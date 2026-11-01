@@ -3,8 +3,11 @@
 ## Design thesis
 Cursor/Linear-inspired precision with a distinct original identity. Minimal, dense where useful, calm by default. Accent color and boldness signal interaction, selection, focus, or meaningful status—not decoration. No gratuitous glows, gradient-heavy surfaces, persistent dashboards, or oversized cards.
 
-## Visual tokens (provisional, brand-neutral)
-Dark default: canvas `#111214`, surface `#181A1D`, raised `#202227`, border `#2B2E34`, primary text `#E8E9EB`, secondary `#9A9EA7`, muted `#70757F`. Light alternative: canvas `#FAFAFB`, surface `#FFFFFF`, border `#E5E7EB`, text `#17191D`. Interaction accent placeholder `#8B8CF8`—configurable, sparingly used. Status colors must meet contrast requirements and never be sole indicator.
+## Visual tokens (provisional)
+Dark default: canvas `#111214`, surface `#181A1D`, raised `#202227`, border `#2B2E34`, primary text `#E8E9EB`, secondary `#9A9EA7`, muted `#70757F`. Light alternative: canvas `#FAFAFB`, surface `#FFFFFF`, border `#E5E7EB`, text `#17191D`. Interaction accent from the brand violet (hue 255°), configurable and sparingly used: `accent` `#5823F6` for filled primary controls in both themes (white label 7.0:1) and for text, links and focus in the light theme (6.7:1 on canvas); `accent-on-dark` `#9776F9` for text, links, icons and focus rings on dark surfaces (5.6:1 canvas, 5.2:1 surface, 4.8:1 raised). Status colors must meet contrast requirements and never be sole indicator.
+
+## Brand
+Brand assets live in `assets/brand/`: `axis-mark.svg` (symbol), `axis-logo-dark.svg` / `axis-logo-light.svg` (symbol and wordmark for dark / light backgrounds), and `axis-app-icon.svg` (1024px application icon on the macOS icon grid). `assets/brand/source/` holds the original raster artwork the vectors were derived from. Use the logo variant that matches the background; do not recolor, outline, rotate or stretch the mark. Keep clear space of at least the mark's corner radius around it, and prefer the symbol alone below 24px. The mark's gradients and the icon's glow are part of the logo only; product UI surfaces follow the flat token system above.
 
 ## Typography and spacing
 System/Inter-like UI sans with strong legibility; code font user-selectable. 12–13px dense controls, 13–14px standard UI, restrained headings. 4px spacing grid, 28–34px compact rows, 36–40px primary controls. Use consistent 6–8px corner radii; near-zero shadows unless layering requires them. These are starting tokens to validate through prototypes.

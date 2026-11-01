@@ -1,3 +1,8 @@
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/brand/axis-logo-dark.svg">
+  <img alt="Axis" src="assets/brand/axis-logo-light.svg" width="240">
+</picture>
+
 # Project Axis — Agent-Ready Product Blueprint
 
 **Status:** approved product direction; architecture subject to proof-of-concept gates. **Working name:** Project Axis.
