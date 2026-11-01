@@ -1,0 +1,16 @@
+# Secrets and local state
+.env
+.env.*
+!.env.example
+*.local
+*.log
+
+# Operating-system metadata
+.DS_Store
+Thumbs.db
+
+# Dependencies and build output
+node_modules/
+dist/
+build/
+coverage/
