@@ -1,16 +1,39 @@
 # Implementation Roadmap and Gates
 
+Sequenced agent-first per ADR 0004: the Agent view shell is built in Phases 0–1, alongside the IDE view on the same custom shell. The first usable release target is the Phase 1 slice.
+
 ## Phase 0 — Feasibility and product architecture
-Deliver Code OSS custom workbench spike, Electron+web prototypes, extension compatibility matrix, licenses/marketplace review, threat model, ADRs, architecture benchmarks. **Gate:** basic IDE operations work with custom shell and a credible upstream maintenance strategy.
+Deliver Code OSS custom workbench spike, Electron+web prototypes, extension compatibility matrix, licenses/marketplace review, threat model, ADRs, architecture benchmarks, and an **agent-view skeleton** on the custom shell (M3, per `docs/design/axis-agent-shell.md`). **Gate:**
+- basic IDE operations (ADR 0002 criterion 1) work in **IDE view** on the custom shell, with a credible upstream maintenance strategy;
+- the shell boots into the agent-view skeleton: a dashboard listing workspaces (mock or read-only data) and a workspace view with a file tree and a terminal bound to a folder;
+- per-workspace toggle and split modes work; a file-tree click opens IDE view at that file; switching back preserves workspace and editor state;
+- the shell-layer footprint including the skeleton is measured against ADR 0002 criterion 2.
 
-## Phase 1 — IDE vertical slice
-Desktop repo open/edit/search, explorer, terminal, Git, diagnostics, language services, command palette, settings, theme, keyboard navigation. Browser workspace skeleton with remote workspace protocol. **Gate:** usable editor on macOS plus Windows/Linux CI smoke; essential keyboard and accessibility flows.
+## Phase 1 — Agent workspace shell + IDE view vertical slice
+A minimal, end-to-end agent manager on desktop, with the full IDE view:
+- **Workspaces and worktrees:** dashboard; create, focus, archive and remove workspaces; daemon worktree lifecycle manager (one worktree and branch per workspace, base SHA recorded, removal refuses to discard uncommitted work); several workspaces concurrently within a per-device limit.
+- **Terminals and panes:** terminals bound to the worktree, split panes, layout persisted per workspace.
+- **File tree, changes and diff review:** file tree; changed-files list against the base; accept/reject per file and hunk; commit on the workspace branch with the user's Git identity; open in IDE view at the location.
+- **Composer and single agent:** Ask / Edit / Agent composer; mock provider plus **one** official provider adapter; connection vault; model selection within that connection; streaming; single-agent tool broker with approval policy and approval UI; local SQLite run journal and audit log.
+- **IDE view:** repo open/edit/search, explorer, terminal, Git, diagnostics, language services, command palette, settings, theme, keyboard navigation.
+- **View modes:** per-workspace, global and split, with the focus rules in `docs/UX.md`.
+- **Platform:** ADR 0003 bridge (validation criteria 1–7); browser workspace skeleton with remote workspace protocol (documented gaps, not gating).
+- **Security controls moved forward** (ADR 0004): worktree path and git-config controls (WT-1–WT-4), broker environment allow-list, timeouts and output caps (PTY-2, PTY-4), challenge approvals (DMN-3), audit and redaction (DMN-5, DMN-6), journal recovery (DMN-7), credential controls (PRV-1, PRV-2, PRV-4, PRV-6; PRV-5 if custom endpoints ship).
 
-## Phase 2 — AI gateway and single agent
-Connection vault, one official provider API adapter, model selector, streaming chat, context attachments, inline diff, single-agent tool broker, approval UI, local run journal. **Gate:** request → change → test → diff → accept/reject, with permissions and crash recovery.
+**Gate:** on macOS, plus Windows/Linux CI smoke:
+- acceptance scenarios 1–5 in `docs/PRODUCT.md` pass with both the mock and the official provider;
+- a requested approval blocks the action until resolved by the user; an agent actor resolving it is denied;
+- killing the app mid-run and restarting recovers the run state from the journal, and the worktree is intact;
+- no credential appears in logs, renderer state, prompts or agent environments (redaction tests);
+- removing a workspace with uncommitted changes is refused without explicit confirmation;
+- the scenarios and all three view modes complete keyboard-only, and the switching focus rules pass;
+- the threat model is revised for the new phase order (ADR 0004).
+
+## Phase 2 — Agent depth and IDE-view AI
+Inline edit and inline diff in the IDE editor, selection/file/symbol context attachments, model/account switcher across connections, capability display, conversation history, checkpoints and undo, prompt templates, cost/usage where supported. **Gate:** inline edit → reversible diff → accept/reject in IDE view; restoring a checkpoint returns the worktree to the recorded state; unsupported capabilities are labeled unavailable.
 
 ## Phase 3 — Parallel orchestration
-Planner DAG, worktree-per-worker, queue, reviewer, merge integration, retries, budgets, task history, logs, checkpoints. **Gate:** two workers independently implement tasks, pass validation, and integrate without silent overwrites.
+Planner DAG, one workspace per worker, queue, reviewer, merge integration queue, retries, budgets, task history, logs, OS sandbox for agent subprocesses (threat model §8.2), advanced DAG and worktree views. **Gate:** two workers independently implement tasks in separate workspaces, pass validation, and integrate without silent overwrites.
 
 ## Phase 4 — Intelligence and extensibility
 Repository indexing, project memory, rules, skills, knowledge graph, ACL retrieval, MCP, provider SDK, supported CLI integration and additional providers. **Gate:** provenance-aware retrieval, data deletion, cross-project isolation and plugin contract tests.
@@ -25,16 +48,16 @@ Cross-platform packaging, signed updates, performance, telemetry consent, extens
 Provider-native artifact integrations where official APIs exist; universal docs/slides, remote workspace fleets, extension marketplace, enterprise SSO/policies, advanced code graph, automation and richer collaboration.
 
 ## Recommended first 10 tickets
-1. ADR: Code OSS fork versus service extraction.
-2. Compatibility proof with custom workbench and Monaco/LSP.
-3. Electron IPC threat model and typed bridge.
-4. Workspace filesystem/Git abstraction and browser remote adapter.
-5. Git worktree lifecycle manager with conflict tests.
-6. SQLite schema + migrations + event journal.
-7. Provider adapter interface and mock provider.
-8. One supported provider connection + vault.
-9. Agent tool broker with approval policy.
-10. End-to-end single-agent diff/review flow.
+1. Agent-view skeleton on the Axis shell: dashboard, workspace view with file tree and terminal, view-mode service with per-workspace, global and split modes (Phase 0 gate).
+2. IDE view on the custom shell passing ADR 0002 criterion 1, opened from the skeleton's file tree at file and line.
+3. ADR 0003 bridge spike: daemon utility process, handshake, contracts and policy hook (validation criteria 1–7).
+4. Git worktree lifecycle manager in the daemon: create, list, remove, base SHA, uncommitted-work protection, WT-1/WT-2 controls, conflict and crash tests.
+5. SQLite schema + migrations + event journal (workspaces, worktrees, runs, approvals, audit).
+6. Workspace terminals and split panes bound to the worktree, persisted per workspace.
+7. Changes list and diff review: accept/reject per file and hunk, commit on the workspace branch.
+8. Provider adapter interface, contract tests and mock provider.
+9. One supported provider connection + vault (provider choice is ADR 0004 open question 1).
+10. Composer (Ask/Edit/Agent) + single-agent tool broker with approval policy and UI; end-to-end dashboard → workspace → agent → diff → commit.
 
 ## Milestone measurement
-Track cold start, keystroke-to-render latency, memory footprint, indexing speed, agent task completion, merge conflicts, provider error rate, sandbox denial, sync conflicts and crash-free sessions. Set numerical budgets after the Phase 0 baseline rather than inventing unsupported guarantees.
+Track cold start, keystroke-to-render latency, view-switch latency (Agent ↔ IDE), workspace creation time, memory footprint, indexing speed, agent task completion, merge conflicts, provider error rate, sandbox denial, sync conflicts and crash-free sessions. Set numerical budgets after the Phase 0 baseline rather than inventing unsupported guarantees.
