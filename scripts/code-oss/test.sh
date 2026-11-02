@@ -325,6 +325,44 @@ expect_success "fetch --force moves the pin over manual edits" fetch --force
 check "forced fetch is at the pinned commit with a clean tree" \
 	test "$(head_of)" = "$c1" -a -z "$(git -C "$tree" status --porcelain)"
 
+# --- Git directory variants in overlay, replace/ and removals.txt ----------------
+
+new_root gitdir
+write_manifest "$c1" v1.0.0
+expect_success "fetch for the Git-directory tests" fetch
+# Each variant must be refused before the tree is touched, in all three inputs.
+# ".git::$INDEX_ALLOCATION" is an NTFS alternate data stream name, not a variable.
+# shellcheck disable=SC2016
+for variant in .GIT a/.git .Git. ".git " "a/.git. ." GIT~1 'a/.git::$INDEX_ALLOCATION'; do
+	for kind in overlay replace removals; do
+		rm -rf "$root/code-oss/overlay" "$root/code-oss/replace" "$root/code-oss/removals.txt"
+		mkdir -p "$root/code-oss/overlay" "$root/code-oss/replace"
+		case "$kind" in
+		overlay | replace)
+			mkdir -p "$root/code-oss/$kind/$variant/hooks"
+			printf '#!/bin/sh\n' >"$root/code-oss/$kind/$variant/hooks/post-checkout.png"
+			chmod +x "$root/code-oss/$kind/$variant/hooks/post-checkout.png"
+			;;
+		removals) printf '%s\n' "$variant" >"$root/code-oss/removals.txt" ;;
+		esac
+		run apply
+		if [ "$status" -ne 0 ] && { output_has "names the Git directory" || output_has "printable ASCII without backslash or colon"; } &&
+			[ -d "$tree/.git" ] && [ ! -e "$tree/.git/hooks/post-checkout.png" ]; then
+			ok "apply refuses '$variant' in $kind"
+		else
+			not_ok "apply refuses '$variant' in $kind (exit $status)"
+		fi
+	done
+done
+rm -rf "$root/code-oss/overlay" "$root/code-oss/replace" "$root/code-oss/removals.txt"
+mkdir -p "$root/code-oss/overlay/src/.github" "$root/code-oss/overlay/src/git"
+printf 'ok\n' >"$root/code-oss/overlay/src/.github/x.txt"
+printf 'ok\n' >"$root/code-oss/overlay/src/git/x.txt"
+expect_success "apply still accepts names that only resemble .git (.github, git)" apply
+printf 'x\n' >"$root/code-oss/overlay/src/caf$(printf '\303\251').txt"
+expect_failure "apply refuses non-ASCII overlay paths" "printable ASCII" apply
+rm -rf "$root/code-oss/overlay/src"
+
 # --- Paths with whitespace and relocated vendor directory ----------------------
 
 new_root "with space"

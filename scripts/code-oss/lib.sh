@@ -82,6 +82,42 @@ load_manifest() {
 	[[ "$NODE_VERSION" =~ $VERSION_RE ]] || die "manifest node is not MAJOR.MINOR.PATCH: $NODE_VERSION"
 }
 
+lowercase() {
+	printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
+}
+
+# check_rel_path PATH: dies unless PATH is a safe repository-relative path. It
+# must not be absolute or contain empty, "." or ".." components; it may hold
+# only printable ASCII without backslash or colon; and no component may be
+# one that Git or a case-insensitive (APFS, HFS+, NTFS) filesystem treats as
+# the Git directory: ".git" in any case, with trailing dots or spaces, or the
+# 8.3 short name "git~1". Colons are refused, which also rules out NTFS
+# alternate data streams such as ".git::$INDEX_ALLOCATION".
+check_rel_path() {
+	local rel="$1" rest comp lc
+	case "$rel" in
+	'' | /*) die "unsafe path: '$rel'" ;;
+	*[![:print:]]* | *\\* | *:*) die "path may contain only printable ASCII without backslash or colon: '$rel'" ;;
+	esac
+	rest="$rel"
+	while :; do
+		comp="${rest%%/*}"
+		case "$comp" in '' | . | ..) die "unsafe path: '$rel'" ;; esac
+		lc="$(lowercase "$comp")"
+		while :; do
+			case "$lc" in
+			*. | *' ') lc="${lc%?}" ;;
+			*) break ;;
+			esac
+		done
+		case "$lc" in
+		.git | git~1) die "path component '$comp' names the Git directory: '$rel'" ;;
+		esac
+		[ "${rest#*/}" != "$rest" ] || break
+		rest="${rest#*/}"
+	done
+}
+
 tree_git() {
 	git -C "$TREE_DIR" "$@"
 }

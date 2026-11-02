@@ -42,17 +42,6 @@ load_manifest
 work="$(mktemp -d "${TMPDIR:-/tmp}/axis-code-oss-apply.XXXXXX")"
 trap 'rm -rf "$work"' EXIT
 
-# Rejects paths that could escape the tree or that the stamp format cannot hold.
-check_rel_path() {
-	case "$1" in
-	'' | /* | ../* | */../* | */.. | .. | . | ./* | */./* | */.) die "unsafe path: '$1'" ;;
-	.git | .git/*) die "path inside the tree's Git directory: '$1'" ;;
-	esac
-	case "$1" in
-	*$'\n'* | *$'\r'* | *\\*) die "path contains a line break or backslash: '$1'" ;;
-	esac
-}
-
 # True if any existing parent of REL inside the tree is a symlink or not a directory.
 parent_escapes() {
 	local parent="$TREE_DIR" rest="$1"
@@ -147,6 +136,10 @@ fi
 stamp_get overlay >"$work/previous-overlay"
 while IFS= read -r rel; do
 	check_rel_path "$rel"
+	if parent_escapes "$rel"; then
+		log "warning: not removing previous overlay file $rel: a parent is a symlink or not a directory"
+		continue
+	fi
 	rm -f "$TREE_DIR/$rel"
 done <"$work/previous-overlay"
 rm -f "$STAMP_FILE"
