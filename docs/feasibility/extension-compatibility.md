@@ -340,7 +340,7 @@ The desktop CLI installs VSIX paths through `--install-extension` (`argv.ts:130`
 
 ## 10. Decisions
 
-Recorded on 2026-11-01 by the Phase 0 lead.
+Recorded on 2026-11-01.
 
 | ID | Decision | Effect on the plan | Follow-up |
 |---|---|---|---|

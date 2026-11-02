@@ -66,7 +66,7 @@ Adopt **Option B**.
    - Windows: `%LOCALAPPDATA%\Axis\worktrees\<repo-id>\<workspace>`.
    A configured location inside any registered repository's working tree is rejected.
 8. **CLI coding agents are first-class in v1.** Axis can launch the user's installed agent CLIs (for example, official provider CLIs) in a workspace terminal, through their documented command-line interfaces, under the user's own login and terms (`PROVIDERS.md` connection type 3).
-   - Each launch is a **CLI agent run** of the workspace. The dashboard shows it with a status derived only from state Axis owns: the process (running, exited with code, killed), the terminal (output activity, waiting for input) and the worktree's changes. Axis never parses a CLI's private files, session stores or undocumented output formats.
+   - Each launch is a **CLI agent run** of the workspace. The dashboard shows it with a status derived only from state Axis owns: the process (running, exited with code, killed), the terminal (output activity, or quiet, which may mean it is waiting for input; Axis cannot know) and the worktree's changes. Axis never parses a CLI's private files, session stores or undocumented output formats.
    - Its changes go through the same Axis diff review as composer agents' changes.
    - Axis never reads private session stores, extracts tokens, or impersonates the CLI's client.
 9. **Phase 1 integration ends at the branch.** Beyond commit, Phase 1 offers push of the workspace branch and "open a pull request". The integration and merge queue stays in Phase 3.
@@ -121,8 +121,8 @@ Cross-references are to `docs/security/threat-model-phase0.md`. Moving the agent
    - WT-4 (one worktree and branch per worker, base SHA recorded) moves from Phase 3 to Phase 1, because the worktree lifecycle manager moves to Phase 1.
 2. **Daemon scope.** ADR 0003 scopes calls by the window's Code OSS workspace (DMN-2). An agent workspace is a worktree that usually sits outside the opened folder. The daemon must scope calls to the project plus the worktrees its own worktree manager registered, by canonical path and recorded ID, never by a path prefix taken from a payload. This is a rule inside ADR 0003's existing policy step, not a change to the bridge.
 3. **Terminals and CLI agent runs.**
-   - A terminal in a workspace, and any CLI agent Axis launches in it, runs with the **user's privileges** in the worktree, in the upstream pty host (PTY-1, accepted while renderer equals user). It is **not brokered**: Axis's policy, approvals, budgets and tool audit do not apply to what the CLI does.
-   - **The CLI's own permission model is the CLI's responsibility.** Axis surfaces it (the CLI's prompts appear in its terminal, and the dashboard shows the run as waiting for input) but does not override, auto-answer or bypass it. Axis must not claim approvals or budgets for CLI runs, and labels them as governed by the CLI's own permissions.
+   - A terminal in a workspace, and any CLI agent Axis launches in it, runs with the **user's privileges** in the worktree, in an Axis-managed pty attached to an integrated terminal (mechanism in the shell design; PTY-1, accepted while renderer equals user). It is **not brokered**: Axis's policy, approvals, budgets and tool audit do not apply to what the CLI does.
+   - **The CLI's own permission model is the CLI's responsibility.** Axis surfaces it (the CLI's prompts appear in its terminal, and the dashboard shows the run as quiet, which may mean it is waiting for input) but does not override, auto-answer or bypass it. Axis must not claim approvals or budgets for CLI runs, and labels them as governed by the CLI's own permissions.
    - **New control PTY-5: CLI agent terminal environment deny-list, required in Phase 1.** This is not PTY-2: PTY-2 is the broker's allow-list, which inherits nothing. A CLI agent terminal deliberately keeps the user's environment, minus what Axis, Code OSS or extensions inject. Evidence at the pin [V, review of 2c33b50]: the built-in git extension adds `GIT_ASKPASS`, `VSCODE_GIT_ASKPASS_*`, `SSH_ASKPASS`, `SSH_ASKPASS_REQUIRE`, `GIT_EDITOR`, `VSCODE_GIT_EDITOR_*` and `VSCODE_GIT_IPC_HANDLE` to every integrated terminal through `environmentVariableCollection` (`extensions/git/src/terminal.ts:28-40`, `askpass.ts:37-48`, `gitEditor.ts:30-33`), after upstream sanitising; and upstream sanitising keeps `VSCODE_IPC_HOOK_CLI` (`terminalEnvironment.ts:295`). `VSCODE_GIT_ASKPASS_NODE` is the signed Axis binary, the PRV-3 vector. The rule:
      - drop every `VSCODE_*` (including `VSCODE_IPC_HOOK_CLI`) and `ELECTRON_*` variable, plus `GIT_ASKPASS`, `SSH_ASKPASS*` and `GIT_EDITOR`;
      - drop every variable any extension environment variable collection adds, replaces, appends or prepends (equivalently: collections are not applied to CLI agent terminals);
@@ -206,12 +206,12 @@ Decided on 2026-11-02. Owner decisions are final for this ADR; engineering defau
 | 7 | Worktree location | Outside the repository, under the app data directory, configurable (decision 7) | Engineering default |
 | 8 | Merging back | Commit, push branch and open a PR in Phase 1; integration and merge queue in Phase 3 (decision 9) | Engineering default |
 | 9 | User edits during an agent run | Allowed, with drift indicator; composer agents are notified, CLI agents are not (decision 10); conflict policy in the shell design | Engineering default |
-| 10 | Workspace Trust for worktrees | Inherited from the source repository; untrusted repository → Restricted Mode (decision 12) | Lead decision |
-| 11 | Supported forge in Phase 1 | GitHub: official `gh` CLI if installed, else the web compare URL; other forges push only (decision 9) | Lead decision |
-| 12 | Phase 1 scope | Split into Phase 1a (agent workspace shell) and Phase 1b (composer, providers, vault, approvals, broker); browser skeleton moves out of Phase 1 (decision 13) | Lead decision |
+| 10 | Workspace Trust for worktrees | Inherited from the source repository; untrusted repository → Restricted Mode (decision 12) | Engineering default |
+| 11 | Supported forge in Phase 1 | GitHub: official `gh` CLI if installed, else the web compare URL; other forges push only (decision 9) | Engineering default |
+| 12 | Phase 1 scope | Split into Phase 1a (agent workspace shell) and Phase 1b (composer, providers, vault, approvals, broker); browser skeleton moves out of Phase 1 (decision 13) | Engineering default |
 | 13 | Anthropic adapter implementation | Documented HTTP API via `fetch` + Zod, no SDK (decision 14) | Engineering default |
 
-Decisions 9 and 10 contain two engineering additions, marked in the text: brokered agents may not push without approval, and Axis stores no forge credentials.
+Decision 9 contains two engineering additions, marked in the text: brokered agents may not push without approval, and Axis stores no forge credentials.
 
 ## Deferred to `docs/design/axis-agent-shell.md` (to be defined there)
 

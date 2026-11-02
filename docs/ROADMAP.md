@@ -46,6 +46,8 @@ A minimal, end-to-end agent manager on desktop, with the full IDE view. Phase 1 
 - **WT-3 (approval):** a composer write to a protected path requires explicit approval and is highlighted in diff review;
 - **PTY-4:** a broker command that exceeds its timeout or output cap is killed with its process group, and the run records why;
 - **DMN-5:** every approval and side effect writes an audit event with approver identity and expiry; altering a stored event is detected by the hash-chain check;
+- **PTY-2:** a broker-launched child process's environment contains only allow-listed variables (`PATH`, `HOME`, `LANG`, `TERM` and declared per-tool additions); variables set in the app, terminal or extension environment, including `VSCODE_*`, `GIT_ASKPASS`, `SSH_AUTH_SOCK` and `*_TOKEN`/`*_KEY`, are absent unless a scoped grant applies;
+- **PRV-6:** a composer run that reaches its per-run token or cost budget is stopped by the daemon before the next provider request, and the run records why;
 - **PRV-1:** with the Linux `basic_text` backend, storing the API key is refused or needs explicit consent, and the UI shows the storage backend;
 - no credential appears in logs, renderer state, prompts or agent environments (redaction tests, PRV-2 and DMN-6);
 - killing the app mid composer run and restarting recovers the run state from the journal, and the worktree is intact.
