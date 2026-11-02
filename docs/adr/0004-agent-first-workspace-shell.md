@@ -189,6 +189,9 @@ Decided on 2026-11-02. Owner decisions are final for this ADR; engineering defau
 | 8 | Merging back | Commit, push branch and open a PR in Phase 1; integration and merge queue in Phase 3 (decision 9) | Engineering default |
 | 9 | User edits during an agent run | Allowed, with drift indicator and agent notification (decision 10); conflict policy in the shell design | Engineering default |
 
-## Open questions
+## Deferred to `docs/design/axis-agent-shell.md`
 
-1. Whether the Agent view reuses or adapts upstream `vs/sessions` code, or re-implements its architecture (decided in `docs/design/axis-agent-shell.md`).
+1. Whether the Agent view reuses or adapts upstream `vs/sessions` code, or re-implements its architecture, and how that interacts with `axis-shell.md` decision D8.
+2. How IDE view follows the focused workspace (resolved question 4).
+3. The detailed conflict policy for user edits during an agent run (resolved question 9).
+4. Concurrent writes by a composer agent and a CLI agent run in the same workspace. They are allowed; the drift rule of decision 10 applies to each agent with respect to the other's writes. The design sets the detailed policy.
