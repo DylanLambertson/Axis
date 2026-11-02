@@ -1,0 +1,102 @@
+name: Code OSS full build (manual)
+
+# Full Linux x64 build of the pinned, patched Code OSS tree. Manual only: the
+# compile needs well over 8 GiB of RAM (upstream sets --max-old-space-size=8192)
+# and was OOM-killed at 7.75 GiB, so standard GitHub-hosted runners for private
+# repositories are too small. Run it on a paid larger runner or on an ephemeral
+# self-hosted runner. npm ci runs every dependency's install scripts, so never
+# use a long-lived or shared self-hosted machine. See docs/ci.md.
+on:
+  workflow_dispatch:
+    inputs:
+      runs-on:
+        description: >-
+          Runner label. Must give at least 16 GB RAM, for example a larger
+          runner (ubuntu-latest-16-cores) or an ephemeral self-hosted label.
+        type: string
+        required: true
+        default: ubuntu-latest-16-cores
+      install-build-packages:
+        description: Install the upstream Linux build packages with sudo apt-get (turn off on a prepared self-hosted image).
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: code-oss-build-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Code OSS full build (Linux x64)
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: 180
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check the runner
+        run: |
+          set -euo pipefail
+          [ "$RUNNER_OS" = Linux ] && [ "$RUNNER_ARCH" = X64 ] || {
+            echo "::error::needs a Linux x64 runner (only linux-x64 Node is pinned); got $RUNNER_OS $RUNNER_ARCH"
+            exit 1
+          }
+          mem_kib="$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)"
+          echo "CPUs: $(nproc), memory: $((mem_kib / 1024 / 1024)) GiB"
+          if [ "$mem_kib" -lt $((12 * 1024 * 1024)) ]; then
+            echo "::error::runner has less than 12 GiB RAM; the compile is known to be OOM-killed at 7.75 GiB"
+            exit 1
+          fi
+
+      - name: Install upstream build packages
+        if: inputs.install-build-packages
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config libx11-dev libx11-xcb-dev libxkbfile-dev \
+            libnotify-bin libkrb5-dev python3
+
+      - name: Place the tree and toolchain outside the checkout
+        run: |
+          {
+            echo "AXIS_CODE_OSS_VENDOR_DIR=$RUNNER_TEMP/axis/vendor"
+            echo "AXIS_CODE_OSS_TOOLS_DIR=$RUNNER_TEMP/axis/tools"
+          } >>"$GITHUB_ENV"
+
+      - name: Fetch the pinned upstream commit
+        run: scripts/code-oss/fetch.sh
+
+      - name: Apply patches, removals, replacements, overlay and hooks
+        run: scripts/code-oss/apply.sh
+
+      - name: Report the patch footprint
+        run: scripts/code-oss/footprint.sh
+
+      - name: Build (Node toolchain, npm ci, compile, Electron, built-in extensions)
+        run: scripts/code-oss/build.sh
+
+      - name: Check build artifacts (if available)
+        run: |
+          set -euo pipefail
+          for candidate in scripts/code-oss/check-artifacts.sh scripts/code-oss/check-artifacts code-oss/scripts/check-artifacts; do
+            if [ -x "$candidate" ]; then
+              "$candidate"
+              exit 0
+            fi
+          done
+          echo "::notice::check-artifacts is not in the repository yet (M3 S1.3); skipped"
+
+      - name: Upload build logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: code-oss-build-logs
+          path: ${{ runner.temp }}/axis/vendor/logs/
+          if-no-files-found: warn
+          retention-days: 14
