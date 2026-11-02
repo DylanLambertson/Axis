@@ -11,6 +11,7 @@ export type RemovalReason =
   | "git-editor"
   | "git-redirect"
   | "git-config"
+  | "shell-integration"
   | "axis-internal"
   | "extension-collection"
   | "secret-name"
@@ -36,6 +37,12 @@ const GIT_REDIRECT = new Set([
   "GIT_EXEC_PATH",
   "GIT_TEMPLATE_DIR",
 ]);
+
+/**
+ * Git config file locations that belong to the user's own environment. Kept in CLI runs by an explicit exemption,
+ * never by fallthrough. Axis warns when one resolves inside a managed worktree (see gitConfigFileWarnings).
+ */
+export const GIT_CONFIG_KEPT: ReadonlySet<string> = new Set(["GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM"]);
 
 /** The shell-integration variables of policies section 4.3. Only plain terminals may receive them. */
 export const SI_ENV_NAMES: ReadonlySet<string> = new Set([
@@ -78,7 +85,10 @@ export function classifyDeniedName(name: string): RemovalReason | undefined {
   if (n.startsWith("ELECTRON_")) return "electron";
   if (n === "GIT_ASKPASS" || n.startsWith("SSH_ASKPASS")) return "askpass";
   if (n === "GIT_EDITOR") return "git-editor";
-  if (n.startsWith("GIT_CONFIG")) return "git-config";
+  if (GIT_CONFIG_KEPT.has(n)) return undefined;
+  if (n === "GIT_CONFIG_COUNT" || n === "GIT_CONFIG_PARAMETERS" || n.startsWith("GIT_CONFIG_KEY_") || n.startsWith("GIT_CONFIG_VALUE_")) {
+    return "git-config";
+  }
   if (GIT_REDIRECT.has(n)) return "git-redirect";
   if (n.startsWith("AXIS_")) return "axis-internal";
   return undefined;

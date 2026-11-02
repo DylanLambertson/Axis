@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { cliAgentSchema, cliAgentsSchema, resolveCliAgentsSetting, resolveSecuritySettings } from "../src/index.js";
+import { checkExecutable, cliAgentSchema, cliAgentsSchema, resolveCliAgentsSetting, resolveSecuritySettings } from "../src/index.js";
 
 const good = { id: "claude", label: "Claude Code", command: ["claude"], args: ["--flag"], envPassthrough: ["ANTHROPIC_API_KEY"] };
 
@@ -72,6 +72,28 @@ test("resolveCliAgentsSetting: unknown scope is ignored; machine beats applicati
   assert.equal(resolveCliAgentsSetting({}).warnings.length, 0);
 });
 
+test("resolveCliAgentsSetting drops agents whose executable fails the platform rules, with a warning", () => {
+  const unc = { ...good, id: "unc", command: ["\\\\evil\\share\\a.exe"] };
+  const cmd = { ...good, id: "cmd", command: ["C:\\t\\a.cmd"] };
+  const exe = { ...good, id: "exe", command: ["C:\\t\\a.exe"] };
+  const r = resolveCliAgentsSetting({ machine: [unc, cmd, exe] }, { platform: "win32" });
+  assert.deepEqual(r.agents.map((a) => a.id), ["exe"]);
+  assert.equal(r.warnings.length, 2);
+  assert.equal(checkExecutable("C:\\t\\a.exe", "linux") !== undefined, true, "a Windows path is not absolute on POSIX");
+});
+
+test("a null at a trusted scope shadows a lower valid value (fail closed)", () => {
+  const r = resolveCliAgentsSetting({ user: [good], machine: null });
+  assert.deepEqual(r.agents, []);
+  assert.equal(r.warnings.length, 1);
+  assert.equal(resolveSecuritySettings({ runHooks: { user: false, machine: null } }).runHooks, true);
+});
+
+test("a value inherited through the prototype of the scope map is never read", () => {
+  const scopes = Object.create({ machine: [good] }) as Record<string, unknown>;
+  assert.deepEqual(resolveCliAgentsSetting(scopes).agents, []);
+});
+
 test("resolveCliAgentsSetting: a prototype key as a scope name is ignored safely", () => {
   const v = JSON.parse('{"__proto__":[{"id":"a"}],"application":[]}') as Record<string, unknown>;
   const r = resolveCliAgentsSetting(v);
@@ -92,12 +114,21 @@ test("security settings: defaults, trusted scopes, and the same scope rule", () 
   assert.equal(r.warnings.length, 3);
 });
 
+test("worktrees.root: UNC, device, root-relative and '..' paths are refused", () => {
+  const w = (v: string, platform: NodeJS.Platform) => resolveSecuritySettings({ worktreesRoot: { user: v } }, { platform }).worktreesRoot;
+  for (const v of ["\\\\srv\\share\\wt", "//srv/share/wt", "\\\\?\\C:\\wt", "\\wt", "C:\\a\\..\\b", "C:wt", "/posix/root"]) assert.equal(w(v, "win32"), undefined, v);
+  assert.equal(w("D:\\axis\\wt", "win32"), "D:\\axis\\wt");
+  assert.equal(w("/data/../etc", "linux"), undefined);
+  assert.equal(w("/data/axis/wt", "linux"), "/data/axis/wt");
+  assert.equal(w("C:\\wt", "linux"), undefined);
+});
+
 test("security settings: user can opt out at trusted scope; invalid values fall back", () => {
   const r = resolveSecuritySettings({ scrubEnvironment: { user: false }, runHooks: { machine: "no" }, worktreesRoot: { user: "relative/dir" } });
   assert.equal(r.scrubEnvironment, false);
   assert.equal(r.runHooks, true);
   assert.equal(r.worktreesRoot, undefined);
   assert.equal(r.warnings.length, 2);
-  assert.equal(resolveSecuritySettings({ worktreesRoot: { user: "C:\\wt" } }).worktreesRoot, "C:\\wt");
+  assert.equal(resolveSecuritySettings({ worktreesRoot: { user: "C:\\wt" } }, { platform: "win32" }).worktreesRoot, "C:\\wt");
   assert.equal(resolveSecuritySettings({ worktreesRoot: { user: "/a\0b" } }).worktreesRoot, undefined);
 });

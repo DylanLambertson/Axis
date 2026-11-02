@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildCliEnv, buildGitEnv, buildPlainTerminalEnv } from "../src/index.js";
+import { buildCliEnv, buildGitEnv, buildPlainTerminalEnv, classifyDeniedName, gitConfigFileWarnings } from "../src/index.js";
 
 const KEPT = { PATH: "/usr/bin", HOME: "/home/u", LANG: "en_US.UTF-8", TERM: "xterm-256color", SSH_AUTH_SOCK: "/tmp/agent.sock", LC_ALL: "C", FOO: "bar" };
 
@@ -11,7 +11,8 @@ const DENIED = [
   "ELECTRON_RUN_AS_NODE", "ELECTRON_NO_ATTACH_CONSOLE",
   "GIT_ASKPASS", "SSH_ASKPASS", "SSH_ASKPASS_REQUIRE", "GIT_EDITOR",
   "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE", "GIT_EXEC_PATH", "GIT_OBJECT_DIRECTORY",
-  "GIT_CONFIG", "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_GLOBAL",
+  "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0", "GIT_CONFIG_KEY_12", "GIT_CONFIG_PARAMETERS", "GIT_NAMESPACE", "GIT_TEMPLATE_DIR", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+  "USER_ZDOTDIR",
   "AXIS_VAULT_KEY", "AXIS_DAEMON_PORT",
 ];
 
@@ -57,6 +58,77 @@ test("POSIX: case variants of one name stay distinct", () => {
   assert.deepEqual(env, { foo: "1", FOO: "2" });
 });
 
+test("GIT_CONFIG narrowing: injectors are removed in any case, the user's own config locations stay", () => {
+  const { env, removed } = buildCliEnv(
+    {
+      GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "core.x", GIT_CONFIG_VALUE_0: "y", GIT_CONFIG_PARAMETERS: "'a=b'", git_config_key_0: "k", Git_Config_Value_9: "v",
+      GIT_CONFIG_GLOBAL: "/home/u/.gitconfig-work", GIT_CONFIG_SYSTEM: "/etc/gitconfig-x", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIGURATION: "kept", PATH: "/b",
+    },
+    { platform: "linux" },
+  );
+  assert.deepEqual(Object.keys(env).sort(), ["GIT_CONFIGURATION", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_SYSTEM", "PATH"]);
+  assert.deepEqual(removed.map((r) => r.reason), Array(6).fill("git-config"));
+  assert.equal(classifyDeniedName("git_config_global"), undefined);
+  assert.equal(classifyDeniedName("GIT_CONFIG_COUNT"), "git-config");
+});
+
+test("GIT-ENV-1 still drops every GIT_CONFIG variable, including the kept-for-CLI ones", () => {
+  const { env } = buildGitEnv({ PATH: "/b", GIT_CONFIG_GLOBAL: "/g", GIT_CONFIG_SYSTEM: "/s", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "k", GIT_CONFIG_PARAMETERS: "p" }, { platform: "linux" });
+  assert.deepEqual(Object.keys(env).sort(), ["GIT_TERMINAL_PROMPT", "PATH"]);
+});
+
+test("gitConfigFileWarnings warns for a config file inside a managed worktree, and only then", () => {
+  const roots = ["/data/wt/p-1/feat", "/data/wt/p-1/other"];
+  assert.deepEqual(gitConfigFileWarnings({ GIT_CONFIG_GLOBAL: "/home/u/.gitconfig", GIT_CONFIG_SYSTEM: "/etc/gitconfig" }, roots, "linux"), []);
+  const w = gitConfigFileWarnings({ GIT_CONFIG_GLOBAL: "/data/wt/p-1/feat/sub/.gitconfig", git_config_system: "/data/wt/p-1/other" }, roots, "linux");
+  assert.deepEqual(w.map((x) => [x.name, x.worktreeRoot]), [["GIT_CONFIG_GLOBAL", "/data/wt/p-1/feat"], ["GIT_CONFIG_SYSTEM", "/data/wt/p-1/other"]]);
+  assert.equal(gitConfigFileWarnings({ GIT_CONFIG_GLOBAL: "/data/wt/p-1/feature/.gitconfig" }, roots, "linux").length, 0, "prefix siblings are not inside");
+  assert.equal(gitConfigFileWarnings({ GIT_CONFIG_GLOBAL: "rel/.gitconfig" }, roots, "linux").length, 1, "a relative path resolves against the cwd, a worktree");
+  assert.equal(gitConfigFileWarnings({ GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "" }, roots, "linux").length, 0);
+  assert.equal(gitConfigFileWarnings({ GIT_CONFIG_GLOBAL: "C:\\DATA\\WT\\P-1\\Feat\\.gitconfig" }, ["c:\\data\\wt\\p-1\\feat"], "win32").length, 1);
+});
+
+test("non-string values are dropped as invalid by every builder and never throw", () => {
+  const bad = { A: 1, B: null, C: { x: 1 }, D: ["a"], E: true, GOOD: "ok" } as unknown as Record<string, string>;
+  const cli = buildCliEnv(bad, { platform: "linux" });
+  assert.deepEqual(cli.env, { GOOD: "ok" });
+  assert.deepEqual(cli.removed.map((r) => r.name).sort(), ["A", "B", "C", "D", "E"]);
+  assert.ok(cli.removed.every((r) => r.reason === "invalid"));
+  const git = buildGitEnv({ PATH: 1, HOME: "/h" } as unknown as Record<string, string>, { platform: "linux" });
+  assert.deepEqual(git.env, { HOME: "/h", GIT_TERMINAL_PROMPT: "0" });
+  assert.deepEqual(git.removed, [{ name: "PATH", reason: "invalid" }]);
+  const plain = buildPlainTerminalEnv({ PATH: "/b" }, { platform: "linux", userEnv: bad, shellIntegration: { VSCODE_NONCE: 5, VSCODE_INJECTION: "1" } as unknown as Record<string, string> });
+  assert.deepEqual(plain.env, { PATH: "/b", GOOD: "ok", VSCODE_INJECTION: "1" });
+  assert.ok(plain.removed.some((r) => r.name === "VSCODE_NONCE" && r.reason === "invalid"));
+});
+
+test("USER_ZDOTDIR is always removed; ZDOTDIR only when it points inside Axis's shell-integration directory", () => {
+  const parent = { PATH: "/b", USER_ZDOTDIR: "/home/u", ZDOTDIR: "/app/shell-integration/zsh" };
+  const a = buildCliEnv(parent, { platform: "linux", shellIntegrationDir: "/app/shell-integration" });
+  assert.deepEqual(a.env, { PATH: "/b" });
+  assert.deepEqual(a.removed.map((r) => r.reason), ["shell-integration", "shell-integration"]);
+  const b = buildCliEnv({ PATH: "/b", ZDOTDIR: "/home/u/.zsh", USER_ZDOTDIR: "x" }, { platform: "linux", shellIntegrationDir: "/app/shell-integration" });
+  assert.deepEqual(b.env, { PATH: "/b", ZDOTDIR: "/home/u/.zsh" });
+  assert.equal(buildCliEnv({ ZDOTDIR: "/app/shell-integration/zsh" }, { platform: "linux" }).env["ZDOTDIR"], "/app/shell-integration/zsh", "no directory given: kept");
+  assert.equal(buildCliEnv({ ZDOTDIR: "/app/shell-integration-evil/zsh" }, { platform: "linux", shellIntegrationDir: "/app/shell-integration" }).env["ZDOTDIR"], "/app/shell-integration-evil/zsh");
+  // Plain terminals: an inherited USER_ZDOTDIR is removed, Axis's own SI-ENV value is added after.
+  const p = buildPlainTerminalEnv({ USER_ZDOTDIR: "/inherited" }, { platform: "linux", shellIntegration: { USER_ZDOTDIR: "/real", ZDOTDIR: "/z" } });
+  assert.deepEqual(p.env, { USER_ZDOTDIR: "/real", ZDOTDIR: "/z" });
+});
+
+test("user pass-through: LD_PRELOAD, DYLD_*, NODE_OPTIONS, GIT_SSH_COMMAND are the user's own environment and stay", () => {
+  const parent = { LD_PRELOAD: "/lib/x.so", DYLD_INSERT_LIBRARIES: "/lib/y.dylib", NODE_OPTIONS: "--max-old-space-size=2048", GIT_SSH_COMMAND: "ssh -i k", PATH: "/b" };
+  assert.deepEqual(buildCliEnv(parent, { platform: "linux" }).env, parent);
+});
+
+test("Windows: a case variant of a denied name in userEnv is removed and case duplicates in userEnv are reported", () => {
+  const r = buildPlainTerminalEnv({ Path: "p" }, { platform: "win32", userEnv: { vscode_nonce: "forged", PATH: "q", Path: "r", Foo: "1", FOO: "2" } });
+  assert.equal("vscode_nonce" in r.env, false);
+  assert.deepEqual(r.env, { Path: "r", Foo: "2" });
+  assert.ok(r.removed.some((x) => x.reason === "duplicate-case" && x.name === "Path"));
+  assert.ok(r.removed.some((x) => x.reason === "duplicate-case" && x.name === "FOO"));
+});
+
 test("prototype-polluting keys never reach the output", () => {
   const parent = JSON.parse('{"__proto__":"x","constructor":"y","prototype":"z","OK":"1"}') as Record<string, string>;
   const { env, removed } = buildCliEnv(parent, { platform: "linux" });
@@ -64,6 +136,7 @@ test("prototype-polluting keys never reach the output", () => {
   assert.equal(Object.getPrototypeOf(env), Object.prototype);
   assert.equal(({} as Record<string, unknown>)["x"], undefined);
   assert.deepEqual(removed.map((r) => r.reason), ["unsafe-key", "unsafe-key", "unsafe-key"]);
+  assert.deepEqual(removed.map((r) => r.name).sort(), ["__proto__", "constructor", "prototype"]);
 });
 
 test("invalid names and values are dropped", () => {
@@ -163,6 +236,7 @@ test("GIT-ENV-1 on Windows: case-insensitive allow-list and system variables", (
 
 test("GIT-ENV-1 drops prototype-polluting keys", () => {
   const parent = JSON.parse('{"__proto__":"x","PATH":"/b"}') as Record<string, string>;
-  const { env } = buildGitEnv(parent, { platform: "linux" });
+  const { env, removed } = buildGitEnv(parent, { platform: "linux" });
   assert.deepEqual(Object.keys(env).sort(), ["GIT_TERMINAL_PROMPT", "PATH"]);
+  assert.deepEqual(removed, [{ name: "__proto__", reason: "unsafe-key" }]);
 });

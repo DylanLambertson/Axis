@@ -1,10 +1,12 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 // Setting scopes (threat model CFG-1, decision Q-3). axis.cliAgents, axis.terminals.scrubEnvironment,
-// axis.git.runHooks and axis.worktrees.root are application or machine scope only. Values from a
-// repository (workspace or folder scope), or from any unknown scope, are ignored with a warning.
-import { isAbsolute as posixAbs } from "node:path/posix";
-import { isAbsolute as winAbs } from "node:path/win32";
+// axis.git.runHooks and axis.worktrees.root are read only from the default, user, application and machine
+// scopes (precedence: machine, application, user, default). Values from a repository (workspace or folder
+// scope), and from any scope name not listed, are ignored with a warning. The caller maps its own scope names
+// onto these; for example a remote window's user setting must be passed as `user` or `machine`, or it is dropped.
 import { cliAgentSchema, type CliAgent } from "./agent.js";
+import { checkExecutable } from "./exec.js";
+import { hasDotDot, isPlainAbsolute } from "./paths.js";
 
 /** Scopes whose values are trusted, lowest precedence first. */
 export const TRUSTED_SCOPES = ["default", "user", "application", "machine"] as const;
@@ -53,7 +55,8 @@ export interface CliAgentsResult {
 }
 
 /** Resolves axis.cliAgents. Invalid entries are dropped one by one with a warning (fail closed). */
-export function resolveCliAgentsSetting(valuesByScope: ValuesByScope): CliAgentsResult {
+export function resolveCliAgentsSetting(valuesByScope: ValuesByScope, opts: { readonly platform?: NodeJS.Platform } = {}): CliAgentsResult {
+  const platform = opts.platform ?? process.platform;
   const setting = "axis.cliAgents";
   const warnings = ignoredScopeWarnings(setting, valuesByScope);
   const chosen = pick(valuesByScope);
@@ -68,6 +71,8 @@ export function resolveCliAgentsSetting(valuesByScope: ValuesByScope): CliAgents
     const r = cliAgentSchema.safeParse(entry);
     if (!r.success) {
       warnings.push({ setting, scope: chosen.scope, message: `Dropped ${setting}[${i}]: ${r.error.issues[0]?.message ?? "invalid"}.` });
+    } else if (checkExecutable(r.data.command[0] as string, platform) !== undefined) {
+      warnings.push({ setting, scope: chosen.scope, message: `Dropped ${setting}[${i}]: ${checkExecutable(r.data.command[0] as string, platform) as string}.` });
     } else if (ids.has(r.data.id)) {
       warnings.push({ setting, scope: chosen.scope, message: `Dropped ${setting}[${i}]: duplicate id '${r.data.id}'.` });
     } else {
@@ -98,13 +103,14 @@ function boolSetting(name: string, v: ValuesByScope, dflt: boolean, warnings: Se
 
 /**
  * Resolves scrubEnvironment (default true), runHooks (default true) and worktrees.root.
- * worktrees.root must be an absolute path; whether it lies inside a registered repository is the daemon's check.
+ * worktrees.root must be a plain absolute path without '..'; whether it lies inside a registered repository is the daemon's check.
  */
 export function resolveSecuritySettings(input: {
   readonly scrubEnvironment?: ValuesByScope;
   readonly runHooks?: ValuesByScope;
   readonly worktreesRoot?: ValuesByScope;
-}): SecuritySettings {
+}, opts: { readonly platform?: NodeJS.Platform } = {}): SecuritySettings {
+  const platform = opts.platform ?? process.platform;
   const warnings: SettingWarning[] = [];
   const scrubEnvironment = boolSetting("axis.terminals.scrubEnvironment", input.scrubEnvironment ?? {}, true, warnings);
   const runHooks = boolSetting("axis.git.runHooks", input.runHooks ?? {}, true, warnings);
@@ -115,10 +121,10 @@ export function resolveSecuritySettings(input: {
   const chosen = pick(rootValues);
   if (chosen) {
     const v = chosen.value;
-    if (typeof v === "string" && v.length > 0 && !v.includes("\0") && (posixAbs(v) || winAbs(v))) {
+    if (typeof v === "string" && v.length > 0 && !v.includes("\0") && isPlainAbsolute(v, platform) && !hasDotDot(v)) {
       worktreesRoot = v;
     } else {
-      warnings.push({ setting: rootName, scope: chosen.scope, message: `${rootName} must be a non-empty absolute path; using the default.` });
+      warnings.push({ setting: rootName, scope: chosen.scope, message: `${rootName} must be a plain absolute path without '..' (on Windows a drive-letter path; UNC and root-relative paths are refused); using the default.` });
     }
   }
   return { scrubEnvironment, runHooks, worktreesRoot, warnings };
