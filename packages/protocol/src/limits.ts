@@ -55,7 +55,8 @@ function utf8Length(s: string, cap: number): number {
 /**
  * One bounded, iterative walk. Rejects:
  * - values JSON cannot carry (undefined, functions, symbols, bigint, non-finite
- *   numbers, class instances such as Date or Map);
+ *   numbers, class instances such as Date or Map), accessor properties, and
+ *   arrays with holes or extra own properties;
  * - forbidden keys at any depth;
  * - any object reached twice. A structured-clone MessagePort preserves shared
  *   references, so a tiny message can expand into an exponential tree; decoded
@@ -103,7 +104,13 @@ export function inspectMessage(value: unknown, limits: InspectLimits = {}): Insp
         bytes += 2;
         if (Array.isArray(node)) {
           if (node.length + nodes > maxNodes) return { ok: false, reason: "too-many-nodes" };
-          for (const item of node) stack.push([item, depth + 1]);
+          // Exactly the indices plus `length`: no holes and no extra own properties.
+          if (Object.getOwnPropertyNames(node).length !== node.length + 1) return { ok: false, reason: "invalid" };
+          for (let i = 0; i < node.length; i++) {
+            const d = Object.getOwnPropertyDescriptor(node, i);
+            if (d === undefined || d.get !== undefined || d.set !== undefined) return { ok: false, reason: "invalid" };
+            stack.push([d.value, depth + 1]);
+          }
           break;
         }
         const proto = Object.getPrototypeOf(node) as unknown;
@@ -116,7 +123,11 @@ export function inspectMessage(value: unknown, limits: InspectLimits = {}): Insp
           const kb = utf8Length(key, maxString);
           if (kb > maxString) return { ok: false, reason: "too-large" };
           bytes += kb + 4;
-          stack.push([(node as Record<string, unknown>)[key], depth + 1]);
+          // Read the descriptor once: an accessor could answer differently to the
+          // walk and to the parser, so accessors are refused outright.
+          const d = Object.getOwnPropertyDescriptor(node, key);
+          if (d === undefined || d.get !== undefined || d.set !== undefined) return { ok: false, reason: "invalid" };
+          stack.push([d.value, depth + 1]);
         }
         break;
       }
@@ -133,8 +144,9 @@ export type JsonValue = z.core.util.JSONType;
 /**
  * A bounded JSON value for payloads, results and error details. It uses the
  * walk above instead of `z.json()`, so no recursive schema runs over input
- * that has not been bounded.
+ * that has not been bounded. The parsed value is a structured clone, so what
+ * the daemon uses is not the live object that was inspected.
  */
-export const boundedJsonSchema = z.custom<JsonValue>((v) => inspectMessage(v).ok, {
-  message: "not a bounded JSON value",
-});
+export const boundedJsonSchema = z
+  .custom<JsonValue>((v) => inspectMessage(v).ok, { message: "not a bounded JSON value" })
+  .transform((v): JsonValue => structuredClone(v));
