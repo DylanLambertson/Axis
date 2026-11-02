@@ -2,8 +2,11 @@
 # Reports the upstream footprint of the applied Axis changes in vendor/code-oss,
 # the budget that ADR 0002 tracks:
 #   - per patch block (shell, guardrails, copilot, security): patches, upstream files
-#     touched, lines added and deleted in upstream files, and new files created
-#     (from `git apply --numstat` of each patch);
+#     touched, lines added and deleted in upstream files, added marker lines
+#     (`--- Start Axis ---` / `--- End Axis ---`, included in "added"), and new
+#     files created (from `git apply --numstat` of each patch);
+#   - "shell-c2": the shell block as ADR 0002 criterion 2 counts it, excluding
+#     product.json and resources/**;
 #   - removals.txt and replace/: upstream files and lines affected;
 #   - the net total from `git diff --numstat` of the tree against the pinned
 #     commit. It covers every tracked upstream file, including changes made by
@@ -21,7 +24,7 @@ for arg in "$@"; do
 	case "$arg" in
 	--tsv) tsv=1 ;;
 	-h | --help)
-		sed -n '2,13p' "$0"
+		sed -n '2,16p' "$0"
 		exit 0
 		;;
 	*) die "unknown argument: $arg" ;;
@@ -47,12 +50,18 @@ if ! tree_matches_stamp; then
 	die "$TREE_DIR has changed since apply.sh ran; rerun scripts/code-oss/apply.sh"
 fi
 
-# rows: block, patch, kind (upstream|new), added, deleted, path
+# rows: block, patch, kind (upstream|new|marker), added (or marker count), deleted, path
 : >"$work/rows"
 while read -r name _; do
 	block="$(patch_block "$name")"
 	block="${block%% *}"
 	printf '%s\t%s\t-\t0\t0\t-\n' "$block" "$name" >>"$work/rows"
+	# Added marker lines per file, from the "+++ b/<path>" headers.
+	awk -v b="$block" -v n="$name" '
+		/^\+\+\+ / { f = $0; sub(/^\+\+\+ (b\/)?/, "", f); sub(/\t.*$/, "", f); next }
+		/^\+.*--- (Start|End) Axis ---/ { m[f]++ }
+		END { for (f in m) printf "%s\t%s\tmarker\t%d\t0\t%s\n", b, n, m[f], f }
+	' "$PATCHES_DIR/$name" >>"$work/rows"
 	tree_git apply --numstat "$PATCHES_DIR/$name" >"$work/numstat"
 	while IFS=$'\t' read -r added deleted path; do
 		[ "$added" = - ] && added=0
@@ -82,9 +91,9 @@ stamp_get replace >"$work/replace"
 awk -F'\t' -v tsv="$tsv" -v removals="$(wc -l <"$work/removals" | tr -d ' ')" \
 	-v replaced="$(wc -l <"$work/replace" | tr -d ' ')" '
 	BEGIN {
-		order = "shell guardrails copilot security removals replace total"
+		order = "shell shell-c2 guardrails copilot security removals replace total"
 		n = split(order, names, " ")
-		range["shell"] = "0001-0999"; range["guardrails"] = "1000-1499"; range["copilot"] = "1500-1999"
+		range["shell"] = "0001-0999"; range["shell-c2"] = "0001-0999*"; range["guardrails"] = "1000-1499"; range["copilot"] = "1500-1999"
 		range["security"] = "2000-2999"
 		range["removals"] = "removals.txt"; range["replace"] = "replace/"; range["total"] = "net vs pin"
 	}
@@ -92,19 +101,26 @@ awk -F'\t' -v tsv="$tsv" -v removals="$(wc -l <"$work/removals" | tr -d ' ')" \
 		b = $1
 		if ($2 != "-" && !((b, $2) in seenpatch)) { seenpatch[b, $2] = 1; patches[b]++ }
 		if ($6 == "-") next
-		if ($3 == "upstream") {
-			if (!((b, $6) in seenfile)) { seenfile[b, $6] = 1; files[b]++ }
+		c2 = (b == "shell" && $6 != "product.json" && $6 !~ /^resources\//)
+		if ($3 == "marker") {
+			markers[b] += $4
+			if (c2) markers["shell-c2"] += $4
+		} else if ($3 == "upstream") {
+			if (!((b, $6) in seenfile)) { seenfile[b, $6] = 1; files[b]++; if (c2) files["shell-c2"]++ }
 			added[b] += $4; deleted[b] += $5
-		} else if (!((b, $6) in seennew)) { seennew[b, $6] = 1; newfiles[b]++ }
+			if (c2) { added["shell-c2"] += $4; deleted["shell-c2"] += $5 }
+		} else if (!((b, $6) in seennew)) { seennew[b, $6] = 1; newfiles[b]++; if (c2) newfiles["shell-c2"]++ }
 	}
 	END {
+		patches["shell-c2"] = (("shell" in patches) ? patches["shell"] : 0)
 		patches["removals"] = removals " paths"; patches["replace"] = replaced " files"; patches["total"] = "-"
-		if (tsv) print "block\trange\tpatches\tupstream_files\tadded\tdeleted\tnew_files"
-		else printf "%-11s %-13s %8s %15s %8s %8s %10s\n", "block", "range", "patches", "upstream files", "added", "deleted", "new files"
+		if (tsv) print "block\trange\tpatches\tupstream_files\tadded\tdeleted\tmarker_lines\tnew_files"
+		else printf "%-11s %-13s %8s %15s %8s %8s %13s %10s\n", "block", "range", "patches", "upstream files", "added", "deleted", "marker lines", "new files"
 		for (i = 1; i <= n; i++) {
 			b = names[i]
 			p = (b in patches) ? patches[b] : 0
-			if (tsv) printf "%s\t%s\t%s\t%d\t%d\t%d\t%d\n", b, range[b], p, files[b], added[b], deleted[b], newfiles[b]
-			else printf "%-11s %-13s %8s %15d %8d %8d %10d\n", b, range[b], p, files[b], added[b], deleted[b], newfiles[b]
+			if (tsv) printf "%s\t%s\t%s\t%d\t%d\t%d\t%d\t%d\n", b, range[b], p, files[b], added[b], deleted[b], markers[b], newfiles[b]
+			else printf "%-11s %-13s %8s %15d %8d %8d %13d %10d\n", b, range[b], p, files[b], added[b], deleted[b], markers[b], newfiles[b]
 		}
+		if (!tsv) print "* shell-c2: ADR 0002 criterion 2 count (shell block without product.json and resources/**)."
 	}' "$work/rows"

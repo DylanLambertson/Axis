@@ -261,6 +261,16 @@ done <"$work/overlay"
 
 # --- 5. Post-apply hooks -----------------------------------------------------
 
+# Hooks get the Node 24 that build.sh would use, if one is already available
+# (no download here), first on PATH and as AXIS_NODE_BIN_DIR.
+if [ -s "$work/hooks" ]; then
+	if node_dir="$( (resolve_node && printf '%s\n' "$NODE_BIN_DIR") 2>/dev/null)"; then
+		export PATH="$node_dir:$PATH" AXIS_NODE_BIN_DIR="$node_dir"
+	else
+		log "No suitable Node 24 found (run build.sh once, or set NODE24_BIN); hooks run without it"
+	fi
+fi
+
 while IFS= read -r name; do
 	log "Running post-apply hook $name"
 	if ! (cd "$TREE_DIR" && AXIS_CODE_OSS_TREE="$TREE_DIR" AXIS_UPSTREAM_COMMIT="$UPSTREAM_COMMIT" \

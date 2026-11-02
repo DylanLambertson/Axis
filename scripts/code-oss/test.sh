@@ -80,6 +80,7 @@ printf 'copilot a\n' >"$up/extensions/copilot/a.txt"
 printf 'copilot b\n' >"$up/extensions/copilot/b.txt"
 printf 'upstream icon\n' >"$up/resources/icon.txt"
 printf 'agent host\n' >"$up/src/agent.txt"
+printf '{ "nameShort": "Code - OSS" }\n' >"$up/product.json"
 printf 'ignored/\n' >"$up/.gitignore"
 printf 'line 1\nline 2\nline 3\nline 4\nline 5\n' >"$up/src/app.txt"
 git -C "$up" add -A
@@ -111,6 +112,9 @@ sed 's/^ line 4$/ line four/' "$tmp/broken.patch" >"$tmp/0003-broken.patch"
 git -C "$scratch" -c advice.detachedHead=false checkout -q -f "$c1"
 printf 'upstream readme (guardrail)\n' >"$scratch/README.md"
 git -C "$scratch" diff >"$tmp/1000-guard.patch"
+git -C "$scratch" -c advice.detachedHead=false checkout -q -f "$c1"
+printf '// --- Start Axis ---\n{ "nameShort": "Axis" }\n// --- End Axis ---\n' >"$scratch/product.json"
+git -C "$scratch" diff >"$tmp/0003-product-identity.patch"
 git -C "$scratch" -c advice.detachedHead=false checkout -q -f "$c1"
 printf 'agent host (stubbed)\n' >"$scratch/src/agent.txt"
 git -C "$scratch" diff >"$tmp/1500-agent-host.patch"
@@ -305,7 +309,8 @@ new_root m3
 write_manifest "$c1" v1.0.0
 expect_success "fetch for the M3 layout tests" fetch
 patches="$root/code-oss/patches"
-cp "$tmp/0001-first.patch" "$tmp/0002-second.patch" "$tmp/1000-guard.patch" "$tmp/1500-agent-host.patch" \
+cp "$tmp/0001-first.patch" "$tmp/0002-second.patch" "$tmp/0003-product-identity.patch" "$tmp/1000-guard.patch" \
+	"$tmp/1500-agent-host.patch" \
 	"$tmp/2000-harden.patch" "$patches/"
 printf 'x\n' >"$patches/3000-unassigned.patch"
 expect_failure "apply rejects a patch number above the assigned blocks" "outside the assigned number blocks" apply
@@ -397,25 +402,45 @@ check "a failed hook marks the stamp incomplete" grep -qx "status incomplete" "$
 rm "$hooks/30-fails"
 expect_success "apply recovers after the failing hook is removed" apply
 
+mkdir -p "$tmp/fake-node"
+printf '#!/bin/sh\necho v24.22.1\n' >"$tmp/fake-node/node"
+chmod +x "$tmp/fake-node/node"
+cat >"$hooks/40-node" <<'HOOK'
+#!/bin/sh
+printf '%s %s\n' "${AXIS_NODE_BIN_DIR:-unset}" "$(command -v node)" >node.txt
+HOOK
+chmod +x "$hooks/40-node"
+NODE24_BIN="$tmp/fake-node" run apply
+check "hooks get the resolved Node 24 on PATH and in AXIS_NODE_BIN_DIR" \
+	test "$status" -eq 0 -a "$(cat "$tree/node.txt" 2>/dev/null)" = "$tmp/fake-node $tmp/fake-node/node"
+printf '#!/bin/sh\necho v25.9.0\n' >"$tmp/fake-node/node"
+NODE24_BIN="$tmp/fake-node" run apply
+check "hooks run without Node when only an unsuitable one is configured" \
+	test "$status" -eq 0 -a "$(cut -d' ' -f1 "$tree/node.txt" 2>/dev/null)" = unset
+rm "$hooks/40-node"
+expect_success "apply after removing the Node hook" apply
+
 # --- footprint.sh ------------------------------------------------------------------
 
 footprint() { "$here/footprint.sh" "$@"; }
-tab="$(printf '\t')"
 expect_success "footprint reports on the applied tree" footprint --tsv
-check "footprint: shell block (2 patches, 1 upstream file, +2 -2)" \
-	grep -qx "shell${tab}0001-0999${tab}2${tab}1${tab}2${tab}2${tab}0" "$tmp/out"
+row() { grep -Fqx "$(printf '%s\t' "$@" | sed 's/\t$//')" "$tmp/out"; }
+check "footprint: shell block (3 patches, 2 upstream files, +5 -3, 2 marker lines)" \
+	row shell 0001-0999 3 2 5 3 2 0
+check "footprint: criterion-2 shell count excludes product.json" \
+	row shell-c2 '0001-0999*' 3 1 2 2 0 0
 check "footprint: guardrails block (1 patch, 1 upstream file, +1 -1)" \
-	grep -qx "guardrails${tab}1000-1499${tab}1${tab}1${tab}1${tab}1${tab}0" "$tmp/out"
+	row guardrails 1000-1499 1 1 1 1 0 0
 check "footprint: copilot block is reported separately (1 patch, 1 upstream file, +1 -1)" \
-	grep -qx "copilot${tab}1500-1999${tab}1${tab}1${tab}1${tab}1${tab}0" "$tmp/out"
+	row copilot 1500-1999 1 1 1 1 0 0
 check "footprint: security block (1 patch, new file only)" \
-	grep -qx "security${tab}2000-2999${tab}1${tab}0${tab}0${tab}0${tab}1" "$tmp/out"
+	row security 2000-2999 1 0 0 0 0 1
 check "footprint: removals (1 path, 2 upstream files, -2)" \
-	grep -qx "removals${tab}removals.txt${tab}1 paths${tab}2${tab}0${tab}2${tab}0" "$tmp/out"
+	row removals removals.txt "1 paths" 2 0 2 0 0
 check "footprint: replace (1 file, +1 -1)" \
-	grep -qx "replace${tab}replace/${tab}1 files${tab}1${tab}1${tab}1${tab}0" "$tmp/out"
-check "footprint: net total against the pin (6 files, +4 -6)" \
-	grep -qx "total${tab}net vs pin${tab}-${tab}6${tab}4${tab}6${tab}0" "$tmp/out"
+	row replace replace/ "1 files" 1 1 1 0 0
+check "footprint: net total against the pin (7 files, +7 -7)" \
+	row total "net vs pin" - 7 7 7 0 0
 expect_success "footprint prints a readable table by default" footprint
 check "readable table has a header" output_has "upstream files"
 cp "$tmp/0003-broken.patch" "$patches/"
