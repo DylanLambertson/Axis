@@ -272,6 +272,11 @@ exports.run = async function run() {
 		checks: [],
 	};
 
+	// Written after every check so that a host timeout still leaves evidence.
+	const writeResult = () => fs.writeFileSync(resultPath, JSON.stringify(result, null, 2) + '\n');
+	result.status = 'running';
+	writeResult();
+
 	for (const check of scenario.checks) {
 		const started = Date.now();
 		let outcome;
@@ -287,13 +292,14 @@ exports.run = async function run() {
 			detail: outcome.detail,
 			durationMs: Date.now() - started,
 		});
+		writeResult();
 	}
 
 	result.extensions = extensionReport(scenario.extensions || []);
 	result.finishedAt = new Date().toISOString();
 	const failed = result.checks.filter(c => c.status !== 'passed').length;
 	result.status = overallStatus(result.checks);
-	fs.writeFileSync(resultPath, JSON.stringify(result, null, 2) + '\n');
+	writeResult();
 
 	if (failed > 0) {
 		throw new Error(`${failed} of ${result.checks.length} checks failed in ${scenario.id}; see ${resultPath}`);

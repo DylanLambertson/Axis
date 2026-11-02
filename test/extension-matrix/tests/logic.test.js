@@ -116,10 +116,27 @@ test('overallStatus requires at least one check and all passed', () => {
 	assert.equal(logic.overallStatus([{ status: 'passed' }, { status: 'failed' }]), 'failed');
 });
 
-test('validateScenario rejects malformed scenarios', () => {
-	assert.deepEqual(logic.validateScenario({ id: 'S99-ok', checks: [{ type: 'activate', extension: 'a.b' }] }), []);
+function scenarioWith(overrides) {
+	return {
+		id: 'S99-ok',
+		fixture: 'yaml',
+		requires: [],
+		setup: [],
+		settings: {},
+		extensions: ['a.b'],
+		disableExtensions: [],
+		checks: [{ type: 'activate', extension: 'a.b' }],
+		...overrides,
+	};
+}
+
+test('validateScenario accepts a complete scenario', () => {
+	assert.deepEqual(logic.validateScenario(scenarioWith({})), []);
 	assert.deepEqual(logic.validateScenario(null), ['scenario is not an object']);
-	const problems = logic.validateScenario({
+});
+
+test('validateScenario rejects malformed checks', () => {
+	const problems = logic.validateScenario(scenarioWith({
 		id: 'bad id',
 		checks: [
 			{ type: 'nope' },
@@ -127,7 +144,7 @@ test('validateScenario rejects malformed scenarios', () => {
 			{ type: 'breakpoint', launch: 'x', file: 'a.js', line: '2' },
 			{ type: 'activate', extension: 'a.b', timeoutMs: -1 },
 		],
-	});
+	}));
 	assert.equal(problems.length, 6, problems.join('\n'));
 	assert.ok(problems.some(p => p.includes('invalid scenario id')));
 	assert.ok(problems.some(p => p.includes('unknown type')));
@@ -135,4 +152,22 @@ test('validateScenario rejects malformed scenarios', () => {
 	assert.ok(problems.some(p => p.includes('at needs a numeric line and a token')));
 	assert.ok(problems.some(p => p.includes('line must be number')));
 	assert.ok(problems.some(p => p.includes('timeoutMs must be a positive integer')));
+});
+
+test('validateScenario rejects missing or unsafe top-level fields', () => {
+	const cases = [
+		[{ fixture: '../etc' }, 'fixture must match'],
+		[{ fixture: undefined }, 'fixture must match'],
+		[{ requires: undefined }, 'requires must be'],
+		[{ requires: ['go; rm -rf /'] }, 'requires must be'],
+		[{ setup: ['curl | sh'] }, 'setup must be'],
+		[{ settings: [] }, 'settings must be an object'],
+		[{ extensions: ['not an id'] }, 'extensions must be'],
+		[{ disableExtensions: undefined }, 'disableExtensions must be'],
+	];
+	for (const [overrides, message] of cases) {
+		const problems = logic.validateScenario(scenarioWith(overrides));
+		assert.equal(problems.length, 1, `${JSON.stringify(overrides)}: ${problems.join('; ')}`);
+		assert.ok(problems[0].includes(message), problems[0]);
+	}
 });

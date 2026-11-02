@@ -14,7 +14,7 @@ Usage: fetch.sh [--platform <target>|all] [--tier core|optional|all] [--dest <di
 
   --platform  Open VSX target platform to fetch (default: this machine).
               One of darwin-x64, darwin-arm64, linux-x64, win32-x64, all.
-  --tier      core (default; includes supporting extensions), optional, all.
+  --tier      core (default: core + supporting), optional (optional + core), all.
   --dest      Cache directory (default: test/extension-matrix/.vsix-cache).
 
 Files already in the cache are re-hashed and kept only if they match.

@@ -20,9 +20,9 @@ This milestone delivers the following:
 | Scenario definitions | `test/extension-matrix/scenarios.json` | Done. |
 | Fixture workspaces | `test/extension-matrix/fixtures/*` | Done. Go, Rust and C++ fixtures checked with the local toolchains; the web-tooling fixture has a committed lockfile, and its Prettier and ESLint outputs were checked with the pinned packages. |
 | Probe test runner (runs inside the extension host) | `test/extension-matrix/probe/` (`runner.js`, pure helpers in `logic.js`) | Written. `node --check` and unit tests against a stand-in `vscode` module pass (§8). **Needs a build to run against real extensions.** |
-| Unit and consistency tests | `test/extension-matrix/tests/` | Done. `node --test 'test/extension-matrix/tests/*.test.js'` runs 23 tests: probe logic, manifest/scenario/fixture consistency and `run()` with a stand-in `vscode` module. |
+| Unit and consistency tests | `test/extension-matrix/tests/` | Done. `node --test 'test/extension-matrix/tests/*.test.js'` runs 43 tests: probe logic, manifest/scenario/fixture consistency, `run()` with a stand-in `vscode` module, the scan analysis, and `run.sh` driven by a stand-in app (§8). |
 | Pinned install into an isolated extensions dir | `test/extension-matrix/install.sh` | Written; tested against a stub CLI only. **Needs a build.** |
-| Desktop scenario runner | `test/extension-matrix/run.sh` | Written; tested against a stub app only. **Needs a build.** |
+| Desktop scenario runner and log scans | `test/extension-matrix/run.sh`, `test/extension-matrix/scan-report.js` | Written; tested against a stand-in app only. **Needs a packaged build.** |
 | Web (reh-web) runner | — | **Designed (§7.4); built and executed in M6** (decision D6). |
 | UI smoke layer (`test/automation`) | — | **Pending.** Design in §7.3. |
 
@@ -57,6 +57,8 @@ Publisher is the Open VSX account that uploaded the pinned version (decision D4)
 
 Python has two rows of results by decision D3: S02 is the default configuration (Jedi fallback), S03 is basedpyright with `python.languageServer: None`.
 
+The scenario rows record each scenario's own extensions only. Proposed-API stripping is recorded once per extension, in the table in §2.1.
+
 | # | Extension | Version | License | Open VSX status | Publisher | Node/web | Platforms | Scenario | Desktop result | Web result | Notes |
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | 0 | Built-in TypeScript/JS (`vscode.typescript-language-features`) and `ms-vscode.js-debug` | 1.144.0 built-in; js-debug 1.140.0 | MIT | n/a (built-in; js-debug pinned by sha256 in upstream `product.json`) | n/a (built-in) | node + browser (TS) | all | S01 | not run | not run | Baseline. Covers diagnostics, hover, definition and a Node breakpoint. |
@@ -69,12 +71,23 @@ Python has two rows of results by decision D3: S02 is the default configuration 
 | 6 | `golang.go` | 0.58.0 (2026-10-21) | MIT | verified; stable is latest | open-vsx service account | node | universal | S07 | not run | not run | Needs `gopls` on the host. Engine `^1.110.0`. |
 | 7 | `llvm-vs-code-extensions.vscode-clangd` | 0.6.0 (2026-05-21) | MIT | verified; stable is latest | vendor (`sam-mccall`) | node | universal | S08 | not run | not run | cpptools replacement. Needs a `clangd` binary. |
 | 8 | `dbaeumer.vscode-eslint` | 3.0.34 (2026-07-17) | MIT | verified; stable is latest | open-vsx service account | node | universal | S09 | not run | not run | Uses the workspace `eslint` (fixture pins 9.39.5). |
-| 9 | `esbenp.prettier-vscode` | 12.4.0 (2026-03-16) | MIT | verified; stable is latest | vendor (`ntotten`) | node + browser | universal | S10 | not run | not run | Bundled Prettier; fixture `.prettierrc.json` pins the options. |
+| 9 | `esbenp.prettier-vscode` | 12.4.0 (2026-03-16) | MIT | verified; stable is latest | vendor (`ntotten`) | node + browser | universal | S10 | not run | not run | S10 installs the lockfile, so the workspace Prettier 3.9.10 is under test. The extension bundles 3.7.4, which gives the same output for the fixture. `.prettierrc.json` pins every option, including `useTabs` and `endOfLine`. |
 | 10 | `GitHub.github-vscode-theme` | 6.3.5 (2024-10-04) | MIT | verified; stable is latest | open-vsx service account | declarative (no entry point) | universal | S11 | not run | not run | Not updated for two years, but needs no API. |
 | 11 | `eamodio.gitlens` | 19.5.0 (2026-10-27) | MIT core + proprietary GitLens Pro terms for `plus/` | verified; **latest is a daily pre-release** | vendor (`eamodio`) | node + browser | universal | S12 | not run | not run | The Open VSX license field is the unresolved placeholder `%gitlens.license%`. |
 | 12 | `redhat.vscode-yaml` | 2.0.0 (2026-10-16) | MIT | verified; **latest is a pre-release** | vendor (`rhdevelopers-ci`) | node + browser | universal | S13 | not run | not run | Has its own telemetry (`redhat.telemetry.enabled`; off in the scenario). |
 | O1 | `ms-toolsai.jupyter` (optional) | 2025.9.1 (2025-10-14) | MIT | verified; stable is latest | open-vsx service account | node + browser | universal | S14 | not run | not run | The Open VSX copy is more than a year old. Declares 13 proposed APIs. Pack members are not pinned. |
 | O2 | `redhat.java` (optional) | 1.58.0 (2026-10-19) | EPL-2.0 | verified; **latest is a pre-release** | vendor (`rhdevelopers-ci`) | node | darwin-x64, darwin-arm64, linux-x64, win32-x64 (+ universal without JRE) | S15 | not run | not run | Platform VSIXs embed a JRE (about 130 MB each). |
+
+### 2.1 Proposed-API stripping (decision D1)
+
+This table comes from one `run.sh --proposed-api-scan` per gating platform: one normal window of a packaged build with the full installed set (`proposed-api.tsv`, §7.2). The scan is valid only when its positive control passes, that is, when every extension below is reported as restricted. If the control fails, the scan status is `inconclusive` and nothing is recorded.
+
+| Extension | Declared proposals | Stripped (macOS x64) | Stripped (Linux x64) | Effect observed in the scenarios | Notes |
+|---|---|---|---|---|---|
+| `ms-python.python` | 9 | not run | not run | not run (S02, S04) | Positive control for every core install |
+| `ms-python.debugpy` | 3 | not run | not run | not run (S04) | |
+| `ms-python.vscode-python-envs` | 3 | not run | not run | not run (S02, S04) | |
+| `ms-toolsai.jupyter` (optional) | 13 | not run | not run | not run (S14) | Only in `--tier optional` installs |
 
 **Engine check.** Every pinned `engines.vscode` range is satisfied by 1.144.0. VS Code reads `^1.x.y` as "at least 1.x.y within major 1", and a date suffix such as `-20260204` only matters when the minor version is equal (`src/vs/platform/extensions/common/extensionValidator.ts:124-236`, notably `:180` and `:233`). The VSIX installer enforces the same check (`src/vs/platform/extensionManagement/node/extensionManagementService.ts:153`).
 
@@ -95,8 +108,9 @@ These extensions are not on Open VSX (the API returns "Extension not found") and
 1. **Proposed APIs are stripped in normal windows and allowed in test hosts.**
    - Python (9 proposals), debugpy (3), python-envs (3) and Jupyter (13) declare `enabledApiProposals`. All 22 distinct names exist at 1.144.0 (`src/vs/platform/extensions/common/extensionsApiProposals.ts`).
    - The OSS `product.json` has no `extensionEnabledApiProposals` allowlist. In a built, non-development window, a non-built-in extension's proposals are therefore cleared, and the host logs "CANNOT USE these API proposals" (`src/vs/workbench/services/extensions/common/extensionsProposedApi.ts:43-55,104-114`).
-   - In an extension test host, proposals are allowed for every extension unless `product.quality` is `stable` (`:34-36`). The probe runs in a test host, so it **cannot** see this gap. `run.sh --activation-scan` opens a normal window and greps the logs for that message.
-   - **Decision D1:** no allowlist by default. M3 runs the matrix without one and records which extensions degrade in normal windows (§7.2). Any allowlist entry is decided per extension, with justification, in a later ADR.
+   - In an extension test host, proposals are allowed for every extension unless `product.quality` is `stable` (`:34-36`). The probe runs in a test host, so it **cannot** see this gap.
+   - A development build allows every proposal too: `!isBuilt` (`:35`), and `isBuilt` is `!VSCODE_DEV` (`src/vs/platform/environment/common/environmentService.ts:231`), which `scripts/code.sh:41` sets. The normal-window scans (§7.2) therefore refuse a dev launcher and check a positive control before they report anything.
+   - **Decision D1:** no allowlist by default. M3 runs the matrix without one and records which extensions degrade in normal windows (§2.1, §7.2). Any allowlist entry is decided per extension, with justification, in a later ADR.
 2. **The Python extension without Pylance.**
    - `ms-python.python` lists Pylance in its `extensionPack`. When a gallery is configured, a pack member that cannot be found or installed is skipped without failing the install (`src/vs/platform/extensionManagement/common/abstractExtensionManagementService.ts:652-692`, log message at `:691`).
    - With `python.languageServer: Default`, the extension uses "Pylance if installed and available, otherwise fallback to Jedi" (its `package.nls.json`). The VSIX bundles `python_files/lib/jedilsp`.
@@ -161,10 +175,10 @@ Fixtures (`test/extension-matrix/fixtures/`):
 |---|---|---|---|
 | `typescript` | `src/main.ts` (TS2322 on line 4), `src/math.ts`, `debug.js` + `launch.json` (node) | — | positions checked by script |
 | `python` | `app.py` (type error on line 4), `helpers.py`, `debug_me.py`, `pyproject.toml` (basedpyright `standard`), `launch.json` (debugpy) | — | `ast.parse` |
-| `rust` | `src/main.rs`, `examples/broken.rs` (E0308; `cargo check --all-targets` reports it, while `cargo build --bin` stays clean), `launch.json` (lldb with cargo) | — | `cargo build`, `cargo check`, `rustfmt --check` |
+| `rust` | `src/main.rs`, `examples/broken.rs` (E0308; `cargo check --all-targets` reports it, while `cargo build --bin` stays clean), `launch.json` (lldb with cargo); an empty `[workspace]` table keeps it its own Cargo root when copied inside another tree | — | `cargo build`, `cargo check`, `rustfmt --check` |
 | `go` | `main.go`, `add.go`, `broken.go` (type error), `fmtcheck/format_me.go` + `testdata/format_me.golden` | — | `gofmt` produced the golden file; `go vet` shows the expected error |
 | `cpp` | `main.cpp` (pointer init error on line 5), `math.hpp`, `math.cpp`, `compile_flags.txt` | — | `clang++ -fsyntax-only` shows the expected error |
-| `web-tooling` | ESLint flat config, `src/lint-me.js`, `src/format-me.js` + `format-me.expected.txt`, pinned `package.json` + `package-lock.json` | `npm-install` (S09 only; `npm ci --ignore-scripts`) | Prettier 3.9.10 CLI output equals `format-me.expected.txt`; the ESLint 9.39.5 CLI reports exactly `no-unused-vars` and `prefer-const` on line 1 of `lint-me.js` and nothing else |
+| `web-tooling` | ESLint flat config, `src/lint-me.js`, `src/format-me.js` + `format-me.expected.txt`, pinned `package.json` + `package-lock.json`, `.prettierrc.json` with every option pinned, and a `root = true` `.editorconfig` | `npm-install` (S09, S10; `npm ci --ignore-scripts`) | The Prettier 3.9.10 (lockfile) and 3.7.4 (bundled in the extension) CLIs both produce exactly `format-me.expected.txt`, also under a parent `.editorconfig` that sets tabs and CRLF. The ESLint 9.39.5 CLI reports exactly `no-unused-vars` and `prefer-const` on line 1 of `lint-me.js` and nothing else. |
 | `yaml` | `schema.json`, `service.yaml` with a `$schema` modeline and a type error | — | JSON validity |
 | `git` | Two files | `git-init`: two commits with a fixed author and fixed dates | `run.sh` setup exercised |
 | `jupyter`, `java` | Minimal notebook; two-class Java project without a build file | — | JSON validity |
@@ -179,14 +193,18 @@ test/extension-matrix/fetch.sh                      # core tier, host platform
 test/extension-matrix/fetch.sh --platform all --tier all
 
 # 2. Install into an isolated extensions dir and verify the installed set.
-AXIS_CLI=<axis-build>/bin/axis test/extension-matrix/install.sh
+AXIS_CLI=<axis-build>/bin/axis test/extension-matrix/install.sh                 # core
+AXIS_CLI=<axis-build>/bin/axis test/extension-matrix/install.sh --tier optional # core + optional
 
-# 3. Run scenarios (desktop). Add --activation-scan 60 for the normal-window log scan.
-AXIS_APP=<axis-build-executable> test/extension-matrix/run.sh --all --activation-scan 60
-AXIS_APP=... test/extension-matrix/run.sh --scenario S06-codelldb-rust
+# 3. Run scenarios (desktop). AXIS_APP is the Electron binary of a packaged build.
+AXIS_APP=<electron-binary> test/extension-matrix/run.sh --proposed-api-scan 60 --all --activation-scan 60
+AXIS_APP=<electron-binary> test/extension-matrix/run.sh --all --tier optional    # uses extensions-<platform>-optional
+AXIS_APP=<electron-binary> test/extension-matrix/run.sh --scenario S06-codelldb-rust
 ```
 
-Each run writes `.work/runs/<timestamp>-<pid>/` containing `summary.tsv` (one row per scenario: `passed`, `failed`, `blocked`, `timeout` or `error`) and, per scenario, `result.json`, the workspace copy, isolated user data, logs and `activation-scan.txt`.
+Each run writes `.work/runs/<timestamp>-<pid>/` containing `summary.tsv` with one row per scenario. The row gives the probe status (`passed`, `failed`, `blocked`, `timeout` or `error`) and, with `--activation-scan`, the scan status. With `--proposed-api-scan` there is also a `proposed-api-scan` row. Each scenario directory holds `result.json` (rewritten after every check, so a timeout leaves partial evidence), the workspace copy, isolated user data, logs and `scan/`.
+
+The probe-only path also accepts a dev launcher such as `scripts/code.sh`, because test hosts allow proposed API anyway. The scans do not (§7.2).
 
 ## 7. Automation approach
 
@@ -204,13 +222,31 @@ Installed extensions in `--extensions-dir` stay enabled in a test host unless `-
 
 The probe is plain CommonJS with no dependencies, so it needs no build step. Its pure logic lives in `probe/logic.js`, which does not import `vscode`, so it can be unit-tested with plain Node. `run()` validates the scenario file before running any check.
 
-### 7.2 Layer B — normal-window activation scan (implemented, pending build)
+### 7.2 Layer B — normal-window scans (implemented, pending build)
 
-This layer covers what Layer A cannot see: proposed-API stripping (§4.1) and activation failures under real conditions. `run.sh --activation-scan <s>` opens the scenario in a normal window, with the same user data and extensions and no development flags. It closes the window after `<s>` seconds and greps the logs for these messages:
+This layer covers what Layer A cannot see: proposed-API stripping (§4.1) and activation failures in a normal window. `scan-report.js` reads every `*.log` file the window wrote and recognizes four messages:
 
-- `CANNOT USE these API proposals` (`extensionsProposedApi.ts:112`);
-- `Activating extension ... failed` (`src/vs/workbench/api/common/extHostExtensionActivator.ts:450`);
-- `Cannot activate the '...'` (missing or failed dependency, `:313`, `:404`).
+- `Extension '<id> CANNOT USE these API proposals '...'` (`extensionsProposedApi.ts:112`);
+- `Activating extension <id> failed due to an error` (`src/vs/workbench/api/common/extHostExtensionActivator.ts:450`);
+- `Cannot activate the '<name>' extension because ...`, for a missing or failed dependency (`:313`, `:404`). These name the extension by display name; `scan-report.js` maps names to ids through the installed `package.json` files, including `package.nls.json` placeholders.
+
+**Packaged builds only.** A development build allows every proposed API (§4.1). `run.sh` therefore refuses `--activation-scan` and `--proposed-api-scan` when `VSCODE_DEV` is set or `AXIS_APP` is a `scripts/code*` launcher.
+
+**Positive control.** Restriction is applied while extensions are registered, before enablement filtering: `checkEnabledAndProposedAPI` calls `updateEnabledApiProposals` and then `filterEnabledExtensions` (`src/vs/workbench/services/extensions/common/abstractExtensionService.ts:1441-1446`). So every installed extension that declares `enabledApiProposals` must log a `CANNOT USE` line in every scan, even when the scenario disables it. `ms-python.python` is in every core install. If any such extension is missing from the logs, the scan reports `inconclusive`: the window may not restrict proposed API (a dev build, `--enable-proposed-api`, a product allowlist), or its logs are incomplete. Once Axis adopts an allowlist (D1), the control must exclude the allowlisted extensions.
+
+**Attribution.** Because of the same ordering, Python's `CANNOT USE` lines appear in every scenario's scan. A scenario's scan status therefore counts only findings that name one of that scenario's `extensions` (case-insensitive):
+
+- `clean`: the control passed, and nothing names the scenario's extensions;
+- `findings`: the control passed, and at least one line names them;
+- `inconclusive`: the control failed;
+- `no-logs`: the window wrote no logs;
+- `error`: the logs or manifests could not be read.
+
+The full extract is kept as `scan/activation-scan-full.txt`, with the parsed report in `scan/activation-scan.json`. Findings that name no installed extension are listed as `unattributed` and do not change the status. The per-extension proposed-API table for D1 (§2.1) comes from `run.sh --proposed-api-scan <s>`: one normal window with the full installed set and an empty workspace. It writes `proposed-api.tsv` and has the status `complete` or `inconclusive`.
+
+**What the scan exercises.** The window opens the scenario workspace plus every file its checks use, with the scenario's `--disable-extension` arguments. That covers the activation events `*`, `onStartupFinished`, `workspaceContains:*` and `onLanguage:*` for the opened files. It does not cover `onDebug*`, `onCommand:*`, `onView:*`, `onUri` or `onWebviewPanel:*`. An extension that activates only through those events is still checked for stripping by the positive control, but its activation errors cannot appear. In the core set, every extension with code declares at least one exercised event (debugpy, for example, declares `onLanguage:python`). The GitHub theme has no code and needs no activation.
+
+**Limits.** The window is closed after `<s>` seconds by signalling the `AXIS_APP` process. Use the Electron binary, not a wrapper script, so that the timeout reaches the app.
 
 ### 7.3 Layer C — UI smoke through `test/automation` (pending)
 
@@ -249,17 +285,20 @@ The desktop CLI installs VSIX paths through `--install-extension` (`argv.ts:130`
 | Check | Result |
 |---|---|
 | Open VSX metadata and manifests fetched for all 15 extensions and for Pylance and cpptools | done; Pylance and cpptools: "Extension not found" |
-| VSIX download and local sha256 against the Open VSX `.sha256` file (24 Open VSX files: universal plus 4 platforms where platform-specific) | passed (all match) |
+| VSIX download and local sha256 against the Open VSX `.sha256` file (24 Open VSX files: one per universal extension, four per platform-specific one) | passed (all match) |
 | CodeLLDB GitHub platform VSIXs (4) against the GitHub release asset `digest` | passed (all match) |
 | `fetch.sh` (core tier, host platform; and optional tier, all platforms) | passed |
 | `fetch.sh` with a tampered manifest hash, a corrupted cached file, a bad platform, a missing option value | each exits 1 or re-downloads as designed; no partial file left behind |
 | `install.sh` against a stub CLI (exact set; extra extension present) | passes and fails respectively |
 | `run.sh` against a stub app (pass, fail, timeout, blocked tool, setup failure, unknown scenario, web mode) | statuses recorded as designed |
+| `run.sh` scans against a stand-in app that writes log files (`tests/run-sh.test.js`): dev-build refusal, attribution, the inconclusive control, the opened fixture files, the full-set table, an unsafe `fixture`, and tier coverage | passed |
+| `scan-report.js` unit and CLI tests (`tests/scan-report.test.js`): message parsing, display-name mapping, attribution, partial and absent controls, `no-logs`, `error` exit 2 | passed |
+| Mutation check: disabling the `VSCODE_DEV` guard and the control in a scratch copy | 5 tests fail as expected |
 | `shellcheck -x` on `lib.sh`, `fetch.sh`, `install.sh`, `run.sh` (ShellCheck 0.11.0, bash 3.2 compatible) | passed |
 | `node --check` on `probe/runner.js` and `probe/logic.js` (Node 25.9.0) | passed |
-| `node --test 'test/extension-matrix/tests/*.test.js'` (23 tests: probe logic, manifest/scenario/fixture consistency, `run()` with a stand-in `vscode` module) | passed |
+| `node --test 'test/extension-matrix/tests/*.test.js'` (43 tests) | passed |
 | Web-tooling lockfile from `npm install --package-lock-only --ignore-scripts`; `npm ci --ignore-scripts` from it, both in a scratch copy and through `run.sh` setup | passed |
-| Prettier 3.9.10 and ESLint 9.39.5 CLIs on the fixture | output matches the golden file; exactly the 2 expected ESLint errors |
+| Prettier 3.9.10 and 3.7.4 and ESLint 9.39.5 CLIs on the fixture, also under a parent `.editorconfig` with tabs and CRLF | Prettier output matches the golden file for both versions; exactly the 2 expected ESLint errors. Without the pins, the parent `.editorconfig` changes the output (control). |
 | Probe against real extensions | **not run** (needs an Axis build) |
 | Any scenario against Code OSS or Axis | **not run** |
 
@@ -270,17 +309,19 @@ The desktop CLI installs VSIX paths through `--install-extension` (`argv.ts:130`
    - Gating runners (decision D6): **macOS x64** (local) and **Linux x64** (Docker/CI, M8). Windows x64 is best-effort in M8 and does not gate Phase 0. macOS arm64 is pinned but not gating.
    - The host tools listed in each scenario's `requires`: node/npm, python3, cargo, go + gopls, clangd, git. Pin and record their versions.
 2. **Desktop pass (M3), per gating platform.**
-   - Run `fetch.sh`, then `install.sh`, then `run.sh --all --activation-scan 60`.
-   - The activation scan is required: it is how D1 is measured. For each extension, record which proposed APIs were stripped and what degraded.
+   - Run `fetch.sh`, then `install.sh`, then `run.sh --proposed-api-scan 60 --all --activation-scan 60`, with `AXIS_APP` set to the packaged Electron binary.
+   - Both scans are required: they are how D1 is measured. Fill §2.1 from `proposed-api.tsv`, and only when the `proposed-api-scan` status is `complete`. Record what degraded in each affected scenario.
    - CodeLLDB is tested from the pre-installed GitHub platform VSIX (D2). Confirm no download happened.
    - Record Python twice (D3): S02 (Jedi default) and S03 (basedpyright, `python.languageServer: None`). S04 (debugpy) runs under the default configuration.
    - Then run each scenario's `observe` items by hand until Layer C exists, and record screenshots for theme and GitLens.
-   - Optional tier (D5): run `run.sh --all --tier optional` (S14–S15) if time allows. The results are recorded but do not gate Phase 0.
+   - Optional tier (D5): if time allows, run `install.sh --tier optional` (it installs the optional extensions plus the core set, which S14 needs) and `run.sh --all --tier optional`. The results are recorded but do not gate Phase 0.
 3. **Signature test (M3, D4).** Install a signed, an unsigned and a tampered extension on the Axis build, as specified by threat EXT-3, and record the outcomes next to the matrix.
 4. **Web pass (M6).** Build and run the reh-web runner from §7.4 on Linux x64, then do a manual browser session covering the same `observe` items.
 5. **Recording.**
    - Copy each `summary.tsv` row into the matrix in §2, replacing `not run` with `passed`, `failed`, `blocked` or `timeout`, plus the build commit, platform and date.
-   - Never mark a scenario `passed` when only the probe ran and the activation scan reported findings. Record it as `passed (probe) / findings (activation)` and link the scan.
+   - A scenario's scan status covers only its own `extensions` (§7.2). Never mark a scenario `passed` when its scan status is `findings`; record it as `passed (probe) / findings (activation)` and link `scan/activation-scan.json`.
+   - `inconclusive`, `no-logs` or `error` means the scan measured nothing. Record that status, fix the setup (packaged build, logs path), and rerun before recording `clean`.
+   - Record proposed-API stripping only in §2.1, never per scenario.
    - File each failure with the scenario's `result.json` and logs.
 6. **Exit criteria for Phase 0 (ADR 0002 criterion 6).**
    - All 12 core extensions plus the built-in baseline have a recorded desktop result on macOS x64 and Linux x64, and a recorded web result from M6.
@@ -294,7 +335,7 @@ Recorded on 2026-11-01 by the Phase 0 lead.
 
 | ID | Decision | Effect on the plan | Follow-up |
 |---|---|---|---|
-| D1 | **Proposed-API allowlist: measure first.** No `extensionEnabledApiProposals` allowlist by default. | M3 runs the matrix without an allowlist and records, via the activation scan, which extensions degrade in normal windows (§7.2, §9 step 2). | A later ADR decides allowlist entries per extension, with justification. |
+| D1 | **Proposed-API allowlist: measure first.** No `extensionEnabledApiProposals` allowlist by default. | M3 runs the matrix without an allowlist. `--proposed-api-scan` fills §2.1, and the per-scenario activation scans record which scenarios degrade (§7.2, §9 step 2). Both need a packaged build and a passing positive control. | A later ADR decides allowlist entries per extension, with justification. |
 | D2 | **CodeLLDB: pre-install the pinned platform VSIX for Phase 0 tests.** | `install.sh` installs the hash-verified GitHub platform package for the host platform (§4.3). | The product default is deferred. The runtime download pulls native code from GitHub at activation; that supply-chain note is tracked against threat EXT-3. |
 | D3 | **Python: no Axis default yet.** | The matrix runs and records both configurations: S02 (Jedi, default) and S03 (basedpyright with `python.languageServer: None`). | The default is chosen after the results. |
 | D4 | **Signatures and service-account uploads: test in M3.** | Phase 0 dev builds may install unsigned extensions. M3 runs the threat EXT-3 test (the suspected `vsce-sign` inversion). The matrix records the publisher type (vendor or open-vsx service account; §2, `extensions.json`). | The signature and publisher policy is set after the M3 results. |

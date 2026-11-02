@@ -164,6 +164,40 @@ function typeOf(value) {
 	return Array.isArray(value) ? 'array' : typeof value;
 }
 
+const SETUP_STEPS = ['git-init', 'npm-install'];
+const EXTENSION_ID = /^[A-Za-z0-9-]+\.[A-Za-z0-9.-]+$/;
+
+function isStringArray(value, pattern) {
+	return Array.isArray(value) && value.every(v => typeof v === 'string' && (!pattern || pattern.test(v)));
+}
+
+// Top-level fields that run.sh reads (it checks the same rules with jq in
+// validate_scenario_file). Only scenarios.json entries carry them; the probe
+// receives the full entry, so they are checked in both places.
+function validateScenarioFields(scenario) {
+	const problems = [];
+	const id = scenario.id;
+	if (typeof scenario.fixture !== 'string' || !/^[a-z0-9-]+$/.test(scenario.fixture)) {
+		problems.push(`${id}: fixture must match ^[a-z0-9-]+$`);
+	}
+	if (!isStringArray(scenario.requires, /^[A-Za-z0-9._+-]+$/)) {
+		problems.push(`${id}: requires must be an array of tool names`);
+	}
+	if (!isStringArray(scenario.setup) || !scenario.setup.every(step => SETUP_STEPS.includes(step))) {
+		problems.push(`${id}: setup must be an array of ${SETUP_STEPS.join(', ')}`);
+	}
+	if (!scenario.settings || typeof scenario.settings !== 'object' || Array.isArray(scenario.settings)) {
+		problems.push(`${id}: settings must be an object`);
+	}
+	if (!isStringArray(scenario.extensions, EXTENSION_ID)) {
+		problems.push(`${id}: extensions must be an array of extension ids`);
+	}
+	if (!isStringArray(scenario.disableExtensions, EXTENSION_ID)) {
+		problems.push(`${id}: disableExtensions must be an array of extension ids`);
+	}
+	return problems;
+}
+
 // Returns a list of problems; an empty list means the scenario is usable.
 function validateScenario(scenario) {
 	const problems = [];
@@ -173,6 +207,7 @@ function validateScenario(scenario) {
 	if (typeof scenario.id !== 'string' || !/^S\d{2}-[a-z0-9-]+$/.test(scenario.id)) {
 		problems.push(`invalid scenario id: ${JSON.stringify(scenario.id)}`);
 	}
+	problems.push(...validateScenarioFields(scenario));
 	if (!Array.isArray(scenario.checks) || scenario.checks.length === 0) {
 		problems.push(`${scenario.id}: checks must be a non-empty array`);
 		return problems;
@@ -226,5 +261,6 @@ module.exports = {
 	frameMatches,
 	describeCheck,
 	overallStatus,
+	validateScenarioFields,
 	validateScenario,
 };

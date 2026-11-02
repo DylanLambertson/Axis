@@ -5,3 +5,6 @@ edition = "2021"
 publish = false
 
 [dependencies]
+
+# Keep the fixture its own workspace root when copied inside another Cargo tree.
+[workspace]

@@ -212,8 +212,8 @@
       "tier": "core",
       "extensions": ["esbenp.prettier-vscode"],
       "fixture": "web-tooling",
-      "setup": [],
-      "requires": [],
+      "setup": ["npm-install"],
+      "requires": ["node", "npm"],
       "settings": { "[javascript]": { "editor.defaultFormatter": "esbenp.prettier-vscode" } },
       "disableExtensions": ["dbaeumer.vscode-eslint"],
       "hosts": ["desktop", "web"],
@@ -222,7 +222,8 @@
         { "type": "format", "file": "src/format-me.js", "expectFile": "format-me.expected.txt" }
       ],
       "observe": [
-        "Format Document on src/format-me.js produces exactly format-me.expected.txt (bundled Prettier, .prettierrc.json applied)."
+        "Format Document on src/format-me.js produces exactly format-me.expected.txt, using the workspace Prettier 3.9.10 from the lockfile and .prettierrc.json (the extension's bundled 3.7.4 gives the same output for this file).",
+        "Output > Prettier names the workspace prettier module, not the bundled one."
       ]
     },
     {

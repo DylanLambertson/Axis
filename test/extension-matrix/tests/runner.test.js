@@ -83,11 +83,15 @@ function baseState() {
 	};
 }
 
+function complete(scenario) {
+	return { fixture: 'typescript', requires: [], setup: [], settings: {}, extensions: [], disableExtensions: [], ...scenario };
+}
+
 function withScenario(scenario, fn) {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'matrix-runner-'));
 	const scenarioFile = path.join(dir, 'scenario.json');
 	const resultFile = path.join(dir, 'result.json');
-	fs.writeFileSync(scenarioFile, JSON.stringify(scenario));
+	fs.writeFileSync(scenarioFile, JSON.stringify(complete(scenario)));
 	const saved = { s: process.env.AXIS_MATRIX_SCENARIO_FILE, r: process.env.AXIS_MATRIX_RESULT };
 	process.env.AXIS_MATRIX_SCENARIO_FILE = scenarioFile;
 	process.env.AXIS_MATRIX_RESULT = resultFile;

@@ -17,7 +17,7 @@ Usage: AXIS_CLI=<launcher> install.sh [--platform <target>] [--tier core|optiona
                                       [--extensions-dir <dir>] [--server]
 
   --platform        Target platform of the VSIXs (default: this machine).
-  --tier            core (default; includes supporting extensions), optional, all.
+  --tier            core (default: core + supporting), optional (optional + core), all.
   --extensions-dir  Destination (default: .work/extensions-<platform>-<tier>).
   --server          AXIS_CLI is a server launcher; skip --user-data-dir.
 

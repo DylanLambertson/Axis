@@ -81,14 +81,16 @@ artifact_file() {
 # For a concrete platform it selects the platform-specific artifact when one
 # exists and falls back to the universal one. An extension with neither is
 # printed with platform MISSING so callers can fail loudly.
-# Tier "core" includes supporting extensions; "all" includes optional ones.
+# Tier "core" is the core and supporting extensions. Tier "optional" is the
+# optional extensions plus the core set, because optional scenarios depend on
+# core extensions (S14 needs ms-python.python); it selects the same set as
+# "all".
 select_artifacts() {
 	local platform="$1" tier="$2"
 	jq -r --arg plat "$platform" --arg tier "$tier" '
 		.extensions[]
-		| select($tier == "all"
-			or .tier == $tier
-			or ($tier == "core" and .tier == "supporting"))
+		| select($tier == "all" or $tier == "optional"
+			or .tier == "core" or .tier == "supporting")
 		| . as $e
 		| (if $plat == "all" then .artifacts
 		   else ([.artifacts[] | select(.platform == $plat)]) as $exact

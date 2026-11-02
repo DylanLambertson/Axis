@@ -35,6 +35,14 @@ test('every pinned artifact is well formed', () => {
 			assert.ok(['universal', ...manifest.platforms].includes(a.platform), `${ext.id} ${a.platform}`);
 			if (a.source === 'open-vsx') {
 				assert.ok(a.url.includes(`/${ext.version}/`), `${ext.id} url does not carry the pinned version`);
+				if (a.platform === 'universal') {
+					assert.ok(!a.url.includes('@'), `${ext.id} universal url names a platform: ${a.url}`);
+				} else {
+					assert.ok(a.url.includes(`/${a.platform}/`) && a.url.endsWith(`@${a.platform}.vsix`), `${ext.id} url does not match ${a.platform}: ${a.url}`);
+				}
+			} else {
+				assert.equal(a.source, 'github-release', ext.id);
+				assert.ok(a.url.includes(`/v${ext.version}/`) && a.url.endsWith(`-${a.platform}.vsix`), `${ext.id} release url does not match: ${a.url}`);
 			}
 		}
 	}

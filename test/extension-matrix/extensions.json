@@ -12,6 +12,9 @@
     "vendor": "Uploaded by the extension's own publisher or maintainer account.",
     "open-vsx": "Uploaded by the Open VSX service account (EclipseFdn publish-extensions), not by the vendor."
   },
+  "fieldNotes": {
+    "extensionKindDeclared": "extensionKind from the VSIX package.json, or null when it declares none. Code then deduces it from the entry points (src/vs/workbench/services/extensions/common/extensionManifestPropertiesService.ts:385-389); on desktop an extension with main runs as workspace."
+  },
   "builtins": [
     {
       "id": "vscode.typescript-language-features",
@@ -53,7 +56,7 @@
         "node": true,
         "browser": true
       },
-      "extensionKind": ["workspace", "web"],
+      "extensionKindDeclared": null,
       "extensionDependencies": [],
       "extensionPack": ["ms-python.vscode-pylance", "ms-python.debugpy", "ms-python.vscode-python-envs"],
       "enabledApiProposals": ["contribEditorContentMenu", "quickPickSortByLabel", "testObserver", "quickPickItemTooltip", "terminalDataWriteEvent", "terminalExecuteCommandEvent", "codeActionAI", "notebookReplDocument", "notebookVariableProvider"],
@@ -92,7 +95,7 @@
         "node": true,
         "browser": false
       },
-      "extensionKind": ["workspace"],
+      "extensionKindDeclared": null,
       "extensionDependencies": [],
       "extensionPack": [],
       "enabledApiProposals": [],
@@ -131,7 +134,7 @@
         "node": true,
         "browser": false
       },
-      "extensionKind": ["workspace"],
+      "extensionKindDeclared": null,
       "extensionDependencies": ["ms-python.python"],
       "extensionPack": [],
       "enabledApiProposals": ["portsAttributes", "debugVisualization", "contribViewsWelcome"],
@@ -194,7 +197,7 @@
         "node": true,
         "browser": false
       },
-      "extensionKind": ["workspace"],
+      "extensionKindDeclared": null,
       "extensionDependencies": [],
       "extensionPack": [],
       "enabledApiProposals": ["terminalShellEnv", "terminalDataWriteEvent", "taskExecutionTerminal"],
@@ -233,7 +236,7 @@
         "node": true,
         "browser": false
       },
-      "extensionKind": ["workspace"],
+      "extensionKindDeclared": ["workspace"],
       "extensionDependencies": [],
       "extensionPack": [],
       "enabledApiProposals": [],
@@ -296,7 +299,7 @@
         "node": true,
         "browser": false
       },
-      "extensionKind": ["workspace"],
+      "extensionKindDeclared": null,
       "extensionDependencies": [],
       "extensionPack": [],
       "enabledApiProposals": [],
@@ -367,7 +370,7 @@
         "node": true,
         "browser": false
       },
-      "extensionKind": ["workspace"],
+      "extensionKindDeclared": null,
       "extensionDependencies": [],
       "extensionPack": [],
       "enabledApiProposals": [],
@@ -406,7 +409,7 @@
         "node": true,
         "browser": false
       },
-      "extensionKind": ["workspace"],
+      "extensionKindDeclared": null,
       "extensionDependencies": [],
       "extensionPack": [],
       "enabledApiProposals": [],
@@ -445,7 +448,7 @@
         "node": true,
         "browser": false
       },
-      "extensionKind": ["workspace"],
+      "extensionKindDeclared": ["workspace"],
       "extensionDependencies": [],
       "extensionPack": [],
       "enabledApiProposals": [],
@@ -484,7 +487,7 @@
         "node": true,
         "browser": true
       },
-      "extensionKind": ["workspace"],
+      "extensionKindDeclared": ["workspace"],
       "extensionDependencies": [],
       "extensionPack": [],
       "enabledApiProposals": [],
@@ -523,7 +526,7 @@
         "node": false,
         "browser": false
       },
-      "extensionKind": ["ui", "workspace", "web"],
+      "extensionKindDeclared": null,
       "extensionDependencies": [],
       "extensionPack": [],
       "enabledApiProposals": [],
@@ -562,7 +565,7 @@
         "node": true,
         "browser": true
       },
-      "extensionKind": ["workspace", "web"],
+      "extensionKindDeclared": null,
       "extensionDependencies": [],
       "extensionPack": [],
       "enabledApiProposals": [],
@@ -601,7 +604,7 @@
         "node": true,
         "browser": true
       },
-      "extensionKind": ["workspace", "web"],
+      "extensionKindDeclared": null,
       "extensionDependencies": [],
       "extensionPack": [],
       "enabledApiProposals": [],
@@ -640,7 +643,7 @@
         "node": true,
         "browser": true
       },
-      "extensionKind": ["workspace"],
+      "extensionKindDeclared": ["workspace"],
       "extensionDependencies": [],
       "extensionPack": ["ms-toolsai.jupyter-keymap", "ms-toolsai.jupyter-renderers", "ms-toolsai.vscode-jupyter-slideshow", "ms-toolsai.vscode-jupyter-cell-tags"],
       "enabledApiProposals": ["notebookDeprecated", "notebookMessaging", "notebookMime", "contribNotebookStaticPreloads", "portsAttributes", "quickPickSortByLabel", "notebookKernelSource", "interactiveWindow", "quickPickItemTooltip", "notebookExecution", "notebookCellExecution", "notebookVariableProvider", "notebookReplDocument"],
@@ -679,7 +682,7 @@
         "node": true,
         "browser": false
       },
-      "extensionKind": ["workspace"],
+      "extensionKindDeclared": null,
       "extensionDependencies": [],
       "extensionPack": [],
       "enabledApiProposals": [],
