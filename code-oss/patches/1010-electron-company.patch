@@ -1,0 +1,17 @@
+diff --git a/build/lib/electron.ts b/build/lib/electron.ts
+index 27151cc4..f12b7f2a 100644
+--- a/build/lib/electron.ts
++++ b/build/lib/electron.ts
+@@ -143,8 +143,10 @@ const electronAssetResolver = electronFeed
+ export const config = {
+ 	version: electronVersion,
+ 	productAppName: product.nameLong,
+-	companyName: 'Microsoft Corporation',
+-	copyright: 'Copyright (C) 2026 Microsoft. All rights reserved',
++	// --- Start Axis ---
++	companyName: 'Dylan Lambertson',
++	copyright: 'Copyright (C) 2026 Dylan Lambertson. All rights reserved',
++	// --- End Axis ---
+ 	darwinExecutable: product.nameShort,
+ 	darwinIcon: 'resources/darwin/code.icns',
+ 	darwinBundleIdentifier: product.darwinBundleIdentifier,
