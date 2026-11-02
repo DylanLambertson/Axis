@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { challengeSchema, errorSchema } from "@axis/protocol";
 import { ChallengeError, ChallengeManager, canonicalJson, type ChallengeAuditEvent } from "../src/index.js";
-import { ARGS, CONTENT, WIN, approve, code, internal, issue, resolveArgs, run, setup } from "./helpers.js";
+import { ARGS, CALLER, CONN, CONTENT, WIN, approve, code, internal, issue, resolveArgs, run, setup } from "./helpers.js";
 
 test("S6: a wall-clock rollback does not extend a confirmation past its TTL", async () => {
   const { manager, clock } = setup();
@@ -12,7 +12,7 @@ test("S6: a wall-clock rollback does not extend a confirmation past its TTL", as
   clock.skew -= 3_600_000; // the wall clock steps back an hour
   clock.t += 10_000; // 35 s elapsed in total, beyond the 30 s confirmation TTL
   let ran = 0;
-  await assert.rejects(manager.execute(token, run, () => void ran++), code("E_CONFLICT"));
+  await assert.rejects(manager.consume(token, CALLER, run, () => void ran++), code("E_CONFLICT"));
   assert.equal(ran, 0);
 });
 
@@ -69,7 +69,7 @@ test("S2: sink failures at every phase surface as E_INTERNAL and never as a raw 
   const s4 = setup();
   const t4 = approve(s4.manager, issue(s4.manager));
   failOn(s4, "authorised");
-  await assert.rejects(s4.manager.execute(t4, run, () => 1), (e: unknown) => wireValid(e) && internal(false)(e));
+  await assert.rejects(s4.manager.consume(t4, CALLER, run, () => 1), (e: unknown) => wireValid(e) && internal(false)(e));
 });
 
 test("S2: when the action fails and the error audit also fails, the caller still learns the action ran", async () => {
@@ -77,7 +77,7 @@ test("S2: when the action fails and the error audit also fails, the caller still
   const token = approve(s.manager, issue(s.manager));
   s.failWhen((e) => e.outcome === "error");
   await assert.rejects(
-    s.manager.execute(token, run, () => {
+    s.manager.consume(token, CALLER, run, () => {
       throw new Error("action broke");
     }),
     internal(true),
@@ -90,7 +90,7 @@ test("S2: whatever the action throws, only a wire-valid ChallengeError escapes",
     const { manager } = setup();
     const token = approve(manager, issue(manager));
     await assert.rejects(
-      manager.execute(token, run, () => {
+      manager.consume(token, CALLER, run, () => {
         throw t;
       }),
       (e: unknown) => {
@@ -133,7 +133,7 @@ test("S5: bidi, zero-width, line-break and control characters are refused in tar
 test("S5: execute also refuses a display-unsafe target", async () => {
   const { manager } = setup();
   const token = approve(manager, issue(manager));
-  await assert.rejects(manager.execute(token, { ...run, target: "workspace:ws-1‮" }, () => 1), code("E_INVALID_ARGUMENT"));
+  await assert.rejects(manager.consume(token, CALLER, { ...run, target: "workspace:ws-1‮" }, () => 1), code("E_INVALID_ARGUMENT"));
 });
 
 test("S4: the default summary is the whole target when it fits, and keeps head and tail when it does not", () => {
@@ -185,13 +185,13 @@ test("B1: approval of remove{deleteBranch:false} does not authorise remove{delet
   let branchDeleted = false;
   const retried = { id: "ws-1", deleteBranch: true };
   await assert.rejects(
-    manager.execute(token, { ...run, args: retried }, () => {
+    manager.consume(token, CALLER, { ...run, args: retried }, () => {
       branchDeleted = retried.deleteBranch;
     }),
     code("E_POLICY_DENIED"),
   );
   assert.equal(branchDeleted, false);
-  await assert.rejects(manager.execute(token, { ...run, args: { id: "ws-1", deleteBranch: false } }, () => 1), code("E_CONFLICT"), "burned: even the approved arguments cannot reuse it");
+  await assert.rejects(manager.consume(token, CALLER, { ...run, args: { id: "ws-1", deleteBranch: false } }, () => 1), code("E_CONFLICT"), "burned: even the approved arguments cannot reuse it");
   assert.equal(events.filter((e) => e.payload["reason"] === "request_mismatch").length, 1);
 });
 
@@ -206,7 +206,7 @@ test("B1: a different contract or an extra or missing argument is refused at exe
     const { manager } = setup();
     const token = approve(manager, issue(manager));
     let ran = 0;
-    await assert.rejects(manager.execute(token, { ...run, ...v }, () => void ran++), code("E_POLICY_DENIED"));
+    await assert.rejects(manager.consume(token, CALLER, { ...run, ...v }, () => void ran++), code("E_POLICY_DENIED"));
     assert.equal(ran, 0);
   }
 });
@@ -223,4 +223,48 @@ test("B1: args and contract are validated: bounded plain objects only, contract 
 
 test("B1: canonicalJson sorts keys at every depth and keeps array order", () => {
   assert.equal(canonicalJson({ b: 1, a: { d: [3, { z: 1, y: 2 }], c: null } }), '{"a":{"c":null,"d":[3,{"y":2,"z":1}]},"b":1}');
+});
+
+// S1 (APR-1): an approval is bound to the requester and its connection, and the challenge id is not a bearer credential.
+test("S1: another agent, the renderer or another connection cannot consume an approved challenge, and a refusal burns nothing", async () => {
+  const { manager, events } = setup();
+  const id = approve(manager, issue(manager, { actor: "agent:run-A", connectionId: "conn-A" }));
+  let ran = 0;
+  const impostors = [
+    { actor: "agent:run-B", connectionId: "conn-A" },
+    { actor: "agent:run-A", connectionId: "conn-B" },
+    { actor: "user", connectionId: "conn-A" },
+    { actor: "daemon", connectionId: "conn-A" },
+  ];
+  for (const caller of impostors) {
+    await assert.rejects(manager.consume(id, caller, run, () => void ran++), code("E_POLICY_DENIED"));
+  }
+  assert.equal(ran, 0);
+  assert.equal(events.filter((e) => e.payload["reason"] === "wrong_caller").length, impostors.length);
+  assert.equal(await manager.consume(id, { actor: "agent:run-A", connectionId: "conn-A" }, run, () => "ok"), "ok", "the real requester still can");
+});
+
+test("S1: consume does not depend on the audit log to refuse a wrong caller", async () => {
+  const s = setup();
+  const id = approve(s.manager, issue(s.manager, { actor: "agent:run-A", connectionId: "conn-A" }));
+  s.failWhen(() => true);
+  await assert.rejects(s.manager.consume(id, CALLER, run, () => 1), code("E_POLICY_DENIED"));
+});
+
+test("S1: caller identity is validated and a malformed caller is E_INVALID_ARGUMENT", async () => {
+  const { manager } = setup();
+  const id = approve(manager, issue(manager));
+  for (const caller of [{}, { actor: "root", connectionId: CONN }, { actor: "user" }, { actor: "user", connectionId: CONN, extra: 1 }]) {
+    await assert.rejects(manager.consume(id, caller as never, run, () => 1), code("E_INVALID_ARGUMENT"));
+  }
+  await assert.rejects(manager.consume(id, CALLER, run, "nope" as never), code("E_INVALID_ARGUMENT"));
+  assert.equal(await manager.consume(id, CALLER, run, () => 1), 1, "invalid input burned nothing");
+});
+
+test("S1: the API exposes no bearer token: resolve results carry no secret and nothing but consume runs an action", () => {
+  const { manager } = setup();
+  const issued = issue(manager);
+  const r = manager.resolve(resolveArgs(issued));
+  assert.deepEqual(Object.keys(r).sort(), ["challengeId", "nativeRequired", "state"]);
+  assert.equal((manager as unknown as Record<string, unknown>)["execute"], undefined);
 });

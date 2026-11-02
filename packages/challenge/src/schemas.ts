@@ -45,6 +45,10 @@ export const argsSchema = boundedJsonSchema
 const actorSchema = z.string().regex(ACTOR);
 const windowSchema = z.string().regex(WINDOW);
 
+export const callerSchema = z.object({ actor: actorSchema, connectionId: windowSchema }).strict();
+/** The attested identity of whoever retries the request: the connection's actor and connection id, set by the daemon's transport, never read from the payload. */
+export type Caller = z.infer<typeof callerSchema>;
+
 export const issueSchema = z
   .object({
     op: z.string().regex(OP),
@@ -56,7 +60,11 @@ export const issueSchema = z
     target: z.string().min(1).max(1024).refine(displaySafe),
     /** SHA-256 hex of what the operation will destroy (for example dirty file content). */
     contentDigest: requestDigestSchema,
+    /** The requesting actor, as attested by the daemon. */
     actor: actorSchema,
+    /** The requesting connection. `consume` accepts only this actor on this connection. */
+    connectionId: windowSchema,
+    /** The window that will show the dialog; only the user in this window can resolve. */
     windowId: windowSchema,
     tier: z.number().int().min(3).max(5).default(4),
     /** The contract of the request being approved, for example `axis.worktrees/1`. Bound into the digest. */

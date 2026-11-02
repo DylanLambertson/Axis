@@ -1,10 +1,11 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
-import { challengeSchema, type Challenge } from "@axis/protocol";
-import type { z } from "zod";
+import { challengeIdSchema, challengeSchema, type Challenge } from "@axis/protocol";
+import { z } from "zod";
 import { canonicalJson, randomToken, requestDigest, safeEqual, sha256Hex } from "./crypto.js";
 import { ChallengeError } from "./errors.js";
 import {
   defaultSummary,
+  callerSchema,
   executeContextSchema,
   invalid,
   issueSchema,
@@ -16,16 +17,6 @@ import {
 } from "./schemas.js";
 
 export type { ActorId, ChallengeAuditEvent, ChallengeAuditSink } from "./schemas.js";
-
-declare const confirmationBrand: unique symbol;
-/**
- * Opaque proof that a challenge was approved (and natively confirmed when
- * required). It is a frozen object recognised by identity in the issuing
- * manager only: a JSON round trip, a copy or a hand-built value is refused.
- */
-export interface ConfirmationToken {
-  readonly [confirmationBrand]: true;
-}
 
 export interface IssuedChallenge {
   /** Renderer-visible, matches `challengeSchema` in `@axis/protocol`. */
@@ -42,8 +33,6 @@ export interface ResolveResult {
   readonly state: "approved" | "denied" | "expired";
   /** True while a native confirmation is still outstanding. */
   readonly nativeRequired: boolean;
-  /** Present once the challenge is fully confirmed. */
-  readonly token?: ConfirmationToken;
 }
 
 /** What `execute` hands to the action: the verified facts, nothing secret. */
@@ -57,11 +46,11 @@ export interface ChallengeManagerOptions {
   readonly audit: ChallengeAuditSink;
   /** Wall clock in epoch ms. Used only for the wire `expiresAt`; never for deadlines. */
   readonly now?: () => number;
-  /** Monotonic clock in ms (default `performance.now`). Every internal TTL runs on this one, so a wall-clock step cannot extend a challenge or token. */
+  /** Monotonic clock in ms (default `performance.now`). Every internal TTL runs on this one, so a wall-clock step cannot extend a challenge or approval. */
   readonly monotonic?: () => number;
   /** Challenge lifetime. Default 60 s, at most 5 min. */
   readonly challengeTtlMs?: number;
-  /** How long a confirmed token stays usable. Default 30 s, at most 5 min. */
+  /** How long a fully confirmed approval stays usable. Default 30 s, at most 5 min. */
   readonly confirmationTtlMs?: number;
   /** Open challenges per requesting actor. Default 8. */
   readonly maxOutstandingPerActor?: number;
@@ -74,6 +63,7 @@ type State = "PENDING" | "AWAITING_NATIVE" | "CONFIRMED" | "DENIED" | "EXPIRED" 
 interface Record_ {
   readonly ref: string;
   readonly requester: ActorId;
+  readonly connectionId: string;
   readonly windowId: string;
   readonly contract: string;
   readonly op: string;
@@ -106,14 +96,14 @@ function limit(value: number | undefined, fallback: number, max: number, name: s
 /**
  * Daemon-side tier-4 challenges (task B4; APR-1, APR-2, G-24).
  *
- *   issue -> resolve(approve) -> [confirmNative] -> execute
+ *   issue -> resolve(approve) -> [confirmNative] -> consume
  *
  * - Ids are 256 random bits; records are keyed by their SHA-256.
  * - A challenge is single-use, short-lived, and bound to operation, target and
  *   the digest of what will be destroyed.
  * - Only the `user` actor, from the window the challenge was issued to, can
  *   resolve it. Agents get E_POLICY_DENIED.
- * - `execute` re-checks the bound digest against the current state (TOCTOU) and
+ * - `consume` re-checks the bound digest against the current state (TOCTOU) and
  *   burns the confirmation whether or not the action then succeeds.
  * - Every phase is audited before it takes effect (fail closed): if the sink
  *   throws, the state does not change.
@@ -130,7 +120,6 @@ export class ChallengeManager {
   readonly #perActor: number;
   readonly #total: number;
   readonly #byRef = new Map<string, Record_>();
-  readonly #tokens = new WeakMap<object, Record_>();
 
   constructor(options: ChallengeManagerOptions) {
     this.#audit = options.audit;
@@ -170,6 +159,7 @@ export class ChallengeManager {
     const record: Record_ = {
       ref,
       requester: p.actor as ActorId,
+      connectionId: p.connectionId,
       windowId: p.windowId,
       contract: p.contract,
       op: p.op,
@@ -239,7 +229,8 @@ export class ChallengeManager {
       return { challengeId: p.challengeId, state: "approved", nativeRequired: true };
     }
     this.#emit("user", "tier4.challenge", rec, "success", { phase: "resolve", decision: "approve" });
-    return { challengeId: p.challengeId, state: "approved", nativeRequired: false, token: this.#mint(rec) };
+    this.#confirm(rec);
+    return { challengeId: p.challengeId, state: "approved", nativeRequired: false };
   }
 
   /**
@@ -272,31 +263,62 @@ export class ChallengeManager {
       return { challengeId: p.challengeId, state: "denied", nativeRequired: true };
     }
     this.#emit("user", "tier4.challenge", rec, "success", { phase: "native", decision: "confirm" });
-    return { challengeId: p.challengeId, state: "approved", nativeRequired: true, token: this.#mint(rec) };
+    this.#confirm(rec);
+    return { challengeId: p.challengeId, state: "approved", nativeRequired: true };
   }
 
   /**
-   * Run `action` only if `token` is a live confirmation for exactly this
-   * operation and target, and the content digest recomputed now still equals
-   * the one the user confirmed (G-24). The token is spent before `action`
-   * starts, so two concurrent calls cannot both run and a failing action
-   * cannot be retried on the same approval. Compute `currentContentDigest`
-   * while holding whatever lock protects the content, and call this straight
-   * after, so nothing can change in between.
+   * The only way to act on an approval. Called by the daemon when the original
+   * request is retried with `approval: {challengeId}`:
+   *
+   *   manager.consume(request.approval.challengeId,
+   *     { actor: conn.actor, connectionId: conn.id },   // from the transport, never the payload
+   *     { contract, op, target, args: paramsWithoutApproval, currentContentDigest },
+   *     (confirmed) => doTheDestructiveThing(confirmed));
+   *
+   * The challenge id is not a bearer credential: the manager looks the record
+   * up by the id's hash and requires the same actor on the same connection that
+   * the challenge was issued to (APR-1), so the daemon keeps no map from id to
+   * grant and an id seen by the renderer or another agent is useless to them.
+   *
+   * `action` runs only if the challenge is a live, fully confirmed approval for
+   * exactly this contract, operation, target and arguments, and the content
+   * digest recomputed now still equals the one the user confirmed (G-24). The
+   * approval is spent before `action` starts (synchronously, before any await),
+   * so two concurrent calls cannot both run and a failing action cannot be
+   * retried on the same approval. Compute `currentContentDigest` while holding
+   * whatever lock protects the content, and call this straight after.
    *
    * The daemon bridges to `@axis/worktrees` inside `action`, for example by
    * calling `markDiscardConfirmed()` there.
    */
-  async execute<T>(
-    token: ConfirmationToken,
+  async consume<T>(
+    challengeId: string,
+    caller: z.input<typeof callerSchema>,
     context: z.input<typeof executeContextSchema>,
     action: (confirmed: ConfirmedAction) => T | Promise<T>,
   ): Promise<T> {
-    const rec = typeof token === "object" && token !== null ? this.#tokens.get(token) : undefined;
-    if (!rec) throw new ChallengeError("E_POLICY_DENIED", "That is not a confirmation issued by this daemon");
+    const id = challengeIdSchema.safeParse(challengeId);
+    if (!id.success) throw invalid(id.error, "challenge id");
+    const who = callerSchema.safeParse(caller);
+    if (!who.success) throw invalid(who.error, "caller");
     const parsed = executeContextSchema.safeParse(context);
     if (!parsed.success) throw invalid(parsed.error, "execute context");
+    if (typeof action !== "function") throw new ChallengeError("E_INVALID_ARGUMENT", "Invalid action");
     const c = parsed.data;
+    const rec = this.#byRef.get(sha256Hex(id.data));
+    // Unknown id and wrong caller are the same refusal, so a probing caller learns nothing about which ids exist.
+    // A refusal here burns nothing: a bystander must not be able to kill someone else's approval.
+    if (!rec || rec.requester !== who.data.actor || rec.connectionId !== who.data.connectionId) {
+      if (rec) {
+        try {
+          this.#emit(who.data.actor as ActorId, "tier4.execute", rec, "denied", { phase: "execute", reason: "wrong_caller" });
+        } catch {
+          // Refusing does not depend on the audit log, and its failure must not change the answer.
+        }
+      }
+      throw new ChallengeError("E_POLICY_DENIED", "That confirmation is not available to this caller");
+    }
     if (rec.state !== "CONFIRMED") {
       this.#emit("daemon", "tier4.execute", rec, "denied", { phase: "execute", reason: "not_live", state: rec.state });
       throw new ChallengeError("E_CONFLICT", "This confirmation was already used or has ended", { state: rec.state });
@@ -348,13 +370,10 @@ export class ChallengeManager {
     return rec;
   }
 
-  #mint(rec: Record_): ConfirmationToken {
-    const token = Object.freeze({}) as ConfirmationToken;
+  #confirm(rec: Record_): void {
     rec.state = "CONFIRMED";
     rec.nativeProof = null;
     rec.tokenExpiresAt = this.#mono() + this.#confirmTtl;
-    this.#tokens.set(token, rec);
-    return token;
   }
 
   #finish(rec: Record_, state: State): void {

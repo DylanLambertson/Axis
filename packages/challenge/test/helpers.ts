@@ -1,13 +1,15 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { ChallengeError, ChallengeManager, type ChallengeAuditEvent, type ConfirmationToken, type IssuedChallenge } from "../src/index.js";
+import { ChallengeError, ChallengeManager, type ChallengeAuditEvent, type IssuedChallenge } from "../src/index.js";
 
 export const sha = (s: string): string => createHash("sha256").update(s).digest("hex");
 export const CONTENT = sha("dirty file bytes v1");
 export const CHANGED = sha("dirty file bytes v2");
 export const CONTRACT = "axis.worktrees/1";
 export const ARGS = { id: "ws-1", deleteBranch: false };
+export const CONN = "conn-1";
+export const CALLER = { actor: "user", connectionId: CONN } as const;
 export const WIN = "window-1";
 
 export function setup(options: { ttl?: number; confirmTtl?: number; perActor?: number; total?: number } = {}) {
@@ -32,17 +34,18 @@ export function setup(options: { ttl?: number; confirmTtl?: number; perActor?: n
 }
 
 export function issue(m: ChallengeManager, over: Partial<Parameters<ChallengeManager["issue"]>[0]> = {}): IssuedChallenge {
-  return m.issue({ contract: CONTRACT, op: "worktree.discard", target: "workspace:ws-1", args: ARGS, contentDigest: CONTENT, actor: "user", windowId: WIN, ...over });
+  return m.issue({ contract: CONTRACT, op: "worktree.discard", target: "workspace:ws-1", args: ARGS, contentDigest: CONTENT, actor: "user", connectionId: CONN, windowId: WIN, ...over });
 }
 
-export function approve(m: ChallengeManager, i: IssuedChallenge): ConfirmationToken {
+/** Resolves and natively confirms; returns the challenge id to hand to `consume`. */
+export function approve(m: ChallengeManager, i: IssuedChallenge): string {
   const r = m.resolve({ challengeId: i.challenge.challengeId, decision: "approve", digest: i.challenge.digest, actor: "user", windowId: WIN });
   assert.equal(r.state, "approved");
-  if (r.token) return r.token;
+  if (!r.nativeRequired) return i.challenge.challengeId;
   assert.ok(i.nativeProof);
   const n = m.confirmNative({ challengeId: i.challenge.challengeId, proof: i.nativeProof, confirmed: true, windowId: WIN });
-  assert.ok(n.token);
-  return n.token;
+  assert.equal(n.state, "approved");
+  return i.challenge.challengeId;
 }
 
 export const resolveArgs = (i: IssuedChallenge, over: Record<string, unknown> = {}) =>

@@ -7,8 +7,8 @@ export {
   type ChallengeAuditEvent,
   type ChallengeAuditSink,
   type ChallengeManagerOptions,
-  type ConfirmationToken,
   type ConfirmedAction,
   type IssuedChallenge,
   type ResolveResult,
 } from "./manager.js";
+export type { Caller } from "./schemas.js";
