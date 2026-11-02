@@ -4,7 +4,8 @@
 - Upstream: `microsoft/vscode` tag `1.144.0`, commit `2c33b50b16c472efe58357d1d2a8a5414bc23fbf` (`code-oss/upstream.json`).
 - Scope: the mechanism from ADR 0002 decision 1 (pinned checkout, patch series, overlay; upstream code is never committed) and an **unmodified** baseline build with measurements. Branding, the Axis shell and Copilot removal are M3 work.
 - Status words: **passed**, **failed**, **not run**, **not applicable**. "Not measured" means no number was taken; no number below is estimated.
-- Script revisions. **Pre-pin** marks results from an earlier, uncommitted revision of `scripts/code-oss/*.sh` that predates `abd7867` (Node tarball checksum pins); the exact revision is unknown. Its logs print `SHA-256 verified against SHASUMS256.txt` and an older apply summary, so the committed manifest-pin check, `replace/` step and post-apply hook step did not run in those results. The macOS build, launch and memory measurements (§5.1, §5.2) and the Linux attempt (§7) are pre-pin. §5.3 re-runs fetch, apply and Node resolution with the scripts at `33da935`.
+- Script revisions. **Pre-pin** marks results from an earlier, uncommitted revision of `scripts/code-oss/*.sh` that predates `abd7867` (rebased as `363444c`; Node tarball checksum pins); the exact revision is unknown. Its logs print `SHA-256 verified against SHASUMS256.txt` and an older apply summary, so the committed manifest-pin check, `replace/` step and post-apply hook step did not run in those results. The macOS build, launch and memory measurements (§5.1, §5.2) and the Linux attempt (§7) are pre-pin. §5.3 re-runs fetch, apply and Node resolution with the scripts at `33da935` (rebased as `6bf775f`).
+- Commit references. The branch was rebased onto `main` before merge; the content of each commit is unchanged except for later fix-ups. SHAs in this document are the pre-rebase ones the runs and CI actually used: `abd7867` (rebased as `363444c`) and `33da935` (rebased as `6bf775f`).
 
 > **Not a distributable build.** This is a local development build of unmodified Code OSS. It still contains the Copilot packages, `extensions/copilot` and the GitHub Copilot `defaultChatAgent`, and it shows Microsoft branding. ADR 0002 decision 5 requires all of that to be removed or replaced, together with the other licensing guardrails, before any build is distributed. Nothing built here may be shared outside the developer's machine.
 
@@ -102,7 +103,7 @@ Network access: the Axis scripts contact only GitHub (`git fetch`) and nodejs.or
 | `test.sh` (macOS bash 3.2) | passed | `150 passed, 0 failed` (113 checks in the pre-pin revision, also passed) | `33da935` |
 | Linux x64 build in Docker | failed | Compile OOM-killed in a 7.75 GiB VM; `npm ci` passed (766 s); §7 | pre-pin |
 | shellcheck 0.11.0 on `scripts/code-oss/*.sh` | passed | No findings | `33da935` |
-| CI job `Code OSS scripts` on GitHub | passed | Run 41376106459. The fix-up head will be re-run by CI after push | `abd7867` |
+| CI job `Code OSS scripts` on GitHub | passed | Run 41376106459. The fix-up head will be re-run by CI after push | `abd7867` (rebased as `363444c`) |
 | Terminal, debugger, Git, search, extensions in the dev build | not run | Not exercised beyond startup; M3 | |
 | Packaged build (`vscode-darwin-x64-min`) | not run | Out of scope; dev build only | |
 | Copilot removal | not applicable | M3 (ADR 0002 decision 6) | |
@@ -164,7 +165,7 @@ Profile freshness made little difference (runs 2 and 3–6). The first launch af
 
 The three unidentified Node utility processes are among the shared process, pty host, file watcher and agent host; they were not told apart. The crash-pad handler (3 MiB, reparented to launchd) is excluded.
 
-### 5.3 Re-verification at `33da935`
+### 5.3 Re-verification at `33da935` (rebased as `6bf775f`)
 
 - Date: 2026-11-02, 08:59 local time (UTC-5), same machine as §4.
 - Script revision: `33da935` (`scripts/code-oss/*.sh` and `code-oss/**` are unchanged by the documentation commit that adds this section).
