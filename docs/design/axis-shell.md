@@ -228,7 +228,7 @@ These edits are patch G1 in block `1000–1499` (decision 5). They are excluded 
 - These are asset replacements, so they live in `code-oss/replace/`; the overlay is for new files only.
 - `gen-icons.sh --check` (run in CI) verifies that the derived SVGs still match `assets/brand/`. Rasters are not compared byte for byte, because Chrome's rasteriser changes between releases.
 - **Implemented in S1.6:** `code.icns`, `code.ico`, the two tile PNGs and `VisualElementsManifest.xml`, `linux/code.png`, `rpm/code.xpm` (256 px rather than 1024 px, to keep it small), the server PNGs, favicon and manifest, `code-icon.svg` and the four letterpress SVGs.
-- **Deferred** until Windows and per-language packaging are in scope (open question 2): the 28 per-language document icons (darwin and win32), `sessions.ico` and the Inno Setup wizard bitmaps.
+- **Implemented in Stage 1b:** one generic Axis document icon (the mark on a page) for every per-language document icon (28 `.icns` on macOS, 27 `.ico` on Windows, which has no `bat.ico`), answering open question 2 with a single design; `sessions.ico` as a copy of the Axis `code.ico`; and the 14 Inno Setup wizard bitmaps as 24-bit BMPs at the upstream sizes (the mark on canvas `#111214` for the large images, the app icon on white for the small ones). Identical files share one Git blob.
 
 | Target (upstream path) | Sizes / format | Referenced by [V] |
 |---|---|---|
