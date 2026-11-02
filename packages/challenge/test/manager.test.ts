@@ -20,7 +20,7 @@ const WIN = "window-1";
 
 function setup(options: { ttl?: number; confirmTtl?: number; perActor?: number; total?: number } = {}) {
   const events: ChallengeAuditEvent[] = [];
-  const clock = { t: 1_000_000 };
+  const clock = { t: 1_000_000, skew: 0 };
   let failNext: ((e: ChallengeAuditEvent) => boolean) | undefined;
   const manager = new ChallengeManager({
     audit: {
@@ -29,7 +29,8 @@ function setup(options: { ttl?: number; confirmTtl?: number; perActor?: number; 
         events.push(e);
       },
     },
-    now: () => clock.t,
+    now: () => clock.t + clock.skew,
+    monotonic: () => clock.t,
     ...(options.ttl ? { challengeTtlMs: options.ttl } : {}),
     ...(options.confirmTtl ? { confirmationTtlMs: options.confirmTtl } : {}),
     ...(options.perActor ? { maxOutstandingPerActor: options.perActor } : {}),
@@ -417,4 +418,24 @@ test("every error the manager raises is valid on the wire (E_APPROVAL_REQUIRED w
     assert.notEqual(e.code, "E_APPROVAL_REQUIRED");
     assert.doesNotThrow(() => errorSchema.parse(e.toWire("corr")));
   }
+});
+
+test("S6: a wall-clock rollback does not extend a confirmation past its TTL", async () => {
+  const { manager, clock } = setup();
+  const token = approve(manager, issue(manager));
+  clock.t += 25_000; // 25 s really pass
+  clock.skew -= 3_600_000; // the wall clock steps back an hour
+  clock.t += 10_000; // 35 s elapsed in total, beyond the 30 s confirmation TTL
+  let ran = 0;
+  await assert.rejects(manager.execute(token, run, () => void ran++), code("E_CONFLICT"));
+  assert.equal(ran, 0);
+});
+
+test("S6: a wall-clock rollback does not keep a stale challenge alive, and the wire expiresAt is wall time", () => {
+  const { manager, clock } = setup({ ttl: 10_000 });
+  const issued = issue(manager);
+  assert.equal(issued.challenge.expiresAt, clock.t + clock.skew + 10_000);
+  clock.skew -= 3_600_000;
+  clock.t += 10_000;
+  assert.equal(manager.resolve(resolveArgs(issued)).state, "expired");
 });

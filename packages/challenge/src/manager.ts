@@ -112,7 +112,10 @@ export interface ConfirmedAction {
 
 export interface ChallengeManagerOptions {
   readonly audit: ChallengeAuditSink;
+  /** Wall clock in epoch ms. Used only for the wire `expiresAt`; never for deadlines. */
   readonly now?: () => number;
+  /** Monotonic clock in ms (default `performance.now`). Every internal TTL runs on this one, so a wall-clock step cannot extend a challenge or token. */
+  readonly monotonic?: () => number;
   /** Challenge lifetime. Default 60 s, at most 5 min. */
   readonly challengeTtlMs?: number;
   /** How long a confirmed token stays usable. Default 30 s, at most 5 min. */
@@ -134,7 +137,10 @@ interface Record_ {
   readonly digest: string;
   readonly tier: number;
   readonly native: boolean;
+  /** Monotonic deadline. */
   readonly expiresAt: number;
+  /** Wall-clock deadline, for display on the wire only. */
+  readonly wallExpiresAt: number;
   nativeProof: string | null;
   state: State;
   tokenExpiresAt: number;
@@ -179,6 +185,7 @@ function invalid(error: z.ZodError, what: string): ChallengeError {
 export class ChallengeManager {
   readonly #audit: ChallengeAuditSink;
   readonly #now: () => number;
+  readonly #mono: () => number;
   readonly #ttl: number;
   readonly #confirmTtl: number;
   readonly #perActor: number;
@@ -189,6 +196,7 @@ export class ChallengeManager {
   constructor(options: ChallengeManagerOptions) {
     this.#audit = options.audit;
     this.#now = options.now ?? Date.now;
+    this.#mono = options.monotonic ?? (() => performance.now());
     this.#ttl = limit(options.challengeTtlMs, 60_000, MAX_TTL, "challengeTtlMs");
     this.#confirmTtl = limit(options.confirmationTtlMs, 30_000, MAX_TTL, "confirmationTtlMs");
     this.#perActor = limit(options.maxOutstandingPerActor, 8, 1024, "maxOutstandingPerActor");
@@ -213,7 +221,7 @@ export class ChallengeManager {
     }
     const id = randomToken();
     const ref = sha256Hex(id);
-    const now = this.#now();
+    const now = this.#mono();
     const native = p.tier >= 4;
     const record: Record_ = {
       ref,
@@ -225,6 +233,7 @@ export class ChallengeManager {
       tier: p.tier,
       native,
       expiresAt: now + this.#ttl,
+      wallExpiresAt: this.#now() + this.#ttl,
       nativeProof: native ? randomToken() : null,
       state: "PENDING",
       tokenExpiresAt: 0,
@@ -240,7 +249,7 @@ export class ChallengeManager {
       tier: p.tier,
       targetSummary: p.targetSummary ?? p.target.slice(0, 512),
       nativeConfirmationRequired: native,
-      expiresAt: record.expiresAt,
+      expiresAt: record.wallExpiresAt,
     });
     return { challenge, nativeProof: record.nativeProof };
   }
@@ -345,7 +354,7 @@ export class ChallengeManager {
       this.#emit("daemon", "tier4.execute", rec, "denied", { phase: "execute", reason: "not_live", state: rec.state });
       throw new ChallengeError("E_CONFLICT", "This confirmation was already used or has ended", { state: rec.state });
     }
-    if (this.#now() >= rec.tokenExpiresAt) {
+    if (this.#mono() >= rec.tokenExpiresAt) {
       this.#end(rec, "EXPIRED", "daemon", "execute", "token_expired", "tier4.execute");
       throw new ChallengeError("E_CONFLICT", "The confirmation expired; ask again");
     }
@@ -359,7 +368,7 @@ export class ChallengeManager {
     }
     // Spend first (synchronously, before any await), then audit, then act.
     rec.state = "CONSUMED";
-    rec.endedAt = this.#now();
+    rec.endedAt = this.#mono();
     this.#emit("daemon", "tier4.execute", rec, "success", { phase: "authorised", approvedBy: "user" });
     let result: T;
     try {
@@ -388,7 +397,7 @@ export class ChallengeManager {
     const token = Object.freeze({}) as ConfirmationToken;
     rec.state = "CONFIRMED";
     rec.nativeProof = null;
-    rec.tokenExpiresAt = this.#now() + this.#confirmTtl;
+    rec.tokenExpiresAt = this.#mono() + this.#confirmTtl;
     this.#tokens.set(token, rec);
     return token;
   }
@@ -396,7 +405,7 @@ export class ChallengeManager {
   #finish(rec: Record_, state: State): void {
     rec.state = state;
     rec.nativeProof = null;
-    rec.endedAt = this.#now();
+    rec.endedAt = this.#mono();
   }
 
   #end(rec: Record_, state: State, actor: ActorId, phase: string, reason: string, action: ChallengeAuditEvent["action"] = "tier4.challenge"): void {
@@ -411,7 +420,7 @@ export class ChallengeManager {
   /** Marks an open challenge expired. Returns true if it is (now) expired. */
   #expireIfDue(rec: Record_): boolean {
     if (rec.state === "EXPIRED") return true;
-    if (OPEN.has(rec.state) && this.#now() >= rec.expiresAt) {
+    if (OPEN.has(rec.state) && this.#mono() >= rec.expiresAt) {
       this.#finish(rec, "EXPIRED");
       return true;
     }
@@ -431,7 +440,7 @@ export class ChallengeManager {
 
   /** Drop finished records after a grace period and expire stale open ones, bounding memory. */
   #sweep(): void {
-    const now = this.#now();
+    const now = this.#mono();
     for (const [ref, r] of this.#byRef) {
       if (OPEN.has(r.state) && now >= r.expiresAt) this.#finish(r, "EXPIRED");
       else if (r.state === "CONFIRMED" && now >= r.tokenExpiresAt) this.#finish(r, "EXPIRED");
