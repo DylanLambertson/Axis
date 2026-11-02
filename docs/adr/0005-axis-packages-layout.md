@@ -4,7 +4,7 @@
 - **Date:** 2026-11-02.
 - **Decision owner:** Dylan Lambertson.
 - **Depends on:** ADR 0002 (Code OSS integration strategy), ADR 0003 (Electron IPC bridge) and ADR 0004 (agent-first workspace shell), all Proposed.
-- **Refines:** ADR 0003 D6, which placed the envelope, errors and contract definitions under `src/vs/axis/platform/protocol/common/`. Those move to `packages/protocol` (this ADR). The renderer client, the main seam and the daemon entry stay in the overlay.
+- **Refines:** ADR 0003 D6, which placed the envelope, errors and contract definitions under `src/vs/axis/platform/protocol/common/`. Those move to `packages/protocol` (this ADR). The renderer client, the main seam and the daemon entry stay in the overlay. Also refines the ADR 0003 D3 envelope sketch (see D8).
 - **Related:** `docs/design/axis-agent-shell.md` §5 and §8 (worktree contract, task B4), `docs/design/axis-agent-shell-policies.md`, `docs/ci.md`, `docs/packages.md`.
 - **Evidence tags:** **[V]** verified in the Code OSS 1.144.0 tree or an Axis document; **[I]** inferred, not verified.
 
@@ -54,16 +54,20 @@ Packages are plain TypeScript workspaces. A post-apply hook copies their sources
 
 Rule of thumb: if it can be tested with `node --test` on a clean CI runner, it is a package. If it needs a workbench service, it is overlay code.
 
-### D2. The boundary rules (enforced, not advisory)
+### D2. The boundary rules
 
 1. **Packages never import `vs/*`,** Electron, or the DOM. A package may import `node:*`, `zod` and other `@axis/*` packages. Nothing else without an amendment to this ADR.
 2. **The overlay talks to the daemon only through `@axis/protocol`,** over the MessagePort from ADR 0003 D1. The renderer imports contracts, never domain packages. A renderer import of `@axis/worktrees` is a defect; the renderer asks the daemon.
 3. **Packages assume nothing about who calls them.** Identity (`ConnectionContext`) and actor come from the daemon pipeline, never from payload fields (ADR 0003 D2, D7).
 4. **Contracts have no Node imports** so web and desktop share them (ADR 0003 I8). Domain packages may use Node.
-5. **The daemon MUST validate every decoded client message with `parseClientMessage` from `@axis/protocol`,** which runs `findForbiddenKey` (forbidden keys `__proto__`, `constructor`, `prototype`, and a depth limit) before any schema. Zod strict objects do not reject an own `__proto__` key, so a schema alone is not enough. Calling the envelope schemas directly is a defect.
+5. **The daemon MUST validate every decoded client message (`hello`, request and cancel) with `parseClientMessage` from `@axis/protocol`.** It runs `inspectMessage` before any schema: one iterative walk that rejects forbidden keys (`__proto__`, `constructor`, `prototype`), shared references and cycles, values JSON cannot carry, and anything over the limits in D4. [V, zod 4.6.6] A top-level own `__proto__` on a strict object is rejected by Zod, but inside a `z.json()` value it is silently dropped, which hides the attack instead of refusing it. Rejecting is the intended behaviour, and it also covers per-method payloads parsed later. Calling the envelope schemas directly is a defect.
 6. **Packages do not read `process.env` or the clock implicitly** where tests need control: take them as parameters.
 
-Enforcement: package `tsconfig.base.json` sets `types: ["node"]` and `lib: ["ES2023"]` with no `DOM`, so DOM and Electron types fail to compile. `vs/*` is not resolvable from `packages/` at all. The overlay side gets an import-patterns target (below).
+Enforcement, today:
+- `test/packages/imports.test.mjs` (run by `npm test`) scans `packages/*/src` import specifiers and each `package.json`. Packages may import relative paths, `zod`, `@axis/*` and `node:*`; `@axis/protocol` may not import `node:*` (D2.1, D2.4). Anything else, including `vs/*` and `electron`, fails. Declared dependencies may only be `zod` (at the pinned version) and `@axis/*`.
+- `tsconfig.base.json` sets `lib: ["ES2023"]` with no `DOM`, so DOM types fail to compile.
+
+Not yet implemented: the renderer-imports-contracts-only rule (overlay import-patterns target, D3.4) and the hook's own checks (D3.1). D2.2, D2.3, D2.5 and D2.6 are review rules, with D2.5 tested at the `@axis/protocol` level.
 
 ### D3. How packages reach the app
 
@@ -85,13 +89,21 @@ The same staged code serves desktop (utility process) and web (the reh child pro
 - **Dev dependencies:** `typescript` and `@types/node`, pinned exactly, at the repository root only.
 - **No other runtime dependency** without an ADR amendment. `node:sqlite` or the Code OSS-provided SQLite is chosen by the journal workstream, not assumed here.
 - **Exact pins and a committed lockfile.** CI installs with `npm ci`; `--ignore-scripts` is used wherever install scripts are not needed.
-- **Known advisory.** `zod@4.4.3` has GHSA-mrhx-c7xc-m3w5 (memory exhaustion validating oversized constrained collections; fixed in 4.6.6) [V, npm audit]. (a) Packages therefore use patched zod 4.6.6. (b) The Code OSS tree still pins 4.4.3 upstream. Follow-up for the security-hardening patch block (2000-2999): bump it with a `package.json` change plus lockfile regeneration, if zod is still used at runtime after the agent-host removal (to be checked). Defence in depth stays: ADR 0003 D2's envelope check bounds message size, depth and string length before any schema runs, and every array and record in a contract carries an explicit maximum.
+- **Known advisory.** `zod@4.4.3` has GHSA-mrhx-c7xc-m3w5 (memory exhaustion validating oversized constrained collections; fixed in 4.6.6) [V, npm audit]. (a) Packages use the patched zod 4.6.6. (b) The Code OSS tree still pins 4.4.3 upstream. Follow-up for the security-hardening patch block (2000-2999): bump it with a `package.json` change plus lockfile regeneration, if zod is still used at runtime after the agent-host removal (to be checked).
+- **How 4.6.6 reaches the daemon bundle** [I]. Staged sources import bare `zod`, which esbuild and Code OSS's `tsc` resolve from `vendor/code-oss/node_modules`, i.e. 4.4.3, unless something changes that. The staging hook must make bare `zod` resolve to 4.6.6 for the daemon bundle, either by vendoring zod 4.6.6 into the staged tree (for example `src/vs/axis/packages/node_modules/zod`) or with an esbuild alias in the entry-list seam. If neither works, the tree bump in (b) becomes a prerequisite rather than a follow-up. Also check that the packages type-check against 4.4.3 types, because Code OSS's `tsc` sees that version first. Spike criterion 2 verifies this.
+- **Message bounds, exactly as coded** (`packages/protocol/src/limits.ts`; defence in depth against the advisory, not a replacement for the patch). `inspectMessage` is one bounded, iterative walk over the decoded value, which works on structured-clone input where no byte length is known:
+  - `MAX_MESSAGE_BYTES` = 1 MiB in total, counting strings and keys by UTF-8 length and other values by a small fixed charge (an approximation);
+  - `MAX_STRING_BYTES` = 256 KiB per string or key;
+  - `MAX_MESSAGE_NODES` = 10,000 values;
+  - `MAX_DEPTH` = 16 levels of objects and arrays, the root counting as level 1;
+  - any object reached twice is rejected (`shared-reference`), because a structured-clone MessagePort preserves aliasing and a small DAG can expand into an exponential tree; decoded JSON is a tree, so a revisit is hostile, and this also rejects cycles.
+  The same walk bounds `payload`, `result` and every `error.details` value (`boundedJsonSchema`, used instead of `z.json()`). `details` has at most 16 keys, and `E_APPROVAL_REQUIRED` must carry a challenge. Every array and record in method payloads also has an explicit maximum. Byte-level framing limits on the port, if any, are separate and belong to the transport.
 
 ### D5. Language, module and build conventions
 
 - npm workspaces at the repository root; packages in `packages/<name>/`, named `@axis/<name>`, `private: true`, `"type": "module"`.
 - TypeScript strict, `NodeNext` modules, target `ES2023`, one `tsconfig.base.json` that every package extends, with project references between packages.
-- Tests use `node:test` and `node:assert` only. `npm test` builds with `tsc -b` and runs `node --test "dist/test/**/*.test.js"`. (Node 24 does not accept a bare directory after `--test`.)
+- Tests use `node:test` and `node:assert` only. `npm test` cleans and builds with `tsc -b` (root `tsconfig.json` references, no shell globbing), runs `node --test "dist/test/**/*.test.js"`. (Node 24 does not accept a bare directory after `--test`.)
 - Node version is the one in `code-oss/upstream.json` (`24.22.1`), recorded in `engines`.
 - **Lint.** Strict `tsc` is the gate for now. An ESLint flat config is deferred: it needs `typescript-eslint` and its transitive dependencies for little gain over strict `tsc`, and the overlay already carries the lint that matters (import patterns). Revisit when a package has logic that the compiler cannot catch.
 
@@ -105,6 +117,15 @@ The same staged code serves desktop (utility process) and web (the reh child pro
 
 Every Axis-owned source file starts with `// Copyright (c) 2026 Dylan Lambertson. All rights reserved.` Axis-owned code is proprietary (ADR 0002); packages carry `"license": "UNLICENSED"` and `"private": true` so they cannot be published by accident.
 
+### D8. Contract decisions recorded here
+
+- **Deferred contracts.** `discard`, `commit` and `push` (design section 5.3 and 5.4) are not in `axis.worktrees/1` yet. They arrive with their own changes, and `push` and review actions are likely a separate contract.
+- **Idempotency is decided per method.** The design does not state it. `create`, `finalise`, `remove` and `restoreFromRunBase` require a key; `list` and `status` do not. The envelope key is optional in the schema, so enforcement is the daemon's: `requiresIdempotencyKey(contract, version, method)` is the lookup it must use, and the daemon refuses a missing key with `E_INVALID_ARGUMENT`.
+- **Reads are tier 0** (`list`, `status`). The design leaves read tiers open.
+- **`restoreFromRunBase` takes `{ runId, id, paths }`.** The policies document names `{ runId, paths }`; `id` is added so the daemon checks that the run belongs to the workspace.
+- **Envelope deviations from ADR 0003 D3's sketch.** Ids are strings (at most 64 characters), not numbers. The contract and its major version are separate fields (`contract: "axis.worktrees"`, `contractVersion: 1`) instead of one `axis.runs/1` string. `v` is the envelope protocol version, 1 to 1000. `error.details` is a bounded JSON record (at most 16 keys) rather than a fixed shape, and `E_APPROVAL_REQUIRED` requires `details.challenge`. The error code set is ADR 0003's, unchanged.
+- **Parse failures** return an enum reason only and never echo input.
+
 ## Consequences and tradeoffs
 
 - Domain logic is testable in seconds on any machine, in parallel by separate workstreams, with no checkout.
@@ -112,15 +133,16 @@ Every Axis-owned source file starts with `// Copyright (c) 2026 Dylan Lambertson
 - Source staging couples packages to Code OSS's compiler flags. The base config is kept a superset of them so drift shows in `packages/` first.
 - ADR 0003's file budget is unchanged: no upstream file is touched beyond what D6 already counted. The hook adds untracked files only.
 - Two homes for Axis code need a clear rule. D1 is that rule; reviews should reject code in the wrong home.
-- Two zod versions may exist in the tree until the 2000-2999 follow-up lands. The staged packages resolve 4.6.6 from the daemon bundle; renderer code that still imports Code OSS's zod gets 4.4.3.
+- Two zod versions may exist in the tree until the 2000-2999 follow-up lands. The staged packages are expected to resolve 4.6.6 in the daemon bundle [I, see D4]; renderer code that still imports Code OSS's zod gets 4.4.3.
 
 ## Validation criteria (staging spike, before Accepted)
 
 1. A package's staged copy compiles under Code OSS's `src/tsconfig.json` with no changes to the package.
-2. `build/next` bundles `axisDaemonMain.ts` with a staged package, and the daemon bundle contains zod 4.6.6 (not 4.4.3).
+2. `build/next` bundles `axisDaemonMain.ts` with a staged package, and the bundle contains zod 4.6.6, checked by grepping the bundled zod version string (and not finding 4.4.3).
 3. The daemon utility process in a packaged build imports and runs a package function.
 4. The import-patterns lint rejects a renderer import of a domain package and a package import of `vs/*`.
-5. Dev (`transpile`) and packaged builds both work.
+5. Dev and packaged builds both work: `node build/next/index.ts transpile` completes and the daemon starts from `out/` with a staged package function callable; the packaged smoke (`scripts/code-oss/build.sh`, then launching the packaged app) does the same.
+6. The hook is idempotent: a second `apply.sh` run is a no-op, and the recorded manifest hashes match the staged files.
 
 ## Rollback
 
