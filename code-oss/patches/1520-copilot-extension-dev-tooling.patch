@@ -1,0 +1,57 @@
+diff --git a/.vscode-test.js b/.vscode-test.js
+index 7cdb29fc..ec40fc96 100644
+--- a/.vscode-test.js
++++ b/.vscode-test.js
+@@ -89,11 +89,9 @@ const extensions = [
+ 		label: 'git-base',
+ 		mocha: { timeout: 60_000 }
+ 	},
+-	{
+-		label: 'copilot',
+-		files: 'extensions/copilot/dist/test-extension.js',
+-		mocha: { ui: 'tdd', timeout: 60_000 }
+-	}
++	// --- Start Axis ---
++	// No copilot extension tests: extensions/copilot is not built (ADR 0002 decision 6)
++	// --- End Axis ---
+ ];
+ 
+ 
+diff --git a/build/next/build-fast.ts b/build/next/build-fast.ts
+index 5c59e177..759698f0 100644
+--- a/build/next/build-fast.ts
++++ b/build/next/build-fast.ts
+@@ -23,7 +23,10 @@ const COPILOT_BUILD_ARGS = ['--prefix', 'extensions/copilot', 'run', 'compile'];
+ type Fingerprint = string | null;
+ type LaneMode = 'skip' | 'incremental' | 'full';
+ type BuildLane = 'client' | 'extensions' | 'copilot';
+-const buildLanes: readonly BuildLane[] = ['client', 'extensions', 'copilot'];
++// --- Start Axis ---
++// The copilot lane never runs: extensions/copilot is not installed or built (ADR 0002 decision 6)
++const buildLanes: readonly BuildLane[] = ['client', 'extensions'];
++// --- End Axis ---
+ 
+ export interface BuildFastState {
+ 	readonly schema: number;
+@@ -381,7 +384,9 @@ function affectsLane(filePath: string, lane: BuildLane): boolean {
+ }
+ 
+ function fullPlan(reason: string, changedPaths: readonly string[], clientOnly: boolean): BuildFastPlan {
+-	return { reason, changedPaths, client: 'full', extensions: clientOnly ? 'skip' : 'full', copilot: clientOnly ? 'skip' : 'full' };
++	// --- Start Axis ---
++	return { reason, changedPaths, client: 'full', extensions: clientOnly ? 'skip' : 'full', copilot: 'skip' };
++	// --- End Axis ---
+ }
+ 
+ async function getOutputStatus(repoRoot: string): Promise<OutputStatus> {
+@@ -417,7 +422,9 @@ async function runAllFull(repoRoot: string, clientOnly: boolean): Promise<void>
+ 		runCommand(repoRoot, process.execPath, [path.join(repoRoot, 'build', 'next', 'index.ts'), 'transpile'], 'client'),
+ 		...(!clientOnly ? [
+ 			runCommand(repoRoot, npmCommand(), EXTENSION_BUILD_ARGS, 'extensions'),
+-			runCommand(repoRoot, npmCommand(), COPILOT_BUILD_ARGS, 'copilot'),
++			// --- Start Axis ---
++			// copilot lane removed (ADR 0002 decision 6)
++			// --- End Axis ---
+ 		] : []),
+ 	]);
+ }
