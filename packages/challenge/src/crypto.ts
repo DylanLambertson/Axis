@@ -35,11 +35,18 @@ export function canonicalJson(value: unknown): string {
   return JSON.stringify(value);
 }
 
+/** The retry's `approval` reference is not part of what was approved, so a top-level `approval` key is dropped. */
+function withoutApproval(payload: unknown): unknown {
+  if (payload === null || typeof payload !== "object" || Array.isArray(payload)) return payload;
+  const { approval: _approval, ...rest } = payload as Record<string, unknown>;
+  return rest;
+}
+
 export interface RequestDigestInput {
   readonly contract: string;
   readonly version: number;
   readonly method: string;
-  /** The request params without the `approval` field. */
+  /** The request params. A top-level `approval` key is ignored. */
   readonly payload: unknown;
 }
 
@@ -50,7 +57,7 @@ export interface RequestDigestInput {
  * TODO: dedupe into @axis/protocol once the daemon's copy and the shared vectors land.
  */
 export function requestDigest(d: RequestDigestInput): string {
-  return sha256Hex(JSON.stringify(["axis.request/1", d.contract, d.version, d.method, canonicalJson(d.payload)]));
+  return sha256Hex(JSON.stringify(["axis.request/1", d.contract, d.version, d.method, canonicalJson(withoutApproval(d.payload))]));
 }
 
 export interface ChallengeDigestInput {

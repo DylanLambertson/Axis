@@ -418,3 +418,18 @@ test("B1: a different version or method is refused at consume and burns the appr
     await assert.rejects(manager.consume(id, CALLER, run, () => 1), code("E_CONFLICT"));
   }
 });
+
+// Fixed vectors for the shared digest spec. Hex values were produced by an independent implementation (Python hashlib and json).
+test("requestDigest fixed vectors: unsorted keys, an ignored approval field, nested values and Unicode", () => {
+  const ref = { challengeId: "A".repeat(43) };
+  const cases: Array<[string, number, string, unknown, string]> = [
+    ["axis.worktrees/1", 1, "remove", { id: "ws-1", deleteBranch: false }, "ccb3a71aa0bc5bd6db5ccfe6fe9a09abef12092dce13ba4f6d99e929a30e0fd7"],
+    ["axis.worktrees/1", 1, "remove", { deleteBranch: false, approval: ref, id: "ws-1" }, "ccb3a71aa0bc5bd6db5ccfe6fe9a09abef12092dce13ba4f6d99e929a30e0fd7"],
+    ["axis.demo/1", 2, "nested", { z: [3, { b: null, a: true }], a: { y: 1.5, x: "s" } }, "1ea2792869f10b78f4046228b72597c0e6951811e63ada0d0cf788001f107488"],
+    ["axis.demo/1", 1, "unicode", { name: "café 中文 \u{1F600}", "kéy": "é" }, "ce1aa20bb3e2bf2910fd4f737e18ed5fe8a063498622376d982ec1456c3e3738"],
+    ["axis.demo/1", 1, "empty", {}, "98df99cd17dc8f6dae1c493391c1a298dc271d44da171fd4f03c88fda545cc4b"],
+  ];
+  for (const [contract, version, method, payload, hex] of cases) {
+    assert.equal(requestDigest({ contract, version, method, payload }), hex, `${contract} v${version} ${method}`);
+  }
+});
