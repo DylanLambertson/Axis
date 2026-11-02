@@ -20,6 +20,8 @@ Project Axis is a desktop-and-web, AI-native software development workspace comb
 8. `docs/SECURITY.md` — trust model, secrets, isolation, sync, enterprise controls.
 9. `docs/ROADMAP.md` — phases, milestones, release gates.
 10. `docs/IMPLEMENTATION.md` — proposed repository, interfaces, initial backlog.
+11. `docs/adr/` — architecture decision records (start with ADR 0001 and ADR 0002).
+12. `docs/feasibility/` — Phase 0 research behind the decisions: Code OSS inventory, licensing and marketplace constraints, integration alternatives.
 
 ## Operating rule
 Do not implement the entire product in one pass. First establish the Code OSS compatibility spike, security boundaries, and an end-to-end vertical slice. Record decisions as ADRs. Do not claim provider features, CLI authentication, or extension compatibility without verified supported paths.
