@@ -1,7 +1,8 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { ChallengeError, ChallengeManager, type ChallengeAuditEvent, type IssuedChallenge } from "../src/index.js";
+import type { Challenge } from "@axis/protocol";
+import { ChallengeError, ChallengeManager, type ChallengeAuditEvent } from "../src/index.js";
 
 export const sha = (s: string): string => createHash("sha256").update(s).digest("hex");
 export const CONTENT = sha("dirty file bytes v1");
@@ -33,8 +34,15 @@ export function setup(options: { ttl?: number; confirmTtl?: number; perActor?: n
   return { manager, events, clock, failWhen: (f: ((e: ChallengeAuditEvent) => boolean) | undefined) => (failNext = f) };
 }
 
+/** What the daemon holds after issuing: the renderer-visible challenge, plus the proof it fetched separately. */
+export interface IssuedChallenge {
+  readonly challenge: Challenge;
+  readonly nativeProof: string | null;
+}
+
 export function issue(m: ChallengeManager, over: Partial<Parameters<ChallengeManager["issue"]>[0]> = {}): IssuedChallenge {
-  return m.issue({ contract: CONTRACT, op: "worktree.discard", target: "workspace:ws-1", args: ARGS, contentDigest: CONTENT, actor: "user", connectionId: CONN, windowId: WIN, ...over });
+  const challenge = m.issue({ contract: CONTRACT, op: "worktree.discard", target: "workspace:ws-1", args: ARGS, contentDigest: CONTENT, actor: "user", connectionId: CONN, windowId: WIN, ...over });
+  return { challenge, nativeProof: m.takeNativeProof(challenge.challengeId) };
 }
 
 /** Resolves and natively confirms; returns the challenge id to hand to `consume`. */

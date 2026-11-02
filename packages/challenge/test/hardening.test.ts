@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { challengeSchema, errorSchema } from "@axis/protocol";
 import { ChallengeError, ChallengeManager, canonicalJson, type ChallengeAuditEvent } from "../src/index.js";
-import { ARGS, CALLER, CONN, CONTENT, WIN, approve, code, internal, issue, resolveArgs, run, setup } from "./helpers.js";
+import { ARGS, CALLER, CONN, CONTENT, CONTRACT, WIN, approve, code, internal, issue, resolveArgs, run, setup } from "./helpers.js";
 
 test("S6: a wall-clock rollback does not extend a confirmation past its TTL", async () => {
   const { manager, clock } = setup();
@@ -305,4 +305,25 @@ test("N2: the attested caller is a separate argument; a payload that carries ide
   assert.throws(() => manager.resolve({ actor: "agent:run-A", windowId: WIN }, request), code("E_POLICY_DENIED"));
   assert.throws(() => manager.resolve({ actor: "user", windowId: WIN, extra: 1 } as never, request), code("E_INVALID_ARGUMENT"));
   assert.equal(manager.resolve({ actor: "user", windowId: WIN }, request).state, "approved");
+});
+
+// N3: the native proof never travels in the object the renderer sees.
+test("N3: issue returns only the wire challenge; the native proof comes out once, through takeNativeProof", () => {
+  const { manager } = setup();
+  const challenge = manager.issue({ contract: CONTRACT, op: "worktree.discard", target: "workspace:ws-1", args: ARGS, contentDigest: CONTENT, actor: "user", connectionId: CONN, windowId: WIN });
+  assert.deepEqual(Object.keys(challenge).sort(), Object.keys(challengeSchema.shape).sort());
+  const proof = manager.takeNativeProof(challenge.challengeId);
+  assert.ok(proof);
+  assert.ok(!JSON.stringify(challenge).includes(proof));
+  assert.equal(manager.takeNativeProof(challenge.challengeId), null, "only once");
+  assert.equal(manager.takeNativeProof("A".repeat(43)), null, "unknown id");
+  assert.equal(manager.takeNativeProof("short"), null, "malformed id");
+  manager.resolve(...resolveArgs({ challenge, nativeProof: proof }));
+  assert.equal(manager.confirmNative({ windowId: WIN }, { challengeId: challenge.challengeId, proof, confirmed: true }).state, "approved", "taking the proof does not consume it");
+});
+
+test("N3: a tier with no native step has no proof to take", () => {
+  const { manager } = setup();
+  const challenge = issue(manager, { tier: 3 }).challenge;
+  assert.equal(manager.takeNativeProof(challenge.challengeId), null);
 });

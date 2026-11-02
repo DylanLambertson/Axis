@@ -20,16 +20,6 @@ import {
 
 export type { ActorId, ChallengeAuditEvent, ChallengeAuditSink } from "./schemas.js";
 
-export interface IssuedChallenge {
-  /** Renderer-visible, matches `challengeSchema` in `@axis/protocol`. */
-  readonly challenge: Challenge;
-  /**
-   * Secret for the privileged native-confirmation path (daemon to main). Never
-   * send it to a renderer. Null when the tier needs no native confirmation.
-   */
-  readonly nativeProof: string | null;
-}
-
 export interface ResolveResult {
   readonly challengeId: string;
   readonly state: "approved" | "denied" | "expired";
@@ -37,7 +27,7 @@ export interface ResolveResult {
   readonly nativeRequired: boolean;
 }
 
-/** What `execute` hands to the action: the verified facts, nothing secret. */
+/** What `consume` hands to the action: the verified facts, nothing secret. */
 export interface ConfirmedAction {
   readonly op: string;
   readonly target: string;
@@ -79,6 +69,7 @@ interface Record_ {
   /** Wall-clock deadline, for display on the wire only. */
   readonly wallExpiresAt: number;
   nativeProof: string | null;
+  proofTaken: boolean;
   state: State;
   tokenExpiresAt: number;
   endedAt: number;
@@ -141,7 +132,12 @@ export class ChallengeManager {
     return n;
   }
 
-  issue(input: z.input<typeof issueSchema>): IssuedChallenge {
+  /**
+   * Returns the renderer-visible challenge and nothing else, so serialising the
+   * result can never leak a secret. The native-confirmation proof is fetched
+   * separately with `takeNativeProof`.
+   */
+  issue(input: z.input<typeof issueSchema>): Challenge {
     const parsed = issueSchema.safeParse(input);
     if (!parsed.success) throw invalid(parsed.error, "challenge request");
     const p = parsed.data;
@@ -173,6 +169,7 @@ export class ChallengeManager {
       expiresAt: mono + this.#ttl,
       wallExpiresAt: Math.floor(wall + this.#ttl),
       nativeProof: native ? randomToken() : null,
+      proofTaken: false,
       state: "PENDING",
       tokenExpiresAt: 0,
       endedAt: 0,
@@ -192,7 +189,20 @@ export class ChallengeManager {
     if (!built.success) throw new ChallengeError("E_INTERNAL", "The challenge could not be built");
     this.#emit(record.requester, "tier4.challenge", record, "success", { phase: "issued", tier: record.tier });
     this.#byRef.set(ref, record);
-    return { challenge: built.data, nativeProof: record.nativeProof };
+    return built.data;
+  }
+
+  /**
+   * The secret for the privileged native-confirmation path (daemon to main).
+   * Call it once, right after `issue` and before the challenge reaches any
+   * other party; later calls, an unknown id and a tier with no native step all
+   * return null. Never send it to a renderer or an agent.
+   */
+  takeNativeProof(challengeId: string): string | null {
+    const rec = this.#byRef.get(sha256Hex(challengeId));
+    if (!rec || rec.nativeProof === null || rec.proofTaken) return null;
+    rec.proofTaken = true;
+    return rec.nativeProof;
   }
 
   /**

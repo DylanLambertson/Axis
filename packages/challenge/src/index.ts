@@ -8,7 +8,6 @@ export {
   type ChallengeAuditSink,
   type ChallengeManagerOptions,
   type ConfirmedAction,
-  type IssuedChallenge,
   type ResolveResult,
 } from "./manager.js";
 export type { Caller } from "./schemas.js";
