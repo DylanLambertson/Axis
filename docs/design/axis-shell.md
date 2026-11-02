@@ -384,7 +384,7 @@ Overlay (new files): `extensions/theme-axis/**` (§2.3), `src/vs/workbench/contr
 **Deviations and follow-ups.**
 
 - `defaultChatAgent` is an inert stub of empty strings, which is upstream's own fallback (`?? ''`). Onboarding theme entries keep their upstream ids (`dark-2026`, `light-2026`), because `onboardingVariationA.ts` preselects `dark-2026`; only their labels and theme ids change.
-- `licenseUrl` and `serverLicenseUrl` point at `LICENSE` in the Axis repository, which does not exist yet (L2).
+- `licenseUrl` and `serverLicenseUrl` point at `LICENSE` in the Axis repository (`https://github.com/DylanLambertson/Project-Axis/blob/main/LICENSE`). Stage 1b adds that file: a short all-rights-reserved notice that keeps third-party components, Code - OSS included, under their own licences as listed in the shipped `LICENSE.txt` and `ThirdPartyNotices.txt`. The final text is still subject to legal review before distribution (L2). It is not yet copied into the artifacts, so `check-artifacts --axis-license` would fail; that copy lands with G3's Axis-`LICENSE` step before distribution.
 - `webviewContentExternalBaseUrlTemplate` is unchanged. Desktop does not use it, but **reh-web webviews load from Microsoft's `vscode-cdn.net` until M6**, and the web CSP `frame-src` still allows it (D9, R5, threat model WEB-4).
 - `extensionsGallery` is still unset (business decision).
 - The About dialog still prints `@github/copilot` and `@github/copilot-sdk` version lines (now `Unknown`). This needs a small patch in block `1500–1999`.
@@ -871,7 +871,7 @@ Met by M2 as follows:
 | ID | Item | Owner and when |
 |---|---|---|
 | L1 | LEGAL REVIEW of interim dev-only use of `@vscode/copilot-api` (D1) | Owner, before GATE-D |
-| L2 | LEGAL REVIEW of the Axis proprietary `LICENSE` text and placement (D4) | Owner, before distribution |
+| L2 | LEGAL REVIEW of the Axis proprietary `LICENSE` text and placement (D4). A placeholder `LICENSE` is in the repository root from Stage 1b | Owner, before distribution |
 | L3 | LEGAL REVIEW before installing `@anthropic-ai/claude-agent-sdk` in CI, if (a1) fails (§2.7) | Owner, during S1.3 |
 
 ## 8. Decisions
