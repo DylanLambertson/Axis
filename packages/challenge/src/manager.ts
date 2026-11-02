@@ -221,7 +221,11 @@ export class ChallengeManager {
     }
     const id = randomToken();
     const ref = sha256Hex(id);
-    const now = this.#mono();
+    const mono = this.#mono();
+    const wall = this.#now();
+    if (!Number.isFinite(mono) || !Number.isFinite(wall) || wall < 0 || wall + this.#ttl > Number.MAX_SAFE_INTEGER) {
+      throw new ChallengeError("E_INTERNAL", "The daemon clock is not usable");
+    }
     const native = p.tier >= 4;
     const record: Record_ = {
       ref,
@@ -232,16 +236,16 @@ export class ChallengeManager {
       digest: requestDigest(p.op, p.target, p.contentDigest),
       tier: p.tier,
       native,
-      expiresAt: now + this.#ttl,
-      wallExpiresAt: this.#now() + this.#ttl,
+      expiresAt: mono + this.#ttl,
+      wallExpiresAt: Math.floor(wall + this.#ttl),
       nativeProof: native ? randomToken() : null,
       state: "PENDING",
       tokenExpiresAt: 0,
       endedAt: 0,
     };
-    this.#emit(record.requester, "tier4.challenge", record, "success", { phase: "issued", tier: record.tier });
-    this.#byRef.set(ref, record);
-    const challenge = challengeSchema.parse({
+    // Build and validate the wire shape before anything is stored or audited,
+    // so a failure leaves no record behind.
+    const built = challengeSchema.safeParse({
       challengeId: id,
       digest: record.digest,
       contract: p.contract,
@@ -251,7 +255,10 @@ export class ChallengeManager {
       nativeConfirmationRequired: native,
       expiresAt: record.wallExpiresAt,
     });
-    return { challenge, nativeProof: record.nativeProof };
+    if (!built.success) throw new ChallengeError("E_INTERNAL", "The challenge could not be built");
+    this.#emit(record.requester, "tier4.challenge", record, "success", { phase: "issued", tier: record.tier });
+    this.#byRef.set(ref, record);
+    return { challenge: built.data, nativeProof: record.nativeProof };
   }
 
   resolve(input: z.input<typeof resolveSchema>): ResolveResult {

@@ -439,3 +439,23 @@ test("S6: a wall-clock rollback does not keep a stale challenge alive, and the w
   clock.t += 10_000;
   assert.equal(manager.resolve(resolveArgs(issued)).state, "expired");
 });
+
+test("S3: a challenge that cannot be built leaves no record and fails with a protocol code", () => {
+  for (const wall of [-5, Number.NaN, Number.MAX_SAFE_INTEGER]) {
+    const m = new ChallengeManager({ audit: { append: () => undefined }, now: () => wall });
+    assert.throws(() => issue(m), (e: unknown) => e instanceof ChallengeError && e.code === "E_INTERNAL");
+    assert.equal(m.outstanding(), 0);
+  }
+  const events: ChallengeAuditEvent[] = [];
+  const m = new ChallengeManager({ audit: { append: (e) => void events.push(e) }, now: () => -1 });
+  assert.throws(() => issue(m), code("E_INTERNAL"));
+  assert.equal(events.length, 0, "nothing is audited for a challenge that was never created");
+});
+
+test("S3: a fractional wall clock (performance.now style) still yields an integer expiresAt", () => {
+  const m = new ChallengeManager({ audit: { append: () => undefined }, now: () => 1_000_000.5 });
+  const c = issue(m).challenge;
+  assert.equal(c.expiresAt, 1_060_000);
+  assert.doesNotThrow(() => challengeSchema.parse(c));
+  assert.equal(m.outstanding(), 1);
+});
