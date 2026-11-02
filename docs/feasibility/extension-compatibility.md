@@ -9,6 +9,8 @@
 
 **No scenario has been run.** No Axis build exists yet; M2 is producing one. Every result column below is `not run`, and nothing in this document is a compatibility claim.
 
+This matrix is the input to ADR 0002 validation criterion 6 (`docs/adr/0002-code-oss-integration-strategy.md`, "Validation criteria (M3–M6)"): "the M5 matrix of 10 representative Open VSX extensions runs on the Axis build, with every failure recorded. Failures caused by Axis changes must be fixable within the patch budget." The 12 core Open VSX extensions in §2 are that set. Until it runs on an Axis build, criterion 6 is unmet.
+
 This milestone delivers the following:
 
 | Deliverable | Location | State |
@@ -259,9 +261,10 @@ The desktop CLI installs VSIX paths through `--install-extension` (`argv.ts:130`
    - Copy each `summary.tsv` row into the matrix in §2, replacing `not run` with `passed`, `failed`, `blocked` or `timeout`, plus the build commit and date.
    - Never mark a scenario `passed` when only the probe ran and the activation scan reported findings. Record it as `passed (probe) / findings (activation)` and link the scan.
    - File each failure with the scenario's `result.json` and logs.
-5. **Exit criteria for Phase 0.**
+5. **Exit criteria for Phase 0 (ADR 0002 criterion 6).**
    - All 12 core extensions plus the built-in baseline have a recorded desktop result on macOS and Linux, and a recorded web result.
-   - Every failure is either fixed or listed as a documented exception, as `DEVELOPMENT.md` §10 requires.
+   - Every failure is recorded, and either fixed or listed as a documented exception, as `DEVELOPMENT.md` §10 requires.
+   - Each failure is classified as caused by an Axis change (patches, rebrand, Copilot removal, hardening) or not. Under criterion 6, failures caused by Axis changes must be fixable within the ADR 0002 patch budget. Record the estimated fix size against that budget.
 6. **Upstream syncs (ADR 0002).** Re-run the matrix on each upstream sync. Re-pin extensions on a fixed cadence: refresh `extensions.json` from the API, re-hash, and review the license and provenance diffs.
 
 ## 10. Decisions needed
@@ -269,7 +272,7 @@ The desktop CLI installs VSIX paths through `--install-extension` (`argv.ts:130`
 - **D1 — Proposed-API allowlist.** Should Axis ship `product.json` `extensionEnabledApiProposals` entries for Python, debugpy, python-envs and Jupyter? An allowlist must track each extension's declared proposals on every sync. Without one, those extensions run with their proposals removed. Decide after the first activation scan.
 - **D2 — CodeLLDB delivery.** Options: allow the runtime GitHub download, pre-install the pinned platform VSIX (the harness approach), or mirror platform packages in an Axis-controlled registry.
 - **D3 — Python defaults.** Should Axis recommend basedpyright and set `python.languageServer` to `None` by default, or keep the Jedi fallback?
-- **D4 — Integrity beyond sha256 pins.** Should Axis verify Open VSX `.sigzip` signatures, and should it accept extensions uploaded by the `open-vsx` service account for a curated catalog?
+- **D4 — Integrity beyond sha256 pins.** Should Axis verify Open VSX `.sigzip` signatures, and should it accept extensions uploaded by the `open-vsx` service account for a curated catalog? This overlaps threat EXT-3 in `docs/security/threat-model-phase0.md` §5.2, whose M3 test (install signed, unsigned and tampered extensions on an Axis build) should reuse these pins.
 - **D5 — Optional extensions.** Should Jupyter (stale Open VSX copy, Pylance coupling) and Java (EPL-2.0, large JRE payloads) be part of the Phase 0 gate or stay optional?
 - **D6 — Runner fleet.** Which CI runners (platforms, tool versions) execute the matrix, and does the matrix block the Phase 0 gate on all four platforms or only macOS and Linux?
 
@@ -279,4 +282,4 @@ The desktop CLI installs VSIX paths through `--install-extension` (`argv.ts:130`
 - GitHub REST API, `repos/vadimcn/codelldb/releases/tags/v1.12.3` (asset digests, accessed 2026-11-01).
 - Pinned VSIX manifests (`extension/package.json`, `extension.vsixmanifest`, license files), read as data from the downloaded files.
 - Code OSS 1.144.0 source, read-only clone at commit `2c33b50b16c472efe58357d1d2a8a5414bc23fbf` (paths cited inline).
-- `docs/feasibility/licensing-and-marketplace.md`, `docs/feasibility/code-oss-inventory.md` and `docs/adr/0002-code-oss-integration-strategy.md` (branch `docs/code-oss-inventory`).
+- `docs/feasibility/licensing-and-marketplace.md`, `docs/feasibility/code-oss-inventory.md`, `docs/adr/0002-code-oss-integration-strategy.md` (validation criterion 6) and `docs/security/threat-model-phase0.md` (EXT-3).
