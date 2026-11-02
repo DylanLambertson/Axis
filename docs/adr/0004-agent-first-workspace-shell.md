@@ -225,3 +225,13 @@ Decision 9 contains two engineering additions, marked in the text: brokered agen
 4. Concurrent writes by a composer agent and a CLI agent run in the same workspace. They are allowed. The composer agent is told of the CLI agent's writes as drift (decision 10); the CLI agent is not told, and the user sees the drift indicator. The design sets the detailed policy.
 5. The mechanism for inheriting Workspace Trust into worktrees (decision 12).
 6. Re-checking the adopted view-switching shortcuts (`UX.md`, from §9.2 of that design) against OS-reserved shortcuts and third-party extensions during implementation (task A6).
+
+## Amendment (2026-11-02)
+
+Records security decisions made while preparing the Phase 1 threat model (`docs/security/threat-model-phase1.md`). The accepted decisions above are not rewritten; where wording differs, this section governs.
+
+1. **Where CLI agent runs execute.** Security implication 7 says CLI agents "run in the user-visible pty host", and implication 3 speaks of an Axis-managed pty. CLI runs and workspace terminals are spawned by the **Axis pty utility process** (`docs/design/axis-agent-shell.md` §4.4), attached to an integrated terminal in the renderer. They do not run in the upstream pty host, which serves only opt-out terminals (`axis.terminals.scrubEnvironment: false`). PTY-1 (the renderer can still spawn through the upstream pty host) stays accepted.
+2. **Workspace Trust gates runs (decision 12).** No CLI or agent run starts in a worktree whose source repository is untrusted. Restricted Mode shows the workspace read-only with a "Trust to run" action. Trust is re-derived at each mount and at each run start.
+3. **Setting scopes.** `axis.cliAgents`, `axis.terminals.scrubEnvironment`, `axis.git.runHooks` and `axis.worktrees.root` are application or machine scope only. Workspace and folder values are ignored with a warning.
+4. **Hooks for Axis commit and push** run in the Axis pty process context (no secrets), never in the daemon. `axis.git.runHooks` stays on in Phase 1a and is re-evaluated in Phase 1b.
+5. **Common-dir snapshot (implication 3).** The snapshot set also covers the worktree's `.git` file, `commondir`, and any `core.hooksPath` target inside the worktree. Axis push re-takes it and refuses on unacknowledged drift, as commit does.

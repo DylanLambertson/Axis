@@ -30,7 +30,7 @@
 - **Reserves against design R1:** a multi-root fallback, and the in-memory workspace hook P2b.
 - **Trust, per ADR 0004 decision 12.**
   - When the daemon creates a worktree, it records the source repository. On mount, the renderer reads the source repository's trust with `getUriTrustInfo` and applies the same value to the worktree path only, with `setUrisTrust([worktree], trusted)` (`platform/workspace/common/workspaceTrust.ts:60-61`) [V].
-  - An untrusted source repository means the worktree opens in Restricted Mode in IDE view.
+  - An untrusted source repository means the worktree opens in Restricted Mode in IDE view, shown read-only with a "Trust to run" action. **No CLI or agent run starts in it** (threat model TRU-2). Trust is re-derived from the source repository at each mount and at each run start, so a later revocation takes effect.
   - The worktree root under app data is **never** trusted as a parent folder.
   - Worktrees Axis did not create (external) do not inherit trust; upstream trust prompts apply as usual.
 
@@ -113,6 +113,7 @@ Each scenario must end with no silent overwrite, or with a flagged and restorabl
 
 - **Phase 1a (decided).** PTY-5 applies to **every Axis workspace terminal**: CLI agent runs, `gh` launches, and plain user terminals.
 - **How.** All of them are spawned by the Axis pty process (design §4.4) and attached through `customPtyImplementation` (`platform/terminal/common/terminal.ts:568`) [V]. The daemon builds their environment and sends it with the spawn. The upstream pty host is not involved.
+- **Setting scope.** `axis.cliAgents`, `axis.terminals.scrubEnvironment`, `axis.git.runHooks` and `axis.worktrees.root` are application or machine scope only. Workspace and folder values are ignored and a warning is surfaced (threat model CFG-1).
 - **Opt-out.** `axis.terminals.scrubEnvironment` (default `true`). When it is `false`, plain user terminals use the upstream pty host and inherit the upstream environment. CLI agent runs always use PTY-5.
 - **Phase 0 residual risk** (no daemon). Workspace terminals are upstream terminals. They carry:
   - `VSCODE_GIT_IPC_HANDLE`, which the git extension injects unconditionally (`extensions/git/src/ipc/ipcServer.ts:110-116`) [V];
@@ -162,11 +163,11 @@ Each scenario must end with no silent overwrite, or with a flagged and restorabl
 - **Commit and push are daemon operations,** started by the user: `axis.worktrees/1.commit { id, paths, message }` and `.push { id }`.
 - **Lock and mutex.** Both run with the git CLI in the worktree, under the per-project git mutex and the per-workspace write lock, so they are serialised with each other and with composer writes (§3.3).
 - **Identity.** Commits use the user's Git identity (ADR 0004 security 6).
-- **Commit is gated by the common-dir drift check.** If the GIT-SNAP-1 set (§6.4) differs from the baseline the user last acknowledged, commit is refused until the user reviews the change. GIT-SNAP-1 is re-taken immediately before each commit.
+- **Commit is gated by the common-dir drift check.** If the GIT-SNAP-1 set (§6.4) differs from the baseline the user last acknowledged, commit is refused until the user reviews the change. GIT-SNAP-1 is re-taken immediately before each commit and each push.
 - **Hooks.**
-  - Axis commit and push run the repository's configured hooks only while the common dir matches that acknowledged baseline, so only hooks the user has seen can run. The setting `axis.git.runHooks` (default `true`) can turn hooks off.
+  - Axis commit and push run the repository's configured hooks only while the common dir matches that acknowledged baseline, so only hooks the user has seen can run. **The hooks run in the Axis pty process context, which holds no secrets, never in the daemon** (threat model GIT-3). The daemon sends the exact git command over the control channel. `axis.git.runHooks` (default `true` in 1a) can turn hooks off; it is re-evaluated in 1b when the vault ships.
   - Other daemon git calls (worktree, discard, snapshots, status) always use an empty `core.hooksPath`, `core.fsmonitor=false` and GIT-ENV-1 (§6.5; design §5.3 invariant 4).
-- **Push** runs `git push <remote> refs/heads/axis/<slug>:refs/heads/axis/<slug>`, with an explicit refspec, never `--mirror` or `--all`. It uses the PTY-5 environment with `GIT_TERMINAL_PROMPT=0`. If push needs interactive credentials, Axis offers to run the same command in a workspace terminal.
+- **Push** is refused on unacknowledged GIT-SNAP-1 drift, as commit is (a planted `url.*.insteadOf`, `remote.*.pushurl` or `credential.helper` would otherwise redirect it). It runs `git push <remote> refs/heads/axis/<slug>:refs/heads/axis/<slug>`, with an explicit refspec, never `--mirror` or `--all`. It uses the PTY-5 environment with `GIT_TERMINAL_PROMPT=0`. If push needs interactive credentials, Axis offers to run the same command in a workspace terminal.
 - **Signed commits.** With `commit.gpgsign` and a pinentry that needs a TTY, the daemon commit fails without prompting. Axis offers the same terminal fallback: the exact `git commit` command in a workspace terminal, still gated by the drift check that ran first.
 - **Broker.** A composer push request is a default-deny tier.
 - **Removed path.** `IGitService.commitFiles` is no longer used for Axis review actions. `IGitService` stays read-only for change state (design §4.3).
@@ -193,6 +194,8 @@ The set required by ADR 0004 security implication 3:
 - every `config.worktree` file (`$GIT_COMMON_DIR/worktrees/*/config.worktree` and the main one);
 - `hooks/`;
 - `info/attributes`;
+- the worktree's root `.git` file, and `$GIT_COMMON_DIR/worktrees/<name>/{gitdir,commondir}`;
+- the contents of the target of an effective `core.hooksPath` that lies inside any worktree (for example a committed `.husky/` or `.githooks/`), because editing those files leaves `config` unchanged;
 - the effective values of `filter.*`, `diff.*` (drivers), `core.hooksPath`, `core.fsmonitor` and `core.sshCommand`, as `git config --show-origin` reports them for the repository.
 
 **When it is taken:**
