@@ -17,6 +17,21 @@ const ONE_MIB = 1_048_576;
 
 const fill = (unit: string, bytes = ONE_MIB): string => unit.repeat(Math.ceil(bytes / unit.length)).slice(0, bytes);
 
+/**
+ * Fastest of n runs, in CPU milliseconds: a descheduled process or a GC pause in
+ * one run (a shared CI machine) must not fail a complexity check.
+ */
+function bestOf(n: number, fn: () => unknown): number {
+  let best = Infinity;
+  for (let i = 0; i < n; i++) {
+    const before = process.cpuUsage();
+    fn();
+    const used = process.cpuUsage(before);
+    best = Math.min(best, (used.user + used.system) / 1000);
+  }
+  return best;
+}
+
 const ADVERSARIAL: Array<[string, string]> = [
   ["a-", fill("a-")],
   ["a.", fill("a.")],
@@ -57,9 +72,7 @@ test("every redaction rule is linear: 1 MiB of adversarial input takes under 50 
   const slow: string[] = [];
   for (const rule of REDACTION_RULES) {
     for (const [name, input] of ADVERSARIAL) {
-      const t0 = performance.now();
-      rule.apply(input);
-      const ms = performance.now() - t0;
+      const ms = bestOf(3, () => rule.apply(input));
       if (ms >= 50) slow.push(`${rule.kind} on ${name}: ${ms.toFixed(0)} ms`);
     }
   }
@@ -71,9 +84,8 @@ test("redactString (all rules, literals and the encoded-run pass) is bounded on 
   r.registerSecret(SECRET);
   const slow: string[] = [];
   for (const [name, input] of ADVERSARIAL) {
-    const t0 = performance.now();
-    const out = r.redactString(input);
-    const ms = performance.now() - t0;
+    let out = "";
+    const ms = bestOf(3, () => void (out = r.redactString(input)));
     if (ms >= 50) slow.push(`${name}: ${ms.toFixed(0)} ms`);
     assert.ok(out.length <= 8 * MAX_STRING_CHARS, `${name} output is not bounded`);
   }

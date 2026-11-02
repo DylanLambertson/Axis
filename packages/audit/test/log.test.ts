@@ -177,7 +177,7 @@ test("a fully recomputed forged suffix is caught by a remembered head", () => {
   const forged = other.list()[2];
   assert.ok(forged);
   // Same prev hash only if rows 1-2 are identical, which they are (same clock, same inputs).
-  db.prepare("INSERT INTO audit_events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run(
+  db.prepare("INSERT INTO audit_events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)").run(
     forged.seq, forged.ts, forged.actor, forged.action, forged.target, forged.outcome, JSON.stringify(forged.payload), forged.prevHash, forged.hash,
   );
   assert.equal(log.verify().ok, true);
@@ -203,7 +203,8 @@ test("payload and target are redacted before hashing and storage", () => {
     action: AuditActions.gitPush,
     target: `https://bob:${FAKE.password}@example.test/r.git`,
     outcome: "failure",
-    payload: { stderr: `fatal: ${FAKE.github} rejected; key ${FAKE.vaultKey}`, token: FAKE.anthropic, Authorization: `Bearer ${FAKE.jwt}` },
+    // `branch` is allowlisted for git.push, so its value is stored (redacted); the other keys are dropped outright.
+    payload: { branch: `${FAKE.github} ${FAKE.vaultKey} Authorization: Bearer ${FAKE.jwt}`, stderr: `fatal: ${FAKE.anthropic}`, token: FAKE.anthropic },
   });
   const dump = JSON.stringify(event) + JSON.stringify(db.prepare("SELECT * FROM audit_events").all());
   for (const needle of FAKE_NEEDLES) assert.ok(!dump.includes(needle), "audit row leaked a fake credential");
@@ -224,7 +225,7 @@ test("the database files on disk contain no planted canary", () => {
       action: AuditActions.tier4Execute,
       target: "x:1",
       outcome: "error",
-      payload: { message: `${FAKE.anthropic} ${FAKE.vaultKey} ${FAKE.privateKey}`, nested: [FAKE.jwt, FAKE.openai] },
+      payload: { reason: `${FAKE.anthropic} ${FAKE.vaultKey} ${FAKE.privateKey}`, message: `${FAKE.anthropic}`, nested: [FAKE.jwt, FAKE.openai] },
     });
     db.close();
     for (const name of readdirSync(dir)) {

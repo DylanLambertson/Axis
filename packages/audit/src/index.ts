@@ -14,6 +14,9 @@ export {
   type RedactionRule,
 } from "./redact.js";
 export {
+  assertPrivateFiles,
+  mapSqlite,
+  mapSqliteError,
   openDatabase,
   runMigrations,
   schemaVersion,
@@ -22,12 +25,14 @@ export {
   type Migration,
   type OpenOptions,
 } from "./db.js";
+export { DEFAULT_PAYLOAD_ALLOWLIST, MAX_PAYLOAD_CHARS } from "./payload-policy.js";
 export {
   AuditLog,
   AuditActions,
   AUDIT_OUTCOMES,
   AUDIT_SCHEMA_VERSION,
   GENESIS_HASH,
+  HASH_VERSION,
   type AuditActor,
   type AuditEvent,
   type AuditEventInput,

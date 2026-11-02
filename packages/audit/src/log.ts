@@ -2,9 +2,10 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { canonicalize, type JsonValue } from "./canonical.js";
-import { runMigrations, withTransaction, type DatabaseSync, type Migration } from "./db.js";
+import { mapSqlite, runMigrations, withTransaction, type DatabaseSync, type Migration } from "./db.js";
 import { AxisError } from "./errors.js";
-import { Redactor } from "./redact.js";
+import { applyPayloadPolicy, DEFAULT_PAYLOAD_ALLOWLIST } from "./payload-policy.js";
+import { Redactor, isWellFormedString } from "./redact.js";
 
 /** `prevHash` of the first event. */
 export const GENESIS_HASH = "0".repeat(64);
@@ -36,9 +37,10 @@ export type AuditOutcome = (typeof AUDIT_OUTCOMES)[number];
 
 const inputSchema = z
   .object({
-    actor: z.string().regex(ACTOR_PATTERN),
-    action: z.string().max(96).regex(ACTION_PATTERN),
-    target: z.string().min(1).max(1024),
+    actor: z.string().regex(ACTOR_PATTERN).refine(isWellFormedString),
+    action: z.string().max(96).regex(ACTION_PATTERN).refine(isWellFormedString),
+    // Lone surrogates would be rewritten by SQLite on the way in, so the stored form would stop matching its hash.
+    target: z.string().min(1).max(1024).refine(isWellFormedString),
     outcome: z.enum(AUDIT_OUTCOMES),
     payload: z.unknown().optional(),
   })
@@ -79,6 +81,7 @@ export interface ChainHead {
 export type VerifyFailureReason =
   | "malformed_row"
   | "seq_gap"
+  | "unsupported_version"
   | "hash_mismatch"
   | "prev_hash_mismatch"
   | "truncated";
@@ -100,10 +103,14 @@ export interface VerifyOptions {
    * against a remembered head can.
    */
   readonly expectedHead?: ChainHead;
+  /** Start after this verified head instead of at genesis (incremental check). */
+  readonly from?: ChainHead;
 }
 
 export interface AuditLogOptions {
   readonly redactor?: Redactor;
+  /** Extra per-action payload keys, merged over `DEFAULT_PAYLOAD_ALLOWLIST`. */
+  readonly payloadAllowlist?: Readonly<Record<string, readonly string[]>>;
   readonly now?: () => Date;
 }
 
@@ -120,7 +127,8 @@ const MIGRATIONS: readonly Migration[] = [
         outcome   TEXT NOT NULL,
         payload   TEXT NOT NULL,
         prev_hash TEXT NOT NULL,
-        hash      TEXT NOT NULL UNIQUE
+        hash      TEXT NOT NULL UNIQUE,
+        hash_version INTEGER NOT NULL DEFAULT 1
       ) STRICT;
       CREATE TRIGGER audit_events_no_update BEFORE UPDATE ON audit_events
         BEGIN SELECT RAISE(ABORT, 'audit_events is append-only'); END;
@@ -142,12 +150,14 @@ interface Row {
   payload: unknown;
   prev_hash: unknown;
   hash: unknown;
+  hash_version: unknown;
 }
 
 function hashEvent(e: Omit<AuditEvent, "hash">): string {
   return createHash("sha256")
     .update(
       canonicalize({
+        v: HASH_VERSION,
         seq: e.seq,
         ts: e.ts,
         actor: e.actor,
@@ -161,7 +171,14 @@ function hashEvent(e: Omit<AuditEvent, "hash">): string {
     .digest("hex");
 }
 
-const COLUMNS = "seq, ts, actor, action, target, outcome, payload, prev_hash, hash";
+/**
+ * Version of the hashed form, inside the hash input and stored per row. A
+ * future field or algorithm change bumps it, and old rows keep verifying
+ * under their own version. Only version 1 exists.
+ */
+export const HASH_VERSION = 1;
+
+const COLUMNS = "seq, ts, actor, action, target, outcome, payload, prev_hash, hash, hash_version";
 
 /**
  * Append-only, hash-chained audit log in the `audit_events` table.
@@ -178,11 +195,13 @@ export class AuditLog implements AuditSink {
   readonly #db: DatabaseSync;
   readonly #redactor: Redactor;
   readonly #now: () => Date;
+  readonly #allowlist: Readonly<Record<string, readonly string[]>>;
 
   constructor(db: DatabaseSync, options: AuditLogOptions = {}) {
     this.#db = db;
     this.#redactor = options.redactor ?? new Redactor();
     this.#now = options.now ?? (() => new Date());
+    this.#allowlist = { ...DEFAULT_PAYLOAD_ALLOWLIST, ...options.payloadAllowlist };
     runMigrations(db, "audit", MIGRATIONS);
   }
 
@@ -199,7 +218,8 @@ export class AuditLog implements AuditSink {
     }
     const { actor, action, target, outcome } = parsed.data;
     const redactedTarget = this.#redactor.redactString(target);
-    const payload = this.#redactor.redactValue(parsed.data.payload ?? null);
+    // Redact first, then keep only what the action's allowlist permits (ADR 0003 D5).
+    const payload = applyPayloadPolicy(action, this.#redactor.redactValue(parsed.data.payload ?? null), this.#allowlist);
     const ts = this.#now().toISOString();
 
     return withTransaction(this.#db, () => {
@@ -218,7 +238,7 @@ export class AuditLog implements AuditSink {
       };
       const event: AuditEvent = { ...unsealed, hash: hashEvent(unsealed) };
       this.#db
-        .prepare(`INSERT INTO audit_events (${COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .prepare(`INSERT INTO audit_events (${COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
         .run(
           event.seq,
           event.ts,
@@ -229,6 +249,7 @@ export class AuditLog implements AuditSink {
           canonicalize(event.payload),
           event.prevHash,
           event.hash,
+          HASH_VERSION,
         );
       return event;
     });
@@ -240,15 +261,19 @@ export class AuditLog implements AuditSink {
   }
 
   /**
-   * Verify the whole chain, then return its head as an anchor. Persist the
-   * anchor OUTSIDE the database (see docs/packages.md) and pass it back as
+   * Verify the chain and return its head as an anchor. Persist the anchor
+   * OUTSIDE the database (see docs/packages.md) and pass it back as
    * `verify({ expectedHead })` at the next start: that is the only way to
    * detect deletion of the newest events (threat model G-11). Throws
    * `E_INTERNAL` if the chain is already broken, so a bad chain is never
-   * anchored. Returns null for an empty log. Cost is linear in log length.
+   * anchored. Returns null for an empty log.
+   *
+   * With `since` (the previous anchor) only the events after it are checked,
+   * starting from its hash, so the cost is proportional to what was appended
+   * since. Run the full form (no argument) at startup.
    */
-  checkpoint(): ChainHead | null {
-    const result = this.verify();
+  checkpoint(since?: ChainHead): ChainHead | null {
+    const result = this.verify(since ? { from: since } : {});
     if (!result.ok) {
       throw new AxisError("E_INTERNAL", "Audit chain failed verification; refusing to checkpoint it", {
         firstBadSeq: result.firstBadSeq,
@@ -272,23 +297,43 @@ export class AuditLog implements AuditSink {
       .all(options.afterSeq ?? 0, options.limit ?? 1000) as unknown as Row[];
     return rows.map((row) => {
       const event = parseRow(row);
-      if (!event) throw new AxisError("E_INTERNAL", "Audit row is malformed; run verify()");
+      if (!event || event === "unsupported") throw new AxisError("E_INTERNAL", "Audit row is malformed; run verify()");
       return event;
     });
   }
 
   /**
-   * Recompute the whole chain. Detects edited fields (hash mismatch), deleted
-   * rows (sequence gap), reordered rows (previous-hash mismatch) and, given
+   * Recompute the chain. Detects edited fields (hash mismatch), deleted rows
+   * (sequence gap), reordered rows (previous-hash mismatch) and, given
    * `expectedHead`, a deleted tail. Reports the first bad sequence number.
+   * With `from` (a head verified earlier) it starts after that row instead of
+   * at genesis, after checking the row still has that hash.
    */
   verify(options: VerifyOptions = {}): VerifyResult {
-    let expectedSeq = 1;
-    let prevHash = GENESIS_HASH;
+    return mapSqlite(() => this.#verify(options));
+  }
+
+  #verify(options: VerifyOptions): VerifyResult {
+    const from = options.from;
+    let expectedSeq = (from?.seq ?? 0) + 1;
+    let prevHash = from?.hash ?? GENESIS_HASH;
     let checked = 0;
-    const rows = this.#db.prepare(`SELECT ${COLUMNS} FROM audit_events ORDER BY seq`).iterate() as Iterable<Row>;
+    if (from) {
+      const row = this.#db.prepare("SELECT hash FROM audit_events WHERE seq = ?").get(from.seq) as { hash: string } | undefined;
+      if (!row) {
+        const h = this.head();
+        return { ok: false, firstBadSeq: (h?.seq ?? 0) + 1, reason: "truncated", checked };
+      }
+      if (row.hash !== from.hash) return { ok: false, firstBadSeq: from.seq, reason: "hash_mismatch", checked };
+    }
+    const rows = this.#db
+      .prepare(`SELECT ${COLUMNS} FROM audit_events WHERE seq > ? ORDER BY seq`)
+      .iterate(from?.seq ?? 0) as Iterable<Row>;
     for (const row of rows) {
       const event = parseRow(row);
+      if (event === "unsupported") {
+        return { ok: false, firstBadSeq: expectedSeq, reason: "unsupported_version", checked };
+      }
       if (!event) {
         const seq = typeof row.seq === "number" ? row.seq : expectedSeq;
         return { ok: false, firstBadSeq: seq, reason: "malformed_row", checked };
@@ -306,7 +351,7 @@ export class AuditLog implements AuditSink {
       expectedSeq++;
       checked++;
     }
-    const head: ChainHead | null = checked > 0 ? { seq: checked, hash: prevHash } : null;
+    const head: ChainHead | null = expectedSeq > 1 ? { seq: expectedSeq - 1, hash: prevHash } : null;
     const expected = options.expectedHead;
     if (expected && (!head || head.seq < expected.seq)) {
       return { ok: false, firstBadSeq: (head?.seq ?? 0) + 1, reason: "truncated", checked };
@@ -319,12 +364,12 @@ export class AuditLog implements AuditSink {
         return { ok: false, firstBadSeq: expected.seq, reason: "hash_mismatch", checked };
       }
     }
-    return { ok: true, count: checked, head };
+    return { ok: true, count: head?.seq ?? 0, head };
   }
 }
 
-function parseRow(row: Row): AuditEvent | null {
-  const { seq, ts, actor, action, target, outcome, payload, prev_hash, hash } = row;
+function parseRow(row: Row): AuditEvent | "unsupported" | null {
+  const { seq, ts, actor, action, target, outcome, payload, prev_hash, hash, hash_version } = row;
   if (
     typeof seq !== "number" ||
     !Number.isInteger(seq) ||
@@ -335,10 +380,12 @@ function parseRow(row: Row): AuditEvent | null {
     typeof outcome !== "string" ||
     typeof payload !== "string" ||
     typeof prev_hash !== "string" ||
-    typeof hash !== "string"
+    typeof hash !== "string" ||
+    typeof hash_version !== "number"
   ) {
     return null;
   }
+  if (hash_version !== HASH_VERSION) return "unsupported";
   let parsedPayload: JsonValue;
   try {
     parsedPayload = JSON.parse(payload) as JsonValue;
