@@ -1,13 +1,14 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { z } from "zod";
 import { errorSchema } from "./errors.js";
+import { boundedJsonSchema, inspectMessage, type InspectFailure } from "./limits.js";
 import {
   contractIdSchema,
   contractVersionSchema,
   protocolVersionSchema,
 } from "./version.js";
 
-/** Hard ceilings. The daemon's byte-size and depth checks run before these schemas. */
+/** Hard ceilings for one call. */
 export const MAX_TIMEOUT_MS = 30_000;
 export const MAX_ID_LENGTH = 64;
 
@@ -32,7 +33,7 @@ export const requestEnvelopeSchema = z.strictObject({
   idempotencyKey: idempotencyKeySchema.optional(),
   /** Client wish; the server uses the smaller of this and the method ceiling. */
   timeoutMs: z.number().int().min(1).max(MAX_TIMEOUT_MS).optional(),
-  payload: z.json(),
+  payload: boundedJsonSchema,
 });
 export type RequestEnvelope = z.infer<typeof requestEnvelopeSchema>;
 
@@ -47,7 +48,7 @@ export const okResponseSchema = z.strictObject({
   v: protocolVersionSchema,
   id: requestIdSchema,
   ok: z.literal(true),
-  result: z.json(),
+  result: boundedJsonSchema,
 });
 export const errorResponseSchema = z.strictObject({
   v: protocolVersionSchema,
@@ -61,18 +62,21 @@ export const responseEnvelopeSchema = z.discriminatedUnion("ok", [
 ]);
 export type ResponseEnvelope = z.infer<typeof responseEnvelopeSchema>;
 
+const unique = (xs: readonly unknown[]): boolean => new Set(xs).size === xs.length;
+
 /** First message on a new port, client to daemon. */
 export const helloSchema = z.strictObject({
   type: z.literal("hello"),
-  protocolVersions: z.array(protocolVersionSchema).min(1).max(16),
+  protocolVersions: z.array(protocolVersionSchema).min(1).max(16).refine(unique, "duplicate version"),
   contracts: z
     .array(
       z.strictObject({
         id: contractIdSchema,
-        versions: z.array(contractVersionSchema).min(1).max(16),
+        versions: z.array(contractVersionSchema).min(1).max(16).refine(unique, "duplicate version"),
       }),
     )
-    .max(64),
+    .max(64)
+    .refine((cs) => unique(cs.map((c) => c.id)), "duplicate contract"),
 });
 export type Hello = z.infer<typeof helloSchema>;
 
@@ -97,51 +101,22 @@ export const helloRejectedSchema = z.strictObject({
   error: errorSchema,
 });
 
-export const clientMessageSchema = z.union([requestEnvelopeSchema, cancelEnvelopeSchema]);
-
-/** Keys that are never accepted anywhere in a message (ADR 0003 D2.4). */
-export const FORBIDDEN_KEYS: ReadonlySet<string> = new Set(["__proto__", "constructor", "prototype"]);
-export const MAX_MESSAGE_DEPTH = 16;
-
-/**
- * Walk a decoded message and return the first violation, or null.
- * Zod strict objects do not flag an own `__proto__` key, so the daemon runs
- * this (with its byte-size check) before any schema. Iterative, so a deeply
- * nested message cannot overflow the stack.
- */
-export function findForbiddenKey(
-  value: unknown,
-  maxDepth: number = MAX_MESSAGE_DEPTH,
-): { reason: "forbidden-key" | "too-deep"; key?: string } | null {
-  const stack: Array<[unknown, number]> = [[value, 0]];
-  while (stack.length > 0) {
-    const [node, depth] = stack.pop() as [unknown, number];
-    if (typeof node !== "object" || node === null) continue;
-    if (depth > maxDepth) return { reason: "too-deep" };
-    if (Array.isArray(node)) {
-      for (const item of node) stack.push([item, depth + 1]);
-      continue;
-    }
-    for (const key of Object.getOwnPropertyNames(node)) {
-      if (FORBIDDEN_KEYS.has(key)) return { reason: "forbidden-key", key };
-      stack.push([(node as Record<string, unknown>)[key], depth + 1]);
-    }
-  }
-  return null;
-}
+/** Every message a client may send: the first is `hello`, then requests and cancels. */
+export const clientMessageSchema = z.union([helloSchema, requestEnvelopeSchema, cancelEnvelopeSchema]);
+export type ClientMessage = z.infer<typeof clientMessageSchema>;
 
 export type ParsedClientMessage =
-  | { ok: true; message: z.infer<typeof clientMessageSchema> }
-  | { ok: false; reason: "forbidden-key" | "too-deep" | "invalid" };
+  | { ok: true; message: ClientMessage }
+  | { ok: false; reason: InspectFailure };
 
 /**
- * The entry point the daemon uses for every decoded client message: the
- * forbidden-key and depth check runs first, then the envelope schema. The
- * daemon MUST NOT call `clientMessageSchema` directly (ADR 0005 D2).
+ * The only entry point the daemon uses for a decoded client message
+ * (`hello`, request and cancel alike): the bounded walk runs first, then the
+ * envelope schema (ADR 0005 D2.5). Calling `clientMessageSchema` directly is a defect.
  */
 export function parseClientMessage(raw: unknown): ParsedClientMessage {
-  const violation = findForbiddenKey(raw);
-  if (violation !== null) return { ok: false, reason: violation.reason };
+  const checked = inspectMessage(raw);
+  if (!checked.ok) return checked;
   const parsed = clientMessageSchema.safeParse(raw);
   return parsed.success ? { ok: true, message: parsed.data } : { ok: false, reason: "invalid" };
 }

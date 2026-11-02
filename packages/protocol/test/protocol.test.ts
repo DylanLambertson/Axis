@@ -5,7 +5,11 @@ import {
   ERROR_CODES,
   PROTOCOL_VERSION,
   cancelEnvelopeSchema,
-  findForbiddenKey,
+  inspectMessage,
+  MAX_DEPTH,
+  MAX_MESSAGE_BYTES,
+  MAX_MESSAGE_NODES,
+  MAX_STRING_BYTES,
   parseClientMessage,
   clientMessageSchema,
   createRequestSchema,
@@ -54,17 +58,74 @@ test("request envelope: rejects unknown keys (identity cannot ride along)", () =
   }
 });
 
-test("forbidden keys and depth are found before schema parsing", () => {
-  assert.deepEqual(findForbiddenKey(JSON.parse('{"payload":{"a":[{"__proto__":1}]}}')), {
+test("inspectMessage: forbidden keys at any depth", () => {
+  assert.deepEqual(inspectMessage(JSON.parse('{"payload":{"a":[{"__proto__":1}]}}')), {
+    ok: false,
     reason: "forbidden-key",
-    key: "__proto__",
   });
-  assert.equal(findForbiddenKey({ constructor: 1 })?.key, "constructor");
-  assert.equal(findForbiddenKey({ a: { prototype: 1 } })?.key, "prototype");
-  assert.equal(findForbiddenKey(goodRequest), null);
-  let deep: unknown = 1;
-  for (let i = 0; i < 100_000; i++) deep = { a: deep };
-  assert.deepEqual(findForbiddenKey(deep), { reason: "too-deep" });
+  assert.deepEqual(inspectMessage({ constructor: 1 }), { ok: false, reason: "forbidden-key" });
+  assert.deepEqual(inspectMessage({ a: { prototype: 1 } }), { ok: false, reason: "forbidden-key" });
+  assert.deepEqual(inspectMessage(goodRequest), { ok: true });
+});
+
+test("inspectMessage: depth boundary counts the root as level 1", () => {
+  const nest = (levels: number): unknown => {
+    let v: unknown = 1;
+    for (let i = 0; i < levels; i++) v = { a: v };
+    return v;
+  };
+  assert.deepEqual(inspectMessage(nest(MAX_DEPTH)), { ok: true });
+  assert.deepEqual(inspectMessage(nest(MAX_DEPTH + 1)), { ok: false, reason: "too-deep" });
+  assert.deepEqual(inspectMessage(nest(100_000)), { ok: false, reason: "too-deep" });
+});
+
+test("inspectMessage: aliased (DAG) structures return fast instead of expanding", () => {
+  let n: unknown = 1;
+  for (let i = 0; i < 6; i++) n = new Array(30).fill(n); // 30^6 leaves if walked as a tree
+  let t = performance.now();
+  assert.deepEqual(inspectMessage(n), { ok: false, reason: "shared-reference" });
+  assert.ok(performance.now() - t < 50, "DAG took too long");
+
+  let wide: unknown = 1;
+  for (let i = 0; i < 16; i++) wide = new Array(1000).fill(wide);
+  t = performance.now();
+  assert.equal(inspectMessage(wide).ok, false);
+  assert.ok(performance.now() - t < 50, "wide DAG took too long");
+
+  const shared = { a: 1 };
+  assert.deepEqual(inspectMessage({ x: shared, y: shared }), { ok: false, reason: "shared-reference" });
+});
+
+test("inspectMessage: cycles are rejected", () => {
+  const a: Record<string, unknown> = {};
+  a["self"] = a;
+  assert.equal(inspectMessage(a).ok, false);
+  const arr: unknown[] = [];
+  arr.push(arr);
+  assert.equal(inspectMessage(arr).ok, false);
+});
+
+test("inspectMessage: size, string and node budgets", () => {
+  assert.deepEqual(inspectMessage("x".repeat(MAX_STRING_BYTES)), { ok: true });
+  assert.deepEqual(inspectMessage("x".repeat(MAX_STRING_BYTES + 1)), { ok: false, reason: "too-large" });
+  // 4-byte characters count by UTF-8 length, not code units
+  assert.deepEqual(inspectMessage("\u{1F600}".repeat(MAX_STRING_BYTES / 4 + 1)), { ok: false, reason: "too-large" });
+  // total bytes: many strings each under the string cap
+  const many = Array.from({ length: 6 }, () => "y".repeat(MAX_STRING_BYTES - 1));
+  assert.deepEqual(inspectMessage(many), { ok: false, reason: "too-large" });
+  assert.ok(6 * (MAX_STRING_BYTES - 1) > MAX_MESSAGE_BYTES);
+  // keys count too
+  assert.deepEqual(inspectMessage({ ["k".repeat(MAX_STRING_BYTES + 1)]: 1 }), { ok: false, reason: "too-large" });
+  // node budget
+  assert.deepEqual(inspectMessage(new Array(MAX_MESSAGE_NODES).fill(1)), { ok: false, reason: "too-many-nodes" });
+  assert.deepEqual(inspectMessage(new Array(MAX_MESSAGE_NODES - 1).fill(1)), { ok: true });
+});
+
+test("inspectMessage: values JSON cannot carry are invalid", () => {
+  for (const bad of [undefined, () => 1, Symbol("s"), 1n, NaN, Infinity, new Date(), new Map(), { a: undefined }]) {
+    assert.equal(inspectMessage(bad).ok, false, String(bad));
+  }
+  assert.equal(inspectMessage(Object.create(null)).ok, true);
 });
 
 test("parseClientMessage rejects an own __proto__ key at any depth", () => {
@@ -77,6 +138,25 @@ test("parseClientMessage rejects an own __proto__ key at any depth", () => {
   assert.equal(({} as Record<string, unknown>)["polluted"], undefined);
   assert.equal(parseClientMessage(goodRequest).ok, true);
   assert.deepEqual(parseClientMessage({ v: 1 }), { ok: false, reason: "invalid" });
+});
+
+test("parseClientMessage covers hello, request and cancel", () => {
+  const hello = { type: "hello", protocolVersions: [1], contracts: [{ id: "axis.worktrees", versions: [1] }] };
+  assert.equal(parseClientMessage(hello).ok, true);
+  assert.equal(parseClientMessage({ v: 1, cancel: "r" }).ok, true);
+  const own = JSON.parse('{"type":"hello","protocolVersions":[1],"contracts":[],"__proto__":{"x":1}}');
+  assert.deepEqual(parseClientMessage(own), { ok: false, reason: "forbidden-key" });
+  assert.equal(parseClientMessage({ ...hello, protocolVersions: [1, 1] }).ok, false);
+});
+
+test("parseClientMessage rejects oversized payloads and aliased messages", () => {
+  const big = { ...goodRequest, payload: { text: "z".repeat(5 * 1024 * 1024) } };
+  assert.deepEqual(parseClientMessage(big), { ok: false, reason: "too-large" });
+  const shared = { n: 1 };
+  assert.deepEqual(parseClientMessage({ ...goodRequest, payload: { a: shared, b: shared } }), {
+    ok: false,
+    reason: "shared-reference",
+  });
 });
 
 test("request envelope: rejects bad fields", () => {
@@ -104,6 +184,7 @@ test("cancel envelope", () => {
 
 test("errors: every code round-trips; unknown code rejected", () => {
   for (const code of ERROR_CODES) {
+    if (code === "E_APPROVAL_REQUIRED") continue;
     const e = makeError(code, "m", "corr-1");
     assert.equal(errorSchema.safeParse(e).success, true, code);
   }
@@ -112,6 +193,28 @@ test("errors: every code round-trips; unknown code rejected", () => {
   assert.equal(errorSchema.safeParse({ ...makeError("E_INTERNAL", "m", "c"), code: "E_DENIED" }).success, false);
   assert.equal(errorSchema.safeParse({ ...makeError("E_INTERNAL", "m", "c"), stack: "at x" }).success, false);
   assert.equal(makeError("E_INTERNAL", "x".repeat(5000), "c").message.length, 1024);
+});
+
+test("errors: E_APPROVAL_REQUIRED must carry a challenge; details are bounded", () => {
+  assert.equal(errorSchema.safeParse(makeError("E_APPROVAL_REQUIRED", "m", "c")).success, false);
+  const challenge = {
+    challengeId: CHALLENGE_ID,
+    digest: DIGEST,
+    contract: "axis.worktrees",
+    method: "remove",
+    tier: 4,
+    targetSummary: "Remove workspace",
+    nativeConfirmationRequired: true,
+    expiresAt: 1_800_000_000_000,
+  };
+  assert.equal(errorSchema.safeParse(makeError("E_APPROVAL_REQUIRED", "m", "c", { challenge })).success, true);
+  const many: Record<string, number> = {};
+  for (let i = 0; i < 17; i++) many[`k${i}`] = i;
+  assert.equal(errorSchema.safeParse(makeError("E_INTERNAL", "m", "c", many)).success, false);
+  assert.equal(errorSchema.safeParse(makeError("E_INTERNAL", "m", "c", { t: "x".repeat(MAX_STRING_BYTES + 1) })).success, false);
+  // truncation never leaves a lone surrogate
+  const cut = makeError("E_INTERNAL", "a".repeat(1023) + "\u{1F600}", "c").message;
+  assert.equal(cut, "a".repeat(1023));
 });
 
 test("response envelope is a discriminated union", () => {

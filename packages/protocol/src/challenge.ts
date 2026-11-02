@@ -1,6 +1,5 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { z } from "zod";
-import { requestIdSchema } from "./envelope.js";
 
 /**
  * Challenge and confirmation shapes (ADR 0003 D4, task B4).
@@ -57,7 +56,7 @@ export const resolveChallengeResponseSchema = z.strictObject({
 export const challengeReferenceSchema = z.strictObject({
   challengeId: challengeIdSchema,
   /** The original request id, for correlation only. */
-  originalRequestId: requestIdSchema.optional(),
+  originalRequestId: z.string().min(1).max(64).optional(),
 });
 export type ChallengeReference = z.infer<typeof challengeReferenceSchema>;
 
