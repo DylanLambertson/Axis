@@ -2,9 +2,9 @@
 
 - **Status:** Draft, a companion to `docs/design/axis-agent-shell.md` (the "design"). The design owns the architecture, the tasks and the footprint. This document owns the policies those tasks implement:
   - the items ADR 0004 defers to the design (§1–§3);
-  - the terminal environment (§4);
+  - the terminal environment, including the shell-integration set (§4);
   - shell integration (§5);
-  - Axis git operations (§6);
+  - Axis git operations, the GIT-SNAP-1 snapshot set and the GIT-ENV-1 environment (§6);
   - snapshot refs (§7);
   - shortcuts (§8);
   - status wording (§9).
@@ -49,7 +49,7 @@ All are allowed at the same time. Axis blocks only the composer.
 
 ### 3.2 State the daemon keeps per workspace
 
-The run base, the drift ledger and the indicator are Phase 1a (design task B10), for CLI runs. Observed hashes, advisory locks and everything in §3.3–3.4 are Phase 1b (task C5).
+The run base, the drift ledger and the indicator are Phase 1a (design task B11), for CLI runs. Observed hashes, advisory locks and everything in §3.3–3.4 are Phase 1b (task C5).
 
 - **Run base.** At every run start (composer or CLI), the daemon writes `refs/axis/runbase/<runId>` (§7). It points at a commit of HEAD plus the whole worktree, tracked and untracked but **not ignored**, built with a temporary index, `add -A`, `write-tree` and `commit-tree`. It is kept for 7 days after the run ends.
 - **Observed hashes**, per composer run: the content hash the run last saw for each path it read or wrote.
@@ -93,7 +93,7 @@ Every broker write, delete or rename of a path P carries the hash the run last o
 - **Discarding a composer-written path** makes the composer's next write to it fail compare-and-swap.
 - **Run end** stores the paths the run wrote, its ledger and any "possible lost change" flags with the run in `agent_runs`.
 
-### 3.8 Tests (design tasks B10 and C5)
+### 3.8 Tests (design tasks B11 and C5)
 
 Each scenario must end with no silent overwrite, or with a flagged and restorable one, plus the expected notice or pause:
 
@@ -112,7 +112,7 @@ Each scenario must end with no silent overwrite, or with a flagged and restorabl
 ### 4.1 Scope
 
 - **Phase 1a (decided).** PTY-5 applies to **every Axis workspace terminal**: CLI agent runs, `gh` launches, and plain user terminals.
-- **How.** All of them are daemon-managed ptys attached through `customPtyImplementation` (`platform/terminal/common/terminal.ts:568`) [V]. Their environment is built by the daemon, not by the upstream pty host.
+- **How.** All of them are spawned by the Axis pty process (design §4.4) and attached through `customPtyImplementation` (`platform/terminal/common/terminal.ts:568`) [V]. The daemon builds their environment and sends it with the spawn. The upstream pty host is not involved.
 - **Opt-out.** `axis.terminals.scrubEnvironment` (default `true`). When it is `false`, plain user terminals use the upstream pty host and inherit the upstream environment. CLI agent runs always use PTY-5.
 - **Phase 0 residual risk** (no daemon). Workspace terminals are upstream terminals. They carry:
   - `VSCODE_GIT_IPC_HANDLE`, which the git extension injects unconditionally (`extensions/git/src/ipc/ipcServer.ts:110-116`) [V];
@@ -123,17 +123,29 @@ Each scenario must end with no silent overwrite, or with a flagged and restorabl
 ### 4.2 Building the environment
 
 1. **Source.** The resolved login-shell environment. Main already resolves it with `getResolvedShellEnv` (`platform/shell/node/shellEnv.ts:32`) [V] and hands it to the daemon over the privileged port at start-up [I]. The daemon's own `process.env` (inherited from main) is never used.
-2. **NODE_OPTIONS restore.** If `VSCODE_NODE_OPTIONS` is set, it becomes `NODE_OPTIONS`, as the upstream terminal does (`terminalEnvironment.ts:281-283`) [V].
-3. **`envPassthrough[]`** (per CLI agent): extra variables copied from the source. Their only purpose is to add variables that exist in the source environment.
-4. **The PTY-5 deny-list is applied last and always wins.** It removes:
+2. **User terminal settings** (plain terminals only): the profile's `env` and `terminal.integrated.env.*`, resolved in the renderer and sent with the request.
+3. **NODE_OPTIONS restore.** If `VSCODE_NODE_OPTIONS` is set, it becomes `NODE_OPTIONS`, as the upstream terminal does (`terminalEnvironment.ts:281-283`) [V].
+4. **`envPassthrough[]`** (per CLI agent): extra variables copied from the source. Their only purpose is to add variables that exist in the source environment.
+5. **The PTY-5 deny-list wins over steps 1–4.** It removes:
    - `VSCODE_*`, including `VSCODE_GIT_ASKPASS*`, `VSCODE_GIT_IPC_HANDLE`, `VSCODE_IPC_HOOK_CLI` and `VSCODE_GIT_EDITOR_*`;
    - `ELECTRON_*`;
    - `GIT_ASKPASS`, `SSH_ASKPASS*`, `GIT_EDITOR`;
    - every variable that extension `environmentVariableCollection`s would add.
 
-   Collections are never merged into daemon ptys in the first place. The rule also covers a passthrough or source variable with the same name.
-5. **Kept:** `SSH_AUTH_SOCK` and the user's Git configuration. **Never added:** Axis vault values (PTY-2).
-6. `PTY-2` (an allow-list) applies only to **broker tool processes** in Phase 1b, not to terminals.
+   Collections are never merged into Axis ptys in the first place. The rule also covers a passthrough, setting or source variable with the same name.
+6. **Kept:** `SSH_AUTH_SOCK` and the user's Git configuration. **Never added:** Axis vault values (PTY-2).
+7. **SI-ENV, plain terminals only** (§4.3). This is the only thing set after the deny-list.
+8. `PTY-2` (an allow-list) applies only to **broker tool processes** in Phase 1b, not to terminals.
+
+### 4.3 The shell-integration set (SI-ENV)
+
+- **What it is.** The variables upstream shell-integration injection needs. They are produced by `getShellIntegrationInjection` (`platform/terminal/node/terminalEnvironment.ts:52`) and applied inside `TerminalProcess` after the environment it is given (`terminalProcess.ts:213-242`) [V]:
+  - `VSCODE_INJECTION` (`:88`), `VSCODE_NONCE` (`:92`), `VSCODE_SHELL_ENV_REPORTING` (`:100-103`), `VSCODE_A11Y_MODE` (`:110`), `VSCODE_STABLE` (`:122-193`), `VSCODE_PATH_PREFIX` (`:310`);
+  - for zsh, `ZDOTDIR` and `USER_ZDOTDIR` (`:252-254`);
+  - exactly what that function returns for the shell, and nothing else.
+- **How it is applied.** The Axis pty process reuses `TerminalProcess`, so SI-ENV is added **after** the PTY-5 environment, for **plain workspace terminals only**.
+- **Never in CLI runs.** CLI runs are spawned with shell integration disabled, so no SI-ENV is produced.
+- **The nonce** is visible to processes inside that shell. That is upstream's accepted trade-off, and Axis keeps it.
 
 ## 5. Shell integration and split cwd
 
@@ -141,7 +153,7 @@ Each scenario must end with no silent overwrite, or with a flagged and restorabl
 - **Rules:**
   - splitting a workspace terminal (CLI or plain) always starts the new pane in the **worktree root**, the cwd Axis knows, never the detected cwd. This is done through `ICreateTerminalOptions.cwd` (`terminal.ts:769`) [V];
   - command decorations in CLI terminals are presentation only. Axis derives no status from them (design §4.5);
-  - plain daemon terminals get upstream shell integration scripts with a daemon-generated nonce, passed to the renderer as `shellIntegrationNonce` [I, verified in task B9].
+  - plain workspace terminals get upstream shell integration (SI-ENV, §4.3). The daemon generates the nonce and passes it to the renderer as `shellIntegrationNonce` [I, verified in task B10].
 
 ## 6. Axis git operations
 
@@ -150,11 +162,12 @@ Each scenario must end with no silent overwrite, or with a flagged and restorabl
 - **Commit and push are daemon operations,** started by the user: `axis.worktrees/1.commit { id, paths, message }` and `.push { id }`.
 - **Lock and mutex.** Both run with the git CLI in the worktree, under the per-project git mutex and the per-workspace write lock, so they are serialised with each other and with composer writes (§3.3).
 - **Identity.** Commits use the user's Git identity (ADR 0004 security 6).
-- **Commit is gated by the common-dir drift check.** If `$GIT_COMMON_DIR/config` or `hooks/` differ from the baseline the user last acknowledged, commit is refused until the user reviews the change.
+- **Commit is gated by the common-dir drift check.** If the GIT-SNAP-1 set (§6.4) differs from the baseline the user last acknowledged, commit is refused until the user reviews the change. GIT-SNAP-1 is re-taken immediately before each commit.
 - **Hooks.**
   - Axis commit and push run the repository's configured hooks only while the common dir matches that acknowledged baseline, so only hooks the user has seen can run. The setting `axis.git.runHooks` (default `true`) can turn hooks off.
-  - Other daemon git calls (worktree, discard, snapshots) always use an empty `core.hooksPath` and `core.fsmonitor=false` (design §5.3 invariant 4).
+  - Other daemon git calls (worktree, discard, snapshots, status) always use an empty `core.hooksPath`, `core.fsmonitor=false` and GIT-ENV-1 (§6.5; design §5.3 invariant 4).
 - **Push** runs `git push <remote> refs/heads/axis/<slug>:refs/heads/axis/<slug>`, with an explicit refspec, never `--mirror` or `--all`. It uses the PTY-5 environment with `GIT_TERMINAL_PROMPT=0`. If push needs interactive credentials, Axis offers to run the same command in a workspace terminal.
+- **Signed commits.** With `commit.gpgsign` and a pinentry that needs a TTY, the daemon commit fails without prompting. Axis offers the same terminal fallback: the exact `git commit` command in a workspace terminal, still gated by the drift check that ran first.
 - **Broker.** A composer push request is a default-deny tier.
 - **Removed path.** `IGitService.commitFiles` is no longer used for Axis review actions. `IGitService` stays read-only for change state (design §4.3).
 
@@ -171,6 +184,31 @@ Each scenario must end with no silent overwrite, or with a flagged and restorabl
   - Axis registers a view in the SCM view container (`workbench.view.scm`, `contrib/scm/common/scm.ts:21`) [V] through `IViewsRegistry.registerViews`. It is shown only while the context key `axis.workspaceDrift` is true.
   - The view says "Git configuration or hooks changed since you last reviewed them", or "Agent run active", and links to the review.
   - A warning action in `MenuId.SCMTitle` (`platform/actions/common/actions.ts:167`) [V] carries the same message.
+
+### 6.4 GIT-SNAP-1: the common-dir guard set
+
+The set required by ADR 0004 security implication 3:
+
+- `$GIT_COMMON_DIR/config`;
+- every `config.worktree` file (`$GIT_COMMON_DIR/worktrees/*/config.worktree` and the main one);
+- `hooks/`;
+- `info/attributes`;
+- the effective values of `filter.*`, `diff.*` (drivers), `core.hooksPath`, `core.fsmonitor` and `core.sshCommand`, as `git config --show-origin` reports them for the repository.
+
+**When it is taken:**
+
+- at worktree creation, as the baseline;
+- before each CLI run's launch and after its exit;
+- before each Axis commit;
+- on status refresh.
+
+It is stored as content hashes plus the full text, for the before/after diff. Changes outside the repository's Git directory (global config, home directory) are not detected, as ADR 0004 states.
+
+### 6.5 GIT-ENV-1: the daemon git environment
+
+- **Applies to** every daemon git call except commit and push.
+- **Contents.** An allow-list taken from the resolved shell environment: `PATH`, `HOME`, `USER`, `LANG`, `LC_*`, `TMPDIR`, plus `GIT_TERMINAL_PROMPT=0`. Every other `GIT_*` variable is removed.
+- **Distinct from PTY-2.** PTY-2 is the broker's tool environment. Commit and push use PTY-5 instead (§6.1), because they need the user's credentials and signing setup.
 
 ## 7. Snapshot refs
 

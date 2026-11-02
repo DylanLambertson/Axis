@@ -87,7 +87,7 @@ Adopt **Option B**.
 | **Space** | The personal or team container above projects (`CONTEXT.md`; formerly called a workspace there). Memory, retrieval and credential scopes are per Space and project |
 | **Agent view** | The Axis shell layer: dashboard part, workspace view parts (file tree, changes and diff review, terminals and panes, composer, agent activity), Axis-owned, under `src/vs/axis` |
 | **IDE view** | The reused upstream workbench parts and contributions, arranged by `AxisWorkbench` |
-| **Terminals and panes** | The upstream terminal service and pty host, with instances bound to the workspace's worktree as working directory and shown inside the workspace view |
+| **Terminals and panes** | The upstream terminal service with Axis-managed ptys (opt-out: the upstream pty host), with instances bound to the workspace's worktree as working directory and shown inside the workspace view |
 | **CLI agent run** | A user-installed agent CLI launched by Axis in a workspace terminal. Axis records the launch (command, worktree, start time) and tracks process and terminal state; the run appears on the dashboard |
 | **File tree** | An Axis view over the focused worktree using upstream file services; a click opens the file in IDE view |
 | **Changes and diff review** | Worktree changes against the workspace's base, shown in Axis views; the diff opens in the upstream diff editor in IDE view on request |
@@ -143,7 +143,9 @@ Cross-references are to `docs/security/threat-model-phase0.md`. Moving the agent
    - re-tag as Phase 1 the controls above (WT-1–WT-4, PTY-2, PTY-4, DMN-3, DMN-5–DMN-7, PRV-1, PRV-2, PRV-4–PRV-6), and also: assumption **A8** (agents run commands as the OS user, now from Phase 1); **PTY-1** (accepted in Phases 1–2, but CLI agents now *do* run in the user-visible pty host); **PRV-3**'s interim Axis-owned keychain labelling (vault ships in Phase 1b); **DMN-8** (cross-workspace leakage, from Phase 1);
    - add **PTY-5** (CLI agent terminal environment deny-list, above) and the per-run CLI snapshot of `$GIT_COMMON_DIR` (a CLI-side WT-2 control) to §5.3 and §5.5;
    - add CLI agent runs to §5.3: user privileges, CLI-owned permissions, and that any extension can answer a CLI's permission prompt through `terminal.sendText` (no new privilege under A4, but it qualifies "answered by the user");
-   - state that the DMN-2 rule includes refusing worktree paths the worktree manager did not register (implication 2).
+   - state that the DMN-2 rule includes refusing worktree paths the worktree manager did not register (implication 2);
+   - add the **Axis pty utility process** (`docs/design/axis-agent-shell.md` §4.4) next to PTY-1. It spawns every workspace pty, holds no vault secrets, accepts spawns only from the daemon over a narrow channel, and the daemon never forks shells;
+   - add **close-on-exec** for every daemon and pty-process file descriptor, so no shell or git child inherits one.
 
 ## Consequences
 
