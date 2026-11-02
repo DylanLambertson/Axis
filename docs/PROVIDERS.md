@@ -7,12 +7,12 @@ Providers are capabilities behind adapters, not separate application silos. Conn
 1. Official OAuth or other published account connection flow when the provider exposes it for this use case.
 2. Provider-issued API keys, scoped project keys, and organization credentials.
 3. Supported local CLI sessions, only via documented CLI interfaces and terms; never read private session stores or repurpose credentials.
-
-**CLI coding agents (Phase 1).** Separately from provider connections, Axis launches the user's installed agent CLIs in a workspace terminal through their documented command-line interfaces, under the user's own login and terms. Axis tracks them only through process and terminal state it owns; it never reads their private session stores, extracts tokens or impersonates their clients, and injects no Axis-held credentials into their environment.
 4. Custom OpenAI-compatible or explicitly specified HTTP APIs, local inference endpoints, and enterprise gateways with user-supplied config.
 
+**CLI coding agents (Phase 1a).** Separately from provider connections, Axis launches the user's installed agent CLIs in a workspace terminal through their documented command-line interfaces, under the user's own login and terms. Axis tracks them only through process and terminal state it owns; it never reads their private session stores, extracts tokens or impersonates their clients, and injects no Axis-held credentials into their environment (PTY-5, ADR 0004).
+
 ## Candidate providers
-In order: Anthropic/Claude API first (Phase 1, API key in the connection vault; ADR 0004), then OpenAI, Google/Gemini, and other providers via verified public APIs; local model servers via documented protocols. Each adapter records supported authentication, tools, image input, streaming, structured output, reasoning controls, caching, rate limits, context size, costs and data retention terms where available. Do not hardcode assumptions about model names or availability.
+In order: Anthropic/Claude API first (Phase 1b, API key in the connection vault; ADR 0004), then OpenAI, Google/Gemini, and other providers via verified public APIs; local model servers via documented protocols. Each adapter records supported authentication, tools, image input, streaming, structured output, reasoning controls, caching, rate limits, context size, costs and data retention terms where available. Do not hardcode assumptions about model names or availability.
 
 ## Capability registry
 Capabilities are per *connection + model + API version*, not only per provider. UI must show unsupported/unknown features explicitly. Examples: tool calls, JSON schema, multimodal, file attachments, long context, web search, computer use, batch, artifact generation, provider-managed memory. Use capability negotiation and feature flags.

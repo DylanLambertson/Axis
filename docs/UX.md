@@ -20,18 +20,18 @@ Axis has two views of the same workspace, in one window (ADR 0004). **Agent view
 ### Agent view: dashboard
 - The home screen. One dense row per workspace, grouped by project: name, branch, agents (composer runs and CLI agent runs) and their state (idle, running, waiting for approval, waiting for input, failed, done), terminal count, changed-file count with additions/deletions, last activity.
 - The project's own checkout appears as a *local checkout* row; it opens in IDE view, but no agent runs in it and it offers no agent actions.
-- **CLI agent runs** show the CLI's name, the launch command and a status derived from the process and terminal Axis owns (running, waiting for input, exited with code, killed), never from the CLI's private data. Selecting one focuses its terminal. They are labelled "permissions: CLI-managed", and never show Axis approvals or budgets.
+- **CLI agent runs** show the CLI's name, the launch command and a status derived from the process and terminal Axis owns (running, waiting for input, exited with code, killed), never from the CLI's private data. Selecting one focuses its terminal. They are labelled "permissions: CLI-managed", and never show Axis approvals or budgets. A row whose run changed the repository's shared Git configuration or hooks shows a "Git config or hooks changed" flag in text.
 - Primary action: **New workspace** (base branch, new branch name, optional first task, optional agent: composer or an installed CLI). Secondary: filter by needs attention / running / all; archive; remove.
 - Selecting a row focuses that workspace and opens its workspace view. Rows that need the user (approval, failure) sort first within a project and show the reason in text, not only color.
 - Empty state: open a repository, then create the first workspace. No sample metrics, charts or onboarding cards.
 
 ### Agent view: workspace view
 - **Left:** file tree of the worktree and a **Changes** list (changed files against the workspace's base, with per-file counts). Collapsible.
-- **Center:** the agent session: activity stream (progress, tool calls, approval requests, errors and recovery actions) with the **composer** docked below it. Selecting a change opens **diff review** in the center, with accept and reject per file and per hunk, **Commit**, and **Push branch** / **Open pull request** where a remote and supported forge exist; closing it returns to the session. Changes from composer agents, CLI agents and the user all appear here; a "files changed outside the agent" indicator marks user edits made during a run.
-- **Terminals and panes:** a pane group of terminals bound to the worktree, split horizontally or vertically, for commands and CLI agents. **Launch CLI agent** starts an installed agent CLI in a new pane of the workspace; its prompts and permission questions stay in that terminal.
+- **Center:** the agent session: activity stream (progress, tool calls, approval requests, errors and recovery actions) with the **composer** docked below it. Selecting a change opens **diff review** in the center, with accept and reject per file and per hunk, **Commit**, and **Push branch** / **Open pull request** (GitHub; other forges push only); closing it returns to the session. Changes from composer agents, CLI agents and the user all appear here; a "files changed outside the agent" indicator marks user edits made during a run. Protected paths, and any change to the repository's shared Git configuration or hooks during a CLI agent run, are flagged at the top of the review with the before/after diff.
+- **Terminals and panes:** a pane group of terminals bound to the worktree, split horizontally or vertically, for commands and CLI agents. **Launch CLI agent** starts an installed agent CLI in a new pane of the workspace; its prompts and permission questions stay in that terminal. The launch states plainly that the CLI runs with the user's credentials, can push and can write outside the worktree, and is governed by its own permissions, not Axis approvals.
 - Approvals show exactly what action, scope and consequence are requested, inline in the activity stream; the dashboard row shows "waiting for approval".
 - Every pane is resizable, collapsible and keyboard navigable. Pane layout, open terminals and the last selection persist per workspace.
-- Exact part arrangement is specified in `docs/design/axis-agent-shell.md`.
+- Exact part arrangement is to be specified in `docs/design/axis-agent-shell.md`.
 
 ### IDE view
 - Left: collapsible activity rail + explorer/search/Git. Center: editor tabs, splits, inline diff and preview. Right: optional workspace agent panel showing the focused workspace's activity and composer. Bottom: terminal/problems/output. Status bar kept.
@@ -47,13 +47,13 @@ The mode is a user preference (`axis.view.mode`), changeable in settings, from t
 | **Global toggle** (`global`) | One app-wide view. The toggle switches every workspace; focusing another workspace keeps the current view. File and diff clicks switch the app to IDE view at the location. |
 | **Split** (`split`) | Agent view and IDE view side by side, divided by a resizable sash. Either pane collapses to a thin header and expands again. File and diff clicks open in the IDE pane without switching; if the IDE pane is collapsed, it expands. |
 
-**Keyboard (provisional).** `Mod` is Cmd on macOS and Ctrl on Windows and Linux. Every binding is a command in the palette and is rebindable. Before adoption, each default is checked against the upstream default keybindings at the pinned Code OSS tag and OS-reserved shortcuts, and changed on conflict.
+**Keyboard.** Every action is a command in the palette and is rebindable. Default `Mod` chords are **TBD: the verified set is to be defined in `docs/design/axis-agent-shell.md` §9.2**, checked against the upstream default keybindings at the pinned Code OSS tag and OS-reserved shortcuts. (Earlier provisional choices conflicted at the pin: `Mod+Alt+V` is editor dictation, and `Cmd+Alt+0` on macOS toggles the editor group layout.)
 
 | Action | Default |
 |---|---|
-| Toggle Agent / IDE view (per mode above; in split mode, moves focus to the other pane) | `Mod+Alt+V` |
-| Show dashboard | `Mod+Alt+0` |
-| Focus workspace 1–9 in dashboard order | `Mod+Alt+1` … `Mod+Alt+9` |
+| Toggle Agent / IDE view (per mode above; in split mode, moves focus to the other pane) | TBD (§9.2) |
+| Show dashboard | TBD (§9.2) |
+| Focus workspace 1–9 in dashboard order | TBD (§9.2) |
 | Open the selected file, change or hunk in IDE view at its location | `Enter` in the file tree, Changes list or diff review |
 | Cycle panes and parts, across both views in split mode | `F6` / `Shift+F6` (upstream behaviour, kept) |
 | Collapse or expand the Agent pane / IDE pane (split mode) | Command only; no default binding |
