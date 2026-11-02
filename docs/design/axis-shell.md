@@ -149,7 +149,7 @@ File: `src/vs/workbench/contrib/axis/browser/axisDefaults.contribution.ts`.
 
 **Token mapping.** Hex values come from UX.md. Values marked * are not in UX.md yet.
 
-- The control-border and light-theme tokens are **accepted** (D6, §8); §2.3.1 proposes the matching UX.md edits.
+- The control-border and light-theme tokens are **accepted** (D6, §8); §2.3.1 lists the matching UX.md edits, applied in Stage 1b.
 - The accent tint and the derived hover and scrollbar values are theme-level implementation values. They are validated by the S1.4 contrast test, not added as UX tokens.
 
 | UX token | Dark | Light | Color-registry ids (registration [V]) |
@@ -177,7 +177,7 @@ File: `src/vs/workbench/contrib/axis/browser/axisDefaults.contribution.ts`.
 - The Electron window background before the renderer loads is `#1F1F1F`/`#FFFFFF` (`platform/theme/electron-main/themeMainServiceImpl.ts:23-26`) until the stored background exists [V].
 - Fixing both is optional polish: about 4 lines in 2 files (optional restyle patches P11/P12 in the shell block, §3.6 and §3.10). The large `*_INITIAL_COLORS` maps (`common/workbenchThemeService.ts:73-365`) are **not** replaced.
 
-### 2.3.1 Proposed `docs/UX.md` token edits (D6; UX.md is not changed by this design)
+### 2.3.1 `docs/UX.md` token edits (D6; applied to UX.md in Stage 1b)
 
 Replace the "Visual tokens (provisional)" paragraph's token list with:
 
@@ -846,7 +846,7 @@ Pass means ≤ 1 working day across all ranges, with no edits outside patched se
 | R7 | Upstream layout actions (panel position, zen mode) expect behaviour Axis constrains | Exclude zen mode; log and keep for panel position; revisit with a precondition context key if users hit it |
 | R8 | Code adapted from sessions or `layout.ts` drifts silently | Keep copies small; record the source path and commit in the header; diff them at sync |
 | R9 | `workbench.experimental.modernUI` is experimental and may change quickly | Structural CSS lives in `axisWorkbench.css` with `.axis-workbench` scope; screenshot check at sync |
-| R10 | UX token gaps: dark muted is 4.0:1, decorative borders are below 3:1, and light secondary/muted are undefined [I computed] | Resolved by D6: control-border and light tokens accepted; UX.md edits proposed in §2.3.1 |
+| R10 | UX token gaps: dark muted is 4.0:1, decorative borders are below 3:1, and light secondary/muted are undefined [I computed] | Resolved by D6: control-border and light tokens accepted; UX.md edits in §2.3.1, applied in Stage 1b |
 | R11 | Lifecycle restore phases wrong → extensions never reach `Eventually` | Port the phase logic; test that `onStartupFinished` extensions activate |
 | R12 | Each patch fits at least 2 Axis-marker lines per hunk; HTML needs `<!-- -->` | The footprint script counts markers separately |
 
@@ -885,7 +885,7 @@ Decisions recorded 2026-11-01; D4 is an owner decision. Where they differ from r
 | D3 | **Keep the status bar** | §1, §2.2 |
 | D4 | **Axis-owned code is proprietary (all rights reserved).** Upstream MIT and third-party notices are preserved as required. The reverse-DNS app id is `dev.dylanlambertson.axis` (`darwinBundleIdentifier` and `linuxDesktopName` `dev.dylanlambertson.axis`, `win32AppUserModelId` `DylanLambertson.Axis`; new win32 GUIDs are generated at implementation). Axis-owned files carry `Copyright (c) 2026 Dylan Lambertson. All rights reserved.`; upstream files keep their MIT headers. `licenseName`/`licenseUrl` point to an Axis `LICENSE` added at distribution time. Legal review of the licence text stays a pre-distribution item (L2) | §2.5, §3.7, S1.1, S1.5 |
 | D5 | **React is deferred.** S2.11 stays a throwaway spike that answers ADR 0002 criterion 5, including the no-JSX variant | §4, S2.11 |
-| D6 | **Accept the control-border and light-theme tokens.** The dark control border is `#6B7079` (3.77 / 3.50 / 3.20 on canvas / surface / raised). An earlier `#61666F` was rejected because it reaches only 2.76:1 on raised. Placeholders use secondary. The matching `docs/UX.md` edits are proposed in §2.3.1; UX.md itself is edited in a separate change | §2.3, §2.3.1, R10 |
+| D6 | **Accept the control-border and light-theme tokens.** The dark control border is `#6B7079` (3.77 / 3.50 / 3.20 on canvas / surface / raised). An earlier `#61666F` was rejected because it reaches only 2.76:1 on raised. Placeholders use secondary. The matching `docs/UX.md` edits are listed in §2.3.1 and were applied in Stage 1b | §2.3, §2.3.1, R10 |
 | D7 | **Stage 2 is in Phase 0**, because criteria 1–2 require it | §1, §3, S2.1–S2.12 |
 | D8 | **Remove the `vs/sessions` (Agents window) entry points** in block `1500–1999`. Triggers exist (§2.7), so the removal also neutralises `windowsMainService.ts:296` and `:1599`, and S1.3 verifies each trigger | §2.7, §7.2 question 1, S1.3 |
 | D9 | **Deferred to M6.** Default: the self-hosted webview origin is served by reh-web, with the `frame-src` CSP edit (H2) in the decision 7 range | §2.5, §3.6 H2, S1.8, S2.7, R5 |
