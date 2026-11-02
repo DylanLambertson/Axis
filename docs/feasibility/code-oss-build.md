@@ -4,6 +4,7 @@
 - Upstream: `microsoft/vscode` tag `1.144.0`, commit `2c33b50b16c472efe58357d1d2a8a5414bc23fbf` (`code-oss/upstream.json`).
 - Scope: the mechanism from ADR 0002 decision 1 (pinned checkout, patch series, overlay; upstream code is never committed) and an **unmodified** baseline build with measurements. Branding, the Axis shell and Copilot removal are M3 work.
 - Status words: **passed**, **failed**, **not run**, **not applicable**. "Not measured" means no number was taken; no number below is estimated.
+- Script revisions. **Pre-pin** marks results from an earlier, uncommitted revision of `scripts/code-oss/*.sh` that predates `abd7867` (Node tarball checksum pins); the exact revision is unknown. Its logs print `SHA-256 verified against SHASUMS256.txt` and an older apply summary, so the committed manifest-pin check, `replace/` step and post-apply hook step did not run in those results. The macOS build, launch and memory measurements (§5.1, §5.2) and the Linux attempt (§7) are pre-pin. §5.3 re-runs fetch, apply and Node resolution with the scripts at `33da935`.
 
 > **Not a distributable build.** This is a local development build of unmodified Code OSS. It still contains the Copilot packages, `extensions/copilot` and the GitHub Copilot `defaultChatAgent`, and it shows Microsoft branding. ADR 0002 decision 5 requires all of that to be removed or replaced, together with the other licensing guardrails, before any build is distributed. Nothing built here may be shared outside the developer's machine.
 
@@ -81,37 +82,40 @@ Network access: the Axis scripts contact only GitHub (`git fetch`) and nodejs.or
 | Memory | 16 GB |
 | OS | macOS 15.7.9 (24G830) |
 | Disk | APFS, 466 GiB, about 100 GiB free at start |
-| Other load | Other development sessions and a Homebrew source build ran at the same time. The upstream `perfBaseline` CPU benchmark read 21–24 ms in most launches and 137 ms in one (run 7, §5.2), so timings carry noise. |
+| Other load | Other development work and a Homebrew source build ran at the same time. The upstream `perfBaseline` CPU benchmark read 21–24 ms in most launches and 137 ms in one (run 7, §5.2), so timings carry noise. |
 
 ## 5. Results (macOS, x86_64)
 
 ### 5.1 Checks
 
-| Check | Result | Evidence |
-|---|---|---|
-| `fetch.sh`: exact commit, `HEAD == commit`, tag peels to commit | passed | `vendor/code-oss HEAD = 2c33b50b… (1.144.0)` |
-| `fetch.sh` idempotent (second run) | passed | `Pinned commit already checked out; nothing to fetch` |
-| `apply.sh` with the empty series | passed | Stamp `status complete`; fingerprint `7bfb3d67…`, equal to the pinned commit's tree |
-| `apply.sh` / `fetch.sh` / `footprint.sh` on the built tree | passed | The build leaves `git status` clean; re-apply took 1.8 s and kept `node_modules` and `out`; footprint all zero |
-| `build.sh`, attempt 1 (tree under a path containing a space) | failed | `npm ci` failed in `@vscode/fs-copyfile` (problem 1) |
-| `build.sh`, attempt 2 (relocated to a path without spaces) | passed | All four steps exit 0; `compile` reports 0 errors |
-| Launch: workbench window opens | passed | Window "hello.ts — sample-ws" with explorer and editor; screenshot taken (not committed) |
-| Standard start reached (upstream definition) | passed | All 7 runs report `standard_start` |
-| `test.sh` (113 checks, macOS bash 3.2) | passed | `113 passed, 0 failed` |
-| Linux x64 build in Docker | failed | Compile OOM-killed in a 7.75 GiB VM; `npm ci` passed (766 s); §7 |
-| shellcheck 0.11.0 on `scripts/code-oss/*.sh` | passed | No findings |
-| CI job `Code OSS scripts` on GitHub | not run | Runs on the first push or PR |
-| Terminal, debugger, Git, search, extensions in the dev build | not run | Not exercised beyond startup; M3 |
-| Packaged build (`vscode-darwin-x64-min`) | not run | Out of scope; dev build only |
-| Copilot removal | not applicable | M3 (ADR 0002 decision 6) |
+| Check | Result | Evidence | Script revision |
+|---|---|---|---|
+| `fetch.sh`: exact commit, `HEAD == commit`, tag peels to commit | passed | `vendor/code-oss HEAD = 2c33b50b… (1.144.0)` | pre-pin; re-run at `33da935`, passed (§5.3) |
+| `fetch.sh` idempotent (second run) | passed | `Pinned commit already checked out; nothing to fetch` | pre-pin; re-run at `33da935`, passed (§5.3) |
+| `apply.sh` with the empty series | passed | Stamp `status complete`; fingerprint `7bfb3d67…`, equal to the pinned commit's tree | pre-pin; re-run at `33da935`, passed (§5.3) |
+| `apply.sh` / `fetch.sh` / `footprint.sh` on the built tree | passed | The build leaves `git status` clean; re-apply took 1.8 s and kept `node_modules` and `out`; footprint all zero | pre-pin |
+| Node 24.22.1 darwin-x64 tarball verified against the manifest pin | passed | `SHA-256 matches the manifest pin and SHASUMS256.txt: d132557e…dc83b035` | `33da935` (§5.3) |
+| `build.sh`, attempt 1 (tree under a path containing a space) | failed | `npm ci` failed in `@vscode/fs-copyfile` (problem 1) | pre-pin |
+| `build.sh`, attempt 2 (relocated to a path without spaces) | passed | All four steps exit 0; `compile` reports 0 errors | pre-pin |
+| Launch: workbench window opens | passed | Window "hello.ts — sample-ws" with explorer and editor; screenshot taken (not committed) | pre-pin |
+| Standard start reached (upstream definition) | passed | All 7 runs report `standard_start` | pre-pin |
+| `test.sh` (macOS bash 3.2) | passed | `150 passed, 0 failed` (113 checks in the pre-pin revision, also passed) | `33da935` |
+| Linux x64 build in Docker | failed | Compile OOM-killed in a 7.75 GiB VM; `npm ci` passed (766 s); §7 | pre-pin |
+| shellcheck 0.11.0 on `scripts/code-oss/*.sh` | passed | No findings | `33da935` |
+| CI job `Code OSS scripts` on GitHub | passed | Run 41376106459. The fix-up head will be re-run by CI after push | `abd7867` |
+| Terminal, debugger, Git, search, extensions in the dev build | not run | Not exercised beyond startup; M3 | |
+| Packaged build (`vscode-darwin-x64-min`) | not run | Out of scope; dev build only | |
+| Copilot removal | not applicable | M3 (ADR 0002 decision 6) | |
 
 ### 5.2 Measurements
+
+All measurements in this section ran the **pre-pin** script revision (see the top of this document). §5.3 has the re-run at `33da935`.
 
 | Metric | Value | Method |
 |---|---|---|
 | Fetch (shallow, one commit) | 38 s; 51 s on a second fresh fetch | `fetch.sh` wall-clock; network-bound |
 | Checkout size after fetch | 440 MiB | `du -sh vendor/code-oss` (includes `.git`, 72 MiB) |
-| Apply, empty series | 4.0 s on a fresh tree; 1.8 s on the built tree | `time apply.sh`; most of it is `git reset`/`clean` and the fingerprint |
+| Apply, empty series | 5.0 s on a fresh tree (per build log); 1.8 s on the built tree | `time apply.sh`; most of it is `git reset`/`clean` and the fingerprint |
 | Node tarball download and verify | about 32 s | `build.sh` total minus the step times |
 | `npm ci` | **956 s** (15 min 56 s) | `build-times.tsv` |
 | `npm run compile` (`compile-client` and `compile-copilot` in parallel) | **119 s** | `build-times.tsv`; gulp `compile` 1.85 min, `compile-src` 94 s |
@@ -128,7 +132,7 @@ Network access: the Axis scripts contact only GitHub (`git fetch`) and nodejs.or
 | Peak memory during build | not measured | |
 | Keystroke latency, indexing | not measured | |
 
-**Startup method.** Each run launches `run.sh` with the sample workspace (`README.md` and `src/hello.ts`) and `hello.ts` open, using `--disable-workspace-trust`, `--prof-append-timers <file>` and `--prof-duration-markers`. Upstream's `NativeStartupTimings` then writes `ellapsed`, which is `code/didStartMain` → `code/didStartWorkbench`, the restored and usable workbench. It also checks the "standard start" conditions: new window, trusted workspace, explorer visible, one text editor, no panel. Then it waits 15 s and quits. The time before `didStartMain` (process spawn, `preLaunch.ts`) is not included. The wall-clock of a whole `run.sh` invocation (36–46 s) includes that fixed 15 s wait and is not a startup metric.
+**Startup method.** Each run launches `run.sh` with the sample workspace (`README.md` and `src/hello.ts`) and `hello.ts` open, using `--disable-workspace-trust`, `--prof-append-timers <file>` and `--prof-duration-markers`. Upstream's `NativeStartupTimings` then writes `ellapsed`, which is `code/didStartMain` → `code/didStartWorkbench`, the restored and usable workbench. It also checks the "standard start" conditions: new window, trusted workspace, explorer visible, one text editor, no panel. Then it waits 15 s and quits. The time before `didStartMain` (process spawn, `preLaunch.ts`) is not included. The wall-clock of a whole `run.sh` invocation (36–46 s for runs 1–6; 129 s for run 7, an outlier under the heavier load noted in §4, per run log) includes that fixed 15 s wait and is not a startup metric.
 
 | Run | Profile | `ellapsed` | didStartMain → willOpenNewWindow | willOpenNewWindow → didStartWorkbench | perfBaseline |
 |---|---|---|---|---|---|
@@ -160,9 +164,28 @@ Profile freshness made little difference (runs 2 and 3–6). The first launch af
 
 The three unidentified Node utility processes are among the shared process, pty host, file watcher and agent host; they were not told apart. The crash-pad handler (3 MiB, reparented to launchd) is excluded.
 
+### 5.3 Re-verification at `33da935`
+
+- Date: 2026-11-02, 08:59 local time (UTC-5), same machine as §4.
+- Script revision: `33da935` (`scripts/code-oss/*.sh` and `code-oss/**` are unchanged by the documentation commit that adds this section).
+- Fresh, empty directories: `AXIS_CODE_OSS_VENDOR_DIR=~/.cache/project-axis/m2-verify/vendor`, `AXIS_CODE_OSS_TOOLS_DIR=~/.cache/project-axis/m2-verify/tools` (no whitespace). `NODE24_BIN` unset. Both directories were deleted afterwards.
+- Scope: fetch, apply with the empty series, and Node resolution only. `npm ci`, compile, Electron, extensions and launch were **not run**. `build.sh --toolchain-only` requires an applied tree, so it ran after `apply.sh`.
+- Timing: wall-clock around each `bash scripts/code-oss/<script>` invocation.
+
+| Step | Result | Time | Output |
+|---|---|---|---|
+| `fetch.sh`, empty vendor dir | passed | 17.6 s | `vendor/code-oss HEAD = 2c33b50b16c472efe58357d1d2a8a5414bc23fbf (1.144.0) in 18s` |
+| `apply.sh`, fresh tree, empty series | passed | 2.0 s | `Applied on 1.144.0 (2c33b50b…): 0 patch(es), 0 removal(s), 0 replaced file(s), 0 overlay file(s), 0 hook(s)`; stamp `status complete`, `fingerprint` and `prehook-fingerprint` both `7bfb3d67…`, equal to `HEAD^{tree}` |
+| `fetch.sh`, second run | passed | 0.6 s | `Pinned commit already checked out; nothing to fetch` |
+| `apply.sh`, second run | passed | 1.4 s | Same summary as above |
+| `build.sh --toolchain-only`, empty tools dir | passed | 9.8 s | `Downloading node-v24.22.1-darwin-x64.tar.gz from https://nodejs.org/dist/v24.22.1`; `SHA-256 matches the manifest pin and SHASUMS256.txt: d132557e7ee2b85af08b0c8c34338e65c6430f2238d01f727728ef42dc83b035`; `Using node v24.22.1 and npm 11.19.1 from …/m2-verify/tools/node-v24.22.1-darwin-x64/bin` |
+| `build.sh --toolchain-only`, second run | passed | 0.5 s | No download; same `Using node v24.22.1 and npm 11.19.1` line |
+
+Sizes (`du -sh`): checkout 440 MiB, tools dir 202 MiB. The `replace/` and hook steps ran with empty inputs (those directories hold only `README.md`); their non-empty behaviour is covered only by `test.sh`.
+
 ## 6. Problems and resolutions
 
-1. **`npm ci` fails when the tree path contains a space** (attempt 1, after 297 s). The Superset worktree path is `…/worktrees/Project Axis/…`. node-gyp's `make` build of `@vscode/fs-copyfile@2.0.0` split the `node-addon-api` include path:
+1. **`npm ci` fails when the tree path contains a space** (attempt 1, after 297 s). The tree was under a worktree path containing a space (`…/Project Axis/…`). node-gyp's `make` build of `@vscode/fs-copyfile@2.0.0` split the `node-addon-api` include path:
 
    ```text
    npm error clang++: error: no such file or directory: 'Axis/spike-code-oss-build/vendor/code-oss/node_modules/@vscode/fs-copyfile/node_modules/node-addon-api'
@@ -171,7 +194,7 @@ The three unidentified Node utility processes are among the shared process, pty 
    ```
 
    Resolution, in our scripts with no upstream patch: `AXIS_CODE_OSS_VENDOR_DIR` and `AXIS_CODE_OSS_TOOLS_DIR` relocate the tree and toolchain, and `build.sh` now fails at once, before any download, if either path contains whitespace. The baseline was built in `~/.cache/project-axis/m2/{vendor,tools}`. `fetch.sh` and `apply.sh` work under paths with spaces; `test.sh` covers both.
-2. **No suitable Node on `PATH`.** The system Node is 25.9.0, and Homebrew's `node@24` was still compiling and absent from `/usr/local/opt/node@24/bin`. `build.sh` fell back to the official tarball as designed.
+2. **No suitable Node on `PATH`.** The system Node is 25.9.0, and Homebrew's `node@24` was still compiling and absent from `/usr/local/opt/node@24/bin`. `build.sh` fell back to the official tarball as designed (pre-pin revision, checked against `SHASUMS256.txt` only; §5.3 re-runs the committed manifest-pin path).
 3. **The dev build writes outside `--user-data-dir`.** The first launches created `~/.vscode-oss-shared/sharedStorage/state.vscdb` (from `product.json` `sharedDataFolderName`; `src/vs/platform/environment/common/environmentService.ts` `appSharedDataHome`). Resolution: `run.sh` passes `--shared-data-dir`. Run 7 verified that the directory is not recreated, and the stray directory was deleted. Remaining writes outside the profile, accepted for a dev build: `~/Library/Preferences/com.visualstudio.code.oss.plist` (macOS defaults for the bundle id), `~/Library/Caches/typescript/` (tsserver typings cache), and the npm and node-gyp caches from the build.
 4. **First-run Copilot sign-in dialog.** On a fresh profile the workbench opens behind a modal titled "Welcome to VS Code" ("Sign in to use GitHub Copilot", with GitHub, Google, Apple and GHE buttons). No sign-in was attempted. The main process also logs `Unknown channel: agentHostClientByokLm` and `Unknown channel: agentHostClientProxy`, and the renderer logs `[AgentHost] No signed-in session resolved for resource: https://api.github.com`. This is expected for unmodified Code OSS; it is input for the M3 guardrail patches.
 5. **npm configuration warnings.** npm 11 warns 47 times per key: `Unknown env config "disturl"` (also `target`, `runtime`, `ms-build-id`, `build-from-source`, `timeout`), as well as `Unknown project config …` for upstream's `.npmrc` keys, with "This will stop working in the next major version of npm". These are harmless with npm 11 (upstream requires npm < 13), but a risk for a future npm major.
@@ -181,6 +204,8 @@ The three unidentified Node utility processes are among the shared process, pty 
 9. **Docker Desktop stopped once** about 1 minute after `open -a Docker` reported it ready (the socket disappeared, no error in the supervisor log). A second `open -a Docker` started it within 10 s, and it stayed up.
 
 ## 7. Linux x64 (Docker): failed, deferred to M8
+
+Ran the **pre-pin** script revision.
 
 **Result: failed.** The compile step was OOM-killed in the Docker Desktop VM (7.75 GiB); `npm ci` passed (766 s). A Linux build is deferred to the M8 GitHub Actions Linux runner. Alternatively, raise the Docker Desktop memory limit to at least 12 GiB and rerun.
 
@@ -198,7 +223,7 @@ The three unidentified Node utility processes are among the shared process, pty 
   | Node 24.22.1 linux-x64 tarball (SHA-256 `eb6728e7…6002d7c`) | passed | |
   | `npm ci` | passed | 766 s |
   | `npm run compile` | failed after 290 s | `[compile-client ] Error: tsgo exited with code unknown`, `'compile' errored after 4.65 min`; `docker inspect` reported `OOMKilled=true` |
-- **Attempt 2, a diagnostic run outside `build.sh`:** `compile-client` and `compile-copilot` run one after the other to lower peak memory. Container memory stayed at 7.3 of 7.75 GiB, and `compile-client` had not finished after about 10 minutes. It was stopped on the owner's decision, so the result is **not run to completion**.
+- **Attempt 2, a diagnostic run outside `build.sh`:** `compile-client` and `compile-copilot` run one after the other to lower peak memory. Container memory peaked at 7.39 of 7.75 GiB (per build log), and `compile-client` had not finished after about 10 minutes. It was stopped on the owner's decision, so the result is **not run to completion**.
 - **Not run on Linux:** Electron download, built-in extensions, launch, startup timing, RSS.
 - The `/work` Docker volume (`axis-m2-linux-work`) and image (`axis-m2-linux`) remain on this machine and can be removed with `docker volume rm` / `docker rmi`.
 - On macOS the same compile ran on a 16 GB host without memory trouble. Upstream's gulp task sets `--max-old-space-size=8192`, so 8 GiB of heap alone can exceed this VM. The M8 Linux runner needs well over 8 GiB of RAM; check the runner size for this repository's plan before relying on the default runner.
@@ -208,9 +233,9 @@ The three unidentified Node utility processes are among the shared process, pty 
 - **Development build only.** `scripts/code.sh` runs Electron on the unbundled `out/` directory. No packaging (`vscode-<platform>-<arch>[-min]`), signing or notarization; startup and memory numbers are not representative of a release build.
 - **Copilot and Microsoft branding still present** (see the note at the top).
 - **Single machine, small samples:** 7 startup runs, 1 memory sample, 1 successful build; other workloads ran concurrently.
-- **Node tarball pins.** The Node tarball must match a SHA-256 pinned in `upstream.json`. The darwin-x64 and linux-x64 pins match the tarballs downloaded and verified during these builds; the darwin-arm64 pin was taken from the release's `SHASUMS256.txt` (fetched over HTTPS) and has not been downloaded here. The GPG signature on `SHASUMS256.txt` is not checked. linux-arm64 is not pinned, so it fails closed. An already-unpacked `.tools/` toolchain is not re-verified on later runs.
+- **Node tarball pins.** The Node tarball must match a SHA-256 pinned in `upstream.json`. The darwin-x64 and linux-x64 pins are the SHA-256s of the tarballs downloaded in the original builds, which ran the pre-pin revision and checked them against `SHASUMS256.txt` only. The committed manifest-pin check has run for darwin-x64 (§5.3), not yet for linux-x64. The darwin-arm64 pin was taken from the release's `SHASUMS256.txt` (fetched over HTTPS) and has not been downloaded here. The GPG signature on `SHASUMS256.txt` is not checked. linux-arm64 is not pinned, so it fails closed. An already-unpacked `.tools/` toolchain is not re-verified on later runs.
 - **`npm ci` runs every dependency's install scripts as the current user.** This is required by upstream: native addons, Electron headers, built-in extensions. Treat the tree as untrusted code; CI builds (M8) should use a disposable runner or container.
-- **Untested paths:** darwin-arm64 tarball download (pinned, not run); `NODE24_BIN` and Homebrew `node@24` lookup (implemented and unit-tested for the version rule only).
+- **Untested paths:** darwin-arm64 and linux-x64 tarball downloads through the committed pin check (pinned, not run); a full build (`npm ci`, compile, launch) with the committed scripts; `NODE24_BIN` and Homebrew `node@24` lookup (implemented and unit-tested for the version rule only).
 - **The default `vendor/` location is unusable in this machine's worktrees** because of the space in the path; contributors there must set the two relocation variables.
 - **Removal manifest semantics are minimal:** exact paths only, no globs; a removed path cannot also be replaced.
 - **Hooks have no sandbox** and run with the user's environment. They get Node only if `build.sh` (or `NODE24_BIN`/Homebrew) already provided one; `apply.sh` never downloads it.
@@ -224,7 +249,7 @@ The three unidentified Node utility processes are among the shared process, pty 
   - Copilot and agent-host removal: patches `1500`–`1999` together with `removals.txt`;
   - lockfile regeneration: a hook in `hooks/post-apply.d/`;
   - security hardening: patches `2000`–`2999`.
-- **Differences from `docs/design/axis-shell.md`** (§2.6, §7.3), following the M2 instructions:
+- **Differences from `docs/design/axis-shell.md`** (§2.6, §7.3), by design:
   - icon and asset replacements go in `code-oss/replace/`, not `code-oss/overlay/` (the overlay stays new-files-only);
   - the scripts live in `scripts/code-oss/*.sh`, not `code-oss/scripts/*`;
   - `footprint.sh` runs after `apply.sh`, not as a post-apply hook, because it needs the completed stamp.
