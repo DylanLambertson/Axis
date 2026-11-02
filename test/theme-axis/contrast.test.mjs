@@ -49,9 +49,9 @@ export function contrast(a, b) {
 	return (hi + 0.05) / (lo + 0.05);
 }
 
-const CANVAS = ['titleBar.activeBackground', 'activityBar.background', 'statusBar.background'];
-const SURFACE = ['editor.background', 'sideBar.background', 'panel.background'];
-const RAISED = ['editorWidget.background', 'quickInput.background', 'menu.background', 'notifications.background'];
+const CANVAS = ['titleBar.activeBackground', 'titleBar.inactiveBackground', 'activityBar.background', 'statusBar.background'];
+const SURFACE = ['editor.background', 'sideBar.background', 'panel.background', 'tab.activeBackground', 'tab.inactiveBackground', 'sideBarSectionHeader.background', 'terminal.background', 'commandCenter.background'];
+const RAISED = ['editorWidget.background', 'quickInput.background', 'menu.background', 'notifications.background', 'dropdown.background'];
 const ALL = [...CANVAS, ...SURFACE, ...RAISED];
 
 // [foreground, surfaces it is drawn on, minimum ratio]. A surface may be
@@ -71,6 +71,19 @@ const checks = [
 	['activityBar.foreground', ['activityBar.background'], TEXT],
 	['activityBar.inactiveForeground', ['activityBar.background'], TEXT],
 	['statusBar.foreground', ['statusBar.background', 'statusBar.noFolderBackground'], TEXT],
+	['statusBar.noFolderForeground', ['statusBar.noFolderBackground'], TEXT],
+	['statusBar.debuggingForeground', ['statusBar.debuggingBackground'], TEXT],
+	['statusBarItem.errorForeground', ['statusBarItem.errorBackground'], TEXT],
+	['statusBarItem.warningForeground', ['statusBarItem.warningBackground'], TEXT],
+	['errorForeground', ALL, TEXT],
+	['dropdown.foreground', ['dropdown.background'], TEXT],
+	['quickInput.foreground', ['quickInput.background'], TEXT],
+	['menu.foreground', ['menu.background'], TEXT],
+	['notifications.foreground', ['notifications.background'], TEXT],
+	['panelTitle.activeForeground', ['panel.background'], TEXT],
+	['panelTitle.inactiveForeground', ['panel.background'], TEXT],
+	['editorLineNumber.activeForeground', ['editor.background'], TEXT],
+	['foreground', ['list.inactiveSelectionBackground|sideBar.background', 'list.inactiveSelectionBackground|editor.background'], TEXT],
 	['commandCenter.foreground', ['commandCenter.background', 'commandCenter.activeBackground|commandCenter.background'], TEXT],
 	['textLink.foreground', ALL, TEXT],
 	['textLink.activeForeground', ALL, TEXT],
@@ -92,6 +105,11 @@ const checks = [
 	['activityBar.activeBorder', ['activityBar.background'], NON_TEXT],
 	['panelTitle.activeBorder', ['panel.background'], NON_TEXT],
 	['icon.foreground', ALL, NON_TEXT],
+	['dropdown.border', ALL, NON_TEXT],
+	// Diagnostics: squiggles and Problems icons on the surfaces they are drawn on.
+	['editorError.foreground', [...SURFACE, ...RAISED], NON_TEXT],
+	['editorWarning.foreground', [...SURFACE, ...RAISED], NON_TEXT],
+	['editorInfo.foreground', [...SURFACE, ...RAISED], NON_TEXT],
 ];
 
 // Stated exceptions: below 4.5:1 by design, never used for body or placeholder text.
