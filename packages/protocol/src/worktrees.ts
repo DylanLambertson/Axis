@@ -18,7 +18,22 @@ export const projectIdSchema = idSchema;
 export const workspaceIdSchema = idSchema;
 export const runIdSchema = idSchema;
 
-/** Repository-relative path: no absolute paths, no `..`, no NUL, bounded. */
+/** Control, format (bidi, zero-width) and line-separator characters. */
+const UNSAFE_CHARS = /[\p{Cc}\p{Cf}\u2028\u2029]/u;
+
+/** True for `.git` in any spelling a case-insensitive or Windows filesystem treats the same. */
+function isGitDirSegment(segment: string): boolean {
+  const s = segment.replace(/[. ]+$/, "").toLowerCase();
+  return s === ".git" || /^git~\d+$/.test(s);
+}
+
+/**
+ * Repository-relative path for `restoreFromRunBase`. The daemon still passes
+ * `--` and `:(literal)` to git; this schema is the first layer, not the only one.
+ * Rejected: absolute and drive paths, a leading `:` (pathspec magic) or `-`
+ * (option), backslashes, empty, `.` and `..` segments, any `.git` segment in
+ * any case, and control, bidi and zero-width characters.
+ */
 export const relativePathSchema = z
   .string()
   .min(1)
@@ -26,24 +41,47 @@ export const relativePathSchema = z
   .refine(
     (p) =>
       !p.startsWith("/") &&
+      !p.startsWith(":") &&
+      !p.startsWith("-") &&
       !/^[A-Za-z]:/.test(p) &&
-      !p.includes("\0") &&
       !p.includes("\\") &&
-      !p.split("/").some((s) => s === ".." || s === "." || s === ""),
-    { message: "must be a normalised repository-relative path" },
+      !UNSAFE_CHARS.test(p) &&
+      !p.split("/").some((seg) => seg === "" || seg === "." || seg === ".." || isGitDirSegment(seg)),
+    { message: "must be a normalised repository-relative path outside .git" },
   );
 
-/** Ref or revision typed by a user. Option-like values (leading `-`) are refused. */
+/**
+ * Ref or revision typed by a user, following `git check-ref-format`: no
+ * leading `-` or `/`, no empty, dot-leading or `.lock`-ending component, no
+ * `..`, `@{`, lone `@`, trailing `/` or `.`, and none of space, `~^:?*[\`,
+ * control, bidi or zero-width characters. The daemon still runs
+ * `check-ref-format`; this is defence in depth.
+ */
 export const refNameSchema = z
   .string()
   .min(1)
   .max(256)
-  .refine((r) => !r.startsWith("-") && !/[\0-\x1f\x7f ~^:?*[\\]/.test(r) && !r.includes(".."), {
-    message: "not a valid ref name",
-  });
+  .refine(
+    (r) =>
+      r !== "@" &&
+      !r.startsWith("-") &&
+      !r.endsWith(".") &&
+      !r.includes("..") &&
+      !r.includes("@{") &&
+      !/[ ~^:?*[\\]/.test(r) &&
+      !UNSAFE_CHARS.test(r) &&
+      r.split("/").every((c) => c !== "" && !c.startsWith(".") && !c.endsWith(".lock")),
+    { message: "not a valid ref name" },
+  );
 
-/** Short human name; the daemon derives the slug and branch from it. */
-export const workspaceNameSchema = z.string().min(1).max(80).regex(/^[^\0-\x1f\x7f]+$/);
+/** Short human name, shown in approval text; the daemon derives the slug and branch from it. */
+export const workspaceNameSchema = z
+  .string()
+  .min(1)
+  .max(80)
+  .refine((n) => n === n.trim() && !UNSAFE_CHARS.test(n), {
+    message: "no leading or trailing whitespace, no control or invisible characters",
+  });
 
 export const workspaceStateSchema = z.enum(["READY", "FINALISED", "CLEANED"]);
 export type WorkspaceState = z.infer<typeof workspaceStateSchema>;

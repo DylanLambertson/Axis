@@ -24,6 +24,8 @@ import {
   responseEnvelopeSchema,
   restoreFromRunBaseRequestSchema,
   statusRequestSchema,
+  refNameSchema,
+  workspaceNameSchema,
   worktreesMethods,
   challengeSchema,
   welcomeSchema,
@@ -290,6 +292,58 @@ test("worktrees: relative paths", () => {
     restoreFromRunBaseRequestSchema.safeParse({ runId: "r1", id: "w1", paths: new Array(501).fill("a") }).success,
     false,
   );
+});
+
+test("worktrees: unsafe relative paths are rejected, one case each", () => {
+  const bad: Record<string, string> = {
+    ".git config": ".git/config",
+    ".git hooks": ".git/hooks/pre-commit",
+    ".GIT upper": "a/.GIT/x",
+    ".Git mixed": ".Git/config",
+    ".git nested": "a/b/.git/hooks/x",
+    ".git trailing dot": ".git./x",
+    ".git trailing space": ".git /x",
+    "git~1 short name": "GIT~1/config",
+    "pathspec magic": ":(top)x",
+    "leading dash": "-rf",
+    newline: "a\nb",
+    tab: "a\tb",
+    NUL: "a\0b",
+    DEL: "a\x7fb",
+    "C1 control": "a\u0085b",
+    "bidi override": "a\u202Eb",
+    "zero width": "a\u200Bb",
+    "line separator": "a\u2028b",
+    "empty segment": "a//b",
+    "dot segment": "a/./b",
+    "dotdot segment": "a/../b",
+    backslash: "a\\b",
+    absolute: "/etc/passwd",
+    "drive path": "C:/x",
+  };
+  for (const [name, p] of Object.entries(bad)) {
+    assert.equal(relativePathSchema.safeParse(p).success, false, name);
+  }
+  // not over-blocked
+  for (const ok of [".gitignore", ".github/workflows/ci.yml", "src/git.ts", "a b/c-d.txt", "ünï/çode.ts"]) {
+    assert.equal(relativePathSchema.safeParse(ok).success, true, ok);
+  }
+});
+
+test("worktrees: ref names follow git check-ref-format", () => {
+  for (const ok of ["main", "feature/x-1", "v1.2.3", "refs/heads/main", "a@b"]) {
+    assert.equal(refNameSchema.safeParse(ok).success, true, ok);
+  }
+  const bad = ["", "-x", "a/", "/a", "refs//x", "x.", "a.lock", "dir/a.lock", ".hidden", "a/.b", "@", "@{-1}", "a@{1}", "a..b",
+    "a b", "a~1", "a^", "a:b", "a?", "a*", "a[", "a\\b", "a\u0007b", "a\u202Eb", "a\u200Bb"];
+  for (const r of bad) assert.equal(refNameSchema.safeParse(r).success, false, JSON.stringify(r));
+});
+
+test("worktrees: workspace names", () => {
+  assert.equal(workspaceNameSchema.safeParse("fix login").success, true);
+  for (const bad of [" lead", "trail ", "a\u202Eb", "a\u200Bb", "a\nb", ""]) {
+    assert.equal(workspaceNameSchema.safeParse(bad).success, false, JSON.stringify(bad));
+  }
 });
 
 test("worktrees: remove carries an optional challenge reference", () => {
