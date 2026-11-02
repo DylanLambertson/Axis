@@ -19,8 +19,8 @@ A minimal, end-to-end agent manager on desktop, with the full IDE view. Phase 1 
 - **File tree, changes and diff review:** file tree; changed-files list against the base; accept/reject per file and hunk; protected-path highlighting; commit on the workspace branch with the user's Git identity; push the branch; open a pull request on GitHub (`gh` if installed, else the web compare URL; other forges push only; no merge action, merge queue is Phase 3); "files changed outside the agent" indicator; open in IDE view at the location.
 - **IDE view:** repo open/edit/search, explorer, terminal, Git, diagnostics, language services, command palette, settings, theme, keyboard navigation; the debugger and extension host as already required by ADR 0002 criterion 1.
 - **View modes:** per-workspace, global and split, with the focus rules in `docs/UX.md`.
-- **Platform:** ADR 0003 bridge (validation criteria 1–7); local SQLite journal for workspaces, worktrees and runs.
-- **Security controls:** PTY-5, CLI-side WT-2 snapshot, WT-3 highlighting, WT-4, the DMN-2 worktree rule, DMN-7 journal recovery (ADR 0004).
+- **Platform:** ADR 0003 bridge (validation criteria 1–7); local SQLite journal for workspaces, worktrees and runs; the ADR 0003 D4 challenge and native-confirmation mechanism, used by workspace removal and other tier-4 user actions (ADR 0004 implication 4); the audit log with hash chain and redaction for user and daemon actions (ADR 0003 D5).
+- **Security controls:** PTY-5, CLI-side WT-2 snapshot, WT-3 highlighting, WT-4, the DMN-2 worktree rule, DMN-5 audit and DMN-6 redaction for user and daemon actions, DMN-7 journal recovery (ADR 0004).
 
 **Gate (1a):** on macOS, plus Windows/Linux CI smoke:
 - acceptance scenarios 2–5 in `docs/PRODUCT.md` pass with at least one installed agent CLI; push goes to a local bare remote; with a stub `gh` on `PATH`, Axis runs `gh pr create` in the worktree with the expected arguments, and without `gh` it opens the correct GitHub compare URL;
@@ -29,13 +29,15 @@ A minimal, end-to-end agent manager on desktop, with the full IDE view. Phase 1 
 - **WT-3 (highlighting):** a CLI write to a protected path (for example `.github/workflows/`, `.vscode/tasks.json`) is highlighted in diff review;
 - **DMN-2:** a daemon call naming a worktree path that the worktree manager did not register, including one that reaches a registered worktree through a symlink or `..`, is refused;
 - creating a worktree inside a registered repository is refused; removing a workspace with uncommitted changes is refused without explicit confirmation;
+- **DMN-5 (user and daemon actions):** workspace removal, commit, push, discard and every other tier-4 or privileged action writes an audit event with actor identity; altering a stored event is detected by the hash-chain check; no secret appears in the audit log or other logs (DMN-6);
+- **tier-4 confirmation:** a tier-4 action (for example workspace removal) without a valid, unexpired challenge confirmed through the native dialog is refused, and a replayed challenge is refused;
 - a worktree of an untrusted repository opens in Restricted Mode in IDE view;
 - killing the app during a CLI agent run and restarting recovers the workspaces, terminal layout and run record from the journal, and the worktree is intact;
 - the scenarios and all three view modes complete keyboard-only, and the switching focus rules pass;
 - the threat model is revised for the new phase order before the gate review (ADR 0004 implication 7).
 
 ### Phase 1b — Composer and brokered agent
-- **Composer and single agent:** Ask / Edit / Agent composer; agent activity stream; mock provider plus the **Anthropic (Claude) API** adapter; connection vault holding its API key; model selection within that connection; streaming; single-agent tool broker with approval policy and approval UI; drift notification to the composer agent; run journal and audit log.
+- **Composer and single agent:** Ask / Edit / Agent composer; agent activity stream; mock provider plus the **Anthropic (Claude) API** adapter; connection vault holding its API key; model selection within that connection; streaming; single-agent tool broker with approval policy and approval UI, reusing the Phase 1a challenge mechanism; drift notification to the composer agent; run journal; the Phase 1a audit log extended to agent approvals and tool calls.
 - **Security controls:** WT-1, WT-2 (broker side), WT-3 approval, PTY-2, PTY-4, DMN-3, DMN-5, DMN-6, PRV-1, PRV-2, PRV-4, PRV-6; PRV-5 if custom endpoints ship (ADR 0004).
 
 **Gate (1b):** on macOS, plus Windows/Linux CI smoke:
@@ -45,7 +47,7 @@ A minimal, end-to-end agent manager on desktop, with the full IDE view. Phase 1 
 - **WT-2 (broker side):** a hook planted in `$GIT_COMMON_DIR/hooks` does not run during broker-run git; a composer run that changes `$GIT_COMMON_DIR/config` or `hooks/` fails closed and is reported;
 - **WT-3 (approval):** a composer write to a protected path requires explicit approval and is highlighted in diff review;
 - **PTY-4:** a broker command that exceeds its timeout or output cap is killed with its process group, and the run records why;
-- **DMN-5:** every approval and side effect writes an audit event with approver identity and expiry; altering a stored event is detected by the hash-chain check;
+- **DMN-5 (agents):** every agent approval and tool side effect writes an audit event with approver identity and expiry; altering a stored event is detected by the hash-chain check;
 - **PTY-2:** a broker-launched child process's environment contains only allow-listed variables (`PATH`, `HOME`, `LANG`, `TERM` and declared per-tool additions); variables set in the app, terminal or extension environment, including `VSCODE_*`, `GIT_ASKPASS`, `SSH_AUTH_SOCK` and `*_TOKEN`/`*_KEY`, are absent unless a scoped grant applies;
 - **PRV-6:** a composer run that reaches its per-run token or cost budget is stopped by the daemon before the next provider request, and the run records why;
 - **PRV-1:** with the Linux `basic_text` backend, storing the API key is refused or needs explicit consent, and the UI shows the storage backend;
