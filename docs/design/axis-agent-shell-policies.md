@@ -132,13 +132,14 @@ Each scenario must end with no silent overwrite, or with a flagged and restorabl
 5. **The PTY-5 deny-list wins over steps 1–4.** It removes:
    - `VSCODE_*`, including `VSCODE_GIT_ASKPASS*`, `VSCODE_GIT_IPC_HANDLE`, `VSCODE_IPC_HOOK_CLI` and `VSCODE_GIT_EDITOR_*`;
    - `ELECTRON_*`;
-   - the git variables that redirect git or inject configuration: `GIT_CONFIG*` (including `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_n`, `GIT_CONFIG_VALUE_n` and `GIT_CONFIG_PARAMETERS`), `GIT_EXEC_PATH`, `GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR`, `GIT_INDEX_FILE`, `GIT_OBJECT_DIRECTORY`, `GIT_ALTERNATE_OBJECT_DIRECTORIES`, `GIT_NAMESPACE`, `GIT_PREFIX`, `GIT_TEMPLATE_DIR`;
+   - the git variables that redirect git or inject configuration: `GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR`, `GIT_INDEX_FILE`, `GIT_OBJECT_DIRECTORY`, `GIT_ALTERNATE_OBJECT_DIRECTORIES`, `GIT_NAMESPACE`, `GIT_EXEC_PATH`, `GIT_TEMPLATE_DIR`, `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_*`, `GIT_CONFIG_VALUE_*` and `GIT_CONFIG_PARAMETERS`. **`GIT_CONFIG_GLOBAL`, `GIT_CONFIG_SYSTEM` and `GIT_CONFIG_NOSYSTEM` are kept by an explicit exemption:** they are the user's own environment (see section 6.5);
+   - the shell-integration variables of section 4.3 that are not a user's own (`VSCODE_*` is already covered): `USER_ZDOTDIR` always, and `ZDOTDIR` only when it points inside Axis's shell-integration directory (passed in as an option; otherwise it is kept);
    - Axis-internal `AXIS_*` variables;
    - `GIT_ASKPASS`, `SSH_ASKPASS*`, `GIT_EDITOR`;
    - every variable that extension `environmentVariableCollection`s would add.
 
    Collections are never merged into Axis ptys in the first place. The rule also covers a passthrough, setting or source variable with the same name.
-6. **Kept:** `SSH_AUTH_SOCK` and the user's Git configuration. **Never added:** Axis vault values (PTY-2).
+6. **Kept:** `SSH_AUTH_SOCK` and the user's Git configuration. **Never added:** Axis vault values (PTY-2). Everything else the user's login environment sets also passes through, including `LD_PRELOAD`, `DYLD_*`, `NODE_OPTIONS` and `GIT_SSH_COMMAND`. These are the user's own environment, at the same trust level as the user's login, and PTY-5 targets only what Axis, the editor and extensions inject.
 7. **SI-ENV, plain terminals only** (§4.3). This is the only thing set after the deny-list.
 8. `PTY-2` (an allow-list) applies only to **broker tool processes** in Phase 1b, not to terminals.
 
@@ -167,7 +168,7 @@ Each scenario must end with no silent overwrite, or with a flagged and restorabl
 - **The daemon orchestrates commit and push; the git process runs in the Axis pty process.** They are started by the user: `axis.worktrees/1.commit { id, paths, message }` and `.push { id }`. The daemon validates the request, takes the lock, mutex and drift gate, writes the journal, and sends the exact git command over the pty-process control channel. Exit status and output return on that channel. The daemon holds the lock across the spawn. The pty process holds no secrets, so hooks and credential helpers never run in the daemon.
 - **Lock and mutex.** Both run the git CLI in the worktree, under the per-project git mutex and the per-workspace write lock, so they are serialised with each other and with composer writes (§3.3).
 - **Identity.** Commits use the user's Git identity (ADR 0004 security 6).
-- **Commit is gated by the common-dir drift check.** If the GIT-SNAP-1 set (§6.4) differs from the baseline the user last acknowledged, commit is refused until the user reviews the change. GIT-SNAP-1 is re-taken immediately before each commit and each push. **Commit and push are also refused while a CLI run is active in that workspace**, so no CLI can change the set between the re-take and git executing a hook.
+- **Commit is gated by the common-dir drift check.** If the GIT-SNAP-1 set (§6.4) differs from the baseline the user last acknowledged, commit is refused until the user reviews the change. GIT-SNAP-1 is re-taken immediately before each commit and each push. **Commit and push are also refused while a CLI run is active in that workspace**, meaning an Axis-launched CLI process is alive in that workspace's pty (an exited run, or a CLI the user started by hand in a terminal, does not count), so no CLI can change the set between the re-take and git executing a hook.
 - **Commit binds the reviewed tree.** Diff review records the tree hash. The commit is built from that exact tree and refuses if the worktree or index differs. Hunk accept applies a daemon `applyPatch` to the reviewed state.
 - **Argument safety.** Values from a request (workspace name, branch slug, base ref, remote) go after `--` or through `rev-parse --verify`; branch names pass `check-ref-format --branch` and must not start with `-`; remotes come from the journal; `ext::` and unlisted transports are refused.
 - **Secrets in the pushed diff.** The diff to be pushed is scanned with the secret-pattern scanner; a match needs a confirmation. This does not stop a push made by a CLI or a terminal.
@@ -218,6 +219,8 @@ It is stored as content hashes plus the full text, for the before/after diff. Ch
 
 - **Applies to** every daemon git call except commit and push.
 - **Contents.** An allow-list taken from the resolved shell environment: `PATH`, `HOME`, `USER`, `LANG`, `LC_*`, `TMPDIR`, plus `GIT_TERMINAL_PROMPT=0`. Every other `GIT_*` variable is removed.
+- **Windows.** The allow-list also holds `SYSTEMROOT`, `WINDIR`, `COMSPEC`, `PATHEXT`, `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, `TEMP`, `TMP`, `HOMEDRIVE` and `HOMEPATH`, compared case-insensitively, because git does not run without them.
+- **User-owned git config files.** `GIT_CONFIG_GLOBAL`, `GIT_CONFIG_SYSTEM` and `GIT_CONFIG_NOSYSTEM` are kept in CLI runs. They name files the user chose. When either of the first two resolves inside a managed worktree, Axis warns, because an agent can edit that file; the check is a pure helper over the environment and the worktree roots. GIT-ENV-1 itself drops them, as it drops every other `GIT_*` variable.
 - **Distinct from PTY-2.** PTY-2 is the broker's tool environment. Commit and push use PTY-5 instead (§6.1), because they need the user's credentials and signing setup.
 
 ## 7. Snapshot refs
@@ -271,3 +274,4 @@ It is stored as content hashes plus the full text, for the before/after diff. Ch
 | CLI run quiet | "quiet (may be waiting for input)" | The honest form of ADR 0004 decision 8's "waiting for input". Axis cannot know that a CLI is waiting |
 | Workspace finalised | "Done" | Matches `UX.md` and `PRODUCT.md` |
 | Changes not yet committed | "Changes to review" | Replaces "needs review" |
+| Commit or push refused because a CLI run is active | "Stop the agent run to commit" | Shown on the disabled Commit and Push actions (section 6.1) |
