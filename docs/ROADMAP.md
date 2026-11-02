@@ -19,7 +19,7 @@ A minimal, end-to-end agent manager on desktop, with the full IDE view. Phase 1 
 - **File tree, changes and diff review:** file tree; changed-files list against the base; accept/reject per file and hunk; protected-path highlighting; commit on the workspace branch with the user's Git identity; push the branch; open a pull request on GitHub (`gh` if installed, else the web compare URL; other forges push only; no merge action, merge queue is Phase 3); "files changed outside the agent" indicator; open in IDE view at the location.
 - **IDE view:** repo open/edit/search, explorer, terminal, Git, diagnostics, language services, command palette, settings, theme, keyboard navigation; the debugger and extension host as already required by ADR 0002 criterion 1.
 - **View modes:** per-workspace, global and split, with the focus rules in `docs/UX.md`.
-- **Platform:** ADR 0003 bridge (validation criteria 1–7); local SQLite journal for workspaces, worktrees and runs.
+- **Platform:** ADR 0003 bridge (validation criteria 1–7); local SQLite journal for workspaces, worktrees and runs; the ADR 0003 D4 challenge and native-confirmation mechanism, used by workspace removal and other tier-4 user actions (ADR 0004 implication 4).
 - **Security controls:** PTY-5, CLI-side WT-2 snapshot, WT-3 highlighting, WT-4, the DMN-2 worktree rule, DMN-7 journal recovery (ADR 0004).
 
 **Gate (1a):** on macOS, plus Windows/Linux CI smoke:
@@ -29,13 +29,14 @@ A minimal, end-to-end agent manager on desktop, with the full IDE view. Phase 1 
 - **WT-3 (highlighting):** a CLI write to a protected path (for example `.github/workflows/`, `.vscode/tasks.json`) is highlighted in diff review;
 - **DMN-2:** a daemon call naming a worktree path that the worktree manager did not register, including one that reaches a registered worktree through a symlink or `..`, is refused;
 - creating a worktree inside a registered repository is refused; removing a workspace with uncommitted changes is refused without explicit confirmation;
+- **tier-4 confirmation:** a tier-4 action (for example workspace removal) without a valid, unexpired challenge confirmed through the native dialog is refused, and a replayed challenge is refused;
 - a worktree of an untrusted repository opens in Restricted Mode in IDE view;
 - killing the app during a CLI agent run and restarting recovers the workspaces, terminal layout and run record from the journal, and the worktree is intact;
 - the scenarios and all three view modes complete keyboard-only, and the switching focus rules pass;
 - the threat model is revised for the new phase order before the gate review (ADR 0004 implication 7).
 
 ### Phase 1b — Composer and brokered agent
-- **Composer and single agent:** Ask / Edit / Agent composer; agent activity stream; mock provider plus the **Anthropic (Claude) API** adapter; connection vault holding its API key; model selection within that connection; streaming; single-agent tool broker with approval policy and approval UI; drift notification to the composer agent; run journal and audit log.
+- **Composer and single agent:** Ask / Edit / Agent composer; agent activity stream; mock provider plus the **Anthropic (Claude) API** adapter; connection vault holding its API key; model selection within that connection; streaming; single-agent tool broker with approval policy and approval UI, reusing the Phase 1a challenge mechanism; drift notification to the composer agent; run journal and audit log.
 - **Security controls:** WT-1, WT-2 (broker side), WT-3 approval, PTY-2, PTY-4, DMN-3, DMN-5, DMN-6, PRV-1, PRV-2, PRV-4, PRV-6; PRV-5 if custom endpoints ship (ADR 0004).
 
 **Gate (1b):** on macOS, plus Windows/Linux CI smoke:
