@@ -159,6 +159,24 @@ tree_is_dirty() {
 	[ -n "$(tree_git status --porcelain --untracked-files=normal)" ]
 }
 
+# Tracked paths whose index entry is marked skip-worktree (tag S) or
+# assume-unchanged (lowercase tag). Git then ignores their working-tree
+# content, so status, diff, add -A and reset --hard all leave such an edit
+# alone. Upstream paths contain no newlines, so a line-based list is enough.
+tree_flagged_paths() {
+	tree_git ls-files -v -z | tr '\0' '\n' | sed -n 's/^[a-zS] //p'
+}
+
+# Clears both flags on every tracked path, so local edits become visible again.
+# Each flag needs its own pass: update-index applies only the last of the two.
+clear_index_flags() {
+	local flag
+	for flag in --no-skip-worktree --no-assume-unchanged; do
+		tree_flagged_paths | tr '\n' '\0' | tree_git update-index -z "$flag" --stdin ||
+			die "could not clear index flags in $TREE_DIR"
+	done
+}
+
 # Content hash of the whole working tree, including untracked files that are
 # not ignored. Uses a throwaway copy of the index so the real index is untouched.
 # The copy keeps the index's mtime (cp -p): Git re-hashes "racily clean" files

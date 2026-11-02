@@ -130,6 +130,16 @@ fi
 
 # --- Reset to the pinned commit ----------------------------------------------
 
+# skip-worktree / assume-unchanged flags hide edits from the check below and
+# survive reset --hard, so clear them first; the hidden edits then count as
+# local modifications.
+flagged="$(tree_flagged_paths)"
+if [ -n "$flagged" ]; then
+	log "Clearing skip-worktree/assume-unchanged index flags on:"
+	printf '%s\n' "$flagged" | sed 's/^/  /' >&2
+	clear_index_flags
+fi
+
 if tree_is_dirty && ! tree_matches_stamp; then
 	[ "$force" = 1 ] ||
 		die "$TREE_DIR has changes that apply.sh did not make; export them as a patch or rerun with --force to discard them"
@@ -265,13 +275,13 @@ done <"$work/overlay"
 # Tree state before the hooks, so footprint.sh can attribute what they change.
 [ ! -s "$work/hooks" ] || prehook_fp="$(tree_fingerprint)"
 
-# Hooks get the Node 24 that build.sh would use, if one is already available
+# Hooks get the pinned Node that build.sh would use, if it is already available
 # (no download here), first on PATH and as AXIS_NODE_BIN_DIR.
 if [ -s "$work/hooks" ]; then
 	if node_dir="$( (resolve_node && printf '%s\n' "$NODE_BIN_DIR") 2>/dev/null)"; then
 		export PATH="$node_dir:$PATH" AXIS_NODE_BIN_DIR="$node_dir"
 	else
-		log "No suitable Node 24 found (run build.sh once, or set NODE24_BIN); hooks run without it"
+		log "Pinned Node.js $NODE_VERSION not available (run build.sh --toolchain-only, or set NODE24_BIN); hooks run without it"
 	fi
 fi
 

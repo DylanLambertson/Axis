@@ -56,6 +56,11 @@ else
 		tree_git remote remove origin 2>/dev/null || true
 		tree_git remote add origin "$UPSTREAM_REPO"
 	fi
+	# Index flags would hide local edits from the checks below (see apply.sh).
+	if [ -n "$(tree_flagged_paths)" ]; then
+		log "Clearing skip-worktree/assume-unchanged index flags"
+		clear_index_flags
+	fi
 	head="$(tree_head)"
 	if [ "$head" = "$UPSTREAM_COMMIT" ]; then
 		if tree_is_dirty; then

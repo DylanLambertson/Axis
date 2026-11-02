@@ -50,6 +50,13 @@ for p in "$PATCHES_DIR"/[0-9]*.patch; do
 done
 cmp -s "$work/stamp-patches" "$work/current-patches" ||
 	die "code-oss/patches differs from what apply.sh last applied; rerun scripts/code-oss/apply.sh"
+# Flagged index entries hide their working-tree content from every check below.
+tree_flagged_paths >"$work/flagged"
+if [ -s "$work/flagged" ]; then
+	printf 'Index entries marked skip-worktree or assume-unchanged:\n' >&2
+	sed 's/^/  /' "$work/flagged" >&2
+	die "the tree has index flags that hide changes from the footprint (set by a hook or by hand); remove the cause and rerun scripts/code-oss/apply.sh"
+fi
 if ! tree_matches_stamp; then
 	die "$TREE_DIR has changed since apply.sh ran; rerun scripts/code-oss/apply.sh"
 fi

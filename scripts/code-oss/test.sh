@@ -561,6 +561,32 @@ check "the UNATTRIBUTED report names the problem" output_has "UNATTRIBUTED upstr
 rm "$hooks/60-edit-source"
 expect_success "apply after removing the source-editing hook" apply
 expect_success "footprint passes again" footprint
+no_index_flags() { ! git -C "$tree" ls-files -v | grep -q '^[a-zS] '; }
+hidden_edit_gone() { ! grep -q hidden "$tree/src/app.txt"; }
+for flag in skip-worktree assume-unchanged; do
+	cat >"$hooks/70-hide" <<HOOK
+#!/bin/sh
+git update-index --$flag src/app.txt
+printf 'hidden\n' >>src/app.txt
+HOOK
+	chmod +x "$hooks/70-hide"
+	expect_success "apply runs a hook that hides an edit behind --$flag" apply
+	expect_failure "footprint refuses a tree with a --$flag index entry" "index flags that hide changes" footprint
+	check "the --$flag report names the path" output_has "src/app.txt"
+	rm "$hooks/70-hide"
+	expect_failure "apply clears --$flag and then sees the hidden edit as a local modification" \
+		"changes that apply.sh did not make" apply
+	check "apply cleared the --$flag flag" no_index_flags
+	expect_success "apply --force discards the edit that --$flag hid" apply --force
+	check "the edit hidden by --$flag is gone" hidden_edit_gone
+	expect_success "footprint passes after the --$flag hook is removed" footprint
+done
+git -C "$tree" update-index --skip-worktree src/app.txt
+printf 'hidden\n' >>"$tree/src/app.txt"
+expect_success "fetch runs on a tree with a hand-set --skip-worktree flag" fetch
+check "fetch reports the hidden edit as a local modification" output_has "local modifications"
+check "fetch cleared the hand-set flag" no_index_flags
+expect_success "apply --force restores the tree after the hand-set flag" apply --force
 printf 'manual\n' >>"$tree/src/app.txt"
 expect_failure "footprint refuses a tree edited after apply" "changed since apply.sh ran" footprint
 
