@@ -17,7 +17,7 @@ Rules for every workflow:
 - Actions are pinned by full commit SHA, with a version comment.
 - Downloaded tools are pinned and checked against their SHA-256. shellcheck is installed in one place, `.github/actions/install-shellcheck`.
 - `permissions: contents: read`, `persist-credentials: false`, no repository secrets, and a timeout on every job.
-- A new push to a PR cancels that PR's run still in progress. Runs on `main` are never cancelled.
+- A new push to a PR cancels that PR's earlier run, whether it is running or queued. Each push to `main` gets its own concurrency group, keyed by commit SHA, so `main` runs are never cancelled or replaced by a newer push.
 
 **Cost of the macOS job.** The repository is private and user-owned, so Actions minutes come from the account's included allowance, and macOS minutes count at about 10 times the Linux rate. `Code OSS scripts (macos-15)` runs on every PR and every push to `main`. It only runs `test.sh`, so it is short, but it still uses the most minutes of any job. If minutes get tight, move the macOS entry out of the `code-oss-scripts` matrix into a separate job or workflow triggered by `schedule` (nightly) and `workflow_dispatch`. Then remove `Code OSS scripts (macos-15)` from the required checks in the same change, or every PR will wait for a check that never reports.
 
