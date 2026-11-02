@@ -1,5 +1,6 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { test } from "node:test";
 import { challengeSchema, errorSchema } from "@axis/protocol";
 import { ChallengeError, ChallengeManager, canonicalJson, type ChallengeAuditEvent } from "../src/index.js";
@@ -341,4 +342,17 @@ test("N4: one window's backlog cannot use every slot; other windows keep theirs"
   manager.resolve(...resolveArgs(first, { windowId: "window-2", decision: "deny" }));
   assert.doesNotThrow(() => mk(7, "window-2"), "a resolved challenge frees its slot");
   assert.throws(() => new ChallengeManager({ audit: { append: () => undefined }, maxOutstandingPerWindow: 0 }), code("E_INVALID_ARGUMENT"));
+});
+
+// N6: the audit log records a hash of the target, never the raw target.
+test("N6: audit events carry a hash of the target, stable per target, and never the raw target", async () => {
+  const { manager, events } = setup();
+  const target = "workspace:ws-secret-name";
+  const id = approve(manager, issue(manager, { target }));
+  await manager.consume(id, CALLER, { ...run, target }, () => 1);
+  const dump = JSON.stringify(events);
+  assert.ok(!dump.includes("ws-secret-name"));
+  const expected = `sha256:${createHash("sha256").update(target).digest("hex")}`;
+  assert.ok(events.length >= 5);
+  for (const e of events) assert.equal(e.target, expected);
 });

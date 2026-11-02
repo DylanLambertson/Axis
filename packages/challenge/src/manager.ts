@@ -457,7 +457,8 @@ export class ChallengeManager {
   ): void {
     // `ref` is a hash prefix of the id: enough to correlate, useless to resolve.
     try {
-      this.#audit.append({ actor, action, target: rec.target, outcome, payload: { ...payload, op: rec.op, ref: rec.ref.slice(0, 12) } });
+      // The target is audited as a hash (ADR 0003 D5): raw targets may become paths. The same target always hashes the same, so events still correlate.
+      this.#audit.append({ actor, action, target: `sha256:${sha256Hex(rec.target)}`, outcome, payload: { ...payload, op: rec.op, ref: rec.ref.slice(0, 12) } });
     } catch {
       // The sink's own error may name paths or hosts, and is not a protocol code.
       const detail = action === "tier4.execute" ? { executed: false } : {};
