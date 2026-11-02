@@ -25,6 +25,9 @@
 
 ## 0. Summary of decisions
 
+The lead and owner decisions on this design are recorded in §8.
+
+
 1. **Layout.** UX.md's layout maps onto upstream parts that already exist (§1). The Axis shell reuses **every upstream part as-is** in M3 and owns only the grid, the layout service and its policy. None of the 8 upstream parts is subclassed. Part IDs are reused, so no new `Parts` enum value is needed.
 2. **Stage 1 (restyle)** needs one temporary import line, plus `product.json` and resources, all in range `0200` (§2).
 3. **Stage 2 (shell)** is a `src/vs/axis` layer modelled on `src/vs/sessions`.
@@ -77,7 +80,7 @@ Features reach the shell only through the service interface. No workbench code i
 - future Axis-only surfaces that need grid nodes, such as an agent timeline or review queue (§3.4);
 - decoupling from weekly `layout.ts` churn.
 
-The owner should confirm that this justifies Stage 2 in Phase 0 (decision D7).
+**Decided (D7, §8):** Stage 2 is in Phase 0, because ADR 0002 criteria 1–2 require a custom shell.
 
 ## 2. Stage 1: restyle only
 
@@ -133,7 +136,10 @@ File: `src/vs/workbench/contrib/axis/browser/axisDefaults.contribution.ts`.
 - An include is resolved relative to the including file (`colorThemeData.ts:784-785`) [V]. Including across extensions (`../../theme-defaults/...`) would work on desktop but is fragile [I], so the snapshot stays inside the extension.
 - High contrast stays on the upstream `Default High Contrast` themes.
 
-**Token mapping.** Hex values come from UX.md. Values marked * are **proposed** because UX.md does not define them; they need UX sign-off (D6).
+**Token mapping.** Hex values come from UX.md. Values marked * are not in UX.md yet.
+
+- The control-border and light-theme tokens are **accepted** (D6, §8); §2.3.1 proposes the matching UX.md edits.
+- The accent tint and the derived hover and scrollbar values are theme-level implementation values. They are validated by the S1.4 contrast test, not added as UX tokens.
 
 | UX token | Dark | Light | Color-registry ids (registration [V]) |
 |---|---|---|---|
@@ -160,6 +166,22 @@ File: `src/vs/workbench/contrib/axis/browser/axisDefaults.contribution.ts`.
 - The Electron window background before the renderer loads is `#1F1F1F`/`#FFFFFF` (`platform/theme/electron-main/themeMainServiceImpl.ts:23-26`) until the stored background exists [V].
 - Fixing both is optional polish: about 4 lines in 2 files (G4/G5 in range `0200`, §3.6). The large `*_INITIAL_COLORS` maps (`common/workbenchThemeService.ts:73-365`) are **not** replaced.
 
+### 2.3.1 Proposed `docs/UX.md` token edits (D6; UX.md is not changed by this design)
+
+Replace the "Visual tokens (provisional)" paragraph's token list with:
+
+```text
+Dark default: canvas #111214, surface #181A1D, raised #202227, border #2B2E34 (decorative
+separators only), control-border #61666F (inputs, checkboxes and other component boundaries;
+>= 3:1 on canvas and surface), primary text #E8E9EB, secondary #9A9EA7, muted #70757F (disabled
+and placeholder text only; 4.0:1 on canvas, so never body text).
+Light alternative: canvas #FAFAFB, surface #FFFFFF, raised #FFFFFF with border, border #E5E7EB
+(decorative), control-border #8A8F98 (>= 3:1 on surface and canvas), text #17191D,
+secondary #50555F (7.2:1), muted #6B7280 (4.6:1).
+```
+
+Add one sentence after it: "Decorative borders may fall below 3:1. Any boundary needed to identify a control uses `control-border` (WCAG 2.2 SC 1.4.11)." The accent sentences stay unchanged.
+
 ### 2.4 Product icon theme
 
 - Keep the upstream `Default` product icon theme (codicons). `workbench.productIconTheme` has a single enum value, `Default` (`themeConfiguration.ts:114-116`) [V].
@@ -168,7 +190,7 @@ File: `src/vs/workbench/contrib/axis/browser/axisDefaults.contribution.ts`.
 
 ### 2.5 product.json identity
 
-These edits go in a dedicated patch that is excluded from the ADR budget. Current values are at `product.json:2-39,90-249` [V, licensing doc §2]. `<rdns>` is the owner's reverse-DNS prefix (D4).
+These edits are patch G2 in range `0200`. They are excluded from criterion 2 but measured under criterion 3. Current values are at `product.json:2-39,90-249` [V, licensing doc §2]. The identifiers follow D4 (§8): the reverse-DNS app id is `dev.dylanlambertson.axis`.
 
 | Keys | Axis value |
 |---|---|
@@ -178,9 +200,10 @@ These edits go in a dedicated patch that is excluded from the ADR budget. Curren
 | `serverApplicationName`, `tunnelApplicationName` | `axis-server`, `axis-tunnel` |
 | `win32DirName`, `win32NameVersion`, `win32RegValueName`, `win32ShellNameShort` | `Axis`, `Axis`, `Axis`, `&Axis` |
 | `win32MutexName`, `win32TunnelServiceMutex`, `win32TunnelMutex` | `axis`, `axis-tunnelservice`, `axis-tunnel` |
-| `win32x64AppId`, `win32arm64AppId`, `win32x64UserAppId`, `win32arm64UserAppId`, `darwinProfileUUID`, `darwinProfilePayloadUUID` | Fresh GUIDs, generated **once** and recorded in the patch so installers never collide with Code OSS |
-| `win32AppUserModelId`, `darwinBundleIdentifier`, `linuxDesktopName` | `<rdns>.Axis`, `<rdns>.axis`, `<rdns>.Axis` |
-| `licenseName`, `licenseUrl`, `serverLicenseUrl`, `reportIssueUrl` | Axis values (**LEGAL REVIEW**) |
+| `win32x64AppId`, `win32arm64AppId`, `win32x64UserAppId`, `win32arm64UserAppId`, `darwinProfileUUID`, `darwinProfilePayloadUUID` | Fresh GUIDs, generated **once** when S1.1 is implemented and recorded in the patch, so installers never collide with Code OSS |
+| `darwinBundleIdentifier`, `linuxDesktopName`, `win32AppUserModelId` | `dev.dylanlambertson.axis`, `dev.dylanlambertson.axis`, `DylanLambertson.Axis` |
+| `licenseName`, `licenseUrl`, `serverLicenseUrl` | Point at an Axis `LICENSE` (proprietary, all rights reserved; D4), added at distribution time. Until then they are `TBD` placeholders, and the patch must not ship an empty or Microsoft URL. `licenseFileName` stays `LICENSE.txt` in M3: desktop packaging copies `product.licenseFileName` (`build/gulpfile.vscode.ts:234`, licensing doc §1), so switching it to the Axis file must also add an explicit `LICENSE.txt` entry in range `0200`. The upstream `LICENSE.txt` (MIT) and `ThirdPartyNotices.txt` stay in every artifact (licensing doc §1). The licence text needs **LEGAL REVIEW** before distribution |
+| `reportIssueUrl` | The Axis issue tracker, `TBD` until a public tracker exists |
 | `webviewContentExternalBaseUrlTemplate`, `voiceWsUrl` | Remove `voiceWsUrl`. Set the webview template to an Axis-hosted endpoint: web falls back to `vscode-cdn.net` if it is absent (`services/environment/browser/environmentService.ts:241-243`) [V]. See R5 |
 | `defaultChatAgent` | **Replace with an inert stub** (empty ids, no URLs). Do not delete it: the field is non-optional (`base/common/product.ts:282`) [V] and is dereferenced unguarded at `extensionGalleryService.ts:2047`, `abstractExtensionManagementService.ts:1223`, `extensionsWorkbenchService.ts:995,2854` and `services/accounts/browser/defaultAccount.ts:98-103` [V] |
 | `trustedExtensionAuthAccess`, `builtInExtensionsEnabledWithAutoUpdates` | Drop the `GitHub.copilot-chat` entries |
@@ -260,7 +283,7 @@ These edits go in a dedicated patch that is excluded from the ADR budget. Curren
 
 **Still open, measured during M3:**
 
-- `vs/sessions` agent entries (`build/next/index.ts:106,120,124-127,188-189,200`; checksums at `gulpfile.vscode.ts:152-155`): removing them is about 12 deletion lines in range `0250`, provided no reachable trigger opens a sessions window (`app.ts:1553-1559` handles protocol URLs).
+- `vs/sessions` agent entries (D10, §7.4; `build/next/index.ts:106,120,124-127,188-189,200`; checksums at `gulpfile.vscode.ts:152-155`): removing them is about 12 deletion lines in range `0250`, provided no reachable trigger opens a sessions window (`app.ts:1553-1559` handles protocol URLs).
 - The renderer-reachable `UtilityProcessWorker` channel (`app.ts:1530-1532`, ADR 0003 open question 3): **keep**. The file watcher and disk file system provider use it (`services/files/electron-browser/watcherClient.ts`, `diskFileSystemProvider.ts`) [V].
 
 **SC-3 acceptance checks (all required; task S1.3).**
@@ -521,7 +544,15 @@ These are expected to be about 2 files and about 25 lines [I]. H1 must be checke
 | `src/vs/axis/services/*/~` | per folder | Core minus `vs/workbench/browser/**`, plus `vs/workbench/contrib/*/~` (as `:2341-2366`, LAYERS.md:60-73) |
 | `src/vs/axis/contrib/*/~` | per folder | Services plus `vs/workbench/browser/**` and `vs/axis/contrib/*/~` |
 
-`axisConfigs` adds one flat-config block. For `src/vs/axis/**`, `src/vs/workbench/contrib/axis/**`, `build/axis/**` and `extensions/theme-axis/**`, it replaces `header/header` (`eslint.config.js:142-151`) [V] with the Axis header (text is decision D4).
+`axisConfigs` adds one flat-config block. For `src/vs/axis/**`, `src/vs/workbench/contrib/axis/**`, `build/axis/**` and `extensions/theme-axis/**`, it replaces `header/header` (`eslint.config.js:142-151`) [V] with the Axis proprietary header (D4):
+
+```text
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) 2026 Dylan Lambertson. All rights reserved.
+ *--------------------------------------------------------------------------------------------*/
+```
+
+Upstream files keep their MIT headers, which this design never edits.
 
 Files that are adapted from upstream (copied from sessions or `layout.ts`) keep the Microsoft MIT header and add an Axis modification notice plus an `Adapted from <path>@2c33b50` line. They get a separate `files` entry so the Microsoft header is still enforced. `layersChecker.ts` iterates `src/tsconfig.json` files (`:101,375-388`) [V], so `vs/axis` is checked with no change.
 
@@ -553,6 +584,13 @@ Files that are adapted from upstream (copied from sessions or `layout.ts`) keep 
 | `0250–0299` Copilot and agent host, option (a) | ~18–20 | ~100, plus removals and lockfile regeneration | Highest conflict risk: agentHost and the gulp files change often [I]. Option (c) would be larger (VSCodium: 29 files, ~3,567 lines) |
 | `0300` security hardening (H1–H4) | 2 | ~25 | No fixed budget (decision 7) |
 
+**Shell plus bridge check (D8, §8).**
+
+- ADR 0003 D6 estimates about 4 files and 52 lines. Two of its files (`build/next/index.ts`, `eslint.config.js`) are already shell files, so it adds only 2 new files: `app.ts` and `serverServices.ts`.
+- Counted **as ADR 0003 writes it**, with its ≤ 40 ESLint lines inline in `eslint.config.js`: **10 files and about 35 + 52 ≈ 87 lines**.
+- With this design's overlay lint module: **10 files and about 45 lines**.
+- Either way it is ≤ 12 files and ≤ 300 lines, leaving 2 files of headroom. Those 2 files are the constraint that rules out in-pipeline `.tsx` (§4).
+
 `code-oss/scripts/footprint` measures each range separately.
 
 - It counts distinct upstream files and `+`/`-` lines across `code-oss/patches/NNNN-*`, grouped by number block, with marker lines reported separately.
@@ -563,8 +601,8 @@ Files that are adapted from upstream (copied from sessions or `layout.ts`) keep 
 
 **Decision for M3.**
 
-- M3 tests criterion 5 directly. It builds one React view, the AI panel empty state, through the normal pipeline on spike branch S2.11, and measures it.
-- Shipped M3 views stay vanilla TS/DOM with upstream widgets until the spike result and the footprint are accepted.
+- **React is deferred (D5, §8).** All M3 Axis UI is vanilla TS/DOM with upstream widgets.
+- S2.11 is a **throwaway spike** that answers ADR 0002 criterion 5. It builds one React view (the AI panel empty state) through the normal pipeline, measures it, and is not merged.
 - If the spike fails, Axis UI stays vanilla. Under criterion 5 that does not reject the ADR.
 
 **Why.** Today no compile, check or bundle path handles `.tsx` [V]:
@@ -600,7 +638,7 @@ Bundles also mark every package external (`build/next/bundle.ts:18`) [V], and no
   - the only build changes are a React resolve/vendor step in `build/next/bundle.ts` and the dependency entries;
   - the ESLint targets live in the overlay module.
 - The no-JSX variant adds about 1–2 files and keeps criterion 2.
-- The spike report gives both numbers. The owner then chooses between no-JSX React, an ADR amendment that counts pipeline enablement separately, and vanilla (D5).
+- The spike report gives both numbers. Any later adoption is a new decision, made after Phase 0: no-JSX React, an ADR amendment that counts pipeline enablement separately, or vanilla.
 - Either way, M3 checks TT and CSP the same way:
   - a Playwright/Electron smoke test loads the view under the production CSP and fails on any Trusted Types violation (threat model §7, SIT);
   - a lint rule bans `dangerouslySetInnerHTML` in `src/vs/axis` (threat model EL-1).
@@ -667,14 +705,15 @@ Tests follow the upstream sessions patterns:
 
 | Task | Scope | Acceptance criteria | Verification |
 |---|---|---|---|
-| S1.1 | product.json identity and endpoints (§2.5) | App runs as "Axis"; data in `~/.axis`; no request to `*.microsoft.com`, `vscode-cdn.net` or `api.github.com` during a 10-minute idle session with a folder open | `scripts/code.sh --log trace`, plus an Electron net log (`--log-net-log=<file>`) grep |
+| S1.1 | `product.json` identity and endpoints (§2.5, D4): `dev.dylanlambertson.axis` ids, `DylanLambertson.Axis`, fresh GUIDs, licence keys as `TBD` placeholders pointing at a future Axis `LICENSE` | App runs as "Axis"; data in `~/.axis`; no request to `*.microsoft.com`, `vscode-cdn.net` or `api.github.com` during a 10-minute idle session with a folder open; upstream `LICENSE.txt` and `ThirdPartyNotices.txt` still packaged | `scripts/code.sh --log trace`, plus an Electron net log (`--log-net-log=<file>`) grep; artifact listing |
 | S1.2 | Range `0250` step 1: stop building, installing and packaging `extensions/copilot`; shared build and lint edits (§2.7) | `npm ci`, `npm run compile`, `npm run eslint`, `npm run hygiene` and `npm run valid-layers-check` pass; no Copilot UI | Command logs attached to the PR |
-| S1.3 | Range `0250` step 2: evaluate decision 6 options (a), then (b), then (c). Unbundle the agent host, drop the packages, add type stubs or the tsconfig exclusion, run `regen-locks` (§2.7–2.8) | **All four SC-3 checks pass** on packaged desktop, server and web builds. The chosen option and the measured footprint of each option tried are recorded | `check-artifacts` and `regen-locks` output; stub lint and unit test; `npm ci` from a clean tree |
+| S1.3 | **Measured spike (D1):** range `0250` step 2, evaluating decision 6 options (a), then (b), then (c). Unbundle the agent host, drop the packages, add type stubs or the tsconfig exclusion, run `regen-locks` (§2.7–2.8) | All four SC-3 checks pass on packaged desktop, server and web builds for the chosen option. The footprint and result of every option tried are recorded under criterion 3. The chosen patch set is kept in range `0250` | `check-artifacts` and `regen-locks` output; stub lint and unit test; `npm ci` from a clean tree |
+| GATE-D | **Hard gate before the first distributed build (D1):** full removal of the Copilot and agent-host root dependencies and code. SC-3 checks 1–4 pass on release artifacts, and the `@vscode/copilot-api` dev-use legal review is closed | Release checklist blocks distribution until met | Release pipeline runs `check-artifacts`; legal sign-off recorded |
 | S1.4 | `extensions/theme-axis` dark and light (§2.3) | Both themes selectable; a contrast test (Axis script) proves text ≥4.5:1, focus and control borders ≥3:1, and the stated exceptions | Script output; screenshots of editor, sidebar, quick input and panel |
-| S1.5 | `axisDefaults.contribution.ts` and G1; Axis header rule (part of P8, landed early) | Fresh profile shows the §2.2 defaults; `chat.disableAIFeatures` is effectively true | Settings editor "Modified by Axis defaults" view; unit test asserting registered defaults |
+| S1.5 | `axisDefaults.contribution.ts` and G1; Axis proprietary header rule (part of P8, landed early; D4) | Fresh profile shows the §2.2 defaults; `chat.disableAIFeatures` is effectively true; Axis-owned files carry the proprietary header, and upstream files keep MIT | Settings editor "Modified by Axis defaults" view; unit test asserting registered defaults; `npm run eslint` |
 | S1.6 | Icons and assets (§2.6), `build/lib/electron.ts:146-147` | No VS Code or Code-OSS imagery in the dock/taskbar, About, watermark or web manifest | Packaged build visual check; `file` sizes check script |
 | S1.7 | Stage 1 checkpoint: packaged macOS and Linux builds; upstream smoke subset | Builds launch; the PRODUCT.md scenario 1 walkthrough works | `npm run gulp vscode-darwin-arm64-min` / `vscode-linux-x64-min`; `npm run smoketest -- --grep "Search\|Terminal\|Statusbar\|Extensions\|Languages\|Task"` (`test/smoke/src/main.ts:20-37,454-457`) [V] |
-| S1.8 | Range `0300` security hardening H1–H4 (§3.6). H1 and H2 land with S2.7 | The web CSP carries Trusted Types with no violations in the web walkthrough; webviews load from the Axis origin; the cookie is `Secure` over TLS; `openExternal` refuses `file:` and custom schemes (H4, if adopted) | TT-violation smoke test (threat model §7 SIT); `curl -I` cookie check; a unit test for the H4 allow-list |
+| S1.8 | Range `0300` security hardening (§3.6). M3 lands H1 (web TT), H3 (cookie `Secure`) and H4 (optional `openExternal` allow-list). H2 (`frame-src` for the self-hosted webview origin) goes to M6 with D9 | The web CSP carries Trusted Types with no violations in the web walkthrough; the cookie is `Secure` over TLS; `openExternal` refuses `file:` and custom schemes (H4) | TT-violation smoke test (threat model §7 SIT); `curl -I` cookie check; a unit test for the H4 allow-list |
 
 **Stage 2**
 
@@ -684,13 +723,13 @@ Tests follow the upstream sessions patterns:
 | S2.2 | Bootstrap plumbing: P2–P7, `axis.*.main.ts` (Phase A wholesale), `AxisDesktopMain` returning the **upstream** `Workbench` first | Desktop boots through the Axis entry with an unchanged UI; checksums are valid in the packaged build | Launch; About dialog has no "installation corrupt" warning; `out/vs/axis/axis.desktop.main.{js,css}` exist |
 | S2.3 | `AxisWorkbench` v1: grid, part creation, restore phases, persistence, the full layout-service table (§3.3) | Editor, explorer, search, SCM, terminal, debug, problems, command palette and the extension host work; sizes and visibility restore per workspace; no `unknown service` errors | Unit tests for grid and state; smoke subset (S1.7); `Developer: Inspect Context Keys` sanity; extension host log |
 | S2.4 | AI panel view container (empty state, no fake AI) and auxiliary-window support | AI panel toggles and resizes and stays hidden by default; "Move Editor into New Window" works | Unit test; manual check |
-| S2.5 | Top-bar contributions (§1) | Workspace switcher, agent indicator ("idle") and account/model control are present and keyboard operable, with honest unavailable states | Unit tests (view items, commands); screenshots |
+| S2.5 | Top-bar contributions on the **reused upstream title bar and menus** (D2, §1) | Workspace switcher (in `MenuId.CommandCenter`), agent indicator ("idle") and account/model control (in `MenuId.TitleBar`) are present and keyboard operable, with honest unavailable states. No Axis title-bar part | Unit tests (view items, commands); screenshots |
 | S2.6 | Keyboard and a11y (§5) | F6 cycle includes the top bar; every §5 command is in the palette; VoiceOver and Orca announce parts | Upstream accessibility smoke area; manual SR script |
-| S2.7 | Web: `axis.web.main*`, `AxisBrowserMain`, `web.factory`, P5; webview endpoint (R5) | `scripts/code-server.sh` serves the Axis shell; node extensions (Open VSX), terminal and Git work; gaps documented | Browser walkthrough; gap list in `docs/feasibility/` |
+| S2.7 | Web bring-up: `axis.web.main*`, `AxisBrowserMain`, `web.factory`, P5. The webview hosting model is **deferred to M6** (D9) | `scripts/code-server.sh` serves the Axis shell; node extensions (Open VSX), terminal and Git work; webview behaviour is recorded as an M6 gap; other gaps documented | Browser walkthrough; gap list in `docs/feasibility/` |
 | S2.8 | Phase B curated contributions (generator, exclude list, stale-exclude check) | Same functional checks as S2.3; startup time not worse than Phase A (median of 5 `Developer: Startup Performance` runs) | Generator self-test; perf numbers in the PR |
 | S2.9 | Packaged Axis-shell builds on macOS and Linux; ADR checklist demo | ADR 0002 validation bullet 1 is satisfied | Recorded walkthrough; smoke subset on both OSes |
 | S2.10 | **Upstream sync exercise** from 1.144 to a release **at least 2 weekly minors later** (criterion 4; latest recovery release, matching the sync policy) | ≤ 1 working day for **all three ranges** (`0100`, `0200`, `0300`); conflicts only in patched seams | Protocol below |
-| S2.11 | React spike for criterion 5 (§4): in-pipeline `.tsx` and no-JSX variants | One React view passes the production CSP/TT smoke test, lint/hygiene/tsec and the minified production bundle; footprint, bundle and startup deltas recorded for both variants | Measurements in the PR description; branch merged only after D5 |
+| S2.11 | **Throwaway** React spike answering criterion 5 (§4, D5): in-pipeline `.tsx` and no-JSX variants | One React view passes the production CSP/TT smoke test, lint/hygiene/tsec and the minified production bundle; footprint, bundle and startup deltas recorded for both variants | Measurements in the PR description; the spike branch is **not merged** |
 | S2.12 | Footprint report and ADR 0002 validation write-up | Criterion 2 met by range `0100`; criterion 3 recorded for `0200` and `0300`; ADR status updated with evidence | `code-oss/scripts/footprint` output per range |
 
 **Sync exercise protocol (S2.10).** Record each of these in `docs/feasibility/upstream-sync-log.md`:
@@ -716,12 +755,12 @@ Pass means ≤ 1 working day across all ranges, with no edits outside patched se
 | R2 | Removing `extensions/copilot` from the build breaks the dirs list, compile and hygiene, and possibly the lint config (§2.7) [V] | Do all of S1.2 in one PR; CI runs all five commands |
 | R3 | `defaultChatAgent` is dereferenced unguarded (§2.5) [V] | Inert stub; grep `defaultChatAgent\.` at each sync (48 files reference it [V]) |
 | R4 | `IWorkbenchLayoutService` churn: 48 members, and upstream parts call layout-specific methods such as `isFloatingPanelsEnabled` [V] | Sync step 3; sessions breakage is an early signal; unit tests over the contract table |
-| R5 | Web webviews default to `vscode-cdn.net` (`environmentService.ts:241-243`), REH sets no `webviewEndpoint`, and the web CSP hard-codes `frame-src 'self' https://*.vscode-cdn.net data:` (`webClientServer.ts:151`) [V] (threat model WEB-4) | Axis-controlled wildcard origin serving the pinned `pre/` assets (§2.5), together with H2 in range `0300`. Serving from the same origin would weaken isolation. code-server's webview patch is the precedent |
+| R5 | Web webviews default to `vscode-cdn.net` (`environmentService.ts:241-243`), REH sets no `webviewEndpoint`, and the web CSP hard-codes `frame-src 'self' https://*.vscode-cdn.net data:` (`webClientServer.ts:151`) [V] (threat model WEB-4) | Deferred to M6 (D9). Default plan: a self-hosted webview origin served by reh-web with per-webview subdomains for isolation, plus H2 in range `0300`. code-server's webview patch is the precedent |
 | R6 | Curated list causes missing services or new-contrib drift | Phase A first; generator default-include plus stale-exclude failure |
 | R7 | Upstream layout actions (panel position, zen mode) expect behaviour Axis constrains | Exclude zen mode; log and keep for panel position; revisit with a precondition context key if users hit it |
 | R8 | Code adapted from sessions or `layout.ts` drifts silently | Keep copies small; record the source path and commit in the header; diff them at sync |
 | R9 | `workbench.experimental.modernUI` is experimental and may change quickly | Structural CSS lives in `axisWorkbench.css` with `.axis-workbench` scope; screenshot check at sync |
-| R10 | UX token gaps: dark muted is 4.0:1, decorative borders are below 3:1, and light secondary/muted are undefined [I computed] | Control-border and light tokens (§2.3); D6 |
+| R10 | UX token gaps: dark muted is 4.0:1, decorative borders are below 3:1, and light secondary/muted are undefined [I computed] | Resolved by D6: control-border and light tokens accepted; UX.md edits proposed in §2.3.1 |
 | R11 | Lifecycle restore phases wrong → extensions never reach `Eventually` | Port the phase logic; test that `onStartupFinished` extensions activate |
 | R12 | Each patch fits at least 2 Axis-marker lines per hunk; HTML needs `<!-- -->` | The footprint script counts markers separately |
 
@@ -739,16 +778,27 @@ Pass means ≤ 1 working day across all ranges, with no edits outside patched se
 - Post-apply hooks: `regen-locks` (§2.8), `gen-axis-main` (§3.5), `gen-icons` verification, `footprint`.
 - Patches numbered by range: `0100` shell, `0200–0249` rebrand, `0250–0299` Copilot and agent host, `0300` security hardening. M2 reserves `0001–0099` for its own build mechanics, if it needs any.
 
-### 7.4 Decisions needed from the owner
+### 7.4 Still open
 
-| ID | Decision | Recommendation |
+| ID | Item | Owner and when |
 |---|---|---|
-| D1 | Decision 6 option: the ADR fixes the order (a), (b), (c), and M3 measures it. Owner sign-off is still needed on: dropping `@anthropic-ai/sdk` with the agent host; keeping `@vscode/sandbox-runtime` under review; and whether `@anthropic-ai/claude-agent-sdk`/`@openai/codex` may stay installed in development checkouts if (a1) fails | Accept the §2.7 dispositions; LEGAL REVIEW on interim dev-only use of `@vscode/copilot-api` |
-| D2 | Top bar: reuse the upstream title bar plus menus, or build an Axis-owned title bar (sessions-style, about 800 LOC, must re-implement the menubar and WCO) | Reuse in M3 |
-| D3 | Keep the status bar (not in UX.md) | Keep |
-| D4 | Reverse-DNS id (`<rdns>`), Axis code licence and header text, `licenseUrl` | Owner and LEGAL REVIEW |
-| D5 | React after S2.11: no-JSX React within the shell budget, in-pipeline `.tsx` with an ADR amendment, or vanilla | Decide on the S2.11 numbers; prefer no-JSX if the spike passes |
-| D6 | Proposed tokens: control border (dark and light), light secondary and muted, accent tint and hover | Accept or adjust in UX.md |
-| D7 | Is Stage 2 worth it in Phase 0, given that Stage 1 already matches the UX layout (§1)? | Yes, but limited to the ADR proof (S2.1–S2.10); defer Axis-only parts |
-| D8 | Remove the `vs/sessions` entry points in range `0250` (§2.7) | Remove them if S1.3 finds no reachable trigger |
-| D9 | Web webview hosting model (R5) | Axis-hosted wildcard subdomain, decided in S2.7 |
+| D10 | Remove the `vs/sessions` (Agents window) entry points in range `0250` (§2.7, §7.2 question 1) | Lead, after S1.3 shows whether any trigger can still open that window |
+| L1 | LEGAL REVIEW of interim dev-only use of `@vscode/copilot-api` (D1) | Owner, before GATE-D |
+| L2 | LEGAL REVIEW of the Axis proprietary `LICENSE` text and placement (D4) | Owner, before distribution |
+| L3 | LEGAL REVIEW before installing `@anthropic-ai/claude-agent-sdk` in CI, if (a1) fails (§2.7) | Owner, during S1.3 |
+
+## 8. Decisions
+
+Recorded 2026-11-01 from the lead's review of this design; D4 is the owner's decision. These decisions override the recommendations elsewhere in this document where they differ.
+
+| ID | Decision | Effect on this design |
+|---|---|---|
+| D1 | **M3 evaluates and measures the decision 6 strategies.** S1.3 is a measured spike under ADR 0002 decision 6 and criterion 3. Full removal of the root dependencies and the agent host is a **hard gate before the first distributed build**. The legal review of `@vscode/copilot-api` in dev builds stays open (L1) | S1.3 and GATE-D (§6); §2.7 dispositions apply |
+| D2 | **Reuse the upstream title bar and menus.** No Axis title-bar part | §1, S2.5 |
+| D3 | **Keep the status bar** | §1, §2.2 |
+| D4 | **Axis-owned code is proprietary (all rights reserved).** Upstream MIT and third-party notices are preserved as required. The reverse-DNS app id is `dev.dylanlambertson.axis` (`darwinBundleIdentifier` and `linuxDesktopName` `dev.dylanlambertson.axis`, `win32AppUserModelId` `DylanLambertson.Axis`; new win32 GUIDs are generated at implementation). Axis-owned files carry `Copyright (c) 2026 Dylan Lambertson. All rights reserved.`; upstream files keep their MIT headers. `licenseName`/`licenseUrl` point to an Axis `LICENSE` added at distribution time. Legal review of the licence text stays a pre-distribution item (L2) | §2.5, §3.7, S1.1, S1.5 |
+| D5 | **React is deferred.** S2.11 stays a throwaway spike that answers ADR 0002 criterion 5 | §4, S2.11 |
+| D6 | **Accept the control-border and light-theme tokens.** The matching `docs/UX.md` edits are proposed in §2.3.1; UX.md itself is edited in a separate change | §2.3, §2.3.1, R10 |
+| D7 | **Stage 2 is in Phase 0**, because criteria 1–2 require it | §1, §3, S2.1–S2.12 |
+| D8 | **Resolved by the merged ADR 0002.** Decision 6 guardrails and decision 7 security hardening are separately measured ranges under criterion 3, and criterion 4 covers all ranges. The ADR 0003 D6 bridge seams (about 4 files, 52 lines) count toward the shell budget. Shell plus bridge is 10 files, so it fits ≤ 12 | Conventions, §3.6, §3.10 |
+| D9 | **Deferred to M6.** Default: the self-hosted webview origin is served by reh-web, with the `frame-src` CSP edit (H2) in the decision 7 range | §2.5, §3.6 H2, S1.8, S2.7, R5 |
