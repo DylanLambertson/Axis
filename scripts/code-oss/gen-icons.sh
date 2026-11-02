@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Dylan Lambertson. All rights reserved.
+#
 # Regenerates the Axis icon and image replacements in code-oss/replace/ from
 # assets/brand/ (docs/design/axis-shell.md §2.6). The outputs are committed, so
 # builds need no image toolchain; rerun this script after a brand change and
@@ -26,7 +28,7 @@ for arg in "$@"; do
 	case "$arg" in
 	--check) check=1 ;;
 	-h | --help)
-		sed -n '2,19p' "$0"
+		sed -n '2,20p' "$0"
 		exit 0
 		;;
 	*) die "unknown argument: $arg" ;;
@@ -98,12 +100,17 @@ chrome="${AXIS_CHROME:-/Applications/Google Chrome.app/Contents/MacOS/Google Chr
 b64() { base64 <"$1" | tr -d '\n'; }
 sources="{\"icon\":\"data:image/svg+xml;base64,$(b64 "$APP_ICON")\"}"
 # The page has two placeholders; jobs.json is inlined as a JavaScript literal.
+# Literal replacement (index/substr): sub() would expand "&" in the inlined text.
 awk -v sources="$sources" -v jobsfile="$ICONS_DIR/jobs.json" '
-	/\/\*SOURCES\*\/\{\}/ { sub(/\/\*SOURCES\*\/\{\}/, sources) }
-	/\/\*JOBS\*\/\[\]/ {
+	function put(s, marker, value,    i) {
+		i = index(s, marker)
+		return i ? substr(s, 1, i - 1) value substr(s, i + length(marker)) : s
+	}
+	index($0, "/*SOURCES*/{}") { $0 = put($0, "/*SOURCES*/{}", sources) }
+	index($0, "/*JOBS*/[]") {
 		jobs = ""
 		while ((getline line < jobsfile) > 0) jobs = jobs line "\n"
-		sub(/\/\*JOBS\*\/\[\]/, jobs)
+		$0 = put($0, "/*JOBS*/[]", jobs)
 	}
 	{ print }
 ' "$ICONS_DIR/render.html" >"$work/render.html"
