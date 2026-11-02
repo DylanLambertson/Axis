@@ -356,3 +356,41 @@ test("N6: audit events carry a hash of the target, stable per target, and never 
   assert.ok(events.length >= 5);
   for (const e of events) assert.equal(e.target, expected);
 });
+
+test("every error any entry point raises parses with errorSchema and uses a protocol code other than E_APPROVAL_REQUIRED", async () => {
+  const s = setup({ ttl: 10_000, confirmTtl: 5_000 });
+  const errors: unknown[] = [];
+  const sync = (fn: () => unknown) => {
+    try {
+      fn();
+    } catch (e) {
+      errors.push(e);
+    }
+  };
+  const issued = issue(s.manager, { actor: "agent:run-A", connectionId: "conn-A" });
+  sync(() => new ChallengeManager({ audit: { append: () => undefined }, challengeTtlMs: 0 }));
+  sync(() => s.manager.issue({} as never));
+  sync(() => s.manager.resolve({ actor: "agent:run-A", windowId: WIN }, resolveArgs(issued)[1]));
+  sync(() => s.manager.resolve({ actor: "user", windowId: WIN }, { ...resolveArgs(issued)[1], digest: "0".repeat(64) }));
+  sync(() => s.manager.resolve(...resolveArgs(issued)));
+  sync(() => s.manager.confirmNative({ windowId: WIN }, { challengeId: issued.challenge.challengeId, proof: "nope", confirmed: true }));
+  sync(() => s.manager.confirmNative({ windowId: "x y" }, {} as never));
+  s.failWhen(() => true);
+  sync(() => issue(s.manager));
+  s.failWhen(undefined);
+  const id = approve(s.manager, issue(s.manager));
+  await s.manager.consume(id, { actor: "agent:z", connectionId: CONN }, run, () => 1).catch((e: unknown) => errors.push(e));
+  await s.manager.consume(id, CALLER, { ...run, args: { other: 1 } }, () => 1).catch((e: unknown) => errors.push(e));
+  await s.manager.consume(id, CALLER, run, () => 1).catch((e: unknown) => errors.push(e));
+  const id2 = approve(s.manager, issue(s.manager));
+  await s.manager.consume(id2, CALLER, run, () => Promise.reject(new Error("boom"))).catch((e: unknown) => errors.push(e));
+  const id3 = approve(s.manager, issue(s.manager));
+  s.clock.t += 5_000;
+  await s.manager.consume(id3, CALLER, run, () => 1).catch((e: unknown) => errors.push(e));
+  assert.ok(errors.length >= 12, `collected ${errors.length}`);
+  for (const e of errors) {
+    assert.ok(e instanceof ChallengeError, String(e));
+    assert.notEqual(e.code, "E_APPROVAL_REQUIRED");
+    assert.doesNotThrow(() => errorSchema.parse(e.toWire("corr-1")));
+  }
+});
