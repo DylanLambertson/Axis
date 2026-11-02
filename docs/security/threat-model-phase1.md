@@ -6,7 +6,7 @@
 - **Relationship to Phase 0.** `docs/security/threat-model-phase0.md` is kept unchanged as history. Its threat IDs stay valid. This document does three things:
   - it adds the new threats and controls (§4);
   - it replaces the Phase 0 text for every row it marks **changed**, and re-tags owner phases (companion file §8);
-  - it inherits every row it does not mention (§4.8 lists them).
+  - it inherits every row it does not mention (§4.10 lists them).
 
   Where the two documents disagree on a row that this one marks changed, this one wins.
 - **Companion file:** `docs/security/threat-model-phase1-controls.md` holds the control-to-gate matrix, gate gaps, residual risks, the re-tag table, the risk register and open questions (§5 onward). It is split out to keep both files under 500 lines.
@@ -35,7 +35,7 @@
 - the Open VSX supply chain as it affects 1a and 1b;
 - the Anthropic HTTP adapter.
 
-**Out of scope or deferred (unchanged from Phase 0 unless stated):** cloud runners, teams and sync (Phase 5); a compromised OS or another same-UID process; the OS sandbox for agents (Phase 3); MCP (Phase 4); the web build. ADR 0004 and the design move the browser skeleton to Phase 2, so the Phase 0 `WEB-*` rows are not exposed in Phase 1 (§4.8).
+**Out of scope or deferred (unchanged from Phase 0 unless stated):** cloud runners, teams and sync (Phase 5); a compromised OS or another same-UID process; the OS sandbox for agents (Phase 3); MCP (Phase 4); the web build. ADR 0004 and the design move the browser skeleton to Phase 2, so the Phase 0 `WEB-*` rows move to P2. reh-web is still packaged in the builds, so that holds only while it is not started (NET-1, §4.9).
 
 | ID | Assumption | If false |
 |---|---|---|
@@ -44,7 +44,7 @@
 | A10 | Renderer equals user (Phase 0 §4 fact 1) still holds. Anything Axis decides in the renderer is advisory. Enforcement lives in the daemon and in main. | Re-audit every "renderer asks, daemon checks" flow. |
 | A11 | CLI agents are user-installed binaries launched through their documented interfaces under the user's own login. Axis sees only the process, the pty stream and the worktree. It cannot see what a CLI does or why. | n/a |
 | A12 | `git` behaves as in the facts of Phase 0 §5.5 and as stated in the design (shared common dir, gitfile worktrees, hooks, `core.hooksPath`). Not re-verified here [I]. | Re-run the WT-2, GIT-SNAP-1 and GIT-4 fixtures against the real `git`. |
-| A13 | Security-relevant `axis.*` settings (`axis.cliAgents`, `axis.terminals.scrubEnvironment`, `axis.git.runHooks`, `axis.worktrees.root`) are application or machine scope only. **Decided** (lead decision on Q-3); workspace and folder values are ignored with a warning. | Repo-supplied settings can weaken Axis defaults (CFG-1). |
+| A13 | Security-relevant `axis.*` settings (`axis.cliAgents`, `axis.terminals.scrubEnvironment`, `axis.git.runHooks`, `axis.worktrees.root`) are application or machine scope only. **Decided** (owner decision on Q-3); workspace and folder values are ignored with a warning. | Repo-supplied settings can weaken Axis defaults (CFG-1). |
 
 ## 2. Data-flow diagram
 
@@ -74,7 +74,8 @@ flowchart LR
       CLI["CLI agent processes (not brokered)"]
       USH["User shells in workspace terminals"]
       BRK["Broker tool processes (1b): allow-listed env"]
-      GITP["git / gh children of the daemon (GIT-ENV-1, or PTY-5 for commit and push)"]
+      GITD["Daemon git: worktree, status, snapshots, discard (GIT-ENV-1)"]
+      GITP["git commit, push and gh, spawned by the pty process (PTY-5 environment, hooks run here)"]
     end
     subgraph REPO["Repository storage"]
       CD[("Shared $GIT_COMMON_DIR: config, hooks/, info/attributes, refs incl. refs/axis/*, objects, worktrees/*")]
@@ -82,6 +83,8 @@ flowchart LR
       LC[("User's local checkout")]
     end
     DB[("Axis SQLite: journal, audit_events")]
+    TRS[("Workspace Trust store, owned by main; attests trust on run start")]
+    SCMV["User git: terminal, SCM view, git extension (outside the Axis gate)"]
     USERCFG[("Global git config, home dir, ssh agent")]
   end
 
@@ -99,9 +102,20 @@ flowchart LR
   PTYP --> USH
   SHELL -- "localPty (PTY-1)" --> UPTY
   DMN --> BRK
-  DMN --> GITP
+  DMN --> GITD
+  DMN -- "orchestrates: lock, mutex, drift gate, journal" --> PTYP
+  PTYP --> GITP
+  SEAM --> TRS
+  SEAM -- "trust attestation on the window-verified run-start call" --> DMN
+  SEAM -- "native confirm dialog" --> SHELL
+  USH -. "git, outside the gate" .-> SCMV
+  EH --> SCMV
+  SCMV -.-> CD
+  SCMV -. "push with user credentials" .-> GH
   DMN --> DB
   DMN -- "HTTPS + API key (1b)" --> ANT
+  GITD --> CD
+  GITD --> WT
   GITP --> CD
   GITP --> WT
   GITP -- "push, gh pr create" --> GH
@@ -168,14 +182,14 @@ Columns: ID, class (STRIDE or the PI and XA overlays of Phase 0 §1), threat and
 | WT-4 (**retag 1a**) | T | Agents overwrite each other's or the user's work. | One branch and worktree per workspace, base SHA recorded and never rewritten, `axis/<slug>` naming (axis, 1a). Overwrites inside a workspace are DRF-1 to DRF-4. | RC |
 | WT-5 | T | Malicious patch that passes review. | Diff review by the user; commits use the user's identity, never an agent identity (axis, 1a). Reviewer-role controls remain Phase 3. | PI |
 | GIT-ENV-1 (**new**) | E/I | Daemon `git` inherits `GIT_*` variables (`GIT_DIR`, `GIT_CONFIG_*`, `GIT_SSH_COMMAND`, `GIT_EXEC_PATH`) or the Electron environment. | Allow-list from the resolved shell environment: `PATH`, `HOME`, `USER`, `LANG`, `LC_*`, `TMPDIR`, plus `GIT_TERMINAL_PROMPT=0`. Every other `GIT_*` removed. Applies to every daemon git call **except commit and push**, which use PTY-5 because they need credentials and signing. Also empty `core.hooksPath` and `core.fsmonitor=false` on those calls [D, policies §6.5, design §5.3 invariant 4] (axis, 1a). Distinct from PTY-2. | CI, SR |
-| GIT-SNAP-1 (**new**, **extended by decision Q-6**) | E/R | **Planted hooks and config in the shared common dir.** Set: `config`; every `config.worktree`; `hooks/`; `info/attributes`; effective `filter.*`, `diff.*` drivers, `core.hooksPath`, `core.fsmonitor`, `core.sshCommand` via `git config --show-origin` [D, policies §6.4]. **Extended (closes G-4, G-5):** the worktree's root `.git` file; `$GIT_COMMON_DIR/worktrees/<name>/{gitdir,commondir}`; and the contents of any effective `core.hooksPath` target that lies inside a worktree (for example a committed `.husky/` or `.githooks/`). Taken at creation, before and after each CLI run, before each Axis commit, **before each Axis push (closes G-6)**, on refresh. Stored as hashes plus text. Changes outside the repository's Git directory (global config, home) are **not** detected. `credential.helper`, `url.*.insteadOf`, `remote.*.url`/`pushurl` and `gpg.program` are covered through the whole-`config` hash. | Take the set as extended. Commit **and push** refuse on unacknowledged drift (axis, 1a). | CI, PE |
-| GIT-3 (**new**, **revised by decisions Q-4 and Q-6**) | E/I | **Commit and push use the user's credentials.** Hooks, `pre-push` and credential helpers are user-controlled code. Push uses an explicit refspec `refs/heads/axis/<slug>`, never `--mirror` or `--all`. In 1b the daemon holds the vault in memory, and a daemon child with the same UID could in principle try to read it [I]. | **Hooks for Axis-initiated commit and push run in the Axis pty process context (spawned over the daemon control channel), which holds no secrets; the daemon never runs them.** Hooks run only while the common dir matches the acknowledged baseline. Push re-takes GIT-SNAP-1 and refuses on unacknowledged drift. `axis.git.runHooks` stays `true` in 1a and is **re-evaluated in 1b when the vault ships**. `GIT_TERMINAL_PROMPT=0` with a terminal fallback. Composer push is default-deny (axis, 1a/1b). | CI, SR |
+| GIT-SNAP-1 (**new**, **extended by decision Q-6**) | E/R | **Planted hooks and config in the shared common dir.** Set: `config`; every `config.worktree`; `hooks/`; `info/attributes`; effective `filter.*`, `diff.*` drivers, `core.hooksPath`, `core.fsmonitor`, `core.sshCommand` via `git config --show-origin` [D, policies §6.4]. **Extended (closes G-4, G-5):** the worktree's root `.git` file; `$GIT_COMMON_DIR/worktrees/<name>/{gitdir,commondir}`; and the contents of any effective `core.hooksPath` target that lies inside a worktree (for example a committed `.husky/` or `.githooks/`). Taken at creation, before and after each CLI run, before each Axis commit, **before each Axis push (closes G-6)**, on refresh. Stored as hashes plus text. Changes outside the repository's Git directory (global config, home) are **not** detected. `credential.helper`, `url.*.insteadOf`, `remote.*.url`/`pushurl` and `gpg.program` are covered through the whole-`config` hash. | Take the set as extended. Commit **and push** refuse on unacknowledged drift, and **are refused while a CLI run is active in that workspace**, so nothing can change the set between the re-take and git executing a hook (decision on review item S2) (axis, 1a). | CI, PE |
+| GIT-3 (**new**, **revised by decisions Q-4 and Q-6**) | E/I | **Commit and push use the user's credentials.** Hooks, `pre-push` and credential helpers are user-controlled code. Push uses an explicit refspec `refs/heads/axis/<slug>`, never `--mirror` or `--all`. In 1b the daemon holds the vault in memory, and a daemon child with the same UID could in principle try to read it [I]. | **The daemon orchestrates commit and push (lock, mutex, drift gate, journal); the git process, and so its hooks, runs in the Axis pty process, which holds no secrets. The daemon never runs hooks.** Exit status and output return over the control channel; the daemon holds the lock across the spawn. Hooks run only while the common dir matches the acknowledged baseline. Push re-takes GIT-SNAP-1 and refuses on unacknowledged drift or while a CLI run is active in the workspace. `axis.git.runHooks` stays `true` in 1a and is **re-evaluated in 1b when the vault ships**. `GIT_TERMINAL_PROMPT=0` with a terminal fallback. Composer push is default-deny (axis, 1a/1b). | CI, SR |
 | GIT-4 (**new**, **control added**) | E | **Worktree redirection.** A worktree's root `.git` is a file (`gitdir: <path>`) that a CLI or the composer can rewrite, as can `commondir`. Daemon git would then operate on a different repository whose config was not snapshotted [I]. | Every daemon git call gets an explicit `--git-dir` and `--work-tree` from the journal, not discovered from the worktree directory; `.git` and `commondir` are in GIT-SNAP-1 (closes G-5) (axis, 1a). | CI, PE |
 | GIT-5 (**new**) | S/T | **Open PR.** The compare URL is derived from the remote URL. A CLI can plant a remote such as `https://github.com.evil.example/o/r` and make Axis open an attacker page. `gh pr create` runs under `gh`'s own login with PTY-5. | Derive the URL only from a strict match of host `github.com` (HTTPS and SSH forms), path `<owner>/<repo>`; anything else is "not supported yet" and push-only. Show the full URL before `openExternal` (EL-5). Axis stores no forge credentials (axis, 1a). | CI, SSRF |
-| GIT-6 (**new**) | T | **SCM view and terminal `git` are user paths** outside Axis's lock, mutex and drift gate [D, policies §6.3]. A commit from there runs hooks without the GIT-SNAP-1 gate. | Banner view in the SCM container while drift exists; warning action in `SCMTitle`. The guarantee is scoped to Axis actions and is documented as such (axis, 1a). Residual R14. | RC |
+| GIT-6 (**new**) | T | **SCM view and terminal `git` are user paths** outside Axis's lock, mutex and drift gate [D, policies §6.3]. A commit from there runs hooks without the GIT-SNAP-1 gate. | Banner view in the SCM container while drift exists; warning action in `SCMTitle`. The guarantee is scoped to Axis actions and is documented as such (axis, 1a). Residual R32. | RC |
 | REF-1 (**new**, **decided Q-8**) | I | **Snapshot refs.** `refs/axis/runbase/<runId>`, `refs/axis/backup/<id>/<ts>`, `refs/axis/archive/<id>` hold tracked and **untracked, non-ignored** files, possibly secrets, as objects in the shared common dir. `git push --mirror`, or a tool that pushes all refs, publishes them. Files over 50 MiB are skipped. | Ignored files excluded; Axis never mirror-pushes; explicit push refspec; retention 7 and 30 days, archive until deleted; cleanup is user-run [D, policies §7]. **1a: the exposure is documented to the user** (and a warning for mirror-style remote refspecs). **1b: secret-pattern scanning of snapshot trees** before a snapshot is written, as a gate (closes G-7 in 1b). | SR |
-| TRU-1 (**new**) | E | **Workspace Trust inheritance.** The renderer reads the source repository's trust with `getUriTrustInfo` and applies it to the worktree path with `setUrisTrust` [D, policies §2]. The renderer is the writer, so a compromised renderer can set trust. That is no new privilege under A10, but it must not be the *only* record. | The daemon records the source repository on worktree creation (journal) and the mount path re-derives trust from that record at each mount. The worktree root under app data is never trusted as a parent folder. External worktrees do not inherit trust (axis, 1a). | PE |
-| TRU-2 (**new**, **decided Q-2**) | E | **Stale or widened trust.** The user revokes trust on the source repository after a worktree exists, or an untrusted repository's worktree is mounted and a CLI run is started in it (Restricted Mode does not limit a CLI the user launches). | **No CLI or agent run starts in a worktree whose source repository is untrusted.** Restricted Mode shows the workspace read-only with a "Trust to run" action. Trust is re-derived from the source repository at each mount and again at each run start, not only at creation (axis, 1a). | PE |
+| TRU-1 (**new**) | E | **Workspace Trust inheritance.** The renderer reads the source repository's trust with `getUriTrustInfo` and applies it to the worktree path with `setUrisTrust` [D, policies §2]. The renderer is the writer, so a compromised renderer can set trust. That is no new privilege under A10, but it must not be the *only* record, and a renderer claim cannot gate a run. | The daemon records the source repository on worktree creation (journal) and the mount path re-derives trust from that record at each mount. The worktree root under app data is never trusted as a parent folder. External worktrees do not inherit trust (axis, 1a). | PE |
+| TRU-2 (**new**, **decided Q-2**) | E | **Stale or widened trust.** The user revokes trust on the source repository after a worktree exists, or an untrusted repository's worktree is mounted and a CLI run is started in it (Restricted Mode does not limit a CLI the user launches). | **No CLI or agent run starts in a worktree whose source repository is untrusted.** Restricted Mode shows the workspace read-only with a "Trust to run" action. Trust is re-derived from the source repository at each mount and again at each run start, not only at creation. **Enforcer: the main process.** It owns the trust state that decides runs, and attests it on the window-verified run-start call (the ADR 0003 D1 checks). The daemon requires that attestation and refuses a run-start call without it. A trust claim made by the renderer alone is advisory under A10 and never gates a run. How main reads the workbench trust store is a design item (controls §11.2) (axis, 1a). | PE |
 | WT-6 (**new**) | E | Worktree creation and removal write into the shared common dir (refs, `worktrees/<name>`), which is inherent in git. The daemon creates worktrees only inside app data, never inside a registered repository's working tree, and refuses the local checkout [D, design §5.3 invariants 2 and 7]. Per-project mutex covers Axis operations only. | As design §5.3 (axis, 1a). Documented to the user. | CI, RC |
 
 ### 4.3 Drift and concurrent writers
@@ -201,7 +215,7 @@ Writers per workspace: the user (editors, terminals, SCM view), at most one comp
 | DMN-5 (**changed**, **G-11 accepted**) | R | **Audit hash chain.** The daemon is the only writer; the chain gives local tamper evidence only [D, ADR 0003 D5]. A same-UID attacker can truncate the tail or rewrite the chain from a point. CLI terminal I/O is not audited. 1a covers user and daemon actions; 1b extends it to agent approvals and tool calls. | Hash chain over `{…, prevHash, hash}` (axis, 1a). **Tail anchor, an `@axis/audit` requirement:** the head hash and event count are persisted periodically (and at app start and exit) in a store outside the chain, and verification compares the chain with the latest anchor, so tail deletion is detected (axis, 1a). | RC, SR |
 | DMN-6 (**changed**) | I | Redaction. Sources now include terminal output (never seen by the daemon), snapshot objects, git output, `gh` output, crash dumps and the Anthropic request/response bodies (1b). Content fields are logged as length plus hash; a secret-pattern scanner is a second layer [D, ADR 0003 D5]. | Field-level sensitivity annotations; scanner on all log sinks; canary secrets in the test plan include the PTY-5 environment, the snapshot refs and the audit DB (axis, 1a for user and daemon actions; 1b for the vault and provider traffic). | SR |
 | DMN-7 (**changed**) | D | Journal recovery. Phase 1a has multi-step operations that touch git: worktree create, finalise, remove, commit, push, discard, restore-from-run-base. A kill between steps leaves orphan worktrees, stale `worktree lock`s, a half-written `refs/axis/*` or an unrecorded push. The pty process survives a daemon restart separately (reattach by terminal id). | Journal-first transitions with reconciliation on start: compare `git worktree list --porcelain` and `refs/axis/*` with the journal and fix or report (axis, 1a). The ROADMAP gate tests kill during a CLI run; it does not name the multi-step operations (G-12). | RC |
-| DMN-8 (**retag 1a**) | I | Cross-workspace leakage in daemon state (journal queries, activity streams, snapshot refs shared in one common dir across a project's workspaces). All workspaces of a project share objects and refs. | Every query scoped by workspace id and project id (axis, 1a). Snapshot refs of one workspace are readable by another workspace's CLI by design of git; documented (residual R13). | TI |
+| DMN-8 (**retag 1a**) | I | Cross-workspace leakage in daemon state (journal queries, activity streams, snapshot refs shared in one common dir across a project's workspaces). All workspaces of a project share objects and refs. | Every query scoped by workspace id and project id (axis, 1a). Snapshot refs of one workspace are readable by another workspace's CLI by design of git; documented (residual R19). | TI |
 | EL-4 (**changed**) | T/E | Forged approvals. Tiers 4–5 native dialog (APR-2) ship in 1a; agent approval UI in 1b. | As APR-1, APR-2. | PE, PI |
 | EXT-2 (**changed**) | E | New 1a Axis actions (start CLI run, commit, push, remove) must not be registered as side-effecting commands. | Commands only open UI; side effects go over the bridge with a challenge (axis, 1a, ADR 0003 D4). | PE |
 
@@ -232,14 +246,34 @@ Writers per workspace: the user (editors, terminals, SCM view), at most one comp
 - In Phase 0 builds, and in **opt-out terminals** afterward (`axis.terminals.scrubEnvironment: false`), workspace terminals are upstream terminals. They carry `VSCODE_GIT_IPC_HANDLE` (injected unconditionally by the git extension, `ipcServer.ts:110-116`) and `VSCODE_IPC_HOOK_CLI` (`terminalEnvironment.ts:295`). D-6 (`git.terminalAuthentication: false`, `askpass.ts:168`) removes only the askpass variables [V, policies §4.1].
 - Any process started in such a terminal can ask the git extension's IPC server for credentials. Phase 0 launches no CLI agents, so only the user's own commands are exposed. From 1a, CLI runs always get PTY-5 and the exposure is limited to opt-out plain terminals.
 
-### 4.8 Inherited rows, unchanged
+### 4.8 Link handling (EL-5)
+
+| ID | Class | Threat and gap | Control (phase) | Test |
+|---|---|---|---|---|
+| EL-5 (**changed, retag 1a**) | E | Links in agent output, a CLI's terminal (OSC 8) or a compare URL reach `openExternal`, which hands non-http(s) schemes to the OS (`nativeHostMainService.ts:736-737`) [V, Phase 0]. CLI output makes this a Phase 1a surface (PTY-3 control 4, GIT-5). | Axis UI calls `openExternal` only for `http`, `https` and `mailto`; links from agent output show the full URL for confirmation first; `file:` and custom schemes are refused. Evaluate the upstream scheme allow-list patch (ADR 0002 decision 7) (axis, 1a). Gate: ROADMAP 1a/L28. | CI, SIT |
+
+### 4.9 Additional Phase 1a surfaces
+
+| ID | Class | Threat and gap | Control (phase) | Test |
+|---|---|---|---|---|
+| GIT-7 | T/E | **Argument and ref injection into daemon git.** Workspace names, branch slugs, base refs, remote names and URLs flow into `git` argv: a leading `-`, `--upload-pack`, or an `ext::` transport would run attacker-chosen commands [I]. | Values from a payload go after `--` or through `rev-parse --verify`; branch names pass `check-ref-format --branch` and must not start with `-`; remotes come from the journal, not a payload; `ext::` and unlisted transports refused (`protocol` allow-list: https, ssh, git; `file` only for a local bare remote the user chose) (axis, 1a). Gate: 1a/L26. | CI |
+| REV-1 | T | **Diff review is not bound to the commit.** A file can change between review or accept-hunk and commit (a CLI still running). APR-1 digests the request, not the content, so the user can commit something they did not review. | Review records the tree hash; Axis commit builds the commit from that exact tree and refuses if the worktree or index differs. Commit is also refused while a CLI run is active (GIT-SNAP-1 row). Hunk accept uses the daemon `applyPatch` against the reviewed state (axis, 1a). Gate: 1a/L27. | RC, PE |
+| PSH-1 | I | **Push of secrets.** A CLI writes a `.env` or key and the user pushes it. REF-1 scans only snapshot trees. | The diff to be pushed is scanned with the secret-pattern scanner (DMN-6); a match shows a warning that needs confirmation. Does not prevent a push made by the CLI or from a terminal (axis, 1a). Gate: 1a/L27. | SR |
+| FT-1 | I/D/S | **File tree, preview and diff review.** A symlink in the worktree pointing outside it is read by the tree or preview; huge or binary diffs exhaust the UI; control and bidirectional characters in paths and hunks spoof what the reviewer sees. | Axis views do not follow a symlink that leaves the worktree (shown as a link); size caps and binary placeholders; control and bidi characters are escaped in paths and hunks and in dashboard rows (axis, 1a). Gate: 1a/L27. | PT, PI |
+| IDE-1 | S/E/I | **IDE-view switch.** (a) "Open in IDE at file:line" from CLI output names a path outside the worktree [D, design §3.4]. (b) Workspace-follows-focus changes the opened folder and its trust [D, design §3.2]. (c) A view switch routes focus or keystrokes to the wrong terminal. | (a) `reveal` refuses a resource outside the focused worktree. (b) Trust is re-derived at each mount (TRU-1); an untrusted worktree is not mounted for run. (c) Terminal input goes only to the focused terminal instance; every switch announces the destination (UX focus rules) (axis, 1a). Gate: 1a/L27 for (a); L19 for (b). | PE, PI |
+| DASH-1 | S/I | **Untrusted strings in the dashboard and native dialog:** branch names, file paths, CLI window titles. Control characters, bidi and very long strings can mislead (APR-2, inherited EL-1). | All such strings render as text, truncated, with control and bidi characters escaped; the native dialog shows only main-built summaries (axis, 1a). Gate: 1a/L27. | PI |
+| NET-1 | I | **reh-web is still packaged** in the builds (the M3 logs show `pkg-vscode-reh-web-*`), so "WEB-* not exposed" holds only if it is not started. | Gate: a loopback port scan finds no listener during a desktop run and the desktop artifact does not start reh-web (axis, 1a, 1a/L29). Until then R10 and R12 keep their Phase 0 scores. | SSRF, PE |
+
+Repudiation: terminal I/O is not audited (residual 5 in the companion file).
+
+### 4.10 Inherited rows, unchanged
 
 These Phase 0 rows are carried as they are, with owner phase unchanged unless the re-tag table (companion §8) says otherwise:
 
-- EL-1 to EL-3, EL-5 to EL-8 (EL-4 is changed above);
+- EL-1 to EL-3, EL-6 to EL-8 (EL-4 and EL-5 are changed above);
 - EXT-5;
 - DMN-1, DMN-4;
-- WEB-1 to WEB-6, which are **not exposed in Phase 1** (browser skeleton moved to Phase 2; proposed re-tag in the companion §8, not in the ADR 0004 list);
+- WEB-1 to WEB-6: owner phase moves to P2 with the browser skeleton (accepted, companion §8), but reh-web is still packaged, so the risk register keeps R10 and R12 at their Phase 0 scores until gate 1a/L29 passes (NET-1);
 - MCP-1 to MCP-4 (Phase 4);
 - SC-1 to SC-6.
 
