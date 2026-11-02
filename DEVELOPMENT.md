@@ -301,7 +301,7 @@ Use factual evidence. Distinguish `passed`, `failed`, `not run`, and `not applic
 
 ### Context, sync, and teams
 
-- Enforce workspace and organization boundaries for memory, retrieval, indexing, and tool access.
+- Enforce Space, project and organization boundaries for memory, retrieval, indexing, and tool access.
 - Define retention, deletion, encryption, and synchronization behavior before enabling cloud sync.
 - Never leak one project's secrets or private context into another project or team.
 - Use permission checks on the server and execution boundary, not just hidden UI controls.

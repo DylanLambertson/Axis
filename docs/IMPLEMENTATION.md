@@ -37,19 +37,19 @@ interface KnowledgeRecord { id: string; scopeId: string; sourceRef: string; prov
 ```
 
 ## Initial SQLite entities
-`workspaces`, `projects`, `repositories`, `connections_metadata`, `agent_runs`, `agent_tasks`, `agent_events`, `worktrees`, `approvals`, `artifacts`, `knowledge_records`, `knowledge_edges`, `skills`, `rules`, `sync_operations`, `audit_events`. Separate secrets from ordinary tables; enforce scope checks in service layer and DB queries.
+`spaces`, `projects`, `repositories`, `agent_workspaces`, `connections_metadata`, `agent_runs`, `agent_tasks`, `agent_events`, `worktrees`, `approvals`, `artifacts`, `knowledge_records`, `knowledge_edges`, `skills`, `rules`, `sync_operations`, `audit_events`. Separate secrets from ordinary tables; enforce scope checks in service layer and DB queries.
 
 ## Quality gates
 PRs require lint, typecheck, unit tests, affected integration tests, accessibility checks for UI, license scan, and an ADR for consequential architecture changes. CI matrices include supported desktop OS and browser targets. Use mock provider for deterministic tests; live provider tests opt-in with strict budget and secrets isolation.
 
-## Initial agent team assignments
-- Architect: feasibility ADRs and dependency inventory.
-- IDE engineer: Code OSS custom workbench spike.
-- Platform engineer: Electron IPC, desktop/web workspace protocol.
-- AI engineer: provider SDK and mock/first official adapter.
-- Runtime engineer: worktree lifecycle, sandbox and tool broker.
-- Product designer: compact shell, editor-first interaction prototypes.
-- Security reviewer: threat model and gate review across workstreams.
+## Initial workstreams
+- Architecture: feasibility ADRs and dependency inventory.
+- IDE: Code OSS custom workbench spike.
+- Platform: Electron IPC, desktop/web workspace protocol.
+- AI: provider SDK and mock/first official adapter.
+- Runtime: worktree lifecycle, sandbox and tool broker.
+- Product design: agent-first workspace shell and view-switching interaction prototypes.
+- Security: threat model and gate review across workstreams.
 
 ## Task handoff template
 Goal; relevant docs/ADR; owner; worktree branch/base SHA; exact scope; acceptance criteria; permitted tools; tests run/results; changed files; security/privacy impact; open questions; merge status.
