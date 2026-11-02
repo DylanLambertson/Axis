@@ -104,6 +104,9 @@ jobs:
       - name: Check generated SVG replacements match assets/brand
         run: scripts/code-oss/gen-icons.sh --check
 
+      - name: Test the SC-3 artifact check
+        run: node --test test/code-oss/*.test.mjs
+
   extension-matrix-tests:
     name: Extension matrix unit tests
     runs-on: ubuntu-24.04
