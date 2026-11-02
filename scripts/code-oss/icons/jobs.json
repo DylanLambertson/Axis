@@ -1,0 +1,496 @@
+[
+	{
+		"name": "icns-16",
+		"src": "icon",
+		"w": 16,
+		"h": 16,
+		"crop": [
+			0,
+			0,
+			1024
+		],
+		"fill": 1,
+		"format": "png",
+		"out": {
+			"type": "png",
+			"path": "code.iconset/icon_16x16.png"
+		}
+	},
+	{
+		"name": "icns-16@2x",
+		"src": "icon",
+		"w": 32,
+		"h": 32,
+		"crop": [
+			0,
+			0,
+			1024
+		],
+		"fill": 1,
+		"format": "png",
+		"out": {
+			"type": "png",
+			"path": "code.iconset/icon_16x16@2x.png"
+		}
+	},
+	{
+		"name": "icns-32",
+		"src": "icon",
+		"w": 32,
+		"h": 32,
+		"crop": [
+			0,
+			0,
+			1024
+		],
+		"fill": 1,
+		"format": "png",
+		"out": {
+			"type": "png",
+			"path": "code.iconset/icon_32x32.png"
+		}
+	},
+	{
+		"name": "icns-32@2x",
+		"src": "icon",
+		"w": 64,
+		"h": 64,
+		"crop": [
+			0,
+			0,
+			1024
+		],
+		"fill": 1,
+		"format": "png",
+		"out": {
+			"type": "png",
+			"path": "code.iconset/icon_32x32@2x.png"
+		}
+	},
+	{
+		"name": "icns-128",
+		"src": "icon",
+		"w": 128,
+		"h": 128,
+		"crop": [
+			0,
+			0,
+			1024
+		],
+		"fill": 1,
+		"format": "png",
+		"out": {
+			"type": "png",
+			"path": "code.iconset/icon_128x128.png"
+		}
+	},
+	{
+		"name": "icns-128@2x",
+		"src": "icon",
+		"w": 256,
+		"h": 256,
+		"crop": [
+			0,
+			0,
+			1024
+		],
+		"fill": 1,
+		"format": "png",
+		"out": {
+			"type": "png",
+			"path": "code.iconset/icon_128x128@2x.png"
+		}
+	},
+	{
+		"name": "icns-256",
+		"src": "icon",
+		"w": 256,
+		"h": 256,
+		"crop": [
+			0,
+			0,
+			1024
+		],
+		"fill": 1,
+		"format": "png",
+		"out": {
+			"type": "png",
+			"path": "code.iconset/icon_256x256.png"
+		}
+	},
+	{
+		"name": "icns-256@2x",
+		"src": "icon",
+		"w": 512,
+		"h": 512,
+		"crop": [
+			0,
+			0,
+			1024
+		],
+		"fill": 1,
+		"format": "png",
+		"out": {
+			"type": "png",
+			"path": "code.iconset/icon_256x256@2x.png"
+		}
+	},
+	{
+		"name": "icns-512",
+		"src": "icon",
+		"w": 512,
+		"h": 512,
+		"crop": [
+			0,
+			0,
+			1024
+		],
+		"fill": 1,
+		"format": "png",
+		"out": {
+			"type": "png",
+			"path": "code.iconset/icon_512x512.png"
+		}
+	},
+	{
+		"name": "icns-512@2x",
+		"src": "icon",
+		"w": 1024,
+		"h": 1024,
+		"crop": [
+			0,
+			0,
+			1024
+		],
+		"fill": 1,
+		"format": "png",
+		"out": {
+			"type": "png",
+			"path": "code.iconset/icon_512x512@2x.png"
+		}
+	},
+	{
+		"name": "win32-ico-16",
+		"src": "icon",
+		"w": 16,
+		"h": 16,
+		"crop": [
+			100,
+			100,
+			824
+		],
+		"fill": 1,
+		"format": "png",
+		"out": {
+			"type": "ico",
+			"path": "resources/win32/code.ico"
+		}
+	},
+	{
+		"name": "win32-ico-20",
+		"src": "icon",
+		"w": 20,
+		"h": 20,
+		"crop": [
+			100,
+			100,
+			824
+		],
+		"fill": 1,
+		"format": "png",
+		"out": {
+			"type": "ico",
+			"path": "resources/win32/code.ico"
+		}
+	},
+	{
+		"name": "win32-ico-24",
+		"src": "icon",
+		"w": 24,
+		"h": 24,
+		"crop": [
+			100,
+			100,
+			824
+		],
+		"fill": 1,
+		"format": "png",
+		"out": {
+			"type": "ico",
+			"path": "resources/win32/code.ico"
+		}
+	},
+	{
+		"name": "win32-ico-32",
+		"src": "icon",
+		"w": 32,
+		"h": 32,
+		"crop": [
+			100,
+			100,
+			824
+		],
+		"fill": 1,
+		"format": "png",
+		"out": {
+			"type": "ico",
+			"path": "resources/win32/code.ico"
+		}
+	},
+	{
+		"name": "win32-ico-40",
+		"src": "icon",
+		"w": 40,
+		"h": 40,
+		"crop": [
+			100,
+			100,
+			824
+		],
+		"fill": 1,
+		"format": "png",
+		"out": {
+			"type": "ico",
+			"path": "resources/win32/code.ico"
+		}
+	},
+	{
+		"name": "win32-ico-48",
+		"src": "icon",
+		"w": 48,
+		"h": 48,
+		"crop": [
+			100,
+			100,
+			824
+		],
+		"fill": 1,
+		"format": "png",
+		"out": {
+			"type": "ico",
+			"path": "resources/win32/code.ico"
+		}
+	},
+	{
+		"name": "win32-ico-64",
+		"src": "icon",
+		"w": 64,
+		"h": 64,
+		"crop": [
+			100,
+			100,
+			824
+		],
+		"fill": 1,
+		"format": "png",
+		"out": {
+			"type": "ico",
+			"path": "resources/win32/code.ico"
+		}
+	},
+	{
+		"name": "win32-ico-256",
+		"src": "icon",
+		"w": 256,
+		"h": 256,
+		"crop": [
+			100,
+			100,
+			824
+		],
+		"fill": 1,
+		"format": "png",
+		"out": {
+			"type": "ico",
+			"path": "resources/win32/code.ico"
+		}
+	},
+	{
+		"name": "win32-tile-70",
+		"src": "icon",
+		"w": 70,
+		"h": 70,
+		"crop": [
+			0,
+			0,
+			1024
+		],
+		"fill": 1,
+		"format": "png",
+		"out": {
+			"type": "png",
+			"path": "resources/win32/code_70x70.png"
+		}
+	},
+	{
+		"name": "win32-tile-150",
+		"src": "icon",
+		"w": 150,
+		"h": 150,
+		"crop": [
+			0,
+			0,
+			1024
+		],
+		"fill": 1,
+		"format": "png",
+		"out": {
+			"type": "png",
+			"path": "resources/win32/code_150x150.png"
+		}
+	},
+	{
+		"name": "linux-png",
+		"src": "icon",
+		"w": 1024,
+		"h": 1024,
+		"crop": [
+			0,
+			0,
+			1024
+		],
+		"fill": 1,
+		"format": "png",
+		"out": {
+			"type": "png",
+			"path": "resources/linux/code.png"
+		}
+	},
+	{
+		"name": "linux-xpm",
+		"src": "icon",
+		"w": 256,
+		"h": 256,
+		"crop": [
+			0,
+			0,
+			1024
+		],
+		"fill": 1,
+		"format": "rgba",
+		"out": {
+			"type": "xpm",
+			"path": "resources/linux/rpm/code.xpm",
+			"symbol": "code"
+		}
+	},
+	{
+		"name": "server-192",
+		"src": "icon",
+		"w": 192,
+		"h": 192,
+		"crop": [
+			0,
+			0,
+			1024
+		],
+		"fill": 1,
+		"format": "png",
+		"out": {
+			"type": "png",
+			"path": "resources/server/code-192.png"
+		}
+	},
+	{
+		"name": "server-512",
+		"src": "icon",
+		"w": 512,
+		"h": 512,
+		"crop": [
+			0,
+			0,
+			1024
+		],
+		"fill": 1,
+		"format": "png",
+		"out": {
+			"type": "png",
+			"path": "resources/server/code-512.png"
+		}
+	},
+	{
+		"name": "favicon-16",
+		"src": "icon",
+		"w": 16,
+		"h": 16,
+		"crop": [
+			100,
+			100,
+			824
+		],
+		"fill": 1,
+		"format": "png",
+		"out": {
+			"type": "ico",
+			"path": "resources/server/favicon.ico"
+		}
+	},
+	{
+		"name": "favicon-24",
+		"src": "icon",
+		"w": 24,
+		"h": 24,
+		"crop": [
+			100,
+			100,
+			824
+		],
+		"fill": 1,
+		"format": "png",
+		"out": {
+			"type": "ico",
+			"path": "resources/server/favicon.ico"
+		}
+	},
+	{
+		"name": "favicon-32",
+		"src": "icon",
+		"w": 32,
+		"h": 32,
+		"crop": [
+			100,
+			100,
+			824
+		],
+		"fill": 1,
+		"format": "png",
+		"out": {
+			"type": "ico",
+			"path": "resources/server/favicon.ico"
+		}
+	},
+	{
+		"name": "favicon-48",
+		"src": "icon",
+		"w": 48,
+		"h": 48,
+		"crop": [
+			100,
+			100,
+			824
+		],
+		"fill": 1,
+		"format": "png",
+		"out": {
+			"type": "ico",
+			"path": "resources/server/favicon.ico"
+		}
+	},
+	{
+		"name": "favicon-64",
+		"src": "icon",
+		"w": 64,
+		"h": 64,
+		"crop": [
+			100,
+			100,
+			824
+		],
+		"fill": 1,
+		"format": "png",
+		"out": {
+			"type": "ico",
+			"path": "resources/server/favicon.ico"
+		}
+	}
+]

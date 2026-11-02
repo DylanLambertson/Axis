@@ -101,6 +101,9 @@ jobs:
       - name: Check Axis theme contrast (WCAG 2.2 AA)
         run: node --test test/theme-axis/*.test.mjs
 
+      - name: Check generated SVG replacements match assets/brand
+        run: scripts/code-oss/gen-icons.sh --check
+
   extension-matrix-tests:
     name: Extension matrix unit tests
     runs-on: ubuntu-24.04
