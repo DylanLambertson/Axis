@@ -47,16 +47,17 @@ The mode is a user preference (`axis.view.mode`), changeable in settings, from t
 | **Global toggle** (`global`) | One app-wide view. The toggle switches every workspace; focusing another workspace keeps the current view. File and diff clicks switch the app to IDE view at the location. |
 | **Split** (`split`) | Agent view and IDE view side by side, divided by a resizable sash. Either pane collapses to a thin header and expands again. File and diff clicks open in the IDE pane without switching; if the IDE pane is collapsed, it expands. |
 
-**Keyboard.** Every action is a command in the palette and is rebindable. Default `Mod` chords are **TBD: the verified set is to be defined in `docs/design/axis-agent-shell.md` §9.2**, checked against the upstream default keybindings at the pinned Code OSS tag and OS-reserved shortcuts. (Earlier provisional choices conflicted at the pin: `Mod+Alt+V` is editor dictation, and `Cmd+Alt+0` on macOS toggles the editor group layout.)
+**Keyboard.** Every action is a command in the palette and is rebindable. The defaults below are the verified set from `docs/design/axis-agent-shell.md` §9.2: checked against all 3,003 upstream keybinding registrations and 100 built-in extension bindings at the pinned Code OSS tag, with zero conflicts. Windows and Linux use `Ctrl+Shift+Alt` rather than `Ctrl+Alt`, because `Ctrl+Alt` is AltGr on many keyboard layouts. OS-reserved shortcuts and third-party extension bindings are re-checked during implementation (shell design task A6). Two earlier provisional choices were rejected because they conflict at the pin: `Mod+Alt+V` is editor dictation, and `Cmd+Alt+0` on macOS toggles the editor group layout.
 
-| Action | Default |
-|---|---|
-| Toggle Agent / IDE view (per mode above; in split mode, moves focus to the other pane) | TBD (§9.2) |
-| Show dashboard | TBD (§9.2) |
-| Focus workspace 1–9 in dashboard order | TBD (§9.2) |
-| Open the selected file, change or hunk in IDE view at its location | `Enter` in the file tree, Changes list or diff review |
-| Cycle panes and parts, across both views in split mode | `F6` / `Shift+F6` (upstream behaviour, kept) |
-| Collapse or expand the Agent pane / IDE pane (split mode) | Command only; no default binding |
+| Action | Command | macOS | Windows / Linux |
+|---|---|---|---|
+| Toggle Agent / IDE view (per mode above; in split mode, focus the other half) | `axis.view.toggle` | `Ctrl+Cmd+V` | `Ctrl+Shift+Alt+V` |
+| Show dashboard | `axis.dashboard.show` | `Ctrl+Cmd+0` | `Ctrl+Shift+Alt+0` |
+| Focus workspace 1–9 in dashboard order | `axis.workspace.focus.1` … `.9` | `Ctrl+Alt+Cmd+1` … `9` | `Ctrl+Shift+Alt+1` … `9` |
+| Next / previous workspace | `axis.workspace.next` / `axis.workspace.previous` | `Ctrl+Cmd+]` / `Ctrl+Cmd+[` | `Ctrl+Shift+Alt+]` / `Ctrl+Shift+Alt+[` |
+| Open the selected file, change or hunk in IDE view at its location | — | `Enter` in the file tree, Changes list or diff review | same |
+| Cycle panes and parts, across both views in split mode | upstream | `F6` / `Shift+F6` (upstream behaviour, kept) | same |
+| Collapse or expand the Agent pane / IDE pane (split mode) | `axis.split.collapseAgent` / `axis.split.collapseIde` | Command only; no default binding | same |
 
 ### Focus and accessibility rules for switching
 1. **Focus lands on the target.** Opening a location focuses the editor at that file and line (or the diff hunk). A plain toggle restores the last focused element of the destination view for that workspace; if none, its primary region (workspace view: composer; IDE view: active editor; dashboard: first row).

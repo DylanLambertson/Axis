@@ -76,6 +76,7 @@ Adopt **Option B**.
 11. **Product services stay behind ADR 0003.** Worktree lifecycle, tool broker, policy, approvals, run journal and the provider gateway run in the Axis daemon. The Agent view reaches them only through the bridge.
 12. **Workspace Trust is inherited.** A worktree inherits the Workspace Trust decision of its source repository. If the repository is untrusted, the worktree opens in Restricted Mode in IDE view. Trusting the worktree parent directory under app data is never used as a shortcut, because it would trust every repository's worktrees. The mechanism is to be defined in `docs/design/axis-agent-shell.md`.
 13. **Phase 1 ships in two steps** (`ROADMAP.md`), both part of Agent view v1: **Phase 1a**, the agent workspace shell (dashboard, worktrees, terminals and panes, CLI agents, file tree, changes, diff review, commit/push/PR, IDE view and switching); then **Phase 1b**, the composer with the mock provider and the Anthropic API adapter, the vault, approvals and the broker.
+14. **The Anthropic API adapter uses the documented HTTP API directly** *(engineering default, decided)*: `fetch` with Zod-validated responses, and no provider SDK. Stage 1 removed `@anthropic-ai/sdk` with the upstream agent host (`axis-shell.md` §2.7), and re-adding it would need a dependency and lockfile patch outside every patch block. The adapter still implements the `PROVIDERS.md` `ProviderAdapter` contract and passes its contract tests.
 
 ### Concept mapping
 
@@ -208,6 +209,7 @@ Decided on 2026-11-02. Owner decisions are final for this ADR; engineering defau
 | 10 | Workspace Trust for worktrees | Inherited from the source repository; untrusted repository → Restricted Mode (decision 12) | Lead decision |
 | 11 | Supported forge in Phase 1 | GitHub: official `gh` CLI if installed, else the web compare URL; other forges push only (decision 9) | Lead decision |
 | 12 | Phase 1 scope | Split into Phase 1a (agent workspace shell) and Phase 1b (composer, providers, vault, approvals, broker); browser skeleton moves out of Phase 1 (decision 13) | Lead decision |
+| 13 | Anthropic adapter implementation | Documented HTTP API via `fetch` + Zod, no SDK (decision 14) | Engineering default |
 
 Decisions 9 and 10 contain two engineering additions, marked in the text: brokered agents may not push without approval, and Axis stores no forge credentials.
 
@@ -218,4 +220,4 @@ Decisions 9 and 10 contain two engineering additions, marked in the text: broker
 3. The detailed conflict policy for user edits during an agent run (resolved question 9).
 4. Concurrent writes by a composer agent and a CLI agent run in the same workspace. They are allowed. The composer agent is told of the CLI agent's writes as drift (decision 10); the CLI agent is not told, and the user sees the drift indicator. The design sets the detailed policy.
 5. The mechanism for inheriting Workspace Trust into worktrees (decision 12).
-6. The verified default keyboard shortcuts for view switching (`UX.md`), §9.2 of that design.
+6. Re-checking the adopted view-switching shortcuts (`UX.md`, from §9.2 of that design) against OS-reserved shortcuts and third-party extensions during implementation (task A6).
