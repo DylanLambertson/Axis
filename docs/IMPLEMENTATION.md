@@ -48,7 +48,7 @@ PRs require lint, typecheck, unit tests, affected integration tests, accessibili
 - Platform engineer: Electron IPC, desktop/web workspace protocol.
 - AI engineer: provider SDK and mock/first official adapter.
 - Runtime engineer: worktree lifecycle, sandbox and tool broker.
-- Product designer: compact shell, editor-first interaction prototypes.
+- Product designer: agent-first workspace shell and view-switching interaction prototypes.
 - Security reviewer: threat model and gate review across workstreams.
 
 ## Task handoff template

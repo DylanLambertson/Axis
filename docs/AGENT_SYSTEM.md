@@ -10,7 +10,7 @@ DRAFT → PLANNING → AWAITING_APPROVAL (if needed) → QUEUED → RUNNING → 
 Tasks have IDs, dependencies, scopes, priority, budget, allowed tools, model requirements, branch/worktree refs and acceptance tests. Run ready tasks concurrently within per-device/per-team quotas. Prevent overlapping write scopes when possible; Git isolation is the final boundary. Planner cannot override policy.
 
 ## Git isolation
-Create one branch and worktree per coding worker; no shared writable repository directory. Record base SHA. Capture diff, tests, artifacts and commit. Review before merge; detect drift and conflicts; serialize merges through an integration queue; require user approval according to risk. Retain rollback refs and clean worktrees only after safe finalization.
+Create one branch and worktree per coding worker; no shared writable repository directory. In the product, each worktree is a **workspace** (ADR 0004): worktree + branch + base SHA + agent runs + terminals + changes. Phase 1 runs one agent at a time per workspace; Phase 3 gives each planner worker its own workspace. Record base SHA. Capture diff, tests, artifacts and commit. Review before merge; detect drift and conflicts; serialize merges through an integration queue; require user approval according to risk. Retain rollback refs and clean worktrees only after safe finalization.
 
 ## Tool contract
 Every tool declares JSON schema, scope, side effects, network use, approval class, timeout and result type. Broker validates inputs and policy before execution. Outputs are untrusted and size-limited. Secret-bearing tools use short-lived scoped handles rather than exposing raw values to models.
@@ -22,7 +22,7 @@ Read-only project inspection; scoped workspace writes; package installs and netw
 Task router chooses only among connected, authorized, capability-compatible models; user can pin model/account per task or role. Respect context limits, tools, streaming, cost budgets and regional restrictions. Graceful fallback requires explicit policy and never silently crosses trust boundaries.
 
 ## Agent UI
-Simple mode: one task composer, progress, files changed, review. Advanced mode: DAG, live worker activity, provider/model, tokens/cost, logs, permissions, checkpoints, worktrees, merge queue. Users can pause, cancel, retry, branch, and take over a task.
+Dashboard: every workspace with its agents and state (idle, running, waiting for approval, failed, done), branch, terminals and changed files; rows needing the user come first. Workspace view: composer (Ask/Edit/Agent), activity stream, file tree, changes and diff review with accept/reject/commit, terminals. Advanced detail on demand inside the workspace view: DAG, live worker activity, provider/model, tokens/cost, logs, permissions, checkpoints, worktrees, merge queue. Commands a user runs in a workspace terminal, including CLI agents, are not brokered; their changes still go through diff review. Users can pause, cancel, retry, branch, and take over a task.
 
 ## Test cases
 Parallel workers touching distinct files; overlapping file conflict; worker crash; rate limit; provider outage; denied network; prompt injection in repo; expired token; failed test; merge conflict; cancellation mid-command; resume after restart; user rejection and rollback.
