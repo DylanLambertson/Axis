@@ -6,6 +6,8 @@ import {
   PROTOCOL_VERSION,
   cancelEnvelopeSchema,
   inspectMessage,
+  lookupMethod,
+  requiresIdempotencyKey,
   MAX_DEPTH,
   MAX_MESSAGE_BYTES,
   MAX_MESSAGE_NODES,
@@ -390,4 +392,16 @@ test("challenge: shape and resolve request", () => {
   assert.equal(resolveChallengeRequestSchema.safeParse({ ...resolve, decision: "maybe" }).success, false);
   // the caller cannot name who approved
   assert.equal(resolveChallengeRequestSchema.safeParse({ ...resolve, approver: "user" }).success, false);
+});
+
+test("idempotency is required per method and is a daemon-side check", () => {
+  assert.equal(requiresIdempotencyKey("axis.worktrees", 1, "create"), true);
+  assert.equal(requiresIdempotencyKey("axis.worktrees", 1, "remove"), true);
+  assert.equal(requiresIdempotencyKey("axis.worktrees", 1, "list"), false);
+  assert.equal(requiresIdempotencyKey("axis.worktrees", 1, "nope"), false);
+  assert.equal(lookupMethod("axis.worktrees", 1, "toString"), undefined);
+  assert.equal(lookupMethod("axis.worktrees", 2, "create"), undefined);
+  // the envelope itself accepts a request with no key, so the daemon must check
+  const { idempotencyKey: _k, ...noKey } = goodRequest;
+  assert.equal(requestEnvelopeSchema.safeParse(noKey).success, true);
 });

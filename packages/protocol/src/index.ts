@@ -5,3 +5,4 @@ export * from "./errors.js";
 export * from "./envelope.js";
 export * from "./challenge.js";
 export * from "./worktrees.js";
+export * from "./contracts.js";
