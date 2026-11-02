@@ -381,8 +381,14 @@ export class ChallengeManager {
     try {
       result = await action({ op: rec.op, target: rec.target, requester: rec.requester });
     } catch (error) {
-      this.#emit("daemon", "tier4.execute", rec, "error", { phase: "completed", errorName: error instanceof Error ? error.name : "unknown" });
-      throw error;
+      // Nothing the action throws crosses this boundary: it may carry paths or secrets and is not a protocol code.
+      const errorName = error instanceof Error ? error.name.slice(0, 64) : "unknown";
+      try {
+        this.#emit("daemon", "tier4.execute", rec, "error", { phase: "completed", errorName });
+      } catch {
+        // The audit failure must not hide that the action ran (and failed).
+      }
+      throw new ChallengeError("E_INTERNAL", "The action failed after the confirmation was spent", { executed: true });
     }
     try {
       this.#emit("daemon", "tier4.execute", rec, "success", { phase: "completed" });
@@ -442,7 +448,13 @@ export class ChallengeManager {
     payload: Readonly<Record<string, string | number | boolean | null>>,
   ): void {
     // `ref` is a hash prefix of the id: enough to correlate, useless to resolve.
-    this.#audit.append({ actor, action, target: rec.target, outcome, payload: { ...payload, op: rec.op, ref: rec.ref.slice(0, 12) } });
+    try {
+      this.#audit.append({ actor, action, target: rec.target, outcome, payload: { ...payload, op: rec.op, ref: rec.ref.slice(0, 12) } });
+    } catch {
+      // The sink's own error may name paths or hosts, and is not a protocol code.
+      const detail = action === "tier4.execute" ? { executed: false } : {};
+      throw new ChallengeError("E_INTERNAL", "The approval audit log is unavailable", detail);
+    }
   }
 
   /** Drop finished records after a grace period and expire stale open ones, bounding memory. */

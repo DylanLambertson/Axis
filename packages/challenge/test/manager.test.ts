@@ -57,6 +57,8 @@ const resolveArgs = (i: IssuedChallenge, over: Record<string, unknown> = {}) =>
   ({ challengeId: i.challenge.challengeId, decision: "approve", digest: i.challenge.digest, actor: "user", windowId: WIN, ...over }) as Parameters<ChallengeManager["resolve"]>[0];
 
 const run = { op: "worktree.discard", target: "workspace:ws-1", currentContentDigest: CONTENT };
+const internal = (executed: boolean) => (e: unknown) =>
+  e instanceof ChallengeError && e.code === "E_INTERNAL" && e.detail["executed"] === executed;
 const code = (c: string) => (e: unknown) => e instanceof ChallengeError && e.code === c;
 
 test("issue returns a protocol-valid challenge with a 256-bit id bound to op, target and content", () => {
@@ -321,27 +323,27 @@ test("audit never contains a challenge id, native proof or content digest, and r
 test("fail closed: if the audit sink fails, issue creates nothing and execute does not run the action", async () => {
   const s = setup();
   s.failWhen((e) => e.payload["phase"] === "issued");
-  assert.throws(() => issue(s.manager), /sink down/);
+  assert.throws(() => issue(s.manager), code("E_INTERNAL"));
   assert.equal(s.manager.outstanding(), 0);
 
   s.failWhen(undefined);
   const token = approve(s.manager, issue(s.manager));
   s.failWhen((e) => e.payload["phase"] === "authorised");
   let ran = 0;
-  await assert.rejects(s.manager.execute(token, run, () => void ran++), /sink down/);
+  await assert.rejects(s.manager.execute(token, run, () => void ran++), internal(false));
   assert.equal(ran, 0);
   s.failWhen(undefined);
   await assert.rejects(s.manager.execute(token, run, () => void ran++), code("E_CONFLICT"), "the token was spent");
 });
 
-test("a failing action spends the token, is audited as an error and rethrows", async () => {
+test("a failing action spends the token, is audited as an error and surfaces as E_INTERNAL with executed=true", async () => {
   const { manager, events } = setup();
   const token = approve(manager, issue(manager));
   await assert.rejects(
     manager.execute(token, run, () => {
-      throw new TypeError("boom");
+      throw new TypeError("boom /secret/path");
     }),
-    TypeError,
+    (e: unknown) => internal(true)(e) && !(e as Error).message.includes("boom"),
   );
   assert.equal(events.at(-1)?.outcome, "error");
   assert.equal(events.at(-1)?.payload["errorName"], "TypeError");
@@ -458,4 +460,62 @@ test("S3: a fractional wall clock (performance.now style) still yields an intege
   assert.equal(c.expiresAt, 1_060_000);
   assert.doesNotThrow(() => challengeSchema.parse(c));
   assert.equal(m.outstanding(), 1);
+});
+
+test("S2: sink failures at every phase surface as E_INTERNAL and never as a raw Error", async () => {
+  const wireValid = (e: unknown): boolean => {
+    assert.ok(e instanceof ChallengeError, String(e));
+    assert.equal(e.code, "E_INTERNAL");
+    assert.doesNotThrow(() => errorSchema.parse(e.toWire("c")));
+    assert.ok(!/sink down/.test(e.message));
+    return true;
+  };
+  const failOn = (s: ReturnType<typeof setup>, phase: string) => s.failWhen((e) => e.payload["phase"] === phase);
+  const s1 = setup();
+  failOn(s1, "issued");
+  assert.throws(() => issue(s1.manager), wireValid);
+  const s2 = setup();
+  const i2 = issue(s2.manager);
+  failOn(s2, "resolve");
+  assert.throws(() => s2.manager.resolve(resolveArgs(i2)), wireValid);
+  const s3 = setup();
+  const i3 = issue(s3.manager);
+  s3.manager.resolve(resolveArgs(i3));
+  failOn(s3, "native");
+  assert.throws(() => s3.manager.confirmNative({ challengeId: i3.challenge.challengeId, proof: i3.nativeProof ?? "", confirmed: true, windowId: WIN }), wireValid);
+  const s4 = setup();
+  const t4 = approve(s4.manager, issue(s4.manager));
+  failOn(s4, "authorised");
+  await assert.rejects(s4.manager.execute(t4, run, () => 1), (e: unknown) => wireValid(e) && internal(false)(e));
+});
+
+test("S2: when the action fails and the error audit also fails, the caller still learns the action ran", async () => {
+  const s = setup();
+  const token = approve(s.manager, issue(s.manager));
+  s.failWhen((e) => e.outcome === "error");
+  await assert.rejects(
+    s.manager.execute(token, run, () => {
+      throw new Error("action broke");
+    }),
+    internal(true),
+  );
+});
+
+test("S2: whatever the action throws, only a wire-valid ChallengeError escapes", async () => {
+  const thrown: unknown[] = [new ChallengeError("E_APPROVAL_REQUIRED", "x"), "text", null, { code: "E_CONFLICT" }, new RangeError("r")];
+  for (const t of thrown) {
+    const { manager } = setup();
+    const token = approve(manager, issue(manager));
+    await assert.rejects(
+      manager.execute(token, run, () => {
+        throw t;
+      }),
+      (e: unknown) => {
+        assert.ok(e instanceof ChallengeError);
+        assert.equal(e.code, "E_INTERNAL");
+        assert.doesNotThrow(() => errorSchema.parse(e.toWire("c")));
+        return true;
+      },
+    );
+  }
 });
