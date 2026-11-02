@@ -1,12 +1,12 @@
 # Context, Memory and Knowledge
 
 ## Data model
-Workspace → Projects → Repositories → Files/Symbols; Users/Teams → Roles; Agent Runs → Tasks → Artifacts/Decisions; Knowledge Entries → Sources/Provenance/Embeddings/Edges. Every entity has stable ID, scope, owner, ACL, created/updated timestamps and schema version.
+Space (personal or team) → Projects → Repositories → Files/Symbols; Repositories → Workspaces (agent worktrees, ADR 0004); Users/Teams → Roles; Agent Runs → Tasks → Artifacts/Decisions; Knowledge Entries → Sources/Provenance/Embeddings/Edges. Every entity has stable ID, scope, owner, ACL, created/updated timestamps and schema version.
 
 ## Memory layers
 - Ephemeral: task scratchpad, run logs, tool results, short-lived context window.
 - Project: architecture, decisions, style rules, repo index, accepted implementation history.
-- Workspace: shared conventions, reusable skills and explicitly approved cross-project knowledge.
+- Space: shared conventions, reusable skills and explicitly approved cross-project knowledge, for a personal or team Space. Agent workspaces read project and Space memory; they do not form a memory layer of their own.
 - Personal: private user preferences, optionally synchronized.
 - Organization: curated shared policies and approved documentation, permission filtered.
 

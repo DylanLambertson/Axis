@@ -1,7 +1,7 @@
 # Security, Privacy and Trust Model
 
 ## Threats
-Prompt injection from source files and external tools; malicious extensions; compromised provider credentials; shell command abuse; cross-workspace data leakage; supply-chain dependencies; malicious agent patches; cloud runner breakout; collab impersonation; sync key loss; model exfiltration.
+Prompt injection from source files and external tools; malicious extensions; compromised provider credentials; shell command abuse; cross-Space or cross-project data leakage; supply-chain dependencies; malicious agent patches; cloud runner breakout; collab impersonation; sync key loss; model exfiltration.
 
 ## Boundaries
 Electron renderer is untrusted relative to local OS; validate all IPC. Local daemon is privileged only within user grants. Extensions and MCP servers are third-party code and require trust boundaries. Agents execute in restricted subprocess/container environments with resource quotas and egress policies. Git worktrees prevent edit collisions but are **not security sandboxes**.
