@@ -2,7 +2,7 @@
 
 Research date: 2026-11-01. Baseline: Code OSS (microsoft/vscode) pinned at **1.144.0** (released 2026-10-28).
 
-Evidence tags: **VERIFIED** = read in a primary source (repo file, release, issue, official doc) this session;
+Evidence tags: **VERIFIED** = read in a primary source (repo file, release, issue, official doc) on the research date;
 **INFERRED** = derived from verified facts, reasoning shown; **UNKNOWN** = not found / not measurable from public sources.
 Bracketed numbers like [S3] refer to the Sources list at the end.
 
@@ -34,7 +34,7 @@ Bracketed numbers like [S3] refer to the Sources list at the end.
 
 | Precedent | Mechanism | Size | Current lag (2026-11-01) |
 |---|---|---|---|
-| VSCodium | Patch files applied to a pinned tag (`upstream/stable.json` = 1.143.1); semi-automated `dev/update_patches.sh` produces `.rej` files for manual fixing | 69 `.patch` files: 42 core + 27 platform-specific (linux 17, windows 6, osx/alpine/insider/user/helper 1 each), plus 5 disabled (`.no`/`.yet`) | Pinned 1.143.1 vs 1.144.0 = 1 minor; release 1.143.17232 on 2026-10-28, 6 days after VS Code 1.143.1 (2026-10-22). **VERIFIED** [S8][S9] |
+| VSCodium | Patch files applied to a pinned tag (`upstream/stable.json` = 1.143.1); semi-automated `dev/update_patches.sh` produces `.rej` files for manual fixing | 69 `.patch` files: 42 core + 27 platform-specific (linux 17, windows 6, osx/alpine/insider/helper 1 each; `patches/user/` holds only a readme), plus 5 disabled (`.no`/`.yet`) and two JSON removal manifests (`52-ext-copilot-remove-it.json`, `80-ui-disable-onboarding.json`) | Pinned 1.143.1 vs 1.144.0 = 1 minor; release 1.143.17232 on 2026-10-28, 6 days after VS Code 1.143.1 (2026-10-22). **VERIFIED** [S8][S9] |
 | Positron | Long-lived git fork; periodic `git merge upstream/<branch>` (`scripts/pull-upstream.sh`); in-file `// --- Start Positron --- … // --- End Positron ---` markers on every modified upstream line | 555 `.tsx` files and 1,839 `src/` paths containing "positron" out of 13,089 `src/` files | `package.json` version on `main` = 1.138.0 vs 1.144.0 = 6 minors (~6 weeks). Merge to 1.143.0 open since 2026-10-28. **VERIFIED** [S10][S11][S12] |
 
 Positron upstream-merge PRs (all **VERIFIED** [S12]):
@@ -138,7 +138,7 @@ parts in refs (INFERRED).
 Electron renderer runs monaco-vscode-api; main process spawns a Code OSS `reh` server built **at the exact commit in
 `config.vscode.commit`**; connect via remote-agent override for node extensions, terminal, FS. The doc points to
 Microsoft's server download or VSCodium `reh` builds [S7b] — Axis would have to build its own `reh` from Code OSS to
-avoid Microsoft binary licensing (INFERRED; licensing teammate to confirm). Net: B for desktop = B + a Code OSS
+avoid Microsoft binary licensing (INFERRED; see `licensing-and-marketplace.md` §1 and §3). Net: B for desktop = B + a Code OSS
 server build, i.e. two moving parts version-locked together.
 
 ---
@@ -184,7 +184,7 @@ widgets can be any tech, `ReactWidget` is the common base; DI via InversifyJS, l
 |---|---|---|---|---|
 | Code OSS `reh-web` (built from the Axis fork) | MIT | same as fork | same tree as desktop; `gulpfile.reh.ts` targets `reh`, `reh-web` **VERIFIED** [S3] | 0 vs Axis fork (by construction) |
 | coder/code-server | MIT | v4.144.0, 2026-10-29 | `lib/vscode` git submodule + **29 quilt patches** (`patches/series`: base-path, proxy-uri, auth/logout, marketplace, webview, service-worker, telemetry, csp-hashes, remote-storage …); bot PRs per upstream release **VERIFIED** [S24] | 1 day after VS Code 1.144.0 |
-| gitpod-io/openvscode-server | MIT | v1.109.5, 2026-02-20 | "minimal set of changes" on upstream **VERIFIED** [S25] | 35 minors / ~8 months; last `main` commit 2026-02-20 — INFERRED stalled |
+| gitpod-io/openvscode-server | MIT | v1.109.5, 2026-02-20 | "minimal set of changes" on upstream **VERIFIED** [S25] | 35 minors / ~8 months; last `main` commit and release 2026-02-20 (the repository was last pushed 2026-09-24, on another branch) — INFERRED stalled |
 
 code-server activity: ~15 releases Jul–Oct 2026; 21 PR authors / 102 merged PRs since 2026-08-01. **VERIFIED** [S4].
 Gaps: code-server and OpenVSCode are web-only (no Electron) **VERIFIED** (descriptions) [S4]; both run the node
@@ -205,7 +205,7 @@ OpenVSCode Server given its staleness.
 |---|---|---|---|---|---|---|---|---|---|
 | **A** Code OSS fork | Full (everything upstream ships) | Highest achievable without MS Marketplace; Open VSX; MS-licensed exts excluded | Medium→High: high if shell is a `vs/sessions`-style layer; conflict-prone if `layout.ts`/parts edited | Native Electron, upstream-maintained | Via fork's `reh-web` | Self-controlled. Precedents: VSCodium 69 patches, ~1 minor behind; Positron 4–7k-file merges every 4–5 weeks, ~6 minors behind | VSCodium ~11 PR authors; Positron ~37 PR authors (17 with ≥10 PRs/quarter); Void (small) archived | Low (MIT); must rebrand, swap product.json, Open VSX, no MS services | **Medium** (known, steady cost) |
 | **B** monaco-vscode-api | High in browser (most workbench services as overrides); node-only features need a server | Web extensions locally; node extensions only via remote server | Highest (`attachPart` into own React DOM) | Not supported officially; needs Electron + matching Code OSS `reh` server | Native strength (browser) | Fast (days) but skips minors; breaking major each sync; you inherit its 116-patch series + your own app glue | Effectively 1 core maintainer | Low (MIT); server build licensing as in A | **High** (bus factor, Electron gap, two version-locked parts) |
-| **C** Eclipse Theia | Broad IDE feature set, own implementations | ~89% stable API Supported, 8.6% stubbed; plugin host is a reimplementation | High by design (DI, ReactWidget, Lumino) | First-class | First-class | Monthly; API version declared current, editor core at 1.108; adopters lag (Arduino 18 months) | 43 PR authors/quarter, foundation-governed | EPL-2.0/GPL-2.0+CE: weak copyleft on modified Theia files (licensing teammate to confirm) | **Medium-High** (compat fidelity, editor-core lag, different architecture) |
+| **C** Eclipse Theia | Broad IDE feature set, own implementations | ~89% stable API Supported, 8.6% stubbed; plugin host is a reimplementation | High by design (DI, ReactWidget, Lumino) | First-class | First-class | Monthly; API version declared current, editor core at 1.108; adopters lag (Arduino 18 months) | 43 PR authors/quarter, foundation-governed | EPL-2.0/GPL-2.0+CE: weak copyleft on modified Theia files (LEGAL REVIEW; not covered by `licensing-and-marketplace.md`) | **Medium-High** (compat fidelity, editor-core lag, different architecture) |
 | **D** alt server + A | Same as A for web | Full via server node ext host | n/a (inherits A) | n/a (A) | code-server: tracks in ~1 day; OpenVSCode: stalled; own `reh-web`: zero extra lag | code-server: 29 patches; own reh-web: no extra fork | code-server ~21 PR authors | Low (MIT) | **Low** if own `reh-web`; Medium if second fork |
 
 ---
@@ -249,7 +249,7 @@ OpenVSCode Server given its staleness.
 - Does Axis need Microsoft-licensed extensions (Pylance, C/C++, Remote-SSH)? If yes, every option fails equally.
 - Settings Sync equivalent for Axis (none of A–D provide a service) — UNKNOWN; product decision.
 - monaco-vscode-api long-term sponsorship beyond its primary maintainer — UNKNOWN.
-- EPL-2.0 obligations for a modified Theia shell — defer to licensing research.
+- EPL-2.0 obligations for a modified Theia shell — LEGAL REVIEW if option C is pursued.
 
 ---
 

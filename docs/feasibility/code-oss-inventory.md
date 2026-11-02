@@ -98,7 +98,7 @@
 
 ### DOM and layout construction (all [V])
 - `src/vs/workbench/browser/workbench.ts` (442 lines): `class Workbench extends Layout` (`:66`).
-  - `startup()` (`:111`) → `initServices()` (`:171`).
+  - `startup()` (`:111`) → `initServices()` (`:172`).
   - `initServices()` registers **the Workbench object itself as `IWorkbenchLayoutService`** (`:175`), then adds every `registerSingleton` descriptor (`:187-190`).
   - It then starts the contribution registry (`:142`) and calls `renderWorkbench()` (`:300-347`).
   - `renderWorkbench()` loops over a **hard-coded list of 8 parts** (`:326-341`): titlebar, banner, activitybar, sidebar, editor, panel, auxiliarybar, statusbar. For each it calls `createPart()`, which makes a `div.part#<id>` (`:350-360`), then `getPart(id).create(container)`.
@@ -198,7 +198,7 @@ Each of these has no registry hook [V]:
 - **Service registration** (all [V]):
   - `registerSingleton(id, ctor, InstantiationType.Eager|Delayed)` pushes onto a module-level array (`platform/instantiation/common/extensions.ts:25-37`).
   - `Workbench.initServices` copies the array into a `ServiceCollection` in import order (`workbench.ts:187-190`).
-  - **A later registration for the same id overwrites an earlier one.** This is the mechanism `vs/sessions` uses to swap in its own `IEditorGroupsService`, `ITitleService` and `IPaneCompositePartService` [V by the registrations listed in §3; the override semantics are [I] from `ServiceCollection.set`].
+  - **A later registration for the same id overwrites an earlier one.** This is the mechanism `vs/sessions` uses to swap in its own `IEditorGroupsService`, `ITitleService` and `IPaneCompositePartService` [V: `getSingletonServiceDescriptors()` returns the push-ordered array (`platform/instantiation/common/extensions.ts:32-40`) and `ServiceCollection.set` is `Map.set` (`serviceCollection.ts:19-22`), so the last registration wins].
   - Constructor injection uses `@IFoo` decorators, and `InstantiationService` builds the graph (`platform/instantiation/common/instantiationService.ts`) [V by usage].
 - **Upstream's pattern for big features:** `contrib/chat` is about 742k LOC.
   - It is pure contribution: `workbench.common.main.ts:230-242,408-409` imports `chat.contribution.js` and others, plus `workbench.desktop.main.ts:196-197`. 25 files in `contrib/chat/browser` call `registerWorkbenchContribution2`. Its view container sits in `ViewContainerLocation.AuxiliaryBar` (`chatParticipant.contribution.ts:50`) [V].
@@ -318,7 +318,7 @@ Each of these has no registry hook [V]:
 **Recovery releases since May:** 1.143.1 (10-22), 1.141.1 (10-13), 1.141.2 (10-14), 1.139.1 (09-25), 1.136.1 (09-03), 1.136.2 (09-08), 1.132.1 (08-11), 1.129.1 (07-17), 1.128.1 (07-14), 1.124.2 (06-12), 1.123.1/1.123.2 (06-10), 1.122.1 (05-29), 1.119.1 (05-12).
 
 - 1.119.0 (2026-05-06) to 1.144.0 (2026-10-28) is **25 minor releases in about 25 weeks: a weekly minor cadence**.
-- 9 of the last 25 minors had at least one recovery release.
+- 10 of the 25 minors from 1.120 to 1.144 had at least one recovery release (about 40%).
 - Rebasing on every minor means about 52 rebases a year. A realistic fork policy is to rebase every 2–4 weeks onto the latest recovery build [I].
 
 ---
@@ -340,7 +340,7 @@ Each of these has no registry hook [V]:
   - `workbench.experimental.modernUI` and its density/frosted settings, `workbench.editor.showTabs`, `breadcrumbs.enabled`
 - **Titlebar and status bar contents:** actions in `MenuId.TitleBar`, `LayoutControlMenu`, `TitleBarAdjacentCenter`; status bar entries; custom view containers and views in Sidebar, Panel or AuxiliaryBar; webview views and custom editors for bespoke UI.
 - **CSS restyle:** a contrib injects an Axis stylesheet (`createStyleSheet`) or a theming participant, with overrides scoped to `.monaco-workbench .part.titlebar` etc. This can change spacing, radii, fonts and borders, though it is fragile against upstream class renames.
-- **Feature trimming:** remove `extensions/copilot`. Optionally comment out contrib imports in `workbench.common.main.ts`: a few lines, but they touch an often-edited file.
+- **Feature trimming:** remove `extensions/copilot`. Note this alone does not remove Copilot: core `src/vs/platform/agentHost/**` imports `@vscode/copilot-api` and `@github/copilot-sdk` (see `licensing-and-marketplace.md` §6 and ADR 0002). Optionally comment out contrib imports in `workbench.common.main.ts`: a few lines, but they touch an often-edited file.
 - **Footprint:** about 0–5 changed lines in upstream files, plus new files in `src/vs/workbench/contrib/axis/` and `extensions/theme-axis/`.
 
 ### (b) Small upstream patches for a separate Axis shell (the `vs/sessions` pattern)
