@@ -2,7 +2,7 @@
 
 - **Status:** Proposed. Becomes Accepted after the Phase 1 bridge spike meets the validation criteria below.
 - **Date:** 2026-11-01.
-- **Depends on:** ADR 0002 (Code OSS integration strategy, Proposed): Axis shell code in `src/vs/axis`, no deep upstream patches, and decision 6 (Copilot and agent host removal as a separate patch set).
+- **Depends on:** ADR 0002 (Code OSS integration strategy, Proposed): Axis shell code in `src/vs/axis`, no deep upstream patches, decision 6 (Copilot and agent host removal as a separate patch set) and decision 7 (security-hardening patch range).
 - **Related:** `docs/security/threat-model-phase0.md`. Threat IDs such as EL-2 and DMN-1 refer to that document.
 - **Upstream baseline:** Code OSS `1.144.0`, commit `2c33b50`. Paths starting with `src/`, `build/` or `remote/` are upstream paths at that commit. **[V]** = verified in source; **[I]** = inferred, not verified.
 
@@ -242,7 +242,9 @@ Upstream edits, marked `// --- Start Axis ---` / `// --- End Axis ---`:
 | `build/next/index.ts` | Add the daemon entry point to the hard-coded esbuild entry list (inventory §1) [V that the list is hard-coded]. This file is already one of the shell files in inventory §9(b). | ≤ 2 |
 | `eslint.config.js` | `local/code-import-patterns` targets for `src/vs/axis/~` and the `code/electron-main`, `daemon/node` and `server/node` sub-layers, modelled on the `src/vs/sessions/~` target (`eslint.config.js:2289`) [V] | ≤ 40 |
 
-That is four files and about 52 lines in total, counted against the ADR 0002 shell-layer budget (criterion 2). Two of them (`app.ts`, `serverServices.ts`) are new to the shell file list, which leaves little file headroom under the 12-file limit. There are no edits to `preload.ts`, `ipcMain.ts` or CSP files for the bridge itself.
+That is four files and about 52 lines in total, counted against the ADR 0002 shell-layer budget (criterion 2). Two of them (`app.ts`, `serverServices.ts`) are new to the shell file list, which leaves little file headroom under the 12-file limit.
+
+The upstream security-hardening patches proposed in the threat model (web CSP, reh cookie, `openExternal`) are not bridge seams. They belong to the separate range in ADR 0002 decision 7 and are not counted here. There are no edits to `preload.ts`, `ipcMain.ts` or CSP files for the bridge itself.
 
 ### D7. Prohibited patterns
 
@@ -253,22 +255,6 @@ The `src/vs/axis` lint configuration should reject:
 - secrets, tokens or raw credential values in any contract response schema (a schema-level `secret` sensitivity is forbidden in responses);
 - renderer-supplied identity fields (`actor`, `workspaceId` used as authority);
 - Axis services registered on `mainProcessElectronServer`.
-
-### D8. Security hardening patch range
-
-The threat model proposes upstream patches that are neither shell layer (criterion 2) nor decision 6 guardrails. They are recorded here so that an acceptance criterion covers them:
-
-- web CSP: `require-trusted-types-for 'script'` (threat model WEB-3);
-- web CSP: `frame-src` for the Axis webview origin, replacing `https://*.vscode-cdn.net` (`src/vs/server/node/webClientServer.ts:151`) [V] (WEB-4);
-- reh cookie: `Secure` when served over TLS (WEB-2);
-- optionally, an `openExternal` scheme allow-list (EL-5).
-
-Rules:
-
-- The range is a separate, numbered patch range with edits marked `// --- Start Axis ---` / `// --- End Axis ---`.
-- Like decision 6, it has no fixed line budget, but its footprint is measured and recorded per sync.
-- It must rebase within ADR 0002 criterion 4's ≤ 1 working day sync, together with the shell and guardrail patches.
-- ADR 0002 criterion 4 currently reads "shell plus guardrails". It should name this range when ADR 0002 is next revised (owner decision).
 
 ## Interface sketches (illustrative, not implementation)
 
