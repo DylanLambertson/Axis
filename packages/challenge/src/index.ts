@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 export { ChallengeError } from "./errors.js";
-export { requestDigest, safeEqual } from "./crypto.js";
+export { canonicalJson, requestDigest, safeEqual, type DigestInput } from "./crypto.js";
 export {
   ChallengeManager,
   type ActorId,

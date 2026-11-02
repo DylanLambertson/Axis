@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { challengeSchema, type Challenge } from "@axis/protocol";
 import type { z } from "zod";
-import { randomToken, requestDigest, safeEqual, sha256Hex } from "./crypto.js";
+import { canonicalJson, randomToken, requestDigest, safeEqual, sha256Hex } from "./crypto.js";
 import { ChallengeError } from "./errors.js";
 import {
   defaultSummary,
@@ -75,8 +75,10 @@ interface Record_ {
   readonly ref: string;
   readonly requester: ActorId;
   readonly windowId: string;
+  readonly contract: string;
   readonly op: string;
   readonly target: string;
+  readonly canonicalArgs: string;
   readonly digest: string;
   readonly tier: number;
   readonly native: boolean;
@@ -164,13 +166,16 @@ export class ChallengeManager {
       throw new ChallengeError("E_INTERNAL", "The daemon clock is not usable");
     }
     const native = p.tier >= 4;
+    const canonicalArgs = canonicalJson(p.args);
     const record: Record_ = {
       ref,
       requester: p.actor as ActorId,
       windowId: p.windowId,
+      contract: p.contract,
       op: p.op,
       target: p.target,
-      digest: requestDigest(p.op, p.target, p.contentDigest),
+      canonicalArgs,
+      digest: requestDigest({ contract: p.contract, op: p.op, target: p.target, canonicalArgs, contentDigest: p.contentDigest }),
       tier: p.tier,
       native,
       expiresAt: mono + this.#ttl,
@@ -300,11 +305,13 @@ export class ChallengeManager {
       this.#end(rec, "EXPIRED", "daemon", "execute", "token_expired", "tier4.execute");
       throw new ChallengeError("E_CONFLICT", "The confirmation expired; ask again");
     }
-    if (c.op !== rec.op || c.target !== rec.target) {
-      this.#end(rec, "BURNED", "daemon", "execute", "op_or_target_mismatch", "tier4.execute");
-      throw new ChallengeError("E_POLICY_DENIED", "The confirmation does not cover this operation");
+    const canonicalArgs = canonicalJson(c.args);
+    if (c.contract !== rec.contract || c.op !== rec.op || c.target !== rec.target || canonicalArgs !== rec.canonicalArgs) {
+      this.#end(rec, "BURNED", "daemon", "execute", "request_mismatch", "tier4.execute");
+      throw new ChallengeError("E_POLICY_DENIED", "The confirmation does not cover this request");
     }
-    if (!safeEqual(requestDigest(c.op, c.target, c.currentContentDigest), rec.digest)) {
+    const current = requestDigest({ contract: c.contract, op: c.op, target: c.target, canonicalArgs, contentDigest: c.currentContentDigest });
+    if (!safeEqual(current, rec.digest)) {
       this.#end(rec, "BURNED", "daemon", "execute", "content_changed", "tier4.execute");
       throw new ChallengeError("E_CONFLICT", "The content changed after it was confirmed; review and confirm again");
     }

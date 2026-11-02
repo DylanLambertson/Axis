@@ -2,8 +2,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { challengeSchema, errorSchema } from "@axis/protocol";
-import { ChallengeError, ChallengeManager, type ChallengeAuditEvent } from "../src/index.js";
-import { WIN, approve, code, internal, issue, resolveArgs, run, setup } from "./helpers.js";
+import { ChallengeError, ChallengeManager, canonicalJson, type ChallengeAuditEvent } from "../src/index.js";
+import { ARGS, CONTENT, WIN, approve, code, internal, issue, resolveArgs, run, setup } from "./helpers.js";
 
 test("S6: a wall-clock rollback does not extend a confirmation past its TTL", async () => {
   const { manager, clock } = setup();
@@ -156,4 +156,71 @@ test("S4: cutting never splits a surrogate pair", () => {
     assert.ok(!/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(summary), `pad ${pad}`);
     assert.ok(summary.length <= 512);
   }
+});
+
+// B1 (APR-1, G-24): contract and arguments are bound into the challenge.
+const pair = (contract: string) => ({ contract, args: ARGS });
+
+test("B1: the challenge digest covers the contract", () => {
+  const { manager } = setup();
+  const a = issue(manager, pair("axis.worktrees/1"));
+  const b = issue(manager, pair("axis.terminals/1"));
+  assert.notEqual(a.challenge.digest, b.challenge.digest);
+});
+
+test("B1: the digest covers the arguments and ignores key order", () => {
+  const { manager } = setup();
+  const a = issue(manager, { args: { id: "ws-1", deleteBranch: false, nested: { x: 1, y: [1, 2] } } });
+  const b = issue(manager, { args: { nested: { y: [1, 2], x: 1 }, deleteBranch: false, id: "ws-1" } });
+  const c = issue(manager, { args: { id: "ws-1", deleteBranch: true, nested: { x: 1, y: [1, 2] } } });
+  const d = issue(manager, { args: { id: "ws-1", deleteBranch: false, nested: { x: 1, y: [2, 1] } } });
+  assert.equal(a.challenge.digest, b.challenge.digest);
+  assert.notEqual(a.challenge.digest, c.challenge.digest);
+  assert.notEqual(a.challenge.digest, d.challenge.digest, "array order matters");
+});
+
+test("B1: approval of remove{deleteBranch:false} does not authorise remove{deleteBranch:true}; the attempt burns it", async () => {
+  const { manager, events } = setup();
+  const token = approve(manager, issue(manager, { args: { id: "ws-1", deleteBranch: false } }));
+  let branchDeleted = false;
+  const retried = { id: "ws-1", deleteBranch: true };
+  await assert.rejects(
+    manager.execute(token, { ...run, args: retried }, () => {
+      branchDeleted = retried.deleteBranch;
+    }),
+    code("E_POLICY_DENIED"),
+  );
+  assert.equal(branchDeleted, false);
+  await assert.rejects(manager.execute(token, { ...run, args: { id: "ws-1", deleteBranch: false } }, () => 1), code("E_CONFLICT"), "burned: even the approved arguments cannot reuse it");
+  assert.equal(events.filter((e) => e.payload["reason"] === "request_mismatch").length, 1);
+});
+
+test("B1: a different contract or an extra or missing argument is refused at execute", async () => {
+  const variants: Array<Record<string, unknown>> = [
+    { contract: "axis.terminals/1" },
+    { args: { id: "ws-1" } },
+    { args: { id: "ws-1", deleteBranch: false, force: true } },
+    { args: { id: "ws-2", deleteBranch: false } },
+  ];
+  for (const v of variants) {
+    const { manager } = setup();
+    const token = approve(manager, issue(manager));
+    let ran = 0;
+    await assert.rejects(manager.execute(token, { ...run, ...v }, () => void ran++), code("E_POLICY_DENIED"));
+    assert.equal(ran, 0);
+  }
+});
+
+test("B1: args and contract are validated: bounded plain objects only, contract shaped like name/version", () => {
+  const { manager } = setup();
+  const big = { blob: "x".repeat(20_000) };
+  for (const bad of [{ args: big }, { args: [1] }, { args: null }, { args: "s" }, { args: { n: Number.NaN } }, { contract: "nope" }, { contract: "" }]) {
+    assert.throws(() => issue(manager, bad as never), code("E_INVALID_ARGUMENT"));
+  }
+  assert.throws(() => manager.issue({ op: "worktree.discard", target: "t", contentDigest: CONTENT, actor: "user", windowId: WIN } as never), code("E_INVALID_ARGUMENT"), "contract and args are required");
+  assert.equal(manager.outstanding(), 0);
+});
+
+test("B1: canonicalJson sorts keys at every depth and keeps array order", () => {
+  assert.equal(canonicalJson({ b: 1, a: { d: [3, { z: 1, y: 2 }], c: null } }), '{"a":{"c":null,"d":[3,{"y":2,"z":1}]},"b":1}');
 });

@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
-import { challengeIdSchema, requestDigestSchema } from "@axis/protocol";
+import { boundedJsonSchema, challengeIdSchema, requestDigestSchema } from "@axis/protocol";
 import { z } from "zod";
+import { canonicalJson } from "./crypto.js";
 import { ChallengeError } from "./errors.js";
 
 const ACTOR = /^(?:user|daemon|agent:[A-Za-z0-9._/-]{1,96})$/;
@@ -28,19 +29,40 @@ export interface ChallengeAuditSink {
   append(event: ChallengeAuditEvent): unknown;
 }
 
+const CONTRACT = /^[a-z][a-z0-9_.-]*\/[0-9]+$/;
+export const MAX_ARGS_BYTES = 16_384;
+const isPlainObject = (v: unknown): boolean => typeof v === "object" && v !== null && !Array.isArray(v);
+
+/**
+ * The request params the user approved, without the `approval` reference: a
+ * bounded plain object. The daemon passes the same params at issue and at
+ * consume; their canonical form is bound into the digest.
+ */
+export const argsSchema = boundedJsonSchema
+  .refine(isPlainObject, "args must be an object")
+  .refine((v) => canonicalJson(v).length <= MAX_ARGS_BYTES, "args too large");
+
 const actorSchema = z.string().regex(ACTOR);
 const windowSchema = z.string().regex(WINDOW);
 
 export const issueSchema = z
   .object({
     op: z.string().regex(OP),
+    /**
+     * A canonical daemon id (for example `workspace:<id>`), never a path or an
+     * alias. It is compared as an opaque exact string, so two spellings of one
+     * thing never match: the user approves what actually gets acted on.
+     */
     target: z.string().min(1).max(1024).refine(displaySafe),
     /** SHA-256 hex of what the operation will destroy (for example dirty file content). */
     contentDigest: requestDigestSchema,
     actor: actorSchema,
     windowId: windowSchema,
     tier: z.number().int().min(3).max(5).default(4),
-    contract: z.string().min(1).max(64).default("axis.approvals/1"),
+    /** The contract of the request being approved, for example `axis.worktrees/1`. Bound into the digest. */
+    contract: z.string().max(64).regex(CONTRACT),
+    /** The request params, minus `approval`. Bound into the digest. */
+    args: argsSchema,
     /**
      * One line the user sees. The daemon must build it from fields it knows are
      * safe to show (annotated `path` or `public`), never from requester input
@@ -73,8 +95,11 @@ export const nativeSchema = z
 
 export const executeContextSchema = z
   .object({
+    contract: z.string().max(64).regex(CONTRACT),
     op: z.string().regex(OP),
     target: z.string().min(1).max(1024).refine(displaySafe),
+    /** The params of the request being executed now, minus `approval`; must equal what was approved. */
+    args: argsSchema,
     /** Digest of the same content, recomputed from the current state just now. */
     currentContentDigest: requestDigestSchema,
   })

@@ -2,15 +2,15 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { challengeSchema, errorSchema } from "@axis/protocol";
-import { ChallengeError, requestDigest, safeEqual, type ConfirmationToken } from "../src/index.js";
-import { CHANGED, CONTENT, WIN, approve, code, internal, issue, resolveArgs, run, setup, sha } from "./helpers.js";
+import { ChallengeError, canonicalJson, requestDigest, safeEqual, type ConfirmationToken, type DigestInput } from "../src/index.js";
+import { ARGS, CHANGED, CONTENT, CONTRACT, WIN, approve, code, internal, issue, resolveArgs, run, setup, sha } from "./helpers.js";
 
 test("issue returns a protocol-valid challenge with a 256-bit id bound to op, target and content", () => {
   const { manager } = setup();
   const issued = issue(manager);
   assert.doesNotThrow(() => challengeSchema.parse(issued.challenge));
   assert.equal(Buffer.from(issued.challenge.challengeId, "base64url").length, 32);
-  assert.equal(issued.challenge.digest, requestDigest("worktree.discard", "workspace:ws-1", CONTENT));
+  assert.equal(issued.challenge.digest, digest({}));
   assert.equal(issued.challenge.nativeConfirmationRequired, true);
   assert.equal(issued.challenge.tier, 4);
   assert.equal(issued.challenge.expiresAt, 1_000_000 + 60_000);
@@ -19,12 +19,17 @@ test("issue returns a protocol-valid challenge with a 256-bit id bound to op, ta
   assert.notEqual(issue(manager).challenge.challengeId, issued.challenge.challengeId);
 });
 
-test("the digest changes with any of op, target or content", () => {
-  const base = requestDigest("a.b", "t", CONTENT);
-  assert.notEqual(base, requestDigest("a.c", "t", CONTENT));
-  assert.notEqual(base, requestDigest("a.b", "u", CONTENT));
-  assert.notEqual(base, requestDigest("a.b", "t", CHANGED));
-  assert.notEqual(requestDigest("a", "b", CONTENT), requestDigest('a","b', "", CONTENT), "no delimiter ambiguity");
+const digest = (over: Partial<DigestInput>) =>
+  requestDigest({ contract: CONTRACT, op: "worktree.discard", target: "workspace:ws-1", canonicalArgs: canonicalJson(ARGS), contentDigest: CONTENT, ...over });
+
+test("the digest changes with any of contract, op, target, arguments or content", () => {
+  const base = digest({});
+  assert.notEqual(base, digest({ contract: "axis.terminals/1" }));
+  assert.notEqual(base, digest({ op: "worktree.remove" }));
+  assert.notEqual(base, digest({ target: "workspace:ws-2" }));
+  assert.notEqual(base, digest({ canonicalArgs: canonicalJson({ ...ARGS, deleteBranch: true }) }));
+  assert.notEqual(base, digest({ contentDigest: CHANGED }));
+  assert.notEqual(digest({ op: "a", target: "b" }), digest({ op: 'a","b', target: "" }), "no delimiter ambiguity");
 });
 
 test("full flow: issue, resolve, native confirm, execute runs the action once and audits every phase", async () => {
@@ -315,10 +320,10 @@ test("input validation: unknown keys, bad digest, bad actor, tier out of range; 
     { extra: 1 },
   ];
   for (const b of bad) {
-    assert.throws(() => manager.issue({ op: "worktree.discard", target: "t", contentDigest: CONTENT, actor: "user", windowId: WIN, ...b } as never), code("E_INVALID_ARGUMENT"));
+    assert.throws(() => manager.issue({ contract: CONTRACT, op: "worktree.discard", target: "t", args: ARGS, contentDigest: CONTENT, actor: "user", windowId: WIN, ...b } as never), code("E_INVALID_ARGUMENT"));
   }
   try {
-    manager.issue({ op: "worktree.discard", target: "t", contentDigest: "SECRET-VALUE", actor: "user", windowId: WIN });
+    manager.issue({ contract: CONTRACT, op: "worktree.discard", target: "t", args: ARGS, contentDigest: "SECRET-VALUE", actor: "user", windowId: WIN });
     assert.fail("expected a throw");
   } catch (e) {
     assert.ok(e instanceof ChallengeError);

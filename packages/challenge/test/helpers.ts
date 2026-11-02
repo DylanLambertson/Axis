@@ -6,6 +6,8 @@ import { ChallengeError, ChallengeManager, type ChallengeAuditEvent, type Confir
 export const sha = (s: string): string => createHash("sha256").update(s).digest("hex");
 export const CONTENT = sha("dirty file bytes v1");
 export const CHANGED = sha("dirty file bytes v2");
+export const CONTRACT = "axis.worktrees/1";
+export const ARGS = { id: "ws-1", deleteBranch: false };
 export const WIN = "window-1";
 
 export function setup(options: { ttl?: number; confirmTtl?: number; perActor?: number; total?: number } = {}) {
@@ -30,7 +32,7 @@ export function setup(options: { ttl?: number; confirmTtl?: number; perActor?: n
 }
 
 export function issue(m: ChallengeManager, over: Partial<Parameters<ChallengeManager["issue"]>[0]> = {}): IssuedChallenge {
-  return m.issue({ op: "worktree.discard", target: "workspace:ws-1", contentDigest: CONTENT, actor: "user", windowId: WIN, ...over });
+  return m.issue({ contract: CONTRACT, op: "worktree.discard", target: "workspace:ws-1", args: ARGS, contentDigest: CONTENT, actor: "user", windowId: WIN, ...over });
 }
 
 export function approve(m: ChallengeManager, i: IssuedChallenge): ConfirmationToken {
@@ -46,7 +48,7 @@ export function approve(m: ChallengeManager, i: IssuedChallenge): ConfirmationTo
 export const resolveArgs = (i: IssuedChallenge, over: Record<string, unknown> = {}) =>
   ({ challengeId: i.challenge.challengeId, decision: "approve", digest: i.challenge.digest, actor: "user", windowId: WIN, ...over }) as Parameters<ChallengeManager["resolve"]>[0];
 
-export const run = { op: "worktree.discard", target: "workspace:ws-1", currentContentDigest: CONTENT };
+export const run = { contract: CONTRACT, op: "worktree.discard", target: "workspace:ws-1", args: ARGS, currentContentDigest: CONTENT };
 export const internal = (executed: boolean) => (e: unknown) =>
   e instanceof ChallengeError && e.code === "E_INTERNAL" && e.detail["executed"] === executed;
 export const code = (c: string) => (e: unknown) => e instanceof ChallengeError && e.code === c;
