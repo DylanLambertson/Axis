@@ -98,6 +98,9 @@ jobs:
           fi
           bash scripts/code-oss/test.sh
 
+      - name: Check Axis theme contrast (WCAG 2.2 AA)
+        run: node --test test/theme-axis/*.test.mjs
+
   extension-matrix-tests:
     name: Extension matrix unit tests
     runs-on: ubuntu-24.04

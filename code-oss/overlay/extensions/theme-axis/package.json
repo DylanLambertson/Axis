@@ -1,0 +1,31 @@
+{
+	"name": "theme-axis",
+	"displayName": "%displayName%",
+	"description": "%description%",
+	"categories": [
+		"Themes"
+	],
+	"version": "1.0.0",
+	"publisher": "axis",
+	"license": "UNLICENSED",
+	"private": true,
+	"engines": {
+		"vscode": "*"
+	},
+	"contributes": {
+		"themes": [
+			{
+				"id": "Axis Dark",
+				"label": "%axisDark%",
+				"uiTheme": "vs-dark",
+				"path": "./themes/axis-dark.json"
+			},
+			{
+				"id": "Axis Light",
+				"label": "%axisLight%",
+				"uiTheme": "vs",
+				"path": "./themes/axis-light.json"
+			}
+		]
+	}
+}
