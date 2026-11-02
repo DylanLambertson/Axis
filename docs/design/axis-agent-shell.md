@@ -1,6 +1,6 @@
 # Axis agent-first shell: technical design for M3 Stage 2
 
-- **Status:** Draft; engineering decisions D-1 to D-11 recorded 2026-11-02 (§9.2). Aligned with ADR 0004 as of `aa6cbd1`, including its resolved questions and the four items it defers to this document (§10). It replaces the IDE-first Stage 2 of `docs/design/axis-shell.md` §3 and §6 (S2.x). Stage 1 (§2 and §2.9 there) is done and still applies. Product direction comes from ADR 0004 (proposed on `docs/agent-first-product`), which this document implements and does not restate.
+- **Status:** Draft; design decisions D-1 to D-13 recorded 2026-11-02 (§9.2); D-11 is now ADR 0004 decision 14. Aligned with ADR 0004 at `c89ae02`, including its resolved questions. The items ADR 0004 defers to this design, and the terminal, git, snapshot, shortcut and wording policies, are in the companion `axis-agent-shell-policies.md` (the "policies"). It replaces the IDE-first Stage 2 of `docs/design/axis-shell.md` §3 and §6 (S2.x). Stage 1 (§2 and §2.9 there) is done and still applies. Product direction comes from ADR 0004 (proposed on `docs/agent-first-product`), which this document implements and does not restate.
 - **Date:** 2026-11-02
 - **Upstream baseline:** Code OSS `1.144.0`, commit `2c33b50b16c472efe58357d1d2a8a5414bc23fbf`.
 - **Inputs:** ADR 0002 (decisions 1–7, criteria 1–7), ADR 0003 (D1–D7), ADR 0004 (draft), `docs/design/axis-shell.md`, `docs/security/threat-model-phase0.md`, `docs/AGENT_SYSTEM.md`, `docs/feasibility/code-oss-inventory.md` §3–4, and the upstream `src/vs/sessions` specifications (`README.md`, `LAYOUT.md`, `LAYERS.md`, `LAYOUT_CONTROLLER.md`, `DESKTOP.md`, `SESSIONS.md`).
@@ -17,9 +17,9 @@
 4. **Upstream footprint:** the agent shell adds **no upstream file** to the shell block beyond the planned bootstrap and bridge seams. Its estimate is 10 files and about 45 changed lines against the 12-file, 300-line budget. No ADR 0002 amendment is needed (§7).
 5. **Worktrees.** Phase 0 lists them read-only from the git metadata on disk. Creation and cleanup come in Phase 1, through the Git CLI in the Axis daemon (ADR 0003), with the safety rules in §5.
 6. **CLI agent runs are first-class** (ADR 0004 decision 8). Axis launches the user's installed agent CLIs in a daemon-owned pty with a scrubbed environment, attached to an upstream terminal. Their status comes only from process and terminal state (§4.5).
-7. **Concurrent writers** (user, one composer run, any number of CLI runs) are allowed. The composer writes by compare-and-swap and is told about drift; CLI runs are only observed (§10.3).
+7. **Concurrent writers** (user, one composer run, any number of CLI runs) are allowed. The composer writes by compare-and-swap and is told about drift; CLI runs are only observed (policies §3). Axis commit and push run in the daemon under its lock and drift gate; the SCM view is a user path outside those guarantees (policies §6).
 8. **The composer** is an Axis view. It calls `axis.runs/1` on the daemon. Its mock provider lives in the daemon. The renderer has no provider code and shows an honest "agent service unavailable" state when the daemon is absent (§6).
-9. **First slice (Phase 0 gate):** the dashboard lists worktrees; the workspace view shows the file tree, terminal and changes; a toggle and the split mode open IDE view at a file (§8, tasks A1–A7).
+9. **First slice (Phase 0 gate):** the dashboard lists worktrees; the workspace view shows the file tree, terminal and changes; a toggle and the split mode open IDE view at a file (§8, tasks A1–A8).
 
 ## 1. Concept model
 
@@ -33,7 +33,7 @@
 | **Branch** | `axis/<slug>` created with the worktree; base ref and base SHA recorded at creation | Git refs plus the daemon journal | Ahead/behind against the base |
 | **Agent session (run)** | A **composer run** (one Ask, Edit or Agent request, at most one active per workspace) or a **CLI agent run** (a user-installed CLI launched by Axis in a workspace pty), bound to one workspace | Daemon `agent_runs` and `agent_tasks` tables (ADR 0003 `axis.runs/1`) | `IAxisRunsService` streams |
 | **Terminal** | A pty bound to a workspace: either a user terminal (upstream pty host) or, from Phase 1, a daemon-managed pty | Upstream `ITerminalService`. Axis keeps the instance-to-workspace map | `AxisWorkspaceTerminals` (§4.4) |
-| **Changeset** | The worktree's changes against its base: committed since the base, staged, unstaged, untracked | Git, read through the workbench `IGitService` (git extension delegate) in Phase 0, and through the daemon for workspaces that are not mounted | The Changes view, the multi-diff editor |
+| **Changeset** | The worktree's changes against its base: committed since the base, staged, unstaged, untracked | Git. Read through the workbench `IGitService` (git extension delegate) for the mounted workspace and through the daemon for the others. All Axis git writes go through the daemon (policies §6) | The Changes view, the multi-diff editor |
 | **View state** | Agent or IDE view per workspace, the global view, split geometry, focus targets | Renderer storage (§3.6) | `IAxisViewService` |
 
 The **local checkout** is listed on the dashboard but is never an agent workspace (`AGENT_SYSTEM.md`: no shared writable repository directory; ADR 0004 decision 6: no agent, composer or CLI, runs in it). The daemon refuses any launch whose canonical working directory is the local checkout or inside it.
@@ -52,15 +52,15 @@ The **local checkout** is listed on the dashboard but is never an agent workspac
 ### 2.1 What upstream ships
 
 - **Size.** `src/vs/sessions` has 623 non-test `.ts` files and about 199,000 lines [V, `find`/`wc`].
-- **Coupling.** 220 of those files import `workbench/contrib/chat/**`, 142 import `platform/agentHost/**`, and 309 import one or the other [V, grep].
+- **Coupling.** 220 of those files import `workbench/contrib/chat/`, 142 import `platform/agentHost/`, and 288 import one or the other [V, `grep -lE 'workbench/contrib/chat/|platform/agentHost/'`].
 - **The domain model is chat-shaped.** `services/sessions/common/session.ts:17-19` imports chat session file-change types, chat customizations and chat pills [V]. `SESSIONS.md` defines a session as a group of chats (`IChat`) adapted by providers (Copilot Chat, Agent Host, Remote Agent Host) [V, `SESSIONS.md:13-28,108-118`].
 - **The shell.** `browser/workbench.ts` is 3,205 lines: `abstract class Workbench ... implements IAgentWorkbenchLayoutService` (`:277`), with desktop and mobile grid descriptors (`:1734`) and per-part "effective" versus desired visibility (`_effectiveVisible`, `:903-904`) [V]. Its topology is a sidebar, a main region of Sessions part, editor, auxiliary bar and custom view grid, and a panel. There is no activity bar, status bar or banner (`LAYOUT.md:35-44`) [V].
 - **Coexistence with the main workbench is a second window type.**
   - It opens a synthetic Code OSS workspace (`windowsMainService.ts:296-335`). A window is a sessions window when its workspace is that file (`:1599`). It loads `sessions.html` instead of `workbench.html` (`windowImpl.ts:1314-1315`). It gets its own profile (`windowsMainService.ts:1726-1727`) [V].
-  - Extensions run in it only if allow-listed or declared (`extensionManifestPropertiesService.ts:187-200,237`) [V].
+  - Extensions run in it only if allow-listed or declared (`workbench/services/extensions/common/extensionManifestPropertiesService.ts:187-200,237`) [V].
   - View containers are filtered per window type (`WindowEnablement`, `views.ts:64-77`; `viewDescriptorService.ts:331-342`) [V].
   - `isSessionsWindow` appears in 112 non-test files under `workbench`, `platform` and `code` [V, grep].
-- **Switching to the editor is a protocol URL.** "Open in VS Code" builds a `vscode://file/<folder>?windowId=_blank` URL and opens it externally. That opens another window at folder granularity, with no file or line (`sessions/browser/actions/vscodeActions.ts:59-105`) [V].
+- **Switching to the editor is a protocol URL.** "Open in VS Code" builds a `vscode://file/<folder>?windowId=_blank` URL and opens it externally. That opens another window at folder granularity, with no file or line (web: `sessions/browser/actions/vscodeActions.ts:59-105`; desktop: `nativeHostService.openWindow(folders, { forceNewWindow: true })`, `sessions/electron-browser/actions/vscodeActions.ts:92`) [V].
 - **It follows the active session's folder** by rewriting the window's workspace folders (`contrib/workspace/browser/workspaceFolderManagement.ts:42-90`). It mounts only trusted folders (`:57-67`) and inherits trust only for worktrees under `<repo>.worktrees` (`services/sessions/browser/worktreeTrust.ts:30-55`) [V].
 - **D8 already removes its entry points** in block `1500–1999` (`axis-shell.md` D8). ADR 0004 keeps D8.
 
@@ -75,8 +75,8 @@ The **local checkout** is listed on the dashboard but is never an agent workspac
 | `CustomViewGridPart` with `ICustomViewService` | **Pattern only** | Mutually exclusive full-surface views with remembered visibility. This is the shape of the Agent/IDE swap |
 | `services/sessions/**` (about 13,900 lines) and the providers | **Replace** | Chat-centred contracts. Axis has no chat transcripts in the renderer; runs live in the daemon |
 | `contrib/workspace/workspaceFolderManagement.ts` (about 120 lines) | **Adapt** (copy and rewrite) | The folder-follows-focus mechanism with a trust backstop. Its input becomes `IAxisWorkspaceService.focused` |
-| `contrib/files/**` (`ExplorerView` subclass in an auxiliary-bar container, `files.contribution.ts:46-75`, `filesView.ts:29-55`) | **Adapt** | It is chat-free. Its containers use `WindowEnablement.Sessions` and would be hidden in a normal window, so they must be re-registered with the default enablement |
-| `contrib/terminal/sessionsTerminalContribution.ts` (1,003 lines) | **Adapt the pattern** | Per-session terminals by `moveToBackground` and `showBackgroundTerminal` (`:241-252,322-361`) and default cwd sync (`:172-184`) [V]. Its agent-host backend is not used |
+| `contrib/files/**` (`ExplorerView` subclass in an auxiliary-bar container, `files.contribution.ts:46-75`, `filesView.ts:29-55`) | **Adapt** | It has no chat imports, but imports `AGENT_HOST_SCHEME` from `platform/agentHost` (`files.contribution.ts:14`), which the adaptation drops. Its containers use `WindowEnablement.Sessions` and would be hidden in a normal window, so they must be re-registered with the default enablement |
+| `contrib/terminal/sessionsTerminalContribution.ts` (1,003 lines) | **Adapt the pattern** | Per-session terminals by `moveToBackground` and `showBackgroundTerminal` (`:689-760`: `showBackgroundTerminal` `:749`, `moveToBackground` `:756`; restored terminals `:241-252`) and default cwd sync (`:172-184`) [V]. Its agent-host backend is not used |
 | `contrib/layout/**` controllers (14 files, chat-free) | **Adapt rules** | Per-owner editor working sets (`baseSessionLayoutController.ts:701`, `LAYOUT_CONTROLLER.md:33-35`) [V]. The owner key becomes the Axis workspace id |
 | `contrib/changes/**` (28 files; `changesView.ts` alone is 2,487 lines) | **Replace** | Driven by provider changesets and pull-request flows. Axis changes come from Git |
 | "Open in VS Code" | **Replace** | Axis switches in place (§3) |
@@ -93,22 +93,25 @@ The **local checkout** is listed on the dashboard but is never an agent workspac
 
 ### 3.1 Mechanism: one window, one grid, layout swap
 
-`AxisWorkbench` owns the grid (`axis-shell.md` §3.3; `SerializableGrid`, as `sessions/browser/workbench.ts` does). It extends that design in three ways:
+`AxisWorkbench` owns the grid (`axis-shell.md` §3.3; `SerializableGrid`, as `sessions/browser/workbench.ts` does). It extends that design in four ways:
 
 - it adds an **agent part** (`axis.parts.agent`), a `Part` with a string id (`part.ts:53-62`) [V];
 - it fixes the panel to span the full width (sessions' justified alignment, `LAYOUT.md:72`);
+- it keeps the auxiliary bar on the **right** in every mode, matching `UX.md`'s IDE view (agent panel on the right);
 - it keeps a **desired-visibility record per view**, with effective visibility derived from the mode, as sessions does for custom views (`LAYOUT.md:133`).
 
 ```text
 root (vertical): titlebar | banner | middle | statusbar
 middle (vertical): row | panel                      (panel spans the full width)
-row (horizontal): agent | auxiliarybar | activitybar | sidebar | editor
+row (horizontal): agent | activitybar | sidebar | editor | auxiliarybar
 ```
+
+With `workbench.sideBar.location: right`, the IDE nodes are reparented as `agent | auxiliarybar | editor | sidebar | activitybar`, matching upstream's rule that the auxiliary bar sits opposite the side bar. The views are moved without resizing them, as sessions does for panel alignment (`LAYOUT.md:72`). The agent part stays leftmost.
 
 | Part | Agent view | IDE view | Split |
 |---|---|---|---|
 | `axis.parts.agent` (dashboard or workspace view, composer) | shown, **flex** | hidden | shown; proportion persisted |
-| Auxiliary bar | shown with the Axis Workspace container (Files, Changes) | user's choice; the Axis Agent container (Composer, Activity) is available | shown with Files and Changes, between the two halves |
+| Auxiliary bar | shown with the Axis Workspace container (Files, Changes) | user's choice; the Axis Agent container (Composer, Activity) is available | shown with Files and Changes, at the right edge |
 | Activity bar, side bar | hidden | shown (Explorer, Search, SCM, Debug, Extensions) | shown, collapsible |
 | Editor | hidden; **editors stay open** | shown, **flex** | shown, **flex** |
 | Panel (terminals) | the workspace's terminal visibility | the user's panel visibility | shared |
@@ -162,7 +165,7 @@ Files / Changes / Activity click
   - `Mod+Alt+V` is editor dictation (`codeEditor/browser/dictation/editorDictation.ts:69`, active when a speech provider exists);
   - on macOS, `Mod+Alt+0` is Toggle Editor Group Layout (`files/browser/views/openEditorsView.ts:938`) [V].
 
-  D-7 (§9.2) gives a verified conflict-free replacement set.
+  The verified conflict-free set (D-7) is in policies §8, adopted by `UX.md`.
 - **F6 and Shift+F6** cycle the visible parts in grid order, through `getVisibleNeighborPart`, which `AxisWorkbench` implements (`axis-shell.md` §3.3 and §5). In split mode both halves are in the cycle.
 - **Focus rules** (`UX.md` focus rules 1–2): a toggle restores the destination's last focused element per workspace, falling back to the composer, the active editor or the first dashboard row. Every switch announces "Agent view, <workspace>" or "IDE view, <file>" through `status()` (`base/browser/ui/aria/aria.ts:65`) [V].
 
@@ -213,9 +216,9 @@ The rail and the main region are an internal split view inside the agent part, s
 |---|---|---|---|
 | Name, project | Workspace label; worktree folder name | Discovery (§5.2) | `axis.worktrees/1.list` |
 | Branch, base | Branch; base ref and short SHA; ahead/behind | HEAD from discovery; base "not recorded" | Journal plus `git rev-list --left-right --count` |
-| State | idle · running · waiting for approval · failed · needs review · finalised | idle, or "external" for a worktree Axis did not create | Runs and approvals from the daemon (`AGENT_SYSTEM.md` state machine) |
+| State | idle · running · waiting for approval (1b) · quiet, may be waiting for input · failed · changes to review · done (policies §9) | idle, or "external" for a worktree Axis did not create | Runs and approvals from the daemon (`AGENT_SYSTEM.md` state machine) |
 | Agents | Composer run (provider, model, mode, state) and CLI agent runs (label, §4.5 status) | none | `axis.runs/1.list`, `axis.cliRuns/1.list` |
-| Drift | "Files changed outside the agent" count per run (§10.3) | none | daemon drift ledger |
+| Drift | "Files changed outside the agent" count per run, and "Git configuration changed" (policies §3, §6) | none | daemon drift ledger |
 | Terminals | Count and running processes (this window) | `AxisWorkspaceTerminals` | same |
 | Changes | Files and +/- lines | Focused workspace: `IGitService` state. Others: "—" | `axis.worktrees/1.status` (batched) |
 
@@ -228,9 +231,10 @@ The rail and the main region are an internal split view inside the agent part, s
 - **Header.** Name, branch, base SHA, state, and Open in IDE.
 - **Activity stream** (Phase 1). Run events as escaped text (PTY-3) and inline approval challenges (ADR 0003 D4).
 - **Composer** (§6).
+- **Trust** follows the source repository (ADR 0004 decision 12; policies §2).
 - **Files** reuses `ExplorerView` (subclassed, as sessions does) in an Axis auxiliary-bar container with the default `WindowEnablement`. The mounted folder is the worktree, so the explorer is already scoped. A click calls `reveal(file)`.
 - **Changes** is an Axis tree view.
-  - Phase 0: `IGitService.openRepository(worktree)` and its observable `state`: index, working-tree and untracked changes with `originalUri`/`modifiedUri` (`contrib/git/common/gitService.ts:33-35,50-57,83-98,110-120`) [V]. The delegate is the git extension (`mainThreadGitExtensionService.ts:99,103`) [V].
+  - Read path only: `IGitService.openRepository(worktree)` and its observable `state`: index, working-tree and untracked changes with `originalUri`/`modifiedUri` (`contrib/git/common/gitService.ts:33-35,50-57,83-98,110-120`) [V]. The delegate is the git extension (`mainThreadGitExtensionService.ts:99,103`) [V].
   - Phase 1 adds "since base" with `diffBetweenWithStats(baseSha, 'HEAD')` (`gitService.ts:90`).
   - Selecting a file opens a diff and "Review all" opens a multi-diff (`MultiDiffEditorInput`, `multiDiffEditorInput.ts:41-42`) [V], both through `reveal`.
   - Accept, reject and commit are §5.4.
@@ -239,33 +243,33 @@ The rail and the main region are an internal split view inside the agent part, s
 
 - `AxisWorkspaceTerminals` creates terminals with `cwd` set to the worktree (`ICreateTerminalOptions.cwd`, `contrib/terminal/browser/terminal.ts:769`). It records instance → workspace id and, on focus change, backgrounds the other workspaces' terminals and restores the focused one's (`moveToBackground` `:622`, `showBackgroundTerminal` `:616`) [V].
 - Processes keep running in the background, so CLI agents continue while the user looks elsewhere.
-- Split panes are upstream terminal groups (`splitInstance`, `:726`; `location: { parentTerminal } | { splitActiveTerminal }`, `:757`) [V]. The group layout is saved per workspace.
+- Split panes are upstream terminal groups (`splitInstance`, `:726`; `location: { parentTerminal } | { splitActiveTerminal }`, `:757`) [V]. A split always starts in the worktree root, never in the shell-integration-detected cwd (policies §5). The group layout is saved per workspace.
 - **Labelling.** User terminals are tagged "not managed by Axis" (ADR 0004 security 3).
-- **Managed terminals** (Phase 1, required for CLI agent runs, §4.5): the daemon owns the pty, spawned through the broker with an allow-listed environment (PTY-2), process-group kill (PTY-4) and no shell integration. It is attached through `IShellLaunchConfig.customPtyImplementation` (`platform/terminal/common/terminal.ts:568`). Upstream already bridges agent-host ptys this way (`agentHostTerminalService.ts:349`, `agentHostPty.ts:85`) [V].
-- **PTY-2 in user terminals.** The git extension injects askpass into terminals only when `git.useIntegratedAskPass` and `git.terminalAuthentication` are true (`extensions/git/src/askpass.ts:168`; setting at `package.json:3941`) [V]. Decided (D-6): Axis defaults `git.terminalAuthentication` to `false`. That covers plain user terminals; CLI agent runs get the full scrub in §4.5.
+- **Managed terminals** (Phase 1a, all workspace terminals by default): the daemon owns the pty, with the PTY-5 environment (policies §4) and process-group kill (PTY-4). The opt-out `axis.terminals.scrubEnvironment: false` puts plain user terminals back on the upstream pty host. It is attached through `IShellLaunchConfig.customPtyImplementation` (`platform/terminal/common/terminal.ts:568`). Upstream already bridges agent-host ptys this way (`agentHostTerminalService.ts:349`, `agentHostPty.ts:85`) [V].
+- **Phase 0 residual** (no daemon): workspace terminals are upstream terminals. D-6 (`git.terminalAuthentication: false`; `askpass.ts:168`) removes only the askpass variables. `VSCODE_GIT_IPC_HANDLE` and `VSCODE_IPC_HOOK_CLI` remain (policies §4.1). Phase 0 launches no CLI agents.
 
 ### 4.5 CLI agent runs (ADR 0004 decision 8)
 
-- **Configuration.** `axis.cliAgents` is a list of `{ id, label, command, args[], envPassthrough[] }`. Axis offers presets for known official CLIs, but only resolves the command on `PATH` and uses documented arguments. It never adds flags that bypass the CLI's own permission prompts.
+- **Configuration.** `axis.cliAgents` is a list of `{ id, label, command, args[], envPassthrough[] }`. `envPassthrough` can add variables but never a denied one. Axis offers presets for known official CLIs, but only resolves the command on `PATH` and uses documented arguments. It never adds flags that bypass the CLI's own permission prompts.
 - **Launch.** The user starts a run from the workspace view or the dashboard. The renderer calls `axis.cliRuns/1.start { workspaceId, agentId }` and the daemon:
   1. resolves the worktree from the journal and checks it with `realpath` (never the local checkout; ADR 0004 decision 6);
-  2. builds the environment from the user's login environment minus the PTY-5 deny-list: `VSCODE_*` (including `VSCODE_GIT_ASKPASS*`, `VSCODE_GIT_IPC_HANDLE`, `VSCODE_IPC_HOOK_CLI`), `ELECTRON_*`, `GIT_ASKPASS`, `SSH_ASKPASS*`, `GIT_EDITOR`, and every variable from extension environment collections. No Axis vault value is ever added (PTY-2). `SSH_AUTH_SOCK` is kept, because the CLI runs under the user's own login and Git setup. A deny-list rather than an allow-list keeps proxies, toolchain managers and the CLI's documented configuration variables working;
+  2. builds the environment: `getResolvedShellEnv` (`platform/shell/node/shellEnv.ts:32`) [V], resolved by main and passed to the daemon, then `envPassthrough`, then the PTY-5 deny-list, which always wins. It keeps `SSH_AUTH_SOCK` and adds no vault value (policies §4.2);
   3. spawns the process in its own process group with `node-pty`, which is already an upstream dependency (`package.json:160`, `remote/package.json:46`) [V];
   4. records `{ runId, workspaceId, agentId, command, args, cwd, startedAt }` in `agent_runs` with kind `cli`.
-- **Attachment.** The renderer creates an upstream terminal whose `customPtyImplementation` (`platform/terminal/common/terminal.ts:568`) proxies input, output and resize to the daemon pty over `axis.cliRuns/1`, as upstream does for agent-host ptys (`agentHostTerminalService.ts:349`) [V]. Shell integration is off for it, so its output cannot feed command detection (PTY-3). The terminal sits in the workspace's terminal group and supports split panes.
+- **Attachment.** The renderer creates an upstream terminal whose `customPtyImplementation` (`platform/terminal/common/terminal.ts:568`) proxies input, output and resize to the daemon pty over `axis.cliRuns/1`, as upstream does for agent-host ptys (`agentHostTerminalService.ts:349`) [V]. The shell-integration addon still parses its output (`xtermTerminal.ts:339-340`) [V]. Axis derives no status from marks, and splits use the worktree root (policies §5). The terminal sits in the workspace's terminal group and supports split panes.
 - **Status, from state Axis owns only:**
 
   | Status | Source |
   |---|---|
   | starting, running, exited (code), killed | Process lifecycle in the daemon |
   | active | Output in the last 5 s |
-  | quiet: "no output for 30 s, may be waiting for input" | Process alive and no output for the configured interval |
+  | quiet: "may be waiting for input" (policies §9) | Process alive and no output for the configured interval |
   | attention | A BEL character in the output (a standard terminal signal) |
-  | changes | Worktree changes observed during the run (§10.3) |
+  | changes | Worktree changes observed during the run (policies §3) |
 
   Axis never parses the CLI's output format, session stores or private files.
 - **Labels.** The dashboard and terminal tab say the run is "governed by the CLI's own permissions". Axis shows no approvals, budgets or tool audit for it.
-- **What Axis cannot stop.** A CLI run is not brokered. It can still run `git` with the user's own credentials (credential helpers and `SSH_AUTH_SOCK`), including `git push`, and it can write hooks or config into the shared `$GIT_COMMON_DIR`. The scrub only removes the editor's askpass, IPC handles and extension variables. The daemon snapshots `$GIT_COMMON_DIR/config` and `hooks/` when a CLI run starts and ends, and flags any change. The dashboard says so, and its git activity is caught by the common-dir drift check (§5.3 invariant 5) and by review.
+- **What Axis cannot stop.** A CLI run is not brokered. It can still run `git` with the user's own credentials (credential helpers and `SSH_AUTH_SOCK`), including `git push`, and it can write hooks or config into the shared `$GIT_COMMON_DIR`. The scrub only removes the editor's askpass, IPC handles and extension variables. The daemon snapshots `$GIT_COMMON_DIR/config` and `hooks/` when a CLI run starts and ends, and flags any change on the dashboard and in the SCM view (policies §6.3). The change also gates Axis commit (§5.3 invariant 5).
 - **Stop** sends SIGINT, then SIGTERM, then SIGKILL to the process group (PTY-4). Reload keeps daemon ptys running; the renderer reattaches by `runId` (R4).
 
 ## 5. Worktree lifecycle
@@ -279,6 +283,7 @@ The rail and the main region are an internal split view inside the agent part, s
 ### 5.2 Phase 0: read-only discovery
 
 - **Discovery.** It reads `<common dir>/worktrees/*/{HEAD,gitdir}` and the main `HEAD` through `IFileService`, which is the git extension's own approach (`git.ts:3118-3170`) [V]. No process is spawned.
+- **Finding the common dir.** When the opened checkout's `.git` is a file (it is itself a linked worktree or a submodule), discovery follows its `gitdir:` line and then that directory's `commondir` file.
 - **What the dashboard shows.** The local checkout, plus every linked worktree marked `external`, since none were created by Axis yet.
 - **Replacement.** Phase 1 replaces discovery with `git worktree list --porcelain -z`, reconciled against the journal.
 
@@ -288,9 +293,9 @@ The rail and the main region are an internal split view inside the agent part, s
 |---|---|---|
 | `create {projectId, name, baseRef?}` | write, tier 2 | Resolve the project root from the journal by `projectId` (never from a payload path; ADR 0004 security 2). Resolve `baseSha` with `rev-parse --verify <ref>^{commit}`. Check the branch name with `check-ref-format --branch`. Choose the path `<worktree root>/<project>-<hash>/<slug>` (D-3), which must not be inside any registered repository's working tree and must not exist. Run `git -c core.hooksPath=<empty> -c core.fsmonitor=false worktree add -b axis/<slug> <path> <baseSha>`, then `worktree lock --reason axis:<id>`. Record `{id, projectId, path(realpath), branch, baseRef, baseSha, createdBy, state: READY}`, plus a hash snapshot of `$GIT_COMMON_DIR/config` and `hooks/` (WT-2 baseline). Return the id |
 | `list`, `status {ids}` | read | Journal joined with porcelain output: present, missing, locked, external; HEAD, dirty counts, ahead/behind against the base |
-| `discard {id, paths, hunks?}` (reject) | write, tier 2 | Write a backup commit of the full worktree (temporary index, `write-tree`, `commit-tree`) to `refs/axis/backup/<id>/<ts>`, then restore the paths or reverse-apply the hunks. Reversible from the backup |
+| `discard {id, paths, hunks?}` (reject) | write, tier 2 | Write a backup commit of the worktree, without ignored files (policies §7), to `refs/axis/backup/<id>/<ts>`, then restore the paths or reverse-apply the hunks. Reversible from the backup |
 | `finalise {id, outcome: merged ∣ archived ∣ abandoned}` | write, tier 2 | Refuse while runs or managed ptys are active. Point `refs/axis/archive/<id>` at the tip (the rollback ref). For `merged`, check the tip is reachable from the base branch |
-| `remove {id, deleteBranch?}` | destructive, tier 4 (native confirmation, ADR 0003 D4) | Require `finalise`. Refuse if dirty unless the user confirms a discard, which writes a backup first. Then `worktree unlock`, `worktree remove <path>` (never `--force` without a backup ref), optionally delete the branch (the archive ref keeps the commits), and set state `CLEANED` |
+| `remove {id, deleteBranch?}` | destructive, tier 4 (challenge plus native confirmation, ADR 0003 D4; task B4) | Require `finalise`. Refuse if dirty unless the user confirms a discard, which writes a backup first. Then `worktree unlock`, `worktree remove <path>` (never `--force` without a backup ref), optionally delete the branch (the archive ref keeps the commits), and set state `CLEANED` |
 
 **Safety invariants** (`AGENT_SYSTEM.md` Git isolation; threat model §5.5):
 
@@ -298,25 +303,23 @@ The rail and the main region are an internal split view inside the agent part, s
 2. **The local checkout is never written.** The daemon refuses any operation whose canonical target is the local checkout or inside it. `worktree add` writes only the shared common dir (refs and `worktrees/<name>`), which is inherent in git and documented to the user.
 3. **Cleanup only after finalisation**, with rollback refs kept (D-8 sets the retention period).
 4. **Every daemon git call** uses an empty hooks path, `core.fsmonitor=false` and an allow-listed environment (WT-2, PTY-2). Paths are canonicalised with `realpath` at the time of use (WT-1).
-5. **Common-dir drift.** The config and hooks snapshot is compared before and after each run, and on every status refresh. On drift the workspace shows "Git configuration changed", and commit stays blocked until the user reviews it (WT-2).
-6. **Trust** is inherited only by worktrees the journal records as Axis-created from a trusted project. This is stronger than sessions' path heuristic (`worktreeTrust.ts:30-55`) [V]. The renderer applies it through `setUrisTrust` (`platform/workspace/common/workspaceTrust.ts:61`) [V].
-7. **One mutating git operation at a time per project** (a daemon mutex), because worktree operations lock refs in the shared common dir [I].
+5. **Common-dir drift.** The config and hooks snapshot is compared before and after each run, and on every status refresh. On drift the workspace shows "Git configuration changed", and **Axis** commit stays blocked until the user reviews it (WT-2). SCM-view commits are not blocked; they show the banner (policies §6.3).
+6. **Trust** is copied from the source repository to each Axis-created worktree (ADR 0004 decision 12; policies §2). It is never granted to the worktree root.
+7. **One mutating Axis git operation at a time per project** (a daemon mutex), because worktree operations lock refs in the shared common dir [I]. Git commands outside Axis (the SCM view, terminals, CLIs) are not serialised.
 
 ### 5.4 Review actions
 
 - **Accept** (per file, per hunk in Phase 1) marks content for commit. In Phase 0 that is file selection.
-- **Commit** is a user action through `IGitService.commitFiles(files, message)`, which stages and commits (`gitService.ts:97`) [V]. It runs with the user's Git identity (ADR 0004 security 6).
-  - The git extension runs the repository's hooks, as the SCM view does. The WT-2 drift check (invariant 5) is what makes those hooks visible.
-  - Protected paths (WT-3) and common-dir changes are flagged before commit.
+- **Commit** and **Push** are user actions run by the daemon (`axis.worktrees/1.commit`, `.push`), under the git mutex and write lock, with commit gated by the drift check (policies §6.1). Protected paths (WT-3) and common-dir changes are flagged before commit.
 - **Reject** is `axis.worktrees/1.discard`, which is reversible.
-- Hunk-level accept and reject need a daemon `applyPatch` to the index (Phase 1). The renderer never hand-edits the index.
-- **Push** (Phase 1, ADR 0004 decision 9) is a user action. The Axis button runs the git extension's push for the workspace branch, using the user's Git configuration and credentials, as the SCM view does. A composer agent's request to push is a default-deny tier in the broker.
-- **Open a pull request** opens the forge's compare page through `IOpenerService` In Phase 1 the forge is GitHub: `https://github.com/<owner>/<repo>/compare/<base>...axis/<slug>` derived from the remote URL, or `gh pr create --web` in a managed pty when `gh` is installed and signed in. Axis stores no forge credentials.
+- Hunk-level accept and reject use a daemon `applyPatch` to the index. The renderer never edits the index.
+- **Open a pull request** uses a GitHub compare URL or `gh pr create --web` (policies §6.2).
+- **The SCM view** in IDE view stays a user path through the git extension, outside these guarantees, with a drift banner (policies §6.3).
 - **Merge into the base branch** stays out of Phase 1. The integration and merge queue is Phase 3.
 
 ## 6. Composer integration point
 
-- **First provider:** the Anthropic API (ADR 0004 resolved question 1), as an adapter in the daemon gateway. Its key is stored in the connection vault and decrypted only through the main-process broker (ADR 0003 D1.6). Stage 1 removed `@anthropic-ai/sdk` from `package.json` together with the agent host (`axis-shell.md` §2.9). The adapter therefore uses the documented HTTP API with Node `fetch`, a streaming parser and Zod schemas, which needs no `package.json` or lockfile patch (D-11).
+- **First provider:** the Anthropic API (ADR 0004 resolved question 1), as an adapter in the daemon gateway. Its key is stored in the connection vault and decrypted only through the main-process broker (ADR 0003 D1.6). Stage 1 removed `@anthropic-ai/sdk` from `package.json` together with the agent host (`axis-shell.md` §2.9). The adapter therefore uses the documented HTTP API with Node `fetch`, a streaming parser and Zod schemas, which needs no `package.json` or lockfile patch (ADR 0004 decision 14).
 - **The UI.** `AxisComposerWidget` is hosted in the workspace view and, in IDE view, in a `ViewPane` in the Axis Agent auxiliary-bar container. It is one widget, bound to `axis.focusedWorkspace`.
   - Modes are Ask, Edit and Agent, and a provider/model picker comes from `axis.providers/1.list`.
   - Context chips come from Files and Changes selections and travel as `UriComponents` inside the worktree. The daemon re-checks them (DMN-1, WT-1).
@@ -341,16 +344,16 @@ The rail and the main region are an internal split view inside the agent part, s
 
 | Block | Contents | Files | Changed lines (excluding markers) | Change from `axis-shell.md` §3.10 |
 |---|---|---|---|---|
-| `0001–0999` shell (criterion 2) | P2–P9 bootstrap, lint and filters (P8 and P9 landed on the Stage 1 branch, `axis-shell.md` §2.9), plus bridge seams B1–B3 | **10** | **~45** (about 75 with markers) | **None.** The agent part, view modes, Files, Changes, terminals binding and composer are all overlay |
+| `0001–0999` shell (criterion 2) | P2–P9 bootstrap, lint and filters (P8 and P9 landed on the Stage 1 branch, `axis-shell.md` §2.9), plus bridge seams (ADR 0003 D6, called seams B1–B3 in `axis-shell.md` §3.6; distinct from the tasks below) | **10** | **~45** (about 75 with markers) | **None.** The agent part, view modes, Files, Changes, terminals binding and composer are all overlay |
 | `0001–0999` worst case | + P2b in-memory workspace hook (same file as P2), + `build/next/resources.ts` if Axis UI loads assets by URI, + optional P11/P12 | 11–13 | ~65 | P11/P12 must stay out unless the final count leaves room (unchanged advice). With them **and** `resources.ts`, the count reaches 13 and breaks the 12-file limit |
 | `1000–1499` rebrand | G1–G3 | 4 incl. `product.json` | 90 / 106 measured (§2.9) | None |
 | `1500–1999` Copilot, agent host, D8 | Measured 19 files (185 / 122); D8 adds about 12 deletion lines in `build/next/index.ts` and about 6 in `windowsMainService.ts` | ~20 | ~200 | None. D8 stays: the agent shell does not need the sessions window |
 | `2000–2999` hardening | H1–H4 | 2 | ~25 | None |
 
 - **Conclusion.** The agent-first shell does not, by design, need more than the ADR 0002 shell budget. **No amendment is proposed.**
-- **Risks to the budget.** Resolve them early in task A7:
+- **Risks to the budget.** Resolve them early in task A8:
   1. the in-memory workspace hook, if per-project workspace files misbehave (R1);
-  2. web: if the reh-web Agent view needs a server-side seam beyond B2 [I, Phase 1];
+  2. web: if the reh-web Agent view needs a server-side seam beyond the `serverServices.ts` bridge seam [I, Phase 2 or later, since the browser skeleton is out of Phase 1];
   3. any Axis need to change upstream part internals, which is forbidden by ADR 0002 decision 2. That would trigger ADR 0004's revisit clause, not an amendment.
 - **Axis-owned code.** Overlay grows from `axis-shell.md`'s 3–4.5k lines to about 8–10k [I]: `AxisWorkbench` with modes about 2.5k, the agent part and dashboard about 2k, services about 1.5k, views about 1.5k, the composer about 1k, tests extra. Adapted sessions copies (about 0.5k) carry `Adapted from <path>@2c33b50` headers (`axis-shell.md` §3.7).
 
@@ -369,28 +372,35 @@ The rail and the main region are an internal split view inside the agent part, s
 | **A3** | The agent part: rail and dashboard rows (§4.2, Phase 0 columns), keyboard navigation of the list, the empty-window state | The dashboard lists the local checkout and the worktrees. Enter focuses a row. Workspace 1–9 commands work | Unit tests on the view model. Accessibility: rows are a list with names and states read as text. Screenshot |
 | **A4** | The workspace view: the header, the Files view (`ExplorerView` subclass, Axis auxiliary-bar container), and `AxisWorkspaceTerminals` (cwd, background/foreground on focus change, split panes, "not managed" tag) | The file tree shows the focused worktree. A new terminal starts in the worktree. Switching workspaces swaps the visible terminals while background processes keep running | Unit tests on the terminal map. A manual script: run `sleep 600` in ws-a, switch to ws-b, back again, and the process is alive |
 | **A5** | The Changes view (read-only, `IGitService` state) and diff and multi-diff open through `reveal` | Modified, staged and untracked files are listed. A click opens a diff in IDE view at the change | Unit test with a fake `IGitService`. Manual test on a fixture repo |
-| **A6** | `reveal` routing (§3.4), `split` mode (sash, collapse, F6 across halves), per-workspace working sets, focus return, announcements, shortcut conflict check (D-7) | A file click in Agent view opens IDE view at file:line in `perWorkspace`, and opens in the IDE half without switching in `split`. Returning restores workspace and editor state. Keyboard-only walkthrough of all three modes | Unit tests per mode. The `UX.md` focus-rule script with VoiceOver on macOS. A keybinding conflict report against the upstream defaults |
-| **A7** | Gate check: footprint report per block, packaged macOS and Linux builds, the ADR 0004 Phase 0 gate items 1–4 | Block `0001–0999` within 12 files and 300 lines. Gate items pass | `code-oss/scripts/footprint` output. Smoke subset. A recorded walkthrough |
+| **A6** | `reveal` routing (§3.4) and `split` mode (sash, collapse, F6 across halves, the `sideBar.location: right` reparenting) | A file click in Agent view opens IDE view at file:line in `perWorkspace`, and opens in the IDE half without switching in `split`. Collapsing either half keeps it reachable by F6 | Unit tests per mode and per side-bar location. Manual check in all three modes |
+| **A7** | Per-workspace working sets, focus return, screen-reader announcements, shortcuts (policies §8) | Returning to Agent view restores workspace and editor state. Focus never falls to the body. Keyboard-only walkthrough of all three modes passes | The `UX.md` focus-rule script with VoiceOver on macOS. A keybinding report against the upstream defaults, plus manual checks on macOS, Linux and Windows (Polish and Czech layouts) |
+| **A8** | Gate check: footprint report per block, packaged macOS and Linux builds, the ADR 0004 Phase 0 gate items 1–4 | Block `0001–0999` within 12 files and 300 lines. Gate items pass | `code-oss/scripts/footprint` output. Smoke subset. A recorded walkthrough |
 
-### 8.2 Phase 1a: daemon, worktrees, CLI agents, review and push
+### 8.2 Phase 1a: daemon, worktrees, terminals, CLI agents, review, push
 
-Phase 1 is split as the lead decided on 2026-11-02: 1a is the agent shell without the composer; 1b adds the composer, provider, vault, approvals and broker.
-
-| Task | Scope | Acceptance criteria | Verification |
-|---|---|---|---|
-| **B1** | ADR 0003 bridge spike (seams B1–B3, handshake, envelope, policy pipeline) with `axis.worktrees/1.list`/`status` replacing discovery | ADR 0003 validation criteria 1–7. The dashboard is fed by the daemon, including non-mounted workspaces' change counts | ADR 0003 tests. Kill the daemon: the UI shows unavailable states and recovers |
-| **B2** | `create`, `finalise`, `remove` with the §5.3 invariants and journal. Dashboard New workspace and Archive/Remove | Base SHA recorded. The local checkout is byte-identical after a create/remove cycle (status, index hash, HEAD). Removing a dirty workspace is refused without confirmation. Rollback refs exist after removal | Daemon unit tests against temporary repos. Hooks-planted fixture: no hook runs during a daemon git call. Drift fixture: commit is blocked |
-| **B3** | Accept/commit (`commitFiles`), reject and hunk-level via `discard`/`applyPatch`. WT-2 and WT-3 flags in Changes | Commit uses the user identity. Reject is reversible from the backup ref. Protected paths are highlighted | Unit and integration tests. Manual review script |
-| **B4** | Push and open pull request (§5.4) | Push uses the user's Git configuration. A composer push request is denied. The compare URL is correct for GitHub HTTPS and SSH remotes. Other forges show "not supported yet". No forge credential is stored | Unit tests on URL derivation. Broker deny test |
-| **B5** | CLI agent runs (§4.5): `axis.cliAgents` setting, daemon pty with the scrubbed environment, `customPtyImplementation` attachment, status, dashboard rows, stop | A run starts only in a worktree. The child environment has none of the PTY-5 variables and keeps `SSH_AUTH_SOCK`. Status follows the table in §4.5. Reload reattaches. Stop kills the process group | PTY-2 test (dump the child environment), PTY-4 kill test, launch refused for the local checkout, reattach test |
-
-### 8.3 Phase 1b: composer, provider and concurrency
+1a is the agent shell (ADR 0004 decision 13). It includes the challenge machinery, so that `remove` (tier 4) and later the composer use one mechanism, built once. This moves that piece of ADR 0004 security implication 4's "approvals in 1b" into 1a. The approval UI for agent requests stays in 1b.
 
 | Task | Scope | Acceptance criteria | Verification |
 |---|---|---|---|
-| **C1** | The composer widget and view, `IAxisRunsService` (bridge client and disconnected state), the daemon mock provider and scenarios | Ask/Edit/Agent run against the mock. An Edit change appears in Changes. An approval challenge blocks until the user resolves it; an agent actor is denied. Cancel works | Contract tests against the mock scenarios. UI tests with `FakeRunsService`. DMN-3 negative test |
-| **C3** | The Anthropic API adapter (ADR 0004 resolved question 1) in the daemon gateway, with no new npm dependency (D-11) | `PROVIDERS.md` rules. No credential in renderer, logs or environment | PRV-1, PRV-2 and PRV-4 tests |
-| **C4** | Drift and concurrency (§10.3): run base snapshots, compare-and-swap writes, advisory locks from dirty editors, drift ledger and indicator | The §10.3 scenarios pass: user edit, CLI edit and commit during a composer run each produce a refused write and a drift notice, never a silent overwrite | Daemon tests per scenario, plus a manual run with a CLI and the composer in one workspace |
+| **B1** | Bridge transport: the daemon fork with a fixed entry (the `app.ts` and `build/next/index.ts` bridge seams), the `vscode:axisConnect` handshake, window-identity and frame checks, the envelope check (ADR 0003 D1, D2 envelope) | Only an Axis workbench window gets a port; auxiliary windows and `about:blank` frames are refused. Oversized or deep messages are rejected before parsing. Native modules (node-pty, the watcher) load in the packaged daemon | ADR 0003 validation tests for D1. Negative tests per check. A packaged-build launch |
+| **B2** | Contracts and the policy pipeline skeleton: schema validation (Zod facade), identity from `ConnectionContext`, default-deny `policy.evaluate`, structured errors, the audit log with hash chain (DMN-5), redaction by field sensitivity (DMN-6) | Unknown keys and `__proto__` are rejected. No rule means deny. Every decision is audited and the chain verifies. Secret fields never appear in logs | Contract tests. Audit chain tamper test. Redaction test with planted secrets |
+| **B3** | The journal: SQLite (WAL, migrations) for `projects`, `worktrees`, `agent_runs` and `audit_events`; journal-first state changes; restart recovery (DMN-7) | Killing the daemon at each state transition and restarting it recovers a consistent state. The worktree is intact | Kill-and-recover test matrix |
+| **B4** | Challenges and native confirmation (ADR 0003 D4): daemon-issued `challengeId` bound to a request digest, `approvals.resolve` by `user` actors only, `confirmNative` over the privileged port for tiers 4–5 | A tier-4 request blocks until a native dialog confirms. An agent actor resolving a challenge gets `E_POLICY_DENIED`. A stale or replayed challenge is refused | DMN-3 negative tests. Manual native-dialog check |
+| **B5** | `axis.worktrees/1.list`/`status` replacing Phase 0 discovery | The dashboard is fed by the daemon, including non-mounted workspaces' change counts. Daemon down: unavailable states shown, then recovery | Unit tests. Kill-daemon test |
+| **B6** | `create`, `finalise`, `remove` with the §5.3 invariants; trust copy (policies §2); dashboard New workspace and Archive/Remove | Base SHA recorded. The local checkout is byte-identical after a create/remove cycle (status, index hash, HEAD). Removing a dirty workspace needs a B4 confirmation and writes a backup. Rollback refs exist after removal | Daemon tests on temporary repos. Hooks-planted fixture: no hook runs during a worktree call. Untrusted-source fixture: the worktree opens restricted |
+| **B7** | Review: daemon `commit`, `discard`, `applyPatch` (hunks), the drift gate, WT-2 and WT-3 flags, the SCM-view banner (policies §6) | Commit uses the user identity and refuses on unacknowledged common-dir drift. Reject is reversible. The SCM banner appears while drift is present | Unit and integration tests. A commit from the SCM view during drift shows the banner and succeeds as a user path |
+| **B8** | Push and open PR (policies §6.1–6.2) | Explicit refspec, never mirror. `GIT_TERMINAL_PROMPT=0`, with the terminal fallback. Compare URL correct for GitHub HTTPS and SSH remotes. No forge credential stored | Unit tests on refspec and URL derivation |
+| **B9** | Daemon-managed workspace terminals and CLI agent runs (§4.4–4.5; policies §4–5): `axis.cliAgents`, attachment, status, dashboard rows, stop, opt-out | Runs start only in a worktree. Splits start in the worktree root | **PTY-5 test**: dump the child environment of a CLI run and a plain terminal. None of the denied variables, `SSH_AUTH_SOCK` kept, `envPassthrough` cannot re-add a denied name, `NODE_OPTIONS` restored. Also a PTY-4 kill test, a local-checkout refusal test, a reattach-after-reload test, and an OSC 633 cwd-spoof test (the split still opens in the worktree root) |
+
+### 8.3 Phase 1b: vault, broker, composer, provider, concurrency
+
+| Task | Scope | Acceptance criteria | Verification |
+|---|---|---|---|
+| **C1** | Connection vault: credentials stored through the main secret broker; backend checked on every encrypt; `basic_text` refused without consent (PRV-1); plaintext never leaves main or the daemon (PRV-2) | No credential in renderer state, extensions, prompts, environment or logs | PRV-1 and PRV-2 tests. Redaction scan |
+| **C2** | The broker: tool contracts, tiers, protected paths (WT-3), timeouts and output caps (PTY-4), the allow-listed tool environment (PTY-2), the Agent-mode tool loop, and policy rules on top of the B2 skeleton | A composer push request is denied. Protected-path writes raise a B4 challenge. A runaway command is killed at the cap | Broker deny tests, including push. A cap and kill test |
+| **C3** | The composer widget and view, `IAxisRunsService` (bridge client and disconnected state), the daemon mock provider and scenarios, the approval UI | Ask/Edit/Agent run against the mock. An Edit change appears in Changes. Cancel works | Contract tests against the mock scenarios. UI tests with `FakeRunsService` |
+| **C4** | The Anthropic API adapter (ADR 0004 decision 14) in the daemon gateway | `PROVIDERS.md` `ProviderAdapter` contract tests pass. No silent cross-provider routing (PRV-4). Budgets enforced (PRV-6) | Contract tests. PRV-4 and PRV-6 tests |
+| **C5** | Drift and concurrency (policies §3): run base, compare-and-swap with temp-and-rename, advisory locks, ledger, notices, restore from run base | Every scenario in policies §3.8 passes | Daemon tests per scenario. A manual run with a CLI and the composer in one workspace |
 
 ## 9. Risks and open questions
 
@@ -400,16 +410,18 @@ Phase 1 is split as the lead decided on 2026-11-02: 1a is the agent shell withou
 |---|---|---|
 | R1 | Folder swap side effects: language servers and the git extension re-scan on each focus change; extensions that cache the first folder at activation go stale [I] | Measure switch latency in A2. If it is too slow, keep the recently focused worktrees mounted (multi-root) and scope views to the focused one. Last resort: P2b |
 | R2 | Extension `workspaceState` and workspace storage are shared by every workspace in a project | Accept and document. Axis keys its own state by workspace id |
-| R3 | `applyWorkingSet` on focus change meets dirty editors [I] | Keep dirty editors open across the swap, or prompt. Test in A6 |
-| R4 | Backgrounded terminals across a window reload or persistent-session restore lose their workspace mapping [I] | Persist the instance → workspace map using persistent process ids. Restore hidden terminals as sessions does for restored terminals (`sessionsTerminalContribution.ts:241-252`) |
+| R3 | `applyWorkingSet` on focus change meets dirty editors [I] | Keep dirty editors open across the swap, or prompt. Test in A7 |
+| R4 | Backgrounded terminals across a window reload lose their workspace mapping [I] | Daemon ptys are keyed by `runId` or terminal id and reattach. Upstream-pty terminals (opt-out) restore hidden as sessions does (`sessionsTerminalContribution.ts:241-252`) |
 | R5 | `IWorkbenchLayoutService` churn now carries more Axis logic (`axis-shell.md` R4) | Contract unit tests. Sync step 3 diff of `layoutService.ts` and `sessions/browser/workbench.ts` |
-| R6 | CLI agent runs are not brokered: no policy, budgets or audit, and the CLI can still use the user's Git credential helpers (including push) | PTY-5 deny-list (§4.5). Common-dir snapshot around each CLI run. Labelled "governed by the CLI's own permissions". Common-dir drift check. All their changes go through review. Plain user terminals keep D-6 |
-| R12 | Drift attribution for CLI runs is by time window, not by writer, because Axis does not observe the CLI's writes directly | Shown as "changed during CLI run X". Attribution is informational; review covers every change (§10.3) |
+| R6 | CLI agent runs are not brokered: no policy, budgets or audit. The CLI can still use the user's Git credentials (including push), and can reach the local checkout (ADR 0004 decision 6 governs the working directory only) | PTY-5 (policies §4). Common-dir snapshot around each CLI run. Labelled "governed by the CLI's own permissions". All their changes go through review |
+| R12 | Drift attribution for CLI runs is by time window, not by writer; a CLI can overwrite other changes | Shown, not prevented. Restore from run base for 7 days (policies §3.6) |
+| R13 | Snapshot refs store untracked, non-ignored files (possibly secrets) as objects in the shared common dir, and grow the repository | Ignored files excluded. Files over 50 MiB skipped. Never mirror-pushed. Retention and user-run cleanup (policies §7) |
+| R14 | Git commands outside Axis (SCM view, terminals, CLIs) bypass the mutex, lock and drift gate | Scoped guarantees, the SCM banner, and HEAD-moved notices to the composer (policies §6.3) |
 | R7 | The shared `$GIT_COMMON_DIR` lets anything in a worktree (a CLI agent, a user command) plant hooks or config that later run in the local checkout | Drift snapshot (invariant 5), surfaced on the dashboard. Never described as a sandbox |
 | R8 | Adapted sessions code drifts | Copies under 600 lines with source and commit headers; diffed at each sync (`axis-shell.md` R8) |
-| R9 | Phase 0 discovery parser diverges from git's metadata format | Read-only, tolerant of missing files (as `git.ts:3166,3177`). Replaced by porcelain output in B1 |
+| R9 | Phase 0 discovery parser diverges from git's metadata format | Read-only, tolerant of missing files (as `git.ts:3166,3177`). Replaced by porcelain output in task B5 |
 | R10 | Split mode with a single side bar and auxiliary bar: both halves cannot each have their own | The agent half keeps its rail inside the agent part. The auxiliary bar is shared (Files and Changes) |
-| R11 | Web (reh-web) Agent view: the daemon runs as a reh child and worktrees live on the server | Desktop first. Web bring-up follows ADR 0003 D1.7 with a gap list |
+| R11 | Web (reh-web) Agent view, Phase 2 or later: the daemon runs as a reh child and worktrees live on the server | Desktop first. Web bring-up follows ADR 0003 D1.7 with a gap list |
 
 ### 9.2 Decisions (recorded 2026-11-02)
 
@@ -420,116 +432,18 @@ Phase 1 is split as the lead decided on 2026-11-02: 1a is the agent shell withou
 | D-3 | Worktree root, per ADR 0004 decision 7: the Axis application data directory, `worktrees/<project>-<hash>/<slug>` beneath it. macOS `~/Library/Application Support/Axis/worktrees/…`; Linux `$XDG_DATA_HOME/Axis/worktrees/…` (default `~/.local/share/Axis/…`); Windows `%LOCALAPPDATA%\Axis\worktrees\…`. `<hash>` is the first 8 hex digits of SHA-256 over the canonical common-dir path, so two clones with the same name do not collide. Configurable by `axis.worktrees.root`; the daemon rejects a root inside any registered repository's working tree | **Decided** (aligned with ADR 0004) |
 | D-4 | Branch naming `axis/<slug>`, refused if it exists | **Decided** |
 | D-5 | Editors opened while Agent view is showing: explicit user opens switch to IDE view; background opens badge the view control | **Decided** |
-| D-6 | Plain user terminals: default `git.terminalAuthentication: false`, re-enabled per profile. CLI agent runs get the PTY-5 deny-list (§4.5) | **Decided** |
-| D-7 | Default shortcuts: the table below | **Proposed**, for `UX.md` to adopt |
+| D-6 | Default `git.terminalAuthentication: false` (Phase 0 and opt-out terminals). From Phase 1a, PTY-5 applies to all workspace terminals, with the opt-out `axis.terminals.scrubEnvironment` (policies §4) | **Decided** |
+| D-7 | Default shortcuts (policies §8) | **Decided**; adopted by `UX.md` at `c89ae02` |
 | D-8 | Keep `refs/axis/archive/*` until the user deletes them; keep `refs/axis/backup/*` for 30 days | **Decided** |
 | D-9 | External (non-Axis) worktrees appear read-only, labelled, with no agent actions | **Decided** |
 | D-10 | Dashboard scope: the current project, with a project switcher in the top bar | **Decided** |
-| D-11 | The Anthropic adapter uses the documented HTTP API through `fetch`, with no SDK, so there is no `package.json` or lockfile patch. Re-adding an SDK would be a dependency patch outside every current block and needs its own decision | **Proposed** |
+| D-12 | Axis commit and push run in the daemon; the SCM view is a user path outside the guarantees (policies §6) | **Decided** |
+| D-13 | The challenge machinery is built in Phase 1a (task B4) and reused by 1b | **Decided** |
 
-**D-7 shortcut table.** `Mod` is Cmd on macOS and Ctrl on Windows and Linux.
-
-| Command | macOS | Windows and Linux |
-|---|---|---|
-| `axis.view.toggle` (toggle Agent / IDE view; in split mode, focus the other half) | `Ctrl+Cmd+V` | `Ctrl+Shift+Alt+V` |
-| `axis.dashboard.show` | `Ctrl+Cmd+0` | `Ctrl+Shift+Alt+0` |
-| `axis.workspace.focus.1` … `.9` | `Ctrl+Alt+Cmd+1` … `9` | `Ctrl+Shift+Alt+1` … `9` |
-| `axis.workspace.next` / `.previous` | `Ctrl+Cmd+]` / `Ctrl+Cmd+[` | `Ctrl+Shift+Alt+]` / `Ctrl+Shift+Alt+[` |
-| Cycle parts across both views | `F6` / `Shift+F6` (upstream, kept) | same |
-| `axis.split.collapseAgent` / `.collapseIde` | command only | command only |
-
-How each binding was verified [V]:
-
-- **Coverage.** Every `KeyMod`/`KeyCode` expression in non-test `src/vs/**/*.ts` was indexed by modifier set and key: 3,003 expressions, covering `primary`, `secondary`, the `mac`/`win`/`linux` overrides and both parts of `KeyChord`. So were the 100 `contributes.keybindings` entries (`key`, `mac`, `win`, `linux`) in built-in `extensions/*/package.json`. Every binding above has **zero** matches, on every platform field.
-- **Rejected candidates and why:**
-  - `Mod+Alt+V` is editor dictation (`codeEditor/browser/dictation/editorDictation.ts:69`);
-  - on macOS, `Mod+Alt+0` is Toggle Editor Group Layout (`files/browser/views/openEditorsView.ts:938`);
-  - on macOS, `Ctrl+Cmd+1` and `Ctrl+Cmd+9` are Move Editor into First/Last Group (`browser/parts/editor/editorActions.ts:2220,2239`). That is why workspace focus uses `Ctrl+Alt+Cmd`;
-  - `Mod+Shift+A`, `Mod+Shift+Enter` and `Mod+Alt+Enter` each have 6 or more registrations;
-  - `Ctrl+Cmd+F`, `Ctrl+Cmd+I` and `Ctrl+Shift+Alt+A`/`C`/`G`/`I`/`L`/`O` are taken (the last ones by chat, files and accessibility commands).
-- **Windows and Linux use `Ctrl+Shift+Alt`, not `Ctrl+Alt`.** On many layouts `Ctrl+Alt` is AltGr and types characters such as `{` and `[` with digits. Upstream already uses `Ctrl+Shift+Alt` for core commands (for example Copy Relative Path, `files/browser/fileCommands.ts:284`) [V].
-- **Not covered by the scan [I]:**
-  - OS-reserved shortcuts. None of the chosen ones is a documented macOS default (those include `Ctrl+Cmd+F`, `Q`, `D` and `Space`, and `Ctrl+Shift+Cmd+3`/`4`). GNOME reserves `Ctrl+Shift+Alt` with the arrow keys and `R`, not these keys;
-  - AltGr+Shift layouts that type characters with digits or brackets;
-  - keybindings contributed by third-party extensions.
-
-  Task A6 re-checks these by hand on macOS and one Linux desktop.
+The Anthropic adapter's "HTTP API, no SDK" choice is ADR 0004 decision 14.
 
 ### 9.3 Open questions
 
 1. Is a per-project `.code-workspace` acceptable product-wise? Users see a workspace file name in the title and in recents. A label formatter can hide it [I].
-2. Do restored editors of a non-focused workspace's files (outside the mounted folder) behave correctly with Workspace Trust and the file watcher [I]? Checked in A6.
+2. Do restored editors of a non-focused workspace's files (outside the mounted folder) behave correctly with Workspace Trust and the file watcher [I]? Checked in A7.
 3. Should Phase 1 keep more than one worktree mounted, for cross-workspace search? Depends on the R1 measurements.
-4. ADR 0004 decision 10 says the agent is told of drift before its next write. Axis can do that for composer runs, but **not for CLI agent runs**: telling a CLI would mean typing into its terminal or writing its private files, which ADR 0004 decision 8 and `PROVIDERS.md` forbid. This design shows CLI drift to the user only (§10.3). The ADR wording should say "composer agent", or the owner should accept this limit.
-
-## 10. Items ADR 0004 defers to this design
-
-### 10.1 Reuse of `vs/sessions` and decision D8
-
-- Axis re-implements the sessions architecture as option (i) (§2.3). It adapts four small pieces with source headers: the folder manager, the Files view, the terminal background/foreground pattern and the per-owner working-set rules (§2.2).
-- **D8 stays.** The upstream Agents Window entry points and window type are removed in range `1500–1999`. Axis uses none of them at runtime. The sessions sources stay in the tree, unbundled, which is where the adapted copies come from.
-
-### 10.2 How IDE view follows the focused workspace
-
-- One window per project, with a per-project Code OSS workspace in the `WORKSPACE` state.
-- Focusing a workspace swaps its single folder with `updateFolders`, which does not restart the extension host (§3.2).
-- Each workspace keeps its editors (working sets) and terminals, swapped on focus change (§3.6, §4.4).
-- A multi-root fallback (keeping recent worktrees mounted) and the in-memory workspace hook (P2b) are held in reserve against risk R1.
-
-### 10.3 Drift and concurrency policy
-
-Covers user edits during a run and a composer run concurrent with CLI agent runs.
-
-**Writers in one workspace:**
-
-- the **user**: IDE editors, Axis review actions, user terminals;
-- **at most one composer run** (ADR 0004: one composer agent run at a time per workspace);
-- **any number of CLI agent runs**.
-
-All are allowed at the same time. No writer is blocked by Axis except the composer, which is brokered.
-
-**State the daemon keeps per workspace:**
-
-- **Run base.** At every run start (composer or CLI), the daemon records HEAD and a tree snapshot of the whole worktree, including untracked files (temporary index, `write-tree`), as `refs/axis/runbase/<runId>`. It is deleted 7 days after the run ends.
-- **Observed hashes, per composer run.** For every path the run has read or written, the content hash it last saw.
-- **Advisory user locks.** The renderer reports, as the `user` actor, the paths with unsaved editors in the workspace (`axis.worktrees/1.setUserEditing`). They are cleared on save or close.
-- **Drift ledger, per run.** The paths that changed while the run was active, other than by the run itself. It comes from a daemon file watcher on the worktree; `@parcel/watcher` is already an upstream dependency (`package.json:115`) [V].
-
-**Composer writes use compare-and-swap.** Every broker write, delete or rename on a path P carries the hash the run last observed for P.
-
-- It is **refused with `E_CONFLICT`** if P's current hash differs, or if P has a user lock. The refusal is a tool result that lists the changed paths and asks the agent to read them again. Axis never merges or overwrites.
-- The write is applied under a per-workspace write lock, so a concurrent Axis commit or discard sees either the old or the new content, never a partial write.
-- **Before each model turn**, the daemon adds a drift notice to the run's context: the paths changed outside the run since its last step, with no content. This is ADR 0004 decision 10's notification.
-- **HEAD moved** (a commit, checkout or reset by the user or a CLI): a drift notice is sent, and observed hashes are re-validated lazily on the next write.
-- **The branch changed away from `axis/<slug>`**, or the worktree is missing: the run **pauses**, and continues only after the user confirms in the workspace view.
-
-**User edits are never blocked.**
-
-- The workspace header and the dashboard row show "N files changed outside the agent" for the active composer run, from its drift ledger. Clicking it opens a multi-diff of those paths from the run base.
-- If a composer write lands on a file the user has open but not dirty, the upstream editor reloads it from disk. A dirty file is protected by the advisory lock.
-
-**CLI runs are observed, not controlled.**
-
-- Axis cannot refuse or sequence a CLI's writes.
-- A path that a CLI run touches after the composer last saw it fails the composer's next compare-and-swap, so **the composer never silently overwrites a CLI's change**.
-- The reverse is not preventable. A change to a path the composer or the user wrote, made while a CLI run is active, is recorded in the composer run's ledger as "changed during CLI run <label>", and in the user's view as "changed outside your edit". Attribution is by time window, not by writer (R12).
-- CLI runs receive no drift notification (§9.3 question 4).
-
-**Review and commit while runs are active:**
-
-- The Changes view groups paths by observed attribution: composer run, during CLI run X, user or unknown. The grouping is informational; every path is reviewed the same way.
-- Committing while a composer run is active needs a confirmation. The run then gets a HEAD-moved notice.
-- Rejecting (discarding) a path the composer wrote makes its next write to that path fail compare-and-swap, so it re-reads.
-
-**Run end** records the paths written by the run and its drift ledger in the run summary, kept with the run in `agent_runs`.
-
-**Tests (task C4):**
-
-- the user edits P during a composer run;
-- the user has P dirty;
-- a CLI writes P during a composer run;
-- a CLI commits during a composer run;
-- the branch is switched in a terminal;
-- the user discards a composer-written path.
-
-Each must end with no silent overwrite and the expected notice or pause.
