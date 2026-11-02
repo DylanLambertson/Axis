@@ -11,17 +11,20 @@ Deliver Code OSS custom workbench spike, Electron+web prototypes, extension comp
 
 ## Phase 1 — Agent workspace shell + IDE view vertical slice
 A minimal, end-to-end agent manager on desktop, with the full IDE view:
-- **Workspaces and worktrees:** dashboard; create, focus, archive and remove workspaces; daemon worktree lifecycle manager (one worktree and branch per workspace, base SHA recorded, removal refuses to discard uncommitted work); several workspaces concurrently within a per-device limit.
+- **Workspaces and worktrees:** dashboard; create, focus, archive and remove workspaces; daemon worktree lifecycle manager (one worktree and branch per workspace, base SHA recorded, removal refuses to discard uncommitted work); worktrees outside the repository under the app data directory (configurable); several workspaces concurrently within a per-device limit; no agent runs in the local checkout.
 - **Terminals and panes:** terminals bound to the worktree, split panes, layout persisted per workspace.
-- **File tree, changes and diff review:** file tree; changed-files list against the base; accept/reject per file and hunk; commit on the workspace branch with the user's Git identity; open in IDE view at the location.
-- **Composer and single agent:** Ask / Edit / Agent composer; mock provider plus **one** official provider adapter; connection vault; model selection within that connection; streaming; single-agent tool broker with approval policy and approval UI; local SQLite run journal and audit log.
+- **CLI coding agents (first-class):** launch installed agent CLIs in a workspace terminal through their documented interfaces, under the user's login and terms; dashboard runs with status from process and terminal state; scrubbed environment (no Axis secrets, askpass or IPC handles; PTY-2); changes through diff review.
+- **File tree, changes and diff review:** file tree; changed-files list against the base; accept/reject per file and hunk; commit on the workspace branch with the user's Git identity; push the branch and open a pull request where a remote and supported forge exist (no merge action; merge queue is Phase 3); "files changed outside the agent" indicator; open in IDE view at the location.
+- **Composer and single agent:** Ask / Edit / Agent composer; mock provider plus the **Anthropic (Claude) API** adapter; connection vault holding its API key; model selection within that connection; streaming; single-agent tool broker with approval policy and approval UI; local SQLite run journal and audit log.
 - **IDE view:** repo open/edit/search, explorer, terminal, Git, diagnostics, language services, command palette, settings, theme, keyboard navigation.
 - **View modes:** per-workspace, global and split, with the focus rules in `docs/UX.md`.
 - **Platform:** ADR 0003 bridge (validation criteria 1–7); browser workspace skeleton with remote workspace protocol (documented gaps, not gating).
 - **Security controls moved forward** (ADR 0004): worktree path and git-config controls (WT-1–WT-4), broker environment allow-list, timeouts and output caps (PTY-2, PTY-4), challenge approvals (DMN-3), audit and redaction (DMN-5, DMN-6), journal recovery (DMN-7), credential controls (PRV-1, PRV-2, PRV-4, PRV-6; PRV-5 if custom endpoints ship).
 
 **Gate:** on macOS, plus Windows/Linux CI smoke:
-- acceptance scenarios 1–5 in `docs/PRODUCT.md` pass with both the mock and the official provider;
+- acceptance scenarios 1–6 in `docs/PRODUCT.md` pass, with the mock provider and the Anthropic API for the composer, and at least one installed agent CLI for scenario 2;
+- a CLI agent's terminal environment contains no Axis secrets, `GIT_ASKPASS`/`VSCODE_GIT_ASKPASS*`, `VSCODE_GIT_IPC_HANDLE` or `VSCODE_IPC_HOOK_CLI` (automated test);
+- creating a worktree inside a registered repository is refused;
 - a requested approval blocks the action until resolved by the user; an agent actor resolving it is denied;
 - killing the app mid-run and restarting recovers the run state from the journal, and the worktree is intact;
 - no credential appears in logs, renderer state, prompts or agent environments (redaction tests);
@@ -36,7 +39,7 @@ Inline edit and inline diff in the IDE editor, selection/file/symbol context att
 Planner DAG, one workspace per worker, queue, reviewer, merge integration queue, retries, budgets, task history, logs, OS sandbox for agent subprocesses (threat model §8.2), advanced DAG and worktree views. **Gate:** two workers independently implement tasks in separate workspaces, pass validation, and integrate without silent overwrites.
 
 ## Phase 4 — Intelligence and extensibility
-Repository indexing, project memory, rules, skills, knowledge graph, ACL retrieval, MCP, provider SDK, supported CLI integration and additional providers. **Gate:** provenance-aware retrieval, data deletion, cross-project isolation and plugin contract tests.
+Repository indexing, project memory, rules, skills, knowledge graph, ACL retrieval, MCP, provider SDK, supported CLI sessions as provider connections (`PROVIDERS.md` type 3, beyond Phase 1 CLI agent runs) and additional providers. **Gate:** provenance-aware retrieval, data deletion, cross-project isolation and plugin contract tests.
 
 ## Phase 5 — Teams and sync
 Organizations, RBAC, presence, CRDT collaboration, shared tasks/agents, encrypted opt-in sync, cloud runners, audit. **Gate:** concurrent editing and team agent runs pass permission, offline/conflict and recovery tests.
@@ -53,10 +56,10 @@ Provider-native artifact integrations where official APIs exist; universal docs/
 3. ADR 0003 bridge spike: daemon utility process, handshake, contracts and policy hook (validation criteria 1–7).
 4. Git worktree lifecycle manager in the daemon: create, list, remove, base SHA, uncommitted-work protection, WT-1/WT-2 controls, conflict and crash tests.
 5. SQLite schema + migrations + event journal (workspaces, worktrees, runs, approvals, audit).
-6. Workspace terminals and split panes bound to the worktree, persisted per workspace.
-7. Changes list and diff review: accept/reject per file and hunk, commit on the workspace branch.
+6. Workspace terminals and split panes bound to the worktree, persisted per workspace; CLI agent launch with scrubbed environment and dashboard run status.
+7. Changes list and diff review: accept/reject per file and hunk, commit, push branch and open pull request, outside-the-agent change indicator.
 8. Provider adapter interface, contract tests and mock provider.
-9. One supported provider connection + vault (provider choice is ADR 0004 open question 1).
+9. Anthropic (Claude) API adapter + connection vault (API key).
 10. Composer (Ask/Edit/Agent) + single-agent tool broker with approval policy and UI; end-to-end dashboard → workspace → agent → diff → commit.
 
 ## Milestone measurement

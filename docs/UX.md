@@ -18,16 +18,17 @@ Axis has two views of the same workspace, in one window (ADR 0004). **Agent view
 **Top bar (both views):** compact project switcher, command/search, agent activity indicator, account/model control, and the view control (Agent / IDE, or Split when that mode is on). In a workspace, a breadcrumb shows Dashboard › workspace › branch.
 
 ### Agent view: dashboard
-- The home screen. One dense row per workspace, grouped by project: name, branch, agents and their state (idle, running, waiting for approval, failed, done), terminal count, changed-file count with additions/deletions, last activity.
-- The project's own checkout appears as a *local checkout* row; it opens in IDE view but is not an agent workspace.
-- Primary action: **New workspace** (base branch, new branch name, optional first task). Secondary: filter by needs attention / running / all; archive; remove.
+- The home screen. One dense row per workspace, grouped by project: name, branch, agents (composer runs and CLI agent runs) and their state (idle, running, waiting for approval, waiting for input, failed, done), terminal count, changed-file count with additions/deletions, last activity.
+- The project's own checkout appears as a *local checkout* row; it opens in IDE view, but no agent runs in it and it offers no agent actions.
+- **CLI agent runs** show the CLI's name, the launch command and a status derived from the process and terminal Axis owns (running, waiting for input, exited with code, killed), never from the CLI's private data. Selecting one focuses its terminal. They are labelled "permissions: CLI-managed", and never show Axis approvals or budgets.
+- Primary action: **New workspace** (base branch, new branch name, optional first task, optional agent: composer or an installed CLI). Secondary: filter by needs attention / running / all; archive; remove.
 - Selecting a row focuses that workspace and opens its workspace view. Rows that need the user (approval, failure) sort first within a project and show the reason in text, not only color.
 - Empty state: open a repository, then create the first workspace. No sample metrics, charts or onboarding cards.
 
 ### Agent view: workspace view
 - **Left:** file tree of the worktree and a **Changes** list (changed files against the workspace's base, with per-file counts). Collapsible.
-- **Center:** the agent session: activity stream (progress, tool calls, approval requests, errors and recovery actions) with the **composer** docked below it. Selecting a change opens **diff review** in the center, with accept and reject per file and per hunk and a **Commit** action; closing it returns to the session.
-- **Terminals and panes:** a pane group of terminals bound to the worktree, split horizontally or vertically, for commands and CLI agents. Terminals not started by Axis's agent are labelled as not managed by Axis.
+- **Center:** the agent session: activity stream (progress, tool calls, approval requests, errors and recovery actions) with the **composer** docked below it. Selecting a change opens **diff review** in the center, with accept and reject per file and per hunk, **Commit**, and **Push branch** / **Open pull request** where a remote and supported forge exist; closing it returns to the session. Changes from composer agents, CLI agents and the user all appear here; a "files changed outside the agent" indicator marks user edits made during a run.
+- **Terminals and panes:** a pane group of terminals bound to the worktree, split horizontally or vertically, for commands and CLI agents. **Launch CLI agent** starts an installed agent CLI in a new pane of the workspace; its prompts and permission questions stay in that terminal.
 - Approvals show exactly what action, scope and consequence are requested, inline in the activity stream; the dashboard row shows "waiting for approval".
 - Every pane is resizable, collapsible and keyboard navigable. Pane layout, open terminals and the last selection persist per workspace.
 - Exact part arrangement is specified in `docs/design/axis-agent-shell.md`.
@@ -42,7 +43,7 @@ The mode is a user preference (`axis.view.mode`), changeable in settings, from t
 
 | Mode | Behaviour |
 |---|---|
-| **Per-workspace toggle** (`perWorkspace`, proposed default) | Each workspace remembers Agent or IDE view. The toggle shortcut switches the focused workspace only. Opening a file, changed file or diff hunk from Agent view switches that workspace to IDE view at the file and line (a diff opens in the diff editor). |
+| **Per-workspace toggle** (`perWorkspace`, default) | Each workspace remembers Agent or IDE view. The toggle shortcut switches the focused workspace only. Opening a file, changed file or diff hunk from Agent view switches that workspace to IDE view at the file and line (a diff opens in the diff editor). |
 | **Global toggle** (`global`) | One app-wide view. The toggle switches every workspace; focusing another workspace keeps the current view. File and diff clicks switch the app to IDE view at the location. |
 | **Split** (`split`) | Agent view and IDE view side by side, divided by a resizable sash. Either pane collapses to a thin header and expands again. File and diff clicks open in the IDE pane without switching; if the IDE pane is collapsed, it expands. |
 

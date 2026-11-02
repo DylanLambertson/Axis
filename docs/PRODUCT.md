@@ -6,10 +6,10 @@ Axis is an AI agent manager for software development, with a fully capable IDE b
 Axis is not a copy of VS Code. The agent manager is the primary surface; the IDE is a secondary view of the same workspace, one click or shortcut away, never a reduced editor. Product direction and its mapping to the architecture are recorded in ADR 0004.
 
 ## Audience
-Solo developers, power users, software teams, and agencies. Support personal and organization scopes with clear data ownership.
+Solo developers, power users, software teams, and agencies. Support personal and team Spaces (the container above projects, `CONTEXT.md`) with clear data ownership.
 
 ## Product model
-- **Workspace:** an isolated Git worktree and branch for one task or agent, with its agents, terminals and changes. A repository can have many workspaces at once. The user's own checkout of the repository is listed as the *local checkout*; it is not an agent workspace.
+- **Workspace:** an isolated Git worktree and branch for one task or agent, with its agents, terminals and changes. A repository can have many workspaces at once. The user's own checkout of the repository is listed as the *local checkout*; it is not an agent workspace, and agents never run in it. Worktrees live outside the repository, under the Axis app data directory by default (ADR 0004).
 - **Dashboard:** the home screen. It lists workspaces with their agents, status, terminals and changes. Selecting one focuses it.
 - **Agent view:** the dashboard and the focused workspace's view: file tree, changes and diff review, terminals and panes, composer, agent activity.
 - **IDE view:** the full IDE for the focused workspace.
@@ -32,10 +32,11 @@ Priority follows `docs/ROADMAP.md`. The v1 agent manager is the Phase 1 slice; i
 
 ### 1. Agent manager (primary; v1 in Phase 1)
 - **Workspaces and worktrees:** create a workspace from a base branch with a new branch, recorded base SHA, list, focus, rename, archive and remove (removal refuses to discard uncommitted work without explicit confirmation). Several workspaces can exist and run agents at once, within a per-device limit.
-- **Dashboard:** one dense row per workspace: name, branch, agents and their state (idle, running, waiting for approval, failed, done), terminals, changed files, last activity.
-- **Terminals and split panes:** terminals bound to the workspace's worktree, split and arranged in panes, for running commands and CLI agents. Layout persists per workspace.
-- **File tree, changes and diff review:** file tree of the worktree; changed-files list against the workspace's base; diff review with accept and reject per file and per hunk; commit on the workspace branch with the user's Git identity.
-- **Composer:** one composer with explicit Ask, Edit and Agent modes, bound to the focused workspace. v1 ships the mock provider and one official provider adapter, a connection vault, model selection within that connection, streaming, and an approval UI.
+- **Dashboard:** one dense row per workspace: name, branch, agents (composer and CLI agent runs) and their state (idle, running, waiting for approval or input, failed, done), terminals, changed files, last activity.
+- **Terminals and split panes:** terminals bound to the workspace's worktree, split and arranged in panes, for running commands. Layout persists per workspace.
+- **CLI coding agents (first-class):** launch the user's installed agent CLIs (for example, official provider CLIs) in a workspace terminal, through their documented command-line interfaces, under the user's own login and terms. Each launch is a run on the dashboard, with status from the process and terminal state Axis owns. The CLI's own permission prompts stay in its terminal; Axis surfaces them and does not override them. Changes go through Axis diff review.
+- **File tree, changes and diff review:** file tree of the worktree; changed-files list against the workspace's base; diff review with accept and reject per file and per hunk; commit on the workspace branch with the user's Git identity; push the branch and open a pull request where a Git remote and a supported forge exist. A "files changed outside the agent" indicator shows user edits made during a run.
+- **Composer:** one composer with explicit Ask, Edit and Agent modes, bound to the focused workspace. v1 ships the mock provider and the Anthropic (Claude) API adapter with an API key in the connection vault, model selection within that connection, streaming, and an approval UI.
 - **Agent activity:** live progress, tool calls, approvals requested, errors and recovery actions for the workspace's agent run.
 
 ### 2. IDE view (secondary, fully capable; v1 in Phase 1)
@@ -51,7 +52,7 @@ Parallel runs on one goal, planner/worker/reviewer roles, graph of dependent tas
 Repository indexing, file/symbol graph, task and decision history, project rules, reusable skills, embeddings and keyword retrieval, provenance and TTL, cross-project knowledge with explicit scope and consent, redaction and deletion.
 
 ### 6. Universal artifacts
-Native workspace documents, structured plans, notes, diagrams, task boards and exportable reports. Slides and other artifacts can be added through native renderers or supported provider tools. Provider-branded features are only available when official APIs/integrations permit; offer functional equivalents otherwise.
+Native project documents, structured plans, notes, diagrams, task boards and exportable reports. Slides and other artifacts can be added through native renderers or supported provider tools. Provider-branded features are only available when official APIs/integrations permit; offer functional equivalents otherwise.
 
 ### 7. Teams
 Organizations, invites, roles, permissions, project sharing, presence, co-editing, comments, shared agents, task assignment, review/approval, audit trail, sync and offline conflict handling.
@@ -61,7 +62,8 @@ MCP client/server integration with scoped permissions, custom provider SDK, cust
 
 ## Constraints
 - Workspaces isolate edits, not privileges. They are Git worktrees, not security sandboxes, and the UI never describes them as secure (`SECURITY.md`, ADR 0004).
-- Code-changing agents run in workspaces, never in a shared writable checkout (`AGENT_SYSTEM.md`).
+- Code-changing agents, composer or CLI, run only in workspaces, never in the user's local checkout or a shared writable checkout (`AGENT_SYSTEM.md`).
+- CLI agents run with the user's privileges under the CLI's own permission model. Axis does not claim approvals or budgets for them, and gives them no Axis secrets or Git askpass handles (ADR 0004).
 - Provider and CLI connections use official, documented paths only (`PROVIDERS.md`).
 - The IDE view keeps full IDE capability; ADR 0002 criterion 1 applies to it.
 
@@ -69,12 +71,13 @@ MCP client/server integration with scoped permissions, custom provider SDK, cust
 Reimplement every proprietary AI app feature; guarantee VS Code extension marketplace access; unrestricted autonomous deployments; automatic cross-tenant knowledge sharing; feature-identical browser and desktop shells.
 
 ## Core acceptance scenarios
-1. Dashboard → create workspace from a base branch → worktree and branch created, base SHA recorded → run an agent in Agent mode (mock provider, then the official provider) → approve a requested action → review the diff → accept some hunks, reject others → commit on the workspace branch.
-2. Agent view file tree, changed file or diff hunk → IDE view opens at that file and line → edit → diagnostics appear → return to Agent view with workspace and editor state preserved. Repeat in split mode, where the file opens in the IDE pane.
-3. Focused workspace → split terminal panes → run tests in one and a CLI tool in the other, both in the worktree → changes made by either appear in the changes list for review.
-4. Open repo → edit TypeScript in IDE view → get diagnostics → run tests in terminal → commit.
-5. Connect approved provider credential → select model → ask for change → review diff → apply or reject.
-6. Launch planner with two coding workers → one workspace each → tests → reviewer → user approval → merge.
-7. Reopen workspace offline → edit, search, access local memory; sync when online and opted in.
-8. Team member joins project → sees allowed context → co-edits → reviews agent output; denied access stays denied.
-9. Unsupported provider capability is labeled unavailable, never silently emulated or misrepresented.
+1. Dashboard → create workspace from a base branch → worktree and branch created, base SHA recorded → run an agent in Agent mode (mock provider, then the Anthropic API) → approve a requested action → review the diff → accept some hunks, reject others → commit on the workspace branch → push the branch and open a pull request.
+2. Focused workspace → launch an installed agent CLI from Axis → the run appears on the dashboard (running, waiting for input, exited) → the CLI's own permission prompt appears in its terminal and is answered there → its changes appear in diff review → accept → commit. The CLI's environment contains no Axis secrets or askpass handles.
+3. Agent view file tree, changed file or diff hunk → IDE view opens at that file and line → edit → diagnostics appear → return to Agent view with workspace and editor state preserved. Repeat in split mode, where the file opens in the IDE pane.
+4. Focused workspace → split terminal panes → run tests in one and a command in the other, both in the worktree → changes made by either appear in the changes list for review. Editing a file in IDE view during an agent run shows the "files changed outside the agent" indicator.
+5. Open repo → edit TypeScript in IDE view → get diagnostics → run tests in terminal → commit.
+6. Connect approved provider credential → select model → ask for change → review diff → apply or reject.
+7. Launch planner with two coding workers → one workspace each → tests → reviewer → user approval → merge.
+8. Reopen workspace offline → edit, search, access local memory; sync when online and opted in.
+9. Team member joins project → sees allowed context → co-edits → reviews agent output; denied access stays denied.
+10. Unsupported provider capability is labeled unavailable, never silently emulated or misrepresented.
