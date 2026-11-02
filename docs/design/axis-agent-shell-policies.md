@@ -49,6 +49,8 @@ All are allowed at the same time. Axis blocks only the composer.
 
 ### 3.2 State the daemon keeps per workspace
 
+The run base, the drift ledger and the indicator are Phase 1a (design task B10), for CLI runs. Observed hashes, advisory locks and everything in §3.3–3.4 are Phase 1b (task C5).
+
 - **Run base.** At every run start (composer or CLI), the daemon writes `refs/axis/runbase/<runId>` (§7). It points at a commit of HEAD plus the whole worktree, tracked and untracked but **not ignored**, built with a temporary index, `add -A`, `write-tree` and `commit-tree`. It is kept for 7 days after the run ends.
 - **Observed hashes**, per composer run: the content hash the run last saw for each path it read or wrote.
 - **Advisory user locks.** The renderer reports, as the `user` actor, the paths with unsaved editors (`axis.worktrees/1.setUserEditing`). They are cleared on save or close.
@@ -81,7 +83,7 @@ Every broker write, delete or rename of a path P carries the hash the run last o
 
 - A path a CLI changes after the composer last saw it fails the composer's next compare-and-swap. **The composer never silently overwrites a CLI change.**
 - The reverse cannot be prevented. A change made during a CLI run to a path the composer or the user wrote is recorded as "changed during CLI run <label>". Attribution is by time window, not by writer (design R12).
-- **Recovery.** For 7 days, "Restore from before this run" (`axis.worktrees/1.restoreFromRunBase { runId, paths }`) first writes a backup ref (§7), then restores the paths from `refs/axis/runbase/<runId>`.
+- **Recovery.** In diff review, for 7 days, "Restore from before this run" (`axis.worktrees/1.restoreFromRunBase { runId, paths }`) first writes a backup ref (§7), then restores the paths from `refs/axis/runbase/<runId>`.
 - **UX label.** The dashboard and the Changes view say "CLI agents can overwrite other changes; Axis shows this but does not prevent it". This wording is proposed to the `UX.md` owner.
 
 ### 3.7 Review and commit while runs are active
@@ -91,7 +93,7 @@ Every broker write, delete or rename of a path P carries the hash the run last o
 - **Discarding a composer-written path** makes the composer's next write to it fail compare-and-swap.
 - **Run end** stores the paths the run wrote, its ledger and any "possible lost change" flags with the run in `agent_runs`.
 
-### 3.8 Tests (design task C5)
+### 3.8 Tests (design tasks B10 and C5)
 
 Each scenario must end with no silent overwrite, or with a flagged and restorable one, plus the expected notice or pause:
 
@@ -101,8 +103,9 @@ Each scenario must end with no silent overwrite, or with a flagged and restorabl
 4. a CLI commits during a composer run;
 5. the branch is switched in a terminal;
 6. the user discards a composer-written path;
-7. a CLI overwrites a composer-written path, and is restored from the run base;
-8. **a commit from the SCM view during drift**: the §6.3 banner is shown, the commit succeeds (it is a user path), the composer gets a HEAD-moved notice, and the run summary lists the commit.
+7. a CLI overwrites a user-written path (Phase 1a) or a composer-written path (Phase 1b), and it is restored from the run base in diff review;
+8. **a commit from the SCM view during drift**: the §6.3 banner is shown, the commit succeeds (it is a user path), the composer gets a HEAD-moved notice, and the run summary lists the commit;
+9. the user edits P during a CLI run: the indicator shows P as "changed during CLI run X" (Phase 1a, no composer).
 
 ## 4. Terminal environment (PTY-5)
 
@@ -216,6 +219,6 @@ Each scenario must end with no silent overwrite, or with a flagged and restorabl
 
 | Design term | Shown as | Note |
 |---|---|---|
-| CLI run quiet | "Quiet: may be waiting for input" | The honest form of ADR 0004 decision 8's "waiting for input". Axis cannot know that a CLI is waiting |
+| CLI run quiet | "quiet (may be waiting for input)" | The honest form of ADR 0004 decision 8's "waiting for input". Axis cannot know that a CLI is waiting |
 | Workspace finalised | "Done" | Matches `UX.md` and `PRODUCT.md` |
 | Changes not yet committed | "Changes to review" | Replaces "needs review" |

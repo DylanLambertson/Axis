@@ -216,7 +216,7 @@ The rail and the main region are an internal split view inside the agent part, s
 |---|---|---|---|
 | Name, project | Workspace label; worktree folder name | Discovery (§5.2) | `axis.worktrees/1.list` |
 | Branch, base | Branch; base ref and short SHA; ahead/behind | HEAD from discovery; base "not recorded" | Journal plus `git rev-list --left-right --count` |
-| State | idle · running · waiting for approval (1b) · quiet, may be waiting for input · failed · changes to review · done (policies §9) | idle, or "external" for a worktree Axis did not create | Runs and approvals from the daemon (`AGENT_SYSTEM.md` state machine) |
+| State | idle · running · waiting for approval (1b) · quiet (may be waiting for input) · failed · changes to review · done (policies §9) | idle, or "external" for a worktree Axis did not create | Runs and approvals from the daemon (`AGENT_SYSTEM.md` state machine) |
 | Agents | Composer run (provider, model, mode, state) and CLI agent runs (label, §4.5 status) | none | `axis.runs/1.list`, `axis.cliRuns/1.list` |
 | Drift | "Files changed outside the agent" count per run, and "Git configuration changed" (policies §3, §6) | none | daemon drift ledger |
 | Terminals | Count and running processes (this window) | `AxisWorkspaceTerminals` | same |
@@ -263,7 +263,7 @@ The rail and the main region are an internal split view inside the agent part, s
   |---|---|
   | starting, running, exited (code), killed | Process lifecycle in the daemon |
   | active | Output in the last 5 s |
-  | quiet: "may be waiting for input" (policies §9) | Process alive and no output for the configured interval |
+  | quiet (may be waiting for input) (policies §9) | Process alive and no output for the configured interval |
   | attention | A BEL character in the output (a standard terminal signal) |
   | changes | Worktree changes observed during the run (policies §3) |
 
@@ -391,6 +391,7 @@ The rail and the main region are an internal split view inside the agent part, s
 | **B7** | Review: daemon `commit`, `discard`, `applyPatch` (hunks), the drift gate, WT-2 and WT-3 flags, the SCM-view banner (policies §6) | Commit uses the user identity and refuses on unacknowledged common-dir drift. Reject is reversible. The SCM banner appears while drift is present | Unit and integration tests. A commit from the SCM view during drift shows the banner and succeeds as a user path |
 | **B8** | Push and open PR (policies §6.1–6.2) | Explicit refspec, never mirror. `GIT_TERMINAL_PROMPT=0`, with the terminal fallback. Compare URL correct for GitHub HTTPS and SSH remotes. No forge credential stored | Unit tests on refspec and URL derivation |
 | **B9** | Daemon-managed workspace terminals and CLI agent runs (§4.4–4.5; policies §4–5): `axis.cliAgents`, attachment, status, dashboard rows, stop, opt-out | Runs start only in a worktree. Splits start in the worktree root | **PTY-5 test**: dump the child environment of a CLI run and a plain terminal. None of the denied variables, `SSH_AUTH_SOCK` kept, `envPassthrough` cannot re-add a denied name, `NODE_OPTIONS` restored. Also a PTY-4 kill test, a local-checkout refusal test, a reattach-after-reload test, and an OSC 633 cwd-spoof test (the split still opens in the worktree root) |
+| **B10** | CLI-run drift attribution (policies §3.2, §3.6): `refs/axis/runbase/<runId>` at CLI run start, the watcher-based drift ledger with time-window attribution, the dashboard Drift column, the "files changed outside the agent" indicator and attribution groups in Changes, and "Restore from before this run" in diff review | PRODUCT scenario 4 passes with only CLI runs: a user edit during a CLI run shows the indicator and the path grouped as "changed during CLI run X". A CLI overwrite of a user change is restorable from the run base | Daemon tests: policies §3.8 scenarios 7 and 9. A manual run with two CLIs in one workspace |
 
 ### 8.3 Phase 1b: vault, broker, composer, provider, concurrency
 
@@ -400,7 +401,7 @@ The rail and the main region are an internal split view inside the agent part, s
 | **C2** | The broker: tool contracts, tiers, protected paths (WT-3), timeouts and output caps (PTY-4), the allow-listed tool environment (PTY-2), the Agent-mode tool loop, and policy rules on top of the B2 skeleton | A composer push request is denied. Protected-path writes raise a B4 challenge. A runaway command is killed at the cap | Broker deny tests, including push. A cap and kill test |
 | **C3** | The composer widget and view, `IAxisRunsService` (bridge client and disconnected state), the daemon mock provider and scenarios, the approval UI | Ask/Edit/Agent run against the mock. An Edit change appears in Changes. Cancel works | Contract tests against the mock scenarios. UI tests with `FakeRunsService` |
 | **C4** | The Anthropic API adapter (ADR 0004 decision 14) in the daemon gateway | `PROVIDERS.md` `ProviderAdapter` contract tests pass. No silent cross-provider routing (PRV-4). Budgets enforced (PRV-6) | Contract tests. PRV-4 and PRV-6 tests |
-| **C5** | Drift and concurrency (policies §3): run base, compare-and-swap with temp-and-rename, advisory locks, ledger, notices, restore from run base | Every scenario in policies §3.8 passes | Daemon tests per scenario. A manual run with a CLI and the composer in one workspace |
+| **C5** | Composer drift (policies §3.3–3.4, building on B10): compare-and-swap with temp-and-rename, advisory locks, drift notices, HEAD-moved and branch-moved handling | Policies §3.8 scenarios 1–6 and 8 pass | Daemon tests per scenario. A manual run with a CLI and the composer in one workspace |
 
 ## 9. Risks and open questions
 
