@@ -1,0 +1,94 @@
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--vscode-editor-background, #1f1f1f);
+  color: var(--vscode-foreground, #ccc);
+  font: 13px system-ui, sans-serif;
+}
+
+.shell {
+  display: grid;
+  grid-template-rows: 36px minmax(0, 1fr) 22px;
+  grid-template-columns: minmax(0, 1fr);
+  height: 100%;
+}
+
+.topbar {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 12px;
+  padding: 0 10px;
+  background: var(--vscode-titleBar-activeBackground, #181818);
+  border-bottom: 1px solid var(--vscode-titleBar-border, #2b2b2b);
+}
+
+.topbar .brand {
+  font-weight: 700;
+  color: #7c8cff;
+}
+
+.topbar .search {
+  flex: 1;
+  max-width: 480px;
+  margin: 0 auto;
+  text-align: left;
+  opacity: 0.8;
+}
+
+.topbar button {
+  background: var(--vscode-button-secondaryBackground, #313131);
+  color: var(--vscode-button-secondaryForeground, #ccc);
+  border: 1px solid var(--vscode-widget-border, #3c3c3c);
+  border-radius: 4px;
+  padding: 3px 8px;
+  cursor: pointer;
+}
+
+.body {
+  display: flex;
+  min-height: 0;
+}
+
+.center {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+
+.part[hidden] {
+  display: none;
+}
+
+.activitybar {
+  flex: none;
+  width: 48px;
+}
+
+.sidebar {
+  flex: none;
+  width: 280px;
+}
+
+.auxiliarybar {
+  flex: none;
+  width: 260px;
+}
+
+.editor {
+  flex: 1;
+  min-height: 0;
+}
+
+.panel {
+  flex: none;
+  height: 220px;
+}
+
+.agent-panel {
+  padding: 8px 12px;
+}
