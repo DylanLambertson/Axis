@@ -34,15 +34,15 @@
 | Axis pty process isolation, spawn only from daemon, attach only to issued ids | PTY-7 | 1a | B9 | none | Design test only (G-14) |
 | Close-on-exec on every daemon and pty-process fd | PTY-7 | 1a | B9 (child-fd test) | none | Design test only (G-14) |
 | Splits open in worktree root; OSC 633 cwd spoof | PTY-3 | 1a | B10 | none | Design test only (G-26) |
-| Security-relevant `axis.*` settings pinned to user scope | CFG-1 | 1a | none | none | No test (G-1) |
+| Security-relevant `axis.*` settings pinned to application or machine scope; workspace values ignored with a warning | CFG-1 | 1a | B10 (to add) | 1a/L13 (added) | Covered once adopted (G-1 closed by decision) |
 | Window-identity, frame URL and main-frame checks for daemon and pty ports | EL-3, PTY-7 | 1a | B1 | none as a gate bullet (ROADMAP "Platform" names "validation criteria 1–7") | Design test only (G-20) |
 | GIT-ENV-1 for every daemon git call except commit/push | GIT-ENV-1 | 1a | B6 (hook fixture) | none for 1a (1b/L4 covers broker-run git) | Design test only (G-15) |
 | GIT-SNAP-1 around CLI runs, before commit, on refresh | WT-2, GIT-SNAP-1 | 1a | B7, B10 | 1a/L3 | Partial: gate tests `hooks/` and `core.hooksPath` only; `info/attributes` filter and `core.sshCommand` fixtures are B10 (G-16) |
-| GIT-SNAP-1 extensions: in-tree `core.hooksPath`, `.git` file and `commondir`, push gate | GIT-SNAP-1, GIT-3, GIT-4 | 1a (proposed) | none | none | No test (G-4, G-5, G-6) |
+| GIT-SNAP-1 extensions: in-tree `core.hooksPath` target, `.git` file and `commondir`, push re-take | GIT-SNAP-1, GIT-3, GIT-4 | 1a (decided Q-6) | B7, B8 (to extend) | 1a/L14 (added) | Covered once adopted (G-4, G-5, G-6 closed by decision) |
 | Commit refused on unacknowledged common-dir drift | GIT-SNAP-1, GIT-3 | 1a | B7 | none | Design test only (G-17) |
 | Push explicit refspec, never mirror; terminal fallback | GIT-3, REF-1 | 1a | B8 | 1a/L1 (push reaches a bare remote) | Partial (G-17) |
 | Compare URL strict host match; `gh` under PTY-5 | GIT-5 | 1a | B8 | 1a/L1 | Partial: URL correctness tested, a planted non-GitHub remote is not (G-17) |
-| Snapshot refs: ignored files excluded, 50 MiB cap, never pushed, retention | REF-1 | 1a | B11 | none | No test (G-18, G-7) |
+| Snapshot refs: ignored files excluded, 50 MiB cap, never pushed, retention; secret scan of snapshot trees | REF-1 | 1a; scan 1b | B11 | 1a/L16, 1b/L13 (added) | Covered once adopted (G-18, G-7) |
 | Run base per CLI run; drift ledger; restore from run base | DRF-2, DRF-3, DRF-4 | 1a | B11 | 1a/L1 (scenario 4, indirectly) | Partial (G-9, G-19) |
 | Composer compare-and-swap, advisory locks, HEAD-moved notices | DRF-1, DRF-5 | 1b | C5 | none | Design test only (G-19) |
 | Protected-path highlighting | WT-3 | 1a | B7 | 1a/L4 | Covered (hook directories: G-3) |
@@ -64,11 +64,11 @@
 | Tool-argument validation | ANT-2 | 1b | C2 | 1b/L3 for paths only | Partial |
 | UI disclosure: CLI "governed by the CLI's own permissions", "can push", never "sandbox" | CLI-1, CLI-2, CLI-3 | 1a | B10, UX owner | none | No test (G-22) |
 | Axis React bundle under Trusted Types; `dangerouslySetInnerHTML` lint | EL-1 | 1a | A1 and M3 | none | No test (G-25) |
-| Open VSX signed, unsigned, tampered install test | EXT-3 | before 1a gate | M3 | none | No test (G-13) |
+| Open VSX signed, unsigned, tampered install test (public open-vsx.org) | EXT-3 | M3 Stage 1b validation | M3 | 1a/L22 (added) | Covered once adopted (G-13) |
 
 ## 6. Gate gaps
 
-A gap is either a missing ROADMAP gate line for a control the design already plans (G-14 to G-26), or a missing control (G-1 to G-13). The proposed gate lines are for the owner of `docs/ROADMAP.md` to adopt; this document does not edit that file.
+A gap is either a missing control (G-1 to G-13) or a missing ROADMAP gate line for a control the design already plans (G-14 to G-26). **Status after the lead decisions (§11.1):** G-1, G-4, G-5 and G-6 are closed by decision (the model's rows now carry the controls); G-9 and G-11 are accepted as stated; G-7 is split (1a documentation, 1b scanning); G-8 is closed by decision Q-2; G-13 is a gate. The proposed gate wording for G-3, G-10, G-12 to G-26 is now adopted in `docs/ROADMAP.md` as the gate lines named in the table below. "Closed" means the design must still implement and test it; the ROADMAP lines are the tracking.
 
 ### 6.1 Missing or under-specified controls
 
@@ -106,6 +106,26 @@ A gap is either a missing ROADMAP gate line for a control the design already pla
 | G-25 | EL-1 Axis bundle under Trusted Types | M3 check (Phase 0 §5.1) | Smoke test that fails on a Trusted Types violation |
 | G-26 | PTY-3 cwd spoof | B10 | 1a/L2 extended |
 
+### 6.3 Resolution after the lead decisions, and ROADMAP tracking
+
+New gate lines were appended to the Gate (1a) and Gate (1b) lists in `docs/ROADMAP.md`, after the existing lines so that 1a/L1 to L12 and 1b/L1 to L12 keep their numbers (§5.1).
+
+| Gap | Status | ROADMAP line |
+|---|---|---|
+| G-1 | Closed by decision Q-3 | 1a/L13 |
+| G-2, G-14, G-26 | Gate added | 1a/L17 |
+| G-3, G-16, G-17 | Gate added | 1a/L18 |
+| G-4, G-5, G-6 | Closed by decision Q-6 (controls in the model's GIT-SNAP-1 and GIT-4 rows) | 1a/L14 |
+| G-15 and decision Q-4 | Gate added; hooks run in the pty process context | 1a/L15 |
+| G-7, G-18 | 1a documentation and snapshot lifecycle; 1b secret scan (Q-8) | 1a/L16, 1b/L13 |
+| G-8, G-10, G-23 | Closed by decision Q-2; DMN-2 and trust fixtures added | 1a/L19 |
+| G-11, G-12, G-24 | G-11 accepted with a tail anchor (`@axis/audit` requirement); gates added | 1a/L20 |
+| G-9, G-19 | G-9 accepted; 1a scenarios 7 and 9, 1b scenarios 1 to 6 and 8 | 1a/L21, 1b/L14 |
+| G-13 | Gate added (Q-7) | 1a/L22 |
+| G-20, G-22, G-25 | Gate added | 1a/L23 |
+| G-21 | Gate added | 1b/L15 |
+| Q-4 re-evaluation | Gate added | 1b/L16 |
+
 ## 7. Honest residual risks
 
 Each of these is accepted for Phase 1 on purpose. The wording is the wording the product should use in the UI and in docs.
@@ -121,7 +141,7 @@ Each of these is accepted for Phase 1 on purpose. The wording is the wording the
 9. **The audit hash chain is tamper-evident for edits, not tamper-proof** against a same-UID attacker (ADR 0003 D5), and truncation is undetected until G-11.
 10. **Snapshot refs may hold secrets** from untracked, non-ignored files, as ordinary git objects in the shared common dir, readable by every workspace of the project (REF-1, DMN-8).
 11. **Extensions are fully trusted** (A4). The Axis policy engine does not defend against a malicious extension; Open VSX signature behaviour is still unknown (EXT-3, G-13).
-12. **Hooks run in the daemon's children** for Axis commit and push, with the user's credentials, while the common dir matches the acknowledged baseline. In 1b the daemon holds the vault key in memory (GIT-3, Q-4).
+12. **Hooks for Axis commit and push run with the user's credentials** in the pty process context (not the daemon, decision Q-4), while the common dir matches the acknowledged baseline. They are user-controlled code. Re-evaluated in 1b when the vault ships (GIT-3).
 13. **The OS sandbox is Phase 3.** Until then no process Axis starts is contained by the OS.
 
 ## 8. Re-tag list applied (ADR 0004 implication 7)
@@ -149,12 +169,12 @@ Each of these is accepted for Phase 1 on purpose. The wording is the wording the
 | PRV-1, PRV-2, PRV-4, PRV-6 | P2 | **1b** | |
 | PRV-3 interim labelling | P2 | **1b** | Vault ships in 1b |
 | PRV-5 | P2 | **1b**, only if custom endpoints ship | |
-| New: GIT-ENV-1, GIT-SNAP-1, GIT-3 to GIT-6, REF-1 | none | **1a** | |
+| New: GIT-ENV-1, GIT-SNAP-1, GIT-3 to GIT-6, REF-1 | none | **1a** (REF-1 secret scan **1b**) | |
 | New: CLI-1 to CLI-3, CFG-1, TRU-1, TRU-2, DRF-1 to DRF-5, APR-1, APR-2 | none | **1a** (DRF-1 **1b**) | |
 | New: ANT-1, ANT-2 | none | **1b** | |
-| **Proposed, not in the ADR list:** WEB-1 to WEB-6 | P1 | **P2** | Browser skeleton moved to Phase 2 (ADR 0004, ROADMAP). Needs owner agreement (Q-5) |
+| **Not in the ADR list, accepted (Q-5):** WEB-1 to WEB-6 | P1 | **P2** | Browser skeleton moved to Phase 2 (ADR 0004, ROADMAP) |
 | **Proposed, not in the ADR list:** EL-5 (`openExternal` confirmation) | P2 | **1a** | CLI output contains links (PTY-3 control 4) |
-| **Proposed, not in the ADR list:** EXT-3 Open VSX test | P0/P1 | **before the 1a gate** | No gate line today (G-13) |
+| **Not in the ADR list, decided (Q-7):** EXT-3 Open VSX test | P0/P1 | **1a gate line** (1a/L22), run in the M3 Stage 1b validation | Public open-vsx.org |
 
 ## 9. Updated risk register
 
@@ -165,21 +185,21 @@ Likelihood (L) and impact (I) on a 1–3 scale, score = L × I, as Phase 0 §6. 
 | 1 | R1 | Agent commands run with the user's privileges; a worktree is not a sandbox. | CLI-1, PTY-1, PTY-4 | 3 | 3 | 9 | 1a disclosure and review; 1b broker; P3 OS sandbox |
 | 2 | R22 | CLI agents are unbrokered and hold the user's credentials: push, local checkout, home directory, network. Detected only where Axis looks. | CLI-1, CLI-2, GIT-3 | 3 | 3 | 9 | 1a (disclosure, snapshot, review); P3 |
 | 3 | R2 | Prompt injection from the repo or tool output causes exfiltration or persistence. Applies to composer and to CLIs. | WT-3, PRV-4, ANT-2, EL-1, PTY-3 | 3 | 3 | 9 | 1b (policy, protected paths); CLI: none beyond review |
-| 4 | R7 | Shared common-dir persistence: planted hooks and config; in-tree `core.hooksPath`; worktree `.git` redirection; planted remote or credential helper before push. | WT-2, GIT-SNAP-1, GIT-3, GIT-4 | 3 | 3 | 9 (6 if G-4, G-5, G-6 close) | 1a (CLI snapshot); 1b (broker) |
+| 4 | R7 | Shared common-dir persistence: planted hooks and config; in-tree `core.hooksPath`; worktree `.git` redirection; planted remote or credential helper before push. Mitigated by the extended GIT-SNAP-1, explicit `--git-dir`, and the push re-take (decisions Q-6). Detection only: changes outside the Git directory are not seen. | WT-2, GIT-SNAP-1, GIT-3, GIT-4 | 2 | 3 | 6 (was 9) | 1a (CLI snapshot); 1b (broker) |
 | 5 | R23 | A CLI overwrites user or composer changes; attribution is by time window. | DRF-2, DRF-3, DRF-4 | 3 | 2 | 6 | 1a |
 | 6 | R3 | Provider credentials exposed through renderer-reachable channels, environment, logs or Linux basic storage. | EXT-4, PRV-1, PRV-2, PTY-2, DMN-6 | 2 | 3 | 6 | 1b |
 | 7 | R4 | Confused deputy into Axis services from extensions, webviews, a compromised renderer or an auxiliary window. | EXT-2, EL-2, EL-3, DMN-2 | 2 | 3 | 6 | 1a (ADR 0003) |
 | 8 | R5 | Self-granted or forged approvals; challenge TOCTOU. | EL-4, DMN-3, APR-1, APR-2 | 2 | 3 | 6 | 1a (mechanism); 1b (agents) |
-| 9 | R6 | Malicious or compromised Open VSX extension; signature semantics unknown; no gate line. | EXT-1, EXT-3 | 2 | 3 | 6 | Before 1a gate; P4 allow-list |
-| 10 | R24 | Repo-supplied settings weaken Axis: a cloned repository defines a CLI agent command or disables scrubbing. | CFG-1 | 2 | 3 | 6 | 1a (G-1) |
+| 9 | R6 | Malicious or compromised Open VSX extension; signature semantics unknown. Public open-vsx.org in Phase 0/1 (Q-7); install test is now a 1a gate line (1a/L22). | EXT-1, EXT-3 | 2 | 3 | 6 | 1a gate; P4 allow-list |
+| 10 | R24 | Repo-supplied settings weaken Axis (CLI command, scrubbing off). Closed by decision Q-3: application or machine scope only, workspace values ignored with a warning. Residual: implementation and test (1a/L13). | CFG-1 | 1 | 3 | 3 (was 6) | 1a |
 | 11 | R8 | Upstream, Electron or Chromium patch lag. | EL-7, SC-6, SC-2 | 2 | 3 | 6 | P1 process |
 | 12 | R9 | npm and build supply chain. | SC-1, SC-3, SC-5 | 2 | 3 | 6 | P1 CI; P6 |
-| 13 | R25 | Daemon-spawned git children (hooks, credential helpers) run with the user's credentials, and in 1b beside the vault key in memory. | GIT-3 | 2 | 3 | 6 | 1a/1b (Q-4) |
+| 13 | R25 | Hooks and credential helpers for Axis commit and push run with the user's credentials. Decision Q-4 moves them out of the daemon into the pty process context, which holds no secrets; re-evaluated in 1b when the vault ships. | GIT-3 | 2 | 2 | 4 (was 6) | 1a; 1b re-evaluation |
 | 14 | R11 | MCP stdio auto-start, tool poisoning. | MCP-1, MCP-2 | 3 | 2 | 6 | P4 |
-| 15 | R26 | Snapshot refs hold secrets from untracked, non-ignored files; mirror push publishes them. | REF-1, DMN-8 | 2 | 2 | 4 | 1a |
+| 15 | R26 | Snapshot refs hold secrets from untracked, non-ignored files; mirror push publishes them. 1a documents the exposure; 1b adds secret scanning of snapshot trees (decision Q-8). | REF-1, DMN-8 | 2 | 2 | 4 (2 once the 1b scan ships) | 1a doc; 1b scan |
 | 16 | R27 | Audit gaps: tail truncation; terminal I/O unaudited; redaction misses new sinks. | DMN-5, DMN-6 | 2 | 2 | 4 | 1a/1b (G-11) |
 | 17 | R28 | Anthropic adapter: hostile or malformed stream, key in errors or redirects, oversized responses, prompts sent without clear consent. | ANT-1, PRV-4 | 2 | 2 | 4 | 1b |
-| 18 | R29 | Workspace Trust inheritance wrong or stale; CLI run in a restricted worktree. | TRU-1, TRU-2 | 2 | 2 | 4 | 1a (G-8, G-23) |
+| 18 | R29 | Workspace Trust inheritance wrong or stale. Decision Q-2: no run in a worktree of an untrusted repository; trust re-derived at mount and at run start. | TRU-1, TRU-2 | 1 | 2 | 2 (was 4) | 1a |
 | 19 | R30 | Pty-process or daemon fd leak into children; pty attach to a foreign terminal id. | PTY-7 | 1 | 3 | 3 | 1a |
 | 20 | R31 | Journal inconsistencies after a kill mid-operation: orphan worktrees, stale locks, half-written refs. | DMN-7 | 2 | 2 | 4 | 1a (G-12) |
 | 21 | R13 | Inherited unused privileged surfaces (agent host, MCP gateway, renderer-chosen utility modules). | DMN-4, MCP-4, SC-3 | 2 | 2 | 4 | P1 (ADR 0002 decision 6) |
@@ -193,7 +213,7 @@ Likelihood (L) and impact (I) on a 1–3 scale, score = L × I, as Phase 0 §6. 
 | 29 | R20 | Unsigned update channel once enabled. | SC-4 | 1 | 3 | 3 | P6 |
 | 30 | R21 | Terminal escape-sequence spoofing (now includes cwd steering of splits). | PTY-3 | 2 | 2 | 4 | 1a. Impact raised from 1: the Axis shell reads CLI output for status |
 
-R17 (audit and redaction gaps) is merged into R27. Changes from the Phase 0 register: R1, R2, R5 (owner phase 1a), R7 (likelihood 2 to 3 and owner phase P3 to 1a), R10, R12 (lowered or re-tagged because the web build moves to Phase 2), R21 (impact), and the new R22 to R31.
+R17 (audit and redaction gaps) is merged into R27. Scores of R6, R7, R24, R25, R26 and R29 reflect the lead decisions of §11.1 (the rows say so); the ranks are not re-sorted and the largest scores are unchanged. Changes from the Phase 0 register: R1, R2, R5 (owner phase 1a), R7 (likelihood 2 to 3 and owner phase P3 to 1a), R10, R12 (lowered or re-tagged because the web build moves to Phase 2), R21 (impact), and the new R22 to R31.
 
 ## 10. Test categories for the new controls
 
@@ -210,22 +230,25 @@ The categories are those of Phase 0 §7. Ideas for the rows the model adds:
 | PT | DMN-2 | A TOCTOU swap between resolve and use; a symlinked worktree root into the local checkout; case and normalisation variants on macOS. |
 | SSRF | ANT-1, GIT-5 | A redirect from the provider endpoint is not followed and the key is not sent to the target; a planted remote host is refused for compare URLs. |
 
-## 11. Open questions and proposed changes to other documents
+## 11. Decisions and remaining doc-fix items
 
-### 11.1 Open questions for the owner
+### 11.1 Decisions on the open questions (lead, 2026-11-02)
 
-1. **Q-1. PTY-1 wording.** ADR 0004 implication 7 says CLI agents run in the "user-visible pty host". The design (§4.4) runs them in the Axis pty process. This model follows the design. Should ADR 0004's wording be amended?
-2. **Q-2. Runs in an untrusted worktree.** If the source repository is untrusted, the worktree opens in Restricted Mode in IDE view. Should Axis also refuse to start a CLI or composer run there, or warn, or allow it?
-3. **Q-3. Settings scope.** Confirm that `axis.cliAgents`, `axis.terminals.scrubEnvironment`, `axis.git.runHooks` and `axis.worktrees.root` are application- or machine-scoped (G-1).
-4. **Q-4. Hooks in the daemon.** Should Axis commit and push run repository hooks in the daemon (as designed), in the Axis pty process (no secrets), or default `axis.git.runHooks` to `false` once the vault ships in 1b (GIT-3, R25)?
-5. **Q-5. Web re-tag.** Agree that WEB-1 to WEB-6 move from P1 to P2 with the browser skeleton.
-6. **Q-6. Push gate.** Gate Axis push on GIT-SNAP-1 as commit is (G-6)?
-7. **Q-7. Open VSX.** Public, managed or mirrored registry (Phase 0 decision 3), and when the M3 install test runs (G-13).
-8. **Q-8. Snapshot scanning.** Scan snapshot trees for secret patterns, or only document the exposure (G-7)?
+| Q | Decision | Effect |
+|---|---|---|
+| Q-1 | The design wins: CLI runs use the separate Axis pty utility process. | PTY-1 row updated; the ADR 0004 wording is a doc-fix item (§11.2). |
+| Q-2 | No CLI or agent run in a worktree whose source repository is untrusted. Restricted Mode shows the workspace read-only with a "Trust to run" action. | TRU-2 row; closes G-8. |
+| Q-3 | `axis.cliAgents`, `axis.terminals.scrubEnvironment`, `axis.git.runHooks`, `axis.worktrees.root`: application or machine scope only; workspace and folder values ignored, with a warning. | CFG-1 closed; closes G-1. |
+| Q-4 | Hooks for Axis-initiated commit and push run in the pty process context (no secrets), never in the daemon. `runHooks` stays on in 1a; re-evaluated in 1b when the vault ships. | GIT-3 row; R25. |
+| Q-5 | The WEB-* P1 to P2 retag is accepted. | §8. |
+| Q-6 | Push re-takes GIT-SNAP-1 and refuses on unacknowledged drift. GIT-SNAP-1 also covers the worktree `.git` file, `commondir`, and any `core.hooksPath` target inside the worktree. | Closes G-4, G-5, G-6. |
+| Q-7 | Phase 0 and 1 use public open-vsx.org. The install test runs in the M3 Stage 1b validation and is a gate. | EXT-3 row; 1a/L22. |
+| Q-8 | 1a documents the snapshot exposure; 1b adds secret scanning of snapshots as a gate. | REF-1 row; 1b/L13. |
 
-### 11.2 Proposed changes to other documents (not made here)
+Also accepted: **G-9** (the run-base diff is authoritative) and **G-11**. G-11 is an **`@axis/audit` requirement**: the head hash and event count are persisted periodically, outside the chain, so tail truncation is detected.
 
-- `docs/ROADMAP.md`: add gate lines for G-1, G-4 to G-6, G-14 to G-17, G-19 to G-24 as in §6; add the Open VSX test (G-13).
-- `docs/design/axis-agent-shell.md` and `-policies.md`: state setting scopes (G-1); GIT-SNAP-1 additions (G-4, G-5, G-6); an authoritative run-base diff (G-9); terminal id binding (G-2).
-- `docs/adr/0004-agent-first-workspace-shell.md`: the PTY-1 wording (Q-1).
-- `docs/SECURITY.md` "Testing" categories are enough; no new category is needed, though DR and CFG appear in the model as threat classes only.
+### 11.2 Doc-fix items, not made in this change
+
+- `docs/adr/0004-agent-first-workspace-shell.md`: implication 7 says CLI agents run in the "user-visible pty host". Amend to the Axis pty utility process (Q-1).
+- `docs/design/axis-agent-shell.md` and `-policies.md`: record the settings scope (G-1), the GIT-SNAP-1 additions and the push re-take (G-4 to G-6), hooks in the pty process context (Q-4), the authoritative run-base diff (G-9), terminal id binding (G-2), and the explicit `--git-dir` rule (G-5).
+- `docs/SECURITY.md` "Testing" needs no new category; DR and CFG are threat classes in the model only.
