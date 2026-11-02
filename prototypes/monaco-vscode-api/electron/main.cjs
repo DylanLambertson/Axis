@@ -1,3 +1,10 @@
+// NOT FOR REUSE: prototype-only security shortcuts, see report §6
+// (docs/feasibility/prototype-monaco-vscode-api.md, findings 9-14).
+// - Path confinement is lexical only; symlinks are followed (threat model WT-1).
+// - IPC checks the sending webContents, not senderFrame/mainFrame or the frame URL (EL-3, ADR 0003 D1).
+// - The shell bridge spawns /bin/sh with the full process.env and accepts arbitrary stdin (PTY-2).
+// - No CSP, no permission request handler, no will-frame-navigate/will-redirect guard.
+//
 // Electron host for the prototype. The renderer runs the same web build as the browser; Node-only capabilities
 // (real file system, a pipe-backed shell) are offered through a narrow, validated IPC surface in preload.cjs.
 // There is no Code OSS `reh` server here, so there is no Node extension host, pty, debugger or Git.

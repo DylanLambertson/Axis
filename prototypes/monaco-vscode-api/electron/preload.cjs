@@ -1,3 +1,7 @@
+// NOT FOR REUSE: prototype-only security shortcuts, see report §6
+// (docs/feasibility/prototype-monaco-vscode-api.md, findings 9-14).
+// This bridge exposes a raw spawn-/bin/sh and write-stdin primitive to the main world.
+//
 // Sandboxed preload: exposes only the narrow bridge typed in src/types.d.ts (AxisNodeBridge).
 const { contextBridge, ipcRenderer } = require('electron')
 
