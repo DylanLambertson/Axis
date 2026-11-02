@@ -4,7 +4,6 @@
   "private": true,
   "description": "Axis-owned TypeScript packages that live outside the Code OSS overlay.",
   "license": "UNLICENSED",
-  "type": "module",
   "engines": {
     "node": "24.22.1",
     "npm": ">=11"
@@ -13,10 +12,10 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "tsc -b packages/*",
+    "clean": "node scripts/clean-dist.mjs",
+    "build": "node scripts/clean-dist.mjs && tsc -b packages/*",
     "typecheck": "tsc -b packages/* && npm run typecheck --workspaces --if-present",
-    "test": "npm run build && npm test --workspaces --if-present",
-    "clean": "tsc -b --clean packages/*"
+    "test": "npm run build && npm test --workspaces --if-present"
   },
   "devDependencies": {
     "@types/node": "24.19.2",

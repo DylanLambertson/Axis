@@ -22,12 +22,12 @@ Use Node 24.22.1 (see `code-oss/upstream.json`). From the repository root:
 npm ci --ignore-scripts
 npm run typecheck   # strict tsc across all packages
 npm run build       # tsc -b packages/*
-npm test            # build, then node --test "dist/test/**/*.test.js" in each package
+npm test            # clean build (scripts/clean-dist.mjs), then node --test "dist/test/**/*.test.js" in each package
 ```
 
 ## Adding a package
 
-1. Copy `packages/protocol/package.json` and `tsconfig.json` to `packages/<name>/` and rename.
+1. Copy `packages/protocol/package.json` and `tsconfig.json` to `packages/<name>/` and rename. Keep `"type": "module"` in the package; the repository root stays CommonJS so the existing `test/` scripts load.
 2. Add `references` to the tsconfig and a pinned `"0.0.0"` dependency for each workspace package you use.
 3. Use `.js` suffixes on relative imports, put sources in `src/` and tests in `test/` (`*.test.ts`).
 4. Run `npm install --ignore-scripts` and commit the lockfile.
