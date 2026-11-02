@@ -6,7 +6,12 @@ export {
   placeholder,
   summarizeContent,
   MIN_REGISTERED_SECRET_LENGTH,
+  MAX_STRING_CHARS,
+  REDACTION_RULES,
+  isWellFormedString,
+  wellFormed,
   type RedactionKind,
+  type RedactionRule,
 } from "./redact.js";
 export {
   openDatabase,
