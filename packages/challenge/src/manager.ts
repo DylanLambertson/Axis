@@ -288,8 +288,7 @@ export class ChallengeManager {
       throw new ChallengeError("E_CONFLICT", "The request no longer matches what was shown; start again");
     }
     if (p.decision === "deny") {
-      this.#emit("user", "tier4.challenge", rec, "success", { phase: "resolve", decision: "deny" });
-      this.#finish(rec, "DENIED");
+      this.#settle(rec, "DENIED", "user", "tier4.challenge", "success", { phase: "resolve", decision: "deny" });
       return { challengeId: p.challengeId, state: "denied", nativeRequired: rec.native };
     }
     if (rec.native) {
@@ -327,8 +326,7 @@ export class ChallengeManager {
       throw new ChallengeError("E_POLICY_DENIED", "Native confirmation was not accepted");
     }
     if (!p.confirmed) {
-      this.#emit("user", "tier4.challenge", rec, "success", { phase: "native", decision: "cancel" });
-      this.#finish(rec, "DENIED");
+      this.#settle(rec, "DENIED", "user", "tier4.challenge", "success", { phase: "native", decision: "cancel" });
       return { challengeId: p.challengeId, state: "denied", nativeRequired: true };
     }
     this.#emit("user", "tier4.challenge", rec, "success", { phase: "native", decision: "confirm" });
@@ -422,12 +420,25 @@ export class ChallengeManager {
   }
 
   #end(rec: Record_, state: State, actor: ActorId, phase: string, reason: string, action: ChallengeAuditEvent["action"] = "tier4.challenge"): void {
-    try {
-      this.#emit(actor, action, rec, "denied", { phase, reason });
-    } finally {
-      // Burn even if the sink failed: refusing is always safe.
-      this.#finish(rec, state);
-    }
+    this.#settle(rec, state, actor, action, "denied", { phase, reason });
+  }
+
+  /**
+   * Ends a challenge, then audits it. Ending first means a
+   * failing sink can never keep a challenge alive: refusing is always safe, so
+   * a deny, a burn or an expiry takes effect whatever the sink does. The
+   * caller still gets E_INTERNAL when the audit failed.
+   */
+  #settle(
+    rec: Record_,
+    state: State,
+    actor: ActorId,
+    action: ChallengeAuditEvent["action"],
+    outcome: ChallengeAuditEvent["outcome"],
+    payload: Readonly<Record<string, string | number | boolean | null>>,
+  ): void {
+    this.#finish(rec, state);
+    this.#emit(actor, action, rec, outcome, payload);
   }
 
   /** Marks an open challenge expired. Returns true if it is (now) expired. */

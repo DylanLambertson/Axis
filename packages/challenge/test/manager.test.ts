@@ -519,3 +519,19 @@ test("S2: whatever the action throws, only a wire-valid ChallengeError escapes",
     );
   }
 });
+
+test("S7: a deny takes effect even when the audit sink fails, and the caller gets E_INTERNAL", () => {
+  const s = setup({});
+  const a = issue(s.manager);
+  s.failWhen((e) => e.payload["decision"] === "deny");
+  assert.throws(() => s.manager.resolve(resolveArgs(a, { decision: "deny" })), code("E_INTERNAL"));
+  s.failWhen(undefined);
+  assert.throws(() => s.manager.resolve(resolveArgs(a)), code("E_CONFLICT"), "an approve cannot follow the deny");
+
+  const b = issue(s.manager);
+  s.manager.resolve(resolveArgs(b));
+  s.failWhen((e) => e.payload["decision"] === "cancel");
+  assert.throws(() => s.manager.confirmNative({ challengeId: b.challenge.challengeId, proof: b.nativeProof ?? "", confirmed: false, windowId: WIN }), code("E_INTERNAL"));
+  s.failWhen(undefined);
+  assert.throws(() => s.manager.confirmNative({ challengeId: b.challenge.challengeId, proof: b.nativeProof ?? "", confirmed: true, windowId: WIN }), code("E_CONFLICT"), "a cancelled dialog cannot be re-confirmed");
+});
