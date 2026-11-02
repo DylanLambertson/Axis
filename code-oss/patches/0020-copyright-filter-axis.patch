@@ -1,0 +1,19 @@
+diff --git a/build/filters.ts b/build/filters.ts
+index b5f5695b..f8be30fc 100644
+--- a/build/filters.ts
++++ b/build/filters.ts
+@@ -232,6 +232,14 @@ export const copyrightFilter = Object.freeze<string[]>([
+ 
+ 	// extensions/copilot has its own code style
+ 	'!extensions/copilot/**',
++
++	// --- Start Axis ---
++	// Axis-owned files carry the Axis proprietary header instead, enforced by ESLint (build/axis/eslint.axis.ts)
++	'!src/vs/axis/**',
++	'!src/vs/workbench/contrib/axis/**',
++	'!extensions/theme-axis/**',
++	'!build/axis/**',
++	// --- End Axis ---
+ ]);
+ 
+ export const tsFormattingFilter = Object.freeze<string[]>([
