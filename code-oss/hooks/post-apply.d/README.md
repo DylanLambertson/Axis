@@ -16,4 +16,4 @@ Executables run by `scripts/code-oss/apply.sh` after the patches, removals, repl
 
 `apply.sh` records each hook and its SHA-256 in `vendor/code-oss.applied`.
 
-None for the Phase 0 M2 baseline build.
+From M3: `10-regen-locks` regenerates the root and remote lockfiles after the Copilot and agent SDK dependencies are dropped, and asserts the exact result (`docs/design/axis-shell.md` §2.8).
