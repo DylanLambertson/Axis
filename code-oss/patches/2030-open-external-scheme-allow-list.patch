@@ -1,0 +1,50 @@
+diff --git a/src/vs/platform/native/common/native.ts b/src/vs/platform/native/common/native.ts
+--- a/src/vs/platform/native/common/native.ts
++++ b/src/vs/platform/native/common/native.ts
+@@ -503,6 +503,16 @@ export type ThermalState = 'unknown' | 'nominal' | 'fair' | 'serious' | 'critica
+  */
+ export type PowerSaveBlockerType = 'prevent-app-suspension' | 'prevent-display-sleep';
+ 
++// --- Start Axis ---
++/** Threat model EL-5: the only URL schemes that openExternal hands to the operating system. */
++export const AXIS_OPEN_EXTERNAL_ALLOWED_SCHEMES: readonly string[] = ['http', 'https', 'mailto'];
++
++export function axisIsAllowedOpenExternalUrl(url: string): boolean {
++	const scheme = /^([a-z][a-z0-9+.-]*):/i.exec(url)?.[1].toLowerCase();
++	return scheme !== undefined && AXIS_OPEN_EXTERNAL_ALLOWED_SCHEMES.includes(scheme);
++}
++// --- End Axis ---
++
+ export const INativeHostService = createDecorator<INativeHostService>('nativeHostService');
+ 
+ /**
+diff --git a/src/vs/platform/native/electron-main/nativeHostMainService.ts b/src/vs/platform/native/electron-main/nativeHostMainService.ts
+--- a/src/vs/platform/native/electron-main/nativeHostMainService.ts
++++ b/src/vs/platform/native/electron-main/nativeHostMainService.ts
+@@ -27,7 +27,11 @@ import { IEnvironmentMainService } from '../../environment/electron-main/environ
+ import { createDecorator, IInstantiationService } from '../../instantiation/common/instantiation.js';
+ import { ILifecycleMainService, IRelaunchOptions } from '../../lifecycle/electron-main/lifecycleMainService.js';
+ import { ILogService } from '../../log/common/log.js';
+-import { FocusMode, IApplicationBadge, ICommonNativeHostService, INativeHostOptions, INativeSystemWideKeybinding, INativeSystemWideKeybindingResult, INativeZipFile, INativeZipOptions, INativeZipProgress, INativeZipResult, IOpenAgentsWindowOptions, IOSProperties, IOSProxy, IOSProxyConfig, IOSStatistics, IStartTracingOptions, IToastOptions, IToastResult, PowerSaveBlockerType, SystemIdleState, ThermalState } from '../common/native.js';
++import { FocusMode, IApplicationBadge, ICommonNativeHostService, INativeHostOptions, INativeSystemWideKeybinding, INativeSystemWideKeybindingResult, INativeZipFile, INativeZipOptions, INativeZipProgress, INativeZipResult, IOpenAgentsWindowOptions, IOSProperties, IOSProxy, IOSProxyConfig, IOSStatistics, IStartTracingOptions, IToastOptions, IToastResult, PowerSaveBlockerType, SystemIdleState, ThermalState,
++	// --- Start Axis ---
++	axisIsAllowedOpenExternalUrl
++	// --- End Axis ---
++} from '../common/native.js';
+ import { IGlobalKeybindingsMainService } from '../../globalKeybindings/electron-main/globalKeybindingsMainService.js';
+ import { IGPUProcessMainService } from '../../gpu/electron-main/gpuProcessMainService.js';
+ import { IProductService } from '../../product/common/productService.js';
+@@ -729,6 +733,13 @@ export class NativeHostMainService extends Disposable implements INativeHostMain
+ 	}
+ 
+ 	async openExternal(windowId: number | undefined, url: string, defaultApplication?: string): Promise<boolean> {
++		// --- Start Axis ---
++		// Only http, https and mailto reach the OS (threat model EL-5); the URL is not logged, as it may carry tokens
++		if (!axisIsAllowedOpenExternalUrl(url)) {
++			this.logService.warn(`openExternal: refused a URL with scheme '${/^([^:]*):/.exec(url)?.[1] ?? ''}'; Axis opens only http, https and mailto links externally`);
++			return false;
++		}
++		// --- End Axis ---
+ 		this.environmentMainService.unsetSnapExportedVariables();
+ 		try {
+ 			if (matchesSomeScheme(url, Schemas.http, Schemas.https)) {
