@@ -18,10 +18,11 @@ NNNN-short-name.patch
 | Numbers | Block | Contents |
 |---|---|---|
 | `0001`–`0999` | shell | The Axis shell layer and its seams (ADR 0002 decision 2). Budget: at most 12 upstream files and 300 upstream lines. |
-| `1000`–`1999` | guardrails | Licensing and distribution guardrails: rebrand, Copilot removal, service endpoints, telemetry (ADR 0002 decisions 5 and 6). |
+| `1000`–`1499` | guardrails | Rebrand and licensing guardrails: product identity, notices, `extensionsGallery`, service endpoints, telemetry (ADR 0002 decision 5). |
+| `1500`–`1999` | copilot | Copilot and agent-host removal or stubbing (ADR 0002 decision 6). |
 | `2000`–`2999` | security | Security hardening (ADR 0002 decision 7). |
 
-Numbers `0000` and `3000`–`9999` are unassigned; extend this table and `patch_block` in `scripts/code-oss/lib.sh` together before using them. Because the series applies in lexical order, all shell patches apply before the guardrail patches, which apply before the security patches.
+Numbers `0000` and `3000`–`9999` are unassigned; extend this table and `patch_block` in `scripts/code-oss/lib.sh` together before using them. Because the series applies in lexical order, the blocks apply in table order.
 
 `scripts/code-oss/footprint.sh` reports, per block, the upstream files and lines each block changes, plus the net total against the pinned commit.
 

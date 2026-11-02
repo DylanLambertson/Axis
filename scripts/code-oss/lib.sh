@@ -26,16 +26,20 @@ COMMIT_RE='^[0-9a-f]{40}$'
 VERSION_RE='^[0-9]+\.[0-9]+\.[0-9]+$'
 TAG_RE='^[A-Za-z0-9._-]+$'
 PATCH_RE='^[0-9]{4}-[a-z0-9][a-z0-9.-]*\.patch$'
-PATCH_BLOCKS_HELP='0001-0999 shell, 1000-1999 guardrails, 2000-2999 security hardening'
+PATCH_BLOCKS_HELP='0001-0999 shell, 1000-1499 guardrails, 1500-1999 copilot, 2000-2999 security'
 
 # patch_block NAME: prints "<block> <range>" for a NNNN-*.patch name, or fails
-# when the number is outside the assigned blocks (ADR 0002 decisions 6 and 7).
+# when the number is outside the assigned blocks: the shell layer (ADR 0002
+# decision 2), rebrand and licensing guardrails (decision 5), Copilot and agent
+# host removal (decision 6), and security hardening (decision 7).
 patch_block() {
 	local n=$((10#${1:0:4}))
 	if [ "$n" -ge 1 ] && [ "$n" -le 999 ]; then
 		echo "shell 0001-0999"
-	elif [ "$n" -ge 1000 ] && [ "$n" -le 1999 ]; then
-		echo "guardrails 1000-1999"
+	elif [ "$n" -ge 1000 ] && [ "$n" -le 1499 ]; then
+		echo "guardrails 1000-1499"
+	elif [ "$n" -ge 1500 ] && [ "$n" -le 1999 ]; then
+		echo "copilot 1500-1999"
 	elif [ "$n" -ge 2000 ] && [ "$n" -le 2999 ]; then
 		echo "security 2000-2999"
 	else

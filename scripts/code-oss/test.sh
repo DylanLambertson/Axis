@@ -79,6 +79,7 @@ printf 'upstream readme\n' >"$up/README.md"
 printf 'copilot a\n' >"$up/extensions/copilot/a.txt"
 printf 'copilot b\n' >"$up/extensions/copilot/b.txt"
 printf 'upstream icon\n' >"$up/resources/icon.txt"
+printf 'agent host\n' >"$up/src/agent.txt"
 printf 'ignored/\n' >"$up/.gitignore"
 printf 'line 1\nline 2\nline 3\nline 4\nline 5\n' >"$up/src/app.txt"
 git -C "$up" add -A
@@ -110,6 +111,9 @@ sed 's/^ line 4$/ line four/' "$tmp/broken.patch" >"$tmp/0003-broken.patch"
 git -C "$scratch" -c advice.detachedHead=false checkout -q -f "$c1"
 printf 'upstream readme (guardrail)\n' >"$scratch/README.md"
 git -C "$scratch" diff >"$tmp/1000-guard.patch"
+git -C "$scratch" -c advice.detachedHead=false checkout -q -f "$c1"
+printf 'agent host (stubbed)\n' >"$scratch/src/agent.txt"
+git -C "$scratch" diff >"$tmp/1500-agent-host.patch"
 git -C "$scratch" -c advice.detachedHead=false checkout -q -f "$c1"
 cat >"$tmp/2000-harden.patch" <<'PATCH'
 diff --git a/src/harden.txt b/src/harden.txt
@@ -301,16 +305,18 @@ new_root m3
 write_manifest "$c1" v1.0.0
 expect_success "fetch for the M3 layout tests" fetch
 patches="$root/code-oss/patches"
-cp "$tmp/0001-first.patch" "$tmp/0002-second.patch" "$tmp/1000-guard.patch" "$tmp/2000-harden.patch" "$patches/"
+cp "$tmp/0001-first.patch" "$tmp/0002-second.patch" "$tmp/1000-guard.patch" "$tmp/1500-agent-host.patch" \
+	"$tmp/2000-harden.patch" "$patches/"
 printf 'x\n' >"$patches/3000-unassigned.patch"
 expect_failure "apply rejects a patch number above the assigned blocks" "outside the assigned number blocks" apply
 rm "$patches/3000-unassigned.patch"
 printf 'x\n' >"$patches/0000-zero.patch"
 expect_failure "apply rejects patch number 0000" "outside the assigned number blocks" apply
 rm "$patches/0000-zero.patch"
-expect_success "apply accepts patches in the shell, guardrail and security blocks" apply
-check "guardrail and security patches are applied" \
-	test "$(cat "$tree/README.md")" = "upstream readme (guardrail)" -a "$(cat "$tree/src/harden.txt")" = hardened
+expect_success "apply accepts patches in the shell, guardrail, copilot and security blocks" apply
+check "guardrail, copilot and security patches are applied" \
+	test "$(cat "$tree/README.md")" = "upstream readme (guardrail)" -a "$(cat "$tree/src/harden.txt")" = hardened \
+	-a "$(cat "$tree/src/agent.txt")" = "agent host (stubbed)"
 
 # --- removals.txt ----------------------------------------------------------------
 
@@ -399,15 +405,17 @@ expect_success "footprint reports on the applied tree" footprint --tsv
 check "footprint: shell block (2 patches, 1 upstream file, +2 -2)" \
 	grep -qx "shell${tab}0001-0999${tab}2${tab}1${tab}2${tab}2${tab}0" "$tmp/out"
 check "footprint: guardrails block (1 patch, 1 upstream file, +1 -1)" \
-	grep -qx "guardrails${tab}1000-1999${tab}1${tab}1${tab}1${tab}1${tab}0" "$tmp/out"
+	grep -qx "guardrails${tab}1000-1499${tab}1${tab}1${tab}1${tab}1${tab}0" "$tmp/out"
+check "footprint: copilot block is reported separately (1 patch, 1 upstream file, +1 -1)" \
+	grep -qx "copilot${tab}1500-1999${tab}1${tab}1${tab}1${tab}1${tab}0" "$tmp/out"
 check "footprint: security block (1 patch, new file only)" \
 	grep -qx "security${tab}2000-2999${tab}1${tab}0${tab}0${tab}0${tab}1" "$tmp/out"
 check "footprint: removals (1 path, 2 upstream files, -2)" \
 	grep -qx "removals${tab}removals.txt${tab}1 paths${tab}2${tab}0${tab}2${tab}0" "$tmp/out"
 check "footprint: replace (1 file, +1 -1)" \
 	grep -qx "replace${tab}replace/${tab}1 files${tab}1${tab}1${tab}1${tab}0" "$tmp/out"
-check "footprint: net total against the pin (5 files, +3 -5)" \
-	grep -qx "total${tab}net vs pin${tab}-${tab}5${tab}3${tab}5${tab}0" "$tmp/out"
+check "footprint: net total against the pin (6 files, +4 -6)" \
+	grep -qx "total${tab}net vs pin${tab}-${tab}6${tab}4${tab}6${tab}0" "$tmp/out"
 expect_success "footprint prints a readable table by default" footprint
 check "readable table has a header" output_has "upstream files"
 cp "$tmp/0003-broken.patch" "$patches/"

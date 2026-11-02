@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Resets vendor/code-oss to the pinned commit, then, in this order:
 #   1. applies code-oss/patches/NNNN-*.patch in lexical order (number blocks:
-#      0001-0999 shell, 1000-1999 guardrails, 2000-2999 security hardening);
+#      0001-0999 shell, 1000-1499 rebrand and licensing guardrails, 1500-1999
+#      Copilot and agent host removal, 2000-2999 security hardening);
 #   2. deletes the paths listed in code-oss/removals.txt (each must exist);
 #   3. copies code-oss/replace/** over existing upstream files (each target
 #      must exist at the pinned commit, to catch upstream drift);
@@ -26,7 +27,7 @@ for arg in "$@"; do
 	case "$arg" in
 	--force) force=1 ;;
 	-h | --help)
-		sed -n '2,19p' "$0"
+		sed -n '2,20p' "$0"
 		exit 0
 		;;
 	*) die "unknown argument: $arg" ;;

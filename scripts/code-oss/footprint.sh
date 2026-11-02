@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Reports the upstream footprint of the applied Axis changes in vendor/code-oss,
 # the budget that ADR 0002 tracks:
-#   - per patch block (shell, guardrails, security): patches, upstream files
+#   - per patch block (shell, guardrails, copilot, security): patches, upstream files
 #     touched, lines added and deleted in upstream files, and new files created
 #     (from `git apply --numstat` of each patch);
 #   - removals.txt and replace/: upstream files and lines affected;
@@ -82,9 +82,10 @@ stamp_get replace >"$work/replace"
 awk -F'\t' -v tsv="$tsv" -v removals="$(wc -l <"$work/removals" | tr -d ' ')" \
 	-v replaced="$(wc -l <"$work/replace" | tr -d ' ')" '
 	BEGIN {
-		order = "shell guardrails security removals replace total"
+		order = "shell guardrails copilot security removals replace total"
 		n = split(order, names, " ")
-		range["shell"] = "0001-0999"; range["guardrails"] = "1000-1999"; range["security"] = "2000-2999"
+		range["shell"] = "0001-0999"; range["guardrails"] = "1000-1499"; range["copilot"] = "1500-1999"
+		range["security"] = "2000-2999"
 		range["removals"] = "removals.txt"; range["replace"] = "replace/"; range["total"] = "net vs pin"
 	}
 	{
