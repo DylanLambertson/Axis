@@ -49,20 +49,30 @@ import { mountWorkspace } from './workspace'
 
 startMark('axis:setup:start')
 
-const workerUrls: Record<string, URL> = {
-  editorWorkerService: new URL('monaco-editor/esm/vs/editor/editor.worker.js', import.meta.url),
-  extensionHostWorkerMain: new URL(
-    '@codingame/monaco-vscode-api/workers/extensionHost.worker',
-    import.meta.url
+// Vite bundles a worker entry only when it sees the literal `new Worker(new URL(..., import.meta.url))`. A bare
+// `new URL(...)` works in dev but ships an unbundled module in production, and the extension host then dies
+// (code 81). This stand-in class (the library demo's idiom) only records the URL; VS Code creates the real workers.
+class Worker {
+  constructor(
+    readonly url: URL,
+    readonly options: WorkerOptions
+  ) {}
+}
+
+const workers: Record<string, Worker> = {
+  editorWorkerService: new Worker(new URL('monaco-editor/esm/vs/editor/editor.worker.js', import.meta.url), { type: 'module' }),
+  extensionHostWorkerMain: new Worker(
+    new URL('@codingame/monaco-vscode-api/workers/extensionHost.worker', import.meta.url),
+    { type: 'module' }
   ),
-  TextMateWorker: new URL('@codingame/monaco-vscode-textmate-service-override/worker', import.meta.url),
-  OutputLinkDetectionWorker: new URL('@codingame/monaco-vscode-output-service-override/worker', import.meta.url),
-  LocalFileSearchWorker: new URL('@codingame/monaco-vscode-search-service-override/worker', import.meta.url)
+  TextMateWorker: new Worker(new URL('@codingame/monaco-vscode-textmate-service-override/worker', import.meta.url), { type: 'module' }),
+  OutputLinkDetectionWorker: new Worker(new URL('@codingame/monaco-vscode-output-service-override/worker', import.meta.url), { type: 'module' }),
+  LocalFileSearchWorker: new Worker(new URL('@codingame/monaco-vscode-search-service-override/worker', import.meta.url), { type: 'module' })
 }
 
 window.MonacoEnvironment = {
-  getWorkerUrl: (_moduleId, label) => workerUrls[label]?.toString() ?? '',
-  getWorkerOptions: () => ({ type: 'module' })
+  getWorkerUrl: (_moduleId, label) => workers[label]?.url.toString() ?? '',
+  getWorkerOptions: (_moduleId, label) => workers[label]?.options ?? { type: 'module' }
 }
 
 const userConfiguration = {

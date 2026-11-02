@@ -179,20 +179,21 @@ try {
       const installMs = Date.now() - t
       await page.eval("window.__axisTest.vscode.workspace.getConfiguration().update('[typescript]', { 'editor.defaultFormatter': 'esbenp.prettier-vscode' }, 1).then(() => true)")
       await page.eval(`window.__axisTest.vscode.window.showTextDocument(window.__axisTest.vscode.Uri.file('${root}/src/messy.ts')).then(() => true)`)
-      // Prettier activates on startup finished and registers its provider asynchronously; poll the provider API
-      // (no dialog) until it answers, then run the user-facing format command.
-      const edits = await page.waitFor(
-        `window.__axisTest.vscode.commands.executeCommand('vscode.executeFormatDocumentProvider', window.__axisTest.vscode.Uri.file('${root}/src/messy.ts')).then(e => e && e.length ? e.map(x => x.newText).join('') : null)`,
-        60_000,
-        1_000
-      )
-      const providerReadyMs = Date.now() - t
-      await cmd('editor.action.formatDocument')
-      const text = await page.waitFor(
-        "(t => t.includes('\"hello\";') && t)(window.__axisTest.vscode.window.activeTextEditor.document.getText())",
-        30_000
-      )
-      return { ...install, installMs, providerReadyMs, providerEditPreview: edits.slice(0, 120), formatted: text }
+      // Prettier activates on startup finished and registers its formatter asynchronously. Until it has, the
+      // format command opens a "cannot format" dialog: dismiss it and retry. Prettier's output is recognisable
+      // because it switches to double quotes and adds semicolons; the built-in TS formatter does neither.
+      let attempts = 0
+      let text = null
+      while (!text && Date.now() - t < 120_000) {
+        attempts++
+        await page.eval("void window.__axisTest.vscode.commands.executeCommand('editor.action.formatDocument'); true")
+        await sleep(1_000)
+        text = await page.eval(`(t => t.includes('"hello";') ? t : null)(window.__axisTest.vscode.window.activeTextEditor.document.getText())`)
+        await page.eval("[...document.querySelectorAll('.monaco-dialog-box .monaco-button')].find(b => b.textContent === 'Cancel')?.click(); true")
+      }
+      if (!text) throw new Error(`Prettier did not format within 120 s (${attempts} attempts)`)
+      const formattedAfterMs = Date.now() - t
+      return { ...install, installMs, formattedAfterMs, attempts, formatted: text }
     })
   }
   await step('memory-after-checklist', async () => ({ jsHeapMiB: await jsMemoryMiB(), processTree: treeRssMiB(child.pid) }))
