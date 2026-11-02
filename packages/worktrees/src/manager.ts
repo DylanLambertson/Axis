@@ -16,7 +16,8 @@ import {
 } from './types.js';
 import type { GitRunner } from './git.js';
 import {
-  buildGitSnapshot, diffGitSnapshots, parseConfigList, snapshotGuardFiles,
+  buildGitSnapshot, diffGitSnapshots, includedConfigFiles, parseConfigAll, snapshotExtraFiles,
+  snapshotGuardFiles, watchedEntries,
   type GitSnapshot,
 } from './gitSnap.js';
 import { HardenedGit } from './hardenedGit.js';
@@ -206,12 +207,44 @@ export class WorktreeManager {
 
   /** GIT-SNAP-1: hashes and text of the common-dir guard set for this worktree. */
   async takeGitSnapshot(worktreePath: string, commonDir?: string): Promise<GitSnapshot> {
-    const dir = commonDir ?? (await resolveRepo(worktreePath)).commonDir;
-    const config = await this.git.run(
+    const repo = await resolveRepo(worktreePath);
+    const dir = commonDir ?? repo.commonDir;
+    const workTree = repo.workTree ?? worktreePath;
+    const listing = await this.git.run(
       ['config', '--show-origin', '--show-scope', '--null', '--list'],
       { cwd: worktreePath },
     );
-    return buildGitSnapshot(await snapshotGuardFiles(dir), parseConfigList(config.stdout), this.now());
+    const all = parseConfigAll(listing.stdout);
+    const files = await snapshotGuardFiles(dir);
+    const primary = new Set([path.join(dir, 'config'), path.join(dir, 'config.worktree'),
+      ...Object.keys(files).filter((k) => k.endsWith('config.worktree')).map((k) => path.join(dir, k))]);
+    const hooksEntry = all.filter((e) => e.key.toLowerCase() === 'core.hookspath').at(-1);
+    await snapshotExtraFiles(files, {
+      workTree, gitDir: repo.gitDir, commonDir: dir,
+      includeFiles: includedConfigFiles(all, worktreePath, primary, os.homedir()),
+      hooksPath: hooksEntry ? hooksEntry.value : null,
+    });
+    return buildGitSnapshot(files, watchedEntries(all), this.now());
+  }
+
+  /**
+   * Call before push (and any other Axis action that must not run on changed
+   * git configuration). Re-takes GIT-SNAP-1 and refuses unless it matches the
+   * baseline the user last acknowledged (`acknowledgeDrift`). Fails closed
+   * when no baseline exists.
+   */
+  async assertNoDrift(worktreePath: string, opts: { baseline?: GitSnapshot } = {}): Promise<void> {
+    const { repo, workTree } = await this.locate(worktreePath, true);
+    const baseline = opts.baseline ?? (await readBaseline(repo.gitDir));
+    if (!baseline) {
+      throw new WorktreeError('E_CONFLICT', 'git configuration baseline is missing', { reason: 'git-drift', baselineMissing: true, items: [] });
+    }
+    const drift = diffGitSnapshots(baseline, await this.takeGitSnapshot(workTree, repo.commonDir));
+    if (drift.length > 0) {
+      throw new WorktreeError('E_CONFLICT', 'git configuration or hooks changed since last acknowledged', {
+        reason: 'git-drift', baselineMissing: false, items: drift.map((d) => d.id),
+      });
+    }
   }
 
   /** The user reviewed the drift: the current state becomes the new baseline. */

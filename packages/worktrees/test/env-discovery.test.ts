@@ -56,7 +56,15 @@ describe('GIT-ENV-1', () => {
       const m = new WorktreeManager({ runner: spy, worktreeRoot: fx.root });
       const ws = await m.create({ repoPath: fx.repo, slug: 'spy' });
       await m.status(ws.path);
-      assert.ok(calls.length > 10);
+      await m.assertNoDrift(ws.path);
+      await m.acknowledgeDrift(ws.path);
+      await m.list(fx.repo);
+      await m.restoreFromRunBase({ path: path.join(ws.path, 'a.txt') });
+      await m.finalise({ path: ws.path, outcome: 'archived' });
+      await m.sweepSnapshotRefs(fx.repo);
+      await m.remove({ path: ws.path, deleteBranch: true });
+      assert.ok(calls.length > 40);
+      assert.ok(calls.some((c) => c.includes('commit-tree')) && calls.some((c) => c.includes('for-each-ref')) && calls.some((c) => c.includes('cat-file')));
       for (const c of calls) {
         assert.ok(c.some((a) => a.startsWith('core.hooksPath=') && a.length > 'core.hooksPath='.length), c.join(' '));
         assert.ok(c.includes('core.fsmonitor=false'), c.join(' '));

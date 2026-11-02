@@ -42,12 +42,30 @@ export interface DriftItem {
   readonly after?: string;
 }
 
-/** Config keys of interest, besides `filter.*` and `diff.*`. Lowercase. */
-const WATCHED_KEYS = new Set(['core.hookspath', 'core.fsmonitor', 'core.sshcommand']);
+/** Exact config keys that execute code, redirect git or change what it trusts. Lowercase. */
+const WATCHED_KEYS = new Set([
+  'core.hookspath', 'core.fsmonitor', 'core.sshcommand', 'core.pager', 'core.editor',
+  'sequence.editor', 'core.askpass', 'core.gitproxy', 'gpg.program',
+]);
+
+/** Whole sections watched by prefix. `alias.` covers `!shell` aliases. */
+const WATCHED_PREFIXES = [
+  'filter.', 'diff.', 'include.', 'includeif.', 'credential.', 'uploadpack.', 'alias.',
+];
+
+/** Watched keys with a free-form subsection in the middle. */
+const WATCHED_PATTERNS: readonly RegExp[] = [
+  /^url\..+\.(push)?insteadof$/,
+  /^remote\..+\.(url|pushurl|uploadpack|receivepack|vcs|proxy)$/,
+  /^gpg\..+\.program$/,
+  /^merge\..+\.driver$/,
+  /^protocol\.(.+\.)?allow$/,
+];
 
 export function isWatchedConfigKey(key: string): boolean {
   const k = key.toLowerCase();
-  return k.startsWith('filter.') || k.startsWith('diff.') || WATCHED_KEYS.has(k);
+  return WATCHED_KEYS.has(k) || WATCHED_PREFIXES.some((p) => k.startsWith(p)) ||
+    WATCHED_PATTERNS.some((re) => re.test(k));
 }
 
 /** Only repository-level scopes count; global/system config is out of scope (ADR 0004). */
@@ -55,8 +73,8 @@ function isRepoScope(scope: string): boolean {
   return scope === 'local' || scope === 'worktree';
 }
 
-/** Parses `git config --show-origin --show-scope --null --list` output. */
-export function parseConfigList(stdout: string): GitSnapConfigEntry[] {
+/** Every repository-scope entry of `git config --show-origin --show-scope --null --list`. */
+export function parseConfigAll(stdout: string): GitSnapConfigEntry[] {
   const parts = stdout.split('\0');
   const out: GitSnapConfigEntry[] = [];
   for (let i = 0; i + 2 < parts.length; i += 3) {
@@ -66,9 +84,47 @@ export function parseConfigList(stdout: string): GitSnapConfigEntry[] {
     const nl = kv.indexOf('\n');
     const key = nl === -1 ? kv : kv.slice(0, nl);
     const value = nl === -1 ? '' : kv.slice(nl + 1);
-    if (isRepoScope(scope) && isWatchedConfigKey(key)) out.push({ key, value, scope, origin });
+    if (isRepoScope(scope)) out.push({ key, value, scope, origin });
   }
   return out;
+}
+
+export function watchedEntries(all: readonly GitSnapConfigEntry[]): GitSnapConfigEntry[] {
+  return all.filter((e) => isWatchedConfigKey(e.key));
+}
+
+/** Parses the config listing and keeps only watched repository-scope entries. */
+export function parseConfigList(stdout: string): GitSnapConfigEntry[] {
+  return watchedEntries(parseConfigAll(stdout));
+}
+
+function originFile(origin: string, cwd: string): string | null {
+  if (!origin.startsWith('file:')) return null;
+  return path.resolve(cwd, origin.slice(5));
+}
+
+/**
+ * Files that config includes pull in: the targets of `include.path` and
+ * `includeIf.*.path` (resolved against the including file), plus every other
+ * file that actually contributed a repository-scope entry.
+ */
+export function includedConfigFiles(
+  all: readonly GitSnapConfigEntry[],
+  cwd: string,
+  primary: ReadonlySet<string>,
+  home: string,
+): string[] {
+  const found = new Set<string>();
+  for (const e of all) {
+    const origin = originFile(e.origin, cwd);
+    if (origin && !primary.has(origin)) found.add(origin);
+    if (/^include(if\..+)?\.path$/i.test(e.key) && origin) {
+      const v = e.value;
+      const target = v.startsWith('~/') ? path.join(home, v.slice(2)) : path.resolve(path.dirname(origin), v);
+      if (!primary.has(target)) found.add(target);
+    }
+  }
+  return [...found].sort();
 }
 
 async function hashFile(abs: string, rel: string, out: Record<string, GitSnapFile>): Promise<void> {
@@ -127,6 +183,46 @@ export async function snapshotGuardFiles(commonDir: string): Promise<Record<stri
     );
   }
   return files;
+}
+
+export interface ExtraFileSources {
+  /** Absolute worktree root (holds the `.git` file). */
+  readonly workTree: string;
+  /** This worktree's admin dir (holds `commondir` and `gitdir`). */
+  readonly gitDir: string;
+  readonly commonDir: string;
+  readonly includeFiles: readonly string[];
+  /** Effective core.hooksPath value from repository config, if any. */
+  readonly hooksPath: string | null;
+}
+
+const MAX_HOOK_DIR_FILES = 2000;
+
+/**
+ * Redirection and indirection files: the worktree's `.git` file, its admin
+ * dir's `commondir` and `gitdir`, config include targets, and the contents of
+ * a core.hooksPath directory that resolves inside the worktree.
+ */
+export async function snapshotExtraFiles(
+  files: Record<string, GitSnapFile>,
+  src: ExtraFileSources,
+): Promise<void> {
+  await hashFile(path.join(src.workTree, '.git'), 'worktree/.git', files);
+  const adminName = path.relative(src.commonDir, src.gitDir).split(path.sep).join('/');
+  if (adminName && !adminName.startsWith('..')) {
+    await hashFile(path.join(src.gitDir, 'commondir'), `${adminName}/commondir`, files);
+    await hashFile(path.join(src.gitDir, 'gitdir'), `${adminName}/gitdir`, files);
+  }
+  for (const f of src.includeFiles) await hashFile(f, `include:${f}`, files);
+  if (src.hooksPath) {
+    const dir = path.resolve(src.workTree, src.hooksPath);
+    const rel = path.relative(src.workTree, dir);
+    if (rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel)) {
+      const found: Record<string, GitSnapFile> = {};
+      await walk(dir, `hookspath:${rel.split(path.sep).join('/')}`, found);
+      for (const k of Object.keys(found).sort().slice(0, MAX_HOOK_DIR_FILES)) files[k] = found[k] as GitSnapFile;
+    }
+  }
 }
 
 export function buildGitSnapshot(
