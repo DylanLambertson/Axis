@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, it } from 'node:test';
 import { createExecGitRunner, defaultWorktreeRoot, WorktreeError, WorktreeManager } from '../src/index.js';
 import { makeFixture, sh, type Fixture } from './helpers.js';
 
-const policy = (e: unknown) => e instanceof WorktreeError && e.code === 'E_POLICY';
+const policy = (e: unknown) => e instanceof WorktreeError && e.code === 'E_POLICY_DENIED';
 
 describe('location policy', () => {
   let fx: Fixture;

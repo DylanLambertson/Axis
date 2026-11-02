@@ -7,7 +7,7 @@ export interface HardenedRunOptions {
   readonly cwd: string;
   readonly input?: string | Buffer;
   readonly extraEnv?: Readonly<Record<string, string>>;
-  /** Return non-zero exits to the caller instead of throwing E_GIT. */
+  /** Return non-zero exits to the caller instead of throwing E_INTERNAL. */
   readonly allowFailure?: boolean;
   /** Skip optional index refreshes (for read-only status calls). */
   readonly noOptionalLocks?: boolean;
@@ -38,7 +38,7 @@ export class HardenedGit {
       ...(opts.extraEnv ? { extraEnv: opts.extraEnv } : {}),
     });
     if (result.code !== 0 && !opts.allowFailure) {
-      throw new WorktreeError('E_GIT', `git ${args[0] ?? ''} failed (exit ${result.code})`, {
+      throw new WorktreeError('E_INTERNAL', `git ${args[0] ?? ''} failed (exit ${result.code})`, {
         args: args.slice(0, 4),
         stderr: result.stderr.slice(0, 2000),
       });

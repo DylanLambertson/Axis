@@ -35,11 +35,11 @@ export async function writeRestoredEntry(
   await fs.mkdir(dir, { recursive: true });
   const realDir = await fs.realpath(dir);
   if (realDir !== dir) {
-    throw new WorktreeError('E_POLICY', 'restore target directory changed during the operation', { dir });
+    throw new WorktreeError('E_POLICY_DENIED', 'restore target directory changed during the operation', { dir });
   }
   const rel = path.relative(worktree, realDir);
   if (rel.startsWith('..') || path.isAbsolute(rel)) {
-    throw new WorktreeError('E_POLICY', 'restore target escapes the worktree', { target });
+    throw new WorktreeError('E_POLICY_DENIED', 'restore target escapes the worktree', { target });
   }
   try {
     if ((await fs.lstat(target)).isDirectory()) {

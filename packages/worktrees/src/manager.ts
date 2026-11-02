@@ -17,7 +17,7 @@ import {
 import type { GitRunner } from './git.js';
 import {
   buildGitSnapshot, diffGitSnapshots, parseConfigList, snapshotGuardFiles,
-  type DriftItem, type GitSnapshot,
+  type GitSnapshot,
 } from './gitSnap.js';
 import { HardenedGit } from './hardenedGit.js';
 import {
@@ -53,7 +53,7 @@ interface Located {
 }
 
 function invalid(message: string, details: Record<string, unknown> = {}): WorktreeError {
-  return new WorktreeError('E_INVALID', message, details);
+  return new WorktreeError('E_INVALID_ARGUMENT', message, details);
 }
 
 export class WorktreeManager {
@@ -126,17 +126,17 @@ export class WorktreeManager {
       const protectedLocs = await this.protectedLocations(repo, localCheckout);
       const root = await validateWorktreeRoot(this.options.worktreeRoot, protectedLocs, this.platform);
       await fs.mkdir(root, { recursive: true, mode: 0o700 });
-      if ((await fs.realpath(root)) !== root) throw new WorktreeError('E_POLICY', 'worktree root changed during the operation');
+      if ((await fs.realpath(root)) !== root) throw new WorktreeError('E_POLICY_DENIED', 'worktree root changed during the operation');
 
       const projDir = path.join(root, projectDirName(repo.commonDir, localCheckout, this.platform));
       await fs.mkdir(projDir, { recursive: true, mode: 0o700 });
       if ((await fs.realpath(projDir)) !== projDir) {
-        throw new WorktreeError('E_POLICY', 'project directory is a symlink or escapes the worktree root', { projDir });
+        throw new WorktreeError('E_POLICY_DENIED', 'project directory is a symlink or escapes the worktree root', { projDir });
       }
       const wtPath = path.join(projDir, slug.data);
       for (const loc of protectedLocs) {
         if (isSameOrInside(wtPath, loc.path, this.platform)) {
-          throw new WorktreeError('E_POLICY', `worktree path is inside ${loc.label}`, { path: wtPath });
+          throw new WorktreeError('E_POLICY_DENIED', `worktree path is inside ${loc.label}`, { path: wtPath });
         }
       }
       if (await fs.lstat(wtPath).then(() => true, () => false)) {
@@ -162,7 +162,7 @@ export class WorktreeManager {
         const wt = await resolveRepo(wtPath);
         await writeMeta(wt.gitDir, {
           version: 1, id, slug: slug.data, branch, baseRef, baseSha, baseBranch,
-          createdAt: this.now().toISOString(), state: 'ready', outcome: null,
+          createdAt: this.now().toISOString(), state: 'READY', outcome: null,
         });
         const snap = await writeSnapshotRef(this.git, wtPath, runBaseRef, `axis run base ${id}`, this.maxFile);
         await writeBaseline(wt.gitDir, await this.takeGitSnapshot(wtPath, repo.commonDir));
@@ -232,7 +232,7 @@ export class WorktreeManager {
     if (!['merged', 'archived', 'abandoned'].includes(input.outcome)) throw invalid('invalid outcome');
     const { repo, workTree, meta } = await this.locate(input.path, true);
     return this.locked(repo.commonDir, async () => {
-      if (meta.state === 'finalised') throw new WorktreeError('E_CONFLICT', 'workspace is already finalised', { id: meta.id });
+      if (meta.state === 'FINALISED') throw new WorktreeError('E_CONFLICT', 'workspace is already finalised', { id: meta.id });
       const backupRef = await this.backupIfDirty(workTree, meta, input.discardConfirmation, 'finalise');
       const head = await this.git.text(['rev-parse', 'HEAD'], { cwd: workTree });
       if (input.outcome === 'merged') {
@@ -246,7 +246,7 @@ export class WorktreeManager {
       }
       const archiveRef = `refs/axis/archive/${meta.id}`;
       await this.git.run(['update-ref', archiveRef, head], { cwd: workTree });
-      await writeMeta(repo.gitDir, { ...meta, state: 'finalised', outcome: input.outcome });
+      await writeMeta(repo.gitDir, { ...meta, state: 'FINALISED', outcome: input.outcome });
       return { archiveRef, archiveSha: head, backupRef, outcome: input.outcome };
     });
   }
@@ -256,7 +256,7 @@ export class WorktreeManager {
   }): Promise<RemoveResult> {
     const { repo, workTree, meta } = await this.locate(input.path, true);
     return this.locked(repo.commonDir, async () => {
-      if (meta.state !== 'finalised') {
+      if (meta.state !== 'FINALISED') {
         throw new WorktreeError('E_CONFLICT', 'workspace must be finalised before removal', { reason: 'not-finalised' });
       }
       const archiveRef = `refs/axis/archive/${meta.id}`;
@@ -297,10 +297,10 @@ export class WorktreeManager {
     const { repo, workTree, meta } = await this.locate(existing, false);
     const relPath = path.relative(workTree, target);
     if (relPath === '' || relPath.startsWith('..') || path.isAbsolute(relPath) || !isSameOrInside(target, workTree, this.platform)) {
-      throw new WorktreeError('E_POLICY', 'path is outside the worktree', { path: input.path });
+      throw new WorktreeError('E_POLICY_DENIED', 'path is outside the worktree', { path: input.path });
     }
     const posix = relPath.split(path.sep).join('/');
-    if (posix === '.git' || posix.startsWith('.git/')) throw new WorktreeError('E_POLICY', 'refusing to touch .git');
+    if (posix === '.git' || posix.startsWith('.git/')) throw new WorktreeError('E_POLICY_DENIED', 'refusing to touch .git');
 
     return this.locked(repo.commonDir, async () => {
       const runBaseRef = `refs/axis/runbase/${input.runId ?? meta.id}`;
@@ -411,11 +411,11 @@ export class WorktreeManager {
     assertNoTraversal(p, 'path');
     const repo = await resolveRepo(p);
     if (!repo.linked || repo.workTree === null) {
-      throw new WorktreeError('E_POLICY', 'not a linked worktree; Axis never operates on the local checkout', { path: p });
+      throw new WorktreeError('E_POLICY_DENIED', 'not a linked worktree; Axis never operates on the local checkout', { path: p });
     }
     const root = await canonicalise(this.options.worktreeRoot);
     if (!isSameOrInside(repo.workTree, root, this.platform)) {
-      throw new WorktreeError('E_POLICY', 'worktree is outside the Axis worktree root', { path: p });
+      throw new WorktreeError('E_POLICY_DENIED', 'worktree is outside the Axis worktree root', { path: p });
     }
     const meta = await readMeta(repo.gitDir);
     if (!meta) throw new WorktreeError('E_NOT_FOUND', 'not an Axis workspace', { path: p });

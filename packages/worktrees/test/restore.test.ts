@@ -57,14 +57,14 @@ describe('restoreFromRunBase', () => {
   });
 
   it('refuses paths outside the worktree, through symlinked directories, and inside .git', async () => {
-    await assert.rejects(fx.manager.restoreFromRunBase({ path: path.join(fx.repo, 'a.txt') }), code('E_POLICY'));
+    await assert.rejects(fx.manager.restoreFromRunBase({ path: path.join(fx.repo, 'a.txt') }), code('E_POLICY_DENIED'));
     // a directory symlink inside the worktree that points at the local checkout
     rmSync(path.join(wt, 'sub'), { recursive: true });
     symlinkSync(fx.repo, path.join(wt, 'sub'));
-    await assert.rejects(fx.manager.restoreFromRunBase({ path: path.join(wt, 'sub', 'a.txt') }), code('E_POLICY'));
+    await assert.rejects(fx.manager.restoreFromRunBase({ path: path.join(wt, 'sub', 'a.txt') }), code('E_POLICY_DENIED'));
     assert.equal(readFileSync(path.join(fx.repo, 'a.txt'), 'utf8'), 'alpha\n');
-    await assert.rejects(fx.manager.restoreFromRunBase({ path: path.join(wt, '.git') }), code('E_POLICY'));
-    await assert.rejects(fx.manager.restoreFromRunBase({ path: `${wt}/a.txt/../../x` }), code('E_POLICY'));
+    await assert.rejects(fx.manager.restoreFromRunBase({ path: path.join(wt, '.git') }), code('E_POLICY_DENIED'));
+    await assert.rejects(fx.manager.restoreFromRunBase({ path: `${wt}/a.txt/../../x` }), code('E_POLICY_DENIED'));
   });
 
   it('restores a symlink entry and honours a custom run id', async () => {
@@ -80,7 +80,7 @@ describe('restoreFromRunBase', () => {
     await fx.manager.restoreFromRunBase({ path: path.join(wt, 'ln'), runId: 'run-1' });
     assert.equal(readlinkSync(path.join(wt, 'ln')), 'a.txt');
     await assert.rejects(fx.manager.restoreFromRunBase({ path: path.join(wt, 'ln'), runId: 'missing' }), code('E_NOT_FOUND'));
-    await assert.rejects(fx.manager.restoreFromRunBase({ path: path.join(wt, 'ln'), runId: 'bad/id' }), code('E_INVALID'));
+    await assert.rejects(fx.manager.restoreFromRunBase({ path: path.join(wt, 'ln'), runId: 'bad/id' }), code('E_INVALID_ARGUMENT'));
   });
 
   it('refuses a directory where the file belongs and an unmanaged worktree', async () => {

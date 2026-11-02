@@ -26,7 +26,7 @@ export interface GitResult {
 
 /** The only door to the git CLI. Tests and the daemon can substitute their own. */
 export interface GitRunner {
-  /** Resolves with the exit code; rejects with E_GIT only when git cannot run. */
+  /** Resolves with the exit code; rejects with E_INTERNAL only when git cannot run. */
   run(args: readonly string[], options: GitRunOptions): Promise<GitResult>;
 }
 
@@ -94,11 +94,11 @@ export function createExecGitRunner(options: ExecGitRunnerOptions = {}): GitRunn
           reject(e);
         };
         const timer = opts.timeoutMs
-          ? setTimeout(() => fail(new WorktreeError('E_GIT', 'git timed out', { args: args.slice(0, 3) })), opts.timeoutMs)
+          ? setTimeout(() => fail(new WorktreeError('E_INTERNAL', 'git timed out', { args: args.slice(0, 3) })), opts.timeoutMs)
           : undefined;
         child.stdout.on('data', (chunk: Buffer) => {
           size += chunk.length;
-          if (size > maxBytes) fail(new WorktreeError('E_GIT', 'git output exceeded limit'));
+          if (size > maxBytes) fail(new WorktreeError('E_INTERNAL', 'git output exceeded limit'));
           else out.push(chunk);
         });
         child.stderr.on('data', (chunk: Buffer) => {
@@ -106,7 +106,7 @@ export function createExecGitRunner(options: ExecGitRunnerOptions = {}): GitRunn
         });
         child.on('error', (e) => {
           if (timer) clearTimeout(timer);
-          fail(new WorktreeError('E_GIT', `cannot run git: ${e.message}`));
+          fail(new WorktreeError('E_INTERNAL', `cannot run git: ${e.message}`));
         });
         child.stdin.on('error', () => undefined);
         child.on('close', (code) => {

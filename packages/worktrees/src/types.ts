@@ -53,7 +53,7 @@ export interface WorkspaceStatus {
   readonly branch: string | null;
   readonly head: string;
   readonly baseSha: string;
-  readonly state: 'ready' | 'finalised';
+  readonly state: 'READY' | 'FINALISED';
   readonly dirty: readonly DirtyFile[];
   /** Commits in HEAD that are not in the recorded base SHA. */
   readonly ahead: number;

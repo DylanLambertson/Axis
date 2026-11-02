@@ -28,9 +28,9 @@ export function defaultWorktreeRoot(
 
 /** Rejects raw input that contains a `..` segment, before any normalisation. */
 export function assertNoTraversal(raw: string, what: string): void {
-  if (raw.includes('\0')) throw new WorktreeError('E_POLICY', `${what} contains a NUL byte`);
+  if (raw.includes('\0')) throw new WorktreeError('E_POLICY_DENIED', `${what} contains a NUL byte`);
   if (raw.split(/[\\/]+/).includes('..')) {
-    throw new WorktreeError('E_POLICY', `${what} must not contain ".." segments`, { path: raw });
+    throw new WorktreeError('E_POLICY_DENIED', `${what} must not contain ".." segments`, { path: raw });
   }
 }
 
@@ -40,7 +40,7 @@ export function assertNoTraversal(raw: string, what: string): void {
  * appended lexically. The input must already be absolute and `..`-free.
  */
 export async function canonicalise(p: string): Promise<string> {
-  if (!path.isAbsolute(p)) throw new WorktreeError('E_POLICY', 'path must be absolute', { path: p });
+  if (!path.isAbsolute(p)) throw new WorktreeError('E_POLICY_DENIED', 'path must be absolute', { path: p });
   assertNoTraversal(p, 'path');
   const resolved = path.resolve(p);
   const pending: string[] = [];
@@ -92,7 +92,7 @@ export async function validateWorktreeRoot(
   const canonical = await canonicalise(root);
   for (const loc of protectedLocations) {
     if (isSameOrInside(canonical, loc.path, platform)) {
-      throw new WorktreeError('E_POLICY', `worktree root is inside ${loc.label}`, {
+      throw new WorktreeError('E_POLICY_DENIED', `worktree root is inside ${loc.label}`, {
         root: canonical,
         protectedPath: loc.path,
       });

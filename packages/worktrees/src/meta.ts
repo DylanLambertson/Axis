@@ -23,7 +23,7 @@ export const WorkspaceMetaSchema = z.strictObject({
   /** Full ref name of the base branch when the base was a branch, else null. */
   baseBranch: z.string().nullable(),
   createdAt: z.string(),
-  state: z.enum(['ready', 'finalised']),
+  state: z.enum(['READY', 'FINALISED']),
   outcome: z.enum(['merged', 'archived', 'abandoned']).nullable(),
 });
 export type WorkspaceMeta = z.infer<typeof WorkspaceMetaSchema>;
@@ -52,7 +52,7 @@ export async function readMeta(gitDir: string): Promise<WorkspaceMeta | null> {
   }
   const parsed = WorkspaceMetaSchema.safeParse(JSON.parse(text));
   if (!parsed.success) {
-    throw new WorktreeError('E_INVALID', 'workspace record is corrupt', { gitDir });
+    throw new WorktreeError('E_INVALID_ARGUMENT', 'workspace record is corrupt', { gitDir });
   }
   return parsed.data;
 }

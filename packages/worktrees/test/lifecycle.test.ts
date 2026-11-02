@@ -73,9 +73,9 @@ describe('worktree lifecycle', () => {
     sh(fx.repo, 'branch', 'axis/taken');
     await assert.rejects(fx.manager.create({ repoPath: fx.repo, slug: 'taken' }), code('E_CONFLICT'));
     for (const slug of ['', 'Upper', '../x', 'a/b', '-lead', 'trail-', 'a b', 'x'.repeat(65)]) {
-      await assert.rejects(fx.manager.create({ repoPath: fx.repo, slug }), code('E_INVALID'), slug);
+      await assert.rejects(fx.manager.create({ repoPath: fx.repo, slug }), code('E_INVALID_ARGUMENT'), slug);
     }
-    await assert.rejects(fx.manager.create({ repoPath: fx.repo, slug: 'ok', baseRef: '--output=/tmp/x' }), code('E_INVALID'));
+    await assert.rejects(fx.manager.create({ repoPath: fx.repo, slug: 'ok', baseRef: '--output=/tmp/x' }), code('E_INVALID_ARGUMENT'));
     await assert.rejects(fx.manager.create({ repoPath: fx.repo, slug: 'ok', baseRef: 'no-such-ref' }), code('E_NOT_FOUND'));
     // a failed create leaves nothing behind
     assert.equal((await fx.manager.list(fx.repo)).length, 2);
@@ -119,11 +119,11 @@ describe('worktree lifecycle', () => {
   });
 
   it('never operates on the local checkout or an unmanaged worktree', async () => {
-    await assert.rejects(fx.manager.status(fx.repo), code('E_POLICY'));
-    await assert.rejects(fx.manager.remove({ path: fx.repo }), code('E_POLICY'));
+    await assert.rejects(fx.manager.status(fx.repo), code('E_POLICY_DENIED'));
+    await assert.rejects(fx.manager.remove({ path: fx.repo }), code('E_POLICY_DENIED'));
     sh(fx.repo, 'worktree', 'add', '-q', '-b', 'other', path.join(fx.tmp, 'external'));
     const ext = path.join(fx.tmp, 'external');
-    await assert.rejects(fx.manager.status(ext), code('E_POLICY'));
+    await assert.rejects(fx.manager.status(ext), code('E_POLICY_DENIED'));
     const list = await fx.manager.list(fx.repo);
     assert.equal(list.find((w) => w.path === ext)?.external, true);
     assert.equal(readFileSync(path.join(ext, 'a.txt'), 'utf8'), 'alpha\n');

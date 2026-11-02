@@ -67,9 +67,9 @@ describe('GIT-ENV-1', () => {
     }
   });
 
-  it('reports a missing git binary as E_GIT', async () => {
+  it('reports a missing git binary as E_INTERNAL', async () => {
     const runner = createExecGitRunner({ gitPath: '/nonexistent/git' });
-    await assert.rejects(runner.run(['--version'], { cwd: process.cwd() }), (e) => e instanceof WorktreeError && e.code === 'E_GIT');
+    await assert.rejects(runner.run(['--version'], { cwd: process.cwd() }), (e) => e instanceof WorktreeError && e.code === 'E_INTERNAL');
   });
 });
 
