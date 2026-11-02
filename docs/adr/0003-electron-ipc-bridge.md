@@ -104,10 +104,10 @@ sequenceDiagram
   participant D as Axis daemon (utility process)
   M->>D: fork fixed entry vs/axis/daemon/node/axisDaemonMain (at startup)
   M->>D: privileged port (secret broker, native approvals, lifecycle)
-  R->>M: vscode:axisConnect {nonce, protocolVersions}
-  M->>M: validatedIpcMain checks + sender is a known workbench window + senderFrame is mainFrame
+  R->>M: vscode:axisConnect nonce (sent by acquirePort)
+  M->>M: sender is a code window + frame URL is the workbench URL + senderFrame is mainFrame
   M->>M: build ConnectionContext {connectionId, windowId, workspaceUri, trusted, clientKind}
-  M->>D: parentPort.postMessage({type: axis.connect, context}, [port1])
+  M->>D: connect(payload {type axis.connect, context}) posts payload + port1 together
   M->>R: vscode:axisConnectResult {nonce} + port2
   R->>D: hello {protocolVersions, contracts}
   D-->>R: welcome {selected versions, limits}
@@ -116,13 +116,15 @@ sequenceDiagram
 1. Main forks the daemon at startup with a **fixed** entry point, through upstream `utilityProcess` support (`src/vs/platform/utilityProcess/electron-main/utilityProcess.ts`) [V].
    - It is **never** launched through the renderer-reachable `UtilityProcessWorker` channel, whose `moduleId` the renderer chooses (`app.ts:1532`) [V].
    - The daemon opens **no listening socket or port** in Phases 1–3 (threat model DMN-4).
-2. The handshake channel is `vscode:axisConnect` / `vscode:axisConnectResult`. The `vscode:` prefix passes upstream validation with no patch. The renderer uses upstream `acquirePort`.
-3. Before brokering, the main seam additionally checks:
-   - `event.sender` resolves to a window in `IWindowsMainService` whose loaded config is an Axis workbench;
-   - `event.senderFrame === event.sender.mainFrame` (this closes the `about:blank` early return, threat model EL-3);
-   - per-window rate limits.
+2. The handshake channel is `vscode:axisConnect` / `vscode:axisConnectResult`. The `vscode:` prefix passes upstream validation with no patch. The renderer uses upstream `acquirePort`, which sends only the nonce (`src/vs/base/parts/ipc/electron-browser/ipc.mp.ts:51`) [V]. Protocol versions and contract lists are negotiated in the first message on the port (`hello`/`welcome`), not in the handshake.
+3. Before brokering, the main seam applies its own checks. It must not rely on `validatedIpcMain`, which returns early for empty and `about:blank` sender URLs (`ipcMain.ts:119-121`) [V]:
+   - **Window identity (required).** `IWindowsMainService.getWindowByWebContents(event.sender)` must return a code window whose loaded config is an Axis workbench. This lookup returns only code windows (`src/vs/platform/windows/electron-main/windowsMainService.ts:1833-1841`) [V]. **It is the check that rejects auxiliary windows**: they open at `about:blank` (`app.ts:597-605`), load `preload-aux.ts`, which can send on any `vscode:` channel, and in them `senderFrame` is the main frame (threat model EL-3).
+   - **Frame URL.** `event.senderFrame.url` must be the expected workbench URL on `VSCODE_AUTHORITY`. `about:blank` and empty URLs are rejected.
+   - **Main frame.** `event.senderFrame === event.sender.mainFrame`, kept as defence in depth.
+   - Per-window rate limits.
 4. **Identity is bound to the port, not the payload.**
-   - Main sends `ConnectionContext` to the daemon together with the port, in a single `parentPort` message, intercepted with `IClientConnectionFilter` (`src/vs/base/parts/ipc/node/ipc.mp.ts:40`) [V].
+   - Main sends `ConnectionContext` to the daemon together with the port in one message, the way upstream's `UtilityProcess.connect(payload)` posts a payload and a port together (`utilityProcess.ts:397-402`) [V]. Only main can post on the daemon's `process.parentPort`.
+   - The daemon reads `process.parentPort` directly. It does **not** use upstream's utility-side `Server` / `IPCServer` (`src/vs/base/parts/ipc/node/ipc.mp.ts:57-91`) or its `IClientConnectionFilter` hook, because `IPCServer` would build a `ChannelServer` from the client-asserted `ctx` (fact 5).
    - The daemon ignores any context the renderer sends, and any identity fields in payloads (threat model DMN-2).
 5. Workspace scope comes from main's view of the window (`workspaceUri`, Workspace Trust state). A renderer cannot target a workspace that another window has open.
 6. A **privileged main↔daemon port**, which no renderer can reach, carries:
@@ -130,9 +132,9 @@ sequenceDiagram
    - `approvals.confirmNative(digest)`. Main shows `dialog.showMessageBox`.
    - Lifecycle messages.
 7. **Web.** The reh server runs the daemon logic in a child Node process and registers **one** upstream channel, `axis`, on its socket server. That channel only tunnels Axis envelopes.
-   - Identity is the authenticated reh connection: the single-user connection token (threat model WEB-1).
+   - Identity is the authenticated reh connection: the single-user connection token (threat model WEB-1). The tunnel channel ignores the client-asserted `RemoteAgentConnectionContext`.
    - Phase 5 replaces this with gateway-issued user identity. The contracts do not change.
-8. **Transport.** The desktop uses the upstream `Protocol` MessagePort framing (`src/vs/base/parts/ipc/common/ipc.mp.ts:42`) [V] with the Axis envelope below. It does **not** use upstream `ChannelServer`, because that `ctx` is client-asserted (fact 5) and `call` has no validation hook.
+8. **Transport.** The desktop uses the upstream `Protocol` MessagePort framing (`src/vs/base/parts/ipc/common/ipc.mp.ts:42`) [V] with the Axis envelope below. It does **not** use upstream `IPCServer` or `ChannelServer` on the desktop, because their `ctx` is client-asserted (fact 5) and `call` has no validation hook. On the web the one tunnel channel is an upstream `IServerChannel` (D1.7), but it only carries envelopes into the same Axis pipeline.
 
 ### D2. Contracts, versioning and runtime validation
 
@@ -156,7 +158,7 @@ sequenceDiagram
 
 | Candidate | Status at the pin | For | Against |
 |---|---|---|---|
-| **Zod 4** | Already a production dependency: `zod ^4.4.3` (`package.json:173`, `remote/package.json:56`), locked at 4.4.3 [V] | No new dependency and **no `package.json` or lockfile patch**, which would conflict on every weekly sync. MIT. Type inference. JSON Schema export for tool contracts and MCP [I]. A tree-shakable `zod/mini` entry for renderer bundles [I]. | Its JIT uses `new Function`, which needs `'unsafe-eval'` and conflicts with Trusted Types in the renderer; it must run with `jitless: true` there [I, verify in M3]. Upstream's only non-test consumer is the agent host (`src/vs/platform/agentHost/node/claude/clientTools/claudeJsonSchemaToZod.ts`) [V], so upstream could drop it, and the ADR 0002 decision 6 patch set must not remove it along with the agent host. |
+| **Zod 4** | Already a production dependency: `zod ^4.4.3` (`package.json:173`, `remote/package.json:56`), locked at 4.4.3 [V] | No new dependency and **no `package.json` or lockfile patch**, which would conflict on every weekly sync. MIT. Type inference. JSON Schema export for tool contracts and MCP [I]. A tree-shakable `zod/mini` entry for renderer bundles; 4.4.3 exports `./mini`, is MIT and has no dependencies [V, npm registry metadata]. | Its JIT uses `new Function`, which needs `'unsafe-eval'` and conflicts with Trusted Types in the renderer; it must run with `jitless: true` there [I, verify in M3]. Upstream's only non-test consumer is the agent host (`src/vs/platform/agentHost/node/claude/clientTools/claudeJsonSchemaToZod.ts`) [V]. That code is what Copilot removal deletes (VSCodium's removal patch does), so after ADR 0002 decision 6 Zod is an orphaned upstream dependency that upstream could drop. The decision 6 patch set must not remove it along with the agent host. |
 | Valibot | Not present | Smallest bundle; modular | A new dependency means a patch to `package.json` and the lockfile; JSON Schema export is a separate package |
 | TypeBox | Not present | JSON-Schema-native | A new dependency; a single maintainer |
 | Ajv | Dev-only v6 (`package-lock.json:5578-5583`, `"dev": true`) and nested under the MCP SDK [V] | JSON Schema standard | Code generation through `eval`; large; not available at runtime without a dependency change |
@@ -237,9 +239,10 @@ Upstream edits, marked `// --- Start Axis ---` / `// --- End Axis ---`:
 |---|---|---|
 | `src/vs/code/electron-main/app.ts` | Import and start `axisMainSeam` after `initChannels` | ≤ 6 |
 | `src/vs/server/node/serverServices.ts` | Register the `axis` tunnel channel | ≤ 4 |
-| `build/next/index.ts` | Add the daemon entry point to the hard-coded esbuild entry list (inventory §1) [V that the list is hard-coded] | ≤ 2 |
+| `build/next/index.ts` | Add the daemon entry point to the hard-coded esbuild entry list (inventory §1) [V that the list is hard-coded]. This file is already one of the shell files in inventory §9(b). | ≤ 2 |
+| `eslint.config.js` | `local/code-import-patterns` targets for `src/vs/axis/~` and the `code/electron-main`, `daemon/node` and `server/node` sub-layers, modelled on the `src/vs/sessions/~` target (`eslint.config.js:2289`) [V] | ≤ 40 |
 
-That is three files and about 12 lines in total, counted against the ADR 0002 shell-layer budget (criterion 2). There are no edits to `preload.ts`, `ipcMain.ts` or CSP files for the bridge itself.
+That is four files and about 52 lines in total, counted against the ADR 0002 shell-layer budget (criterion 2). Two of them (`app.ts`, `serverServices.ts`) are new to the shell file list, which leaves little file headroom under the 12-file limit. There are no edits to `preload.ts`, `ipcMain.ts` or CSP files for the bridge itself.
 
 ### D7. Prohibited patterns
 
@@ -250,6 +253,22 @@ The `src/vs/axis` lint configuration should reject:
 - secrets, tokens or raw credential values in any contract response schema (a schema-level `secret` sensitivity is forbidden in responses);
 - renderer-supplied identity fields (`actor`, `workspaceId` used as authority);
 - Axis services registered on `mainProcessElectronServer`.
+
+### D8. Security hardening patch range
+
+The threat model proposes upstream patches that are neither shell layer (criterion 2) nor decision 6 guardrails. They are recorded here so that an acceptance criterion covers them:
+
+- web CSP: `require-trusted-types-for 'script'` (threat model WEB-3);
+- web CSP: `frame-src` for the Axis webview origin, replacing `https://*.vscode-cdn.net` (`src/vs/server/node/webClientServer.ts:151`) [V] (WEB-4);
+- reh cookie: `Secure` when served over TLS (WEB-2);
+- optionally, an `openExternal` scheme allow-list (EL-5).
+
+Rules:
+
+- The range is a separate, numbered patch range with edits marked `// --- Start Axis ---` / `// --- End Axis ---`.
+- Like decision 6, it has no fixed line budget, but its footprint is measured and recorded per sync.
+- It must rebase within ADR 0002 criterion 4's ≤ 1 working day sync, together with the shell and guardrail patches.
+- ADR 0002 criterion 4 currently reads "shell plus guardrails". It should name this range when ADR 0002 is next revised (owner decision).
 
 ## Interface sketches (illustrative, not implementation)
 
@@ -346,7 +365,7 @@ export interface IAxisPolicyEngine { evaluate(req: PolicyRequest, token: Cancell
   - The renderer's authority does not grow: one handshake channel and one port.
   - Enforcement, audit and secrets stay outside the renderer and main.
   - Desktop and web share contracts.
-  - The upstream footprint is about 3 files and 12 lines, with no changes to security-critical upstream IPC files.
+  - The bridge footprint is about 4 files and 52 lines, with no changes to security-critical upstream IPC files.
 - **Negative:**
   - A daemon process to supervise (restart, memory budget).
   - An extra hop: renderer → daemon is direct over the port, but secret use goes daemon → main → daemon.
@@ -361,7 +380,8 @@ export interface IAxisPolicyEngine { evaluate(req: PolicyRequest, token: Cancell
 
 1. The handshake works from the Axis shell on macOS and Linux, and is refused from:
    - a webview;
-   - an `about:blank` auxiliary window;
+   - an `about:blank` auxiliary window (rejected by the window-identity check);
+   - a code window whose frame URL is not the workbench URL;
    - a second window that targets the first window's workspace.
 2. The envelope and schemas survive a fuzz run (random, oversized, deeply nested and prototype-polluting payloads) with no daemon crash and only typed errors.
 3. Behaviour tests pass for: cancellation on port close; timeout ceilings the client cannot raise; idempotent replay; `E_IDEMPOTENCY_CONFLICT`.
@@ -374,7 +394,7 @@ export interface IAxisPolicyEngine { evaluate(req: PolicyRequest, token: Cancell
 
 - **If the daemon utility process proves unworkable** (for example, native modules or lifecycle problems), host the same RPC server in main behind the same handshake. That is Option 1 with Axis contracts, not `ProxyChannel`. The contracts, policy pipeline and renderer client do not change.
 - **If Zod becomes unavailable or unsuitable,** swap the implementation behind `schema.ts`.
-- Until Phase 2 ships privileged services, rollback only removes the three seams and `src/vs/axis/platform/protocol`.
+- Until Phase 2 ships privileged services, rollback only removes the four bridge seams (D6) and `src/vs/axis/platform/protocol`.
 
 ## Open questions
 
