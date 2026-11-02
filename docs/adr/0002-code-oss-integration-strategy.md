@@ -61,7 +61,7 @@ Adopt **Option A**, with the web target built from the same fork's `vscode-reh-w
    - First restyle through contributions, a built-in theme, `product.json` and default settings. These need almost no upstream edits.
    - Then a separate `src/vs/axis` shell layer modelled on `src/vs/sessions`. It implements `IWorkbenchLayoutService`, reuses upstream parts and services, and overrides singletons registered after upstream imports.
    - **Do not edit `layout.ts` or `workbench/browser/parts/*` in place.**
-3. **Upstream sync cadence.** Sync onto the latest recovery release every 2–4 weekly minors. Track the patch count and changed upstream lines as a budget, and mark edits in upstream files with `// --- Start Axis ---` / `// --- End Axis ---`.
+3. **Upstream sync cadence.** Sync onto the latest recovery release every 2–4 weekly minors. Track the patch count and changed upstream lines per patch range (shell layer, decision 6 guardrails, and security hardening per ADR 0003 D8), and mark edits in upstream files with `// --- Start Axis ---` / `// --- End Axis ---`.
 4. **UI technology.** Keep upstream's vanilla TypeScript/DOM for anything inside reused parts.
    - React is allowed only for Axis-owned leaf UI (views and panels), compiled in the normal pipeline the way Positron does it: `jsx: react-jsx` and a renderer bridge passing services through context.
    - M3 must confirm this works with CSP, Trusted Types, lint and production bundling before it is adopted.
@@ -86,7 +86,7 @@ Adopt **Option A**, with the web target built from the same fork's `vscode-reh-w
 1. **Shell works:** a custom Axis shell runs editor, explorer, search, SCM/Git, terminal, debugger, diagnostics, command palette and the extension host, on macOS and on Linux.
 2. **Shell footprint:** the shell layer changes at most **12 upstream files and 300 upstream lines**. `product.json` and resources don't count.
 3. **Guardrail footprint is measured:** the Copilot removal and rebrand patch set (decision 6) is measured and recorded, and it rebases cleanly as part of criterion 4. There is no fixed line budget for it. The cheapest strategy that removes the packages is chosen.
-4. **Sync cost:** one real sync from 1.144 to a release at least **2 weekly minors later**, matching the sync policy, takes **≤ 1 working day** for all Axis patches (shell plus guardrails). Conflicts are confined to the patched seams.
+4. **Sync cost:** one real sync from 1.144 to a release at least **2 weekly minors later**, matching the sync policy, takes **≤ 1 working day** for all Axis patch ranges (shell layer, guardrails and security hardening). Conflicts are confined to the patched seams.
 5. **React is viable:** a React view built through the normal pipeline passes CSP and Trusted Types, lint/hygiene and the production bundle (decision 4). If it fails, Axis UI stays vanilla TypeScript; that does not reject the ADR.
 6. **Extensions:** the M5 matrix of 10 representative Open VSX extensions runs on the Axis build, with every failure recorded. Failures caused by Axis changes must be fixable within the patch budget.
 7. **Web:** `reh-web` serves the shell in a browser, with node extensions, terminal and Git working through Open VSX, and gaps documented.
