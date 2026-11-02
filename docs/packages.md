@@ -9,6 +9,7 @@ Axis-owned TypeScript that does not need Code OSS services lives in `packages/*`
 | `@axis/challenge` | Daemon-side approval challenges for tier 3-5 destructive operations: issue, user resolve, native confirmation, single-use `consume`. Node `crypto` only. |
 | `@axis/daemon` | Transport-agnostic daemon core: connections, handshake, dispatch, tiers, idempotency, cancel and timeout, backpressure, error sanitisation. Every service (identity, policy, approvals, idempotency store, audit sink, handlers) is injected. No Electron. `MemoryIdempotencyStore` is for tests and dev wiring only (it forgets on restart); the product uses the journal-backed store. The pipeline owns approvals (`ApprovalGate.issue` and `execute`, see "Wiring the daemon"). |
 | `@axis/providers` | Provider adapter API (v1): normalized requests, stream events, capability reports, error taxonomy; the daemon-side guard (budget hook PRV-6, redaction hook PRV-2, timeouts, cancellation, stream checks); the mock provider. `@axis/providers/contract` is the reusable adapter contract suite (test support in `packages/providers/contract/`, outside `src/` so it is never staged; imports `node:test`). |
+| `@axis/git-ops` | Daemon-orchestrated Axis commit and push, and GitHub compare URLs. Takes an injected git runner (`context: "pty" \| "daemon"`): hooks run only in the pty context. Commit binds the reviewed tree, push uses one explicit refspec, both are refused while a CLI run is active. |
 
 More packages (worktrees, journal, audit) are added by their own changes.
 
