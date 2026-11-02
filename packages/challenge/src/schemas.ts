@@ -1,5 +1,5 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
-import { boundedJsonSchema, challengeIdSchema, requestDigestSchema } from "@axis/protocol";
+import { boundedJsonSchema, challengeIdSchema, requestDigestSchema, resolveChallengeRequestSchema } from "@axis/protocol";
 import { z } from "zod";
 import { canonicalJson } from "./crypto.js";
 import { ChallengeError } from "./errors.js";
@@ -82,22 +82,21 @@ export const issueSchema = z
   })
   .strict();
 
-export const resolveSchema = z
-  .object({
-    challengeId: challengeIdSchema,
-    decision: z.enum(["approve", "deny"]),
-    digest: requestDigestSchema,
-    actor: actorSchema,
-    windowId: windowSchema,
-  })
-  .strict();
+/** Who is resolving, as attested by the daemon's transport. Never part of the renderer's payload (ADR 0003). */
+export const resolverSchema = z.object({ actor: actorSchema, windowId: windowSchema }).strict();
+export type Resolver = z.infer<typeof resolverSchema>;
+
+/** The renderer's `axis.approvals/1.resolve` params, exactly as the protocol defines them. */
+export const resolveSchema = resolveChallengeRequestSchema;
+
+/** The window the native dialog belongs to, from the privileged port. */
+export const nativeCallerSchema = z.object({ windowId: windowSchema }).strict();
 
 export const nativeSchema = z
   .object({
     challengeId: challengeIdSchema,
     proof: z.string().min(1).max(128),
     confirmed: z.boolean(),
-    windowId: windowSchema,
   })
   .strict();
 

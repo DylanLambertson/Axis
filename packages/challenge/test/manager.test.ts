@@ -35,11 +35,11 @@ test("the digest changes with any of contract, op, target, arguments or content"
 test("full flow: issue, resolve, native confirm, execute runs the action once and audits every phase", async () => {
   const { manager, events } = setup();
   const issued = issue(manager);
-  const r = manager.resolve(resolveArgs(issued));
+  const r = manager.resolve(...resolveArgs(issued));
   assert.deepEqual([r.state, r.nativeRequired], ["approved", true]);
   await assert.rejects(manager.consume(issued.challenge.challengeId, CALLER, run, () => 1), code("E_CONFLICT"), "not usable before the native confirmation");
   assert.ok(issued.nativeProof);
-  const n = manager.confirmNative({ challengeId: issued.challenge.challengeId, proof: issued.nativeProof, confirmed: true, windowId: WIN });
+  const n = manager.confirmNative({ windowId: WIN }, { challengeId: issued.challenge.challengeId, proof: issued.nativeProof, confirmed: true });
   assert.equal(n.state, "approved");
   let ran = 0;
   const out = await manager.consume(issued.challenge.challengeId, CALLER, run, (c) => {
@@ -65,7 +65,7 @@ test("a tier below 4 needs no native confirmation: resolve alone approves", asyn
   const issued = issue(manager, { tier: 3 });
   assert.equal(issued.challenge.nativeConfirmationRequired, false);
   assert.equal(issued.nativeProof, null);
-  const r = manager.resolve(resolveArgs(issued));
+  const r = manager.resolve(...resolveArgs(issued));
   assert.equal(r.nativeRequired, false);
   assert.equal(await manager.consume(issued.challenge.challengeId, CALLER, run, () => 1), 1);
 });
@@ -74,7 +74,7 @@ test("replay: a resolved challenge cannot be resolved again, a spent token canno
   const { manager } = setup();
   const issued = issue(manager);
   const token = approve(manager, issued);
-  assert.throws(() => manager.resolve(resolveArgs(issued)), code("E_CONFLICT"));
+  assert.throws(() => manager.resolve(...resolveArgs(issued)), code("E_CONFLICT"));
   let ran = 0;
   await manager.consume(token, CALLER, run, () => void ran++);
   await assert.rejects(manager.consume(token, CALLER, run, () => void ran++), code("E_CONFLICT"));
@@ -84,22 +84,22 @@ test("replay: a resolved challenge cannot be resolved again, a spent token canno
 test("a denied challenge stays denied", () => {
   const { manager } = setup();
   const issued = issue(manager);
-  assert.equal(manager.resolve(resolveArgs(issued, { decision: "deny" })).state, "denied");
-  assert.throws(() => manager.resolve(resolveArgs(issued)), code("E_CONFLICT"));
+  assert.equal(manager.resolve(...resolveArgs(issued, { decision: "deny" })).state, "denied");
+  assert.throws(() => manager.resolve(...resolveArgs(issued)), code("E_CONFLICT"));
 });
 
 test("expiry (injected clock): challenge, native step and confirmation token all lapse", async () => {
   const a = setup({ ttl: 10_000, confirmTtl: 5_000 });
   const i1 = issue(a.manager);
   a.clock.t += 10_000;
-  const r = a.manager.resolve(resolveArgs(i1));
+  const r = a.manager.resolve(...resolveArgs(i1));
   assert.equal(r.state, "expired");
 
   const i2 = issue(a.manager);
-  a.manager.resolve(resolveArgs(i2));
+  a.manager.resolve(...resolveArgs(i2));
   a.clock.t += 10_000;
   assert.ok(i2.nativeProof);
-  assert.equal(a.manager.confirmNative({ challengeId: i2.challenge.challengeId, proof: i2.nativeProof, confirmed: true, windowId: WIN }).state, "expired");
+  assert.equal(a.manager.confirmNative({ windowId: WIN }, { challengeId: i2.challenge.challengeId, proof: i2.nativeProof, confirmed: true }).state, "expired");
 
   const i3 = issue(a.manager);
   const token = approve(a.manager, i3);
@@ -119,9 +119,9 @@ test("only the user can resolve, only from the issuing window, and a refusal doe
   const { manager, events } = setup();
   const issued = issue(manager, { actor: "agent:run-7" });
   for (const actor of ["agent:run-7", "agent:other", "daemon"]) {
-    assert.throws(() => manager.resolve(resolveArgs(issued, { actor })), code("E_POLICY_DENIED"));
+    assert.throws(() => manager.resolve(...resolveArgs(issued, { actor })), code("E_POLICY_DENIED"));
   }
-  assert.throws(() => manager.resolve(resolveArgs(issued, { windowId: "window-2" })), code("E_POLICY_DENIED"));
+  assert.throws(() => manager.resolve(...resolveArgs(issued, { windowId: "window-2" })), code("E_POLICY_DENIED"));
   assert.equal(events.filter((e) => e.outcome === "denied").length, 4);
   const token = approve(manager, issued);
   assert.equal(await manager.consume(token, { ...CALLER, actor: "agent:run-7" }, run, () => "ok"), "ok");
@@ -130,23 +130,23 @@ test("only the user can resolve, only from the issuing window, and a refusal doe
 test("a wrong native proof burns the challenge; a cancelled dialog denies it; native before resolve is refused", () => {
   const { manager } = setup();
   const a = issue(manager);
-  assert.throws(() => manager.confirmNative({ challengeId: a.challenge.challengeId, proof: a.nativeProof ?? "", confirmed: true, windowId: WIN }), code("E_CONFLICT"));
-  manager.resolve(resolveArgs(a));
-  assert.throws(() => manager.confirmNative({ challengeId: a.challenge.challengeId, proof: "guess", confirmed: true, windowId: WIN }), code("E_POLICY_DENIED"));
-  assert.throws(() => manager.confirmNative({ challengeId: a.challenge.challengeId, proof: a.nativeProof ?? "", confirmed: true, windowId: WIN }), code("E_CONFLICT"));
+  assert.throws(() => manager.confirmNative({ windowId: WIN }, { challengeId: a.challenge.challengeId, proof: a.nativeProof ?? "", confirmed: true }), code("E_CONFLICT"));
+  manager.resolve(...resolveArgs(a));
+  assert.throws(() => manager.confirmNative({ windowId: WIN }, { challengeId: a.challenge.challengeId, proof: "guess", confirmed: true }), code("E_POLICY_DENIED"));
+  assert.throws(() => manager.confirmNative({ windowId: WIN }, { challengeId: a.challenge.challengeId, proof: a.nativeProof ?? "", confirmed: true }), code("E_CONFLICT"));
 
   const b = issue(manager);
-  manager.resolve(resolveArgs(b));
+  manager.resolve(...resolveArgs(b));
   assert.ok(b.nativeProof);
-  assert.equal(manager.confirmNative({ challengeId: b.challenge.challengeId, proof: b.nativeProof, confirmed: false, windowId: WIN }).state, "denied");
+  assert.equal(manager.confirmNative({ windowId: WIN }, { challengeId: b.challenge.challengeId, proof: b.nativeProof, confirmed: false }).state, "denied");
 });
 
 test("a stale or swapped digest echo is refused and burns the challenge", () => {
   const { manager } = setup();
   const issued = issue(manager);
   const other = issue(manager, { target: "workspace:ws-2" });
-  assert.throws(() => manager.resolve(resolveArgs(issued, { digest: other.challenge.digest })), code("E_CONFLICT"));
-  assert.throws(() => manager.resolve(resolveArgs(issued)), code("E_CONFLICT"));
+  assert.throws(() => manager.resolve(...resolveArgs(issued, { digest: other.challenge.digest })), code("E_CONFLICT"));
+  assert.throws(() => manager.resolve(...resolveArgs(issued)), code("E_CONFLICT"));
 });
 
 test("a token for one operation or target does not authorise another, and the attempt burns it", async () => {
@@ -176,7 +176,7 @@ test("TOCTOU (G-24): content that changed after confirmation is refused with E_C
 test("concurrency: two simultaneous resolves, only one wins", async () => {
   const { manager } = setup();
   const issued = issue(manager, { tier: 3 });
-  const attempt = async () => manager.resolve(resolveArgs(issued));
+  const attempt = async () => manager.resolve(...resolveArgs(issued));
   const results = await Promise.allSettled([attempt(), attempt()]);
   assert.deepEqual(results.map((r) => r.status).sort(), ["fulfilled", "rejected"]);
 });
@@ -204,7 +204,7 @@ test("outstanding challenges are bounded per actor and overall, and freed by den
 
   const first = mine[0];
   assert.ok(first);
-  manager.resolve(resolveArgs(first, { decision: "deny" }));
+  manager.resolve(...resolveArgs(first, { decision: "deny" }));
   issue(manager, { actor: "agent:a" });
   assert.throws(() => issue(manager, { actor: "agent:a" }), code("E_BACKPRESSURE"));
 
@@ -220,7 +220,7 @@ test("memory stays bounded: finished records are dropped after a grace period", 
   assert.equal(manager.outstanding(), 0);
   clock.t += 2_001;
   issue(manager);
-  assert.throws(() => manager.resolve(resolveArgs(issued)), code("E_NOT_FOUND"));
+  assert.throws(() => manager.resolve(...resolveArgs(issued)), code("E_POLICY_DENIED"));
 });
 
 test("forged, malformed and foreign challenge ids are refused without running anything", async () => {
@@ -239,11 +239,11 @@ test("forged, malformed and foreign challenge ids are refused without running an
   assert.equal(await a.manager.consume(real, CALLER, run, () => "still valid"), "still valid");
 });
 
-test("unknown challenge ids are E_NOT_FOUND", () => {
+test("unknown challenge ids get the same refusal as a wrong caller (no existence oracle)", () => {
   const { manager } = setup();
   assert.throws(
-    () => manager.resolve({ challengeId: "A".repeat(43), decision: "approve", digest: sha("x"), actor: "user", windowId: WIN }),
-    code("E_NOT_FOUND"),
+    () => manager.resolve({ actor: "user", windowId: WIN }, { challengeId: "A".repeat(43), decision: "approve", digest: sha("x") }),
+    code("E_POLICY_DENIED"),
   );
 });
 
@@ -346,10 +346,10 @@ test("every error the manager raises is valid on the wire (E_APPROVAL_REQUIRED w
     }
   };
   const issued = issue(manager);
-  collect(() => manager.resolve(resolveArgs(issued, { actor: "agent:x" })));
-  collect(() => manager.resolve(resolveArgs(issued, { digest: sha("other") })));
-  collect(() => manager.resolve(resolveArgs(issued)));
-  collect(() => manager.resolve({ challengeId: "A".repeat(43), decision: "approve", digest: sha("x"), actor: "user", windowId: WIN }));
+  collect(() => manager.resolve(...resolveArgs(issued, { actor: "agent:x" })));
+  collect(() => manager.resolve(...resolveArgs(issued, { digest: sha("other") })));
+  collect(() => manager.resolve(...resolveArgs(issued)));
+  collect(() => manager.resolve({ actor: "user", windowId: WIN }, { challengeId: "A".repeat(43), decision: "approve", digest: sha("x") }));
   collect(() => manager.issue({ nope: 1 } as never));
   const token = approve(manager, issue(manager));
   clock.t += 5_000;

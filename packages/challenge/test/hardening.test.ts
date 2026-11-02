@@ -22,7 +22,7 @@ test("S6: a wall-clock rollback does not keep a stale challenge alive, and the w
   assert.equal(issued.challenge.expiresAt, clock.t + clock.skew + 10_000);
   clock.skew -= 3_600_000;
   clock.t += 10_000;
-  assert.equal(manager.resolve(resolveArgs(issued)).state, "expired");
+  assert.equal(manager.resolve(...resolveArgs(issued)).state, "expired");
 });
 
 test("S3: a challenge that cannot be built leaves no record and fails with a protocol code", () => {
@@ -60,12 +60,12 @@ test("S2: sink failures at every phase surface as E_INTERNAL and never as a raw 
   const s2 = setup();
   const i2 = issue(s2.manager);
   failOn(s2, "resolve");
-  assert.throws(() => s2.manager.resolve(resolveArgs(i2)), wireValid);
+  assert.throws(() => s2.manager.resolve(...resolveArgs(i2)), wireValid);
   const s3 = setup();
   const i3 = issue(s3.manager);
-  s3.manager.resolve(resolveArgs(i3));
+  s3.manager.resolve(...resolveArgs(i3));
   failOn(s3, "native");
-  assert.throws(() => s3.manager.confirmNative({ challengeId: i3.challenge.challengeId, proof: i3.nativeProof ?? "", confirmed: true, windowId: WIN }), wireValid);
+  assert.throws(() => s3.manager.confirmNative({ windowId: WIN }, { challengeId: i3.challenge.challengeId, proof: i3.nativeProof ?? "", confirmed: true }), wireValid);
   const s4 = setup();
   const t4 = approve(s4.manager, issue(s4.manager));
   failOn(s4, "authorised");
@@ -107,16 +107,16 @@ test("S7: a deny takes effect even when the audit sink fails, and the caller get
   const s = setup({});
   const a = issue(s.manager);
   s.failWhen((e) => e.payload["decision"] === "deny");
-  assert.throws(() => s.manager.resolve(resolveArgs(a, { decision: "deny" })), code("E_INTERNAL"));
+  assert.throws(() => s.manager.resolve(...resolveArgs(a, { decision: "deny" })), code("E_INTERNAL"));
   s.failWhen(undefined);
-  assert.throws(() => s.manager.resolve(resolveArgs(a)), code("E_CONFLICT"), "an approve cannot follow the deny");
+  assert.throws(() => s.manager.resolve(...resolveArgs(a)), code("E_CONFLICT"), "an approve cannot follow the deny");
 
   const b = issue(s.manager);
-  s.manager.resolve(resolveArgs(b));
+  s.manager.resolve(...resolveArgs(b));
   s.failWhen((e) => e.payload["decision"] === "cancel");
-  assert.throws(() => s.manager.confirmNative({ challengeId: b.challenge.challengeId, proof: b.nativeProof ?? "", confirmed: false, windowId: WIN }), code("E_INTERNAL"));
+  assert.throws(() => s.manager.confirmNative({ windowId: WIN }, { challengeId: b.challenge.challengeId, proof: b.nativeProof ?? "", confirmed: false }), code("E_INTERNAL"));
   s.failWhen(undefined);
-  assert.throws(() => s.manager.confirmNative({ challengeId: b.challenge.challengeId, proof: b.nativeProof ?? "", confirmed: true, windowId: WIN }), code("E_CONFLICT"), "a cancelled dialog cannot be re-confirmed");
+  assert.throws(() => s.manager.confirmNative({ windowId: WIN }, { challengeId: b.challenge.challengeId, proof: b.nativeProof ?? "", confirmed: true }), code("E_CONFLICT"), "a cancelled dialog cannot be re-confirmed");
 });
 
 test("S5: bidi, zero-width, line-break and control characters are refused in target and summary", () => {
@@ -264,7 +264,45 @@ test("S1: caller identity is validated and a malformed caller is E_INVALID_ARGUM
 test("S1: the API exposes no bearer token: resolve results carry no secret and nothing but consume runs an action", () => {
   const { manager } = setup();
   const issued = issue(manager);
-  const r = manager.resolve(resolveArgs(issued));
+  const r = manager.resolve(...resolveArgs(issued));
   assert.deepEqual(Object.keys(r).sort(), ["challengeId", "nativeRequired", "state"]);
   assert.equal((manager as unknown as Record<string, unknown>)["execute"], undefined);
+});
+
+// N1, N2: no existence oracle; identity is a separate, attested argument.
+test("N1: unknown id, non-user actor and wrong window are indistinguishable, even with a failing audit sink", () => {
+  const s = setup();
+  const real = issue(s.manager, { actor: "agent:run-A" });
+  const ghost = { ...real, challenge: { ...real.challenge, challengeId: "A".repeat(43) } };
+  const outcome = (fn: () => unknown): string => {
+    try {
+      fn();
+      return "no error";
+    } catch (e) {
+      return e instanceof ChallengeError ? `${e.code}|${e.message}|${JSON.stringify(e.detail)}` : String(e);
+    }
+  };
+  for (const sinkDown of [false, true]) {
+    s.failWhen(sinkDown ? () => true : undefined);
+    const results = new Set([
+      outcome(() => s.manager.resolve(...resolveArgs(real, { actor: "agent:run-A" }))),
+      outcome(() => s.manager.resolve(...resolveArgs(ghost, { actor: "agent:run-A" }))),
+      outcome(() => s.manager.resolve(...resolveArgs(real, { windowId: "window-2" }))),
+      outcome(() => s.manager.resolve(...resolveArgs(ghost))),
+      outcome(() => s.manager.confirmNative({ windowId: "window-2" }, { challengeId: real.challenge.challengeId, proof: "p", confirmed: true })),
+      outcome(() => s.manager.confirmNative({ windowId: WIN }, { challengeId: ghost.challenge.challengeId, proof: "p", confirmed: true })),
+    ]);
+    assert.equal(results.size, 1, [...results].join("\n"));
+    assert.ok([...results][0]?.startsWith("E_POLICY_DENIED|"));
+  }
+});
+
+test("N2: the attested caller is a separate argument; a payload that carries identity is refused", () => {
+  const { manager } = setup();
+  const issued = issue(manager, { actor: "agent:run-A" });
+  const [, request] = resolveArgs(issued);
+  assert.throws(() => manager.resolve({ actor: "agent:run-A", windowId: WIN }, { ...request, actor: "user", windowId: WIN } as never), code("E_INVALID_ARGUMENT"));
+  assert.throws(() => manager.resolve({ actor: "agent:run-A", windowId: WIN }, request), code("E_POLICY_DENIED"));
+  assert.throws(() => manager.resolve({ actor: "user", windowId: WIN, extra: 1 } as never, request), code("E_INVALID_ARGUMENT"));
+  assert.equal(manager.resolve({ actor: "user", windowId: WIN }, request).state, "approved");
 });

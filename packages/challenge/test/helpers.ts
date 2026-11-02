@@ -39,17 +39,20 @@ export function issue(m: ChallengeManager, over: Partial<Parameters<ChallengeMan
 
 /** Resolves and natively confirms; returns the challenge id to hand to `consume`. */
 export function approve(m: ChallengeManager, i: IssuedChallenge): string {
-  const r = m.resolve({ challengeId: i.challenge.challengeId, decision: "approve", digest: i.challenge.digest, actor: "user", windowId: WIN });
+  const r = m.resolve(...resolveArgs(i));
   assert.equal(r.state, "approved");
   if (!r.nativeRequired) return i.challenge.challengeId;
   assert.ok(i.nativeProof);
-  const n = m.confirmNative({ challengeId: i.challenge.challengeId, proof: i.nativeProof, confirmed: true, windowId: WIN });
+  const n = m.confirmNative({ windowId: WIN }, { challengeId: i.challenge.challengeId, proof: i.nativeProof, confirmed: true });
   assert.equal(n.state, "approved");
   return i.challenge.challengeId;
 }
 
-export const resolveArgs = (i: IssuedChallenge, over: Record<string, unknown> = {}) =>
-  ({ challengeId: i.challenge.challengeId, decision: "approve", digest: i.challenge.digest, actor: "user", windowId: WIN, ...over }) as Parameters<ChallengeManager["resolve"]>[0];
+/** Arguments for `manager.resolve(...resolveArgs(issued))`: the attested caller, then the renderer's params. */
+export const resolveArgs = (i: IssuedChallenge, over: Record<string, unknown> = {}) => {
+  const { actor, windowId, ...params } = { actor: "user", windowId: WIN, ...over };
+  return [{ actor, windowId }, { challengeId: i.challenge.challengeId, decision: "approve", digest: i.challenge.digest, ...params }] as unknown as Parameters<ChallengeManager["resolve"]>;
+};
 
 export const run = { contract: CONTRACT, op: "worktree.discard", target: "workspace:ws-1", args: ARGS, currentContentDigest: CONTENT };
 export const internal = (executed: boolean) => (e: unknown) =>

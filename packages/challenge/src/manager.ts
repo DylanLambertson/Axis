@@ -9,8 +9,10 @@ import {
   executeContextSchema,
   invalid,
   issueSchema,
+  nativeCallerSchema,
   nativeSchema,
   resolveSchema,
+  resolverSchema,
   type ActorId,
   type ChallengeAuditEvent,
   type ChallengeAuditSink,
@@ -193,20 +195,22 @@ export class ChallengeManager {
     return { challenge: built.data, nativeProof: record.nativeProof };
   }
 
-  resolve(input: z.input<typeof resolveSchema>): ResolveResult {
-    const parsed = resolveSchema.safeParse(input);
+  /**
+   * `caller` is the identity the daemon attested for this connection and
+   * `request` is the renderer's params, kept as two arguments so a payload can
+   * never override who is calling. Unknown id, non-user actor and another
+   * window all get the same E_POLICY_DENIED, so nothing reveals which ids exist.
+   */
+  resolve(caller: z.input<typeof resolverSchema>, request: z.input<typeof resolveSchema>): ResolveResult {
+    const who = resolverSchema.safeParse(caller);
+    if (!who.success) throw invalid(who.error, "caller");
+    const parsed = resolveSchema.safeParse(request);
     if (!parsed.success) throw invalid(parsed.error, "resolve request");
     const p = parsed.data;
-    const rec = this.#find(p.challengeId);
+    const rec = this.#byRef.get(sha256Hex(p.challengeId));
     // Authorisation first, and it does not burn the challenge: a bystander must not be able to kill a legitimate one.
-    if (p.actor !== "user") {
-      this.#emit(p.actor as ActorId, "tier4.challenge", rec, "denied", { phase: "resolve", reason: "actor_not_user" });
-      throw new ChallengeError("E_POLICY_DENIED", "Only the user can resolve a confirmation");
-    }
-    if (p.windowId !== rec.windowId) {
-      this.#emit("user", "tier4.challenge", rec, "denied", { phase: "resolve", reason: "wrong_window" });
-      throw new ChallengeError("E_POLICY_DENIED", "This confirmation belongs to a different window");
-    }
+    if (who.data.actor !== "user") throw this.#refuse(who.data.actor as ActorId, rec, "resolve", "actor_not_user");
+    if (!rec || who.data.windowId !== rec.windowId) throw this.#refuse("user", rec, "resolve", "wrong_window");
     if (this.#expireIfDue(rec)) {
       this.#emit("user", "tier4.challenge", rec, "failure", { phase: "resolve", reason: "expired" });
       return { challengeId: p.challengeId, state: "expired", nativeRequired: rec.native };
@@ -237,15 +241,14 @@ export class ChallengeManager {
    * The native dialog's result, delivered over the privileged port. `proof` is
    * the `nativeProof` returned by `issue`; a wrong proof burns the challenge.
    */
-  confirmNative(input: z.input<typeof nativeSchema>): ResolveResult {
+  confirmNative(caller: z.input<typeof nativeCallerSchema>, input: z.input<typeof nativeSchema>): ResolveResult {
+    const who = nativeCallerSchema.safeParse(caller);
+    if (!who.success) throw invalid(who.error, "caller");
     const parsed = nativeSchema.safeParse(input);
     if (!parsed.success) throw invalid(parsed.error, "native confirmation");
     const p = parsed.data;
-    const rec = this.#find(p.challengeId);
-    if (p.windowId !== rec.windowId) {
-      this.#emit("user", "tier4.challenge", rec, "denied", { phase: "native", reason: "wrong_window" });
-      throw new ChallengeError("E_POLICY_DENIED", "This confirmation belongs to a different window");
-    }
+    const rec = this.#byRef.get(sha256Hex(p.challengeId));
+    if (!rec || who.data.windowId !== rec.windowId) throw this.#refuse("user", rec, "native", "wrong_window");
     if (this.#expireIfDue(rec)) {
       this.#emit("user", "tier4.challenge", rec, "failure", { phase: "native", reason: "expired" });
       return { challengeId: p.challengeId, state: "expired", nativeRequired: true };
@@ -364,10 +367,20 @@ export class ChallengeManager {
 
   // ---- internals ----
 
-  #find(challengeId: string): Record_ {
-    const rec = this.#byRef.get(sha256Hex(challengeId));
-    if (!rec) throw new ChallengeError("E_NOT_FOUND", "Unknown or expired confirmation");
-    return rec;
+  /**
+   * The one refusal for "not yours or not there". It audits when the record
+   * exists, best effort: the answer must not change with the sink's health or
+   * with whether the id is real.
+   */
+  #refuse(actor: ActorId, rec: Record_ | undefined, phase: string, reason: string): ChallengeError {
+    if (rec) {
+      try {
+        this.#emit(actor, "tier4.challenge", rec, "denied", { phase, reason });
+      } catch {
+        // See above.
+      }
+    }
+    return new ChallengeError("E_POLICY_DENIED", "That confirmation is not available to this caller");
   }
 
   #confirm(rec: Record_): void {
