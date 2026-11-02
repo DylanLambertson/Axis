@@ -129,3 +129,19 @@ export function findForbiddenKey(
   }
   return null;
 }
+
+export type ParsedClientMessage =
+  | { ok: true; message: z.infer<typeof clientMessageSchema> }
+  | { ok: false; reason: "forbidden-key" | "too-deep" | "invalid" };
+
+/**
+ * The entry point the daemon uses for every decoded client message: the
+ * forbidden-key and depth check runs first, then the envelope schema. The
+ * daemon MUST NOT call `clientMessageSchema` directly (ADR 0005 D2).
+ */
+export function parseClientMessage(raw: unknown): ParsedClientMessage {
+  const violation = findForbiddenKey(raw);
+  if (violation !== null) return { ok: false, reason: violation.reason };
+  const parsed = clientMessageSchema.safeParse(raw);
+  return parsed.success ? { ok: true, message: parsed.data } : { ok: false, reason: "invalid" };
+}

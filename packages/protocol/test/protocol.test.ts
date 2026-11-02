@@ -6,6 +6,7 @@ import {
   PROTOCOL_VERSION,
   cancelEnvelopeSchema,
   findForbiddenKey,
+  parseClientMessage,
   clientMessageSchema,
   createRequestSchema,
   errorSchema,
@@ -64,6 +65,18 @@ test("forbidden keys and depth are found before schema parsing", () => {
   let deep: unknown = 1;
   for (let i = 0; i < 100_000; i++) deep = { a: deep };
   assert.deepEqual(findForbiddenKey(deep), { reason: "too-deep" });
+});
+
+test("parseClientMessage rejects an own __proto__ key at any depth", () => {
+  const top = JSON.parse(JSON.stringify(goodRequest).replace(/}$/, ',"__proto__":{"x":1}}'));
+  assert.deepEqual(parseClientMessage(top), { ok: false, reason: "forbidden-key" });
+  const nested = JSON.parse(
+    '{"v":1,"id":"r","contract":"axis.worktrees","contractVersion":1,"method":"create","payload":{"a":[{"__proto__":{"polluted":true}}]}}',
+  );
+  assert.deepEqual(parseClientMessage(nested), { ok: false, reason: "forbidden-key" });
+  assert.equal(({} as Record<string, unknown>)["polluted"], undefined);
+  assert.equal(parseClientMessage(goodRequest).ok, true);
+  assert.deepEqual(parseClientMessage({ v: 1 }), { ok: false, reason: "invalid" });
 });
 
 test("request envelope: rejects bad fields", () => {

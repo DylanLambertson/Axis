@@ -60,7 +60,8 @@ Rule of thumb: if it can be tested with `node --test` on a clean CI runner, it i
 2. **The overlay talks to the daemon only through `@axis/protocol`,** over the MessagePort from ADR 0003 D1. The renderer imports contracts, never domain packages. A renderer import of `@axis/worktrees` is a defect; the renderer asks the daemon.
 3. **Packages assume nothing about who calls them.** Identity (`ConnectionContext`) and actor come from the daemon pipeline, never from payload fields (ADR 0003 D2, D7).
 4. **Contracts have no Node imports** so web and desktop share them (ADR 0003 I8). Domain packages may use Node.
-5. **Packages do not read `process.env` or the clock implicitly** where tests need control: take them as parameters.
+5. **The daemon MUST validate every decoded client message with `parseClientMessage` from `@axis/protocol`,** which runs `findForbiddenKey` (forbidden keys `__proto__`, `constructor`, `prototype`, and a depth limit) before any schema. Zod strict objects do not reject an own `__proto__` key, so a schema alone is not enough. Calling the envelope schemas directly is a defect.
+6. **Packages do not read `process.env` or the clock implicitly** where tests need control: take them as parameters.
 
 Enforcement: package `tsconfig.base.json` sets `types: ["node"]` and `lib: ["ES2023"]` with no `DOM`, so DOM and Electron types fail to compile. `vs/*` is not resolvable from `packages/` at all. The overlay side gets an import-patterns target (below).
 
