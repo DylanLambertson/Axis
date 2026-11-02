@@ -1,12 +1,12 @@
 # Prototype C: Eclipse Theia (Phase 0 M4)
 
-- Date: 2026-11-01 to 2026-11-02 (local time, UTC-5). Time-boxed to about 2 hours for this pass, plus an earlier interrupted session that built the prototype.
+- Date: 2026-11-01 to 2026-11-02 (local time, UTC-5). Time-boxed to about 2 hours for this pass, plus an earlier run that built the prototype.
 - Question (ADR 0002, revisit trigger 3): can option C meet the ADR 0002 feature checklist with **materially lower maintenance cost** than option A?
-- Framework: Eclipse Theia **1.76.0** (2026-09-24), every `@theia/*` package pinned exactly, browser target. Editor core `@theia/monaco-editor-core` **1.108.201**; declared VS Code API level **1.139.0** (`DEFAULT_SUPPORTED_API_VERSION` in `@theia/application-package`). Option A's baseline is Code OSS 1.144.0 (`code-oss-build.md` on the M2 branch).
+- Framework: Eclipse Theia **1.76.0** (2026-09-24), every `@theia/*` package pinned exactly, browser target. Editor core `@theia/monaco-editor-core` **1.108.201**; declared VS Code API level **1.139.0** (`DEFAULT_SUPPORTED_API_VERSION` in `@theia/application-package`). Option A's baseline is Code OSS 1.144.0 (`docs/feasibility/code-oss-build.md`).
 - Code: `prototypes/theia/` (self-contained, not wired into anything else).
 - Status words: **works**, **partial**, **fails**, **not possible**, **not tested** / **not run**. Every number below was measured on this machine unless it says "estimate". Screenshots are kept outside the repository (`~/.cache/project-axis/reviews/m4-theia/`).
 
-**Answer in one paragraph.** Theia gives Axis a working IDE in a browser with a Node backend: editor, explorer, search, terminal, SCM/Git, diagnostics, command palette, an Open VSX extensions view and a Node plugin host. Axis customises it with 363 lines of additive contributions and patches nothing. Nine of the 13 M5 matrix scenarios pass unchanged, covering 14 pinned extensions: TypeScript, Python (Jedi and basedpyright), rust-analyzer, clangd, ESLint, Prettier, YAML, GitLens and a theme. **Debugging fails with all three debug adapters tried** (js-debug, debugpy, CodeLLDB): sessions start but never stop at a breakpoint, and the cause was not isolated in the time box. Build cost is a small fraction of A's (install 20 s against 956 s; production build 7–13 s against a 119 s compile). One minor-version swap (1.76.0 → 1.75.0) needed **0 source changes**. Against that: the editor core is VS Code 1.108, 36 weekly minors behind A's baseline; 8.6% of the VS Code API is stubbed (M1); the framework is EPL-2.0 (LEGAL REVIEW); and Electron was not tested. **Revisit trigger 3 is not met as measured**, because the debugger is part of the checklist. It is the closest of the M4 options, and §9 lists what would flip it.
+**Answer in one paragraph.** Theia gives Axis a working IDE in a browser with a Node backend: editor, explorer, search, terminal, SCM/Git, diagnostics, command palette, an Open VSX extensions view and a Node plugin host. Axis customises it with 363 lines of additive contributions and patches nothing. Nine of the 13 M5 matrix scenarios pass unchanged, covering 14 pinned extensions: TypeScript, Python (Jedi and basedpyright), rust-analyzer, clangd, ESLint, Prettier, YAML, GitLens and a theme. **Debugging fails with all three debug adapters tried** (js-debug, debugpy, CodeLLDB): sessions start but never stop at a breakpoint, and the cause was not isolated in the time box. Build cost is a small fraction of A's: install about 67 s (20.4 s `npm ci` plus the required 46.9 s native `npm rebuild`) against 956 s, and a production build of 7–13 s against a 119 s compile. The prototype also takes **security shortcuts that must not be reused** (§5.2): the browser backend's connection token is issued to any HTTP client, and workspace trust is off in the app's default preferences. One minor-version swap (1.76.0 → 1.75.0) needed **0 source changes**. Against that: the editor core is VS Code 1.108, 36 weekly minors behind A's baseline; 8.6% of the VS Code API is stubbed (M1); the framework is EPL-2.0 (LEGAL REVIEW); and Electron was not tested. **Revisit trigger 3 is not met as measured**, because the debugger is part of the checklist. It is the closest of the M4 options, and §9 lists what would flip it.
 
 ---
 
@@ -14,7 +14,7 @@
 
 | Piece | Files | Notes |
 |---|---|---|
-| Theia application (browser target) | `browser-app/package.json` | 31 `@theia/*` packages at 1.76.0 (core, editor, monaco, filesystem, navigator, search-in-workspace, terminal, scm, debug, task, plugin-ext, plugin-ext-vscode, vsx-registry, preferences, keymaps, notebook, …). Built by `theia build --mode production`, which uses esbuild since 1.75. Default theme `axis-dark`, workspace trust off for the test runs. The plugins directory is `../plugins`. |
+| Theia application (browser target) | `browser-app/package.json` | 31 `@theia/*` packages at 1.76.0 (core, editor, monaco, filesystem, navigator, search-in-workspace, terminal, scm, debug, task, plugin-ext, plugin-ext-vscode, vsx-registry, preferences, keymaps, notebook, …). Built by `theia build --mode production`, which uses esbuild since 1.75. Default theme `axis-dark`. **Workspace trust is disabled in the app's default preferences** (`"security.workspace.trust.enabled": false` in `theia.frontend.config.preferences`), so every build of this app ships with trust off, not only the test runs (§5.2). The plugins directory is `../plugins`. |
 | Axis shell extension | `axis-shell/src/browser/*` (363 lines of TS, TSX and CSS) | Everything is an Inversify contribution; **no Theia package is patched**. `AxisTopBarWidget` is a `ReactWidget` added to the shell's `top` area: brand mark, workspace switcher, "Search or run a command", "Agents: idle", "Model: not configured". `AxisAiPanelWidget` is a `ReactWidget` in the right area, collapsed on first start. A command toggles it. The first-run layout lives in `initializeLayout`. |
 | Axis Dark theme | `axis-shell/src/browser/axis-theme.ts` | Registered through `MonacoThemingService`, so one token set drives both the workbench CSS variables (`--theia-*`) and the editor. Colours are the `docs/UX.md` dark tokens: canvas `#111214`, surface `#181A1D`, raised `#202227`, border `#2B2E34`, text `#E8E9EB`/`#9A9EA7`/`#70757F`, accent `#5823F6`, accent-on-dark `#9776F9`. |
 | Plugins | `builtins.json`, `scripts/prepare-plugins.sh` | Two sources, both sha256-verified before unpacking. (1) The pinned Open VSX extensions via `test/extension-matrix/fetch.sh`. (2) 21 VS Code built-ins (TypeScript language features, Git, grammars, themes, js-debug) from the `eclipse-theia/vscode-builtin-extensions` **1.108.2** release (2026-03-25); Theia ships none of these itself. Everything is unpacked into the ignored `plugins/` directory. |
@@ -55,16 +55,22 @@ Run 2 was on 2026-11-02, 09:15–09:32 local, against the build of 2026-11-02 00
 
 **Summary.** 14 extensions exercised: 9 scenarios pass, 3 fail (all on the breakpoint check, S01 only on that check), and 1 was not run.
 
-**The debugger failure.** It is one problem, not three: three unrelated adapters (JavaScript, Python, LLDB) all lose or never use their breakpoint connection, while everything else about the same extensions works.
+**The debugger failure.** Three unrelated adapters (JavaScript, Python, LLDB) fail the same check, while everything else about the same extensions works. A shared cause in Theia's debug transport or session lifecycle is **likely, but it is a hypothesis**: the error signatures differ.
 
-- To rule out the probe, a scratch diagnostic set a breakpoint through the UI (F9 on `debug.js:3`) and started `matrix: debug.js` with F5.
-- With only the built-ins and js-debug installed, the Debug view shows the session as **RUNNING**, with the breakpoint listed, and it never pauses. There are no errors in the backend log.
-- With the full plugin set, the session stays at "Activating JavaScript Debugger" after 60 s.
-- The cause is **not isolated**. Candidates not excluded in the time box:
-  - Theia's breakpoint and launch ordering against these adapter versions;
-  - the debuggee runtime: Node 25.9.0 for js-debug 1.105.0, which predates it;
-  - the headless-browser environment.
-- The M5 matrix has not yet run on the Code OSS build either (`extension-compatibility.md` §1), so there is no option-A control on this machine yet.
+| Run | Signature |
+|---|---|
+| S01, js-debug (matrix) | `Failed to set exception breakpoints: Error: Connection is closed`, raised from the frontend `DebugSession` (`bundle.js`) |
+| js-debug, UI breakpoint (F9 on `debug.js:3`, F5), built-ins and js-debug only | The Debug view shows the session as **RUNNING** with the breakpoint listed, and it never pauses. The backend log has no errors. This rules out the probe as the cause |
+| js-debug, UI breakpoint, full plugin set | Stuck at "Activating JavaScript Debugger" after 60 s |
+| S04, debugpy | "Server[1] disconnected unexpectedly", then `Request 'configure' timed out after 30000ms` |
+| S06, CodeLLDB | `Could not handle breakpoints … Malformed message, disabling...` |
+
+What is known about the cause:
+
+- **Node 25 is ruled out for js-debug.** The backend, the plugin host and the debuggees in all of this report ran on Node 25.9.0, outside the prototype's own `engines` (`>=24 <25`, §4). The independent review re-ran S01 with Node 24.22.2 on `PATH`, covering the backend, the plugin host and the debuggee. It **still fails with the same error**, raised from the frontend `DebugSession`.
+- That points at Theia's frontend–backend debug channel rather than at the adapters. This is not proven.
+- **Still open:** the headless-browser environment; the prototype's configuration compared with Theia's own example app; and the lack of an option-A control. The M5 matrix has not run on the Code OSS build yet (`extension-compatibility.md` §1).
+- §9 lists the follow-up steps.
 
 **Other compatibility signals from the logs.**
 
@@ -98,15 +104,19 @@ The checklist is ADR 0002 validation criterion 1, plus the M4 brief and `docs/de
 
 **Summary.** Works: shell customisation, theme, React UI, editor, explorer, diagnostics, search, palette, terminal, SCM/Git and the Node plugin host. Fails: debugger. Not tested: Electron, Linux, CSP/Trusted Types, run-time Open VSX installs, settings UI.
 
-ADR 0002 criterion 7 (web) differs in shape for C. The browser target *is* Theia's web deployment: a Node backend serving the frontend, like `reh-web`. So the web column here is the same evidence.
+ADR 0002 criterion 7 (web) differs in shape for C. The browser target *is* Theia's web deployment: a Node backend serving the frontend. So the browser column above is the functional evidence for the web target too. It is **not** equivalent to `reh-web` on security:
+
+- `reh-web` requires a connection token the client cannot obtain by asking (threat WEB-1 in `docs/security/threat-model-phase0.md`).
+- This backend issues its token to any client that asks (§5.2).
+- A deployable Axis web target on C needs Axis-owned authentication and host checks first.
 
 ## 4. Measurements
 
 Machine: the M2 machine (Intel Core i9-9980HK, 8 cores, 16 GB, macOS 15.7.9).
 
-- Node 25.9.0 and npm 11.12.1. The prototype's `engines` says Node 24, but npm does not enforce it and the M4 sibling used the same Node.
+- Node 25.9.0 and npm 11.12.1. **Every measurement, smoke run and matrix run in this report ran on Node 25.9.0**: the install, the build, the backend, the plugin host and the debuggees. That is outside the prototype's declared `engines` (`>=24 <25`), which npm does not enforce. The option B report (`prototype-monaco-vscode-api.md`) used the same Node. One S01 re-run on Node 24.22.2 by the review is the only exception (§2).
 - Chrome 156.0.8078.74, headless, through `puppeteer-core` 25.1.0.
-- Other sessions ran builds at the same time. The 1-minute load average (`sysctl -n vm.loadavg`) is recorded before and after each measurement. Runs above 14 are marked and not used for comparison.
+- Other workloads on the machine ran builds at the same time. The 1-minute load average (`sysctl -n vm.loadavg`) is recorded before and after each measurement. Runs above 14 are marked and not used for comparison.
 
 ### 4.1 Install, build and disk
 
@@ -119,7 +129,7 @@ Machine: the M2 machine (Intel Core i9-9980HK, 8 cores, 16 GB, macOS 15.7.9).
 | Build output (`browser-app/lib`) | 85 MiB on disk | n/a | `du -sh` |
 | Unpacked plugins | 410 MiB (CodeLLDB 149 MiB, TypeScript built-in 56 MiB, rust-analyzer 40 MiB); the 21 built-ins alone 83 MiB | n/a | `du -sh` |
 
-For comparison, option A (M2): `npm ci` 956 s, compile 119 s, tree 7.6 GiB after build.
+For comparison, option A (M2): `npm ci` 956 s, which includes its native builds; compile 119 s; tree 7.6 GiB after build. Theia's equivalent of A's `npm ci` is install plus rebuild: **67.3 s**.
 
 ### 4.2 Bundle size (production build)
 
@@ -138,7 +148,7 @@ The workspace is the TypeScript matrix fixture with `src/main.ts` opened through
 
 | Plugins | Backend listening | Navigation → shell ready | Spawn → shell ready | Load (before → after) |
 |---|---|---|---|---|
-| none | 1.8, 1.6, 1.6 s | 4.4, 4.3, 4.3 s | **8.0, 7.1, 7.0 s** | 9.3→9.0, 9.0→6.9, 6.9→24.3 |
+| none | 1.8, 1.6, 1.6 s | 4.4, 4.3, 4.3 s | **8.0, 7.1, 7.0 s** | 9.3→9.0, 9.0→6.9, 6.9→**24.3** (the third run started below 14 but ended at 24.3, so treat it with care) |
 | full set (34 plugins) | 1.5, 1.7, 1.5 s | 7.4, 7.7, 7.4 s | **10.0, 10.5, 9.9 s** | 6.2→6.0, 6.0→5.0, 5.0→4.1 |
 | full set, first attempt (**load above 14, not used**) | 1.6, 1.4, 1.7 s | 9.5, 7.4, 12.3 s | 12.4, 9.9, 15.3 s | 24.3→21.1, 21.1→26.2, 26.2→20.6 |
 
@@ -153,7 +163,7 @@ Sampled about 30 s after shell ready, as summed RSS (`ps`) of the backend and al
 | none | 257, 178, 266 MiB (3 processes) | 957, 635, 965 MiB | 60 MiB | 6.9–9.3 |
 | full set | **1,132, 1,128, 1,109 MiB** (9 processes: the backend and its Node children, i.e. plugin host, language servers and `tsserver`, plus one shell) | **1,184, 1,180, 1,179 MiB** | 130 MiB | 4.1–6.2 |
 
-The full-set total is about **2.3 GiB**. M2 baseline (option A): 2,778 MiB summed over 11 Electron processes. Again not equivalent: Chrome stands in for Electron, and the plugin sets differ. The M4 sibling report found headless-Chrome RSS unstable; here the three low-load runs agree within 2%.
+The full-set total is about **2.3 GiB**. M2 baseline (option A): 2,778 MiB summed over 11 Electron processes. Again not equivalent: Chrome stands in for Electron, and the plugin sets differ. The option B report found headless-Chrome RSS unstable; here the three low-load runs agree within 2%.
 
 ## 5. Licensing and supply chain
 
@@ -191,20 +201,48 @@ These are engineering notes, not legal advice; `licensing-and-marketplace.md` al
 4. **The secondary licence (GPL-2.0 with Classpath exception)** is available to recipients. It does not change Axis's obligations if Axis distributes under EPL-2.0. Confirm with counsel.
 5. Patent and trademark: EPL-2.0 includes a patent grant from contributors, and Eclipse Foundation trademark rules apply to "Eclipse" and "Theia" names (not used in the Axis product name). **LEGAL REVIEW.**
 
+### 5.2 Prototype security shortcuts (not for reuse)
+
+The prototype is a local measurement rig. Its security posture must not be copied into an Axis built on C.
+
+1. **The browser backend issues its connection token to any HTTP client, and the `Host` header is not checked.**
+   - The backend runs as `theia start --hostname=127.0.0.1 --port=3000` with no `THEIA_HOSTS` (`browser-app/package.json`; the same in `run-app.mjs` and `smoke.mjs`).
+   - In Theia 1.76.0, `BrowserConnectionTokenBackendContribution` sets the `theia-connection-token` cookie (`HttpOnly; SameSite=Strict`) on **any** HTTP request that lacks a valid one. So the token protects only through the browser's cookie scoping, not as a secret.
+   - `WsOriginValidator` (`@theia/core/lib/node/hosting/ws-origin-validator.js`) accepts a missing `Origin`. Without `THEIA_HOSTS`, it only requires the `Origin` host to equal the `Host` header. Nothing restricts the `Host` header itself.
+   - **Reproduced by the independent review** against the built backend, with raw HTTP requests:
+     - `GET /` with `Host: evil.example` returns the cookie.
+     - A WebSocket upgrade with that cookie and `Origin` = `Host` = `evil.example` (the DNS-rebinding shape) gets **101**.
+     - The same cookie with no `Origin` (any local process) gets **101**.
+     - A plain cross-site `Origin` against `Host: 127.0.0.1` is refused with 400.
+   - That socket carries Theia's RPC services: a real pty, the file system and the plugin host. A rebinding page, or any local process of any user, could get command execution as the user.
+   - A real browser DNS rebinding was not performed. Chrome's Local Network Access restrictions may block some paths; that is browser-dependent and was not tested.
+   - **An Axis on C needs:**
+     - a `THEIA_HOSTS` allow-list;
+     - real authentication for the browser target, not a cookie issued on the first GET;
+     - on desktop, `@theia/electron`'s token model (`electron-node/token`), which was **not tested**.
+2. **Workspace trust is off by default** (§1). This was found by code reading and not exercised.
+   - Opening an untrusted repository applies its `.vscode/settings.json` and `tasks.json` without a prompt.
+   - Several extensions in the prepared set take executable paths from settings: `clangd.path`, `rust-analyzer.server.path` and the Python interpreter path. A repository could point one at a binary it contains, and that binary would run when the extension activates.
+   - VS Code with trust off behaves the same way; here, trust is off in the app's defaults.
+   - **An Axis on C must keep workspace trust on**, and verify that Theia's trust gating covers tasks and extension settings.
+3. **Archive symlinks.** `scripts/prepare-plugins.sh` rejects absolute and `..` entry names but not symlink entries.
+   - The risk is low here: every archive is sha256-pinned and its URL is prefix-checked.
+   - Any reuse for unpinned VSIXs must reject symlink entries (for example from `zipinfo` output).
+
 ## 6. Maintenance
 
 ### 6.1 Theia release cadence (GitHub releases, `eclipse-theia/theia`)
 
 - **Monthly minors.** 1.67.0 2025-12-10, 1.68.0 2026-01-29, 1.69.0 02-26, 1.70.0 03-26, 1.71.0 04-30, 1.72.0 05-28, 1.73.0 06-25, 1.74.0 07-31, 1.75.0 08-27, 1.76.0 09-24. That is ten minors in about ten months. 1.77.0 is not released as of 2026-11-02; a `next` pre-release was published that day.
 - **Patch releases** on selected minors. 1.74 is still receiving them (1.74.3 on 2026-10-23, after 1.76.0), which matches Theia's quarterly community-release line.
-- **Breaking-change entries** in `CHANGELOG.md` per minor (counted as bullets under each "Breaking Changes" heading). About a third are in the AI packages, which Axis does not use:
+- **Breaking-change entries** per minor, counted as bullets under each "Breaking Changes" heading of `CHANGELOG.md` **at tag `v1.76.0`**. On `master`, entries were later added to some sections; 1.76.0 has 16 there. About a quarter of the entries are in the AI packages, which Axis does not use:
 
 | Minor | Breaking entries | Of which `ai-*` only |
 |---|---|---|
 | 1.73.0 | 24 | 9 |
 | 1.74.0 | 8 | 2 |
 | 1.75.0 | 18 | 2 |
-| 1.76.0 | 16 | 7 |
+| 1.76.0 | 14 | 5 |
 
 **1.75 → 1.76 upgrade notes**, for the APIs Axis would touch:
 
@@ -257,11 +295,13 @@ This is a downgrade by one minor on a 363-line surface. It shows that the contri
 | Per upgrade | **Measured: 0 source lines for one adjacent minor**, about 1 minute of install and build plus a 2-minute smoke run. **Estimate** for a product-sized surface: 0.5–2 days per monthly minor, mostly reading the breaking-change list and fixing the APIs used. A Monaco bump is a larger, rarer event (estimate: several days of regression testing, every 12–14 months at the historical rate) | Rebase of all patch ranges every 2–4 weekly minors; criterion 4 target ≤ 1 working day per sync (not yet measured) |
 | Inherited third-party maintenance | Theia's own team (365 contributors, 43 PR authors in 3 months, M1). Axis cannot pick a newer editor core than Theia ships | none: Axis is the maintainer of its patches; upstream is Microsoft |
 | Extension compatibility work | Theia's plugin host is its own implementation: 8.6% of the API stubbed and 30 items unsupported (M1). Fixes go upstream to Theia or are waited for. The debugger gap (§2) is the open example | Upstream's own extension host; failures caused by Axis patches only |
+| Security hardening of the server | **Axis-owned, not estimated.** It needs `THEIA_HOSTS`, real authentication for the browser target in place of the token cookie Theia issues on first request, workspace trust on by default with its coverage of tasks and settings verified, and the `@theia/electron` token model on desktop (§5.2). It is done as contributions or configuration if possible; a patch would carry EPL source obligations | The hardening range `2000–2999` on upstream's `reh-web`, which already requires a connection token (ADR 0002 decision 7) |
 
 **Inferred conclusion.** On build and upgrade cost, C is **materially cheaper** than A: about an order of magnitude less build time, no patch series, no Copilot removal, and a measured zero-change minor swap. C's costs sit elsewhere:
 
 - compatibility gaps Axis does not control (the stubbed API surface, the editor core lag, and now the debugger);
-- EPL-2.0 compliance.
+- EPL-2.0 compliance;
+- Axis-owned security hardening of the backend, mainly for a web deployment (§5.2).
 
 ## 7. Findings and risks
 
@@ -269,17 +309,19 @@ This is a downgrade by one minor on a 363-line surface. It shows that the contri
 2. **Editor core lag.** Monaco 1.108 against A's 1.144 baseline is 36 weekly minors behind, and bumps come roughly yearly. The VS Code built-ins Theia uses (TypeScript, Git, js-debug) lag the same way. Newer editor features (inline-edit and diff UI, recent TypeScript-extension behaviour) arrive late or not at all. The matrix did not hit a blocker from this.
 3. **API gaps are silent.** Stubbed APIs no-op, and unsupported activation events are only logged (`onLanguageModelTool:*`, `onTerminal:*`, `onEditSession:*`). An extension can "work" in the matrix and still degrade, as GitLens's status-bar `TypeError` shows.
 4. **EPL-2.0** (§5.1). It is weak copyleft at the file and module level. It is fine for additive extensions if counsel agrees, but it forbids quiet patching and needs a source-offer process for distributed web and desktop builds.
-5. **Native install scripts.** The terminal, file watching and keychain need native builds or prebuilds (§5), so supply-chain review and an `allowScripts` list are needed, unlike the M4 sibling's zero-script install.
+5. **Native install scripts.** The terminal, file watching and keychain need native builds or prebuilds (§5), so supply-chain review and an `allowScripts` list are needed, unlike option B's zero-script install.
 6. **Not tested: Electron** (`@theia/electron`, Electron 44.9.1 per M1), Linux, CSP and Trusted Types, and run-time Open VSX installs. Each is a criterion input.
 7. **Precedent risk.** The main adopter cited in M1 (Arduino IDE) sits about 18 months behind Theia. That suggests adopters do not always keep up with monthly minors in practice, even though one minor cost nothing here.
-8. **Measurement noise.** The load reached 26 during one startup series, which was discarded (§4.3). Install and build ran at load 9–10.
+8. **Measurement noise.** The load reached 26 during one startup series, which was discarded, and one no-plugin run ended at 24.3 (§4.3). Install and build ran at load 9–10.
+9. **Prototype security shortcuts** (§5.2): the token cookie is issued to any client, there is no `Host` allow-list, and workspace trust is off by default. None is for reuse.
 
 ## 8. Not done
 
 - No Electron build, and no Linux or Windows run.
 - The debugger root cause was not found (see §2 for the candidates). The matrix was not run against a Code OSS build for a control.
 - S07 (Go) was not run: `gopls` is missing on the host.
-- Run-time installs from the Open VSX registry, the settings and keybindings editors, CSP/Trusted Types and accessibility (F6 cycle, screen readers) were not exercised.
+- Run-time installs from the Open VSX registry through `@theia/vsx-registry` were not exercised, and neither was that path's signature and verification behaviour. Neither were the settings and keybindings editors, CSP/Trusted Types, or accessibility (F6 cycle, screen readers).
+- No real browser DNS-rebinding attempt, and no test of `@theia/electron`'s token model (§5.2).
 - The upgrade experiment covers one adjacent minor on a 363-line surface; no Monaco bump was exercised.
 - Proposed-API handling (`enabledApiProposals`; D1 in `extension-compatibility.md`) was not checked on Theia.
 
@@ -290,10 +332,17 @@ This is a downgrade by one minor on a 363-line surface. It shows that the contri
   - The checklist half is not, because the debugger fails with all three adapters tried (criteria 1 and 6).
   - Electron and Linux are untested.
 - **Criteria 2 and 5:** C is strongest here. The shell needs zero upstream patches, and React is the framework's own UI technology. CSP/Trusted Types are unverified.
-- **Compared with option B** (`prototype-monaco-vscode-api.md` on the B branch): C already runs the Node extension host, terminal, Git and 9 of 13 matrix scenarios without a Code OSS server. So C, not B, is the realistic alternative if A hits a revisit trigger.
+- **Compared with option B** (`docs/feasibility/prototype-monaco-vscode-api.md`): C already runs the Node extension host, terminal, Git and 9 of 13 matrix scenarios without a Code OSS server. So C, not B, is the realistic alternative if A hits a revisit trigger.
 - **Decision input:** keep ADR 0002 **option A** as proposed. Record C as the **primary fallback**. Before Phase 0 exits, spend one day on these:
-  1. **Root-cause the debugger.** Run S01/S04/S06 headful, with Node 24 for the debuggee, and with DAP tracing on (`debug.trace` / adapter logs). Then compare with the same scenarios on the M2 Code OSS build once M5 runs there. If the M2 build also fails, the problem is environmental and C's checklist gap closes.
+  1. **Root-cause the debugger.** Node 24 is already ruled out for js-debug (§2).
+     1. Run S01 headful (`run-app.mjs --headful`).
+     2. Run it with a DAP trace: `"trace": true` in the js-debug launch configuration, and the adapter logs for debugpy and CodeLLDB.
+     3. Run the same launch in Theia's own example application at 1.76.0, and on `next`, to rule out the prototype's configuration.
+     4. As an option-A control, launch js-debug once with F5 on the M2 Code OSS build. This does not wait for the full M5 run. A failure there would show an environmental cause, but it does not close C's gap.
+     5. **Pass criterion:** C itself stops at `debug.js:3`, `debug_me.py:2` and `src/main.rs:2`.
   2. **Build `@theia/electron`** for the same app and run `smoke.mjs` against it.
   3. **Send the EPL-2.0 questions in §5.1 to LEGAL REVIEW.**
 
-  If (1) and (2) pass and (3) clears contributions-only use, trigger 3 would be met. That warrants a superseding ADR comparing A's measured sync cost (criterion 4) against C's monthly minors.
+  If (1) and (2) pass and (3) clears contributions-only use, trigger 3 would be met.
+
+  An Axis on C also carries the Axis-owned security hardening in §5.2. That does not change this recommendation, but it belongs in any superseding ADR's cost comparison. That warrants a superseding ADR comparing A's measured sync cost (criterion 4) against C's monthly minors.
