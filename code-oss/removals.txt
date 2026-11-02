@@ -1,0 +1,6 @@
+# Upstream paths deleted from vendor/code-oss after the patch series is applied
+# (ADR 0002 decision 6). One repository-relative file or directory per line;
+# blank lines and lines starting with # are ignored. Every listed path must
+# exist, otherwise scripts/code-oss/apply.sh fails so that upstream moves are
+# noticed at sync time. Ignored build output (node_modules, out, ...) cannot be
+# listed. Empty for the Phase 0 M2 baseline build.
