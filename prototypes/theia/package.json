@@ -1,0 +1,18 @@
+{
+  "private": true,
+  "name": "axis-theia-prototype",
+  "version": "0.0.0",
+  "description": "Phase 0 M4 prototype C: a minimal Eclipse Theia application with an Axis shell extension",
+  "license": "MIT",
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "workspaces": [
+    "axis-shell",
+    "browser-app"
+  ],
+  "scripts": {
+    "build": "npm run -w axis-shell build && npm run -w browser-app build",
+    "start": "npm run -w browser-app start"
+  }
+}

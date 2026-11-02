@@ -1,0 +1,33 @@
+{
+  "private": true,
+  "name": "axis-shell",
+  "version": "0.0.0",
+  "description": "Axis shell customisation for the Theia prototype: top bar, default layout and Axis Dark theme",
+  "license": "MIT",
+  "files": [
+    "lib",
+    "src"
+  ],
+  "theiaExtensions": [
+    {
+      "frontend": "lib/browser/axis-shell-frontend-module"
+    }
+  ],
+  "dependencies": {
+    "@theia/core": "1.76.0",
+    "@theia/monaco": "1.76.0",
+    "@theia/workspace": "1.76.0"
+  },
+  "devDependencies": {
+    "@types/react": "19.2.18",
+    "rimraf": "5.0.10",
+    "typescript": "5.9.3"
+  },
+  "scripts": {
+    "clean": "rimraf lib tsconfig.tsbuildinfo",
+    "build": "tsc -b"
+  },
+  "peerDependencies": {
+    "react": "^19.0.0"
+  }
+}

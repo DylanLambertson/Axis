@@ -1,0 +1,134 @@
+{
+  "description": "VS Code built-in extensions used by the Theia prototype. Theia ships none of these itself; its own examples take them from the eclipse-theia/vscode-builtin-extensions release below. sha256 values are the GitHub release asset digests, re-checked locally by scripts/prepare-plugins.sh.",
+  "source": "https://github.com/eclipse-theia/vscode-builtin-extensions/releases/tag/1.108.2",
+  "release": "1.108.2",
+  "publishedAt": "2026-03-25T12:38:07Z",
+  "extensions": [
+    {
+      "id": "vscode.typescript-language-features",
+      "url": "https://github.com/eclipse-theia/vscode-builtin-extensions/releases/download/1.108.2/vscode.typescript-language-features.vsix",
+      "sha256": "616bdc301fd96b060081f5d9c303b39ee032dbd00b89b55c212dffe3e68807a9",
+      "size": 11931970
+    },
+    {
+      "id": "vscode.typescript",
+      "url": "https://github.com/eclipse-theia/vscode-builtin-extensions/releases/download/1.108.2/vscode.typescript.vsix",
+      "sha256": "efae51165edddf8bbd2269d4daee0fded26f0d49b4670fa7526a4cbff913f1f6",
+      "size": 41948
+    },
+    {
+      "id": "vscode.javascript",
+      "url": "https://github.com/eclipse-theia/vscode-builtin-extensions/releases/download/1.108.2/vscode.javascript.vsix",
+      "sha256": "22cce50bcce5af634f120cd45cb2b67ae8a603044523055e4b1ac37555041259",
+      "size": 43189
+    },
+    {
+      "id": "vscode.json",
+      "url": "https://github.com/eclipse-theia/vscode-builtin-extensions/releases/download/1.108.2/vscode.json.vsix",
+      "sha256": "12ea6e358033b3b86a0e456a1c6362fab1d116ff4e24cbd12a1549699acf89d4",
+      "size": 21408
+    },
+    {
+      "id": "vscode.json-language-features",
+      "url": "https://github.com/eclipse-theia/vscode-builtin-extensions/releases/download/1.108.2/vscode.json-language-features.vsix",
+      "sha256": "61ced0c93e8fd19152caaa15725a10593decd4efa25c35f7afc589cd2e515863",
+      "size": 1950574
+    },
+    {
+      "id": "vscode.git",
+      "url": "https://github.com/eclipse-theia/vscode-builtin-extensions/releases/download/1.108.2/vscode.git.vsix",
+      "sha256": "99750e0905b13db132ed8c60d887c81806d6250da7ba51413095df0c97ee176b",
+      "size": 1002128
+    },
+    {
+      "id": "vscode.git-base",
+      "url": "https://github.com/eclipse-theia/vscode-builtin-extensions/releases/download/1.108.2/vscode.git-base.vsix",
+      "sha256": "125b5871f050caff28ed2ee95940aefb6d740c6de43cf7d21fdae7c8747cecb3",
+      "size": 37601
+    },
+    {
+      "id": "vscode.theme-defaults",
+      "url": "https://github.com/eclipse-theia/vscode-builtin-extensions/releases/download/1.108.2/vscode.theme-defaults.vsix",
+      "sha256": "4020454d3a7b3308e5bc6d0ecb035f20a261837ec1a24983af7b48eb8655fda0",
+      "size": 22561
+    },
+    {
+      "id": "vscode.vscode-theme-seti",
+      "url": "https://github.com/eclipse-theia/vscode-builtin-extensions/releases/download/1.108.2/vscode.vscode-theme-seti.vsix",
+      "sha256": "87f5b4ec47485caec24a3e68dbd444f7bdfb45c88547a1fed605a53cf8d35a8b",
+      "size": 55113
+    },
+    {
+      "id": "vscode.python",
+      "url": "https://github.com/eclipse-theia/vscode-builtin-extensions/releases/download/1.108.2/vscode.python.vsix",
+      "sha256": "e986d6621abbba525f6eb7fc58a8da75bc1cd63b9e19edb0e4e89518b380917e",
+      "size": 17770
+    },
+    {
+      "id": "vscode.rust",
+      "url": "https://github.com/eclipse-theia/vscode-builtin-extensions/releases/download/1.108.2/vscode.rust.vsix",
+      "sha256": "7f8ac38e089b704390cc2ae4fdb58e60716a9969742027dba20437c67a13209d",
+      "size": 7975
+    },
+    {
+      "id": "vscode.cpp",
+      "url": "https://github.com/eclipse-theia/vscode-builtin-extensions/releases/download/1.108.2/vscode.cpp.vsix",
+      "sha256": "bee1b6c0bab4c3cc1442c26c19dba85c1f6c60c56e2305a90b56eb163fdb7a6e",
+      "size": 298442
+    },
+    {
+      "id": "vscode.go",
+      "url": "https://github.com/eclipse-theia/vscode-builtin-extensions/releases/download/1.108.2/vscode.go.vsix",
+      "sha256": "7fc6f9a38d95808ee9102069731dcf70c983f05c5e321ec738acadf888ff4e90",
+      "size": 11080
+    },
+    {
+      "id": "vscode.yaml",
+      "url": "https://github.com/eclipse-theia/vscode-builtin-extensions/releases/download/1.108.2/vscode.yaml.vsix",
+      "sha256": "d187dfe253e01ab812ca343d3c660c9c85a9073b991666af0e915abdac385571",
+      "size": 22980
+    },
+    {
+      "id": "vscode.markdown",
+      "url": "https://github.com/eclipse-theia/vscode-builtin-extensions/releases/download/1.108.2/vscode.markdown.vsix",
+      "sha256": "f1253537b6f33df4e8c685fd864bb7d72b98b63934fb4d395b50358e60b5b328",
+      "size": 11783
+    },
+    {
+      "id": "vscode.shellscript",
+      "url": "https://github.com/eclipse-theia/vscode-builtin-extensions/releases/download/1.108.2/vscode.shellscript.vsix",
+      "sha256": "d0b39991b7f3f298b54b8df489206440a6c8883b122bee902768b68174e64f45",
+      "size": 11318
+    },
+    {
+      "id": "vscode.css",
+      "url": "https://github.com/eclipse-theia/vscode-builtin-extensions/releases/download/1.108.2/vscode.css.vsix",
+      "sha256": "3a1be6b1bbf70090f677d3c560d997f11f8ec57a70ac5189d9cea73dc2359aa6",
+      "size": 19062
+    },
+    {
+      "id": "vscode.html",
+      "url": "https://github.com/eclipse-theia/vscode-builtin-extensions/releases/download/1.108.2/vscode.html.vsix",
+      "sha256": "e98a3af3c3c01fa44b790ec4adb5a16e6bc9e1594bf47b01f668efc1aa083ad8",
+      "size": 18308
+    },
+    {
+      "id": "vscode.npm",
+      "url": "https://github.com/eclipse-theia/vscode-builtin-extensions/releases/download/1.108.2/vscode.npm.vsix",
+      "sha256": "ca4026e93e878c37f9ad1d06432040adb4e365da8f98c620ec87d2f431f33384",
+      "size": 459015
+    },
+    {
+      "id": "vscode.merge-conflict",
+      "url": "https://github.com/eclipse-theia/vscode-builtin-extensions/releases/download/1.108.2/vscode.merge-conflict.vsix",
+      "sha256": "20a8b989b5a809c9b694487cb3eee27d5e33ba7fb766fcb0cc787ea67deceee1",
+      "size": 882203
+    },
+    {
+      "id": "ms-vscode.js-debug",
+      "url": "https://github.com/eclipse-theia/vscode-builtin-extensions/releases/download/1.108.2/ms-vscode.js-debug.vsix",
+      "sha256": "0c45b90342e8aafd4ff2963b4006de64208ca58c2fd01fea7a710fe61dcfd12a",
+      "size": 1314222
+    }
+  ]
+}
