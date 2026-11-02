@@ -170,9 +170,9 @@ setup_git() {
 
 setup_npm() {
 	local ws="$1"
-	# Direct dependencies are pinned in package.json; no lockfile exists yet,
-	# so transitive versions can drift. Install scripts are disabled.
-	(cd "$ws" && npm install --ignore-scripts --no-audit --no-fund --no-package-lock --loglevel=error)
+	# package-lock.json pins every package with an integrity hash.
+	# Install scripts are disabled.
+	(cd "$ws" && npm ci --ignore-scripts --no-audit --no-fund --loglevel=error)
 }
 
 # Prints the --disable-extension arguments of a scenario, one per line.

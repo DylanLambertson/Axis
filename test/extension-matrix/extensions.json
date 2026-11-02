@@ -8,6 +8,10 @@
   "registry": "https://open-vsx.org",
   "retrievedAt": "2026-11-01",
   "platforms": ["darwin-x64", "darwin-arm64", "linux-x64", "win32-x64"],
+  "publisherTypes": {
+    "vendor": "Uploaded by the extension's own publisher or maintainer account.",
+    "open-vsx": "Uploaded by the Open VSX service account (EclipseFdn publish-extensions), not by the vendor."
+  },
   "builtins": [
     {
       "id": "vscode.typescript-language-features",
@@ -40,7 +44,8 @@
         "latestAnyVersion": "2026.4.0",
         "latestAnyIsPreRelease": false,
         "publishedBy": "open-vsx",
-        "trustedPublishing": false
+        "trustedPublishing": false,
+        "publisherType": "open-vsx"
       },
       "engine": "^1.95.0",
       "engineSatisfiedBy1_144_0": true,
@@ -78,7 +83,8 @@
         "latestAnyVersion": "1.40.2",
         "latestAnyIsPreRelease": false,
         "publishedBy": "DetachHead",
-        "trustedPublishing": false
+        "trustedPublishing": false,
+        "publisherType": "vendor"
       },
       "engine": "^1.101.0",
       "engineSatisfiedBy1_144_0": true,
@@ -116,7 +122,8 @@
         "latestAnyVersion": "2026.6.0",
         "latestAnyIsPreRelease": false,
         "publishedBy": "open-vsx",
-        "trustedPublishing": false
+        "trustedPublishing": false,
+        "publisherType": "open-vsx"
       },
       "engine": "^1.92.0",
       "engineSatisfiedBy1_144_0": true,
@@ -178,7 +185,8 @@
         "latestAnyVersion": "1.40.0",
         "latestAnyIsPreRelease": false,
         "publishedBy": "open-vsx",
-        "trustedPublishing": false
+        "trustedPublishing": false,
+        "publisherType": "open-vsx"
       },
       "engine": "^1.110.0-20260204",
       "engineSatisfiedBy1_144_0": true,
@@ -216,7 +224,8 @@
         "latestAnyVersion": "0.4.3103",
         "latestAnyIsPreRelease": true,
         "publishedBy": "rust-lang-owner",
-        "trustedPublishing": false
+        "trustedPublishing": false,
+        "publisherType": "vendor"
       },
       "engine": "^1.93.0",
       "engineSatisfiedBy1_144_0": true,
@@ -278,7 +287,8 @@
         "latestAnyVersion": "1.12.3",
         "latestAnyIsPreRelease": false,
         "publishedBy": "vadimcn",
-        "trustedPublishing": false
+        "trustedPublishing": false,
+        "publisherType": "vendor"
       },
       "engine": "^1.61.0",
       "engineSatisfiedBy1_144_0": true,
@@ -348,7 +358,8 @@
         "latestAnyVersion": "0.58.0",
         "latestAnyIsPreRelease": false,
         "publishedBy": "open-vsx",
-        "trustedPublishing": false
+        "trustedPublishing": false,
+        "publisherType": "open-vsx"
       },
       "engine": "^1.110.0",
       "engineSatisfiedBy1_144_0": true,
@@ -386,7 +397,8 @@
         "latestAnyVersion": "0.6.0",
         "latestAnyIsPreRelease": false,
         "publishedBy": "sam-mccall",
-        "trustedPublishing": false
+        "trustedPublishing": false,
+        "publisherType": "vendor"
       },
       "engine": "^1.75.0",
       "engineSatisfiedBy1_144_0": true,
@@ -424,7 +436,8 @@
         "latestAnyVersion": "3.0.34",
         "latestAnyIsPreRelease": false,
         "publishedBy": "open-vsx",
-        "trustedPublishing": false
+        "trustedPublishing": false,
+        "publisherType": "open-vsx"
       },
       "engine": "^1.90.0",
       "engineSatisfiedBy1_144_0": true,
@@ -462,7 +475,8 @@
         "latestAnyVersion": "12.4.0",
         "latestAnyIsPreRelease": false,
         "publishedBy": "ntotten",
-        "trustedPublishing": false
+        "trustedPublishing": false,
+        "publisherType": "vendor"
       },
       "engine": "^1.101.0",
       "engineSatisfiedBy1_144_0": true,
@@ -500,7 +514,8 @@
         "latestAnyVersion": "6.3.5",
         "latestAnyIsPreRelease": false,
         "publishedBy": "open-vsx",
-        "trustedPublishing": false
+        "trustedPublishing": false,
+        "publisherType": "open-vsx"
       },
       "engine": "^1.43.0",
       "engineSatisfiedBy1_144_0": true,
@@ -538,7 +553,8 @@
         "latestAnyVersion": "2026.10.310508",
         "latestAnyIsPreRelease": true,
         "publishedBy": "eamodio",
-        "trustedPublishing": false
+        "trustedPublishing": false,
+        "publisherType": "vendor"
       },
       "engine": "^1.101.0",
       "engineSatisfiedBy1_144_0": true,
@@ -576,7 +592,8 @@
         "latestAnyVersion": "2.1.2026102308",
         "latestAnyIsPreRelease": true,
         "publishedBy": "rhdevelopers-ci",
-        "trustedPublishing": false
+        "trustedPublishing": false,
+        "publisherType": "vendor"
       },
       "engine": "^1.91.0",
       "engineSatisfiedBy1_144_0": true,
@@ -614,7 +631,8 @@
         "latestAnyVersion": "2025.9.1",
         "latestAnyIsPreRelease": false,
         "publishedBy": "open-vsx",
-        "trustedPublishing": false
+        "trustedPublishing": false,
+        "publisherType": "open-vsx"
       },
       "engine": "^1.105.0",
       "engineSatisfiedBy1_144_0": true,
@@ -652,7 +670,8 @@
         "latestAnyVersion": "1.59.2026103108",
         "latestAnyIsPreRelease": true,
         "publishedBy": "rhdevelopers-ci",
-        "trustedPublishing": false
+        "trustedPublishing": false,
+        "publisherType": "vendor"
       },
       "engine": "^1.77.0",
       "engineSatisfiedBy1_144_0": true,

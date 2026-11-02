@@ -11,9 +11,25 @@
 
 const fs = require('fs');
 const vscode = require('vscode');
-
-const DEFAULT_TIMEOUT_MS = 60000;
-const POLL_INTERVAL_MS = 500;
+const {
+	ok,
+	fail,
+	errorText,
+	withTimeout,
+	poll,
+	timeoutOf,
+	normalizePath,
+	tokenColumn,
+	hoverText,
+	describeDiagnostic,
+	matchesDiagnostic,
+	normalizeText,
+	findExpectedLocation,
+	frameMatches,
+	describeCheck,
+	overallStatus,
+	validateScenario,
+} = require('./logic');
 
 const SEVERITY = {
 	error: vscode.DiagnosticSeverity.Error,
@@ -21,58 +37,6 @@ const SEVERITY = {
 	information: vscode.DiagnosticSeverity.Information,
 	hint: vscode.DiagnosticSeverity.Hint,
 };
-
-function sleep(ms) {
-	return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-function ok(detail) {
-	return { ok: true, detail };
-}
-
-function fail(detail) {
-	return { ok: false, detail };
-}
-
-function errorText(err) {
-	return err && err.stack ? err.stack : String(err);
-}
-
-async function withTimeout(promise, ms, label) {
-	let timer;
-	const timeout = new Promise((_, reject) => {
-		timer = setTimeout(() => reject(new Error(`timed out after ${ms} ms: ${label}`)), ms);
-	});
-	try {
-		return await Promise.race([promise, timeout]);
-	} finally {
-		clearTimeout(timer);
-	}
-}
-
-// Calls fn until it returns { ok: true } or the timeout expires. Errors thrown
-// by fn count as "not yet" so that providers which are still starting can be
-// retried.
-async function poll(fn, ms, label) {
-	const deadline = Date.now() + ms;
-	let last = fail('no attempt completed');
-	while (Date.now() < deadline) {
-		try {
-			last = await fn();
-			if (last.ok) {
-				return last;
-			}
-		} catch (err) {
-			last = fail(`error: ${err && err.message ? err.message : String(err)}`);
-		}
-		await sleep(POLL_INTERVAL_MS);
-	}
-	return fail(`timed out after ${ms} ms waiting for ${label}; last: ${last.detail}`);
-}
-
-function timeoutOf(check) {
-	return typeof check.timeoutMs === 'number' ? check.timeoutMs : DEFAULT_TIMEOUT_MS;
-}
 
 function workspaceFolder() {
 	const folders = vscode.workspace.workspaceFolders;
@@ -84,14 +48,6 @@ function workspaceFolder() {
 
 function fileUri(relativePath) {
 	return vscode.Uri.joinPath(workspaceFolder().uri, ...relativePath.split('/'));
-}
-
-function normalizePath(p) {
-	return p.replace(/\\/g, '/');
-}
-
-function sameFile(uri, relativePath) {
-	return normalizePath(uri.path).endsWith('/' + relativePath);
 }
 
 async function openEditor(relativePath) {
@@ -106,42 +62,11 @@ async function readFixtureText(relativePath) {
 }
 
 function positionOf(document, at) {
-	const text = document.lineAt(at.line).text;
-	const index = text.indexOf(at.token);
-	if (index < 0) {
+	const column = tokenColumn(document.lineAt(at.line).text, at.token);
+	if (column < 0) {
 		throw new Error(`token '${at.token}' not found on line ${at.line} of ${document.uri.path}`);
 	}
-	return new vscode.Position(at.line, index + Math.floor(at.token.length / 2));
-}
-
-function hoverText(hovers) {
-	const parts = [];
-	for (const hover of hovers || []) {
-		for (const content of hover.contents || []) {
-			if (typeof content === 'string') {
-				parts.push(content);
-			} else if (content && typeof content.value === 'string') {
-				parts.push(content.value);
-			}
-		}
-	}
-	return parts.join('\n');
-}
-
-function diagnosticCode(diagnostic) {
-	const code = diagnostic.code;
-	if (code === undefined || code === null) {
-		return '';
-	}
-	return typeof code === 'object' ? String(code.value) : String(code);
-}
-
-function describeDiagnostic(d) {
-	return `[${d.source || '?'}:${diagnosticCode(d)}] line ${d.range.start.line}: ${d.message.split('\n')[0]}`;
-}
-
-function normalizeText(text) {
-	return text.replace(/\r\n/g, '\n');
+	return new vscode.Position(at.line, column);
 }
 
 const CHECKS = {
@@ -161,12 +86,7 @@ const CHECKS = {
 		const minCount = typeof check.minCount === 'number' ? check.minCount : 1;
 		return poll(() => {
 			const all = vscode.languages.getDiagnostics(document.uri);
-			const matching = all.filter(d =>
-				(!check.severity || d.severity === SEVERITY[check.severity]) &&
-				(check.line === undefined || d.range.start.line === check.line) &&
-				(!check.sourceAnyOf || check.sourceAnyOf.includes(d.source)) &&
-				(!check.codeAnyOf || check.codeAnyOf.includes(diagnosticCode(d))) &&
-				(!check.messageContains || d.message.includes(check.messageContains)));
+			const matching = all.filter(d => matchesDiagnostic(d, check, SEVERITY));
 			const summary = all.slice(0, 5).map(describeDiagnostic).join(' | ') || 'none';
 			return matching.length >= minCount
 				? ok(`${matching.length} matching of ${all.length}: ${matching.slice(0, 3).map(describeDiagnostic).join(' | ')}`)
@@ -191,12 +111,7 @@ const CHECKS = {
 		const position = positionOf(document, check.at);
 		return poll(async () => {
 			const results = await vscode.commands.executeCommand('vscode.executeDefinitionProvider', document.uri, position);
-			const locations = (results || []).map(r => ({
-				uri: r.targetUri || r.uri,
-				range: r.targetSelectionRange || r.targetRange || r.range,
-			}));
-			const hit = locations.find(l => check.expectAnyOf.some(e => sameFile(l.uri, e.file) && l.range.start.line === e.line));
-			const seen = locations.map(l => `${l.uri.path}:${l.range.start.line}`).join(', ') || 'none';
+			const { hit, seen } = findExpectedLocation(results, check.expectAnyOf);
 			return hit ? ok(`definition at ${hit.uri.path}:${hit.range.start.line}`) : fail(`definitions: ${seen}`);
 		}, timeoutOf(check), `definition in ${check.file}`);
 	},
@@ -244,8 +159,7 @@ const CHECKS = {
 				const trace = await event.session.customRequest('stackTrace', { threadId: event.body.threadId, startFrame: 0, levels: 1 });
 				const top = trace && trace.stackFrames && trace.stackFrames[0];
 				const sourcePath = top && top.source && top.source.path ? normalizePath(top.source.path) : '';
-				// DAP lines are 1-based for the VS Code client.
-				if (top && top.line - 1 === check.line && sourcePath.endsWith('/' + check.file)) {
+				if (frameMatches(top, check.file, check.line)) {
 					return ok(`stopped (${event.body.reason}) at ${check.file}:${top.line} in ${event.session.type}`);
 				}
 				return fail(`stopped (${event.body.reason}) at ${sourcePath || '?'}:${top ? top.line : '?'}`);
@@ -307,11 +221,6 @@ const CHECKS = {
 	},
 };
 
-function describeCheck(check) {
-	const target = check.extension || check.file || check.command || check.value || '';
-	return `${check.type}${target ? ' ' + target : ''}`;
-}
-
 function extensionReport(ids) {
 	return ids.map(id => {
 		const extension = vscode.extensions.getExtension(id);
@@ -340,8 +249,9 @@ function requiredEnv(name) {
 exports.run = async function run() {
 	const scenario = JSON.parse(fs.readFileSync(requiredEnv('AXIS_MATRIX_SCENARIO_FILE'), 'utf8'));
 	const resultPath = requiredEnv('AXIS_MATRIX_RESULT');
-	if (!scenario || !Array.isArray(scenario.checks)) {
-		throw new Error('scenario file has no checks array');
+	const problems = validateScenario(scenario);
+	if (problems.length > 0) {
+		throw new Error(`invalid scenario file:\n${problems.join('\n')}`);
 	}
 
 	const result = {
@@ -382,7 +292,7 @@ exports.run = async function run() {
 	result.extensions = extensionReport(scenario.extensions || []);
 	result.finishedAt = new Date().toISOString();
 	const failed = result.checks.filter(c => c.status !== 'passed').length;
-	result.status = failed === 0 ? 'passed' : 'failed';
+	result.status = overallStatus(result.checks);
 	fs.writeFileSync(resultPath, JSON.stringify(result, null, 2) + '\n');
 
 	if (failed > 0) {
