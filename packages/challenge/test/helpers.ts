@@ -41,7 +41,7 @@ export interface IssuedChallenge {
 }
 
 export function issue(m: ChallengeManager, over: Partial<Parameters<ChallengeManager["issue"]>[0]> = {}): IssuedChallenge {
-  const challenge = m.issue({ contract: CONTRACT, op: "worktree.discard", target: "workspace:ws-1", args: ARGS, contentDigest: CONTENT, actor: "user", connectionId: CONN, windowId: WIN, ...over });
+  const challenge = m.issue({ contract: CONTRACT, version: 1, method: "worktree.discard", target: "workspace:ws-1", args: ARGS, contentDigest: CONTENT, actor: "user", connectionId: CONN, windowId: WIN, ...over });
   return { challenge, nativeProof: m.takeNativeProof(challenge.challengeId) };
 }
 
@@ -62,7 +62,7 @@ export const resolveArgs = (i: IssuedChallenge, over: Record<string, unknown> = 
   return [{ actor, windowId }, { challengeId: i.challenge.challengeId, decision: "approve", digest: i.challenge.digest, ...params }] as unknown as Parameters<ChallengeManager["resolve"]>;
 };
 
-export const run = { contract: CONTRACT, op: "worktree.discard", target: "workspace:ws-1", args: ARGS, currentContentDigest: CONTENT };
+export const run = { contract: CONTRACT, version: 1, method: "worktree.discard", target: "workspace:ws-1", args: ARGS, currentContentDigest: CONTENT };
 export const internal = (executed: boolean) => (e: unknown) =>
   e instanceof ChallengeError && e.code === "E_INTERNAL" && e.detail["executed"] === executed;
 export const code = (c: string) => (e: unknown) => e instanceof ChallengeError && e.code === c;

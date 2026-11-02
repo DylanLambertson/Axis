@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { challengeSchema, errorSchema } from "@axis/protocol";
-import { ChallengeError, canonicalJson, requestDigest, safeEqual, type DigestInput } from "../src/index.js";
+import { ChallengeError, challengeDigest, requestDigest, safeEqual, type ChallengeDigestInput, type RequestDigestInput } from "../src/index.js";
 import { ARGS, CALLER, CHANGED, CONN, CONTENT, CONTRACT, WIN, approve, code, internal, issue, resolveArgs, run, setup, sha } from "./helpers.js";
 
 test("issue returns a protocol-valid challenge with a 256-bit id bound to op, target and content", () => {
@@ -10,7 +10,7 @@ test("issue returns a protocol-valid challenge with a 256-bit id bound to op, ta
   const issued = issue(manager);
   assert.doesNotThrow(() => challengeSchema.parse(issued.challenge));
   assert.equal(Buffer.from(issued.challenge.challengeId, "base64url").length, 32);
-  assert.equal(issued.challenge.digest, digest({}));
+  assert.equal(issued.challenge.digest, digest());
   assert.equal(issued.challenge.nativeConfirmationRequired, true);
   assert.equal(issued.challenge.tier, 4);
   assert.equal(issued.challenge.expiresAt, 1_000_000 + 60_000);
@@ -19,17 +19,29 @@ test("issue returns a protocol-valid challenge with a 256-bit id bound to op, ta
   assert.notEqual(issue(manager).challenge.challengeId, issued.challenge.challengeId);
 });
 
-const digest = (over: Partial<DigestInput>) =>
-  requestDigest({ contract: CONTRACT, op: "worktree.discard", target: "workspace:ws-1", canonicalArgs: canonicalJson(ARGS), contentDigest: CONTENT, ...over });
+const req = (over: Partial<RequestDigestInput> = {}) => requestDigest({ contract: CONTRACT, version: 1, method: "worktree.discard", payload: ARGS, ...over });
+const digest = (over: Partial<ChallengeDigestInput> = {}) =>
+  challengeDigest({ requestDigest: req(), target: "workspace:ws-1", contentDigest: CONTENT, ...over });
 
-test("the digest changes with any of contract, op, target, arguments or content", () => {
-  const base = digest({});
-  assert.notEqual(base, digest({ contract: "axis.terminals/1" }));
-  assert.notEqual(base, digest({ op: "worktree.remove" }));
+test("the digest changes with any of contract, version, method, arguments, target or content", () => {
+  const base = digest();
+  assert.notEqual(req(), req({ contract: "axis.terminals/1" }));
+  assert.notEqual(req(), req({ version: 2 }));
+  assert.notEqual(req(), req({ method: "worktree.remove" }));
+  assert.notEqual(req(), req({ payload: { ...ARGS, deleteBranch: true } }));
   assert.notEqual(base, digest({ target: "workspace:ws-2" }));
-  assert.notEqual(base, digest({ canonicalArgs: canonicalJson({ ...ARGS, deleteBranch: true }) }));
   assert.notEqual(base, digest({ contentDigest: CHANGED }));
-  assert.notEqual(digest({ op: "a", target: "b" }), digest({ op: 'a","b', target: "" }), "no delimiter ambiguity");
+  assert.notEqual(req({ method: "a", contract: "b" }), req({ method: 'a","b', contract: "" }), "no delimiter ambiguity");
+});
+
+test("requestDigest matches its fixed vectors (shared spec: axis.request/1)", () => {
+  // sha256 of the exact JSON text below; recomputed independently of the implementation.
+  const text = '["axis.request/1","axis.worktrees/1",1,"remove","{\\"deleteBranch\\":false,\\"id\\":\\"ws-1\\"}"]';
+  assert.equal(req({ method: "remove" }), sha(text));
+  assert.equal(
+    requestDigest({ contract: "c", version: 1, method: "m", payload: { b: [1, { z: null, y: true }], a: "x" } }),
+    sha('["axis.request/1","c",1,"m","{\\"a\\":\\"x\\",\\"b\\":[1,{\\"y\\":true,\\"z\\":null}]}"]'),
+  );
 });
 
 test("full flow: issue, resolve, native confirm, execute runs the action once and audits every phase", async () => {
@@ -44,7 +56,7 @@ test("full flow: issue, resolve, native confirm, execute runs the action once an
   let ran = 0;
   const out = await manager.consume(issued.challenge.challengeId, CALLER, run, (c) => {
     ran++;
-    assert.deepEqual(c, { op: "worktree.discard", target: "workspace:ws-1", requester: "user" });
+    assert.deepEqual(c, { method: "worktree.discard", target: "workspace:ws-1", requester: "user" });
     return "done";
   });
   assert.equal(out, "done");
@@ -151,7 +163,7 @@ test("a stale or swapped digest echo is refused and burns the challenge", () => 
 
 test("a token for one operation or target does not authorise another, and the attempt burns it", async () => {
   const { manager } = setup();
-  for (const wrong of [{ op: "worktree.remove" }, { target: "workspace:ws-2" }]) {
+  for (const wrong of [{ method: "worktree.remove" }, { target: "workspace:ws-2" }]) {
     const token = approve(manager, issue(manager));
     let ran = 0;
     await assert.rejects(manager.consume(token, CALLER, { ...run, ...wrong }, () => void ran++), code("E_POLICY_DENIED"));
@@ -308,14 +320,14 @@ test("input validation: unknown keys, bad digest, bad actor, tier out of range; 
     { actor: "root" },
     { tier: 2 },
     { target: "a\nb" },
-    { op: "Discard" },
+    { method: "Discard" },
     { extra: 1 },
   ];
   for (const b of bad) {
-    assert.throws(() => manager.issue({ contract: CONTRACT, op: "worktree.discard", target: "t", args: ARGS, contentDigest: CONTENT, actor: "user", connectionId: CONN, windowId: WIN, ...b } as never), code("E_INVALID_ARGUMENT"));
+    assert.throws(() => manager.issue({ contract: CONTRACT, version: 1, method: "worktree.discard", target: "t", args: ARGS, contentDigest: CONTENT, actor: "user", connectionId: CONN, windowId: WIN, ...b } as never), code("E_INVALID_ARGUMENT"));
   }
   try {
-    manager.issue({ contract: CONTRACT, op: "worktree.discard", target: "t", args: ARGS, contentDigest: "SECRET-VALUE", actor: "user", connectionId: CONN, windowId: WIN });
+    manager.issue({ contract: CONTRACT, version: 1, method: "worktree.discard", target: "t", args: ARGS, contentDigest: "SECRET-VALUE", actor: "user", connectionId: CONN, windowId: WIN });
     assert.fail("expected a throw");
   } catch (e) {
     assert.ok(e instanceof ChallengeError);

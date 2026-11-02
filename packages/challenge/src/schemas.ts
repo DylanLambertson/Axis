@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { boundedJsonSchema, challengeIdSchema, requestDigestSchema, resolveChallengeRequestSchema } from "@axis/protocol";
 import { z } from "zod";
-import { canonicalJson } from "./crypto.js";
+import { canonicalJson, requestDigest } from "./crypto.js";
 import { ChallengeError } from "./errors.js";
 
 const ACTOR = /^(?:user|daemon|agent:[A-Za-z0-9._/-]{1,96})$/;
@@ -49,9 +49,33 @@ export const callerSchema = z.object({ actor: actorSchema, connectionId: windowS
 /** The attested identity of whoever retries the request: the connection's actor and connection id, set by the daemon's transport, never read from the payload. */
 export type Caller = z.infer<typeof callerSchema>;
 
+const versionSchema = z.number().int().min(1).max(9999);
+const METHOD = OP;
+
+/** The request being approved. Give `args` (the digest is computed), a precomputed `requestDigest`, or both (they must agree). */
+const requestFields = {
+  contract: z.string().max(64).regex(CONTRACT),
+  version: versionSchema,
+  method: z.string().regex(METHOD),
+  /** The request params, minus `approval`. */
+  args: argsSchema.optional(),
+  /** The daemon's precomputed digest of the request (see `requestDigest`). */
+  requestDigest: requestDigestSchema.optional(),
+};
+
+type RequestFields = { contract: string; version: number; method: string; args?: unknown; requestDigest?: string | undefined };
+
+/** The digest of the request, from args and/or the precomputed value; null if neither is given or they disagree. */
+export function digestOf(r: RequestFields): string | null {
+  const computed = r.args === undefined ? undefined : requestDigest({ contract: r.contract, version: r.version, method: r.method, payload: r.args });
+  if (computed === undefined) return r.requestDigest ?? null;
+  return r.requestDigest === undefined || r.requestDigest === computed ? computed : null;
+}
+const requestRefine = (r: RequestFields): boolean => digestOf(r) !== null;
+
 export const issueSchema = z
   .object({
-    op: z.string().regex(OP),
+    ...requestFields,
     /**
      * A canonical daemon id (for example `workspace:<id>`), never a path or an
      * alias. It is compared as an opaque exact string, so two spellings of one
@@ -67,10 +91,6 @@ export const issueSchema = z
     /** The window that will show the dialog; only the user in this window can resolve. */
     windowId: windowSchema,
     tier: z.number().int().min(3).max(5).default(4),
-    /** The contract of the request being approved, for example `axis.worktrees/1`. Bound into the digest. */
-    contract: z.string().max(64).regex(CONTRACT),
-    /** The request params, minus `approval`. Bound into the digest. */
-    args: argsSchema,
     /**
      * One line the user sees. The daemon must build it from fields it knows are
      * safe to show (annotated `path` or `public`), never from requester input
@@ -80,7 +100,8 @@ export const issueSchema = z
      */
     targetSummary: z.string().max(512).refine(displaySafe).optional(),
   })
-  .strict();
+  .strict()
+  .refine(requestRefine, { message: "args or a matching requestDigest is required", path: ["args"] });
 
 /** Who is resolving, as attested by the daemon's transport. Never part of the renderer's payload (ADR 0003). */
 export const resolverSchema = z.object({ actor: actorSchema, windowId: windowSchema }).strict();
@@ -102,15 +123,13 @@ export const nativeSchema = z
 
 export const executeContextSchema = z
   .object({
-    contract: z.string().max(64).regex(CONTRACT),
-    op: z.string().regex(OP),
+    ...requestFields,
     target: z.string().min(1).max(1024).refine(displaySafe),
-    /** The params of the request being executed now, minus `approval`; must equal what was approved. */
-    args: argsSchema,
     /** Digest of the same content, recomputed from the current state just now. */
     currentContentDigest: requestDigestSchema,
   })
-  .strict();
+  .strict()
+  .refine(requestRefine, { message: "args or a matching requestDigest is required", path: ["args"] });
 
 /**
  * The whole target when it fits the schema's 512 characters; otherwise the head

@@ -1,10 +1,11 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { challengeIdSchema, challengeSchema, type Challenge } from "@axis/protocol";
 import { z } from "zod";
-import { canonicalJson, randomToken, requestDigest, safeEqual, sha256Hex } from "./crypto.js";
+import { challengeDigest, randomToken, safeEqual, sha256Hex } from "./crypto.js";
 import { ChallengeError } from "./errors.js";
 import {
   defaultSummary,
+  digestOf,
   callerSchema,
   executeContextSchema,
   invalid,
@@ -29,7 +30,7 @@ export interface ResolveResult {
 
 /** What `consume` hands to the action: the verified facts, nothing secret. */
 export interface ConfirmedAction {
-  readonly op: string;
+  readonly method: string;
   readonly target: string;
   readonly requester: ActorId;
 }
@@ -65,9 +66,11 @@ interface Record_ {
   readonly connectionId: string;
   readonly windowId: string;
   readonly contract: string;
-  readonly op: string;
+  readonly method: string;
   readonly target: string;
-  readonly canonicalArgs: string;
+  /** Digest of the approved request: contract, version, method and args. */
+  readonly requestDigest: string;
+  /** Digest shown on the challenge: request digest, target and content digest. */
   readonly digest: string;
   readonly tier: number;
   readonly native: boolean;
@@ -164,17 +167,18 @@ export class ChallengeManager {
       throw new ChallengeError("E_INTERNAL", "The daemon clock is not usable");
     }
     const native = p.tier >= 4;
-    const canonicalArgs = canonicalJson(p.args);
+    const reqDigest = digestOf(p);
+    if (reqDigest === null) throw new ChallengeError("E_INVALID_ARGUMENT", "Invalid challenge request: args");
     const record: Record_ = {
       ref,
       requester: p.actor as ActorId,
       connectionId: p.connectionId,
       windowId: p.windowId,
       contract: p.contract,
-      op: p.op,
+      method: p.method,
       target: p.target,
-      canonicalArgs,
-      digest: requestDigest({ contract: p.contract, op: p.op, target: p.target, canonicalArgs, contentDigest: p.contentDigest }),
+      requestDigest: reqDigest,
+      digest: challengeDigest({ requestDigest: reqDigest, target: p.target, contentDigest: p.contentDigest }),
       tier: p.tier,
       native,
       expiresAt: mono + this.#ttl,
@@ -191,7 +195,7 @@ export class ChallengeManager {
       challengeId: id,
       digest: record.digest,
       contract: p.contract,
-      method: p.op,
+      method: p.method,
       tier: p.tier,
       targetSummary: p.targetSummary ?? defaultSummary(p.target),
       nativeConfirmationRequired: native,
@@ -297,7 +301,7 @@ export class ChallengeManager {
    *
    *   manager.consume(request.approval.challengeId,
    *     { actor: conn.actor, connectionId: conn.id },   // from the transport, never the payload
-   *     { contract, op, target, args: paramsWithoutApproval, currentContentDigest },
+   *     { contract, version, method, args: paramsWithoutApproval, target, currentContentDigest },
    *     (confirmed) => doTheDestructiveThing(confirmed));
    *
    * The challenge id is not a bearer credential: the manager looks the record
@@ -330,6 +334,7 @@ export class ChallengeManager {
     if (!parsed.success) throw invalid(parsed.error, "execute context");
     if (typeof action !== "function") throw new ChallengeError("E_INVALID_ARGUMENT", "Invalid action");
     const c = parsed.data;
+    const reqDigest = digestOf(c) as string; // non-null: the schema refines it
     const rec = this.#byRef.get(sha256Hex(id.data));
     // Unknown id and wrong caller are the same refusal, so a probing caller learns nothing about which ids exist.
     // A refusal here burns nothing: a bystander must not be able to kill someone else's approval.
@@ -351,12 +356,11 @@ export class ChallengeManager {
       this.#end(rec, "EXPIRED", "daemon", "execute", "token_expired", "tier4.execute");
       throw new ChallengeError("E_CONFLICT", "The confirmation expired; ask again");
     }
-    const canonicalArgs = canonicalJson(c.args);
-    if (c.contract !== rec.contract || c.op !== rec.op || c.target !== rec.target || canonicalArgs !== rec.canonicalArgs) {
+    if (c.target !== rec.target || reqDigest !== rec.requestDigest) {
       this.#end(rec, "BURNED", "daemon", "execute", "request_mismatch", "tier4.execute");
       throw new ChallengeError("E_POLICY_DENIED", "The confirmation does not cover this request");
     }
-    const current = requestDigest({ contract: c.contract, op: c.op, target: c.target, canonicalArgs, contentDigest: c.currentContentDigest });
+    const current = challengeDigest({ requestDigest: reqDigest, target: c.target, contentDigest: c.currentContentDigest });
     if (!safeEqual(current, rec.digest)) {
       this.#end(rec, "BURNED", "daemon", "execute", "content_changed", "tier4.execute");
       throw new ChallengeError("E_CONFLICT", "The content changed after it was confirmed; review and confirm again");
@@ -367,7 +371,7 @@ export class ChallengeManager {
     this.#emit("daemon", "tier4.execute", rec, "success", { phase: "authorised", approvedBy: "user" });
     let result: T;
     try {
-      result = await action({ op: rec.op, target: rec.target, requester: rec.requester });
+      result = await action({ method: rec.method, target: rec.target, requester: rec.requester });
     } catch (error) {
       // Nothing the action throws crosses this boundary: it may carry paths or secrets and is not a protocol code.
       const errorName = error instanceof Error ? error.name.slice(0, 64) : "unknown";
@@ -458,7 +462,7 @@ export class ChallengeManager {
     // `ref` is a hash prefix of the id: enough to correlate, useless to resolve.
     try {
       // The target is audited as a hash (ADR 0003 D5): raw targets may become paths. The same target always hashes the same, so events still correlate.
-      this.#audit.append({ actor, action, target: `sha256:${sha256Hex(rec.target)}`, outcome, payload: { ...payload, op: rec.op, ref: rec.ref.slice(0, 12) } });
+      this.#audit.append({ actor, action, target: `sha256:${sha256Hex(rec.target)}`, outcome, payload: { ...payload, method: rec.method, ref: rec.ref.slice(0, 12) } });
     } catch {
       // The sink's own error may name paths or hosts, and is not a protocol code.
       const detail = action === "tier4.execute" ? { executed: false } : {};

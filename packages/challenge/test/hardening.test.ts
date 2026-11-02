@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
 import { challengeSchema, errorSchema } from "@axis/protocol";
-import { ChallengeError, ChallengeManager, canonicalJson, type ChallengeAuditEvent } from "../src/index.js";
+import { ChallengeError, ChallengeManager, canonicalJson, requestDigest, type ChallengeAuditEvent } from "../src/index.js";
 import { ARGS, CALLER, CONN, CONTENT, CONTRACT, WIN, approve, code, internal, issue, resolveArgs, run, setup } from "./helpers.js";
 
 test("S6: a wall-clock rollback does not extend a confirmation past its TTL", async () => {
@@ -218,7 +218,7 @@ test("B1: args and contract are validated: bounded plain objects only, contract 
   for (const bad of [{ args: big }, { args: [1] }, { args: null }, { args: "s" }, { args: { n: Number.NaN } }, { contract: "nope" }, { contract: "" }]) {
     assert.throws(() => issue(manager, bad as never), code("E_INVALID_ARGUMENT"));
   }
-  assert.throws(() => manager.issue({ op: "worktree.discard", target: "t", contentDigest: CONTENT, actor: "user", windowId: WIN } as never), code("E_INVALID_ARGUMENT"), "contract and args are required");
+  assert.throws(() => manager.issue({ method: "worktree.discard", target: "t", contentDigest: CONTENT, actor: "user", windowId: WIN } as never), code("E_INVALID_ARGUMENT"), "contract and args are required");
   assert.equal(manager.outstanding(), 0);
 });
 
@@ -311,7 +311,7 @@ test("N2: the attested caller is a separate argument; a payload that carries ide
 // N3: the native proof never travels in the object the renderer sees.
 test("N3: issue returns only the wire challenge; the native proof comes out once, through takeNativeProof", () => {
   const { manager } = setup();
-  const challenge = manager.issue({ contract: CONTRACT, op: "worktree.discard", target: "workspace:ws-1", args: ARGS, contentDigest: CONTENT, actor: "user", connectionId: CONN, windowId: WIN });
+  const challenge = manager.issue({ contract: CONTRACT, version: 1, method: "worktree.discard", target: "workspace:ws-1", args: ARGS, contentDigest: CONTENT, actor: "user", connectionId: CONN, windowId: WIN });
   assert.deepEqual(Object.keys(challenge).sort(), Object.keys(challengeSchema.shape).sort());
   const proof = manager.takeNativeProof(challenge.challengeId);
   assert.ok(proof);
@@ -392,5 +392,29 @@ test("every error any entry point raises parses with errorSchema and uses a prot
     assert.ok(e instanceof ChallengeError, String(e));
     assert.notEqual(e.code, "E_APPROVAL_REQUIRED");
     assert.doesNotThrow(() => errorSchema.parse(e.toWire("corr-1")));
+  }
+});
+
+// B1 follow-up: the daemon may pass a precomputed request digest instead of (or with) the args.
+test("B1: a precomputed requestDigest can replace args, and must agree when both are given", async () => {
+  const pre = requestDigest({ contract: CONTRACT, version: 1, method: "worktree.discard", payload: ARGS });
+  const { manager } = setup();
+  const digestOnly = (({ args: _a, ...rest }) => rest)({ ...run, requestDigest: pre });
+  const id = approve(manager, issue(manager, { args: undefined, requestDigest: pre } as never));
+  assert.equal(await manager.consume(id, CALLER, digestOnly as never, () => "ok"), "ok");
+
+  assert.throws(() => issue(manager, { requestDigest: "0".repeat(64) }), code("E_INVALID_ARGUMENT"), "args and digest disagree");
+  assert.throws(() => issue(manager, { args: undefined } as never), code("E_INVALID_ARGUMENT"), "neither given");
+
+  const id2 = approve(manager, issue(manager));
+  await assert.rejects(manager.consume(id2, CALLER, { ...run, args: undefined, requestDigest: requestDigest({ contract: CONTRACT, version: 1, method: "worktree.discard", payload: { ...ARGS, deleteBranch: true } }) } as never, () => 1), code("E_POLICY_DENIED"));
+});
+
+test("B1: a different version or method is refused at consume and burns the approval", async () => {
+  for (const v of [{ version: 2 }, { method: "worktree.remove" }]) {
+    const { manager } = setup();
+    const id = approve(manager, issue(manager));
+    await assert.rejects(manager.consume(id, CALLER, { ...run, ...v }, () => 1), code("E_POLICY_DENIED"));
+    await assert.rejects(manager.consume(id, CALLER, run, () => 1), code("E_CONFLICT"));
   }
 });

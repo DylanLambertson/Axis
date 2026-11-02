@@ -35,22 +35,37 @@ export function canonicalJson(value: unknown): string {
   return JSON.stringify(value);
 }
 
-export interface DigestInput {
+export interface RequestDigestInput {
   readonly contract: string;
-  readonly op: string;
+  readonly version: number;
+  readonly method: string;
+  /** The request params without the `approval` field. */
+  readonly payload: unknown;
+}
+
+/**
+ * The canonical request digest shared with the daemon (APR-1, G-24):
+ * `sha256hex(JSON.stringify(["axis.request/1", contract, version, method, canonical(payload)]))`,
+ * where `canonical` sorts object keys recursively and allows JSON primitives only.
+ * TODO: dedupe into @axis/protocol once the daemon's copy and the shared vectors land.
+ */
+export function requestDigest(d: RequestDigestInput): string {
+  return sha256Hex(JSON.stringify(["axis.request/1", d.contract, d.version, d.method, canonicalJson(d.payload)]));
+}
+
+export interface ChallengeDigestInput {
+  /** `requestDigest` of the request being approved. */
+  readonly requestDigest: string;
   readonly target: string;
-  /** Output of `canonicalJson` for the request arguments (without `approval`). */
-  readonly canonicalArgs: string;
   /** SHA-256 hex of what the operation will destroy. */
   readonly contentDigest: string;
 }
 
 /**
- * The digest a challenge is bound to: contract, operation, target, the
- * canonical arguments and the digest of the content that will be destroyed
- * (APR-1, G-24). A JSON array keeps the fields unambiguous (no delimiter
- * injection) and the leading version tag allows a later format.
+ * The digest shown on the challenge and echoed by the renderer: the request
+ * digest, the target and the content digest (G-24: a request, target or
+ * content altered after approval is refused).
  */
-export function requestDigest(d: DigestInput): string {
-  return sha256Hex(JSON.stringify([2, d.contract, d.op, d.target, d.canonicalArgs, d.contentDigest]));
+export function challengeDigest(d: ChallengeDigestInput): string {
+  return sha256Hex(JSON.stringify([3, d.requestDigest, d.target, d.contentDigest]));
 }
