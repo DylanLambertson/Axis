@@ -25,6 +25,7 @@ TOOLS_DIR="${AXIS_CODE_OSS_TOOLS_DIR:-$AXIS_ROOT/.tools}"
 COMMIT_RE='^[0-9a-f]{40}$'
 VERSION_RE='^[0-9]+\.[0-9]+\.[0-9]+$'
 TAG_RE='^[A-Za-z0-9._-]+$'
+SHA256_RE='^[0-9a-f]{64}$'
 PATCH_RE='^[0-9]{4}-[a-z0-9][a-z0-9.-]*\.patch$'
 PATCH_BLOCKS_HELP='0001-0999 shell, 1000-1499 guardrails, 1500-1999 copilot, 2000-2999 security'
 
@@ -160,11 +161,38 @@ node_dist_name() {
 	printf 'node-v%s-%s-%s\n' "$NODE_VERSION" "$os" "$arch"
 }
 
-# Downloads the official Node.js tarball into $TOOLS_DIR, verified against
-# the release's SHASUMS256.txt. Network: nodejs.org only.
+# pinned_node_sha256 NAME: prints the SHA-256 that the manifest pins for
+# NAME.tar.gz (NAME is node-v<version>-<os>-<arch>) under the key
+# "node-sha256-<os>-<arch>". Fails closed when the pin is missing or malformed.
+pinned_node_sha256() {
+	local key="node-sha256-${1#node-v"$NODE_VERSION"-}" value
+	grep -q "\"$key\"" "$MANIFEST" ||
+		die "no pinned SHA-256 for $1.tar.gz in $MANIFEST (key \"$key\"); refusing an unpinned toolchain"
+	value="$(manifest_get "$key")"
+	[[ "$value" =~ $SHA256_RE ]] || die "manifest key \"$key\" is not a lowercase 64-character SHA-256"
+	printf '%s\n' "$value"
+}
+
+# verify_node_tarball NAME TARBALL SHASUMS: fails unless TARBALL matches the
+# SHA-256 pinned in the manifest and the release's SHASUMS256.txt lists the
+# same value (a cross-check that catches a wrong pin).
+verify_node_tarball() {
+	local pinned published actual
+	pinned="$(pinned_node_sha256 "$1")" || exit 1
+	actual="$(sha256_of "$2")"
+	[ "$actual" = "$pinned" ] || die "checksum mismatch for $1.tar.gz: manifest pins $pinned, file is $actual"
+	published="$(awk -v f="$1.tar.gz" '$2 == f { print $1 }' "$3")"
+	[ "$published" = "$pinned" ] ||
+		die "SHASUMS256.txt lists '$published' for $1.tar.gz, but the manifest pins $pinned"
+}
+
+# Downloads the official Node.js tarball into $TOOLS_DIR. The tarball must
+# match the SHA-256 pinned in the manifest, cross-checked against the release's
+# SHASUMS256.txt. Network: nodejs.org only.
 download_node() {
-	local name base stage expected actual
+	local name base stage
 	name="$(node_dist_name)"
+	pinned_node_sha256 "$name" >/dev/null
 	base="https://nodejs.org/dist/v$NODE_VERSION"
 	mkdir -p "$TOOLS_DIR"
 	stage="$(mktemp -d "$TOOLS_DIR/.download.XXXXXX")"
@@ -174,13 +202,11 @@ download_node() {
 		rm -rf "$stage"
 		die "could not download Node.js $NODE_VERSION from $base"
 	fi
-	expected="$(awk -v f="$name.tar.gz" '$2 == f { print $1 }' "$stage/SHASUMS256.txt")"
-	actual="$(sha256_of "$stage/$name.tar.gz")"
-	if ! [[ "$expected" =~ ^[0-9a-f]{64}$ ]] || [ "$actual" != "$expected" ]; then
+	if ! (verify_node_tarball "$name" "$stage/$name.tar.gz" "$stage/SHASUMS256.txt"); then
 		rm -rf "$stage"
-		die "checksum mismatch for $name.tar.gz (expected '$expected', got '$actual')"
+		exit 1
 	fi
-	log "SHA-256 verified against SHASUMS256.txt: $actual"
+	log "SHA-256 matches the manifest pin and SHASUMS256.txt: $(pinned_node_sha256 "$name")"
 	mkdir "$stage/x"
 	tar -xzf "$stage/$name.tar.gz" -C "$stage/x"
 	[ -x "$stage/x/$name/bin/node" ] || {

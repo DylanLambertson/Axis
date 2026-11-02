@@ -13,7 +13,7 @@
 
 | Path | Tracked | Purpose |
 |---|---|---|
-| `code-oss/upstream.json` | yes | Pin: `repository`, `tag`, `commit`, `node`. |
+| `code-oss/upstream.json` | yes | Pin: `repository`, `tag`, `commit`, `node`, and the Node tarball SHA-256s `node-sha256-{darwin-x64,darwin-arm64,linux-x64}`. |
 | `code-oss/patches/NNNN-short-name.patch` | yes | Patch series, applied in lexical order. Blocks: `0001`–`0999` shell, `1000`–`1499` rebrand and licensing guardrails, `1500`–`1999` Copilot and agent-host removal, `2000`–`2999` security hardening. See its `README.md`. Empty. |
 | `code-oss/removals.txt` | yes | Upstream paths deleted after the patches (ADR 0002 decision 6). Comments only. |
 | `code-oss/replace/**` | yes | Files that replace existing upstream files (icons, assets). Empty. |
@@ -53,7 +53,7 @@ scripts/code-oss/test.sh       # offline tests of fetch/apply/footprint against 
 |---|---|
 | `fetch.sh` | `git init` plus `git fetch --depth 1 origin <commit> refs/tags/<tag>`. Checks that `HEAD` equals the pinned commit and that the tag peels to it. If the pin changes, it moves the tree, refusing when there are foreign local modifications unless `--force`. Network: GitHub only. |
 | `apply.sh` | Validates all inputs first: patch names and blocks, duplicate numbers, unsafe paths (`..`, absolute, `.git`), symlinks, non-executable hooks. Then `git reset --hard` and `git clean -fd` (ignored files kept) and the steps in order. Each step fails loudly, naming the patch, path or hook. Removals must exist and may not be ignored build output. Replacements must exist at the pinned commit. Overlay files must not exist, and their parents may not be upstream symlinks. |
-| `build.sh` | Node lookup: `$NODE24_BIN`, then `/usr/local/opt/node@24/bin`, then the official `node-v24.22.1-<os>-<arch>.tar.gz` from nodejs.org, SHA-256 checked against that release's `SHASUMS256.txt` and unpacked into `.tools/`. Requires major 24 and at least the manifest version, and npm < 13 (upstream rule). Refuses whitespace in the tree or tools path. Runs upstream steps only inside `vendor/code-oss`. |
+| `build.sh` | Node lookup: `$NODE24_BIN`, then `/usr/local/opt/node@24/bin`, then the official `node-v24.22.1-<os>-<arch>.tar.gz` from nodejs.org, unpacked into `.tools/` only if its SHA-256 equals the value pinned in `upstream.json` and the release's `SHASUMS256.txt` lists the same value. A platform without a pin fails closed before any download. Requires major 24 and at least the manifest version, and npm < 13 (upstream rule). Refuses whitespace in the tree or tools path. Runs upstream steps only inside `vendor/code-oss`. |
 | `run.sh` | `./scripts/code.sh --user-data-dir … --extensions-dir … --shared-data-dir …`. The third flag is needed: without it Code OSS writes `~/.vscode-oss-shared` (problem 3). |
 | `footprint.sh` | Per block (shell, guardrails, copilot, security), from `git apply --numstat`: patches, upstream files touched, lines added and deleted in upstream files, added `--- Start/End Axis ---` marker lines, and new files. A `shell-c2` row counts the shell block as ADR 0002 criterion 2 does, without `product.json` and `resources/**`. Also rows for removals and replacements (`git diff --numstat` on those paths) and the net total (`git diff --numstat` against the pin, which includes hook edits). Refuses a stale stamp or a tree edited after apply. |
 
@@ -97,7 +97,7 @@ Network access: the Axis scripts contact only GitHub (`git fetch`) and nodejs.or
 | `build.sh`, attempt 2 (relocated to a path without spaces) | passed | All four steps exit 0; `compile` reports 0 errors |
 | Launch: workbench window opens | passed | Window "hello.ts — sample-ws" with explorer and editor; screenshot taken (not committed) |
 | Standard start reached (upstream definition) | passed | All 7 runs report `standard_start` |
-| `test.sh` (107 checks, macOS bash 3.2) | passed | `107 passed, 0 failed` |
+| `test.sh` (113 checks, macOS bash 3.2) | passed | `113 passed, 0 failed` |
 | Linux x64 build in Docker | failed | Compile OOM-killed in a 7.75 GiB VM; `npm ci` passed (766 s); §7 |
 | shellcheck 0.11.0 on `scripts/code-oss/*.sh` | passed | No findings |
 | CI job `Code OSS scripts` on GitHub | not run | Runs on the first push or PR |
@@ -208,9 +208,9 @@ The three unidentified Node utility processes are among the shared process, pty 
 - **Development build only.** `scripts/code.sh` runs Electron on the unbundled `out/` directory. No packaging (`vscode-<platform>-<arch>[-min]`), signing or notarization; startup and memory numbers are not representative of a release build.
 - **Copilot and Microsoft branding still present** (see the note at the top).
 - **Single machine, small samples:** 7 startup runs, 1 memory sample, 1 successful build; other workloads ran concurrently.
-- **`SHASUMS256.txt` is not signature-checked.** The Node tarball is verified against `SHASUMS256.txt` fetched over HTTPS from the same origin; the GPG signature (`SHASUMS256.txt.sig`) is not checked. A stronger option is to pin the tarball SHA-256 in `upstream.json`.
+- **Node tarball pins.** The Node tarball must match a SHA-256 pinned in `upstream.json`. The darwin-x64 and linux-x64 pins match the tarballs downloaded and verified during these builds; the darwin-arm64 pin was taken from the release's `SHASUMS256.txt` (fetched over HTTPS) and has not been downloaded here. The GPG signature on `SHASUMS256.txt` is not checked. linux-arm64 is not pinned, so it fails closed. An already-unpacked `.tools/` toolchain is not re-verified on later runs.
 - **`npm ci` runs every dependency's install scripts as the current user.** This is required by upstream: native addons, Electron headers, built-in extensions. Treat the tree as untrusted code; CI builds (M8) should use a disposable runner or container.
-- **Untested paths:** darwin-arm64 and linux-arm64 tarball selection (implemented, not run); `NODE24_BIN` and Homebrew `node@24` lookup (implemented and unit-tested for the version rule only).
+- **Untested paths:** darwin-arm64 tarball download (pinned, not run); `NODE24_BIN` and Homebrew `node@24` lookup (implemented and unit-tested for the version rule only).
 - **The default `vendor/` location is unusable in this machine's worktrees** because of the space in the path; contributors there must set the two relocation variables.
 - **Removal manifest semantics are minimal:** exact paths only, no globs; a removed path cannot also be replaced.
 - **Hooks have no sandbox** and run with the user's environment. They get Node only if `build.sh` (or `NODE24_BIN`/Homebrew) already provided one; `apply.sh` never downloads it.

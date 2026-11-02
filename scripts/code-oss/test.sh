@@ -178,6 +178,46 @@ check "version_satisfies accepts 24.22.1, 24.22.2, 24.23.0 for >= 24.22.1" \
 check "version_satisfies rejects 24.22.0, 24.9.9, 25.0.0, 23.99.99, junk" \
 	versions - 24.22.0 - 24.9.9 - 25.0.0 - 23.99.99 - v24.22.1 - 24.22
 
+# --- Pinned Node tarball checksums -------------------------------------------
+
+new_root nodepin
+printf 'fake node tarball\n' >"$tmp/fake.tar.gz"
+# shellcheck source=scripts/code-oss/lib.sh
+fake_sha="$(. "$here/lib.sh" && sha256_of "$tmp/fake.tar.gz")"
+other_sha="$(printf '%064d' 0)"
+# shellcheck source=scripts/code-oss/lib.sh
+dist="$(. "$here/lib.sh" && NODE_VERSION=24.22.1 node_dist_name)"
+# pin_manifest PIN: writes a manifest pinning PIN (or nothing, if empty) for this OS/CPU.
+pin_manifest() {
+	{
+		printf '{\n  "repository": "file://%s",\n  "tag": "v1.0.0",\n  "commit": "%s",\n  "node": "24.22.1"' "$up" "$c1"
+		[ -z "$1" ] || printf ',\n  "node-sha256-%s": "%s"' "${dist#node-v24.22.1-}" "$1"
+		printf '\n}\n'
+	} >"$root/code-oss/upstream.json"
+}
+# verify SHASUMS_VALUE: runs verify_node_tarball on the fake tarball.
+verify() {
+	printf '%s  %s.tar.gz\n' "$1" "$dist" >"$tmp/SHASUMS256.txt"
+	(
+		# shellcheck source=scripts/code-oss/lib.sh
+		. "$here/lib.sh"
+		load_manifest
+		verify_node_tarball "$dist" "$tmp/fake.tar.gz" "$tmp/SHASUMS256.txt"
+	)
+}
+pin_manifest "$fake_sha"
+expect_success "a tarball matching the pin and SHASUMS256.txt is accepted" verify "$fake_sha"
+pin_manifest "$other_sha"
+expect_failure "a tarball that does not match the pin is rejected" "checksum mismatch" verify "$other_sha"
+pin_manifest "$fake_sha"
+expect_failure "a pin that SHASUMS256.txt contradicts is rejected" "SHASUMS256.txt lists" verify "$other_sha"
+pin_manifest ""
+expect_failure "a missing pin fails closed" "refusing an unpinned toolchain" verify "$fake_sha"
+pin_manifest "ABC123"
+expect_failure "a malformed pin fails closed" "not a lowercase 64-character SHA-256" verify "$fake_sha"
+check "the repository manifest pins darwin-x64, darwin-arm64 and linux-x64" \
+	test "$(grep -cE '"node-sha256-(darwin-x64|darwin-arm64|linux-x64)": "[0-9a-f]{64}"' "$here/../../code-oss/upstream.json")" = 3
+
 # --- Manifest validation -----------------------------------------------------
 
 new_root badmanifest

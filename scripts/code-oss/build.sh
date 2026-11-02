@@ -8,7 +8,8 @@
 #   1. $NODE24_BIN (directory containing node, or the node binary itself)
 #   2. /usr/local/opt/node@24/bin
 #   3. the official nodejs.org tarball for this OS/CPU, unpacked into .tools/
-#      after verifying it against the release's SHASUMS256.txt
+#      only if it matches the SHA-256 pinned in code-oss/upstream.json (and the
+#      release's SHASUMS256.txt agrees); an unpinned OS/CPU fails closed
 #
 # The tree and .tools/ paths must not contain whitespace (node-gyp limitation);
 # use AXIS_CODE_OSS_VENDOR_DIR / AXIS_CODE_OSS_TOOLS_DIR to relocate them.
