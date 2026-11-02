@@ -1,28 +1,9 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 
-/**
- * Closed set of structured error codes (ADR 0003, "Structured errors"). This
- * package and `@axis/journal` use a subset; the set is mirrored here rather
- * than invented so the bridge can pass errors through unchanged.
- */
-export const ERROR_CODES = [
-  "E_INVALID_ARGUMENT",
-  "E_UNAUTHENTICATED",
-  "E_POLICY_DENIED",
-  "E_APPROVAL_REQUIRED",
-  "E_NOT_FOUND",
-  "E_CONFLICT",
-  "E_IDEMPOTENCY_CONFLICT",
-  "E_TIMEOUT",
-  "E_CANCELLED",
-  "E_BACKPRESSURE",
-  "E_UNAVAILABLE",
-  "E_METHOD_NOT_FOUND",
-  "E_VERSION_UNSUPPORTED",
-  "E_INTERNAL",
-] as const;
+import { ERROR_CODES, makeError, type AxisError as WireError, type ErrorCode } from "@axis/protocol";
 
-export type ErrorCode = (typeof ERROR_CODES)[number];
+// One source of truth: the closed set lives in @axis/protocol (ADR 0003 D3).
+export { ERROR_CODES, type ErrorCode };
 
 /**
  * A structured error. `message` must be user-safe: callers never put secrets,
@@ -42,5 +23,12 @@ export class AxisError extends Error {
     this.name = "AxisError";
     this.code = code;
     this.detail = detail;
+  }
+
+  /** The wire shape (`@axis/protocol` `AxisError`) for the bridge. */
+  toWire(correlationId: string): WireError {
+    return Object.keys(this.detail).length === 0
+      ? makeError(this.code, this.message, correlationId)
+      : makeError(this.code, this.message, correlationId, { ...this.detail });
   }
 }
