@@ -210,6 +210,8 @@ Ran the **pre-pin** script revision.
 
 **Result: failed.** The compile step was OOM-killed in the Docker Desktop VM (7.75 GiB); `npm ci` passed (766 s). A Linux build is deferred to the M8 GitHub Actions Linux runner. Alternatively, raise the Docker Desktop memory limit to at least 12 GiB and rerun.
 
+**M8 update:** standard private-repo GitHub runners are also too small, so PR CI runs only the script and unit tests. Full Linux builds use the manual `code-oss-build.yml` workflow on a larger or ephemeral self-hosted runner, or local Docker with at least 12 GiB of memory. See `docs/ci.md`.
+
 - **Setup.**
   - Docker Desktop 29.9.2 on the same Mac; the VM had 16 CPUs and 7.749 GiB RAM, left at the owner's settings.
   - Image: `ubuntu:24.04` (`sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852`) plus the upstream CI build packages (`build-essential pkg-config libx11-dev libx11-xcb-dev libxkbfile-dev libnotify-bin libkrb5-dev`), Python 3, Git and runtime libraries for a headless `xvfb` launch.

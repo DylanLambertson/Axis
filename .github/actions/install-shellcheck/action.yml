@@ -1,0 +1,32 @@
+name: Install shellcheck
+description: >-
+  Downloads the pinned ShellCheck release for Linux x86_64, verifies its
+  SHA-256 and exposes the binary path. Used by every CI job that lints shell.
+outputs:
+  path:
+    description: Absolute path of the verified shellcheck binary.
+    value: ${{ steps.install.outputs.path }}
+runs:
+  using: composite
+  steps:
+    - name: Install shellcheck (pinned, checksum-verified)
+      id: install
+      shell: bash
+      env:
+        SHELLCHECK_VERSION: 0.11.0
+        # SHA-256 of shellcheck-v0.11.0.linux.x86_64.tar.xz, as listed in the upstream release asset digest.
+        SHELLCHECK_SHA256: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
+      run: |
+        set -euo pipefail
+        [ "$RUNNER_OS" = Linux ] && [ "$RUNNER_ARCH" = X64 ] || {
+          echo "::error::install-shellcheck supports Linux x64 runners only"
+          exit 1
+        }
+        archive="shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
+        curl -fsSL --retry 3 -o "$RUNNER_TEMP/$archive" \
+          "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/${archive}"
+        echo "${SHELLCHECK_SHA256}  $RUNNER_TEMP/$archive" | sha256sum -c -
+        tar -xJf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP"
+        bin="$RUNNER_TEMP/shellcheck-v${SHELLCHECK_VERSION}/shellcheck"
+        "$bin" --version
+        echo "path=$bin" >>"$GITHUB_OUTPUT"

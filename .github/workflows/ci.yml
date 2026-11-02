@@ -9,8 +9,11 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  # PR runs share a group per ref, so a newer push cancels the older run.
+  # Push runs get a group per commit SHA, so they never queue behind or cancel
+  # each other, and every commit on main keeps its own result.
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   secret-scan:
@@ -48,31 +51,135 @@ jobs:
         run: git diff --check "$BASE_SHA" HEAD
 
   code-oss-scripts:
-    name: Code OSS scripts
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    env:
-      SHELLCHECK_VERSION: 0.11.0
-      # SHA-256 of shellcheck-v0.11.0.linux.x86_64.tar.xz, as listed in the upstream release asset digest.
-      SHELLCHECK_SHA256: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
+    name: Code OSS scripts (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # macos-15 is the standard arm64 runner. Its /bin/bash is 3.2, the same
+        # as developer Macs, so it catches bash 4+ constructs in the scripts.
+        os: [ubuntu-24.04, macos-15]
     steps:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - name: Install shellcheck (pinned, checksum-verified)
-        run: |
-          set -euo pipefail
-          archive="shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
-          curl -fsSL --retry 3 -o "$RUNNER_TEMP/$archive" \
-            "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/${archive}"
-          echo "${SHELLCHECK_SHA256}  $RUNNER_TEMP/$archive" | sha256sum -c -
-          tar -xJf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP"
-          "$RUNNER_TEMP/shellcheck-v${SHELLCHECK_VERSION}/shellcheck" --version
+      - name: Install shellcheck
+        id: shellcheck
+        if: runner.os == 'Linux'
+        uses: ./.github/actions/install-shellcheck
 
       - name: Lint Code OSS scripts
-        run: '"$RUNNER_TEMP/shellcheck-v${SHELLCHECK_VERSION}/shellcheck" -x scripts/code-oss/*.sh'
+        if: runner.os == 'Linux'
+        env:
+          SHELLCHECK: ${{ steps.shellcheck.outputs.path }}
+        run: '"$SHELLCHECK" -x scripts/code-oss/*.sh'
+
+      - name: Use the system bash 3.2 for every script (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          # The scripts use "#!/usr/bin/env bash", which resolves through PATH.
+          # The shim guarantees /bin/bash 3.2 for test.sh and every child script,
+          # whatever bash a future runner image puts on PATH.
+          shim="$RUNNER_TEMP/bash32"
+          mkdir -p "$shim"
+          ln -s /bin/bash "$shim/bash"
+          echo "$shim" >>"$GITHUB_PATH"
+          PATH="$shim:$PATH" bash -c '[ "${BASH_VERSINFO[0]}" -eq 3 ] && echo "bash $BASH_VERSION"'
 
       - name: Test fetch and apply against a local fake upstream
-        run: scripts/code-oss/test.sh
+        run: |
+          set -euo pipefail
+          if [ "$RUNNER_OS" = macOS ]; then
+            bash -c '[ "${BASH_VERSINFO[0]}" -eq 3 ]' || { echo "::error::bash on PATH is not 3.2"; exit 1; }
+          fi
+          bash scripts/code-oss/test.sh
+
+  extension-matrix-tests:
+    name: Extension matrix unit tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Read the pinned Node version from the manifest
+        id: manifest
+        run: |
+          set -euo pipefail
+          node_version="$(jq -er '.node' code-oss/upstream.json)"
+          [[ "$node_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "::error file=code-oss/upstream.json::node is not MAJOR.MINOR.PATCH: $node_version"
+            exit 1
+          }
+          echo "node=$node_version" >>"$GITHUB_OUTPUT"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ steps.manifest.outputs.node }}
+          package-manager-cache: false
+
+      - name: Check the Node version
+        env:
+          EXPECTED: v${{ steps.manifest.outputs.node }}
+        run: |
+          set -euo pipefail
+          actual="$(node --version)"
+          [ "$actual" = "$EXPECTED" ] || { echo "::error::node is $actual, manifest pins $EXPECTED"; exit 1; }
+          echo "node $actual, jq $(jq --version)"
+
+      - name: Install shellcheck
+        id: shellcheck
+        uses: ./.github/actions/install-shellcheck
+
+      - name: Lint extension matrix scripts
+        env:
+          SHELLCHECK: ${{ steps.shellcheck.outputs.path }}
+        run: '"$SHELLCHECK" -x test/extension-matrix/*.sh'
+
+      - name: Syntax-check the probe
+        run: node --check test/extension-matrix/probe/runner.js && node --check test/extension-matrix/probe/logic.js
+
+      - name: Run the unit and consistency tests
+        run: node --test 'test/extension-matrix/tests/*.test.js'
+
+  workflow-lint:
+    name: Workflow lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      ACTIONLINT_VERSION: 1.7.12
+      # SHA-256 of actionlint_1.7.12_linux_amd64.tar.gz from the release checksums file
+      # (matches the release asset digest).
+      ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install shellcheck
+        id: shellcheck
+        uses: ./.github/actions/install-shellcheck
+
+      - name: Install actionlint (pinned, checksum-verified)
+        run: |
+          set -euo pipefail
+          archive="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/$archive" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${archive}"
+          echo "${ACTIONLINT_SHA256}  $RUNNER_TEMP/$archive" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP" actionlint
+          "$RUNNER_TEMP/actionlint" -version
+
+      - name: Lint workflows
+        env:
+          SHELLCHECK: ${{ steps.shellcheck.outputs.path }}
+        # The pinned shellcheck checks every run: block; pyflakes is not used.
+        run: '"$RUNNER_TEMP/actionlint" -color -shellcheck "$SHELLCHECK" -pyflakes='
