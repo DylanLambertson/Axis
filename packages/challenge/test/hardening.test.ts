@@ -327,3 +327,18 @@ test("N3: a tier with no native step has no proof to take", () => {
   const challenge = issue(manager, { tier: 3 }).challenge;
   assert.equal(manager.takeNativeProof(challenge.challengeId), null);
 });
+
+// N4: a per-window bound.
+test("N4: one window's backlog cannot use every slot; other windows keep theirs", () => {
+  const events: ChallengeAuditEvent[] = [];
+  const manager = new ChallengeManager({ audit: { append: (e) => void events.push(e) }, maxOutstandingPerWindow: 3, maxOutstandingPerActor: 100 });
+  const mk = (n: number, windowId: string) => issue(manager, { actor: `agent:run-${n}`, windowId });
+  [1, 2, 3].forEach((n) => mk(n, "window-1"));
+  assert.throws(() => mk(4, "window-1"), code("E_BACKPRESSURE"));
+  assert.doesNotThrow(() => mk(5, "window-2"));
+  assert.equal(manager.outstanding(undefined, "window-1"), 3);
+  const first = issue(manager, { actor: "agent:run-6", windowId: "window-2" });
+  manager.resolve(...resolveArgs(first, { windowId: "window-2", decision: "deny" }));
+  assert.doesNotThrow(() => mk(7, "window-2"), "a resolved challenge frees its slot");
+  assert.throws(() => new ChallengeManager({ audit: { append: () => undefined }, maxOutstandingPerWindow: 0 }), code("E_INVALID_ARGUMENT"));
+});

@@ -46,6 +46,13 @@ export interface ChallengeManagerOptions {
   readonly confirmationTtlMs?: number;
   /** Open challenges per requesting actor. Default 8. */
   readonly maxOutstandingPerActor?: number;
+  /**
+   * Open challenges shown in one window. Default 16. Keeps one window's backlog
+   * from using every slot. Finished records linger for twice the challenge TTL
+   * at whatever rate the user resolves them, so the per-window rate limit
+   * (ADR 0003) is what bounds churn; this only bounds what is open at once.
+   */
+  readonly maxOutstandingPerWindow?: number;
   /** Open challenges overall. Default 128. */
   readonly maxOutstandingTotal?: number;
 }
@@ -111,6 +118,7 @@ export class ChallengeManager {
   readonly #ttl: number;
   readonly #confirmTtl: number;
   readonly #perActor: number;
+  readonly #perWindow: number;
   readonly #total: number;
   readonly #byRef = new Map<string, Record_>();
 
@@ -121,14 +129,17 @@ export class ChallengeManager {
     this.#ttl = limit(options.challengeTtlMs, 60_000, MAX_TTL, "challengeTtlMs");
     this.#confirmTtl = limit(options.confirmationTtlMs, 30_000, MAX_TTL, "confirmationTtlMs");
     this.#perActor = limit(options.maxOutstandingPerActor, 8, 1024, "maxOutstandingPerActor");
+    this.#perWindow = limit(options.maxOutstandingPerWindow, 16, 1024, "maxOutstandingPerWindow");
     this.#total = limit(options.maxOutstandingTotal, 128, 65_536, "maxOutstandingTotal");
   }
 
-  /** Open (unexpired, unresolved) challenges, optionally for one requester. */
-  outstanding(actor?: string): number {
+  /** Open (unexpired, unresolved) challenges, optionally for one requester and/or one window. */
+  outstanding(actor?: string, windowId?: string): number {
     this.#sweep();
     let n = 0;
-    for (const r of this.#byRef.values()) if (OPEN.has(r.state) && (actor === undefined || r.requester === actor)) n++;
+    for (const r of this.#byRef.values()) {
+      if (OPEN.has(r.state) && (actor === undefined || r.requester === actor) && (windowId === undefined || r.windowId === windowId)) n++;
+    }
     return n;
   }
 
@@ -142,7 +153,7 @@ export class ChallengeManager {
     if (!parsed.success) throw invalid(parsed.error, "challenge request");
     const p = parsed.data;
     this.#sweep();
-    if (this.outstanding(p.actor) >= this.#perActor || this.outstanding() >= this.#total) {
+    if (this.outstanding(p.actor) >= this.#perActor || this.outstanding(undefined, p.windowId) >= this.#perWindow || this.outstanding() >= this.#total) {
       throw new ChallengeError("E_BACKPRESSURE", "Too many confirmations are waiting; resolve or wait for them to expire");
     }
     const id = randomToken();
