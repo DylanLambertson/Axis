@@ -15,6 +15,8 @@ export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null
 export GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@example.invalid
 export GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@example.invalid
 unset NODE24_BIN AXIS_CODE_OSS_VENDOR_DIR AXIS_CODE_OSS_TOOLS_DIR
+# Test mode: lets the manifest point at the file:// fake upstream.
+export AXIS_CODE_OSS_TEST=1
 
 passed=0
 failed=0
@@ -81,6 +83,7 @@ printf 'copilot b\n' >"$up/extensions/copilot/b.txt"
 printf 'upstream icon\n' >"$up/resources/icon.txt"
 printf 'agent host\n' >"$up/src/agent.txt"
 printf '{ "nameShort": "Code - OSS" }\n' >"$up/product.json"
+printf '24.22.1\n' >"$up/.nvmrc"
 printf 'lock v1\n' >"$up/package-lock.json"
 printf 'ignored/\n' >"$up/.gitignore"
 printf 'line 1\nline 2\nline 3\nline 4\nline 5\n' >"$up/src/app.txt"
@@ -159,25 +162,6 @@ head_of() { git -C "$tree" rev-parse HEAD; }
 # --- Helpers -----------------------------------------------------------------
 
 new_root lib
-# Runs version_satisfies from lib.sh in a subshell. "+" expects success, "-" failure.
-versions() {
-	(
-		# shellcheck source=scripts/code-oss/lib.sh
-		. "$here/lib.sh"
-		while [ "$#" -gt 0 ]; do
-			if [ "$1" = + ]; then
-				version_satisfies "$2" 24.22.1 || exit 1
-			else
-				! version_satisfies "$2" 24.22.1 || exit 1
-			fi
-			shift 2
-		done
-	)
-}
-check "version_satisfies accepts 24.22.1, 24.22.2, 24.23.0 for >= 24.22.1" \
-	versions + 24.22.1 + 24.22.2 + 24.23.0 + 24.100.0
-check "version_satisfies rejects 24.22.0, 24.9.9, 25.0.0, 23.99.99, junk" \
-	versions - 24.22.0 - 24.9.9 - 25.0.0 - 23.99.99 - v24.22.1 - 24.22
 
 # --- Pinned Node tarball checksums -------------------------------------------
 
@@ -363,6 +347,37 @@ expect_success "apply still accepts names that only resemble .git (.github, git)
 printf 'x\n' >"$root/code-oss/overlay/src/caf$(printf '\303\251').txt"
 expect_failure "apply refuses non-ASCII overlay paths" "printable ASCII" apply
 rm -rf "$root/code-oss/overlay/src"
+
+# --- Manifest and toolchain rules ------------------------------------------------
+
+new_root rules
+write_manifest "$c1" v1.0.0
+expect_failure "file:// upstreams are refused outside test mode" "accepted only by test.sh" env AXIS_CODE_OSS_TEST= "$here/fetch.sh"
+sed 's/"node": "24.22.1"/"node": "24.23.0"/' "$root/code-oss/upstream.json" >"$tmp/m.json"
+mv "$tmp/m.json" "$root/code-oss/upstream.json"
+expect_failure "fetch refuses a manifest node version that differs from upstream .nvmrc" "does not match upstream .nvmrc '24.22.1'" fetch
+write_manifest "$c1" v1.0.0
+mkdir -p "$tmp/node-exact" "$tmp/node-newer"
+printf '#!/bin/sh\necho v24.22.1\n' >"$tmp/node-exact/node"
+printf '#!/bin/sh\necho v24.22.2\n' >"$tmp/node-newer/node"
+chmod +x "$tmp/node-exact/node" "$tmp/node-newer/node"
+resolve_with() {
+	(
+		# shellcheck source=scripts/code-oss/lib.sh
+		. "$here/lib.sh"
+		load_manifest
+		NODE24_BIN="$1" resolve_node
+		echo "resolved $NODE_BIN_DIR"
+	)
+}
+expect_success "NODE24_BIN with exactly the pinned version is accepted" resolve_with "$tmp/node-exact"
+check "NODE24_BIN use warns that the toolchain is not checksum-verified" output_has "not verified"
+expect_failure "NODE24_BIN with another version is refused" "pins Node 24.22.1 exactly" resolve_with "$tmp/node-newer"
+expect_failure "without NODE24_BIN and no pinned tarball, resolution fails without downloading" \
+	"pinned Node.js 24.22.1 not found" resolve_with ""
+(cd "$tmp" && AXIS_CODE_OSS_VENDOR_DIR=rel-vendor "$here/fetch.sh") >"$tmp/out" 2>&1 && status=0 || status=$?
+check "a relative AXIS_CODE_OSS_VENDOR_DIR is resolved against the current directory" \
+	test "$status" -eq 0 -a "$(git -C "$tmp/rel-vendor/code-oss" rev-parse HEAD 2>/dev/null)" = "$c1"
 
 # --- Paths with whitespace and relocated vendor directory ----------------------
 

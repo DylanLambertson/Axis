@@ -4,6 +4,8 @@
 # commit is left alone. Refuses to discard local modifications unless --force;
 # changes made by apply.sh (matching its stamp) are not treated as local edits.
 #
+# Also checks that the manifest's "node" equals upstream's .nvmrc.
+#
 # Usage: scripts/code-oss/fetch.sh [--force]
 set -euo pipefail
 
@@ -15,7 +17,7 @@ for arg in "$@"; do
 	case "$arg" in
 	--force) force=1 ;;
 	-h | --help)
-		sed -n '2,7p' "$0"
+		sed -n '2,9p' "$0"
 		exit 0
 		;;
 	*) die "unknown argument: $arg" ;;
@@ -78,4 +80,10 @@ fi
 
 head="$(tree_head)"
 [ "$head" = "$UPSTREAM_COMMIT" ] || die "HEAD is '$head', expected $UPSTREAM_COMMIT"
+
+# The manifest's Node version must be the one upstream builds with.
+nvmrc="$(tree_git show "$UPSTREAM_COMMIT:.nvmrc" 2>/dev/null | tr -d ' \t\r\n' || true)"
+nvmrc="${nvmrc#v}"
+[ "$nvmrc" = "$NODE_VERSION" ] ||
+	die "manifest node $NODE_VERSION does not match upstream .nvmrc '$nvmrc' at $UPSTREAM_TAG; update code-oss/upstream.json (version and tarball pins)"
 log "vendor/code-oss HEAD = $head ($UPSTREAM_TAG) in ${SECONDS}s"

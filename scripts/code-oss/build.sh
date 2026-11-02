@@ -4,26 +4,28 @@
 # scripts/code.sh would otherwise fetch at first launch. Each step is timed and
 # appended to vendor/logs/build-times.tsv.
 #
-# Node.js must be major 24 and >= the manifest "node" version. Lookup order:
-#   1. $NODE24_BIN (directory containing node, or the node binary itself)
-#   2. /usr/local/opt/node@24/bin
-#   3. the official nodejs.org tarball for this OS/CPU, unpacked into .tools/
-#      only if it matches the SHA-256 pinned in code-oss/upstream.json (and the
-#      release's SHASUMS256.txt agrees); an unpinned OS/CPU fails closed
+# Node.js must be exactly the manifest "node" version. By default it is the
+# official nodejs.org tarball for this OS/CPU, unpacked into .tools/ only if it
+# matches the SHA-256 pinned in code-oss/upstream.json (and the release's
+# SHASUMS256.txt agrees); an unpinned OS/CPU fails closed. $NODE24_BIN (the
+# directory containing node, or the binary) overrides it with a warning, since
+# it is not checksum-verified. --toolchain-only stops after resolving Node.
 #
 # The tree and .tools/ paths must not contain whitespace (node-gyp limitation);
 # use AXIS_CODE_OSS_VENDOR_DIR / AXIS_CODE_OSS_TOOLS_DIR to relocate them.
 #
-# Usage: scripts/code-oss/build.sh [--skip-install]
+# Usage: scripts/code-oss/build.sh [--skip-install | --toolchain-only]
 set -euo pipefail
 
 # shellcheck source=scripts/code-oss/lib.sh
 . "$(dirname "$0")/lib.sh"
 
 skip_install=0
+toolchain_only=0
 for arg in "$@"; do
 	case "$arg" in
 	--skip-install) skip_install=1 ;;
+	--toolchain-only) toolchain_only=1 ;;
 	-h | --help)
 		sed -n '2,17p' "$0"
 		exit 0
@@ -43,6 +45,10 @@ npm_v="$(npm --version)"
 log "Using node $node_v and npm $npm_v from $NODE_BIN_DIR"
 npm_major="${npm_v%%.*}"
 [ "$npm_major" -lt 13 ] || die "Code OSS requires npm < 13; found $npm_v"
+if [ "$toolchain_only" = 1 ]; then
+	log "Toolchain ready (--toolchain-only)"
+	exit 0
+fi
 
 mkdir -p "$VENDOR_DIR/logs"
 times="$VENDOR_DIR/logs/build-times.tsv"

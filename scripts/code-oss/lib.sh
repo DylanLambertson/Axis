@@ -6,21 +6,30 @@
 # the root; test.sh uses it to point the scripts at a temporary fake repository.
 # AXIS_CODE_OSS_VENDOR_DIR and AXIS_CODE_OSS_TOOLS_DIR move vendor/ and .tools/
 # elsewhere, which build.sh needs when the repository path contains whitespace.
+# Relative values are taken relative to the current directory. AXIS_CODE_OSS_TEST=1
+# (set by test.sh) additionally allows file:// upstream repositories.
 # Written for bash 3.2 (the macOS system bash): no associative arrays, no mapfile.
 
 export LC_ALL=C
 
-AXIS_ROOT="${AXIS_CODE_OSS_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)}"
+abs_path() {
+	case "$1" in
+	/*) printf '%s\n' "$1" ;;
+	*) printf '%s/%s\n' "$PWD" "$1" ;;
+	esac
+}
+
+AXIS_ROOT="$(abs_path "${AXIS_CODE_OSS_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)}")"
 MANIFEST="$AXIS_ROOT/code-oss/upstream.json"
 PATCHES_DIR="$AXIS_ROOT/code-oss/patches"
 OVERLAY_DIR="$AXIS_ROOT/code-oss/overlay"
 REPLACE_DIR="$AXIS_ROOT/code-oss/replace"
 REMOVALS_FILE="$AXIS_ROOT/code-oss/removals.txt"
 HOOKS_DIR="$AXIS_ROOT/code-oss/hooks/post-apply.d"
-VENDOR_DIR="${AXIS_CODE_OSS_VENDOR_DIR:-$AXIS_ROOT/vendor}"
+VENDOR_DIR="$(abs_path "${AXIS_CODE_OSS_VENDOR_DIR:-$AXIS_ROOT/vendor}")"
 TREE_DIR="$VENDOR_DIR/code-oss"
 STAMP_FILE="$VENDOR_DIR/code-oss.applied"
-TOOLS_DIR="${AXIS_CODE_OSS_TOOLS_DIR:-$AXIS_ROOT/.tools}"
+TOOLS_DIR="$(abs_path "${AXIS_CODE_OSS_TOOLS_DIR:-$AXIS_ROOT/.tools}")"
 
 COMMIT_RE='^[0-9a-f]{40}$'
 VERSION_RE='^[0-9]+\.[0-9]+\.[0-9]+$'
@@ -78,8 +87,9 @@ load_manifest() {
 	UPSTREAM_COMMIT="$(manifest_get commit)"
 	NODE_VERSION="$(manifest_get node)"
 	case "$UPSTREAM_REPO" in
-	https://* | file://*) ;;
-	*) die "manifest repository must be an https:// (or file:// for tests) URL: $UPSTREAM_REPO" ;;
+	https://*) ;;
+	file://*) [ "${AXIS_CODE_OSS_TEST:-}" = 1 ] || die "file:// repositories are accepted only by test.sh (AXIS_CODE_OSS_TEST=1): $UPSTREAM_REPO" ;;
+	*) die "manifest repository must be an https:// URL: $UPSTREAM_REPO" ;;
 	esac
 	[[ "$UPSTREAM_TAG" =~ $TAG_RE ]] || die "manifest tag is not a plain tag name: $UPSTREAM_TAG"
 	[[ "$UPSTREAM_COMMIT" =~ $COMMIT_RE ]] || die "manifest commit is not a full 40-character SHA-1: $UPSTREAM_COMMIT"
@@ -189,18 +199,6 @@ sha256_of() {
 	fi
 }
 
-# version_satisfies ACTUAL REQUIRED: same major, and ACTUAL >= REQUIRED.
-version_satisfies() {
-	local a_major a_minor a_patch r_major r_minor r_patch
-	[[ "$1" =~ $VERSION_RE ]] || return 1
-	[[ "$2" =~ $VERSION_RE ]] || return 1
-	IFS=. read -r a_major a_minor a_patch <<<"$1"
-	IFS=. read -r r_major r_minor r_patch <<<"$2"
-	[ "$a_major" -eq "$r_major" ] || return 1
-	[ "$a_minor" -gt "$r_minor" ] && return 0
-	[ "$a_minor" -eq "$r_minor" ] && [ "$a_patch" -ge "$r_patch" ]
-}
-
 node_version_in() {
 	local v
 	v="$("$1/node" --version 2>/dev/null)" || return 1
@@ -279,37 +277,29 @@ download_node() {
 	rm -rf "$stage"
 }
 
-# Sets NODE_BIN_DIR to a directory holding a node that satisfies the manifest.
-# Order: $NODE24_BIN, /usr/local/opt/node@24/bin, then the tarball in .tools/.
-# With "download", a missing tarball is fetched; otherwise it is an error.
+# Sets NODE_BIN_DIR to a directory holding exactly the manifest's Node version.
+# Default: the checksum-pinned nodejs.org tarball in .tools/ (with "download",
+# a missing tarball is fetched; otherwise that is an error). $NODE24_BIN (the
+# directory holding node, or the binary) overrides it; it must report the same
+# version, but its contents are not checksum-verified, so a warning is printed.
 resolve_node() {
 	local mode="${1:-}" dir v tools_dir
 	if [ -n "${NODE24_BIN:-}" ]; then
 		dir="$NODE24_BIN"
 		[ -f "$dir" ] && dir="$(dirname "$dir")"
 		v="$(node_version_in "$dir")" || die "NODE24_BIN is set but $dir/node does not run"
-		version_satisfies "$v" "$NODE_VERSION" ||
-			die "NODE24_BIN node is $v; Code OSS needs Node major ${NODE_VERSION%%.*} and >= $NODE_VERSION"
+		[ "$v" = "$NODE_VERSION" ] || die "NODE24_BIN node is $v; the manifest pins Node $NODE_VERSION exactly"
+		log "warning: using NODE24_BIN ($dir/node $v) instead of the checksum-pinned tarball; the toolchain is not verified"
 		NODE_BIN_DIR="$dir"
 		return 0
 	fi
-	dir=/usr/local/opt/node@24/bin
-	if [ -x "$dir/node" ]; then
-		v="$(node_version_in "$dir" || true)"
-		if version_satisfies "$v" "$NODE_VERSION"; then
-			NODE_BIN_DIR="$dir"
-			return 0
-		fi
-		log "Skipping $dir/node ($v): need major ${NODE_VERSION%%.*} and >= $NODE_VERSION"
-	fi
 	tools_dir="$TOOLS_DIR/$(node_dist_name)/bin"
 	if [ ! -x "$tools_dir/node" ]; then
-		[ "$mode" = download ] || die "no suitable Node.js found; run scripts/code-oss/build.sh first or set NODE24_BIN"
+		[ "$mode" = download ] || die "pinned Node.js $NODE_VERSION not found in $TOOLS_DIR; run scripts/code-oss/build.sh --toolchain-only or set NODE24_BIN"
 		download_node
 	fi
 	v="$(node_version_in "$tools_dir")" || die "$tools_dir/node does not run"
-	version_satisfies "$v" "$NODE_VERSION" ||
-		die "$tools_dir/node is $v; need major ${NODE_VERSION%%.*} and >= $NODE_VERSION"
+	[ "$v" = "$NODE_VERSION" ] || die "$tools_dir/node is $v; the manifest pins Node $NODE_VERSION exactly"
 	NODE_BIN_DIR="$tools_dir"
 }
 
