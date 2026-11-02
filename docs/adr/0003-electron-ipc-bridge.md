@@ -2,7 +2,7 @@
 
 - **Status:** Proposed. Becomes Accepted after the Phase 1 bridge spike meets the validation criteria below.
 - **Date:** 2026-11-01.
-- **Depends on:** ADR 0002 (Code OSS integration strategy, Proposed): Axis shell code in `src/vs/axis`, no deep upstream patches.
+- **Depends on:** ADR 0002 (Code OSS integration strategy, Proposed): Axis shell code in `src/vs/axis`, no deep upstream patches, and decision 6 (Copilot and agent host removal as a separate patch set).
 - **Related:** `docs/security/threat-model-phase0.md`. Threat IDs such as EL-2 and DMN-1 refer to that document.
 - **Upstream baseline:** Code OSS `1.144.0`, commit `2c33b50`. Paths starting with `src/`, `build/` or `remote/` are upstream paths at that commit. **[V]** = verified in source; **[I]** = inferred, not verified.
 
@@ -47,7 +47,7 @@ From `SECURITY.md`, `ARCHITECTURE.md`, `AGENT_SYSTEM.md` and ADR 0002:
 - **I4** Secrets are never sent to the renderer or placed in agent prompts or environments. Only scoped handles are.
 - **I5** Typed, versioned RPC with cancellation, backpressure, idempotent operations and bounded retries.
 - **I6** Every stage emits auditable events with redacted payloads.
-- **I7** Shell code lives in `src/vs/axis`. Upstream edits are minimal, marked and counted against the ADR 0002 budget (≤ 12 files, ≤ 300 lines).
+- **I7** Shell code lives in `src/vs/axis`. Upstream edits are minimal, marked and counted against the ADR 0002 shell-layer budget (criterion 2: ≤ 12 files, ≤ 300 lines).
 - **I8** Desktop and web share contracts. Shared code must not assume Node.
 
 ## Options
@@ -156,7 +156,7 @@ sequenceDiagram
 
 | Candidate | Status at the pin | For | Against |
 |---|---|---|---|
-| **Zod 4** | Already a production dependency: `zod ^4.4.3` (`package.json:173`, `remote/package.json:56`), locked at 4.4.3 [V] | No new dependency and **no `package.json` or lockfile patch**, which would conflict on every weekly sync. MIT. Type inference. JSON Schema export for tool contracts and MCP [I]. A tree-shakable `zod/mini` entry for renderer bundles [I]. | Its JIT uses `new Function`, which needs `'unsafe-eval'` and conflicts with Trusted Types in the renderer; it must run with `jitless: true` there [I, verify in M3]. Upstream's only non-test consumer is the agent host (`src/vs/platform/agentHost/node/claude/clientTools/claudeJsonSchemaToZod.ts`) [V], so upstream could drop it. |
+| **Zod 4** | Already a production dependency: `zod ^4.4.3` (`package.json:173`, `remote/package.json:56`), locked at 4.4.3 [V] | No new dependency and **no `package.json` or lockfile patch**, which would conflict on every weekly sync. MIT. Type inference. JSON Schema export for tool contracts and MCP [I]. A tree-shakable `zod/mini` entry for renderer bundles [I]. | Its JIT uses `new Function`, which needs `'unsafe-eval'` and conflicts with Trusted Types in the renderer; it must run with `jitless: true` there [I, verify in M3]. Upstream's only non-test consumer is the agent host (`src/vs/platform/agentHost/node/claude/clientTools/claudeJsonSchemaToZod.ts`) [V], so upstream could drop it, and the ADR 0002 decision 6 patch set must not remove it along with the agent host. |
 | Valibot | Not present | Smallest bundle; modular | A new dependency means a patch to `package.json` and the lockfile; JSON Schema export is a separate package |
 | TypeBox | Not present | JSON-Schema-native | A new dependency; a single maintainer |
 | Ajv | Dev-only v6 (`package-lock.json:5578-5583`, `"dev": true`) and nested under the MCP SDK [V] | JSON Schema standard | Code generation through `eval`; large; not available at runtime without a dependency change |
@@ -164,7 +164,7 @@ sequenceDiagram
 
 Consequences of choosing Zod:
 
-- Contracts import only the facade. If upstream drops Zod, Axis either adds it in the patch series (one `package.json` line plus the lockfile) or vendors it under `src/vs/axis/base/common/vendor/`. Only the facade changes.
+- Contracts import only the facade. The decision 6 patch set keeps `zod` as a direct dependency even when it unbundles or deletes the agent host (its only upstream consumer). If upstream drops Zod, Axis either adds it in the patch series (one `package.json` line plus the lockfile) or vendors it under `src/vs/axis/base/common/vendor/`. Only the facade changes.
 - Renderer bundle cost is measured in the M3 spike. No number is assumed here.
 
 ### D3. Call semantics
@@ -239,7 +239,7 @@ Upstream edits, marked `// --- Start Axis ---` / `// --- End Axis ---`:
 | `src/vs/server/node/serverServices.ts` | Register the `axis` tunnel channel | ≤ 4 |
 | `build/next/index.ts` | Add the daemon entry point to the hard-coded esbuild entry list (inventory §1) [V that the list is hard-coded] | ≤ 2 |
 
-That is three files and about 12 lines in total, counted against the ADR 0002 budget. There are no edits to `preload.ts`, `ipcMain.ts` or CSP files for the bridge itself.
+That is three files and about 12 lines in total, counted against the ADR 0002 shell-layer budget (criterion 2). There are no edits to `preload.ts`, `ipcMain.ts` or CSP files for the bridge itself.
 
 ### D7. Prohibited patterns
 
@@ -368,7 +368,7 @@ export interface IAxisPolicyEngine { evaluate(req: PolicyRequest, token: Cancell
 4. A test extension that runs every Axis command produces no daemon side effects.
 5. Zod runs under the desktop Trusted Types CSP in `jitless` mode with no violations, and the bundle delta is measured and recorded.
 6. Web: the same contract test suite passes through the reh tunnel channel.
-7. The upstream footprint is measured and recorded against the ADR 0002 budget.
+7. The upstream footprint is measured and recorded against the ADR 0002 shell-layer budget.
 
 ## Rollback
 
@@ -380,5 +380,5 @@ export interface IAxisPolicyEngine { evaluate(req: PolicyRequest, token: Cancell
 
 1. Should the daemon outlive windows, or the app, to support background agent runs? If so, it needs a listening socket and the DMN-4 controls (a P3 decision).
 2. Should tier-3 actions (network, package install) also require native confirmation, or is the renderer approval UI enough?
-3. Should Axis also remove upstream's renderer-reachable `UtilityProcessWorker` channel (`app.ts:1532`) and the agent-host channels? That is a footprint versus surface-reduction tradeoff, to be decided with M3.
+3. Should Axis also remove upstream's renderer-reachable `UtilityProcessWorker` channel (`app.ts:1532`)? The agent-host channels are already covered by ADR 0002 decision 6. This one is a footprint versus surface-reduction tradeoff, to be decided with M3.
 4. How long should idempotency records and audit records be retained?
