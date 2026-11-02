@@ -11,6 +11,7 @@ Project Axis is a desktop-and-web AI agent manager for software development, wit
 
 ## Read in order
 1. `DEVELOPMENT.md` — repository workflow, Git conventions, PRs, phase checks and attribution.
+   - `docs/ci.md` — the CI checks every pull request must pass.
 2. `docs/PRODUCT.md` — product scope and acceptance criteria.
 3. `docs/ARCHITECTURE.md` — boundaries, runtimes, data flows, technical decisions.
 4. `docs/AGENT_SYSTEM.md` — orchestration, isolation, review, lifecycle.
@@ -18,6 +19,7 @@ Project Axis is a desktop-and-web AI agent manager for software development, wit
 6. `docs/CONTEXT.md` — local-first memory and cross-project intelligence.
 7. `docs/UX.md` — design principles, layouts, interaction rules.
 8. `docs/SECURITY.md` — trust model, secrets, isolation, sync, enterprise controls.
+   - `docs/security/threat-model-phase0.md` — Phase 0/1 threat model; the threat IDs cited across the ADRs.
 9. `docs/ROADMAP.md` — phases, milestones, release gates.
 10. `docs/IMPLEMENTATION.md` — proposed repository, interfaces, initial backlog.
 11. `docs/adr/` — architecture decision records (start with ADR 0001, ADR 0002, and ADR 0004 for the agent-first workspace shell).
