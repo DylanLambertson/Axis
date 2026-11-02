@@ -123,7 +123,7 @@ test("replay: a resolved challenge cannot be resolved again, a spent token canno
   assert.throws(() => manager.resolve(resolveArgs(issued)), code("E_CONFLICT"));
   let ran = 0;
   await manager.execute(token, run, () => void ran++);
-  await assert.rejects(manager.execute(token, run, () => void ran++), code("E_APPROVAL_REQUIRED"));
+  await assert.rejects(manager.execute(token, run, () => void ran++), code("E_CONFLICT"));
   assert.equal(ran, 1);
 });
 
@@ -152,7 +152,7 @@ test("expiry (injected clock): challenge, native step and confirmation token all
   const token = approve(a.manager, i3);
   a.clock.t += 5_000;
   let ran = 0;
-  await assert.rejects(a.manager.execute(token, run, () => void ran++), code("E_APPROVAL_REQUIRED"));
+  await assert.rejects(a.manager.execute(token, run, () => void ran++), code("E_CONFLICT"));
   assert.equal(ran, 0);
 
   const i4 = issue(a.manager);
@@ -202,7 +202,7 @@ test("a token for one operation or target does not authorise another, and the at
     const token = approve(manager, issue(manager));
     let ran = 0;
     await assert.rejects(manager.execute(token, { ...run, ...wrong }, () => void ran++), code("E_POLICY_DENIED"));
-    await assert.rejects(manager.execute(token, run, () => void ran++), code("E_APPROVAL_REQUIRED"));
+    await assert.rejects(manager.execute(token, run, () => void ran++), code("E_CONFLICT"));
     assert.equal(ran, 0);
   }
 });
@@ -213,7 +213,7 @@ test("TOCTOU (G-24): content that changed after confirmation is refused with E_C
   let ran = 0;
   await assert.rejects(manager.execute(token, { ...run, currentContentDigest: CHANGED }, () => void ran++), code("E_CONFLICT"));
   assert.equal(ran, 0);
-  await assert.rejects(manager.execute(token, run, () => void ran++), code("E_APPROVAL_REQUIRED"), "even the original digest cannot reuse it");
+  await assert.rejects(manager.execute(token, run, () => void ran++), code("E_CONFLICT"), "even the original digest cannot reuse it");
   assert.equal(ran, 0);
   const exec = events.filter((e) => e.action === "tier4.execute");
   assert.equal(exec[0]?.payload["reason"], "content_changed");
@@ -330,7 +330,7 @@ test("fail closed: if the audit sink fails, issue creates nothing and execute do
   await assert.rejects(s.manager.execute(token, run, () => void ran++), /sink down/);
   assert.equal(ran, 0);
   s.failWhen(undefined);
-  await assert.rejects(s.manager.execute(token, run, () => void ran++), code("E_APPROVAL_REQUIRED"), "the token was spent");
+  await assert.rejects(s.manager.execute(token, run, () => void ran++), code("E_CONFLICT"), "the token was spent");
 });
 
 test("a failing action spends the token, is audited as an error and rethrows", async () => {
@@ -344,7 +344,7 @@ test("a failing action spends the token, is audited as an error and rethrows", a
   );
   assert.equal(events.at(-1)?.outcome, "error");
   assert.equal(events.at(-1)?.payload["errorName"], "TypeError");
-  await assert.rejects(manager.execute(token, run, () => 1), code("E_APPROVAL_REQUIRED"));
+  await assert.rejects(manager.execute(token, run, () => 1), code("E_CONFLICT"));
 });
 
 test("a completion-audit failure after the action ran is reported as E_INTERNAL with executed=true", async () => {
@@ -389,4 +389,32 @@ test("safeEqual compares by value, including different lengths", () => {
   assert.equal(safeEqual("abc", "abd"), false);
   assert.equal(safeEqual("abc", "abcd"), false);
   assert.equal(safeEqual("", ""), true);
+});
+
+test("every error the manager raises is valid on the wire (E_APPROVAL_REQUIRED would need an attached challenge, so it is never used)", async () => {
+  const { manager, clock } = setup({ ttl: 10_000, confirmTtl: 5_000 });
+  const errors: unknown[] = [];
+  const collect = (fn: () => unknown) => {
+    try {
+      fn();
+    } catch (e) {
+      errors.push(e);
+    }
+  };
+  const issued = issue(manager);
+  collect(() => manager.resolve(resolveArgs(issued, { actor: "agent:x" })));
+  collect(() => manager.resolve(resolveArgs(issued, { digest: sha("other") })));
+  collect(() => manager.resolve(resolveArgs(issued)));
+  collect(() => manager.resolve({ challengeId: "A".repeat(43), decision: "approve", digest: sha("x"), actor: "user", windowId: WIN }));
+  collect(() => manager.issue({ nope: 1 } as never));
+  const token = approve(manager, issue(manager));
+  clock.t += 5_000;
+  await manager.execute(token, run, () => 1).catch((e: unknown) => errors.push(e));
+  await manager.execute({} as ConfirmationToken, run, () => 1).catch((e: unknown) => errors.push(e));
+  assert.ok(errors.length >= 7);
+  for (const e of errors) {
+    assert.ok(e instanceof ChallengeError);
+    assert.notEqual(e.code, "E_APPROVAL_REQUIRED");
+    assert.doesNotThrow(() => errorSchema.parse(e.toWire("corr")));
+  }
 });

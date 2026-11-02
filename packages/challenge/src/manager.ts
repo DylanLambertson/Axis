@@ -343,11 +343,11 @@ export class ChallengeManager {
     const c = parsed.data;
     if (rec.state !== "CONFIRMED") {
       this.#emit("daemon", "tier4.execute", rec, "denied", { phase: "execute", reason: "not_live", state: rec.state });
-      throw new ChallengeError("E_APPROVAL_REQUIRED", "This confirmation was already used or has ended", { state: rec.state });
+      throw new ChallengeError("E_CONFLICT", "This confirmation was already used or has ended", { state: rec.state });
     }
     if (this.#now() >= rec.tokenExpiresAt) {
       this.#end(rec, "EXPIRED", "daemon", "execute", "token_expired", "tier4.execute");
-      throw new ChallengeError("E_APPROVAL_REQUIRED", "The confirmation expired; ask again");
+      throw new ChallengeError("E_CONFLICT", "The confirmation expired; ask again");
     }
     if (c.op !== rec.op || c.target !== rec.target) {
       this.#end(rec, "BURNED", "daemon", "execute", "op_or_target_mismatch", "tier4.execute");
