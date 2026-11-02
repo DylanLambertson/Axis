@@ -263,7 +263,8 @@ These edits are patch G1 in block `1000–1499` (decision 5). They are excluded 
 
 | Item | Mechanism |
 |---|---|
-| `extensions/copilot/**` (2,583 .ts files) | (a): keep it in the tree but unbuilt. (c): removal manifest. **Never a deletion patch**, which would carry every line and conflict on every sync. `packageCopilotExtensionStream` already skips a missing folder (`build/lib/extensions.ts:470-472`) |
+| `extensions/copilot/**` (2,583 .ts files) | (a): keep it in the tree but unbuilt (see the build-task row below). (c): removal manifest. **Never a deletion patch**, which would carry every line and conflict on every sync. `packageCopilotExtensionStream` already skips a missing folder (`build/lib/extensions.ts:470-472`) |
+| `compileCopilotExtensionBuildTask` (`build/gulpfile.extensions.ts:282`, which calls `packageCopilotExtensionStream`) in the desktop series `build/gulpfile.vscode.ts:636` (import `:27`) and the reh series `build/gulpfile.reh.ts:567` (import `:26`) [V] | Remove the task from both series and drop both imports. Under (a) the folder stays, and `packageCopilotExtensionStream` skips only a **missing** folder (`build/lib/extensions.ts:470-472`), so without this edit Copilot would still be packaged. The SC-3 artifact check catches a regression |
 | `build/npm/dirs.ts:18` | Delete the line, so postinstall stops running `npm install` there (`postinstall.ts:57-65`) |
 | `package.json` scripts `:26,:28,:36-37,:55-57,:94-95`; `:330` `copilotRuntimeVersion`; `remote/package.json:82` | Drop the Copilot compile, watch and setup scripts and the version key |
 | `build/gulpfile.vscode.ts:45-60` (keep `:44` `const commit`, used at `:62,143,204-205,405`) | Remove `packageLock` (`:45-47`), the SDK version check that throws on every gulp run once the SDK is gone (`:48-51`), and `getLockedPackageVersion` (`:53-60`, used only at `:211`). Drop the Copilot names from the `:29` import |
@@ -531,6 +532,7 @@ Assets (`resources/**`, `code-icon.svg`, letterpress) are overlay replacements, 
 - `serverServices.ts:273-358` (always `UnavailableAgentHostChannel`);
 - `package.json` and `remote/package.json`;
 - `gulpfile.vscode.ts`, `gulpfile.reh.ts`, `gulpfile.vscode.linux.ts`;
+- `compileCopilotExtensionBuildTask` in `gulpfile.vscode.ts:636` (import `:27`) and `gulpfile.reh.ts:567` (import `:26`), defined at `gulpfile.extensions.ts:282`;
 - `build/npm/dirs.ts`, `build/next/build-fast.ts`, `.vscode-test.js`, `build/hygiene.ts`, `gulpfile.hygiene.ts`;
 - for (a1), `src/tsconfig.json`;
 - plus removal-manifest entries and regenerated lockfiles.
