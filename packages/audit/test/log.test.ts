@@ -272,3 +272,28 @@ test("a failing migration rolls back entirely and leaves the version unchanged",
   assert.equal(schemaVersion(db, "demo"), 1);
   assert.equal(db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'demo_b'").get(), undefined);
 });
+
+test("checkpoint returns an anchor that catches later tail deletion; it refuses to anchor a broken chain", () => {
+  const { db, log } = memLog();
+  assert.equal(log.checkpoint(), null);
+  seed(log, 4);
+  const anchor = log.checkpoint();
+  assert.deepEqual(anchor, { seq: 4, hash: log.head()?.hash });
+  assert.ok(anchor);
+  seed(log, 2);
+  assert.equal(log.verify({ expectedHead: anchor }).ok, true, "a longer chain that contains the anchor is fine");
+  unlock(db);
+  db.exec("DELETE FROM audit_events WHERE seq > 3");
+  assert.equal(log.verify({ expectedHead: anchor }).ok, false);
+  db.exec("UPDATE audit_events SET outcome = 'denied' WHERE seq = 2");
+  assert.throws(
+    () => log.checkpoint(),
+    (e: unknown) => e instanceof AxisError && e.code === "E_INTERNAL" && e.detail["firstBadSeq"] === 2,
+  );
+});
+
+test("isBoundTo is identity on the connection", () => {
+  const { db, log } = memLog();
+  assert.equal(log.isBoundTo(db), true);
+  assert.equal(log.isBoundTo(openDatabase(":memory:")), false);
+});

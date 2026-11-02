@@ -234,6 +234,30 @@ export class AuditLog implements AuditSink {
     });
   }
 
+  /** True when this log writes through exactly this connection (identity, not path equality). */
+  isBoundTo(db: DatabaseSync): boolean {
+    return this.#db === db;
+  }
+
+  /**
+   * Verify the whole chain, then return its head as an anchor. Persist the
+   * anchor OUTSIDE the database (see docs/packages.md) and pass it back as
+   * `verify({ expectedHead })` at the next start: that is the only way to
+   * detect deletion of the newest events (threat model G-11). Throws
+   * `E_INTERNAL` if the chain is already broken, so a bad chain is never
+   * anchored. Returns null for an empty log. Cost is linear in log length.
+   */
+  checkpoint(): ChainHead | null {
+    const result = this.verify();
+    if (!result.ok) {
+      throw new AxisError("E_INTERNAL", "Audit chain failed verification; refusing to checkpoint it", {
+        firstBadSeq: result.firstBadSeq,
+        reason: result.reason,
+      });
+    }
+    return result.head;
+  }
+
   head(): ChainHead | null {
     const row = this.#db.prepare("SELECT seq, hash FROM audit_events ORDER BY seq DESC LIMIT 1").get() as
       | { seq: number; hash: string }

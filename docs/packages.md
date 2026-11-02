@@ -11,7 +11,24 @@ Axis-owned TypeScript that does not need Code OSS services lives in `packages/*`
 | `@axis/providers` | Provider adapter API (v1): normalized requests, stream events, capability reports, error taxonomy; the daemon-side guard (budget hook PRV-6, redaction hook PRV-2, timeouts, cancellation, stream checks); the mock provider. `@axis/providers/contract` is the reusable adapter contract suite (test support in `packages/providers/contract/`, outside `src/` so it is never staged; imports `node:test`). |
 | `@axis/git-ops` | Daemon-orchestrated Axis commit and push, and GitHub compare URLs. Takes an injected git runner (`context: "pty" \| "daemon"`): hooks run only in the pty context. Commit binds the reviewed tree, push uses one explicit refspec, both are refused while a CLI run is active. |
 
-More packages (worktrees, journal, audit) are added by their own changes.
+| `@axis/audit` | Secret redaction, canonical JSON, and the hash-chained append-only audit log on `node:sqlite` (DMN-5, DMN-6). Also the SQLite helpers (`openDatabase`, `withTransaction`, `runMigrations`). |
+| `@axis/journal` | Durable `agent_workspaces` and `agent_runs`, the Phase 1a run state machine, idempotency keys and restart recovery (DMN-7). Depends on `@axis/audit`. |
+
+More packages (worktrees, and so on) are added by their own changes.
+
+## Audit anchor (requirement on the daemon)
+
+A hash chain cannot show that its newest events were deleted. Threat model G-11 is closed only if the daemon keeps a copy of the chain head outside the database. The daemon MUST:
+
+1. Call `AuditLog.checkpoint()` after each append batch (for example at the end of each handled request that wrote events, and on clean shutdown). It verifies the chain and returns `{ seq, hash }`, or throws `E_INTERNAL` if the chain is already broken; a broken chain is never anchored.
+2. Persist that anchor outside the journal database, where an attacker who edits the database file does not also write (for example the OS keychain through the main process, or a separate file with its own permissions). Where it is stored is daemon work and is not decided here.
+3. At every start, before accepting work, call `verify({ expectedHead: anchor })` and treat `ok: false` as an integrity failure (surface it to the user; do not silently continue). A longer chain that still contains the anchor is valid.
+
+Without the anchor, `verify()` detects edits, deletions in the middle and reordering, but not removal of the tail. The chain gives local tamper evidence only; it does not stop an attacker who can also rewrite the anchor (ADR 0003 D5).
+
+## Journal and audit share one connection
+
+`Journal.open(db, { audit })` rejects (`E_INTERNAL`) an `AuditLog` that was created on a different `DatabaseSync` handle. Sharing the handle is what makes a state change and its audit event commit or roll back together.
 
 ## Using `@axis/challenge`
 
