@@ -10,7 +10,8 @@ permissions:
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  # Cancel superseded PR runs only; every push to main keeps its own result.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   secret-scan:
@@ -78,8 +79,9 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           set -euo pipefail
-          # The scripts use "#!/usr/bin/env bash", which would otherwise find the
-          # runner's Homebrew bash 5. Shadow it so child scripts run on 3.2 too.
+          # The scripts use "#!/usr/bin/env bash", which resolves through PATH.
+          # The shim guarantees /bin/bash 3.2 for test.sh and every child script,
+          # whatever bash a future runner image puts on PATH.
           shim="$RUNNER_TEMP/bash32"
           mkdir -p "$shim"
           ln -s /bin/bash "$shim/bash"
@@ -87,7 +89,12 @@ jobs:
           PATH="$shim:$PATH" bash -c '[ "${BASH_VERSINFO[0]}" -eq 3 ] && echo "bash $BASH_VERSION"'
 
       - name: Test fetch and apply against a local fake upstream
-        run: bash scripts/code-oss/test.sh
+        run: |
+          set -euo pipefail
+          if [ "$RUNNER_OS" = macOS ]; then
+            bash -c '[ "${BASH_VERSINFO[0]}" -eq 3 ]' || { echo "::error::bash on PATH is not 3.2"; exit 1; }
+          fi
+          bash scripts/code-oss/test.sh
 
   extension-matrix-tests:
     name: Extension matrix unit tests
