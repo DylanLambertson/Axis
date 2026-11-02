@@ -1,9 +1,9 @@
 # Axis agent-first shell: technical design for M3 Stage 2
 
-- **Status:** Draft; design decisions D-1 to D-13 recorded 2026-11-02 (§9.2); D-11 is now ADR 0004 decision 14. Aligned with ADR 0004 at `c89ae02`, including its resolved questions. The items ADR 0004 defers to this design, and the terminal, git, snapshot, shortcut and wording policies, are in the companion `axis-agent-shell-policies.md` (the "policies"). It replaces the IDE-first Stage 2 of `docs/design/axis-shell.md` §3 and §6 (S2.x). Stage 1 (§2 and §2.9 there) is done and still applies. Product direction comes from ADR 0004 (proposed on `docs/agent-first-product`), which this document implements and does not restate.
+- **Status:** Draft; design decisions D-1 to D-13 recorded 2026-11-02 (§9.2); D-11 is now ADR 0004 decision 14. Aligned with ADR 0004 as merged on `main` (`a0cb0a3`, amended in this branch for D-13), including its resolved questions. The items ADR 0004 defers to this design, and the terminal, git, snapshot, shortcut and wording policies, are in the companion `axis-agent-shell-policies.md` (the "policies"). It replaces the IDE-first Stage 2 of `docs/design/axis-shell.md` §3 and §6 (S2.x). Stage 1 (§2 and §2.9 there) is done and still applies. Product direction comes from ADR 0004 (`docs/adr/0004-agent-first-workspace-shell.md`), which this document implements and does not restate.
 - **Date:** 2026-11-02
 - **Upstream baseline:** Code OSS `1.144.0`, commit `2c33b50b16c472efe58357d1d2a8a5414bc23fbf`.
-- **Inputs:** ADR 0002 (decisions 1–7, criteria 1–7), ADR 0003 (D1–D7), ADR 0004 (draft), `docs/design/axis-shell.md`, `docs/security/threat-model-phase0.md`, `docs/AGENT_SYSTEM.md`, `docs/feasibility/code-oss-inventory.md` §3–4, and the upstream `src/vs/sessions` specifications (`README.md`, `LAYOUT.md`, `LAYERS.md`, `LAYOUT_CONTROLLER.md`, `DESKTOP.md`, `SESSIONS.md`).
+- **Inputs:** ADR 0002 (decisions 1–7, criteria 1–7), ADR 0003 (D1–D7), ADR 0004 (decisions 1–14, as merged), `docs/design/axis-shell.md`, `docs/security/threat-model-phase0.md`, `docs/AGENT_SYSTEM.md`, `docs/feasibility/code-oss-inventory.md` §3–4, and the upstream `src/vs/sessions` specifications (`README.md`, `LAYOUT.md`, `LAYERS.md`, `LAYOUT_CONTROLLER.md`, `DESKTOP.md`, `SESSIONS.md`).
 - **Conventions:** as in `axis-shell.md`.
   - Upstream paths are relative to the Code OSS root at the baseline commit, or to `src/vs/` when they start with `sessions/`, `workbench/`, `platform/` or `base/`. `file:line` refers to that commit.
   - **[V]** means verified by reading the source. **[I]** means inferred. No upstream code was run.
@@ -434,7 +434,7 @@ The rail and the main region are an internal split view inside the agent part, s
 | D-4 | Branch naming `axis/<slug>`, refused if it exists | **Decided** |
 | D-5 | Editors opened while Agent view is showing: explicit user opens switch to IDE view; background opens badge the view control | **Decided** |
 | D-6 | Default `git.terminalAuthentication: false` (Phase 0 and opt-out terminals). From Phase 1a, PTY-5 applies to all workspace terminals, with the opt-out `axis.terminals.scrubEnvironment` (policies §4) | **Decided** |
-| D-7 | Default shortcuts (policies §8) | **Decided**; adopted by `UX.md` at `c89ae02` |
+| D-7 | Default shortcuts (policies §8) | **Decided**; adopted by `UX.md` on `main` (`a0cb0a3`) |
 | D-8 | Keep `refs/axis/archive/*` until the user deletes them; keep `refs/axis/backup/*` for 30 days | **Decided** |
 | D-9 | External (non-Axis) worktrees appear read-only, labelled, with no agent actions | **Decided** |
 | D-10 | Dashboard scope: the current project, with a project switcher in the top bar | **Decided** |

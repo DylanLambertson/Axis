@@ -8,7 +8,7 @@
   - snapshot refs (§7);
   - shortcuts (§8);
   - status wording (§9).
-- **Date:** 2026-11-02. Aligned with ADR 0004 at `c89ae02`.
+- **Date:** 2026-11-02. Aligned with ADR 0004 as merged on `main` (`a0cb0a3`, amended in this branch for D-13).
 - **Conventions:** as in the design. **[V]** means verified in the Code OSS `1.144.0` source (`2c33b50`); **[I]** means inferred. `D-n` labels are design-local decisions (design §9.2). ADR 0004 decisions are cited by number.
 
 ## 1. Reuse of `vs/sessions` and decision D8 (ADR 0004 deferred item 1)
@@ -186,7 +186,7 @@ Each scenario must end with no silent overwrite, or with a flagged and restorabl
 
 ## 8. Shortcuts (D-7)
 
-- **Status.** Adopted in `UX.md` at `c89ae02`.
+- **Status.** Adopted in `UX.md` on `main` (`a0cb0a3`).
 - **Platforms.** `Mod` is Cmd on macOS and Ctrl on Windows and Linux.
 
 | Command | macOS | Windows and Linux |
