@@ -1,5 +1,7 @@
 # Axis workbench shell: design for Phase 0 M3
 
+> **Stage 2 is superseded by the agent-first shell design (ADR 0004).** See `docs/design/axis-agent-shell.md` (to be added separately). Stage 1 (restyle, §2) is done and still applies; §3 and the Stage 2 parts of §5–§6 are kept for reference only.
+
 - **Status:** Draft for owner review. Implementation follows this document once accepted. Aligned with ADR 0002 as merged in `13764bc` (decisions 6–7, criteria 1–7), ADR 0003 and the Phase 0 threat model.
 - **Date:** 2026-11-01
 - **Upstream baseline:** Code OSS `1.144.0`, commit `2c33b50b16c472efe58357d1d2a8a5414bc23fbf`.
