@@ -39,4 +39,4 @@ Numbers `0000` and `3000`–`9999` are unassigned; extend this table and `patch_
 - Mark edited regions in upstream files with `// --- Start Axis ---` and `// --- End Axis ---`.
 - Keep each patch focused on one concern, so that conflicts during an upstream sync stay local.
 
-The series is empty for the Phase 0 M2 baseline build.
+From M3 the series holds the Stage 1 patches in blocks `0001`–`0999`, `1000`–`1499` and `1500`–`1999`; `docs/design/axis-shell.md` §2.9 lists them with their footprint.

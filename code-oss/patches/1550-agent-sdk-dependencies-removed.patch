@@ -1,0 +1,186 @@
+diff --git a/build/gulpfile.reh.ts b/build/gulpfile.reh.ts
+index 2b1e004e..5df64f10 100644
+--- a/build/gulpfile.reh.ts
++++ b/build/gulpfile.reh.ts
+@@ -33,7 +33,7 @@ import { runEsbuildBundle, getBootstrapEntryPointsForTarget } from './lib/esbuil
+ import { fetchUrls } from './lib/fetch.ts';
+ import { downloadFeedPackage } from './lib/azureFeed.ts';
+ // --- Start Axis ---
+-import { ensureCopilotPlatformPackage, getCopilotExcludeFilter, getCopilotRuntimePrebuildFiles, getCopilotTgrepExcludeFilter, getRipgrepExcludeFilter } from './lib/copilot.ts';
++import { getCopilotExcludeFilter, getCopilotTgrepExcludeFilter, getRipgrepExcludeFilter } from './lib/copilot.ts';
+ // --- End Axis ---
+ import { readAgentSdkResults } from './agent-sdk/common.ts';
+ 
+@@ -366,9 +366,10 @@ function packageTask(type: string, platform: string, arch: string, sourceFolderN
+ 			.pipe(filter(['**', '!**/package-lock.json', '!**/*.{js,css}.map']))
+ 			.pipe(util.cleanNodeModules(path.join(import.meta.dirname, '.moduleignore')))
+ 			.pipe(util.cleanNodeModules(path.join(import.meta.dirname, `.moduleignore.${process.platform}`)));
+-		ensureCopilotPlatformPackage(platform, arch, 'remote/node_modules');
+-		const copilotRuntimePrebuilds = gulp.src(getCopilotRuntimePrebuildFiles(platform, arch, 'remote/node_modules'), { base: 'remote', dot: true, allowEmpty: true });
+-		const deps = es.merge(cleanedDeps, copilotRuntimePrebuilds)
++		// --- Start Axis ---
++		// No Copilot SDK runtime prebuilds are fetched or packaged (ADR 0002 decision 6)
++		const deps = es.merge(cleanedDeps)
++		// --- End Axis ---
+ 			.pipe(filter(getCopilotExcludeFilter(platform, arch)))
+ 			.pipe(filter(getCopilotTgrepExcludeFilter(platform, arch)))
+ 			.pipe(filter(getRipgrepExcludeFilter(platform, arch)))
+diff --git a/build/gulpfile.vscode.ts b/build/gulpfile.vscode.ts
+index eb610d74..6b191b11 100644
+--- a/build/gulpfile.vscode.ts
++++ b/build/gulpfile.vscode.ts
+@@ -29,7 +29,7 @@ import { compileNonNativeExtensionsBuildTask, compileNativeExtensionsBuildTask,
+ // --- End Axis ---
+ import { checkApiProposalNamesTask, copyCodiconsTask } from './lib/compilation.ts';
+ // --- Start Axis ---
+-import { ensureCopilotPlatformPackage, getCopilotExcludeFilter, getCopilotRuntimePrebuildFiles, getCopilotRuntimeVersion, getCopilotTgrepExcludeFilter, getRipgrepExcludeFilter, renderCopilotShimLauncher } from './lib/copilot.ts';
++import { getCopilotExcludeFilter, getCopilotTgrepExcludeFilter, getRipgrepExcludeFilter } from './lib/copilot.ts';
+ // --- End Axis ---
+ import { ensureOSProxyResolverPlatformPackage, getOSProxyResolverExcludeFilter, getOSProxyResolverPlatformFiles } from './lib/osProxyResolver.ts';
+ import { readAgentSdkResults } from './agent-sdk/common.ts';
+@@ -46,22 +46,9 @@ const glob = promisify(globCallback);
+ const rcedit = promisify(rceditCallback);
+ const root = path.dirname(import.meta.dirname);
+ const commit = getVersion(root);
+-const packageLock = JSON.parse(fs.readFileSync(path.join(root, 'package-lock.json'), 'utf8')) as {
+-	readonly packages?: Readonly<Record<string, { readonly version?: string }>>;
+-};
+-const copilotRuntimeVersion = getCopilotRuntimeVersion(path.join(root, 'node_modules'));
+-if (packageJson.copilotRuntimeVersion !== copilotRuntimeVersion) {
+-	throw new Error(`package.json declares Copilot runtime ${packageJson.copilotRuntimeVersion}, but @github/copilot-sdk bundles ${copilotRuntimeVersion}.`);
+-}
+-
+-function getLockedPackageVersion(packageName: string): string {
+-	const version = packageLock.packages?.[`node_modules/${packageName}`]?.version;
+-	if (!version) {
+-		throw new Error(`Package ${packageName} is missing a version in package-lock.json.`);
+-	}
+-
+-	return version;
+-}
++// --- Start Axis ---
++// No Copilot runtime check or lockfile lookup: the Copilot SDK is not a dependency (ADR 0002 decision 6)
++// --- End Axis ---
+ 
+ const sourceMappingURLBase = `https://main.vscode-cdn.net/sourcemaps/${commit}`;
+ const isCI = !!process.env['CI'] || !!process.env['BUILD_ARTIFACTSTAGINGDIRECTORY'] || !!process.env['GITHUB_WORKSPACE'];
+@@ -210,10 +197,9 @@ function packageTask(platform: string, arch: string, sourceFolderName: string, d
+ 				json.date = readISODate(out);
+ 				json.checksums = checksums;
+ 				json.version = version;
+-				json.copilotVersions = {
+-					runtime: copilotRuntimeVersion,
+-					sdk: getLockedPackageVersion('@github/copilot-sdk'),
+-				};
++				// --- Start Axis ---
++				// no copilotVersions: the Copilot SDK is not shipped
++				// --- End Axis ---
+ 				// Stamp agentSdks from the per-platform results file produced
+ 				// by `build/agent-sdk/produce.ts` (an earlier pipeline step).
+ 				// Local dev: file absent → empty → not stamped.
+@@ -256,11 +242,14 @@ function packageTask(platform: string, arch: string, sourceFolderName: string, d
+ 			.pipe(filter(depFilterPattern))
+ 			.pipe(util.cleanNodeModules(path.join(import.meta.dirname, '.moduleignore')))
+ 			.pipe(util.cleanNodeModules(path.join(import.meta.dirname, `.moduleignore.${process.platform}`)));
+-		ensureCopilotPlatformPackage(platform, arch);
+-		const copilotRuntimePrebuilds = gulp.src(getCopilotRuntimePrebuildFiles(platform, arch), { base: '.', dot: true, allowEmpty: true });
++		// --- Start Axis ---
++		// No Copilot SDK runtime prebuilds are fetched or packaged (ADR 0002 decision 6)
++		// --- End Axis ---
+ 		ensureOSProxyResolverPlatformPackage(platform, arch);
+ 		const osProxyResolverPlatformPackage = gulp.src(getOSProxyResolverPlatformFiles(platform, arch), { base: '.', dot: true, allowEmpty: true });
+-		const deps = es.merge(cleanedDeps, copilotRuntimePrebuilds, osProxyResolverPlatformPackage)
++		// --- Start Axis ---
++		const deps = es.merge(cleanedDeps, osProxyResolverPlatformPackage)
++		// --- End Axis ---
+ 			.pipe(filter(getCopilotExcludeFilter(platform, arch)))
+ 			.pipe(filter(getCopilotTgrepExcludeFilter(platform, arch)))
+ 			.pipe(filter(getRipgrepExcludeFilter(platform, arch)))
+@@ -432,19 +421,9 @@ function packageTask(platform: string, arch: string, sourceFolderName: string, d
+ 				.pipe(replace('@@VERSIONFOLDER@@', versionedResourcesFolder ? `${versionedResourcesFolder}\\` : ''))
+ 				.pipe(rename(product.nameShort + '.VisualElementsManifest.xml')));
+ 
+-			// Setup publishes it next to the copilot.exe shim; see build/win32/copilot.iss.
+-			result = es.merge(result, gulp.src('resources/win32/bin/copilot.sh', { base: 'resources/win32' })
+-				.pipe(es.through(function (file) {
+-					file.contents = Buffer.from(renderCopilotShimLauncher(file.contents.toString('utf8'), {
+-						commit: String(commit),
+-						quality: String(quality),
+-						applicationName: product.applicationName,
+-						dataFolderName: product.dataFolderName,
+-						serverDataFolderName: product.serverDataFolderName || '.vscode-remote',
+-					}));
+-					this.emit('data', file);
+-				}))
+-				.pipe(rename(f => { f.dirname = 'bin/copilot-shim'; f.basename = 'copilot'; f.extname = ''; })));
++			// --- Start Axis ---
++			// No copilot.exe shim launcher: the Copilot CLI is not shipped (ADR 0002 decision 6)
++			// --- End Axis ---
+ 
+ 			result = es.merge(result, gulp.src('.build/policies/win32/**', { base: '.build/policies/win32' })
+ 				.pipe(rename(f => f.dirname = `policies/${f.dirname}`)));
+diff --git a/package.json b/package.json
+index a116abc4..7cf91704 100644
+--- a/package.json
++++ b/package.json
+@@ -95,9 +95,7 @@
+     "reauth-feed": "artifacts-npm-credprovider --force"
+   },
+   "dependencies": {
+-    "@anthropic-ai/sdk": "^0.82.0",
+     "@devcontainers/cli": "0.88.0",
+-    "@github/copilot-sdk": "1.0.27-unstable.40031404408.gba6c003",
+     "@hpke/core": "^1.9.0",
+     "@microsoft/1ds-core-js": "^3.2.13",
+     "@microsoft/1ds-post-js": "^3.2.13",
+@@ -109,7 +107,6 @@
+     "@parcel/watcher": "^2.5.6",
+     "@types/semver": "^7.5.8",
+     "@vscode/codicons": "^0.0.46-47",
+-    "@vscode/copilot-api": "^0.5.2",
+     "@vscode/deviceid": "^0.1.1",
+     "@vscode/diff": "0.0.2-7",
+     "@vscode/fs-copyfile": "2.0.0",
+@@ -167,9 +164,7 @@
+     "zod": "^4.4.3"
+   },
+   "devDependencies": {
+-    "@anthropic-ai/claude-agent-sdk": "0.3.304",
+     "@eslint/compat": "^2.1.0",
+-    "@openai/codex": "0.163.0",
+     "@playwright/cli": "^0.1.9",
+     "@playwright/test": "^1.61.1",
+     "@stylistic/eslint-plugin": "^5.10.0",
+@@ -320,6 +315,5 @@
+     "husky": false,
+     "@vscode/windows-ca-certs@0.3.4": true,
+     "@vscode/windows-process-tree@0.8.0": true
+-  },
+-  "copilotRuntimeVersion": "1.0.103-unstable.r40031404408.gba6c003"
++  }
+ }
+diff --git a/remote/package.json b/remote/package.json
+index 8c1a3e17..43e8ffb5 100644
+--- a/remote/package.json
++++ b/remote/package.json
+@@ -4,12 +4,10 @@
+   "private": true,
+   "dependencies": {
+     "@devcontainers/cli": "0.88.0",
+-    "@github/copilot-sdk": "1.0.27-unstable.40031404408.gba6c003",
+     "@hpke/core": "^1.9.0",
+     "@microsoft/1ds-core-js": "^3.2.13",
+     "@microsoft/1ds-post-js": "^3.2.13",
+     "@parcel/watcher": "^2.5.6",
+-    "@vscode/copilot-api": "^0.5.2",
+     "@vscode/deviceid": "^0.1.1",
+     "@vscode/fs-copyfile": "2.0.0",
+     "@vscode/iconv-lite-umd": "0.7.1",
+@@ -78,6 +76,5 @@
+     "cpu-features": false,
+     "@vscode/windows-ca-certs@0.3.4": true,
+     "@vscode/windows-process-tree@0.8.0": true
+-  },
+-  "copilotRuntimeVersion": "1.0.103-unstable.r40031404408.gba6c003"
++  }
+ }

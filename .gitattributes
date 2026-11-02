@@ -1,0 +1,3 @@
+# Patch files carry upstream context lines that start with a space and may end in
+# whitespace; whitespace checks (git diff --check) do not apply to them.
+code-oss/patches/*.patch -whitespace

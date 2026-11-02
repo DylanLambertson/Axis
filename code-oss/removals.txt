@@ -3,4 +3,4 @@
 # blank lines and lines starting with # are ignored. Every listed path must
 # exist, otherwise scripts/code-oss/apply.sh fails so that upstream moves are
 # noticed at sync time. Ignored build output (node_modules, out, ...) and any
-# spelling of a .git component cannot be listed. Empty for the Phase 0 M2 baseline build.
+# spelling of a .git component cannot be listed.

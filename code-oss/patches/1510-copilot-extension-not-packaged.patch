@@ -1,0 +1,163 @@
+diff --git a/build/gulpfile.reh.ts b/build/gulpfile.reh.ts
+index 3e6a5be1..2b1e004e 100644
+--- a/build/gulpfile.reh.ts
++++ b/build/gulpfile.reh.ts
+@@ -23,14 +23,18 @@ import glob from 'glob';
+ import { promisify } from 'util';
+ import rceditCallback from 'rcedit';
+ import { compileApiProposalNamesTask, copyCodiconsTask } from './lib/compilation.ts';
+-import { cleanExtensionsBuildTask, compileNonNativeExtensionsBuildTask, compileNativeExtensionsBuildTask, compileExtensionMediaBuildTask, compileCopilotExtensionBuildTask } from './gulpfile.extensions.ts';
++// --- Start Axis ---
++import { cleanExtensionsBuildTask, compileNonNativeExtensionsBuildTask, compileNativeExtensionsBuildTask, compileExtensionMediaBuildTask } from './gulpfile.extensions.ts';
++// --- End Axis ---
+ import * as cp from 'child_process';
+ import crypto from 'crypto';
+ import log from 'fancy-log';
+ import { runEsbuildBundle, getBootstrapEntryPointsForTarget } from './lib/esbuild.ts';
+ import { fetchUrls } from './lib/fetch.ts';
+ import { downloadFeedPackage } from './lib/azureFeed.ts';
+-import { ensureCopilotPlatformPackage, getCopilotExcludeFilter, getCopilotRuntimePrebuildFiles, getCopilotTgrepExcludeFilter, getRipgrepExcludeFilter, prepareBuiltInCopilotRipgrepShim } from './lib/copilot.ts';
++// --- Start Axis ---
++import { ensureCopilotPlatformPackage, getCopilotExcludeFilter, getCopilotRuntimePrebuildFiles, getCopilotTgrepExcludeFilter, getRipgrepExcludeFilter } from './lib/copilot.ts';
++// --- End Axis ---
+ import { readAgentSdkResults } from './agent-sdk/common.ts';
+ 
+ 
+@@ -523,15 +527,9 @@ function patchWin32DependenciesTask(destinationFolderName: string) {
+ 	};
+ }
+ 
+-function prepareCopilotRipgrepShimTaskREH(platform: string, arch: string, destinationFolderName: string) {
+-	return async () => {
+-		const outputDir = path.join(BUILD_ROOT, destinationFolderName);
+-		const nodeModulesDir = path.join(outputDir, 'node_modules');
+-
+-		const builtInCopilotExtensionDir = path.join(outputDir, 'extensions', 'copilot');
+-		prepareBuiltInCopilotRipgrepShim(platform, arch, builtInCopilotExtensionDir, nodeModulesDir);
+-	};
+-}
++// --- Start Axis ---
++// prepareCopilotRipgrepShimTaskREH removed: no built-in Copilot extension (ADR 0002 decision 6)
++// --- End Axis ---
+ 
+ ['reh', 'reh-web'].forEach(type => {
+ 	const target = type === 'reh' ? 'server' : 'server-web';
+@@ -551,8 +549,10 @@ function prepareCopilotRipgrepShimTaskREH(platform: string, arch: string, destin
+ 				compileNativeExtensionsBuildTask,
+ 				task.task(`node-${platform}-${arch}`) as task.Task,
+ 				util.rimraf(path.join(BUILD_ROOT, destinationFolderName)),
++				// --- Start Axis ---
++				// No built-in Copilot extension to shim (ADR 0002 decision 6)
+ 				packageTask(type, platform, arch, sourceFolderName, destinationFolderName),
+-				prepareCopilotRipgrepShimTaskREH(platform, arch, destinationFolderName)
++				// --- End Axis ---
+ 			];
+ 
+ 			if (platform === 'win32') {
+@@ -567,7 +567,9 @@ function prepareCopilotRipgrepShimTaskREH(platform: string, arch: string, destin
+ 				compileApiProposalNamesTask,
+ 				cleanExtensionsBuildTask,
+ 				compileNonNativeExtensionsBuildTask,
+-				compileCopilotExtensionBuildTask,
++				// --- Start Axis ---
++				// extensions/copilot is not packaged (ADR 0002 decision 6)
++				// --- End Axis ---
+ 				compileExtensionMediaBuildTask,
+ 				writeISODate('out-build'),
+ 				minified ? esbuildBundleMinTask : esbuildBundleTask,
+diff --git a/build/gulpfile.vscode.linux.ts b/build/gulpfile.vscode.linux.ts
+index 121cbc83..82ff80dc 100644
+--- a/build/gulpfile.vscode.linux.ts
++++ b/build/gulpfile.vscode.linux.ts
+@@ -14,7 +14,9 @@ import product from '../product.json' with { type: 'json' };
+ import { getDependencies } from './linux/dependencies-generator.ts';
+ import { recommendedDeps as debianRecommendedDependencies } from './linux/debian/dep-lists.ts';
+ import { recommendedDeps as rpmRecommendedDependencies } from './linux/rpm/dep-lists.ts';
+-import { readFileSync } from 'fs';
++// --- Start Axis ---
++// readFileSync was used only for resources/linux/copilot-link.sh
++// --- End Axis ---
+ import * as path from 'path';
+ import * as cp from 'child_process';
+ import { promisify } from 'util';
+@@ -23,7 +25,10 @@ const exec = promisify(cp.exec);
+ const root = path.dirname(import.meta.dirname);
+ const commit = getVersion(root);
+ const linuxDesktopName = product.linuxDesktopName;
+-const copilotLinkHelper = readFileSync(path.join(root, 'resources/linux/copilot-link.sh'), 'utf8');
++// --- Start Axis ---
++// No built-in Copilot CLI to link from the deb/rpm scripts (ADR 0002 decision 6)
++const copilotLinkHelper = '';
++// --- End Axis ---
+ const rpmCopilotLinkHelper = copilotLinkHelper.replace(/%/g, '%%');
+ 
+ const linuxPackageRevision = Math.floor(new Date().getTime() / 1000);
+diff --git a/build/gulpfile.vscode.ts b/build/gulpfile.vscode.ts
+index 0256e9ea..eb610d74 100644
+--- a/build/gulpfile.vscode.ts
++++ b/build/gulpfile.vscode.ts
+@@ -24,9 +24,13 @@ import { getProductionDependencies } from './lib/dependencies.ts';
+ import { config } from './lib/electron.ts';
+ import { createAsar } from './lib/asar.ts';
+ import minimist from 'minimist';
+-import { compileNonNativeExtensionsBuildTask, compileNativeExtensionsBuildTask, compileAllExtensionsBuildTask, compileExtensionMediaBuildTask, cleanExtensionsBuildTask, compileCopilotExtensionBuildTask } from './gulpfile.extensions.ts';
++// --- Start Axis ---
++import { compileNonNativeExtensionsBuildTask, compileNativeExtensionsBuildTask, compileAllExtensionsBuildTask, compileExtensionMediaBuildTask, cleanExtensionsBuildTask } from './gulpfile.extensions.ts';
++// --- End Axis ---
+ import { checkApiProposalNamesTask, copyCodiconsTask } from './lib/compilation.ts';
+-import { ensureCopilotPlatformPackage, getCopilotExcludeFilter, getCopilotRuntimePrebuildFiles, getCopilotRuntimeVersion, getCopilotTgrepExcludeFilter, getRipgrepExcludeFilter, prepareBuiltInCopilotRipgrepShim, renderCopilotShimLauncher } from './lib/copilot.ts';
++// --- Start Axis ---
++import { ensureCopilotPlatformPackage, getCopilotExcludeFilter, getCopilotRuntimePrebuildFiles, getCopilotRuntimeVersion, getCopilotTgrepExcludeFilter, getRipgrepExcludeFilter, renderCopilotShimLauncher } from './lib/copilot.ts';
++// --- End Axis ---
+ import { ensureOSProxyResolverPlatformPackage, getOSProxyResolverExcludeFilter, getOSProxyResolverPlatformFiles } from './lib/osProxyResolver.ts';
+ import { readAgentSdkResults } from './agent-sdk/common.ts';
+ import { readDictationRuntimeResults } from './dictation-runtime/common.ts';
+@@ -553,22 +557,9 @@ function patchWin32DependenciesTask(destinationFolderName: string) {
+ 	};
+ }
+ 
+-function prepareCopilotRipgrepShimTask(platform: string, arch: string, destinationFolderName: string) {
+-	const outputDir = path.join(path.dirname(root), destinationFolderName);
+-
+-	return async () => {
+-		// On Windows with win32VersionedUpdate, app resources live under a
+-		// commit-hash prefix: {output}/{commitHash}/resources/app/
+-		const versionedResourcesFolder = util.getVersionedResourcesFolder(platform, commit!);
+-		const appBase = platform === 'darwin'
+-			? path.join(outputDir, `${product.nameLong}.app`, 'Contents', 'Resources', 'app')
+-			: path.join(outputDir, versionedResourcesFolder, 'resources', 'app');
+-		const appNodeModulesDir = path.join(appBase, 'node_modules.asar.unpacked');
+-
+-		const builtInCopilotExtensionDir = path.join(appBase, 'extensions', 'copilot');
+-		prepareBuiltInCopilotRipgrepShim(platform, arch, builtInCopilotExtensionDir, appNodeModulesDir);
+-	};
+-}
++// --- Start Axis ---
++// prepareCopilotRipgrepShimTask removed: no built-in Copilot extension (ADR 0002 decision 6)
++// --- End Axis ---
+ 
+ function generateNodeCompileCacheTask(platform: string, destinationFolderName: string) {
+ 	const outputDirectory = path.join(path.dirname(root), destinationFolderName);
+@@ -605,8 +596,10 @@ BUILD_TARGETS.forEach(buildTarget => {
+ 		const packageTasks: task.Task[] = [
+ 			compileNativeExtensionsBuildTask,
+ 			util.rimraf(path.join(buildRoot, destinationFolderName)),
++			// --- Start Axis ---
++			// No built-in Copilot extension to shim (ADR 0002 decision 6)
+ 			packageTask(platform, arch, sourceFolderName, destinationFolderName, opts),
+-			prepareCopilotRipgrepShimTask(platform, arch, destinationFolderName)
++			// --- End Axis ---
+ 		];
+ 
+ 		if (platform === 'win32') {
+@@ -633,7 +626,9 @@ BUILD_TARGETS.forEach(buildTarget => {
+ 			copyCodiconsTask,
+ 			cleanExtensionsBuildTask,
+ 			compileNonNativeExtensionsBuildTask,
+-			compileCopilotExtensionBuildTask,
++			// --- Start Axis ---
++			// extensions/copilot is not packaged (ADR 0002 decision 6)
++			// --- End Axis ---
+ 			compileExtensionMediaBuildTask,
+ 			writeISODate('out-build'),
+ 			esbuildBundleTask,

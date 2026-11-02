@@ -1,0 +1,182 @@
+diff --git a/build/checker/tsconfig.browser.json b/build/checker/tsconfig.browser.json
+index 3c18171d..96598df6 100644
+--- a/build/checker/tsconfig.browser.json
++++ b/build/checker/tsconfig.browser.json
+@@ -25,6 +25,11 @@
+ 	],
+ 	"exclude": [
+ 		"../../src/**/test/**",
+-		"../../src/**/fixtures/**"
++		"../../src/**/fixtures/**",
++		// --- Start Axis ---
++		// The agent host is not bundled and its SDK packages are not installed (ADR 0002 decision 6)
++		"../../src/vs/platform/agentHost/node/**",
++		"../../src/vs/platform/agentHost/common/otel/agentHostOTelService.ts"
++		// --- End Axis ---
+ 	]
+ }
+diff --git a/build/checker/tsconfig.electron-browser.json b/build/checker/tsconfig.electron-browser.json
+index 80828443..46344fc1 100644
+--- a/build/checker/tsconfig.electron-browser.json
++++ b/build/checker/tsconfig.electron-browser.json
+@@ -17,6 +17,11 @@
+ 		"../../src/**/fixtures/**",
+ 		"../../src/vs/base/parts/sandbox/electron-browser/preload.ts", 		// Preload scripts for Electron sandbox
+ 		"../../src/vs/base/parts/sandbox/electron-browser/preload-aux.ts",	// have limited access to node.js APIs
+-		"../../src/vs/platform/browserView/electron-browser/preload-browserView.ts"	// Browser view preload script
++		"../../src/vs/platform/browserView/electron-browser/preload-browserView.ts",	// Browser view preload script
++		// --- Start Axis ---
++		// The agent host is not bundled and its SDK packages are not installed (ADR 0002 decision 6)
++		"../../src/vs/platform/agentHost/node/**",
++		"../../src/vs/platform/agentHost/common/otel/agentHostOTelService.ts"
++		// --- End Axis ---
+ 	]
+ }
+diff --git a/build/checker/tsconfig.electron-main.json b/build/checker/tsconfig.electron-main.json
+index a275f65d..465f92e4 100644
+--- a/build/checker/tsconfig.electron-main.json
++++ b/build/checker/tsconfig.electron-main.json
+@@ -13,5 +13,10 @@
+ 	"exclude": [
+ 		"../../src/**/test/**",
+ 		"../../src/**/fixtures/**",
++		// --- Start Axis ---
++		// The agent host is not bundled and its SDK packages are not installed (ADR 0002 decision 6)
++		"../../src/vs/platform/agentHost/node/**",
++		"../../src/vs/platform/agentHost/common/otel/agentHostOTelService.ts"
++		// --- End Axis ---
+ 	]
+ }
+diff --git a/build/checker/tsconfig.electron-utility.json b/build/checker/tsconfig.electron-utility.json
+index 25b33be4..97a3b180 100644
+--- a/build/checker/tsconfig.electron-utility.json
++++ b/build/checker/tsconfig.electron-utility.json
+@@ -13,5 +13,10 @@
+ 	"exclude": [
+ 		"../../src/**/test/**",
+ 		"../../src/**/fixtures/**",
++		// --- Start Axis ---
++		// The agent host is not bundled and its SDK packages are not installed (ADR 0002 decision 6)
++		"../../src/vs/platform/agentHost/node/**",
++		"../../src/vs/platform/agentHost/common/otel/agentHostOTelService.ts"
++		// --- End Axis ---
+ 	]
+ }
+diff --git a/build/checker/tsconfig.node.json b/build/checker/tsconfig.node.json
+index d8699e83..36579b9b 100644
+--- a/build/checker/tsconfig.node.json
++++ b/build/checker/tsconfig.node.json
+@@ -24,6 +24,11 @@
+ 	"exclude": [
+ 		"../../src/**/test/**",
+ 		"../../src/**/fixtures/**",
+-		"../../src/typings/editContext.d.ts"
++		"../../src/typings/editContext.d.ts",
++		// --- Start Axis ---
++		// The agent host is not bundled and its SDK packages are not installed (ADR 0002 decision 6)
++		"../../src/vs/platform/agentHost/node/**",
++		"../../src/vs/platform/agentHost/common/otel/agentHostOTelService.ts"
++		// --- End Axis ---
+ 	]
+ }
+diff --git a/build/checker/tsconfig.worker.json b/build/checker/tsconfig.worker.json
+index 2f7bed6f..f215dbbe 100644
+--- a/build/checker/tsconfig.worker.json
++++ b/build/checker/tsconfig.worker.json
+@@ -25,6 +25,11 @@
+ 	"exclude": [
+ 		"../../src/**/test/**",
+ 		"../../src/**/fixtures/**",
+-		"../../src/typings/editContext.d.ts"
++		"../../src/typings/editContext.d.ts",
++		// --- Start Axis ---
++		// The agent host is not bundled and its SDK packages are not installed (ADR 0002 decision 6)
++		"../../src/vs/platform/agentHost/node/**",
++		"../../src/vs/platform/agentHost/common/otel/agentHostOTelService.ts"
++		// --- End Axis ---
+ 	]
+ }
+diff --git a/build/lib/compilation.ts b/build/lib/compilation.ts
+index 3d73cfec..57d69be7 100644
+--- a/build/lib/compilation.ts
++++ b/build/lib/compilation.ts
+@@ -95,12 +95,25 @@ export function createCompile(src: string, { build, emitError, transpileOnly, pr
+ 	return pipeline;
+ }
+ 
++// --- Start Axis ---
++// Agent host sources that the tsconfig leaves out are not compiled (ADR 0002 decision 6):
++// they import SDK packages that Axis does not install, and tsb fails on files outside the program.
++function axisSkipExcludedAgentHostSources(src: string): NodeJS.ReadWriteStream {
++	const configPath = path.join(import.meta.dirname, '../../', src, 'tsconfig.json');
++	const parsed = ts.getParsedCommandLineOfConfigFile(configPath, undefined, { ...ts.sys, onUnRecoverableConfigFileDiagnostic: d => { throw new Error(ts.flattenDiagnosticMessageText(d.messageText, '\n')); } });
++	const roots = new Set((parsed?.fileNames ?? []).map(f => path.normalize(f)));
++	return util.filter(data => !/[\\/]platform[\\/]agentHost[\\/]/.test(data.path) || !data.path.endsWith('.ts') || roots.has(path.normalize(data.path)));
++}
++// --- End Axis ---
++
+ export function transpileTask(src: string, out: string, esbuild?: boolean): task.StreamTask {
+ 
+ 	const task = () => {
+ 
+ 		const transpile = createCompile(src, { build: false, emitError: true, transpileOnly: { esbuild: !!esbuild }, preserveEnglish: false });
+-		const srcPipe = gulp.src(`${src}/**`, { base: `${src}` });
++		// --- Start Axis ---
++		const srcPipe = gulp.src(`${src}/**`, { base: `${src}` }).pipe(axisSkipExcludedAgentHostSources(src));
++		// --- End Axis ---
+ 
+ 		return srcPipe
+ 			.pipe(transpile())
+@@ -120,7 +133,9 @@ export function compileTask(src: string, out: string): task.Task {
+ 		}
+ 
+ 		const compile = createCompile(src, { build: false, emitError: true, transpileOnly: { esbuild: true }, preserveEnglish: false });
+-		const srcPipe = gulp.src(`${src}/**`, { base: `${src}` });
++		// --- Start Axis ---
++		const srcPipe = gulp.src(`${src}/**`, { base: `${src}` }).pipe(axisSkipExcludedAgentHostSources(src));
++		// --- End Axis ---
+ 		const generator = new MonacoGenerator(false);
+ 		if (src === 'src') {
+ 			generator.execute();
+diff --git a/src/tsconfig.json b/src/tsconfig.json
+index 815c7bfe..f4b2b1b3 100644
+--- a/src/tsconfig.json
++++ b/src/tsconfig.json
+@@ -34,6 +34,36 @@
+ 		"./vscode-dts/vscode.d.ts"
+ 	],
+ 	"exclude": [
+-		"vs/workbench/contrib/webview/browser/pre/service-worker.js"
++		"vs/workbench/contrib/webview/browser/pre/service-worker.js",
++		// --- Start Axis ---
++		// The agent host is not bundled and its SDK packages are not installed (ADR 0002 decision 6):
++		// its sources are neither type-checked nor compiled (build/lib/compilation.ts follows this list).
++		"vs/platform/agentHost/node/**",
++		"vs/platform/agentHost/test/node/**",
++		"vs/platform/agentHost/common/otel/agentHostOTelService.ts"
++		// --- End Axis ---
++	],
++	// --- Start Axis ---
++	// agentHost/node files that kept entry points import (remote agent hosts, dev containers) stay compiled
++	"files": [
++		"./vs/platform/agentHost/node/agentHostLockfile.ts",
++		"./vs/platform/agentHost/node/appNodeModules.ts",
++		"./vs/platform/agentHost/node/devContainerAgentHostService.ts",
++		"./vs/platform/agentHost/node/devContainerSamples.ts",
++		"./vs/platform/agentHost/node/devContainerSandbox.ts",
++		"./vs/platform/agentHost/node/devContainerServerCache.ts",
++		"./vs/platform/agentHost/node/localAgentHostMetadata.ts",
++		"./vs/platform/agentHost/node/nodeAgentHostStarter.ts",
++		"./vs/platform/agentHost/node/remoteAgentHostCliCache.ts",
++		"./vs/platform/agentHost/node/remoteAgentHostCliInstaller.ts",
++		"./vs/platform/agentHost/node/sshConfigPaths.ts",
++		"./vs/platform/agentHost/node/sshKnownHosts.ts",
++		"./vs/platform/agentHost/node/sshProxyCommand.ts",
++		"./vs/platform/agentHost/node/sshRemoteAgentHostHelpers.ts",
++		"./vs/platform/agentHost/node/sshRemoteAgentHostService.ts",
++		"./vs/platform/agentHost/node/tunnelAgentHostService.ts",
++		"./vs/platform/agentHost/node/wslRemoteAgentHostHelpers.ts",
++		"./vs/platform/agentHost/node/wslRemoteAgentHostService.ts"
+ 	]
++	// --- End Axis ---
+ }

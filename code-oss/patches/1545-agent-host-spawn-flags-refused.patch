@@ -1,0 +1,15 @@
+diff --git a/src/vs/server/node/serverServices.ts b/src/vs/server/node/serverServices.ts
+--- a/src/vs/server/node/serverServices.ts
++++ b/src/vs/server/node/serverServices.ts
+@@ -116,6 +116,11 @@ const axisAgentHostBundled: boolean = false;
+ 
+ export async function setupServerServices(connectionToken: ServerConnectionToken, args: ServerParsedArgs, REMOTE_DATA_FOLDER: string, agentHostBridgeConnectionToken: string | undefined, disposables: DisposableStore) {
+ 	const githubEnvironment = readGithubEnvironmentOptions(process.env);
++	// --- Start Axis ---
++	if (!axisAgentHostBundled && (args['agent-host-port'] || args['agent-host-path'] || githubEnvironment)) {
++		throw new Error('Axis does not include the agent host: --agent-host-port, --agent-host-path and GitHub environment hosting are not available');
++	}
++	// --- End Axis ---
+ 	if (githubEnvironment && !(args['agent-host-port'] || args['agent-host-path'])) {
+ 		throw new Error('GitHub environment hosting requires an explicitly spawned agent host');
+ 	}

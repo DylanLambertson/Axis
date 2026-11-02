@@ -12,7 +12,13 @@
   - `docs/feasibility/{code-oss-inventory,integration-alternatives,licensing-and-marketplace}.md`.
 - **Conventions:**
   - Upstream paths are relative to the Code OSS root at the baseline commit. `file:line` refers to that commit.
-  - Axis repository paths start with `code-oss/` (M2 tooling: `code-oss/patches/NNNN-name.patch` and `code-oss/overlay/**`).
+  - Axis repository paths follow the M2 tooling (`docs/feasibility/code-oss-build.md`):
+    - `code-oss/patches/NNNN-name.patch`: the patch series;
+    - `code-oss/overlay/**`: new files only (the apply script refuses to overwrite an upstream file);
+    - `code-oss/replace/**`: whole-file replacements of existing upstream files, such as icons;
+    - `code-oss/removals.txt`: upstream paths deleted after the patches;
+    - `code-oss/hooks/post-apply.d/NN-name`: executables run after apply, for example to regenerate lockfiles;
+    - `scripts/code-oss/*.sh`: `fetch`, `apply`, `build`, `run`, `footprint` and `test`, plus the M3 helpers `gen-icons.sh`, `gen-theme-syntax.mjs` and `check-artifacts.sh`.
   - **[V]** means VERIFIED: read in source. **[I]** means INFERRED: reasoned, not proven by running anything. No upstream scripts were run.
   - "Patch" means a hunk that edits an existing upstream file. "Overlay" means a new file copied into the tree. "Removal" means a path the M2 apply script deletes (see §7.3).
 - **Patch ranges.** Each range is measured on its own (ADR 0002 decisions 3, 6 and 7):
@@ -160,7 +166,7 @@ File: `src/vs/workbench/contrib/axis/browser/axisDefaults.contribution.ts`.
 | accent-on-dark / accent (text, focus) | `#9776F9` | `#5823F6` | `focusBorder` (`baseColors.ts:37`), `textLink.foreground` (`:56`), `textLink.activeForeground`, `list.focusOutline` (`listColors.ts:25`), `inputOption.activeBorder`, `activityBar.activeBorder` (`theme.ts:435`), `tab.activeBorderTop` (`:128`), `panelTitle.activeBorder`, `progressBar.background` (`colors/miscColors.ts:75`), `sash.hoverBorder` (`miscColors.ts:18`) |
 | accent tint* | `#9776F926` | `#5823F614` | `list.activeSelectionBackground` (`listColors.ts:33`), `list.inactiveSelectionBackground`, `menu.selectionBackground`, `quickInputList.focusBackground`, `selection.background` (`#9776F940` / `#5823F626`) |
 | derived* | `#4A1AD6` | `#4A1AD6` | `button.hoverBackground` (`inputColors.ts:125`); `scrollbarSlider.background` `#9A9EA733` / `#50555F33` (`miscColors.ts:56`); `badge.background` = raised, with text-primary foreground (`miscColors.ts:25`), so the accent stays reserved for interaction |
-| status | inherited | inherited | `errorForeground` (`baseColors.ts:25`), `editorError/Warning/Info.foreground` (`editorColors.ts:70,83,96`), `statusBar.debuggingBackground`: keep the 2026 values, then verify contrast in task S1.4 |
+| status | set explicitly | set explicitly | The themes include only the syntax snapshot, so unset workbench colours fall back to registry defaults, not to the 2026 theme. Set in both themes and checked by the contrast test: `statusBar.debuggingBackground`/`Foreground` dark `#1F6F99`/`#FFFFFF` (5.54:1; the 2026 `#3994BC` is 3.42:1 under white), light `#0069CC`/`#FFFFFF` (the 2026 pair, 5.39:1); `statusBarItem.errorBackground`/`Foreground` `#B42318`/`#FFFFFF` (6.57:1) and `statusBarItem.warningBackground`/`Foreground` `#CCA700`/`#111214` (8.12:1) in both; `errorForeground` dark `#F48771`, light `#AD0707`; `editorError/Warning/Info.foreground` (`editorColors.ts:70,83,96`) dark `#F14C4C`/`#CCA700`/`#59A4F9`, light `#E51400`/`#895503`/`#0063D3` (light warning: the registry `#BF8803` is 2.99:1) |
 
 `contrastBorder` and `contrastActiveBorder` (`baseColors.ts:41,45`) stay unset outside the HC themes.
 
@@ -218,8 +224,11 @@ These edits are patch G1 in block `1000–1499` (decision 5). They are excluded 
 
 ### 2.6 Icons and images from `assets/brand/axis-app-icon.svg`
 
-- Generate the assets with `code-oss/scripts/gen-icons.sh` (rsvg-convert, ImageMagick and `iconutil` on macOS). **Commit the outputs** under `code-oss/overlay/resources/**`, so builds need no image toolchain and reviewers see the bytes [I recommendation].
-- These are asset replacements: the overlay overwrites upstream files (requirement on M2, §7.3).
+- Generate the assets with `scripts/code-oss/gen-icons.sh`. It rasterises the SVG at each final size with headless Chrome (`scripts/code-oss/icons/render.html`), packs ICO and XPM with `scripts/code-oss/icons/pack.py` (Python standard library) and ICNS with `iconutil`, so it runs on a stock Mac with Chrome installed. **Commit the outputs** under `code-oss/replace/**`, so builds need no image toolchain and reviewers see the bytes.
+- These are asset replacements, so they live in `code-oss/replace/`; the overlay is for new files only.
+- `gen-icons.sh --check` (run in CI) verifies that the derived SVGs still match `assets/brand/`. Rasters are not compared byte for byte, because Chrome's rasteriser changes between releases.
+- **Implemented in S1.6:** `code.icns`, `code.ico`, the two tile PNGs and `VisualElementsManifest.xml`, `linux/code.png`, `rpm/code.xpm` (256 px rather than 1024 px, to keep it small), the server PNGs, favicon and manifest, `code-icon.svg` and the four letterpress SVGs.
+- **Deferred** until Windows and per-language packaging are in scope (open question 2): the 28 per-language document icons (darwin and win32), `sessions.ico` and the Inno Setup wizard bitmaps.
 
 | Target (upstream path) | Sizes / format | Referenced by [V] |
 |---|---|---|
@@ -308,7 +317,7 @@ These edits are patch G1 in block `1000–1499` (decision 5). They are excluded 
 **SC-3 acceptance checks (all required; task S1.3).**
 
 1. **No Copilot or agent-host code in artifacts.**
-   - `code-oss/scripts/check-artifacts` scans the packaged desktop app (including an `asar list` of `node_modules.asar`), the `vscode-reh-*` server and the `vscode-reh-web` output.
+   - `scripts/code-oss/check-artifacts.sh` scans the packaged desktop app (including an `asar list` of `node_modules.asar`), the `vscode-reh-*` server and the `vscode-reh-web` output.
    - With `--notices` it also fails if `LICENSE.txt`, `ThirdPartyNotices.txt` or (from distribution) the Axis `LICENSE` is missing from any of the three targets.
    - It fails on any path containing `node_modules/@github/copilot`, `node_modules/@vscode/copilot-api`, `node_modules/@anthropic-ai` or `extensions/copilot`, on any `agentHostMain` or `diffWorkerMain` file, and on any bundle containing those import specifiers.
 2. **Every remaining stub is inert.**
@@ -330,13 +339,63 @@ Removing root dependencies requires regenerating `package-lock.json`, because th
 1. The upstream precedent is `npm install --package-lock-only --ignore-scripts` per directory (`build/azure-pipelines/common/apply-sdk-canary-override.ts:174-183`, `build/agent-sdk/README.md:91-94`) [V].
    - `--ignore-scripts` skips `build/npm/preinstall.ts`, which runs header installs (`:125`) [I, npm lifecycle].
    - `.npmrc` already sets `legacy-peer-deps=true` [V].
-2. M2 apply step (`code-oss/scripts/apply` → `regen-locks`):
+2. A post-apply hook (`code-oss/hooks/post-apply.d/NN-regen-locks`, run by `scripts/code-oss/apply.sh`):
    - pin npm to the version bundled with `.nvmrc` Node `24.22.1` (npm < 13 is enforced at `preinstall.ts:46-53`) [V];
    - run the command above in `.` and `remote/`;
    - then **assert** that the removed set equals the expected list: `@github/copilot-sdk` with its 8 platform packages and its own nested `zod` (`package-lock.json:1173-1313`), `@vscode/copilot-api` and `@anthropic-ai/sdk` with their exclusive transitive dependencies;
    - also assert that nothing else changed (`git diff --numstat` plus a JSON key diff) and that top-level `zod` is unchanged (SC-3 check 4).
 3. Record the resulting lockfile sha256 in the manifest. CI runs `npm ci` in a clean checkout to prove the lock is reproducible.
 4. Regenerate at apply time rather than committing a lockfile patch. A lock patch would conflict on almost every sync [I].
+
+### 2.9 Stage 1 as implemented (M3)
+
+Measured on `feat/axis-stage1-rebrand` against Code OSS `1.144.0`, macOS 15 on Intel x64. Upstream line counts come from `scripts/code-oss/footprint.sh`.
+
+**Patch series.**
+
+| Block | Patches | Upstream files | Lines added / deleted (markers) | Contents |
+|---|---|---|---|---|
+| `0001–0999` shell | `0010` (P8 part), `0020` (P9), `0100` (P10) | 3 | 21 / 1 (8) | ESLint spreads `axisConfigs` from `build/axis/eslint.axis.ts`; copyright filter exempts Axis paths; the temporary defaults import |
+| `1000–1499` rebrand | `1000` (G1), `1010` (G2), `1015`, `1020` (G3) | 4 | 97 / 109 (10) | `product.json` identity (§2.5), Electron company and copyright, the macOS help book and workspace document-type names, notices in reh, reh-web and web |
+| `1500–1999` Copilot and agent host | `1500`–`1560` (8 patches) | 19 | 190 / 122 (84) | S1.2: the Copilot extension is not installed, compiled, packaged or tested. S1.3: option (a) with (a1), below; `1545` refuses the agent-host spawn flags |
+| `2000–2999` security | none | 0 | 0 | S1.8 not started |
+| `replace/` | 16 files | 16 | n/a | Icons, images and manifests (§2.6) |
+| net vs pin (`git diff`) | | 43 | 931 / 2,670 | Includes the lockfiles regenerated by `code-oss/hooks/post-apply.d/10-regen-locks` (root 88 / 901, remote 0 / 484) |
+
+Overlay (new files): `extensions/theme-axis/**` (§2.3), `src/vs/workbench/contrib/axis/{browser,test/browser}/axisDefaults*` (§2.2) and `build/axis/eslint.axis.ts` (§3.7).
+
+**S1.3 Copilot and agent-host removal: options tried, in ADR order.**
+
+| Option | Result |
+|---|---|
+| (a) unbundle, type-checked with (a2) shorthand stubs (`declare module '<pkg>';` in a `.d.ts`) | **Failed.** 3,825 type errors in 151 files, all under `platform/agentHost` (2,600 in tests). The sources use SDK names as types and namespaces (TS2709 and TS2694), which shorthand modules cannot express. Full `.d.ts` stubs would mean vendoring the SDK typings at every bump |
+| (a) unbundle with (a1) tsconfig exclusion | **Chosen; all checks pass.** An import-graph scan showed that the files importing the SDKs, and everything that imports them, form a closed set inside `platform/agentHost` (183 sources, 221 tests) that no kept entry point reaches. `src/tsconfig.json` and the six layer-checker tsconfigs exclude `agentHost/node/**`, `agentHost/test/node/**` and `agentHostOTelService.ts`, and keep as explicit roots the 18 `agentHost/node` files that the shared process, main process and server import (remote agent hosts, dev containers). Because tsb rejects files outside the program, `build/lib/compilation.ts` skips agent-host sources that are not tsconfig roots, so the tsconfig is the single list |
+| (b) stub packages, (c) delete | Not needed |
+
+`1530`–`1560` remove the agent-host entry points (`build/next/index.ts`), stop Electron main from creating the agent host starter and manager and make the server register `UnavailableAgentHostChannel` by default (`app.ts`, `serverServices.ts`), and drop `@github/copilot-sdk`, `@vscode/copilot-api` and `@anthropic-ai/sdk` from the root and remote dependencies and `@anthropic-ai/claude-agent-sdk` and `@openai/codex` from devDependencies, with the packaging steps that fetched or checked them. L3 no longer applies, because `claude-agent-sdk` is not installed.
+
+**SC-3 checks.**
+
+1. `scripts/code-oss/check-artifacts.sh --notices` (which fails closed: any listing, asar or grep error fails the run, paths match anywhere including `node_modules.asar.unpacked`, and auto-discovery requires all three artifacts) passes on `vscode-darwin-x64-min`, `vscode-reh-darwin-x64-min` and `vscode-reh-web-darwin-x64-min`. `node_modules.asar` has no `@github`, `@anthropic-ai` or `@vscode/copilot-api` entry and keeps `zod`, and `LICENSE.txt` and `ThirdPartyNotices.txt` are in all three artifacts (G3).
+2. No stub remains: (a1) needs none.
+3. `10-regen-locks` regenerates both lockfiles with `npm install --package-lock-only --ignore-scripts`, using exactly npm 11.19.1 (bundled with Node 24.22.1). It fails unless the removed entries equal its expected `name@version` lists, every kept entry is unchanged in every field, the root entry loses only the agent SDK names, and each lockfile has the sha256 recorded in the hook. It removed 51 root entries (28 SDK packages and their platform builds, 23 exclusive transitive dependencies such as `koffi` and `json-schema-to-ts`) and 31 remote entries. `npm ci` succeeded on the regenerated lock.
+4. `zod` stays a direct dependency, resolved at `node_modules/zod`, at the same version; the hook asserts it.
+
+**Deviations and follow-ups.**
+
+- `defaultChatAgent` is an inert stub of empty strings, which is upstream's own fallback (`?? ''`). Onboarding theme entries keep their upstream ids (`dark-2026`, `light-2026`), because `onboardingVariationA.ts` preselects `dark-2026`; only their labels and theme ids change.
+- `licenseUrl` and `serverLicenseUrl` point at `LICENSE` in the Axis repository, which does not exist yet (L2).
+- `webviewContentExternalBaseUrlTemplate` is unchanged. Desktop does not use it, but **reh-web webviews load from Microsoft's `vscode-cdn.net` until M6**, and the web CSP `frame-src` still allows it (D9, R5, threat model WEB-4).
+- `extensionsGallery` is still unset (business decision).
+- The About dialog still prints `@github/copilot` and `@github/copilot-sdk` version lines (now `Unknown`). This needs a small patch in block `1500–1999`.
+- Still open in block `1500–1999`: D8 (the Agents-window entry points and choke points) and removing `extensions/copilot` from the tree. The dev launcher skips the extension through `VSCODE_SKIP_BUILTIN_EXTENSIONS`.
+- Open question 4 is answered: ESLint loads `extensions/copilot/.eslintplugin` with the extension's `node_modules` absent.
+- `1545` makes the server fail at startup when `--agent-host-port`, `--agent-host-path` or GitHub environment hosting is used, since they would fork the unbundled `agentHostMain`. The `--agent-host-bridge-*` flags still let renderers proxy to an externally running agent host.
+- `@vscode/sandbox-runtime` is kept (§2.7). By code reading, it is launched only for chat-agent terminal tools with `chat.agent.sandbox.enabled` on, or for MCP servers whose definition sets `sandboxEnabled`; with the Axis defaults (AI features off) neither path runs. This was not observed at runtime.
+- Header rule: every Axis-owned file added in M3 carries `Copyright (c) 2026 Dylan Lambertson. All rights reserved.`, scripts included (`check-artifacts.sh`, `gen-icons.sh`, `gen-theme-syntax.mjs`, `icons/*`, `10-regen-locks`). JSON files cannot carry it.
+- Deviation from §2.8 step 3: the lockfile sha256s are recorded in `10-regen-locks`, not in the manifest.
+- `build/next/index.ts transpile` (the development fast build) globs `src/**/*.ts`, so it still emits the excluded agent-host files into `out/`. Development only: packaged outputs have no `agentHost/node` files.
+- Follow-ups (Linux packaging, not on the M3 gating platform): the Linux templates still say "Visual Studio Code" (`resources/linux/code.appdata.xml:8,10`, `debian/control.template:8,15`, `rpm/code.spec.template:7,21`, `snap/snapcraft.yaml:5`), name Microsoft as maintainer and packager, and `debian/templates.template` offers to add Microsoft's apt repository. Fix them in block `1000–1499` before any Linux package is built.
 
 ## 3. Stage 2: the `src/vs/axis` shell layer
 
@@ -451,7 +510,7 @@ Why this approach:
 
 **Phase B (curated, task S2.8).**
 
-- `code-oss/scripts/gen-axis-main` generates `axis.common.main.ts` at apply time from upstream `workbench.common.main.ts` (`:6-492`) [V] **minus** the exclude list below.
+- A post-apply hook (`code-oss/hooks/post-apply.d/NN-gen-axis-main`) generates `axis.common.main.ts` at apply time from upstream `workbench.common.main.ts` (`:6-492`) [V] **minus** the exclude list below.
 - It **fails** when an exclude pattern no longer matches anything (a stale exclude).
 - It prints every upstream import that is new since the last sync, so the sync PR records an include/exclude decision for each one.
 - Defaulting to *include* protects service availability. A missing service is a runtime "unknown service" failure [I].
@@ -586,7 +645,7 @@ Files that are adapted from upstream (copied from sessions or `layout.ts`) keep 
   - Assets referenced from CSS `url()` are bundled by esbuild's `file` loader (`build/next/index.ts:520-526`) [V].
   - Assets loaded at runtime through `FileAccess` URIs need curated patterns in `build/next/resources.ts:20-31`; sessions adds its own at `:29-30` [V].
   - M3 Axis UI loads **no** assets by URI: icons are codicons and CSS-referenced SVGs, and replaced upstream assets keep their listed paths (`:26-27`). If that changes, `resources.ts` is an eleventh shell file.
-- **Packaging:** `vscode-darwin-arm64-min`, `vscode-linux-x64-min`, `vscode-reh-web-linux-x64-min` (`gulpfile.vscode.ts:586-650`, `gulpfile.reh.ts:533-575`) [V, inventory].
+- **Packaging:** `vscode-darwin-x64-min` on the Intel development Mac (`vscode-darwin-arm64-min` on Apple silicon), `vscode-linux-x64-min`, `vscode-reh-web-linux-x64-min` (`gulpfile.vscode.ts:586-650`, `gulpfile.reh.ts:533-575`) [V, inventory].
 
 ### 3.9 Desktop vs web
 
@@ -618,7 +677,7 @@ Files that are adapted from upstream (copied from sessions or `layout.ts`) keep 
 - With this design's overlay lint module: **10 files and about 45 lines**.
 - Either way it is ≤ 12 files and ≤ 300 lines, leaving 2 files of headroom. Those 2 files are the constraint that rules out in-pipeline `.tsx` (§4), and they would be used up by P11/P12 or by `build/next/resources.ts` (§3.8).
 
-`code-oss/scripts/footprint` measures each range separately.
+`scripts/code-oss/footprint.sh` measures each range separately. It runs after `scripts/code-oss/apply.sh`, not as a hook, because it needs the completed apply stamp.
 
 - It counts distinct upstream files and `+`/`-` lines across `code-oss/patches/NNNN-*`, reporting the four blocks separately: `0001–0999` shell, `1000–1499` rebrand and licensing (decision 5), `1500–1999` Copilot and agent host (decision 6), and `2000–2999` security hardening (decision 7). Marker lines are reported separately too.
 - For criterion 2 it excludes `product.json` and `resources/**`.
@@ -739,7 +798,7 @@ Tests follow the upstream sessions patterns:
 | S1.4 | `extensions/theme-axis` dark and light (§2.3) | Both themes selectable; a contrast test (Axis script) checks every foreground against **each surface it is drawn on** (canvas, surface and raised). Text and placeholders must reach ≥4.5:1; focus and control borders ≥3:1 (dark control border 3.20:1 on raised is the tightest case). The stated exceptions (disabled text, line numbers) are listed in the test | Script output; screenshots of editor, sidebar, quick input and panel |
 | S1.5 | `axisDefaults.contribution.ts` and P10 (restyle, shell block); Axis proprietary header rule (part of P8, landed early; D4) | Fresh profile shows the §2.2 defaults; `chat.disableAIFeatures` is effectively true; Axis-owned files carry the proprietary header, and upstream files keep MIT | Settings editor "Modified by Axis defaults" view; unit test asserting registered defaults; `npm run eslint` |
 | S1.6 | Icons and assets (§2.6), `build/lib/electron.ts:146-147` | No VS Code or Code-OSS imagery in the dock/taskbar, About, watermark or web manifest | Packaged build visual check; `file` sizes check script |
-| S1.7 | Stage 1 checkpoint: packaged macOS and Linux builds; upstream smoke subset | Builds launch; the PRODUCT.md scenario 5 walkthrough works | `npm run gulp vscode-darwin-arm64-min` / `vscode-linux-x64-min`; `npm run smoketest -- --grep "Search\|Terminal\|Statusbar\|Extensions\|Languages\|Task"` (`test/smoke/src/main.ts:20-37,454-457`) [V] |
+| S1.7 | Stage 1 checkpoint: packaged macOS and Linux builds; upstream smoke subset | Builds launch; the PRODUCT.md scenario 5 walkthrough works | `npm run gulp vscode-darwin-x64-min` (or `-arm64-min`) / `vscode-linux-x64-min`; `npm run smoketest -- --grep "Search\|Terminal\|Statusbar\|Extensions\|Languages\|Task"` (`test/smoke/src/main.ts:20-37,454-457`) [V] |
 | S1.8 | Range `2000–2999` security hardening (§3.6). M3 lands H1 (web TT), H3 (cookie `Secure`) and H4 (optional `openExternal` allow-list). H2 (`frame-src` for the self-hosted webview origin) goes to M6 with D9 | The web CSP carries Trusted Types with no violations in the web walkthrough; the cookie is `Secure` over TLS; `openExternal` refuses `file:` and custom schemes (H4) | TT-violation smoke test (threat model §7 SIT); `curl -I` cookie check; a unit test for the H4 allow-list |
 
 **Stage 2**
@@ -757,7 +816,7 @@ Tests follow the upstream sessions patterns:
 | S2.9 | Packaged Axis-shell builds on macOS and Linux; ADR checklist demo | ADR 0002 validation bullet 1 is satisfied | Recorded walkthrough; smoke subset on both OSes |
 | S2.10 | **Upstream sync exercise** from 1.144 to a release **at least 2 weekly minors later** (criterion 4; latest recovery release, matching the sync policy) | ≤ 1 working day for **all four blocks** (`0001–0999`, `1000–1499`, `1500–1999`, `2000–2999`); conflicts only in patched seams | Protocol below |
 | S2.11 | **Throwaway** React spike answering criterion 5 (§4, D5): in-pipeline `.tsx` and no-JSX variants | One React view passes the production CSP/TT smoke test, lint/hygiene/tsec and the minified production bundle; footprint, bundle and startup deltas recorded for both variants | Measurements in the PR description; the spike branch is **not merged** |
-| S2.12 | Footprint report and ADR 0002 validation write-up | Criterion 2 met by range `0001–0999`; criterion 3 recorded separately for `1000–1499`, `1500–1999` and `2000–2999`; ADR status updated with evidence | `code-oss/scripts/footprint` output per range |
+| S2.12 | Footprint report and ADR 0002 validation write-up | Criterion 2 met by range `0001–0999`; criterion 3 recorded separately for `1000–1499`, `1500–1999` and `2000–2999`; ADR status updated with evidence | `scripts/code-oss/footprint.sh` output per range |
 
 **Sync exercise protocol (S2.10).** Record each of these in `docs/feasibility/upstream-sync-log.md`:
 
@@ -800,9 +859,11 @@ Pass means ≤ 1 working day across all ranges, with no edits outside patched se
 
 ### 7.3 Requirements on M2 tooling
 
-- Overlay supports **new files and replacing upstream files** (assets in §2.6).
-- A **removal manifest** (`code-oss/removals.txt`) applied after checkout.
-- Post-apply hooks: `regen-locks` (§2.8), `gen-axis-main` (§3.5), `gen-icons` verification, `footprint`.
+Met by M2 as follows:
+
+- New files go in `code-oss/overlay/`; whole-file replacements of upstream files (assets in §2.6) go in `code-oss/replace/`, which refuses targets that do not exist at the pin.
+- A **removal manifest** (`code-oss/removals.txt`) applied after the patches.
+- Post-apply hooks in `code-oss/hooks/post-apply.d/`: `regen-locks` (§2.8) and `gen-axis-main` (§3.5). Icon verification is `scripts/code-oss/gen-icons.sh --check` in CI. `scripts/code-oss/footprint.sh` runs after apply, not as a hook.
 - Patches numbered by block, as in the M2 scripts: `0001–0999` shell, `1000–1499` rebrand and licensing, `1500–1999` Copilot and agent host, `2000–2999` security hardening.
 
 ### 7.4 Still open

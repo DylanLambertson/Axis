@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<!-- Copyright (c) 2026 Dylan Lambertson. All rights reserved. -->
+<!-- Rasterises the Axis brand SVGs for scripts/code-oss/gen-icons.sh. The script
+     replaces the JOBS and SOURCES placeholders, loads the page in headless Chrome
+     with --dump-dom and reads the result from <pre id="out">. Every raster is drawn
+     from the vector at its final size; nothing is resampled. -->
+<html>
+<head><meta charset="utf-8"></head>
+<body>
+<pre id="out">pending</pre>
+<script>
+const SOURCES = /*SOURCES*/{};
+const JOBS = /*JOBS*/[];
+
+function load(src) {
+	const img = new Image();
+	img.src = src;
+	return img.decode().then(() => img);
+}
+
+async function main() {
+	const images = {};
+	for (const [name, url] of Object.entries(SOURCES)) {
+		images[name] = await load(url);
+	}
+	const out = {};
+	for (const job of JOBS) {
+		const canvas = document.createElement('canvas');
+		canvas.width = job.w;
+		canvas.height = job.h;
+		const ctx = canvas.getContext('2d');
+		ctx.imageSmoothingQuality = 'high';
+		if (job.bg) {
+			ctx.fillStyle = job.bg;
+			ctx.fillRect(0, 0, job.w, job.h);
+		}
+		const img = images[job.src];
+		// Source crop in SVG user units ([x, y, size]); the SVG is drawn at a scale
+		// that maps the crop onto `fill` of the shorter canvas side, centred.
+		const [cx, cy, cs] = job.crop;
+		const side = Math.round(Math.min(job.w, job.h) * job.fill);
+		const scale = side / cs;
+		const dx = Math.round((job.w - side) / 2) - cx * scale;
+		const dy = Math.round((job.h - side) / 2) - cy * scale;
+		ctx.drawImage(img, dx, dy, img.naturalWidth * scale, img.naturalHeight * scale);
+		if (job.format === 'png') {
+			out[job.name] = canvas.toDataURL('image/png').split(',')[1];
+		} else {
+			const data = ctx.getImageData(0, 0, job.w, job.h).data;
+			let bin = '';
+			for (let i = 0; i < data.length; i += 0x8000) {
+				bin += String.fromCharCode.apply(null, data.subarray(i, i + 0x8000));
+			}
+			out[job.name] = btoa(bin);
+		}
+	}
+	document.getElementById('out').textContent = JSON.stringify(out);
+}
+
+main().catch(e => { document.getElementById('out').textContent = 'error: ' + e; });
+</script>
+</body>
+</html>

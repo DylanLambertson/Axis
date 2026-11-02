@@ -14,6 +14,9 @@ node_modules/
 dist/
 build/
 coverage/
+# Code OSS sources named build/ (upstream build scripts) are Axis source, not output.
+!/code-oss/overlay/build/
+!/code-oss/replace/build/
 
 # Extension compatibility matrix: downloaded VSIXs and run output
 test/extension-matrix/.vsix-cache/
