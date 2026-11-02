@@ -11,7 +11,7 @@ Executables run by `scripts/code-oss/apply.sh` after the patches, removals, repl
 - Hooks must be deterministic and idempotent: `apply.sh` resets the tree before every run, so a hook always starts from the same input. Untracked hook output is removed by that reset unless upstream ignores it.
 - If a suitable Node 24 is already available (`NODE24_BIN`, Homebrew `node@24` or the tarball `build.sh` unpacked into `.tools/`), its directory is first on `PATH` and in `AXIS_NODE_BIN_DIR`. `apply.sh` never downloads Node, so a hook that needs Node must check `AXIS_NODE_BIN_DIR` and fail clearly when it is unset.
 - Hooks must not reach the network beyond what the step strictly requires; document any access in the hook.
-- Changes that hooks make to tracked upstream files appear in the `total` row of `scripts/code-oss/footprint.sh`, not in a patch block.
+- **Hooks may change only lockfiles among upstream files:** `package-lock.json` and `npm-shrinkwrap.json`, in any directory (`HOOK_ALLOWED_BASENAMES` in `scripts/code-oss/lib.sh`). New untracked files, such as generated sources, are allowed. `apply.sh` records the tree before and after the hooks. `footprint.sh` reports the hooks' changes to upstream files in its `hooks` row, and fails with `UNATTRIBUTED` when a hook changes any other upstream file.
 
 `apply.sh` records each hook and its SHA-256 in `vendor/code-oss.applied`.
 

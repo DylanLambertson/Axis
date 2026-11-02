@@ -81,6 +81,7 @@ printf 'copilot b\n' >"$up/extensions/copilot/b.txt"
 printf 'upstream icon\n' >"$up/resources/icon.txt"
 printf 'agent host\n' >"$up/src/agent.txt"
 printf '{ "nameShort": "Code - OSS" }\n' >"$up/product.json"
+printf 'lock v1\n' >"$up/package-lock.json"
 printf 'ignored/\n' >"$up/.gitignore"
 printf 'line 1\nline 2\nline 3\nline 4\nline 5\n' >"$up/src/app.txt"
 git -C "$up" add -A
@@ -113,7 +114,7 @@ git -C "$scratch" -c advice.detachedHead=false checkout -q -f "$c1"
 printf 'upstream readme (guardrail)\n' >"$scratch/README.md"
 git -C "$scratch" diff >"$tmp/1000-guard.patch"
 git -C "$scratch" -c advice.detachedHead=false checkout -q -f "$c1"
-printf '// --- Start Axis ---\n{ "nameShort": "Axis" }\n// --- End Axis ---\n' >"$scratch/product.json"
+printf '// --- Start Axis ---\n++ not a file header\n{ "nameShort": "Axis" }\n// --- End Axis ---\n' >"$scratch/product.json"
 git -C "$scratch" diff >"$tmp/0003-product-identity.patch"
 git -C "$scratch" -c advice.detachedHead=false checkout -q -f "$c1"
 printf 'agent host (stubbed)\n' >"$scratch/src/agent.txt"
@@ -436,13 +437,15 @@ check "stamp records the replaced path" grep -qx "replace resources/icon.txt" "$
 printf 'new\n' >"$replace/resources/new-icon.txt"
 expect_failure "apply refuses a replacement with no upstream file" "resources/new-icon.txt (not an upstream file" apply
 rm "$replace/resources/new-icon.txt"
-mkdir -p "$replace/extensions/copilot"
-printf 'x\n' >"$replace/extensions/copilot/a.txt"
+printf 'extensions/copilot\nresources/icon.txt\n' >"$removals"
 expect_failure "apply refuses to replace a file that removals.txt deleted" "no longer a regular file" apply
-rm -r "$replace/extensions"
+printf 'extensions/copilot\n' >"$removals"
 mkdir -p "$replace/src"
-printf 'x\n' >"$replace/src/harden.txt"
-expect_failure "apply refuses to replace a file created by a patch" "src/harden.txt (not an upstream file" apply
+printf 'x\n' >"$replace/src/app.txt"
+expect_failure "apply refuses to replace a source file (assets only)" "replace/src/app.txt is not an asset" apply
+rm "$replace/src/app.txt"
+printf 'x\n' >"$replace/src/harden.png"
+expect_failure "apply refuses to replace an image with no upstream file" "src/harden.png (not an upstream file" apply
 rm -r "$replace/src"
 printf 'overlay\n' >"$root/code-oss/overlay/resources-icon-collision.txt"
 mkdir -p "$root/code-oss/overlay/resources"
@@ -500,11 +503,17 @@ expect_success "apply after removing the Node hook" apply
 
 # --- footprint.sh ------------------------------------------------------------------
 
+cat >"$hooks/50-lock" <<'HOOK'
+#!/bin/sh
+printf 'lock v2\n' >package-lock.json
+HOOK
+chmod +x "$hooks/50-lock"
+expect_success "apply runs a lockfile-regenerating hook" apply
 footprint() { "$here/footprint.sh" "$@"; }
 expect_success "footprint reports on the applied tree" footprint --tsv
 row() { grep -Fqx "$(printf '%s\t' "$@" | sed 's/\t$//')" "$tmp/out"; }
-check "footprint: shell block (3 patches, 2 upstream files, +5 -3, 2 marker lines)" \
-	row shell 0001-0999 3 2 5 3 2 0
+check "footprint: shell block (3 patches, 2 upstream files, +6 -3, 2 marker lines; '++ ' line is not a header)" \
+	row shell 0001-0999 3 2 6 3 2 0
 check "footprint: criterion-2 shell count excludes product.json" \
 	row shell-c2 '0001-0999*' 3 1 2 2 0 0
 check "footprint: guardrails block (1 patch, 1 upstream file, +1 -1)" \
@@ -517,13 +526,26 @@ check "footprint: removals (1 path, 2 upstream files, -2)" \
 	row removals removals.txt "1 paths" 2 0 2 0 0
 check "footprint: replace (1 file, +1 -1)" \
 	row replace replace/ "1 files" 1 1 1 0 0
-check "footprint: net total against the pin (7 files, +7 -7)" \
-	row total "net vs pin" - 7 7 7 0 0
+check "footprint: lockfile changes by hooks are attributed to the hooks row" \
+	row hooks post-apply.d "3 hooks" 1 1 1 0 0
+check "footprint: net total against the pin (8 files, +9 -8)" \
+	row total "net vs pin" - 8 9 8 0 0
 expect_success "footprint prints a readable table by default" footprint
 check "readable table has a header" output_has "upstream files"
 cp "$tmp/0003-broken.patch" "$patches/"
 expect_failure "footprint refuses a stale apply" "rerun scripts/code-oss/apply.sh" footprint
 rm "$patches/0003-broken.patch"
+cat >"$hooks/60-edit-source" <<'HOOK'
+#!/bin/sh
+printf 'edited by a hook\n' >>README.md
+HOOK
+chmod +x "$hooks/60-edit-source"
+expect_success "apply runs a hook that edits upstream source" apply
+expect_failure "footprint flags a hook edit to upstream source as UNATTRIBUTED" "README.md (changed by a post-apply hook" footprint
+check "the UNATTRIBUTED report names the problem" output_has "UNATTRIBUTED upstream changes"
+rm "$hooks/60-edit-source"
+expect_success "apply after removing the source-editing hook" apply
+expect_success "footprint passes again" footprint
 printf 'manual\n' >>"$tree/src/app.txt"
 expect_failure "footprint refuses a tree edited after apply" "changed since apply.sh ran" footprint
 

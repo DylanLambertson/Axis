@@ -4,8 +4,9 @@
 #      0001-0999 shell, 1000-1499 rebrand and licensing guardrails, 1500-1999
 #      Copilot and agent host removal, 2000-2999 security hardening);
 #   2. deletes the paths listed in code-oss/removals.txt (each must exist);
-#   3. copies code-oss/replace/** over existing upstream files (each target
-#      must exist at the pinned commit, to catch upstream drift);
+#   3. copies code-oss/replace/** over existing upstream files (assets only:
+#      resources/** or image files; each target must exist at the pinned
+#      commit, to catch upstream drift);
 #   4. copies code-oss/overlay/** as new files (overwriting is refused);
 #   5. runs the executables in code-oss/hooks/post-apply.d/ in lexical order,
 #      inside vendor/code-oss.
@@ -27,7 +28,7 @@ for arg in "$@"; do
 	case "$arg" in
 	--force) force=1 ;;
 	-h | --help)
-		sed -n '2,20p' "$0"
+		sed -n '2,21p' "$0"
 		exit 0
 		;;
 	*) die "unknown argument: $arg" ;;
@@ -108,6 +109,10 @@ dup="$(sort "$work/removals" | uniq -d | head -n 1)"
 [ -z "$dup" ] || die "removals.txt lists '$dup' more than once"
 
 list_files "$REPLACE_DIR" "$work/replace"
+while IFS= read -r rel; do
+	is_replaceable_asset "$rel" ||
+		die "replace/$rel is not an asset; replace/ accepts only resources/** and image files (change source files with a patch)"
+done <"$work/replace"
 list_files "$OVERLAY_DIR" "$work/overlay"
 
 : >"$work/hooks"
@@ -151,8 +156,9 @@ tree_git clean -fdq
 for f in applied-patches applied-removals applied-replace applied-overlay applied-hooks; do
 	: >"$work/$f"
 done
+prehook_fp=""
 write_stamp() {
-	local p
+	local p fp
 	{
 		printf 'commit %s\n' "$UPSTREAM_COMMIT"
 		printf 'tag %s\n' "$UPSTREAM_TAG"
@@ -166,7 +172,9 @@ write_stamp() {
 		while IFS= read -r p; do
 			printf 'hook %s %s\n' "$p" "$(sha256_of "$HOOKS_DIR/$p")"
 		done <"$work/applied-hooks"
-		printf 'fingerprint %s\n' "$(tree_fingerprint)"
+		fp="$(tree_fingerprint)"
+		printf 'prehook-fingerprint %s\n' "${prehook_fp:-$fp}"
+		printf 'fingerprint %s\n' "$fp"
 	} >"$work/stamp"
 	mv "$work/stamp" "$STAMP_FILE"
 }
@@ -253,6 +261,9 @@ while IFS= read -r rel; do
 done <"$work/overlay"
 
 # --- 5. Post-apply hooks -----------------------------------------------------
+
+# Tree state before the hooks, so footprint.sh can attribute what they change.
+[ ! -s "$work/hooks" ] || prehook_fp="$(tree_fingerprint)"
 
 # Hooks get the Node 24 that build.sh would use, if one is already available
 # (no download here), first on PATH and as AXIS_NODE_BIN_DIR.

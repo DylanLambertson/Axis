@@ -27,6 +27,10 @@ VERSION_RE='^[0-9]+\.[0-9]+\.[0-9]+$'
 TAG_RE='^[A-Za-z0-9._-]+$'
 SHA256_RE='^[0-9a-f]{64}$'
 PATCH_RE='^[0-9]{4}-[a-z0-9][a-z0-9.-]*\.patch$'
+# replace/ may hold only assets: anything under resources/, or images elsewhere.
+REPLACE_IMAGE_RE='\.(png|svg|ico|icns|bmp|xpm|jpg|jpeg|gif|webp)$'
+# Post-apply hooks may change only these upstream files (by basename).
+HOOK_ALLOWED_BASENAMES='package-lock.json npm-shrinkwrap.json'
 PATCH_BLOCKS_HELP='0001-0999 shell, 1000-1499 guardrails, 1500-1999 copilot, 2000-2999 security'
 
 # patch_block NAME: prints "<block> <range>" for a NNNN-*.patch name, or fails
@@ -118,6 +122,21 @@ check_rel_path() {
 	done
 }
 
+# True if REL may be replaced wholesale through replace/.
+is_replaceable_asset() {
+	case "$1" in resources/*) return 0 ;; esac
+	[[ "$(lowercase "$1")" =~ $REPLACE_IMAGE_RE ]]
+}
+
+# True if a post-apply hook may change the upstream file REL.
+is_hook_allowed_path() {
+	local base="${1##*/}" allowed
+	for allowed in $HOOK_ALLOWED_BASENAMES; do
+		[ "$base" = "$allowed" ] && return 0
+	done
+	return 1
+}
+
 tree_git() {
 	git -C "$TREE_DIR" "$@"
 }
@@ -132,13 +151,19 @@ tree_is_dirty() {
 
 # Content hash of the whole working tree, including untracked files that are
 # not ignored. Uses a throwaway copy of the index so the real index is untouched.
+# The copy keeps the index's mtime (cp -p): Git re-hashes "racily clean" files
+# modified in the same second the index was written only when it can compare
+# against the real index timestamp.
 tree_fingerprint() {
 	local git_dir tmp_index tree_hash
 	git_dir="$(tree_git rev-parse --absolute-git-dir)"
 	tmp_index="$(mktemp "${TMPDIR:-/tmp}/axis-code-oss-index.XXXXXX")"
-	cp "$git_dir/index" "$tmp_index"
-	GIT_INDEX_FILE="$tmp_index" tree_git add -A
-	tree_hash="$(GIT_INDEX_FILE="$tmp_index" tree_git write-tree)"
+	if ! cp -p "$git_dir/index" "$tmp_index" ||
+		! GIT_INDEX_FILE="$tmp_index" tree_git add -A ||
+		! tree_hash="$(GIT_INDEX_FILE="$tmp_index" tree_git write-tree)"; then
+		rm -f "$tmp_index"
+		die "could not fingerprint $TREE_DIR"
+	fi
 	rm -f "$tmp_index"
 	printf '%s\n' "$tree_hash"
 }

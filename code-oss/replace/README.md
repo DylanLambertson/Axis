@@ -4,8 +4,9 @@ Axis files that intentionally replace upstream files of the same path, typically
 
 ## Rules
 
+- **Assets only.** A path is accepted only if it is under `resources/` or ends in an image extension: `.png`, `.svg`, `.ico`, `.icns`, `.bmp`, `.xpm`, `.jpg`, `.jpeg`, `.gif` or `.webp`, in any case. Anything else is refused before the tree is touched. Source changes must be patches, so that they count in the right `footprint.sh` block; wholesale replacement must not bypass the shell budget (ADR 0002 criterion 2). The allow-list is `is_replaceable_asset` in `scripts/code-oss/lib.sh`.
 - **Existing upstream files only.** The target path must exist at the pinned commit and still be a regular file in the tree; otherwise `apply.sh` fails and lists the paths. This catches upstream renames and deletions at sync time. New files belong in `../overlay`.
-- Text changes to upstream source belong in a patch, so that they show up in review and in `scripts/code-oss/footprint.sh` line counts. Use this directory for assets and for files that are replaced wholesale.
+- Paths are checked like the overlay's: no `..`, only printable ASCII without `\` or `:`, and no `.git` component in any spelling.
 - The upstream file mode is kept; only the content is replaced.
 - Only regular files and directories are allowed; symlinks are rejected. This `README.md` and `.DS_Store` files are not copied.
 
