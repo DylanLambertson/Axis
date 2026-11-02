@@ -1,0 +1,28 @@
+diff --git a/build/next/index.ts b/build/next/index.ts
+index e2f56634..56297c2e 100644
+--- a/build/next/index.ts
++++ b/build/next/index.ts
+@@ -108,8 +108,9 @@ const desktopEntryPoints = [
+ 	'vs/platform/files/node/watcher/watcherMain',
+ 	'vs/platform/localTranscription/node/localTranscriptionMain',
+ 	'vs/platform/terminal/node/ptyHostMain',
+-	'vs/platform/agentHost/node/agentHostMain',
+-	'vs/platform/agentHost/node/diffWorkerMain',
++	// --- Start Axis ---
++	// The agent host is not bundled (ADR 0002 decision 6)
++	// --- End Axis ---
+ 	'vs/workbench/api/node/extensionHostProcess',
+ ];
+ 
+@@ -137,8 +138,9 @@ const serverEntryPoints = [
+ 	'vs/workbench/api/node/extensionHostProcess',
+ 	'vs/platform/files/node/watcher/watcherMain',
+ 	'vs/platform/terminal/node/ptyHostMain',
+-	'vs/platform/agentHost/node/agentHostMain',
+-	'vs/platform/agentHost/node/diffWorkerMain',
++	// --- Start Axis ---
++	// The agent host is not bundled (ADR 0002 decision 6)
++	// --- End Axis ---
+ ];
+ 
+ /**

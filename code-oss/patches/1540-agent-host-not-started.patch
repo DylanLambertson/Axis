@@ -1,0 +1,67 @@
+diff --git a/src/vs/code/electron-main/app.ts b/src/vs/code/electron-main/app.ts
+index 924824f2..3d42fd46 100644
+--- a/src/vs/code/electron-main/app.ts
++++ b/src/vs/code/electron-main/app.ts
+@@ -135,8 +135,9 @@ import { createLocalPtyChannel } from '../../platform/terminal/common/localPtyCh
+ import { ElectronPtyHostStarter } from '../../platform/terminal/electron-main/electronPtyHostStarter.js';
+ import { PtyHostService } from '../../platform/terminal/node/ptyHostService.js';
+ import { parseExternalOpenSessionLinkUri } from '../../platform/agentHost/common/openSessionLink.js';
+-import { ElectronAgentHostStarter } from '../../platform/agentHost/electron-main/electronAgentHostStarter.js';
+-import { AgentHostProcessManager } from '../../platform/agentHost/node/agentHostService.js';
++// --- Start Axis ---
++// No agent host starter or manager: the agent host is not bundled (ADR 0002 decision 6)
++// --- End Axis ---
+ import { NODE_REMOTE_RESOURCE_CHANNEL_NAME, NODE_REMOTE_RESOURCE_IPC_METHOD_NAME, NodeRemoteResourceResponse, NodeRemoteResourceRouter } from '../../platform/remote/common/electronRemoteResources.js';
+ import { Lazy } from '../../base/common/lazy.js';
+ import { IAuxiliaryWindowsMainService } from '../../platform/auxiliaryWindow/electron-main/auxiliaryWindows.js';
+@@ -764,9 +765,9 @@ export class CodeApplication extends Disposable {
+ 		// request. The renderer only requests a connection when the runtime is
+ 		// available and AI features are enabled there, which the main process
+ 		// cannot fully observe.
+-		const agentHostStarter = appInstantiationService.createInstance(ElectronAgentHostStarter, { machineId, sqmId, devDeviceId });
+-		// This manager self-disposes after its lifecycle join; CodeApplication disposes before later shutdown listeners run.
+-		const agentHostProcessManager = appInstantiationService.createInstance(AgentHostProcessManager, agentHostStarter, process.platform);
++		// --- Start Axis ---
++		// Axis does not bundle the agent host, so neither the starter nor the manager is created.
++		// --- End Axis ---
+ 
+ 		// Metered connection telemetry
+ 		appInstantiationService.invokeFunction(accessor => {
+@@ -810,7 +811,9 @@ export class CodeApplication extends Disposable {
+ 				...windows.map(window => window.ready()),
+ 				sharedProcessReady,
+ 				appInstantiationService.invokeFunction(accessor => accessor.get(ILocalPtyService).getLatency()),
+-				agentHostProcessManager.start()
++				// --- Start Axis ---
++				// no agent host to start
++				// --- End Axis ---
+ 			]);
+ 		}
+ 
+diff --git a/src/vs/server/node/serverServices.ts b/src/vs/server/node/serverServices.ts
+index ed077663..50451d7b 100644
+--- a/src/vs/server/node/serverServices.ts
++++ b/src/vs/server/node/serverServices.ts
+@@ -110,6 +110,10 @@ import { SandboxHelperService } from '../../platform/sandbox/node/sandboxHelper.
+ 
+ const eventPrefix = 'monacoworkbench';
+ 
++// --- Start Axis ---
++const axisAgentHostBundled: boolean = false;
++// --- End Axis ---
++
+ export async function setupServerServices(connectionToken: ServerConnectionToken, args: ServerParsedArgs, REMOTE_DATA_FOLDER: string, agentHostBridgeConnectionToken: string | undefined, disposables: DisposableStore) {
+ 	const githubEnvironment = readGithubEnvironmentOptions(process.env);
+ 	if (githubEnvironment && !(args['agent-host-port'] || args['agent-host-path'])) {
+@@ -358,6 +362,11 @@ export async function setupServerServices(connectionToken: ServerConnectionToken
+ 			socketServer.registerChannel(AgentHostIpcChannels.RemoteProxy, new UnavailableAgentHostChannel<RemoteAgentConnectionContext>());
+ 			logService.info(`[AgentHostChannel] Registered unavailable IPC channel '${AgentHostIpcChannels.RemoteProxy}': no --agent-host-bridge-port / --agent-host-bridge-path set.`);
+ 		}
++		// --- Start Axis ---
++		// Axis bundles no agent host (ADR 0002 decision 6), so it never starts one lazily.
++	} else if (!axisAgentHostBundled) {
++		socketServer.registerChannel(AgentHostIpcChannels.RemoteProxy, new UnavailableAgentHostChannel<RemoteAgentConnectionContext>());
++		// --- End Axis ---
+ 	} else {
+ 		try {
+ 			const socketPath = createRandomIPCHandle();
