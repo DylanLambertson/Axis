@@ -28,6 +28,7 @@ function bestOf(n: number, fn: () => unknown): number {
     fn();
     const used = process.cpuUsage(before);
     best = Math.min(best, (used.user + used.system) / 1000);
+    if (best < 50) break; // fast enough once is proof enough
   }
   return best;
 }

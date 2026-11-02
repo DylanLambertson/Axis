@@ -44,3 +44,4 @@ export {
   type VerifyOptions,
   type VerifyResult,
 } from "./log.js";
+export { acquireInstanceLock, processStartTime, type InstanceLock, type LockOptions } from "./lock.js";

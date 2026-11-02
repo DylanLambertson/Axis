@@ -1,0 +1,105 @@
+// Copyright (c) 2026 Dylan Lambertson. All rights reserved.
+import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { test } from "node:test";
+import { AxisError, acquireInstanceLock, processStartTime } from "../src/index.js";
+
+const dirOf = () => mkdtempSync(join(tmpdir(), "axis-lock-"));
+const conflict = (e: unknown) => e instanceof AxisError && e.code === "E_CONFLICT";
+
+test("a second acquisition while the first is held is E_CONFLICT; release lets the next one in", () => {
+  const dir = dirOf();
+  try {
+    const a = acquireInstanceLock(dir);
+    assert.equal(a.held, true);
+    assert.equal(statSync(a.path).mode & 0o777, process.platform === "win32" ? statSync(a.path).mode & 0o777 : 0o600);
+    assert.throws(() => acquireInstanceLock(dir), conflict);
+    a.release();
+    assert.equal(a.held, false);
+    assert.equal(existsSync(a.path), false);
+    const b = acquireInstanceLock(dir);
+    assert.equal(b.held, true);
+    b.release();
+    a.release(); // releasing twice is harmless and does not remove b's lock
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a lock whose process has died is stale and is taken over", async () => {
+  const dir = dirOf();
+  try {
+    const child = spawn(process.execPath, ["-e", "process.stdout.write(String(process.pid))"], { stdio: ["ignore", "pipe", "ignore"] });
+    let out = "";
+    child.stdout.on("data", (d: Buffer) => (out += d.toString()));
+    await new Promise((r) => child.on("exit", r));
+    const deadPid = Number(out);
+    const dead = acquireInstanceLock(dir, { pid: deadPid });
+    assert.equal(dead.held, true);
+    const taken = acquireInstanceLock(dir); // real isAlive says the dead pid is gone
+    assert.equal(taken.held, true);
+    assert.equal(JSON.parse(readFileSync(taken.path, "utf8")).pid, process.pid);
+    dead.release(); // not ours any more: must not delete the new holder's file
+    assert.equal(existsSync(taken.path), true);
+    taken.release();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a live pid whose OS start time differs from the recorded one is a reused pid, so the lock is stale", () => {
+  const dir = dirOf();
+  try {
+    const first = acquireInstanceLock(dir, { pid: 4242, procStart: () => "Mon Nov  2 10:00:00 2026", isAlive: () => true });
+    assert.equal(first.held, true);
+    assert.throws(() => acquireInstanceLock(dir, { isAlive: () => true, procStart: (p) => (p === 4242 ? "Mon Nov  2 10:00:00 2026" : "x") }), conflict);
+    const taken = acquireInstanceLock(dir, { isAlive: () => true, procStart: (p) => (p === 4242 ? "Tue Nov  3 09:00:00 2026" : "y") });
+    assert.equal(taken.held, true);
+    taken.release();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("an unparseable lock file is respected while fresh and replaced once old", () => {
+  const dir = dirOf();
+  try {
+    const path = join(dir, "axis.lock");
+    writeFileSync(path, "{half a rec");
+    assert.throws(() => acquireInstanceLock(dir), conflict);
+    const old = new Date(Date.now() - 60_000);
+    utimesSync(path, old, old);
+    const l = acquireInstanceLock(dir);
+    assert.equal(l.held, true);
+    l.release();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("two processes racing for the lock: exactly one wins", async () => {
+  const dir = dirOf();
+  try {
+    const script = `import("${new URL("../src/index.js", import.meta.url).href}").then(({acquireInstanceLock})=>{try{acquireInstanceLock(${JSON.stringify(dir)});process.stdout.write("won");setTimeout(()=>{},400)}catch(e){process.stdout.write(e.code)}})`;
+    const run = () =>
+      new Promise<string>((resolve) => {
+        const c = spawn(process.execPath, ["-e", script], { stdio: ["ignore", "pipe", "ignore"] });
+        let out = "";
+        c.stdout.on("data", (d: Buffer) => (out += d.toString()));
+        c.on("exit", () => resolve(out));
+      });
+    const results = (await Promise.all([run(), run(), run()])).sort();
+    assert.deepEqual(results, ["E_CONFLICT", "E_CONFLICT", "won"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("processStartTime reports a stable value for a live pid", () => {
+  const a = processStartTime(process.pid);
+  assert.ok(a === undefined || a.length > 0);
+  assert.equal(processStartTime(process.pid), a);
+});
