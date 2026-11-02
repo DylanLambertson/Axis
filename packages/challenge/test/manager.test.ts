@@ -535,3 +535,20 @@ test("S7: a deny takes effect even when the audit sink fails, and the caller get
   s.failWhen(undefined);
   assert.throws(() => s.manager.confirmNative({ challengeId: b.challenge.challengeId, proof: b.nativeProof ?? "", confirmed: true, windowId: WIN }), code("E_CONFLICT"), "a cancelled dialog cannot be re-confirmed");
 });
+
+test("S5: bidi, zero-width, line-break and control characters are refused in target and summary", () => {
+  const { manager } = setup();
+  const bad = ["ws-‮gnp.txt", "ws-⁦x", "ws-​x", "ws-﻿x", "ws-1\n\nSafe: nothing will be deleted", "a\u0085b", "a b", "a b", "a\u007fb", "a\uD800b"];
+  for (const text of bad) {
+    assert.throws(() => issue(manager, { target: text }), code("E_INVALID_ARGUMENT"), `target ${JSON.stringify(text)}`);
+    assert.throws(() => issue(manager, { targetSummary: text }), code("E_INVALID_ARGUMENT"), `summary ${JSON.stringify(text)}`);
+  }
+  assert.equal(manager.outstanding(), 0);
+  assert.doesNotThrow(() => issue(manager, { target: "workspace:é中\u{1F600}", targetSummary: "café 中" }));
+});
+
+test("S5: execute also refuses a display-unsafe target", async () => {
+  const { manager } = setup();
+  const token = approve(manager, issue(manager));
+  await assert.rejects(manager.execute(token, { ...run, target: "workspace:ws-1‮" }, () => 1), code("E_INVALID_ARGUMENT"));
+});

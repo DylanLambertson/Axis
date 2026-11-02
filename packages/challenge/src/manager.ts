@@ -12,7 +12,13 @@ import { ChallengeError } from "./errors.js";
 const ACTOR = /^(?:user|daemon|agent:[A-Za-z0-9._/-]{1,96})$/;
 const OP = /^[a-z][a-z0-9_.-]{0,63}$/;
 const WINDOW = /^[A-Za-z0-9._:-]{1,64}$/;
-const noControl = (s: string): boolean => !/[\u0000-\u001f\u007f]/.test(s);
+/**
+ * Text a native dialog may show. Refuses control characters (C0, DEL, C1,
+ * newlines), format characters (bidi overrides and isolates, zero-width
+ * characters, BOM), line and paragraph separators and lone surrogates: any of
+ * them can reorder, hide or fake what the user thinks they approve (APR-2).
+ */
+const displaySafe = (s: string): boolean => !/[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/u.test(s);
 
 export type ActorId = "user" | "daemon" | `agent:${string}`;
 
@@ -34,15 +40,19 @@ const windowSchema = z.string().regex(WINDOW);
 const issueSchema = z
   .object({
     op: z.string().regex(OP),
-    target: z.string().min(1).max(1024).refine(noControl),
+    target: z.string().min(1).max(1024).refine(displaySafe),
     /** SHA-256 hex of what the operation will destroy (for example dirty file content). */
     contentDigest: requestDigestSchema,
     actor: actorSchema,
     windowId: windowSchema,
     tier: z.number().int().min(3).max(5).default(4),
     contract: z.string().min(1).max(64).default("axis.approvals/1"),
-    /** User-safe, already redacted. Defaults to the target. */
-    targetSummary: z.string().max(512).optional(),
+    /**
+     * One line the user sees. The daemon must build it from fields it knows are
+     * safe to show (annotated `path` or `public`), never from requester input
+     * (APR-2). Defaults to the target.
+     */
+    targetSummary: z.string().max(512).refine(displaySafe).optional(),
   })
   .strict();
 
@@ -68,7 +78,7 @@ const nativeSchema = z
 const executeContextSchema = z
   .object({
     op: z.string().regex(OP),
-    target: z.string().min(1).max(1024).refine(noControl),
+    target: z.string().min(1).max(1024).refine(displaySafe),
     /** Digest of the same content, recomputed from the current state just now. */
     currentContentDigest: requestDigestSchema,
   })
