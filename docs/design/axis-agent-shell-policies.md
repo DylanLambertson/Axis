@@ -140,11 +140,11 @@ Each scenario must end with no silent overwrite, or with a flagged and restorabl
 ### 4.3 The shell-integration set (SI-ENV)
 
 - **What it is.** The variables upstream shell-integration injection needs. They are produced by `getShellIntegrationInjection` (`platform/terminal/node/terminalEnvironment.ts:52`) and applied inside `TerminalProcess` after the environment it is given (`terminalProcess.ts:213-242`) [V]:
-  - `VSCODE_INJECTION` (`:88`), `VSCODE_NONCE` (`:92`), `VSCODE_SHELL_ENV_REPORTING` (`:100-103`), `VSCODE_A11Y_MODE` (`:110`), `VSCODE_STABLE` (`:122-193`), `VSCODE_PATH_PREFIX` (`:310`);
+  - `VSCODE_INJECTION` (`:88`), `VSCODE_NONCE` (`:92`), `VSCODE_SHELL_ENV_REPORTING` (`:100-103`), `VSCODE_A11Y_MODE` (`:110`), `VSCODE_STABLE` (`:122-193`), `VSCODE_SHELL_LOGIN` (`:128,150`), `VSCODE_PATH_PREFIX` (`:310`);
   - for zsh, `ZDOTDIR` and `USER_ZDOTDIR` (`:252-254`);
   - exactly what that function returns for the shell, and nothing else.
 - **How it is applied.** The Axis pty process reuses `TerminalProcess`, so SI-ENV is added **after** the PTY-5 environment, for **plain workspace terminals only**.
-- **Never in CLI runs.** CLI runs are spawned with shell integration disabled, so no SI-ENV is produced.
+- **Never in CLI runs.** CLI runs are spawned with shell integration disabled **and no nonce supplied at all**. Upstream sets `VSCODE_NONCE` even when injection fails, whenever a nonce is supplied (`terminalProcess.ts:238-242`) [V]. So the daemon must not pass a nonce for CLI runs, and the B10 test asserts that `VSCODE_NONCE` is absent.
 - **The nonce** is visible to processes inside that shell. That is upstream's accepted trade-off, and Axis keeps it.
 
 ## 5. Shell integration and split cwd
