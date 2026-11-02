@@ -14,3 +14,7 @@ node_modules/
 dist/
 build/
 coverage/
+
+# Extension compatibility matrix: downloaded VSIXs and run output
+test/extension-matrix/.vsix-cache/
+test/extension-matrix/.work/

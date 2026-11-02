@@ -1,0 +1,327 @@
+{
+  "schemaVersion": 1,
+  "conventions": {
+    "line": "0-based line number in the fixture file (breakpoints included).",
+    "token": "Text searched on that line; the probe places the cursor inside its first occurrence.",
+    "timeoutMs": "Per-check timeout. Defaults to 60000.",
+    "settingsTokens": "@PYTHON@, @GOPLS@ and @CLANGD@ are replaced by run.sh with the absolute path from 'command -v'.",
+    "hosts": "desktop = Electron build. web = reh-web server in a browser, where workspace extensions run in the server's Node extension host."
+  },
+  "baseSettings": {
+    "extensions.autoUpdate": false,
+    "extensions.autoCheckUpdates": false,
+    "update.mode": "none",
+    "telemetry.telemetryLevel": "off",
+    "workbench.startupEditor": "none",
+    "security.workspace.trust.enabled": false,
+    "git.openRepositoryInParentFolders": "never"
+  },
+  "scenarios": [
+    {
+      "id": "S01-typescript-builtin",
+      "tier": "core",
+      "extensions": ["vscode.typescript-language-features", "ms-vscode.js-debug"],
+      "fixture": "typescript",
+      "setup": [],
+      "requires": ["node"],
+      "settings": {},
+      "disableExtensions": [],
+      "hosts": ["desktop", "web"],
+      "checks": [
+        { "type": "activate", "extension": "vscode.typescript-language-features" },
+        { "type": "diagnostics", "file": "src/main.ts", "line": 3, "severity": "error", "sourceAnyOf": ["ts"], "minCount": 1 },
+        { "type": "hover", "file": "src/main.ts", "at": { "line": 2, "token": "add" }, "contains": "add(a: number, b: number): number" },
+        { "type": "definition", "file": "src/main.ts", "at": { "line": 2, "token": "add" }, "expectAnyOf": [{ "file": "src/math.ts", "line": 0 }] },
+        { "type": "breakpoint", "launch": "matrix: debug.js", "file": "debug.js", "line": 2 }
+      ],
+      "observe": [
+        "Red squiggle on line 4 of src/main.ts and a TS2322 entry in the Problems view.",
+        "Hovering add shows its signature; F12 opens src/math.ts.",
+        "Running 'matrix: debug.js' stops on line 3 of debug.js."
+      ]
+    },
+    {
+      "id": "S02-python-default-ls",
+      "tier": "core",
+      "extensions": ["ms-python.python", "ms-python.vscode-python-envs"],
+      "fixture": "python",
+      "setup": [],
+      "requires": ["python3"],
+      "settings": { "python.defaultInterpreterPath": "@PYTHON@" },
+      "disableExtensions": ["detachhead.basedpyright"],
+      "hosts": ["desktop", "web"],
+      "checks": [
+        { "type": "activate", "extension": "ms-python.python" },
+        { "type": "activate", "extension": "ms-python.vscode-python-envs" },
+        { "type": "hover", "file": "app.py", "at": { "line": 2, "token": "greet" }, "contains": "greet", "timeoutMs": 90000 },
+        { "type": "definition", "file": "app.py", "at": { "line": 2, "token": "greet" }, "expectAnyOf": [{ "file": "helpers.py", "line": 0 }], "timeoutMs": 90000 }
+      ],
+      "observe": [
+        "The Python extension activates without Pylance and falls back to its bundled Jedi language server (python.languageServer = Default).",
+        "Output > Python shows which language server started; no prompt to install Pylance blocks use.",
+        "Hover and go-to-definition work on greet in app.py."
+      ]
+    },
+    {
+      "id": "S03-python-basedpyright",
+      "tier": "core",
+      "extensions": ["detachhead.basedpyright", "ms-python.python"],
+      "fixture": "python",
+      "setup": [],
+      "requires": ["python3"],
+      "settings": { "python.languageServer": "None", "python.defaultInterpreterPath": "@PYTHON@" },
+      "disableExtensions": [],
+      "hosts": ["desktop", "web"],
+      "checks": [
+        { "type": "activate", "extension": "detachhead.basedpyright" },
+        { "type": "diagnostics", "file": "app.py", "line": 3, "severity": "error", "sourceAnyOf": ["basedpyright"], "minCount": 1, "timeoutMs": 90000 },
+        { "type": "hover", "file": "app.py", "at": { "line": 2, "token": "greet" }, "contains": "def greet(name: str) -> str" },
+        { "type": "definition", "file": "app.py", "at": { "line": 2, "token": "greet" }, "expectAnyOf": [{ "file": "helpers.py", "line": 0 }] }
+      ],
+      "observe": [
+        "basedpyright reports reportAssignmentType on line 4 of app.py.",
+        "Hover shows the typed signature of greet; F12 opens helpers.py."
+      ]
+    },
+    {
+      "id": "S04-python-debugpy",
+      "tier": "core",
+      "extensions": ["ms-python.debugpy", "ms-python.python", "ms-python.vscode-python-envs"],
+      "fixture": "python",
+      "setup": [],
+      "requires": ["python3"],
+      "settings": { "python.defaultInterpreterPath": "@PYTHON@" },
+      "disableExtensions": [],
+      "hosts": ["desktop", "web"],
+      "checks": [
+        { "type": "activate", "extension": "ms-python.debugpy" },
+        { "type": "breakpoint", "launch": "matrix: debug_me.py", "file": "debug_me.py", "line": 1, "timeoutMs": 120000 }
+      ],
+      "observe": [
+        "Running 'matrix: debug_me.py' stops on line 2; the Variables view shows n = 4."
+      ]
+    },
+    {
+      "id": "S05-rust-analyzer",
+      "tier": "core",
+      "extensions": ["rust-lang.rust-analyzer"],
+      "fixture": "rust",
+      "setup": [],
+      "requires": ["cargo"],
+      "settings": {},
+      "disableExtensions": [],
+      "hosts": ["desktop", "web"],
+      "checks": [
+        { "type": "activate", "extension": "rust-lang.rust-analyzer" },
+        { "type": "diagnostics", "file": "examples/broken.rs", "line": 1, "severity": "error", "sourceAnyOf": ["rustc", "rust-analyzer"], "minCount": 1, "timeoutMs": 180000 },
+        { "type": "hover", "file": "src/main.rs", "at": { "line": 5, "token": "add" }, "contains": "fn add(a: i32, b: i32) -> i32", "timeoutMs": 120000 },
+        { "type": "definition", "file": "src/main.rs", "at": { "line": 5, "token": "add" }, "expectAnyOf": [{ "file": "src/main.rs", "line": 0 }] }
+      ],
+      "observe": [
+        "cargo check reports E0308 in examples/broken.rs.",
+        "Hover on add shows its signature; F12 jumps to line 1 of src/main.rs."
+      ]
+    },
+    {
+      "id": "S06-codelldb-rust",
+      "tier": "core",
+      "extensions": ["vadimcn.vscode-lldb"],
+      "fixture": "rust",
+      "setup": [],
+      "requires": ["cargo"],
+      "settings": { "lldb.suppressUpdateNotifications": true },
+      "disableExtensions": ["rust-lang.rust-analyzer"],
+      "hosts": ["desktop", "web"],
+      "checks": [
+        { "type": "activate", "extension": "vadimcn.vscode-lldb" },
+        { "type": "breakpoint", "launch": "matrix: rust main", "file": "src/main.rs", "line": 1, "timeoutMs": 240000 }
+      ],
+      "observe": [
+        "Running 'matrix: rust main' builds the binary and stops on line 2 of src/main.rs (a + b) with a = 1, b = 2.",
+        "No download of a CodeLLDB platform package happens (the pinned platform VSIX is already installed)."
+      ]
+    },
+    {
+      "id": "S07-go",
+      "tier": "core",
+      "extensions": ["golang.go"],
+      "fixture": "go",
+      "setup": [],
+      "requires": ["go", "gopls"],
+      "settings": {
+        "go.alternateTools": { "gopls": "@GOPLS@" },
+        "go.toolsManagement.autoUpdate": false,
+        "go.toolsManagement.checkForUpdates": "off",
+        "[go]": { "editor.defaultFormatter": "golang.go" }
+      },
+      "disableExtensions": [],
+      "hosts": ["desktop", "web"],
+      "checks": [
+        { "type": "activate", "extension": "golang.go" },
+        { "type": "diagnostics", "file": "broken.go", "line": 2, "severity": "error", "minCount": 1, "timeoutMs": 120000 },
+        { "type": "hover", "file": "main.go", "at": { "line": 5, "token": "add" }, "contains": "func add(a, b int) int" },
+        { "type": "definition", "file": "main.go", "at": { "line": 5, "token": "add" }, "expectAnyOf": [{ "file": "add.go", "line": 3 }] },
+        { "type": "format", "file": "fmtcheck/format_me.go", "expectFile": "testdata/format_me.golden" }
+      ],
+      "observe": [
+        "gopls reports the string-to-int error in broken.go.",
+        "Hover on add shows its doc comment; Format Document rewrites fmtcheck/format_me.go to match testdata/format_me.golden."
+      ]
+    },
+    {
+      "id": "S08-clangd",
+      "tier": "core",
+      "extensions": ["llvm-vs-code-extensions.vscode-clangd"],
+      "fixture": "cpp",
+      "setup": [],
+      "requires": ["clangd"],
+      "settings": { "clangd.path": "@CLANGD@", "clangd.checkUpdates": false, "clangd.arguments": ["--background-index=false"] },
+      "disableExtensions": [],
+      "hosts": ["desktop", "web"],
+      "checks": [
+        { "type": "activate", "extension": "llvm-vs-code-extensions.vscode-clangd" },
+        { "type": "diagnostics", "file": "main.cpp", "line": 4, "severity": "error", "sourceAnyOf": ["clang"], "minCount": 1 },
+        { "type": "hover", "file": "main.cpp", "at": { "line": 3, "token": "add" }, "contains": "add" },
+        { "type": "definition", "file": "main.cpp", "at": { "line": 3, "token": "add" }, "expectAnyOf": [{ "file": "math.hpp", "line": 3 }, { "file": "math.cpp", "line": 2 }] }
+      ],
+      "observe": [
+        "clangd reports 'cannot initialize a variable of type int *' on line 5 of main.cpp.",
+        "Hover on add shows the declaration from math.hpp; F12 opens math.hpp (or math.cpp when indexed)."
+      ]
+    },
+    {
+      "id": "S09-eslint",
+      "tier": "core",
+      "extensions": ["dbaeumer.vscode-eslint"],
+      "fixture": "web-tooling",
+      "setup": ["npm-install"],
+      "requires": ["node", "npm"],
+      "settings": {},
+      "disableExtensions": [],
+      "hosts": ["desktop", "web"],
+      "checks": [
+        { "type": "activate", "extension": "dbaeumer.vscode-eslint" },
+        { "type": "diagnostics", "file": "src/lint-me.js", "line": 0, "sourceAnyOf": ["eslint"], "codeAnyOf": ["no-unused-vars", "prefer-const"], "minCount": 1, "timeoutMs": 90000 }
+      ],
+      "observe": [
+        "ESLint reports no-unused-vars and prefer-const on line 1 of src/lint-me.js; the ESLint status bar item shows no error."
+      ]
+    },
+    {
+      "id": "S10-prettier",
+      "tier": "core",
+      "extensions": ["esbenp.prettier-vscode"],
+      "fixture": "web-tooling",
+      "setup": ["npm-install"],
+      "requires": ["node", "npm"],
+      "settings": { "[javascript]": { "editor.defaultFormatter": "esbenp.prettier-vscode" } },
+      "disableExtensions": ["dbaeumer.vscode-eslint"],
+      "hosts": ["desktop", "web"],
+      "checks": [
+        { "type": "activate", "extension": "esbenp.prettier-vscode" },
+        { "type": "format", "file": "src/format-me.js", "expectFile": "format-me.expected.txt" }
+      ],
+      "observe": [
+        "Format Document on src/format-me.js produces exactly format-me.expected.txt, using the workspace Prettier 3.9.10 from the lockfile and .prettierrc.json (the extension's bundled 3.7.4 gives the same output for this file).",
+        "Output > Prettier names the workspace prettier module, not the bundled one."
+      ]
+    },
+    {
+      "id": "S11-theme",
+      "tier": "core",
+      "extensions": ["GitHub.github-vscode-theme"],
+      "fixture": "yaml",
+      "setup": [],
+      "requires": [],
+      "settings": {},
+      "disableExtensions": [],
+      "hosts": ["desktop", "web"],
+      "checks": [
+        { "type": "theme", "value": "GitHub Light High Contrast", "expectKind": "HighContrastLight" }
+      ],
+      "observe": [
+        "The workbench switches to GitHub Light High Contrast: white editor background (#ffffff), foreground #0e1116.",
+        "The theme is listed in Preferences: Color Theme."
+      ]
+    },
+    {
+      "id": "S12-gitlens",
+      "tier": "core",
+      "extensions": ["eamodio.gitlens", "vscode.git"],
+      "fixture": "git",
+      "setup": ["git-init"],
+      "requires": ["git"],
+      "settings": { "gitlens.showWelcomeOnInstall": false, "gitlens.showWhatsNewAfterUpgrades": false },
+      "disableExtensions": [],
+      "hosts": ["desktop", "web"],
+      "checks": [
+        { "type": "gitRepositories", "min": 1 },
+        { "type": "activate", "extension": "eamodio.gitlens", "timeoutMs": 90000 },
+        { "type": "commandsRegistered", "commands": ["gitlens.toggleFileBlame", "gitlens.showCommitsView", "gitlens.showFileHistoryView"] },
+        { "type": "command", "command": "gitlens.showCommitsView" }
+      ],
+      "observe": [
+        "The GitLens Commits view lists the two fixture commits by 'Axis Matrix'.",
+        "Toggle File Blame on notes.txt shows blame annotations. Pro-only features (plus/) are out of scope."
+      ]
+    },
+    {
+      "id": "S13-yaml",
+      "tier": "core",
+      "extensions": ["redhat.vscode-yaml"],
+      "fixture": "yaml",
+      "setup": [],
+      "requires": [],
+      "settings": { "redhat.telemetry.enabled": false },
+      "disableExtensions": [],
+      "hosts": ["desktop", "web"],
+      "checks": [
+        { "type": "activate", "extension": "redhat.vscode-yaml" },
+        { "type": "diagnostics", "file": "service.yaml", "line": 2, "messageContains": "Incorrect type", "minCount": 1 },
+        { "type": "hover", "file": "service.yaml", "at": { "line": 1, "token": "name" }, "contains": "Human readable service name." }
+      ],
+      "observe": [
+        "service.yaml shows 'Incorrect type. Expected \"integer\"' on replicas; hovering name shows the schema description."
+      ]
+    },
+    {
+      "id": "S14-jupyter",
+      "tier": "optional",
+      "extensions": ["ms-toolsai.jupyter", "ms-python.python"],
+      "fixture": "jupyter",
+      "setup": [],
+      "requires": ["python3"],
+      "settings": { "python.defaultInterpreterPath": "@PYTHON@" },
+      "disableExtensions": [],
+      "hosts": ["desktop", "web"],
+      "checks": [
+        { "type": "activate", "extension": "ms-toolsai.jupyter", "timeoutMs": 90000 },
+        { "type": "openNotebook", "file": "notebook.ipynb", "expectNotebookType": "jupyter-notebook" },
+        { "type": "commandsRegistered", "commands": ["jupyter.selectJupyterInterpreter", "jupyter.export"] }
+      ],
+      "observe": [
+        "notebook.ipynb opens in the notebook editor; the kernel picker lists the host Python (running a cell needs ipykernel, which the fixture does not install)."
+      ]
+    },
+    {
+      "id": "S15-java",
+      "tier": "optional",
+      "extensions": ["redhat.java"],
+      "fixture": "java",
+      "setup": [],
+      "requires": [],
+      "settings": { "redhat.telemetry.enabled": false },
+      "disableExtensions": [],
+      "hosts": ["desktop", "web"],
+      "checks": [
+        { "type": "activate", "extension": "redhat.java", "timeoutMs": 120000 },
+        { "type": "diagnostics", "file": "src/main/java/dev/axis/matrix/Main.java", "line": 5, "severity": "error", "minCount": 1, "timeoutMs": 240000 },
+        { "type": "hover", "file": "src/main/java/dev/axis/matrix/Main.java", "at": { "line": 4, "token": "add" }, "contains": "add(int a, int b)", "timeoutMs": 120000 },
+        { "type": "definition", "file": "src/main/java/dev/axis/matrix/Main.java", "at": { "line": 4, "token": "add" }, "expectAnyOf": [{ "file": "src/main/java/dev/axis/matrix/MathUtil.java", "line": 6 }] }
+      ],
+      "observe": [
+        "JDT LS starts with its embedded JRE, treats the folder as an invisible project (no build file) and reports a type mismatch on line 6 of Main.java; F12 on add opens MathUtil.java."
+      ]
+    }
+  ]
+}

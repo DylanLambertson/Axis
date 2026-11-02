@@ -1,0 +1,13 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "debugpy",
+      "request": "launch",
+      "name": "matrix: debug_me.py",
+      "program": "${workspaceFolder}/debug_me.py",
+      "console": "internalConsole",
+      "justMyCode": true
+    }
+  ]
+}

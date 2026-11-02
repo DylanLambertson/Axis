@@ -1,0 +1,14 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "matrix: rust main",
+      "cargo": {
+        "args": ["build", "--bin=axis_matrix_fixture"]
+      },
+      "args": []
+    }
+  ]
+}

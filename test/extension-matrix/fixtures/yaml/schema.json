@@ -1,0 +1,17 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "Human readable service name."
+    },
+    "replicas": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Number of instances to run."
+    }
+  },
+  "required": ["name"],
+  "additionalProperties": false
+}

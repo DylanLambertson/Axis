@@ -1,0 +1,726 @@
+{
+  "schemaVersion": 1,
+  "description": "Pinned extensions for the Phase 0 extension compatibility matrix. See docs/feasibility/extension-compatibility.md.",
+  "target": {
+    "codeOss": "1.144.0",
+    "commit": "2c33b50b16c472efe58357d1d2a8a5414bc23fbf"
+  },
+  "registry": "https://open-vsx.org",
+  "retrievedAt": "2026-11-01",
+  "platforms": ["darwin-x64", "darwin-arm64", "linux-x64", "win32-x64"],
+  "publisherTypes": {
+    "vendor": "Uploaded by the extension's own publisher or maintainer account.",
+    "open-vsx": "Uploaded by the Open VSX service account (EclipseFdn publish-extensions), not by the vendor."
+  },
+  "fieldNotes": {
+    "extensionKindDeclared": "extensionKind from the VSIX package.json, or null when it declares none. Code then deduces it from the entry points (src/vs/workbench/services/extensions/common/extensionManifestPropertiesService.ts:385-389); on desktop an extension with main runs as workspace."
+  },
+  "builtins": [
+    {
+      "id": "vscode.typescript-language-features",
+      "source": "Code OSS 1.144.0 extensions/typescript-language-features",
+      "license": "MIT",
+      "capability": "language/typescript-javascript (built-in)",
+      "scenarios": ["S01-typescript-builtin"]
+    },
+    {
+      "id": "ms-vscode.js-debug",
+      "version": "1.140.0",
+      "source": "Code OSS 1.144.0 product.json builtInExtensions",
+      "license": "MIT",
+      "capability": "debugger/node (built-in)",
+      "scenarios": ["S01-typescript-builtin"]
+    }
+  ],
+  "extensions": [
+    {
+      "id": "ms-python.python",
+      "version": "2026.4.0",
+      "publishedAt": "2026-03-13T04:21:53.228120Z",
+      "tier": "core",
+      "capability": "language/python (extension host, interpreter, testing; Jedi fallback language server)",
+      "scenarios": ["S02-python-default-ls"],
+      "license": "MIT",
+      "openVsx": {
+        "licenseField": "MIT",
+        "namespaceVerified": true,
+        "latestAnyVersion": "2026.4.0",
+        "latestAnyIsPreRelease": false,
+        "publishedBy": "open-vsx",
+        "trustedPublishing": false,
+        "publisherType": "open-vsx"
+      },
+      "engine": "^1.95.0",
+      "engineSatisfiedBy1_144_0": true,
+      "entryPoints": {
+        "node": true,
+        "browser": true
+      },
+      "extensionKindDeclared": null,
+      "extensionDependencies": [],
+      "extensionPack": ["ms-python.vscode-pylance", "ms-python.debugpy", "ms-python.vscode-python-envs"],
+      "enabledApiProposals": ["contribEditorContentMenu", "quickPickSortByLabel", "testObserver", "quickPickItemTooltip", "terminalDataWriteEvent", "terminalExecuteCommandEvent", "codeActionAI", "notebookReplDocument", "notebookVariableProvider"],
+      "artifacts": [
+        {
+          "platform": "universal",
+          "source": "open-vsx",
+          "url": "https://open-vsx.org/api/ms-python/python/2026.4.0/file/ms-python.python-2026.4.0.vsix",
+          "sha256": "232aeafb01f069824fdd92d3e628c1c442bbcfa1d3cc945ff97076340bb2b4a6",
+          "size": 6826731,
+          "sha256CrossCheck": "matches the Open VSX .sha256 file"
+        }
+      ],
+      "notes": "extensionPack lists ms-python.vscode-pylance (not on Open VSX, Microsoft-licensed) plus debugpy and python-envs. Declares 9 proposed APIs."
+    },
+    {
+      "id": "detachhead.basedpyright",
+      "version": "1.40.2",
+      "publishedAt": "2026-10-04T12:25:49.914519Z",
+      "tier": "core",
+      "capability": "language-server/python (open Pylance replacement)",
+      "scenarios": ["S03-python-basedpyright"],
+      "license": "MIT",
+      "openVsx": {
+        "licenseField": "MIT",
+        "namespaceVerified": true,
+        "latestAnyVersion": "1.40.2",
+        "latestAnyIsPreRelease": false,
+        "publishedBy": "DetachHead",
+        "trustedPublishing": false,
+        "publisherType": "vendor"
+      },
+      "engine": "^1.101.0",
+      "engineSatisfiedBy1_144_0": true,
+      "entryPoints": {
+        "node": true,
+        "browser": false
+      },
+      "extensionKindDeclared": null,
+      "extensionDependencies": [],
+      "extensionPack": [],
+      "enabledApiProposals": [],
+      "artifacts": [
+        {
+          "platform": "universal",
+          "source": "open-vsx",
+          "url": "https://open-vsx.org/api/detachhead/basedpyright/1.40.2/file/detachhead.basedpyright-1.40.2.vsix",
+          "sha256": "9c87b0b992714ca2f9298cb7e98bda621612f0ee96121a8e77ee7fcccce2f351",
+          "size": 6433623,
+          "sha256CrossCheck": "matches the Open VSX .sha256 file"
+        }
+      ],
+      "notes": "Pyright fork; MIT. Replaces Pylance for diagnostics, hover and go-to-definition."
+    },
+    {
+      "id": "ms-python.debugpy",
+      "version": "2026.6.0",
+      "publishedAt": "2026-05-01T04:48:48.461429Z",
+      "tier": "core",
+      "capability": "debugger/python",
+      "scenarios": ["S04-python-debugpy"],
+      "license": "MIT",
+      "openVsx": {
+        "licenseField": "MIT",
+        "namespaceVerified": true,
+        "latestAnyVersion": "2026.6.0",
+        "latestAnyIsPreRelease": false,
+        "publishedBy": "open-vsx",
+        "trustedPublishing": false,
+        "publisherType": "open-vsx"
+      },
+      "engine": "^1.92.0",
+      "engineSatisfiedBy1_144_0": true,
+      "entryPoints": {
+        "node": true,
+        "browser": false
+      },
+      "extensionKindDeclared": null,
+      "extensionDependencies": ["ms-python.python"],
+      "extensionPack": [],
+      "enabledApiProposals": ["portsAttributes", "debugVisualization", "contribViewsWelcome"],
+      "artifacts": [
+        {
+          "platform": "darwin-x64",
+          "source": "open-vsx",
+          "url": "https://open-vsx.org/api/ms-python/debugpy/darwin-x64/2026.6.0/file/ms-python.debugpy-2026.6.0@darwin-x64.vsix",
+          "sha256": "7a87aeba6a4dc1f46cfb8e6d457e53256c80b5be75a1781d51d3e0ad5dbb1574",
+          "size": 4700834,
+          "sha256CrossCheck": "matches the Open VSX .sha256 file"
+        },
+        {
+          "platform": "darwin-arm64",
+          "source": "open-vsx",
+          "url": "https://open-vsx.org/api/ms-python/debugpy/darwin-arm64/2026.6.0/file/ms-python.debugpy-2026.6.0@darwin-arm64.vsix",
+          "sha256": "3425b5251b0f0642b569e64397effe72ab141d138abd966b567041baa5609b4b",
+          "size": 4700835,
+          "sha256CrossCheck": "matches the Open VSX .sha256 file"
+        },
+        {
+          "platform": "linux-x64",
+          "source": "open-vsx",
+          "url": "https://open-vsx.org/api/ms-python/debugpy/linux-x64/2026.6.0/file/ms-python.debugpy-2026.6.0@linux-x64.vsix",
+          "sha256": "c7744af4bf72978f5792624a71c80e2b622a1118574fada3a903d70ac03d5bca",
+          "size": 4700833,
+          "sha256CrossCheck": "matches the Open VSX .sha256 file"
+        },
+        {
+          "platform": "win32-x64",
+          "source": "open-vsx",
+          "url": "https://open-vsx.org/api/ms-python/debugpy/win32-x64/2026.6.0/file/ms-python.debugpy-2026.6.0@win32-x64.vsix",
+          "sha256": "f4a8ba033acc9a1e14bf53f124d8d0848318702bbb161f2a5e47ae3d3d756a67",
+          "size": 4700834,
+          "sha256CrossCheck": "matches the Open VSX .sha256 file"
+        }
+      ],
+      "notes": "Platform-specific only (no universal or web build). Depends on ms-python.python. Declares 3 proposed APIs."
+    },
+    {
+      "id": "ms-python.vscode-python-envs",
+      "version": "1.40.0",
+      "publishedAt": "2026-10-15T03:40:52.346866Z",
+      "tier": "supporting",
+      "capability": "python environments (pack member of ms-python.python)",
+      "scenarios": ["S02-python-default-ls", "S04-python-debugpy"],
+      "license": "MIT",
+      "openVsx": {
+        "licenseField": null,
+        "namespaceVerified": true,
+        "latestAnyVersion": "1.40.0",
+        "latestAnyIsPreRelease": false,
+        "publishedBy": "open-vsx",
+        "trustedPublishing": false,
+        "publisherType": "open-vsx"
+      },
+      "engine": "^1.110.0-20260204",
+      "engineSatisfiedBy1_144_0": true,
+      "entryPoints": {
+        "node": true,
+        "browser": false
+      },
+      "extensionKindDeclared": null,
+      "extensionDependencies": [],
+      "extensionPack": [],
+      "enabledApiProposals": ["terminalShellEnv", "terminalDataWriteEvent", "taskExecutionTerminal"],
+      "artifacts": [
+        {
+          "platform": "universal",
+          "source": "open-vsx",
+          "url": "https://open-vsx.org/api/ms-python/vscode-python-envs/1.40.0/file/ms-python.vscode-python-envs-1.40.0.vsix",
+          "sha256": "a32ea2166e040d6e4069b7654e700dfa0f03891313dd2565cbfe8eb1d8378968",
+          "size": 1541720,
+          "sha256CrossCheck": "matches the Open VSX .sha256 file"
+        }
+      ],
+      "notes": "Open VSX metadata has no license field; the VSIX ships an MIT LICENSE.txt. Declares 3 proposed APIs."
+    },
+    {
+      "id": "rust-lang.rust-analyzer",
+      "version": "0.3.3097",
+      "publishedAt": "2026-10-26T08:22:16.418917Z",
+      "tier": "core",
+      "capability": "language-server/rust",
+      "scenarios": ["S05-rust-analyzer"],
+      "license": "MIT OR Apache-2.0",
+      "openVsx": {
+        "licenseField": "MIT OR Apache-2.0",
+        "namespaceVerified": true,
+        "latestAnyVersion": "0.4.3103",
+        "latestAnyIsPreRelease": true,
+        "publishedBy": "rust-lang-owner",
+        "trustedPublishing": false,
+        "publisherType": "vendor"
+      },
+      "engine": "^1.93.0",
+      "engineSatisfiedBy1_144_0": true,
+      "entryPoints": {
+        "node": true,
+        "browser": false
+      },
+      "extensionKindDeclared": ["workspace"],
+      "extensionDependencies": [],
+      "extensionPack": [],
+      "enabledApiProposals": [],
+      "artifacts": [
+        {
+          "platform": "darwin-x64",
+          "source": "open-vsx",
+          "url": "https://open-vsx.org/api/rust-lang/rust-analyzer/darwin-x64/0.3.3097/file/rust-lang.rust-analyzer-0.3.3097@darwin-x64.vsix",
+          "sha256": "157513041fad50a009ef334e19f7d3ffc2f0fe0c6e4f189276a2000461f79b70",
+          "size": 16030191,
+          "sha256CrossCheck": "matches the Open VSX .sha256 file"
+        },
+        {
+          "platform": "darwin-arm64",
+          "source": "open-vsx",
+          "url": "https://open-vsx.org/api/rust-lang/rust-analyzer/darwin-arm64/0.3.3097/file/rust-lang.rust-analyzer-0.3.3097@darwin-arm64.vsix",
+          "sha256": "9a5424b3bf9ad76632c675c458e03571b1038fcd16db5b06be6811477ac7e53c",
+          "size": 15549085,
+          "sha256CrossCheck": "matches the Open VSX .sha256 file"
+        },
+        {
+          "platform": "linux-x64",
+          "source": "open-vsx",
+          "url": "https://open-vsx.org/api/rust-lang/rust-analyzer/linux-x64/0.3.3097/file/rust-lang.rust-analyzer-0.3.3097@linux-x64.vsix",
+          "sha256": "78f643f2616daaf79f84c536c4746131ac116537f7f7b9246832511cc5b902d8",
+          "size": 16356355,
+          "sha256CrossCheck": "matches the Open VSX .sha256 file"
+        },
+        {
+          "platform": "win32-x64",
+          "source": "open-vsx",
+          "url": "https://open-vsx.org/api/rust-lang/rust-analyzer/win32-x64/0.3.3097/file/rust-lang.rust-analyzer-0.3.3097@win32-x64.vsix",
+          "sha256": "30675a66e9560344462a3222c370964d74b700dfbdb172dffca7c7cd34845e67",
+          "size": 19275686,
+          "sha256CrossCheck": "matches the Open VSX .sha256 file"
+        }
+      ],
+      "notes": "Pinned to the stable 0.3 line; Open VSX 'latest' is a 0.4 pre-release. Platform VSIXs bundle the server binary; the universal VSIX does not."
+    },
+    {
+      "id": "vadimcn.vscode-lldb",
+      "version": "1.12.3",
+      "publishedAt": "2026-08-23T23:44:40.142241Z",
+      "tier": "core",
+      "capability": "debugger/native (LLDB)",
+      "scenarios": ["S06-codelldb-rust"],
+      "license": "MIT",
+      "openVsx": {
+        "licenseField": "MIT",
+        "namespaceVerified": true,
+        "latestAnyVersion": "1.12.3",
+        "latestAnyIsPreRelease": false,
+        "publishedBy": "vadimcn",
+        "trustedPublishing": false,
+        "publisherType": "vendor"
+      },
+      "engine": "^1.61.0",
+      "engineSatisfiedBy1_144_0": true,
+      "entryPoints": {
+        "node": true,
+        "browser": false
+      },
+      "extensionKindDeclared": null,
+      "extensionDependencies": [],
+      "extensionPack": [],
+      "enabledApiProposals": [],
+      "artifacts": [
+        {
+          "platform": "universal",
+          "source": "open-vsx",
+          "url": "https://open-vsx.org/api/vadimcn/vscode-lldb/1.12.3/file/vadimcn.vscode-lldb-1.12.3.vsix",
+          "sha256": "460ac959094344ebb29b3d01bad94f6093b374d6fff44896ca456ac5b2047cd1",
+          "size": 93774,
+          "sha256CrossCheck": "matches the Open VSX .sha256 file"
+        },
+        {
+          "platform": "darwin-x64",
+          "source": "github-release",
+          "url": "https://github.com/vadimcn/codelldb/releases/download/v1.12.3/codelldb-darwin-x64.vsix",
+          "sha256": "e25cc716b94c62c07fec268ff2785d2b797245b160502baef8b9c970a0c4d8e8",
+          "size": 47735596,
+          "sha256CrossCheck": "matches the GitHub release asset digest"
+        },
+        {
+          "platform": "darwin-arm64",
+          "source": "github-release",
+          "url": "https://github.com/vadimcn/codelldb/releases/download/v1.12.3/codelldb-darwin-arm64.vsix",
+          "sha256": "2f114a990e1b368dd1dbd33c80c0e719767af2d228391ec0df0571c957f9ac91",
+          "size": 45390048,
+          "sha256CrossCheck": "matches the GitHub release asset digest"
+        },
+        {
+          "platform": "linux-x64",
+          "source": "github-release",
+          "url": "https://github.com/vadimcn/codelldb/releases/download/v1.12.3/codelldb-linux-x64.vsix",
+          "sha256": "1cd7f386598022b51a5b93b9ffa23e812b23f519cfe1833384ec4bef4bfd1be1",
+          "size": 55571094,
+          "sha256CrossCheck": "matches the GitHub release asset digest"
+        },
+        {
+          "platform": "win32-x64",
+          "source": "github-release",
+          "url": "https://github.com/vadimcn/codelldb/releases/download/v1.12.3/codelldb-win32-x64.vsix",
+          "sha256": "a916e509308dac817732f63ca604a8b93ed29cd16f38a2fa9f0b64ed58e8f51a",
+          "size": 50943475,
+          "sha256CrossCheck": "matches the GitHub release asset digest"
+        }
+      ],
+      "notes": "Open VSX hosts only a universal bootstrap VSIX that downloads the platform package from GitHub releases on activation. The harness installs the pinned GitHub platform VSIX (same id and version) instead."
+    },
+    {
+      "id": "golang.go",
+      "version": "0.58.0",
+      "publishedAt": "2026-10-21T03:32:53.881321Z",
+      "tier": "core",
+      "capability": "language/go (gopls client)",
+      "scenarios": ["S07-go"],
+      "license": "MIT",
+      "openVsx": {
+        "licenseField": "MIT",
+        "namespaceVerified": true,
+        "latestAnyVersion": "0.58.0",
+        "latestAnyIsPreRelease": false,
+        "publishedBy": "open-vsx",
+        "trustedPublishing": false,
+        "publisherType": "open-vsx"
+      },
+      "engine": "^1.110.0",
+      "engineSatisfiedBy1_144_0": true,
+      "entryPoints": {
+        "node": true,
+        "browser": false
+      },
+      "extensionKindDeclared": null,
+      "extensionDependencies": [],
+      "extensionPack": [],
+      "enabledApiProposals": [],
+      "artifacts": [
+        {
+          "platform": "universal",
+          "source": "open-vsx",
+          "url": "https://open-vsx.org/api/golang/Go/0.58.0/file/golang.Go-0.58.0.vsix",
+          "sha256": "bc638d118041fe91c2b437c7bc478adac9e1b9525490ab39770f4bf10f58a78d",
+          "size": 812477,
+          "sha256CrossCheck": "matches the Open VSX .sha256 file"
+        }
+      ],
+      "notes": "Needs a gopls binary; the extension otherwise offers to install tools with 'go install', which needs network access."
+    },
+    {
+      "id": "llvm-vs-code-extensions.vscode-clangd",
+      "version": "0.6.0",
+      "publishedAt": "2026-05-21T20:14:26.944129Z",
+      "tier": "core",
+      "capability": "language-server/c-cpp (clangd client)",
+      "scenarios": ["S08-clangd"],
+      "license": "MIT",
+      "openVsx": {
+        "licenseField": "MIT",
+        "namespaceVerified": true,
+        "latestAnyVersion": "0.6.0",
+        "latestAnyIsPreRelease": false,
+        "publishedBy": "sam-mccall",
+        "trustedPublishing": false,
+        "publisherType": "vendor"
+      },
+      "engine": "^1.75.0",
+      "engineSatisfiedBy1_144_0": true,
+      "entryPoints": {
+        "node": true,
+        "browser": false
+      },
+      "extensionKindDeclared": null,
+      "extensionDependencies": [],
+      "extensionPack": [],
+      "enabledApiProposals": [],
+      "artifacts": [
+        {
+          "platform": "universal",
+          "source": "open-vsx",
+          "url": "https://open-vsx.org/api/llvm-vs-code-extensions/vscode-clangd/0.6.0/file/llvm-vs-code-extensions.vscode-clangd-0.6.0.vsix",
+          "sha256": "32030694fa6c0ef438f4e4219f84677cd32f603c7faa4c71a283efc1f5b51751",
+          "size": 638869,
+          "sha256CrossCheck": "matches the Open VSX .sha256 file"
+        }
+      ],
+      "notes": "Open replacement for ms-vscode.cpptools. Needs a clangd binary (host or downloaded by the extension from GitHub)."
+    },
+    {
+      "id": "dbaeumer.vscode-eslint",
+      "version": "3.0.34",
+      "publishedAt": "2026-07-17T04:12:54.913196Z",
+      "tier": "core",
+      "capability": "linter/javascript",
+      "scenarios": ["S09-eslint"],
+      "license": "MIT",
+      "openVsx": {
+        "licenseField": "MIT",
+        "namespaceVerified": true,
+        "latestAnyVersion": "3.0.34",
+        "latestAnyIsPreRelease": false,
+        "publishedBy": "open-vsx",
+        "trustedPublishing": false,
+        "publisherType": "open-vsx"
+      },
+      "engine": "^1.90.0",
+      "engineSatisfiedBy1_144_0": true,
+      "entryPoints": {
+        "node": true,
+        "browser": false
+      },
+      "extensionKindDeclared": ["workspace"],
+      "extensionDependencies": [],
+      "extensionPack": [],
+      "enabledApiProposals": [],
+      "artifacts": [
+        {
+          "platform": "universal",
+          "source": "open-vsx",
+          "url": "https://open-vsx.org/api/dbaeumer/vscode-eslint/3.0.34/file/dbaeumer.vscode-eslint-3.0.34.vsix",
+          "sha256": "ca5334d46f6a39079e751ef4601bfc9f86bc3a46483e87291ec609239d161308",
+          "size": 264365,
+          "sha256CrossCheck": "matches the Open VSX .sha256 file"
+        }
+      ],
+      "notes": "Uses the workspace's eslint package; the fixture pins eslint 9.39.5."
+    },
+    {
+      "id": "esbenp.prettier-vscode",
+      "version": "12.4.0",
+      "publishedAt": "2026-03-16T19:14:43.319347Z",
+      "tier": "core",
+      "capability": "formatter/javascript",
+      "scenarios": ["S10-prettier"],
+      "license": "MIT",
+      "openVsx": {
+        "licenseField": "MIT",
+        "namespaceVerified": true,
+        "latestAnyVersion": "12.4.0",
+        "latestAnyIsPreRelease": false,
+        "publishedBy": "ntotten",
+        "trustedPublishing": false,
+        "publisherType": "vendor"
+      },
+      "engine": "^1.101.0",
+      "engineSatisfiedBy1_144_0": true,
+      "entryPoints": {
+        "node": true,
+        "browser": true
+      },
+      "extensionKindDeclared": ["workspace"],
+      "extensionDependencies": [],
+      "extensionPack": [],
+      "enabledApiProposals": [],
+      "artifacts": [
+        {
+          "platform": "universal",
+          "source": "open-vsx",
+          "url": "https://open-vsx.org/api/esbenp/prettier-vscode/12.4.0/file/esbenp.prettier-vscode-12.4.0.vsix",
+          "sha256": "fb730ea4306d09cdc0a3aaa9e9baae28058cc97a4fbfce8b056b377a0639a9fe",
+          "size": 3643663,
+          "sha256CrossCheck": "matches the Open VSX .sha256 file"
+        }
+      ],
+      "notes": "Has a browser entry. Uses workspace prettier when installed (fixture pins 3.9.10), otherwise its bundled copy."
+    },
+    {
+      "id": "GitHub.github-vscode-theme",
+      "version": "6.3.5",
+      "publishedAt": "2024-10-04T03:33:27.439016Z",
+      "tier": "core",
+      "capability": "theme (declarative)",
+      "scenarios": ["S11-theme"],
+      "license": "MIT",
+      "openVsx": {
+        "licenseField": "MIT",
+        "namespaceVerified": true,
+        "latestAnyVersion": "6.3.5",
+        "latestAnyIsPreRelease": false,
+        "publishedBy": "open-vsx",
+        "trustedPublishing": false,
+        "publisherType": "open-vsx"
+      },
+      "engine": "^1.43.0",
+      "engineSatisfiedBy1_144_0": true,
+      "entryPoints": {
+        "node": false,
+        "browser": false
+      },
+      "extensionKindDeclared": null,
+      "extensionDependencies": [],
+      "extensionPack": [],
+      "enabledApiProposals": [],
+      "artifacts": [
+        {
+          "platform": "universal",
+          "source": "open-vsx",
+          "url": "https://open-vsx.org/api/GitHub/github-vscode-theme/6.3.5/file/GitHub.github-vscode-theme-6.3.5.vsix",
+          "sha256": "a85236a58ad490b1600ec5a0fd0cea7eec56fb9d33660a1ac82c6da639ad3af4",
+          "size": 91023,
+          "sha256CrossCheck": "matches the Open VSX .sha256 file"
+        }
+      ],
+      "notes": "Declarative only (no main or browser entry), so it must work in every host. Last published 2024-10-04."
+    },
+    {
+      "id": "eamodio.gitlens",
+      "version": "19.5.0",
+      "publishedAt": "2026-10-27T20:14:27.585405Z",
+      "tier": "core",
+      "capability": "git (blame, history views)",
+      "scenarios": ["S12-gitlens"],
+      "license": "MIT AND LicenseRef-GitLens-Pro",
+      "openVsx": {
+        "licenseField": "%gitlens.license%",
+        "namespaceVerified": true,
+        "latestAnyVersion": "2026.10.310508",
+        "latestAnyIsPreRelease": true,
+        "publishedBy": "eamodio",
+        "trustedPublishing": false,
+        "publisherType": "vendor"
+      },
+      "engine": "^1.101.0",
+      "engineSatisfiedBy1_144_0": true,
+      "entryPoints": {
+        "node": true,
+        "browser": true
+      },
+      "extensionKindDeclared": null,
+      "extensionDependencies": [],
+      "extensionPack": [],
+      "enabledApiProposals": [],
+      "artifacts": [
+        {
+          "platform": "universal",
+          "source": "open-vsx",
+          "url": "https://open-vsx.org/api/eamodio/gitlens/19.5.0/file/eamodio.gitlens-19.5.0.vsix",
+          "sha256": "fb410733c312667e22f776e4d5eef0aa5074a7de840b3c30be8ee8d86a18208a",
+          "size": 4903512,
+          "sha256CrossCheck": "matches the Open VSX .sha256 file"
+        }
+      ],
+      "notes": "Pinned to stable 19.5.0; Open VSX 'latest' is a daily pre-release. Open VSX license field is the unresolved placeholder '%gitlens.license%': the VSIX ships LICENSE.txt (MIT) and LICENSE.plus (proprietary GitLens Pro terms for 'plus' directories)."
+    },
+    {
+      "id": "redhat.vscode-yaml",
+      "version": "2.0.0",
+      "publishedAt": "2026-10-16T01:46:39.843678Z",
+      "tier": "core",
+      "capability": "language-server/yaml (JSON Schema)",
+      "scenarios": ["S13-yaml"],
+      "license": "MIT",
+      "openVsx": {
+        "licenseField": "MIT",
+        "namespaceVerified": true,
+        "latestAnyVersion": "2.1.2026102308",
+        "latestAnyIsPreRelease": true,
+        "publishedBy": "rhdevelopers-ci",
+        "trustedPublishing": false,
+        "publisherType": "vendor"
+      },
+      "engine": "^1.91.0",
+      "engineSatisfiedBy1_144_0": true,
+      "entryPoints": {
+        "node": true,
+        "browser": true
+      },
+      "extensionKindDeclared": null,
+      "extensionDependencies": [],
+      "extensionPack": [],
+      "enabledApiProposals": [],
+      "artifacts": [
+        {
+          "platform": "universal",
+          "source": "open-vsx",
+          "url": "https://open-vsx.org/api/redhat/vscode-yaml/2.0.0/file/redhat.vscode-yaml-2.0.0.vsix",
+          "sha256": "4bba62ccda962b720dcb0829e85cf4109c94e86653dcd39fd7500c3687ad8c60",
+          "size": 1104200,
+          "sha256CrossCheck": "matches the Open VSX .sha256 file"
+        }
+      ],
+      "notes": "Pinned to stable 2.0.0; Open VSX 'latest' is a pre-release. Has a browser entry."
+    },
+    {
+      "id": "ms-toolsai.jupyter",
+      "version": "2025.9.1",
+      "publishedAt": "2025-10-14T03:38:46.009152Z",
+      "tier": "optional",
+      "capability": "notebooks/jupyter",
+      "scenarios": ["S14-jupyter"],
+      "license": "MIT",
+      "openVsx": {
+        "licenseField": "MIT",
+        "namespaceVerified": true,
+        "latestAnyVersion": "2025.9.1",
+        "latestAnyIsPreRelease": false,
+        "publishedBy": "open-vsx",
+        "trustedPublishing": false,
+        "publisherType": "open-vsx"
+      },
+      "engine": "^1.105.0",
+      "engineSatisfiedBy1_144_0": true,
+      "entryPoints": {
+        "node": true,
+        "browser": true
+      },
+      "extensionKindDeclared": ["workspace"],
+      "extensionDependencies": [],
+      "extensionPack": ["ms-toolsai.jupyter-keymap", "ms-toolsai.jupyter-renderers", "ms-toolsai.vscode-jupyter-slideshow", "ms-toolsai.vscode-jupyter-cell-tags"],
+      "enabledApiProposals": ["notebookDeprecated", "notebookMessaging", "notebookMime", "contribNotebookStaticPreloads", "portsAttributes", "quickPickSortByLabel", "notebookKernelSource", "interactiveWindow", "quickPickItemTooltip", "notebookExecution", "notebookCellExecution", "notebookVariableProvider", "notebookReplDocument"],
+      "artifacts": [
+        {
+          "platform": "universal",
+          "source": "open-vsx",
+          "url": "https://open-vsx.org/api/ms-toolsai/jupyter/2025.9.1/file/ms-toolsai.jupyter-2025.9.1.vsix",
+          "sha256": "110660656944c4ab0ff687db488c2e8c59c67ec121dcf09bcaa54b6edd9ce71f",
+          "size": 12619012,
+          "sha256CrossCheck": "matches the Open VSX .sha256 file"
+        }
+      ],
+      "notes": "Open VSX version (2025.9.1, 2025-10-14) lags upstream. extensionPack members (keymap, renderers, slideshow, cell-tags) are not pinned. Declares 13 proposed APIs and contains Pylance-specific commands."
+    },
+    {
+      "id": "redhat.java",
+      "version": "1.58.0",
+      "publishedAt": "2026-10-19T12:35:57.861596Z",
+      "tier": "optional",
+      "capability": "language-server/java (Eclipse JDT LS)",
+      "scenarios": ["S15-java"],
+      "license": "EPL-2.0",
+      "openVsx": {
+        "licenseField": "EPL-2.0",
+        "namespaceVerified": true,
+        "latestAnyVersion": "1.59.2026103108",
+        "latestAnyIsPreRelease": true,
+        "publishedBy": "rhdevelopers-ci",
+        "trustedPublishing": false,
+        "publisherType": "vendor"
+      },
+      "engine": "^1.77.0",
+      "engineSatisfiedBy1_144_0": true,
+      "entryPoints": {
+        "node": true,
+        "browser": false
+      },
+      "extensionKindDeclared": null,
+      "extensionDependencies": [],
+      "extensionPack": [],
+      "enabledApiProposals": [],
+      "artifacts": [
+        {
+          "platform": "darwin-x64",
+          "source": "open-vsx",
+          "url": "https://open-vsx.org/api/redhat/java/darwin-x64/1.58.0/file/redhat.java-1.58.0@darwin-x64.vsix",
+          "sha256": "70cacdf22f728be69278fdbc67af0b7ca8b668c2c9f899f0e944a6943ca1dfd3",
+          "size": 134596850,
+          "sha256CrossCheck": "matches the Open VSX .sha256 file"
+        },
+        {
+          "platform": "darwin-arm64",
+          "source": "open-vsx",
+          "url": "https://open-vsx.org/api/redhat/java/darwin-arm64/1.58.0/file/redhat.java-1.58.0@darwin-arm64.vsix",
+          "sha256": "8783b3331d6b35e8ae80833e76974edbca2fa5f3a9d9943b598680087d2b24e8",
+          "size": 133349822,
+          "sha256CrossCheck": "matches the Open VSX .sha256 file"
+        },
+        {
+          "platform": "linux-x64",
+          "source": "open-vsx",
+          "url": "https://open-vsx.org/api/redhat/java/linux-x64/1.58.0/file/redhat.java-1.58.0@linux-x64.vsix",
+          "sha256": "45049a2273c78814287fb31a45255e5ce1fdbe34161bb9f1ba8f62a6aa84bdfc",
+          "size": 138698053,
+          "sha256CrossCheck": "matches the Open VSX .sha256 file"
+        },
+        {
+          "platform": "win32-x64",
+          "source": "open-vsx",
+          "url": "https://open-vsx.org/api/redhat/java/win32-x64/1.58.0/file/redhat.java-1.58.0@win32-x64.vsix",
+          "sha256": "e23746b65468243ea54a7c7ad0a41ff4202196cf642cd9e6fa275234c33cdacd",
+          "size": 134602310,
+          "sha256CrossCheck": "matches the Open VSX .sha256 file"
+        }
+      ],
+      "notes": "EPL-2.0. Platform VSIXs embed a JRE (about 130 MB each). Java debugging (vscjava.vscode-java-debug) is not pinned."
+    }
+  ]
+}
