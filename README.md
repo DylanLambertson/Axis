@@ -19,7 +19,8 @@ Project Axis is a desktop-and-web AI agent manager for software development, wit
 6. `docs/CONTEXT.md` — local-first memory and cross-project intelligence.
 7. `docs/UX.md` — design principles, layouts, interaction rules.
 8. `docs/SECURITY.md` — trust model, secrets, isolation, sync, enterprise controls.
-   - `docs/security/threat-model-phase0.md` — Phase 0/1 threat model; the threat IDs cited across the ADRs.
+   - `docs/security/threat-model-phase0.md` — Phase 0 threat model (history); the threat IDs cited across the ADRs.
+   - `docs/security/threat-model-phase1.md` and `threat-model-phase1-controls.md` — Phase 1 revision (agent-first shell, 1a and 1b): data-flow diagram, new threats, control-to-gate matrix, residual risks, risk register. Read before the Phase 1a gate.
 9. `docs/ROADMAP.md` — phases, milestones, release gates.
 10. `docs/IMPLEMENTATION.md` — proposed repository, interfaces, initial backlog.
 11. `docs/adr/` — architecture decision records (start with ADR 0001, ADR 0002, and ADR 0004 for the agent-first workspace shell).
