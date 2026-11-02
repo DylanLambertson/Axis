@@ -233,11 +233,11 @@ test("a failing audit append rolls back the whole recovery (all or nothing)", ()
   const db = openDatabase(":memory:");
   const real = new AuditLog(db);
   let calls = 0;
-  const flaky = {
-    append(input: Parameters<AuditLog["append"]>[0]) {
-      if (++calls === 2) throw new AxisError("E_INTERNAL", "disk full");
-      return real.append(input);
-    },
+  const flaky = real;
+  const realAppend = real.append.bind(real);
+  flaky.append = (input) => {
+    if (++calls === 2) throw new AxisError("E_INTERNAL", "disk full");
+    return realAppend(input);
   };
   const journal = Journal.open(db, { audit: flaky });
   const ws = readyWorkspace(journal);
@@ -248,4 +248,16 @@ test("a failing audit append rolls back the whole recovery (all or nothing)", ()
   assert.throws(() => journal.recover(), code("E_INTERNAL"));
   assert.equal(journal.listRuns({ states: ["RUNNING"] }).length, 3);
   assert.equal(real.head(), null);
+});
+
+test("open refuses an audit log bound to a different database handle", () => {
+  const journalDb = openDatabase(":memory:");
+  const otherDb = openDatabase(":memory:");
+  assert.throws(() => Journal.open(journalDb, { audit: new AuditLog(otherDb) }), code("E_INTERNAL"));
+  // Same path, separate connections is still a different handle.
+  const a = openDatabase(":memory:");
+  assert.throws(() => Journal.open(a, { audit: new AuditLog(openDatabase(":memory:")) }), code("E_INTERNAL"));
+  // The matching handle is accepted and nothing was migrated by the failed attempts.
+  assert.equal(schemaVersion(journalDb, "journal"), 0);
+  Journal.open(a, { audit: new AuditLog(a) });
 });

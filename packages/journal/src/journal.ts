@@ -7,7 +7,7 @@ import {
   runMigrations,
   withTransaction,
   type AuditActor,
-  type AuditSink,
+  type AuditLog,
   type DatabaseSync,
 } from "@axis/audit";
 import { z } from "zod";
@@ -144,12 +144,11 @@ export interface RecoveryReport {
 
 export interface JournalOptions {
   /**
-   * Where recovery events go. Pass an `AuditLog` on the same database handle
-   * and every recovery change commits atomically with its audit event. With a
-   * sink on another connection the event is written inside the recovery
-   * transaction but is not covered by its rollback.
+   * Where recovery events go. It must be an `AuditLog` bound to the same
+   * `DatabaseSync` handle as the journal (checked by identity in `open`), so
+   * every change commits atomically with its audit event.
    */
-  readonly audit: AuditSink;
+  readonly audit: AuditLog;
   readonly now?: () => Date;
   readonly newId?: () => string;
 }
@@ -217,7 +216,7 @@ function invalid(error: z.ZodError, what: string): AxisError {
  */
 export class Journal {
   readonly #db: DatabaseSync;
-  readonly #audit: AuditSink;
+  readonly #audit: AuditLog;
   readonly #now: () => Date;
   readonly #newId: () => string;
 
@@ -230,6 +229,12 @@ export class Journal {
 
   /** Migrate the schema and return a journal. Call `recover()` next on daemon start. */
   static open(db: DatabaseSync, options: JournalOptions): Journal {
+    if (!options.audit.isBoundTo(db)) {
+      throw new AxisError(
+        "E_INTERNAL",
+        "The audit log must use the same database handle as the journal so state changes and audit events commit atomically",
+      );
+    }
     runMigrations(db, "journal", JOURNAL_MIGRATIONS);
     return new Journal(db, options);
   }
