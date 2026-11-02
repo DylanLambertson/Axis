@@ -10,7 +10,7 @@ More packages (worktrees, journal, audit) are added by their own changes.
 
 ## Rules
 
-- Packages may import `node:*`, `zod` (exactly 4.4.3) and other `@axis/*` packages. They never import `vs/*`, Electron or the DOM.
+- Packages may import `node:*`, `zod` (exactly 4.6.6) and other `@axis/*` packages. They never import `vs/*`, Electron or the DOM.
 - The UI and workbench code in `code-oss/overlay/src/vs/axis/**` reaches the daemon only through `@axis/protocol`.
 - Tests use `node:test`. No other test framework.
 
