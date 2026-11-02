@@ -1,0 +1,15 @@
+{
+  "name": "extension-matrix-probe",
+  "displayName": "Axis extension matrix probe",
+  "description": "Test-only extension. Runs extension compatibility checks through --extensionTestsPath.",
+  "publisher": "axis-test",
+  "version": "0.0.1",
+  "private": true,
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.144.0"
+  },
+  "extensionKind": ["workspace"],
+  "activationEvents": [],
+  "contributes": {}
+}
