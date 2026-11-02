@@ -596,7 +596,7 @@ Files that are adapted from upstream (copied from sessions or `layout.ts`) keep 
 
 `code-oss/scripts/footprint` measures each range separately.
 
-- It counts distinct upstream files and `+`/`-` lines across `code-oss/patches/NNNN-*`, grouped by number block, with marker lines reported separately.
+- It counts distinct upstream files and `+`/`-` lines across `code-oss/patches/NNNN-*`, reporting the four blocks separately: `0001–0999` shell, `1000–1499` rebrand and licensing (decision 5), `1500–1999` Copilot and agent host (decision 6), and `2000–2999` security hardening (decision 7). Marker lines are reported separately too.
 - For criterion 2 it excludes `product.json` and `resources/**`.
 - Every sync PR records its output (criteria 2–4).
 
@@ -733,7 +733,7 @@ Tests follow the upstream sessions patterns:
 | S2.9 | Packaged Axis-shell builds on macOS and Linux; ADR checklist demo | ADR 0002 validation bullet 1 is satisfied | Recorded walkthrough; smoke subset on both OSes |
 | S2.10 | **Upstream sync exercise** from 1.144 to a release **at least 2 weekly minors later** (criterion 4; latest recovery release, matching the sync policy) | ≤ 1 working day for **all four blocks** (`0001–0999`, `1000–1499`, `1500–1999`, `2000–2999`); conflicts only in patched seams | Protocol below |
 | S2.11 | **Throwaway** React spike answering criterion 5 (§4, D5): in-pipeline `.tsx` and no-JSX variants | One React view passes the production CSP/TT smoke test, lint/hygiene/tsec and the minified production bundle; footprint, bundle and startup deltas recorded for both variants | Measurements in the PR description; the spike branch is **not merged** |
-| S2.12 | Footprint report and ADR 0002 validation write-up | Criterion 2 met by range `0001–0999`; criterion 3 recorded for `1000`, `1500` and `2000`; ADR status updated with evidence | `code-oss/scripts/footprint` output per range |
+| S2.12 | Footprint report and ADR 0002 validation write-up | Criterion 2 met by range `0001–0999`; criterion 3 recorded separately for `1000–1499`, `1500–1999` and `2000–2999`; ADR status updated with evidence | `code-oss/scripts/footprint` output per range |
 
 **Sync exercise protocol (S2.10).** Record each of these in `docs/feasibility/upstream-sync-log.md`:
 
