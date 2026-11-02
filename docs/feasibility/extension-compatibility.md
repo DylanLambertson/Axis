@@ -150,7 +150,7 @@ These extensions are not on Open VSX (the API returns "Extension not found") and
 11. **Web runner gaps upstream.**
    - The upstream browser integration runner always passes `--enable-proposed-api` to the server and `["enableProposedApi",""]` in the page payload (`test/integration/browser/src/index.ts:135,194`), which would hide risk 1.
    - It also creates a fresh `--server-data-dir` on every run (`:182-194`), so pinned extensions cannot be pre-installed. Axis needs its own small web runner (§7.4).
-12. **Extensions that plug into the upstream chat stack.** Python, CodeLLDB and Jupyter contribute `languageModelTools`, and GitLens contributes `mcpServerDefinitionProviders`. When Axis removes or replaces the upstream chat stack (ADR 0002 guardrails), these contribution points may have no host. If Axis wires them into its own agent features, they become a path from extensions into those features. Threat EXT-2 requires that Axis privileged operations are not exposed as commands. The activation scan records any errors from these contribution points; how Axis surfaces them is an M3 question.
+12. **Extensions that plug into the upstream chat stack.** Python, CodeLLDB and Jupyter contribute `languageModelTools`, and GitLens contributes `mcpServerDefinitionProviders`. When Axis removes or replaces the upstream chat stack (ADR 0002 guardrails), these contribution points may have no host. If Axis wires them into its own agent features, they become a path from extensions into those features. Threat EXT-2 requires that Axis privileged operations are not exposed as commands. The activation scan records any errors from these contribution points; how Axis surfaces them is an M3 question. The removal is M3 task S1.3 in `docs/design/axis-shell.md`, and its SC-3 artifact check (`check-artifacts`) confirms that the Copilot and agent-host code is gone. Results for these extensions are only comparable before and after S1.3 when that check has passed on the build under test.
 
 ## 5. Test procedure
 
@@ -315,19 +315,28 @@ The desktop CLI installs VSIX paths through `--install-extension` (`argv.ts:130`
    - Record Python twice (D3): S02 (Jedi default) and S03 (basedpyright, `python.languageServer: None`). S04 (debugpy) runs under the default configuration.
    - Then run each scenario's `observe` items by hand until Layer C exists, and record screenshots for theme and GitLens.
    - Optional tier (D5): if time allows, run `install.sh --tier optional` (it installs the optional extensions plus the core set, which S14 needs) and `run.sh --all --tier optional`. The results are recorded but do not gate Phase 0.
-3. **Signature test (M3, D4).** Install a signed, an unsigned and a tampered extension on the Axis build, as specified by threat EXT-3, and record the outcomes next to the matrix.
-4. **Web pass (M6).** Build and run the reh-web runner from §7.4 on Linux x64, then do a manual browser session covering the same `observe` items.
-5. **Recording.**
+3. **When to run (M3, `docs/design/axis-shell.md` §6).**
+   - Run the desktop pass on the S1.7 packaged builds (stage 1 checkpoint) as the baseline. Then rerun it after S1.3 (decision 6 removal, with the SC-3 artifact check passing) and on the S2.9 Axis-shell builds.
+   - A failure that first appears after S1.3 or S2.x is caused by an Axis change, for criterion 6.
+   - S1.1 replaces `product.json` `defaultChatAgent` with an inert stub (design §2.5). Two extension-management paths read it unguarded: the extensions control manifest (`getExtensionsControlManifest`, `extensionGalleryService.ts:2047`) and pack uninstall (`getAllPackExtensionsToUninstall`, `abstractExtensionManagementService.ts:995`). `install.sh`'s VSIX installs may not reach either path. After S1.1, also run one gallery install against the configured registry and uninstall `ms-python.python` (a pack) through the CLI.
+   - Check that the S1.7 build target matches the gating platform (D6: macOS x64). The design's example command builds `vscode-darwin-arm64-min`.
+4. **Signature test (M3, D4).** Install a signed, an unsigned and a tampered extension on the Axis build, as specified by threat EXT-3, and record the outcomes next to the matrix. The pins provide the inputs:
+   - signed: any pinned Open VSX extension, each of which has an Open VSX `.sigzip` (`files.signature` in the API), installed through the gallery;
+   - unsigned: a CodeLLDB GitHub platform VSIX, which has no Open VSX signature;
+   - tampered: a copy of a pinned VSIX with one byte changed, kept outside `.vsix-cache/` (because `fetch.sh` deletes files whose hash does not match).
+   - Record whether a VSIX installed from a file is verified at all. That path was not checked here.
+5. **Web pass (M6).** Build and run the reh-web runner from §7.4 on Linux x64, then do a manual browser session covering the same `observe` items.
+6. **Recording.**
    - Copy each `summary.tsv` row into the matrix in §2, replacing `not run` with `passed`, `failed`, `blocked` or `timeout`, plus the build commit, platform and date.
    - A scenario's scan status covers only its own `extensions` (§7.2). Never mark a scenario `passed` when its scan status is `findings`; record it as `passed (probe) / findings (activation)` and link `scan/activation-scan.json`.
    - `inconclusive`, `no-logs` or `error` means the scan measured nothing. Record that status, fix the setup (packaged build, logs path), and rerun before recording `clean`.
    - Record proposed-API stripping only in §2.1, never per scenario.
    - File each failure with the scenario's `result.json` and logs.
-6. **Exit criteria for Phase 0 (ADR 0002 criterion 6).**
+7. **Exit criteria for Phase 0 (ADR 0002 criterion 6).**
    - All 12 core extensions plus the built-in baseline have a recorded desktop result on macOS x64 and Linux x64, and a recorded web result from M6.
    - Every failure is recorded, and either fixed or listed as a documented exception, as `DEVELOPMENT.md` §10 requires.
    - Each failure is classified as caused by an Axis change (shell layer, guardrail or hardening patches, rebrand) or not. Under criterion 6, failures caused by Axis changes must be fixable within the ADR 0002 patch budget. Record the estimated fix size against that budget.
-7. **Upstream syncs (ADR 0002).** Re-run the matrix on each upstream sync. Re-pin extensions on a fixed cadence: refresh `extensions.json` from the API, re-hash, re-run the unit tests, and review the license and provenance diffs.
+8. **Upstream syncs (ADR 0002).** Re-run the matrix on each upstream sync. Re-pin extensions on a fixed cadence: refresh `extensions.json` from the API, re-hash, re-run the unit tests, and review the license and provenance diffs.
 
 ## 10. Decisions
 
@@ -348,4 +357,4 @@ Recorded on 2026-11-01 by the Phase 0 lead.
 - GitHub REST API, `repos/vadimcn/codelldb/releases/tags/v1.12.3` (asset digests, accessed 2026-11-01).
 - Pinned VSIX manifests (`extension/package.json`, `extension.vsixmanifest`, license files), read as data from the downloaded files.
 - Code OSS 1.144.0 source, read-only clone at commit `2c33b50b16c472efe58357d1d2a8a5414bc23fbf` (paths cited inline).
-- `docs/feasibility/licensing-and-marketplace.md`, `docs/feasibility/code-oss-inventory.md`, `docs/adr/0002-code-oss-integration-strategy.md` (validation criterion 6) and `docs/security/threat-model-phase0.md` (§5.2: EXT-1, EXT-2, EXT-3, EXT-5).
+- `docs/feasibility/licensing-and-marketplace.md`, `docs/feasibility/code-oss-inventory.md`, `docs/adr/0002-code-oss-integration-strategy.md` (validation criterion 6) and `docs/security/threat-model-phase0.md` (§5.2: EXT-1, EXT-2, EXT-3, EXT-5) and `docs/design/axis-shell.md` (S1.3 and the SC-3 checks, S1.7, S2.9).
