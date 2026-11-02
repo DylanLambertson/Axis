@@ -552,3 +552,25 @@ test("S5: execute also refuses a display-unsafe target", async () => {
   const token = approve(manager, issue(manager));
   await assert.rejects(manager.execute(token, { ...run, target: "workspace:ws-1‮" }, () => 1), code("E_INVALID_ARGUMENT"));
 });
+
+test("S4: the default summary is the whole target when it fits, and keeps head and tail when it does not", () => {
+  const { manager } = setup();
+  const exact = "workspace:" + "a".repeat(502);
+  assert.equal(issue(manager, { target: exact }).challenge.targetSummary, exact);
+  const long = "workspace:" + "a".repeat(600) + "/../../home";
+  const summary = issue(manager, { target: long }).challenge.targetSummary;
+  assert.ok(summary.length <= 512);
+  assert.ok(summary.startsWith("workspace:aaa"));
+  assert.ok(summary.endsWith("/../../home"), "the tail is visible");
+  assert.ok(summary.includes("…"), "the cut is visible");
+});
+
+test("S4: cutting never splits a surrogate pair", () => {
+  for (let pad = 250; pad < 260; pad++) {
+    const { manager } = setup();
+    const target = "a".repeat(pad) + "\u{1F600}".repeat(200) + "b".repeat(pad);
+    const summary = issue(manager, { target }).challenge.targetSummary;
+    assert.ok(!/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(summary), `pad ${pad}`);
+    assert.ok(summary.length <= 512);
+  }
+});

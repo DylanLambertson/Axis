@@ -50,7 +50,9 @@ const issueSchema = z
     /**
      * One line the user sees. The daemon must build it from fields it knows are
      * safe to show (annotated `path` or `public`), never from requester input
-     * (APR-2). Defaults to the target.
+     * (APR-2). Defaults to the whole target, or, for a target over 512
+     * characters, its first 255 and last 256 around an ellipsis; the tail is
+     * never hidden.
      */
     targetSummary: z.string().max(512).refine(displaySafe).optional(),
   })
@@ -168,6 +170,20 @@ function limit(value: number | undefined, fallback: number, max: number, name: s
   return v;
 }
 
+/**
+ * The whole target when it fits the schema's 512 characters; otherwise the head
+ * and the tail around a visible ellipsis. The tail is where `/../../home` hides,
+ * so it is never the part that gets cut.
+ */
+export function defaultSummary(target: string): string {
+  if (target.length <= 512) return target;
+  let head = target.slice(0, 255);
+  let tail = target.slice(-256);
+  if (/[\uD800-\uDBFF]$/.test(head)) head = head.slice(0, -1);
+  if (/^[\uDC00-\uDFFF]/.test(tail)) tail = tail.slice(1);
+  return `${head}\u2026${tail}`;
+}
+
 function invalid(error: z.ZodError, what: string): ChallengeError {
   // Field paths only: zod messages can echo the offending value.
   const fields = [...new Set(error.issues.map((i) => i.path.join(".") || "(root)"))].join(", ");
@@ -261,7 +277,7 @@ export class ChallengeManager {
       contract: p.contract,
       method: p.op,
       tier: p.tier,
-      targetSummary: p.targetSummary ?? p.target.slice(0, 512),
+      targetSummary: p.targetSummary ?? defaultSummary(p.target),
       nativeConfirmationRequired: native,
       expiresAt: record.wallExpiresAt,
     });
