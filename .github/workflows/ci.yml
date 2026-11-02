@@ -158,6 +158,54 @@ jobs:
       - name: Run the unit and consistency tests
         run: node --test 'test/extension-matrix/tests/*.test.js'
 
+  axis-packages:
+    name: Axis packages
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Read the pinned Node version from the manifest
+        id: manifest
+        run: |
+          set -euo pipefail
+          node_version="$(jq -er '.node' code-oss/upstream.json)"
+          [[ "$node_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "::error file=code-oss/upstream.json::node is not MAJOR.MINOR.PATCH: $node_version"
+            exit 1
+          }
+          echo "node=$node_version" >>"$GITHUB_OUTPUT"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ steps.manifest.outputs.node }}
+          package-manager-cache: false
+
+      - name: Check the Node version
+        env:
+          EXPECTED: v${{ steps.manifest.outputs.node }}
+        run: |
+          set -euo pipefail
+          actual="$(node --version)"
+          [ "$actual" = "$EXPECTED" ] || { echo "::error::node is $actual, manifest pins $EXPECTED"; exit 1; }
+          echo "node $actual, npm $(npm --version)"
+
+      - name: Install dependencies (lockfile only, no install scripts)
+        run: npm ci --ignore-scripts
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+      - name: Test
+        run: npm test
+
   workflow-lint:
     name: Workflow lint
     runs-on: ubuntu-24.04
