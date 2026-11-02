@@ -1,0 +1,19 @@
+diff --git a/product.json b/product.json
+--- a/product.json
++++ b/product.json
+@@ -35,6 +35,15 @@
+ 	"nodejsArtifactFeed": "",
+ 	"electronArtifactFeed": "",
+ 	"urlProtocol": "axis",
++	"extensionsGallery": {
++		"serviceUrl": "https://open-vsx.org/vscode/gallery",
++		"itemUrl": "https://open-vsx.org/vscode/item",
++		"latestUrlTemplate": "https://open-vsx.org/vscode/gallery/{publisher}/{name}/latest",
++		"controlUrl": "https://raw.githubusercontent.com/EclipseFdn/publish-extensions/refs/heads/master/extension-control/extensions.json"
++	},
++	"linkProtectionTrustedDomains": [
++		"https://open-vsx.org"
++	],
+ 	"webviewContentExternalBaseUrlTemplate": "https://{{uuid}}.vscode-cdn.net/insider/ef65ac1ba57f57f2a3961bfe94aa20481caca4c6/out/vs/workbench/contrib/webview/browser/pre/",
+ 	"builtInExtensions": [
+ 		{
