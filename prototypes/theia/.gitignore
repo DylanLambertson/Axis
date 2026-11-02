@@ -1,0 +1,12 @@
+# Dependencies and build output of the Theia prototype
+node_modules/
+lib/
+src-gen/
+gen-esbuild*.mjs
+esbuild.mjs
+*.tsbuildinfo
+# Unpacked VS Code extensions (fetched and hash-verified by scripts/, never committed)
+plugins/
+.vsix-cache/
+# Measurement output
+.work/

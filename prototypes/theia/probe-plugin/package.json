@@ -1,0 +1,17 @@
+{
+  "name": "extension-matrix-probe-theia",
+  "displayName": "Axis extension matrix probe (Theia wrapper)",
+  "description": "Test-only plugin. Theia has no --extensionTestsPath, so this wrapper activates on startup and calls the unchanged test/extension-matrix/probe/runner.js run().",
+  "publisher": "axis-test",
+  "version": "0.0.1",
+  "private": true,
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.100.0"
+  },
+  "main": "./main.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {}
+}

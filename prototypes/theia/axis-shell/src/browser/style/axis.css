@@ -1,0 +1,40 @@
+/* Axis top bar and AI panel. Colours come from the Axis Dark theme
+   variables (--theia-*); spacing follows docs/UX.md (4px grid, 28-34px rows). */
+.axis-top-bar {
+  height: 34px;
+  min-height: 34px;
+  background: var(--theia-titleBar-activeBackground);
+  border-bottom: 1px solid var(--theia-titleBar-border, var(--theia-widget-border));
+  color: var(--theia-foreground);
+  font-size: 12px;
+}
+.axis-top-bar-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 100%;
+  padding: 0 8px;
+}
+.axis-mark { color: var(--theia-focusBorder); font-size: 14px; padding: 0 4px; }
+.axis-spacer { flex: 1; }
+.axis-top-bar button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--theia-widget-border);
+  border-radius: 6px;
+  background: var(--theia-input-background);
+  color: var(--theia-foreground);
+  font: inherit;
+  cursor: pointer;
+}
+.axis-top-bar button:hover { background: var(--theia-list-hoverBackground); }
+.axis-top-bar button:focus-visible { outline: 1px solid var(--theia-focusBorder); outline-offset: 1px; }
+.axis-search { min-width: 320px; color: var(--theia-input-placeholderForeground) !important; }
+.axis-dot { width: 6px; height: 6px; border-radius: 3px; background: var(--theia-descriptionForeground); }
+.axis-ai-panel-body { padding: 12px; color: var(--theia-foreground); }
+.axis-ai-panel-body h3 { margin: 0 0 4px; font-size: 13px; font-weight: 600; }
+.axis-secondary { color: var(--theia-descriptionForeground); }
+.axis-muted { color: var(--theia-disabledForeground); }

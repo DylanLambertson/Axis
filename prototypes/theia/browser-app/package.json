@@ -1,0 +1,77 @@
+{
+  "private": true,
+  "name": "browser-app",
+  "version": "0.0.0",
+  "description": "Axis Theia prototype, browser target",
+  "license": "MIT",
+  "theia": {
+    "target": "browser",
+    "frontend": {
+      "config": {
+        "applicationName": "Axis (Theia prototype)",
+        "defaultTheme": "axis-dark",
+        "defaultIconTheme": "theia-file-icons",
+        "preferences": {
+          "workbench.colorTheme": "axis-dark",
+          "files.enableTrash": false,
+          "security.workspace.trust.enabled": false
+        },
+        "reloadOnReconnect": true
+      }
+    },
+    "backend": {
+      "config": {
+        "frontendConnectionTimeout": 3000
+      }
+    }
+  },
+  "theiaPluginsDir": "../plugins",
+  "dependencies": {
+    "@theia/bulk-edit": "1.76.0",
+    "@theia/callhierarchy": "1.76.0",
+    "@theia/console": "1.76.0",
+    "@theia/core": "1.76.0",
+    "@theia/debug": "1.76.0",
+    "@theia/editor": "1.76.0",
+    "@theia/editor-preview": "1.76.0",
+    "@theia/file-search": "1.76.0",
+    "@theia/filesystem": "1.76.0",
+    "@theia/keymaps": "1.76.0",
+    "@theia/markers": "1.76.0",
+    "@theia/messages": "1.76.0",
+    "@theia/monaco": "1.76.0",
+    "@theia/navigator": "1.76.0",
+    "@theia/notebook": "1.76.0",
+    "@theia/outline-view": "1.76.0",
+    "@theia/output": "1.76.0",
+    "@theia/plugin-ext": "1.76.0",
+    "@theia/plugin-ext-vscode": "1.76.0",
+    "@theia/preferences": "1.76.0",
+    "@theia/process": "1.76.0",
+    "@theia/scm": "1.76.0",
+    "@theia/search-in-workspace": "1.76.0",
+    "@theia/task": "1.76.0",
+    "@theia/terminal": "1.76.0",
+    "@theia/timeline": "1.76.0",
+    "@theia/typehierarchy": "1.76.0",
+    "@theia/userstorage": "1.76.0",
+    "@theia/variable-resolver": "1.76.0",
+    "@theia/vsx-registry": "1.76.0",
+    "@theia/workspace": "1.76.0",
+    "axis-shell": "0.0.0",
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
+  },
+  "devDependencies": {
+    "@theia/cli": "1.76.0",
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.7"
+  },
+  "scripts": {
+    "clean": "theia clean",
+    "build": "theia build --mode production",
+    "build:dev": "theia build --mode development",
+    "rebuild": "theia rebuild:browser --cacheRoot ..",
+    "start": "theia start --plugins=local-dir:../plugins --hostname=127.0.0.1 --port=3000"
+  }
+}
