@@ -1,0 +1,15 @@
+# Code OSS replacements
+
+Axis files that intentionally replace upstream files of the same path, typically icons and other binary assets (`resources/**`), where a patch would be unreadable. `scripts/code-oss/apply.sh` copies everything under this directory over the matching upstream file, after the patches and `../removals.txt` have been applied and before the overlay.
+
+## Rules
+
+- **Assets only.** A path is accepted only if it is under `resources/` or ends in an image extension: `.png`, `.svg`, `.ico`, `.icns`, `.bmp`, `.xpm`, `.jpg`, `.jpeg`, `.gif` or `.webp`, in any case. Anything else is refused before the tree is touched. Source changes must be patches, so that they count in the right `footprint.sh` block; wholesale replacement must not bypass the shell budget (ADR 0002 criterion 2). The allow-list is `is_replaceable_asset` in `scripts/code-oss/lib.sh`.
+- **Existing upstream files only.** The target path must exist at the pinned commit and still be a regular file in the tree; otherwise `apply.sh` fails and lists the paths. This catches upstream renames and deletions at sync time. New files belong in `../overlay`.
+- Paths are checked like the overlay's: no `..`, only printable ASCII without `\` or `:`, and no `.git` component in any spelling.
+- The upstream file mode is kept; only the content is replaced.
+- Only regular files and directories are allowed; symlinks are rejected. This `README.md` and `.DS_Store` files are not copied.
+
+`apply.sh` records each replaced path in `vendor/code-oss.applied`, and `footprint.sh` reports them as their own row.
+
+Empty for the Phase 0 M2 baseline build.

@@ -46,3 +46,33 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: git diff --check "$BASE_SHA" HEAD
+
+  code-oss-scripts:
+    name: Code OSS scripts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      SHELLCHECK_VERSION: 0.11.0
+      # SHA-256 of shellcheck-v0.11.0.linux.x86_64.tar.xz, as listed in the upstream release asset digest.
+      SHELLCHECK_SHA256: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install shellcheck (pinned, checksum-verified)
+        run: |
+          set -euo pipefail
+          archive="shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/$archive" \
+            "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/${archive}"
+          echo "${SHELLCHECK_SHA256}  $RUNNER_TEMP/$archive" | sha256sum -c -
+          tar -xJf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP"
+          "$RUNNER_TEMP/shellcheck-v${SHELLCHECK_VERSION}/shellcheck" --version
+
+      - name: Lint Code OSS scripts
+        run: '"$RUNNER_TEMP/shellcheck-v${SHELLCHECK_VERSION}/shellcheck" -x scripts/code-oss/*.sh'
+
+      - name: Test fetch and apply against a local fake upstream
+        run: scripts/code-oss/test.sh
