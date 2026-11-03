@@ -11,7 +11,7 @@
  * outside `src/` so the ADR 0005 D3 staging hook, which copies
  * `packages/<name>/src/**`, never stages it into the Code OSS tree (N9).
  */
-import { describe, it, type TestContext } from "node:test";
+import { afterEach, beforeEach, describe, it, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import type { JsonValue } from "@axis/protocol";
 import { inspect } from "node:util";
@@ -67,6 +67,83 @@ export interface ContractFixture {
   requestCount(): number;
   /** Responses still open on the wire. Required: release checks never skip (S9). */
   openStreams(): number;
+  /**
+   * The last request as the adapter put it on the wire, mapped back to these
+   * fields (for an HTTP adapter: `model`, `max_tokens`, `system`,
+   * `stop_sequences` from the body). Undefined before any request. The suite
+   * checks that the adapter forwards them unchanged (NS1).
+   */
+  lastRequest(): ForwardedRequest | undefined;
+}
+
+/** The request fields an adapter must forward unchanged. */
+export interface ForwardedRequest {
+  readonly model: string;
+  readonly maxOutputTokens: number;
+  readonly system?: string;
+  readonly stopSequences?: readonly string[];
+}
+
+/** Every 12-character window of the credential, so a partial echo is caught too (NS5). */
+export const CREDENTIAL_WINDOW = 12;
+
+function needlesFor(canary: string, credential: string): string[] {
+  const out = new Set<string>([canary, credential]);
+  for (let i = 0; i + CREDENTIAL_WINDOW <= credential.length; i++) out.add(credential.slice(i, i + CREDENTIAL_WINDOW));
+  return [...out];
+}
+
+/**
+ * The adapter with every output recorded: events, results, listings,
+ * reports and thrown values. `stream` still calls the adapter synchronously,
+ * so the "never throws synchronously" check sees the adapter itself.
+ */
+function recording(a: ProviderAdapter, sink: unknown[]): ProviderAdapter {
+  const keep = <T>(p: Promise<T>): Promise<T> =>
+    p.then(
+      (v) => {
+        sink.push(v);
+        return v;
+      },
+      (e: unknown) => {
+        sink.push(e);
+        throw e;
+      },
+    );
+  const w: { -readonly [K in keyof ProviderAdapter]: ProviderAdapter[K] } = {
+    descriptor: a.descriptor,
+    listModels: (o) => keep(a.listModels(o)),
+    getCapabilities: (m, o) => keep(a.getCapabilities(m, o)),
+    validateConnection: (o) => keep(a.validateConnection(o)),
+    generate: (r, o) => keep(a.generate(r, o)),
+    stream: (r, o) => {
+      const inner = a.stream(r, o);
+      return {
+        async *[Symbol.asyncIterator]() {
+          try {
+            for await (const ev of inner) {
+              sink.push(ev);
+              yield ev;
+            }
+          } catch (e) {
+            sink.push(e);
+            throw e;
+          }
+        },
+      };
+    },
+  };
+  const count = a.countTokens;
+  if (count !== undefined) w.countTokens = (r, o) => keep(count.call(a, r, o));
+  const cost = a.estimateCost;
+  if (cost !== undefined) {
+    w.estimateCost = (m, u) => {
+      const c = cost.call(a, m, u);
+      sink.push(c);
+      return c;
+    };
+  }
+  return w;
 }
 
 export interface ContractHarness {
@@ -76,7 +153,9 @@ export interface ContractHarness {
   /**
    * The API credential the harness configures the adapter with (ANT-1). The
    * simulated provider echoes it into error bodies and headers; it must never
-   * appear in an error, an event or a result. Use a low-entropy test value.
+   * appear in an error, an event or a result, whole or as any 12-character
+   * window (NS5). Use a low-entropy test value of at least 16 characters that
+   * shares no 12-character run with the suite's own strings.
    */
   readonly credential: string;
   /** Every scenario must be simulated; a missing one fails the suite rather than skipping. */
@@ -175,14 +254,42 @@ export function runProviderContractSuite(harness: ContractHarness): void {
   const cancelMs = harness.cancelWithinMs ?? 2_000;
   const live = (): AbortSignal => new AbortController().signal;
 
+  const needles = needlesFor(harness.canary, harness.credential);
+  let outputs: unknown[] = [];
+
   const fixture = async (t: TestContext, scenario: ContractScenario): Promise<ContractFixture> => {
     void t;
     const f = await harness.setup(scenario);
     assert.ok(f !== undefined, `harness must simulate ${scenario.kind}`);
-    return f;
+    return { ...f, adapter: recording(f.adapter, outputs), lastRequest: () => f.lastRequest(), requestCount: () => f.requestCount(), openStreams: () => f.openStreams() };
   };
 
   describe(`provider contract: ${harness.name}`, () => {
+    beforeEach(() => {
+      outputs = [];
+    });
+
+    // Every output of every scenario, events and results included, is free of
+    // the provider body canary and of the credential, whole or in part (NS5).
+    afterEach(() => {
+      // Deltas are also checked joined: a credential split across chunks is
+      // still a credential in what the consumer assembles.
+      const joined = outputs
+        .map((o) => {
+          const ev = o as Partial<StreamEvent> & { delta?: { text?: unknown; partialJson?: unknown } };
+          if (ev?.type !== "content_block_delta") return "";
+          return typeof ev.delta?.text === "string" ? ev.delta.text : typeof ev.delta?.partialJson === "string" ? ev.delta.partialJson : "";
+        })
+        .join("");
+      for (const n of needles) assert.ok(!joined.includes(n), "streamed output contains the credential or the provider body");
+      for (const o of outputs) {
+        const text = o instanceof Error || (typeof o === "object" && o !== null && !Array.isArray(o) && Object.getPrototypeOf(o) !== Object.prototype)
+          ? inspect(o, { depth: Infinity, showHidden: true, getters: true })
+          : JSON.stringify(o) ?? "";
+        for (const n of needles) assert.ok(!text.includes(n), "an adapter output contains the credential or the provider body");
+      }
+    });
+
     it("descriptor declares the API version, ids and a destination", async (t) => {
       const f = await fixture(t, { kind: "text", text: "hi" });
       const d = f.adapter.descriptor;
@@ -235,7 +342,7 @@ export function runProviderContractSuite(harness: ContractHarness): void {
       if (!r.ok) {
         assert.ok(isProviderError(r.error));
         assert.equal(r.error.code, "authentication");
-        assertNoLeak(r.error, harness.canary, harness.credential);
+        assertNoLeak(r.error, ...needles);
       }
     });
 
@@ -306,7 +413,7 @@ export function runProviderContractSuite(harness: ContractHarness): void {
           assert.equal(err.code, code);
           assert.equal(err.retryable, isRetryableCode(code));
           if (code === "rate_limited") assert.equal(err.details.retryAfterMs, 3_000);
-          assertNoLeak(err, harness.canary, harness.credential);
+          assertNoLeak(err, ...needles);
           assert.equal(f.requestCount(), 1, "adapters do not retry; the gateway decides (budget runs before each request)");
         });
       }
@@ -324,7 +431,7 @@ export function runProviderContractSuite(harness: ContractHarness): void {
       assert.equal(seen[0]?.type, "message_start");
       const v = new StreamValidator();
       for (const ev of seen) v.accept(ev);
-      assertNoLeak(err, harness.canary, harness.credential);
+      assertNoLeak(err, ...needles);
       assert.equal(f.openStreams(), 0);
     });
 
@@ -336,7 +443,7 @@ export function runProviderContractSuite(harness: ContractHarness): void {
           mode === "stream" ? drain(f.adapter.stream(req, { signal: live() })) : f.adapter.generate(req, { signal: live() }),
         );
         assert.equal(err.code, "invalid_response");
-        assertNoLeak(err, harness.canary, harness.credential);
+        assertNoLeak(err, ...needles);
       });
 
       it(`${mode}: an already aborted signal fails with cancelled and sends nothing`, async (t) => {
@@ -377,6 +484,20 @@ export function runProviderContractSuite(harness: ContractHarness): void {
         assert.equal(f.requestCount(), 0);
       });
     }
+
+    it("forwards model, maxOutputTokens, system and stopSequences unchanged", async (t) => {
+      const f = await fixture(t, { kind: "text", text: "forwarded" });
+      const caps = await f.adapter.getCapabilities(f.model, { signal: live() });
+      const stop = caps.features.stopSequences === "supported" ? { stopSequences: ["END-OF-TURN"] } : {};
+      const req = request(f.model, { maxOutputTokens: 321, ...stop });
+      await f.adapter.generate(req, { signal: live() });
+      const sent = f.lastRequest();
+      assert.ok(sent !== undefined, "the harness reports the request it saw");
+      assert.equal(sent.model, f.model);
+      assert.equal(sent.maxOutputTokens, 321, "the output cap is forwarded exactly");
+      assert.equal(sent.system, req.system);
+      if ("stopSequences" in stop) assert.deepEqual(sent.stopSequences, stop.stopSequences);
+    });
 
     it("providerOptions cannot redirect the request, add headers or change auth", async (t) => {
       const f = await fixture(t, { kind: "text", text: "never sent" });

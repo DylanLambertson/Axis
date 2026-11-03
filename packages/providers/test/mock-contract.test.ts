@@ -48,6 +48,16 @@ runProviderContractSuite({
       model: MOCK_DEFAULT_MODEL,
       requestCount: () => mock.requests.length,
       openStreams: () => mock.openStreams,
+      lastRequest: () => {
+        const r = mock.requests.at(-1);
+        if (r === undefined) return undefined;
+        return {
+          model: r.model,
+          maxOutputTokens: r.maxOutputTokens,
+          ...(r.system === undefined ? {} : { system: r.system }),
+          ...(r.stopSequences === undefined ? {} : { stopSequences: r.stopSequences }),
+        };
+      },
     };
   },
 });
