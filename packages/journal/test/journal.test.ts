@@ -3,8 +3,10 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { after, test } from "node:test";
 import { AuditLog, AxisError, acquireInstanceLock, openDatabase, schemaVersion } from "@axis/audit";
+import * as daemonPrincipal from "../src/daemon-principal.js";
 import { userPrincipal } from "../src/daemon-principal.js";
 import { JOURNAL_SCHEMA_VERSION, Journal, RESTART_REASON, RUN_STATES, RUN_TRANSITIONS, type RunState } from "../src/index.js";
 
@@ -453,10 +455,16 @@ test("principal: a string, a literal, a prototype lookalike and a clone cannot a
 test("principal: the package root does not export a way to mint one; the daemon-principal subpath does", async () => {
   const root = (await import("@axis/journal")) as Record<string, unknown>;
   for (const name of ["userPrincipal", "UserPrincipal", "MINT"]) assert.equal(name in root, false, name);
-  const sub = (await import("@axis/journal/daemon-principal")) as Record<string, unknown>;
-  assert.deepEqual(Object.keys(sub), ["userPrincipal"]);
+  // The test cannot import the restricted subpath by name (the import-allowlist test forbids it outside the daemon),
+  // so check what the package's exports map points at, and exercise that module through its relative path.
+  const { readFileSync, existsSync } = await import("node:fs");
+  const pkgDir = fileURLToPath(new URL("../../", import.meta.url));
+  const exportsMap = (JSON.parse(readFileSync(join(pkgDir, "package.json"), "utf8")) as { exports: Record<string, { default: string }> }).exports;
+  assert.deepEqual(Object.keys(exportsMap).sort(), [".", "./daemon-principal"]);
+  assert.equal(existsSync(join(pkgDir, exportsMap["./daemon-principal"]?.default ?? "missing")), true);
+  assert.deepEqual(Object.keys(daemonPrincipal), ["userPrincipal"]);
   const { UserPrincipal } = await import("../src/principal.js");
-  assert.equal(UserPrincipal.is((sub["userPrincipal"] as () => unknown)()), true);
+  assert.equal(UserPrincipal.is(daemonPrincipal.userPrincipal()), true);
 });
 
 test("principal: any other object as an actor is also denied on a workspace transition", () => {

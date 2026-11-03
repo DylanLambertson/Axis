@@ -4,6 +4,7 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { AxisError, InstanceLock, acquireInstanceLock, openDatabase, parseProcStatStart, processStartTime } from "../src/index.js";
 
@@ -83,10 +84,10 @@ test("an unparseable lock file is respected while fresh and replaced once old", 
 test("two processes racing for the lock: exactly one wins", async () => {
   const dir = dirOf();
   try {
-    const script = `import("${new URL("../src/index.js", import.meta.url).href}").then(({acquireInstanceLock})=>{try{acquireInstanceLock(${JSON.stringify(dir)});process.stdout.write("won");setTimeout(()=>{},400)}catch(e){process.stdout.write(e.code)}})`;
+    const racer = fileURLToPath(new URL("./fixtures/lock-racer.js", import.meta.url));
     const run = () =>
       new Promise<string>((resolve) => {
-        const c = spawn(process.execPath, ["-e", script], { stdio: ["ignore", "pipe", "ignore"] });
+        const c = spawn(process.execPath, [racer, dir], { stdio: ["ignore", "pipe", "ignore"] });
         let out = "";
         c.stdout.on("data", (d: Buffer) => (out += d.toString()));
         c.on("exit", () => resolve(out));
