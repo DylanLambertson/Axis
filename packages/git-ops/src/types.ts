@@ -47,6 +47,8 @@ export interface ScanMeta {
   readonly truncated: boolean;
   /** The commit whose patch this is. The scanner is called once per outgoing commit. */
   readonly commit: string;
+  /** Paths git treats as binary in this commit (a NUL byte, a `-diff` attribute or key material). Content is still passed with --text. */
+  readonly binaryPaths: readonly string[];
 }
 
 /** PSH-1 hook point: scan the patch of one outgoing commit. Findings must never contain the secret itself. */

@@ -3,7 +3,7 @@
 import { OBJECT_ID, REMOTE_NAME, branchFor, checkWorktree, daemonGitFor, platformOf, prefix, type DaemonGit } from "./args.js";
 import { findOverride, withNoPrompt } from "./env.js";
 import { scanOutgoing } from "./scan.js";
-import { GitOpsError, conflict, denied, invalid, redactUrls } from "./errors.js";
+import { GitOpsError, conflict, denied, invalid, redactUrls, sanitizeText } from "./errors.js";
 import type { GitOpsDeps, GitRunRequest, SecretFinding, WorktreeRef } from "./types.js";
 
 export interface PushInput {
@@ -17,6 +17,11 @@ export interface PushInput {
    * is `baseSha..tip`. Refs under refs/remotes are never used for this: the code in the worktree can write them and they go stale.
    */
   readonly baseSha: string;
+  /**
+   * Paths (exact, repository-relative) that may be pushed although git treats them as binary. In refuse mode any other
+   * binary path refuses the push, because a `-diff` attribute or a NUL byte hides content from pattern matching.
+   */
+  readonly allowedBinaryPaths?: readonly string[];
 }
 
 export interface PushPlan {
@@ -30,6 +35,8 @@ export interface PushPlan {
   /** Rule names, paths and lines only; never the matched text. */
   readonly findings: readonly SecretFinding[];
   readonly requiresConfirmation: boolean;
+  /** Why confirmation is required: matches, binary content. Never the matched text. */
+  readonly reasons: readonly string[];
 }
 
 export function pushRefspec(slug: string): string {
@@ -80,11 +87,22 @@ async function check(deps: GitOpsDeps, input: PushInput): Promise<{ plan: PushPl
   // The GIT-SNAP-1 re-take comes last so nothing can change between it and the push.
   await deps.assertNoDrift(input.worktree);
 
-  const { findings } = await scanOutgoing(deps, git, input.worktree, input.baseSha, tip.stdout.trim());
-  if (findings.length > 0 && (deps.scanMode ?? "warn") === "refuse") {
+  const { findings, binaryPaths } = await scanOutgoing(deps, git, input.worktree, input.baseSha, tip.stdout.trim());
+  const refuse = (deps.scanMode ?? "warn") === "refuse";
+  const reasons: string[] = [];
+  if (findings.length > 0) {
     const rules = [...new Set(findings.map((f) => f.rule))].join(", ");
     const commits = [...new Set(findings.map((f) => (f.commit ?? "").slice(0, 12)))].join(", ");
-    throw denied(`the outgoing history matches ${findings.length} secret pattern(s) (${rules}) in commit(s) ${commits}`);
+    const why = `the outgoing history matches ${findings.length} secret pattern(s) (${rules}) in commit(s) ${commits}`;
+    if (refuse) throw denied(why);
+    reasons.push(why);
+  }
+  if (binaryPaths.length > 0) {
+    const allowed = new Set(input.allowedBinaryPaths ?? []);
+    const unlisted = binaryPaths.filter((p) => !allowed.has(p));
+    const shown = (ps: readonly string[]): string => sanitizeText(ps.slice(0, 5).join(", ")) + (ps.length > 5 ? ` and ${ps.length - 5} more` : "");
+    if (refuse && unlisted.length > 0) throw denied(`the outgoing history contains binary or non-diffable files that cannot be scanned: ${shown(unlisted)}`);
+    if (!refuse) reasons.push(`binary or non-diffable files cannot be fully scanned: ${shown(binaryPaths)}`);
   }
 
   const argv = [
@@ -93,7 +111,7 @@ async function check(deps: GitOpsDeps, input: PushInput): Promise<{ plan: PushPl
     "--", input.remote, refspec,
   ];
   const command: GitRunRequest = { argv, cwd: input.worktree.workTree, env: withNoPrompt(deps.env.pty), context: "pty" };
-  return { plan: { worktree: input.worktree, remote: input.remote, branch, refspec, command, findings, requiresConfirmation: findings.length > 0 }, git };
+  return { plan: { worktree: input.worktree, remote: input.remote, branch, refspec, command, findings, requiresConfirmation: reasons.length > 0, reasons }, git };
 }
 
 /** Validates everything and returns the exact push command and any secret findings. */
@@ -105,7 +123,7 @@ export async function planPush(deps: GitOpsDeps, input: PushInput): Promise<Push
 export async function executePush(deps: GitOpsDeps, input: PushInput, opts: { readonly confirmed?: boolean } = {}): Promise<void> {
   const { plan } = await check(deps, input);
   if (plan.requiresConfirmation && opts.confirmed !== true) {
-    throw new GitOpsError("E_APPROVAL_REQUIRED", "the outgoing changes match secret patterns; confirm to push");
+    throw new GitOpsError("E_APPROVAL_REQUIRED", `confirm to push: ${plan.reasons.join("; ")}`);
   }
   const r = await deps.runner.run(plan.command);
   if (r.code !== 0) throw new GitOpsError("E_UNAVAILABLE", `git push failed (exit ${r.code}): ${redactUrls(r.stderr).slice(0, 500)}`);

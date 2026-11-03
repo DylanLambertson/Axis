@@ -27,3 +27,11 @@ export function conflict(message: string): GitOpsError {
 export function redactUrls(text: string): string {
   return text.replace(/(\w+:\/\/)[^/@\s]+@/g, "$1***@");
 }
+
+/** Strips terminal escape sequences and control characters (C0, DEL, C1) so untrusted text is safe to show. */
+export function sanitizeText(text: string): string {
+  return text
+    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)?/g, "")
+    .replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, "");
+}

@@ -54,7 +54,7 @@ export function healthy(extra: Responder = () => undefined): Responder {
     if (s[0] === "merge-base") return { code: 0 };
     if (s[0] === "rev-parse") return { code: 1 };
     if (s[0] === "rev-list") return { stdout: `${COMMIT}\n` };
-    if (s[0] === "diff-tree") return { stdout: "+hello\n" };
+    if (s[0] === "diff-tree") return { stdout: s.includes("--numstat") ? "" : "+hello\n" };
     if (s[0] === "hash-object") return { stdout: `${"4".repeat(40)}\n` };
     return undefined;
   };

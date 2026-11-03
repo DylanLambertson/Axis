@@ -166,3 +166,39 @@ test("B-3: a secret that exists only in a merge resolution is scanned", async ()
   assert.deepEqual(plan.findings.map((x) => x.commit), [merge], "found in the merge commit and nowhere else");
   assert.equal(hits.filter((h) => h.found).every((h) => h.commit === merge), true);
 });
+
+test("S-2: a '-diff' attribute cannot hide content from the scan, and the path is reported as binary", async () => {
+  const metas: string[][] = [];
+  const seen: string[] = [];
+  const f = fixture({ scanner: async (d, meta) => { metas.push([...meta.binaryPaths]); return scanFor(seen)(d); }, scanMode: "warn" });
+  writeFileSync(join(f.wt.workTree, ".gitattributes"), "*.cfg -diff\n");
+  writeFileSync(join(f.wt.workTree, "prod.cfg"), `AWS=${AWS_KEY}\n`);
+  f.git("add", "-A");
+  f.git("commit", "-q", "-m", "cfg");
+  const plan = await planPush(f.deps, { worktree: f.wt, remote: "origin", branch: "axis/feat", baseSha: baseOf(f) });
+  assert.ok(seen.some((d) => d.includes(AWS_KEY)), "the scanner saw the text, not 'Binary files differ'");
+  assert.ok(plan.findings.length > 0 && plan.requiresConfirmation);
+  assert.deepEqual(metas.flat(), ["prod.cfg"]);
+});
+
+test("S-2: a NUL byte or binary file is refused in refuse mode unless the path is allow-listed, and needs confirmation in warn mode", async () => {
+  const mk = (scanMode: "warn" | "refuse") => {
+    const f = fixture({ scanner: async () => [], scanMode });
+    writeFileSync(join(f.wt.workTree, "key.p12"), Buffer.from([0x30, 0x82, 0x00, 0x00, 0x01]));
+    f.git("add", "-A");
+    f.git("commit", "-q", "-m", "binary");
+    return f;
+  };
+  const refuse = mk("refuse");
+  const input = (f: ReturnType<typeof mk>, extra: object = {}) => ({ worktree: f.wt, remote: "origin", branch: "axis/feat", baseSha: baseOf(f), ...extra });
+  const e = await planPush(refuse.deps, input(refuse)).then(() => undefined, (x: unknown) => x);
+  assert.ok(e instanceof Error && /key\.p12/.test(e.message), "refused, naming the path");
+  await planPush(refuse.deps, input(refuse, { allowedBinaryPaths: ["other.bin"] })).then(() => assert.fail("a different path does not allow it"), () => undefined);
+  const ok = await planPush(refuse.deps, input(refuse, { allowedBinaryPaths: ["key.p12"] }));
+  assert.equal(ok.requiresConfirmation, false);
+  const warn = mk("warn");
+  const plan = await planPush(warn.deps, input(warn, { allowedBinaryPaths: ["key.p12"] }));
+  assert.equal(plan.requiresConfirmation, true, "warn mode: any binary path needs confirmation, allow-listed or not");
+  assert.match(plan.reasons.join(), /key\.p12/);
+  await executePush(warn.deps, input(warn), { confirmed: true });
+});

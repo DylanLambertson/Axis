@@ -11,6 +11,18 @@ export interface OutgoingScan {
   readonly findings: readonly SecretFinding[];
   /** True when any commit's patch was larger than the scanner was given. */
   readonly truncated: boolean;
+  /** Every path git treats as binary in any outgoing commit, without duplicates. */
+  readonly binaryPaths: readonly string[];
+}
+
+/** Paths whose `git diff-tree --numstat -z` counts are `-\t-`. */
+export function parseBinaryPaths(numstat: string): string[] {
+  const out: string[] = [];
+  for (const rec of numstat.split("\0")) {
+    const m = /^-\t-\t([^\0]+)$/.exec(rec.replace(/^\n/, ""));
+    if (m) out.push(m[1] as string);
+  }
+  return out;
 }
 
 function unavailable(what: string): GitOpsError {
@@ -24,22 +36,31 @@ function unavailable(what: string): GitOpsError {
  */
 export async function scanOutgoing(deps: GitOpsDeps, git: DaemonGit, worktree: WorktreeRef, base: string, tip: string): Promise<OutgoingScan> {
   const scanner = deps.scanner;
-  if (!scanner) return { findings: [], truncated: false };
+  if (!scanner) return { findings: [], truncated: false, binaryPaths: [] };
   const list = await git(["rev-list", "--reverse", "--end-of-options", tip, `^${base}`]);
   if (list.code !== 0) throw unavailable("list the outgoing commits");
   const commits = list.stdout.split("\n").map((l) => l.trim()).filter(Boolean);
   if (commits.some((c) => !OBJECT_ID.test(c))) throw unavailable("list the outgoing commits");
   const findings: SecretFinding[] = [];
   let truncated = false;
+  const binary = new Set<string>();
   for (const commit of commits) {
     const d = await git([
-      "diff-tree", "-p", "-m", "--root", "--no-commit-id", "--no-renames", "--no-color", "--no-ext-diff", "--no-textconv",
+      "diff-tree", "-p", "--text", "-m", "--root", "--no-commit-id", "--no-renames", "--no-color", "--no-ext-diff", "--no-textconv",
       "--submodule=short", "--ignore-submodules=all", "--end-of-options", commit,
     ]);
     if (d.code !== 0) throw unavailable("compute the outgoing diff");
+    // Without --text, so that git reports what it treats as binary. The patch above is --text and shows it all anyway.
+    const stat = await git([
+      "diff-tree", "-r", "--numstat", "-z", "-m", "--root", "--no-commit-id", "--no-renames", "--no-ext-diff", "--no-textconv",
+      "--submodule=short", "--ignore-submodules=all", "--end-of-options", commit,
+    ]);
+    if (stat.code !== 0) throw unavailable("list the binary files");
+    const binaryPaths = parseBinaryPaths(stat.stdout);
+    for (const p of binaryPaths) binary.add(p);
     const cut = d.stdout.length > MAX_DIFF;
     if (cut) truncated = true;
-    for (const f of await scanner(cut ? d.stdout.slice(0, MAX_DIFF) : d.stdout, { worktree, truncated: cut, commit })) findings.push({ ...f, commit });
+    for (const f of await scanner(cut ? d.stdout.slice(0, MAX_DIFF) : d.stdout, { worktree, truncated: cut, commit, binaryPaths })) findings.push({ ...f, commit });
   }
-  return { findings, truncated };
+  return { findings, truncated, binaryPaths: [...binary] };
 }

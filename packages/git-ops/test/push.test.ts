@@ -167,3 +167,16 @@ test("B-3: the scanner is called once per outgoing commit, oldest first, with th
   assert.ok(patch);
   for (const flag of ["-p", "-m", "--no-ext-diff", "--no-textconv", "--submodule=short"]) assert.ok(sub(patch.argv).includes(flag), flag);
 });
+
+test("S-2: the patch is taken with --text and binary paths are parsed from numstat", async () => {
+  const stat = (s: string[]) => (s[0] === "diff-tree" && s.includes("--numstat") ? { stdout: "-\t-\tkey.p12\0" + "1\t0\ta.txt\0" } : undefined);
+  const r = new FakeRunner(healthy(stat));
+  const metas: string[][] = [];
+  const plan = await planPush(makeDeps(r, { scanner: async (_d, m) => { metas.push([...m.binaryPaths]); return []; }, scanMode: "warn" }), input);
+  assert.deepEqual(metas, [["key.p12"]]);
+  assert.equal(plan.requiresConfirmation, true);
+  const patch = r.calls.find((c) => sub(c.argv)[0] === "diff-tree" && !sub(c.argv).includes("--numstat"));
+  assert.ok(patch && sub(patch.argv).includes("--text"));
+  const statCall = r.calls.find((c) => sub(c.argv).includes("--numstat"));
+  assert.ok(statCall && !sub(statCall.argv).includes("--text"), "numstat must not use --text or git would count binary files as text");
+});
