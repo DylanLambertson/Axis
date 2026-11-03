@@ -7,6 +7,7 @@ Axis-owned TypeScript that does not need Code OSS services lives in `packages/*`
 | `@axis/protocol` | Versioned envelope, structured errors, contracts such as `axis.worktrees/1`, and the challenge shape. Zod schemas and inferred types. No Node imports. |
 | `@axis/pty-policy` | Pure logic for terminal environments and CLI agent launch: the PTY-5 deny-list (`buildCliEnv`), SI-ENV (`buildPlainTerminalEnv`), GIT-ENV-1 (`buildGitEnv`), the `axis.cliAgents` schema, setting-scope resolution and `resolveLaunch`. Axis resolves launch executables itself (PATH only, never the cwd or worktree). Imports `node:*` and `zod` only; no `process.env` access. |
 | `@axis/challenge` | Daemon-side approval challenges for tier 3-5 destructive operations: issue, user resolve, native confirmation, single-use `consume`. Node `crypto` only. |
+| `@axis/daemon` | Transport-agnostic daemon core: connections, handshake, dispatch, tiers, idempotency, cancel and timeout, backpressure, error sanitisation. Every service (identity, policy, approvals, idempotency store, audit sink, handlers) is injected. No Electron. `MemoryIdempotencyStore` is for tests and dev wiring only (it forgets on restart); the product uses the journal-backed store. The pipeline owns approvals (`ApprovalGate.issue` and `execute`, see "Wiring the daemon"). |
 
 More packages (worktrees, journal, audit) are added by their own changes.
 
@@ -44,6 +45,46 @@ Fixed vectors (`sha256hex` as lowercase hex):
 | `axis.worktrees` | 1 | `remove` | `{id:"ws-1",deleteBranch:false}` | `adb7a157e75395816cf74974fbdfa2b5bdf32831996a578ff80cdb46fe9d2735` |
 
 `@axis/daemon` implements the identical function and pins the same vectors; the two copies must stay in step. The shared function moves into `@axis/protocol` later, and both packages will then import it.
+## Request digest
+
+The digest is specified under "Shared request digest" above. The daemon computes it once with `requestDigest()` (`packages/daemon/src/digest.ts`, whose doc comment states the ECMAScript `JSON.stringify` semantics) and passes it to the gate as `input.digest`; both packages are pinned by the same fixed vectors, and the copies are to be merged into `@axis/protocol`.
+
+## Wiring the daemon
+
+`@axis/daemon` never imports `@axis/challenge`. The product wiring supplies an `ApprovalGate` adapter, and the pipeline owns the whole approval sequence: a handler never sees a challenge id and the gate cannot answer "confirmed" without spending a live challenge.
+
+- No `approval` in the request: the pipeline calls `gate.issue(input, content)` and answers `E_APPROVAL_REQUIRED`. The adapter calls `manager.issue({ contract: input.contract, version: input.contractVersion, method: input.method, args: input.args, requestDigest: input.digest, target: content.target, contentDigest: content.contentDigest, actor: input.actor, connectionId: input.connectionId, windowId: input.identity.windowId, tier: input.tier })`. `args` is required and `requestDigest` is only a cross-check, so both must agree. For tier 4 and 5 it also takes `takeNativeProof(challengeId)` once and passes it to main, never to a renderer.
+- With `approval: { challengeId }`: the pipeline calls `gate.execute(input, approval, content, action)` inside the method's content lock. The adapter calls `manager.consume(approval.challengeId, { actor: input.actor, connectionId: input.connectionId }, { contract, version, method, args, requestDigest: input.digest, target: content.target, currentContentDigest: content.contentDigest }, action)`, translates a `ChallengeError` as described under the adapter rules and returns what `action` returns (the daemon ignores that value). The handler runs inside `action`, so it can only run with a spent approval, and it receives only `ctx.approved` (`method`, `target`, `requester` and the adapter's `capability`). The `approval` field is stripped from its payload.
+- Content: a tier 3+ method registers a hook, `daemon.register(contract, version, handlers, { content: { method: (ctx, payload) => ({ target, withLock }) } })`. `withLock(fn)` takes the lock that protects the content and calls `fn(contentDigest)`. The digest is read under that lock at issue and again at execute, and the handler runs under the same lock, so "the content is unchanged right now" and the action cannot be separated. A method without a hook (including a policy-raised tier) is approved against target `request:<digest>` with the digest as content digest. Review each hook with the destructive call it guards; a handler must check `ctx.approved.target` against what it is about to act on.
+- Replay: a tier 3+ replay from the originating connection returns the stored result. From any other connection it needs its own approval, and the stored result is returned inside `execute`.
+- Withdrawal: a cancel or timeout before the approval was spent calls `gate.withdraw(challengeId, { actor, connectionId })` once; a closed connection calls `gate.withdrawConnection(connectionId)` once. Both are best effort.
+
+Adapter rules:
+
+- Pass both `args` and `requestDigest: input.digest` to `issue` and `consume`; the manager computes its own digest and a mismatch is `E_INVALID_ARGUMENT`.
+- `gate.withdraw` calls `manager.withdraw(challengeId, { actor, connectionId })` and `gate.withdrawConnection` calls `manager.withdrawConnection(connectionId)`; the adapter may return their result (an object or a count) or discard it, the daemon ignores it. A withdrawn id is refused with `E_POLICY_DENIED` afterwards.
+- Handler errors are mapped by the pipeline inside `action` and never pass through `consume`. A handler that fails (or returns an error) has still spent the approval; the user confirms again and the idempotency key is freed. `action` throws only for an abort or a failed decision-audit write.
+- Map `ChallengeError` to `ApprovalError` for refusals: `E_POLICY_DENIED`, `E_CONFLICT`, `E_BACKPRESSURE` (issue out of capacity) and `E_INVALID_ARGUMENT` (arguments over 16 KiB canonical or not a plain object, a target that is not display-safe or over 1024 characters) keep their code; any other code is `E_INTERNAL`. An action failure (`ChallengeError` with `executed: true`; the flag is in `detail`, singular, not `details`) is re-thrown as it is, as `ApprovalError(code, true)` or the original error, and answered `E_INTERNAL` (or the abort code). Never call `error.toWire`: the daemon owns the wire answer and the correlation id.
+- Mint the handler's capability inside the action, after the spend: for worktrees, call `markDiscardConfirmed` from `@axis/worktrees/daemon-confirm` there, bound to `content.target` and `content.contentDigest`, and pass it as `capability` in the `ConfirmedAction` given to `action`. The handler reads `ctx.approved.capability` (non-enumerable, never serialised or logged) and never mints one itself.
+- Identity comes from the daemon only: pass `input.identity.windowId`, `input.connectionId` and `input.actor` (attested by the transport) to the manager, never a value from the request payload or the envelope.
+- `manager.withdrawConnection` can throw `E_INTERNAL` (for example on a bad clock reading). The adapter should catch it; if it throws anyway the daemon's close path still completes and reports the error locally through `onInternalError`.
+- Quotas are described under "Using `@axis/challenge`". Closing a connection leaves tombstones until they expire (at most one challenge TTL), so a legitimate window reload is held to its quota for up to one TTL.
+- The challenge manager's audit sink must be synchronous (a returned promise counts as a failed write, so every `issue()` would fail closed). Never hand it a journal sink with an async `append`; wrap that in a synchronous buffer or queue.
+- `issue()` out of capacity is `E_BACKPRESSURE` (retryable): ask-and-cancel cycles also count against the actor's challenge quota until withdrawn, so map it through, never to `E_INTERNAL`.
+- Tier 3+ methods must declare `approval` as an optional field of their strict request schema: `register()` throws otherwise, and a policy-raised tier on a method without it is refused with `E_POLICY_DENIED` (audit reason `not_approvable`) before any challenge is issued.
+- The daemon runs the action at most once and answers with the action's own outcome, never with `execute`'s return value; a gate that returns before the action completed gets `E_INTERNAL`, and the slot stays held until the handler settles.
+- A challenge issued for a request that was aborted during an async `issue` is withdrawn on a best-effort basis; if that fails it holds its slots until the challenge TTL (60 s by default).
+
+| Daemon field | Challenge field |
+|---|---|
+| `input.contract` (bare id), `input.contractVersion` | `contract`, `version` |
+| `input.method`, `input.args` | `method`, `args` |
+| `input.digest` | `requestDigest` (cross-check) |
+| `input.actor`, `input.connectionId` | `actor`, `connectionId` |
+| `input.identity.windowId` | `windowId` |
+| `content.target`, `content.contentDigest` / digest under lock | `target`, `contentDigest` / `currentContentDigest` |
+
+Destructive library entry points are protected independently of the daemon: `@axis/worktrees` requires a token that only `markDiscardConfirmed` can mint, and that function is exported only from the `@axis/worktrees/daemon-confirm` subpath. Only the integration package that implements the gate adapter may import that subpath, never a handler. This cannot be enforced inside `@axis/daemon`, so it is a review rule.
 
 ## Rules
 
