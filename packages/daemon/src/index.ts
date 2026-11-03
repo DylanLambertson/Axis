@@ -1,10 +1,13 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 export { Daemon, type DaemonOptions } from "./daemon.js";
-export { fromNodePort, memoryPair } from "./transport.js";
-export { MemoryIdempotencyStore, protocolRegistry, canonicalJson, payloadHash } from "./support.js";
+export { fromElectronPort, fromNodePort, memoryPair, type ElectronPortLike } from "./transport.js";
+export { protocolRegistry } from "./support.js";
+export { MemoryIdempotencyStore, type MemoryStoreOptions } from "./memory-store.js";
+export { canonicalJson, payloadHash, requestDigest, REQUEST_DIGEST_TAG } from "./digest.js";
+export { DaemonError, SAFE_MESSAGE_MAX } from "./errors.js";
+export { identitySchema } from "./identity.js";
 export type { SessionLimits } from "./session.js";
 export {
-  DaemonError,
   type ActorId,
   type ApprovalGate,
   type ApprovalInput,

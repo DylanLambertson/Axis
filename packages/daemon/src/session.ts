@@ -2,32 +2,20 @@
 import {
   MAX_TIMEOUT_MS,
   PROTOCOL_VERSION,
-  challengeReferenceSchema,
   makeError,
   negotiateVersion,
   parseClientMessage,
   responseEnvelopeSchema,
   type AxisError,
-  type ChallengeReference,
   type ErrorCode,
   type Hello,
-  type JsonValue,
   type RequestEnvelope,
-  inspectMessage,
 } from "@axis/protocol";
-import { RateLimiter, newCorrelationId, payloadHash } from "./support.js";
-import {
-  DaemonError,
-  type ApprovalGate,
-  type Connection,
-  type ContractRegistry,
-  type DaemonAuditSink,
-  type Handler,
-  type IdempotencyKey,
-  type IdempotencyStore,
-  type Identity,
-  type Policy,
-} from "./types.js";
+import { newCorrelationId } from "./digest.js";
+import type { OrphanTracker } from "./orphans.js";
+import { CANCELLED, CLOSED, TIMED_OUT, runPipeline, type Outcome, type PipelineDeps } from "./pipeline.js";
+import { RateLimiter } from "./support.js";
+import type { Connection, Identity } from "./types.js";
 
 export interface SessionLimits {
   readonly maxInFlight: number;
@@ -38,44 +26,32 @@ export interface SessionLimits {
 }
 
 export interface SessionDeps {
-  readonly registry: ContractRegistry;
-  readonly handlers: ReadonlyMap<string, Handler>;
-  readonly policy: Policy | undefined;
-  readonly approvals: ApprovalGate | undefined;
-  readonly idempotency: IdempotencyStore;
-  readonly audit: DaemonAuditSink;
+  readonly pipeline: PipelineDeps;
   readonly limits: SessionLimits;
   readonly now: () => number;
-  /** Local diagnostics for unexpected failures. Receives the raw error: the sink must keep it local. */
-  readonly onInternalError: ((correlationId: string, error: unknown) => void) | undefined;
+  readonly orphans: OrphanTracker;
   readonly onClosed: (session: Session) => void;
 }
 
-const CANCELLED = Symbol("cancelled");
-const TIMED_OUT = Symbol("timed-out");
-const CLOSED = Symbol("closed");
-
+/**
+ * One request. It holds its in-flight slot from admission until the pipeline
+ * promise settles, however the caller was answered: an abort answers the
+ * caller at once but the slot stays taken while the handler runs.
+ */
 interface InFlight {
   readonly controller: AbortController;
+  /** The caller has been answered (or the session is closed). */
+  answered: boolean;
+  /** The pipeline promise has settled: nothing of this request is running. */
   settled: boolean;
   timer: NodeJS.Timeout | undefined;
 }
-
-type Outcome = { ok: true; result: JsonValue } | { ok: false; error: AxisError };
-
-const handlerKey = (contract: string, version: number, method: string): string => `${contract}/${version}#${method}`;
 
 /** Only plain-data ids can be echoed in an error response; anything else gets no response. */
 function extractId(raw: unknown): string | undefined {
   if (typeof raw !== "object" || raw === null) return undefined;
   const id = (raw as { id?: unknown }).id;
   return typeof id === "string" && id.length >= 1 && id.length <= 64 ? id : undefined;
-}
-
-function pathsOf(error: { issues: ReadonlyArray<{ path: ReadonlyArray<PropertyKey> }> }): string[] {
-  const out = new Set<string>();
-  for (const i of error.issues) out.add(i.path.map(String).join(".").slice(0, 64) || "(root)");
-  return [...out].slice(0, 8);
 }
 
 /** One connection's state machine: handshake, then dispatch. */
@@ -106,6 +82,7 @@ export class Session {
     return this.#identity;
   }
 
+  /** Requests whose handler (or pipeline) has not settled, answered or not. */
   get inFlightCount(): number {
     return this.#inFlight.size;
   }
@@ -114,14 +91,8 @@ export class Session {
     if (this.#closed) return;
     this.#closed = true;
     if (this.#handshakeTimer) clearTimeout(this.#handshakeTimer);
-    for (const entry of this.#inFlight.values()) {
-      if (!entry.settled) {
-        entry.settled = true;
-        if (entry.timer) clearTimeout(entry.timer);
-        entry.controller.abort(CLOSED);
-      }
-    }
-    this.#inFlight.clear();
+    // Slots are not freed here: a running handler keeps its entry (and the daemon-wide orphan count) until it settles.
+    for (const entry of [...this.#inFlight.values()]) entry.controller.abort(CLOSED);
     try {
       this.#conn.close();
     } catch {
@@ -157,6 +128,7 @@ export class Session {
     if ("type" in msg) {
       if (this.#negotiated) {
         this.#violation(); // a second hello is a protocol error
+        this.#rejectHello(this.#err("E_INVALID_ARGUMENT", "The handshake is already complete"), false);
         return;
       }
       this.#hello(msg);
@@ -191,7 +163,7 @@ export class Session {
     }
     const chosen: Array<{ id: string; version: number }> = [];
     for (const offered of hello.contracts) {
-      const served = this.#d.registry.versions(offered.id);
+      const served = this.#d.pipeline.registry.versions(offered.id);
       const common = served.filter((v) => offered.versions.includes(v));
       const best = common.length > 0 ? Math.max(...common) : undefined;
       if (best !== undefined) chosen.push({ id: offered.id, version: best });
@@ -224,7 +196,7 @@ export class Session {
 
   #cancel(id: string): void {
     const entry = this.#inFlight.get(id);
-    if (entry && !entry.settled) entry.controller.abort(CANCELLED);
+    if (entry && !entry.answered) entry.controller.abort(CANCELLED);
   }
 
   async #request(req: RequestEnvelope): Promise<void> {
@@ -235,13 +207,13 @@ export class Session {
       this.#reply(id, { ok: false, error: this.#err("E_CONFLICT", "That request id is already in flight") });
       return;
     }
-    if (this.#inFlight.size >= d.limits.maxInFlight) {
+    if (this.#inFlight.size >= d.limits.maxInFlight || d.orphans.full) {
       this.#reply(id, { ok: false, error: this.#err("E_BACKPRESSURE", "Too many requests in flight") });
       return;
     }
     const contractKey = `${req.contract}/${req.contractVersion}`;
     if (!this.#negotiated?.has(contractKey)) {
-      const known = d.registry.versions(req.contract).length > 0;
+      const known = d.pipeline.registry.versions(req.contract).length > 0;
       this.#reply(id, {
         ok: false,
         error: known
@@ -250,28 +222,34 @@ export class Session {
       });
       return;
     }
-    const spec = d.registry.lookup(req.contract, req.contractVersion, req.method);
+    const spec = d.pipeline.registry.lookup(req.contract, req.contractVersion, req.method);
     if (!spec) {
       this.#reply(id, { ok: false, error: this.#err("E_METHOD_NOT_FOUND", "Unknown method") });
       return;
     }
 
     const controller = new AbortController();
-    const entry: InFlight = { controller, settled: false, timer: undefined };
+    const entry: InFlight = { controller, answered: false, settled: false, timer: undefined };
     this.#inFlight.set(id, entry);
     const timeoutMs = Math.min(spec.timeoutMs, req.timeoutMs ?? Infinity, MAX_TIMEOUT_MS);
     entry.timer = setTimeout(() => controller.abort(TIMED_OUT), timeoutMs);
     entry.timer.unref();
-    const aborted = new Promise<never>((_, reject) => {
-      controller.signal.addEventListener("abort", () => reject(controller.signal.reason), { once: true });
-    });
-    aborted.catch(() => undefined);
+
+    const answer = (outcome: Outcome): void => {
+      if (entry.answered) return;
+      entry.answered = true;
+      this.#reply(id, outcome);
+    };
     controller.signal.addEventListener(
       "abort",
       () => {
         const reason: unknown = controller.signal.reason;
-        if (reason === CLOSED) return;
-        this.#finish(id, entry, {
+        if (!entry.settled) d.orphans.add(); // the caller is about to be told "done", the handler may still run
+        if (reason === CLOSED) {
+          entry.answered = true;
+          return;
+        }
+        answer({
           ok: false,
           error:
             reason === TIMED_OUT
@@ -283,211 +261,33 @@ export class Session {
     );
 
     const correlationId = newCorrelationId();
-    let idemKey: IdempotencyKey | undefined;
-    let idemDone = false;
-    try {
-      const outcome = await Promise.race([this.#pipeline(req, spec, correlationId, controller.signal, (k) => (idemKey = k), () => (idemDone = true)), aborted]);
-      this.#finish(id, entry, outcome);
-    } catch (error) {
-      if (error === CANCELLED || error === TIMED_OUT || error === CLOSED) return; // already answered
-      this.#finish(id, entry, { ok: false, error: this.#sanitise(error, correlationId) });
-    } finally {
-      if (idemKey && !idemDone) {
-        try {
-          await d.idempotency.abandon(idemKey);
-        } catch (e) {
-          d.onInternalError?.(correlationId, e);
-        }
-      }
-    }
-  }
-
-  async #pipeline(
-    req: RequestEnvelope,
-    spec: NonNullable<ReturnType<ContractRegistry["lookup"]>>,
-    correlationId: string,
-    signal: AbortSignal,
-    setKey: (k: IdempotencyKey) => void,
-    markDone: () => void,
-  ): Promise<Outcome> {
-    const d = this.#d;
-    const target = `${req.contract}/${req.method}`;
-
-    // 1. payload schema (strict objects: unknown keys are refused)
-    const payloadParsed = spec.request.safeParse(req.payload);
-    if (!payloadParsed.success) {
-      return { ok: false, error: this.#err("E_INVALID_ARGUMENT", "Invalid request", { fields: pathsOf(payloadParsed.error), correlationId }, correlationId) };
-    }
-    if (spec.idempotency === "required" && req.idempotencyKey === undefined) {
-      return { ok: false, error: this.#err("E_INVALID_ARGUMENT", "This method requires an idempotency key", undefined, correlationId) };
-    }
-
-    // 2. policy (default deny) and tier
-    const decision = d.policy
-      ? await d.policy.evaluate({
-          identity: this.#identity,
-          contract: req.contract,
-          version: req.contractVersion,
-          method: req.method,
-          sideEffect: spec.sideEffect,
-          tier: spec.tier,
-        })
-      : ({ effect: "deny" } as const);
-    const tier = decision.effect === "allow" ? Math.max(spec.tier, decision.tier ?? 0) : spec.tier;
-    const audit = (outcome: "success" | "failure" | "denied" | "error", extra: Record<string, string | number | boolean | null>, action: "policy.decision" | "rpc.execute" = "policy.decision") =>
-      d.audit.append({
-        actor: this.#identity.actor,
-        action,
-        target,
-        outcome,
-        payload: { tier, sideEffect: spec.sideEffect, connectionId: this.#identity.connectionId, ...extra },
+    const run = runPipeline({
+      deps: d.pipeline,
+      identity: this.#identity,
+      req,
+      spec,
+      correlationId,
+      signal: controller.signal,
+      version: this.#version,
+    });
+    // `run` never rejects; the second handler is a backstop so a daemon bug cannot become an unhandled rejection.
+    await run
+      .then(answer, (error: unknown) => {
+        d.pipeline.onInternalError?.(correlationId, error);
+        answer({ ok: false, error: makeError("E_INTERNAL", "Internal error", correlationId) });
+      })
+      .finally(() => {
+        entry.settled = true;
+        if (entry.timer) clearTimeout(entry.timer);
+        if (controller.signal.aborted) d.orphans.remove();
+        this.#inFlight.delete(id);
       });
-    if (decision.effect !== "allow") {
-      audit("denied", { decision: "deny" });
-      return { ok: false, error: this.#err("E_POLICY_DENIED", "Not permitted", undefined, correlationId) };
-    }
-
-    // 3. idempotency: a replay returns the stored result without asking for approval again
-    const hash = payloadHash(req.payload);
-    let key: IdempotencyKey | undefined;
-    if (req.idempotencyKey !== undefined && spec.idempotency !== "none") {
-      key = {
-        actorId: this.#identity.actorId,
-        contract: req.contract,
-        version: req.contractVersion,
-        method: req.method,
-        key: req.idempotencyKey,
-      };
-      const begun = await d.idempotency.begin(key, hash);
-      if (begun.state === "replay") {
-        audit("success", { decision: "allow", replay: true });
-        return { ok: true, result: begun.result };
-      }
-      if (begun.state === "conflict") {
-        audit("denied", { decision: "allow", reason: "idempotency_conflict" });
-        return { ok: false, error: this.#err("E_IDEMPOTENCY_CONFLICT", "That idempotency key was used with a different request", undefined, correlationId) };
-      }
-      if (begun.state === "in-progress") {
-        audit("denied", { decision: "allow", reason: "in_progress" });
-        return { ok: false, error: this.#err("E_CONFLICT", "A request with that key is still running", undefined, correlationId) };
-      }
-      setKey(key);
-    }
-
-    // 4. approval for tier >= 3 (fail closed when no gate is configured)
-    let confirmation: unknown;
-    if (tier >= 3) {
-      if (!d.approvals) {
-        audit("denied", { decision: "allow", reason: "no_approval_gate" });
-        return { ok: false, error: this.#err("E_POLICY_DENIED", "Not permitted", undefined, correlationId) };
-      }
-      const outcome = await d.approvals.check({
-        identity: this.#identity,
-        contract: req.contract,
-        method: req.method,
-        tier,
-        payload: req.payload,
-        payloadHash: hash,
-        ...(approvalOf(req.payload) ? { approval: approvalOf(req.payload) as ChallengeReference } : {}),
-        ...(req.idempotencyKey !== undefined ? { idempotencyKey: req.idempotencyKey } : {}),
-      });
-      if (outcome.status === "required") {
-        audit("denied", { decision: "allow", reason: "approval_required" });
-        return {
-          ok: false,
-          error: this.#err("E_APPROVAL_REQUIRED", "Confirmation required", { challenge: outcome.challenge as unknown as JsonValue }, correlationId),
-        };
-      }
-      if (outcome.status === "denied") {
-        audit("denied", { decision: "allow", reason: "approval_denied" });
-        return { ok: false, error: this.#err("E_POLICY_DENIED", "Not permitted", undefined, correlationId) };
-      }
-      confirmation = outcome.confirmation;
-    }
-    audit("success", { decision: "allow" });
-    if (signal.aborted) throw signal.reason;
-
-    // 5. execute
-    const handler = d.handlers.get(handlerKey(req.contract, req.contractVersion, req.method));
-    if (!handler) return { ok: false, error: this.#err("E_UNAVAILABLE", "This method is not available right now", undefined, correlationId) };
-    const sideEffecting = spec.sideEffect !== "none" && spec.sideEffect !== "read";
-    let raw: unknown;
-    try {
-      raw = await (handler as (c: unknown, p: unknown) => unknown)(
-        {
-          identity: this.#identity,
-          requestId: req.id,
-          correlationId,
-          ...(req.idempotencyKey !== undefined ? { idempotencyKey: req.idempotencyKey } : {}),
-          signal,
-          ...(confirmation !== undefined ? { confirmation } : {}),
-        },
-        payloadParsed.data,
-      );
-    } catch (error) {
-      if (signal.aborted) throw signal.reason;
-      const wire = this.#sanitise(error, correlationId);
-      if (sideEffecting) this.#auditCompletion(audit, "error", wire.code);
-      return { ok: false, error: wire };
-    }
-
-    // 6. the response must match the contract exactly: this is what stops a handler leaking extra fields
-    const checked = spec.response.safeParse(raw ?? null);
-    if (!checked.success || !inspectMessage(checked.data).ok) {
-      d.onInternalError?.(correlationId, new Error("handler response violates its contract"));
-      if (sideEffecting) this.#auditCompletion(audit, "error", "E_INTERNAL");
-      return { ok: false, error: this.#err("E_INTERNAL", "Internal error", undefined, correlationId) };
-    }
-    const result = checked.data as JsonValue;
-    if (key) {
-      try {
-        await d.idempotency.complete(key, result);
-        markDone();
-      } catch (e) {
-        d.onInternalError?.(correlationId, e);
-      }
-    }
-    if (sideEffecting) this.#auditCompletion(audit, "success", null);
-    return { ok: true, result };
-  }
-
-  /** The action already happened: an audit failure here is reported locally and must not change the answer. */
-  #auditCompletion(
-    audit: (o: "success" | "failure" | "denied" | "error", e: Record<string, string | number | boolean | null>, a?: "policy.decision" | "rpc.execute") => unknown,
-    outcome: "success" | "error",
-    code: string | null,
-  ): void {
-    try {
-      audit(outcome, code === null ? { phase: "completed" } : { phase: "completed", code }, "rpc.execute");
-    } catch (e) {
-      this.#d.onInternalError?.("audit", e);
-    }
   }
 
   // ---- outbound ----
 
-  #err(code: ErrorCode, message: string, details?: Record<string, unknown>, correlationId: string = newCorrelationId()): AxisError {
-    return makeError(code, message, correlationId, details as Record<string, JsonValue> | undefined);
-  }
-
-  /** Nothing but a deliberate DaemonError ever reaches the wire with its own text; everything else is an opaque E_INTERNAL. */
-  #sanitise(error: unknown, correlationId: string): AxisError {
-    if (error instanceof DaemonError) {
-      const wire = makeError(error.code, error.message, correlationId, error.details === undefined ? undefined : { ...error.details });
-      return responseEnvelopeSchema.safeParse({ v: this.#version, id: "x", ok: false, error: wire }).success
-        ? wire
-        : makeError("E_INTERNAL", "Internal error", correlationId);
-    }
-    this.#d.onInternalError?.(correlationId, error);
-    return makeError("E_INTERNAL", "Internal error", correlationId);
-  }
-
-  #finish(id: string, entry: InFlight, outcome: Outcome): void {
-    if (entry.settled) return;
-    entry.settled = true;
-    if (entry.timer) clearTimeout(entry.timer);
-    this.#inFlight.delete(id);
-    this.#reply(id, outcome);
+  #err(code: ErrorCode, message: string, details?: Record<string, string>): AxisError {
+    return makeError(code, message, newCorrelationId(), details);
   }
 
   #reply(id: string, outcome: Outcome): void {
@@ -497,9 +297,12 @@ export class Session {
     const checked = responseEnvelopeSchema.safeParse(message);
     if (checked.success) {
       this.#send(checked.data);
-    } else {
-      this.#send({ v: this.#version, id, ok: false, error: makeError("E_INTERNAL", "Internal error", newCorrelationId()) });
+      return;
     }
+    // Keep the correlation id of the original answer so the replacement can still be joined to its audit rows.
+    const correlationId = outcome.ok ? newCorrelationId() : outcome.error.correlationId;
+    this.#d.pipeline.onInternalError?.(correlationId, new Error("outbound response failed schema validation"));
+    this.#send({ v: this.#version, id, ok: false, error: makeError("E_INTERNAL", "Internal error", correlationId) });
   }
 
   #send(message: unknown): void {
@@ -511,12 +314,3 @@ export class Session {
     }
   }
 }
-
-function approvalOf(payload: JsonValue): ChallengeReference | undefined {
-  if (payload === null || typeof payload !== "object" || Array.isArray(payload)) return undefined;
-  const candidate = (payload as Record<string, JsonValue>)["approval"];
-  const parsed = challengeReferenceSchema.safeParse(candidate);
-  return parsed.success ? parsed.data : undefined;
-}
-
-export { handlerKey };
