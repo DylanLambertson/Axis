@@ -21,6 +21,29 @@ The daemon owns one `ChallengeManager` and wires it like this. Identity (`actor`
 
 The package limits open challenges per actor, per window and overall; the per-window rate limit from ADR 0003 belongs to the daemon.
 
+### Shared request digest
+
+`requestDigest({ contract, version, method, payload })` binds a challenge to the exact request. It is, byte for byte:
+
+```
+sha256hex(JSON.stringify(["axis.request/1", contract, version, method, canonicalJson(payload)]))
+```
+
+- `contract` is the bare contract id exactly as `@axis/protocol` defines it (`contractIdSchema`, for example `axis.worktrees`), never the slash form `axis.worktrees/1`. `version` is the separate integer major version (`contractVersionSchema`). `issue` and `consume` validate both with those schemas and refuse anything else.
+- `method` is the method name as sent.
+- `canonicalJson(payload)` is a string: the payload's JSON text with object keys sorted recursively and a top-level `approval` field removed. It is embedded in the array as a string element, not as a nested object, so no delimiter can be forged.
+- The digest function itself accepts any strings; only `issue` and `consume` enforce the schemas.
+
+Fixed vectors (`sha256hex` as lowercase hex):
+
+| contract | version | method | payload | digest |
+|---|---|---|---|---|
+| `axis.worktrees/1` (function-level only) | 1 | `remove` | `{id:"ws-1",deleteBranch:false}` | `ccb3a71aa0bc5bd6db5ccfe6fe9a09abef12092dce13ba4f6d99e929a30e0fd7` |
+| `c` | 1 | `m` | `{b:[1,{z:null,y:true}],a:"x"}` | `de8399306f850ad7498d82c8f95ec94ca317181b2422480425c52ad8ed55e596` |
+| `axis.worktrees` | 1 | `remove` | `{id:"ws-1",deleteBranch:false}` | `adb7a157e75395816cf74974fbdfa2b5bdf32831996a578ff80cdb46fe9d2735` |
+
+`@axis/daemon` implements the identical function and pins the same vectors; the two copies must stay in step. The shared function moves into `@axis/protocol` later, and both packages will then import it.
+
 ## Rules
 
 - Packages may import `node:*`, `zod` (exactly 4.6.6) and other `@axis/*` packages. They never import `vs/*`, Electron or the DOM.
