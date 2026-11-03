@@ -55,15 +55,27 @@ test("NEW-B1: other hostile pre-identity shapes (cycle, accessor, deep nesting, 
   }
 });
 
-test("NEW-B1: no source file serialises untrusted input (JSON.stringify appears only in the digest and the store key)", () => {
+/** Source text without comments (block, line and doc), so only code is scanned. */
+const code = (text: string): string => text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
+function sourceFiles(dir: string): string[] {
+  return readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? sourceFiles(join(dir, e.name)) : e.name.endsWith(".ts") ? [join(dir, e.name)] : []));
+}
+
+test("NEW-B1: nothing serialises or joins untrusted input (stringify, join and String appear only where listed)", () => {
   const src = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "src");
-  const allowed = new Map([
-    ["digest.js", 3],
-    ["memory-store.js", 2],
+  const files = sourceFiles(src);
+  assert.ok(files.length >= 10, "the scan must actually see the sources");
+  // file -> [stringify, join, String]: the digest and the store key (inputs already bounded), and a path formatter over schema issues.
+  const allowed = new Map<string, [number, number, number]>([
+    ["digest.ts", [3, 2, 0]],
+    ["memory-store.ts", [2, 0, 0]],
+    ["pipeline.ts", [0, 1, 1]],
   ]);
-  for (const file of readdirSync(src).filter((f) => f.endsWith(".js"))) {
-    const count = (readFileSync(join(src, file), "utf8").match(/JSON\.stringify\(/g) ?? []).length;
-    assert.equal(count, allowed.get(file) ?? 0, `${file}: JSON.stringify must not be used outside the digest and store keys`);
+  for (const file of files) {
+    const text = code(readFileSync(file, "utf8"));
+    const name = file.slice(src.length + 1);
+    const counts = [/\bstringify\b/g, /\.join\(/g, /\bString\b/g].map((re) => (text.match(re) ?? []).length);
+    assert.deepEqual(counts, allowed.get(name) ?? [0, 0, 0], `${name}: JSON.stringify, .join( and String must not touch untrusted input`);
   }
 });
 

@@ -274,7 +274,10 @@ export class Session {
       "abort",
       () => {
         const reason: unknown = controller.signal.reason;
-        if (!entry.settled) d.orphans.add(this.#identity.windowId); // the caller is about to be told "done", the handler may still run
+        if (!entry.settled && d.orphans.add(this.#identity.windowId)) {
+          // A handler that ignores its signal is a bug someone has to find.
+          d.pipeline.onInternalError?.("orphans", new Error(`window ${this.#identity.windowId} reached its orphan quota`));
+        } // the caller is about to be told "done", the handler may still run
         if (reason === CLOSED) {
           entry.answered = true;
           return;

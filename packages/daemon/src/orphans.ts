@@ -26,9 +26,12 @@ export class OrphanTracker {
     if (this.countFor(windowId) >= this.maxPerWindow) return "window";
     return this.#total >= this.max ? "daemon" : undefined;
   }
-  add(windowId: string): void {
+  /** Returns true when this orphan makes the window reach its quota (the moment worth reporting). */
+  add(windowId: string): boolean {
     this.#total++;
-    this.#byWindow.set(windowId, this.countFor(windowId) + 1);
+    const n = this.countFor(windowId) + 1;
+    this.#byWindow.set(windowId, n);
+    return n === this.maxPerWindow;
   }
   remove(windowId: string): void {
     this.#total--;
