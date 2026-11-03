@@ -55,3 +55,11 @@ test("ref names are validated and each segment is encoded", () => {
 test("a non-string URL is refused", () => {
   assert.throws(() => compareUrl({ remoteUrl: undefined as unknown as string, base: "a", head: "b" }));
 });
+
+test("N-7: a pasted trailing slash is accepted, a doubled slash and non-BMP or U+FFFF characters are not", () => {
+  const want = "https://github.com/o/r/compare/main...axis/feat";
+  for (const u of ["https://github.com/o/r/", "https://github.com/o/r.git/", "ssh://git@github.com/o/r/", "git@github.com:o/r/"]) assert.equal(ok(u), want, u);
+  for (const u of ["https://github.com//o/r", "https://github.com/o//r", "https://github.com/o/r//", "https://github.com/o/r/x", "https://github.com/o/￿", "https://github.com/o/r\u{1f600}", "git@github.com://o/r"]) {
+    assert.throws(() => ok(u), GitOpsError, JSON.stringify(u));
+  }
+});

@@ -26,7 +26,8 @@ export function normaliseHost(host: string): string | undefined {
 }
 
 function ownerRepo(path: string): { owner: string; repo: string } | undefined {
-  const parts = path.replace(/^\/+/, "").split("/");
+  // One optional leading and one optional trailing slash: a pasted `https://github.com/o/r/` works, `//o/r` does not.
+  const parts = path.replace(/^\//, "").replace(/\/$/, "").split("/");
   if (parts.length !== 2) return undefined;
   const owner = parts[0] as string;
   let repo = parts[1] as string;
@@ -36,7 +37,7 @@ function ownerRepo(path: string): { owner: string; repo: string } | undefined {
 }
 
 function parseRemote(url: string): { host: string; owner: string; repo: string } | undefined {
-  if (/[\s\\\u0000-\u001f\u007f-￿]/.test(url) || url.length > 512) return undefined;
+  if (/[\s\\\u0000-\u001f\u007f-\uffff]/.test(url) || url.length > 512) return undefined;
   const scp = /^([A-Za-z0-9_.-]+)@([^:/]+):(.+)$/.exec(url);
   if (scp && !url.includes("://")) {
     if (scp[1] !== "git") return undefined;
