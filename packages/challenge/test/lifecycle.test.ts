@@ -289,3 +289,14 @@ test("D1b: tombstones from closed connections are bounded by the total cap", () 
   }
   assert.equal(issued, 4);
 });
+
+test("a withdraw after the challenge expired, before any sweep, reports ended", () => {
+  const { manager, clock } = setup({ ttl: 1_000 });
+  const open = issue(manager);
+  clock.t += 1_000;
+  assert.deepEqual(manager.withdraw(open.challenge.challengeId, CALLER), { withdrawn: false, reason: "ended" });
+  const confirmed = issue(manager, { tier: 3 });
+  const id = approve(manager, confirmed);
+  clock.t += 30_001; // the confirmation window (30 s) has run out; the challenge itself expired too
+  assert.deepEqual(manager.withdraw(id, CALLER), { withdrawn: false, reason: "ended" });
+});

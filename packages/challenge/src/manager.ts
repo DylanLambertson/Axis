@@ -355,6 +355,12 @@ export class ChallengeManager {
     }
     if (rec.state === "CONSUMED") return { withdrawn: false, reason: "spent" };
     if (!OPEN.has(rec.state) && rec.state !== "CONFIRMED") return { withdrawn: false, reason: "ended" };
+    // Past its deadline but not yet swept: it has ended, so say so and let the sweep drop it.
+    if (this.#expireIfDue(rec)) return { withdrawn: false, reason: "ended" };
+    if (rec.state === "CONFIRMED" && this.#mono() >= rec.tokenExpiresAt) {
+      this.#finish(rec, "EXPIRED");
+      return { withdrawn: false, reason: "ended" };
+    }
     this.#drop(rec, who.data.actor as ActorId, this.#mono() < rec.expiresAt);
     return { withdrawn: true };
   }
