@@ -1,7 +1,6 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import {
-  inspectMessage,
-  makeError,
+    makeError,
   permissionTierSchema,
   challengeReferenceSchema,
   challengeSchema,
@@ -14,17 +13,22 @@ import {
 } from "@axis/protocol";
 import { z } from "zod";
 import { Auditor } from "./audit.js";
-import { payloadHash, requestDigest } from "./digest.js";
-import { toWireError } from "./errors.js";
-import type {
-  ApprovalGate,
-  ContractRegistry,
-  DaemonAuditSink,
-  Handler,
-  IdempotencyKey,
-  IdempotencyStore,
-  Identity,
-  Policy,
+import { payloadHash, requestDigest, withoutApproval } from "./digest.js";
+import { runAction } from "./execute.js";
+import {
+  ApprovalError,
+  type ApprovalContentHook,
+  type ApprovalContentLock,
+  type ApprovalGate,
+  type ApprovalInput,
+  type ConfirmedAction,
+  type ContractRegistry,
+  type DaemonAuditSink,
+  type Handler,
+  type IdempotencyKey,
+  type IdempotencyStore,
+  type Identity,
+  type Policy,
 } from "./types.js";
 
 export const CANCELLED = Symbol("cancelled");
@@ -36,6 +40,8 @@ export type Outcome = { ok: true; result: JsonValue } | { ok: false; error: Axis
 export interface PipelineDeps {
   readonly registry: ContractRegistry;
   readonly handlers: ReadonlyMap<string, Handler>;
+  /** Optional per-method approval content hooks, by `handlerKey`. */
+  readonly contentHooks: ReadonlyMap<string, ApprovalContentHook>;
   readonly policy: Policy | undefined;
   readonly approvals: ApprovalGate | undefined;
   readonly idempotency: IdempotencyStore;
@@ -53,6 +59,15 @@ export interface PipelineInput {
   readonly signal: AbortSignal;
   /** The negotiated protocol version, for the wire-shape check of handler errors. */
   readonly version: number;
+}
+
+interface PipelineState {
+  key?: IdempotencyKey;
+  /** The approval a retry carried, once the pipeline went to spend it. */
+  approval?: ChallengeReference;
+  /** The approval was spent (the action started). */
+  spent?: boolean;
+  withdrawn?: boolean;
 }
 
 export const handlerKey = (contract: string, version: number, method: string): string =>
@@ -91,7 +106,7 @@ const abortCode = (reason: unknown): ErrorCode => (reason === TIMED_OUT ? "E_TIM
  * freed on error, cancel or timeout.
  */
 export async function runPipeline(p: PipelineInput): Promise<Outcome> {
-  const state: { key?: IdempotencyKey } = {};
+  const state: PipelineState = {};
   let outcome: Outcome;
   try {
     outcome = await steps(p, state);
@@ -112,6 +127,23 @@ export async function runPipeline(p: PipelineInput): Promise<Outcome> {
   return outcome;
 }
 
+/**
+ * A cancel or timeout before the approval was spent withdraws it, once. This
+ * runs from the abort event, not after the pipeline settles: the gate may be
+ * the very thing that is stuck. A close is covered by `withdrawConnection`.
+ */
+async function withdrawIfUnspent(p: PipelineInput, state: PipelineState): Promise<void> {
+  const gate = p.deps.approvals;
+  if (!gate?.withdraw || !state.approval || state.spent || state.withdrawn) return;
+  if (!p.signal.aborted || p.signal.reason === CLOSED) return;
+  state.withdrawn = true;
+  try {
+    await gate.withdraw(state.approval.challengeId, { actor: p.identity.actor, connectionId: p.identity.connectionId });
+  } catch (e) {
+    p.deps.onInternalError?.(p.correlationId, e);
+  }
+}
+
 async function finaliseKey(p: PipelineInput, key: IdempotencyKey | undefined, outcome: Outcome): Promise<void> {
   if (!key) return;
   const store = p.deps.idempotency;
@@ -130,7 +162,7 @@ async function finaliseKey(p: PipelineInput, key: IdempotencyKey | undefined, ou
   }
 }
 
-async function steps(p: PipelineInput, state: { key?: IdempotencyKey }): Promise<Outcome> {
+async function steps(p: PipelineInput, state: PipelineState): Promise<Outcome> {
   const { deps: d, identity, req, spec, correlationId, signal } = p;
   const fail = (code: ErrorCode, message: string, details?: Record<string, JsonValue>): Outcome => ({
     ok: false,
@@ -227,92 +259,108 @@ async function steps(p: PipelineInput, state: { key?: IdempotencyKey }): Promise
           await auditor.strict("success", { decision: "allow", replay: true });
           return { ok: true, result: begun.result };
         }
-        replayed = begun.result;
+        replayed = begun.result; // another connection: the approval gate runs again, and only then is the stored result returned
         break;
       case "new":
         break;
     }
   }
+  const action = (confirmed: ConfirmedAction | undefined): Promise<Outcome> =>
+    runAction({ p, auditor, tier, confirmed, replayed, data: withoutApprovalOf(payloadParsed.data) });
+  if (tier < 3) return action(undefined);
 
-  // 4. approval for tier >= 3 (fail closed when no gate is configured)
-  let confirmation: unknown;
-  if (tier >= 3) {
-    if (!d.approvals) {
-      await auditor.soft("denied", { decision: "allow", reason: "no_approval_gate" });
-      return fail("E_POLICY_DENIED", "Not permitted");
-    }
-    const approval = approvalOf(req.payload);
-    const answer = await d.approvals.check({
-      identity,
-      actor: identity.actor,
-      connectionId: identity.connectionId,
-      requestId: req.id,
-      correlationId,
-      contract: req.contract,
-      contractVersion: req.contractVersion,
-      method: req.method,
-      tier,
-      payload: req.payload,
-      digest: requestDigest(req.contract, req.contractVersion, req.method, req.payload),
-      ...(approval ? { approval } : {}),
-      ...(req.idempotencyKey !== undefined ? { idempotencyKey: req.idempotencyKey } : {}),
-      signal,
-    });
-    guard();
-    if (answer.status === "required") {
-      // A malformed challenge is a gate bug: the audit row says so and the client gets a bare E_INTERNAL.
-      if (!challengeSchema.safeParse(answer.challenge).success) {
-        await auditor.soft("error", { decision: "allow", reason: "approval_gate_error" });
-        d.onInternalError?.(correlationId, new Error("the approval gate returned a malformed challenge"));
-        return fail("E_INTERNAL", "Internal error");
-      }
-      await auditor.soft("denied", { decision: "allow", reason: "approval_required" });
-      return fail("E_APPROVAL_REQUIRED", "Confirmation required", { challenge: answer.challenge as unknown as JsonValue });
-    }
-    if (answer.status !== "confirmed") {
-      await auditor.soft("denied", { decision: "allow", reason: "approval_denied" });
-      return fail("E_POLICY_DENIED", "Not permitted");
-    }
-    confirmation = answer.confirmation;
+  // 4. approval for tier >= 3 (fail closed when no gate is configured). The pipeline owns the whole sequence.
+  const gate = d.approvals;
+  if (!gate) {
+    await auditor.soft("denied", { decision: "allow", reason: "no_approval_gate" });
+    return fail("E_POLICY_DENIED", "Not permitted");
   }
-  await auditor.strict("success", replayed === undefined ? { decision: "allow" } : { decision: "allow", replay: true });
-  guard();
-  if (replayed !== undefined) return { ok: true, result: replayed };
-
-  // 5. execute
-  const handler = d.handlers.get(handlerKey(req.contract, req.contractVersion, req.method));
-  if (!handler) return fail("E_UNAVAILABLE", "This method is not available right now");
-  const sideEffecting = spec.sideEffect !== "none" && spec.sideEffect !== "read";
-  let raw: unknown;
+  const approval = approvalOf(req.payload);
+  if (approval) {
+    state.approval = approval;
+    signal.addEventListener("abort", () => void withdrawIfUnspent(p, state), { once: true });
+  }
+  const input: ApprovalInput = {
+    identity,
+    actor: identity.actor,
+    connectionId: identity.connectionId,
+    requestId: req.id,
+    correlationId,
+    contract: req.contract,
+    contractVersion: req.contractVersion,
+    method: req.method,
+    tier,
+    args: withoutApproval(req.payload),
+    digest: requestDigest(req.contract, req.contractVersion, req.method, req.payload),
+    ...(req.idempotencyKey !== undefined ? { idempotencyKey: req.idempotencyKey } : {}),
+    signal,
+  };
+  let lock: ApprovalContentLock;
   try {
-    raw = await (handler as (c: unknown, p: unknown) => unknown)(
-      {
-        identity,
-        requestId: req.id,
-        correlationId,
-        ...(req.idempotencyKey !== undefined ? { idempotencyKey: req.idempotencyKey } : {}),
-        signal,
-        ...(confirmation !== undefined ? { confirmation } : {}),
-      },
-      payloadParsed.data,
-    );
-  } catch (error) {
-    if (signal.aborted) {
-      if (sideEffecting) await auditor.soft("failure", { phase: "completed", result: "aborted", code: abortCode(signal.reason) }, "rpc.execute");
-      throw new Aborted();
+    lock = await resolveContent(p, withoutApprovalOf(payloadParsed.data), input.digest);
+  } catch (e) {
+    await auditor.soft("error", { decision: "allow", reason: "content_hook_error" });
+    throw e;
+  }
+  guard();
+
+  if (!approval) {
+    const contentDigest = await lock.withLock((cd) => Promise.resolve(cd));
+    guard();
+    const challenge = await gate.issue(input, { target: lock.target, contentDigest });
+    guard();
+    // A malformed challenge is a gate bug: the audit row says so and the client gets a bare E_INTERNAL.
+    if (!challengeSchema.safeParse(challenge).success) {
+      await auditor.soft("error", { decision: "allow", reason: "approval_gate_error" });
+      d.onInternalError?.(correlationId, new Error("the approval gate returned a malformed challenge"));
+      return fail("E_INTERNAL", "Internal error");
     }
-    const wire = toWireError(error, correlationId, p.version, d.onInternalError);
-    if (sideEffecting) await auditor.soft("error", { phase: "completed", result: "failed", code: wire.code }, "rpc.execute");
-    return { ok: false, error: wire };
+    await auditor.soft("denied", { decision: "allow", reason: "approval_required" });
+    return fail("E_APPROVAL_REQUIRED", "Confirmation required", { challenge: challenge as unknown as JsonValue });
   }
 
-  // 6. the response must match the contract exactly: this is what stops a handler leaking extra fields
-  const checked = spec.response.safeParse(raw ?? null);
-  if (!checked.success || !inspectMessage(checked.data).ok) {
-    d.onInternalError?.(correlationId, new Error("handler response violates its contract"));
-    if (sideEffecting) await auditor.soft("error", { phase: "completed", result: "failed", code: "E_INTERNAL" }, "rpc.execute");
-    return fail("E_INTERNAL", "Internal error");
+  // 5. spend the approval and run the action inside it, under the content lock
+  let ran = false;
+  try {
+    const outcome = await lock.withLock((contentDigest) =>
+      gate.execute(input, approval, { target: lock.target, contentDigest }, (confirmed) => {
+        ran = true;
+        state.spent = true;
+        return action(confirmed);
+      }),
+    );
+    if (!ran) {
+      // The gate answered without running the action: it cannot be trusted with the approval.
+      await auditor.soft("error", { decision: "allow", reason: "approval_not_executed" });
+      d.onInternalError?.(correlationId, new Error("the approval gate returned without running the action"));
+      return fail("E_INTERNAL", "Internal error");
+    }
+    return outcome;
+  } catch (e) {
+    if (!(e instanceof ApprovalError) || e.executed) throw e;
+    if (e.code === "E_CONFLICT") {
+      await auditor.soft("denied", { decision: "allow", reason: "approval_conflict" });
+      return fail("E_CONFLICT", "The confirmation is no longer valid; confirm again");
+    }
+    await auditor.soft("denied", { decision: "allow", reason: "approval_refused" });
+    return fail("E_POLICY_DENIED", "Not permitted");
   }
-  if (sideEffecting) await auditor.soft("success", { phase: "completed", result: "done" }, "rpc.execute");
-  return { ok: true, result: checked.data as JsonValue };
+}
+
+/** The target and the lock of a method's content: its hook, or `request:<digest>` with the digest as content. */
+async function resolveContent(p: PipelineInput, payload: JsonValue, digest: string): Promise<ApprovalContentLock> {
+  const hook = p.deps.contentHooks.get(handlerKey(p.req.contract, p.req.contractVersion, p.req.method));
+  if (!hook) return { target: `request:${digest}`, withLock: (fn) => fn(digest) };
+  const lock = await (hook as (c: unknown, payload: unknown) => ApprovalContentLock | Promise<ApprovalContentLock>)(
+    { identity: p.identity, requestId: p.req.id, correlationId: p.correlationId, signal: p.signal },
+    payload,
+  );
+  if (typeof lock?.target !== "string" || lock.target.length === 0 || typeof lock.withLock !== "function") {
+    throw new Error("an approval content hook returned something that is not a target and a lock");
+  }
+  return lock;
+}
+
+function withoutApprovalOf(data: unknown): JsonValue {
+  return withoutApproval(data as JsonValue);
 }

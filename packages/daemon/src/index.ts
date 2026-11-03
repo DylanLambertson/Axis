@@ -8,10 +8,14 @@ export { DaemonError, SAFE_MESSAGE_MAX } from "./errors.js";
 export { identitySchema } from "./identity.js";
 export type { SessionLimits } from "./session.js";
 export {
+  ApprovalError,
   type ActorId,
   type ApprovalGate,
   type ApprovalInput,
-  type ApprovalOutcome,
+  type ApprovalContent,
+  type ApprovalContentHook,
+  type ApprovalContentLock,
+  type ConfirmedAction,
   type Connection,
   type ContractRegistry,
   type DaemonAuditEvent,

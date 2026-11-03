@@ -63,44 +63,107 @@ export interface ApprovalInput {
   readonly connectionId: string;
   readonly requestId: string;
   readonly correlationId: string;
+  /** The bare contract id of the envelope ("axis.worktrees"). */
   readonly contract: string;
+  /** The integer contract version. */
   readonly contractVersion: number;
   readonly method: string;
   readonly tier: number;
-  readonly payload: JsonValue;
+  /** The request payload minus its top-level `approval` field. */
+  readonly args: JsonValue;
   /**
-   * `requestDigest()` of this request (contract, version, method and the
-   * payload without its `approval` field). The daemon computes it once;
-   * the gate must not derive its own.
+   * `requestDigest()` of exactly (contract, contractVersion, method, args).
+   * A gate that computes its own digest from those fields must get this
+   * value; it is a cross-check, not a second source of truth.
    */
   readonly digest: string;
-  readonly approval?: ChallengeReference;
   readonly idempotencyKey?: string;
-  /** Fires on cancel, timeout and connection close: withdraw any pending prompt. */
+  /** Fires on cancel, timeout and connection close: stop waiting and withdraw any pending prompt. */
   readonly signal: AbortSignal;
 }
-export type ApprovalOutcome =
-  | { readonly status: "confirmed"; readonly confirmation: unknown }
-  | { readonly status: "required"; readonly challenge: Challenge }
-  | { readonly status: "denied" };
+
+/** What the approval is bound to besides the request: the thing that will be acted on and its content right now. */
+export interface ApprovalContent {
+  /** A canonical daemon id such as `workspace:<id>`, or `request:<digest>` for methods without a content hook. */
+  readonly target: string;
+  /** SHA-256 hex of what the operation will change or destroy, taken under the lock that covers the action. */
+  readonly contentDigest: string;
+}
+
+/** What a spent approval tells the action that runs under it. Read-only facts, never a credential. */
+export interface ConfirmedAction {
+  readonly method: string;
+  readonly target: string;
+  readonly requester: string;
+}
+
 /**
- * Challenge-like gate for tier 3 and above; `@axis/challenge` sits behind it
- * in the daemon wiring.
+ * Per-method content hook for tier >= 3: names the target and runs a function
+ * under the lock that protects the content, handing it the content digest
+ * computed under that lock. The pipeline runs the approval check and the
+ * handler inside `withLock`, so "the content is unchanged right now" and the
+ * action are covered by the same lock. A hook is reviewed with its
+ * destructive call. Methods without a hook use `request:<digest>` and the
+ * digest itself as the content digest.
+ */
+export interface ApprovalContentHook {
+  (
+    context: { readonly identity: Identity; readonly requestId: string; readonly correlationId: string; readonly signal: AbortSignal },
+    payload: never,
+  ): ApprovalContentLock | Promise<ApprovalContentLock>;
+}
+export interface ApprovalContentLock {
+  readonly target: string;
+  withLock<T>(fn: (contentDigest: string) => Promise<T>): Promise<T>;
+}
+
+/**
+ * Thrown by `ApprovalGate.execute` when the approval does not cover the
+ * request. `E_POLICY_DENIED`: unknown, wrong caller, wrong request or target.
+ * `E_CONFLICT`: already used, expired, or the content changed since the
+ * user confirmed. `executed: true` means the approval was spent and the
+ * action then failed (or could not be audited): the daemon answers
+ * E_INTERNAL and frees the idempotency key, and the user confirms again.
+ * Any other error from the gate is E_INTERNAL.
+ */
+export class ApprovalError extends Error {
+  constructor(
+    readonly code: "E_POLICY_DENIED" | "E_CONFLICT",
+    readonly executed: boolean = false,
+  ) {
+    super(code);
+    this.name = "ApprovalError";
+  }
+}
+
+/**
+ * The approval gate for tier 3 and above; `@axis/challenge` sits behind it.
+ * The pipeline owns the whole sequence, so a handler never sees a challenge
+ * id and the gate cannot say "confirmed" without spending a live challenge.
  *
- * Contract. To answer `confirmed` for `input.approval`, the gate MUST:
- * 1. check that the challenge was issued for exactly `input.digest` (an
- *    equality test against the digest it stored when it issued the
- *    challenge, never a recomputation from the payload);
- * 2. check that it was issued to the same `actor` and the same
- *    `connectionId` as this request. A challenge id is not a bearer credential;
- * 3. burn the challenge on first use (single use), also when the later
- *    handler fails;
- * 4. stop and withdraw any prompt when `input.signal` aborts.
- * Anything else is `required` (with a freshly issued challenge) or `denied`.
- * A gate that throws fails the request closed.
+ * - `issue` is called when the request carries no `approval`. It issues a
+ *   challenge bound to `input.digest`, the actor, the connection, the target
+ *   and the content digest, and the pipeline answers E_APPROVAL_REQUIRED.
+ * - `execute` is called when it does. It MUST: check that the challenge was
+ *   issued to this `actor` on this `connectionId` for exactly this request
+ *   (digest, target) and that `content.contentDigest` still equals the one
+ *   the user confirmed; burn the challenge before running `action`
+ *   (single use, also when `action` fails); and run `action` exactly once.
+ *   It throws `ApprovalError` for a refusal. It returns what `action` returns.
+ * - `withdraw` is called when a request is cancelled or times out before its
+ *   approval was spent; `withdrawConnection` when a connection closes. Both
+ *   are best effort and called at most once per challenge / connection.
  */
 export interface ApprovalGate {
-  check(input: ApprovalInput): ApprovalOutcome | Promise<ApprovalOutcome>;
+  issue(input: ApprovalInput, content: ApprovalContent): Challenge | Promise<Challenge>;
+  execute<T>(
+    input: ApprovalInput,
+    approval: ChallengeReference,
+    content: ApprovalContent,
+    action: (confirmed: ConfirmedAction) => Promise<T>,
+  ): Promise<T>;
+  withdraw?(challengeId: string, caller: { readonly actor: ActorId; readonly connectionId: string }): void | Promise<void>;
+  withdrawConnection?(connectionId: string): void | Promise<void>;
 }
 
 export interface IdempotencyKey {
@@ -160,8 +223,8 @@ export interface HandlerContext {
   readonly idempotencyKey?: string;
   /** Fires on cancel, timeout and connection close. Handlers must stop promptly. */
   readonly signal: AbortSignal;
-  /** Whatever the approval gate returned for tier >= 3 (for example a confirmation token). */
-  readonly confirmation?: unknown;
+  /** For tier >= 3: what the spent approval covers. Read-only; check `target` before acting on anything else. */
+  readonly approved?: ConfirmedAction;
 }
 export type Handler = (context: HandlerContext, payload: never) => unknown;
 

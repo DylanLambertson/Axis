@@ -2,19 +2,9 @@
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 import { errorSchema, type Challenge } from "@axis/protocol";
-import { DaemonError, payloadHash, requestDigest, type ApprovalGate, type ApprovalInput } from "../src/index.js";
+import { DaemonError, payloadHash, requestDigest } from "../src/index.js";
+import { approveAndRun, fakeGate } from "./gate.js";
 import { CONTRACT, KEY1, KEY2, cid, req, rig, type Rig } from "./harness.js";
-
-const CHALLENGE: Challenge = {
-  challengeId: "A".repeat(43),
-  digest: "a".repeat(64),
-  contract: "axis.approvals/1",
-  method: "danger",
-  tier: 4,
-  targetSummary: "ws-1",
-  nativeConfirmationRequired: true,
-  expiresAt: 2_000_000_000_000,
-};
 
 async function ready(t: TestContext, options: Parameters<typeof rig>[0] = {}): Promise<Rig> {
   const r = rig(options);
@@ -118,40 +108,44 @@ test("tier 3 and above need an approval gate: absent gate fails closed, a policy
   assert.equal((await raising.inbox.response("t3")).error?.code, "E_POLICY_DENIED", "a raised tier also needs a gate");
 });
 
-test("tier 4 without a valid confirmation returns E_APPROVAL_REQUIRED carrying a schema-valid challenge", async (t) => {
-  const inputs: ApprovalInput[] = [];
-  const gate: ApprovalGate = { check: (i) => (inputs.push(i), { status: "required", challenge: CHALLENGE }) };
+test("tier 4 without an approval returns E_APPROVAL_REQUIRED carrying a schema-valid challenge, issued with the request's own facts", async (t) => {
+  const { gate, calls } = fakeGate();
   const r = await ready(t, { gate });
   r.daemon.register(CONTRACT, 1, { danger: () => assert.fail("must not run") });
   r.send(req("a1", "danger", { id: "ws-1" }, { idempotencyKey: KEY1 }));
   const res = await r.inbox.response("a1");
   assert.equal(res.error?.code, "E_APPROVAL_REQUIRED");
   assert.doesNotThrow(() => errorSchema.parse(res.error));
-  assert.deepEqual((res.error?.details as { challenge: Challenge }).challenge, CHALLENGE);
-  assert.equal(inputs[0]?.tier, 4);
-  assert.equal(inputs[0]?.identity.actor, "user");
-  assert.equal(inputs[0]?.digest, requestDigest(CONTRACT, 1, "danger", { id: "ws-1" }));
+  const issued = (res.error?.details as { challenge: Challenge }).challenge;
+  const { input, content } = calls.issue[0] as (typeof calls.issue)[number];
+  assert.equal(issued.method, "danger");
+  assert.equal(input.tier, 4);
+  assert.equal(input.identity.actor, "user");
+  assert.deepEqual(input.args, { id: "ws-1" });
+  assert.equal(input.digest, requestDigest(CONTRACT, 1, "danger", { id: "ws-1" }));
+  assert.deepEqual(content, { target: `request:${input.digest}`, contentDigest: input.digest }, "no content hook: the request itself is the target");
   assert.equal(r.events.at(-1)?.outcome, "denied");
 });
 
-test("a confirmed gate result reaches the handler as ctx.confirmation, and the approval reference is passed to the gate", async (t) => {
-  const seen: ApprovalInput[] = [];
-  const token = Object.freeze({ kind: "token" });
-  const gate: ApprovalGate = { check: (i) => (seen.push(i), { status: "confirmed", confirmation: token }) };
+test("the full tier 4 flow: issue, then retry with the approval; the handler sees what was approved and never a challenge id", async (t) => {
+  const { gate, calls } = fakeGate();
   const r = await ready(t, { gate });
-  let got: unknown;
-  r.daemon.register(CONTRACT, 1, { danger: (c) => ((got = c.confirmation), { done: true }) });
-  r.send(req("a2", "danger", { id: "ws-1", approval: { challengeId: "B".repeat(43) } }, { idempotencyKey: KEY1 }));
-  assert.equal((await r.inbox.response("a2")).ok, true);
-  assert.equal(got, token);
-  assert.deepEqual(seen[0]?.approval, { challengeId: "B".repeat(43) });
-  assert.equal(seen[0]?.idempotencyKey, KEY1);
+  let ctx: Record<string, unknown> = {};
+  let payload: unknown;
+  r.daemon.register(CONTRACT, 1, { danger: (c, p) => ((ctx = { ...c }), (payload = p), { done: true }) });
+  const id = await approveAndRun(r, "f", { id: "ws-1" });
+  assert.equal((await r.inbox.response(id)).ok, true);
+  assert.deepEqual(payload, { id: "ws-1" }, "the approval field is stripped before the handler");
+  assert.deepEqual(ctx["approved"], { method: "danger", target: calls.issue[0]?.content.target, requester: "user" });
+  assert.ok(!JSON.stringify(ctx).includes("AAAAAAAA"), "no challenge id reaches the handler");
+  assert.equal(calls.execute[0]?.input.idempotencyKey, KEY1);
 });
 
-test("a gate that denies is E_POLICY_DENIED", async (t) => {
-  const r = await ready(t, { gate: { check: () => ({ status: "denied" }) } });
+test("a gate that refuses the approval is E_POLICY_DENIED and the handler does not run", async (t) => {
+  const { gate } = fakeGate();
+  const r = await ready(t, { gate });
   r.daemon.register(CONTRACT, 1, { danger: () => assert.fail("must not run") });
-  r.send(req("a3", "danger", { id: "ws-1" }, { idempotencyKey: KEY1 }));
+  r.send(req("a3", "danger", { id: "ws-1", approval: { challengeId: "B".repeat(43) } }, { idempotencyKey: KEY1 }));
   assert.equal((await r.inbox.response("a3")).error?.code, "E_POLICY_DENIED");
 });
 

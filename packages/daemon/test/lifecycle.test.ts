@@ -2,7 +2,8 @@
 // Regression tests for review findings B1, S2, S3, S4 and N2.
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
-import { MemoryIdempotencyStore, type ApprovalInput, type IdempotencyKey, type IdempotencyStore } from "../src/index.js";
+import { MemoryIdempotencyStore, type IdempotencyKey, type IdempotencyStore } from "../src/index.js";
+import { approveAndRun, fakeGate } from "./gate.js";
 import { CONTRACT, KEY1, cid, hello, req, rig, verifier, type Rig } from "./harness.js";
 
 async function ready(t: TestContext, options: Parameters<typeof rig>[0] = {}): Promise<Rig> {
@@ -213,33 +214,40 @@ test("S4a: the idempotency scope includes the workspace", async (t) => {
   assert.equal(runs, 2, "another workspace cannot replay the first workspace's key");
 });
 
-test("S4b: a tier >= 3 replay from another connection asks the gate again; from the same connection it does not", async (t) => {
-  const inputs: ApprovalInput[] = [];
-  const r = await ready(t, { gate: { check: (i) => (inputs.push(i), { status: "confirmed", confirmation: "tok" }) } });
-  r.daemon.register(CONTRACT, 1, { danger: () => ({ done: true }) });
-  r.send(req("a1", "danger", { id: "ws-1" }, { idempotencyKey: KEY1 }));
-  assert.equal((await r.inbox.response("a1")).ok, true);
-  r.send(req("a2", "danger", { id: "ws-1" }, { idempotencyKey: KEY1 }));
-  assert.equal((await r.inbox.response("a2")).ok, true);
-  assert.equal(inputs.length, 1, "same connection: the stored result is returned without a second gate call");
+test("S4b: a tier >= 3 replay from another connection needs its own approval; from the same connection it does not", async (t) => {
+  const { gate, calls } = fakeGate();
+  const r = await ready(t, { gate });
+  let runs = 0;
+  r.daemon.register(CONTRACT, 1, { danger: () => (runs++, { done: true }) });
+  assert.equal((await r.inbox.response(await approveAndRun(r, "a", { id: "ws-1" }))).ok, true);
+  r.send(req("a3", "danger", { id: "ws-1" }, { idempotencyKey: KEY1 }));
+  assert.equal((await r.inbox.response("a3")).ok, true);
+  assert.equal(calls.issue.length + calls.execute.length, 2, "same connection: the stored result is returned without another gate call");
+
   const other = r.connect("good#conn-2");
   await welcome(other);
   other.client.postMessage(req("b1", "danger", { id: "ws-1" }, { idempotencyKey: KEY1 }));
-  assert.equal((await other.inbox.response("b1")).ok, true);
-  assert.equal(inputs.length, 2, "another connection: the gate was asked again");
-  assert.equal(inputs[1]?.connectionId, cid("conn-2"));
+  assert.equal((await other.inbox.response("b1")).error?.code, "E_APPROVAL_REQUIRED", "no stored result without an approval of its own");
+  const retry = await approveAndRun(r, "b", { id: "ws-1" }, undefined, other);
+  const res = await other.inbox.response(retry);
+  assert.deepEqual([res.ok, res.result], [true, { done: true }]);
+  assert.equal(runs, 1, "the replay returned the stored result under a spent approval, without running the handler");
+  assert.equal(calls.execute.at(-1)?.input.connectionId, cid("conn-2"));
 });
 
-test("S4c: a tier >= 3 replay from another connection is refused when the gate says so", async (t) => {
-  let calls = 0;
-  const r = await ready(t, { gate: { check: () => (++calls === 1 ? { status: "confirmed", confirmation: "tok" } : { status: "denied" }) } });
-  r.daemon.register(CONTRACT, 1, { danger: () => ({ done: true }) });
-  r.send(req("a1", "danger", { id: "ws-1" }, { idempotencyKey: KEY1 }));
-  assert.equal((await r.inbox.response("a1")).ok, true);
+test("S4c / RR-APR: a forged challenge id on another connection gets neither the stored tier 4 result nor a run", async (t) => {
+  const { gate } = fakeGate();
+  const r = await ready(t, { gate });
+  let runs = 0;
+  r.daemon.register(CONTRACT, 1, { danger: () => (runs++, { done: true }) });
+  assert.equal((await r.inbox.response(await approveAndRun(r, "a", { id: "ws-1" }))).ok, true);
   const other = r.connect("good#conn-2");
   await welcome(other);
-  other.client.postMessage(req("b1", "danger", { id: "ws-1" }, { idempotencyKey: KEY1 }));
-  assert.equal((await other.inbox.response("b1")).error?.code, "E_POLICY_DENIED");
+  other.client.postMessage(req("b1", "danger", { id: "ws-1", approval: { challengeId: "x".repeat(43) } }, { idempotencyKey: KEY1 }));
+  const res = await other.inbox.response("b1");
+  assert.equal(res.error?.code, "E_POLICY_DENIED");
+  assert.equal(res.result, undefined, "the stored result is not disclosed");
+  assert.equal(runs, 1);
 });
 
 test("S4d: a second live session reusing a connection id is refused", async (t) => {
@@ -252,11 +260,13 @@ test("S4d: a second live session reusing a connection id is refused", async (t) 
 
 // ---- N2: the gate gets an AbortSignal ----
 
-test("N2: a cancel during a pending gate check aborts the signal the gate received", async (t) => {
+test("N2: a cancel during a pending gate call aborts the signal the gate received", async (t) => {
   const seen = deferred<AbortSignal>();
+  const { gate } = fakeGate();
   const r = await ready(t, {
     gate: {
-      check: (i) => {
+      ...gate,
+      issue: (i) => {
         seen.resolve(i.signal);
         return new Promise(() => undefined);
       },

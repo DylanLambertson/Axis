@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import { test, type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import { Daemon, DaemonError, MemoryIdempotencyStore } from "../src/index.js";
+import { fakeGate } from "./gate.js";
 import { CONTRACT, KEY1, hello, req, rig, testRegistry, verifier, type Rig } from "./harness.js";
 
 async function ready(t: TestContext, options: Parameters<typeof rig>[0] = {}): Promise<Rig> {
@@ -106,7 +107,7 @@ test("NEW-S1: the daemon-wide backstop still applies across windows", async (t) 
 // ---- N-a: a malformed challenge from the gate ----
 
 test("N-a: a malformed challenge from the gate is E_INTERNAL, audited as approval_gate_error, with one correlation id", async (t) => {
-  const r = await ready(t, { gate: { check: () => ({ status: "required", challenge: { challengeId: "short" } as never }) } });
+  const r = await ready(t, { gate: { ...fakeGate().gate, issue: () => ({ challengeId: "short" }) as never } });
   r.daemon.register(CONTRACT, 1, { danger: () => assert.fail("must not run") });
   r.send(req("g1", "danger", { id: "ws-1" }, { idempotencyKey: KEY1 }));
   const res = await r.inbox.response("g1");

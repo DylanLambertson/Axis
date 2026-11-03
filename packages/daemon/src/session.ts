@@ -105,6 +105,16 @@ export class Session {
     if (this.#handshakeTimer) clearTimeout(this.#handshakeTimer);
     // Slots are not freed here: a running handler keeps its entry (and the daemon-wide orphan count) until it settles.
     for (const entry of [...this.#inFlight.values()]) entry.controller.abort(CLOSED);
+    // Challenges issued to this connection die with it (best effort, once).
+    const gate = this.#d.pipeline.approvals;
+    if (gate?.withdrawConnection) {
+      const fail = (e: unknown): void => this.#d.pipeline.onInternalError?.("withdraw", e);
+      try {
+        void Promise.resolve(gate.withdrawConnection(this.#identity.connectionId)).catch(fail);
+      } catch (e) {
+        fail(e);
+      }
+    }
     try {
       this.#conn.close();
     } catch {

@@ -23,7 +23,7 @@ export function canonicalJson(value: JsonValue): string {
   return JSON.stringify(value);
 }
 
-function withoutApproval(payload: JsonValue): JsonValue {
+export function withoutApproval(payload: JsonValue): JsonValue {
   if (payload !== null && typeof payload === "object" && !Array.isArray(payload) && "approval" in payload) {
     const { approval: _ignored, ...rest } = payload as Record<string, JsonValue>;
     return rest;

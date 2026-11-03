@@ -7,6 +7,7 @@ import { handlerKey, type PipelineDeps } from "./pipeline.js";
 import { Session, type SessionLimits } from "./session.js";
 import { protocolRegistry } from "./support.js";
 import type {
+  ApprovalContentHook,
   ApprovalGate,
   Connection,
   ContractRegistry,
@@ -64,6 +65,7 @@ export class Daemon {
   readonly #opts: DaemonOptions;
   readonly #registry: ContractRegistry;
   readonly #handlers = new Map<string, Handler>();
+  readonly #contentHooks = new Map<string, ApprovalContentHook>();
   readonly #sessions = new Map<string, Session>();
   readonly #orphans: OrphanTracker;
   readonly #pipeline: PipelineDeps;
@@ -83,6 +85,7 @@ export class Daemon {
     this.#pipeline = {
       registry: this.#registry,
       handlers: this.#handlers,
+      contentHooks: this.#contentHooks,
       policy: options.policy,
       approvals: options.approvals,
       idempotency: this.#idempotency,
@@ -101,8 +104,21 @@ export class Daemon {
     return this.#orphans.count;
   }
 
-  /** Register the handlers for one contract version. Every key must name a method the registry knows. */
-  register(contract: string, version: number, handlers: Readonly<Record<string, Handler>>): void {
+  /**
+   * Register the handlers for one contract version. Every key must name a
+   * method the registry knows. `options.content` gives tier >= 3 methods their
+   * approval content hook (target and content lock); a method without one is
+   * approved against `request:<digest>`.
+   */
+  register(
+    contract: string,
+    version: number,
+    handlers: Readonly<Record<string, Handler>>,
+    options: { readonly content?: Readonly<Record<string, ApprovalContentHook>> } = {},
+  ): void {
+    for (const method of Object.keys(options.content ?? {})) {
+      if (!Object.hasOwn(handlers, method)) throw new Error(`Content hook for ${contract}/${version}.${method} has no handler`);
+    }
     for (const [method, handler] of Object.entries(handlers)) {
       const spec = this.#registry.lookup(contract, version, method);
       if (!spec) throw new Error(`No such method ${contract}/${version}.${method}`);
@@ -112,6 +128,8 @@ export class Daemon {
       const key = handlerKey(contract, version, method);
       if (this.#handlers.has(key)) throw new Error(`Handler already registered for ${key}`);
       this.#handlers.set(key, handler);
+      const hook = options.content?.[method];
+      if (hook) this.#contentHooks.set(key, hook);
     }
   }
 

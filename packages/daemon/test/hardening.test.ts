@@ -15,6 +15,7 @@ import {
   type ContractRegistry,
   type ElectronPortLike,
 } from "../src/index.js";
+import { fakeGate } from "./gate.js";
 import { CONTRACT, KEY1, cid, identityOf, req, rig, testRegistry, verifier, type Rig } from "./harness.js";
 
 async function ready(t: TestContext, options: Parameters<typeof rig>[0] = {}): Promise<Rig> {
@@ -134,16 +135,19 @@ test("S1: the digest ignores the approval field, changes with every other input 
   assert.equal(canonicalJson({ "10": 1, "2": 2, b: [{ z: 1, a: 2 }] }), '{"10":1,"2":2,"b":[{"a":2,"z":1}]}');
 });
 
-test("S1: the gate receives the daemon's digest, the attested actor and connection, and an AbortSignal", async (t) => {
-  const seen: ApprovalInput[] = [];
-  const r = await ready(t, { gate: { check: (i) => (seen.push(i), { status: "denied" }) } });
-  r.daemon.register(CONTRACT, 1, { danger: () => assert.fail("must not run") });
+test("S1: the gate receives the request's own facts: bare contract, version, method, args, digest, actor, connection, signal", async (t) => {
+  const { gate, calls } = fakeGate();
+  const r = await ready(t, { gate });
+  r.daemon.register(CONTRACT, 1, { danger: () => ({ done: true }) });
   r.send(req("d1", "danger", { id: "ws-1", approval: { challengeId: "A".repeat(43) } }, { idempotencyKey: KEY1 }));
   await r.inbox.response("d1");
-  const input = seen[0] as ApprovalInput;
+  const input = calls.execute[0]?.input as ApprovalInput;
   assert.equal(input.digest, requestDigest(CONTRACT, 1, "danger", { id: "ws-1" }));
+  assert.deepEqual(input.args, { id: "ws-1" }, "args are the payload minus approval");
+  assert.equal(requestDigest(input.contract, input.contractVersion, input.method, input.args), input.digest, "digest and fields agree");
   assert.equal(input.contract, CONTRACT, "the bare contract id");
   assert.equal(input.contractVersion, 1);
+  assert.equal(input.method, "danger");
   assert.equal(input.actor, "user");
   assert.equal(input.connectionId, cid("conn-1"));
   assert.ok(input.signal instanceof AbortSignal);

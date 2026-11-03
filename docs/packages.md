@@ -9,6 +9,7 @@ Axis-owned TypeScript that does not need Code OSS services lives in `packages/*`
 | `@axis/challenge` | Daemon-side approval challenges for tier 3-5 destructive operations: issue, user resolve, native confirmation, single-use `consume`. Node `crypto` only. |
 | `@axis/daemon` | Transport-agnostic daemon core: connections, handshake, dispatch, tiers, idempotency, cancel and timeout, backpressure, error sanitisation. Every service (identity, policy, approvals, idempotency store, audit sink, handlers) is injected. No Electron. |
 | `@axis/daemon` | Transport-agnostic daemon core: connections, handshake, dispatch, tiers, idempotency, cancel and timeout, backpressure, error sanitisation. Every service (identity, policy, approvals, idempotency store, audit sink, handlers) is injected. No Electron. `MemoryIdempotencyStore` is for tests and dev wiring only (it forgets on restart); the product uses the journal-backed store. The approval gate must check the request digest (`requestDigest()`, shared with `@axis/challenge`), the actor and the connection id, and burn the challenge on use. |
+| `@axis/daemon` | Transport-agnostic daemon core: connections, handshake, dispatch, tiers, idempotency, cancel and timeout, backpressure, error sanitisation. Every service (identity, policy, approvals, idempotency store, audit sink, handlers) is injected. No Electron. `MemoryIdempotencyStore` is for tests and dev wiring only (it forgets on restart); the product uses the journal-backed store. The pipeline owns approvals (`ApprovalGate.issue` and `execute`, see "Wiring the daemon"). |
 
 More packages (worktrees, journal, audit) are added by their own changes.
 
@@ -52,24 +53,24 @@ The approval digest is defined once, in the doc comment of `requestDigest()` in 
 
 ## Wiring the daemon
 
-`@axis/daemon` never imports `@axis/challenge`; the product wiring (in main or the daemon entry) connects them in two places. The daemon computes the request digest once and hands it to the gate; the handler of the destructive method spends the approval.
+`@axis/daemon` never imports `@axis/challenge`. The product wiring supplies an `ApprovalGate` adapter, and the pipeline owns the whole approval sequence: a handler never sees a challenge id and the gate cannot answer "confirmed" without spending a live challenge.
 
-1. **Gate (`ApprovalGate.check`)**: issues, and answers `confirmed` only when the retry carries `approval`. The daemon calls it for tier 3 and above, after policy and idempotency, with an `ApprovalInput`:
-   - No `input.approval`: call `manager.issue({ contract: input.contract, version: input.contractVersion, method: input.method, requestDigest: input.digest, target, contentDigest, actor: input.actor, connectionId: input.connectionId, windowId: input.identity.windowId, tier: input.tier })`, with `target` (`workspace:<id>`) and `contentDigest` computed by the wiring from the parsed payload. Return `{ status: "required", challenge }`; for tier 4 and 5 also call `takeNativeProof(challengeId)` once and pass it to main, never to the renderer.
-   - With `input.approval`: return `{ status: "confirmed", confirmation: { challengeId: input.approval.challengeId, target } }`. The gate does not call `consume`, because `consume` runs the action itself. `input.digest` already equals the `requestDigest` the challenge was issued with, because both use `requestDigest()` with the bare contract id and the integer version.
-   - Pass `input.signal` to anything pending and stop on abort.
-2. **Handler** (runs after the gate answered `confirmed`, receives `ctx.confirmation`): wraps the destructive step in `manager.consume(ctx.confirmation.challengeId, { actor: ctx.identity.actor, connectionId: ctx.identity.connectionId }, { contract, version, method, requestDigest: <the digest>, target, currentContentDigest }, (confirmed) => doTheDestructiveThing(confirmed))`. Compute `currentContentDigest` under the lock that protects the content, immediately before the call.
+- No `approval` in the request: the pipeline calls `gate.issue(input, content)` and answers `E_APPROVAL_REQUIRED`. The adapter calls `manager.issue({ contract: input.contract, version: input.contractVersion, method: input.method, args: input.args, requestDigest: input.digest, target: content.target, contentDigest: content.contentDigest, actor: input.actor, connectionId: input.connectionId, windowId: input.identity.windowId, tier: input.tier })`. `args` is required and `requestDigest` is only a cross-check, so both must agree. For tier 4 and 5 it also takes `takeNativeProof(challengeId)` once and passes it to main, never to a renderer.
+- With `approval: { challengeId }`: the pipeline calls `gate.execute(input, approval, content, action)` inside the method's content lock. The adapter calls `manager.consume(approval.challengeId, { actor: input.actor, connectionId: input.connectionId }, { contract, version, method, args, requestDigest: input.digest, target: content.target, currentContentDigest: content.contentDigest }, action)`, translates a `ChallengeError` into `ApprovalError` (`E_POLICY_DENIED`, or `E_CONFLICT` for used, expired or changed content; `executed: true` if the action ran) and returns what `action` returns. The handler runs inside `action`, so it can only run with a spent approval, and it receives only `ctx.approved` (`method`, `target`, `requester`). The `approval` field is stripped from its payload.
+- Content: a tier 3+ method registers a hook, `daemon.register(contract, version, handlers, { content: { method: (ctx, payload) => ({ target, withLock }) } })`. `withLock(fn)` takes the lock that protects the content and calls `fn(contentDigest)`. The digest is read under that lock at issue and again at execute, and the handler runs under the same lock, so "the content is unchanged right now" and the action cannot be separated. A method without a hook (including a policy-raised tier) is approved against target `request:<digest>` with the digest as content digest. Review each hook with the destructive call it guards; a handler must check `ctx.approved.target` against what it is about to act on.
+- Replay: a tier 3+ replay from the originating connection returns the stored result. From any other connection it needs its own approval, and the stored result is returned inside `execute`.
+- Withdrawal: a cancel or timeout before the approval was spent calls `gate.withdraw(challengeId, { actor, connectionId })` once; a closed connection calls `gate.withdrawConnection(connectionId)` once. Both are best effort.
 
 | Daemon field | Challenge field |
 |---|---|
 | `input.contract` (bare id), `input.contractVersion` | `contract`, `version` |
-| `input.digest` | `requestDigest` (do not pass `args` as well) |
-| `input.actor` | `actor` |
-| `input.connectionId` | `connectionId` |
-| `identity.windowId` | `windowId` |
-| `input.approval.challengeId` | the id given to `consume` |
+| `input.method`, `input.args` | `method`, `args` |
+| `input.digest` | `requestDigest` (cross-check) |
+| `input.actor`, `input.connectionId` | `actor`, `connectionId` |
+| `input.identity.windowId` | `windowId` |
+| `content.target`, `content.contentDigest` / digest under lock | `target`, `contentDigest` / `currentContentDigest` |
 
-Order of calls for one destructive request: policy, idempotency `begin`, `gate.check` (issue, answer `required`), user resolve and native confirm via `axis.approvals/1` and main, the retry with the same idempotency key and `approval`, `gate.check` again (`confirmed`), audit `policy.decision`, the handler calls `consume`, which audits and spends the approval before the action runs. A failed action cannot be retried on the same approval; the idempotency key is freed and the user confirms again.
+Destructive library entry points are protected independently of the daemon: `@axis/worktrees` requires a token that only `markDiscardConfirmed` can mint, and that function is exported only from the `@axis/worktrees/daemon-confirm` subpath. Only the integration package that implements the gate adapter may import that subpath, never a handler. This cannot be enforced inside `@axis/daemon`, so it is a review rule.
 
 ## Rules
 
