@@ -115,7 +115,7 @@ Each scenario must end with no silent overwrite, or with a flagged and restorabl
 
 - **Phase 1a (decided).** PTY-5 applies to **every Axis workspace terminal**: CLI agent runs, `gh` launches, and plain user terminals.
 - **How.** All of them are spawned by the Axis pty process (design §4.4) and attached through `customPtyImplementation` (`platform/terminal/common/terminal.ts:568`) [V]. The daemon builds their environment and sends it with the spawn. The upstream pty host is not involved.
-- **Setting scope.** `axis.cliAgents`, `axis.terminals.scrubEnvironment`, `axis.git.runHooks` and `axis.worktrees.root` are application or machine scope only. Workspace and folder values are ignored and a warning is surfaced (threat model CFG-1).
+- **Setting scope.** `axis.cliAgents`, `axis.terminals.scrubEnvironment`, `axis.git.runHooks` and `axis.worktrees.root` are user, application or machine scope (never workspace or folder). Workspace and folder values are ignored and a warning is surfaced (threat model CFG-1).
 - **Opt-out.** `axis.terminals.scrubEnvironment` (default `true`). When it is `false`, plain user terminals use the upstream pty host and inherit the upstream environment. CLI agent runs always use PTY-5.
 - **Phase 0 residual risk** (no daemon). Workspace terminals are upstream terminals. They carry:
   - `VSCODE_GIT_IPC_HANDLE`, which the git extension injects unconditionally (`extensions/git/src/ipc/ipcServer.ts:110-116`) [V];

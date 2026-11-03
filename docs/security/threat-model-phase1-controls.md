@@ -60,7 +60,7 @@ Lines are counted in the order the bullets appear in `docs/ROADMAP.md`. L1 to L1
 | SI-ENV after deny-list, plain terminals only; no nonce in CLI runs | PTY-6 | 1a | B10 | 1a/L2, 1a/L17 | Covered |
 | Axis pty process isolation, spawn only from daemon, attach only to issued ids; close-on-exec | PTY-7 | 1a | B9 | 1a/L17 | Covered |
 | Splits open in worktree root; OSC 633 cwd spoof | PTY-3 | 1a | B10 | 1a/L17 | Covered |
-| Settings scope: application or machine only | CFG-1 | 1a | B10 | 1a/L13 | Covered |
+| Settings scope: user, application or machine only (never workspace or folder) | CFG-1 | 1a | B10 | 1a/L13 | Covered |
 | Window identity, frame URL, main-frame checks for daemon and pty ports | EL-3, PTY-7 | 1a | B1 | 1a/L23 | Covered (ADR 0003 criteria 1 to 7) |
 | GIT-ENV-1 for daemon git calls | GIT-ENV-1 | 1a | B6 | 1a/L15 | Covered |
 | GIT-SNAP-1 around CLI runs, before commit and push, on refresh | WT-2, GIT-SNAP-1 | 1a | B7, B10 | 1a/L3, 1a/L14, 1a/L18 | Covered (hooks, `core.hooksPath`, in-tree hook paths, `.git` file, `commondir`, filter, `core.sshCommand`, `url.*.insteadOf`) |
@@ -106,7 +106,7 @@ A gap is either a missing control (G-1 to G-13) or a missing ROADMAP gate line f
 
 | Gap | Threat | Proposed fix | Proposed gate line |
 |---|---|---|---|
-| G-1 | CFG-1 | State the scope of `axis.cliAgents`, `axis.terminals.scrubEnvironment`, `axis.git.runHooks`, `axis.worktrees.root` as application or machine scope; ignore workspace and folder values. | 1a: a repo `.vscode/settings.json` defining a CLI agent or disabling scrubbing has no effect |
+| G-1 | CFG-1 | State the scope of `axis.cliAgents`, `axis.terminals.scrubEnvironment`, `axis.git.runHooks`, `axis.worktrees.root` as user, application or machine scope (never workspace or folder); ignore workspace and folder values. | 1a: a repo `.vscode/settings.json` defining a CLI agent or disabling scrubbing has no effect |
 | G-2 | PTY-7 | Terminal ids unguessable and bound to the issuing connection. | B9 test extended |
 | G-3 | WT-3 | Add `.husky/`, `.githooks/`, `lefthook.yml`, `.pre-commit-config.yaml` to the protected-path list. | 1a/L4 extended |
 | G-4 | GIT-SNAP-1, GIT-3 | Hash the contents of an effective `core.hooksPath` that lies inside a worktree, or refuse hooks while it does. | 1a: a CLI edit to an in-tree hook is flagged before Axis commit and the hook does not run unacknowledged |
@@ -244,7 +244,7 @@ Likelihood (L) and impact (I) on a 1–3 scale, score = L × I, as Phase 0 §6. 
 | 26 | R18 | Resource exhaustion and cost runaway. | PTY-4, PRV-6, DMN-7 | 2 | 2 | 4 | 1b; P3 |
 | 27 | R19 | Cross-workspace leakage in daemon state or the index; snapshot refs of all workspaces of a project share one common dir and are readable by any workspace's CLI. | DMN-8, REF-1 | 2 | 2 | 4 | 1a / P4 |
 | 28 | R21 | Terminal escape-sequence spoofing (now includes cwd steering of splits). | PTY-3 | 2 | 2 | 4 | 1a. Impact raised from 1: the Axis shell reads CLI output for status |
-| 29 | R24 | Repo-supplied settings weaken Axis (CLI command, scrubbing off). Closed by decision Q-3: application or machine scope only, workspace values ignored with a warning. Residual: implementation and test (1a/L13). | CFG-1 | 1 | 3 | 3 (was 6) | 1a |
+| 29 | R24 | Repo-supplied settings weaken Axis (CLI command, scrubbing off). Closed by decision Q-3: user, application or machine scope (never workspace or folder); workspace values ignored with a warning. Residual: implementation and test (1a/L13). | CFG-1 | 1 | 3 | 3 (was 6) | 1a |
 | 30 | R29 | Workspace Trust inheritance wrong or stale; a CLI run under the user's account in an untrusted repository is arbitrary code. Mitigated by decision Q-2 and main's attestation (1a/L25). | TRU-1, TRU-2 | 1 | 3 | 3 | 1a |
 | 31 | R30 | Pty-process or daemon fd leak into children; pty attach to a foreign terminal id. | PTY-7 | 1 | 3 | 3 | 1a |
 | 32 | R20 | Unsigned update channel once enabled. | SC-4 | 1 | 3 | 3 | P6 |
@@ -277,7 +277,7 @@ The categories are those of Phase 0 §7. Ideas for the rows the model adds:
 |---|---|---|
 | Q-1 | The design wins: CLI runs use the separate Axis pty utility process. | PTY-1 row updated; the ADR 0004 wording is a doc-fix item (§11.2). |
 | Q-2 | No CLI or agent run in a worktree whose source repository is untrusted. Restricted Mode shows the workspace read-only with a "Trust to run" action. | TRU-2 row; closes G-8. |
-| Q-3 | `axis.cliAgents`, `axis.terminals.scrubEnvironment`, `axis.git.runHooks`, `axis.worktrees.root`: application or machine scope only; workspace and folder values ignored, with a warning. | CFG-1 closed; closes G-1. |
+| Q-3 | `axis.cliAgents`, `axis.terminals.scrubEnvironment`, `axis.git.runHooks`, `axis.worktrees.root`: user, application or machine scope (never workspace or folder); workspace and folder values ignored, with a warning. | CFG-1 closed; closes G-1. |
 | Q-4 | Hooks for Axis-initiated commit and push run in the pty process context (no secrets), never in the daemon. `runHooks` stays on in 1a; re-evaluated in 1b when the vault ships. | GIT-3 row; R25. |
 | Q-5 | The WEB-* P1 to P2 retag is accepted. | §8. |
 | Q-6 | Push re-takes GIT-SNAP-1 and refuses on unacknowledged drift. GIT-SNAP-1 also covers the worktree `.git` file, `commondir`, and any `core.hooksPath` target inside the worktree. | Closes G-4, G-5, G-6. |
