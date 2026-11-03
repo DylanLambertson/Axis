@@ -132,7 +132,7 @@ Each scenario must end with no silent overwrite, or with a flagged and restorabl
 5. **The PTY-5 deny-list wins over steps 1–4.** It removes:
    - `VSCODE_*`, including `VSCODE_GIT_ASKPASS*`, `VSCODE_GIT_IPC_HANDLE`, `VSCODE_IPC_HOOK_CLI` and `VSCODE_GIT_EDITOR_*`;
    - `ELECTRON_*`;
-   - the git variables that redirect git or inject configuration: `GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR`, `GIT_INDEX_FILE`, `GIT_OBJECT_DIRECTORY`, `GIT_ALTERNATE_OBJECT_DIRECTORIES`, `GIT_NAMESPACE`, `GIT_EXEC_PATH`, `GIT_TEMPLATE_DIR`, `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_*`, `GIT_CONFIG_VALUE_*` and `GIT_CONFIG_PARAMETERS`. **`GIT_CONFIG_GLOBAL`, `GIT_CONFIG_SYSTEM` and `GIT_CONFIG_NOSYSTEM` are kept by an explicit exemption:** they are the user's own environment (see section 6.5);
+   - the git variables that redirect git or inject configuration: `GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR`, `GIT_INDEX_FILE`, `GIT_OBJECT_DIRECTORY`, `GIT_ALTERNATE_OBJECT_DIRECTORIES`, `GIT_NAMESPACE`, `GIT_EXEC_PATH`, `GIT_TEMPLATE_DIR`, `GIT_PREFIX`, `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_*`, `GIT_CONFIG_VALUE_*` and `GIT_CONFIG_PARAMETERS`. **`GIT_CONFIG_GLOBAL`, `GIT_CONFIG_SYSTEM` and `GIT_CONFIG_NOSYSTEM` are kept by an explicit exemption:** they are the user's own environment (see section 6.5);
    - the shell-integration variables of section 4.3 that are not a user's own (`VSCODE_*` is already covered): `USER_ZDOTDIR` always, and `ZDOTDIR` only when it points inside Axis's shell-integration directory (passed in as an option; otherwise it is kept);
    - Axis-internal `AXIS_*` variables;
    - `GIT_ASKPASS`, `SSH_ASKPASS*`, `GIT_EDITOR`;

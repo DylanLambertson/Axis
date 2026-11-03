@@ -300,7 +300,7 @@ The rail and the main region are an internal split view inside the agent part, s
 
 - The git extension can add, list and remove worktrees (`extensions/git/src/git.ts:2311-2335,3114-3170`; API `api/git.d.ts:343-344`) [V]. But it lives in the extension host. The workbench-side `IGitService` exposes no worktree operations (`gitService.ts:83-120`) [V].
 - Driving it through commands would make side-effecting commands reachable by every extension, which ADR 0003 D4 forbids.
-- The daemon therefore runs `git` itself, with an explicit argument vector, a scrubbed environment and per-project serialisation. ARCHITECTURE.md's "Git CLI or libgit2" choice resolves to the CLI for worktrees, because `git worktree` has no stable libgit2 equivalent for locking and pruning [I].
+- The daemon therefore runs `git` itself, except for Axis commit and push (policies §6.1), with an explicit argument vector, a scrubbed environment and per-project serialisation. ARCHITECTURE.md's "Git CLI or libgit2" choice resolves to the CLI for worktrees, because `git worktree` has no stable libgit2 equivalent for locking and pruning [I].
 
 ### 5.2 Phase 0: read-only discovery
 
@@ -332,7 +332,7 @@ The rail and the main region are an internal split view inside the agent part, s
 ### 5.4 Review actions
 
 - **Accept** (per file, per hunk in Phase 1) marks content for commit. In Phase 0 that is file selection.
-- **Commit** and **Push** are user actions run by the daemon (`axis.worktrees/1.commit`, `.push`), under the git mutex and write lock, with commit gated by the drift check (policies §6.1). Protected paths (WT-3) and common-dir changes are flagged before commit.
+- **Commit** and **Push** are user actions the daemon orchestrates (`axis.worktrees/1.commit`, `.push`); git and its hooks run in the Axis pty process (policies §6.1). They are serialised under the git mutex and write lock, with commit gated by the drift check (policies §6.1). Protected paths (WT-3) and common-dir changes are flagged before commit.
 - **Reject** is `axis.worktrees/1.discard`, which is reversible.
 - Hunk-level accept and reject use a daemon `applyPatch` to the index. The renderer never edits the index.
 - **Open a pull request** uses a GitHub compare URL or `gh pr create --web` (policies §6.2).
