@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import type { JsonValue } from "@axis/protocol";
 import { ProviderError, type ProviderErrorCode } from "./errors.js";
-import { stringsIn } from "./redaction.js";
+import { estimateInputTokens } from "./guard.js";
 import { collectStream } from "./stream.js";
 import {
   FEATURES,
@@ -172,12 +172,8 @@ export function createMockProvider(options: MockProviderOptions = {}): MockProvi
     if (signal.aborted) throw new ProviderError("cancelled");
   };
 
-  const inputTokens = (r: ValidRequest): number => {
-    let n = 0;
-    for (const s of stringsIn(r.messages)) n += s.length;
-    if (r.system !== undefined) n += r.system.length;
-    return tokensFor(n);
-  };
+  /** Content only (not JSON keys): half the guard's deliberately high estimate. */
+  const inputTokens = (r: ValidRequest): number => Math.ceil(estimateInputTokens(r) / 2);
 
   /** Validate, then take the next scripted reply. Counts as a provider request. */
   const begin = (request: GenerateRequest, mode: "generate" | "stream", signal: AbortSignal): [ValidRequest, MockReply] => {
@@ -214,7 +210,10 @@ export function createMockProvider(options: MockProviderOptions = {}): MockProvi
       yield { type: "usage", usage: usage() };
 
       let index = 0;
-      const text =
+      // Like a real provider, stop at the output cap (four characters per token).
+      const capChars = valid.maxOutputTokens * 4;
+      let truncated = false;
+      const fullText =
         reply.kind === "echo"
           ? `Mock reply: ${lastUserText(valid)}`
           : reply.kind === "text"
@@ -224,6 +223,13 @@ export function createMockProvider(options: MockProviderOptions = {}): MockProvi
               : reply.kind === "error"
                 ? reply.afterText
                 : undefined;
+      let text = fullText;
+      if (text !== undefined && text.length > capChars) {
+        text = text.slice(0, capChars);
+        const last = text.charCodeAt(text.length - 1);
+        if (last >= 0xd800 && last <= 0xdbff) text = text.slice(0, -1);
+        truncated = true;
+      }
       if (text !== undefined) {
         await tick();
         yield { type: "content_block_start", index, block: { type: "text" } };
@@ -254,7 +260,9 @@ export function createMockProvider(options: MockProviderOptions = {}): MockProvi
       }
 
       let stopReason: StopReason = "end_turn";
-      if (reply.kind === "tool_use") {
+      if (truncated) {
+        stopReason = "max_tokens";
+      } else if (reply.kind === "tool_use") {
         const json = JSON.stringify(reply.input);
         await tick();
         yield { type: "content_block_start", index, block: { type: "tool_use", id: reply.id ?? `mock-tool-${seq}-${index}`, name: reply.name } };

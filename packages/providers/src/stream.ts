@@ -18,12 +18,15 @@ export interface StreamLimits {
   readonly maxTextChars?: number;
   /** UTF-16 units of partial JSON for one tool_use block. */
   readonly maxToolInputChars?: number;
+  /** UTF-16 units across all text and tool input in one response (S8). */
+  readonly maxResponseChars?: number;
 }
 
 export const DEFAULT_STREAM_LIMITS: Required<StreamLimits> = {
   maxEvents: 200_000,
   maxTextChars: 8_000_000,
   maxToolInputChars: 1_000_000,
+  maxResponseChars: 16_000_000,
 };
 
 interface OpenBlock {
@@ -33,6 +36,22 @@ interface OpenBlock {
   parts: string[];
   chars: number;
   done: boolean;
+  /** Tool input, parsed once at `content_block_stop`; `parts` is released then (S8, N6). */
+  input?: JsonValue;
+}
+
+/** `undefined` means the default; anything else must be a positive safe integer (S7). */
+function resolveLimits(limits: StreamLimits): Required<StreamLimits> {
+  const out = { ...DEFAULT_STREAM_LIMITS };
+  for (const key of Object.keys(DEFAULT_STREAM_LIMITS) as Array<keyof StreamLimits>) {
+    const v: unknown = limits[key];
+    if (v === undefined) continue;
+    if (typeof v !== "number" || !Number.isSafeInteger(v) || v < 1) {
+      throw new RangeError(`stream limit ${key} must be a positive safe integer`);
+    }
+    out[key] = v;
+  }
+  return out;
 }
 
 function violation(reason: string): ProviderError {
@@ -48,6 +67,8 @@ export class StreamValidator {
   private readonly limits: Required<StreamLimits>;
   private events = 0;
   private textChars = 0;
+  private responseChars = 0;
+  private readonly toolIds = new Set<string>();
   private started = false;
   private stopped = false;
   private id: string | undefined;
@@ -57,7 +78,7 @@ export class StreamValidator {
   private stopReason: StopReason | undefined;
 
   constructor(limits: StreamLimits = {}) {
-    this.limits = { ...DEFAULT_STREAM_LIMITS, ...limits };
+    this.limits = resolveLimits(limits);
   }
 
   /** Usage seen so far (from `usage` or `message_stop`), for budget accounting on failure. */
@@ -87,6 +108,11 @@ export class StreamValidator {
         break;
       case "content_block_start": {
         if (ev.index !== this.blocks.length) throw violation("block_index_order");
+        if (ev.block.type === "tool_use") {
+          // The broker keys approvals and results by tool-use id (ANT-2, N6).
+          if (this.toolIds.has(ev.block.id)) throw violation("duplicate_tool_use_id");
+          this.toolIds.add(ev.block.id);
+        }
         this.blocks.push(
           ev.block.type === "text"
             ? { kind: "text", parts: [], chars: 0, done: false }
@@ -100,12 +126,16 @@ export class StreamValidator {
         if (ev.delta.type === "text") {
           if (b.kind !== "text") throw violation("delta_type_mismatch");
           this.textChars += ev.delta.text.length;
+          this.responseChars += ev.delta.text.length;
           if (this.textChars > this.limits.maxTextChars) throw violation("text_too_large");
+          if (this.responseChars > this.limits.maxResponseChars) throw violation("response_too_large");
           b.parts.push(ev.delta.text);
         } else {
           if (b.kind !== "tool_use") throw violation("delta_type_mismatch");
           b.chars += ev.delta.partialJson.length;
+          this.responseChars += ev.delta.partialJson.length;
           if (b.chars > this.limits.maxToolInputChars) throw violation("tool_input_too_large");
+          if (this.responseChars > this.limits.maxResponseChars) throw violation("response_too_large");
           b.parts.push(ev.delta.partialJson);
         }
         break;
@@ -114,7 +144,10 @@ export class StreamValidator {
         const b = this.blocks[ev.index];
         if (b === undefined || b.done) throw violation("stop_outside_block");
         b.done = true;
-        if (b.kind === "tool_use") parseToolInput(b.parts.join(""));
+        if (b.kind === "tool_use") {
+          b.input = parseToolInput(b.parts.join(""));
+          b.parts = [];
+        }
         break;
       }
       case "usage":
@@ -133,11 +166,16 @@ export class StreamValidator {
     return ev;
   }
 
-  /** Usage is cumulative: it may not go down. */
+  /** Usage is cumulative: no counter may go down, cache counters included (N6). */
   private checkUsage(u: Usage): void {
     const prev = this.lastUsage;
-    if (prev !== undefined && (u.inputTokens < prev.inputTokens || u.outputTokens < prev.outputTokens)) {
-      throw violation("usage_decreased");
+    if (prev !== undefined) {
+      const down =
+        u.inputTokens < prev.inputTokens ||
+        u.outputTokens < prev.outputTokens ||
+        (u.cacheReadTokens ?? 0) < (prev.cacheReadTokens ?? 0) ||
+        (u.cacheWriteTokens ?? 0) < (prev.cacheWriteTokens ?? 0);
+      if (down) throw violation("usage_decreased");
     }
     this.lastUsage = u;
   }
@@ -148,7 +186,7 @@ export class StreamValidator {
     const content: Array<TextBlock | ToolUseBlock> = this.blocks.map((b) =>
       b.kind === "text"
         ? { type: "text", text: b.parts.join("") }
-        : { type: "tool_use", id: b.id as string, name: b.name as string, input: parseToolInput(b.parts.join("")) },
+        : { type: "tool_use", id: b.id as string, name: b.name as string, input: structuredClone(b.input as JsonValue) },
     );
     const base = { model: this.model, content, stopReason: this.stopReason, usage: this.lastUsage };
     return this.id === undefined ? base : { ...base, id: this.id };

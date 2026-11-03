@@ -9,6 +9,8 @@ import {
   createRunBudget,
   createSecretRedactor,
   guardProvider,
+  NO_SECRETS,
+  estimateInputTokens,
   isProviderError,
   type BudgetUsageInfo,
   type GenerateRequest,
@@ -65,13 +67,13 @@ function patched(over: Partial<ProviderAdapter>): ProviderAdapter {
 test("PRV-6: a run that reaches its token budget is stopped before the next provider request", async () => {
   const mock = createMockProvider({ replies: [{ kind: "text", text: "x".repeat(400) }] });
   const logs: ProviderLogRecord[] = [];
-  const g = guardProvider(mock, { log: (r) => logs.push(r) });
+  const g = guardProvider(mock, { redactor: NO_SECRETS, log: (r) => logs.push(r) });
   const budget = createRunBudget({ maxTokens: 50 });
   const run = { runId: "run-1", signal: live(), budget };
 
   await drain(g.stream(req(), run));
   assert.equal(mock.requests.length, 1);
-  assert.ok(budget.state().tokens >= 50);
+  assert.ok(budget.state().tokens <= 50, "the clamp keeps the run inside the cap");
 
   const err = await fails(drain(g.stream(req(), run)));
   assert.equal(err.code, "budget_exceeded");
@@ -83,27 +85,30 @@ test("PRV-6: a run that reaches its token budget is stopped before the next prov
 
 test("PRV-6: maxOutputTokens is clamped to the remaining token headroom", async () => {
   const mock = createMockProvider();
-  const g = guardProvider(mock);
+  const g = guardProvider(mock, { redactor: NO_SECRETS });
   await g.generate(req({ maxOutputTokens: 1_000 }), { runId: "r", signal: live(), budget: createRunBudget({ maxTokens: 120 }) });
-  assert.equal(mock.requests[0]?.maxOutputTokens, 120);
+  const sent = mock.requests[0];
+  assert.ok(sent !== undefined);
+  // The headroom is the cap minus the (deliberately high) input estimate.
+  assert.equal(sent.maxOutputTokens, 120 - estimateInputTokens(sent));
 });
 
 test("PRV-6: cost and request caps; an unpriceable model fails closed under a cost cap", async () => {
   const priced = createMockProvider();
-  const g = guardProvider(priced);
+  const g = guardProvider(priced, { redactor: NO_SECRETS });
   const budget = createRunBudget({ maxCostMicroUsd: 1 });
   await g.generate(req(), { runId: "r", signal: live(), budget });
   assert.equal((await fails(g.generate(req(), { runId: "r", signal: live(), budget }))).details.reason, "cost");
 
   const unpriced = createMockProvider({ pricing: null });
-  const e = await fails(guardProvider(unpriced).generate(req(), { runId: "r", signal: live(), budget: createRunBudget({ maxCostMicroUsd: 1_000_000 }) }));
+  const e = await fails(guardProvider(unpriced, { redactor: NO_SECRETS }).generate(req(), { runId: "r", signal: live(), budget: createRunBudget({ maxCostMicroUsd: 1_000_000 }) }));
   assert.equal(e.details.reason, "cost_unknown");
   assert.equal(unpriced.requests.length, 0);
 
   const counted = createMockProvider();
   const rb = createRunBudget({ maxRequests: 1 });
-  await guardProvider(counted).generate(req(), { runId: "r", signal: live(), budget: rb });
-  assert.equal((await fails(guardProvider(counted).generate(req(), { runId: "r", signal: live(), budget: rb }))).details.reason, "requests");
+  await guardProvider(counted, { redactor: NO_SECRETS }).generate(req(), { runId: "r", signal: live(), budget: rb });
+  assert.equal((await fails(guardProvider(counted, { redactor: NO_SECRETS }).generate(req(), { runId: "r", signal: live(), budget: rb }))).details.reason, "requests");
   assert.equal(counted.requests.length, 1);
 });
 
@@ -116,7 +121,7 @@ test("PRV-6: usage is recorded when a stream fails or the consumer stops early",
   const mock = createMockProvider({
     replies: [{ kind: "error", code: "overloaded", afterText: "partial" }, { kind: "text", text: "a long answer here" }],
   });
-  const g = guardProvider(mock);
+  const g = guardProvider(mock, { redactor: NO_SECRETS });
   await fails(drain(g.stream(req(), { runId: "r", signal: live(), budget })));
   for await (const _ of g.stream(req(), { runId: "r", signal: live(), budget })) break;
   assert.deepEqual(records.map((r) => r.outcome), ["failed", "cancelled"]);
@@ -144,9 +149,7 @@ test("PRV-2: a request containing a stored credential is refused and never sent"
 test("PRV-2: error messages are redacted; foreign errors become a fixed internal error", async () => {
   const redactor = createSecretRedactor({ secrets: () => [SECRET] });
   const leaky = guardProvider(
-    patched({ generate: async () => Promise.reject(new ProviderError("authentication", { message: `bad key ${SECRET}` })) }),
-    { redactor },
-  );
+    patched({ generate: async () => Promise.reject(new ProviderError("authentication", { message: `bad key ${SECRET}` })) }), { redactor },);
   const e1 = await fails(leaky.generate(req(), { runId: "r", signal: live() }));
   assert.equal(e1.code, "authentication");
   assert.equal(e1.message, `bad key ${REDACTED}`);
@@ -157,9 +160,7 @@ test("PRV-2: error messages are redacted; foreign errors become a fixed internal
   assert.ok(!JSON.stringify(e2).includes(SECRET) && !e2.message.includes("fetch"));
 
   const conn = guardProvider(
-    patched({ validateConnection: async () => ({ ok: false, error: new ProviderError("authentication", { message: SECRET }) }) }),
-    { redactor },
-  );
+    patched({ validateConnection: async () => ({ ok: false, error: new ProviderError("authentication", { message: SECRET }) }) }), { redactor },);
   const r = await conn.validateConnection({ signal: live() });
   assert.equal(r.ok, false);
   if (!r.ok) assert.equal(r.error.message, REDACTED);
@@ -167,7 +168,7 @@ test("PRV-2: error messages are redacted; foreign errors become a fixed internal
 
 test("DMN-6: logs carry metadata only, never request or response content", async () => {
   const logs: ProviderLogRecord[] = [];
-  const g = guardProvider(createMockProvider(), { log: (r) => logs.push(r) });
+  const g = guardProvider(createMockProvider(), { redactor: NO_SECRETS, log: (r) => logs.push(r) });
   await drain(g.stream(req(), { runId: "r", signal: live() }));
   const text = JSON.stringify(logs);
   assert.ok(!text.includes(MARKER), "prompt text is not logged");
@@ -178,14 +179,14 @@ test("DMN-6: logs carry metadata only, never request or response content", async
 });
 
 test("a throwing log sink does not change the outcome", async () => {
-  const g = guardProvider(createMockProvider(), { log: () => { throw new Error("sink down"); } });
+  const g = guardProvider(createMockProvider(), { redactor: NO_SECRETS, log: () => { throw new Error("sink down"); } });
   const r = await g.generate(req(), { runId: "r", signal: live() });
   assert.equal(r.stopReason, "end_turn");
 });
 
 test("capabilities: a feature the model lacks is refused by the guard before the adapter sees it", async () => {
   let called = 0;
-  const g = guardProvider(patched({ generate: async () => { called++; throw new Error("unreachable"); } }));
+  const g = guardProvider(patched({ generate: async () => { called++; throw new Error("unreachable"); } }), { redactor: NO_SECRETS });
   const e = await fails(
     g.generate(req({ messages: [{ role: "user", content: [{ type: "image", mediaType: "image/png", data: "AAAA" }] }] }), { runId: "r", signal: live() }),
   );
@@ -196,7 +197,7 @@ test("capabilities: a feature the model lacks is refused by the guard before the
 
 test("timeouts: an idle stream is cut off with timeout/idle", async () => {
   const mock = createMockProvider({ replies: [{ kind: "hang", text: "thinking" }] });
-  const g = guardProvider(mock, { limits: { idleTimeoutMs: 30 } });
+  const g = guardProvider(mock, { redactor: NO_SECRETS, limits: { idleTimeoutMs: 30 } });
   const e = await fails(drain(g.stream(req(), { runId: "r", signal: live() })));
   assert.equal(e.code, "timeout");
   assert.equal(e.details.reason, "idle");
@@ -205,7 +206,7 @@ test("timeouts: an idle stream is cut off with timeout/idle", async () => {
 
 test("timeouts: a whole request is cut off with timeout/request", async () => {
   const mock = createMockProvider({ replies: [{ kind: "hang" }] });
-  const g = guardProvider(mock, { limits: { requestTimeoutMs: 30 } });
+  const g = guardProvider(mock, { redactor: NO_SECRETS, limits: { requestTimeoutMs: 30 } });
   const e = await fails(g.generate(req(), { runId: "r", signal: live() }));
   assert.equal(e.code, "timeout");
   assert.equal(e.details.reason, "request");
@@ -226,7 +227,7 @@ test("cancellation is prompt even when the adapter ignores its signal", async ()
       }),
     }),
   });
-  const g = guardProvider(stubborn);
+  const g = guardProvider(stubborn, { redactor: NO_SECRETS });
 
   const c1 = new AbortController();
   const p1 = g.generate(req(), { runId: "r", signal: c1.signal });
@@ -245,7 +246,7 @@ test("an already aborted run sends nothing", async () => {
   const mock = createMockProvider();
   const c = new AbortController();
   c.abort();
-  assert.equal((await fails(guardProvider(mock).generate(req(), { runId: "r", signal: c.signal }))).code, "cancelled");
+  assert.equal((await fails(guardProvider(mock, { redactor: NO_SECRETS }).generate(req(), { runId: "r", signal: c.signal }))).code, "cancelled");
   assert.equal(mock.requests.length, 0);
 });
 
@@ -258,7 +259,7 @@ test("a stream that breaks the grammar fails with invalid_response", async () =>
       },
     }),
   });
-  const e = await fails(drain(guardProvider(bad).stream(req(), { runId: "r", signal: live() })));
+  const e = await fails(drain(guardProvider(bad, { redactor: NO_SECRETS }).stream(req(), { runId: "r", signal: live() })));
   assert.equal(e.code, "invalid_response");
   assert.equal(e.details.reason, "delta_outside_block");
 
@@ -269,33 +270,33 @@ test("a stream that breaks the grammar fails with invalid_response", async () =>
       },
     }),
   });
-  assert.equal((await fails(drain(guardProvider(truncated).stream(req(), { runId: "r", signal: live() })))).details.reason, "truncated_stream");
+  assert.equal((await fails(drain(guardProvider(truncated, { redactor: NO_SECRETS }).stream(req(), { runId: "r", signal: live() })))).details.reason, "truncated_stream");
 });
 
 test("a malformed generate result fails with invalid_response", async () => {
   const bad = patched({
     generate: async () => ({ model: MOCK_DEFAULT_MODEL, content: [{ type: "tool_use", id: "t", name: "x", input: [1] }], stopReason: "tool_use", usage: { inputTokens: 1, outputTokens: 1 } }) as never,
   });
-  const e = await fails(guardProvider(bad).generate(req(), { runId: "r", signal: live() }));
+  const e = await fails(guardProvider(bad, { redactor: NO_SECRETS }).generate(req(), { runId: "r", signal: live() }));
   assert.equal(e.code, "invalid_response");
   assert.equal(e.details.reason, "tool_input_not_object");
 });
 
 test("stream limits: an oversized response is cut off", async () => {
   const mock = createMockProvider({ replies: [{ kind: "text", text: "y".repeat(100) }] });
-  const e = await fails(drain(guardProvider(mock, { limits: { maxTextChars: 10 } }).stream(req(), { runId: "r", signal: live() })));
+  const e = await fails(drain(guardProvider(mock, { redactor: NO_SECRETS, limits: { maxTextChars: 10 } }).stream(req(), { runId: "r", signal: live() })));
   assert.equal(e.details.reason, "text_too_large");
   assert.equal(mock.openStreams, 0);
 });
 
 test("an adapter on another API version is refused", () => {
   const m = createMockProvider();
-  assert.throws(() => guardProvider({ ...patched({}), descriptor: { ...m.descriptor, apiVersion: 2 } }), RangeError);
+  assert.throws(() => guardProvider({ ...patched({}), descriptor: { ...m.descriptor, apiVersion: 2 } }, { redactor: NO_SECRETS }), RangeError);
 });
 
 test("countTokens without adapter support is unsupported_capability", async () => {
-  const e = await fails(guardProvider(patched({})).countTokens(req(), { signal: live() }));
+  const e = await fails(guardProvider(patched({}), { redactor: NO_SECRETS }).countTokens(req(), { runId: "r", signal: live() }));
   assert.equal(e.code, "unsupported_capability");
-  const n = await guardProvider(createMockProvider()).countTokens(req(), { signal: live() });
+  const n = await guardProvider(createMockProvider(), { redactor: NO_SECRETS }).countTokens(req(), { runId: "r", signal: live() });
   assert.ok(n.inputTokens > 0);
 });

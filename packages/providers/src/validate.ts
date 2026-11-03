@@ -20,10 +20,14 @@ export function featuresUsed(request: ValidRequest, mode: "generate" | "stream")
   if (request.stopSequences !== undefined && request.stopSequences.length > 0) used.add("stopSequences");
   if (request.temperature !== undefined) used.add("temperature");
   for (const m of request.messages) {
+    let toolUses = 0;
     for (const b of m.content) {
       if (b.type === "image") used.add("imageInput");
       else if (b.type === "tool_use" || b.type === "tool_result") used.add("toolUse");
+      if (b.type === "tool_use") toolUses += 1;
     }
+    // Several tool calls in one assistant turn are parallel tool use (N8).
+    if (toolUses > 1) used.add("parallelToolUse");
   }
   return used;
 }
@@ -42,7 +46,7 @@ export function validateRequest(
 ): ValidRequest {
   const parsed = generateRequestSchema.safeParse(request);
   if (!parsed.success) {
-    const path = parsed.error.issues[0]?.path.map(String).join(".") ?? "";
+    const path = describePath(parsed.error.issues[0]?.path ?? []);
     throw new ProviderError("invalid_request", {
       message: path === "" ? "The request is invalid." : `The request field "${safePath(path)}" is invalid.`,
       reason: "schema",
@@ -73,8 +77,21 @@ export function validateRequest(
   return req;
 }
 
-/** Field paths come from our schema, but record keys are caller data: keep them short and plain. */
+/**
+ * Field paths come from our schema, but record keys are caller data and may
+ * hold a secret or a prefix of one (S1): the key under `providerOptions` is
+ * never echoed.
+ */
+function describePath(path: readonly PropertyKey[]): string {
+  const out: string[] = [];
+  for (let i = 0; i < path.length; i++) {
+    out.push(i > 0 && path[i - 1] === "providerOptions" ? "<key>" : String(path[i]));
+  }
+  return out.join(".");
+}
+
+/** Keep the rest short and plain. */
 function safePath(path: string): string {
-  const cleaned = path.replace(/[^A-Za-z0-9_.-]/g, "?");
+  const cleaned = path.replace(/[^A-Za-z0-9_.<>-]/g, "?");
   return cleaned.length > 80 ? `${cleaned.slice(0, 80)}…` : cleaned;
 }

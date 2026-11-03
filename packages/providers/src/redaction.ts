@@ -13,6 +13,12 @@ export interface Redactor {
   redact(text: string): string;
   /** True when `text` contains a known secret or matches a secret pattern. */
   containsSecret(text: string): boolean;
+  /**
+   * A redactor fixed to the current secret set, for scanning many strings of
+   * one request without asking the vault for each (N3). Optional for custom
+   * implementations; the guard falls back to the redactor itself.
+   */
+  snapshot?(): Redactor;
 }
 
 export interface SecretRedactorOptions {
@@ -42,9 +48,8 @@ export const DEFAULT_MIN_SECRET_LENGTH = 8;
  */
 export function createSecretRedactor(options: SecretRedactorOptions): Redactor {
   const min = options.minSecretLength ?? DEFAULT_MIN_SECRET_LENGTH;
-  const patterns = (options.patterns ?? []).map(
-    (p) => new RegExp(p.source, p.flags.includes("g") ? p.flags : `${p.flags}g`),
-  );
+  // Global, never sticky: a sticky pattern only matches at consecutive positions (N4).
+  const patterns = (options.patterns ?? []).map((p) => new RegExp(p.source, `${p.flags.replace(/[gy]/g, "")}g`));
 
   const needles = (): string[] => {
     const out = new Set<string>();
@@ -57,25 +62,72 @@ export function createSecretRedactor(options: SecretRedactorOptions): Redactor {
     return [...out].filter((s) => s.length >= min).sort((a, b) => b.length - a.length);
   };
 
-  return {
+  const over = (get: () => readonly string[]): Redactor => ({
     redact(text: string): string {
       let out = text;
-      for (const n of needles()) out = out.split(n).join(REDACTED);
+      for (const n of get()) out = out.split(n).join(REDACTED);
       for (const p of patterns) out = out.replace(p, REDACTED);
       return out;
     },
     containsSecret(text: string): boolean {
-      for (const n of needles()) if (text.includes(n)) return true;
+      for (const n of get()) if (text.includes(n)) return true;
       for (const p of patterns) {
         p.lastIndex = 0;
         if (p.test(text)) return true;
       }
       return false;
     },
+  });
+
+  const live = over(needles);
+  return {
+    ...live,
+    snapshot() {
+      const fixed = needles();
+      return over(() => fixed);
+    },
   };
 }
 
-/** A redactor that knows no secrets. Used when the caller passes none. */
+/**
+ * True when any string in `value` (keys included) holds a secret. Walks the
+ * raw, unvalidated value without invoking getters, so it can run before the
+ * schema (S1). Returns `"unwalkable"` for anything that is not plain data
+ * (accessors, class instances, more than `maxNodes` values); callers refuse
+ * those.
+ */
+export function scanForSecret(value: unknown, redactor: Redactor, maxNodes = 200_000): "secret" | "clean" | "unwalkable" {
+  const seen = new WeakSet<object>();
+  const stack: unknown[] = [value];
+  let nodes = 0;
+  while (stack.length > 0) {
+    if (++nodes > maxNodes) return "unwalkable";
+    const v = stack.pop();
+    if (typeof v === "string") {
+      if (redactor.containsSecret(v)) return "secret";
+      continue;
+    }
+    if (typeof v !== "object" || v === null) continue;
+    if (seen.has(v)) continue;
+    seen.add(v);
+    const proto = Object.getPrototypeOf(v) as unknown;
+    if (!Array.isArray(v) && proto !== Object.prototype && proto !== null) return "unwalkable";
+    for (const key of Object.getOwnPropertyNames(v)) {
+      if (Array.isArray(v) && key === "length") continue;
+      if (redactor.containsSecret(key)) return "secret";
+      const d = Object.getOwnPropertyDescriptor(v, key);
+      if (d === undefined || d.get !== undefined || d.set !== undefined) return "unwalkable";
+      stack.push(d.value);
+    }
+  }
+  return "clean";
+}
+
+/**
+ * A redactor that knows no secrets. The guard requires a redactor (S10); this
+ * exists for tests and for connections that hold no credential (the mock),
+ * and must be passed explicitly.
+ */
 export const NO_SECRETS: Redactor = { redact: (t) => t, containsSecret: () => false };
 
 /** Every string in a JSON-like value, keys included, without recursion. */

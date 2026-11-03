@@ -166,7 +166,7 @@ test("budget: refuses bad limits and resumes from journal state", () => {
   assert.throws(() => createRunBudget({ maxTokens: -1 }), RangeError);
   assert.throws(() => createRunBudget({ maxTokens: 1.5 }), RangeError);
   const b = createRunBudget({ maxTokens: 100 }, { tokens: 100 });
-  const d = b.beforeRequest({ runId: "r", providerId: "p", connectionId: "c", model: "m", maxOutputTokens: 10, costKnown: true });
+  const d = b.beforeRequest({ requestId: "q", runId: "r", providerId: "p", connectionId: "c", model: "m", maxOutputTokens: 10, estimatedInputTokens: 1, costKnown: true, worstCaseCost: { microUsd: 1 } });
   assert.deepEqual(d, { allow: false, reason: "tokens" });
 });
 
