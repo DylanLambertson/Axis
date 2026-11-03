@@ -3,6 +3,8 @@
 // and the mock. The contract-side nits are tested in contract-suite.test.ts.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { setFlagsFromString } from "node:v8";
+import { runInNewContext } from "node:vm";
 import {
   MOCK_DEFAULT_MODEL,
   ProviderError,
@@ -16,6 +18,7 @@ import {
   type GenerateRequest,
   type ProviderAdapter,
   type ProviderLogRecord,
+  type StreamEvent,
 } from "../src/index.js";
 
 // Low-entropy stand-in for a stored credential.
@@ -100,4 +103,48 @@ test("R7: the mock refuses an invalid inputTokenFactor", () => {
     assert.throws(() => createMockProvider({ inputTokenFactor: bad }), RangeError, String(bad));
   }
   assert.doesNotThrow(() => createMockProvider({ inputTokenFactor: 0 }));
+});
+
+/** A collector that fully runs GC, without needing --expose-gc on the command line. */
+function collector(): () => void {
+  setFlagsFromString("--expose-gc");
+  const gc = runInNewContext("gc") as () => void;
+  return () => {
+    gc();
+    gc();
+  };
+}
+
+test("guard.ts:228: live heap stays flat across many tiny stream events (no Promise.race build-up)", async () => {
+  const gc = collector();
+  const N = 150_000;
+  const mock = createMockProvider();
+  const adapter: ProviderAdapter = {
+    ...withDescriptor(mock.descriptor, mock),
+    stream: (r) => ({
+      async *[Symbol.asyncIterator]() {
+        yield { type: "message_start", model: r.model } as StreamEvent;
+        for (let i = 0; i < N; i++) yield { type: "usage", usage: { inputTokens: 1, outputTokens: 0 } } as StreamEvent;
+        yield { type: "message_stop", stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 0 } } as StreamEvent;
+      },
+    }),
+  };
+  const g = guardProvider(adapter, { redactor, limits: { maxEvents: N + 10 } });
+  let i = 0;
+  let base = 0;
+  let late = 0;
+  for await (const _ of g.stream(req({ maxOutputTokens: 10 }), { runId: "r", signal: live() })) {
+    i += 1;
+    if (i === 1_000) {
+      gc();
+      base = process.memoryUsage().heapUsed;
+    }
+    if (i === N - 10) {
+      gc();
+      late = process.memoryUsage().heapUsed;
+    }
+  }
+  const growthMiB = (late - base) / 2 ** 20;
+  // Before the fix: about 61 MiB (430 bytes per event) while the stream was open.
+  assert.ok(growthMiB < 8, `live heap grew ${growthMiB.toFixed(1)} MiB over ${N} events`);
 });

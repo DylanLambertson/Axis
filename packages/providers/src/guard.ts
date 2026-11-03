@@ -171,8 +171,8 @@ function abortError(why: AbortWhy): ProviderError {
 class RequestControl {
   readonly controller = new AbortController();
   why: AbortWhy | undefined;
-  private readonly aborted: Promise<never>;
-  private rejectAborted: ((e: unknown) => void) | undefined;
+  /** Rejecters of the calls `race` is waiting on; each is removed as soon as its call settles. */
+  private readonly pending = new Set<(e: unknown) => void>();
   private idleHandle: unknown;
   private readonly requestHandle: unknown;
   private readonly listeners: Array<() => void> = [];
@@ -184,10 +184,6 @@ class RequestControl {
     private readonly idleMs: number,
     requestMs: number,
   ) {
-    this.aborted = new Promise<never>((_, reject) => {
-      this.rejectAborted = reject;
-    });
-    this.aborted.catch(() => undefined);
     callerSignal.addEventListener("abort", this.onCallerAbort, { once: true });
     this.requestHandle = timers.setTimeout(() => this.abort("timeout_request"), requestMs);
     if (callerSignal.aborted) this.abort("cancelled");
@@ -213,7 +209,8 @@ class RequestControl {
     if (this.why !== undefined) return;
     this.why = why;
     this.controller.abort();
-    this.rejectAborted?.(abortError(why));
+    for (const reject of [...this.pending]) reject(abortError(why));
+    this.pending.clear();
     for (const fn of this.listeners) {
       try {
         fn();
@@ -223,9 +220,33 @@ class RequestControl {
     }
   }
 
-  /** Settle with `p`, or fail as soon as the request is aborted, whichever is first. */
+  /**
+   * Settle with `p`, or fail as soon as the request is aborted, whichever is
+   * first. Not `Promise.race` against one abort promise that lives as long as
+   * the stream: every race would add a reaction to it, keeping each settled
+   * step alive until the stream ends (about 430 bytes per event; review of
+   * guard.ts:228). Each call registers its own rejecter and removes it when
+   * `p` settles, so nothing accumulates.
+   */
   race<T>(p: Promise<T>): Promise<T> {
-    return Promise.race([p, this.aborted]);
+    const why = this.why;
+    if (why !== undefined) {
+      p.catch(() => undefined);
+      return Promise.reject(abortError(why));
+    }
+    return new Promise<T>((resolve, reject) => {
+      this.pending.add(reject);
+      p.then(
+        (v) => {
+          this.pending.delete(reject);
+          resolve(v);
+        },
+        (e: unknown) => {
+          this.pending.delete(reject);
+          reject(e);
+        },
+      );
+    });
   }
 
   dispose(): void {
