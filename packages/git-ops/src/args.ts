@@ -65,7 +65,8 @@ export function prefix(w: WorktreeRef, deps: GitOpsDeps, o: PrefixOptions): stri
   const hooksOn = o.context === "pty" && o.hooks;
   if (!hooksOn) a.push("-c", `core.hooksPath=${hooksOffPath(deps)}`);
   if (o.context === "daemon") {
-    a.push("-c", "commit.gpgsign=false", "-c", "core.askPass=");
+    // diff.submodule=diff would make git spawn a child `git diff` in a nested repository that ignores --no-ext-diff.
+    a.push("-c", "commit.gpgsign=false", "-c", "core.askPass=", "-c", "diff.submodule=short");
     for (const f of o.filters) {
       for (const k of ["clean", "smudge", "process"]) a.push("-c", `filter.${f}.${k}=`);
       a.push("-c", `filter.${f}.required=false`);

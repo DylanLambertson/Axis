@@ -95,7 +95,7 @@ async function scan(deps: GitOpsDeps, git: DaemonGit, input: PushInput, branch: 
     if (r.code === 0) from = r.stdout.trim();
   }
   if (from === undefined) from = (await git(["hash-object", "-t", "tree", "--stdin"], "")).stdout.trim() || EMPTY_TREE_SHA1;
-  const d = await git(["diff", "--no-color", "--no-ext-diff", "--no-textconv", from, tip, "--"]);
+  const d = await git(["diff", "--no-color", "--no-ext-diff", "--no-textconv", "--submodule=short", "--ignore-submodules=all", from, tip, "--"]);
   if (d.code !== 0) throw new GitOpsError("E_UNAVAILABLE", "could not compute the outgoing diff for the secret scan");
   const truncated = d.stdout.length > MAX_DIFF;
   return deps.scanner(truncated ? d.stdout.slice(0, MAX_DIFF) : d.stdout, { worktree: input.worktree, truncated });
