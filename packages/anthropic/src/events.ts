@@ -109,6 +109,8 @@ export class EventMapper {
   private cacheWrite: number | undefined;
   /** A `message_delta` reported `output_tokens`: the final count the budget is charged (S1). */
   private outputReported = false;
+  /** Some text or a tool call was streamed, so the final output count cannot be zero. */
+  private producedContent = false;
   private lastProgress: number;
 
   constructor(
@@ -161,6 +163,10 @@ export class EventMapper {
         const m = parse(messageStart, json).message;
         // No usage means no basis to charge the budget: refuse rather than report zero (S1).
         if (typeof m.usage?.input_tokens !== "number") throw new ProviderError("invalid_response", { reason: "missing_usage" });
+        // A prompt is never zero tokens: an explicit zero (with nothing cached) is as useless to the budget as no number.
+        if (m.usage.input_tokens === 0 && !(m.usage.cache_read_input_tokens ?? 0) && !(m.usage.cache_creation_input_tokens ?? 0)) {
+          throw new ProviderError("invalid_response", { reason: "implausible_usage" });
+        }
         this.started = true;
         this.absorb(m.usage);
         return [
@@ -175,6 +181,7 @@ export class EventMapper {
         if (this.mapped.size + this.ignoredBlocks.size >= MAX_WIRE_BLOCKS) throw new ProviderError("invalid_response", { reason: "too_many_blocks" });
         const b = e.content_block;
         if (b.type === "text") {
+          this.producedContent ||= typeof b.text === "string" && b.text !== "";
           const index = this.nextIndex++;
           this.mapped.set(e.index, index);
           const out: StreamEvent[] = [{ type: "content_block_start", index, block: { type: "text" } }];
@@ -182,6 +189,7 @@ export class EventMapper {
           return out;
         }
         if (b.type === "tool_use") {
+          this.producedContent = true;
           if (b.id === undefined || b.name === undefined) throw malformed();
           const empty = typeof b.input === "object" && b.input !== null && !Array.isArray(b.input) && Object.keys(b.input).length === 0;
           if (b.input !== undefined && !empty) throw new ProviderError("invalid_response", { reason: "unexpected_tool_input" });
@@ -209,6 +217,7 @@ export class EventMapper {
           throw new ProviderError("invalid_response", { reason: "delta_outside_block" });
         }
         if (e.delta.type === "text_delta" && typeof e.delta.text === "string") {
+          this.producedContent ||= e.delta.text !== "";
           return [{ type: "content_block_delta", index, delta: { type: "text", text: e.delta.text } }];
         }
         if (e.delta.type === "input_json_delta" && typeof e.delta.partial_json === "string") {
@@ -236,6 +245,7 @@ export class EventMapper {
       }
       case "message_stop":
         if (!this.outputReported) throw new ProviderError("invalid_response", { reason: "missing_usage" });
+        if (this.producedContent && this.outputTokens === 0) throw new ProviderError("invalid_response", { reason: "implausible_usage" });
         this.stopped = true;
         return [{ type: "message_stop", stopReason: this.stop ?? "other", usage: this.usage() }];
       case "ping":

@@ -85,6 +85,7 @@ export async function* parseSse(body: BodyStream, limits: AnthropicLimits, count
   let data: string[] = [];
   let eventBytes = 0;
   let pending = false;
+  let sawEventField = false;
 
   const takeLine = (): string => {
     if (line.length === 0) return "";
@@ -107,6 +108,7 @@ export async function* parseSse(body: BodyStream, limits: AnthropicLimits, count
       data = [];
       eventBytes = 0;
       pending = false;
+      sawEventField = false;
       if (ev === undefined) {
         // A blank line with nothing pending, or an event with no data, is skipped but costs budget.
         counters.countIgnored();
@@ -124,7 +126,9 @@ export async function* parseSse(body: BodyStream, limits: AnthropicLimits, count
     let value = colon === -1 ? "" : text.slice(colon + 1);
     if (value.startsWith(" ")) value = value.slice(1);
     if (field === "event") {
-      if (eventName !== "") counters.countIgnored();
+      // A second `event:` in one event, empty or not, is ignored input and costs budget.
+      if (sawEventField) counters.countIgnored();
+      sawEventField = true;
       eventName = value;
       pending = true;
     } else if (field === "data") {

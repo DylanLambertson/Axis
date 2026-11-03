@@ -45,7 +45,6 @@ function cancelled(): ProviderError {
  */
 export class BodyStream {
   private readonly reader: BodyReader;
-  private readonly aborted: Promise<never>;
   private readonly onAbort: () => void;
   private finished = false;
   private closed = false;
@@ -57,13 +56,7 @@ export class BodyStream {
     private readonly maxBytes: number,
   ) {
     this.reader = body.getReader();
-    let reject: (e: unknown) => void = () => undefined;
-    this.aborted = new Promise<never>((_, r) => {
-      reject = r;
-    });
-    this.aborted.catch(() => undefined);
     this.onAbort = (): void => {
-      reject(cancelled());
       void this.release();
     };
     if (signal.aborted) this.onAbort();
@@ -75,12 +68,21 @@ export class BodyStream {
     if (this.finished) return undefined;
     if (this.signal.aborted) throw cancelled();
     let step: { readonly done: boolean; readonly value?: Uint8Array | undefined };
+    // The abort promise is made per read and its listener removed afterwards. A promise that lives as
+    // long as the stream would keep a reaction, and with it every chunk, alive until the stream ends.
+    let onAbort: (() => void) | undefined;
+    const aborted = new Promise<never>((_, reject) => {
+      onAbort = () => reject(cancelled());
+      this.signal.addEventListener("abort", onAbort, { once: true });
+    });
     try {
-      step = await Promise.race([this.reader.read(), this.aborted]);
+      step = await Promise.race([this.reader.read(), aborted]);
     } catch (e) {
       if (this.signal.aborted) throw cancelled();
       if (e instanceof ProviderError) throw e;
       throw new ProviderError("network", { reason: "stream_error" });
+    } finally {
+      if (onAbort !== undefined) this.signal.removeEventListener("abort", onAbort);
     }
     if (step.done) {
       this.finished = true;
