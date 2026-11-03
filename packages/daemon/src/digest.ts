@@ -47,6 +47,13 @@ export const REQUEST_DIGEST_TAG = "axis.request/1";
  * the top-level `approval` field, and the canonical text is embedded as a
  * JSON string. The daemon computes this; the gate compares it, it never
  * recomputes its own.
+ *
+ * This is the one statement of the spec (docs and `@axis/challenge` refer to
+ * it). "JSON.stringify" means ECMAScript semantics: ES2019 well-formed
+ * output (lone surrogates escaped in lowercase, `\ud800`), numbers by
+ * Number::toString (`-0` is `0`, `1e21` is `1e+21`, integers above 2^53 are
+ * already rounded). A non-JS implementation must reproduce those, or limit
+ * payload numbers to safe integers.
  */
 export function requestDigest(contract: string, version: number, method: string, payload: JsonValue): string {
   return sha256Hex(JSON.stringify([REQUEST_DIGEST_TAG, contract, version, method, canonicalJson(withoutApproval(payload))]));

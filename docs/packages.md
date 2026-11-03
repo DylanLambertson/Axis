@@ -46,6 +46,10 @@ Fixed vectors (`sha256hex` as lowercase hex):
 | `axis.worktrees` | 1 | `remove` | `{id:"ws-1",deleteBranch:false}` | `adb7a157e75395816cf74974fbdfa2b5bdf32831996a578ff80cdb46fe9d2735` |
 
 `@axis/daemon` implements the identical function and pins the same vectors; the two copies must stay in step. The shared function moves into `@axis/protocol` later, and both packages will then import it.
+## Request digest
+
+The approval digest is defined once, in the doc comment of `requestDigest()` in `packages/daemon/src/digest.ts` (`sha256hex(JSON.stringify(["axis.request/1", contract, version, method, canonicalJson(payloadWithoutApproval)]))`, ECMAScript `JSON.stringify` semantics, bare contract id, integer version). `@axis/challenge` implements the same function; both are pinned by the same fixed vectors, and the copies are to be merged into `@axis/protocol`.
+
 ## Wiring the daemon
 
 `@axis/daemon` never imports `@axis/challenge`; the product wiring (in main or the daemon entry) connects them in two places. The daemon computes the request digest once and hands it to the gate; the handler of the destructive method spends the approval.

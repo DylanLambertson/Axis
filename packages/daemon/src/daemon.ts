@@ -1,7 +1,6 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { randomBytes } from "node:crypto";
-import { permissionTierSchema } from "@axis/protocol";
-import { MemoryIdempotencyStore } from "./memory-store.js";
+import { inspectMessage, permissionTierSchema } from "@axis/protocol";
 import { parseIdentity } from "./identity.js";
 import { OrphanTracker } from "./orphans.js";
 import { handlerKey, type PipelineDeps } from "./pipeline.js";
@@ -25,7 +24,8 @@ export interface DaemonOptions {
   readonly policy?: Policy;
   /** Absent gate refuses every request of tier 3 and above. */
   readonly approvals?: ApprovalGate;
-  readonly idempotency?: IdempotencyStore;
+  /** Required: the daemon never falls back to the dev-only memory store on its own. */
+  readonly idempotency: IdempotencyStore;
   readonly registry?: ContractRegistry;
   readonly now?: () => number;
   readonly onInternalError?: (correlationId: string, error: unknown) => void;
@@ -34,20 +34,16 @@ export interface DaemonOptions {
   readonly maxConnections?: number;
   /** Messages accepted before the attestation has been verified. Default 16. */
   readonly maxPendingBeforeIdentity?: number;
-  /** Bytes (JSON size) accepted before the attestation has been verified. Default 1 MiB. */
+  /**
+   * Total bytes accepted before the attestation has been verified (default 1 MiB).
+   * Each queued message may use `maxPendingBytesBeforeIdentity / maxPendingBeforeIdentity`
+   * of it, measured by the bounded walk of `inspectMessage`; untrusted input is never serialised.
+   */
   readonly maxPendingBytesBeforeIdentity?: number;
-  /** Handlers still running after their caller got a timeout, cancel or close, daemon-wide. Default 32. */
+  /** Handlers still running after their caller got a timeout, cancel or close, per window. Default: `maxInFlight`. */
+  readonly maxOrphanedPerWindow?: number;
+  /** The same, daemon-wide backstop. Default: four windows' worth. */
   readonly maxOrphanedHandlers?: number;
-}
-
-/** Size of a decoded message for the pre-identity byte bound; anything that cannot be measured counts as too big. */
-function sizeOf(raw: unknown): number {
-  if (typeof raw === "string") return raw.length;
-  try {
-    return JSON.stringify(raw)?.length ?? 0;
-  } catch {
-    return Number.POSITIVE_INFINITY;
-  }
 }
 
 const DEFAULT_LIMITS: SessionLimits = {
@@ -80,9 +76,10 @@ export class Daemon {
   constructor(options: DaemonOptions) {
     this.#opts = options;
     this.#registry = options.registry ?? protocolRegistry;
-    this.#idempotency = options.idempotency ?? new MemoryIdempotencyStore({ now: options.now ?? Date.now });
+    this.#idempotency = options.idempotency;
     this.#limits = { ...DEFAULT_LIMITS, ...options.limits };
-    this.#orphans = new OrphanTracker(options.maxOrphanedHandlers ?? 32);
+    const perWindow = options.maxOrphanedPerWindow ?? this.#limits.maxInFlight;
+    this.#orphans = new OrphanTracker(options.maxOrphanedHandlers ?? perWindow * 4, perWindow);
     this.#pipeline = {
       registry: this.#registry,
       handlers: this.#handlers,
@@ -133,7 +130,8 @@ export class Daemon {
     const maxPending = this.#opts.maxPendingBeforeIdentity ?? 16;
     const maxBytes = this.#opts.maxPendingBytesBeforeIdentity ?? 1_048_576;
     const pending: unknown[] = [];
-    let pendingBytes = 0;
+    const perMessageBytes = Math.max(1, Math.floor(maxBytes / maxPending));
+    const acceptedAt = performance.now();
     let session: Session | undefined;
     let dead = false;
     let counted = true;
@@ -146,8 +144,8 @@ export class Daemon {
     connection.onMessage((raw) => {
       if (dead) return;
       if (session) return session.handle(raw);
-      pendingBytes += sizeOf(raw);
-      if (pending.length < maxPending && pendingBytes <= maxBytes) pending.push(raw);
+      // The walk refuses shared references, so a tiny DAG cannot expand here, and stops at the byte and node limits.
+      if (pending.length < maxPending && inspectMessage(raw, { maxBytes: perMessageBytes }).ok) pending.push(raw);
       else {
         dead = true;
         uncount();
@@ -203,7 +201,7 @@ export class Daemon {
         onClosed: (x) => {
           if (this.#sessions.get(x.identity.connectionId) === x) this.#sessions.delete(x.identity.connectionId);
         },
-      });
+      }, this.#limits.handshakeTimeoutMs - (performance.now() - acceptedAt));
       session = s;
       uncount();
       this.#sessions.set(identity.connectionId, s);

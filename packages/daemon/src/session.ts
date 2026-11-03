@@ -47,6 +47,13 @@ interface InFlight {
   timer: NodeJS.Timeout | undefined;
 }
 
+/**
+ * Client note: use a new request id for every attempt. Re-sending an id after
+ * E_TIMEOUT or E_CANCELLED while the abandoned handler still runs gets
+ * E_CONFLICT (and counts as a violation); the id stays in flight until the
+ * handler settles.
+ */
+
 /** Only plain-data ids can be echoed in an error response; anything else gets no response. */
 function extractId(raw: unknown): string | undefined {
   if (typeof raw !== "object" || raw === null) return undefined;
@@ -67,14 +74,19 @@ export class Session {
   #closed = false;
   #handshakeTimer: NodeJS.Timeout | undefined;
 
-  constructor(conn: Connection, identity: Identity, deps: SessionDeps) {
+  /**
+   * `handshakeBudgetMs` is what is left of the handshake timeout after
+   * verification, so verification and handshake together never take longer
+   * than `limits.handshakeTimeoutMs`.
+   */
+  constructor(conn: Connection, identity: Identity, deps: SessionDeps, handshakeBudgetMs: number = deps.limits.handshakeTimeoutMs) {
     this.#conn = conn;
     this.#identity = Object.freeze({ ...identity });
     this.#d = deps;
     this.#limiter = new RateLimiter(deps.limits.maxMessagesPerSecond, deps.limits.burst, deps.now);
     this.#handshakeTimer = setTimeout(() => {
       if (!this.#negotiated) this.close();
-    }, deps.limits.handshakeTimeoutMs);
+    }, Math.max(1, handshakeBudgetMs));
     this.#handshakeTimer.unref();
   }
 
@@ -128,6 +140,7 @@ export class Session {
     if ("type" in msg) {
       if (this.#negotiated) {
         this.#violation(); // a second hello is a protocol error
+        // Not terminal: after a welcome, a hello-rejected only answers this extra hello and the session stays open.
         this.#rejectHello(this.#err("E_INVALID_ARGUMENT", "The handshake is already complete"), false);
         return;
       }
@@ -207,8 +220,15 @@ export class Session {
       this.#reply(id, { ok: false, error: this.#err("E_CONFLICT", "That request id is already in flight") });
       return;
     }
-    if (this.#inFlight.size >= d.limits.maxInFlight || d.orphans.full) {
+    if (this.#inFlight.size >= d.limits.maxInFlight) {
       this.#reply(id, { ok: false, error: this.#err("E_BACKPRESSURE", "Too many requests in flight") });
+      return;
+    }
+    const refused = d.orphans.refusal(this.#identity.windowId);
+    if (refused) {
+      // Only this window pays for its own orphans; hammering on regardless ends in a close.
+      if (refused === "window") this.#violation();
+      this.#reply(id, { ok: false, error: this.#err("E_BACKPRESSURE", "Too many abandoned requests are still running") });
       return;
     }
     const contractKey = `${req.contract}/${req.contractVersion}`;
@@ -244,7 +264,7 @@ export class Session {
       "abort",
       () => {
         const reason: unknown = controller.signal.reason;
-        if (!entry.settled) d.orphans.add(); // the caller is about to be told "done", the handler may still run
+        if (!entry.settled) d.orphans.add(this.#identity.windowId); // the caller is about to be told "done", the handler may still run
         if (reason === CLOSED) {
           entry.answered = true;
           return;
@@ -279,7 +299,7 @@ export class Session {
       .finally(() => {
         entry.settled = true;
         if (entry.timer) clearTimeout(entry.timer);
-        if (controller.signal.aborted) d.orphans.remove();
+        if (controller.signal.aborted) d.orphans.remove(this.#identity.windowId);
         this.#inFlight.delete(id);
       });
   }

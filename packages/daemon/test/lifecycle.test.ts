@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 import { MemoryIdempotencyStore, type ApprovalInput, type IdempotencyKey, type IdempotencyStore } from "../src/index.js";
-import { CONTRACT, KEY1, hello, req, rig, verifier, type Rig } from "./harness.js";
+import { CONTRACT, KEY1, cid, hello, req, rig, verifier, type Rig } from "./harness.js";
 
 async function ready(t: TestContext, options: Parameters<typeof rig>[0] = {}): Promise<Rig> {
   const r = rig(options);
@@ -227,12 +227,12 @@ test("S4b: a tier >= 3 replay from another connection asks the gate again; from 
   other.client.postMessage(req("b1", "danger", { id: "ws-1" }, { idempotencyKey: KEY1 }));
   assert.equal((await other.inbox.response("b1")).ok, true);
   assert.equal(inputs.length, 2, "another connection: the gate was asked again");
-  assert.equal(inputs[1]?.connectionId, "conn-2");
+  assert.equal(inputs[1]?.connectionId, cid("conn-2"));
 });
 
 test("S4c: a tier >= 3 replay from another connection is refused when the gate says so", async (t) => {
   let calls = 0;
-  const r = await ready(t, { gate: { check: () => (++calls === 1 ? { status: "confirmed", confirmation: 1 } : { status: "denied" }) } });
+  const r = await ready(t, { gate: { check: () => (++calls === 1 ? { status: "confirmed", confirmation: "tok" } : { status: "denied" }) } });
   r.daemon.register(CONTRACT, 1, { danger: () => ({ done: true }) });
   r.send(req("a1", "danger", { id: "ws-1" }, { idempotencyKey: KEY1 }));
   assert.equal((await r.inbox.response("a1")).ok, true);

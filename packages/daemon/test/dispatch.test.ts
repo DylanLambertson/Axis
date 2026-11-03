@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 import { errorSchema, type Challenge } from "@axis/protocol";
 import { DaemonError, payloadHash, requestDigest, type ApprovalGate, type ApprovalInput } from "../src/index.js";
-import { CONTRACT, KEY1, KEY2, req, rig, type Rig } from "./harness.js";
+import { CONTRACT, KEY1, KEY2, cid, req, rig, type Rig } from "./harness.js";
 
 const CHALLENGE: Challenge = {
   challengeId: "A".repeat(43),
@@ -97,7 +97,7 @@ test("a policy deny stops the handler; the audit event has tier, method and outc
     action: "policy.decision",
     target: `${CONTRACT}/1.echo`,
     outcome: "denied",
-    payload: { tier: 0, sideEffect: "read", connectionId: "conn-1", correlationId, workspaceId: null, contractVersion: 1, decision: "deny" },
+    payload: { tier: 0, sideEffect: "read", connectionId: cid("conn-1"), correlationId, workspaceId: null, contractVersion: 1, decision: "deny" },
   });
 });
 
@@ -135,8 +135,8 @@ test("tier 4 without a valid confirmation returns E_APPROVAL_REQUIRED carrying a
 });
 
 test("a confirmed gate result reaches the handler as ctx.confirmation, and the approval reference is passed to the gate", async (t) => {
-  const token = Object.freeze({ kind: "token" });
   const seen: ApprovalInput[] = [];
+  const token = Object.freeze({ kind: "token" });
   const gate: ApprovalGate = { check: (i) => (seen.push(i), { status: "confirmed", confirmation: token }) };
   const r = await ready(t, { gate });
   let got: unknown;

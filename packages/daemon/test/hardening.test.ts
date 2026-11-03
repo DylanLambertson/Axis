@@ -6,6 +6,7 @@ import type { MethodSpec } from "@axis/protocol";
 import {
   Daemon,
   DaemonError,
+  MemoryIdempotencyStore,
   SAFE_MESSAGE_MAX,
   canonicalJson,
   fromElectronPort,
@@ -14,7 +15,7 @@ import {
   type ContractRegistry,
   type ElectronPortLike,
 } from "../src/index.js";
-import { CONTRACT, KEY1, identityOf, req, rig, testRegistry, verifier, type Rig } from "./harness.js";
+import { CONTRACT, KEY1, cid, identityOf, req, rig, testRegistry, verifier, type Rig } from "./harness.js";
 
 async function ready(t: TestContext, options: Parameters<typeof rig>[0] = {}): Promise<Rig> {
   const r = rig(options);
@@ -73,7 +74,7 @@ test("B2: register() rejects a method spec whose tier is not 0..5", () => {
   const spec = (tier: unknown): MethodSpec => ({ ...(testRegistry.lookup(CONTRACT, 1, "echo") as MethodSpec), tier: tier as never });
   for (const tier of [Number.NaN, Number.POSITIVE_INFINITY, -1, 6, 1.5, "3", undefined]) {
     const registry: ContractRegistry = { lookup: () => spec(tier), versions: () => [1] };
-    const d = new Daemon({ identity: verifier, audit: { append: () => undefined }, registry });
+    const d = new Daemon({ identity: verifier, audit: { append: () => undefined }, registry, idempotency: new MemoryIdempotencyStore() });
     assert.throws(() => d.register(CONTRACT, 1, { echo: () => 1 }), /Invalid tier/, String(tier));
   }
 });
@@ -144,7 +145,7 @@ test("S1: the gate receives the daemon's digest, the attested actor and connecti
   assert.equal(input.contract, CONTRACT, "the bare contract id");
   assert.equal(input.contractVersion, 1);
   assert.equal(input.actor, "user");
-  assert.equal(input.connectionId, "conn-1");
+  assert.equal(input.connectionId, cid("conn-1"));
   assert.ok(input.signal instanceof AbortSignal);
 });
 
@@ -278,6 +279,7 @@ test("N1: an identity that fails the schema is refused, not trusted", async (t) 
   const bad = [
     identityOf({ actor: "root" as never }),
     identityOf({ connectionId: "" }),
+    identityOf({ connectionId: "conn-1" }), // not a minted 128-bit id
     identityOf({ actorId: "has space" }),
     { ...identityOf(), trusted: "yes" },
     { ...identityOf(), extra: 1 },

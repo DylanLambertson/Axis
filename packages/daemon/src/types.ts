@@ -127,7 +127,11 @@ export type IdempotencyBegin =
  */
 export interface IdempotencyStore {
   begin(key: IdempotencyKey, payloadHash: string): IdempotencyBegin | Promise<IdempotencyBegin>;
-  /** The handler succeeded. `origin` is the connection id, kept so a tier >= 3 replay can be bound to it. */
+  /**
+   * The handler succeeded. `origin` is the connection id, kept so a tier >= 3 replay can be bound to it.
+   * If this throws, the daemon abandons the key, so a retry runs the side effect again: a durable
+   * store must make `complete` durable before the reply is sent.
+   */
   complete(key: IdempotencyKey, result: JsonValue, origin: string): void | Promise<void>;
   /** The call failed or was cancelled: free the key so a bounded retry can run. */
   abandon(key: IdempotencyKey): void | Promise<void>;

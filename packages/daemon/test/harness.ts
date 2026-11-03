@@ -4,6 +4,7 @@ import { z } from "zod";
 import type { MethodSpec } from "@axis/protocol";
 import {
   Daemon,
+  MemoryIdempotencyStore,
   memoryPair,
   type ApprovalGate,
   type ContractRegistry,
@@ -56,8 +57,11 @@ export const testRegistry: ContractRegistry = {
   versions: (c) => (c === CONTRACT ? [1, 2] : []),
 };
 
+/** Connection ids are 22+ base64url characters (minted by main); tests use readable names padded to that. */
+export const cid = (name: string): string => name.padEnd(22, "_");
+
 export const identityOf = (over: Partial<Identity> = {}): Identity => ({
-  connectionId: "conn-1",
+  connectionId: cid("conn-1"),
   windowId: "win-1",
   actorId: "actor-1",
   actor: "user",
@@ -67,20 +71,22 @@ export const identityOf = (over: Partial<Identity> = {}): Identity => ({
 });
 
 /**
- * Accepts "good[:<actorId>][#<connectionId>][@<workspaceId>]", refuses
+ * Accepts "good[:<actorId>][#<connectionId>][@<workspaceId>][~<windowId>]", refuses
  * everything else. The connection id defaults to conn-1, so a second
  * connection that must not be refused as a duplicate names its own.
  */
 export const verifier: IdentityVerifier = {
   verify(att) {
     if (typeof att !== "string" || !att.startsWith("good")) return undefined;
-    const [rest, workspaceId] = att.split("@");
+    const [noWin, windowId] = att.split("~");
+    const [rest, workspaceId] = (noWin as string).split("@");
     const [head, conn] = (rest as string).split("#");
     const actorId = (head as string).split(":")[1];
     return identityOf({
       ...(actorId ? { actorId } : {}),
-      ...(conn ? { connectionId: conn } : {}),
+      ...(conn ? { connectionId: cid(conn) } : {}),
       ...(workspaceId ? { workspaceId } : {}),
+      ...(windowId ? { windowId } : {}),
     });
   },
 };
@@ -168,6 +174,7 @@ export function rig(options: Partial<DaemonOptions> & { gate?: ApprovalGate; att
     identity: verifier,
     audit: { append: (e) => void events.push(e) },
     registry: testRegistry,
+    idempotency: new MemoryIdempotencyStore(),
     ...(noPolicy ? {} : { policy: allowAll }),
     ...(gate ? { approvals: gate } : {}),
     onInternalError: (correlationId, error) => void internal.push({ correlationId, error }),

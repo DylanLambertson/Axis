@@ -4,6 +4,7 @@ import {
   makeError,
   permissionTierSchema,
   challengeReferenceSchema,
+  challengeSchema,
   type AxisError,
   type ChallengeReference,
   type ErrorCode,
@@ -64,6 +65,7 @@ const policyDecisionSchema = z.discriminatedUnion("effect", [
 ]);
 
 class Aborted extends Error {}
+
 
 function pathsOf(error: { issues: ReadonlyArray<{ path: ReadonlyArray<PropertyKey> }> }): string[] {
   const out = new Set<string>();
@@ -258,6 +260,12 @@ async function steps(p: PipelineInput, state: { key?: IdempotencyKey }): Promise
     });
     guard();
     if (answer.status === "required") {
+      // A malformed challenge is a gate bug: the audit row says so and the client gets a bare E_INTERNAL.
+      if (!challengeSchema.safeParse(answer.challenge).success) {
+        await auditor.soft("error", { decision: "allow", reason: "approval_gate_error" });
+        d.onInternalError?.(correlationId, new Error("the approval gate returned a malformed challenge"));
+        return fail("E_INTERNAL", "Internal error");
+      }
       await auditor.soft("denied", { decision: "allow", reason: "approval_required" });
       return fail("E_APPROVAL_REQUIRED", "Confirmation required", { challenge: answer.challenge as unknown as JsonValue });
     }

@@ -6,7 +6,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 interface Entry {
   readonly hash: string;
-  readonly actorId: string;
+  readonly budget: string;
   readonly at: number;
   result?: JsonValue;
   origin?: string;
@@ -17,7 +17,7 @@ export interface MemoryStoreOptions {
   readonly ttlMs?: number;
   /** Entries across all actors. Default 10 000. */
   readonly maxEntries?: number;
-  /** Entries one actor may hold. Default 1 000. */
+  /** Entries one actor may hold in one workspace. Default 1 000. */
   readonly maxPerActor?: number;
   /** Minimum time between expiry sweeps. Default one minute. */
   readonly sweepEveryMs?: number;
@@ -28,7 +28,7 @@ export interface MemoryStoreOptions {
  * after a crash would run a side effect twice; the product uses the
  * journal-backed store (ADR 0003 D3, 24 h).
  *
- * Bounds: an actor can only ever evict its own completed entries, never
+ * Bounds: an actor in a workspace can only ever evict its own completed entries there, never
  * another actor's and never an in-progress one. When an actor, or the whole
  * store, is full of live entries, `begin` answers `exhausted`. Expiry runs as
  * an amortised sweep (at most once per `sweepEveryMs`), not on every call.
@@ -57,15 +57,20 @@ export class MemoryIdempotencyStore implements IdempotencyStore {
     return this.#entries.size;
   }
 
+  /** The budget owner: an actor in a workspace cannot evict the same actor's entries in another. */
+  #budget(k: IdempotencyKey): string {
+    return JSON.stringify([k.actorId, k.workspaceId]);
+  }
+
   #id(k: IdempotencyKey): string {
     return JSON.stringify([k.actorId, k.workspaceId, k.contract, k.version, k.method, k.key]);
   }
 
   #drop(id: string, e: Entry): void {
     this.#entries.delete(id);
-    const set = this.#byActor.get(e.actorId);
+    const set = this.#byActor.get(e.budget);
     set?.delete(id);
-    if (set?.size === 0) this.#byActor.delete(e.actorId);
+    if (set?.size === 0) this.#byActor.delete(e.budget);
   }
 
   #expired(e: Entry, t: number): boolean {
@@ -90,13 +95,14 @@ export class MemoryIdempotencyStore implements IdempotencyStore {
         ? { state: "in-progress" }
         : { state: "replay", result: found.result, origin: found.origin ?? "" };
     }
-    const mine = this.#byActor.get(key.actorId);
+    const budget = this.#budget(key);
+    const mine = this.#byActor.get(budget);
     if (mine && mine.size >= this.#maxPerActor && !this.#evictOldestCompleted(mine)) return { state: "exhausted" };
     if (this.#entries.size >= this.#maxEntries) return { state: "exhausted" };
-    const entry: Entry = { hash, actorId: key.actorId, at: t };
+    const entry: Entry = { hash, budget, at: t };
     this.#entries.set(id, entry);
     if (mine) mine.add(id);
-    else this.#byActor.set(key.actorId, new Set([id]));
+    else this.#byActor.set(budget, new Set([id]));
     return { state: "new" };
   }
 

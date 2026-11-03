@@ -1,24 +1,39 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 
 /**
- * Daemon-wide count of handlers still running after their caller was told
- * about a timeout, a cancel or a close. New requests are refused with
- * E_BACKPRESSURE above `max`, so a reconnect loop cannot multiply work that
- * will not stop.
+ * Counts handlers still running after their caller was told about a timeout,
+ * a cancel or a close. The count is charged to the originating window, which
+ * is stable across reconnects, so one window's misbehaviour fills its own
+ * quota and nobody else's. The daemon-wide cap is only a larger backstop.
  */
 export class OrphanTracker {
-  #count = 0;
-  constructor(readonly max: number) {}
+  #total = 0;
+  readonly #byWindow = new Map<string, number>();
+  constructor(
+    /** Daemon-wide backstop. */
+    readonly max: number,
+    /** Per window. */
+    readonly maxPerWindow: number,
+  ) {}
   get count(): number {
-    return this.#count;
+    return this.#total;
   }
-  get full(): boolean {
-    return this.#count >= this.max;
+  countFor(windowId: string): number {
+    return this.#byWindow.get(windowId) ?? 0;
   }
-  add(): void {
-    this.#count++;
+  /** Why a new request from this window must be refused, if it must. */
+  refusal(windowId: string): "window" | "daemon" | undefined {
+    if (this.countFor(windowId) >= this.maxPerWindow) return "window";
+    return this.#total >= this.max ? "daemon" : undefined;
   }
-  remove(): void {
-    this.#count--;
+  add(windowId: string): void {
+    this.#total++;
+    this.#byWindow.set(windowId, this.countFor(windowId) + 1);
+  }
+  remove(windowId: string): void {
+    this.#total--;
+    const n = this.countFor(windowId) - 1;
+    if (n <= 0) this.#byWindow.delete(windowId);
+    else this.#byWindow.set(windowId, n);
   }
 }

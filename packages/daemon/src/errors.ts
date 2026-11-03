@@ -11,8 +11,9 @@ import { makeError, responseEnvelopeSchema, type AxisError, type ErrorCode, type
  *   that fails the message is replaced by a generic one.
  * - `details` keys must be on the per-code allowlist below with a bounded
  *   value; anything else drops the whole `details`.
- * - `E_APPROVAL_REQUIRED` cannot be thrown by a handler (only the approval
- *   gate path may issue a challenge); it becomes `E_INTERNAL`.
+ * - `E_APPROVAL_REQUIRED`, `E_POLICY_DENIED`, `E_UNAUTHENTICATED` and
+ *   `E_VERSION_UNSUPPORTED` cannot be thrown by a handler (only the daemon
+ *   decides them, with an audit row); they become `E_INTERNAL`.
  */
 export class DaemonError extends Error {
   constructor(
@@ -24,6 +25,14 @@ export class DaemonError extends Error {
     this.name = "DaemonError";
   }
 }
+
+/** Codes that mean a daemon decision (audited elsewhere); a handler cannot claim one. */
+const DAEMON_ONLY_CODES: ReadonlySet<ErrorCode> = new Set<ErrorCode>([
+  "E_APPROVAL_REQUIRED",
+  "E_POLICY_DENIED",
+  "E_UNAUTHENTICATED",
+  "E_VERSION_UNSUPPORTED",
+]);
 
 export const SAFE_MESSAGE_MAX = 200;
 const GENERIC_MESSAGE = "Request failed";
@@ -97,8 +106,8 @@ export function toWireError(
     onInternal?.(correlationId, error);
     return internal();
   }
-  if (error.code === "E_APPROVAL_REQUIRED") {
-    onInternal?.(correlationId, new Error("a handler tried to raise E_APPROVAL_REQUIRED"));
+  if (DAEMON_ONLY_CODES.has(error.code)) {
+    onInternal?.(correlationId, new Error(`a handler tried to raise ${error.code}`));
     return internal();
   }
   const details = constrainDetails(error.code, error.details);
