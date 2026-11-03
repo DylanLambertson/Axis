@@ -47,6 +47,14 @@ Fixed vectors (`sha256hex` as lowercase hex):
 | `axis.worktrees` | 1 | `remove` | `{id:"ws-1",deleteBranch:false}` | `adb7a157e75395816cf74974fbdfa2b5bdf32831996a578ff80cdb46fe9d2735` |
 
 `@axis/daemon` implements the identical function and pins the same vectors; the two copies must stay in step. The shared function moves into `@axis/protocol` later, and both packages will then import it.
+## Using `@axis/git-ops`
+
+`planPush` and `executePush` take a required `baseSha`: **the last commit that was actually pushed** (or the workspace's recorded base before the first push), read from the journal by the daemon. The secret scan covers `baseSha..tip`, every commit's patch and its commit message, so everything reachable from `baseSha` is assumed to be on the remote already. If a workspace's base is a local commit that was never pushed, its ancestors go out unscanned: the journal must record the sha of each successful push and supply it next time. A `baseSha` that is not in the repository or not an ancestor of the branch (history was rewritten) is refused with `E_CONFLICT`. Never derive it from a ref under `refs/remotes`: the code in the worktree can write those.
+
+A plan that needs confirmation (warn mode findings, binary files, a scan that was too large) carries `tip` and `digest`. The caller passes `confirmed: true` and `confirmedPlan: { tip, digest }` to `executePush`, which re-scans and answers `E_CONFLICT` with `details.reason: "plan_changed"` if either differs. The runner reports `truncated` when it cut off output, and any truncated scan call fails closed.
+
+The node runner starts git in its own process group so a timeout kills git's children. A normal daemon exit kills the live groups; a crash of the daemon cannot, and may leave an orphaned git running until it finishes.
+
 ## Request digest
 
 The digest is specified under "Shared request digest" above. The daemon computes it once with `requestDigest()` (`packages/daemon/src/digest.ts`, whose doc comment states the ECMAScript `JSON.stringify` semantics) and passes it to the gate as `input.digest`; both packages are pinned by the same fixed vectors, and the copies are to be merged into `@axis/protocol`.

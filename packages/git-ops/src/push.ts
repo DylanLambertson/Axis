@@ -15,8 +15,10 @@ export interface PushInput {
   /** `axis/<slug>`. */
   readonly branch: string;
   /**
-   * The workspace's recorded base, or the last SHA Axis pushed, from the journal: a full object id. The scanned range
-   * is `baseSha..tip`. Refs under refs/remotes are never used for this: the code in the worktree can write them and they go stale.
+   * The last commit Axis actually PUSHED (or the workspace's recorded base before the first push), from the journal: a
+   * full object id. The scanned range is `baseSha..tip`, so everything reachable from `baseSha` is assumed to be on the
+   * remote already; a base that was never pushed lets its ancestors go out unscanned. Refs under refs/remotes are never
+   * used for this: the code in the worktree can write them and they go stale.
    */
   readonly baseSha: string;
   /**
