@@ -32,8 +32,11 @@ export function createNodeRunner(opts: NodeRunnerOptions = {}): GitRunner {
             child.kill("SIGKILL");
           }
         }, opts.timeoutMs ?? 120_000);
+        let truncated = false;
         child.stdout.setEncoding("utf8").on("data", (d: string) => {
-          if (out.length < maxOutput) out += d;
+          const room = Math.max(0, maxOutput - out.length);
+          if (d.length > room) truncated = true;
+          out += d.slice(0, room);
         });
         child.stderr.setEncoding("utf8").on("data", (d: string) => {
           if (err.length < 64 * 1024) err += d;
@@ -44,7 +47,7 @@ export function createNodeRunner(opts: NodeRunnerOptions = {}): GitRunner {
         });
         child.on("close", (code) => {
           clearTimeout(timer);
-          resolve({ code: code ?? -1, stdout: out, stderr: err });
+          resolve({ code: code ?? -1, stdout: out, stderr: err, ...(truncated ? { truncated: true } : {}) });
         });
         child.stdin.on("error", () => undefined);
         child.stdin.end(req.stdin ?? "");

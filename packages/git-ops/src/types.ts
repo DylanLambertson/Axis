@@ -19,6 +19,8 @@ export interface GitRunResult {
   readonly code: number;
   readonly stdout: string;
   readonly stderr: string;
+  /** stdout was cut at the runner's output limit. A caller that needs all of it (the secret scan) must fail closed. */
+  readonly truncated?: boolean;
 }
 
 export interface GitRunner {

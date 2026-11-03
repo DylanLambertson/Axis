@@ -43,10 +43,11 @@ export async function scanOutgoing(deps: GitOpsDeps, git: DaemonGit, worktree: W
   if (!scanner) return { findings: [], truncated: false, binaryPaths: [] };
   const list = await git(["rev-list", "--reverse", "--end-of-options", tip, `^${base}`]);
   if (list.code !== 0) throw unavailable("list the outgoing commits");
+  // Output the runner cut off is output the scan never saw: whatever it dropped fails the scan closed.
+  let truncated = list.truncated === true;
   const commits = list.stdout.split("\n").map((l) => l.trim()).filter(Boolean);
   if (commits.some((c) => !OBJECT_ID.test(c))) throw unavailable("list the outgoing commits");
   const findings: SecretFinding[] = [];
-  let truncated = false;
   const binary = new Set<string>();
   let total = 0;
   if (commits.length > MAX_COMMITS) truncated = true;
@@ -68,15 +69,15 @@ export async function scanOutgoing(deps: GitOpsDeps, git: DaemonGit, worktree: W
     if (stat.code !== 0) throw unavailable("list the binary files");
     const binaryPaths = parseBinaryPaths(stat.stdout);
     for (const p of binaryPaths) binary.add(p);
-    const cut = d.stdout.length > MAX_DIFF;
+    const cut = d.stdout.length > MAX_DIFF || d.truncated === true;
     total += d.stdout.length;
-    if (cut) truncated = true;
+    if (cut || stat.truncated === true) truncated = true;
     for (const f of await scanner(cut ? d.stdout.slice(0, MAX_DIFF) : d.stdout, { worktree, truncated: cut, commit, binaryPaths, part: "patch" })) findings.push({ ...f, commit });
 
     // The commit object, headers and message, is pushed too, and a message is as good a place for a secret as a file.
     const raw = await git(["cat-file", "commit", commit]);
     if (raw.code !== 0) throw unavailable("read the commit message");
-    const cutMessage = raw.stdout.length > MAX_DIFF;
+    const cutMessage = raw.stdout.length > MAX_DIFF || raw.truncated === true;
     total += raw.stdout.length;
     if (cutMessage) truncated = true;
     if (raw.stdout.length > 0) {

@@ -307,3 +307,17 @@ test("RR-2: GIT_ALLOW_PROTOCOL and GIT_PROTOCOL_FROM_USER in the pty environment
     assert.equal(await code(planPush(deps, input)), "E_POLICY_DENIED", n);
   }
 });
+
+test("RR-N4: output the runner cut off fails the scan closed, whichever call lost output", async () => {
+  for (const lost of ["rev-list", "diff-tree-patch", "diff-tree-numstat", "cat-file"]) {
+    const runner = () => new FakeRunner(healthy((s) => {
+      const key = s[0] === "diff-tree" ? (s.includes("--numstat") ? "diff-tree-numstat" : "diff-tree-patch") : s[0];
+      if (key !== lost) return undefined;
+      return { stdout: key === "rev-list" ? `${COMMIT}\n` : key === "cat-file" ? "tree x\n" : "", truncated: true };
+    }));
+    const scanner = async () => [];
+    assert.equal(await code(planPush(makeDeps(runner(), { scanner, scanMode: "refuse" }), input)), "E_POLICY_DENIED", lost);
+    const plan = await planPush(makeDeps(runner(), { scanner, scanMode: "warn" }), input);
+    assert.equal(plan.requiresConfirmation, true, lost);
+  }
+});
