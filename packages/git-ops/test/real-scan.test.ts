@@ -74,3 +74,19 @@ test("B-2: in a partial clone the scan diff cannot lazy-fetch through remote.<n>
   await planPush(f.deps, { worktree: wt, remote: "origin", branch: "axis/feat", base: "main" }).catch(() => undefined);
   assert.equal(readFileSync(f.marker, "utf8"), "", "the daemon ran a transport program during a lazy fetch");
 });
+
+test("S-6: a refs/replace entry cannot show the scanner clean content in place of the blob that is pushed", async () => {
+  const seen: string[] = [];
+  const f = fixture({ scanner: scanFor(seen), scanMode: "refuse" });
+  const repo = f.wt.workTree;
+  writeFileSync(join(repo, "prod.env"), `AWS=${AWS_KEY}\n`);
+  f.git("add", "-A");
+  f.git("commit", "-q", "-m", "add env");
+  const secretBlob = f.git("rev-parse", "HEAD:prod.env").trim();
+  writeFileSync(join(f.root, "clean.txt"), "AWS=redacted\n");
+  const clean = f.run(repo, "hash-object", "-w", join(f.root, "clean.txt")).trim();
+  f.git("replace", secretBlob, clean);
+  assert.ok(!f.git("diff", "main", "HEAD").includes(AWS_KEY), "fixture: an unhardened diff honours the replacement");
+  const e = await planPush(f.deps, { worktree: f.wt, remote: "origin", branch: "axis/feat", base: "main" }).then(() => undefined, (x: unknown) => x);
+  assert.ok(e instanceof Error && /secret pattern/.test(e.message), `the scan did not see the real blob; scanner got ${JSON.stringify(seen)}`);
+});
