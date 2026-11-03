@@ -202,9 +202,9 @@ All failures are `ProviderError` (closed taxonomy in `@axis/providers`), whose `
 
 Rules:
 
-- **No body ever reaches an error.** For an error status the adapter reads at most 16 KiB of the body, only to take two decisions: the `error.type` from a fixed list of known values, and, for `invalid_request_error`, whether the message contains the fixed phrase `prompt is too long`. The body is then dropped. Neither the text nor the `request_id` is surfaced. A body that echoes the key therefore cannot leak it, and the test checks that.
+- **No body ever reaches an error.** The status decides the code. For a 400 only, the adapter reads at most 16 KiB of the body, to see whether the error is `invalid_request_error` and the message contains the fixed phrase `prompt is too long`; that one boolean turns `invalid_request` into `context_length_exceeded`. For every other status the body is cancelled unread. Neither the text nor the `request_id` is surfaced. A body that echoes the key therefore cannot leak it, and the tests check that.
 - `Retry-After`: only a non-negative integer number of seconds is honoured (capped at one day by `ProviderError`); an HTTP date or garbage is ignored.
-- A stream `error` event maps from `error.type` through the same fixed list; the message is never used.
+- A stream `error` event maps from `error.type` through a fixed list (`overloaded_error`, `rate_limit_error`, `invalid_request_error`, `authentication_error`, `permission_error`, `billing_error`, `not_found_error`, `request_too_large`, `timeout_error`; anything else is `server_error`); the message is never used.
 - `status` is the HTTP status when there was one.
 - A 429 with no `retry-after` header is `rate_limited` with no `retryAfterMs` (the documentation notes that a spend-cap 429 has no header and keeps failing; the budget layer, not a retry loop, is what stops spend).
 
@@ -325,5 +325,5 @@ The gate lines the tests cover: ANT-1 (items 2 to 5), PRV-1 (10), PRV-2 (5, 6, 1
 1. **Thinking blocks.** Models that always think return blocks that must be passed back on tool turns. Options: an opaque provider-state content block in adapter API v2 (preferred; needs a change in `@axis/providers`), or a per-connection in-memory cache keyed by tool-use id (lost on restart). Until decided, v1 ignores them (§4.5). Needed before ticket 10's tool loop is exercised against such a model.
 2. **`temperature` and `toolChoice` reporting.** The Models API does not report them, so they are `unknown` and refused. If the product needs forced tool choice on a given model, that needs either a documented capability field or a user-visible override.
 3. **Pricing source.** The adapter takes pricing from the daemon. Where that configuration lives and who reviews it is a ticket 10 decision; without it, only token budgets are enforceable.
-4. **Error body inspection.** §8 reads a bounded error body for two fixed decisions. If the owner prefers no body reads at all, `context_length_exceeded` on a 400 is lost (the status alone says `invalid_request`).
+4. **Error body inspection.** §8 reads a bounded body of a 400 for one fixed decision. If the owner prefers no body reads at all, `context_length_exceeded` on a 400 is lost (the status alone says `invalid_request`).
 5. **Key kinds.** v1 sends `x-api-key` for a provider-issued API key only. Workspace-scoped keys that need an `anthropic-workspace-id` header, and bearer or OAuth credentials, are not supported (`PROVIDERS.md` connection type 2 only).
