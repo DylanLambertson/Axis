@@ -2,6 +2,7 @@
 import { challengeReferenceSchema, challengeSchema, makeError, type ChallengeReference, type ErrorCode, type JsonValue } from "@axis/protocol";
 import type { Auditor } from "./audit.js";
 import { requestDigest, withoutApproval } from "./digest.js";
+import { CONTROL_CHARS } from "./errors.js";
 import { Aborted } from "./execute.js";
 import { handlerKey, withdrawChallenge, withdrawIfUnspent, type Outcome, type PipelineInput, type PipelineState } from "./pipeline.js";
 import {
@@ -16,6 +17,21 @@ export function approvalOf(payload: JsonValue): ChallengeReference | undefined {
   const parsed = challengeReferenceSchema.safeParse((payload as Record<string, JsonValue>)["approval"]);
   return parsed.success ? parsed.data : undefined;
 }
+
+/** A content hook returned something the approval cannot be bound to: the integrator's bug, never the client's. */
+class ContentHookError extends Error {}
+
+const TARGET_MAX = 1024;
+const checkTarget = (target: unknown): void => {
+  if (typeof target !== "string" || target.length === 0 || target.length > TARGET_MAX || CONTROL_CHARS.test(target)) {
+    throw new ContentHookError("a content hook returned a target that is not a non-empty display-safe string");
+  }
+};
+const checkDigest = (digest: unknown): void => {
+  if (typeof digest !== "string" || !/^[0-9a-f]{64}$/.test(digest)) {
+    throw new ContentHookError("a content hook produced a content digest that is not 64 lowercase hex characters");
+  }
+};
 
 /** Thrown out of the action so the approval manager records a failed handler as failed; the pipeline unwraps it. */
 class HandlerFailed extends Error {}
@@ -91,9 +107,23 @@ export async function runApproval(a: ApprovalStep): Promise<Outcome> {
     throw e;
   }
   guard();
+  const hookBug = async (e: ContentHookError): Promise<Outcome> => {
+    await auditor.soft("error", { decision: "allow", reason: "content_hook_error" });
+    d.onInternalError?.(correlationId, e);
+    return fail("E_INTERNAL", "Internal error");
+  };
 
   if (!approval) {
-    const contentDigest = await lock.withLock((cd) => Promise.resolve(cd));
+    let contentDigest: string;
+    try {
+      contentDigest = await lock.withLock((cd) => {
+        checkDigest(cd);
+        return Promise.resolve(cd);
+      });
+    } catch (e) {
+      if (e instanceof ContentHookError) return hookBug(e);
+      throw e;
+    }
     guard();
     let challenge;
     try {
@@ -141,10 +171,14 @@ export async function runApproval(a: ApprovalStep): Promise<Outcome> {
     if (pending) await pending.catch(() => undefined);
   };
   try {
-    await lock.withLock((contentDigest) => gate.execute(input, approval, { target: lock.target, contentDigest }, wrapped));
+    await lock.withLock((contentDigest) => {
+      checkDigest(contentDigest);
+      return gate.execute(input, approval, { target: lock.target, contentDigest }, wrapped);
+    });
     completedAtReturn = captured !== undefined;
   } catch (e) {
     await settle();
+    if (e instanceof ContentHookError && !started) return hookBug(e);
     const done = captured as Outcome | undefined;
     if (done && !done.ok) return done;
     if (started) throw e; // the action ran (aborted, audit failure) or the gate failed after it
@@ -199,8 +233,7 @@ async function resolveContent(p: PipelineInput, payload: JsonValue, digest: stri
     { identity: p.identity, requestId: p.req.id, correlationId: p.correlationId, signal: p.signal },
     payload,
   );
-  if (typeof lock?.target !== "string" || lock.target.length === 0 || typeof lock.withLock !== "function") {
-    throw new Error("an approval content hook returned something that is not a target and a lock");
-  }
+  if (typeof lock?.withLock !== "function") throw new ContentHookError("an approval content hook returned no lock");
+  checkTarget(lock.target);
   return lock;
 }

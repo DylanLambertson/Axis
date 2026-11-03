@@ -84,6 +84,40 @@ test("a content hook that throws, or returns no lock, fails closed with an audit
   }
 });
 
+test("D3-N1: a content hook with a bad target or digest is E_INTERNAL with a content_hook_error row and a local report, and nothing is issued", async (t) => {
+  const good = "a".repeat(64);
+  const hooks: Array<[string, (calls: number) => ApprovalContentHook]> = [
+    ["empty target", () => () => ({ target: "", withLock: (fn) => fn(good) })],
+    ["control characters in the target", () => () => ({ target: "workspace:\u0007x", withLock: (fn) => fn(good) })],
+    ["target over 1024", () => () => ({ target: "w".repeat(1025), withLock: (fn) => fn(good) })],
+    ["short digest", () => () => ({ target: "workspace:x", withLock: (fn) => fn("abc") })],
+    ["uppercase digest", () => () => ({ target: "workspace:x", withLock: (fn) => fn("A".repeat(64)) })],
+    ["non-string digest", () => () => ({ target: "workspace:x", withLock: (fn) => fn(undefined as never) })],
+  ];
+  for (const [name, make] of hooks) {
+    const { gate, calls } = fakeGate();
+    const r = await ready(t, { gate });
+    r.daemon.register(CONTRACT, 1, { danger: () => assert.fail("must not run") }, { content: { danger: make(0) } });
+    r.send(req("d3", "danger", { id: "ws-1" }, { idempotencyKey: KEY1 }));
+    const res = await r.inbox.response("d3");
+    assert.equal(res.error?.code, "E_INTERNAL", name);
+    assert.equal(calls.issue.length, 0, name);
+    assert.equal(r.events.at(-1)?.payload["reason"], "content_hook_error", name);
+    assert.equal(r.internal.length, 1, name);
+  }
+});
+
+test("D3-N1: a digest that goes bad between issue and execute is refused before the gate is asked to spend", async (t) => {
+  const { gate, calls } = fakeGate();
+  let digest = sha("v1");
+  const r = await ready(t, { gate });
+  r.daemon.register(CONTRACT, 1, { danger: () => assert.fail("must not run") }, { content: { danger: () => ({ target: "workspace:x", withLock: (fn) => fn(digest) }) } });
+  const id = await approveAndRun(r, "b", { id: "ws-1" }, () => void (digest = "not hex"));
+  assert.equal((await r.inbox.response(id)).error?.code, "E_INTERNAL");
+  assert.equal(calls.execute.length, 0);
+  assert.equal(r.events.at(-1)?.payload["reason"], "content_hook_error");
+});
+
 test("registering a content hook for a method without a handler throws", async (t) => {
   const r = await ready(t);
   assert.throws(() => r.daemon.register(CONTRACT, 1, { echo: () => 1 }, { content: { danger: () => ({ target: "x", withLock: (f) => f("d") }) } }), /no handler/);

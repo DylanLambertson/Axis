@@ -37,7 +37,7 @@ const DAEMON_ONLY_CODES: ReadonlySet<ErrorCode> = new Set<ErrorCode>([
 export const SAFE_MESSAGE_MAX = 200;
 const GENERIC_MESSAGE = "Request failed";
 
-const CONTROL_CHARS = /[\p{Cc}\p{Cf}\u2028\u2029]/u;
+export const CONTROL_CHARS = /[\p{Cc}\p{Cf}\u2028\u2029]/u;
 
 /** A second layer behind the contract rules: obvious credential shapes. */
 const SECRET_PATTERNS: readonly RegExp[] = [
