@@ -164,8 +164,9 @@ export const REDACTION_RULES: readonly RedactionRule[] = [
   regexRule("authorization", /\bBasic\s+[A-Za-z0-9+/]{16,}={0,2}/g, () => `Basic ${placeholder("authorization")}`),
   regexRule(
     "env-secret",
-    // NAME=value where NAME mentions a secret-ish word (AWS_SECRET_ACCESS_KEY=..., DB_PWD=...).
-    /(\b[A-Za-z0-9_]{0,64}(?:secret|token|password|passwd|pwd|apikey|api_key|access_key|private_key|credential)[A-Za-z0-9_]{0,64}\s*=\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s"']+)/gi,
+    // NAME=value, NAME: value and JSON-text "name": "value", where NAME mentions a secret-ish word
+    // (AWS_SECRET_ACCESS_KEY=..., DB_PWD=..., password: ..., client_secret: ..., "secret_key": "...").
+    /(\b[A-Za-z0-9_]{0,64}(?:secret|token|password|passwd|pwd|apikey|api_key|access_key|private_key|credential)[A-Za-z0-9_]{0,64}\\?["']?\s*[:=]\s*)(?:\\?"[^"\r\n]*"|\\?'[^'\r\n]*'|[^\s"',;}\\]+)/gi,
     (_m, prefix = "") => `${prefix}${placeholder("env-secret")}`,
   ),
   regexRule("jwt", /\beyJ[A-Za-z0-9_-]{5,}\.eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]*/g, () => placeholder("jwt")),
@@ -206,6 +207,7 @@ const SENSITIVE_KEY_SUFFIXES = [
   "apikey",
   "privatekey",
   "accesskey",
+  "secretkey",
   "sessionid",
   "pwd",
 ];

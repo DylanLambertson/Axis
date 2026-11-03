@@ -219,7 +219,12 @@ export class AuditLog implements AuditSink {
     const { actor, action, target, outcome } = parsed.data;
     const redactedTarget = this.#redactor.redactString(target);
     // Redact first, then keep only what the action's allowlist permits (ADR 0003 D5).
-    const payload = applyPayloadPolicy(action, this.#redactor.redactValue(parsed.data.payload ?? null), this.#allowlist);
+    const payload = applyPayloadPolicy(
+      action,
+      this.#redactor.redactValue(parsed.data.payload ?? null),
+      this.#allowlist,
+      (s) => this.#redactor.redactString(s),
+    );
     const ts = this.#now().toISOString();
 
     return withTransaction(this.#db, () => {

@@ -43,6 +43,8 @@ export function applyPayloadPolicy(
   action: string,
   payload: JsonValue,
   allowlist: Readonly<Record<string, readonly string[]>>,
+  /** Applied to every string that is stored, so no free-text field is ever kept verbatim whatever the caller did before. */
+  redactString: (s: string) => string,
 ): JsonValue {
   if (payload === null) return null;
   const allowed = Object.hasOwn(allowlist, action) ? allowlist[action] : undefined;
@@ -55,7 +57,8 @@ export function applyPayloadPolicy(
     if (!allowed.includes(key)) {
       omitted++;
     } else if (isScalar(value)) {
-      out[key] = typeof value === "string" && value.length > MAX_FIELD_CHARS ? `${value.slice(0, MAX_FIELD_CHARS)}[TRUNCATED:${value.length}]` : value;
+      const text = typeof value === "string" ? redactString(value) : value;
+      out[key] = typeof text === "string" && text.length > MAX_FIELD_CHARS ? `${text.slice(0, MAX_FIELD_CHARS)}[TRUNCATED:${text.length}]` : text;
     } else {
       out[key] = summary(value);
     }
