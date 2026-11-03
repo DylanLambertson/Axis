@@ -4,7 +4,7 @@
 **Planner:** decomposes user goal into a dependency DAG, proposes risks, file scope, acceptance tests, estimated cost and permissions. **Worker:** implements one bounded task in a dedicated worktree. **Reviewer:** checks diff, tests, security, spec alignment and integration risk; cannot self-approve its own work. **Integrator:** coordinates sequential merges and conflict resolution under policy. Optional researcher/tester agents use the same task protocol.
 
 ## Run state machine
-DRAFT → PLANNING → AWAITING_APPROVAL (if needed) → QUEUED → RUNNING → VALIDATING → REVIEWING → READY_TO_MERGE → MERGING → COMPLETED. Alternative terminal states: CANCELLED, FAILED, BLOCKED, ROLLED_BACK. Durable journal and restart recovery required.
+DRAFT → PLANNING → AWAITING_APPROVAL (if needed) → QUEUED → RUNNING → VALIDATING → REVIEWING → READY_TO_MERGE → MERGING → COMPLETED. Alternative terminal states: CANCELLED, FAILED, BLOCKED, ROLLED_BACK. Durable journal and restart recovery required. In the Phase 1a journal every run reaches COMPLETED through REVIEWING (a run that produced nothing still passes it) and only the user can accept it from there, and BLOCKED is resumable rather than terminal: a run interrupted by a daemon restart becomes BLOCKED and can be retried (QUEUED), re-adopted (RUNNING) or cancelled, only while its workspace is READY.
 
 ## Scheduling
 Tasks have IDs, dependencies, scopes, priority, budget, allowed tools, model requirements, branch/worktree refs and acceptance tests. Run ready tasks concurrently within per-device/per-team quotas. Prevent overlapping write scopes when possible; Git isolation is the final boundary. Planner cannot override policy.

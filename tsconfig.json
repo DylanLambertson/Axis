@@ -6,6 +6,8 @@
     { "path": "packages/challenge" },
     { "path": "packages/daemon" },
     { "path": "packages/providers" },
-    { "path": "packages/git-ops" }
+    { "path": "packages/git-ops" },
+    { "path": "packages/audit" },
+    { "path": "packages/journal" }
   ]
 }
