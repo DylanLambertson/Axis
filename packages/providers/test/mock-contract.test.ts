@@ -1,10 +1,12 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 // Runs the shared adapter contract suite against the mock provider. Ticket 9
 // runs the same suite against the Anthropic adapter with a fake transport.
-import { runProviderContractSuite, type ContractScenario } from "../src/contract/index.js";
+import { runProviderContractSuite, type ContractScenario } from "../contract/index.js";
 import { MOCK_DEFAULT_MODEL, createMockProvider, type MockReply } from "../src/index.js";
 
 const CANARY = "contract-canary-body-text";
+// Low-entropy stand-in for an API key.
+const CREDENTIAL = "contract-credential-stand-in";
 
 function replyFor(s: ContractScenario): MockReply {
   switch (s.kind) {
@@ -15,9 +17,14 @@ function replyFor(s: ContractScenario): MockReply {
     case "tool_use":
       return { kind: "tool_use", name: s.name, input: s.input };
     case "error":
-      return { kind: "error", code: s.code, body: `{"error":"${CANARY}"}`, ...(s.retryAfterMs === undefined ? {} : { retryAfterMs: s.retryAfterMs }) };
+      return {
+        kind: "error",
+        code: s.code,
+        body: `{"error":"${CANARY}","key":"${CREDENTIAL}"}`,
+        ...(s.retryAfterMs === undefined ? {} : { retryAfterMs: s.retryAfterMs }),
+      };
     case "mid_stream_error":
-      return { kind: "error", code: "overloaded", afterText: s.text, body: CANARY };
+      return { kind: "error", code: "overloaded", afterText: s.text, body: `${CANARY} ${CREDENTIAL}` };
     case "hang":
       return { kind: "hang" };
     case "malformed":
@@ -28,10 +35,12 @@ function replyFor(s: ContractScenario): MockReply {
 runProviderContractSuite({
   name: "mock",
   canary: CANARY,
+  credential: CREDENTIAL,
   setup(scenario) {
     const mock = createMockProvider({
       replies: [replyFor(scenario)],
       chunkChars: 4,
+      credential: CREDENTIAL,
       ...(scenario.kind === "error" && scenario.code === "authentication" ? { connectionError: "authentication" as const } : {}),
     });
     return {

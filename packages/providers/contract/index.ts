@@ -7,14 +7,16 @@
  * injects a fake transport that serves recorded responses and counts
  * requests. The suite needs no network.
  *
- * This entry point imports `node:test` and is test support only: it is not
- * daemon code and is not staged into the Code OSS tree (ADR 0005 D3).
+ * This entry point imports `node:test` and is test support only. It lives
+ * outside `src/` so the ADR 0005 D3 staging hook, which copies
+ * `packages/<name>/src/**`, never stages it into the Code OSS tree (N9).
  */
 import { describe, it, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import type { JsonValue } from "@axis/protocol";
-import { ProviderError, isProviderError, isRetryableCode, type ProviderErrorCode } from "../errors.js";
-import { StreamValidator, collectStream } from "../stream.js";
+import { inspect } from "node:util";
+import { DETAIL_KEYS, ProviderError, isProviderError, isRetryableCode, type ProviderErrorCode } from "../src/errors.js";
+import { StreamValidator, collectStream } from "../src/stream.js";
 import {
   PROVIDER_ADAPTER_API_VERSION,
   modelCapabilitiesSchema,
@@ -23,7 +25,7 @@ import {
   type ModelCapabilities,
   type ProviderAdapter,
   type StreamEvent,
-} from "../types.js";
+} from "../src/types.js";
 
 /** Error codes a harness is asked to simulate as provider error responses. */
 export const CONTRACT_ERROR_CODES = [
@@ -44,9 +46,9 @@ export type ContractScenario =
   | { readonly kind: "max_tokens"; readonly text: string }
   | { readonly kind: "tool_use"; readonly name: string; readonly input: { readonly [key: string]: JsonValue } }
   /**
-   * An error response. The harness must put `canary` into the simulated
-   * response body (and headers, where it can), to prove the adapter does not
-   * echo bodies into errors (ANT-1).
+   * An error response. The harness must put `canary` and `credential` into
+   * the simulated response body and headers, to prove the adapter does not
+   * echo them into errors (ANT-1).
    */
   | { readonly kind: "error"; readonly code: ContractErrorCode; readonly retryAfterMs?: number }
   /** A stream that sends `text` and then fails with `overloaded`. */
@@ -63,16 +65,22 @@ export interface ContractFixture {
   readonly model: string;
   /** Provider requests made by `generate` and `stream` so far. */
   requestCount(): number;
-  /** Responses still open on the wire. Optional; checks that need it are skipped without it. */
-  openStreams?(): number;
+  /** Responses still open on the wire. Required: release checks never skip (S9). */
+  openStreams(): number;
 }
 
 export interface ContractHarness {
   readonly name: string;
   /** A marker the simulated provider echoes into error bodies. It must never reach an error. */
   readonly canary: string;
-  /** Return undefined for a scenario the harness cannot simulate; those tests are skipped. */
-  setup(scenario: ContractScenario): ContractFixture | undefined | Promise<ContractFixture | undefined>;
+  /**
+   * The API credential the harness configures the adapter with (ANT-1). The
+   * simulated provider echoes it into error bodies and headers; it must never
+   * appear in an error, an event or a result. Use a low-entropy test value.
+   */
+  readonly credential: string;
+  /** Every scenario must be simulated; a missing one fails the suite rather than skipping. */
+  setup(scenario: ContractScenario): ContractFixture | Promise<ContractFixture>;
   /** A model id the connection does not offer. */
   readonly unknownModel?: string;
   /** How long a cancelled call may take to settle. Default 2000 ms. */
@@ -130,12 +138,28 @@ async function settles(check: () => boolean, ms: number): Promise<boolean> {
   return check();
 }
 
-function assertNoLeak(err: ProviderError, canary: string): void {
-  for (const s of [err.message, String(err), JSON.stringify(err), err.stack ?? ""]) {
-    assert.ok(!s.includes(canary), "error text contains the provider body canary");
+const ERROR_OWN_KEYS: ReadonlySet<string> = new Set(["stack", "message", "name", "code", "retryable", "details"]);
+const DETAIL_KEY_SET: ReadonlySet<string> = new Set(DETAIL_KEYS);
+
+/**
+ * An error is exactly a ProviderError with its known fields, and nothing a
+ * log sink would print contains a canary (S9). `util.inspect` with hidden
+ * properties and getters is what common loggers see; `JSON.stringify` alone
+ * goes through `toJSON` and would hide extra properties.
+ */
+function assertNoLeak(err: ProviderError, ...canaries: string[]): void {
+  assert.equal(Object.getPrototypeOf(err), ProviderError.prototype, "errors are plain ProviderError instances");
+  for (const key of Reflect.ownKeys(err)) {
+    assert.ok(typeof key === "string" && ERROR_OWN_KEYS.has(key), `unexpected own property on the error: ${String(key)}`);
+  }
+  for (const key of Reflect.ownKeys(err.details)) {
+    assert.ok(typeof key === "string" && DETAIL_KEY_SET.has(key), `unexpected detail key: ${String(key)}`);
+  }
+  const views = [err.message, String(err), JSON.stringify(err), err.stack ?? "", inspect(err, { depth: Infinity, showHidden: true, getters: true })];
+  for (const s of views) {
+    for (const c of canaries) assert.ok(!s.includes(c), "error text contains a canary (provider body or credential)");
     assert.ok(!s.includes(MARKER), "error text contains request content");
   }
-  assert.equal(Object.prototype.hasOwnProperty.call(err, "cause"), false, "errors carry no cause chain");
 }
 
 function textOf(r: GenerateResult): string {
@@ -151,16 +175,16 @@ export function runProviderContractSuite(harness: ContractHarness): void {
   const cancelMs = harness.cancelWithinMs ?? 2_000;
   const live = (): AbortSignal => new AbortController().signal;
 
-  const fixture = async (t: TestContext, scenario: ContractScenario): Promise<ContractFixture | undefined> => {
+  const fixture = async (t: TestContext, scenario: ContractScenario): Promise<ContractFixture> => {
+    void t;
     const f = await harness.setup(scenario);
-    if (f === undefined) t.skip(`harness cannot simulate ${scenario.kind}`);
+    assert.ok(f !== undefined, `harness must simulate ${scenario.kind}`);
     return f;
   };
 
   describe(`provider contract: ${harness.name}`, () => {
     it("descriptor declares the API version, ids and a destination", async (t) => {
       const f = await fixture(t, { kind: "text", text: "hi" });
-      if (f === undefined) return;
       const d = f.adapter.descriptor;
       assert.equal(d.apiVersion, PROVIDER_ADAPTER_API_VERSION);
       assert.match(d.providerId, /^[a-z][a-z0-9-]{0,63}$/);
@@ -176,7 +200,6 @@ export function runProviderContractSuite(harness: ContractHarness): void {
 
     it("listModels returns unique ids including the fixture model", async (t) => {
       const f = await fixture(t, { kind: "text", text: "hi" });
-      if (f === undefined) return;
       const models = await f.adapter.listModels({ signal: live() });
       const ids = models.map((m) => m.id);
       assert.ok(ids.includes(f.model));
@@ -185,7 +208,6 @@ export function runProviderContractSuite(harness: ContractHarness): void {
 
     it("getCapabilities returns a well-formed report for the model", async (t) => {
       const f = await fixture(t, { kind: "text", text: "hi" });
-      if (f === undefined) return;
       const caps = await f.adapter.getCapabilities(f.model, { signal: live() });
       assert.equal(modelCapabilitiesSchema.safeParse(caps).success, true);
       assert.equal(caps.modelId, f.model);
@@ -197,32 +219,28 @@ export function runProviderContractSuite(harness: ContractHarness): void {
 
     it("getCapabilities fails with not_found for an unknown model", async (t) => {
       const f = await fixture(t, { kind: "text", text: "hi" });
-      if (f === undefined) return;
       const err = await rejection(f.adapter.getCapabilities(harness.unknownModel ?? "axis-contract-no-such-model", { signal: live() }));
       assert.equal(err.code, "not_found");
     });
 
     it("validateConnection reports a healthy connection", async (t) => {
       const f = await fixture(t, { kind: "text", text: "hi" });
-      if (f === undefined) return;
       assert.deepEqual(await f.adapter.validateConnection({ signal: live() }), { ok: true });
     });
 
     it("validateConnection returns, not throws, a rejected credential", async (t) => {
       const f = await fixture(t, { kind: "error", code: "authentication" });
-      if (f === undefined) return;
       const r = await f.adapter.validateConnection({ signal: live() });
       assert.equal(r.ok, false);
       if (!r.ok) {
         assert.ok(isProviderError(r.error));
         assert.equal(r.error.code, "authentication");
-        assertNoLeak(r.error, harness.canary);
+        assertNoLeak(r.error, harness.canary, harness.credential);
       }
     });
 
     it("stream: a text reply follows the event grammar", async (t) => {
       const f = await fixture(t, { kind: "text", text: "The quick brown fox jumps over the lazy dog." });
-      if (f === undefined) return;
       const events = await drain(f.adapter.stream(request(f.model), { signal: live() }));
       const v = new StreamValidator();
       for (const ev of events) v.accept(ev);
@@ -232,14 +250,17 @@ export function runProviderContractSuite(harness: ContractHarness): void {
       assert.equal(r.model.length > 0, true);
       assertUsage(r);
       assert.equal(f.requestCount(), 1);
-      if (f.openStreams !== undefined) assert.equal(f.openStreams(), 0);
+      assert.equal(f.openStreams(), 0);
+      // Input usage right after message_start, so a cancelled request can be charged (S5).
+      const second = events[1];
+      assert.ok(second?.type === "usage" && second.usage.inputTokens > 0, "a usage event with input tokens follows message_start");
+      assert.ok(!JSON.stringify(events).includes(harness.credential), "events never carry the credential");
     });
 
     it("generate: returns what collectStream builds from stream", async (t) => {
       const scenario: ContractScenario = { kind: "text", text: "Same answer either way." };
       const a = await fixture(t, scenario);
       const b = await fixture(t, scenario);
-      if (a === undefined || b === undefined) return;
       const gen = await a.adapter.generate(request(a.model), { signal: live() });
       const col = await collectStream(b.adapter.stream(request(b.model), { signal: live() }));
       assert.equal(textOf(gen), "Same answer either way.");
@@ -253,7 +274,6 @@ export function runProviderContractSuite(harness: ContractHarness): void {
       it(`${mode}: a tool call carries its name and parsed input`, async (t) => {
         const input = { path: "src/index.ts" };
         const f = await fixture(t, { kind: "tool_use", name: TOOL.name, input });
-        if (f === undefined) return;
         const req = request(f.model, { tools: [TOOL] });
         const r =
           mode === "stream"
@@ -270,7 +290,6 @@ export function runProviderContractSuite(harness: ContractHarness): void {
 
     it("stream: reports max_tokens", async (t) => {
       const f = await fixture(t, { kind: "max_tokens", text: "cut off" });
-      if (f === undefined) return;
       const r = await collectStream(f.adapter.stream(request(f.model), { signal: live() }));
       assert.equal(r.stopReason, "max_tokens");
     });
@@ -280,7 +299,6 @@ export function runProviderContractSuite(harness: ContractHarness): void {
         it(`${mode}: a provider ${code} error maps to the taxonomy without leaking`, async (t) => {
           const scenario: ContractScenario = code === "rate_limited" ? { kind: "error", code, retryAfterMs: 3_000 } : { kind: "error", code };
           const f = await fixture(t, scenario);
-          if (f === undefined) return;
           const req = request(f.model);
           const err = await rejection(
             mode === "stream" ? drain(f.adapter.stream(req, { signal: live() })) : f.adapter.generate(req, { signal: live() }),
@@ -288,7 +306,7 @@ export function runProviderContractSuite(harness: ContractHarness): void {
           assert.equal(err.code, code);
           assert.equal(err.retryable, isRetryableCode(code));
           if (code === "rate_limited") assert.equal(err.details.retryAfterMs, 3_000);
-          assertNoLeak(err, harness.canary);
+          assertNoLeak(err, harness.canary, harness.credential);
           assert.equal(f.requestCount(), 1, "adapters do not retry; the gateway decides (budget runs before each request)");
         });
       }
@@ -296,7 +314,6 @@ export function runProviderContractSuite(harness: ContractHarness): void {
 
     it("stream: an error after some output surfaces from iteration", async (t) => {
       const f = await fixture(t, { kind: "mid_stream_error", text: "partial" });
-      if (f === undefined) return;
       const seen: StreamEvent[] = [];
       const err = await rejection(
         (async () => {
@@ -307,25 +324,23 @@ export function runProviderContractSuite(harness: ContractHarness): void {
       assert.equal(seen[0]?.type, "message_start");
       const v = new StreamValidator();
       for (const ev of seen) v.accept(ev);
-      assertNoLeak(err, harness.canary);
-      if (f.openStreams !== undefined) assert.equal(f.openStreams(), 0);
+      assertNoLeak(err, harness.canary, harness.credential);
+      assert.equal(f.openStreams(), 0);
     });
 
     for (const mode of ["stream", "generate"] as const) {
       it(`${mode}: a malformed response fails with invalid_response`, async (t) => {
         const f = await fixture(t, { kind: "malformed" });
-        if (f === undefined) return;
         const req = request(f.model);
         const err = await rejection(
           mode === "stream" ? drain(f.adapter.stream(req, { signal: live() })) : f.adapter.generate(req, { signal: live() }),
         );
         assert.equal(err.code, "invalid_response");
-        assertNoLeak(err, harness.canary);
+        assertNoLeak(err, harness.canary, harness.credential);
       });
 
       it(`${mode}: an already aborted signal fails with cancelled and sends nothing`, async (t) => {
         const f = await fixture(t, { kind: "text", text: "never sent" });
-        if (f === undefined) return;
         const c = new AbortController();
         c.abort();
         const req = request(f.model);
@@ -338,7 +353,6 @@ export function runProviderContractSuite(harness: ContractHarness): void {
 
       it(`${mode}: an invalid request fails with invalid_request and sends nothing`, async (t) => {
         const f = await fixture(t, { kind: "text", text: "never sent" });
-        if (f === undefined) return;
         for (const bad of [request(f.model, { messages: [] }), request(f.model, { maxOutputTokens: 0 })]) {
           const err = await rejection(
             mode === "stream" ? drain(f.adapter.stream(bad, { signal: live() })) : f.adapter.generate(bad, { signal: live() }),
@@ -350,7 +364,6 @@ export function runProviderContractSuite(harness: ContractHarness): void {
 
       it(`${mode}: a feature the model lacks is refused, not emulated`, async (t) => {
         const f = await fixture(t, { kind: "text", text: "never sent" });
-        if (f === undefined) return;
         const caps = await f.adapter.getCapabilities(f.model, { signal: live() });
         const req = requestUsingMissingFeature(f.model, caps);
         if (req === undefined) {
@@ -365,15 +378,33 @@ export function runProviderContractSuite(harness: ContractHarness): void {
       });
     }
 
+    it("providerOptions cannot redirect the request, add headers or change auth", async (t) => {
+      const f = await fixture(t, { kind: "text", text: "never sent" });
+      const own = f.adapter.descriptor.providerId;
+      const hostile = request(f.model, {
+        providerOptions: {
+          [own]: { baseUrl: "https://attacker.invalid", origin: "https://attacker.invalid", headers: { authorization: "x" }, redirect: "follow" },
+        },
+      });
+      const err = await rejection(f.adapter.generate(hostile, { signal: live() }));
+      assert.equal(err.code, "invalid_request");
+      assert.equal(f.requestCount(), 0);
+    });
+
+    it("providerOptions for another provider are ignored", async (t) => {
+      const f = await fixture(t, { kind: "text", text: "fine" });
+      const r = await f.adapter.generate(request(f.model, { providerOptions: { "some-other-provider": { anything: true } } }), { signal: live() });
+      assert.equal(textOf(r), "fine");
+      assert.ok(!JSON.stringify(r).includes(harness.credential));
+    });
+
     it("stream: never throws synchronously", async (t) => {
       const f = await fixture(t, { kind: "text", text: "x" });
-      if (f === undefined) return;
       assert.doesNotThrow(() => f.adapter.stream(request(f.model, { messages: [] }), { signal: live() }));
     });
 
     it("stream: aborting mid-response fails promptly with cancelled and releases the response", async (t) => {
       const f = await fixture(t, { kind: "hang" });
-      if (f === undefined) return;
       const c = new AbortController();
       const iter = f.adapter.stream(request(f.model), { signal: c.signal })[Symbol.asyncIterator]();
       const first = await within(iter.next(), cancelMs, "first event");
@@ -382,38 +413,31 @@ export function runProviderContractSuite(harness: ContractHarness): void {
       c.abort();
       const err = await within(rejection(pending), cancelMs, "cancelled stream");
       assert.equal(err.code, "cancelled");
-      if (f.openStreams !== undefined) assert.ok(await settles(() => f.openStreams?.() === 0, cancelMs), "response released");
+      assert.ok(await settles(() => f.openStreams() === 0, cancelMs), "response released");
     });
 
     it("generate: aborting mid-response fails promptly with cancelled", async (t) => {
       const f = await fixture(t, { kind: "hang" });
-      if (f === undefined) return;
       const c = new AbortController();
       const p = f.adapter.generate(request(f.model), { signal: c.signal });
       await new Promise((r) => setTimeout(r, 10));
       c.abort();
       const err = await within(rejection(p), cancelMs, "cancelled generate");
       assert.equal(err.code, "cancelled");
-      if (f.openStreams !== undefined) assert.ok(await settles(() => f.openStreams?.() === 0, cancelMs), "response released");
+      assert.ok(await settles(() => f.openStreams() === 0, cancelMs), "response released");
     });
 
     it("stream: ending iteration early releases the response", async (t) => {
       const f = await fixture(t, { kind: "text", text: "a long enough answer to need several deltas" });
-      if (f === undefined) return;
-      if (f.openStreams === undefined) {
-        t.skip("harness does not report open responses");
-        return;
-      }
       for await (const ev of f.adapter.stream(request(f.model), { signal: live() })) {
         assert.equal(ev.type, "message_start");
         break;
       }
-      assert.ok(await settles(() => f.openStreams?.() === 0, cancelMs), "response released");
+      assert.ok(await settles(() => f.openStreams() === 0, cancelMs), "response released");
     });
 
     it("countTokens and estimateCost, when present, return sane values", async (t) => {
       const f = await fixture(t, { kind: "text", text: "hi" });
-      if (f === undefined) return;
       const a = f.adapter;
       if (a.countTokens !== undefined) {
         const n = await a.countTokens(request(f.model), { signal: live() });

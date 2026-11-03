@@ -73,6 +73,11 @@ export interface MockProviderOptions {
   readonly pricing?: { readonly inputMicroUsdPerToken: number; readonly outputMicroUsdPerToken: number } | null;
   /** When set, `validateConnection` reports this error (for example `authentication`). */
   readonly connectionError?: ProviderErrorCode;
+  /**
+   * A stand-in credential the mock holds, as a real adapter holds its key.
+   * It is never emitted; the contract suite checks that.
+   */
+  readonly credential?: string;
 }
 
 export const MOCK_PROVIDER_ID = "mock";
@@ -168,6 +173,17 @@ export function createMockProvider(options: MockProviderOptions = {}): MockProvi
     };
   };
 
+  /**
+   * The mock accepts no options of its own. A real adapter parses its entry
+   * with a strict schema and never lets it change the origin, headers, auth or
+   * redirect handling (ANT-1, PRV-5); other providers' entries are ignored.
+   */
+  const checkOwnOptions = (r: ValidRequest): void => {
+    const own = r.providerOptions?.[options.providerId ?? MOCK_PROVIDER_ID];
+    const empty = own === undefined || (typeof own === "object" && own !== null && !Array.isArray(own) && Object.keys(own).length === 0);
+    if (!empty) throw new ProviderError("invalid_request", { message: "The mock provider accepts no provider options.", reason: "provider_options" });
+  };
+
   const cancelled = (signal: AbortSignal): void => {
     if (signal.aborted) throw new ProviderError("cancelled");
   };
@@ -180,6 +196,7 @@ export function createMockProvider(options: MockProviderOptions = {}): MockProvi
     cancelled(signal);
     const model = findModel(typeof request.model === "string" ? request.model : "");
     const valid = validateRequest(request, capabilitiesOf(model), mode);
+    checkOwnOptions(valid);
     const next = queue.shift() ?? respond;
     const reply = typeof next === "function" ? next(valid) : next;
     requests.push(structuredClone(valid));

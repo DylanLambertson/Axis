@@ -13,8 +13,8 @@
       "default": "./dist/src/index.js"
     },
     "./contract": {
-      "types": "./dist/src/contract/index.d.ts",
-      "default": "./dist/src/contract/index.js"
+      "types": "./dist/contract/index.d.ts",
+      "default": "./dist/contract/index.js"
     }
   },
   "scripts": {
