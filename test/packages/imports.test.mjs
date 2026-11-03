@@ -3,10 +3,11 @@
 // and which dependencies its package.json may declare.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { forbiddenLoaders, principalReexports } from "./loaders.mjs";
+import { forbiddenLoaders, isScriptFile, principalReexports } from "./loaders.mjs";
 
 const packagesDir = fileURLToPath(new URL("../../packages/", import.meta.url));
 
@@ -80,7 +81,7 @@ export function violation(pkg, spec, file = null, pkgDir = null) {
 const SKIP_DIRS = new Set(["dist", "node_modules"]);
 
 /**
- * Every TypeScript file in a package, not only `src/`: `contract/` is a
+ * Every script file in a package (.js, .mjs, .cjs, .ts, .mts, .cts, .tsx, .jsx; not declaration files), not only `src/`: `contract/` is a
  * published entry point other packages import, and `test/` runs in CI (N9).
  */
 export function* sourceFiles(dir) {
@@ -90,7 +91,7 @@ export function* sourceFiles(dir) {
       if (!SKIP_DIRS.has(name)) yield* sourceFiles(p);
       continue;
     }
-    if (p.endsWith(".ts") && !p.endsWith(".d.ts")) yield p;
+    if (isScriptFile(p)) yield p;
   }
 }
 
@@ -209,6 +210,46 @@ test("the journal package root exports the principal subpath only through packag
   assert.deepEqual(Object.keys(json.exports).sort(), [".", "./daemon-principal"]);
   const index = readFileSync(join(packagesDir, "journal", "src", "index.ts"), "utf8");
   assert.ok(!/principal/i.test(index), "src/index.ts must not mention the principal module");
+});
+
+test("scanner: every script extension is read, declaration files are not", () => {
+  for (const f of ["a.js", "a.mjs", "a.cjs", "a.ts", "a.mts", "a.cts", "a.tsx", "a.jsx", "dir/deep/x.mts"]) assert.equal(isScriptFile(f), true, f);
+  for (const f of ["a.d.ts", "a.d.mts", "a.d.cts", "a.json", "a.map", "a.js.map", "a.md", "a.mtsx", "ts"]) assert.equal(isScriptFile(f), false, f);
+});
+
+test("scanner: sourceFiles yields .mts, .cts, .tsx, .jsx, .mjs and .cjs files, and skips dist and node_modules", () => {
+  const root = mkdtempSync(join(tmpdir(), "axis-scan-"));
+  try {
+    for (const f of ["src/a.ts", "src/b.mts", "src/c.cts", "src/d.tsx", "src/e.jsx", "scripts/f.mjs", "scripts/g.cjs", "h.js", "src/i.d.ts", "src/j.d.mts", "src/k.json", "dist/l.js", "node_modules/m/n.js"]) {
+      mkdirSync(dirname(join(root, f)), { recursive: true });
+      writeFileSync(join(root, f), "");
+    }
+    const found = [...sourceFiles(root)].map((p) => relative(root, p).split(sep).join("/")).sort();
+    assert.deepEqual(found, ["h.js", "scripts/f.mjs", "scripts/g.cjs", "src/a.ts", "src/b.mts", "src/c.cts", "src/d.tsx", "src/e.jsx"]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("scanner: a .mts file that imports and re-exports the principal is caught end to end", () => {
+  const root = mkdtempSync(join(tmpdir(), "axis-scan-"));
+  try {
+    mkdirSync(join(root, "src"), { recursive: true });
+    const file = join(root, "src", "leak.mts");
+    writeFileSync(file, 'import { userPrincipal } from "@axis/journal/daemon-principal";\nexport { userPrincipal };\nconst r = createRequire(import.meta.url);\n');
+    const bad = [];
+    for (const f of sourceFiles(root)) {
+      const source = readFileSync(f, "utf8");
+      for (const spec of importSpecifiers(source)) {
+        const why = violation("providers", spec, f, root);
+        if (why) bad.push(spec);
+      }
+      bad.push(...forbiddenLoaders(source), ...principalReexports(source));
+    }
+    assert.deepEqual(bad, ["@axis/journal/daemon-principal", "createRequire", "export { userPrincipal }"]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("scanner: loaders that hide a specifier are flagged", () => {

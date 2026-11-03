@@ -1,5 +1,21 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 // Shared scanning rules for test/packages/*.test.mjs (this file is not a test).
+//
+// WHAT THIS IS, AND IS NOT. These are TEXT LINTS over source and emitted code. They catch honest mistakes and the
+// obvious ways of reaching the user-principal subpath, and nothing more. They cannot see `eval`, `new Function`,
+// a loader name built at run time (`"getBuilt" + "inModule"`), an aliased or object re-export inside the daemon
+// package (`const p = { mint: userPrincipal }; export { p }`), code in a language they do not read, or a native
+// addon. The real guarantee is a bundle-time check on the daemon bundle's module graph (ADR 0005, staging hook,
+// TODO), plus code review of whatever the daemon package exports. Do not read a passing scan as proof.
+
+/** Every extension a script can have: JavaScript and TypeScript, in module, CommonJS and JSX flavours. */
+export const SCRIPT_EXTENSIONS = [".js", ".mjs", ".cjs", ".ts", ".mts", ".cts", ".tsx", ".jsx"];
+
+/** True for a script file the scanners must read; declaration files (`.d.ts`, `.d.mts`, `.d.cts`) hold no code. */
+export function isScriptFile(path) {
+  if (/\.d\.[mc]?ts$/.test(path)) return false;
+  return SCRIPT_EXTENSIONS.some((ext) => path.endsWith(ext));
+}
 
 export const PRINCIPAL_SUBPATH = "@axis/journal/daemon-principal";
 

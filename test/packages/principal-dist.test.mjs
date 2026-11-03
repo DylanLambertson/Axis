@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { PRINCIPAL_SUBPATH, forbiddenLoaders, principalReexports } from "./loaders.mjs";
+import { PRINCIPAL_SUBPATH, forbiddenLoaders, isScriptFile, principalReexports } from "./loaders.mjs";
 
 const packagesDir = fileURLToPath(new URL("../../packages/", import.meta.url));
 /** The only package whose emitted code may import the principal subpath: the daemon's connection layer. */
@@ -20,7 +20,7 @@ function* jsFiles(dir) {
     const p = join(dir, name);
     if (statSync(p).isDirectory()) {
       if (name !== "node_modules") yield* jsFiles(p);
-    } else if (p.endsWith(".js")) yield p;
+    } else if (isScriptFile(p)) yield p;
   }
 }
 
