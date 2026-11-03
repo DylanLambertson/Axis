@@ -48,8 +48,8 @@ const VARIANTS: Array<[leak: string, mustFail: string[]]> = [
   ["masked", ["stream: a provider authentication error maps to the taxonomy without leaking", "generate: a provider server_error error maps to the taxonomy without leaking"]],
   ["drop-cap", ["forwards model, maxOutputTokens, system and stopSequences unchanged"]],
   ["stream-drop-cap", ["forwards model, maxOutputTokens, system and stopSequences unchanged"]],
-  ["base64", ["stream: a text reply follows the event grammar", "generate: returns what collectStream builds from stream"]],
-  ["upper", ["stream: a text reply follows the event grammar"]],
+  ["base64", ["stream: an error after some output surfaces from iteration"]],
+  ["upper", ["stream: an error after some output surfaces from iteration"]],
   ["descriptor", ["descriptor declares the API version, ids and a destination", "listModels returns unique ids including the fixture model"]],
 ];
 
@@ -58,7 +58,7 @@ for (const [leak, mustFail] of VARIANTS) {
     const failed = failedTests(leak);
     for (const name of mustFail) assert.ok(failed.has(name), `the suite should fail: ${name}`);
     // These variants leak in every scenario (or in the text scenario the unrelated check uses).
-    const pervasive = ["error-props", "base64", "upper", "descriptor"].includes(leak);
+    const pervasive = ["error-props", "descriptor"].includes(leak);
     if (!pervasive) assert.ok(!failed.has(UNRELATED), "unrelated checks still pass");
     if (!pervasive) assert.ok(!failed.has("getCapabilities returns a well-formed report for the model"), "the fixture is otherwise well-behaved");
   });

@@ -13,9 +13,6 @@ const LEAK = process.env["LEAK"] ?? "error-props";
 function reply(s: ContractScenario): MockReply {
   switch (s.kind) {
     case "text":
-      // base64 / upper: the credential is echoed transformed (R3).
-      if (LEAK === "base64") return { kind: "text", text: `${s.text} ${Buffer.from(CREDENTIAL).toString("base64")}` };
-      if (LEAK === "upper") return { kind: "text", text: `${s.text} ${CREDENTIAL.toUpperCase()}` };
       return { kind: "text", text: s.text };
     case "max_tokens":
       // maxtok: the credential appears in a max_tokens reply.
@@ -26,7 +23,20 @@ function reply(s: ContractScenario): MockReply {
       return { kind: "error", code: s.code, ...(s.retryAfterMs === undefined ? {} : { retryAfterMs: s.retryAfterMs }) };
     case "mid_stream_error":
       // midstream-delta: the provider error body is echoed into a text delta first.
-      return { kind: "error", code: "overloaded", afterText: LEAK === "midstream-delta" ? `${s.text} ${CANARY} ${CREDENTIAL}` : s.text };
+      // base64 / upper: the credential is echoed there transformed (R3). The
+      // suite does not compare this text exactly, so only the leak check can fail it.
+      return {
+        kind: "error",
+        code: "overloaded",
+        afterText:
+          LEAK === "midstream-delta"
+            ? `${s.text} ${CANARY} ${CREDENTIAL}`
+            : LEAK === "base64"
+              ? `${s.text} ${Buffer.from(CREDENTIAL).toString("base64")}`
+              : LEAK === "upper"
+                ? `${s.text} ${CREDENTIAL.toUpperCase()}`
+                : s.text,
+      };
     case "hang":
       return { kind: "hang" };
     case "malformed":
