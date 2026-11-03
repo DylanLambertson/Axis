@@ -67,19 +67,23 @@ for (const [leak, mustFail] of VARIANTS) {
 test("redirect: a well-behaved HTTP adapter that refuses redirects passes the whole suite", () => {
   const r = runFixture("http-harness.js", { FOLLOW: "0" });
   assert.deepEqual([...r.failed], []);
-  assert.ok(r.passed > 50, `only ${r.passed} checks ran`);
+  assert.ok(r.passed > 70, `only ${r.passed} checks ran`);
 });
 
-for (const mode of ["1", "fail"]) {
-  test(`redirect: the suite fails an adapter that follows redirects (FOLLOW=${mode})`, () => {
+// 1: fetch's default (follow); manual: re-requests the Location; fail: follows,
+// then errors; retry: two requests to the origin for one call.
+for (const mode of ["1", "manual", "fail", "retry"]) {
+  test(`redirect: the suite fails an adapter that misbehaves on a redirect (FOLLOW=${mode})`, () => {
     const { failed } = runFixture("http-harness.js", { FOLLOW: mode });
     for (const status of [301, 302, 303, 307, 308]) {
-      for (const call of ["generate", "stream", "validateConnection"]) {
-        const name = `${call}: a ${status} redirect is not followed and the credential stays on the origin`;
+      for (const call of ["generate", "stream", "listModels", "validateConnection", "countTokens"]) {
+        const name = `${call}: a ${status} redirect is not followed, one request per call, all on the origin`;
         assert.ok(failed.has(name), `the suite should fail: ${name}`);
       }
     }
-    assert.ok(!failed.has("stream: a text reply follows the event grammar"), "unrelated checks still pass");
+    // FOLLOW=1 leaves every request on fetch's default, so every check fails for it.
+    if (mode !== "1") assert.ok(!failed.has("stream: a text reply follows the event grammar"), "unrelated checks still pass");
+    else assert.ok(failed.has("stream: a text reply follows the event grammar"), "redirect: follow is refused in every scenario");
   });
 }
 

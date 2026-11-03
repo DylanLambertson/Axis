@@ -1,14 +1,16 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
-// A fake HTTP adapter: the mock behind a recording transport with a real
-// https origin. contract-suite.test.ts runs it in a child process.
-// FOLLOW=0: a well-behaved adapter that refuses redirects; it must pass the
-//           whole suite, which shows the redirect checks are not vacuous.
-// FOLLOW=1: an adapter that follows redirects and re-sends its key to the
-//           Location host; the suite must fail it (ANT-1).
-// FOLLOW=fail: follows, then reports invalid_response anyway; the off-origin
-//           check alone must fail it.
+// A fake HTTP adapter: the mock behind a real fetch-shaped call on an https
+// origin, built with the suite's transport (`transport.wrap`), so the suite
+// records every request itself. contract-suite.test.ts runs it in a child
+// process. FOLLOW selects the behaviour on a 3xx:
+//   0       redirect: "manual", and a 3xx fails the call. Must pass the suite.
+//   1       leaves redirect unset (fetch's default, follow). Must fail.
+//   manual  redirect: "manual", then re-requests the Location itself. Must fail.
+//   fail    as manual, then reports invalid_response anyway. Must fail.
+//   retry   redirect: "manual", and retries the same URL once. Must fail
+//           (more than one request per call).
 // Not named *.test.ts, so `npm test` does not run it directly.
-import { runProviderContractSuite, type ContractScenario, type WireRequest } from "../../contract/index.js";
+import { runProviderContractSuite, type ContractFetch, type ContractScenario } from "../../contract/index.js";
 import {
   MOCK_DEFAULT_MODEL,
   ProviderError,
@@ -20,12 +22,10 @@ import {
 } from "../../src/index.js";
 
 const ORIGIN = "https://api.provider.test";
-const ELSEWHERE = "https://elsewhere.example.test";
 const CANARY = "http-canary-body-text";
 // Low-entropy stand-in for an API key.
 const CREDENTIAL = "http-credential-stand-in";
 const MODE = process.env["FOLLOW"] ?? "0";
-const FOLLOW = MODE !== "0";
 
 function reply(s: ContractScenario): MockReply {
   switch (s.kind) {
@@ -44,32 +44,48 @@ function reply(s: ContractScenario): MockReply {
     case "malformed":
       return { kind: "malformed" };
     case "redirect":
-      // Only reached by the following adapter: the Location host answers.
-      return { kind: "text", text: "answered by the redirect target" };
+      // Only reached by an adapter that followed: the redirect host answered 200.
+      return { kind: "text", text: "answered after a redirect" };
   }
 }
 
+/** The harness's own fake server: every request succeeds; content comes from the mock. */
+const server: ContractFetch = async (_url, _init) => new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+
 runProviderContractSuite({
-  name: FOLLOW ? `http (follows redirects: ${MODE})` : "http",
+  name: `http (FOLLOW=${MODE})`,
   canary: CANARY,
   credential: CREDENTIAL,
-  setup(scenario) {
+  setup(scenario, transport) {
     const mock = createMockProvider({
       replies: [reply(scenario)],
       ...(scenario.kind === "error" && scenario.code === "authentication" ? { connectionError: "authentication" as const } : {}),
     });
-    const wire: WireRequest[] = [];
+    const fetch = transport.wrap(server);
 
-    /** The transport: records the request, then answers a redirect scenario with its status. */
-    const send = (path: string, body?: unknown): void => {
-      const headers = { "x-api-key": CREDENTIAL, "content-type": "application/json" };
-      const text = body === undefined ? undefined : JSON.stringify(body);
-      wire.push({ url: `${ORIGIN}${path}`, headers, ...(text === undefined ? {} : { body: text }) });
-      if (scenario.kind !== "redirect") return;
-      if (!FOLLOW) throw new ProviderError("invalid_response", { status: scenario.status, reason: "redirect" });
-      // The defect under test: the request, key included, goes to the Location host.
-      wire.push({ url: `${ELSEWHERE}${path}`, headers, ...(text === undefined ? {} : { body: text }) });
-      if (MODE === "fail") throw new ProviderError("invalid_response", { status: scenario.status, reason: "redirect" });
+    /** One request to the origin; a 3xx is handled according to MODE. */
+    const send = async (path: string, signal: AbortSignal, body?: unknown): Promise<void> => {
+      const init = {
+        method: body === undefined ? "GET" : "POST",
+        headers: { "x-api-key": CREDENTIAL, "content-type": "application/json" },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        ...(MODE === "1" ? {} : { redirect: "manual" as const }),
+        signal,
+      };
+      const res = await fetch(`${ORIGIN}${path}`, init);
+      if (res.status < 300 || res.status > 399) return;
+      const location = res.headers.get("location") ?? "";
+      if (MODE === "retry") {
+        await fetch(`${ORIGIN}${path}`, init);
+        throw new ProviderError("invalid_response", { status: res.status, reason: "redirect" });
+      }
+      if (MODE === "manual" || MODE === "fail") {
+        // The defect under test: the request, key included, goes to the Location host.
+        await fetch(location, init);
+        if (MODE === "fail") throw new ProviderError("invalid_response", { status: res.status, reason: "redirect" });
+        return;
+      }
+      throw new ProviderError("invalid_response", { status: res.status, reason: "redirect" });
     };
     /** Validate and honour the signal before anything reaches the transport. */
     const before = (r: GenerateRequest, signal: AbortSignal) => {
@@ -80,13 +96,14 @@ runProviderContractSuite({
     const adapter: ProviderAdapter = {
       descriptor: Object.freeze({ ...mock.descriptor, destination: Object.freeze({ origin: ORIGIN, description: "Fake HTTP provider" }) }),
       listModels: async (o) => {
-        send("/v1/models");
+        await send("/v1/models", o.signal);
         return mock.listModels(o);
       },
+      // Capabilities come from a local table: no request.
       getCapabilities: (m, o) => mock.getCapabilities(m, o),
       validateConnection: async (o) => {
         try {
-          send("/v1/models");
+          await send("/v1/models", o.signal);
         } catch (e) {
           if (e instanceof ProviderError) return { ok: false, error: e };
           throw e;
@@ -94,17 +111,17 @@ runProviderContractSuite({
         return mock.validateConnection(o);
       },
       generate: async (r, o) => {
-        send("/v1/messages", before(r, o.signal));
+        await send("/v1/messages", o.signal, before(r, o.signal));
         return mock.generate(r, o);
       },
       stream: (r, o) => ({
         async *[Symbol.asyncIterator]() {
-          send("/v1/messages", before(r, o.signal));
+          await send("/v1/messages", o.signal, before(r, o.signal));
           yield* mock.stream(r, o);
         },
       }),
       countTokens: async (r, o) => {
-        send("/v1/messages/count_tokens", before(r, o.signal));
+        await send("/v1/messages/count_tokens", o.signal, before(r, o.signal));
         return (mock.countTokens as NonNullable<ProviderAdapter["countTokens"]>)(r, o);
       },
       estimateCost: (m, u) => mock.estimateCost?.(m, u),
@@ -114,7 +131,6 @@ runProviderContractSuite({
       model: MOCK_DEFAULT_MODEL,
       requestCount: () => mock.requests.length,
       openStreams: () => mock.openStreams,
-      forwardedRequests: () => wire,
       lastRequest: () => {
         const r = mock.requests.at(-1);
         if (r === undefined) return undefined;

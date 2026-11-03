@@ -58,22 +58,60 @@ export type ContractScenario =
   /** A corrupt response that cannot be parsed. */
   | { readonly kind: "malformed" }
   /**
-   * Every request the adapter makes (model listings and the message request
-   * alike) is answered with this redirect status and a `Location` on a
-   * different host. The adapter must not follow it (ANT-1): the call fails
-   * with `invalid_response`, and nothing, the credential least of all, is
-   * sent anywhere but the adapter's own origin.
+   * The suite's transport answers every request (model listings, capability
+   * lookups and message requests alike) with this redirect status and a
+   * `Location` on `REDIRECT_HOST`, which the transport also answers, so an
+   * adapter that follows gets a normal 200 back and no error to hide behind.
+   * The adapter must not follow (ANT-1). The harness's own handler is not
+   * called in this scenario.
    */
   | { readonly kind: "redirect"; readonly status: RedirectStatus };
 
 export const REDIRECT_STATUSES = [301, 302, 303, 307, 308] as const;
 export type RedirectStatus = (typeof REDIRECT_STATUSES)[number];
 
-/** One request as the adapter put it on the wire. */
-export interface WireRequest {
+/** The recognizable host every redirect points at. It must never receive a request. */
+export const REDIRECT_HOST = "redirect-target.contract.invalid";
+
+/** The `fetch` options the suite's transport understands; Node's `fetch` takes the same. */
+export interface ContractFetchInit {
+  readonly method?: string;
+  readonly headers?: Readonly<Record<string, string>>;
+  readonly body?: string | Uint8Array;
+  /** `fetch` follows redirects unless this is `manual` or `error`; the transport does the same. */
+  readonly redirect?: "follow" | "manual" | "error";
+  readonly signal?: AbortSignal;
+}
+
+/**
+ * A `fetch`-shaped function. Generic over the init and response types, so an
+ * adapter's own narrower `fetch` type (for example one that always passes
+ * `redirect: "manual"` and returns a structural response) can be wrapped
+ * without casts. What `wrap` returns answers with the inner function's
+ * responses, or with a `Response` in the redirect scenario.
+ */
+export type ContractFetch<I extends ContractFetchInit = ContractFetchInit, R = Response> = (url: string, init: I) => Promise<R>;
+
+/**
+ * The suite's transport, handed to `ContractHarness.setup`. The harness must
+ * build its adapter with `wrap(inner)` as the adapter's `fetch`, where `inner`
+ * is the harness's fake server. The suite records every request at this seam
+ * itself; nothing is taken from the adapter's own account (ANT-1).
+ */
+export interface ContractTransport {
+  wrap<I extends ContractFetchInit, R>(inner: ContractFetch<I, R>): ContractFetch<I, R | Response>;
+}
+
+/** One request as the suite's transport saw it. */
+export interface RecordedRequest {
   readonly url: string;
+  readonly method: string;
   readonly headers: Readonly<Record<string, string>>;
   readonly body?: string;
+  /** The `redirect` option as given; `undefined` means `fetch`'s default, `follow`. */
+  readonly redirect: string | undefined;
+  /** Where the credential (or a transformed form of it) appeared. */
+  readonly credentialIn: ReadonlyArray<"url" | "headers" | "body">;
 }
 
 export interface ContractFixture {
@@ -92,12 +130,6 @@ export interface ContractFixture {
    * checks that the adapter forwards them unchanged (NS1).
    */
   lastRequest(): ForwardedRequest | undefined;
-  /**
-   * Every request the adapter made through the harness's transport, in order,
-   * including any to a redirect target. An adapter without a network origin
-   * (the mock) makes none and returns an empty list.
-   */
-  forwardedRequests(): ReadonlyArray<WireRequest>;
 }
 
 /** The request fields an adapter must forward unchanged. */
@@ -199,8 +231,18 @@ export interface ContractHarness {
    * shares no 12-character run with the suite's own strings.
    */
   readonly credential: string;
-  /** Every scenario must be simulated; a missing one fails the suite rather than skipping. */
-  setup(scenario: ContractScenario): ContractFixture | Promise<ContractFixture>;
+  /**
+   * Every scenario must be simulated; a missing one fails the suite rather
+   * than skipping. An adapter with a network origin must be built with
+   * `transport.wrap(inner)` as its `fetch`, in every scenario.
+   */
+  setup(scenario: ContractScenario, transport: ContractTransport): ContractFixture | Promise<ContractFixture>;
+  /**
+   * Required, with a reason, when the adapter has no network origin (the
+   * mock): it makes no request, so the transport must record none. Must be
+   * absent for an adapter with an origin.
+   */
+  readonly noNetwork?: string;
   /** A model id the connection does not offer. */
   readonly unknownModel?: string;
   /** How long a cancelled call may take to settle. Default 2000 ms. */
@@ -304,33 +346,80 @@ export function runProviderContractSuite(harness: ContractHarness): void {
 
   const needles = needlesFor(harness.canary, harness.credential);
   let outputs: unknown[] = [];
-  let fixtures: ContractFixture[] = [];
+  interface Tracked {
+    readonly fixture: ContractFixture;
+    readonly requests: RecordedRequest[];
+  }
+  let fixtures: Tracked[] = [];
+
+  const credentialIn = (url: string, headers: Record<string, string>, body: string | undefined): Array<"url" | "headers" | "body"> => {
+    const has = (text: string): boolean => needles.some((n) => text.includes(n));
+    const out: Array<"url" | "headers" | "body"> = [];
+    if (has(url)) out.push("url");
+    if (has(JSON.stringify(headers))) out.push("headers");
+    if (body !== undefined && has(body)) out.push("body");
+    return out;
+  };
+
+  /** The suite-owned transport for one fixture: records every request, and plays the redirect scenario itself. */
+  const transportFor = (scenario: ContractScenario, requests: RecordedRequest[]): ContractTransport => ({
+    wrap<I extends ContractFetchInit, R>(inner: ContractFetch<I, R>): ContractFetch<I, R | Response> {
+      const fetchFn: ContractFetch<I, R | Response> = async (url, init) => {
+        const headers: Record<string, string> = {};
+        for (const [k, v] of Object.entries(init.headers ?? {})) headers[k.toLowerCase()] = String(v);
+        const body = init.body === undefined ? undefined : typeof init.body === "string" ? init.body : Buffer.from(init.body).toString("utf8");
+        requests.push({
+          url,
+          method: (init.method ?? "GET").toUpperCase(),
+          headers,
+          ...(body === undefined ? {} : { body }),
+          redirect: init.redirect,
+          credentialIn: credentialIn(url, headers, body),
+        });
+        if (scenario.kind !== "redirect") return inner(url, init);
+        const target = new URL(url);
+        if (target.host === REDIRECT_HOST) {
+          return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+        }
+        const location = `https://${REDIRECT_HOST}${target.pathname}${target.search}`;
+        const mode = init.redirect ?? "follow";
+        // Real fetch semantics, so an adapter relying on the default is caught too.
+        if (mode === "error") throw new TypeError("fetch failed: redirect mode is error");
+        if (mode === "follow") return fetchFn(location, init);
+        return new Response(null, { status: scenario.status, headers: { location } });
+      };
+      return fetchFn;
+    },
+  });
 
   const fixture = async (t: TestContext, scenario: ContractScenario): Promise<ContractFixture> => {
     void t;
-    const f = await harness.setup(scenario);
+    const requests: RecordedRequest[] = [];
+    const f = await harness.setup(scenario, transportFor(scenario, requests));
     assert.ok(f !== undefined, `harness must simulate ${scenario.kind}`);
+    const origin = f.adapter.descriptor.destination.origin;
+    if (origin === undefined) {
+      assert.ok(typeof harness.noNetwork === "string" && harness.noNetwork.length > 0, "an adapter without an origin needs a stated noNetwork reason");
+    } else {
+      assert.equal(harness.noNetwork, undefined, "an adapter with an origin cannot opt out of the transport checks");
+    }
     const wrapped: ContractFixture = {
       ...f,
       adapter: recording(f.adapter, outputs),
       lastRequest: () => f.lastRequest(),
       requestCount: () => f.requestCount(),
       openStreams: () => f.openStreams(),
-      forwardedRequests: () => f.forwardedRequests(),
     };
-    fixtures.push(wrapped);
+    fixtures.push({ fixture: wrapped, requests });
     // The descriptor reaches every log line, so it is checked like an output (R1).
     outputs.push(f.adapter.descriptor);
     return wrapped;
   };
 
-  /**
-   * Requests that left the adapter's own origin. An adapter without an origin
-   * may make no request at all. URLs that do not parse count as off-origin.
-   */
-  const offOrigin = (f: ContractFixture): WireRequest[] => {
-    const origin = f.adapter.descriptor.destination.origin;
-    return f.forwardedRequests().filter((r) => {
+  /** Recorded requests that left the adapter's origin; for an adapter without one, every request. */
+  const offOrigin = (tr: Tracked): RecordedRequest[] => {
+    const origin = tr.fixture.adapter.descriptor.destination.origin;
+    return tr.requests.filter((r) => {
       if (origin === undefined) return true;
       try {
         return new URL(r.url).origin !== origin;
@@ -340,17 +429,28 @@ export function runProviderContractSuite(harness: ContractHarness): void {
     });
   };
 
+  const trackedOf = (f: ContractFixture): Tracked => {
+    const tr = fixtures.find((x) => x.fixture === f);
+    assert.ok(tr !== undefined);
+    return tr;
+  };
+
   describe(`provider contract: ${harness.name}`, () => {
     beforeEach(() => {
       outputs = [];
       fixtures = [];
     });
 
-    // In every scenario, every request stays on the adapter's own origin.
+    // In every scenario: every request the transport saw stayed on the
+    // adapter's origin (none at all without one), and none asked fetch to
+    // follow redirects, which it does by default (ANT-1).
     afterEach(() => {
-      for (const f of fixtures) {
-        const off = offOrigin(f);
+      for (const tr of fixtures) {
+        const off = offOrigin(tr);
         assert.deepEqual(off.map((r) => r.url.split("?")[0]), [], "a request left the adapter's origin");
+        for (const r of tr.requests) {
+          assert.ok(r.redirect === "manual" || r.redirect === "error", `a request did not set redirect to manual or error (${String(r.redirect)})`);
+        }
       }
     });
 
@@ -591,33 +691,51 @@ export function runProviderContractSuite(harness: ContractHarness): void {
     });
 
     for (const status of REDIRECT_STATUSES) {
-      for (const mode of ["generate", "stream", "validateConnection"] as const) {
-        it(`${mode}: a ${status} redirect is not followed and the credential stays on the origin`, async (t) => {
+      for (const call of ["generate", "stream", "listModels", "getCapabilities", "validateConnection", "countTokens"] as const) {
+        it(`${call}: a ${status} redirect is not followed, one request per call, all on the origin`, async (t) => {
           const f = await fixture(t, { kind: "redirect", status });
-          let err: ProviderError;
-          if (mode === "validateConnection") {
-            const r = await f.adapter.validateConnection({ signal: live() });
-            assert.equal(r.ok, false, "a redirected connection check fails");
-            if (r.ok) return;
-            err = r.error;
-          } else {
-            const req = request(f.model);
-            err = await rejection(mode === "stream" ? drain(f.adapter.stream(req, { signal: live() })) : f.adapter.generate(req, { signal: live() }));
-          }
-          assert.equal(err.code, "invalid_response");
-          assertNoLeak(err, ...needles);
+          const tr = trackedOf(f);
+          const a = f.adapter;
+          if (call === "countTokens" && a.countTokens === undefined) return; // The adapter has no such call path.
 
-          const origin = f.adapter.descriptor.destination.origin;
-          const sent = f.forwardedRequests();
-          if (origin === undefined) assert.equal(sent.length, 0, "an adapter without an origin makes no request");
-          else assert.ok(sent.length > 0, "the harness saw the request that was redirected");
-          for (const r of sent) assert.ok(r.url.startsWith(origin ?? "\u0000"), `request outside the origin: ${r.url.split("?")[0] ?? ""}`);
-          const off = offOrigin(f);
-          assert.equal(off.length, 0, "no request went to another host");
-          for (const r of off) {
-            const text = [r.url, JSON.stringify(r.headers), r.body ?? ""].join("\n");
-            for (const n of needles) assert.ok(!text.includes(n), "the credential left the adapter's origin");
+          // Run the call; record whether it failed and with what.
+          let failed = false;
+          let thrown: unknown;
+          try {
+            if (call === "generate") await a.generate(request(f.model), { signal: live() });
+            else if (call === "stream") await drain(a.stream(request(f.model), { signal: live() }));
+            else if (call === "listModels") await a.listModels({ signal: live() });
+            else if (call === "getCapabilities") await a.getCapabilities(f.model, { signal: live() });
+            else if (call === "countTokens") await (a.countTokens as NonNullable<ProviderAdapter["countTokens"]>)(request(f.model), { signal: live() });
+            else {
+              const r = await a.validateConnection({ signal: live() });
+              if (!r.ok) {
+                failed = true;
+                thrown = r.error;
+              }
+            }
+          } catch (e) {
+            failed = true;
+            thrown = e;
           }
+          if (thrown !== undefined) {
+            assert.ok(isProviderError(thrown), "failures are ProviderErrors");
+            assertNoLeak(thrown, ...needles);
+          }
+
+          const origin = a.descriptor.destination.origin;
+          if (origin === undefined) {
+            assert.equal(tr.requests.length, 0, `no network (${harness.noNetwork ?? ""}): the transport saw no request`);
+            return;
+          }
+          const sent = tr.requests;
+          // Capabilities may be known locally; every other path is a network call.
+          if (call === "getCapabilities" && sent.length === 0) return;
+          assert.equal(sent.length, 1, `exactly one outbound request per call (saw ${sent.length})`);
+          assert.ok(failed, "a redirected call fails; the error code is the adapter's own");
+          assert.equal(sent.filter((r) => new URL(r.url).host === REDIRECT_HOST).length, 0, "no request reached the redirect host");
+          for (const r of offOrigin(tr)) assert.deepEqual(r.credentialIn, [], "the credential left the adapter's origin");
+          assert.equal(offOrigin(tr).length, 0, "every request went to the declared destination");
         });
       }
     }

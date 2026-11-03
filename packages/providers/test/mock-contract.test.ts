@@ -40,6 +40,7 @@ runProviderContractSuite({
   name: "mock",
   canary: CANARY,
   credential: CREDENTIAL,
+  noNetwork: "the mock provider runs in process and makes no network request",
   setup(scenario) {
     const mock = createMockProvider({
       replies: [replyFor(scenario)],
@@ -53,8 +54,6 @@ runProviderContractSuite({
       model: MOCK_DEFAULT_MODEL,
       requestCount: () => mock.requests.length,
       openStreams: () => mock.openStreams,
-      // The mock makes no network request.
-      forwardedRequests: () => [],
       lastRequest: () => {
         const r = mock.requests.at(-1);
         if (r === undefined) return undefined;

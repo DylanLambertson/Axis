@@ -73,6 +73,7 @@ runProviderContractSuite({
   name: `leaky (${LEAK})`,
   canary: CANARY,
   credential: CREDENTIAL,
+  noNetwork: "the leaky fixtures wrap the in-process mock and make no network request",
   setup(scenario) {
     const mock = createMockProvider({
       replies: [reply(scenario)],
@@ -122,7 +123,6 @@ runProviderContractSuite({
       requestCount: () => mock.requests.length,
       openStreams: () => mock.openStreams,
       lastRequest: () => last,
-      forwardedRequests: () => [],
     };
   },
 });
