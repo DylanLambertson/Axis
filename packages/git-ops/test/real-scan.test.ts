@@ -143,7 +143,7 @@ test("B-3: a secret added in one commit and deleted in the next is scanned and r
   const e = await executePush(f.deps, input).then(() => undefined, (x: unknown) => x);
   assert.ok(e instanceof Error && e.message.includes(leaky.slice(0, 12)), `refused, naming the commit; got ${String(e)}`);
   assert.throws(() => execFileSync("git", ["--git-dir", f.remote, "rev-parse", "refs/heads/axis/feat"], { stdio: "ignore" }), "nothing was pushed");
-  assert.equal(seen.length, 2, "the scanner is called once per outgoing commit");
+  assert.equal(seen.length, 4, "the scanner is called for the patch and the message of each outgoing commit");
 });
 
 test("B-3: a secret that exists only in a merge resolution is scanned", async () => {
@@ -229,7 +229,7 @@ test("S-3: a commit made after the scan is not pushed: the branch moving is refu
     f.git("commit", "-q", "-m", "late");
   };
   // 1. The branch moves while the scanner runs: refused before anything is pushed.
-  const a = fixture({ scanMode: "refuse", scanner: async () => { late(a); return []; } });
+  const a = fixture({ scanMode: "refuse", scanner: async (_d, m) => { if (m.part === "patch") late(a); return []; } });
   const input = (f: ReturnType<typeof fixture>) => ({ worktree: f.wt, remote: "origin", branch: "axis/feat", baseSha: baseOf(f) });
   writeFileSync(join(a.wt.workTree, "b.txt"), "b\n");
   a.git("add", "-A");
@@ -269,4 +269,17 @@ test("RR-1: a confirmation is bound to the plan the user saw; findings added aft
   const fresh = await planPush(f.deps, input);
   await executePush(f.deps, input, { confirmed: true, confirmedPlan: { tip: fresh.tip, digest: fresh.digest } });
   assert.equal(execFileSync("git", ["--git-dir", f.remote, "rev-parse", "refs/heads/axis/feat"], { encoding: "utf8" }).trim(), fresh.tip);
+});
+
+test("RR-N2: a secret in a commit message is scanned, in refuse mode refused, and the scanner is told it is a message", async () => {
+  const parts: string[] = [];
+  const f = fixture({ scanner: async (d, meta) => { parts.push(meta.part); return d.includes(AWS_KEY) ? [{ rule: "aws-key" }] : []; }, scanMode: "refuse" });
+  writeFileSync(join(f.wt.workTree, "ok.txt"), "fine\n");
+  f.git("add", "-A");
+  f.git("commit", "-q", "-m", `deploy with AWS=${AWS_KEY}`);
+  const bad = f.git("rev-parse", "HEAD").trim();
+  const e = await executePush(f.deps, { worktree: f.wt, remote: "origin", branch: "axis/feat", baseSha: baseOf(f) }).then(() => undefined, (x: unknown) => x);
+  assert.ok(e instanceof Error && e.message.includes(bad.slice(0, 12)), String(e));
+  assert.deepEqual(parts, ["patch", "message"]);
+  assert.throws(() => execFileSync("git", ["--git-dir", f.remote, "rev-parse", "refs/heads/axis/feat"], { stdio: "ignore" }), "nothing was pushed");
 });

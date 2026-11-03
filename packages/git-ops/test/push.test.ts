@@ -163,7 +163,7 @@ test("B-3: the scanner is called once per outgoing commit, oldest first, with th
   const C2 = "2".repeat(40);
   const r = new FakeRunner(healthy((s) => (s[0] === "rev-list" ? { stdout: `${C1}\n${C2}\n` } : s[0] === "diff-tree" ? { stdout: `+patch of ${s.at(-1)}\n` } : undefined)));
   const calls: Array<[string, string]> = [];
-  await planPush(makeDeps(r, { scanner: async (d, meta) => { calls.push([meta.commit, d]); return []; } }), input);
+  await planPush(makeDeps(r, { scanner: async (d, meta) => { if (meta.part === "patch") calls.push([meta.commit, d]); return []; } }), input);
   assert.deepEqual(calls, [[C1, `+patch of ${C1}\n`], [C2, `+patch of ${C2}\n`]]);
   const range = r.calls.find((c) => sub(c.argv)[0] === "rev-list");
   assert.ok(range && sub(range.argv).includes("--reverse"));

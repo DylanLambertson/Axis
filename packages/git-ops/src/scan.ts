@@ -71,7 +71,18 @@ export async function scanOutgoing(deps: GitOpsDeps, git: DaemonGit, worktree: W
     const cut = d.stdout.length > MAX_DIFF;
     total += d.stdout.length;
     if (cut) truncated = true;
-    for (const f of await scanner(cut ? d.stdout.slice(0, MAX_DIFF) : d.stdout, { worktree, truncated: cut, commit, binaryPaths })) findings.push({ ...f, commit });
+    for (const f of await scanner(cut ? d.stdout.slice(0, MAX_DIFF) : d.stdout, { worktree, truncated: cut, commit, binaryPaths, part: "patch" })) findings.push({ ...f, commit });
+
+    // The commit object, headers and message, is pushed too, and a message is as good a place for a secret as a file.
+    const raw = await git(["cat-file", "commit", commit]);
+    if (raw.code !== 0) throw unavailable("read the commit message");
+    const cutMessage = raw.stdout.length > MAX_DIFF;
+    total += raw.stdout.length;
+    if (cutMessage) truncated = true;
+    if (raw.stdout.length > 0) {
+      const text = cutMessage ? raw.stdout.slice(0, MAX_DIFF) : raw.stdout;
+      for (const f of await scanner(text, { worktree, truncated: cutMessage, commit, binaryPaths: [], part: "message" })) findings.push({ ...f, commit });
+    }
   }
   return { findings, truncated, binaryPaths: [...binary] };
 }

@@ -49,9 +49,14 @@ export interface ScanMeta {
   readonly commit: string;
   /** Paths git treats as binary in this commit (a NUL byte, a `-diff` attribute or key material). Content is still passed with --text. */
   readonly binaryPaths: readonly string[];
+  /**
+   * What `diff` holds: the commit's patch, or its raw commit object (author, committer and message). The scanner is
+   * called once for each, per commit, and must treat "message" as plain text rather than a diff.
+   */
+  readonly part: "patch" | "message";
 }
 
-/** PSH-1 hook point: scan the patch of one outgoing commit. Findings must never contain the secret itself. */
+/** PSH-1 hook point: scan one part (patch or message) of one outgoing commit. Findings must never contain the secret itself. */
 export type SecretScanner = (diff: string, meta: ScanMeta) => Promise<readonly SecretFinding[]>;
 
 export interface GitOpsDeps {

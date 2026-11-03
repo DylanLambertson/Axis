@@ -139,7 +139,7 @@ test("push: drift refuses before anything is pushed; the secret scanner sees the
   assert.throws(() => execFileSync("git", ["--git-dir", drifting.remote, "rev-parse", "refs/heads/axis/feat"], { stdio: "ignore" }));
 
   let diff = "";
-  const f = fixture({ scanner: async (d) => { diff = d; return /SECRET=/.test(d) ? [{ rule: "env-secret", path: ".env" }] : []; }, scanMode: "warn" });
+  const f = fixture({ scanner: async (d, m) => { if (m.part === "patch") diff = d; return /SECRET=/.test(d) ? [{ rule: "env-secret", path: ".env" }] : []; }, scanMode: "warn" });
   stage(f, ".env", "SECRET=abc\n");
   f.git("commit", "-q", "-m", "add env");
   const plan = await planPush(f.deps, { worktree: f.wt, remote: "origin", branch: "axis/feat", baseSha: baseOf(f) });
