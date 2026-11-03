@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { challengeIdSchema, challengeSchema, type Challenge } from "@axis/protocol";
 import { z } from "zod";
-import { actionFailure } from "./action-error.js";
+import { actionFailure, safeName } from "./action-error.js";
 import { challengeDigest, randomToken, safeEqual, sha256Hex } from "./crypto.js";
 import { ChallengeError } from "./errors.js";
 import {
@@ -19,10 +19,11 @@ import {
   type ChallengeAuditEvent,
   type ChallengeAuditSink,
 } from "./schemas.js";
-import { limit, MAX_TTL, OPEN, type ChallengeManagerOptions, type ConfirmedAction, type Record_, type ResolveResult, type State } from "./types.js";
+import { Tombstones } from "./tombstones.js";
+import { limit, MAX_TTL, OPEN, type ChallengeManagerOptions, type ConfirmedAction, type Record_, type ResolveResult, type State, type WithdrawResult } from "./types.js";
 
 export type { ActorId, ChallengeAuditEvent, ChallengeAuditSink } from "./schemas.js";
-export type { ChallengeManagerOptions, ConfirmedAction, ResolveResult } from "./types.js";
+export type { ChallengeManagerOptions, ConfirmedAction, ResolveResult, WithdrawResult } from "./types.js";
 
 /** What an audit event names: a record, or for an unknown id just the id's own hash, so refusing an unknown id costs the same as refusing a wrong caller. */
 interface Subject {
@@ -61,6 +62,7 @@ export class ChallengeManager {
   readonly #perWindow: number;
   readonly #total: number;
   readonly #byRef = new Map<string, Record_>();
+  readonly #tombs = new Tombstones();
 
   constructor(options: ChallengeManagerOptions) {
     this.#audit = options.audit;
@@ -113,7 +115,8 @@ export class ChallengeManager {
       if (r.requester === p.actor) actorN++;
       if (r.windowId === p.windowId) windowN++;
     }
-    if (actorN >= this.#perActor || windowN >= this.#perWindow || totalN >= this.#total) {
+    const t = this.#tombs.count(p.actor, p.windowId);
+    if (actorN + t.actor >= this.#perActor || windowN + t.window >= this.#perWindow || totalN + t.total >= this.#total) {
       throw new ChallengeError("E_BACKPRESSURE", "Too many confirmations are waiting; resolve or wait for them to expire");
     }
     const id = randomToken();
@@ -325,7 +328,7 @@ export class ChallengeManager {
       result = await action({ method: rec.method, target: rec.target, requester: rec.requester });
     } catch (error) {
       // Nothing the action throws crosses this boundary except a protocol-shaped code and its safe message: the rest may carry paths or secrets.
-      const errorName = error instanceof Error ? error.name.slice(0, 64) : "unknown";
+      const errorName = safeName(error);
       try {
         this.#emit("daemon", "tier4.execute", rec, "error", { phase: "completed", errorName });
       } catch {
@@ -342,13 +345,20 @@ export class ChallengeManager {
   }
 
   /**
-   * Ends an open challenge because its request was aborted. Only the requester
-   * on the connection it was issued to can withdraw it; anyone else, an unknown
-   * id and an already-withdrawn challenge get the uniform E_POLICY_DENIED.
-   * The record is dropped, so resolve and consume refuse its id the same way
-   * and its slots are freed. The audit is best effort: withdrawing never fails on it.
+   * Ends an open or approved challenge because its request was aborted. Only
+   * the requester on the connection it was issued to can withdraw it; anyone
+   * else, an unknown id and an already-withdrawn challenge get the uniform
+   * E_POLICY_DENIED. The record is dropped, so resolve and consume refuse its
+   * id the same way, but it keeps counting against the requester's per-actor,
+   * per-window and total quotas until its original expiry, so withdrawing
+   * cannot be used to put more prompts in front of the user. The audit is best
+   * effort.
+   *
+   * Returns `{ withdrawn: false, reason: "spent" }` when the approval was
+   * already consumed (the action ran or is running), and `reason: "ended"` when
+   * it was already denied, expired or burned; nothing changes in either case.
    */
-  withdraw(challengeId: string, caller: z.input<typeof callerSchema>): void {
+  withdraw(challengeId: string, caller: z.input<typeof callerSchema>): WithdrawResult {
     const id = challengeIdSchema.safeParse(challengeId);
     if (!id.success) throw invalid(id.error, "challenge id");
     const who = callerSchema.safeParse(caller);
@@ -358,32 +368,34 @@ export class ChallengeManager {
     if (!rec || rec.requester !== who.data.actor || rec.connectionId !== who.data.connectionId) {
       throw this.#refuse(who.data.actor as ActorId, rec, ref, "tier4.challenge", "withdraw", "wrong_caller");
     }
-    this.#withdrawRecord(rec, who.data.actor as ActorId);
+    if (rec.state === "CONSUMED") return { withdrawn: false, reason: "spent" };
+    if (!OPEN.has(rec.state) && rec.state !== "CONFIRMED") return { withdrawn: false, reason: "ended" };
+    this.#drop(rec, who.data.actor as ActorId, this.#mono() < rec.expiresAt);
+    return { withdrawn: true };
   }
 
-  /** Ends every live challenge issued to a connection that has closed. Returns how many it ended. */
+  /** Ends every live challenge issued to a connection that has closed, and frees their quota (a closed connection cannot prompt). Returns how many it ended. */
   withdrawConnection(connectionId: string): number {
     const parsed = callerSchema.shape.connectionId.safeParse(connectionId);
     if (!parsed.success) throw invalid(parsed.error, "connection id");
     let n = 0;
     for (const rec of this.#byRef.values()) {
       if (rec.connectionId === parsed.data && (OPEN.has(rec.state) || rec.state === "CONFIRMED")) {
-        this.#withdrawRecord(rec, "daemon");
+        this.#drop(rec, "daemon", false);
         n++;
       }
     }
     return n;
   }
 
-  #withdrawRecord(rec: Record_, actor: ActorId): void {
-    if (!OPEN.has(rec.state) && rec.state !== "CONFIRMED") return;
+  #drop(rec: Record_, actor: ActorId, tombstone: boolean): void {
     try {
       this.#emit(actor, "tier4.challenge", rec, "denied", { phase: "withdraw", reason: "request_aborted" });
     } catch {
       // Ending is what matters; the audit is best effort here.
     }
-    // The record is dropped, not parked: from now on its id is unknown, so resolve and consume refuse it with the uniform E_POLICY_DENIED, and its slots are free.
     this.#byRef.delete(rec.ref);
+    if (tombstone) this.#tombs.add(rec.ref, rec.requester, rec.windowId, rec.expiresAt);
   }
 
   // ---- internals ----
@@ -472,6 +484,7 @@ export class ChallengeManager {
   /** Drop finished records after a grace period and expire stale open ones, bounding memory. */
   #sweep(): void {
     const now = this.#mono();
+    this.#tombs.sweep(now);
     for (const [ref, r] of this.#byRef) {
       if (OPEN.has(r.state) && now >= r.expiresAt) this.#finish(r, "EXPIRED");
       else if (r.state === "CONFIRMED" && now >= r.tokenExpiresAt) this.#finish(r, "EXPIRED");

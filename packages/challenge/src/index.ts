@@ -9,5 +9,6 @@ export {
   type ChallengeManagerOptions,
   type ConfirmedAction,
   type ResolveResult,
+  type WithdrawResult,
 } from "./manager.js";
 export type { Caller } from "./schemas.js";

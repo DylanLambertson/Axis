@@ -25,15 +25,52 @@ test("F1: consume naming a different contract, version or method is refused and 
 });
 
 // F2: withdraw.
-test("F2: withdraw ends the challenge; resolve and consume get the uniform denial and the slots are free", async () => {
-  const { manager } = setup({ perActor: 1 });
+test("F2: withdraw ends the challenge: resolve and consume get the uniform denial", async () => {
+  const { manager } = setup();
   const i = issue(manager);
-  assert.throws(() => issue(manager), code("E_BACKPRESSURE"));
-  manager.withdraw(i.challenge.challengeId, CALLER);
-  assert.equal(manager.outstanding(), 0);
+  assert.deepEqual(manager.withdraw(i.challenge.challengeId, CALLER), { withdrawn: true });
+  assert.equal(manager.outstanding(), 0, "nothing is left to prompt");
   assert.throws(() => manager.resolve(...resolveArgs(i)), code("E_POLICY_DENIED"));
   await assert.rejects(manager.consume(i.challenge.challengeId, CALLER, run, () => 1), code("E_POLICY_DENIED"));
-  assert.doesNotThrow(() => issue(manager), "the actor slot is free again");
+});
+
+// D1: withdraw must not be a way around the quotas.
+test("D1: a withdrawn challenge keeps its slot until its original expiry, so issue/withdraw loops hit E_BACKPRESSURE", () => {
+  const { manager, clock } = setup({ perActor: 2, ttl: 60_000 });
+  const first = issue(manager);
+  manager.withdraw(first.challenge.challengeId, CALLER);
+  const second = issue(manager);
+  manager.withdraw(second.challenge.challengeId, CALLER);
+  let issued = 2;
+  for (let n = 0; n < 500; n++) {
+    try {
+      manager.withdraw(issue(manager).challenge.challengeId, CALLER);
+      issued++;
+    } catch (e) {
+      assert.ok(e instanceof ChallengeError && e.code === "E_BACKPRESSURE");
+    }
+  }
+  assert.equal(issued, 2, "no prompt beyond the quota inside one TTL");
+  clock.t += 60_001;
+  assert.doesNotThrow(() => issue(manager), "the slots come back at the original expiry");
+});
+
+test("D1: a tombstone counts toward the window and total quotas, and is swept on schedule", () => {
+  const { manager, clock } = setup({ total: 2 });
+  const a = issue(manager);
+  manager.withdraw(a.challenge.challengeId, CALLER);
+  clock.t += 30_000;
+  const b = issue(manager);
+  manager.withdraw(b.challenge.challengeId, CALLER);
+  assert.throws(() => issue(manager), code("E_BACKPRESSURE"));
+  clock.t += 30_001; // a's original expiry has passed, b's has not
+  const c = issue(manager);
+  assert.throws(() => issue(manager), code("E_BACKPRESSURE"), "b still holds a slot");
+  manager.withdrawConnection(CONN);
+  assert.doesNotThrow(() => issue(manager), "a closed connection frees everything, tombstones aside");
+  assert.ok(c.challenge.challengeId);
+  clock.t += 60_000;
+  assert.doesNotThrow(() => (issue(manager), issue(manager)), "every tombstone has been swept, so the whole quota is free");
 });
 
 test("F2: withdraw also ends an approved challenge, and only its requester on its connection can", async () => {
@@ -41,7 +78,7 @@ test("F2: withdraw also ends an approved challenge, and only its requester on it
   const id = approve(manager, issue(manager));
   assert.throws(() => manager.withdraw(id, { actor: "agent:x", connectionId: CONN }), code("E_POLICY_DENIED"));
   assert.throws(() => manager.withdraw(id, { actor: "user", connectionId: "other" }), code("E_POLICY_DENIED"));
-  manager.withdraw(id, CALLER);
+  assert.deepEqual(manager.withdraw(id, CALLER), { withdrawn: true });
   await assert.rejects(manager.consume(id, CALLER, run, () => 1), code("E_POLICY_DENIED"));
   assert.throws(() => manager.withdraw(id, CALLER), code("E_POLICY_DENIED"), "already gone");
 });
@@ -54,7 +91,7 @@ test("F2: withdraw succeeds even if the audit sink is down", () => {
   assert.equal(s.manager.outstanding(), 0);
 });
 
-test("F2: withdrawConnection ends every live challenge of that connection and frees the window and total slots", () => {
+test("F2: withdrawConnection ends every live challenge of that connection and frees its quota", () => {
   const { manager } = setup({ total: 3 });
   const a = issue(manager, { connectionId: "conn-a" });
   const b = issue(manager, { connectionId: "conn-a" });
@@ -68,6 +105,17 @@ test("F2: withdrawConnection ends every live challenge of that connection and fr
   assert.equal(manager.withdrawConnection("conn-a"), 0);
   assert.doesNotThrow(() => issue(manager));
   assert.throws(() => manager.withdrawConnection(""), code("E_INVALID_ARGUMENT"));
+});
+
+// N-j: withdraw after the approval was spent says so.
+test("N-j: withdraw after the approval was spent, or after it ended, reports it instead of returning silently", async () => {
+  const { manager } = setup();
+  const id = approve(manager, issue(manager));
+  await manager.consume(id, CALLER, run, () => 1);
+  assert.deepEqual(manager.withdraw(id, CALLER), { withdrawn: false, reason: "spent" });
+  const i = issue(manager);
+  manager.resolve(...resolveArgs(i, { decision: "deny" }));
+  assert.deepEqual(manager.withdraw(i.challenge.challengeId, CALLER), { withdrawn: false, reason: "ended" });
 });
 
 // F3 (async sink).
@@ -151,4 +199,24 @@ test("N-f: the args limit counts UTF-8 bytes", () => {
   assert.doesNotThrow(() => issue(manager, { args: { s: "a".repeat(16_000) } }));
   // 6000 three-byte characters: 6000 code units but 18000 bytes.
   assert.throws(() => issue(manager, { args: { s: "中".repeat(6_000) } }), code("E_INVALID_ARGUMENT"));
+});
+
+test("N-h: a hostile getter on the action's error cannot escape consume; it stays E_INTERNAL with executed: true", async () => {
+  const hostile = {
+    get code(): string {
+      throw new Error("/secret/path");
+    },
+    get name(): string {
+      throw new Error("/secret/path");
+    },
+  };
+  const { manager, events } = setup();
+  const id = approve(manager, issue(manager));
+  await assert.rejects(
+    manager.consume(id, CALLER, run, () => {
+      throw hostile;
+    }),
+    (e: unknown) => e instanceof ChallengeError && e.code === "E_INTERNAL" && e.detail["executed"] === true && !e.message.includes("secret"),
+  );
+  assert.equal(events.at(-1)?.outcome, "error");
 });

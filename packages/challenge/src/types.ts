@@ -9,6 +9,9 @@ export interface ResolveResult {
   readonly nativeRequired: boolean;
 }
 
+/** What `withdraw` did. `spent`: the approval was already consumed, so the action ran or is running. `ended`: it was already denied, expired or burned. */
+export type WithdrawResult = { readonly withdrawn: true } | { readonly withdrawn: false; readonly reason: "spent" | "ended" };
+
 /** What `consume` hands to the action: the verified facts, nothing secret. */
 export interface ConfirmedAction {
   readonly method: string;
