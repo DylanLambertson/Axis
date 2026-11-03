@@ -42,6 +42,8 @@ export const MIN_REGISTERED_SECRET_LENGTH = 8;
  */
 export const MAX_STRING_CHARS = 16_384;
 const MAX_KEY_CHARS = 256;
+/** Keys kept per object; the rest are counted in a `[truncated]` marker. */
+const MAX_KEYS_PER_OBJECT = 1024;
 /** Values visited and characters kept per `redactValue` call. */
 const MAX_NODES = 10_000;
 const MAX_TOTAL_CHARS = 1_048_576;
@@ -317,8 +319,8 @@ export class Redactor {
   }
 
   /**
-   * Deep-redact any value into plain JSON. Bounded: at most 10,000 values and
-   * 1 MiB of text per call, each object visited once (shared and circular
+   * Deep-redact any value into plain JSON. Bounded: at most 10,000 values (values
+   * under sensitive keys count too), 1,024 keys per object and 1 MiB of text per call, each object visited once (shared and circular
    * references become markers), unreadable properties become a fixed
    * placeholder. Binary data is never copied or decoded: only its length and
    * SHA-256 are kept. Values under sensitive keys are replaced wholesale and
@@ -387,19 +389,27 @@ export class Redactor {
         };
       }
       const out: Record<string, JsonValue> = {};
-      for (const key of Object.keys(obj)) {
-        if (budget.nodes > MAX_NODES) {
-          out["[truncated]"] = "[TRUNCATED:size]";
+      const keys = Object.keys(obj);
+      for (let k = 0; k < keys.length; k++) {
+        const key = keys[k] as string;
+        if (budget.nodes > MAX_NODES || budget.chars > MAX_TOTAL_CHARS || k >= MAX_KEYS_PER_OBJECT) {
+          out["[truncated]"] = `[TRUNCATED:size:${keys.length - k} keys]`;
           break;
         }
         const raw = this.#read(obj, key);
-        const safeKey = truncate(this.redactString(key), MAX_KEY_CHARS);
+        // Cut the key before the rules run, so a huge key costs a bounded amount.
+        const safeKey = truncate(this.redactString(truncate(key, MAX_KEY_CHARS)), MAX_KEY_CHARS);
+        budget.chars += safeKey.length;
         let slot = safeKey;
         for (let n = 2; Object.hasOwn(out, slot); n++) slot = `${safeKey}#${n}`;
-        const walked =
-          isSensitiveKey(key) && raw !== null && raw !== undefined && raw !== ""
-            ? placeholder("sensitive-field")
-            : this.#walk(raw, depth + 1, path, seen, budget);
+        let walked: JsonValue | undefined;
+        if (isSensitiveKey(key) && raw !== null && raw !== undefined && raw !== "") {
+          // The value is replaced, but it still costs one node, so sensitive keys cannot be used to flood the walk.
+          budget.nodes++;
+          walked = placeholder("sensitive-field");
+        } else {
+          walked = this.#walk(raw, depth + 1, path, seen, budget);
+        }
         if (walked === undefined) continue;
         // defineProperty so a key named "__proto__" is data, never a prototype write.
         Object.defineProperty(out, slot, { value: walked, enumerable: true, writable: true, configurable: true });

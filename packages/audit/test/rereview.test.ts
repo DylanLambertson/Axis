@@ -59,3 +59,44 @@ test("NEW-B: the policy redacts every kept string itself, even if the caller did
   const allowed = applyPayloadPolicy("a.b", { reason: "pass" + "word: " + PW }, { "a.b": ["reason"] }, (s) => s.replaceAll("Tr0ub4", "X")) as Record<string, string>;
   assert.ok(!allowed["reason"]?.includes("Tr0ub4"));
 });
+
+// ---- NEW-C / S5: sensitive keys count toward the node budget ----
+
+test("NEW-C: a million sensitive keys is bounded, fast and cannot flood the log", () => {
+  const r = new Redactor();
+  const flood: Record<string, string> = {};
+  for (let i = 0; i < 1_000_000; i++) flood[`k${i}tok` + "en"] = "x";
+  const t0 = performance.now();
+  const out = r.redactValue(flood) as Record<string, unknown>;
+  const ms = performance.now() - t0;
+  assert.ok(Object.keys(out).length <= 1025, `emitted ${Object.keys(out).length} entries`);
+  assert.ok(String(out["[truncated]"]).startsWith("[TRUNCATED:size"));
+  assert.ok(ms < 1000, `redactValue took ${ms.toFixed(0)} ms`);
+
+  const log = new AuditLog(openDatabase(":memory:"));
+  const t1 = performance.now();
+  const e = log.append(ev(flood));
+  const appendMs = performance.now() - t1;
+  assert.ok(appendMs < 1500, `append took ${appendMs.toFixed(0)} ms`);
+  assert.ok(JSON.stringify(e.payload).length < 1024);
+});
+
+test("NEW-C: many sensitive keys with long names, and plain keys beyond the per-object cap, are cut", () => {
+  const r = new Redactor();
+  const o: Record<string, string> = {};
+  for (let i = 0; i < 2000; i++) o["x".repeat(16_000) + i + "pass" + "word"] = "v";
+  const t0 = performance.now();
+  const out = r.redactValue(o) as Record<string, unknown>;
+  assert.ok(performance.now() - t0 < 500);
+  assert.ok(Object.keys(out).every((k) => k.length <= 300));
+  assert.ok(Object.keys(out).length <= 1025);
+
+  const plain: Record<string, number> = {};
+  for (let i = 0; i < 5000; i++) plain[`f${i}`] = i;
+  assert.equal(Object.keys(r.redactValue(plain) as object).length, 1025);
+});
+
+test("NEW-C: a few sensitive keys are still redacted whole", () => {
+  const r = new Redactor();
+  assert.deepEqual(r.redactValue({ ["pass" + "word"]: PW, ok: 1 }), { ["pass" + "word"]: "[REDACTED:sensitive-field]", ok: 1 });
+});
