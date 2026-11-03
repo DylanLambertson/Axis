@@ -6,9 +6,9 @@ import { runProviderContractSuite } from "@axis/providers/contract";
 import { createAnthropicAdapter } from "../src/index.js";
 import { MODEL, scenarioFetch } from "./support/scenarios.js";
 
-const CANARY = "contract-canary-body-text";
+const CANARY = "canary-qz-body-text-77";
 // Low-entropy stand-in for an API credential.
-const CREDENTIAL = "contract-credential-stand-in";
+const CREDENTIAL = "holdout-zq7x-standin-0042";
 
 runProviderContractSuite({
   name: "anthropic",
@@ -22,6 +22,6 @@ runProviderContractSuite({
       fetch: fake.fetch,
       pricing: (m) => (m === MODEL ? { inputMicroUsdPerMTok: 3_000_000, outputMicroUsdPerMTok: 15_000_000 } : undefined),
     });
-    return { adapter, model: MODEL, requestCount: () => fake.messageRequests(), openStreams: () => fake.counter.open };
+    return { adapter, model: MODEL, requestCount: () => fake.messageRequests(), openStreams: () => fake.counter.open, lastRequest: () => fake.lastRequest() };
   },
 });

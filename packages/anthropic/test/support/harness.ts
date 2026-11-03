@@ -18,7 +18,7 @@ import { MODEL } from "./scenarios.js";
 import { fakeFetch, jsonResponse, modelInfo, type FakeFetch, type Handler } from "./transport.js";
 
 // Low-entropy stand-in for an API credential. Not key-shaped on purpose.
-export const CREDENTIAL = "axis-test-credential-standin-one";
+export const CREDENTIAL = "holdout-zq7x-standin-0001";
 /** A key-shaped string built at run time, to test the pattern without a literal that looks like a key. */
 export const PATTERN_KEY = ["sk", "ant", "x".repeat(12)].join("-");
 

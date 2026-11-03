@@ -2,7 +2,7 @@
 // A scripted "Anthropic" for the shared contract suite: models endpoints that
 // always work, and a messages endpoint that follows the scenario. Error
 // responses echo the canary and the credential into the body and a header.
-import type { ContractScenario } from "@axis/providers/contract";
+import type { ContractScenario, ForwardedRequest } from "@axis/providers/contract";
 import {
   OpenCounter,
   chunkBytes,
@@ -30,7 +30,7 @@ const STATUS: Record<string, { status: number; type: string }> = {
   context_length_exceeded: { status: 413, type: "request_too_large" },
 };
 
-export function scenarioFetch(scenario: ContractScenario, canary: string, credential: string): FakeFetch & { messageRequests(): number } {
+export function scenarioFetch(scenario: ContractScenario, canary: string, credential: string): FakeFetch & { messageRequests(): number; lastRequest(): ForwardedRequest | undefined } {
   const echo = `${canary} ${credential} sk-ant-${credential}`;
   const errorBody = (type: string): unknown => ({ type: "error", error: { type, message: `bad request: ${echo}` }, request_id: `req_${canary}` });
   const f = fakeFetch((call: RecordedCall, counter: OpenCounter) => {
@@ -49,7 +49,17 @@ export function scenarioFetch(scenario: ContractScenario, canary: string, creden
     if (call.init.method === "POST" && url.pathname === "/v1/messages") return messages(scenario, counter, errorBody, credential);
     return jsonResponse(counter, 404, errorBody("not_found_error"));
   });
-  return Object.assign(f, { messageRequests: () => f.calls.filter((c) => c.init.method === "POST" && c.url.endsWith("/v1/messages")).length });
+  const sent = (): RecordedCall[] => f.calls.filter((c) => c.init.method === "POST" && c.url.endsWith("/v1/messages"));
+  return Object.assign(f, {
+    messageRequests: () => sent().length,
+    /** The last message request as it went on the wire, with the HTTP field names mapped back. */
+    lastRequest: (): ForwardedRequest | undefined => {
+      const last = sent().at(-1);
+      if (last === undefined) return undefined;
+      const b = JSON.parse(last.init.body ?? "{}") as { model: string; max_tokens: number; system?: string; stop_sequences?: string[] };
+      return { model: b.model, maxOutputTokens: b.max_tokens, ...(b.system === undefined ? {} : { system: b.system }), ...(b.stop_sequences === undefined ? {} : { stopSequences: b.stop_sequences }) };
+    },
+  });
 }
 
 function messages(s: ContractScenario, counter: OpenCounter, errorBody: (t: string) => unknown, credential: string) {
