@@ -29,7 +29,8 @@ export const createRunSchema = z
   .object({
     workspaceId: text(128),
     kind: z.enum(RUN_KINDS),
-    createdBy: actorSchema.optional(),
+    /** Required: the authenticated principal, never a default. */
+    createdBy: actorSchema,
     idempotencyKey: idempotencyKey.optional(),
   })
   .strict();
@@ -98,7 +99,8 @@ export interface CreateWorkspaceInput {
 export interface CreateRunInput {
   readonly workspaceId: string;
   readonly kind: RunKind;
-  readonly createdBy?: AuditActor;
+  /** The authenticated principal of the connection that asked, never a value taken from a request payload. */
+  readonly createdBy: AuditActor;
   readonly idempotencyKey?: string;
 }
 

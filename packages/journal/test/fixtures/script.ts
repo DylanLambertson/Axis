@@ -28,16 +28,16 @@ export const STEPS: ReadonlyArray<(j: Journal, c: Ctx) => void> = [
   },
   (j, c) => void j.transitionWorkspace(c.ws, "READY"),
   (j, c) => {
-    c.r1 = j.createRun({ workspaceId: c.ws, kind: "cli" }).value.id;
+    c.r1 = j.createRun({ workspaceId: c.ws, kind: "cli", createdBy: "user" }).value.id;
   },
   (j, c) => void j.transitionRun(c.r1, "RUNNING"),
   (j, c) => {
-    c.r2 = j.createRun({ workspaceId: c.ws, kind: "composer" }).value.id;
+    c.r2 = j.createRun({ workspaceId: c.ws, kind: "composer", createdBy: "user" }).value.id;
   },
   (j, c) => void j.transitionRun(c.r2, "RUNNING"),
   (j, c) => void j.transitionRun(c.r1, "REVIEWING"),
   (j, c) => void j.transitionRun(c.r2, "BLOCKED", { reason: "USER_PAUSED" }),
-  (j, c) => void j.transitionRun(c.r1, "COMPLETED", { exitCode: 0 }),
+  (j, c) => void j.transitionRun(c.r1, "COMPLETED", { exitCode: 0, actor: "user" }),
   (j, c) => void j.transitionRun(c.r2, "RUNNING"),
   // a second workspace walks into REMOVING, the state recovery must report but not rewrite
   (j, c) => {

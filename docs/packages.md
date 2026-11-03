@@ -32,6 +32,10 @@ Without the anchor, `verify()` detects edits, deletions in the middle and reorde
 
 `Journal.recover(lock)` interrupts every RUNNING run, which is correct only when the previous writer is dead. The daemon MUST take the exclusive instance lock (`acquireInstanceLock(dir)` from `@axis/audit`, a pid and process-start-time lock file in the database directory) before opening the journal, and hold it until exit. `recover()` refuses to run without a held lock. A second daemon on the same directory fails with `E_CONFLICT`.
 
+## Principals
+
+`createdBy` and every transition `actor` come from the authenticated connection (`ConnectionContext`), never from a request payload. The journal requires `createdBy` on `createRun` (there is no default) and scopes idempotency keys by it, so a caller that could choose its own principal could both forge attribution and replay another principal's keys. Completing a run in review (REVIEWING to COMPLETED) is accepted only with actor `user`, the person reviewing the diff in Phase 1a.
+
 ## Journal and audit share one connection
 
 `Journal.open(db, { audit })` rejects (`E_INTERNAL`) an `AuditLog` that was created on a different `DatabaseSync` handle. Sharing the handle is what makes a state change and its audit event commit or roll back together.

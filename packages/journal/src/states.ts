@@ -14,7 +14,11 @@
  *
  * Every run reaches COMPLETED through REVIEWING (AGENT_SYSTEM.md routes every
  * run through review; CLI runs' changes go through diff review). A run that
- * produced nothing still passes REVIEWING and is accepted from there.
+ * produced nothing still passes REVIEWING and is accepted from there. In
+ * Phase 1a the acceptance is the user's: `transitionRun(.., "COMPLETED")`
+ * from REVIEWING is denied (E_POLICY_DENIED) unless its actor is `user`, so
+ * neither the agent that did the work nor the daemon on its own can approve
+ * it. A later reviewer role (Phase 3) widens this by its own decision.
  *
  * BLOCKED is the "interrupted" state, and it is resumable, unlike the
  * "alternative terminal" BLOCKED of AGENT_SYSTEM.md (recorded there too). A run that was RUNNING when the daemon

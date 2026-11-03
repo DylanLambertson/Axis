@@ -9,6 +9,7 @@ import {
   withTransaction,
   type DatabaseSync,
 } from "@axis/audit";
+import { z } from "zod";
 import {
   createRunSchema,
   createWorkspaceSchema,
@@ -156,9 +157,8 @@ export class Journal {
   createRun(input: CreateRunInput): Created<Run> {
     const parsed = createRunSchema.safeParse(input);
     if (!parsed.success) throw invalid(parsed.error, "run");
-    const { idempotencyKey: key, createdBy: by, ...rest } = parsed.data;
-    const createdBy = by ?? "user";
-    const body = { ...rest, createdBy };
+    const { idempotencyKey: key, ...body } = parsed.data;
+    const { createdBy } = body;
     return withTransaction(this.#db, () => {
       const scope = `run.create:${createdBy}`;
       const replay = this.#replay(scope, key, body);
@@ -196,7 +196,9 @@ export class Journal {
     }
     if (options.states !== undefined) {
       if (options.states.length === 0) return [];
-      const states = options.states.map((s) => runStateSchema.parse(s));
+      const parsedStates = z.array(runStateSchema).max(RUN_STATES.length).safeParse(options.states);
+      if (!parsedStates.success) throw invalid(parsedStates.error, "run states");
+      const states = parsedStates.data;
       where.push(`state IN (${states.map(() => "?").join(",")})`);
       args.push(...states);
     }
@@ -211,6 +213,10 @@ export class Journal {
     return withTransaction(this.#db, () => {
       const current = this.#mustRun(id);
       this.#guard("run", current.state, to, RUN_TRANSITIONS[current.state], opts.expectedFrom);
+      // Approval is a human act in 1a (diff review, threat model WT-5): an agent, or the daemon on its own, cannot approve its own work.
+      if (current.state === "REVIEWING" && to === "COMPLETED" && opts.actor !== "user") {
+        throw new AxisError("E_POLICY_DENIED", "Only the user can complete a run that is in review", { actor: opts.actor ?? "none" });
+      }
       if (current.state === "BLOCKED" && (to === "QUEUED" || to === "RUNNING")) {
         const ws = this.#mustWorkspace(current.workspaceId);
         if (ws.state !== "READY") {

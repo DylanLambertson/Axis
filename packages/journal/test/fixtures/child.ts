@@ -27,10 +27,10 @@ function writeLoop(big: boolean): void {
   }
   process.stdout.write("READY\n");
   for (;;) {
-    const r = journal.createRun({ workspaceId: ws, kind: "cli" }).value.id;
+    const r = journal.createRun({ workspaceId: ws, kind: "cli", createdBy: "user" }).value.id;
     journal.transitionRun(r, "RUNNING");
     journal.transitionRun(r, "REVIEWING");
-    journal.transitionRun(r, "COMPLETED", { exitCode: 0 });
+    journal.transitionRun(r, "COMPLETED", { exitCode: 0, actor: "user" });
     if (big && Number(journal.listRuns().length) > 5000) setInterval(() => undefined, 1000);
   }
 }

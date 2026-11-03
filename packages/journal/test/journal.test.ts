@@ -67,7 +67,7 @@ test("run state machine allows exactly the documented transitions", () => {
   for (const from of RUN_STATES) {
     for (const to of RUN_STATES) {
       // Walk a fresh run into `from` along a legal path, then try `to`.
-      const run = journal.createRun({ workspaceId: ws.id, kind: "cli" }).value;
+      const run = journal.createRun({ workspaceId: ws.id, kind: "cli", createdBy: "user" }).value;
       const path: Record<RunState, RunState[]> = {
         QUEUED: [],
         RUNNING: ["RUNNING"],
@@ -77,11 +77,11 @@ test("run state machine allows exactly the documented transitions", () => {
         FAILED: ["RUNNING", "FAILED"],
         CANCELLED: ["CANCELLED"],
       };
-      for (const step of path[from]) journal.transitionRun(run.id, step);
+      for (const step of path[from]) journal.transitionRun(run.id, step, { actor: "user" });
       if (RUN_TRANSITIONS[from].includes(to)) {
-        assert.equal(journal.transitionRun(run.id, to).state, to, `${from} -> ${to}`);
+        assert.equal(journal.transitionRun(run.id, to, { actor: "user" }).state, to, `${from} -> ${to}`);
       } else {
-        assert.throws(() => journal.transitionRun(run.id, to), code("E_CONFLICT"), `${from} -> ${to}`);
+        assert.throws(() => journal.transitionRun(run.id, to, { actor: "user" }), code("E_CONFLICT"), `${from} -> ${to}`);
         assert.equal(journal.getRun(run.id)?.state, from);
       }
     }
@@ -93,7 +93,7 @@ test("terminal states are final; started/ended timestamps and exit code are reco
   const db = openDatabase(":memory:");
   const journal = Journal.open(db, { audit: new AuditLog(db), now: () => new Date(Date.UTC(2026, 0, 1, 0, 0, ++t)) });
   const ws = readyWorkspace(journal);
-  const run = journal.createRun({ workspaceId: ws.id, kind: "composer" }).value;
+  const run = journal.createRun({ workspaceId: ws.id, kind: "composer", createdBy: "user" }).value;
   assert.equal(run.state, "QUEUED");
   assert.equal(run.startedAt, null);
   const running = journal.transitionRun(run.id, "RUNNING");
@@ -108,15 +108,15 @@ test("terminal states are final; started/ended timestamps and exit code are reco
 test("runs need a READY workspace; unknown ids are E_NOT_FOUND", () => {
   const { journal } = setup();
   const ws = journal.createWorkspace({ projectId: "p", branch: "b", baseRef: "main", baseSha: SHA, createdBy: "user" }).value;
-  assert.throws(() => journal.createRun({ workspaceId: ws.id, kind: "cli" }), code("E_CONFLICT"));
-  assert.throws(() => journal.createRun({ workspaceId: "nope", kind: "cli" }), code("E_NOT_FOUND"));
+  assert.throws(() => journal.createRun({ workspaceId: ws.id, kind: "cli", createdBy: "user" }), code("E_CONFLICT"));
+  assert.throws(() => journal.createRun({ workspaceId: "nope", kind: "cli", createdBy: "user" }), code("E_NOT_FOUND"));
   assert.throws(() => journal.transitionRun("nope", "RUNNING"), code("E_NOT_FOUND"));
 });
 
 test("expectedFrom makes a transition conditional", () => {
   const { journal } = setup();
   const ws = readyWorkspace(journal);
-  const run = journal.createRun({ workspaceId: ws.id, kind: "cli" }).value;
+  const run = journal.createRun({ workspaceId: ws.id, kind: "cli", createdBy: "user" }).value;
   assert.throws(() => journal.transitionRun(run.id, "RUNNING", { expectedFrom: "BLOCKED" }), code("E_CONFLICT"));
   assert.equal(journal.transitionRun(run.id, "RUNNING", { expectedFrom: "QUEUED" }).state, "RUNNING");
 });
@@ -133,11 +133,11 @@ test("idempotency: same key and input replays; same key with different input con
   assert.throws(() => journal.createWorkspace({ ...input, branch: "axis/other" }), code("E_IDEMPOTENCY_CONFLICT"));
 
   journal.transitionWorkspace(first.value.id, "READY");
-  const r1 = journal.createRun({ workspaceId: first.value.id, kind: "cli", idempotencyKey: KEY2 });
-  const r2 = journal.createRun({ workspaceId: first.value.id, kind: "cli", idempotencyKey: KEY2 });
+  const r1 = journal.createRun({ workspaceId: first.value.id, kind: "cli", idempotencyKey: KEY2 , createdBy: "user" });
+  const r2 = journal.createRun({ workspaceId: first.value.id, kind: "cli", idempotencyKey: KEY2 , createdBy: "user" });
   assert.equal(r2.value.id, r1.value.id);
   assert.equal(r2.replayed, true);
-  assert.throws(() => journal.createRun({ workspaceId: first.value.id, kind: "composer", idempotencyKey: KEY2 }), code("E_IDEMPOTENCY_CONFLICT"));
+  assert.throws(() => journal.createRun({ workspaceId: first.value.id, kind: "composer", idempotencyKey: KEY2 , createdBy: "user" }), code("E_IDEMPOTENCY_CONFLICT"));
   assert.equal(journal.listRuns().length, 1);
 });
 
@@ -146,8 +146,8 @@ test("keys are scoped per operation, and must be UUIDv4", () => {
   const ws = journal.createWorkspace({ projectId: "p", branch: "b", baseRef: "main", baseSha: SHA, createdBy: "user", idempotencyKey: KEY1 }).value;
   journal.transitionWorkspace(ws.id, "READY");
   // Same key string used for a different operation is independent.
-  assert.equal(journal.createRun({ workspaceId: ws.id, kind: "cli", idempotencyKey: KEY1 }).replayed, false);
-  assert.throws(() => journal.createRun({ workspaceId: ws.id, kind: "cli", idempotencyKey: "not-a-uuid" }), code("E_INVALID_ARGUMENT"));
+  assert.equal(journal.createRun({ workspaceId: ws.id, kind: "cli", idempotencyKey: KEY1 , createdBy: "user" }).replayed, false);
+  assert.throws(() => journal.createRun({ workspaceId: ws.id, kind: "cli", idempotencyKey: "not-a-uuid", createdBy: "user" }), code("E_INVALID_ARGUMENT"));
 });
 
 test("input validation rejects unknown keys, bad actors, bad shas and free-text reasons", () => {
@@ -158,7 +158,7 @@ test("input validation rejects unknown keys, bad actors, bad shas and free-text 
   assert.throws(() => journal.createWorkspace({ ...base, extra: 1 } as never), code("E_INVALID_ARGUMENT"));
   assert.throws(() => journal.createWorkspace({ ...base, branch: "a\nb" }), code("E_INVALID_ARGUMENT"));
   const ws = readyWorkspace(journal);
-  const run = journal.createRun({ workspaceId: ws.id, kind: "cli" }).value;
+  const run = journal.createRun({ workspaceId: ws.id, kind: "cli", createdBy: "user" }).value;
   assert.throws(() => journal.transitionRun(run.id, "RUNNING", { reason: `failed with ${FAKE.anthropic}` }), code("E_INVALID_ARGUMENT"));
   assert.equal(journal.getRun(run.id)?.state, "QUEUED");
 });
@@ -179,8 +179,8 @@ test("recovery policy: RUNNING becomes BLOCKED; QUEUED, REVIEWING and BLOCKED ar
   const { journal, audit } = setup();
   const ws = readyWorkspace(journal);
   const mk = (kind: "cli" | "composer", ...path: RunState[]) => {
-    const run = journal.createRun({ workspaceId: ws.id, kind }).value;
-    for (const s of path) journal.transitionRun(run.id, s);
+    const run = journal.createRun({ workspaceId: ws.id, kind , createdBy: "user" }).value;
+    for (const s of path) journal.transitionRun(run.id, s, { actor: "user" });
     return run.id;
   };
   const queued = mk("cli");
@@ -254,7 +254,7 @@ test("a failing audit append rolls back the whole recovery (all or nothing)", ()
   const journal = Journal.open(db, { audit: flaky });
   const ws = readyWorkspace(journal);
   for (let i = 0; i < 3; i++) {
-    const r = journal.createRun({ workspaceId: ws.id, kind: "cli" }).value;
+    const r = journal.createRun({ workspaceId: ws.id, kind: "cli", createdBy: "user" }).value;
     journal.transitionRun(r.id, "RUNNING");
   }
   assert.throws(() => journal.recover(LOCK), code("E_INTERNAL"));
@@ -292,7 +292,7 @@ test("S6: createdBy is part of the run idempotency hash and scope, so attributio
 test("S7: a workspace cannot start removal while any run is not finished", () => {
   const { journal } = setup();
   const ws = readyWorkspace(journal);
-  const run = journal.createRun({ workspaceId: ws.id, kind: "cli" }).value;
+  const run = journal.createRun({ workspaceId: ws.id, kind: "cli", createdBy: "user" }).value;
   journal.transitionRun(run.id, "RUNNING");
   assert.throws(() => journal.transitionWorkspace(ws.id, "REMOVING"), code("E_CONFLICT"));
   journal.transitionRun(run.id, "CANCELLED");
@@ -302,12 +302,12 @@ test("S7: a workspace cannot start removal while any run is not finished", () =>
 test("S8: a run cannot reach COMPLETED without passing REVIEWING", () => {
   const { journal } = setup();
   const ws = readyWorkspace(journal);
-  const run = journal.createRun({ workspaceId: ws.id, kind: "cli" }).value;
+  const run = journal.createRun({ workspaceId: ws.id, kind: "cli", createdBy: "user" }).value;
   journal.transitionRun(run.id, "RUNNING");
-  assert.throws(() => journal.transitionRun(run.id, "COMPLETED"), code("E_CONFLICT"));
+  assert.throws(() => journal.transitionRun(run.id, "COMPLETED", { actor: "user" }), code("E_CONFLICT"));
   assert.ok(!RUN_TRANSITIONS.RUNNING.includes("COMPLETED"));
   journal.transitionRun(run.id, "REVIEWING");
-  assert.equal(journal.transitionRun(run.id, "COMPLETED", { exitCode: 0 }).state, "COMPLETED");
+  assert.equal(journal.transitionRun(run.id, "COMPLETED", { exitCode: 0, actor: "user" }).state, "COMPLETED");
 });
 
 test("S9: lone surrogates in journal strings are rejected", () => {
@@ -356,7 +356,7 @@ test("NEW-D: a literal lock, a lock for another directory and a released lock ar
     const audit = new AuditLog(db);
     const journal = Journal.open(db, { audit });
     const ws = readyWorkspace(journal);
-    const run = journal.createRun({ workspaceId: ws.id, kind: "cli" }).value.id;
+    const run = journal.createRun({ workspaceId: ws.id, kind: "cli", createdBy: "user" }).value.id;
     journal.transitionRun(run, "RUNNING"); // a live daemon's run
 
     const literal = { path: join(dataDir, "axis.lock"), held: true, release() {} };
@@ -375,4 +375,38 @@ test("NEW-D: a literal lock, a lock for another directory and a released lock ar
     rmSync(dataDir, { recursive: true, force: true });
     rmSync(otherDir, { recursive: true, force: true });
   }
+});
+
+// ---- NEW-I / judgement (c): approval is a human act ----
+
+test("NEW-I: only the user completes a run in review; an agent (even its own author), the daemon and no actor are denied", () => {
+  const { journal, audit } = setup();
+  const ws = readyWorkspace(journal);
+  const run = journal.createRun({ workspaceId: ws.id, kind: "composer", createdBy: "agent:w1" }).value.id;
+  journal.transitionRun(run, "RUNNING", { actor: "agent:w1" });
+  journal.transitionRun(run, "REVIEWING", { actor: "agent:w1" });
+  const before = audit.head()?.seq;
+  for (const opts of [{ actor: "agent:w1" as const }, { actor: "agent:other" as const }, { actor: "daemon" as const }, {}]) {
+    assert.throws(() => journal.transitionRun(run, "COMPLETED", opts), code("E_POLICY_DENIED"));
+    assert.equal(journal.getRun(run)?.state, "REVIEWING");
+  }
+  assert.equal(audit.head()?.seq, before, "a denied approval writes nothing");
+  // Rejection and cancellation stay available to the agent side; approval does not.
+  assert.equal(journal.transitionRun(run, "COMPLETED", { actor: "user" }).state, "COMPLETED");
+  assert.equal(journal.transitions("run", run).at(-1)?.actor, "user");
+});
+
+test("NEW-E: createRun needs a principal; there is no default to the user", () => {
+  const { journal } = setup();
+  const ws = readyWorkspace(journal);
+  assert.throws(() => journal.createRun({ workspaceId: ws.id, kind: "cli" } as never), code("E_INVALID_ARGUMENT"));
+  assert.throws(() => journal.createRun({ workspaceId: ws.id, kind: "cli", createdBy: "someone" } as never), code("E_INVALID_ARGUMENT"));
+});
+
+test("NEW-H: listRuns reports a bad state as E_INVALID_ARGUMENT, never a raw ZodError", () => {
+  const { journal } = setup();
+  for (const states of [["NOPE"], "RUNNING", [5], Array(20).fill("QUEUED")]) {
+    assert.throws(() => journal.listRuns({ states: states as never }), code("E_INVALID_ARGUMENT"));
+  }
+  assert.deepEqual(journal.listRuns({ states: [] }), []);
 });
