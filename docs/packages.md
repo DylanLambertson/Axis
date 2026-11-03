@@ -68,12 +68,12 @@ Adapter rules:
 - Mint the handler's capability inside the action, after the spend: for worktrees, call `markDiscardConfirmed` from `@axis/worktrees/daemon-confirm` there, bound to `content.target` and `content.contentDigest`, and pass it as `capability` in the `ConfirmedAction` given to `action`. The handler reads `ctx.approved.capability` (non-enumerable, never serialised or logged) and never mints one itself.
 - Identity comes from the daemon only: pass `input.identity.windowId`, `input.connectionId` and `input.actor` (attested by the transport) to the manager, never a value from the request payload or the envelope.
 - `manager.withdrawConnection` can throw `E_INTERNAL` (for example on a bad clock reading). The adapter should catch it; if it throws anyway the daemon's close path still completes and reports the error locally through `onInternalError`.
-- The per-actor challenge cap is keyed per (actor, window) with an overall backstop, and closing a connection leaves tombstones until they expire (at most one challenge TTL), so a legitimate window reload is held to the quota for up to one TTL.
+- Quotas are described under "Using `@axis/challenge`". Closing a connection leaves tombstones until they expire (at most one challenge TTL), so a legitimate window reload is held to its quota for up to one TTL.
 - The challenge manager's audit sink must be synchronous (a returned promise counts as a failed write, so every `issue()` would fail closed). Never hand it a journal sink with an async `append`; wrap that in a synchronous buffer or queue.
 - `issue()` out of capacity is `E_BACKPRESSURE` (retryable): ask-and-cancel cycles also count against the actor's challenge quota until withdrawn, so map it through, never to `E_INTERNAL`.
 - Tier 3+ methods must declare `approval` as an optional field of their strict request schema: `register()` throws otherwise, and a policy-raised tier on a method without it is refused with `E_POLICY_DENIED` (audit reason `not_approvable`) before any challenge is issued.
 - The daemon runs the action at most once and answers with the action's own outcome, never with `execute`'s return value; a gate that returns before the action completed gets `E_INTERNAL`, and the slot stays held until the handler settles.
-- A challenge issued for a request that was aborted during an async `issue` is withdrawn on a best-effort basis; if that fails it holds its slots until the challenge TTL (60 s by default). `@axis/challenge`'s method pattern currently refuses camelCase method names such as `restoreFromRunBase`; that is fixed in the challenge package, not here.
+- A challenge issued for a request that was aborted during an async `issue` is withdrawn on a best-effort basis; if that fails it holds its slots until the challenge TTL (60 s by default).
 
 | Daemon field | Challenge field |
 |---|---|
