@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { challengeIdSchema, challengeSchema, type Challenge } from "@axis/protocol";
 import { z } from "zod";
+import { actionFailure } from "./action-error.js";
 import { challengeDigest, randomToken, safeEqual, sha256Hex } from "./crypto.js";
 import { ChallengeError } from "./errors.js";
 import {
@@ -18,82 +19,16 @@ import {
   type ChallengeAuditEvent,
   type ChallengeAuditSink,
 } from "./schemas.js";
+import { limit, MAX_TTL, OPEN, type ChallengeManagerOptions, type ConfirmedAction, type Record_, type ResolveResult, type State } from "./types.js";
 
 export type { ActorId, ChallengeAuditEvent, ChallengeAuditSink } from "./schemas.js";
+export type { ChallengeManagerOptions, ConfirmedAction, ResolveResult } from "./types.js";
 
-export interface ResolveResult {
-  readonly challengeId: string;
-  readonly state: "approved" | "denied" | "expired";
-  /** True while a native confirmation is still outstanding. */
-  readonly nativeRequired: boolean;
-}
-
-/** What `consume` hands to the action: the verified facts, nothing secret. */
-export interface ConfirmedAction {
-  readonly method: string;
+/** What an audit event names: a record, or for an unknown id just the id's own hash, so refusing an unknown id costs the same as refusing a wrong caller. */
+interface Subject {
   readonly target: string;
-  readonly requester: ActorId;
-}
-
-export interface ChallengeManagerOptions {
-  readonly audit: ChallengeAuditSink;
-  /** Wall clock in epoch ms. Used only for the wire `expiresAt`; never for deadlines. */
-  readonly now?: () => number;
-  /** Monotonic clock in ms (default `performance.now`). Every internal TTL runs on this one, so a wall-clock step cannot extend a challenge or approval. */
-  readonly monotonic?: () => number;
-  /** Challenge lifetime. Default 60 s, at most 5 min. */
-  readonly challengeTtlMs?: number;
-  /** How long a fully confirmed approval stays usable. Default 30 s, at most 5 min. */
-  readonly confirmationTtlMs?: number;
-  /** Open challenges per requesting actor. Default 8. */
-  readonly maxOutstandingPerActor?: number;
-  /**
-   * Open challenges shown in one window. Default 16. Keeps one window's backlog
-   * from using every slot. Finished records linger for twice the challenge TTL
-   * at whatever rate the user resolves them, so the per-window rate limit
-   * (ADR 0003) is what bounds churn; this only bounds what is open at once.
-   */
-  readonly maxOutstandingPerWindow?: number;
-  /** Open challenges overall. Default 128. */
-  readonly maxOutstandingTotal?: number;
-}
-
-type State = "PENDING" | "AWAITING_NATIVE" | "CONFIRMED" | "DENIED" | "EXPIRED" | "BURNED" | "CONSUMED";
-
-interface Record_ {
+  readonly method: string;
   readonly ref: string;
-  readonly requester: ActorId;
-  readonly connectionId: string;
-  readonly windowId: string;
-  readonly contract: string;
-  readonly method: string;
-  readonly target: string;
-  /** Digest of the approved request: contract, version, method and args. */
-  readonly requestDigest: string;
-  /** Digest shown on the challenge: request digest, target and content digest. */
-  readonly digest: string;
-  readonly tier: number;
-  readonly native: boolean;
-  /** Monotonic deadline. */
-  readonly expiresAt: number;
-  /** Wall-clock deadline, for display on the wire only. */
-  readonly wallExpiresAt: number;
-  nativeProof: string | null;
-  proofTaken: boolean;
-  state: State;
-  tokenExpiresAt: number;
-  endedAt: number;
-}
-
-const OPEN: ReadonlySet<State> = new Set<State>(["PENDING", "AWAITING_NATIVE"]);
-const MAX_TTL = 300_000;
-
-function limit(value: number | undefined, fallback: number, max: number, name: string): number {
-  const v = value ?? fallback;
-  if (!Number.isInteger(v) || v < 1 || v > max) {
-    throw new ChallengeError("E_INVALID_ARGUMENT", `${name} must be an integer from 1 to ${max}`);
-  }
-  return v;
 }
 
 /**
@@ -117,7 +52,9 @@ function limit(value: number | undefined, fallback: number, max: number, name: s
 export class ChallengeManager {
   readonly #audit: ChallengeAuditSink;
   readonly #now: () => number;
-  readonly #mono: () => number;
+  readonly #clock: () => number;
+  /** Last finite monotonic reading, for record timestamps after the clock fails. */
+  #last = 0;
   readonly #ttl: number;
   readonly #confirmTtl: number;
   readonly #perActor: number;
@@ -128,7 +65,7 @@ export class ChallengeManager {
   constructor(options: ChallengeManagerOptions) {
     this.#audit = options.audit;
     this.#now = options.now ?? Date.now;
-    this.#mono = options.monotonic ?? (() => performance.now());
+    this.#clock = options.monotonic ?? (() => performance.now());
     this.#ttl = limit(options.challengeTtlMs, 60_000, MAX_TTL, "challengeTtlMs");
     this.#confirmTtl = limit(options.confirmationTtlMs, 30_000, MAX_TTL, "confirmationTtlMs");
     this.#perActor = limit(options.maxOutstandingPerActor, 8, 1024, "maxOutstandingPerActor");
@@ -146,6 +83,17 @@ export class ChallengeManager {
     return n;
   }
 
+  /** Reads the monotonic clock. A reading that is not finite expires everything live and fails closed. */
+  #mono(): number {
+    const v = this.#clock();
+    if (Number.isFinite(v)) {
+      this.#last = v;
+      return v;
+    }
+    for (const r of this.#byRef.values()) if (OPEN.has(r.state) || r.state === "CONFIRMED") this.#finish(r, "EXPIRED");
+    throw new ChallengeError("E_INTERNAL", "The daemon clock is not usable");
+  }
+
   /**
    * Returns the renderer-visible challenge and nothing else, so serialising the
    * result can never leak a secret. The native-confirmation proof is fetched
@@ -156,25 +104,34 @@ export class ChallengeManager {
     if (!parsed.success) throw invalid(parsed.error, "challenge request");
     const p = parsed.data;
     this.#sweep();
-    if (this.outstanding(p.actor) >= this.#perActor || this.outstanding(undefined, p.windowId) >= this.#perWindow || this.outstanding() >= this.#total) {
+    let actorN = 0;
+    let windowN = 0;
+    let totalN = 0;
+    for (const r of this.#byRef.values()) {
+      if (!OPEN.has(r.state)) continue;
+      totalN++;
+      if (r.requester === p.actor) actorN++;
+      if (r.windowId === p.windowId) windowN++;
+    }
+    if (actorN >= this.#perActor || windowN >= this.#perWindow || totalN >= this.#total) {
       throw new ChallengeError("E_BACKPRESSURE", "Too many confirmations are waiting; resolve or wait for them to expire");
     }
     const id = randomToken();
     const ref = sha256Hex(id);
     const mono = this.#mono();
     const wall = this.#now();
-    if (!Number.isFinite(mono) || !Number.isFinite(wall) || wall < 0 || wall + this.#ttl > Number.MAX_SAFE_INTEGER) {
+    if (!Number.isFinite(wall) || wall < 0 || wall + this.#ttl > Number.MAX_SAFE_INTEGER) {
       throw new ChallengeError("E_INTERNAL", "The daemon clock is not usable");
     }
     const native = p.tier >= 4;
-    const reqDigest = digestOf(p);
-    if (reqDigest === null) throw new ChallengeError("E_INVALID_ARGUMENT", "Invalid challenge request: args");
+    const reqDigest = digestOf(p) as string; // non-null: the schema refines it
     const record: Record_ = {
       ref,
       requester: p.actor as ActorId,
       connectionId: p.connectionId,
       windowId: p.windowId,
       contract: p.contract,
+      version: p.version,
       method: p.method,
       target: p.target,
       requestDigest: reqDigest,
@@ -234,8 +191,8 @@ export class ChallengeManager {
     const p = parsed.data;
     const rec = this.#byRef.get(sha256Hex(p.challengeId));
     // Authorisation first, and it does not burn the challenge: a bystander must not be able to kill a legitimate one.
-    if (who.data.actor !== "user") throw this.#refuse(who.data.actor as ActorId, rec, "resolve", "actor_not_user");
-    if (!rec || who.data.windowId !== rec.windowId) throw this.#refuse("user", rec, "resolve", "wrong_window");
+    if (who.data.actor !== "user") throw this.#refuse(who.data.actor as ActorId, rec, sha256Hex(p.challengeId), "tier4.challenge", "resolve", "actor_not_user");
+    if (!rec || who.data.windowId !== rec.windowId) throw this.#refuse("user", rec, sha256Hex(p.challengeId), "tier4.challenge", "resolve", "wrong_window");
     if (this.#expireIfDue(rec)) {
       this.#emit("user", "tier4.challenge", rec, "failure", { phase: "resolve", reason: "expired" });
       return { challengeId: p.challengeId, state: "expired", nativeRequired: rec.native };
@@ -264,7 +221,7 @@ export class ChallengeManager {
 
   /**
    * The native dialog's result, delivered over the privileged port. `proof` is
-   * the `nativeProof` returned by `issue`; a wrong proof burns the challenge.
+   * the `nativeProof` from `takeNativeProof`; a wrong proof burns the challenge.
    */
   confirmNative(caller: z.input<typeof nativeCallerSchema>, input: z.input<typeof nativeSchema>): ResolveResult {
     const who = nativeCallerSchema.safeParse(caller);
@@ -273,7 +230,7 @@ export class ChallengeManager {
     if (!parsed.success) throw invalid(parsed.error, "native confirmation");
     const p = parsed.data;
     const rec = this.#byRef.get(sha256Hex(p.challengeId));
-    if (!rec || who.data.windowId !== rec.windowId) throw this.#refuse("user", rec, "native", "wrong_window");
+    if (!rec || who.data.windowId !== rec.windowId) throw this.#refuse("user", rec, sha256Hex(p.challengeId), "tier4.challenge", "native", "wrong_window");
     if (this.#expireIfDue(rec)) {
       this.#emit("user", "tier4.challenge", rec, "failure", { phase: "native", reason: "expired" });
       return { challengeId: p.challengeId, state: "expired", nativeRequired: true };
@@ -335,18 +292,12 @@ export class ChallengeManager {
     if (typeof action !== "function") throw new ChallengeError("E_INVALID_ARGUMENT", "Invalid action");
     const c = parsed.data;
     const reqDigest = digestOf(c) as string; // non-null: the schema refines it
-    const rec = this.#byRef.get(sha256Hex(id.data));
-    // Unknown id and wrong caller are the same refusal, so a probing caller learns nothing about which ids exist.
+    const ref = sha256Hex(id.data);
+    const rec = this.#byRef.get(ref);
+    // Unknown id and wrong caller are the same refusal and the same work (one hash, one best-effort audit write), so a probing caller learns nothing about which ids exist.
     // A refusal here burns nothing: a bystander must not be able to kill someone else's approval.
     if (!rec || rec.requester !== who.data.actor || rec.connectionId !== who.data.connectionId) {
-      if (rec) {
-        try {
-          this.#emit(who.data.actor as ActorId, "tier4.execute", rec, "denied", { phase: "execute", reason: "wrong_caller" });
-        } catch {
-          // Refusing does not depend on the audit log, and its failure must not change the answer.
-        }
-      }
-      throw new ChallengeError("E_POLICY_DENIED", "That confirmation is not available to this caller");
+      throw this.#refuse(who.data.actor as ActorId, rec, ref, "tier4.execute", "execute", "wrong_caller");
     }
     if (rec.state !== "CONFIRMED") {
       this.#emit("daemon", "tier4.execute", rec, "denied", { phase: "execute", reason: "not_live", state: rec.state });
@@ -356,7 +307,7 @@ export class ChallengeManager {
       this.#end(rec, "EXPIRED", "daemon", "execute", "token_expired", "tier4.execute");
       throw new ChallengeError("E_CONFLICT", "The confirmation expired; ask again");
     }
-    if (c.target !== rec.target || reqDigest !== rec.requestDigest) {
+    if (c.target !== rec.target || c.contract !== rec.contract || c.version !== rec.version || c.method !== rec.method || reqDigest !== rec.requestDigest) {
       this.#end(rec, "BURNED", "daemon", "execute", "request_mismatch", "tier4.execute");
       throw new ChallengeError("E_POLICY_DENIED", "The confirmation does not cover this request");
     }
@@ -367,20 +318,20 @@ export class ChallengeManager {
     }
     // Spend first (synchronously, before any await), then audit, then act.
     rec.state = "CONSUMED";
-    rec.endedAt = this.#mono();
+    rec.endedAt = this.#last;
     this.#emit("daemon", "tier4.execute", rec, "success", { phase: "authorised", approvedBy: "user" });
     let result: T;
     try {
       result = await action({ method: rec.method, target: rec.target, requester: rec.requester });
     } catch (error) {
-      // Nothing the action throws crosses this boundary: it may carry paths or secrets and is not a protocol code.
+      // Nothing the action throws crosses this boundary except a protocol-shaped code and its safe message: the rest may carry paths or secrets.
       const errorName = error instanceof Error ? error.name.slice(0, 64) : "unknown";
       try {
         this.#emit("daemon", "tier4.execute", rec, "error", { phase: "completed", errorName });
       } catch {
         // The audit failure must not hide that the action ran (and failed).
       }
-      throw new ChallengeError("E_INTERNAL", "The action failed after the confirmation was spent", { executed: true });
+      throw actionFailure(error);
     }
     try {
       this.#emit("daemon", "tier4.execute", rec, "success", { phase: "completed" });
@@ -393,17 +344,15 @@ export class ChallengeManager {
   // ---- internals ----
 
   /**
-   * The one refusal for "not yours or not there". It audits when the record
-   * exists, best effort: the answer must not change with the sink's health or
-   * with whether the id is real.
+   * The one refusal for "not yours or not there". It always audits, best effort
+   * (a record, or for an unknown id its hash), so the answer and the work done
+   * do not depend on the sink's health or on whether the id is real.
    */
-  #refuse(actor: ActorId, rec: Record_ | undefined, phase: string, reason: string): ChallengeError {
-    if (rec) {
-      try {
-        this.#emit(actor, "tier4.challenge", rec, "denied", { phase, reason });
-      } catch {
-        // See above.
-      }
+  #refuse(actor: ActorId, rec: Record_ | undefined, ref: string, action: ChallengeAuditEvent["action"], phase: string, reason: string): ChallengeError {
+    try {
+      this.#emit(actor, action, rec ?? { target: "", method: "", ref }, "denied", { phase, reason: rec ? reason : "unknown_id" });
+    } catch {
+      // See above.
     }
     return new ChallengeError("E_POLICY_DENIED", "That confirmation is not available to this caller");
   }
@@ -417,7 +366,7 @@ export class ChallengeManager {
   #finish(rec: Record_, state: State): void {
     rec.state = state;
     rec.nativeProof = null;
-    rec.endedAt = this.#mono();
+    rec.endedAt = this.#last;
   }
 
   #end(rec: Record_, state: State, actor: ActorId, phase: string, reason: string, action: ChallengeAuditEvent["action"] = "tier4.challenge"): void {
@@ -455,14 +404,19 @@ export class ChallengeManager {
   #emit(
     actor: ActorId,
     action: ChallengeAuditEvent["action"],
-    rec: Record_,
+    rec: Subject,
     outcome: ChallengeAuditEvent["outcome"],
     payload: Readonly<Record<string, string | number | boolean | null>>,
   ): void {
-    // `ref` is a hash prefix of the id: enough to correlate, useless to resolve.
     try {
       // The target is audited as a hash (ADR 0003 D5): raw targets may become paths. The same target always hashes the same, so events still correlate.
-      this.#audit.append({ actor, action, target: `sha256:${sha256Hex(rec.target)}`, outcome, payload: { ...payload, method: rec.method, ref: rec.ref.slice(0, 12) } });
+      // `ref` is a hash prefix of the id: enough to correlate, useless to resolve.
+      const result: unknown = this.#audit.append({ actor, action, target: `sha256:${sha256Hex(rec.target)}`, outcome, payload: { ...payload, method: rec.method, ref: rec.ref.slice(0, 12) } });
+      if (typeof result === "object" && result !== null && typeof (result as { then?: unknown }).then === "function") {
+        // An asynchronous sink cannot be waited for on this path: treat the write as failed, and swallow its rejection.
+        Promise.resolve(result).catch(() => undefined);
+        throw new Error("async audit sink");
+      }
     } catch {
       // The sink's own error may name paths or hosts, and is not a protocol code.
       const detail = action === "tier4.execute" ? { executed: false } : {};

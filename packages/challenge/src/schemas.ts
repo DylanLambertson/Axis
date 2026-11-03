@@ -26,7 +26,8 @@ export interface ChallengeAuditEvent {
   readonly payload: Readonly<Record<string, string | number | boolean | null>>;
 }
 export interface ChallengeAuditSink {
-  append(event: ChallengeAuditEvent): unknown;
+  /** Must be synchronous. A returned promise is treated as a failed write (fail closed) and its rejection is swallowed. */
+  append(event: ChallengeAuditEvent): void;
 }
 
 export const MAX_ARGS_BYTES = 16_384;
@@ -39,7 +40,7 @@ const isPlainObject = (v: unknown): boolean => typeof v === "object" && v !== nu
  */
 export const argsSchema = boundedJsonSchema
   .refine(isPlainObject, "args must be an object")
-  .refine((v) => canonicalJson(v).length <= MAX_ARGS_BYTES, "args too large");
+  .refine((v) => Buffer.byteLength(canonicalJson(v), "utf8") <= MAX_ARGS_BYTES, "args too large");
 
 const actorSchema = z.string().regex(ACTOR);
 const windowSchema = z.string().regex(WINDOW);
@@ -56,18 +57,17 @@ const requestFields = {
   contract: contractIdSchema,
   version: contractVersionSchema,
   method: z.string().regex(METHOD),
-  /** The request params, minus `approval`. */
-  args: argsSchema.optional(),
-  /** The daemon's precomputed digest of the request (see `requestDigest`). */
+  /** The request params, minus `approval`. Required: the manager computes the digest itself, so contract, version and method are bound to it. */
+  args: argsSchema,
+  /** Optional cross-check: the daemon's own digest of the request (see `requestDigest`). It must equal the computed one. */
   requestDigest: requestDigestSchema.optional(),
 };
 
-type RequestFields = { contract: string; version: number; method: string; args?: unknown; requestDigest?: string | undefined };
+type RequestFields = { contract: string; version: number; method: string; args: unknown; requestDigest?: string | undefined };
 
-/** The digest of the request, from args and/or the precomputed value; null if neither is given or they disagree. */
+/** The digest of the request, computed from its parts; null if a supplied `requestDigest` disagrees. */
 export function digestOf(r: RequestFields): string | null {
-  const computed = r.args === undefined ? undefined : requestDigest({ contract: r.contract, version: r.version, method: r.method, payload: r.args });
-  if (computed === undefined) return r.requestDigest ?? null;
+  const computed = requestDigest({ contract: r.contract, version: r.version, method: r.method, payload: r.args });
   return r.requestDigest === undefined || r.requestDigest === computed ? computed : null;
 }
 const requestRefine = (r: RequestFields): boolean => digestOf(r) !== null;
@@ -100,7 +100,7 @@ export const issueSchema = z
     targetSummary: z.string().max(512).refine(displaySafe).optional(),
   })
   .strict()
-  .refine(requestRefine, { message: "args or a matching requestDigest is required", path: ["args"] });
+  .refine(requestRefine, { message: "requestDigest does not match the request", path: ["requestDigest"] });
 
 /** Who is resolving, as attested by the daemon's transport. Never part of the renderer's payload (ADR 0003). */
 export const resolverSchema = z.object({ actor: actorSchema, windowId: windowSchema }).strict();
@@ -128,7 +128,7 @@ export const executeContextSchema = z
     currentContentDigest: requestDigestSchema,
   })
   .strict()
-  .refine(requestRefine, { message: "args or a matching requestDigest is required", path: ["args"] });
+  .refine(requestRefine, { message: "requestDigest does not match the request", path: ["requestDigest"] });
 
 /**
  * The whole target when it fits the schema's 512 characters; otherwise the head
