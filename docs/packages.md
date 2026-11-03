@@ -20,11 +20,15 @@ More packages (worktrees, and so on) are added by their own changes.
 
 A hash chain cannot show that its newest events were deleted. Threat model G-11 is closed only if the daemon keeps a copy of the chain head outside the database. The daemon MUST:
 
-1. Call `AuditLog.checkpoint()` after each append batch (for example at the end of each handled request that wrote events, and on clean shutdown). It verifies the chain and returns `{ seq, hash }`, or throws `E_INTERNAL` if the chain is already broken; a broken chain is never anchored.
-2. Persist that anchor outside the journal database, where an attacker who edits the database file does not also write (for example the OS keychain through the main process, or a separate file with its own permissions). Where it is stored is daemon work and is not decided here.
+1. Call `AuditLog.checkpoint(previousAnchor)` after each append batch (for example at the end of each handled request that wrote events, and on clean shutdown). It verifies only the events after the previous anchor, so the cost is proportional to the batch, and returns `{ seq, hash }`; it throws `E_INTERNAL` if the chain is already broken, and a broken chain is never anchored. Run the full `checkpoint()` (no argument) at startup.
+2. Persist that anchor outside the journal database, where an attacker who edits the database file does not also write (for example the OS keychain through the main process, or a store owned by a different principal). A separate file under the same OS user does not count: the attacker in DMN-5 runs as that user and can rewrite the file as easily as the database. Where it is stored is daemon work and is not decided here.
 3. At every start, before accepting work, call `verify({ expectedHead: anchor })` and treat `ok: false` as an integrity failure (surface it to the user; do not silently continue). A longer chain that still contains the anchor is valid.
 
-Without the anchor, `verify()` detects edits, deletions in the middle and reordering, but not removal of the tail. The chain gives local tamper evidence only; it does not stop an attacker who can also rewrite the anchor (ADR 0003 D5).
+Without the anchor, `verify()` detects edits, deletions in the middle and reordering, but not removal of the tail. The chain gives local tamper evidence only (ADR 0003 D5). The append-only triggers stop no one with write access to the file (`DROP TRIGGER` works), and the chain has no key, so everything after the last anchor can be recomputed. It does not stop an attacker who can also rewrite the anchor.
+
+## Single instance (requirement on the daemon)
+
+`Journal.recover(lock)` interrupts every RUNNING run, which is correct only when the previous writer is dead. The daemon MUST take the exclusive instance lock (`acquireInstanceLock(dir)` from `@axis/audit`, a pid and process-start-time lock file in the database directory) before opening the journal, and hold it until exit. `recover()` refuses to run without a held lock. A second daemon on the same directory fails with `E_CONFLICT`.
 
 ## Journal and audit share one connection
 
