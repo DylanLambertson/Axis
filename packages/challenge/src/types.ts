@@ -80,4 +80,3 @@ export function limit(value: number | undefined, fallback: number, max: number, 
   }
   return v;
 }
-
