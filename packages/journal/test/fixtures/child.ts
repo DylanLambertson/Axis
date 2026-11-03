@@ -3,7 +3,10 @@
 // or recovery inside an open transaction, announce READY and hang until killed.
 import { dirname } from "node:path";
 import { acquireInstanceLock, openDatabase } from "@axis/audit";
+import { userPrincipal } from "../../src/daemon-principal.js";
 import { STEPS, deterministicJournal, type Ctx } from "./script.js";
+
+const USER = userPrincipal();
 
 const [dbPath, mode, kArg] = process.argv.slice(2);
 if (!dbPath || !mode) process.exit(2);
@@ -33,7 +36,7 @@ function writeLoop(big: boolean): void {
     const r = journal.createRun({ workspaceId: ws, kind: "cli", createdBy: "user" }).value.id;
     journal.transitionRun(r, "RUNNING");
     journal.transitionRun(r, "REVIEWING");
-    journal.transitionRun(r, "COMPLETED", { exitCode: 0, actor: "user" });
+    journal.transitionRun(r, "COMPLETED", { exitCode: 0, actor: USER });
   }
 }
 

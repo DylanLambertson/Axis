@@ -5,6 +5,7 @@ import {
   AuditLog,
   AxisError,
   InstanceLock,
+  type AuditActor,
   runMigrations,
   withTransaction,
   type DatabaseSync,
@@ -32,6 +33,7 @@ import {
   type Workspace,
   type WorkspaceRow,
 } from "./model.js";
+import { UserPrincipal } from "./principal.js";
 import { JOURNAL_MIGRATIONS } from "./schema.js";
 import {
   RESTART_REASON,
@@ -129,7 +131,7 @@ export class Journal {
   transitionWorkspace(id: string, to: WorkspaceState, options: TransitionOptions = {}): Workspace {
     const target = workspaceStateSchema.safeParse(to);
     if (!target.success) throw invalid(target.error, "workspace state");
-    const opts = this.#parseTransitionOptions(options);
+    const { opts } = this.#parseTransitionOptions(options);
     return withTransaction(this.#db, () => {
       const current = this.#mustWorkspace(id);
       this.#guard("workspace", current.state, to, WORKSPACE_TRANSITIONS[current.state], opts.expectedFrom);
@@ -209,13 +211,14 @@ export class Journal {
   transitionRun(id: string, to: RunState, options: TransitionOptions = {}): Run {
     const target = runStateSchema.safeParse(to);
     if (!target.success) throw invalid(target.error, "run state");
-    const opts = this.#parseTransitionOptions(options);
+    const { opts, approvedByUser } = this.#parseTransitionOptions(options);
     return withTransaction(this.#db, () => {
       const current = this.#mustRun(id);
       this.#guard("run", current.state, to, RUN_TRANSITIONS[current.state], opts.expectedFrom);
       // Approval is a human act in 1a (diff review, threat model WT-5): an agent, or the daemon on its own, cannot approve its own work.
-      if (current.state === "REVIEWING" && to === "COMPLETED" && opts.actor !== "user") {
-        throw new AxisError("E_POLICY_DENIED", "Only the user can complete a run that is in review", { actor: opts.actor ?? "none" });
+      // The string "user" does not count: only the principal the daemon minted from the attested connection does.
+      if (current.state === "REVIEWING" && to === "COMPLETED" && !approvedByUser) {
+        throw new AxisError("E_POLICY_DENIED", "Only the user, acting through the daemon, can complete a run that is in review");
       }
       if (current.state === "BLOCKED" && (to === "QUEUED" || to === "RUNNING")) {
         const ws = this.#mustWorkspace(current.workspaceId);
@@ -368,10 +371,20 @@ export class Journal {
     return this.#now().toISOString();
   }
 
-  #parseTransitionOptions(options: TransitionOptions): TransitionOptions {
-    const parsed = transitionOptionsSchema.safeParse(options);
+  /** Validate the options. A genuine `UserPrincipal` becomes the actor "user" and sets `approvedByUser`; nothing else can. */
+  #parseTransitionOptions(options: TransitionOptions): {
+    readonly opts: Omit<TransitionOptions, "actor"> & { readonly actor?: AuditActor };
+    readonly approvedByUser: boolean;
+  } {
+    const record = typeof options === "object" && options !== null ? options : {};
+    const approvedByUser = UserPrincipal.is(record.actor);
+    // An object that is not a genuine principal is a forgery attempt (a literal, a prototype lookalike, a clone), not a typo.
+    if (!approvedByUser && typeof record.actor === "object" && record.actor !== null) {
+      throw new AxisError("E_POLICY_DENIED", "An actor must be a plain actor name or a principal minted by the daemon");
+    }
+    const parsed = transitionOptionsSchema.safeParse(approvedByUser ? { ...record, actor: "user" } : record);
     if (!parsed.success) throw invalid(parsed.error, "transition options");
-    return parsed.data as TransitionOptions;
+    return { opts: parsed.data as Omit<TransitionOptions, "actor"> & { readonly actor?: AuditActor }, approvedByUser };
   }
 
   /** A single-row UPDATE that touched anything else means the caller's assumptions broke: fail loudly. */

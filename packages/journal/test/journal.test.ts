@@ -5,7 +5,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { AuditLog, AxisError, acquireInstanceLock, openDatabase, schemaVersion } from "@axis/audit";
+import { userPrincipal } from "../src/daemon-principal.js";
 import { JOURNAL_SCHEMA_VERSION, Journal, RESTART_REASON, RUN_STATES, RUN_TRANSITIONS, type RunState } from "../src/index.js";
+
+const USER = userPrincipal();
 
 // Low-entropy stand-ins assembled at runtime; none is a credential.
 const FAKE = { anthropic: "sk-" + "ant-" + "A1b2".repeat(8), password: "hunter2-" + "pw".repeat(6) };
@@ -77,11 +80,11 @@ test("run state machine allows exactly the documented transitions", () => {
         FAILED: ["RUNNING", "FAILED"],
         CANCELLED: ["CANCELLED"],
       };
-      for (const step of path[from]) journal.transitionRun(run.id, step, { actor: "user" });
+      for (const step of path[from]) journal.transitionRun(run.id, step, { actor: USER });
       if (RUN_TRANSITIONS[from].includes(to)) {
-        assert.equal(journal.transitionRun(run.id, to, { actor: "user" }).state, to, `${from} -> ${to}`);
+        assert.equal(journal.transitionRun(run.id, to, { actor: USER }).state, to, `${from} -> ${to}`);
       } else {
-        assert.throws(() => journal.transitionRun(run.id, to, { actor: "user" }), code("E_CONFLICT"), `${from} -> ${to}`);
+        assert.throws(() => journal.transitionRun(run.id, to, { actor: USER }), code("E_CONFLICT"), `${from} -> ${to}`);
         assert.equal(journal.getRun(run.id)?.state, from);
       }
     }
@@ -180,7 +183,7 @@ test("recovery policy: RUNNING becomes BLOCKED; QUEUED, REVIEWING and BLOCKED ar
   const ws = readyWorkspace(journal);
   const mk = (kind: "cli" | "composer", ...path: RunState[]) => {
     const run = journal.createRun({ workspaceId: ws.id, kind , createdBy: "user" }).value;
-    for (const s of path) journal.transitionRun(run.id, s, { actor: "user" });
+    for (const s of path) journal.transitionRun(run.id, s, { actor: USER });
     return run.id;
   };
   const queued = mk("cli");
@@ -304,10 +307,10 @@ test("S8: a run cannot reach COMPLETED without passing REVIEWING", () => {
   const ws = readyWorkspace(journal);
   const run = journal.createRun({ workspaceId: ws.id, kind: "cli", createdBy: "user" }).value;
   journal.transitionRun(run.id, "RUNNING");
-  assert.throws(() => journal.transitionRun(run.id, "COMPLETED", { actor: "user" }), code("E_CONFLICT"));
+  assert.throws(() => journal.transitionRun(run.id, "COMPLETED", { actor: USER }), code("E_CONFLICT"));
   assert.ok(!RUN_TRANSITIONS.RUNNING.includes("COMPLETED"));
   journal.transitionRun(run.id, "REVIEWING");
-  assert.equal(journal.transitionRun(run.id, "COMPLETED", { exitCode: 0, actor: "user" }).state, "COMPLETED");
+  assert.equal(journal.transitionRun(run.id, "COMPLETED", { exitCode: 0, actor: USER }).state, "COMPLETED");
 });
 
 test("S9: lone surrogates in journal strings are rejected", () => {
@@ -392,7 +395,7 @@ test("NEW-I: only the user completes a run in review; an agent (even its own aut
   }
   assert.equal(audit.head()?.seq, before, "a denied approval writes nothing");
   // Rejection and cancellation stay available to the agent side; approval does not.
-  assert.equal(journal.transitionRun(run, "COMPLETED", { actor: "user" }).state, "COMPLETED");
+  assert.equal(journal.transitionRun(run, "COMPLETED", { actor: USER }).state, "COMPLETED");
   assert.equal(journal.transitions("run", run).at(-1)?.actor, "user");
 });
 
@@ -416,4 +419,49 @@ test("the shipped journal migration is pinned by hash (add a new migration inste
   const { JOURNAL_MIGRATIONS } = await import("../src/index.js");
   assert.equal(JOURNAL_MIGRATIONS.length, 1);
   assert.equal(createHash("sha256").update(JOURNAL_MIGRATIONS[0]?.sql ?? "").digest("hex"), "92332f71a375b32c59a45d0059e20ffd5a90090032b72c567ac0698c5db4d2e9");
+});
+
+// ---- the user principal is a brand the daemon mints, not a value a caller can assert ----
+
+test("principal: a string, a literal, a prototype lookalike and a clone cannot approve; the minted principal can", async () => {
+  const { UserPrincipal } = await import("../src/principal.js");
+  const { journal } = setup();
+  const ws = readyWorkspace(journal);
+  const run = journal.createRun({ workspaceId: ws.id, kind: "composer", createdBy: "agent:w1" }).value.id;
+  journal.transitionRun(run, "RUNNING");
+  journal.transitionRun(run, "REVIEWING");
+  const forged: unknown[] = [
+    "user",
+    { kind: "user" },
+    { actor: "user" },
+    Object.create(UserPrincipal.prototype),
+    structuredClone(USER),
+    JSON.parse(JSON.stringify(USER)),
+    { ...USER },
+    Object.defineProperty(Object.create(UserPrincipal.prototype), "actor", { value: "user", enumerable: true }),
+  ];
+  for (const actor of forged) {
+    assert.throws(() => journal.transitionRun(run, "COMPLETED", { actor } as never), code("E_POLICY_DENIED"), JSON.stringify(actor));
+    assert.equal(journal.getRun(run)?.state, "REVIEWING");
+  }
+  assert.throws(() => new UserPrincipal(Symbol("guess")), code("E_POLICY_DENIED"));
+  assert.equal(UserPrincipal.is(USER), true);
+  assert.equal(journal.transitionRun(run, "COMPLETED", { actor: USER }).state, "COMPLETED");
+  assert.equal(journal.transitions("run", run).at(-1)?.actor, "user", "the principal is recorded as the user");
+});
+
+test("principal: the package root does not export a way to mint one; the daemon-principal subpath does", async () => {
+  const root = (await import("@axis/journal")) as Record<string, unknown>;
+  for (const name of ["userPrincipal", "UserPrincipal", "MINT"]) assert.equal(name in root, false, name);
+  const sub = (await import("@axis/journal/daemon-principal")) as Record<string, unknown>;
+  assert.deepEqual(Object.keys(sub), ["userPrincipal"]);
+  const { UserPrincipal } = await import("../src/principal.js");
+  assert.equal(UserPrincipal.is((sub["userPrincipal"] as () => unknown)()), true);
+});
+
+test("principal: any other object as an actor is also denied on a workspace transition", () => {
+  const { journal } = setup();
+  const ws = readyWorkspace(journal);
+  assert.throws(() => journal.transitionWorkspace(ws.id, "REMOVING", { actor: { actor: "user" } } as never), code("E_POLICY_DENIED"));
+  assert.equal(journal.transitionWorkspace(ws.id, "REMOVING", { actor: USER }).state, "REMOVING");
 });

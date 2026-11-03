@@ -11,6 +11,10 @@
     ".": {
       "types": "./dist/src/index.d.ts",
       "default": "./dist/src/index.js"
+    },
+    "./daemon-principal": {
+      "types": "./dist/src/daemon-principal.d.ts",
+      "default": "./dist/src/daemon-principal.js"
     }
   },
   "scripts": {

@@ -1,6 +1,9 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { AuditLog, type DatabaseSync } from "@axis/audit";
 import { Journal } from "../../src/index.js";
+import { userPrincipal } from "../../src/daemon-principal.js";
+
+const USER = userPrincipal();
 
 /** A scripted lifecycle shared by the crashing child and the in-process reference. */
 export interface Ctx {
@@ -37,7 +40,7 @@ export const STEPS: ReadonlyArray<(j: Journal, c: Ctx) => void> = [
   (j, c) => void j.transitionRun(c.r2, "RUNNING"),
   (j, c) => void j.transitionRun(c.r1, "REVIEWING"),
   (j, c) => void j.transitionRun(c.r2, "BLOCKED", { reason: "USER_PAUSED" }),
-  (j, c) => void j.transitionRun(c.r1, "COMPLETED", { exitCode: 0, actor: "user" }),
+  (j, c) => void j.transitionRun(c.r1, "COMPLETED", { exitCode: 0, actor: USER }),
   (j, c) => void j.transitionRun(c.r2, "RUNNING"),
   // a second workspace walks into REMOVING, the state recovery must report but not rewrite
   (j, c) => {

@@ -41,6 +41,14 @@ export function importSpecifiers(source) {
 }
 
 /**
+ * Subpaths of @axis/journal and the only packages that may import them. The user principal is minted by the
+ * daemon's connection layer from the attested connection; nothing else may be able to create one. Any other
+ * `@axis/journal/...` deep import is refused. Other packages' subpaths (for example `@axis/providers/contract`)
+ * are unrestricted, as before.
+ */
+const JOURNAL_SUBPATHS = new Map([["@axis/journal/daemon-principal", new Set(["daemon"])]]);
+
+/**
  * Why a specifier is not allowed in `pkg`, or null when it is. The node:*
  * ban for contract packages (D2.4) applies to shipped sources under `src/`;
  * tests and test-support entry points (`test/`, `contract/`) may use node:*.
@@ -57,6 +65,11 @@ export function violation(pkg, spec, file = null, pkgDir = null) {
       : null;
   }
   if (spec === "zod" || spec.startsWith("zod/")) return null;
+  if (spec.startsWith("@axis/journal/")) {
+    const allowed = JOURNAL_SUBPATHS.get(spec);
+    if (allowed === undefined) return "deep imports into @axis/journal are not allowed";
+    return allowed.has(pkg) ? null : "this subpath may only be imported by the daemon integration code";
+  }
   if (spec.startsWith("@axis/")) return null;
   if (spec.startsWith("node:")) return NO_NODE.has(pkg) && inSrc ? "node:* is not allowed in this package" : null;
   return "only relative, zod, @axis/* and node:* imports are allowed";
@@ -173,4 +186,24 @@ test("scanner: node:* is banned in protocol src, allowed in its tests and test-s
   assert.equal(violation("protocol", "node:test", join(dir, "contract", "index.ts"), dir), null);
   assert.notEqual(violation("protocol", "electron", join(dir, "contract", "index.ts"), dir), null, "the rest of the allowlist still applies");
   assert.notEqual(violation("protocol", "vs/base/common/event", join(dir, "test", "a.test.ts"), dir), null);
+});
+
+test("scanner: the user-principal subpath is restricted to the daemon; other journal deep imports are refused", () => {
+  assert.equal(violation("journal", "@axis/audit"), null);
+  assert.equal(violation("daemon", "@axis/journal"), null);
+  assert.equal(violation("daemon", "@axis/journal/daemon-principal"), null);
+  for (const pkg of ["protocol", "audit", "journal", "worktrees", "git-ops", "pty-policy", "providers", "challenge"]) {
+    assert.notEqual(violation(pkg, "@axis/journal/daemon-principal"), null, pkg);
+  }
+  assert.notEqual(violation("daemon", "@axis/journal/dist/src/principal.js"), null);
+  assert.notEqual(violation("daemon", "@axis/journal/src/principal"), null);
+  // Other packages' own subpaths stay allowed, as on main.
+  assert.equal(violation("daemon", "@axis/providers/contract"), null);
+});
+
+test("the journal package root exports the principal subpath only through package.json exports", () => {
+  const json = JSON.parse(readFileSync(join(packagesDir, "journal", "package.json"), "utf8"));
+  assert.deepEqual(Object.keys(json.exports).sort(), [".", "./daemon-principal"]);
+  const index = readFileSync(join(packagesDir, "journal", "src", "index.ts"), "utf8");
+  assert.ok(!/principal/i.test(index), "src/index.ts must not mention the principal module");
 });

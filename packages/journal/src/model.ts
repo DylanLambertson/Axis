@@ -2,6 +2,7 @@
 import { createHash } from "node:crypto";
 import { AxisError, canonicalize, isWellFormedString, type AuditActor } from "@axis/audit";
 import { z } from "zod";
+import type { UserPrincipal } from "./principal.js";
 import { RUN_KINDS, RUN_STATES, WORKSPACE_STATES, type RunKind, type RunState, type WorkspaceState } from "./states.js";
 
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -107,7 +108,8 @@ export interface CreateRunInput {
 export interface TransitionOptions {
   /** Short upper-case code (for example `USER_CANCELLED`); never free text, so no secret can ride along. */
   readonly reason?: string;
-  readonly actor?: AuditActor;
+  /** A plain actor, or the `UserPrincipal` the daemon minted. Only the latter may complete a run in review. */
+  readonly actor?: AuditActor | UserPrincipal;
   readonly exitCode?: number;
   readonly expectedFrom?: string;
 }
