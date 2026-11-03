@@ -4,7 +4,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const packagesDir = fileURLToPath(new URL("../../packages/", import.meta.url));
@@ -12,9 +12,23 @@ const packagesDir = fileURLToPath(new URL("../../packages/", import.meta.url));
 /** Packages that must stay free of Node imports (contracts shared with the web target). */
 const NO_NODE = new Set(["protocol"]);
 
+function stripComments(source) {
+  return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:"'`])\/\/.*$/gm, "$1");
+}
+
+/** Dynamic `import(...)` or `require(...)` whose argument is not a plain string literal. */
+export function nonLiteralLoads(source) {
+  const text = stripComments(source);
+  const found = [];
+  for (const m of text.matchAll(/\b(import|require)\s*\(\s*(?!['"][^'"`$]*['"]\s*\))([^)]{0,40})/g)) {
+    found.push(`${m[1]}(${m[2].trim()}`);
+  }
+  return found;
+}
+
 /** Import specifiers in TypeScript source: static, side-effect, re-export and dynamic imports. */
 export function importSpecifiers(source) {
-  const text = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:"'`])\/\/.*$/gm, "$1");
+  const text = stripComments(source);
   const found = [];
   const patterns = [
     /\b(?:import|export)\b[^'"`;]*?\bfrom\s*['"]([^'"]+)['"]/g,
@@ -27,8 +41,15 @@ export function importSpecifiers(source) {
 }
 
 /** Why a specifier is not allowed in `pkg`, or null when it is. */
-export function violation(pkg, spec) {
-  if (spec.startsWith("./") || spec.startsWith("../")) return null;
+export function violation(pkg, spec, file = null, pkgDir = null) {
+  if (spec.startsWith("./") || spec.startsWith("../")) {
+    if (file === null || pkgDir === null) return null;
+    const target = resolve(dirname(file), spec);
+    const rel = relative(pkgDir, target);
+    return rel === ".." || rel.startsWith(`..${sep}`) || resolve(rel) === rel
+      ? "relative import leaves the package directory"
+      : null;
+  }
   if (spec === "zod" || spec.startsWith("zod/")) return null;
   if (spec.startsWith("@axis/")) return null;
   if (spec.startsWith("node:")) return NO_NODE.has(pkg) ? "node:* is not allowed in this package" : null;
@@ -50,11 +71,14 @@ test("there is at least one package", () => assert.ok(packages.length > 0));
 for (const pkg of packages) {
   test(`${pkg}: src imports stay inside the allowlist`, () => {
     const bad = [];
-    for (const file of sourceFiles(join(packagesDir, pkg, "src"))) {
-      for (const spec of importSpecifiers(readFileSync(file, "utf8"))) {
-        const why = violation(pkg, spec);
+    const pkgDir = join(packagesDir, pkg);
+    for (const file of sourceFiles(join(pkgDir, "src"))) {
+      const source = readFileSync(file, "utf8");
+      for (const spec of importSpecifiers(source)) {
+        const why = violation(pkg, spec, file, pkgDir);
         if (why) bad.push(`${file}: ${spec} (${why})`);
       }
+      for (const call of nonLiteralLoads(source)) bad.push(`${file}: ${call} (dynamic load needs a string literal)`);
     }
     assert.deepEqual(bad, []);
   });
@@ -97,4 +121,23 @@ test("scanner: policy", () => {
   assert.equal(violation("worktrees", "@axis/protocol"), null);
   assert.equal(violation("worktrees", "zod"), null);
   assert.equal(violation("worktrees", "fs") !== null, true);
+});
+
+test("scanner: relative imports must stay inside the package", () => {
+  const dir = join(packagesDir, "protocol");
+  const file = join(dir, "src", "a.ts");
+  assert.equal(violation("protocol", "./b.js", file, dir), null);
+  assert.equal(violation("protocol", "../test/x.js", file, dir), null);
+  assert.notEqual(violation("protocol", "../../worktrees/src/x.js", file, dir), null);
+  assert.notEqual(violation("protocol", "../../../vendor/code-oss/x.js", file, dir), null);
+  assert.notEqual(violation("protocol", "../../protocol-evil/x.js", file, dir), null);
+});
+
+test("scanner: dynamic loads need a string literal", () => {
+  assert.deepEqual(nonLiteralLoads(`const a = await import("zod"); const b = require('./x.js');`), []);
+  assert.equal(nonLiteralLoads("await import(name)").length, 1);
+  assert.equal(nonLiteralLoads("await import(`./x/${n}.js`)").length, 1);
+  assert.equal(nonLiteralLoads("await import('./x/' + n)").length, 1);
+  assert.equal(nonLiteralLoads("require(path)").length, 1);
+  assert.deepEqual(nonLiteralLoads('// import(name)\n/* require(x) */'), []);
 });

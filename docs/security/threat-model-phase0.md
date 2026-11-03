@@ -1,7 +1,7 @@
 # Threat model: Phase 0/1 architecture
 
 - **Purpose:** the Phase 0 threat model listed in `docs/ROADMAP.md` (Phase 0 deliverables and recommended ticket 3), as required by `docs/SECURITY.md` ("Threat model per major milestone").
-- **Status:** Draft for review. Revisit at the Phase 1 gate and whenever ADR 0002 or ADR 0003 changes.
+- **Status:** Draft for review. Kept as history. The Phase 1 revision for the agent-first shell is `docs/security/threat-model-phase1.md` (with `threat-model-phase1-controls.md`); where it marks a row changed, it wins.
 - **Date:** 2026-11-01.
 - **Upstream baseline:** Code OSS `1.144.0`, commit `2c33b50b16c472efe58357d1d2a8a5414bc23fbf`, the same pin as ADR 0002.
 - **Related:** `docs/adr/0002-code-oss-integration-strategy.md` and `docs/feasibility/*` (ADR 0002 is Proposed); `docs/adr/0003-electron-ipc-bridge.md` (Proposed).
