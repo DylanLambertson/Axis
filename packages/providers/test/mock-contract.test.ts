@@ -1,0 +1,44 @@
+// Copyright (c) 2026 Dylan Lambertson. All rights reserved.
+// Runs the shared adapter contract suite against the mock provider. Ticket 9
+// runs the same suite against the Anthropic adapter with a fake transport.
+import { runProviderContractSuite, type ContractScenario } from "../src/contract/index.js";
+import { MOCK_DEFAULT_MODEL, createMockProvider, type MockReply } from "../src/index.js";
+
+const CANARY = "contract-canary-body-text";
+
+function replyFor(s: ContractScenario): MockReply {
+  switch (s.kind) {
+    case "text":
+      return { kind: "text", text: s.text };
+    case "max_tokens":
+      return { kind: "text", text: s.text, stopReason: "max_tokens" };
+    case "tool_use":
+      return { kind: "tool_use", name: s.name, input: s.input };
+    case "error":
+      return { kind: "error", code: s.code, body: `{"error":"${CANARY}"}`, ...(s.retryAfterMs === undefined ? {} : { retryAfterMs: s.retryAfterMs }) };
+    case "mid_stream_error":
+      return { kind: "error", code: "overloaded", afterText: s.text, body: CANARY };
+    case "hang":
+      return { kind: "hang" };
+    case "malformed":
+      return { kind: "malformed" };
+  }
+}
+
+runProviderContractSuite({
+  name: "mock",
+  canary: CANARY,
+  setup(scenario) {
+    const mock = createMockProvider({
+      replies: [replyFor(scenario)],
+      chunkChars: 4,
+      ...(scenario.kind === "error" && scenario.code === "authentication" ? { connectionError: "authentication" as const } : {}),
+    });
+    return {
+      adapter: mock,
+      model: MOCK_DEFAULT_MODEL,
+      requestCount: () => mock.requests.length,
+      openStreams: () => mock.openStreams,
+    };
+  },
+});

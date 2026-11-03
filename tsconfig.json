@@ -4,6 +4,7 @@
     { "path": "packages/protocol" },
     { "path": "packages/pty-policy" },
     { "path": "packages/challenge" },
-    { "path": "packages/daemon" }
+    { "path": "packages/daemon" },
+    { "path": "packages/providers" }
   ]
 }
