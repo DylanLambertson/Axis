@@ -223,7 +223,11 @@ export function acquireInstanceLock(dir: string, options: LockOptions = {}): Ins
       const current = alive ? startOf(holder.pid) : undefined;
       stale = !alive || (holder.procStart !== null && current !== undefined && current !== holder.procStart);
     } else {
-      stale = now() - statSync(path).mtimeMs > UNPARSEABLE_GRACE_MS;
+      try {
+        stale = now() - statSync(path).mtimeMs > UNPARSEABLE_GRACE_MS;
+      } catch {
+        continue; // the file vanished between the read and the stat: try again
+      }
     }
     if (!stale) {
       throw new AxisError("E_CONFLICT", "Another Axis daemon is using this database", seen.record ? { pid: seen.record.pid } : {});

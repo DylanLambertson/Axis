@@ -16,6 +16,7 @@ export {
 export {
   assertPrivateFiles,
   assertSafeDirectory,
+  assertUsablePath,
   ensureDataDirectory,
   mapFs,
   mapFsError,

@@ -1,11 +1,11 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 // File system errors become closed-set errors without the path (the operating system puts the path in its message).
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { AxisError, acquireInstanceLock, mapFsError, openDatabase } from "../src/index.js";
+import { AxisError, acquireInstanceLock, ensureDataDirectory, mapFsError, openDatabase } from "../src/index.js";
 
 const posixOnly = { skip: process.platform === "win32" };
 const notRoot = { skip: process.platform === "win32" || process.getuid?.() === 0 ? "root ignores directory permissions" : false };
@@ -93,5 +93,39 @@ test("a directory the user cannot write to gives E_POLICY_DENIED (EACCES) withou
     chmodSync(ro, 0o700);
   } finally {
     t.done();
+  }
+});
+
+test("a NUL byte in a path is E_INVALID_ARGUMENT with a fixed message, before any file system call", posixOnly, () => {
+  const t = tmp();
+  try {
+    for (const call of [
+      () => openDatabase(`${t.base}/a\0b/x.db`),
+      () => openDatabase(`${t.base}/dir/x\0.db`),
+      () => acquireInstanceLock(`${t.base}/da\0ta`),
+      () => ensureDataDirectory(`${t.base}/\0`),
+    ]) {
+      const e = thrown(call, t.base);
+      assert.equal(e.code, "E_INVALID_ARGUMENT");
+      assert.equal(e.detail["reason"], "nul-byte");
+      assert.ok(!e.message.includes("\0"));
+    }
+    assert.equal(existsSync(join(t.base, "dir")), false, "nothing is created before the path is rejected");
+    for (const bad of [undefined, null, 5, ""]) {
+      assert.equal(thrown(() => openDatabase(bad as never), t.base).code, "E_INVALID_ARGUMENT");
+    }
+  } finally {
+    t.done();
+  }
+});
+
+test("mapFsError: Node's own argument errors are mapped without quoting the value", () => {
+  for (const code of ["ERR_INVALID_ARG_VALUE", "ERR_INVALID_ARG_TYPE"]) {
+    const raw = Object.assign(new Error("The argument 'path' must be a string without null bytes. Received '/private/secret/path'"), { code });
+    const mapped = mapFsError(raw);
+    assert.ok(mapped instanceof AxisError);
+    assert.equal(mapped.code, "E_INVALID_ARGUMENT");
+    assert.deepEqual(mapped.detail, { errno: code });
+    assert.ok(!mapped.message.includes("secret"));
   }
 });

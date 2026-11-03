@@ -128,6 +128,10 @@ export function assertSafeDirectory(dir: string, fs: DirectoryFs = nodeDirectory
 export function mapFsError(error: unknown): unknown {
   if (error instanceof AxisError) return error;
   const errno = (error as { code?: unknown } | null)?.code;
+  if (typeof errno === "string" && /^ERR_INVALID_ARG_[A-Z_]{1,20}$/.test(errno)) {
+    // Node's argument errors (a NUL byte in a path, a wrong type) quote the offending value in the message.
+    return new AxisError("E_INVALID_ARGUMENT", "The data directory path cannot be used", { errno });
+  }
   if (typeof errno !== "string" || !/^E[A-Z0-9]{2,15}$/.test(errno)) return error;
   const detail = { errno };
   if (["ENAMETOOLONG", "ENOTDIR", "ELOOP", "EINVAL", "EISDIR", "ENOENT"].includes(errno)) {
@@ -162,6 +166,16 @@ function lstatExists(path: string, fs: DirectoryFs): boolean {
 }
 
 const hasDotDot = (path: string): boolean => path.split("/").includes("..");
+
+/**
+ * Refuse a path the file system cannot take before any call is made with it. A NUL byte would make Node throw
+ * `ERR_INVALID_ARG_VALUE` with the whole path quoted in its message, so it is rejected here with a fixed message.
+ */
+export function assertUsablePath(path: unknown): asserts path is string {
+  if (typeof path !== "string" || path.length === 0 || path.includes("\0")) {
+    throw new AxisError("E_INVALID_ARGUMENT", "The data directory path cannot be used", { reason: typeof path === "string" && path.length > 0 ? "nul-byte" : "not-a-path" });
+  }
+}
 
 /**
  * The nearest existing ancestor of the missing directory `dir` must not be writable by others, because a
@@ -208,6 +222,7 @@ function assertSafeAncestor(dir: string, fs: DirectoryFs): void {
  * kernel and SQLite will resolve it.
  */
 export function ensureDataDirectory(dir: string, fs: DirectoryFs = nodeDirectoryFs): void {
+  assertUsablePath(dir);
   mapFs(() => {
     if (!POSIX) {
       mkdirSync(dir, { recursive: true });
@@ -269,7 +284,10 @@ export function openDatabase(path: string, options: OpenOptions = {}): DatabaseS
     throw new AxisError("E_INVALID_ARGUMENT", "busyTimeoutMs must be an integer from 0 to 600000");
   }
   const memory = path === ":memory:";
-  if (!memory) prepareLocation(path, options.directoryFs ?? nodeDirectoryFs);
+  if (!memory) {
+    assertUsablePath(path);
+    prepareLocation(path, options.directoryFs ?? nodeDirectoryFs);
+  }
   const db = mapSqlite(() => new DatabaseSync(path));
   try {
     mapSqlite(() => {
