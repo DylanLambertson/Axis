@@ -2,32 +2,47 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { inspect } from "node:util";
+import * as vaultModule from "../src/index.js";
 import {
   BACKEND_IDS,
   VaultError,
+  createConsentAuthority,
   createMemoryBackend,
   createVault,
-  createWeakStorageConsent,
   toAxisVaultError,
   type AccessEvent,
   type BackendId,
+  type ChangeEvent,
   type Protection,
 } from "../src/index.js";
 
-// Low-entropy stand-in for an API credential.
+// Low-entropy stand-ins for API credentials.
 const SECRET = "vault-test-credential-0001";
 const OTHER = "vault-test-credential-0002";
 
-function setup(id: BackendId, protection: Protection, extra: { weakPolicy?: "consent" | "refuse"; events?: AccessEvent[] } = {}) {
+interface SetupOptions {
+  weakPolicy?: "consent" | "refuse";
+  events?: AccessEvent[];
+  changes?: ChangeEvent[];
+  clock?: { t: number };
+}
+
+function setup(id: BackendId, protection: Protection, extra: SetupOptions = {}) {
   const backend = createMemoryBackend({ id, protection });
+  const clock = extra.clock ?? { t: 1_700_000_000_000 };
+  const authority = createConsentAuthority({ now: () => clock.t });
   const events = extra.events;
+  const changes = extra.changes;
   const vault = createVault({
     backend,
+    consent: authority.verifier,
     ...(extra.weakPolicy === undefined ? {} : { weakPolicy: extra.weakPolicy }),
     ...(events === undefined ? {} : { onAccess: (e: AccessEvent) => void events.push(e) }),
-    now: () => 1_700_000_000_000,
+    ...(changes === undefined ? {} : { onChange: (e: ChangeEvent) => void changes.push(e) }),
+    now: () => clock.t,
   });
-  return { backend, vault };
+  const consentFor = (connectionId: string, backendId: BackendId) => authority.grantor.grant({ connectionId, backend: backendId });
+  return { backend, vault, authority, consentFor, clock };
 }
 
 async function code(p: Promise<unknown>): Promise<string> {
@@ -40,11 +55,13 @@ async function code(p: Promise<unknown>): Promise<string> {
   assert.fail("expected a failure");
 }
 
-test("PRV-1: os-protected backends store without consent", async () => {
-  for (const id of ["macos_keychain", "windows_dpapi", "gnome_libsecret", "kwallet"] as const) {
+// ------------------------------------------------------------------- PRV-1
+
+test("PRV-1: os-protected backends store without consent, including KDE's kwallet5 and kwallet6 (S5)", async () => {
+  for (const id of ["macos_keychain", "windows_dpapi", "gnome_libsecret", "kwallet", "kwallet5", "kwallet6"] as const) {
     const { vault } = setup(id, "os_protected");
     const r = await vault.backend();
-    assert.equal(r.policy, "allowed");
+    assert.equal(r.policy, "allowed", id);
     assert.equal(r.persistent, true);
     const info = await vault.store("anthropic-main", SECRET);
     assert.equal(info.backend, id);
@@ -55,11 +72,11 @@ test("PRV-1: os-protected backends store without consent", async () => {
 
 test("PRV-1: basic_text and unknown need consent, and report it to the UI", async () => {
   for (const id of ["basic_text", "unknown"] as const) {
-    const { vault } = setup(id, "none");
+    const { vault, consentFor } = setup(id, "none");
     assert.equal((await vault.backend()).policy, "consent_required");
     assert.equal(await code(vault.store("c1", SECRET)), "consent_required");
     assert.equal(await vault.info("c1"), undefined, "nothing was stored");
-    const info = await vault.store("c1", SECRET, { consent: createWeakStorageConsent(id, 1) });
+    const info = await vault.store("c1", SECRET, { consent: consentFor("c1", id) });
     assert.equal(info.weakConsent, true);
     assert.equal(info.protection, "none");
     assert.equal(info.backend, id);
@@ -82,15 +99,6 @@ test("PRV-1: a malformed backend answer fails closed", async () => {
   assert.equal(r.policy, "consent_required");
 });
 
-test("PRV-1: consent must name the current backend, be issued by the factory, and is spent once", async () => {
-  const { vault } = setup("basic_text", "none");
-  assert.equal(await code(vault.store("c1", SECRET, { consent: createWeakStorageConsent("unknown", 1) })), "consent_required");
-  assert.equal(await code(vault.store("c1", SECRET, { consent: { backend: "basic_text", grantedAt: 1 } })), "consent_required", "a forged object is not consent");
-  const consent = createWeakStorageConsent("basic_text", 1);
-  await vault.store("c1", SECRET, { consent });
-  assert.equal(await code(vault.store("c2", OTHER, { consent })), "consent_required", "consent is spent");
-});
-
 test("PRV-1: the backend is checked on every store, not cached", async () => {
   const { vault, backend } = setup("gnome_libsecret", "os_protected");
   await vault.store("c1", SECRET);
@@ -103,9 +111,9 @@ test("PRV-1: the backend is checked on every store, not cached", async () => {
 });
 
 test("PRV-1: weakPolicy refuse refuses a weak backend even with consent", async () => {
-  const { vault } = setup("basic_text", "none", { weakPolicy: "refuse" });
+  const { vault, consentFor } = setup("basic_text", "none", { weakPolicy: "refuse" });
   assert.equal((await vault.backend()).policy, "refused");
-  assert.equal(await code(vault.store("c1", SECRET, { consent: createWeakStorageConsent("basic_text", 1) })), "backend_refused");
+  assert.equal(await code(vault.store("c1", SECRET, { consent: consentFor("c1", "basic_text") })), "backend_refused");
 });
 
 test("the memory backend is ephemeral and reported as not persistent", async () => {
@@ -113,13 +121,126 @@ test("the memory backend is ephemeral and reported as not persistent", async () 
   const r = await vault.backend();
   assert.equal(r.persistent, false);
   assert.equal(r.policy, "allowed");
-  const info = await vault.store("c1", SECRET);
-  assert.equal(info.protection, "ephemeral");
+  assert.equal((await vault.store("c1", SECRET)).protection, "ephemeral");
 });
 
 test("every backend id is covered by the matrix", () => {
-  assert.deepEqual([...BACKEND_IDS].sort(), ["basic_text", "gnome_libsecret", "kwallet", "macos_keychain", "memory", "unknown", "windows_dpapi"]);
+  assert.deepEqual([...BACKEND_IDS].sort(), ["basic_text", "gnome_libsecret", "kwallet", "kwallet5", "kwallet6", "macos_keychain", "memory", "unknown", "windows_dpapi"]);
 });
+
+// ---------------------------------------- S5: protection is what was reported
+
+test("S5: a backend that reports itself ephemeral still needs consent, unless it is the memory backend", async () => {
+  for (const id of ["kwallet", "gnome_libsecret", "windows_dpapi", "macos_keychain"] as const) {
+    const { vault } = setup(id, "ephemeral");
+    const r = await vault.backend();
+    assert.equal(r.policy, "consent_required", id);
+    assert.equal(r.persistent, true, "it is not treated as the memory backend");
+    assert.equal(await code(vault.store("c1", SECRET)), "consent_required");
+  }
+});
+
+test("S5: the protection the UI shows is what the backend reported, not a guess from its name", async () => {
+  // gnome_libsecret reporting no protection (for example a locked collection) needs consent and is shown as unprotected.
+  const { vault, consentFor } = setup("gnome_libsecret", "none");
+  assert.equal(await code(vault.store("c1", SECRET)), "consent_required");
+  const info = await vault.store("c1", SECRET, { consent: consentFor("c1", "gnome_libsecret") });
+  assert.equal(info.protection, "none");
+  assert.equal(info.weakConsent, true);
+  assert.equal((await vault.info("c1"))?.protection, "none");
+  assert.equal((await vault.list())[0]?.protection, "none");
+});
+
+// ------------------------------------------------- S2, S3: consent is real
+
+test("S2: one consent stores once, even when stores run concurrently", async () => {
+  const { vault, consentFor } = setup("basic_text", "none");
+  const consent = consentFor("conn-a", "basic_text");
+  const results = await Promise.allSettled([
+    vault.store("conn-a", SECRET, { consent }),
+    vault.store("conn-a", SECRET, { consent }),
+    vault.store("conn-a", SECRET, { consent }),
+  ]);
+  assert.equal(results.filter((r) => r.status === "fulfilled").length, 1);
+  for (const r of results) if (r.status === "rejected") assert.equal((r.reason as VaultError).code, "consent_required");
+});
+
+test("S2: a consent spent on one vault is refused by another vault of the same daemon", async () => {
+  const backend = createMemoryBackend({ id: "basic_text", protection: "none" });
+  const authority = createConsentAuthority();
+  const a = createVault({ backend, consent: authority.verifier });
+  const b = createVault({ backend, consent: authority.verifier });
+  const consent = authority.grantor.grant({ connectionId: "c1", backend: "basic_text" });
+  await a.store("c1", SECRET, { consent });
+  assert.equal(await code(b.store("c1", OTHER, { consent })), "consent_required");
+});
+
+test("S3: a consent is bound to its connection and backend, and a wrong attempt does not spend it", async () => {
+  const { vault, consentFor, backend } = setup("basic_text", "none");
+  const consent = consentFor("conn-a", "basic_text");
+  assert.equal(await code(vault.store("conn-b", SECRET, { consent })), "consent_required", "another connection");
+  backend.setInfo({ id: "unknown", protection: "none" });
+  assert.equal(await code(vault.store("conn-a", SECRET, { consent })), "consent_required", "another backend");
+  backend.setInfo({ id: "basic_text", protection: "none" });
+  await vault.store("conn-a", SECRET, { consent }); // still valid for what it was granted for
+});
+
+test("S3: a consent expires", async () => {
+  const { vault, consentFor, clock } = setup("basic_text", "none");
+  const consent = consentFor("c1", "basic_text");
+  clock.t += 300_001;
+  assert.equal(await code(vault.store("c1", SECRET, { consent })), "consent_required");
+});
+
+test("S3: a forged or foreign consent is refused, and there is no free factory to mint one", async () => {
+  const { vault, consentFor } = setup("basic_text", "none");
+  const forged = { connectionId: "c1", backend: "basic_text", expiresAt: Number.MAX_SAFE_INTEGER };
+  assert.equal(await code(vault.store("c1", SECRET, { consent: forged as never })), "consent_required");
+  const other = createConsentAuthority().grantor.grant({ connectionId: "c1", backend: "basic_text" });
+  assert.equal(await code(vault.store("c1", SECRET, { consent: other })), "consent_required", "another authority's consent");
+  assert.ok(!("createWeakStorageConsent" in vaultModule), "no free-standing factory is exported");
+  void consentFor;
+});
+
+test("S3: a vault without a verifier accepts no consent at all", async () => {
+  const backend = createMemoryBackend({ id: "basic_text", protection: "none" });
+  const vault = createVault({ backend });
+  const consent = createConsentAuthority().grantor.grant({ connectionId: "c1", backend: "basic_text" });
+  assert.equal(await code(vault.store("c1", SECRET, { consent })), "consent_required");
+});
+
+test("the authority validates what it grants", () => {
+  const { grantor } = createConsentAuthority();
+  assert.throws(() => grantor.grant({ connectionId: "Bad Id", backend: "basic_text" }), RangeError);
+  assert.throws(() => grantor.grant({ connectionId: "c1", backend: "rm" as never }), RangeError);
+  assert.throws(() => createConsentAuthority({ ttlMs: 0 }), RangeError);
+});
+
+// ------------------------------------------------------------ S4: TOCTOU
+
+test("S4: a write that lands on a different backend than the one the decision used is rolled back", async () => {
+  const { vault, backend } = setup("gnome_libsecret", "os_protected");
+  backend.landWritesOn({ id: "basic_text", protection: "none" });
+  assert.equal(await code(vault.store("c1", SECRET)), "backend_changed");
+  assert.equal(await backend.get("c1"), undefined, "the weakly stored copy was removed");
+  assert.equal(await vault.info("c1"), undefined);
+  assert.ok(vault.knownSecrets().includes(SECRET), "still redacted");
+  backend.landWritesOn(undefined);
+  assert.equal((await vault.store("c1", SECRET)).protection, "os_protected");
+});
+
+test("S4: a backend that does not say where it wrote fails closed", async () => {
+  const { vault, backend } = setup("gnome_libsecret", "os_protected");
+  const put = backend.put.bind(backend);
+  backend.put = (async (...a: Parameters<typeof put>) => {
+    await put(...a);
+    return undefined;
+  }) as never;
+  assert.equal(await code(vault.store("c1", SECRET)), "backend_changed");
+  assert.equal(await backend.get("c1"), undefined);
+});
+
+// -------------------------------------------------- reveal, audit and info
 
 test("reveal returns the secret and audits without it", async () => {
   const events: AccessEvent[] = [];
@@ -131,6 +252,20 @@ test("reveal returns the secret and audits without it", async () => {
   assert.ok(!JSON.stringify(events).includes(SECRET));
 });
 
+test("N11: stores and removals are audited, refusals included, without the secret", async () => {
+  const changes: ChangeEvent[] = [];
+  const { vault, consentFor } = setup("basic_text", "none", { changes });
+  await code(vault.store("c1", SECRET));
+  await vault.store("c1", SECRET, { consent: consentFor("c1", "basic_text") });
+  await vault.remove("c1");
+  assert.deepEqual(
+    changes.map((c) => [c.action, c.outcome, c.weakConsent ?? null]),
+    [["store", "refused", false], ["store", "ok", true], ["remove", "ok", null]],
+  );
+  assert.equal(changes[1]?.backend, "basic_text");
+  assert.ok(!JSON.stringify(changes).includes(SECRET));
+});
+
 test("a throwing audit hook does not change the outcome", async () => {
   const backend = createMemoryBackend({ id: "macos_keychain", protection: "os_protected" });
   const vault = createVault({
@@ -138,9 +273,13 @@ test("a throwing audit hook does not change the outcome", async () => {
     onAccess: () => {
       throw new Error("sink down");
     },
+    onChange: () => {
+      throw new Error("sink down");
+    },
   });
   await vault.store("c1", SECRET);
   assert.equal(await vault.reveal("c1", "validate_connection"), SECRET);
+  assert.ok(await vault.remove("c1"));
 });
 
 test("info and list never contain the secret, a prefix or a length", async () => {
@@ -183,6 +322,49 @@ test("a backend failure becomes a fixed error that never echoes the backend's te
   }
 });
 
+// ------------------------------------------- N9: backend data is untrusted
+
+test("N9: bad entry metadata from a backend is a fixed backend failure, never raw text or unvalidated fields", async () => {
+  const { vault, backend } = setup("macos_keychain", "os_protected");
+  await vault.store("c1", SECRET);
+  const hostile = {
+    get backend(): never {
+      throw new Error(`getter blew up with ${SECRET}`);
+    },
+  };
+  const cases: unknown[] = [
+    hostile,
+    { backend: "made-up-backend", protection: "os_protected", storedAt: 1, weakConsent: false },
+    { backend: "macos_keychain", protection: "os_protected", storedAt: 1, weakConsent: "yes" },
+    { backend: "macos_keychain", protection: "os_protected", storedAt: 1, weakConsent: false, label: "evil‮label\nline" },
+    { backend: "macos_keychain", protection: "os_protected", storedAt: Number.NaN, weakConsent: false },
+    "a string",
+  ];
+  for (const raw of cases) {
+    backend.corruptMeta("c1", raw);
+    for (const op of [vault.info("c1"), vault.list()]) {
+      try {
+        await op;
+        assert.fail("expected failure");
+      } catch (e) {
+        assert.ok(e instanceof VaultError);
+        assert.equal(e.code, "backend_failed");
+        assert.ok(!e.message.includes(SECRET) && !inspect(e, { showHidden: true }).includes(SECRET));
+      }
+    }
+  }
+});
+
+test("N9: a backend list that is not a list of valid names is a fixed failure", async () => {
+  const { vault, backend } = setup("macos_keychain", "os_protected");
+  backend.list = (async () => [{ name: "../escape", meta: {} }]) as never;
+  assert.equal(await code(vault.list()), "backend_failed");
+  backend.list = (async () => "nope") as never;
+  assert.equal(await code(vault.list()), "backend_failed");
+});
+
+// -------------------------------------------------------- known secrets
+
 test("knownSecrets keeps rotated and removed secrets for redaction", async () => {
   const { vault } = setup("macos_keychain", "os_protected");
   await vault.store("c1", SECRET);
@@ -202,10 +384,19 @@ test("a secret from a failed write is still known, so a failure that echoes it i
   assert.ok(vault.knownSecrets().includes(SECRET));
 });
 
+test("N10: a stored secret is never forgotten, however many others pass through", async () => {
+  const { vault } = setup("macos_keychain", "os_protected");
+  await vault.store("real", SECRET);
+  for (let i = 0; i < 2_000; i++) await vault.store(`junk-${i % 7}`, `junk-secret-value-${String(i).padStart(5, "0")}`);
+  assert.ok(vault.knownSecrets().includes(SECRET), "the live key is still redacted");
+  assert.ok(vault.knownSecrets().length <= 1_030, "old secrets that are gone are bounded");
+});
+
 test("the bridge error carries a code and fixed text only", () => {
   const e = toAxisVaultError(new VaultError("consent_required"), "corr-1");
   assert.equal(e.code, "E_POLICY_DENIED");
   assert.deepEqual(e.details, { vaultCode: "consent_required" });
   assert.equal(toAxisVaultError(new VaultError("not_found"), "c").code, "E_NOT_FOUND");
   assert.equal(toAxisVaultError(new VaultError("backend_failed"), "c").code, "E_UNAVAILABLE");
+  assert.equal(toAxisVaultError(new VaultError("backend_changed"), "c").code, "E_CONFLICT");
 });

@@ -254,8 +254,8 @@ The vault holds one secret per connection id and the non-secret metadata about i
 
 ```ts
 type BackendId =
-  | "macos_keychain" | "windows_dpapi" | "gnome_libsecret" | "kwallet"
-  | "basic_text" | "unknown" | "memory";
+  | "macos_keychain" | "windows_dpapi" | "gnome_libsecret"
+  | "kwallet" | "kwallet5" | "kwallet6" | "basic_text" | "unknown" | "memory";
 type Protection = "os_protected" | "none" | "ephemeral";
 
 interface BackendInfo { id: BackendId; protection: Protection; label: string }
@@ -263,7 +263,7 @@ interface BackendInfo { id: BackendId; protection: Protection; label: string }
 /** The seam: one implementation per OS, added with the main-process wiring. */
 interface SecretBackend {
   info(): Promise<BackendInfo>;                     // asked on every store
-  put(name: string, secret: string, meta: EntryMeta): Promise<void>;
+  put(name: string, secret: string, meta: EntryMeta): Promise<{ id: BackendId; protection: Protection }>; // where it actually landed
   get(name: string): Promise<{ secret: string; meta: EntryMeta } | undefined>;
   remove(name: string): Promise<boolean>;
   list(): Promise<Array<{ name: string; meta: EntryMeta }>>;
@@ -280,12 +280,13 @@ interface ConnectionVault {
 }
 ```
 
-- `ConnectionInfo` is `{ connectionId, label?, storedAt, backend: BackendId, protection, weakConsent: boolean, backendChanged: boolean }`: enough for the UI to show where the key lives and whether it was stored with consent. It never contains the secret, a prefix, a length or a hash of it.
+- `ConnectionInfo` is `{ connectionId, label?, storedAt, backend: BackendId, protection, weakConsent: boolean, backendChanged: boolean }`, where `protection` is what the backend reported when the secret was stored, not a guess from its name: enough for the UI to show where the key lives and whether it was stored with consent. It never contains the secret, a prefix, a length or a hash of it.
 - `BackendReport` is `{ id, protection, label, policy: "allowed" | "consent_required" | "refused" }`: the current backend and whether a store would be allowed now.
-- `SecretPurpose` is a closed set (`provider_request`, `validate_connection`). `reveal` calls an optional `onAccess({ connectionId, purpose, outcome })` hook so the daemon can write an audit event (DMN-5) without the secret.
+- `SecretPurpose` is a closed set (`provider_request`, `validate_connection`). `reveal` calls an optional `onAccess({ connectionId, purpose, outcome })` hook, and every store (refusals included) and removal calls `onChange({ action, connectionId, outcome, backend?, protection?, weakConsent? })`, so the daemon can write audit events (DMN-5) without the secret.
 - Connection ids and names: `[a-z0-9][a-z0-9._-]{0,63}`. Secrets: printable ASCII, 8 to 4,096 characters, no whitespace.
-- `knownSecrets()` returns every secret stored or revealed in this process, including rotated and removed ones, so a late echo of an old key is still redacted. It is for the redactor only; the same trust boundary as `reveal`.
-- Errors are `VaultError` with a closed code set (`consent_required`, `backend_refused`, `backend_failed`, `not_found`, `invalid_name`, `invalid_secret`). Messages are fixed text and never contain the secret or a backend's raw error text. `VaultError` maps to the bridge errors `E_POLICY_DENIED` (consent and refusal), `E_NOT_FOUND`, `E_INVALID_ARGUMENT` and `E_UNAVAILABLE`.
+- `knownSecrets()` returns every secret stored or revealed in this process, including rotated and removed ones, so a late echo of an old key is still redacted. Secrets that are no longer stored are forgotten oldest first beyond 1,024; a secret that is still stored is never forgotten. After a restart it holds only what `reveal` has returned since, so the daemon should reveal each connection at startup before it builds the redactor. It is for the redactor only; the same trust boundary as `reveal`.
+- Everything a backend returns is untrusted: `info()` answers, entry metadata (`meta()`, `list()`) and the `put` result are validated field by field. Bad data, or an error thrown while reading it, becomes a fixed `backend_failed`; backend error text never escapes.
+- Errors are `VaultError` with a closed code set (`consent_required`, `backend_refused`, `backend_failed`, `backend_changed`, `not_found`, `invalid_name`, `invalid_secret`). Messages are fixed text and never contain the secret or a backend's raw error text. `VaultError` maps to the bridge errors `E_POLICY_DENIED` (consent and refusal), `E_NOT_FOUND`, `E_INVALID_ARGUMENT`, `E_CONFLICT` (`backend_changed`) and `E_UNAVAILABLE`.
 - The vault object keeps secrets nowhere but in the backend and the known-secret set (a closure, not a property), so `util.inspect` and `JSON.stringify` of the vault show no secret.
 
 ### 10.3 The Linux `basic_text` rule (PRV-1)
@@ -293,21 +294,22 @@ interface ConnectionVault {
 On Linux, Electron's `safeStorage` may fall back to a `basic_text` backend: a hardcoded key, so no protection against another process of the same user. macOS and Windows have no such mode.
 
 - The backend is asked on **every** `store` (not cached), because it can change between calls (a keyring starting or stopping).
-- `os_protected` backends (`macos_keychain`, `windows_dpapi`, `gnome_libsecret`, `kwallet`): stored without consent.
-- `basic_text`, `unknown` and any other `none` protection: `store` fails with `consent_required` unless a `WeakStorageConsent` for **that backend id** is supplied. Consent for `basic_text` does not carry over to `unknown` or to another backend, and a consent object is used once.
-- `WeakStorageConsent` is produced only by the approvals path, after the user resolves a native confirmation that names the backend (DMN-3: an agent cannot resolve it). The vault verifies that the consent names the current backend, and records `weakConsent: true` and the backend id in the entry's metadata. The UI shows the backend and a warning for every connection stored this way.
+- `os_protected` backends (`macos_keychain`, `windows_dpapi`, `gnome_libsecret`, `kwallet`, and Electron's `kwallet5` and `kwallet6`): stored without consent. The backend's own report decides: a `gnome_libsecret` that reports no protection (a locked collection) needs consent like any weak backend.
+- `basic_text`, `unknown` and any backend reporting `none`: `store` fails with `consent_required` unless a consent is supplied. `basic_text` and `unknown` never count as protected, whatever they claim. A backend reporting `ephemeral` is trusted only if its id is `memory`; for any other id the claim is treated as `none`.
+- **Consent is a capability, not a value.** `createConsentAuthority({ ttlMs?, now? })` returns a `grantor` and a `verifier`. The grantor goes only to the approvals service, which calls `grant({ connectionId, backend })` after the user resolves a native confirmation that names both (DMN-3: an agent cannot resolve it). The verifier goes to the vault (`createVault({ consent })`). There is no free-standing factory: code that was not handed the grantor cannot mint a consent, and a plain object or another authority's consent is refused. A consent is bound to one connection id and one backend id, expires (five minutes by default), and is spent by `redeem`, which checks and marks it in one synchronous step, so concurrent stores cannot both use it and a second vault sharing the verifier refuses it. A wrong attempt (another connection or backend) does not spend it. A vault without a verifier accepts no consent. The vault records `weakConsent: true` and the backend id in the entry's metadata; the UI shows the backend and a warning for every connection stored this way. Keeping the grantor out of reach of other daemon code is a wiring rule (the approvals module owns it); the vault cannot enforce it from inside.
+- **The check and the write are tied together.** `put` reports the backend that actually took the write. If that differs from the backend the policy decision was made on (the keyring went away in between), the vault removes the written copy and fails with `backend_changed`; it never records a weakly stored secret as protected. A backend that does not say where it wrote fails the same way.
 - A vault can also be created with `weakPolicy: "refuse"`, in which case a weak backend is refused outright (`backend_refused`) and consent is not offered. The product default is `"consent"`.
 - `memory` (the in-memory test backend) reports `protection: "ephemeral"`: allowed without consent, never persists, flagged `persistent: false`. It is exported for tests; production wiring must not select it.
-- Metadata records the backend at store time. `info().backendChanged` is true when the current backend differs from the one the secret was stored under (for example the keyring was disabled later), so the UI can prompt a re-store.
+- Metadata records the backend and its protection at store time. `info().backendChanged` is true when the current backend differs from the one the secret was stored under (for example the keyring was disabled later), so the UI can prompt a re-store.
 
 ### 10.4 Wiring (for ticket 10, recorded here)
 
 ```
-vault.reveal(id, "provider_request") ──► adapter apiKey supplier
+vault.reveal(id, purpose) ──► adapter apiKey(purpose) supplier
 vault.knownSecrets + ANTHROPIC_KEY_PATTERN ──► createSecretRedactor ──► guardProvider(adapter, { redactor, log, limits })
 ```
 
-The vault, the supplier and the redactor stay in the daemon process.
+The vault, the supplier and the redactor stay in the daemon process. The daemon creates one consent authority: its grantor goes to the approvals service, its verifier to the vault.
 
 ## 11. Tests (ANT-1 and the contract suite)
 
@@ -323,7 +325,7 @@ All tests use `node:test`; the transport is a fake `fetch`, so no test touches t
 8. **Review regressions** (`test/review.test.ts`): missing usage through a token budget, line floods, redirects on the GET paths and with the real `fetch`, `.` model ids, content types, 413, thinking progress, key purposes.
 9. **Error mapping:** the table in §8, `Retry-After` handling, `error` event types.
 10. **Capabilities, cost, `countTokens`:** report built from a models response, unknown fields ignored, cache and expiry; pricing with `BigInt` and missing cache price; `countTokens` body.
-11. **Vault:** the PRV-1 matrix (every backend id, with and without consent, wrong-backend consent, `refuse` policy, backend change between stores), no secret in `info`, `list`, errors, `inspect` or `JSON.stringify`, `knownSecrets` after rotation and removal, `onAccess` carries no secret.
+11. **Vault:** the PRV-1 matrix (every backend id, with and without consent; consent bound to a connection and a backend, expiring, forged, foreign, spent once even under `Promise.all` and across vaults; `refuse` policy; backend change between stores and between the check and the write; reported protection; bad backend data), no secret in `info`, `list`, errors, `inspect` or `JSON.stringify`, `knownSecrets` after rotation and removal, `onAccess` carries no secret.
 
 The gate lines the tests cover: ANT-1 (items 2 to 5), PRV-1 (10), PRV-2 (5, 6, 10), PRV-4 (guard scan with the vault redactor), PRV-6 (guard budget with the adapter's pricing and usage events).
 

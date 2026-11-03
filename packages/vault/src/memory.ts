@@ -11,8 +11,12 @@ export interface MemoryBackendOptions {
 export interface MemoryBackend extends SecretBackend {
   /** Change what the backend reports, as a platform keyring starting or stopping would. */
   setInfo(info: Partial<BackendInfo>): void;
+  /** Make the next writes land on this backend instead (the backend changed between `info()` and `put()`). Undefined restores it. */
+  landWritesOn(info: { id: BackendId; protection: Protection } | undefined): void;
   /** Make every call after this fail, with an error text that echoes the secret, to test containment. */
   failWith(message: string | undefined): void;
+  /** Replace what `meta()` and `list()` return for an entry, to test a backend that returns bad data. */
+  corruptMeta(name: string, raw: unknown): void;
 }
 
 /**
@@ -26,7 +30,8 @@ export function createMemoryBackend(options: MemoryBackendOptions = {}): MemoryB
     label: options.label ?? "In-memory (test)",
   };
   let failure: string | undefined;
-  const entries = new Map<string, { secret: string; meta: EntryMeta }>();
+  let landed: { id: BackendId; protection: Protection } | undefined;
+  const entries = new Map<string, { secret: string; meta: unknown }>();
 
   const check = (): void => {
     if (failure !== undefined) throw new Error(failure);
@@ -36,8 +41,15 @@ export function createMemoryBackend(options: MemoryBackendOptions = {}): MemoryB
     setInfo(next) {
       info = { ...info, ...next };
     },
+    landWritesOn(next) {
+      landed = next;
+    },
     failWith(message) {
       failure = message;
+    },
+    corruptMeta(name, raw) {
+      const e = entries.get(name);
+      if (e !== undefined) e.meta = raw;
     },
     async info() {
       check();
@@ -46,15 +58,16 @@ export function createMemoryBackend(options: MemoryBackendOptions = {}): MemoryB
     async put(name, secret, meta) {
       check();
       entries.set(name, { secret, meta });
+      return landed ?? { id: info.id, protection: info.protection };
     },
     async get(name) {
       check();
       const e = entries.get(name);
-      return e === undefined ? undefined : { secret: e.secret, meta: e.meta };
+      return e === undefined ? undefined : { secret: e.secret, meta: e.meta as EntryMeta };
     },
     async meta(name) {
       check();
-      return entries.get(name)?.meta;
+      return entries.get(name)?.meta as EntryMeta | undefined;
     },
     async remove(name) {
       check();
@@ -62,7 +75,7 @@ export function createMemoryBackend(options: MemoryBackendOptions = {}): MemoryB
     },
     async list() {
       check();
-      return [...entries].map(([name, e]) => ({ name, meta: e.meta }));
+      return [...entries].map(([name, e]) => ({ name, meta: e.meta as EntryMeta }));
     },
   };
 }

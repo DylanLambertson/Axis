@@ -10,6 +10,8 @@ export const BACKEND_IDS = [
   "windows_dpapi",
   "gnome_libsecret",
   "kwallet",
+  "kwallet5",
+  "kwallet6",
   "basic_text",
   "unknown",
   "memory",
@@ -27,12 +29,19 @@ export interface BackendInfo {
   readonly label: string;
 }
 
-/** Non-secret facts stored beside a secret. */
+/** Non-secret facts stored beside a secret. `protection` is what the backend reported when it was stored. */
 export interface EntryMeta {
   readonly label?: string;
   readonly storedAt: number;
   readonly backend: BackendId;
+  readonly protection: Protection;
   readonly weakConsent: boolean;
+}
+
+/** Where a write actually landed, as the backend reports it after the write. */
+export interface WrittenTo {
+  readonly id: BackendId;
+  readonly protection: Protection;
 }
 
 /**
@@ -44,7 +53,13 @@ export interface EntryMeta {
 export interface SecretBackend {
   /** Asked on every store (PRV-1): the backend can change between calls. */
   info(): Promise<BackendInfo>;
-  put(name: string, secret: string, meta: EntryMeta): Promise<void>;
+  /**
+   * Store the secret and report the backend that actually took it. The vault
+   * compares that with the answer its policy decision was based on and rolls
+   * the write back on a difference, so a backend that changed in between (S4)
+   * cannot leave a weakly stored secret recorded as protected.
+   */
+  put(name: string, secret: string, meta: EntryMeta): Promise<WrittenTo>;
   get(name: string): Promise<{ readonly secret: string; readonly meta: EntryMeta } | undefined>;
   /** Metadata without decrypting. */
   meta(name: string): Promise<EntryMeta | undefined>;
@@ -82,4 +97,16 @@ export interface AccessEvent {
   readonly connectionId: string;
   readonly purpose: SecretPurpose;
   readonly outcome: "ok" | "not_found" | "error";
+}
+
+/** A store or removal, for the audit log (DMN-5). Never carries the secret. */
+export interface ChangeEvent {
+  readonly action: "store" | "remove";
+  readonly connectionId: string;
+  readonly outcome: "ok" | "refused" | "error";
+  /** The backend and protection the decision was made on, for a store. */
+  readonly backend?: BackendId;
+  readonly protection?: Protection;
+  /** A store went ahead on a weak backend under the user's consent. */
+  readonly weakConsent?: boolean;
 }

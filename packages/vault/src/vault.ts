@@ -1,5 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
+import type { ConsentVerifier, WeakStorageConsent } from "./consent.js";
 import { VaultError } from "./errors.js";
+import { NAME_RE } from "./names.js";
 import {
   BACKEND_IDS,
   PROTECTIONS,
@@ -8,43 +10,25 @@ import {
   type BackendId,
   type BackendInfo,
   type BackendReport,
+  type ChangeEvent,
   type ConnectionInfo,
   type EntryMeta,
+  type Protection,
   type SecretBackend,
   type SecretPurpose,
   type StoragePolicy,
 } from "./types.js";
 
-const NAME_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const SECRET_RE = /^[\x21-\x7e]{8,4096}$/;
 const LABEL_RE = /^[\x20-\x7e]{1,64}$/;
-/** More distinct secrets than this in one process is not a normal use; the oldest are forgotten. */
+/** Secrets no longer stored are forgotten oldest first beyond this many. A stored secret is never forgotten. */
 const MAX_KNOWN_SECRETS = 1_024;
 
 const BACKEND_SET: ReadonlySet<string> = new Set(BACKEND_IDS);
 const PROTECTION_SET: ReadonlySet<string> = new Set(PROTECTIONS);
 const PURPOSE_SET: ReadonlySet<string> = new Set(SECRET_PURPOSES);
 /** Backends that never protect, whatever they claim. */
-const ALWAYS_WEAK: ReadonlySet<BackendId> = new Set<BackendId>(["basic_text", "unknown"]);
-
-/**
- * The user's consent to store a credential on a backend that gives no
- * protection (PRV-1). Only the approvals path creates one, after the user
- * resolves a native confirmation that names the backend (DMN-3: an agent
- * cannot resolve it). It names one backend and is spent by one `store`.
- */
-export interface WeakStorageConsent {
-  readonly backend: BackendId;
-  readonly grantedAt: number;
-}
-
-const issued = new WeakSet<object>();
-
-export function createWeakStorageConsent(backend: BackendId, grantedAt: number): WeakStorageConsent {
-  const consent: WeakStorageConsent = Object.freeze({ backend, grantedAt });
-  issued.add(consent);
-  return consent;
-}
+const ALWAYS_WEAK: ReadonlySet<string> = new Set(["basic_text", "unknown"]);
 
 export interface VaultOptions {
   readonly backend: SecretBackend;
@@ -53,13 +37,22 @@ export interface VaultOptions {
    * refuse outright.
    */
   readonly weakPolicy?: "consent" | "refuse";
+  /**
+   * Checks and spends a `WeakStorageConsent` (from `createConsentAuthority`).
+   * Without one no consent is ever accepted, so a weak backend always fails
+   * with `consent_required`.
+   */
+  readonly consent?: ConsentVerifier;
   /** Audit hook for every `reveal`, without the secret (DMN-5). Failures are ignored. */
   readonly onAccess?: (event: AccessEvent) => void;
+  /** Audit hook for every store and removal, without the secret (DMN-5). Failures are ignored. */
+  readonly onChange?: (event: ChangeEvent) => void;
   readonly now?: () => number;
 }
 
 export interface StoreOptions {
   readonly label?: string;
+  /** Required on a backend with no protection: the user's consent for this connection and this backend. */
   readonly consent?: WeakStorageConsent;
 }
 
@@ -79,20 +72,30 @@ export interface ConnectionVault {
   remove(connectionId: string): Promise<boolean>;
   /**
    * Every secret stored or revealed in this process, rotated and removed ones
-   * included, so a late echo of an old key is still redacted. For the
-   * guard's redactor only: the same trust boundary as `reveal`.
+   * included (up to a bound; a secret that is still stored is never dropped),
+   * so a late echo of an old key is still redacted. For the guard's redactor
+   * only: the same trust boundary as `reveal`. After a restart it holds only
+   * what `reveal` has returned since.
    */
   knownSecrets(): readonly string[];
 }
 
-/** Treat a backend's answer as untrusted: unknown ids and claims fail closed. */
+/**
+ * What a backend reports about itself, treated as untrusted. Unknown ids and
+ * claims fail closed; `ephemeral` is accepted from the memory backend only, and
+ * `basic_text` and `unknown` never count as protected.
+ */
 function normalizeInfo(raw: unknown): BackendInfo {
   const o = typeof raw === "object" && raw !== null ? (raw as Record<string, unknown>) : {};
   const id: BackendId = typeof o["id"] === "string" && BACKEND_SET.has(o["id"]) ? (o["id"] as BackendId) : "unknown";
-  let protection = typeof o["protection"] === "string" && PROTECTION_SET.has(o["protection"]) ? (o["protection"] as BackendInfo["protection"]) : "none";
-  if (ALWAYS_WEAK.has(id)) protection = "none";
-  const label = typeof o["label"] === "string" && LABEL_RE.test(o["label"]) ? o["label"] : id;
-  return { id, protection, label };
+  return { id, protection: normalizeProtection(id, o["protection"]), label: typeof o["label"] === "string" && LABEL_RE.test(o["label"]) ? o["label"] : id };
+}
+
+function normalizeProtection(id: BackendId, claimed: unknown): Protection {
+  if (ALWAYS_WEAK.has(id)) return "none";
+  if (id === "memory") return "ephemeral";
+  if (typeof claimed !== "string" || !PROTECTION_SET.has(claimed)) return "none";
+  return claimed === "ephemeral" ? "none" : (claimed as Protection);
 }
 
 function policyOf(info: BackendInfo, weak: "consent" | "refuse"): StoragePolicy {
@@ -108,17 +111,59 @@ async function backendCall<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
+/** Entry metadata from a backend, validated field by field. Anything off is a fixed backend failure. */
+function readMeta(raw: unknown): EntryMeta {
+  try {
+    if (typeof raw !== "object" || raw === null) throw new Error();
+    const o = raw as Record<string, unknown>;
+    const backend = o["backend"];
+    const protection = o["protection"];
+    const storedAt = o["storedAt"];
+    const weakConsent = o["weakConsent"];
+    const label = o["label"];
+    if (typeof backend !== "string" || !BACKEND_SET.has(backend)) throw new Error();
+    if (typeof protection !== "string" || !PROTECTION_SET.has(protection)) throw new Error();
+    if (typeof storedAt !== "number" || !Number.isFinite(storedAt) || storedAt < 0) throw new Error();
+    if (typeof weakConsent !== "boolean") throw new Error();
+    if (label !== undefined && (typeof label !== "string" || !LABEL_RE.test(label))) throw new Error();
+    return {
+      ...(label === undefined ? {} : { label }),
+      storedAt,
+      backend: backend as BackendId,
+      protection: normalizeProtection(backend as BackendId, protection),
+      weakConsent,
+    };
+  } catch {
+    throw new VaultError("backend_failed");
+  }
+}
+
 export function createVault(options: VaultOptions): ConnectionVault {
   const backend = options.backend;
   const weak = options.weakPolicy ?? "consent";
   const now = options.now ?? ((): number => Date.now());
-  const spent = new WeakSet<object>();
-  const known: string[] = [];
+  const known = new Set<string>();
+  /** The secret currently stored (or last revealed) for each connection: these are never forgotten. */
+  const live = new Map<string, string>();
 
   const remember = (secret: string): void => {
-    if (known.includes(secret)) return;
-    known.push(secret);
-    if (known.length > MAX_KNOWN_SECRETS) known.shift();
+    known.add(secret);
+    if (known.size <= MAX_KNOWN_SECRETS) return;
+    const keep = new Set(live.values());
+    for (const s of known) {
+      if (!keep.has(s)) {
+        known.delete(s);
+        break;
+      }
+    }
+  };
+
+  const notify = <E>(hook: ((e: E) => void) | undefined, event: E): void => {
+    try {
+      hook?.(event);
+    } catch {
+      // An audit sink failure must not change the outcome.
+    }
   };
 
   const currentInfo = async (): Promise<BackendInfo> => normalizeInfo(await backendCall(() => backend.info()));
@@ -128,18 +173,16 @@ export function createVault(options: VaultOptions): ConnectionVault {
     return id;
   };
 
-  const describe = (connectionId: string, meta: EntryMeta, current: BackendInfo): ConnectionInfo => {
-    const info: { -readonly [K in keyof ConnectionInfo]: ConnectionInfo[K] } = {
-      connectionId,
-      storedAt: meta.storedAt,
-      backend: meta.backend,
-      protection: ALWAYS_WEAK.has(meta.backend) ? "none" : meta.backend === "memory" ? "ephemeral" : "os_protected",
-      weakConsent: meta.weakConsent,
-      backendChanged: current.id !== meta.backend,
-    };
-    if (meta.label !== undefined) info.label = meta.label;
-    return info;
-  };
+  /** What the UI shows: protection is what the backend reported at store time, not a guess from its name. */
+  const describe = (connectionId: string, meta: EntryMeta, current: BackendInfo): ConnectionInfo => ({
+    connectionId,
+    ...(meta.label === undefined ? {} : { label: meta.label }),
+    storedAt: meta.storedAt,
+    backend: meta.backend,
+    protection: meta.protection,
+    weakConsent: meta.weakConsent,
+    backendChanged: current.id !== meta.backend,
+  });
 
   const vault: ConnectionVault = {
     async backend() {
@@ -152,16 +195,27 @@ export function createVault(options: VaultOptions): ConnectionVault {
       if (typeof secret !== "string" || !SECRET_RE.test(secret)) throw new VaultError("invalid_secret");
       if (opts.label !== undefined && (typeof opts.label !== "string" || !LABEL_RE.test(opts.label))) throw new VaultError("invalid_secret");
 
-      // PRV-1: the backend is asked on every store, never cached.
-      const info = await currentInfo();
+      let info: BackendInfo;
+      try {
+        // PRV-1: the backend is asked on every store, never cached.
+        info = await currentInfo();
+      } catch (e) {
+        notify(options.onChange, { action: "store", connectionId: name, outcome: "error" } satisfies ChangeEvent);
+        throw e;
+      }
+      const event = (outcome: ChangeEvent["outcome"], weakConsent = false): ChangeEvent => ({ action: "store", connectionId: name, outcome, backend: info.id, protection: info.protection, weakConsent });
       const policy = policyOf(info, weak);
       let weakConsent = false;
-      let consent: object | undefined;
-      if (policy === "refused") throw new VaultError("backend_refused");
+      if (policy === "refused") {
+        notify(options.onChange, event("refused"));
+        throw new VaultError("backend_refused");
+      }
       if (policy === "consent_required") {
-        const c = opts.consent;
-        if (c === undefined || !issued.has(c) || spent.has(c) || c.backend !== info.id) throw new VaultError("consent_required");
-        consent = c;
+        // Checked and spent in one synchronous step, bound to this connection and this backend (S2, S3).
+        if (opts.consent === undefined || options.consent?.redeem(opts.consent, { connectionId: name, backend: info.id }) !== true) {
+          notify(options.onChange, event("refused"));
+          throw new VaultError("consent_required");
+        }
         weakConsent = true;
       }
 
@@ -171,23 +225,37 @@ export function createVault(options: VaultOptions): ConnectionVault {
         ...(opts.label === undefined ? {} : { label: opts.label }),
         storedAt: now(),
         backend: info.id,
+        protection: info.protection,
         weakConsent,
       };
-      await backendCall(() => backend.put(name, secret, meta));
-      if (consent !== undefined) spent.add(consent);
+      let wrote: BackendInfo;
+      try {
+        const raw = await backend.put(name, secret, meta);
+        wrote = normalizeInfo({ id: (raw as { id?: unknown } | undefined)?.id, protection: (raw as { protection?: unknown } | undefined)?.protection });
+      } catch {
+        notify(options.onChange, event("error", weakConsent));
+        throw new VaultError("backend_failed");
+      }
+      if (wrote.id !== info.id || wrote.protection !== info.protection) {
+        // The write landed somewhere other than the backend the decision was made on (S4): do not keep it.
+        try {
+          await backend.remove(name);
+        } catch {
+          // Nothing more can be done here; the failure below is the same.
+        }
+        live.delete(name);
+        notify(options.onChange, event("error", weakConsent));
+        throw new VaultError("backend_changed");
+      }
+      live.set(name, secret);
+      notify(options.onChange, event("ok", weakConsent));
       return describe(name, meta, info);
     },
 
     async reveal(connectionId, purpose) {
       const name = checkName(connectionId);
       if (typeof purpose !== "string" || !PURPOSE_SET.has(purpose)) throw new VaultError("invalid_secret");
-      const audit = (outcome: AccessEvent["outcome"]): void => {
-        try {
-          options.onAccess?.({ connectionId: name, purpose, outcome });
-        } catch {
-          // An audit sink failure must not change the outcome.
-        }
-      };
+      const audit = (outcome: AccessEvent["outcome"]): void => notify(options.onAccess, { connectionId: name, purpose, outcome });
       let entry: Awaited<ReturnType<SecretBackend["get"]>>;
       try {
         entry = await backend.get(name);
@@ -199,30 +267,58 @@ export function createVault(options: VaultOptions): ConnectionVault {
         audit("not_found");
         throw new VaultError("not_found");
       }
-      if (typeof entry.secret !== "string" || entry.secret.length === 0) {
+      const secret = (() => {
+        try {
+          return entry.secret;
+        } catch {
+          return undefined;
+        }
+      })();
+      if (typeof secret !== "string" || secret.length === 0) {
         audit("error");
         throw new VaultError("backend_failed");
       }
-      remember(entry.secret);
+      live.set(name, secret);
+      remember(secret);
       audit("ok");
-      return entry.secret;
+      return secret;
     },
 
     async info(connectionId) {
       const name = checkName(connectionId);
-      const meta = await backendCall(() => backend.meta(name));
-      if (meta === undefined) return undefined;
+      const raw = await backendCall(() => backend.meta(name));
+      if (raw === undefined) return undefined;
+      const meta = readMeta(raw);
       return describe(name, meta, await currentInfo());
     },
 
     async list() {
       const current = await currentInfo();
       const entries = await backendCall(() => backend.list());
-      return entries.map((e) => describe(e.name, e.meta, current));
+      try {
+        if (!Array.isArray(entries)) throw new Error();
+        return entries.map((e) => {
+          const n = (e as { name?: unknown }).name;
+          if (typeof n !== "string" || !NAME_RE.test(n)) throw new Error();
+          return describe(n, readMeta((e as { meta?: unknown }).meta), current);
+        });
+      } catch {
+        throw new VaultError("backend_failed");
+      }
     },
 
     async remove(connectionId) {
-      return backendCall(() => backend.remove(checkName(connectionId)));
+      const name = checkName(connectionId);
+      let removed: boolean;
+      try {
+        removed = await backend.remove(name);
+      } catch {
+        notify(options.onChange, { action: "remove", connectionId: name, outcome: "error" } satisfies ChangeEvent);
+        throw new VaultError("backend_failed");
+      }
+      live.delete(name);
+      notify(options.onChange, { action: "remove", connectionId: name, outcome: "ok" } satisfies ChangeEvent);
+      return removed;
     },
 
     knownSecrets() {
