@@ -160,6 +160,7 @@ test("execute: a commit with the wrong tree is undone by compare-and-swap", asyn
         return { code: 0 };
       }
       if (committed && s.join(" ") === "rev-parse --verify --end-of-options HEAD^{commit}") return { stdout: `${NEW}\n` };
+      if (committed && s.includes(`${NEW}^1`)) return { stdout: `${HEAD}\n` };
       if (committed && s.join(" ") === "rev-parse --verify --end-of-options HEAD^{tree}") return { stdout: `${OTHER_TREE}\n` };
       return undefined;
     }),
@@ -180,9 +181,68 @@ test("execute: success returns the commit and tree", async () => {
         return { code: 0 };
       }
       if (committed && s.join(" ") === "rev-parse --verify --end-of-options HEAD^{commit}") return { stdout: `${NEW}\n` };
+      if (committed && s.includes(`${NEW}^1`)) return { stdout: `${HEAD}\n` };
       if (committed && s.join(" ") === "rev-parse --verify --end-of-options HEAD^{tree}") return { stdout: `${TREE}\n` };
       return undefined;
     }),
   );
   assert.deepEqual(await executeCommit(makeDeps(r), input), { commit: NEW, tree: TREE });
+});
+
+function afterCommit(over: { tree?: string; parent?: string; undo?: { code: number } }) {
+  const NEW = "d".repeat(40);
+  let committed = false;
+  const r = new FakeRunner(
+    healthy((s, req) => {
+      if (req.context === "pty") {
+        committed = true;
+        return { code: 0 };
+      }
+      if (!committed) return undefined;
+      if (s.join(" ") === "rev-parse --verify --end-of-options HEAD^{commit}") return { stdout: `${NEW}\n` };
+      if (s.join(" ") === "rev-parse --verify --end-of-options HEAD^{tree}") return { stdout: `${over.tree ?? OTHER_TREE}\n` };
+      if (s.includes(`${NEW}^1`)) return { stdout: `${over.parent ?? HEAD}\n` };
+      if (s[0] === "update-ref") return { code: over.undo?.code ?? 0 };
+      return undefined;
+    }),
+  );
+  return { r, NEW };
+}
+
+async function failure(p: Promise<unknown>): Promise<GitOpsError> {
+  try {
+    await p;
+  } catch (e) {
+    assert.ok(e instanceof GitOpsError, String(e));
+    return e;
+  }
+  assert.fail("expected a refusal");
+}
+
+test("S-5: an undo that really happened says so; one whose update-ref failed reports E_INTERNAL and undone=false", async () => {
+  const ok = await failure(executeCommit(makeDeps(afterCommit({}).r), input));
+  assert.equal(ok.code, "E_CONFLICT");
+  assert.deepEqual(ok.details, { undone: true });
+  const failed = await failure(executeCommit(makeDeps(afterCommit({ undo: { code: 1 } }).r), input));
+  assert.equal(failed.code, "E_INTERNAL");
+  assert.deepEqual(failed.details, { undone: false });
+  assert.doesNotMatch(failed.message, /was undone/);
+});
+
+test("S-5: a new commit whose parent is not the reviewed one is never undone, even when its tree is the reviewed one", async () => {
+  for (const tree of [TREE, OTHER_TREE]) {
+    const { r } = afterCommit({ tree, parent: "f".repeat(40) });
+    const e = await failure(executeCommit(makeDeps(r), input));
+    assert.equal(e.code, "E_INTERNAL");
+    assert.deepEqual(e.details, { undone: false });
+    assert.equal(r.calls.some((c) => sub(c.argv)[0] === "update-ref"), false, "no undo is attempted");
+  }
+});
+
+test("S-5: the undo moves the branch to the commit's actual parent with the commit as the expected old value", async () => {
+  const { r, NEW } = afterCommit({});
+  await failure(executeCommit(makeDeps(r), input));
+  const undo = r.calls.find((c) => sub(c.argv)[0] === "update-ref");
+  assert.ok(undo);
+  assert.deepEqual(sub(undo.argv).slice(-3), ["refs/heads/axis/feat", HEAD, NEW]);
 });

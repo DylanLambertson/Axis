@@ -3,7 +3,7 @@
 // process, so repository hooks never run in the daemon. The commit is of the tree the user reviewed.
 import { branchFor, checkWorktree, daemonGitFor, platformOf, prefix, OBJECT_ID, type DaemonGit } from "./args.js";
 import { findOverride, withNoPrompt } from "./env.js";
-import { conflict, denied, invalid } from "./errors.js";
+import { GitOpsError, conflict, denied, internal, invalid } from "./errors.js";
 import type { GitOpsDeps, GitRunRequest, WorktreeRef } from "./types.js";
 
 export interface CommitInput {
@@ -100,7 +100,12 @@ export async function planCommit(deps: GitOpsDeps, input: CommitInput): Promise<
 
 /**
  * Re-validates immediately before running (the plan is not trusted), runs the commit in the pty context, and
- * verifies the new commit has the reviewed tree. On a mismatch it moves the branch back (compare-and-swap).
+ * verifies that the new commit has the reviewed tree and sits directly on the reviewed parent.
+ *
+ * - A wrong tree on the expected parent is undone by compare-and-swap (new value the parent, old value the commit);
+ *   the undo is reported only when `update-ref` really succeeded.
+ * - Any other outcome (the parent is not the reviewed one, or the undo failed) leaves the branch alone and reports
+ *   E_INTERNAL with `undone: false`: dropping a commit that someone else made is not ours to do.
  */
 export async function executeCommit(deps: GitOpsDeps, input: CommitInput): Promise<CommitResult> {
   const { plan, git } = await check(deps, input);
@@ -108,9 +113,18 @@ export async function executeCommit(deps: GitOpsDeps, input: CommitInput): Promi
   if (r.code !== 0) throw conflict(`git commit failed (exit ${r.code})`);
   const commit = line(await git(["rev-parse", "--verify", "--end-of-options", "HEAD^{commit}"]));
   const tree = line(await git(["rev-parse", "--verify", "--end-of-options", "HEAD^{tree}"]));
-  if (tree !== plan.reviewedTreeHash) {
-    await git(["update-ref", "-m", "axis: undo commit of an unreviewed tree", `refs/heads/${plan.branch}`, plan.parent, commit]);
-    throw conflict("the commit did not contain the reviewed tree and was undone");
+  const parentR = OBJECT_ID.test(commit) ? await git(["rev-parse", "--verify", "--quiet", "--end-of-options", `${commit}^1`]) : undefined;
+  const parent = parentR?.code === 0 ? line(parentR) : "";
+  if (!OBJECT_ID.test(commit) || !OBJECT_ID.test(tree)) {
+    throw internal("the new commit could not be read back, so it was not verified", { undone: false });
   }
-  return { commit, tree };
+  if (parent !== plan.parent) {
+    throw internal(`the new commit ${commit} is not built on the reviewed base ${plan.parent}: the branch moved while the commit ran; it was not undone`, { undone: false });
+  }
+  if (tree === plan.reviewedTreeHash) return { commit, tree };
+  const undo = await git(["update-ref", "-m", "axis: undo commit of an unreviewed tree", `refs/heads/${plan.branch}`, parent, commit]);
+  if (undo.code !== 0) {
+    throw internal(`the commit ${commit} did not contain the reviewed tree and could not be undone; the branch was left as it is`, { undone: false });
+  }
+  throw new GitOpsError("E_CONFLICT", "the commit did not contain the reviewed tree and was undone", { undone: true });
 }

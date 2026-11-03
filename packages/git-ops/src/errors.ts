@@ -23,6 +23,10 @@ export function conflict(message: string): GitOpsError {
   return new GitOpsError("E_CONFLICT", message);
 }
 
+export function internal(message: string, details?: Readonly<Record<string, string | number | boolean>>): GitOpsError {
+  return new GitOpsError("E_INTERNAL", message, details);
+}
+
 /** Replaces scheme://user:pass@ in text that may reach logs or error details. */
 export function redactUrls(text: string): string {
   return text.replace(/(\w+:\/\/)[^/@\s]+@/g, "$1***@");
