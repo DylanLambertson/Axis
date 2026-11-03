@@ -28,7 +28,19 @@ export function daemonGitEnv(parent: Env, platform: NodeJS.Platform = process.pl
 }
 
 /** Variables that would override the identity git takes from the repository config, or the repository location. */
-const OVERRIDES = /^GIT_(AUTHOR|COMMITTER)_(NAME|EMAIL|DATE)$|^GIT_CONFIG|^GIT_DIR$|^GIT_WORK_TREE$|^GIT_INDEX_FILE$|^GIT_EXEC_PATH$/i;
+const OVERRIDES = new RegExp(
+  [
+    "^GIT_(AUTHOR|COMMITTER)_(NAME|EMAIL|DATE)$", "^GIT_CONFIG",
+    // Where the repository, its refs and its objects are, so what git writes can differ from what the daemon verifies.
+    "^GIT_DIR$", "^GIT_WORK_TREE$", "^GIT_INDEX_FILE$", "^GIT_COMMON_DIR$", "^GIT_PREFIX$", "^GIT_NAMESPACE$",
+    "^GIT_OBJECT_DIRECTORY$", "^GIT_ALTERNATE_OBJECT_DIRECTORIES$", "^GIT_SHALLOW_FILE$",
+    "^GIT_CEILING_DIRECTORIES$", "^GIT_DISCOVERY_ACROSS_FILESYSTEM$",
+    // refs/replace: pack-objects ignores it, and the daemon's reads must agree with it.
+    "^GIT_REPLACE_REF_BASE$", "^GIT_NO_REPLACE_OBJECTS$",
+    "^GIT_EXEC_PATH$",
+  ].join("|"),
+  "i",
+);
 
 /** The name of an environment variable that tries to override identity, config or repository location. */
 export function findOverride(env: Env): string | undefined {

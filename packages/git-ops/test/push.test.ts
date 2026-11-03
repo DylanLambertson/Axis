@@ -254,3 +254,10 @@ test("S-4: any userinfo on a non-ssh URL, and a password on ssh, is refused with
   }
   for (const ok of ["ssh://git@github.com/o/r.git", "git@github.com:o/r.git"]) assert.equal(await code(planPush(makeDeps(urlRunner(ok)), input)), "OK", ok);
 });
+
+test("S-9: repository-location and object-store overrides in the pty environment refuse a push", async () => {
+  for (const n of ["GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE", "GIT_REPLACE_REF_BASE", "GIT_PREFIX", "GIT_DIR"]) {
+    const deps = makeDeps(new FakeRunner(healthy()), { env: { daemon: {}, pty: { PATH: "/b", [n]: "x" } } });
+    assert.equal(await code(planPush(deps, input)), "E_POLICY_DENIED", n);
+  }
+});

@@ -46,7 +46,11 @@ test("author and committer are never overridden", async () => {
 });
 
 test("an identity override in the environment is refused", async () => {
-  for (const n of ["GIT_AUTHOR_NAME", "git_committer_email", "GIT_CONFIG_COUNT", "GIT_DIR", "GIT_INDEX_FILE"]) {
+  for (const n of [
+    "GIT_AUTHOR_NAME", "git_committer_email", "GIT_CONFIG_COUNT", "GIT_DIR", "GIT_INDEX_FILE",
+    "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE", "GIT_REPLACE_REF_BASE", "GIT_PREFIX",
+    "GIT_NO_REPLACE_OBJECTS", "GIT_SHALLOW_FILE", "GIT_CEILING_DIRECTORIES", "GIT_DISCOVERY_ACROSS_FILESYSTEM", "git_common_dir",
+  ]) {
     const deps = makeDeps(new FakeRunner(healthy()), { env: { daemon: {}, pty: { PATH: "/b", [n]: "x" } } });
     assert.equal(await code(planCommit(deps, input)), "E_POLICY_DENIED", n);
   }
