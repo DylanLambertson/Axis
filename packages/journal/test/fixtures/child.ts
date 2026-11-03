@@ -1,7 +1,8 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 // Crash fixture. Run steps 1..k committed, then (mode "open-tx") perform step k+1
 // or recovery inside an open transaction, announce READY and hang until killed.
-import { openDatabase } from "@axis/audit";
+import { dirname } from "node:path";
+import { acquireInstanceLock, openDatabase } from "@axis/audit";
 import { STEPS, deterministicJournal, type Ctx } from "./script.js";
 
 const [dbPath, mode, kArg] = process.argv.slice(2);
@@ -43,7 +44,7 @@ if (mode === "open-tx") {
   if (next) next(journal, ctx);
 } else if (mode === "recover-open-tx") {
   db.exec("BEGIN IMMEDIATE");
-  journal.recover({ path: ":child:", held: true, release() {} });
+  journal.recover(acquireInstanceLock(dirname(dbPath)));
 }
 process.stdout.write("READY\n");
 setInterval(() => undefined, 1000);

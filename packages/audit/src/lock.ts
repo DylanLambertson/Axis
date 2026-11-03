@@ -1,8 +1,9 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { chmodSync, closeSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync, writeSync } from "node:fs";
-import { join } from "node:path";
+import { chmodSync, closeSync, mkdirSync, openSync, readFileSync, realpathSync, statSync, unlinkSync, writeSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import type { DatabaseSync } from "node:sqlite";
 import { AxisError } from "./errors.js";
 
 const LOCK_FILE = "axis.lock";
@@ -17,11 +18,65 @@ interface LockRecord {
   readonly nonce: string;
 }
 
-/** Proof that this process holds the database directory. `Journal.recover` requires one. */
-export interface InstanceLock {
-  readonly path: string;
-  readonly held: boolean;
-  release(): void;
+const MINT = Symbol("axis.instanceLock.mint");
+
+/**
+ * Proof that this process holds the database directory, minted only by
+ * `acquireInstanceLock`. The `#` fields are a brand: `InstanceLock.is(x)` is
+ * true only for an object this class constructed, so an object literal with
+ * the right-looking fields is not one. `Journal.recover` requires one that is
+ * still held and that guards the journal's own database directory.
+ */
+export class InstanceLock {
+  readonly #path: string;
+  readonly #nonce: string;
+  #held = true;
+
+  /** Not constructible outside this module: use `acquireInstanceLock`. */
+  constructor(mint: symbol, path: string, nonce: string) {
+    if (mint !== MINT) throw new AxisError("E_INVALID_ARGUMENT", "An instance lock can only be acquired with acquireInstanceLock");
+    this.#path = path;
+    this.#nonce = nonce;
+  }
+
+  /** True only for a genuine lock object (private-field brand check; cannot be forged by a literal). */
+  static is(value: unknown): value is InstanceLock {
+    return typeof value === "object" && value !== null && #held in value;
+  }
+
+  get path(): string {
+    return this.#path;
+  }
+
+  get held(): boolean {
+    return this.#held;
+  }
+
+  /**
+   * Whether this lock guards the directory that holds `db`. An in-memory
+   * database has no directory and no other process can share it, so any held
+   * lock is accepted for it. Paths are compared after resolving symlinks.
+   */
+  guards(db: DatabaseSync): boolean {
+    if (!this.#held) return false;
+    const location = db.location();
+    if (location === null || location === "" || location === ":memory:") return true;
+    try {
+      return realpathSync(dirname(resolve(location))) === realpathSync(dirname(this.#path));
+    } catch {
+      return false;
+    }
+  }
+
+  release(): void {
+    if (!this.#held) return;
+    this.#held = false;
+    try {
+      if (readRecord(this.#path).record?.nonce === this.#nonce) unlinkSync(this.#path);
+    } catch {
+      // already gone
+    }
+  }
 }
 
 export interface LockOptions {
@@ -55,6 +110,40 @@ export function processStartTime(pid: number): string | undefined {
     return out === "" ? undefined : out;
   } catch {
     return undefined;
+  }
+}
+
+/**
+ * Remove the stale lock file `path` (whose content was `raw` when judged stale),
+ * serialised against other takers by an exclusive guard file. Without the guard
+ * the compare and the unlink are two steps, and another process could finish its
+ * own takeover between them and have its fresh lock deleted. A guard left by a
+ * crashed taker is removed once it is older than the grace period.
+ */
+function takeOver(path: string, raw: string, now: () => number): void {
+  const guard = `${path}.takeover`;
+  let fd: number;
+  try {
+    fd = openSync(guard, "wx", 0o600);
+  } catch {
+    try {
+      if (now() - statSync(guard).mtimeMs > UNPARSEABLE_GRACE_MS) unlinkSync(guard);
+    } catch {
+      // gone already
+    }
+    return; // another taker is at work; the caller retries
+  }
+  try {
+    if (readFileSync(path, "utf8") === raw) unlinkSync(path);
+  } catch {
+    // already replaced or gone
+  } finally {
+    closeSync(fd);
+    try {
+      unlinkSync(guard);
+    } catch {
+      // gone
+    }
   }
 }
 
@@ -99,7 +188,7 @@ export function acquireInstanceLock(dir: string, options: LockOptions = {}): Ins
         closeSync(fd);
       }
       chmodSync(path, 0o600);
-      return makeLock(path, record.nonce);
+      return new InstanceLock(MINT, path, record.nonce);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
         throw new AxisError("E_UNAVAILABLE", "Could not create the instance lock");
@@ -123,31 +212,8 @@ export function acquireInstanceLock(dir: string, options: LockOptions = {}): Ins
     if (!stale) {
       throw new AxisError("E_CONFLICT", "Another Axis daemon is using this database", seen.record ? { pid: seen.record.pid } : {});
     }
-    // Compare-and-delete: only remove the file we judged stale.
-    try {
-      if (readFileSync(path, "utf8") === seen.raw) unlinkSync(path);
-    } catch {
-      // someone else took it over; retry
-    }
+    // Compare-and-delete under a takeover guard, so no other taker can replace the file between our read and our unlink.
+    takeOver(path, seen.raw, now);
   }
   throw new AxisError("E_CONFLICT", "Could not take the instance lock; another daemon is starting");
-}
-
-function makeLock(path: string, nonce: string): InstanceLock {
-  let held = true;
-  return {
-    path,
-    get held() {
-      return held;
-    },
-    release() {
-      if (!held) return;
-      held = false;
-      try {
-        if (readRecord(path).record?.nonce === nonce) unlinkSync(path);
-      } catch {
-        // already gone
-      }
-    },
-  };
 }

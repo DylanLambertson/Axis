@@ -1,13 +1,21 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import assert from "node:assert/strict";
-import { test } from "node:test";
-import { AuditLog, AxisError, openDatabase, schemaVersion } from "@axis/audit";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { after, test } from "node:test";
+import { AuditLog, AxisError, acquireInstanceLock, openDatabase, schemaVersion } from "@axis/audit";
 import { JOURNAL_SCHEMA_VERSION, Journal, RESTART_REASON, RUN_STATES, RUN_TRANSITIONS, type RunState } from "../src/index.js";
 
 // Low-entropy stand-ins assembled at runtime; none is a credential.
 const FAKE = { anthropic: "sk-" + "ant-" + "A1b2".repeat(8), password: "hunter2-" + "pw".repeat(6) };
-/** A held lock for in-memory tests; the real one is exercised in lock and crash tests. */
-const LOCK = { path: ":test:", held: true, release() {} };
+/** A real instance lock. In-memory databases have no directory, so any held lock guards them. */
+const LOCK_DIR = mkdtempSync(join(tmpdir(), "axis-journal-lock-"));
+const LOCK = acquireInstanceLock(LOCK_DIR);
+after(() => {
+  LOCK.release();
+  rmSync(LOCK_DIR, { recursive: true, force: true });
+});
 
 const KEY1 = "00000000-0000-4000-8000-000000000001";
 const KEY2 = "00000000-0000-4000-8000-000000000002";
@@ -332,5 +340,39 @@ test("S11: recovery reports a REMOVING workspace every time but audits it once",
   assert.deepEqual(journal.recover(LOCK).workspacesNeedingReconcile, [ws.id]);
   assert.deepEqual(journal.recover(LOCK).workspacesNeedingReconcile, [ws.id]);
   assert.equal(audit.head()?.seq, seq);
-  assert.throws(() => journal.recover({ path: "x", held: false, release() {} }), code("E_CONFLICT"));
+  const released = acquireInstanceLock(mkdtempSync(join(tmpdir(), "axis-journal-rel-")));
+  released.release();
+  assert.throws(() => journal.recover(released), code("E_CONFLICT"));
+  assert.throws(() => journal.recover(undefined as never), code("E_INVALID_ARGUMENT"));
+});
+
+// ---- NEW-D / S10: recover() needs a genuine lock for this database's directory ----
+
+test("NEW-D: a literal lock, a lock for another directory and a released lock are refused; the live run is untouched", () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "axis-j-data-"));
+  const otherDir = mkdtempSync(join(tmpdir(), "axis-j-other-"));
+  try {
+    const db = openDatabase(join(dataDir, "j.db"));
+    const audit = new AuditLog(db);
+    const journal = Journal.open(db, { audit });
+    const ws = readyWorkspace(journal);
+    const run = journal.createRun({ workspaceId: ws.id, kind: "cli" }).value.id;
+    journal.transitionRun(run, "RUNNING"); // a live daemon's run
+
+    const literal = { path: join(dataDir, "axis.lock"), held: true, release() {} };
+    const unrelated = acquireInstanceLock(otherDir);
+    assert.throws(() => journal.recover(literal as never), code("E_INVALID_ARGUMENT"));
+    assert.throws(() => journal.recover(unrelated), code("E_INVALID_ARGUMENT"));
+    assert.equal(journal.getRun(run)?.state, "RUNNING", "a refused recovery must not touch the live run");
+    unrelated.release();
+
+    const real = acquireInstanceLock(dataDir);
+    assert.deepEqual(journal.recover(real).runsInterrupted, [run]);
+    real.release();
+    assert.throws(() => journal.recover(real), code("E_CONFLICT"));
+    db.close();
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(otherDir, { recursive: true, force: true });
+  }
 });

@@ -4,10 +4,10 @@ import {
   AuditActions,
   AuditLog,
   AxisError,
+  InstanceLock,
   runMigrations,
   withTransaction,
   type DatabaseSync,
-  type InstanceLock,
 } from "@axis/audit";
 import {
   createRunSchema,
@@ -263,7 +263,8 @@ export class Journal {
 
   /**
    * Reconcile after a start. Requires the held instance lock
-   * (`acquireInstanceLock`): a second live daemon on the same data must never
+   * (`acquireInstanceLock`, an `InstanceLock` object, not a lookalike) for the
+   * directory of this journal's database: a second live daemon on the same data must never
    * run this, because it would block the first one's RUNNING runs. Policy:
    *
    * - run RUNNING            -> BLOCKED / INTERRUPTED_BY_RESTART (the composer loop or the CLI supervision is gone);
@@ -277,8 +278,13 @@ export class Journal {
    * after a crash (including one during recovery) finishes the job.
    */
   recover(lock: InstanceLock): RecoveryReport {
-    if (!lock || lock.held !== true) {
-      throw new AxisError("E_CONFLICT", "Recovery requires the held single-instance lock");
+    // A genuine lock (not a lookalike literal), still held, for this database's own directory.
+    if (!InstanceLock.is(lock)) {
+      throw new AxisError("E_INVALID_ARGUMENT", "Recovery requires an instance lock from acquireInstanceLock");
+    }
+    if (!lock.held) throw new AxisError("E_CONFLICT", "Recovery requires the held single-instance lock");
+    if (!lock.guards(this.#db)) {
+      throw new AxisError("E_INVALID_ARGUMENT", "The instance lock does not guard this database's directory");
     }
     return withTransaction(this.#db, () => {
       const ts = this.#ts();

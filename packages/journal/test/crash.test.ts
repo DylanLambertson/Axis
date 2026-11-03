@@ -3,15 +3,13 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
-import { AuditLog, openDatabase } from "@axis/audit";
+import { AuditLog, acquireInstanceLock, openDatabase, type InstanceLock } from "@axis/audit";
 import { Journal, RUN_TRANSITIONS, WORKSPACE_TRANSITIONS } from "../src/index.js";
 import { STEPS, deterministicJournal, snapshot, type Ctx } from "./fixtures/script.js";
 
-/** A held lock for in-process recovery; the child fixtures and lock tests exercise the real one. */
-const LOCK = { path: ":test:", held: true, release() {} };
 const CHILD = fileURLToPath(new URL("./fixtures/child.js", import.meta.url));
 
 /** Spawn the fixture, wait for READY, SIGKILL it (after `delayMs`), and confirm it died by signal. */
@@ -64,6 +62,16 @@ function assertConsistent(db: ReturnType<typeof openDatabase>, journal: Journal,
   }
 }
 
+/** Run `fn` holding the real instance lock for the database's directory, then release it (a child may need it next). */
+function withLock<T>(dbPath: string, fn: (lock: InstanceLock) => T): T {
+  const lock = acquireInstanceLock(dirname(dbPath));
+  try {
+    return fn(lock);
+  } finally {
+    lock.release();
+  }
+}
+
 function fresh(): { dir: string; path: string; done: () => void } {
   const dir = mkdtempSync(join(tmpdir(), "axis-journal-"));
   return { dir, path: join(dir, "journal.db"), done: () => rmSync(dir, { recursive: true, force: true }) };
@@ -87,7 +95,7 @@ for (const mode of ["after-commit", "open-tx"] as const) {
         assertConsistent(db, journal, audit);
 
         const before = audit.head()?.seq ?? 0;
-        const report = journal.recover(LOCK);
+        const report = withLock(path, (lock) => journal.recover(lock));
         const stillRunning = journal.listRuns({ states: ["RUNNING"] });
         assert.deepEqual(stillRunning, []);
         assert.equal(journal.listWorkspaces().filter((w) => w.state === "CREATING").length, 0);
@@ -97,7 +105,7 @@ for (const mode of ["after-commit", "open-tx"] as const) {
         // Recovery converges: a second pass has nothing to do.
         // REMOVING workspaces are re-reported (the worktree manager still owes them work) but never re-audited.
         const afterFirst = audit.head()?.seq ?? 0;
-        const again = journal.recover(LOCK);
+        const again = withLock(path, (lock) => journal.recover(lock));
         assert.deepEqual([again.runsInterrupted, again.workspacesFailed], [[], []]);
         assert.deepEqual(again.workspacesNeedingReconcile, report.workspacesNeedingReconcile);
         assert.equal(audit.head()?.seq ?? 0, afterFirst, "a repeated recovery must not write audit events");
@@ -119,7 +127,7 @@ test("killed mid-recovery: the half-done recovery rolls back, a second recovery 
     assert.equal(audit.head(), null, "no audit event from the uncommitted recovery");
     assertConsistent(db, journal, audit);
 
-    const report = journal.recover(LOCK);
+    const report = withLock(path, (lock) => journal.recover(lock));
     assert.equal(report.runsInterrupted.length, 2);
     assert.equal(audit.list().length, 2);
     for (const e of audit.list()) {
@@ -157,7 +165,7 @@ test("recovery never deletes rows", async () => {
     const db = openDatabase(path);
     const { journal } = deterministicJournal(db);
     const before = journal.listRuns().length;
-    journal.recover(LOCK);
+    withLock(path, (lock) => journal.recover(lock));
     assert.equal(journal.listRuns().length, before);
     assert.equal(journal.listWorkspaces({ includeRemoved: true }).length, 1);
     db.close();
@@ -175,7 +183,7 @@ test("S11: SIGKILL at random instants while the child commits in a loop (includi
       const { journal, audit } = deterministicJournal(db);
       assertConsistent(db, journal, audit);
       // Every committed run is whole: its journal row and its history agree (checked above), and none is half-created.
-      journal.recover(LOCK);
+      withLock(path, (lock) => journal.recover(lock));
       assertConsistent(db, journal, audit);
       assert.equal(journal.listRuns({ states: ["RUNNING"] }).length, 0);
       db.close();

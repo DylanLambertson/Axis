@@ -5,7 +5,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, wr
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { AxisError, acquireInstanceLock, processStartTime } from "../src/index.js";
+import { AxisError, InstanceLock, acquireInstanceLock, openDatabase, processStartTime } from "../src/index.js";
 
 const dirOf = () => mkdtempSync(join(tmpdir(), "axis-lock-"));
 const conflict = (e: unknown) => e instanceof AxisError && e.code === "E_CONFLICT";
@@ -102,4 +102,66 @@ test("processStartTime reports a stable value for a live pid", () => {
   const a = processStartTime(process.pid);
   assert.ok(a === undefined || a.length > 0);
   assert.equal(processStartTime(process.pid), a);
+});
+
+test("an InstanceLock is a branded class: a lookalike is not one and the constructor is not open", () => {
+  const dir = dirOf();
+  try {
+    const lock = acquireInstanceLock(dir);
+    assert.equal(InstanceLock.is(lock), true);
+    for (const fake of [{ path: lock.path, held: true, release() {} }, Object.create(InstanceLock.prototype), null, undefined, "x"]) {
+      assert.equal(InstanceLock.is(fake), false);
+    }
+    assert.throws(() => new InstanceLock(Symbol("x"), lock.path, "n"), (e: unknown) => e instanceof AxisError && e.code === "E_INVALID_ARGUMENT");
+    lock.release();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("guards(db) is true for the database's own directory only, and false once released", () => {
+  const dir = dirOf();
+  const other = dirOf();
+  try {
+    const db = openDatabase(join(dir, "a.db"));
+    const lock = acquireInstanceLock(dir);
+    const unrelated = acquireInstanceLock(other);
+    assert.equal(lock.guards(db), true);
+    assert.equal(unrelated.guards(db), false);
+    assert.equal(unrelated.guards(openDatabase(":memory:")), true, "an in-memory database has no directory to guard");
+    lock.release();
+    assert.equal(lock.guards(db), false);
+    unrelated.release();
+    db.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(other, { recursive: true, force: true });
+  }
+});
+
+test("a takeover guard left by a crashed taker is cleared once old, and a live one defers the taker", () => {
+  const dir = dirOf();
+  try {
+    const first = acquireInstanceLock(dir, { pid: 999_999_001, isAlive: () => true, procStart: () => "s1" });
+    const guard = `${first.path}.takeover`;
+    writeFileSync(guard, "");
+    const deadHolder = { isAlive: (p: number) => p !== 999_999_001, procStart: () => "s1" };
+    // The lock is stale (holder dead) but a fresh guard means another taker is mid-takeover: this attempt must not delete the file.
+    assert.throws(() => acquireInstanceLock(dir, deadHolder), conflict);
+    assert.equal(existsSync(first.path), true);
+    // Once the guard is old it is cleared and the takeover proceeds.
+    const old = (Date.now() - 60_000) / 1000;
+    utimesSync(guard, old, old);
+    for (let i = 0; i < 3; i++) {
+      try {
+        acquireInstanceLock(dir, deadHolder).release();
+        break;
+      } catch (e) {
+        assert.ok(conflict(e));
+      }
+    }
+    assert.equal(existsSync(guard), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
