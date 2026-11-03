@@ -70,9 +70,9 @@ export function requireDiscardConfirmation(
   };
   const result = consumeConfirmation(token, { workspaceId, op, fingerprint: scan.fingerprint });
   if (result === 'ok') return { needsBackup: scan.dirty.length > 0 };
-  const why = { invalid: 'needs a verified confirmation', mismatch: 'confirmation does not match the current files', spent: 'confirmation was already used' }[result];
+  const why = { invalid: 'needs a verified confirmation', mismatch: 'confirmation does not match the current files', spent: 'confirmation was already used', expired: 'confirmation expired' }[result];
   throw new WorktreeError('E_CONFLICT', `${op}: ${why}`, {
     ...details,
-    ...(result === 'invalid' ? {} : { reason: result === 'spent' ? 'confirmation-spent' : 'confirmation-stale' }),
+    ...(result === 'invalid' ? {} : { reason: result === 'spent' ? 'confirmation-spent' : result === 'expired' ? 'confirmation-expired' : 'confirmation-stale' }),
   });
 }

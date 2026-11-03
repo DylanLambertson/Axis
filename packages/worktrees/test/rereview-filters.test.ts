@@ -192,4 +192,3 @@ describe('re-review B-2: scan-then-run TOCTOU', () => {
     assert.equal(existsSync(marker), false, `race won after ${tries} status() calls`);
   });
 });
-

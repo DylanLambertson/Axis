@@ -102,4 +102,3 @@ export async function everyBlobPath(fx: Fixture, m: WorktreeManager, a: { path: 
 export function fired(log: OpLog[]): string[] {
   return log.filter((l) => l.fired).map((l) => `${l.op} [${l.outcome}]`);
 }
-
