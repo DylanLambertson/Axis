@@ -2,10 +2,10 @@
 // Launch rules for a CLI agent run (ADR 0004 decision 8; threat model TRU-2, PTY-5, PTY-6).
 import { cliAgentSchema, type CliAgent } from "./agent.js";
 import { buildCliEnv, type EnvLike, type Removal } from "./env.js";
-import { checkExecutable, nodeFs, resolveExecutable, type ExecFs } from "./exec.js";
-import { hasDotDot, isInside, isNormalised, isPlainAbsolute } from "./paths.js";
+import { checkExecutable, isInsideAny, nodeFs, resolveExecutable, type ExecFs } from "./exec.js";
+import { hasDotDot, isNormalised, isPlainAbsolute } from "./paths.js";
 
-export type LaunchRefusal = "UNTRUSTED" | "BAD_WORKTREE" | "INVALID_AGENT" | "EXECUTABLE_NOT_FOUND";
+export type LaunchRefusal = "UNTRUSTED" | "BAD_WORKTREE" | "INVALID_AGENT" | "INVALID_ENV" | "EXECUTABLE_NOT_FOUND";
 
 export type LaunchResult =
   | {
@@ -27,6 +27,8 @@ export interface LaunchInput {
   /** Must be exactly true. Anything else, including undefined, refuses. */
   readonly trusted: boolean;
   readonly parentEnv: EnvLike;
+  /** Every managed worktree root, not only this run's: no executable may come from any of them. */
+  readonly managedWorktreeRoots?: readonly string[];
   readonly extensionVariableNames?: readonly string[];
   /** Defaults to process.platform; injectable for tests. */
   readonly platform?: NodeJS.Platform;
@@ -61,11 +63,16 @@ export function resolveLaunch(input: LaunchInput): LaunchResult {
     return { ok: false, code: "BAD_WORKTREE", message: "The worktree root must be a normalised absolute path." };
   }
 
+  if (input.parentEnv === null || typeof input.parentEnv !== "object" || Array.isArray(input.parentEnv)) {
+    return { ok: false, code: "INVALID_ENV", message: "The parent environment must be an object of string values." };
+  }
+
+  const excludeDirs = [input.worktreeRoot, ...(input.managedWorktreeRoots ?? []).filter((r) => typeof r === "string" && isPlainAbsolute(r, platform))];
   const bare = !isPlainAbsolute(command0, platform);
   let file: string | undefined;
   if (bare) {
-    file = resolveExecutable(command0, input.parentEnv, platform, fs, { excludeDirs: [input.worktreeRoot] });
-  } else if (!isInside(command0, input.worktreeRoot, platform) && fs.isExecutableFile(command0)) {
+    file = resolveExecutable(command0, input.parentEnv, platform, fs, { excludeDirs });
+  } else if (!isInsideAny(command0, excludeDirs, platform, fs) && fs.isExecutableFile(command0)) {
     file = command0;
   }
   if (file === undefined) {

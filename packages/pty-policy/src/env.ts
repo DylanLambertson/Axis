@@ -48,6 +48,15 @@ export interface PlainTerminalEnvOptions extends CliEnvOptions {
 }
 
 type Raw = Readonly<Record<string, unknown>>;
+
+const BAD_ENV: Removal = { name: "(environment)", reason: "invalid" };
+
+/** A source that is not a plain object (null, a primitive, an array) is treated as empty and reported, never thrown on. */
+function plain(source: unknown, required = false): { raw: Raw; bad: Removal[] } {
+  if (source === undefined && !required) return { raw: {}, bad: [] };
+  if (source === undefined || source === null || typeof source !== "object" || Array.isArray(source)) return { raw: {}, bad: [BAD_ENV] };
+  return { raw: source as Raw, bad: [] };
+}
 type Merged = Map<string, [string, unknown]>;
 
 function keyOf(name: string, platform: NodeJS.Platform): string {
@@ -119,18 +128,20 @@ function restoreNodeOptions(env: Record<string, string>, source: Raw, platform: 
 /** PTY-5 for a CLI agent run. Shell integration is never available here: no nonce can be supplied. */
 export function buildCliEnv(parentEnv: EnvLike, opts: CliEnvOptions = {}): BuiltEnv {
   const platform = opts.platform ?? process.platform;
-  const { env, removed } = sanitize(mergeSources([parentEnv], platform), opts, platform);
-  restoreNodeOptions(env, parentEnv, platform);
-  return { env, removed: [...removed, ...caseDuplicates([parentEnv], platform)] };
+  const { raw: parent, bad } = plain(parentEnv, true);
+  const { env, removed } = sanitize(mergeSources([parent], platform), opts, platform);
+  restoreNodeOptions(env, parent, platform);
+  return { env, removed: [...bad, ...removed, ...caseDuplicates([parent], platform)] };
 }
 
 /** PTY-5 plus SI-ENV for a plain workspace terminal. SI-ENV is the only thing set after the deny-list. */
 export function buildPlainTerminalEnv(parentEnv: EnvLike, opts: PlainTerminalEnvOptions = {}): BuiltEnv {
   const platform = opts.platform ?? process.platform;
-  const userEnv = opts.userEnv ?? {};
-  const { env, removed } = sanitize(mergeSources([parentEnv, userEnv], platform), opts, platform);
-  restoreNodeOptions(env, parentEnv, platform);
-  const si: Raw = opts.shellIntegration ?? {};
+  const { raw: parent, bad: badParent } = plain(parentEnv, true);
+  const { raw: userEnv, bad: badUser } = plain(opts.userEnv);
+  const { raw: si, bad: badSi } = plain(opts.shellIntegration);
+  const { env, removed } = sanitize(mergeSources([parent, userEnv], platform), opts, platform);
+  restoreNodeOptions(env, parent, platform);
   const extra: Removal[] = [];
   for (const name of Object.keys(si)) {
     const value = si[name];
@@ -140,7 +151,7 @@ export function buildPlainTerminalEnv(parentEnv: EnvLike, opts: PlainTerminalEnv
     else if (!SI_ENV_NAMES.has(canonical(name))) extra.push({ name, reason: "si-env-not-allowed" });
     else env[canonical(name)] = value;
   }
-  return { env, removed: [...removed, ...caseDuplicates([parentEnv, userEnv], platform), ...extra] };
+  return { env, removed: [...badParent, ...badUser, ...badSi, ...removed, ...caseDuplicates([parent, userEnv], platform), ...extra] };
 }
 
 function caseDuplicates(sources: readonly Raw[], platform: NodeJS.Platform): Removal[] {
@@ -171,9 +182,9 @@ const GIT_ALLOW_WIN32 = [
 export function buildGitEnv(parentEnv: EnvLike, opts: { readonly platform?: NodeJS.Platform } = {}): BuiltEnv {
   const platform = opts.platform ?? process.platform;
   const allow = new Set(platform === "win32" ? [...GIT_ALLOW, ...GIT_ALLOW_WIN32] : GIT_ALLOW);
-  const source: Raw = parentEnv;
+  const { raw: source, bad } = plain(parentEnv, true);
   const env: Record<string, string> = {};
-  const removed: Removal[] = [];
+  const removed: Removal[] = [...bad];
   const seen = new Set<string>();
   for (const name of Object.keys(source)) {
     const value = source[name];

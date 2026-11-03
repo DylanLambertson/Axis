@@ -121,3 +121,10 @@ test("the platform defaults to process.platform", () => {
   const r = resolveLaunch({ ...base, platform: undefined as unknown as NodeJS.Platform });
   assert.ok(r.ok || r.code === "EXECUTABLE_NOT_FOUND" || r.code === "INVALID_AGENT");
 });
+
+test("N4: a null or non-object parentEnv is an invalid result, never a throw", () => {
+  for (const parentEnv of [null, undefined, 5, "PATH=/b", ["PATH=/b"]] as unknown[]) {
+    const r = resolveLaunch({ ...base, parentEnv: parentEnv as never });
+    assert.ok(!r.ok && r.code === "INVALID_ENV", String(parentEnv));
+  }
+});

@@ -26,13 +26,17 @@ export function isNormalised(p: string, platform: NodeJS.Platform): boolean {
   return trim(norm) === trim(p);
 }
 
+/** Default file systems on win32 and darwin ignore case, so `<root>/WT` and `<root>/wt` are the same directory. */
+const caseInsensitive = (platform: NodeJS.Platform): boolean => platform === "win32" || platform === "darwin";
+
 function fold(p: string, platform: NodeJS.Platform): string {
-  const n = platform === "win32" ? win32.normalize(p).replace(/\//g, "\\").toLowerCase() : posix.normalize(p);
+  let n = platform === "win32" ? win32.normalize(p).replace(/\//g, "\\") : posix.normalize(p);
+  if (caseInsensitive(platform)) n = n.toLowerCase();
   const sep = platform === "win32" ? "\\" : "/";
   return n.endsWith(sep) ? n : n + sep;
 }
 
-/** True when `p` is `dir` or lies below it. Case-insensitive on win32. */
+/** True when `p` is `dir` or lies below it. Case-insensitive on win32 and darwin. */
 export function isInside(p: string, dir: string, platform: NodeJS.Platform): boolean {
   return fold(p, platform).startsWith(fold(dir, platform));
 }

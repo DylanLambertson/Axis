@@ -240,3 +240,17 @@ test("GIT-ENV-1 drops prototype-polluting keys", () => {
   assert.deepEqual(Object.keys(env).sort(), ["GIT_TERMINAL_PROMPT", "PATH"]);
   assert.deepEqual(removed, [{ name: "__proto__", reason: "unsafe-key" }]);
 });
+
+test("N4: a null or non-object source yields an empty environment and an invalid removal, never a throw", () => {
+  for (const bad of [null, undefined, 5, "x", ["a"]] as unknown[]) {
+    for (const build of [
+      () => buildCliEnv(bad as never, { platform: "linux" }),
+      () => buildPlainTerminalEnv(bad as never, { platform: "linux" }),
+      () => buildGitEnv(bad as never, { platform: "linux" }),
+    ]) {
+      const r = build();
+      assert.ok(r.removed.some((x) => x.reason === "invalid"), String(bad));
+      assert.deepEqual(Object.keys(r.env).filter((k) => k !== "GIT_TERMINAL_PROMPT"), []);
+    }
+  }
+});
