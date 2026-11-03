@@ -2,7 +2,7 @@
 // Regression tests for the re-review of the audit package (NEW-A to NEW-J, S4, S5, S10).
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { AuditLog, AxisError, Redactor, canonicalize, openDatabase } from "../src/index.js";
+import { AuditLog, AxisError, MAX_STRING_CHARS, Redactor, canonicalize, isWellFormedString, openDatabase } from "../src/index.js";
 
 // Low-entropy, runtime-assembled stand-ins; none is a credential.
 const PW = "Tr0ub4" + "dor-and-3";
@@ -371,4 +371,58 @@ test("truncation is deterministic: the same oversized payload gives the same sto
   const r = new Redactor();
   assert.equal(JSON.stringify(r.redactValue(big())), JSON.stringify(r.redactValue(big())));
   assert.equal(r.redactString("a".repeat(40_000)), r.redactString("a".repeat(40_000)));
+});
+
+// ---- D2-B1: truncation must be linear (the trailing-token strip was O(run squared)) ----
+
+test("D2-B1: one string with a long token run before the cut redacts in milliseconds", () => {
+  const r = new Redactor();
+  for (const input of [
+    "b".repeat(MAX_STRING_CHARS - 1) + ":" + "x",
+    "b".repeat(MAX_STRING_CHARS - 1) + "\n" + "x".repeat(100_000),
+    "ab+/=.-_".repeat(4000) + " " + "y".repeat(50_000),
+    "=".repeat(1_000_000) + "x",
+  ]) {
+    const t0 = performance.now();
+    const out = r.redactString(input);
+    const ms = performance.now() - t0;
+    assert.ok(ms < 250, `took ${ms.toFixed(0)} ms`);
+    assert.ok(out.length <= MAX_STRING_CHARS + 32);
+  }
+});
+
+test("D2-B1: 64 such strings in one payload append in under a second (it took 20 s)", () => {
+  const log = new AuditLog(openDatabase(":memory:"));
+  const payload: Record<string, string> = {};
+  for (let i = 0; i < 64; i++) payload[`field${i}`] = "b".repeat(MAX_STRING_CHARS - 1) + ":" + "x";
+  const t0 = performance.now();
+  log.append(ev(payload));
+  const ms = performance.now() - t0;
+  assert.ok(ms < 1000, `append took ${ms.toFixed(0)} ms`);
+  const t1 = performance.now();
+  new Redactor().redactValue(Array.from({ length: 64 }, () => "b".repeat(MAX_STRING_CHARS - 1) + ":" + "x"));
+  assert.ok(performance.now() - t1 < 1000);
+});
+
+test("D2-B1: the cut still drops a partial token and records the original length", () => {
+  const r = new Redactor();
+  const out = r.redactString("word ".repeat(4000) + "ghp_" + "a1B2c3".repeat(7) + " tail".repeat(10_000));
+  assert.match(out, /\[TRUNCATED:\d+\]$/);
+  assert.ok(!out.includes("ghp_a1B2c3"));
+  const exact = r.redactString("a ".repeat(MAX_STRING_CHARS / 2 - 1) + "tokentoken" + "z".repeat(MAX_STRING_CHARS));
+  assert.ok(!exact.includes("tokentoken") || exact.includes("TRUNCATED"));
+});
+
+test("D2-B1: the cut comes before any other work, so a huge string of lone surrogates costs the same as a small one", () => {
+  const r = new Redactor();
+  const huge = "\udc00".repeat(8_000_000);
+  const t0 = performance.now();
+  const out = r.redactString(huge);
+  assert.ok(performance.now() - t0 < 250, "surrogate repair ran on the whole input");
+  assert.ok(out.length <= MAX_STRING_CHARS + 32);
+  assert.ok(isWellFormedString(out));
+  assert.match(out, /\[TRUNCATED:8000000\]$/);
+  // A pair split by the cut is dropped, never left as a lone half.
+  const split = "a".repeat(MAX_STRING_CHARS - 1) + "😀" + "b".repeat(100);
+  assert.ok(isWellFormedString(r.redactString(split)));
 });

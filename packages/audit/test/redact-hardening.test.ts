@@ -67,6 +67,11 @@ const ADVERSARIAL: Array<[string, string]> = [
   ["spaces", fill(" ")],
   ["newlines", fill("\n")],
   ["quotes", fill("\"'")],
+  // a long token run with ONE non-token character just before the 16 KiB cut: the trailing-token strip was O(run squared)
+  ["token-run-colon", "b".repeat(MAX_STRING_CHARS - 1) + ":" + "x"],
+  ["token-run-newline", "b".repeat(MAX_STRING_CHARS - 1) + "\n" + "x".repeat(MAX_STRING_CHARS)],
+  ["token-run-colon-repeat", fill("b".repeat(MAX_STRING_CHARS - 1) + ":")],
+  ["equals-run", fill("=")],
   // the shapes of the colon-separated and quoted environment-secret rule
   ["pwd='", fill("pwd='")],
   ["password: ", fill("password: ")],

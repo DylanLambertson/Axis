@@ -237,20 +237,43 @@ function summarizeBinary(view: ArrayBufferView | ArrayBuffer): JsonValue {
   };
 }
 
+/** A character that can be part of a token (letters, digits and `_ + / = . -`). */
+function isTokenChar(c: number): boolean {
+  return (
+    (c >= 97 && c <= 122) || (c >= 65 && c <= 90) || (c >= 48 && c <= 57) ||
+    c === 95 || c === 43 || c === 47 || c === 61 || c === 46 || c === 45
+  );
+}
+
+/**
+ * `s` without its trailing run of token characters. A backward loop, not a regex: `/[...]+$/` is O(run squared)
+ * when a long run is followed by one non-token character, and this runs on attacker-sized strings.
+ */
+function stripTrailingToken(s: string): string {
+  let i = s.length;
+  while (i > 0 && isTokenChar(s.charCodeAt(i - 1))) i--;
+  return s.slice(0, i);
+}
+
 /** Cut `s` to `max` characters, dropping a partial token at the cut (it could be a secret prefix). */
 function truncate(s: string, max: number): string {
   if (s.length <= max) return s;
   let cut = s.slice(0, max);
   const last = cut.charCodeAt(cut.length - 1);
   if (last >= 0xd800 && last <= 0xdbff) cut = cut.slice(0, -1);
-  cut = cut.replace(/[A-Za-z0-9_+/=.-]+$/, "");
-  return `${cut}[TRUNCATED:${s.length}]`;
+  return `${stripTrailingToken(cut)}[TRUNCATED:${s.length}]`;
+}
+
+function stripTrailingEquals(s: string): string {
+  let i = s.length;
+  while (i > 0 && s.charCodeAt(i - 1) === 61) i--;
+  return s.slice(0, i);
 }
 
 function base64Variants(raw: Buffer): string[] {
   const std = raw.toString("base64");
   const url = raw.toString("base64url");
-  return [std, std.replace(/=+$/, ""), url, url.replace(/=+$/, "")];
+  return [std, stripTrailingEquals(std), url, stripTrailingEquals(url)];
 }
 
 /**
@@ -307,7 +330,8 @@ export class Redactor {
   }
 
   redactString(input: string): string {
-    const bounded = truncate(wellFormed(input), MAX_STRING_CHARS);
+    // Cut first, so every later step (surrogate repair included) costs at most MAX_STRING_CHARS whatever the input size.
+    const bounded = wellFormed(truncate(input, MAX_STRING_CHARS));
     let out = this.#scan(bounded);
     // Encoded secrets: decode base64-looking runs and re-scan them. A run can start anywhere inside an
     // encoded value (a path segment or a prefix such as `x_` shifts it), so decode at all four offsets.
