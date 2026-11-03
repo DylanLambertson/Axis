@@ -117,7 +117,7 @@ test("PSH-1 warn mode: findings need confirmation; names only", async () => {
   assert.deepEqual(plan.findings, [{ rule: "aws-key", path: ".env", line: 3, commit: COMMIT }]);
   assert.equal(await code(executePush(deps, input)), "E_APPROVAL_REQUIRED");
   assert.equal(r.ptyCalls().length, 0);
-  await executePush(deps, input, { confirmed: true });
+  await executePush(deps, input, { confirmed: true, confirmedPlan: { tip: plan.tip, digest: plan.digest } });
   assert.equal(r.ptyCalls().length, 1);
 });
 
@@ -275,4 +275,28 @@ test("N-4: push stderr is stripped of terminal control sequences and credentials
     assert.doesNotMatch(e.message, /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/);
     assert.doesNotMatch(e.message, /tok@/);
   }
+});
+
+test("RR-1: confirmed needs the confirmed plan; a changed tip or digest is E_CONFLICT plan_changed; the plan as shown pushes", async () => {
+  const scanner = async () => [{ rule: "aws-key", path: ".env", line: 1 }];
+  const deps = (r: FakeRunner) => makeDeps(r, { scanner, scanMode: "warn" });
+  const plan = await planPush(deps(new FakeRunner(healthy())), input);
+  assert.match(plan.digest, /^[0-9a-f]{64}$/);
+  const r0 = new FakeRunner(healthy());
+  assert.equal(await code(executePush(deps(r0), input, { confirmed: true })), "E_APPROVAL_REQUIRED", "confirmed alone is not enough");
+  for (const wrong of [{ tip: "f".repeat(40), digest: plan.digest }, { tip: plan.tip, digest: "0".repeat(64) }]) {
+    const r = new FakeRunner(healthy());
+    try {
+      await executePush(deps(r), input, { confirmed: true, confirmedPlan: wrong });
+      assert.fail("expected a refusal");
+    } catch (e) {
+      assert.ok(e instanceof GitOpsError);
+      assert.equal(e.code, "E_CONFLICT");
+      assert.deepEqual(e.details, { reason: "plan_changed" });
+      assert.equal(r.ptyCalls().length, 0);
+    }
+  }
+  const more = new FakeRunner(healthy());
+  const changed = { ...deps(more), scanner: async () => [{ rule: "aws-key", path: ".env", line: 1 }, { rule: "private-key" }] };
+  assert.equal(await code(executePush(changed, input, { confirmed: true, confirmedPlan: { tip: plan.tip, digest: plan.digest } })), "E_CONFLICT", "new findings change the digest");
 });

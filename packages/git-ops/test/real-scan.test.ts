@@ -200,7 +200,7 @@ test("S-2: a NUL byte or binary file is refused in refuse mode unless the path i
   const plan = await planPush(warn.deps, input(warn, { allowedBinaryPaths: ["key.p12"] }));
   assert.equal(plan.requiresConfirmation, true, "warn mode: any binary path needs confirmation, allow-listed or not");
   assert.match(plan.reasons.join(), /key\.p12/);
-  await executePush(warn.deps, input(warn), { confirmed: true });
+  await executePush(warn.deps, input(warn), { confirmed: true, confirmedPlan: { tip: plan.tip, digest: plan.digest } });
 });
 
 test("S-8: padding a push with 8 MiB of filler before a secret does not hide it, even in refuse mode", async () => {
@@ -236,4 +236,28 @@ test("S-3: a commit made after the scan is not pushed: the branch moving is refu
   await executePush(deps, input(b));
   const pushed = execFileSync("git", ["--git-dir", b.remote, "rev-parse", "refs/heads/axis/feat"], { encoding: "utf8" }).trim();
   assert.equal(pushed, scannedTip, "pushed an unscanned commit");
+});
+
+test("RR-1: a confirmation is bound to the plan the user saw; findings added after planPush are not pushed under it", async () => {
+  const keyed = async (d: string) => (d.includes(["AK", "IA"].join("")) ? [{ rule: "aws-key" }] : []);
+  const f = fixture({ scanner: keyed, scanMode: "warn" });
+  const input = { worktree: f.wt, remote: "origin", branch: "axis/feat", baseSha: baseOf(f) };
+  writeFileSync(join(f.wt.workTree, "fixture.txt"), `AWS=${["AK", "IA", "EXAMPLEEXAMPLE12"].join("")}\n`); // a known test key the user accepts
+  f.git("add", "-A");
+  f.git("commit", "-q", "-m", "test fixture");
+  const plan = await planPush(f.deps, input);
+  assert.equal(plan.requiresConfirmation, true);
+  const confirmedPlan = { tip: plan.tip, digest: plan.digest };
+  // Before "push anyway" is clicked, a leftover process adds a real key.
+  writeFileSync(join(f.wt.workTree, ".env"), `AWS=${["AK", "IA", "REALREALREAL1234"].join("")}\n`);
+  f.git("add", "-A");
+  f.git("commit", "-q", "-m", "late");
+  const e = await executePush(f.deps, input, { confirmed: true, confirmedPlan }).then(() => undefined, (x: unknown) => x) as { code?: string; details?: unknown } | undefined;
+  assert.equal(e?.code, "E_CONFLICT");
+  assert.deepEqual(e?.details, { reason: "plan_changed" });
+  assert.throws(() => execFileSync("git", ["--git-dir", f.remote, "rev-parse", "refs/heads/axis/feat"], { stdio: "ignore" }), "nothing was pushed");
+  // The fresh plan, confirmed as shown, does push.
+  const fresh = await planPush(f.deps, input);
+  await executePush(f.deps, input, { confirmed: true, confirmedPlan: { tip: fresh.tip, digest: fresh.digest } });
+  assert.equal(execFileSync("git", ["--git-dir", f.remote, "rev-parse", "refs/heads/axis/feat"], { encoding: "utf8" }).trim(), fresh.tip);
 });

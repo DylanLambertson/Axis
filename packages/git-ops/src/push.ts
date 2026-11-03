@@ -1,5 +1,6 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 // Axis push (threat model GIT-3, GIT-SNAP-1 re-take, PSH-1, GIT-7; gate 1a/L24). Explicit refspec only.
+import { createHash } from "node:crypto";
 import { OBJECT_ID, REMOTE_NAME, branchFor, checkWorktree, daemonGitFor, platformOf, prefix, type DaemonGit } from "./args.js";
 import { findOverride, overrideMessage, withNoPrompt } from "./env.js";
 import { assertPushUrl, protocolAllowList } from "./pushUrl.js";
@@ -40,6 +41,26 @@ export interface PushPlan {
   readonly requiresConfirmation: boolean;
   /** Why confirmation is required: matches, binary content. Never the matched text. */
   readonly reasons: readonly string[];
+  /** SHA-256 over the tip, the findings and the reasons. A confirmation is bound to it (see `confirmedPlan`). */
+  readonly digest: string;
+}
+
+/** What the user was shown and confirmed: handed back to executePush, which refuses if the push changed since. */
+export interface ConfirmedPlan {
+  readonly tip: string;
+  readonly digest: string;
+}
+
+export interface ExecutePushOptions {
+  readonly confirmed?: boolean;
+  /** Required with `confirmed` when the plan needs confirmation: the `tip` and `digest` of the plan the user saw. */
+  readonly confirmedPlan?: ConfirmedPlan;
+}
+
+/** A digest of everything a confirmation covers. Findings carry names, paths, lines and commits, never matched text. */
+export function planDigest(tip: string, findings: readonly SecretFinding[], reasons: readonly string[]): string {
+  const f = findings.map((x) => [x.rule, x.path ?? "", x.line ?? 0, x.commit ?? ""]);
+  return createHash("sha256").update(JSON.stringify({ tip, findings: f, reasons })).digest("hex");
 }
 
 /** The pinned source: the scanned tip, by object id, so a commit made after the scan cannot ride along. */
@@ -130,7 +151,7 @@ async function check(deps: GitOpsDeps, input: PushInput): Promise<{ plan: PushPl
     "--", input.remote, refspec,
   ];
   const command: GitRunRequest = { argv, cwd: input.worktree.workTree, env: withNoPrompt(deps.env.pty), context: "pty" };
-  return { plan: { worktree: input.worktree, remote: input.remote, branch, tip: tipSha, refspec, command, findings, requiresConfirmation: reasons.length > 0, reasons }, git };
+  return { plan: { worktree: input.worktree, remote: input.remote, branch, tip: tipSha, refspec, command, findings, requiresConfirmation: reasons.length > 0, reasons, digest: planDigest(tipSha, findings, reasons) }, git };
 }
 
 /** Validates everything and returns the exact push command and any secret findings. */
@@ -138,14 +159,22 @@ export async function planPush(deps: GitOpsDeps, input: PushInput): Promise<Push
   return mapUnexpected(async () => (await check(deps, input)).plan);
 }
 
-/** Re-validates immediately before pushing. A plan with findings needs `confirmed: true`. */
-export function executePush(deps: GitOpsDeps, input: PushInput, opts: { readonly confirmed?: boolean } = {}): Promise<void> {
+/**
+ * Re-validates immediately before pushing. A plan that needs confirmation needs `confirmed: true` and the
+ * `confirmedPlan` the user saw: if the tip or the scan result differs now, nothing is pushed (E_CONFLICT, reason
+ * "plan_changed") and the user must be shown the new plan.
+ */
+export function executePush(deps: GitOpsDeps, input: PushInput, opts: ExecutePushOptions = {}): Promise<void> {
   return mapUnexpected(() => runPush(deps, input, opts));
 }
 
-async function runPush(deps: GitOpsDeps, input: PushInput, opts: { readonly confirmed?: boolean }): Promise<void> {
+async function runPush(deps: GitOpsDeps, input: PushInput, opts: ExecutePushOptions): Promise<void> {
   const { plan, git } = await check(deps, input);
-  if (plan.requiresConfirmation && opts.confirmed !== true) {
+  const seen = opts.confirmedPlan;
+  if (seen !== undefined && (seen.tip !== plan.tip || seen.digest !== plan.digest)) {
+    throw new GitOpsError("E_CONFLICT", "the outgoing changes are not the ones that were confirmed; review the new plan", { reason: "plan_changed" });
+  }
+  if (plan.requiresConfirmation && (opts.confirmed !== true || seen === undefined)) {
     throw new GitOpsError("E_APPROVAL_REQUIRED", `confirm to push: ${plan.reasons.join("; ")}`);
   }
   await confirmTip(git, plan.branch, plan.tip);

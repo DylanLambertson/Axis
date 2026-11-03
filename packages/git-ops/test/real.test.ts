@@ -145,7 +145,7 @@ test("push: drift refuses before anything is pushed; the secret scanner sees the
   assert.match(diff, /\+SECRET=abc/);
   assert.equal(plan.requiresConfirmation, true);
   await refusal(executePush(f.deps, { worktree: f.wt, remote: "origin", branch: "axis/feat", baseSha: baseOf(f) }));
-  await executePush(f.deps, { worktree: f.wt, remote: "origin", branch: "axis/feat", baseSha: baseOf(f) }, { confirmed: true });
+  await executePush(f.deps, { worktree: f.wt, remote: "origin", branch: "axis/feat", baseSha: baseOf(f) }, { confirmed: true, confirmedPlan: { tip: plan.tip, digest: plan.digest } });
 });
 
 test("a filter driver in the config is neutralised by the daemon prefix, and the fixture is not vacuous", async () => {
