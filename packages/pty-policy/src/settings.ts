@@ -32,7 +32,7 @@ function ignoredScopeWarnings(setting: string, v: ValuesByScope): SettingWarning
       setting,
       scope,
       message: known
-        ? `Ignored ${setting} from ${scope} settings: it can only be set at application or machine scope.`
+        ? `Ignored ${setting} from ${scope} settings: it is only read from the default, user, application or machine scope; workspace and folder scopes are ignored.`
         : `Ignored ${setting} from unknown scope '${scope}'.`,
     });
   }

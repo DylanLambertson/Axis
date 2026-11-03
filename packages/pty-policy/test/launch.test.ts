@@ -51,7 +51,7 @@ test("Windows: UNC, device and root-relative executables are refused (proof from
 });
 
 test("Windows: .bat and .cmd are refused in every spelling, with a clear reason", () => {
-  for (const c of ["C:\\t\\a.cmd", "C:\\t\\a.BAT", "C:\\t\\a.cmd.", "C:\\t\\a.cmd  ", "C:\\t\\a.Cmd. .", "claude.cmd", "x.bat"]) {
+  for (const c of ["C:\\t\\a.cmd", "C:\\t\\a.BAT", "C:\\t\\a.cmd.", "C:\\t\\a.cmd  ", "C:\\t\\a.Cmd. .", "examplecli.cmd", "x.bat"]) {
     const r = resolveLaunch({ ...base, platform: "win32", worktreeRoot: "C:\\w\\wt", agent: { ...agent, command: [c], args: ["x&calc", "%PATH%", "\"&calc"] }, parentEnv: {} });
     assert.ok(!r.ok && r.code === "INVALID_AGENT", c);
     if (!r.ok) assert.match(r.message, /\.exe/);

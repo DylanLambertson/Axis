@@ -164,10 +164,10 @@ test("envPassthrough cannot re-add a denied name", () => {
 });
 
 test("secret-looking names are kept by default and stripped on request, passthrough exempts", () => {
-  const parent = { ANTHROPIC_API_KEY: "k", GITHUB_TOKEN: "t", DB_PASSWORD: "p", MONKEY: "m", PATH: "/b" };
+  const parent = { EXAMPLE_API_KEY: "k", GITHUB_TOKEN: "t", DB_PASSWORD: "p", MONKEY: "m", PATH: "/b" };
   assert.deepEqual(Object.keys(buildCliEnv(parent, { platform: "linux" }).env).sort(), Object.keys(parent).sort());
-  const r = buildCliEnv(parent, { platform: "linux", stripSecretNames: true, envPassthrough: ["ANTHROPIC_API_KEY"] });
-  assert.deepEqual(Object.keys(r.env).sort(), ["ANTHROPIC_API_KEY", "MONKEY", "PATH"]);
+  const r = buildCliEnv(parent, { platform: "linux", stripSecretNames: true, envPassthrough: ["EXAMPLE_API_KEY"] });
+  assert.deepEqual(Object.keys(r.env).sort(), ["EXAMPLE_API_KEY", "MONKEY", "PATH"]);
   assert.deepEqual(r.removed.map((x) => x.name).sort(), ["DB_PASSWORD", "GITHUB_TOKEN"]);
 });
 

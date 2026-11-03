@@ -12,8 +12,9 @@ const BARE = /^[A-Za-z0-9._+-]+$/;
 
 /**
  * command[0]: a bare executable name resolved on PATH, or an absolute path (nvm, asdf and similar
- * installs). It comes only from application or machine scope. A relative path with a separator,
- * shell metacharacters, control characters, '..' segments and an empty value are rejected.
+ * installs). It comes only from the default, user, application or machine scope; workspace and folder scopes are
+ * ignored. A relative path with a separator, shell metacharacters, control characters, '..' segments and an empty
+ * value are rejected.
  */
 export function isAcceptableExecutable(c: string): boolean {
   if (c.length === 0 || c.length > 1024 || SHELL_META.test(c)) return false;
