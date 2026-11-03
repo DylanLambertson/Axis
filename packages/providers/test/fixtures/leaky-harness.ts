@@ -28,6 +28,8 @@ function reply(s: ContractScenario): MockReply {
       return { kind: "hang" };
     case "malformed":
       return { kind: "malformed" };
+    case "redirect":
+      return { kind: "error", code: "invalid_response" };
   }
 }
 
@@ -62,6 +64,7 @@ runProviderContractSuite({
     const mock = createMockProvider({
       replies: [reply(scenario)],
       ...(scenario.kind === "error" && scenario.code === "authentication" ? { connectionError: "authentication" as const } : {}),
+      ...(scenario.kind === "redirect" ? { connectionError: "invalid_response" as const } : {}),
     });
     let last: { model: string; maxOutputTokens: number; system?: string; stopSequences?: readonly string[] } | undefined;
     // error-props also "accepts" any providerOptions by stripping them.
@@ -104,6 +107,7 @@ runProviderContractSuite({
       requestCount: () => mock.requests.length,
       openStreams: () => mock.openStreams,
       lastRequest: () => last,
+      forwardedRequests: () => [],
     };
   },
 });

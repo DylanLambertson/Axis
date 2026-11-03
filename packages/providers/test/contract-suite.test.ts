@@ -7,13 +7,24 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-function failedTests(leak: string): Set<string> {
-  const fixture = fileURLToPath(new URL("./fixtures/leaky-harness.js", import.meta.url));
+interface ChildRun {
+  readonly failed: Set<string>;
+  readonly passed: number;
+}
+
+function runFixture(file: string, vars: Record<string, string>): ChildRun {
+  const fixture = fileURLToPath(new URL(`./fixtures/${file}`, import.meta.url));
   // Drop NODE_TEST_CONTEXT, or the child reports to this runner instead of printing TAP.
-  const env: NodeJS.ProcessEnv = { ...process.env, LEAK: leak };
+  const env: NodeJS.ProcessEnv = { ...process.env, ...vars };
   delete env["NODE_TEST_CONTEXT"];
-  const r = spawnSync(process.execPath, ["--test", "--test-reporter=tap", fixture], { encoding: "utf8", timeout: 60_000, env });
-  return new Set([...r.stdout.matchAll(/^\s*not ok \d+ - (.+)$/gm)].map((m) => m[1]?.trim() ?? ""));
+  const r = spawnSync(process.execPath, ["--test", "--test-reporter=tap", fixture], { encoding: "utf8", timeout: 120_000, env });
+  const failed = new Set([...r.stdout.matchAll(/^\s*not ok \d+ - (.+)$/gm)].map((m) => m[1]?.trim() ?? ""));
+  const passed = Number(/^# pass (\d+)$/m.exec(r.stdout)?.[1] ?? "0");
+  return { failed, passed };
+}
+
+function failedTests(leak: string): Set<string> {
+  return runFixture("leaky-harness.js", { LEAK: leak }).failed;
 }
 
 const UNRELATED = "generate: returns what collectStream builds from stream";
@@ -43,5 +54,24 @@ for (const [leak, mustFail] of VARIANTS) {
     for (const name of mustFail) assert.ok(failed.has(name), `the suite should fail: ${name}`);
     if (leak !== "error-props") assert.ok(!failed.has(UNRELATED), "unrelated checks still pass");
     if (leak !== "error-props") assert.ok(!failed.has("getCapabilities returns a well-formed report for the model"), "the fixture is otherwise well-behaved");
+  });
+}
+
+test("redirect: a well-behaved HTTP adapter that refuses redirects passes the whole suite", () => {
+  const r = runFixture("http-harness.js", { FOLLOW: "0" });
+  assert.deepEqual([...r.failed], []);
+  assert.ok(r.passed > 50, `only ${r.passed} checks ran`);
+});
+
+for (const mode of ["1", "fail"]) {
+  test(`redirect: the suite fails an adapter that follows redirects (FOLLOW=${mode})`, () => {
+    const { failed } = runFixture("http-harness.js", { FOLLOW: mode });
+    for (const status of [301, 302, 303, 307, 308]) {
+      for (const call of ["generate", "stream", "validateConnection"]) {
+        const name = `${call}: a ${status} redirect is not followed and the credential stays on the origin`;
+        assert.ok(failed.has(name), `the suite should fail: ${name}`);
+      }
+    }
+    assert.ok(!failed.has("stream: a text reply follows the event grammar"), "unrelated checks still pass");
   });
 }
