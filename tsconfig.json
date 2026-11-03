@@ -1,4 +1,4 @@
 {
   "files": [],
-  "references": [{ "path": "packages/protocol" }, { "path": "packages/pty-policy" }]
+  "references": [{ "path": "packages/protocol" }, { "path": "packages/pty-policy" }, { "path": "packages/challenge" }]
 }
