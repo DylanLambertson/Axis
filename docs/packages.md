@@ -7,8 +7,6 @@ Axis-owned TypeScript that does not need Code OSS services lives in `packages/*`
 | `@axis/protocol` | Versioned envelope, structured errors, contracts such as `axis.worktrees/1`, and the challenge shape. Zod schemas and inferred types. No Node imports. |
 | `@axis/pty-policy` | Pure logic for terminal environments and CLI agent launch: the PTY-5 deny-list (`buildCliEnv`), SI-ENV (`buildPlainTerminalEnv`), GIT-ENV-1 (`buildGitEnv`), the `axis.cliAgents` schema, setting-scope resolution and `resolveLaunch`. Axis resolves launch executables itself (PATH only, never the cwd or worktree). Imports `node:*` and `zod` only; no `process.env` access. |
 | `@axis/challenge` | Daemon-side approval challenges for tier 3-5 destructive operations: issue, user resolve, native confirmation, single-use `consume`. Node `crypto` only. |
-| `@axis/daemon` | Transport-agnostic daemon core: connections, handshake, dispatch, tiers, idempotency, cancel and timeout, backpressure, error sanitisation. Every service (identity, policy, approvals, idempotency store, audit sink, handlers) is injected. No Electron. |
-| `@axis/daemon` | Transport-agnostic daemon core: connections, handshake, dispatch, tiers, idempotency, cancel and timeout, backpressure, error sanitisation. Every service (identity, policy, approvals, idempotency store, audit sink, handlers) is injected. No Electron. `MemoryIdempotencyStore` is for tests and dev wiring only (it forgets on restart); the product uses the journal-backed store. The approval gate must check the request digest (`requestDigest()`, shared with `@axis/challenge`), the actor and the connection id, and burn the challenge on use. |
 | `@axis/daemon` | Transport-agnostic daemon core: connections, handshake, dispatch, tiers, idempotency, cancel and timeout, backpressure, error sanitisation. Every service (identity, policy, approvals, idempotency store, audit sink, handlers) is injected. No Electron. `MemoryIdempotencyStore` is for tests and dev wiring only (it forgets on restart); the product uses the journal-backed store. The pipeline owns approvals (`ApprovalGate.issue` and `execute`, see "Wiring the daemon"). |
 
 More packages (worktrees, journal, audit) are added by their own changes.
@@ -49,7 +47,7 @@ Fixed vectors (`sha256hex` as lowercase hex):
 `@axis/daemon` implements the identical function and pins the same vectors; the two copies must stay in step. The shared function moves into `@axis/protocol` later, and both packages will then import it.
 ## Request digest
 
-The approval digest is defined once, in the doc comment of `requestDigest()` in `packages/daemon/src/digest.ts` (`sha256hex(JSON.stringify(["axis.request/1", contract, version, method, canonicalJson(payloadWithoutApproval)]))`, ECMAScript `JSON.stringify` semantics, bare contract id, integer version). `@axis/challenge` implements the same function; both are pinned by the same fixed vectors, and the copies are to be merged into `@axis/protocol`.
+The digest is specified under "Shared request digest" above. The daemon computes it once with `requestDigest()` (`packages/daemon/src/digest.ts`, whose doc comment states the ECMAScript `JSON.stringify` semantics) and passes it to the gate as `input.digest`; both packages are pinned by the same fixed vectors, and the copies are to be merged into `@axis/protocol`.
 
 ## Wiring the daemon
 
