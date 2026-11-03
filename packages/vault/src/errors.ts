@@ -23,7 +23,7 @@ const CODE_INFO: Readonly<Record<VaultErrorCode, CodeInfo>> = {
   consent_required: { axis: "E_POLICY_DENIED", text: "This storage backend gives no protection; storing the credential needs explicit consent." },
   backend_refused: { axis: "E_POLICY_DENIED", text: "This storage backend gives no protection and is refused." },
   backend_failed: { axis: "E_UNAVAILABLE", text: "The credential storage backend failed." },
-  backend_changed: { axis: "E_CONFLICT", text: "The storage backend changed while the credential was being stored; it was not kept." },
+  backend_changed: { axis: "E_CONFLICT", text: "The storage backend changed while the credential was being stored; enter it again." },
   not_found: { axis: "E_NOT_FOUND", text: "No credential is stored for this connection." },
   invalid_name: { axis: "E_INVALID_ARGUMENT", text: "The connection id is invalid." },
   invalid_secret: { axis: "E_INVALID_ARGUMENT", text: "The credential or its label is invalid." },

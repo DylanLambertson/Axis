@@ -119,4 +119,7 @@ export interface ChangeEvent {
   readonly protection?: Protection;
   /** A store went ahead on a weak backend under the user's consent. */
   readonly weakConsent?: boolean;
+  /** Where a write that was not the decided backend actually landed (`error` after a rollback, and `rollback_failed`). */
+  readonly landedOn?: BackendId;
+  readonly landedProtection?: Protection;
 }

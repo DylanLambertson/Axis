@@ -48,6 +48,8 @@ export interface VaultOptions {
   /** Audit hook for every store and removal, without the secret (DMN-5). Failures are ignored. */
   readonly onChange?: (event: ChangeEvent) => void;
   readonly now?: () => number;
+  /** Longest one attempt to remove a stray copy may take before it counts as failed. Default 5,000 ms. */
+  readonly rollbackTimeoutMs?: number;
 }
 
 export interface StoreOptions {
@@ -192,12 +194,32 @@ export function createVault(options: VaultOptions): ConnectionVault {
     };
   };
 
-  /** Remove a stray copy, retrying once. */
+  const rollbackTimeoutMs = options.rollbackTimeoutMs ?? 5_000;
+  if (!Number.isSafeInteger(rollbackTimeoutMs) || rollbackTimeoutMs < 1) throw new RangeError("rollbackTimeoutMs must be a positive safe integer");
+
+  /** Run `fn`, failing if it takes longer than `ms`. */
+  const withTimeout = async <T>(fn: () => Promise<T>, ms: number): Promise<T> => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const late = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error("timeout")), ms);
+    });
+    try {
+      return await Promise.race([fn(), late]);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
+  /**
+   * True only when the stray copy is certainly gone: `remove` said so, or it
+   * said it removed nothing and the entry is not there. A `false` that leaves
+   * the entry in place, an error and a hang all count as failure. Two attempts.
+   */
   const removeCopy = async (name: string): Promise<boolean> => {
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        await backend.remove(name);
-        return true;
+        const gone = await withTimeout(async () => (await backend.remove(name)) === true || (await backend.meta(name)) === undefined, rollbackTimeoutMs);
+        if (gone) return true;
       } catch {
         // Try once more, then give up.
       }
@@ -205,17 +227,22 @@ export function createVault(options: VaultOptions): ConnectionVault {
     return false;
   };
 
-  const vault: ConnectionVault = {
-    async backend() {
-      const info = await currentInfo();
-      return { ...info, policy: policyOf(info, weak), persistent: info.protection !== "ephemeral" };
-    },
+  /** One store or removal at a time per connection, so a late acknowledgement cannot undo a later decision (N-I). */
+  const chains = new Map<string, Promise<unknown>>();
+  const serial = <T>(name: string, fn: () => Promise<T>): Promise<T> => {
+    const run = (chains.get(name) ?? Promise.resolve()).then(fn, fn);
+    const tail = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    chains.set(name, tail);
+    void tail.then(() => {
+      if (chains.get(name) === tail) chains.delete(name);
+    });
+    return run;
+  };
 
-    async store(connectionId, secret, opts = {}) {
-      const name = checkName(connectionId);
-      if (typeof secret !== "string" || !SECRET_RE.test(secret)) throw new VaultError("invalid_secret");
-      if (opts.label !== undefined && (typeof opts.label !== "string" || !LABEL_RE.test(opts.label))) throw new VaultError("invalid_secret");
-
+  const storeNow = async (name: string, secret: string, opts: StoreOptions): Promise<ConnectionInfo> => {
       let info: BackendInfo;
       try {
         // PRV-1: the backend is asked on every store, never cached.
@@ -262,13 +289,16 @@ export function createVault(options: VaultOptions): ConnectionVault {
       }
       if (wrote === undefined || wrote.id !== info.id || wrote.protection !== info.protection) {
         // The write landed somewhere other than the backend the decision was made on (S4): do not keep it.
+        // Quarantine first, so while the removal is under way (or hangs) the copy is shown as weak and is not revealed (SF-3).
+        const landed: BackendInfo = wrote ?? { id: "unknown", protection: "none", label: "unknown" };
+        quarantine.set(name, landed);
         live.delete(name);
+        const landedAt = { landedOn: landed.id, landedProtection: landed.protection };
         if (await removeCopy(name)) {
-          notify(options.onChange, event("error", weakConsent));
+          quarantine.delete(name);
+          notify(options.onChange, { ...event("error", weakConsent), ...landedAt });
         } else {
-          // The weak copy is still there. Show it as weak and refuse to reveal it until it is stored again or removed (SF-2).
-          quarantine.set(name, wrote ?? { id: "unknown", protection: "none", label: "unknown" });
-          notify(options.onChange, event("rollback_failed", weakConsent));
+          notify(options.onChange, { ...event("rollback_failed", weakConsent), ...landedAt });
         }
         throw new VaultError("backend_changed");
       }
@@ -276,7 +306,21 @@ export function createVault(options: VaultOptions): ConnectionVault {
       live.set(name, secret);
       notify(options.onChange, event("ok", weakConsent));
       return describe(name, meta, info);
+  };
+
+  const vault: ConnectionVault = {
+    async backend() {
+      const info = await currentInfo();
+      return { ...info, policy: policyOf(info, weak), persistent: info.protection !== "ephemeral" };
     },
+
+    async store(connectionId, secret, opts = {}) {
+      const name = checkName(connectionId);
+      if (typeof secret !== "string" || !SECRET_RE.test(secret)) throw new VaultError("invalid_secret");
+      if (opts.label !== undefined && (typeof opts.label !== "string" || !LABEL_RE.test(opts.label))) throw new VaultError("invalid_secret");
+      return serial(name, () => storeNow(name, secret, opts));
+    },
+
 
     async reveal(connectionId, purpose) {
       const name = checkName(connectionId);
@@ -296,6 +340,11 @@ export function createVault(options: VaultOptions): ConnectionVault {
       if (entry === undefined) {
         audit("not_found");
         throw new VaultError("not_found");
+      }
+      // A weak copy may have been found while this read was in flight (SF-3).
+      if (quarantine.has(name)) {
+        audit("error");
+        throw new VaultError("backend_changed");
       }
       const secret = (() => {
         try {
@@ -339,17 +388,23 @@ export function createVault(options: VaultOptions): ConnectionVault {
 
     async remove(connectionId) {
       const name = checkName(connectionId);
-      let removed: boolean;
-      try {
-        removed = await backend.remove(name);
-      } catch {
-        notify(options.onChange, { action: "remove", connectionId: name, outcome: "error" } satisfies ChangeEvent);
-        throw new VaultError("backend_failed");
-      }
-      live.delete(name);
-      quarantine.delete(name);
-      notify(options.onChange, { action: "remove", connectionId: name, outcome: "ok" } satisfies ChangeEvent);
-      return removed;
+      return serial(name, async () => {
+        let removed: boolean;
+        let gone: boolean;
+        try {
+          removed = await backend.remove(name);
+          gone = removed === true || (await backend.meta(name)) === undefined;
+        } catch {
+          notify(options.onChange, { action: "remove", connectionId: name, outcome: "error" } satisfies ChangeEvent);
+          throw new VaultError("backend_failed");
+        }
+        if (gone) {
+          live.delete(name);
+          quarantine.delete(name);
+        }
+        notify(options.onChange, { action: "remove", connectionId: name, outcome: gone ? "ok" : "error" } satisfies ChangeEvent);
+        return removed;
+      });
     },
 
     knownSecrets() {
