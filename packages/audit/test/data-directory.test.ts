@@ -238,3 +238,31 @@ test("data directory: the lock and guards() also follow `..` after a symlink phy
     t.done();
   }
 });
+
+// ---- the instance lock follows the same rules as the database directory ----
+
+test("lock: a missing directory is never created through a `..` path, and nothing is created", posixOnly, async () => {
+  const t = await tmp();
+  try {
+    const { acquireInstanceLock } = await import("../src/index.js");
+    // Built by hand: path.join would collapse the `..` before the lock saw it.
+    assert.equal(reasonOf(() => acquireInstanceLock(`${t.base}/missing/../data`)), "dotdot-path");
+    assert.equal(t.existsSync(t.join(t.base, "missing")), false);
+    assert.equal(t.existsSync(t.join(t.base, "data")), false);
+    // The database and the lock now agree: both refuse, for the same reason.
+    assert.equal(reasonOf(() => openDatabase(`${t.base}/missing/../data/a.db`)), "dotdot-path");
+    // An existing directory reached through `..` is judged and allowed when safe, and the lock lands where `..` leads.
+    const real = t.join(t.base, "real");
+    t.mkdirSync(t.join(real, "sub"), { recursive: true });
+    t.chmodSync(real, 0o700);
+    const lock = acquireInstanceLock(`${real}/sub/..`);
+    assert.equal(t.existsSync(t.join(real, "axis.lock")), true);
+    lock.release();
+    // A missing directory with no `..` is created 0700 by the lock, as before.
+    const made = acquireInstanceLock(t.join(t.base, "newdata"));
+    assert.equal(t.statSync(t.join(t.base, "newdata")).mode & 0o777, 0o700);
+    made.release();
+  } finally {
+    t.done();
+  }
+});

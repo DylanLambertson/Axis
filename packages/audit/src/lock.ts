@@ -1,10 +1,10 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { chmodSync, closeSync, mkdirSync, openSync, readFileSync, realpathSync, statSync, unlinkSync, writeSync } from "node:fs";
+import { chmodSync, closeSync, openSync, readFileSync, realpathSync, statSync, unlinkSync, writeSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
-import { assertSafeDirectory, mapFs, mapFsError } from "./db.js";
+import { ensureDataDirectory, mapFsError } from "./db.js";
 import { AxisError } from "./errors.js";
 
 const LOCK_FILE = "axis.lock";
@@ -188,7 +188,7 @@ export function acquireInstanceLock(dir: string, options: LockOptions = {}): Ins
   const now = options.now ?? Date.now;
   const isAlive = options.isAlive ?? defaultIsAlive;
   const startOf = options.procStart ?? processStartTime;
-  if (mapFs(() => mkdirSync(dir, { recursive: true, mode: 0o700 })) === undefined) mapFs(() => assertSafeDirectory(dir));
+  ensureDataDirectory(dir); // the same rules as the database directory
   // join() would collapse a `..` that follows a symlink and put the lock in a different directory than `dir` names.
   const path = process.platform === "win32" ? join(dir, LOCK_FILE) : (dir.endsWith("/") ? `${dir}${LOCK_FILE}` : `${dir}/${LOCK_FILE}`);
   const record: LockRecord = { pid, procStart: startOf(pid) ?? null, startedAt: now(), nonce: randomBytes(16).toString("hex") };

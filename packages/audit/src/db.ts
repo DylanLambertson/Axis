@@ -160,30 +160,46 @@ function lstatExists(path: string, fs: DirectoryFs): boolean {
   }
 }
 
-function prepareLocation(path: string, fs: DirectoryFs): void {
-  if (!POSIX) return;
-  mapFs(() => prepareLocationUnmapped(path, fs));
-}
+const hasDotDot = (path: string): boolean => path.split("/").includes("..");
 
-function prepareLocationUnmapped(path: string, fs: DirectoryFs): void {
-  // NOT `dirname(resolve(path))`: resolve() collapses `..` lexically, but the kernel (and SQLite) follow a symlink
-  // first, so `safe/link/../x.db` lives in link's PARENT, which is not `safe`. Judge the path as the kernel will.
-  const dir = dirname(path);
-  // A directory this call creates is private (0700). An existing one is the caller's: it is never chmod-ed, but it
-  // must be safe (see assertSafeDirectory), because the database and its WAL are only as private as the place
-  // they live. The files themselves are always 0600.
-  if (lstatExists(dir, fs)) {
-    assertSafeDirectory(dir, fs);
-  } else {
-    if (path.split("/").includes("..")) {
+/**
+ * Make sure the data directory `dir` exists and is safe: an existing one must pass `assertSafeDirectory`; a
+ * missing one is created 0700, but never through a path that contains `..` (it could not be judged before it
+ * is created, and a `..` after a symlink leads somewhere else). Shared by `openDatabase` and
+ * `acquireInstanceLock`, so the database and its lock follow the same rules. File system errors are mapped
+ * without the path (`mapFsError`).
+ *
+ * `dir` is used as given (not `resolve()`d), because a `..` after a symlink must be resolved physically, as the
+ * kernel and SQLite will resolve it.
+ */
+export function ensureDataDirectory(dir: string, fs: DirectoryFs = nodeDirectoryFs): void {
+  mapFs(() => {
+    if (!POSIX) {
+      mkdirSync(dir, { recursive: true });
+      return;
+    }
+    if (lstatExists(dir, fs)) {
+      assertSafeDirectory(dir, fs);
+      return;
+    }
+    if (hasDotDot(dir)) {
       throw new AxisError("E_INVALID_ARGUMENT", "The data directory is not safe to use", { reason: "dotdot-path" });
     }
     const target = resolve(dir);
     if (mkdirSync(target, { recursive: true, mode: 0o700 }) !== undefined) chmodSync(target, 0o700);
-  }
+  });
+}
+
+function prepareLocation(path: string, fs: DirectoryFs): void {
+  if (!POSIX) return;
+  // NOT `dirname(resolve(path))`: resolve() collapses `..` lexically, but the kernel (and SQLite) follow a symlink
+  // first, so `safe/link/../x.db` lives in link's PARENT, which is not `safe`. Judge the path as the kernel will.
+  ensureDataDirectory(dirname(path), fs);
   // Create the file 0600 before SQLite does (its default would follow the umask); -wal and -shm copy its mode.
-  closeSync(openSync(path, "a", 0o600));
-  chmodSync(path, 0o600);
+  mapFs(() => {
+    closeSync(openSync(path, "a", 0o600));
+    chmodSync(path, 0o600);
+  });
 }
 
 function pragma(db: DatabaseSync, sql: string): Record<string, unknown> {
