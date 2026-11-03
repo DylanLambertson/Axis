@@ -83,9 +83,13 @@ export interface RemoveResult {
   readonly archiveRef: string;
   readonly backupRef: string | null;
   readonly branchDeleted: boolean;
+  /** Ref holding the deleted branch's tip, written before the branch was deleted; null when it was kept. */
+  readonly branchBackupRef: string | null;
   /** Data that was deleted without a backup: files over the size limit and ignored files. */
   readonly skippedLarge: readonly string[];
   readonly ignored: readonly string[];
+  /** Nested repositories and other entries a snapshot cannot hold. */
+  readonly skippedUnsupported: readonly string[];
 }
 
 export interface RestoreResult {

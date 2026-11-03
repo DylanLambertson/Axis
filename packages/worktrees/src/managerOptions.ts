@@ -24,8 +24,8 @@ export interface WorktreeManagerOptions {
   readonly now?: () => Date;
   readonly platform?: NodeJS.Platform;
   readonly maxSnapshotFileBytes?: number;
-  /** Windows only: the empty hooks directory under the app-data root. Defaults beside the worktree root. */
-  readonly windowsEmptyHooksDir?: string;
+  /** Windows only: a daemon-owned zero-byte file under the app-data root, used as `core.hooksPath`. Defaults beside the worktree root. */
+  readonly windowsNoHooksFile?: string;
   /** How long to wait for another process's workspace lock. */
   readonly lockTimeoutMs?: number;
 }

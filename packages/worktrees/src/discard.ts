@@ -16,6 +16,8 @@ export interface DiscardScan {
   readonly skippedLarge: readonly string[];
   /** Ignored files and directories: never in a snapshot (policies 7). */
   readonly ignored: readonly string[];
+  /** Nested repositories and other entries a snapshot cannot hold: deleted by remove, never backed up. */
+  readonly skippedUnsupported: readonly string[];
   /** Binds a confirmation to exactly this set of affected files. */
   readonly fingerprint: string;
 }
@@ -33,14 +35,15 @@ export async function scanDiscard(git: HardenedGit, workTree: string, maxFile: n
   );
   const ignored = ignoredOut.stdout.split('\0').filter(Boolean).sort();
   const skippedLarge = [...scan.skippedLarge].sort();
+  const skippedUnsupported = [...scan.skippedUnsupported].sort();
   const stats: Array<[string, string, number, number]> = [];
   for (const d of dirty) {
     const st = await fs.lstat(path.join(workTree, d.path)).catch(() => null);
     stats.push([d.path, d.index + d.worktree, st?.size ?? -1, Math.round(st?.mtimeMs ?? -1)]);
   }
   stats.sort((a, b) => (a[0] < b[0] ? -1 : 1));
-  const fingerprint = createHash('sha256').update(JSON.stringify({ stats, skippedLarge, ignored })).digest('hex');
-  return { dirty, skippedLarge, ignored, fingerprint };
+  const fingerprint = createHash('sha256').update(JSON.stringify({ stats, skippedLarge, ignored, skippedUnsupported })).digest('hex');
+  return { dirty, skippedLarge, ignored, skippedUnsupported, fingerprint };
 }
 
 /**
@@ -53,7 +56,7 @@ export async function scanDiscard(git: HardenedGit, workTree: string, maxFile: n
 export function requireDiscardConfirmation(
   op: DiscardOp, workspaceId: string, scan: DiscardScan, token: unknown,
 ): { needsBackup: boolean } {
-  const unbacked = scan.skippedLarge.length + scan.ignored.length;
+  const unbacked = scan.skippedLarge.length + scan.ignored.length + scan.skippedUnsupported.length;
   const needed = scan.dirty.length > 0 || (op === 'remove' && unbacked > 0);
   if (!needed) return { needsBackup: false };
   const details = {
@@ -63,6 +66,7 @@ export function requireDiscardConfirmation(
     count: scan.dirty.length,
     skippedLarge: scan.skippedLarge.slice(0, 50),
     ignored: scan.ignored.slice(0, 50),
+    skippedUnsupported: scan.skippedUnsupported.slice(0, 50),
   };
   const result = consumeConfirmation(token, { workspaceId, op, fingerprint: scan.fingerprint });
   if (result === 'ok') return { needsBackup: scan.dirty.length > 0 };

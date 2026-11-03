@@ -4,6 +4,7 @@ import { execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import { WorktreeError } from './errors.js';
+import { readRegularFile } from './fsSafe.js';
 
 interface LockRecord {
   readonly pid: number;
@@ -33,14 +34,19 @@ function alive(pid: number): boolean {
   }
 }
 
-/** Start time of `pid` in epoch ms, or null when it cannot be determined. */
-async function processStartOf(pid: number): Promise<number | null> {
+/**
+ * Start time of `pid` in epoch ms, or null when it cannot be determined.
+ * `ps -o lstart=` exists on macOS, Linux and the BSDs (`etimes` is Linux only);
+ * it prints a fixed-format local time with one-second resolution, which the
+ * start tolerance below absorbs. Windows has no equivalent here: liveness only.
+ */
+export async function processStartOf(pid: number): Promise<number | null> {
   if (pid === process.pid) return OWN_START;
   if (process.platform === 'win32') return null;
   return new Promise((resolve) => {
-    execFile('/bin/ps', ['-o', 'etimes=', '-p', String(pid)], { timeout: 2000 }, (err, stdout) => {
-      const secs = Number(stdout.trim());
-      resolve(err || !Number.isFinite(secs) ? null : Math.round(Date.now() - secs * 1000));
+    execFile('/bin/ps', ['-o', 'lstart=', '-p', String(pid)], { timeout: 2000, env: { LC_ALL: 'C', PATH: '/bin:/usr/bin' } }, (err, stdout) => {
+      const ms = err ? NaN : Date.parse(stdout.trim());
+      resolve(Number.isFinite(ms) ? ms : null);
     });
   });
 }
@@ -86,18 +92,18 @@ export async function acquireFileLock(file: string, opts: FileLockOptions = {}):
       }
       return async () => {
         // only remove a lock that is still ours
-        const cur = await fs.readFile(file, 'utf8').catch(() => null);
+        const cur = await readRegularFile(file, 4096).catch(() => null);
         if (cur === body) await fs.rm(file, { force: true });
       };
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
     }
-    const text = await fs.readFile(file, 'utf8').catch(() => null);
+    const text = await readRegularFile(file, 4096).catch(() => null);
     if (text !== null) {
       const rec = parse(text);
       // an unparsable file may be a holder mid-write: only reclaim it once it has aged
       const aged = rec !== null || Date.now() - ((await fs.stat(file).catch(() => null))?.mtimeMs ?? 0) > 2_000;
-      if (aged && (rec === null || (await isStale(rec))) && (await fs.readFile(file, 'utf8').catch(() => null)) === text) {
+      if (aged && (rec === null || (await isStale(rec))) && (await readRegularFile(file, 4096).catch(() => null)) === text) {
         await fs.rm(file, { force: true });
         continue;
       }

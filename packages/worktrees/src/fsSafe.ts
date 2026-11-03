@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 
-import { promises as fs } from 'node:fs';
+import { constants as fsc, promises as fs } from 'node:fs';
 import * as path from 'node:path';
 import { WorktreeError } from './errors.js';
 
@@ -50,4 +50,49 @@ export async function ensureDirChain(canonical: string, mode = 0o700): Promise<v
     }
   }
   await mkdirSafe(cursor, pending.reverse(), mode);
+}
+
+export const MAX_RECORD_BYTES = 1024 * 1024;
+
+/**
+ * Reads a small text file that must be a regular file. It is opened with
+ * O_NOFOLLOW and O_NONBLOCK, so a FIFO or a symlink to a device cannot block a
+ * thread or feed the daemon unbounded data, then `fstat`-ed on the open handle
+ * and size-capped before any byte is read. Missing files reject with ENOENT;
+ * anything else that is wrong rejects with E_INTERNAL.
+ */
+export async function readRegularFile(file: string, maxBytes = MAX_RECORD_BYTES): Promise<string> {
+  const flags = fsc.O_RDONLY | (fsc.O_NOFOLLOW ?? 0) | (fsc.O_NONBLOCK ?? 0);
+  const fh = await fs.open(file, flags);
+  try {
+    const st = await fh.stat();
+    if (!st.isFile()) throw new WorktreeError('E_INTERNAL', 'record is not a regular file', { reason: 'corrupt-record' });
+    if (st.size > maxBytes) throw new WorktreeError('E_INTERNAL', 'record is too large', { reason: 'corrupt-record' });
+    const buf = Buffer.alloc(st.size);
+    let off = 0;
+    while (off < buf.length) {
+      const { bytesRead } = await fh.read(buf, off, buf.length - off, off);
+      if (bytesRead === 0) break;
+      off += bytesRead;
+    }
+    return buf.subarray(0, off).toString('utf8');
+  } finally {
+    await fh.close();
+  }
+}
+
+/**
+ * A directory only this user can enter, for scratch files (such as the
+ * temporary index of a snapshot) that must not live in the agent-writable
+ * `$TMPDIR`. `dir`'s parent must already exist and be canonical. A symlink,
+ * a non-directory or a directory owned by somebody else is refused.
+ */
+export async function privateDir(dir: string): Promise<string> {
+  await mkdirSafe(path.dirname(dir), [path.basename(dir)], 0o700);
+  const st = await fs.lstat(dir);
+  if (typeof process.getuid === 'function' && st.uid !== process.getuid()) {
+    throw new WorktreeError('E_POLICY_DENIED', 'the scratch directory is owned by another user', { path: dir });
+  }
+  if (process.platform !== 'win32' && (st.mode & 0o077) !== 0) await fs.chmod(dir, 0o700);
+  return dir;
 }

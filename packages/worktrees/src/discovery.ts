@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
 import { WorktreeError } from './errors.js';
+import { readRegularFile } from './fsSafe.js';
 import { sanitiseName } from './paths.js';
 
 export interface RepoLocation {
@@ -27,7 +28,7 @@ async function isDir(p: string): Promise<boolean> {
 
 async function readText(p: string): Promise<string | null> {
   try {
-    return await fs.readFile(p, 'utf8');
+    return await readRegularFile(p, 64 * 1024);
   } catch {
     return null;
   }

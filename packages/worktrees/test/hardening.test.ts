@@ -2,7 +2,7 @@
 // Regression tests for the independent security review (hooks directory, filter drivers).
 
 import assert from 'node:assert/strict';
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
@@ -50,15 +50,19 @@ describe('B-1: no writable hooks directory', () => {
     assert.equal(existsSync(marker), false);
   });
 
-  it('on Windows checks the dedicated directory is empty before every call (fail closed)', async () => {
+  it('on Windows points at a daemon-owned empty regular file and fails closed if it is replaced (NS-4)', async () => {
     assert.throws(() => createHooksGuard('win32'), code('E_INVALID_ARGUMENT'));
-    const dir = path.join(fx.tmp, 'empty-hooks');
-    const guard = createHooksGuard('win32', dir);
-    assert.equal(guard.path, dir);
-    await assert.doesNotReject(guard.assertEmpty());
-    chmodSync(dir, 0o755);
-    writeFileSync(path.join(dir, 'pre-commit'), 'x');
-    await assert.rejects(guard.assertEmpty(), code('E_POLICY_DENIED'));
+    const file = path.join(fx.tmp, 'app-data', 'nohooks');
+    const guard = createHooksGuard('win32', file);
+    assert.equal(guard.path, file);
+    assert.equal(lstatSync(file).isFile(), true);
+    await assert.doesNotReject(guard.assertInert());
+    rmSync(file);
+    mkdirSync(file);
+    await assert.rejects(guard.assertInert(), code('E_POLICY_DENIED'));
+    rmSync(file, { recursive: true });
+    writeFileSync(file, 'x');
+    await assert.rejects(guard.assertInert(), code('E_POLICY_DENIED'));
     assert.equal(createHooksGuard('linux').path, '/dev/null');
   });
 });

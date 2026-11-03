@@ -3,6 +3,7 @@
 import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
+import { isOutsideRel } from './pathGuard.js';
 
 /** Stored `text` is capped so a huge hook cannot bloat the baseline. */
 const MAX_TEXT_BYTES = 64 * 1024;
@@ -209,7 +210,7 @@ export async function snapshotExtraFiles(
 ): Promise<void> {
   await hashFile(path.join(src.workTree, '.git'), 'worktree/.git', files);
   const adminName = path.relative(src.commonDir, src.gitDir).split(path.sep).join('/');
-  if (adminName && !adminName.startsWith('..')) {
+  if (adminName && !isOutsideRel(path.relative(src.commonDir, src.gitDir))) {
     await hashFile(path.join(src.gitDir, 'commondir'), `${adminName}/commondir`, files);
     await hashFile(path.join(src.gitDir, 'gitdir'), `${adminName}/gitdir`, files);
   }
@@ -217,7 +218,7 @@ export async function snapshotExtraFiles(
   if (src.hooksPath) {
     const dir = path.resolve(src.workTree, src.hooksPath);
     const rel = path.relative(src.workTree, dir);
-    if (rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel)) {
+    if (rel !== '' && !isOutsideRel(rel)) {
       const found: Record<string, GitSnapFile> = {};
       await walk(dir, `hookspath:${rel.split(path.sep).join('/')}`, found);
       for (const k of Object.keys(found).sort().slice(0, MAX_HOOK_DIR_FILES)) files[k] = found[k] as GitSnapFile;

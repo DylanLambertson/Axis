@@ -4,7 +4,7 @@ import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
 import { projectDirName, resolveRepo, type RepoLocation, type WorktreeEntry } from './discovery.js';
 import { WorktreeError } from './errors.js';
-import { ensureDirChain, mkdirSafe } from './fsSafe.js';
+import { ensureDirChain, mkdirSafe, privateDir } from './fsSafe.js';
 import type { GitSnapshot } from './gitSnap.js';
 import type { HardenedGit } from './hardenedGit.js';
 import { readMeta, writeBaseline, writeMeta } from './meta.js';
@@ -101,13 +101,14 @@ export async function createWorkspace(host: CreateHost, repo: RepoLocation, p: C
     baseBranch = (await git.ok(['show-ref', '--verify', '--quiet', full], { cwd })) ? full : null;
   }
 
+  const scratchDir = await privateDir(path.join(root, '.axis-tmp'));
   let runBaseSha: string | null = null;
   try {
     await git.run(['worktree', 'add', '--no-checkout', '-b', branch, '--', wtPath, baseSha], { cwd });
     await git.run(['worktree', 'lock', '--reason', `axis:${p.id}`, '--', wtPath], { cwd });
     await populateFilterFree(git, wtPath);
     const wt = await resolveRepo(wtPath);
-    const snap = await writeSnapshotRef(git, wtPath, runBaseRef, `axis run base ${p.id}`, host.maxFile);
+    const snap = await writeSnapshotRef(git, wtPath, runBaseRef, `axis run base ${p.id}`, host.maxFile, scratchDir);
     runBaseSha = snap.commit;
     await writeMeta(wt.gitDir, {
       version: 1, id: p.id, slug: p.slug, branch, baseRef: p.baseRef, baseSha, baseBranch, runBaseSha,
@@ -124,7 +125,8 @@ export async function createWorkspace(host: CreateHost, repo: RepoLocation, p: C
     await git.run(['worktree', 'remove', '--force', '--', wtPath], { cwd, allowFailure: true });
     await fs.rm(wtPath, { recursive: true, force: true });
     await git.run(['worktree', 'prune'], { cwd, allowFailure: true });
-    await git.run(['branch', '-D', '--', branch], { cwd, allowFailure: true });
+    // Only a branch still at the commit we created it on: never delete one somebody else made or moved.
+    await deleteRefIf(git, cwd, `refs/heads/${branch}`, baseSha);
     if (runBaseSha) await deleteRefIf(git, cwd, runBaseRef, runBaseSha);
     throw e;
   }

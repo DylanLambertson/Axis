@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 
-import { chmodSync, mkdirSync, promises as fsp } from 'node:fs';
+import { mkdirSync, promises as fsp, writeFileSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { WorktreeError } from './errors.js';
 import type { GitResult, GitRunner } from './git.js';
 
@@ -18,32 +19,37 @@ export interface HardenedRunOptions {
  * Supplies `core.hooksPath` for every daemon git call. On POSIX this is
  * `/dev/null`: git then looks for `/dev/null/<hook>`, gets ENOTDIR and runs
  * nothing, and there is no directory an attacker could write into. Windows has
- * no such device, so a read-only directory under the app-data root is used and
- * checked to be empty immediately before every call (fail closed).
+ * no such device, so the path is a daemon-owned zero-byte regular FILE under
+ * the app-data root: `<file>\<hook>` fails the same way, and there is nothing
+ * to plant a hook into. `assertInert` still checks, before every call, that it
+ * is still that file (fail closed).
  */
 export interface HooksGuard {
   readonly path: string;
-  assertEmpty(): Promise<void>;
+  assertInert(): Promise<void>;
 }
 
-export function createHooksGuard(platform: NodeJS.Platform, emptyDir?: string): HooksGuard {
-  if (platform !== 'win32') return { path: '/dev/null', assertEmpty: async () => undefined };
-  if (!emptyDir) {
-    throw new WorktreeError('E_INVALID_ARGUMENT', 'Windows needs an empty hooks directory under the app-data root');
+export function createHooksGuard(platform: NodeJS.Platform, noHooksFile?: string): HooksGuard {
+  if (platform !== 'win32') return { path: '/dev/null', assertInert: async () => undefined };
+  if (!noHooksFile) {
+    throw new WorktreeError('E_INVALID_ARGUMENT', 'Windows needs a no-hooks file under the app-data root');
   }
-  mkdirSync(emptyDir, { recursive: true });
+  mkdirSync(dirname(noHooksFile), { recursive: true });
   try {
-    chmodSync(emptyDir, 0o555);
-  } catch {
-    // best effort: the emptiness check below is the real control
+    writeFileSync(noHooksFile, '', { flag: 'wx' });
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
   }
+  const check = async (): Promise<boolean> => {
+    const st = await fsp.lstat(noHooksFile).catch(() => null);
+    return st !== null && st.isFile() && st.size === 0;
+  };
   return {
-    path: emptyDir,
-    async assertEmpty() {
-      const entries = await fsp.readdir(emptyDir).catch(() => ['<unreadable>']);
-      if (entries.length !== 0) {
-        throw new WorktreeError('E_POLICY_DENIED', 'the empty hooks directory is not empty; refusing to run git', {
-          reason: 'hooks-dir-tampered',
+    path: noHooksFile,
+    async assertInert() {
+      if (!(await check())) {
+        throw new WorktreeError('E_POLICY_DENIED', 'the no-hooks file is missing or not an empty regular file; refusing to run git', {
+          reason: 'hooks-guard-tampered',
         });
       }
     },
@@ -52,7 +58,7 @@ export function createHooksGuard(platform: NodeJS.Platform, emptyDir?: string): 
 
 /** Strips `user:password@` from URLs so credentials never reach error details. */
 export function redact(text: string): string {
-  return text.replace(/(\w[\w+.-]*:\/\/)[^/@\s]+@/g, '$1***@');
+  return text.replace(/(\w[\w+.-]*:\/\/)[^/\s]*@/g, '$1***@');
 }
 
 /** Skips leading `-c key=value` pairs and global flags to find the git subcommand. */
@@ -126,7 +132,7 @@ export class HardenedGit {
 
   /** `-c filter.<n>.{clean,smudge,process}=` for every filter named in any config scope. */
   private async filterOverrides(cwd: string): Promise<string[]> {
-    await this.hooks.assertEmpty();
+    await this.hooks.assertInert();
     const res = await this.runner.run(
       [...this.prefix(true), 'config', '--null', '--name-only', '--get-regexp', '^filter\\.'],
       { cwd },
@@ -155,7 +161,7 @@ export class HardenedGit {
   }
 
   async run(args: readonly string[], opts: HardenedRunOptions): Promise<GitResult> {
-    await this.hooks.assertEmpty();
+    await this.hooks.assertInert();
     const filters = runsNoFilters(args) ? [] : await this.filterOverrides(opts.cwd);
     const result = await this.runner.run([...this.prefix(opts.noOptionalLocks), ...filters, ...args], {
       cwd: opts.cwd,

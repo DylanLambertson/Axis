@@ -5,6 +5,7 @@ import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
 import { z } from 'zod';
 import { WorktreeError } from './errors.js';
+import { readRegularFile } from './fsSafe.js';
 import type { GitSnapshot } from './gitSnap.js';
 
 export const SLUG_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
@@ -63,9 +64,11 @@ async function writeAtomic(file: string, data: string): Promise<void> {
 export async function readMeta(gitDir: string): Promise<WorkspaceMeta | null> {
   let text: string;
   try {
-    text = await fs.readFile(path.join(gitDir, META_FILE), 'utf8');
-  } catch {
-    return null;
+    text = await readRegularFile(path.join(gitDir, META_FILE));
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    // a FIFO, device link, oversized or unreadable record is corrupt, never "missing" and never a hang
+    throw new WorktreeError('E_INTERNAL', 'workspace record is corrupt', { reason: 'corrupt-record' });
   }
   let json: unknown;
   try {
@@ -87,7 +90,7 @@ export async function writeMeta(gitDir: string, meta: WorkspaceMeta): Promise<vo
 export async function readBaseline(gitDir: string): Promise<GitSnapshot | null> {
   let text: string;
   try {
-    text = await fs.readFile(path.join(gitDir, BASELINE_FILE), 'utf8');
+    text = await readRegularFile(path.join(gitDir, BASELINE_FILE));
   } catch {
     return null;
   }

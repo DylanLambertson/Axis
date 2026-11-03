@@ -1,7 +1,6 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 
 import { promises as fs } from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { WorktreeError } from './errors.js';
 import type { HardenedGit } from './hardenedGit.js';
@@ -45,16 +44,22 @@ export interface WorktreeScan {
   /** Tracked paths that no longer exist on disk. */
   readonly removed: string[];
   readonly skippedLarge: string[];
+  /** Untracked directories (nested repositories), FIFOs, sockets and devices: not in any snapshot. */
+  readonly skippedUnsupported: string[];
   readonly executable: ReadonlySet<string>;
 }
 
 /** Lists what a snapshot would hold, applying the size limit. Runs no filter. */
 export async function scanWorktree(git: HardenedGit, worktree: string, maxFileBytes: number): Promise<WorktreeScan> {
-  const listed = await git.run(['ls-files', '-z', '--cached', '--others', '--exclude-standard'], { cwd: worktree });
-  const candidates = [...new Set(listed.stdout.split('\0').filter((p) => p !== ''))];
+  const [cachedOut, othersOut] = await Promise.all([
+    git.run(['ls-files', '-z', '--cached'], { cwd: worktree }),
+    git.run(['ls-files', '-z', '--others', '--exclude-standard'], { cwd: worktree }),
+  ]);
+  const cached = new Set(cachedOut.stdout.split('\0').filter((p) => p !== ''));
+  const candidates = [...new Set([...cached, ...othersOut.stdout.split('\0').filter((p) => p !== '')])];
   const scan = {
     files: [] as string[], symlinks: [] as string[], removed: [] as string[], skippedLarge: [] as string[],
-    executable: new Set<string>(),
+    skippedUnsupported: [] as string[], executable: new Set<string>(),
   };
   for (const rel of candidates) {
     let st;
@@ -64,15 +69,16 @@ export async function scanWorktree(git: HardenedGit, worktree: string, maxFileBy
       scan.removed.push(rel);
       continue;
     }
-    if (st.isDirectory()) continue; // nested repo / gitlink: keep HEAD's entry
-    if (st.isSymbolicLink()) scan.symlinks.push(rel);
+    if (st.isDirectory()) {
+      if (!cached.has(rel)) scan.skippedUnsupported.push(rel); // nested repository; a tracked gitlink keeps HEAD's entry
+    } else if (st.isSymbolicLink()) scan.symlinks.push(rel);
     else if (st.isFile()) {
       if (st.size > maxFileBytes) scan.skippedLarge.push(rel);
       else {
         scan.files.push(rel);
         if (process.platform !== 'win32' && (st.mode & 0o111) !== 0) scan.executable.add(rel);
       }
-    }
+    } else scan.skippedUnsupported.push(rel);
   }
   return scan;
 }
@@ -98,8 +104,8 @@ async function hashRaw(git: HardenedGit, worktree: string, rels: readonly string
 /**
  * Writes a snapshot commit of a worktree to a NEW `ref` (policies 7): HEAD,
  * plus the tracked and untracked-but-not-ignored working files, excluding any
- * file over `maxFileBytes`. A temporary index keeps the worktree's real index
- * untouched. Content is hashed with `--no-filters` and entered with
+ * file over `maxFileBytes`. A temporary index in a private daemon directory keeps the
+ * worktree's real index untouched and out of reach of an agent. Content is hashed with `--no-filters` and entered with
  * `update-index --index-info`, so no clean/smudge/process driver, attribute or
  * end-of-line conversion can run or alter the bytes.
  */
@@ -108,9 +114,11 @@ export async function writeSnapshotRef(
   worktree: string,
   ref: string,
   message: string,
-  maxFileBytes: number = MAX_SNAPSHOT_FILE_BYTES,
+  maxFileBytes: number,
+  /** A private directory (see `privateDir`) for the temporary index; never `$TMPDIR`. */
+  scratchDir: string,
 ): Promise<SnapshotResult> {
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'axis-snap-'));
+  const tmp = await fs.mkdtemp(path.join(scratchDir, 'snap-'));
   const env = { GIT_INDEX_FILE: path.join(tmp, 'index') };
   try {
     await git.run(['read-tree', 'HEAD'], { cwd: worktree, extraEnv: env });

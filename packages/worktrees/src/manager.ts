@@ -7,6 +7,7 @@ import type { DiscardConfirmation } from './confirmation.js';
 import { createWorkspace, type CreateHost } from './createWorkspace.js';
 import { parseWorktreeList, resolveRepo, type RepoLocation } from './discovery.js';
 import { readDirty, requireDiscardConfirmation, scanDiscard, type DiscardScan } from './discard.js';
+import { removeWorkspace } from './removeWorkspace.js';
 import { toWorktreeError, WorktreeError } from './errors.js';
 import type { GitRunner } from './git.js';
 import {
@@ -14,6 +15,7 @@ import {
   snapshotExtraFiles, snapshotGuardFiles, watchedEntries, type GitSnapshot,
 } from './gitSnap.js';
 import { createHooksGuard, HardenedGit } from './hardenedGit.js';
+import { privateDir } from './fsSafe.js';
 import { acquireFileLock } from './lock.js';
 import {
   IdSchema, SlugSchema, readBaseline, readMeta, writeBaseline, writeMeta, type WorkspaceMeta,
@@ -37,9 +39,8 @@ export { BACKUP_RETENTION_DAYS, RUNBASE_RETENTION_DAYS, type ActiveRunOp, type W
 
 /**
  * Worktree lifecycle for one daemon. CONCURRENCY: mutating operations are
- * serialised per repository by an in-process mutex plus a pid/start-time
- * lockfile in the workspace admin dir, and workspace records are re-read under
- * that lock. The in-process mutex assumes exactly one manager instance per
+ * serialised per repository by an in-process mutex plus pid/start-time
+ * lockfiles (see `withLock`), and workspace records are re-read under that lock. The in-process mutex assumes exactly one manager instance per
  * daemon process and one daemon per user; the lockfile covers stray processes.
  * Every public method maps any failure into the closed WorktreeError set.
  */
@@ -57,7 +58,7 @@ export class WorktreeManager {
     this.platform = options.platform ?? process.platform;
     this.now = options.now ?? (() => new Date());
     this.maxFile = options.maxSnapshotFileBytes ?? MAX_SNAPSHOT_FILE_BYTES;
-    const emptyDir = options.windowsEmptyHooksDir ?? path.win32.join(path.win32.dirname(options.worktreeRoot), 'empty-hooks');
+    const emptyDir = options.windowsNoHooksFile ?? path.win32.join(path.win32.dirname(options.worktreeRoot), 'nohooks');
     this.git = new HardenedGit(this.runner, createHooksGuard(this.platform, emptyDir));
   }
 
@@ -152,40 +153,11 @@ export class WorktreeManager {
     path: string; deleteBranch?: boolean; discardConfirmation?: DiscardConfirmation;
   }): Promise<RemoveResult> {
     return this.boundary(() =>
-      this.withWorkspace(input.path, true, 'remove', async ({ repo, workTree, meta }) => {
-        if (meta.state !== 'FINALISED') {
-          throw new WorktreeError('E_CONFLICT', 'workspace must be finalised before removal', { reason: 'not-finalised' });
-        }
-        const archiveRef = `refs/axis/archive/${meta.id}`;
-        if (!(await this.git.ok(['rev-parse', '--verify', '--quiet', '--end-of-options', archiveRef], { cwd: workTree }))) {
-          throw new WorktreeError('E_CONFLICT', 'archive ref is missing', { reason: 'no-archive' });
-        }
-        await this.guardExecutionDrift(repo, workTree);
-        // Run from the main checkout's path: git only reads it here and the worktree is about to vanish.
-        const entries = parseWorktreeList((await this.git.run(['worktree', 'list', '--porcelain', '-z'], { cwd: workTree })).stdout);
-        const main = entries[0];
-        const cwd = main && !main.bare ? main.path : repo.commonDir;
-        if (input.deleteBranch) {
-          // Never delete on the word of the record alone: git must agree this path has that branch.
-          const mine = entries.find((e) => path.resolve(e.path) === workTree || e.path === workTree);
-          if (!mine || mine.branch !== `refs/heads/${meta.branch}` || meta.branch !== `axis/${meta.slug}`) {
-            throw new WorktreeError('E_POLICY_DENIED', 'refusing to delete a branch git does not list for this worktree', { reason: 'branch-mismatch' });
-          }
-        }
-        const scan = await scanDiscard(this.git, workTree, this.maxFile);
-        const { needsBackup } = requireDiscardConfirmation('remove', meta.id, scan, input.discardConfirmation);
-        const backupRef = needsBackup ? await this.writeBackup(workTree, meta.id, 'remove') : null;
-        await this.git.run(['worktree', 'unlock', '--', workTree], { cwd, allowFailure: true });
-        // Always --force: Axis's own filter-free check and confirmation above replace git's, which would run `git status`.
-        await this.git.run(['worktree', 'remove', '--force', '--', workTree], { cwd });
-        await this.git.run(['worktree', 'prune'], { cwd });
-        let branchDeleted = false;
-        if (input.deleteBranch) {
-          await this.git.run(['branch', '-D', '--', meta.branch], { cwd });
-          branchDeleted = true;
-        }
-        return { removed: true as const, archiveRef, backupRef, branchDeleted, skippedLarge: scan.skippedLarge, ignored: scan.ignored };
-      }));
+      this.withWorkspace(input.path, true, 'remove', ({ repo, workTree, meta }) =>
+        removeWorkspace(
+          { git: this.git, maxFile: this.maxFile, guardExecutionDrift: (r, w) => this.guardExecutionDrift(r, w),
+            writeBackup: (w, id, why) => this.writeBackup(w, id, why), now: () => this.now() },
+          { repo, workTree, meta, deleteBranch: input.deleteBranch === true, token: input.discardConfirmation })));
   }
 
   /**
@@ -374,7 +346,10 @@ export class WorktreeManager {
       if (isSameOrInside(real, root, this.platform)) {
         throw new WorktreeError('E_POLICY_DENIED', 'the git executable lives inside the worktree root', { reason: 'git-path' });
       }
-    })();
+    })().catch((e: unknown) => {
+      this.gitChecked = null; // a transient failure must not poison every later call
+      throw e;
+    });
     return this.gitChecked.then(async () => {
       const real = await fs.realpath(gitPath);
       for (const loc of extra) {
@@ -392,7 +367,8 @@ export class WorktreeManager {
 
   private async writeBackup(workTree: string, id: string, why: string): Promise<string> {
     const ref = this.backupRefName(id);
-    await writeSnapshotRef(this.git, workTree, ref, `axis backup before ${why}`, this.maxFile);
+    const scratch = await privateDir(path.join(await canonicalise(this.options.worktreeRoot), '.axis-tmp'));
+    await writeSnapshotRef(this.git, workTree, ref, `axis backup before ${why}`, this.maxFile, scratch);
     return ref;
   }
 
@@ -473,7 +449,13 @@ export class WorktreeManager {
     });
   }
 
-  /** One mutating Axis git operation at a time per project, across processes via the lockfile. */
+  /**
+   * The in-process mutex serialises every operation of one repository. Across processes there are two
+   * lockfiles: workspace operations (finalise, remove, restore, drift acknowledgement) lock
+   * `<worktree admin dir>/axis.lock`, while create and sweep lock `<common dir>/axis-create.lock`. So two
+   * workspace operations on the same workspace, or two creates, exclude each other across processes;
+   * a create and a workspace operation do not (they touch different refs and directories).
+   */
   private withLock<T>(key: string, lockFile: string, fn: () => Promise<T>): Promise<T> {
     return this.locked(key, async () => {
       const release = await acquireFileLock(lockFile, { timeoutMs: this.options.lockTimeoutMs ?? 15_000 });
