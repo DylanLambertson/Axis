@@ -3,7 +3,11 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { AuditLog, AxisError, openDatabase, schemaVersion } from "@axis/audit";
 import { JOURNAL_SCHEMA_VERSION, Journal, RESTART_REASON, RUN_STATES, RUN_TRANSITIONS, type RunState } from "../src/index.js";
-import { FAKE } from "./fakes.js";
+
+// Low-entropy stand-ins assembled at runtime; none is a credential.
+const FAKE = { anthropic: "sk-" + "ant-" + "A1b2".repeat(8), password: "hunter2-" + "pw".repeat(6) };
+/** A held lock for in-memory tests; the real one is exercised in lock and crash tests. */
+const LOCK = { path: ":test:", held: true, release() {} };
 
 const KEY1 = "00000000-0000-4000-8000-000000000001";
 const KEY2 = "00000000-0000-4000-8000-000000000002";
@@ -61,7 +65,7 @@ test("run state machine allows exactly the documented transitions", () => {
         RUNNING: ["RUNNING"],
         REVIEWING: ["RUNNING", "REVIEWING"],
         BLOCKED: ["RUNNING", "BLOCKED"],
-        COMPLETED: ["RUNNING", "COMPLETED"],
+        COMPLETED: ["RUNNING", "REVIEWING", "COMPLETED"],
         FAILED: ["RUNNING", "FAILED"],
         CANCELLED: ["CANCELLED"],
       };
@@ -176,9 +180,9 @@ test("recovery policy: RUNNING becomes BLOCKED; QUEUED, REVIEWING and BLOCKED ar
   const running2 = mk("composer", "RUNNING");
   const reviewing = mk("cli", "RUNNING", "REVIEWING");
   const blocked = mk("composer", "RUNNING", "BLOCKED");
-  const done = mk("cli", "RUNNING", "COMPLETED");
+  const done = mk("cli", "RUNNING", "REVIEWING", "COMPLETED");
 
-  const report = journal.recover();
+  const report = journal.recover(LOCK);
   assert.deepEqual([...report.runsInterrupted].sort(), [running1, running2].sort());
   assert.deepEqual([...report.runsLeftAlone].sort(), [queued, reviewing, blocked].sort());
 
@@ -207,7 +211,7 @@ test("recovery policy: RUNNING becomes BLOCKED; QUEUED, REVIEWING and BLOCKED ar
   assert.equal(journal.transitionRun(running2, "CANCELLED", { actor: "user" }).state, "CANCELLED");
 
   // Idempotent: nothing left to do.
-  const again = journal.recover();
+  const again = journal.recover(LOCK);
   assert.deepEqual([again.runsInterrupted, again.workspacesFailed, again.workspacesNeedingReconcile], [[], [], []]);
   assert.equal(audit.list().length, 2);
 });
@@ -219,7 +223,7 @@ test("recovery policy for workspaces: CREATING fails, REMOVING is reported and k
   journal.transitionWorkspace(removing.id, "REMOVING");
   const ready = readyWorkspace(journal);
 
-  const report = journal.recover();
+  const report = journal.recover(LOCK);
   assert.deepEqual(report.workspacesFailed, [creating.id]);
   assert.deepEqual(report.workspacesNeedingReconcile, [removing.id]);
   assert.equal(journal.getWorkspace(creating.id)?.state, "FAILED");
@@ -245,7 +249,7 @@ test("a failing audit append rolls back the whole recovery (all or nothing)", ()
     const r = journal.createRun({ workspaceId: ws.id, kind: "cli" }).value;
     journal.transitionRun(r.id, "RUNNING");
   }
-  assert.throws(() => journal.recover(), code("E_INTERNAL"));
+  assert.throws(() => journal.recover(LOCK), code("E_INTERNAL"));
   assert.equal(journal.listRuns({ states: ["RUNNING"] }).length, 3);
   assert.equal(real.head(), null);
 });
@@ -260,4 +264,73 @@ test("open refuses an audit log bound to a different database handle", () => {
   // The matching handle is accepted and nothing was migrated by the failed attempts.
   assert.equal(schemaVersion(journalDb, "journal"), 0);
   Journal.open(a, { audit: new AuditLog(a) });
+});
+
+// ---- review regressions (S6 to S9, N6) ----
+
+test("S6: createdBy is part of the run idempotency hash and scope, so attribution cannot be merged", () => {
+  const { journal } = setup();
+  const ws = readyWorkspace(journal);
+  const first = journal.createRun({ workspaceId: ws.id, kind: "cli", createdBy: "user", idempotencyKey: KEY1 });
+  const other = journal.createRun({ workspaceId: ws.id, kind: "cli", createdBy: "agent:evil", idempotencyKey: KEY1 });
+  assert.equal(other.replayed, false);
+  assert.notEqual(other.value.id, first.value.id);
+  const again = journal.createRun({ workspaceId: ws.id, kind: "cli", createdBy: "user", idempotencyKey: KEY1 });
+  assert.equal(again.replayed, true);
+  assert.equal(again.value.id, first.value.id);
+  assert.throws(() => journal.createRun({ workspaceId: ws.id, kind: "composer", createdBy: "user", idempotencyKey: KEY1 }), code("E_IDEMPOTENCY_CONFLICT"));
+});
+
+test("S7: a workspace cannot start removal while any run is not finished", () => {
+  const { journal } = setup();
+  const ws = readyWorkspace(journal);
+  const run = journal.createRun({ workspaceId: ws.id, kind: "cli" }).value;
+  journal.transitionRun(run.id, "RUNNING");
+  assert.throws(() => journal.transitionWorkspace(ws.id, "REMOVING"), code("E_CONFLICT"));
+  journal.transitionRun(run.id, "CANCELLED");
+  assert.equal(journal.transitionWorkspace(ws.id, "REMOVING").state, "REMOVING");
+});
+
+test("S8: a run cannot reach COMPLETED without passing REVIEWING", () => {
+  const { journal } = setup();
+  const ws = readyWorkspace(journal);
+  const run = journal.createRun({ workspaceId: ws.id, kind: "cli" }).value;
+  journal.transitionRun(run.id, "RUNNING");
+  assert.throws(() => journal.transitionRun(run.id, "COMPLETED"), code("E_CONFLICT"));
+  assert.ok(!RUN_TRANSITIONS.RUNNING.includes("COMPLETED"));
+  journal.transitionRun(run.id, "REVIEWING");
+  assert.equal(journal.transitionRun(run.id, "COMPLETED", { exitCode: 0 }).state, "COMPLETED");
+});
+
+test("S9: lone surrogates in journal strings are rejected", () => {
+  const { journal } = setup();
+  assert.throws(
+    () => journal.createWorkspace({ projectId: "p\uD800", branch: "b", baseRef: "main", baseSha: SHA, createdBy: "user" }),
+    code("E_INVALID_ARGUMENT"),
+  );
+});
+
+test("N6: expectedFrom and target states are constrained to the state enums and never echoed", () => {
+  const { journal } = setup();
+  const ws = readyWorkspace(journal);
+  const big = "Z".repeat(5000);
+  for (const call of [
+    () => journal.transitionWorkspace(ws.id, "REMOVING", { expectedFrom: big }),
+    () => journal.transitionWorkspace(ws.id, big as never),
+    () => journal.transitionRun(big, big as never),
+  ]) {
+    assert.throws(call, (e: unknown) => e instanceof AxisError && e.code === "E_INVALID_ARGUMENT" && !JSON.stringify([e.message, e.detail]).includes("ZZZZ"));
+  }
+});
+
+test("S11: recovery reports a REMOVING workspace every time but audits it once", () => {
+  const { journal, audit } = setup();
+  const ws = readyWorkspace(journal);
+  journal.transitionWorkspace(ws.id, "REMOVING");
+  assert.deepEqual(journal.recover(LOCK).workspacesNeedingReconcile, [ws.id]);
+  const seq = audit.head()?.seq;
+  assert.deepEqual(journal.recover(LOCK).workspacesNeedingReconcile, [ws.id]);
+  assert.deepEqual(journal.recover(LOCK).workspacesNeedingReconcile, [ws.id]);
+  assert.equal(audit.head()?.seq, seq);
+  assert.throws(() => journal.recover({ path: "x", held: false, release() {} }), code("E_CONFLICT"));
 });

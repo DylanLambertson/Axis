@@ -7,6 +7,7 @@ export interface Ctx {
   ws: string;
   r1: string;
   r2: string;
+  ws2: string;
 }
 
 export function deterministicJournal(db: DatabaseSync): { journal: Journal; audit: AuditLog } {
@@ -38,6 +39,12 @@ export const STEPS: ReadonlyArray<(j: Journal, c: Ctx) => void> = [
   (j, c) => void j.transitionRun(c.r2, "BLOCKED", { reason: "USER_PAUSED" }),
   (j, c) => void j.transitionRun(c.r1, "COMPLETED", { exitCode: 0 }),
   (j, c) => void j.transitionRun(c.r2, "RUNNING"),
+  // a second workspace walks into REMOVING, the state recovery must report but not rewrite
+  (j, c) => {
+    c.ws2 = j.createWorkspace({ projectId: "p2", branch: "axis/other", baseRef: "main", baseSha: "c".repeat(40), createdBy: "user" }).value.id;
+  },
+  (j, c) => void j.transitionWorkspace(c.ws2, "READY"),
+  (j, c) => void j.transitionWorkspace(c.ws2, "REMOVING", { reason: "USER_REMOVED", actor: "user" }),
 ];
 
 export function snapshot(j: Journal): unknown {

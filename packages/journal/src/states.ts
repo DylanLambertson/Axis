@@ -12,7 +12,12 @@
  * merge queue, all Phase 1b or later): DRAFT, PLANNING, AWAITING_APPROVAL,
  * VALIDATING, READY_TO_MERGE, MERGING, ROLLED_BACK.
  *
- * BLOCKED is the "interrupted" state. A run that was RUNNING when the daemon
+ * Every run reaches COMPLETED through REVIEWING (AGENT_SYSTEM.md routes every
+ * run through review; CLI runs' changes go through diff review). A run that
+ * produced nothing still passes REVIEWING and is accepted from there.
+ *
+ * BLOCKED is the "interrupted" state, and it is resumable, unlike the
+ * "alternative terminal" BLOCKED of AGENT_SYSTEM.md (recorded there too). A run that was RUNNING when the daemon
  * died becomes BLOCKED with reason `INTERRUPTED_BY_RESTART`; the user (or the
  * supervisor) then retries it (BLOCKED -> QUEUED), re-adopts a still-live CLI
  * process (BLOCKED -> RUNNING) or cancels it.
@@ -25,7 +30,7 @@ export type RunKind = (typeof RUN_KINDS)[number];
 
 export const RUN_TRANSITIONS: Readonly<Record<RunState, readonly RunState[]>> = {
   QUEUED: ["RUNNING", "CANCELLED"],
-  RUNNING: ["REVIEWING", "COMPLETED", "FAILED", "CANCELLED", "BLOCKED"],
+  RUNNING: ["REVIEWING", "FAILED", "CANCELLED", "BLOCKED"],
   REVIEWING: ["COMPLETED", "FAILED", "CANCELLED"],
   BLOCKED: ["QUEUED", "RUNNING", "CANCELLED", "FAILED"],
   COMPLETED: [],

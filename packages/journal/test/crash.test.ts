@@ -10,10 +10,12 @@ import { AuditLog, openDatabase } from "@axis/audit";
 import { Journal, RUN_TRANSITIONS, WORKSPACE_TRANSITIONS } from "../src/index.js";
 import { STEPS, deterministicJournal, snapshot, type Ctx } from "./fixtures/script.js";
 
+/** A held lock for in-process recovery; the child fixtures and lock tests exercise the real one. */
+const LOCK = { path: ":test:", held: true, release() {} };
 const CHILD = fileURLToPath(new URL("./fixtures/child.js", import.meta.url));
 
-/** Spawn the fixture, wait for READY, SIGKILL it, and confirm it died by signal. */
-async function crashChild(dbPath: string, mode: string, k: number): Promise<void> {
+/** Spawn the fixture, wait for READY, SIGKILL it (after `delayMs`), and confirm it died by signal. */
+async function crashChild(dbPath: string, mode: string, k: number, delayMs = 0): Promise<void> {
   const child = spawn(process.execPath, [CHILD, dbPath, mode, String(k)], { stdio: ["ignore", "pipe", "inherit"] });
   const exit = new Promise<string>((resolve) => child.on("exit", (code, signal) => resolve(signal ?? `code:${String(code)}`)));
   await new Promise<void>((resolve, reject) => {
@@ -25,13 +27,14 @@ async function crashChild(dbPath: string, mode: string, k: number): Promise<void
     child.on("error", reject);
     void exit.then((how) => reject(new Error(`child exited before READY: ${how}`)));
   });
+  if (delayMs > 0) await new Promise((r) => setTimeout(r, delayMs));
   child.kill("SIGKILL");
   assert.equal(await exit, "SIGKILL");
 }
 
 function reference(k: number): unknown {
   const { journal } = deterministicJournal(openDatabase(":memory:"));
-  const ctx: Ctx = { ws: "", r1: "", r2: "" };
+  const ctx: Ctx = { ws: "", r1: "", r2: "", ws2: "" };
   for (let i = 0; i < k; i++) STEPS[i]?.(journal, ctx);
   return snapshot(journal);
 }
@@ -84,7 +87,7 @@ for (const mode of ["after-commit", "open-tx"] as const) {
         assertConsistent(db, journal, audit);
 
         const before = audit.head()?.seq ?? 0;
-        const report = journal.recover();
+        const report = journal.recover(LOCK);
         const stillRunning = journal.listRuns({ states: ["RUNNING"] });
         assert.deepEqual(stillRunning, []);
         assert.equal(journal.listWorkspaces().filter((w) => w.state === "CREATING").length, 0);
@@ -92,8 +95,12 @@ for (const mode of ["after-commit", "open-tx"] as const) {
         assertConsistent(db, journal, audit);
 
         // Recovery converges: a second pass has nothing to do.
-        const again = journal.recover();
-        assert.deepEqual([again.runsInterrupted, again.workspacesFailed, again.workspacesNeedingReconcile], [[], [], []]);
+        // REMOVING workspaces are re-reported (the worktree manager still owes them work) but never re-audited.
+        const afterFirst = audit.head()?.seq ?? 0;
+        const again = journal.recover(LOCK);
+        assert.deepEqual([again.runsInterrupted, again.workspacesFailed], [[], []]);
+        assert.deepEqual(again.workspacesNeedingReconcile, report.workspacesNeedingReconcile);
+        assert.equal(audit.head()?.seq ?? 0, afterFirst, "a repeated recovery must not write audit events");
         db.close();
       }
     } finally {
@@ -112,7 +119,7 @@ test("killed mid-recovery: the half-done recovery rolls back, a second recovery 
     assert.equal(audit.head(), null, "no audit event from the uncommitted recovery");
     assertConsistent(db, journal, audit);
 
-    const report = journal.recover();
+    const report = journal.recover(LOCK);
     assert.equal(report.runsInterrupted.length, 2);
     assert.equal(audit.list().length, 2);
     for (const e of audit.list()) {
@@ -134,9 +141,9 @@ test("a killed writer does not leave the database locked for the next daemon", a
     const db = openDatabase(path, { busyTimeoutMs: 200 });
     const { journal } = deterministicJournal(db);
     // Would throw SQLITE_BUSY if the dead process still held the write lock.
-    const ws = journal.listWorkspaces()[0];
-    assert.ok(ws);
-    journal.transitionWorkspace(ws.id, "REMOVING");
+    const run = journal.listRuns()[0];
+    assert.ok(run);
+    journal.transitionRun(run.id, "CANCELLED");
     db.close();
   } finally {
     done();
@@ -150,9 +157,43 @@ test("recovery never deletes rows", async () => {
     const db = openDatabase(path);
     const { journal } = deterministicJournal(db);
     const before = journal.listRuns().length;
-    journal.recover();
+    journal.recover(LOCK);
     assert.equal(journal.listRuns().length, before);
     assert.equal(journal.listWorkspaces({ includeRemoved: true }).length, 1);
+    db.close();
+  } finally {
+    done();
+  }
+});
+
+test("S11: SIGKILL at random instants while the child commits in a loop (including inside COMMIT) never corrupts state", async () => {
+  for (let i = 0; i < 12; i++) {
+    const { path, done } = fresh();
+    try {
+      await crashChild(path, "fuzz", 0, Math.floor(Math.random() * 50));
+      const db = openDatabase(path);
+      const { journal, audit } = deterministicJournal(db);
+      assertConsistent(db, journal, audit);
+      // Every committed run is whole: its journal row and its history agree (checked above), and none is half-created.
+      journal.recover(LOCK);
+      assertConsistent(db, journal, audit);
+      assert.equal(journal.listRuns({ states: ["RUNNING"] }).length, 0);
+      db.close();
+    } finally {
+      done();
+    }
+  }
+});
+
+test("S11: an uncommitted transaction large enough to spill the page cache to the WAL file still vanishes on kill", async () => {
+  const { path, done } = fresh();
+  try {
+    await crashChild(path, "spill", 0, 150);
+    const db = openDatabase(path);
+    const { journal, audit } = deterministicJournal(db);
+    assert.equal(journal.listRuns().length, 0, "nothing from the uncommitted transaction may survive");
+    assert.equal(journal.listWorkspaces().length, 1);
+    assertConsistent(db, journal, audit);
     db.close();
   } finally {
     done();

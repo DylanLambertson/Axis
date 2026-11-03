@@ -1,16 +1,15 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
+export { Journal, type JournalOptions } from "./journal.js";
 export {
-  Journal,
   type Created,
   type CreateRunInput,
   type CreateWorkspaceInput,
-  type JournalOptions,
   type RecoveryReport,
   type Run,
   type Transition,
   type TransitionOptions,
   type Workspace,
-} from "./journal.js";
+} from "./model.js";
 export { JOURNAL_MIGRATIONS, JOURNAL_SCHEMA_VERSION } from "./schema.js";
 export {
   RESTART_REASON,

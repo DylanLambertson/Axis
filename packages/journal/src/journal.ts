@@ -1,211 +1,60 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import {
   AuditActions,
+  AuditLog,
   AxisError,
-  canonicalize,
   runMigrations,
   withTransaction,
-  type AuditActor,
-  type AuditLog,
   type DatabaseSync,
+  type InstanceLock,
 } from "@axis/audit";
-import { z } from "zod";
+import {
+  createRunSchema,
+  createWorkspaceSchema,
+  hashBody,
+  idSchema,
+  invalid,
+  runStateSchema,
+  toRun,
+  toWorkspace,
+  transitionOptionsSchema,
+  workspaceStateSchema,
+  type Created,
+  type CreateRunInput,
+  type CreateWorkspaceInput,
+  type RecoveryReport,
+  type Run,
+  type RunRow,
+  type Transition,
+  type TransitionOptions,
+  type Workspace,
+  type WorkspaceRow,
+} from "./model.js";
 import { JOURNAL_MIGRATIONS } from "./schema.js";
 import {
   RESTART_REASON,
-  RUN_KINDS,
+  RUN_STATES,
   RUN_TERMINAL_STATES,
   RUN_TRANSITIONS,
   WORKSPACE_TRANSITIONS,
-  type RunKind,
   type RunState,
   type WorkspaceState,
 } from "./states.js";
 
-const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-const REASON = /^[A-Z][A-Z0-9_]{0,63}$/;
-const ACTOR = /^(?:user|daemon|agent:[A-Za-z0-9._-]{1,64})$/;
-const noControl = (s: string): boolean => !/[\u0000-\u001f\u007f]/.test(s);
-const text = (max: number) => z.string().min(1).max(max).refine(noControl);
-
-const idempotencyKey = z.string().regex(UUID_V4);
-const actorSchema = z.string().regex(ACTOR);
-
-const createWorkspaceSchema = z
-  .object({
-    projectId: text(128),
-    branch: text(256),
-    baseRef: text(256),
-    baseSha: z.string().regex(/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/),
-    createdBy: actorSchema,
-    idempotencyKey: idempotencyKey.optional(),
-  })
-  .strict();
-
-const createRunSchema = z
-  .object({
-    workspaceId: text(128),
-    kind: z.enum(RUN_KINDS),
-    createdBy: actorSchema.optional(),
-    idempotencyKey: idempotencyKey.optional(),
-  })
-  .strict();
-
-const transitionOptionsSchema = z
-  .object({
-    reason: z.string().regex(REASON).optional(),
-    actor: actorSchema.optional(),
-    exitCode: z.number().int().min(-255).max(255).optional(),
-    /** Optimistic guard: the transition applies only if the entity is in this state. */
-    expectedFrom: z.string().optional(),
-  })
-  .strict();
-
-export interface Workspace {
-  readonly id: string;
-  readonly projectId: string;
-  readonly branch: string;
-  readonly baseRef: string;
-  readonly baseSha: string;
-  readonly createdBy: string;
-  readonly state: WorkspaceState;
-  readonly createdAt: string;
-  readonly updatedAt: string;
-}
-
-export interface Run {
-  readonly id: string;
-  readonly workspaceId: string;
-  readonly kind: RunKind;
-  readonly state: RunState;
-  readonly reason: string | null;
-  readonly exitCode: number | null;
-  readonly createdAt: string;
-  readonly updatedAt: string;
-  readonly startedAt: string | null;
-  readonly endedAt: string | null;
-}
-
-export interface Transition {
-  readonly entity: "workspace" | "run";
-  readonly entityId: string;
-  readonly from: string | null;
-  readonly to: string;
-  readonly reason: string | null;
-  readonly actor: string;
-  readonly ts: string;
-}
-
-export interface CreateWorkspaceInput {
-  readonly projectId: string;
-  readonly branch: string;
-  readonly baseRef: string;
-  readonly baseSha: string;
-  readonly createdBy: AuditActor;
-  /** UUIDv4. A replay with the same input returns the same workspace. */
-  readonly idempotencyKey?: string;
-}
-
-export interface CreateRunInput {
-  readonly workspaceId: string;
-  readonly kind: RunKind;
-  readonly createdBy?: AuditActor;
-  readonly idempotencyKey?: string;
-}
-
-export interface TransitionOptions {
-  /** Short upper-case code (for example `USER_CANCELLED`); never free text, so no secret can ride along. */
-  readonly reason?: string;
-  readonly actor?: AuditActor;
-  readonly exitCode?: number;
-  readonly expectedFrom?: string;
-}
-
-export interface Created<T> {
-  readonly value: T;
-  /** True when an earlier call with the same idempotency key already created it. */
-  readonly replayed: boolean;
-}
-
-export interface RecoveryReport {
-  /** Runs that were RUNNING and are now BLOCKED (`INTERRUPTED_BY_RESTART`). */
-  readonly runsInterrupted: readonly string[];
-  /** Workspaces that were CREATING and are now FAILED. */
-  readonly workspacesFailed: readonly string[];
-  /**
-   * Workspaces left in REMOVING. Removal is idempotent against Git, so the
-   * worktree manager finishes or rolls back from here; no state change is made.
-   */
-  readonly workspacesNeedingReconcile: readonly string[];
-  /** Non-terminal runs recovery left alone (QUEUED, REVIEWING, BLOCKED): they are durable user-facing states. */
-  readonly runsLeftAlone: readonly string[];
-}
-
 export interface JournalOptions {
   /**
    * Where recovery events go. It must be an `AuditLog` bound to the same
-   * `DatabaseSync` handle as the journal (checked by identity in `open`), so
-   * every change commits atomically with its audit event.
+   * `DatabaseSync` handle as the journal (checked by `instanceof` and by
+   * identity in `open`), so every change commits atomically with its audit
+   * event.
    */
   readonly audit: AuditLog;
   readonly now?: () => Date;
   readonly newId?: () => string;
 }
 
-interface WorkspaceRow {
-  id: string;
-  project_id: string;
-  branch: string;
-  base_ref: string;
-  base_sha: string;
-  created_by: string;
-  state: string;
-  created_at: string;
-  updated_at: string;
-}
-interface RunRow {
-  id: string;
-  workspace_id: string;
-  kind: string;
-  state: string;
-  reason: string | null;
-  exit_code: number | null;
-  created_at: string;
-  updated_at: string;
-  started_at: string | null;
-  ended_at: string | null;
-}
-
-const toWorkspace = (r: WorkspaceRow): Workspace => ({
-  id: r.id,
-  projectId: r.project_id,
-  branch: r.branch,
-  baseRef: r.base_ref,
-  baseSha: r.base_sha,
-  createdBy: r.created_by,
-  state: r.state as WorkspaceState,
-  createdAt: r.created_at,
-  updatedAt: r.updated_at,
-});
-const toRun = (r: RunRow): Run => ({
-  id: r.id,
-  workspaceId: r.workspace_id,
-  kind: r.kind as RunKind,
-  state: r.state as RunState,
-  reason: r.reason,
-  exitCode: r.exit_code,
-  createdAt: r.created_at,
-  updatedAt: r.updated_at,
-  startedAt: r.started_at,
-  endedAt: r.ended_at,
-});
-
-function invalid(error: z.ZodError, what: string): AxisError {
-  // Only field paths: zod messages can echo the offending value.
-  const fields = [...new Set(error.issues.map((i) => i.path.join(".") || "(root)"))].join(", ");
-  return new AxisError("E_INVALID_ARGUMENT", `Invalid ${what}: ${fields}`);
-}
+const OPEN_RUN_STATES = RUN_STATES.filter((s) => !RUN_TERMINAL_STATES.includes(s));
 
 /**
  * The durable journal for agent workspaces and runs. Every state change is a
@@ -227,9 +76,9 @@ export class Journal {
     this.#newId = options.newId ?? (() => randomUUID());
   }
 
-  /** Migrate the schema and return a journal. Call `recover()` next on daemon start. */
+  /** Migrate the schema and return a journal. On daemon start take the instance lock, then call `recover(lock)`. */
   static open(db: DatabaseSync, options: JournalOptions): Journal {
-    if (!options.audit.isBoundTo(db)) {
+    if (!(options.audit instanceof AuditLog) || !options.audit.isBoundTo(db)) {
       throw new AxisError(
         "E_INTERNAL",
         "The audit log must use the same database handle as the journal so state changes and audit events commit atomically",
@@ -246,7 +95,9 @@ export class Journal {
     if (!parsed.success) throw invalid(parsed.error, "workspace");
     const { idempotencyKey: key, ...body } = parsed.data;
     return withTransaction(this.#db, () => {
-      const replay = this.#replay("workspace.create", key, body);
+      // The principal is part of the scope: one actor's key never resolves to another's result.
+      const scope = `workspace.create:${body.createdBy}`;
+      const replay = this.#replay(scope, key, body);
       if (replay) return { value: this.#mustWorkspace(replay), replayed: true };
       const id = this.#newId();
       const ts = this.#ts();
@@ -257,7 +108,7 @@ export class Journal {
         )
         .run(id, body.projectId, body.branch, body.baseRef, body.baseSha, body.createdBy, ts, ts);
       this.#recordTransition("workspace", id, null, "CREATING", null, body.createdBy, ts);
-      this.#remember("workspace.create", key, body, id, ts);
+      this.#remember(scope, key, body, id, ts);
       return { value: this.#mustWorkspace(id), replayed: false };
     });
   }
@@ -275,12 +126,26 @@ export class Journal {
   }
 
   transitionWorkspace(id: string, to: WorkspaceState, options: TransitionOptions = {}): Workspace {
+    const target = workspaceStateSchema.safeParse(to);
+    if (!target.success) throw invalid(target.error, "workspace state");
     const opts = this.#parseTransitionOptions(options);
     return withTransaction(this.#db, () => {
       const current = this.#mustWorkspace(id);
       this.#guard("workspace", current.state, to, WORKSPACE_TRANSITIONS[current.state], opts.expectedFrom);
+      if (to === "REMOVING") {
+        const open = this.#db
+          .prepare(`SELECT COUNT(*) AS n FROM agent_runs WHERE workspace_id = ? AND state IN (${OPEN_RUN_STATES.map(() => "?").join(",")})`)
+          .get(id, ...OPEN_RUN_STATES) as { n: number };
+        if (open.n > 0) {
+          throw new AxisError("E_CONFLICT", "The workspace still has runs that are not finished", { openRuns: open.n });
+        }
+      }
       const ts = this.#ts();
-      this.#db.prepare("UPDATE agent_workspaces SET state = ?, updated_at = ? WHERE id = ? AND state = ?").run(to, ts, id, current.state);
+      this.#expectOne(
+        this.#db
+          .prepare("UPDATE agent_workspaces SET state = ?, reconcile_reported = 0, updated_at = ? WHERE id = ? AND state = ?")
+          .run(to, ts, id, current.state),
+      );
       this.#recordTransition("workspace", id, current.state, to, opts.reason ?? null, opts.actor ?? "daemon", ts);
       return this.#mustWorkspace(id);
     });
@@ -291,9 +156,12 @@ export class Journal {
   createRun(input: CreateRunInput): Created<Run> {
     const parsed = createRunSchema.safeParse(input);
     if (!parsed.success) throw invalid(parsed.error, "run");
-    const { idempotencyKey: key, createdBy, ...body } = parsed.data;
+    const { idempotencyKey: key, createdBy: by, ...rest } = parsed.data;
+    const createdBy = by ?? "user";
+    const body = { ...rest, createdBy };
     return withTransaction(this.#db, () => {
-      const replay = this.#replay("run.create", key, body);
+      const scope = `run.create:${createdBy}`;
+      const replay = this.#replay(scope, key, body);
       if (replay) return { value: this.#mustRun(replay), replayed: true };
       const workspace = this.#mustWorkspace(body.workspaceId);
       if (workspace.state !== "READY") {
@@ -306,8 +174,8 @@ export class Journal {
           "INSERT INTO agent_runs (id, workspace_id, kind, state, created_at, updated_at) VALUES (?, ?, ?, 'QUEUED', ?, ?)",
         )
         .run(id, body.workspaceId, body.kind, ts, ts);
-      this.#recordTransition("run", id, null, "QUEUED", null, createdBy ?? "user", ts);
-      this.#remember("run.create", key, body, id, ts);
+      this.#recordTransition("run", id, null, "QUEUED", null, createdBy, ts);
+      this.#remember(scope, key, body, id, ts);
       return { value: this.#mustRun(id), replayed: false };
     });
   }
@@ -318,26 +186,48 @@ export class Journal {
   }
 
   listRuns(options: { readonly workspaceId?: string; readonly states?: readonly RunState[] } = {}): Run[] {
-    const rows = this.#db.prepare("SELECT * FROM agent_runs ORDER BY created_at, id").all() as unknown as RunRow[];
-    return rows
-      .map(toRun)
-      .filter((r) => (options.workspaceId === undefined || r.workspaceId === options.workspaceId) && (!options.states || options.states.includes(r.state)));
+    const where: string[] = [];
+    const args: string[] = [];
+    if (options.workspaceId !== undefined) {
+      const w = idSchema.safeParse(options.workspaceId);
+      if (!w.success) throw invalid(w.error, "workspace id");
+      where.push("workspace_id = ?");
+      args.push(w.data);
+    }
+    if (options.states !== undefined) {
+      if (options.states.length === 0) return [];
+      const states = options.states.map((s) => runStateSchema.parse(s));
+      where.push(`state IN (${states.map(() => "?").join(",")})`);
+      args.push(...states);
+    }
+    const sql = `SELECT * FROM agent_runs${where.length ? ` WHERE ${where.join(" AND ")}` : ""} ORDER BY created_at, id`;
+    return (this.#db.prepare(sql).all(...args) as unknown as RunRow[]).map(toRun);
   }
 
   transitionRun(id: string, to: RunState, options: TransitionOptions = {}): Run {
+    const target = runStateSchema.safeParse(to);
+    if (!target.success) throw invalid(target.error, "run state");
     const opts = this.#parseTransitionOptions(options);
     return withTransaction(this.#db, () => {
       const current = this.#mustRun(id);
       this.#guard("run", current.state, to, RUN_TRANSITIONS[current.state], opts.expectedFrom);
+      if (current.state === "BLOCKED" && (to === "QUEUED" || to === "RUNNING")) {
+        const ws = this.#mustWorkspace(current.workspaceId);
+        if (ws.state !== "READY") {
+          throw new AxisError("E_CONFLICT", "A run can only resume in a READY workspace", { state: ws.state });
+        }
+      }
       const ts = this.#ts();
       const terminal = RUN_TERMINAL_STATES.includes(to);
-      this.#db
-        .prepare(
-          "UPDATE agent_runs SET state = ?, reason = ?, exit_code = COALESCE(?, exit_code), updated_at = ?, " +
-            "started_at = CASE WHEN ? = 'RUNNING' AND started_at IS NULL THEN ? ELSE started_at END, " +
-            "ended_at = CASE WHEN ? THEN ? ELSE ended_at END WHERE id = ? AND state = ?",
-        )
-        .run(to, opts.reason ?? null, opts.exitCode ?? null, ts, to, ts, terminal ? 1 : 0, ts, id, current.state);
+      this.#expectOne(
+        this.#db
+          .prepare(
+            "UPDATE agent_runs SET state = ?, reason = ?, exit_code = COALESCE(?, exit_code), updated_at = ?, " +
+              "started_at = CASE WHEN ? = 'RUNNING' AND started_at IS NULL THEN ? ELSE started_at END, " +
+              "ended_at = CASE WHEN ? THEN ? ELSE ended_at END WHERE id = ? AND state = ?",
+          )
+          .run(to, opts.reason ?? null, opts.exitCode ?? null, ts, to, ts, terminal ? 1 : 0, ts, id, current.state),
+      );
       this.#recordTransition("run", id, current.state, to, opts.reason ?? null, opts.actor ?? "daemon", ts);
       return this.#mustRun(id);
     });
@@ -372,18 +262,24 @@ export class Journal {
   // ---- recovery (DMN-7) ----
 
   /**
-   * Reconcile after a start. Policy (documented, deliberately small):
+   * Reconcile after a start. Requires the held instance lock
+   * (`acquireInstanceLock`): a second live daemon on the same data must never
+   * run this, because it would block the first one's RUNNING runs. Policy:
    *
    * - run RUNNING            -> BLOCKED / INTERRUPTED_BY_RESTART (the composer loop or the CLI supervision is gone);
    * - workspace CREATING     -> FAILED / INTERRUPTED_BY_RESTART (the worktree manager sweeps any stray Git worktree);
-   * - workspace REMOVING     -> unchanged, reported for reconcile;
+   * - workspace REMOVING     -> unchanged; reported on every call, audited once;
    * - run QUEUED/REVIEWING/BLOCKED -> unchanged (durable states a person or the scheduler acts on).
    *
    * One transaction: each change is written with its transition record and a
-   * `journal.recovery` audit event, all or nothing. Running it again after a
-   * crash (including a crash during recovery) is safe and converges.
+   * `journal.recovery` audit event, all or nothing. Converges: a second call
+   * after a completed recovery changes nothing and writes nothing, and a call
+   * after a crash (including one during recovery) finishes the job.
    */
-  recover(): RecoveryReport {
+  recover(lock: InstanceLock): RecoveryReport {
+    if (!lock || lock.held !== true) {
+      throw new AxisError("E_CONFLICT", "Recovery requires the held single-instance lock");
+    }
     return withTransaction(this.#db, () => {
       const ts = this.#ts();
       const runsInterrupted: string[] = [];
@@ -396,7 +292,11 @@ export class Journal {
         .all() as unknown as WorkspaceRow[];
       for (const row of stuckWorkspaces) {
         if (row.state === "CREATING") {
-          this.#db.prepare("UPDATE agent_workspaces SET state = 'FAILED', updated_at = ? WHERE id = ? AND state = 'CREATING'").run(ts, row.id);
+          this.#expectOne(
+            this.#db
+              .prepare("UPDATE agent_workspaces SET state = 'FAILED', updated_at = ? WHERE id = ? AND state = 'CREATING'")
+              .run(ts, row.id),
+          );
           this.#recordTransition("workspace", row.id, "CREATING", "FAILED", RESTART_REASON, "daemon", ts);
           this.#audit.append({
             actor: "daemon",
@@ -407,28 +307,35 @@ export class Journal {
           });
           workspacesFailed.push(row.id);
         } else {
-          this.#audit.append({
-            actor: "daemon",
-            action: AuditActions.journalRecovery,
-            target: `workspace:${row.id}`,
-            outcome: "success",
-            payload: { from: "REMOVING", to: "REMOVING", reason: "NEEDS_RECONCILE", projectId: row.project_id },
-          });
           workspacesNeedingReconcile.push(row.id);
+          if (row.reconcile_reported === 0) {
+            this.#expectOne(
+              this.#db.prepare("UPDATE agent_workspaces SET reconcile_reported = 1 WHERE id = ? AND state = 'REMOVING'").run(row.id),
+            );
+            this.#audit.append({
+              actor: "daemon",
+              action: AuditActions.journalRecovery,
+              target: `workspace:${row.id}`,
+              outcome: "success",
+              payload: { from: "REMOVING", to: "REMOVING", reason: "NEEDS_RECONCILE", projectId: row.project_id },
+            });
+          }
         }
       }
 
       const nonTerminalRuns = this.#db
-        .prepare("SELECT * FROM agent_runs WHERE state IN ('QUEUED','RUNNING','REVIEWING','BLOCKED') ORDER BY created_at, id")
-        .all() as unknown as RunRow[];
+        .prepare(`SELECT * FROM agent_runs WHERE state IN (${OPEN_RUN_STATES.map(() => "?").join(",")}) ORDER BY created_at, id`)
+        .all(...OPEN_RUN_STATES) as unknown as RunRow[];
       for (const row of nonTerminalRuns) {
         if (row.state !== "RUNNING") {
           runsLeftAlone.push(row.id);
           continue;
         }
-        this.#db
-          .prepare("UPDATE agent_runs SET state = 'BLOCKED', reason = ?, updated_at = ? WHERE id = ? AND state = 'RUNNING'")
-          .run(RESTART_REASON, ts, row.id);
+        this.#expectOne(
+          this.#db
+            .prepare("UPDATE agent_runs SET state = 'BLOCKED', reason = ?, updated_at = ? WHERE id = ? AND state = 'RUNNING'")
+            .run(RESTART_REASON, ts, row.id),
+        );
         this.#recordTransition("run", row.id, "RUNNING", "BLOCKED", RESTART_REASON, "daemon", ts);
         this.#audit.append({
           actor: "daemon",
@@ -455,13 +362,12 @@ export class Journal {
     return parsed.data as TransitionOptions;
   }
 
-  #guard(
-    entity: string,
-    from: string,
-    to: string,
-    allowed: readonly string[],
-    expectedFrom: string | undefined,
-  ): void {
+  /** A single-row UPDATE that touched anything else means the caller's assumptions broke: fail loudly. */
+  #expectOne(result: { changes: number | bigint }): void {
+    if (Number(result.changes) !== 1) throw new AxisError("E_INTERNAL", "A state update did not apply to exactly one row");
+  }
+
+  #guard(entity: string, from: string, to: string, allowed: readonly string[], expectedFrom: string | undefined): void {
     if (expectedFrom !== undefined && expectedFrom !== from) {
       throw new AxisError("E_CONFLICT", `The ${entity} is no longer in the expected state`, { expected: expectedFrom, actual: from });
     }
@@ -515,8 +421,4 @@ export class Journal {
     if (!r) throw new AxisError("E_NOT_FOUND", "Run not found");
     return r;
   }
-}
-
-function hashBody(body: unknown): string {
-  return createHash("sha256").update(canonicalize(body)).digest("hex");
 }
