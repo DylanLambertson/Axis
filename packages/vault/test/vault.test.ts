@@ -218,26 +218,123 @@ test("the authority validates what it grants", () => {
 
 // ------------------------------------------------------------ S4: TOCTOU
 
-test("S4: a write that lands on a different backend than the one the decision used is rolled back", async () => {
+test("S4: a backend that honours the put contract refuses a write that would land elsewhere, and nothing is stored", async () => {
   const { vault, backend } = setup("gnome_libsecret", "os_protected");
   backend.landWritesOn({ id: "basic_text", protection: "none" });
-  assert.equal(await code(vault.store("c1", SECRET)), "backend_changed");
-  assert.equal(await backend.get("c1"), undefined, "the weakly stored copy was removed");
-  assert.equal(await vault.info("c1"), undefined);
+  assert.equal(await code(vault.store("c1", SECRET)), "backend_failed");
+  assert.equal(await backend.get("c1"), undefined);
   assert.ok(vault.knownSecrets().includes(SECRET), "still redacted");
   backend.landWritesOn(undefined);
   assert.equal((await vault.store("c1", SECRET)).protection, "os_protected");
 });
 
-test("S4: a backend that does not say where it wrote fails closed", async () => {
+test("N-D: a refused rotation leaves the previous key in place", async () => {
   const { vault, backend } = setup("gnome_libsecret", "os_protected");
+  await vault.store("c1", SECRET);
+  backend.landWritesOn({ id: "basic_text", protection: "none" });
+  assert.equal(await code(vault.store("c1", OTHER)), "backend_failed");
+  backend.landWritesOn(undefined);
+  assert.equal(await vault.reveal("c1", "provider_request"), SECRET);
+});
+
+test("S4: a backend that writes anyway is rolled back as backend_changed", async () => {
+  const { vault, backend } = setup("gnome_libsecret", "os_protected");
+  backend.landWritesOn({ id: "basic_text", protection: "none" }, "write_anyway");
+  assert.equal(await code(vault.store("c1", SECRET)), "backend_changed");
+  assert.equal(await backend.get("c1"), undefined, "the weakly stored copy was removed");
+  assert.equal(await vault.info("c1"), undefined);
+  assert.ok(vault.knownSecrets().includes(SECRET), "still redacted");
+});
+
+test("SF-2: a rollback that fails once is retried", async () => {
+  const { vault, backend } = setup("gnome_libsecret", "os_protected");
+  backend.landWritesOn({ id: "basic_text", protection: "none" }, "write_anyway");
+  const remove = backend.remove.bind(backend);
+  let calls = 0;
+  backend.remove = async (n) => {
+    if (++calls === 1) throw new Error("transient");
+    return remove(n);
+  };
+  assert.equal(await code(vault.store("c1", SECRET)), "backend_changed");
+  assert.equal(calls, 2);
+  assert.equal(await backend.get("c1"), undefined);
+  assert.equal(await vault.info("c1"), undefined);
+});
+
+test("SF-2: when the rollback cannot remove the copy, it is shown as weak, never revealed, and audited", async () => {
+  const changes: ChangeEvent[] = [];
+  const { vault, backend } = setup("gnome_libsecret", "os_protected", { changes });
+  backend.landWritesOn({ id: "basic_text", protection: "none" }, "write_anyway");
+  backend.remove = async () => {
+    throw new Error(`remove failed for ${SECRET}`);
+  };
+  assert.equal(await code(vault.store("c1", SECRET)), "backend_changed");
+  const info = await vault.info("c1");
+  assert.equal(info?.backend, "basic_text");
+  assert.equal(info?.protection, "none", "not shown as protected");
+  assert.equal(info?.backendChanged, true);
+  assert.equal(info?.weakConsent, false);
+  assert.equal((await vault.list())[0]?.protection, "none");
+  assert.equal(await code(vault.reveal("c1", "provider_request")), "backend_changed", "the weak copy is not handed out");
+  assert.deepEqual(changes.map((c) => c.outcome), ["rollback_failed"]);
+  assert.ok(!JSON.stringify(changes).includes(SECRET));
+  // A good store afterwards clears it.
+  backend.landWritesOn(undefined);
+  await vault.store("c1", OTHER);
+  assert.equal((await vault.info("c1"))?.protection, "os_protected");
+  assert.equal(await vault.reveal("c1", "provider_request"), OTHER);
+});
+
+test("N-C: a backend that does not say where it wrote is rolled back, even when the decision was unknown", async () => {
+  const { vault, backend, consentFor } = setup("unknown", "none");
   const put = backend.put.bind(backend);
   backend.put = (async (...a: Parameters<typeof put>) => {
     await put(...a);
     return undefined;
   }) as never;
-  assert.equal(await code(vault.store("c1", SECRET)), "backend_changed");
+  assert.equal(await code(vault.store("c1", SECRET, { consent: consentFor("c1", "unknown") })), "backend_changed");
   assert.equal(await backend.get("c1"), undefined);
+});
+
+test("N-F: a backend that now reports less protection counts as changed, even with the same id", async () => {
+  const { vault, backend } = setup("gnome_libsecret", "os_protected");
+  await vault.store("c1", SECRET);
+  assert.equal((await vault.info("c1"))?.backendChanged, false);
+  backend.setInfo({ protection: "none" }); // a locked collection
+  assert.equal((await vault.info("c1"))?.backendChanged, true);
+});
+
+// ------------------------------------------- N-E: consent wiring hardening
+
+test("N-E: the verifier is captured at construction and cannot be swapped through the options object", async () => {
+  const backend = createMemoryBackend({ id: "basic_text", protection: "none" });
+  const options = { backend, consent: createConsentAuthority().verifier } as { backend: typeof backend; consent: { redeem(): boolean } };
+  const vault = createVault(options as never);
+  options.consent = { redeem: () => true };
+  assert.equal(await code(vault.store("c1", SECRET, { consent: { connectionId: "c1", backend: "basic_text", expiresAt: 1 } as never })), "consent_required");
+});
+
+test("N-E: the default consent clock is monotonic, so changing the wall clock cannot extend a consent", async () => {
+  const authority = createConsentAuthority({ ttlMs: 40 });
+  const consent = authority.grantor.grant({ connectionId: "c1", backend: "basic_text" });
+  const real = Date.now;
+  Date.now = () => 0; // the wall clock set back
+  try {
+    await new Promise((r) => setTimeout(r, 90));
+    assert.equal(authority.verifier.redeem(consent, { connectionId: "c1", backend: "basic_text" }), false, "expired on the monotonic clock");
+  } finally {
+    Date.now = real;
+  }
+});
+
+test("N-E: a consent is spent even when the write then fails, so the approvals UI must ask again", async () => {
+  const { vault, backend, consentFor } = setup("basic_text", "none");
+  const consent = consentFor("c1", "basic_text");
+  backend.put = async () => {
+    throw new Error("disk full");
+  };
+  assert.equal(await code(vault.store("c1", SECRET, { consent })), "backend_failed");
+  assert.equal(await code(vault.store("c1", SECRET, { consent })), "consent_required");
 });
 
 // -------------------------------------------------- reveal, audit and info

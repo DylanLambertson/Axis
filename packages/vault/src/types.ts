@@ -54,10 +54,15 @@ export interface SecretBackend {
   /** Asked on every store (PRV-1): the backend can change between calls. */
   info(): Promise<BackendInfo>;
   /**
-   * Store the secret and report the backend that actually took it. The vault
-   * compares that with the answer its policy decision was based on and rolls
-   * the write back on a difference, so a backend that changed in between (S4)
-   * cannot leave a weakly stored secret recorded as protected.
+   * Store the secret and report the backend that actually took it.
+   *
+   * An implementation MUST refuse (throw) rather than write when the write
+   * would land on a backend or protection other than `meta.backend` and
+   * `meta.protection`: that is what keeps a secret from ever being written
+   * somewhere weaker than the policy decision assumed (SF-2). The vault checks
+   * the reported result anyway and rolls the write back on a difference, but a
+   * rollback can fail and can destroy the previous secret of a rotation, so it
+   * is the second line of defence, not the first.
    */
   put(name: string, secret: string, meta: EntryMeta): Promise<WrittenTo>;
   get(name: string): Promise<{ readonly secret: string; readonly meta: EntryMeta } | undefined>;
@@ -103,7 +108,12 @@ export interface AccessEvent {
 export interface ChangeEvent {
   readonly action: "store" | "remove";
   readonly connectionId: string;
-  readonly outcome: "ok" | "refused" | "error";
+  /**
+   * `rollback_failed`: a write landed on a different backend than decided and
+   * could not be removed. The connection is shown as weak and refuses `reveal`
+   * until it is stored again or removed.
+   */
+  readonly outcome: "ok" | "refused" | "error" | "rollback_failed";
   /** The backend and protection the decision was made on, for a store. */
   readonly backend?: BackendId;
   readonly protection?: Protection;

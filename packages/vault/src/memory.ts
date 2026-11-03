@@ -11,8 +11,12 @@ export interface MemoryBackendOptions {
 export interface MemoryBackend extends SecretBackend {
   /** Change what the backend reports, as a platform keyring starting or stopping would. */
   setInfo(info: Partial<BackendInfo>): void;
-  /** Make the next writes land on this backend instead (the backend changed between `info()` and `put()`). Undefined restores it. */
-  landWritesOn(info: { id: BackendId; protection: Protection } | undefined): void;
+  /**
+   * The backend changed between `info()` and `put()`: writes would land on `info`. By default the backend
+   * behaves as the `SecretBackend.put` contract requires and refuses; `write_anyway` models one that does not,
+   * to test the vault's second line of defence. Undefined restores normal behaviour.
+   */
+  landWritesOn(info: { id: BackendId; protection: Protection } | undefined, mode?: "refuse" | "write_anyway"): void;
   /** Make every call after this fail, with an error text that echoes the secret, to test containment. */
   failWith(message: string | undefined): void;
   /** Replace what `meta()` and `list()` return for an entry, to test a backend that returns bad data. */
@@ -31,6 +35,7 @@ export function createMemoryBackend(options: MemoryBackendOptions = {}): MemoryB
   };
   let failure: string | undefined;
   let landed: { id: BackendId; protection: Protection } | undefined;
+  let landedMode: "refuse" | "write_anyway" = "refuse";
   const entries = new Map<string, { secret: string; meta: unknown }>();
 
   const check = (): void => {
@@ -41,8 +46,9 @@ export function createMemoryBackend(options: MemoryBackendOptions = {}): MemoryB
     setInfo(next) {
       info = { ...info, ...next };
     },
-    landWritesOn(next) {
+    landWritesOn(next, mode = "refuse") {
       landed = next;
+      landedMode = mode;
     },
     failWith(message) {
       failure = message;
@@ -57,6 +63,7 @@ export function createMemoryBackend(options: MemoryBackendOptions = {}): MemoryB
     },
     async put(name, secret, meta) {
       check();
+      if (landed !== undefined && landedMode === "refuse") throw new Error("the write would land on another backend");
       entries.set(name, { secret, meta });
       return landed ?? { id: info.id, protection: info.protection };
     },

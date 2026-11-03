@@ -11,7 +11,7 @@ import { BACKEND_IDS, type BackendId } from "./types.js";
 export interface WeakStorageConsent {
   readonly connectionId: string;
   readonly backend: BackendId;
-  /** Epoch milliseconds. */
+  /** Milliseconds on the authority's own clock (monotonic by default); only the authority compares it. */
   readonly expiresAt: number;
 }
 
@@ -33,6 +33,7 @@ export interface ConsentVerifier {
 export interface ConsentAuthorityOptions {
   /** How long a consent stays valid. Default five minutes. */
   readonly ttlMs?: number;
+  /** The clock. Default `performance.now()`: monotonic, so setting the wall clock back cannot extend a consent. */
   readonly now?: () => number;
 }
 
@@ -49,7 +50,7 @@ const BACKEND_SET: ReadonlySet<string> = new Set(BACKEND_IDS);
 export function createConsentAuthority(options: ConsentAuthorityOptions = {}): { readonly grantor: ConsentGrantor; readonly verifier: ConsentVerifier } {
   const ttl = options.ttlMs ?? DEFAULT_CONSENT_TTL_MS;
   if (!Number.isSafeInteger(ttl) || ttl < 1) throw new RangeError("ttlMs must be a positive safe integer");
-  const now = options.now ?? ((): number => Date.now());
+  const now = options.now ?? ((): number => performance.now());
   const issued = new WeakMap<object, { spent: boolean }>();
 
   const grantor: ConsentGrantor = {

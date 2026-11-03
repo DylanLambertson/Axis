@@ -139,12 +139,16 @@ function readMeta(raw: unknown): EntryMeta {
 }
 
 export function createVault(options: VaultOptions): ConnectionVault {
+  // Captured once: whoever holds the options object later cannot swap them (N-E).
   const backend = options.backend;
+  const consentVerifier = options.consent;
   const weak = options.weakPolicy ?? "consent";
   const now = options.now ?? ((): number => Date.now());
   const known = new Set<string>();
   /** The secret currently stored (or last revealed) for each connection: these are never forgotten. */
   const live = new Map<string, string>();
+  /** Connections whose write landed somewhere weaker and could not be removed: shown as weak, never revealed (SF-2). */
+  const quarantine = new Map<string, BackendInfo>();
 
   const remember = (secret: string): void => {
     known.add(secret);
@@ -174,15 +178,32 @@ export function createVault(options: VaultOptions): ConnectionVault {
   };
 
   /** What the UI shows: protection is what the backend reported at store time, not a guess from its name. */
-  const describe = (connectionId: string, meta: EntryMeta, current: BackendInfo): ConnectionInfo => ({
-    connectionId,
-    ...(meta.label === undefined ? {} : { label: meta.label }),
-    storedAt: meta.storedAt,
-    backend: meta.backend,
-    protection: meta.protection,
-    weakConsent: meta.weakConsent,
-    backendChanged: current.id !== meta.backend,
-  });
+  const describe = (connectionId: string, meta: EntryMeta, current: BackendInfo): ConnectionInfo => {
+    const q = quarantine.get(connectionId);
+    return {
+      connectionId,
+      ...(meta.label === undefined ? {} : { label: meta.label }),
+      storedAt: meta.storedAt,
+      backend: q?.id ?? meta.backend,
+      protection: q?.protection ?? meta.protection,
+      weakConsent: q === undefined ? meta.weakConsent : false,
+      // A different backend, or the same one now reporting a different protection (a locked keyring), both count (N-F).
+      backendChanged: q !== undefined || current.id !== meta.backend || current.protection !== meta.protection,
+    };
+  };
+
+  /** Remove a stray copy, retrying once. */
+  const removeCopy = async (name: string): Promise<boolean> => {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        await backend.remove(name);
+        return true;
+      } catch {
+        // Try once more, then give up.
+      }
+    }
+    return false;
+  };
 
   const vault: ConnectionVault = {
     async backend() {
@@ -212,7 +233,7 @@ export function createVault(options: VaultOptions): ConnectionVault {
       }
       if (policy === "consent_required") {
         // Checked and spent in one synchronous step, bound to this connection and this backend (S2, S3).
-        if (opts.consent === undefined || options.consent?.redeem(opts.consent, { connectionId: name, backend: info.id }) !== true) {
+        if (opts.consent === undefined || consentVerifier?.redeem(opts.consent, { connectionId: name, backend: info.id }) !== true) {
           notify(options.onChange, event("refused"));
           throw new VaultError("consent_required");
         }
@@ -228,25 +249,30 @@ export function createVault(options: VaultOptions): ConnectionVault {
         protection: info.protection,
         weakConsent,
       };
-      let wrote: BackendInfo;
+      let wrote: BackendInfo | undefined;
       try {
         const raw = await backend.put(name, secret, meta);
-        wrote = normalizeInfo({ id: (raw as { id?: unknown } | undefined)?.id, protection: (raw as { protection?: unknown } | undefined)?.protection });
+        // A backend that does not say where it wrote is treated as having written somewhere else (N-C).
+        if (typeof raw === "object" && raw !== null) {
+          wrote = normalizeInfo({ id: (raw as { id?: unknown }).id, protection: (raw as { protection?: unknown }).protection });
+        }
       } catch {
         notify(options.onChange, event("error", weakConsent));
         throw new VaultError("backend_failed");
       }
-      if (wrote.id !== info.id || wrote.protection !== info.protection) {
+      if (wrote === undefined || wrote.id !== info.id || wrote.protection !== info.protection) {
         // The write landed somewhere other than the backend the decision was made on (S4): do not keep it.
-        try {
-          await backend.remove(name);
-        } catch {
-          // Nothing more can be done here; the failure below is the same.
-        }
         live.delete(name);
-        notify(options.onChange, event("error", weakConsent));
+        if (await removeCopy(name)) {
+          notify(options.onChange, event("error", weakConsent));
+        } else {
+          // The weak copy is still there. Show it as weak and refuse to reveal it until it is stored again or removed (SF-2).
+          quarantine.set(name, wrote ?? { id: "unknown", protection: "none", label: "unknown" });
+          notify(options.onChange, event("rollback_failed", weakConsent));
+        }
         throw new VaultError("backend_changed");
       }
+      quarantine.delete(name);
       live.set(name, secret);
       notify(options.onChange, event("ok", weakConsent));
       return describe(name, meta, info);
@@ -256,6 +282,10 @@ export function createVault(options: VaultOptions): ConnectionVault {
       const name = checkName(connectionId);
       if (typeof purpose !== "string" || !PURPOSE_SET.has(purpose)) throw new VaultError("invalid_secret");
       const audit = (outcome: AccessEvent["outcome"]): void => notify(options.onAccess, { connectionId: name, purpose, outcome });
+      if (quarantine.has(name)) {
+        audit("error");
+        throw new VaultError("backend_changed");
+      }
       let entry: Awaited<ReturnType<SecretBackend["get"]>>;
       try {
         entry = await backend.get(name);
@@ -317,6 +347,7 @@ export function createVault(options: VaultOptions): ConnectionVault {
         throw new VaultError("backend_failed");
       }
       live.delete(name);
+      quarantine.delete(name);
       notify(options.onChange, { action: "remove", connectionId: name, outcome: "ok" } satisfies ChangeEvent);
       return removed;
     },
