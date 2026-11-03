@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { GitOpsError, executePush, isAllowedRefspec, planPush } from "../src/index.js";
+import { GitOpsError, MAX_COMMITS, MAX_DIFF, executePush, isAllowedRefspec, planPush } from "../src/index.js";
 import { BASE, COMMIT, FakeRunner, WT, healthy, makeDeps, sub } from "./helpers.js";
 
 const input = { worktree: WT, remote: "origin", branch: "axis/feat", baseSha: BASE };
@@ -179,4 +179,27 @@ test("S-2: the patch is taken with --text and binary paths are parsed from numst
   assert.ok(patch && sub(patch.argv).includes("--text"));
   const statCall = r.calls.find((c) => sub(c.argv).includes("--numstat"));
   assert.ok(statCall && !sub(statCall.argv).includes("--text"), "numstat must not use --text or git would count binary files as text");
+});
+
+test("S-8: a patch past the size limit fails closed: refused in refuse mode, confirmation in warn mode", async () => {
+  const big = "+x\n".repeat(MAX_DIFF);
+  const runner = () => new FakeRunner(healthy((s) => (s[0] === "diff-tree" && !s.includes("--numstat") ? { stdout: big } : undefined)));
+  const flags: boolean[] = [];
+  const scanner = async (d: string, m: { truncated: boolean }) => { flags.push(m.truncated); assert.equal(d.length, MAX_DIFF); return []; };
+  const refused = await code(planPush(makeDeps(runner(), { scanner, scanMode: "refuse" }), input));
+  assert.equal(refused, "E_POLICY_DENIED");
+  const plan = await planPush(makeDeps(runner(), { scanner, scanMode: "warn" }), input);
+  assert.equal(plan.requiresConfirmation, true);
+  assert.match(plan.reasons.join(), /too large to scan/);
+  assert.deepEqual(flags, [true, true]);
+  assert.equal(await code(executePush(makeDeps(runner(), { scanner, scanMode: "warn" }), input)), "E_APPROVAL_REQUIRED");
+});
+
+test("S-8: more commits than the scan limit fails closed too", async () => {
+  const many = Array.from({ length: MAX_COMMITS + 1 }, (_, i) => i.toString(16).padStart(40, "0")).join("\n");
+  const r = new FakeRunner(healthy((s) => (s[0] === "rev-list" ? { stdout: many } : undefined)));
+  let calls = 0;
+  const deps = makeDeps(r, { scanner: async () => { calls += 1; return []; }, scanMode: "refuse" });
+  assert.equal(await code(planPush(deps, input)), "E_POLICY_DENIED");
+  assert.equal(calls, MAX_COMMITS);
 });

@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
-import { executePush, planPush } from "../src/index.js";
+import { MAX_DIFF, executePush, planPush } from "../src/index.js";
 import { baseOf, fixture } from "./realFixture.js";
 
 /** A secret-shaped value assembled at runtime so no literal looks like a credential. */
@@ -201,4 +201,14 @@ test("S-2: a NUL byte or binary file is refused in refuse mode unless the path i
   assert.equal(plan.requiresConfirmation, true, "warn mode: any binary path needs confirmation, allow-listed or not");
   assert.match(plan.reasons.join(), /key\.p12/);
   await executePush(warn.deps, input(warn), { confirmed: true });
+});
+
+test("S-8: padding a push with 8 MiB of filler before a secret does not hide it, even in refuse mode", async () => {
+  const f = fixture({ scanner: scanFor([]), scanMode: "refuse" });
+  writeFileSync(join(f.wt.workTree, "pad.txt"), "filler line\n".repeat(Math.ceil((MAX_DIFF + 1024) / 12)) + `AWS=${AWS_KEY}\n`);
+  f.git("add", "-A");
+  f.git("commit", "-q", "-m", "padded");
+  const e = await executePush(f.deps, { worktree: f.wt, remote: "origin", branch: "axis/feat", baseSha: baseOf(f) }).then(() => undefined, (x: unknown) => x);
+  assert.ok(e instanceof Error && /too large to scan/.test(e.message), String(e));
+  assert.throws(() => execFileSync("git", ["--git-dir", f.remote, "rev-parse", "refs/heads/axis/feat"], { stdio: "ignore" }), "nothing was pushed");
 });

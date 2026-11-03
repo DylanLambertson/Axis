@@ -87,7 +87,7 @@ async function check(deps: GitOpsDeps, input: PushInput): Promise<{ plan: PushPl
   // The GIT-SNAP-1 re-take comes last so nothing can change between it and the push.
   await deps.assertNoDrift(input.worktree);
 
-  const { findings, binaryPaths } = await scanOutgoing(deps, git, input.worktree, input.baseSha, tip.stdout.trim());
+  const { findings, binaryPaths, truncated } = await scanOutgoing(deps, git, input.worktree, input.baseSha, tip.stdout.trim());
   const refuse = (deps.scanMode ?? "warn") === "refuse";
   const reasons: string[] = [];
   if (findings.length > 0) {
@@ -96,6 +96,12 @@ async function check(deps: GitOpsDeps, input: PushInput): Promise<{ plan: PushPl
     const why = `the outgoing history matches ${findings.length} secret pattern(s) (${rules}) in commit(s) ${commits}`;
     if (refuse) throw denied(why);
     reasons.push(why);
+  }
+  if (truncated) {
+    // Padding a push with filler must not hide what follows it: an incomplete scan fails closed.
+    const why = "the outgoing history is too large to scan completely";
+    if (refuse) throw denied(`${why}, so the push is refused`);
+    reasons.push(`${why}; content past the limit was not scanned`);
   }
   if (binaryPaths.length > 0) {
     const allowed = new Set(input.allowedBinaryPaths ?? []);

@@ -7,9 +7,13 @@ import type { GitOpsDeps, SecretFinding, WorktreeRef } from "./types.js";
 /** Per-commit patch size handed to the scanner. */
 export const MAX_DIFF = 8 * 1024 * 1024;
 
+/** More commits or bytes than this are not scanned; the scan then reports `truncated` and the caller fails closed. */
+export const MAX_COMMITS = 5000;
+export const MAX_TOTAL = 128 * 1024 * 1024;
+
 export interface OutgoingScan {
   readonly findings: readonly SecretFinding[];
-  /** True when any commit's patch was larger than the scanner was given. */
+  /** True when anything outgoing was not scanned: a patch over MAX_DIFF, more than MAX_COMMITS commits, or more than MAX_TOTAL bytes. */
   readonly truncated: boolean;
   /** Every path git treats as binary in any outgoing commit, without duplicates. */
   readonly binaryPaths: readonly string[];
@@ -44,7 +48,13 @@ export async function scanOutgoing(deps: GitOpsDeps, git: DaemonGit, worktree: W
   const findings: SecretFinding[] = [];
   let truncated = false;
   const binary = new Set<string>();
-  for (const commit of commits) {
+  let total = 0;
+  if (commits.length > MAX_COMMITS) truncated = true;
+  for (const commit of commits.slice(0, MAX_COMMITS)) {
+    if (total >= MAX_TOTAL) {
+      truncated = true;
+      break;
+    }
     const d = await git([
       "diff-tree", "-p", "--text", "-m", "--root", "--no-commit-id", "--no-renames", "--no-color", "--no-ext-diff", "--no-textconv",
       "--submodule=short", "--ignore-submodules=all", "--end-of-options", commit,
@@ -59,6 +69,7 @@ export async function scanOutgoing(deps: GitOpsDeps, git: DaemonGit, worktree: W
     const binaryPaths = parseBinaryPaths(stat.stdout);
     for (const p of binaryPaths) binary.add(p);
     const cut = d.stdout.length > MAX_DIFF;
+    total += d.stdout.length;
     if (cut) truncated = true;
     for (const f of await scanner(cut ? d.stdout.slice(0, MAX_DIFF) : d.stdout, { worktree, truncated: cut, commit, binaryPaths })) findings.push({ ...f, commit });
   }
