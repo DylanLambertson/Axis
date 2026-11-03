@@ -1,11 +1,10 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
-import { boundedJsonSchema, challengeIdSchema, contractIdSchema, contractVersionSchema, requestDigestSchema, resolveChallengeRequestSchema } from "@axis/protocol";
+import { boundedJsonSchema, methodNameSchema, challengeIdSchema, contractIdSchema, contractVersionSchema, requestDigestSchema, resolveChallengeRequestSchema } from "@axis/protocol";
 import { z } from "zod";
 import { canonicalJson, requestDigest } from "./crypto.js";
 import { ChallengeError } from "./errors.js";
 
 const ACTOR = /^(?:user|daemon|agent:[A-Za-z0-9._/-]{1,96})$/;
-export const OP = /^[a-z][a-z0-9_.-]{0,63}$/;
 const WINDOW = /^[A-Za-z0-9._:-]{1,64}$/;
 /**
  * Text a native dialog may show. Refuses control characters (C0, DEL, C1,
@@ -49,14 +48,13 @@ export const callerSchema = z.object({ actor: actorSchema, connectionId: windowS
 /** The attested identity of whoever retries the request: the connection's actor and connection id, set by the daemon's transport, never read from the payload. */
 export type Caller = z.infer<typeof callerSchema>;
 
-const METHOD = OP;
-
-/** The request being approved. Give `args` (the digest is computed), a precomputed `requestDigest`, or both (they must agree). */
+/** The request being approved. `args` is required (the digest is computed from it); a `requestDigest` is an optional cross-check. */
 const requestFields = {
   /** The bare contract id (for example `axis.worktrees`) and its integer major version, exactly as @axis/protocol defines them. */
   contract: contractIdSchema,
   version: contractVersionSchema,
-  method: z.string().regex(METHOD),
+  /** A method name exactly as the envelope defines it (camelCase, for example `restoreFromRunBase`). */
+  method: methodNameSchema,
   /** The request params, minus `approval`. Required: the manager computes the digest itself, so contract, version and method are bound to it. */
   args: argsSchema,
   /** Optional cross-check: the daemon's own digest of the request (see `requestDigest`). It must equal the computed one. */
