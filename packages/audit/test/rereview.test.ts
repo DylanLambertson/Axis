@@ -2,7 +2,7 @@
 // Regression tests for the re-review of the audit package (NEW-A to NEW-J, S4, S5, S10).
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { AuditLog, AxisError, Redactor, openDatabase } from "../src/index.js";
+import { AuditLog, AxisError, Redactor, canonicalize, openDatabase } from "../src/index.js";
 
 // Low-entropy, runtime-assembled stand-ins; none is a credential.
 const PW = "Tr0ub4" + "dor-and-3";
@@ -166,7 +166,6 @@ test("NEW-G: an edit to the anchor row itself is caught by the incremental check
 // ---- NEW-J: canonical JSON and directories ----
 
 test("NEW-J: canonicalize rejects array holes instead of emitting invalid JSON", async () => {
-  const { canonicalize } = await import("../src/index.js");
   // eslint-disable-next-line no-sparse-arrays
   assert.throws(() => canonicalize([, 1]), (e: unknown) => e instanceof AxisError && e.code === "E_INVALID_ARGUMENT");
   assert.equal(canonicalize([1, 2]), "[1,2]");
@@ -199,3 +198,177 @@ test("the shipped audit migration is pinned by hash (add a new migration instead
   assert.equal(createHash("sha256").update(sql).digest("hex"), PINNED_AUDIT_MIGRATION_1);
 });
 const PINNED_AUDIT_MIGRATION_1 = "2f4a68e5e4e21432d4a86a4c9708b5b9e40235aec8e222e8620a019386baf811";
+
+// ---- existing data directory safety ----
+
+const posixOnly = { skip: process.platform === "win32" };
+
+async function tmp() {
+  const { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, symlinkSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const base = realpathSync(mkdtempSync(join(tmpdir(), "axis-dirsafe-")));
+  return { base, join, chmodSync, existsSync, mkdirSync, statSync, symlinkSync, done: () => rmSync(base, { recursive: true, force: true }) };
+}
+const reasonOf = (fn: () => unknown): string | undefined => {
+  try {
+    fn();
+    return undefined;
+  } catch (e) {
+    return e instanceof AxisError && e.code === "E_INVALID_ARGUMENT" ? String(e.detail["reason"]) : `other:${String(e)}`;
+  }
+};
+
+test("data directory: world-writable and group-writable directories are refused, untouched, and no database is created", posixOnly, async () => {
+  const t = await tmp();
+  try {
+    for (const [mode, reason] of [[0o777, "group-writable"], [0o757, "world-writable"], [0o770, "group-writable"], [0o1777, "group-writable"]] as const) {
+      const dir = t.join(t.base, `d${mode.toString(8)}`);
+      t.mkdirSync(dir);
+      t.chmodSync(dir, mode);
+      assert.equal(reasonOf(() => openDatabase(t.join(dir, "a.db"))), reason, mode.toString(8));
+      assert.equal(t.statSync(dir).mode & 0o7777, mode, "the mode must not be changed");
+      assert.equal(t.existsSync(t.join(dir, "a.db")), false, "nothing is created in an unsafe directory");
+    }
+    const msg = (() => {
+      try {
+        openDatabase(t.join(t.base, "d777", "a.db"));
+      } catch (e) {
+        return (e as Error).message;
+      }
+      return "";
+    })();
+    assert.ok(!msg.includes(t.base), "the error must not carry the path");
+  } finally {
+    t.done();
+  }
+});
+
+test("data directory: a symlinked directory is refused, even when its target is safe", posixOnly, async () => {
+  const t = await tmp();
+  try {
+    const real = t.join(t.base, "real");
+    t.mkdirSync(real, { mode: 0o700 });
+    t.symlinkSync(real, t.join(t.base, "link"));
+    assert.equal(reasonOf(() => openDatabase(t.join(t.base, "link", "a.db"))), "symlink");
+    // A symlinked ANCESTOR (as /tmp and /var are on macOS) is fine: the real directory is what is judged.
+    const viaAncestor = t.join(t.base, "linkroot");
+    t.symlinkSync(t.base, viaAncestor);
+    openDatabase(t.join(viaAncestor, "real", "a.db")).close();
+  } finally {
+    t.done();
+  }
+});
+
+test("data directory: a directory owned by another user is refused (simulated through the injected stat)", posixOnly, async () => {
+  const t = await tmp();
+  try {
+    const dir = t.join(t.base, "mine");
+    t.mkdirSync(dir, { mode: 0o700 });
+    const real = {
+      lstat: (p: string) => ({ ...t.statSync(p), isSymbolicLink: () => false }),
+      stat: (p: string) => t.statSync(p),
+      realpath: (p: string) => p,
+    };
+    const ours = process.getuid?.() ?? 0;
+    assert.equal(reasonOf(() => openDatabase(t.join(dir, "a.db"), { directoryFs: { ...real, uid: () => ours + 1 } })), "not-owned");
+    openDatabase(t.join(dir, "a.db"), { directoryFs: { ...real, uid: () => ours } }).close();
+  } finally {
+    t.done();
+  }
+});
+
+test("data directory: the normal cases pass: an existing 0700 or 0755 directory, and a new one is created 0700", posixOnly, async () => {
+  const t = await tmp();
+  try {
+    for (const mode of [0o700, 0o755, 0o750]) {
+      const dir = t.join(t.base, `ok${mode.toString(8)}`);
+      t.mkdirSync(dir);
+      t.chmodSync(dir, mode);
+      openDatabase(t.join(dir, "a.db")).close();
+      assert.equal(t.statSync(dir).mode & 0o777, mode, "an existing directory is not chmod-ed");
+    }
+    const fresh = t.join(t.base, "a", "b");
+    openDatabase(t.join(fresh, "a.db")).close();
+    assert.equal(t.statSync(fresh).mode & 0o777, 0o700);
+    openDatabase(":memory:").close();
+  } finally {
+    t.done();
+  }
+});
+
+test("data directory: the instance lock applies the same check to an existing directory", posixOnly, async () => {
+  const t = await tmp();
+  try {
+    const { acquireInstanceLock } = await import("../src/index.js");
+    const dir = t.join(t.base, "shared");
+    t.mkdirSync(dir);
+    t.chmodSync(dir, 0o777);
+    assert.equal(reasonOf(() => acquireInstanceLock(dir)), "group-writable");
+    t.chmodSync(dir, 0o700);
+    acquireInstanceLock(dir).release();
+  } finally {
+    t.done();
+  }
+});
+
+// ---- the in-memory carve-out is unreachable from a file-backed database ----
+
+test("guards(): no file-backed database, whatever its name, takes the in-memory carve-out", posixOnly, async () => {
+  const t = await tmp();
+  try {
+    const { acquireInstanceLock } = await import("../src/index.js");
+    const other = t.join(t.base, "other");
+    t.mkdirSync(other, { mode: 0o700 });
+    const elsewhere = acquireInstanceLock(other);
+    const mine = t.join(t.base, "mine");
+    for (const name of [":memory:", "x.db", "file::memory:", "memory", ":memory:-wal"]) {
+      const db = openDatabase(t.join(mine, name));
+      assert.equal(elsewhere.guards(db), false, name);
+      db.close();
+    }
+    // A relative "./:memory:" is a file too.
+    const cwd = process.cwd();
+    process.chdir(mine);
+    try {
+      const db = openDatabase("./:memory:");
+      assert.equal(elsewhere.guards(db), false);
+      db.close();
+    } finally {
+      process.chdir(cwd);
+    }
+    // A closed database is not guarded; a true in-memory one is, by any held lock.
+    const closed = openDatabase(t.join(mine, "c.db"));
+    closed.close();
+    assert.equal(elsewhere.guards(closed), false);
+    assert.equal(elsewhere.guards(openDatabase(":memory:")), true);
+    elsewhere.release();
+  } finally {
+    t.done();
+  }
+});
+
+// ---- the truncation markers are deterministic ----
+
+test("truncation is deterministic: the same oversized payload gives the same stored form and the same event hash", () => {
+  const big = (): Record<string, unknown> => {
+    const o: Record<string, unknown> = { workspaceId: "w1", reason: "x".repeat(40_000) };
+    for (let i = 0; i < 5000; i++) o[`field${i}`] = { nested: i, text: "y".repeat(30) };
+    return o;
+  };
+  const T = new Date("2026-11-02T00:00:00.000Z");
+  const hashes: string[] = [];
+  for (let run = 0; run < 2; run++) {
+    const db = openDatabase(":memory:");
+    const log = new AuditLog(db, { now: () => T });
+    const e1 = log.append(ev(big()));
+    const e2 = log.append(ev(big(), "made.up"));
+    assert.equal(log.verify().ok, true, "stored truncated forms must verify");
+    assert.equal(canonicalize(log.list()[0]?.payload), canonicalize(e1.payload));
+    hashes.push(e1.hash + e2.hash);
+  }
+  assert.equal(hashes[0], hashes[1]);
+  const r = new Redactor();
+  assert.equal(JSON.stringify(r.redactValue(big())), JSON.stringify(r.redactValue(big())));
+  assert.equal(r.redactString("a".repeat(40_000)), r.redactString("a".repeat(40_000)));
+});

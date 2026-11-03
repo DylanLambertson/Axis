@@ -1,14 +1,32 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
-import { chmodSync, closeSync, existsSync, mkdirSync, openSync, statSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, realpathSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { AxisError } from "./errors.js";
 
 export type { DatabaseSync };
 
+/** The file system calls the directory safety check makes; tests inject their own to simulate another owner. */
+export interface DirectoryFs {
+  lstat(path: string): { readonly mode: number; readonly uid: number; isSymbolicLink(): boolean };
+  stat(path: string): { readonly mode: number; readonly uid: number };
+  realpath(path: string): string;
+  /** The current user's uid. */
+  uid(): number;
+}
+
+const nodeDirectoryFs: DirectoryFs = {
+  lstat: (p) => lstatSync(p),
+  stat: (p) => statSync(p),
+  realpath: (p) => realpathSync(p),
+  uid: () => process.getuid?.() ?? -1,
+};
+
 export interface OpenOptions {
   /** How long a writer waits for another writer's lock. Integer, 0 to 600000 ms. Default 5000. */
   readonly busyTimeoutMs?: number;
+  /** Tests only: replace the file system calls used to judge an existing data directory. */
+  readonly directoryFs?: DirectoryFs;
 }
 
 const POSIX = process.platform !== "win32";
@@ -65,13 +83,36 @@ export function assertPrivateFiles(path: string): void {
   }
 }
 
-function prepareLocation(path: string): void {
+/**
+ * Refuse (E_INVALID_ARGUMENT, the reason in `details`, no path in the message) an existing data directory that
+ * someone else could use to replace or read the database: the directory itself a symlink, or, after resolving
+ * symlinks, not owned by the current user, or writable by group or others. It never changes a mode. POSIX only:
+ * Windows has no owner or mode bits to read here, so the check is skipped there (the per-user profile directory
+ * the daemon uses is protected by its ACL).
+ */
+export function assertSafeDirectory(dir: string, fs: DirectoryFs = nodeDirectoryFs): void {
+  if (!POSIX) return;
+  const refuse = (reason: string): never => {
+    throw new AxisError("E_INVALID_ARGUMENT", "The data directory is not safe to use", { reason });
+  };
+  // Only the last component is judged for being a symlink: ancestors such as /tmp or /var are symlinks on macOS
+  // and are fine, because the real directory below is what gets checked.
+  if (fs.lstat(dir).isSymbolicLink()) refuse("symlink");
+  const real = fs.stat(fs.realpath(dir));
+  if (real.uid !== fs.uid()) refuse("not-owned");
+  if ((real.mode & 0o020) !== 0) refuse("group-writable");
+  if ((real.mode & 0o002) !== 0) refuse("world-writable");
+}
+
+function prepareLocation(path: string, fs: DirectoryFs): void {
   if (!POSIX) return;
   const dir = dirname(resolve(path));
-  // A directory this call creates is private (0700). An existing directory belongs to the caller and is left as it is:
-  // the database files themselves are 0600, so what a loose directory exposes is only their names.
+  // A directory this call creates is private (0700). An existing one is the caller's: it is never chmod-ed, but it
+  // must be safe (see assertSafeDirectory), because the database and its WAL are only as private as the place
+  // they live. The files themselves are always 0600.
   const created = mkdirSync(dir, { recursive: true, mode: 0o700 });
   if (created !== undefined) chmodSync(dir, 0o700);
+  else assertSafeDirectory(dir, fs);
   // Create the file 0600 before SQLite does (its default would follow the umask); -wal and -shm copy its mode.
   closeSync(openSync(path, "a", 0o600));
   chmodSync(path, 0o600);
@@ -104,7 +145,7 @@ export function openDatabase(path: string, options: OpenOptions = {}): DatabaseS
     throw new AxisError("E_INVALID_ARGUMENT", "busyTimeoutMs must be an integer from 0 to 600000");
   }
   const memory = path === ":memory:";
-  if (!memory) prepareLocation(path);
+  if (!memory) prepareLocation(path, options.directoryFs ?? nodeDirectoryFs);
   const db = mapSqlite(() => new DatabaseSync(path));
   try {
     mapSqlite(() => {

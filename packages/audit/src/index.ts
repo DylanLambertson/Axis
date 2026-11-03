@@ -15,6 +15,7 @@ export {
 } from "./redact.js";
 export {
   assertPrivateFiles,
+  assertSafeDirectory,
   mapSqlite,
   mapSqliteError,
   openDatabase,
@@ -22,6 +23,7 @@ export {
   schemaVersion,
   withTransaction,
   type DatabaseSync,
+  type DirectoryFs,
   type Migration,
   type OpenOptions,
 } from "./db.js";
