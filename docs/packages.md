@@ -9,8 +9,44 @@ Axis-owned TypeScript that does not need Code OSS services lives in `packages/*`
 | `@axis/challenge` | Daemon-side approval challenges for tier 3-5 destructive operations: issue, user resolve, native confirmation, single-use `consume`. Node `crypto` only. |
 | `@axis/daemon` | Transport-agnostic daemon core: connections, handshake, dispatch, tiers, idempotency, cancel and timeout, backpressure, error sanitisation. Every service (identity, policy, approvals, idempotency store, audit sink, handlers) is injected. No Electron. `MemoryIdempotencyStore` is for tests and dev wiring only (it forgets on restart); the product uses the journal-backed store. The pipeline owns approvals (`ApprovalGate.issue` and `execute`, see "Wiring the daemon"). |
 | `@axis/providers` | Provider adapter API (v1): normalized requests, stream events, capability reports, error taxonomy; the daemon-side guard (budget hook PRV-6, redaction hook PRV-2, timeouts, cancellation, stream checks); the mock provider. `@axis/providers/contract` is the reusable adapter contract suite (test support in `packages/providers/contract/`, outside `src/` so it is never staged; imports `node:test`). |
+| `@axis/git-ops` | Daemon-orchestrated Axis commit and push, and GitHub compare URLs. Takes an injected git runner (`context: "pty" \| "daemon"`): hooks run only in the pty context. Commit binds the reviewed tree, push uses one explicit refspec, both are refused while a CLI run is active. |
+| `@axis/audit` | Secret redaction, canonical JSON, and the hash-chained append-only audit log on `node:sqlite` (DMN-5, DMN-6). Also the SQLite helpers (`openDatabase`, `withTransaction`, `runMigrations`). |
+| `@axis/journal` | Durable `agent_workspaces` and `agent_runs`, the Phase 1a run state machine, idempotency keys and restart recovery (DMN-7). Depends on `@axis/audit`. |
 
-More packages (worktrees, journal, audit) are added by their own changes.
+More packages (worktrees, and so on) are added by their own changes.
+
+## Audit anchor (requirement on the daemon)
+
+A hash chain cannot show that its newest events were deleted. Threat model G-11 is closed only if the daemon keeps a copy of the chain head outside the database. The daemon MUST:
+
+1. Call `AuditLog.checkpoint(previousAnchor)` after each append batch (for example at the end of each handled request that wrote events, and on clean shutdown). It verifies only the events after the previous anchor, so the cost is proportional to the batch, and returns `{ seq, hash }`; it throws `E_INTERNAL` if the chain is already broken, and a broken chain is never anchored. Run the full `checkpoint()` (no argument) at startup.
+2. Persist that anchor outside the journal database, where an attacker who edits the database file does not also write (for example the OS keychain through the main process, or a store owned by a different principal). A separate file under the same OS user does not count: the attacker in DMN-5 runs as that user and can rewrite the file as easily as the database. Where it is stored is daemon work and is not decided here.
+3. At every start, before accepting work, call `verify({ expectedHead: anchor })` and treat `ok: false` as an integrity failure (surface it to the user; do not silently continue). A longer chain that still contains the anchor is valid.
+
+Persist an anchor only after the commit it covers is durable. `openDatabase` uses `synchronous=FULL` everywhere and, on macOS, also `fullfsync` and `checkpoint_fullfsync`, because plain `fsync` there does not flush the drive cache. That makes a commit survive a process kill on every platform, and power loss on Linux (`fsync`), Windows (`FlushFileBuffers`) and macOS (F_FULLFSYNC), provided the drive or virtualisation layer honours flushes; if it does not, nothing in the database can tell. A power cut that loses commits an anchor already covered shows up at the next start as `truncated`, and must be reported as "the database is behind the anchor", not silently treated as tampering or ignored.
+
+Without the anchor, `verify()` detects edits, deletions in the middle and reordering, but not removal of the tail. The chain gives local tamper evidence only (ADR 0003 D5). The append-only triggers stop no one with write access to the file (`DROP TRIGGER` works), and the chain has no key, so everything after the last anchor can be recomputed. It does not stop an attacker who can also rewrite the anchor.
+
+## Single instance (requirement on the daemon)
+
+`Journal.recover(lock)` interrupts every RUNNING run, which is correct only when the previous writer is dead. The daemon MUST take the exclusive instance lock (`acquireInstanceLock(dir)` from `@axis/audit`, a pid and process-start-time lock file in the database directory) before opening the journal, and hold it until exit. `recover()` refuses to run without a held lock, and the lock must be the `InstanceLock` object `acquireInstanceLock` returned (an object literal with the same fields is refused) and must guard the directory of the journal's own database file. A second daemon on the same directory fails with `E_CONFLICT`.
+
+## Principals
+
+`createdBy` and every transition `actor` come from the authenticated connection (`ConnectionContext`), never from a request payload. The journal requires `createdBy` on `createRun` (there is no default) and scopes idempotency keys by it, so a caller that could choose its own principal could both forge attribution and replay another principal's keys. Completing a run in review (REVIEWING to COMPLETED) is the person's act in Phase 1a (diff review), and the journal does not take the string `"user"` for it. It needs a `UserPrincipal`, an unforgeable brand (a class with a private field and a module-private mint symbol; a literal, `Object.create` of the prototype or a `structuredClone` fails the check with `E_POLICY_DENIED`). The only way to get one is `userPrincipal()` from the subpath `@axis/journal/daemon-principal`, which is not exported from the package root, and `test/packages/imports.test.mjs` allows only the daemon's connection layer (package `daemon`) to import it. The daemon mints it from the attested connection (the `ConnectionContext` the renderer cannot influence) at the moment the person acts, and never from a request payload or a field a client supplied.
+
+## Data directory
+
+`openDatabase` and `acquireInstanceLock` create a missing data directory 0700. An existing directory is never chmod-ed, and is refused (`E_INVALID_ARGUMENT`, `details.reason` one of `symlink`, `not-owned`, `group-writable`, `world-writable`, `dotdot-path`) when its last component is a symlink or the real directory is not owned by the current user or is writable by group or others. The path is judged as the kernel resolves it: a `..` after a symlink leads to the symlink target's parent, and a missing directory is never created through a path that contains `..`. The database files themselves are always 0600.
+
+The check is deliberately narrow:
+- Only the leaf directory is judged, not its ancestors. A parent that another user can write to (and that is not sticky) lets them rename the checked directory away and plant another, so the data directory must sit under a parent only the user controls, which the per-user application-data directory does.
+- Only mode bits and the owner are read. POSIX ACLs (macOS `chmod +a`, Linux `setfacl`) can grant access that the bits do not show, and are ignored.
+- Windows has no owner or mode bits to read here, so the check is skipped; the per-user profile directory is protected by its ACL.
+
+## Journal and audit share one connection
+
+`Journal.open(db, { audit })` rejects (`E_INTERNAL`) an `AuditLog` that was created on a different `DatabaseSync` handle. Sharing the handle is what makes a state change and its audit event commit or roll back together.
 
 ## Using `@axis/challenge`
 
@@ -46,6 +82,14 @@ Fixed vectors (`sha256hex` as lowercase hex):
 | `axis.worktrees` | 1 | `remove` | `{id:"ws-1",deleteBranch:false}` | `adb7a157e75395816cf74974fbdfa2b5bdf32831996a578ff80cdb46fe9d2735` |
 
 `@axis/daemon` implements the identical function and pins the same vectors; the two copies must stay in step. The shared function moves into `@axis/protocol` later, and both packages will then import it.
+## Using `@axis/git-ops`
+
+`planPush` and `executePush` take a required `baseSha`: **the last commit that was actually pushed** (or the workspace's recorded base before the first push), read from the journal by the daemon. The secret scan covers `baseSha..tip`, every commit's patch and its commit message, so everything reachable from `baseSha` is assumed to be on the remote already. If a workspace's base is a local commit that was never pushed, its ancestors go out unscanned: the journal must record the sha of each successful push and supply it next time. A `baseSha` that is not in the repository or not an ancestor of the branch (history was rewritten) is refused with `E_CONFLICT`. Never derive it from a ref under `refs/remotes`: the code in the worktree can write those.
+
+A plan that needs confirmation (warn mode findings, binary files, a scan that was too large) carries `tip` and `digest`. The caller passes `confirmed: true` and `confirmedPlan: { tip, digest }` to `executePush`, which re-scans and answers `E_CONFLICT` with `details.reason: "plan_changed"` if either differs. The runner reports `truncated` when it cut off output, and any truncated scan call fails closed.
+
+The node runner starts git in its own process group so a timeout kills git's children. A normal daemon exit kills the live groups; a crash of the daemon cannot, and may leave an orphaned git running until it finishes.
+
 ## Request digest
 
 The digest is specified under "Shared request digest" above. The daemon computes it once with `requestDigest()` (`packages/daemon/src/digest.ts`, whose doc comment states the ECMAScript `JSON.stringify` semantics) and passes it to the gate as `input.digest`; both packages are pinned by the same fixed vectors, and the copies are to be merged into `@axis/protocol`.
