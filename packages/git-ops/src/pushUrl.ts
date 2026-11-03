@@ -17,5 +17,10 @@ export function assertPushUrl(url: string): void {
   if (scheme !== undefined && !(PUSH_PROTOCOLS as readonly string[]).includes(scheme)) {
     throw denied(`the remote uses the ${scheme.slice(0, 20)} transport, which Axis does not push to`);
   }
-  if (/^[a-z][a-z0-9+.-]*:\/\/[^/@\s]*:[^/@\s]*@/i.test(url)) throw denied(`the remote URL embeds credentials: ${redactUrls(url)}`);
+  // Credentials belong to the user's credential helper or ssh keys, never to a URL: that includes a token used as the
+  // user name (https://TOKEN@host/...). Only ssh keeps a user name, because `git@host` is how ssh remotes are written.
+  const userinfo = /^[a-z][a-z0-9+.-]*:\/\/([^/\s]*)@/i.exec(url)?.[1];
+  if (userinfo !== undefined && (scheme !== "ssh" || userinfo.includes(":"))) {
+    throw denied(`the remote URL embeds credentials: ${redactUrls(url)}`);
+  }
 }

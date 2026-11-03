@@ -238,3 +238,19 @@ test("S-7: the pty push carries a protocol allow-list that refuses everything bu
   ]);
   assert.ok(plan.command.argv.indexOf("protocol.allow=never") < plan.command.argv.indexOf("push"));
 });
+
+test("S-4: any userinfo on a non-ssh URL, and a password on ssh, is refused without echoing it; git@ ssh remotes are fine", async () => {
+  const urlRunner = (u: string) => new FakeRunner(healthy((s) => (s[0] === "remote" && s[1] === "get-url" ? { stdout: `${u}\n` } : undefined)));
+  const token = ["ghp", "_", "abcdefghijklmnopqrstuvwxyz0123456789"].join("");
+  for (const bad of [`https://${token}@github.com/o/r.git`, `https://user:${token}@github.com/o/r.git`, `https://x-access-token:${token}@github.com/o/r`, `git://${token}@h/r`, `ssh://git:${token}@h/r`]) {
+    try {
+      await planPush(makeDeps(urlRunner(bad)), input);
+      assert.fail(`expected a refusal: ${bad}`);
+    } catch (e) {
+      assert.ok(e instanceof GitOpsError);
+      assert.equal(e.code, "E_POLICY_DENIED", bad);
+      assert.ok(!e.message.includes(token), "the token is not echoed");
+    }
+  }
+  for (const ok of ["ssh://git@github.com/o/r.git", "git@github.com:o/r.git"]) assert.equal(await code(planPush(makeDeps(urlRunner(ok)), input)), "OK", ok);
+});

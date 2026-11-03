@@ -190,3 +190,9 @@ test("S-7: git itself refuses a remote-helper transport on the pty push, and the
   await run({ ...plan.command, argv: open, env });
   assert.ok(existsSync(f.marker), "fixture: without the allow-list the helper runs");
 });
+
+test("S-4: a token-as-username https remote is refused", async () => {
+  const f = fixture();
+  f.git("remote", "add", "tok", `https://${["ghp", "_", "abcdefghijklmnopqrstuvwxyz0123456789"].join("")}@github.com/o/r.git`);
+  assert.equal((await refusal(planPush(f.deps, { worktree: f.wt, remote: "tok", branch: "axis/feat", baseSha: baseOf(f) }))).code, "E_POLICY_DENIED");
+});
