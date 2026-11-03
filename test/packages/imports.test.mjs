@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { forbiddenLoaders, principalReexports } from "./loaders.mjs";
 
 const packagesDir = fileURLToPath(new URL("../../packages/", import.meta.url));
 
@@ -108,6 +109,8 @@ for (const pkg of packages) {
         if (why) bad.push(`${file}: ${spec} (${why})`);
       }
       for (const call of nonLiteralLoads(source)) bad.push(`${file}: ${call} (dynamic load needs a string literal)`);
+      for (const name of forbiddenLoaders(source)) bad.push(`${file}: ${name} (loads a module without a visible specifier)`);
+      for (const re of principalReexports(source)) bad.push(`${file}: ${re} (the user-principal subpath must not be re-exported)`);
     }
     assert.deepEqual(bad, []);
   });
@@ -206,4 +209,27 @@ test("the journal package root exports the principal subpath only through packag
   assert.deepEqual(Object.keys(json.exports).sort(), [".", "./daemon-principal"]);
   const index = readFileSync(join(packagesDir, "journal", "src", "index.ts"), "utf8");
   assert.ok(!/principal/i.test(index), "src/index.ts must not mention the principal module");
+});
+
+test("scanner: loaders that hide a specifier are flagged", () => {
+  assert.deepEqual(forbiddenLoaders('const r = createRequire(import.meta.url); r("@axis/journal/daemon-principal");'), ["createRequire"]);
+  assert.deepEqual(forbiddenLoaders('process.getBuiltinModule("node:module").createRequire(import.meta.url)'), ["getBuiltinModule", "createRequire"]);
+  assert.deepEqual(forbiddenLoaders('import { createRequire } from "node:module";'), ["createRequire"]);
+  assert.deepEqual(forbiddenLoaders('// createRequire in a comment\n/* getBuiltinModule */ const a = 1;'), []);
+  assert.deepEqual(forbiddenLoaders("const requireX = 1; const created = 2;"), []);
+});
+
+test("scanner: re-exporting the user-principal subpath is flagged, importing it for use is not", () => {
+  const sub = '"@axis/journal/daemon-principal"';
+  assert.equal(principalReexports(`export * from ${sub};`).length, 1);
+  assert.equal(principalReexports(`export { userPrincipal } from ${sub};`).length, 1);
+  assert.equal(principalReexports(`export type { UserPrincipal } from ${sub};`).length, 1);
+  assert.equal(principalReexports(`export * as p from ${sub};`).length, 1);
+  assert.equal(principalReexports(`import { userPrincipal } from ${sub};\nexport { userPrincipal };`).length, 1);
+  assert.equal(principalReexports(`import { userPrincipal as mint } from ${sub};\nexport { a, userPrincipal, b };`).length, 1);
+  assert.equal(principalReexports(`import { userPrincipal } from ${sub};\nexport const mint = userPrincipal;`).length, 1);
+  assert.equal(principalReexports(`import { userPrincipal } from ${sub};\nexport default userPrincipal;`).length, 1);
+  assert.equal(principalReexports(`import { userPrincipal } from ${sub};\nexport function connect() { return userPrincipal(); }`).length, 0);
+  assert.equal(principalReexports(`export { userPrincipal } from "./other.js";`).length, 0);
+  assert.equal(principalReexports(`// export * from ${sub};`).length, 0);
 });
