@@ -17,7 +17,10 @@ const ctx: Ctx = { ws: "", r1: "", r2: "", ws2: "" };
 // every child starts from an empty database and replays from step 1.
 for (let i = 0; i < k; i++) STEPS[i]?.(journal, ctx);
 
-/** A workspace with a long-lived write loop: the parent kills it at a random instant, often inside COMMIT. */
+/**
+ * A workspace with an endless write loop; the parent kills it at a chosen instant. With `big` the loop runs inside one
+ * open transaction under `cache_size = 1`, so dirty pages spill into the WAL file before any commit.
+ */
 function writeLoop(big: boolean): void {
   const ws = journal.createWorkspace({ projectId: "p", branch: "axis/fuzz", baseRef: "main", baseSha: "a".repeat(40), createdBy: "user" }).value.id;
   journal.transitionWorkspace(ws, "READY");
@@ -31,7 +34,6 @@ function writeLoop(big: boolean): void {
     journal.transitionRun(r, "RUNNING");
     journal.transitionRun(r, "REVIEWING");
     journal.transitionRun(r, "COMPLETED", { exitCode: 0, actor: "user" });
-    if (big && Number(journal.listRuns().length) > 5000) setInterval(() => undefined, 1000);
   }
 }
 

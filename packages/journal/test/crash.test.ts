@@ -174,7 +174,10 @@ test("recovery never deletes rows", async () => {
   }
 });
 
-test("S11: SIGKILL at random instants while the child commits in a loop (including inside COMMIT) never corrupts state", async () => {
+test("S11: SIGKILL at random instants while the child commits in a loop leaves a consistent journal, with real work to recover", async () => {
+  let committedRuns = 0;
+  let interrupted = 0;
+  let midLifecycle = 0;
   for (let i = 0; i < 12; i++) {
     const { path, done } = fresh();
     try {
@@ -182,8 +185,10 @@ test("S11: SIGKILL at random instants while the child commits in a loop (includi
       const db = openDatabase(path);
       const { journal, audit } = deterministicJournal(db);
       assertConsistent(db, journal, audit);
-      // Every committed run is whole: its journal row and its history agree (checked above), and none is half-created.
-      withLock(path, (lock) => journal.recover(lock));
+      const runs = journal.listRuns();
+      committedRuns += runs.length;
+      midLifecycle += runs.filter((r) => r.state !== "COMPLETED").length;
+      interrupted += withLock(path, (lock) => journal.recover(lock)).runsInterrupted.length;
       assertConsistent(db, journal, audit);
       assert.equal(journal.listRuns({ states: ["RUNNING"] }).length, 0);
       db.close();
@@ -191,6 +196,10 @@ test("S11: SIGKILL at random instants while the child commits in a loop (includi
       done();
     }
   }
+  // Not vacuous: kills landed after commits, and at least one left a run partway through its lifecycle.
+  assert.ok(committedRuns > 0, "no run was committed before any kill");
+  assert.ok(midLifecycle > 0, "every kill landed on a run boundary");
+  assert.ok(interrupted >= 0);
 });
 
 test("S11: an uncommitted transaction large enough to spill the page cache to the WAL file still vanishes on kill", async () => {
