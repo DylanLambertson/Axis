@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
-import { MAX_DIFF, executePush, planPush } from "../src/index.js";
+import { MAX_DIFF, createNodeRunner, executePush, planPush } from "../src/index.js";
 import { baseOf, fixture } from "./realFixture.js";
 
 /** A secret-shaped value assembled at runtime so no literal looks like a credential. */
@@ -44,6 +44,15 @@ test("B-1: a submodule diff.submodule=diff preference cannot run a nested reposi
   writeFileSync(f.marker, "");
   await planPush(f.deps, { worktree: f.wt, remote: "origin", branch: "axis/feat", baseSha: baseOf(f) });
   assert.equal(readFileSync(f.marker, "utf8"), "", "a program from worktree-controlled config ran in the daemon during the secret-scan diff");
+  // The behaviour above also holds for plain diff-tree (it ignores diff.submodule), so pin the protections themselves:
+  // the real scan calls carry them, and the same call with them swapped for the attack form does run the program.
+  const scans = f.seen.filter((c) => c.context === "daemon" && c.argv.includes("diff-tree") && c.argv.includes("-p"));
+  assert.ok(scans.length >= 2, "the scan ran once per outgoing commit");
+  for (const c of scans) for (const want of ["--submodule=short", "--ignore-submodules=all", "diff.submodule=short"]) assert.ok(c.argv.includes(want), want);
+  const last = scans.at(-1) as (typeof scans)[number];
+  const attack = last.argv.filter((a) => a !== "--ignore-submodules=all").map((a) => (a === "--submodule=short" ? "--submodule=diff" : a === "diff.submodule=short" ? "diff.submodule=diff" : a));
+  await createNodeRunner().run({ ...last, argv: attack });
+  assert.ok(readFileSync(f.marker, "utf8").includes("daemon-exec"), "fixture: without the protections the same scan call runs the nested diff.external");
 });
 
 test("B-2: in a partial clone the scan diff cannot lazy-fetch through remote.<n>.uploadpack in the daemon", async () => {
