@@ -37,10 +37,20 @@ export interface SecretFinding {
   readonly rule: string;
   readonly path?: string;
   readonly line?: number;
+  /** The outgoing commit whose patch matched. Set by Axis, not by the scanner. */
+  readonly commit?: string;
 }
 
-/** PSH-1 hook point: scan the outgoing diff. Findings must never contain the secret itself. */
-export type SecretScanner = (diff: string, meta: { readonly worktree: WorktreeRef; readonly truncated: boolean }) => Promise<readonly SecretFinding[]>;
+export interface ScanMeta {
+  readonly worktree: WorktreeRef;
+  /** The patch was cut at the size limit. */
+  readonly truncated: boolean;
+  /** The commit whose patch this is. The scanner is called once per outgoing commit. */
+  readonly commit: string;
+}
+
+/** PSH-1 hook point: scan the patch of one outgoing commit. Findings must never contain the secret itself. */
+export type SecretScanner = (diff: string, meta: ScanMeta) => Promise<readonly SecretFinding[]>;
 
 export interface GitOpsDeps {
   readonly runner: GitRunner;

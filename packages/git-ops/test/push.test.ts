@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { GitOpsError, executePush, isAllowedRefspec, planPush } from "../src/index.js";
-import { BASE, FakeRunner, WT, healthy, makeDeps, sub } from "./helpers.js";
+import { BASE, COMMIT, FakeRunner, WT, healthy, makeDeps, sub } from "./helpers.js";
 
 const input = { worktree: WT, remote: "origin", branch: "axis/feat", baseSha: BASE };
 
@@ -110,7 +110,7 @@ test("PSH-1 warn mode: findings need confirmation; names only", async () => {
   const deps = makeDeps(r, { scanner, scanMode: "warn" });
   const plan = await planPush(deps, input);
   assert.equal(plan.requiresConfirmation, true);
-  assert.deepEqual(plan.findings, [{ rule: "aws-key", path: ".env", line: 3 }]);
+  assert.deepEqual(plan.findings, [{ rule: "aws-key", path: ".env", line: 3, commit: COMMIT }]);
   assert.equal(await code(executePush(deps, input)), "E_APPROVAL_REQUIRED");
   assert.equal(r.ptyCalls().length, 0);
   await executePush(deps, input, { confirmed: true });
@@ -129,7 +129,7 @@ test("the secret-scan diff uses no external diff or textconv, and no findings me
   const r = new FakeRunner(healthy());
   const plan = await planPush(makeDeps(r, { scanner: async () => [] }), input);
   assert.equal(plan.requiresConfirmation, false);
-  const diff = r.calls.find((c) => sub(c.argv)[0] === "diff");
+  const diff = r.calls.find((c) => sub(c.argv)[0] === "diff-tree");
   assert.ok(diff);
   assert.ok(sub(diff.argv).includes("--no-ext-diff") && sub(diff.argv).includes("--no-textconv"));
 });
@@ -137,8 +137,9 @@ test("the secret-scan diff uses no external diff or textconv, and no findings me
 test("S-1: the scan runs from the journaled baseSha and never reads a ref under refs/remotes", async () => {
   const r = new FakeRunner(healthy());
   await planPush(makeDeps(r, { scanner: async () => [] }), input);
-  const diff = r.calls.find((c) => sub(c.argv)[0] === "diff");
-  assert.ok(diff && sub(diff.argv).includes(BASE));
+  const diff = r.calls.find((c) => sub(c.argv)[0] === "diff-tree");
+  const range = r.calls.find((c) => sub(c.argv)[0] === "rev-list");
+  assert.ok(diff && range && sub(range.argv).includes(`^${BASE}`));
   assert.equal(r.calls.some((c) => c.argv.some((a) => a.includes("refs/remotes"))), false);
 });
 
@@ -151,4 +152,18 @@ test("S-1: a missing, malformed or non-ancestor base is refused", async () => {
   assert.equal(await code(planPush(makeDeps(missing), input)), "E_CONFLICT");
   const rewritten = new FakeRunner(healthy((s) => (s[0] === "merge-base" ? { code: 1 } : undefined)));
   assert.equal(await code(planPush(makeDeps(rewritten), input)), "E_CONFLICT");
+});
+
+test("B-3: the scanner is called once per outgoing commit, oldest first, with the commit in its meta", async () => {
+  const C1 = "1".repeat(40);
+  const C2 = "2".repeat(40);
+  const r = new FakeRunner(healthy((s) => (s[0] === "rev-list" ? { stdout: `${C1}\n${C2}\n` } : s[0] === "diff-tree" ? { stdout: `+patch of ${s.at(-1)}\n` } : undefined)));
+  const calls: Array<[string, string]> = [];
+  await planPush(makeDeps(r, { scanner: async (d, meta) => { calls.push([meta.commit, d]); return []; } }), input);
+  assert.deepEqual(calls, [[C1, `+patch of ${C1}\n`], [C2, `+patch of ${C2}\n`]]);
+  const range = r.calls.find((c) => sub(c.argv)[0] === "rev-list");
+  assert.ok(range && sub(range.argv).includes("--reverse"));
+  const patch = r.calls.find((c) => sub(c.argv)[0] === "diff-tree");
+  assert.ok(patch);
+  for (const flag of ["-p", "-m", "--no-ext-diff", "--no-textconv", "--submodule=short"]) assert.ok(sub(patch.argv).includes(flag), flag);
 });

@@ -4,7 +4,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { planPush } from "../src/index.js";
+import { execFileSync } from "node:child_process";
+import { executePush, planPush } from "../src/index.js";
 import { baseOf, fixture } from "./realFixture.js";
 
 /** A secret-shaped value assembled at runtime so no literal looks like a credential. */
@@ -118,4 +119,50 @@ test("S-1: a base that is missing, malformed or not an ancestor of the tip is re
   f.git("checkout", "-q", "axis/feat");
   assert.equal(await codeOf(stray), "E_CONFLICT", "not an ancestor");
   assert.equal(await codeOf(baseOf(f)), "OK");
+});
+
+test("B-3: a secret added in one commit and deleted in the next is scanned and refused, and never reaches the remote", async () => {
+  const seen: string[] = [];
+  const f = fixture({ scanner: scanFor(seen), scanMode: "refuse" });
+  const add = (n: string): void => { f.git("add", "-A"); f.git("commit", "-q", "-m", n); };
+  writeFileSync(join(f.wt.workTree, ".env"), `AWS=${AWS_KEY}\n`);
+  add("add env");
+  const leaky = f.git("rev-parse", "HEAD").trim();
+  f.git("rm", "-q", ".env");
+  add("oops, remove env");
+  const input = { worktree: f.wt, remote: "origin", branch: "axis/feat", baseSha: baseOf(f) };
+  const e = await executePush(f.deps, input).then(() => undefined, (x: unknown) => x);
+  assert.ok(e instanceof Error && e.message.includes(leaky.slice(0, 12)), `refused, naming the commit; got ${String(e)}`);
+  assert.throws(() => execFileSync("git", ["--git-dir", f.remote, "rev-parse", "refs/heads/axis/feat"], { stdio: "ignore" }), "nothing was pushed");
+  assert.equal(seen.length, 2, "the scanner is called once per outgoing commit");
+});
+
+test("B-3: a secret that exists only in a merge resolution is scanned", async () => {
+  const hits: Array<{ commit: string; found: boolean }> = [];
+  const f = fixture({
+    scanner: async (d, meta) => {
+      hits.push({ commit: meta.commit, found: d.includes(AWS_KEY) });
+      return d.includes(AWS_KEY) ? [{ rule: "aws-key" }] : [];
+    },
+    scanMode: "warn",
+  });
+  const repo = f.wt.workTree;
+  f.git("branch", "other", "main");
+  writeFileSync(join(repo, "f.txt"), "f\n");
+  f.git("add", "-A");
+  f.git("commit", "-q", "-m", "f1");
+  f.git("checkout", "-q", "other");
+  writeFileSync(join(repo, "o.txt"), "o\n");
+  f.git("add", "-A");
+  f.git("commit", "-q", "-m", "o1");
+  f.git("checkout", "-q", "axis/feat");
+  f.git("merge", "-q", "--no-ff", "--no-commit", "other");
+  writeFileSync(join(repo, "merge.env"), `AWS=${AWS_KEY}\n`);
+  f.git("add", "-A");
+  f.git("commit", "-q", "-m", "merge");
+  const merge = f.git("rev-parse", "HEAD").trim();
+  const plan = await planPush(f.deps, { worktree: f.wt, remote: "origin", branch: "axis/feat", baseSha: baseOf(f) });
+  assert.equal(plan.requiresConfirmation, true);
+  assert.deepEqual(plan.findings.map((x) => x.commit), [merge], "found in the merge commit and nowhere else");
+  assert.equal(hits.filter((h) => h.found).every((h) => h.commit === merge), true);
 });

@@ -2,6 +2,7 @@
 // Axis push (threat model GIT-3, GIT-SNAP-1 re-take, PSH-1, GIT-7; gate 1a/L24). Explicit refspec only.
 import { OBJECT_ID, REMOTE_NAME, branchFor, checkWorktree, daemonGitFor, platformOf, prefix, type DaemonGit } from "./args.js";
 import { findOverride, withNoPrompt } from "./env.js";
+import { scanOutgoing } from "./scan.js";
 import { GitOpsError, conflict, denied, invalid, redactUrls } from "./errors.js";
 import type { GitOpsDeps, GitRunRequest, SecretFinding, WorktreeRef } from "./types.js";
 
@@ -30,8 +31,6 @@ export interface PushPlan {
   readonly findings: readonly SecretFinding[];
   readonly requiresConfirmation: boolean;
 }
-
-const MAX_DIFF = 8 * 1024 * 1024;
 
 export function pushRefspec(slug: string): string {
   return `refs/heads/axis/${slug}:refs/heads/axis/${slug}`;
@@ -81,9 +80,11 @@ async function check(deps: GitOpsDeps, input: PushInput): Promise<{ plan: PushPl
   // The GIT-SNAP-1 re-take comes last so nothing can change between it and the push.
   await deps.assertNoDrift(input.worktree);
 
-  const findings = await scan(deps, git, input, branch, tip.stdout.trim());
+  const { findings } = await scanOutgoing(deps, git, input.worktree, input.baseSha, tip.stdout.trim());
   if (findings.length > 0 && (deps.scanMode ?? "warn") === "refuse") {
-    throw denied(`the outgoing changes match ${findings.length} secret pattern(s): ${[...new Set(findings.map((f) => f.rule))].join(", ")}`);
+    const rules = [...new Set(findings.map((f) => f.rule))].join(", ");
+    const commits = [...new Set(findings.map((f) => (f.commit ?? "").slice(0, 12)))].join(", ");
+    throw denied(`the outgoing history matches ${findings.length} secret pattern(s) (${rules}) in commit(s) ${commits}`);
   }
 
   const argv = [
@@ -93,15 +94,6 @@ async function check(deps: GitOpsDeps, input: PushInput): Promise<{ plan: PushPl
   ];
   const command: GitRunRequest = { argv, cwd: input.worktree.workTree, env: withNoPrompt(deps.env.pty), context: "pty" };
   return { plan: { worktree: input.worktree, remote: input.remote, branch, refspec, command, findings, requiresConfirmation: findings.length > 0 }, git };
-}
-
-async function scan(deps: GitOpsDeps, git: DaemonGit, input: PushInput, branch: string, tip: string): Promise<readonly SecretFinding[]> {
-  if (!deps.scanner) return [];
-  const from = input.baseSha;
-  const d = await git(["diff", "--no-color", "--no-ext-diff", "--no-textconv", "--submodule=short", "--ignore-submodules=all", from, tip, "--"]);
-  if (d.code !== 0) throw new GitOpsError("E_UNAVAILABLE", "could not compute the outgoing diff for the secret scan");
-  const truncated = d.stdout.length > MAX_DIFF;
-  return deps.scanner(truncated ? d.stdout.slice(0, MAX_DIFF) : d.stdout, { worktree: input.worktree, truncated });
 }
 
 /** Validates everything and returns the exact push command and any secret findings. */
