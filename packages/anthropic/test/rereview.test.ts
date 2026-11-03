@@ -99,3 +99,21 @@ test("N-A: a fully cached prompt (zero input tokens, cache reads reported) is re
   const empty = make((_c, counter) => sseResponse(counter, reply({ input_tokens: 7, output_tokens: 0 }, { output_tokens: 0 }, "")));
   assert.equal((await empty.adapter.generate(req(), { signal: live() })).usage.outputTokens, 0);
 });
+
+test("N-H: a final output count of zero is refused even though the stream's start reported one token", async () => {
+  const lie = make((_c, counter) => sseResponse(counter, reply({ input_tokens: 10, output_tokens: 1 }, { output_tokens: 0 })));
+  const err = await failure(lie.adapter.generate(req(), { signal: live() }));
+  assert.equal(err.details.reason, "implausible_usage");
+  // Thinking is billed as output: a thinking-only reply with a zero final count is just as implausible.
+  const thinking =
+    sseEvent("message_start", { type: "message_start", message: { id: "m", model: MODEL, usage: { input_tokens: 10, output_tokens: 1 } } }) +
+    sseEvent("content_block_start", { type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "" } }) +
+    sseEvent("content_block_stop", { type: "content_block_stop", index: 0 }) +
+    sseEvent("message_delta", { type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 0 } }) +
+    sseEvent("message_stop", { type: "message_stop" });
+  const t = make((_c, counter) => sseResponse(counter, thinking));
+  assert.equal((await failure(t.adapter.generate(req(), { signal: live() }))).details.reason, "implausible_usage");
+  // A real count is fine, with or without thinking.
+  const ok = make((_c, counter) => sseResponse(counter, thinking.replace('"output_tokens":0', '"output_tokens":12')));
+  assert.equal((await ok.adapter.generate(req(), { signal: live() })).usage.outputTokens, 12);
+});

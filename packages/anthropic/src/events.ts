@@ -109,8 +109,10 @@ export class EventMapper {
   private cacheWrite: number | undefined;
   /** A `message_delta` reported `output_tokens`: the final count the budget is charged (S1). */
   private outputReported = false;
-  /** Some text or a tool call was streamed, so the final output count cannot be zero. */
+  /** Some text, a tool call or thinking was streamed, so the final output count cannot be zero. */
   private producedContent = false;
+  /** The output count of the last `message_delta`: the final one. The running maximum includes the start's `output_tokens: 1`. */
+  private finalOutput: number | undefined;
   private lastProgress: number;
 
   constructor(
@@ -199,6 +201,8 @@ export class EventMapper {
         }
         this.counters.countIgnored();
         this.ignoredBlocks.add(e.index);
+        // Thinking is billed as output too.
+        if (b.type === "thinking" || b.type === "redacted_thinking") this.producedContent = true;
         return [];
       }
       case "content_block_delta": {
@@ -240,12 +244,15 @@ export class EventMapper {
         const e = parse(messageDelta, json);
         const reason = e.delta?.stop_reason;
         if (typeof reason === "string") this.stop = mapStopReason(reason);
-        if (typeof e.usage?.output_tokens === "number") this.outputReported = true;
+        if (typeof e.usage?.output_tokens === "number") {
+          this.outputReported = true;
+          this.finalOutput = e.usage.output_tokens;
+        }
         return this.absorb(e.usage) ? [{ type: "usage", usage: this.usage() }] : [];
       }
       case "message_stop":
         if (!this.outputReported) throw new ProviderError("invalid_response", { reason: "missing_usage" });
-        if (this.producedContent && this.outputTokens === 0) throw new ProviderError("invalid_response", { reason: "implausible_usage" });
+        if (this.producedContent && this.finalOutput === 0) throw new ProviderError("invalid_response", { reason: "implausible_usage" });
         this.stopped = true;
         return [{ type: "message_stop", stopReason: this.stop ?? "other", usage: this.usage() }];
       case "ping":
