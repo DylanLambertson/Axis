@@ -68,13 +68,10 @@ export function assertPrivateFiles(path: string): void {
 function prepareLocation(path: string): void {
   if (!POSIX) return;
   const dir = dirname(resolve(path));
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
-  if ((modeOf(dir) & 0o077) !== 0) {
-    chmodSync(dir, 0o700);
-    if ((modeOf(dir) & 0o077) !== 0) {
-      throw new AxisError("E_UNAVAILABLE", "The database directory is accessible to other users and could not be tightened");
-    }
-  }
+  // A directory this call creates is private (0700). An existing directory belongs to the caller and is left as it is:
+  // the database files themselves are 0600, so what a loose directory exposes is only their names.
+  const created = mkdirSync(dir, { recursive: true, mode: 0o700 });
+  if (created !== undefined) chmodSync(dir, 0o700);
   // Create the file 0600 before SQLite does (its default would follow the umask); -wal and -shm copy its mode.
   closeSync(openSync(path, "a", 0o600));
   chmodSync(path, 0o600);

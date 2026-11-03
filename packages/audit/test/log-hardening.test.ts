@@ -189,7 +189,7 @@ test("S2: the database, -wal and -shm files are 0600 and the directory 0700, wha
   }
 });
 
-test("S2: pre-existing loose files and directories are tightened on open", { skip: process.platform === "win32" }, () => {
+test("S2/NEW-J: a pre-existing loose file is tightened on open; a pre-existing directory is the caller's and is left alone", { skip: process.platform === "win32" }, () => {
   const old = process.umask(0o022);
   const root = mkdtempSync(join(tmpdir(), "axis-perm-"));
   try {
@@ -200,8 +200,12 @@ test("S2: pre-existing loose files and directories are tightened on open", { ski
     writeFileSync(path, "", { mode: 0o644 });
     chmodSync(path, 0o644);
     openDatabase(path).close();
-    assert.equal(modeOf(dir), 0o700);
+    assert.equal(modeOf(dir), 0o755, "an existing directory is not ours to chmod");
     assert.equal(modeOf(path), 0o600);
+    // A directory the call creates is private.
+    const fresh = join(root, "new", "deeper");
+    openDatabase(join(fresh, "axis.db")).close();
+    assert.equal(modeOf(fresh), 0o700);
   } finally {
     process.umask(old);
     rmSync(root, { recursive: true, force: true });

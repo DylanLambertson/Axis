@@ -48,6 +48,10 @@ function encode(value: unknown, depth: number, seen: Set<object>): string {
   seen.add(obj);
   try {
     if (Array.isArray(obj)) {
+      // A hole would be printed as `[,1]`, which is not JSON.
+      for (let i = 0; i < obj.length; i++) {
+        if (!(i in obj)) throw new AxisError("E_INVALID_ARGUMENT", "Sparse arrays cannot be canonicalised");
+      }
       return `[${obj.map((item) => encode(item, depth + 1, seen)).join(",")}]`;
     }
     const proto: unknown = Object.getPrototypeOf(obj);

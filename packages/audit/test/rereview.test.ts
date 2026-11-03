@@ -2,10 +2,18 @@
 // Regression tests for the re-review of the audit package (NEW-A to NEW-J, S4, S5, S10).
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { AuditLog, Redactor, openDatabase } from "../src/index.js";
+import { AuditLog, AxisError, Redactor, openDatabase } from "../src/index.js";
 
 // Low-entropy, runtime-assembled stand-ins; none is a credential.
 const PW = "Tr0ub4" + "dor-and-3";
+const code = (fn: () => unknown): string | undefined => {
+  try {
+    fn();
+    return undefined;
+  } catch (e) {
+    return e instanceof AxisError ? e.code : `raw:${(e as Error).constructor.name}`;
+  }
+};
 const ev = (payload?: unknown, action = "tier4.execute") =>
   ({ actor: "user", action, target: "t", outcome: "success", payload }) as const;
 
@@ -122,3 +130,72 @@ test("NEW-A: on macOS the database is opened with fullfsync and checkpoint_fullf
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ---- NEW-F: the encoded-run pass is alignment-independent ----
+
+test("NEW-F: base64 of user:secret is caught whatever precedes it", () => {
+  const r = new Redactor();
+  r.registerSecret("hunter2" + "hunter2" + "xyz");
+  const b64 = Buffer.from("user:" + "hunter2hunter2xyz").toString("base64");
+  const url64 = Buffer.from("user:" + "hunter2hunter2xyz").toString("base64url");
+  for (const prefix of ["", "/a/", "x_", "/v2/x/", "ab-", "a"]) {
+    for (const enc of [b64, url64]) {
+      const out = r.redactString(`GET https://h${prefix}${enc}`);
+      assert.ok(!out.includes(enc) && !out.includes(enc.slice(4)), `prefix ${JSON.stringify(prefix)}: ${out}`);
+    }
+  }
+  assert.equal(r.redactString("see https://example.test/some/long/path/segment/abc"), "see https://example.test/some/long/path/segment/abc");
+});
+
+// ---- NEW-G: incremental verification does not trust the anchor row's stored hash ----
+
+test("NEW-G: an edit to the anchor row itself is caught by the incremental check", () => {
+  const db = openDatabase(":memory:");
+  const log = new AuditLog(db);
+  for (let i = 0; i < 5; i++) log.append({ actor: "user", action: "worktree.create", target: `w:${i}`, outcome: "success" });
+  const anchor = log.checkpoint();
+  assert.ok(anchor);
+  log.append({ actor: "user", action: "worktree.create", target: "w:after", outcome: "success" });
+  db.exec("DROP TRIGGER audit_events_no_update");
+  db.prepare("UPDATE audit_events SET target = 'forged' WHERE seq = ?").run(anchor.seq); // content edited, hash column untouched
+  assert.equal(code(() => log.checkpoint(anchor)), "E_INTERNAL");
+  const r = log.verify({ from: anchor });
+  assert.ok(!r.ok && r.firstBadSeq === anchor.seq && r.reason === "hash_mismatch");
+});
+
+// ---- NEW-J: canonical JSON and directories ----
+
+test("NEW-J: canonicalize rejects array holes instead of emitting invalid JSON", async () => {
+  const { canonicalize } = await import("../src/index.js");
+  // eslint-disable-next-line no-sparse-arrays
+  assert.throws(() => canonicalize([, 1]), (e: unknown) => e instanceof AxisError && e.code === "E_INVALID_ARGUMENT");
+  assert.equal(canonicalize([1, 2]), "[1,2]");
+  assert.equal(canonicalize(new Array(0)), "[]");
+});
+
+test("NEW-J: opening a database in an existing shared directory does not change that directory's mode", { skip: process.platform === "win32" }, async () => {
+  const { chmodSync, mkdtempSync, rmSync, statSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const dir = mkdtempSync(join(tmpdir(), "axis-share-"));
+  try {
+    chmodSync(dir, 0o755);
+    openDatabase(join(dir, "x.db")).close();
+    assert.equal(statSync(dir).mode & 0o777, 0o755);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ---- schema pin: a shipped migration is never edited ----
+
+test("the shipped audit migration is pinned by hash (add a new migration instead of editing it)", async () => {
+  const { createHash } = await import("node:crypto");
+  const { readFileSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const src = readFileSync(fileURLToPath(new URL("../../src/log.ts", import.meta.url)), "utf8");
+  const sql = /sql: `([\s\S]*?)`,\n  \},\n\];/.exec(src)?.[1];
+  assert.ok(sql, "migration 1 not found");
+  assert.equal(createHash("sha256").update(sql).digest("hex"), PINNED_AUDIT_MIGRATION_1);
+});
+const PINNED_AUDIT_MIGRATION_1 = "2f4a68e5e4e21432d4a86a4c9708b5b9e40235aec8e222e8620a019386baf811";

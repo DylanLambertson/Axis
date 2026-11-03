@@ -275,7 +275,10 @@ export class AuditLog implements AuditSink {
    *
    * With `since` (the previous anchor) only the events after it are checked,
    * starting from its hash, so the cost is proportional to what was appended
-   * since. Run the full form (no argument) at startup.
+   * since. The anchor row's own hash is recomputed from its content, but rows
+   * before it are not read, so an edit at or before the previous anchor is
+   * caught only by the full form (and the external anchor) at the next start.
+   * Run the full form (no argument) at startup.
    */
   checkpoint(since?: ChainHead): ChainHead | null {
     const result = this.verify(since ? { from: since } : {});
@@ -324,12 +327,18 @@ export class AuditLog implements AuditSink {
     let prevHash = from?.hash ?? GENESIS_HASH;
     let checked = 0;
     if (from) {
-      const row = this.#db.prepare("SELECT hash FROM audit_events WHERE seq = ?").get(from.seq) as { hash: string } | undefined;
+      const row = this.#db.prepare(`SELECT ${COLUMNS} FROM audit_events WHERE seq = ?`).get(from.seq) as unknown as Row | undefined;
       if (!row) {
         const h = this.head();
         return { ok: false, firstBadSeq: (h?.seq ?? 0) + 1, reason: "truncated", checked };
       }
-      if (row.hash !== from.hash) return { ok: false, firstBadSeq: from.seq, reason: "hash_mismatch", checked };
+      // Do not trust the stored hash column: recompute it from the row's content, so an edit to the anchor row itself is caught.
+      const anchorRow = parseRow(row);
+      if (anchorRow === "unsupported") return { ok: false, firstBadSeq: from.seq, reason: "unsupported_version", checked };
+      if (!anchorRow) return { ok: false, firstBadSeq: from.seq, reason: "malformed_row", checked };
+      if (anchorRow.hash !== from.hash || hashEvent(anchorRow) !== from.hash) {
+        return { ok: false, firstBadSeq: from.seq, reason: "hash_mismatch", checked };
+      }
     }
     const rows = this.#db
       .prepare(`SELECT ${COLUMNS} FROM audit_events WHERE seq > ? ORDER BY seq`)

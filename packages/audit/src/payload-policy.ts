@@ -31,6 +31,16 @@ export const DEFAULT_PAYLOAD_ALLOWLIST: Readonly<Record<string, readonly string[
 const isScalar = (v: JsonValue): v is string | number | boolean | null =>
   v === null || typeof v === "string" || typeof v === "number" || typeof v === "boolean";
 
+/**
+ * `[content]` is a length plus an UNSALTED SHA-256 of the redacted payload. A
+ * salt would not help here: it would have to live in the database (and then
+ * travels with any copy of it) or in a key store the daemon owns, and anyone
+ * who can read the file as the same user already reads everything the hash
+ * stands for no better than before. What the hash protects is the log's
+ * plaintext (nothing readable is stored), not the guessability of a
+ * low-entropy value that no rule caught. If a later phase stores summaries
+ * for such values, hash with an HMAC under a daemon-held key instead.
+ */
 function summary(value: JsonValue): JsonValue {
   return { "[content]": summarizeContent(canonicalize(value)) };
 }

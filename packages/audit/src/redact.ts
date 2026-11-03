@@ -309,11 +309,15 @@ export class Redactor {
   redactString(input: string): string {
     const bounded = truncate(wellFormed(input), MAX_STRING_CHARS);
     let out = this.#scan(bounded);
-    // Encoded secrets: decode base64-looking runs once and re-scan them.
+    // Encoded secrets: decode base64-looking runs and re-scan them. A run can start anywhere inside an
+    // encoded value (a path segment or a prefix such as `x_` shifts it), so decode at all four offsets.
     out = out.replace(/[A-Za-z0-9+/_-]{16,4096}={0,2}/g, (run) => {
       if (run.length < ENCODED_RUN_MIN || run.length > ENCODED_RUN_MAX) return run;
-      const decoded = Buffer.from(run, "base64").toString("utf8");
-      return this.#scan(decoded) === decoded ? run : placeholder("encoded-secret");
+      for (let shift = 0; shift < 4; shift++) {
+        const decoded = Buffer.from(run.slice(shift), "base64").toString("utf8");
+        if (this.#scan(decoded) !== decoded) return placeholder("encoded-secret");
+      }
+      return run;
     });
     return out;
   }
