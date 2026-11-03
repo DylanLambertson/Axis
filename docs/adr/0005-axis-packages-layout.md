@@ -133,7 +133,7 @@ Every Axis-owned source file starts with `// Copyright (c) 2026 Dylan Lambertson
 **Evidence.**
 
 - `node:sqlite` loads without a flag in Node 24.22.1, the pin in `code-oss/upstream.json`, and reports SQLite 3.53.4 [V, run locally].
-- The desktop daemon runs in Electron's Node, not the pinned Node. The Code OSS Electron build (target 43.8.3, `.npmrc` and `.build/electron/version`) embeds Node 24.22.0 [V]. Run as plain Node (`ELECTRON_RUN_AS_NODE=1`), it loads `node:sqlite` and reports the same SQLite 3.53.4 [V]. The full `@axis/audit` and `@axis/journal` suites (including the SIGKILL matrix) pass under that binary: 33 and 18 tests at the time of measurement [V].
+- The desktop daemon runs in Electron's Node, not the pinned Node. The Code OSS Electron build (target 43.8.3, `.npmrc` and `.build/electron/version`) embeds Node 24.22.0 [V]. Run as plain Node (`ELECTRON_RUN_AS_NODE=1`), it loads `node:sqlite` and reports the same SQLite 3.53.4 [V]. The full `@axis/audit` and `@axis/journal` suites (including the SIGKILL matrix) passed under that binary when this was measured (before the review fixes; re-run them under the shipped Electron binary at each Electron bump) [V].
 - The web server (the reh child, ADR 0003 D1.7) runs the pinned Node 24.22.1 (`remote/.npmrc` target `24.22.1`) [V].
 - The code uses WAL, `synchronous=FULL`, `BEGIN IMMEDIATE`, savepoints, `STRICT` tables, triggers and `isTransaction` [V, all exercised by the tests]. Code OSS's own `@vscode/sqlite3` 5.1.12-vscode is a native addon [V] and would add a native build to the daemon.
 
