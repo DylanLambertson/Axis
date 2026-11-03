@@ -66,8 +66,6 @@ test("D1: a tombstone counts toward the window and total quotas, and is swept on
   clock.t += 30_001; // a's original expiry has passed, b's has not
   const c = issue(manager);
   assert.throws(() => issue(manager), code("E_BACKPRESSURE"), "b still holds a slot");
-  manager.withdrawConnection(CONN);
-  assert.doesNotThrow(() => issue(manager), "a closed connection frees everything, tombstones aside");
   assert.ok(c.challenge.challengeId);
   clock.t += 60_000;
   assert.doesNotThrow(() => (issue(manager), issue(manager)), "every tombstone has been swept, so the whole quota is free");
@@ -91,7 +89,7 @@ test("F2: withdraw succeeds even if the audit sink is down", () => {
   assert.equal(s.manager.outstanding(), 0);
 });
 
-test("F2: withdrawConnection ends every live challenge of that connection and frees its quota", () => {
+test("F2: withdrawConnection ends every live challenge of that connection", () => {
   const { manager } = setup({ total: 3 });
   const a = issue(manager, { connectionId: "conn-a" });
   const b = issue(manager, { connectionId: "conn-a" });
@@ -103,7 +101,7 @@ test("F2: withdrawConnection ends every live challenge of that connection and fr
   assert.throws(() => manager.resolve(...resolveArgs(b)), code("E_POLICY_DENIED"));
   assert.equal(manager.resolve(...resolveArgs(c)).state, "approved");
   assert.equal(manager.withdrawConnection("conn-a"), 0);
-  assert.doesNotThrow(() => issue(manager));
+  assert.throws(() => issue(manager), code("E_BACKPRESSURE"), "the closed connection's tombstones still count");
   assert.throws(() => manager.withdrawConnection(""), code("E_INVALID_ARGUMENT"));
 });
 
@@ -254,4 +252,40 @@ test("the overall per-actor backstop still bounds one actor across windows", () 
   issue(manager, { windowId: "window-c" });
   assert.throws(() => issue(manager, { windowId: "window-d" }), code("E_BACKPRESSURE"));
   assert.doesNotThrow(() => issue(manager, { windowId: "window-d", actor: "agent:other" }), "another actor is unaffected");
+});
+
+// D1b: closing a connection must not reset the quota either.
+test("D1b: a requester that reconnects in a loop cannot get past the prompt quota", () => {
+  const { manager, clock } = setup({ perActor: 2 });
+  let issued = 0;
+  for (let n = 0; n < 100; n++) {
+    const connectionId = `conn-${n}`;
+    for (let k = 0; k < 2; k++) {
+      try {
+        issue(manager, { actor: "agent:loop", connectionId });
+        issued++;
+      } catch (e) {
+        assert.ok(e instanceof ChallengeError && e.code === "E_BACKPRESSURE");
+      }
+    }
+    manager.withdrawConnection(connectionId);
+  }
+  assert.equal(issued, 2, "only the first connection got any prompts through");
+  clock.t += 60_001;
+  assert.doesNotThrow(() => issue(manager, { actor: "agent:loop", connectionId: "conn-new" }), "the quota returns at the original expiry");
+});
+
+test("D1b: tombstones from closed connections are bounded by the total cap", () => {
+  const { manager } = setup({ total: 4, perActor: 4 });
+  let issued = 0;
+  for (let n = 0; n < 50; n++) {
+    try {
+      issue(manager, { actor: `agent:a${n}`, connectionId: `c${n}`, windowId: `w${n}` });
+      issued++;
+    } catch (e) {
+      assert.ok(e instanceof ChallengeError && e.code === "E_BACKPRESSURE");
+    }
+    manager.withdrawConnection(`c${n}`);
+  }
+  assert.equal(issued, 4);
 });

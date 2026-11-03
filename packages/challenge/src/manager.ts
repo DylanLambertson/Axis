@@ -21,17 +21,10 @@ import {
 } from "./schemas.js";
 import { overQuota, type QuotaLimits } from "./quota.js";
 import { Tombstones } from "./tombstones.js";
-import { limit, MAX_TTL, OPEN, type ChallengeManagerOptions, type ConfirmedAction, type Record_, type ResolveResult, type State, type WithdrawResult } from "./types.js";
+import { limit, MAX_TTL, OPEN, type ChallengeManagerOptions, type ConfirmedAction, type Record_, type ResolveResult, type State, type Subject, type WithdrawResult } from "./types.js";
 
 export type { ActorId, ChallengeAuditEvent, ChallengeAuditSink } from "./schemas.js";
 export type { ChallengeManagerOptions, ConfirmedAction, ResolveResult, WithdrawResult } from "./types.js";
-
-/** What an audit event names: a record, or for an unknown id just the id's own hash, so refusing an unknown id costs the same as refusing a wrong caller. */
-interface Subject {
-  readonly target: string;
-  readonly method: string;
-  readonly ref: string;
-}
 
 /**
  * Daemon-side tier-4 challenges (task B4; APR-1, APR-2, G-24).
@@ -366,14 +359,20 @@ export class ChallengeManager {
     return { withdrawn: true };
   }
 
-  /** Ends every live challenge issued to a connection that has closed, and frees their quota (a closed connection cannot prompt). Returns how many it ended. */
+  /**
+   * Ends every live challenge issued to a connection that has closed. They
+   * leave tombstones like `withdraw`, so a requester that reconnects in a loop
+   * cannot get past the prompt quotas; the tombstones are bounded by those same
+   * quotas, since issue counts them. Returns how many it ended.
+   */
   withdrawConnection(connectionId: string): number {
     const parsed = callerSchema.shape.connectionId.safeParse(connectionId);
     if (!parsed.success) throw invalid(parsed.error, "connection id");
     let n = 0;
+    const now = this.#mono();
     for (const rec of this.#byRef.values()) {
       if (rec.connectionId === parsed.data && (OPEN.has(rec.state) || rec.state === "CONFIRMED")) {
-        this.#drop(rec, "daemon", false);
+        this.#drop(rec, "daemon", now < rec.expiresAt);
         n++;
       }
     }

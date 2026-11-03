@@ -82,3 +82,10 @@ export function limit(value: number | undefined, fallback: number, max: number, 
   }
   return v;
 }
+
+/** What an audit event names: a record, or for an unknown id just the id's own hash, so refusing an unknown id costs the same as refusing a wrong caller. */
+export interface Subject {
+  readonly target: string;
+  readonly method: string;
+  readonly ref: string;
+}
