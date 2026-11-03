@@ -18,7 +18,9 @@ export interface DirectoryFs {
 const nodeDirectoryFs: DirectoryFs = {
   lstat: (p) => lstatSync(p),
   stat: (p) => statSync(p),
-  realpath: (p) => realpathSync(p),
+  // `.native` asks the OS. The JavaScript realpathSync collapses `..` lexically first, which is exactly the mistake
+  // this check exists to avoid (`safe/link/..` is not `safe`).
+  realpath: (p) => realpathSync.native(p),
   uid: () => process.getuid?.() ?? -1,
 };
 
@@ -86,9 +88,19 @@ export function assertPrivateFiles(path: string): void {
 /**
  * Refuse (E_INVALID_ARGUMENT, the reason in `details`, no path in the message) an existing data directory that
  * someone else could use to replace or read the database: the directory itself a symlink, or, after resolving
- * symlinks, not owned by the current user, or writable by group or others. It never changes a mode. POSIX only:
- * Windows has no owner or mode bits to read here, so the check is skipped there (the per-user profile directory
- * the daemon uses is protected by its ACL).
+ * symlinks, not owned by the current user, or writable by group or others. It never changes a mode.
+ *
+ * What it does NOT cover, on purpose:
+ * - Only this directory is judged, not its ancestors. A parent that another user can write to (not sticky) lets
+ *   them rename the checked directory away and plant another, so the data directory belongs under a parent the
+ *   user alone controls (the per-user application-data directory is).
+ * - Mode bits only. POSIX ACLs (macOS `chmod +a`, Linux `setfacl`) can grant access that the bits do not show,
+ *   and are not read.
+ * - Windows: there are no owner or mode bits to read here, so the check is skipped (the per-user profile
+ *   directory the daemon uses is protected by its ACL).
+ *
+ * `dir` is passed to the kernel as given, so a `..` after a symlink is resolved physically, the way the database
+ * will be opened. Do not normalise it lexically first.
  */
 export function assertSafeDirectory(dir: string, fs: DirectoryFs = nodeDirectoryFs): void {
   if (!POSIX) return;
@@ -104,15 +116,33 @@ export function assertSafeDirectory(dir: string, fs: DirectoryFs = nodeDirectory
   if ((real.mode & 0o002) !== 0) refuse("world-writable");
 }
 
+function lstatExists(path: string, fs: DirectoryFs): boolean {
+  try {
+    fs.lstat(path);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+}
+
 function prepareLocation(path: string, fs: DirectoryFs): void {
   if (!POSIX) return;
-  const dir = dirname(resolve(path));
+  // NOT `dirname(resolve(path))`: resolve() collapses `..` lexically, but the kernel (and SQLite) follow a symlink
+  // first, so `safe/link/../x.db` lives in link's PARENT, which is not `safe`. Judge the path as the kernel will.
+  const dir = dirname(path);
   // A directory this call creates is private (0700). An existing one is the caller's: it is never chmod-ed, but it
   // must be safe (see assertSafeDirectory), because the database and its WAL are only as private as the place
   // they live. The files themselves are always 0600.
-  const created = mkdirSync(dir, { recursive: true, mode: 0o700 });
-  if (created !== undefined) chmodSync(dir, 0o700);
-  else assertSafeDirectory(dir, fs);
+  if (lstatExists(dir, fs)) {
+    assertSafeDirectory(dir, fs);
+  } else {
+    if (path.split("/").includes("..")) {
+      throw new AxisError("E_INVALID_ARGUMENT", "The data directory is not safe to use", { reason: "dotdot-path" });
+    }
+    const target = resolve(dir);
+    if (mkdirSync(target, { recursive: true, mode: 0o700 }) !== undefined) chmodSync(target, 0o700);
+  }
   // Create the file 0600 before SQLite does (its default would follow the umask); -wal and -shm copy its mode.
   closeSync(openSync(path, "a", 0o600));
   chmodSync(path, 0o600);

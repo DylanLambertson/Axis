@@ -426,3 +426,75 @@ test("D2-B1: the cut comes before any other work, so a huge string of lone surro
   const split = "a".repeat(MAX_STRING_CHARS - 1) + "😀" + "b".repeat(100);
   assert.ok(isWellFormedString(r.redactString(split)));
 });
+
+// ---- D2-6: `..` after a symlink is judged the way the kernel resolves it ----
+
+test("data directory: `safe/link/../x.db` is judged by where `..` really leads, not by its lexical parent", posixOnly, async () => {
+  const t = await tmp();
+  try {
+    const safe = t.join(t.base, "safe");
+    const shared = t.join(t.base, "shared");
+    t.mkdirSync(safe, { mode: 0o700 });
+    t.mkdirSync(t.join(shared, "sub"), { recursive: true });
+    t.chmodSync(shared, 0o777);
+    t.symlinkSync(t.join(shared, "sub"), t.join(safe, "link"));
+    // (Built by hand: path.join would collapse the `..` before openDatabase ever saw it.)
+    // Lexically the parent is `safe` (0700, ours); physically it is `shared` (0777).
+    assert.equal(reasonOf(() => openDatabase(`${safe}/link/../x.db`)), "group-writable");
+    assert.equal(t.existsSync(t.join(shared, "x.db")), false, "no database may be created in the shared directory");
+    assert.equal(t.existsSync(t.join(safe, "x.db")), false);
+
+    // The same shape with a SAFE physical parent is fine, and the database lands where `..` leads.
+    const ok = t.join(t.base, "ok");
+    t.mkdirSync(t.join(ok, "sub"), { recursive: true });
+    t.chmodSync(ok, 0o700);
+    t.symlinkSync(t.join(ok, "sub"), t.join(safe, "oklink"));
+    openDatabase(`${safe}/oklink/../y.db`).close();
+    assert.equal(t.existsSync(t.join(ok, "y.db")), true);
+    assert.equal(t.existsSync(t.join(safe, "y.db")), false);
+
+    // A missing directory is never created through a `..` path (it could not be judged first).
+    assert.equal(reasonOf(() => openDatabase(`${t.base}/missing/../z.db`)), "dotdot-path");
+    assert.equal(t.existsSync(t.join(t.base, "missing")), false);
+    // Relative paths work as before.
+    const cwd = process.cwd();
+    process.chdir(ok);
+    try {
+      openDatabase("rel.db").close();
+      assert.equal(t.existsSync(t.join(ok, "rel.db")), true);
+    } finally {
+      process.chdir(cwd);
+    }
+  } finally {
+    t.done();
+  }
+});
+
+test("data directory: the lock and guards() also follow `..` after a symlink physically", posixOnly, async () => {
+  const t = await tmp();
+  try {
+    const { acquireInstanceLock } = await import("../src/index.js");
+    const safe = t.join(t.base, "safe");
+    const real = t.join(t.base, "real");
+    t.mkdirSync(safe, { mode: 0o700 });
+    t.mkdirSync(t.join(real, "sub"), { recursive: true });
+    t.chmodSync(real, 0o700);
+    t.symlinkSync(t.join(real, "sub"), t.join(safe, "link"));
+    const raw = `${safe}/link/..`; // physically: real
+    const lock = acquireInstanceLock(raw);
+    assert.equal(t.existsSync(t.join(real, "axis.lock")), true, "the lock file lives where `..` leads");
+    assert.equal(t.existsSync(t.join(safe, "axis.lock")), false);
+    const db = openDatabase(`${raw}/j.db`);
+    assert.equal(lock.guards(db), true);
+    db.close();
+    lock.release();
+    // A database in `safe` is not guarded by that lock.
+    const lock2 = acquireInstanceLock(raw);
+    const other = openDatabase(t.join(safe, "k.db"));
+    assert.equal(lock2.guards(other), false);
+    other.close();
+    lock2.release();
+  } finally {
+    t.done();
+  }
+});

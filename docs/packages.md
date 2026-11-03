@@ -35,6 +35,15 @@ Without the anchor, `verify()` detects edits, deletions in the middle and reorde
 
 `createdBy` and every transition `actor` come from the authenticated connection (`ConnectionContext`), never from a request payload. The journal requires `createdBy` on `createRun` (there is no default) and scopes idempotency keys by it, so a caller that could choose its own principal could both forge attribution and replay another principal's keys. Completing a run in review (REVIEWING to COMPLETED) is the person's act in Phase 1a (diff review), and the journal does not take the string `"user"` for it. It needs a `UserPrincipal`, an unforgeable brand (a class with a private field and a module-private mint symbol; a literal, `Object.create` of the prototype or a `structuredClone` fails the check with `E_POLICY_DENIED`). The only way to get one is `userPrincipal()` from the subpath `@axis/journal/daemon-principal`, which is not exported from the package root, and `test/packages/imports.test.mjs` allows only the daemon's connection layer (package `daemon`) to import it. The daemon mints it from the attested connection (the `ConnectionContext` the renderer cannot influence) at the moment the person acts, and never from a request payload or a field a client supplied.
 
+## Data directory
+
+`openDatabase` and `acquireInstanceLock` create a missing data directory 0700. An existing directory is never chmod-ed, and is refused (`E_INVALID_ARGUMENT`, `details.reason` one of `symlink`, `not-owned`, `group-writable`, `world-writable`, `dotdot-path`) when its last component is a symlink or the real directory is not owned by the current user or is writable by group or others. The path is judged as the kernel resolves it: a `..` after a symlink leads to the symlink target's parent, and a missing directory is never created through a path that contains `..`. The database files themselves are always 0600.
+
+The check is deliberately narrow:
+- Only the leaf directory is judged, not its ancestors. A parent that another user can write to (and that is not sticky) lets them rename the checked directory away and plant another, so the data directory must sit under a parent only the user controls, which the per-user application-data directory does.
+- Only mode bits and the owner are read. POSIX ACLs (macOS `chmod +a`, Linux `setfacl`) can grant access that the bits do not show, and are ignored.
+- Windows has no owner or mode bits to read here, so the check is skipped; the per-user profile directory is protected by its ACL.
+
 ## Journal and audit share one connection
 
 `Journal.open(db, { audit })` rejects (`E_INTERNAL`) an `AuditLog` that was created on a different `DatabaseSync` handle. Sharing the handle is what makes a state change and its audit event commit or roll back together.

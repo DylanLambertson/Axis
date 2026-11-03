@@ -2,7 +2,7 @@
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { chmodSync, closeSync, mkdirSync, openSync, readFileSync, realpathSync, statSync, unlinkSync, writeSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { assertSafeDirectory } from "./db.js";
 import { AxisError } from "./errors.js";
@@ -65,7 +65,8 @@ export class InstanceLock {
       // directory, "./:memory:") reports its real path here, so it takes the directory comparison below.
       const location = db.location();
       if (location === null) return true;
-      return realpathSync(dirname(resolve(location))) === realpathSync(dirname(this.#path));
+      // OS-level realpath of the directory as the database was opened (no lexical `..` collapsing, which resolve() does).
+      return realpathSync.native(dirname(location)) === realpathSync.native(dirname(this.#path));
     } catch {
       return false; // a closed database, or a path that cannot be resolved, is not guarded
     }
@@ -188,7 +189,8 @@ export function acquireInstanceLock(dir: string, options: LockOptions = {}): Ins
   const isAlive = options.isAlive ?? defaultIsAlive;
   const startOf = options.procStart ?? processStartTime;
   if (mkdirSync(dir, { recursive: true, mode: 0o700 }) === undefined) assertSafeDirectory(dir);
-  const path = join(dir, LOCK_FILE);
+  // join() would collapse a `..` that follows a symlink and put the lock in a different directory than `dir` names.
+  const path = process.platform === "win32" ? join(dir, LOCK_FILE) : (dir.endsWith("/") ? `${dir}${LOCK_FILE}` : `${dir}/${LOCK_FILE}`);
   const record: LockRecord = { pid, procStart: startOf(pid) ?? null, startedAt: now(), nonce: randomBytes(16).toString("hex") };
   const body = JSON.stringify(record);
 
