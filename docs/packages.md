@@ -14,8 +14,9 @@ Axis-owned TypeScript that does not need Code OSS services lives in `packages/*`
 | `@axis/journal` | Durable `agent_workspaces` and `agent_runs`, the Phase 1a run state machine, idempotency keys and restart recovery (DMN-7). Depends on `@axis/audit`. |
 | `@axis/anthropic` | Anthropic (Claude) Messages API adapter for `@axis/providers` (ticket 9, ANT-1): hand-written SSE parser with byte, event and depth limits, redirects refused, error text never built from a response body, injected `fetch`. Design: `docs/design/anthropic-adapter.md`. |
 | `@axis/vault` | Connection vault: key storage interface, backend reporting, the PRV-1 rule for the Linux `basic_text` backend (consent or refusal), an in-memory test backend, and the seam for real OS backends. Runs in the daemon only. |
+| `@axis/worktrees` | Lifecycle of isolated git worktrees, one per agent workspace: create, list, status, finalise, remove, restore from the run base, GIT-SNAP-1 drift detection and a hardened git environment (GIT-ENV-1) that never runs hooks or filter drivers. Imports `node:*`, `zod` and `@axis/*` only. |
 
-More packages (worktrees, and so on) are added by their own changes.
+More packages are added by their own changes.
 
 ## Audit anchor (requirement on the daemon)
 
@@ -168,21 +169,14 @@ Planned in ADR 0005 D3: a post-apply hook stages package sources into `src/vs/ax
 
 ## Calling `@axis/worktrees` from the daemon
 
-Use one `WorktreeManager` per daemon process, built with the pinned absolute git path and a `refuseIfActiveRun` hook. Its in-process mutex assumes a single instance, and each mutating call also takes a pid and start-time lockfile in the worktree admin dir.
+Use one `WorktreeManager` per daemon process, built with the pinned absolute git path and a `refuseIfActiveRun` hook. Its in-process mutex assumes a single instance, and each mutating call also takes a pid and start-time lockfile (workspace operations lock the worktree admin dir; create and sweep lock the common dir).
 
-`finalise` and `remove` are destructive, so they go through `@axis/challenge`. Identity (`actor`, `connectionId`) always comes from the transport.
+`finalise` and `remove` are destructive, so they are tier 3 or higher and go through the approval pipeline in "Wiring the daemon". The content hook for them is:
 
-**Issuing the challenge** (the request arrives without `approval`):
+- `target`: `workspace:<id>`, never a path.
+- `withLock(fn)`: takes the daemon's per-project mutex, calls `assertNoDrift(path)` (a `git-drift` `E_CONFLICT` means the user reviews the change and the daemon then calls `acknowledgeDrift(path)`), then `previewDiscard(path)` and calls `fn(scan.fingerprint)`. The fingerprint is the `contentDigest`, read at issue and again at execute under the same lock. This is the TOCTOU binding: if any dirty, large, ignored or nested-repository entry changed after the user approved, `consume` refuses and nothing runs.
+- The native confirmation text must show `skippedLarge`, `ignored` and `skippedUnsupported` from the preview, because a backup does not hold them.
 
-1. Call `assertNoDrift(path)`. A `git-drift` `E_CONFLICT` means the user must review the change and the daemon then calls `acknowledgeDrift(path)`.
-2. Call `previewDiscard(path)`. It returns the dirty files, `skippedLarge`, `ignored` and a `fingerprint`. Show all three lists in the native confirmation, because files in `skippedLarge` and `ignored` are not backed up.
-3. Call `issue({ contract, version, method, args, target: 'workspace:<id>', contentDigest: fingerprint, ... })`. The `contentDigest` is the `previewDiscard` fingerprint. `target` is the canonical workspace id, never a path.
+Inside the `action` (after the approval is spent), call `markDiscardConfirmed({ workspaceId, op, fingerprint }, opts?)` from `@axis/worktrees/daemon-confirm` (never the package root) and pass the result as `discardConfirmation` to `finalise` or `remove`. The token is bound to that workspace, operation and fingerprint, expires after 30 s on a monotonic clock, and is spent by the first call that accepts it, even if that call then fails. It must not cross a JSON boundary or leave the callback.
 
-**Acting on the approval** (the retry carries `approval: { challengeId }`):
-
-1. Take the daemon's per-project mutex. The manager's own locks only cover each call, so this mutex is what keeps the content from changing between the digest and the action.
-2. Call `assertNoDrift(path)` again, then `previewDiscard(path)` again.
-3. Call `consume(challengeId, { actor, connectionId }, { contract, version, method, args, target, currentContentDigest }, action)`. `currentContentDigest` is the fingerprint from the second `previewDiscard`. This is the TOCTOU binding: if any file changed after the user approved, `consume` refuses and nothing runs. `consume` is the only way to act on an approval, and there is no bearer token. The request digest is `requestDigest({ contract, version, method, payload })`, with `contract` as the bare id and `version` as the integer.
-4. Inside the `action` callback, import `markDiscardConfirmed` from `@axis/worktrees/daemon-confirm` (never the package root) and call it with `{ workspaceId, op, fingerprint }` using the same fingerprint. Pass the result as `discardConfirmation` to `finalise` or `remove`. The token is single use, bound to that workspace, operation and fingerprint, and never leaves the callback.
-
-If the manager still refuses, `E_CONFLICT` carries `details.reason`: `confirmation-stale` or `confirmation-spent` for a bad token, and `dirty` or `unbacked-data` (with the fingerprint) for a missing one. Errors are always `WorktreeError` with an ADR 0003 code; map them to the wire with the daemon's usual error path.
+If the manager still refuses, `E_CONFLICT` carries `details.reason`: `confirmation-stale`, `confirmation-spent` or `confirmation-expired` for a bad token, and `dirty` or `unbacked-data` (with the fingerprint) for a missing one. `remove` with `deleteBranch` also writes and returns `branchBackupRef` before deleting the branch. Errors are always `WorktreeError` with an ADR 0003 code.
