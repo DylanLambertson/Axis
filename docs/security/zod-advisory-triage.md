@@ -28,7 +28,7 @@ Evidence gathered by applying every patch in `code-oss/patches/` to a clean chec
 - Nothing in `code-oss/overlay/` imports `zod`.
 - The package is still present on disk in a packaged app, because it stays a production dependency (ADR 0003 asks the patch set to keep it, ADR 0005 D4 notes it). Present is not reachable: nothing loads it.
 
-Conclusion: **not runtime-reachable** while the agent host stays excluded. It becomes reachable if a later patch restores an importer of the root `zod`, or if the Axis daemon bundle resolves bare `zod` to the root copy (ADR 0005 D4 "How 4.6.6 reaches the daemon bundle"). That second case is the one to guard: the daemon must bundle 4.6.6, and the staging hook already refuses to run if the staged `zod` is not the pinned version.
+Conclusion: **not runtime-reachable** while the agent host stays excluded. It becomes reachable if a later patch restores an importer of the root `zod`, or if the Axis daemon bundle resolves bare `zod` to the root copy (ADR 0005 D4 "How 4.6.6 reaches the daemon bundle"). That second case is the one to guard: the daemon must bundle 4.6.6. ADR 0005 D4 specifies a staging check for this, but no script under `scripts/code-oss/` implements it yet.
 
 ### Markdown editor 4.4.3: reachable, low severity
 
@@ -52,6 +52,6 @@ Not trivial. Recommendation: do not bump now.
 
 ## Follow-ups
 
-1. Keep the guard that stops the daemon bundle from resolving the tree's 4.4.3 (ADR 0005 D4). It is the one way this advisory could reach Axis code.
+1. Implement the ADR 0005 D4 check that stops the daemon bundle from resolving the tree's 4.4.3 (not present in `scripts/code-oss/` today). It is the one way this advisory could reach Axis code.
 2. Before any patch re-enables code under `src/vs/platform/agentHost/node/**`, re-open this note.
 3. Open question for the patch-series owner: patch 1550 edits `package.json` and `remote/package.json` but not the lockfiles, which still list `@github/copilot-sdk` and its nested zod 4.3.6. Check that `npm ci` in the vendored tree accepts this, and what the shipped `node_modules` contains.
