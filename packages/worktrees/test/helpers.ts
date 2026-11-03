@@ -1,7 +1,8 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 
 import { execFileSync } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { markDiscardConfirmed, type DiscardConfirmation, type DiscardOp } from '../src/daemonConfirm.js';
@@ -53,7 +54,7 @@ export function makeFixture(extra: Partial<WorktreeManagerOptions> = {}): Fixtur
 
 /** HEAD, porcelain status and index bytes of a checkout: must not change. */
 export function checkoutFingerprint(repo: string): string {
-  const index = execFileSync('shasum', ['-a', '256', path.join(repo, '.git', 'index')], { encoding: 'utf8' }).split(' ')[0];
+  const index = createHash('sha256').update(readFileSync(path.join(repo, '.git', 'index'))).digest('hex');
   return [sh(repo, 'rev-parse', 'HEAD'), sh(repo, 'status', '--porcelain=v1', '--untracked-files=all'), index].join('|');
 }
 

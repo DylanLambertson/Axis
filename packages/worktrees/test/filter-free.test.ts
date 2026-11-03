@@ -2,7 +2,7 @@
 // NB-1 (empty filter name) and NB-2 (no per-call scan race): the daemon runs no command that can reach a filter.
 
 import assert from 'node:assert/strict';
-import { chmodSync, existsSync, readFileSync, rmSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, existsSync, readFileSync, rmSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { spawn } from 'node:child_process';
 import { after, describe, it } from 'node:test';
@@ -25,7 +25,8 @@ describe('NB-1: a filter with an empty name is neutralised', () => {
   it('blanks `[filter ""]` for a command that is off the allow-list (best effort path)', async () => {
     const fx = fresh();
     const marker = path.join(fx.tmp, 'PWNED-empty');
-    sh(fx.repo, 'config', '--add', 'filter..clean', `touch '${marker}'; cat`);
+    // Written as text: `git config` refuses some spellings of an empty subsection on some versions.
+    appendFileSync(path.join(fx.repo, '.git', 'config'), `\n[filter ""]\n\tclean = touch '${marker}'; cat\n`);
     write(path.join(fx.repo, '.git', 'info', 'attributes'), '* filter=\n');
     write(path.join(fx.repo, 'a.txt'), 'ALPHA\n');
     const t = new Date(Date.now() + 120_000);
