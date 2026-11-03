@@ -106,9 +106,11 @@ The request is first parsed by the shared `validateRequest` (bounded, cloned, ca
 
 Stop reasons: `end_turn`, `max_tokens`, `stop_sequence`, `tool_use` and `refusal` map to the same names; `pause_turn`, `model_context_window_exceeded`, a missing or any unknown value map to `other`.
 
-Usage: `input_tokens`, `output_tokens` map to `inputTokens`, `outputTokens`; `cache_read_input_tokens` and `cache_creation_input_tokens` map to `cacheReadTokens` and `cacheWriteTokens` and are not added to `inputTokens` (the API reports them separately). Usage is cumulative; the adapter takes the running maximum per counter, so a legitimate later event that omits or lowers a counter cannot make the guard see usage go down.
+Usage is required: a `message_start` without `usage.input_tokens`, or a stream that reaches `message_stop` without any `message_delta` reporting `usage.output_tokens`, is `invalid_response` with reason `missing_usage` (never reported as zero, which would let the PRV-6 budget fail open); the guard then charges its conservative estimate. Usage: `input_tokens`, `output_tokens` map to `inputTokens`, `outputTokens`; `cache_read_input_tokens` and `cache_creation_input_tokens` map to `cacheReadTokens` and `cacheWriteTokens` and are not added to `inputTokens` (the API reports them separately). Usage is cumulative; the adapter takes the running maximum per counter, so a legitimate later event that omits or lowers a counter cannot make the guard see usage go down.
 
 Block indices: the wire index counts every block, including ignored ones. The adapter remaps wire indices to the contiguous 0, 1, 2… that the normalized grammar requires, and drops deltas and stops for ignored blocks.
+
+Deltas of an ignored block (thinking) are real progress, so while they stream the adapter emits a `usage` event with the counters unchanged, at most once per `keepAliveMs` (default 5,000 ms). It is a valid event in the normalized grammar and restarts the guard's idle timer, so a model that thinks for longer than the idle timeout is not cut off. Pings never do that.
 
 **Known limitation (thinking blocks).** Some current models always think and return `thinking` blocks with signatures, and the API requires those blocks to be passed back unchanged on tool-use turns. The normalized content types have no such block, and `@axis/providers` is owned by another change. v1 ignores and counts thinking blocks, reports `reasoning: "unsupported"`, and does not send a `thinking` field. A multi-turn tool loop against a model that insists on the returned blocks can fail with `invalid_request` from the API. The fix is an opaque provider-state content block in a version 2 of the adapter API. See open question 1.
 
@@ -129,16 +131,17 @@ The parser is a bounded incremental SSE reader over the response body. Every lim
 
 Details:
 
-- Lines end in LF, CRLF or CR; a leading BOM is dropped; lines starting with `:` are comments; only `event` and `data` fields are used. A line limit is checked as bytes arrive, before the line is complete, so a response with no newline cannot grow the buffer past it.
+- Lines end in LF, CRLF or CR; a BOM on the first line is dropped (and only there); lines starting with `:` are comments; only `event` and `data` fields are used. Every line that does not belong to a dispatched event counts as an ignored event: comments, blank lines with nothing pending, `id:`, `retry:` and unknown fields, an `event:` that overwrites another, and an event with no `data` (which is skipped, as the SSE rules say). No kind of line can be sent for free, and empty lines are not decoded or allocated. A line limit is checked as bytes arrive, before the line is complete, so a response with no newline cannot grow the buffer past it.
 - JSON depth is checked by a linear scan of the event text (counting brackets outside strings) before `JSON.parse`, so a deeply nested event is refused without being parsed.
 - Event shapes are parsed with Zod schemas that read only the fields the adapter uses and ignore the rest.
 - Beyond these wire limits the guard's `StreamValidator` still applies its own caps per response and per tool input (events, text, tool input, total response size, tool input depth and size, duplicate tool ids, usage monotonic). A tool input that is deeply nested JSON is a string inside `partial_json`, so it passes the event depth check and is refused by the validator (`tool_input_unbounded`).
 - Idle and request timeouts are the guard's. Pings do not reset them: the guard's idle timer restarts only when the adapter yields a normalized event, so an endless stream of pings ends in `timeout`, and the ignored-event cap ends it earlier.
+- A line is held in one growable buffer, so a long line that arrives in tiny chunks costs one copy.
 - The adapter holds a reader on the body and always releases it: on normal end, on error, on early return and on abort (`reader.cancel()`), and a pending read is raced against the abort signal so cancellation does not wait for the next chunk.
 
 ## 6. Key handling
 
-- The adapter never stores the key. It takes `apiKey: () => string | Promise<string>` and calls it immediately before building the headers of each request. The daemon passes a function backed by the vault (`vault.reveal`, §9). A failing or empty supplier is `authentication`, reason `no_credential`.
+- The adapter never stores the key. It takes `apiKey: (purpose) => string | Promise<string>` and calls it immediately before building the headers of each request. `purpose` (`provider_request` or `validate_connection`) is the vault's `SecretPurpose`, so the audit event of `vault.reveal` says why the key was read. The daemon passes a function backed by the vault (`vault.reveal`, §9). A failing or empty supplier is `authentication`, reason `no_credential`.
 - The key is checked for header safety: printable ASCII, no whitespace or control characters, 8 to 4,096 characters. Anything else is `authentication`, reason `bad_key_format`, and nothing is sent. This prevents header injection from a pasted key with a newline.
 - The key is set only as `x-api-key`. It is never placed in a URL, a body, a log record, an error message, a thrown object or an event. Errors carry fixed text and the four detail keys of `ProviderError`; they have no `cause`.
 - The key is sent only to the constant origin. The `fetch` seam (§7) is called only with URLs the adapter built from constants.
@@ -165,7 +168,9 @@ type FetchLike = (url: string, init: {
 
 - Every call passes `redirect: "manual"`. With Node's `fetch` a 3xx response is then returned as is and never re-requested, so the key cannot reach a `Location` target.
 - The adapter treats any status 300 to 399, an `opaqueredirect` type, `redirected: true`, or a response `url` that differs from the request URL as a refused redirect: it cancels the body without reading it and throws `invalid_response`, reason `redirect`. It never reads or logs the `Location` header.
-- This is a second line of defence for a fetch implementation that followed anyway: the response is discarded and the key is not reused. The first line is that the adapter makes exactly one call per request and never retries.
+- This is detection, not prevention, for a fetch implementation that ignores `redirect: "manual"`: the request has already gone out, with the key, before the adapter sees the response. Such a fetch cannot be made safe from inside the adapter, so the daemon must pass Node's own global `fetch` and nothing else. `test/review.test.ts` runs the real `fetch` against local servers to show that a 302 and a 307 never reach their `Location`, and, as a control, that a fetch forced to follow would deliver `x-api-key` to the target. A per-request header-less probe was considered and rejected: it doubles the requests and still proves nothing about the next call. The first line of defence is that the adapter makes exactly one call per request and never retries.
+- The response URL is compared after URL normalization, so an encoded query character is not mistaken for a redirect. Model ids `.` and `..` are refused: they survive URL encoding and would walk the path.
+- A 200 whose `content-type` is present and is not `text/event-stream` (or `application/json` for the small endpoints) is `invalid_response`, reason `unexpected_content_type`, not a retryable network error.
 - `redirect: "error"` was considered. It cannot be told apart from a network failure, and `manual` gives a precise error and a testable "exactly one request" property.
 
 ### 7.3 System proxy and trust store
@@ -183,7 +188,8 @@ All failures are `ProviderError` (closed taxonomy in `@axis/providers`), whose `
 | Situation | `ProviderErrorCode` | `ErrorCode` | Retryable |
 |---|---|---|---|
 | HTTP 400, 409, 422, other 4xx | `invalid_request` | `E_INVALID_ARGUMENT` | no |
-| 400 whose error `type` is `invalid_request_error` and message says the prompt is too long; 413 | `context_length_exceeded` | `E_INVALID_ARGUMENT` | no |
+| 400 whose error `type` is `invalid_request_error` and message says the prompt is too long | `context_length_exceeded` | `E_INVALID_ARGUMENT` | no |
+| 413 and the stream `request_too_large` (the body exceeds the byte limit; reason `request_too_large`) | `invalid_request` | `E_INVALID_ARGUMENT` | no |
 | 401 | `authentication` | `E_UNAUTHENTICATED` | no |
 | 402, 403 | `permission_denied` | `E_UNAUTHENTICATED` | no |
 | 404 | `not_found` | `E_NOT_FOUND` | no |
@@ -204,7 +210,7 @@ Rules:
 
 - **No body ever reaches an error.** The status decides the code. For a 400 only, the adapter reads at most 16 KiB of the body, to see whether the error is `invalid_request_error` and the message contains the fixed phrase `prompt is too long`; that one boolean turns `invalid_request` into `context_length_exceeded`. For every other status the body is cancelled unread. Neither the text nor the `request_id` is surfaced. A body that echoes the key therefore cannot leak it, and the tests check that.
 - `Retry-After`: only a non-negative integer number of seconds is honoured (capped at one day by `ProviderError`); an HTTP date or garbage is ignored.
-- A stream `error` event maps from `error.type` through a fixed list (`overloaded_error`, `rate_limit_error`, `invalid_request_error`, `authentication_error`, `permission_error`, `billing_error`, `not_found_error`, `request_too_large`, `timeout_error`; anything else is `server_error`); the message is never used.
+- A stream `error` event maps from `error.type` through a fixed list (`overloaded_error`, `rate_limit_error`, `invalid_request_error`, `authentication_error`, `permission_error`, `billing_error`, `not_found_error`, `request_too_large` (mapped to `invalid_request`), `timeout_error`; anything else is `server_error`); the message is never used.
 - `status` is the HTTP status when there was one.
 - A 429 with no `retry-after` header is `rate_limited` with no `retryAfterMs` (the documentation notes that a spend-cap 429 has no header and keeps failing; the budget layer, not a retry loop, is what stops spend).
 
@@ -314,13 +320,16 @@ All tests use `node:test`; the transport is a fake `fetch`, so no test touches t
 5. **ANT-1, error body echoes the key:** 400, 401, 403, 429 and 529 bodies and a mid-stream `error` event containing the key, its URL-encoded form and a `sk-ant-` string never reach the thrown error, `String(err)`, `JSON.stringify`, `util.inspect(err, {showHidden:true})` or the guard's log records; the same through the guard with a vault-backed redactor.
 6. **Key handling:** the key is read per request from the supplier, appears only in `x-api-key`, is rejected when it contains CR, LF or spaces, and is absent from every URL and body; every recorded URL starts with `https://api.anthropic.com/`.
 7. **SSE parser units:** chunk boundaries inside a line, a multi-byte character and a CRLF; BOM; comments; multi-line data; invalid UTF-8; index remapping around ignored blocks; usage mapping; stop-reason mapping.
-8. **Error mapping:** the table in §8, `Retry-After` handling, `error` event types.
-9. **Capabilities, cost, `countTokens`:** report built from a models response, unknown fields ignored, cache and expiry; pricing with `BigInt` and missing cache price; `countTokens` body.
-10. **Vault:** the PRV-1 matrix (every backend id, with and without consent, wrong-backend consent, `refuse` policy, backend change between stores), no secret in `info`, `list`, errors, `inspect` or `JSON.stringify`, `knownSecrets` after rotation and removal, `onAccess` carries no secret.
+8. **Review regressions** (`test/review.test.ts`): missing usage through a token budget, line floods, redirects on the GET paths and with the real `fetch`, `.` model ids, content types, 413, thinking progress, key purposes.
+9. **Error mapping:** the table in §8, `Retry-After` handling, `error` event types.
+10. **Capabilities, cost, `countTokens`:** report built from a models response, unknown fields ignored, cache and expiry; pricing with `BigInt` and missing cache price; `countTokens` body.
+11. **Vault:** the PRV-1 matrix (every backend id, with and without consent, wrong-backend consent, `refuse` policy, backend change between stores), no secret in `info`, `list`, errors, `inspect` or `JSON.stringify`, `knownSecrets` after rotation and removal, `onAccess` carries no secret.
 
 The gate lines the tests cover: ANT-1 (items 2 to 5), PRV-1 (10), PRV-2 (5, 6, 10), PRV-4 (guard scan with the vault redactor), PRV-6 (guard budget with the adapter's pricing and usage events).
 
 ## 12. Open questions
+
+0. **Contract coverage of redirects.** The shared suite never serves a 3xx, so an adapter that follows redirects and sends the key along passes all of it. It needs a `redirect` scenario and a hook that reports every URL the adapter requested; see the review follow-up. Until then the adapter's own tests carry ANT-1's redirect property.
 
 1. **Thinking blocks.** Models that always think return blocks that must be passed back on tool turns. Options: an opaque provider-state content block in adapter API v2 (preferred; needs a change in `@axis/providers`), or a per-connection in-memory cache keyed by tool-use id (lost on restart). Until decided, v1 ignores them (§4.5). Needed before ticket 10's tool loop is exercised against such a model.
 2. **`temperature` and `toolChoice` reporting.** The Models API does not report them, so they are `unknown` and refused. If the product needs forced tool choice on a given model, that needs either a documented capability field or a user-visible override.

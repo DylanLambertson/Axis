@@ -18,7 +18,8 @@ export function codeForStatus(status: number): ProviderErrorCode {
     case 504:
       return "timeout";
     case 413:
-      return "context_length_exceeded";
+      // request_too_large: the body exceeded the byte limit, not the context window (N4).
+      return "invalid_request";
     case 429:
       return "rate_limited";
     case 503:
@@ -61,7 +62,11 @@ export async function errorFromResponse(res: ResponseLike, signal: AbortSignal, 
     const body = new BodyStream(res.body, signal, Number.MAX_SAFE_INTEGER);
     await body.close();
   }
-  return new ProviderError(code, { status: res.status, ...(retryAfter === undefined ? {} : { retryAfterMs: retryAfter }) });
+  return new ProviderError(code, {
+    status: res.status,
+    ...(retryAfter === undefined ? {} : { retryAfterMs: retryAfter }),
+    ...(res.status === 413 ? { reason: "request_too_large" } : {}),
+  });
 }
 
 function safeHeader(res: ResponseLike, name: string): string | null {

@@ -200,7 +200,7 @@ test("listModels with a repeated cursor stops, and validateConnection reports in
 test("the status table", () => {
   const table: Array<[number, string]> = [
     [400, "invalid_request"], [401, "authentication"], [402, "permission_denied"], [403, "permission_denied"], [404, "not_found"],
-    [408, "timeout"], [409, "invalid_request"], [413, "context_length_exceeded"], [418, "invalid_request"], [422, "invalid_request"], [429, "rate_limited"],
+    [408, "timeout"], [409, "invalid_request"], [413, "invalid_request"], [418, "invalid_request"], [422, "invalid_request"], [429, "rate_limited"],
     [500, "server_error"], [502, "server_error"], [503, "overloaded"], [504, "timeout"], [529, "overloaded"], [201, "invalid_response"], [204, "invalid_response"],
   ];
   for (const [status, code] of table) assert.equal(codeForStatus(status), code, String(status));

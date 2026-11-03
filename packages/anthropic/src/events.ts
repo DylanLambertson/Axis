@@ -56,7 +56,8 @@ export function codeForErrorType(type: string | undefined): ProviderErrorCode {
     case "not_found_error":
       return "not_found";
     case "request_too_large":
-      return "context_length_exceeded";
+      // The body exceeded the byte limit; that is not the context window (N4).
+      return "invalid_request";
     case "timeout_error":
       return "timeout";
     default:
@@ -94,6 +95,8 @@ function parse<T extends z.ZodType>(schema: T, value: unknown): z.infer<T> {
  * counted, never executed.
  */
 export class EventMapper {
+  /** Default spacing of the progress events sent while an ignored block (thinking) streams. */
+  static readonly DEFAULT_KEEPALIVE_MS = 5_000;
   private readonly mapped = new Map<number, number>();
   private readonly ignoredBlocks = new Set<number>();
   private nextIndex = 0;
@@ -104,8 +107,17 @@ export class EventMapper {
   private outputTokens = 0;
   private cacheRead: number | undefined;
   private cacheWrite: number | undefined;
+  /** A `message_delta` reported `output_tokens`: the final count the budget is charged (S1). */
+  private outputReported = false;
+  private lastProgress: number;
 
-  constructor(private readonly counters: EventCounters) {}
+  constructor(
+    private readonly counters: EventCounters,
+    private readonly now: () => number = () => Date.now(),
+    private readonly keepAliveMs: number = EventMapper.DEFAULT_KEEPALIVE_MS,
+  ) {
+    this.lastProgress = now();
+  }
 
   /** True once `message_stop` has been mapped. */
   get finished(): boolean {
@@ -147,6 +159,8 @@ export class EventMapper {
       case "message_start": {
         if (this.started) throw new ProviderError("invalid_response", { reason: "duplicate_message_start" });
         const m = parse(messageStart, json).message;
+        // No usage means no basis to charge the budget: refuse rather than report zero (S1).
+        if (typeof m.usage?.input_tokens !== "number") throw new ProviderError("invalid_response", { reason: "missing_usage" });
         this.started = true;
         this.absorb(m.usage);
         return [
@@ -184,7 +198,14 @@ export class EventMapper {
         const index = this.mapped.get(e.index);
         if (index === undefined) {
           // Thinking and other ignored blocks can stream many deltas; they count as raw events only.
-          if (this.ignoredBlocks.has(e.index)) return [];
+          // They are real progress, so a throttled `usage` event (the counters unchanged) lets the
+          // guard's idle timer restart while a model thinks (N7). Pings never do.
+          if (this.ignoredBlocks.has(e.index)) {
+            const t = this.now();
+            if (t - this.lastProgress < this.keepAliveMs) return [];
+            this.lastProgress = t;
+            return [{ type: "usage", usage: this.usage() }];
+          }
           throw new ProviderError("invalid_response", { reason: "delta_outside_block" });
         }
         if (e.delta.type === "text_delta" && typeof e.delta.text === "string") {
@@ -210,9 +231,11 @@ export class EventMapper {
         const e = parse(messageDelta, json);
         const reason = e.delta?.stop_reason;
         if (typeof reason === "string") this.stop = mapStopReason(reason);
+        if (typeof e.usage?.output_tokens === "number") this.outputReported = true;
         return this.absorb(e.usage) ? [{ type: "usage", usage: this.usage() }] : [];
       }
       case "message_stop":
+        if (!this.outputReported) throw new ProviderError("invalid_response", { reason: "missing_usage" });
         this.stopped = true;
         return [{ type: "message_stop", stopReason: this.stop ?? "other", usage: this.usage() }];
       case "ping":
@@ -221,7 +244,8 @@ export class EventMapper {
       case "error": {
         const e = parse(errorEvent, json);
         // The error message is never used: only the type, through a fixed table.
-        throw new ProviderError(codeForErrorType(e.error?.type));
+        const type = e.error?.type;
+        throw new ProviderError(codeForErrorType(type), type === "request_too_large" ? { reason: "request_too_large" } : {});
       }
       default:
         this.counters.countIgnored();

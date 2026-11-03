@@ -27,7 +27,8 @@ const STATUS: Record<string, { status: number; type: string }> = {
   rate_limited: { status: 429, type: "rate_limit_error" },
   overloaded: { status: 529, type: "overloaded_error" },
   server_error: { status: 500, type: "api_error" },
-  context_length_exceeded: { status: 413, type: "request_too_large" },
+  // Anthropic reports a too-long prompt as a 400; a 413 is a byte-size problem (N4).
+  context_length_exceeded: { status: 400, type: "invalid_request_error" },
 };
 
 export function scenarioFetch(scenario: ContractScenario, canary: string, credential: string): FakeFetch & { messageRequests(): number; lastRequest(): ForwardedRequest | undefined } {
@@ -46,7 +47,7 @@ export function scenarioFetch(scenario: ContractScenario, canary: string, creden
       return jsonResponse(counter, 200, { data: [{ type: "model", id: MODEL, display_name: "Test model" }], has_more: false, first_id: MODEL, last_id: MODEL });
     }
     if (call.init.method === "POST" && url.pathname === "/v1/messages/count_tokens") return jsonResponse(counter, 200, { input_tokens: 42 });
-    if (call.init.method === "POST" && url.pathname === "/v1/messages") return messages(scenario, counter, errorBody, credential);
+    if (call.init.method === "POST" && url.pathname === "/v1/messages") return messages(scenario, counter, errorBody, credential, echo);
     return jsonResponse(counter, 404, errorBody("not_found_error"));
   });
   const sent = (): RecordedCall[] => f.calls.filter((c) => c.init.method === "POST" && c.url.endsWith("/v1/messages"));
@@ -62,7 +63,7 @@ export function scenarioFetch(scenario: ContractScenario, canary: string, creden
   });
 }
 
-function messages(s: ContractScenario, counter: OpenCounter, errorBody: (t: string) => unknown, credential: string) {
+function messages(s: ContractScenario, counter: OpenCounter, errorBody: (t: string) => unknown, credential: string, errorMessageEcho: string) {
   switch (s.kind) {
     case "text":
       return sseResponse(counter, textReply(s.text));
@@ -84,6 +85,9 @@ function messages(s: ContractScenario, counter: OpenCounter, errorBody: (t: stri
       const e = STATUS[s.code] as { status: number; type: string };
       const headers: Record<string, string> = { "x-echo": credential };
       if (s.retryAfterMs !== undefined) headers["retry-after"] = String(Math.round(s.retryAfterMs / 1000));
+      if (s.code === "context_length_exceeded") {
+        return jsonResponse(counter, 400, { type: "error", error: { type: "invalid_request_error", message: `prompt is too long: 250000 tokens > 200000 maximum ${errorMessageEcho}` } }, headers);
+      }
       return jsonResponse(counter, e.status, errorBody(e.type), headers);
     }
     case "mid_stream_error": {

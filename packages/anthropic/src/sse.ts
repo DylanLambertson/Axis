@@ -25,23 +25,60 @@ export class EventCounters {
 
 const LF = 0x0a;
 const CR = 0x0d;
+const INITIAL_CAPACITY = 256;
+/** A buffer that grew past this is shrunk again after its line is taken. */
+const KEEP_CAPACITY = 65_536;
 
 function tooLarge(): ProviderError {
   return new ProviderError("invalid_response", { reason: "event_too_large" });
+}
+
+/** One line under construction: a growable buffer, so a long line arriving in tiny chunks costs one copy (N6). */
+class LineBuffer {
+  private buf = new Uint8Array(INITIAL_CAPACITY);
+  length = 0;
+  constructor(private readonly max: number) {}
+
+  append(seg: Uint8Array): void {
+    if (seg.length === 0) return;
+    const need = this.length + seg.length;
+    if (need > this.max) throw tooLarge();
+    if (need > this.buf.length) {
+      const grown = new Uint8Array(Math.min(Math.max(need, this.buf.length * 2), this.max));
+      grown.set(this.buf.subarray(0, this.length));
+      this.buf = grown;
+    }
+    this.buf.set(seg, this.length);
+    this.length = need;
+  }
+
+  /** The bytes of the line; valid until the next `append`. */
+  view(): Uint8Array {
+    return this.buf.subarray(0, this.length);
+  }
+
+  reset(): void {
+    this.length = 0;
+    if (this.buf.length > KEEP_CAPACITY) this.buf = new Uint8Array(INITIAL_CAPACITY);
+  }
 }
 
 /**
  * An incremental, bounded SSE reader. Splits on LF, CRLF and CR at the byte
  * level (those bytes never occur inside a UTF-8 multi-byte sequence), so a line
  * is limited as it arrives and a body with no newline cannot grow the buffer.
- * Only the `event` and `data` fields are used; comments count as ignored. An
- * event left unfinished at the end of the body is dropped (the caller then
- * sees a stream that ended before `message_stop`).
+ *
+ * Only `event` and `data` carry anything. Every line that does not belong to an
+ * event that gets dispatched counts as an ignored event (comments, blank lines
+ * with nothing pending, `id:`, `retry:`, unknown fields, an `event:` that
+ * overwrites another, an event with no data), so no kind of line can be sent
+ * for free (S6). An event left unfinished at the end of the body is dropped
+ * (the caller then sees a stream that ended before `message_stop`).
  */
 export async function* parseSse(body: BodyStream, limits: AnthropicLimits, counters: EventCounters): AsyncGenerator<SseEvent, void, undefined> {
-  const decoder = new TextDecoder("utf-8", { fatal: true });
-  let parts: Uint8Array[] = [];
-  let lineBytes = 0;
+  // BOM handling is ours (first line only): the decoder must not strip one from every line (N5).
+  const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+  const line = new LineBuffer(limits.maxLineBytes);
   let skipLF = false;
   let first = true;
   let eventName = "";
@@ -49,53 +86,45 @@ export async function* parseSse(body: BodyStream, limits: AnthropicLimits, count
   let eventBytes = 0;
   let pending = false;
 
-  const addBytes = (seg: Uint8Array): void => {
-    lineBytes += seg.length;
-    if (lineBytes > limits.maxLineBytes) throw tooLarge();
-    if (seg.length > 0) parts.push(seg.slice());
-  };
-
   const takeLine = (): string => {
-    const all = new Uint8Array(lineBytes);
-    let off = 0;
-    for (const p of parts) {
-      all.set(p, off);
-      off += p.length;
-    }
-    parts = [];
-    lineBytes = 0;
+    if (line.length === 0) return "";
     try {
-      let text = decoder.decode(all);
-      if (first) {
-        first = false;
-        if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
-      }
+      let text = decoder.decode(line.view());
+      if (first && text.charCodeAt(0) === 0xfeff) text = text.slice(1);
       return text;
     } catch {
       throw new ProviderError("invalid_response", { reason: "bad_encoding" });
+    } finally {
+      line.reset();
     }
   };
 
-  const handleLine = (line: string): SseEvent | undefined => {
-    if (line === "") {
-      if (!pending) return undefined;
-      const ev: SseEvent = { event: eventName === "" ? "message" : eventName, data: data.join("\n") };
+  const handleLine = (text: string): SseEvent | undefined => {
+    if (text === "") {
+      const ready = pending && data.length > 0;
+      const ev: SseEvent | undefined = ready ? { event: eventName === "" ? "message" : eventName, data: data.join("\n") } : undefined;
       eventName = "";
       data = [];
       eventBytes = 0;
       pending = false;
+      if (ev === undefined) {
+        // A blank line with nothing pending, or an event with no data, is skipped but costs budget.
+        counters.countIgnored();
+        return undefined;
+      }
       counters.countRaw();
       return ev;
     }
-    if (line.charCodeAt(0) === 0x3a) {
+    if (text.charCodeAt(0) === 0x3a) {
       counters.countIgnored();
       return undefined;
     }
-    const colon = line.indexOf(":");
-    const field = colon === -1 ? line : line.slice(0, colon);
-    let value = colon === -1 ? "" : line.slice(colon + 1);
+    const colon = text.indexOf(":");
+    const field = colon === -1 ? text : text.slice(0, colon);
+    let value = colon === -1 ? "" : text.slice(colon + 1);
     if (value.startsWith(" ")) value = value.slice(1);
     if (field === "event") {
+      if (eventName !== "") counters.countIgnored();
       eventName = value;
       pending = true;
     } else if (field === "data") {
@@ -103,6 +132,8 @@ export async function* parseSse(body: BodyStream, limits: AnthropicLimits, count
       if (eventBytes > limits.maxEventBytes) throw tooLarge();
       data.push(value);
       pending = true;
+    } else {
+      counters.countIgnored();
     }
     return undefined;
   };
@@ -121,12 +152,13 @@ export async function* parseSse(body: BodyStream, limits: AnthropicLimits, count
         }
       }
       if (b !== LF && b !== CR) continue;
-      addBytes(chunk.subarray(start, i));
+      line.append(chunk.subarray(start, i));
       start = i + 1;
       skipLF = b === CR;
       const ev = handleLine(takeLine());
+      first = false;
       if (ev !== undefined) yield ev;
     }
-    addBytes(chunk.subarray(start));
+    line.append(chunk.subarray(start));
   }
 }

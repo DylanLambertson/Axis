@@ -44,7 +44,11 @@ test("ANT-1: a redirect on a GET (models, validateConnection) is refused too", a
   if (!check.ok) assert.equal(check.error.details.reason, "redirect");
   const err = await failure(adapter.listModels({ signal: live() }));
   assert.equal(err.code, "invalid_response");
-  for (const c of fake.calls) assert.equal(c.init.redirect, "manual");
+  assert.equal(fake.calls.length, 2, "one call per request, nothing for the redirect target");
+  for (const c of fake.calls) {
+    assert.equal(c.init.redirect, "manual");
+    assert.ok(c.url.startsWith(`${ANTHROPIC_ORIGIN}/`) && !c.url.includes("attacker"));
+  }
 });
 
 test("ANT-1: a response that a fetch followed anyway is discarded", async () => {
@@ -193,7 +197,7 @@ for (const [status, type, code] of [
   [401, "authentication_error", "authentication"],
   [403, "permission_error", "permission_denied"],
   [404, "not_found_error", "not_found"],
-  [413, "request_too_large", "context_length_exceeded"],
+  [413, "request_too_large", "invalid_request"],
   [429, "rate_limit_error", "rate_limited"],
   [500, "api_error", "server_error"],
   [529, "overloaded_error", "overloaded"],
@@ -204,7 +208,7 @@ for (const [status, type, code] of [
     const err = await failure(adapter.generate(req(), { signal: live() }));
     assert.equal(err.code, code);
     assert.equal(err.details.status, status);
-    assert.deepEqual(Object.keys(err.details).sort().filter((k) => !["status", "retryAfterMs"].includes(k)), []);
+    assert.deepEqual(Object.keys(err.details).sort().filter((k) => !["status", "retryAfterMs", "reason"].includes(k)), []);
     noLeak(views(err));
     const { g, logs } = guarded(adapter);
     const gerr = await failure(g.generate(req(), run()));
