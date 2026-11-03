@@ -2,25 +2,53 @@
 
 declare const verifiedBrand: unique symbol;
 
+export type DiscardOp = 'finalise' | 'remove';
+
+/** What the user actually confirmed. */
+export interface DiscardBinding {
+  readonly workspaceId: string;
+  readonly op: DiscardOp;
+  /** Digest of the dirty files plus the files a backup cannot hold (see `previewDiscard`). */
+  readonly fingerprint: string;
+}
+
 /**
  * Opaque proof that a user discard confirmation (challenge plus native
- * dialog, task B4) already succeeded. This package never verifies it; it only
- * checks that the value was minted by `markDiscardConfirmed`, so a value that
- * crossed a JSON boundary or was hand-built cannot satisfy the check.
+ * dialog, task B4) already succeeded for one workspace, one operation and one
+ * exact set of affected files. This package never verifies the dialog; it only
+ * checks the value was minted by the daemon-only `markDiscardConfirmed`, still
+ * matches the binding, and has not been used. A value that crossed a JSON
+ * boundary or was hand-built cannot satisfy the check.
  */
 export interface DiscardConfirmation {
   readonly [verifiedBrand]: true;
 }
 
-const minted = new WeakSet<object>();
+interface State {
+  readonly binding: DiscardBinding;
+  spent: boolean;
+}
 
-/** To be called only by the daemon after B4 verification succeeded. */
-export function markDiscardConfirmed(): DiscardConfirmation {
+const minted = new WeakMap<object, State>();
+
+/** Internal: used by `daemonConfirm.ts`, which is the only minting entry point. */
+export function registerConfirmation(binding: DiscardBinding): DiscardConfirmation {
   const token = Object.freeze({}) as DiscardConfirmation;
-  minted.add(token);
+  minted.set(token, { binding: { ...binding }, spent: false });
   return token;
 }
 
-export function isDiscardConfirmed(value: unknown): value is DiscardConfirmation {
-  return typeof value === 'object' && value !== null && minted.has(value);
+export type ConsumeResult = 'ok' | 'invalid' | 'mismatch' | 'spent';
+
+/** Checks the binding and marks the token used when it matches. */
+export function consumeConfirmation(value: unknown, expected: DiscardBinding): ConsumeResult {
+  const state = typeof value === 'object' && value !== null ? minted.get(value) : undefined;
+  if (!state) return 'invalid';
+  if (state.spent) return 'spent';
+  const b = state.binding;
+  if (b.workspaceId !== expected.workspaceId || b.op !== expected.op || b.fingerprint !== expected.fingerprint) {
+    return 'mismatch';
+  }
+  state.spent = true;
+  return 'ok';
 }

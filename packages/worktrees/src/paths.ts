@@ -4,6 +4,7 @@ import { promises as fs } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { WorktreeError } from './errors.js';
+import { isOutsideRel } from './pathGuard.js';
 
 /**
  * The default worktree root under the per-OS application data directory
@@ -59,8 +60,9 @@ export async function canonicalise(p: string): Promise<string> {
   }
 }
 
+/** Only Windows folds case; elsewhere realpath already yields on-disk case and exact comparison is correct. */
 function fold(p: string, platform: NodeJS.Platform): string {
-  return platform === 'win32' || platform === 'darwin' ? p.toLowerCase() : p;
+  return platform === 'win32' ? p.toLowerCase() : p;
 }
 
 /** True when `child` equals `parent` or lies beneath it. Both must be canonical. */
@@ -70,7 +72,7 @@ export function isSameOrInside(
   platform: NodeJS.Platform = process.platform,
 ): boolean {
   const rel = path.relative(fold(parent, platform), fold(child, platform));
-  return rel === '' || (!rel.startsWith('..' + path.sep) && rel !== '..' && !path.isAbsolute(rel));
+  return rel === '' || !isOutsideRel(rel);
 }
 
 export interface ProtectedLocation {

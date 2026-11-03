@@ -4,8 +4,8 @@ import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
-import { markDiscardConfirmed, WorktreeError } from '../src/index.js';
-import { checkoutFingerprint, makeFixture, sh, write, type Fixture } from './helpers.js';
+import { WorktreeError } from '../src/index.js';
+import { checkoutFingerprint, confirmFor, makeFixture, sh, write, type Fixture } from './helpers.js';
 
 const code = (c: string) => (e: unknown) => e instanceof WorktreeError && e.code === c;
 
@@ -95,10 +95,10 @@ describe('worktree lifecycle', () => {
     await assert.rejects(fx.manager.remove({ path: ws.path }), (e) =>
       e instanceof WorktreeError && e.details['reason'] === 'not-finalised');
 
-    const fin = await fx.manager.finalise({ path: ws.path, outcome: 'abandoned', discardConfirmation: markDiscardConfirmed() });
+    const fin = await fx.manager.finalise({ path: ws.path, outcome: 'abandoned', discardConfirmation: await confirmFor(fx.manager, ws.path, ws.id, 'finalise') });
     assert.ok(fin.backupRef?.startsWith(`refs/axis/backup/${ws.id}/`));
     await assert.rejects(fx.manager.remove({ path: ws.path }), code('E_CONFLICT'));
-    const rm = await fx.manager.remove({ path: ws.path, discardConfirmation: markDiscardConfirmed() });
+    const rm = await fx.manager.remove({ path: ws.path, discardConfirmation: await confirmFor(fx.manager, ws.path, ws.id, 'remove') });
     assert.ok(rm.backupRef);
     assert.equal(existsSync(ws.path), false);
     // the dirty content is recoverable from the backup, including untracked files

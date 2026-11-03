@@ -281,3 +281,14 @@ export function diffGitSnapshots(baseline: GitSnapshot, current: GitSnapshot): D
   }
   return items;
 }
+
+/**
+ * Drift that changes what git may execute or where it points: any watched
+ * config key, attributes, include targets, and the redirection files. Daemon
+ * writes refuse while any of these is unacknowledged.
+ */
+export function isExecutionDrift(item: DriftItem): boolean {
+  const id = item.id;
+  return item.kind === 'config' || id === 'file:info/attributes' || id.startsWith('file:include:') ||
+    id === 'file:worktree/.git' || id.endsWith('/commondir') || id.endsWith('/gitdir');
+}

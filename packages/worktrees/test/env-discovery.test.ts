@@ -69,7 +69,6 @@ describe('GIT-ENV-1', () => {
         assert.ok(c.some((a) => a.startsWith('core.hooksPath=') && a.length > 'core.hooksPath='.length), c.join(' '));
         assert.ok(c.includes('core.fsmonitor=false'), c.join(' '));
       }
-      m.dispose();
     } finally {
       fx.cleanup();
     }

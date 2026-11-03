@@ -1,6 +1,8 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 
 import { spawn } from 'node:child_process';
+import { accessSync, constants, statSync } from 'node:fs';
+import * as path from 'node:path';
 import { WorktreeError } from './errors.js';
 
 export interface GitRunOptions {
@@ -26,6 +28,8 @@ export interface GitResult {
 
 /** The only door to the git CLI. Tests and the daemon can substitute their own. */
 export interface GitRunner {
+  /** Absolute path of the pinned git executable, when the runner knows it. */
+  readonly gitPath?: string;
   /** Resolves with the exit code; rejects with E_INTERNAL only when git cannot run. */
   run(args: readonly string[], options: GitRunOptions): Promise<GitResult>;
 }
@@ -65,11 +69,38 @@ export interface ExecGitRunnerOptions {
   readonly maxOutputBytes?: number;
 }
 
+/**
+ * Resolves git to an absolute path once. A relative or bare name is searched
+ * for in the absolute directories of PATH only, so a project-relative entry
+ * such as ./node_modules/.bin can never supply the binary.
+ */
+export function resolveGitPath(
+  explicit: string | undefined,
+  env: Readonly<Record<string, string | undefined>>,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  if (explicit && path.isAbsolute(explicit)) return explicit;
+  const exe = explicit ?? (platform === 'win32' ? 'git.exe' : 'git');
+  const rawPath = env['PATH'] ?? env['Path'] ?? '';
+  for (const dir of rawPath.split(platform === 'win32' ? ';' : ':')) {
+    if (!dir || !path.isAbsolute(dir)) continue;
+    const candidate = path.join(dir, exe);
+    try {
+      accessSync(candidate, constants.X_OK);
+      if (statSync(candidate).isFile()) return candidate;
+    } catch {
+      // keep searching
+    }
+  }
+  throw new WorktreeError('E_NOT_FOUND', 'git executable not found in an absolute PATH directory');
+}
+
 /** Real runner: spawns git directly with an argument vector, never a shell. */
 export function createExecGitRunner(options: ExecGitRunnerOptions = {}): GitRunner {
-  const gitPath = options.gitPath ?? 'git';
+  const gitPath = resolveGitPath(options.gitPath, options.baseEnv ?? process.env, options.platform);
   const maxBytes = options.maxOutputBytes ?? 256 * 1024 * 1024;
   return {
+    gitPath,
     run(args, opts) {
       const env = {
         ...buildGitEnv(options.baseEnv ?? process.env, options.platform),

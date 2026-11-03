@@ -13,20 +13,37 @@ export const ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 export const SlugSchema = z.string().regex(SLUG_PATTERN, 'slug must be 1-64 chars of a-z, 0-9 and "-", not starting or ending with "-"');
 export const IdSchema = z.string().regex(ID_PATTERN);
 
-export const WorkspaceMetaSchema = z.strictObject({
-  version: z.literal(1),
-  id: IdSchema,
-  slug: SlugSchema,
-  branch: z.string().min(1),
-  baseRef: z.string().min(1),
-  baseSha: z.string().regex(/^[0-9a-f]{40,64}$/),
-  /** Full ref name of the base branch when the base was a branch, else null. */
-  baseBranch: z.string().nullable(),
-  createdAt: z.string(),
-  state: z.enum(['READY', 'FINALISED']),
-  outcome: z.enum(['merged', 'archived', 'abandoned']).nullable(),
-});
+export const WorkspaceMetaSchema = z
+  .strictObject({
+    version: z.literal(1),
+    id: IdSchema,
+    slug: SlugSchema,
+    branch: z.string().min(1),
+    baseRef: z.string().min(1),
+    baseSha: z.string().regex(/^[0-9a-f]{40,64}$/),
+    /** Full ref name of the base branch when the base was a branch, else null. */
+    baseBranch: z.string().regex(/^refs\/heads\/[^\s\0-\x1f\x7f-][^\s\0-\x1f\x7f]*$/).nullable(),
+    /** Commit the run-base ref pointed at when Axis wrote it; restore refuses if the ref moved. */
+    runBaseSha: z.string().regex(/^[0-9a-f]{40,64}$/),
+    createdAt: z.string(),
+    state: z.enum(['READY', 'FINALISED']),
+    outcome: z.enum(['merged', 'archived', 'abandoned']).nullable(),
+  })
+  .refine((m) => m.branch === `axis/${m.slug}`, { message: 'branch must be axis/<slug>' });
 export type WorkspaceMeta = z.infer<typeof WorkspaceMetaSchema>;
+
+const SnapFileSchema = z.strictObject({
+  sha256: z.string().regex(/^[0-9a-f]{64}$/),
+  size: z.number().int().min(0),
+  exec: z.boolean(),
+  text: z.string().optional(),
+});
+export const GitSnapshotSchema = z.strictObject({
+  version: z.literal(1),
+  takenAt: z.string(),
+  files: z.record(z.string(), SnapFileSchema),
+  config: z.array(z.strictObject({ key: z.string(), value: z.string(), scope: z.string(), origin: z.string() })),
+});
 
 const META_FILE = 'axis-workspace.json';
 const BASELINE_FILE = 'axis-gitsnap.json';
@@ -50,9 +67,15 @@ export async function readMeta(gitDir: string): Promise<WorkspaceMeta | null> {
   } catch {
     return null;
   }
-  const parsed = WorkspaceMetaSchema.safeParse(JSON.parse(text));
+  let json: unknown;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    throw new WorktreeError('E_INTERNAL', 'workspace record is corrupt', { reason: 'corrupt-record' });
+  }
+  const parsed = WorkspaceMetaSchema.safeParse(json);
   if (!parsed.success) {
-    throw new WorktreeError('E_INVALID_ARGUMENT', 'workspace record is corrupt', { gitDir });
+    throw new WorktreeError('E_INTERNAL', 'workspace record is corrupt', { reason: 'corrupt-record' });
   }
   return parsed.data;
 }
@@ -62,8 +85,15 @@ export async function writeMeta(gitDir: string, meta: WorkspaceMeta): Promise<vo
 }
 
 export async function readBaseline(gitDir: string): Promise<GitSnapshot | null> {
+  let text: string;
   try {
-    return JSON.parse(await fs.readFile(path.join(gitDir, BASELINE_FILE), 'utf8')) as GitSnapshot;
+    text = await fs.readFile(path.join(gitDir, BASELINE_FILE), 'utf8');
+  } catch {
+    return null;
+  }
+  try {
+    const parsed = GitSnapshotSchema.safeParse(JSON.parse(text));
+    return parsed.success ? (parsed.data as GitSnapshot) : null; // unusable baseline == missing: fail closed
   } catch {
     return null;
   }

@@ -72,9 +72,9 @@ describe('restoreFromRunBase', () => {
     sh(wt, 'add', 'ln');
     sh(wt, 'commit', '-q', '-m', 'ln');
     const snap = await import('../src/snapshotRef.js');
-    const { HardenedGit } = await import('../src/hardenedGit.js');
+    const { HardenedGit, createHooksGuard } = await import('../src/hardenedGit.js');
     const { createExecGitRunner } = await import('../src/index.js');
-    await snap.writeSnapshotRef(new HardenedGit(createExecGitRunner(), fx.tmp), wt, 'refs/axis/runbase/run-1', 'run');
+    await snap.writeSnapshotRef(new HardenedGit(createExecGitRunner(), createHooksGuard('linux')), wt, 'refs/axis/runbase/run-1', 'run');
     unlinkSync(path.join(wt, 'ln'));
     write(path.join(wt, 'ln'), 'now a file\n');
     await fx.manager.restoreFromRunBase({ path: path.join(wt, 'ln'), runId: 'run-1' });

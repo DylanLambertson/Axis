@@ -74,6 +74,8 @@ export interface FinaliseResult {
   readonly archiveSha: string;
   readonly backupRef: string | null;
   readonly outcome: FinaliseOutcome;
+  /** Files the backup cannot hold (over the size limit). */
+  readonly skippedLarge: readonly string[];
 }
 
 export interface RemoveResult {
@@ -81,6 +83,9 @@ export interface RemoveResult {
   readonly archiveRef: string;
   readonly backupRef: string | null;
   readonly branchDeleted: boolean;
+  /** Data that was deleted without a backup: files over the size limit and ignored files. */
+  readonly skippedLarge: readonly string[];
+  readonly ignored: readonly string[];
 }
 
 export interface RestoreResult {

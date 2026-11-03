@@ -4,6 +4,7 @@ import { randomBytes } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
 import { WorktreeError } from './errors.js';
+import { mkdirSafe } from './fsSafe.js';
 
 export interface TreeEntry {
   readonly mode: string;
@@ -20,35 +21,27 @@ export function parseLsTree(stdout: string): TreeEntry | null {
 }
 
 /**
- * Writes `content` to `target` (already canonical, inside `worktree`) without
- * following a final symlink: the content goes to a sibling temp file that is
- * renamed over the target, and every directory above it is re-verified with
- * realpath to still sit inside the worktree (WT-1).
+ * Writes `content` to `rel` inside `worktree` (canonical) without following a
+ * final symlink. Missing directories are created one level at a time with
+ * symlink checks; the content goes to a sibling temp file that is renamed over
+ * the target, and the containing directory is re-verified afterwards. If it
+ * was swapped meanwhile, the written file is removed and the call fails.
  */
 export async function writeRestoredEntry(
   worktree: string,
-  target: string,
+  rel: string,
   entry: TreeEntry,
   content: Buffer,
-): Promise<void> {
-  const dir = path.dirname(target);
-  await fs.mkdir(dir, { recursive: true });
-  const realDir = await fs.realpath(dir);
-  if (realDir !== dir) {
-    throw new WorktreeError('E_POLICY_DENIED', 'restore target directory changed during the operation', { dir });
+): Promise<string> {
+  const parts = rel.split('/');
+  const dir = await mkdirSafe(worktree, parts.slice(0, -1), 0o755);
+  const name = parts.at(-1) as string;
+  const target = path.join(dir, name);
+  const existing = await fs.lstat(target).catch(() => null);
+  if (existing?.isDirectory()) {
+    throw new WorktreeError('E_CONFLICT', 'a directory exists where the file should be restored', { relPath: rel });
   }
-  const rel = path.relative(worktree, realDir);
-  if (rel.startsWith('..') || path.isAbsolute(rel)) {
-    throw new WorktreeError('E_POLICY_DENIED', 'restore target escapes the worktree', { target });
-  }
-  try {
-    if ((await fs.lstat(target)).isDirectory()) {
-      throw new WorktreeError('E_CONFLICT', 'a directory exists where the file should be restored', { target });
-    }
-  } catch (e) {
-    if (e instanceof WorktreeError) throw e;
-  }
-  const tmp = path.join(dir, `.${path.basename(target)}.axis-restore-${randomBytes(4).toString('hex')}`);
+  const tmp = path.join(dir, `.${name}.axis-restore-${randomBytes(8).toString('hex')}`);
   try {
     if (entry.mode === '120000') {
       await fs.symlink(content.toString('utf8'), tmp);
@@ -61,4 +54,10 @@ export async function writeRestoredEntry(
     await fs.rm(tmp, { force: true });
     throw e;
   }
+  const realDir = await fs.realpath(dir).catch(() => null);
+  if (realDir !== dir) {
+    await fs.rm(target, { force: true });
+    throw new WorktreeError('E_POLICY_DENIED', 'restore target directory changed during the operation', { relPath: rel });
+  }
+  return target;
 }

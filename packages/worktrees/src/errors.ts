@@ -26,3 +26,33 @@ export class WorktreeError extends Error {
 export function isWorktreeError(value: unknown): value is WorktreeError {
   return value instanceof WorktreeError;
 }
+
+const ERRNO_MAP: Readonly<Record<string, WorktreeErrorCode>> = {
+  ELOOP: 'E_POLICY_DENIED',
+  ENOTDIR: 'E_POLICY_DENIED',
+  EACCES: 'E_POLICY_DENIED',
+  EPERM: 'E_POLICY_DENIED',
+  ENOENT: 'E_NOT_FOUND',
+  EEXIST: 'E_CONFLICT',
+  ENOTEMPTY: 'E_CONFLICT',
+};
+
+/**
+ * Maps anything that is not already a WorktreeError into the closed error set.
+ * The original message is dropped because it carries absolute paths; only the
+ * errno survives, in `details`.
+ */
+export function toWorktreeError(e: unknown): WorktreeError {
+  if (e instanceof WorktreeError) return e;
+  const errno = typeof (e as { code?: unknown } | null)?.code === 'string' ? (e as { code: string }).code : undefined;
+  if (errno !== undefined) {
+    return new WorktreeError(ERRNO_MAP[errno] ?? 'E_INTERNAL', `filesystem operation failed (${errno})`, { errno });
+  }
+  if (e instanceof SyntaxError) {
+    return new WorktreeError('E_INTERNAL', 'a stored record is not valid JSON', { reason: 'corrupt-record' });
+  }
+  if (e instanceof Error && e.name === 'ZodError') {
+    return new WorktreeError('E_INTERNAL', 'a stored record has an invalid shape', { reason: 'corrupt-record' });
+  }
+  return new WorktreeError('E_INTERNAL', 'unexpected internal error');
+}

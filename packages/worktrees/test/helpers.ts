@@ -4,6 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { markDiscardConfirmed, type DiscardConfirmation, type DiscardOp } from '../src/daemonConfirm.js';
 import { createExecGitRunner, WorktreeManager, type WorktreeManagerOptions } from '../src/index.js';
 
 export function sh(cwd: string, ...args: string[]): string {
@@ -45,7 +46,6 @@ export function makeFixture(extra: Partial<WorktreeManagerOptions> = {}): Fixtur
   return {
     tmp, repo, root, manager,
     cleanup() {
-      manager.dispose();
       rmSync(tmp, { recursive: true, force: true });
     },
   };
@@ -55,4 +55,10 @@ export function makeFixture(extra: Partial<WorktreeManagerOptions> = {}): Fixtur
 export function checkoutFingerprint(repo: string): string {
   const index = execFileSync('shasum', ['-a', '256', path.join(repo, '.git', 'index')], { encoding: 'utf8' }).split(' ')[0];
   return [sh(repo, 'rev-parse', 'HEAD'), sh(repo, 'status', '--porcelain=v1', '--untracked-files=all'), index].join('|');
+}
+
+/** Mints a confirmation bound to what the workspace would discard right now. */
+export async function confirmFor(m: WorktreeManager, wtPath: string, id: string, op: DiscardOp): Promise<DiscardConfirmation> {
+  const scan = await m.previewDiscard(wtPath);
+  return markDiscardConfirmed({ workspaceId: id, op, fingerprint: scan.fingerprint });
 }

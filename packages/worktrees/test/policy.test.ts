@@ -21,7 +21,6 @@ describe('location policy', () => {
     for (const root of [fx.repo, path.join(fx.repo, 'wt'), path.join(fx.repo, 'sub', 'deep', 'wt'), path.join(fx.repo, '.git', 'wt')]) {
       const m = withRoot(root);
       await assert.rejects(m.create({ repoPath: fx.repo, slug: 'x' }), policy, root);
-      m.dispose();
     }
   });
 
@@ -31,17 +30,14 @@ describe('location policy', () => {
     sh(other, 'init', '-q');
     const m = withRoot(path.join(other, 'nested', 'wt'), [other]);
     await assert.rejects(m.create({ repoPath: fx.repo, slug: 'x' }), policy);
-    m.dispose();
     // the same root is fine when that repository is not registered
     const ok = withRoot(path.join(other, 'nested', 'wt'));
     await assert.doesNotReject(ok.create({ repoPath: fx.repo, slug: 'x' }));
-    ok.dispose();
   });
 
   it('rejects ".." segments in the root and the repository path', async () => {
     const m = withRoot(`${fx.tmp}/outside/../wt`);
     await assert.rejects(m.create({ repoPath: fx.repo, slug: 'x' }), policy);
-    m.dispose();
     await assert.rejects(fx.manager.create({ repoPath: `${fx.repo}/sub/..`, slug: 'x' }), policy);
     await assert.rejects(fx.manager.restoreFromRunBase({ path: `${fx.root}/../a.txt` }), policy);
   });
@@ -49,7 +45,6 @@ describe('location policy', () => {
   it('rejects a relative root', async () => {
     const m = withRoot('relative/wt');
     await assert.rejects(m.create({ repoPath: fx.repo, slug: 'x' }), policy);
-    m.dispose();
   });
 
   it('rejects a root that is a symlink into the local checkout', async () => {
@@ -57,10 +52,8 @@ describe('location policy', () => {
     symlinkSync(path.join(fx.repo, 'sub'), link);
     const m = withRoot(link);
     await assert.rejects(m.create({ repoPath: fx.repo, slug: 'x' }), policy);
-    m.dispose();
     const viaLinkParent = withRoot(path.join(link, 'deeper'));
     await assert.rejects(viaLinkParent.create({ repoPath: fx.repo, slug: 'x' }), policy);
-    viaLinkParent.dispose();
   });
 
   it('rejects a per-project directory that is a planted symlink', async () => {
