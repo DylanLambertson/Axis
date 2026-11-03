@@ -176,7 +176,8 @@ export class WorktreeManager {
         const { needsBackup } = requireDiscardConfirmation('remove', meta.id, scan, input.discardConfirmation);
         const backupRef = needsBackup ? await this.writeBackup(workTree, meta.id, 'remove') : null;
         await this.git.run(['worktree', 'unlock', '--', workTree], { cwd, allowFailure: true });
-        await this.git.run(['worktree', 'remove', ...(scan.dirty.length > 0 ? ['--force'] : []), '--', workTree], { cwd });
+        // Always --force: Axis's own filter-free check and confirmation above replace git's, which would run `git status`.
+        await this.git.run(['worktree', 'remove', '--force', '--', workTree], { cwd });
         await this.git.run(['worktree', 'prune'], { cwd });
         let branchDeleted = false;
         if (input.deleteBranch) {

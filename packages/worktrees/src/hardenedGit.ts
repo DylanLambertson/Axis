@@ -55,22 +55,47 @@ export function redact(text: string): string {
   return text.replace(/(\w[\w+.-]*:\/\/)[^/@\s]+@/g, '$1***@');
 }
 
-/** Subcommands that never run filter drivers, so they skip the per-call filter scan. */
-function runsNoFilters(args: readonly string[]): boolean {
-  const [sub, second] = args;
+/** Skips leading `-c key=value` pairs and global flags to find the git subcommand. */
+function subcommandOf(args: readonly string[]): { sub: string | undefined; rest: readonly string[] } {
+  let i = 0;
+  while (i < args.length) {
+    const a = args[i] as string;
+    if (a === '-c' || a === '-C') i += 2;
+    else if (a.startsWith('--') && a.length > 2 && !a.startsWith('--end')) i += 1;
+    else break;
+  }
+  return { sub: args[i], rest: args.slice(i + 1) };
+}
+
+/**
+ * Allow-list of git commands that cannot invoke a filter driver, because they
+ * neither read the working tree through attributes nor check files out. Only
+ * these are used by the manager (a test pins this). They skip the per-call
+ * filter scan, which would otherwise be a time-of-check race (the repository
+ * configuration is agent-writable): a command that is not on this list gets
+ * `-c filter.<n>.*` overrides built from a scan taken just before the call,
+ * which is best effort only and can lose that race. Do not add such a
+ * command to the daemon.
+ */
+export function runsNoFilters(args: readonly string[]): boolean {
+  const { sub, rest } = subcommandOf(args);
   switch (sub) {
     case 'config': case 'rev-parse': case 'symbolic-ref': case 'show-ref': case 'check-ref-format':
     case 'for-each-ref': case 'update-ref': case 'branch': case 'merge-base': case 'rev-list':
     case 'ls-tree': case 'cat-file': case 'ls-files': case 'write-tree': case 'commit-tree':
-      return true;
-    case 'worktree':
-      return second === 'list' || second === 'lock' || second === 'unlock' || second === 'prune';
+      return !rest.includes('--filters') && !rest.includes('--textconv') && !rest.includes('--eol');
+    case 'worktree': {
+      const op = rest[0];
+      if (op === 'add') return rest.includes('--no-checkout');
+      if (op === 'remove') return rest.includes('--force');
+      return op === 'list' || op === 'lock' || op === 'unlock' || op === 'prune';
+    }
     case 'read-tree':
-      return !args.includes('-u');
+      return !rest.includes('-u') && !rest.includes('-m');
     case 'hash-object':
-      return args.includes('--no-filters');
+      return rest.includes('--no-filters');
     case 'update-index':
-      return args.includes('--index-info');
+      return rest.includes('--index-info') && !rest.includes('--refresh') && !rest.includes('--really-refresh');
     default:
       return false;
   }
@@ -108,8 +133,13 @@ export class HardenedGit {
     );
     const names = new Set<string>();
     for (const key of res.stdout.split('\0')) {
-      const m = /^filter\.(.+)\.[^.]+$/is.exec(key);
-      if (m?.[1]) names.add(m[1]);
+      if (key === '') continue;
+      // The name may be empty (`[filter ""]` is `filter..clean`) or contain dots.
+      const m = /^filter\.(.*)\.([^.]+)$/is.exec(key);
+      if (!m) {
+        throw new WorktreeError('E_POLICY_DENIED', 'a filter configuration key cannot be neutralised', { reason: 'filter-name' });
+      }
+      names.add(m[1] as string);
     }
     const out: string[] = [];
     for (const n of names) {

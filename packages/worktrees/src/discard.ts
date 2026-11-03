@@ -6,8 +6,9 @@ import * as path from 'node:path';
 import { consumeConfirmation, type DiscardOp } from './confirmation.js';
 import { WorktreeError } from './errors.js';
 import type { HardenedGit } from './hardenedGit.js';
+import { readDirtyFilterFree } from './dirty.js';
 import { scanWorktree } from './snapshotRef.js';
-import { parsePorcelainStatus, type DirtyFile } from './types.js';
+import type { DirtyFile } from './types.js';
 
 export interface DiscardScan {
   readonly dirty: readonly DirtyFile[];
@@ -19,12 +20,8 @@ export interface DiscardScan {
   readonly fingerprint: string;
 }
 
-export async function readDirty(git: HardenedGit, cwd: string): Promise<DirtyFile[]> {
-  const out = await git.run(
-    ['status', '--porcelain=v1', '-z', '--untracked-files=all', '--ignore-submodules=all'],
-    { cwd, noOptionalLocks: true },
-  );
-  return parsePorcelainStatus(out.stdout);
+export function readDirty(git: HardenedGit, cwd: string): Promise<DirtyFile[]> {
+  return readDirtyFilterFree(git, cwd);
 }
 
 export async function scanDiscard(git: HardenedGit, workTree: string, maxFile: number): Promise<DiscardScan> {

@@ -7,6 +7,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import { createExecGitRunner, createHooksGuard, WorktreeError, WorktreeManager, type GitRunner } from '../src/index.js';
+import { runsNoFilters } from '../src/hardenedGit.js';
 import { confirmFor, makeFixture, sh, write, type Fixture } from './helpers.js';
 
 const code = (c: string) => (e: unknown) => e instanceof WorktreeError && e.code === c;
@@ -111,17 +112,38 @@ describe('B-2: filter drivers never run in the daemon', () => {
     none();
   });
 
-  it('passes --ignore-submodules=all to status and --literal-pathspecs everywhere', async () => {
+  it('NB-2: every git command the manager runs is on the no-filter allow-list, and none is status', async () => {
     const calls: string[][] = [];
     const real = createExecGitRunner();
     const spy: GitRunner = { gitPath: real.gitPath as string, run: (a, o) => { calls.push([...a]); return real.run(a, o); } };
     const m = new WorktreeManager({ runner: spy, worktreeRoot: fx.root });
     const ws = await m.create({ repoPath: fx.repo, slug: 'sub' });
+    write(path.join(ws.path, 'a.txt'), 'edit\n');
+    write(path.join(ws.path, 'new.txt'), 'new\n');
     await m.status(ws.path);
-    const statusCalls = calls.filter((c) => c.includes('status'));
-    assert.ok(statusCalls.length > 0);
-    for (const c of statusCalls) assert.ok(c.includes('--ignore-submodules=all'));
+    await m.previewDiscard(ws.path);
+    await m.restoreFromRunBase({ path: path.join(ws.path, 'a.txt') });
+    await m.finalise({ path: ws.path, outcome: 'archived', discardConfirmation: await confirmFor(m, ws.path, ws.id, 'finalise') });
+    await m.remove({ path: ws.path, deleteBranch: true, discardConfirmation: await confirmFor(m, ws.path, ws.id, 'remove') });
+    await m.sweepSnapshotRefs(fx.repo);
+    assert.ok(calls.length > 20);
     for (const c of calls) assert.equal(c[0], '--literal-pathspecs');
+    // The hardened prefix is added by HardenedGit; the spy sees prefix + (scan) + command, so a scan
+    // (`config --get-regexp ^filter`) appearing at all would mean a command fell off the allow-list.
+    assert.equal(calls.filter((c) => c.includes('--get-regexp') && c.includes('^filter\\.')).length, 0);
+    assert.equal(calls.filter((c) => c.includes('status')).length, 0);
+  });
+
+  it('runsNoFilters is a closed allow-list', () => {
+    for (const ok of [
+      ['rev-parse', 'HEAD'], ['ls-files', '-z'], ['hash-object', '--no-filters', '--stdin'], ['cat-file', '--batch'],
+      ['update-index', '--index-info'], ['worktree', 'add', '--no-checkout', 'p'], ['worktree', 'remove', '--force', 'p'],
+      ['-c', 'user.name=x', 'commit-tree', 't'], ['read-tree', 'HEAD'],
+    ]) assert.equal(runsNoFilters(ok), true, ok.join(' '));
+    for (const no of [
+      ['status'], ['checkout', 'x'], ['add', '.'], ['diff'], ['reset', '--hard'], ['worktree', 'add', 'p'], ['worktree', 'remove', 'p'],
+      ['hash-object', '--stdin'], ['update-index', '--refresh'], ['read-tree', '-u', 'HEAD'], ['cat-file', '--filters', 'x'], ['stash'],
+    ]) assert.equal(runsNoFilters(no), false, no.join(' '));
   });
 
   it('refuses to check out a tree that contains a .git path, and rolls back cleanly', async () => {

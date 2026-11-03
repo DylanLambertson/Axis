@@ -89,6 +89,6 @@ export async function populateFilterFree(git: HardenedGit, worktree: string): Pr
       if (e.mode === '100755') await fs.chmod(target, 0o755);
     }
   }
+  // The index carries no stat data, so nothing here compares files through a filter; git refreshes it lazily.
   await git.run(['read-tree', 'HEAD'], { cwd: worktree });
-  await git.run(['update-index', '-q', '--refresh'], { cwd: worktree, allowFailure: true });
 }
