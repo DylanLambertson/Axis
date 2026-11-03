@@ -4,7 +4,7 @@ import { readdirSync } from "node:fs";
 import { isAbsolute as posixAbs, normalize as posixNorm } from "node:path/posix";
 import { isAbsolute as winAbs, normalize as winNorm } from "node:path/win32";
 import { refNameSchema } from "@axis/protocol";
-import { daemonGitEnv, findOverride } from "./env.js";
+import { daemonGitEnv } from "./env.js";
 import { GitOpsError, denied, invalid } from "./errors.js";
 import type { GitContext, GitOpsDeps, GitRunRequest, GitRunResult, GitRunner, WorktreeRef } from "./types.js";
 
@@ -180,7 +180,6 @@ export async function daemonGitFor(w: WorktreeRef, deps: GitOpsDeps): Promise<Da
 }
 
 function daemonEnv(deps: GitOpsDeps): Record<string, string> {
-  const bad = findOverride(deps.env.daemon);
-  if (bad) throw denied(`the daemon git environment must not set ${bad}`);
+  // No refusal for GIT_* here: the allow-list below already strips every one of them from the daemon's environment.
   return daemonGitEnv(deps.env.daemon, platformOf(deps));
 }

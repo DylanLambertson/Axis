@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 // Axis push (threat model GIT-3, GIT-SNAP-1 re-take, PSH-1, GIT-7; gate 1a/L24). Explicit refspec only.
 import { OBJECT_ID, REMOTE_NAME, branchFor, checkWorktree, daemonGitFor, platformOf, prefix, type DaemonGit } from "./args.js";
-import { findOverride, withNoPrompt } from "./env.js";
+import { findOverride, overrideMessage, withNoPrompt } from "./env.js";
 import { assertPushUrl, protocolAllowList } from "./pushUrl.js";
 import { scanOutgoing } from "./scan.js";
 import { GitOpsError, conflict, denied, invalid, mapUnexpected, redactUrls, sanitizeText } from "./errors.js";
@@ -72,7 +72,7 @@ async function check(deps: GitOpsDeps, input: PushInput): Promise<{ plan: PushPl
     throw invalid("baseSha must be the journaled base commit as a full lower-case object id");
   }
   const bad = findOverride(deps.env.pty);
-  if (bad) throw denied(`the pty git environment must not set ${bad}`);
+  if (bad) throw denied(overrideMessage(bad));
 
   if (await deps.isCliRunActive(input.worktree)) throw denied("a CLI run is active in this workspace; push is refused until it ends");
 

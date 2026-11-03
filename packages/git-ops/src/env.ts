@@ -30,7 +30,8 @@ export function daemonGitEnv(parent: Env, platform: NodeJS.Platform = process.pl
 /** Variables that would override the identity git takes from the repository config, or the repository location. */
 const OVERRIDES = new RegExp(
   [
-    "^GIT_(AUTHOR|COMMITTER)_(NAME|EMAIL|DATE)$", "^GIT_CONFIG",
+    // NAME and EMAIL are compared with the configured identity instead (see identityOverrides): shell profiles often export them.
+    "^GIT_(AUTHOR|COMMITTER)_DATE$", "^GIT_CONFIG",
     // Where the repository, its refs and its objects are, so what git writes can differ from what the daemon verifies.
     "^GIT_DIR$", "^GIT_WORK_TREE$", "^GIT_INDEX_FILE$", "^GIT_COMMON_DIR$", "^GIT_PREFIX$", "^GIT_NAMESPACE$",
     "^GIT_OBJECT_DIRECTORY$", "^GIT_ALTERNATE_OBJECT_DIRECTORIES$", "^GIT_SHALLOW_FILE$",
@@ -42,9 +43,25 @@ const OVERRIDES = new RegExp(
   "i",
 );
 
-/** The name of an environment variable that tries to override identity, config or repository location. */
+/** The name of an environment variable that tries to override the config, the dates or the repository location. */
 export function findOverride(env: Env): string | undefined {
   return Object.keys(env).find((n) => env[n] !== undefined && OVERRIDES.test(n));
+}
+
+/** The refusal text for a pty environment variable found by findOverride. */
+export function overrideMessage(name: string): string {
+  return `the pty git environment must not set ${name}; unset it in the shell profile and put the setting in the git config instead`;
+}
+
+/** GIT_AUTHOR_/GIT_COMMITTER_ NAME and EMAIL variables in the environment, as [author|committer, name|email, value]. */
+export function identityOverrides(env: Env): Array<["author" | "committer", "name" | "email", string]> {
+  const out: Array<["author" | "committer", "name" | "email", string]> = [];
+  for (const n of Object.keys(env)) {
+    const m = /^GIT_(AUTHOR|COMMITTER)_(NAME|EMAIL)$/i.exec(n);
+    const v = env[n];
+    if (m && v !== undefined) out.push([(m[1] as string).toLowerCase() as "author" | "committer", (m[2] as string).toLowerCase() as "name" | "email", v]);
+  }
+  return out;
 }
 
 export function withNoPrompt(env: Env): Record<string, string> {

@@ -47,7 +47,7 @@ test("author and committer are never overridden", async () => {
 
 test("an identity override in the environment is refused", async () => {
   for (const n of [
-    "GIT_AUTHOR_NAME", "git_committer_email", "GIT_CONFIG_COUNT", "GIT_DIR", "GIT_INDEX_FILE",
+    "GIT_AUTHOR_DATE", "git_committer_date", "GIT_CONFIG_COUNT", "GIT_DIR", "GIT_INDEX_FILE",
     "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE", "GIT_REPLACE_REF_BASE", "GIT_PREFIX",
     "GIT_NO_REPLACE_OBJECTS", "GIT_SHALLOW_FILE", "GIT_CEILING_DIRECTORIES", "GIT_DISCOVERY_ACROSS_FILESYSTEM", "git_common_dir",
   ]) {
@@ -245,4 +245,22 @@ test("S-5: the undo moves the branch to the commit's actual parent with the comm
   const undo = r.calls.find((c) => sub(c.argv)[0] === "update-ref");
   assert.ok(undo);
   assert.deepEqual(sub(undo.argv).slice(-3), ["refs/heads/axis/feat", HEAD, NEW]);
+});
+
+test("N-3: a GIT_AUTHOR_*/GIT_COMMITTER_* that matches the configured identity is allowed; one that would change it is refused", async () => {
+  const mk = (pty: Record<string, string>) => makeDeps(new FakeRunner(healthy()), { env: { daemon: {}, pty: { PATH: "/b", ...pty } } });
+  const same = { GIT_AUTHOR_NAME: "Dylan Lambertson", GIT_AUTHOR_EMAIL: "me@dylanlambertson.dev", GIT_COMMITTER_NAME: "Dylan Lambertson", GIT_COMMITTER_EMAIL: "me@dylanlambertson.dev" };
+  assert.equal(await code(planCommit(mk(same), input)), "OK");
+  for (const bad of [{ GIT_AUTHOR_NAME: "Evil" }, { GIT_AUTHOR_EMAIL: "e@x" }, { GIT_COMMITTER_NAME: "Evil" }, { git_committer_email: "e@x" }]) {
+    const e = await failure(planCommit(mk(bad), input));
+    assert.equal(e.code, "E_POLICY_DENIED", JSON.stringify(bad));
+    assert.match(e.message, /unset it or make it match/);
+  }
+});
+
+test("N-3: GIT_* variables in the daemon environment are stripped, not refused; the pty-side message says how to fix it", async () => {
+  const deps = makeDeps(new FakeRunner(healthy()), { env: { daemon: { PATH: "/usr/bin", GIT_AUTHOR_NAME: "x", GIT_CONFIG_GLOBAL: "/x", GIT_DIR: "/y" }, pty: { PATH: "/b" } } });
+  assert.equal(await code(planCommit(deps, input)), "OK");
+  const bad = await failure(planCommit(makeDeps(new FakeRunner(healthy()), { env: { daemon: {}, pty: { PATH: "/b", GIT_CONFIG_GLOBAL: "/x" } } }), input));
+  assert.match(bad.message, /GIT_CONFIG_GLOBAL.*unset it in the shell profile/);
 });

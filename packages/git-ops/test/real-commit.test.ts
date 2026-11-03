@@ -69,3 +69,17 @@ test("S-5: a commit built on a parent that moved during the commit is left in pl
   assert.equal(f.git("log", "-1", "--format=%s", "HEAD~1").trim(), "x", "the commit that moved the branch is still there");
   assert.equal(f.git("log", "-1", "--format=%s").trim(), "m");
 });
+
+test("N-3: a shell profile's own GIT_AUTHOR_* that matches the config commits; one that differs is refused before git runs", async () => {
+  const f0 = fixture();
+  const pty = { ...f0.deps.env.pty, GIT_AUTHOR_NAME: "Dylan Lambertson", GIT_AUTHOR_EMAIL: "me@dylanlambertson.dev", GIT_COMMITTER_NAME: "Dylan Lambertson" };
+  const f = fixture({ env: { daemon: f0.deps.env.daemon, pty } });
+  const tree = stage(f, "b.txt", "two\n");
+  await executeCommit(f.deps, { worktree: f.wt, reviewedTreeHash: tree, message: "m" });
+  assert.equal(f.git("log", "-1", "--format=%an <%ae>").trim(), "Dylan Lambertson <me@dylanlambertson.dev>");
+  const g = fixture({ env: { daemon: f0.deps.env.daemon, pty: { ...pty, GIT_AUTHOR_NAME: "Somebody Else" } } });
+  const t2 = stage(g, "b.txt", "two\n");
+  const e = await failure(executeCommit(g.deps, { worktree: g.wt, reviewedTreeHash: t2, message: "m" }));
+  assert.equal(e.code, "E_POLICY_DENIED");
+  assert.equal(g.seen.filter((r) => r.context === "pty").length, 0);
+});

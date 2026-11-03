@@ -2,7 +2,7 @@
 // Axis commit (threat model GIT-3, REV-1, GIT-7; gate 1a/L24). The daemon orchestrates; git runs in the pty
 // process, so repository hooks never run in the daemon. The commit is of the tree the user reviewed.
 import { branchFor, checkWorktree, daemonGitFor, platformOf, prefix, OBJECT_ID, type DaemonGit } from "./args.js";
-import { findOverride, withNoPrompt } from "./env.js";
+import { findOverride, identityOverrides, overrideMessage, withNoPrompt } from "./env.js";
 import { GitOpsError, conflict, denied, internal, invalid, mapUnexpected } from "./errors.js";
 import type { GitOpsDeps, GitRunRequest, WorktreeRef } from "./types.js";
 
@@ -47,7 +47,7 @@ async function check(deps: GitOpsDeps, input: CommitInput): Promise<{ plan: Comm
     throw invalid("the commit message must be non-empty text of at most 64 KiB without NUL");
   }
   const bad = findOverride(deps.env.pty);
-  if (bad) throw denied(`the pty git environment must not set ${bad}`);
+  if (bad) throw denied(overrideMessage(bad));
 
   if (await deps.isCliRunActive(input.worktree)) throw denied("a CLI run is active in this workspace; commit is refused until it ends");
   await deps.assertNoDrift(input.worktree);
@@ -67,13 +67,20 @@ async function check(deps: GitOpsDeps, input: CommitInput): Promise<{ plan: Comm
   const headTree = await git(["rev-parse", "--verify", "--end-of-options", "HEAD^{tree}"]);
   if (headTree.code === 0 && line(headTree) === input.reviewedTreeHash) throw invalid("nothing to commit");
 
-  for (const v of ["GIT_AUTHOR_IDENT", "GIT_COMMITTER_IDENT"]) {
+  const pty = identityOverrides(deps.env.pty);
+  for (const [v, role] of [["GIT_AUTHOR_IDENT", "author"], ["GIT_COMMITTER_IDENT", "committer"]] as const) {
     const ident = await git(["var", v]);
     if (ident.code !== 0) throw denied("no Git identity is configured; set user.name and user.email");
-    if (input.author && v === "GIT_AUTHOR_IDENT") {
-      const m = /^(.*) <([^>]*)> \d+ [+-]\d{4}$/.exec(line(ident));
-      if (!m || m[1] !== input.author.name || m[2] !== input.author.email) {
-        throw denied("the configured Git identity is not the one expected");
+    const m = /^(.*) <([^>]*)> \d+ [+-]\d{4}$/.exec(line(ident));
+    if (!m) throw denied("the configured Git identity could not be read");
+    if (input.author && role === "author" && (m[1] !== input.author.name || m[2] !== input.author.email)) {
+      throw denied("the configured Git identity is not the one expected");
+    }
+    // A user's own GIT_AUTHOR_* in a shell profile is fine while it says what the config says; one that would change
+    // the recorded name or email is refused.
+    for (const [r, field, value] of pty) {
+      if (r === role && value !== (field === "name" ? m[1] : m[2])) {
+        throw denied(`the pty environment sets GIT_${role.toUpperCase()}_${field.toUpperCase()} to something other than the configured identity; unset it or make it match user.${field}`);
       }
     }
   }
