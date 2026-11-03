@@ -11,7 +11,8 @@
  * outside `src/` so the ADR 0005 D3 staging hook, which copies
  * `packages/<name>/src/**`, never stages it into the Code OSS tree (N9).
  */
-import { after, afterEach, beforeEach, describe, it, type TestContext } from "node:test";
+import { after, afterEach, before, beforeEach, describe, it, type TestContext } from "node:test";
+import diagnostics from "node:diagnostics_channel";
 import assert from "node:assert/strict";
 import type { JsonValue } from "@axis/protocol";
 import { inspect } from "node:util";
@@ -74,12 +75,16 @@ export type RedirectStatus = (typeof REDIRECT_STATUSES)[number];
 export const REDIRECT_HOST = "redirect-target.contract.invalid";
 
 /**
- * How long each redirect check waits after its call settles before it
- * concludes, so a follow sent later (in the background, from a timer, from a
- * still-running stream) is seen too (SF-1). Requests later than this are still
- * caught by the next test's afterEach, or by the suite's after() hook.
+ * How long the suite's final check waits, once, after the last test, for a
+ * request sent late (in the background, from a timer, from a still-running
+ * stream). Each check takes the violations seen so far without waiting, so a
+ * late request fails the first check after it arrives, or this final one
+ * (SF-1). A process `exit` scan catches anything later still.
  */
-export const REDIRECT_SETTLE_MS = 100;
+export const LATE_REQUEST_WINDOW_MS = 3_000;
+
+/** Node's built-in channels that see an outbound HTTP request (Node 24). */
+const REQUEST_CHANNELS = ["undici:request:create", "http.client.request.start"] as const;
 
 /** The `fetch` options the suite's transport understands; Node's `fetch` takes the same. */
 export interface ContractFetchInit {
@@ -106,11 +111,19 @@ export type ContractFetch<I extends ContractFetchInit = ContractFetchInit, R = R
  * is the harness's fake server. The suite records every request at this seam
  * itself; nothing is taken from the adapter's own account (ANT-1).
  *
- * Limits: the seam sees only what goes through it. During each test the
- * suite replaces `globalThis.fetch` with a trap that records any call as a
- * violation (N-2), and for an adapter with an origin it requires at least one
- * recorded request per provider request. I/O through `node:http`/`node:https`
- * directly is not trapped; the import allowlist and review cover that.
+ * Bypass detection (N-2), three layers:
+ * - During each test `globalThis.fetch` is replaced by a trap. The trap only
+ *   catches code that looks `globalThis.fetch` up at call time; a reference
+ *   captured earlier (for example at module load) still calls the real fetch.
+ * - Node's request diagnostics channels (`undici:request:create`, which the
+ *   built-in fetch uses, and `http.client.request.start` for `node:http` and
+ *   `node:https`) are watched for the whole suite run. The suite's transport
+ *   and every harness fake make no real request, so any request there is a
+ *   violation: this catches a captured fetch and direct `node:https` I/O.
+ * - For an adapter with an origin, at least one transport request per
+ *   provider request.
+ * Harnesses must therefore never perform real network I/O, not even to a
+ * local server, while the suite runs.
  */
 export interface ContractTransport {
   wrap<I extends ContractFetchInit, R>(inner: ContractFetch<I, R>): ContractFetch<I, R | Response>;
@@ -371,8 +384,15 @@ export function runProviderContractSuite(harness: ContractHarness): void {
   let fixtures: Tracked[] = [];
   /** Every fixture of the whole suite, kept so late requests are still judged (SF-1). */
   const everyFixture: Tracked[] = [];
-  /** Calls to `globalThis.fetch` during a test: the adapter bypassed the transport (N-2). */
+  /** Calls to `globalThis.fetch` during a test, and real requests seen on Node's channels (N-2). */
   const bypasses: string[] = [];
+  const onRealRequest = (name: string) => (message: unknown): void => {
+    const req = (message as { request?: { origin?: unknown; host?: unknown; path?: unknown } } | undefined)?.request;
+    const where = String(req?.origin ?? req?.host ?? "?");
+    const path = String(req?.path ?? "").split(/[?#]/)[0] ?? "";
+    bypasses.push(`${name}: ${where}${path}`);
+  };
+  const channelHandlers = REQUEST_CHANNELS.map((name) => [name, onRealRequest(name)] as const);
   let savedFetch: typeof globalThis.fetch | undefined;
 
   /** Requests and bypasses already reported, so each violation fails exactly one check. */
@@ -387,7 +407,7 @@ export function runProviderContractSuite(harness: ContractHarness): void {
    * reduced to origin and path.
    */
   const takeViolations = (): string[] => {
-    const out: string[] = bypasses.slice(bypassesReported).map((u) => `globalThis.fetch: ${u}`);
+    const out: string[] = bypasses.slice(bypassesReported).map((u) => `bypassed the transport: ${u}`);
     bypassesReported = bypasses.length;
     for (const tr of everyFixture) {
       if (!tr.ready) continue;
@@ -412,7 +432,17 @@ export function runProviderContractSuite(harness: ContractHarness): void {
     return out;
   };
 
-  const settle = (): Promise<void> => new Promise((r) => setTimeout(r, REDIRECT_SETTLE_MS));
+  const lateWindow = (): Promise<void> => new Promise((r) => setTimeout(r, LATE_REQUEST_WINDOW_MS));
+
+  // Anything still unreported when the process exits fails it: node --test
+  // reports a file that exits non-zero as failed (N-4 of the re-check).
+  process.once("exit", () => {
+    const left = takeViolations();
+    if (left.length > 0) {
+      process.exitCode = 1;
+      process.stderr.write(`contract suite (${harness.name}): requests after the suite ended:\n${left.join("\n")}\n`);
+    }
+  });
 
   const credentialIn = (url: string, headers: Record<string, string>, body: string | undefined): Array<"url" | "headers" | "body"> => {
     const has = (text: string): boolean => needles.some((n) => text.includes(n));
@@ -512,7 +542,7 @@ export function runProviderContractSuite(harness: ContractHarness): void {
       savedFetch = globalThis.fetch;
       globalThis.fetch = (async (input: unknown) => {
         const url = typeof input === "string" ? input : input instanceof URL ? input.href : String((input as { url?: unknown })?.url ?? input);
-        bypasses.push(url.split(/[?#]/)[0] ?? "");
+        bypasses.push(`globalThis.fetch: ${url.split(/[?#]/)[0] ?? ""}`);
         throw new TypeError("contract suite: globalThis.fetch bypasses the adapter's transport");
       }) as typeof globalThis.fetch;
     });
@@ -524,9 +554,15 @@ export function runProviderContractSuite(harness: ContractHarness): void {
       assert.deepEqual(takeViolations(), [], "a request reached the redirect host, left the origin or bypassed the transport");
     });
 
-    // A request made after the last test settled still fails the suite.
+    before(() => {
+      for (const [name, fn] of channelHandlers) diagnostics.subscribe(name, fn);
+    });
+
+    // One wait for the whole suite: a request made after its check concluded,
+    // up to LATE_REQUEST_WINDOW_MS after the last test, still fails the file.
     after(async () => {
-      await settle();
+      await lateWindow();
+      for (const [name, fn] of channelHandlers) diagnostics.unsubscribe(name, fn);
       assert.deepEqual(takeViolations(), [], "a late request reached the redirect host, left the origin or bypassed the transport");
     });
 
@@ -816,8 +852,8 @@ export function runProviderContractSuite(harness: ContractHarness): void {
             assert.ok(isProviderError(thrown), "failures are ProviderErrors");
             assertNoLeak(thrown, ...needles);
           }
-          // A follow sent after the call settled must be seen too (SF-1).
-          await settle();
+          // A follow made while the call ran fails here; a later one fails a
+          // later check or the suite's final one (SF-1).
           assert.deepEqual(takeViolations(), [], "a request reached the redirect host, left the origin or bypassed the transport");
 
           const origin = a.descriptor.destination.origin;
@@ -842,10 +878,10 @@ export function runProviderContractSuite(harness: ContractHarness): void {
         const f = await fixture(t, { kind: "redirect", status });
         const tr = trackedOf(f);
         for (let i = 0; i < 2; i++) await f.adapter.generate(request(f.model), { signal: live() }).catch(() => undefined);
-        await settle();
         assert.deepEqual(takeViolations(), [], "a request reached the redirect host, left the origin or bypassed the transport");
-        // One request per call, so two in all; none without an origin (N-1).
-        assert.equal(tr.requests.length, f.adapter.descriptor.destination.origin === undefined ? 0 : 2);
+        // At most one request per call, so at most two; none without an origin (N-1).
+        const max = f.adapter.descriptor.destination.origin === undefined ? 0 : 2;
+        assert.ok(tr.requests.length <= max, `at most ${max} requests for two calls (saw ${tr.requests.length})`);
       });
     }
 

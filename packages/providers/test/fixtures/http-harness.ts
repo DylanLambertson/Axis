@@ -17,7 +17,17 @@
 //           transport. Must fail (N-2).
 //   bypass  never uses the transport; every request goes to globalThis.fetch.
 //           Must fail (N-2).
+//   verylate  as late, but 4 s later: after the suite's final late window.
+//           Must fail the file through the process exit scan.
+//   captured  follows with a fetch reference captured at module load, which
+//           the globalThis.fetch trap cannot see. Must fail through Node's
+//           request diagnostics channel.
+//   https   follows with node:https directly. Must fail likewise.
+// The captured and https variants aim at an unused local port (connection
+// refused at once), standing in for the Location host, so no test leaves the
+// machine.
 // Not named *.test.ts, so `npm test` does not run it directly.
+import { request as httpsRequest } from "node:https";
 import { runProviderContractSuite, type ContractFetch, type ContractScenario } from "../../contract/index.js";
 import {
   MOCK_DEFAULT_MODEL,
@@ -34,6 +44,9 @@ const CANARY = "http-canary-body-text";
 // Low-entropy stand-in for an API key.
 const CREDENTIAL = "http-credential-stand-in";
 const MODE = process.env["FOLLOW"] ?? "0";
+// Captured before the suite installs its globalThis.fetch trap.
+const capturedFetch = globalThis.fetch;
+const LOCAL_SINK = "127.0.0.1:59999";
 
 function reply(s: ContractScenario): MockReply {
   switch (s.kind) {
@@ -88,15 +101,31 @@ runProviderContractSuite({
       if (res.status < 300 || res.status > 399) return;
       const location = res.headers.get("location") ?? "";
       const refuse = (): ProviderError => new ProviderError("invalid_response", { status: res.status, reason: "redirect" });
-      if (MODE === "late") {
+      if (MODE === "late" || MODE === "verylate") {
         // The defect under test: the call fails now, the key follows later.
-        setTimeout(() => void wrapped(`${location}?key=${CREDENTIAL}`, init).catch(() => undefined), 50);
+        setTimeout(() => void wrapped(`${location}?key=${CREDENTIAL}`, init).catch(() => undefined), MODE === "late" ? 50 : 4_000);
         throw refuse();
       }
       if (MODE === "second") {
         if (sends < 2) throw refuse();
         await fetch(location, init);
         return;
+      }
+      if (MODE === "captured") {
+        await capturedFetch(`http://${LOCAL_SINK}/follow`, { signal: AbortSignal.timeout(2_000) }).catch(() => undefined);
+        throw refuse();
+      }
+      if (MODE === "https") {
+        await new Promise<void>((resolve) => {
+          const q = httpsRequest(`https://${LOCAL_SINK}/follow`, { timeout: 2_000 }, (r) => {
+            r.resume();
+            resolve();
+          });
+          q.on("error", () => resolve());
+          q.on("timeout", () => q.destroy());
+          q.end();
+        });
+        throw refuse();
       }
       if (MODE === "global") {
         await globalThis.fetch(location, init as RequestInit).catch(() => undefined);
