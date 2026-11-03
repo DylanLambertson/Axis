@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { errorSchema } from "@axis/protocol";
 import { ChallengeError, ChallengeManager, requestDigest } from "../src/index.js";
-import { ARGS, CALLER, CONN, CONTENT, CONTRACT, WIN, approve, code, issue, run, setup } from "./helpers.js";
+import { ARGS, CALLER, CONN, CONTENT, CONTRACT, WIN, approve, code, issue, resolveArgs, run, setup } from "./helpers.js";
 
 // F1 (re-review): the shown contract, version and method are bound to the request digest.
 test("F1: a precomputed digest of a different request cannot be issued under another method", () => {
@@ -24,6 +24,52 @@ test("F1: consume naming a different contract, version or method is refused and 
   }
 });
 
+// F2: withdraw.
+test("F2: withdraw ends the challenge; resolve and consume get the uniform denial and the slots are free", async () => {
+  const { manager } = setup({ perActor: 1 });
+  const i = issue(manager);
+  assert.throws(() => issue(manager), code("E_BACKPRESSURE"));
+  manager.withdraw(i.challenge.challengeId, CALLER);
+  assert.equal(manager.outstanding(), 0);
+  assert.throws(() => manager.resolve(...resolveArgs(i)), code("E_POLICY_DENIED"));
+  await assert.rejects(manager.consume(i.challenge.challengeId, CALLER, run, () => 1), code("E_POLICY_DENIED"));
+  assert.doesNotThrow(() => issue(manager), "the actor slot is free again");
+});
+
+test("F2: withdraw also ends an approved challenge, and only its requester on its connection can", async () => {
+  const { manager } = setup();
+  const id = approve(manager, issue(manager));
+  assert.throws(() => manager.withdraw(id, { actor: "agent:x", connectionId: CONN }), code("E_POLICY_DENIED"));
+  assert.throws(() => manager.withdraw(id, { actor: "user", connectionId: "other" }), code("E_POLICY_DENIED"));
+  manager.withdraw(id, CALLER);
+  await assert.rejects(manager.consume(id, CALLER, run, () => 1), code("E_POLICY_DENIED"));
+  assert.throws(() => manager.withdraw(id, CALLER), code("E_POLICY_DENIED"), "already gone");
+});
+
+test("F2: withdraw succeeds even if the audit sink is down", () => {
+  const s = setup();
+  const i = issue(s.manager);
+  s.failWhen(() => true);
+  s.manager.withdraw(i.challenge.challengeId, CALLER);
+  assert.equal(s.manager.outstanding(), 0);
+});
+
+test("F2: withdrawConnection ends every live challenge of that connection and frees the window and total slots", () => {
+  const { manager } = setup({ total: 3 });
+  const a = issue(manager, { connectionId: "conn-a" });
+  const b = issue(manager, { connectionId: "conn-a" });
+  const c = issue(manager, { connectionId: "conn-b" });
+  assert.throws(() => issue(manager), code("E_BACKPRESSURE"));
+  assert.equal(manager.withdrawConnection("conn-a"), 2);
+  assert.equal(manager.outstanding(undefined, WIN), 1);
+  assert.throws(() => manager.resolve(...resolveArgs(a)), code("E_POLICY_DENIED"));
+  assert.throws(() => manager.resolve(...resolveArgs(b)), code("E_POLICY_DENIED"));
+  assert.equal(manager.resolve(...resolveArgs(c)).state, "approved");
+  assert.equal(manager.withdrawConnection("conn-a"), 0);
+  assert.doesNotThrow(() => issue(manager));
+  assert.throws(() => manager.withdrawConnection(""), code("E_INVALID_ARGUMENT"));
+});
+
 // F3 (async sink).
 test("F3: an async sink fails closed on the decision path and its rejection is never unhandled", async () => {
   let unhandled = 0;
@@ -33,6 +79,7 @@ test("F3: an async sink fails closed on the decision path and its rejection is n
   const base = { contract: CONTRACT, version: 1, method: "worktree.discard", target: "workspace:ws-1", args: ARGS, contentDigest: CONTENT, actor: "user", connectionId: CONN, windowId: WIN };
   assert.throws(() => m.issue(base), code("E_INTERNAL"));
   assert.equal(m.outstanding(), 0, "nothing was stored");
+  m.withdrawConnection(CONN); // best-effort paths swallow it as well
   await new Promise((r) => setTimeout(r, 20));
   process.off("unhandledRejection", h);
   assert.equal(unhandled, 0);

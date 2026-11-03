@@ -341,6 +341,51 @@ export class ChallengeManager {
     return result;
   }
 
+  /**
+   * Ends an open challenge because its request was aborted. Only the requester
+   * on the connection it was issued to can withdraw it; anyone else, an unknown
+   * id and an already-withdrawn challenge get the uniform E_POLICY_DENIED.
+   * The record is dropped, so resolve and consume refuse its id the same way
+   * and its slots are freed. The audit is best effort: withdrawing never fails on it.
+   */
+  withdraw(challengeId: string, caller: z.input<typeof callerSchema>): void {
+    const id = challengeIdSchema.safeParse(challengeId);
+    if (!id.success) throw invalid(id.error, "challenge id");
+    const who = callerSchema.safeParse(caller);
+    if (!who.success) throw invalid(who.error, "caller");
+    const ref = sha256Hex(id.data);
+    const rec = this.#byRef.get(ref);
+    if (!rec || rec.requester !== who.data.actor || rec.connectionId !== who.data.connectionId) {
+      throw this.#refuse(who.data.actor as ActorId, rec, ref, "tier4.challenge", "withdraw", "wrong_caller");
+    }
+    this.#withdrawRecord(rec, who.data.actor as ActorId);
+  }
+
+  /** Ends every live challenge issued to a connection that has closed. Returns how many it ended. */
+  withdrawConnection(connectionId: string): number {
+    const parsed = callerSchema.shape.connectionId.safeParse(connectionId);
+    if (!parsed.success) throw invalid(parsed.error, "connection id");
+    let n = 0;
+    for (const rec of this.#byRef.values()) {
+      if (rec.connectionId === parsed.data && (OPEN.has(rec.state) || rec.state === "CONFIRMED")) {
+        this.#withdrawRecord(rec, "daemon");
+        n++;
+      }
+    }
+    return n;
+  }
+
+  #withdrawRecord(rec: Record_, actor: ActorId): void {
+    if (!OPEN.has(rec.state) && rec.state !== "CONFIRMED") return;
+    try {
+      this.#emit(actor, "tier4.challenge", rec, "denied", { phase: "withdraw", reason: "request_aborted" });
+    } catch {
+      // Ending is what matters; the audit is best effort here.
+    }
+    // The record is dropped, not parked: from now on its id is unknown, so resolve and consume refuse it with the uniform E_POLICY_DENIED, and its slots are free.
+    this.#byRef.delete(rec.ref);
+  }
+
   // ---- internals ----
 
   /**
