@@ -2,7 +2,7 @@
 import { z } from "zod";
 import type { BudgetHook } from "./budget.js";
 import { ProviderError, sanitizeProviderError, type ProviderErrorCode } from "./errors.js";
-import { scanForSecret, type Redactor } from "./redaction.js";
+import { stringsIn, type Redactor } from "./redaction.js";
 import { StreamValidator, type StreamLimits } from "./stream.js";
 import {
   PROVIDER_ADAPTER_API_VERSION,
@@ -22,10 +22,10 @@ import {
   type TokenCount,
   type Usage,
 } from "./types.js";
-import { validateRequest, type ValidRequest } from "./validate.js";
+import { checkCapabilities, validateRequest, type ValidRequest } from "./validate.js";
 
 export interface GuardLimits extends StreamLimits {
-  /** Longest wait for the provider: the next stream event, or a non-streaming answer. Consumer time does not count. */
+  /** Longest wait for the next stream event. Consumer time does not count; `generate` uses only the request timeout (NN8). */
   readonly idleTimeoutMs?: number;
   /** Longest whole request, consumer time included; it also cleans up an abandoned stream. */
   readonly requestTimeoutMs?: number;
@@ -43,8 +43,8 @@ const IMAGE_TOKEN_ESTIMATE = 2_000;
 const PROBE_USAGE: Usage = { inputTokens: 1_000, outputTokens: 1_000, cacheReadTokens: 1_000, cacheWriteTokens: 1_000 };
 
 /**
- * Errors after which the provider has billed nothing, provided no response
- * event arrived: the request was refused before generation started.
+ * Errors that are pre-generation by definition: the provider refused the
+ * request before producing anything, so nothing is charged (S5, NS3).
  */
 const NOT_BILLED: ReadonlySet<ProviderErrorCode> = new Set<ProviderErrorCode>([
   "invalid_request",
@@ -52,13 +52,23 @@ const NOT_BILLED: ReadonlySet<ProviderErrorCode> = new Set<ProviderErrorCode>([
   "permission_denied",
   "not_found",
   "rate_limited",
-  "overloaded",
-  "server_error",
   "context_length_exceeded",
   "unsupported_capability",
-  "secret_in_request",
-  "budget_exceeded",
 ]);
+
+/**
+ * Errors after which the provider may already have read the prompt (and, for
+ * `generate`, generated): charged the input estimate when no output was seen,
+ * in both paths (NS3). Anything else is charged input plus the output cap.
+ */
+const INPUT_BILLED: ReadonlySet<ProviderErrorCode> = new Set<ProviderErrorCode>(["server_error", "overloaded"]);
+
+/**
+ * Codes only the guard may raise. An adapter that throws one (or `cancelled`
+ * when nothing was cancelled) is misreporting, and gets `internal` (NS3).
+ * `timeout` stays: adapters keep their own wire timeouts (ANT-1).
+ */
+const GUARD_ONLY: ReadonlySet<ProviderErrorCode> = new Set<ProviderErrorCode>(["budget_exceeded", "secret_in_request", "cancelled"]);
 
 export interface Timers {
   setTimeout(fn: () => void, ms: number): unknown;
@@ -301,6 +311,12 @@ export function guardProvider(adapter: ProviderAdapter, options: GuardOptions): 
   const normalize = (e: unknown, why: AbortWhy | undefined): ProviderError =>
     why === undefined ? sanitizeProviderError(e, redactor) : abortError(why);
 
+  /** `normalize` for anything that came out of an adapter call. Total: never throws (NS4). */
+  const fromAdapter = (e: unknown, why: AbortWhy | undefined): ProviderError => {
+    const err = normalize(e, why);
+    return why === undefined && GUARD_ONLY.has(err.code) ? new ProviderError("internal") : err;
+  };
+
   /** A non-run call (list, capabilities, validate, count): timeouts, abort race, rebuilt errors. */
   const call = async <T>(signal: AbortSignal, fn: (opts: CallOptions) => Promise<T>): Promise<T> => {
     const ctl = new RequestControl(signal, timers, requestMs, requestMs);
@@ -308,7 +324,7 @@ export function guardProvider(adapter: ProviderAdapter, options: GuardOptions): 
       if (ctl.why !== undefined) throw abortError(ctl.why);
       return await ctl.race(Promise.resolve().then(() => fn({ signal: ctl.controller.signal })));
     } catch (e) {
-      throw normalize(e, ctl.why);
+      throw fromAdapter(e, ctl.why);
     } finally {
       ctl.dispose();
     }
@@ -349,8 +365,15 @@ export function guardProvider(adapter: ProviderAdapter, options: GuardOptions): 
 
   /**
    * The checks every outgoing request passes, in an order that sends and logs
-   * nothing unchecked (S1): model id, raw secret scan, capabilities (the
-   * first adapter call), schema and capability validation.
+   * nothing unchecked:
+   * 1. the model id;
+   * 2. a synchronous parse of the request, which is the snapshot that will be
+   *    sent: zod builds fresh objects and arrays and clones JSON values, so
+   *    later changes to the caller's object (or a Proxy that answers
+   *    differently to different reads) cannot reach the adapter (NB1);
+   * 3. the secret scan over that snapshot, before any `await`;
+   * 4. capabilities (the first adapter call), checked against the snapshot.
+   * Validation messages never echo values or record keys (S1).
    */
   const preflight = async (
     request: GenerateRequest,
@@ -361,13 +384,14 @@ export function guardProvider(adapter: ProviderAdapter, options: GuardOptions): 
     if (signal.aborted) throw new ProviderError("cancelled");
     const model = modelIdSchema.safeParse(read(request, "model"));
     if (!model.success) throw new ProviderError("invalid_request", { message: 'The request field "model" is invalid.', reason: "schema" });
+    const valid = validateRequest(request);
     const scanner = redactor.snapshot?.() ?? redactor;
-    const scan = scanForSecret(request, scanner);
-    if (scan === "secret") throw new ProviderError("secret_in_request");
-    if (scan === "unwalkable") throw new ProviderError("invalid_request", { message: "The request is not plain data.", reason: "schema" });
-    setModel(model.data);
-    const caps = await capabilities(model.data, signal);
-    const valid = validateRequest(request, caps, mode === "stream" ? "stream" : "generate");
+    for (const s of stringsIn(valid)) {
+      if (scanner.containsSecret(s)) throw new ProviderError("secret_in_request");
+    }
+    setModel(valid.model);
+    const caps = await capabilities(valid.model, signal);
+    checkCapabilities(valid, caps, mode === "stream" ? "stream" : "generate");
     if (mode === "count_tokens" && caps.features.tokenCounting !== "supported") {
       throw new ProviderError("unsupported_capability", { capability: "tokenCounting" });
     }
@@ -464,9 +488,13 @@ export function guardProvider(adapter: ProviderAdapter, options: GuardOptions): 
   };
 
   /**
-   * What to charge for a request that did not complete (S5). Nothing if the
-   * provider refused it before any output; otherwise the last reported input
-   * (or the local estimate) plus the full output cap.
+   * What to charge for a request (S5, NS3, NN7):
+   * - completed: the reported usage;
+   * - never sent to the adapter: nothing;
+   * - refused before any output with a pre-generation code: nothing;
+   * - `server_error` or `overloaded` before any output: the input;
+   * - anything else: the last reported input (or the estimate) plus the
+   *   full output cap, or the reported output if it is higher.
    */
   const charge = (
     prep: Prepared,
@@ -474,11 +502,17 @@ export function guardProvider(adapter: ProviderAdapter, options: GuardOptions): 
     complete: boolean,
     sawEvent: boolean,
     error: ProviderError | undefined,
+    sent: boolean,
   ): [Usage, "reported" | "estimated" | "none"] => {
     if (complete && reported !== undefined) return [reported, "reported"];
-    if (error !== undefined && NOT_BILLED.has(error.code) && !sawEvent) return [ZERO_USAGE, "none"];
+    if (!sent) return [ZERO_USAGE, "none"];
+    const input = reported?.inputTokens ?? prep.estimatedInputTokens;
+    if (error !== undefined && !sawEvent) {
+      if (NOT_BILLED.has(error.code)) return [ZERO_USAGE, "none"];
+      if (INPUT_BILLED.has(error.code)) return [{ inputTokens: input, outputTokens: 0 }, "estimated"];
+    }
     const u: { -readonly [K in keyof Usage]: Usage[K] } = {
-      inputTokens: reported?.inputTokens ?? prep.estimatedInputTokens,
+      inputTokens: input,
       outputTokens: Math.max(reported?.outputTokens ?? 0, prep.request.maxOutputTokens),
     };
     if (reported?.cacheReadTokens !== undefined) u.cacheReadTokens = reported.cacheReadTokens;
@@ -502,7 +536,7 @@ export function guardProvider(adapter: ProviderAdapter, options: GuardOptions): 
       const r: unknown = await call(opts.signal, (o) => adapter.validateConnection(o));
       if (typeof r === "object" && r !== null && read(r, "ok") === true) return { ok: true };
       const error = typeof r === "object" && r !== null ? read(r, "error") : undefined;
-      return { ok: false, error: normalize(error, undefined) };
+      return { ok: false, error: fromAdapter(error, undefined) };
     },
 
     async countTokens(request, run) {
@@ -536,20 +570,23 @@ export function guardProvider(adapter: ProviderAdapter, options: GuardOptions): 
       const valid = prep.request;
       const started = now();
       log({ ...base(run.runId, valid.model, "generate"), event: "request_start", messageCount: valid.messages.length, requestChars: requestChars(valid) });
-      const ctl = new RequestControl(run.signal, timers, idleMs, requestMs);
-      ctl.touch();
+      // A non-streaming answer has no events, so only the request timeout
+      // applies: an idle timer would cut off a long generation (NN8).
+      const ctl = new RequestControl(run.signal, timers, requestMs, requestMs);
       let result: GenerateResult | undefined;
       let error: ProviderError | undefined;
+      let sent = false;
       try {
         if (ctl.why !== undefined) throw abortError(ctl.why); // N1: never call the adapter with an aborted signal.
+        sent = true;
         const raw = await ctl.race(Promise.resolve().then(() => adapter.generate(valid, { signal: ctl.controller.signal })));
         result = checkResult(raw, streamLimits);
       } catch (e) {
-        error = normalize(e, ctl.why);
+        error = fromAdapter(e, ctl.why);
       } finally {
         ctl.dispose();
       }
-      const [usage, charged] = charge(prep, result?.usage, result !== undefined, false, error);
+      const [usage, charged] = charge(prep, result?.usage, result !== undefined, false, error, sent);
       const outcome = error === undefined ? "completed" : outcomeOf(error);
       error = (await recordSafely(run, prep.requestId, valid.model, usage, charged, outcome)) ?? error;
       log({
@@ -582,6 +619,7 @@ export function guardProvider(adapter: ProviderAdapter, options: GuardOptions): 
     let iterator: AsyncIterator<StreamEvent> | undefined;
     let suspended = false;
     let sawEvent = false;
+    let sent = false;
     let finalized: Promise<ProviderError | undefined> | undefined;
 
     /** Release, record and log exactly once, however the stream ends (S3, S4, S5). */
@@ -599,7 +637,7 @@ export function guardProvider(adapter: ProviderAdapter, options: GuardOptions): 
         ctl.dispose();
         const complete = validator.complete && error === undefined;
         const outcome = error === undefined ? (complete ? "completed" : "cancelled") : outcomeOf(error);
-        const [usage, charged] = charge(prep, validator.usage, validator.complete, sawEvent, error);
+        const [usage, charged] = charge(prep, validator.usage, validator.complete, sawEvent, error, sent);
         const out = (await recordSafely(run, prep.requestId, valid.model, usage, charged, outcome)) ?? error;
         log({
           ...base(run.runId, valid.model, "stream"),
@@ -624,6 +662,7 @@ export function guardProvider(adapter: ProviderAdapter, options: GuardOptions): 
     let error: ProviderError | undefined;
     try {
       if (ctl.why !== undefined) throw abortError(ctl.why); // N1
+      sent = true;
       iterator = adapter.stream(valid, { signal: ctl.controller.signal })[Symbol.asyncIterator]();
       for (;;) {
         ctl.touch();
@@ -642,7 +681,7 @@ export function guardProvider(adapter: ProviderAdapter, options: GuardOptions): 
       }
       validator.result();
     } catch (e) {
-      error = normalize(e, ctl.why);
+      error = fromAdapter(e, ctl.why);
     } finally {
       // Runs on completion, on error and when the consumer stops early.
       error = await finalize(error);

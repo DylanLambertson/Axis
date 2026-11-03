@@ -53,8 +53,16 @@ export function validateRequest(
     });
   }
   const req = parsed.data;
-  if (capabilities === undefined) return req;
+  if (capabilities !== undefined) checkCapabilities(req, capabilities, mode);
+  return req;
+}
 
+/**
+ * The capability half of `validateRequest`, for a request already parsed.
+ * The guard parses (and so snapshots) the request first, scans the snapshot,
+ * and only then fetches capabilities (NB1).
+ */
+export function checkCapabilities(req: ValidRequest, capabilities: ModelCapabilities, mode: "generate" | "stream" = "generate"): void {
   if (capabilities.modelId !== req.model) {
     throw new ProviderError("invalid_request", { message: "The capability report is for a different model.", reason: "model_mismatch" });
   }
@@ -74,7 +82,6 @@ export function validateRequest(
       reason: "max_output_tokens",
     });
   }
-  return req;
 }
 
 /**

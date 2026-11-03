@@ -183,7 +183,7 @@ export function codeForHttpStatus(status: number): ProviderErrorCode {
 
 /** Longest message an error may carry after sanitizing. */
 export const MAX_PROVIDER_ERROR_MESSAGE = 1_024;
-/** Redaction runs over at most this much of a message, so a huge message cannot stall it. */
+/** Longer adapter messages are replaced by the fixed text, so a huge message cannot stall redaction. */
 const MESSAGE_PRECAP = 16_384;
 
 /** Cut at a UTF-16 length without splitting a surrogate pair. */
@@ -216,11 +216,29 @@ export interface ErrorRedactor {
  * secret. A value that is not a `ProviderError` becomes a fixed `internal`.
  */
 export function sanitizeProviderError(e: unknown, redactor: ErrorRedactor): ProviderError {
-  if (!(e instanceof ProviderError)) return new ProviderError("internal");
+  try {
+    return rebuild(e, redactor);
+  } catch {
+    // Total: a Proxy trap, a throwing redactor or anything else becomes a fixed error (NS4).
+    return new ProviderError("internal");
+  }
+}
+
+function rebuild(e: unknown, redactor: ErrorRedactor): ProviderError {
+  let isProvider = false;
+  try {
+    // `instanceof` runs a Proxy's getPrototypeOf trap, which an adapter controls (NS4).
+    isProvider = e instanceof ProviderError;
+  } catch {
+    isProvider = false;
+  }
+  if (!isProvider || typeof e !== "object" || e === null) return new ProviderError("internal");
   const rawCode = read(e, "code");
   const code: ProviderErrorCode = isProviderErrorCode(rawCode) ? rawCode : "internal";
   const rawMessage = read(e, "message");
-  let message = typeof rawMessage === "string" ? truncate(rawMessage, MESSAGE_PRECAP) : defaultMessage(code);
+  // A message longer than the precap is replaced, not cut: a cut can leave a
+  // secret prefix that exact-match redaction no longer recognises (NN2).
+  let message = typeof rawMessage === "string" && rawMessage.length <= MESSAGE_PRECAP ? rawMessage : defaultMessage(code);
   message = redactor.redact(message);
   if (message.length > MAX_PROVIDER_ERROR_MESSAGE) message = `${truncate(message, MAX_PROVIDER_ERROR_MESSAGE - 1)}…`;
   const rawDetails = read(e, "details");
