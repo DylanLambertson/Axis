@@ -27,6 +27,21 @@ export function internal(message: string, details?: Readonly<Record<string, stri
   return new GitOpsError("E_INTERNAL", message, details);
 }
 
+/**
+ * Runs an operation so that only protocol error codes leave the package. Anything else (a spawn failure, a throwing
+ * hook such as the drift check or the scanner) becomes E_UNAVAILABLE with a fixed message: the original text may
+ * carry paths or content, so only a short error code such as ENOENT is kept.
+ */
+export async function mapUnexpected<T>(fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (e) {
+    if (e instanceof GitOpsError) throw e;
+    const code = (e as { code?: unknown } | null)?.code;
+    throw new GitOpsError("E_UNAVAILABLE", `git could not be run${typeof code === "string" && /^[A-Z0-9_]{1,40}$/.test(code) ? ` (${code})` : ""}`);
+  }
+}
+
 /** Replaces scheme://user:pass@ in text that may reach logs or error details. */
 export function redactUrls(text: string): string {
   return text.replace(/(\w+:\/\/)[^/@\s]+@/g, "$1***@");

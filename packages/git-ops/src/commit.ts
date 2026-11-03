@@ -3,7 +3,7 @@
 // process, so repository hooks never run in the daemon. The commit is of the tree the user reviewed.
 import { branchFor, checkWorktree, daemonGitFor, platformOf, prefix, OBJECT_ID, type DaemonGit } from "./args.js";
 import { findOverride, withNoPrompt } from "./env.js";
-import { GitOpsError, conflict, denied, internal, invalid } from "./errors.js";
+import { GitOpsError, conflict, denied, internal, invalid, mapUnexpected } from "./errors.js";
 import type { GitOpsDeps, GitRunRequest, WorktreeRef } from "./types.js";
 
 export interface CommitInput {
@@ -95,7 +95,7 @@ async function check(deps: GitOpsDeps, input: CommitInput): Promise<{ plan: Comm
 
 /** Validates everything and returns the exact command. Nothing is written except tree objects. */
 export async function planCommit(deps: GitOpsDeps, input: CommitInput): Promise<CommitPlan> {
-  return (await check(deps, input)).plan;
+  return mapUnexpected(async () => (await check(deps, input)).plan);
 }
 
 /**
@@ -107,7 +107,11 @@ export async function planCommit(deps: GitOpsDeps, input: CommitInput): Promise<
  * - Any other outcome (the parent is not the reviewed one, or the undo failed) leaves the branch alone and reports
  *   E_INTERNAL with `undone: false`: dropping a commit that someone else made is not ours to do.
  */
-export async function executeCommit(deps: GitOpsDeps, input: CommitInput): Promise<CommitResult> {
+export function executeCommit(deps: GitOpsDeps, input: CommitInput): Promise<CommitResult> {
+  return mapUnexpected(() => runCommit(deps, input));
+}
+
+async function runCommit(deps: GitOpsDeps, input: CommitInput): Promise<CommitResult> {
   const { plan, git } = await check(deps, input);
   const r = await deps.runner.run(plan.command);
   if (r.code !== 0) throw conflict(`git commit failed (exit ${r.code})`);

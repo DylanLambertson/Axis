@@ -4,7 +4,7 @@ import { OBJECT_ID, REMOTE_NAME, branchFor, checkWorktree, daemonGitFor, platfor
 import { findOverride, withNoPrompt } from "./env.js";
 import { assertPushUrl, protocolAllowList } from "./pushUrl.js";
 import { scanOutgoing } from "./scan.js";
-import { GitOpsError, conflict, denied, invalid, redactUrls, sanitizeText } from "./errors.js";
+import { GitOpsError, conflict, denied, invalid, mapUnexpected, redactUrls, sanitizeText } from "./errors.js";
 import type { GitOpsDeps, GitRunRequest, SecretFinding, WorktreeRef } from "./types.js";
 
 export interface PushInput {
@@ -135,11 +135,15 @@ async function check(deps: GitOpsDeps, input: PushInput): Promise<{ plan: PushPl
 
 /** Validates everything and returns the exact push command and any secret findings. */
 export async function planPush(deps: GitOpsDeps, input: PushInput): Promise<PushPlan> {
-  return (await check(deps, input)).plan;
+  return mapUnexpected(async () => (await check(deps, input)).plan);
 }
 
 /** Re-validates immediately before pushing. A plan with findings needs `confirmed: true`. */
-export async function executePush(deps: GitOpsDeps, input: PushInput, opts: { readonly confirmed?: boolean } = {}): Promise<void> {
+export function executePush(deps: GitOpsDeps, input: PushInput, opts: { readonly confirmed?: boolean } = {}): Promise<void> {
+  return mapUnexpected(() => runPush(deps, input, opts));
+}
+
+async function runPush(deps: GitOpsDeps, input: PushInput, opts: { readonly confirmed?: boolean }): Promise<void> {
   const { plan, git } = await check(deps, input);
   if (plan.requiresConfirmation && opts.confirmed !== true) {
     throw new GitOpsError("E_APPROVAL_REQUIRED", `confirm to push: ${plan.reasons.join("; ")}`);

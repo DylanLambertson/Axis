@@ -19,10 +19,19 @@ export function createNodeRunner(opts: NodeRunnerOptions = {}): GitRunner {
         return Promise.reject(denied("the daemon process must not run pty-context git"));
       }
       return new Promise((resolve, reject) => {
-        const child = spawn("git", [...req.argv], { cwd: req.cwd, env: req.env, shell: false, stdio: ["pipe", "pipe", "pipe"] });
+        // Its own process group on POSIX, so a timeout can kill git's children too (filters, submodule diffs, ssh).
+        const group = process.platform !== "win32";
+        const child = spawn("git", [...req.argv], { cwd: req.cwd, env: req.env, shell: false, detached: group, stdio: ["pipe", "pipe", "pipe"] });
         let out = "";
         let err = "";
-        const timer = setTimeout(() => child.kill("SIGKILL"), opts.timeoutMs ?? 120_000);
+        const timer = setTimeout(() => {
+          try {
+            if (group && child.pid !== undefined) process.kill(-child.pid, "SIGKILL");
+            else child.kill("SIGKILL");
+          } catch {
+            child.kill("SIGKILL");
+          }
+        }, opts.timeoutMs ?? 120_000);
         child.stdout.setEncoding("utf8").on("data", (d: string) => {
           if (out.length < maxOutput) out += d;
         });
