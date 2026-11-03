@@ -40,8 +40,14 @@ export function importSpecifiers(source) {
   return found;
 }
 
-/** Why a specifier is not allowed in `pkg`, or null when it is. */
+/**
+ * Why a specifier is not allowed in `pkg`, or null when it is. The node:*
+ * ban for contract packages (D2.4) applies to shipped sources under `src/`;
+ * tests and test-support entry points (`test/`, `contract/`) may use node:*.
+ * A call without a file is judged as `src/`.
+ */
 export function violation(pkg, spec, file = null, pkgDir = null) {
+  const inSrc = file === null || pkgDir === null || relative(pkgDir, file).split(sep)[0] === "src";
   if (spec.startsWith("./") || spec.startsWith("../")) {
     if (file === null || pkgDir === null) return null;
     const target = resolve(dirname(file), spec);
@@ -52,15 +58,25 @@ export function violation(pkg, spec, file = null, pkgDir = null) {
   }
   if (spec === "zod" || spec.startsWith("zod/")) return null;
   if (spec.startsWith("@axis/")) return null;
-  if (spec.startsWith("node:")) return NO_NODE.has(pkg) ? "node:* is not allowed in this package" : null;
+  if (spec.startsWith("node:")) return NO_NODE.has(pkg) && inSrc ? "node:* is not allowed in this package" : null;
   return "only relative, zod, @axis/* and node:* imports are allowed";
 }
 
-function* sourceFiles(dir) {
+/** Directories never scanned: build output and installed dependencies. */
+const SKIP_DIRS = new Set(["dist", "node_modules"]);
+
+/**
+ * Every TypeScript file in a package, not only `src/`: `contract/` is a
+ * published entry point other packages import, and `test/` runs in CI (N9).
+ */
+export function* sourceFiles(dir) {
   for (const name of readdirSync(dir)) {
     const p = join(dir, name);
-    if (statSync(p).isDirectory()) yield* sourceFiles(p);
-    else if (p.endsWith(".ts") && !p.endsWith(".d.ts")) yield p;
+    if (statSync(p).isDirectory()) {
+      if (!SKIP_DIRS.has(name)) yield* sourceFiles(p);
+      continue;
+    }
+    if (p.endsWith(".ts") && !p.endsWith(".d.ts")) yield p;
   }
 }
 
@@ -69,10 +85,10 @@ const packages = readdirSync(packagesDir).filter((n) => statSync(join(packagesDi
 test("there is at least one package", () => assert.ok(packages.length > 0));
 
 for (const pkg of packages) {
-  test(`${pkg}: src imports stay inside the allowlist`, () => {
+  test(`${pkg}: imports stay inside the allowlist (whole package)`, () => {
     const bad = [];
     const pkgDir = join(packagesDir, pkg);
-    for (const file of sourceFiles(join(pkgDir, "src"))) {
+    for (const file of sourceFiles(pkgDir)) {
       const source = readFileSync(file, "utf8");
       for (const spec of importSpecifiers(source)) {
         const why = violation(pkg, spec, file, pkgDir);
@@ -140,4 +156,21 @@ test("scanner: dynamic loads need a string literal", () => {
   assert.equal(nonLiteralLoads("await import('./x/' + n)").length, 1);
   assert.equal(nonLiteralLoads("require(path)").length, 1);
   assert.deepEqual(nonLiteralLoads('// import(name)\n/* require(x) */'), []);
+});
+
+test("scanner: walks the whole package except dist and node_modules", () => {
+  const dir = join(packagesDir, "protocol");
+  const files = [...sourceFiles(dir)].map((f) => relative(dir, f));
+  assert.ok(files.some((f) => f.startsWith(`src${sep}`)));
+  assert.ok(files.some((f) => f.startsWith(`test${sep}`)), "tests are scanned");
+  assert.ok(files.every((f) => !f.startsWith(`dist${sep}`) && !f.startsWith(`node_modules${sep}`)));
+});
+
+test("scanner: node:* is banned in protocol src, allowed in its tests and test-support entry points", () => {
+  const dir = join(packagesDir, "protocol");
+  assert.notEqual(violation("protocol", "node:fs", join(dir, "src", "a.ts"), dir), null);
+  assert.equal(violation("protocol", "node:test", join(dir, "test", "a.test.ts"), dir), null);
+  assert.equal(violation("protocol", "node:test", join(dir, "contract", "index.ts"), dir), null);
+  assert.notEqual(violation("protocol", "electron", join(dir, "contract", "index.ts"), dir), null, "the rest of the allowlist still applies");
+  assert.notEqual(violation("protocol", "vs/base/common/event", join(dir, "test", "a.test.ts"), dir), null);
 });
