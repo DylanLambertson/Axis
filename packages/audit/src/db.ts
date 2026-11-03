@@ -12,6 +12,7 @@ export interface OpenOptions {
 }
 
 const POSIX = process.platform !== "win32";
+const DARWIN = process.platform === "darwin";
 
 /** SQLite primary result codes the bridge cares about. */
 const SQLITE_BUSY = 5;
@@ -85,10 +86,20 @@ function pragma(db: DatabaseSync, sql: string): Record<string, unknown> {
 
 /**
  * Open a journal database with the settings the audit log and the journal
- * rely on: WAL, `synchronous=FULL` (a committed transaction survives power
- * loss, not only a process crash), foreign keys, and a busy timeout so
+ * rely on: WAL, `synchronous=FULL`, foreign keys, and a busy timeout so
  * concurrent writers queue instead of failing. File mode is 0600 and the
  * directory 0700; every setting is read back and a mismatch is an error.
+ *
+ * What a committed transaction survives:
+ * - a process crash or kill, on every platform (the WAL frames are in the OS
+ *   file cache and the OS outlives the process);
+ * - power loss, only to the extent the platform's flush reaches stable
+ *   storage. Linux: `fsync` after each commit (`synchronous=FULL`). Windows:
+ *   `FlushFileBuffers`. macOS: plain `fsync` does NOT flush the drive's write
+ *   cache, so this function also turns on `fullfsync` and
+ *   `checkpoint_fullfsync` (F_FULLFSYNC) there. In every case a drive or
+ *   virtualisation layer that acknowledges a flush it did not perform defeats
+ *   the guarantee, and nothing here can detect that.
  */
 export function openDatabase(path: string, options: OpenOptions = {}): DatabaseSync {
   const timeout = options.busyTimeoutMs ?? 5000;
@@ -106,9 +117,19 @@ export function openDatabase(path: string, options: OpenOptions = {}): DatabaseS
         if (mode !== "wal") throw new AxisError("E_UNAVAILABLE", "This file system does not support WAL, which the journal requires");
       }
       db.exec("PRAGMA synchronous = FULL");
+      if (DARWIN) {
+        db.exec("PRAGMA fullfsync = ON");
+        db.exec("PRAGMA checkpoint_fullfsync = ON");
+      }
       db.exec("PRAGMA foreign_keys = ON");
     });
     if (pragma(db, "PRAGMA synchronous")["synchronous"] !== 2) throw new AxisError("E_INTERNAL", "Could not enable synchronous=FULL");
+    if (DARWIN) {
+      if (pragma(db, "PRAGMA fullfsync")["fullfsync"] !== 1) throw new AxisError("E_INTERNAL", "Could not enable fullfsync");
+      if (pragma(db, "PRAGMA checkpoint_fullfsync")["checkpoint_fullfsync"] !== 1) {
+        throw new AxisError("E_INTERNAL", "Could not enable checkpoint_fullfsync");
+      }
+    }
     if (pragma(db, "PRAGMA foreign_keys")["foreign_keys"] !== 1) throw new AxisError("E_INTERNAL", "Could not enable foreign keys");
     assertPrivateFiles(path);
   } catch (error) {

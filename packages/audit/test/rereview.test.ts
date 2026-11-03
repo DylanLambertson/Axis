@@ -100,3 +100,25 @@ test("NEW-C: a few sensitive keys are still redacted whole", () => {
   const r = new Redactor();
   assert.deepEqual(r.redactValue({ ["pass" + "word"]: PW, ok: 1 }), { ["pass" + "word"]: "[REDACTED:sensitive-field]", ok: 1 });
 });
+
+// ---- NEW-A: durability settings ----
+
+test("NEW-A: on macOS the database is opened with fullfsync and checkpoint_fullfsync; synchronous is FULL everywhere", async () => {
+  const { mkdtempSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const dir = mkdtempSync(join(tmpdir(), "axis-fsync-"));
+  try {
+    const db = openDatabase(join(dir, "f.db"));
+    const get = (name: string): unknown => (db.prepare(`PRAGMA ${name}`).get() as Record<string, unknown>)[name];
+    assert.equal(get("synchronous"), 2);
+    assert.equal(get("journal_mode"), "wal");
+    if (process.platform === "darwin") {
+      assert.equal(get("fullfsync"), 1);
+      assert.equal(get("checkpoint_fullfsync"), 1);
+    }
+    db.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
