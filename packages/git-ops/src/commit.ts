@@ -3,7 +3,7 @@
 // process, so repository hooks never run in the daemon. The commit is of the tree the user reviewed.
 import { branchFor, checkWorktree, daemonGitFor, platformOf, prefix, OBJECT_ID, type DaemonGit } from "./args.js";
 import { findOverride, identityOverrides, overrideMessage, withNoPrompt } from "./env.js";
-import { GitOpsError, conflict, denied, internal, invalid, mapUnexpected } from "./errors.js";
+import { GitOpsError, conflict, denied, internal, invalid, mapUnexpected, redactUrls, sanitizeText } from "./errors.js";
 import type { GitOpsDeps, GitRunRequest, WorktreeRef } from "./types.js";
 
 export interface CommitInput {
@@ -121,7 +121,7 @@ export function executeCommit(deps: GitOpsDeps, input: CommitInput): Promise<Com
 async function runCommit(deps: GitOpsDeps, input: CommitInput): Promise<CommitResult> {
   const { plan, git } = await check(deps, input);
   const r = await deps.runner.run(plan.command);
-  if (r.code !== 0) throw conflict(`git commit failed (exit ${r.code})`);
+  if (r.code !== 0) throw conflict(`git commit failed (exit ${r.code}): ${redactUrls(sanitizeText(r.stderr)).trim().slice(0, 500)}`);
   const commit = line(await git(["rev-parse", "--verify", "--end-of-options", "HEAD^{commit}"]));
   const tree = line(await git(["rev-parse", "--verify", "--end-of-options", "HEAD^{tree}"]));
   const parentR = OBJECT_ID.test(commit) ? await git(["rev-parse", "--verify", "--quiet", "--end-of-options", `${commit}^1`]) : undefined;

@@ -264,3 +264,12 @@ test("N-3: GIT_* variables in the daemon environment are stripped, not refused; 
   const bad = await failure(planCommit(makeDeps(new FakeRunner(healthy()), { env: { daemon: {}, pty: { PATH: "/b", GIT_CONFIG_GLOBAL: "/x" } } }), input));
   assert.match(bad.message, /GIT_CONFIG_GLOBAL.*unset it in the shell profile/);
 });
+
+test("N-8: a failed commit carries a sanitised, redacted reason (signing and hook failures need one)", async () => {
+  const stderr = "error: gpg failed to sign the data\u001b[31m\nfatal: failed to write commit object\u0007\n";
+  const r = new FakeRunner(healthy((_s, req) => (req.context === "pty" ? { code: 128, stderr } : undefined)));
+  const e = await failure(executeCommit(makeDeps(r), input));
+  assert.equal(e.code, "E_CONFLICT");
+  assert.equal(e.message, "git commit failed (exit 128): error: gpg failed to sign the data\nfatal: failed to write commit object");
+  assert.doesNotMatch(e.message, /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/);
+});
