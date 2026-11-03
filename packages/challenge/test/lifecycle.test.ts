@@ -233,3 +233,25 @@ test("every axis.worktrees method name can be issued and consumed, and malformed
     assert.throws(() => issue(manager, { method: bad }), code("E_INVALID_ARGUMENT"), bad);
   }
 });
+
+// The per-actor cap is per (actor, window): one window cannot lock the same user out of another.
+test("a window that floods its own per-actor cap does not block the same actor in another window", () => {
+  const { manager } = setup({ perActor: 2 });
+  issue(manager, { windowId: "window-a" });
+  const second = issue(manager, { windowId: "window-a" });
+  assert.throws(() => issue(manager, { windowId: "window-a" }), code("E_BACKPRESSURE"));
+  assert.doesNotThrow(() => issue(manager, { windowId: "window-b" }), "the other window still works");
+  // Tombstones are keyed the same way: withdrawing in window-a does not free the slot, and does not touch window-b.
+  manager.withdraw(second.challenge.challengeId, CALLER);
+  assert.throws(() => issue(manager, { windowId: "window-a" }), code("E_BACKPRESSURE"));
+  assert.doesNotThrow(() => issue(manager, { windowId: "window-b" }));
+});
+
+test("the overall per-actor backstop still bounds one actor across windows", () => {
+  const { manager } = setup({ perActor: 2, perActorOverall: 3 });
+  issue(manager, { windowId: "window-a" });
+  issue(manager, { windowId: "window-b" });
+  issue(manager, { windowId: "window-c" });
+  assert.throws(() => issue(manager, { windowId: "window-d" }), code("E_BACKPRESSURE"));
+  assert.doesNotThrow(() => issue(manager, { windowId: "window-d", actor: "agent:other" }), "another actor is unaffected");
+});

@@ -13,7 +13,7 @@ export const CONN = "conn-1";
 export const CALLER = { actor: "user", connectionId: CONN } as const;
 export const WIN = "window-1";
 
-export function setup(options: { ttl?: number; confirmTtl?: number; perActor?: number; total?: number } = {}) {
+export function setup(options: { ttl?: number; confirmTtl?: number; perActor?: number; perActorOverall?: number; perWindow?: number; total?: number } = {}) {
   const events: ChallengeAuditEvent[] = [];
   const clock = { t: 1_000_000, skew: 0 };
   let failNext: ((e: ChallengeAuditEvent) => boolean) | undefined;
@@ -29,6 +29,8 @@ export function setup(options: { ttl?: number; confirmTtl?: number; perActor?: n
     ...(options.ttl ? { challengeTtlMs: options.ttl } : {}),
     ...(options.confirmTtl ? { confirmationTtlMs: options.confirmTtl } : {}),
     ...(options.perActor ? { maxOutstandingPerActor: options.perActor } : {}),
+    ...(options.perActorOverall ? { maxOutstandingPerActorOverall: options.perActorOverall } : {}),
+    ...(options.perWindow ? { maxOutstandingPerWindow: options.perWindow } : {}),
     ...(options.total ? { maxOutstandingTotal: options.total } : {}),
   });
   return { manager, events, clock, failWhen: (f: ((e: ChallengeAuditEvent) => boolean) | undefined) => (failNext = f) };
