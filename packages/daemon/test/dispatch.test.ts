@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 import { errorSchema, type Challenge } from "@axis/protocol";
-import { DaemonError, payloadHash, type ApprovalGate, type ApprovalInput } from "../src/index.js";
+import { DaemonError, payloadHash, requestDigest, type ApprovalGate, type ApprovalInput } from "../src/index.js";
 import { CONTRACT, KEY1, KEY2, req, rig, type Rig } from "./harness.js";
 
 const CHALLENGE: Challenge = {
@@ -88,13 +88,16 @@ test("a policy deny stops the handler; the audit event has tier, method and outc
   const r = await ready(t, { policy: { evaluate: () => ({ effect: "deny" }) } });
   r.daemon.register(CONTRACT, 1, { echo: () => assert.fail("must not run") });
   r.send(req("d2", "echo", { text: "x" }));
-  assert.equal((await r.inbox.response("d2")).error?.code, "E_POLICY_DENIED");
+  const denied = await r.inbox.response("d2");
+  assert.equal(denied.error?.code, "E_POLICY_DENIED");
+  const correlationId = (denied.error as { correlationId?: string }).correlationId;
+  assert.equal(r.events[0]?.payload["correlationId"], correlationId, "the audit row joins to the wire error");
   assert.deepEqual(r.events[0], {
     actor: "user",
     action: "policy.decision",
-    target: `${CONTRACT}/echo`,
+    target: `${CONTRACT}/1.echo`,
     outcome: "denied",
-    payload: { tier: 0, sideEffect: "read", connectionId: "conn-1", decision: "deny" },
+    payload: { tier: 0, sideEffect: "read", connectionId: "conn-1", correlationId, workspaceId: null, contractVersion: 1, decision: "deny" },
   });
 });
 
@@ -127,7 +130,7 @@ test("tier 4 without a valid confirmation returns E_APPROVAL_REQUIRED carrying a
   assert.deepEqual((res.error?.details as { challenge: Challenge }).challenge, CHALLENGE);
   assert.equal(inputs[0]?.tier, 4);
   assert.equal(inputs[0]?.identity.actor, "user");
-  assert.equal(inputs[0]?.payloadHash, payloadHash({ id: "ws-1" }));
+  assert.equal(inputs[0]?.digest, requestDigest(CONTRACT, 1, "danger", { id: "ws-1" }));
   assert.equal(r.events.at(-1)?.outcome, "denied");
 });
 
@@ -184,7 +187,7 @@ test("the same key with a different payload is E_IDEMPOTENCY_CONFLICT; another a
   r.send(req("c2", "write", { n: 2 }, { idempotencyKey: KEY1 }));
   assert.equal((await r.inbox.response("c2")).error?.code, "E_IDEMPOTENCY_CONFLICT");
 
-  const other = r.connect("good:actor-2");
+  const other = r.connect("good:actor-2#conn-2");
   other.client.postMessage({ type: "hello", protocolVersions: [1], contracts: [{ id: CONTRACT, versions: [1] }] });
   await other.inbox.until((m): m is object => typeof m === "object" && m !== null && (m as { type?: string }).type === "welcome");
   other.client.postMessage(req("c3", "write", { n: 2 }, { idempotencyKey: KEY1 }));
@@ -312,15 +315,22 @@ test("more than maxInFlight concurrent requests get E_BACKPRESSURE; a reused in-
   assert.equal((await r.inbox.response("b2")).ok, true);
 });
 
-test("the per-connection message rate is bounded", async (t) => {
-  const r = await ready(t, { limits: { maxMessagesPerSecond: 1, burst: 5, maxViolations: 1000 } });
+test("the per-connection message rate is bounded (injected clock, exact counts)", async (t) => {
+  let clock = 1_000_000;
+  const r = await ready(t, { now: () => clock, limits: { maxMessagesPerSecond: 1, burst: 5, maxViolations: 1000 } });
   r.daemon.register(CONTRACT, 1, { echo: (_c, p: { text: string }) => p });
+  const limited = (prefix: string) =>
+    r.inbox.all.filter((m) => (m as { id?: string }).id?.startsWith(prefix) && (m as { error?: { code: string } }).error?.code === "E_BACKPRESSURE").length;
+  const answered = (prefix: string) => r.inbox.all.filter((m) => (m as { id?: string }).id?.startsWith(prefix)).length;
+  // The handshake took one of the five tokens, so exactly four requests pass and the other 26 are refused.
   for (let i = 0; i < 30; i++) r.send(req(`rl${i}`, "echo", { text: "x" }));
-  await wait(150);
-  const answered = r.inbox.all.filter((m) => (m as { id?: string }).id?.startsWith("rl"));
-  const limited = answered.filter((m) => (m as { error?: { code: string } }).error?.code === "E_BACKPRESSURE");
-  assert.ok(limited.length >= 20, `expected most messages limited, got ${limited.length}`);
-  assert.ok(answered.filter((m) => (m as { ok?: boolean }).ok).length <= 6);
+  await wait(100);
+  assert.equal(answered("rl"), 30);
+  assert.equal(limited("rl"), 26);
+  clock += 2000; // two tokens come back
+  for (let i = 0; i < 5; i++) r.send(req(`rm${i}`, "echo", { text: "x" }));
+  await wait(100);
+  assert.equal(limited("rm"), 3);
 });
 
 // ---- error sanitisation ----
@@ -361,13 +371,13 @@ test("a DaemonError carries its code and user-safe message; one that cannot be v
   let n = 0;
   r.daemon.register(CONTRACT, 1, {
     boom: () => {
-      if (n++ === 0) throw new DaemonError("E_NOT_FOUND", "No such workspace", { id: "ws-9" });
+      if (n++ === 0) throw new DaemonError("E_NOT_FOUND", "No such workspace", { reason: "gone" });
       throw new DaemonError("E_APPROVAL_REQUIRED", "needs a challenge it does not have");
     },
   });
   r.send(req("de1", "boom"));
   const a = await r.inbox.response("de1");
-  assert.deepEqual([a.error?.code, a.error?.message, a.error?.details], ["E_NOT_FOUND", "No such workspace", { id: "ws-9" }]);
+  assert.deepEqual([a.error?.code, a.error?.message, a.error?.details], ["E_NOT_FOUND", "No such workspace", { reason: "gone" }]);
   r.send(req("de2", "boom"));
   assert.equal((await r.inbox.response("de2")).error?.code, "E_INTERNAL");
 });
@@ -402,9 +412,9 @@ test("side-effecting calls are audited at decision and completion; reads only at
   assert.deepEqual(
     r.events.map((e) => [e.action, e.target, e.outcome]),
     [
-      ["policy.decision", `${CONTRACT}/write`, "success"],
-      ["rpc.execute", `${CONTRACT}/write`, "success"],
-      ["policy.decision", `${CONTRACT}/echo`, "success"],
+      ["policy.decision", `${CONTRACT}/1.write`, "success"],
+      ["rpc.execute", `${CONTRACT}/1.write`, "success"],
+      ["policy.decision", `${CONTRACT}/1.echo`, "success"],
     ],
   );
   const dump = JSON.stringify(r.events);

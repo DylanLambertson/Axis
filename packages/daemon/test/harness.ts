@@ -66,11 +66,22 @@ export const identityOf = (over: Partial<Identity> = {}): Identity => ({
   ...over,
 });
 
-/** Accepts the attestation "good" (or "good:<actorId>"), refuses everything else. */
+/**
+ * Accepts "good[:<actorId>][#<connectionId>][@<workspaceId>]", refuses
+ * everything else. The connection id defaults to conn-1, so a second
+ * connection that must not be refused as a duplicate names its own.
+ */
 export const verifier: IdentityVerifier = {
   verify(att) {
     if (typeof att !== "string" || !att.startsWith("good")) return undefined;
-    return identityOf(att.includes(":") ? { actorId: att.split(":")[1] as string } : {});
+    const [rest, workspaceId] = att.split("@");
+    const [head, conn] = (rest as string).split("#");
+    const actorId = (head as string).split(":")[1];
+    return identityOf({
+      ...(actorId ? { actorId } : {}),
+      ...(conn ? { connectionId: conn } : {}),
+      ...(workspaceId ? { workspaceId } : {}),
+    });
   },
 };
 

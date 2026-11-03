@@ -133,7 +133,7 @@ test("a connection that never completes the handshake is closed", async (t) => {
 test("connections beyond the limit are closed immediately", async (t) => {
   const r = mk(t, { maxConnections: 1 });
   await r.handshake();
-  const second = r.connect("good");
+  const second = r.connect("good#conn-2");
   assert.ok(await second.inbox.closedWithin(500));
   assert.equal(r.daemon.connectionCount, 1);
 });
