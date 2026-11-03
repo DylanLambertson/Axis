@@ -135,6 +135,19 @@ test("D2-N3: the action runs at most once, and the wire shows the action's own o
   assert.deepEqual([res.ok, res.result], [true, { done: true }]);
 });
 
+test("a gate's withdraw may return anything; the daemon ignores it", async (t) => {
+  const { gate } = fakeGate();
+  const r = await ready(t, { gate: { ...gate, execute: () => new Promise(() => undefined), withdraw: () => ({ withdrawn: true, reason: "request_aborted" }), withdrawConnection: () => 3 } });
+  r.daemon.register(CONTRACT, 1, { danger: () => assert.fail("must not run") });
+  const id = await approveAndRun(r, "w", { id: "ws-1" });
+  await wait(20);
+  r.send({ v: 1, cancel: id });
+  assert.equal((await r.inbox.response(id)).error?.code, "E_CANCELLED");
+  r.client.close();
+  await wait(30);
+  assert.equal(r.internal.length, 0);
+});
+
 // ---- N5/N6: refusal codes ----
 
 test("D2-N6: an issue() that is out of capacity is E_BACKPRESSURE and an unapprovable request is E_INVALID_ARGUMENT, not E_INTERNAL", async (t) => {
@@ -146,7 +159,9 @@ test("D2-N6: an issue() that is out of capacity is E_BACKPRESSURE and an unappro
     const r = await ready(t, { gate: { ...gate, issue: () => Promise.reject(new ApprovalError(code)) } });
     r.daemon.register(CONTRACT, 1, { danger: () => assert.fail("must not run") });
     r.send(request("i1", { id: "ws-1" }));
-    assert.equal((await r.inbox.response("i1")).error?.code, expected);
+    const res = await r.inbox.response("i1");
+    assert.equal(res.error?.code, expected);
+    if (code === "E_BACKPRESSURE") assert.equal((res.error as { retryable?: boolean }).retryable, true, "the client can back off and retry");
   }
 });
 

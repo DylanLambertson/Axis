@@ -164,7 +164,9 @@ export class ApprovalError extends Error {
  *   It throws `ApprovalError` for a refusal. It returns what `action` returns.
  * - `withdraw` is called when a request is cancelled or times out before its
  *   approval was spent; `withdrawConnection` when a connection closes. Both
- *   are best effort and called at most once per challenge / connection.
+ *   are best effort and called at most once per challenge / connection. The
+ *   daemon awaits and ignores whatever they return (the challenge manager
+ *   returns a count or a result object), and reports a throw locally.
  */
 export interface ApprovalGate {
   issue(input: ApprovalInput, content: ApprovalContent): Challenge | Promise<Challenge>;
@@ -174,8 +176,8 @@ export interface ApprovalGate {
     content: ApprovalContent,
     action: (confirmed: ConfirmedAction) => Promise<T>,
   ): Promise<T>;
-  withdraw?(challengeId: string, caller: { readonly actor: ActorId; readonly connectionId: string }): void | Promise<void>;
-  withdrawConnection?(connectionId: string): void | Promise<void>;
+  withdraw?(challengeId: string, caller: { readonly actor: ActorId; readonly connectionId: string }): unknown;
+  withdrawConnection?(connectionId: string): unknown;
 }
 
 export interface IdempotencyKey {
