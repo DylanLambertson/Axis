@@ -261,3 +261,18 @@ test("S-9: repository-location and object-store overrides in the pty environment
     assert.equal(await code(planPush(deps, input)), "E_POLICY_DENIED", n);
   }
 });
+
+test("N-4: push stderr is stripped of terminal control sequences and credentials before it reaches the error", async () => {
+  const evil = "remote: \u001b]0;pwned\u0007\u001b[31mdenied\u001b[0m\u009b2J\u0000 for https://tok@github.com/o/r\u0008\u0008x\n";
+  const r = new FakeRunner(healthy((_s, req) => (req.context === "pty" ? { code: 1, stderr: evil } : undefined)));
+  try {
+    await executePush(makeDeps(r), input);
+    assert.fail("expected a failure");
+  } catch (e) {
+    assert.ok(e instanceof GitOpsError);
+    assert.equal(e.code, "E_UNAVAILABLE");
+    assert.match(e.message, /remote: denied/);
+    assert.doesNotMatch(e.message, /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/);
+    assert.doesNotMatch(e.message, /tok@/);
+  }
+});

@@ -150,5 +150,5 @@ async function runPush(deps: GitOpsDeps, input: PushInput, opts: { readonly conf
   }
   await confirmTip(git, plan.branch, plan.tip);
   const r = await deps.runner.run(plan.command);
-  if (r.code !== 0) throw new GitOpsError("E_UNAVAILABLE", `git push failed (exit ${r.code}): ${redactUrls(r.stderr).slice(0, 500)}`);
+  if (r.code !== 0) throw new GitOpsError("E_UNAVAILABLE", `git push failed (exit ${r.code}): ${redactUrls(sanitizeText(r.stderr)).slice(0, 500)}`);
 }

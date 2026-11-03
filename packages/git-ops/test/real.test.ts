@@ -196,3 +196,14 @@ test("S-4: a token-as-username https remote is refused", async () => {
   f.git("remote", "add", "tok", `https://${["ghp", "_", "abcdefghijklmnopqrstuvwxyz0123456789"].join("")}@github.com/o/r.git`);
   assert.equal((await refusal(planPush(f.deps, { worktree: f.wt, remote: "tok", branch: "axis/feat", baseSha: baseOf(f) }))).code, "E_POLICY_DENIED");
 });
+
+test("N-4: a server-controlled escape sequence in a remote hook's output does not reach the error text", async () => {
+  const f = fixture();
+  const hook = join(f.remote, "hooks", "pre-receive");
+  mkdirSync(join(f.remote, "hooks"), { recursive: true });
+  writeFileSync(hook, "#!/bin/sh\nprintf 'rejected \\033]0;pwned\\007\\033[2Jnow\\n' >&2\nexit 1\n");
+  chmodSync(hook, 0o755);
+  const e = await refusal(executePush(f.deps, { worktree: f.wt, remote: "origin", branch: "axis/feat", baseSha: baseOf(f) }));
+  assert.match(e.message, /rejected/);
+  assert.doesNotMatch(e.message, /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/);
+});
