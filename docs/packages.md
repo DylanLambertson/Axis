@@ -46,6 +46,26 @@ Fixed vectors (`sha256hex` as lowercase hex):
 | `axis.worktrees` | 1 | `remove` | `{id:"ws-1",deleteBranch:false}` | `adb7a157e75395816cf74974fbdfa2b5bdf32831996a578ff80cdb46fe9d2735` |
 
 `@axis/daemon` implements the identical function and pins the same vectors; the two copies must stay in step. The shared function moves into `@axis/protocol` later, and both packages will then import it.
+## Wiring the daemon
+
+`@axis/daemon` never imports `@axis/challenge`; the product wiring (in main or the daemon entry) connects them in two places. The daemon computes the request digest once and hands it to the gate; the handler of the destructive method spends the approval.
+
+1. **Gate (`ApprovalGate.check`)**: issues, and answers `confirmed` only when the retry carries `approval`. The daemon calls it for tier 3 and above, after policy and idempotency, with an `ApprovalInput`:
+   - No `input.approval`: call `manager.issue({ contract: input.contract, version: input.contractVersion, method: input.method, requestDigest: input.digest, target, contentDigest, actor: input.actor, connectionId: input.connectionId, windowId: input.identity.windowId, tier: input.tier })`, with `target` (`workspace:<id>`) and `contentDigest` computed by the wiring from the parsed payload. Return `{ status: "required", challenge }`; for tier 4 and 5 also call `takeNativeProof(challengeId)` once and pass it to main, never to the renderer.
+   - With `input.approval`: return `{ status: "confirmed", confirmation: { challengeId: input.approval.challengeId, target } }`. The gate does not call `consume`, because `consume` runs the action itself. `input.digest` already equals the `requestDigest` the challenge was issued with, because both use `requestDigest()` with the bare contract id and the integer version.
+   - Pass `input.signal` to anything pending and stop on abort.
+2. **Handler** (runs after the gate answered `confirmed`, receives `ctx.confirmation`): wraps the destructive step in `manager.consume(ctx.confirmation.challengeId, { actor: ctx.identity.actor, connectionId: ctx.identity.connectionId }, { contract, version, method, requestDigest: <the digest>, target, currentContentDigest }, (confirmed) => doTheDestructiveThing(confirmed))`. Compute `currentContentDigest` under the lock that protects the content, immediately before the call.
+
+| Daemon field | Challenge field |
+|---|---|
+| `input.contract` (bare id), `input.contractVersion` | `contract`, `version` |
+| `input.digest` | `requestDigest` (do not pass `args` as well) |
+| `input.actor` | `actor` |
+| `input.connectionId` | `connectionId` |
+| `identity.windowId` | `windowId` |
+| `input.approval.challengeId` | the id given to `consume` |
+
+Order of calls for one destructive request: policy, idempotency `begin`, `gate.check` (issue, answer `required`), user resolve and native confirm via `axis.approvals/1` and main, the retry with the same idempotency key and `approval`, `gate.check` again (`confirmed`), audit `policy.decision`, the handler calls `consume`, which audits and spends the approval before the action runs. A failed action cannot be retried on the same approval; the idempotency key is freed and the user confirms again.
 
 ## Rules
 
