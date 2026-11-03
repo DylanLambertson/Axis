@@ -300,3 +300,10 @@ test("RR-1: confirmed needs the confirmed plan; a changed tip or digest is E_CON
   const changed = { ...deps(more), scanner: async () => [{ rule: "aws-key", path: ".env", line: 1 }, { rule: "private-key" }] };
   assert.equal(await code(executePush(changed, input, { confirmed: true, confirmedPlan: { tip: plan.tip, digest: plan.digest } })), "E_CONFLICT", "new findings change the digest");
 });
+
+test("RR-2: GIT_ALLOW_PROTOCOL and GIT_PROTOCOL_FROM_USER in the pty environment are refused", async () => {
+  for (const n of ["GIT_ALLOW_PROTOCOL", "git_allow_protocol", "GIT_PROTOCOL_FROM_USER"]) {
+    const deps = makeDeps(new FakeRunner(healthy()), { env: { daemon: {}, pty: { PATH: "/b", [n]: "ext" } } });
+    assert.equal(await code(planPush(deps, input)), "E_POLICY_DENIED", n);
+  }
+});

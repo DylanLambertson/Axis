@@ -40,6 +40,8 @@ const OVERRIDES = new RegExp(
     // refs/replace: pack-objects ignores it, and the daemon's reads must agree with it.
     "^GIT_REPLACE_REF_BASE$", "^GIT_NO_REPLACE_OBJECTS$",
     "^GIT_EXEC_PATH$",
+    // GIT_ALLOW_PROTOCOL overrides every protocol.* setting, which would undo the push transport allow-list.
+    "^GIT_ALLOW_PROTOCOL$", "^GIT_PROTOCOL_FROM_USER$",
   ].join("|"),
   "i",
 );
@@ -65,11 +67,14 @@ export function identityOverrides(env: Env): Array<["author" | "committer", "nam
   return out;
 }
 
+/** Variables Axis sets itself or never passes on, even if a caller hands them over. */
+const SET_BY_AXIS = /^(GIT_TERMINAL_PROMPT|GIT_ALLOW_PROTOCOL|GIT_PROTOCOL_FROM_USER)$/i;
+
 export function withNoPrompt(env: Env): Record<string, string> {
   const out: Record<string, string> = {};
   for (const n of Object.keys(env)) {
     const v = env[n];
-    if (v !== undefined && !UNSAFE.has(n) && n.toUpperCase() !== "GIT_TERMINAL_PROMPT") out[n] = v;
+    if (v !== undefined && !UNSAFE.has(n) && !SET_BY_AXIS.test(n)) out[n] = v;
   }
   out["GIT_TERMINAL_PROMPT"] = "0";
   return out;

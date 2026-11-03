@@ -7,6 +7,7 @@ import { join } from "node:path";
 import {
   GitOpsError, createNodeRunner, executeCommit, executePush, guardedRunner, planCommit, planPush, prefix,
 } from "../src/index.js";
+import { withNoPrompt } from "../src/env.js";
 import { PATHS, baseOf, fixture, plantHook, refusal, stage } from "./realFixture.js";
 
 test("commit: the reviewed tree is committed with the config identity and hooks run in the pty context", async () => {
@@ -217,4 +218,23 @@ test("N-5: the daemon reads the same XDG user config as the pty push, so a pushI
   f.git("remote", "set-url", "origin", f0.remote);
   const e = await refusal(planPush(f.deps, { worktree: f.wt, remote: "origin", branch: "axis/feat", baseSha: baseOf(f) }));
   assert.equal(e.code, "E_POLICY_DENIED");
+});
+
+test("RR-2: GIT_ALLOW_PROTOCOL would override the -c allow-list, so Axis refuses it and never passes it on", async () => {
+  const f = fixture();
+  const plan = await planPush(f.deps, { worktree: f.wt, remote: "origin", branch: "axis/feat", baseSha: baseOf(f) });
+  const argv = [...plan.command.argv];
+  const prog = join(f.root, "ext.sh");
+  writeFileSync(prog, `#!/bin/sh\necho ext >> "${f.marker}"\n`);
+  chmodSync(prog, 0o755);
+  argv[argv.lastIndexOf(plan.remote)] = `ext::${prog}`;
+  const run = createNodeRunner({ allowPtyContext: true }).run;
+  const loud = { ...plan.command.env, GIT_ALLOW_PROTOCOL: "ext" };
+  await run({ ...plan.command, argv, env: loud });
+  assert.ok(existsSync(f.marker), "fixture: with the variable honoured, ext:: runs despite the -c allow-list");
+  writeFileSync(f.marker, "");
+  await run({ ...plan.command, argv, env: withNoPrompt(loud) });
+  assert.equal(readFileSync(f.marker, "utf8"), "", "withNoPrompt drops the variable, so the allow-list holds");
+  const bad = fixture({ env: { daemon: f.deps.env.daemon, pty: { ...f.deps.env.pty, GIT_ALLOW_PROTOCOL: "ext" } } });
+  assert.equal((await refusal(planPush(bad.deps, { worktree: bad.wt, remote: "origin", branch: "axis/feat", baseSha: baseOf(bad) }))).code, "E_POLICY_DENIED");
 });
