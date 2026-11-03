@@ -181,7 +181,8 @@ test("S11: SIGKILL at random instants while the child commits in a loop leaves a
   for (let i = 0; i < 12; i++) {
     const { path, done } = fresh();
     try {
-      await crashChild(path, "fuzz", 0, Math.floor(Math.random() * 50));
+      // 10 to 59 ms after READY: enough for commits even on a slow runner, short enough to land mid-lifecycle.
+      await crashChild(path, "fuzz", 0, 10 + Math.floor(Math.random() * 50));
       const db = openDatabase(path);
       const { journal, audit } = deterministicJournal(db);
       assertConsistent(db, journal, audit);

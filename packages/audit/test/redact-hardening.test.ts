@@ -67,14 +67,28 @@ const ADVERSARIAL: Array<[string, string]> = [
   ["spaces", fill(" ")],
   ["newlines", fill("\n")],
   ["quotes", fill("\"'")],
+  // the shapes of the colon-separated and quoted environment-secret rule
+  ["pwd='", fill("pwd='")],
+  ["password: ", fill("password: ")],
+  ["json-token", fill('"token":"')],
+  ["secret_key:", fill("a_secret_key: ")],
+  ["escaped-secret", fill('\\"secret\\":\\"')],
 ];
 
-test("every redaction rule is linear: 1 MiB of adversarial input takes under 50 ms per rule", () => {
+/**
+ * Linear versus quadratic is a difference of orders of magnitude (a quadratic rule needs minutes on 1 MiB), so the
+ * limits are generous: a slower or busier CI runner must not fail them. Strings are cut to MAX_STRING_CHARS before
+ * any rule runs in practice, so these are far worse than anything `redactString` is ever given.
+ */
+const RULE_LIMIT_MS = 400;
+const STRING_LIMIT_MS = 150;
+
+test("every redaction rule is linear: 1 MiB of adversarial input takes under 400 ms per rule (quadratic would take minutes)", () => {
   const slow: string[] = [];
   for (const rule of REDACTION_RULES) {
     for (const [name, input] of ADVERSARIAL) {
       const ms = bestOf(3, () => rule.apply(input));
-      if (ms >= 50) slow.push(`${rule.kind} on ${name}: ${ms.toFixed(0)} ms`);
+      if (ms >= RULE_LIMIT_MS) slow.push(`${rule.kind} on ${name}: ${ms.toFixed(0)} ms`);
     }
   }
   assert.deepEqual(slow, []);
@@ -87,7 +101,7 @@ test("redactString (all rules, literals and the encoded-run pass) is bounded on 
   for (const [name, input] of ADVERSARIAL) {
     let out = "";
     const ms = bestOf(3, () => void (out = r.redactString(input)));
-    if (ms >= 50) slow.push(`${name}: ${ms.toFixed(0)} ms`);
+    if (ms >= STRING_LIMIT_MS) slow.push(`${name}: ${ms.toFixed(0)} ms`);
     assert.ok(out.length <= 8 * MAX_STRING_CHARS, `${name} output is not bounded`);
   }
   assert.deepEqual(slow, []);
@@ -98,7 +112,7 @@ test("B2: the review's quadratic inputs now run in milliseconds", () => {
   for (const input of ["a-".repeat(40_000), "a.".repeat(80_000), "eyJaaaaa.".repeat(30_000), "sk-".repeat(60_000)]) {
     const t0 = performance.now();
     r.redactString(input);
-    assert.ok(performance.now() - t0 < 50);
+    assert.ok(performance.now() - t0 < 500, "the review's quadratic inputs took seconds to minutes");
   }
 });
 
@@ -247,7 +261,7 @@ test("S5: a shared-subtree DAG is walked once (the 24-level case took 31 s)", ()
   for (let i = 0; i < 24; i++) node = [node, node];
   const t0 = performance.now();
   const out = JSON.stringify(new Redactor().redactValue(node));
-  assert.ok(performance.now() - t0 < 100);
+  assert.ok(performance.now() - t0 < 2000, "an exponential walk took tens of seconds");
   assert.ok(out.includes("[SHARED]"));
   assert.ok(out.length < 10_000);
 });

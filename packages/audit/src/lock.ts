@@ -100,13 +100,23 @@ function defaultIsAlive(pid: number): boolean {
   }
 }
 
+/**
+ * `starttime` (field 22, clock ticks since boot) from the text of `/proc/<pid>/stat`. The command name is field 2,
+ * in parentheses, and may itself contain spaces and parentheses, so the fields are counted from the LAST ")".
+ * Exported so the Linux parsing is tested on every platform.
+ */
+export function parseProcStatStart(stat: string): string | undefined {
+  const close = stat.lastIndexOf(")");
+  if (close < 0) return undefined;
+  const value = stat.slice(close + 2).trim().split(" ")[19]; // fields 3.. start after ") "; starttime is the 20th of them
+  return value !== undefined && /^\d+$/.test(value) ? value : undefined;
+}
+
 /** Process start time: /proc on Linux, `ps` elsewhere. Undefined when it cannot be read. */
 export function processStartTime(pid: number): string | undefined {
   try {
     if (process.platform === "linux") {
-      const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-      const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
-      return fields[19]; // field 22, starttime in clock ticks since boot
+      return parseProcStatStart(readFileSync(`/proc/${pid}/stat`, "utf8"));
     }
     if (process.platform === "win32") return undefined;
     const out = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8", timeout: 2000 }).trim();

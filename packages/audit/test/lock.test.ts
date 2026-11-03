@@ -5,7 +5,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, wr
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { AxisError, InstanceLock, acquireInstanceLock, openDatabase, processStartTime } from "../src/index.js";
+import { AxisError, InstanceLock, acquireInstanceLock, openDatabase, parseProcStatStart, processStartTime } from "../src/index.js";
 
 const dirOf = () => mkdtempSync(join(tmpdir(), "axis-lock-"));
 const conflict = (e: unknown) => e instanceof AxisError && e.code === "E_CONFLICT";
@@ -163,5 +163,15 @@ test("a takeover guard left by a crashed taker is cleared once old, and a live o
     assert.equal(existsSync(guard), false);
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("parseProcStatStart reads starttime from a Linux /proc stat line, whatever the command name contains", () => {
+  const tail = "S 1 1234 1234 0 -1 4194560 100 0 0 0 1 2 0 0 20 0 1 0 987654 12345678 123 18446744073709551615 1 1 0 0 0 0 0 0 0 0 0 0 17 3 0 0 0 0 0";
+  for (const comm of ["node", "my proc", "a (b) c", "x) S 1 2", "((", ")"]) {
+    assert.equal(parseProcStatStart(`4242 (${comm}) ${tail}`), "987654", comm);
+  }
+  for (const bad of ["", "garbage", "1 (x)", "1 (x) S 1 2 3", "1 (x) " + tail.replace("987654", "abc")]) {
+    assert.equal(parseProcStatStart(bad), undefined, bad);
   }
 });
