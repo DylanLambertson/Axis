@@ -16,6 +16,12 @@ export interface BudgetRequestInfo {
   readonly costKnown: boolean;
   /** Cost of `estimatedInputTokens` plus `maxOutputTokens`; undefined when unpriced. */
   readonly worstCaseCost: CostEstimate | undefined;
+  /**
+   * Cost in micro-USD of `estimatedInputTokens` plus `outputTokens`, so a
+   * budget can clamp the output cap to its cost headroom (NS2). Optional:
+   * hooks written before it existed ignore it.
+   */
+  readonly costForOutput?: (outputTokens: number) => number | undefined;
 }
 
 export type BudgetDecision =
@@ -104,7 +110,8 @@ function isCount(v: unknown): v is number {
  *   the reservations of requests still in flight, so concurrent requests
  *   cannot overshoot the token cap (S6).
  * - Reserves the input estimate plus the (clamped) output cap per request,
- *   and clamps `maxOutputTokens` to the headroom left after that.
+ *   and clamps `maxOutputTokens` to the token headroom left after that, and
+ *   to the cost headroom when the guard supplies `costForOutput` (NS2).
  * - With a cost cap, refuses a model the adapter cannot price, and refuses
  *   every request after one whose cost could not be estimated (`cost_unknown`):
  *   an unenforceable cap fails closed (B2).
@@ -157,9 +164,29 @@ export function createRunBudget(limits: RunBudgetLimits, initial?: Partial<RunBu
       let cost = 0;
       if (limits.maxCostMicroUsd !== undefined) {
         if (!info.costKnown || unpricedRequests > 0) return { allow: false, reason: "cost_unknown" };
-        const worst = info.worstCaseCost?.microUsd;
+        const committed = costMicroUsd + reservedCost();
+        if (committed >= limits.maxCostMicroUsd) return { allow: false, reason: "cost" };
+        const headroom = limits.maxCostMicroUsd - committed;
+        const costFor = info.costForOutput;
+        let worst = costFor === undefined ? info.worstCaseCost?.microUsd : costFor(maxOutputTokens);
         if (!isCount(worst)) return { allow: false, reason: "cost_unknown" };
-        if (costMicroUsd + reservedCost() >= limits.maxCostMicroUsd) return { allow: false, reason: "cost" };
+        // One request may not cost more than the headroom (NS2): clamp the
+        // output cap to what fits, or deny if not even one token fits.
+        if (worst > headroom) {
+          if (costFor === undefined) return { allow: false, reason: "cost" };
+          let lo = 0;
+          let hi = maxOutputTokens;
+          while (lo < hi) {
+            const mid = Math.ceil((lo + hi) / 2);
+            const c = costFor(mid);
+            if (isCount(c) && c <= headroom) lo = mid;
+            else hi = mid - 1;
+          }
+          if (lo < 1) return { allow: false, reason: "cost" };
+          maxOutputTokens = lo;
+          worst = costFor(lo);
+          if (!isCount(worst)) return { allow: false, reason: "cost_unknown" };
+        }
         cost = worst;
       }
 

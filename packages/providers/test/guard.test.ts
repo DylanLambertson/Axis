@@ -68,12 +68,12 @@ test("PRV-6: a run that reaches its token budget is stopped before the next prov
   const mock = createMockProvider({ replies: [{ kind: "text", text: "x".repeat(400) }] });
   const logs: ProviderLogRecord[] = [];
   const g = guardProvider(mock, { redactor: NO_SECRETS, log: (r) => logs.push(r) });
-  const budget = createRunBudget({ maxTokens: 50 });
+  const budget = createRunBudget({ maxTokens: 150 });
   const run = { runId: "run-1", signal: live(), budget };
 
   await drain(g.stream(req(), run));
   assert.equal(mock.requests.length, 1);
-  assert.ok(budget.state().tokens <= 50, "the clamp keeps the run inside the cap");
+  assert.ok(budget.state().tokens <= 150, "the clamp keeps the run inside the cap");
 
   const err = await fails(drain(g.stream(req(), run)));
   assert.equal(err.code, "budget_exceeded");
@@ -96,9 +96,14 @@ test("PRV-6: maxOutputTokens is clamped to the remaining token headroom", async 
 test("PRV-6: cost and request caps; an unpriceable model fails closed under a cost cap", async () => {
   const priced = createMockProvider();
   const g = guardProvider(priced, { redactor: NO_SECRETS });
-  const budget = createRunBudget({ maxCostMicroUsd: 1 });
-  await g.generate(req(), { runId: "r", signal: live(), budget });
-  assert.equal((await fails(g.generate(req(), { runId: "r", signal: live(), budget }))).details.reason, "cost");
+  const budget = createRunBudget({ maxCostMicroUsd: 300 });
+  let denied: ProviderError | undefined;
+  for (let i = 0; i < 10 && denied === undefined; i++) {
+    denied = await g.generate(req(), { runId: "r", signal: live(), budget }).then(() => undefined, (e: ProviderError) => e);
+  }
+  assert.equal(denied?.details.reason, "cost");
+  assert.ok(priced.requests.length >= 1);
+  assert.ok(budget.state().costMicroUsd <= 300, "the cost clamp keeps the run inside the cap");
 
   const unpriced = createMockProvider({ pricing: null });
   const e = await fails(guardProvider(unpriced, { redactor: NO_SECRETS }).generate(req(), { runId: "r", signal: live(), budget: createRunBudget({ maxCostMicroUsd: 1_000_000 }) }));

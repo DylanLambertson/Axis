@@ -78,6 +78,8 @@ export interface MockProviderOptions {
    * It is never emitted; the contract suite checks that.
    */
   readonly credential?: string;
+  /** Reported input tokens as a multiple of the guard's estimate. Default 1. */
+  readonly inputTokenFactor?: number;
 }
 
 export const MOCK_PROVIDER_ID = "mock";
@@ -188,8 +190,13 @@ export function createMockProvider(options: MockProviderOptions = {}): MockProvi
     if (signal.aborted) throw new ProviderError("cancelled");
   };
 
-  /** Content only (not JSON keys): half the guard's deliberately high estimate. */
-  const inputTokens = (r: ValidRequest): number => Math.ceil(estimateInputTokens(r) / 2);
+  /**
+   * The guard's own estimate, scaled by `inputTokenFactor`: 1 reports exactly
+   * what the guard reserved; above 1 simulates a provider that counts more
+   * than the estimate (NN4).
+   */
+  const inputFactor = options.inputTokenFactor ?? 1;
+  const inputTokens = (r: ValidRequest): number => Math.ceil(estimateInputTokens(r) * inputFactor);
 
   /** Validate, then take the next scripted reply. Counts as a provider request. */
   const begin = (request: GenerateRequest, mode: "generate" | "stream", signal: AbortSignal): [ValidRequest, MockReply] => {
@@ -277,10 +284,13 @@ export function createMockProvider(options: MockProviderOptions = {}): MockProvi
       }
 
       let stopReason: StopReason = "end_turn";
+      const toolJson = reply.kind === "tool_use" ? JSON.stringify(reply.input) : "";
+      // The output cap covers tool input too: a call that does not fit is not emitted (NS1).
+      if (reply.kind === "tool_use" && outputChars + toolJson.length > capChars) truncated = true;
       if (truncated) {
         stopReason = "max_tokens";
       } else if (reply.kind === "tool_use") {
-        const json = JSON.stringify(reply.input);
+        const json = toolJson;
         await tick();
         yield { type: "content_block_start", index, block: { type: "tool_use", id: reply.id ?? `mock-tool-${seq}-${index}`, name: reply.name } };
         for (const part of chunks(json, chunkChars)) {

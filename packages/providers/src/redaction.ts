@@ -36,6 +36,14 @@ export interface SecretRedactorOptions {
 
 export const DEFAULT_MIN_SECRET_LENGTH = 8;
 
+export interface SecretRedactor extends Redactor {
+  /**
+   * How many of the current secrets are shorter than `minSecretLength` and so
+   * neither redacted nor scanned for (N4). The vault warns when this is not 0.
+   */
+  skippedSecrets(): number;
+}
+
 /**
  * Exact-match plus pattern redactor. Exact matches cover the value itself and
  * its URL-encoded and JSON-escaped forms; longer secrets are replaced first
@@ -46,7 +54,7 @@ export const DEFAULT_MIN_SECRET_LENGTH = 8;
  * reversed). The guard therefore refuses requests that contain a secret
  * rather than relying on redaction downstream.
  */
-export function createSecretRedactor(options: SecretRedactorOptions): Redactor {
+export function createSecretRedactor(options: SecretRedactorOptions): SecretRedactor {
   const min = options.minSecretLength ?? DEFAULT_MIN_SECRET_LENGTH;
   // Global, never sticky: a sticky pattern only matches at consecutive positions (N4).
   const patterns = (options.patterns ?? []).map((p) => new RegExp(p.source, `${p.flags.replace(/[gy]/g, "")}g`));
@@ -82,6 +90,11 @@ export function createSecretRedactor(options: SecretRedactorOptions): Redactor {
   const live = over(needles);
   return {
     ...live,
+    skippedSecrets() {
+      let n = 0;
+      for (const s of options.secrets()) if (typeof s === "string" && s.length > 0 && s.length < min) n += 1;
+      return n;
+    },
     snapshot() {
       const fixed = needles();
       return over(() => fixed);

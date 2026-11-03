@@ -139,6 +139,16 @@ export interface RunOptions {
  * Consumers of `stream` must finish iterating or call `return()` (a `break`
  * does). An abandoned iterator is cleaned up only when the request timeout
  * fires.
+ *
+ * If the budget cannot record a request's usage, that request fails with
+ * `internal`/`budget_record_failed` in both paths: `generate` discards its
+ * result, and a stream throws it after the last event, when the consumer
+ * already has the output. Consumers must treat it as "stop the run", not
+ * "discard the turn"; the guard refuses every later request on that budget
+ * (S4, NN3).
+ *
+ * `countTokens` is not budgeted. A run stopped by its budget must not call it;
+ * the daemon checks that before counting (NN6).
  */
 export interface GuardedProvider {
   readonly descriptor: AdapterDescriptor;
@@ -234,6 +244,13 @@ function limitOf(name: string, value: unknown, fallback: number, max = Number.MA
   return value;
 }
 
+/**
+ * Budget hooks whose `recordUsage` failed. The guard refuses every later
+ * request on them (`budget_exceeded`/`state_invalid`): spend that could not
+ * be recorded must not be followed by more (S4, NN3).
+ */
+const failedBudgets = new WeakSet<object>();
+
 let requestSeq = 0;
 function nextRequestSeq(): number {
   requestSeq += 1;
@@ -248,20 +265,63 @@ function read(o: object, key: string): unknown {
   }
 }
 
-/** A deliberately high input estimate: two characters per token, images at a fixed charge. */
-export function estimateInputTokens(r: ValidRequest): number {
-  let chars = r.system?.length ?? 0;
-  let images = 0;
-  for (const m of r.messages) {
-    for (const b of m.content) {
-      if (b.type === "text") chars += b.text.length;
-      else if (b.type === "image") images += 1;
-      else if (b.type === "tool_use") chars += JSON.stringify(b.input).length + b.name.length;
-      else chars += typeof b.content === "string" ? b.content.length : b.content.reduce((n, t) => n + t.text.length, 0);
+/** Fixed overheads, in tokens, for the request envelope, each message, and tool use (the provider's tool prompt). */
+const REQUEST_OVERHEAD_TOKENS = 64;
+const MESSAGE_OVERHEAD_TOKENS = 8;
+const TOOL_USE_OVERHEAD_TOKENS = 512;
+const PER_TOOL_OVERHEAD_TOKENS = 64;
+
+/** ASCII characters and other code points in a string. */
+function charClasses(s: string, acc: { ascii: number; other: number }): void {
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c < 0x80) acc.ascii += 1;
+    else {
+      acc.other += 1;
+      if (c >= 0xd800 && c <= 0xdbff && i + 1 < s.length) i += 1; // one code point for a surrogate pair
     }
   }
-  for (const t of r.tools ?? []) chars += t.name.length + t.description.length + JSON.stringify(t.inputSchema).length;
-  return Math.ceil(chars / 2) + images * IMAGE_TOKEN_ESTIMATE;
+}
+
+/**
+ * A high input estimate, used for budget reservations (NN4). It is an
+ * estimate, not a bound: ASCII text at two characters per token; every other
+ * code point (CJK, emoji, accents) at two tokens; a fixed charge per request,
+ * per message and for tool use (the provider's tool prompt) and per tool; and
+ * a flat 2,000 per image, above the roughly 1,600 that providers charge for
+ * the largest image they accept without resizing. A provider can still
+ * report more; the run budget's overshoot is bounded by that difference.
+ */
+export function estimateInputTokens(r: ValidRequest): number {
+  const acc = { ascii: 0, other: 0 };
+  let images = 0;
+  if (r.system !== undefined) charClasses(r.system, acc);
+  for (const m of r.messages) {
+    for (const b of m.content) {
+      if (b.type === "text") charClasses(b.text, acc);
+      else if (b.type === "image") images += 1;
+      else if (b.type === "tool_use") {
+        charClasses(JSON.stringify(b.input), acc);
+        charClasses(b.name, acc);
+      } else if (typeof b.content === "string") charClasses(b.content, acc);
+      else for (const t of b.content) charClasses(t.text, acc);
+    }
+  }
+  const tools = r.tools ?? [];
+  for (const t of tools) {
+    charClasses(t.name, acc);
+    charClasses(t.description, acc);
+    charClasses(JSON.stringify(t.inputSchema), acc);
+  }
+  const toolOverhead = tools.length > 0 ? TOOL_USE_OVERHEAD_TOKENS + tools.length * PER_TOOL_OVERHEAD_TOKENS : 0;
+  return (
+    REQUEST_OVERHEAD_TOKENS +
+    r.messages.length * MESSAGE_OVERHEAD_TOKENS +
+    Math.ceil(acc.ascii / 2) +
+    acc.other * 2 +
+    images * IMAGE_TOKEN_ESTIMATE +
+    toolOverhead
+  );
 }
 
 function requestChars(r: ValidRequest): number {
@@ -434,6 +494,8 @@ export function guardProvider(adapter: ProviderAdapter, options: GuardOptions): 
       await record(...args);
       return undefined;
     } catch {
+      const budget = args[0].budget;
+      if (budget !== undefined) failedBudgets.add(budget);
       return new ProviderError("internal", { reason: "budget_record_failed" });
     }
   };
@@ -446,6 +508,7 @@ export function guardProvider(adapter: ProviderAdapter, options: GuardOptions): 
       const valid = await preflight(request, run.signal, mode, (m) => (model = m));
       const estimatedInputTokens = estimateInputTokens(valid);
       if (run.budget !== undefined) {
+        if (failedBudgets.has(run.budget)) throw new ProviderError("budget_exceeded", { reason: "state_invalid" });
         const requestId = `${run.runId}#${nextRequestSeq()}`;
         const decision = await run.budget.beforeRequest({
           requestId,
@@ -457,6 +520,7 @@ export function guardProvider(adapter: ProviderAdapter, options: GuardOptions): 
           estimatedInputTokens,
           costKnown: safeCost(valid.model, PROBE_USAGE) !== undefined,
           worstCaseCost: safeCost(valid.model, { inputTokens: estimatedInputTokens, outputTokens: valid.maxOutputTokens }),
+          costForOutput: (outputTokens: number) => safeCost(valid.model, { inputTokens: estimatedInputTokens, outputTokens })?.microUsd,
         });
         if (decision.allow !== true) {
           const reason = read(decision, "reason");
@@ -576,17 +640,24 @@ export function guardProvider(adapter: ProviderAdapter, options: GuardOptions): 
       let result: GenerateResult | undefined;
       let error: ProviderError | undefined;
       let sent = false;
+      let overCap: Usage | undefined;
       try {
         if (ctl.why !== undefined) throw abortError(ctl.why); // N1: never call the adapter with an aborted signal.
         sent = true;
         const raw = await ctl.race(Promise.resolve().then(() => adapter.generate(valid, { signal: ctl.controller.signal })));
-        result = checkResult(raw, streamLimits);
+        const checked = checkResult(raw, streamLimits);
+        if (checked.usage.outputTokens > valid.maxOutputTokens) {
+          overCap = checked.usage;
+          throw new ProviderError("invalid_response", { reason: "output_over_cap" });
+        }
+        result = checked;
       } catch (e) {
         error = fromAdapter(e, ctl.why);
       } finally {
         ctl.dispose();
       }
-      const [usage, charged] = charge(prep, result?.usage, result !== undefined, false, error, sent);
+      const [usage, charged] =
+        overCap !== undefined ? [overCap, "reported" as const] : charge(prep, result?.usage, result !== undefined, false, error, sent);
       const outcome = error === undefined ? "completed" : outcomeOf(error);
       error = (await recordSafely(run, prep.requestId, valid.model, usage, charged, outcome)) ?? error;
       log({
@@ -670,6 +741,11 @@ export function guardProvider(adapter: ProviderAdapter, options: GuardOptions): 
         ctl.pause();
         if (step.done === true) break;
         const ev = validator.accept(step.value);
+        // The provider must stop at the output cap the guard set (NS1); its
+        // reported usage is still charged.
+        if ((ev.type === "usage" || ev.type === "message_stop") && ev.usage.outputTokens > valid.maxOutputTokens) {
+          throw new ProviderError("invalid_response", { reason: "output_over_cap" });
+        }
         sawEvent = true;
         suspended = true;
         try {

@@ -8,6 +8,8 @@ import {
   MOCK_DEFAULT_MODEL,
   ProviderError,
   createMockProvider,
+  estimateInputTokens,
+  validateRequest,
   createRunBudget,
   createSecretRedactor,
   guardProvider,
@@ -184,4 +186,92 @@ test("NN2: an over-long adapter message cannot leave a secret prefix behind", as
   const g = guardProvider(patched({ generate: async () => { throw new ProviderError("server_error", { message }); } }), { redactor: r2 });
   const e = await fails(g.generate(req(), run()));
   assert.ok(!e.message.includes("keymaterial-keymaterial"), e.message.slice(0, 80));
+});
+
+test("NS1: output beyond the cap the guard set is refused and charged as reported", async () => {
+  const over = { inputTokens: 5, outputTokens: 10_003 };
+  for (const mode of ["generate", "stream"] as const) {
+    const budget = createRunBudget({ maxTokens: 200 });
+    let sent = 0;
+    const g = guardProvider(
+      patched({
+        generate: async (r) => { sent++; return { model: r.model, content: [{ type: "text", text: "x" }], stopReason: "end_turn", usage: over }; },
+        stream: (r) => ({
+          async *[Symbol.asyncIterator]() {
+            sent++;
+            yield { type: "message_start", model: r.model } as StreamEvent;
+            yield { type: "usage", usage: { inputTokens: 5, outputTokens: 0 } } as StreamEvent;
+            yield { type: "message_stop", stopReason: "end_turn", usage: over } as StreamEvent;
+          },
+        }),
+      }),
+      { redactor },
+    );
+    const call = () => (mode === "generate" ? g.generate(req(), { ...run(), budget }) : drain(g.stream(req(), { ...run(), budget })));
+    const e = await fails(call());
+    assert.equal(e.details.reason, "output_over_cap", mode);
+    assert.ok(budget.state().tokens >= 10_003, `${mode}: the reported output is charged`);
+    assert.equal((await fails(call())).code, "budget_exceeded", `${mode}: the run stops`);
+    assert.equal(sent, 1);
+  }
+});
+
+test("NS1: the mock's output cap covers tool calls too", async () => {
+  const mock = createMockProvider({ replies: [{ kind: "tool_use", name: "write", input: { text: "y".repeat(5_000) } }] });
+  const r = await mock.generate(req({ maxOutputTokens: 10, tools: [{ name: "write", description: "d", inputSchema: { type: "object" } }] }), { signal: live() });
+  assert.equal(r.stopReason, "max_tokens");
+  assert.ok(r.usage.outputTokens <= 10);
+});
+
+test("NS2: one request cannot cost more than the cost headroom", async () => {
+  const mock = createMockProvider({ respond: () => ({ kind: "text", text: "z".repeat(200_000) }) });
+  const budget = createRunBudget({ maxCostMicroUsd: 1_000 });
+  const g = guardProvider(mock, { redactor });
+  await g.generate(req({ maxOutputTokens: 30_000 }), { ...run(), budget });
+  assert.ok(budget.state().costMicroUsd <= 1_000, `cost ${budget.state().costMicroUsd}`);
+  assert.ok((mock.requests[0]?.maxOutputTokens ?? 0) < 30_000, "the output cap was clamped to the cost headroom");
+  const tiny = createRunBudget({ maxCostMicroUsd: 1_000 }, { costMicroUsd: 999 });
+  assert.equal((await fails(g.generate(req(), { ...run(), budget: tiny }))).details.reason, "cost");
+});
+
+test("S4/NN3: after a failed budget write, every later request on that budget is refused unsent, in both paths", async () => {
+  for (const mode of ["generate", "stream"] as const) {
+    const mock = createMockProvider();
+    const budget = spyBudget({ recordUsage: () => { throw new Error("journal down"); } });
+    const g = guardProvider(mock, { redactor });
+    const call = () => (mode === "generate" ? g.generate(req(), { ...run(), budget }) : drain(g.stream(req(), { ...run(), budget })));
+    assert.equal((await fails(call())).details.reason, "budget_record_failed", mode);
+    for (let i = 0; i < 4; i++) {
+      const e = await fails(call());
+      assert.equal(e.code, "budget_exceeded");
+      assert.equal(e.details.reason, "state_invalid");
+    }
+    assert.equal(mock.requests.length, 1, `${mode}: only the first request was sent`);
+  }
+});
+
+test("NN4: the input estimate counts non-ASCII text and tool overhead", () => {
+  const text = (t: string) => validateRequest(req({ messages: [{ role: "user", content: [{ type: "text", text: t }] }] }));
+  assert.ok(estimateInputTokens(text("漢".repeat(10_000))) >= 10_000, "CJK: at least one token per character");
+  assert.ok(estimateInputTokens(text("😀".repeat(5_000))) >= 10_000, "emoji: at least two tokens each");
+  const plain = estimateInputTokens(text("hello"));
+  const withTool = estimateInputTokens(validateRequest(req({ tools: [{ name: "t", description: "", inputSchema: {} }] })));
+  assert.ok(withTool - plain >= 512, "tool use carries the provider's tool prompt");
+});
+
+test("NN4: with a provider that counts more input than the estimate, overshoot stays within the difference", async () => {
+  for (const factor of [1, 1.5]) {
+    const mock = createMockProvider({ inputTokenFactor: factor, respond: () => ({ kind: "text", text: "w".repeat(2_000) }) });
+    const budget = createRunBudget({ maxTokens: 2_000 });
+    const g = guardProvider(mock, { redactor });
+    for (let i = 0; i < 20; i++) await g.generate(req(), { ...run(), budget }).catch(() => undefined);
+    const slack = mock.requests.reduce((n, r) => n + Math.ceil(estimateInputTokens(r) * factor) - estimateInputTokens(r), 0);
+    assert.ok(budget.state().tokens <= 2_000 + slack, `factor ${factor}: ${budget.state().tokens} > ${2_000 + slack}`);
+    if (factor === 1) assert.ok(budget.state().tokens <= 2_000, "an exact estimate never overshoots");
+  }
+});
+
+test("N4: the redactor reports how many secrets are too short to protect", () => {
+  const r = createSecretRedactor({ secrets: () => ["short", "", "long-enough-secret"] });
+  assert.equal(r.skippedSecrets(), 1);
 });
