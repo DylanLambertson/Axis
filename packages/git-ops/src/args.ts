@@ -78,14 +78,36 @@ export function prefix(w: WorktreeRef, deps: GitOpsDeps, o: PrefixOptions): stri
   return a;
 }
 
-/** Wraps a runner so a daemon-context call without the hooks-off prefix is refused. */
+/** The global options before the subcommand: bare flags, `-c key=value` pairs, and where they end. */
+function leadingOptions(argv: readonly string[]): { flags: Set<string>; configs: Set<string> } {
+  const flags = new Set<string>();
+  const configs = new Set<string>();
+  for (let i = 0; i < argv.length && (argv[i] as string).startsWith("-"); i++) {
+    if (argv[i] === "-c") configs.add(argv[++i] ?? "");
+    else flags.add(argv[i] as string);
+  }
+  return { flags, configs };
+}
+
+/**
+ * Wraps a runner so a daemon-context call that lacks the hardened prefix is refused. Every protection that `prefix()`
+ * adds for the daemon must be present among the options before the subcommand; a pair placed after the subcommand
+ * (where git reads it as an argument, not an option) does not count.
+ */
 export function guardedRunner(inner: GitRunner, deps: GitOpsDeps): GitRunner {
   return {
     async run(req: GitRunRequest): Promise<GitRunResult> {
       if (req.context === "daemon") {
-        const off = `core.hooksPath=${platformOf(deps) === "win32" ? (deps.emptyHooksDir ?? "") : "/dev/null"}`;
-        const i = req.argv.indexOf(off);
-        if (i < 1 || req.argv[i - 1] !== "-c") throw denied("a daemon-side git call must carry an empty core.hooksPath");
+        const { flags, configs } = leadingOptions(req.argv);
+        const off = hooksOffPath(deps);
+        const missing = [
+          ...["--no-pager", "--no-replace-objects"].filter((f) => !flags.has(f)),
+          ...["--git-dir=", "--work-tree="].filter((p) => ![...flags].some((f) => f.startsWith(p) && f.length > p.length)),
+          ...[`core.hooksPath=${off}`, "core.fsmonitor=false", "protocol.allow=never", "protocol.ext.allow=never", "commit.gpgsign=false", "core.askPass=", "diff.submodule=short"].filter((c) => !configs.has(c)),
+        ];
+        if (off === "" || missing.length > 0) {
+          throw denied(`a daemon-side git call must carry the hardened options (missing: ${missing.join(", ") || "core.hooksPath"})`);
+        }
       }
       return inner.run(req);
     },
