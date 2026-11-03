@@ -11,7 +11,7 @@
  * outside `src/` so the ADR 0005 D3 staging hook, which copies
  * `packages/<name>/src/**`, never stages it into the Code OSS tree (N9).
  */
-import { afterEach, beforeEach, describe, it, type TestContext } from "node:test";
+import { after, afterEach, beforeEach, describe, it, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import type { JsonValue } from "@axis/protocol";
 import { inspect } from "node:util";
@@ -73,6 +73,14 @@ export type RedirectStatus = (typeof REDIRECT_STATUSES)[number];
 /** The recognizable host every redirect points at. It must never receive a request. */
 export const REDIRECT_HOST = "redirect-target.contract.invalid";
 
+/**
+ * How long each redirect check waits after its call settles before it
+ * concludes, so a follow sent later (in the background, from a timer, from a
+ * still-running stream) is seen too (SF-1). Requests later than this are still
+ * caught by the next test's afterEach, or by the suite's after() hook.
+ */
+export const REDIRECT_SETTLE_MS = 100;
+
 /** The `fetch` options the suite's transport understands; Node's `fetch` takes the same. */
 export interface ContractFetchInit {
   readonly method?: string;
@@ -97,6 +105,12 @@ export type ContractFetch<I extends ContractFetchInit = ContractFetchInit, R = R
  * build its adapter with `wrap(inner)` as the adapter's `fetch`, where `inner`
  * is the harness's fake server. The suite records every request at this seam
  * itself; nothing is taken from the adapter's own account (ANT-1).
+ *
+ * Limits: the seam sees only what goes through it. During each test the
+ * suite replaces `globalThis.fetch` with a trap that records any call as a
+ * violation (N-2), and for an adapter with an origin it requires at least one
+ * recorded request per provider request. I/O through `node:http`/`node:https`
+ * directly is not trapped; the import allowlist and review cover that.
  */
 export interface ContractTransport {
   wrap<I extends ContractFetchInit, R>(inner: ContractFetch<I, R>): ContractFetch<I, R | Response>;
@@ -347,10 +361,58 @@ export function runProviderContractSuite(harness: ContractHarness): void {
   const needles = needlesFor(harness.canary, harness.credential);
   let outputs: unknown[] = [];
   interface Tracked {
-    readonly fixture: ContractFixture;
+    fixture: ContractFixture | undefined;
+    /** The adapter's origin once set up; requests are judged against it. */
+    origin: string | undefined;
+    ready: boolean;
     readonly requests: RecordedRequest[];
   }
+  /** This test's fixtures. */
   let fixtures: Tracked[] = [];
+  /** Every fixture of the whole suite, kept so late requests are still judged (SF-1). */
+  const everyFixture: Tracked[] = [];
+  /** Calls to `globalThis.fetch` during a test: the adapter bypassed the transport (N-2). */
+  const bypasses: string[] = [];
+  let savedFetch: typeof globalThis.fetch | undefined;
+
+  /** Requests and bypasses already reported, so each violation fails exactly one check. */
+  const reported = new WeakSet<RecordedRequest>();
+  let bypassesReported = 0;
+
+  /**
+   * Every request, at any time in the suite, that reached the redirect host,
+   * left its adapter's origin, or came from an adapter without one; plus every
+   * bypass of the transport. Returns those not reported yet and marks them, so
+   * a late violation fails the first check that sees it and no other. URLs are
+   * reduced to origin and path.
+   */
+  const takeViolations = (): string[] => {
+    const out: string[] = bypasses.slice(bypassesReported).map((u) => `globalThis.fetch: ${u}`);
+    bypassesReported = bypasses.length;
+    for (const tr of everyFixture) {
+      if (!tr.ready) continue;
+      for (const r of tr.requests) {
+        if (reported.has(r)) continue;
+        let host = "";
+        let originOf = "";
+        try {
+          const u = new URL(r.url);
+          host = u.host;
+          originOf = u.origin;
+        } catch {
+          // An unparsable URL is off-origin.
+        }
+        const shown = r.url.split(/[?#]/)[0] ?? "";
+        if (host === REDIRECT_HOST) out.push(`redirect host: ${shown}`);
+        else if (tr.origin === undefined || originOf !== tr.origin) out.push(`off origin: ${shown}`);
+        else continue;
+        reported.add(r);
+      }
+    }
+    return out;
+  };
+
+  const settle = (): Promise<void> => new Promise((r) => setTimeout(r, REDIRECT_SETTLE_MS));
 
   const credentialIn = (url: string, headers: Record<string, string>, body: string | undefined): Array<"url" | "headers" | "body"> => {
     const has = (text: string): boolean => needles.some((n) => text.includes(n));
@@ -363,6 +425,8 @@ export function runProviderContractSuite(harness: ContractHarness): void {
 
   /** The suite-owned transport for one fixture: records every request, and plays the redirect scenario itself. */
   const transportFor = (scenario: ContractScenario, requests: RecordedRequest[]): ContractTransport => ({
+    // Every request is recorded into the fixture's list, which the suite keeps
+    // for its whole run, so a request made after the call settled is judged too.
     wrap<I extends ContractFetchInit, R>(inner: ContractFetch<I, R>): ContractFetch<I, R | Response> {
       const fetchFn: ContractFetch<I, R | Response> = async (url, init) => {
         const headers: Record<string, string> = {};
@@ -395,6 +459,9 @@ export function runProviderContractSuite(harness: ContractHarness): void {
   const fixture = async (t: TestContext, scenario: ContractScenario): Promise<ContractFixture> => {
     void t;
     const requests: RecordedRequest[] = [];
+    const tracked: Tracked = { fixture: undefined, origin: undefined, ready: false, requests };
+    everyFixture.push(tracked);
+    fixtures.push(tracked);
     const f = await harness.setup(scenario, transportFor(scenario, requests));
     assert.ok(f !== undefined, `harness must simulate ${scenario.kind}`);
     const origin = f.adapter.descriptor.destination.origin;
@@ -410,7 +477,9 @@ export function runProviderContractSuite(harness: ContractHarness): void {
       requestCount: () => f.requestCount(),
       openStreams: () => f.openStreams(),
     };
-    fixtures.push({ fixture: wrapped, requests });
+    tracked.fixture = wrapped;
+    tracked.origin = origin;
+    tracked.ready = true;
     // The descriptor reaches every log line, so it is checked like an output (R1).
     outputs.push(f.adapter.descriptor);
     return wrapped;
@@ -418,7 +487,7 @@ export function runProviderContractSuite(harness: ContractHarness): void {
 
   /** Recorded requests that left the adapter's origin; for an adapter without one, every request. */
   const offOrigin = (tr: Tracked): RecordedRequest[] => {
-    const origin = tr.fixture.adapter.descriptor.destination.origin;
+    const origin = tr.origin;
     return tr.requests.filter((r) => {
       if (origin === undefined) return true;
       try {
@@ -430,7 +499,7 @@ export function runProviderContractSuite(harness: ContractHarness): void {
   };
 
   const trackedOf = (f: ContractFixture): Tracked => {
-    const tr = fixtures.find((x) => x.fixture === f);
+    const tr = everyFixture.find((x) => x.fixture === f);
     assert.ok(tr !== undefined);
     return tr;
   };
@@ -439,6 +508,26 @@ export function runProviderContractSuite(harness: ContractHarness): void {
     beforeEach(() => {
       outputs = [];
       fixtures = [];
+      // Any use of the global fetch during a test bypasses the transport (N-2).
+      savedFetch = globalThis.fetch;
+      globalThis.fetch = (async (input: unknown) => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.href : String((input as { url?: unknown })?.url ?? input);
+        bypasses.push(url.split(/[?#]/)[0] ?? "");
+        throw new TypeError("contract suite: globalThis.fetch bypasses the adapter's transport");
+      }) as typeof globalThis.fetch;
+    });
+
+    // Late requests and bypasses, from this test or an earlier one (SF-1, N-2).
+    afterEach(() => {
+      if (savedFetch !== undefined) globalThis.fetch = savedFetch;
+      savedFetch = undefined;
+      assert.deepEqual(takeViolations(), [], "a request reached the redirect host, left the origin or bypassed the transport");
+    });
+
+    // A request made after the last test settled still fails the suite.
+    after(async () => {
+      await settle();
+      assert.deepEqual(takeViolations(), [], "a late request reached the redirect host, left the origin or bypassed the transport");
     });
 
     // In every scenario: every request the transport saw stayed on the
@@ -447,9 +536,14 @@ export function runProviderContractSuite(harness: ContractHarness): void {
     afterEach(() => {
       for (const tr of fixtures) {
         const off = offOrigin(tr);
-        assert.deepEqual(off.map((r) => r.url.split("?")[0]), [], "a request left the adapter's origin");
+        assert.deepEqual(off.map((r) => r.url.split(/[?#]/)[0]), [], "a request left the adapter's origin");
         for (const r of tr.requests) {
           assert.ok(r.redirect === "manual" || r.redirect === "error", `a request did not set redirect to manual or error (${String(r.redirect)})`);
+        }
+        // An adapter with an origin reaches the provider only through the
+        // transport: at least one recorded request per provider request (N-2).
+        if (tr.origin !== undefined && tr.fixture !== undefined) {
+          assert.ok(tr.requests.length >= tr.fixture.requestCount(), `${tr.fixture.requestCount()} provider requests but ${tr.requests.length} through the transport`);
         }
       }
     });
@@ -722,6 +816,9 @@ export function runProviderContractSuite(harness: ContractHarness): void {
             assert.ok(isProviderError(thrown), "failures are ProviderErrors");
             assertNoLeak(thrown, ...needles);
           }
+          // A follow sent after the call settled must be seen too (SF-1).
+          await settle();
+          assert.deepEqual(takeViolations(), [], "a request reached the redirect host, left the origin or bypassed the transport");
 
           const origin = a.descriptor.destination.origin;
           if (origin === undefined) {
@@ -738,6 +835,18 @@ export function runProviderContractSuite(harness: ContractHarness): void {
           assert.equal(offOrigin(tr).length, 0, "every request went to the declared destination");
         });
       }
+    }
+
+    for (const status of REDIRECT_STATUSES) {
+      it(`generate twice: a ${status} redirect is not followed on a later call either`, async (t) => {
+        const f = await fixture(t, { kind: "redirect", status });
+        const tr = trackedOf(f);
+        for (let i = 0; i < 2; i++) await f.adapter.generate(request(f.model), { signal: live() }).catch(() => undefined);
+        await settle();
+        assert.deepEqual(takeViolations(), [], "a request reached the redirect host, left the origin or bypassed the transport");
+        // One request per call, so two in all; none without an origin (N-1).
+        assert.equal(tr.requests.length, f.adapter.descriptor.destination.origin === undefined ? 0 : 2);
+      });
     }
 
     it("providerOptions cannot redirect the request, add headers or change auth", async (t) => {

@@ -9,6 +9,14 @@
 //   fail    as manual, then reports invalid_response anyway. Must fail.
 //   retry   redirect: "manual", and retries the same URL once. Must fail
 //           (more than one request per call).
+//   late    fails the call at once, then follows the Location 50 ms later
+//           through the wrapped fetch. Must fail (SF-1).
+//   second  refuses the first redirect, follows from its second request on.
+//           Must fail (N-1).
+//   global  follows the Location with globalThis.fetch instead of the
+//           transport. Must fail (N-2).
+//   bypass  never uses the transport; every request goes to globalThis.fetch.
+//           Must fail (N-2).
 // Not named *.test.ts, so `npm test` does not run it directly.
 import { runProviderContractSuite, type ContractFetch, type ContractScenario } from "../../contract/index.js";
 import {
@@ -61,7 +69,10 @@ runProviderContractSuite({
       replies: [reply(scenario)],
       ...(scenario.kind === "error" && scenario.code === "authentication" ? { connectionError: "authentication" as const } : {}),
     });
-    const fetch = transport.wrap(server);
+    const wrapped = transport.wrap(server);
+    const fetch = (url: string, init: Parameters<typeof wrapped>[1]): Promise<Response> =>
+      MODE === "bypass" ? globalThis.fetch(url, init as RequestInit) : wrapped(url, init);
+    let sends = 0;
 
     /** One request to the origin; a 3xx is handled according to MODE. */
     const send = async (path: string, signal: AbortSignal, body?: unknown): Promise<void> => {
@@ -72,9 +83,25 @@ runProviderContractSuite({
         ...(MODE === "1" ? {} : { redirect: "manual" as const }),
         signal,
       };
+      sends += 1;
       const res = await fetch(`${ORIGIN}${path}`, init);
       if (res.status < 300 || res.status > 399) return;
       const location = res.headers.get("location") ?? "";
+      const refuse = (): ProviderError => new ProviderError("invalid_response", { status: res.status, reason: "redirect" });
+      if (MODE === "late") {
+        // The defect under test: the call fails now, the key follows later.
+        setTimeout(() => void wrapped(`${location}?key=${CREDENTIAL}`, init).catch(() => undefined), 50);
+        throw refuse();
+      }
+      if (MODE === "second") {
+        if (sends < 2) throw refuse();
+        await fetch(location, init);
+        return;
+      }
+      if (MODE === "global") {
+        await globalThis.fetch(location, init as RequestInit).catch(() => undefined);
+        throw refuse();
+      }
       if (MODE === "retry") {
         await fetch(`${ORIGIN}${path}`, init);
         throw new ProviderError("invalid_response", { status: res.status, reason: "redirect" });

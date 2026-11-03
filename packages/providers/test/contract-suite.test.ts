@@ -87,6 +87,28 @@ for (const mode of ["1", "manual", "fail", "retry"]) {
   });
 }
 
+// late: follows 50 ms after failing the call (SF-1); global: follows with
+// globalThis.fetch (N-2); bypass: never uses the transport (N-2).
+for (const mode of ["late", "global", "bypass"]) {
+  test(`redirect: the suite fails an adapter that leaks outside the checked window or the transport (FOLLOW=${mode})`, () => {
+    const { failed } = runFixture("http-harness.js", { FOLLOW: mode });
+    for (const status of [301, 302, 303, 307, 308]) {
+      const name = `generate: a ${status} redirect is not followed, one request per call, all on the origin`;
+      assert.ok(failed.has(name), `the suite should fail: ${name}`);
+    }
+  });
+}
+
+test("redirect: the suite fails an adapter that follows only on a later call (FOLLOW=second, N-1)", () => {
+  const { failed } = runFixture("http-harness.js", { FOLLOW: "second" });
+  for (const status of [301, 302, 303, 307, 308]) {
+    const name = `generate twice: a ${status} redirect is not followed on a later call either`;
+    assert.ok(failed.has(name), `the suite should fail: ${name}`);
+    // A single call is refused correctly, so the one-call check alone would pass it.
+    assert.ok(!failed.has(`listModels: a ${status} redirect is not followed, one request per call, all on the origin`));
+  }
+});
+
 test("R4: a harness with a short credential or canary is refused before any test is registered", () => {
   const base = { name: "x", setup: () => { throw new Error("unreachable"); } };
   assert.throws(() => runProviderContractSuite({ ...base, canary: "canary-long-enough", credential: "short-cred" }), RangeError);
