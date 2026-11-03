@@ -14,10 +14,10 @@
 1. **Build approach: (i), an Axis layer modelled on `vs/sessions`**, with a few small pieces of sessions code adapted and tracked (§2). Reusing `vs/sessions` directly (ii) is not viable: its domain model is built on chat and agent-host types, and it ships as a second window type. Building inside the stock workbench (iii) is the fallback if `AxisWorkbench` slips. The Agent-view views are written so they work in either host.
 2. **One window per project.** The window opens an Axis-managed, per-project Code OSS workspace file. Its folder list follows the focused workspace's worktree, which is the mechanism sessions uses. Changing folders in a workspace that is already in the `WORKSPACE` state does not restart the extension host (§3.2). This answers ADR 0004 resolved question 4.
 3. **All three view modes are one grid with a layout swap** in `AxisWorkbench`, the Axis implementation of `IWorkbenchLayoutService`. Upstream parts are reused as singletons. There is one new Axis part, the agent part. The two-window model is rejected (§3).
-4. **Upstream footprint:** the agent shell adds **no upstream file** to the shell block beyond the planned bootstrap and bridge seams. Its estimate is 10 files and about 45 changed lines against the 12-file, 300-line budget. No ADR 0002 amendment is needed (§7).
+4. **Upstream footprint:** the agent shell adds **no upstream file** to the shell block beyond the planned bootstrap and bridge seams. Its estimate is 10 files and about 50 changed lines against the 12-file, 300-line budget. No ADR 0002 amendment is needed (§7).
 5. **Worktrees.** Phase 0 lists them read-only from the git metadata on disk. Creation and cleanup come in Phase 1, through the Git CLI in the Axis daemon (ADR 0003), with the safety rules in §5.
 6. **CLI agent runs are first-class** (ADR 0004 decision 8). Axis launches the user's installed agent CLIs in a pty spawned by the Axis pty process (not the daemon), with the PTY-5 environment, attached to an upstream terminal. Their status comes only from process and terminal state (§4.5).
-7. **Concurrent writers** (user, one composer run, any number of CLI runs) are allowed. The composer writes by compare-and-swap and is told about drift; CLI runs are only observed (policies §3). Axis commit and push run in the daemon under its lock and drift gate; the SCM view is a user path outside those guarantees (policies §6).
+7. **Concurrent writers** (user, one composer run, any number of CLI runs) are allowed. The composer writes by compare-and-swap and is told about drift; CLI runs are only observed (policies §3). The daemon orchestrates Axis commit and push under its lock and drift gate, and git runs in the Axis pty process; the SCM view is a user path outside those guarantees (policies §6).
 8. **The composer** is an Axis view. It calls `axis.runs/1` on the daemon. Its mock provider lives in the daemon. The renderer has no provider code and shows an honest "agent service unavailable" state when the daemon is absent (§6).
 9. **First slice (Phase 0 gate):** the dashboard lists worktrees; the workspace view shows the file tree, terminal and changes; a toggle and the split mode open IDE view at a file (§8, tasks A1–A8).
 
@@ -271,12 +271,13 @@ The rail and the main region are an internal split view inside the agent part, s
 
 ### 4.5 CLI agent runs (ADR 0004 decision 8)
 
-- **Configuration.** `axis.cliAgents` is a list of `{ id, label, command, args[], envPassthrough[] }`. `envPassthrough` can add variables but never a denied one. Axis offers presets for known official CLIs, but only resolves the command on `PATH` and uses documented arguments. It never adds flags that bypass the CLI's own permission prompts.
+- **Configuration.** `axis.cliAgents` is a list of `{ id, label, command, args[], envPassthrough[] }`. It, `axis.terminals.scrubEnvironment`, `axis.git.runHooks` and `axis.worktrees.root` are **user, application or machine scope (never workspace or folder)**: workspace and folder `.vscode/settings.json` values are ignored and a warning is surfaced (threat model CFG-1, decision Q-3), so a cloned repository cannot define a CLI agent or weaken PTY-5. `envPassthrough` can add variables but never a denied one. Axis offers presets for known official CLIs, but only resolves the command on `PATH` and uses documented arguments. It never adds flags that bypass the CLI's own permission prompts.
 - **Launch.** The user starts a run from the workspace view or the dashboard. The renderer calls `axis.cliRuns/1.start { workspaceId, agentId }` and the daemon:
-  1. resolves the worktree from the journal and checks it with `realpath` (never the local checkout; ADR 0004 decision 6);
+  1. resolves the worktree from the journal and checks it with `realpath` (never the local checkout; ADR 0004 decision 6), and **refuses to start unless main attests that the worktree's source repository is trusted** (policies §2; threat model TRU-2); a renderer claim alone never gates a run. Restricted Mode shows the workspace read-only with a "Trust to run" action;
   2. builds the environment: `getResolvedShellEnv` (`platform/shell/node/shellEnv.ts:32`) [V], resolved by main and passed to the daemon, then `envPassthrough`, then the PTY-5 deny-list, which always wins. It keeps `SSH_AUTH_SOCK` and adds no vault value (policies §4.2);
-  3. asks the Axis pty process to spawn it in its own process group with shell integration off **and no nonce supplied** (`node-pty` is an upstream dependency, `package.json:160`) [V];
-  4. records `{ runId, workspaceId, agentId, command, args, cwd, startedAt }` in `agent_runs` with kind `cli`.
+  3. resolves `command[0]` itself: a bare name against the PATH of the resolved shell environment only, ignoring empty and relative entries, the cwd and anything inside the worktree (on Windows with PATHEXT minus `.bat` and `.cmd`), and passes the absolute path as argv[0], so the pty never searches. On Windows an absolute `command[0]` must be a drive-letter path (no UNC or root-relative path) and `.bat` and `.cmd` are refused; the workaround is the real `.exe`;
+  4. asks the Axis pty process to spawn it in its own process group with shell integration off **and no nonce supplied** (`node-pty` is an upstream dependency, `package.json:160`) [V];
+  5. records `{ runId, workspaceId, agentId, command, args, cwd, startedAt }` in `agent_runs` with kind `cli`.
 - **Attachment.** The renderer creates an upstream terminal whose `customPtyImplementation` (`platform/terminal/common/terminal.ts:568`) proxies input, output and resize to the Axis pty process over the data channel, as upstream does for agent-host ptys (`agentHostTerminalService.ts:349`) [V]. The shell-integration addon still parses its output (`xtermTerminal.ts:339-340`) [V]. Axis derives no status from marks, and splits use the worktree root (policies §5). The terminal sits in the workspace's terminal group and supports split panes.
 - **Status, from state Axis owns only:**
 
@@ -299,7 +300,7 @@ The rail and the main region are an internal split view inside the agent part, s
 
 - The git extension can add, list and remove worktrees (`extensions/git/src/git.ts:2311-2335,3114-3170`; API `api/git.d.ts:343-344`) [V]. But it lives in the extension host. The workbench-side `IGitService` exposes no worktree operations (`gitService.ts:83-120`) [V].
 - Driving it through commands would make side-effecting commands reachable by every extension, which ADR 0003 D4 forbids.
-- The daemon therefore runs `git` itself, with an explicit argument vector, a scrubbed environment and per-project serialisation. ARCHITECTURE.md's "Git CLI or libgit2" choice resolves to the CLI for worktrees, because `git worktree` has no stable libgit2 equivalent for locking and pruning [I].
+- The daemon therefore runs `git` itself, except for Axis commit and push (policies §6.1), with an explicit argument vector, a scrubbed environment and per-project serialisation. ARCHITECTURE.md's "Git CLI or libgit2" choice resolves to the CLI for worktrees, because `git worktree` has no stable libgit2 equivalent for locking and pruning [I].
 
 ### 5.2 Phase 0: read-only discovery
 
@@ -323,15 +324,15 @@ The rail and the main region are an internal split view inside the agent part, s
 1. **The base SHA is recorded at creation and never rewritten.** Drift is reported, not repaired.
 2. **The local checkout is never written.** The daemon refuses any operation whose canonical target is the local checkout or inside it. `worktree add` writes only the shared common dir (refs and `worktrees/<name>`), which is inherent in git and documented to the user.
 3. **Cleanup only after finalisation**, with rollback refs kept (D-8 sets the retention period).
-4. **Every daemon git call except commit and push** (policies §6.1) uses an empty hooks path, `core.fsmonitor=false` and the **GIT-ENV-1** environment (policies §6.5; WT-2). GIT-ENV-1 is distinct from PTY-2, which is for broker tools. Paths are canonicalised with `realpath` at the time of use (WT-1).
-5. **Common-dir drift.** The GIT-SNAP-1 set is compared before launch and after exit of each run, before every Axis commit, and on status refresh. On drift the workspace shows "Git configuration changed", and **Axis** commit stays blocked until the user reviews it (WT-2). SCM-view commits are not blocked; they show the banner (policies §6.3).
-6. **Trust** is copied from the source repository to each Axis-created worktree (ADR 0004 decision 12; policies §2). It is never granted to the worktree root.
+4. **Every daemon git call except commit and push** (policies §6.1) passes an explicit `--git-dir` and `--work-tree` taken from the journal (never discovered from the worktree directory, which a CLI can redirect through its `.git` file; threat model GIT-4), and uses an empty hooks path, `core.fsmonitor=false` and the **GIT-ENV-1** environment (policies §6.5; WT-2). GIT-ENV-1 is distinct from PTY-2, which is for broker tools. Paths are canonicalised with `realpath` at the time of use (WT-1).
+5. **Common-dir drift.** The GIT-SNAP-1 set (policies §6.4, including the worktree `.git` file, `commondir` and any in-worktree `core.hooksPath` target) is compared before launch and after exit of each run, before every Axis commit **and every Axis push**, and on status refresh. On drift the workspace shows "Git configuration changed", and **Axis** commit and push stay blocked until the user reviews it (WT-2). They are also refused while a CLI run is active in the workspace. SCM-view commits are not blocked; they show the banner (policies §6.3).
+6. **Trust** is copied from the source repository to each Axis-created worktree and re-derived at each mount and at each run start (ADR 0004 decision 12; policies §2). It is never granted to the worktree root. No CLI or agent run starts in a worktree of an untrusted repository.
 7. **One mutating Axis git operation at a time per project** (a daemon mutex), because worktree operations lock refs in the shared common dir [I]. Git commands outside Axis (the SCM view, terminals, CLIs) are not serialised.
 
 ### 5.4 Review actions
 
 - **Accept** (per file, per hunk in Phase 1) marks content for commit. In Phase 0 that is file selection.
-- **Commit** and **Push** are user actions run by the daemon (`axis.worktrees/1.commit`, `.push`), under the git mutex and write lock, with commit gated by the drift check (policies §6.1). Protected paths (WT-3) and common-dir changes are flagged before commit.
+- **Commit** and **Push** are user actions the daemon orchestrates (`axis.worktrees/1.commit`, `.push`); git and its hooks run in the Axis pty process (policies §6.1). They are serialised under the git mutex and write lock, with commit gated by the drift check (policies §6.1). Protected paths (WT-3) and common-dir changes are flagged before commit.
 - **Reject** is `axis.worktrees/1.discard`, which is reversible.
 - Hunk-level accept and reject use a daemon `applyPatch` to the index. The renderer never edits the index.
 - **Open a pull request** uses a GitHub compare URL or `gh pr create --web` (policies §6.2).
@@ -460,7 +461,7 @@ The rail and the main region are an internal split view inside the agent part, s
 | D-8 | Keep `refs/axis/archive/*` until the user deletes them; keep `refs/axis/backup/*` for 30 days | **Decided** |
 | D-9 | External (non-Axis) worktrees appear read-only, labelled, with no agent actions | **Decided** |
 | D-10 | Dashboard scope: the current project, with a project switcher in the top bar | **Decided** |
-| D-12 | Axis commit and push run in the daemon; the SCM view is a user path outside the guarantees (policies §6) | **Decided** |
+| D-12 | The daemon orchestrates Axis commit and push; git, and its hooks, runs in the Axis pty process; the SCM view is a user path outside the guarantees (policies §6) | **Decided** |
 | D-13 | The challenge machinery is built in Phase 1a (task B4) and reused by 1b | **Decided** |
 
 The Anthropic adapter's "HTTP API, no SDK" choice is ADR 0004 decision 14.

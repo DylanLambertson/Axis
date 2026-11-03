@@ -29,6 +29,7 @@ Lines are counted in the order the bullets appear in `docs/ROADMAP.md`. L1 to L1
 | | | 1a/L27 | Review and commit binding, push secret warning, file tree, dashboard strings, reveal path |
 | | | 1a/L28 | External links (EL-5) |
 | | | 1a/L29 | No reh-web listener (NET-1) |
+| | | 1a/L30 | Typing after a view switch reaches only the destination's last focused element (IDE-1 c) |
 
 | Line | Gate (1b) |
 |---|---|
@@ -59,7 +60,7 @@ Lines are counted in the order the bullets appear in `docs/ROADMAP.md`. L1 to L1
 | SI-ENV after deny-list, plain terminals only; no nonce in CLI runs | PTY-6 | 1a | B10 | 1a/L2, 1a/L17 | Covered |
 | Axis pty process isolation, spawn only from daemon, attach only to issued ids; close-on-exec | PTY-7 | 1a | B9 | 1a/L17 | Covered |
 | Splits open in worktree root; OSC 633 cwd spoof | PTY-3 | 1a | B10 | 1a/L17 | Covered |
-| Settings scope: application or machine only | CFG-1 | 1a | B10 | 1a/L13 | Covered |
+| Settings scope: user, application or machine only (never workspace or folder) | CFG-1 | 1a | B10 | 1a/L13 | Covered |
 | Window identity, frame URL, main-frame checks for daemon and pty ports | EL-3, PTY-7 | 1a | B1 | 1a/L23 | Covered (ADR 0003 criteria 1 to 7) |
 | GIT-ENV-1 for daemon git calls | GIT-ENV-1 | 1a | B6 | 1a/L15 | Covered |
 | GIT-SNAP-1 around CLI runs, before commit and push, on refresh | WT-2, GIT-SNAP-1 | 1a | B7, B10 | 1a/L3, 1a/L14, 1a/L18 | Covered (hooks, `core.hooksPath`, in-tree hook paths, `.git` file, `commondir`, filter, `core.sshCommand`, `url.*.insteadOf`) |
@@ -93,6 +94,7 @@ Lines are counted in the order the bullets appear in `docs/ROADMAP.md`. L1 to L1
 | Axis bundle under Trusted Types | EL-1 | 1a | A1, M3 | 1a/L23 | Covered |
 | `openExternal` allow-list and confirmation | EL-5 | 1a | none | 1a/L28 | Covered |
 | No reh-web listener | NET-1, DMN-4 | 1a | none | 1a/L29 | Covered |
+| View switch routes focus and input to the destination only | IDE-1 (c) | 1a | A7 | 1a/L30 | Covered |
 | Open VSX tampered refused; outcomes recorded | EXT-3 | M3 Stage 1b | M3 | 1a/L22 | Covered |
 | Hooks placement decision after the vault | GIT-3 | 1b | none | 1b/L16 | Recorded decision, not a test |
 
@@ -104,7 +106,7 @@ A gap is either a missing control (G-1 to G-13) or a missing ROADMAP gate line f
 
 | Gap | Threat | Proposed fix | Proposed gate line |
 |---|---|---|---|
-| G-1 | CFG-1 | State the scope of `axis.cliAgents`, `axis.terminals.scrubEnvironment`, `axis.git.runHooks`, `axis.worktrees.root` as application or machine scope; ignore workspace and folder values. | 1a: a repo `.vscode/settings.json` defining a CLI agent or disabling scrubbing has no effect |
+| G-1 | CFG-1 | State the scope of `axis.cliAgents`, `axis.terminals.scrubEnvironment`, `axis.git.runHooks`, `axis.worktrees.root` as user, application or machine scope (never workspace or folder); ignore workspace and folder values. | 1a: a repo `.vscode/settings.json` defining a CLI agent or disabling scrubbing has no effect |
 | G-2 | PTY-7 | Terminal ids unguessable and bound to the issuing connection. | B9 test extended |
 | G-3 | WT-3 | Add `.husky/`, `.githooks/`, `lefthook.yml`, `.pre-commit-config.yaml` to the protected-path list. | 1a/L4 extended |
 | G-4 | GIT-SNAP-1, GIT-3 | Hash the contents of an effective `core.hooksPath` that lies inside a worktree, or refuse hooks while it does. | 1a: a CLI edit to an in-tree hook is flagged before Axis commit and the hook does not run unacknowledged |
@@ -167,7 +169,7 @@ Each of these is accepted for Phase 1 on purpose. The wording is the wording the
 4. **Changes outside the repository's Git directory are not detected:** global git config, `~/.ssh`, shell startup files, anything in the home directory. Only the shared common dir and the worktree are watched.
 5. **Terminal I/O bypasses the daemon.** Keystrokes and CLI output do not pass through policy, audit or redaction. An extension or the renderer can answer a CLI's prompt (`sendText`, CLI-2). The audit log records the launch, not what the CLI did.
 6. **Opt-out terminals and Phase 0 builds** carry `VSCODE_GIT_IPC_HANDLE` and `VSCODE_IPC_HOOK_CLI` (§4.7 of the model). Any process started there can ask the git extension for credentials. D-6 removes only the askpass variables.
-7. **PTY-5 is a deny-list.** A new editor-injected variable that is not on the list reaches CLIs. The list is `VSCODE_*`, `ELECTRON_*`, `GIT_ASKPASS`, `SSH_ASKPASS*`, `GIT_EDITOR` plus extension collections, so new `VSCODE_*` names are covered by the prefix; a new non-prefixed name is not.
+7. **PTY-5 is a deny-list.** A new editor-injected variable that is not on the list reaches CLIs. The list is `VSCODE_*`, `ELECTRON_*`, `GIT_ASKPASS`, `SSH_ASKPASS*`, `GIT_EDITOR`, the git redirectors and config injectors (`GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR`, `GIT_INDEX_FILE`, `GIT_OBJECT_DIRECTORY`, `GIT_ALTERNATE_OBJECT_DIRECTORIES`, `GIT_NAMESPACE`, `GIT_EXEC_PATH`, `GIT_TEMPLATE_DIR`, `GIT_PREFIX`, `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_*`, `GIT_CONFIG_VALUE_*`, `GIT_CONFIG_PARAMETERS`), `AXIS_*` and extension collections, so new `VSCODE_*` names are covered by the prefix; a new non-prefixed name is not. `GIT_CONFIG_GLOBAL`, `GIT_CONFIG_SYSTEM`, `GIT_CONFIG_NOSYSTEM`, `LD_PRELOAD`, `DYLD_*`, `NODE_OPTIONS` and `GIT_SSH_COMMAND` pass through as the user's own environment.
 8. **Renderer equals user** (A10). Trust writes (TRU-1), advisory locks (DRF-5), and the approval UI are renderer-side. Only the daemon's challenge model and main's native dialog (tiers 4–5) are anchored outside it. A compromised renderer can drive the pty data port and any user-path action that has no challenge.
 9. **The audit hash chain is tamper-evident for edits, not tamper-proof** against a same-UID attacker (ADR 0003 D5), and truncation is undetected until G-11.
 10. **Snapshot refs may hold secrets** from untracked, non-ignored files, as ordinary git objects in the shared common dir, readable by every workspace of the project (REF-1, DMN-8).
@@ -230,7 +232,7 @@ Likelihood (L) and impact (I) on a 1–3 scale, score = L × I, as Phase 0 §6. 
 | 14 | R12 | Web webviews from a third-party CDN by fallback. Same condition as R10. | WEB-4, NET-1 | 3 | 2 | 6 | P2 (moved from P1); 1a/L29 |
 | 15 | R32 | User paths bypass the Axis gate: a commit or push from the terminal, SCM view or git extension runs planted hooks and pushes without GIT-SNAP-1; the local checkout shares the common dir. | GIT-6, GIT-SNAP-1 | 3 | 2 | 6 | 1a (banner, disclosure); not preventable |
 | 16 | R33 | Review is not bound to the commit; secrets pushed from a CLI-written file; git argument injection. | REV-1, PSH-1, GIT-7 | 2 | 3 | 6 | 1a |
-| 17 | R25 | Hooks and credential helpers for Axis commit and push run with the user's credentials. Decision Q-4 moves them out of the daemon into the pty process context, which holds no secrets; re-evaluated in 1b when the vault ships. | GIT-3 | 2 | 2 | 4 (was 6) | 1a; 1b re-evaluation |
+| 17 | R25 | Hooks and credential helpers for **Axis-initiated** commit and push run with the user's credentials. Decision Q-4 moves them out of the daemon into the pty process context, which holds no secrets; re-evaluated in 1b when the vault ships. Hooks run by the user's own terminal or SCM view are R32, not this row. A CLI the user starts by hand in a terminal does not count as an active run, so it can still change hooks between the GIT-SNAP-1 re-take and git executing them: a residual risk, accepted with R32. | GIT-3 | 2 | 2 | 4 (was 6, for 1b vault exposure only: the pty process runs as the user with the user's credential environment, so 1a exposure is unchanged) | 1a; 1b re-evaluation |
 | 18 | R26 | Snapshot refs hold secrets from untracked, non-ignored files; mirror push publishes them. 1a documents the exposure; 1b adds secret scanning of snapshot trees (decision Q-8). Target 2 once the 1b scan (1b/L13) ships. | REF-1, DMN-8 | 2 | 2 | 4 | 1a doc; 1b scan |
 | 19 | R27 | Audit gaps: tail truncation; terminal I/O unaudited; redaction misses new sinks. | DMN-5, DMN-6 | 2 | 2 | 4 | 1a/1b (G-11) |
 | 20 | R28 | Anthropic adapter: hostile or malformed stream, key in errors or redirects, oversized responses, prompts sent without clear consent. | ANT-1, PRV-4 | 2 | 2 | 4 | 1b |
@@ -242,7 +244,7 @@ Likelihood (L) and impact (I) on a 1–3 scale, score = L × I, as Phase 0 §6. 
 | 26 | R18 | Resource exhaustion and cost runaway. | PTY-4, PRV-6, DMN-7 | 2 | 2 | 4 | 1b; P3 |
 | 27 | R19 | Cross-workspace leakage in daemon state or the index; snapshot refs of all workspaces of a project share one common dir and are readable by any workspace's CLI. | DMN-8, REF-1 | 2 | 2 | 4 | 1a / P4 |
 | 28 | R21 | Terminal escape-sequence spoofing (now includes cwd steering of splits). | PTY-3 | 2 | 2 | 4 | 1a. Impact raised from 1: the Axis shell reads CLI output for status |
-| 29 | R24 | Repo-supplied settings weaken Axis (CLI command, scrubbing off). Closed by decision Q-3: application or machine scope only, workspace values ignored with a warning. Residual: implementation and test (1a/L13). | CFG-1 | 1 | 3 | 3 (was 6) | 1a |
+| 29 | R24 | Repo-supplied settings weaken Axis (CLI command, scrubbing off). Closed by decision Q-3: user, application or machine scope (never workspace or folder); workspace values ignored with a warning. Residual: implementation and test (1a/L13). | CFG-1 | 1 | 3 | 3 (was 6) | 1a |
 | 30 | R29 | Workspace Trust inheritance wrong or stale; a CLI run under the user's account in an untrusted repository is arbitrary code. Mitigated by decision Q-2 and main's attestation (1a/L25). | TRU-1, TRU-2 | 1 | 3 | 3 | 1a |
 | 31 | R30 | Pty-process or daemon fd leak into children; pty attach to a foreign terminal id. | PTY-7 | 1 | 3 | 3 | 1a |
 | 32 | R20 | Unsigned update channel once enabled. | SC-4 | 1 | 3 | 3 | P6 |
@@ -275,7 +277,7 @@ The categories are those of Phase 0 §7. Ideas for the rows the model adds:
 |---|---|---|
 | Q-1 | The design wins: CLI runs use the separate Axis pty utility process. | PTY-1 row updated; the ADR 0004 wording is a doc-fix item (§11.2). |
 | Q-2 | No CLI or agent run in a worktree whose source repository is untrusted. Restricted Mode shows the workspace read-only with a "Trust to run" action. | TRU-2 row; closes G-8. |
-| Q-3 | `axis.cliAgents`, `axis.terminals.scrubEnvironment`, `axis.git.runHooks`, `axis.worktrees.root`: application or machine scope only; workspace and folder values ignored, with a warning. | CFG-1 closed; closes G-1. |
+| Q-3 | `axis.cliAgents`, `axis.terminals.scrubEnvironment`, `axis.git.runHooks`, `axis.worktrees.root`: user, application or machine scope (never workspace or folder); workspace and folder values ignored, with a warning. | CFG-1 closed; closes G-1. |
 | Q-4 | Hooks for Axis-initiated commit and push run in the pty process context (no secrets), never in the daemon. `runHooks` stays on in 1a; re-evaluated in 1b when the vault ships. | GIT-3 row; R25. |
 | Q-5 | The WEB-* P1 to P2 retag is accepted. | §8. |
 | Q-6 | Push re-takes GIT-SNAP-1 and refuses on unacknowledged drift. GIT-SNAP-1 also covers the worktree `.git` file, `commondir`, and any `core.hooksPath` target inside the worktree. | Closes G-4, G-5, G-6. |
@@ -283,6 +285,12 @@ The categories are those of Phase 0 §7. Ideas for the rows the model adds:
 | Q-8 | 1a documents the snapshot exposure; 1b adds secret scanning of snapshots as a gate. | REF-1 row; 1b/L13. |
 
 Also accepted: **G-9** (the run-base diff is authoritative) and **G-11**. G-11 is an **`@axis/audit` requirement**: the head hash and event count are persisted periodically, outside the chain, so tail truncation is detected.
+
+### 11.2 Doc-fix items (done on the design and ADR branch)
+
+- `docs/adr/0004-agent-first-workspace-shell.md`: implication 7 said CLI agents run in the "user-visible pty host"; it now says the Axis pty utility process (Q-1).
+- `docs/design/axis-agent-shell.md` and `-policies.md` now say that the daemon orchestrates commit and push and that git (and its hooks) runs in the Axis pty process. They define how main attests trust on the run-start call (it reads the workbench trust store, or owns the state that decides runs). They record the refusal of commit and push while a CLI run is active, the reviewed-tree binding (REV-1), the argv rules (GIT-7), the settings scope (G-1), the GIT-SNAP-1 additions and the push re-take (G-4 to G-6), hooks in the pty process context (Q-4), the authoritative run-base diff (G-9), terminal id binding (G-2) and the explicit `--git-dir` rule (G-5).
+- `docs/SECURITY.md` "Testing" needs no new category; DR and CFG are threat classes in the model only.
 
 ### 11.3 Review decisions (owner)
 
@@ -295,9 +303,3 @@ Also accepted: **G-9** (the run-base diff is authoritative) and **G-11**. G-11 i
 - **S8:** gate lines made pass/fail (1a/L2, L16, L22; 1b/L16 is a recorded decision).
 - **S9:** the daemon orchestrates commit and push (lock, mutex, drift gate, journal); the git process, and its hooks, runs in the Axis pty process. The model and the design documents say so.
 - **S10:** EL-5 is a changed row with gate 1a/L28.
-
-### 11.2 Doc-fix items, not made in this change
-
-- `docs/adr/0004-agent-first-workspace-shell.md`: implication 7 says CLI agents run in the "user-visible pty host". Amend to the Axis pty utility process (Q-1).
-- `docs/design/axis-agent-shell.md` and `-policies.md`: say that the daemon orchestrates commit and push and that git (and its hooks) runs in the Axis pty process; define how main attests trust on the run-start call (it must read the workbench trust store, or own the state that decides runs); record the refusal of commit and push while a CLI run is active, the reviewed-tree binding (REV-1) and the argv rules (GIT-7); record the settings scope (G-1), the GIT-SNAP-1 additions and the push re-take (G-4 to G-6), hooks in the pty process context (Q-4), the authoritative run-base diff (G-9), terminal id binding (G-2), and the explicit `--git-dir` rule (G-5).
-- `docs/SECURITY.md` "Testing" needs no new category; DR and CFG are threat classes in the model only.

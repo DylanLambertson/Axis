@@ -30,7 +30,8 @@
 - **Reserves against design R1:** a multi-root fallback, and the in-memory workspace hook P2b.
 - **Trust, per ADR 0004 decision 12.**
   - When the daemon creates a worktree, it records the source repository. On mount, the renderer reads the source repository's trust with `getUriTrustInfo` and applies the same value to the worktree path only, with `setUrisTrust([worktree], trusted)` (`platform/workspace/common/workspaceTrust.ts:60-61`) [V].
-  - An untrusted source repository means the worktree opens in Restricted Mode in IDE view.
+  - **Who decides.** The main process owns the trust state that decides runs and attests it on the window-verified run-start call (the ADR 0003 D1 checks). The daemon requires that attestation and refuses a run-start call without it. A trust claim made by the renderer alone is advisory (a compromised renderer can write trust) and never gates a run. How main reads the workbench trust store is settled in task B6.
+  - An untrusted source repository means the worktree opens in Restricted Mode in IDE view, shown read-only with a "Trust to run" action. **No CLI or agent run starts in it** (threat model TRU-2). Trust is re-derived from the source repository at each mount and at each run start, so a later revocation takes effect.
   - The worktree root under app data is **never** trusted as a parent folder.
   - Worktrees Axis did not create (external) do not inherit trust; upstream trust prompts apply as usual.
 
@@ -54,6 +55,7 @@ The run base, the drift ledger and the indicator are Phase 1a (design task B11),
 - **Run base.** At every run start (composer or CLI), the daemon writes `refs/axis/runbase/<runId>` (§7). It points at a commit of HEAD plus the whole worktree, tracked and untracked but **not ignored**, built with a temporary index, `add -A`, `write-tree` and `commit-tree`. It is kept for 7 days after the run ends.
 - **Observed hashes**, per composer run: the content hash the run last saw for each path it read or wrote.
 - **Advisory user locks.** The renderer reports, as the `user` actor, the paths with unsaved editors (`axis.worktrees/1.setUserEditing`). They are cleared on save or close.
+- **Authority.** The diff against the run base is authoritative for what changed, at run end and at commit. The watcher only feeds the live indicator, because watchers can drop events.
 - **Drift ledger**, per run: the paths changed while the run was active, other than by the run itself. It comes from a daemon file watcher on the worktree; `@parcel/watcher` is an upstream dependency (`package.json:115`) [V].
 
 ### 3.3 Composer writes: compare-and-swap
@@ -113,6 +115,7 @@ Each scenario must end with no silent overwrite, or with a flagged and restorabl
 
 - **Phase 1a (decided).** PTY-5 applies to **every Axis workspace terminal**: CLI agent runs, `gh` launches, and plain user terminals.
 - **How.** All of them are spawned by the Axis pty process (design §4.4) and attached through `customPtyImplementation` (`platform/terminal/common/terminal.ts:568`) [V]. The daemon builds their environment and sends it with the spawn. The upstream pty host is not involved.
+- **Setting scope.** `axis.cliAgents`, `axis.terminals.scrubEnvironment`, `axis.git.runHooks` and `axis.worktrees.root` are user, application or machine scope (never workspace or folder). Workspace and folder values are ignored and a warning is surfaced (threat model CFG-1).
 - **Opt-out.** `axis.terminals.scrubEnvironment` (default `true`). When it is `false`, plain user terminals use the upstream pty host and inherit the upstream environment. CLI agent runs always use PTY-5.
 - **Phase 0 residual risk** (no daemon). Workspace terminals are upstream terminals. They carry:
   - `VSCODE_GIT_IPC_HANDLE`, which the git extension injects unconditionally (`extensions/git/src/ipc/ipcServer.ts:110-116`) [V];
@@ -129,11 +132,14 @@ Each scenario must end with no silent overwrite, or with a flagged and restorabl
 5. **The PTY-5 deny-list wins over steps 1–4.** It removes:
    - `VSCODE_*`, including `VSCODE_GIT_ASKPASS*`, `VSCODE_GIT_IPC_HANDLE`, `VSCODE_IPC_HOOK_CLI` and `VSCODE_GIT_EDITOR_*`;
    - `ELECTRON_*`;
+   - the git variables that redirect git or inject configuration: `GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR`, `GIT_INDEX_FILE`, `GIT_OBJECT_DIRECTORY`, `GIT_ALTERNATE_OBJECT_DIRECTORIES`, `GIT_NAMESPACE`, `GIT_EXEC_PATH`, `GIT_TEMPLATE_DIR`, `GIT_PREFIX`, `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_*`, `GIT_CONFIG_VALUE_*` and `GIT_CONFIG_PARAMETERS`. **`GIT_CONFIG_GLOBAL`, `GIT_CONFIG_SYSTEM` and `GIT_CONFIG_NOSYSTEM` are kept by an explicit exemption:** they are the user's own environment (see section 6.5);
+   - the shell-integration variables of section 4.3 that are not a user's own (`VSCODE_*` is already covered): `USER_ZDOTDIR` always, and `ZDOTDIR` only when it points inside Axis's shell-integration directory (passed in as an option; otherwise it is kept);
+   - Axis-internal `AXIS_*` variables;
    - `GIT_ASKPASS`, `SSH_ASKPASS*`, `GIT_EDITOR`;
    - every variable that extension `environmentVariableCollection`s would add.
 
    Collections are never merged into Axis ptys in the first place. The rule also covers a passthrough, setting or source variable with the same name.
-6. **Kept:** `SSH_AUTH_SOCK` and the user's Git configuration. **Never added:** Axis vault values (PTY-2).
+6. **Kept:** `SSH_AUTH_SOCK` and the user's Git configuration. **Never added:** Axis vault values (PTY-2). Everything else the user's login environment sets also passes through, including `LD_PRELOAD`, `DYLD_*`, `NODE_OPTIONS` and `GIT_SSH_COMMAND`. These are the user's own environment, at the same trust level as the user's login, and PTY-5 targets only what Axis, the editor and extensions inject.
 7. **SI-ENV, plain terminals only** (§4.3). This is the only thing set after the deny-list.
 8. `PTY-2` (an allow-list) applies only to **broker tool processes** in Phase 1b, not to terminals.
 
@@ -149,7 +155,7 @@ Each scenario must end with no silent overwrite, or with a flagged and restorabl
 
 ## 5. Shell integration and split cwd
 
-- **Correction to the earlier design text.** `ShellIntegrationAddon` loads on **every** terminal (`workbench/contrib/terminal/browser/xterm/xtermTerminal.ts:339-340`) [V], including daemon-backed ones. Most OSC 633 sequences need no nonce. So a CLI's output can set command marks and the detected cwd (OSC 633 P `Cwd=`) [I from the addon]. With `terminal.integrated.splitCwd` (`terminalConfiguration.ts:511`) [V] set to `inherited`, that detected cwd steers where a split pane starts.
+- **Correction to the earlier design text.** `ShellIntegrationAddon` loads on **every** terminal (`workbench/contrib/terminal/browser/xterm/xtermTerminal.ts:339-340`) [V], including daemon-backed ones. Most OSC 633 sequences need no nonce. So a CLI's output can set command marks and the detected cwd (OSC 633 P `Cwd=`) [I from the addon]. With `terminal.integrated.splitCwd` (`terminalConfiguration.ts:512`) [V] set to `inherited`, that detected cwd steers where a split pane starts.
 - **Rules:**
   - splitting a workspace terminal (CLI or plain) always starts the new pane in the **worktree root**, the cwd Axis knows, never the detected cwd. This is done through `ICreateTerminalOptions.cwd` (`terminal.ts:769`) [V];
   - command decorations in CLI terminals are presentation only. Axis derives no status from them (design §4.5);
@@ -157,17 +163,20 @@ Each scenario must end with no silent overwrite, or with a flagged and restorabl
 
 ## 6. Axis git operations
 
-### 6.1 Commit and push run in the daemon (decided)
+### 6.1 Commit and push: the daemon orchestrates, git runs in the pty process (decided)
 
-- **Commit and push are daemon operations,** started by the user: `axis.worktrees/1.commit { id, paths, message }` and `.push { id }`.
-- **Lock and mutex.** Both run with the git CLI in the worktree, under the per-project git mutex and the per-workspace write lock, so they are serialised with each other and with composer writes (§3.3).
+- **The daemon orchestrates commit and push; the git process runs in the Axis pty process.** They are started by the user: `axis.worktrees/1.commit { id, paths, message }` and `.push { id }`. The daemon validates the request, takes the lock, mutex and drift gate, writes the journal, and sends the exact git command over the pty-process control channel. Exit status and output return on that channel. The daemon holds the lock across the spawn. The pty process holds no secrets, so hooks and credential helpers never run in the daemon.
+- **Lock and mutex.** Both run the git CLI in the worktree, under the per-project git mutex and the per-workspace write lock, so they are serialised with each other and with composer writes (§3.3).
 - **Identity.** Commits use the user's Git identity (ADR 0004 security 6).
-- **Commit is gated by the common-dir drift check.** If the GIT-SNAP-1 set (§6.4) differs from the baseline the user last acknowledged, commit is refused until the user reviews the change. GIT-SNAP-1 is re-taken immediately before each commit.
+- **Commit is gated by the common-dir drift check.** If the GIT-SNAP-1 set (§6.4) differs from the baseline the user last acknowledged, commit is refused until the user reviews the change. GIT-SNAP-1 is re-taken immediately before each commit and each push. **Commit and push are also refused while a CLI run is active in that workspace**, meaning an Axis-launched CLI process is alive in that workspace's pty (an exited run, or a CLI the user started by hand in a terminal, does not count), so no CLI can change the set between the re-take and git executing a hook.
+- **Commit binds the reviewed tree.** Diff review records the tree hash. The commit is built from that exact tree and refuses if the worktree or index differs. Hunk accept applies a daemon `applyPatch` to the reviewed state.
+- **Argument safety.** Values from a request (workspace name, branch slug, base ref, remote) go after `--` or through `rev-parse --verify`; branch names pass `check-ref-format --branch` and must not start with `-`; remotes come from the journal; `ext::` and unlisted transports are refused.
+- **Secrets in the pushed diff.** The diff to be pushed is scanned with the secret-pattern scanner; a match needs a confirmation. This does not stop a push made by a CLI or a terminal.
 - **Hooks.**
-  - Axis commit and push run the repository's configured hooks only while the common dir matches that acknowledged baseline, so only hooks the user has seen can run. The setting `axis.git.runHooks` (default `true`) can turn hooks off.
+  - Axis commit and push run the repository's configured hooks only while the common dir matches that acknowledged baseline, so only hooks the user has seen can run. **The hooks run in the Axis pty process context, which holds no secrets, never in the daemon** (threat model GIT-3). The daemon sends the exact git command over the control channel. `axis.git.runHooks` (default `true` in 1a) can turn hooks off; it is re-evaluated in 1b when the vault ships.
   - Other daemon git calls (worktree, discard, snapshots, status) always use an empty `core.hooksPath`, `core.fsmonitor=false` and GIT-ENV-1 (§6.5; design §5.3 invariant 4).
-- **Push** runs `git push <remote> refs/heads/axis/<slug>:refs/heads/axis/<slug>`, with an explicit refspec, never `--mirror` or `--all`. It uses the PTY-5 environment with `GIT_TERMINAL_PROMPT=0`. If push needs interactive credentials, Axis offers to run the same command in a workspace terminal.
-- **Signed commits.** With `commit.gpgsign` and a pinentry that needs a TTY, the daemon commit fails without prompting. Axis offers the same terminal fallback: the exact `git commit` command in a workspace terminal, still gated by the drift check that ran first.
+- **Push** is refused on unacknowledged GIT-SNAP-1 drift, as commit is (a planted `url.*.insteadOf`, `remote.*.pushurl` or `credential.helper` would otherwise redirect it). It runs `git push <remote> refs/heads/axis/<slug>:refs/heads/axis/<slug>`, with an explicit refspec, never `--mirror` or `--all`. It uses the PTY-5 environment with `GIT_TERMINAL_PROMPT=0`. If push needs interactive credentials, Axis offers to run the same command in a workspace terminal.
+- **Signed commits.** With `commit.gpgsign` and a pinentry that needs a TTY, the commit fails without prompting. Axis offers the same terminal fallback: the exact `git commit` command in a workspace terminal, still gated by the drift check that ran first.
 - **Broker.** A composer push request is a default-deny tier.
 - **Removed path.** `IGitService.commitFiles` is no longer used for Axis review actions. `IGitService` stays read-only for change state (design §4.3).
 
@@ -193,13 +202,15 @@ The set required by ADR 0004 security implication 3:
 - every `config.worktree` file (`$GIT_COMMON_DIR/worktrees/*/config.worktree` and the main one);
 - `hooks/`;
 - `info/attributes`;
+- the worktree's root `.git` file, and `$GIT_COMMON_DIR/worktrees/<name>/{gitdir,commondir}`;
+- the contents of the target of an effective `core.hooksPath` that lies inside any worktree (for example a committed `.husky/` or `.githooks/`), because editing those files leaves `config` unchanged;
 - the effective values of `filter.*`, `diff.*` (drivers), `core.hooksPath`, `core.fsmonitor` and `core.sshCommand`, as `git config --show-origin` reports them for the repository.
 
 **When it is taken:**
 
 - at worktree creation, as the baseline;
 - before each CLI run's launch and after its exit;
-- before each Axis commit;
+- before each Axis commit and each Axis push;
 - on status refresh.
 
 It is stored as content hashes plus the full text, for the before/after diff. Changes outside the repository's Git directory (global config, home directory) are not detected, as ADR 0004 states.
@@ -208,6 +219,8 @@ It is stored as content hashes plus the full text, for the before/after diff. Ch
 
 - **Applies to** every daemon git call except commit and push.
 - **Contents.** An allow-list taken from the resolved shell environment: `PATH`, `HOME`, `USER`, `LANG`, `LC_*`, `TMPDIR`, plus `GIT_TERMINAL_PROMPT=0`. Every other `GIT_*` variable is removed.
+- **Windows.** The allow-list also holds `SYSTEMROOT`, `WINDIR`, `COMSPEC`, `PATHEXT`, `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, `TEMP`, `TMP`, `HOMEDRIVE` and `HOMEPATH`, compared case-insensitively, because git does not run without them.
+- **User-owned git config files.** `GIT_CONFIG_GLOBAL`, `GIT_CONFIG_SYSTEM` and `GIT_CONFIG_NOSYSTEM` are kept in CLI runs. They name files the user chose. When either of the first two resolves inside a managed worktree, Axis warns, because an agent can edit that file; the check is a pure helper over the environment and the worktree roots. GIT-ENV-1 itself drops them, as it drops every other `GIT_*` variable.
 - **Distinct from PTY-2.** PTY-2 is the broker's tool environment. Commit and push use PTY-5 instead (§6.1), because they need the user's credentials and signing setup.
 
 ## 7. Snapshot refs
@@ -219,6 +232,7 @@ It is stored as content hashes plus the full text, for the before/after diff. Ch
 | `refs/axis/archive/<id>` | `finalise` | The branch tip | Until the user deletes it (D-8) |
 
 - **Ignored files are excluded.** Untracked, non-ignored files are included. These may hold secrets (for example a new `.env` that is not ignored), and they become objects in the shared common dir.
+- **Disclosure.** The snapshot dialog and the workspace Settings page state that snapshots may hold untracked, non-ignored files, which can include secrets. Phase 1b scans snapshot trees for secret patterns before writing a snapshot.
 - **Never pushed.** Axis never mirror-pushes. `git push --mirror` by the user, or a tool, would publish `refs/axis/*`. The dashboard's "Clean up snapshots" action and the retention job delete expired refs and run `git gc --prune` on the user's schedule, never automatically.
 - **Repository growth.** Large untracked artifacts inflate the repository (design R13). Snapshots skip files larger than 50 MiB and list them in the run summary.
 
@@ -260,3 +274,4 @@ It is stored as content hashes plus the full text, for the before/after diff. Ch
 | CLI run quiet | "quiet (may be waiting for input)" | The honest form of ADR 0004 decision 8's "waiting for input". Axis cannot know that a CLI is waiting |
 | Workspace finalised | "Done" | Matches `UX.md` and `PRODUCT.md` |
 | Changes not yet committed | "Changes to review" | Replaces "needs review" |
+| Commit or push refused because a CLI run is active | "Stop the agent run to commit" | Shown on the disabled Commit and Push actions (section 6.1) |
