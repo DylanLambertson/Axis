@@ -14,3 +14,27 @@ test("RR-N4: the node runner reports truncated when stdout passes its limit, and
   assert.equal(big.truncated, undefined);
   assert.ok(big.stdout.length > 40);
 });
+
+test("RR-N5: a normal daemon exit kills git's live process groups (a crash cannot; that is documented)", async () => {
+  const { spawnSync } = await import("node:child_process");
+  const { existsSync, readFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const f = fixture();
+  const pidFile = join(f.root, "pid");
+  const runnerUrl = new URL("../src/nodeRunner.js", import.meta.url).href;
+  const script = `
+    import { createNodeRunner } from ${JSON.stringify(runnerUrl)};
+    import { existsSync } from "node:fs";
+    createNodeRunner({ allowPtyContext: true }).run({
+      argv: ["-c", ${JSON.stringify(`alias.slow=!sh -c 'echo $$ > "${pidFile}"; exec sleep 60' & wait`)}, "slow"],
+      cwd: ${JSON.stringify(f.root)}, env: { PATH: process.env.PATH, HOME: ${JSON.stringify(f.home)} }, context: "pty",
+    });
+    const t = setInterval(() => { if (existsSync(${JSON.stringify(pidFile)})) { clearInterval(t); setTimeout(() => process.exit(0), 100); } }, 20);
+  `;
+  const r = spawnSync(process.execPath, ["--input-type=module", "-e", script], { timeout: 20_000, encoding: "utf8" });
+  assert.equal(r.status, 0, r.stderr);
+  assert.ok(existsSync(pidFile));
+  const pid = Number(readFileSync(pidFile, "utf8").trim());
+  await new Promise((res) => setTimeout(res, 300));
+  assert.throws(() => process.kill(pid, 0), "the grandchild did not outlive the daemon's exit");
+});
