@@ -29,7 +29,7 @@ Without the anchor, `verify()` detects edits, deletions in the middle and reorde
 
 ## Single instance (requirement on the daemon)
 
-`Journal.recover(lock)` interrupts every RUNNING run, which is correct only when the previous writer is dead. The daemon MUST take the exclusive instance lock (`acquireInstanceLock(dir)` from `@axis/audit`, a pid and process-start-time lock file in the database directory) before opening the journal, and hold it until exit. `recover()` refuses to run without a held lock. A second daemon on the same directory fails with `E_CONFLICT`.
+`Journal.recover(lock)` interrupts every RUNNING run, which is correct only when the previous writer is dead. The daemon MUST take the exclusive instance lock (`acquireInstanceLock(dir)` from `@axis/audit`, a pid and process-start-time lock file in the database directory) before opening the journal, and hold it until exit. `recover()` refuses to run without a held lock, and the lock must be the `InstanceLock` object `acquireInstanceLock` returned (an object literal with the same fields is refused) and must guard the directory of the journal's own database file. A second daemon on the same directory fails with `E_CONFLICT`.
 
 ## Principals
 
