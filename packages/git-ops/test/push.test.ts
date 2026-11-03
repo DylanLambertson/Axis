@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { GitOpsError, MAX_COMMITS, MAX_DIFF, executePush, isAllowedRefspec, planPush } from "../src/index.js";
-import { BASE, COMMIT, FakeRunner, WT, healthy, makeDeps, sub } from "./helpers.js";
+import { BASE, COMMIT, FakeRunner, HEAD, WT, healthy, makeDeps, sub } from "./helpers.js";
 
 const input = { worktree: WT, remote: "origin", branch: "axis/feat", baseSha: BASE };
 
@@ -16,30 +16,34 @@ async function code(p: Promise<unknown>): Promise<string> {
   return "OK";
 }
 
-test("the refspec is exactly refs/heads/axis/<slug>:refs/heads/axis/<slug>, after --", async () => {
+test("the refspec is exactly <scanned tip>:refs/heads/axis/<slug>, after --", async () => {
   const plan = await planPush(makeDeps(new FakeRunner(healthy())), input);
-  assert.equal(plan.refspec, "refs/heads/axis/feat:refs/heads/axis/feat");
+  assert.equal(plan.refspec, `${HEAD}:refs/heads/axis/feat`);
+  assert.equal(plan.tip, HEAD);
   const s = sub(plan.command.argv);
-  assert.deepEqual(s.slice(-3), ["--", "origin", "refs/heads/axis/feat:refs/heads/axis/feat"]);
+  assert.deepEqual(s.slice(-3), ["--", "origin", `${HEAD}:refs/heads/axis/feat`]);
   assert.equal(plan.command.context, "pty");
   assert.equal(plan.command.env["GIT_TERMINAL_PROMPT"], "0");
   for (const bad of ["--force", "--mirror", "--all", "--tags", "--delete", "--force-with-lease"]) assert.equal(s.includes(bad), false);
   assert.ok(s.includes("--no-follow-tags"));
 });
 
-test("isAllowedRefspec refuses force, wildcard, tag, delete and mismatched refspecs", () => {
-  assert.ok(isAllowedRefspec("refs/heads/axis/feat:refs/heads/axis/feat"));
+test("isAllowedRefspec accepts only an object id into refs/heads/axis/<slug>", () => {
+  assert.ok(isAllowedRefspec(`${HEAD}:refs/heads/axis/feat`));
+  assert.ok(isAllowedRefspec(`${"c".repeat(64)}:refs/heads/axis/feat`));
   for (const bad of [
-    "+refs/heads/axis/feat:refs/heads/axis/feat",
+    `+${HEAD}:refs/heads/axis/feat`,
+    "refs/heads/axis/feat:refs/heads/axis/feat",
     "refs/heads/axis/*:refs/heads/axis/*",
-    "refs/tags/v1:refs/tags/v1",
+    `${HEAD}:refs/tags/v1`,
+    `${HEAD}:refs/heads/main`,
+    `${HEAD}:refs/heads/axis/-x`,
+    `${HEAD}:refs/heads/axis/feat `,
+    `${"c".repeat(39)}:refs/heads/axis/feat`,
+    `${"C".repeat(40)}:refs/heads/axis/feat`,
+    `HEAD:refs/heads/axis/feat`,
     ":refs/heads/axis/feat",
-    "refs/heads/axis/feat",
-    "refs/heads/axis/feat:refs/heads/main",
-    "refs/heads/main:refs/heads/axis/feat",
-    "refs/heads/axis/feat:refs/heads/axis/other",
-    "refs/heads/axis/feat:refs/heads/axis/feat ",
-    "refs/heads/axis/-x:refs/heads/axis/-x",
+    HEAD,
     "",
   ]) assert.equal(isAllowedRefspec(bad), false, bad);
 });
@@ -202,4 +206,16 @@ test("S-8: more commits than the scan limit fails closed too", async () => {
   const deps = makeDeps(r, { scanner: async () => { calls += 1; return []; }, scanMode: "refuse" });
   assert.equal(await code(planPush(deps, input)), "E_POLICY_DENIED");
   assert.equal(calls, MAX_COMMITS);
+});
+
+test("S-3: a branch that moved after the scan is refused before the push, and the pty runner is never called", async () => {
+  const MOVED = "f".repeat(40);
+  let reads = 0;
+  // The branch ref is read once while planning; only the re-check immediately before the push sees it has moved.
+  const r = new FakeRunner(healthy((s) => {
+    if (s[0] === "rev-parse" && s.includes("refs/heads/axis/feat^{commit}") && (reads += 1) > 1) return { stdout: `${MOVED}\n` };
+    return undefined;
+  }));
+  assert.equal(await code(executePush(makeDeps(r), input)), "E_CONFLICT");
+  assert.equal(r.ptyCalls().length, 0);
 });

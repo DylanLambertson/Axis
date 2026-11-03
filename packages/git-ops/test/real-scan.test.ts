@@ -212,3 +212,28 @@ test("S-8: padding a push with 8 MiB of filler before a secret does not hide it,
   assert.ok(e instanceof Error && /too large to scan/.test(e.message), String(e));
   assert.throws(() => execFileSync("git", ["--git-dir", f.remote, "rev-parse", "refs/heads/axis/feat"], { stdio: "ignore" }), "nothing was pushed");
 });
+
+test("S-3: a commit made after the scan is not pushed: the branch moving is refused, and the source is pinned to the scanned sha", async () => {
+  const late = (f: ReturnType<typeof fixture>): void => {
+    writeFileSync(join(f.wt.workTree, ".env"), `AWS=${AWS_KEY}\n`);
+    f.git("add", "-A");
+    f.git("commit", "-q", "-m", "late");
+  };
+  // 1. The branch moves while the scanner runs: refused before anything is pushed.
+  const a = fixture({ scanMode: "refuse", scanner: async () => { late(a); return []; } });
+  const input = (f: ReturnType<typeof fixture>) => ({ worktree: f.wt, remote: "origin", branch: "axis/feat", baseSha: baseOf(f) });
+  writeFileSync(join(a.wt.workTree, "b.txt"), "b\n");
+  a.git("add", "-A");
+  a.git("commit", "-q", "-m", "one outgoing commit, so the scanner runs");
+  const e = await executePush(a.deps, input(a)).then(() => undefined, (x: unknown) => x);
+  assert.equal((e as { code?: string } | undefined)?.code, "E_CONFLICT");
+  assert.throws(() => execFileSync("git", ["--git-dir", a.remote, "rev-parse", "refs/heads/axis/feat"], { stdio: "ignore" }));
+  // 2. The branch moves in the window between the last check and git push: the pinned sha still wins.
+  const b = fixture({ scanMode: "refuse", scanner: async () => [] });
+  const scannedTip = b.git("rev-parse", "HEAD").trim();
+  const inner = b.deps.runner;
+  const deps = { ...b.deps, runner: { run: async (req: Parameters<typeof inner.run>[0]) => { if (req.context === "pty") late(b); return inner.run(req); } } };
+  await executePush(deps, input(b));
+  const pushed = execFileSync("git", ["--git-dir", b.remote, "rev-parse", "refs/heads/axis/feat"], { encoding: "utf8" }).trim();
+  assert.equal(pushed, scannedTip, "pushed an unscanned commit");
+});

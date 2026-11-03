@@ -28,7 +28,9 @@ export interface PushPlan {
   readonly worktree: WorktreeRef;
   readonly remote: string;
   readonly branch: string;
-  /** Exactly `refs/heads/axis/<slug>:refs/heads/axis/<slug>`. */
+  /** The scanned commit, which is what is pushed. */
+  readonly tip: string;
+  /** Exactly `<tip>:refs/heads/axis/<slug>`. */
   readonly refspec: string;
   /** Runs in the pty process. */
   readonly command: GitRunRequest;
@@ -39,14 +41,24 @@ export interface PushPlan {
   readonly reasons: readonly string[];
 }
 
-export function pushRefspec(slug: string): string {
-  return `refs/heads/axis/${slug}:refs/heads/axis/${slug}`;
+/** The pinned source: the scanned tip, by object id, so a commit made after the scan cannot ride along. */
+export function pushRefspec(tip: string, slug: string): string {
+  return `${tip}:refs/heads/axis/${slug}`;
 }
 
-/** True only for the one refspec Axis pushes: no '+', no wildcard, no tag, no delete, source equals destination. */
+/** True only for the one refspec Axis pushes: a full object id into refs/heads/axis/<slug>. No '+', wildcard, tag or delete. */
 export function isAllowedRefspec(spec: string): boolean {
-  const m = /^refs\/heads\/axis\/([a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?):refs\/heads\/axis\/([a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?)$/.exec(spec);
-  return m !== null && m[1] === m[2];
+  const m = /^([0-9a-f]{40}|[0-9a-f]{64}):refs\/heads\/axis\/([a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?)$/.exec(spec);
+  return m !== null;
+}
+
+/** The branch must still be checked out and still point at the scanned commit. */
+async function confirmTip(git: DaemonGit, branch: string, tip: string): Promise<void> {
+  const head = await git(["symbolic-ref", "--quiet", "--short", "HEAD"]);
+  const now = await git(["rev-parse", "--verify", "--end-of-options", `refs/heads/${branch}^{commit}`]);
+  if (head.code !== 0 || head.stdout.trim() !== branch || now.code !== 0 || now.stdout.trim() !== tip) {
+    throw conflict("the branch changed after it was scanned; review and push again");
+  }
 }
 
 async function check(deps: GitOpsDeps, input: PushInput): Promise<{ plan: PushPlan; git: DaemonGit }> {
@@ -55,8 +67,6 @@ async function check(deps: GitOpsDeps, input: PushInput): Promise<{ plan: PushPl
     throw invalid("the remote must be a configured remote name, not a URL or an option");
   }
   const { branch, slug } = branchFor(input.branch);
-  const refspec = pushRefspec(slug);
-  if (!isAllowedRefspec(refspec)) throw denied("refspec not allowed");
   if (typeof input.baseSha !== "string" || !OBJECT_ID.test(input.baseSha)) {
     throw invalid("baseSha must be the journaled base commit as a full lower-case object id");
   }
@@ -78,16 +88,20 @@ async function check(deps: GitOpsDeps, input: PushInput): Promise<{ plan: PushPl
   if (head.code !== 0 || head.stdout.trim() !== branch) throw denied("the worktree is not on the branch being pushed");
   const tip = await git(["rev-parse", "--verify", "--end-of-options", `refs/heads/${branch}^{commit}`]);
   if (tip.code !== 0) throw invalid("the branch has no commits");
+  const tipSha = tip.stdout.trim();
+  if (!OBJECT_ID.test(tipSha)) throw invalid("the branch has no commits");
+  const refspec = pushRefspec(tipSha, slug);
+  if (!isAllowedRefspec(refspec)) throw denied("refspec not allowed");
 
   const base = await git(["rev-parse", "--verify", "--quiet", "--end-of-options", `${input.baseSha}^{commit}`]);
   if (base.code !== 0) throw conflict("the recorded base commit is not in this repository");
-  const ancestor = await git(["merge-base", "--is-ancestor", input.baseSha, tip.stdout.trim()]);
+  const ancestor = await git(["merge-base", "--is-ancestor", input.baseSha, tipSha]);
   if (ancestor.code !== 0) throw conflict("the recorded base is not an ancestor of the branch; the history was rewritten");
 
   // The GIT-SNAP-1 re-take comes last so nothing can change between it and the push.
   await deps.assertNoDrift(input.worktree);
 
-  const { findings, binaryPaths, truncated } = await scanOutgoing(deps, git, input.worktree, input.baseSha, tip.stdout.trim());
+  const { findings, binaryPaths, truncated } = await scanOutgoing(deps, git, input.worktree, input.baseSha, tipSha);
   const refuse = (deps.scanMode ?? "warn") === "refuse";
   const reasons: string[] = [];
   if (findings.length > 0) {
@@ -117,7 +131,7 @@ async function check(deps: GitOpsDeps, input: PushInput): Promise<{ plan: PushPl
     "--", input.remote, refspec,
   ];
   const command: GitRunRequest = { argv, cwd: input.worktree.workTree, env: withNoPrompt(deps.env.pty), context: "pty" };
-  return { plan: { worktree: input.worktree, remote: input.remote, branch, refspec, command, findings, requiresConfirmation: reasons.length > 0, reasons }, git };
+  return { plan: { worktree: input.worktree, remote: input.remote, branch, tip: tipSha, refspec, command, findings, requiresConfirmation: reasons.length > 0, reasons }, git };
 }
 
 /** Validates everything and returns the exact push command and any secret findings. */
@@ -127,10 +141,11 @@ export async function planPush(deps: GitOpsDeps, input: PushInput): Promise<Push
 
 /** Re-validates immediately before pushing. A plan with findings needs `confirmed: true`. */
 export async function executePush(deps: GitOpsDeps, input: PushInput, opts: { readonly confirmed?: boolean } = {}): Promise<void> {
-  const { plan } = await check(deps, input);
+  const { plan, git } = await check(deps, input);
   if (plan.requiresConfirmation && opts.confirmed !== true) {
     throw new GitOpsError("E_APPROVAL_REQUIRED", `confirm to push: ${plan.reasons.join("; ")}`);
   }
+  await confirmTip(git, plan.branch, plan.tip);
   const r = await deps.runner.run(plan.command);
   if (r.code !== 0) throw new GitOpsError("E_UNAVAILABLE", `git push failed (exit ${r.code}): ${redactUrls(r.stderr).slice(0, 500)}`);
 }
