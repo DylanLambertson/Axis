@@ -111,10 +111,27 @@ export interface ForwardedRequest {
 /** Every 12-character window of the credential, so a partial echo is caught too (NS5). */
 export const CREDENTIAL_WINDOW = 12;
 
-function needlesFor(canary: string, credential: string): string[] {
+/** Shortest test credential: shorter ones would get no 12-character windows (R4). */
+export const MIN_CREDENTIAL_LENGTH = 16;
+export const MIN_CANARY_LENGTH = 8;
+
+/**
+ * What the leak checks look for: the canary, the credential, every
+ * 12-character window of it, and its common transformed forms, so an echo
+ * through an `Authorization: Basic` header, a URL or a case change is caught
+ * too (R3).
+ */
+export function needlesFor(canary: string, credential: string): string[] {
   const out = new Set<string>([canary, credential]);
   for (let i = 0; i + CREDENTIAL_WINDOW <= credential.length; i++) out.add(credential.slice(i, i + CREDENTIAL_WINDOW));
-  return [...out];
+  const bytes = Buffer.from(credential, "utf8");
+  out.add(bytes.toString("base64"));
+  out.add(bytes.toString("base64").replace(/=+$/, ""));
+  out.add(bytes.toString("base64url"));
+  out.add(encodeURIComponent(credential));
+  out.add(credential.toUpperCase());
+  out.add(credential.toLowerCase());
+  return [...out].filter((n) => n.length > 0);
 }
 
 /**
@@ -275,6 +292,13 @@ function assertUsage(r: GenerateResult): void {
 
 /** Register the contract suite with `node:test` for one harness. */
 export function runProviderContractSuite(harness: ContractHarness): void {
+  // Refuse a harness whose leak checks would be weak or vacuous (R4).
+  if (typeof harness.credential !== "string" || harness.credential.length < MIN_CREDENTIAL_LENGTH) {
+    throw new RangeError(`the contract harness credential must be at least ${MIN_CREDENTIAL_LENGTH} characters`);
+  }
+  if (typeof harness.canary !== "string" || harness.canary.length < MIN_CANARY_LENGTH) {
+    throw new RangeError(`the contract harness canary must be at least ${MIN_CANARY_LENGTH} characters`);
+  }
   const cancelMs = harness.cancelWithinMs ?? 2_000;
   const live = (): AbortSignal => new AbortController().signal;
 
@@ -295,6 +319,8 @@ export function runProviderContractSuite(harness: ContractHarness): void {
       forwardedRequests: () => f.forwardedRequests(),
     };
     fixtures.push(wrapped);
+    // The descriptor reaches every log line, so it is checked like an output (R1).
+    outputs.push(f.adapter.descriptor);
     return wrapped;
   };
 
@@ -549,13 +575,19 @@ export function runProviderContractSuite(harness: ContractHarness): void {
       const caps = await f.adapter.getCapabilities(f.model, { signal: live() });
       const stop = caps.features.stopSequences === "supported" ? { stopSequences: ["END-OF-TURN"] } : {};
       const req = request(f.model, { maxOutputTokens: 321, ...stop });
+      const check = (sent: ForwardedRequest | undefined, mode: string): void => {
+        assert.ok(sent !== undefined, `${mode}: the harness reports the request it saw`);
+        assert.equal(sent.model, f.model);
+        assert.equal(sent.maxOutputTokens, 321, `${mode}: the output cap is forwarded exactly`);
+        assert.equal(sent.system, req.system);
+        if ("stopSequences" in stop) assert.deepEqual(sent.stopSequences, stop.stopSequences);
+      };
       await f.adapter.generate(req, { signal: live() });
-      const sent = f.lastRequest();
-      assert.ok(sent !== undefined, "the harness reports the request it saw");
-      assert.equal(sent.model, f.model);
-      assert.equal(sent.maxOutputTokens, 321, "the output cap is forwarded exactly");
-      assert.equal(sent.system, req.system);
-      if ("stopSequences" in stop) assert.deepEqual(sent.stopSequences, stop.stopSequences);
+      check(f.lastRequest(), "generate");
+      // The stream path builds its request separately in most adapters (R2).
+      const g = await fixture(t, { kind: "text", text: "forwarded" });
+      await drain(g.adapter.stream(req, { signal: live() }));
+      check(g.lastRequest(), "stream");
     });
 
     for (const status of REDIRECT_STATUSES) {

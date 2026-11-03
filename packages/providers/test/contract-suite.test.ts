@@ -5,6 +5,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { runProviderContractSuite } from "../contract/index.js";
 import { fileURLToPath } from "node:url";
 
 interface ChildRun {
@@ -46,14 +47,20 @@ const VARIANTS: Array<[leak: string, mustFail: string[]]> = [
   ["maxtok", ["stream: reports max_tokens"]],
   ["masked", ["stream: a provider authentication error maps to the taxonomy without leaking", "generate: a provider server_error error maps to the taxonomy without leaking"]],
   ["drop-cap", ["forwards model, maxOutputTokens, system and stopSequences unchanged"]],
+  ["stream-drop-cap", ["forwards model, maxOutputTokens, system and stopSequences unchanged"]],
+  ["base64", ["stream: a text reply follows the event grammar", "generate: returns what collectStream builds from stream"]],
+  ["upper", ["stream: a text reply follows the event grammar"]],
+  ["descriptor", ["descriptor declares the API version, ids and a destination", "listModels returns unique ids including the fixture model"]],
 ];
 
 for (const [leak, mustFail] of VARIANTS) {
   test(`S9/NS5: the contract suite fails the "${leak}" leaky adapter`, () => {
     const failed = failedTests(leak);
     for (const name of mustFail) assert.ok(failed.has(name), `the suite should fail: ${name}`);
-    if (leak !== "error-props") assert.ok(!failed.has(UNRELATED), "unrelated checks still pass");
-    if (leak !== "error-props") assert.ok(!failed.has("getCapabilities returns a well-formed report for the model"), "the fixture is otherwise well-behaved");
+    // These variants leak in every scenario (or in the text scenario the unrelated check uses).
+    const pervasive = ["error-props", "base64", "upper", "descriptor"].includes(leak);
+    if (!pervasive) assert.ok(!failed.has(UNRELATED), "unrelated checks still pass");
+    if (!pervasive) assert.ok(!failed.has("getCapabilities returns a well-formed report for the model"), "the fixture is otherwise well-behaved");
   });
 }
 
@@ -75,3 +82,9 @@ for (const mode of ["1", "fail"]) {
     assert.ok(!failed.has("stream: a text reply follows the event grammar"), "unrelated checks still pass");
   });
 }
+
+test("R4: a harness with a short credential or canary is refused before any test is registered", () => {
+  const base = { name: "x", setup: () => { throw new Error("unreachable"); } };
+  assert.throws(() => runProviderContractSuite({ ...base, canary: "canary-long-enough", credential: "short-cred" }), RangeError);
+  assert.throws(() => runProviderContractSuite({ ...base, canary: "", credential: "a-credential-long-enough" }), RangeError);
+});
