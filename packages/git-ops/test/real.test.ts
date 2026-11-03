@@ -67,20 +67,25 @@ test("daemon-side reads run no hook and no fsmonitor, even with planted ones", a
   assert.equal(readFileSync(f.marker, "utf8"), "", "no daemon-side call ran planted code");
 });
 
-test("a planted pre-push hook does not run on a daemon-side push, and the guard refuses an unhardened daemon call", async () => {
+test("a hardened call runs no pre-push hook, a daemon-side push is refused by the transport allow-list, and the guard refuses an unhardened daemon call", async () => {
   const f = fixture();
   plantHook(f, "pre-push");
   const inner = createNodeRunner();
   const guarded = guardedRunner(inner, f.deps);
-  const hardened = [...prefix(f.wt, f.deps, { context: "daemon", hooks: false, filters: [] }), "push", "--", "origin", "refs/heads/axis/feat:refs/heads/axis/feat"];
+  const refspec = "refs/heads/axis/feat:refs/heads/axis/feat";
+  const hardened = [...prefix(f.wt, f.deps, { context: "daemon", hooks: false, filters: [] }), "push", "--", "origin", refspec];
   const env = { PATH: PATHS, HOME: f.deps.env.daemon["HOME"] as string, GIT_TERMINAL_PROMPT: "0" };
   const r = await guarded.run({ argv: hardened, cwd: f.wt.workTree, env, context: "daemon" });
-  assert.equal(r.code, 0, r.stderr);
+  assert.notEqual(r.code, 0, "the daemon never pushes");
+  assert.match(r.stderr, /not allowed/);
   assert.equal(existsSync(f.marker), false, "pre-push hook did not run");
+  assert.throws(() => execFileSync("git", ["--git-dir", f.remote, "rev-parse", "refs/heads/axis/feat"], { stdio: "ignore" }), "nothing was pushed");
+  // The same hooks-off prefix in the pty context (user credentials, network allowed) pushes without running the hook.
+  const pty = await inner.run({ argv: [...prefix(f.wt, f.deps, { context: "pty", hooks: false, filters: [] }), "push", "--no-verify", "--", "origin", refspec], cwd: f.wt.workTree, env, context: "pty" }).catch((e: unknown) => e);
+  assert.ok(pty instanceof GitOpsError, "the daemon runner refuses the pty context");
   const unhardened = ["--git-dir=" + f.wt.gitDir, "push", "origin", "axis/feat"];
   const e = await refusal(guarded.run({ argv: unhardened, cwd: f.wt.workTree, env, context: "daemon" }));
   assert.equal(e.code, "E_POLICY_DENIED");
-  await refusal(createNodeRunner().run({ argv: ["--version"], cwd: f.root, env, context: "pty" }));
 });
 
 test("push: explicit refspec reaches the bare remote; the pre-push hook runs in the pty context only when hooks are on", async () => {

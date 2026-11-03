@@ -44,3 +44,33 @@ test("B-1: a submodule diff.submodule=diff preference cannot run a nested reposi
   await planPush(f.deps, { worktree: f.wt, remote: "origin", branch: "axis/feat" });
   assert.equal(readFileSync(f.marker, "utf8"), "", "a program from worktree-controlled config ran in the daemon during the secret-scan diff");
 });
+
+test("B-2: in a partial clone the scan diff cannot lazy-fetch through remote.<n>.uploadpack in the daemon", async () => {
+  const f = fixture({ scanner: async () => [] });
+  const repo = f.wt.workTree;
+  f.run(repo, "config", "uploadpack.allowFilter", "true");
+  writeFileSync(join(repo, "a.txt"), "two\n");
+  f.git("commit", "-q", "-am", "second");
+  const up = join(f.root, "up.sh");
+  writeFileSync(up, `#!/bin/sh\necho daemon-exec >> "${f.marker}"\nexec git-upload-pack "$@"\n`);
+  chmodSync(up, 0o755);
+  f.run(repo, "config", "--global", "remote.origin.uploadpack", up);
+  const clone = (name: string): string => {
+    const pc = join(f.root, name);
+    f.run(f.root, "clone", "-q", "--filter=blob:none", "--no-checkout", `file://${repo}`, pc);
+    for (const [k, v] of [["user.name", "Dylan Lambertson"], ["user.email", "me@dylanlambertson.dev"]] as const) f.run(pc, "config", k, v);
+    f.run(pc, "checkout", "-q", "axis/feat");
+    f.run(pc, "branch", "-q", "main", "origin/main");
+    f.run(pc, "update-ref", "-d", "refs/remotes/origin/axis/feat");
+    return pc;
+  };
+  // Sanity, on a clone of its own (a fetch fills the object store): an unhardened diff does fetch, through the planted program.
+  f.run(clone("probe"), "diff", "--no-ext-diff", "main", "axis/feat");
+  assert.ok(existsSync(f.marker), "fixture: a partial-clone diff runs the uploadpack program");
+  writeFileSync(f.marker, "");
+  const pc = clone("pc");
+  writeFileSync(f.marker, "");
+  const wt = { workTree: pc, gitDir: join(pc, ".git") };
+  await planPush(f.deps, { worktree: wt, remote: "origin", branch: "axis/feat", base: "main" }).catch(() => undefined);
+  assert.equal(readFileSync(f.marker, "utf8"), "", "the daemon ran a transport program during a lazy fetch");
+});

@@ -62,6 +62,8 @@ export interface PrefixOptions {
 /** Global options placed before the subcommand. Explicit --git-dir/--work-tree come from the journal (GIT-4). */
 export function prefix(w: WorktreeRef, deps: GitOpsDeps, o: PrefixOptions): string[] {
   const a = ["--no-pager", `--git-dir=${w.gitDir}`, `--work-tree=${w.workTree}`, "-c", "core.fsmonitor=false", "-c", "protocol.ext.allow=never"];
+  // The daemon never touches the network or a remote: no transport, so a lazy fetch cannot run uploadpack, ssh or credential code.
+  if (o.context === "daemon") a.push("-c", "protocol.allow=never");
   const hooksOn = o.context === "pty" && o.hooks;
   if (!hooksOn) a.push("-c", `core.hooksPath=${hooksOffPath(deps)}`);
   if (o.context === "daemon") {
