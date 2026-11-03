@@ -43,17 +43,39 @@ test("S-5: a tree mismatch is undone to the real parent, and the daemon's undo r
   mkdirSync(join(f.wt.gitDir, "hooks"), { recursive: true });
   writeFileSync(hook, `#!/bin/sh\necho sneaky > "${f.wt.workTree}/c.txt"\ngit add c.txt\n`);
   chmodSync(hook, 0o755);
+  // Every event a hook-enabled ref update emits is logged. Which events, and how many, depends on the git version
+  // (newer git adds "preparing" and "aborted"), so only the line COUNT around the daemon's undo is compared.
   const refTx = join(f.wt.gitDir, "hooks", "reference-transaction");
   writeFileSync(refTx, `#!/bin/sh\necho "$1" >> "${f.marker}"\n`);
   chmodSync(refTx, 0o755);
+  const lines = (): number => (existsSync(f.marker) ? readFileSync(f.marker, "utf8").split("\n").filter(Boolean).length : 0);
+  const around: Array<{ before: number; after: number }> = [];
+  const inner = f.deps.runner;
+  const deps: GitOpsDeps = {
+    ...f.deps,
+    runner: {
+      run: async (req) => {
+        if (req.context !== "daemon" || !req.argv.includes("update-ref")) return inner.run(req);
+        const before = lines();
+        const r = await inner.run(req);
+        around.push({ before, after: lines() });
+        return r;
+      },
+    },
+  };
   const reviewed = stage(f, "b.txt", "two\n");
   const parent = f.git("rev-parse", "HEAD").trim();
-  const e = await failure(executeCommit(f.deps, { worktree: f.wt, reviewedTreeHash: reviewed, message: "m" }));
+  const e = await failure(executeCommit(deps, { worktree: f.wt, reviewedTreeHash: reviewed, message: "m" }));
   assert.equal(e.code, "E_CONFLICT");
   assert.deepEqual(e.details, { undone: true });
   assert.equal(f.git("rev-parse", "HEAD").trim(), parent, "the branch is back on the parent");
-  assert.ok(existsSync(f.marker));
-  assert.equal(readFileSync(f.marker, "utf8"), "prepared\ncommitted\n", "only the pty commit ran the hook; the daemon's undo did not");
+  assert.equal(around.length, 1, "the daemon ran exactly one update-ref, the undo");
+  assert.ok((around[0] as { before: number }).before > 0, "the pty commit ran the hook, so the log is live");
+  assert.equal((around[0] as { after: number }).after, (around[0] as { before: number }).before, "the daemon's undo invoked no hook");
+  // Positive control: the same kind of update with hooks enabled DOES log, so the check above cannot pass vacuously.
+  const before = lines();
+  f.git("update-ref", "refs/heads/control", "HEAD");
+  assert.ok(lines() > before, "a hook-enabled update-ref appends to the log on this git");
 });
 
 test("S-5: a commit built on a parent that moved during the commit is left in place and reported, not undone", async () => {
