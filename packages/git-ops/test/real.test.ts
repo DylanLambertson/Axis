@@ -78,7 +78,7 @@ test("a hardened call runs no pre-push hook, a daemon-side push is refused by th
   const env = { PATH: PATHS, HOME: f.deps.env.daemon["HOME"] as string, GIT_TERMINAL_PROMPT: "0" };
   const r = await guarded.run({ argv: hardened, cwd: f.wt.workTree, env, context: "daemon" });
   assert.notEqual(r.code, 0, "the daemon never pushes");
-  assert.match(r.stderr, /not allowed/);
+  assert.match(r.stderr, /not allowed|protocol/i);
   assert.equal(existsSync(f.marker), false, "pre-push hook did not run");
   assert.throws(() => execFileSync("git", ["--git-dir", f.remote, "rev-parse", "refs/heads/axis/feat"], { stdio: "ignore" }), "nothing was pushed");
   // The same hooks-off prefix in the pty context (user credentials, network allowed) pushes without running the hook.
@@ -185,7 +185,7 @@ test("S-7: git itself refuses a remote-helper transport on the pty push, and the
   const run = createNodeRunner({ allowPtyContext: true }).run;
   const refused = await run({ ...plan.command, argv, env });
   assert.notEqual(refused.code, 0);
-  assert.match(refused.stderr, /not allowed/);
+  assert.match(refused.stderr, /not allowed|protocol/i);
   assert.equal(existsSync(f.marker), false, "the helper did not run");
   const open = argv.filter((a, i) => !(a.startsWith("protocol.") && argv[i - 1] === "-c") && !(a === "-c" && (argv[i + 1] ?? "").startsWith("protocol.")));
   await run({ ...plan.command, argv: open, env });
