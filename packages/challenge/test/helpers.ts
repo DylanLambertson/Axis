@@ -7,7 +7,7 @@ import { ChallengeError, ChallengeManager, type ChallengeAuditEvent } from "../s
 export const sha = (s: string): string => createHash("sha256").update(s).digest("hex");
 export const CONTENT = sha("dirty file bytes v1");
 export const CHANGED = sha("dirty file bytes v2");
-export const CONTRACT = "axis.worktrees/1";
+export const CONTRACT = "axis.worktrees";
 export const ARGS = { id: "ws-1", deleteBranch: false };
 export const CONN = "conn-1";
 export const CALLER = { actor: "user", connectionId: CONN } as const;

@@ -164,8 +164,8 @@ const pair = (contract: string) => ({ contract, args: ARGS });
 
 test("B1: the challenge digest covers the contract", () => {
   const { manager } = setup();
-  const a = issue(manager, pair("axis.worktrees/1"));
-  const b = issue(manager, pair("axis.terminals/1"));
+  const a = issue(manager, pair("axis.worktrees"));
+  const b = issue(manager, pair("axis.terminals"));
   assert.notEqual(a.challenge.digest, b.challenge.digest);
 });
 
@@ -198,7 +198,7 @@ test("B1: approval of remove{deleteBranch:false} does not authorise remove{delet
 
 test("B1: a different contract or an extra or missing argument is refused at execute", async () => {
   const variants: Array<Record<string, unknown>> = [
-    { contract: "axis.terminals/1" },
+    { contract: "axis.terminals" },
     { args: { id: "ws-1" } },
     { args: { id: "ws-1", deleteBranch: false, force: true } },
     { args: { id: "ws-2", deleteBranch: false } },
@@ -423,13 +423,27 @@ test("B1: a different version or method is refused at consume and burns the appr
 test("requestDigest fixed vectors: unsorted keys, an ignored approval field, nested values and Unicode", () => {
   const ref = { challengeId: "A".repeat(43) };
   const cases: Array<[string, number, string, unknown, string]> = [
+    // Function-level only: the digest function accepts any string; issue() and consume() refuse the slash form.
     ["axis.worktrees/1", 1, "remove", { id: "ws-1", deleteBranch: false }, "ccb3a71aa0bc5bd6db5ccfe6fe9a09abef12092dce13ba4f6d99e929a30e0fd7"],
     ["axis.worktrees/1", 1, "remove", { deleteBranch: false, approval: ref, id: "ws-1" }, "ccb3a71aa0bc5bd6db5ccfe6fe9a09abef12092dce13ba4f6d99e929a30e0fd7"],
+    ["axis.worktrees", 1, "remove", { id: "ws-1", deleteBranch: false }, "adb7a157e75395816cf74974fbdfa2b5bdf32831996a578ff80cdb46fe9d2735"],
+    ["c", 1, "m", { b: [1, { z: null, y: true }], a: "x" }, "de8399306f850ad7498d82c8f95ec94ca317181b2422480425c52ad8ed55e596"],
     ["axis.demo/1", 2, "nested", { z: [3, { b: null, a: true }], a: { y: 1.5, x: "s" } }, "1ea2792869f10b78f4046228b72597c0e6951811e63ada0d0cf788001f107488"],
     ["axis.demo/1", 1, "unicode", { name: "café 中文 \u{1F600}", "kéy": "é" }, "ce1aa20bb3e2bf2910fd4f737e18ed5fe8a063498622376d982ec1456c3e3738"],
     ["axis.demo/1", 1, "empty", {}, "98df99cd17dc8f6dae1c493391c1a298dc271d44da171fd4f03c88fda545cc4b"],
   ];
   for (const [contract, version, method, payload, hex] of cases) {
     assert.equal(requestDigest({ contract, version, method, payload }), hex, `${contract} v${version} ${method}`);
+  }
+});
+
+test("issue and consume refuse the slash contract form and out-of-range versions (protocol schemas)", async () => {
+  const { manager } = setup();
+  for (const bad of [{ contract: "axis.worktrees/1" }, { contract: "worktrees" }, { version: 0 }, { version: 1001 }, { version: 1.5 }]) {
+    assert.throws(() => issue(manager, bad), code("E_INVALID_ARGUMENT"));
+  }
+  const id = approve(manager, issue(manager));
+  for (const bad of [{ contract: "axis.worktrees/1" }, { version: 1001 }]) {
+    await assert.rejects(manager.consume(id, CALLER, { ...run, ...bad } as never, () => 1), code("E_INVALID_ARGUMENT"));
   }
 });

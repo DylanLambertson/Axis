@@ -54,6 +54,8 @@ export interface RequestDigestInput {
  * The canonical request digest shared with the daemon (APR-1, G-24):
  * `sha256hex(JSON.stringify(["axis.request/1", contract, version, method, canonical(payload)]))`,
  * where `canonical` sorts object keys recursively and allows JSON primitives only.
+ * Cross-check: @axis/daemon implements the identical function; both packages pin the vectors
+ * in test/hardening.test.ts (docs/packages.md lists them). `contract` is the bare id (`axis.worktrees`).
  * TODO: dedupe into @axis/protocol once the daemon's copy and the shared vectors land.
  */
 export function requestDigest(d: RequestDigestInput): string {

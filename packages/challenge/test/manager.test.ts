@@ -25,7 +25,7 @@ const digest = (over: Partial<ChallengeDigestInput> = {}) =>
 
 test("the digest changes with any of contract, version, method, arguments, target or content", () => {
   const base = digest();
-  assert.notEqual(req(), req({ contract: "axis.terminals/1" }));
+  assert.notEqual(req(), req({ contract: "axis.terminals" }));
   assert.notEqual(req(), req({ version: 2 }));
   assert.notEqual(req(), req({ method: "worktree.remove" }));
   assert.notEqual(req(), req({ payload: { ...ARGS, deleteBranch: true } }));
@@ -36,8 +36,14 @@ test("the digest changes with any of contract, version, method, arguments, targe
 
 test("requestDigest matches its fixed vectors (shared spec: axis.request/1)", () => {
   // sha256 of the exact JSON text below; recomputed independently of the implementation.
-  const text = '["axis.request/1","axis.worktrees/1",1,"remove","{\\"deleteBranch\\":false,\\"id\\":\\"ws-1\\"}"]';
+  // Cross-check: @axis/daemon implements the identical function and pins the same vectors; keep both in step.
+  const text = '["axis.request/1","axis.worktrees",1,"remove","{\\"deleteBranch\\":false,\\"id\\":\\"ws-1\\"}"]';
+  assert.equal(req({ method: "remove" }), "adb7a157e75395816cf74974fbdfa2b5bdf32831996a578ff80cdb46fe9d2735");
   assert.equal(req({ method: "remove" }), sha(text));
+  assert.equal(
+    requestDigest({ contract: "c", version: 1, method: "m", payload: { b: [1, { z: null, y: true }], a: "x" } }),
+    "de8399306f850ad7498d82c8f95ec94ca317181b2422480425c52ad8ed55e596",
+  );
   assert.equal(
     requestDigest({ contract: "c", version: 1, method: "m", payload: { b: [1, { z: null, y: true }], a: "x" } }),
     sha('["axis.request/1","c",1,"m","{\\"a\\":\\"x\\",\\"b\\":[1,{\\"y\\":true,\\"z\\":null}]}"]'),

@@ -1,5 +1,5 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
-import { boundedJsonSchema, challengeIdSchema, requestDigestSchema, resolveChallengeRequestSchema } from "@axis/protocol";
+import { boundedJsonSchema, challengeIdSchema, contractIdSchema, contractVersionSchema, requestDigestSchema, resolveChallengeRequestSchema } from "@axis/protocol";
 import { z } from "zod";
 import { canonicalJson, requestDigest } from "./crypto.js";
 import { ChallengeError } from "./errors.js";
@@ -29,7 +29,6 @@ export interface ChallengeAuditSink {
   append(event: ChallengeAuditEvent): unknown;
 }
 
-const CONTRACT = /^[a-z][a-z0-9_.-]*\/[0-9]+$/;
 export const MAX_ARGS_BYTES = 16_384;
 const isPlainObject = (v: unknown): boolean => typeof v === "object" && v !== null && !Array.isArray(v);
 
@@ -49,13 +48,13 @@ export const callerSchema = z.object({ actor: actorSchema, connectionId: windowS
 /** The attested identity of whoever retries the request: the connection's actor and connection id, set by the daemon's transport, never read from the payload. */
 export type Caller = z.infer<typeof callerSchema>;
 
-const versionSchema = z.number().int().min(1).max(9999);
 const METHOD = OP;
 
 /** The request being approved. Give `args` (the digest is computed), a precomputed `requestDigest`, or both (they must agree). */
 const requestFields = {
-  contract: z.string().max(64).regex(CONTRACT),
-  version: versionSchema,
+  /** The bare contract id (for example `axis.worktrees`) and its integer major version, exactly as @axis/protocol defines them. */
+  contract: contractIdSchema,
+  version: contractVersionSchema,
   method: z.string().regex(METHOD),
   /** The request params, minus `approval`. */
   args: argsSchema.optional(),
