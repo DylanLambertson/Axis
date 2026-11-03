@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   GitOpsError, createNodeRunner, executeCommit, executePush, guardedRunner, planCommit, planPush, prefix,
@@ -168,4 +168,25 @@ test("a filter driver in the config is neutralised by the daemon prefix, and the
   writeFileSync(join(f.wt.workTree, "a.txt"), "touched 2\n");
   f.git("add", "-A");
   assert.ok(existsSync(f.marker), "an unhardened add does run it");
+});
+
+test("S-7: git itself refuses a remote-helper transport on the pty push, and the sanity case shows the helper would otherwise run", async () => {
+  const f = fixture();
+  const bin = join(f.root, "bin");
+  mkdirSync(bin);
+  writeFileSync(join(bin, "git-remote-foo"), `#!/bin/sh\necho helper >> "${f.marker}"\nexit 1\n`);
+  chmodSync(join(bin, "git-remote-foo"), 0o755);
+  const plan = await planPush(f.deps, { worktree: f.wt, remote: "origin", branch: "axis/feat", baseSha: baseOf(f) });
+  const argv = [...plan.command.argv];
+  const at = argv.lastIndexOf(plan.remote);
+  argv[at] = "foo::x";
+  const env = { ...plan.command.env, PATH: `${bin}:${PATHS}` };
+  const run = createNodeRunner({ allowPtyContext: true }).run;
+  const refused = await run({ ...plan.command, argv, env });
+  assert.notEqual(refused.code, 0);
+  assert.match(refused.stderr, /not allowed/);
+  assert.equal(existsSync(f.marker), false, "the helper did not run");
+  const open = argv.filter((a, i) => !(a.startsWith("protocol.") && argv[i - 1] === "-c") && !(a === "-c" && (argv[i + 1] ?? "").startsWith("protocol.")));
+  await run({ ...plan.command, argv: open, env });
+  assert.ok(existsSync(f.marker), "fixture: without the allow-list the helper runs");
 });

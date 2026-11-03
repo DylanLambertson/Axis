@@ -219,3 +219,22 @@ test("S-3: a branch that moved after the scan is refused before the push, and th
   assert.equal(await code(executePush(makeDeps(r), input)), "E_CONFLICT");
   assert.equal(r.ptyCalls().length, 0);
 });
+
+test("S-7: remote helpers and unlisted transports are refused; https, ssh, git, scp and local paths are accepted", async () => {
+  const urlRunner = (u: string) => new FakeRunner(healthy((s) => (s[0] === "remote" && s[1] === "get-url" ? { stdout: `${u}\n` } : undefined)));
+  for (const bad of ["foo::bar", "ext::sh -c x", "fd::3", "http://github.com/o/r.git", "ftp://h/r", "git+ssh://h/r", "FOO://h/r", "rsync://h/r"]) {
+    assert.equal(await code(planPush(makeDeps(urlRunner(bad)), input)), "E_POLICY_DENIED", bad);
+  }
+  for (const ok of ["https://github.com/o/r.git", "ssh://git@github.com/o/r.git", "git://h/r.git", "git@github.com:o/r.git", "/srv/git/r.git", "file:///srv/git/r.git", "HTTPS://github.com/o/r"]) {
+    assert.equal(await code(planPush(makeDeps(urlRunner(ok)), input)), "OK", ok);
+  }
+});
+
+test("S-7: the pty push carries a protocol allow-list that refuses everything but https, ssh, git and file", async () => {
+  const plan = await planPush(makeDeps(new FakeRunner(healthy())), input);
+  const pairs = plan.command.argv.flatMap((a, i, all) => (all[i - 1] === "-c" && a.startsWith("protocol.") ? [a] : []));
+  assert.deepEqual(pairs.filter((p) => p !== "protocol.ext.allow=never"), [
+    "protocol.allow=never", "protocol.https.allow=always", "protocol.ssh.allow=always", "protocol.git.allow=always", "protocol.file.allow=always",
+  ]);
+  assert.ok(plan.command.argv.indexOf("protocol.allow=never") < plan.command.argv.indexOf("push"));
+});

@@ -2,6 +2,7 @@
 // Axis push (threat model GIT-3, GIT-SNAP-1 re-take, PSH-1, GIT-7; gate 1a/L24). Explicit refspec only.
 import { OBJECT_ID, REMOTE_NAME, branchFor, checkWorktree, daemonGitFor, platformOf, prefix, type DaemonGit } from "./args.js";
 import { findOverride, withNoPrompt } from "./env.js";
+import { assertPushUrl, protocolAllowList } from "./pushUrl.js";
 import { scanOutgoing } from "./scan.js";
 import { GitOpsError, conflict, denied, invalid, redactUrls, sanitizeText } from "./errors.js";
 import type { GitOpsDeps, GitRunRequest, SecretFinding, WorktreeRef } from "./types.js";
@@ -80,10 +81,7 @@ async function check(deps: GitOpsDeps, input: PushInput): Promise<{ plan: PushPl
   if (!remotes.includes(input.remote)) throw invalid("the remote is not configured in this repository");
   const urls = await git(["remote", "get-url", "--push", "--all", "--", input.remote]);
   if (urls.code !== 0) throw invalid("the remote has no push URL");
-  for (const u of urls.stdout.split("\n").map((l) => l.trim()).filter(Boolean)) {
-    if (/^[a-z][a-z0-9+.-]*:\/\/[^/@\s]*:[^/@\s]*@/i.test(u)) throw denied(`the remote URL embeds credentials: ${redactUrls(u)}`);
-    if (/^(ext|fd)::/i.test(u)) throw denied("the remote uses a transport that Axis does not push to");
-  }
+  for (const u of urls.stdout.split("\n").map((l) => l.trim()).filter(Boolean)) assertPushUrl(u);
   const head = await git(["symbolic-ref", "--quiet", "--short", "HEAD"]);
   if (head.code !== 0 || head.stdout.trim() !== branch) throw denied("the worktree is not on the branch being pushed");
   const tip = await git(["rev-parse", "--verify", "--end-of-options", `refs/heads/${branch}^{commit}`]);
@@ -127,6 +125,7 @@ async function check(deps: GitOpsDeps, input: PushInput): Promise<{ plan: PushPl
 
   const argv = [
     ...prefix(input.worktree, deps, { context: "pty", hooks: deps.runHooks, filters: [] }),
+    ...protocolAllowList(),
     "push", "--no-follow-tags", "--no-recurse-submodules", ...(deps.runHooks ? [] : ["--no-verify"]),
     "--", input.remote, refspec,
   ];
