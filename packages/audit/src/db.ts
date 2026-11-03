@@ -76,13 +76,15 @@ function modeOf(path: string): number {
  */
 export function assertPrivateFiles(path: string): void {
   if (!POSIX || path === ":memory:") return;
-  for (const file of [path, `${path}-wal`, `${path}-shm`]) {
-    if (!existsSync(file)) continue;
-    if ((modeOf(file) & 0o077) !== 0) chmodSync(file, 0o600);
-    if ((modeOf(file) & 0o077) !== 0) {
-      throw new AxisError("E_UNAVAILABLE", "A database file is readable by other users and could not be tightened");
+  mapFs(() => {
+    for (const file of [path, `${path}-wal`, `${path}-shm`]) {
+      if (!existsSync(file)) continue;
+      if ((modeOf(file) & 0o077) !== 0) chmodSync(file, 0o600);
+      if ((modeOf(file) & 0o077) !== 0) {
+        throw new AxisError("E_UNAVAILABLE", "A database file is readable by other users and could not be tightened");
+      }
     }
-  }
+  });
 }
 
 /**
@@ -116,6 +118,38 @@ export function assertSafeDirectory(dir: string, fs: DirectoryFs = nodeDirectory
   if ((real.mode & 0o002) !== 0) refuse("world-writable");
 }
 
+/**
+ * Map a raw file system error onto the closed error set without its path (Node puts the path in `message`).
+ * A bad path (too long, a component that is not a directory, a loop) is the caller's argument; a permission
+ * refusal from the OS is a policy denial and is not retryable; a full disk, a busy file or too many open files
+ * is `E_UNAVAILABLE` (retryable); anything else is `E_INTERNAL`. Only the errno name is kept, in `detail`.
+ */
+export function mapFsError(error: unknown): unknown {
+  if (error instanceof AxisError) return error;
+  const errno = (error as { code?: unknown } | null)?.code;
+  if (typeof errno !== "string" || !/^E[A-Z0-9]{2,15}$/.test(errno)) return error;
+  const detail = { errno };
+  if (["ENAMETOOLONG", "ENOTDIR", "ELOOP", "EINVAL", "EISDIR", "ENOENT"].includes(errno)) {
+    return new AxisError("E_INVALID_ARGUMENT", "The data directory path cannot be used", detail);
+  }
+  if (["EACCES", "EPERM", "EROFS"].includes(errno)) {
+    return new AxisError("E_POLICY_DENIED", "The operating system denied access to the data directory", detail);
+  }
+  if (["ENOSPC", "EDQUOT", "EMFILE", "ENFILE", "EBUSY", "EAGAIN", "ETXTBSY", "ENOMEM"].includes(errno)) {
+    return new AxisError("E_UNAVAILABLE", "The data directory is temporarily unavailable", detail);
+  }
+  return new AxisError("E_INTERNAL", "The data directory could not be prepared", detail);
+}
+
+/** Run a file system step, converting its errors with `mapFsError`. */
+export function mapFs<T>(fn: () => T): T {
+  try {
+    return fn();
+  } catch (error) {
+    throw mapFsError(error);
+  }
+}
+
 function lstatExists(path: string, fs: DirectoryFs): boolean {
   try {
     fs.lstat(path);
@@ -128,6 +162,10 @@ function lstatExists(path: string, fs: DirectoryFs): boolean {
 
 function prepareLocation(path: string, fs: DirectoryFs): void {
   if (!POSIX) return;
+  mapFs(() => prepareLocationUnmapped(path, fs));
+}
+
+function prepareLocationUnmapped(path: string, fs: DirectoryFs): void {
   // NOT `dirname(resolve(path))`: resolve() collapses `..` lexically, but the kernel (and SQLite) follow a symlink
   // first, so `safe/link/../x.db` lives in link's PARENT, which is not `safe`. Judge the path as the kernel will.
   const dir = dirname(path);
