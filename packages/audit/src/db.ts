@@ -167,7 +167,8 @@ const hasDotDot = (path: string): boolean => path.split("/").includes("..");
  * The nearest existing ancestor of the missing directory `dir` must not be writable by others, because a
  * directory created inside a 0777 one can be renamed away and replaced by its other writers before the first
  * write. A sticky directory (like /tmp) is fine: only the owner can rename or remove what is inside it. A symlinked
- * ancestor is followed (`~/.config` is often one) and its real directory judged. Ownership is not required: if
+ * ancestor is followed (`~/.config` is often one) and its real directory judged. A sticky directory is safe only
+ * if root or the current user owns it, because the sticky bit does not restrict its owner. Otherwise ownership is not required: if
  * the user could not write there, `mkdir` fails with EACCES and that is mapped.
  */
 function assertSafeAncestor(dir: string, fs: DirectoryFs): void {
@@ -178,7 +179,15 @@ function assertSafeAncestor(dir: string, fs: DirectoryFs): void {
     ancestor = parent;
   }
   const real = fs.stat(fs.realpath(ancestor));
-  if ((real.mode & 0o1000) !== 0) return;
+  if ((real.mode & 0o1000) !== 0) {
+    // The sticky bit stops OTHER users renaming or removing entries, not the directory's owner: its owner could
+    // rename our new directory away and plant their own. So a sticky ancestor is safe only when root (like /tmp)
+    // or the current user owns it.
+    if (real.uid !== 0 && real.uid !== fs.uid()) {
+      throw new AxisError("E_INVALID_ARGUMENT", "The data directory is not safe to use", { reason: "parent-sticky-foreign-owner" });
+    }
+    return;
+  }
   if ((real.mode & 0o020) !== 0) {
     throw new AxisError("E_INVALID_ARGUMENT", "The data directory is not safe to use", { reason: "parent-group-writable" });
   }
@@ -191,7 +200,7 @@ function assertSafeAncestor(dir: string, fs: DirectoryFs): void {
  * Make sure the data directory `dir` exists and is safe: an existing one must pass `assertSafeDirectory`; a
  * missing one is created 0700, but never through a path that contains `..` (it could not be judged before it
  * is created, and a `..` after a symlink leads somewhere else) and never inside an ancestor that others can
- * write to (see `assertSafeAncestor`). Shared by `openDatabase` and
+ * write to, and not inside a sticky one owned by another user (see `assertSafeAncestor`). Shared by `openDatabase` and
  * `acquireInstanceLock`, so the database and its lock follow the same rules. File system errors are mapped
  * without the path (`mapFsError`).
  *

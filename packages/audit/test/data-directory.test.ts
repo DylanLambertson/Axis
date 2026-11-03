@@ -368,3 +368,33 @@ test("race: a directory planted after the ancestor check is judged by the final 
     t.done();
   }
 });
+
+// ---- FU-2: a sticky ancestor must belong to root or to the current user ----
+
+const notRoot = { skip: process.platform === "win32" || process.getuid?.() === 0 ? "root owns everything the test creates" : false };
+
+test("sticky ancestor: allowed when root or the current user owns it, refused when anyone else does", notRoot, async () => {
+  const t = await tmp();
+  try {
+    const ours = process.getuid?.() ?? 0;
+    const sticky = t.join(t.base, "sticky");
+    t.mkdirSync(sticky);
+    t.chmodSync(sticky, 0o1777);
+    const withOwner = (owner: number, uid: number) => ({
+      lstat: (p: string) => ({ ...t.statSync(p), isSymbolicLink: () => false }),
+      stat: (p: string) => ({ mode: t.statSync(p).mode, uid: p === sticky ? owner : t.statSync(p).uid }),
+      realpath: (p: string) => p,
+      uid: () => uid,
+    });
+    // Owned by someone else (an injected uid stands in for them): refused, and nothing is created.
+    assert.equal(reasonOf(() => openDatabase(`${sticky}/mine/x.db`, { directoryFs: withOwner(ours + 1, ours) })), "parent-sticky-foreign-owner");
+    assert.equal(t.existsSync(t.join(sticky, "mine")), false);
+    // Owned by root (as /tmp is) or by the current user: allowed.
+    openDatabase(`${sticky}/rootowned/x.db`, { directoryFs: withOwner(0, ours) }).close();
+    openDatabase(`${sticky}/ours/x.db`, { directoryFs: withOwner(ours, ours) }).close();
+    assert.equal(t.existsSync(t.join(sticky, "rootowned", "x.db")), true);
+    assert.equal(t.existsSync(t.join(sticky, "ours", "x.db")), true);
+  } finally {
+    t.done();
+  }
+});
