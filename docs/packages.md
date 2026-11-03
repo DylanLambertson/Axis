@@ -165,3 +165,24 @@ npm test            # clean build (scripts/clean-dist.mjs), then node --test "di
 ## Reaching the app
 
 Planned in ADR 0005 D3: a post-apply hook stages package sources into `src/vs/axis/packages/` so Code OSS's own esbuild bundles them into the daemon. Not implemented yet.
+
+## Calling `@axis/worktrees` from the daemon
+
+Use one `WorktreeManager` per daemon process, built with the pinned absolute git path and a `refuseIfActiveRun` hook. Its in-process mutex assumes a single instance, and each mutating call also takes a pid and start-time lockfile in the worktree admin dir.
+
+`finalise` and `remove` are destructive, so they go through `@axis/challenge`. Identity (`actor`, `connectionId`) always comes from the transport.
+
+**Issuing the challenge** (the request arrives without `approval`):
+
+1. Call `assertNoDrift(path)`. A `git-drift` `E_CONFLICT` means the user must review the change and the daemon then calls `acknowledgeDrift(path)`.
+2. Call `previewDiscard(path)`. It returns the dirty files, `skippedLarge`, `ignored` and a `fingerprint`. Show all three lists in the native confirmation, because files in `skippedLarge` and `ignored` are not backed up.
+3. Call `issue({ contract, version, method, args, target: 'workspace:<id>', contentDigest: fingerprint, ... })`. The `contentDigest` is the `previewDiscard` fingerprint. `target` is the canonical workspace id, never a path.
+
+**Acting on the approval** (the retry carries `approval: { challengeId }`):
+
+1. Take the daemon's per-project mutex. The manager's own locks only cover each call, so this mutex is what keeps the content from changing between the digest and the action.
+2. Call `assertNoDrift(path)` again, then `previewDiscard(path)` again.
+3. Call `consume(challengeId, { actor, connectionId }, { contract, version, method, args, target, currentContentDigest }, action)`. `currentContentDigest` is the fingerprint from the second `previewDiscard`. This is the TOCTOU binding: if any file changed after the user approved, `consume` refuses and nothing runs. `consume` is the only way to act on an approval, and there is no bearer token. The request digest is `requestDigest({ contract, version, method, payload })`, with `contract` as the bare id and `version` as the integer.
+4. Inside the `action` callback, import `markDiscardConfirmed` from `@axis/worktrees/daemon-confirm` (never the package root) and call it with `{ workspaceId, op, fingerprint }` using the same fingerprint. Pass the result as `discardConfirmation` to `finalise` or `remove`. The token is single use, bound to that workspace, operation and fingerprint, and never leaves the callback.
+
+If the manager still refuses, `E_CONFLICT` carries `details.reason`: `confirmation-stale` or `confirmation-spent` for a bad token, and `dirty` or `unbacked-data` (with the fingerprint) for a missing one. Errors are always `WorktreeError` with an ADR 0003 code; map them to the wire with the daemon's usual error path.
