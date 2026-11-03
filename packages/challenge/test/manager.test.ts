@@ -19,7 +19,7 @@ test("issue returns a protocol-valid challenge with a 256-bit id bound to op, ta
   assert.notEqual(issue(manager).challenge.challengeId, issued.challenge.challengeId);
 });
 
-const req = (over: Partial<RequestDigestInput> = {}) => requestDigest({ contract: CONTRACT, version: 1, method: "worktree.discard", payload: ARGS, ...over });
+const req = (over: Partial<RequestDigestInput> = {}) => requestDigest({ contract: CONTRACT, version: 1, method: "discard", payload: ARGS, ...over });
 const digest = (over: Partial<ChallengeDigestInput> = {}) =>
   challengeDigest({ requestDigest: req(), target: "workspace:ws-1", contentDigest: CONTENT, ...over });
 
@@ -27,7 +27,7 @@ test("the digest changes with any of contract, version, method, arguments, targe
   const base = digest();
   assert.notEqual(req(), req({ contract: "axis.terminals" }));
   assert.notEqual(req(), req({ version: 2 }));
-  assert.notEqual(req(), req({ method: "worktree.remove" }));
+  assert.notEqual(req(), req({ method: "remove" }));
   assert.notEqual(req(), req({ payload: { ...ARGS, deleteBranch: true } }));
   assert.notEqual(base, digest({ target: "workspace:ws-2" }));
   assert.notEqual(base, digest({ contentDigest: CHANGED }));
@@ -62,7 +62,7 @@ test("full flow: issue, resolve, native confirm, execute runs the action once an
   let ran = 0;
   const out = await manager.consume(issued.challenge.challengeId, CALLER, run, (c) => {
     ran++;
-    assert.deepEqual(c, { method: "worktree.discard", target: "workspace:ws-1", requester: "user" });
+    assert.deepEqual(c, { method: "discard", target: "workspace:ws-1", requester: "user" });
     return "done";
   });
   assert.equal(out, "done");
@@ -169,7 +169,7 @@ test("a stale or swapped digest echo is refused and burns the challenge", () => 
 
 test("a token for one operation or target does not authorise another, and the attempt burns it", async () => {
   const { manager } = setup();
-  for (const wrong of [{ method: "worktree.remove" }, { target: "workspace:ws-2" }]) {
+  for (const wrong of [{ method: "remove" }, { target: "workspace:ws-2" }]) {
     const token = approve(manager, issue(manager));
     let ran = 0;
     await assert.rejects(manager.consume(token, CALLER, { ...run, ...wrong }, () => void ran++), code("E_POLICY_DENIED"));
@@ -326,14 +326,14 @@ test("input validation: unknown keys, bad digest, bad actor, tier out of range; 
     { actor: "root" },
     { tier: 2 },
     { target: "a\nb" },
-    { method: "Discard" },
+    { method: "dis.card" },
     { extra: 1 },
   ];
   for (const b of bad) {
-    assert.throws(() => manager.issue({ contract: CONTRACT, version: 1, method: "worktree.discard", target: "t", args: ARGS, contentDigest: CONTENT, actor: "user", connectionId: CONN, windowId: WIN, ...b } as never), code("E_INVALID_ARGUMENT"));
+    assert.throws(() => manager.issue({ contract: CONTRACT, version: 1, method: "discard", target: "t", args: ARGS, contentDigest: CONTENT, actor: "user", connectionId: CONN, windowId: WIN, ...b } as never), code("E_INVALID_ARGUMENT"));
   }
   try {
-    manager.issue({ contract: CONTRACT, version: 1, method: "worktree.discard", target: "t", args: ARGS, contentDigest: "SECRET-VALUE", actor: "user", connectionId: CONN, windowId: WIN });
+    manager.issue({ contract: CONTRACT, version: 1, method: "discard", target: "t", args: ARGS, contentDigest: "SECRET-VALUE", actor: "user", connectionId: CONN, windowId: WIN });
     assert.fail("expected a throw");
   } catch (e) {
     assert.ok(e instanceof ChallengeError);

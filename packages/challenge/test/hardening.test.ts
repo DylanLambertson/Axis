@@ -218,7 +218,7 @@ test("B1: args and contract are validated: bounded plain objects only, contract 
   for (const bad of [{ args: big }, { args: [1] }, { args: null }, { args: "s" }, { args: { n: Number.NaN } }, { contract: "nope" }, { contract: "" }]) {
     assert.throws(() => issue(manager, bad as never), code("E_INVALID_ARGUMENT"));
   }
-  assert.throws(() => manager.issue({ method: "worktree.discard", target: "t", contentDigest: CONTENT, actor: "user", windowId: WIN } as never), code("E_INVALID_ARGUMENT"), "contract and args are required");
+  assert.throws(() => manager.issue({ method: "discard", target: "t", contentDigest: CONTENT, actor: "user", windowId: WIN } as never), code("E_INVALID_ARGUMENT"), "contract and args are required");
   assert.equal(manager.outstanding(), 0);
 });
 
@@ -311,7 +311,7 @@ test("N2: the attested caller is a separate argument; a payload that carries ide
 // N3: the native proof never travels in the object the renderer sees.
 test("N3: issue returns only the wire challenge; the native proof comes out once, through takeNativeProof", () => {
   const { manager } = setup();
-  const challenge = manager.issue({ contract: CONTRACT, version: 1, method: "worktree.discard", target: "workspace:ws-1", args: ARGS, contentDigest: CONTENT, actor: "user", connectionId: CONN, windowId: WIN });
+  const challenge = manager.issue({ contract: CONTRACT, version: 1, method: "discard", target: "workspace:ws-1", args: ARGS, contentDigest: CONTENT, actor: "user", connectionId: CONN, windowId: WIN });
   assert.deepEqual(Object.keys(challenge).sort(), Object.keys(challengeSchema.shape).sort());
   const proof = manager.takeNativeProof(challenge.challengeId);
   assert.ok(proof);
@@ -397,7 +397,7 @@ test("every error any entry point raises parses with errorSchema and uses a prot
 
 // B1 follow-up: `args` is always required; a precomputed requestDigest is only a cross-check.
 test("B1: args are required; a precomputed requestDigest must equal the computed one", async () => {
-  const pre = requestDigest({ contract: CONTRACT, version: 1, method: "worktree.discard", payload: ARGS });
+  const pre = requestDigest({ contract: CONTRACT, version: 1, method: "discard", payload: ARGS });
   const { manager } = setup();
   const id = approve(manager, issue(manager, { requestDigest: pre }));
   assert.equal(await manager.consume(id, CALLER, { ...run, requestDigest: pre }, () => "ok"), "ok");

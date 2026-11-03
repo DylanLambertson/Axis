@@ -124,7 +124,7 @@ test("F3: an async sink fails closed on the decision path and its rejection is n
   const h = () => void unhandled++;
   process.on("unhandledRejection", h);
   const m = new ChallengeManager({ audit: { append: (async () => { throw new Error("down"); }) as never } });
-  const base = { contract: CONTRACT, version: 1, method: "worktree.discard", target: "workspace:ws-1", args: ARGS, contentDigest: CONTENT, actor: "user", connectionId: CONN, windowId: WIN };
+  const base = { contract: CONTRACT, version: 1, method: "discard", target: "workspace:ws-1", args: ARGS, contentDigest: CONTENT, actor: "user", connectionId: CONN, windowId: WIN };
   assert.throws(() => m.issue(base), code("E_INTERNAL"));
   assert.equal(m.outstanding(), 0, "nothing was stored");
   m.withdrawConnection(CONN); // best-effort paths swallow it as well
@@ -147,7 +147,7 @@ test("N-a: refusing an unknown id does the same audit work as refusing a wrong c
 test("N-c: a monotonic clock that goes NaN fails closed and expires everything live", async () => {
   let bad = false;
   const m = new ChallengeManager({ audit: { append() {} }, monotonic: () => (bad ? Number.NaN : 1_000), now: () => 1_700_000_000_000 });
-  const mk = () => m.issue({ contract: CONTRACT, version: 1, method: "worktree.discard", target: "workspace:ws-1", args: ARGS, contentDigest: CONTENT, actor: "user", connectionId: CONN, windowId: WIN, tier: 3 });
+  const mk = () => m.issue({ contract: CONTRACT, version: 1, method: "discard", target: "workspace:ws-1", args: ARGS, contentDigest: CONTENT, actor: "user", connectionId: CONN, windowId: WIN, tier: 3 });
   const c = mk();
   m.resolve({ actor: "user", windowId: WIN }, { challengeId: c.challengeId, decision: "approve", digest: c.digest });
   bad = true;
@@ -219,4 +219,17 @@ test("N-h: a hostile getter on the action's error cannot escape consume; it stay
     (e: unknown) => e instanceof ChallengeError && e.code === "E_INTERNAL" && e.detail["executed"] === true && !e.message.includes("secret"),
   );
   assert.equal(events.at(-1)?.outcome, "error");
+});
+
+// The worktrees contract's methods, as @axis/protocol defines them: camelCase names must be accepted.
+test("every axis.worktrees method name can be issued and consumed, and malformed names are refused", async () => {
+  for (const method of ["list", "status", "create", "finalise", "remove", "restoreFromRunBase"]) {
+    const { manager } = setup();
+    const id = approve(manager, issue(manager, { method }));
+    assert.equal(await manager.consume(id, CALLER, { ...run, method }, (c) => c.method), method);
+  }
+  const { manager } = setup();
+  for (const bad of ["", "worktree.remove", "1remove", "restore_from_run_base", "a".repeat(65), "re move"]) {
+    assert.throws(() => issue(manager, { method: bad }), code("E_INVALID_ARGUMENT"), bad);
+  }
 });
