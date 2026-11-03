@@ -93,7 +93,8 @@ export function assertPrivateFiles(path: string): void {
  * symlinks, not owned by the current user, or writable by group or others. It never changes a mode.
  *
  * What it does NOT cover, on purpose:
- * - Only this directory is judged, not its ancestors. A parent that another user can write to (not sticky) lets
+ * - Only this directory is judged, not its ancestors (`ensureDataDirectory` does judge the nearest existing ancestor
+ *   of a directory it has to create). A parent that another user can write to (not sticky) lets
  *   them rename the checked directory away and plant another, so the data directory belongs under a parent the
  *   user alone controls (the per-user application-data directory is).
  * - Mode bits only. POSIX ACLs (macOS `chmod +a`, Linux `setfacl`) can grant access that the bits do not show,
@@ -163,9 +164,34 @@ function lstatExists(path: string, fs: DirectoryFs): boolean {
 const hasDotDot = (path: string): boolean => path.split("/").includes("..");
 
 /**
+ * The nearest existing ancestor of the missing directory `dir` must not be writable by others, because a
+ * directory created inside a 0777 one can be renamed away and replaced by its other writers before the first
+ * write. A sticky directory (like /tmp) is fine: only the owner can rename or remove what is inside it. A symlinked
+ * ancestor is followed (`~/.config` is often one) and its real directory judged. Ownership is not required: if
+ * the user could not write there, `mkdir` fails with EACCES and that is mapped.
+ */
+function assertSafeAncestor(dir: string, fs: DirectoryFs): void {
+  let ancestor = dirname(dir);
+  while (!lstatExists(ancestor, fs)) {
+    const parent = dirname(ancestor);
+    if (parent === ancestor) return;
+    ancestor = parent;
+  }
+  const real = fs.stat(fs.realpath(ancestor));
+  if ((real.mode & 0o1000) !== 0) return;
+  if ((real.mode & 0o020) !== 0) {
+    throw new AxisError("E_INVALID_ARGUMENT", "The data directory is not safe to use", { reason: "parent-group-writable" });
+  }
+  if ((real.mode & 0o002) !== 0) {
+    throw new AxisError("E_INVALID_ARGUMENT", "The data directory is not safe to use", { reason: "parent-world-writable" });
+  }
+}
+
+/**
  * Make sure the data directory `dir` exists and is safe: an existing one must pass `assertSafeDirectory`; a
  * missing one is created 0700, but never through a path that contains `..` (it could not be judged before it
- * is created, and a `..` after a symlink leads somewhere else). Shared by `openDatabase` and
+ * is created, and a `..` after a symlink leads somewhere else) and never inside an ancestor that others can
+ * write to (see `assertSafeAncestor`). Shared by `openDatabase` and
  * `acquireInstanceLock`, so the database and its lock follow the same rules. File system errors are mapped
  * without the path (`mapFsError`).
  *
@@ -185,6 +211,7 @@ export function ensureDataDirectory(dir: string, fs: DirectoryFs = nodeDirectory
     if (hasDotDot(dir)) {
       throw new AxisError("E_INVALID_ARGUMENT", "The data directory is not safe to use", { reason: "dotdot-path" });
     }
+    assertSafeAncestor(dir, fs);
     const target = resolve(dir);
     if (mkdirSync(target, { recursive: true, mode: 0o700 }) !== undefined) chmodSync(target, 0o700);
   });

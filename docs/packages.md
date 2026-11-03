@@ -37,10 +37,10 @@ Without the anchor, `verify()` detects edits, deletions in the middle and reorde
 
 ## Data directory
 
-`openDatabase` and `acquireInstanceLock` create a missing data directory 0700. An existing directory is never chmod-ed, and is refused (`E_INVALID_ARGUMENT`, `details.reason` one of `symlink`, `not-owned`, `group-writable`, `world-writable`, `dotdot-path`) when its last component is a symlink or the real directory is not owned by the current user or is writable by group or others. The path is judged as the kernel resolves it: a `..` after a symlink leads to the symlink target's parent, and a missing directory is never created through a path that contains `..`. The database files themselves are always 0600.
+`openDatabase` and `acquireInstanceLock` create a missing data directory 0700. An existing directory is never chmod-ed, and is refused (`E_INVALID_ARGUMENT`, `details.reason` one of `symlink`, `not-owned`, `group-writable`, `world-writable`, `dotdot-path`, `parent-group-writable`, `parent-world-writable`) when its last component is a symlink or the real directory is not owned by the current user or is writable by group or others. The path is judged as the kernel resolves it: a `..` after a symlink leads to the symlink target's parent, and a missing directory is never created through a path that contains `..`. The database files themselves are always 0600.
 
 The check is deliberately narrow:
-- Only the leaf directory is judged, not its ancestors. A parent that another user can write to (and that is not sticky) lets them rename the checked directory away and plant another, so the data directory must sit under a parent only the user controls, which the per-user application-data directory does.
+- For a directory that already exists, only that directory is judged, not its ancestors. (For a MISSING one, the nearest existing ancestor must not be writable by group or others, unless it is sticky like `/tmp`, and a symlinked ancestor is judged by its target.) A parent that another user can write to (and that is not sticky) lets them rename the checked directory away and plant another, so the data directory must sit under a parent only the user controls, which the per-user application-data directory does.
 - Only mode bits and the owner are read. POSIX ACLs (macOS `chmod +a`, Linux `setfacl`) can grant access that the bits do not show, and are ignored.
 - Windows has no owner or mode bits to read here, so the check is skipped; the per-user profile directory is protected by its ACL.
 

@@ -266,3 +266,57 @@ test("lock: a missing directory is never created through a `..` path, and nothin
     t.done();
   }
 });
+
+// ---- a missing directory is not created inside an ancestor that others can write to ----
+
+test("ancestor: `safe/badleaf/newdir/x.db` does not create newdir inside a 0777 directory", posixOnly, async () => {
+  const t = await tmp();
+  try {
+    const { acquireInstanceLock } = await import("../src/index.js");
+    const badleaf = t.join(t.base, "safe", "badleaf");
+    t.mkdirSync(badleaf, { recursive: true });
+    t.chmodSync(t.join(t.base, "safe"), 0o700);
+    for (const [mode, reason] of [[0o777, "parent-group-writable"], [0o757, "parent-world-writable"], [0o770, "parent-group-writable"]] as const) {
+      t.chmodSync(badleaf, mode);
+      assert.equal(reasonOf(() => openDatabase(`${badleaf}/newdir/x.db`)), reason, mode.toString(8));
+      assert.equal(reasonOf(() => acquireInstanceLock(`${badleaf}/newdir`)), reason, `lock ${mode.toString(8)}`);
+      // The nearest EXISTING ancestor is what counts, however many levels are missing.
+      assert.equal(reasonOf(() => openDatabase(`${badleaf}/a/b/c/x.db`)), reason);
+      assert.equal(t.existsSync(t.join(badleaf, "newdir")), false);
+      assert.equal(t.existsSync(t.join(badleaf, "a")), false);
+      assert.equal(t.statSync(badleaf).mode & 0o777, mode, "the ancestor's mode is not changed");
+    }
+    // A private ancestor is fine.
+    t.chmodSync(badleaf, 0o700);
+    openDatabase(`${badleaf}/newdir/x.db`).close();
+    assert.equal(t.statSync(t.join(badleaf, "newdir")).mode & 0o777, 0o700);
+  } finally {
+    t.done();
+  }
+});
+
+test("ancestor: a sticky world-writable ancestor (like /tmp) and a symlinked ancestor are allowed", posixOnly, async () => {
+  const t = await tmp();
+  try {
+    const sticky = t.join(t.base, "sticky");
+    t.mkdirSync(sticky);
+    t.chmodSync(sticky, 0o1777);
+    openDatabase(`${sticky}/mine/x.db`).close();
+    assert.equal(t.statSync(t.join(sticky, "mine")).mode & 0o777, 0o700);
+
+    const real = t.join(t.base, "realparent");
+    t.mkdirSync(real, { mode: 0o700 });
+    t.symlinkSync(real, t.join(t.base, "dotdir")); // like a ~/.config that points into a dotfiles checkout
+    openDatabase(`${t.base}/dotdir/axis/x.db`).close();
+    assert.equal(t.existsSync(t.join(real, "axis", "x.db")), true);
+
+    // A symlinked ancestor whose target is 0777 is judged by the target.
+    const open777 = t.join(t.base, "open777");
+    t.mkdirSync(open777);
+    t.chmodSync(open777, 0o777);
+    t.symlinkSync(open777, t.join(t.base, "openlink"));
+    assert.equal(reasonOf(() => openDatabase(`${t.base}/openlink/axis/x.db`)), "parent-group-writable");
+  } finally {
+    t.done();
+  }
+});
