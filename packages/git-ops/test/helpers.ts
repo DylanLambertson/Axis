@@ -5,6 +5,7 @@ export const WT: WorktreeRef = { workTree: "/data/wt/proj-1/feat", gitDir: "/rep
 export const TREE = "a".repeat(40);
 export const OTHER_TREE = "b".repeat(40);
 export const HEAD = "c".repeat(40);
+export const BASE = "9".repeat(40);
 
 /** The subcommand and its arguments, after the global options that come first. */
 export function sub(argv: readonly string[]): string[] {
@@ -48,6 +49,8 @@ export function healthy(extra: Responder = () => undefined): Responder {
     if (k === "remote") return { stdout: "origin\n" };
     if (s[0] === "remote" && s[1] === "get-url") return { stdout: "https://github.com/o/r.git\n" };
     if (s[0] === "rev-parse" && s.includes("refs/heads/axis/feat^{commit}")) return { stdout: `${HEAD}\n` };
+    if (s[0] === "rev-parse" && s.includes(`${BASE}^{commit}`)) return { stdout: `${BASE}\n` };
+    if (s[0] === "merge-base") return { code: 0 };
     if (s[0] === "rev-parse") return { code: 1 };
     if (s[0] === "diff") return { stdout: "+hello\n" };
     if (s[0] === "hash-object") return { stdout: `${"4".repeat(40)}\n` };

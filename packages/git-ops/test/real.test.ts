@@ -7,7 +7,7 @@ import { join } from "node:path";
 import {
   GitOpsError, createNodeRunner, executeCommit, executePush, guardedRunner, planCommit, planPush, prefix,
 } from "../src/index.js";
-import { PATHS, fixture, plantHook, refusal, stage } from "./realFixture.js";
+import { PATHS, baseOf, fixture, plantHook, refusal, stage } from "./realFixture.js";
 
 test("commit: the reviewed tree is committed with the config identity and hooks run in the pty context", async () => {
   const f = fixture();
@@ -63,7 +63,7 @@ test("daemon-side reads run no hook and no fsmonitor, even with planted ones", a
   const tree = stage(f, "b.txt", "two\n");
   writeFileSync(f.marker, "");
   await planCommit(f.deps, { worktree: f.wt, reviewedTreeHash: tree, message: "m" });
-  await planPush(f.deps, { worktree: f.wt, remote: "origin", branch: "axis/feat" });
+  await planPush(f.deps, { worktree: f.wt, remote: "origin", branch: "axis/feat", baseSha: baseOf(f) });
   assert.equal(readFileSync(f.marker, "utf8"), "", "no daemon-side call ran planted code");
 });
 
@@ -91,12 +91,12 @@ test("a hardened call runs no pre-push hook, a daemon-side push is refused by th
 test("push: explicit refspec reaches the bare remote; the pre-push hook runs in the pty context only when hooks are on", async () => {
   const f = fixture();
   plantHook(f, "pre-push");
-  await executePush(f.deps, { worktree: f.wt, remote: "origin", branch: "axis/feat" });
+  await executePush(f.deps, { worktree: f.wt, remote: "origin", branch: "axis/feat", baseSha: baseOf(f) });
   assert.match(execFileSync("git", ["--git-dir", f.remote, "rev-parse", "refs/heads/axis/feat"], { encoding: "utf8" }), /^[0-9a-f]{40}\n$/);
   assert.equal(readFileSync(f.marker, "utf8"), "pre-push\n");
   const off = fixture({ runHooks: false });
   plantHook(off, "pre-push");
-  await executePush(off.deps, { worktree: off.wt, remote: "origin", branch: "axis/feat" });
+  await executePush(off.deps, { worktree: off.wt, remote: "origin", branch: "axis/feat", baseSha: baseOf(off) });
   assert.equal(existsSync(off.marker), false);
 });
 
@@ -104,7 +104,7 @@ test("push: only the one branch goes; other refs, tags and force never do", asyn
   const f = fixture();
   f.git("branch", "other");
   f.git("tag", "v1");
-  await executePush(f.deps, { worktree: f.wt, remote: "origin", branch: "axis/feat" });
+  await executePush(f.deps, { worktree: f.wt, remote: "origin", branch: "axis/feat", baseSha: baseOf(f) });
   const refs = execFileSync("git", ["--git-dir", f.remote, "for-each-ref", "--format=%(refname)"], { encoding: "utf8" }).trim().split("\n");
   assert.deepEqual(refs, ["refs/heads/axis/feat"]);
 });
@@ -112,11 +112,11 @@ test("push: only the one branch goes; other refs, tags and force never do", asyn
 test("push: force and refspec tricks in the branch or remote are refused", async () => {
   const f = fixture();
   for (const branch of ["+axis/feat", "axis/feat:main", "axis/*", "main", ":axis/feat", "--force", "--upload-pack=touch /tmp/axis-pwned"]) {
-    const e = await refusal(planPush(f.deps, { worktree: f.wt, remote: "origin", branch }));
+    const e = await refusal(planPush(f.deps, { worktree: f.wt, remote: "origin", branch, baseSha: baseOf(f) }));
     assert.ok(e.code === "E_POLICY_DENIED" || e.code === "E_INVALID_ARGUMENT", branch);
   }
   for (const remote of ["--receive-pack=touch /tmp/axis-pwned", "-f", f.remote, "ext::sh -c touch% /tmp/axis-pwned"]) {
-    const e = await refusal(planPush(f.deps, { worktree: f.wt, remote, branch: "axis/feat" }));
+    const e = await refusal(planPush(f.deps, { worktree: f.wt, remote, branch: "axis/feat", baseSha: baseOf(f) }));
     assert.equal(e.code, "E_INVALID_ARGUMENT", remote);
   }
   assert.equal(existsSync("/tmp/axis-pwned"), false);
@@ -125,27 +125,27 @@ test("push: force and refspec tricks in the branch or remote are refused", async
 test("push: a configured remote with credentials in its URL is refused without echoing the password", async () => {
   const f = fixture();
   f.git("remote", "add", "cred", "https://user:hunter2@github.com/o/r.git");
-  const e = await refusal(planPush(f.deps, { worktree: f.wt, remote: "cred", branch: "axis/feat" }));
+  const e = await refusal(planPush(f.deps, { worktree: f.wt, remote: "cred", branch: "axis/feat", baseSha: baseOf(f) }));
   assert.equal(e.code, "E_POLICY_DENIED");
   assert.ok(!e.message.includes("hunter2"));
   f.git("remote", "add", "ext", "ext::sh -c true");
-  assert.equal((await refusal(planPush(f.deps, { worktree: f.wt, remote: "ext", branch: "axis/feat" }))).code, "E_POLICY_DENIED");
+  assert.equal((await refusal(planPush(f.deps, { worktree: f.wt, remote: "ext", branch: "axis/feat", baseSha: baseOf(f) }))).code, "E_POLICY_DENIED");
 });
 
 test("push: drift refuses before anything is pushed; the secret scanner sees the real outgoing diff", async () => {
   const drifting = fixture({ assertNoDrift: async () => { throw new GitOpsError("E_POLICY_DENIED", "drift"); } });
-  await refusal(executePush(drifting.deps, { worktree: drifting.wt, remote: "origin", branch: "axis/feat" }));
+  await refusal(executePush(drifting.deps, { worktree: drifting.wt, remote: "origin", branch: "axis/feat", baseSha: baseOf(drifting) }));
   assert.throws(() => execFileSync("git", ["--git-dir", drifting.remote, "rev-parse", "refs/heads/axis/feat"], { stdio: "ignore" }));
 
   let diff = "";
   const f = fixture({ scanner: async (d) => { diff = d; return /SECRET=/.test(d) ? [{ rule: "env-secret", path: ".env" }] : []; }, scanMode: "warn" });
   stage(f, ".env", "SECRET=abc\n");
   f.git("commit", "-q", "-m", "add env");
-  const plan = await planPush(f.deps, { worktree: f.wt, remote: "origin", branch: "axis/feat", base: "main" });
+  const plan = await planPush(f.deps, { worktree: f.wt, remote: "origin", branch: "axis/feat", baseSha: baseOf(f) });
   assert.match(diff, /\+SECRET=abc/);
   assert.equal(plan.requiresConfirmation, true);
-  await refusal(executePush(f.deps, { worktree: f.wt, remote: "origin", branch: "axis/feat", base: "main" }));
-  await executePush(f.deps, { worktree: f.wt, remote: "origin", branch: "axis/feat", base: "main" }, { confirmed: true });
+  await refusal(executePush(f.deps, { worktree: f.wt, remote: "origin", branch: "axis/feat", baseSha: baseOf(f) }));
+  await executePush(f.deps, { worktree: f.wt, remote: "origin", branch: "axis/feat", baseSha: baseOf(f) }, { confirmed: true });
 });
 
 test("a filter driver in the config is neutralised by the daemon prefix, and the fixture is not vacuous", async () => {

@@ -75,3 +75,8 @@ export async function refusal(p: Promise<unknown>): Promise<GitOpsError> {
   assert.fail("expected a refusal");
 }
 
+
+/** The journaled base of the fixture: the commit axis/feat was cut from. */
+export function baseOf(f: Pick<Fixture, "git">): string {
+  return f.git("rev-parse", "main").trim();
+}

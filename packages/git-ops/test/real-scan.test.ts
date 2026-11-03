@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { planPush } from "../src/index.js";
-import { fixture } from "./realFixture.js";
+import { baseOf, fixture } from "./realFixture.js";
 
 /** A secret-shaped value assembled at runtime so no literal looks like a credential. */
 export const AWS_KEY = ["AK", "IA", "ABCDEFGHIJKLMNOP"].join("");
@@ -41,7 +41,7 @@ test("B-1: a submodule diff.submodule=diff preference cannot run a nested reposi
   f.git("diff", "--no-ext-diff", "--no-textconv", "HEAD~1", "HEAD");
   assert.ok(existsSync(f.marker), "fixture: an unhardened submodule diff runs diff.external");
   writeFileSync(f.marker, "");
-  await planPush(f.deps, { worktree: f.wt, remote: "origin", branch: "axis/feat" });
+  await planPush(f.deps, { worktree: f.wt, remote: "origin", branch: "axis/feat", baseSha: baseOf(f) });
   assert.equal(readFileSync(f.marker, "utf8"), "", "a program from worktree-controlled config ran in the daemon during the secret-scan diff");
 });
 
@@ -71,7 +71,7 @@ test("B-2: in a partial clone the scan diff cannot lazy-fetch through remote.<n>
   const pc = clone("pc");
   writeFileSync(f.marker, "");
   const wt = { workTree: pc, gitDir: join(pc, ".git") };
-  await planPush(f.deps, { worktree: wt, remote: "origin", branch: "axis/feat", base: "main" }).catch(() => undefined);
+  await planPush(f.deps, { worktree: wt, remote: "origin", branch: "axis/feat", baseSha: f.run(pc, "rev-parse", "main").trim() }).catch(() => undefined);
   assert.equal(readFileSync(f.marker, "utf8"), "", "the daemon ran a transport program during a lazy fetch");
 });
 
@@ -87,6 +87,35 @@ test("S-6: a refs/replace entry cannot show the scanner clean content in place o
   const clean = f.run(repo, "hash-object", "-w", join(f.root, "clean.txt")).trim();
   f.git("replace", secretBlob, clean);
   assert.ok(!f.git("diff", "main", "HEAD").includes(AWS_KEY), "fixture: an unhardened diff honours the replacement");
-  const e = await planPush(f.deps, { worktree: f.wt, remote: "origin", branch: "axis/feat", base: "main" }).then(() => undefined, (x: unknown) => x);
+  const e = await planPush(f.deps, { worktree: f.wt, remote: "origin", branch: "axis/feat", baseSha: baseOf(f) }).then(() => undefined, (x: unknown) => x);
   assert.ok(e instanceof Error && /secret pattern/.test(e.message), `the scan did not see the real blob; scanner got ${JSON.stringify(seen)}`);
+});
+
+test("S-1: a remote-tracking ref planted in the worktree does not narrow the scanned range", async () => {
+  const seen: string[] = [];
+  const f = fixture({ scanner: scanFor(seen), scanMode: "refuse" });
+  writeFileSync(join(f.wt.workTree, ".env"), `AWS=${AWS_KEY}\n`);
+  f.git("add", "-A");
+  f.git("commit", "-q", "-m", "add env");
+  f.git("update-ref", "refs/remotes/origin/axis/feat", "HEAD"); // the remote has no such branch
+  const e = await planPush(f.deps, { worktree: f.wt, remote: "origin", branch: "axis/feat", baseSha: baseOf(f) }).then(() => undefined, (x: unknown) => x);
+  assert.ok(e instanceof Error && /secret pattern/.test(e.message), `the scan was narrowed; scanner got ${JSON.stringify(seen)}`);
+});
+
+test("S-1: a base that is missing, malformed or not an ancestor of the tip is refused", async () => {
+  const f = fixture({ scanner: async () => [] });
+  const input = { worktree: f.wt, remote: "origin", branch: "axis/feat" };
+  const codeOf = async (baseSha: unknown): Promise<string> => planPush(f.deps, { ...input, baseSha } as never).then(() => "OK", (e: { code: string }) => e.code);
+  assert.equal(await codeOf(undefined), "E_INVALID_ARGUMENT");
+  assert.equal(await codeOf("main"), "E_INVALID_ARGUMENT");
+  assert.equal(await codeOf("0".repeat(40)), "E_CONFLICT", "not in the repository");
+  // A commit that exists but is not an ancestor of the tip (history rewritten since the base was recorded).
+  f.git("checkout", "-q", "--orphan", "other");
+  writeFileSync(join(f.wt.workTree, "z.txt"), "z\n");
+  f.git("add", "-A");
+  f.git("commit", "-q", "-m", "unrelated");
+  const stray = f.git("rev-parse", "HEAD").trim();
+  f.git("checkout", "-q", "axis/feat");
+  assert.equal(await codeOf(stray), "E_CONFLICT", "not an ancestor");
+  assert.equal(await codeOf(baseOf(f)), "OK");
 });

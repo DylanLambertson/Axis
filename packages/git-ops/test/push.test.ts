@@ -2,9 +2,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { GitOpsError, executePush, isAllowedRefspec, planPush } from "../src/index.js";
-import { FakeRunner, WT, healthy, makeDeps, sub } from "./helpers.js";
+import { BASE, FakeRunner, WT, healthy, makeDeps, sub } from "./helpers.js";
 
-const input = { worktree: WT, remote: "origin", branch: "axis/feat" };
+const input = { worktree: WT, remote: "origin", branch: "axis/feat", baseSha: BASE };
 
 async function code(p: Promise<unknown>): Promise<string> {
   try {
@@ -132,4 +132,23 @@ test("the secret-scan diff uses no external diff or textconv, and no findings me
   const diff = r.calls.find((c) => sub(c.argv)[0] === "diff");
   assert.ok(diff);
   assert.ok(sub(diff.argv).includes("--no-ext-diff") && sub(diff.argv).includes("--no-textconv"));
+});
+
+test("S-1: the scan runs from the journaled baseSha and never reads a ref under refs/remotes", async () => {
+  const r = new FakeRunner(healthy());
+  await planPush(makeDeps(r, { scanner: async () => [] }), input);
+  const diff = r.calls.find((c) => sub(c.argv)[0] === "diff");
+  assert.ok(diff && sub(diff.argv).includes(BASE));
+  assert.equal(r.calls.some((c) => c.argv.some((a) => a.includes("refs/remotes"))), false);
+});
+
+test("S-1: a missing, malformed or non-ancestor base is refused", async () => {
+  const mk = (over: Record<string, unknown>) => planPush(makeDeps(new FakeRunner(healthy())), { ...input, ...over } as typeof input);
+  assert.equal(await code(mk({ baseSha: undefined })), "E_INVALID_ARGUMENT");
+  assert.equal(await code(mk({ baseSha: "main" })), "E_INVALID_ARGUMENT");
+  assert.equal(await code(mk({ baseSha: "A".repeat(40) })), "E_INVALID_ARGUMENT");
+  const missing = new FakeRunner(healthy((s) => (s[0] === "rev-parse" && s.includes(`${BASE}^{commit}`) ? { code: 1 } : undefined)));
+  assert.equal(await code(planPush(makeDeps(missing), input)), "E_CONFLICT");
+  const rewritten = new FakeRunner(healthy((s) => (s[0] === "merge-base" ? { code: 1 } : undefined)));
+  assert.equal(await code(planPush(makeDeps(rewritten), input)), "E_CONFLICT");
 });

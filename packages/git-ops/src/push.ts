@@ -1,8 +1,8 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 // Axis push (threat model GIT-3, GIT-SNAP-1 re-take, PSH-1, GIT-7; gate 1a/L24). Explicit refspec only.
-import { EMPTY_TREE_SHA1, OBJECT_ID, REMOTE_NAME, branchFor, checkWorktree, daemonGitFor, platformOf, prefix, safeRef, type DaemonGit } from "./args.js";
+import { OBJECT_ID, REMOTE_NAME, branchFor, checkWorktree, daemonGitFor, platformOf, prefix, type DaemonGit } from "./args.js";
 import { findOverride, withNoPrompt } from "./env.js";
-import { GitOpsError, denied, invalid, redactUrls } from "./errors.js";
+import { GitOpsError, conflict, denied, invalid, redactUrls } from "./errors.js";
 import type { GitOpsDeps, GitRunRequest, SecretFinding, WorktreeRef } from "./types.js";
 
 export interface PushInput {
@@ -11,8 +11,11 @@ export interface PushInput {
   readonly remote: string;
   /** `axis/<slug>`. */
   readonly branch: string;
-  /** Workspace base SHA or ref, used as the diff base for the secret scan when the remote has no copy. */
-  readonly base?: string;
+  /**
+   * The workspace's recorded base, or the last SHA Axis pushed, from the journal: a full object id. The scanned range
+   * is `baseSha..tip`. Refs under refs/remotes are never used for this: the code in the worktree can write them and they go stale.
+   */
+  readonly baseSha: string;
 }
 
 export interface PushPlan {
@@ -48,6 +51,9 @@ async function check(deps: GitOpsDeps, input: PushInput): Promise<{ plan: PushPl
   const { branch, slug } = branchFor(input.branch);
   const refspec = pushRefspec(slug);
   if (!isAllowedRefspec(refspec)) throw denied("refspec not allowed");
+  if (typeof input.baseSha !== "string" || !OBJECT_ID.test(input.baseSha)) {
+    throw invalid("baseSha must be the journaled base commit as a full lower-case object id");
+  }
   const bad = findOverride(deps.env.pty);
   if (bad) throw denied(`the pty git environment must not set ${bad}`);
 
@@ -66,6 +72,11 @@ async function check(deps: GitOpsDeps, input: PushInput): Promise<{ plan: PushPl
   if (head.code !== 0 || head.stdout.trim() !== branch) throw denied("the worktree is not on the branch being pushed");
   const tip = await git(["rev-parse", "--verify", "--end-of-options", `refs/heads/${branch}^{commit}`]);
   if (tip.code !== 0) throw invalid("the branch has no commits");
+
+  const base = await git(["rev-parse", "--verify", "--quiet", "--end-of-options", `${input.baseSha}^{commit}`]);
+  if (base.code !== 0) throw conflict("the recorded base commit is not in this repository");
+  const ancestor = await git(["merge-base", "--is-ancestor", input.baseSha, tip.stdout.trim()]);
+  if (ancestor.code !== 0) throw conflict("the recorded base is not an ancestor of the branch; the history was rewritten");
 
   // The GIT-SNAP-1 re-take comes last so nothing can change between it and the push.
   await deps.assertNoDrift(input.worktree);
@@ -86,15 +97,7 @@ async function check(deps: GitOpsDeps, input: PushInput): Promise<{ plan: PushPl
 
 async function scan(deps: GitOpsDeps, git: DaemonGit, input: PushInput, branch: string, tip: string): Promise<readonly SecretFinding[]> {
   if (!deps.scanner) return [];
-  let from: string | undefined;
-  const tracking = await git(["rev-parse", "--verify", "--quiet", "--end-of-options", `refs/remotes/${input.remote}/${branch}^{commit}`]);
-  if (tracking.code === 0) from = tracking.stdout.trim();
-  if (from === undefined && input.base !== undefined) {
-    const b = OBJECT_ID.test(input.base) ? input.base : safeRef(input.base, "base");
-    const r = await git(["rev-parse", "--verify", "--quiet", "--end-of-options", `${b}^{commit}`]);
-    if (r.code === 0) from = r.stdout.trim();
-  }
-  if (from === undefined) from = (await git(["hash-object", "-t", "tree", "--stdin"], "")).stdout.trim() || EMPTY_TREE_SHA1;
+  const from = input.baseSha;
   const d = await git(["diff", "--no-color", "--no-ext-diff", "--no-textconv", "--submodule=short", "--ignore-submodules=all", from, tip, "--"]);
   if (d.code !== 0) throw new GitOpsError("E_UNAVAILABLE", "could not compute the outgoing diff for the secret scan");
   const truncated = d.stdout.length > MAX_DIFF;
