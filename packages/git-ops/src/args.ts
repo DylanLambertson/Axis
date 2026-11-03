@@ -5,7 +5,7 @@ import { isAbsolute as posixAbs, normalize as posixNorm } from "node:path/posix"
 import { isAbsolute as winAbs, normalize as winNorm } from "node:path/win32";
 import { refNameSchema } from "@axis/protocol";
 import { daemonGitEnv, findOverride } from "./env.js";
-import { denied, invalid } from "./errors.js";
+import { GitOpsError, denied, invalid } from "./errors.js";
 import type { GitContext, GitOpsDeps, GitRunRequest, GitRunResult, GitRunner, WorktreeRef } from "./types.js";
 
 export const SLUG = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
@@ -109,6 +109,30 @@ export async function filterNames(w: WorktreeRef, deps: GitOpsDeps, env: Record<
   return [...names];
 }
 
+/** `--end-of-options`, which every ref-taking call here relies on, first appeared in git 2.24. */
+export const MIN_GIT_VERSION = { major: 2, minor: 24 } as const;
+
+const versionChecked = new WeakSet<GitRunner>();
+
+/**
+ * Refuses (E_UNAVAILABLE) a git older than 2.24 or whose `git --version` output cannot be parsed.
+ * A success is remembered per runner, so the check costs one process per runner, not one per call.
+ */
+export async function requireGitVersion(deps: GitOpsDeps, w: WorktreeRef, env: Record<string, string>): Promise<void> {
+  if (versionChecked.has(deps.runner)) return;
+  // Same hardened prefix as every other daemon call, so the hooks-off invariant has no exception.
+  const argv = [...prefix(w, deps, { context: "daemon", hooks: false, filters: [] }), "--version"];
+  const r = await guardedRunner(deps.runner, deps).run({ argv, cwd: w.workTree, env, context: "daemon" });
+  const m = r.code === 0 ? /^git version (\d+)\.(\d+)(?![\d])/.exec(r.stdout.trim()) : null;
+  if (!m) throw new GitOpsError("E_UNAVAILABLE", "could not determine the git version");
+  const major = Number(m[1]);
+  const minor = Number(m[2]);
+  if (major < MIN_GIT_VERSION.major || (major === MIN_GIT_VERSION.major && minor < MIN_GIT_VERSION.minor)) {
+    throw new GitOpsError("E_UNAVAILABLE", `git ${MIN_GIT_VERSION.major}.${MIN_GIT_VERSION.minor} or newer is required (found ${major}.${minor})`);
+  }
+  versionChecked.add(deps.runner);
+}
+
 export interface DaemonGit {
   (sub: readonly string[], stdin?: string): Promise<GitRunResult>;
 }
@@ -116,6 +140,7 @@ export interface DaemonGit {
 /** A daemon-side git caller bound to a worktree: hardened prefix, filters neutralised, GIT-ENV-1 environment. */
 export async function daemonGitFor(w: WorktreeRef, deps: GitOpsDeps): Promise<DaemonGit> {
   const env = daemonEnv(deps);
+  await requireGitVersion(deps, w, env);
   const filters = await filterNames(w, deps, env);
   const runner = guardedRunner(deps.runner, deps);
   return (sub, stdin) =>

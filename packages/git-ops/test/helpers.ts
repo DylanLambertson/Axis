@@ -8,6 +8,7 @@ export const HEAD = "c".repeat(40);
 
 /** The subcommand and its arguments, after the global options that come first. */
 export function sub(argv: readonly string[]): string[] {
+  if (argv.at(-1) === "--version") return ["--version"];
   let i = 0;
   while (i < argv.length && (argv[i] as string).startsWith("-")) i += argv[i] === "-c" ? 2 : 1;
   return argv.slice(i);
@@ -37,6 +38,7 @@ export function healthy(extra: Responder = () => undefined): Responder {
     const e = extra(s, req);
     if (e) return e;
     const k = s.join(" ");
+    if (k === "--version") return { stdout: "git version 2.39.5 (Apple Git-154)\n" };
     if (s[0] === "config") return { code: 1 };
     if (k === "symbolic-ref --quiet --short HEAD") return { stdout: "axis/feat\n" };
     if (k === "write-tree") return { stdout: `${TREE}\n` };
