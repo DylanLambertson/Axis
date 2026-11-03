@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import type { BudgetHook } from "./budget.js";
-import { ProviderError, isProviderError, type ProviderErrorCode } from "./errors.js";
+import { ProviderError, sanitizeProviderError, type ProviderErrorCode } from "./errors.js";
 import { NO_SECRETS, stringsIn, type Redactor } from "./redaction.js";
 import { StreamValidator, type StreamLimits } from "./stream.js";
 import {
@@ -29,7 +29,6 @@ export interface GuardLimits extends StreamLimits {
 
 export const DEFAULT_IDLE_TIMEOUT_MS = 120_000;
 export const DEFAULT_REQUEST_TIMEOUT_MS = 900_000;
-const MAX_MESSAGE_CHARS = 1_024;
 
 export interface Timers {
   setTimeout(fn: () => void, ms: number): unknown;
@@ -173,10 +172,7 @@ export function guardProvider(adapter: ProviderAdapter, options: GuardOptions = 
     if (why === "cancelled") return new ProviderError("cancelled");
     if (why === "timeout_idle") return new ProviderError("timeout", { reason: "idle" });
     if (why === "timeout_request") return new ProviderError("timeout", { reason: "request" });
-    if (!isProviderError(e)) return new ProviderError("internal");
-    let m = redactor.redact(e.message);
-    if (m.length > MAX_MESSAGE_CHARS) m = `${m.slice(0, MAX_MESSAGE_CHARS - 1)}…`;
-    return m === e.message ? e : e.withMessage(m);
+    return sanitizeProviderError(e, redactor);
   };
 
   /** A non-run call (list, capabilities, validate, count): timeouts, abort race, normalized errors. */
@@ -286,7 +282,7 @@ export function guardProvider(adapter: ProviderAdapter, options: GuardOptions = 
     getCapabilities: (model, opts) => call(opts.signal, (o) => adapter.getCapabilities(model, o)),
     validateConnection: (opts) =>
       call(opts.signal, (o) => adapter.validateConnection(o)).then(
-        (r): ConnectionCheck => (r.ok ? r : { ok: false, error: normalize(r.error, undefined) }),
+        (r): ConnectionCheck => (r.ok === true ? { ok: true } : { ok: false, error: normalize(read(r, "error"), undefined) }),
       ),
     countTokens: (request, opts) =>
       call(opts.signal, async (o) => {
@@ -369,6 +365,14 @@ export function guardProvider(adapter: ProviderAdapter, options: GuardOptions = 
       });
     }
     if (error !== undefined) throw error;
+  }
+}
+
+function read(o: object, key: string): unknown {
+  try {
+    return (o as Record<string, unknown>)[key];
+  } catch {
+    return undefined;
   }
 }
 

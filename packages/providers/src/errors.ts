@@ -1,5 +1,6 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { makeError, type AxisError, type ErrorCode } from "@axis/protocol";
+import { FEATURES, type Feature } from "./types.js";
 
 /**
  * The closed provider error taxonomy. Every adapter maps every failure to one
@@ -55,6 +56,12 @@ const CODE_INFO: Readonly<Record<ProviderErrorCode, CodeInfo>> = {
   internal: { retryable: false, axis: "E_INTERNAL", text: "The provider adapter failed." },
 };
 
+const CODE_SET: ReadonlySet<string> = new Set(PROVIDER_ERROR_CODES);
+
+export function isProviderErrorCode(code: unknown): code is ProviderErrorCode {
+  return typeof code === "string" && CODE_SET.has(code);
+}
+
 export function isRetryableCode(code: ProviderErrorCode): boolean {
   return CODE_INFO[code].retryable;
 }
@@ -69,10 +76,10 @@ export interface ProviderErrorDetails {
   readonly status?: number;
   /** Server-advised delay before a retry, in milliseconds. */
   readonly retryAfterMs?: number;
-  /** A fixed reason word, for example the budget dimension that ran out. */
+  /** A fixed reason word (lowercase letters and `_`, at most 32), for example the budget dimension that ran out. */
   readonly reason?: string;
-  /** The capability a request used and the model lacks. */
-  readonly capability?: string;
+  /** The capability a request used and the model lacks; one of `FEATURES`. */
+  readonly capability?: Feature;
 }
 
 export interface ProviderErrorInit extends ProviderErrorDetails {
@@ -80,11 +87,21 @@ export interface ProviderErrorInit extends ProviderErrorDetails {
   readonly message?: string;
 }
 
-const REASON_RE = /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/;
+/**
+ * Reasons are fixed words chosen by code, never data. No digits and a short
+ * bound keep a credential (or a prefix of one) from passing as a reason.
+ */
+const REASON_RE = /^[a-z][a-z_]{0,31}$/;
+const FEATURE_SET: ReadonlySet<string> = new Set(FEATURES);
+
+export const DETAIL_KEYS = ["status", "retryAfterMs", "reason", "capability"] as const;
 
 /**
  * The one error type adapters throw. It has no `cause`: a cause chain is where
- * request bodies and credentials leak into logs (ANT-1, PRV-2).
+ * request bodies and credentials leak into logs (ANT-1, PRV-2). Instances are
+ * frozen, so nothing can be attached after construction. The guard never
+ * trusts an adapter's instance anyway: it rebuilds a fresh one
+ * (`sanitizeProviderError` in `guard.ts`).
  */
 export class ProviderError extends Error {
   override readonly name = "ProviderError";
@@ -103,14 +120,10 @@ export class ProviderError extends Error {
     if (init.retryAfterMs !== undefined && Number.isFinite(init.retryAfterMs) && init.retryAfterMs >= 0) {
       details.retryAfterMs = Math.min(Math.round(init.retryAfterMs), 86_400_000);
     }
-    if (init.reason !== undefined && REASON_RE.test(init.reason)) details.reason = init.reason;
-    if (init.capability !== undefined && REASON_RE.test(init.capability)) details.capability = init.capability;
+    if (typeof init.reason === "string" && REASON_RE.test(init.reason)) details.reason = init.reason;
+    if (typeof init.capability === "string" && FEATURE_SET.has(init.capability)) details.capability = init.capability;
     this.details = Object.freeze(details);
-  }
-
-  /** The same error with its message replaced, for example after redaction. */
-  withMessage(message: string): ProviderError {
-    return new ProviderError(this.code, { ...this.details, message });
+    Object.freeze(this);
   }
 
   toJSON(): { name: string; code: ProviderErrorCode; message: string; retryable: boolean; details: ProviderErrorDetails } {
@@ -127,10 +140,14 @@ export function isProviderError(e: unknown): e is ProviderError {
  * own (already user-safe) text; details carry only the fixed fields above.
  */
 export function toAxisError(e: ProviderError, correlationId: string): AxisError {
+  // Copy the known keys only, each type-checked: `details` is not trusted to
+  // have the shape the type says (B1).
+  const d = e.details;
   const details: Record<string, string | number> = { providerCode: e.code };
-  for (const [k, v] of Object.entries(e.details)) {
-    if (typeof v === "string" || typeof v === "number") details[k] = v;
-  }
+  if (typeof d.status === "number" && Number.isInteger(d.status)) details["status"] = d.status;
+  if (typeof d.retryAfterMs === "number" && Number.isFinite(d.retryAfterMs)) details["retryAfterMs"] = d.retryAfterMs;
+  if (typeof d.reason === "string" && REASON_RE.test(d.reason)) details["reason"] = d.reason;
+  if (typeof d.capability === "string" && FEATURE_SET.has(d.capability)) details["capability"] = d.capability;
   return makeError(CODE_INFO[e.code].axis, e.message, correlationId, details);
 }
 
@@ -162,4 +179,60 @@ export function codeForHttpStatus(status: number): ProviderErrorCode {
     default:
       return status >= 500 && status <= 599 ? "server_error" : "invalid_response";
   }
+}
+
+/** Longest message an error may carry after sanitizing. */
+export const MAX_PROVIDER_ERROR_MESSAGE = 1_024;
+/** Redaction runs over at most this much of a message, so a huge message cannot stall it. */
+const MESSAGE_PRECAP = 16_384;
+
+/** Cut at a UTF-16 length without splitting a surrogate pair. */
+function truncate(s: string, max: number): string {
+  if (s.length <= max) return s;
+  const last = s.charCodeAt(max - 1);
+  return s.slice(0, last >= 0xd800 && last <= 0xdbff ? max - 1 : max);
+}
+
+/** Read one property without letting a throwing getter escape. */
+function read(o: object, key: string): unknown {
+  try {
+    return (o as Record<string, unknown>)[key];
+  } catch {
+    return undefined;
+  }
+}
+
+/** The part of a redactor `sanitizeProviderError` needs. */
+export interface ErrorRedactor {
+  redact(text: string): string;
+  containsSecret(text: string): boolean;
+}
+
+/**
+ * Build a fresh, safe `ProviderError` from anything an adapter threw (B1).
+ * The adapter's object is never returned: extra properties, a `cause`, a
+ * replaced `details` object and getters stay behind. Each field is read once,
+ * the message is bounded and redacted, and `reason` is dropped if it holds a
+ * secret. A value that is not a `ProviderError` becomes a fixed `internal`.
+ */
+export function sanitizeProviderError(e: unknown, redactor: ErrorRedactor): ProviderError {
+  if (!(e instanceof ProviderError)) return new ProviderError("internal");
+  const rawCode = read(e, "code");
+  const code: ProviderErrorCode = isProviderErrorCode(rawCode) ? rawCode : "internal";
+  const rawMessage = read(e, "message");
+  let message = typeof rawMessage === "string" ? truncate(rawMessage, MESSAGE_PRECAP) : defaultMessage(code);
+  message = redactor.redact(message);
+  if (message.length > MAX_PROVIDER_ERROR_MESSAGE) message = `${truncate(message, MAX_PROVIDER_ERROR_MESSAGE - 1)}…`;
+  const rawDetails = read(e, "details");
+  const d = typeof rawDetails === "object" && rawDetails !== null ? rawDetails : {};
+  const status = read(d, "status");
+  const retryAfterMs = read(d, "retryAfterMs");
+  const reason = read(d, "reason");
+  const capability = read(d, "capability");
+  const init: { -readonly [K in keyof ProviderErrorInit]: ProviderErrorInit[K] } = { message };
+  if (typeof status === "number") init.status = status;
+  if (typeof retryAfterMs === "number") init.retryAfterMs = retryAfterMs;
+  if (typeof reason === "string" && !redactor.containsSecret(reason)) init.reason = reason;
+  if (typeof capability === "string" && FEATURE_SET.has(capability)) init.capability = capability as Feature;
+  return new ProviderError(code, init);
 }

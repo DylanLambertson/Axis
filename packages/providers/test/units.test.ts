@@ -33,7 +33,7 @@ test("errors: every code maps to a valid bridge error with consistent retryabili
 });
 
 test("errors: details are sanitized and there is no cause", () => {
-  const e = new ProviderError("rate_limited", { status: 99, retryAfterMs: -1, reason: "Has Spaces", capability: "x".repeat(100) });
+  const e = new ProviderError("rate_limited", { status: 99, retryAfterMs: -1, reason: "Has Spaces", capability: "x".repeat(100) as never });
   assert.deepEqual(e.details, {});
   assert.equal("cause" in e, false);
   assert.equal(new ProviderError("rate_limited", { retryAfterMs: 1e12 }).details.retryAfterMs, 86_400_000);
