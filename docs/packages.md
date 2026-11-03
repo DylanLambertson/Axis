@@ -61,6 +61,14 @@ The approval digest is defined once, in the doc comment of `requestDigest()` in 
 - Replay: a tier 3+ replay from the originating connection returns the stored result. From any other connection it needs its own approval, and the stored result is returned inside `execute`.
 - Withdrawal: a cancel or timeout before the approval was spent calls `gate.withdraw(challengeId, { actor, connectionId })` once; a closed connection calls `gate.withdrawConnection(connectionId)` once. Both are best effort.
 
+Adapter rules:
+
+- Pass both `args` and `requestDigest: input.digest` to `issue` and `consume`; the manager computes its own digest and a mismatch is `E_INVALID_ARGUMENT`.
+- `gate.withdraw` calls `manager.withdraw(challengeId, { actor, connectionId })` and `gate.withdrawConnection` calls `manager.withdrawConnection(connectionId)`; ignore the count. A withdrawn id is refused with `E_POLICY_DENIED` afterwards.
+- Handler errors are mapped by the pipeline inside `action` and never pass through `consume`. A handler that fails (or returns an error) has still spent the approval; the user confirms again and the idempotency key is freed. `action` throws only for an abort or a failed decision-audit write.
+- Map `ChallengeError` to `ApprovalError`: `E_POLICY_DENIED` and `E_CONFLICT` stay; any other code, or `executed: true`, becomes `ApprovalError(code, true)` and is answered `E_INTERNAL`. Never call `error.toWire`: the daemon owns the wire answer and the correlation id.
+- A method whose tier a policy may raise must declare `approval` as an optional field of its (strict) request schema, or it can never be approved.
+
 | Daemon field | Challenge field |
 |---|---|
 | `input.contract` (bare id), `input.contractVersion` | `contract`, `version` |
