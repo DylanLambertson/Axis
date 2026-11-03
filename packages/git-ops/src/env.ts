@@ -3,7 +3,8 @@
 // This is a copy of its GIT-ENV-1 semantics: an allow-list, GIT_TERMINAL_PROMPT=0, and no other GIT_*.
 import type { Env } from "./types.js";
 
-const ALLOW = new Set(["PATH", "HOME", "USER", "LANG", "TMPDIR"]);
+// XDG_CONFIG_HOME locates the user-level git config, so the daemon must read the same one the pty push will.
+const ALLOW = new Set(["PATH", "HOME", "USER", "LANG", "TMPDIR", "XDG_CONFIG_HOME"]);
 const ALLOW_WIN32 = new Set([
   "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "USERPROFILE", "APPDATA", "LOCALAPPDATA",
   "TEMP", "TMP", "HOMEDRIVE", "HOMEPATH",
