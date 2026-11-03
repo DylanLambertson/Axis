@@ -320,3 +320,51 @@ test("ancestor: a sticky world-writable ancestor (like /tmp) and a symlinked anc
     t.done();
   }
 });
+
+// ---- FU-1: a directory another user creates between the ancestor check and mkdir is judged, not trusted ----
+
+test("race: a directory planted after the ancestor check is judged by the final check", posixOnly, async () => {
+  const t = await tmp();
+  try {
+    const ours = process.getuid?.() ?? 0;
+    const real = {
+      lstat: (p: string) => ({ ...t.statSync(p), isSymbolicLink: () => false }),
+      stat: (p: string) => t.statSync(p),
+      realpath: (p: string) => p,
+    };
+    // The hook plants the data directory at the moment the ancestor is judged: after that check, before mkdir.
+    const planting = (target: string, mode: number, uidAfter: number) => {
+      let planted = false;
+      return {
+        ...real,
+        // The data directory does not exist until planted; every other path is real.
+        lstat: (p: string) => {
+          if (p === target && !planted) throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+          return { ...t.statSync(p), isSymbolicLink: () => false };
+        },
+        stat: (p: string) => {
+          if (!planted && p !== target) {
+            t.mkdirSync(target);
+            t.chmodSync(target, mode);
+            planted = true;
+          }
+          return t.statSync(p);
+        },
+        uid: () => (planted ? uidAfter : ours),
+      };
+    };
+    // 1. The planted directory is world-writable.
+    const open777 = t.join(t.base, "open777");
+    const hookA = { ...planting(open777, 0o777, ours) };
+    assert.equal(reasonOf(() => openDatabase(`${open777}/x.db`, { directoryFs: hookA })), "group-writable");
+    assert.equal(t.existsSync(t.join(open777, "x.db")), false, "no database inside the planted directory");
+
+    // 2. The planted directory LOOKS private but belongs to someone else (the injected uid stands in for the other user).
+    const foreign = t.join(t.base, "foreign");
+    const hookB = { ...planting(foreign, 0o700, ours + 1) };
+    assert.equal(reasonOf(() => openDatabase(`${foreign}/x.db`, { directoryFs: hookB })), "not-owned");
+    assert.equal(t.existsSync(t.join(foreign, "x.db")), false);
+  } finally {
+    t.done();
+  }
+});

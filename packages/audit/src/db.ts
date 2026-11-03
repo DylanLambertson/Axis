@@ -214,6 +214,10 @@ export function ensureDataDirectory(dir: string, fs: DirectoryFs = nodeDirectory
     assertSafeAncestor(dir, fs);
     const target = resolve(dir);
     if (mkdirSync(target, { recursive: true, mode: 0o700 }) !== undefined) chmodSync(target, 0o700);
+    // Judge what is there NOW, whether or not this call created it. Between the ancestor check and mkdir another
+    // user can create the directory first (in a sticky parent such as /tmp): mkdir then reports nothing created, and
+    // without this check the database would be opened inside a directory they own and can swap files in.
+    assertSafeDirectory(dir, fs);
   });
 }
 
