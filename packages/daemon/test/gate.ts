@@ -20,13 +20,15 @@ export const sha = (s: string): string => createHash("sha256").update(s).digest(
  * binding, a content check, single use (also when the action fails), and
  * withdrawal. Every call is recorded.
  */
-export function fakeGate() {
+export function fakeGate(options: { mint?: (input: ApprovalInput, content: ApprovalContent) => unknown } = {}) {
   const records = new Map<string, Record_>();
   const calls = {
     issue: [] as Array<{ input: ApprovalInput; content: ApprovalContent }>,
     execute: [] as Array<{ input: ApprovalInput; challengeId: string; content: ApprovalContent }>,
     withdraw: [] as Array<{ challengeId: string; connectionId: string }>,
     withdrawConnection: [] as string[],
+    /** What the approval manager would audit around the action, like tier4.execute. */
+    audit: [] as string[],
   };
   let n = 0;
   const gate: ApprovalGate = {
@@ -67,9 +69,15 @@ export function fakeGate() {
         throw new ApprovalError("E_CONFLICT");
       }
       rec.state = "spent";
+      calls.audit.push("authorised");
+      // Minted after the spend, bound to the target and the content digest, handed to the handler through the action.
+      const capability = options.mint?.(input, content);
       try {
-        return await action({ method: input.method, target: rec.target, requester: rec.actor });
+        const result = await action({ method: input.method, target: rec.target, requester: rec.actor, ...(capability !== undefined ? { capability } : {}) });
+        calls.audit.push("completed success");
+        return result;
       } catch {
+        calls.audit.push("completed error");
         throw new ApprovalError("E_CONFLICT", true);
       }
     },

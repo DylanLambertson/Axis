@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { randomBytes } from "node:crypto";
-import { inspectMessage, permissionTierSchema } from "@axis/protocol";
+import { inspectMessage, permissionTierSchema, type MethodSpec } from "@axis/protocol";
 import { parseIdentity } from "./identity.js";
 import { OrphanTracker } from "./orphans.js";
 import { handlerKey, type PipelineDeps } from "./pipeline.js";
@@ -45,6 +45,12 @@ export interface DaemonOptions {
   readonly maxOrphanedPerWindow?: number;
   /** The same, daemon-wide backstop. Default: four windows' worth. */
   readonly maxOrphanedHandlers?: number;
+}
+
+/** Does the request schema declare an optional `approval` that accepts a challenge reference? */
+function declaresApproval(spec: MethodSpec): boolean {
+  const field = (spec.request as { shape?: Record<string, { safeParse(v: unknown): { success: boolean } }> }).shape?.["approval"];
+  return field !== undefined && field.safeParse(undefined).success && field.safeParse({ challengeId: "A".repeat(43) }).success;
 }
 
 const DEFAULT_LIMITS: SessionLimits = {
@@ -124,6 +130,10 @@ export class Daemon {
       if (!spec) throw new Error(`No such method ${contract}/${version}.${method}`);
       if (!permissionTierSchema.safeParse(spec.tier).success) {
         throw new Error(`Invalid tier on ${contract}/${version}.${method}`);
+      }
+      // A tier >= 3 method must be approvable: its strict request schema must accept an optional `approval`.
+      if (spec.tier >= 3 && !declaresApproval(spec)) {
+        throw new Error(`${contract}/${version}.${method} is tier ${spec.tier} but its request schema has no optional approval field`);
       }
       const key = handlerKey(contract, version, method);
       if (this.#handlers.has(key)) throw new Error(`Handler already registered for ${key}`);

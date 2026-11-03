@@ -95,6 +95,16 @@ export interface ConfirmedAction {
   readonly method: string;
   readonly target: string;
   readonly requester: string;
+  /**
+   * Opaque, single-use capability for the destructive library call, minted by
+   * the integration adapter INSIDE the approval action, after the spend and
+   * bound to `content.target` and `content.contentDigest` (for worktrees:
+   * `markDiscardConfirmed` from `@axis/worktrees/daemon-confirm`). The daemon
+   * hands it to the handler as `ctx.approved.capability` and never serialises
+   * or logs it (it is non-enumerable on the object the handler sees).
+   * Handlers must never mint one themselves.
+   */
+  readonly capability?: unknown;
 }
 
 /**
@@ -121,14 +131,16 @@ export interface ApprovalContentLock {
  * Thrown by `ApprovalGate.execute` when the approval does not cover the
  * request. `E_POLICY_DENIED`: unknown, wrong caller, wrong request or target.
  * `E_CONFLICT`: already used, expired, or the content changed since the
- * user confirmed. `executed: true` means the approval was spent and the
+ * user confirmed. `E_BACKPRESSURE`: too many confirmations are waiting (from
+ * `issue` or `execute`). `E_INVALID_ARGUMENT`: the request cannot be approved
+ * (for example arguments the approval manager refuses). `executed: true` means the approval was spent and the
  * action then failed (or could not be audited): the daemon answers
  * E_INTERNAL and frees the idempotency key, and the user confirms again.
  * Any other error from the gate is E_INTERNAL.
  */
 export class ApprovalError extends Error {
   constructor(
-    readonly code: "E_POLICY_DENIED" | "E_CONFLICT",
+    readonly code: "E_POLICY_DENIED" | "E_CONFLICT" | "E_BACKPRESSURE" | "E_INVALID_ARGUMENT",
     readonly executed: boolean = false,
   ) {
     super(code);

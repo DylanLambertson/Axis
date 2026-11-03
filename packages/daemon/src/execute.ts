@@ -5,9 +5,16 @@ import { toWireError } from "./errors.js";
 import { TIMED_OUT, handlerKey, type Outcome, type PipelineInput } from "./pipeline.js";
 import type { ConfirmedAction } from "./types.js";
 
-class Aborted extends Error {}
+export class Aborted extends Error {}
 
 const abortCode = (reason: unknown): ErrorCode => (reason === TIMED_OUT ? "E_TIMEOUT" : "E_CANCELLED");
+
+/** A frozen copy whose `capability` is non-enumerable: it never shows up in JSON, spreads or `inspect`. */
+function readOnly(c: ConfirmedAction): ConfirmedAction {
+  const copy: { method: string; target: string; requester: string } = { method: c.method, target: c.target, requester: c.requester };
+  if (c.capability !== undefined) Object.defineProperty(copy, "capability", { value: c.capability, enumerable: false });
+  return Object.freeze(copy);
+}
 
 export interface ActionInput {
   readonly p: PipelineInput;
@@ -51,7 +58,7 @@ export async function runAction(a: ActionInput): Promise<Outcome> {
         correlationId,
         ...(req.idempotencyKey !== undefined ? { idempotencyKey: req.idempotencyKey } : {}),
         signal,
-        ...(confirmed !== undefined ? { approved: Object.freeze({ ...confirmed }) } : {}),
+        ...(confirmed !== undefined ? { approved: readOnly(confirmed) } : {}),
       },
       data,
     );
