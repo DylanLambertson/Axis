@@ -127,7 +127,7 @@ async function check(deps: GitOpsDeps, input: PushInput): Promise<{ plan: PushPl
   // Fail closed in either mode: a message with NUL bytes, bytes invalid in its encoding or an unknown encoding is hiding from the scan, and the user
   // cannot meaningfully confirm text that nothing could read. The message names commits only, never their content.
   if (undecodable.length > 0) {
-    throw denied(`the outgoing history has a commit message that cannot be scanned (NUL bytes, invalid text or an unknown encoding) in commit(s) ${undecodable.slice(0, 5).map((c) => c.slice(0, 12)).join(", ")}${undecodable.length > 5 ? ` and ${undecodable.length - 5} more` : ""}`);
+    throw denied(`the outgoing history has a commit message that cannot be scanned (NUL bytes, invalid text or an unknown or repeated encoding) in commit(s) ${undecodable.slice(0, 5).map((c) => c.slice(0, 12)).join(", ")}${undecodable.length > 5 ? ` and ${undecodable.length - 5} more` : ""}; if this is expected, push from a terminal`);
   }
   const reasons: string[] = [];
   if (findings.length > 0) {

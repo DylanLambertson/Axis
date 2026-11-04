@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 // PSH-1 regression: the history scan reads commit messages as bytes, so an encoding cannot hide a secret from it.
-// The commit objects are written with `hash-object --literally`, because `git commit` refuses most of these messages.
+// The commit objects are written with `hash-object` (with --literally only where the message holds a NUL), never `git commit`.
+// The encoding cases need a Node with full ICU, as official builds have; the first test fails loudly without it.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -27,10 +28,10 @@ const nulInside = (s: string): Buffer => Buffer.from(s.split("").join("\0"), "la
 const MSG = `deploy with AWS=${AWS_KEY}\n`;
 
 /** A commit on top of the base whose message is exactly `message` (bytes), made the tip of axis/feat. */
-function commitWith(f: Fixture, message: Buffer, encoding?: string): string {
+function commitWith(f: Fixture, message: Buffer, encoding?: string | string[], author = "Dylan Lambertson"): string {
   const tree = f.git("rev-parse", "HEAD^{tree}").trim();
-  const head = ascii(`tree ${tree}\nparent ${baseOf(f)}\nauthor Dylan Lambertson <me@dylanlambertson.dev> 1700000000 +0000\ncommitter Dylan Lambertson <me@dylanlambertson.dev> 1700000000 +0000\n${encoding === undefined ? "" : `encoding ${encoding}\n`}\n`);
-  const sha = execFileSync("git", ["hash-object", "-t", "commit", "-w", "--literally", "--stdin"], { cwd: f.wt.workTree, env: f.env, input: Buffer.concat([head, message]) }).toString().trim();
+  const head = ascii(`tree ${tree}\nparent ${baseOf(f)}\nauthor ${author} <me@dylanlambertson.dev> 1700000000 +0000\ncommitter Dylan Lambertson <me@dylanlambertson.dev> 1700000000 +0000\n${[encoding ?? []].flat().map((e) => `encoding ${e}\n`).join("")}\n`);
+  const sha = execFileSync("git", ["hash-object", "-t", "commit", "-w", ...(encoding === undefined ? ["--literally"] : []), "--stdin"], { cwd: f.wt.workTree, env: f.env, input: Buffer.concat([head, message]) }).toString().trim();
   f.git("update-ref", "refs/heads/axis/feat", sha);
   return sha;
 }
@@ -157,4 +158,53 @@ test("PSH-1: a runner that does not say it returned raw output fails the scan cl
   const deps = { ...f.deps, runner: { run: async (req: Parameters<typeof inner.run>[0]) => { const { raw: _raw, ...r } = await inner.run(req); return r; } } };
   const e = await planPush(deps, { worktree: f.wt, remote: "origin", branch: "axis/feat", baseSha: baseOf(f) }).then(() => undefined, (x: unknown) => x);
   assert.ok(e instanceof GitOpsError && e.code === "E_UNAVAILABLE", String(e));
+});
+
+test("PSH-1: this Node has the ICU data the encoding cases rely on", () => {
+  for (const label of ["iso-2022-jp", "shift_jis", "euc-kr", "gbk", "windows-1252"]) assert.doesNotThrow(() => new TextDecoder(label, { fatal: true }), `no ${label} decoder: run the tests on a full-ICU Node`);
+});
+
+for (const scanMode of ["refuse", "warn"] as const) {
+  const input = (f: Fixture) => ({ worktree: f.wt, remote: "origin", branch: "axis/feat", baseSha: baseOf(f) });
+  const found = async (f: Fixture, sha: string): Promise<void> => {
+    const r = await planPush(f.deps, input(f)).then((p) => p, (x: unknown) => x);
+    if (scanMode === "refuse") assert.ok(r instanceof GitOpsError && r.code === "E_POLICY_DENIED" && /secret pattern/.test(r.message) && r.message.includes(sha.slice(0, 12)), String(r));
+    else assert.deepEqual((r as { findings: Array<{ commit?: string }> }).findings.map((x) => x.commit), [sha]);
+  };
+  const SHIFTED = `${AWS_KEY.slice(0, 4)}\x1b(B${AWS_KEY.slice(4)}`;
+
+  test(`PSH-1 (${scanMode}): a carriage return after the encoding label does not hide the header`, async () => {
+    const f = fixture({ scanner: scanFor([]), scanMode });
+    await found(f, commitWith(f, ascii(`AWS=${SHIFTED}\n`), "ISO-2022-JP\r"));
+  });
+
+  test(`PSH-1 (${scanMode}): a key hidden by the declared encoding in the author name is found`, async () => {
+    const f = fixture({ scanner: scanFor([]), scanMode });
+    await found(f, commitWith(f, ascii("fine\n"), "ISO-2022-JP", SHIFTED));
+  });
+
+  test(`PSH-1 (${scanMode}): a commit with more than one encoding header is refused without decoding each`, async () => {
+    const f = fixture({ scanner: scanFor([]), scanMode });
+    const sha = commitWith(f, Buffer.alloc(4 * 1024 * 1024, 0xe9), Array.from({ length: 5000 }, () => "latin1"));
+    const rss = process.memoryUsage().rss;
+    const t = Date.now();
+    const e = await planPush(f.deps, input(f)).then(() => undefined, (x: unknown) => x);
+    assert.ok(e instanceof GitOpsError && e.code === "E_POLICY_DENIED" && e.message.includes(sha.slice(0, 12)) && !e.message.includes("latin1"), String(e));
+    assert.ok(Date.now() - t < 5000, "bounded time");
+    assert.ok(process.memoryUsage().rss - rss < 512 * 1024 * 1024, "bounded memory");
+  });
+}
+
+test("PSH-1: messageViews decodes once whatever the header count, and takes the first header the way git does", () => {
+  const body = "x".repeat(1024);
+  const many = `tree x\n${"encoding latin1\n".repeat(5000)}\n${body}`;
+  const t = Date.now();
+  assert.equal(messageViews(many).undecodable, true);
+  assert.ok(Date.now() - t < 1000);
+  const object = (enc: string, m: Buffer): string => Buffer.concat([ascii(`tree x\nauthor a <b> 1 +0000\nencoding ${enc}\n\n`), m]).toString("latin1");
+  for (const enc of ["CP932", "eucJP", "CP936", "CP949"]) assert.equal(messageViews(object(enc, ascii("ok\n"))).undecodable, false, enc);
+  assert.equal(messageViews(object("ISO-2022-JP\r", ascii(`${AWS_KEY.slice(0, 4)}\x1b(B${AWS_KEY.slice(4)}\n`))).views.some((v) => v.includes(AWS_KEY)), true);
+  // A header that is not in the declared encoding is shown as it is; the message is still decoded.
+  const mixed = messageViews(Buffer.concat([ascii("tree x\nauthor "), Buffer.from("\u00e9 <b> 1 +0000\nencoding Shift_JIS\n\n", "utf8"), Buffer.from([0x41, 0x0a])]).toString("latin1"));
+  assert.equal(mixed.undecodable, false);
 });

@@ -16,18 +16,33 @@ export interface MessageViews {
 
 const UTF8 = /^(?:utf-?8)$/i;
 
-function declaredEncodings(header: string): string[] {
+/** Labels git (through iconv) accepts that the WHATWG decoder does not know. */
+const ALIASES: Readonly<Record<string, string>> = {
+  cp932: "shift_jis",
+  sjis: "shift_jis",
+  eucjp: "euc-jp",
+  "euc_jp": "euc-jp",
+  cp936: "gbk",
+  cp949: "euc-kr",
+  euckr: "euc-kr",
+  "iso-2022-jp-2": "iso-2022-jp",
+};
+
+/**
+ * The `encoding` headers of a commit object, the way git reads them: only the header block (up to the first empty
+ * line), a continuation line (leading space) belongs to the header above it, and the value is the rest of the line.
+ */
+function encodingHeaders(bytes: Buffer, end: number): string[] {
   const out: string[] = [];
-  for (const line of header.split("\n")) {
-    const m = /^encoding (.+)$/.exec(line);
-    if (m) out.push((m[1] as string).trim());
+  for (const line of bytes.subarray(0, end < 0 ? bytes.length : end).toString("latin1").split("\n")) {
+    if (line.startsWith("encoding ")) out.push(line.slice(9).trim());
   }
   return out;
 }
 
 function decodes(bytes: Buffer, label: string): string | undefined {
   try {
-    return new TextDecoder(label, { fatal: true, ignoreBOM: true }).decode(bytes);
+    return new TextDecoder(ALIASES[label.toLowerCase()] ?? label, { fatal: true, ignoreBOM: true }).decode(bytes);
   } catch {
     return undefined;
   }
@@ -36,25 +51,23 @@ function decodes(bytes: Buffer, label: string): string | undefined {
 /**
  * `raw` is the commit object as the runner returned it, one character per byte (it was asked for `raw`; the scan
  * refuses a runner that did not say it complied).
+ *
+ * Git decodes the whole object, headers included, from the first `encoding` header, so that is what is scanned, once.
+ * More than one `encoding` header is refused (git never writes two, and each would cost a full decode).
  */
 export function messageViews(raw: string): MessageViews {
   const bytes = Buffer.from(raw, "latin1");
   const plain = bytes.toString("utf8");
   if (bytes.includes(0)) return { views: [plain], undecodable: true };
   const split = bytes.indexOf("\n\n");
-  const header = (split < 0 ? bytes : bytes.subarray(0, split)).toString("latin1");
-  const body = split < 0 ? Buffer.alloc(0) : bytes.subarray(split + 2);
-  const labels = declaredEncodings(header).filter((l) => !UTF8.test(l));
-  if (labels.length === 0) {
+  const labels = encodingHeaders(bytes, split);
+  if (labels.length > 1) return { views: [plain], undecodable: true };
+  const label = labels[0];
+  if (label === undefined || UTF8.test(label)) {
     return { views: [plain], undecodable: decodes(bytes, "utf-8") === undefined };
   }
-  // A declared encoding changes what every reader sees (git decodes it when it shows the message), so the decoded text is
-  // what must be scanned. The headers are ASCII; the body is the part that is in that encoding.
-  const views = [plain];
-  for (const label of labels) {
-    const text = decodes(body, label);
-    if (text === undefined) return { views: [plain], undecodable: true };
-    views.push(text);
-  }
-  return { views: [...new Set(views)], undecodable: false };
+  // Where the headers are not in that encoding, git shows them as they are (the plain reading) and decodes only the message.
+  const text = decodes(bytes, label) ?? (split < 0 ? undefined : decodes(bytes.subarray(split + 2), label));
+  if (text === undefined) return { views: [plain], undecodable: true };
+  return { views: text === plain ? [plain] : [plain, text], undecodable: false };
 }
