@@ -12,6 +12,7 @@ Axis-owned TypeScript that does not need Code OSS services lives in `packages/*`
 | `@axis/git-ops` | Daemon-orchestrated Axis commit and push, and GitHub compare URLs. Takes an injected git runner (`context: "pty" \| "daemon"`): hooks run only in the pty context. Commit binds the reviewed tree, push uses one explicit refspec, both are refused while a CLI run is active. |
 | `@axis/audit` | Secret redaction, canonical JSON, and the hash-chained append-only audit log on `node:sqlite` (DMN-5, DMN-6). Also the SQLite helpers (`openDatabase`, `withTransaction`, `runMigrations`). |
 | `@axis/journal` | Durable `agent_workspaces` and `agent_runs`, the Phase 1a run state machine, idempotency keys and restart recovery (DMN-7). Depends on `@axis/audit`. |
+| `@axis/runs` | CLI run lifecycle over injected ports (pty, clock, worktree locator, snapshotter, environment): launch through `@axis/pty-policy`, the journal state machine and restart recovery (DMN-7), status derivation, the per-device limit, trust attestation (TRU-2), the `isCliRunActive` guard for `@axis/git-ops`, output bounds and the disclosure copy. Design: `docs/design/runs.md`. Depends on `@axis/audit`, `@axis/journal` and `@axis/pty-policy`. |
 
 More packages (worktrees, and so on) are added by their own changes.
 

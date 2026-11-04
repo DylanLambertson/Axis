@@ -38,7 +38,7 @@ All injected; none is imported from Node globals.
 `start({ workspaceId, agent, actor, trust, idempotencyKey? })`:
 
 1. Validate the input (strict schema; `actor` is the authenticated principal, never from a payload).
-2. **Trust (TRU-2).** `trust` must be a `TrustAttestation`: an unforgeable object (private-field brand, like the journal's `UserPrincipal`) that only the daemon's connection layer can mint, through the restricted subpath `@axis/runs/daemon-attestation`, from main's window-verified attestation. It is bound to a workspace id and the project id the journal recorded for it, expires after a short TTL (default 10 s), and is **single use**. A plain object, a clone, a stale, reused or mismatched attestation, or `trusted: false`, is refused with `E_POLICY_DENIED` and an audit row. The TTL is checked again immediately before spawn, after the snapshot await. A revoked trust therefore refuses the next start, because main would not mint a new attestation.
+2. **Trust (TRU-2).** `trust` must be a `TrustAttestation`: an unforgeable object (private-field brand, like the journal's `UserPrincipal`) that only the daemon's connection layer can mint, through the restricted subpath `@axis/runs/daemon-attestation`, from main's window-verified attestation. It is bound to a workspace id and the project id the journal recorded for it, expires after a short TTL (default 30 s), and is **single use**. A plain object, a clone, a stale, reused or mismatched attestation, or `trusted: false`, is refused with `E_POLICY_DENIED` and an audit row. The TTL is checked again immediately before spawn, after the snapshot await. A revoked trust therefore refuses the next start, because main would not mint a new attestation.
 3. Locate the worktree, then **in one synchronous block**: check the supervisor is open, check the per-device limit, reserve a slot, register the run as active for its worktree and consume the attestation. There is no `await` between the limit check and the reservation (TOCTOU).
 4. `resolveLaunch` (PTY-5 deny-list, Axis resolves `command[0]` outside the worktree and every managed root). A refusal creates no journal row and is audited.
 5. `journal.createRun({ kind: "cli" })` (`QUEUED`), the `cli_run.start` audit row (fail closed: no audit row, no process), `snapshotter.before`.
@@ -58,11 +58,13 @@ The per-device limit counts every run that can still own a process: starting, ru
 
 ## 5. Commit and push versus a running CLI
 
-`isCliRunActive(worktree)` has the shape `@axis/git-ops` expects (`WorktreeRef -> boolean`). It is true while any run for that worktree can own a process (section 3 list), compared on the path with case and Unicode normalisation folded (a false positive only refuses a commit), and also on `gitDir`. A reservation whose worktree is still being located makes it true for every worktree (fail closed). It never reads the journal, so a stale `RUNNING` row alone does not decide it. Exited and hand-started CLIs do not count, as the design specifies.
+`isCliRunActive(worktree)` has the shape `@axis/git-ops` expects (`WorktreeRef -> boolean`). It is true while any run for that worktree can own a process (section 3 list), compared on the path with case and Unicode normalisation folded (a false positive only refuses a commit), and also on `gitDir`. A reference it cannot read counts as active (fail closed). It never reads the journal, so a stale `RUNNING` row alone does not decide it. Exited and hand-started CLIs do not count, as the design specifies.
+
+A query alone leaves a gap: "no run is active" can be true, then a run starts, then git executes. `acquireGitOperation(worktree, { maxMs })` closes it: it throws `E_CONFLICT` if a run is active, otherwise holds the worktree against new starts (`E_CONFLICT`, reason `GIT_OPERATION_ACTIVE`) until `release()` or `maxMs` (at most 10 minutes, bounded table of 64), so an Axis commit or push wraps its git call in a lease. The lease is checked in the same synchronous block as the slot reservation.
 
 ## 6. Output and event bounds, and secrets
 
-- Output goes to a ring buffer (default 64 KiB, hard maximum 1 MiB). A chunk larger than the buffer is cut to its tail before it is stored; the cost of a data event is bounded by the buffer size whatever the flood. `tail(runId, maxChars)` returns the recent text **redacted on read** by the injected `Redactor` (so a secret split across two chunks is still caught) with lone surrogates repaired and the result bounded.
+- Output goes to a ring buffer (default 64 KiB, hard maximum 1 MiB). A chunk larger than the buffer is cut to its tail before it is stored; the cost of a data event is bounded by the buffer size whatever the flood. `tail(runId, maxChars)` returns the recent text of a live run **redacted on read** by the injected `Redactor` (so a secret split across two chunks is still caught) with lone surrogates repaired and the result bounded.
 - No regex runs per data event. Output never goes to the audit log. Audit rows hold ids, state names, reason codes, the executable's base name, argument and removed-variable counts and a snapshot flag; the action allowlist is exported (`RUN_AUDIT_ALLOWLIST`) for the daemon to merge into `AuditLog`'s `payloadAllowlist`, and without it the log stores only a content summary. Everything passes through `AuditLog`'s own redaction as well.
 - Status listeners are bounded (32); a throwing listener is dropped from that event and counted, never allowed to break the run. There is one quiet timer per live run, re-armed lazily, not per data event.
 
@@ -76,6 +78,7 @@ Hostile cases (each a test): stop during start (before and after the handle arri
 
 ## 9. Open questions
 
-1. A hung `spawn` holds its slot until the port settles. Is a manual "abandon" action wanted, or does the pty process's own liveness report settle it?
+1. A hung `spawn`, or a handle whose exit cannot be subscribed to, holds its slot until the port settles. Is a manual "abandon" action wanted, or does the pty process's own liveness report settle it?
 2. `QUEUED -> FAILED` is missing from the journal, so failures before a process exist are `CANCELLED` with a failure reason. Adding the edge would be cleaner but changes a merged package.
-3. The default concurrency limit (4) and quiet interval (60 s) are placeholders until the A8 baseline.
+3. `recover` writes its audit row for a cancelled launch after the journal transition, in a separate step from `Journal.recover` (which is atomic). A crash between the two leaves a cancelled launch without an audit row; the journal does not expose its database handle for one transaction.
+4. The default concurrency limit (4) and quiet interval (60 s) are placeholders until the A8 baseline.
