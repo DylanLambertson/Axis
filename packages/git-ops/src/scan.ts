@@ -18,7 +18,7 @@ export interface OutgoingScan {
   readonly truncated: boolean;
   /** Every path git treats as binary in any outgoing commit, without duplicates. */
   readonly binaryPaths: readonly string[];
-  /** Commits whose message holds a NUL byte or invalid UTF-8, so it cannot be scanned reliably. The caller refuses; none of the text is kept. */
+  /** Commits whose message holds a NUL byte, bytes invalid in its declared encoding, or an unknown encoding, so it cannot be scanned reliably. The caller refuses; none of the text is kept. */
   readonly undecodable: readonly string[];
 }
 
@@ -80,7 +80,7 @@ export async function scanOutgoing(deps: GitOpsDeps, git: DaemonGit, worktree: W
 
     // The commit object, headers and message, is pushed too, and a message is as good a place for a secret as a file.
     const raw = await git(["cat-file", "commit", commit], undefined, { raw: true });
-    if (raw.code !== 0) throw unavailable("read the commit message");
+    if (raw.code !== 0 || raw.raw !== true) throw unavailable("read the commit message");
     const cutMessage = raw.stdout.length > MAX_DIFF || raw.truncated === true;
     total += raw.stdout.length;
     if (cutMessage) truncated = true;

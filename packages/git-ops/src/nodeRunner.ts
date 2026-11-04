@@ -77,7 +77,7 @@ export function createNodeRunner(opts: NodeRunnerOptions = {}): GitRunner {
         child.on("close", (code) => {
           done();
           clearTimeout(timer);
-          resolve({ code: code ?? -1, stdout: out, stderr: err, ...(truncated ? { truncated: true } : {}) });
+          resolve({ code: code ?? -1, stdout: out, stderr: err, ...(truncated ? { truncated: true } : {}), ...(req.raw === true ? { raw: true } : {}) });
         });
         child.stdin.on("error", () => undefined);
         child.stdin.end(req.stdin ?? "");

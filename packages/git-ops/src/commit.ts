@@ -87,6 +87,8 @@ async function check(deps: GitOpsDeps, input: CommitInput): Promise<{ plan: Comm
 
   const argv = [
     ...prefix(input.worktree, deps, { context: "pty", hooks: deps.runHooks, filters: [] }),
+    // A repository can set i18n.commitEncoding; the message is recorded as UTF-8 so that the secret scan reads what is pushed.
+    "-c", "i18n.commitEncoding=utf-8",
     "commit", "-F", "-", "--no-edit",
     ...(deps.runHooks ? [] : ["--no-verify"]),
   ];

@@ -15,7 +15,8 @@ export interface GitRunRequest {
   readonly context: GitContext;
   /**
    * Return stdout with one character per byte (latin1) instead of decoding it as UTF-8, so the bytes of a commit object
-   * survive intact. A runner that ignores this still works; the secret scan then falls back to the text it was given.
+   * survive intact. A runner that honours this sets `raw: true` on the result; the secret scan fails closed
+   * (E_UNAVAILABLE) when it asked for raw output and the result does not say it got it.
    */
   readonly raw?: boolean;
 }
@@ -26,6 +27,8 @@ export interface GitRunResult {
   readonly stderr: string;
   /** stdout was cut at the runner's output limit. A caller that needs all of it (the secret scan) must fail closed. */
   readonly truncated?: boolean;
+  /** stdout holds one character per byte because the request asked for `raw`. */
+  readonly raw?: boolean;
 }
 
 export interface GitRunner {
