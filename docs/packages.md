@@ -88,6 +88,8 @@ Fixed vectors (`sha256hex` as lowercase hex):
 
 A plan that needs confirmation (warn mode findings, binary files, a scan that was too large) carries `tip` and `digest`. The caller passes `confirmed: true` and `confirmedPlan: { tip, digest }` to `executePush`, which re-scans and answers `E_CONFLICT` with `details.reason: "plan_changed"` if either differs. The runner reports `truncated` when it cut off output, and any truncated scan call fails closed.
 
+Commit messages are scanned as bytes: the runner is asked for `raw` stdout (one character per byte) and the scan hands the scanner the plain UTF-8 reading plus, when the message holds a NUL byte or invalid UTF-8, the NUL-stripped reading and UTF-16LE and UTF-16BE readings. Such a message is also refused in both scan modes (`E_POLICY_DENIED`, naming only commit ids), because git never writes one itself and nothing can reliably read it. A message in a legacy encoding such as ISO-8859-1 is therefore refused too.
+
 The node runner starts git in its own process group so a timeout kills git's children. A normal daemon exit kills the live groups; a crash of the daemon cannot, and may leave an orphaned git running until it finishes.
 
 ## Request digest

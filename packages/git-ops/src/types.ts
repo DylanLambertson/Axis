@@ -13,6 +13,11 @@ export interface GitRunRequest {
    * no secrets and may run repository hooks when policy allows.
    */
   readonly context: GitContext;
+  /**
+   * Return stdout with one character per byte (latin1) instead of decoding it as UTF-8, so the bytes of a commit object
+   * survive intact. A runner that ignores this still works; the secret scan then falls back to the text it was given.
+   */
+  readonly raw?: boolean;
 }
 
 export interface GitRunResult {

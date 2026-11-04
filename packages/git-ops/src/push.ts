@@ -122,8 +122,13 @@ async function check(deps: GitOpsDeps, input: PushInput): Promise<{ plan: PushPl
   // The GIT-SNAP-1 re-take comes last so nothing can change between it and the push.
   await deps.assertNoDrift(input.worktree);
 
-  const { findings, binaryPaths, truncated } = await scanOutgoing(deps, git, input.worktree, input.baseSha, tipSha);
+  const { findings, binaryPaths, truncated, undecodable } = await scanOutgoing(deps, git, input.worktree, input.baseSha, tipSha);
   const refuse = (deps.scanMode ?? "warn") === "refuse";
+  // Fail closed in either mode: a message built from NUL bytes or invalid UTF-8 is hiding from the scan, and the user
+  // cannot meaningfully confirm text that nothing could read. The message names commits only, never their content.
+  if (undecodable.length > 0) {
+    throw denied(`the outgoing history has a commit message that cannot be scanned (NUL bytes or invalid UTF-8) in commit(s) ${undecodable.slice(0, 5).map((c) => c.slice(0, 12)).join(", ")}${undecodable.length > 5 ? ` and ${undecodable.length - 5} more` : ""}`);
+  }
   const reasons: string[] = [];
   if (findings.length > 0) {
     const rules = [...new Set(findings.map((f) => f.rule))].join(", ");

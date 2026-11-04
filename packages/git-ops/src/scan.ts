@@ -2,6 +2,7 @@
 // PSH-1: scan the patch of every commit that a push will send, not the net change between two trees.
 import { OBJECT_ID, type DaemonGit } from "./args.js";
 import { GitOpsError } from "./errors.js";
+import { messageViews } from "./messageViews.js";
 import type { GitOpsDeps, SecretFinding, WorktreeRef } from "./types.js";
 
 /** Per-commit patch size handed to the scanner. */
@@ -17,6 +18,8 @@ export interface OutgoingScan {
   readonly truncated: boolean;
   /** Every path git treats as binary in any outgoing commit, without duplicates. */
   readonly binaryPaths: readonly string[];
+  /** Commits whose message holds a NUL byte or invalid UTF-8, so it cannot be scanned reliably. The caller refuses; none of the text is kept. */
+  readonly undecodable: readonly string[];
 }
 
 /** Paths whose `git diff-tree --numstat -z` counts are `-\t-`. */
@@ -40,7 +43,7 @@ function unavailable(what: string): GitOpsError {
  */
 export async function scanOutgoing(deps: GitOpsDeps, git: DaemonGit, worktree: WorktreeRef, base: string, tip: string): Promise<OutgoingScan> {
   const scanner = deps.scanner;
-  if (!scanner) return { findings: [], truncated: false, binaryPaths: [] };
+  if (!scanner) return { findings: [], truncated: false, binaryPaths: [], undecodable: [] };
   const list = await git(["rev-list", "--reverse", "--end-of-options", tip, `^${base}`]);
   if (list.code !== 0) throw unavailable("list the outgoing commits");
   // Output the runner cut off is output the scan never saw: whatever it dropped fails the scan closed.
@@ -49,6 +52,7 @@ export async function scanOutgoing(deps: GitOpsDeps, git: DaemonGit, worktree: W
   if (commits.some((c) => !OBJECT_ID.test(c))) throw unavailable("list the outgoing commits");
   const findings: SecretFinding[] = [];
   const binary = new Set<string>();
+  const undecodable: string[] = [];
   let total = 0;
   if (commits.length > MAX_COMMITS) truncated = true;
   for (const commit of commits.slice(0, MAX_COMMITS)) {
@@ -75,15 +79,19 @@ export async function scanOutgoing(deps: GitOpsDeps, git: DaemonGit, worktree: W
     for (const f of await scanner(cut ? d.stdout.slice(0, MAX_DIFF) : d.stdout, { worktree, truncated: cut, commit, binaryPaths, part: "patch" })) findings.push({ ...f, commit });
 
     // The commit object, headers and message, is pushed too, and a message is as good a place for a secret as a file.
-    const raw = await git(["cat-file", "commit", commit]);
+    const raw = await git(["cat-file", "commit", commit], undefined, { raw: true });
     if (raw.code !== 0) throw unavailable("read the commit message");
     const cutMessage = raw.stdout.length > MAX_DIFF || raw.truncated === true;
     total += raw.stdout.length;
     if (cutMessage) truncated = true;
     if (raw.stdout.length > 0) {
       const text = cutMessage ? raw.stdout.slice(0, MAX_DIFF) : raw.stdout;
-      for (const f of await scanner(text, { worktree, truncated: cutMessage, commit, binaryPaths: [], part: "message" })) findings.push({ ...f, commit });
+      const { views, undecodable: bad } = messageViews(text);
+      if (bad) undecodable.push(commit);
+      for (const view of views) {
+        for (const f of await scanner(view, { worktree, truncated: cutMessage, commit, binaryPaths: [], part: "message" })) findings.push({ ...f, commit });
+      }
     }
   }
-  return { findings, truncated, binaryPaths: [...binary] };
+  return { findings, truncated, binaryPaths: [...binary], undecodable };
 }

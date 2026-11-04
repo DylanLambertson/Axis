@@ -61,7 +61,7 @@ export function createNodeRunner(opts: NodeRunnerOptions = {}): GitRunner {
           }
         }, opts.timeoutMs ?? 120_000);
         let truncated = false;
-        child.stdout.setEncoding("utf8").on("data", (d: string) => {
+        child.stdout.setEncoding(req.raw === true ? "latin1" : "utf8").on("data", (d: string) => {
           const room = Math.max(0, maxOutput - out.length);
           if (d.length > room) truncated = true;
           out += d.slice(0, room);
