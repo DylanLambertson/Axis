@@ -107,7 +107,7 @@ export interface BrokerGitDeps {
 }
 
 export interface BrokerGit {
-  run(w: WorktreeRef, call: GitCall): Promise<GitRunResult>;
+  run(w: WorktreeRef, call: GitCall, signal?: AbortSignal): Promise<GitRunResult>;
 }
 
 export function createBrokerGit(d: BrokerGitDeps): BrokerGit {
@@ -129,15 +129,23 @@ export function createBrokerGit(d: BrokerGitDeps): BrokerGit {
     }
   };
   return {
-    async run(w, call) {
+    async run(w, call, signal) {
+      // The runner takes no signal, so cancellation is checked between every step and before git itself starts.
+      const alive = (): void => {
+        if (signal?.aborted === true) throw new BrokerError("E_CANCELLED", "aborted", "the call was cancelled");
+      };
+      alive();
       const { flags, revs, paths } = checkGitCall(call, w.workTree, platform);
       const spec = GIT_COMMANDS[call.command];
       await drift(w, false);
+      alive();
       try {
         const env = daemonGitEnv(d.parentEnv, platform);
         // `--end-of-options` needs git 2.24: say so plainly instead of failing on an unknown flag.
         await requireGitVersion(gitOps, w, env);
+        alive();
         const filters = await filterNames(w, gitOps, env);
+        alive();
         const argv = [
           ...prefix(w, gitOps, { context: "daemon", hooks: false, filters }),
           // Literal pathspecs: `*`, `:(top)` and friends are plain characters. No optional locks: reads never write the index.

@@ -96,8 +96,8 @@ export async function resolveTarget(deps: ContainDeps, worktreeId: unknown, inpu
   const { worktree, root } = await resolveRoot(deps, worktreeId);
   const segments = lexicalSegments(input, root, platform);
   const finish = (parent: string, name: string, before: FileStat | undefined, realSegs: string[]): ResolvedTarget => {
-    const a = matchProtected(segments, deps.extraProtected);
-    const b = matchProtected(realSegs, deps.extraProtected);
+    const a = matchProtected(segments, deps.extraProtected, platform);
+    const b = matchProtected(realSegs, deps.extraProtected, platform);
     // Either spelling may match; a Git directory match wins because it also gates reads.
     const hit = a?.gitDir === true ? a : b?.gitDir === true ? b : (a ?? b);
     return {
@@ -195,8 +195,12 @@ export async function openContained(deps: ContainDeps, target: ResolvedTarget, m
       const want = lib.join(target.root, ...target.realSegments);
       if (!same(viaFd, want, platform)) throw denied("swapped", "the open file is not the authorised path");
     }
-    if (mode !== "read" && st.nlink > 1) throw denied("hardlink", "the file has more than one link");
-    return { file, stat: st, target };
+    // The link count is read again at the very end: a hard link made after the first fstat (where there is no descriptor
+    // path to compare, darwin and win32) would otherwise pass. This narrows that race; it does not close it.
+    const last = await file.stat();
+    if (last.id !== st.id || last.kind !== "file") throw denied("swapped", "the file changed while it was being opened");
+    if (mode !== "read" && (st.nlink > 1 || last.nlink > 1)) throw denied("hardlink", "the file has more than one link");
+    return { file, stat: last, target };
   } catch (e) {
     await file.close().catch(() => undefined);
     throw toBrokerError(e);

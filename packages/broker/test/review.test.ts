@@ -5,55 +5,12 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
-import type { AuditEventInput, Redactor } from "@axis/audit";
-import { BrokerError, ToolBroker, createCommandRunner, nodeBrokerFs, writeContained, type ApprovalRequest, type BrokerFile, type BrokerFs, type ToolDefinition } from "../src/index.js";
-import { canSymlink, makeWorld } from "./helpers.js";
+import type { Redactor } from "@axis/audit";
+import { BrokerError, nodeBrokerFs, writeContained, type ApprovalRequest, type BrokerFile, type BrokerFs, type ToolDefinition } from "../src/index.js";
+import { makeWorld } from "./helpers.js";
+import { call, cleanupWorlds, grant, rig, skipFd, skipLinks, why, worlds, writer } from "./rig.js";
 
-const worlds: Array<{ cleanup(): void }> = [];
-after(() => worlds.forEach((w) => w.cleanup()));
-const skipLinks = canSymlink() ? false : "symlinks are not available on this host";
-const skipFd = process.platform === "linux" && canSymlink() ? false : "needs Linux and symlinks";
-
-const grant = (r: ApprovalRequest) => ({ approved: true, approvedBy: "user", approvalId: `id-${Math.random().toString(36).slice(2, 12)}`, digest: r.digest, expiresAt: Date.now() + 30_000 });
-
-interface Rig {
-  broker: ToolBroker;
-  w: ReturnType<typeof makeWorld>;
-  events: AuditEventInput[];
-  requests: ApprovalRequest[];
-}
-function rig(o: { approve?: (r: ApprovalRequest) => unknown | Promise<unknown>; redactor?: Redactor } = {}): Rig {
-  const w = makeWorld();
-  worlds.push(w);
-  const events: AuditEventInput[] = [];
-  const requests: ApprovalRequest[] = [];
-  const broker = new ToolBroker({
-    registry: w.registry, fs: nodeBrokerFs, audit: { append: (i) => { events.push(i); return {} as never; } },
-    runner: createCommandRunner({ killGraceMs: 200 }), parentEnv: () => ({ PATH: process.env["PATH"] ?? "", HOME: w.base }),
-    ...(o.approve === undefined ? {} : { approval: { request: async (r) => { requests.push(r); return o.approve?.(r); } } }),
-    ...(o.redactor === undefined ? {} : { redactor: o.redactor }),
-  });
-  return { broker, w, events, requests };
-}
-type WArgs = { path: string; content: string };
-const writer = (name: string, before: (a: WArgs) => unknown | Promise<unknown>, writePath?: (a: WArgs) => string): ToolDefinition => {
-  const def: ToolDefinition<WArgs> = {
-    name, tier: "write", args: z.strictObject({ path: z.string(), content: z.string() }),
-    targets: (a) => [{ path: a.path, access: "write" }],
-    run: async (ctx, a) => { await before(a); await ctx.writeFile(writePath?.(a) ?? a.path, Buffer.from(a.content), { mode: "upsert", maxBytes: 1_000_000 }); return "written"; },
-  };
-  return def as unknown as ToolDefinition;
-};
-const call = (tool: string, args: unknown, extra: object = {}) => ({ tool, worktreeId: "wt1", actor: "agent:composer-1", args, ...extra });
-async function why(p: Promise<unknown>): Promise<string> {
-  try {
-    await p;
-  } catch (e) {
-    assert.ok(e instanceof BrokerError);
-    return `${e.code}/${e.reason}`;
-  }
-  return "no-error";
-}
+after(cleanupWorlds);
 
 // B1 ---------------------------------------------------------------------------------------------------------------
 
@@ -245,3 +202,4 @@ test("S8: the approval request names the real path and shows the redacted conten
   assert.equal(big.requests[0]?.previewTruncated, true);
   assert.ok((big.requests[0]?.preview.length ?? 0) <= 4096);
 });
+

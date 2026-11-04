@@ -19,6 +19,7 @@ export const DEFAULT_PROTECTED: readonly (readonly string[])[] = [
   [".lefthook.yml"],
   [".pre-commit-config.yaml"],
   [".devcontainer"],
+  [".devcontainer.json"],
   [".gitmodules"],
 ];
 
@@ -26,6 +27,9 @@ export const DEFAULT_PROTECTED: readonly (readonly string[])[] = [
  * Names that take effect from any directory (WT-3: `package.json` scripts, `.npmrc`, `.envrc`, `Makefile`), so a
  * file called this anywhere below the root is protected. `.gitattributes` is read from every directory by git.
  */
+/** File-name suffixes protected at any depth: a `.code-workspace` file carries `tasks` and `settings` like `.vscode/`. */
+export const PROTECTED_SUFFIXES: readonly string[] = [".code-workspace"];
+
 export const PROTECTED_ANYWHERE: readonly string[] = [
   "package.json", ".npmrc", ".envrc", ".gitattributes", "makefile", "gnumakefile", "justfile", ".yarnrc", ".yarnrc.yml", ".pnpmfile.cjs",
 ];
@@ -49,8 +53,9 @@ function shortNamePrefix(folded: string): string | undefined {
   return m === null ? undefined : (m[1] as string);
 }
 
-function sameName(folded: string, protectedName: string): boolean {
+function sameName(folded: string, protectedName: string, shortNames: boolean): boolean {
   if (folded === protectedName) return true;
+  if (!shortNames) return false;
   const prefix = shortNamePrefix(folded);
   if (prefix === undefined) return false;
   const bare = protectedName.replace(/^\./, "").slice(0, 6);
@@ -61,15 +66,20 @@ function sameName(folded: string, protectedName: string): boolean {
  * Whether `segments` (relative to the worktree root) name a protected path. Call it with the lexical segments and
  * with the real-path segments; either may match. `extra` adds root-anchored entries.
  */
-export function matchProtected(segments: readonly string[], extra: readonly (readonly string[])[] = []): ProtectedMatch | undefined {
+export function matchProtected(segments: readonly string[], extra: readonly (readonly string[])[] = [], platform?: NodeJS.Platform): ProtectedMatch | undefined {
   const folded = segments.map(foldSegment);
-  if (folded.some((s) => sameName(s, ".git"))) return { gitDir: true, label: ".git" };
-  for (const name of PROTECTED_ANYWHERE) {
-    if (folded.some((s) => sameName(s, name))) return { gitDir: false, label: name };
+  // 8.3 short names exist on Windows only; with no platform given the check stays on, which can only ask more.
+  const short = platform === undefined || platform === "win32";
+  if (folded.some((s) => sameName(s, ".git", short))) return { gitDir: true, label: ".git" };
+  const last = folded[folded.length - 1];
+  if (last !== undefined) {
+    // A file name anywhere below the root; a directory that merely has the name (`docs/makefile/readme.md`) is not it.
+    for (const name of PROTECTED_ANYWHERE) if (sameName(last, name, short)) return { gitDir: false, label: name };
+    for (const suffix of PROTECTED_SUFFIXES) if (last.endsWith(suffix) && last !== suffix) return { gitDir: false, label: `*${suffix}` };
   }
   for (const entry of [...DEFAULT_PROTECTED, ...extra]) {
     if (entry.length > folded.length) continue;
-    if (entry.every((name, i) => sameName(folded[i] as string, foldSegment(name)))) return { gitDir: false, label: entry.join("/") };
+    if (entry.every((name, i) => sameName(folded[i] as string, foldSegment(name), short))) return { gitDir: false, label: entry.join("/") };
   }
   return undefined;
 }

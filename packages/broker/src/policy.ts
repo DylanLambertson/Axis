@@ -8,11 +8,15 @@ import { maxTier, parseTier, tierRank, type Tier } from "./types.js";
 const LAUNCHERS = new Set([
   "sh", "bash", "zsh", "dash", "ksh", "fish", "csh", "tcsh", "ash", "busybox", "env", "xargs", "sudo", "su", "doas", "nohup", "nice",
   "timeout", "time", "setsid", "script", "cmd", "powershell", "pwsh", "wsl", "start", "runas", "osascript", "open", "launchctl", "ssh",
+  "rbash", "mksh", "yash", "stdbuf", "chroot", "unshare", "nsenter", "find", "make", "gmake", "npx", "pnpx", "xvfb-run", "flock", "strace", "ltrace",
+  "git", "gh", "awk", "gawk", "mawk", "nawk", "sed", "perl", "php", "lua", "tclsh", "expect", "deno", "bun", "bunx", "osascript", "cscript", "wscript", "mshta", "rundll32",
 ]);
+/** Interpreters carry a version in the name (`python3.12`, `ruby3.2`, `node22`). */
+const INTERPRETER = /^(?:python|pypy|ruby|node|nodejs|perl|php|lua|java)[\d.]*$/;
 
 export function isLauncher(argv0: string): boolean {
   const base = (argv0.split(/[\\/]/).pop() ?? "").toLowerCase().replace(/\.(exe|com|bat|cmd)$/, "");
-  return LAUNCHERS.has(base);
+  return LAUNCHERS.has(base) || INTERPRETER.test(base);
 }
 
 export interface PolicyInput {
@@ -85,9 +89,11 @@ export interface ApprovalRequest {
   readonly reasons: readonly string[];
   readonly targets: readonly string[];
   /** The real, worktree-relative paths and what the call does to each, so the UI can name what it approves. */
+  /** The command lines (program and arguments, or git calls) the call may run, redacted, bidi controls escaped. */
+  readonly commands: readonly string[];
   readonly operations: readonly { readonly access: "read" | "write"; readonly path: string }[];
   /** The canonical arguments (content included), redacted and bounded. The digest is over the full arguments. */
-  readonly preview: string;
+  readonly preview: string; // bidirectional controls are escaped; the UI should still treat it as untrusted text
   readonly previewTruncated: boolean;
   readonly maxTtlMs: number;
 }

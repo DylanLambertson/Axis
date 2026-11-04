@@ -37,8 +37,8 @@ test("a raised tier only raises; protected paths force approval whatever the flo
 });
 
 test("a shell or launcher raises the call to privileged", () => {
-  for (const c of ["/bin/sh", "bash", "C:\\Windows\\System32\\cmd.exe", "/usr/bin/env", "xargs", "sudo", "PowerShell.EXE", "/usr/bin/ssh"]) assert.equal(isLauncher(c), true, c);
-  for (const c of ["/usr/bin/node", "git", "cargo"]) assert.equal(isLauncher(c), false, c);
+  for (const c of ["/bin/sh", "bash", "C:\\Windows\\System32\\cmd.exe", "/usr/bin/env", "xargs", "sudo", "PowerShell.EXE", "/usr/bin/ssh", "python3", "/usr/bin/python3.12", "node", "/usr/bin/node", "perl", "find", "make", "git", "rbash", "npx"]) assert.equal(isLauncher(c), true, c);
+  for (const c of ["cargo", "tsc", "eslint", "nodemon-x", "pythonic"]) assert.equal(isLauncher(c), false, c);
   const d = new ToolPolicy().decide(input({ tier: "read", argv0: "/bin/bash" }));
   assert.equal(d.effect === "deny" ? undefined : d.tier, "privileged");
   assert.equal(d.effect, "approve");
