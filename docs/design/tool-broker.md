@@ -1,0 +1,67 @@
+# Tool broker core (`@axis/broker`)
+
+- **Status:** Draft for the Phase 1b prerequisites of ROADMAP ticket 10. Pure TypeScript, `node:*`, `zod`, `@axis/protocol`, `@axis/audit`, `@axis/git-ops` and `@axis/pty-policy` only. No Electron, no worktree manager, no challenge manager, no provider or UI code.
+- **Scope:** what a composer tool call may touch (paths, environment, processes, git) and the policy that decides whether it runs. Wiring to the daemon, `@axis/challenge` and `@axis/worktrees` comes later and goes through the injection points below.
+- **Threat mapping:** WT-1, WT-2 (broker side), WT-3, GIT-ENV-1, PTY-2, PTY-4, ANT-2, DMN-2, DMN-3, DMN-5, DMN-6 (threat model Phase 1, controls file §Phase 1b gate lines 1b/L2 to 1b/L8).
+
+## 1. Injection points
+
+Everything outside pure computation is a port, so tests run without a worktree manager or Electron.
+
+| Port | Provided by (later) | Used for |
+|---|---|---|
+| `WorktreeRegistry.get(id)` / `repositoryRoots()` | worktree manager (DMN-2) | The only source of roots. A request names a registered id, never a root. |
+| `BrokerFs` | `nodeBrokerFs` here; tests wrap it to inject races | Realpath, lstat, open with `O_NOFOLLOW`, fstat, write. |
+| `ApprovalHook.request(req)` | daemon adapter over `@axis/challenge` | Returns a grant bound to the call digest. |
+| `AuditSink` (from `@axis/audit`) and `Redactor` | `AuditLog` and the vault-aware redactor | Every decision and run record. |
+| `GitRunner` (from `@axis/git-ops`) and `assertNoDrift` | `createNodeRunner`, GIT-SNAP-1 | Broker-run git. |
+| `EnvGrantSource.grantsFor(tool, worktreeId)` | vault (PRV-2, later) | Scoped secret grants for a child environment. |
+| `Clock`, `SpawnPort` | tests | Expiry and process control. |
+
+## 2. Modules
+
+- `contain` (WT-1, DMN-2): `resolveInWorktree`, `readContained`, `writeContained`.
+- `protectedPaths` (WT-3): `matchProtected` over folded path segments.
+- `env` (PTY-2): `buildToolEnv`.
+- `runner` (PTY-4): `createCommandRunner().run` and `killAll`.
+- `git` (WT-2, GIT-ENV-1): `createBrokerGit`.
+- `policy` (WT-3, DMN-3, ANT-2): `ToolPolicy.decide`, tiers, approval verification.
+- `broker`: `ToolBroker.invoke` ties validation, containment, policy, approval and audit together.
+- `audit`: `BrokerAudit` (redaction, fail-closed append) and `BROKER_PAYLOAD_ALLOWLIST` for `AuditLog` options.
+- `errors`: `BrokerError` carrying only a closed `@axis/protocol` code, a fixed message and scalar details. It never carries `cause`, a path from the model, or a value.
+
+## 3. Containment (WT-1)
+
+1. **Lexical stage (pure, platform-parameterised).** The input is a bounded string with no NUL or control characters. Refused on every platform: any `..` segment, a backslash (except as a separator on win32), a drive prefix on non-win32, and on win32 UNC, device (`\\?\`, `\\.\`), drive-relative, `:` (alternate data streams), reserved device names, trailing dots or spaces and `~N` short names. An absolute path is accepted only when, after normalisation, it lies under the registered root (case-folded on win32 and darwin).
+2. **Registry stage.** The root is looked up by id. At every use `realpath(root)` must equal the root recorded at registration (a worktree that is, or sits under, a symlink is refused, including a symlink into the local checkout), and must not be inside any `repositoryRoots()` entry.
+3. **Real-path stage.** The real path of the target's parent (or the target itself for read) must be inside the real root, compared segment-wise, never by string prefix.
+4. **Open stage.** Node has no `openat`, so the broker opens `<real parent>/<name>` with `O_NOFOLLOW` (final component), `O_NONBLOCK` (no FIFO hang), and without `O_TRUNC`. After the open it `fstat`s the descriptor and refuses anything but a regular file; compares dev and ino with an `lstat` taken before the open and with a second `lstat` and `realpath` of the parent after it; on Linux also reads `/proc/self/fd/N`. Any mismatch closes the descriptor and refuses before a byte is read or written. A write truncates (`ftruncate`) only after verification. Writes also refuse files with more than one link (a hard link planted from outside). Where `O_NOFOLLOW` does not exist (win32), the lstat and realpath re-verification is the only guard.
+5. **Protected paths** are matched on both the lexical and the real relative path (a symlink inside the tree to `.github/workflows` does not hide it).
+
+Residual risks (documented, not closed): a create race can leave an *empty* file outside the tree if the parent is swapped between the check and an `O_CREAT`, but no bytes are written; reads through a hard link to an outside file are allowed (pnpm stores need them); a same-UID attacker with a process outside the broker can still race any user-space check on win32.
+
+## 4. Environment (PTY-2)
+
+Allow-list: `PATH`, `HOME`, `LANG`, `TERM`, plus names the tool declares (`envAdditions`) and fixed values it declares (`envFixed`). `PATH` is rewritten to absolute entries outside the worktree and any registered repository. Denied even when declared: `VSCODE_*`, `ELECTRON_*`, `AXIS_*`, `GIT_ASKPASS`, `SSH_ASKPASS*`, `SSH_AUTH_SOCK`, `GIT_EDITOR`, git redirectors and config injectors, loader and interpreter injection (`LD_*`, `DYLD_*`, `NODE_OPTIONS`, `BASH_ENV`, `ENV`, `PYTHONSTARTUP`, ...), and any secret-looking name (`*_TOKEN`, `*_KEY`, `*SECRET*`, `*PASSWORD*`). A scoped grant (`tool`, `worktreeId`, `name`, `value`, `expiresAt`) is the only way such a name appears; its value comes from the grant, never from the parent environment, and loader or interpreter injection and `VSCODE_*`/`ELECTRON_*`/`AXIS_*` names stay refused even with a grant.
+
+## 5. Commands (PTY-4)
+
+Argv only, `shell: false`, no option to turn a shell on. `argv[0]` is an absolute path or a bare name resolved by `resolveExecutable` (PATH only, never the cwd or worktree). Own process group on POSIX. Timeout and a combined stdout and stderr cap, both kill the group (SIGTERM, then SIGKILL after a grace). The run record states why it ended (`exit`, `signal`, `timeout`, `output-cap`, `aborted`, `spawn-error`). A concurrency slot is released only after the child's streams closed or were destroyed after the kill, never while work may still run. The runner installs no process-wide hook; the host calls `killAll()` at shutdown. Lingering group members after the main process exits are killed and counted.
+
+## 6. Git (WT-2 broker side, GIT-ENV-1)
+
+Subcommands come from a fixed table (`status`, `diff`, `log`, `show`, `ls-files`, `add`, `restore`), each with an exact flag allow-list. The argv is `prefix()` from `@axis/git-ops` in the daemon context (explicit `--git-dir` and `--work-tree`, `core.hooksPath` off, `core.fsmonitor=false`, filters neutralised, no transport), plus `--literal-pathspecs`, `--no-ext-diff` and `--no-textconv` where they apply, then the subcommand and flags, then revisions after `--end-of-options`, then paths after `--`. Environment is `daemonGitEnv` (GIT-ENV-1). `assertNoDrift` runs before every call and after every writing call; drift fails closed (`E_CONFLICT`). Commit and push are not broker tools: they stay with `@axis/git-ops` (daemon-orchestrated, reviewed tree).
+
+## 7. Policy and approvals (WT-3, DMN-3, ANT-2)
+
+Tiers: `read` < `write` < `network` < `destructive` < `privileged`. A tool declares one tier. Unknown tool names, tiers that are not one of the five strings (including numbers, `NaN`, `undefined`), invalid arguments and a tier raised by the injected override to something invalid all **deny**. Default approval floor is `network`; the floor itself is validated the same way. Protected paths force approval for any write and for any access to a Git directory path, whatever the floor. A shell or launcher in `argv[0]` (`sh`, `bash`, `env`, `xargs`, `sudo`, `cmd`, `powershell`, ...) raises a command to `privileged`.
+
+The approval hook receives the tool, tier, reasons and a digest of the canonical call. Its answer is validated with a strict schema: approved, `approvedBy: "user"` (an `agent:*` approver is refused), the same digest, an `approvalId`, an expiry in the future and within a bound. A rejected, malformed, expired, mismatched, replayed (`approvalId` seen before) or timed-out answer, or a throwing hook, denies. The model never receives a way to resolve its own approval.
+
+## 8. Audit (DMN-5, DMN-6)
+
+Each call writes `broker.decision` before it runs (a failed append stops the call) and `broker.result` after (a failed append is reported with `executed: true`). Payloads and targets pass through the injected `Redactor` first; the sink may redact again. Paths appear only as worktree-relative text, output only as length and hash. Payload keys are listed in `BROKER_PAYLOAD_ALLOWLIST`, to be merged into the `AuditLog` options.
+
+## 9. Not in this package
+
+Composer, provider calls, UI, daemon/challenge/worktrees integration, vault, network egress policy, `mkdir -p`, rename and delete tools, commit and push.
