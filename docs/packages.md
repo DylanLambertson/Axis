@@ -12,7 +12,7 @@ Axis-owned TypeScript that does not need Code OSS services lives in `packages/*`
 | `@axis/git-ops` | Daemon-orchestrated Axis commit and push, and GitHub compare URLs. Takes an injected git runner (`context: "pty" \| "daemon"`): hooks run only in the pty context. Commit binds the reviewed tree, push uses one explicit refspec, both are refused while a CLI run is active. |
 | `@axis/audit` | Secret redaction, canonical JSON, and the hash-chained append-only audit log on `node:sqlite` (DMN-5, DMN-6). Also the SQLite helpers (`openDatabase`, `withTransaction`, `runMigrations`). |
 | `@axis/journal` | Durable `agent_workspaces` and `agent_runs`, the Phase 1a run state machine, idempotency keys and restart recovery (DMN-7). Depends on `@axis/audit`. |
-| `@axis/git-snapshot` | GIT-SNAP-1 and WT-2/WT-3 logic over a worktree path and a git common dir path: bounded snapshot of hooks, config (includes, in-tree `core.hooksPath`), attributes, the worktree `.git` link and `refs/axis/*`; a redacted before/after diff; the drift verdict that Axis commit and push consult; and the protected-path matcher. Reads files only, never runs git. Design: `docs/design/git-snapshot.md`. |
+| `@axis/git-snapshot` | GIT-SNAP-1 and WT-2/WT-3 logic over a worktree path and a git common dir path: bounded snapshot of hooks, config (includes, in-tree `core.hooksPath`), attributes, the worktree `.git` link and `refs/axis/*`; a redacted before/after diff; the drift verdict that Axis commit and push consult; and the protected-path matcher. Reads files, and asks git only read-only questions (`config --list --show-origin`, `rev-parse`) with the GIT-ENV-1 environment. Design: `docs/design/git-snapshot.md`. |
 
 More packages (worktrees, and so on) are added by their own changes.
 

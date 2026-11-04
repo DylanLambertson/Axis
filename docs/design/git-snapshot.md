@@ -1,10 +1,10 @@
 # Git snapshot (`@axis/git-snapshot`)
 
-> Phase 1a · design for GIT-SNAP-1, WT-2 (CLI side), WT-3 highlighting and WT-4. Source of the requirements: `docs/ROADMAP.md` (Phase 1a gate), `docs/design/axis-agent-shell-policies.md` §6.4, threat model rows WT-2, WT-3, GIT-SNAP-1, GIT-4 and gaps G-3 to G-6.
+> Phase 1a · design for GIT-SNAP-1, WT-2 (CLI side) and WT-3 highlighting. WT-4 (one branch and worktree per workspace, base SHA recorded) is the worktree manager's; nothing here addresses it. Source of the requirements: `docs/ROADMAP.md` (Phase 1a gate), `docs/design/axis-agent-shell-policies.md` §6.4, threat model rows WT-2, WT-3, GIT-SNAP-1, GIT-4 and gaps G-3 to G-6.
 
 ## 1. Scope
 
-A package of pure logic over two directory paths: a worktree and its `$GIT_COMMON_DIR`. It reads files and never runs `git`, never writes, and does not depend on the worktree manager. The daemon decides **when** to take a snapshot (worktree creation, before and after a CLI run, before commit and push, on status refresh) and **where** to keep it (the journal). This package supplies:
+A package of pure logic over two directory paths: a worktree and its `$GIT_COMMON_DIR`. It reads files, never writes, and does not depend on the worktree manager. It runs `git` only for read-only questions (`config --list --show-origin -z`, `rev-parse`), with the GIT-ENV-1 environment from `@axis/git-ops` (no caller `GIT_*`, no system or user config, discovery capped at the worktree). The daemon decides **when** to take a snapshot (worktree creation, before and after a CLI run, before commit and push, on status refresh) and **where** to keep it (the journal). This package supplies:
 
 1. `takeSnapshot` / `takeStableSnapshot`: the GIT-SNAP-1 set, with bounded memory and time.
 2. `diffSnapshots`: a structured before/after diff for display, redacted.
@@ -18,7 +18,7 @@ Not in this package: snapshot refs (`refs/axis/runbase|backup|archive`), their r
 | Group | Items | Blocks commit and push |
 |---|---|---|
 | config | `$GIT_COMMON_DIR/config`, `config.worktree` (main and `worktrees/*`), and every file reached by `include.path` / `includeIf.*.path` (all conditions assumed true) | yes |
-| hooks | every file in `$GIT_COMMON_DIR/hooks`: type, mode, SHA-256, text | yes |
+| hooks | every file under `$GIT_COMMON_DIR/hooks`, subdirectories included (a dispatcher such as `pre-commit.d/*`): type, mode, SHA-256, text | yes |
 | in-tree hooks | the target of every `core.hooksPath` value (relative values resolve against the worktree, so an in-worktree directory is hashed, recursively and bounded), plus `.husky/`, `.githooks/`, `lefthook*.y(a)ml` and `.pre-commit-config.yaml` of the worktree | yes |
 | attributes | `info/attributes`, `info/exclude`, and the targets of `core.attributesFile` / `core.excludesFile` | yes |
 | link | the worktree `.git` file, `worktrees/*/gitdir`, `worktrees/*/commondir`, and, when the caller passes the journal's git dir, a mismatch check | yes; a mismatch is **refused**, not acknowledgeable |
@@ -27,7 +27,7 @@ Not in this package: snapshot refs (`refs/axis/runbase|backup|archive`), their r
 
 Global and system config, the home directory and submodule git dirs (`modules/*`) are not read (ADR 0004 states the first two; the third is an open question).
 
-Values are not interpreted by running git. The config parser follows git-config(1) (sections, quoted subsections, escapes, continuations, comments, BOM, CRLF). A line it cannot parse is recorded and the whole-file hash still covers it.
+**What decides what is hashed comes from git, not from this package's parser.** Git reports every config entry with its origin file (includes followed), the hook directory it will use (`rev-parse --git-path hooks`) and where the worktree really points (discovery from inside it, compared with the journal's git dir and the common dir). The package's own git-config parser is a second opinion, run over the bytes (latin1 view) of every file git read: if it rejects a line, or disagrees with git on any file, the snapshot is blocking-incomplete and can never read as clean. The parser also finds include files git did not read (missing, or an `includeIf` that is false today); they are hashed so their appearance shows. Paths that are not valid UTF-8 (a config value, a directory name) are reported unread and block; they are never decoded lossily.
 
 ## 3. Snapshot
 
@@ -35,13 +35,13 @@ Plain JSON: `{ version, takenAtMs, worktreePath, commonDir, entries[], settings[
 
 The digest covers the blocking entries only (id, state, mode, size, hash, link target), never timestamps or text.
 
-**Bounds** (`Limits`, all overridable): 4096 entries, 4 MiB parsed per config file, 16 MiB hashed per file, 128 MiB read in total, 16 KiB text per entry, 10 s wall clock, include depth 10 and 64 include files, and an `AbortSignal`. Exceeding a bound, an unreadable item, or a file that changes while read (size, mtime and ctime are compared around the read; two retries) makes the snapshot **incomplete**: it names the item, and no verdict over it can be acknowledged. Nothing is silently skipped.
+**Bounds** (`Limits`, all overridable): 4096 entries, 4 MiB parsed per config file, 16 MiB hashed per file, 128 MiB read in total, 16 KiB text per entry, 10 s wall clock, include depth 10 and 64 include files, and an `AbortSignal`. Exceeding a bound (including more recognised settings than the list holds, which is decided after path settings are resolved by key), an unreadable item, or a file that changes while read (size, mtime and ctime are compared around the read; two retries) makes the snapshot **incomplete**: it names the item, and no verdict over it can be acknowledged. Nothing is silently skipped.
 
 `takeStableSnapshot` takes two snapshots and returns the first only if the digests agree (three attempts), so a re-take before commit or push is not a mix of two states. It does not remove the race with a writer that is still running: the daemon refuses commit and push while a CLI run is active (policies §6.1).
 
 ## 4. Diff
 
-`diffSnapshots(before, after)` returns `changes[]` (added, removed, modified, mode or type change, became incomplete) with a flag label, a blocking bit, redacted before and after views and a bounded line delta, `settingChanges[]` (key-level, for the flags such as "core.hooksPath set to a path inside the worktree"), and `flags[]` for the dashboard row. Control characters and bidirectional or invisible format characters are escaped; counts and sizes are capped. Output is checked in tests for planted secrets.
+`diffSnapshots(before, after)` returns `changes[]` (added, removed, modified, mode or type change, became incomplete) with a flag label, a blocking bit, redacted before and after views and a bounded line delta, `settingChanges[]` (key-level, for the flags such as "core.hooksPath set to a path inside the worktree"), and `flags[]` for the dashboard row. Flags for the settings that decide what git runs (hooks path, fsmonitor, ssh command, includes, credentials, URL rewrites, remotes, filters, and any link mismatch or unread item) have their own slots: a flood of lesser changes cannot push them out. Control characters and bidirectional or invisible format characters are escaped; counts and sizes are capped. Output is checked in tests for planted secrets.
 
 ## 5. Verdict
 
@@ -50,15 +50,16 @@ The digest covers the blocking entries only (id, state, mode, size, hash, link t
 - `clean`: digests equal. No flag.
 - `acknowledged`: differs, but the user acknowledged exactly this digest. Allowed.
 - `unacknowledged`: differs. Not allowed; carries the diff.
-- `refused`: incomplete snapshot (either side) or a worktree-link mismatch. Not allowed, and `acknowledgeDrift` throws `E_POLICY_DENIED` for it.
+- `refused`: incomplete snapshot (either side) or a worktree-link mismatch. Not allowed, and `acknowledgeDrift` throws `E_POLICY_DENIED` for it. `assertDriftAllowed` throws a fixed message with counts; names and paths stay in the structured verdict.
 
 An acknowledgement binds the digest of the state the user reviewed, so any further change invalidates it. Because legitimate git use also edits `config` (for example setting an upstream), the daemon re-baselines after its own operations; any other config churn needs one acknowledgement. Persisted snapshots are re-validated with `parseSnapshot` (zod) before use.
 
 ## 6. Protected paths (WT-3)
 
-`classifyPath(relPath)` is lexical and `classifyPathResolved(root, relPath)` also follows symlinks (hop-limited, dangling links included) and reports a path whose resolution lands in a protected path, or outside the root. Matching is case-insensitive on every platform (a false highlight is harmless; a miss on a case-insensitive volume is not), compares after Unicode NFKC normalisation, ignores HFS+ ignorable code points, NTFS trailing dots and spaces, alternate data streams and `NAME~1` short names, and accepts `\` as a separator. The list is data: `.github/workflows/` and `.github/actions/`, `.vscode/`, `.devcontainer*`, `.husky/`, `.githooks/`, `lefthook*`, `.pre-commit-config.yaml`, CI configs (GitLab, CircleCI, Azure, Jenkins, Travis, Buildkite, Drone, Bitbucket, AppVeyor), Dockerfile-likes and compose files, `package.json`, `.npmrc` and the other package-manager rc files, `.envrc`, `Makefile`, `.mcp.json`, `.gitmodules`, `.gitattributes`, and any `.git` component at any depth. Hard links are not detectable by path.
+`classifyPath(relPath)` is lexical and `classifyPathResolved(root, relPath)` also follows symlinks (hop-limited, dangling links included) and reports a path whose resolution lands in a protected path, or outside the root. Matching is case-insensitive on every platform (a false highlight is harmless; a miss on a case-insensitive volume is not), compares after Unicode NFKC normalisation and an upper-then-lower case fold (dotless i, Kelvin sign), ignores HFS+ ignorable code points, NTFS trailing dots and spaces, alternate data streams and `NAME~1` short names (including a dash, as in `PRE-CO~1.YAM`), and accepts `\` as a separator. The list is data (and a caller can add paths with `extraPaths`; product-specific tool directories belong in the caller's configuration, not in this list): `.github/workflows/` and `.github/actions/`, `.vscode/`, `.devcontainer*`, `.husky/`, `.githooks/`, `lefthook*`, `.pre-commit-config.yaml`, CI configs (GitLab, CircleCI, Azure, Jenkins, Travis, Buildkite, Drone, Bitbucket, AppVeyor), Dockerfile-likes and compose files, `package.json`, `conftest.py`, `build.rs`, `pyproject.toml`, `.npmrc` and the other package-manager rc files, `.envrc`, `Makefile`, `.mcp.json`, `.gitmodules`, `.gitattributes`, and any `.git` component at any depth. Hard links are not detectable by path.
 
 ## 7. Open questions
 
 - Submodule git dirs (`$GIT_COMMON_DIR/modules/*`) carry their own hooks and config; they are not in the ADR 0004 set and are left out.
+- Which tool directories (agent or editor configuration, `.idea/` and similar) belong on the protected list is a product decision; pass them as `extraPaths`.
 - Another worktree's creation changes `worktrees/*` and so counts as drift for every workspace in the repository until the daemon re-baselines; the worktree manager should re-baseline all workspaces of a repository after `worktree add`.
