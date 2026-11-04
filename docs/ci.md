@@ -22,6 +22,8 @@ Rules for every workflow:
 
 **Cost of the macOS job.** The repository is private and user-owned, so Actions minutes come from the account's included allowance, and macOS minutes count at about 10 times the Linux rate. `Code OSS scripts (macos-15)` runs on every PR and every push to `main`. It only runs `test.sh`, so it is short, but it still uses the most minutes of any job. If minutes get tight, move the macOS entry out of the `code-oss-scripts` matrix into a separate job or workflow triggered by `schedule` (nightly) and `workflow_dispatch`. Then remove `Code OSS scripts (macos-15)` from the required checks in the same change, or every PR will wait for a check that never reports.
 
+`npm test` runs `scripts/test-all.mjs`, which runs every suite even after a failure and exits non-zero if any failed; `npm run gate` runs all pre-push checks (DEVELOPMENT.md section 8).
+
 Reproduce locally (bash 3.2 on macOS; tools cached under `~/.cache/project-axis/tools/`):
 
 ```bash
