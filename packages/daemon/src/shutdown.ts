@@ -3,12 +3,17 @@ import type { DrainGate } from "./drain.js";
 import type { IdempotencyStore } from "./types.js";
 
 export interface ShutdownOptions {
-  /** How long in-flight handlers may keep running before they are cancelled. Default 10 000 ms. */
-  readonly graceMs?: number;
+  /**
+   * All three: milliseconds. `undefined` keeps the default, `Infinity` waits without a timer (until the work
+   * ends or `escalate()`), a finite value above 2^31-1 is clamped to it, and NaN, a negative number or a
+   * non-number throws a TypeError from the constructor.
+   *
+   * How long in-flight handlers may keep running before they are cancelled. Default 10 000 ms. */
+  readonly graceMs?: number | undefined;
   /** How long cancelled handlers may take to settle before the connections are closed anyway. Default 2 000 ms. */
-  readonly cancelSettleMs?: number;
+  readonly cancelSettleMs?: number | undefined;
   /** How long the idempotency flush may take. Default 5 000 ms. */
-  readonly flushTimeoutMs?: number;
+  readonly flushTimeoutMs?: number | undefined;
 }
 
 export interface ShutdownResult {
@@ -16,7 +21,7 @@ export interface ShutdownResult {
   readonly reason: string;
   /** Every handler settled without being cancelled. */
   readonly graceful: boolean;
-  /** The second signal (or `escalate()`) cut a wait short. */
+  /** `escalate()` (a repeated signal) cut at least one wait short. */
   readonly escalated: boolean;
   /** Requests cancelled when the grace period ended. */
   readonly cancelled: number;
@@ -41,24 +46,41 @@ export interface ShutdownTarget {
 }
 
 const REASON_MAX = 64;
+const MAX_TIMER_MS = 2_147_483_647;
 const DEFAULTS = { graceMs: 10_000, cancelSettleMs: 2_000, flushTimeoutMs: 5_000 };
+
+function timing(name: string, value: unknown, fallback: number): number {
+  if (value === undefined) return fallback;
+  if (typeof value !== "number" || Number.isNaN(value) || value < 0) throw new TypeError(`shutdown.${name} must be a number >= 0 (or Infinity)`);
+  return value === Infinity ? Infinity : Math.min(value, MAX_TIMER_MS);
+}
+
+/** A timer for a finite wait; none for Infinity. */
+function arm(ms: number, fn: () => void): NodeJS.Timeout | undefined {
+  return Number.isFinite(ms) ? setTimeout(fn, ms) : undefined;
+}
 
 /**
  * Graceful shutdown: refuse new work, let handlers settle for `graceMs`, cancel
  * what remains, wait briefly for it to settle, close, flush. Idempotent: every
  * `run` returns the same promise, which never rejects. `escalate()` skips the
- * wait in progress. It leaves no timer or listener behind.
+ * wait in progress (grace, settle after cancel, or flush) and only that one: each
+ * further call skips the next. It leaves no timer or listener behind.
  */
 export class ShutdownCoordinator {
   readonly #t: ShutdownTarget;
-  readonly #o: Required<ShutdownOptions>;
+  readonly #o: { readonly graceMs: number; readonly cancelSettleMs: number; readonly flushTimeoutMs: number };
   #result: Promise<ShutdownResult> | undefined;
   #escalated = false;
   #wake: (() => void) | undefined;
 
   constructor(target: ShutdownTarget, options: ShutdownOptions = {}) {
     this.#t = target;
-    this.#o = { ...DEFAULTS, ...options };
+    this.#o = {
+      graceMs: timing("graceMs", options.graceMs, DEFAULTS.graceMs),
+      cancelSettleMs: timing("cancelSettleMs", options.cancelSettleMs, DEFAULTS.cancelSettleMs),
+      flushTimeoutMs: timing("flushTimeoutMs", options.flushTimeoutMs, DEFAULTS.flushTimeoutMs),
+    };
   }
 
   get started(): boolean {
@@ -70,30 +92,30 @@ export class ShutdownCoordinator {
     return this.#result;
   }
 
-  /** Skip the wait in progress (grace, or the settle after cancel). No effect before `run`. */
+  /** Skip the wait in progress. No effect before `run`, between waits, or after the end. */
   escalate(): void {
-    if (!this.#result) return;
+    if (!this.#result || !this.#wake) return;
     this.#escalated = true;
-    this.#wake?.();
+    this.#wake();
   }
 
   /** Resolves true when nothing is running any more, false on timeout or escalation. */
   #settled(ms: number): Promise<boolean> {
     const drain = this.#t.drain;
     if (drain.running === 0) return Promise.resolve(true);
-    if (this.#escalated) return Promise.resolve(false);
     return new Promise<boolean>((resolve) => {
       let done = false;
       let off: () => void = () => undefined;
-      const timer: NodeJS.Timeout = setTimeout(() => finish(false), Math.max(0, ms));
+      let timer: NodeJS.Timeout | undefined;
       const finish = (idle: boolean): void => {
         if (done) return;
         done = true;
-        clearTimeout(timer);
+        if (timer) clearTimeout(timer);
         off();
         this.#wake = undefined;
         resolve(idle);
       };
+      timer = arm(ms, () => finish(false));
       off = drain.onIdle(() => finish(true));
       this.#wake = () => finish(false);
     });
@@ -104,12 +126,12 @@ export class ShutdownCoordinator {
     let cancelled = 0;
     try {
       t.drain.begin();
-      let graceful = await this.#settled(this.#o.graceMs);
+      const graceful = await this.#settled(this.#o.graceMs);
       if (!graceful) {
         cancelled = t.cancelAll();
-        await this.#settled(this.#o.cancelSettleMs);
+        // Only requests that were still unanswered have anything new to react to.
+        if (cancelled > 0) await this.#settled(this.#o.cancelSettleMs);
       }
-      graceful = graceful && cancelled === 0;
       t.closeAll();
       const flushed = await this.#flush();
       return { reason, graceful, escalated: this.#escalated, cancelled, unsettled: t.drain.running, flushed };
@@ -130,12 +152,13 @@ export class ShutdownCoordinator {
     if (typeof store.flush !== "function") return "unsupported";
     let timer: NodeJS.Timeout | undefined;
     try {
-      const timedOut = new Promise<"timeout">((resolve) => {
-        timer = setTimeout(() => resolve("timeout"), this.#o.flushTimeoutMs);
+      const cutShort = new Promise<"cut">((resolve) => {
+        timer = arm(this.#o.flushTimeoutMs, () => resolve("cut"));
+        this.#wake = () => resolve("cut");
       });
-      const outcome = await Promise.race([Promise.resolve().then(() => store.flush?.()).then(() => "done" as const), timedOut]);
-      if (outcome === "timeout") {
-        this.#t.onError("shutdown-flush", new Error("idempotency flush timed out"));
+      const outcome = await Promise.race([Promise.resolve().then(() => store.flush?.()).then(() => "done" as const), cutShort]);
+      if (outcome === "cut") {
+        this.#t.onError("shutdown-flush", new Error("idempotency flush timed out or was cut short"));
         return "failed";
       }
       return "done";
@@ -143,6 +166,7 @@ export class ShutdownCoordinator {
       this.#t.onError("shutdown-flush", error);
       return "failed";
     } finally {
+      this.#wake = undefined;
       if (timer) clearTimeout(timer);
     }
   }

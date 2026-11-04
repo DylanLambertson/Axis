@@ -44,7 +44,12 @@ export interface PipelineDeps {
   readonly audit: DaemonAuditSink;
   /** Local diagnostics for unexpected failures. Receives the raw error: the sink must keep it local. */
   readonly onInternalError: ((correlationId: string, error: unknown) => void) | undefined;
+  /** Graceful shutdown has begun: a request that has not reached its handler or its approval spend is refused. */
+  readonly draining?: () => boolean;
 }
+
+/** Thrown inside the approval step when shutdown began before the approval was spent. */
+export class ShuttingDown extends Error {}
 
 export interface PipelineInput {
   readonly deps: PipelineDeps;
@@ -261,6 +266,8 @@ async function steps(p: PipelineInput, state: PipelineState): Promise<Outcome> {
         break;
     }
   }
+  // Shutdown began while this request was parked in policy, idempotency or audit: nothing has run or been spent yet.
+  if (d.draining?.()) return fail("E_UNAVAILABLE", "The daemon is shutting down");
   const action = (confirmed: ConfirmedAction | undefined): Promise<Outcome> =>
     runAction({ p, auditor, tier, confirmed, replayed, data: withoutApprovalOf(payloadParsed.data) });
   if (tier < 3) return action(undefined);

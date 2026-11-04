@@ -18,9 +18,11 @@ export interface SignalOptions {
   readonly signals?: readonly NodeJS.Signals[];
   /**
    * Called once when shutdown has finished, with 0 for a clean shutdown and 1 when handlers were
-   * cancelled or are still running. Required: a process with a signal listener no longer dies on the signal.
+   * cancelled or are still running, and the full result: close the journal or audit database only when
+   * `result.unsettled === 0`, because handlers still running write to it. When shutdown itself failed
+   * unexpectedly `result` is undefined. Required: a process with a signal listener no longer dies on the signal.
    */
-  readonly exit: (code: number) => void;
+  readonly exit: (code: number, result: ShutdownResult | undefined) => void;
   readonly source?: SignalSource;
 }
 
@@ -30,8 +32,8 @@ export interface SignalHandle {
 }
 
 /**
- * First SIGTERM/SIGINT starts a graceful shutdown; a second one escalates (skips the wait in
- * progress); further ones are ignored. Listeners are removed when shutdown finishes, so a signal
+ * First SIGTERM/SIGINT starts a graceful shutdown; each further one escalates (skips the wait in
+ * progress, so the next signal skips the next wait). Listeners are removed when shutdown finishes, so a signal
  * after that gets the default behaviour back. Never throws.
  */
 export function installShutdownSignals(daemon: ShutdownCapable, options: SignalOptions): SignalHandle {
@@ -56,13 +58,13 @@ export function installShutdownSignals(daemon: ShutdownCapable, options: SignalO
     void daemon
       .shutdown(`signal:${signal}`)
       .then(
-        (r) => (r.graceful && r.unsettled === 0 ? 0 : 1),
-        () => 1,
+        (r) => ({ code: r.graceful && r.unsettled === 0 ? 0 : 1, result: r as ShutdownResult | undefined }),
+        () => ({ code: 1, result: undefined as ShutdownResult | undefined }),
       )
-      .then((code) => {
+      .then(({ code, result }) => {
         dispose();
         try {
-          options.exit(code);
+          options.exit(code, result);
         } catch {
           // the caller's exit hook must not turn into an unhandled rejection
         }

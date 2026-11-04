@@ -196,6 +196,10 @@ export class Session {
   // ---- handshake ----
 
   #hello(hello: Hello): void {
+    if (this.#d.drain.draining) {
+      this.#rejectHello(this.#err("E_UNAVAILABLE", "The daemon is shutting down"), true);
+      return;
+    }
     const version = negotiateVersion(hello.protocolVersions);
     if (!version.ok) {
       this.#rejectHello(this.#err("E_VERSION_UNSUPPORTED", "No common protocol version"), true);

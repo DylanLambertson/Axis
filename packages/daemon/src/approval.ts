@@ -4,7 +4,7 @@ import type { Auditor } from "./audit.js";
 import { requestDigest, withoutApproval } from "./digest.js";
 import { CONTROL_CHARS } from "./errors.js";
 import { Aborted } from "./execute.js";
-import { handlerKey, withdrawChallenge, withdrawIfUnspent, type Outcome, type PipelineInput, type PipelineState } from "./pipeline.js";
+import { ShuttingDown, handlerKey, withdrawChallenge, withdrawIfUnspent, type Outcome, type PipelineInput, type PipelineState } from "./pipeline.js";
 import {
   ApprovalError,
   type ApprovalContentLock,
@@ -173,11 +173,16 @@ export async function runApproval(a: ApprovalStep): Promise<Outcome> {
   try {
     await lock.withLock((contentDigest) => {
       checkDigest(contentDigest);
+      if (d.draining?.()) throw new ShuttingDown(); // shutdown began: refuse before the approval is spent
       return gate.execute(input, approval, { target: lock.target, contentDigest }, wrapped);
     });
     completedAtReturn = captured !== undefined;
   } catch (e) {
     await settle();
+    if (e instanceof ShuttingDown && !started) {
+      await auditor.soft("denied", { decision: "allow", reason: "shutting_down" });
+      return fail("E_UNAVAILABLE", "The daemon is shutting down");
+    }
     if (e instanceof ContentHookError && !started) return hookBug(e);
     const done = captured as Outcome | undefined;
     if (done && !done.ok) return done;

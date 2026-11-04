@@ -45,6 +45,9 @@ export async function runAction(a: ActionInput): Promise<Outcome> {
   await auditor.strict("success", replayed === undefined ? { decision: "allow" } : { decision: "allow", replay: true });
   if (signal.aborted) throw new Aborted();
   if (replayed !== undefined) return { ok: true, result: replayed };
+  // Shutdown began while this request waited (policy, idempotency, audit): do not start a handler now.
+  // At tier >= 3 the approval is already spent, so the check ran before the spend (approval.ts) and cannot refuse here.
+  if (confirmed === undefined && d.draining?.()) return fail("E_UNAVAILABLE", "The daemon is shutting down");
 
   const handler = d.handlers.get(handlerKey(req.contract, req.contractVersion, req.method));
   if (!handler) return fail("E_UNAVAILABLE", "This method is not available right now");

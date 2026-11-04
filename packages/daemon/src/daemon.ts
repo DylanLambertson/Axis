@@ -114,6 +114,7 @@ export class Daemon {
       idempotency: this.#idempotency,
       audit: options.audit,
       onInternalError: options.onInternalError,
+      draining: () => this.#drain.draining,
     };
   }
 
