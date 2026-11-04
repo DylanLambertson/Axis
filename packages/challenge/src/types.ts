@@ -29,8 +29,10 @@ export interface ChallengeManagerOptions {
   readonly challengeTtlMs?: number;
   /** How long a fully confirmed approval stays usable. Default 30 s, at most 5 min. */
   readonly confirmationTtlMs?: number;
-  /** Open challenges per requesting actor. Default 8. */
+  /** Open challenges per requesting actor in one window. Default 8. One window's flood cannot block the same actor's approvals in another window. */
   readonly maxOutstandingPerActor?: number;
+  /** Open challenges per requesting actor across all windows: the backstop. Default 32. */
+  readonly maxOutstandingPerActorOverall?: number;
   /**
    * Open challenges shown in one window. Default 16. Keeps one window's backlog
    * from using every slot. Finished records linger for twice the challenge TTL
@@ -79,4 +81,11 @@ export function limit(value: number | undefined, fallback: number, max: number, 
     throw new ChallengeError("E_INVALID_ARGUMENT", `${name} must be an integer from 1 to ${max}`);
   }
   return v;
+}
+
+/** What an audit event names: a record, or for an unknown id just the id's own hash, so refusing an unknown id costs the same as refusing a wrong caller. */
+export interface Subject {
+  readonly target: string;
+  readonly method: string;
+  readonly ref: string;
 }

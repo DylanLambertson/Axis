@@ -3,9 +3,11 @@
 // and which dependencies its package.json may declare.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { forbiddenLoaders, isScriptFile, principalReexports } from "./loaders.mjs";
 
 const packagesDir = fileURLToPath(new URL("../../packages/", import.meta.url));
 
@@ -40,8 +42,22 @@ export function importSpecifiers(source) {
   return found;
 }
 
-/** Why a specifier is not allowed in `pkg`, or null when it is. */
+/**
+ * Subpaths of @axis/journal and the only packages that may import them. The user principal is minted by the
+ * daemon's connection layer from the attested connection; nothing else may be able to create one. Any other
+ * `@axis/journal/...` deep import is refused. Other packages' subpaths (for example `@axis/providers/contract`)
+ * are unrestricted, as before.
+ */
+const JOURNAL_SUBPATHS = new Map([["@axis/journal/daemon-principal", new Set(["daemon"])]]);
+
+/**
+ * Why a specifier is not allowed in `pkg`, or null when it is. The node:*
+ * ban for contract packages (D2.4) applies to shipped sources under `src/`;
+ * tests and test-support entry points (`test/`, `contract/`) may use node:*.
+ * A call without a file is judged as `src/`.
+ */
 export function violation(pkg, spec, file = null, pkgDir = null) {
+  const inSrc = file === null || pkgDir === null || relative(pkgDir, file).split(sep)[0] === "src";
   if (spec.startsWith("./") || spec.startsWith("../")) {
     if (file === null || pkgDir === null) return null;
     const target = resolve(dirname(file), spec);
@@ -51,16 +67,31 @@ export function violation(pkg, spec, file = null, pkgDir = null) {
       : null;
   }
   if (spec === "zod" || spec.startsWith("zod/")) return null;
+  if (spec.startsWith("@axis/journal/")) {
+    const allowed = JOURNAL_SUBPATHS.get(spec);
+    if (allowed === undefined) return "deep imports into @axis/journal are not allowed";
+    return allowed.has(pkg) ? null : "this subpath may only be imported by the daemon integration code";
+  }
   if (spec.startsWith("@axis/")) return null;
-  if (spec.startsWith("node:")) return NO_NODE.has(pkg) ? "node:* is not allowed in this package" : null;
+  if (spec.startsWith("node:")) return NO_NODE.has(pkg) && inSrc ? "node:* is not allowed in this package" : null;
   return "only relative, zod, @axis/* and node:* imports are allowed";
 }
 
-function* sourceFiles(dir) {
+/** Directories never scanned: build output and installed dependencies. */
+const SKIP_DIRS = new Set(["dist", "node_modules"]);
+
+/**
+ * Every script file in a package (.js, .mjs, .cjs, .ts, .mts, .cts, .tsx, .jsx; not declaration files), not only `src/`: `contract/` is a
+ * published entry point other packages import, and `test/` runs in CI (N9).
+ */
+export function* sourceFiles(dir) {
   for (const name of readdirSync(dir)) {
     const p = join(dir, name);
-    if (statSync(p).isDirectory()) yield* sourceFiles(p);
-    else if (p.endsWith(".ts") && !p.endsWith(".d.ts")) yield p;
+    if (statSync(p).isDirectory()) {
+      if (!SKIP_DIRS.has(name)) yield* sourceFiles(p);
+      continue;
+    }
+    if (isScriptFile(p)) yield p;
   }
 }
 
@@ -69,16 +100,18 @@ const packages = readdirSync(packagesDir).filter((n) => statSync(join(packagesDi
 test("there is at least one package", () => assert.ok(packages.length > 0));
 
 for (const pkg of packages) {
-  test(`${pkg}: src imports stay inside the allowlist`, () => {
+  test(`${pkg}: imports stay inside the allowlist (whole package)`, () => {
     const bad = [];
     const pkgDir = join(packagesDir, pkg);
-    for (const file of sourceFiles(join(pkgDir, "src"))) {
+    for (const file of sourceFiles(pkgDir)) {
       const source = readFileSync(file, "utf8");
       for (const spec of importSpecifiers(source)) {
         const why = violation(pkg, spec, file, pkgDir);
         if (why) bad.push(`${file}: ${spec} (${why})`);
       }
       for (const call of nonLiteralLoads(source)) bad.push(`${file}: ${call} (dynamic load needs a string literal)`);
+      for (const name of forbiddenLoaders(source)) bad.push(`${file}: ${name} (loads a module without a visible specifier)`);
+      for (const re of principalReexports(source)) bad.push(`${file}: ${re} (the user-principal subpath must not be re-exported)`);
     }
     assert.deepEqual(bad, []);
   });
@@ -140,4 +173,104 @@ test("scanner: dynamic loads need a string literal", () => {
   assert.equal(nonLiteralLoads("await import('./x/' + n)").length, 1);
   assert.equal(nonLiteralLoads("require(path)").length, 1);
   assert.deepEqual(nonLiteralLoads('// import(name)\n/* require(x) */'), []);
+});
+
+test("scanner: walks the whole package except dist and node_modules", () => {
+  const dir = join(packagesDir, "protocol");
+  const files = [...sourceFiles(dir)].map((f) => relative(dir, f));
+  assert.ok(files.some((f) => f.startsWith(`src${sep}`)));
+  assert.ok(files.some((f) => f.startsWith(`test${sep}`)), "tests are scanned");
+  assert.ok(files.every((f) => !f.startsWith(`dist${sep}`) && !f.startsWith(`node_modules${sep}`)));
+});
+
+test("scanner: node:* is banned in protocol src, allowed in its tests and test-support entry points", () => {
+  const dir = join(packagesDir, "protocol");
+  assert.notEqual(violation("protocol", "node:fs", join(dir, "src", "a.ts"), dir), null);
+  assert.equal(violation("protocol", "node:test", join(dir, "test", "a.test.ts"), dir), null);
+  assert.equal(violation("protocol", "node:test", join(dir, "contract", "index.ts"), dir), null);
+  assert.notEqual(violation("protocol", "electron", join(dir, "contract", "index.ts"), dir), null, "the rest of the allowlist still applies");
+  assert.notEqual(violation("protocol", "vs/base/common/event", join(dir, "test", "a.test.ts"), dir), null);
+});
+
+test("scanner: the user-principal subpath is restricted to the daemon; other journal deep imports are refused", () => {
+  assert.equal(violation("journal", "@axis/audit"), null);
+  assert.equal(violation("daemon", "@axis/journal"), null);
+  assert.equal(violation("daemon", "@axis/journal/daemon-principal"), null);
+  for (const pkg of ["protocol", "audit", "journal", "worktrees", "git-ops", "pty-policy", "providers", "challenge"]) {
+    assert.notEqual(violation(pkg, "@axis/journal/daemon-principal"), null, pkg);
+  }
+  assert.notEqual(violation("daemon", "@axis/journal/dist/src/principal.js"), null);
+  assert.notEqual(violation("daemon", "@axis/journal/src/principal"), null);
+  // Other packages' own subpaths stay allowed, as on main.
+  assert.equal(violation("daemon", "@axis/providers/contract"), null);
+});
+
+test("the journal package root exports the principal subpath only through package.json exports", () => {
+  const json = JSON.parse(readFileSync(join(packagesDir, "journal", "package.json"), "utf8"));
+  assert.deepEqual(Object.keys(json.exports).sort(), [".", "./daemon-principal"]);
+  const index = readFileSync(join(packagesDir, "journal", "src", "index.ts"), "utf8");
+  assert.ok(!/principal/i.test(index), "src/index.ts must not mention the principal module");
+});
+
+test("scanner: every script extension is read, declaration files are not", () => {
+  for (const f of ["a.js", "a.mjs", "a.cjs", "a.ts", "a.mts", "a.cts", "a.tsx", "a.jsx", "dir/deep/x.mts"]) assert.equal(isScriptFile(f), true, f);
+  for (const f of ["a.d.ts", "a.d.mts", "a.d.cts", "a.json", "a.map", "a.js.map", "a.md", "a.mtsx", "ts"]) assert.equal(isScriptFile(f), false, f);
+});
+
+test("scanner: sourceFiles yields .mts, .cts, .tsx, .jsx, .mjs and .cjs files, and skips dist and node_modules", () => {
+  const root = mkdtempSync(join(tmpdir(), "axis-scan-"));
+  try {
+    for (const f of ["src/a.ts", "src/b.mts", "src/c.cts", "src/d.tsx", "src/e.jsx", "scripts/f.mjs", "scripts/g.cjs", "h.js", "src/i.d.ts", "src/j.d.mts", "src/k.json", "dist/l.js", "node_modules/m/n.js"]) {
+      mkdirSync(dirname(join(root, f)), { recursive: true });
+      writeFileSync(join(root, f), "");
+    }
+    const found = [...sourceFiles(root)].map((p) => relative(root, p).split(sep).join("/")).sort();
+    assert.deepEqual(found, ["h.js", "scripts/f.mjs", "scripts/g.cjs", "src/a.ts", "src/b.mts", "src/c.cts", "src/d.tsx", "src/e.jsx"]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("scanner: a .mts file that imports and re-exports the principal is caught end to end", () => {
+  const root = mkdtempSync(join(tmpdir(), "axis-scan-"));
+  try {
+    mkdirSync(join(root, "src"), { recursive: true });
+    const file = join(root, "src", "leak.mts");
+    writeFileSync(file, 'import { userPrincipal } from "@axis/journal/daemon-principal";\nexport { userPrincipal };\nconst r = createRequire(import.meta.url);\n');
+    const bad = [];
+    for (const f of sourceFiles(root)) {
+      const source = readFileSync(f, "utf8");
+      for (const spec of importSpecifiers(source)) {
+        const why = violation("providers", spec, f, root);
+        if (why) bad.push(spec);
+      }
+      bad.push(...forbiddenLoaders(source), ...principalReexports(source));
+    }
+    assert.deepEqual(bad, ["@axis/journal/daemon-principal", "createRequire", "export { userPrincipal }"]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("scanner: loaders that hide a specifier are flagged", () => {
+  assert.deepEqual(forbiddenLoaders('const r = createRequire(import.meta.url); r("@axis/journal/daemon-principal");'), ["createRequire"]);
+  assert.deepEqual(forbiddenLoaders('process.getBuiltinModule("node:module").createRequire(import.meta.url)'), ["getBuiltinModule", "createRequire"]);
+  assert.deepEqual(forbiddenLoaders('import { createRequire } from "node:module";'), ["createRequire"]);
+  assert.deepEqual(forbiddenLoaders('// createRequire in a comment\n/* getBuiltinModule */ const a = 1;'), []);
+  assert.deepEqual(forbiddenLoaders("const requireX = 1; const created = 2;"), []);
+});
+
+test("scanner: re-exporting the user-principal subpath is flagged, importing it for use is not", () => {
+  const sub = '"@axis/journal/daemon-principal"';
+  assert.equal(principalReexports(`export * from ${sub};`).length, 1);
+  assert.equal(principalReexports(`export { userPrincipal } from ${sub};`).length, 1);
+  assert.equal(principalReexports(`export type { UserPrincipal } from ${sub};`).length, 1);
+  assert.equal(principalReexports(`export * as p from ${sub};`).length, 1);
+  assert.equal(principalReexports(`import { userPrincipal } from ${sub};\nexport { userPrincipal };`).length, 1);
+  assert.equal(principalReexports(`import { userPrincipal as mint } from ${sub};\nexport { a, userPrincipal, b };`).length, 1);
+  assert.equal(principalReexports(`import { userPrincipal } from ${sub};\nexport const mint = userPrincipal;`).length, 1);
+  assert.equal(principalReexports(`import { userPrincipal } from ${sub};\nexport default userPrincipal;`).length, 1);
+  assert.equal(principalReexports(`import { userPrincipal } from ${sub};\nexport function connect() { return userPrincipal(); }`).length, 0);
+  assert.equal(principalReexports(`export { userPrincipal } from "./other.js";`).length, 0);
+  assert.equal(principalReexports(`// export * from ${sub};`).length, 0);
 });
