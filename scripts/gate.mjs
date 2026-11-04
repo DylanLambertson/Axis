@@ -73,19 +73,20 @@ step("gitleaks", "gitleaks", () => {
   }
   const pin = parsePin();
   if (!pin) return { status: "fail", detail: "no GITLEAKS_VERSION / GITLEAKS_SHA256 pin in .github/workflows/ci.yml; refusing to run an unverified binary" };
-  const v = sh(bin, ["version"], { cwd: root, timeout: 30000 });
-  if (!v.ok || !versionMatchesPin(v.out, pin)) {
-    return { status: "fail", detail: `${bin} reports "${v.out.trim().slice(0, 60)}", CI pins ${pin.version}; refusing to run an unverified binary (reinstall it)` };
-  }
-  let note = `v${pin.version}, binary hash not recorded (${bin}.sha256)`;
+  // Hash first: nothing is executed until the file matches the recorded hash.
+  let note = `binary hash not recorded (${bin}.sha256)`;
   if (existsSync(`${bin}.sha256`)) {
     const recorded = parseSidecarHash(readFileSync(`${bin}.sha256`, "utf8"));
     const actual = createHash("sha256").update(readFileSync(bin)).digest("hex");
     if (recorded !== actual) return { status: "fail", detail: `${bin} does not match ${bin}.sha256; refusing to run an unverified binary` };
-    note = `v${pin.version}, hash verified`;
+    note = "hash verified";
+  }
+  const v = sh(bin, ["version"], { cwd: root, timeout: 30000 });
+  if (!v.ok || !versionMatchesPin(v.out, pin)) {
+    return { status: "fail", detail: `${bin} reports "${v.out.trim().slice(0, 60)}", CI pins ${pin.version}; refusing to run an unverified binary (reinstall it)` };
   }
   const r = sh(bin, ["git", "--no-banner", "--redact", `--log-opts=${range}`, "."], { cwd: root });
-  return r.ok ? { status: "pass", detail: `no leaks (${note})` } : { status: "fail", detail: tail(r.out) };
+  return r.ok ? { status: "pass", detail: `no leaks; v${pin.version}, ${note}` } : { status: "fail", detail: tail(r.out) };
 });
 
 step("line-limit", `files over ${config.lineLimit} lines`, () => {

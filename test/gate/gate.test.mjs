@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -180,7 +180,8 @@ test("skipping a gate prints a loud warning", () => {
 
 function fakeGitleaks(dir, versionText) {
   const file = join(dir, "fake-gitleaks.mjs");
-  writeFileSync(file, `#!/usr/bin/env node\nconsole.log(process.argv[2] === "version" ? ${JSON.stringify(versionText)} : "no leaks found");\n`);
+  const marker = join(dir, "executed.marker");
+  writeFileSync(file, `#!/usr/bin/env node\nimport { writeFileSync } from "node:fs";\nwriteFileSync(${JSON.stringify(marker)}, "ran");\nconsole.log(process.argv[2] === "version" ? ${JSON.stringify(versionText)} : "no leaks found");\n`);
   chmodSync(file, 0o755);
   return file;
 }
@@ -203,10 +204,12 @@ test("gitleaks: the recorded binary hash is enforced and reported", { skip: proc
     let r = runGate(dir, env);
     assert.equal(r.code, 2, r.out);
     assert.match(r.out, /PASS {2}gitleaks .*binary hash not recorded/);
+    rmSync(join(dir, "executed.marker"));
     writeFileSync(`${bin}.sha256`, `${"0".repeat(64)}  fake-gitleaks.mjs\n`);
     r = runGate(dir, env);
     assert.equal(r.code, 1, r.out);
     assert.match(r.out, /does not match .*\.sha256; refusing/);
+    assert.ok(!existsSync(join(dir, "executed.marker")), "a binary with a wrong hash must never be executed");
     writeFileSync(`${bin}.sha256`, `${createHash("sha256").update(readFileSync(bin)).digest("hex")}  fake-gitleaks.mjs\n`);
     r = runGate(dir, env);
     assert.equal(r.code, 2, r.out);
