@@ -1,0 +1,237 @@
+// Copyright (c) 2026 Dylan Lambertson. All rights reserved.
+import { lstat, readlink } from "node:fs/promises";
+import { dirname, isAbsolute, join, parse, relative } from "node:path";
+import { realish } from "./paths.js";
+
+export type ProtectedCategory =
+  | "ci"
+  | "editor-config"
+  | "dev-container"
+  | "git-hooks"
+  | "container-build"
+  | "package-scripts"
+  | "package-config"
+  | "shell-env"
+  | "build-script"
+  | "agent-config"
+  | "git-dir"
+  | "git-config"
+  | "outside-worktree"
+  | "invalid-path";
+
+export interface ProtectedMatch {
+  readonly category: ProtectedCategory;
+  readonly severity: "high" | "medium";
+  /** Which rule matched (a stable name for the highlight tooltip). */
+  readonly rule: string;
+  /** `symlink` when the path only reaches a protected location through a link. */
+  readonly via: "path" | "symlink";
+  /** The root-relative location the path resolves to, when it differs from what was asked. */
+  readonly resolved?: string;
+}
+
+interface Rule {
+  readonly rule: string;
+  readonly category: ProtectedCategory;
+  readonly severity: "high" | "medium";
+  /** Anchored at the worktree root, or at any depth. */
+  readonly anywhere: boolean;
+  /** A directory prefix or file name, as folded components. */
+  readonly path?: readonly string[];
+  /** For families of names (Dockerfile.*), a test on one folded component. */
+  readonly test?: (comp: string) => boolean;
+}
+
+const dir = (rule: string, category: ProtectedCategory, severity: "high" | "medium", anywhere: boolean, ...path: string[]): Rule => ({
+  rule,
+  category,
+  severity,
+  anywhere,
+  path,
+});
+const names = (category: ProtectedCategory, severity: "high" | "medium", ...files: string[]): Rule[] =>
+  files.map((f) => dir(f, category, severity, true, f));
+const fam = (rule: string, category: ProtectedCategory, test: (c: string) => boolean): Rule => ({
+  rule,
+  category,
+  severity: "high",
+  anywhere: true,
+  test,
+});
+
+// WT-3 plus gap G-3: files that run later, for the user or in CI, and the Git directory itself.
+const RULES: readonly Rule[] = [
+  dir(".github/workflows", "ci", "high", false, ".github", "workflows"),
+  dir(".github/actions", "ci", "high", false, ".github", "actions"),
+  dir(".circleci", "ci", "high", false, ".circleci"),
+  dir(".buildkite", "ci", "high", false, ".buildkite"),
+  dir(".azure-pipelines", "ci", "high", false, ".azure-pipelines"),
+  dir(".gitlab", "ci", "high", false, ".gitlab"),
+  ...names("ci", "high", ".gitlab-ci.yml", "azure-pipelines.yml", "jenkinsfile", ".travis.yml", "bitbucket-pipelines.yml", ".drone.yml", "appveyor.yml", ".appveyor.yml", "cloudbuild.yaml", "cloudbuild.yml", "buildkite.yml", "buildkite.yaml"),
+  dir(".vscode", "editor-config", "high", true, ".vscode"),
+  dir(".devcontainer", "dev-container", "high", true, ".devcontainer"),
+  ...names("dev-container", "high", ".devcontainer.json"),
+  dir(".husky", "git-hooks", "high", true, ".husky"),
+  dir(".githooks", "git-hooks", "high", true, ".githooks"),
+  ...names("git-hooks", "high", "lefthook.yml", "lefthook.yaml", ".lefthook.yml", ".lefthook.yaml", "lefthook-local.yml", "lefthook-local.yaml", ".lefthook-local.yml", ".lefthook-local.yaml", ".pre-commit-config.yaml", ".pre-commit-hooks.yaml"),
+  fam("Dockerfile", "container-build", (c) => c === "dockerfile" || c.startsWith("dockerfile.") || c.endsWith(".dockerfile")),
+  fam("Containerfile", "container-build", (c) => c === "containerfile" || c.startsWith("containerfile.") || c.endsWith(".containerfile")),
+  fam("compose file", "container-build", (c) => /^(?:docker-compose|compose)(?:[.-][a-z0-9._-]*)?\.ya?ml$/.test(c)),
+  ...names("package-scripts", "medium", "package.json"),
+  ...names("package-config", "high", ".npmrc", ".yarnrc", ".yarnrc.yml", ".pnpmfile.cjs", ".pypirc", "pip.conf", ".bunfig.toml", "bunfig.toml"),
+  dir(".cargo/config", "package-config", "high", true, ".cargo"),
+  ...names("shell-env", "high", ".envrc", ".mise.toml", "mise.toml"),
+  ...names("build-script", "medium", "makefile", "gnumakefile", "justfile", "taskfile.yml", "taskfile.yaml", "rakefile", "build.gradle", "build.gradle.kts", "setup.py", "noxfile.py"),
+  ...names("agent-config", "high", ".mcp.json"),
+  dir(".git", "git-dir", "high", true, ".git"),
+  ...names("git-config", "high", ".gitmodules", ".gitattributes"),
+];
+
+// Code points HFS+ and APFS-style comparison ignores in a name (CVE-2014-9390 class): `.g<ZWNJ>it` is `.git`.
+const IGNORABLE = /[\u200b-\u200f\u202a-\u202e\u206a-\u206f\ufeff\u00ad\u2060\u180e]/g;
+const MARKS = /\p{M}/gu;
+const MAX_PATH = 4096;
+const MAX_PARTS = 256;
+
+/** The comparison form of one path component. */
+export function foldName(comp: string): string {
+  return comp.replace(IGNORABLE, "").normalize("NFKC").normalize("NFD").replace(MARKS, "").toLowerCase();
+}
+
+// NTFS: a trailing dot or space is dropped, `name:stream` is the same file, and `GITHUB~1` is `.github`.
+function ntfsClean(comp: string): string {
+  const colon = comp.indexOf(":");
+  const base = colon >= 0 ? comp.slice(0, colon) : comp;
+  return base.replace(/[ .]+$/, "");
+}
+
+function shortMatches(comp: string, literal: string): boolean {
+  const m = /^([^~.]{1,6})~\d{1,7}(?:\.(.{0,3}))?$/.exec(comp);
+  if (m === null) return false;
+  const dot = literal.lastIndexOf(".");
+  const hasExt = dot > 0;
+  const base = (hasExt ? literal.slice(0, dot) : literal).replace(/[^a-z0-9]/g, "");
+  const ext = hasExt ? literal.slice(dot + 1) : "";
+  return base.slice(0, 6) === m[1] && (m[2] === undefined || m[2] === "" || ext.startsWith(m[2]));
+}
+
+const compEquals = (comp: string, literal: string): boolean => comp === literal || shortMatches(comp, literal);
+
+type Parts = { readonly parts: string[]; readonly escapes: boolean } | null;
+
+/** Splits on `/` and `\`, applies `.` and `..`, drops empty parts, folds each name. Null when the path is not usable. */
+function split(rel: string): Parts {
+  if (rel.length > MAX_PATH || rel.includes("\0")) return null;
+  const stack: string[] = [];
+  let escapes = false;
+  const raw = rel.replace(IGNORABLE, "").normalize("NFKC").split(/[\\/]+/);
+  if (raw.length > MAX_PARTS) return null;
+  for (const piece of raw) {
+    if (piece === "" || piece === ".") continue;
+    if (piece === "..") {
+      if (stack.pop() === undefined) escapes = true;
+      continue;
+    }
+    const clean = ntfsClean(piece);
+    if (clean === "") continue;
+    stack.push(foldName(clean));
+  }
+  return { parts: stack, escapes };
+}
+
+function matchRule(parts: readonly string[], r: Rule): boolean {
+  if (r.test !== undefined) return parts.some((p) => r.test?.(p) === true);
+  const path = r.path as readonly string[];
+  const last = parts.length - path.length;
+  for (let start = 0; start <= (r.anywhere ? last : Math.min(last, 0)); start++) {
+    if (path.every((lit, i) => compEquals(parts[start + i] as string, foldLiteral(lit)))) return true;
+  }
+  return false;
+}
+
+const foldLiteral = (lit: string): string => foldName(lit);
+
+function matchParts(parts: readonly string[]): ProtectedMatch | null {
+  for (const r of RULES) {
+    if (matchRule(parts, r)) return { category: r.category, severity: r.severity, rule: r.rule, via: "path" };
+  }
+  return null;
+}
+
+/**
+ * Whether a root-relative path is in the protected list. Lexical only: it does not touch the file system, so it
+ * can judge a path that does not exist yet. A path that leaves the root (`..`, an absolute path, a drive letter) is
+ * `outside-worktree`; one that cannot be parsed (too long, a NUL) is `invalid-path`.
+ */
+export function classifyPath(relPath: string): ProtectedMatch | null {
+  if (typeof relPath !== "string") return { category: "invalid-path", severity: "high", rule: "not a string", via: "path" };
+  if (/^(?:[\\/]|[a-zA-Z]:)/.test(relPath)) return { category: "outside-worktree", severity: "high", rule: "absolute path", via: "path" };
+  const sp = split(relPath);
+  if (sp === null) return { category: "invalid-path", severity: "high", rule: "unusable path", via: "path" };
+  if (sp.escapes) return { category: "outside-worktree", severity: "high", rule: "leaves the worktree", via: "path" };
+  return matchParts(sp.parts);
+}
+
+const MAX_HOPS = 40;
+
+function components(p: string): { root: string; rest: string[] } {
+  const { root } = parse(p);
+  return { root, rest: p.slice(root.length).split(/[\\/]+/).filter((x) => x !== "") };
+}
+
+/**
+ * Like `classifyPath`, and also follows symlinks on disk: a path whose resolution lands in a protected location is
+ * reported with `via: "symlink"`, one that lands outside `root` is `outside-worktree`, and a link chain longer than
+ * 40 hops is `invalid-path`. Dangling links resolve to where they point. Resolution is a snapshot of the file
+ * system, so it is advisory for highlighting; it is not a guard against a link swapped later. Hard links cannot
+ * be told from a path.
+ */
+export async function classifyPathResolved(root: string, path: string): Promise<ProtectedMatch | null> {
+  const rel = isAbsolute(path) ? relative(root, path) : path;
+  const lexical = classifyPath(rel);
+  if (lexical !== null) return lexical;
+  const realRoot = await realish(root);
+  let cur = realRoot;
+  const queue = rel.split(/[\\/]+/).filter((x) => x !== "" && x !== ".");
+  let hops = 0;
+  while (queue.length > 0) {
+    const part = queue.shift() as string;
+    if (part === "..") {
+      cur = dirname(cur);
+      continue;
+    }
+    const next = join(cur, part);
+    let st;
+    try {
+      st = await lstat(next);
+    } catch {
+      cur = next;
+      continue;
+    }
+    if (!st.isSymbolicLink()) {
+      cur = next;
+      continue;
+    }
+    if (++hops > MAX_HOPS) return { category: "invalid-path", severity: "high", rule: "symlink loop", via: "symlink" };
+    let target;
+    try {
+      target = await readlink(next);
+    } catch {
+      return { category: "invalid-path", severity: "high", rule: "unreadable link", via: "symlink" };
+    }
+    if (isAbsolute(target)) {
+      const c = components(target);
+      cur = c.root;
+      queue.unshift(...c.rest);
+    } else {
+      queue.unshift(...target.split(/[\\/]+/).filter((x) => x !== "" && x !== "."));
+    }
+  }
+  const finalRel = relative(realRoot, cur);
+  if (finalRel === ".." || finalRel.startsWith("../") || finalRel.startsWith("..\\") || isAbsolute(finalRel)) {
+    return hops > 0 ? { category: "outside-worktree", severity: "high", rule: "link leaves the worktree", via: "symlink" } : null;
+  }
+  const hit = classifyPath(finalRel);
+  if (hit === null) return null;
+  return hops > 0 ? { ...hit, via: "symlink", resolved: finalRel } : hit;
+}
