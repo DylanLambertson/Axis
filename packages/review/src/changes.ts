@@ -98,6 +98,31 @@ async function objectSizes(git: ReviewGit, oids: readonly string[]): Promise<Map
   return sizes;
 }
 
+/**
+ * Paths that have a `filter` attribute, in the worktree's attribute files or the index's. No program runs: check-attr only
+ * reads attribute files. Such a path is never offered (design §2): the snapshot ran with every filter off, so its bytes are
+ * the smudged ones and "modified" may only mean "not cleaned", and a clean filter must not run inside the daemon.
+ * (A filter literally named `unspecified` or `set` or `unset` cannot be told from no filter by check-attr; known limit.)
+ */
+export async function filteredPaths(git: ReviewGit, paths: readonly string[] | string[]): Promise<Set<string>> {
+  const found = new Set<string>();
+  // A path that cannot be accepted anyway is not asked about (a `..` or absolute path would make check-attr refuse the batch).
+  paths = paths.filter((p) => pathProblem(p) === undefined);
+  if (paths.length === 0) return found;
+  const stdin = `${paths.join("\0")}\0`;
+  for (const extra of [[], ["--cached"]] as const) {
+    const out = expectComplete(await git(["check-attr", "-z", "--stdin", ...extra, "filter"], { stdin }), "read the file attributes");
+    const t = out.split("\0");
+    if (t[t.length - 1] === "") t.pop();
+    if (t.length !== paths.length * 3) return malformed();
+    for (let i = 0; i < t.length; i += 3) {
+      const value = t[i + 2] as string;
+      if (value !== "unspecified" && value !== "unset" && value !== "set") found.add(t[i] as string);
+    }
+  }
+  return found;
+}
+
 function protectedRules(matcher: ProtectedPathMatcher | undefined, paths: readonly string[], maxDisplay: number): string[] {
   if (!matcher) return [];
   const rules = new Set<string>();
@@ -135,6 +160,7 @@ export async function listChanges(
     }
   }
   const sizes = await objectSizes(git, [...wanted]);
+  const filtered = await filteredPaths(git, [...new Set(entries.flatMap((e) => (e.oldPath === undefined ? [e.path] : [e.path, e.oldPath])))]);
 
   let linkReads = 0;
   const files: ReviewFile[] = [];
@@ -147,11 +173,13 @@ export async function listChanges(
     const isSubmodule = e.newMode === "160000" || e.oldMode === "160000";
     const big = Math.max(sizes.get(e.oldOid) ?? 0, sizes.get(e.newOid) ?? 0) > limits.maxPreviewBytes;
     let kind: ChangeKind = "text";
-    if (isSubmodule) kind = "submodule";
+    const isFiltered = filtered.has(e.path) || (e.oldPath !== undefined && filtered.has(e.oldPath));
+    if (isFiltered) kind = "filtered";
+    else if (isSubmodule) kind = "submodule";
     else if (linkSide) kind = "symlink";
     else if (stat?.binary === true) kind = "binary";
     else if (big) kind = "too-large";
-    if (kind !== "text") warnings.push(kind === "too-large" ? "too-large" : kind);
+    if (kind !== "text") warnings.push(kind);
 
     let link: ReviewFile["link"];
     if (kind === "symlink" && linkSide) {
@@ -171,6 +199,7 @@ export async function listChanges(
 
     let reason: string | undefined;
     if (problem) reason = "unsafe_path";
+    else if (isFiltered) reason = "filtered_path";
     else if (e.status === "A" || e.status === "D" || e.status === "T") reason = e.status === "A" ? "added" : e.status === "D" ? "deleted" : "type_change";
     else if (kind !== "text") reason = kind;
     else if (e.oldOid === e.newOid) reason = "no_content_change";

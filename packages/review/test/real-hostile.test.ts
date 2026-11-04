@@ -4,7 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { ReviewSession, checkFresh, prepareCommit, secretWarnings } from "../src/index.js";
+import { ReviewError, ReviewSession, checkFresh, prepareCommit, secretWarnings } from "../src/index.js";
 import { fixture, leftoverIndexes, refusal, type Fixture } from "./fixture.js";
 
 const posix = process.platform !== "win32";
@@ -19,7 +19,7 @@ function script(f: Fixture, name: string): { path: string; marker: string } {
 }
 
 test("an external diff driver, a textconv, filters and a hooks path in the repository config run nothing", { skip: !posix }, async () => {
-  const f = fixture({ base: ({ write }) => write(".gitattributes", "*.txt diff=evil filter=evil\n") });
+  const f = fixture({ base: ({ write }) => write(".gitattributes", "*.txt diff=evil\n*.dat filter=evil\n") });
   try {
     const ext = script(f, "ext");
     const conv = script(f, "textconv");
@@ -39,6 +39,7 @@ test("an external diff driver, a textconv, filters and a hooks path in the repos
 
     f.write("a.txt", BASE.replace("l2\n", "L2\n").replace("l18\n", "L18\n"));
     f.write("new.txt", "fresh\n");
+    f.write("blob.dat", "payload\n");
     const scanned: string[] = [];
     const deps = { ...f.deps, git: { ...f.gitOps, scanner: async (d: string) => { scanned.push(d); return []; } } };
     const s = await ReviewSession.start(deps, { worktree: f.wt, against: f.head() });
@@ -46,6 +47,8 @@ test("an external diff driver, a textconv, filters and a hooks path in the repos
     assert.equal(h.hunks?.length, 2, h.fileLevelReason);
     s.acceptHunk("a.txt", h.hunks?.[0]?.id ?? "");
     s.acceptFile("new.txt");
+    assert.equal(s.file("blob.dat").kind, "filtered", "a path with a filter attribute is listed, flagged and never offered");
+    assert.throws(() => s.acceptFile("blob.dat"), (e: unknown) => e instanceof ReviewError && e.details?.["reason"] === "filtered_path");
     await s.preview("a.txt", "new");
     const b = await s.build();
     await secretWarnings(deps, b, s.files);

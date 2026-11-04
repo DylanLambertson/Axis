@@ -12,6 +12,14 @@ export interface EscapeOptions {
    * what a path needs: the file name is at the end and is the part a reviewer must not lose.
    */
   readonly cut?: "end" | "middle";
+  /** Append U+2026 to a cut text (default true). Hunk lines turn it off: they carry an explicit `truncated` flag instead. */
+  readonly ellipsis?: boolean;
+}
+
+export interface EscapedText {
+  readonly text: string;
+  /** The input was longer than `maxLength` and part of it is not in `text`. */
+  readonly truncated: boolean;
 }
 
 const NAMED: Readonly<Record<number, string>> = { 0x0a: "\\n", 0x0d: "\\r", 0x09: "\\t", 0x5c: "\\\\" };
@@ -36,6 +44,11 @@ function show(cp: number, keepTab: boolean): string {
 }
 
 export function escapeForDisplay(input: string, opts: EscapeOptions = {}): string {
+  return escapeWithInfo(input, opts).text;
+}
+
+export function escapeWithInfo(input: string, opts: EscapeOptions = {}): EscapedText {
+  const mark = opts.ellipsis === false ? "" : "\u2026";
   const text = typeof input === "string" ? input : "";
   const max = Math.max(1, Math.floor(opts.maxLength ?? 512));
   const keepTab = opts.keepTab === true;
@@ -46,20 +59,20 @@ export function escapeForDisplay(input: string, opts: EscapeOptions = {}): strin
     // Work is bounded by `max`, not by the input: only the two ends of a huge text are ever looked at. A pair split by
     // the cut becomes a lone surrogate, which is shown escaped.
     const whole = text.length <= max * 2 ? Array.from(text) : undefined;
-    if (whole && whole.length <= max) return render(whole);
+    if (whole && whole.length <= max) return { text: render(whole), truncated: false };
     const start = whole ? whole.slice(0, head) : Array.from(text.slice(0, head * 2)).slice(0, head);
     const end = whole ? whole.slice(whole.length - tail) : Array.from(text.slice(text.length - tail * 2)).slice(-tail);
-    return `${render(start)}\u2026${render(end)}`;
+    return { text: `${render(start)}${mark}${render(end)}`, truncated: true };
   }
   let out = "";
   let n = 0;
   // Iterating by code point yields a lone surrogate as itself, which `show` then writes as \u{d800}.
   for (const ch of text) {
-    if (n >= max) return `${out}\u2026`;
+    if (n >= max) return { text: `${out}${mark}`, truncated: true };
     out += show(ch.codePointAt(0) as number, keepTab);
     n++;
   }
-  return out;
+  return { text: out, truncated: false };
 }
 
 const WINDOWS_DRIVE = /^[A-Za-z]:/;
@@ -74,10 +87,12 @@ export function pathProblem(p: string): string | undefined {
     if (seg === "") return "empty_segment";
     if (seg === "." || seg === "..") return "dot_segment";
     if (seg.includes("\\")) return "backslash";
-    if (seg.includes(":")) return "colon";
-    // .git, `.git.`, `.git ` and the 8.3 name all name the repository directory on some file systems.
-    const core = seg.replace(/[. ]+$/, "").toLowerCase();
+    // .git, `.git.`, `.git ` and the 8.3 names name the repository directory on some file systems. NTFS also reads
+    // `.git:stream` as `.git`, and HFS+ ignores some zero-width code points, as git's own path check does. A ":" elsewhere
+    // in a name is an ordinary POSIX file name (`12:30 notes.md`) and is not refused.
+    const core = seg.split(":")[0]?.replace(/[\u200c-\u200f\u202a-\u202e\u206a-\u206f\ufeff]/g, "").replace(/[. ]+$/, "").toLowerCase();
     if (core === ".git" || core === "git~1") return "git_dir";
+    if (core === "gitmod~1") return "git_dir";
   }
   return undefined;
 }

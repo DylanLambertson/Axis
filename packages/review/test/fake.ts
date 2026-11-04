@@ -37,6 +37,7 @@ export function fakeFixture(entries: readonly Entry[], opts: { patch?: string; b
       if (opts.throwOn !== undefined && has(opts.throwOn)) throw opts.error ?? new Error("boom");
       if (opts.failOn !== undefined && has(opts.failOn)) return { code: 128, stdout: "", stderr: "fatal: planted\n" };
       if (has("--version")) return result(`${opts.version ?? "git version 2.40.0"}\n`);
+      if (has("check-attr")) return result((req.stdin ?? "").split("\0").filter(Boolean).map((p) => `${p}\0filter\0unspecified\0`).join(""));
       if (has("--get-regexp")) return { code: 1, stdout: "", stderr: "" };
       if (has("rev-parse")) return result(`${oid(7)}\n`);
       if (has("read-tree") || has("add")) return result("");
@@ -61,7 +62,7 @@ export function fakeFixture(entries: readonly Entry[], opts: { patch?: string; b
   const { provider, counts } = tempIndexes(join(mkdtempSync(join(tmpdir(), "axis-review-fake-")), "idx"));
   return {
     counts,
-    deps: { git: gitOps, tempIndex: provider },
+    deps: { git: gitOps, tempIndex: provider, fileExists: async () => false },
     wt: { workTree: "/work/tree", gitDir: "/work/tree/.git" },
     against: oid(7),
     calls,

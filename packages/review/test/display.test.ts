@@ -73,7 +73,7 @@ test("pathProblem refuses traversal, absolute and git-directory paths in every s
     ["", "empty"], ["../x", "dot_segment"], ["a/../../x", "dot_segment"], ["./x", "dot_segment"], ["a//b", "empty_segment"], ["a/", "empty_segment"],
     ["/etc/passwd", "absolute"], ["\\\\server\\share", "absolute"], ["C:\\x", "absolute"], ["c:x", "absolute"], ["a\\..\\b", "backslash"],
     [".git/hooks/pre-commit", "git_dir"], ["a/.GIT/config", "git_dir"], [".git./x", "git_dir"], [".git /x", "git_dir"], ["git~1/x", "git_dir"],
-    ["a\0b", "nul"], ["x".repeat(4097), "too_long"], [".git::$INDEX_ALLOCATION/x", "colon"],
+    ["a\0b", "nul"], ["x".repeat(4097), "too_long"], [".git::$INDEX_ALLOCATION/x", "git_dir"], [".g\u200cit/x", "git_dir"], ["GITMOD~1", "git_dir"],
   ];
   for (const [p, why] of bad) assert.equal(pathProblem(p), why, JSON.stringify(p));
   for (const ok of ["a", "a/b.txt", ".github/workflows/ci.yml", ".gitignore", ".gitmodules", "dir/.gitkeep", 'we"ird\nname', "..x", "x..", "a/.. b"]) {

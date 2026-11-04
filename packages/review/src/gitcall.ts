@@ -92,3 +92,10 @@ export async function resolveObject(git: ReviewGit, oid: string, kind: "commit" 
   if (r.code !== 0 || !OBJECT_ID.test(out)) throw invalid(`${kind} ${oid.slice(0, 12)} was not found`, "not_found");
   return out;
 }
+
+/** The size of an object, or undefined when git could not say (a failed call is never "size 0"). */
+export async function objectSize(git: ReviewGit, oid: string): Promise<number | undefined> {
+  const r = await git(["cat-file", "-s", oid]);
+  const t = r.stdout.trim();
+  return r.code === 0 && /^\d{1,15}$/.test(t) ? Number(t) : undefined;
+}

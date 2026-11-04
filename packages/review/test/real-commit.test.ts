@@ -30,7 +30,7 @@ test("review, partial accept, prepare and Axis commit: the commit holds exactly 
     const prepared = await prepareCommit(f.deps, b);
     assert.equal(prepared.reviewedTreeHash, b.reviewedTree);
     assert.equal(f.git("write-tree").trim(), b.reviewedTree, "the real index now holds the reviewed tree");
-    const result = await executeCommit(f.gitOps, prepared.commitInput("accept the first hunk"));
+    const result = await executeCommit(f.gitOps, await prepared.handoff("accept the first hunk"));
     assert.equal(result.tree, b.reviewedTree);
     assert.equal(f.git("rev-parse", "HEAD^{tree}").trim(), b.reviewedTree);
     assert.equal(f.git("rev-parse", "HEAD~1").trim(), b.head);
@@ -200,7 +200,7 @@ test("a SHA-256 repository works end to end", async (t) => {
     assert.equal(f.git("cat-file", "blob", `${b.reviewedTree}:a.txt`), BASE.replace("l2\n", "L2\n"));
     assert.equal(s.files[0]?.oldOid.length, 64);
     const prepared = await prepareCommit(f.deps, b);
-    assert.equal((await executeCommit(f.gitOps, prepared.commitInput("m"))).tree, b.reviewedTree);
+    assert.equal((await executeCommit(f.gitOps, await prepared.handoff("m"))).tree, b.reviewedTree);
   } finally {
     f.cleanup();
   }
@@ -231,9 +231,11 @@ test("git-ops refuses what the review layer prepared if the index is changed bet
     const prepared = await prepareCommit(f.deps, b);
     f.write("evil.txt", "x\n");
     f.git("add", "evil.txt");
-    const e = await refusal2(executeCommit(f.gitOps, prepared.commitInput("m")));
+    assert.equal((await refusal(prepared.handoff("m"))).details?.["reason"], "index_changed", "the hand-over notices first");
+    const raw = { worktree: f.wt, reviewedTreeHash: b.reviewedTree, message: "m" };
+    const e = await refusal2(executeCommit(f.gitOps, raw));
     assert.equal(e.code, "E_CONFLICT");
-    const plan = await refusal2(planCommit(f.gitOps, prepared.commitInput("m")));
+    const plan = await refusal2(planCommit(f.gitOps, raw));
     assert.equal(plan.code, "E_CONFLICT");
   } finally {
     f.cleanup();

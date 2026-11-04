@@ -3,7 +3,7 @@
 // committed, so the push dialog can warn before the commit exists. It does not replace the scan in planPush.
 import { createHash } from "node:crypto";
 import { MAX_DIFF, type SecretFinding } from "@axis/git-ops";
-import type { ReviewBinding } from "./binding.js";
+import { assertBinding, type ReviewBinding } from "./binding.js";
 import { escapeForDisplay } from "./display.js";
 import { mapUnexpected, internal, invalid } from "./errors.js";
 import { OBJECT_ID, expectOk, reviewGitFor } from "./gitcall.js";
@@ -34,6 +34,7 @@ const RULE = /^[A-Za-z0-9._-]{1,64}$/;
 
 export function secretWarnings(deps: ReviewDeps, binding: ReviewBinding, files: readonly ReviewFile[]): Promise<SecretWarnings> {
   return mapUnexpected(async () => {
+    assertBinding(binding);
     const reviewedTree = binding.reviewedTree;
     if (!OBJECT_ID.test(reviewedTree)) throw invalid("not a review binding");
     const limits = resolveLimits(deps.limits);

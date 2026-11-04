@@ -6,12 +6,12 @@ import { headState, mintBinding, type ReviewBinding } from "./binding.js";
 import { buildReviewedTree, type FileDecision } from "./build.js";
 import { listChanges } from "./changes.js";
 import { conflict, denied, internal, invalid, mapUnexpected, notFound } from "./errors.js";
-import { assertOid, expectComplete, reviewGitFor, resolveObject, type ReviewGit } from "./gitcall.js";
+import { assertOid, expectComplete, objectSize, reviewGitFor, resolveObject, type ReviewGit } from "./gitcall.js";
 import { applyHunks, blobOid, hunkId, parseUnifiedHunks, type Hunk } from "./hunks.js";
 import { resolveLimits } from "./limits.js";
-import { hunkView, previewSide, type HunkView, type Preview } from "./preview.js";
-import { snapshotWorktree } from "./snapshot.js";
-import type { ReviewDeps, ReviewFile, ReviewInput, ReviewLimits } from "./types.js";
+import { hunkTruncated, hunkView, previewSide, type HunkView, type Preview } from "./preview.js";
+import { snapshotWorktreeDetailed } from "./snapshot.js";
+import type { ReviewDeps, ReviewFile, ReviewInput, ReviewLimits, SkippedFile } from "./types.js";
 
 export type FileDecisionState = "none" | "accepted" | "partial";
 
@@ -34,6 +34,9 @@ export class ReviewSession {
   /** The worktree as it was read once, at the start (design §2). */
   readonly worktreeTree: string;
   readonly files: readonly ReviewFile[];
+  /** Files over the snapshot size cap: left out of the review, listed here so they are not silently missing. */
+  readonly skipped: readonly SkippedFile[];
+  readonly skippedCount: number;
 
   readonly #deps: ReviewDeps;
   readonly #limits: ReviewLimits;
@@ -44,14 +47,16 @@ export class ReviewSession {
   readonly #decisions = new Map<string, { whole: boolean; hunks: Set<number> }>();
   #cached = 0;
 
-  private constructor(deps: ReviewDeps, limits: ReviewLimits, git: ReviewGit, input: ReviewInput, againstTree: string, worktreeTree: string, files: readonly ReviewFile[]) {
+  private constructor(deps: ReviewDeps, limits: ReviewLimits, git: ReviewGit, input: ReviewInput, againstTree: string, snap: { tree: string; skipped: readonly SkippedFile[]; skippedCount: number }, files: readonly ReviewFile[]) {
     this.#deps = deps;
     this.#limits = limits;
     this.#git = git;
     this.worktree = { workTree: input.worktree.workTree, gitDir: input.worktree.gitDir };
     this.against = input.against;
     this.againstTree = againstTree;
-    this.worktreeTree = worktreeTree;
+    this.worktreeTree = snap.tree;
+    this.skipped = Object.freeze(snap.skipped.slice());
+    this.skippedCount = snap.skippedCount;
     this.files = Object.freeze(files.slice());
     this.#byPath = new Map(files.map((f) => [f.path, f]));
   }
@@ -64,9 +69,9 @@ export class ReviewSession {
       const git = await reviewGitFor(deps, input.worktree);
       if ((await resolveObject(git, against, "commit")) !== against) throw invalid("against must be a commit id", "not_a_commit");
       const againstTree = await resolveObject(git, against, "tree");
-      const worktreeTree = await snapshotWorktree(deps, git, againstTree);
-      const files = await listChanges(git, againstTree, worktreeTree, limits, deps.protectedPaths);
-      return new ReviewSession(deps, limits, git, input, againstTree, worktreeTree, files);
+      const snap = await snapshotWorktreeDetailed(deps, git, againstTree);
+      const files = await listChanges(git, againstTree, snap.tree, limits, deps.protectedPaths);
+      return new ReviewSession(deps, limits, git, input, againstTree, snap, files);
     });
   }
 
@@ -109,10 +114,16 @@ export class ReviewSession {
     const fileLevel = (reason: string): Loaded => ({ kind: "file-level", reason });
     if (f.fileLevelReason !== undefined) return fileLevel(f.fileLevelReason);
     const git = this.#git;
-    const sizes = await Promise.all([f.oldOid, f.newOid].map(async (oid) => Number((await git(["cat-file", "-s", oid])).stdout.trim())));
-    if (sizes.some((s) => !Number.isFinite(s))) return fileLevel("unreadable");
-    if (Math.max(...sizes) > this.#limits.maxHunkFileBytes) return fileLevel("too_large");
-    const r = await git(["diff", "--no-ext-diff", "--no-textconv", "--no-color", "--no-renames", "-U3", f.oldOid, f.newOid]);
+    const sizes = await Promise.all([f.oldOid, f.newOid].map((oid) => objectSize(git, oid)));
+    if (sizes.some((s) => s === undefined)) return fileLevel("unreadable");
+    if (Math.max(...(sizes as number[])) > this.#limits.maxHunkFileBytes) return fileLevel("too_large");
+    // Every setting that changes what a diff looks like is pinned, so a repository's config cannot switch per-hunk review off
+    // (diff.suppressBlankEmpty turns a blank context line into an empty one, which the parser rightly refuses).
+    const r = await git([
+      "-c", "diff.suppressBlankEmpty=false", "-c", "diff.noprefix=false", "-c", "diff.mnemonicPrefix=false", "-c", "diff.interHunkContext=0",
+      "-c", "diff.context=3", "-c", "core.bigFileThreshold=2g",
+      "diff", "--no-ext-diff", "--no-textconv", "--no-color", "--no-renames", "--inter-hunk-context=0", "-U3", f.oldOid, f.newOid,
+    ]);
     if (r.code !== 0) return fileLevel("diff_failed");
     if (r.truncated === true || r.stdout.length > this.#limits.maxPatchBytes) return fileLevel("patch_too_large");
     // The cache is charged before the patch is kept, so the bound holds even when the next file would exceed it.
@@ -138,6 +149,7 @@ export class ReviewSession {
   #acceptable(path: string): ReviewFile {
     const f = this.file(path);
     if (f.unsafePath) throw denied("a file with an unusable path cannot be accepted", "unsafe_path");
+    if (f.kind === "filtered") throw denied("a file with a content filter (git-crypt, LFS and the like) cannot be accepted here", "filtered_path");
     return f;
   }
 
@@ -161,9 +173,17 @@ export class ReviewSession {
     return { hunks: loaded.hunks, index: h.index };
   }
 
-  acceptHunk(path: string, id: string): void {
+  /**
+   * Accepts one hunk. A hunk with a line the view had to cut is refused unless the caller passes `acceptTruncated: true`,
+   * which is the user's explicit acknowledgement that part of an added or removed line was not shown.
+   */
+  acceptHunk(path: string, id: string, opts: { readonly acceptTruncated?: boolean } = {}): void {
     this.#acceptable(path);
     const { hunks, index } = this.#hunkIndex(path, id);
+    const hunk = hunks[index];
+    if (hunk && opts.acceptTruncated !== true && hunkTruncated(hunk, this.#limits)) {
+      throw denied("a line of this hunk is longer than the view shows; accept it only after acknowledging that", "truncated_hunk");
+    }
     const cur = this.#decisions.get(path) ?? { whole: false, hunks: new Set<number>() };
     if (cur.whole) return;
     cur.hunks.add(index);

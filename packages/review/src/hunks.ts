@@ -78,7 +78,8 @@ export function parseUnifiedHunks(patch: string, maxHunks: number): ParsedPatch 
       }
     }
     const next = lines[i];
-    // Whatever follows a complete hunk must be the next header (or the end): extra lines mean the header lied.
+    // Whatever follows a complete hunk must be the next header (or the end): extra lines mean the header lied. Defence in
+    // depth, with no test of its own: the HEADER match on the next loop turn refuses the same input, and so does the self-check.
     if (next !== undefined && !next.startsWith("@@")) return { ok: false, reason: "malformed" };
     hunks.push({
       index: hunks.length,

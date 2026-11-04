@@ -34,18 +34,22 @@ export interface ReviewLimits {
   readonly maxSymlinkReads: number;
   readonly maxCachedPatchBytes: number;
   readonly maxStalePaths: number;
+  /** A worktree file larger than this is left out of the snapshot and listed as skipped (not silently). */
+  readonly maxSnapshotFileBytes: number;
 }
 
 export interface ReviewDeps {
   /** The object the daemon already passes to @axis/git-ops: runner, GIT-ENV-1 environment, platform. Only daemon-context git is used. */
   readonly git: GitOpsDeps;
   readonly tempIndex: TempIndexProvider;
+  /** Whether an absolute path exists. Used for the git directory's in-progress markers; the package has no file system of its own. */
+  readonly fileExists: (absolutePath: string) => Promise<boolean>;
   readonly protectedPaths?: ProtectedPathMatcher;
   readonly limits?: Partial<ReviewLimits>;
 }
 
 export type ChangeStatus = "A" | "M" | "D" | "R" | "T";
-export type ChangeKind = "text" | "binary" | "symlink" | "submodule" | "too-large";
+export type ChangeKind = "text" | "binary" | "symlink" | "submodule" | "too-large" | "filtered";
 
 export interface ReviewFile {
   /** Repository-relative, as git has it. Use for operations; never show it. */
@@ -82,4 +86,12 @@ export interface ReviewInput {
   readonly worktree: WorktreeRef;
   /** Full object id of a commit. For a review that will be committed it must be HEAD (design §3). */
   readonly against: string;
+}
+
+/** A worktree file left out of the snapshot because it is larger than `maxSnapshotFileBytes`. It cannot be reviewed or accepted. */
+export interface SkippedFile {
+  readonly path: string;
+  readonly displayPath: string;
+  readonly size: number;
+  readonly reason: "too_large_to_review";
 }

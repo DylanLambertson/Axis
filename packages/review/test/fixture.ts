@@ -79,7 +79,7 @@ export function fixture(over: { objectFormat?: "sha1" | "sha256"; deps?: Partial
     ...over.git,
   };
   const { provider, counts } = tempIndexes(join(root, "indexes"));
-  const deps: ReviewDeps = { git: gitOps, tempIndex: provider, ...over.deps };
+  const deps: ReviewDeps = { git: gitOps, tempIndex: provider, fileExists: async (p) => existsSync(p), ...over.deps };
   return {
     root, repo, home, wt: { workTree: repo, gitDir: join(repo, ".git") }, deps, gitOps, seen, indexes: counts, git, write,
     head: () => git("rev-parse", "HEAD").trim(),

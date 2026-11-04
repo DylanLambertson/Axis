@@ -1,10 +1,12 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 // Builds the REVIEWED TREE (design §5): the base tree plus exactly the accepted changes, in a temporary index, from
 // immutable objects. The worktree, the real index and the refs are not touched.
+import { escapeForDisplay } from "./display.js";
 import { internal, conflict, denied } from "./errors.js";
 import { OBJECT_ID, expectComplete, expectOk, type ReviewGit } from "./gitcall.js";
 import { parseRaw } from "./changes.js";
 import { applyHunks, blobOid, type Hunk } from "./hunks.js";
+import { acquireIndex } from "./tempindex.js";
 import type { ReviewDeps, ReviewFile } from "./types.js";
 
 /** What the user decided about one file. */
@@ -68,6 +70,7 @@ export async function buildReviewedTree(deps: ReviewDeps, git: ReviewGit, input:
     const f = input.files.get(path);
     if (!f) throw internal("a decision names a file that is not in the review");
     if (f.unsafePath) throw denied("a file with an unusable path cannot be accepted", "unsafe_path");
+    if (f.kind === "filtered") throw denied("a file with a content filter cannot be accepted", "filtered_path");
     zero = "0".repeat(f.newOid.length);
     baseline.set(path, baselineOf(f, "path"));
     if (f.oldPath !== undefined) baseline.set(f.oldPath, baselineOf(f, "old"));
@@ -95,24 +98,50 @@ export async function buildReviewedTree(deps: ReviewDeps, git: ReviewGit, input:
   }
   if (accepted.length === 0) throw denied("nothing is accepted", "nothing_accepted");
 
-  const idx = await deps.tempIndex.create();
+  rejectPathConflicts(input.files, expected);
+  const idx = await acquireIndex(deps.tempIndex);
   let reviewedTree: string;
   try {
     expectOk(await git(["read-tree", input.againstTree], { index: idx.path }), "read the base tree");
     // Removals first, so a delete of `x` and an add of `x/y` cannot clash. NUL-terminated: any path is safe here.
     const upd = await git(["update-index", "-z", "--index-info"], { index: idx.path, stdin: [...removals, ...additions].join("") });
+    // Defence in depth, no test of its own: `verify` below catches a silently ignored path whatever git writes on stderr.
     if (upd.code !== 0 || /Ignoring path/.test(upd.stderr)) throw conflict("git refused an accepted path", "index_refused");
     reviewedTree = expectOk(await git(["write-tree"], { index: idx.path }), "write the reviewed tree").trim();
   } finally {
-    try {
-      await idx.dispose();
-    } catch {
-      /* the provider's to clean up */
-    }
+    await idx.release();
   }
   if (!OBJECT_ID.test(reviewedTree)) throw internal("git did not return a tree id for the reviewed tree");
   await verify(git, input.againstTree, reviewedTree, expected, baseline);
   return { reviewedTree, accepted };
+}
+
+/**
+ * A file and a directory cannot share a path. Accepting `x/y` while keeping the old file `x` (or the reverse) cannot be built:
+ * refuse it by name instead of failing inside git. Only files of the changed list can clash, because only they differ from the base.
+ */
+function rejectPathConflicts(files: ReadonlyMap<string, ReviewFile>, expected: ReadonlyMap<string, State | null>): void {
+  const removed = new Set<string>();
+  for (const [p, s] of expected) if (s === null) removed.add(p);
+  const kept = new Set<string>();
+  const dirs = new Set<string>();
+  const addKept = (p: string): void => {
+    if (removed.has(p) || kept.has(p)) return;
+    kept.add(p);
+    for (let i = p.indexOf("/"); i !== -1; i = p.indexOf("/", i + 1)) dirs.add(p.slice(0, i));
+  };
+  for (const f of files.values()) {
+    if (f.status !== "A" && f.oldMode !== "000000" && f.oldMode !== "040000") addKept(f.oldPath ?? f.path);
+  }
+  const show = (p: string): string => escapeForDisplay(p, { maxLength: 200, cut: "middle" });
+  for (const [p, s] of expected) {
+    if (s === null) continue;
+    const clash = dirs.has(p) ? p : undefined;
+    let under: string | undefined;
+    for (let i = p.indexOf("/"); i !== -1 && under === undefined; i = p.indexOf("/", i + 1)) if (kept.has(p.slice(0, i))) under = p.slice(0, i);
+    if (clash !== undefined) throw conflict(`accepting the file ${show(p)} would replace a directory whose files are not all accepted for removal`, "path_conflict");
+    if (under !== undefined) throw conflict(`accepting ${show(p)} needs the file ${show(under)} to be removed, and that removal is not accepted`, "path_conflict");
+  }
 }
 
 /**

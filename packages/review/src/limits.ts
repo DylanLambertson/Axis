@@ -13,6 +13,8 @@ export const DEFAULT_LIMITS: ReviewLimits = Object.freeze({
   maxSymlinkReads: 256,
   maxCachedPatchBytes: 32 * 1024 * 1024,
   maxStalePaths: 100,
+  // Policies §7: snapshots skip files over 50 MiB. The review reads the worktree the same way, so the two agree.
+  maxSnapshotFileBytes: 50 * 1024 * 1024,
 });
 
 /** Hard ceilings: a caller may lower a limit but cannot raise it past what the package was written to survive. */
@@ -27,6 +29,7 @@ const CEILING: ReviewLimits = Object.freeze({
   maxSymlinkReads: 1024,
   maxCachedPatchBytes: 128 * 1024 * 1024,
   maxStalePaths: 1000,
+  maxSnapshotFileBytes: 50 * 1024 * 1024,
 });
 
 export function resolveLimits(over: Partial<ReviewLimits> | undefined): ReviewLimits {
