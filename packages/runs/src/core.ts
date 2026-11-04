@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { AxisError, type AuditActor } from "@axis/audit";
 import type { Run, RunState } from "@axis/journal";
-import type { LiveRun } from "./live.js";
+import type { LiveRun, SnapshotVerdict } from "./live.js";
 import { resolveLimits, DEFAULT_LIMITS, type RunLimits } from "./limits.js";
 import type { Disposable, PtySignal, RunWorktree, TimerId } from "./ports.js";
 import { deriveStatus } from "./status.js";
@@ -15,8 +15,13 @@ export abstract class SupervisorCore {
   protected readonly live = new Set<LiveRun>();
   protected readonly byId = new Map<string, LiveRun>();
   protected readonly listeners = new Set<(e: RunEvent) => void>();
-  protected readonly leases = new Map<symbol, { readonly keys: readonly string[]; readonly timer: TimerId }>();
+  protected readonly leases = new Map<symbol, { readonly keys: readonly string[]; readonly timer: TimerId; lapsed: boolean }>();
+  /** Post-run snapshot verdicts, newest last, bounded. Lost on restart, which reads as `unknown`. */
+  protected readonly verdicts = new Map<string, SnapshotVerdict>();
   protected closed = false;
+  /** Set by the first `start`: recovery is a startup step and must not run after it. */
+  protected started = false;
+  protected recovered = false;
   protected errorsInListeners = 0;
 
   constructor(options: SupervisorOptions) {
@@ -51,6 +56,23 @@ export abstract class SupervisorCore {
     }
   }
 
+  /** A journal read that can only fail with a closed-set error: the raw cause (a path, a SQL message) never escapes. */
+  protected read<T>(fn: () => T): T {
+    try {
+      return fn();
+    } catch (e) {
+      if (e instanceof AxisError) throw e;
+      this.report("journal", "E_INTERNAL");
+      throw new AxisError("E_UNAVAILABLE", "The run record could not be read");
+    }
+  }
+
+  protected setVerdict(runId: string, v: SnapshotVerdict): void {
+    this.verdicts.delete(runId);
+    this.verdicts.set(runId, v);
+    if (this.verdicts.size > 512) this.verdicts.delete(this.verdicts.keys().next().value as string);
+  }
+
   protected summary(run: Run, live: LiveRun | undefined): RunSummary {
     const now = this.o.clock.now();
     const held = live !== undefined && !live.released ? live : undefined;
@@ -68,20 +90,28 @@ export abstract class SupervisorCore {
       lastOutputAt: held && held.ring.totalChars > 0 ? held.lastActivityAt : null,
       outputChars: held?.ring.totalChars ?? 0,
       droppedChars: held?.ring.droppedChars ?? 0,
+      snapshotAfter: held || run.state === "QUEUED" || run.state === "RUNNING" ? "pending" : (this.verdicts.get(run.id) ?? "unknown"),
     };
   }
 
   protected mustSummary(runId: string): RunSummary {
-    const run = this.o.journal.getRun(runId);
+    const run = this.read(() => this.o.journal.getRun(runId));
     if (!run || run.kind !== "cli") throw new AxisError("E_NOT_FOUND", "Run not found");
     return this.summary(run, this.byId.get(runId));
   }
 
   protected emit(live: LiveRun): void {
     if (!live.runId || this.listeners.size === 0) return;
-    const run = this.o.journal.getRun(live.runId);
-    if (!run) return;
-    const e: RunEvent = { runId: run.id, workspaceId: run.workspaceId, state: run.state, status: this.summary(run, live).status };
+    let e: RunEvent;
+    try {
+      const run = this.o.journal.getRun(live.runId);
+      if (!run) return;
+      e = { runId: run.id, workspaceId: run.workspaceId, state: run.state, status: this.summary(run, live).status };
+    } catch {
+      // A failing journal read must not break the run, a release or a timer: the event is skipped.
+      this.report("emit", "E_INTERNAL");
+      return;
+    }
     for (const l of [...this.listeners]) {
       try {
         l(e);

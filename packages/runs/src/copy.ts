@@ -4,7 +4,7 @@
 import type { RunStatus, WorkspaceRunStatus } from "./status.js";
 
 /** Bumped whenever the disclosure wording changes; recorded in the start audit row. */
-export const DISCLOSURE_VERSION = 1;
+export const DISCLOSURE_VERSION = 2;
 
 function deepFreeze<T extends object>(o: T): T {
   for (const v of Object.values(o)) if (typeof v === "object" && v !== null) deepFreeze(v);
@@ -17,7 +17,7 @@ export const RUN_COPY = deepFreeze({
     governedBy: "This run is governed by the CLI's own permissions. Axis does not approve, limit or audit what the CLI does.",
     canPush: "The CLI runs with your credentials and can push to your remotes without asking Axis.",
     prompts: "The CLI's own permission prompts appear in its terminal. Answer them there.",
-    environment: "Editor handles and tokens are removed from the CLI's environment. Your login environment is otherwise passed through.",
+    environment: "Axis removes its own editor variables (VSCODE_*, ELECTRON_*, askpass and editor hooks) from the CLI's environment. Your login environment, including any tokens in it, is passed through.",
     review: "Changes appear in diff review. Commit and push from Axis are unavailable while the run is active.",
     confirm: "Start run",
     cancel: "Cancel",
@@ -40,6 +40,7 @@ export const RUN_COPY = deepFreeze({
     failed: "failed",
     killed: "stopped",
     interrupted: "interrupted by restart",
+    stopping: "stopping (process not confirmed gone)",
   } satisfies Record<RunStatus, string>,
   workspaceStatus: {
     idle: "idle",

@@ -30,7 +30,7 @@ const FAILURE_REASONS: ReadonlySet<string> = new Set([
   RUN_REASONS.internal,
 ]);
 
-export const RUN_STATUSES = ["starting", "running", "quiet", "finished", "failed", "killed", "interrupted"] as const;
+export const RUN_STATUSES = ["starting", "running", "quiet", "finished", "failed", "killed", "interrupted", "stopping"] as const;
 export type RunStatus = (typeof RUN_STATUSES)[number];
 
 export const WORKSPACE_RUN_STATUSES = ["idle", "running", "quiet", "failed", "done"] as const;
@@ -63,6 +63,7 @@ export function deriveStatus(i: StatusInput): RunStatus {
     case "RUNNING":
       if (!i.live) return "interrupted";
       if (i.live.phase === "starting") return "starting";
+      if (i.live.phase === "stopping") return "stopping";
       return i.now - i.live.lastActivityAt >= i.quietMs ? "quiet" : "running";
     case "REVIEWING":
     case "COMPLETED":
@@ -70,6 +71,9 @@ export function deriveStatus(i: StatusInput): RunStatus {
     case "FAILED":
       return "failed";
     case "CANCELLED":
+      // The row says the run ended, but this daemon still holds a process that may be alive (a hung spawn or an
+      // unconfirmed kill): say so, and keep the workspace active.
+      if (i.live) return "stopping";
       if (i.reason !== null && FAILURE_REASONS.has(i.reason)) return "failed";
       return i.reason === "INTERRUPTED_BY_RESTART" ? "interrupted" : "killed";
     case "BLOCKED":
@@ -79,11 +83,11 @@ export function deriveStatus(i: StatusInput): RunStatus {
 
 /**
  * The workspace row: a live run wins (`quiet` only when every live run is quiet), else the latest run decides.
- * A stopped run leaves the workspace `idle`.
+ * A run that is stopping counts as running. A stopped run leaves the workspace `idle`.
  */
 export function deriveWorkspaceStatus(runs: readonly { readonly status: RunStatus; readonly createdAt: string }[]): WorkspaceRunStatus {
   if (runs.length === 0) return "idle";
-  const active = runs.filter((r) => r.status === "starting" || r.status === "running" || r.status === "quiet");
+  const active = runs.filter((r) => r.status === "starting" || r.status === "running" || r.status === "quiet" || r.status === "stopping");
   if (active.length > 0) return active.every((r) => r.status === "quiet") ? "quiet" : "running";
   let latest = runs[0] as (typeof runs)[number];
   for (const r of runs) if (r.createdAt >= latest.createdAt) latest = r;

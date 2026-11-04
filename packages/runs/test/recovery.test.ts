@@ -66,9 +66,8 @@ test("recovery from every journal state: interrupted, never resumed, and it conv
   assert.equal(h.supervisor.activeCount, 0);
 
   const seq = h.audit.head()?.seq;
-  const again = h.supervisor.recover(LOCK);
-  assert.deepEqual([again.launchesCancelled, again.runsInterrupted], [[], []]);
-  assert.equal(h.audit.head()?.seq, seq, "a second recovery writes nothing");
+  assert.throws(() => h.supervisor.recover(LOCK), code("E_CONFLICT"), "recovery is a startup step and runs once");
+  assert.equal(h.audit.head()?.seq, seq, "a refused second recovery writes nothing");
   assert.equal(h.audit.verify().ok, true);
 });
 

@@ -31,6 +31,7 @@ export class RunSupervisor extends SupervisorQueries {
 
   async start(request: StartRequest): Promise<{ readonly run: RunSummary; readonly replayed: boolean }> {
     this.assertOpen();
+    this.started = true;
     if (typeof request !== "object" || request === null) throw new AxisError("E_INVALID_ARGUMENT", "Invalid run start request");
     // One read of each field: a getter or Proxy cannot answer differently later.
     const { workspaceId, agent: rawAgent, actor, trust, idempotencyKey } = request as StartRequest;
@@ -57,7 +58,7 @@ export class RunSupervisor extends SupervisorQueries {
 
     // ---- from here to the reservation there is no await: the limit check and the slot cannot be separated ----
     this.assertOpen();
-    const workspace = this.o.journal.getWorkspace(ws);
+    const workspace = this.read(() => this.o.journal.getWorkspace(ws));
     if (!workspace) return refuse("E_NOT_FOUND", "WORKSPACE_NOT_FOUND", "Workspace not found");
     if (workspace.state !== "READY") return refuse("E_CONFLICT", "WORKSPACE_NOT_READY", "Runs can only start in a READY workspace");
     if (this.leased(tree)) return refuse("E_CONFLICT", "GIT_OPERATION_ACTIVE", "An Axis commit or push is in progress in this workspace");
@@ -123,6 +124,23 @@ export class RunSupervisor extends SupervisorQueries {
     if (!launch.ok) {
       this.transition(live, "CANCELLED", RUN_REASONS.launchRefused);
       throw this.refused(live, launch);
+    }
+    // The start audit row names the first resolution: refuse if the executable moved across the snapshot await.
+    if (launch.argv[0] !== prelaunch.argv[0]) {
+      this.transition(live, "CANCELLED", RUN_REASONS.launchRefused);
+      this.audit(live.actor, RUN_AUDIT_ACTIONS.refused, `workspace:${live.workspaceId}`, "denied", { workspaceId: live.workspaceId, code: "E_CONFLICT", reason: "EXECUTABLE_CHANGED" });
+      throw new AxisError("E_CONFLICT", "The CLI executable changed while the run was starting", { reason: "EXECUTABLE_CHANGED" });
+    }
+    // N3: the workspace must still be READY in the tick that spawns.
+    let still = false;
+    try {
+      still = o.journal.getWorkspace(live.workspaceId)?.state === "READY";
+    } catch {
+      this.report("journal", "E_INTERNAL");
+    }
+    if (!still) {
+      this.transition(live, "CANCELLED", RUN_REASONS.launchRefused);
+      throw new AxisError("E_CONFLICT", "The workspace is no longer ready", { reason: "WORKSPACE_NOT_READY" });
     }
 
     live.phase = "spawning";
@@ -241,11 +259,14 @@ export class RunSupervisor extends SupervisorQueries {
       this.transition(live, "CANCELLED", RUN_REASONS.spawnFailed);
       live.finalised = true;
       this.signal(live, "SIGKILL");
+      // An exit that arrived while subscribing was held back: handle it now or the slot is never freed.
+      if (live.pendingExit) this.onExit(live, live.pendingExit);
       throw new AxisError("E_UNAVAILABLE", "The CLI could not be supervised");
     }
     if (this.closed) {
       live.subscribing = false;
       this.signal(live, "SIGKILL");
+      if (live.pendingExit) this.onExit(live, live.pendingExit);
       throw new AxisError("E_UNAVAILABLE", "The run supervisor is shut down");
     }
     if (live.stopRequested) {
@@ -270,7 +291,7 @@ export class RunSupervisor extends SupervisorQueries {
     this.armQuiet(live);
     const pending = live.pendingExit;
     if (pending) this.onExit(live, pending);
-    return this.summary(this.o.journal.getRun(id) as Run, live);
+    return this.summary(this.read(() => this.o.journal.getRun(id)) as Run, live);
   }
 
   private adoptLate(live: LiveRun, handle: PtyHandle): void {
@@ -348,20 +369,24 @@ export class RunSupervisor extends SupervisorQueries {
     else if (code === 0 && !signalled) [to, reason] = ["REVIEWING", RUN_REASONS.exited];
     else [to, reason] = ["FAILED", signalled ? RUN_REASONS.signalled : code === null ? RUN_REASONS.unknownExit : RUN_REASONS.nonZero];
     if (!live.finalised && live.runId) this.transition(live, to, reason, code);
-    void this.afterExit(live, reason, code);
+    this.afterExit(live, reason, code).catch(() => {
+      this.report("afterExit", "E_INTERNAL");
+      this.release(live);
+    });
   }
 
   private async afterExit(live: LiveRun, reason: string, code: number | null): Promise<void> {
     try {
       if (this.closed || !live.runId) return;
       let snapshotAfter = "failed";
-      let drift = false;
+      let drift: boolean | null = null; // null: no verdict, which is not the same as "no drift"
       const snap = await timed(this.o.clock, this.limits.snapshotTimeoutMs, () =>
         this.o.snapshotter.after({ runId: live.runId as string, workspaceId: live.workspaceId, worktree: live.worktree }),
       );
       if (snap.ok) {
         drift = snap.value?.drift === true;
         snapshotAfter = drift ? "drift" : "ok";
+        live.verdict = drift ? "drift" : "ok";
       } else if (snap.why === "timeout") {
         snapshotAfter = "timeout";
       }
@@ -371,6 +396,7 @@ export class RunSupervisor extends SupervisorQueries {
     } catch {
       this.report("afterExit", "E_INTERNAL");
     } finally {
+      if (live.runId) this.setVerdict(live.runId, live.verdict);
       this.release(live);
     }
   }
@@ -382,6 +408,12 @@ export class RunSupervisor extends SupervisorQueries {
     if (!idText.safeParse(runId).success || !actorSchema.safeParse(actor).success) throw new AxisError("E_INVALID_ARGUMENT", "Invalid stop request");
     const live = this.byId.get(runId);
     if (!live || live.phase === "exited") return this.mustSummary(runId);
+    if (live.stopRequested && live.unconfirmed && live.handle) {
+      // The last kill was not confirmed: try again, and keep waiting for an exit.
+      live.unconfirmed = false;
+      this.signal(live, "SIGKILL");
+      this.armKillTimeout(live);
+    }
     if (!live.stopRequested) {
       live.stopRequested = true;
       live.stopReason = RUN_REASONS.userKilled;
@@ -403,15 +435,20 @@ export class RunSupervisor extends SupervisorQueries {
       this.signal(live, "SIGTERM");
       this.after(live, g, () => {
         this.signal(live, "SIGKILL");
-        this.after(live, this.limits.killTimeoutMs, () => {
-          // No exit event: record the user's intent, keep the slot and the "active" answer until one arrives.
-          if (!live.finalised && live.runId) {
-            live.finalised = true;
-            this.transition(live, "CANCELLED", RUN_REASONS.killUnconfirmed);
-          }
-          this.report("kill", "E_TIMEOUT");
-        });
+        this.armKillTimeout(live);
       });
+    });
+  }
+
+  private armKillTimeout(live: LiveRun): void {
+    this.after(live, this.limits.killTimeoutMs, () => {
+      // No exit event: record the user's intent, keep the slot and the "active" answer until one arrives.
+      live.unconfirmed = true;
+      if (!live.finalised && live.runId) {
+        live.finalised = true;
+        this.transition(live, "CANCELLED", RUN_REASONS.killUnconfirmed);
+      }
+      this.report("kill", "E_TIMEOUT");
     });
   }
 

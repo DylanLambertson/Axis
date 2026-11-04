@@ -5,6 +5,7 @@ import type { ExecFs } from "@axis/pty-policy";
 import type { TrustAttestation } from "./attestation.js";
 import type { RunLimits } from "./limits.js";
 import type { Clock, EnvSource, PtyPort, RunSnapshotter, WorktreeLocator } from "./ports.js";
+import type { SnapshotVerdict } from "./live.js";
 import type { RunStatus } from "./status.js";
 
 export interface SupervisorOptions {
@@ -54,6 +55,8 @@ export interface RunSummary {
   readonly lastOutputAt: number | null;
   readonly outputChars: number;
   readonly droppedChars: number;
+  /** The post-run snapshot verdict (WT-2). `pending` until the run ends; `unknown` when no snapshot answered, or after a restart. Treat `unknown` as possibly changed. */
+  readonly snapshotAfter: "pending" | SnapshotVerdict;
 }
 
 export interface RunEvent {

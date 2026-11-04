@@ -15,7 +15,7 @@ export const RUN_AUDIT_ACTIONS = {
  */
 export const RUN_AUDIT_ALLOWLIST: Readonly<Record<string, readonly string[]>> = {
   [RUN_AUDIT_ACTIONS.start]: ["runId", "workspaceId", "agentId", "executable", "argCount", "removedEnvCount", "disclosureVersion"],
-  [RUN_AUDIT_ACTIONS.exit]: ["runId", "workspaceId", "state", "reason", "exitCode", "snapshotAfter", "drift"],
+  [RUN_AUDIT_ACTIONS.exit]: ["runId", "workspaceId", "state", "reason", "exitCode", "snapshotAfter", "drift"] /* drift is null when no snapshot answered */,
   [RUN_AUDIT_ACTIONS.stop]: ["runId", "workspaceId", "phase"],
   [RUN_AUDIT_ACTIONS.refused]: ["workspaceId", "code", "reason"],
   [RUN_AUDIT_ACTIONS.discard]: ["runId", "workspaceId", "from", "to", "reason"],

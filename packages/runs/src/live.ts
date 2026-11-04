@@ -6,6 +6,7 @@ import type { Disposable, PtyExit, PtyHandle, RunWorktree, TimerId } from "./por
 import { RingBuffer } from "./ring.js";
 import type { LiveView } from "./status.js";
 
+export type SnapshotVerdict = "ok" | "drift" | "unknown";
 export type Phase = "launching" | "spawning" | "running" | "stopping" | "exited";
 
 /**
@@ -33,6 +34,10 @@ export class LiveRun {
   quiet = false;
   released = false;
   reportedKillError = false;
+  /** SIGKILL was sent and no exit came within the kill timeout: the process may still live. */
+  unconfirmed = false;
+  /** The post-run snapshot verdict; `unknown` until a snapshot answered. */
+  verdict: SnapshotVerdict = "unknown";
   ignoredEvents = 0;
   lastActivityAt: number;
   readonly ring: RingBuffer;

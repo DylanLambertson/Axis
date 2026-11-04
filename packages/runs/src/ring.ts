@@ -9,6 +9,11 @@ const COALESCE_BELOW = 1024;
  * its tail first, small chunks are merged so the chunk count stays near `capacity / 1024`, and nothing here runs a
  * regular expression.
  */
+/** A fresh, unshared copy of `s` (lone surrogates survive: the round trip is raw UTF-16). */
+function flat(s: string): string {
+  return Buffer.from(s, "utf16le").toString("utf16le");
+}
+
 export class RingBuffer {
   readonly capacity: number;
   #chunks: string[] = [];
@@ -38,7 +43,8 @@ export class RingBuffer {
     this.#total = Math.min(Number.MAX_SAFE_INTEGER, this.#total + chunk.length);
     if (chunk.length >= this.capacity) {
       this.#dropped = Math.min(Number.MAX_SAFE_INTEGER, this.#dropped + this.#length + chunk.length - this.capacity);
-      this.#chunks = [chunk.slice(chunk.length - this.capacity)];
+      // Copy the kept tail: a slice would keep the whole (possibly huge) original string alive.
+      this.#chunks = [flat(chunk.slice(chunk.length - this.capacity))];
       this.#head = 0;
       this.#length = this.capacity;
       return;

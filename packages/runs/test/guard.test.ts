@@ -148,9 +148,15 @@ test("a git operation lease blocks new runs, expires, and is refused while a run
   lease.release();
   assert.equal(h.clock.pending, 0);
   const l2 = h.supervisor.acquireGitOperation(w.tree, { maxMs: 1000 });
+  assert.equal(l2.held, true);
+  l2.assertHeld();
   await h.clock.advance(1000);
-  await h.start(w);
+  // A lapsed lease is not dropped (git may still be running): new runs stay refused and the holder is told.
+  assert.equal(l2.held, false);
+  assert.throws(() => l2.assertHeld(), code("E_CONFLICT"));
+  await assert.rejects(h.start(w), (e: unknown) => e instanceof AxisError && e.detail["reason"] === "GIT_OPERATION_ACTIVE");
   l2.release();
+  await h.start(w);
   assert.throws(() => h.supervisor.acquireGitOperation(w.tree), code("E_CONFLICT"));
   assert.throws(() => h.supervisor.acquireGitOperation(w.tree, { maxMs: 0 }), code("E_INVALID_ARGUMENT"));
   assert.throws(() => h.supervisor.acquireGitOperation({} as never), code("E_INVALID_ARGUMENT"));

@@ -50,7 +50,9 @@ test("status derivation covers every journal state and reason", () => {
   assert.equal(s("RUNNING", null, live("running", 90_000)), "running");
   assert.equal(s("RUNNING", null, live("running", 40_000)), "quiet");
   assert.equal(s("RUNNING", null, live("running", 40_001)), "running");
-  assert.equal(s("RUNNING", null, live("stopping", 90_000)), "running");
+  assert.equal(s("RUNNING", null, live("stopping", 90_000)), "stopping");
+  assert.equal(s("CANCELLED", RUN_REASONS.killUnconfirmed, live("stopping", 0)), "stopping", "the row ended but a process may live");
+  assert.equal(s("CANCELLED", RUN_REASONS.spawnTimeout, live("starting", 0)), "stopping");
   assert.equal(s("RUNNING", null, live("starting", 0)), "starting");
   assert.equal(s("RUNNING", null), "interrupted", "a row that says RUNNING with no process here is not running");
   assert.equal(s("REVIEWING", RUN_REASONS.exited), "finished");

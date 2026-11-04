@@ -4,7 +4,7 @@ import { RESTART_REASON, type RecoveryReport } from "@axis/journal";
 import { z } from "zod";
 import { RUN_AUDIT_ACTIONS } from "./audit.js";
 import { SupervisorCore } from "./core.js";
-import type { Disposable, RunWorktree } from "./ports.js";
+import type { Disposable, RunWorktree, TimerId } from "./ports.js";
 import { RUN_REASONS, deriveWorkspaceStatus, type WorkspaceRunStatus } from "./status.js";
 import type { RunEvent, RunSummary } from "./types.js";
 import { noControl, pathKey } from "./util.js";
@@ -13,11 +13,30 @@ const MAX_LISTENERS = 32;
 const MAX_LEASES = 64;
 const TAIL_WINDOW = 16_384;
 const MAX_TAIL = 8192;
+// CSI, OSC (to BEL or ST), and other two-character escapes, plus stray C0 controls except tab and newline.
+const ESCAPES = new RegExp(
+  [String.raw`\u001b\[[0-?]*[ -/]*[@-~]`, String.raw`\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)?`, String.raw`\u001b[@-Z\\-_]`, String.raw`[\u0000-\u0008\u000b-\u001f\u007f]`].join("|"),
+  "g",
+);
+const stripEscapes = (s: string): string => s.replace(ESCAPES, "");
 const idText = z.string().min(1).max(128).refine(noControl);
 const actorSchema = z.string().regex(/^(?:user|daemon|agent:[A-Za-z0-9._-]{1,64})$/);
 
 export interface GitOperationLease {
   release(): void;
+  /**
+   * Throws `E_CONFLICT` if the lease was released or ran past its `maxMs`. A git-ops caller checks it immediately
+   * before it executes git. A lapsed lease keeps refusing new runs until it is released.
+   */
+  assertHeld(): void;
+  /** False once released or lapsed. */
+  readonly held: boolean;
+}
+
+interface Lease {
+  readonly keys: readonly string[];
+  readonly timer: TimerId;
+  lapsed: boolean;
 }
 
 /** Reads, the commit and push guard, recovery and shutdown. */
@@ -40,23 +59,25 @@ export abstract class SupervisorQueries extends SupervisorCore {
     const w = options.workspaceId === undefined ? undefined : idText.safeParse(options.workspaceId);
     if (w && !w.success) throw new AxisError("E_INVALID_ARGUMENT", "Invalid workspace id");
     const limit = Math.min(1000, Math.max(1, Math.trunc(options.limit ?? 200) || 200));
-    const runs = this.o.journal.listRuns(w ? { workspaceId: w.data } : {}).filter((r) => r.kind === "cli");
+    const runs = this.read(() => this.o.journal.listRuns(w ? { workspaceId: w.data } : {})).filter((r) => r.kind === "cli");
     return runs.slice(-limit).map((r) => this.summary(r, this.byId.get(r.id)));
   }
 
   /**
    * Recent output of a live run, redacted on read so a secret split across two chunks is still caught. The
    * redactor sees up to 16 KiB; the answer is the last part of that, so a secret cut at the window's start only
-   * loses text that is not returned. Terminal escape sequences are left in place for the terminal to draw.
+   * loses text that is not returned. Terminal escape sequences are left in place for a terminal to draw; a consumer
+   * that is not a terminal (a dashboard row, a log) passes `{ plain: true }` so no OSC or CSI sequence reaches it.
    */
-  tail(runId: string, maxChars = 4096): string {
+  tail(runId: string, maxChars = 4096, options: { readonly plain?: boolean } = {}): string {
     if (!idText.safeParse(runId).success) throw new AxisError("E_INVALID_ARGUMENT", "Invalid run id");
     const live = this.byId.get(runId);
     if (!live || live.released) throw new AxisError("E_NOT_FOUND", "No live output for that run");
     const n = Math.min(MAX_TAIL, Math.max(1, Math.trunc(maxChars) || 1));
     try {
       const redacted = this.o.redactor.redactString(live.ring.tail(TAIL_WINDOW));
-      return wellFormed(redacted.slice(Math.max(0, redacted.length - n)));
+      const text = options.plain === true ? stripEscapes(redacted) : redacted;
+      return wellFormed(text.slice(Math.max(0, text.length - n)));
     } catch {
       this.report("tail", "E_INTERNAL");
       return "";
@@ -88,10 +109,12 @@ export abstract class SupervisorQueries extends SupervisorCore {
 
   /**
    * The `isCliRunActive` dependency of `@axis/git-ops`. True while any Axis-launched run in that worktree can own a
-   * process: starting (a spawn may be pending or hung), running, stopping, or a kill nobody confirmed. An exited run
+   * process: starting (a spawn may be pending or hung), running, stopping, or a kill nobody confirmed; always true once the supervisor is shut down. An exited run
    * does not count and neither does a CLI the user started by hand. A reference this cannot read counts as active.
    */
   readonly isCliRunActive = (worktree: RunWorktree): boolean => {
+    // After dispose a SIGKILLed process may not have exited yet and nothing watches it: answer "active" (fail closed).
+    if (this.closed) return true;
     const keys = this.keysOf(worktree);
     if (!keys) return true;
     for (const l of this.live) {
@@ -115,14 +138,32 @@ export abstract class SupervisorQueries extends SupervisorCore {
     if (this.isCliRunActive(worktree)) throw new AxisError("E_CONFLICT", "A CLI run is active in this workspace");
     if (this.leases.size >= MAX_LEASES) throw new AxisError("E_BACKPRESSURE", "Too many git operations in progress");
     const id = Symbol("lease");
-    const timer = this.o.clock.setTimeout(() => void this.leases.delete(id), maxMs);
-    this.leases.set(id, { keys, timer });
+    // The timer does not drop the lease: git may still be running. It marks the lease lapsed, reports it, and the
+    // worktree stays closed to new runs until the holder calls `release()` (or the supervisor is disposed).
+    const lease: Lease = {
+      keys,
+      lapsed: false,
+      timer: this.o.clock.setTimeout(() => {
+        lease.lapsed = true;
+        this.report("lease", "E_TIMEOUT");
+      }, maxMs),
+    };
+    this.leases.set(id, lease);
+    const leases = this.leases;
     return {
       release: () => {
         const l = this.leases.get(id);
         if (!l) return;
         this.o.clock.clearTimeout(l.timer);
         this.leases.delete(id);
+      },
+      assertHeld: () => {
+        const l = this.leases.get(id);
+        if (!l || l.lapsed || this.closed) throw new AxisError("E_CONFLICT", "The git operation lease is no longer held");
+      },
+      get held() {
+        const l = leases.get(id);
+        return l !== undefined && !l.lapsed;
       },
     };
   }
@@ -135,10 +176,12 @@ export abstract class SupervisorQueries extends SupervisorCore {
    */
   recover(lock: InstanceLock): RecoveryReport & { readonly launchesCancelled: readonly string[] } {
     this.assertOpen();
-    if (this.live.size > 0) throw new AxisError("E_CONFLICT", "Recovery must run before any run starts");
-    const report = this.o.journal.recover(lock);
+    // Startup only: recovering mid-session would interrupt live runs of other kinds (composer runs).
+    if (this.recovered || this.started || this.live.size > 0) throw new AxisError("E_CONFLICT", "Recovery runs once, at startup, before any run starts");
+    const report = this.read(() => this.o.journal.recover(lock));
+    this.recovered = true;
     const launchesCancelled: string[] = [];
-    for (const run of this.o.journal.listRuns({ states: ["QUEUED"] })) {
+    for (const run of this.read(() => this.o.journal.listRuns({ states: ["QUEUED"] }))) {
       if (run.kind !== "cli") continue;
       try {
         this.o.journal.transitionRun(run.id, "CANCELLED", { reason: RESTART_REASON, actor: "daemon", expectedFrom: "QUEUED" });
@@ -157,10 +200,10 @@ export abstract class SupervisorQueries extends SupervisorCore {
   /** The user dismisses an interrupted run. It is never resumed. */
   discardInterrupted(runId: string, actor: AuditActor): RunSummary {
     if (!idText.safeParse(runId).success || !actorSchema.safeParse(actor).success) throw new AxisError("E_INVALID_ARGUMENT", "Invalid request");
-    const run = this.o.journal.getRun(runId);
+    const run = this.read(() => this.o.journal.getRun(runId));
     if (!run || run.kind !== "cli") throw new AxisError("E_NOT_FOUND", "Run not found");
     if (run.state !== "BLOCKED" || this.byId.has(runId)) throw new AxisError("E_CONFLICT", "Only an interrupted run can be discarded");
-    const done = this.o.journal.transitionRun(runId, "CANCELLED", { reason: RUN_REASONS.userDiscarded, actor, expectedFrom: "BLOCKED" });
+    const done = this.read(() => this.o.journal.transitionRun(runId, "CANCELLED", { reason: RUN_REASONS.userDiscarded, actor, expectedFrom: "BLOCKED" }));
     this.audit(actor, RUN_AUDIT_ACTIONS.discard, `run:${runId}`, "success", {
       runId, workspaceId: run.workspaceId, from: "BLOCKED", to: "CANCELLED", reason: RUN_REASONS.userDiscarded,
     });
