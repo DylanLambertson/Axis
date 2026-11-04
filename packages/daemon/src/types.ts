@@ -194,12 +194,17 @@ export type IdempotencyBegin =
   /** `origin` is the connection id that completed the call. */
   | { readonly state: "replay"; readonly result: JsonValue; readonly origin: string }
   | { readonly state: "conflict" }
+  /**
+   * The call began but its outcome was never recorded (the daemon died, or the result could not be stored
+   * or must not be). The side effect may have happened: never run it again under this key.
+   */
+  | { readonly state: "unknown"; readonly reason: "interrupted" | "result-not-stored" | "failed-after-start" }
   /** Still running (until the handler settles, whatever the caller was told). */
   | { readonly state: "in-progress" }
   /** The store has no room for this actor's live keys: answer E_BACKPRESSURE. */
   | { readonly state: "exhausted" };
 /**
- * The real store lives in the journal (24 h, ADR 0003 D3). `MemoryIdempotencyStore`
+ * The real store is `JournalIdempotencyStore` in `@axis/journal` (24 h, ADR 0003 D3). `MemoryIdempotencyStore`
  * is for tests and dev wiring only.
  */
 export interface IdempotencyStore {
@@ -212,6 +217,13 @@ export interface IdempotencyStore {
   complete(key: IdempotencyKey, result: JsonValue, origin: string): void | Promise<void>;
   /** The call failed or was cancelled: free the key so a bounded retry can run. */
   abandon(key: IdempotencyKey): void | Promise<void>;
+  /**
+   * A side-effecting handler started and the call ended without a recorded success: it returned and then the
+   * approval gate or the response check failed, or it was cancelled or timed out. Keep the key as outcome-unknown instead of freeing it, so a retry
+   * is refused rather than run again. Also used when the handler started and was cancelled or timed out.
+   * Required: a store that cannot do this must not be wired in (the pipeline never falls back to `abandon`).
+   */
+  markUnknown(key: IdempotencyKey): void | Promise<void>;
 }
 
 /** Structurally compatible with `@axis/audit`'s sink. Events carry decisions, never payloads. */

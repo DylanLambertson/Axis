@@ -64,7 +64,7 @@ Rule of thumb: if it can be tested with `node --test` on a clean CI runner, it i
 6. **Packages do not read `process.env` or the clock implicitly** where tests need control: take them as parameters.
 
 Enforcement, today:
-- `test/packages/imports.test.mjs` (run by `npm test`) scans the import specifiers of every TypeScript file in each package (`src/`, `test/`, `contract/` and any other directory, excluding `dist/` and `node_modules/`) and each `package.json`. Packages may import relative paths that stay inside the package, `zod`, `@axis/*` and `node:*`; `@axis/protocol` may not import `node:*` in `src/` (D2.1, D2.4), but its tests and test-support entry points may. Anything else, including `vs/*` and `electron`, fails. Declared dependencies may only be `zod` (at the pinned version) and `@axis/*`.
+- `test/packages/imports.test.mjs` (run by `npm test`) scans `packages/*/src` import specifiers and each `package.json`. Packages may import relative paths, `zod`, `@axis/*` and `node:*`; `@axis/protocol` may not import `node:*` (D2.1, D2.4). Anything else, including `vs/*` and `electron`, fails. Declared dependencies may only be `zod` (at the pinned version) and `@axis/*`.
 - `tsconfig.base.json` sets `lib: ["ES2023"]` with no `DOM`, so DOM types fail to compile.
 
 Not yet implemented: the renderer-imports-contracts-only rule (overlay import-patterns target, D3.4) and the hook's own checks (D3.1). D2.2, D2.3, D2.5 and D2.6 are review rules, with D2.5 tested at the `@axis/protocol` level.

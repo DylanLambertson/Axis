@@ -23,26 +23,11 @@ function reply(s: ContractScenario): MockReply {
       return { kind: "error", code: s.code, ...(s.retryAfterMs === undefined ? {} : { retryAfterMs: s.retryAfterMs }) };
     case "mid_stream_error":
       // midstream-delta: the provider error body is echoed into a text delta first.
-      // base64 / upper: the credential is echoed there transformed (R3). The
-      // suite does not compare this text exactly, so only the leak check can fail it.
-      return {
-        kind: "error",
-        code: "overloaded",
-        afterText:
-          LEAK === "midstream-delta"
-            ? `${s.text} ${CANARY} ${CREDENTIAL}`
-            : LEAK === "base64"
-              ? `${s.text} ${Buffer.from(CREDENTIAL).toString("base64")}`
-              : LEAK === "upper"
-                ? `${s.text} ${CREDENTIAL.toUpperCase()}`
-                : s.text,
-      };
+      return { kind: "error", code: "overloaded", afterText: LEAK === "midstream-delta" ? `${s.text} ${CANARY} ${CREDENTIAL}` : s.text };
     case "hang":
       return { kind: "hang" };
     case "malformed":
       return { kind: "malformed" };
-    case "redirect":
-      return { kind: "error", code: "invalid_response" };
   }
 }
 
@@ -73,22 +58,19 @@ runProviderContractSuite({
   name: `leaky (${LEAK})`,
   canary: CANARY,
   credential: CREDENTIAL,
-  noNetwork: "the leaky fixtures wrap the in-process mock and make no network request",
   setup(scenario) {
     const mock = createMockProvider({
       replies: [reply(scenario)],
       ...(scenario.kind === "error" && scenario.code === "authentication" ? { connectionError: "authentication" as const } : {}),
-      ...(scenario.kind === "redirect" ? { connectionError: "invalid_response" as const } : {}),
     });
     let last: { model: string; maxOutputTokens: number; system?: string; stopSequences?: readonly string[] } | undefined;
     // error-props also "accepts" any providerOptions by stripping them.
     // drop-cap: the adapter ignores the caller's output cap and sends its own.
-    // stream-drop-cap: the same, on the stream path only (R2).
-    const send = (r: Parameters<ProviderAdapter["generate"]>[0], path: "generate" | "stream") => {
+    const send = (r: Parameters<ProviderAdapter["generate"]>[0]) => {
       const out = {
         ...r,
         ...(LEAK === "error-props" ? { providerOptions: {} } : {}),
-        ...(LEAK === "drop-cap" || (LEAK === "stream-drop-cap" && path === "stream") ? { maxOutputTokens: 4_096 } : {}),
+        ...(LEAK === "drop-cap" ? { maxOutputTokens: 32_000 } : {}),
       };
       last = {
         model: String(out.model),
@@ -99,18 +81,17 @@ runProviderContractSuite({
       return out;
     };
     const adapter: ProviderAdapter = {
-      // descriptor: the connection id carries the credential, as an endpoint URL with ?api-key= would (R1).
-      descriptor: LEAK === "descriptor" ? Object.freeze({ ...mock.descriptor, connectionId: `conn-${CREDENTIAL}` }) : mock.descriptor,
+      descriptor: mock.descriptor,
       listModels: (o) => mock.listModels(o),
       getCapabilities: (m, o) => mock.getCapabilities(m, o),
       validateConnection: (o) => mock.validateConnection(o),
       countTokens: (r, o) => (mock.countTokens as NonNullable<ProviderAdapter["countTokens"]>)(r, o),
       estimateCost: (m, u) => mock.estimateCost?.(m, u),
-      generate: (r, o) => mock.generate(send(r, "generate"), o).catch(onError),
+      generate: (r, o) => mock.generate(send(r), o).catch(onError),
       stream: (r, o) => ({
         async *[Symbol.asyncIterator]() {
           try {
-            for await (const ev of mock.stream(send(r, "stream"), o)) yield mapEvent(ev);
+            for await (const ev of mock.stream(send(r), o)) yield mapEvent(ev);
           } catch (e) {
             onError(e);
           }

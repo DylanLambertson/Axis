@@ -92,7 +92,7 @@ test("B1d: close does not free the slots of running handlers; the daemon-wide or
   assert.equal((await next.inbox.response("n2")).error?.code, "E_CANCELLED", "admitted once the orphans settled");
 });
 
-test("B1e: the idempotency key stays in-progress until the handler settles; error and cancel free it; success stores the result", async (t) => {
+test("B1e: the idempotency key stays in-progress until the handler settles; a write that failed after its caller left stays unknown; success stores the result", async (t) => {
   const r = await ready(t);
   const gate = deferred<{ n: number }>();
   let runs = 0;
@@ -103,11 +103,12 @@ test("B1e: the idempotency key stays in-progress until the handler settles; erro
   const busy = await r.inbox.response("w2");
   assert.equal(busy.error?.code, "E_CONFLICT");
   assert.equal(busy.error?.details?.["reason"], "in-progress");
-  gate.reject(new Error("failed after the caller left")); // settles with an error: key freed
+  gate.reject(new Error("failed after the caller left")); // settles after the abort: the effect is uncertain, so the key is not freed
   await wait(30);
   r.send(req("w3", "write", { n: 1 }, { idempotencyKey: KEY1 }));
-  assert.equal((await r.inbox.response("w3")).error?.code, "E_INTERNAL", "the retry ran (and failed again), it was not wedged");
-  assert.equal(runs, 2);
+  const after = await r.inbox.response("w3");
+  assert.equal(after.error?.details?.["reason"], "outcome-unknown", "not wedged in progress, and not run again");
+  assert.equal(runs, 1);
 });
 
 test("B1f: a success after the caller timed out is stored, and the retry replays it without running again", async (t) => {
@@ -125,7 +126,7 @@ test("B1f: a success after the caller timed out is stored, and the retry replays
   assert.equal(runs, 1);
 });
 
-test("B1g: cancelling a keyed request frees the key once the handler settles", async (t) => {
+test("B1g: cancelling a keyed write leaves its key unknown once the handler settles; it is not run again", async (t) => {
   const r = await ready(t);
   const gate = deferred<{ n: number }>();
   let runs = 0;
@@ -137,8 +138,8 @@ test("B1g: cancelling a keyed request frees the key once the handler settles", a
   gate.resolve({ n: 1 });
   await wait(30);
   r.send(req("k2", "write", { n: 1 }, { idempotencyKey: KEY1 }));
-  assert.equal((await r.inbox.response("k2")).ok, true);
-  assert.equal(runs, 2);
+  assert.equal((await r.inbox.response("k2")).error?.details?.["reason"], "outcome-unknown");
+  assert.equal(runs, 1);
 });
 
 // ---- S2 ----
@@ -149,6 +150,7 @@ test("S2: a key whose begin() resolves after a timeout is not wedged in-progress
     begin: async (k: IdempotencyKey, h: string) => (await wait(50), inner.begin(k, h)),
     complete: (k, v, o) => inner.complete(k, v, o),
     abandon: (k) => inner.abandon(k),
+    markUnknown: (k) => inner.markUnknown(k),
   };
   const r = await ready(t, { idempotency: store });
   r.daemon.register(CONTRACT, 1, { write: (_c, p: { n: number }) => p });
