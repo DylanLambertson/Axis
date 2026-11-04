@@ -64,7 +64,7 @@ Rule of thumb: if it can be tested with `node --test` on a clean CI runner, it i
 6. **Packages do not read `process.env` or the clock implicitly** where tests need control: take them as parameters.
 
 Enforcement, today:
-- `test/packages/imports.test.mjs` (run by `npm test`) scans `packages/*/src` import specifiers and each `package.json`. Packages may import relative paths, `zod`, `@axis/*` and `node:*`; `@axis/protocol` may not import `node:*` (D2.1, D2.4). Anything else, including `vs/*` and `electron`, fails. Declared dependencies may only be `zod` (at the pinned version) and `@axis/*`.
+- `test/packages/imports.test.mjs` (run by `npm test`) scans the import specifiers of every TypeScript file in each package (`src/`, `test/`, `contract/` and any other directory, excluding `dist/` and `node_modules/`) and each `package.json`. Packages may import relative paths that stay inside the package, `zod`, `@axis/*` and `node:*`; `@axis/protocol` may not import `node:*` in `src/` (D2.1, D2.4), but its tests and test-support entry points may. Anything else, including `vs/*` and `electron`, fails. Declared dependencies may only be `zod` (at the pinned version) and `@axis/*`.
 - `tsconfig.base.json` sets `lib: ["ES2023"]` with no `DOM`, so DOM types fail to compile.
 
 Not yet implemented: the renderer-imports-contracts-only rule (overlay import-patterns target, D3.4) and the hook's own checks (D3.1). D2.2, D2.3, D2.5 and D2.6 are review rules, with D2.5 tested at the `@axis/protocol` level.
@@ -87,7 +87,7 @@ The same staged code serves desktop (utility process) and web (the reh child pro
 
 - **Runtime dependencies:** `zod` only, pinned exactly to **4.6.6**, the patched release. Code OSS's own tree still pins 4.4.3; the two need not match, because esbuild bundles the daemon's dependencies into the daemon bundle, so duplicate copies cost size, not correctness. Security outweighs deduplication.
 - **Dev dependencies:** `typescript` and `@types/node`, pinned exactly, at the repository root only.
-- **No other runtime dependency** without an ADR amendment. `node:sqlite` or the Code OSS-provided SQLite is chosen by the journal workstream, not assumed here.
+- **No other runtime dependency** without an ADR amendment. SQLite is `node:sqlite`, a Node built-in, not a package (D9).
 - **Exact pins and a committed lockfile.** CI installs with `npm ci`; `--ignore-scripts` is used wherever install scripts are not needed.
 - **Known advisory.** `zod@4.4.3` has GHSA-mrhx-c7xc-m3w5 (memory exhaustion validating oversized constrained collections; fixed in 4.6.6) [V, npm audit]. (a) Packages use the patched zod 4.6.6. (b) The Code OSS tree still pins 4.4.3 upstream. Follow-up for the security-hardening patch block (2000-2999): bump it with a `package.json` change plus lockfile regeneration, if zod is still used at runtime after the agent-host removal (to be checked).
 - **How 4.6.6 reaches the daemon bundle** [I]. Staged sources import bare `zod`, which esbuild and Code OSS's `tsc` resolve from `vendor/code-oss/node_modules`, i.e. 4.4.3, unless something changes that. The staging hook must make bare `zod` resolve to 4.6.6 for the daemon bundle, either by vendoring zod 4.6.6 into the staged tree (for example `src/vs/axis/packages/node_modules/zod`) or with an esbuild alias in the entry-list seam. If neither works, the tree bump in (b) becomes a prerequisite rather than a follow-up. Also check that the packages type-check against 4.4.3 types, because Code OSS's `tsc` sees that version first. Spike criterion 2 verifies this.
@@ -112,6 +112,7 @@ The same staged code serves desktop (utility process) and web (the reh child pro
 - A CI job `Axis packages` runs `npm ci`, `npm run typecheck`, `npm run build` and `npm test` on Linux with the Node version read from `code-oss/upstream.json`. It does not need the Code OSS checkout, so it is cheap and runs on every PR.
 - After merge, `Axis packages` becomes a required check (`docs/ci.md`).
 - Staging is tested in two layers: a unit test of the hook against a fake tree (no 7.6 GB build), and the manual full build for the end-to-end check.
+- The user-principal subpath (`@axis/journal/daemon-principal`) is importable only from the daemon package. The source scan (`imports.test.mjs`) refuses it elsewhere, refuses re-exports of it, and flags `createRequire` and `process.getBuiltinModule`; `principal-dist.test.mjs` applies the same rules to the emitted JavaScript after the build. **TODO (staging hook):** when the daemon bundle is built with esbuild, add a metafile check that only daemon modules reach the output of `daemon-principal`, and extend the scan to the Code OSS overlay, which is not covered today. The emitted-JS scan stands in until then.
 
 ### D7. File headers
 
@@ -125,6 +126,27 @@ Every Axis-owned source file starts with `// Copyright (c) 2026 Dylan Lambertson
 - **`restoreFromRunBase` takes `{ runId, id, paths }`.** The policies document names `{ runId, paths }`; `id` is added so the daemon checks that the run belongs to the workspace.
 - **Envelope deviations from ADR 0003 D3's sketch.** Ids are strings (at most 64 characters), not numbers. The contract and its major version are separate fields (`contract: "axis.worktrees"`, `contractVersion: 1`) instead of one `axis.runs/1` string. `v` is the envelope protocol version, 1 to 1000. `error.details` is a bounded JSON record (at most 16 keys) rather than a fixed shape, and `E_APPROVAL_REQUIRED` requires `details.challenge`. The error code set is ADR 0003's, unchanged.
 - **Parse failures** return an enum reason only and never echo input.
+
+### D9. SQLite for the journal and the audit log: `node:sqlite`
+
+`@axis/audit` and `@axis/journal` use the built-in `node:sqlite` (`DatabaseSync`), with no added dependency. This closes open question 1.
+
+**Evidence.**
+
+- `node:sqlite` loads without a flag in Node 24.22.1, the pin in `code-oss/upstream.json`, and reports SQLite 3.53.4 [V, run locally].
+- The desktop daemon runs in Electron's Node, not the pinned Node. The Code OSS Electron build (target 43.8.3, `.npmrc` and `.build/electron/version`) embeds Node 24.22.0 [V]. Run as plain Node (`ELECTRON_RUN_AS_NODE=1`), it loads `node:sqlite` and reports the same SQLite 3.53.4 [V]. The full `@axis/audit` and `@axis/journal` suites (including the SIGKILL matrix) passed under that binary when this was measured (before the review fixes; re-run them under the shipped Electron binary at each Electron bump) [V].
+- The web server (the reh child, ADR 0003 D1.7) runs the pinned Node 24.22.1 (`remote/.npmrc` target `24.22.1`) [V].
+- The code uses WAL, `synchronous=FULL`, `BEGIN IMMEDIATE`, savepoints, `STRICT` tables, triggers and `isTransaction` [V, all exercised by the tests]. Code OSS's own `@vscode/sqlite3` 5.1.12-vscode is a native addon [V] and would add a native build to the daemon.
+
+**Risks and mitigations.**
+
+- **Still experimental upstream.** Node documents the module as pre-stable, so its API could change or be removed in a later Node line [I, from the Node documentation, not re-read for this ADR].
+  - Mitigation: the Node pin and the Electron pin are changed only deliberately, and the two package suites are the canary. Any Node or Electron bump runs them under both the pinned Node and the Electron binary (`ELECTRON_RUN_AS_NODE=1`) before it merges. A change in behaviour surfaces as a test failure, not as a data problem in the field.
+  - The surface is kept small and in one place: `packages/audit/src/db.ts` owns opening, transactions and migrations; the rest uses `prepare`, `run`, `get`, `all` and `iterate`.
+- **Electron's Node can differ from the pinned Node** (24.22.0 against 24.22.1 today) [V]. A future Electron may ship a Node with a different `node:sqlite`. The same canary step covers this, since it runs the suites under the Electron binary.
+- **On-disk format.** SQLite files are portable across SQLite versions, so a fallback does not need a data migration [I].
+
+**Fallback.** If `node:sqlite` is removed or changes incompatibly, swap the binding behind `db.ts` for `better-sqlite3`, built through Code OSS's native-module pipeline for the Electron ABI (the same route `@vscode/sqlite3` takes) [I, not tried]. `better-sqlite3` has a similar synchronous API, so the change should stay inside `db.ts` and its tests. That would need an amendment to D4 (a new runtime dependency) and the packaged-build check for the native module.
 
 ## Consequences and tradeoffs
 
@@ -152,6 +174,6 @@ Every Axis-owned source file starts with `// Copyright (c) 2026 Dylan Lambertson
 
 ## Open questions
 
-1. Where does the SQLite binding come from for `@axis/journal`: `node:sqlite` in the pinned Node, or Code OSS's `@vscode/sqlite3`? (Journal workstream.)
+1. ~~Where does the SQLite binding come from for `@axis/journal`?~~ Resolved by D9: `node:sqlite`.
 2. Should renderer-side contract use go through `zod/mini` (smaller bundle, no JIT) and, if so, should `@axis/protocol` expose a mini entry? Measure in the M3 spike (ADR 0003 D2).
 3. Should the hook fail or warn on a package that compiles under Code OSS only with `noUnusedLocals` disabled? Proposed: fail.

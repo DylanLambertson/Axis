@@ -66,8 +66,6 @@ test("D1: a tombstone counts toward the window and total quotas, and is swept on
   clock.t += 30_001; // a's original expiry has passed, b's has not
   const c = issue(manager);
   assert.throws(() => issue(manager), code("E_BACKPRESSURE"), "b still holds a slot");
-  manager.withdrawConnection(CONN);
-  assert.doesNotThrow(() => issue(manager), "a closed connection frees everything, tombstones aside");
   assert.ok(c.challenge.challengeId);
   clock.t += 60_000;
   assert.doesNotThrow(() => (issue(manager), issue(manager)), "every tombstone has been swept, so the whole quota is free");
@@ -91,7 +89,7 @@ test("F2: withdraw succeeds even if the audit sink is down", () => {
   assert.equal(s.manager.outstanding(), 0);
 });
 
-test("F2: withdrawConnection ends every live challenge of that connection and frees its quota", () => {
+test("F2: withdrawConnection ends every live challenge of that connection", () => {
   const { manager } = setup({ total: 3 });
   const a = issue(manager, { connectionId: "conn-a" });
   const b = issue(manager, { connectionId: "conn-a" });
@@ -103,7 +101,7 @@ test("F2: withdrawConnection ends every live challenge of that connection and fr
   assert.throws(() => manager.resolve(...resolveArgs(b)), code("E_POLICY_DENIED"));
   assert.equal(manager.resolve(...resolveArgs(c)).state, "approved");
   assert.equal(manager.withdrawConnection("conn-a"), 0);
-  assert.doesNotThrow(() => issue(manager));
+  assert.throws(() => issue(manager), code("E_BACKPRESSURE"), "the closed connection's tombstones still count");
   assert.throws(() => manager.withdrawConnection(""), code("E_INVALID_ARGUMENT"));
 });
 
@@ -124,7 +122,7 @@ test("F3: an async sink fails closed on the decision path and its rejection is n
   const h = () => void unhandled++;
   process.on("unhandledRejection", h);
   const m = new ChallengeManager({ audit: { append: (async () => { throw new Error("down"); }) as never } });
-  const base = { contract: CONTRACT, version: 1, method: "worktree.discard", target: "workspace:ws-1", args: ARGS, contentDigest: CONTENT, actor: "user", connectionId: CONN, windowId: WIN };
+  const base = { contract: CONTRACT, version: 1, method: "discard", target: "workspace:ws-1", args: ARGS, contentDigest: CONTENT, actor: "user", connectionId: CONN, windowId: WIN };
   assert.throws(() => m.issue(base), code("E_INTERNAL"));
   assert.equal(m.outstanding(), 0, "nothing was stored");
   m.withdrawConnection(CONN); // best-effort paths swallow it as well
@@ -147,7 +145,7 @@ test("N-a: refusing an unknown id does the same audit work as refusing a wrong c
 test("N-c: a monotonic clock that goes NaN fails closed and expires everything live", async () => {
   let bad = false;
   const m = new ChallengeManager({ audit: { append() {} }, monotonic: () => (bad ? Number.NaN : 1_000), now: () => 1_700_000_000_000 });
-  const mk = () => m.issue({ contract: CONTRACT, version: 1, method: "worktree.discard", target: "workspace:ws-1", args: ARGS, contentDigest: CONTENT, actor: "user", connectionId: CONN, windowId: WIN, tier: 3 });
+  const mk = () => m.issue({ contract: CONTRACT, version: 1, method: "discard", target: "workspace:ws-1", args: ARGS, contentDigest: CONTENT, actor: "user", connectionId: CONN, windowId: WIN, tier: 3 });
   const c = mk();
   m.resolve({ actor: "user", windowId: WIN }, { challengeId: c.challengeId, decision: "approve", digest: c.digest });
   bad = true;
@@ -219,4 +217,86 @@ test("N-h: a hostile getter on the action's error cannot escape consume; it stay
     (e: unknown) => e instanceof ChallengeError && e.code === "E_INTERNAL" && e.detail["executed"] === true && !e.message.includes("secret"),
   );
   assert.equal(events.at(-1)?.outcome, "error");
+});
+
+// The worktrees contract's methods, as @axis/protocol defines them: camelCase names must be accepted.
+test("every axis.worktrees method name can be issued and consumed, and malformed names are refused", async () => {
+  for (const method of ["list", "status", "create", "finalise", "remove", "restoreFromRunBase"]) {
+    const { manager } = setup();
+    const id = approve(manager, issue(manager, { method }));
+    assert.equal(await manager.consume(id, CALLER, { ...run, method }, (c) => c.method), method);
+  }
+  const { manager } = setup();
+  for (const bad of ["", "worktree.remove", "1remove", "restore_from_run_base", "a".repeat(65), "re move"]) {
+    assert.throws(() => issue(manager, { method: bad }), code("E_INVALID_ARGUMENT"), bad);
+  }
+});
+
+// The per-actor cap is per (actor, window): one window cannot lock the same user out of another.
+test("a window that floods its own per-actor cap does not block the same actor in another window", () => {
+  const { manager } = setup({ perActor: 2 });
+  issue(manager, { windowId: "window-a" });
+  const second = issue(manager, { windowId: "window-a" });
+  assert.throws(() => issue(manager, { windowId: "window-a" }), code("E_BACKPRESSURE"));
+  assert.doesNotThrow(() => issue(manager, { windowId: "window-b" }), "the other window still works");
+  // Tombstones are keyed the same way: withdrawing in window-a does not free the slot, and does not touch window-b.
+  manager.withdraw(second.challenge.challengeId, CALLER);
+  assert.throws(() => issue(manager, { windowId: "window-a" }), code("E_BACKPRESSURE"));
+  assert.doesNotThrow(() => issue(manager, { windowId: "window-b" }));
+});
+
+test("the overall per-actor backstop still bounds one actor across windows", () => {
+  const { manager } = setup({ perActor: 2, perActorOverall: 3 });
+  issue(manager, { windowId: "window-a" });
+  issue(manager, { windowId: "window-b" });
+  issue(manager, { windowId: "window-c" });
+  assert.throws(() => issue(manager, { windowId: "window-d" }), code("E_BACKPRESSURE"));
+  assert.doesNotThrow(() => issue(manager, { windowId: "window-d", actor: "agent:other" }), "another actor is unaffected");
+});
+
+// D1b: closing a connection must not reset the quota either.
+test("D1b: a requester that reconnects in a loop cannot get past the prompt quota", () => {
+  const { manager, clock } = setup({ perActor: 2 });
+  let issued = 0;
+  for (let n = 0; n < 100; n++) {
+    const connectionId = `conn-${n}`;
+    for (let k = 0; k < 2; k++) {
+      try {
+        issue(manager, { actor: "agent:loop", connectionId });
+        issued++;
+      } catch (e) {
+        assert.ok(e instanceof ChallengeError && e.code === "E_BACKPRESSURE");
+      }
+    }
+    manager.withdrawConnection(connectionId);
+  }
+  assert.equal(issued, 2, "only the first connection got any prompts through");
+  clock.t += 60_001;
+  assert.doesNotThrow(() => issue(manager, { actor: "agent:loop", connectionId: "conn-new" }), "the quota returns at the original expiry");
+});
+
+test("D1b: tombstones from closed connections are bounded by the total cap", () => {
+  const { manager } = setup({ total: 4, perActor: 4 });
+  let issued = 0;
+  for (let n = 0; n < 50; n++) {
+    try {
+      issue(manager, { actor: `agent:a${n}`, connectionId: `c${n}`, windowId: `w${n}` });
+      issued++;
+    } catch (e) {
+      assert.ok(e instanceof ChallengeError && e.code === "E_BACKPRESSURE");
+    }
+    manager.withdrawConnection(`c${n}`);
+  }
+  assert.equal(issued, 4);
+});
+
+test("a withdraw after the challenge expired, before any sweep, reports ended", () => {
+  const { manager, clock } = setup({ ttl: 1_000 });
+  const open = issue(manager);
+  clock.t += 1_000;
+  assert.deepEqual(manager.withdraw(open.challenge.challengeId, CALLER), { withdrawn: false, reason: "ended" });
+  const confirmed = issue(manager, { tier: 3 });
+  const id = approve(manager, confirmed);
+  clock.t += 30_001; // the confirmation window (30 s) has run out; the challenge itself expired too
+  assert.deepEqual(manager.withdraw(id, CALLER), { withdrawn: false, reason: "ended" });
 });

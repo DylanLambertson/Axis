@@ -13,7 +13,7 @@ export const CONN = "conn-1";
 export const CALLER = { actor: "user", connectionId: CONN } as const;
 export const WIN = "window-1";
 
-export function setup(options: { ttl?: number; confirmTtl?: number; perActor?: number; total?: number } = {}) {
+export function setup(options: { ttl?: number; confirmTtl?: number; perActor?: number; perActorOverall?: number; perWindow?: number; total?: number } = {}) {
   const events: ChallengeAuditEvent[] = [];
   const clock = { t: 1_000_000, skew: 0 };
   let failNext: ((e: ChallengeAuditEvent) => boolean) | undefined;
@@ -29,6 +29,8 @@ export function setup(options: { ttl?: number; confirmTtl?: number; perActor?: n
     ...(options.ttl ? { challengeTtlMs: options.ttl } : {}),
     ...(options.confirmTtl ? { confirmationTtlMs: options.confirmTtl } : {}),
     ...(options.perActor ? { maxOutstandingPerActor: options.perActor } : {}),
+    ...(options.perActorOverall ? { maxOutstandingPerActorOverall: options.perActorOverall } : {}),
+    ...(options.perWindow ? { maxOutstandingPerWindow: options.perWindow } : {}),
     ...(options.total ? { maxOutstandingTotal: options.total } : {}),
   });
   return { manager, events, clock, failWhen: (f: ((e: ChallengeAuditEvent) => boolean) | undefined) => (failNext = f) };
@@ -41,7 +43,7 @@ export interface IssuedChallenge {
 }
 
 export function issue(m: ChallengeManager, over: Partial<Parameters<ChallengeManager["issue"]>[0]> = {}): IssuedChallenge {
-  const challenge = m.issue({ contract: CONTRACT, version: 1, method: "worktree.discard", target: "workspace:ws-1", args: ARGS, contentDigest: CONTENT, actor: "user", connectionId: CONN, windowId: WIN, ...over });
+  const challenge = m.issue({ contract: CONTRACT, version: 1, method: "discard", target: "workspace:ws-1", args: ARGS, contentDigest: CONTENT, actor: "user", connectionId: CONN, windowId: WIN, ...over });
   return { challenge, nativeProof: m.takeNativeProof(challenge.challengeId) };
 }
 
@@ -62,7 +64,7 @@ export const resolveArgs = (i: IssuedChallenge, over: Record<string, unknown> = 
   return [{ actor, windowId }, { challengeId: i.challenge.challengeId, decision: "approve", digest: i.challenge.digest, ...params }] as unknown as Parameters<ChallengeManager["resolve"]>;
 };
 
-export const run = { contract: CONTRACT, version: 1, method: "worktree.discard", target: "workspace:ws-1", args: ARGS, currentContentDigest: CONTENT };
+export const run = { contract: CONTRACT, version: 1, method: "discard", target: "workspace:ws-1", args: ARGS, currentContentDigest: CONTENT };
 export const internal = (executed: boolean) => (e: unknown) =>
   e instanceof ChallengeError && e.code === "E_INTERNAL" && e.detail["executed"] === executed;
 export const code = (c: string) => (e: unknown) => e instanceof ChallengeError && e.code === c;
