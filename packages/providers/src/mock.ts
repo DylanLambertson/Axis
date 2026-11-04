@@ -70,7 +70,12 @@ export interface MockProviderOptions {
   /** Characters per streamed delta. */
   readonly chunkChars?: number;
   /** Prices in micro-USD per token; `null` makes the mock unable to price (for budget tests). */
-  readonly pricing?: { readonly inputMicroUsdPerToken: number; readonly outputMicroUsdPerToken: number } | null;
+  readonly pricing?: {
+    readonly inputMicroUsdPerToken: number;
+    readonly outputMicroUsdPerToken: number;
+    /** Cache writes; defaults to the input price. */
+    readonly cacheWriteMicroUsdPerToken?: number;
+  } | null;
   /** When set, `validateConnection` reports this error (for example `authentication`). */
   readonly connectionError?: ProviderErrorCode;
   /**
@@ -196,6 +201,10 @@ export function createMockProvider(options: MockProviderOptions = {}): MockProvi
    * than the estimate (NN4).
    */
   const inputFactor = options.inputTokenFactor ?? 1;
+  // NaN, a negative or an infinite factor would make the mock emit invalid usage (R7).
+  if (typeof inputFactor !== "number" || !Number.isFinite(inputFactor) || inputFactor < 0) {
+    throw new RangeError("inputTokenFactor must be a finite number of at least 0");
+  }
   const inputTokens = (r: ValidRequest): number => Math.ceil(estimateInputTokens(r) * inputFactor);
 
   /** Validate, then take the next scripted reply. Counts as a provider request. */
@@ -366,8 +375,9 @@ export function createMockProvider(options: MockProviderOptions = {}): MockProvi
 
     estimateCost(model: string, usage: Usage): CostEstimate | undefined {
       if (pricing === null || !models.some((m) => m.id === model)) return undefined;
-      const input = usage.inputTokens + (usage.cacheReadTokens ?? 0) + (usage.cacheWriteTokens ?? 0);
-      return { microUsd: input * pricing.inputMicroUsdPerToken + usage.outputTokens * pricing.outputMicroUsdPerToken };
+      const input = usage.inputTokens + (usage.cacheReadTokens ?? 0);
+      const cacheWrite = (usage.cacheWriteTokens ?? 0) * (pricing.cacheWriteMicroUsdPerToken ?? pricing.inputMicroUsdPerToken);
+      return { microUsd: input * pricing.inputMicroUsdPerToken + cacheWrite + usage.outputTokens * pricing.outputMicroUsdPerToken };
     },
   };
   return adapter;
