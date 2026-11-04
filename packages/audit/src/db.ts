@@ -76,13 +76,15 @@ function modeOf(path: string): number {
  */
 export function assertPrivateFiles(path: string): void {
   if (!POSIX || path === ":memory:") return;
-  for (const file of [path, `${path}-wal`, `${path}-shm`]) {
-    if (!existsSync(file)) continue;
-    if ((modeOf(file) & 0o077) !== 0) chmodSync(file, 0o600);
-    if ((modeOf(file) & 0o077) !== 0) {
-      throw new AxisError("E_UNAVAILABLE", "A database file is readable by other users and could not be tightened");
+  mapFs(() => {
+    for (const file of [path, `${path}-wal`, `${path}-shm`]) {
+      if (!existsSync(file)) continue;
+      if ((modeOf(file) & 0o077) !== 0) chmodSync(file, 0o600);
+      if ((modeOf(file) & 0o077) !== 0) {
+        throw new AxisError("E_UNAVAILABLE", "A database file is readable by other users and could not be tightened");
+      }
     }
-  }
+  });
 }
 
 /**
@@ -91,7 +93,8 @@ export function assertPrivateFiles(path: string): void {
  * symlinks, not owned by the current user, or writable by group or others. It never changes a mode.
  *
  * What it does NOT cover, on purpose:
- * - Only this directory is judged, not its ancestors. A parent that another user can write to (not sticky) lets
+ * - Only this directory is judged, not its ancestors (`ensureDataDirectory` does judge the nearest existing ancestor
+ *   of a directory it has to create). A parent that another user can write to (not sticky) lets
  *   them rename the checked directory away and plant another, so the data directory belongs under a parent the
  *   user alone controls (the per-user application-data directory is).
  * - Mode bits only. POSIX ACLs (macOS `chmod +a`, Linux `setfacl`) can grant access that the bits do not show,
@@ -116,6 +119,42 @@ export function assertSafeDirectory(dir: string, fs: DirectoryFs = nodeDirectory
   if ((real.mode & 0o002) !== 0) refuse("world-writable");
 }
 
+/**
+ * Map a raw file system error onto the closed error set without its path (Node puts the path in `message`).
+ * A bad path (too long, a component that is not a directory, a loop) is the caller's argument; a permission
+ * refusal from the OS is a policy denial and is not retryable; a full disk, a busy file or too many open files
+ * is `E_UNAVAILABLE` (retryable); anything else is `E_INTERNAL`. Only the errno name is kept, in `detail`.
+ */
+export function mapFsError(error: unknown): unknown {
+  if (error instanceof AxisError) return error;
+  const errno = (error as { code?: unknown } | null)?.code;
+  if (typeof errno === "string" && /^ERR_INVALID_ARG_[A-Z_]{1,20}$/.test(errno)) {
+    // Node's argument errors (a NUL byte in a path, a wrong type) quote the offending value in the message.
+    return new AxisError("E_INVALID_ARGUMENT", "The data directory path cannot be used", { errno });
+  }
+  if (typeof errno !== "string" || !/^E[A-Z0-9]{2,15}$/.test(errno)) return error;
+  const detail = { errno };
+  if (["ENAMETOOLONG", "ENOTDIR", "ELOOP", "EINVAL", "EISDIR", "ENOENT"].includes(errno)) {
+    return new AxisError("E_INVALID_ARGUMENT", "The data directory path cannot be used", detail);
+  }
+  if (["EACCES", "EPERM", "EROFS"].includes(errno)) {
+    return new AxisError("E_POLICY_DENIED", "The operating system denied access to the data directory", detail);
+  }
+  if (["ENOSPC", "EDQUOT", "EMFILE", "ENFILE", "EBUSY", "EAGAIN", "ETXTBSY", "ENOMEM"].includes(errno)) {
+    return new AxisError("E_UNAVAILABLE", "The data directory is temporarily unavailable", detail);
+  }
+  return new AxisError("E_INTERNAL", "The data directory could not be prepared", detail);
+}
+
+/** Run a file system step, converting its errors with `mapFsError`. */
+export function mapFs<T>(fn: () => T): T {
+  try {
+    return fn();
+  } catch (error) {
+    throw mapFsError(error);
+  }
+}
+
 function lstatExists(path: string, fs: DirectoryFs): boolean {
   try {
     fs.lstat(path);
@@ -126,26 +165,96 @@ function lstatExists(path: string, fs: DirectoryFs): boolean {
   }
 }
 
+const hasDotDot = (path: string): boolean => path.split("/").includes("..");
+
+/**
+ * Refuse a path the file system cannot take before any call is made with it. A NUL byte would make Node throw
+ * `ERR_INVALID_ARG_VALUE` with the whole path quoted in its message, so it is rejected here with a fixed message.
+ */
+export function assertUsablePath(path: unknown): asserts path is string {
+  if (typeof path !== "string" || path.length === 0 || path.includes("\0")) {
+    throw new AxisError("E_INVALID_ARGUMENT", "The data directory path cannot be used", { reason: typeof path === "string" && path.length > 0 ? "nul-byte" : "not-a-path" });
+  }
+}
+
+/**
+ * The nearest existing ancestor of the missing directory `dir` must not be writable by others, because a
+ * directory created inside a 0777 one can be renamed away and replaced by its other writers before the first
+ * write. A sticky directory (like /tmp) is fine: only the owner can rename or remove what is inside it. A symlinked
+ * ancestor is followed (`~/.config` is often one) and its real directory judged. A sticky directory is safe only
+ * if root or the current user owns it, because the sticky bit does not restrict its owner. Otherwise ownership is not required: if
+ * the user could not write there, `mkdir` fails with EACCES and that is mapped.
+ */
+function assertSafeAncestor(dir: string, fs: DirectoryFs): void {
+  let ancestor = dirname(dir);
+  while (!lstatExists(ancestor, fs)) {
+    const parent = dirname(ancestor);
+    if (parent === ancestor) return;
+    ancestor = parent;
+  }
+  const real = fs.stat(fs.realpath(ancestor));
+  if ((real.mode & 0o1000) !== 0) {
+    // The sticky bit stops OTHER users renaming or removing entries, not the directory's owner: its owner could
+    // rename our new directory away and plant their own. So a sticky ancestor is safe only when root (like /tmp)
+    // or the current user owns it.
+    if (real.uid !== 0 && real.uid !== fs.uid()) {
+      throw new AxisError("E_INVALID_ARGUMENT", "The data directory is not safe to use", { reason: "parent-sticky-foreign-owner" });
+    }
+    return;
+  }
+  if ((real.mode & 0o020) !== 0) {
+    throw new AxisError("E_INVALID_ARGUMENT", "The data directory is not safe to use", { reason: "parent-group-writable" });
+  }
+  if ((real.mode & 0o002) !== 0) {
+    throw new AxisError("E_INVALID_ARGUMENT", "The data directory is not safe to use", { reason: "parent-world-writable" });
+  }
+}
+
+/**
+ * Make sure the data directory `dir` exists and is safe: an existing one must pass `assertSafeDirectory`; a
+ * missing one is created 0700, but never through a path that contains `..` (it could not be judged before it
+ * is created, and a `..` after a symlink leads somewhere else) and never inside an ancestor that others can
+ * write to, and not inside a sticky one owned by another user (see `assertSafeAncestor`). Shared by `openDatabase` and
+ * `acquireInstanceLock`, so the database and its lock follow the same rules. File system errors are mapped
+ * without the path (`mapFsError`).
+ *
+ * `dir` is used as given (not `resolve()`d), because a `..` after a symlink must be resolved physically, as the
+ * kernel and SQLite will resolve it.
+ */
+export function ensureDataDirectory(dir: string, fs: DirectoryFs = nodeDirectoryFs): void {
+  assertUsablePath(dir);
+  mapFs(() => {
+    if (!POSIX) {
+      mkdirSync(dir, { recursive: true });
+      return;
+    }
+    if (lstatExists(dir, fs)) {
+      assertSafeDirectory(dir, fs);
+      return;
+    }
+    if (hasDotDot(dir)) {
+      throw new AxisError("E_INVALID_ARGUMENT", "The data directory is not safe to use", { reason: "dotdot-path" });
+    }
+    assertSafeAncestor(dir, fs);
+    const target = resolve(dir);
+    if (mkdirSync(target, { recursive: true, mode: 0o700 }) !== undefined) chmodSync(target, 0o700);
+    // Judge what is there NOW, whether or not this call created it. Between the ancestor check and mkdir another
+    // user can create the directory first (in a sticky parent such as /tmp): mkdir then reports nothing created, and
+    // without this check the database would be opened inside a directory they own and can swap files in.
+    assertSafeDirectory(dir, fs);
+  });
+}
+
 function prepareLocation(path: string, fs: DirectoryFs): void {
   if (!POSIX) return;
   // NOT `dirname(resolve(path))`: resolve() collapses `..` lexically, but the kernel (and SQLite) follow a symlink
   // first, so `safe/link/../x.db` lives in link's PARENT, which is not `safe`. Judge the path as the kernel will.
-  const dir = dirname(path);
-  // A directory this call creates is private (0700). An existing one is the caller's: it is never chmod-ed, but it
-  // must be safe (see assertSafeDirectory), because the database and its WAL are only as private as the place
-  // they live. The files themselves are always 0600.
-  if (lstatExists(dir, fs)) {
-    assertSafeDirectory(dir, fs);
-  } else {
-    if (path.split("/").includes("..")) {
-      throw new AxisError("E_INVALID_ARGUMENT", "The data directory is not safe to use", { reason: "dotdot-path" });
-    }
-    const target = resolve(dir);
-    if (mkdirSync(target, { recursive: true, mode: 0o700 }) !== undefined) chmodSync(target, 0o700);
-  }
+  ensureDataDirectory(dirname(path), fs);
   // Create the file 0600 before SQLite does (its default would follow the umask); -wal and -shm copy its mode.
-  closeSync(openSync(path, "a", 0o600));
-  chmodSync(path, 0o600);
+  mapFs(() => {
+    closeSync(openSync(path, "a", 0o600));
+    chmodSync(path, 0o600);
+  });
 }
 
 function pragma(db: DatabaseSync, sql: string): Record<string, unknown> {
@@ -175,7 +284,10 @@ export function openDatabase(path: string, options: OpenOptions = {}): DatabaseS
     throw new AxisError("E_INVALID_ARGUMENT", "busyTimeoutMs must be an integer from 0 to 600000");
   }
   const memory = path === ":memory:";
-  if (!memory) prepareLocation(path, options.directoryFs ?? nodeDirectoryFs);
+  if (!memory) {
+    assertUsablePath(path);
+    prepareLocation(path, options.directoryFs ?? nodeDirectoryFs);
+  }
   const db = mapSqlite(() => new DatabaseSync(path));
   try {
     mapSqlite(() => {

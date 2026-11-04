@@ -1,10 +1,10 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { chmodSync, closeSync, mkdirSync, openSync, readFileSync, realpathSync, statSync, unlinkSync, writeSync } from "node:fs";
+import { chmodSync, closeSync, openSync, readFileSync, realpathSync, statSync, unlinkSync, writeSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
-import { assertSafeDirectory } from "./db.js";
+import { ensureDataDirectory, mapFsError } from "./db.js";
 import { AxisError } from "./errors.js";
 
 const LOCK_FILE = "axis.lock";
@@ -188,7 +188,7 @@ export function acquireInstanceLock(dir: string, options: LockOptions = {}): Ins
   const now = options.now ?? Date.now;
   const isAlive = options.isAlive ?? defaultIsAlive;
   const startOf = options.procStart ?? processStartTime;
-  if (mkdirSync(dir, { recursive: true, mode: 0o700 }) === undefined) assertSafeDirectory(dir);
+  ensureDataDirectory(dir); // the same rules as the database directory
   // join() would collapse a `..` that follows a symlink and put the lock in a different directory than `dir` names.
   const path = process.platform === "win32" ? join(dir, LOCK_FILE) : (dir.endsWith("/") ? `${dir}${LOCK_FILE}` : `${dir}/${LOCK_FILE}`);
   const record: LockRecord = { pid, procStart: startOf(pid) ?? null, startedAt: now(), nonce: randomBytes(16).toString("hex") };
@@ -206,7 +206,8 @@ export function acquireInstanceLock(dir: string, options: LockOptions = {}): Ins
       return new InstanceLock(MINT, path, record.nonce);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
-        throw new AxisError("E_UNAVAILABLE", "Could not create the instance lock");
+        const mapped = mapFsError(error);
+        throw mapped instanceof AxisError ? new AxisError(mapped.code, "Could not create the instance lock", mapped.detail) : new AxisError("E_UNAVAILABLE", "Could not create the instance lock");
       }
     }
     let seen: { raw: string; record: LockRecord | undefined };
@@ -222,7 +223,11 @@ export function acquireInstanceLock(dir: string, options: LockOptions = {}): Ins
       const current = alive ? startOf(holder.pid) : undefined;
       stale = !alive || (holder.procStart !== null && current !== undefined && current !== holder.procStart);
     } else {
-      stale = now() - statSync(path).mtimeMs > UNPARSEABLE_GRACE_MS;
+      try {
+        stale = now() - statSync(path).mtimeMs > UNPARSEABLE_GRACE_MS;
+      } catch {
+        continue; // the file vanished between the read and the stat: try again
+      }
     }
     if (!stale) {
       throw new AxisError("E_CONFLICT", "Another Axis daemon is using this database", seen.record ? { pid: seen.record.pid } : {});

@@ -112,6 +112,7 @@ The same staged code serves desktop (utility process) and web (the reh child pro
 - A CI job `Axis packages` runs `npm ci`, `npm run typecheck`, `npm run build` and `npm test` on Linux with the Node version read from `code-oss/upstream.json`. It does not need the Code OSS checkout, so it is cheap and runs on every PR.
 - After merge, `Axis packages` becomes a required check (`docs/ci.md`).
 - Staging is tested in two layers: a unit test of the hook against a fake tree (no 7.6 GB build), and the manual full build for the end-to-end check.
+- The user-principal subpath (`@axis/journal/daemon-principal`) is importable only from the daemon package. The source scan (`imports.test.mjs`) refuses it elsewhere, refuses re-exports of it, and flags `createRequire` and `process.getBuiltinModule`; `principal-dist.test.mjs` applies the same rules to the emitted JavaScript after the build. **TODO (staging hook):** when the daemon bundle is built with esbuild, add a metafile check that only daemon modules reach the output of `daemon-principal`, and extend the scan to the Code OSS overlay, which is not covered today. The emitted-JS scan stands in until then.
 
 ### D7. File headers
 

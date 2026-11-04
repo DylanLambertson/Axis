@@ -238,3 +238,163 @@ test("data directory: the lock and guards() also follow `..` after a symlink phy
     t.done();
   }
 });
+
+// ---- the instance lock follows the same rules as the database directory ----
+
+test("lock: a missing directory is never created through a `..` path, and nothing is created", posixOnly, async () => {
+  const t = await tmp();
+  try {
+    const { acquireInstanceLock } = await import("../src/index.js");
+    // Built by hand: path.join would collapse the `..` before the lock saw it.
+    assert.equal(reasonOf(() => acquireInstanceLock(`${t.base}/missing/../data`)), "dotdot-path");
+    assert.equal(t.existsSync(t.join(t.base, "missing")), false);
+    assert.equal(t.existsSync(t.join(t.base, "data")), false);
+    // The database and the lock now agree: both refuse, for the same reason.
+    assert.equal(reasonOf(() => openDatabase(`${t.base}/missing/../data/a.db`)), "dotdot-path");
+    // An existing directory reached through `..` is judged and allowed when safe, and the lock lands where `..` leads.
+    const real = t.join(t.base, "real");
+    t.mkdirSync(t.join(real, "sub"), { recursive: true });
+    t.chmodSync(real, 0o700);
+    const lock = acquireInstanceLock(`${real}/sub/..`);
+    assert.equal(t.existsSync(t.join(real, "axis.lock")), true);
+    lock.release();
+    // A missing directory with no `..` is created 0700 by the lock, as before.
+    const made = acquireInstanceLock(t.join(t.base, "newdata"));
+    assert.equal(t.statSync(t.join(t.base, "newdata")).mode & 0o777, 0o700);
+    made.release();
+  } finally {
+    t.done();
+  }
+});
+
+// ---- a missing directory is not created inside an ancestor that others can write to ----
+
+test("ancestor: `safe/badleaf/newdir/x.db` does not create newdir inside a 0777 directory", posixOnly, async () => {
+  const t = await tmp();
+  try {
+    const { acquireInstanceLock } = await import("../src/index.js");
+    const badleaf = t.join(t.base, "safe", "badleaf");
+    t.mkdirSync(badleaf, { recursive: true });
+    t.chmodSync(t.join(t.base, "safe"), 0o700);
+    for (const [mode, reason] of [[0o777, "parent-group-writable"], [0o757, "parent-world-writable"], [0o770, "parent-group-writable"]] as const) {
+      t.chmodSync(badleaf, mode);
+      assert.equal(reasonOf(() => openDatabase(`${badleaf}/newdir/x.db`)), reason, mode.toString(8));
+      assert.equal(reasonOf(() => acquireInstanceLock(`${badleaf}/newdir`)), reason, `lock ${mode.toString(8)}`);
+      // The nearest EXISTING ancestor is what counts, however many levels are missing.
+      assert.equal(reasonOf(() => openDatabase(`${badleaf}/a/b/c/x.db`)), reason);
+      assert.equal(t.existsSync(t.join(badleaf, "newdir")), false);
+      assert.equal(t.existsSync(t.join(badleaf, "a")), false);
+      assert.equal(t.statSync(badleaf).mode & 0o777, mode, "the ancestor's mode is not changed");
+    }
+    // A private ancestor is fine.
+    t.chmodSync(badleaf, 0o700);
+    openDatabase(`${badleaf}/newdir/x.db`).close();
+    assert.equal(t.statSync(t.join(badleaf, "newdir")).mode & 0o777, 0o700);
+  } finally {
+    t.done();
+  }
+});
+
+test("ancestor: a sticky world-writable ancestor (like /tmp) and a symlinked ancestor are allowed", posixOnly, async () => {
+  const t = await tmp();
+  try {
+    const sticky = t.join(t.base, "sticky");
+    t.mkdirSync(sticky);
+    t.chmodSync(sticky, 0o1777);
+    openDatabase(`${sticky}/mine/x.db`).close();
+    assert.equal(t.statSync(t.join(sticky, "mine")).mode & 0o777, 0o700);
+
+    const real = t.join(t.base, "realparent");
+    t.mkdirSync(real, { mode: 0o700 });
+    t.symlinkSync(real, t.join(t.base, "dotdir")); // like a ~/.config that points into a dotfiles checkout
+    openDatabase(`${t.base}/dotdir/axis/x.db`).close();
+    assert.equal(t.existsSync(t.join(real, "axis", "x.db")), true);
+
+    // A symlinked ancestor whose target is 0777 is judged by the target.
+    const open777 = t.join(t.base, "open777");
+    t.mkdirSync(open777);
+    t.chmodSync(open777, 0o777);
+    t.symlinkSync(open777, t.join(t.base, "openlink"));
+    assert.equal(reasonOf(() => openDatabase(`${t.base}/openlink/axis/x.db`)), "parent-group-writable");
+  } finally {
+    t.done();
+  }
+});
+
+// ---- FU-1: a directory another user creates between the ancestor check and mkdir is judged, not trusted ----
+
+test("race: a directory planted after the ancestor check is judged by the final check", posixOnly, async () => {
+  const t = await tmp();
+  try {
+    const ours = process.getuid?.() ?? 0;
+    const real = {
+      lstat: (p: string) => ({ ...t.statSync(p), isSymbolicLink: () => false }),
+      stat: (p: string) => t.statSync(p),
+      realpath: (p: string) => p,
+    };
+    // The hook plants the data directory at the moment the ancestor is judged: after that check, before mkdir.
+    const planting = (target: string, mode: number, uidAfter: number) => {
+      let planted = false;
+      return {
+        ...real,
+        // The data directory does not exist until planted; every other path is real.
+        lstat: (p: string) => {
+          if (p === target && !planted) throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+          return { ...t.statSync(p), isSymbolicLink: () => false };
+        },
+        stat: (p: string) => {
+          if (!planted && p !== target) {
+            t.mkdirSync(target);
+            t.chmodSync(target, mode);
+            planted = true;
+          }
+          return t.statSync(p);
+        },
+        uid: () => (planted ? uidAfter : ours),
+      };
+    };
+    // 1. The planted directory is world-writable.
+    const open777 = t.join(t.base, "open777");
+    const hookA = { ...planting(open777, 0o777, ours) };
+    assert.equal(reasonOf(() => openDatabase(`${open777}/x.db`, { directoryFs: hookA })), "group-writable");
+    assert.equal(t.existsSync(t.join(open777, "x.db")), false, "no database inside the planted directory");
+
+    // 2. The planted directory LOOKS private but belongs to someone else (the injected uid stands in for the other user).
+    const foreign = t.join(t.base, "foreign");
+    const hookB = { ...planting(foreign, 0o700, ours + 1) };
+    assert.equal(reasonOf(() => openDatabase(`${foreign}/x.db`, { directoryFs: hookB })), "not-owned");
+    assert.equal(t.existsSync(t.join(foreign, "x.db")), false);
+  } finally {
+    t.done();
+  }
+});
+
+// ---- FU-2: a sticky ancestor must belong to root or to the current user ----
+
+const notRoot = { skip: process.platform === "win32" || process.getuid?.() === 0 ? "root owns everything the test creates" : false };
+
+test("sticky ancestor: allowed when root or the current user owns it, refused when anyone else does", notRoot, async () => {
+  const t = await tmp();
+  try {
+    const ours = process.getuid?.() ?? 0;
+    const sticky = t.join(t.base, "sticky");
+    t.mkdirSync(sticky);
+    t.chmodSync(sticky, 0o1777);
+    const withOwner = (owner: number, uid: number) => ({
+      lstat: (p: string) => ({ ...t.statSync(p), isSymbolicLink: () => false }),
+      stat: (p: string) => ({ mode: t.statSync(p).mode, uid: p === sticky ? owner : t.statSync(p).uid }),
+      realpath: (p: string) => p,
+      uid: () => uid,
+    });
+    // Owned by someone else (an injected uid stands in for them): refused, and nothing is created.
+    assert.equal(reasonOf(() => openDatabase(`${sticky}/mine/x.db`, { directoryFs: withOwner(ours + 1, ours) })), "parent-sticky-foreign-owner");
+    assert.equal(t.existsSync(t.join(sticky, "mine")), false);
+    // Owned by root (as /tmp is) or by the current user: allowed.
+    openDatabase(`${sticky}/rootowned/x.db`, { directoryFs: withOwner(0, ours) }).close();
+    openDatabase(`${sticky}/ours/x.db`, { directoryFs: withOwner(ours, ours) }).close();
+    assert.equal(t.existsSync(t.join(sticky, "rootowned", "x.db")), true);
+    assert.equal(t.existsSync(t.join(sticky, "ours", "x.db")), true);
+  } finally {
+    t.done();
+  }
+});
