@@ -39,12 +39,31 @@ test("S1: in-progress rows count, and a settled row frees room under the cap", (
   assert.equal(s.begin(key("3"), "h").state, "new");
 });
 
-test("S1: once unevictable rows reach half the table, only actors that hold none can still begin", () => {
-  const s = make({ maxEntries: 10, maxPerActor: 10, maxPendingPerActor: 3, maxPendingPerWorkspace: 3 });
-  for (const k of ["1", "2", "3"]) cancelled(s, key(k, { actorId: "x" }));
-  for (const k of ["1", "2"]) cancelled(s, key(k, { actorId: "y" }));
-  assert.equal(s.begin(key("9", { actorId: "y" }), "h").state, "exhausted");
-  assert.equal(s.begin(key("1", { actorId: "z" }), "h").state, "new");
+test("S1': ten actors holding half the table cannot lock out a legitimate actor with a timed-out write", () => {
+  const s = make({ maxEntries: 1000, maxPerActor: 100, maxPendingPerActor: 50, maxPendingPerWorkspace: 50 });
+  for (let a = 0; a < 10; a++) for (let i = 0; i < 50; i++) cancelled(s, key(`k${i}`, { actorId: `bad${a}` }));
+  assert.equal(s.size, 500, "half the table is held by rows that cannot be evicted");
+  assert.equal(cancelled(s, key("t1", { actorId: "legit" })), "new", "its write times out and its key stays unknown");
+  assert.equal(s.begin(key("t2", { actorId: "legit" }), "h").state, "new", "and it can still write");
+  for (let i = 3; i <= 16; i++) assert.equal(s.begin(key(`t${i}`, { actorId: "legit" }), "h").state, "new", "up to a floor of 16 in flight");
+  assert.equal(s.begin(key("t17", { actorId: "legit" }), "h").state, "exhausted", "past the floor it is refused like the others");
+  assert.equal(s.begin(key("x", { actorId: "bad0" }), "h").state, "exhausted");
+  assert.equal(s.begin(key("n", { actorId: "newcomer" }), "h").state, "new");
+});
+
+test("N1: a restart whose first clock reading is a month ahead does not free an unknown key", () => {
+  const db = openDatabase(":memory:");
+  const open = (now: () => number) => JournalIdempotencyStore.open(db, { audit: new AuditLog(db), redactor: new Redactor(), now });
+  let t = 1_000_000;
+  const first = open(() => t);
+  first.begin(key("k"), "h");
+  first.markUnknown(key("k")); // the daemon then dies
+  let later = t + 30 * 24 * HOUR; // it restarts with its clock a month ahead
+  const second = open(() => later);
+  assert.equal(second.begin(key("k"), "h").state, "unknown", "the first reading after a restart is not trusted");
+  later = t + 5 * 60_000; // the clock is corrected five minutes later
+  assert.equal(second.begin(key("k"), "h").state, "unknown");
+  t = later;
 });
 
 test("the default pending caps are a twentieth of the table per actor and half of that per workspace", () => {

@@ -20,6 +20,8 @@ const INTERRUPTED_TTL_MS = 7 * DAY_MS;
 const MAX_FIELD = 512;
 const MAX_TTL_MS = 365 * DAY_MS;
 const HOUR_MS = 60 * 60 * 1000;
+/** An actor below this many unevictable rows is never refused by the table-wide rule (the daemon's default in-flight limit). */
+const PENDING_FLOOR = 16;
 
 /** A replayed result is freshly parsed, so it is plain mutable JSON (what the daemon's interface expects). */
 export type StoredJson = null | boolean | number | string | StoredJson[] | { [key: string]: StoredJson };
@@ -155,7 +157,18 @@ export class JournalIdempotencyStore {
     this.#maxShareBytes = positive(o.maxShareBytes ?? Math.max(1, Math.floor(this.#maxTotalBytes / 8)), "maxShareBytes");
     this.#sweepEveryMs = positive(o.sweepEveryMs ?? 60_000, "sweepEveryMs");
     this.#boot = (o.bootId ?? randomUUID)();
-    this.#lastSweep = (this.#time(), this.#trusted);
+    // The clock never starts before the newest row already written: a first reading far ahead of it (a reboot with a
+    // wrong clock) is then unconfirmed, and expires nothing, instead of being trusted as the first reading.
+    const newest = db
+      .prepare("SELECT MAX(MAX(created_at), MAX(expires_at) - ?) AS t FROM daemon_idempotency")
+      .get(Math.max(this.#ttlMs, this.#interruptedTtlMs)) as { t: number | bigint | null };
+    if (newest.t !== null && newest.t > 0) {
+      this.#clock = this.#trusted = Number(newest.t);
+      this.#started = true;
+    } else {
+      this.#time();
+    }
+    this.#lastSweep = this.#trusted;
   }
 
   /** Integer epoch ms that never goes backwards within this boot. */
@@ -356,15 +369,16 @@ export class JournalIdempotencyStore {
   /**
    * `in-progress` and `unknown` rows cannot be evicted, so a caller (a client that cancels its writes, or keeps
    * timing out) could fill the table with them. Each actor gets a cap across its workspaces and one per workspace;
-   * over either, that actor alone is refused. Overall, once unevictable rows reach half the table, an actor that
-   * already holds some is refused, so an actor with none can still begin.
+   * over either, that actor alone is refused. Overall, once unevictable rows reach half the table, an actor
+   * holding at least `PENDING_FLOOR` of them is refused; one below it still can, so a legitimate caller keeps a floor.
    */
   #pendingExceeded(actorId: string, workspaceId: string): boolean {
     const pending = "state <> 'completed'";
     const mine = this.#count(`WHERE actor_id = ? AND ${pending}`, actorId);
     if (mine >= this.#maxPending) return true;
     if (this.#count(`WHERE actor_id = ? AND workspace_id = ? AND ${pending}`, actorId, workspaceId) >= this.#maxPendingWorkspace) return true;
-    return mine > 0 && this.#count(`WHERE ${pending}`) >= Math.max(1, Math.floor(this.#maxEntries / 2));
+    // Over the floor, an actor stops once such rows are half the table; below it an actor always may begin.
+    return mine >= Math.min(PENDING_FLOOR, this.#maxPending) && this.#count(`WHERE ${pending}`) >= Math.max(1, Math.floor(this.#maxEntries / 2));
   }
 
   #count(where: string, ...args: string[]): number {
