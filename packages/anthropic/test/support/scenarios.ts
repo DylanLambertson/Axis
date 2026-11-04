@@ -101,5 +101,8 @@ function messages(s: ContractScenario, counter: OpenCounter, errorBody: (t: stri
       return response(counter, 200, [...chunkBytes(sseEvent("message_start", { type: "message_start", message: { id: "msg_h", model: MODEL, usage: { input_tokens: 5, output_tokens: 1 } } }), 64), "hang"], { "content-type": "text/event-stream" });
     case "malformed":
       return sseResponse(counter, "event: message_start\ndata: {not json at all\n\n");
+    case "redirect":
+      // The suite's transport answers every request in this scenario itself, so the fake server is never reached.
+      throw new Error("unreachable: the suite's transport plays the redirect scenario");
   }
 }
