@@ -19,7 +19,8 @@ export interface SignalOptions {
   /**
    * Called once when shutdown has finished, with 0 for a clean shutdown and 1 when handlers were
    * cancelled or are still running, and the full result: close the journal or audit database only when
-   * `result.unsettled === 0`, because handlers still running write to it. When shutdown itself failed
+   * `result.unsettled === 0` and `result.flushed !== "running"`, because handlers still running and a flush
+   * that was cut short may still be writing to it. When shutdown itself failed
    * unexpectedly `result` is undefined. Required: a process with a signal listener no longer dies on the signal.
    */
   readonly exit: (code: number, result: ShutdownResult | undefined) => void;

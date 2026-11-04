@@ -27,8 +27,11 @@ export interface ShutdownResult {
   readonly cancelled: number;
   /** Handlers still running when the daemon gave up waiting: they keep their slots and orphan counts. */
   readonly unsettled: number;
-  /** `unsupported`: the store has no `flush`. */
-  readonly flushed: "done" | "unsupported" | "failed";
+  /**
+   * `unsupported`: the store has no `flush`. `failed`: it threw. `running`: it was cut short (timeout or
+   * escalation) and had not settled, so it may still be writing: do not close the store until it has.
+   */
+  readonly flushed: "done" | "unsupported" | "failed" | "running";
 }
 
 /** An idempotency store may offer `flush`; the in-memory store has nothing to write, the journal-backed one may. */
@@ -156,10 +159,16 @@ export class ShutdownCoordinator {
         timer = arm(this.#o.flushTimeoutMs, () => resolve("cut"));
         this.#wake = () => resolve("cut");
       });
-      const outcome = await Promise.race([Promise.resolve().then(() => store.flush?.()).then(() => "done" as const), cutShort]);
+      let settled = false;
+      const flushing = Promise.resolve()
+        .then(() => store.flush?.())
+        .then(() => "done" as const)
+        .finally(() => void (settled = true));
+      flushing.catch(() => undefined); // a failure after being cut short is not an unhandled rejection
+      const outcome = await Promise.race([flushing, cutShort]);
       if (outcome === "cut") {
         this.#t.onError("shutdown-flush", new Error("idempotency flush timed out or was cut short"));
-        return "failed";
+        return settled ? "failed" : "running";
       }
       return "done";
     } catch (error) {

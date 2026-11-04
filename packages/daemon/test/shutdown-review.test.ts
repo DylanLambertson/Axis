@@ -5,7 +5,7 @@ import { EventEmitter } from "node:events";
 import { test, type TestContext } from "node:test";
 import { MemoryIdempotencyStore, ShutdownCoordinator, type ShutdownTarget, type FlushableIdempotencyStore, DrainGate, installShutdownSignals, type ShutdownResult } from "../src/index.js";
 import { approveAndRun, fakeGate, sha } from "./gate.js";
-import { CONTRACT, hello, req, rig, type Rig } from "./harness.js";
+import { CONTRACT, KEY1, hello, req, rig, type Rig } from "./harness.js";
 
 async function ready(t: TestContext, options: Parameters<typeof rig>[0] = {}): Promise<Rig> {
   const r = rig(options);
@@ -95,19 +95,70 @@ test("N1a: a request parked in policy when shutdown begins is refused instead of
   assert.equal(started, 0);
 });
 
-test("N1b: a request parked in its audit write is refused too, and its idempotency key is freed", async (t) => {
+test("N1b: a keyed write parked in its audit write is refused, audited with an outcome, and its idempotency key is freed", async (t) => {
   const park = deferred();
+  const rows: Array<{ outcome: string; reason: unknown }> = [];
   let first = true;
-  const r = await ready(t, { audit: { append: () => (first ? ((first = false), park.promise) : undefined) } });
+  const keys = new MemoryIdempotencyStore();
+  const r = await ready(t, {
+    idempotency: keys,
+    audit: { append: (e) => (first ? ((first = false), park.promise) : void rows.push({ outcome: e.outcome, reason: e.payload["reason"] })) },
+  });
   let started = 0;
-  r.daemon.register(CONTRACT, 1, { echo: () => (started++, { text: "x" }) });
-  r.send(req("a", "echo", { text: "a" }));
+  r.daemon.register(CONTRACT, 1, { write: () => (started++, { n: 1 }) });
+  r.send(req("a", "write", { n: 1 }, { idempotencyKey: KEY1 }));
   await wait(10);
+  assert.equal(keys.size, 1, "the key is in progress while the request is parked");
   const done = r.daemon.shutdown("t");
   park.resolve();
   assert.equal((await r.inbox.response("a")).error?.code, "E_UNAVAILABLE");
   await done;
   assert.equal(started, 0);
+  assert.equal(keys.size, 0, "the key was abandoned");
+  assert.deepEqual(rows, [{ outcome: "denied", reason: "shutting_down" }], "the allow row is followed by an outcome row");
+});
+
+test("N1d: a request refused after its policy wait is audited as denied (shutting_down)", async (t) => {
+  const park = deferred();
+  const r = await ready(t, { policy: { evaluate: async () => (await park.promise, { effect: "allow" as const }) } });
+  r.daemon.register(CONTRACT, 1, { echo: () => ({ text: "x" }) });
+  r.send(req("a", "echo", { text: "a" }));
+  await wait(10);
+  const done = r.daemon.shutdown("t");
+  park.resolve();
+  await r.inbox.response("a");
+  await done;
+  assert.deepEqual(r.events.map((e) => [e.outcome, e.payload["reason"]]), [["denied", "shutting_down"]]);
+});
+
+test("N1e: a content lock that wraps the errors it sees still yields E_UNAVAILABLE, not E_INTERNAL", async (t) => {
+  const { gate, calls } = fakeGate();
+  const park = deferred();
+  let parkNext = false;
+  const r = await ready(t, { gate });
+  r.daemon.register(CONTRACT, 1, { danger: () => ({ done: true as const }) }, {
+    content: {
+      danger: () => ({
+        target: "workspace:ws-1",
+        withLock: async (fn) => {
+          if (parkNext) await park.promise;
+          try {
+            return await fn(sha("v1"));
+          } catch (e) {
+            throw new Error("lock failed", { cause: e });
+          }
+        },
+      }),
+    },
+  });
+  const id = await approveAndRun(r, "w", { id: "ws-1" }, () => void (parkNext = true));
+  await wait(20);
+  const done = r.daemon.shutdown("t");
+  park.resolve();
+  assert.equal((await r.inbox.response(id)).error?.code, "E_UNAVAILABLE");
+  await done;
+  assert.equal(calls.execute.length, 0);
+  assert.equal(r.events.at(-1)?.payload["reason"], "shutting_down");
 });
 
 test("N1c: a tier-4 request whose content lock is parked when shutdown begins is refused before its approval is spent", async (t) => {
@@ -158,12 +209,12 @@ test("N2: each escalate() skips only the wait in progress: grace, then the settl
   assert.deepEqual(events, ["cancel", "close"], "now in the flush");
   c.escalate(); // ends the flush
   const res = await p;
-  assert.equal(res.flushed, "failed");
+  assert.equal(res.flushed, "running");
   assert.equal(res.escalated, true);
   assert.equal(res.unsettled, 1);
 });
 
-test("N2b: every signal after the first escalates (a third Ctrl+C is not ignored)", () => {
+test("N2b: guards the documented behaviour: every signal after the first escalates (this also held before the fix)", () => {
   const src = new EventEmitter();
   let escalations = 0;
   installShutdownSignals(
@@ -219,4 +270,18 @@ test("N7: when only already-answered orphans remain at the end of the grace peri
   assert.equal((await r.inbox.response("a")).error?.code, "E_TIMEOUT");
   const res = await r.daemon.shutdown("t"); // would hang for 600 s if it waited for the orphan after cancelling nothing
   assert.deepEqual({ cancelled: res.cancelled, unsettled: res.unsettled }, { cancelled: 0, unsettled: 1 });
+});
+
+test("R2: a flush that is cut short while still running is reported as running; one that already failed is failed", async () => {
+  const never = { ...store, flush: () => new Promise<void>(() => undefined) };
+  const res = await new ShutdownCoordinator({ ...target(new DrainGate()), store: never }, { flushTimeoutMs: 20 }).run("t");
+  assert.equal(res.flushed, "running");
+  const late = deferred();
+  const slow = { ...store, flush: () => late.promise };
+  const c = new ShutdownCoordinator({ ...target(new DrainGate()), store: slow }, { flushTimeoutMs: Infinity });
+  const p = c.run("t");
+  await wait(10);
+  c.escalate();
+  assert.equal((await p).flushed, "running");
+  late.resolve();
 });

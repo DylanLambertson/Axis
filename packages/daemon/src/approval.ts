@@ -170,16 +170,20 @@ export async function runApproval(a: ApprovalStep): Promise<Outcome> {
     // Never answer, and so never free the slot, while the handler may still be running.
     if (pending) await pending.catch(() => undefined);
   };
+  let refusedForShutdown = false;
   try {
     await lock.withLock((contentDigest) => {
       checkDigest(contentDigest);
-      if (d.draining?.()) throw new ShuttingDown(); // shutdown began: refuse before the approval is spent
+      if (d.draining?.()) {
+        refusedForShutdown = true; // a flag, not the error type: a content lock that wraps errors must not turn this into E_INTERNAL
+        throw new ShuttingDown(); // shutdown began: refuse before the approval is spent
+      }
       return gate.execute(input, approval, { target: lock.target, contentDigest }, wrapped);
     });
     completedAtReturn = captured !== undefined;
   } catch (e) {
     await settle();
-    if (e instanceof ShuttingDown && !started) {
+    if (refusedForShutdown && !started) {
       await auditor.soft("denied", { decision: "allow", reason: "shutting_down" });
       return fail("E_UNAVAILABLE", "The daemon is shutting down");
     }

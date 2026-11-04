@@ -177,7 +177,7 @@ test("SD9: a failing or hanging flush is reported, not thrown", async (t) => {
   const store2 = new FlushStore();
   const r2 = await ready(t, { idempotency: store2, ...fast });
   store2.flushImpl = never;
-  assert.equal((await r2.daemon.shutdown("b")).flushed, "failed");
+  assert.equal((await r2.daemon.shutdown("b")).flushed, "running");
 });
 
 test("SD10: shutdown leaves no timers behind, even when it cancels and flushes", async () => {
