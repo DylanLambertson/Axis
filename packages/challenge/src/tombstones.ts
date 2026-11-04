@@ -27,15 +27,19 @@ export class Tombstones {
     for (const [ref, t] of this.#byRef) if (now >= t.until) this.#byRef.delete(ref);
   }
 
-  /** Live tombstones: overall, for one requester and for one window. */
-  count(requester: string, windowId: string): { total: number; actor: number; window: number } {
+  /** Live tombstones: overall, for one requester, for one window and for one requester in one window. */
+  count(requester: string, windowId: string): { total: number; actor: number; window: number; actorWindow: number } {
     let actor = 0;
     let window = 0;
+    let actorWindow = 0;
     for (const t of this.#byRef.values()) {
-      if (t.requester === requester) actor++;
-      if (t.windowId === windowId) window++;
+      const a = t.requester === requester;
+      const w = t.windowId === windowId;
+      if (a) actor++;
+      if (w) window++;
+      if (a && w) actorWindow++;
     }
-    return { total: this.#byRef.size, actor, window };
+    return { total: this.#byRef.size, actor, window, actorWindow };
   }
 
   get size(): number {
