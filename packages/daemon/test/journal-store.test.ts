@@ -64,19 +64,47 @@ test("R1: a cancelled tier-2 write leaves its key unknown", async (t) => {
   assert.equal(runs.n, 1);
 });
 
-test("R1: a cancel before the handler started still frees the key", async (t) => {
-  const r = await ready(t);
-  let runs = 0;
-  r.daemon.register("axis.test", 1, { write: (_c, p: { n: number }) => (runs++, p) });
-  r.send(req("b1", "write", { n: 1 }, { idempotencyKey: KEY1 }));
-  r.send({ v: 1, cancel: "b1" });
-  await r.inbox.response("b1");
-  await wait(40);
-  r.send(req("b2", "write", { n: 1 }, { idempotencyKey: KEY1 }));
-  const second = await r.inbox.response("b2");
-  assert.notEqual(second.error?.details?.reason, "outcome-unknown");
-  assert.ok(runs <= 2);
-});
+/**
+ * Hold a request after its key was taken and before its handler starts, cancel it, then let it go. `where` picks
+ * the gap: inside `begin`, or inside the audit of the decision (the check at the top of `runAction`).
+ */
+for (const where of ["begin", "decision audit"] as const) {
+  test(`R1: a cancel before the handler started (held in ${where}) frees the key, so the retry runs the write`, async (t) => {
+    const real = realStore();
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    let hold = true;
+    const once = async (): Promise<void> => {
+      if (!hold) return;
+      hold = false;
+      await held;
+    };
+    const store: IdempotencyStore = {
+      begin: async (k, h) => {
+        const out = real.begin(k, h);
+        if (where === "begin") await once();
+        return out;
+      },
+      complete: (k, v, o) => real.complete(k, v, o),
+      abandon: (k) => real.abandon(k),
+      markUnknown: (k) => real.markUnknown(k),
+    };
+    const audit = { append: (): Promise<void> | void => (where === "decision audit" && real.size > 0 ? once() : undefined) };
+    const r = await ready(t, { idempotency: store, audit });
+    let runs = 0;
+    r.daemon.register("axis.test", 1, { write: (_c, p: { n: number }) => (runs++, p) });
+    r.send(req("b1", "write", { n: 1 }, { idempotencyKey: KEY1 }));
+    await wait(20);
+    r.send({ v: 1, cancel: "b1" });
+    await wait(20);
+    release();
+    assert.equal((await r.inbox.response("b1")).error?.code, "E_CANCELLED");
+    assert.equal(runs, 0, "the handler never started");
+    r.send(req("b2", "write", { n: 1 }, { idempotencyKey: KEY1 }));
+    assert.equal((await r.inbox.response("b2")).ok, true);
+    assert.equal(runs, 1);
+  });
+}
 
 test("R1: a handler that fails on its own (not aborted) frees the key", async (t) => {
   const r = await ready(t);

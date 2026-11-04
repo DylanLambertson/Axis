@@ -62,6 +62,13 @@ export interface IdempotencyStoreOptions {
   readonly maxEntries?: number;
   /** Rows one actor may hold in one workspace. Default 1 000. */
   readonly maxPerActor?: number;
+  /**
+   * Rows that cannot be evicted (`in-progress` and `unknown`) one actor may hold across all its workspaces. A
+   * caller over it gets `exhausted`; nobody else is affected. Default `maxEntries / 20` (at least 1).
+   */
+  readonly maxPendingPerActor?: number;
+  /** The same, for one actor in one workspace. Default half of `maxPendingPerActor` (at least 1). */
+  readonly maxPendingPerWorkspace?: number;
   /** Canonical-JSON bytes of one stored result. Default 64 KiB. */
   readonly maxResultBytes?: number;
   /** Stored result bytes across all rows. Default 32 MiB. */
@@ -97,12 +104,14 @@ const WHERE = "actor_id = ? AND workspace_id = ? AND contract = ? AND version = 
  *   possibly done side effect), and `unknown` rows expire only by TTL (7 days when interrupted, else 24 h).
  *   Quotas: rows and result bytes per actor and workspace (it evicts its own oldest completed rows, else
  *   `exhausted` / `result-not-stored`), then rows and bytes overall (the heaviest holder's oldest completed
- *   rows go first, so one caller cannot starve the rest).
+ *   rows go first, so one caller cannot starve the rest). Rows that cannot be evicted (`in-progress`, `unknown`)
+ *   are capped per actor (across workspaces) and per actor and workspace: over its cap that actor alone gets
+ *   `exhausted`, so cancelling or timing out writes cannot lock other callers out.
  * - Every write is one `withTransaction` on the shared handle, so a kill leaves the old row or the new one.
  * - If `complete` cannot be stored, the following `abandon` keeps the key as `unknown` instead of freeing it;
  *   `markUnknown` does the same when the handler succeeded but the call then failed.
- * - Time is wall clock (it has to survive a restart): a jump forward expires rows early, a jump back extends
- *   them. Inside one boot the clock never runs backwards. `now` must return integer epoch milliseconds.
+ * - Time is wall clock (it has to survive a restart): a jump back extends rows. A reading more than an hour ahead
+ *   of the last one expires nothing until the next reading agrees with it. Inside one boot the clock never runs backwards. `now` must return integer epoch milliseconds.
  * - `complete` must not be called inside an outer transaction (it would not be durable on return).
  */
 export class JournalIdempotencyStore {
@@ -115,6 +124,8 @@ export class JournalIdempotencyStore {
   readonly #maxShareBytes: number;
   readonly #maxEntries: number;
   readonly #maxPerActor: number;
+  readonly #maxPending: number;
+  readonly #maxPendingWorkspace: number;
   readonly #maxResultBytes: number;
   readonly #maxTotalBytes: number;
   readonly #sweepEveryMs: number;
@@ -122,6 +133,11 @@ export class JournalIdempotencyStore {
   readonly #poisoned = new Set<string>();
   #lastSweep: number;
   #clock = 0;
+  /** The time rows expire by: it does not follow a forward jump until a second reading agrees with it. */
+  #trusted = 0;
+  /** Set while the latest reading jumped forward by more than an hour and no later reading has agreed yet. */
+  #unconfirmed = false;
+  #started = false;
 
   private constructor(db: DatabaseSync, o: IdempotencyStoreOptions) {
     this.#db = db;
@@ -132,22 +148,31 @@ export class JournalIdempotencyStore {
     this.#interruptedTtlMs = positive(o.interruptedTtlMs ?? Math.max(INTERRUPTED_TTL_MS, this.#ttlMs), "interruptedTtlMs", MAX_TTL_MS);
     this.#maxEntries = positive(o.maxEntries ?? 10_000, "maxEntries");
     this.#maxPerActor = positive(o.maxPerActor ?? 1_000, "maxPerActor");
+    this.#maxPending = positive(o.maxPendingPerActor ?? Math.max(1, Math.floor(this.#maxEntries / 20)), "maxPendingPerActor");
+    this.#maxPendingWorkspace = positive(o.maxPendingPerWorkspace ?? Math.max(1, Math.floor(this.#maxPending / 2)), "maxPendingPerWorkspace");
     this.#maxResultBytes = Math.min(positive(o.maxResultBytes ?? 64 * 1024, "maxResultBytes"), 1_000_000);
     this.#maxTotalBytes = positive(o.maxTotalBytes ?? 32 * 1024 * 1024, "maxTotalBytes");
     this.#maxShareBytes = positive(o.maxShareBytes ?? Math.max(1, Math.floor(this.#maxTotalBytes / 8)), "maxShareBytes");
     this.#sweepEveryMs = positive(o.sweepEveryMs ?? 60_000, "sweepEveryMs");
     this.#boot = (o.bootId ?? randomUUID)();
-    this.#lastSweep = this.#time();
+    this.#lastSweep = (this.#time(), this.#trusted);
   }
 
   /** Integer epoch ms that never goes backwards within this boot. */
   #time(): number {
-    const t = this.#now();
-    if (!Number.isSafeInteger(t) || t < 0) throw new AxisError("E_INTERNAL", "The idempotency clock must return integer epoch milliseconds");
+    const raw = this.#now();
+    if (!Number.isSafeInteger(raw) || raw < 0) throw new AxisError("E_INTERNAL", "The idempotency clock must return integer epoch milliseconds");
     // A large step back is a real correction (or an earlier bad reading): follow it, so one spike does not pin the
     // clock. Small steps back are ignored, so expiry never runs backwards by jitter.
-    this.#clock = t < this.#clock - HOUR_MS ? t : Math.max(this.#clock, t);
-    return this.#clock;
+    const prev = this.#clock;
+    const t = raw < prev - HOUR_MS ? raw : Math.max(prev, raw);
+    // One reading far ahead must not delete rows (an `unknown` key coming back as `new` would re-run a possibly
+    // done side effect): expiry waits until the next reading is also near it. A real long pause costs one reading.
+    this.#unconfirmed = this.#started && t - prev > HOUR_MS;
+    if (!this.#unconfirmed) this.#trusted = t;
+    this.#started = true;
+    this.#clock = t;
+    return t;
   }
 
   /** Migrate the journal schema (idempotent) and return a store. Call `recover(lock)` on daemon start. */
@@ -170,9 +195,9 @@ export class JournalIdempotencyStore {
     }
     return withTransaction(this.#db, (): StoreBegin => {
       const t = this.#time();
-      this.#sweep(t);
+      this.#sweep(this.#trusted);
       let row = this.#db.prepare(`SELECT * FROM daemon_idempotency WHERE ${WHERE}`).get(...k) as unknown as Row | undefined;
-      if (row && row.state !== "in-progress" && row.expires_at <= t) {
+      if (row && row.state !== "in-progress" && row.expires_at <= this.#trusted) {
         this.#db.prepare(`DELETE FROM daemon_idempotency WHERE ${WHERE}`).run(...k);
         row = undefined;
       }
@@ -189,6 +214,7 @@ export class JournalIdempotencyStore {
         if (row.state === "unknown") return { state: "unknown", reason: row.unknown_reason ?? "interrupted" };
         return { state: "replay", result: JSON.parse(row.result ?? "null") as StoredJson, origin: row.origin };
       }
+      if (this.#pendingExceeded(k[0], k[1])) return { state: "exhausted" };
       if (this.#count("WHERE actor_id = ? AND workspace_id = ?", k[0], k[1]) >= this.#maxPerActor && !this.#evictOldest(k[0], k[1])) {
         return { state: "exhausted" };
       }
@@ -277,7 +303,7 @@ export class JournalIdempotencyStore {
     }
     return withTransaction(this.#db, () => {
       const t = this.#time();
-      this.#sweep(t, true);
+      this.#sweep(this.#trusted, true);
       const res = this.#db
         .prepare(
           "UPDATE daemon_idempotency SET state = 'unknown', unknown_reason = 'interrupted', expires_at = ? WHERE state = 'in-progress' AND boot_id <> ?",
@@ -327,6 +353,20 @@ export class JournalIdempotencyStore {
     return true;
   }
 
+  /**
+   * `in-progress` and `unknown` rows cannot be evicted, so a caller (a client that cancels its writes, or keeps
+   * timing out) could fill the table with them. Each actor gets a cap across its workspaces and one per workspace;
+   * over either, that actor alone is refused. Overall, once unevictable rows reach half the table, an actor that
+   * already holds some is refused, so an actor with none can still begin.
+   */
+  #pendingExceeded(actorId: string, workspaceId: string): boolean {
+    const pending = "state <> 'completed'";
+    const mine = this.#count(`WHERE actor_id = ? AND ${pending}`, actorId);
+    if (mine >= this.#maxPending) return true;
+    if (this.#count(`WHERE actor_id = ? AND workspace_id = ? AND ${pending}`, actorId, workspaceId) >= this.#maxPendingWorkspace) return true;
+    return mine > 0 && this.#count(`WHERE ${pending}`) >= Math.max(1, Math.floor(this.#maxEntries / 2));
+  }
+
   #count(where: string, ...args: string[]): number {
     const row = this.#db.prepare(`SELECT COUNT(*) AS n FROM daemon_idempotency ${where}`).get(...args) as { n: number | bigint };
     return Number(row.n);
@@ -360,12 +400,14 @@ export class JournalIdempotencyStore {
     return Number(res.changes) === 1;
   }
 
+  /** `t` is the trusted time (see `#time`): rows expire by it, never by a reading that has not been confirmed. */
   #sweep(t: number, force = false): void {
     if (!force && t >= this.#lastSweep && t - this.#lastSweep < this.#sweepEveryMs) return; // a clock step back sweeps at once
     this.#lastSweep = t;
     this.#db.prepare("DELETE FROM daemon_idempotency WHERE state <> 'in-progress' AND expires_at <= ?").run(t);
-    // An expiry further ahead than any TTL allows came from a bad clock reading: bring it back.
-    const latest = t + this.#interruptedTtlMs;
+    if (this.#unconfirmed) return;
+    // An expiry further ahead than the longest TTL allows came from a bad clock reading: bring it back.
+    const latest = t + Math.max(this.#ttlMs, this.#interruptedTtlMs);
     this.#db.prepare("UPDATE daemon_idempotency SET expires_at = ? WHERE state <> 'in-progress' AND expires_at > ?").run(latest, latest);
   }
 }

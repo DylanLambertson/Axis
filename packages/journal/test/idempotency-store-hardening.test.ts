@@ -88,9 +88,11 @@ test("rulings: an interrupted key is remembered for 7 days, a result-not-stored 
   store.begin(key("r"), "h");
   store.complete(key("r"), "x".repeat(50), "c");
   now += 25 * 3600_000;
+  store.begin(key("tick"), "h"); // a reading far ahead is confirmed by the next one before anything expires
   assert.equal(store.begin(key("i"), "h").state, "unknown");
   assert.equal(store.begin(key("r"), "h").state, "new", "result-not-stored forgets after 24 h");
   now += 7 * 24 * 3600_000;
+  store.begin(key("tick2"), "h");
   assert.equal(store.begin(key("i"), "h").state, "new", "after 7 days the interrupted key is forgotten");
 });
 
@@ -215,6 +217,7 @@ test("R3: one far-future clock reading does not pin expiries for the rest of the
   now += 60_001;
   store.begin(key("poke2"), "h");
   now += 8 * 24 * 3600_000;
+  store.begin(key("tick"), "h");
   assert.equal(store.begin(key("spike"), "h").state, "new", "the row expires in the real timeline");
 });
 

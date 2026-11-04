@@ -252,6 +252,11 @@ export interface HandlerContext {
   /** For tier >= 3: what the spent approval covers. Read-only; check `target` before acting on anything else. */
   readonly approved?: ConfirmedAction;
 }
+/**
+ * Throw only when nothing was changed: a handler that throws on its own frees its idempotency key, so a retry
+ * runs it again. Once a side effect may have happened, return, or let the abort (`signal`) propagate: then the
+ * key is kept as outcome-unknown and the retry is refused rather than run twice.
+ */
 export type Handler = (context: HandlerContext, payload: never) => unknown;
 
 export interface ContractRegistry {
