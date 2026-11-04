@@ -171,8 +171,8 @@ function abortError(why: AbortWhy): ProviderError {
 class RequestControl {
   readonly controller = new AbortController();
   why: AbortWhy | undefined;
-  private readonly aborted: Promise<never>;
-  private rejectAborted: ((e: unknown) => void) | undefined;
+  /** Rejecters of the calls `race` is waiting on; each is removed as soon as its call settles. */
+  private readonly pending = new Set<(e: unknown) => void>();
   private idleHandle: unknown;
   private readonly requestHandle: unknown;
   private readonly listeners: Array<() => void> = [];
@@ -184,10 +184,6 @@ class RequestControl {
     private readonly idleMs: number,
     requestMs: number,
   ) {
-    this.aborted = new Promise<never>((_, reject) => {
-      this.rejectAborted = reject;
-    });
-    this.aborted.catch(() => undefined);
     callerSignal.addEventListener("abort", this.onCallerAbort, { once: true });
     this.requestHandle = timers.setTimeout(() => this.abort("timeout_request"), requestMs);
     if (callerSignal.aborted) this.abort("cancelled");
@@ -213,7 +209,8 @@ class RequestControl {
     if (this.why !== undefined) return;
     this.why = why;
     this.controller.abort();
-    this.rejectAborted?.(abortError(why));
+    for (const reject of [...this.pending]) reject(abortError(why));
+    this.pending.clear();
     for (const fn of this.listeners) {
       try {
         fn();
@@ -223,9 +220,33 @@ class RequestControl {
     }
   }
 
-  /** Settle with `p`, or fail as soon as the request is aborted, whichever is first. */
+  /**
+   * Settle with `p`, or fail as soon as the request is aborted, whichever is
+   * first. Not `Promise.race` against one abort promise that lives as long as
+   * the stream: every race would add a reaction to it, keeping each settled
+   * step alive until the stream ends (about 430 bytes per event; review of
+   * guard.ts:228). Each call registers its own rejecter and removes it when
+   * `p` settles, so nothing accumulates.
+   */
   race<T>(p: Promise<T>): Promise<T> {
-    return Promise.race([p, this.aborted]);
+    const why = this.why;
+    if (why !== undefined) {
+      p.catch(() => undefined);
+      return Promise.reject(abortError(why));
+    }
+    return new Promise<T>((resolve, reject) => {
+      this.pending.add(reject);
+      p.then(
+        (v) => {
+          this.pending.delete(reject);
+          resolve(v);
+        },
+        (e: unknown) => {
+          this.pending.delete(reject);
+          reject(e);
+        },
+      );
+    });
   }
 
   dispose(): void {
@@ -330,6 +351,29 @@ function requestChars(r: ValidRequest): number {
   return n;
 }
 
+/** The adapter descriptor, checked once by `guardProvider` (R1). */
+const descriptorSchema = z.object({
+  apiVersion: z.literal(PROVIDER_ADAPTER_API_VERSION),
+  providerId: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/),
+  displayName: z.string().min(1).max(128),
+  connectionId: z.string().min(1).max(256),
+  destination: z.object({
+    origin: z
+      .string()
+      .max(256)
+      .refine((o) => {
+        try {
+          const u = new URL(o);
+          return u.protocol === "https:" && u.origin === o;
+        } catch {
+          return false;
+        }
+      }, "an https origin")
+      .optional(),
+    description: z.string().min(1).max(512),
+  }),
+});
+
 const listedModelsSchema = z
   .array(z.object({ id: modelIdSchema, displayName: z.string().max(256).optional() }))
   .max(MAX_LISTED_MODELS);
@@ -337,10 +381,26 @@ const listedModelsSchema = z
 const tokenCountSchema = z.object({ inputTokens: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER) });
 
 export function guardProvider(adapter: ProviderAdapter, options: GuardOptions): GuardedProvider {
-  const d = adapter.descriptor;
-  if (d.apiVersion !== PROVIDER_ADAPTER_API_VERSION) {
-    throw new RangeError(`adapter API version ${String(d.apiVersion)} is not supported`);
+  const raw = adapter.descriptor;
+  if (raw?.apiVersion !== PROVIDER_ADAPTER_API_VERSION) {
+    throw new RangeError(`adapter API version ${String(raw?.apiVersion)} is not supported`);
   }
+  // Parsed and frozen once: the adapter cannot change it later, and a
+  // malformed one is refused up front (R1).
+  const parsedDescriptor = descriptorSchema.safeParse(raw);
+  if (!parsedDescriptor.success) throw new TypeError("the adapter descriptor is malformed");
+  const pd = parsedDescriptor.data;
+  const d: AdapterDescriptor = Object.freeze({
+    apiVersion: pd.apiVersion,
+    providerId: pd.providerId,
+    displayName: pd.displayName,
+    connectionId: pd.connectionId,
+    destination: Object.freeze(
+      pd.destination.origin === undefined
+        ? { description: pd.destination.description }
+        : { origin: pd.destination.origin, description: pd.destination.description },
+    ),
+  });
   const redactor = options.redactor;
   if (typeof redactor?.redact !== "function" || typeof redactor.containsSecret !== "function") {
     throw new TypeError("guardProvider needs a redactor (pass NO_SECRETS explicitly for a connection without credentials)");
@@ -392,17 +452,24 @@ export function guardProvider(adapter: ProviderAdapter, options: GuardOptions): 
 
   /** Capabilities as a fresh, schema-checked object for exactly the model asked (N5). */
   const capabilities = async (model: string, signal: AbortSignal): Promise<ModelCapabilities> => {
+    // Every path, the public getCapabilities included, checks and scans the
+    // model id before the adapter sees it (R5).
+    if (!modelIdSchema.safeParse(model).success) {
+      throw new ProviderError("invalid_request", { message: 'The request field "model" is invalid.', reason: "schema" });
+    }
+    if (redactor.containsSecret(model)) throw new ProviderError("secret_in_request");
     const raw = await call(signal, (o) => adapter.getCapabilities(model, o));
     const parsed = modelCapabilitiesSchema.safeParse(raw);
     if (!parsed.success || parsed.data.modelId !== model) throw new ProviderError("invalid_response", { reason: "malformed_capabilities" });
     return parsed.data;
   };
 
+  /** Common log fields. Descriptor fields are adapter data and are redacted on every line (R1). */
   const base = (runId: string, model: string, mode: GuardMode) => ({
     runId,
-    providerId: d.providerId,
-    connectionId: d.connectionId,
-    destination: d.destination.origin ?? d.destination.description,
+    providerId: redactor.redact(d.providerId),
+    connectionId: redactor.redact(d.connectionId),
+    destination: redactor.redact(d.destination.origin ?? d.destination.description),
     model,
     mode,
   });
@@ -456,6 +523,19 @@ export function guardProvider(adapter: ProviderAdapter, options: GuardOptions): 
       throw new ProviderError("unsupported_capability", { capability: "tokenCounting" });
     }
     return valid;
+  };
+
+  /**
+   * What to reserve for a request: the input priced at the higher of the plain
+   * input rate and the cache-write rate (a request may write the prompt cache,
+   * which providers bill at a premium), plus the output (R6). Undefined if
+   * either price is unknown.
+   */
+  const reserveCost = (model: string, inputTokens: number, outputTokens: number): CostEstimate | undefined => {
+    const plain = safeCost(model, { inputTokens, outputTokens });
+    const cached = safeCost(model, { inputTokens: 0, outputTokens, cacheWriteTokens: inputTokens });
+    if (plain === undefined || cached === undefined) return undefined;
+    return plain.microUsd >= cached.microUsd ? plain : cached;
   };
 
   interface Prepared {
@@ -519,8 +599,8 @@ export function guardProvider(adapter: ProviderAdapter, options: GuardOptions): 
           maxOutputTokens: valid.maxOutputTokens,
           estimatedInputTokens,
           costKnown: safeCost(valid.model, PROBE_USAGE) !== undefined,
-          worstCaseCost: safeCost(valid.model, { inputTokens: estimatedInputTokens, outputTokens: valid.maxOutputTokens }),
-          costForOutput: (outputTokens: number) => safeCost(valid.model, { inputTokens: estimatedInputTokens, outputTokens })?.microUsd,
+          worstCaseCost: reserveCost(valid.model, estimatedInputTokens, valid.maxOutputTokens),
+          costForOutput: (outputTokens: number) => reserveCost(valid.model, estimatedInputTokens, outputTokens)?.microUsd,
         });
         if (decision.allow !== true) {
           const reason = read(decision, "reason");
