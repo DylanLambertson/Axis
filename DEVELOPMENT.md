@@ -267,15 +267,15 @@ Use factual evidence. Distinguish `passed`, `failed`, `not run`, and `not applic
 
 | Step | What it checks |
 |---|---|
-| `git diff --check` | Whitespace errors in `origin/main..HEAD`. |
-| `gitleaks` | The CI-pinned gitleaks over `origin/main..HEAD`, from `~/.cache/project-axis/tools/gitleaks/gitleaks` (or `GATE_GITLEAKS`). If it is missing, the step fails and prints install steps built from `GITLEAKS_VERSION` and `GITLEAKS_SHA256` in `.github/workflows/ci.yml`, which stays the only copy of the pin. |
-| files over 500 lines | Files added or changed in the range that are over the limit and are new or grew. `package-lock.json` and binary-like extensions are exempt. |
-| commit wording | Every commit message and the branch name, against `scripts/gate/config.json`: attribution trailers, "generated with/by", assistant or tool names, and the bare word "agent". `allowedPhrases` (for example "CLI agent") are blanked before the scan. |
+| `git diff --check` | Whitespace errors in `origin/main...HEAD` (against the merge base, so a base that moved on is not reported). |
+| `gitleaks` | The CI-pinned gitleaks over `origin/main..HEAD`, from `~/.cache/project-axis/tools/gitleaks/gitleaks` (or `GATE_GITLEAKS`) over `origin/main..HEAD` only (CI scans the full history). The binary must report the pinned version, and if `gitleaks.sha256` sits next to it the hash must match; otherwise the gate refuses to run it. If it is missing, the step fails and prints install steps built from `GITLEAKS_VERSION` and `GITLEAKS_SHA256` in `.github/workflows/ci.yml`, which stays the only copy of the pin. |
+| files over 500 lines | Committed files added, changed or renamed in the range that are over the limit and are new or grew (a rename is measured against the old path). `package-lock.json` and binary-like extensions are exempt. |
+| commit wording | Every commit message and the branch name, against `scripts/gate/config.json`: attribution trailers, "generated with/by", assistant or tool names, and the bare word "agent". Text is folded first (Unicode look-alikes, hyphens, underscores, zero-width characters), and `allowedPhrases` (for example "CLI agent", "user-agent") are blanked before the scan. A legitimate use of a flagged word needs an `allowedPhrases` entry in the same change. |
 | node version | The running Node equals `node` in `code-oss/upstream.json`. |
 | typecheck | `npm run typecheck`. |
 | tests | `scripts/test-all.mjs`: build, then each package's tests, `test/packages` and `test/gate`, all run even if one fails. |
 
-`npm test` is the same runner: it prints a summary and exits non-zero if any suite failed, so the CI `Axis packages` job still fails when any suite fails, and now shows every suite's result. `GATE_BASE` changes the base ref (default `origin/main`). `GATE_SKIP=gitleaks,test` skips steps for local iteration; a run with skips exits 2 and says INCOMPLETE, so it is never a valid pre-push result. Exit codes: 0 all passed, 1 a gate failed. Edit the wording lists and the line limit in `scripts/gate/config.json`; the pure logic is in `scripts/gate/lib.mjs`, tested by `test/gate/`.
+`npm test` is the same runner: it prints a summary and exits non-zero if any suite failed, so the CI `Axis packages` job still fails when any suite fails, and now shows every suite's result. `GATE_BASE` changes the base ref (default `origin/main`). `GATE_SKIP=gitleaks,test` skips steps for local iteration; a run with skips exits 2 and says INCOMPLETE, so it is never a valid pre-push result. Exit codes: 0 all passed, 1 a gate failed, 2 nothing failed but a step was skipped (a warning is printed for each skip). Edit the wording lists and the line limit in `scripts/gate/config.json`; the pure logic is in `scripts/gate/lib.mjs`, tested by `test/gate/`.
 
 ## 9. Engineering and code quality
 

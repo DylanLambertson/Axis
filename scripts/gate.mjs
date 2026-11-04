@@ -2,6 +2,7 @@
 // `npm run gate`: every pre-push check, in order, without stopping at the first failure.
 // Environment: GATE_BASE (default origin/main), GATE_GITLEAKS (binary path),
 // GATE_SKIP (comma-separated step ids; a run with skips is reported INCOMPLETE, exit 2).
+import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -9,7 +10,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   countLines, exitCode, findLongFiles, formatReport, formatTable, gitleaksInstallSteps,
-  parseGitleaksPin, parseLog, scanCommits
+  parseGitleaksPin, parseLog, parseSidecarHash, scanCommits, versionMatchesPin
 } from "./gate/lib.mjs";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
@@ -36,44 +37,73 @@ const tail = (text, n = 12) => text.trimEnd().split("\n").slice(-n).join("\n");
 const range = `${base}..HEAD`;
 
 const head = git("rev-parse", "HEAD").out.trim();
-const branch = git("rev-parse", "--abbrev-ref", "HEAD").out.trim();
-const baseOk = git("rev-parse", "--verify", "--quiet", `${base}^{commit}`).ok;
+const branchName = git("rev-parse", "--abbrev-ref", "HEAD").out.trim();
+const branch = branchName === "HEAD" ? "(detached HEAD)" : branchName;
+const baseOk = !base.startsWith("-") && git("rev-parse", "--verify", "--quiet", `${base}^{commit}`).ok;
+// Diff-based gates compare against the merge base, like the PR merge result in CI, so a
+// base that has moved on does not show its own changes reversed. Log and gitleaks use
+// base..HEAD, which already means "commits only on this branch".
+const mergeBase = baseOk ? git("merge-base", base, "HEAD").out.trim() : "";
+const diffRange = `${base}...HEAD`;
 const baseMissing = { status: "fail", detail: `base ref ${base} not found (git fetch origin)` };
 
 const steps = [];
 const step = (id, name, fn) => steps.push({ id, name, fn });
 
+function parsePin() {
+  const wf = join(root, ".github", "workflows", "ci.yml");
+  return existsSync(wf) ? parseGitleaksPin(readFileSync(wf, "utf8")) : undefined;
+}
+
 step("diff-check", "git diff --check", () => {
   if (!baseOk) return baseMissing;
-  const r = git("diff", "--check", range);
-  return r.ok ? { status: "pass", detail: range } : { status: "fail", detail: tail(r.out) };
+  const r = git("diff", "--check", diffRange);
+  return r.ok ? { status: "pass", detail: diffRange } : { status: "fail", detail: tail(r.out) };
 });
 
 step("gitleaks", "gitleaks", () => {
   if (!baseOk) return baseMissing;
   const bin = process.env.GATE_GITLEAKS ?? join(homedir(), ".cache", "project-axis", "tools", "gitleaks", "gitleaks");
   if (!existsSync(bin)) {
-    const wf = join(root, ".github", "workflows", "ci.yml");
-    const pin = existsSync(wf) ? parseGitleaksPin(readFileSync(wf, "utf8")) : undefined;
+    const pin = parsePin();
     const how = pin
       ? `install the CI pin (${pin.version}):\n    ${gitleaksInstallSteps(pin, dirname(bin)).join("\n    ")}`
       : "no pin found in .github/workflows/ci.yml (GITLEAKS_VERSION / GITLEAKS_SHA256)";
     return { status: "fail", detail: `${bin} is missing; ${how}` };
   }
+  const pin = parsePin();
+  if (!pin) return { status: "fail", detail: "no GITLEAKS_VERSION / GITLEAKS_SHA256 pin in .github/workflows/ci.yml; refusing to run an unverified binary" };
+  const v = sh(bin, ["version"], { cwd: root, timeout: 30000 });
+  if (!v.ok || !versionMatchesPin(v.out, pin)) {
+    return { status: "fail", detail: `${bin} reports "${v.out.trim().slice(0, 60)}", CI pins ${pin.version}; refusing to run an unverified binary (reinstall it)` };
+  }
+  let note = `v${pin.version}, binary hash not recorded (${bin}.sha256)`;
+  if (existsSync(`${bin}.sha256`)) {
+    const recorded = parseSidecarHash(readFileSync(`${bin}.sha256`, "utf8"));
+    const actual = createHash("sha256").update(readFileSync(bin)).digest("hex");
+    if (recorded !== actual) return { status: "fail", detail: `${bin} does not match ${bin}.sha256; refusing to run an unverified binary` };
+    note = `v${pin.version}, hash verified`;
+  }
   const r = sh(bin, ["git", "--no-banner", "--redact", `--log-opts=${range}`, "."], { cwd: root });
-  return r.ok ? { status: "pass", detail: "no leaks" } : { status: "fail", detail: tail(r.out) };
+  return r.ok ? { status: "pass", detail: `no leaks (${note})` } : { status: "fail", detail: tail(r.out) };
 });
 
 step("line-limit", `files over ${config.lineLimit} lines`, () => {
   if (!baseOk) return baseMissing;
-  const names = git("diff", "--name-only", "--diff-filter=AM", "-z", range).out.split("\0").filter(Boolean);
+  const listing = git("diff", "--name-status", "-z", "-M", "--diff-filter=AMRC", diffRange).out.split("\0").filter(Boolean);
+  const changed = [];
+  for (let i = 0; i < listing.length; ) {
+    const code = listing[i][0];
+    if (code === "R" || code === "C") { changed.push({ path: listing[i + 2], oldPath: listing[i + 1] }); i += 3; }
+    else { changed.push({ path: listing[i + 1], oldPath: listing[i + 1] }); i += 2; }
+  }
+  // Committed content on both sides, not the working tree.
   const files = [];
-  for (const path of names) {
-    let text;
-    try { text = readFileSync(join(root, path), "utf8"); } catch { continue; }
-    if (text.includes("\0")) continue;
-    const old = git("show", `${base}:${path}`);
-    files.push({ path, lines: countLines(text), baseLines: old.ok ? countLines(old.out) : undefined });
+  for (const { path, oldPath } of changed) {
+    const now = git("show", `HEAD:${path}`);
+    if (!now.ok || now.out.includes("\0")) continue;
+    const old = git("show", `${mergeBase}:${oldPath}`);
+    files.push({ path, lines: countLines(now.out), baseLines: old.ok ? countLines(old.out) : undefined });
   }
   const long = findLongFiles(files, config);
   return long.length === 0
@@ -122,7 +152,10 @@ step("test", "tests", () => {
 const results = [];
 for (const s of steps) {
   let r;
-  if (skip.has(s.id)) r = { status: "skip", detail: "skipped by GATE_SKIP" };
+  if (skip.has(s.id)) {
+    r = { status: "skip", detail: "skipped by GATE_SKIP" };
+    console.error(`WARNING: ${s.name} skipped; this run is not a valid pre-push result`);
+  }
   else {
     try { r = s.fn(); } catch (e) { r = { status: "fail", detail: `gate error: ${e instanceof Error ? e.message : String(e)}` }; }
   }

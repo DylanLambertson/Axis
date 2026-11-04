@@ -19,6 +19,10 @@
     "CLI agent",
     "CLI agents",
     "axis-agent-shell",
+    "agent_runs",
+    "agent_workspaces",
+    "user-agent",
+    "assistant role",
     "agent-first"
   ]
 }

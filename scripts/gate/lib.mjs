@@ -35,18 +35,32 @@ function escapeRegExp(s) {
 }
 
 /**
- * Forbidden wording in a text. Allowed phrases are blanked first, so "CLI agent" passes
- * while a bare "agent" does not. Terms match as whole words, case-insensitively.
- * Returns the distinct offending terms.
+ * Folds a text so look-alike spellings compare equal: NFKC (fullwidth letters, non-breaking
+ * hyphens), no invisible format characters, and one space for any run of whitespace,
+ * underscores or dash characters.
+ */
+export function foldText(text) {
+  return text
+    .normalize("NFKC")
+    .replace(/\p{Cf}/gu, "")
+    .replace(/[\s_\u2010-\u2015\u2212-]+/gu, " ")
+    .toLowerCase();
+}
+
+/**
+ * Forbidden wording in a text. Both sides are folded, allowed phrases are blanked first
+ * (so "CLI agent" passes while a bare "agent" does not), and terms match as whole words
+ * with an optional plural or "ic" suffix ("agents", "agentic"). Returns the distinct
+ * offending terms.
  */
 export function scanWording(text, config) {
-  let rest = text;
+  let rest = ` ${foldText(text)} `;
   for (const phrase of config.allowedPhrases) {
-    rest = rest.replace(new RegExp(escapeRegExp(phrase), "gi"), " ");
+    rest = rest.replace(new RegExp(escapeRegExp(foldText(phrase)), "gu"), " ");
   }
   const found = new Set();
   for (const term of config.forbiddenWording) {
-    const pattern = new RegExp(`(?<![A-Za-z0-9_])${escapeRegExp(term)}(?:s|es)?(?![A-Za-z0-9_])`, "i");
+    const pattern = new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(foldText(term))}(?:s|es|ic)?(?![\\p{L}\\p{N}])`, "u");
     if (pattern.test(rest)) found.add(term);
   }
   return [...found];
@@ -83,6 +97,16 @@ export function parseGitleaksPin(workflowText) {
   return version && sha256 ? { version, sha256 } : undefined;
 }
 
+/** True if `gitleaks version` output is exactly the pinned version (optionally with a leading v). */
+export function versionMatchesPin(output, pin) {
+  return output.trim().replace(/^v/, "") === pin.version;
+}
+
+/** The hash recorded in a `sha256sum`-style sidecar file, or undefined. */
+export function parseSidecarHash(text) {
+  return /^([0-9a-f]{64})\b/.exec(text.trim())?.[1];
+}
+
 /** Install steps for the pinned gitleaks, derived from the workflow pin. */
 export function gitleaksInstallSteps(pin, dir) {
   const archive = `gitleaks_${pin.version}_linux_x64.tar.gz`;
@@ -91,6 +115,7 @@ export function gitleaksInstallSteps(pin, dir) {
     `curl -fsSL -o ${archive} https://github.com/gitleaks/gitleaks/releases/download/v${pin.version}/${archive}`,
     `echo "${pin.sha256}  ${archive}" | sha256sum -c -`,
     `tar -xzf ${archive} gitleaks && ./gitleaks version`,
+    "sha256sum gitleaks > gitleaks.sha256   # the gate re-checks the binary against this file",
     "(macOS: use the darwin archive and `shasum -a 256 -c -`; take its checksum from the release checksums file.)"
   ];
 }

@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
   countLines, exitCode, findLongFiles, formatReport, formatTable, gitleaksInstallSteps,
-  parseGitleaksPin, parseLog, parseTestCounts, scanCommits, scanWording
+  parseGitleaksPin, parseLog, parseSidecarHash, parseTestCounts, versionMatchesPin, scanCommits, scanWording
 } from "../../scripts/gate/lib.mjs";
 
 const config = JSON.parse(readFileSync(new URL("../../scripts/gate/config.json", import.meta.url), "utf8"));
@@ -106,4 +106,36 @@ test("table, exit code and report", () => {
   assert.ok(report.includes("head:   " + "f".repeat(40)));
   assert.ok(report.includes("@axis/audit: 5 pass, 0 fail"));
   assert.ok(report.includes("verdict: FAILED"));
+});
+
+test("scanWording sees through look-alike spellings", () => {
+  for (const text of [
+    "Co\u2011Authored\u2011By: x",
+    "Co\u200b-Authored-By: x",
+    "\uff23\uff4f-authored-by: x",
+    "Co authored by x",
+    "Generated  with x",
+    "Generated\nwith x",
+    "agentic loop",
+    "the agent_x thing"
+  ]) assert.notDeepEqual(scanWording(text, config), [], JSON.stringify(text));
+});
+
+test("scanWording keeps product identifiers and the anthropic package allowed", () => {
+  for (const text of [
+    "feat(anthropic): add the @axis/anthropic adapter",
+    "the user-agent header",
+    "the assistant role in a message",
+    "agent_workspaces and agent_runs"
+  ]) assert.deepEqual(scanWording(text, config), [], text);
+});
+
+test("version and sidecar helpers", () => {
+  const pin = { version: "8.30.1" };
+  assert.ok(versionMatchesPin("8.30.1\n", pin));
+  assert.ok(versionMatchesPin("v8.30.1", pin));
+  assert.ok(!versionMatchesPin("8.30.10", pin));
+  assert.ok(!versionMatchesPin("evil 8.30.1", pin));
+  assert.equal(parseSidecarHash(`${"a".repeat(64)}  gitleaks\n`), "a".repeat(64));
+  assert.equal(parseSidecarHash("nothing"), undefined);
 });
