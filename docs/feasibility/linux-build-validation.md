@@ -1,9 +1,9 @@
 # Linux x64 build validation (native, WSL2)
 
 - Dates: 2026-11-03 and 2026-11-04.
-- Upstream: `microsoft/vscode` tag `1.144.0`, commit `2c33b50b16c472efe58357d1d2a8a5414bc23fbf`, with the patch series, `replace/`, overlay and hook at `origin/main` `dc29b38` (15 patches, 16 replaced files, 9 overlay files, 1 hook).
+- Upstream: `microsoft/vscode` tag `1.144.0`, commit `2c33b50b16c472efe58357d1d2a8a5414bc23fbf`, with the patch series, `replace/`, overlay and hook as at `origin/main` `dc29b38` (15 patches, 16 replaced files, 9 overlay files, 1 hook). Every build, package and matrix number below covers that commit. `origin/main` has since moved (docs, packages and daemon changes); the build was not repeated on it, and the patch series was not re-checked.
 - Scope: `docs/feasibility/code-oss-build.md` §7 recorded the Linux build as failed in Docker (compile OOM-killed at 7.75 GiB) and deferred it. This document validates it natively on a Linux host, runs the checks CI runs on Linux, runs the Open VSX extension matrix headless against the packaged build, and checks the reh-web output and loopback listeners.
-- Status words follow `code-oss-build.md`: **passed**, **failed**, **not run**, **not applicable**. No number below is estimated. A failure is a recorded result.
+- Status words follow `code-oss-build.md`: **passed**, **failed**, **not run**, **not applicable**. Every number below was measured, not estimated; the memory rows are readings of a 15-second sampler on a shared host. A failure is a recorded result.
 - Nothing recorded in `docs/feasibility/extension-compatibility.md`, `scenarios.json` or `extensions.json` was edited. This document records outcomes next to them; moving them into that matrix is a separate change.
 
 > **Not a distributable build.** Same caveat as `code-oss-build.md`: a local validation build, run only on this machine.
@@ -14,9 +14,9 @@
 |---|---|
 | Pinned build, native Linux | **Passed on the second attempt.** The first attempt failed in `npm ci` on missing host packages (§4, problem 2). With them supplied in a user-space sysroot, `build.sh` completed in 6 min 14 s (§5). |
 | Packaged targets | `vscode-linux-x64-min` **passed** (4 min 46 s). `vscode-reh-web-linux-x64-min` **failed once** on a network error while fetching Node, then **passed** on retry (3 min 31 s). |
-| CI-equivalent checks on Linux | **All passed** once `jq` was available. Without `jq`, 8 of 43 extension-matrix unit tests fail (§6). |
+| CI-equivalent checks on Linux | Every check that could run **passed** once `jq` was available. Without `jq`, 8 of 43 extension-matrix unit tests **fail** (§6). The gitleaks step was **not run** in the original session; a later run of gitleaks 8.30.1 over this branch found no leaks (§6). |
 | SC-3 artifact check (`check-artifacts.sh`) | **Passed** on the packaged desktop and reh-web outputs. The reh (non-web) server was not built, so the script's default all-three requirement was not exercised (§7). |
-| Extension matrix, packaged desktop, headless | 9 of 13 scenarios **passed**, 4 **blocked** (Rust, Go and clangd toolchains absent), 0 failed. The scans found that `ms-python.debugpy` **fails to activate in a normal window** because proposed APIs are stripped (§8). |
+| Extension matrix, packaged desktop, headless | Probe verdicts: 9 passed, 4 blocked (Rust, Go and clangd toolchains absent), 0 failed. Counting the activation scan too: **6 clean, 3 passed the probe but have scan findings (S02 to S04), 4 blocked**. In S04 `ms-python.debugpy` **fails to activate in a normal window** because proposed APIs are stripped, so Python debugging is broken for users even though the probe passed (§8). The normal-window check of S04 is a **failure**. |
 | reh-web | The built server still serves `frame-src 'self' https://*.vscode-cdn.net data:` (H2 open, expected), no Trusted Types requirement (H1) and a token cookie without `Secure` (H3) (§9). |
 | Loopback listeners | The desktop build with no extensions opened **no listening socket**. With the pinned set installed, GitLens opened `127.0.0.1:<port>` (§10). The reh-web server listens on loopback by design. |
 | Bootstrap | `apply.sh` fails on a fresh host before Node exists, and `build.sh --toolchain-only` refuses to run on an unapplied tree (§4, problem 1). |
@@ -69,9 +69,9 @@ export PKG_CONFIG=$SYSROOT/bin/pkg-config             # sets PKG_CONFIG_PATH and
 
 Dangling `.so` symlinks left by the `-dev` packages (`mit-krb5/*.so`) were re-pointed at the system runtime libraries. Xvfb and its runtime libraries (NSS, ALSA, Xss) were unpacked the same way. The build scripts themselves were not modified.
 
-Parallelism: `npm_config_jobs=16` for the native module compiles. The Node heap was left at upstream's `--max-old-space-size=8192` in the gulp tasks, so the numbers are for the shipped settings, not a tuned run.
+Parallelism: `npm_config_jobs=16` for the native module compiles. The Node heap was left at upstream's `--max-old-space-size=8192` in the gulp tasks, so the numbers are for the shipped settings. A heap sweep of the compile step alone is in §5.
 
-## 4. Problems found
+## 4. Problems found, with a recommended change for each
 
 1. **Bootstrap deadlock on a fresh host (fails).** `apply.sh` runs the post-apply hook `10-regen-locks`, which needs the pinned Node. On a host with no Node, `apply.sh` exits 1:
 
@@ -80,7 +80,7 @@ Parallelism: `npm_config_jobs=16` for the native module compiles. The Node heap 
    error: post-apply hook 10-regen-locks failed; the tree is marked incomplete
    ```
 
-   The advice does not work: `build.sh --toolchain-only` calls `require_applied_tree` first and fails with `patches and overlay are not (completely) applied`. The way out used here was to source `lib.sh`, call `load_manifest; download_node` (the repository's own pin-checked download), and rerun `apply.sh`. Cost: 10 s. Suggested fix: resolve Node before the applied-tree check in `--toolchain-only`, or let `apply.sh` call the same download when a hook needs it.
+   The advice does not work: `build.sh --toolchain-only` calls `require_applied_tree` first and fails with `patches and overlay are not (completely) applied`. The way out used here was to source `lib.sh`, call `load_manifest; download_node` (the repository's own pin-checked download), and rerun `apply.sh`. Cost: 10 s. The hook's other branch, `NODE24_BIN`, works only if the exact pinned Node 24.22.1 already exists on the host. **Recommended change** (`scripts/code-oss/build.sh`, `apply.sh`): resolve Node before the applied-tree check in `--toolchain-only`, or let `apply.sh` call the same pin-checked download when a hook needs it; correct the hook message to say what works.
 2. **`build.sh` does not check host packages; `npm ci` fails late (fails).** Attempt 1 ran for 95 s and failed in `native-keymap`:
 
    ```text
@@ -88,14 +88,15 @@ Parallelism: `npm_config_jobs=16` for the native module compiles. The Node heap 
    gyp: Call to '${PKG_CONFIG:-pkg-config} x11 xkbfile --libs' returned exit status 127 while in binding.gyp.
    ```
 
-   Only the manual workflow installs the packages (`code-oss-build.yml`); `build.sh` and `DEVELOPMENT.md` do not list them. A preflight in `build.sh` (or a documented package list) would fail in seconds.
-3. **Upstream's `bin/axis` launcher prompts on WSL.** It asks `Do you want to continue anyway? [y/N]` and blocks any non-interactive use (`install.sh` hung on it). `DONT_PROMPT_WSL_INSTALL=1` skips it. Upstream behaviour, not an Axis change; the harness does not set it.
-4. **The matrix harness fails in a long work path.** `run.sh` under the worktree path gave `S01: error (exit 1, no result.json)`. The cause is a path longer than 107 characters for the user-data IPC socket (`listen EINVAL … 1.14-main.sock`). `MATRIX_WORK_DIR` (read in `lib.sh`) fixes it; `/tmp/axm` was used. Anyone running from a deep worktree hits this.
-5. **`gulp vscode-reh-web-linux-x64-min` needs the network late.** Attempt 1 ran 8 min 21 s, then failed at the `node` step with `TypeError: fetch failed` while downloading Node 24.22.1 from nodejs.org (a transient DNS failure on this host). The retry took 3 min 31 s and passed. A reproducible build should not depend on that fetch succeeding after eight minutes of work.
-6. **`jq` is an undeclared dependency of the matrix unit tests.** Eight tests fail with `error: required command not found: jq` instead of being skipped (§6). CI runners have `jq`.
+   Only the manual workflow installs the packages (`code-oss-build.yml`); `build.sh` and `DEVELOPMENT.md` do not list them. **Recommended change** (`scripts/code-oss/build.sh`, `DEVELOPMENT.md`): add a preflight that checks `pkg-config`, the X11, xkbfile and Kerberos headers and `jq`, fails in seconds with the package list, and document the same list in `DEVELOPMENT.md`.
+3. **Upstream's `bin/axis` launcher prompts on WSL.** It asks `Do you want to continue anyway? [y/N]` and blocks any non-interactive use (`install.sh` hung on it). `DONT_PROMPT_WSL_INSTALL=1` skips it. Upstream behaviour, not an Axis change; the harness does not set it. **Recommended change** (`test/extension-matrix/lib.sh`): export `DONT_PROMPT_WSL_INSTALL=1` for every launcher call, and mention it in `DEVELOPMENT.md` for WSL users.
+4. **The matrix harness fails in a long work path.** `run.sh` under the worktree path gave `S01: error (exit 1, no result.json)`. The cause is a path longer than 107 characters for the user-data IPC socket (`listen EINVAL … 1.14-main.sock`). `MATRIX_WORK_DIR` (read in `lib.sh`) fixes it; `/tmp/axm` was used. Anyone running from a deep worktree hits this. **Recommended change** (`test/extension-matrix/lib.sh`): default the work directory to a short path under `${TMPDIR:-/tmp}` (or fail early with a clear message when the path is over 100 characters).
+5. **`gulp vscode-reh-web-linux-x64-min` needs the network late.** Attempt 1 ran 8 min 21 s, then failed at the `node` step with `TypeError: fetch failed` while downloading Node 24.22.1 from nodejs.org (a transient DNS failure on this host). The retry took 3 min 31 s and passed. A reproducible build should not depend on that fetch succeeding after eight minutes of work. **Recommended change** (`scripts/code-oss/build.sh` or the packaging docs): run the pin-checked `download_node` before the packaging targets, so the tarball is already in the cache.
+6. **`jq` is an undeclared dependency of the matrix unit tests.** Eight tests fail with `error: required command not found: jq` instead of being skipped (§6). CI runners have `jq`. **Recommended change** (`test/extension-matrix/tests/`): skip those tests with a clear reason when `jq` is missing, and list `jq` in `DEVELOPMENT.md` and the preflight above.
 7. **Direct launch of the Electron binary with `--version`** started the app and did not return within 60 s. Use `bin/axis --version`, which printed `1.144.0` and the pinned commit. Not a defect.
+8. **Debugpy does not activate in a normal window** (§8). **Recommended change:** record it as a named exception in `extension-compatibility.md` and make it an input to the decision D1 follow-up ADR (proposed-API allowlist), owned by the Phase 0 extension-compatibility work; until then the S04 probe result alone must not be read as "Python debugging works".
 
-## 5. Build baseline (steps 1)
+## 5. Build baseline
 
 Commands, in order, from the repository root:
 
@@ -126,7 +127,21 @@ npm run gulp vscode-reh-web-linux-x64-min
 | `gulp vscode-reh-web-linux-x64-min`, attempt 1 | **failed** | 8 min 21 s | Problem 5 |
 | `gulp vscode-reh-web-linux-x64-min`, attempt 2 | passed | 3 min 31 s | Largest process 3.6 GiB RSS; output 323 MiB |
 
-Comparison with the macOS baseline in `code-oss-build.md` §5.2: `npm ci` 283 s against 956 s and `compile` 69 s against 119 s, on a different machine (16 cores, no concurrent Homebrew build). The Docker failure in §7 of that document is not reproduced here: the compile completed with the upstream 8 GiB heap setting and about 25 GiB free.
+Comparison with the macOS baseline in `code-oss-build.md` §5.2 (`npm ci` 956 s, `compile` 119 s) is **not like for like and is not a speed result**: that baseline measured an unmodified tree that still had the Copilot packages and ran `compile-copilot` beside `compile-client`, on a different machine and OS. This run's tree has the Copilot and agent packages and `compile-copilot` removed by patches 1500 and 1550.
+
+The reh-web retry (3 min 31 s) was a second run of the same gulp target; whether it reused any output of the failed first run was not checked, so treat it as a possibly warm timing.
+
+**Memory.** The largest single process was 8.3 GiB RSS over the whole `build.sh`, with the Node heap cap at 8192 MiB; the step that peaked was not recorded. The data does not establish a minimum, and says nothing about the 7.75 GiB Docker VM that failed in `code-oss-build.md` §7, because this host had about 25 GiB free and the cap equals that VM's size. One narrow sweep was run afterwards, on the compile step only (`gulp compile-client` re-run on the built tree, host shared):
+
+| `--max-old-space-size` | Result | Wall time | Max RSS, largest process (`time -v`) |
+|---|---|---|---|
+| 6144 MiB | passed | 54.8 s | 3.28 GiB |
+| 4096 MiB | passed | 54.4 s | 3.29 GiB |
+| 3072 MiB | passed | 56.5 s | 3.35 GiB |
+| 2048 MiB | passed | 55.8 s | 3.31 GiB |
+| 1024 MiB | passed | 52.3 s | 3.32 GiB |
+
+The compile step finished at every cap down to 1024 MiB, with the largest process near 3.3 GiB RSS in each run (the cap limits the V8 heap of the gulp process; child processes are not capped by it). So the compile step is not what needs 8 GiB; which step reached the 8.3 GiB peak was not recorded. Not measured: `npm ci` and the two packaging targets under a lower cap, and any cgroup memory limit (no privileges for one here). The M8 runner decision should therefore size for the 8.3 GiB peak plus the OS, and treat anything smaller, including a 16 GiB runner, as unmeasured until the full build is run under that limit.
 
 Memory and disk (15-second sampler over `free -m` and `du`):
 
@@ -142,7 +157,7 @@ Memory and disk (15-second sampler over `free -m` and `du`):
 
 Not measured: startup time of the dev build or the packaged build, and the dev launcher (`run.sh`). Nothing was run with `scripts/code-oss/run.sh`.
 
-## 6. CI-equivalent checks on Linux (step 2)
+## 6. CI-equivalent checks on Linux
 
 Run with Node 24.22.1, the sysroot `jq`, and the repository's pinned shellcheck and actionlint.
 
@@ -157,12 +172,13 @@ Run with Node 24.22.1, the sysroot `jq`, and the repository's pinned shellcheck 
 | Extension matrix: syntax | `node --check` on `probe/runner.js`, `probe/logic.js` | passed | 0.1 s |
 | Extension matrix: unit tests, **without `jq`** | `node --test 'test/extension-matrix/tests/*.test.js'` | **failed**, 35 of 43 pass, 8 fail with `required command not found: jq` | 0.7 s |
 | Extension matrix: unit tests, with `jq` | same | passed, 43 of 43 | 11.5 s |
-| Axis packages | `npm ci --ignore-scripts`, `npm run typecheck`, `npm run build`, `npm test` | passed | 2.3 s, 1.5 s, 0.9 s, 3.0 s |
+| Axis packages (at `dc29b38`: three packages then; main now has more) | `npm ci --ignore-scripts`, `npm run typecheck`, `npm run build`, `npm test` | passed | 2.3 s, 1.5 s, 0.9 s, 3.0 s |
 | Axis packages: test counts | four `node --test` runs inside `npm test` | 75, 31, 71 and 11 tests, all passed | |
 | Workflow lint | `actionlint -shellcheck <pinned> -pyflakes=` over `.github/workflows/` | passed | 0.2 s |
-| Secret scan (gitleaks) | `gitleaks git` | **not run**: gitleaks is not installed on this host | |
+| Secret scan (gitleaks) | `gitleaks git` | **not run** in the original session (not installed on this host); the manual diff scan stood in | |
+| Secret scan, run afterwards | `gitleaks git --log-opts="origin/main..HEAD"`, gitleaks 8.30.1 from a shared tool directory | passed, no leaks, 1 commit scanned | 0.3 s |
 
-`git diff --check origin/main..HEAD` is run before the commit (§12).
+`git diff --check origin/main..HEAD` was run before each push and was clean. `libnotify-bin` (in the CI list) was not installed here; nothing in the build or the headless runs needed it.
 
 ## 7. SC-3 artifact check
 
@@ -173,7 +189,7 @@ scripts/code-oss/check-artifacts.sh --expect desktop,reh-web --notices \
 
 Result: **passed** for both artifacts (1 s). A name search for `*copilot*` outside `node_modules` in both outputs found nothing. Run without arguments, the script reported `no packaged artifacts found … pass directories explicitly`: it needs the packaged outputs, which `build.sh` does not create, and its default expects a `vscode-reh-linux-x64` directory too. That target was not built.
 
-## 8. Extension matrix on the packaged build (step 3)
+## 8. Extension matrix on the packaged build
 
 Build under test: `VSCode-linux-x64` (`vscode-linux-x64-min`, the packaged build, no `VSCODE_DEV`), `AXIS_APP` set to its `axis` binary. Headless under Xvfb.
 
@@ -224,7 +240,7 @@ Error: Extension 'ms-python.debugpy' CANNOT use API proposal: portsAttributes.
 
 The S04 probe still **passed** (breakpoint stopped at `debug_me.py:2` in `debugpy`) because the test host allows every proposal (`extension-compatibility.md` §4.1). The probe cannot see this failure; only the scan does. This is the decision D1 effect, measured: with no allowlist, Python debugging through debugpy is broken in a normal window. It is not caused by an Axis patch (the allowlist is empty upstream too); it should be recorded as an exception or addressed by the D1 follow-up ADR. The other two Python extensions had their proposals stripped but logged no activation error in these scenarios.
 
-## 9. reh-web (step 4)
+## 9. reh-web
 
 Built with `vscode-reh-web-linux-x64-min` (§5). Started headless on loopback:
 
@@ -249,7 +265,7 @@ Observed (tokens redacted):
 
 So the reh-web output still depends on Microsoft's `vscode-cdn.net` for webview content, as `docs/security/threat-model-phase0.md` WEB-4 and design R5 describe. No webview was loaded: no browser was driven, so the effect on a real webview, and the `codeAutomationExit` web runner (§7.4 of the compatibility document, planned for M6), are **not run**.
 
-## 10. Loopback and network listeners (step 4)
+## 10. Loopback and network listeners
 
 Method: `ss -ltnup` before launch and during a run of the packaged desktop build under Xvfb (55 s, isolated profile via `--user-data-dir`, `--shared-data-dir` and `--extensions-dir`, `--disable-workspace-trust`, `--disable-telemetry`), compared against every process in the Axis process tree.
 
@@ -269,8 +285,7 @@ Outbound traffic: with an empty extensions directory, an `axis` utility process 
 - Optional tier (Jupyter, Java), Layer C UI smoke, the signature test (D4), and the Playwright web runner (M6).
 - The `vscode-reh-linux-x64` (non-web) target, so `check-artifacts.sh` ran with `--expect desktop,reh-web` rather than its all-three default.
 - Dev-build launch with `run.sh`, startup timing of either build, packaged-build RSS under a real workspace.
-- A heap or parallelism sweep. The Node heap stayed at upstream's 8192 MiB.
-- `gitleaks`: not installed here. A manual scan of the diff was done instead.
+- A full heap or parallelism sweep. Only the compile step was swept (§5); `npm ci` and packaging ran at upstream's 8192 MiB, and no cgroup limit was tried, so the minimum working memory is unknown.
 - Any browser session against reh-web.
 
 ## 12. Reproduce
