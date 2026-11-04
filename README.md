@@ -284,7 +284,7 @@ The full contributor workflow, branch and commit conventions, and the phase chec
 
 ## License and third-party software
 
-Axis is **proprietary software, all rights reserved**. The source is visible here and nothing in this repository is licensed for reuse, redistribution or resale. See [`LICENSE`](LICENSE). Axis builds on [Code - OSS](https://github.com/microsoft/vscode), which is MIT licensed, and the required notices are in [`NOTICE`](NOTICE). "Visual Studio Code" and Microsoft's marks are trademarks of Microsoft Corporation, and Axis is not affiliated with or endorsed by Microsoft.
+Axis is **proprietary software, all rights reserved**. The source is visible here and nothing in this repository is licensed for reuse, redistribution or resale. See [`LICENSE`](LICENSE), or the [plain-English summary](docs/LICENSING.md). Axis builds on [Code - OSS](https://github.com/microsoft/vscode), which is MIT licensed, and the required notices are in [`NOTICE`](NOTICE). "Visual Studio Code" and Microsoft's marks are trademarks of Microsoft Corporation, and Axis is not affiliated with or endorsed by Microsoft.
 
 ## Work with me
 
