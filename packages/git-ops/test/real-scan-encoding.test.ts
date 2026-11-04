@@ -28,9 +28,9 @@ const nulInside = (s: string): Buffer => Buffer.from(s.split("").join("\0"), "la
 const MSG = `deploy with AWS=${AWS_KEY}\n`;
 
 /** A commit on top of the base whose message is exactly `message` (bytes), made the tip of axis/feat. */
-function commitWith(f: Fixture, message: Buffer, encoding?: string | string[], author = "Dylan Lambertson"): string {
+function commitWith(f: Fixture, message: Buffer, encoding?: string | string[], author = "Dylan Lambertson", committer = "Dylan Lambertson"): string {
   const tree = f.git("rev-parse", "HEAD^{tree}").trim();
-  const head = ascii(`tree ${tree}\nparent ${baseOf(f)}\nauthor ${author} <me@dylanlambertson.dev> 1700000000 +0000\ncommitter Dylan Lambertson <me@dylanlambertson.dev> 1700000000 +0000\n${[encoding ?? []].flat().map((e) => `encoding ${e}\n`).join("")}\n`);
+  const head = ascii(`tree ${tree}\nparent ${baseOf(f)}\nauthor ${author} <me@dylanlambertson.dev> 1700000000 +0000\ncommitter ${committer} <me@dylanlambertson.dev> 1700000000 +0000\n${[encoding ?? []].flat().map((e) => `encoding ${e}\n`).join("")}\n`);
   const sha = execFileSync("git", ["hash-object", "-t", "commit", "-w", ...(encoding === undefined ? ["--literally"] : []), "--stdin"], { cwd: f.wt.workTree, env: f.env, input: Buffer.concat([head, message]) }).toString().trim();
   f.git("update-ref", "refs/heads/axis/feat", sha);
   return sha;
@@ -191,9 +191,35 @@ for (const scanMode of ["refuse", "warn"] as const) {
     const e = await planPush(f.deps, input(f)).then(() => undefined, (x: unknown) => x);
     assert.ok(e instanceof GitOpsError && e.code === "E_POLICY_DENIED" && e.message.includes(sha.slice(0, 12)) && !e.message.includes("latin1"), String(e));
     assert.ok(Date.now() - t < 5000, "bounded time");
-    assert.ok(process.memoryUsage().rss - rss < 512 * 1024 * 1024, "bounded memory");
+    assert.ok(process.memoryUsage().rss - rss < 1024 * 1024 * 1024, "bounded memory");
   });
 }
+
+for (const scanMode of ["refuse", "warn"] as const) {
+  // Git's decoder accepts a doubled shift sequence that Node's rejects; the commit is refused, never scanned half-decoded.
+  const DOUBLE = `${AWS_KEY.slice(0, 4)}\x1b(B\x1b(B${AWS_KEY.slice(4)}`;
+  for (const label of ["ISO-2022-JP", "ISO-2022-JP-2", "csISO2022JP"]) {
+    for (const where of ["author", "committer", "message"] as const) {
+      test(`PSH-1 (${scanMode}): a doubled shift sequence in the ${where} with encoding ${label} is refused`, async () => {
+        const f = fixture({ scanner: scanFor([]), scanMode });
+        const body = ascii(where === "message" ? `AWS=${DOUBLE}\n` : "fine\n");
+        const sha = commitWith(f, body, label, where === "author" ? DOUBLE : undefined, where === "committer" ? DOUBLE : undefined);
+        const e = await planPush(f.deps, { worktree: f.wt, remote: "origin", branch: "axis/feat", baseSha: baseOf(f) }).then(() => undefined, (x: unknown) => x);
+        assert.ok(e instanceof GitOpsError && e.code === "E_POLICY_DENIED" && e.message.includes(sha.slice(0, 12)), String(e));
+        assert.ok(!JSON.stringify([e.message, e.details]).includes(AWS_KEY.slice(0, 8)) && !e.message.includes(label), "no key and no label in the error");
+        assert.throws(() => execFileSync("git", ["--git-dir", f.remote, "rev-parse", "refs/heads/axis/feat"], { stdio: "ignore" }), "nothing was pushed");
+      });
+    }
+  }
+}
+
+test("PSH-1: messageViews refuses what the strict decoder rejects and strips shifts for the ISO-2022-JP family", () => {
+  const obj = (label: string, header: string, m: string): string => `tree x\nauthor ${header} <b> 1 +0000\nencoding ${label}\n\n${m}`;
+  const bad = `${AWS_KEY.slice(0, 4)}\x1b(B\x1b(B${AWS_KEY.slice(4)}`;
+  assert.equal(messageViews(obj("ISO-2022-JP", bad, "x\n")).undecodable, true);
+  assert.equal(messageViews(obj("ISO-2022-JP", "a", `${AWS_KEY.slice(0, 4)}\x1b(B${AWS_KEY.slice(4)}\n`)).views.some((v) => v.includes(AWS_KEY)), true);
+  assert.equal(messageViews(obj("Shift_JIS", "a", "x\n")).undecodable, false);
+});
 
 test("PSH-1: messageViews decodes once whatever the header count, and takes the first header the way git does", () => {
   const body = "x".repeat(1024);

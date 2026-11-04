@@ -19,9 +19,7 @@ const UTF8 = /^(?:utf-?8)$/i;
 /** Labels git (through iconv) accepts that the WHATWG decoder does not know. */
 const ALIASES: Readonly<Record<string, string>> = {
   cp932: "shift_jis",
-  sjis: "shift_jis",
   eucjp: "euc-jp",
-  "euc_jp": "euc-jp",
   cp936: "gbk",
   cp949: "euc-kr",
   euckr: "euc-kr",
@@ -40,12 +38,25 @@ function encodingHeaders(bytes: Buffer, end: number): string[] {
   return out;
 }
 
-function decodes(bytes: Buffer, label: string): string | undefined {
+function decoder(label: string): InstanceType<typeof TextDecoder> | undefined {
   try {
-    return new TextDecoder(ALIASES[label.toLowerCase()] ?? label, { fatal: true, ignoreBOM: true }).decode(bytes);
+    return new TextDecoder(ALIASES[label.toLowerCase()] ?? label, { fatal: true, ignoreBOM: true });
   } catch {
     return undefined;
   }
+}
+
+function decodes(bytes: Buffer, label: string): string | undefined {
+  try {
+    return decoder(label)?.decode(bytes);
+  } catch {
+    return undefined;
+  }
+}
+
+/** ESC sequences (ESC, intermediate bytes, a final byte) and other control characters, as the ISO-2022 family shifts with them. */
+function withoutShifts(bytes: Buffer): string {
+  return bytes.toString("latin1").replace(/\u001b[\u0020-\u002f]*[\u0030-\u007e]?/g, "").replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "");
 }
 
 /**
@@ -53,7 +64,9 @@ function decodes(bytes: Buffer, label: string): string | undefined {
  * refuses a runner that did not say it complied).
  *
  * Git decodes the whole object, headers included, from the first `encoding` header, so that is what is scanned, once.
- * More than one `encoding` header is refused (git never writes two, and each would cost a full decode).
+ * If that decode fails the commit is refused: git's decoder is not Node's (it accepts shift sequences Node rejects), so
+ * a failure here does not mean git shows the text undecoded, and nothing weaker (the message alone, say) is scanned
+ * instead. More than one `encoding` header is refused too (git never writes two, and each would cost a full decode).
  */
 export function messageViews(raw: string): MessageViews {
   const bytes = Buffer.from(raw, "latin1");
@@ -66,8 +79,10 @@ export function messageViews(raw: string): MessageViews {
   if (label === undefined || UTF8.test(label)) {
     return { views: [plain], undecodable: decodes(bytes, "utf-8") === undefined };
   }
-  // Where the headers are not in that encoding, git shows them as they are (the plain reading) and decodes only the message.
-  const text = decodes(bytes, label) ?? (split < 0 ? undefined : decodes(bytes.subarray(split + 2), label));
+  const text = decodes(bytes, label);
   if (text === undefined) return { views: [plain], undecodable: true };
-  return { views: text === plain ? [plain] : [plain, text], undecodable: false };
+  const views = [plain, text];
+  // The ISO-2022 family is stateful, so also read the bytes with every shift sequence and control character removed.
+  if (decoder(label)?.encoding === "iso-2022-jp") views.push(withoutShifts(bytes));
+  return { views: [...new Set(views)], undecodable: false };
 }
