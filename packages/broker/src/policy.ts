@@ -45,6 +45,12 @@ export class ToolPolicy {
     this.#floor = floor;
   }
 
+  /** Whether a call at `tier` needs approval on tier alone (protected paths add to this). */
+  needsApproval(tier: unknown): boolean {
+    const t = parseTier(tier);
+    return t !== undefined && tierRank(t) >= tierRank(this.#floor);
+  }
+
   decide(input: PolicyInput): Decision {
     let tier = parseTier(input.tier);
     if (tier === undefined) return { effect: "deny", reason: "invalid-tier", reasons: ["the tool tier is not valid"] };
@@ -78,6 +84,11 @@ export interface ApprovalRequest {
   readonly actor: string;
   readonly reasons: readonly string[];
   readonly targets: readonly string[];
+  /** The real, worktree-relative paths and what the call does to each, so the UI can name what it approves. */
+  readonly operations: readonly { readonly access: "read" | "write"; readonly path: string }[];
+  /** The canonical arguments (content included), redacted and bounded. The digest is over the full arguments. */
+  readonly preview: string;
+  readonly previewTruncated: boolean;
   readonly maxTtlMs: number;
 }
 
@@ -108,7 +119,7 @@ export class ApprovalLedger {
   spend(id: string, expiresAt: number, now: number): void {
     for (const [k, exp] of this.#seen) if (exp <= now) this.#seen.delete(k);
     if (this.#seen.has(id)) throw denied("approval-replayed", "the approval was already used");
-    if (this.#seen.size >= this.max) throw new BrokerError("E_BACKPRESSURE", "approval-replayed", "too many approvals are outstanding");
+    if (this.#seen.size >= this.max) throw new BrokerError("E_BACKPRESSURE", "approval-limit", "too many approvals are outstanding");
     this.#seen.set(id, expiresAt);
   }
 }

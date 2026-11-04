@@ -5,7 +5,8 @@ import { Redactor, canonicalize, type AuditActor, type AuditSink } from "@axis/a
 import { resolveExecutable, nodeFs } from "@axis/pty-policy";
 import type { GitRunResult, GitRunner } from "@axis/git-ops";
 import { BrokerAudit, BROKER_ACTIONS } from "./audit.js";
-import { isUnder, readContained, resolveRoot, resolveTarget, writeContained, type ContainDeps } from "./contain.js";
+import { foldName } from "./lexical.js";
+import { isUnder, readContained, resolveRoot, resolveTarget, writeContained, type ContainDeps, type TargetGuard } from "./contain.js";
 import { buildToolEnv, type EnvGrantSource } from "./env.js";
 import { BrokerError, denied, invalid, toBrokerError } from "./errors.js";
 import type { BrokerFs } from "./fs.js";
@@ -18,6 +19,7 @@ import type { WorktreeRef } from "@axis/git-ops";
 const ACTOR = /^(?:user|daemon|agent:[A-Za-z0-9._-]{1,64})$/;
 const TOOL_NAME = /^[a-z][a-z0-9_.-]{0,63}$/;
 const MAX_TARGETS = 32;
+const PREVIEW_CHARS = 4096;
 
 /** What a tool's action may do. Every call re-resolves its path at the time of use (WT-1). */
 export interface ToolContext {
@@ -74,6 +76,14 @@ export interface BrokerDeps {
   readonly maxApprovalTtlMs?: number;
 }
 
+/** What a call declared it touches, resolved when the policy decided. A use that resolves anywhere else is refused. */
+interface Declared {
+  readonly access: "read" | "write";
+  readonly lex: string;
+  readonly real: string;
+}
+
+const isAborted = (s: AbortSignal | undefined): boolean => s?.aborted === true;
 const clip = (s: string, n: number): string => (s.length > n ? s.slice(0, n) : s);
 const CTRL = new RegExp("[\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]", "g");
 const printable = (s: string): string => clip(s.replace(CTRL, "?"), 200);
@@ -89,13 +99,15 @@ export class ToolBroker {
   readonly #git: BrokerGit | undefined;
   readonly #platform: NodeJS.Platform;
   readonly #now: () => number;
+  readonly #redactor: Redactor;
 
   constructor(deps: BrokerDeps) {
     this.#d = deps;
     this.#platform = deps.platform ?? process.platform;
     this.#now = (): number => (deps.clock ?? { now: Date.now }).now();
     this.#policy = new ToolPolicy(deps.policy);
-    this.#audit = new BrokerAudit(deps.audit, deps.redactor ?? new Redactor());
+    this.#redactor = deps.redactor ?? new Redactor();
+    this.#audit = new BrokerAudit(deps.audit, this.#redactor);
     this.#contain = {
       registry: deps.registry, fs: deps.fs, platform: this.#platform,
       ...(deps.extraProtected === undefined ? {} : { extraProtected: deps.extraProtected }),
@@ -109,32 +121,48 @@ export class ToolBroker {
   register<A>(def: ToolDefinition<A>): void {
     if (typeof def?.name !== "string" || !TOOL_NAME.test(def.name) || this.#tools.has(def.name)) throw invalid("invalid-call", "the tool name is not valid");
     if (parseTier(def.tier) === undefined) throw denied("invalid-tier", "the tool tier is not valid");
+    // A command can leave its process group (setsid), so the approval floor is the only gate for it (PTY-4 residual).
+    if (def.command !== undefined && !this.#policy.needsApproval(def.tier)) {
+      throw denied("invalid-tier", "a tool that starts a command must sit at or above the approval floor");
+    }
     this.#tools.set(def.name, Object.freeze({ ...def }) as ToolDefinition);
   }
 
   async invoke(call: ToolCall): Promise<unknown> {
     const started = performance.now();
-    if (call === null || typeof call !== "object" || typeof call.actor !== "string" || !ACTOR.test(call.actor)) {
+    // Every field is read exactly once, here: a getter cannot show the validation one value and the audit another.
+    let tool0: unknown, wt0: unknown, actor0: unknown, args0: unknown, signal0: unknown;
+    try {
+      if (call === null || typeof call !== "object") throw new Error("shape");
+      ({ tool: tool0, worktreeId: wt0, actor: actor0, args: args0, signal: signal0 } = call);
+    } catch {
       throw invalid("invalid-call", "the call is not valid");
     }
-    const actor = call.actor as AuditActor;
-    const worktreeId = typeof call.worktreeId === "string" && /^[A-Za-z0-9._-]{1,64}$/.test(call.worktreeId) ? call.worktreeId : "invalid";
+    if (typeof actor0 !== "string" || !ACTOR.test(actor0) || (signal0 !== undefined && !(signal0 instanceof AbortSignal))) {
+      throw invalid("invalid-call", "the call is not valid");
+    }
+    const actor = actor0 as AuditActor;
+    const signal = signal0 as AbortSignal | undefined;
+    const worktreeId = typeof wt0 === "string" && /^[A-Za-z0-9._-]{1,64}$/.test(wt0) ? wt0 : "invalid";
     const target = `worktree:${worktreeId}`;
-    const toolName = typeof call.tool === "string" ? printable(call.tool) : "invalid";
+    const toolName = typeof tool0 === "string" ? printable(tool0) : "invalid";
     const refuse = (e: BrokerError, extra: Record<string, string | number | boolean | null> = {}): never => {
       this.#audit.record({ actor, action: BROKER_ACTIONS.decision, target, outcome: "denied", payload: { tool: toolName, decision: "deny", reason: e.reason, ...extra } });
       throw e;
     };
     if (worktreeId === "invalid") return refuse(invalid("invalid-call", "the call is not valid"));
-    const tool = typeof call.tool === "string" ? this.#tools.get(call.tool) : undefined;
+    if (signal?.aborted === true) return refuse(new BrokerError("E_CANCELLED", "aborted", "the call was cancelled"));
+    const tool = typeof tool0 === "string" ? this.#tools.get(tool0) : undefined;
     if (tool === undefined) return refuse(denied("unknown-tool", "the tool is not registered"));
 
-    const parsed = tool.args.safeParse(call.args);
+    const parsed = tool.args.safeParse(args0);
     if (!parsed.success) return refuse(invalid("invalid-args", "the arguments are not valid"), { tier: tool.tier });
     const args = parsed.data;
 
     // Containment and protected paths, resolved now for the policy and again when the action uses them.
     const rels: string[] = [];
+    const ops: { access: "read" | "write"; path: string }[] = [];
+    const declared: Declared[] = [];
     const labels: string[] = [];
     let protectedHit = false;
     try {
@@ -144,6 +172,8 @@ export class ToolBroker {
         const mode = t.access === "read" ? "read" : "upsert";
         const r = await resolveTarget(this.#contain, worktreeId, t.path, mode);
         rels.push(r.rel);
+        ops.push({ access: t.access === "read" ? "read" : "write", path: r.rel });
+        declared.push({ access: t.access === "read" ? "read" : "write", lex: this.#key(r.segments), real: this.#key(r.realSegments) });
         if (r.protected !== undefined && (t.access === "write" || r.protected.gitDir)) {
           protectedHit = true;
           labels.push(r.protected.label);
@@ -169,7 +199,7 @@ export class ToolBroker {
 
     let digest: string;
     try {
-      digest = sha(canonicalize({ tool: tool.name, worktreeId, actor, tier: decision.tier, args: args as never }));
+      digest = sha(canonicalize({ tool: tool.name, worktreeId, actor, tier: decision.tier, paths: ops.map((o) => `${o.access}:${o.path}`), args: args as never }));
     } catch {
       return refuse(invalid("invalid-args", "the arguments cannot be approved"), { tier: decision.tier });
     }
@@ -177,7 +207,8 @@ export class ToolBroker {
     let approval: VerifiedApproval | undefined;
     if (decision.effect === "approve") {
       try {
-        approval = await this.#approve(call, tool.name, decision.tier, decision.reasons, rels, digest, worktreeId, actor);
+        const preview = this.#redactor.redactString(canonicalize(args as never));
+        approval = await this.#approve(signal, tool.name, decision.tier, decision.reasons, ops, preview, digest, worktreeId, actor);
       } catch (e) {
         return refuse(toBrokerError(e), { tier: decision.tier, digest, reasons: decision.reasons.join(",") });
       }
@@ -194,16 +225,18 @@ export class ToolBroker {
     const stats = { bytesRead: 0, bytesWritten: 0, effects: 0, endedBy: null as string | null, exitCode: null as number | null, outputBytes: 0 };
     const ac = new AbortController();
     const onAbort = (): void => ac.abort();
-    call.signal?.addEventListener("abort", onAbort, { once: true });
-    if (call.signal?.aborted === true) ac.abort();
+    signal?.addEventListener("abort", onAbort, { once: true });
+    if (isAborted(signal)) ac.abort();
     let result: unknown;
     let failure: BrokerError | undefined;
     try {
-      result = await tool.run(this.#context(worktreeId, tool, ac.signal, stats), args);
+      // Cancelled between the decision and the action: nothing has run, so nothing runs.
+      if (ac.signal.aborted) throw new BrokerError("E_CANCELLED", "aborted", "the call was cancelled");
+      result = await tool.run(this.#context(worktreeId, tool, ac.signal, stats, declared), args);
     } catch (e) {
       failure = toBrokerError(e);
     } finally {
-      call.signal?.removeEventListener("abort", onAbort);
+      signal?.removeEventListener("abort", onAbort);
     }
     try {
       this.#audit.record({
@@ -221,7 +254,7 @@ export class ToolBroker {
     return result;
   }
 
-  async #approve(call: ToolCall, tool: string, tier: Tier, reasons: readonly string[], rels: readonly string[], digest: string, worktreeId: string, actor: string): Promise<VerifiedApproval> {
+  async #approve(signal: AbortSignal | undefined, tool: string, tier: Tier, reasons: readonly string[], ops: readonly { access: "read" | "write"; path: string }[], preview: string, digest: string, worktreeId: string, actor: string): Promise<VerifiedApproval> {
     const hook = this.#d.approval;
     if (hook === undefined) throw denied("no-approval-hook", "the call needs approval and none is configured");
     const maxTtlMs = this.#d.maxApprovalTtlMs ?? 600_000;
@@ -231,10 +264,14 @@ export class ToolBroker {
     }
     const ac = new AbortController();
     const abort = (): void => ac.abort();
-    call.signal?.addEventListener("abort", abort, { once: true });
+    signal?.addEventListener("abort", abort, { once: true });
     let timer: NodeJS.Timeout | undefined;
     try {
-      if (call.signal?.aborted === true) throw new BrokerError("E_CANCELLED", "aborted", "the call was cancelled");
+      if (signal?.aborted === true) throw new BrokerError("E_CANCELLED", "aborted", "the call was cancelled");
+      // A hook that ignores its signal and answers "yes" after the call was cancelled must not start the action.
+      const cancelled = new Promise<never>((_, reject) => {
+        signal?.addEventListener("abort", () => reject(new BrokerError("E_CANCELLED", "aborted", "the call was cancelled")), { once: true });
+      });
       const timeout = new Promise<never>((_, reject) => {
         timer = setTimeout(() => {
           ac.abort();
@@ -243,37 +280,54 @@ export class ToolBroker {
       });
       const raw = await Promise.race([
         Promise.resolve().then(() => hook.request({
-          digest, tool, tier, worktreeId, actor, reasons: [...reasons], targets: rels.slice(0, 16).map(printable), maxTtlMs,
+          digest, tool, tier, worktreeId, actor, reasons: [...reasons], targets: ops.slice(0, 16).map((o) => printable(o.path)), maxTtlMs,
+          operations: ops.slice(0, 16).map((o) => ({ access: o.access, path: printable(o.path) })),
+          preview: clip(preview, PREVIEW_CHARS), previewTruncated: preview.length > PREVIEW_CHARS,
         }, ac.signal)),
-        timeout,
+        timeout, cancelled,
       ]).catch((e: unknown) => {
         if (e instanceof BrokerError) throw e;
         throw denied("approval-error", "the approval could not be obtained");
       });
+      if (isAborted(signal)) throw new BrokerError("E_CANCELLED", "aborted", "the call was cancelled");
       return verifyApproval(raw, digest, this.#now(), maxTtlMs, this.#ledger);
     } finally {
       if (timer !== undefined) clearTimeout(timer);
-      call.signal?.removeEventListener("abort", abort);
+      signal?.removeEventListener("abort", abort);
     }
   }
 
-  #context(worktreeId: string, tool: ToolDefinition, signal: AbortSignal, stats: { bytesRead: number; bytesWritten: number; effects: number; endedBy: string | null; exitCode: number | null; outputBytes: number }): ToolContext {
+  #context(worktreeId: string, tool: ToolDefinition, signal: AbortSignal, stats: { bytesRead: number; bytesWritten: number; effects: number; endedBy: string | null; exitCode: number | null; outputBytes: number }, declared: readonly Declared[]): ToolContext {
     const d = this.#d;
     const contain = this.#contain;
+    const guardFor = (access: "read" | "write"): TargetGuard => (t) => {
+      // WT-3 at the time of use: the path must be one the call declared and the approval named, and it must still
+      // resolve to the same real path. A directory swapped for a symlink since then lands somewhere else and is refused.
+      const lex = this.#key(t.segments);
+      const hit = declared.find((x) => x.lex === lex && (access === "read" || x.access === "write"));
+      if (hit === undefined) throw denied("undeclared-path", "the tool touched a path it did not declare");
+      if (hit.real !== this.#key(t.realSegments)) throw denied("path-changed", "the path no longer resolves to what was approved");
+    };
+    const alive = (): void => {
+      if (signal.aborted) throw new BrokerError("E_CANCELLED", "aborted", "the call was cancelled");
+    };
     return {
       worktreeId, signal,
       readFile: async (path, maxBytes) => {
-        const data = await readContained(contain, worktreeId, path, { maxBytes });
+        alive();
+        const data = await readContained(contain, worktreeId, path, { maxBytes, guard: guardFor("read"), signal });
         stats.effects++;
         stats.bytesRead += data.length;
         return data;
       },
       writeFile: async (path, data, o) => {
-        const r = await writeContained(contain, worktreeId, path, data, o);
+        alive();
+        const r = await writeContained(contain, worktreeId, path, data, { ...o, guard: guardFor("write"), signal });
         stats.effects++;
         stats.bytesWritten += r.bytes;
       },
       run: async (o) => {
+        alive();
         const root = await resolveRoot(contain, worktreeId);
         const cwdTarget = await resolveTarget(contain, worktreeId, o.cwd ?? ".", "dir");
         const cwd = cwdTarget.segments.length === 0 ? root.root : [cwdTarget.parent, cwdTarget.name].join(this.#platform === "win32" ? "\\" : "/");
@@ -293,6 +347,7 @@ export class ToolBroker {
         return rec;
       },
       git: async (call) => {
+        alive();
         if (this.#git === undefined) throw new BrokerError("E_UNAVAILABLE", "git-unavailable", "git is not configured");
         const { worktree, root } = await resolveRoot(contain, worktreeId);
         const result = await this.#git.run({ workTree: root, gitDir: worktree.gitDir }, call);
@@ -302,6 +357,10 @@ export class ToolBroker {
         return result;
       },
     };
+  }
+
+  #key(segs: readonly string[]): string {
+    return segs.map((s) => foldName(s, this.#platform)).join("\0");
   }
 
   async #executable(command: string, env: Readonly<Record<string, string>>, exclude: readonly string[]): Promise<string> {

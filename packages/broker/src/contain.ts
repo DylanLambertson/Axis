@@ -177,18 +177,24 @@ export async function openContained(deps: ContainDeps, target: ResolvedTarget, m
     const st = await file.stat();
     if (st.kind !== "file") throw denied("not-regular", "the path is not a regular file");
     if (target.before !== undefined && target.before.id !== st.id) throw denied("swapped", "the file changed while it was being opened");
-    const after = await deps.fs.lstat(full).catch(() => {
-      throw denied("swapped", "the file changed while it was being opened");
-    });
-    if (after.kind !== "file" || after.id !== st.id) throw denied("swapped", "the file changed while it was being opened");
+    // Parent first, then the name: a swap that is undone between the two checks still leaves the second one to see it.
     const parentNow = await real(deps.fs, target.parent).catch(() => {
       throw denied("swapped", "the parent changed while the file was being opened");
     });
     if (!same(parentNow, target.parent, platform) || !isUnder(parentNow, target.root, platform)) {
       throw denied("swapped", "the parent changed while the file was being opened");
     }
+    const after = await deps.fs.lstat(full).catch(() => {
+      throw denied("swapped", "the file changed while it was being opened");
+    });
+    if (after.kind !== "file" || after.id !== st.id) throw denied("swapped", "the file changed while it was being opened");
+    // Where the kernel reports the descriptor's path (Linux), the file that was opened must be the one that was
+    // authorised: the same real path, not merely one below the root (WT-1, WT-3 at the time of use).
     const viaFd = await file.fdPath();
-    if (viaFd !== undefined && !isUnder(viaFd, target.root, platform)) throw denied("swapped", "the open file is outside the worktree");
+    if (viaFd !== undefined) {
+      const want = lib.join(target.root, ...target.realSegments);
+      if (!same(viaFd, want, platform)) throw denied("swapped", "the open file is not the authorised path");
+    }
     if (mode !== "read" && st.nlink > 1) throw denied("hardlink", "the file has more than one link");
     return { file, stat: st, target };
   } catch (e) {
@@ -197,13 +203,24 @@ export async function openContained(deps: ContainDeps, target: ResolvedTarget, m
   }
 }
 
+/** Runs on the resolved target before anything is opened; throws to refuse. The broker's use-time policy lives here. */
+export type TargetGuard = (target: ResolvedTarget) => void;
+
 export interface ReadOptions {
   readonly maxBytes: number;
+  readonly guard?: TargetGuard;
+  readonly signal?: AbortSignal;
 }
 export interface WriteOptions {
   readonly mode: "overwrite" | "create" | "upsert";
   readonly maxBytes: number;
+  readonly guard?: TargetGuard;
+  readonly signal?: AbortSignal;
 }
+
+const cancelled = (signal: AbortSignal | undefined): void => {
+  if (signal?.aborted === true) throw new BrokerError("E_CANCELLED", "aborted", "the call was cancelled");
+};
 
 function checkLimit(n: unknown): number {
   if (typeof n !== "number" || !Number.isInteger(n) || n < 0 || n > 64 * 1024 * 1024) throw invalid("invalid-call", "the size limit is not valid");
@@ -212,7 +229,10 @@ function checkLimit(n: unknown): number {
 
 export async function readContained(deps: ContainDeps, worktreeId: string, path: string, o: ReadOptions): Promise<Buffer> {
   const max = checkLimit(o.maxBytes);
+  cancelled(o.signal);
   const target = await resolveTarget(deps, worktreeId, path, "read");
+  o.guard?.(target);
+  cancelled(o.signal);
   const { file, stat } = await openContained(deps, target, "read");
   try {
     if (stat.size > max) throw denied("too-large", "the file is larger than the limit");
@@ -229,9 +249,13 @@ export async function readContained(deps: ContainDeps, worktreeId: string, path:
 export async function writeContained(deps: ContainDeps, worktreeId: string, path: string, data: Uint8Array, o: WriteOptions): Promise<{ readonly bytes: number; readonly rel: string }> {
   const max = checkLimit(o.maxBytes);
   if (!(data instanceof Uint8Array) || data.length > max) throw denied("too-large", "the content is larger than the limit");
+  cancelled(o.signal);
   const target = await resolveTarget(deps, worktreeId, path, o.mode);
+  o.guard?.(target);
+  cancelled(o.signal);
   const { file } = await openContained(deps, target, o.mode);
   try {
+    cancelled(o.signal);
     // Truncate only now: the descriptor has been verified, so an outside file is never emptied by a swapped symlink.
     await file.truncate(0);
     await file.write(data);

@@ -72,5 +72,5 @@ test("approval answers: only a well-formed, user-made, matching, unexpired, sing
   assert.equal(reasonOf(grant(), ledger), "approval-replayed");
   const small = new ApprovalLedger(1);
   assert.equal(reasonOf(grant({ approvalId: "appr-aaaa" }), small), "ok");
-  assert.throws(() => verifyApproval(grant({ approvalId: "appr-bbbb" }), digest, now, 600_000, small), (e: unknown) => e instanceof BrokerError && e.code === "E_BACKPRESSURE");
+  assert.throws(() => verifyApproval(grant({ approvalId: "appr-bbbb" }), digest, now, 600_000, small), (e: unknown) => e instanceof BrokerError && e.code === "E_BACKPRESSURE" && e.reason === "approval-limit");
 });
