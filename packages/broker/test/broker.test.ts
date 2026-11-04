@@ -100,7 +100,7 @@ test("a protected write needs approval, whatever the tier; no hook means denied"
     assert.equal(await r.broker.invoke(call("write_file", { path: p, content: "x" })), "written", p);
   }
   assert.equal(r.requests.length, 5);
-  assert.ok(r.requests[0]?.reasons.includes("protected:.github/workflows"));
+  assert.ok(r.requests[0]?.reasons.includes("protected:.github"));
   const approved = r.events.find((e) => (e.payload as { decision?: string }).decision === "approved");
   const p = approved?.payload as { approvedBy: string; approvalId: string; expiresAt: number };
   assert.equal(p.approvedBy, "user");

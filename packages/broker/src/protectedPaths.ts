@@ -9,7 +9,8 @@ export interface ProtectedMatch {
 
 /** Root-anchored protected paths, each a list of folded segments. A prefix match covers everything below. */
 export const DEFAULT_PROTECTED: readonly (readonly string[])[] = [
-  [".github", "workflows"],
+  // The whole of `.github`: a local composite action under `.github/actions` runs in CI like a workflow does.
+  [".github"],
   [".vscode"],
   [".husky"],
   [".githooks"],
@@ -18,10 +19,15 @@ export const DEFAULT_PROTECTED: readonly (readonly string[])[] = [
   [".lefthook.yml"],
   [".pre-commit-config.yaml"],
   [".devcontainer"],
-  [".npmrc"],
-  [".envrc"],
   [".gitmodules"],
-  [".gitattributes"],
+];
+
+/**
+ * Names that take effect from any directory (WT-3: `package.json` scripts, `.npmrc`, `.envrc`, `Makefile`), so a
+ * file called this anywhere below the root is protected. `.gitattributes` is read from every directory by git.
+ */
+export const PROTECTED_ANYWHERE: readonly string[] = [
+  "package.json", ".npmrc", ".envrc", ".gitattributes", "makefile", "gnumakefile", "justfile", ".yarnrc", ".yarnrc.yml", ".pnpmfile.cjs",
 ];
 
 const IGNORABLE = /\p{Default_Ignorable_Code_Point}/gu;
@@ -58,6 +64,9 @@ function sameName(folded: string, protectedName: string): boolean {
 export function matchProtected(segments: readonly string[], extra: readonly (readonly string[])[] = []): ProtectedMatch | undefined {
   const folded = segments.map(foldSegment);
   if (folded.some((s) => sameName(s, ".git"))) return { gitDir: true, label: ".git" };
+  for (const name of PROTECTED_ANYWHERE) {
+    if (folded.some((s) => sameName(s, name))) return { gitDir: false, label: name };
+  }
   for (const entry of [...DEFAULT_PROTECTED, ...extra]) {
     if (entry.length > folded.length) continue;
     if (entry.every((name, i) => sameName(folded[i] as string, foldSegment(name)))) return { gitDir: false, label: entry.join("/") };

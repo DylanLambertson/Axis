@@ -43,10 +43,13 @@ test("win32 rules run on every host", () => {
   }
 });
 
+test("N1: a root-relative path on win32 is refused, not read as relative to the worktree", () => {
+  for (const bad of ["\\x", "/r/x", "\\r\\x"]) assert.equal(reasonOf(() => lexicalSegments(bad, winRoot, "win32")), "outside-root", bad);
+});
+
 test("protected paths: the listed set, folded on every platform", () => {
   const hit = (p: string[]): string | undefined => matchProtected(p)?.label;
-  assert.equal(hit([".github", "workflows", "ci.yml"]), ".github/workflows");
-  assert.equal(hit([".github", "CODEOWNERS"]), undefined);
+  assert.equal(hit([".github", "workflows", "ci.yml"]), ".github");
   assert.equal(hit([".vscode", "tasks.json"]), ".vscode");
   assert.equal(hit([".husky", "pre-commit"]), ".husky");
   assert.equal(hit([".githooks", "x"]), ".githooks");
@@ -56,7 +59,15 @@ test("protected paths: the listed set, folded on every platform", () => {
   assert.equal(matchProtected(["sub", "mod", ".git", "hooks", "x"])?.gitDir, true, "nested repositories and submodules");
   assert.equal(hit(["src", "a.ts"]), undefined);
   assert.equal(hit([".gitignore"]), undefined);
-  assert.equal(hit([".github"]), undefined, "the directory entry alone is not a workflow");
+  assert.equal(hit([".github", "actions", "x", "action.yml"]), ".github", "a local composite action runs in CI like a workflow");
+});
+
+test("protected paths: WT-3 names are protected at any depth, and package.json and Makefile are on the list (S1)", () => {
+  for (const p of [["sub", ".envrc"], ["src", ".gitattributes"], ["packages", "x", "package.json"], ["Makefile"], ["a", "b", "GNUmakefile"], ["pkg", ".npmrc"], [".npmrc"], ["a", "PACKAG~1.JSO"]]) {
+    assert.ok(matchProtected(p), p.join("/"));
+  }
+  assert.equal(matchProtected(["src", "package.json.bak"]), undefined);
+  assert.equal(matchProtected(["src", "makefiles", "a.ts"]), undefined);
 });
 
 test("protected paths: case, Unicode, ignorable characters, trailing dots and short names", () => {

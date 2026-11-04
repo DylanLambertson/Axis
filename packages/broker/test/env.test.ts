@@ -10,6 +10,15 @@ const parent = {
   SSH_AUTH_SOCK: "/tmp/agent.sock", GITHUB_TOKEN: "gh-canary", AWS_SECRET_ACCESS_KEY: "aws-canary", STRIPE_API_KEY: "k",
   NODE_OPTIONS: "--require /evil", LD_PRELOAD: "/evil.so", GIT_DIR: "/x", AXIS_INTERNAL: "1", CARGO_HOME: "/c", MY_TOOL_FLAG: "on",
 } as const;
+test("S5: SECRET and PASSWORD match as substrings, in any case", () => {
+  const names = ["PGPASSWORD", "MYSECRETVAR", "CLIENTSECRET", "db_password", "My_Secret", "PASSWD_FILE"];
+  const p: Record<string, string> = { PATH: "/usr/bin" };
+  for (const n of names) p[n] = "v";
+  const { env, removed } = buildToolEnv(p, { tool: "t", worktreeId: "wt1", additions: names }, { now: 1 });
+  assert.deepEqual(Object.keys(env), ["PATH"]);
+  assert.deepEqual(removed.map((r) => r.reason), names.map(() => "secret-name"));
+});
+
 const spec = { tool: "run_tests", worktreeId: "wt1" };
 const now = 1_000_000;
 

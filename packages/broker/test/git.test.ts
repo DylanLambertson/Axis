@@ -53,6 +53,7 @@ function fake(): { runner: GitRunner; calls: GitRunRequest[] } {
     runner: {
       async run(req) {
         calls.push(req);
+        if (req.argv.includes("--version")) return { code: 0, stdout: "git version 2.40.0", stderr: "" };
         return req.argv.includes("--get-regexp") ? { code: 1, stdout: "", stderr: "" } : { code: 0, stdout: "ok", stderr: "" };
       },
     },
@@ -74,6 +75,14 @@ test("argv: hardened prefix, explicit dirs, hooks off, user values after the sep
   assert.deepEqual(a.slice(a.indexOf("--end-of-options")), ["--end-of-options", "main", "--", "--output=/x", ":(top)*"]);
   assert.equal(call.context, "daemon");
   assert.deepEqual(Object.keys(call.env).sort(), ["GIT_TERMINAL_PROMPT", "HOME", "PATH"]);
+});
+
+test("N3: a git older than 2.24 is refused with a plain error before any other call", async () => {
+  const calls: GitRunRequest[] = [];
+  const runner: GitRunner = { async run(req) { calls.push(req); return { code: 0, stdout: "git version 2.20.1", stderr: "" }; } };
+  const git = createBrokerGit({ runner, parentEnv: { PATH: "/bin" }, assertNoDrift: async () => undefined, platform: "linux" });
+  await assert.rejects(git.run(w, { command: "status" }), (e: unknown) => e instanceof BrokerError && e.code === "E_UNAVAILABLE");
+  assert.equal(calls.length, 1, "only the version probe ran");
 });
 
 test("drift fails closed: before every call, and after a write", async () => {

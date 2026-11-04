@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 // WT-2 (broker side) and GIT-ENV-1: git run for a composer tool call. Reuses the @axis/git-ops hardened prefix.
-import { daemonGitEnv, filterNames, guardedRunner, prefix, safeRef, type GitOpsDeps, type GitRunResult, type GitRunner, type WorktreeRef } from "@axis/git-ops";
+import { daemonGitEnv, filterNames, guardedRunner, prefix, requireGitVersion, safeRef, type GitOpsDeps, type GitRunResult, type GitRunner, type WorktreeRef } from "@axis/git-ops";
 import { BrokerError, denied, invalid } from "./errors.js";
 import { lexicalSegments, relText } from "./lexical.js";
 import type { Env, Tier } from "./types.js";
@@ -135,6 +135,8 @@ export function createBrokerGit(d: BrokerGitDeps): BrokerGit {
       await drift(w, false);
       try {
         const env = daemonGitEnv(d.parentEnv, platform);
+        // `--end-of-options` needs git 2.24: say so plainly instead of failing on an unknown flag.
+        await requireGitVersion(gitOps, w, env);
         const filters = await filterNames(w, gitOps, env);
         const argv = [
           ...prefix(w, gitOps, { context: "daemon", hooks: false, filters }),

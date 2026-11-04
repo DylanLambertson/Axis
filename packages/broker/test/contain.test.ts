@@ -191,7 +191,7 @@ test("the protected flag is set from the real path as well as the spelling", { s
   writeFileSync(join(w.wt, ".github", "workflows", "ci.yml"), "on: push");
   symlinkSync(join(w.wt, ".github", "workflows"), join(w.wt, "docs"));
   const t = await resolveTarget(w.deps(), "wt1", "docs/ci.yml", "read");
-  assert.equal(t.protected?.label, ".github/workflows");
+  assert.equal(t.protected?.label, ".github");
   assert.equal(t.rel, ".github/workflows/ci.yml");
   assert.equal(statSync(join(w.wt, "docs")).isDirectory(), true);
 });

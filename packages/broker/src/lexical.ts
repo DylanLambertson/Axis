@@ -43,6 +43,8 @@ export function lexicalSegments(input: unknown, root: string, platform: NodeJS.P
   } else {
     if (/^[\\/]{2}/.test(input)) return fail("unc-or-device");
     if (/^[A-Za-z]:(?![\\/])/.test(input)) return fail("drive-prefix");
+    // A root-relative path (`\x`, `/x`) means the current drive's root, not the worktree: refuse it like a drive-relative one.
+    if (/^[\\/]/.test(input)) return fail("outside-root");
   }
   const parts = input.split(win ? /[\\/]/ : "/");
   if (parts.some((s) => s === "..")) return fail("dotdot");

@@ -139,7 +139,9 @@ export function createCommandRunner(options: RunnerOptions = {}): CommandRunner 
           timers.delete(t);
           fn();
         }, ms);
-        timers.add(t);
+        // A timer armed after the run settled (the unkillable path) would never be cleared by `finish`.
+        if (settled) clearTimeout(t);
+        else timers.add(t);
         return t;
       };
 
