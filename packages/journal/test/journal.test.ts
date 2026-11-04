@@ -419,8 +419,9 @@ test("NEW-H: listRuns reports a bad state as E_INVALID_ARGUMENT, never a raw Zod
 test("the shipped journal migration is pinned by hash (add a new migration instead of editing it)", async () => {
   const { createHash } = await import("node:crypto");
   const { JOURNAL_MIGRATIONS } = await import("../src/index.js");
-  assert.equal(JOURNAL_MIGRATIONS.length, 1);
+  assert.equal(JOURNAL_MIGRATIONS.length, 2);
   assert.equal(createHash("sha256").update(JOURNAL_MIGRATIONS[0]?.sql ?? "").digest("hex"), "92332f71a375b32c59a45d0059e20ffd5a90090032b72c567ac0698c5db4d2e9");
+  assert.equal(createHash("sha256").update(JOURNAL_MIGRATIONS[1]?.sql ?? "").digest("hex"), "9302852a810e1b6069f421ebb3af4b5493bbeb28753da79d24ed832e2571d0bf");
 });
 
 // ---- the user principal is a brand the daemon mints, not a value a caller can assert ----

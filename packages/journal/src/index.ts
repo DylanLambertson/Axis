@@ -23,3 +23,11 @@ export {
   type RunState,
   type WorkspaceState,
 } from "./states.js";
+export {
+  JournalIdempotencyStore,
+  type IdempotencyStoreOptions,
+  type StoreBegin,
+  type StoreKey,
+  type StoredJson,
+  type UnknownReason,
+} from "./idempotency-store.js";
