@@ -27,7 +27,6 @@ export interface Setting {
   readonly value: string | null;
   /** Id of the entry (file) it came from. */
   readonly origin: string;
-  readonly line: number;
   /** Why it matters, from the table in settings.ts. */
   readonly label: string;
   readonly severity: "high" | "medium";

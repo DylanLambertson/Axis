@@ -29,7 +29,6 @@ const Setting = z
     key: str(4096),
     value: nullable(str(4096)),
     origin: str(4096),
-    line: z.number().int().min(0),
     label: str(256),
     severity: z.enum(["high", "medium"]),
     note: nullable(z.enum(["in-worktree", "outside-worktree", "unresolved"])),

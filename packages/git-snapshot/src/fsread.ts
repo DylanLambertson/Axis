@@ -161,7 +161,12 @@ async function readOnce(
 }
 
 export type ListResult =
-  | { readonly ok: true; readonly names: readonly string[] }
+  | {
+      readonly ok: true;
+      readonly names: readonly string[];
+      /** Entries whose names are not valid UTF-8 (shown as hex): they cannot be named by a string path, so they are not read. */
+      readonly undecodable: readonly string[];
+    }
   | { readonly ok: false; readonly detail: string };
 
 /**
@@ -171,19 +176,27 @@ export type ListResult =
 export async function listDir(path: string, budget: Budget, max: number): Promise<ListResult> {
   let dir;
   try {
-    dir = await opendir(path, { bufferSize: 64 });
+    dir = await opendir(path, { bufferSize: 64, encoding: "buffer" } as unknown as Parameters<typeof opendir>[1]);
   } catch (e) {
     const code = errnoName(e);
     return { ok: false, detail: code === "ENOENT" || code === "ENOTDIR" ? "missing" : code };
   }
   const names: string[] = [];
+  const undecodable: string[] = [];
+  const strict = new TextDecoder("utf-8", { fatal: true });
   try {
     for (;;) {
       budget.tick();
       const ent = await dir.read();
       if (ent === null) break;
-      names.push(ent.name);
-      if (names.length > max) throw new Exhausted("entries");
+      // The name comes back as bytes, never as a lossy string: a name git sees as one file must not become another.
+      const raw = ent.name as unknown as Buffer;
+      try {
+        names.push(strict.decode(raw));
+      } catch {
+        undecodable.push(`hex:${raw.toString("hex")}`);
+      }
+      if (names.length + undecodable.length > max) throw new Exhausted("entries");
     }
   } catch (e) {
     if (e instanceof Exhausted || e instanceof SnapshotError) throw e;
@@ -192,7 +205,7 @@ export async function listDir(path: string, budget: Budget, max: number): Promis
     await dir.close().catch(() => undefined);
   }
   names.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
-  return { ok: true, names };
+  return { ok: true, names, undecodable };
 }
 
 /** UTF-8 text of `bytes`, or null for binary content (a NUL byte or invalid UTF-8). `cut` allows a split last character. */

@@ -64,3 +64,23 @@ export const PATH_SETTINGS: ReadonlyMap<string, "hooks" | "attributes"> = new Ma
   ["core.attributesfile", "attributes"],
   ["core.excludesfile", "attributes"],
 ]);
+
+/** Labels whose flags are never pushed out of a flag list by a flood of lesser ones. */
+export const CRITICAL_LABELS: ReadonlySet<string> = new Set([
+  "core.hooksPath",
+  "core.fsmonitor",
+  "core.sshCommand",
+  "core.gitProxy",
+  "core.askPass",
+  "core attributes or excludes file",
+  "core.worktree",
+  "include.path",
+  "includeIf path",
+  "credential helper",
+  "url rewrite",
+  "remote",
+  "filter driver",
+  "gpg program",
+  "http transport",
+  "protocol allow",
+]);

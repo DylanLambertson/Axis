@@ -14,6 +14,9 @@
     },
     {
       "path": "../audit"
+    },
+    {
+      "path": "../git-ops"
     }
   ]
 }

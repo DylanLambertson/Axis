@@ -72,12 +72,16 @@ export function acknowledgeDrift(current: Snapshot, now: () => number = Date.now
 }
 
 /**
- * Throws `E_POLICY_DENIED` unless the verdict allows the action. The message names the flags (redacted text) so the
- * caller can show why; it never carries file content.
+ * Throws `E_POLICY_DENIED` unless the verdict allows the action. The message is fixed text and counts: file names and
+ * paths come from the CLI and are not echoed. The caller shows `verdict.diff`, which is redacted and escaped.
  */
 export function assertDriftAllowed(verdict: DriftVerdict, action: "commit" | "push"): void {
   if (verdict.allowed) return;
   if (verdict.status !== "unacknowledged" && verdict.status !== "refused") throw invalid("unknown verdict");
-  const why = verdict.status === "refused" ? verdict.reasons.join("; ") : verdict.diff.flags.slice(0, 5).join("; ");
-  throw denied(`${action} refused: the git directory changed and the change was not acknowledged${why === "" ? "" : ` (${why})`}`);
+  const n = verdict.diff.changes.length + verdict.diff.settingChanges.length;
+  const why =
+    verdict.status === "refused"
+      ? "the git directory could not be verified"
+      : `the git directory changed (${n} change${n === 1 ? "" : "s"}) and the change was not acknowledged`;
+  throw denied(`${action} refused: ${why}`);
 }

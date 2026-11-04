@@ -18,7 +18,11 @@ export function computeDigest(
   const gaps = incomplete
     .filter((i) => i.blocking)
     .map((i) => [i.id, i.reason])
-    .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+    .sort((a, b) => {
+      const x = JSON.stringify(a);
+      const y = JSON.stringify(b);
+      return x < y ? -1 : x > y ? 1 : 0;
+    });
   const body = JSON.stringify(["git-snapshot-v1", rows, link.declared, link.mismatch, gaps]);
   return createHash("sha256").update(body).digest("hex");
 }

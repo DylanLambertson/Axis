@@ -74,9 +74,23 @@ export function secretNamed(name: string): boolean {
   return SECRET_NAME.test(name.toLowerCase().replace(/[-_\s]/g, ""));
 }
 
-/** Pattern redaction (URL credentials, headers, token shapes, secret-named assignments, key blocks). */
+// Anything between `scheme://` and the `@` is userinfo, however short: `https://token@host` is a credential too.
+const USERINFO = /([A-Za-z][A-Za-z0-9+.-]*:\/\/)[^/\s@]*@/g;
+// `name = value` or `name: value` where the name ends like a secret's (extraheader, token, password ...).
+const SECRET_LINE = /^(\s*[A-Za-z0-9_.-]{1,64}\s*[=:]\s*)(.*)$/;
+
+/** Pattern redaction (URL userinfo, headers, token shapes, secret-named assignments, key blocks). */
 export function redactText(s: string): string {
-  return redactor.redactString(s);
+  const named = s
+    .split("\n")
+    .map((line) => {
+      const m = SECRET_LINE.exec(line);
+      if (m === null) return line;
+      const name = (m[1] as string).replace(/[\s=:]+$/, "");
+      return secretNamed(name.slice(name.lastIndexOf(".") + 1)) && (m[2] as string).length > 0 ? `${m[1]}[REDACTED]` : line;
+    })
+    .join("\n");
+  return redactor.redactString(named.replace(USERINFO, "$1[REDACTED]@"));
 }
 
 /** A value shown on a single line: redacted, then escaped. */

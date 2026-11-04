@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 
-/** One `name = value` line, with its section. Section and name are lower-cased; a quoted subsection keeps its case. */
+/** Values are whatever string was passed in: callers pass a latin1 view of the bytes so nothing is decoded lossily.
+ * One `name = value` line, with its section. Section and name are lower-cased; a quoted subsection keeps its case. */
 export interface ConfigEntry {
   readonly section: string;
   readonly subsection: string | null;
@@ -20,7 +21,8 @@ export interface ParsedConfig {
 
 const isNameStart = (c: string): boolean => (c >= "a" && c <= "z") || (c >= "A" && c <= "Z");
 const isNameChar = (c: string): boolean => isNameStart(c) || (c >= "0" && c <= "9") || c === "-";
-const isBlank = (c: string): boolean => c === " " || c === "\t" || c === "\r" || c === "\f" || c === "\v";
+// git's own whitespace (sane_ctype isspace): space, tab, CR and LF. Not form feed or vertical tab.
+const isBlank = (c: string): boolean => c === " " || c === "\t" || c === "\r";
 
 /**
  * Parses git-config(1) syntax: `[section]`, `[section "sub"]` (with `\"` and `\\`), the legacy `[section.sub]`
@@ -30,7 +32,8 @@ const isBlank = (c: string): boolean => c === " " || c === "\t" || c === "\r" ||
  * is still returned. Linear in the input; the caller bounds the input size.
  */
 export function parseGitConfig(input: string, maxEntries: number): ParsedConfig {
-  const text = (input.charCodeAt(0) === 0xfeff ? input.slice(1) : input).replace(/\r\n/g, "\n");
+  const bom = input.startsWith("\u00ef\u00bb\u00bf") ? 3 : input.charCodeAt(0) === 0xfeff ? 1 : 0;
+  const text = input.slice(bom).replace(/\r\n/g, "\n");
   const entries: ConfigEntry[] = [];
   let errors = 0;
   let truncated = false;
@@ -125,6 +128,11 @@ export function parseGitConfig(input: string, maxEntries: number): ParsedConfig 
           }
           if (d === "\\") {
             const e = text[i + 1];
+            // A backslash at the very end of the file continues into the end of the file, as git reads it.
+            if (e === undefined) {
+              i++;
+              break;
+            }
             if (e === "\n") {
               line++;
               i++;

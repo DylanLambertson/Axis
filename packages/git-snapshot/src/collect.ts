@@ -8,6 +8,7 @@ import { escapeDisplay } from "./display.js";
 import { record, recordTree, type Ctx } from "./entry.js";
 import { SnapshotError, invalid } from "./errors.js";
 import { listDir } from "./fsread.js";
+import { askGit, type GitView } from "./git.js";
 import { Budget, Exhausted, resolveLimits, type Limits } from "./limits.js";
 import { samePath } from "./paths.js";
 import { collectRefs } from "./refs.js";
@@ -26,6 +27,8 @@ export interface TakeOptions {
   readonly homeDir?: string;
   readonly limits?: Partial<Limits>;
   readonly signal?: AbortSignal;
+  /** The environment git is started from (only the GIT-ENV-1 allow-list is passed on). Defaults to `process.env`. */
+  readonly env?: Readonly<Record<string, string | undefined>>;
   /** Tests only. */
   readonly now?: () => number;
 }
@@ -69,15 +72,19 @@ export async function takeSnapshot(opts: TakeOptions): Promise<Snapshot> {
   const ctx: Ctx = { limits, budget, entries, settings: [], incomplete: [], homeDir: opts.homeDir ?? homedir() };
   const roots = [worktreePath, ...(opts.extraWorktreeRoots ?? []).map((r) => absolute(r, "extraWorktreeRoots"))];
   if (basename(commonDir) === ".git") roots.push(dirname(commonDir));
-  let link: WorktreeLink = { declared: null, expected: expected ?? null, mismatch: expected !== undefined };
+  let link: WorktreeLink = { declared: null, expected: expected ?? null, mismatch: true };
   let refs: Snapshot["refs"] = [];
   const refsIncomplete: Incomplete[] = [];
 
   try {
     const names: string[] = [];
-    link = await collectLink(ctx, worktreePath, commonDir, expected, names);
-    const targets = await collectConfigs(ctx, { commonDir, worktreePath, worktreeRoots: roots, worktreeNames: names });
-    await recordTree(ctx, "hooks", "hooks", join(commonDir, "hooks"), 0, false);
+    const view = await askGit(worktreePath, expected ?? null, ctx.homeDir, opts.env ?? process.env, budget);
+    for (const p of view.problems) ctx.incomplete.push({ id: "git", reason: p, blocking: true });
+    link = await collectLink(ctx, worktreePath, commonDir, expected, names, view);
+    const targets = await collectConfigs(ctx, { commonDir, worktreePath, worktreeRoots: roots, worktreeNames: names, git: view });
+    // Hook scripts can dispatch to subdirectories (pre-commit.d/*): walk them like any in-tree hook directory.
+    await recordTree(ctx, "hooks", "hooks", join(commonDir, "hooks"), limits.maxWalkDepth, true);
+    if (view.hooksDir !== null && view.hooksDir !== join(commonDir, "hooks")) targets.push({ kind: "hooks", path: view.hooksDir });
     const seen = new Set<string>();
     for (const t of targets) {
       if (t.kind === "hooks" && !seen.has(t.path)) {
@@ -122,23 +129,26 @@ export async function takeSnapshot(opts: TakeOptions): Promise<Snapshot> {
   };
 }
 
-/** The worktree's `.git` file (or directory) and `worktrees/<name>/{gitdir,commondir}` for every linked worktree. */
+/**
+ * The worktree's `.git` file (hashed byte for byte) and `worktrees/<name>/{gitdir,commondir}` for every linked
+ * worktree. Where the worktree really points is what git itself finds from inside it, not a reading of the file: a
+ * terminal `git` follows that, and so must the check. Any difference from the recorded git dir or from the common
+ * dir the snapshot was asked about is a mismatch, which is refused and cannot be acknowledged.
+ */
 async function collectLink(
   ctx: Ctx,
   worktreePath: string,
   commonDir: string,
   expected: string | undefined,
   names: string[],
+  view: GitView,
 ): Promise<WorktreeLink> {
-  const { read } = await record(ctx, "worktree/.git", "link", join(worktreePath, ".git"), { parse: true });
-  let declared: string | null = null;
-  if (read.kind === "dir") declared = join(worktreePath, ".git");
-  else if (read.bytes !== null) {
-    const m = /^gitdir:[ \t]*(.+?)[ \t]*\r?(?:\n|$)/.exec(read.bytes.toString("utf8"));
-    if (m?.[1] !== undefined && !m[1].includes("\0")) declared = resolve(worktreePath, m[1]);
-  }
+  await record(ctx, "worktree/.git", "link", join(worktreePath, ".git"));
   const list = await listDir(join(commonDir, "worktrees"), ctx.budget, ctx.limits.maxWorktrees);
   if (list.ok) {
+    for (const hex of list.undecodable) {
+      ctx.incomplete.push({ id: `worktrees/${hex}`, reason: "name is not valid UTF-8, so it was not read", blocking: true });
+    }
     for (const name of list.names) {
       names.push(name);
       const base = `worktrees/${escapeDisplay(name)}`;
@@ -148,8 +158,10 @@ async function collectLink(
   } else if (list.detail !== "missing") {
     ctx.incomplete.push({ id: "worktrees", reason: `unreadable (${list.detail})`, blocking: true });
   }
-  const mismatch = expected !== undefined && (declared === null || !(await samePath(declared, expected)));
-  return { declared, expected: expected ?? null, mismatch };
+  const { gitDir, commonDir: found } = view.discovered;
+  let mismatch = gitDir === null || found === null || !(await samePath(found, commonDir));
+  if (!mismatch && expected !== undefined && gitDir !== null) mismatch = !(await samePath(gitDir, expected));
+  return { declared: gitDir, expected: expected ?? null, mismatch };
 }
 
 export interface StableOptions extends TakeOptions {

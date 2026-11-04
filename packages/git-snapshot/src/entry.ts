@@ -123,6 +123,9 @@ export async function recordTree(
     if (list.detail !== "missing") ctx.incomplete.push({ id: baseId, reason: `unreadable (${list.detail})`, blocking: true });
     return;
   }
+  for (const hex of list.undecodable) {
+    ctx.incomplete.push({ id: `${baseId}/${hex}`, reason: "name is not valid UTF-8, so it was not read", blocking: true });
+  }
   for (const name of list.names) {
     const id = childId(baseId, name);
     const child = join(dirPath, name);

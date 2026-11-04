@@ -1,11 +1,14 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { clip } from "./display.js";
+import { CRITICAL_LABELS } from "./settings.js";
 import type { EntryGroup, Incomplete, Setting, Snapshot, SnapshotEntry } from "./types.js";
 
 export const MAX_CHANGES = 512;
 export const MAX_LINES = 40;
 const MAX_LINE_CHARS = 400;
 const MAX_FLAGS = 64;
+/** Flags for the settings that decide what git runs are kept in their own list: a flood of changes cannot push them out. */
+const MAX_CRITICAL_FLAGS = 64;
 
 export interface EntryView {
   readonly state: string;
@@ -218,23 +221,25 @@ export function diffSnapshots(before: Snapshot, after: Snapshot): SnapshotDiff {
     });
   }
   const settings = settingChanges(before.settings, after.settings);
+  const critical = new Set<string>();
   const flags = new Set<string>();
   for (const s of settings) {
     const where = s.note === "in-worktree" ? " (inside the worktree)" : "";
-    flags.add(`${s.label} ${s.added.length > 0 && s.removed.length > 0 ? "changed" : s.added.length > 0 ? "added" : "removed"}: ${s.key}${where}`);
+    const f = `${s.label} ${s.added.length > 0 && s.removed.length > 0 ? "changed" : s.added.length > 0 ? "added" : "removed"}: ${s.key}${where}`;
+    (CRITICAL_LABELS.has(s.label) ? critical : flags).add(f);
   }
   for (const c of changes) flags.add(c.flag);
   const linkMismatch = after.link.mismatch;
-  if (linkMismatch) flags.add("worktree .git does not match the recorded git dir");
+  if (linkMismatch) critical.add("worktree .git does not match the recorded git dir");
   const gaps = after.incomplete.filter((i) => i.blocking);
-  for (const g of gaps) flags.add(`could not read in full: ${g.id}`);
+  for (const g of gaps) critical.add(`could not read in full: ${g.id}`);
   const refs = refChanges(before.refs, after.refs);
   const blocking = changes.length > 0 || linkMismatch || gaps.length > 0 || before.incomplete.some((i) => i.blocking);
   return {
     changes,
     settingChanges: settings,
     refChanges: refs,
-    flags: [...flags].slice(0, MAX_FLAGS),
+    flags: [...[...critical].slice(0, MAX_CRITICAL_FLAGS), ...[...flags].slice(0, MAX_FLAGS)],
     incomplete: gaps,
     linkMismatch,
     blocking,

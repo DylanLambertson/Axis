@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { chmodSync, mkdirSync, renameSync, symlinkSync, writeFileSync, readFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { acknowledgeDrift, assertDriftAllowed, diffSnapshots, judgeDrift, parseSnapshot, takeStableSnapshot } from "../src/index.js";
@@ -109,14 +110,15 @@ test("a rewritten worktree .git file or commondir is flagged", async () => {
     const gitdir = readFileSync(join(f.wt, ".git"), "utf8");
     assert.match(gitdir, /^gitdir: /);
     write(join(f.wt, ".git"), `gitdir: ${join(f.root, "elsewhere")}\n`);
+    // git itself cannot find the repository any more, so the verdict cannot be acknowledged.
     const v1 = judgeDrift({ baseline: base, current: await f.snap() });
-    assert.equal(v1.status, "unacknowledged");
+    assert.equal(v1.status, "refused");
     assert.match(flagsOf(v1.diff), /worktree link modified: worktree\/\.git/);
     write(join(f.wt, ".git"), gitdir);
     const wtName = [...base.entries].find((e) => e.id.endsWith("/commondir"))?.id as string;
     write(join(f.common, wtName), "../../elsewhere\n");
     const v2 = judgeDrift({ baseline: base, current: await f.snap() });
-    assert.equal(v2.status, "unacknowledged");
+    assert.equal(v2.status, "refused");
     assert.match(flagsOf(v2.diff), /commondir/);
   } finally {
     f.cleanup();
@@ -335,31 +337,39 @@ test("a symlinked hook is followed for its content and its target is recorded", 
   }
 });
 
-test("a file rewritten while the snapshot reads is never silently accepted", async () => {
+test("a file rewritten while the snapshot reads is never accepted torn", async () => {
   const f = makeFixture();
   try {
     const p = join(f.common, "hooks", "busy");
-    write(p, "x".repeat(300_000));
+    const contents = Array.from({ length: 7 }, (_, n) => String(n).repeat(300_000));
+    const allowed = new Set(contents.map((c) => createHash("sha256").update(c).digest("hex")));
+    write(p, contents[0] as string);
     let stop = false;
     const writer = (async () => {
       let n = 0;
       while (!stop) {
-        writeFileSync(p, String(n++ % 7).repeat(300_000));
+        writeFileSync(p, contents[n++ % 7] as string);
         await new Promise((r) => setImmediate(r));
       }
     })();
+    let accepted = 0;
     try {
-      for (let i = 0; i < 20; i++) {
+      for (let i = 0; i < 25; i++) {
         const s = await f.snap();
         const e = s.entries.find((x) => x.id === "hooks/busy");
-        // Either a consistent read, or flagged: an unstable read always carries an incomplete mark.
         if (e?.state === "unstable") assert.ok(s.incomplete.some((x) => x.id === "hooks/busy" && x.blocking));
-        else assert.equal(e?.state, "file");
+        else {
+          accepted++;
+          // An accepted read is one of the contents that was ever written, byte for byte: never a mix.
+          assert.equal(e?.state, "file");
+          assert.ok(allowed.has(e?.sha256 as string), "a torn read was accepted");
+        }
       }
     } finally {
       stop = true;
       await writer;
     }
+    assert.ok(accepted >= 0);
   } finally {
     f.cleanup();
   }

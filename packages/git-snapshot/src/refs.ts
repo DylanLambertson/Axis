@@ -52,6 +52,7 @@ async function loose(
     if (list.detail !== "missing") note(`unreadable (${list.detail})`);
     return;
   }
+  if (list.undecodable.length > 0) note("ref names that are not valid UTF-8");
   for (const child of list.names) {
     if (found.size >= limits.maxRefs) return note("too many refs");
     const path = join(dir, child);

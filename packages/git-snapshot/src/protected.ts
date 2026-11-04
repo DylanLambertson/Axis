@@ -14,6 +14,7 @@ export type ProtectedCategory =
   | "shell-env"
   | "build-script"
   | "agent-config"
+  | "caller-defined"
   | "git-dir"
   | "git-config"
   | "outside-worktree"
@@ -81,7 +82,8 @@ const RULES: readonly Rule[] = [
   ...names("package-config", "high", ".npmrc", ".yarnrc", ".yarnrc.yml", ".pnpmfile.cjs", ".pypirc", "pip.conf", ".bunfig.toml", "bunfig.toml"),
   dir(".cargo/config", "package-config", "high", true, ".cargo"),
   ...names("shell-env", "high", ".envrc", ".mise.toml", "mise.toml"),
-  ...names("build-script", "medium", "makefile", "gnumakefile", "justfile", "taskfile.yml", "taskfile.yaml", "rakefile", "build.gradle", "build.gradle.kts", "setup.py", "noxfile.py"),
+  dir(".yarn/plugins", "package-config", "high", false, ".yarn", "plugins"),
+  ...names("build-script", "medium", "conftest.py", "build.rs", "pyproject.toml", "makefile", "gnumakefile", "justfile", "taskfile.yml", "taskfile.yaml", "rakefile", "build.gradle", "build.gradle.kts", "setup.py", "noxfile.py"),
   ...names("agent-config", "high", ".mcp.json"),
   dir(".git", "git-dir", "high", true, ".git"),
   ...names("git-config", "high", ".gitmodules", ".gitattributes"),
@@ -90,12 +92,22 @@ const RULES: readonly Rule[] = [
 // Code points HFS+ and APFS-style comparison ignores in a name (CVE-2014-9390 class): `.g<ZWNJ>it` is `.git`.
 const IGNORABLE = /[\u200b-\u200f\u202a-\u202e\u206a-\u206f\ufeff\u00ad\u2060\u180e]/g;
 const MARKS = /\p{M}/gu;
+// Letters that look like an ASCII one and do not fold to it by case or normalisation (latin small script g).
+const LOOKALIKES = new RegExp(String.fromCharCode(0x261), "g");
 const MAX_PATH = 4096;
 const MAX_PARTS = 256;
 
 /** The comparison form of one path component. */
 export function foldName(comp: string): string {
-  return comp.replace(IGNORABLE, "").normalize("NFKC").normalize("NFD").replace(MARKS, "").toLowerCase();
+  // Upper then lower: the dotless i and the long s fold to the plain letter, as an NTFS upcase table does.
+  return comp
+    .replace(IGNORABLE, "")
+    .normalize("NFKC")
+    .normalize("NFD")
+    .replace(MARKS, "")
+    .toUpperCase()
+    .toLowerCase()
+    .replace(LOOKALIKES, "g");
 }
 
 // NTFS: a trailing dot or space is dropped, `name:stream` is the same file, and `GITHUB~1` is `.github`.
@@ -110,7 +122,8 @@ function shortMatches(comp: string, literal: string): boolean {
   if (m === null) return false;
   const dot = literal.lastIndexOf(".");
   const hasExt = dot > 0;
-  const base = (hasExt ? literal.slice(0, dot) : literal).replace(/[^a-z0-9]/g, "");
+  // Windows keeps these characters in the generated name (so PRE-CO~1.YAM for .pre-commit-config.yaml) and drops dots and spaces.
+  const base = (hasExt ? literal.slice(0, dot) : literal).replace(/[^a-z0-9_$%'@!#()&^{}-]/g, "");
   const ext = hasExt ? literal.slice(dot + 1) : "";
   return base.slice(0, 6) === m[1] && (m[2] === undefined || m[2] === "" || ext.startsWith(m[2]));
 }
@@ -151,6 +164,25 @@ function matchRule(parts: readonly string[], r: Rule): boolean {
 
 const foldLiteral = (lit: string): string => foldName(lit);
 
+export interface MatchOptions {
+  /**
+   * Root-relative paths the caller also wants highlighted (for example a directory of tool configuration that
+   * belongs to a product setting, not to this list). Matched as folded prefixes, with the same rules.
+   */
+  readonly extraPaths?: readonly string[];
+}
+
+function matchExtra(parts: readonly string[], extra: readonly string[] | undefined): ProtectedMatch | null {
+  for (const x of extra ?? []) {
+    const sp = split(x);
+    if (sp === null || sp.escapes || sp.parts.length === 0) continue;
+    if (sp.parts.length <= parts.length && sp.parts.every((p, i) => compEquals(parts[i] as string, p))) {
+      return { category: "caller-defined", severity: "high", rule: "caller-defined path", via: "path" };
+    }
+  }
+  return null;
+}
+
 function matchParts(parts: readonly string[]): ProtectedMatch | null {
   for (const r of RULES) {
     if (matchRule(parts, r)) return { category: r.category, severity: r.severity, rule: r.rule, via: "path" };
@@ -163,13 +195,13 @@ function matchParts(parts: readonly string[]): ProtectedMatch | null {
  * can judge a path that does not exist yet. A path that leaves the root (`..`, an absolute path, a drive letter) is
  * `outside-worktree`; one that cannot be parsed (too long, a NUL) is `invalid-path`.
  */
-export function classifyPath(relPath: string): ProtectedMatch | null {
+export function classifyPath(relPath: string, opts: MatchOptions = {}): ProtectedMatch | null {
   if (typeof relPath !== "string") return { category: "invalid-path", severity: "high", rule: "not a string", via: "path" };
   if (/^(?:[\\/]|[a-zA-Z]:)/.test(relPath)) return { category: "outside-worktree", severity: "high", rule: "absolute path", via: "path" };
   const sp = split(relPath);
   if (sp === null) return { category: "invalid-path", severity: "high", rule: "unusable path", via: "path" };
   if (sp.escapes) return { category: "outside-worktree", severity: "high", rule: "leaves the worktree", via: "path" };
-  return matchParts(sp.parts);
+  return matchParts(sp.parts) ?? matchExtra(sp.parts, opts.extraPaths);
 }
 
 const MAX_HOPS = 40;
@@ -186,9 +218,9 @@ function components(p: string): { root: string; rest: string[] } {
  * system, so it is advisory for highlighting; it is not a guard against a link swapped later. Hard links cannot
  * be told from a path.
  */
-export async function classifyPathResolved(root: string, path: string): Promise<ProtectedMatch | null> {
+export async function classifyPathResolved(root: string, path: string, opts: MatchOptions = {}): Promise<ProtectedMatch | null> {
   const rel = isAbsolute(path) ? relative(root, path) : path;
-  const lexical = classifyPath(rel);
+  const lexical = classifyPath(rel, opts);
   if (lexical !== null) return lexical;
   const realRoot = await realish(root);
   let cur = realRoot;
@@ -231,7 +263,7 @@ export async function classifyPathResolved(root: string, path: string): Promise<
   if (finalRel === ".." || finalRel.startsWith("../") || finalRel.startsWith("..\\") || isAbsolute(finalRel)) {
     return hops > 0 ? { category: "outside-worktree", severity: "high", rule: "link leaves the worktree", via: "symlink" } : null;
   }
-  const hit = classifyPath(finalRel);
+  const hit = classifyPath(finalRel, opts);
   if (hit === null) return null;
   return hops > 0 ? { ...hit, via: "symlink", resolved: finalRel } : hit;
 }
