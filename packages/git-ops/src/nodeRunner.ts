@@ -61,7 +61,7 @@ export function createNodeRunner(opts: NodeRunnerOptions = {}): GitRunner {
           }
         }, opts.timeoutMs ?? 120_000);
         let truncated = false;
-        child.stdout.setEncoding("utf8").on("data", (d: string) => {
+        child.stdout.setEncoding(req.raw === true ? "latin1" : "utf8").on("data", (d: string) => {
           const room = Math.max(0, maxOutput - out.length);
           if (d.length > room) truncated = true;
           out += d.slice(0, room);
@@ -77,7 +77,7 @@ export function createNodeRunner(opts: NodeRunnerOptions = {}): GitRunner {
         child.on("close", (code) => {
           done();
           clearTimeout(timer);
-          resolve({ code: code ?? -1, stdout: out, stderr: err, ...(truncated ? { truncated: true } : {}) });
+          resolve({ code: code ?? -1, stdout: out, stderr: err, ...(truncated ? { truncated: true } : {}), ...(req.raw === true ? { raw: true } : {}) });
         });
         child.stdin.on("error", () => undefined);
         child.stdin.end(req.stdin ?? "");
