@@ -202,4 +202,3 @@ test("S8: the approval request names the real path and shows the redacted conten
   assert.equal(big.requests[0]?.previewTruncated, true);
   assert.ok((big.requests[0]?.preview.length ?? 0) <= 4096);
 });
-

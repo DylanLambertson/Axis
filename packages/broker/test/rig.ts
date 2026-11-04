@@ -56,4 +56,3 @@ export async function why(p: Promise<unknown>): Promise<string> {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type Loose = { name: string; tier: string; args: z.ZodType; command?: (a: any) => string | undefined; argv?: (a: any) => readonly string[] | undefined; git?: (a: any) => readonly unknown[]; targets?: (a: any) => { path: string; access: "read" | "write" }[]; run: (ctx: ToolContext, a: any) => Promise<unknown> };
 export const def = (d: Loose): ToolDefinition => d as unknown as ToolDefinition;
-

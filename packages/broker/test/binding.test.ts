@@ -273,4 +273,3 @@ test("N-c / NS2: file names match at the last component, short names only on win
   assert.ok(matchProtected(["pkg", "package.json"], [], "linux"));
   assert.ok(matchProtected(["a", "b", ".git", "x"], [], "linux")?.gitDir);
 });
-
