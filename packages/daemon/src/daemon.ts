@@ -1,10 +1,12 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { randomBytes } from "node:crypto";
 import { inspectMessage, permissionTierSchema, type MethodSpec } from "@axis/protocol";
+import { DrainGate } from "./drain.js";
 import { parseIdentity } from "./identity.js";
 import { OrphanTracker } from "./orphans.js";
 import { handlerKey, type PipelineDeps } from "./pipeline.js";
 import { Session, type SessionLimits } from "./session.js";
+import { ShutdownCoordinator, type FlushableIdempotencyStore, type ShutdownOptions, type ShutdownResult } from "./shutdown.js";
 import { protocolRegistry } from "./support.js";
 import type {
   ApprovalContentHook,
@@ -45,6 +47,8 @@ export interface DaemonOptions {
   readonly maxOrphanedPerWindow?: number;
   /** The same, daemon-wide backstop. Default: four windows' worth. */
   readonly maxOrphanedHandlers?: number;
+  /** Graceful shutdown timings (see shutdown.ts). */
+  readonly shutdown?: ShutdownOptions;
 }
 
 /** Does the request schema declare an optional `approval` that accepts a challenge reference? */
@@ -80,6 +84,9 @@ export class Daemon {
   readonly #idempotency: IdempotencyStore;
   readonly #limits: SessionLimits;
   #stopped = false;
+  // ---- graceful shutdown (integration point: see drain.ts, shutdown.ts, signals.ts) ----
+  readonly #drain = new DrainGate();
+  readonly #shutdown: ShutdownCoordinator;
 
   constructor(options: DaemonOptions) {
     this.#opts = options;
@@ -88,6 +95,16 @@ export class Daemon {
     this.#limits = { ...DEFAULT_LIMITS, ...options.limits };
     const perWindow = options.maxOrphanedPerWindow ?? this.#limits.maxInFlight;
     this.#orphans = new OrphanTracker(options.maxOrphanedHandlers ?? perWindow * 4, perWindow);
+    this.#shutdown = new ShutdownCoordinator(
+      {
+        drain: this.#drain,
+        cancelAll: () => [...this.#sessions.values()].reduce((n, s) => n + s.cancelAll(), 0),
+        closeAll: () => this.stop(),
+        store: this.#idempotency as FlushableIdempotencyStore,
+        onError: (where, error) => options.onInternalError?.(where, error),
+      },
+      options.shutdown,
+    );
     this.#pipeline = {
       registry: this.#registry,
       handlers: this.#handlers,
@@ -150,7 +167,7 @@ export class Daemon {
    */
   accept(connection: Connection, attestation: unknown): void {
     const max = this.#opts.maxConnections ?? 64;
-    if (this.#stopped || this.#sessions.size + this.#pending >= max) {
+    if (this.#stopped || this.#drain.draining || this.#sessions.size + this.#pending >= max) {
       connection.close();
       return;
     }
@@ -220,12 +237,13 @@ export class Daemon {
         if (timer) clearTimeout(timer);
       }
       // One live session per connection id: a verifier cannot bind an attestation to a port, so the daemon refuses reuse.
-      if (!identity || dead || this.#stopped || this.#sessions.has(identity.connectionId)) return refuse();
+      if (!identity || dead || this.#stopped || this.#drain.draining || this.#sessions.has(identity.connectionId)) return refuse();
       const s = new Session(connection, identity, {
         pipeline: this.#pipeline,
         limits: this.#limits,
         now: this.#opts.now ?? Date.now,
         orphans: this.#orphans,
+        drain: this.#drain,
         onClosed: (x) => {
           if (this.#sessions.get(x.identity.connectionId) === x) this.#sessions.delete(x.identity.connectionId);
         },
@@ -235,6 +253,20 @@ export class Daemon {
       this.#sessions.set(identity.connectionId, s);
       for (const raw of pending.splice(0)) s.handle(raw);
     })();
+  }
+
+  /**
+   * Graceful shutdown. New requests and connections are refused (E_UNAVAILABLE, no handler starts), handlers
+   * get `shutdown.graceMs` to settle, the rest are cancelled, connections close, the idempotency store is
+   * flushed if it has `flush`. Idempotent (the first reason wins) and never rejects.
+   */
+  shutdown(reason: string): Promise<ShutdownResult> {
+    return this.#shutdown.run(reason);
+  }
+
+  /** A second shutdown signal: skip the wait in progress. No effect unless `shutdown` was called. */
+  escalate(): void {
+    this.#shutdown.escalate();
   }
 
   /** Close every connection (in-flight calls are cancelled, runs owned by services continue). */

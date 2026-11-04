@@ -31,3 +31,6 @@ export {
   type PolicyDecision,
   type PolicyInput,
 } from "./types.js";
+export { DrainGate } from "./drain.js";
+export { ShutdownCoordinator, type FlushableIdempotencyStore, type ShutdownOptions, type ShutdownResult } from "./shutdown.js";
+export { installShutdownSignals, type ShutdownCapable, type SignalHandle, type SignalOptions, type SignalSource } from "./signals.js";

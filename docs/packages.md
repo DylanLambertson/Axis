@@ -15,6 +15,10 @@ Axis-owned TypeScript that does not need Code OSS services lives in `packages/*`
 
 More packages (worktrees, and so on) are added by their own changes.
 
+## Daemon shutdown
+
+`Daemon.shutdown(reason)` is the graceful path; it never rejects and every call returns the same promise (the first reason wins). It refuses new requests (`E_UNAVAILABLE`, no handler starts) and new connections, waits up to `shutdown.graceMs` (default 10 s) for admitted handlers to settle, cancels the rest through the normal cancel path (callers get `E_CANCELLED`), waits up to `cancelSettleMs` (2 s), closes every connection, then calls `flush()` on the idempotency store if it has one (bounded by `flushTimeoutMs`, 5 s). A handler that ignores its signal keeps its in-flight slot and orphan count until it settles; the result reports it as `unsettled`. `Daemon.escalate()` skips the wait in progress. `installShutdownSignals(daemon, { exit })` wires SIGTERM and SIGINT (first starts shutdown, second escalates, later ones are ignored) and removes its listeners when done; the caller's `exit` receives 0 for a clean shutdown and 1 otherwise. The store's `flush` is optional and is the hook for the journal-backed store.
+
 ## Audit anchor (requirement on the daemon)
 
 A hash chain cannot show that its newest events were deleted. Threat model G-11 is closed only if the daemon keeps a copy of the chain head outside the database. The daemon MUST:
