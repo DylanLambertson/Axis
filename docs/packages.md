@@ -12,6 +12,7 @@ Axis-owned TypeScript that does not need Code OSS services lives in `packages/*`
 | `@axis/git-ops` | Daemon-orchestrated Axis commit and push, and GitHub compare URLs. Takes an injected git runner (`context: "pty" \| "daemon"`): hooks run only in the pty context. Commit binds the reviewed tree, push uses one explicit refspec, both are refused while a CLI run is active. |
 | `@axis/audit` | Secret redaction, canonical JSON, and the hash-chained append-only audit log on `node:sqlite` (DMN-5, DMN-6). Also the SQLite helpers (`openDatabase`, `withTransaction`, `runMigrations`). |
 | `@axis/journal` | Durable `agent_workspaces` and `agent_runs`, the Phase 1a run state machine, idempotency keys and restart recovery (DMN-7). Depends on `@axis/audit`. |
+| `@axis/review` | Diff review core (REV-1, FT-1, PSH-1, WT-3, DRF-2 to DRF-4): the changed files of a worktree against a base, per-file and per-hunk accept and reject, the reviewed tree and its binding to `@axis/git-ops` commit, protected-path flags, symlink-safe preview, display escaping, the "changed outside the agent" model and secret-warning data. Pure logic over the injected git runner; reads the worktree once into a tree object. Design: `docs/design/review-core.md`. |
 
 More packages (worktrees, and so on) are added by their own changes.
 
@@ -130,6 +131,19 @@ Adapter rules:
 | `content.target`, `content.contentDigest` / digest under lock | `target`, `contentDigest` / `currentContentDigest` |
 
 Destructive library entry points are protected independently of the daemon: `@axis/worktrees` requires a token that only `markDiscardConfirmed` can mint, and that function is exported only from the `@axis/worktrees/daemon-confirm` subpath. Only the integration package that implements the gate adapter may import that subpath, never a handler. This cannot be enforced inside `@axis/daemon`, so it is a review rule.
+
+## Using `@axis/review`
+
+Everything goes through the `GitOpsDeps` the daemon already holds (daemon context only, hardened prefix) plus a `TempIndexProvider` that hands out a file in the daemon's private data directory. The package has no file system access.
+
+1. `ReviewSession.start(deps, { worktree, against })` reads the worktree **once** into a tree object (`worktreeTree`, a temporary index and `add -A`) and lists the changes against `against`. Use the recorded base for the overall "what did the run change" list. A review that will be committed must be against HEAD; `build()` refuses (`E_CONFLICT`, `details.reason: "not_head"`) otherwise.
+2. `session.hunks(path)` returns the hunks of a text file, or `fileLevelReason` when only a whole-file decision is offered (binary, symlink, submodule, add, delete, type change, mode only, unsafe path, over a size limit, or a diff that did not rebuild the new file exactly). `acceptFile`, `acceptHunk`, `rejectFile`, `rejectHunk` record decisions; nothing is accepted by default, and every hunk accepted is the whole file.
+3. `session.build()` returns a `ReviewBinding` (the reviewed tree, the worktree tree it came from, HEAD and the branch it was reviewed against, a digest for the audit event). Only a session can mint one; a plain object is refused.
+4. Under the daemon's worktree lock, `prepareCommit(deps, binding)` refuses (`E_CONFLICT`, `details.reason` `stale` or `head_moved`) when any file, HEAD or the branch changed since the review, then replaces the **real index** with the reviewed tree (any staging done outside Axis is replaced) and returns `commitInput(message, author?)` for `executeCommit`. A sparse checkout is refused (`E_UNAVAILABLE`). `checkFresh` is the same check without staging, for the UI.
+5. Reject only leaves a change out of the reviewed tree. Writing it back out of the worktree is `axis.worktrees/1.discard`, with its backup ref and approval, and is not here.
+6. `secretWarnings`, `computeOutsideAgent`, `previewSide` via `session.preview` and `escapeForDisplay` are the data for the push dialog, the drift indicator, the preview and every untrusted string. Show `displayPath`, never `path`.
+
+Proposed changes to `@axis/git-ops` (not made here, see `docs/design/review-core.md` §6): an `assertReviewFresh` hook next to `assertNoDrift`, `CommitInput.expectedParent`, and exports for `daemonGitFor` (with an extra environment) and `checkWorktree`.
 
 ## Rules
 
