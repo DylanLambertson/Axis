@@ -8,6 +8,7 @@
     { "path": "packages/providers" },
     { "path": "packages/git-ops" },
     { "path": "packages/audit" },
-    { "path": "packages/journal" }
+    { "path": "packages/journal" },
+    { "path": "packages/broker" }
   ]
 }
