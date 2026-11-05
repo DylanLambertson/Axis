@@ -79,7 +79,7 @@ Lines are counted in the order the bullets appear in `docs/ROADMAP.md`. L1 to L1
 | Protected-path highlighting, including hook directories | WT-3 | 1a | B7 | 1a/L4, 1a/L18 | Covered |
 | Protected-path approval for composer | WT-3 | 1b | C2 | 1b/L5 | Covered |
 | WT-1 path canonicalisation (composer) | WT-1 | 1b | C2 | 1b/L3 | Covered |
-| DMN-2 registered-worktree rule, TOCTOU, normalisation | DMN-2 | 1a | B6 | 1a/L5, 1a/L6, 1a/L19 | Covered |
+| DMN-2 registered-worktree rule, TOCTOU, normalisation | DMN-2 | 1a | B6 | 1a/L5, 1a/L6, 1a/L19 | Partial: covered without a concurrent process; the restore symlink race is a recorded residual (`threat-model-phase1.md`, "Known residual: symlink swap during a worktree restore") |
 | Trust inheritance; main attests trust at run start | TRU-1, TRU-2 | 1a | A2, B6 | 1a/L9, 1a/L19, 1a/L25 | Covered |
 | Challenges and native confirmation; altered request refused | APR-1, APR-2, EL-4 | 1a | B4 | 1a/L8, 1a/L20 | Covered |
 | Agent approval policy and UI | DMN-3 | 1b | C2, C3 | 1b/L2 | Covered |
