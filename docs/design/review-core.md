@@ -2,7 +2,7 @@
 
 - **Status:** Design, Phase 1a (ROADMAP ticket 7, design task B7). Written before the code.
 - **Covers:** the changed-files list against a base, per-file and per-hunk accept and reject, the reviewed tree and its binding to `@axis/git-ops` commit (REV-1), the "files changed outside the agent" model, protected-path flags, display escaping, symlink-safe preview and the secret-warning data for the push dialog (PSH-1, FT-1, DASH-1, WT-3, DRF-2 to DRF-4).
-- **Does not cover:** the UI, the daemon handlers (`axis.worktrees/1.commit`, `.discard`, `.applyPatch`), the drift ledger watcher, the run-base ref writer, the protected-path list itself, writing rejected changes back to the worktree (the `discard` action).
+- **Does not cover:** the UI, the daemon handlers (`axis.git/1.commit`, `axis.worktrees/1.discard`, `.applyPatch`), the drift ledger watcher, the run-base ref writer, the protected-path list itself, writing rejected changes back to the worktree (the `discard` action).
 
 ## 1. Shape
 
@@ -99,6 +99,10 @@ That contract is **sufficient to bind the content of the commit**, with one step
 Between `prepareCommit` and git running there is a window in which a file can change. That does not change what is committed (`R` is already an immutable tree in the index) but it makes the commit differ from the worktree the user saw, which is why G2 is best closed inside git-ops.
 
 The **binding** is an instance of `ReviewBinding`, a class whose constructor needs a module-private token and whose instances are recorded in a module-private set, so a plain object, or one made with its prototype, cannot be passed in its place; every function that takes one checks (the same device as the journal's `UserPrincipal`). It holds `worktree`, `head` and the checked-out `branch` (or null), `headTree`, `worktreeTree` (`W`), `reviewedTree` (`R`), and a digest over all of them and the accepted file summary, for the audit event. `prepareCommit` refuses when HEAD or the branch is no longer the one reviewed. `prepareCommit` returns a `PreparedCommit` whose `handoff(message, author?)` returns a `PinnedCommitInput` (a `CommitInput` plus the required `expectedParent` and short `expectedBranch`; a type-level test keeps it assignable to git-ops' `CommitInput`) for `executeCommit`. It does not carry a path from a renderer: the daemon keeps the binding keyed by its own id.
+
+## 6a. What the daemon wire adds (ticket P1b)
+
+`axis.review/1.diff` is file-level review: the wire carries display paths, kinds, counts and flags, no line of any file, and there is no hunk method. It reports `truncated` and a `contentId` for a file whose whole-file accept needs `acceptTruncated` (`hasCutLines`), and returns a `treeHash` only when no such file lacks an acknowledgement. `contentId` is the SHA-256 of `<newMode> <newOid>` of the snapshot tree entry, so mode and kind are bound as well as bytes. A path with U+FFFD (not strict UTF-8) is `unsafePath` with reason `not_utf8`. The user acknowledges a file with `{ fileId, contentId }` from the response; the handler passes `acceptTruncated: true` only when both equal the entry of the current review, and MUST NOT pass it in any other case. Files the view would not cut, binaries and over-size text are committed unseen: a recorded residual (threat model REV-1). See `docs/design/daemon-host.md` section 4.2.
 
 ## 7. Display (FT-1, DASH-1)
 

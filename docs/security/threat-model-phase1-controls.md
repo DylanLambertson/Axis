@@ -70,7 +70,7 @@ Lines are counted in the order the bullets appear in `docs/ROADMAP.md`. L1 to L1
 | Commit and push refused while a CLI run is active | GIT-SNAP-1, GIT-3 | 1a | B7, B8 | 1a/L24 | Covered |
 | Commit drift gate; push refspec; compare URL host match | GIT-3, GIT-5 | 1a | B7, B8 | 1a/L1, 1a/L18 | Covered |
 | Git argument and ref injection | GIT-7 | 1a | B6, B7, B8 | 1a/L26 | Covered |
-| Commit binds the reviewed tree; push secret warning | REV-1, PSH-1 | 1a | B7 | 1a/L27 | Covered |
+| Commit binds the reviewed tree; push secret warning | REV-1, PSH-1 | 1a | B7 | 1a/L27 | Partly: the tree binding is covered; showing content is a **residual** in 1a (file-level review with per-file acknowledgement of cut files only, see section 7 item 15) |
 | File tree, preview, diff review, dashboard strings, reveal path | FT-1, IDE-1, DASH-1 | 1a | A3, A5, A6, B7 | 1a/L27 | Covered |
 | Snapshot refs lifecycle; disclosure text | REF-1 | 1a | B11 | 1a/L16 | Covered |
 | Snapshot secret scan | REF-1 | 1b | C-series | 1b/L13 | Covered |
@@ -184,7 +184,8 @@ Each of these is accepted for Phase 1 on purpose. The wording is the wording the
 12. **Hooks for Axis commit and push run with the user's credentials** in the pty process context (not the daemon, decision Q-4), while the common dir matches the acknowledged baseline. They are user-controlled code. Re-evaluated in 1b when the vault ships (GIT-3).
 13. **User paths bypass the Axis gate** (GIT-6, R32): a commit from the terminal or SCM view runs planted hooks without GIT-SNAP-1, and the user's local checkout shares the common dir.
 14. **The OS sandbox is Phase 3.** Until then no process Axis starts is contained by the OS.
-15. **Phase 0 worktree discovery checks paths once (TOCTOU).** Until the daemon owns worktree paths (task B5), the Agent view reads git metadata in the renderer, checks each worktree's two-way link and that every path in that check is physical (its real path equals the path as written, so no symbolic link anywhere in it), and then uses the path as a string (Files tree root, terminal cwd). A process that swaps a checked folder for a symbolic link after discovery redirects those uses. It needs a live writer in that folder; a downloaded archive or a `git pull` cannot do it (`docs/feasibility/axis-shell-phase0.md` §6).
+15. **The 1a review shows no file content (REV-1).** `axis.review/1.diff` lists names, kinds and line counts, and the user acknowledges, by file id and content id, each file whose text a viewer would cut. No line of any file is on the wire, and there is no hunk accept. A text file the view would not cut, a binary file and a text file over the preview size can therefore be committed (tier 2, bound to the reviewed tree) on the strength of the file list alone, and the push scan (PSH-1) is the only content check before it leaves. Decided 2026-11-05 by the master under delegated authority; the owner may revisit. Closed when a content-showing review method exists.
+16. **Phase 0 worktree discovery checks paths once (TOCTOU).** Until the daemon owns worktree paths (task B5), the Agent view reads git metadata in the renderer, checks each worktree's two-way link and that every path in that check is physical (its real path equals the path as written, so no symbolic link anywhere in it), and then uses the path as a string (Files tree root, terminal cwd). A process that swaps a checked folder for a symbolic link after discovery redirects those uses. It needs a live writer in that folder; a downloaded archive or a `git pull` cannot do it (`docs/feasibility/axis-shell-phase0.md` §6).
 
 ## 8. Re-tag list applied (ADR 0004 implication 7)
 

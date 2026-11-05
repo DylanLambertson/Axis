@@ -87,7 +87,13 @@ export type VerifyFailureReason =
   | "truncated";
 
 export type VerifyResult =
-  | { readonly ok: true; readonly count: number; readonly head: ChainHead | null }
+  | {
+      readonly ok: true;
+      readonly count: number;
+      readonly head: ChainHead | null;
+      /** Present (true) only when `limit` stopped the scan before the end: more events follow `head`. */
+      readonly more?: true;
+    }
   | {
       readonly ok: false;
       /** The first sequence number at which the chain stops being valid. */
@@ -105,6 +111,12 @@ export interface VerifyOptions {
   readonly expectedHead?: ChainHead;
   /** Start after this verified head instead of at genesis (incremental check). */
   readonly from?: ChainHead;
+  /**
+   * Check at most this many events after the start, so a caller can scan a long log in slices and yield between
+   * them. When events remain the result is `ok: true` with `more: true` and the head reached so far; `expectedHead`
+   * is compared only by the slice that reaches the end. A positive integer.
+   */
+  readonly limit?: number;
 }
 
 export interface AuditLogOptions {
@@ -322,6 +334,10 @@ export class AuditLog implements AuditSink {
   }
 
   #verify(options: VerifyOptions): VerifyResult {
+    const limit = options.limit;
+    if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1)) {
+      throw new AxisError("E_INVALID_ARGUMENT", "limit must be a positive integer");
+    }
     const from = options.from;
     let expectedSeq = (from?.seq ?? 0) + 1;
     let prevHash = from?.hash ?? GENESIS_HASH;
@@ -330,6 +346,8 @@ export class AuditLog implements AuditSink {
       const row = this.#db.prepare(`SELECT ${COLUMNS} FROM audit_events WHERE seq = ?`).get(from.seq) as unknown as Row | undefined;
       if (!row) {
         const h = this.head();
+        // Later rows exist but the start row is gone: a deleted row in the middle, reported where it is missing.
+        if (h !== null && h.seq > from.seq) return { ok: false, firstBadSeq: from.seq, reason: "seq_gap", checked };
         return { ok: false, firstBadSeq: (h?.seq ?? 0) + 1, reason: "truncated", checked };
       }
       // Do not trust the stored hash column: recompute it from the row's content, so an edit to the anchor row itself is caught.
@@ -340,10 +358,16 @@ export class AuditLog implements AuditSink {
         return { ok: false, firstBadSeq: from.seq, reason: "hash_mismatch", checked };
       }
     }
+    let more = false;
+    // One row past the limit tells whether the slice ended before the log did.
     const rows = this.#db
-      .prepare(`SELECT ${COLUMNS} FROM audit_events WHERE seq > ? ORDER BY seq`)
-      .iterate(from?.seq ?? 0) as Iterable<Row>;
+      .prepare(`SELECT ${COLUMNS} FROM audit_events WHERE seq > ? ORDER BY seq${limit === undefined ? "" : " LIMIT ?"}`)
+      .iterate(...(limit === undefined ? [from?.seq ?? 0] : [from?.seq ?? 0, limit + 1])) as Iterable<Row>;
     for (const row of rows) {
+      if (limit !== undefined && checked >= limit) {
+        more = true;
+        break;
+      }
       const event = parseRow(row);
       if (event === "unsupported") {
         return { ok: false, firstBadSeq: expectedSeq, reason: "unsupported_version", checked };
@@ -366,6 +390,7 @@ export class AuditLog implements AuditSink {
       checked++;
     }
     const head: ChainHead | null = expectedSeq > 1 ? { seq: expectedSeq - 1, hash: prevHash } : null;
+    if (more) return { ok: true, count: head?.seq ?? 0, head, more: true };
     const expected = options.expectedHead;
     if (expected && (!head || head.seq < expected.seq)) {
       return { ok: false, firstBadSeq: (head?.seq ?? 0) + 1, reason: "truncated", checked };

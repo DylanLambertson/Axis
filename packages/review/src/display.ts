@@ -82,6 +82,9 @@ export function pathProblem(p: string): string | undefined {
   if (typeof p !== "string" || p.length === 0) return "empty";
   if (p.length > 4096) return "too_long";
   if (p.includes("\0")) return "nul";
+  // The runner decodes git's output as UTF-8 and replaces what is not valid with U+FFFD, so distinct byte paths (`a\xff`, `a\xfe`)
+  // can arrive as one string. Such a path cannot be told from another, so it is unusable (a file really named with U+FFFD is too).
+  if (p.includes("\ufffd")) return "not_utf8";
   if (p.startsWith("/") || p.startsWith("\\") || WINDOWS_DRIVE.test(p)) return "absolute";
   for (const seg of p.split("/")) {
     if (seg === "") return "empty_segment";
