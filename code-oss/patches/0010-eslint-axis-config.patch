@@ -1,5 +1,5 @@
 diff --git a/eslint.config.js b/eslint.config.js
-index 6c967c6c..27c13d48 100644
+index 6c967c6c..067cbac7 100644
 --- a/eslint.config.js
 +++ b/eslint.config.js
 @@ -13,6 +13,9 @@ import tseslint from 'typescript-eslint';
@@ -7,12 +7,22 @@ index 6c967c6c..27c13d48 100644
  import * as pluginLocal from './.eslint-plugin-local/index.ts';
  import * as pluginCopilotLocal from './extensions/copilot/.eslintplugin/index.ts';
 +// --- Start Axis ---
-+import { axisConfigs } from './build/axis/eslint.axis.ts';
++import { axisConfigs, axisImportPatternTargets } from './build/axis/eslint.axis.ts';
 +// --- End Axis ---
  import pluginImport from 'eslint-plugin-import';
  import pluginJsdoc from 'eslint-plugin-jsdoc';
  
-@@ -3081,4 +3084,8 @@ export default defineConfig(
+@@ -2364,6 +2367,9 @@ export default defineConfig(
+ 						} // node module allowed even in /browser/
+ 					]
+ 				},
++				// --- Start Axis ---
++				...axisImportPatternTargets,
++				// --- End Axis ---
+ 			]
+ 		}
+ 	},
+@@ -3081,4 +3087,8 @@ export default defineConfig(
  		rules: {
  			'local/code-no-new-javascript-files': 'error',
  		},

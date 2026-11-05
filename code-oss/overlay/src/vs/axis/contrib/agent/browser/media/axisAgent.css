@@ -1,0 +1,260 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) 2026 Dylan Lambertson. All rights reserved.
+ *--------------------------------------------------------------------------------------------*/
+
+/* Agent view: dense, flat, token colours only (docs/UX.md). */
+
+.monaco-workbench .axis-agent-view {
+	height: 100%;
+	overflow: auto;
+	font-size: 13px;
+}
+
+.monaco-workbench .axis-agent-view h2,
+.monaco-workbench .axis-agent-view h3 {
+	margin: 0;
+	font-weight: 600;
+}
+
+.monaco-workbench .axis-agent-view .axis-button {
+	font: inherit;
+	font-size: 12px;
+	color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
+	background: var(--vscode-button-secondaryBackground, transparent);
+	border: 1px solid var(--vscode-button-border, var(--vscode-panel-border, transparent));
+	border-radius: 6px;
+	padding: 3px 10px;
+	white-space: nowrap;
+	cursor: pointer;
+}
+
+.monaco-workbench .axis-agent-view .axis-button:hover {
+	background: var(--vscode-button-secondaryHoverBackground, var(--vscode-toolbar-hoverBackground));
+}
+
+.monaco-workbench .axis-agent-view :focus-visible,
+.monaco-workbench .axis-agent-view [role="option"]:focus,
+.monaco-workbench .axis-agent-view [role="treeitem"]:focus {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+
+.monaco-workbench .axis-agent-view .axis-note {
+	color: var(--vscode-descriptionForeground);
+	margin: 8px 0 0;
+}
+
+/* Dashboard */
+
+.monaco-workbench .axis-dashboard {
+	padding: 12px 16px;
+}
+
+.monaco-workbench .axis-dashboard-header {
+	display: flex;
+	align-items: baseline;
+	flex-wrap: wrap;
+	gap: 12px;
+	margin-bottom: 12px;
+}
+
+.monaco-workbench .axis-dashboard-title {
+	font-size: 15px;
+}
+
+.monaco-workbench .axis-dashboard-project {
+	color: var(--vscode-foreground);
+}
+
+.monaco-workbench .axis-dashboard-note {
+	flex: 1 1 320px;
+	color: var(--vscode-descriptionForeground);
+	font-size: 12px;
+}
+
+.monaco-workbench .axis-dashboard-columns,
+.monaco-workbench .axis-dashboard-row {
+	display: grid;
+	grid-template-columns: minmax(140px, 1.4fr) minmax(110px, 1.2fr) minmax(90px, 1fr) minmax(140px, 1.8fr) 72px 80px 100px;
+	gap: 12px;
+	align-items: center;
+	padding: 0 8px;
+}
+
+.monaco-workbench .axis-dashboard-columns {
+	height: 24px;
+	font-size: 11px;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	color: var(--vscode-descriptionForeground);
+}
+
+.monaco-workbench .axis-dashboard-group {
+	margin-top: 8px;
+	padding: 4px 8px;
+	font-size: 12px;
+	font-weight: 600;
+	color: var(--vscode-descriptionForeground);
+	border-bottom: 1px solid var(--vscode-panel-border, transparent);
+}
+
+.monaco-workbench .axis-dashboard-row {
+	height: 32px;
+	border-radius: 6px;
+	cursor: pointer;
+}
+
+.monaco-workbench .axis-dashboard-row:hover {
+	background: var(--vscode-list-hoverBackground);
+}
+
+.monaco-workbench .axis-dashboard-row[aria-selected="true"] {
+	background: var(--vscode-list-inactiveSelectionBackground);
+}
+
+.monaco-workbench .axis-dashboard-row .axis-cell {
+	overflow: hidden;
+	white-space: nowrap;
+	text-overflow: ellipsis;
+}
+
+.monaco-workbench .axis-dashboard-row .axis-cell.name {
+	font-weight: 600;
+}
+
+.monaco-workbench .axis-dashboard-row .axis-cell.branch,
+.monaco-workbench .axis-dashboard-row .axis-cell.activity,
+.monaco-workbench .axis-dashboard-row .axis-cell.changes {
+	color: var(--vscode-descriptionForeground);
+}
+
+/* Status: colour supports the text, never replaces it. */
+.monaco-workbench .axis-dashboard-row.state-failed .axis-cell.state,
+.monaco-workbench .axis-dashboard-row.state-missing .axis-cell.state {
+	color: var(--vscode-errorForeground);
+}
+
+.monaco-workbench .axis-dashboard-row.state-quiet .axis-cell.state {
+	color: var(--vscode-editorWarning-foreground);
+}
+
+.monaco-workbench .axis-dashboard-row.state-running .axis-cell.state {
+	color: var(--vscode-textLink-foreground);
+}
+
+.monaco-workbench .axis-dashboard-empty {
+	padding: 24px 8px;
+	color: var(--vscode-descriptionForeground);
+}
+
+/* Workspace view */
+
+.monaco-workbench .axis-workspace-view {
+	display: flex;
+	flex-direction: column;
+	height: 100%;
+}
+
+.monaco-workbench .axis-workspace-header {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	padding: 8px 16px;
+	border-bottom: 1px solid var(--vscode-panel-border, transparent);
+	flex: 0 0 auto;
+}
+
+.monaco-workbench .axis-workspace-title {
+	font-size: 15px;
+}
+
+.monaco-workbench .axis-workspace-facts {
+	flex: 1 1 auto;
+	color: var(--vscode-descriptionForeground);
+	overflow: hidden;
+	white-space: nowrap;
+	text-overflow: ellipsis;
+}
+
+.monaco-workbench .axis-workspace-actions {
+	display: flex;
+	gap: 6px;
+}
+
+.monaco-workbench .axis-workspace-body {
+	display: flex;
+	flex: 1 1 auto;
+	min-height: 0;
+}
+
+.monaco-workbench .axis-workspace-files {
+	flex: 0 0 280px;
+	display: flex;
+	flex-direction: column;
+	border-right: 1px solid var(--vscode-panel-border, transparent);
+	min-height: 0;
+}
+
+.monaco-workbench .axis-section-title {
+	font-size: 11px;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	color: var(--vscode-descriptionForeground);
+	padding: 8px 12px 4px;
+}
+
+.monaco-workbench .axis-workspace-activity {
+	flex: 1 1 auto;
+	padding: 0 16px 16px;
+	overflow: auto;
+}
+
+.monaco-workbench .axis-workspace-activity .axis-section-title {
+	padding-left: 0;
+}
+
+.monaco-workbench .axis-run-list {
+	margin: 4px 0;
+	padding-left: 18px;
+}
+
+/* Files tree */
+
+.monaco-workbench .axis-file-tree {
+	flex: 1 1 auto;
+	overflow: auto;
+	padding-bottom: 8px;
+}
+
+.monaco-workbench .axis-file-tree-row {
+	display: flex;
+	align-items: center;
+	height: 22px;
+	padding-right: 8px;
+	white-space: nowrap;
+	cursor: pointer;
+}
+
+.monaco-workbench .axis-file-tree-row:hover {
+	background: var(--vscode-list-hoverBackground);
+}
+
+.monaco-workbench .axis-file-tree-row[aria-selected="true"] {
+	background: var(--vscode-list-inactiveSelectionBackground);
+}
+
+.monaco-workbench .axis-file-tree-row .twistie {
+	display: inline-block;
+	width: 14px;
+	color: var(--vscode-descriptionForeground);
+}
+
+.monaco-workbench .axis-file-tree-row .name {
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.monaco-workbench .axis-file-tree-empty {
+	padding: 8px 12px;
+	color: var(--vscode-descriptionForeground);
+}
