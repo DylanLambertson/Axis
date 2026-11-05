@@ -117,10 +117,11 @@ const WHERE = "actor_id = ? AND workspace_id = ? AND contract = ? AND version = 
  * - Every write is one `withTransaction` on the shared handle, so a kill leaves the old row or the new one.
  * - If `complete` cannot be stored, the following `abandon` keeps the key as `unknown` instead of freeing it;
  *   `markUnknown` does the same when the handler succeeded but the call then failed.
- * - Time is wall clock (it has to survive a restart), guarded by the monotonic clock: a jump back extends rows, and
- *   a wall clock further ahead than the newest row plus uptime plus an hour expires nothing until that offset has
- *   held steady for an hour of monotonic time. Inside one boot small steps back are ignored. `now` must return
- *   integer epoch milliseconds.
+ * - Time is wall clock (it has to survive a restart), guarded by the monotonic clock: one trusted time starts each boot
+ *   from a saved value and follows a reading only within an hour of where uptime says it should be; a reading
+ *   further off, ahead or behind, moves nothing until that offset has held steady for an hour. Rows are created,
+ *   expire and are deleted by the trusted time. Small steps back inside a boot are ignored. `now` must return
+ *   integer epoch milliseconds. Exact limits: docs/packages.md.
  * - `complete` must not be called inside an outer transaction (it would not be durable on return).
  */
 export class JournalIdempotencyStore {
@@ -144,14 +145,13 @@ export class JournalIdempotencyStore {
   #clock = 0;
   /** The time rows are deleted by: it follows a forward jump only as the monotonic clock allows (see `#time`). */
   #trusted = 0;
-  /** The time new expiries are written from: never behind where uptime says the clock should be, so a clock that is behind never shortens one. */
-  #expiryBase = 0;
+  #saved = 0;
   /** Set while the latest reading is further ahead than the monotonic clock allows and has not yet held steady. */
   #unconfirmed = false;
   readonly #monotonic: () => number;
   #mono0: number;
   #base: number;
-  #candidate: { offset: number; since: number } | undefined;
+  #candidate: { offset: number; since: number; fromRow: number } | undefined;
 
   private constructor(db: DatabaseSync, o: IdempotencyStoreOptions) {
     this.#db = db;
@@ -169,16 +169,28 @@ export class JournalIdempotencyStore {
     this.#maxShareBytes = positive(o.maxShareBytes ?? Math.max(1, Math.floor(this.#maxTotalBytes / 8)), "maxShareBytes");
     this.#sweepEveryMs = positive(o.sweepEveryMs ?? 60_000, "sweepEveryMs");
     this.#boot = (o.bootId ?? randomUUID)();
-    // The clock starts no earlier than the newest row already written, and may then only move ahead as fast as the
-    // monotonic clock does (see `#time`): a restart whose wall clock is far ahead cannot expire anything.
+    // The clock starts from the saved trusted time (not from row timestamps, which may carry a wrong reading) and
+    // may then move only as fast as the monotonic clock does (see `#time`).
     this.#monotonic = o.monotonic ?? ((): number => performance.now());
     this.#mono0 = this.#monotonic();
-    const newest = db
-      .prepare("SELECT MAX(MAX(created_at), MAX(expires_at) - ?) AS t FROM daemon_idempotency")
-      .get(Math.max(this.#ttlMs, this.#interruptedTtlMs)) as { t: number | bigint | null };
-    this.#base = newest.t !== null && newest.t > 0 ? Number(newest.t) : this.#reading();
-    this.#clock = this.#trusted = this.#expiryBase = this.#base;
+    const saved = db.prepare("SELECT trusted_ms AS t FROM daemon_idempotency_clock WHERE id = 1").get() as { t: number | bigint } | undefined;
+    this.#base = saved ? Number(saved.t) : this.#reading();
+    this.#clock = this.#trusted = this.#base;
     this.#lastSweep = this.#trusted;
+    this.#save();
+  }
+
+  /** Persist the trusted time (rate limited by the caller). It only ever holds a time the monotonic gate has accepted. */
+  #save(): void {
+    this.#db
+      .prepare("INSERT INTO daemon_idempotency_clock (id, trusted_ms) VALUES (1, ?) ON CONFLICT (id) DO UPDATE SET trusted_ms = excluded.trusted_ms")
+      .run(this.#trusted);
+    this.#saved = this.#trusted;
+  }
+
+  /** The newest row at the moment a suspect offset first appears: rows added after it were made at the suspect time. */
+  #maxRow(): number {
+    return Number((this.#db.prepare("SELECT COALESCE(MAX(rowid), 0) AS n FROM daemon_idempotency").get() as { n: number | bigint }).n);
   }
 
   #reading(): number {
@@ -188,42 +200,54 @@ export class JournalIdempotencyStore {
   }
 
   /**
-   * Integer epoch ms that never goes backwards by jitter, and sets `#trusted`, the time rows expire by.
+   * Integer epoch ms that never goes backwards by jitter, and sets `#trusted`: the one time rows are created at,
+   * expire at and are deleted by (so an expiry is never further than the longest TTL past it).
    *
-   * The wall clock must survive a restart, but it can be wrong. `implied` is where the clock should read if it only
-   * ran forward with uptime (the newest row at boot, plus the monotonic time since). A reading no more than an hour
-   * past that is trusted. A reading further ahead (a wrong clock at boot, a spike) is not: expiry advances only at
-   * the monotonic rate until that offset has held steady for `CONFIRM_MS` of monotonic time, then it is accepted. So
-   * a clock that is wrong for minutes frees no `unknown` key, however many calls are made meanwhile; a real long
-   * downtime delays expiry by about that hour. Large steps back are followed; small ones are ignored.
+   * The wall clock must survive a restart, but it can be wrong. `implied` is where it should read if it only ran
+   * forward with uptime from the saved trusted time. A reading within an hour of it, either side, is trusted. A
+   * reading further off (a wrong clock at boot, a spike, a restored snapshot) is not: trusted time advances at the
+   * monotonic rate until that offset has held steady for `CONFIRM_MS` of monotonic time, then it is accepted. So a
+   * clock that is wrong for minutes shortens or frees no key, however many calls are made meanwhile. When a forward
+   * offset is accepted, the rows made during the wait are moved forward by it (a real long downtime must not
+   * shorten them). A clock that is wrong for more than an hour is accepted as it is: see docs/packages.md.
+   * Small steps back are ignored.
    */
   #time(): number {
     const raw = this.#reading();
     const mono = this.#monotonic();
     const prev = this.#clock;
     const t = raw < prev - HOUR_MS ? raw : Math.max(prev, raw);
-    const implied = this.#base + (mono - this.#mono0);
-    if (t <= implied + HOUR_MS) {
+    const implied = Math.floor(this.#base + (mono - this.#mono0)); // whole milliseconds: the columns are integers
+    if (Math.abs(t - implied) <= HOUR_MS) {
       this.#unconfirmed = false;
       this.#candidate = undefined;
-      this.#trusted = t;
+      this.#trusted = Math.max(this.#trusted, t);
     } else {
       const offset = t - mono;
-      if (this.#candidate === undefined || Math.abs(offset - this.#candidate.offset) > JITTER_MS) this.#candidate = { offset, since: mono };
+      if (this.#candidate === undefined || Math.abs(offset - this.#candidate.offset) > JITTER_MS) {
+        this.#candidate = { offset, since: mono, fromRow: this.#maxRow() };
+      }
       if (mono - this.#candidate.since >= CONFIRM_MS) {
+        const delta = t - implied;
+        if (delta > 0) {
+          this.#db
+            .prepare("UPDATE daemon_idempotency SET created_at = created_at + ?, expires_at = expires_at + ? WHERE rowid > ?")
+            .run(delta, delta, this.#candidate.fromRow);
+        }
         this.#base = t;
         this.#mono0 = mono;
         this.#trusted = t;
         this.#unconfirmed = false;
         this.#candidate = undefined;
+        this.#save();
       } else {
         this.#unconfirmed = true;
-        this.#trusted = Math.max(this.#trusted, Math.min(t, implied));
+        this.#trusted = Math.max(this.#trusted, implied);
       }
     }
     this.#clock = t;
-    this.#expiryBase = Math.max(t, Math.floor(this.#base + (mono - this.#mono0))); // whole milliseconds: the column is an integer
-    return t;
+    if (this.#trusted - this.#saved >= this.#sweepEveryMs) this.#save();
+    return this.#trusted;
   }
 
   /** Migrate the journal schema (idempotent) and return a store. Call `recover(lock)` on daemon start. */
@@ -245,9 +269,8 @@ export class JournalIdempotencyStore {
       throw new AxisError("E_INVALID_ARGUMENT", "A request hash must be 1 to 128 characters");
     }
     return withTransaction(this.#db, (): StoreBegin => {
-      this.#time();
-      const x = this.#expiryBase;
-      this.#sweep(this.#trusted);
+      const x = this.#time();
+      this.#sweep(x);
       let row = this.#db.prepare(`SELECT * FROM daemon_idempotency WHERE ${WHERE}`).get(...k) as unknown as Row | undefined;
       if (row && row.state !== "in-progress" && row.expires_at <= this.#trusted) {
         this.#db.prepare(`DELETE FROM daemon_idempotency WHERE ${WHERE}`).run(...k);
@@ -288,8 +311,7 @@ export class JournalIdempotencyStore {
     try {
       if (this.#db.isTransaction) throw new AxisError("E_INTERNAL", "complete must not run inside an outer transaction");
       withTransaction(this.#db, () => {
-        this.#time();
-        const x = this.#expiryBase;
+        const x = this.#time();
         const stored = this.#storable(result);
         const fits = stored.text !== undefined && this.#makeRoom(k[0], k[1], stored.bytes);
         const res = fits
@@ -339,7 +361,7 @@ export class JournalIdempotencyStore {
       .prepare(
         `UPDATE daemon_idempotency SET state = 'unknown', unknown_reason = 'failed-after-start', expires_at = ? WHERE ${WHERE} AND state = 'in-progress' AND boot_id = ?`,
       )
-      .run((this.#time(), this.#expiryBase) + this.#interruptedTtlMs, ...k, this.#boot);
+      .run(this.#time() + this.#interruptedTtlMs, ...k, this.#boot);
   }
 
   /**
@@ -355,9 +377,8 @@ export class JournalIdempotencyStore {
       throw new AxisError("E_INVALID_ARGUMENT", "The instance lock does not guard this database's directory");
     }
     return withTransaction(this.#db, () => {
-      this.#time();
-      const x = this.#expiryBase;
-      this.#sweep(this.#trusted, true);
+      const x = this.#time();
+      this.#sweep(x, true);
       const res = this.#db
         .prepare(
           "UPDATE daemon_idempotency SET state = 'unknown', unknown_reason = 'interrupted', expires_at = ? WHERE state = 'in-progress' AND boot_id <> ?",
@@ -462,7 +483,7 @@ export class JournalIdempotencyStore {
     this.#db.prepare("DELETE FROM daemon_idempotency WHERE state <> 'in-progress' AND expires_at <= ?").run(t);
     if (this.#unconfirmed) return;
     // An expiry further ahead than the longest TTL allows came from a bad clock reading: bring it back.
-    const latest = Math.max(t, this.#expiryBase) + Math.max(this.#ttlMs, this.#interruptedTtlMs);
+    const latest = t + Math.max(this.#ttlMs, this.#interruptedTtlMs);
     this.#db.prepare("UPDATE daemon_idempotency SET expires_at = ? WHERE state <> 'in-progress' AND expires_at > ?").run(latest, latest);
   }
 }

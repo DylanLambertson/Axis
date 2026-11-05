@@ -94,6 +94,17 @@ export const JOURNAL_MIGRATIONS: readonly Migration[] = [
       CREATE INDEX daemon_idempotency_budget ON daemon_idempotency (actor_id, workspace_id, created_at);
     `,
   },
+  {
+    // The idempotency store's trusted time, saved apart from row timestamps: a boot starts its clock from it, so a wrong
+    // reading that was written into a row cannot carry into the next boot. One row.
+    version: 3,
+    sql: `
+      CREATE TABLE daemon_idempotency_clock (
+        id         INTEGER PRIMARY KEY CHECK (id = 1),
+        trusted_ms INTEGER NOT NULL CHECK (trusted_ms >= 0)
+      ) STRICT;
+    `,
+  },
 ];
 
 export const JOURNAL_SCHEMA_VERSION = JOURNAL_MIGRATIONS.length;
