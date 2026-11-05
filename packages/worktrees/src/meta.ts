@@ -102,6 +102,22 @@ export async function readBaseline(gitDir: string): Promise<GitSnapshot | null> 
   }
 }
 
+/**
+ * Stores the reviewed state. A snapshot with an unread guard file (random
+ * digest, see `GitSnapFile.unreadable`) is refused rather than stored: the user
+ * would be accepting content nobody was shown, and the entry would drift forever.
+ */
 export async function writeBaseline(gitDir: string, snap: GitSnapshot): Promise<void> {
+  const unread = Object.entries(snap.files).filter(([, f]) => f.unreadable !== undefined);
+  if (unread.some(([, f]) => f.unreadable === 'changed')) {
+    throw new WorktreeError('E_CONFLICT', 'a git guard file changed while it was read; try again', {
+      reason: 'guard-file-changing', retryable: true, paths: unread.map(([k]) => k).slice(0, 8),
+    });
+  }
+  if (unread.length > 0) {
+    throw new WorktreeError('E_POLICY_DENIED', 'the git guard files exceed the read limits and cannot be reviewed', {
+      reason: 'guard-set-unreadable', paths: unread.map(([k]) => k).slice(0, 8),
+    });
+  }
   await writeAtomic(path.join(gitDir, BASELINE_FILE), JSON.stringify(snap));
 }
