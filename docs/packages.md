@@ -49,6 +49,25 @@ More packages are added by their own changes.
   - The `list` cap of 1000 is unreachable: about 550 entries fit one message.
   - The daemon handler must map `E_POLICY_DENIED` from the package, or it becomes `E_INTERNAL`.
 
+## Daemon shutdown
+
+`Daemon.shutdown(reason)` is the graceful path; it never rejects and every call returns the same promise (the first reason wins).
+
+1. **Refuse new work.** New requests get `E_UNAVAILABLE` (retryable; the connection closes when shutdown ends, so the retry reaches the restarted daemon). New connections are closed, and a `hello` that arrives while draining gets `hello-rejected` with `E_UNAVAILABLE`.
+2. **Grace.** Handlers already admitted get `shutdown.graceMs` (default 10 s) to settle. A request still waiting in policy, idempotency, an approval content lock or an audit write when shutdown begins is refused with `E_UNAVAILABLE` (audited as denied, reason `shutting_down`) instead of starting its handler. One residual: a tier 3-5 request whose approval is already being spent (inside `gate.execute`) is not interrupted and may start its handler during the grace period.
+3. **Cancel.** What remains is cancelled through the normal cancel path (callers get `E_CANCELLED`), then the daemon waits up to `cancelSettleMs` (2 s) for those handlers to settle. If nothing needed cancelling the wait is skipped.
+4. **Close and flush.** Connections close (`stop()`, which also withdraws each connection's pending approvals; shutdown does not withdraw them earlier, because that would race admitted requests the grace period should finish). Then `flush()` is called on the idempotency store if it has one, bounded by `flushTimeoutMs` (5 s). A store that writes synchronously, such as the journal-backed one, has no `flush` and the result reads `flushed: "unsupported"`; that is not a defect. `flushed` is `"running"` when the flush was cut short and had not settled.
+
+A handler that ignores its signal keeps its in-flight slot and orphan count until it settles; the result reports it as `unsettled`. Handlers still running at a forced exit are recorded as `unknown` on restart by the journal-backed store.
+
+Timing options are milliseconds: `undefined` keeps the default, `Infinity` waits without a timer, a finite value above 2^31-1 is clamped to it, and NaN, a negative number or a non-number throws a `TypeError` at construction.
+
+`Daemon.escalate()` skips the wait in progress (grace, settle or flush) and only that one; each further call skips the next. `installShutdownSignals(daemon, { exit })` wires SIGTERM and SIGINT: the first starts shutdown, every later one escalates, and the listeners are removed when shutdown finishes (a signal after that gets the default action). `exit(code, result)` gets 0 for a clean shutdown and 1 otherwise, and the full result: close the journal or audit database only when `result.unsettled === 0` and `result.flushed !== "running"` (a flush that timed out or was escalated past and has not settled may still be writing), because handlers still running write to it.
+
+Windows: SIGTERM is never delivered there, and Electron's `utilityProcess.kill()` terminates the process outright. In the utility process the graceful path is reachable only if main sends a shutdown message that calls `daemon.shutdown()`. That message is not implemented yet.
+
+Known gap: `withdrawConnection` during close is not awaited, so `flush()` and `exit` can run before it settles. That is harmless while challenges are in memory; a persistent challenge store would need shutdown to await it.
+
 ## Audit anchor (requirement on the daemon)
 
 A hash chain cannot show that its newest events were deleted. Threat model G-11 is closed only if the daemon keeps a copy of the chain head outside the database. The daemon MUST:
