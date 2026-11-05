@@ -1,14 +1,14 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
-import { stat } from "node:fs/promises";
+import { readFile, readdir, stat } from "node:fs/promises";
 import { collectConfigs } from "./configs.js";
 import { computeDigest } from "./digest.js";
 import { escapeDisplay } from "./display.js";
 import { record, recordTree, type Ctx } from "./entry.js";
 import { SnapshotError, invalid } from "./errors.js";
 import { listDir } from "./fsread.js";
-import { askGit, resolveGit, type GitView } from "./git.js";
+import { askGit, cachedGit, type GitView } from "./git.js";
 import { Budget, Exhausted, resolveLimits, type Limits } from "./limits.js";
 import { isWithin, realish, samePath } from "./paths.js";
 import { collectRefs } from "./refs.js";
@@ -28,8 +28,8 @@ export interface TakeOptions {
   readonly limits?: Partial<Limits>;
   readonly signal?: AbortSignal;
   /**
-   * Absolute path of `git`, resolved once by the caller outside every worktree. When absent, the first absolute
-   * `PATH` entry that holds an executable `git` outside the worktrees is used; a bare `git` is never started.
+   * Absolute path of `git`, resolved once by the host (at start) outside every registered worktree. When absent, the first absolute
+   * `PATH` entry that holds an executable `git` outside the worktrees is used (resolved once per PATH for the process, again only if that git is gone); a bare `git` is never started.
    */
   readonly gitPath?: string;
   /** The environment git is started from (only the GIT-ENV-1 allow-list is passed on). Defaults to `process.env`. */
@@ -91,17 +91,25 @@ export async function takeSnapshot(opts: TakeOptions): Promise<Snapshot> {
     const names: string[] = [];
     const env = opts.env ?? process.env;
     const pathKey = Object.keys(env).find((k) => k.toUpperCase() === "PATH");
-    let gitPath: string | null = null;
-    if (opts.gitPath !== undefined) {
-      gitPath = absolute(opts.gitPath, "gitPath");
-      if (await insideAny(gitPath, roots)) throw invalid("gitPath must be outside every worktree");
-    } else {
-      gitPath = await resolveGit(pathKey === undefined ? undefined : env[pathKey], roots);
-    }
-    const view: GitView =
+    // Every checkout of this repository is a place the CLI can write, so none may hold the git that runs: the ones the
+    // caller names, and the ones the repository itself lists in the `gitdir` file of each `worktrees` entry.
+    const forbidden = [...roots, ...(await siblingRoots(commonDir))];
+    const given = opts.gitPath === undefined ? null : absolute(opts.gitPath, "gitPath");
+    if (given !== null && (await insideAny(given, forbidden))) throw invalid("gitPath must be outside every worktree");
+    const pathValue = pathKey === undefined ? undefined : env[pathKey];
+    const configTooBig = await tooBig([join(commonDir, "config"), join(commonDir, "config.worktree")], limits.maxConfigBytes);
+    const ask = (gitPath: string): Promise<GitView> =>
+      askGit({ worktree: worktreePath, gitDir: expected ?? null, commonDir, home: ctx.homeDir, env, gitPath, budget, limits, configTooBig });
+    let gitPath = given ?? (await cachedGit(pathValue, forbidden));
+    let view: GitView =
       gitPath === null
-        ? { discovered: { gitDir: null, commonDir: null, topLevel: null }, config: null, hooksDir: null, problems: ["git was not found outside the worktrees"] }
-        : await askGit({ worktree: worktreePath, gitDir: expected ?? null, commonDir, home: ctx.homeDir, env, gitPath, budget, limits });
+        ? { discovered: { gitDir: null, commonDir: null, topLevel: null }, config: null, hooksDir: null, problems: ["git was not found outside the worktrees"], missing: false }
+        : await ask(gitPath);
+    if (view.missing && given === null) {
+      // The cached git is gone: resolve again, once, through the same trusted function.
+      gitPath = await cachedGit(pathValue, forbidden, true);
+      if (gitPath !== null) view = await ask(gitPath);
+    }
     for (const p of view.problems) ctx.incomplete.push({ id: "git", reason: p, blocking: true });
     link = await collectLink(ctx, worktreePath, commonDir, expected, names, view);
     // Relative paths start where git runs hooks: its own top level, which `core.worktree` can move.
@@ -210,4 +218,26 @@ export async function takeStableSnapshot(opts: StableOptions): Promise<Snapshot>
   }
   const incomplete = [...prev.incomplete, { id: "snapshot", reason: "changed between consecutive snapshots", blocking: true }];
   return { ...prev, incomplete, digest: computeDigest(prev.entries, prev.link, incomplete) };
+}
+
+/** Checkouts the repository lists in the `gitdir` file of each `worktrees` entry (the directory holding each `.git` file). At most 256. */
+async function siblingRoots(commonDir: string): Promise<string[]> {
+  const out: string[] = [];
+  try {
+    const names = (await readdir(join(commonDir, "worktrees"))).slice(0, 256);
+    for (const n of names) {
+      const text = await readFile(join(commonDir, "worktrees", n, "gitdir"), "utf8").catch(() => "");
+      const line = text.split("\n", 1)[0] ?? "";
+      if (line.length > 0 && line.length < 4096 && isAbsolute(line)) out.push(dirname(line));
+    }
+  } catch {
+    // No `worktrees` directory: no siblings.
+  }
+  return out;
+}
+
+/** True when any of the files is larger than `max` bytes. */
+async function tooBig(files: readonly string[], max: number): Promise<boolean> {
+  for (const f of files) if ((await stat(f).then((s) => s.size, () => 0)) > max) return true;
+  return false;
 }

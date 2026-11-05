@@ -77,12 +77,21 @@ export function secretNamed(name: string): boolean {
 // Anything between `scheme://` and the `@` is userinfo, however short: `https://token@host` is a credential too.
 // The scp form `user:password@host:path` has no scheme, but the password is as much a secret.
 const SCP_PASSWORD = /(?<![A-Za-z0-9._@-])[A-Za-z0-9._-]+:[^\s@/:]+@(?=[A-Za-z0-9.-]+:)/g;
-const USERINFO = /([A-Za-z][A-Za-z0-9+.-]*:\/\/)[^/\s@]*@/g;
+// The lookbehind makes a scheme start only at the beginning of a run of scheme characters: without it a long run
+// of them is tried from every position (quadratic).
+const USERINFO = /(?<![A-Za-z0-9+.-])([A-Za-z][A-Za-z0-9+.-]*:\/\/)[^/\s@]*@/g;
+// `scheme://user:secret` with no `@` left: git ends a value at `#`, so `https://bob:secret#x@host` is stored as
+// `https://bob:secret`. A host and port (`https://host:8080`) is not one: its second part is only digits.
+const USERPASS = /(?<![A-Za-z0-9+.-])([A-Za-z][A-Za-z0-9+.-]*:\/\/)[^/\s@:]+:(?!\d{1,5}(?![^/\s]))[^/\s@]+/g;
 // `name = value` or `name: value` where the name ends like a secret's (extraheader, token, password ...).
 const SECRET_LINE = /^(\s*[A-Za-z0-9_.-]{1,64}\s*[=:]\s*)(.*)$/;
 
+/** The most text any redaction pattern is run over: a longer value is cut first, so no pattern can be made slow. */
+const REDACT_MAX = 64_000;
+
 /** Pattern redaction (URL userinfo, headers, token shapes, secret-named assignments, key blocks). */
-export function redactText(s: string): string {
+export function redactText(input: string): string {
+  const s = clip(input, REDACT_MAX);
   const named = s
     .split("\n")
     .map((line) => {
@@ -92,7 +101,7 @@ export function redactText(s: string): string {
       return secretNamed(name.slice(name.lastIndexOf(".") + 1)) && (m[2] as string).length > 0 ? `${m[1]}[REDACTED]` : line;
     })
     .join("\n");
-  return redactor.redactString(named.replace(USERINFO, "$1[REDACTED]@").replace(SCP_PASSWORD, "[REDACTED]@"));
+  return redactor.redactString(named.replace(USERINFO, "$1[REDACTED]@").replace(USERPASS, "$1[REDACTED]").replace(SCP_PASSWORD, "[REDACTED]@"));
 }
 
 /** A value shown on a single line: redacted, then escaped. */

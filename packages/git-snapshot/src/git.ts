@@ -1,9 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { execFile } from "node:child_process";
-import { constants } from "node:fs";
-import { access, stat } from "node:fs/promises";
-import { delimiter, dirname, isAbsolute, join, parse, resolve } from "node:path";
-import { buildGitEnv } from "@axis/pty-policy";
+import { delimiter, dirname, parse, resolve } from "node:path";
+import { buildGitEnv, isPlainAbsolute, nodeFs, resolveExecutable } from "@axis/pty-policy";
 import { SnapshotError } from "./errors.js";
 import { Exhausted, type Budget, type Limits } from "./limits.js";
 import { isWithin, realish } from "./paths.js";
@@ -35,46 +33,55 @@ export interface GitView {
   readonly hooksDir: string | null;
   /** Fixed-text reasons something could not be asked of git. */
   readonly problems: readonly string[];
+  /** The `git` file could not be started at all (ENOENT): the caller may re-resolve it once. */
+  readonly missing: boolean;
 }
 
-const exe = (platform: NodeJS.Platform): readonly string[] => (platform === "win32" ? ["git.exe", "git.com"] : ["git"]);
-
-/** The `PATH` entries that are safe to search: absolute only. An empty or relative entry means "the current directory". */
+/** The `PATH` entries that are safe to search: plain absolute only (pty-policy's rule: no UNC, device or root-relative). */
 export function trustedPathEntries(pathValue: string | undefined, platform: NodeJS.Platform = process.platform): string[] {
   const sep = platform === "win32" ? ";" : delimiter;
-  return (pathValue ?? "").split(sep).filter((e) => e.length > 0 && !e.includes("\0") && isAbsolute(e));
+  return (pathValue ?? "").split(sep).filter((e) => e.length > 0 && !e.includes("\0") && isPlainAbsolute(e, platform));
 }
 
 /**
- * The absolute path of `git`, looked up only in absolute `PATH` entries and never in a directory that holds a
- * worktree (`forbidden`, compared by real path). Returns null when there is none. Never a bare command name: the
- * worktree is writable by the CLI, and a `git` planted there must not run with the daemon's privileges (CLI-1, CFG-1).
+ * The absolute path of `git`, by `@axis/pty-policy`'s `resolveExecutable` (absolute `PATH` entries only, `.exe` and
+ * `.com` on Windows, nothing whose real path is inside `forbidden`). Returns null when there is none. Never a bare
+ * command name: the worktree is writable by the CLI, and a `git` planted there must not run with the daemon's
+ * privileges (CLI-1, CFG-1).
  */
-export async function resolveGit(
-  pathValue: string | undefined,
-  forbidden: readonly string[],
-  platform: NodeJS.Platform = process.platform,
-): Promise<string | null> {
-  const bad = await Promise.all(forbidden.map((f) => realish(f)));
-  for (const dir of trustedPathEntries(pathValue, platform)) {
-    for (const name of exe(platform)) {
-      const candidate = join(dir, name);
-      try {
-        if (!(await stat(candidate)).isFile()) continue;
-        if (platform !== "win32") await access(candidate, constants.X_OK);
-      } catch {
-        continue;
-      }
-      const real = await realish(candidate);
-      if (bad.some((b) => isWithin(b, real) || isWithin(b, resolve(candidate)))) continue;
-      return candidate;
-    }
+export function resolveGit(pathValue: string | undefined, forbidden: readonly string[], platform: NodeJS.Platform = process.platform): string | null {
+  const key = platform === "win32" ? "Path" : "PATH";
+  return resolveExecutable("git", { [key]: pathValue ?? "" }, platform, nodeFs, { excludeDirs: forbidden }) ?? null;
+}
+
+// One resolution per distinct PATH for the life of the process. A `git` dropped into an earlier directory later is
+// not picked up; the entry is dropped only when the cached git is gone (ENOENT) or has come to sit inside a worktree.
+const cache = new Map<string, string>();
+
+/** The cached `git` for this PATH, or a fresh trusted resolution. `refresh` drops the cached one first. */
+export async function cachedGit(pathValue: string | undefined, forbidden: readonly string[], refresh = false): Promise<string | null> {
+  const key = pathValue ?? "";
+  if (refresh) cache.delete(key);
+  const hit = cache.get(key);
+  if (hit !== undefined) {
+    const real = await realish(hit);
+    const bad = await Promise.all(forbidden.map((f) => realish(f)));
+    if (!bad.some((b) => isWithin(b, real) || isWithin(b, hit))) return hit;
   }
-  return null;
+  const found = resolveGit(pathValue, forbidden);
+  if (found === null) cache.delete(key);
+  else cache.set(key, found);
+  return found;
+}
+
+/** Tests: forget every cached resolution. */
+export function forgetGit(): void {
+  cache.clear();
 }
 
 interface Out {
   readonly ok: boolean;
+  readonly missing: boolean;
   readonly stdout: Buffer;
 }
 
@@ -152,6 +159,8 @@ export interface AskInput {
   readonly gitPath: string;
   readonly budget: Budget;
   readonly limits: Limits;
+  /** A config file is already known to be over the size limit: git is not asked to list it (it would read it all). */
+  readonly configTooBig?: boolean;
 }
 
 /**
@@ -174,7 +183,7 @@ export async function askGit(i: AskInput): Promise<GitView> {
     return new Promise((done) => {
       const timeout = Math.max(1, Math.floor(Math.min(TIMEOUT_MS, i.budget.remaining())));
       const opts = { cwd, env, encoding: "buffer" as const, maxBuffer, timeout, windowsHide: true, ...(i.budget.signal === undefined ? {} : { signal: i.budget.signal }) };
-      execFile(i.gitPath, [...base, ...argv], opts, (err, stdout) => done({ ok: err === null, stdout: Buffer.isBuffer(stdout) ? stdout : Buffer.alloc(0) }));
+      execFile(i.gitPath, [...base, ...argv], opts, (err, stdout) => done({ ok: err === null, missing: (err as NodeJS.ErrnoException | null)?.code === "ENOENT", stdout: Buffer.isBuffer(stdout) ? stdout : Buffer.alloc(0) }));
     });
   };
   const guard = async (argv: readonly string[]): Promise<Out> => {
@@ -182,11 +191,13 @@ export async function askGit(i: AskInput): Promise<GitView> {
       return await run(argv);
     } catch (e) {
       if (e instanceof SnapshotError || e instanceof Exhausted) throw e;
-      return { ok: false, stdout: Buffer.alloc(0) };
+      return { ok: false, missing: false, stdout: Buffer.alloc(0) };
     }
   };
+  let missing = false;
   const line = async (argv: readonly string[]): Promise<string | null> => {
     const o = await guard(argv);
+    if (o.missing) missing = true;
     return o.ok ? oneLine(o.stdout) : null;
   };
   const gd = await line(["rev-parse", "--absolute-git-dir"]);
@@ -205,13 +216,22 @@ export async function askGit(i: AskInput): Promise<GitView> {
     problems.push("no git directory to ask about");
   } else {
     const dir = [`--git-dir=${useDir}`];
-    const list = await guard([...dir, "config", "--list", "--show-origin", "-z", "--includes"]);
-    config = list.ok ? parseListOutput(list.stdout, i.limits.maxSettings * 8) : null;
-    if (config === null) problems.push("git could not read the configuration");
+    const cap = i.limits.maxSettings * 8;
+    if (i.configTooBig === true) {
+      problems.push("a config file is over the size limit, so git was not asked to list the configuration");
+    } else {
+      const list = await guard([...dir, "config", "--list", "--show-origin", "-z", "--includes"]);
+      if (list.missing) missing = true;
+      config = list.ok ? parseListOutput(list.stdout, cap) : null;
+      if (config === null) {
+        const many = list.ok && parseListOutput(list.stdout) !== null;
+        problems.push(many ? `the configuration has more than ${cap} entries, more than the snapshot can list` : "git could not read the configuration");
+      }
+    }
     // No `--work-tree`: git then uses its own top level, so a relative hooks path starts where git runs hooks.
     const hp = await line([...dir, "rev-parse", "--git-path", "hooks"]);
     if (hp === null) problems.push("git could not name the hooks directory");
     else hooksDir = resolve(discovered.topLevel ?? i.worktree, hp);
   }
-  return { discovered, config, hooksDir, problems };
+  return { discovered, config, hooksDir, problems, missing };
 }

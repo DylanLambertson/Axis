@@ -121,6 +121,7 @@ export async function collectConfigs(ctx: Ctx, input: ConfigInput): Promise<Path
   } else {
     const byFile = new Map<string, GitConfigEntry[]>();
     for (const e of gitList) {
+      // Only what git read from a file: `-c` values (the snapshot's own `core.fsmonitor=false`) are not the repository's.
       if (e.file === null) continue;
       const list = byFile.get(e.file) ?? [];
       list.push(e);
@@ -143,7 +144,7 @@ export async function collectConfigs(ctx: Ctx, input: ConfigInput): Promise<Path
       const mine = parsed.entries.map((e) => [keyOf(e), e.value] as const);
       if (!repeatsOf(list.map((e) => [e.key, e.value] as const), mine)) bad(parsed.id, "parser and git disagree");
     }
-    source = gitList.map((e) => ({ key: e.key, value: e.value, origin: e.file === null ? "other" : (originId.get(e.file) ?? "other") }));
+    source = gitList.filter((e) => e.file !== null).map((e) => ({ key: e.key, value: e.value, origin: originId.get(e.file as string) ?? "other" }));
   }
 
   const targets: PathTarget[] = [];
