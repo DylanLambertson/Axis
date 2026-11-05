@@ -34,10 +34,12 @@ export const RESTRICTED_SUBPATHS = new Map([
  * Exact-file exceptions to RESTRICTED_SUBPATHS: specifier -> package -> paths inside that package's `src` that may
  * import it, despite the package not being listed there. Exact paths, never patterns; mirrors HOST_FILE_RULES in
  * test/packages/imports.test.mjs and the single mint file in test/packages/principal-dist.test.mjs. The daemon host's
- * review handler mints the user principal for a person's acceptance (ADR 0005 D2).
+ * review handler mints the user principal for a person's acceptance, and its run trust minter mints the single-use run
+ * attestation after main's `trust.check` (ADR 0005 D2).
  */
 export const RESTRICTED_FILE_EXCEPTIONS = new Map([
   ["@axis/journal/daemon-principal", new Map([["daemon-host", new Set(["handlers/review.ts"])]])],
+  ["@axis/runs/daemon-attestation", new Map([["daemon-host", new Set(["gate/run-trust.ts"])]])],
 ]);
 
 /**
@@ -47,12 +49,22 @@ export const RESTRICTED_FILE_EXCEPTIONS = new Map([
  */
 export const RESTRICTED_MODULES = [
   { pkg: "journal", file: "daemon-principal.ts", importers: new Set(["daemon"]), files: new Set(["daemon-host/handlers/review.ts"]) },
-  { pkg: "runs", file: "daemon-attestation.ts", importers: new Set(["daemon"]) },
+  { pkg: "runs", file: "daemon-attestation.ts", importers: new Set(["daemon"]), files: new Set(["daemon-host/gate/run-trust.ts"]) },
   // The modules that hold the mint symbols: only their own package may reach them.
   { pkg: "journal", file: "principal.ts", importers: new Set() },
   { pkg: "runs", file: "attestation.ts", importers: new Set() },
   { pkg: "audit", file: "lock.ts", importers: new Set() },
+  // The host's run trust minter: even inside its own package only the composition point (the public index) may load it, so no
+  // handler, service or binding can mint an attestation without main's per-start trust.check (TRU-2).
+  { pkg: "daemon-host", file: "gate/run-trust.ts", importers: new Set(), files: new Set(["daemon-host/index.ts"]), exact: true },
 ];
+
+/** True when the staged file `rel` (package `importerPkg`) may import restricted module `r`. `exact` ignores the owner package. */
+export function mayImportRestricted(r, importerPkg, rel) {
+  if (r.files?.has(rel) === true) return true;
+  if (r.exact === true) return false;
+  return importerPkg === r.pkg || (importerPkg !== null && r.importers.has(importerPkg));
+}
 
 /**
  * Classifies one specifier found in staged package `pkg`. Returns `{ kind, ... }`, or throws a string reason.

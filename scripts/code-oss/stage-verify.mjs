@@ -5,7 +5,7 @@
 import { createHash } from "node:crypto";
 import { join, posix } from "node:path";
 import { StageError, fail, readRegular, walkFiles } from "./stage-fs.mjs";
-import { LOADER_BUILTINS, RESTRICTED_MODULES, importSpecifiers, unsafeForms } from "./stage-scan.mjs";
+import { LOADER_BUILTINS, RESTRICTED_MODULES, mayImportRestricted, importSpecifiers, unsafeForms } from "./stage-scan.mjs";
 
 export const STAGE_ROOT = "src/vs/axis/packages";
 export const MANIFEST_NAME = "stage-manifest.json";
@@ -47,7 +47,7 @@ export function checkStagedFile(rel, text, fileSet) {
     if (pkg === "vendor" && targetPkg !== "vendor") fail(`staged ${rel}: vendored code reaches ${spec}`);
     if (pkg !== "vendor" && targetPkg === "vendor" && !target.startsWith("vendor/zod/")) fail(`staged ${rel}: ${spec} reaches an unknown vendored module`);
     for (const r of RESTRICTED_MODULES) {
-      if (target.startsWith(`${r.pkg}/${r.file.replace(/\.ts$/, "")}.`) && pkg !== r.pkg && !r.importers.has(pkg) && r.files?.has(rel) !== true) {
+      if (target.startsWith(`${r.pkg}/${r.file.replace(/\.ts$/, "")}.`) && !mayImportRestricted(r, pkg, rel)) {
         fail(`staged ${rel}: ${spec} reaches ${r.pkg}/${r.file}, which only ${[...r.importers].join(", ")} may import`);
       }
     }

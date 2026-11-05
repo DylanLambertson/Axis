@@ -23,7 +23,7 @@
 import { createRequire } from "node:module";
 import { join, posix, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { RESTRICTED_MODULES } from "./stage-scan.mjs";
+import { RESTRICTED_MODULES, mayImportRestricted } from "./stage-scan.mjs";
 import { MANIFEST_NAME, STAGE_ROOT, verifyStaged } from "./stage-verify.mjs";
 import { readFileSync } from "node:fs";
 
@@ -52,7 +52,7 @@ export function checkMetafile(metafile, manifest, { bundledText = null, treeZod 
       for (const r of RESTRICTED_MODULES) {
         if (target !== `${r.pkg}/${r.file}`) continue;
         const importerPkg = rel === null ? null : pkgOf(rel);
-        if (importerPkg !== r.pkg && !(importerPkg !== null && r.importers.has(importerPkg)) && r.files?.has(rel) !== true) {
+        if (!mayImportRestricted(r, importerPkg, rel)) {
           bad.push(`${input}: imports ${imp.path}, which only ${[r.pkg, ...r.importers].join(" and ")} may import`);
         }
       }
