@@ -21,3 +21,16 @@ diff --git a/build/next/index.ts b/build/next/index.ts
  	'vs/workbench/api/node/extensionHostProcess',
  	'vs/platform/files/node/watcher/watcherMain',
  	'vs/platform/terminal/node/ptyHostMain',
+@@ -598,7 +604,11 @@
+ 				// source map coordinate system (both reference the raw esbuild output).
+ 				// Skip extension host bundles - they expose API surface to extensions
+ 				// where true encapsulation matters more than the perf gain.
+-				if (file.path.endsWith('.js') && doManglePrivates && !isExtensionHostBundle(file.path)) {
++				// --- Start Axis ---
++				// Axis security markers rely on #private fields (ADR 0005 D3.6): never mangle vs/axis outputs.
++				const keepAxisPrivates = file.path.replaceAll('\\', '/').includes('/vs/axis/');
++				// --- End Axis ---
++				if (file.path.endsWith('.js') && doManglePrivates && !isExtensionHostBundle(file.path) && !keepAxisPrivates) {
+ 					const preMangleCode = content;
+ 					const mangleResult = convertPrivateFields(content, file.path);
+ 					content = mangleResult.code;

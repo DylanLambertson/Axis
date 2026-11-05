@@ -4,6 +4,10 @@
 //
 //   node scripts/code-oss/check-daemon-graph.mjs --tree <code-oss tree> [--all-packages] [--entry <tree-relative .ts>]...
 //
+// Limits: this bundles with esbuild platform `node`; build/next uses `neutral` plus plugins. The resolved graph was
+// identical in the review run (232 inputs, same externals), but it does NOT model build/next's post-processing
+// (NLS, `--mangle-privates`): see check-privates.mjs and ADR 0005 D3.6.
+//
 // Bundles the daemon entry (and, with --all-packages, every staged package index) with Code OSS's own esbuild and
 // the options of build/next/bundle.ts, with a metafile, then checks what esbuild really resolved. Unlike the text
 // scans, the metafile cannot be fooled by how an import is spelled:
@@ -81,7 +85,7 @@ export function checkMetafile(metafile, manifest, { bundledText = null, treeZod 
 }
 
 /** Bundles `entries` (tree-relative) in `tree` with Code OSS's esbuild, then checks the metafile. */
-export async function checkTree({ tree, entries }) {
+export async function checkTree({ tree, entries, graphOf = null }) {
   const manifest = verifyStaged(tree); // the hook's output must be intact before its graph means anything
   const req = createRequire(join(tree, "build", "package.json"));
   const esbuild = req("esbuild");
@@ -99,7 +103,14 @@ export async function checkTree({ tree, entries }) {
   const bundledText = result.outputFiles.map((f) => f.text).join("\n");
   const violations = checkMetafile(result.metafile, manifest, { bundledText, treeZod });
   const inputs = Object.keys(result.metafile.inputs);
-  return { violations, manifest, entries, inputs: inputs.length, stagedInputs: inputs.filter((i) => i.startsWith(PREFIX)).length, zod: manifest.zod, treeZod };
+  // The staged sources that went into one entry's bundle (for the #private survival check).
+  let stagedSources = [];
+  if (graphOf !== null) {
+    const single = await esbuild.build({ ...getBundleOptions(false, "node"), entryPoints: [join(tree, graphOf)], outdir: join(tree, "out-axis-graph"), absWorkingDir: tree, metafile: true, sourcemap: false, write: false });
+    stagedSources = Object.keys(single.metafile.inputs).filter((i) => i.startsWith(PREFIX) && i.endsWith(".ts")).map((i) => readFileSync(join(tree, i), "utf8"));
+  }
+  return {
+    stagedSources, violations, manifest, entries, inputs: inputs.length, stagedInputs: inputs.filter((i) => i.startsWith(PREFIX)).length, zod: manifest.zod, treeZod };
 }
 
 if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

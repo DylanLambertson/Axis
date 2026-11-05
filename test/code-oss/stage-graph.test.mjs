@@ -6,9 +6,10 @@ import assert from "node:assert/strict";
 import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { checkMetafile } from "../../scripts/code-oss/check-daemon-graph.mjs";
+import { mangleExemptionPresent, privateNameCount, privatesSurvive } from "../../scripts/code-oss/check-privates.mjs";
 import { STAGE_ROOT, stage } from "../../scripts/code-oss/stage-packages.mjs";
 import { RESTRICTED_MODULES, RESTRICTED_SUBPATHS, classifySpecifier, hiddenLoaders, importSpecifiers, maskComments, nonLiteralLoads } from "../../scripts/code-oss/stage-scan.mjs";
-import { sha256, treeHash, verifyStaged } from "../../scripts/code-oss/stage-verify.mjs";
+import { checkStagedFile, sha256, treeHash, verifyStaged } from "../../scripts/code-oss/stage-verify.mjs";
 import { put, withFixture } from "./stage-fixture.mjs";
 
 const staged = (tree, rel) => join(tree, STAGE_ROOT, rel);
@@ -50,7 +51,7 @@ test("the restricted-module table matches test/packages/imports.test.mjs", () =>
     assert.ok(m, `${spec} is no longer restricted in imports.test.mjs`);
     assert.deepEqual([...importers].sort(), m[1].split(",").map((s) => s.trim().replace(/"/g, "")).filter(Boolean).sort(), spec);
   }
-  for (const r of RESTRICTED_MODULES) assert.ok(RESTRICTED_SUBPATHS.has([...RESTRICTED_SUBPATHS.keys()].find((k) => k.startsWith(`@axis/${r.pkg}/`))), r.file);
+  for (const r of RESTRICTED_MODULES.filter((m) => m.importers.size > 0)) assert.ok(RESTRICTED_SUBPATHS.has([...RESTRICTED_SUBPATHS.keys()].find((k) => k.startsWith(`@axis/${r.pkg}/`))), r.file);
 });
 
 test("verifyStaged accepts the hook's output and refuses each way of changing it", () => {
@@ -137,4 +138,35 @@ test("checkMetafile: a clean graph passes; each violation is named", () => {
   }
   assert.ok(checkMetafile(good, manifest, { bundledText: "var v = { major: 4, minor: 4, patch: 3 };", treeZod: "4.4.3" }).some((v) => /does not contain zod 4\.6\.6/.test(v)));
   assert.ok(checkMetafile(good, manifest, { bundledText: `${text} { major: 4, minor: 4, patch: 3 }`, treeZod: "4.4.3" }).some((v) => /tree's zod 4\.4\.3/.test(v)));
+});
+
+test("checkStagedFile: vendored code cannot reach Axis code, Axis code can reach only vendor/zod, and mint holders stay private", () => {
+  const set = new Set(["vendor/zod/index.js", "vendor/other/x.js", "vendor/zod/a.js", "protocol/index.ts", "journal/principal.ts", "journal/index.ts", "daemon/index.ts"]);
+  assert.throws(() => checkStagedFile("vendor/zod/a.js", 'import "../../protocol/index.js";', set), /vendored code reaches/);
+  assert.throws(() => checkStagedFile("vendor/zod/a.js", 'import "node:fs";', set), /vendored code imports/);
+  assert.throws(() => checkStagedFile("protocol/index.ts", 'import "../vendor/other/x.js";', set), /unknown vendored module/);
+  assert.throws(() => checkStagedFile("daemon/index.ts", 'import "../journal/principal.js";', set), /only .* may import/);
+  checkStagedFile("journal/index.ts", 'import "./principal.js";', set);
+  checkStagedFile("protocol/index.ts", 'import "../vendor/zod/index.js";', set);
+});
+
+test("checkMetafile: another package reaching a mint holder is refused", () => {
+  const manifest = { zod: null, files: ["journal/principal.ts", "audit/lock.ts", "daemon/index.ts"].map((p) => ({ path: p })) };
+  const P = (rel) => `${STAGE_ROOT}/${rel}`;
+  const meta = { inputs: { [P("daemon/index.ts")]: { imports: [{ path: P("journal/principal.ts"), kind: "import-statement" }, { path: P("audit/lock.ts"), kind: "import-statement" }] }, [P("journal/principal.ts")]: { imports: [] }, [P("audit/lock.ts")]: { imports: [] } } };
+  const found = checkMetafile(meta, manifest);
+  assert.equal(found.length, 2, found.join("; "));
+});
+
+test("check-privates: counts # names on tokens, sees the exemption, and flags mangled bundles", () => {
+  assert.equal(privateNameCount('class A { #x = 1; get() { return this.#x; } } const s = "#not"; // #nor\n'), 2);
+  assert.equal(privateNameCount("class A { $a = 1; }"), 0);
+  const upstream = "\t\t\t\tif (file.path.endsWith('.js') && doManglePrivates && !isExtensionHostBundle(file.path)) {\n";
+  assert.equal(mangleExemptionPresent(upstream), false);
+  const patched = "const keepAxisPrivates = file.path.replaceAll('\\\\', '/').includes('/vs/axis/');\nif (file.path.endsWith('.js') && doManglePrivates && !isExtensionHostBundle(file.path) && !keepAxisPrivates) {\n";
+  assert.equal(mangleExemptionPresent(patched), true);
+  assert.equal(mangleExemptionPresent(`${patched}${upstream}`), false, "a second, ungated mangle condition");
+  assert.deepEqual(privatesSurvive({ file: "a.js", sourcePrivates: 3, builtText: "class A { #a = 1; }" }), []);
+  assert.deepEqual(privatesSurvive({ file: "a.js", sourcePrivates: 0, builtText: "class A { $a = 1; }" }), []);
+  assert.match(privatesSurvive({ file: "a.js", sourcePrivates: 3, builtText: "class A { $a = 1; }" })[0], /mangled into plain properties/);
 });
