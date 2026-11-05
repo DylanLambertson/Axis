@@ -17,22 +17,40 @@ export function resolveGit(env: EnvLike, platform: NodeJS.Platform, excludeDirs:
   return resolveExecutable("git", env, platform, nodeFs, { excludeDirs });
 }
 
+// Global options that take their value as the NEXT argument when written without `=`.
+const SPLIT_VALUE = new Set(["-c", "--namespace", "--super-prefix", "--config-env", "--attr-source"]);
+
 /**
  * The directories a request works in: cwd, `--work-tree` and `--git-dir`. A value that is not a plain absolute path
  * (a relative `--git-dir=.git` would be read against cwd by git, never matching anything here) is refused.
+ * Only git's OPTION area is read: from the start up to the subcommand (the first argument that does not start with `-`)
+ * or a `--`. A pathspec such as `-Cache` after the subcommand is data, and the value of `-c` is data too.
  */
 export function requestDirs(req: GitRunRequest, platform: NodeJS.Platform = process.platform): string[] {
   const dirs = [req.cwd];
-  for (const a of req.argv) {
+  for (let i = 0; i < req.argv.length; i++) {
+    const a = req.argv[i] as string;
+    if (!a.startsWith("-") || a === "--") break;
     // git-ops builds only the `=` forms; the split forms and -C are never parsed here, so a caller may not carry them.
-    if (a === "-C" || a === "--git-dir" || a === "--work-tree" || (a.startsWith("-C") && a.length > 2 && !a.startsWith("--"))) {
+    if (a === "-C" || a === "--git-dir" || a === "--work-tree" || (a.startsWith("-C") && !a.startsWith("--"))) {
       throw denied("-C and the split --git-dir and --work-tree forms are not allowed; use --git-dir=<abs> and --work-tree=<abs>");
     }
+    // --exec-path[=<dir>] makes git run its helpers (git-<name>) from <dir>, which may be inside the worktree.
+    if (a === "--exec-path" || a.startsWith("--exec-path=")) throw denied("--exec-path is not allowed");
     if (a.startsWith("--work-tree=")) dirs.push(a.slice(12));
     else if (a.startsWith("--git-dir=")) dirs.push(a.slice(10));
+    else if (SPLIT_VALUE.has(a)) i++; // its value is data, not an option
   }
   if (!dirs.every((d) => isPlainAbsolute(d, platform))) throw denied("cwd, --work-tree and --git-dir must be absolute paths");
   return dirs;
+}
+
+// Variables that move git's helpers, config or repository. GIT_INDEX_FILE is NOT here: the bound commit sets it itself.
+const ENV_OVERRIDE = /^GIT_(EXEC_PATH|CONFIG.*|DIR|WORK_TREE|COMMON_DIR)$/i;
+
+/** Refuses an environment that moves git's helpers, config or repository (GIT_EXEC_PATH, GIT_CONFIG*, GIT_DIR and the like). */
+export function assertNoEnvOverride(env: Record<string, string>): void {
+  if (Object.keys(env).some((n) => ENV_OVERRIDE.test(n))) throw denied("the environment must not set GIT_EXEC_PATH, GIT_CONFIG*, GIT_DIR or another override");
 }
 
 /**

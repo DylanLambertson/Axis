@@ -1,8 +1,9 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { spawn } from "node:child_process";
 import { GitOpsError, denied } from "./errors.js";
-import { isNormalised, isPlainAbsolute, nodeFs } from "@axis/pty-policy";
-import { assertGitOutsideWorktree, requestDirs, resolveGit, withTrustedPath } from "./gitPath.js";
+import { isInsideAny, nodeFs } from "@axis/pty-policy";
+import { readExcludeDirs } from "./excludeDirs.js";
+import { assertGitOutsideWorktree, assertNoEnvOverride, requestDirs, resolveGit, withTrustedPath } from "./gitPath.js";
 import type { GitRunRequest, GitRunResult, GitRunner } from "./types.js";
 
 export interface NodeRunnerOptions {
@@ -21,9 +22,11 @@ export interface NodeRunnerOptions {
   readonly gitPath?: string;
   /**
    * Every registered worktree and git directory, read on EACH lookup (the list changes). Required for any re-resolve of an
-   * injected `gitPath`. It must return a plain array of absolute, normalised path strings; a throw, a Promise, a string,
-   * `undefined`, a relative or empty entry is refused with `E_UNAVAILABLE` (fixed text, nothing of the host's value or
-   * message is echoed) and nothing is looked up or spawned.
+   * injected `gitPath`. It must return a plain `Array` (not a Proxy or subclass, no accessors or holes) of at most 1024
+   * absolute, normalised path strings (duplicates by real path are dropped); a throw, a Promise, a string, `undefined`, a
+   * relative or empty entry is refused with `E_UNAVAILABLE` (fixed text, nothing of the host's value or message is echoed)
+   * and nothing is looked up or spawned. Without a host `gitPath`, a list that covers none of the request's directories
+   * (cwd, --work-tree, --git-dir) is refused too, unless `allowUnpinnedGit` is set.
    */
   readonly excludeDirs?: () => readonly string[];
   /**
@@ -38,8 +41,6 @@ export interface NodeRunnerOptions {
   readonly timeoutMs?: number;
   readonly maxOutput?: number;
 }
-
-const BAD_EXCLUDES = "the host's excludeDirs list is not usable (it must be an array of absolute, normalised paths)";
 
 // Each git child runs in its own process group (POSIX), so a timeout can kill git's children too. The price: a group
 // does not die with the daemon. A normal exit kills every live group below; a crash or SIGKILL of the daemon cannot,
@@ -65,22 +66,9 @@ export function createNodeRunner(opts: NodeRunnerOptions = {}): GitRunner {
   const injected = opts.gitPath !== undefined;
   const platform = process.platform;
   const lookupEnv = { ...(opts.env ?? process.env) };
-  /** The host's list, copied and checked. Any problem is a closed-set refusal that echoes nothing of the host's value. */
+  /** The host's list, copied, checked and deduplicated (see readExcludeDirs). Any problem is a closed-set refusal. */
   function hostExcludes(): string[] {
-    if (opts.excludeDirs === undefined) return [];
-    let got: unknown;
-    try {
-      got = opts.excludeDirs();
-    } catch {
-      throw new GitOpsError("E_UNAVAILABLE", BAD_EXCLUDES);
-    }
-    if (!Array.isArray(got)) throw new GitOpsError("E_UNAVAILABLE", BAD_EXCLUDES);
-    const list: string[] = [];
-    for (const d of got as unknown[]) {
-      if (typeof d !== "string" || !isPlainAbsolute(d, platform) || !isNormalised(d, platform)) throw new GitOpsError("E_UNAVAILABLE", BAD_EXCLUDES);
-      list.push(d);
-    }
-    return list;
+    return opts.excludeDirs === undefined ? [] : readExcludeDirs(opts.excludeDirs, platform);
   }
   /** The real path to spawn. A vanished file is looked up once more, through the one trusted resolver. */
   function pickGit(req: GitRunRequest): string {
@@ -91,7 +79,15 @@ export function createNodeRunner(opts: NodeRunnerOptions = {}): GitRunner {
       if (cached === undefined && injected && opts.excludeDirs === undefined) {
         throw new GitOpsError("E_UNAVAILABLE", "the git executable the host gave has gone; the host must resolve it again");
       }
-      cached ??= resolveGit(lookupEnv, platform, [...hostExcludes(), ...requestDirs(req, platform)]);
+      if (cached === undefined) {
+        const listed = hostExcludes();
+        const mine = requestDirs(req, platform);
+        // Without a host gitPath the list is the only protection against a sibling's git: it must cover this request.
+        if (opts.gitPath === undefined && opts.allowUnpinnedGit !== true && !mine.some((d) => isInsideAny(d, listed, platform, nodeFs))) {
+          throw new GitOpsError("E_UNAVAILABLE", "the host's excludeDirs does not cover this request's directories");
+        }
+        cached = resolveGit(lookupEnv, platform, [...listed, ...mine]);
+      }
       if (cached === undefined) throw new GitOpsError("E_UNAVAILABLE", "no git executable was found in a trusted PATH entry");
       assertGitOutsideWorktree(cached, req, platform);
       const real = nodeFs.realPath?.(cached);
@@ -110,6 +106,7 @@ export function createNodeRunner(opts: NodeRunnerOptions = {}): GitRunner {
       }
       let gitPath: string;
       try {
+        assertNoEnvOverride(req.env);
         gitPath = pickGit(req);
       } catch (e) {
         return Promise.reject(e);
