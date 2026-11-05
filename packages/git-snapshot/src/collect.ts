@@ -1,13 +1,13 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
-import { readFile, readdir, stat } from "node:fs/promises";
+import { stat } from "node:fs/promises";
 import { collectConfigs } from "./configs.js";
 import { computeDigest } from "./digest.js";
 import { escapeDisplay } from "./display.js";
 import { record, recordTree, type Ctx } from "./entry.js";
 import { SnapshotError, invalid } from "./errors.js";
-import { listDir } from "./fsread.js";
+import { listDir, readItem } from "./fsread.js";
 import { askGit, cachedGit, type GitView } from "./git.js";
 import { Budget, Exhausted, resolveLimits, type Limits } from "./limits.js";
 import { isWithin, realish, samePath } from "./paths.js";
@@ -93,7 +93,7 @@ export async function takeSnapshot(opts: TakeOptions): Promise<Snapshot> {
     const pathKey = Object.keys(env).find((k) => k.toUpperCase() === "PATH");
     // Every checkout of this repository is a place the CLI can write, so none may hold the git that runs: the ones the
     // caller names, and the ones the repository itself lists in the `gitdir` file of each `worktrees` entry.
-    const forbidden = [...roots, ...(await siblingRoots(commonDir))];
+    const forbidden = [...roots, ...(await siblingRoots(ctx, commonDir))];
     const given = opts.gitPath === undefined ? null : absolute(opts.gitPath, "gitPath");
     if (given !== null && (await insideAny(given, forbidden))) throw invalid("gitPath must be outside every worktree");
     const pathValue = pathKey === undefined ? undefined : env[pathKey];
@@ -220,18 +220,36 @@ export async function takeStableSnapshot(opts: StableOptions): Promise<Snapshot>
   return { ...prev, incomplete, digest: computeDigest(prev.entries, prev.link, incomplete) };
 }
 
-/** Checkouts the repository lists in the `gitdir` file of each `worktrees` entry (the directory holding each `.git` file). At most 256. */
-async function siblingRoots(commonDir: string): Promise<string[]> {
+/**
+ * Checkouts the repository lists in the `gitdir` file of each `worktrees` entry (the directory holding each `.git`
+ * file); relative paths (git 2.48+) start at the entry's own directory. The CLI can write these files, so they are read
+ * like any other: bounded, non-blocking, within the time budget and the abort signal. Anything that cannot be read
+ * as one short path blocks the snapshot (the set of excluded places is then unknown), and is never skipped.
+ */
+async function siblingRoots(ctx: Ctx, commonDir: string): Promise<string[]> {
   const out: string[] = [];
-  try {
-    const names = (await readdir(join(commonDir, "worktrees"))).slice(0, 256);
-    for (const n of names) {
-      const text = await readFile(join(commonDir, "worktrees", n, "gitdir"), "utf8").catch(() => "");
-      const line = text.split("\n", 1)[0] ?? "";
-      if (line.length > 0 && line.length < 4096 && isAbsolute(line)) out.push(dirname(line));
+  const dir = join(commonDir, "worktrees");
+  const block = (id: string, reason: string): void => void ctx.incomplete.push({ id, reason, blocking: true });
+  const list = await listDir(dir, ctx.budget, 256);
+  if (!list.ok) {
+    if (list.detail !== "missing") block("worktrees", `unreadable (${list.detail})`);
+    return out;
+  }
+  if (list.undecodable.length > 0) block("worktrees", "entry names that are not valid UTF-8");
+  for (const n of list.names) {
+    const id = `worktrees/${escapeDisplay(n)}/gitdir`;
+    const r = await readItem(join(dir, n, "gitdir"), ctx.budget, { maxBytes: 4096, keep: 4096 });
+    if (r.state === "missing") continue;
+    if (r.state !== "file" || r.bytes === null) {
+      block(id, `not a plain file that could be read (${r.state}${r.detail === null ? "" : `: ${r.detail}`})`);
+      continue;
     }
-  } catch {
-    // No `worktrees` directory: no siblings.
+    const line = r.bytes.toString("utf8").split("\n", 1)[0]?.replace(/\r$/, "") ?? "";
+    if (line.length === 0 || line.includes("\0") || line.includes("\ufffd")) {
+      block(id, "does not hold a path");
+      continue;
+    }
+    out.push(dirname(resolve(dir, n, line)));
   }
   return out;
 }
