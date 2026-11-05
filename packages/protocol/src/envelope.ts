@@ -115,8 +115,15 @@ export type ParsedClientMessage =
  * envelope schema (ADR 0005 D2.5). Calling `clientMessageSchema` directly is a defect.
  */
 export function parseClientMessage(raw: unknown): ParsedClientMessage {
-  const checked = inspectMessage(raw);
-  if (!checked.ok) return checked;
-  const parsed = clientMessageSchema.safeParse(raw);
-  return parsed.success ? { ok: true, message: parsed.data } : { ok: false, reason: "invalid" };
+  // The input comes from a structured-clone port, so it can be a Proxy or another
+  // value whose traps throw, or one `structuredClone` refuses to copy. This is the
+  // one place those throws are caught, and the answer stays inside the closed set.
+  try {
+    const checked = inspectMessage(raw);
+    if (!checked.ok) return checked;
+    const parsed = clientMessageSchema.safeParse(raw);
+    return parsed.success ? { ok: true, message: parsed.data } : { ok: false, reason: "invalid" };
+  } catch {
+    return { ok: false, reason: "invalid" };
+  }
 }
