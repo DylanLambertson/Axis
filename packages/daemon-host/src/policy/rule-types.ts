@@ -5,7 +5,8 @@
  * - `none`: no trust condition.
  * - `registry`: the attested `identity.trusted` AND the live `TrustRegistry` must both say trusted (design 6.2).
  * - `per-start`: a CLI run start. Trust is a single-use attestation minted per call from the supervisor's live answer
- *   (TRU-2), so the registry is not the authority, but an explicit revoke in it refuses the start as well.
+ *   (TRU-2), so the registry is not the authority, but an explicit revoke in it refuses the start as well. Policy does
+ *   NOT check the attested `identity.trusted` for this mode: the per-start `trust.check` (ticket H10) must refuse.
  */
 export type TrustMode = "none" | "registry" | "per-start";
 

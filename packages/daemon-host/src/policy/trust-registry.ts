@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import type { TrustRegistry, TrustSubject } from "../ports/trust.js";
 
-/** Bound on remembered decisions. Trust is never granted past it; a revoke always lands. */
+/** Bound on remembered decisions. */
 export const MAX_TRUST_ENTRIES = 4096;
 
 const ID = /^[A-Za-z0-9._:-]{1,64}$/;
@@ -18,26 +18,38 @@ function levels(s: TrustSubject): string[] | null {
     if (!valid(s.workspaceId)) return null;
     out.push(`s:${s.workspaceId}`);
   }
-  if (s.projectId !== undefined) {
-    if (!valid(s.projectId)) return null;
-    out.push(`p:${s.projectId}`);
-  }
   return out;
 }
 
 /**
  * Live trust, held in memory and fed only by supervisor control messages (`trust.set`; design 6.2). A decision is
- * recorded at the most specific level the subject names (project, else workspace, else window). A subject is trusted
- * only if some level says trusted and NO level says revoked, so a revoke at any level wins and an unknown subject is
- * untrusted. A workspace or project decision holds in every window (a revoke must not be escapable by opening
- * another window); a bare window with no decision is untrusted. Revoking never touches a running run (Q6): nothing here holds a reference to the run supervisor.
+ * recorded at the most specific level the subject names (workspace, else window). A subject is trusted only if some
+ * level says trusted and NO level says revoked, so a revoke at either level wins and an unknown subject is untrusted.
+ *
+ * Deliberate deviation from design 6.2 ("the default for an unknown window is untrusted"): a workspace decision is
+ * keyed by the workspace alone and holds in every window, because trust belongs to the source repository and a
+ * revoke must not be escapable by opening another window. A bare window with no decision is still untrusted, and a
+ * grant is still ANDed with the per-connection attested `identity.trusted`.
+ *
+ * Bounded and fail closed: nothing is ever evicted. When the table is full, a new grant is refused, and a new revoke
+ * (which cannot be recorded) latches the registry saturated: every subject is then untrusted and revoked and every
+ * `set` throws, until the host restarts. Revoking never touches a running run (Q6): nothing here holds a run.
  */
 export class InMemoryTrustRegistry implements TrustRegistry {
   readonly #entries = new Map<string, boolean>();
+  #saturated = false;
+
+  get size(): number {
+    return this.#entries.size;
+  }
+
+  get saturated(): boolean {
+    return this.#saturated;
+  }
 
   isTrusted(subject: TrustSubject): boolean {
     const keys = levels(subject);
-    if (keys === null) return false;
+    if (keys === null || this.#saturated) return false;
     let granted = false;
     for (const k of keys) {
       const v = this.#entries.get(k);
@@ -49,30 +61,20 @@ export class InMemoryTrustRegistry implements TrustRegistry {
 
   isRevoked(subject: TrustSubject): boolean {
     const keys = levels(subject);
-    // A malformed subject cannot be shown to be fine, so it counts as revoked (fail closed).
-    if (keys === null) return true;
+    // A malformed subject cannot be shown to be fine, and a saturated registry has lost track, so both count as revoked.
+    if (keys === null || this.#saturated) return true;
     return keys.some((k) => this.#entries.get(k) === false);
   }
 
   set(subject: TrustSubject, trusted: boolean): void {
+    if (this.#saturated) throw new RangeError("trust registry is saturated");
     const keys = levels(subject);
     if (keys === null || typeof trusted !== "boolean") throw new RangeError("invalid trust subject");
     const key = keys[keys.length - 1] as string;
     if (!this.#entries.has(key) && this.#entries.size >= MAX_TRUST_ENTRIES) {
-      if (trusted) throw new RangeError("trust registry is full");
-      this.#evict();
+      if (!trusted) this.#saturated = true;
+      throw new RangeError(trusted ? "trust registry is full" : "trust registry is saturated");
     }
-    // Re-insert so the map stays in order of last update (oldest first for eviction).
-    this.#entries.delete(key);
     this.#entries.set(key, trusted);
-  }
-
-  /** Make room for a revoke: drop the oldest grant (fail-closed direction), else the oldest revoke. */
-  #evict(): void {
-    for (const [k, v] of this.#entries) {
-      if (v) return void this.#entries.delete(k);
-    }
-    const first = this.#entries.keys().next();
-    if (!first.done) this.#entries.delete(first.value);
   }
 }

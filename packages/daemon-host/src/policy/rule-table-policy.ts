@@ -30,25 +30,22 @@ export class RuleTablePolicy implements Policy {
 
   #decide(input: PolicyInput): PolicyDecision {
     if (typeof input !== "object" || input === null) return DENY;
-    const { identity, contract, version, method, tier } = input;
+    const { identity, contract, version, method, tier } = input; // each field is read exactly once
     if (typeof contract !== "string" || typeof method !== "string" || !Number.isInteger(version)) return DENY;
     if (!Number.isInteger(tier) || tier < 0 || tier > 5) return DENY;
     const rule = this.#rules.get(ruleKey(contract, version, method));
     if (rule === undefined) return DENY;
     if (typeof identity !== "object" || identity === null) return DENY;
     if (!rule.actors.some((a) => a === identity.actor)) return DENY;
-    if (!this.#trustOk(rule, input)) return DENY;
+    if (!this.#trustOk(rule, identity)) return DENY;
     return rule.tier > tier ? { effect: "allow", tier: rule.tier } : { effect: "allow" };
   }
 
-  #trustOk(rule: Rule, input: PolicyInput): boolean {
+  #trustOk(rule: Rule, identity: PolicyInput["identity"]): boolean {
     if (rule.trust === "none") return true;
-    const { identity } = input;
-    const subject = {
-      windowId: identity.windowId,
-      ...(identity.workspaceId === undefined ? {} : { workspaceId: identity.workspaceId }),
-    };
+    const { windowId, workspaceId, trusted } = identity;
+    const subject = { windowId, ...(workspaceId === undefined ? {} : { workspaceId }) };
     if (rule.trust === "per-start") return !this.#trust.isRevoked(subject);
-    return identity.trusted === true && this.#trust.isTrusted(subject);
+    return trusted === true && this.#trust.isTrusted(subject);
   }
 }

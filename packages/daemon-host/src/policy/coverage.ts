@@ -7,7 +7,10 @@ import type { Rule } from "./rule-types.js";
 type Registry = Readonly<Record<string, Readonly<Record<string, { readonly tier: number }>>>>;
 
 export interface CoverageInput {
-  /** The protocol registry (defaults to the one this build serves). */
+  /**
+   * The protocol registry (defaults to the one this build serves). If it is filtered by `config.contracts`, `rules`
+   * and `planned` must be filtered the same way: use `policySurface(ids)`, which does all three together.
+   */
   readonly registry?: Registry;
   readonly rules?: Readonly<Record<string, Rule>>;
   readonly planned?: Readonly<Record<string, Rule>>;
@@ -38,7 +41,6 @@ export function coverageProblems(input: CoverageInput = {}): string[] {
   for (const key of rules.keys()) if (!served.has(key)) out.push(`${key}: policy rule for no served method`);
   for (const key of planned.keys()) {
     if (served.has(key)) out.push(`${key}: planned but already served (move its row to the served table)`);
-    if (rules.has(key)) out.push(`${key}: in both the served table and the planned table`);
   }
   for (const [name, set] of Object.entries(input.also ?? {})) {
     for (const key of served.keys()) if (!set.has(key)) out.push(`${key}: served but missing from ${name}`);
@@ -51,4 +53,28 @@ export function coverageProblems(input: CoverageInput = {}): string[] {
 export function checkCoverage(input: CoverageInput = {}): void {
   const problems = coverageProblems(input);
   if (problems.length > 0) throw new Error(`policy coverage: ${problems.join("; ")}`);
+}
+
+export interface PolicySurface {
+  readonly registry: Registry;
+  readonly rules: Readonly<Record<string, Rule>>;
+  readonly planned: Readonly<Record<string, Rule>>;
+}
+
+/**
+ * The registry, rule table and planned table restricted to the contract ids the host serves (`config.contracts`;
+ * absent means all), so they cannot diverge. Pass `surface.rules` to `RuleTablePolicy` and the whole surface to
+ * `checkCoverage`. A rule key is `<id>/<major>.<method>`, so it belongs to a contract id when it starts `<id>/`.
+ */
+export function policySurface(contractIds?: readonly string[]): PolicySurface {
+  if (contractIds === undefined) return { registry: contracts, rules: RULES, planned: PLANNED_RULES };
+  const ids = new Set(contractIds);
+  const keep = (key: string): boolean => ids.has(key.slice(0, key.indexOf("/")));
+  const pick = <T>(o: Readonly<Record<string, T>>, f: (k: string) => boolean): Readonly<Record<string, T>> =>
+    Object.freeze(Object.fromEntries(Object.entries(o).filter(([k]) => f(k))));
+  return {
+    registry: pick(contracts, (k) => ids.has(k.slice(0, k.indexOf("/")))),
+    rules: pick(RULES, keep),
+    planned: pick(PLANNED_RULES, keep),
+  };
 }

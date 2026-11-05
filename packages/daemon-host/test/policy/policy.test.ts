@@ -2,10 +2,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Identity, PolicyInput } from "@axis/daemon";
+import type { RunsService } from "../../src/index.js";
 import { contracts } from "@axis/protocol";
 import {
   checkCoverage, coverageProblems, InMemoryTrustRegistry, MAX_TRUST_ENTRIES, PLANNED_RULES, RULES, RuleTablePolicy,
-  ruleKey, servedMethods, userRule,
+  policySurface, ruleKey, servedMethods, userRule,
 } from "../../src/index.js";
 
 const CONN = "A".repeat(22);
@@ -68,7 +69,7 @@ test("unknown methods, contracts and versions, planned methods and garbage input
   for (const bad of [
     { ...base, method: "nope" }, { ...base, contract: "axis.nope" }, { ...base, version: 2 }, { ...base, version: 1.5 },
     { ...base, method: "__proto__" }, { ...base, method: "constructor" }, { ...base, method: "toString" },
-    { ...base, tier: 9 }, { ...base, tier: Number.NaN }, { ...base, contract: 5 as unknown as string },
+    { ...base, tier: 9 }, { ...base, tier: -1 }, { ...base, tier: Number.NaN }, { ...base, contract: 5 as unknown as string },
     { ...base, identity: null as unknown as Identity }, null as unknown as PolicyInput, undefined as unknown as PolicyInput,
   ]) assert.equal(policy.evaluate(bad).effect, "deny");
   for (const key of Object.keys(PLANNED_RULES)) assert.equal(policy.evaluate(input(key)).effect, "deny", key);
@@ -101,21 +102,22 @@ test("registry-trust methods need the attested flag AND the live registry; an un
   assert.equal(new RuleTablePolicy(new InMemoryTrustRegistry()).evaluate(input("axis.worktrees/1.list")).effect, "allow");
 });
 
-test("TRU-2: a revoke refuses the next create and the next run start, and does not touch a running run", () => {
+test("TRU-2: a workspace revoke refuses the next create and run start, and never stops a running run", () => {
   const registry = trustedRegistry();
   const policy = new RuleTablePolicy(registry);
+  // A real-shaped run service stub: one run is live, and any stop() is recorded.
+  const stops: string[] = [];
+  const runs = { stop: (id: string) => void stops.push(id), hasActiveRun: () => true } as unknown as RunsService;
   assert.equal(policy.evaluate(input("axis.cli-runs/1.start")).effect, "allow");
-  let stops = 0;
-  const running = { stop: () => void stops++ }; // the registry has no way to reach this; the assertion below proves it
+  assert.equal(policy.evaluate(input("axis.worktrees/1.create")).effect, "allow");
   registry.set({ windowId: "w1", workspaceId: "ws1" }, false);
   assert.equal(policy.evaluate(input("axis.cli-runs/1.start")).effect, "deny");
   assert.equal(policy.evaluate(input("axis.worktrees/1.create")).effect, "deny");
-  // A run already going is managed only through stop/get/list, which a revoke does not gate.
-  assert.equal(policy.evaluate(input("axis.cli-runs/1.stop")).effect, "allow");
-  assert.equal(policy.evaluate(input("axis.cli-runs/1.get")).effect, "allow");
-  assert.equal(stops, 0);
-  void running;
-  // Re-granting is a fresh decision.
+  assert.equal(policy.evaluate(input("axis.worktrees/1.restoreFromRunBase")).effect, "deny");
+  // The running run is left alone: the revoke called nothing on the run service, and the user can still manage it.
+  assert.deepEqual(stops, []);
+  assert.equal(runs.hasActiveRun("ws1"), true);
+  for (const m of ["stop", "get", "list"]) assert.equal(policy.evaluate(input(`axis.cli-runs/1.${m}`)).effect, "allow", m);
   registry.set({ windowId: "w1", workspaceId: "ws1" }, true);
   assert.equal(policy.evaluate(input("axis.cli-runs/1.start")).effect, "allow");
 });
@@ -128,32 +130,114 @@ test("run start does not need a registry grant (the per-start attestation is the
   assert.equal(policy.evaluate(input("axis.cli-runs/1.start")).effect, "deny");
 });
 
-test("trust is per project: a project revoke beats a window grant, and other projects are unaffected", () => {
+test("window and workspace levels: a revoke at either wins; a grant needs at least one level", () => {
   const r = new InMemoryTrustRegistry();
   r.set({ windowId: "w1" }, true);
-  assert.equal(r.isTrusted({ windowId: "w1", projectId: "pa" }), true);
-  r.set({ windowId: "w1", projectId: "pa" }, false);
-  assert.equal(r.isTrusted({ windowId: "w1", projectId: "pa" }), false);
-  assert.equal(r.isRevoked({ windowId: "w1", projectId: "pa" }), true);
-  assert.equal(r.isTrusted({ windowId: "w1", projectId: "pb" }), true);
+  assert.equal(r.isTrusted({ windowId: "w1", workspaceId: "wa" }), true);
+  r.set({ windowId: "w1", workspaceId: "wa" }, false);
+  assert.equal(r.isTrusted({ windowId: "w1", workspaceId: "wa" }), false);
+  assert.equal(r.isRevoked({ windowId: "w1", workspaceId: "wa" }), true);
+  assert.equal(r.isTrusted({ windowId: "w1", workspaceId: "wb" }), true);
   r.set({ windowId: "w1" }, false);
-  r.set({ windowId: "w1", projectId: "pb" }, true);
-  assert.equal(r.isTrusted({ windowId: "w1", projectId: "pb" }), false, "a window revoke wins over a project grant");
-  assert.equal(r.isTrusted({ windowId: "w9", projectId: "pb" }), true, "another window sees only its own levels plus the project grant");
+  r.set({ windowId: "w1", workspaceId: "wb" }, true);
+  assert.equal(r.isTrusted({ windowId: "w1", workspaceId: "wb" }), false, "a window revoke wins over a workspace grant");
+  assert.equal(r.isTrusted({ windowId: "w1" }), false);
 });
 
-test("registry: malformed subjects are untrusted and revoked; set refuses them; entries are bounded", () => {
+test("S1 (documented deviation from design 6.2): a workspace decision holds in every window", () => {
   const r = new InMemoryTrustRegistry();
-  for (const bad of [{ windowId: "" }, { windowId: "a b" }, { windowId: "w", workspaceId: "x".repeat(65) }, { windowId: "w", projectId: "" }, null, { windowId: 5 }] as never[]) {
+  r.set({ windowId: "w1", workspaceId: "ws1" }, true);
+  assert.equal(r.isTrusted({ windowId: "w2", workspaceId: "ws1" }), true, "another window sees the workspace grant");
+  assert.equal(r.isTrusted({ windowId: "w2" }), false, "a bare unknown window is still untrusted");
+  r.set({ windowId: "w2", workspaceId: "ws1" }, false);
+  assert.equal(r.isTrusted({ windowId: "w1", workspaceId: "ws1" }), false, "a revoke from any window revokes for all");
+  assert.equal(r.isRevoked({ windowId: "w3", workspaceId: "ws1" }), true);
+  assert.equal(r.size, 1, "one key per workspace, not per window");
+  // Through the policy: a connection attested trusted in a window main never named still needs the workspace grant.
+  const p = new RuleTablePolicy(trustedRegistry());
+  assert.equal(p.evaluate(input("axis.worktrees/1.create", { windowId: "w7" })).effect, "allow");
+  assert.equal(p.evaluate(input("axis.worktrees/1.create", { windowId: "w7", trusted: false })).effect, "deny");
+});
+
+test("registry: malformed subjects are untrusted and revoked, and set refuses them", () => {
+  const r = new InMemoryTrustRegistry();
+  for (const bad of [{ windowId: "" }, { windowId: "a b" }, { windowId: "w", workspaceId: "x".repeat(65) }, { windowId: "w", workspaceId: "" }, null, { windowId: 5 }] as never[]) {
     assert.equal(r.isTrusted(bad), false);
     assert.equal(r.isRevoked(bad), true);
     assert.throws(() => r.set(bad, true), RangeError);
   }
   assert.throws(() => r.set({ windowId: "w" }, "yes" as never), RangeError);
+  assert.equal(r.size, 0);
+});
+
+test("the cap: a full table refuses a new grant, evicts nothing, and keeps existing decisions", () => {
+  const r = new InMemoryTrustRegistry();
   for (let i = 0; i < MAX_TRUST_ENTRIES; i++) r.set({ windowId: `w${i}` }, true);
+  assert.equal(r.size, MAX_TRUST_ENTRIES);
   assert.throws(() => r.set({ windowId: "extra" }, true), /full/);
-  r.set({ windowId: "extra" }, false); // a revoke always lands
-  assert.equal(r.isRevoked({ windowId: "extra" }), true);
-  assert.equal(r.isTrusted({ windowId: "extra" }), false);
-  assert.equal(r.isTrusted({ windowId: "w1" }), true);
+  assert.equal(r.size, MAX_TRUST_ENTRIES);
+  assert.equal(r.saturated, false);
+  assert.equal(r.isTrusted({ windowId: "w0" }), true, "the oldest grant is still there");
+  assert.equal(r.isTrusted({ windowId: `w${MAX_TRUST_ENTRIES - 1}` }), true);
+  // Updating a key it already holds is not growth, so it still works (here a revoke of the oldest grant).
+  r.set({ windowId: "w0" }, false);
+  assert.equal(r.isRevoked({ windowId: "w0" }), true);
+  assert.equal(r.size, MAX_TRUST_ENTRIES);
+});
+
+test("the cap: a revoke that cannot be recorded latches the registry closed, and no revoke is ever evicted", () => {
+  const r = new InMemoryTrustRegistry();
+  r.set({ windowId: "w1", workspaceId: "bad" }, false);
+  for (let i = 0; i < MAX_TRUST_ENTRIES - 1; i++) r.set({ windowId: `x${i}` }, false);
+  assert.equal(r.size, MAX_TRUST_ENTRIES);
+  assert.throws(() => r.set({ windowId: "one-more" }, false), /saturated/);
+  assert.equal(r.saturated, true);
+  assert.equal(r.size, MAX_TRUST_ENTRIES, "nothing was evicted to make room");
+  // Fail closed for everyone, including a subject nobody ever revoked, and no decision (grant or revoke) is accepted.
+  assert.equal(r.isRevoked({ windowId: "w1", workspaceId: "bad" }), true);
+  assert.equal(r.isTrusted({ windowId: "never-seen" }), false);
+  assert.equal(r.isRevoked({ windowId: "never-seen" }), true);
+  assert.throws(() => r.set({ windowId: "w1" }, true), /saturated/);
+  assert.throws(() => r.set({ windowId: "w1", workspaceId: "bad" }, true), /saturated/);
+  // And the policy refuses everything that needs trust, including a start.
+  const p = new RuleTablePolicy(r);
+  for (const k of ["axis.worktrees/1.create", "axis.cli-runs/1.start"]) assert.equal(p.evaluate(input(k)).effect, "deny", k);
+  assert.equal(p.evaluate(input("axis.audit/1.list")).effect, "allow");
+});
+
+test("a saturating revoke on a registry that holds grants also latches closed rather than evicting a grant", () => {
+  const r = new InMemoryTrustRegistry();
+  for (let i = 0; i < MAX_TRUST_ENTRIES; i++) r.set({ windowId: `w${i}` }, true);
+  assert.throws(() => r.set({ windowId: "newly-revoked" }, false), /saturated/);
+  assert.equal(r.isRevoked({ windowId: "newly-revoked" }), true);
+  assert.equal(r.isTrusted({ windowId: "w0" }), false);
+  assert.equal(r.size, MAX_TRUST_ENTRIES);
+});
+
+test("every row admits exactly the user actor", () => {
+  for (const [key, rule] of [...Object.entries(RULES), ...Object.entries(PLANNED_RULES)]) assert.deepEqual(rule.actors, ["user"], key);
+});
+
+test("the policy reads the identity once: a getter that changes its answer cannot split the decision", () => {
+  const registry = trustedRegistry();
+  const policy = new RuleTablePolicy(registry);
+  let reads = 0;
+  const flip = { ...input("axis.worktrees/1.create"), get identity(): Identity { return reads++ === 0 ? identity() : identity({ actor: "agent:x" }); } };
+  assert.equal(policy.evaluate(flip as PolicyInput).effect, "allow");
+  assert.equal(reads, 1);
+});
+
+test("policySurface filters registry, rules and planned together, so coverage holds for any contract subset", () => {
+  assert.deepEqual(coverageProblems(policySurface()), []);
+  for (const ids of [["axis.audit"], ["axis.worktrees", "axis.cli-runs"], []]) {
+    const surface = policySurface(ids);
+    assert.deepEqual(coverageProblems(surface), [], ids.join());
+    assert.ok(Object.keys(surface.rules).every((k) => ids.includes(k.slice(0, k.indexOf("/")))));
+    assert.ok(Object.keys(surface.planned).every((k) => ids.includes(k.slice(0, k.indexOf("/")))));
+    assert.deepEqual(Object.keys(surface.registry).map((k) => k.slice(0, k.indexOf("/"))).sort(), [...ids].sort());
+    // A policy built from the filtered table denies a method of a contract that is not served.
+    const p = new RuleTablePolicy(trustedRegistry(), surface.rules);
+    assert.equal(p.evaluate(input("axis.providers/1.list")).effect, "deny");
+  }
+  assert.match(coverageProblems({ registry: policySurface(["axis.audit"]).registry }).join("\n"), /policy rule for no served method/);
 });
