@@ -23,6 +23,7 @@ import {
   transitionOptionsSchema,
   workspaceStateSchema,
   type Created,
+  type Project,
   type CreateRunInput,
   type CreateWorkspaceInput,
   type RecoveryReport,
@@ -33,6 +34,20 @@ import {
   type Workspace,
   type WorkspaceRow,
 } from "./model.js";
+import {
+  checkWorkspaceTransition,
+  clearStaleLocks,
+  getProject,
+  listProjects,
+  lockWorkspace,
+  recordPushed,
+  recordReviewedTree,
+  registerProject,
+  setWorktreePath,
+  unlockWorkspace,
+  type RecordsContext,
+  type RegisterProjectInput,
+} from "./records.js";
 import { UserPrincipal } from "./principal.js";
 import { JOURNAL_MIGRATIONS } from "./schema.js";
 import {
@@ -44,6 +59,10 @@ import {
   type RunState,
   type WorkspaceState,
 } from "./states.js";
+
+function inRecords<T>(db: DatabaseSync, audit: AuditLog, now: () => Date, fn: (ctx: RecordsContext) => T): T {
+  return withTransaction(db, () => fn({ db, audit, ts: () => now().toISOString() }));
+}
 
 export interface JournalOptions {
   /**
@@ -135,23 +154,47 @@ export class Journal {
     return withTransaction(this.#db, () => {
       const current = this.#mustWorkspace(id);
       this.#guard("workspace", current.state, to, WORKSPACE_TRANSITIONS[current.state], opts.expectedFrom);
-      if (to === "REMOVING") {
-        const open = this.#db
-          .prepare(`SELECT COUNT(*) AS n FROM agent_runs WHERE workspace_id = ? AND state IN (${OPEN_RUN_STATES.map(() => "?").join(",")})`)
-          .get(id, ...OPEN_RUN_STATES) as { n: number };
-        if (open.n > 0) {
-          throw new AxisError("E_CONFLICT", "The workspace still has runs that are not finished", { openRuns: open.n });
-        }
-      }
+      checkWorkspaceTransition(this.#db, id, current.state, to, opts.outcome);
       const ts = this.#ts();
       this.#expectOne(
         this.#db
-          .prepare("UPDATE agent_workspaces SET state = ?, reconcile_reported = 0, updated_at = ? WHERE id = ? AND state = ?")
-          .run(to, ts, id, current.state),
+          .prepare(
+            "UPDATE agent_workspaces SET state = ?, reconcile_reported = 0, updated_at = ?, finalise_outcome = COALESCE(?, finalise_outcome), " +
+              "lock_state = CASE WHEN ? IN ('REMOVED','FAILED') THEN 'unlocked' ELSE lock_state END, " +
+              "locked_at = CASE WHEN ? IN ('REMOVED','FAILED') THEN NULL ELSE locked_at END WHERE id = ? AND state = ?",
+          )
+          .run(to, ts, opts.outcome ?? null, to, to, id, current.state),
       );
       this.#recordTransition("workspace", id, current.state, to, opts.reason ?? null, opts.actor ?? "daemon", ts);
       return this.#mustWorkspace(id);
     });
+  }
+
+  // ---- host records (projects, worktree path, lock, last pushed sha, reviewed tree): each with its audit event, one transaction ----
+
+  registerProject(input: RegisterProjectInput): Project {
+    return inRecords(this.#db, this.#audit, this.#now, (ctx) => registerProject(ctx, input));
+  }
+  getProject(id: string): Project | undefined {
+    return getProject(this.#db, id);
+  }
+  listProjects(): Project[] {
+    return listProjects(this.#db);
+  }
+  setWorktreePath(id: string, path: string, actor: AuditActor): Workspace {
+    return inRecords(this.#db, this.#audit, this.#now, (ctx) => setWorktreePath(ctx, id, path, actor));
+  }
+  lockWorkspace(id: string, actor: AuditActor): Workspace {
+    return inRecords(this.#db, this.#audit, this.#now, (ctx) => lockWorkspace(ctx, id, actor));
+  }
+  unlockWorkspace(id: string, actor: AuditActor): Workspace {
+    return inRecords(this.#db, this.#audit, this.#now, (ctx) => unlockWorkspace(ctx, id, actor));
+  }
+  recordPushed(id: string, sha: string, actor: AuditActor): Workspace {
+    return inRecords(this.#db, this.#audit, this.#now, (ctx) => recordPushed(ctx, id, sha, actor));
+  }
+  recordReviewedTree(id: string, treeHash: string, principal: UserPrincipal): Workspace {
+    return inRecords(this.#db, this.#audit, this.#now, (ctx) => recordReviewedTree(ctx, id, treeHash, principal));
   }
 
   // ---- runs ----
@@ -212,6 +255,7 @@ export class Journal {
     const target = runStateSchema.safeParse(to);
     if (!target.success) throw invalid(target.error, "run state");
     const { opts, approvedByUser } = this.#parseTransitionOptions(options);
+    if (opts.outcome !== undefined) throw new AxisError("E_INVALID_ARGUMENT", "An outcome applies only to finalising a workspace");
     return withTransaction(this.#db, () => {
       const current = this.#mustRun(id);
       this.#guard("run", current.state, to, RUN_TRANSITIONS[current.state], opts.expectedFrom);
@@ -279,7 +323,8 @@ export class Journal {
    * - run RUNNING            -> BLOCKED / INTERRUPTED_BY_RESTART (the composer loop or the CLI supervision is gone);
    * - workspace CREATING     -> FAILED / INTERRUPTED_BY_RESTART (the worktree manager sweeps any stray Git worktree);
    * - workspace REMOVING     -> unchanged; reported on every call, audited once;
-   * - run QUEUED/REVIEWING/BLOCKED -> unchanged (durable states a person or the scheduler acts on).
+   * - run QUEUED/REVIEWING/BLOCKED -> unchanged (durable states a person or the scheduler acts on);
+   * - workspace lock_state locked -> unlocked (the process that took it is gone).
    *
    * One transaction: each change is written with its transition record and a
    * `journal.recovery` audit event, all or nothing. Converges: a second call
@@ -297,6 +342,8 @@ export class Journal {
     }
     return withTransaction(this.#db, () => {
       const ts = this.#ts();
+      // First, so a CREATING workspace that holds a stale lock is reported as unlocked before it becomes FAILED.
+      const locksCleared = clearStaleLocks({ db: this.#db, audit: this.#audit, ts: () => ts });
       const runsInterrupted: string[] = [];
       const workspacesFailed: string[] = [];
       const workspacesNeedingReconcile: string[] = [];
@@ -361,7 +408,7 @@ export class Journal {
         });
         runsInterrupted.push(row.id);
       }
-      return { runsInterrupted, workspacesFailed, workspacesNeedingReconcile, runsLeftAlone };
+      return { runsInterrupted, workspacesFailed, workspacesNeedingReconcile, runsLeftAlone, locksCleared };
     });
   }
 

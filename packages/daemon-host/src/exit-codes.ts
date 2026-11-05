@@ -1,4 +1,5 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
+import { AxisError } from "@axis/audit";
 import { summarizeError } from "./log/summarize-error.js";
 
 /**
@@ -28,7 +29,11 @@ export type ExitCode = (typeof EXIT)[keyof typeof EXIT];
  * Everything else, including a value that is not an error, is internal (70).
  */
 export function exitCodeForStartupError(error: unknown): ExitCode {
+  if (error instanceof DegradedStartError) return EXIT.DEGRADED;
   switch (summarizeError(error).code) {
+    case "E_CANCELLED":
+      // A stop requested while starting: a clean stop, not an internal error.
+      return EXIT.OK;
     case "E_CONFLICT":
       return EXIT.LOCK_HELD;
     case "E_INVALID_ARGUMENT":
@@ -36,5 +41,15 @@ export function exitCodeForStartupError(error: unknown): ExitCode {
       return EXIT.BAD_CONFIG;
     default:
       return EXIT.INTERNAL;
+  }
+}
+
+/**
+ * Thrown by `start()` when the host came up degraded and the supervisor asked it not to run that way
+ * (`exitOnDegraded`). Exit code 79. `reason` is the closed reason code that `ready.degraded` would have carried.
+ */
+export class DegradedStartError extends AxisError {
+  constructor(readonly reason: string) {
+    super("E_UNAVAILABLE", "The host started degraded", { reason });
   }
 }

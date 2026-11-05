@@ -3,7 +3,17 @@ import { createHash } from "node:crypto";
 import { AxisError, canonicalize, isWellFormedString, type AuditActor } from "@axis/audit";
 import { z } from "zod";
 import type { UserPrincipal } from "./principal.js";
-import { RUN_KINDS, RUN_STATES, WORKSPACE_STATES, type RunKind, type RunState, type WorkspaceState } from "./states.js";
+import {
+  FINALISE_OUTCOMES,
+  RUN_KINDS,
+  RUN_STATES,
+  WORKSPACE_STATES,
+  type FinaliseOutcome,
+  type LockState,
+  type RunKind,
+  type RunState,
+  type WorkspaceState,
+} from "./states.js";
 
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const REASON = /^[A-Z][A-Z0-9_]{0,63}$/;
@@ -45,6 +55,8 @@ export const transitionOptionsSchema = z
     exitCode: z.number().int().min(-255).max(255).optional(),
     /** Optimistic guard: the transition applies only if the entity is in this state. */
     expectedFrom: anyState.optional(),
+    /** How a workspace was finalised; required for FINALISED, refused for any other target. */
+    outcome: z.enum(FINALISE_OUTCOMES).optional(),
   })
   .strict();
 
@@ -62,7 +74,45 @@ export interface Workspace {
   readonly state: WorkspaceState;
   readonly createdAt: string;
   readonly updatedAt: string;
+  /** Canonical absolute worktree path once the host recorded it; null before. */
+  readonly worktreePath: string | null;
+  /** Advisory record of the per-worktree lock (the lock itself is the host mutex); recovery clears a stale one. */
+  readonly lockState: LockState;
+  readonly lockedAt: string | null;
+  /** The sha the branch was last pushed at: the push base. Null until the first recorded push. */
+  readonly lastPushedSha: string | null;
+  /** The tree hash recorded at diff review (REV-1). */
+  readonly reviewedTreeHash: string | null;
+  readonly reviewedAt: string | null;
+  readonly finaliseOutcome: FinaliseOutcome | null;
 }
+
+export interface Project {
+  readonly id: string;
+  readonly path: string;
+  readonly displayName: string;
+  readonly trusted: boolean;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+export interface ProjectRow {
+  id: string;
+  path: string;
+  display_name: string;
+  trusted: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export const toProject = (r: ProjectRow): Project => ({
+  id: r.id,
+  path: r.path,
+  displayName: r.display_name,
+  trusted: r.trusted === 1,
+  createdAt: r.created_at,
+  updatedAt: r.updated_at,
+});
 
 export interface Run {
   readonly id: string;
@@ -112,6 +162,8 @@ export interface TransitionOptions {
   readonly actor?: AuditActor | UserPrincipal;
   readonly exitCode?: number;
   readonly expectedFrom?: string;
+  /** Required when the target is FINALISED, refused otherwise. */
+  readonly outcome?: FinaliseOutcome;
 }
 
 export interface Created<T> {
@@ -134,6 +186,8 @@ export interface RecoveryReport {
   readonly workspacesNeedingReconcile: readonly string[];
   /** Non-terminal runs recovery left alone (QUEUED, REVIEWING, BLOCKED): they are durable user-facing states. */
   readonly runsLeftAlone: readonly string[];
+  /** Workspaces whose recorded lock was left by the dead process and is now cleared. */
+  readonly locksCleared: readonly string[];
 }
 
 export interface WorkspaceRow {
@@ -147,6 +201,13 @@ export interface WorkspaceRow {
   reconcile_reported: number;
   created_at: string;
   updated_at: string;
+  worktree_path: string | null;
+  lock_state: string;
+  locked_at: string | null;
+  last_pushed_sha: string | null;
+  reviewed_tree_hash: string | null;
+  reviewed_at: string | null;
+  finalise_outcome: string | null;
 }
 export interface RunRow {
   id: string;
@@ -171,6 +232,13 @@ export const toWorkspace = (r: WorkspaceRow): Workspace => ({
   state: r.state as WorkspaceState,
   createdAt: r.created_at,
   updatedAt: r.updated_at,
+  worktreePath: r.worktree_path,
+  lockState: r.lock_state as LockState,
+  lockedAt: r.locked_at,
+  lastPushedSha: r.last_pushed_sha,
+  reviewedTreeHash: r.reviewed_tree_hash,
+  reviewedAt: r.reviewed_at,
+  finaliseOutcome: r.finalise_outcome as FinaliseOutcome | null,
 });
 export const toRun = (r: RunRow): Run => ({
   id: r.id,
