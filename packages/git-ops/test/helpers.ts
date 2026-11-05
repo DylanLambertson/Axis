@@ -42,6 +42,9 @@ export function healthy(extra: Responder = () => undefined): Responder {
     const k = s.join(" ");
     if (k === "--version") return { stdout: "git version 2.39.5 (Apple Git-154)\n" };
     if (s[0] === "config") return { code: 1 };
+    if (s[0] === "ls-files") return { stdout: "" };
+    // `rev-parse --git-path A --git-path B ...` answers one path per line under the (non-existent) git directory.
+    if (s[0] === "rev-parse" && s[1] === "--git-path") return { stdout: s.filter((_, i) => s[i - 1] === "--git-path").map((n) => `${WT.gitDir}/${n}`).join("\n") + "\n" };
     if (k === "symbolic-ref --quiet --short HEAD") return { stdout: "axis/feat\n" };
     if (k === "write-tree") return { stdout: `${TREE}\n` };
     if (k === "rev-parse --verify --end-of-options HEAD^{commit}") return { stdout: `${HEAD}\n` };
