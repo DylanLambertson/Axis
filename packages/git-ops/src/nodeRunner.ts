@@ -1,11 +1,18 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { spawn } from "node:child_process";
-import { denied } from "./errors.js";
+import { GitOpsError, denied } from "./errors.js";
+import { assertGitOutsideWorktree, resolveGit, withTrustedPath } from "./gitPath.js";
 import type { GitRunRequest, GitRunResult, GitRunner } from "./types.js";
 
 export interface NodeRunnerOptions {
   /** Tests only: allow the "pty" context in this process. The daemon must leave this false. */
   readonly allowPtyContext?: boolean;
+  /**
+   * Absolute path of the git executable, chosen by the host. Default: the first `git` in the trusted entries of the
+   * daemon's own PATH (empty and relative entries ignored), resolved once. A bare `git` is never spawned, and a path
+   * inside the request's worktree is refused.
+   */
+  readonly gitPath?: string;
   readonly timeoutMs?: number;
   readonly maxOutput?: number;
 }
@@ -30,15 +37,24 @@ function killLiveGroups(): void {
 /** Runs git with an argv vector and no shell. Refuses the pty context unless explicitly allowed. */
 export function createNodeRunner(opts: NodeRunnerOptions = {}): GitRunner {
   const maxOutput = opts.maxOutput ?? 32 * 1024 * 1024;
+  let resolved: string | undefined = opts.gitPath;
   return {
     run(req: GitRunRequest): Promise<GitRunResult> {
       if (req.context === "pty" && opts.allowPtyContext !== true) {
         return Promise.reject(denied("the daemon process must not run pty-context git"));
       }
+      resolved ??= resolveGit(process.env["PATH"]);
+      if (resolved === undefined) return Promise.reject(new GitOpsError("E_UNAVAILABLE", "no git executable was found in a trusted PATH entry"));
+      const gitPath = resolved;
+      try {
+        assertGitOutsideWorktree(gitPath, req);
+      } catch (e) {
+        return Promise.reject(e);
+      }
       return new Promise((resolve, reject) => {
         // Its own process group on POSIX, so a timeout can kill git's children too (filters, submodule diffs, ssh).
         const group = process.platform !== "win32";
-        const child = spawn("git", [...req.argv], { cwd: req.cwd, env: req.env, shell: false, detached: group, stdio: ["pipe", "pipe", "pipe"] });
+        const child = spawn(gitPath, [...req.argv], { cwd: req.cwd, env: withTrustedPath(req.env), shell: false, detached: group, stdio: ["pipe", "pipe", "pipe"] });
         if (group && child.pid !== undefined) {
           liveGroups.add(child.pid);
           if (!exitHookInstalled) {

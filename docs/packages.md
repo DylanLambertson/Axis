@@ -86,6 +86,10 @@ Fixed vectors (`sha256hex` as lowercase hex):
 `@axis/daemon` implements the identical function and pins the same vectors; the two copies must stay in step. The shared function moves into `@axis/protocol` later, and both packages will then import it.
 ## Using `@axis/git-ops`
 
+### Finding git (CLI-1, CFG-1)
+
+`createNodeRunner` never spawns a bare `git`. It resolves an absolute, symlink-free path once from the daemon's own `PATH` (empty and relative entries ignored, as they mean the current directory, which is the worktree), or takes one from the host (`gitPath`, absolute). Each request refuses (`E_POLICY_DENIED`) a git inside the request's working directory, `--work-tree` or `--git-dir`, and with no usable git the call fails with `E_UNAVAILABLE` without spawning anything. The child's own `PATH` is cleaned the same way, so git's helpers, hooks and external commands are not found through an empty or relative entry. The working directory of a request is unchanged (callers pass the work tree); only the executable lookup moved out of it.
+
 ### Bound commit contract (what `@axis/review` implements against)
 
 `executeCommit(deps, input)` and `planCommit` take, besides `worktree`, `reviewedTreeHash`, `message` and `author?`:
