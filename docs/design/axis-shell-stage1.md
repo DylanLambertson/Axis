@@ -255,4 +255,3 @@ Removing root dependencies requires regenerating `package-lock.json`, because th
    - also assert that nothing else changed (`git diff --numstat` plus a JSON key diff) and that top-level `zod` is unchanged (SC-3 check 4).
 3. Record the resulting lockfile sha256 in the manifest. CI runs `npm ci` in a clean checkout to prove the lock is reproducible.
 4. Regenerate at apply time rather than committing a lockfile patch. A lock patch would conflict on almost every sync [I].
-

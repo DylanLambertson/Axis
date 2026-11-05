@@ -92,4 +92,3 @@ Overlay (new files): `extensions/theme-axis/**` (§2.3), `src/vs/workbench/contr
 - H2 (`frame-src` for a self-hosted webview origin) is deferred to M6 with D9; the web CSP still allows `https://*.vscode-cdn.net` in `frame-src`.
 - The packaged-build signature verification, above (a separate ticket). The `file:` reveal fallback is closed by `2040`.
 - Removing `extensions/copilot` from the tree, and the resource-only `out/vs/sessions` files.
-

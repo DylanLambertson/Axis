@@ -149,4 +149,3 @@ Tests follow the upstream sessions patterns:
 8. SC-3 artifact check and the TT-violation smoke test re-run on the new base.
 
 Pass means ≤ 1 working day across all ranges, with no edits outside patched seams except type fixes in `src/vs/axis` and stub updates for a bumped SDK.
-

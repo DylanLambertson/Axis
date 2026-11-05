@@ -287,4 +287,3 @@ Files that are adapted from upstream (copied from sessions or `layout.ts`) keep 
 - It counts distinct upstream files and `+`/`-` lines across `code-oss/patches/NNNN-*`, reporting the four blocks separately: `0001–0999` shell, `1000–1499` rebrand and licensing (decision 5), `1500–1999` Copilot and agent host (decision 6), and `2000–2999` security hardening (decision 7). Marker lines are reported separately too.
 - For criterion 2 it excludes `product.json` and `resources/**`.
 - Every sync PR records its output (criteria 2–4).
-

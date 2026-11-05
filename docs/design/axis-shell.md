@@ -105,4 +105,3 @@ Features reach the shell only through the service interface. No workbench code i
 - decoupling from weekly `layout.ts` churn.
 
 **Decided (D7, §8):** Stage 2 is in Phase 0, because ADR 0002 criteria 1–2 require a custom shell.
-
