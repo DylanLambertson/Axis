@@ -39,6 +39,7 @@ const HOST_FILE_RULES = new Map([
   ["@axis/journal/daemon-principal", ["src/handlers/review.ts"]],
   ["@axis/worktrees", ["src/bindings/worktrees.ts"]],
   ["@axis/worktrees/daemon-confirm", ["src/gate/worktrees-confirm.ts"]],
+  ["@axis/runs/daemon-attestation", ["src/gate/run-trust.ts"]],
 ]);
 /** Packages whose bindings live in `src/bindings/*.ts` of the host (they land with their own changes). */
 const HOST_BINDING_PACKAGES = ["@axis/runs", "@axis/review"];
@@ -82,6 +83,10 @@ export function violation(pkg, spec, file = null, pkgDir = null) {
     if (pkg === HOST_PACKAGE && /^src[\\/]gate[\\/]worktrees-confirm(\.[cm]?[jt]s)?$/.test(rel)) {
       const from = relative(pkgDir, file).split(sep).join("/");
       if (from.startsWith("src/") && from !== "src/index.ts") return "only src/index.ts may import the discard token minter";
+    }
+    if (pkg === HOST_PACKAGE && /^src[\\/]gate[\\/]run-trust(\.[cm]?[jt]s)?$/.test(rel)) {
+      const from = relative(pkgDir, file).split(sep).join("/");
+      if (from.startsWith("src/") && from !== "src/index.ts") return "only src/index.ts may import the run trust minter";
     }
     return rel === ".." || rel.startsWith(`..${sep}`) || resolve(rel) === rel
       ? "relative import leaves the package directory"
@@ -342,6 +347,23 @@ test("scanner: the daemon host is imported by nothing and imports the restricted
   for (const f of ["src/handlers/worktrees.ts", "src/ports/worktrees.ts", "src/host.ts", "src/bindings/runs.ts"]) {
     assert.notEqual(violation("daemon-host", "@axis/worktrees", at(f), dir), null, f);
   }
+  // The trust attestation: only src/gate/run-trust.ts of the host (the binding and the handler cannot mint one).
+  assert.equal(violation("daemon-host", "@axis/runs/daemon-attestation", at("src/gate/run-trust.ts"), dir), null);
+  for (const f of ["src/bindings/runs.ts", "src/handlers/cli-runs.ts", "src/gate/approvals.ts", "test/runs-rig.ts"]) {
+    assert.notEqual(violation("daemon-host", "@axis/runs/daemon-attestation", at(f), dir), null, f);
+  }
+  assert.notEqual(violation("daemon-host", "@axis/runs/daemon-attestation"), null, "a call without a file is judged strictly");
+  // The run trust minter module (a relative import): only the public index, never a handler, binding or gate neighbour.
+  assert.equal(violation("daemon-host", "./gate/run-trust.js", at("src/index.ts"), dir), null);
+  for (const [f, spec] of [
+    ["src/handlers/cli-runs.ts", "../gate/run-trust.js"],
+    ["src/bindings/runs.ts", "../gate/run-trust.js"],
+    ["src/gate/approvals.ts", "./run-trust.js"],
+    ["src/handlers/git.ts", "../gate/run-trust"],
+  ]) {
+    assert.notEqual(violation("daemon-host", spec, at(f), dir), null, f);
+  }
+  assert.equal(violation("daemon-host", "../src/gate/run-trust.js", at("test/run-trust.test.ts"), dir), null, "tests may");
   assert.equal(violation("daemon-host", "@axis/worktrees/daemon-confirm", at("src/gate/worktrees-confirm.ts"), dir), null);
   assert.notEqual(violation("daemon-host", "@axis/worktrees/daemon-confirm", at("src/bindings/worktrees.ts"), dir), null);
   // The minter itself (a relative import): only the public index, never a handler, service, binding or the gate neighbours.

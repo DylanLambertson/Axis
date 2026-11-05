@@ -245,7 +245,7 @@ Two mechanisms, for two kinds of method.
 
 1. The renderer calls `axis.cli-runs/1.start { workspaceId, agentId }`.
 2. The handler asks the supervisor channel for a fresh per-start decision: control message `trust.check { windowId, workspaceId, projectId } -> trust.result { trusted }`. Main answers from its live Workspace Trust state. No answer within 2 s, or `trusted: false`, is `E_POLICY_DENIED` (`details.reason: "untrusted"`).
-3. Only then `src/gate/run-trust.ts` calls `attestTrust({ workspaceId, projectId, issuedAt: clock.now() })` and passes the result to `start` in the same tick. The attestation is never stored, logged or reused; `projectId` comes from the journal, not the payload.
+3. Only then `src/gate/run-trust.ts` calls `attestTrust({ workspaceId, projectId, issuedAt: clock.now() })` and passes the result to `start` inside the project mutex (the supervisor re-checks the attestation's freshness before it spawns). The attestation is never stored, logged or reused; `projectId` comes from the journal, not the payload.
 4. A revoked trust therefore refuses the next start (ROADMAP 1a trust line). A running run is not stopped by a revoke in 1a (Q6).
 
 **Other methods (`worktrees.create`, `restoreFromRunBase`, `git.commit`, `git.push`): attested flag plus live registry.** `identity.trusted` is fixed for a connection, so trust is two inputs ANDed in policy: the attested `identity.trusted` and a live `TrustRegistry`, fed by supervisor control messages `trust.set { windowId, workspaceId?, trusted }`. The registry has **two levels only, window and workspace; there is no project level and `trust.set` has no project field.**
