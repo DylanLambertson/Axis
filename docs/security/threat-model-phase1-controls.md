@@ -92,10 +92,10 @@ Lines are counted in the order the bullets appear in `docs/ROADMAP.md`. L1 to L1
 | Tool-argument validation | ANT-2 | 1b | C2 | 1b/L3 | Partial: paths only |
 | UI disclosure; no "sandbox" in copy | CLI-1 to CLI-3 | 1a | B10 | 1a/L23 | Covered (string assertions) |
 | Axis bundle under Trusted Types | EL-1 | 1a | A1, M3 | 1a/L23 | Covered |
-| `openExternal` allow-list and confirmation | EL-5 | 1a | none | 1a/L28 | Covered |
+| `openExternal` allow-list and confirmation | EL-5 | 1a | none | 1a/L28 | Partial: desktop allow-list, no reveal of refused `file:` links and full URL in the upstream prompt are in patches 2030, 2040 and 2050; confirmation for links from agent output needs the Axis UI; the web build is not covered |
 | No reh-web listener | NET-1, DMN-4 | 1a | none | 1a/L29 | Covered |
 | View switch routes focus and input to the destination only | IDE-1 (c) | 1a | A7 | 1a/L30 | Covered |
-| Open VSX tampered refused; outcomes recorded | EXT-3 | M3 Stage 1b | M3 | 1a/L22 | Covered |
+| Open VSX tampered refused; outcomes recorded | EXT-3 | M3 Stage 1b | M3 | 1a/L22 | Open: the test was not run in Stage 1b. A packaged build refuses every gallery install (no signature verifier ships), so a tampered extension is refused today; the signed and unsigned outcomes are not recorded. Follow-up with the Open VSX signature verification ticket |
 | Hooks placement decision after the vault | GIT-3 | 1b | none | 1b/L16 | Recorded decision, not a test |
 
 ## 6. Gate gaps
@@ -210,7 +210,7 @@ Each of these is accepted for Phase 1 on purpose. The wording is the wording the
 | New: ANT-1, ANT-2 | none | **1b** | |
 | **Not in the ADR list, accepted (Q-5):** WEB-1 to WEB-6 | P1 | **P2** | Browser skeleton moved to Phase 2 (ADR 0004, ROADMAP) |
 | **Not in the ADR list, decided:** EL-5 (`openExternal` confirmation) | P2 | **1a** (changed row, gate 1a/L28) | CLI output contains links (PTY-3 control 4) |
-| **Not in the ADR list, decided (Q-7):** EXT-3 Open VSX test | P0/P1 | **1a gate line** (1a/L22), run in the M3 Stage 1b validation | Public open-vsx.org |
+| **Not in the ADR list, decided (Q-7):** EXT-3 Open VSX test | P0/P1 | **1a gate line** (1a/L22), planned for the M3 Stage 1b validation, not run there (open) | Public open-vsx.org |
 
 ## 9. Updated risk register
 
@@ -283,7 +283,7 @@ The categories are those of Phase 0 §7. Ideas for the rows the model adds:
 | Q-4 | Hooks for Axis-initiated commit and push run in the pty process context (no secrets), never in the daemon. `runHooks` stays on in 1a; re-evaluated in 1b when the vault ships. | GIT-3 row; R25. **Amendment 2026-11-04:** the daemon never runs commit hooks (commit is `commit-tree` plus a ref compare-and-swap); **NOT BUILT YET: today no commit hook runs; building the hook step is a named follow-up (ticket H9-hooks).** When built, with `runHooks` on, the host runs `pre-commit` and `commit-msg` in the pty process context; the sequence is all under the daemon's commit lock: first the CLI-run refusal and the GIT-SNAP-1 drift re-take, then the host runs `pre-commit` and `commit-msg` against a temporary index and scratch checkout of the reviewed tree (never the user's worktree or real index), then a freshness re-check, then `commit-tree` and the compare-and-swap. A hook that modifies files makes the commit refused with a hook-specific reason (the changes are discarded and the user is told to run the formatter and review again; Axis commits exactly the reviewed tree). A message rewritten by `commit-msg` is shown to the user before it is committed, and the message that is committed is recorded in the audit event. `post-commit` style hooks are not run in 1a. See ADR 0004 §4 and `docs/packages.md` "Commit hooks". |
 | Q-5 | The WEB-* P1 to P2 retag is accepted. | §8. |
 | Q-6 | Push re-takes GIT-SNAP-1 and refuses on unacknowledged drift. GIT-SNAP-1 also covers the worktree `.git` file, `commondir`, and any `core.hooksPath` target inside the worktree. | Closes G-4, G-5, G-6. |
-| Q-7 | Phase 0 and 1 use public open-vsx.org. The install test runs in the M3 Stage 1b validation and is a gate. | EXT-3 row; 1a/L22. |
+| Q-7 | Phase 0 and 1 use public open-vsx.org. The install test is a gate; it was planned for the M3 Stage 1b validation and was not run there. | EXT-3 row; 1a/L22. |
 | Q-8 | 1a documents the snapshot exposure; 1b adds secret scanning of snapshots as a gate. | REF-1 row; 1b/L13. |
 
 Also accepted: **G-9** (the run-base diff is authoritative) and **G-11**. G-11 is an **`@axis/audit` requirement**: the head hash and event count are persisted periodically, outside the chain, so tail truncation is detected.

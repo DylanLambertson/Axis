@@ -1,7 +1,7 @@
 /*---------------------------------------------------------------------------------------------
  *  Copyright (c) 2026 Dylan Lambertson. All rights reserved.
  *--------------------------------------------------------------------------------------------*/
-// Contrast test for the Axis built-in themes (docs/design/axis-shell.md §2.3, task S1.4).
+// Contrast test for the Axis built-in themes (docs/design/axis-shell-stage1.md §2.3, task S1.4).
 // Checks every foreground against each surface it is drawn on, using the WCAG 2.2
 // relative-luminance formula; translucent colours are composited over the surface first.
 //   - text and placeholders: >= 4.5:1 (SC 1.4.3)

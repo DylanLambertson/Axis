@@ -1,4 +1,4 @@
-// Axis built-in colour theme. Values follow docs/UX.md tokens and docs/design/axis-shell.md section 2.3.
+// Axis built-in colour theme. Values follow docs/UX.md tokens and docs/design/axis-shell-stage1.md section 2.3.
 {
 	"$schema": "vscode://schemas/color-theme",
 	"name": "Axis Light",

@@ -1,0 +1,33 @@
+diff --git a/src/vs/workbench/contrib/url/browser/trustedDomainsValidator.ts b/src/vs/workbench/contrib/url/browser/trustedDomainsValidator.ts
+index fc37d04d..e353dcd8 100644
+--- a/src/vs/workbench/contrib/url/browser/trustedDomainsValidator.ts
++++ b/src/vs/workbench/contrib/url/browser/trustedDomainsValidator.ts
+@@ -72,22 +72,12 @@ export class OpenerValidatorContributions implements IWorkbenchContribution {
+ 		if (this._trustedDomainService.isValid(resourceUri)) {
+ 			return true;
+ 		} else {
+-			const { scheme, authority, path, query, fragment } = resourceUri;
+-			let formattedLink = `${scheme}://${authority}${path}`;
+-
+-			const linkTail = `${query ? '?' + query : ''}${fragment ? '#' + fragment : ''}`;
+-
+-
+-			const remainingLength = Math.max(0, 60 - formattedLink.length);
+-			const linkTailLengthToKeep = Math.min(Math.max(5, remainingLength), linkTail.length);
+-
+-			if (linkTailLengthToKeep === linkTail.length) {
+-				formattedLink += linkTail;
+-			} else {
+-				// keep the first char ? or #
+-				// add ... and keep the tail end as much as possible
+-				formattedLink += linkTail.charAt(0) + '...' + linkTail.substring(linkTail.length - linkTailLengthToKeep + 1);
+-			}
++			const { scheme, authority } = resourceUri;
++			// --- Start Axis ---
++			// Security patch 2050 (threat model EL-5): the prompt shows the full URL, not a link shortened to the
++			// scheme, authority and path with the tail of the query or fragment kept
++			const formattedLink = resourceUri.toString(true);
++			// --- End Axis ---
+ 
+ 			const { result } = await this._dialogService.prompt<boolean>({
+ 				type: Severity.Info,

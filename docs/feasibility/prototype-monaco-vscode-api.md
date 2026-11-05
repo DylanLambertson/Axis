@@ -188,7 +188,7 @@ From the library's `docs/vscode_server.md` and source, at 38.1.3:
 
 | Cost item | Option B (measured or inferred) | Option A (ADR 0002 / M2 / M3 design) |
 |---|---|---|
-| Axis shell code | 699 lines of TS/TSX/CSS; React owns the layout | `src/vs/axis` overlay plus about 10 upstream files / about 45 lines (design estimate, `axis-shell.md` §3.10); React deferred because in-pipeline TSX breaks criterion 2 |
+| Axis shell code | 699 lines of TS/TSX/CSS; React owns the layout | `src/vs/axis` overlay plus about 10 upstream files / about 45 lines (design estimate, `axis-shell-stage2.md` §3.10); React deferred because in-pipeline TSX breaks criterion 2 |
 | Axis-owned upstream patches (client) | **0** | shell `0001–0999` ≤ 12 files / 300 lines; plus guardrail and Copilot ranges |
 | Client upgrade per sync | **Measured: 0 source lines for 37.6.1 → 38.1.3**; about 3 minutes of install, typecheck, build and smoke. The library demo needed 4 files, +30/−7 lines (v37.6.1 → v38.0.0). Release notes list only "update vscode to 1.x" as breaking. | Rebase of all patch ranges; criterion 4 target ≤ 1 working day (not yet measured; M3) |
 | Server for Node features (desktop, `reh-web`) | **Still required**: the M2 pipeline at the library's commit, plus the Copilot-removal and hardening ranges rebased per library major; **not measured** (estimate: of the same order as A's server work, because it is the same tree) | Same tree as the client; one pin |
