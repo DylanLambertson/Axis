@@ -12,11 +12,13 @@ Axis-owned TypeScript that does not need Code OSS services lives in `packages/*`
 | `@axis/git-ops` | Daemon-orchestrated Axis commit and push, and GitHub compare URLs. Takes an injected git runner (`context: "pty" \| "daemon"`): hooks run only in the pty context. Commit binds the reviewed tree, push uses one explicit refspec, both are refused while a CLI run is active. |
 | `@axis/audit` | Secret redaction, canonical JSON, and the hash-chained append-only audit log on `node:sqlite` (DMN-5, DMN-6). Also the SQLite helpers (`openDatabase`, `withTransaction`, `runMigrations`). |
 | `@axis/journal` | Durable `agent_workspaces` and `agent_runs`, the Phase 1a run state machine, idempotency keys and restart recovery (DMN-7). Depends on `@axis/audit`. |
+| `@axis/runs` | CLI run lifecycle over injected ports (pty, clock, worktree locator, snapshotter, environment): launch through `@axis/pty-policy`, the journal state machine and restart recovery (DMN-7), status derivation, the per-device limit, trust attestation (TRU-2), the `isCliRunActive` guard for `@axis/git-ops`, output bounds and the disclosure copy. Design: `docs/design/runs.md`. Depends on `@axis/audit`, `@axis/journal` and `@axis/pty-policy`. |
 | `@axis/anthropic` | Anthropic (Claude) Messages API adapter for `@axis/providers` (ticket 9, ANT-1): hand-written SSE parser with byte, event and depth limits, redirects refused, error text never built from a response body, injected `fetch`. Design: `docs/design/anthropic-adapter.md`. |
 | `@axis/vault` | Connection vault: key storage interface, backend reporting, the PRV-1 rule for the Linux `basic_text` backend (consent or refusal), an in-memory test backend, and the seam for real OS backends. Runs in the daemon only. |
+| `@axis/worktrees` | Lifecycle of isolated git worktrees, one per agent workspace: create, list, status, finalise, remove, restore from the run base, GIT-SNAP-1 drift detection and a hardened git environment (GIT-ENV-1) that never runs hooks or filter drivers. Imports `node:*`, `zod` and `@axis/*` only. |
 | `@axis/review` | Diff review core (REV-1, FT-1, PSH-1, WT-3, DRF-2 to DRF-4): the changed files of a worktree against a base, per-file and per-hunk accept and reject, the reviewed tree and its binding to `@axis/git-ops` commit, protected-path flags, symlink-safe preview, display escaping, the "changed outside the agent" model and secret-warning data. Pure logic over the injected git runner; reads the worktree once into a tree object. Design: `docs/design/review-core.md`. |
 
-More packages (worktrees, and so on) are added by their own changes.
+More packages are added by their own changes.
 
 ## Audit anchor (requirement on the daemon)
 
@@ -179,3 +181,19 @@ npm test            # clean build (scripts/clean-dist.mjs), then node --test "di
 ## Reaching the app
 
 Planned in ADR 0005 D3: a post-apply hook stages package sources into `src/vs/axis/packages/` so Code OSS's own esbuild bundles them into the daemon. Not implemented yet.
+
+## Calling `@axis/worktrees` from the daemon
+
+Use one `WorktreeManager` per daemon process, built with the pinned absolute git path and a `refuseIfActiveRun` hook. Its in-process mutex assumes a single instance, and each mutating call also takes a pid and start-time lockfile (workspace operations lock the worktree admin dir; create and sweep lock the common dir).
+
+`finalise` and `remove` are destructive, so they are tier 3 or higher and go through the approval pipeline in "Wiring the daemon". The content hook for them is:
+
+- `target`: `workspace:<id>`, never a path.
+- `withLock(fn)`: takes the daemon's per-project mutex, calls `assertNoDrift(path)` (a `git-drift` `E_CONFLICT` means the user reviews the change and the daemon then calls `acknowledgeDrift(path)`), then `previewDiscard(path)` and calls `fn(scan.fingerprint)`. The fingerprint is passed as the `contentDigest`, read at issue and again at execute under the same lock. It is a SHA-256 over metadata, not over file content: the path, status, size and mtime of each dirty file, plus the path lists of the large, ignored and nested-repository or unsupported entries. This is the TOCTOU binding: if such an entry is added, removed, or changes status, size or mtime after the user approved, `consume` refuses and nothing runs. A rewrite that keeps a file's size and mtime (for example with `touch -r`) does not change it; no data is lost then, because the backup captures the content at execute time.
+- The native confirmation text must show `skippedLarge`, `ignored` and `skippedUnsupported` from the preview, because a backup does not hold them.
+
+Inside the `action` (after the approval is spent), call `markDiscardConfirmed({ workspaceId, op, fingerprint }, opts?)` from `@axis/worktrees/daemon-confirm` (never the package root) and pass the result as `discardConfirmation` to `finalise` or `remove`. The token is bound to that workspace, operation and fingerprint, expires after 30 s on a monotonic clock, and is spent by the first call that accepts it, even if that call then fails. It must not cross a JSON boundary or leave the callback.
+
+If the manager still refuses, `E_CONFLICT` carries `details.reason`: `confirmation-stale`, `confirmation-spent` or `confirmation-expired` for a bad token, and `dirty` or `unbacked-data` (with the fingerprint) for a missing one. `remove` with `deleteBranch` also writes and returns `branchBackupRef` before deleting the branch. Errors are always `WorktreeError` with an ADR 0003 code.
+
+Audit and journal: `@axis/worktrees` imports neither. The daemon writes the `@axis/audit` event for each `finalise` and `remove` in the same journal transaction as the workspace state change (`Journal.open(db, { audit })`), including `backupRef`, `branchBackupRef` and the three unbacked lists from the result. The `axis-workspace.json` record in the worktree admin dir is an interim store that the workspace itself can write. Once the daemon passes the `agent_workspaces` row from `@axis/journal`, that row is the source of truth for id, slug and branch, and the admin-dir record must not be trusted over it.
