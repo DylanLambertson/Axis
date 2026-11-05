@@ -4,12 +4,27 @@
 // vector. `npm test` builds before it runs this.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { requestDigest } from "@axis/daemon";
 import { RUN_STATES } from "@axis/journal";
-import { RUN_STATE_VALUES, contracts, lookupMethod } from "@axis/protocol";
+import { RUN_STATUS_VALUES, RUN_STATE_VALUES, contracts, lookupMethod } from "@axis/protocol";
+import { RUN_STATUSES } from "@axis/runs";
 
 test("the protocol's run states are the journal's run states", () => {
   assert.deepEqual([...RUN_STATE_VALUES], [...RUN_STATES]);
+});
+
+test("the protocol's run statuses are the runs package's RUN_STATUSES", () => {
+  assert.deepEqual([...RUN_STATUS_VALUES], [...RUN_STATUSES]);
+});
+
+test("@axis/protocol has no dependency on another @axis package (runtime, peer or optional)", () => {
+  const pkg = JSON.parse(readFileSync(new URL("../../packages/protocol/package.json", import.meta.url), "utf8"));
+  for (const field of ["dependencies", "peerDependencies", "optionalDependencies", "bundledDependencies", "bundleDependencies"]) {
+    const names = Array.isArray(pkg[field]) ? pkg[field] : Object.keys(pkg[field] ?? {});
+    assert.deepEqual(names.filter((n) => n.startsWith("@axis/")), [], field);
+  }
+  assert.deepEqual(Object.keys(pkg.dependencies ?? {}), ["zod"]);
 });
 
 test("the daemon's request digest reproduces the shared vectors (docs/packages.md 'Shared request digest')", () => {
