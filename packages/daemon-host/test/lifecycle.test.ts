@@ -103,6 +103,7 @@ test("a failed or hung stop, or a failing disposer, is reported as exit 1 and ne
   bad.proc.emit("SIGTERM", "SIGTERM");
   await bad.handle.finished;
   assert.equal(bad.exits[0]?.code, EXIT.UNSETTLED);
+  assert.equal(bad.exits[0]?.info.released, false, "an abandoned disposer may still hold the loop: the caller must force the exit");
   const thrown = rig({ opts: { stop: () => Promise.reject(new Error("x")) } });
   thrown.proc.emit("SIGTERM", "SIGTERM");
   await thrown.handle.finished;
@@ -197,4 +198,33 @@ test("dispose removes every listener and a later signal does nothing; bad timing
   for (const finalizeTimeoutMs of [-1, 1.5, Number.NaN, 10 ** 9]) {
     assert.throws(() => rig({ opts: { finalizeTimeoutMs } }), { code: "E_INVALID_ARGUMENT" });
   }
+});
+
+test("a crash during the final checkpoint wins: stop never runs after the crash exit, and the exit is reported once", async () => {
+  let crashNow!: () => void;
+  let finishFinalize!: () => void;
+  const r = rig({
+    opts: {
+      finalize: () => new Promise<void>((res) => { finishFinalize = res; }),
+      finalizeTimeoutMs: 5_000,
+    },
+  });
+  crashNow = () => r.proc.emit("uncaughtException", new Error("x"));
+  r.proc.emit("SIGTERM", "SIGTERM");
+  await wait(10); // daemon.shutdown resolved, finalize is running
+  crashNow();
+  finishFinalize();
+  await wait(20);
+  assert.deepEqual(r.exits.map((e) => [e.code, e.info.released]), [[EXIT.INTERNAL, false]]);
+  assert.deepEqual(r.calls, ["shutdown:signal:SIGTERM"], "the database and lock were not closed after the crash");
+});
+
+test("a crash while stop is running does not turn into a released exit", async () => {
+  let crashNow!: () => void;
+  const r = rig({ opts: { stop: async () => { crashNow(); await wait(5); return OK_STOP; } } });
+  crashNow = () => r.proc.emit("uncaughtException", new Error("x"));
+  r.proc.emit("SIGTERM", "SIGTERM");
+  await r.handle.finished;
+  await wait(20);
+  assert.deepEqual(r.exits.map((e) => [e.code, e.info.released]), [[EXIT.INTERNAL, false]]);
 });

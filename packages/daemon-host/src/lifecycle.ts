@@ -16,6 +16,8 @@ import type { Logger } from "./log/logger.js";
  *   from either source, escalates the wait in progress.
  * - The database handle and the instance lock are closed (`stop`) ONLY when no handler is still running and the
  *   idempotency flush is not still writing. Otherwise both stay open and the exit hook is told to force the exit.
+ * - A repeat trigger escalates only the daemon's own waits (grace, settle, flush). During `finalize` and `stop` it
+ *   does nothing: those are bounded (2 s, and 5 s per disposer).
  * - A crash (`uncaughtException`, `unhandledRejection`) fails closed: one log record of the closed error summary
  *   (never the message, stack or any property of the thrown value), exit code 70, no graceful path and no write.
  * - Every listener and timer it created is removed before the exit hook runs, so a clean exit needs no
@@ -26,8 +28,8 @@ export interface ExitInfo {
   /** What `daemon.shutdown` reported. `undefined` after a crash or when shutdown itself failed. */
   readonly result: ShutdownResult | undefined;
   /**
-   * True when `stop` ran: every timer, listener, the database handle and the lock are released, so the process
-   * may simply end by draining. False: something may still run or hold the store (or the process crashed), so
+   * True when `stop` ran and every disposer succeeded: every timer, listener, the database handle and the lock
+   * are released, so the process may simply end by draining. False (also when a disposer failed or was abandoned): something may still run or hold the store (or the process crashed), so
    * the caller must end the process itself (`process.exit(code)`).
    */
   readonly released: boolean;
@@ -39,12 +41,21 @@ export interface LifecycleOptions {
   readonly control: Pick<ControlClient, "onShutdown">;
   /** `DaemonHost.stop`: disposes timers, listeners, the database handle, then the lock. */
   readonly stop: () => Promise<DisposeResult>;
-  /** The final `checkpoint` and `anchor.put` (design section 8, step 4). Runs only once nothing can still write. */
+  /**
+   * The final `checkpoint` and `anchor.put` (design section 8, step 4). Runs only once nothing can still write.
+   * It also owns step 3 (stop accepting control `connect`, stop the anchor manager) before it puts. It is bounded
+   * by `finalizeTimeoutMs`, but a timed-out one keeps running while `stop` closes the database, so every database
+   * write in it must happen synchronously before its first `await`; only the anchor acknowledgement may be awaited.
+   */
   readonly finalize?: () => void | Promise<void>;
   /** Bound of `finalize` (default 2000). */
   readonly finalizeTimeoutMs?: number;
   readonly logger?: Logger;
-  /** Called exactly once with the exit code. Required: a process with these listeners no longer dies on its own. */
+  /**
+   * Called exactly once with the exit code. Required: a process with these listeners no longer dies on its own.
+   * If it throws, the error is rethrown from a microtask and Node ends the process with its own code 1, not 70
+   * (this package cannot set `process.exitCode`): set the code before doing anything that can throw.
+   */
   readonly exit: (code: ExitCode, info: ExitInfo) => void;
   /** Where signals and crash events are listened for: the composition root passes the real `process` (this package never names it). */
   readonly process: ListenerTarget;
@@ -162,10 +173,13 @@ export function installHostLifecycle(options: LifecycleOptions): LifecycleHandle
       if (options.finalize !== undefined && !(await runFinalize(options.finalize, finalizeMs))) {
         if (code === EXIT.OK) code = EXIT.UNSETTLED;
       }
+      // A crash during the final checkpoint wins: once its exit ran, nothing may close the database or the lock.
+      if (crashed) return;
       try {
         const disposed = await options.stop();
-        released = true;
-        if (disposed.failures.length > 0) {
+        // Any failed or abandoned (timed out) disposer may still hold the event loop or the store: not released.
+        released = disposed.failures.length === 0;
+        if (!released) {
           if (code === EXIT.OK) code = EXIT.UNSETTLED;
           logger?.warn("dispose.failed", { count: disposed.failures.length });
         }

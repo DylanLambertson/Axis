@@ -1,6 +1,8 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import assert from "node:assert/strict";
+import { fileURLToPath } from "node:url";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { tmpdir } from "node:os";
 import { test } from "node:test";
 import { wait } from "./helpers.js";
 
@@ -25,7 +27,11 @@ async function until(cond: () => boolean, ms: number): Promise<boolean> {
 }
 
 async function start(finalizeMs = 30_000): Promise<Child> {
-  const proc = spawn(process.execPath, [CHILD.pathname, String(finalizeMs)], { stdio: ["pipe", "pipe", "pipe"] });
+  const proc = spawn(process.execPath, [fileURLToPath(CHILD), String(finalizeMs)], {
+    stdio: ["pipe", "pipe", "pipe"],
+    shell: false,
+    cwd: tmpdir(),
+  });
   const out: Array<Record<string, unknown>> = [];
   let buf = "";
   proc.stdout.on("data", (d: Buffer) => {
@@ -36,7 +42,8 @@ async function start(finalizeMs = 30_000): Promise<Child> {
       buf = buf.slice(i + 1);
     }
   });
-  proc.stderr.on("data", () => undefined);
+  let errText = "";
+  proc.stderr.on("data", (d: Buffer) => void (errText = (errText + d.toString("utf8")).slice(-2000)));
   const closed = new Promise<number | null>((resolve) => proc.on("close", (code) => resolve(code)));
   const child: Child = {
     proc,
@@ -48,7 +55,7 @@ async function start(finalizeMs = 30_000): Promise<Child> {
       assert.ok(await until(() => out.filter((o) => o["ack"] === line).length > n || proc.exitCode !== null, 3000), `child acknowledged ${line}`);
     },
   };
-  assert.ok(await until(() => out.some((o) => o["ready"] === true), 15_000), "child became ready");
+  assert.ok(await until(() => out.some((o) => o["ready"] === true), 15_000), `child became ready; stderr: ${errText}`);
   return child;
 }
 
@@ -83,5 +90,5 @@ test("a repeated trigger while work is still running ends the wait: exit 1, the 
   assert.ok(await until(() => c.out.some((o) => "exit" in o), 3000), "escalation cut the grace wait short");
   const report = c.out.find((o) => "exit" in o);
   assert.deepEqual([report?.["exit"], report?.["released"], report?.["running"]], [1, false, 1]);
-  assert.equal(await c.closed, 1);
+  assert.equal(await Promise.race([c.closed, wait(3000).then(() => "timeout" as const)]), 1, "the forced exit ended the child");
 });
