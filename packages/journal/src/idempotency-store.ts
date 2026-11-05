@@ -22,6 +22,9 @@ const MAX_TTL_MS = 365 * DAY_MS;
 const HOUR_MS = 60 * 60 * 1000;
 /** An actor below this many unevictable rows is never refused by the table-wide rule (the daemon's default in-flight limit). */
 const PENDING_FLOOR = 16;
+/** How long a wall clock far ahead of the monotonic clock must hold steady before expiry follows it. */
+const CONFIRM_MS = HOUR_MS;
+const JITTER_MS = 5 * 60_000;
 
 /** A replayed result is freshly parsed, so it is plain mutable JSON (what the daemon's interface expects). */
 export type StoredJson = null | boolean | number | string | StoredJson[] | { [key: string]: StoredJson };
@@ -56,6 +59,8 @@ export interface IdempotencyStoreOptions {
    */
   readonly redactor: Redactor;
   readonly now?: () => number;
+  /** Monotonic milliseconds (default `performance.now`); expiry follows a wall clock far ahead only after it holds steady on this. */
+  readonly monotonic?: () => number;
   /** Replay window for a settled key, measured from when it settled. Default 24 h. Also bounds `result-not-stored`. */
   readonly ttlMs?: number;
   /** How long an `interrupted` unknown key is remembered (never evicted before). Default 7 days. */
@@ -112,8 +117,10 @@ const WHERE = "actor_id = ? AND workspace_id = ? AND contract = ? AND version = 
  * - Every write is one `withTransaction` on the shared handle, so a kill leaves the old row or the new one.
  * - If `complete` cannot be stored, the following `abandon` keeps the key as `unknown` instead of freeing it;
  *   `markUnknown` does the same when the handler succeeded but the call then failed.
- * - Time is wall clock (it has to survive a restart): a jump back extends rows. A reading more than an hour ahead
- *   of the last one expires nothing until the next reading agrees with it. Inside one boot the clock never runs backwards. `now` must return integer epoch milliseconds.
+ * - Time is wall clock (it has to survive a restart), guarded by the monotonic clock: a jump back extends rows, and
+ *   a wall clock further ahead than the newest row plus uptime plus an hour expires nothing until that offset has
+ *   held steady for an hour of monotonic time. Inside one boot small steps back are ignored. `now` must return
+ *   integer epoch milliseconds.
  * - `complete` must not be called inside an outer transaction (it would not be durable on return).
  */
 export class JournalIdempotencyStore {
@@ -137,9 +144,12 @@ export class JournalIdempotencyStore {
   #clock = 0;
   /** The time rows expire by: it does not follow a forward jump until a second reading agrees with it. */
   #trusted = 0;
-  /** Set while the latest reading jumped forward by more than an hour and no later reading has agreed yet. */
+  /** Set while the latest reading is further ahead than the monotonic clock allows and has not yet held steady. */
   #unconfirmed = false;
-  #started = false;
+  readonly #monotonic: () => number;
+  #mono0: number;
+  #base: number;
+  #candidate: { offset: number; since: number } | undefined;
 
   private constructor(db: DatabaseSync, o: IdempotencyStoreOptions) {
     this.#db = db;
@@ -157,33 +167,58 @@ export class JournalIdempotencyStore {
     this.#maxShareBytes = positive(o.maxShareBytes ?? Math.max(1, Math.floor(this.#maxTotalBytes / 8)), "maxShareBytes");
     this.#sweepEveryMs = positive(o.sweepEveryMs ?? 60_000, "sweepEveryMs");
     this.#boot = (o.bootId ?? randomUUID)();
-    // The clock never starts before the newest row already written: a first reading far ahead of it (a reboot with a
-    // wrong clock) is then unconfirmed, and expires nothing, instead of being trusted as the first reading.
+    // The clock starts no earlier than the newest row already written, and may then only move ahead as fast as the
+    // monotonic clock does (see `#time`): a restart whose wall clock is far ahead cannot expire anything.
+    this.#monotonic = o.monotonic ?? ((): number => performance.now());
+    this.#mono0 = this.#monotonic();
     const newest = db
       .prepare("SELECT MAX(MAX(created_at), MAX(expires_at) - ?) AS t FROM daemon_idempotency")
       .get(Math.max(this.#ttlMs, this.#interruptedTtlMs)) as { t: number | bigint | null };
-    if (newest.t !== null && newest.t > 0) {
-      this.#clock = this.#trusted = Number(newest.t);
-      this.#started = true;
-    } else {
-      this.#time();
-    }
+    this.#base = newest.t !== null && newest.t > 0 ? Number(newest.t) : this.#reading();
+    this.#clock = this.#trusted = this.#base;
     this.#lastSweep = this.#trusted;
   }
 
-  /** Integer epoch ms that never goes backwards within this boot. */
-  #time(): number {
+  #reading(): number {
     const raw = this.#now();
     if (!Number.isSafeInteger(raw) || raw < 0) throw new AxisError("E_INTERNAL", "The idempotency clock must return integer epoch milliseconds");
-    // A large step back is a real correction (or an earlier bad reading): follow it, so one spike does not pin the
-    // clock. Small steps back are ignored, so expiry never runs backwards by jitter.
+    return raw;
+  }
+
+  /**
+   * Integer epoch ms that never goes backwards by jitter, and sets `#trusted`, the time rows expire by.
+   *
+   * The wall clock must survive a restart, but it can be wrong. `implied` is where the clock should read if it only
+   * ran forward with uptime (the newest row at boot, plus the monotonic time since). A reading no more than an hour
+   * past that is trusted. A reading further ahead (a wrong clock at boot, a spike) is not: expiry advances only at
+   * the monotonic rate until that offset has held steady for `CONFIRM_MS` of monotonic time, then it is accepted. So
+   * a clock that is wrong for minutes frees no `unknown` key, however many calls are made meanwhile; a real long
+   * downtime delays expiry by about that hour. Large steps back are followed; small ones are ignored.
+   */
+  #time(): number {
+    const raw = this.#reading();
+    const mono = this.#monotonic();
     const prev = this.#clock;
     const t = raw < prev - HOUR_MS ? raw : Math.max(prev, raw);
-    // One reading far ahead must not delete rows (an `unknown` key coming back as `new` would re-run a possibly
-    // done side effect): expiry waits until the next reading is also near it. A real long pause costs one reading.
-    this.#unconfirmed = this.#started && t - prev > HOUR_MS;
-    if (!this.#unconfirmed) this.#trusted = t;
-    this.#started = true;
+    const implied = this.#base + (mono - this.#mono0);
+    if (t <= implied + HOUR_MS) {
+      this.#unconfirmed = false;
+      this.#candidate = undefined;
+      this.#trusted = t;
+    } else {
+      const offset = t - mono;
+      if (this.#candidate === undefined || Math.abs(offset - this.#candidate.offset) > JITTER_MS) this.#candidate = { offset, since: mono };
+      if (mono - this.#candidate.since >= CONFIRM_MS) {
+        this.#base = t;
+        this.#mono0 = mono;
+        this.#trusted = t;
+        this.#unconfirmed = false;
+        this.#candidate = undefined;
+      } else {
+        this.#unconfirmed = true;
+        this.#trusted = Math.max(this.#trusted, Math.min(t, implied));
+      }
+    }
     this.#clock = t;
     return t;
   }

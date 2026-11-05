@@ -75,18 +75,78 @@ test("the default pending caps are a twentieth of the table per actor and half o
   assert.equal(at("w3", 0), "exhausted");
 });
 
-test("N-b: one clock reading far ahead deletes nothing; the key is still unknown, and expires once the clock agrees", () => {
-  let now = 1_000_000;
-  const s = make({ now: () => now });
+test("N-b: a clock reading far ahead deletes nothing; the key stays unknown, and expires once the clock really got there", () => {
+  let real = 1_000_000; // the monotonic clock
+  let offset = 0; // the wall clock's error
+  const s = make({ now: () => real + offset, monotonic: () => real });
   s.begin(key("k"), "h");
   s.markUnknown(key("k"));
-  now += 30 * 24 * HOUR; // a bad reading a month ahead
-  assert.equal(s.begin(key("k"), "h").state, "unknown", "the first reading ahead expires nothing");
-  now = 1_000_000 + 2 * 60_000; // the clock is right again
+  offset = 30 * 24 * HOUR; // a bad clock a month ahead
+  for (let i = 0; i < 5; i++) {
+    real += 60_000;
+    assert.equal(s.begin(key("k"), "h").state, "unknown", "calls while the clock is wrong expire nothing");
+  }
+  offset = 0; // corrected
+  real += 60_000;
   assert.equal(s.begin(key("k"), "h").state, "unknown");
-  now += 8 * 24 * HOUR; // really 8 days later, reached in one step
+  real += 8 * 24 * HOUR; // really 8 days later
   s.begin(key("tick"), "h");
-  assert.equal(s.begin(key("k"), "h").state, "new", "a second reading that agrees lets it expire");
+  assert.equal(s.begin(key("k"), "h").state, "new", "after a real week it expires");
+});
+
+test("N1': a wrong boot clock stays wrong for minutes and several calls are made: the unknown key is kept", () => {
+  const db = openDatabase(":memory:");
+  let real = 1_000_000;
+  let offset = 0;
+  const open = () => JournalIdempotencyStore.open(db, { audit: new AuditLog(db), redactor: new Redactor(), now: () => real + offset, monotonic: () => real });
+  const first = open();
+  first.begin(key("k"), "h");
+  first.markUnknown(key("k")); // the daemon dies
+  real += 60_000;
+  offset = 30 * 24 * HOUR; // it boots with its clock a month ahead
+  real += 60_000;
+  const second = open();
+  for (const other of ["a", "b", "c"]) {
+    real += 10_000;
+    assert.equal(second.begin(key(other), "h").state, "new"); // the shell calls straight away
+  }
+  offset = 0; // corrected five minutes later
+  real += 5 * 60_000;
+  assert.equal(second.begin(key("k"), "h").state, "unknown");
+});
+
+test("N1': a real clock that is far ahead after a long downtime is accepted once it has held steady for an hour", () => {
+  const db = openDatabase(":memory:");
+  let real = 1_000_000;
+  let skew = 0;
+  const open = () => JournalIdempotencyStore.open(db, { audit: new AuditLog(db), redactor: new Redactor(), now: () => real + skew, monotonic: () => real });
+  const first = open();
+  first.begin(key("k"), "h");
+  first.markUnknown(key("k"));
+  skew = 30 * 24 * HOUR; // the machine was off for a month (the monotonic clock restarts with the process)
+  const second = open();
+  assert.equal(second.begin(key("k"), "h").state, "unknown", "not yet");
+  for (let i = 0; i < 12; i++) {
+    real += 6 * 60_000;
+    second.begin(key("x"), "h");
+  }
+  real += 60_000;
+  assert.equal(second.begin(key("k"), "h").state, "new", "the month has passed and the clock held steady for an hour");
+});
+
+test("N1': the clock seed uses the newest expiry too, so an honest restart of a long-lived row is not mistaken for a jump", () => {
+  const db = openDatabase(":memory:");
+  let real = 1_000_000;
+  const open = () =>
+    JournalIdempotencyStore.open(db, { audit: new AuditLog(db), redactor: new Redactor(), now: () => real, monotonic: () => real, ttlMs: HOUR, interruptedTtlMs: 2 * HOUR });
+  const first = open();
+  first.begin(key("k"), "h"); // created at 1 000 000
+  real += 20 * HOUR;
+  first.markUnknown(key("k")); // expires 2 h after this; its creation time is 20 h older
+  real += 60_000;
+  const second = open(); // an honest restart a minute later
+  real += 2 * HOUR;
+  assert.equal(second.begin(key("k"), "h").state, "new", "seeded from the expiry, the honest reading is trusted and the row has expired");
 });
 
 test("N-c: the expiry clamp follows the longer TTL, not the interrupted one", () => {

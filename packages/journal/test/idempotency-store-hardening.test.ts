@@ -82,7 +82,7 @@ test("S2: a result larger than a caller's share is not stored", () => {
 
 test("rulings: an interrupted key is remembered for 7 days, a result-not-stored one for the TTL", () => {
   let now = 1_000;
-  const { store } = make({ now: () => now, maxResultBytes: 10 });
+  const { store } = make({ now: () => now, monotonic: () => now, maxResultBytes: 10 });
   store.begin(key("i"), "h");
   store.markUnknown(key("i"));
   store.begin(key("r"), "h");
@@ -208,15 +208,17 @@ test("SIGKILL while large commits run back to back: every surviving key is intac
 });
 
 test("R3: one far-future clock reading does not pin expiries for the rest of the run", () => {
-  let now = 1_000_000;
-  const { store } = make({ now: () => now });
-  now = 4_000_000_000_000; // a bad reading in the year 2096
+  let real = 1_000_000; // the true time; the monotonic clock follows it
+  let spike = false;
+  const { store } = make({ now: () => (spike ? 4_000_000_000_000 : real), monotonic: () => real }); // a bad reading in 2096
+  spike = true;
   done(store, key("spike"));
-  now = 1_000_000 + 1000; // the clock is right again
+  spike = false; // the clock is right again
+  real += 1000;
   store.begin(key("poke"), "h"); // any later call; the sweep brings the bad expiry back
-  now += 60_001;
+  real += 60_001;
   store.begin(key("poke2"), "h");
-  now += 8 * 24 * 3600_000;
+  real += 8 * 24 * 3600_000;
   store.begin(key("tick"), "h");
   assert.equal(store.begin(key("spike"), "h").state, "new", "the row expires in the real timeline");
 });
