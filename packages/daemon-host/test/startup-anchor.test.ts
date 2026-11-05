@@ -44,6 +44,7 @@ const decide = (s: HostServices, contract: string, method: string): string =>
 
 /** Degraded is enforced by construction: nothing writable, and the policy denies every non-degraded method. */
 function assertDegradedServices(s: HostServices): void {
+  assertReadOnlyFacades(s);
   assert.equal(s.audit, undefined);
   assert.equal(s.journal, undefined);
   assert.equal(s.unsafe, undefined);
@@ -53,6 +54,21 @@ function assertDegradedServices(s: HostServices): void {
   }
   for (const [c, m] of [["axis.worktrees", "finalise"], ["axis.worktrees", "list"], ["axis.approvals", "resolve"], ["axis.cli-runs", "start"], ["axis.providers", "list"]] as const) {
     assert.equal(decide(s, c, m), "deny", `${c}.${m} must be denied when degraded`);
+  }
+}
+
+/** The read facades hold only closures over the read methods: no writer, no prototype chain to the real object. */
+export function assertReadOnlyFacades(s: HostServices): void {
+  for (const [name, facade, writers] of [
+    ["auditRead", s.auditRead, ["append", "checkpoint", "isBoundTo"]],
+    ["journalRead", s.journalRead, ["createWorkspace", "transitionWorkspace", "createRun", "transitionRun", "recover"]],
+  ] as const) {
+    assert.ok(Object.isFrozen(facade), name);
+    assert.equal(Object.getPrototypeOf(facade), Object.prototype, `${name} has no class behind it`);
+    for (const w of writers) {
+      assert.ok(!(w in facade), `${name}.${w} must be absent`);
+      assert.throws(() => (facade as unknown as Record<string, { call(t: unknown): void }>)[w]!.call(facade), TypeError);
+    }
   }
 }
 
@@ -70,10 +86,19 @@ for (const [name, sql, reason] of REASONS) {
     try {
       fix.supervisor.anchor = await seed(fix, 4);
       tamper(fix, sql);
-      const before = new DatabaseSync(join(fix.dataDir, "axis.db"));
-      const count = (): number => (reason === "audit_unreadable" ? 0 : Number((before.prepare("SELECT COUNT(*) AS n FROM audit_events").get() as { n: number }).n));
-      const eventsBefore = count();
-      before.close();
+      const snapshot = (): { events: number; digest: string } => {
+        if (reason === "audit_unreadable") return { events: 0, digest: "" };
+        const db = new DatabaseSync(join(fix.dataDir, "axis.db"));
+        try {
+          const n = (sql: string): number => Number((db.prepare(sql).get() as { n: number }).n);
+          const events = n("SELECT COUNT(*) AS n FROM audit_events");
+          return { events, digest: JSON.stringify([events, n("SELECT COUNT(*) AS n FROM agent_workspaces"), n("SELECT COUNT(*) AS n FROM state_transitions")]) };
+        } finally {
+          db.close();
+        }
+      };
+      const before = snapshot();
+      const eventsBefore = before.events;
       const { host, services, ready } = await startAgain(fix);
       try {
         assert.equal(services.degraded, reason);
@@ -84,9 +109,12 @@ for (const [name, sql, reason] of REASONS) {
         assert.equal(fix.supervisor.puts.length, 0, "a degraded host never re-anchors on its own");
         if (reason !== "audit_unreadable") assert.equal(services.auditRead.list({ limit: 1000 }).length, eventsBefore, "the host appended nothing");
         assertDegradedServices(services);
+        assert.throws(() => (services.auditRead as unknown as { append: () => void }).append(), TypeError);
+        assert.throws(() => (services.journalRead as unknown as { createWorkspace: () => void }).createWorkspace(), TypeError);
       } finally {
         await host.stop();
       }
+      assert.equal(snapshot().digest, before.digest, "the chain and the journal are unchanged after a degraded run");
     } finally {
       fix.cleanup();
     }

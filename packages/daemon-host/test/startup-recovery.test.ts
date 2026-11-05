@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { acquireInstanceLock, AuditLog, openDatabase, Redactor } from "@axis/audit";
 import { Journal, JournalIdempotencyStore, RESTART_REASON } from "@axis/journal";
@@ -21,7 +22,7 @@ const KEY = { actorId: "user", workspaceId: "ws-seed", contract: "axis.worktrees
  * What a host that was killed leaves behind: a lock whose pid is dead, a RUNNING run, a CREATING workspace and an
  * idempotency key still in progress. Nothing is closed cleanly: the lock is never released.
  */
-function leaveKilledHost(fix: HostFixture): { runId: string; creatingId: string } {
+function leaveKilledHost(fix: HostFixture, withEvent = false): { runId: string; creatingId: string } {
   const lock = acquireInstanceLock(fix.dataDir, { pid: deadPid(), procStart: () => undefined });
   const db = openDatabase(`${fix.dataDir}/axis.db`);
   const audit = new AuditLog(db, { redactor: new Redactor() });
@@ -33,6 +34,7 @@ function leaveKilledHost(fix: HostFixture): { runId: string; creatingId: string 
   const creating = journal.createWorkspace({ projectId: "p1", branch: "axis/b", baseRef: "main", baseSha: "a".repeat(40), createdBy: "user" }).value;
   const store = JournalIdempotencyStore.open(db, { audit, redactor: new Redactor(), bootId: () => "boot-killed" });
   assert.deepEqual(store.begin(KEY, "hash-1"), { state: "new" });
+  if (withEvent) audit.append({ actor: "daemon", action: "policy.decision", target: "t:1", outcome: "success", payload: { tier: 0 } });
   db.close();
   assert.equal(lock.held, true, "the killed host never released its lock");
   return { runId: run.id, creatingId: creating.id };
@@ -177,6 +179,81 @@ test("a reconcile report is capped at 1024 entries and leaves no timer behind", 
   } finally {
     timers.restore();
     await host.stop();
+    fix.cleanup();
+  }
+});
+
+test("stop() during anchor.get cancels the wait at once and runs no recovery write", async () => {
+  const fix = hostFixture();
+  try {
+    const { runId } = leaveKilledHost(fix);
+    fix.supervisor.answerDelayMs = 3_000;
+    const host = createDaemonHost(fix.config, fix.ports);
+    const started = host.start().then(() => "resolved", (e: { code?: string }) => e.code);
+    await wait(30); // the anchor.get is in flight
+    const t0 = Date.now();
+    await host.stop();
+    assert.ok(Date.now() - t0 < 1_000, "stop did not wait out the 5 s anchor timeout");
+    assert.equal(await started, "E_CANCELLED");
+    const db = new DatabaseSync(`${fix.dataDir}/axis.db`);
+    try {
+      const run = db.prepare("SELECT state FROM agent_runs WHERE id = ?").get(runId) as { state: string };
+      assert.equal(run.state, "RUNNING", "recovery never ran");
+      assert.equal(Number((db.prepare("SELECT COUNT(*) AS n FROM audit_events WHERE action = 'journal.recovery'").get() as { n: number }).n), 0);
+    } finally {
+      db.close();
+    }
+    assert.equal(fix.sent.filter((m) => m["type"] === "ready").length, 0);
+  } finally {
+    fix.cleanup();
+  }
+});
+
+test("stop() during a reconcile that ignores its signal does not wait out the budget and writes no event", async () => {
+  const fix = hostFixture({ ports: { reconcile: () => new Promise(() => undefined) } });
+  const host = createDaemonHost(fix.config, fix.ports);
+  try {
+    const started = host.start().then(() => "resolved", (e: { code?: string }) => e.code);
+    await wait(50);
+    const t0 = Date.now();
+    await host.stop();
+    assert.ok(Date.now() - t0 < 1_000);
+    assert.equal(await started, "E_CANCELLED");
+  } finally {
+    fix.cleanup();
+  }
+});
+
+test("stop() right after the anchor answer arrives (a sound chain) still runs no recovery write", async () => {
+  const fix = hostFixture();
+  try {
+    const { runId } = leaveKilledHost(fix, true);
+    const peek = new DatabaseSync(`${fix.dataDir}/axis.db`);
+    const row = peek.prepare("SELECT seq, hash FROM audit_events ORDER BY seq DESC LIMIT 1").get() as { seq: number; hash: string };
+    peek.close();
+    fix.supervisor.anchor = { seq: Number(row.seq), hash: row.hash };
+    const holder: { host?: ReturnType<typeof createDaemonHost> } = {};
+    const control = {
+      send: (m: Parameters<typeof fix.client.send>[0]) => fix.client.send(m),
+      anchorPut: (h: Parameters<typeof fix.client.anchorPut>[0]) => fix.client.anchorPut(h),
+      onAnchorAck: (h: Parameters<typeof fix.client.onAnchorAck>[0]) => fix.client.onAnchorAck(h),
+      anchorGet: async (o?: Parameters<typeof fix.client.anchorGet>[0]) => {
+        const answer = await fix.client.anchorGet(o);
+        void holder.host?.stop(); // the stop lands between the answer and the check that follows it
+        return answer;
+      },
+    };
+    const host = (holder.host = createDaemonHost(fix.config, { ...fix.ports, control }));
+    assert.equal(await host.start().then(() => "resolved", (e: { code?: string }) => e.code), "E_CANCELLED");
+    await host.stop();
+    const db = new DatabaseSync(`${fix.dataDir}/axis.db`);
+    try {
+      assert.equal((db.prepare("SELECT state FROM agent_runs WHERE id = ?").get(runId) as { state: string }).state, "RUNNING");
+    } finally {
+      db.close();
+    }
+    assert.equal(fix.sent.filter((m) => m["type"] === "ready").length, 0);
+  } finally {
     fix.cleanup();
   }
 });

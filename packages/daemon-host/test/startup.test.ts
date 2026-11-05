@@ -188,10 +188,34 @@ test("exit codes follow the step: a conflict raised after the lock is internal (
     );
     assert.ok(error !== undefined);
     assert.equal(exitCodeForStartupError(error), EXIT.INTERNAL);
+    assert.deepEqual((error as AxisError).detail, { reason: "startup_step", cause: "E_CONFLICT", causeReason: "none" }, "the original code is kept");
     assert.ok(!existsSync(join(fix.dataDir, "axis.lock")));
   } finally {
     fix.cleanup();
   }
+});
+
+test("a path that is not normalised is a configuration error (78) refused before the lock is taken", () => {
+  const fix = hostFixture();
+  try {
+    for (const bad of [`${fix.dataDir}/`, `${fix.root}/x/../data`]) {
+      let error: unknown;
+      try {
+        hostFixture({ root: fix.root, config: { dataDir: bad } });
+      } catch (e) {
+        error = e;
+      }
+      assert.equal((error as { code?: string }).code, "E_INVALID_ARGUMENT", bad);
+      assert.equal(exitCodeForStartupError(error), EXIT.BAD_CONFIG);
+    }
+    assert.ok(!existsSync(join(fix.dataDir, "axis.lock")));
+  } finally {
+    fix.cleanup();
+  }
+});
+
+test("a stop requested while starting maps to a clean exit (0), not an internal error", () => {
+  assert.equal(exitCodeForStartupError(new AxisError("E_CANCELLED", "x")), EXIT.OK);
 });
 
 test("a database that the held lock does not guard is refused, and the lock is released", async () => {

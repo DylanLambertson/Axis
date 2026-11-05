@@ -6,6 +6,7 @@ import type { HostConfig } from "./config.js";
 import type { ControlClient } from "./control/client.js";
 import { Disposables, type DisposeResult } from "./disposables.js";
 import { DegradedStartError } from "./exit-codes.js";
+import { summarizeError } from "./log/summarize-error.js";
 import type { Logger } from "./log/logger.js";
 import { checkCoverage, policySurface, RuleTablePolicy, InMemoryTrustRegistry, type PolicySurface } from "./policy/index.js";
 import type { Clock } from "./ports/clock.js";
@@ -54,10 +55,28 @@ export interface HostOptions {
   readonly anchorTimeoutMs?: number;
 }
 
-/** The reads of the journal, safe in every mode. */
+/** The reads of the journal, safe in every mode. A frozen facade of closures: no writer is reachable from it. */
 export type JournalReader = Pick<Journal, "getWorkspace" | "listWorkspaces" | "getRun" | "listRuns" | "transitions">;
-/** The reads of the audit log, safe in every mode (`axis.audit/1.list`, `verify`, `status`). */
+/** The reads of the audit log, safe in every mode (`axis.audit/1.list`, `verify`, `status`). A frozen facade too. */
 export type AuditReader = Pick<AuditLog, "list" | "verify" | "head">;
+
+function journalReader(j: Journal): JournalReader {
+  return Object.freeze({
+    getWorkspace: (id: string) => j.getWorkspace(id),
+    listWorkspaces: (o?: Parameters<Journal["listWorkspaces"]>[0]) => j.listWorkspaces(o),
+    getRun: (id: string) => j.getRun(id),
+    listRuns: (o?: Parameters<Journal["listRuns"]>[0]) => j.listRuns(o),
+    transitions: (e: "workspace" | "run", id: string) => j.transitions(e, id),
+  });
+}
+
+function auditReader(a: AuditLog): AuditReader {
+  return Object.freeze({
+    list: (o?: Parameters<AuditLog["list"]>[0]) => a.list(o),
+    verify: (o?: Parameters<AuditLog["verify"]>[0]) => a.verify(o),
+    head: () => a.head(),
+  });
+}
 
 /**
  * What startup built. Present on the object `start()` returns; later tickets build their handlers from it. It is for
@@ -125,6 +144,8 @@ export function createDaemonHost(config: HostConfig, ports: StartupPorts, option
   let state: DaemonHost["state"] = "new";
   let started: Promise<HostServices> | undefined;
   let stopping = false;
+  /** Aborted by `stop()`: cancels the waits of a start in progress (`anchor.get`, reconcile) instead of waiting them out. */
+  const startup = new AbortController();
   /** Checked after every await: a `stop()` during `start()` ends the start before it can send `ready`. */
   const alive = (): void => {
     if (stopping) throw new AxisError("E_CANCELLED", "The host was stopped while starting", { reason: "stopping" });
@@ -143,7 +164,15 @@ export function createDaemonHost(config: HostConfig, ports: StartupPorts, option
       return await afterLock(dir);
     } catch (error) {
       if (error instanceof AxisError && STEP_ERRORS.has(error.code) && !(error instanceof DegradedStartError)) {
-        throw new AxisError("E_INTERNAL", "Startup failed after the data directory was locked", { reason: "startup_step" });
+        // Keep what the operator needs: the original closed code and reason, in the log and in the details.
+        const original = summarizeError(error);
+        ports.logger?.error("host.start_failed", { error });
+        const reason = typeof error.detail["reason"] === "string" ? error.detail["reason"] : "none";
+        throw new AxisError("E_INTERNAL", "Startup failed after the data directory was locked", {
+          reason: "startup_step",
+          cause: original.code ?? "unknown",
+          causeReason: reason.slice(0, 64),
+        });
       }
       throw error;
     }
@@ -159,7 +188,7 @@ export function createDaemonHost(config: HostConfig, ports: StartupPorts, option
     const gitPath = resolveGitOnce({ env: ports.env, platform: config.platform, excludeDirs: excludeDirs() });
     // Step 6: audit log and the anchor check (reads only).
     const audit = new AuditLog(db, { redactor: ports.redactor, now: () => new Date(ports.clock.now()) });
-    const check = await checkAnchor(audit, () => ports.control.anchorGet({ timeoutMs: options.anchorTimeoutMs ?? 5_000 }));
+    const check = await checkAnchor(audit, () => ports.control.anchorGet({ timeoutMs: options.anchorTimeoutMs ?? 5_000, signal: startup.signal }));
     alive();
     const degraded = check.degraded;
     if (degraded !== undefined) {
@@ -184,6 +213,7 @@ export function createDaemonHost(config: HostConfig, ports: StartupPorts, option
         audit,
         reconcile: ports.reconcile,
         reconcileBudgetMs: config.limits.reconcileBudgetMs ?? DEFAULT_RECONCILE_BUDGET_MS,
+        signal: startup.signal,
       });
       alive();
       disposables.add(ports.control.onAnchorAck((seq) => void (anchorState.ackedSeq = Math.max(anchorState.ackedSeq, seq))), "anchor.ack");
@@ -206,8 +236,8 @@ export function createDaemonHost(config: HostConfig, ports: StartupPorts, option
     ports.control.send({ type: "ready", protocolVersion: PROTOCOL_VERSION, contracts: served, ...(degraded === undefined ? {} : { degraded }) });
     ports.logger?.info("host.ready");
     return Object.freeze({
-      journalRead: journal,
-      auditRead: audit,
+      journalRead: journalReader(journal),
+      auditRead: auditReader(audit),
       journal: degraded === undefined ? journal : undefined,
       audit: degraded === undefined ? audit : undefined,
       idempotency,
@@ -249,6 +279,7 @@ export function createDaemonHost(config: HostConfig, ports: StartupPorts, option
     },
     async stop(): Promise<DisposeResult> {
       stopping = true;
+      startup.abort();
       state = "stopped";
       if (started !== undefined) await started.catch(() => undefined);
       return disposables.dispose();

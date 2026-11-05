@@ -23,6 +23,8 @@ export interface RecoveryInput {
   /** Compare git with the journal (worktrees port, ticket H8). Absent: skipped. */
   readonly reconcile?: ((signal: AbortSignal) => Promise<ReconcileReport>) | undefined;
   readonly reconcileBudgetMs: number;
+  /** Aborted by `stop()`: the reconcile is told to stop and its result (and any audit write for it) is dropped. */
+  readonly signal?: AbortSignal;
 }
 
 /**
@@ -38,26 +40,33 @@ export async function runRecovery(input: RecoveryInput): Promise<RecoveryOutcome
     return { journal, keysInterrupted: interrupted, reconcile: "skipped", needsAttention: [] };
   }
   const controller = new AbortController();
+  const cancel = (): void => controller.abort();
+  input.signal?.addEventListener("abort", cancel, { once: true });
+  if (input.signal?.aborted === true) cancel();
   let timer: NodeJS.Timeout | undefined;
   let status: "ok" | "timeout" | "failed" = "ok";
   let needsAttention: ReconcileReport["needsAttention"] = [];
   try {
     const timeout = new Promise<"timeout">((resolve) => {
       timer = setTimeout(() => {
+        resolve("timeout"); // before the abort, which settles the "cancelled" branch of the race
         controller.abort();
-        resolve("timeout");
       }, input.reconcileBudgetMs);
     });
     const work = Promise.resolve().then(() => input.reconcile?.(controller.signal));
     work.catch(() => undefined); // an abandoned reconcile may still reject later
-    const done = await Promise.race([work, timeout]);
-    if (done === "timeout") status = "timeout";
+    const cancelled = new Promise<"cancelled">((resolve) => controller.signal.addEventListener("abort", () => resolve("cancelled"), { once: true }));
+    const done = await Promise.race([work, timeout, cancelled]);
+    if (input.signal?.aborted === true || done === "cancelled") status = "failed";
+    else if (done === "timeout") status = "timeout";
     else if (done !== undefined) needsAttention = done.needsAttention.slice(0, MAX_ATTENTION);
   } catch {
     status = "failed";
   } finally {
     if (timer !== undefined) clearTimeout(timer);
   }
+  input.signal?.removeEventListener("abort", cancel);
+  if (input.signal?.aborted === true) return { journal, keysInterrupted: interrupted, reconcile: "failed", needsAttention: [] };
   if (status !== "ok" || needsAttention.length > 0) {
     input.audit.append({
       actor: "daemon",

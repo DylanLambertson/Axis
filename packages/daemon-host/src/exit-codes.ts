@@ -31,6 +31,9 @@ export type ExitCode = (typeof EXIT)[keyof typeof EXIT];
 export function exitCodeForStartupError(error: unknown): ExitCode {
   if (error instanceof DegradedStartError) return EXIT.DEGRADED;
   switch (summarizeError(error).code) {
+    case "E_CANCELLED":
+      // A stop requested while starting: a clean stop, not an internal error.
+      return EXIT.OK;
     case "E_CONFLICT":
       return EXIT.LOCK_HELD;
     case "E_INVALID_ARGUMENT":
