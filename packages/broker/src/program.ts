@@ -4,6 +4,7 @@ import { resolveExecutable, nodeFs } from "@axis/pty-policy";
 import { BrokerError, denied, invalid } from "./errors.js";
 import type { BrokerFs } from "./fs.js";
 import { isUnder } from "./contain.js";
+import { isNativeExecutable } from "./executable.js";
 import type { Env } from "./types.js";
 
 /** A file at a moment: `dev:ino`, size and both times. A rename over it, a copy in its place or an in-place edit all change it. */
@@ -51,19 +52,15 @@ async function shebang(d: Deps, real: string): Promise<{ readonly line: string }
     return "unreadable";
   }
   if (head.length >= 2 && head[0] === 0x23 && head[1] === 0x21) {
-    // The kernel's rule: blanks, then a word on the same line. Anything else is run by /bin/sh (ENOEXEC), not by a named interpreter.
-    const line = /^#![ \t]*([^ \t\n]+)/.exec(head.toString("latin1"))?.[1];
-    return line === undefined ? "unreadable" : { line };
+    // The kernel's rule: blanks, then a word on the same line that stops at a blank, a newline or a NUL.
+    const m = /^#![ \t]*([^ \t\n\0]+)/.exec(head.toString("latin1"));
+    // A full buffer with no newline whose word runs to its end is refused by the kernel (the path may be cut): /bin/sh runs it.
+    if (m === null || (head.length === 256 && !head.includes(0x0a) && m[0].length === head.length)) return "unreadable";
+    return { line: m[1] as string };
   }
-  // No `#!`: a binary only if it starts like one. Text the kernel refuses is run by /bin/sh and cannot be judged here.
-  return EXECUTABLE_MAGIC.some((m) => head.subarray(0, m.length).equals(m)) ? "none" : "unreadable";
+  // No `#!`: a program only if it is one the loader accepts. Text the kernel refuses (even with a magic prefix) is run by /bin/sh.
+  return isNativeExecutable(head, d.platform) ? "none" : "unreadable";
 }
-const EXECUTABLE_MAGIC: readonly Buffer[] = [
-  Buffer.from("7f454c46", "hex"), // ELF
-  Buffer.from("feedface", "hex"), Buffer.from("feedfacf", "hex"), Buffer.from("cefaedfe", "hex"), Buffer.from("cffaedfe", "hex"), // Mach-O
-  Buffer.from("cafebabe", "hex"), // Mach-O universal
-  Buffer.from("MZ", "latin1"), // PE
-];
 
 /**
  * Resolves `command` the way `ctx.run` will: an absolute path is judged by its real path, a bare name is searched on

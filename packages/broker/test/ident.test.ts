@@ -3,37 +3,14 @@
 // or chained script is not judged as a plain program, and invisible characters are shown as code points.
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, copyFileSync, mkdirSync, realpathSync, utimesSync, writeFileSync, readFileSync } from "node:fs";
+import { chmodSync, realpathSync, utimesSync, writeFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
-import { ToolBroker, createCommandRunner, nodeBrokerFs, type ApprovalRequest, type BrokerFs, type FileStat, type ToolContext } from "../src/index.js";
-import { call, cleanupWorlds, def, grant, rig, skipSh, why, worlds } from "./rig.js";
-import { makeWorld } from "./helpers.js";
+import { nodeBrokerFs, type FileStat } from "../src/index.js";
+import { call, cleanupWorlds, def, grant, rig, skipSh, why } from "./rig.js";
+import { build } from "./buildRig.js";
 
 after(cleanupWorlds);
-const lim = { timeoutMs: 5000, maxOutputBytes: 1000 };
-
-function build(o: { fs?: (flag: { on: boolean }) => BrokerFs; mutate?: (bin: string) => void } = {}) {
-  const w = makeWorld();
-  worlds.push(w);
-  const bin = join(w.base, "bin");
-  mkdirSync(bin);
-  const flag = { on: false };
-  const requests: ApprovalRequest[] = [];
-  const broker = new ToolBroker({
-    registry: w.registry, fs: o.fs?.(flag) ?? nodeBrokerFs, audit: { append: () => ({}) as never }, runner: createCommandRunner({ killGraceMs: 200 }),
-    parentEnv: () => ({ PATH: bin, HOME: w.base }),
-    approval: { request: async (q: ApprovalRequest) => { requests.push(q); flag.on = true; o.mutate?.(bin); return grant(q); } },
-  });
-  broker.register(def({ name: "t", tier: "network", args: z.strictObject({}), argv: () => ["prog"], run: async (ctx: ToolContext) => ctx.run({ command: "prog", args: [], ...lim }) }));
-  const install = (name = "prog"): string => {
-    copyFileSync(realpathSync("/bin/true"), join(bin, name));
-    chmodSync(join(bin, name), 0o755);
-    return join(bin, name);
-  };
-  return { w, bin, broker, requests, install };
-}
-
 // R5-A: each identity field, alone -----------------------------------------------------------------------------------
 
 for (const field of ["id", "size", "mtime", "ctime"] as const) {
