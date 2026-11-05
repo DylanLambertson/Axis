@@ -118,5 +118,5 @@ test("a cached git is checked again against the current worktrees", { skip: !pos
 });
 
 test("redaction cuts its input: the output is never longer than the bound", () => {
-  assert.ok(redactText("a".repeat(300_000)).length <= 64_000);
+  assert.ok(redactText("word ".repeat(60_000)).length <= 64_000);
 });
