@@ -122,7 +122,7 @@ Startup is a straight line. Any failure before step 12 exits with a typed code a
    - A first start is an empty chain AND an explicit `anchor.result { anchor: null }` from the supervisor. It is normal and creates the first anchor after step 9 (nothing to anchor until the first event).
 7. **Journal.** `Journal.open(db, { audit })`.
 8. **Idempotency store.** `JournalIdempotencyStore.open(db, { audit, redactor })` (`feat/daemon-idempotency-store`). It marks keys of the previous boot as `unknown: interrupted` itself ([V] `UnknownReason`). **Its clock handling must be re-reviewed before the product uses it (decided; ticket H2 checks it).** Until that branch merges, the host refuses to start with `MemoryIdempotencyStore` unless `config.devMemoryIdempotency` is set by the test supervisor; the product path has no such flag.
-9. **Recovery.** `journal.recover(lock)` (interrupts RUNNING runs, DMN-7), then `worktrees.reconcile()` (§7.3: `git worktree list --porcelain` and `refs/axis/*` against the journal, gate G-12). Reconcile has a time budget (default 20 s). Failure or timeout marks only the affected workspaces `needs attention` (their methods answer `E_UNAVAILABLE`), and is audited. It never blocks the other workspaces and never aborts startup. Then `checkpoint(previousAnchor)` and persist the new anchor (the recovery events are in the chain).
+9. **Recovery.** `journal.recover(lock)` (interrupts RUNNING runs, DMN-7), then `worktrees.reconcile()` (§7.3: `git worktree list --porcelain` and `refs/axis/*` against the journal, gate G-12). Reconcile has a time budget (default 20 s). A reconcile that fails, times out or is cut at its report cap is incomplete: until a full one completes EVERY workspace is `needs attention` (its methods answer `E_UNAVAILABLE`; reads such as `list` still work), never "nothing is wrong", and it is audited. It never aborts startup. A completed reconcile flags only the workspaces it found in disagreement. Acceptance for the wiring (H12): no worktrees method is served before the startup reconcile settles, or the incomplete state starts true. Then `checkpoint(previousAnchor)` and persist the new anchor (the recovery events are in the chain).
 10. **Services.** Build, in this order: `ChallengeManager` (synchronous sink, §5.2), the gate adapter, `TrustRegistry`, the attestation `IdentityVerifier`, `RuleTablePolicy`, the `Daemon`; `register()` every handler with its content hooks; run the **coverage check** (§4.2). A mismatch throws, and the host exits 70 before listening.
 11. **Signals.** Install the shutdown handlers (§8).
 12. **Ready.** Send `ready { protocolVersion, contracts, degraded?: reason }` on the control channel. The supervisor starts brokering connections only after this. From here the host accepts `connect` messages. **There is no listening socket**; "listening" means the control channel handler is attached.
@@ -143,7 +143,7 @@ Tier and `sideEffect` are the contract's declared minimum; policy may raise, nev
 |---|---|---|---|---|---|---|---|---|---|
 | `axis.worktrees/1` | `list`, `status` | read | 0 | none | | | user | `WorktreesService` | 1a, exists |
 | | `create` | write | 2 | req | | yes | user | same | 1a, exists |
-| | `finalise` | write | 2 now, **3 after P1d+** | req | yes after P1d+ | | user | same, content hook after P1d+ | 1a, exists. **Decided:** becomes tier 3 with a challenge, as a follow-up outside the first protocol PR |
+| | `finalise` | write | 2 now, **4 after P1d+** | req | yes after P1d+ | | user | same, content hook after P1d+ | 1a, exists. **Decided (amended by H8):** becomes tier 4 (challenge with a native confirmation), as a follow-up outside the first protocol PR: a discard token is minted only for a challenge issued at tier 4 or above, because a tier 3 approval has no dialog |
 | | `remove` | destructive | 4 | req | yes, native | | user | same, content hook (§7.2) | 1a, exists |
 | | `restoreFromRunBase` | write | 2 | req | | yes | user | same | 1a, exists |
 | | `discard`, `setUserEditing` | write | 2 | req / none | | | user | same | 1a, **named in the design docs, absent in the protocol** (additive, ticket P1d) |
@@ -176,7 +176,7 @@ Notes on the table:
 
 #### 4.2.1 Coverage check
 
-At startup and as a unit test, assert: the set of `(contract, version, method)` in the served registry equals the set with a handler, equals the set with a policy row, equals the set with an audit action declaration (§5.3). Any difference throws. Every tier 3 or above method (including `worktrees.finalise` once it is tier 3) has a content hook or is explicitly marked "request digest content" in the table. This stops "a method was added to the protocol and is silently served, or silently dropped".
+At startup and as a unit test, assert: the set of `(contract, version, method)` in the served registry equals the set with a handler, equals the set with a policy row, equals the set with an audit action declaration (§5.3). Any difference throws. Every tier 3 or above method (including `worktrees.finalise` once it is tier 4) has a content hook or is explicitly marked "request digest content" in the table. This stops "a method was added to the protocol and is silently served, or silently dropped".
 
 ### 4.3 Handler shape
 
