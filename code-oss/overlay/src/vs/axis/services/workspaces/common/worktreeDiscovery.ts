@@ -17,8 +17,8 @@ import { posix, win32 } from '../../../../base/common/path.js';
 /** Largest metadata file read during discovery; git's own files are tiny. */
 export const MAX_GIT_METADATA_BYTES = 64 * 1024;
 
-/** Most linked worktrees listed per project (the contract's list limit). */
-export const MAX_DISCOVERED_WORKTREES = 1000;
+/** Most `<common dir>/worktrees` entries read per project; the rest are counted, not read. */
+export const MAX_DISCOVERED_WORKTREES = 200;
 
 /** Longest branch name kept, as the contract's `WorktreeInfo.branch` (`max(256)`). */
 export const MAX_BRANCH_LENGTH = 256;
@@ -27,6 +27,10 @@ const SHA = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
 
 /** Control, format (bidi overrides, zero-width) and line-separator characters, as the protocol's name rule. */
 const UNSAFE_TEXT = /[\p{Cc}\p{Cf}\u2028\u2029]/gu;
+/** Private-use and unassigned code points: no meaning a reader can check. */
+const OPAQUE_TEXT = /[\p{Co}\p{Cn}]/gu;
+/** A third and later combining mark in a row (stacked marks that spill over neighbouring text). */
+const MARK_RUN = /(\p{M}{2})\p{M}+/gu;
 
 export type GitHead =
 	| { readonly kind: 'ref'; readonly ref: string }
@@ -84,7 +88,7 @@ export function branchOf(head: GitHead | undefined): string | null {
 		return null;
 	}
 	const name = head.ref.slice('refs/heads/'.length, 'refs/heads/'.length + MAX_BRANCH_LENGTH * 2);
-	return clampText(name.replace(UNSAFE_TEXT, '\uFFFD'), MAX_BRANCH_LENGTH);
+	return clampText(name.replace(UNSAFE_TEXT, '\uFFFD').replace(OPAQUE_TEXT, '\uFFFD').replace(MARK_RUN, '$1'), MAX_BRANCH_LENGTH);
 }
 
 /** Cuts text to at most `max` code points, ending with an ellipsis when it was longer. */
@@ -139,9 +143,36 @@ export function linksBack(dotGitContent: string, worktreeDir: string, adminDir: 
 	return windows ? target.toLowerCase() === expected.toLowerCase() : target === expected;
 }
 
+/**
+ * The `core.worktree` value of a git `config` file, or `undefined`. Git writes
+ * it for a submodule's git dir (`.git/modules/<name>`), naming the
+ * submodule's work tree relative to the git dir. Only the simple forms git
+ * itself writes are read: a `[core]` section and a `worktree = <path>` line,
+ * optionally quoted.
+ */
+export function parseCoreWorktree(config: string): string | undefined {
+	let inCore = false;
+	let value: string | undefined;
+	for (const raw of config.split('\n')) {
+		const line = raw.trim();
+		const section = /^\[\s*([A-Za-z0-9.-]+)\s*(?:"[^"]*")?\s*\]/.exec(line);
+		if (section) {
+			inCore = section[1].toLowerCase() === 'core' && !line.includes('"');
+			continue;
+		}
+		const entry = inCore ? /^worktree\s*=\s*(.*)$/i.exec(line) : null;
+		if (entry) {
+			const text = entry[1].trim();
+			const quoted = /^"((?:[^"\\]|\\.)*)"$/.exec(text);
+			value = quoted ? quoted[1].replace(/\\(.)/g, '$1') : text.replace(/\s[;#].*$/, '');
+		}
+	}
+	return value || undefined;
+}
+
 /** A display name for a project or workspace that fits the contract's name rules. */
 export function displayName(value: string): string {
-	const cleaned = value.replace(UNSAFE_TEXT, '').trim();
+	const cleaned = value.replace(UNSAFE_TEXT, '').replace(OPAQUE_TEXT, '\uFFFD').replace(MARK_RUN, '$1').trim();
 	return clampText(cleaned || 'unnamed', 80);
 }
 

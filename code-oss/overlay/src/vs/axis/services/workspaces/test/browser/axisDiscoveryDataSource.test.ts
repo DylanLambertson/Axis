@@ -11,17 +11,34 @@ import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { TestConfigurationService } from '../../../../../platform/configuration/test/common/testConfigurationService.js';
 import { FileService } from '../../../../../platform/files/common/fileService.js';
+import { FileType, IStat } from '../../../../../platform/files/common/files.js';
 import { InMemoryFileSystemProvider } from '../../../../../platform/files/common/inMemoryFilesystemProvider.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { testWorkspace } from '../../../../../platform/workspace/test/common/testWorkspace.js';
 import { TestContextService, TestWorkspaceTrustManagementService } from '../../../../../workbench/test/common/workbenchTestServices.js';
 import { AxisDiscoveryDataSource, workspaceKeyOf } from '../../browser/axisDiscoveryDataSource.js';
 import { AXIS_SAMPLE_RUNS_SETTING } from '../../common/axisSampleRuns.js';
+import { MAX_DISCOVERED_WORKTREES } from '../../common/worktreeDiscovery.js';
 import { AXIS_ID_PATTERN } from '../../common/axisWorkspaceData.js';
 import { branchLabel, MAX_BRANCH_LABEL_LENGTH } from '../../common/axisWorkspaceModel.js';
 
 const SHA_A = 'a'.repeat(40);
 const SHA_B = 'b'.repeat(40);
+
+/** An in-memory provider that reports chosen paths as symbolic links (the in-memory provider has none). */
+class SymlinkMarkingProvider extends InMemoryFileSystemProvider {
+	readonly links = new Set<string>();
+
+	override async stat(resource: URI): Promise<IStat> {
+		const stat = await super.stat(resource);
+		return this.links.has(resource.path) ? { ...stat, type: stat.type | FileType.SymbolicLink } : stat;
+	}
+
+	override async readdir(resource: URI): Promise<[string, FileType][]> {
+		const prefix = resource.path.endsWith('/') ? resource.path : `${resource.path}/`;
+		return (await super.readdir(resource)).map(([name, type]) => [name, this.links.has(prefix + name) ? type | FileType.SymbolicLink : type]);
+	}
+}
 
 /** Fixture repositories on an in-memory `file:` provider (design task A2: 0, 1 and 3 worktrees, detached HEAD, missing gitdir). */
 (isWindows ? suite.skip : suite)('Axis worktree discovery', () => {
@@ -30,11 +47,13 @@ const SHA_B = 'b'.repeat(40);
 	let disposables: DisposableStore;
 	let fileService: FileService;
 	let configuration: TestConfigurationService;
+	let provider: SymlinkMarkingProvider;
 
 	setup(() => {
 		disposables = store.add(new DisposableStore());
 		fileService = disposables.add(new FileService(new NullLogService()));
-		disposables.add(fileService.registerProvider(Schemas.file, disposables.add(new InMemoryFileSystemProvider())));
+		provider = disposables.add(new SymlinkMarkingProvider());
+		disposables.add(fileService.registerProvider(Schemas.file, provider));
 		configuration = new TestConfigurationService();
 	});
 
@@ -128,12 +147,90 @@ const SHA_B = 'b'.repeat(40);
 		assert.deepStrictEqual(await createSource('/clone').listProjects(), []);
 	});
 
-	test('a folder with a separate git dir is its own local checkout', async () => {
-		await write('/sep/.git', 'gitdir: /store/sep.git\n');
+	async function paths(folder: string): Promise<string[]> {
+		const source = createSource(folder);
+		const result: string[] = [];
+		for (const project of await source.listProjects()) {
+			result.push(...(await source.listWorktrees(project.id)).map(w => w.path));
+		}
+		return result;
+	}
+
+	async function victim(): Promise<void> {
+		await mainRepo('/home/user/victim');
+		await linkedWorktree('/home/user/victim', 'secretwt', '/home/user/victim-wt', 'ref: refs/heads/private-branch\n');
+	}
+
+	test('a .git file naming another repository\'s git dir does not make a project or list its worktrees', async () => {
+		await victim();
+		await write('/clone/.git', 'gitdir: /home/user/victim/.git\n');
+		await write('/clone2/.git', 'gitdir: ../home/user/victim/.git\n'); // relative
+		await write('/clone3/.git', 'gitdir: /home/user/victim/.git/worktrees/secretwt\n'); // its genuine admin dir, which names victim-wt
+		for (const folder of ['/clone', '/clone2', '/clone3']) {
+			assert.deepStrictEqual(await paths(folder), [], folder);
+		}
+	});
+
+	test('a genuine submodule is one checkout, verified by core.worktree, and lists no worktrees', async () => {
+		await mainRepo('/super');
+		await write('/super/sub/.git', 'gitdir: ../.git/modules/sub\n');
+		await write('/super/.git/modules/sub/HEAD', 'ref: refs/heads/main\n');
+		await write('/super/.git/modules/sub/config', '[core]\n\tbare = false\n\tworktree = ../../../sub\n');
+		await write('/super/.git/modules/sub/worktrees/extra/gitdir', '/wt/sub-extra/.git\n'); // a real worktree of the submodule: not listed
+		await write('/wt/sub-extra/.git', 'gitdir: /super/.git/modules/sub/worktrees/extra\n');
+		assert.deepStrictEqual(await paths('/super/sub'), ['/super/sub']);
+	});
+
+	test('a submodule-style .git file whose core.worktree names another folder, or that has none, is not a project', async () => {
+		await write('/fake/.git', 'gitdir: /store/fake.git\n');
+		await write('/store/fake.git/HEAD', 'ref: refs/heads/main\n');
+		await write('/store/fake.git/config', '[core]\n\tworktree = /elsewhere\n');
+		await write('/sep/.git', 'gitdir: /store/sep.git\n'); // a --separate-git-dir repository: no back-pointer
 		await write('/store/sep.git/HEAD', 'ref: refs/heads/main\n');
-		const source = createSource('/sep');
+		assert.deepStrictEqual(await paths('/fake'), []);
+		assert.deepStrictEqual(await paths('/sep'), []);
+	});
+
+	test('a symbolically linked worktree folder is refused, even when its relative .git resolves back', async () => {
+		// The reviewer's case: /a/wt links to another repository's worktree whose relative .git, read from /a/wt, names /a's entry.
+		await mainRepo('/a/victim');
+		await write('/a/victim/.git/worktrees/x/gitdir', '/a/wt/.git\n');
+		await write('/a/wt/.git', 'gitdir: ../victim/.git/worktrees/x\n');
+		assert.deepStrictEqual(await paths('/a/victim'), ['/a/victim', '/a/wt'], 'control: accepted while /a/wt is a real folder');
+		provider.links.add('/a/wt');
+		assert.deepStrictEqual(await paths('/a/victim'), ['/a/victim']);
+	});
+
+	test('a worktree whose .git is a symbolic link or a directory is refused', async () => {
+		await mainRepo('/repo');
+		await linkedWorktree('/repo', 'linked', '/wt/linked', 'ref: refs/heads/main\n');
+		await write('/repo/.git/worktrees/dir/gitdir', '/wt/dir/.git\n');
+		await write('/wt/dir/.git/HEAD', 'ref: refs/heads/main\n'); // .git is a directory here
+		assert.deepStrictEqual(await paths('/repo'), ['/repo', '/wt/linked'], 'control');
+		provider.links.add('/wt/linked/.git');
+		assert.deepStrictEqual(await paths('/repo'), ['/repo']);
+	});
+
+	test('symbolically linked entries and an opened folder whose .git is a link are not followed', async () => {
+		await mainRepo('/repo');
+		await linkedWorktree('/repo', 'entry', '/wt/entry', 'ref: refs/heads/main\n');
+		await mainRepo('/linked');
+		provider.links.add('/repo/.git/worktrees/entry');
+		provider.links.add('/linked/.git');
+		assert.deepStrictEqual(await paths('/repo'), ['/repo']);
+		assert.deepStrictEqual(await paths('/linked'), []);
+	});
+
+	test('at most MAX_DISCOVERED_WORKTREES entries are read; the rest are counted as not listed', async () => {
+		await mainRepo('/repo');
+		for (let i = 0; i < MAX_DISCOVERED_WORKTREES; i++) {
+			await write(`/repo/.git/worktrees/e${String(i).padStart(4, '0')}/gitdir`, '/nowhere/.git\n');
+		}
+		await linkedWorktree('/repo', 'zz-past-the-limit', '/wt/zz', 'ref: refs/heads/main\n');
+		const source = createSource('/repo');
 		const [project] = await source.listProjects();
-		assert.strictEqual(await source.getLocalCheckout(project.id), '/sep');
+		assert.deepStrictEqual((await source.listWorktrees(project.id)).map(w => w.path), ['/repo']);
+		assert.strictEqual(await source.countRefusedWorktrees(project.id), MAX_DISCOVERED_WORKTREES + 1);
 	});
 
 	test('opening a linked worktree finds the same project and its local checkout', async () => {

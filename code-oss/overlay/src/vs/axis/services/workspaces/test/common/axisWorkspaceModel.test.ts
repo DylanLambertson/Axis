@@ -7,7 +7,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { sampleCliRuns } from '../../common/axisSampleRuns.js';
 import { AXIS_ID_PATTERN, IAxisWorktreeInfo } from '../../common/axisWorkspaceData.js';
 import { attentionOf, branchLabel, cycleIndex, IAxisWorkspaceEntry, MAX_BRANCH_LABEL_LENGTH, opensTerminalOnFocus, orderEntries, rowStateOf } from '../../common/axisWorkspaceModel.js';
-import { branchOf, clampText, displayName, isSafeRefName, linksBack, MAX_BRANCH_LENGTH, parseGitFile, parseHead, parseLooseRef, parsePackedRefs, resolveMetadataPath, stableId, worktreeDirFromGitdir } from '../../common/worktreeDiscovery.js';
+import { branchOf, clampText, displayName, isSafeRefName, linksBack, MAX_BRANCH_LENGTH, parseCoreWorktree, parseGitFile, parseHead, parseLooseRef, parsePackedRefs, resolveMetadataPath, stableId, worktreeDirFromGitdir } from '../../common/worktreeDiscovery.js';
 
 const SHA = '0123456789abcdef0123456789abcdef01234567';
 
@@ -50,6 +50,9 @@ suite('Axis worktree discovery parsers', () => {
 		assert.strictEqual([...huge].length, MAX_BRANCH_LENGTH);
 		assert.ok(huge.endsWith('\u2026'));
 		assert.strictEqual([...branchLabel(entry('k', 'x', { worktree: { ...worktree('/w/x'), branch: huge } }))].length, MAX_BRANCH_LABEL_LENGTH);
+		assert.strictEqual(branchOf(ref('a\u0301\u0302\u0303\u0304b')), 'a\u0301\u0302b', 'at most two combining marks in a row');
+		assert.strictEqual(branchOf(ref('x\uE000y\u{10FFFF}')), 'x\uFFFDy\uFFFD', 'private-use and unassigned code points');
+		assert.strictEqual(displayName('n\u0300\u0300\u0300\u0300'), 'n\u0300\u0300');
 		assert.strictEqual(clampText('\u{1F600}'.repeat(5), 3), '\u{1F600}\u{1F600}\u2026', 'cut on code points, never inside a pair');
 	});
 
@@ -59,6 +62,15 @@ suite('Axis worktree discovery parsers', () => {
 		assert.ok(!linksBack('gitdir: /r/.git/worktrees/b\n', '/wt/a', '/r/.git/worktrees/a', false));
 		assert.ok(!linksBack('', '/home/user', '/r/.git/worktrees/a', false));
 		assert.ok(linksBack('gitdir: C:\\R\\.git\\worktrees\\a', 'D:\\wt\\a', 'c:\\r\\.git\\worktrees\\a', true));
+	});
+
+	test('core.worktree of a git config', () => {
+		assert.strictEqual(parseCoreWorktree('[core]\n\trepositoryformatversion = 0\n\tworktree = ../../../sub\n'), '../../../sub');
+		assert.strictEqual(parseCoreWorktree('[core]\n\tworktree = "/a b/c"\n'), '/a b/c');
+		assert.strictEqual(parseCoreWorktree('[core]\n\tWorkTree = /x ; comment\n'), '/x');
+		assert.strictEqual(parseCoreWorktree('[remote "origin"]\n\tworktree = /x\n'), undefined, 'another section');
+		assert.strictEqual(parseCoreWorktree('[core]\n\tbare = false\n'), undefined);
+		assert.strictEqual(parseCoreWorktree(''), undefined);
 	});
 
 	test('ref names that would escape the git directory are refused', () => {

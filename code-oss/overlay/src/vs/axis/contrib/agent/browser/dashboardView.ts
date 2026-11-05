@@ -12,6 +12,7 @@ import { ICommandService } from '../../../../platform/commands/common/commands.j
 import { IAxisCliRun } from '../../../services/workspaces/common/axisWorkspaceData.js';
 import { AxisRowState, branchLabel, IAxisWorkspaceEntry, rowStateOf } from '../../../services/workspaces/common/axisWorkspaceModel.js';
 import { IAxisWorkspaceService } from '../../../services/workspaces/browser/axisWorkspaceService.js';
+import { MAX_DISCOVERED_WORKTREES } from '../../../services/workspaces/common/worktreeDiscovery.js';
 
 /** Terminal count per workspace key, from `AxisWorkspaceTerminals`. */
 export interface IAxisTerminalCounts {
@@ -94,8 +95,8 @@ export class AxisDashboardView extends Disposable {
 			const warning = append(this.header, $('span.axis-dashboard-note.axis-dashboard-refused'));
 			warning.setAttribute('role', 'note');
 			warning.textContent = refused === 1
-				? localize('axis.dashboard.refusedOne', "1 worktree entry is not listed: its folder is missing, or its .git file does not point back to this repository.")
-				: localize('axis.dashboard.refused', "{0} worktree entries are not listed: their folders are missing, or their .git files do not point back to this repository.", refused);
+				? localize('axis.dashboard.refusedOne', "1 worktree entry is not listed: its folder is missing, its .git file does not point back to this repository, or it is past the first {0} entries.", MAX_DISCOVERED_WORKTREES)
+				: localize('axis.dashboard.refused', "{0} worktree entries are not listed: their folders are missing, their .git files do not point back to this repository, or they are past the first {1} entries.", refused, MAX_DISCOVERED_WORKTREES);
 		}
 		const refresh = append(this.header, $<HTMLButtonElement>('button.axis-button'));
 		refresh.type = 'button';
