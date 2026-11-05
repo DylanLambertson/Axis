@@ -38,11 +38,13 @@ async function assertLoopbackOnly(port) {
   const hexPort = port.toString(16).toUpperCase().padStart(4, "0");
   const loopback = new Set(["0100007F", "00000000000000000000000001000000"]);
   let found = 0;
+  let tables = 0;
   for (const table of ["/proc/net/tcp", "/proc/net/tcp6"]) {
     const text = await readFile(table, "utf8").catch(() => undefined);
     if (text === undefined) {
       continue;
     }
+    tables++;
     for (const line of text.split("\n").slice(1)) {
       const [, local, , state] = line.trim().split(/\s+/);
       if (state === "0A" && local?.endsWith(`:${hexPort}`)) {
@@ -51,7 +53,13 @@ async function assertLoopbackOnly(port) {
       }
     }
   }
-  console.log(found ? `     DevTools port ${port} listens on loopback only` : `     DevTools port binding not checked (no /proc/net)`);
+  if (!tables) {
+    console.log(`     DevTools port binding not checked: no /proc/net on this system`);
+    return;
+  }
+  // Seen through CDP but not in this network namespace's tables: the binding cannot be confirmed, so fail.
+  assert.ok(found > 0, `no listener on port ${port} in /proc/net; the app may run in another network namespace, so its binding is unchecked`);
+  console.log(`     DevTools port ${port} listens on loopback only`);
 }
 const AXIS = ["Control", "Shift", "Alt"]; // Windows and Linux defaults (docs/UX.md); macOS differs
 const out = args.out;
