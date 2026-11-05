@@ -84,6 +84,10 @@ export function violation(pkg, spec, file = null, pkgDir = null) {
       const from = relative(pkgDir, file).split(sep).join("/");
       if (from.startsWith("src/") && from !== "src/index.ts") return "only src/index.ts may import the discard token minter";
     }
+    if (pkg === HOST_PACKAGE && /^src[\\/]gate[\\/]run-trust(\.[cm]?[jt]s)?$/.test(rel)) {
+      const from = relative(pkgDir, file).split(sep).join("/");
+      if (from.startsWith("src/") && from !== "src/index.ts") return "only src/index.ts may import the run trust minter";
+    }
     return rel === ".." || rel.startsWith(`..${sep}`) || resolve(rel) === rel
       ? "relative import leaves the package directory"
       : null;
@@ -349,6 +353,17 @@ test("scanner: the daemon host is imported by nothing and imports the restricted
     assert.notEqual(violation("daemon-host", "@axis/runs/daemon-attestation", at(f), dir), null, f);
   }
   assert.notEqual(violation("daemon-host", "@axis/runs/daemon-attestation"), null, "a call without a file is judged strictly");
+  // The run trust minter module (a relative import): only the public index, never a handler, binding or gate neighbour.
+  assert.equal(violation("daemon-host", "./gate/run-trust.js", at("src/index.ts"), dir), null);
+  for (const [f, spec] of [
+    ["src/handlers/cli-runs.ts", "../gate/run-trust.js"],
+    ["src/bindings/runs.ts", "../gate/run-trust.js"],
+    ["src/gate/approvals.ts", "./run-trust.js"],
+    ["src/handlers/git.ts", "../gate/run-trust"],
+  ]) {
+    assert.notEqual(violation("daemon-host", spec, at(f), dir), null, f);
+  }
+  assert.equal(violation("daemon-host", "../src/gate/run-trust.js", at("test/run-trust.test.ts"), dir), null, "tests may");
   assert.equal(violation("daemon-host", "@axis/worktrees/daemon-confirm", at("src/gate/worktrees-confirm.ts"), dir), null);
   assert.notEqual(violation("daemon-host", "@axis/worktrees/daemon-confirm", at("src/bindings/worktrees.ts"), dir), null);
   // The minter itself (a relative import): only the public index, never a handler, service, binding or the gate neighbours.

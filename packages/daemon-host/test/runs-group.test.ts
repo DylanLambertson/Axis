@@ -59,7 +59,31 @@ test("a handle that cannot say whether its group is gone counts as alive", { ski
   const fin = await user.call("axis.worktrees", "finalise", { id, outcome: "archived" }, newKey());
   assert.equal(fin.error?.details?.["reason"], "active_run");
   handle.groupThrows = false;
+  // A probe that answers with anything but `false` (nothing, a string, a number) is not "gone".
+  for (const value of [undefined, null, 0, "gone"]) {
+    handle.groupRaw = { value };
+    assert.equal(r.runs.service.hasActiveRun(id), true, String(value));
+  }
+  handle.groupRaw = { value: false };
   assert.equal(r.runs.service.hasActiveRun(id), false);
+});
+
+test("a start refuses while the supervisor's own run is still spawning: a hung spawn never lets a second process start beside it", { skip }, async (t) => {
+  const r = await runsRig();
+  t.after(() => r.cleanup());
+  const user = await r.connect();
+  const id = await create(user);
+  let spawnCalls = 0;
+  const hung = { spawn: () => (spawnCalls++, new Promise<never>(() => undefined)) };
+  const { createRunsBinding } = await import("../src/index.js");
+  const b = createRunsBinding({ ...r.deps, pty: hung, limits: { startTimeoutMs: 50 } });
+  t.after(() => b.dispose());
+  const agent = (r.answers.agents as unknown[])[0];
+  const go = () => b.service.start({ workspaceId: id, agent, actor: "user", trust: r.handlerDeps.minter.attest({ workspaceId: id, projectId: r.projectId }) });
+  await assert.rejects(go(), (e: { code?: string }) => e.code === "E_TIMEOUT");
+  assert.equal(b.service.hasActiveRun(id), true, "the supervisor holds the slot: the port may still produce a process");
+  await assert.rejects(go(), (e: { code?: string; details?: { reason?: string } }) => e.code === "E_CONFLICT" && e.details?.reason === "active_run");
+  assert.equal(spawnCalls, 1, "no second spawn was attempted");
 });
 
 test("a pty handle with no group probe is killed and the start fails: a process that cannot be shown gone is never supervised", { skip }, async (t) => {

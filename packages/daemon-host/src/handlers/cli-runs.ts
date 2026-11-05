@@ -21,8 +21,8 @@ import type { ProjectMutex } from "../worktrees/project-mutex.js";
  * is never taken from a payload), main is asked `trust.check` for this window, workspace and project (no answer in 2 s is a
  * refusal), and only then is the single-use attestation minted and passed to `start` in the same breath. The request's
  * idempotency key is passed to the supervisor, whose journal refuses a second run for it, so a retry after a failure that
- * left a row cannot start a second process. Nothing is thrown after the supervisor has started a process: a start that
- * is cancelled mid-call is left to the supervisor, and the daemon then keeps the key as outcome-unknown.
+ * left a row cannot start a second process. `start` is a write method: a call that throws while its signal is aborted
+ * keeps its key as outcome-unknown (the daemon decides that, not this file), and a plain failure frees the key.
  */
 export interface CliRunsHandlerDeps {
   readonly service: RunsService;
@@ -97,7 +97,7 @@ export function createCliRunsHandlers(deps: CliRunsHandlerDeps): Readonly<Record
           context.signal.throwIfAborted();
           throw e;
         }
-        // Nothing has been changed so far: a cancelled call stops here and the key is freed.
+        // Nothing has been changed so far, but a write method that throws while aborted keeps its key outcome-unknown (safe).
         if (context.signal.aborted) throw cancelled();
         const trust = deps.minter.attest({ workspaceId: req.workspaceId, projectId: ws.projectId });
         const out = await deps.service.start({

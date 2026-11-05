@@ -19,6 +19,8 @@ export class FakeHandle implements PtyHandle {
   readonly kills: string[] = [];
   groupUp = true;
   groupThrows = false;
+  /** When set, `groupAlive` returns this value as is (a probe that does not answer with a boolean). */
+  groupRaw: { value: unknown } | undefined;
   #exit: Array<(e: { exitCode: number | null; signal: string | null }) => void> = [];
   write(): void {}
   resize(): void {}
@@ -27,6 +29,7 @@ export class FakeHandle implements PtyHandle {
   }
   groupAlive(): boolean {
     if (this.groupThrows) throw new Error("probe failed");
+    if (this.groupRaw !== undefined) return this.groupRaw.value as boolean;
     return this.groupUp;
   }
   onData(): { dispose(): void } {

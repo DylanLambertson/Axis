@@ -84,6 +84,7 @@ const isHandle = (h: unknown): h is PtyHandle =>
 export function createRunsBinding(deps: RunsBindingDeps): RunsBinding {
   const tracked = new Map<string, Tracked>();
   const maxTracked = deps.maxTrackedGroups ?? MAX_TRACKED_GROUPS;
+  let pendingSpawns = 0; // spawns awaiting their handle count against the cap, so concurrent ones cannot overshoot it
 
   const alive = (t: Tracked): boolean => {
     try {
@@ -105,10 +106,16 @@ export function createRunsBinding(deps: RunsBindingDeps): RunsBinding {
   const pty: SupervisorPtyPort = {
     async spawn(spec: PtySpawn): Promise<SupervisorPtyHandle> {
       sweep();
-      if (tracked.size >= maxTracked) throw runFailure("E_UNAVAILABLE");
+      if (tracked.size + pendingSpawns >= maxTracked) throw runFailure("E_UNAVAILABLE");
       const workspaceId = deps.journal.getRun(spec.runId)?.workspaceId;
       if (workspaceId === undefined) throw runFailure("E_INTERNAL");
-      const handle = await deps.pty.spawn(spec);
+      pendingSpawns++;
+      let handle: PtyHandle;
+      try {
+        handle = await deps.pty.spawn(spec);
+      } finally {
+        pendingSpawns--;
+      }
       if (!isHandle(handle)) {
         // A process whose group cannot be asked about can never be shown gone: kill it, and report a failed spawn.
         try {
@@ -161,7 +168,8 @@ export function createRunsBinding(deps: RunsBindingDeps): RunsBinding {
         if (ws === undefined || ws.projectId !== first.projectId || ws.state === "REMOVED" || ws.state === "FAILED" || ws.state === "CREATING") throw runFailure("E_NOT_FOUND");
         if (ws.state !== "READY") throw runFailure("E_CONFLICT", "not_ready");
         if (ws.lockState === "locked") throw runFailure("E_CONFLICT", "busy");
-        if (groupsAlive(workspaceId)) throw runFailure("E_CONFLICT", "active_run");
+        // The supervisor's own view too: a spawn still pending (or hung) holds the workspace, so a second process cannot start beside it.
+        if (supervisor.hasActiveRun(workspaceId) || groupsAlive(workspaceId)) throw runFailure("E_CONFLICT", "active_run");
         try {
           return await supervisor.start({
             workspaceId,

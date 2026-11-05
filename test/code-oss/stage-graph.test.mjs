@@ -278,3 +278,14 @@ test("the daemon host's run trust minter is the one exact file outside the daemo
   assert.deepEqual(checkMetafile(meta("daemon-host/gate/run-trust.ts"), manifest), []);
   assert.equal(checkMetafile(meta("daemon-host/bindings/runs.ts"), manifest).length, 1);
 });
+
+test("the host's run trust minter module is loadable only by the host's public index, not by its own package's other files", () => {
+  const P = (rel) => `${STAGE_ROOT}/${rel}`;
+  const manifest = { zod: null, files: ["daemon-host/gate/run-trust.ts", "daemon-host/index.ts", "daemon-host/handlers/cli-runs.ts", "daemon-host/bindings/runs.ts"].map((p) => ({ path: p })) };
+  const meta = (from) => ({ inputs: { [P(from)]: { imports: [{ path: P("daemon-host/gate/run-trust.ts"), kind: "import-statement" }] }, [P("daemon-host/gate/run-trust.ts")]: { imports: [] } } });
+  assert.deepEqual(checkMetafile(meta("daemon-host/index.ts"), manifest), []);
+  for (const from of ["daemon-host/handlers/cli-runs.ts", "daemon-host/bindings/runs.ts"]) assert.equal(checkMetafile(meta(from), manifest).length, 1, from);
+  const files = new Set(manifest.files.map((f) => f.path));
+  checkStagedFile("daemon-host/index.ts", 'export * from "./gate/run-trust.js";\n', files);
+  assert.throws(() => checkStagedFile("daemon-host/handlers/cli-runs.ts", 'import "../gate/run-trust.js";\n', files), /run-trust/);
+});

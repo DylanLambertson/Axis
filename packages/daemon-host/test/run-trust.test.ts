@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { AxisError } from "@axis/audit";
 import { createDaemonHost, createRunTrustMinter, toRunError } from "../src/index.js";
 import { hostFixture } from "../testing/host-fixture.js";
 import { runsRig } from "./runs-rig.js";
@@ -31,6 +32,13 @@ test("the minter's attestation is accepted once, for its own workspace, while fr
   assert.equal(r.pty.spawns.length, 1);
   // The refusals are closed-set errors, and nothing from the package reaches the wire.
   assert.equal(toRunError(new Error("secret /home/x")).message, "The run operation failed.");
+});
+
+test("the supervisor's run limit reaches the wire as its fixed text on E_BACKPRESSURE", () => {
+  const e = toRunError(new AxisError("E_BACKPRESSURE", "raw text /home/x", { reason: "RUN_LIMIT" }));
+  assert.equal(e.code, "E_BACKPRESSURE");
+  assert.equal(e.message, "Too many runs are active.");
+  assert.equal(toRunError(new AxisError("E_BACKPRESSURE", "other")).message, "Too many requests are waiting.");
 });
 
 test("the minter refuses malformed facts with a fixed error and stamps the host clock", () => {

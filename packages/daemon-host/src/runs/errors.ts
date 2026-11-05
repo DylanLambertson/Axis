@@ -82,8 +82,10 @@ export function toRunError(error: unknown): DaemonError {
       case "E_CONFLICT":
       case "E_INVALID_ARGUMENT":
         return runFailure(error.code, reason);
-      case "E_UNAVAILABLE":
       case "E_BACKPRESSURE":
+        // The reason shows in the fixed text only: the wire allows no `reason` detail on this code.
+        return new DaemonError("E_BACKPRESSURE", reason === "run_limit" ? REASON_TEXT["run_limit"] as string : CODE_TEXT.E_BACKPRESSURE);
+      case "E_UNAVAILABLE":
       case "E_TIMEOUT":
       case "E_CANCELLED":
         return runFailure(error.code);
