@@ -7,6 +7,7 @@ import {
   PROTOCOL_VERSION,
   ZOD_VERSION,
   cancelEnvelopeSchema,
+  boundedJsonSchema,
   inspectMessage,
   lookupMethod,
   requiresIdempotencyKey,
@@ -413,4 +414,46 @@ test("ZOD_VERSION is the pinned zod", () => {
     dependencies: { zod: string };
   };
   assert.equal(ZOD_VERSION, pkg.dependencies.zod);
+});
+
+test("inspectMessage: accessor properties are refused", () => {
+  const o: Record<string, unknown> = {};
+  Object.defineProperty(o, "g", { get: () => 1, enumerable: true });
+  assert.deepEqual(inspectMessage(o), { ok: false, reason: "invalid" });
+  const w: Record<string, unknown> = {};
+  Object.defineProperty(w, "s", { set: () => undefined, enumerable: true });
+  assert.deepEqual(inspectMessage(w), { ok: false, reason: "invalid" });
+  const a: unknown[] = [1];
+  Object.defineProperty(a, 0, { get: () => 1, enumerable: true });
+  assert.deepEqual(inspectMessage(a), { ok: false, reason: "invalid" });
+  // a getter that changes its answer never reaches the parser
+  let reads = 0;
+  const flip: Record<string, unknown> = { v: 1, id: "r", cancel: "r" };
+  Object.defineProperty(flip, "cancel", { get: () => (++reads === 1 ? "r" : 5), enumerable: true });
+  assert.equal(parseClientMessage(flip).ok, false);
+  assert.equal(reads, 0);
+});
+
+test("inspectMessage: arrays must be dense with no extra own properties", () => {
+  const extra = [1, 2] as unknown[] & { constructor?: unknown };
+  extra.constructor = 5;
+  assert.deepEqual(inspectMessage(extra), { ok: false, reason: "invalid" });
+  const tagged = [1] as unknown[] & { note?: string };
+  tagged.note = "x";
+  assert.deepEqual(inspectMessage(tagged), { ok: false, reason: "invalid" });
+  const sparse = new Array(3);
+  sparse[0] = 1;
+  assert.deepEqual(inspectMessage(sparse), { ok: false, reason: "invalid" });
+  assert.deepEqual(inspectMessage([1, [2, 3], []]), { ok: true });
+});
+
+test("boundedJsonSchema returns a copy, not the inspected object", () => {
+  const input = { a: { b: [1, 2] } };
+  const r = boundedJsonSchema.safeParse(input);
+  assert.equal(r.success, true);
+  if (!r.success) return;
+  assert.notEqual(r.data, input);
+  assert.deepEqual(r.data, input);
+  input.a.b.push(3);
+  assert.deepEqual(r.data, { a: { b: [1, 2] } });
 });
