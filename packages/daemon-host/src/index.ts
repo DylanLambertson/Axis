@@ -37,3 +37,10 @@ export * from "./gate/native-bridge.js";
 export * from "./gate/pending-registry.js";
 export * from "./gate/summary.js";
 export * from "./handlers/approvals.js";
+// axis.review/1 (ticket H10b).
+export * from "./bindings/review.js";
+export * from "./bindings/review-tempindex.js";
+export * from "./handlers/review.js";
+export * from "./handlers/review-audit.js";
+export * from "./handlers/review-store.js";
+export * from "./handlers/review-wire.js";
