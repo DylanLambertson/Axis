@@ -89,3 +89,14 @@ export const safeTextSchema = (max: number) =>
     .refine((t) => t === t.trim() && !/[\p{Cc}\p{Cf}\u2028\u2029]/u.test(t), {
       message: "no leading or trailing whitespace, no control or invisible characters",
     });
+
+/**
+ * Display text that is not edited by the schema: bounded, may be empty or have
+ * edge spaces, but no control, format (bidi, zero-width), surrogate or
+ * line-separator characters (the same set as `@axis/challenge` `displaySafe`).
+ */
+export const displayTextSchema = (max: number) =>
+  z
+    .string()
+    .max(max)
+    .refine((t) => !/[\p{Cc}\p{Cf}\p{Cs}\u2028\u2029]/u.test(t), { message: "no control or invisible characters" });

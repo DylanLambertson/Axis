@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { MAX_AUDIT_LIST, MAX_PENDING_CHALLENGES, MAX_PROJECTS } from "../src/index.js";
+import { MAX_AUDIT_LIST, MAX_LISTED_SUMMARY, MAX_PENDING_CHALLENGES, MAX_PROJECTS } from "../src/index.js";
 import { CHALLENGE_A, H1, H2, H3, P1A_SAMPLES, challengeA, eventOne, eventTwo } from "./samples-p1a.js";
 import { accepts, rejects, runSuite, schemaOf } from "./suite.js";
 
@@ -66,6 +66,37 @@ test("approvals.resolve: response states are the closed three", () => {
   rejects(resolveRes(), { challengeId: CHALLENGE_A, state: "approved", nativeRequired: false, approver: "user" }, "extra field");
   rejects(resolveRes(), { challengeId: CHALLENGE_A, state: "approved" }, "nativeRequired missing");
   rejects(resolveRes(), { challengeId: CHALLENGE_A, state: "approved", nativeRequired: "yes" }, "nativeRequired as string");
+});
+
+test("approvals.pending: the cap is 1024 and a full listing of worst-case challenges fits one message", () => {
+  assert.equal(MAX_PENDING_CHALLENGES, 1024);
+  assert.equal(MAX_LISTED_SUMMARY, 192);
+  const fat = (i: number) => ({
+    ...challengeA,
+    challengeId: `C${String(i).padStart(21, "0")}`,
+    contract: `a${"b".repeat(63)}`,
+    method: `A${"b".repeat(63)}`,
+    targetSummary: "\u20ac".repeat(MAX_LISTED_SUMMARY),
+  });
+  const full = Array.from({ length: 1024 }, (_, i) => fat(i));
+  accepts(pendingRes(), { challenges: full }, "1024 challenges with 3-byte summaries and 64-character names");
+  rejects(pendingRes(), { challenges: [...full, fat(1024)] }, "1025 challenges");
+});
+
+test("approvals.pending: text fields carry no control, bidi, zero-width or line-separator characters, and are bounded", () => {
+  const one = (patch: Record<string, unknown>) => ({ challenges: [{ ...challengeA, ...patch }] });
+  accepts(pendingRes(), one({ targetSummary: "Remove \u00e9\u4e2d\u6587 \ud83d\ude80 fix-login" }), "normal Unicode");
+  accepts(pendingRes(), one({ targetSummary: "x".repeat(MAX_LISTED_SUMMARY) }), "summary at the bound");
+  rejects(pendingRes(), one({ targetSummary: "x".repeat(MAX_LISTED_SUMMARY + 1) }), "summary over the bound");
+  for (const bad of ["a\nb", "a\rb", "a\tb", "a\u0000b", "a\u001bb", "a\u007fb", "a\u202eb", "a\u2066b", "a\u200bb", "a\ufeffb", "a\u2028b", "a\u2029b", "a\ud800b"]) {
+    rejects(pendingRes(), one({ targetSummary: bad }), `summary ${JSON.stringify(bad)}`);
+  }
+  for (const bad of ["Axis.worktrees", "axis worktrees", "axis.worktrees\n", "a\u202eb", "", "x".repeat(65), "1a"]) {
+    rejects(pendingRes(), one({ contract: bad }), `contract ${JSON.stringify(bad)}`);
+  }
+  for (const bad of ["re move", "remove\n", "a\u202eb", "", "A".repeat(65), "1a", "a-b"]) {
+    rejects(pendingRes(), one({ method: bad }), `method ${JSON.stringify(bad)}`);
+  }
 });
 
 test("approvals.pending: bounds, shape and unique ids", () => {

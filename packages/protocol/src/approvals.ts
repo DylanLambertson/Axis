@@ -5,7 +5,7 @@ import {
   resolveChallengeRequestSchema,
   resolveChallengeResponseSchema,
 } from "./challenge.js";
-import { emptyRequestSchema, guarded } from "./guard.js";
+import { displayTextSchema, emptyRequestSchema, guarded } from "./guard.js";
 import type { MethodSpec } from "./worktrees.js";
 
 /**
@@ -24,10 +24,28 @@ export const APPROVALS_VERSION = 1 as const;
 
 /**
  * Most open challenges one listing can carry: the challenge manager's per-window
- * quota can be configured up to 1024, and 1024 challenges (nine values each)
- * still fit the message walk's 10,000-value ceiling.
+ * quota can be configured up to 1024. 1024 challenges are nine values each
+ * (9,217 of the 10,000 the message walk allows) and, with the text bounds below
+ * at their worst (three UTF-8 bytes per character), about 960 KB of the 1 MiB
+ * message limit, so a full listing always fits.
  */
 export const MAX_PENDING_CHALLENGES = 1024;
+
+/**
+ * Longest `targetSummary` a listing carries. `@axis/challenge` allows 512, which
+ * would not fit 1024 challenges in one message; the handler that builds the
+ * listing must shorten a longer summary (the full text stays in the
+ * E_APPROVAL_REQUIRED details). The listing fails as a whole otherwise.
+ */
+export const MAX_LISTED_SUMMARY = 192;
+
+/** A challenge as `pending` lists it: the issued shape, with the text fields held to display rules. */
+export const listedChallengeSchema = z.strictObject({
+  ...challengeSchema.shape,
+  contract: z.string().regex(/^[a-z][a-z0-9.-]{0,63}$/),
+  method: z.string().regex(/^[A-Za-z][A-Za-z0-9]{0,63}$/),
+  targetSummary: displayTextSchema(MAX_LISTED_SUMMARY),
+});
 
 // resolve (write, tier 2, user only)
 export const approvalsResolveRequestSchema = guarded(resolveChallengeRequestSchema);
@@ -45,7 +63,7 @@ export const approvalsPendingRequestSchema = emptyRequestSchema;
 export const approvalsPendingResponseSchema = guarded(
   z.strictObject({
     challenges: z
-      .array(challengeSchema)
+      .array(listedChallengeSchema)
       .max(MAX_PENDING_CHALLENGES)
       .refine((cs) => new Set(cs.map((c) => c.challengeId)).size === cs.length, "duplicate challenge id"),
   }),
