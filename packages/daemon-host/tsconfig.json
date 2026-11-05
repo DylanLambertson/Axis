@@ -2,5 +2,5 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": { "rootDir": ".", "outDir": "dist" },
   "include": ["src", "test"],
-  "references": [{ "path": "../audit" }, { "path": "../daemon" }, { "path": "../git-ops" }, { "path": "../protocol" }, { "path": "../runs" }]
+  "references": [{ "path": "../audit" }, { "path": "../daemon" }, { "path": "../git-ops" }, { "path": "../protocol" }, { "path": "../providers" }, { "path": "../runs" }]
 }
