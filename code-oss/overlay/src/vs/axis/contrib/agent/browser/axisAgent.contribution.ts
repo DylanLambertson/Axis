@@ -18,7 +18,10 @@ import { IAxisAgentPartContent, IAxisWorkbenchLayoutService } from '../../../bro
 import { IAxisViewService } from '../../../services/view/browser/axisViewService.js';
 import { IAxisWorkspaceService } from '../../../services/workspaces/browser/axisWorkspaceService.js';
 import { AXIS_SAMPLE_RUNS_SETTING } from '../../../services/workspaces/common/axisSampleRuns.js';
-import { AxisDashboardView, IAxisTerminalCounts } from './dashboardView.js';
+import { IAxisWorkspaceEntry } from '../../../services/workspaces/common/axisWorkspaceModel.js';
+import { AxisDashboardView } from './dashboardView.js';
+import { AxisWorkspaceTerminals } from './workspaceTerminals.js';
+import { AxisWorkspaceView } from './workspaceView.js';
 
 const AXIS_CATEGORY = localize2('axis.agent.category', "Axis");
 
@@ -34,17 +37,18 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 	}
 });
 
-/** Terminals per workspace come with the workspace view; until then every count is zero. */
-const NO_TERMINALS: IAxisTerminalCounts = { count: () => 0 };
-
 /**
- * The agent part's content: the dashboard (docs/design/axis-agent-shell.md
- * section 4.2). Opening a row focuses that workspace; its view follows.
+ * The agent part's content: the dashboard while no workspace is focused, the
+ * workspace view otherwise (docs/design/axis-agent-shell.md section 4.1).
  */
 class AxisAgentContent extends Disposable implements IAxisAgentPartContent {
 
 	readonly element = $('.axis-agent-view');
 	private readonly dashboard: AxisDashboardView;
+	private readonly workspaceView: AxisWorkspaceView;
+	private readonly terminals: AxisWorkspaceTerminals;
+	private readonly terminalsCreatedFor = new Set<string>();
+	private showing: 'dashboard' | 'workspace' | undefined;
 
 	constructor(
 		@IInstantiationService instantiationService: IInstantiationService,
@@ -52,9 +56,16 @@ class AxisAgentContent extends Disposable implements IAxisAgentPartContent {
 		@IAxisWorkbenchLayoutService private readonly layoutService: IAxisWorkbenchLayoutService,
 	) {
 		super();
-		this.dashboard = this._register(instantiationService.createInstance(AxisDashboardView, NO_TERMINALS));
-		this.element.appendChild(this.dashboard.element);
-		this._register(this.workspaceService.onDidChangeWorkspaces(() => this.focusIfLost()));
+		this.terminals = this._register(instantiationService.createInstance(AxisWorkspaceTerminals));
+		this.dashboard = this._register(instantiationService.createInstance(AxisDashboardView, this.terminals));
+		this.workspaceView = this._register(instantiationService.createInstance(AxisWorkspaceView, this.terminals));
+		this._register(this.terminals.onDidChange(() => this.dashboard.render()));
+		this._register(this.workspaceService.onDidChangeFocus(entry => this.update(entry)));
+		this._register(this.workspaceService.onDidChangeWorkspaces(() => {
+			this.update(this.workspaceService.focused);
+			this.focusIfLost();
+		}));
+		this.update(this.workspaceService.focused);
 		this.layoutService.whenRestored.then(() => {
 			this.focusIfLost();
 			setTimeout(() => this.focusIfLost(), 0); // after upstream's own post-restore focus
@@ -78,12 +89,35 @@ class AxisAgentContent extends Disposable implements IAxisAgentPartContent {
 		}
 	}
 
+	private update(entry: IAxisWorkspaceEntry | undefined): void {
+		const showing = entry ? 'workspace' : 'dashboard';
+		if (entry) {
+			this.workspaceView.setEntry(entry);
+		}
+		if (showing !== this.showing) {
+			this.showing = showing;
+			this.element.replaceChildren(entry ? this.workspaceView.element : this.dashboard.element);
+		}
+		this.terminals.setFocused(entry).then(() => {
+			// A terminal bound to the worktree on first focus (ADR 0004 Phase 0 gate item 1).
+			if (entry && entry.worktree.present && !this.terminalsCreatedFor.has(entry.key) && this.terminals.count(entry.key) === 0) {
+				this.terminalsCreatedFor.add(entry.key);
+				this.terminals.create(entry, { focus: false });
+			}
+		});
+	}
+
 	layout(dimension: Dimension): void {
 		this.dashboard.layout(dimension);
+		this.workspaceView.layout(dimension);
 	}
 
 	focus(): void {
-		this.dashboard.focus();
+		if (this.showing === 'workspace') {
+			this.workspaceView.focus();
+		} else {
+			this.dashboard.focus();
+		}
 	}
 }
 
