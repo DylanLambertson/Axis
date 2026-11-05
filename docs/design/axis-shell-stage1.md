@@ -1,6 +1,6 @@
-# Axis workbench shell: Stage 1, restyle
+# Axis workbench shell: Stage 1, restyle and rebrand (§2.1 to §2.8)
 
-> Part of the Axis workbench shell design. The index, with the summary of decisions (§0), the layout (§1), risks (§7) and decisions (§8), is [`axis-shell.md`](axis-shell.md). This file holds §2 (Stage 1: restyle only, done and still in force). Section numbers are those of the original single document, so a reference such as "`axis-shell.md` §3.10" resolves through the section map in the index.
+> Part of the Axis workbench shell design. Section numbers (§) are stable across the parts; `axis-shell.md` lists which part holds which section.
 
 ## 2. Stage 1: restyle only
 
@@ -58,7 +58,7 @@ File: `src/vs/workbench/contrib/axis/browser/axisDefaults.contribution.ts`.
 
 **Token mapping.** Hex values come from UX.md. Values marked * are not in UX.md yet.
 
-- The control-border and light-theme tokens are **accepted** (D6, §8); §2.3.1 proposes the matching UX.md edits.
+- The control-border and light-theme tokens are **accepted** (D6, §8); §2.3.1 lists the matching UX.md edits, applied in Stage 1b.
 - The accent tint and the derived hover and scrollbar values are theme-level implementation values. They are validated by the S1.4 contrast test, not added as UX tokens.
 
 | UX token | Dark | Light | Color-registry ids (registration [V]) |
@@ -86,7 +86,7 @@ File: `src/vs/workbench/contrib/axis/browser/axisDefaults.contribution.ts`.
 - The Electron window background before the renderer loads is `#1F1F1F`/`#FFFFFF` (`platform/theme/electron-main/themeMainServiceImpl.ts:23-26`) until the stored background exists [V].
 - Fixing both is optional polish: about 4 lines in 2 files (optional restyle patches P11/P12 in the shell block, §3.6 and §3.10). The large `*_INITIAL_COLORS` maps (`common/workbenchThemeService.ts:73-365`) are **not** replaced.
 
-### 2.3.1 Proposed `docs/UX.md` token edits (D6; UX.md is not changed by this design)
+### 2.3.1 `docs/UX.md` token edits (D6; applied to UX.md in Stage 1b)
 
 Replace the "Visual tokens (provisional)" paragraph's token list with:
 
@@ -137,7 +137,7 @@ These edits are patch G1 in block `1000–1499` (decision 5). They are excluded 
 - These are asset replacements, so they live in `code-oss/replace/`; the overlay is for new files only.
 - `gen-icons.sh --check` (run in CI) verifies that the derived SVGs still match `assets/brand/`. Rasters are not compared byte for byte, because Chrome's rasteriser changes between releases.
 - **Implemented in S1.6:** `code.icns`, `code.ico`, the two tile PNGs and `VisualElementsManifest.xml`, `linux/code.png`, `rpm/code.xpm` (256 px rather than 1024 px, to keep it small), the server PNGs, favicon and manifest, `code-icon.svg` and the four letterpress SVGs.
-- **Deferred** until Windows and per-language packaging are in scope (open question 2): the 28 per-language document icons (darwin and win32), `sessions.ico` and the Inno Setup wizard bitmaps.
+- **Implemented in Stage 1b:** one generic Axis document icon (the mark on a page) for every per-language document icon (28 `.icns` on macOS, 27 `.ico` on Windows, which has no `bat.ico`), answering open question 2 with a single design; `sessions.ico` as a copy of the Axis `code.ico`; and the 14 Inno Setup wizard bitmaps as 24-bit BMPs at the upstream sizes (the mark on canvas `#111214` for the large images, the app icon on white for the small ones). Identical files share one Git blob.
 
 | Target (upstream path) | Sizes / format | Referenced by [V] |
 |---|---|---|
@@ -255,53 +255,3 @@ Removing root dependencies requires regenerating `package-lock.json`, because th
    - also assert that nothing else changed (`git diff --numstat` plus a JSON key diff) and that top-level `zod` is unchanged (SC-3 check 4).
 3. Record the resulting lockfile sha256 in the manifest. CI runs `npm ci` in a clean checkout to prove the lock is reproducible.
 4. Regenerate at apply time rather than committing a lockfile patch. A lock patch would conflict on almost every sync [I].
-
-### 2.9 Stage 1 as implemented (M3)
-
-Measured on `feat/axis-stage1-rebrand` against Code OSS `1.144.0`, macOS 15 on Intel x64. Upstream line counts come from `scripts/code-oss/footprint.sh`.
-
-**Patch series.**
-
-| Block | Patches | Upstream files | Lines added / deleted (markers) | Contents |
-|---|---|---|---|---|
-| `0001–0999` shell | `0010` (P8 part), `0020` (P9), `0100` (P10) | 3 | 21 / 1 (8) | ESLint spreads `axisConfigs` from `build/axis/eslint.axis.ts`; copyright filter exempts Axis paths; the temporary defaults import |
-| `1000–1499` rebrand | `1000` (G1), `1010` (G2), `1015`, `1020` (G3) | 4 | 97 / 109 (10) | `product.json` identity (§2.5), Electron company and copyright, the macOS help book and workspace document-type names, notices in reh, reh-web and web |
-| `1500–1999` Copilot and agent host | `1500`–`1560` (8 patches) | 19 | 190 / 122 (84) | S1.2: the Copilot extension is not installed, compiled, packaged or tested. S1.3: option (a) with (a1), below; `1545` refuses the agent-host spawn flags |
-| `2000–2999` security | none | 0 | 0 | S1.8 not started |
-| `replace/` | 16 files | 16 | n/a | Icons, images and manifests (§2.6) |
-| net vs pin (`git diff`) | | 43 | 931 / 2,670 | Includes the lockfiles regenerated by `code-oss/hooks/post-apply.d/10-regen-locks` (root 88 / 901, remote 0 / 484) |
-
-Overlay (new files): `extensions/theme-axis/**` (§2.3), `src/vs/workbench/contrib/axis/{browser,test/browser}/axisDefaults*` (§2.2) and `build/axis/eslint.axis.ts` (§3.7).
-
-**S1.3 Copilot and agent-host removal: options tried, in ADR order.**
-
-| Option | Result |
-|---|---|
-| (a) unbundle, type-checked with (a2) shorthand stubs (`declare module '<pkg>';` in a `.d.ts`) | **Failed.** 3,825 type errors in 151 files, all under `platform/agentHost` (2,600 in tests). The sources use SDK names as types and namespaces (TS2709 and TS2694), which shorthand modules cannot express. Full `.d.ts` stubs would mean vendoring the SDK typings at every bump |
-| (a) unbundle with (a1) tsconfig exclusion | **Chosen; all checks pass.** An import-graph scan showed that the files importing the SDKs, and everything that imports them, form a closed set inside `platform/agentHost` (183 sources, 221 tests) that no kept entry point reaches. `src/tsconfig.json` and the six layer-checker tsconfigs exclude `agentHost/node/**`, `agentHost/test/node/**` and `agentHostOTelService.ts`, and keep as explicit roots the 18 `agentHost/node` files that the shared process, main process and server import (remote agent hosts, dev containers). Because tsb rejects files outside the program, `build/lib/compilation.ts` skips agent-host sources that are not tsconfig roots, so the tsconfig is the single list |
-| (b) stub packages, (c) delete | Not needed |
-
-`1530`–`1560` remove the agent-host entry points (`build/next/index.ts`), stop Electron main from creating the agent host starter and manager and make the server register `UnavailableAgentHostChannel` by default (`app.ts`, `serverServices.ts`), and drop `@github/copilot-sdk`, `@vscode/copilot-api` and `@anthropic-ai/sdk` from the root and remote dependencies and `@anthropic-ai/claude-agent-sdk` and `@openai/codex` from devDependencies, with the packaging steps that fetched or checked them. L3 no longer applies, because `claude-agent-sdk` is not installed.
-
-**SC-3 checks.**
-
-1. `scripts/code-oss/check-artifacts.sh --notices` (which fails closed: any listing, asar or grep error fails the run, paths match anywhere including `node_modules.asar.unpacked`, and auto-discovery requires all three artifacts) passes on `vscode-darwin-x64-min`, `vscode-reh-darwin-x64-min` and `vscode-reh-web-darwin-x64-min`. `node_modules.asar` has no `@github`, `@anthropic-ai` or `@vscode/copilot-api` entry and keeps `zod`, and `LICENSE.txt` and `ThirdPartyNotices.txt` are in all three artifacts (G3).
-2. No stub remains: (a1) needs none.
-3. `10-regen-locks` regenerates both lockfiles with `npm install --package-lock-only --ignore-scripts`, using exactly npm 11.19.1 (bundled with Node 24.22.1). It fails unless the removed entries equal its expected `name@version` lists, every kept entry is unchanged in every field, the root entry loses only the agent SDK names, and each lockfile has the sha256 recorded in the hook. It removed 51 root entries (28 SDK packages and their platform builds, 23 exclusive transitive dependencies such as `koffi` and `json-schema-to-ts`) and 31 remote entries. `npm ci` succeeded on the regenerated lock.
-4. `zod` stays a direct dependency, resolved at `node_modules/zod`, at the same version; the hook asserts it.
-
-**Deviations and follow-ups.**
-
-- `defaultChatAgent` is an inert stub of empty strings, which is upstream's own fallback (`?? ''`). Onboarding theme entries keep their upstream ids (`dark-2026`, `light-2026`), because `onboardingVariationA.ts` preselects `dark-2026`; only their labels and theme ids change.
-- `licenseUrl` and `serverLicenseUrl` point at `LICENSE` in the Axis repository, which does not exist yet (L2).
-- `webviewContentExternalBaseUrlTemplate` is unchanged. Desktop does not use it, but **reh-web webviews load from Microsoft's `vscode-cdn.net` until M6**, and the web CSP `frame-src` still allows it (D9, R5, threat model WEB-4).
-- `extensionsGallery` is still unset (business decision).
-- The About dialog still prints `@github/copilot` and `@github/copilot-sdk` version lines (now `Unknown`). This needs a small patch in block `1500–1999`.
-- Still open in block `1500–1999`: D8 (the Agents-window entry points and choke points) and removing `extensions/copilot` from the tree. The dev launcher skips the extension through `VSCODE_SKIP_BUILTIN_EXTENSIONS`.
-- Open question 4 is answered: ESLint loads `extensions/copilot/.eslintplugin` with the extension's `node_modules` absent.
-- `1545` makes the server fail at startup when `--agent-host-port`, `--agent-host-path` or GitHub environment hosting is used, since they would fork the unbundled `agentHostMain`. The `--agent-host-bridge-*` flags still let renderers proxy to an externally running agent host.
-- `@vscode/sandbox-runtime` is kept (§2.7). By code reading, it is launched only for chat-agent terminal tools with `chat.agent.sandbox.enabled` on, or for MCP servers whose definition sets `sandboxEnabled`; with the Axis defaults (AI features off) neither path runs. This was not observed at runtime.
-- Header rule: every Axis-owned file added in M3 carries `Copyright (c) 2026 Dylan Lambertson. All rights reserved.`, scripts included (`check-artifacts.sh`, `gen-icons.sh`, `gen-theme-syntax.mjs`, `icons/*`, `10-regen-locks`). JSON files cannot carry it.
-- Deviation from §2.8 step 3: the lockfile sha256s are recorded in `10-regen-locks`, not in the manifest.
-- `build/next/index.ts transpile` (the development fast build) globs `src/**/*.ts`, so it still emits the excluded agent-host files into `out/`. Development only: packaged outputs have no `agentHost/node` files.
-- Follow-ups (Linux packaging, not on the M3 gating platform): the Linux templates still say "Visual Studio Code" (`resources/linux/code.appdata.xml:8,10`, `debian/control.template:8,15`, `rpm/code.spec.template:7,21`, `snap/snapcraft.yaml:5`), name Microsoft as maintainer and packager, and `debian/templates.template` offers to add Microsoft's apt repository. Fix them in block `1000–1499` before any Linux package is built.

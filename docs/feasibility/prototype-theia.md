@@ -288,7 +288,7 @@ This is a downgrade by one minor on a 363-line surface. It shows that the contri
 
 | Cost item | Option C (measured or inferred) | Option A (ADR 0002 / M2 / M3 design) |
 |---|---|---|
-| Axis shell code | 363 lines of TS/TSX/CSS as Theia extensions; React native | `src/vs/axis` overlay plus about 10 upstream files / about 45 lines (design estimate, `axis-shell.md` §3.10) |
+| Axis shell code | 363 lines of TS/TSX/CSS as Theia extensions; React native | `src/vs/axis` overlay plus about 10 upstream files / about 45 lines (design estimate, `axis-shell-stage2.md` §3.10) |
 | Axis-owned upstream patches | **0** (and patches would carry EPL source obligations, §5.1) | shell `0001–0999` ≤ 12 files / 300 lines; plus the guardrail, Copilot and hardening ranges |
 | Copilot removal and rebrand | **not needed**: Theia has no Copilot dependency in core. Its AI packages are optional and were not installed. Rebrand is `applicationName` plus Axis theme and icons | The largest patch set (ADR 0002 decision 6) |
 | Build pipeline | `npm ci` + `npm rebuild` + `theia build`: about 81 s cold in total (§4.1: 20.4 + 46.9 + 13.3 s) | M2 pipeline: 956 s install, 119 s compile, 7.6 GiB tree |

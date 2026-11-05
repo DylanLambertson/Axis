@@ -10,7 +10,7 @@ import { AxisWorkbench } from '../browser/workbench.js';
 /**
  * The desktop bootstrap of the Axis shell. The upstream service setup in
  * `DesktopMain` stays authoritative; only the workbench class changes
- * (docs/design/axis-shell.md section 3.2, patch P2).
+ * (docs/design/axis-shell-stage2.md section 3.2, patch P2).
  */
 export class AxisDesktopMain extends DesktopMain {
 

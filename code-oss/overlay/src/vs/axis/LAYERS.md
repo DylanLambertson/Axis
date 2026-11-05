@@ -1,6 +1,6 @@
 # `src/vs/axis` layers
 
-Axis-owned shell code, copied into the Code OSS tree by `scripts/code-oss/apply.sh`. The rules below are enforced by `local/code-import-patterns` targets in `build/axis/eslint.axis.ts` (docs/design/axis-shell.md section 3.7).
+Axis-owned shell code, copied into the Code OSS tree by `scripts/code-oss/apply.sh`. The rules below are enforced by `local/code-import-patterns` targets in `build/axis/eslint.axis.ts` (docs/design/axis-shell-stage2.md section 3.7).
 
 | Folder | May import | Notes |
 |---|---|---|

@@ -1,0 +1,64 @@
+diff --git a/src/vs/platform/native/common/native.ts b/src/vs/platform/native/common/native.ts
+--- a/src/vs/platform/native/common/native.ts
++++ b/src/vs/platform/native/common/native.ts
+@@ -503,6 +503,30 @@ export type ThermalState = 'unknown' | 'nominal' | 'fair' | 'serious' | 'critica
+  */
+ export type PowerSaveBlockerType = 'prevent-app-suspension' | 'prevent-display-sleep';
+ 
++// --- Start Axis ---
++/** Threat model EL-5: the only URL schemes that openExternal hands to the operating system. */
++export const AXIS_OPEN_EXTERNAL_ALLOWED_SCHEMES: readonly string[] = ['http', 'https', 'mailto'];
++
++/** Schemes a refusal log line may name. Any other scheme is logged as 'invalid'. */
++const AXIS_LOGGABLE_SCHEMES: ReadonlySet<string> = new Set([
++	'http', 'https', 'mailto', 'file', 'ftp', 'sftp', 'ssh', 'smb', 'vscode', 'vscode-insiders', 'axis', 'data', 'javascript', 'tel', 'sms'
++]);
++
++/**
++ * What a log line may say about a refused URL: its scheme when it is a known one, and nothing else, because any
++ * other part of a URL, or an unknown scheme-shaped prefix, can carry tokens, data or line breaks.
++ */
++export function axisOpenExternalSchemeForLog(url: string): string {
++	const scheme = /^([a-z][a-z0-9+.-]{0,15}):/i.exec(url)?.[1].toLowerCase();
++	return scheme !== undefined && AXIS_LOGGABLE_SCHEMES.has(scheme) ? scheme : 'invalid';
++}
++
++export function axisIsAllowedOpenExternalUrl(url: string): boolean {
++	const scheme = /^([a-z][a-z0-9+.-]*):/i.exec(url)?.[1].toLowerCase();
++	return scheme !== undefined && AXIS_OPEN_EXTERNAL_ALLOWED_SCHEMES.includes(scheme);
++}
++// --- End Axis ---
++
+ export const INativeHostService = createDecorator<INativeHostService>('nativeHostService');
+ 
+ /**
+diff --git a/src/vs/platform/native/electron-main/nativeHostMainService.ts b/src/vs/platform/native/electron-main/nativeHostMainService.ts
+--- a/src/vs/platform/native/electron-main/nativeHostMainService.ts
++++ b/src/vs/platform/native/electron-main/nativeHostMainService.ts
+@@ -27,7 +27,11 @@ import { IEnvironmentMainService } from '../../environment/electron-main/environ
+ import { createDecorator, IInstantiationService } from '../../instantiation/common/instantiation.js';
+ import { ILifecycleMainService, IRelaunchOptions } from '../../lifecycle/electron-main/lifecycleMainService.js';
+ import { ILogService } from '../../log/common/log.js';
+-import { FocusMode, IApplicationBadge, ICommonNativeHostService, INativeHostOptions, INativeSystemWideKeybinding, INativeSystemWideKeybindingResult, INativeZipFile, INativeZipOptions, INativeZipProgress, INativeZipResult, IOpenAgentsWindowOptions, IOSProperties, IOSProxy, IOSProxyConfig, IOSStatistics, IStartTracingOptions, IToastOptions, IToastResult, PowerSaveBlockerType, SystemIdleState, ThermalState } from '../common/native.js';
++import { FocusMode, IApplicationBadge, ICommonNativeHostService, INativeHostOptions, INativeSystemWideKeybinding, INativeSystemWideKeybindingResult, INativeZipFile, INativeZipOptions, INativeZipProgress, INativeZipResult, IOpenAgentsWindowOptions, IOSProperties, IOSProxy, IOSProxyConfig, IOSStatistics, IStartTracingOptions, IToastOptions, IToastResult, PowerSaveBlockerType, SystemIdleState, ThermalState,
++	// --- Start Axis ---
++	axisIsAllowedOpenExternalUrl, axisOpenExternalSchemeForLog
++	// --- End Axis ---
++} from '../common/native.js';
+ import { IGlobalKeybindingsMainService } from '../../globalKeybindings/electron-main/globalKeybindingsMainService.js';
+ import { IGPUProcessMainService } from '../../gpu/electron-main/gpuProcessMainService.js';
+ import { IProductService } from '../../product/common/productService.js';
+@@ -729,6 +733,13 @@ export class NativeHostMainService extends Disposable implements INativeHostMain
+ 	}
+ 
+ 	async openExternal(windowId: number | undefined, url: string, defaultApplication?: string): Promise<boolean> {
++		// --- Start Axis ---
++		// Only http, https and mailto reach the OS (threat model EL-5); only a valid scheme is logged, never the rest of the URL, as it may carry tokens
++		if (!axisIsAllowedOpenExternalUrl(url)) {
++			this.logService.warn(`openExternal: refused a URL with scheme '${axisOpenExternalSchemeForLog(url)}'; Axis opens only http, https and mailto links externally`);
++			return false;
++		}
++		// --- End Axis ---
+ 		this.environmentMainService.unsetSnapExportedVariables();
+ 		try {
+ 			if (matchesSomeScheme(url, Schemas.http, Schemas.https)) {

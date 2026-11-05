@@ -1,0 +1,75 @@
+diff --git a/src/vs/server/node/webClientServer.ts b/src/vs/server/node/webClientServer.ts
+--- a/src/vs/server/node/webClientServer.ts
++++ b/src/vs/server/node/webClientServer.ts
+@@ -141,6 +141,12 @@ export function createNlsUrl(nlsBaseUrl: string, commit: string | undefined, ver
+ 	return `${nlsBaseUrl}${commit}/${version}/${encodeURIComponent(locale)}/nls.messages.js`;
+ }
+ 
++// --- Start Axis ---
++// Trusted Types policies of the web workbench: the desktop workbench.html list plus the
++// policy the development template uses for its import map (threat model WEB-3).
++export const axisWebTrustedTypesPolicies = ['amdLoader', 'cellRendererEditorText', 'collapsedCellPreview', 'defaultWorkerFactory', 'diffEditorWidget', 'diffReview', 'domLineBreaksComputer', 'dompurify', 'lit-html', 'editorGhostText', 'editorViewLayer', 'htmlToMarkdown', 'notebookRenderer', 'stickyScrollViewLayer', 'tokenizeToString', 'notebookChatEditController', 'richScreenReaderContent', 'chatDebugTokenizer', 'vscode-bootstrapImportMap'];
++// --- End Axis ---
++
+ export function createWorkbenchContentSecurityPolicy(scriptNonce: string, nlsBaseUrl: string | undefined, remoteAuthority: string, useTestResolver: boolean): string {
+ 	return [
+ 		'default-src \'self\';',
+@@ -153,6 +159,9 @@ export function createWorkbenchContentSecurityPolicy(scriptNonce: string, nlsBas
+ 		'style-src \'self\' \'unsafe-inline\';',
+ 		'connect-src \'self\' ws: wss: https:;',
+ 		'font-src \'self\' blob:;',
++		// --- Start Axis ---
++		`require-trusted-types-for 'script'; trusted-types ${axisWebTrustedTypesPolicies.join(' ')};`,
++		// --- End Axis ---
+ 		'manifest-src \'self\';'
+ 	].join(' ');
+ }
+diff --git a/src/vs/code/browser/workbench/workbench-dev.html b/src/vs/code/browser/workbench/workbench-dev.html
+--- a/src/vs/code/browser/workbench/workbench-dev.html
++++ b/src/vs/code/browser/workbench/workbench-dev.html
+@@ -110,7 +110,12 @@
+ 		const importMapElement = document.createElement('script');
+ 		importMapElement.type = 'importmap';
+ 		importMapElement.nonce = document.currentScript.nonce;
+-		importMapElement.textContent = JSON.stringify(importMap, undefined, 2);
++		// --- Start Axis ---
++		// The web CSP requires Trusted Types, so the import map goes through a policy (as on desktop)
++		const importMapPolicy = window.trustedTypes?.createPolicy('vscode-bootstrapImportMap', { createScript(value) { return value; } });
++		const importMapText = JSON.stringify(importMap, undefined, 2);
++		importMapElement.textContent = importMapPolicy ? importMapPolicy.createScript(importMapText) : importMapText;
++		// --- End Axis ---
+ 		document.head.appendChild(importMapElement);
+ 	</script>
+ 	<script nonce="{{WORKBENCH_SCRIPT_NONCE}}">
+diff --git a/src/vs/server/test/node/webClientServer.test.ts b/src/vs/server/test/node/webClientServer.test.ts
+--- a/src/vs/server/test/node/webClientServer.test.ts
++++ b/src/vs/server/test/node/webClientServer.test.ts
+@@ -9,7 +9,11 @@ import { promises } from 'fs';
+ import { FileAccess } from '../../../base/common/network.js';
+ import { htmlAttributeEncodeValue } from '../../../base/common/strings.js';
+ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../base/test/common/utils.js';
+-import { createNlsUrl, createScriptNonce, createWorkbenchContentSecurityPolicy, isSafeBasePath, renderWorkbenchTemplate } from '../../node/webClientServer.js';
++import { createNlsUrl, createScriptNonce, createWorkbenchContentSecurityPolicy, isSafeBasePath, renderWorkbenchTemplate,
++	// --- Start Axis ---
++	axisWebTrustedTypesPolicies
++	// --- End Axis ---
++} from '../../node/webClientServer.js';
+ 
+ /**
+  * Decodes the five entities produced by `htmlAttributeEncodeValue`, the same way a browser
+@@ -124,6 +128,15 @@ suite('WebClientServer', () => {
+ 		});
+ 	});
+ 
++	// --- Start Axis ---
++	test('requires Trusted Types with the web workbench policies', () => {
++		const policy = createWorkbenchContentSecurityPolicy(createScriptNonce(), undefined, 'localhost:3000', false);
++		assert.ok(policy.includes(`require-trusted-types-for 'script';`));
++		assert.ok(policy.includes(`trusted-types ${axisWebTrustedTypesPolicies.join(' ')};`));
++		assert.ok(axisWebTrustedTypesPolicies.includes('amdLoader') && axisWebTrustedTypesPolicies.includes('defaultWorkerFactory'));
++	});
++	// --- End Axis ---
++
+ 	test('uses a unique nonce without hashing rendered scripts', () => {
+ 		const firstNonce = createScriptNonce();
+ 		const secondNonce = createScriptNonce();

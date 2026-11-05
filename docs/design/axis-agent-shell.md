@@ -1,6 +1,6 @@
 # Axis agent-first shell: technical design for M3 Stage 2
 
-- **Status:** Draft; design decisions D-1 to D-13 recorded 2026-11-02 (§9.2); D-11 is now ADR 0004 decision 14. Aligned with ADR 0004 as merged on `main` (`a0cb0a3`, amended in this branch for D-13 and the Phase 1a audit log), including its resolved questions. The items ADR 0004 defers to this design, and the terminal, git, snapshot, shortcut and wording policies, are in the companion `axis-agent-shell-policies.md` (the "policies"). It replaces the IDE-first Stage 2 of `docs/design/axis-shell.md` §3 and §6 (S2.x). Stage 1 (§2 and §2.9 there) is done and still applies. Product direction comes from ADR 0004 (`docs/adr/0004-agent-first-workspace-shell.md`), which this document implements and does not restate.
+- **Status:** Draft; design decisions D-1 to D-13 recorded 2026-11-02 (§9.2); D-11 is now ADR 0004 decision 14. Aligned with ADR 0004 as merged on `main` (`a0cb0a3`, amended in this branch for D-13 and the Phase 1a audit log), including its resolved questions. The items ADR 0004 defers to this design, and the terminal, git, snapshot, shortcut and wording policies, are in the companion `axis-agent-shell-policies.md` (the "policies"). It replaces the IDE-first Stage 2 of `docs/design/axis-shell-stage2.md` §3 and `docs/design/axis-shell-stage2-plan.md` §6 (S2.x). Stage 1 (`axis-shell-stage1.md` §2 and `axis-shell-stage1-built.md` §2.9) is done and still applies. Product direction comes from ADR 0004 (`docs/adr/0004-agent-first-workspace-shell.md`), which this document implements and does not restate.
 - **Date:** 2026-11-02
 - **As built:** the Phase 0 slice of tasks A1 to A4 and A6 (view modes, dashboard, workspace view, split) is on `feat/axis-shell-a1`; its deviations from this design and what it does not do yet are in `docs/feasibility/axis-shell-phase0.md` §5, and how to run it in `axis-shell-runbook.md`.
 - **Upstream baseline:** Code OSS `1.144.0`, commit `2c33b50b16c472efe58357d1d2a8a5414bc23fbf`.
@@ -64,13 +64,13 @@ The **local checkout** is listed on the dashboard but is never an agent workspac
   - `isSessionsWindow` appears in 112 non-test files under `workbench`, `platform` and `code` [V, grep].
 - **Switching to the editor is a protocol URL.** "Open in VS Code" builds a `vscode://file/<folder>?windowId=_blank` URL and opens it externally. That opens another window at folder granularity, with no file or line (web: `sessions/browser/actions/vscodeActions.ts:59-105`; desktop: `nativeHostService.openWindow(folders, { forceNewWindow: true })`, `sessions/electron-browser/actions/vscodeActions.ts:92`) [V].
 - **It follows the active session's folder** by rewriting the window's workspace folders (`contrib/workspace/browser/workspaceFolderManagement.ts:42-90`). It mounts only trusted folders (`:57-67`) and inherits trust only for worktrees under `<repo>.worktrees` (`services/sessions/browser/worktreeTrust.ts:30-55`) [V].
-- **D8 already removes its entry points** in block `1500–1999` (`axis-shell.md` D8). ADR 0004 keeps D8.
+- **D8 already removes its entry points** in block `1500–1999` (`axis-shell-risks.md` D8). ADR 0004 keeps D8.
 
 ### 2.2 Component assessment
 
 | Sessions component | Verdict | Reason |
 |---|---|---|
-| `sessions.*.main.ts`, `electron-browser/sessions.main.ts` (a 420-line copy of `DesktopMain`) | **Replace** | Axis boots through the P2 `createWorkbench` hook (`axis-shell.md` §3.2), not a bootstrap copy |
+| `sessions.*.main.ts`, `electron-browser/sessions.main.ts` (a 420-line copy of `DesktopMain`) | **Replace** | Axis boots through the P2 `createWorkbench` hook (`axis-shell-stage2.md` §3.2), not a bootstrap copy |
 | `browser/workbench.ts` (grid, restore phases, notifications, persistence) | **Adapt patterns, not code** | It references `ISessionsService` and chat layout presentation (`:78-80,72`), plus mobile. The patterns Axis takes: a fixed grid owned by the shell, desired versus effective visibility (`LAYOUT.md:133`), one high-priority flex surface (`LAYOUT.md:62`), and reparenting grid views without resizing them (`LAYOUT.md:72`) [V] |
 | `SessionsPart`, chat group views, session header (`browser/parts/*`) | **Replace** | They render chat sessions. The Axis agent part renders the dashboard and the workspace view |
 | `ProjectBarPart` (`projectBarPart.ts:85,124`, string part id) | **Pattern only** | Confirms that an Axis-only part with a string id needs no `Parts` enum change [V] |
@@ -87,15 +87,15 @@ The **local checkout** is listed on the dashboard but is never an agent workspac
 
 **(i): an Axis layer modelled on `vs/sessions`**, as ADR 0002 decision 2 assumed and ADR 0004 decision 3 proposes.
 
-- **Against the footprint budget.** (i) and (iii) both add no upstream file (§7). (ii) would need the sessions entry points kept (undoing D8's build removals), the chat and agent-host graph type-checked, and the sessions window type, which has 112 coupled files, all against block `1500–1999`'s removal work. Under Stage 1's option (a1), most of `platform/agentHost/**` is excluded from type-checking (`axis-shell.md` §2.9).
-- **Against sync cost.** Copying sessions code means carrying it through weekly syncs. Its specifications expose experimental, reload-only modes (`LAYOUT.md:18-33`) [V], which is a sign of active churn [I]. (i) copies only about 400–600 lines (the folder manager, the Files view and the terminal pattern), each recorded with its source path and commit (`axis-shell.md` R8).
+- **Against the footprint budget.** (i) and (iii) both add no upstream file (§7). (ii) would need the sessions entry points kept (undoing D8's build removals), the chat and agent-host graph type-checked, and the sessions window type, which has 112 coupled files, all against block `1500–1999`'s removal work. Under Stage 1's option (a1), most of `platform/agentHost/**` is excluded from type-checking (`axis-shell-stage1-built.md` §2.9).
+- **Against sync cost.** Copying sessions code means carrying it through weekly syncs. Its specifications expose experimental, reload-only modes (`LAYOUT.md:18-33`) [V], which is a sign of active churn [I]. (i) copies only about 400–600 lines (the folder manager, the Files view and the terminal pattern), each recorded with its source path and commit (`axis-shell-risks.md` R8).
 - **Against (iii).** The stock grid is closed. Contributions get only the side bar, panel and auxiliary bar (`views.ts:39-43`) [V], or an editor tab. The agent surface would be a closable editor tab that competes with editor groups, and split mode would be an editor-group split rather than two views. (iii) stays the fallback: if S2-level `AxisWorkbench` work slips, the same Files, Changes and Composer views run in the stock workbench, and the agent surface becomes an `EditorPane` hosting the same widget.
 
 ## 3. View-switching modes
 
 ### 3.1 Mechanism: one window, one grid, layout swap
 
-`AxisWorkbench` owns the grid (`axis-shell.md` §3.3; `SerializableGrid`, as `sessions/browser/workbench.ts` does). It extends that design in four ways:
+`AxisWorkbench` owns the grid (`axis-shell-stage2.md` §3.3; `SerializableGrid`, as `sessions/browser/workbench.ts` does). It extends that design in four ways:
 
 - it adds an **agent part** (`axis.parts.agent`), a `Part` with a string id (`part.ts:53-62`) [V];
 - it fixes the panel to span the full width (sessions' justified alignment, `LAYOUT.md:72`);
@@ -168,7 +168,7 @@ Files / Changes / Activity click
   - on macOS, `Mod+Alt+0` is Toggle Editor Group Layout (`files/browser/views/openEditorsView.ts:938`) [V].
 
   The verified conflict-free set (D-7) is in policies §8, adopted by `UX.md`.
-- **F6 and Shift+F6** cycle the visible parts in grid order, through `getVisibleNeighborPart`, which `AxisWorkbench` implements (`axis-shell.md` §3.3 and §5). In split mode both halves are in the cycle.
+- **F6 and Shift+F6** cycle the visible parts in grid order, through `getVisibleNeighborPart`, which `AxisWorkbench` implements (`axis-shell-stage2.md` §3.3 and §5). In split mode both halves are in the cycle.
 - **Focus rules** (`UX.md` focus rules 1–2): a toggle restores the destination's last focused element per workspace, falling back to the composer, the active editor or the first dashboard row. Every switch announces "Agent view, <workspace>" or "IDE view, <file>" through `status()` (`base/browser/ui/aria/aria.ts:65`) [V].
 
 ### 3.6 Persistence
@@ -178,7 +178,7 @@ Files / Changes / Activity click
 | `axis.view.mode` | User setting (application scope) |
 | `globalView` | `StorageScope.APPLICATION`, `StorageTarget.MACHINE` |
 | `workspaceState` map: view, auxiliary-bar container, panel visibility, return-focus id | `StorageScope.WORKSPACE` (the per-project Code OSS workspace), keyed by workspace id |
-| Grid sizes, split ratio | `StorageScope.WORKSPACE`, as `axis-shell.md` §3.3 |
+| Grid sizes, split ratio | `StorageScope.WORKSPACE`, as `axis-shell-stage2.md` §3.3 |
 | Focused workspace | `StorageScope.WORKSPACE` |
 | Editors per workspace | Upstream working sets `saveWorkingSet`/`applyWorkingSet` (`editorGroupsService.ts:709-726`) [V], named `axis.ws.<id>`, applied on focus change as sessions does per session (`LAYOUT_CONTROLLER.md:33`) |
 
@@ -342,7 +342,7 @@ The rail and the main region are an internal split view inside the agent part, s
 
 ## 6. Composer integration point
 
-- **First provider:** the Anthropic API (ADR 0004 resolved question 1), as an adapter in the daemon gateway. Its key is stored in the connection vault and decrypted only through the main-process broker (ADR 0003 D1.6). Stage 1 removed `@anthropic-ai/sdk` from `package.json` together with the agent host (`axis-shell.md` §2.9). The adapter therefore uses the documented HTTP API with Node `fetch`, a streaming parser and Zod schemas, which needs no `package.json` or lockfile patch (ADR 0004 decision 14).
+- **First provider:** the Anthropic API (ADR 0004 resolved question 1), as an adapter in the daemon gateway. Its key is stored in the connection vault and decrypted only through the main-process broker (ADR 0003 D1.6). Stage 1 removed `@anthropic-ai/sdk` from `package.json` together with the agent host (`axis-shell-stage1-built.md` §2.9). The adapter therefore uses the documented HTTP API with Node `fetch`, a streaming parser and Zod schemas, which needs no `package.json` or lockfile patch (ADR 0004 decision 14).
 - **The UI.** `AxisComposerWidget` is hosted in the workspace view and, in IDE view, in a `ViewPane` in the Axis Agent auxiliary-bar container. It is one widget, bound to `axis.focusedWorkspace`.
   - Modes are Ask, Edit and Agent, and a provider/model picker comes from `axis.providers/1.list`.
   - Context chips come from Files and Changes selections and travel as `UriComponents` inside the worktree. The daemon re-checks them (DMN-1, WT-1).
@@ -361,13 +361,13 @@ The rail and the main region are an internal split view inside the agent part, s
   - with no daemon connected, `IAxisRunsService` is `DisconnectedRunsService` and the composer shows "Agent service not running" with a retry;
   - unit tests use a `FakeRunsService` under `test/` only;
   - no provider code or credential ever enters the renderer (PRV-2).
-- **The upstream chat UI stays disabled** (`chat.disableAIFeatures`, `axis-shell.md` §2.2). The Axis composer does not reuse the chat widget, which is tied to the chat agent and `defaultChatAgent` infrastructure (R3 there).
+- **The upstream chat UI stays disabled** (`chat.disableAIFeatures`, `axis-shell-stage1.md` §2.2). The Axis composer does not reuse the chat widget, which is tied to the chat agent and `defaultChatAgent` infrastructure (R3 there).
 
 ## 7. Upstream footprint estimate
 
-| Block | Contents | Files | Changed lines (excluding markers) | Change from `axis-shell.md` §3.10 |
+| Block | Contents | Files | Changed lines (excluding markers) | Change from `axis-shell-stage2.md` §3.10 |
 |---|---|---|---|---|
-| `0001–0999` shell (criterion 2) | P2–P9 bootstrap, lint and filters (P8 and P9 landed on the Stage 1 branch, `axis-shell.md` §2.9), plus bridge seams (ADR 0003 D6, called seams B1–B3 in `axis-shell.md` §3.6; distinct from the tasks below) | **10** | **~50** (about 80 with markers) | The pty-process entry adds about 1 line to `build/next/index.ts` and about 3 to `app.ts`, both already counted files. The agent part, view modes, Files, Changes, terminals binding and composer are all overlay |
+| `0001–0999` shell (criterion 2) | P2–P9 bootstrap, lint and filters (P8 and P9 landed on the Stage 1 branch, `axis-shell-stage1-built.md` §2.9), plus bridge seams (ADR 0003 D6, called seams B1–B3 in `axis-shell-stage2.md` §3.6; distinct from the tasks below) | **10** | **~50** (about 80 with markers) | The pty-process entry adds about 1 line to `build/next/index.ts` and about 3 to `app.ts`, both already counted files. The agent part, view modes, Files, Changes, terminals binding and composer are all overlay |
 | `0001–0999` worst case | + P2b in-memory workspace hook (same file as P2), + `build/next/resources.ts` if Axis UI loads assets by URI, + optional P11/P12 | 11–13 | ~65 | P11/P12 must stay out unless the final count leaves room (unchanged advice). With them **and** `resources.ts`, the count reaches 13 and breaks the 12-file limit |
 | `1000–1499` rebrand | G1–G3 | 4 incl. `product.json` | 90 / 106 measured (§2.9) | None |
 | `1500–1999` Copilot, agent host, D8 | Measured 19 files (185 / 122); D8 adds about 12 deletion lines in `build/next/index.ts` and about 6 in `windowsMainService.ts` | ~20 | ~200 | None. D8 stays: the agent shell does not need the sessions window |
@@ -378,12 +378,12 @@ The rail and the main region are an internal split view inside the agent part, s
   1. the in-memory workspace hook, if per-project workspace files misbehave (R1);
   2. web: if the reh-web Agent view needs a server-side seam beyond the `serverServices.ts` bridge seam [I, Phase 2 or later, since the browser skeleton is out of Phase 1];
   3. any Axis need to change upstream part internals, which is forbidden by ADR 0002 decision 2. That would trigger ADR 0004's revisit clause, not an amendment.
-- **Axis-owned code.** Overlay grows from `axis-shell.md`'s 3–4.5k lines to about 8–10k [I]: `AxisWorkbench` with modes about 2.5k, the agent part and dashboard about 2k, services about 1.5k, views about 1.5k, the composer about 1k, the pty process and its channels about 1k (it reuses upstream `PtyService`), tests extra. Adapted sessions copies (about 0.5k) carry `Adapted from <path>@2c33b50` headers (`axis-shell.md` §3.7).
+- **Axis-owned code.** Overlay grows from `axis-shell.md`'s 3–4.5k lines to about 8–10k [I]: `AxisWorkbench` with modes about 2.5k, the agent part and dashboard about 2k, services about 1.5k, views about 1.5k, the composer about 1k, the pty process and its channels about 1k (it reuses upstream `PtyService`), tests extra. Adapted sessions copies (about 0.5k) carry `Adapted from <path>@2c33b50` headers (`axis-shell-stage2.md` §3.7).
 
 ## 8. Phased implementation tasks
 
 - **Prerequisite.** `axis-shell.md` S2.1 (layer scaffold; P8 and P9 landed on the Stage 1 branch) and S2.2 (bootstrap P2–P7, Phase A wholesale contributions) are unchanged and come first.
-- **Test conventions.** Tests follow `axis-shell.md` §6: `./scripts/test.sh --grep Axis`, `npm run test-browser -- --grep Axis`, and smoke runs with `--grep`.
+- **Test conventions.** Tests follow `axis-shell-stage2-plan.md` §6: `./scripts/test.sh --grep Axis`, `npm run test-browser -- --grep Axis`, and smoke runs with `--grep`.
 - **Fixtures.** Worktree fixtures are created by test setup with the Git CLI in a temporary directory (electron-browser/node test layer) [I].
 
 ### 8.1 Phase 0 skeleton (the gate): first slice
@@ -437,13 +437,13 @@ The rail and the main region are an internal split view inside the agent part, s
 | R2 | Extension `workspaceState` and workspace storage are shared by every workspace in a project | Accept and document. Axis keys its own state by workspace id |
 | R3 | `applyWorkingSet` on focus change meets dirty editors [I] | Keep dirty editors open across the swap, or prompt. Test in A7 |
 | R4 | Backgrounded terminals across a window reload lose their workspace mapping [I] | Axis ptys live in the pty process, are keyed by terminal id and reattach. Upstream-pty terminals (opt-out) restore hidden as sessions does (`sessionsTerminalContribution.ts:241-252`) |
-| R5 | `IWorkbenchLayoutService` churn now carries more Axis logic (`axis-shell.md` R4) | Contract unit tests. Sync step 3 diff of `layoutService.ts` and `sessions/browser/workbench.ts` |
+| R5 | `IWorkbenchLayoutService` churn now carries more Axis logic (`axis-shell-risks.md` R4) | Contract unit tests. Sync step 3 diff of `layoutService.ts` and `sessions/browser/workbench.ts` |
 | R6 | CLI agent runs are not brokered: no policy, budgets or audit. The CLI can still use the user's Git credentials (including push), and can reach the local checkout (ADR 0004 decision 6 governs the working directory only) | PTY-5 (policies §4). Common-dir snapshot around each CLI run. Labelled "governed by the CLI's own permissions". All their changes go through review |
 | R12 | Drift attribution for CLI runs is by time window, not by writer; a CLI can overwrite other changes | Shown, not prevented. Restore from run base for 7 days (policies §3.6) |
 | R13 | Snapshot refs store untracked, non-ignored files (possibly secrets) as objects in the shared common dir, and grow the repository | Ignored files excluded. Files over 50 MiB skipped. Never mirror-pushed. Retention and user-run cleanup (policies §7) |
 | R14 | Git commands outside Axis (SCM view, terminals, CLIs) bypass the mutex, lock and drift gate | Scoped guarantees, the SCM banner, and HEAD-moved notices to the composer (policies §6.3) |
 | R7 | The shared `$GIT_COMMON_DIR` lets anything in a worktree (a CLI agent, a user command) plant hooks or config that later run in the local checkout | Drift snapshot (invariant 5), surfaced on the dashboard. Never described as a sandbox |
-| R8 | Adapted sessions code drifts | Copies under 600 lines with source and commit headers; diffed at each sync (`axis-shell.md` R8) |
+| R8 | Adapted sessions code drifts | Copies under 600 lines with source and commit headers; diffed at each sync (`axis-shell-risks.md` R8) |
 | R9 | Phase 0 discovery parser diverges from git's metadata format | Read-only, tolerant of missing files (as `git.ts:3166,3177`). Replaced by porcelain output in task B5 |
 | R10 | Split mode with a single side bar and auxiliary bar: both halves cannot each have their own | The agent half keeps its rail inside the agent part. The auxiliary bar is shared (Files and Changes) |
 | R11 | Web (reh-web) Agent view, Phase 2 or later: the daemon runs as a reh child and worktrees live on the server | Desktop first. Web bring-up follows ADR 0003 D1.7 with a gap list |

@@ -3,7 +3,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 // Axis contributions shared by every Axis entry point. Phase A of
-// docs/design/axis-shell.md section 3.5: the upstream workbench main is
+// docs/design/axis-shell-stage2.md section 3.5: the upstream workbench main is
 // imported wholesale by each platform entry, then these follow, so that Axis
 // registrations come after (and override) upstream ones.
 

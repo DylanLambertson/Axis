@@ -3,7 +3,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 // Axis additions to the upstream ESLint flat config, spread into eslint.config.js
-// by the shell patch (docs/design/axis-shell.md section 3.7, P8). Keeping them here
+// by the shell patch (docs/design/axis-shell-stage2.md section 3.7, P8). Keeping them here
 // keeps the upstream footprint to the import and the spread lines.
 
 /** Paths owned by Axis. Upstream files keep the Microsoft MIT header. */
@@ -14,7 +14,7 @@ export const axisOwnedFiles = [
 	'extensions/theme-axis/**',
 ];
 
-// Layer rules for `src/vs/axis` (docs/design/axis-shell.md section 3.7). They are
+// Layer rules for `src/vs/axis` (docs/design/axis-shell-stage2.md section 3.7). They are
 // allow-lists: no upstream target lists `vs/axis`, so upstream code cannot import
 // Axis code. More specific targets come first, because the first match wins.
 const axisCore = [

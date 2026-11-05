@@ -7,6 +7,7 @@ Each job's "out" entry selects the container:
   png      the PNG as rendered
   ico      PNG-compressed ICO entries; jobs sharing a path become one file
   xpm      XPM2 text with a quantised palette (RGBA input)
+  bmp      24-bit uncompressed BMP (RGBA input; alpha is dropped, so render on an opaque background)
 Standard library only.
 """
 import base64
@@ -84,6 +85,23 @@ def xpm(name, w, h, rgba):
     return ("\n".join(lines) + "\n").encode("ascii")
 
 
+def bmp(w, h, rgba):
+    """Bottom-up 24-bit BI_RGB bitmap at 96 DPI, the format Inno Setup expects."""
+    stride = (w * 3 + 3) & ~3
+    pixels = bytearray()
+    for y in range(h - 1, -1, -1):
+        row = bytearray()
+        for x in range(w):
+            i = (y * w + x) * 4
+            r, g, b = rgba[i], rgba[i + 1], rgba[i + 2]
+            row += bytes((b, g, r))
+        row += b"\0" * (stride - len(row))
+        pixels += row
+    header = struct.pack("<2sIHHI", b"BM", 54 + len(pixels), 0, 0, 54)
+    info = struct.pack("<IiiHHIIiiII", 40, w, h, 1, 24, 0, len(pixels), 3779, 3779, 0, 0)
+    return header + info + bytes(pixels)
+
+
 def main():
     jobs_path, dom_path, out_dir = sys.argv[1:4]
     with open(jobs_path, encoding="utf-8") as f:
@@ -100,6 +118,8 @@ def main():
             icos.setdefault(target, []).append((job["w"], data))
         elif kind == "xpm":
             write(target, xpm(job["out"]["symbol"], job["w"], job["h"], data))
+        elif kind == "bmp":
+            write(target, bmp(job["w"], job["h"], data))
         else:
             sys.exit("pack.py: unknown output type " + kind)
     for target, entries in icos.items():

@@ -1,6 +1,99 @@
-# Axis workbench shell: M3 implementation tasks
+# Axis workbench shell: React, accessibility and M3 tasks (§4 to §6)
 
-> Part of the Axis workbench shell design. The index, with the summary of decisions (§0), the layout (§1), risks (§7) and decisions (§8), is [`axis-shell.md`](axis-shell.md). This file holds §6 (the M3 tasks S1.x and S2.x). Section numbers are those of the original single document, so a reference such as "`axis-shell.md` §3.10" resolves through the section map in the index.
+> Part of the Axis workbench shell design. Section numbers (§) are stable across the parts; `axis-shell.md` lists which part holds which section.
+
+## 4. React integration plan
+
+**Decision for M3.**
+
+- **React is deferred (D5, §8).** All M3 Axis UI is vanilla TS/DOM with upstream widgets.
+- S2.11 is a **throwaway spike** that answers ADR 0002 criterion 5. It builds one React view (the AI panel empty state) through the normal pipeline, measures it, and is not merged.
+- If the spike fails, Axis UI stays vanilla. Under criterion 5 that does not reject the ADR.
+
+**Why.** Today no compile, check or bundle path handles `.tsx` [V]:
+
+- `src/tsconfig.json:29-35` includes only `.ts`;
+- `build/next/transpile.ts:15-27` hard-codes `loader: 'ts'`;
+- `build/next/index.ts:432-451` globs `**/*.ts`, and `:282-285` would copy a `.tsx` raw into `out/`;
+- `build/lib/compilation.ts:69` has `tsFilter = /\.ts$/`, and `build/lib/tsb/transpiler.ts:133-134` recognises only `.ts`;
+- the `build/checker/tsconfig.*.json` includes use `**/*.ts`;
+- `src/tsconfig.tsec.json` inherits the `.ts`-only include;
+- ESLint `code-import-patterns` is scoped to `src/**/*.ts` (`eslint.config.js:1610-1612`);
+- component fixtures use `.fixture.ts` globs (`build/rspack/rspack.serve-out.config.mts:126`, `build/vite/vite.config.ts:171`).
+
+Bundles also mark every package external (`build/next/bundle.ts:18`) [V], and no runtime import map resolves a bare `react` specifier in the renderer [I]. React 19 publishes CJS only (no UMD) [I], so `importAMDNodeModule` (`src/vs/amdX.ts:210-234`) cannot load it.
+
+**Design to validate in spike S2.11** (throwaway branch, measured):
+
+| Concern | Plan |
+|---|---|
+| Bridge | `src/vs/axis/browser/react/axisReactRenderer.tsx`, Positron-style (alternatives doc: `positronReactRenderer.tsx`): a `Disposable` that owns `createRoot(container)`, renders inside `AxisServicesContext.Provider`, and unmounts on dispose. It passes a **narrow typed services object**, not the raw `IInstantiationService`. It forwards size, focus and visibility from the hosting `ViewPane`. An error boundary reports to `ILogService` |
+| tsconfig | `"jsx": "react-jsx"` in `src/tsconfig.json`, and include `./vs/axis/**/*.tsx` only, which confines TSX to Axis. Same include for the browser and electron-browser checker tsconfigs |
+| Transpile and bundle | Loader by extension (`tsx`) and `jsx: 'automatic'` in `transpile.ts` and `bundle.ts`. Widen the globs in `index.ts`/`compilation.ts`/`tsb`. Bundle react, react-dom and scheduler into the Axis entry with an `onResolve` plugin, or emit a separate vendor ESM bundle loaded with `import(FileAccess.asBrowserUri(...))`. Both follow the precedent at `build/next/devTunnelsWeb.ts:38-70` and `devTunnelsWebLoader.ts:81-89` [V] |
+| Mangling | Only `#private` fields are renamed (`build/next/private-to-property.ts:10-33`, enabled at `build/lib/esbuild.ts:55-58`). No `mangleProps` [V], so JSX props are safe [I] |
+| CSP / Trusted Types | `style-src 'self' 'unsafe-inline'` already allows React inline styles (`workbench.html:32-35`, server `webClientServer.ts:153`) [V]. React DOM's normal rendering uses DOM APIs, not TT sinks [I]. **Ban `dangerouslySetInnerHTML`**; any HTML must go through an allow-listed policy created with `createTrustedTypesPolicy` (`base/browser/trustedTypes.ts:11-33`), and its name must be added to `workbench.html:50-68` [V]. No new policy is expected |
+| Lint, tsec, hygiene | Widen `code-import-patterns` and the browser `no-restricted-syntax` globs to `{ts,tsx}` (`eslint.config.js:1236,1610`). Allow `react`/`react-dom/client` only in Axis targets. Add a `react/no-danger` equivalent. Run tsec over `.tsx`. Hygiene already checks headers, indentation and unicode on any file (`build/filters.ts:36-46,82,176`) [V]; `tsFormattingFilter` (`:237-238`) needs `.tsx` |
+| Tests | `.test.tsx` is picked up once it transpiles to `.test.js` (`test/unit/electron/renderer.js:90`) [V] |
+| Licence | React is MIT. Add it to ThirdPartyNotices |
+
+**Footprint consequence (criterion 2).**
+
+- The shell range already uses 10 of its 12 files (§3.10). In-pipeline `.tsx` (`jsx: react-jsx`, ADR 0002 decision 4) adds about 9 build files, so the spike also measures a **no-JSX variant**:
+  - React is called through `createElement` (or a tagged template such as `htm`) in ordinary `.ts`;
+  - the only build changes are a React resolve/vendor step in `build/next/bundle.ts` and the dependency entries;
+  - the ESLint targets live in the overlay module.
+- The no-JSX variant adds about 1–2 files and keeps criterion 2.
+- The spike report gives both numbers. Any later adoption is a new decision, made after Phase 0: no-JSX React, an ADR amendment that counts pipeline enablement separately, or vanilla.
+- Either way, M3 checks TT and CSP the same way:
+  - a Playwright/Electron smoke test loads the view under the production CSP and fails on any Trusted Types violation (threat model §7, SIT);
+  - a lint rule bans `dangerouslySetInnerHTML` in `src/vs/axis` (threat model EL-1).
+
+**Risks to verify:**
+
+- the real upstream footprint (expected about 9 files beyond §3.6);
+- production bundle size and startup delta, lazy-loaded in the AI panel only;
+- dev watch support for `.tsx` (`index.ts:803-807`);
+- focus and keyboard interop between React-managed DOM and the upstream list/focus trackers;
+- React DOM and Trusted Types under `require-trusted-types-for 'script'`;
+- whether a second component model fragments the design system (DEVELOPMENT.md §9 "no competing component systems").
+
+## 5. Accessibility and keyboard navigation
+
+These follow UX.md (WCAG 2.2 AA, keyboard-only workflows, command palette for all essential actions, no colour-only status).
+
+1. **Landmarks.**
+   - Keep upstream roles and ids for every reused part (§3.3).
+   - Every part container gets an `aria-label`: "Top Bar", "Activity Bar", "Primary Side Bar", "Editor", "Panel", "AI Panel", "Status Bar". Use `role="none"` where upstream does, to avoid screen-reader chatter (`workbench.ts:329`) [V].
+   - New Axis controls are toolbar items with accessible names and `aria-haspopup` where they open menus.
+2. **Focus order.**
+   - The upstream F6 cycle is hard-coded as Editor → Panel → Auxiliary Bar → Status Bar → Activity Bar → Side Bar, **without the title bar** (`workbench/browser/actions/navigationActions.ts:308-324`; F6 at `:362-367`) [V].
+   - Axis registers `axis.action.focusNextPart`/`focusPreviousPart` on F6 and Shift+F6 with a higher weight. The cycle is Top Bar → Activity Bar → Side Bar → Editor → Panel → AI Panel → Status Bar, skipping hidden parts through `getVisibleNeighborPart`.
+3. **Commands for every action.** Each one is in the Command Palette with a category and is bindable:
+
+   | Command id | Notes |
+   |---|---|
+   | `axis.action.focusTopBar` | |
+   | `axis.action.switchWorkspace` | Delegates to the recent-workspace picker |
+   | `axis.action.showAgentActivity` | |
+   | `axis.action.selectModel` | M3: a placeholder that states "not configured", never a fake list |
+   | `axis.action.manageAccounts` | |
+   | `axis.action.toggleActivityRail` | |
+   | `axis.action.toggleAIPanel` | |
+   | `axis.action.focusAIPanel` | |
+   | `axis.action.resetLayout` | |
+
+   The upstream toggles stay valid: `workbench.action.toggleSidebarVisibility`, `togglePanel`, `toggleAuxiliaryBar` and `focusSideBar`.
+4. **Focus visibility and contrast.**
+   - `focusBorder` is `#9776F9` (5.6:1 on canvas, ≥3:1 on raised) or `#5823F6` on light.
+   - Control borders follow the §2.3 proposal.
+   - Status uses icon plus text plus colour. The agent indicator exposes its state in its label (for example "Agents: idle").
+5. **Motion.** No new animation over 200ms. Honour `workbench.reduceMotion` (`workbench.contribution.ts:771`) [V]. No loops in the activity indicator.
+6. **Zoom.** Grid minimum sizes are expressed in CSS px. Verify at 200% window zoom and at `window.zoomLevel` 3.
+7. **Verification.**
+   - Keyboard-only walkthrough of PRODUCT.md scenario 5 (open repo → edit → diagnostics → terminal tests → commit).
+   - VoiceOver (macOS) and Orca (Linux) part announcements.
+   - Upstream `test/smoke/src/areas/accessibility` suite.
+   - An automated contrast test over both theme JSONs (S1.4).
 
 ## 6. M3 implementation tasks
 

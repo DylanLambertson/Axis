@@ -1,0 +1,15 @@
+diff --git a/src/vs/workbench/contrib/extensions/browser/extensions.contribution.ts b/src/vs/workbench/contrib/extensions/browser/extensions.contribution.ts
+--- a/src/vs/workbench/contrib/extensions/browser/extensions.contribution.ts
++++ b/src/vs/workbench/contrib/extensions/browser/extensions.contribution.ts
+@@ -198,6 +198,11 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration)
+ 				type: 'boolean',
+ 				description: localize('extensionsIgnoreRecommendations', "When enabled, the notifications for extension recommendations will not be shown."),
+ 				default: false,
++				// --- Start Axis ---
++				// Application scope: a repository's .vscode/settings.json cannot turn recommendations back on,
++				// so opening a folder cannot start a gallery request (threat model privacy note).
++				scope: ConfigurationScope.APPLICATION,
++				// --- End Axis ---
+ 				agentsWindow: { default: true, readOnly: true },
+ 			},
+ 			'extensions.showRecommendationsOnlyOnDemand': {
