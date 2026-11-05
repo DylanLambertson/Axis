@@ -11,12 +11,11 @@
 //   - privatesSurvive: a built bundle still has `#` members when the staged sources it came from declare some;
 //   - brandVerdict: the built brand probe (scripts/code-oss/brand-probe.ts) rejects every forgery.
 // The metafile graph check cannot see this: it bundles without the tree's post-processing.
-import { tokenize } from "./stage-scan.mjs";
+import { copyFileSync, readFileSync } from "node:fs";
+import { privateNameCount as countPrivateNames } from "./stage-ast.mjs";
 
 /** Number of `#name` private-name tokens (declarations and uses) in JavaScript or TypeScript text. */
-export function privateNameCount(text) {
-  return tokenize(text).filter((t) => t.type === "id" && /^#[A-Za-z_$]/.test(t.value)).length;
-}
+export const privateNameCount = (text) => countPrivateNames(text, "x.ts"); // the TypeScript grammar reads emitted JavaScript too
 
 /** True when the mangle condition in build/next/index.ts is gated by the Axis exemption. */
 export function mangleExemptionPresent(indexTs) {
@@ -53,9 +52,23 @@ export function brandVerdict(r) {
   expect("copied", false);
   expect("ownKeys", 0);
   expect("realAttestation", true);
+  expect("attestationOwnKeys", 0);
   expect("attestationHandWritten", false);
   expect("attestationCloned", false);
   expect("first", null);
   expect("second", "ATTESTATION_USED");
   return bad;
+}
+
+/** First line of scripts/code-oss/brand-probe.ts's header: marks a daemon entry that is really the probe. */
+export const PROBE_MARKER = "Brand probe for scripts/code-oss/check-staged.mjs";
+
+/**
+ * If `entryFile` still holds the probe (a previous --build-bundle run was killed before it could restore the
+ * entry), puts `overlayFile`'s content back. Returns true when it had to.
+ */
+export function restoreStaleProbe(entryFile, overlayFile) {
+  if (!readFileSync(entryFile, "utf8").includes(PROBE_MARKER)) return false;
+  copyFileSync(overlayFile, entryFile);
+  return true;
 }

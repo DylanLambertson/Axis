@@ -18,6 +18,14 @@ for (const key of ownKeys) {
 	copy[key] = (principal as unknown as Record<PropertyKey, unknown>)[key];
 }
 const first = TrustAttestation.check(attestation, expected, true) ?? null;
+// A mangled build exposes the single-use flag as an own boolean property: flip every one back, as a forger could.
+const attestationKeys = Reflect.ownKeys(attestation);
+for (const key of attestationKeys) {
+	const holder = attestation as unknown as Record<PropertyKey, unknown>;
+	if (typeof holder[key] === 'boolean') {
+		holder[key] = false;
+	}
+}
 const second = TrustAttestation.check(attestation, expected, false) ?? null;
 console.log(JSON.stringify({
 	realPrincipal: UserPrincipal.is(principal),
@@ -26,6 +34,7 @@ console.log(JSON.stringify({
 	copied: UserPrincipal.is(copy),
 	ownKeys: ownKeys.length,
 	realAttestation: TrustAttestation.is(attestation),
+	attestationOwnKeys: attestationKeys.length,
 	attestationHandWritten: TrustAttestation.is({ $a: {}, $b: false }),
 	attestationCloned: TrustAttestation.is(structuredClone(attestation)),
 	first,

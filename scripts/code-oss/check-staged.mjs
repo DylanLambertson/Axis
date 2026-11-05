@@ -24,7 +24,7 @@ import { copyFileSync, readFileSync, rmSync, statSync, writeFileSync } from "nod
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DEFAULT_ENTRY, checkTree } from "./check-daemon-graph.mjs";
-import { brandVerdict, mangleExemptionPresent, privateNameCount, privatesSurvive } from "./check-privates.mjs";
+import { brandVerdict, mangleExemptionPresent, privateNameCount, privatesSurvive, restoreStaleProbe } from "./check-privates.mjs";
 import { STAGE_ROOT, verifyStaged } from "./stage-verify.mjs";
 
 export function typecheckAxis(tree) {
@@ -82,7 +82,10 @@ if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(
     if (buildBundle) {
       const out = "out-axis-bundle-check";
       const entryFile = join(tree, DEFAULT_ENTRY);
+      const overlayEntry = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "code-oss", "overlay", DEFAULT_ENTRY);
+      if (restoreStaleProbe(entryFile, overlayEntry)) console.log("   restored the daemon entry: a previous --build-bundle run was interrupted");
       const original = readFileSync(entryFile);
+      // The build blocks this process, so a kill cannot run cleanup: the next run restores a stale probe (above).
       rmSync(join(tree, out), { recursive: true, force: true });
       try {
         // The probe stands in for the daemon entry for the duration of one real minified build, then is restored.
