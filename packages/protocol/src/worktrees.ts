@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { z } from "zod";
 import { challengeReferenceSchema } from "./challenge.js";
+import { guarded } from "./guard.js";
 
 /**
  * `axis.worktrees/1` (docs/design/axis-agent-shell.md section 5.3).
@@ -13,7 +14,8 @@ import { challengeReferenceSchema } from "./challenge.js";
 export const WORKTREES_CONTRACT = "axis.worktrees" as const;
 export const WORKTREES_VERSION = 1 as const;
 
-const idSchema = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/);
+/** Journal id. Starts with a letter or digit: a leading `-` or `_` is how an option reaches a command line. */
+const idSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/);
 export const projectIdSchema = idSchema;
 export const workspaceIdSchema = idSchema;
 export const runIdSchema = idSchema;
@@ -196,48 +198,48 @@ export interface MethodSpec {
 
 export const worktreesMethods = {
   list: {
-    request: listRequestSchema,
-    response: listResponseSchema,
+    request: guarded(listRequestSchema),
+    response: guarded(listResponseSchema),
     sideEffect: "read",
     tier: 0,
     idempotency: "none",
     timeoutMs: 10_000,
   },
   status: {
-    request: statusRequestSchema,
-    response: statusResponseSchema,
+    request: guarded(statusRequestSchema),
+    response: guarded(statusResponseSchema),
     sideEffect: "read",
     tier: 0,
     idempotency: "none",
     timeoutMs: 15_000,
   },
   create: {
-    request: createRequestSchema,
-    response: createResponseSchema,
+    request: guarded(createRequestSchema),
+    response: guarded(createResponseSchema),
     sideEffect: "write",
     tier: 2,
     idempotency: "required",
     timeoutMs: 30_000,
   },
   finalise: {
-    request: finaliseRequestSchema,
-    response: finaliseResponseSchema,
+    request: guarded(finaliseRequestSchema),
+    response: guarded(finaliseResponseSchema),
     sideEffect: "write",
     tier: 2,
     idempotency: "required",
     timeoutMs: 30_000,
   },
   remove: {
-    request: removeRequestSchema,
-    response: removeResponseSchema,
+    request: guarded(removeRequestSchema),
+    response: guarded(removeResponseSchema),
     sideEffect: "destructive",
     tier: 4,
     idempotency: "required",
     timeoutMs: 30_000,
   },
   restoreFromRunBase: {
-    request: restoreFromRunBaseRequestSchema,
-    response: restoreFromRunBaseResponseSchema,
+    request: guarded(restoreFromRunBaseRequestSchema),
+    response: guarded(restoreFromRunBaseResponseSchema),
     sideEffect: "write",
     tier: 2,
     idempotency: "required",
