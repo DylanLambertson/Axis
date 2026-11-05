@@ -2,6 +2,7 @@
  *  Copyright (c) 2026 Dylan Lambertson. All rights reserved.
  *--------------------------------------------------------------------------------------------*/
 
+import { StringSHA1 } from '../../../../base/common/hash.js';
 import { posix, win32 } from '../../../../base/common/path.js';
 
 /*
@@ -19,7 +20,13 @@ export const MAX_GIT_METADATA_BYTES = 64 * 1024;
 /** Most linked worktrees listed per project (the contract's list limit). */
 export const MAX_DISCOVERED_WORKTREES = 1000;
 
+/** Longest branch name kept, as the contract's `WorktreeInfo.branch` (`max(256)`). */
+export const MAX_BRANCH_LENGTH = 256;
+
 const SHA = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
+
+/** Control, format (bidi overrides, zero-width) and line-separator characters, as the protocol's name rule. */
+const UNSAFE_TEXT = /[\p{Cc}\p{Cf}\u2028\u2029]/gu;
 
 export type GitHead =
 	| { readonly kind: 'ref'; readonly ref: string }
@@ -66,12 +73,24 @@ export function parsePackedRefs(content: string): Map<string, string> {
 	return refs;
 }
 
-/** The branch name of a `refs/heads/` ref, or `null` for anything else. */
+/**
+ * The branch name of a `refs/heads/` ref, or `null` for anything else. `HEAD`
+ * comes from repository metadata anyone can write, so control, format and bidi
+ * characters become U+FFFD (visible, never reordering the row) and the name is
+ * cut to the contract's 256 characters.
+ */
 export function branchOf(head: GitHead | undefined): string | null {
 	if (head?.kind !== 'ref' || !head.ref.startsWith('refs/heads/')) {
 		return null;
 	}
-	return head.ref.slice('refs/heads/'.length);
+	const name = head.ref.slice('refs/heads/'.length, 'refs/heads/'.length + MAX_BRANCH_LENGTH * 2);
+	return clampText(name.replace(UNSAFE_TEXT, '\uFFFD'), MAX_BRANCH_LENGTH);
+}
+
+/** Cuts text to at most `max` code points, ending with an ellipsis when it was longer. */
+export function clampText(value: string, max: number): string {
+	const points = [...value];
+	return points.length <= max ? value : points.slice(0, max - 1).join('') + '\u2026';
 }
 
 /** True for a ref name that is safe to turn into a path under the git dir. */
@@ -88,7 +107,11 @@ export function resolveMetadataPath(value: string, baseDir: string, windows: boo
 	return path.isAbsolute(value) ? path.normalize(value) : path.resolve(baseDir, value);
 }
 
-/** The worktree directory named by a `<common dir>/worktrees/<name>/gitdir` file (it names `<worktree>/.git`). */
+/**
+ * The worktree directory named by a `<common dir>/worktrees/<name>/gitdir` file
+ * (it names `<worktree>/.git`). The result is only a claim: the caller must
+ * check that `<worktree>/.git` points back (`linksBack`) before using it.
+ */
 export function worktreeDirFromGitdir(gitdirContent: string, entryDir: string, windows: boolean): string | undefined {
 	const line = firstLine(gitdirContent);
 	if (!line) {
@@ -99,16 +122,34 @@ export function worktreeDirFromGitdir(gitdirContent: string, entryDir: string, w
 	return path.basename(dotGit) === '.git' ? path.dirname(dotGit) : undefined;
 }
 
-/** A display name for a project or workspace that fits the contract's name rules. */
-export function displayName(value: string): string {
-	// Control, format (bidi, zero-width) and line-separator characters, as the protocol's name rule.
-	const cleaned = value.replace(/[\p{Cc}\p{Cf}\u2028\u2029]/gu, '').trim();
-	return (cleaned || 'unnamed').slice(0, 80);
+/**
+ * True when a worktree's `.git` file content (`gitdir: <path>`, relative to the
+ * worktree) names `adminDir`, the `<common dir>/worktrees/<name>` entry it was
+ * found from. Git links both ways; a `gitdir` that names a folder whose `.git`
+ * does not point back is not a worktree of this repository and is refused.
+ */
+export function linksBack(dotGitContent: string, worktreeDir: string, adminDir: string, windows: boolean): boolean {
+	const line = parseGitFile(dotGitContent);
+	if (!line) {
+		return false;
+	}
+	const path = windows ? win32 : posix;
+	const target = resolveMetadataPath(line, worktreeDir, windows);
+	const expected = path.normalize(adminDir);
+	return windows ? target.toLowerCase() === expected.toLowerCase() : target === expected;
 }
 
-/** A contract-shaped id (`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`) derived from a prefix and a stable hash. */
-export function stableId(prefix: string, hash: number): string {
-	return `${prefix}-${(hash >>> 0).toString(16).padStart(8, '0')}`;
+/** A display name for a project or workspace that fits the contract's name rules. */
+export function displayName(value: string): string {
+	const cleaned = value.replace(UNSAFE_TEXT, '').trim();
+	return clampText(cleaned || 'unnamed', 80);
+}
+
+/** A contract-shaped id (`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`): a prefix and 128 bits of the key's SHA-1. */
+export function stableId(prefix: string, key: string): string {
+	const sha = new StringSHA1();
+	sha.update(key);
+	return `${prefix}-${sha.digest().slice(0, 32)}`;
 }
 
 function firstLine(content: string): string {

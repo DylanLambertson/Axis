@@ -2,11 +2,13 @@
  *  Copyright (c) 2026 Dylan Lambertson. All rights reserved.
  *--------------------------------------------------------------------------------------------*/
 
+import { localize } from '../../../../nls.js';
 import { IAxisCliRun, IAxisProjectInfo, IAxisWorktreeInfo } from './axisWorkspaceData.js';
+import { clampText } from './worktreeDiscovery.js';
 
 /** One dashboard row: a worktree of a project, with its runs. */
 export interface IAxisWorkspaceEntry {
-	/** Stable UI key: the journal id, else a hash of the path. */
+	/** Stable UI key: the journal id, else a digest of the path. */
 	readonly key: string;
 	readonly project: IAxisProjectInfo;
 	readonly worktree: IAxisWorktreeInfo;
@@ -85,4 +87,27 @@ export function cycleIndex(current: number | undefined, delta: number, count: nu
 		return delta >= 0 ? 0 : count - 1;
 	}
 	return ((current + delta) % count + count) % count;
+}
+
+/** Longest branch text shown in a row, its tooltip and its label. */
+export const MAX_BRANCH_LABEL_LENGTH = 128;
+
+/** The branch as shown: the (already cleaned) name cut for display, or the detached commit. */
+export function branchLabel(entry: IAxisWorkspaceEntry): string {
+	if (entry.worktree.branch) {
+		return clampText(entry.worktree.branch, MAX_BRANCH_LABEL_LENGTH);
+	}
+	return entry.worktree.head
+		? localize('axis.branch.detached', "detached at {0}", entry.worktree.head.slice(0, 7))
+		: localize('axis.branch.none', "no commit");
+}
+
+/**
+ * Whether focusing a workspace opens a terminal in its worktree by itself
+ * (ADR 0004 Phase 0 gate item 1). Only in a trusted window: the path comes from
+ * repository metadata, and a shell starting there runs that folder's shell
+ * hooks. In Restricted Mode the user opens one with New Terminal.
+ */
+export function opensTerminalOnFocus(entry: IAxisWorkspaceEntry, windowTrusted: boolean, alreadyOpened: boolean): boolean {
+	return entry.worktree.present && entry.project.trusted && windowTrusted && !alreadyOpened;
 }

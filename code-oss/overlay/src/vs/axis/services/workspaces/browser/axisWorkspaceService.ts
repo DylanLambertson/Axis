@@ -36,6 +36,8 @@ export interface IAxisWorkspaceService {
 	readonly workspaces: readonly IAxisWorkspaceEntry[];
 	readonly focused: IAxisWorkspaceEntry | undefined;
 	readonly runsProvenance: AxisDataProvenance;
+	/** Worktree entries discovery refused to list, over all projects (their `.git` does not point back, or they are missing). */
+	readonly refusedWorktrees: number;
 
 	/** Focuses a workspace by key, or the dashboard (`undefined`). */
 	focus(key: string | undefined, options?: IAxisShowViewOptions): void;
@@ -60,6 +62,7 @@ export class AxisWorkspaceService extends Disposable implements IAxisWorkspaceSe
 	private _loaded = false;
 	private _projects: readonly IAxisProjectInfo[] = [];
 	private _workspaces: readonly IAxisWorkspaceEntry[] = [];
+	private _refusedWorktrees = 0;
 	private _focusedKey: string | undefined;
 	private loading: Promise<void> | undefined;
 	private reloadQueued = false;
@@ -81,6 +84,7 @@ export class AxisWorkspaceService extends Disposable implements IAxisWorkspaceSe
 	get projects(): readonly IAxisProjectInfo[] { return this._projects; }
 	get workspaces(): readonly IAxisWorkspaceEntry[] { return this._workspaces; }
 	get runsProvenance(): AxisDataProvenance { return this.source.runsProvenance; }
+	get refusedWorktrees(): number { return this._refusedWorktrees; }
 
 	get focused(): IAxisWorkspaceEntry | undefined {
 		return this._focusedKey ? this._workspaces.find(w => w.key === this._focusedKey) : undefined;
@@ -136,7 +140,9 @@ export class AxisWorkspaceService extends Disposable implements IAxisWorkspaceSe
 			const projects = await this.source.listProjects();
 			const runs = await this.source.listCliRuns();
 			const entries: IAxisWorkspaceEntry[] = [];
+			let refused = 0;
 			for (const project of projects) {
+				refused += await this.source.countRefusedWorktrees(project.id);
 				const localCheckout = await this.source.getLocalCheckout(project.id);
 				for (const worktree of await this.source.listWorktrees(project.id)) {
 					const key = workspaceKeyOf(worktree);
@@ -158,6 +164,7 @@ export class AxisWorkspaceService extends Disposable implements IAxisWorkspaceSe
 			}
 			const hadFocus = this.focused;
 			this._projects = projects;
+			this._refusedWorktrees = refused;
 			this._workspaces = orderEntries(entries, projects.map(p => p.id));
 			this._loaded = true;
 			this._onDidChangeWorkspaces.fire();

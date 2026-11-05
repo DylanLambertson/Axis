@@ -3,7 +3,6 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { Emitter } from '../../../../base/common/event.js';
-import { hash } from '../../../../base/common/hash.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { Schemas } from '../../../../base/common/network.js';
 import { basename, posix, win32 } from '../../../../base/common/path.js';
@@ -15,7 +14,7 @@ import { IWorkspaceContextService } from '../../../../platform/workspace/common/
 import { IWorkspaceTrustManagementService } from '../../../../platform/workspace/common/workspaceTrust.js';
 import { AxisDataProvenance, IAxisCliRun, IAxisProjectInfo, IAxisWorkspaceDataSource, IAxisWorktreeInfo } from '../common/axisWorkspaceData.js';
 import { AXIS_SAMPLE_RUNS_SETTING, sampleCliRuns } from '../common/axisSampleRuns.js';
-import { branchOf, displayName, GitHead, isSafeRefName, MAX_DISCOVERED_WORKTREES, MAX_GIT_METADATA_BYTES, parseGitFile, parseHead, parseLooseRef, parsePackedRefs, resolveMetadataPath, stableId, worktreeDirFromGitdir } from '../common/worktreeDiscovery.js';
+import { branchOf, displayName, GitHead, isSafeRefName, linksBack, MAX_DISCOVERED_WORKTREES, MAX_GIT_METADATA_BYTES, parseGitFile, parseHead, parseLooseRef, parsePackedRefs, resolveMetadataPath, stableId, worktreeDirFromGitdir } from '../common/worktreeDiscovery.js';
 
 interface IDiscoveredProject {
 	readonly info: IAxisProjectInfo;
@@ -23,9 +22,16 @@ interface IDiscoveredProject {
 	readonly localCheckout: string | undefined;
 }
 
-/** The workspace key the UI uses for a worktree: its journal id, else a stable hash of its path. */
+/** The workspace key the UI uses for a worktree: its journal id, else a stable digest of its path. */
 export function workspaceKeyOf(worktree: IAxisWorktreeInfo): string {
-	return worktree.id ?? stableId('w', hash(worktree.path));
+	return worktree.id ?? stableId('w', worktree.path);
+}
+
+/** A worktree listed by discovery: its folder's `.git` points back to the entry it was found from. */
+interface IDiscoveredWorktrees {
+	readonly worktrees: readonly IAxisWorktreeInfo[];
+	/** Entries under `<common dir>/worktrees` that were not listed: missing, or not linked back. */
+	readonly refused: number;
 }
 
 /**
@@ -41,7 +47,7 @@ export class AxisDiscoveryDataSource extends Disposable implements IAxisWorkspac
 	readonly onDidChange = this._onDidChange.event;
 
 	private projects: Promise<Map<string, IDiscoveredProject>> | undefined;
-	private worktrees = new Map<string, Promise<readonly IAxisWorktreeInfo[]>>();
+	private worktrees = new Map<string, Promise<IDiscoveredWorktrees>>();
 
 	constructor(
 		@IFileService private readonly fileService: IFileService,
@@ -83,7 +89,16 @@ export class AxisDiscoveryDataSource extends Disposable implements IAxisWorkspac
 		return (await this.discoverProjects()).get(projectId)?.localCheckout;
 	}
 
-	listWorktrees(projectId: string): Promise<readonly IAxisWorktreeInfo[]> {
+	async listWorktrees(projectId: string): Promise<readonly IAxisWorktreeInfo[]> {
+		return (await this.discovered(projectId)).worktrees;
+	}
+
+	/** How many worktree entries of a project were refused (shown as a fixed message, never as rows). */
+	async countRefusedWorktrees(projectId: string): Promise<number> {
+		return (await this.discovered(projectId)).refused;
+	}
+
+	private discovered(projectId: string): Promise<IDiscoveredWorktrees> {
 		let result = this.worktrees.get(projectId);
 		if (!result) {
 			result = this.discoverWorktrees(projectId);
@@ -121,7 +136,7 @@ export class AxisDiscoveryDataSource extends Disposable implements IAxisWorkspac
 					if (!repo) {
 						continue;
 					}
-					const id = stableId('p', hash(repo.commonDir));
+					const id = stableId('p', repo.commonDir);
 					if (!projects.has(id)) {
 						const name = displayName(basename(repo.localCheckout ?? folder.uri.fsPath));
 						projects.set(id, { info: { id, name, trusted }, ...repo });
@@ -133,12 +148,17 @@ export class AxisDiscoveryDataSource extends Disposable implements IAxisWorkspac
 		return this.projects;
 	}
 
-	/** Finds the common git dir and the local checkout of a folder, following a `.git` file once. */
+	/**
+	 * Finds the common git dir and the local checkout of a folder, following a
+	 * `.git` file once. Every path read from metadata is checked against git's
+	 * own two-way links before it is used, so a repository cannot point the
+	 * dashboard, the Files tree or a terminal at an unrelated folder.
+	 */
 	private async findRepository(root: string): Promise<{ commonDir: string; localCheckout: string | undefined } | undefined> {
 		const path = isWindows ? win32 : posix;
 		const dotGit = path.join(root, '.git');
 		const stat = await this.statOrUndefined(dotGit);
-		if (!stat) {
+		if (!stat || stat.isSymbolicLink) {
 			return undefined;
 		}
 		if (stat.isDirectory) {
@@ -150,16 +170,25 @@ export class AxisDiscoveryDataSource extends Disposable implements IAxisWorkspac
 		}
 		const gitDir = resolveMetadataPath(gitDirLine, root, isWindows);
 		const commonDirLine = (await this.readText(path.join(gitDir, 'commondir')))?.split('\n')[0].trim();
-		const commonDir = commonDirLine ? resolveMetadataPath(commonDirLine, gitDir, isWindows) : gitDir;
-		// A linked worktree (or a submodule): the local checkout is the common dir's work tree when it is `<checkout>/.git`.
+		if (!commonDirLine) {
+			// A separate git dir or a submodule: its work tree is the folder itself.
+			return { commonDir: gitDir, localCheckout: root };
+		}
+		// A linked worktree: git keeps its admin dir at `<common dir>/worktrees/<name>`, whose `gitdir` names this folder's `.git`.
+		const commonDir = resolveMetadataPath(commonDirLine, gitDir, isWindows);
+		const adminParent = path.join(commonDir, 'worktrees');
+		const gitdirBack = resolveMetadataPath((await this.readText(path.join(gitDir, 'gitdir')))?.split('\n')[0].trim() || '.', gitDir, isWindows);
+		if (!samePath(path.dirname(gitDir), adminParent) || !samePath(gitdirBack, dotGit)) {
+			return undefined;
+		}
 		const localCheckout = path.basename(commonDir) === '.git' ? path.dirname(commonDir) : undefined;
 		return { commonDir, localCheckout };
 	}
 
-	private async discoverWorktrees(projectId: string): Promise<readonly IAxisWorktreeInfo[]> {
+	private async discoverWorktrees(projectId: string): Promise<IDiscoveredWorktrees> {
 		const project = (await this.discoverProjects()).get(projectId);
 		if (!project) {
-			return [];
+			return { worktrees: [], refused: 0 };
 		}
 		const path = isWindows ? win32 : posix;
 		const packed = parsePackedRefs(await this.readText(path.join(project.commonDir, 'packed-refs')) ?? '');
@@ -173,17 +202,29 @@ export class AxisDiscoveryDataSource extends Disposable implements IAxisWorkspac
 		const worktreesDir = path.join(project.commonDir, 'worktrees');
 		const listing = await this.fileService.resolve(URI.file(worktreesDir)).catch(() => undefined);
 		const entries = (listing?.children ?? []).filter(child => child.isDirectory).sort((a, b) => a.name.localeCompare(b.name)).slice(0, MAX_DISCOVERED_WORKTREES);
+		let refused = 0;
 		for (const entry of entries) {
 			const entryDir = entry.resource.fsPath;
 			const worktreeDir = worktreeDirFromGitdir(await this.readText(path.join(entryDir, 'gitdir')) ?? '', entryDir, isWindows);
-			if (!worktreeDir) {
-				continue; // missing or malformed `gitdir`: not a worktree git can use either
+			if (!worktreeDir || !(await this.isLinkedBack(worktreeDir, entryDir))) {
+				refused++; // missing, malformed, or naming a folder that is not this worktree: never listed, statted or opened
+				continue;
 			}
 			const head = parseHead(await this.readText(path.join(entryDir, 'HEAD')) ?? '');
 			const locked = !!(await this.statOrUndefined(path.join(entryDir, 'locked')));
 			result.push(await this.toInfo(projectId, worktreeDir, head, locked, project.commonDir, packed));
 		}
-		return result;
+		return { worktrees: result, refused };
+	}
+
+	/** The worktree folder and its `.git` file are real (no symbolic link) and the `.git` file names `adminDir`. */
+	private async isLinkedBack(worktreeDir: string, adminDir: string): Promise<boolean> {
+		const dotGit = (isWindows ? win32 : posix).join(worktreeDir, '.git');
+		const [dirStat, fileStat] = await Promise.all([this.statOrUndefined(worktreeDir), this.statOrUndefined(dotGit)]);
+		if (!dirStat?.isDirectory || dirStat.isSymbolicLink || !fileStat?.isFile || fileStat.isSymbolicLink) {
+			return false;
+		}
+		return linksBack(await this.readText(dotGit) ?? '', worktreeDir, adminDir, isWindows);
 	}
 
 	private async toInfo(projectId: string, worktreeDir: string, head: GitHead | undefined, locked: boolean, commonDir: string, packed: Map<string, string>): Promise<IAxisWorktreeInfo> {
@@ -229,4 +270,8 @@ export class AxisDiscoveryDataSource extends Disposable implements IAxisWorkspac
 			return undefined;
 		}
 	}
+}
+
+function samePath(a: string, b: string): boolean {
+	return isWindows ? win32.normalize(a).toLowerCase() === win32.normalize(b).toLowerCase() : posix.normalize(a) === posix.normalize(b);
 }

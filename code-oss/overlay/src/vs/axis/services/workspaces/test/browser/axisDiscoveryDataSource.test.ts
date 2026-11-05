@@ -18,6 +18,7 @@ import { TestContextService, TestWorkspaceTrustManagementService } from '../../.
 import { AxisDiscoveryDataSource, workspaceKeyOf } from '../../browser/axisDiscoveryDataSource.js';
 import { AXIS_SAMPLE_RUNS_SETTING } from '../../common/axisSampleRuns.js';
 import { AXIS_ID_PATTERN } from '../../common/axisWorkspaceData.js';
+import { branchLabel, MAX_BRANCH_LABEL_LENGTH } from '../../common/axisWorkspaceModel.js';
 
 const SHA_A = 'a'.repeat(40);
 const SHA_B = 'b'.repeat(40);
@@ -76,7 +77,7 @@ const SHA_B = 'b'.repeat(40);
 		assert.deepStrictEqual(worktrees, [{ origin: 'external', projectId: project.id, branch: 'main', head: SHA_A, path: '/repo', locked: false, present: true }]);
 	});
 
-	test('three linked worktrees: branches, packed refs, a detached HEAD, a lock and a missing folder', async () => {
+	test('three linked worktrees: branches, packed refs, a detached HEAD and a lock; a missing folder is refused', async () => {
 		await mainRepo('/repo');
 		await write('/repo/.git/packed-refs', `# pack-refs with: peeled fully-peeled sorted\n${SHA_B} refs/heads/feature\n^${SHA_A}\n`);
 		await linkedWorktree('/repo', 'feature', '/wt/feature', 'ref: refs/heads/feature\n');
@@ -88,12 +89,11 @@ const SHA_B = 'b'.repeat(40);
 		const source = createSource('/repo');
 		const [project] = await source.listProjects();
 		const byPath = new Map((await source.listWorktrees(project.id)).map(w => [w.path, w]));
-		assert.deepStrictEqual([...byPath.keys()], ['/repo', '/wt/detached', '/wt/feature', '/wt/gone']);
+		assert.deepStrictEqual([...byPath.keys()], ['/repo', '/wt/detached', '/wt/feature']);
 		assert.deepStrictEqual(byPath.get('/wt/feature'), { origin: 'external', projectId: project.id, branch: 'feature', head: SHA_B, path: '/wt/feature', locked: true, present: true });
 		assert.strictEqual(byPath.get('/wt/detached')?.branch, null);
 		assert.strictEqual(byPath.get('/wt/detached')?.head, SHA_B);
-		assert.strictEqual(byPath.get('/wt/gone')?.present, false);
-		assert.strictEqual(byPath.get('/wt/gone')?.head, null, 'an unknown branch has no head');
+		assert.strictEqual(await source.countRefusedWorktrees(project.id), 1, 'the missing folder cannot be checked, so it is not listed');
 	});
 
 	test('an entry with a missing or malformed gitdir is skipped', async () => {
@@ -103,6 +103,37 @@ const SHA_B = 'b'.repeat(40);
 		const source = createSource('/repo');
 		const [project] = await source.listProjects();
 		assert.deepStrictEqual((await source.listWorktrees(project.id)).map(w => w.path), ['/repo']);
+		assert.strictEqual(await source.countRefusedWorktrees(project.id), 2);
+	});
+
+	test('a gitdir naming a folder that does not point back is refused, whatever is there', async () => {
+		await mainRepo('/repo');
+		await mainRepo('/home/user'); // an unrelated repository: its .git is a directory
+		await write('/repo/.git/worktrees/home/gitdir', '/home/user/.git\n');
+		await write('/repo/.git/worktrees/home/HEAD', 'ref: refs/heads/main\n');
+		await write('/elsewhere/.git', 'gitdir: /other/.git/worktrees/x\n'); // a .git file, but for another repository
+		await write('/repo/.git/worktrees/other/gitdir', '/elsewhere/.git\n');
+		await write('/repo/.git/worktrees/rel/gitdir', '../../../../home/user/.git\n'); // `..` out of the repository
+		const source = createSource('/repo');
+		const [project] = await source.listProjects();
+		assert.deepStrictEqual((await source.listWorktrees(project.id)).map(w => w.path), ['/repo']);
+		assert.strictEqual(await source.countRefusedWorktrees(project.id), 3);
+	});
+
+	test('an opened folder whose .git file claims an unrelated common dir is not a project', async () => {
+		await mainRepo('/home/user');
+		await write('/clone/.git', 'gitdir: meta/a\n');
+		await write('/clone/meta/a/commondir', '/home/user/.git\n');
+		await write('/clone/meta/a/gitdir', '/clone/.git\n'); // points back, but the admin dir is not under the common dir
+		assert.deepStrictEqual(await createSource('/clone').listProjects(), []);
+	});
+
+	test('a folder with a separate git dir is its own local checkout', async () => {
+		await write('/sep/.git', 'gitdir: /store/sep.git\n');
+		await write('/store/sep.git/HEAD', 'ref: refs/heads/main\n');
+		const source = createSource('/sep');
+		const [project] = await source.listProjects();
+		assert.strictEqual(await source.getLocalCheckout(project.id), '/sep');
 	});
 
 	test('opening a linked worktree finds the same project and its local checkout', async () => {
@@ -115,8 +146,21 @@ const SHA_B = 'b'.repeat(40);
 		assert.strictEqual(await source.getLocalCheckout(fromWorktree[0].id), '/repo');
 	});
 
+	test('a hostile branch name reaches the dashboard cleaned and bounded', async () => {
+		await mainRepo('/repo', `ref: refs/heads/main\u202E${'b'.repeat(60 * 1024)}\n`);
+		const source = createSource('/repo');
+		const [project] = await source.listProjects();
+		const [worktree] = await source.listWorktrees(project.id);
+		assert.ok(worktree.branch!.startsWith('main\uFFFDbbb'));
+		assert.strictEqual([...worktree.branch!].length, 256, 'the contract limit');
+		const label = branchLabel({ key: 'k', label: 'repo', project, worktree, isLocalCheckout: true, runs: [], attention: undefined });
+		assert.strictEqual([...label].length, MAX_BRANCH_LABEL_LENGTH);
+	});
+
 	test('a ref name that would leave the git directory is not read', async () => {
 		await mainRepo('/repo', 'ref: refs/heads/../../../etc/x\n');
+		// /repo/.git + refs/heads/../../../etc/x: what an unguarded join of that ref would read.
+		await write('/repo/etc/x', `${SHA_B}\n`);
 		const source = createSource('/repo');
 		const [project] = await source.listProjects();
 		const [checkout] = await source.listWorktrees(project.id);

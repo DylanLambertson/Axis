@@ -5,8 +5,8 @@
 import { Event } from '../../../../base/common/event.js';
 
 /*
- * Renderer copies of the daemon contract shapes (packages/protocol on
- * origin/feat/protocol-contracts-p1: `axis.projects/1` ProjectInfo,
+ * Renderer copies of the daemon contract shapes (packages/protocol/src/
+ * {projects,worktrees,cliRuns}.ts on main: `axis.projects/1` ProjectInfo,
  * `axis.worktrees/1` WorktreeInfo, `axis.cli-runs/1` CliRun). The Code OSS
  * tree cannot import `@axis/protocol` until the staging work (ADR 0005 D3)
  * lands, so the fields are copied here, field for field, and a data source

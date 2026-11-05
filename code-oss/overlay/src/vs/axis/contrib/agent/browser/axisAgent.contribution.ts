@@ -4,6 +4,7 @@
 
 import './media/axisAgent.css';
 import { $, Dimension } from '../../../../base/browser/dom.js';
+import { disposableTimeout } from '../../../../base/common/async.js';
 import { Event } from '../../../../base/common/event.js';
 import { KeyCode, KeyMod } from '../../../../base/common/keyCodes.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
@@ -13,12 +14,13 @@ import { ConfigurationScope, Extensions as ConfigurationExtensions, IConfigurati
 import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { KeybindingWeight } from '../../../../platform/keybinding/common/keybindingsRegistry.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
+import { IWorkspaceTrustManagementService } from '../../../../platform/workspace/common/workspaceTrust.js';
 import { registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { IAxisAgentPartContent, IAxisWorkbenchLayoutService } from '../../../browser/axisLayoutService.js';
 import { IAxisViewService } from '../../../services/view/browser/axisViewService.js';
 import { IAxisWorkspaceService } from '../../../services/workspaces/browser/axisWorkspaceService.js';
 import { AXIS_SAMPLE_RUNS_SETTING } from '../../../services/workspaces/common/axisSampleRuns.js';
-import { IAxisWorkspaceEntry } from '../../../services/workspaces/common/axisWorkspaceModel.js';
+import { IAxisWorkspaceEntry, opensTerminalOnFocus } from '../../../services/workspaces/common/axisWorkspaceModel.js';
 import { AxisDashboardView } from './dashboardView.js';
 import { AxisWorkspaceTerminals } from './workspaceTerminals.js';
 import { AxisWorkspaceView } from './workspaceView.js';
@@ -54,6 +56,7 @@ class AxisAgentContent extends Disposable implements IAxisAgentPartContent {
 		@IInstantiationService instantiationService: IInstantiationService,
 		@IAxisWorkspaceService private readonly workspaceService: IAxisWorkspaceService,
 		@IAxisWorkbenchLayoutService private readonly layoutService: IAxisWorkbenchLayoutService,
+		@IWorkspaceTrustManagementService private readonly workspaceTrustService: IWorkspaceTrustManagementService,
 	) {
 		super();
 		this.terminals = this._register(instantiationService.createInstance(AxisWorkspaceTerminals));
@@ -68,7 +71,7 @@ class AxisAgentContent extends Disposable implements IAxisAgentPartContent {
 		this.update(this.workspaceService.focused);
 		this.layoutService.whenRestored.then(() => {
 			this.focusIfLost();
-			setTimeout(() => this.focusIfLost(), 0); // after upstream's own post-restore focus
+			this._register(disposableTimeout(() => this.focusIfLost(), 0)); // after upstream's own post-restore focus
 		});
 	}
 
@@ -99,8 +102,8 @@ class AxisAgentContent extends Disposable implements IAxisAgentPartContent {
 			this.element.replaceChildren(entry ? this.workspaceView.element : this.dashboard.element);
 		}
 		this.terminals.setFocused(entry).then(() => {
-			// A terminal bound to the worktree on first focus (ADR 0004 Phase 0 gate item 1).
-			if (entry && entry.worktree.present && !this.terminalsCreatedFor.has(entry.key) && this.terminals.count(entry.key) === 0) {
+			// A terminal bound to the worktree on first focus, in a trusted window only.
+			if (entry && opensTerminalOnFocus(entry, this.workspaceTrustService.isWorkspaceTrusted(), this.terminalsCreatedFor.has(entry.key) || this.terminals.count(entry.key) > 0)) {
 				this.terminalsCreatedFor.add(entry.key);
 				this.terminals.create(entry, { focus: false });
 			}

@@ -6,8 +6,8 @@ import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { sampleCliRuns } from '../../common/axisSampleRuns.js';
 import { AXIS_ID_PATTERN, IAxisWorktreeInfo } from '../../common/axisWorkspaceData.js';
-import { attentionOf, cycleIndex, IAxisWorkspaceEntry, orderEntries, rowStateOf } from '../../common/axisWorkspaceModel.js';
-import { branchOf, displayName, isSafeRefName, parseGitFile, parseHead, parseLooseRef, parsePackedRefs, resolveMetadataPath, stableId, worktreeDirFromGitdir } from '../../common/worktreeDiscovery.js';
+import { attentionOf, branchLabel, cycleIndex, IAxisWorkspaceEntry, MAX_BRANCH_LABEL_LENGTH, opensTerminalOnFocus, orderEntries, rowStateOf } from '../../common/axisWorkspaceModel.js';
+import { branchOf, clampText, displayName, isSafeRefName, linksBack, MAX_BRANCH_LENGTH, parseGitFile, parseHead, parseLooseRef, parsePackedRefs, resolveMetadataPath, stableId, worktreeDirFromGitdir } from '../../common/worktreeDiscovery.js';
 
 const SHA = '0123456789abcdef0123456789abcdef01234567';
 
@@ -41,6 +41,26 @@ suite('Axis worktree discovery parsers', () => {
 		assert.strictEqual(branchOf({ kind: 'detached', sha: SHA }), null);
 	});
 
+	test('branch names from HEAD are cleaned and bounded', () => {
+		const ref = (name: string) => ({ kind: 'ref' as const, ref: `refs/heads/${name}` });
+		assert.strictEqual(branchOf(ref('main\u202Eniam')), 'main\uFFFDniam', 'a bidi override is replaced, visibly');
+		assert.strictEqual(branchOf(ref('a\u200Bb\u0007c\u2028d')), 'a\uFFFDb\uFFFDc\uFFFDd');
+		assert.strictEqual(parseHead(`ref: refs/heads/x\u202Ey`)?.kind, 'ref', 'parsing keeps the ref; cleaning is for display');
+		const huge = branchOf(ref('b'.repeat(64 * 1024)))!;
+		assert.strictEqual([...huge].length, MAX_BRANCH_LENGTH);
+		assert.ok(huge.endsWith('\u2026'));
+		assert.strictEqual([...branchLabel(entry('k', 'x', { worktree: { ...worktree('/w/x'), branch: huge } }))].length, MAX_BRANCH_LABEL_LENGTH);
+		assert.strictEqual(clampText('\u{1F600}'.repeat(5), 3), '\u{1F600}\u{1F600}\u2026', 'cut on code points, never inside a pair');
+	});
+
+	test('a worktree is accepted only when its .git file points back to the entry', () => {
+		assert.ok(linksBack('gitdir: /r/.git/worktrees/a\n', '/wt/a', '/r/.git/worktrees/a', false));
+		assert.ok(linksBack('gitdir: ../../r/.git/worktrees/a\n', '/wt/a', '/r/.git/worktrees/a', false), 'relative links (worktree.useRelativePaths)');
+		assert.ok(!linksBack('gitdir: /r/.git/worktrees/b\n', '/wt/a', '/r/.git/worktrees/a', false));
+		assert.ok(!linksBack('', '/home/user', '/r/.git/worktrees/a', false));
+		assert.ok(linksBack('gitdir: C:\\R\\.git\\worktrees\\a', 'D:\\wt\\a', 'c:\\r\\.git\\worktrees\\a', true));
+	});
+
 	test('ref names that would escape the git directory are refused', () => {
 		assert.ok(isSafeRefName('refs/heads/feat/x-1'));
 		for (const bad of ['refs/heads/../../x', 'refs/heads//x', 'refs/heads/x.lock', 'HEAD', 'refs/heads/a b', 'refs/./x']) {
@@ -61,15 +81,28 @@ suite('Axis worktree discovery parsers', () => {
 		assert.strictEqual(displayName('  fix\u200b-login\u0007 '), 'fix-login');
 		assert.strictEqual(displayName(''), 'unnamed');
 		assert.strictEqual(displayName('x'.repeat(200)).length, 80);
-		for (const value of [0, 1, -1, 0xffffffff, 123456789]) {
+		for (const value of ['', '/w/a', 'x'.repeat(5000), '\u202E']) {
 			assert.match(stableId('w', value), AXIS_ID_PATTERN);
 		}
+		assert.notStrictEqual(stableId('w', '/w/a'), stableId('w', '/w/b'));
+		assert.strictEqual(stableId('w', '/w/a').length, 2 + 32, '128 bits of digest');
 	});
 });
 
 suite('Axis dashboard model', () => {
 
 	ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('a terminal opens by itself only in a trusted window, once, for a present worktree', () => {
+		const trusted = entry('k', 'x');
+		const untrustedProject = entry('k', 'x', { project: { id: 'p-1', name: 'repo', trusted: false } });
+		const missing = entry('k', 'x', { worktree: worktree('/w/x', false) });
+		assert.ok(opensTerminalOnFocus(trusted, true, false));
+		assert.ok(!opensTerminalOnFocus(trusted, false, false), 'Restricted Mode');
+		assert.ok(!opensTerminalOnFocus(untrustedProject, true, false), 'discovered while untrusted');
+		assert.ok(!opensTerminalOnFocus(trusted, true, true), 'already opened once');
+		assert.ok(!opensTerminalOnFocus(missing, true, false));
+	});
 
 	test('rows that need the user sort first, then the local checkout, then by name', () => {
 		const runs = sampleCliRuns(['k-fail'], 0).map(r => ({ ...r, status: 'failed' as const, state: 'FAILED' as const }));

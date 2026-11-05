@@ -9,8 +9,8 @@ import { localize } from '../../../../nls.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { IAxisViewService } from '../../../services/view/browser/axisViewService.js';
 import { IAxisWorkspaceService } from '../../../services/workspaces/browser/axisWorkspaceService.js';
-import { IAxisWorkspaceEntry, rowStateOf } from '../../../services/workspaces/common/axisWorkspaceModel.js';
-import { branchLabel, rowStateLabel, runLabel } from './dashboardView.js';
+import { branchLabel, IAxisWorkspaceEntry, rowStateOf } from '../../../services/workspaces/common/axisWorkspaceModel.js';
+import { rowStateLabel, runLabel } from './dashboardView.js';
 import { AxisFileTree } from './fileTree.js';
 import { AxisWorkspaceTerminals } from './workspaceTerminals.js';
 

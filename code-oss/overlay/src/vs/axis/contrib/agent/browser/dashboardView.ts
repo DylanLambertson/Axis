@@ -10,7 +10,7 @@ import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.j
 import { localize } from '../../../../nls.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { IAxisCliRun } from '../../../services/workspaces/common/axisWorkspaceData.js';
-import { AxisRowState, IAxisWorkspaceEntry, rowStateOf } from '../../../services/workspaces/common/axisWorkspaceModel.js';
+import { AxisRowState, branchLabel, IAxisWorkspaceEntry, rowStateOf } from '../../../services/workspaces/common/axisWorkspaceModel.js';
 import { IAxisWorkspaceService } from '../../../services/workspaces/browser/axisWorkspaceService.js';
 
 /** Terminal count per workspace key, from `AxisWorkspaceTerminals`. */
@@ -38,15 +38,6 @@ export function runLabel(run: IAxisCliRun): string {
 		case 'quiet': return localize('axis.run.quiet', "{0}: quiet (may be waiting for input)", agent);
 		default: return `${agent}: ${run.status}`;
 	}
-}
-
-export function branchLabel(entry: IAxisWorkspaceEntry): string {
-	if (entry.worktree.branch) {
-		return entry.worktree.branch;
-	}
-	return entry.worktree.head
-		? localize('axis.branch.detached', "detached at {0}", entry.worktree.head.slice(0, 7))
-		: localize('axis.branch.none', "no commit");
 }
 
 /**
@@ -98,6 +89,14 @@ export class AxisDashboardView extends Disposable {
 		note.textContent = this.workspaceService.runsProvenance === 'sample'
 			? localize('axis.dashboard.sampleRuns', "Agent runs are sample data (axis.preview.sampleRuns); the Axis service is not running.")
 			: localize('axis.dashboard.noService', "Read from the worktrees on disk. The Axis service is not running, so no agent runs are shown.");
+		const refused = this.workspaceService.refusedWorktrees;
+		if (refused) {
+			const warning = append(this.header, $('span.axis-dashboard-note.axis-dashboard-refused'));
+			warning.setAttribute('role', 'note');
+			warning.textContent = refused === 1
+				? localize('axis.dashboard.refusedOne', "1 worktree entry is not listed: its folder is missing, or its .git file does not point back to this repository.")
+				: localize('axis.dashboard.refused', "{0} worktree entries are not listed: their folders are missing, or their .git files do not point back to this repository.", refused);
+		}
 		const refresh = append(this.header, $<HTMLButtonElement>('button.axis-button'));
 		refresh.type = 'button';
 		refresh.textContent = localize('axis.dashboard.refresh', "Refresh");
