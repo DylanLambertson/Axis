@@ -24,7 +24,7 @@
 //   - the staged output is re-read from disk and checked again (scripts/code-oss/stage-verify.mjs).
 // Deterministic: output depends on file contents only (no time, user, umask or path), so the same input gives
 // the same tree hash. Idempotent: the output directory is deleted and rebuilt.
-import { chmodSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, posix, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -54,6 +54,8 @@ const GENERATED = "Staged by code-oss/hooks/post-apply.d/20-stage-axis-packages.
 const MAX_TOTAL_BYTES = 32 * 1024 * 1024;
 const DEFAULT_FUTURE_SKEW_MS = 5 * 60 * 1000;
 const PACKAGE_DIR_RE = /^[a-z][a-z0-9-]*$/;
+const RESERVED_PACKAGE_NAMES = new Set(["vendor"]); // the staged namespace of third-party code
+export const TMP_ROOT = `${STAGE_ROOT}.staging`;
 
 const decode = (data, what) => {
   try {
@@ -66,26 +68,23 @@ const decode = (data, what) => {
   }
 };
 
-/** Files of zod reachable from index.js by relative imports, plus their .d.ts twins, package.json and the licence. */
+/**
+ * Files of zod reachable from index.js by relative imports, plus their .d.ts twins, package.json and the licence.
+ * The whole zod directory is listed first with `walkFiles`, which refuses a link or odd entry anywhere in it, and
+ * only listed files are read (hard links are refused by `readRegular`).
+ */
 export function zodClosure(zodDir, read = (rel) => readRegular(join(zodDir, rel), MAX_FILE_BYTES).data) {
+  const listing = new Set([...walkFiles(zodDir)].map((f) => f.rel));
   const wanted = new Set(["package.json", "LICENSE"]);
   const queue = ["index.js"];
-  const exists = (rel) => {
-    try {
-      read(rel);
-      return true;
-    } catch (e) {
-      if (e instanceof StageError || e.code === "ENOENT") return false;
-      throw e;
-    }
-  };
   while (queue.length > 0) {
     const f = queue.pop();
     if (wanted.has(f)) continue;
     if (f.startsWith("../") || f === ".." || posix.isAbsolute(f)) fail(`zod file import leaves the package: ${f}`);
+    if (!listing.has(f)) fail(`zod file ${f} is imported but missing from node_modules/zod`);
     wanted.add(f);
     const dts = f.replace(/\.js$/, ".d.ts");
-    if (dts !== f && exists(dts)) {
+    if (dts !== f && listing.has(dts)) {
       wanted.add(dts);
       for (const spec of importSpecifiers(decode(read(dts), dts), { code: true })) {
         if (spec.startsWith(".")) queue.push(posix.normalize(posix.join(posix.dirname(dts), spec)).replace(/\.d\.ts$/, ".js"));
@@ -96,7 +95,7 @@ export function zodClosure(zodDir, read = (rel) => readRegular(join(zodDir, rel)
       queue.push(posix.normalize(posix.join(posix.dirname(f), spec)));
     }
   }
-  return [...wanted].filter(exists).sort();
+  return [...wanted].filter((f) => listing.has(f)).sort();
 }
 
 /** Subpaths a package exports that map to a staged src file: `{ ".": "index", "./daemon-principal": "daemon-principal" }`. */
@@ -114,6 +113,8 @@ function stageableExports(name, pkgJson, srcFiles) {
 /** The staged directory, if present, must be ours: a real directory holding a manifest and only files it lists. */
 function checkExistingOutput(tree, stageRoot) {
   assertRealDirChain(tree, STAGE_ROOT.split("/"));
+  assertRealDirChain(tree, TMP_ROOT.split("/"));
+  rmSync(join(tree, TMP_ROOT), { recursive: true, force: true }); // a temporary left by a run that died
   if (!existsSync(stageRoot)) return;
   let manifest;
   try {
@@ -127,7 +128,9 @@ function checkExistingOutput(tree, stageRoot) {
   }
 }
 
-export function stage({ repo, tree, now = Date.now(), maxFutureSkewMs = DEFAULT_FUTURE_SKEW_MS, beforeRecheck = undefined }) {
+/** Test seams: `beforeRecheck()` runs before the unchanged-input check, `beforeWrite(tmpDir)` and `afterWrite(tmpDir)` around writing the output. */
+export function stage({ repo, tree, now = Date.now(), maxFutureSkewMs = DEFAULT_FUTURE_SKEW_MS, beforeRecheck = undefined, beforeWrite = undefined, afterWrite = undefined, maxTotalBytes = MAX_TOTAL_BYTES }) {
+  const realRepo = realpathSync(repo);
   const packagesDir = join(repo, "packages");
   const stageRoot = join(tree, STAGE_ROOT);
   checkExistingOutput(tree, stageRoot);
@@ -138,7 +141,7 @@ export function stage({ repo, tree, now = Date.now(), maxFutureSkewMs = DEFAULT_
   const read = (path) => {
     const { data, sig } = readRegular(path, MAX_FILE_BYTES);
     total += data.length;
-    if (total > MAX_TOTAL_BYTES) fail(`inputs exceed ${MAX_TOTAL_BYTES} bytes`);
+    if (total > maxTotalBytes) fail(`inputs exceed ${maxTotalBytes} bytes`);
     sigs.set(path, sig);
     return data;
   };
@@ -151,6 +154,7 @@ export function stage({ repo, tree, now = Date.now(), maxFutureSkewMs = DEFAULT_
   for (const e of listDir(packagesDir)) {
     if (!e.dir) continue; // files beside the packages are not staged
     if (!PACKAGE_DIR_RE.test(e.name)) fail(`packages/${e.name}: not a valid package directory name`);
+    if (RESERVED_PACKAGE_NAMES.has(e.name)) fail(`packages/${e.name}: the name is reserved for vendored code`);
     names.push(e.name);
   }
   if (names.length === 0) fail("no packages to stage");
@@ -185,11 +189,13 @@ export function stage({ repo, tree, now = Date.now(), maxFutureSkewMs = DEFAULT_
   // Plan every output in memory first; nothing is written until all checks pass.
   const plan = new Map(); // staged path -> { content: string|Buffer, source, sourceSha256 }
   if (zodPinned !== undefined) {
-    for (const f of zodClosure(zodDir, (rel) => (rel === "package.json" ? read(join(zodDir, rel)) : readRegular(join(zodDir, rel), MAX_FILE_BYTES).data))) {
+    for (const f of zodClosure(zodDir)) {
       const p = join(zodDir, f);
       const data = read(p);
       mtimeOk(p);
-      plan.set(`vendor/zod/${f}`, { content: data, source: `node_modules/zod/${f}`, sourceSha256: sha256(data) });
+      // zod's own package.json carries scripts and an exports map for files that are not vendored: write a minimal one.
+      const content = f === "package.json" ? `${JSON.stringify({ name: "zod", version: zodMeta.version, type: "module", license: zodMeta.license ?? "MIT", description: "Vendored by the Axis staging hook; see ADR 0005 D4" }, null, 2)}\n` : data;
+      plan.set(`vendor/zod/${f}`, { content, source: `node_modules/zod/${f}`, sourceSha256: sha256(data) });
     }
   }
 
@@ -251,37 +257,56 @@ export function stage({ repo, tree, now = Date.now(), maxFutureSkewMs = DEFAULT_
     }
   }
 
+  // Two paths that differ only in case would overwrite each other on a case-insensitive file system (macOS).
+  const folded = new Map();
+  for (const path of plan.keys()) {
+    const key = path.toLowerCase();
+    if (folded.has(key)) fail(`${folded.get(key)} and ${path} differ only in case`);
+    folded.set(key, path);
+  }
+
   // The import allowlist on the OUTPUT, before anything is written.
   const fileSet = new Set(plan.keys());
   for (const [path, { content }] of plan) {
     if (/\.(?:ts|js)$/.test(path)) checkStagedFile(path, content.toString(), fileSet);
   }
 
-  // No input may have changed while it was being staged. (`beforeRecheck` is a test seam.)
+  // No input may have changed while it was being staged, nor been reached through a different path.
+  // (`beforeRecheck` is a test seam.)
   beforeRecheck?.();
-  for (const [path, sig] of sigs) if (!unchanged(path, sig)) fail(`${path}: changed while staging`);
+  for (const [path, sig] of sigs) {
+    if (!unchanged(path, sig)) fail(`${path}: changed while staging`);
+    if (realpathSync(path) !== join(realRepo, relative(repo, path))) fail(`${path}: resolves outside the repository through a link`);
+  }
 
+  // Write into a temporary sibling, verify it there, then rename it into place: a failure leaves nothing behind.
+  const tmpRoot = join(tree, TMP_ROOT);
   const dirs = new Set();
   const files = [];
-  for (const [path, { content, source, sourceSha256 }] of [...plan].sort(([a], [b]) => (a < b ? -1 : 1))) {
-    const dest = join(stageRoot, path);
-    for (let d = dirname(dest); d.length > tree.length; d = dirname(d)) dirs.add(d);
-    mkdirSync(dirname(dest), { recursive: true });
-    writeFileSync(dest, content, { flag: "wx", mode: 0o644 });
-    chmodSync(dest, 0o644);
-    files.push({ path, sha256: sha256(content), source, sourceSha256 });
-  }
-  const manifest = { schema: 1, zod: zodPinned ?? null, packages: names, treeSha256: treeHash(files), files };
-  const manifestPath = join(stageRoot, MANIFEST_NAME);
-  writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, { flag: "wx", mode: 0o644 });
-  chmodSync(manifestPath, 0o644);
-  for (const d of dirs) if (d.startsWith(stageRoot)) chmodSync(d, 0o755);
-
   try {
-    verifyStaged(tree);
+    mkdirSync(tmpRoot, { recursive: true });
+    beforeWrite?.(tmpRoot);
+    for (const [path, { content, source, sourceSha256 }] of [...plan].sort(([a], [b]) => (a < b ? -1 : 1))) {
+      const dest = join(tmpRoot, path);
+      for (let d = dirname(dest); d.length >= tmpRoot.length; d = dirname(d)) dirs.add(d);
+      mkdirSync(dirname(dest), { recursive: true });
+      writeFileSync(dest, content, { flag: "wx", mode: 0o644 });
+      chmodSync(dest, 0o644);
+      files.push({ path, sha256: sha256(content), source, sourceSha256 });
+    }
+    var manifest = { schema: 1, zod: zodPinned ?? null, packages: names, treeSha256: treeHash(files), files }; // eslint-disable-line no-var
+    const manifestPath = join(tmpRoot, MANIFEST_NAME);
+    writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, { flag: "wx", mode: 0o644 });
+    chmodSync(manifestPath, 0o644);
+    for (const d of dirs) chmodSync(d, 0o755);
+    afterWrite?.(tmpRoot);
+    verifyStaged(tree, TMP_ROOT);
+    renameSync(tmpRoot, stageRoot);
   } catch (e) {
+    rmSync(tmpRoot, { recursive: true, force: true });
     rmSync(stageRoot, { recursive: true, force: true });
-    throw e;
+    if (e instanceof StageError) throw e;
+    throw new StageError(`writing the staged tree failed (${e.code ?? e.message}); nothing was left behind`);
   }
   return manifest;
 }
@@ -307,8 +332,7 @@ if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(
       console.log(`staged ${m.files.length} file(s) from ${m.packages.length} package(s); zod ${m.zod}; tree ${m.treeSha256}`);
     }
   } catch (e) {
-    if (!(e instanceof StageError)) throw e;
-    console.error(`stage-axis-packages: ${e.message}`);
+    console.error(`stage-axis-packages: ${e instanceof StageError ? e.message : `unexpected error: ${e.code ?? e.message}`}`);
     process.exit(1);
   }
 }

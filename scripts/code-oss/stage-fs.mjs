@@ -38,6 +38,7 @@ export function readRegular(path, maxBytes) {
   try {
     const st = fstatSync(fd);
     if (!st.isFile()) fail(`${path}: not a regular file`);
+    if (st.nlink !== 1) fail(`${path}: has ${st.nlink} hard links (a staged input must be the only name of its file)`);
     if (st.size > maxBytes) fail(`${path}: ${st.size} bytes exceeds the ${maxBytes} byte limit`);
     const data = Buffer.alloc(st.size);
     let off = 0;

@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { forbiddenLoaders, isScriptFile, principalReexports } from "./loaders.mjs";
+import { tokenNonLiteralLoads, tokenSpecifiers } from "../../scripts/code-oss/stage-scan.mjs";
 
 const packagesDir = fileURLToPath(new URL("../../packages/", import.meta.url));
 
@@ -25,6 +26,7 @@ export function nonLiteralLoads(source) {
   for (const m of text.matchAll(/\b(import|require)\s*\(\s*(?!['"][^'"`$]*['"]\s*\))([^)]{0,40})/g)) {
     found.push(`${m[1]}(${m[2].trim()}`);
   }
+  if (found.length === 0) found.push(...tokenNonLiteralLoads(source)); // the tokenizer also sees what a comment hides
   return found;
 }
 
@@ -39,6 +41,9 @@ export function importSpecifiers(source) {
     /\brequire\s*\(\s*['"]([^'"]+)['"]\s*\)/g,
   ];
   for (const re of patterns) for (const m of text.matchAll(re)) found.push(m[1]);
+  // The text patterns miss string-named bindings (`import { "z" as z } from "zod"`) and a quote inside a comment
+  // before the specifier; the staging hook's tokenizer sees both.
+  for (const t of tokenSpecifiers(source)) if (!found.includes(t.spec)) found.push(t.spec);
   return found;
 }
 
@@ -152,6 +157,10 @@ test("scanner: finds every import form and ignores comments", () => {
   assert.deepEqual(importSpecifiers(src).sort(), [
     "../b.js", "./c.js", "electron", "node:fs", "vs/base/common/lifecycle", "zod",
   ]);
+});
+
+test("scanner: string-named bindings and a quote in a comment do not hide a specifier", () => {
+  assert.deepEqual(importSpecifiers('import { "z" as z } from "zod";\nexport { "default" as e } from "vs/base/common/event";\nimport /* \' */ { x } from "child_process";').sort(), ["child_process", "vs/base/common/event", "zod"]);
 });
 
 test("scanner: policy", () => {

@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { STAGE_ROOT, stage } from "../../scripts/code-oss/stage-packages.mjs";
 import { fixture, put, withFixture } from "./stage-fixture.mjs";
@@ -140,4 +140,103 @@ test("stage: a failing run after a good one removes the old output", () => {
   } finally {
     rmSync(base, { recursive: true, force: true });
   }
+});
+
+// ---- Review round: tokenizer-based import scan, zod tree links, hard links, atomic write ----
+
+const REFUSED_2 = [
+  ["a string-named binding from a Node built-in", (r) => put(r, src("a.ts"), 'import { "execSync" as e } from "child_process";\n'), /outside the allowlist/],
+  ["a string-named re-export from vs/*", (r) => put(r, src("a.ts"), 'export { "default" as ev } from "vs/base/common/event";\n'), /outside the allowlist/],
+  ["a quote inside a comment before the specifier", (r) => put(r, src("a.ts"), "import /* ' */ { execSync } from \"child_process\";\n"), /outside the allowlist/],
+  ["a specifier written with escapes", (r) => put(r, src("a.ts"), 'import "\\x65lectron";\n'), /outside the allowlist/],
+  ["a package named vendor", (r) => { put(r, "packages/vendor/package.json", JSON.stringify({ name: "@axis/vendor", exports: { ".": { default: "./dist/src/index.js" } } })); put(r, "packages/vendor/src/index.ts", "export {};\n"); }, /reserved for vendored code/],
+  ["a hard link to a file outside the repository", (r, b) => { put(b, "outside/creds.ts", "export const secret = 1;\n"); linkSync(join(b, "outside/creds.ts"), join(r, src("creds.ts"))); }, /hard links/],
+  ["a hard link inside zod", (r, b) => { put(b, "outside/core.js", "export const z = 1;\n"); rmSync(join(r, "node_modules/zod/v4/core.js")); linkSync(join(b, "outside/core.js"), join(r, "node_modules/zod/v4/core.js")); }, /hard links/],
+  ["a symlinked directory inside zod", (r, b) => { put(b, "elsewhere/core.js", "export const z = 'outside';\n"); put(b, "elsewhere/core.d.ts", "export declare const z: string;\n"); rmSync(join(r, "node_modules/zod/v4"), { recursive: true }); symlinkSync(join(b, "elsewhere"), join(r, "node_modules/zod/v4")); }, /symbolic link/],
+  ["a symlinked zod declaration file", (r, b) => { put(b, "o.d.ts", "export {};\n"); rmSync(join(r, "node_modules/zod/v4/core.d.ts")); symlinkSync(join(b, "o.d.ts"), join(r, "node_modules/zod/v4/core.d.ts")); }, /symbolic link/],
+  ["a symlink anywhere in the zod tree, even an unused one", (r) => symlinkSync("/etc", join(r, "node_modules/zod/v3/loop")), /symbolic link/],
+  ["two sources that differ only in case", (r) => { put(r, src("Dup.ts"), "export {};\n"); put(r, src("dup.ts"), "export {};\n"); }, /differ only in case/],
+];
+
+for (const [name, mutate, pattern] of REFUSED_2) {
+  test(`stage refuses ${name}, and leaves no staged output`, () => {
+    withFixture(({ repo, tree, base }) => {
+      mutate(repo, base, tree);
+      assert.throws(() => stage({ repo, tree }), pattern);
+      assert.equal(existsSync(join(tree, STAGE_ROOT)), false);
+      assert.equal(existsSync(join(tree, `${STAGE_ROOT}.staging`)), false);
+    });
+  });
+}
+
+test("stage rewrites a string-named zod binding to the vendored copy instead of leaving a bare import", () => {
+  withFixture(({ repo, tree }) => {
+    put(repo, src("quoted.ts"), 'import { "z" as zq } from "zod";\nexport const q = zq;\n');
+    stage({ repo, tree });
+    const text = readFileSync(join(tree, STAGE_ROOT, "protocol/quoted.ts"), "utf8");
+    assert.match(text, /from "\.\.\/vendor\/zod\/index\.js"/);
+    assert.doesNotMatch(text, /from "zod"/);
+  });
+});
+
+test("stage refuses an input reached through a directory link swapped in after it was read", () => {
+  withFixture(({ repo, tree }) => {
+    assert.throws(
+      () => stage({
+        repo,
+        tree,
+        beforeRecheck: () => {
+          renameSync(join(repo, src("sub")), join(repo, src("sub-real")));
+          symlinkSync(join(repo, src("sub-real")), join(repo, src("sub")));
+        },
+      }),
+      /changed while staging|resolves outside the repository through a link/,
+    );
+    assert.equal(existsSync(join(tree, STAGE_ROOT)), false);
+  });
+});
+
+test("stage fails cleanly when writing fails: no partial tree, no temporary, and the next run works", () => {
+  withFixture(({ repo, tree }) => {
+    assert.throws(
+      () => stage({ repo, tree, beforeWrite: (tmp) => put(tmp, "protocol/index.ts", "planted\n") }),
+      /writing the staged tree failed/,
+    );
+    assert.equal(existsSync(join(tree, STAGE_ROOT)), false);
+    assert.equal(existsSync(join(tree, `${STAGE_ROOT}.staging`)), false);
+    assert.ok(stage({ repo, tree }).files.length > 0);
+  });
+});
+
+test("stage removes a stale temporary left by a run that died", () => {
+  withFixture(({ repo, tree }) => {
+    put(tree, `${STAGE_ROOT}.staging/leftover.ts`, "export {};\n");
+    stage({ repo, tree });
+    assert.equal(existsSync(join(tree, `${STAGE_ROOT}.staging`)), false);
+  });
+});
+
+test("stage removes everything when the final verification of the written tree fails", () => {
+  withFixture(({ repo, tree }) => {
+    assert.throws(() => stage({ repo, tree, afterWrite: (tmp) => writeFileSync(join(tmp, "protocol/sub/a.ts"), "export const a = 2;\n") }), /does not match the manifest/);
+    assert.equal(existsSync(join(tree, STAGE_ROOT)), false);
+    assert.equal(existsSync(join(tree, `${STAGE_ROOT}.staging`)), false);
+  });
+});
+
+test("stage enforces the total input size cap", () => {
+  withFixture(({ repo, tree }) => {
+    assert.throws(() => stage({ repo, tree, maxTotalBytes: 500 }), /inputs exceed 500 bytes/);
+    assert.equal(existsSync(join(tree, STAGE_ROOT)), false);
+  });
+});
+
+test("the vendored zod package.json is a minimal one, without scripts or an exports map", () => {
+  withFixture(({ repo, tree }) => {
+    put(repo, "node_modules/zod/package.json", JSON.stringify({ name: "zod", version: "9.9.9", license: "MIT", scripts: { clean: "git clean -xdf ." }, exports: { ".": "./nowhere.js" } }));
+    stage({ repo, tree });
+    const pj = JSON.parse(readFileSync(join(tree, STAGE_ROOT, "vendor/zod/package.json"), "utf8"));
+    assert.deepEqual(Object.keys(pj).sort(), ["description", "license", "name", "type", "version"]);
+    assert.equal(pj.version, "9.9.9");
+  });
 });

@@ -60,14 +60,14 @@ export function checkStagedFile(rel, text, fileSet) {
  * does not list, no listed file missing or changed, the tree hash, and the import allowlist on every staged file.
  * Returns the manifest. Throws StageError otherwise.
  */
-export function verifyStaged(tree) {
-  const stageRoot = join(tree, STAGE_ROOT);
+export function verifyStaged(tree, root = STAGE_ROOT) {
+  const stageRoot = join(tree, root);
   let manifest;
   try {
     manifest = JSON.parse(readRegular(join(stageRoot, MANIFEST_NAME), MAX_FILE_BYTES).data.toString("utf8"));
   } catch (e) {
     if (e instanceof StageError) throw e;
-    return fail(`${STAGE_ROOT}/${MANIFEST_NAME} is missing or not JSON`);
+    return fail(`${root}/${MANIFEST_NAME} is missing or not JSON`);
   }
   if (manifest?.schema !== 1 || !Array.isArray(manifest.files)) fail(`${MANIFEST_NAME} has an unknown schema`);
   const listed = new Map(manifest.files.map((f) => [f.path, f.sha256]));
@@ -77,12 +77,12 @@ export function verifyStaged(tree) {
   for (const f of walkFiles(stageRoot)) {
     if (f.rel === MANIFEST_NAME) continue;
     seen.add(f.rel);
-    if (!listed.has(f.rel)) fail(`${STAGE_ROOT}/${f.rel}: not in the manifest (unexpected file)`);
+    if (!listed.has(f.rel)) fail(`${root}/${f.rel}: not in the manifest (unexpected file)`);
     const { data } = readRegular(f.path, MAX_FILE_BYTES);
-    if (sha256(data) !== listed.get(f.rel)) fail(`${STAGE_ROOT}/${f.rel}: content does not match the manifest`);
+    if (sha256(data) !== listed.get(f.rel)) fail(`${root}/${f.rel}: content does not match the manifest`);
     if (/\.(?:ts|js)$/.test(f.rel)) texts.set(f.rel, data.toString("utf8"));
   }
-  for (const p of listed.keys()) if (!seen.has(p)) fail(`${STAGE_ROOT}/${p}: listed in the manifest but missing`);
+  for (const p of listed.keys()) if (!seen.has(p)) fail(`${root}/${p}: listed in the manifest but missing`);
   if (treeHash(manifest.files) !== manifest.treeSha256) fail(`${MANIFEST_NAME}: treeSha256 does not match its files`);
   for (const [rel, text] of texts) checkStagedFile(rel, text, seen);
   return manifest;

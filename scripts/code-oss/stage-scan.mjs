@@ -67,16 +67,141 @@ export function maskComments(src) {
   return out;
 }
 
+const NOT_VALUE_END = new Set(["return", "typeof", "instanceof", "in", "of", "void", "delete", "new", "case", "throw", "else", "do", "yield", "await"]);
+const IMPORT_CLAUSE_STOP = new Set(["function", "class", "const", "let", "var", "interface", "enum", "namespace", "default", "declare", "abstract", "async", "module"]);
+
+/**
+ * A small JavaScript/TypeScript tokenizer: identifiers (and numbers), strings, template literals (nested `${}`
+ * included), regular-expression literals and single punctuation characters. Comments are skipped. Strings carry
+ * `start`/`end` of their contents (inside the quotes). It does not need to be a full lexer: it has to tell code from
+ * comments and strings, which the regular expressions cannot do (`import /* ' *\/ ...`, `{ "z" as z }`).
+ */
+export function tokenize(src) {
+  const toks = [];
+  const stack = []; // "tmpl" marks a `${` inside a template literal; "{" an ordinary block
+  let i = 0;
+  const prevIsValue = () => {
+    const t = toks[toks.length - 1];
+    if (!t) return false;
+    if (t.type === "id") return !NOT_VALUE_END.has(t.value);
+    if (t.type === "str" || t.type === "tmpl" || t.type === "re") return true;
+    return t.value === ")" || t.value === "]" || t.value === "}";
+  };
+  const readTemplate = () => {
+    // i is just after a backtick or just after the `}` that closes a `${`
+    const start = i;
+    while (i < src.length) {
+      if (src[i] === "\\") i += 2;
+      else if (src[i] === "`") {
+        i++;
+        toks.push({ type: "tmpl", value: src.slice(start, i - 1), start, end: i - 1 });
+        return;
+      } else if (src[i] === "$" && src[i + 1] === "{") {
+        toks.push({ type: "tmpl", value: src.slice(start, i), start, end: i, open: true });
+        i += 2;
+        stack.push("tmpl");
+        return;
+      } else i++;
+    }
+    toks.push({ type: "tmpl", value: src.slice(start), start, end: src.length });
+  };
+  while (i < src.length) {
+    const c = src[i];
+    const n = src[i + 1];
+    if (/\s/.test(c)) i++;
+    else if (c === "/" && n === "/") {
+      const end = src.indexOf("\n", i);
+      i = end < 0 ? src.length : end;
+    } else if (c === "/" && n === "*") {
+      const end = src.indexOf("*/", i + 2);
+      i = end < 0 ? src.length : end + 2;
+    } else if (c === '"' || c === "'") {
+      let j = i + 1;
+      while (j < src.length && src[j] !== c && src[j] !== "\n") j += src[j] === "\\" ? 2 : 1;
+      toks.push({ type: "str", value: src.slice(i + 1, j), start: i + 1, end: j });
+      i = j + 1;
+    } else if (c === "`") {
+      i++;
+      readTemplate();
+    } else if (c === "/" && !prevIsValue()) {
+      let j = i + 1;
+      let inClass = false;
+      while (j < src.length && src[j] !== "\n" && (inClass || src[j] !== "/")) {
+        if (src[j] === "\\") j++;
+        else if (src[j] === "[") inClass = true;
+        else if (src[j] === "]") inClass = false;
+        j++;
+      }
+      toks.push({ type: "re", value: src.slice(i, j + 1), start: i, end: j + 1 });
+      i = j + 1;
+    } else if (/[A-Za-z0-9_$#\u0080-\uffff]/.test(c)) {
+      let j = i + 1;
+      while (j < src.length && /[A-Za-z0-9_$#\u0080-\uffff]/.test(src[j])) j++;
+      toks.push({ type: "id", value: src.slice(i, j), start: i, end: j });
+      i = j;
+    } else {
+      if (c === "{") stack.push("{");
+      if (c === "}") {
+        if (stack.pop() === "tmpl") {
+          i++;
+          readTemplate();
+          continue;
+        }
+      }
+      toks.push({ type: "p", value: c, start: i, end: i + 1 });
+      i++;
+    }
+  }
+  return toks;
+}
+
+/**
+ * Every module specifier in the source, as `{ spec, start, end }` (offsets of the text between the quotes), found on
+ * tokens, not text: `import ... from "x"`, `export ... from "x"` (string-named bindings such as `{ "a" as b }`
+ * included), `import "x"`, `import("x")` and `require("x")`. A string right after an identifier `from` is always
+ * taken as a specifier, whatever precedes it (fail closed).
+ */
+export function tokenSpecifiers(src) {
+  const t = tokenize(src);
+  const found = new Map();
+  const add = (tok) => found.set(tok.start, { spec: tok.value, start: tok.start, end: tok.end });
+  const isId = (k, v) => t[k]?.type === "id" && t[k].value === v && t[k - 1]?.value !== ".";
+  for (let k = 0; k < t.length; k++) {
+    if (t[k].type === "id" && t[k].value === "from" && t[k + 1]?.type === "str" && t[k - 1]?.value !== ".") add(t[k + 1]);
+    if (isId(k, "import")) {
+      if (t[k + 1]?.type === "str") add(t[k + 1]);
+      else if (t[k + 1]?.value === "(" && t[k + 2]?.type === "str") add(t[k + 2]);
+    }
+    if (isId(k, "require") && t[k + 1]?.value === "(" && t[k + 2]?.type === "str") add(t[k + 2]);
+  }
+  return [...found.values()].sort((a, b) => a.start - b.start);
+}
+
+/** Dynamic loads whose argument is not a single string literal, found on tokens. */
+export function tokenNonLiteralLoads(src) {
+  const t = tokenize(src);
+  const bad = [];
+  for (let k = 0; k < t.length; k++) {
+    const call = (t[k].value === "import" || t[k].value === "require") && t[k].type === "id" && t[k - 1]?.value !== "." && t[k + 1]?.value === "(";
+    if (!call) continue;
+    const arg = t[k + 2];
+    const after = t[k + 3]?.value;
+    if (arg?.type !== "str" || (after !== ")" && after !== ",")) bad.push(`${t[k].value}(`);
+  }
+  return bad;
+}
+
+/** Every specifier text in the source: the token scan, plus the text patterns (which also see comments, unless `code`). */
 export function importSpecifiers(source, { code = false } = {}) {
-  if (code) source = maskComments(source);
-  const found = [];
-  for (const re of SPECIFIER_PATTERNS) for (const m of source.matchAll(re)) found.push(m[2]);
-  return found;
+  const found = tokenSpecifiers(source).map((s) => s.spec);
+  const text = code ? maskComments(source) : source;
+  for (const re of SPECIFIER_PATTERNS) for (const m of text.matchAll(re)) found.push(m[2]);
+  return [...new Set(found)];
 }
 
 /** Dynamic loads whose argument is not a string literal cannot be checked or rewritten. */
 export function nonLiteralLoads(source) {
-  return [...source.matchAll(/\b(?:import|require)\s*\(\s*(?!['"][^'"`$\\]*['"]\s*\))/g)].map((m) => m[0]);
+  return tokenNonLiteralLoads(source);
 }
 
 /**
@@ -95,19 +220,32 @@ export function hiddenLoaders(source) {
   return found;
 }
 
-/** Rewrites package specifiers to relative paths. `resolveSpec(spec)` returns the staged path (tree-relative, posix) or null. */
+/**
+ * Rewrites package specifiers to relative paths, on the tokens found by `tokenSpecifiers`. `resolveSpec(spec)` returns
+ * the staged path (tree-relative, posix) or null. A specifier the token scan cannot see is left alone, and the
+ * check on the staged file then refuses it.
+ */
 export function rewriteSpecifiers(source, fromFile, resolveSpec) {
-  let out = source;
+  let out = "";
+  let at = 0;
+  // Token matches, plus the text patterns' matches (they also see comments, so a commented-out import is rewritten
+  // too and cannot leave a bare specifier in the staged file).
+  const spans = new Map(tokenSpecifiers(source).map((t) => [t.start, t]));
   for (const re of SPECIFIER_PATTERNS) {
-    out = out.replace(re, (whole, head, spec) => {
-      const target = resolveSpec(spec);
-      if (target === null) return whole;
-      let rel = posix.relative(posix.dirname(fromFile), target);
-      if (!rel.startsWith(".")) rel = `./${rel}`;
-      return `${head}${rel}`;
-    });
+    for (const m of source.matchAll(re)) {
+      const start = m.index + m[1].length;
+      if (!spans.has(start)) spans.set(start, { spec: m[2], start, end: start + m[2].length });
+    }
   }
-  return out;
+  for (const { spec, start, end } of [...spans.values()].sort((a, b) => a.start - b.start)) {
+    const target = resolveSpec(spec);
+    if (target === null) continue;
+    let rel = posix.relative(posix.dirname(fromFile), target);
+    if (!rel.startsWith(".")) rel = `./${rel}`;
+    out += source.slice(at, start) + rel;
+    at = end;
+  }
+  return out + source.slice(at);
 }
 
 /** Subpaths of `@axis/*` that only some packages may import (ADR 0005 D2; mirrors test/packages/imports.test.mjs). */
@@ -124,6 +262,10 @@ export const RESTRICTED_SUBPATHS = new Map([
 export const RESTRICTED_MODULES = [
   { pkg: "journal", file: "daemon-principal.ts", importers: new Set(["daemon"]) },
   { pkg: "runs", file: "daemon-attestation.ts", importers: new Set(["daemon"]) },
+  // The modules that hold the mint symbols: only their own package may reach them.
+  { pkg: "journal", file: "principal.ts", importers: new Set() },
+  { pkg: "runs", file: "attestation.ts", importers: new Set() },
+  { pkg: "audit", file: "lock.ts", importers: new Set() },
 ];
 
 /**
