@@ -38,11 +38,14 @@ test("an answer with no pending request, or for another id, is ignored and count
   const { b, client, peer } = setup();
   b.send({ type: "trust.result", requestId: "r999", trusted: true });
   const p = client.settingsGet("axis.cliAgents", { timeoutMs: 50 });
+  // Attach the assertion before anything awaits: on a loaded host the 50 ms timer can fire first, and a rejection nobody
+  // handles yet is reported as a failure of this test.
+  const timedOut = assert.rejects(p, { code: "E_TIMEOUT" });
   await wait(0);
   const requestId = last(peer)?.["requestId"];
   b.send({ type: "settings.result", requestId, key: "axis.git.runHooks", value: false }); // other key: not the answer
   b.send({ type: "settings.result", requestId: "r888", key: "axis.cliAgents", value: [] });
-  await assert.rejects(p, { code: "E_TIMEOUT" });
+  await timedOut;
   assert.equal(client.stats().ignoredAnswers, 3);
   // A late answer after the timeout is ignored too.
   b.send({ type: "settings.result", requestId, key: "axis.cliAgents", value: [] });
@@ -219,10 +222,11 @@ test("native.confirm ignores an answer for another window or with another proof"
   const { b, client, peer } = setup();
   const req = { challengeId: chal, proof, windowId: "win-1", summary: "Push" };
   const p = client.nativeConfirm(req, { timeoutMs: 100 });
+  const timedOut = assert.rejects(p, { code: "E_TIMEOUT" });
   await wait(0);
   assert.equal(last(peer)?.["type"], "native.confirm");
   b.send({ type: "native.result", challengeId: chal, proof, confirmed: true, windowId: "win-2" });
   b.send({ type: "native.result", challengeId: chal, proof: "x".repeat(32), confirmed: true, windowId: "win-1" });
-  await assert.rejects(p, { code: "E_TIMEOUT" });
+  await timedOut;
   assert.equal(client.stats().ignoredAnswers, 2);
 });
