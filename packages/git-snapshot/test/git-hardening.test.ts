@@ -16,7 +16,7 @@ const opts = (f: Fixture, more: Partial<TakeOptions> = {}): TakeOptions => ({ wo
 
 /** A stand-in `git` outside the worktree that logs how it was started and then runs the real one. */
 async function logging(f: Fixture, extra = ""): Promise<{ path: string; log: () => string }> {
-  const real = await resolveGit(realPath, []);
+  const real = resolveGit(realPath, []);
   assert.ok(real !== null, "a git must be installed to run these tests");
   const dir = join(f.root, "bin");
   mkdirSync(dir, { recursive: true });
@@ -77,7 +77,8 @@ test("N2: a git planted in the worktree never runs, with an empty or relative PA
 
 test("path entries: only absolute ones are searched", () => {
   assert.deepEqual(trustedPathEntries(":/a::b:./c:/d", "linux"), ["/a", "/d"]);
-  assert.deepEqual(trustedPathEntries("C:\\x;;bin;D:\\y", "win32").length, process.platform === "win32" ? 2 : 0);
+  // Windows rules (pty-policy's), judged lexically so they hold on any host: drive-letter paths only.
+  assert.deepEqual(trustedPathEntries("C:\\x;;bin;D:\\y;\\\\srv\\share\\bin;\\root\\bin;\\\\?\\C:\\x", "win32"), ["C:\\x", "D:\\y"]);
 });
 
 test("every git call is hardened: -C, neutral cwd, absolute git, GIT-ENV-1, no user or system config, ceiling", { skip: !posix }, async () => {
@@ -140,7 +141,7 @@ test("a git that hangs is cut by the time budget, and cancellation reaches the p
     const g = await logging(f, "exec sh -c 'exec sleep 30'");
     const t0 = Date.now();
     const s = await takeSnapshot(opts(f, { gitPath: g.path, limits: { maxMillis: 1500 } }));
-    assert.ok(Date.now() - t0 < 8000, `took ${Date.now() - t0} ms`);
+    assert.ok(Date.now() - t0 < 4500, `took ${Date.now() - t0} ms`);
     assert.ok(s.incomplete.some((i) => i.blocking), "a hung git leaves the snapshot incomplete");
     const ac = new AbortController();
     setTimeout(() => ac.abort(), 300);
