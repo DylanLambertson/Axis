@@ -93,14 +93,19 @@ export async function takeSnapshot(opts: TakeOptions): Promise<Snapshot> {
     const pathKey = Object.keys(env).find((k) => k.toUpperCase() === "PATH");
     // Every checkout of this repository is a place the CLI can write, so none may hold the git that runs: the ones the
     // caller names, and the ones the repository itself lists in the `gitdir` file of each `worktrees` entry.
-    const forbidden = [...roots, ...(await siblingRoots(ctx, commonDir))];
+    const siblings = await siblingRoots(ctx, commonDir);
+    const forbidden = [...roots, ...siblings];
     const given = opts.gitPath === undefined ? null : absolute(opts.gitPath, "gitPath");
-    if (given !== null && (await insideAny(given, forbidden))) throw invalid("gitPath must be outside every worktree");
+    // The caller's own mistake is an error. A path inside a place only the repository's files name (they are
+    // untrusted) is not: the snapshot is refused, and nothing a file says can make this call throw.
+    if (given !== null && (await insideAny(given, roots))) throw invalid("gitPath must be outside every worktree");
+    const givenBad = given !== null && (await insideAny(given, siblings));
+    if (givenBad) ctx.incomplete.push({ id: "git", reason: "the given git is inside a checkout the repository lists", blocking: true });
     const pathValue = pathKey === undefined ? undefined : env[pathKey];
     const configTooBig = await tooBig([join(commonDir, "config"), join(commonDir, "config.worktree")], limits.maxConfigBytes);
     const ask = (gitPath: string): Promise<GitView> =>
       askGit({ worktree: worktreePath, gitDir: expected ?? null, commonDir, home: ctx.homeDir, env, gitPath, budget, limits, configTooBig });
-    let gitPath = given ?? (await cachedGit(pathValue, forbidden));
+    let gitPath = givenBad ? null : (given ?? (await cachedGit(pathValue, forbidden)));
     let view: GitView =
       gitPath === null
         ? { discovered: { gitDir: null, commonDir: null, topLevel: null }, config: null, hooksDir: null, problems: ["git was not found outside the worktrees"], missing: false }
@@ -230,7 +235,14 @@ async function siblingRoots(ctx: Ctx, commonDir: string): Promise<string[]> {
   const out: string[] = [];
   const dir = join(commonDir, "worktrees");
   const block = (id: string, reason: string): void => void ctx.incomplete.push({ id, reason, blocking: true });
-  const list = await listDir(dir, ctx.budget, 256);
+  let list: Awaited<ReturnType<typeof listDir>>;
+  try {
+    list = await listDir(dir, ctx.budget, ctx.limits.maxWorktrees);
+  } catch (e) {
+    if (!(e instanceof Exhausted) || e.bound !== "entries") throw e;
+    block("worktrees", `more than ${ctx.limits.maxWorktrees} worktrees (the maxWorktrees limit)`);
+    return out;
+  }
   if (!list.ok) {
     if (list.detail !== "missing") block("worktrees", `unreadable (${list.detail})`);
     return out;

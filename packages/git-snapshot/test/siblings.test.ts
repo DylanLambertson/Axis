@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { judgeDrift, takeSnapshot, type TakeOptions } from "../src/index.js";
@@ -65,7 +65,14 @@ test("sibling list: a FIFO does not outlive an abort", { skip: !posix }, async (
   }
 });
 
-test("sibling list: a relative gitdir file (git --relative-paths) still excludes the sibling's git", { skip: !posix }, async () => {
+// `worktree add --relative-paths` came with git 2.48 (and is not listed in `-h`), so the version decides.
+const hasRelative = ((): boolean => {
+  const m = /git version (\d+)\.(\d+)/.exec(spawnSync("git", ["--version"], { encoding: "utf8" }).stdout);
+  return m !== null && (Number(m[1]) > 2 || (Number(m[1]) === 2 && Number(m[2]) >= 48));
+})();
+
+test("sibling list: a relative gitdir file (git --relative-paths) still excludes the sibling's git", { skip: !posix }, async (t) => {
+  if (!hasRelative) return t.skip(`SKIPPED: the installed git has no 'worktree add --relative-paths' (needs git 2.48 or newer), so relative gitdir files cannot be staged`);
   const f = makeFixture();
   try {
     const sib = join(f.root, "sib");
@@ -79,7 +86,9 @@ test("sibling list: a relative gitdir file (git --relative-paths) still excludes
     const s = await takeSnapshot(opts(f, { env: { PATH: `${join(sib, "bin")}:${realPath}` } }));
     assert.equal(existsSync(marker), false, "the sibling's git ran");
     assert.equal(s.incomplete.length, 0, JSON.stringify(s.incomplete));
-    await assert.rejects(takeSnapshot(opts(f, { gitPath: planted })), /outside every worktree/);
+    const refused = await takeSnapshot(opts(f, { gitPath: planted }));
+    assert.ok(refused.incomplete.some((i) => i.id === "git" && i.blocking), JSON.stringify(refused.incomplete));
+    assert.equal(existsSync(marker), false);
   } finally {
     f.cleanup();
   }
@@ -90,8 +99,14 @@ test("an injected gitPath inside a sibling worktree is refused, with no extraWor
   try {
     const sib = join(f.root, "sib2");
     git(f.main, "worktree", "add", "-q", "-b", "axis/sib2", sib);
-    const planted = plant(join(sib, "bin"), join(f.root, "ran"));
-    await assert.rejects(takeSnapshot(opts(f, { gitPath: planted })), /outside every worktree/);
+    const marker = join(f.root, "ran");
+    const planted = plant(join(sib, "bin"), marker);
+    const s = await takeSnapshot(opts(f, { gitPath: planted }));
+    assert.ok(s.incomplete.some((i) => i.id === "git" && i.blocking), JSON.stringify(s.incomplete));
+    assert.equal(judgeDrift({ baseline: s, current: s }).status, "refused");
+    assert.equal(existsSync(marker), false);
+    // The caller's own roots are still a caller error.
+    await assert.rejects(takeSnapshot(opts(f, { gitPath: join(f.wt, "git") })), /outside every worktree/);
   } finally {
     f.cleanup();
   }
@@ -117,6 +132,48 @@ test("a cached git is checked again against the current worktrees", { skip: !pos
   }
 });
 
-test("redaction cuts its input: the output is never longer than the bound", () => {
-  assert.ok(redactText("word ".repeat(60_000)).length <= 64_000);
+test("redaction cuts its input to the bound before any pattern runs", () => {
+  // The cut to 64,000 characters is visible in the audit redactor's marker, which records the length it was given.
+  assert.match(redactText("word ".repeat(60_000)), /\[TRUNCATED:64000\]$/);
+});
+
+test("a gitdir that resolves to the file system root refuses the snapshot, it does not throw", { skip: !posix }, async () => {
+  const f = makeFixture();
+  try {
+    mkdirSync(join(f.common, "worktrees", "zz"));
+    writeFileSync(join(f.common, "worktrees", "zz", "gitdir"), "/.git\n");
+    const real = resolveGit(realPath, []) as string;
+    for (const more of [{}, { gitPath: real }]) {
+      const s = await takeSnapshot(opts(f, more));
+      assert.equal(judgeDrift({ baseline: s, current: s }).status, "refused");
+    }
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("an unreadable worktrees directory blocks", { skip: !posix || process.getuid?.() === 0 }, async () => {
+  const f = makeFixture();
+  try {
+    chmodSync(join(f.common, "worktrees"), 0);
+    const s = await takeSnapshot(opts(f));
+    chmodSync(join(f.common, "worktrees"), 0o755);
+    assert.ok(s.incomplete.some((i) => i.blocking && i.id === "worktrees"), JSON.stringify(s.incomplete));
+  } finally {
+    chmodSync(join(f.common, "worktrees"), 0o755);
+    f.cleanup();
+  }
+});
+
+test("more worktrees than maxWorktrees: the reason names that limit, and raising it helps", { skip: !posix }, async () => {
+  const f = makeFixture();
+  try {
+    for (let i = 0; i < 5; i++) mkdirSync(join(f.common, "worktrees", `w${i}`));
+    const low = await takeSnapshot(opts(f, { limits: { maxWorktrees: 3 } }));
+    assert.ok(low.incomplete.some((i) => i.blocking && /maxWorktrees/.test(i.reason)), JSON.stringify(low.incomplete));
+    const high = await takeSnapshot(opts(f, { limits: { maxWorktrees: 50 } }));
+    assert.ok(!high.incomplete.some((i) => /maxWorktrees/.test(i.reason)));
+  } finally {
+    f.cleanup();
+  }
 });
