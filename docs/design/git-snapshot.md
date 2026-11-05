@@ -65,3 +65,6 @@ An acknowledgement binds the digest of the state the user reviewed, so any furth
 - A repository with more config entries than the snapshot lists (16,384 by default, mostly thousands of tracked branches) is refused with the reason stated, until the limit is raised.
 - `credential.helper` values that carry a secret inside a file path are not redacted (the value is a command line).
 - Another worktree's creation changes `worktrees/*` and so counts as drift for every workspace in the repository until the daemon re-baselines; the worktree manager should re-baseline all workspaces of a repository after `worktree add`.
+- With a very large config line (hundreds of MB), the `rev-parse` calls read the config too, so a snapshot can use its whole time budget before it fails closed. The size check stops only the listing. Not fixed: the result is a blocking-incomplete snapshot, never a clean one.
+- A host must resolve `git` once, with every managed worktree excluded, and pass the same absolute `gitPath` to this package and to the Axis commit and push code. Without it each package resolves on its own and their defaults can differ (one may accept a `git` in a sibling worktree the other refuses).
+- Tool-configuration paths (the owner delegated the choice to the review session, not to this change) are still not built in; see the first item above.
