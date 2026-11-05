@@ -100,7 +100,18 @@ export function createNodeRunner(opts: NodeRunnerOptions = {}): GitRunner {
     throw new GitOpsError("E_UNAVAILABLE", "the git executable could not be found");
   }
   return {
-    run(req: GitRunRequest): Promise<GitRunResult> {
+    run(request: GitRunRequest): Promise<GitRunResult> {
+      // Every field is read ONCE and only the copies are checked and spawned, so a getter or Proxy request cannot show the
+      // checks one argv or environment and the spawn another.
+      let req: GitRunRequest;
+      try {
+        const { argv: rawArgv, env: rawEnv, cwd, context, stdin, raw } = request;
+        const argv = Array.from(rawArgv);
+        if (!argv.every((a) => typeof a === "string")) throw denied("every argv entry must be a string");
+        req = { argv, env: { ...rawEnv }, cwd, context, ...(stdin === undefined ? {} : { stdin }), ...(raw === true ? { raw: true } : {}) };
+      } catch (e) {
+        return Promise.reject(e instanceof GitOpsError ? e : denied("the request could not be read"));
+      }
       if (req.context === "pty" && opts.allowPtyContext !== true) {
         return Promise.reject(denied("the daemon process must not run pty-context git"));
       }
@@ -114,7 +125,7 @@ export function createNodeRunner(opts: NodeRunnerOptions = {}): GitRunner {
       return new Promise((resolve, reject) => {
         // Its own process group on POSIX, so a timeout can kill git's children too (filters, submodule diffs, ssh).
         const group = process.platform !== "win32";
-        const child = spawn(gitPath, [...req.argv], { cwd: req.cwd, env: withTrustedPath(req.env, req, platform), shell: false, detached: group, stdio: ["pipe", "pipe", "pipe"] });
+        const child = spawn(gitPath, req.argv, { cwd: req.cwd, env: withTrustedPath(req.env, req, platform), shell: false, detached: group, stdio: ["pipe", "pipe", "pipe"] });
         if (group && child.pid !== undefined) {
           liveGroups.add(child.pid);
           if (!exitHookInstalled) {

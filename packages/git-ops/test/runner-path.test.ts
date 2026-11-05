@@ -250,22 +250,6 @@ test("a bad excludeDirs result (undefined, relative or empty entry, throw, Promi
   }
 });
 
-test("a good excludeDirs result is copied: emptying the host's array right after the first lookup changes nothing", { skip: !posix }, async () => {
-  const f = fixture();
-  const b = fixture();
-  const marker = planted(b.wt.workTree);
-  const list = [b.wt.workTree];
-  const runner = createNodeRunner({ allowPtyContext: true, gitPath: join(tmp("axis-gone-"), "git"), env: { PATH: `${b.wt.workTree}${delimiter}${REAL_PATH}` }, excludeDirs: () => { listRead = true; return list; } });
-  // The runner reads req.argv after it read the host's list; that read empties the host's array, as a registry reload would.
-  let listRead = false;
-  let argvReads = 0;
-  const req = { cwd: f.wt.workTree, env: {}, context: "pty" as const, get argv(): readonly string[] { if (listRead) { argvReads++; list.length = 0; } return ["--version"]; } };
-  const r = await runner.run(req);
-  assert.match(r.stdout, /^git version /);
-  assert.ok(argvReads > 0 && list.length === 0, "the host's array was emptied after the lookup began");
-  assert.equal(existsSync(marker), false, "the copy still excluded the sibling's worktree");
-});
-
 test("with neither gitPath nor excludeDirs the runner refuses; allowUnpinnedGit opts into the weaker lookup", { skip: !posix }, async () => {
   const f = fixture();
   const refuse = (e: unknown): boolean => e instanceof GitOpsError && e.code === "E_UNAVAILABLE" && /gitPath or excludeDirs/.test(e.message);

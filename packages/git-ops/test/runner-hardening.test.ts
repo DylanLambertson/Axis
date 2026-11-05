@@ -166,3 +166,28 @@ test("the redirect variables the package's own lists name are refused in the req
   assert.equal(r.code, 0);
 });
 
+test("run() reads argv and env once: a getter or Proxy request cannot show the checks one value and the spawn another", { skip: !posix }, async () => {
+  const f = fixture();
+  planted(f.wt.workTree, "git-axisx");
+  const marker = join(f.wt.workTree, "planted-ran-git-axisx");
+  const runner = createNodeRunner({ allowPtyContext: true, allowUnpinnedGit: true });
+  const evil = [`--exec-path=${f.wt.workTree}`, "axisx"];
+  let reads = 0;
+  const viaGetter = { cwd: f.wt.workTree, env: {}, context: "pty" as const, get argv(): string[] { return reads++ === 0 ? ["--version"] : evil; } };
+  const first = await runner.run(viaGetter);
+  assert.equal(first.code, 0, first.stderr);
+  assert.equal(reads, 1, "argv was read more than once");
+  assert.equal(existsSync(marker), false);
+
+  let envReads = 0;
+  const envProxy = new Proxy({}, {
+    ownKeys: () => (envReads++ === 0 ? [] : ["GIT_EXEC_PATH"]),
+    getOwnPropertyDescriptor: (_t, k) => (k === "GIT_EXEC_PATH" ? { value: f.wt.workTree, enumerable: true, configurable: true, writable: true } : undefined),
+    get: (_t, k) => (k === "GIT_EXEC_PATH" ? f.wt.workTree : undefined),
+  }) as Record<string, string>;
+  const second = await runner.run({ argv: ["--version"], cwd: f.wt.workTree, env: envProxy, context: "pty" });
+  assert.equal(second.code, 0, second.stderr);
+  assert.equal(envReads, 1, "env was read more than once");
+  assert.equal(existsSync(marker), false);
+  await assert.rejects(runner.run({ argv: [1 as unknown as string], cwd: f.wt.workTree, env: {}, context: "pty" }), denied);
+});
