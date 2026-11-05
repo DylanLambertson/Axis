@@ -9,4 +9,8 @@ export * from "./log/index.js";
 export * from "./ports/index.js";
 export * from "./control/attestation.js";
 export * from "./control/messages.js";
+export * from "./control/client.js";
+export * from "./control/connect-limiter.js";
+export * from "./control/connect-router.js";
+export * from "./transport/electron-parent-port.js";
 export * from "./transport/mux.js";
