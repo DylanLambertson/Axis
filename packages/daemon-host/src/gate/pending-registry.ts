@@ -17,13 +17,27 @@ interface Entry {
   readonly expiresAt: number;
 }
 
-/** Shorten to at most `max` characters: head, an ellipsis, tail, cut on code point boundaries (the contract's rule). */
+/**
+ * Shorten to at most `max` UTF-16 code units (what the contract's `displayTextSchema` counts): head, an ellipsis, tail,
+ * every cut on a code point boundary so a surrogate pair is never split.
+ */
 export function shortenSummary(text: string, max: number = MAX_LISTED_SUMMARY): string {
+  if (text.length <= max) return text;
+  const room = max - 1;
+  const headRoom = Math.ceil(room / 2);
   const points = Array.from(text);
-  if (points.length <= max) return text;
-  const keep = max - 1;
-  const head = Math.ceil(keep / 2);
-  return points.slice(0, head).join("") + "…" + points.slice(points.length - (keep - head)).join("");
+  let head = "";
+  for (const p of points) {
+    if (head.length + p.length > headRoom) break;
+    head += p;
+  }
+  let tail = "";
+  for (let i = points.length - 1; i >= 0; i--) {
+    const p = points[i] as string;
+    if (head.length + tail.length + p.length > room) break;
+    tail = p + tail;
+  }
+  return `${head}\u2026${tail}`;
 }
 
 export class PendingRegistry {

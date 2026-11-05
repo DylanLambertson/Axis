@@ -9,6 +9,7 @@ import {
   createApprovalsHandlers,
   createChallengeAuditSink,
   NativeBridge,
+  nativeSummary,
   PendingRegistry,
   shortenSummary,
   type ApprovalsPort,
@@ -117,14 +118,14 @@ function bridgeRig(maxEntries = 2) {
   };
   const clock = fakeClock();
   const bridge = new NativeBridge({ control, apply: (a) => void applied.push({ ...a }), monotonic: () => clock.monotonic(), ttlMs: 1000, maxEntries });
-  const req = (n: number, connectionId = "c1") => ({ challengeId: String(n).repeat(30), proof: "p".repeat(20), windowId: "w1", summary: "s", connectionId });
+  const req = (n: number, connectionId = "c1") => ({ challengeId: String(n).repeat(30), proof: "p".repeat(20), windowId: "w1", summary: "s", connectionId, actor: "user" });
   return { bridge, applied, waits, req, clock };
 }
 const tick = (): Promise<void> => new Promise((r) => setImmediate(r));
 
 test("bridge: applies the answer with the host's own proof, once, only after the user approved", async () => {
   const { bridge, applied, waits, req } = bridgeRig();
-  bridge.start(req(1));
+  await bridge.start(req(1));
   waits[0]?.resolve({ confirmed: true, proof: "attacker-proof-value", windowId: "elsewhere" });
   await tick();
   assert.deepEqual(applied, [], "held until the user approves");
@@ -136,10 +137,10 @@ test("bridge: applies the answer with the host's own proof, once, only after the
 
 test("bridge: a failure is a refusal; a thrown apply is counted, not propagated; end and dispose cancel waits", async () => {
   const { bridge, applied, waits, req } = bridgeRig(3);
-  bridge.start(req(1));
-  bridge.start(req(2));
+  await bridge.start(req(1));
+  await bridge.start(req(2));
   bridge.start(req(3, "c2"));
-  waits[0]?.reject(new Error(CANARY));
+  waits[0]?.reject(Object.assign(new Error(CANARY), { code: "E_TIMEOUT" }));
   await tick();
   bridge.userApproved(req(1).challengeId);
   assert.equal(applied[0]?.["confirmed"], false);
@@ -150,32 +151,32 @@ test("bridge: a failure is a refusal; a thrown apply is counted, not propagated;
   assert.equal(waits[2]?.signal?.aborted, true);
   assert.equal(bridge.stats().entries, 0);
   const bad = new NativeBridge({ control: { nativeConfirm: () => Promise.resolve({ confirmed: true, proof: "p", windowId: "w" }) }, apply: () => { throw new Error(CANARY); }, monotonic: () => 0, ttlMs: 10, maxEntries: 1 });
-  bad.start(req(4));
+  await bad.start(req(4));
   bad.userApproved(req(4).challengeId);
   await tick();
   bad.userApproved(req(4).challengeId);
   assert.equal(bad.stats().applyErrors, 1);
-  bridge.start(req(5));
+  await bridge.start(req(5));
   bridge.dispose();
   assert.equal(waits[3]?.signal?.aborted, true);
-  assert.throws(() => bridge.start(req(6)), { code: "E_UNAVAILABLE" });
+  await assert.rejects(bridge.start(req(6)), { code: "E_UNAVAILABLE" });
 });
 
-test("bridge: bounded, one wait per challenge, stale entries swept on the monotonic clock", () => {
+test("bridge: bounded, one wait per challenge, stale entries swept on the monotonic clock", async () => {
   const { bridge, waits, req, clock } = bridgeRig(2);
-  bridge.start(req(1));
-  assert.throws(() => bridge.start(req(1)), { code: "E_BACKPRESSURE" });
-  bridge.start(req(2));
-  assert.throws(() => bridge.start(req(3)), { code: "E_BACKPRESSURE" });
+  await bridge.start(req(1));
+  await assert.rejects(bridge.start(req(1)), { code: "E_BACKPRESSURE" });
+  await bridge.start(req(2));
+  await assert.rejects(bridge.start(req(3)), { code: "E_BACKPRESSURE" });
   clock.advance(1000);
-  bridge.start(req(3));
+  await bridge.start(req(3));
   assert.equal(bridge.stats().entries, 1);
   assert.equal(waits[0]?.signal?.aborted, true);
 });
 
-test("bridge: a nativeConfirm that throws leaves nothing behind", () => {
+test("bridge: a nativeConfirm that throws leaves nothing behind", async () => {
   const bridge = new NativeBridge({ control: { nativeConfirm: () => { throw new Error(CANARY); } }, apply: () => undefined, monotonic: () => 0, ttlMs: 10, maxEntries: 1 });
-  assert.throws(() => bridge.start({ challengeId: ID, proof: "p".repeat(20), windowId: "w", summary: "s", connectionId: "c" }));
+  await assert.rejects(bridge.start({ challengeId: ID, proof: "p".repeat(20), windowId: "w", summary: "s", connectionId: "c", actor: "user" }));
   assert.equal(bridge.stats().entries, 0);
 });
 
@@ -253,10 +254,10 @@ test("handlers: pending answers only the caller's window, validates the list, an
 
 const events: Array<{ payload: Record<string, unknown> }> = [];
 const sink = { append: (e: { payload: Record<string, unknown> }) => void events.push(e) };
-function gateRig(control: NativeControl) {
+function gateRig(control: NativeControl, extra: Partial<Parameters<typeof createApprovals>[0]> = {}) {
   events.length = 0;
   const clock = fakeClock();
-  const approvals = createApprovals({ audit: sink, control, clock });
+  const approvals = createApprovals({ audit: sink, control, clock, ...extra });
   const input = (over: Partial<ApprovalInput> = {}): ApprovalInput => {
     const args = { id: "ws-1" };
     return {
@@ -305,11 +306,11 @@ test("gate: a withdraw or a retry by someone else ends nothing; the requester's 
   approvals.dispose();
 });
 
-test("gate: if the native step cannot start, the challenge is withdrawn, never listed, and the error is opaque", () => {
+test("gate: if the native step cannot start, the challenge is withdrawn, never listed, and the error is opaque", async () => {
   const { approvals, input, content } = gateRig({ nativeConfirm: () => { throw new Error(CANARY); } });
   let thrown: unknown;
   try {
-    approvals.gate.issue(input(), content);
+    await approvals.gate.issue(input(), content);
   } catch (e) {
     thrown = e;
   }
@@ -335,5 +336,103 @@ test("gate: an action that fails after the spend is thrown as it is (no Approval
     (e: unknown) => e instanceof ApprovalError && e.code === "E_CONFLICT",
   );
   assert.equal(approvals.port.pending("win-1").length, 0);
+  approvals.dispose();
+});
+
+test("bridge: a wait that dies for another reason than a timeout is lost and reported once, never a held refusal", async () => {
+  const lost: unknown[] = [];
+  const waits: Array<(e: Error) => void> = [];
+  const bridge = new NativeBridge({
+    control: { nativeConfirm: () => new Promise((_r, reject) => void waits.push(reject)) },
+    apply: () => assert.fail("nothing to apply"),
+    monotonic: () => 0,
+    ttlMs: 1000,
+    maxEntries: 2,
+    onLost: (l) => void lost.push(l),
+  });
+  const r = { challengeId: ID, proof: "p".repeat(20), windowId: "w", summary: "s", connectionId: "c", actor: "user" };
+  await bridge.start(r);
+  waits[0]?.(Object.assign(new Error(CANARY), { code: "E_UNAVAILABLE" }));
+  await tick();
+  assert.deepEqual(lost, [{ challengeId: ID, connectionId: "c", actor: "user" }]);
+  assert.equal(bridge.stats().entries, 0);
+  assert.equal(bridge.stats().lost, 1);
+  // Refused at once: start itself rejects (and onLost is not called, the caller withdraws).
+  const instant = new NativeBridge({ control: { nativeConfirm: () => Promise.reject(Object.assign(new Error(CANARY), { code: "E_BACKPRESSURE" })) }, apply: () => undefined, monotonic: () => 0, ttlMs: 1000, maxEntries: 2, onLost: () => assert.fail("not late") });
+  await assert.rejects(instant.start(r), (e: unknown) => (e as { code: string }).code === "E_BACKPRESSURE" && !(e as Error).message.includes(CANARY));
+  assert.equal(instant.stats().entries, 0);
+});
+
+test("bridge: an answered but never approved entry, and its proof, are dropped when it expires", async () => {
+  const { bridge, waits, req, clock } = bridgeRig(2);
+  await bridge.start(req(1));
+  waits[0]?.resolve({ confirmed: true, proof: "p", windowId: "w1" });
+  await tick();
+  assert.equal(bridge.stats().entries, 1);
+  clock.advance(1000);
+  assert.equal(bridge.stats().entries, 0);
+});
+
+// ---- native summary ----
+
+test("native summary: names the action, keeps it whole, is cut at 192 units, never splits a pair, and falls back from unsafe detail", () => {
+  const action = "axis.worktrees/1.remove";
+  assert.equal(nativeSummary(action, "workspace:ws-1"), `${action}: workspace:ws-1`);
+  assert.equal(nativeSummary(action, "workspace:ws-1", "Project Alpha"), `${action}: Project Alpha`);
+  assert.equal(nativeSummary(action, "workspace:ws-1", "bad\u202etext"), `${action}: workspace:ws-1`, "unsafe detail is not shown");
+  assert.equal(nativeSummary(action, "workspace:ws-1", ""), `${action}: workspace:ws-1`);
+  for (const long of ["x".repeat(900), "\u{1F600}".repeat(400)]) {
+    const out = nativeSummary(action, "t", long);
+    assert.ok(out.length <= 192 && out.startsWith(`${action}: `) && out.includes("\u2026"));
+    assert.ok(!/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(out));
+  }
+});
+
+test("native summary: through the gate the dialog gets the action key, the describe text, and an emoji target fits the contract", async () => {
+  const sent: Array<{ summary: string }> = [];
+  const control: NativeControl = { nativeConfirm: (r) => (sent.push(r), new Promise(() => undefined)) };
+  const { approvals, input, content } = gateRig(control, { describe: () => "Project Alpha" });
+  await approvals.gate.issue(input(), content);
+  assert.equal(sent[0]?.summary, "axis.worktrees/1.remove: Project Alpha");
+  const g2 = gateRig(control, { describe: () => { throw new Error(CANARY); } });
+  await g2.approvals.gate.issue(g2.input(), { target: `workspace:${"\u{1F600}".repeat(150)}`, contentDigest: "e".repeat(64) });
+  assert.ok((sent[1]?.summary.length ?? 999) <= 192 && sent[1]?.summary.startsWith("axis.worktrees/1.remove: workspace:"));
+  const listed = g2.approvals.port.pending("win-1");
+  assert.equal(listed.length, 1, "a challenge with an emoji target is still listed in the contract's shape");
+  approvals.dispose();
+  g2.approvals.dispose();
+});
+
+// ---- preflight seam, digest cross-check ----
+
+test("preflight: called with the final tier before any challenge or spend; its error reaches the daemon unchanged; a refused retry keeps the approval", async () => {
+  const calls: number[] = [];
+  let stalled = true;
+  const closed = Object.assign(new Error("stalled"), { code: "E_UNAVAILABLE" });
+  const { approvals, input, content } = gateRig(idleControl(), { preflight: (tier) => { calls.push(tier); if (stalled) throw closed; } });
+  await assert.rejects(async () => approvals.gate.issue(input({ tier: 3 }), content), (e: unknown) => e === closed);
+  assert.deepEqual(calls, [3]);
+  assert.deepEqual(events, [], "no challenge, no audit row, no quota used");
+  stalled = false;
+  const c = (await approvals.gate.issue(input({ tier: 3 }), content)) as Challenge;
+  approvals.port.resolve({ actor: "user", windowId: "win-1" }, { challengeId: c.challengeId, decision: "approve", digest: c.digest });
+  stalled = true;
+  let ran = 0;
+  await assert.rejects(approvals.gate.execute(input({ tier: 3 }), { challengeId: c.challengeId }, content, () => (ran++, Promise.resolve(1))), (e: unknown) => e === closed);
+  assert.equal(ran, 0);
+  assert.deepEqual(calls, [3, 3, 3]);
+  stalled = false;
+  assert.equal(await approvals.gate.execute(input({ tier: 3 }), { challengeId: c.challengeId }, content, () => (ran++, Promise.resolve(7))), 7);
+  assert.equal(ran, 1, "the approval survived the refused retry and is spent once");
+  approvals.dispose();
+});
+
+test("digest cross-check: a digest that is not the request's is refused at issue and at execute, and the approval is not burned by it", async () => {
+  const { approvals, input, content } = gateRig(idleControl());
+  await assert.rejects(async () => approvals.gate.issue(input({ tier: 3, digest: "f".repeat(64) }), content), (e: unknown) => e instanceof ApprovalError && e.code === "E_INVALID_ARGUMENT");
+  const c = (await approvals.gate.issue(input({ tier: 3 }), content)) as Challenge;
+  approvals.port.resolve({ actor: "user", windowId: "win-1" }, { challengeId: c.challengeId, decision: "approve", digest: c.digest });
+  await assert.rejects(approvals.gate.execute(input({ tier: 3, digest: "f".repeat(64) }), { challengeId: c.challengeId }, content, () => Promise.resolve(1)), (e: unknown) => e instanceof ApprovalError && e.code === "E_INVALID_ARGUMENT");
+  assert.equal(await approvals.gate.execute(input({ tier: 3 }), { challengeId: c.challengeId }, content, () => Promise.resolve(2)), 2);
   approvals.dispose();
 });

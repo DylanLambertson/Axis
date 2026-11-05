@@ -30,4 +30,5 @@ export * from "./gate/approvals.js";
 export * from "./gate/audit-sink.js";
 export * from "./gate/native-bridge.js";
 export * from "./gate/pending-registry.js";
+export * from "./gate/summary.js";
 export * from "./handlers/approvals.js";

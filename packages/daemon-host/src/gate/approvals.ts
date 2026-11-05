@@ -18,7 +18,8 @@ import type { Challenge, ChallengeReference, ResolveChallengeRequest } from "@ax
 import type { Logger } from "../log/logger.js";
 import type { Clock } from "../ports/clock.js";
 import { NativeBridge, type NativeControl, type NativeStats } from "./native-bridge.js";
-import { PendingRegistry, shortenSummary } from "./pending-registry.js";
+import { PendingRegistry } from "./pending-registry.js";
+import { nativeSummary } from "./summary.js";
 
 /**
  * Challenge manager, gate adapter and native bridge (ticket H5, design section 5.2). `createApprovals` builds the one
@@ -45,6 +46,23 @@ export interface ApprovalsDeps {
   readonly clock: Pick<Clock, "now" | "monotonic">;
   readonly limits?: ChallengeLimits;
   readonly logger?: Logger;
+  /**
+   * Native waits at once (default 16, at most the manager's total). Each holds a slot of the control client, which is
+   * shared with `trust.check`, `anchor.get` and `settings.get`, so keep it well below its `maxPending` (64).
+   */
+  readonly nativeWaitLimit?: number;
+  /**
+   * Called with the final tier first thing in `issue` (before any challenge, quota or dialog) and in `execute` (before
+   * the approval is spent), so a refusal costs nothing and a retry keeps its approval. Whatever it throws reaches the
+   * daemon unchanged. The host passes the anchor check here once ticket H4 has merged; the daemon then needs to map
+   * its `E_UNAVAILABLE` (today a gate error that is not an `ApprovalError` answers `E_INTERNAL`).
+   */
+  readonly preflight?: (tier: number) => void;
+  /**
+   * What a content hook knows about the target in words (a workspace name, a plan or finding summary), for the native
+   * dialog. Display text only; an unsafe or empty answer, or a throw, falls back to the challenge's target summary.
+   */
+  readonly describe?: (input: ApprovalInput, content: ApprovalContent) => string | undefined;
 }
 
 /** What the `axis.approvals/1` handlers may do. The caller is the attested identity, never a payload value. */
@@ -67,13 +85,14 @@ export interface Approvals {
   dispose(): void;
 }
 
+const TERMINAL: ReadonlySet<string> = new Set(["DENIED", "EXPIRED", "BURNED", "CONSUMED"]);
 const GATE_CODES: ReadonlySet<string> = new Set(["E_POLICY_DENIED", "E_CONFLICT", "E_BACKPRESSURE", "E_INVALID_ARGUMENT"]);
 type GateCode = "E_POLICY_DENIED" | "E_CONFLICT" | "E_BACKPRESSURE" | "E_INVALID_ARGUMENT";
 
 /**
  * A `ChallengeError` as the gate must throw it. A refusal keeps one of four codes and nothing else; an action failure
- * (`detail.executed`) is thrown as it is (the daemon answers `E_INTERNAL` and frees the key, and its text never
- * reaches the wire); everything else is an opaque error, which the daemon also answers `E_INTERNAL`.
+ * (`detail.executed`) is thrown as it is (the daemon answers `E_INTERNAL`; whether the key is freed or kept
+ * unknown depends on whether the action itself succeeded, and its text never reaches the wire); everything else is an opaque error, which the daemon also answers `E_INTERNAL`.
  */
 function toGateError(error: unknown): Error {
   if (error instanceof ChallengeError) {
@@ -100,7 +119,8 @@ export function createApprovals(deps: ApprovalsDeps): Approvals {
     control: deps.control,
     monotonic: () => clock.monotonic(),
     ttlMs: ttl,
-    maxEntries: total,
+    maxEntries: Math.min(deps.nativeWaitLimit ?? 16, total),
+    onLost: (l) => quietWithdraw(l.challengeId, { actor: l.actor as ActorId, connectionId: l.connectionId }),
     apply: (a) => {
       try {
         manager.confirmNative({ windowId: a.windowId }, { challengeId: a.challengeId, proof: a.proof, confirmed: a.confirmed });
@@ -109,6 +129,15 @@ export function createApprovals(deps: ApprovalsDeps): Approvals {
       }
     },
   });
+
+  const describe = (input: ApprovalInput, content: ApprovalContent): string | undefined => {
+    try {
+      const text = deps.describe?.(input, content);
+      return typeof text === "string" ? text : undefined;
+    } catch {
+      return undefined;
+    }
+  };
 
   const forget = (challengeId: string): void => {
     registry.remove(challengeId);
@@ -126,7 +155,8 @@ export function createApprovals(deps: ApprovalsDeps): Approvals {
   };
 
   const gate: ApprovalGate = {
-    issue(input: ApprovalInput, content: ApprovalContent): Challenge {
+    async issue(input: ApprovalInput, content: ApprovalContent): Promise<Challenge> {
+      deps.preflight?.(input.tier);
       let challenge: Challenge;
       try {
         challenge = manager.issue({
@@ -151,17 +181,19 @@ export function createApprovals(deps: ApprovalsDeps): Approvals {
           // Once, right after issue and before the challenge reaches anyone: the proof goes to the supervisor only.
           const proof = manager.takeNativeProof(challenge.challengeId);
           if (proof === null) throw new Error("no native proof");
-          bridge.start({
+          await bridge.start({
             challengeId: challenge.challengeId,
             proof,
             windowId: input.identity.windowId,
             connectionId: input.connectionId,
-            summary: shortenSummary(challenge.targetSummary, 192),
+            actor: input.actor,
+            summary: nativeSummary(`${input.contract}/${input.contractVersion}.${input.method}`, challenge.targetSummary, describe(input, content)),
           });
         }
         registry.add(challenge, input.identity.windowId, input.connectionId);
       } catch (e) {
-        // The user can never be asked to approve something whose native step cannot be started.
+        // The user is never asked to approve something whose native dialog could not be started (a closed channel, no
+        // free control slot, a full bridge): the challenge ends here and nobody has seen it.
         quietWithdraw(challenge.challengeId, caller);
         forget(challenge.challengeId);
         if (e instanceof Error && (e as { code?: unknown }).code === "E_BACKPRESSURE") throw new ApprovalError("E_BACKPRESSURE");
@@ -176,6 +208,7 @@ export function createApprovals(deps: ApprovalsDeps): Approvals {
       content: ApprovalContent,
       action: (confirmed: DaemonConfirmedAction) => Promise<T>,
     ): Promise<T> {
+      deps.preflight?.(input.tier);
       try {
         const result = await manager.consume(
           approval.challengeId,
@@ -220,9 +253,23 @@ export function createApprovals(deps: ApprovalsDeps): Approvals {
 
   const port: ApprovalsPort = {
     resolve(caller, request) {
-      const result = manager.resolve(caller, request);
-      if (result.state === "approved" && result.nativeRequired) bridge.userApproved(result.challengeId);
-      else forget(result.challengeId);
+      let result: ResolveResult;
+      try {
+        result = manager.resolve(caller, request);
+      } catch (e) {
+        // A burn (a digest that no longer matches) ends the challenge: close its dialog and its listing. A refusal
+        // that names a live state (a second approve while the dialog is open) leaves both alone.
+        const state = e instanceof ChallengeError ? e.detail["state"] : undefined;
+        if (e instanceof ChallengeError && e.code === "E_CONFLICT" && (state === undefined || TERMINAL.has(String(state)))) {
+          forget(request.challengeId);
+        }
+        throw e;
+      }
+      if (result.state === "approved" && result.nativeRequired) {
+        // Approved by the user: no longer a prompt to answer, though the dialog is still awaited.
+        registry.remove(result.challengeId);
+        bridge.userApproved(result.challengeId);
+      } else forget(result.challengeId);
       return result;
     },
     pending: (windowId) => registry.list(windowId),

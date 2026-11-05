@@ -28,8 +28,13 @@ export interface NativeBridgeOptions {
   readonly monotonic: () => number;
   /** How long a challenge lives; an entry older than this is dropped. */
   readonly ttlMs: number;
-  /** Entries at once; more is `E_BACKPRESSURE`. */
+  /**
+   * Native waits at once; more is `E_BACKPRESSURE`. Each wait holds one slot of the control client (64 by default,
+   * shared with `trust.check`, `anchor.get` and `settings.get`), so this stays well below that.
+   */
   readonly maxEntries: number;
+  /** A wait that failed for a reason other than the user or the clock (channel closed, no slot) after `start` returned. */
+  readonly onLost?: (lost: { challengeId: string; connectionId: string; actor: string }) => void;
 }
 
 export interface NativeStats {
@@ -41,6 +46,8 @@ export interface NativeStats {
   readonly failed: number;
   /** `apply` calls that threw (challenge already ended, wrong state). */
   readonly applyErrors: number;
+  /** Waits that could not be started or died for another reason than a timeout or a cancel. */
+  readonly lost: number;
 }
 
 interface Entry {
@@ -48,6 +55,7 @@ interface Entry {
   readonly proof: string;
   readonly windowId: string;
   readonly connectionId: string;
+  readonly actor: string;
   readonly controller: AbortController;
   readonly expiresAt: number;
   approved: boolean;
@@ -60,6 +68,7 @@ export class NativeBridge {
   #confirmed = 0;
   #refused = 0;
   #failed = 0;
+  #lost = 0;
   #applyErrors = 0;
   #disposed = false;
 
@@ -68,28 +77,35 @@ export class NativeBridge {
   }
 
   stats(): NativeStats {
+    this.#sweep();
     return Object.freeze({
       entries: this.#entries.size,
       confirmed: this.#confirmed,
       refused: this.#refused,
       failed: this.#failed,
       applyErrors: this.#applyErrors,
+      lost: this.#lost,
     });
   }
 
-  /** Send `native.confirm`. Throws (and keeps nothing) when the bridge is full or closed; the caller withdraws the challenge. */
-  start(request: NativeConfirmRequest & { readonly connectionId: string }): void {
+  /**
+   * Send `native.confirm`. Rejects (and keeps nothing) when the bridge is full or closed, or when the control client
+   * refuses the request at once (channel closed, no free slot): the caller then withdraws the challenge, so the user is
+   * never shown one whose dialog cannot open. A failure that comes later is reported through `onLost`.
+   */
+  async start(request: NativeConfirmRequest & { readonly connectionId: string; readonly actor: string }): Promise<void> {
     if (this.#disposed) throw new AxisError("E_UNAVAILABLE", "The native confirmation is closed", { reason: "bridge_closed" });
     this.#sweep();
     if (this.#entries.size >= this.#opts.maxEntries || this.#entries.has(request.challengeId)) {
       throw new AxisError("E_BACKPRESSURE", "Too many native confirmations are waiting");
     }
-    const { connectionId, ...wire } = request;
+    const { connectionId, actor, ...wire } = request;
     const entry: Entry = {
       challengeId: wire.challengeId,
       proof: wire.proof,
       windowId: wire.windowId,
       connectionId,
+      actor,
       controller: new AbortController(),
       expiresAt: this.#opts.monotonic() + this.#opts.ttlMs,
       approved: false,
@@ -103,15 +119,34 @@ export class NativeBridge {
       this.#entries.delete(entry.challengeId);
       throw e;
     }
+    let started = false;
+    let lost: string | undefined;
     pending.then(
       (result) => this.#answered(entry, result.confirmed === true, false),
-      // A timeout, a cancel, a closed channel: a refusal. If the entry was dropped on purpose it is no longer ours.
-      () => this.#answered(entry, false, true),
+      (error: unknown) => {
+        const code = (error as { code?: unknown } | null)?.code;
+        // A timeout or a cancel is the user's or the clock's answer: a refusal. Anything else means the wait never worked.
+        if (this.#entries.get(entry.challengeId) !== entry || code === "E_TIMEOUT" || code === "E_CANCELLED") {
+          this.#answered(entry, false, true);
+          return;
+        }
+        this.#entries.delete(entry.challengeId);
+        this.#lost++;
+        if (started) this.#opts.onLost?.({ challengeId: entry.challengeId, connectionId, actor });
+        else lost = typeof code === "string" ? code : "E_UNAVAILABLE";
+      },
     );
+    // One turn of the event loop: a request the control client refused at once has rejected by now.
+    await new Promise<void>((r) => setImmediate(r));
+    started = true;
+    if (lost !== undefined) {
+      throw new AxisError(lost === "E_BACKPRESSURE" ? "E_BACKPRESSURE" : "E_UNAVAILABLE", "The native confirmation could not be started");
+    }
   }
 
   /** The user approved the challenge in the window: apply the dialog's answer now, or when it arrives. */
   userApproved(challengeId: string): void {
+    this.#sweep();
     const entry = this.#entries.get(challengeId);
     if (entry === undefined) return;
     entry.approved = true;
@@ -120,6 +155,7 @@ export class NativeBridge {
 
   /** The challenge ended for any other reason (denied, expired, consumed, withdrawn): forget it and cancel the wait. */
   end(challengeId: string): void {
+    this.#sweep();
     const entry = this.#entries.get(challengeId);
     if (entry === undefined) return;
     this.#entries.delete(challengeId);
@@ -156,6 +192,10 @@ export class NativeBridge {
 
   #sweep(): void {
     const now = this.#opts.monotonic();
-    for (const entry of [...this.#entries.values()]) if (now >= entry.expiresAt) this.end(entry.challengeId);
+    for (const entry of [...this.#entries.values()]) {
+      if (now < entry.expiresAt) continue;
+      this.#entries.delete(entry.challengeId);
+      entry.controller.abort();
+    }
   }
 }

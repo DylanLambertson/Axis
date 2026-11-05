@@ -94,6 +94,10 @@ export interface RigOptions {
   /** Replace the rule-table policy (to prove a handler's own checks). */
   policy?: Policy;
   failAudit?: (e: ChallengeAuditEvent) => boolean;
+  controlMaxPending?: number;
+  nativeWaitLimit?: number;
+  /** Where the challenge events go instead of the in-memory list (a real `AuditLog`). */
+  audit?: { append(e: ChallengeAuditEvent): unknown };
 }
 
 /** The attestation is "<actor>#<connection>#<window>". */
@@ -122,7 +126,7 @@ export async function rig(options: RigOptions = {}) {
   const rpcEvents: DaemonAuditEvent[] = [];
   const { a, b } = memoryChannelPair();
   const mux = new ChannelMux(a);
-  const control = new ControlClient({ mux });
+  const control = new ControlClient({ mux, ...(options.controlMaxPending ? { maxPending: options.controlMaxPending } : {}) });
   const supervisor: Array<Record<string, unknown>> = [];
   b.onMessage((m) => supervisor.push(m as Record<string, unknown>));
   const approvals: Approvals = createApprovals({
@@ -130,11 +134,13 @@ export async function rig(options: RigOptions = {}) {
       append(e) {
         if (options.failAudit?.(e)) throw new Error("audit down");
         challengeEvents.push(e);
+        options.audit?.append(e);
       },
     },
     control,
     clock,
     ...(options.limits ? { limits: options.limits } : {}),
+    ...(options.nativeWaitLimit ? { nativeWaitLimit: options.nativeWaitLimit } : {}),
   });
   const trust = new InMemoryTrustRegistry();
   const runs: Array<{ id: string; approved: unknown; payload: unknown }> = [];

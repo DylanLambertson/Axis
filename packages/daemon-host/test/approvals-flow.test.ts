@@ -1,6 +1,9 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
+import { DatabaseSync } from "node:sqlite";
+import { AuditLog, Redactor } from "@axis/audit";
+import { CHALLENGE_PAYLOAD_ALLOWLIST, createChallengeAuditSink } from "../src/index.js";
 import { challengeOf, newKey, removePayload, rig, wipePayload, type Client, type Msg, type Rig } from "./approvals-rig.js";
 import { trackTimers, wait } from "./helpers.js";
 
@@ -133,14 +136,97 @@ test("a supervisor that never answers (timeout) and a closed channel are refusal
   await waitFor(() => r.approvals.stats().native.failed === 1);
   assert.equal(r.approvals.stats().native.confirmed, 0);
   assert.equal((await retry(user, i.challenge.challengeId, i.key)).error?.code, "E_CONFLICT");
-  // Closed channel: the pending wait fails, the user's approval then refuses.
+  assert.equal(r.runs.length, 0);
+});
+
+test("a channel that closes under a waiting dialog withdraws the challenge: the user is never left with one that cannot succeed", async (t) => {
+  const { r, user } = await setup(t);
   const j = await issue4(r, user);
   r.peer.close();
-  await waitFor(() => r.approvals.stats().native.failed === 2);
-  await resolve(user, j.challenge);
-  assert.equal(r.approvals.stats().native.refused, 2);
-  assert.equal((await retry(user, j.challenge.challengeId, j.key)).error?.code, "E_CONFLICT");
+  await waitFor(() => r.approvals.stats().native.lost === 1);
+  assert.equal(r.approvals.stats().pending, 0);
+  assert.equal((await resolve(user, j.challenge)).error?.code, "E_NOT_FOUND");
+  assert.equal((await retry(user, j.challenge.challengeId, j.key)).error?.code, "E_POLICY_DENIED");
   assert.equal(r.runs.length, 0);
+});
+
+test("a native step refused at once (control client closed, or out of slots) fails the request with nothing issued or listed", async (t) => {
+  const closed = await setup(t);
+  closed.r.control.dispose();
+  const a = await closed.user.call(WT, "remove", removePayload(), newKey());
+  assert.equal(a.error?.code, "E_INTERNAL");
+  assert.equal(closed.r.approvals.stats().pending, 0);
+  assert.deepEqual((await closed.user.call(AP, "pending", {})).result, { challenges: [] });
+  const full = await setup(t, { controlMaxPending: 1 });
+  await issue4(full.r, full.user);
+  const b = await full.user.call(WT, "remove", removePayload({ id: "ws-2" }), newKey());
+  assert.equal(b.error?.code, "E_BACKPRESSURE");
+  assert.equal(full.r.approvals.stats().pending, 1);
+  assert.equal(full.r.control.stats().pending, 1);
+});
+
+test("native waits are capped below the control client's slots, so they cannot starve other control requests", async (t) => {
+  const { r, user } = await setup(t, { nativeWaitLimit: 2, controlMaxPending: 4 });
+  await issue4(r, user, { id: "ws-1" });
+  await issue4(r, user, { id: "ws-2" });
+  const third = await user.call(WT, "remove", removePayload({ id: "ws-3" }), newKey());
+  assert.equal(third.error?.code, "E_BACKPRESSURE");
+  assert.equal(r.control.stats().pending, 2);
+  const setting = r.control.settingsGet("axis.cliAgents", { timeoutMs: 1000 });
+  await waitFor(() => r.supervisor.some((m) => m["type"] === "settings.get"));
+  assert.equal(r.control.stats().pending, 3, "a free slot remains for the other requests");
+  r.peer.send({ type: "settings.result", requestId: r.supervisor.find((m) => m["type"] === "settings.get")?.["requestId"], key: "axis.cliAgents", value: [] });
+  assert.deepEqual(await setting, []);
+});
+
+test("a bad digest burns the challenge: its dialog wait is cancelled, a late answer is ignored, and nothing is listed", async (t) => {
+  const { r, user } = await setup(t);
+  const i = await issue4(r, user);
+  const bad = await user.call(AP, "resolve", { challengeId: i.challenge.challengeId, decision: "approve", digest: "1".repeat(64) });
+  assert.equal(bad.error?.code, "E_CONFLICT");
+  assert.equal(r.approvals.stats().native.entries, 0);
+  assert.equal(r.control.stats().pending, 0);
+  assert.deepEqual((await user.call(AP, "pending", {})).result, { challenges: [] });
+  r.answer(i.challenge.challengeId, i.proof, true);
+  await waitFor(() => r.control.stats().ignoredAnswers === 1);
+  assert.equal((await retry(user, i.challenge.challengeId, i.key)).error?.code, "E_CONFLICT");
+  // A second approve while the dialog is open is refused but leaves the dialog alone.
+  const k = await issue4(r, user, { id: "ws-2" });
+  await resolve(user, k.challenge);
+  assert.equal((await resolve(user, k.challenge)).error?.code, "E_CONFLICT");
+  assert.equal(r.approvals.stats().native.entries, 1);
+  assert.equal(r.control.stats().pending, 1);
+});
+
+test("once the user has approved, the challenge is no longer listed as something to answer", async (t) => {
+  const { r, user } = await setup(t);
+  const i = await issue4(r, user);
+  await resolve(user, i.challenge);
+  assert.deepEqual((await user.call(AP, "pending", {})).result, { challenges: [] });
+  assert.equal(r.approvals.stats().native.entries, 1);
+});
+
+test("the stored audit rows say which action was approved (real AuditLog), and carry no id or proof", async (t) => {
+  const db = new DatabaseSync(":memory:");
+  const log = new AuditLog(db, { redactor: new Redactor(), payloadAllowlist: CHALLENGE_PAYLOAD_ALLOWLIST });
+  const { r, user } = await setup(t, { audit: createChallengeAuditSink(log) });
+  const i = await issue4(r, user);
+  await approve4(r, user, i);
+  await retry(user, i.challenge.challengeId, i.key);
+  const rows = log.list({ limit: 50 }).filter((e) => e.action.startsWith("tier4."));
+  assert.ok(rows.length >= 5);
+  for (const row of rows) assert.equal((row.payload as Record<string, unknown>)["method"], "remove", `${row.action} lacks the method`);
+  const text = JSON.stringify(rows);
+  assert.ok(!text.includes(i.proof) && !text.includes(i.challenge.challengeId));
+  assert.ok(!JSON.stringify(new AuditLog(new DatabaseSync(":memory:")).list()).includes("method"));
+  db.close();
+});
+
+test("the dialog names the action: the summary starts with the policy-table key, whatever the target", async (t) => {
+  const { r, user } = await setup(t);
+  const i = await issue4(r, user);
+  assert.match(String(i.sent["summary"]), /^axis\.worktrees\/1\.remove: /);
+  assert.ok(String(i.sent["summary"]).length <= 192);
 });
 
 test("unsolicited, mismatched and wrong-proof native.result messages are ignored and counted", async (t) => {
