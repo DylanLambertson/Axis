@@ -166,15 +166,24 @@ export class WorktreeManager {
    * (CLI runs); `expectedRunBaseSha` pins that ref's commit. By default the
    * workspace's creation snapshot is used and its recorded commit is enforced.
    */
-  restoreFromRunBase(input: { path: string; runId?: string; expectedRunBaseSha?: string }): Promise<RestoreResult> {
+  restoreFromRunBase(input: {
+    path: string; runId?: string; expectedRunBaseSha?: string; expectedWorktree?: string;
+  }): Promise<RestoreResult> {
     return this.boundary(async () => {
       assertNoTraversal(input.path, 'path');
+      // A caller that has already checked ONE workspace names it: the path must lie under it with no symlinked
+      // parent, and the worktree the path resolves to must be that same one (otherwise a symlink planted inside
+      // workspace A would send the write to workspace B, past every check made for A).
+      if (input.expectedWorktree !== undefined) await this.assertUnder(input.expectedWorktree, input.path);
       if (input.runId !== undefined && !IdSchema.safeParse(input.runId).success) throw invalid('invalid run id');
       const parent = await canonicalise(path.dirname(input.path));
       const target = path.join(parent, path.basename(input.path));
       let existing = parent;
       while (!(await fs.stat(existing).then(() => true, () => false))) existing = path.dirname(existing);
       return this.withWorkspace(existing, false, 'restore', async ({ repo, workTree, meta }) => {
+        if (input.expectedWorktree !== undefined && (await canonicalise(input.expectedWorktree)) !== workTree) {
+          throw new WorktreeError('E_POLICY_DENIED', 'path resolves into a different worktree', { reason: 'worktree-mismatch' });
+        }
         const relPath = path.relative(workTree, target);
         if (relPath === '' || isOutsideRel(relPath) || !isSameOrInside(target, workTree, this.platform)) {
           throw new WorktreeError('E_POLICY_DENIED', 'path is outside the worktree');
@@ -229,6 +238,23 @@ export class WorktreeManager {
         return deleted;
       });
     });
+  }
+
+  /** The path is inside `expected` (lexically) and none of its parent components below it is a symlink. */
+  private async assertUnder(expected: string, p: string): Promise<void> {
+    assertNoTraversal(expected, 'expected worktree');
+    const root = path.resolve(expected);
+    const rel = path.relative(root, path.resolve(p));
+    if (rel === '' || isOutsideRel(rel)) throw new WorktreeError('E_POLICY_DENIED', 'path is outside the worktree');
+    let cur = root;
+    for (const part of rel.split(path.sep).slice(0, -1)) {
+      cur = path.join(cur, part);
+      const st = await fs.lstat(cur).catch((e: NodeJS.ErrnoException) => (e.code === 'ENOENT' ? null : Promise.reject(e)));
+      if (st === null) return; // the rest does not exist yet: nothing to follow
+      if (st.isSymbolicLink() || !st.isDirectory()) {
+        throw new WorktreeError('E_POLICY_DENIED', 'a parent folder of the path is a symlink', { reason: 'symlink-component' });
+      }
+    }
   }
 
   // ---- implementations -------------------------------------------------------
