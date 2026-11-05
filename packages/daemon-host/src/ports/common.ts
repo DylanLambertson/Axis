@@ -17,4 +17,10 @@ export interface Caller {
 export interface PortContext {
   readonly caller: Caller;
   readonly signal: AbortSignal;
+  /**
+   * The opaque, single-use capability a spent approval produced for this call (`ctx.approved.capability` of the
+   * handler), when there is one. Only the binding that understands it reads it; a port that has no use for it ignores
+   * it. A handler passes it through and never builds one.
+   */
+  readonly confirmation?: unknown;
 }

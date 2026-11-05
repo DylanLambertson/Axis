@@ -67,6 +67,13 @@ export interface ApprovalsDeps {
    * dialog. Display text only; an unsafe or empty answer, or a throw, falls back to the challenge's target summary.
    */
   readonly describe?: (input: ApprovalInput, content: ApprovalContent) => string | undefined;
+  /**
+   * Mints the opaque capability of a destructive library call (design section 5.2: for worktrees `markDiscardConfirmed`,
+   * see `gate/worktrees-confirm.ts`). Called INSIDE the approval action, after the approval was spent, with the
+   * content the user confirmed; the result is handed to the handler as `ctx.approved.capability`. A throw fails the
+   * action (the approval is already spent). Absent, or `undefined` for a method that needs none: no capability.
+   */
+  readonly capability?: (input: ApprovalInput, content: ApprovalContent) => unknown;
 }
 
 /** What the `axis.approvals/1` handlers may do. The caller is the attested identity, never a payload value. */
@@ -263,7 +270,10 @@ export function createApprovals(deps: ApprovalsDeps): Approvals {
             target: content.target,
             currentContentDigest: content.contentDigest,
           },
-          (confirmed) => action(confirmed),
+          (confirmed) => {
+            const capability = deps.capability?.(input, content);
+            return action(capability === undefined ? confirmed : { ...confirmed, capability });
+          },
         );
         forget(approval.challengeId);
         return result;
