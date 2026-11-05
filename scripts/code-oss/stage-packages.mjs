@@ -86,11 +86,11 @@ export function zodClosure(zodDir, read = (rel) => readRegular(join(zodDir, rel)
     const dts = f.replace(/\.js$/, ".d.ts");
     if (dts !== f && listing.has(dts)) {
       wanted.add(dts);
-      for (const spec of importSpecifiers(decode(read(dts), dts), { code: true })) {
+      for (const spec of importSpecifiers(decode(read(dts), dts), dts)) {
         if (spec.startsWith(".")) queue.push(posix.normalize(posix.join(posix.dirname(dts), spec)).replace(/\.d\.ts$/, ".js"));
       }
     }
-    for (const spec of importSpecifiers(decode(read(f), f), { code: true })) {
+    for (const spec of importSpecifiers(decode(read(f), f), f)) {
       if (!spec.startsWith(".")) fail(`zod file ${f} imports a bare specifier: ${spec}`);
       queue.push(posix.normalize(posix.join(posix.dirname(f), spec)));
     }
@@ -226,8 +226,8 @@ export function stage({ repo, tree, now = Date.now(), maxFutureSkewMs = DEFAULT_
     for (const [rel, { abs, data, text }] of sources[n]) {
       const sourceRel = `packages/${n}/src/${rel}`;
       for (const t of hiddenLoaders(text)) fail(`${sourceRel}: ${t} hides a load from the import check`);
-      for (const t of nonLiteralLoads(text)) fail(`${sourceRel}: dynamic load needs a string literal (${t})`);
-      for (const spec of importSpecifiers(text)) {
+      for (const t of nonLiteralLoads(text, sourceRel)) fail(`${sourceRel}: ${t}`);
+      for (const spec of importSpecifiers(text, sourceRel)) {
         let c;
         try {
           c = classifySpecifier(spec, n, exportsOf);

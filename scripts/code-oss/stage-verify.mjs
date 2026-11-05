@@ -32,9 +32,9 @@ export function checkStagedFile(rel, text, fileSet) {
   const isTs = rel.endsWith(".ts");
   if (isTs && !rel.endsWith(".d.ts")) {
     for (const t of hiddenLoaders(text)) fail(`staged ${rel}: ${t} hides a load from the import check`);
-    for (const t of nonLiteralLoads(text)) fail(`staged ${rel}: dynamic load needs a string literal (${t})`);
   }
-  for (const spec of importSpecifiers(text, { code: pkg === "vendor" })) {
+  if (rel.endsWith(".ts") || rel.endsWith(".js")) for (const t of nonLiteralLoads(text, rel)) fail(`staged ${rel}: ${t}`);
+  for (const spec of importSpecifiers(text, rel)) {
     if (/^node:[a-z_]+(?:\/[a-z0-9_]+)*$/.test(spec)) {
       if (pkg === "vendor") fail(`staged ${rel}: vendored code imports ${spec}`);
       continue;

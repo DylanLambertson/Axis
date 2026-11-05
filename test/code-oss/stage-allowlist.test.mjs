@@ -49,7 +49,6 @@ const REFUSED = [
   ["an electron import", (r) => put(r, src("a.ts"), 'import "electron";\n'), /outside the allowlist/],
   ["a vs/* import", (r) => put(r, src("a.ts"), 'import "vs/base/common/event";\n'), /outside the allowlist/],
   ["an import hidden after a comment on the same line", (r) => put(r, src("a.ts"), 'const u = "x//"; import "electron";\n'), /outside the allowlist/],
-  ["an import that only appears in a comment", (r) => put(r, src("a.ts"), '// import x from "vs/base/common/event";\n'), /outside the allowlist/],
   ["a require call", (r) => put(r, src("a.ts"), 'const x = require("left-pad");\n'), /outside the allowlist/],
   ["a zod subpath", (r) => put(r, src("a.ts"), 'import "zod/mini";\n'), /only the "zod" entry/],
   ["an unknown workspace package", (r) => put(r, src("a.ts"), 'import "@axis/nope";\n'), /unknown workspace package/],
@@ -155,6 +154,19 @@ const REFUSED_2 = [
   ["the same desync with import x = require", (r) => put(r, src("a.ts"), "if (Date.now() < 0) /'/.test(\"\"); import fs = require(\"fs\");\n"), /outside the allowlist|only the "zod" entry|non-literal/],
   ["the same desync with import type", (r) => put(r, src("a.ts"), "if (Date.now() < 0) /'/.test(\"\"); import type { X } from \"vs/base/common/event\";\n"), /outside the allowlist|only the "zod" entry|non-literal/],
   ["the same desync with export {..} from a bare built-in", (r) => put(r, src("a.ts"), "if (Date.now() < 0) /'/.test(\"\"); export { \"x\" as y } from \"child_process\";\n"), /outside the allowlist|only the "zod" entry|non-literal/],
+  ["the reviewed regex-after-brace desync with a computed dynamic import", (r) => put(r, src("a.ts"), "export const probeOpen = \"/*\"; export function probeBlock(): void {} /'/.test(\"\"); export const probeLoad = (): Promise<unknown> => import(/* x */[\"z\", \"od\"].join(\"\")); export const probeClose = \"*/\";\n"), /import\(\) needs a single string literal/],
+  ["a comment between from and the specifier", (r) => put(r, src("a.ts"), "export { z } from/* y */\"zod/v4\";\n"), /only the .zod. entry/],
+  ["a regex after export default hiding an import", (r) => put(r, src("a.ts"), "export default /'/.test(\"\"); export * from \"electron\";\n"), /outside the allowlist/],
+  ["a template-literal desync hiding an import", (r) => put(r, src("a.ts"), "export const t = `${`}`}'`; export * from \"electron\";\n"), /outside the allowlist/],
+  ["a concatenated specifier", (r) => put(r, src("a.ts"), "export const m = () => import(\"elec\" + \"tron\");\n"), /import\(\) needs a single string literal/],
+  ["import of a variable", (r) => put(r, src("a.ts"), "declare const name: string; export const m = () => import(name);\n"), /import\(\) needs a single string literal/],
+  ["require of a variable", (r) => put(r, src("a.ts"), "declare const name: string; export const m = require(name);\n"), /require\(\) needs a single string literal|hides a load/],
+  ["require used as a value", (r) => put(r, src("a.ts"), "declare const require: (x: string) => unknown; const r = require; export const m = r(\"fs\");\n"), /require used as a value/],
+  ["import.meta.resolve", (r) => put(r, src("a.ts"), "export const m = import.meta.resolve(\"electron\");\n"), /import\.meta can reach modules|hides a load/],
+  ["import.meta indexed by a string", (r) => put(r, src("a.ts"), "export const m = (import.meta as any)[\"resolve\"](\"electron\");\n"), /import\.meta can reach modules|hides a load/],
+  ["an import type of a forbidden module", (r) => put(r, src("a.ts"), "export type T = import(\"electron\").App;\n"), /outside the allowlist/],
+  ["a triple-slash path reference", (r) => put(r, src("a.ts"), "/// <reference path=\"../../elsewhere/x.ts\" />\nexport {};\n"), /directive|hides a load/],
+  ["a syntax error", (r) => put(r, src("a.ts"), "export const = ;\n"), /syntax error/],
   ["a package named vendor", (r) => { put(r, "packages/vendor/package.json", JSON.stringify({ name: "@axis/vendor", exports: { ".": { default: "./dist/src/index.js" } } })); put(r, "packages/vendor/src/index.ts", "export {};\n"); }, /reserved for vendored code/],
   ["a hard link to a file outside the repository", (r, b) => { put(b, "outside/creds.ts", "export const secret = 1;\n"); linkSync(join(b, "outside/creds.ts"), join(r, src("creds.ts"))); }, /hard links/],
   ["a hard link inside zod", (r, b) => { put(b, "outside/core.js", "export const z = 1;\n"); rmSync(join(r, "node_modules/zod/v4/core.js")); linkSync(join(b, "outside/core.js"), join(r, "node_modules/zod/v4/core.js")); }, /hard links/],
@@ -244,5 +256,14 @@ test("the vendored zod package.json is a minimal one, without scripts or an expo
     const pj = JSON.parse(readFileSync(join(tree, STAGE_ROOT, "vendor/zod/package.json"), "utf8"));
     assert.deepEqual(Object.keys(pj).sort(), ["description", "license", "name", "type", "version"]);
     assert.equal(pj.version, "9.9.9");
+  });
+});
+
+test("stage ignores an import that only appears in a comment and leaves the comment as written", () => {
+  withFixture(({ repo, tree }) => {
+    put(repo, src("c.ts"), '// import x from "vs/base/common/event";\n/* export * from "electron"; */\nexport const c = 1;\n');
+    stage({ repo, tree });
+    const text = readFileSync(join(tree, STAGE_ROOT, "protocol/c.ts"), "utf8");
+    assert.match(text, /\/\/ import x from "vs\/base\/common\/event";/);
   });
 });

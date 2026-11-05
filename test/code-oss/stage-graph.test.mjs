@@ -3,27 +3,17 @@
 // and the metafile rules of check-daemon-graph.mjs.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { checkMetafile } from "../../scripts/code-oss/check-daemon-graph.mjs";
-import { brandVerdict, mangleExemptionPresent, privateNameCount, privatesSurvive } from "../../scripts/code-oss/check-privates.mjs";
+import { PROBE_MARKER, brandVerdict, restoreStaleProbe, mangleExemptionPresent, privateNameCount, privatesSurvive } from "../../scripts/code-oss/check-privates.mjs";
 import { STAGE_ROOT, stage } from "../../scripts/code-oss/stage-packages.mjs";
-import { RESTRICTED_MODULES, RESTRICTED_SUBPATHS, classifySpecifier, hiddenLoaders, importSpecifiers, maskComments, nonLiteralLoads } from "../../scripts/code-oss/stage-scan.mjs";
+import { RESTRICTED_MODULES, RESTRICTED_SUBPATHS, classifySpecifier, hiddenLoaders, importSpecifiers, nonLiteralLoads } from "../../scripts/code-oss/stage-scan.mjs";
 import { checkStagedFile, sha256, treeHash, verifyStaged } from "../../scripts/code-oss/stage-verify.mjs";
 import { put, withFixture } from "./stage-fixture.mjs";
 
 const staged = (tree, rel) => join(tree, STAGE_ROOT, rel);
-
-test("importSpecifiers sees every import form, comments included", () => {
-  const src = 'import a from "zod";\nimport type { B } from "../b.js";\nexport * from "./c.js";\nexport * as d from "./d.js";\nimport "./e.js";\nimport f = require("node:fs");\nconst g = await import("electron");\n// import x from "in-comment";\n';
-  assert.deepEqual(importSpecifiers(src).sort(), ["../b.js", "./c.js", "./d.js", "./e.js", "electron", "in-comment", "node:fs", "zod"]);
-});
-
-test("importSpecifiers with code:true ignores comments but keeps strings that contain //", () => {
-  const src = 'import a from "zod"; // import x from "no"\n/* import "y" */ const u = "http://x"; import b from "./b.js";\nconst r = /["\']/; import c from "./c.js";\n';
-  assert.deepEqual(importSpecifiers(src, { code: true }).sort(), ["./b.js", "./c.js", "zod"]);
-  assert.equal(maskComments("a // b\nc").split("\n").length, 2);
-});
 
 test("nonLiteralLoads and hiddenLoaders", () => {
   assert.equal(nonLiteralLoads("await import(name)").length, 1);
@@ -171,7 +161,7 @@ test("check-privates: counts # names on tokens, sees the exemption, and flags ma
   assert.match(privatesSurvive({ file: "a.js", sourcePrivates: 3, builtText: "class A { $a = 1; }" })[0], /mangled into plain properties/);
 });
 
-const GOOD_PROBE = { realPrincipal: true, handWritten: false, cloned: false, copied: false, ownKeys: 0, realAttestation: true, attestationHandWritten: false, attestationCloned: false, first: null, second: "ATTESTATION_USED" };
+const GOOD_PROBE = { attestationOwnKeys: 0, realPrincipal: true, handWritten: false, cloned: false, copied: false, ownKeys: 0, realAttestation: true, attestationHandWritten: false, attestationCloned: false, first: null, second: "ATTESTATION_USED" };
 
 test("brandVerdict accepts a probe whose forgeries are all rejected", () => {
   assert.deepEqual(brandVerdict(GOOD_PROBE), []);
@@ -184,11 +174,33 @@ test("brandVerdict fails on each accepted forgery, an exposed key, a reset singl
   assert.match(brandVerdict({ ...GOOD_PROBE, ownKeys: 1 })[0], /ownKeys is 1/);
   assert.match(brandVerdict({ ...GOOD_PROBE, second: null })[0], /second is null/);
   assert.match(brandVerdict({ ...GOOD_PROBE, realPrincipal: false })[0], /realPrincipal/);
-  assert.equal(brandVerdict(null).length, 10);
+  assert.match(brandVerdict({ ...GOOD_PROBE, attestationOwnKeys: 2 })[0], /attestationOwnKeys is 2/);
+  assert.equal(brandVerdict(null).length, 11);
 });
 
 test("the committed brand probe imports the brand classes and mints through the daemon-only modules", () => {
   const text = readFileSync(new URL("../../scripts/code-oss/brand-probe.ts", import.meta.url), "utf8");
   for (const want of ["journal/principal.js", "journal/daemon-principal.js", "runs/attestation.js", "runs/daemon-attestation.js", "structuredClone", "UserPrincipal.is", "TrustAttestation.is"]) assert.ok(text.includes(want), want);
   for (const key of Object.keys(GOOD_PROBE)) assert.ok(new RegExp(`\\b${key}\\b`).test(text), `probe reports ${key}`);
+});
+
+test("restoreStaleProbe puts the overlay entry back over a leftover probe, and leaves a real entry alone", () => {
+  const dir = mkdtempSync(join(tmpdir(), "axis-probe-"));
+  try {
+    const entry = join(dir, "entry.ts");
+    const overlay = join(dir, "overlay.ts");
+    writeFileSync(overlay, "export const real = 1;\n");
+    writeFileSync(entry, `// ${PROBE_MARKER} (x)\nexport const probe = 1;\n`);
+    assert.equal(restoreStaleProbe(entry, overlay), true);
+    assert.equal(readFileSync(entry, "utf8"), "export const real = 1;\n");
+    assert.equal(restoreStaleProbe(entry, overlay), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("the committed probe carries the marker the stale-probe guard looks for, and tries to reset the single-use flag", () => {
+  const text = readFileSync(new URL("../../scripts/code-oss/brand-probe.ts", import.meta.url), "utf8");
+  assert.ok(text.includes(PROBE_MARKER));
+  assert.match(text, /typeof holder\[key\] === 'boolean'/);
 });

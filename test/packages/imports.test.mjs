@@ -8,46 +8,15 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { forbiddenLoaders, isScriptFile, principalReexports } from "./loaders.mjs";
-import { tokenNonLiteralLoads, tokenSpecifiers } from "../../scripts/code-oss/stage-scan.mjs";
+import { importSpecifiers, nonLiteralLoads } from "../../scripts/code-oss/stage-ast.mjs";
 
 const packagesDir = fileURLToPath(new URL("../../packages/", import.meta.url));
 
 /** Packages that must stay free of Node imports (contracts shared with the web target). */
 const NO_NODE = new Set(["protocol"]);
 
-function stripComments(source) {
-  return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:"'`])\/\/.*$/gm, "$1");
-}
-
-/** Dynamic `import(...)` or `require(...)` whose argument is not a plain string literal. */
-export function nonLiteralLoads(source) {
-  const text = stripComments(source);
-  const found = [];
-  for (const m of text.matchAll(/\b(import|require)\s*\(\s*(?!['"][^'"`$]*['"]\s*\))([^)]{0,40})/g)) {
-    found.push(`${m[1]}(${m[2].trim()}`);
-  }
-  if (found.length === 0) found.push(...tokenNonLiteralLoads(source)); // the tokenizer also sees what a comment hides
-  return found;
-}
-
-/** Import specifiers in TypeScript source: static, side-effect, re-export and dynamic imports. */
-export function importSpecifiers(source) {
-  const text = stripComments(source);
-  const found = [];
-  const patterns = [
-    /\b(?:import|export)\b[^'"`;]*?\bfrom\s*['"]([^'"]+)['"]/g,
-    /\bimport\s*['"]([^'"]+)['"]/g,
-    /\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/g,
-    /\brequire\s*\(\s*['"]([^'"]+)['"]\s*\)/g,
-    /(?<![\w'"`])from\s*['"]([^'"\s,;]+)['"]/g,
-  ];
-  for (const re of patterns) for (const m of text.matchAll(re)) found.push(m[1]);
-  // The text patterns miss string-named bindings (`import { "z" as z } from "zod"`) and a quote inside a comment
-  // before the specifier; the staging hook's tokenizer sees both.
-  for (const t of tokenSpecifiers(source)) if (!found.includes(t.spec)) found.push(t.spec);
-  return [...new Set(found)];
-}
-
+// The scanners imported above are the staging hook's own (scripts/code-oss/stage-ast.mjs, a TypeScript parse), so the lint and the
+// hook cannot disagree about what a file imports.
 /**
  * Subpaths of @axis/journal and the only packages that may import them. The user principal is minted by the
  * daemon's connection layer from the attested connection; nothing else may be able to create one. Any other
@@ -156,11 +125,11 @@ for (const pkg of packages) {
     const pkgDir = join(packagesDir, pkg);
     for (const file of sourceFiles(pkgDir)) {
       const source = readFileSync(file, "utf8");
-      for (const spec of importSpecifiers(source)) {
+      for (const spec of importSpecifiers(source, file)) {
         const why = violation(pkg, spec, file, pkgDir);
         if (why) bad.push(`${file}: ${spec} (${why})`);
       }
-      for (const call of nonLiteralLoads(source)) bad.push(`${file}: ${call} (dynamic load needs a string literal)`);
+      for (const call of nonLiteralLoads(source, file)) bad.push(`${file}: ${call}`);
       for (const name of forbiddenLoaders(source)) bad.push(`${file}: ${name} (loads a module without a visible specifier)`);
       for (const re of principalReexports(source)) bad.push(`${file}: ${re} (the user-principal subpath must not be re-exported)`);
     }
@@ -321,7 +290,7 @@ test("scanner: a .mts file that imports and re-exports the principal is caught e
     const bad = [];
     for (const f of sourceFiles(root)) {
       const source = readFileSync(f, "utf8");
-      for (const spec of importSpecifiers(source)) {
+      for (const spec of importSpecifiers(source, f)) {
         const why = violation("providers", spec, f, root);
         if (why) bad.push(spec);
       }
