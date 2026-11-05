@@ -98,6 +98,11 @@ export function violation(pkg, spec, file = null, pkgDir = null) {
     const rel = relative(pkgDir, target);
     // The module that mints the discard token: inside the host's src/, only the public index may load it (a handler
     // or a service reaching it by a relative path could mint a token with no spent approval).
+    // The public index re-exports the wiring that closes over it: nothing inside src/ may load the index (a barrel hop).
+    if (pkg === HOST_PACKAGE && /^src[\\/]index(\.[cm]?[jt]s)?$/.test(rel)) {
+      const from = relative(pkgDir, file).split(sep).join("/");
+      if (from.startsWith("src/")) return "nothing inside src/ may import the public index";
+    }
     if (pkg === HOST_PACKAGE && /^src[\\/]gate[\\/]worktrees-confirm(\.[cm]?[jt]s)?$/.test(rel)) {
       const from = relative(pkgDir, file).split(sep).join("/");
       if (from.startsWith("src/") && from !== "src/index.ts") return "only src/index.ts may import the discard token minter";
@@ -379,6 +384,10 @@ test("scanner: the daemon host is imported by nothing and imports the restricted
     assert.notEqual(violation("daemon-host", spec, at(f), dir), null, f);
   }
   assert.equal(violation("daemon-host", "../src/gate/worktrees-confirm.js", at("test/worktrees-unit.test.ts"), dir), null, "tests may");
+  // The barrel hop: a handler loading the public index could reach whatever it exports.
+  for (const [f, spec] of [["src/handlers/worktrees.ts", "../index.js"], ["src/worktrees/service.ts", "../index"], ["src/gate/approvals.ts", "../index.ts"]]) {
+    assert.notEqual(violation("daemon-host", spec, at(f), dir), null, f);
+  }
   assert.notEqual(violation("runs", "@axis/worktrees/daemon-confirm"), null);
   assert.notEqual(violation("daemon", "@axis/worktrees/daemon-confirm"), null);
   // Runs and review: bindings only.

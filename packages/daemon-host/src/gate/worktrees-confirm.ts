@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import type { ApprovalContent, ApprovalInput } from "@axis/daemon";
 import { markDiscardConfirmed } from "@axis/worktrees/daemon-confirm";
-import type { ApprovalsDeps } from "./approvals.js";
+import { createApprovals, type Approvals, type ApprovalsDeps } from "./approvals.js";
 
 /**
  * The confirmation inputs of the worktree calls that discard data (design section 5.2, `docs/packages.md` "Calling
@@ -50,26 +50,27 @@ export class PreviewNotes {
   describe = (_input: ApprovalInput, content: ApprovalContent): string | undefined => this.#notes.get(`${content.target}|${content.contentDigest}`);
 }
 
-export interface WorktreesApprovalWiring {
-  /** Spread into `createApprovals`: the capability minter, the dialog text and (when given) the preflight. */
-  readonly approvals: Pick<ApprovalsDeps, "capability" | "describe" | "preflight">;
-  /** Pass to `createWorktreeContentHooks` as `onPreview`. */
+export interface WorktreesApprovals extends Approvals {
+  /** Pass to `createWorktreeContentHooks` as `onPreview`: it records a line of counts and returns nothing. */
   readonly onPreview: PreviewNotes["record"];
 }
 
 /**
- * Everything the worktrees binding adds to `createApprovals`. `preflight` is the stall check seam (the anchor check
- * of ticket H4: refuse tier 3 and above while the supervisor withholds acknowledgements); it is passed through
- * unchanged and defaults to none. It must be synchronous (the gate refuses a promise).
+ * `createApprovals` for the worktrees binding: the challenge manager and gate of ticket H5 with the discard capability and
+ * the dialog text wired in. The capability minter is CLOSED OVER here: it is not an option, a property or a return value
+ * of anything exported, so no caller (a handler, a service, the composition root) can obtain a function that mints a
+ * discard token without a spent approval; the only way to a token is a call that went through `gate.execute`. What
+ * comes back is the gate, the narrow port the `axis.approvals/1` handlers use, `stats`, `dispose` and `onPreview`.
+ * `preflight` (the anchor stall check, ticket H4) is passed through; it must be synchronous.
  */
-export function createWorktreesApprovalWiring(options: { readonly preflight?: (tier: number) => void } = {}): WorktreesApprovalWiring {
+export function createWorktreesApprovals(deps: Omit<ApprovalsDeps, "capability" | "describe">): WorktreesApprovals {
   const notes = new PreviewNotes();
-  return {
-    approvals: {
-      capability: worktreesCapability,
-      describe: notes.describe,
-      ...(options.preflight === undefined ? {} : { preflight: options.preflight }),
-    },
+  const approvals = createApprovals({ ...deps, capability: worktreesCapability, describe: notes.describe });
+  return Object.freeze({
+    gate: approvals.gate,
+    port: approvals.port,
+    stats: approvals.stats,
+    dispose: approvals.dispose,
     onPreview: notes.record,
-  };
+  });
 }

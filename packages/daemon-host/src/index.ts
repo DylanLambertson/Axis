@@ -39,8 +39,8 @@ export * from "./gate/summary.js";
 export * from "./handlers/approvals.js";
 // Worktrees binding over the real @axis/worktrees (ticket H8).
 export * from "./bindings/worktrees.js";
-// Only the wiring is public: `worktreesCapability` mints a discard token and stays inside the gate (see imports.test.mjs).
-export { createWorktreesApprovalWiring, type WorktreesApprovalWiring } from "./gate/worktrees-confirm.js";
+// Only the factory is public: the capability minter is closed over inside it and never returned (see worktrees-gate-exports.test.ts).
+export { createWorktreesApprovals, type WorktreesApprovals } from "./gate/worktrees-confirm.js";
 export * from "./handlers/worktrees.js";
 export * from "./worktrees/audit.js";
 export * from "./worktrees/errors.js";
@@ -52,5 +52,6 @@ export * from "./worktrees/project-mutex.js";
 export * from "./worktrees/reconcile.js";
 export * from "./worktrees/service.js";
 export * from "./worktrees/shapes.js";
+export * from "./worktrees/finalise-recovery.js";
 export * from "./worktrees/restore-paths.js";
 export * from "./worktrees/slug.js";
