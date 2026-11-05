@@ -22,7 +22,7 @@ const key = (k: string, over: Partial<StoreKey> = {}): StoreKey => ({
 
 function make(db: DatabaseSync = openDatabase(":memory:"), over: Partial<IdempotencyStoreOptions> = {}) {
   const audit = new AuditLog(db);
-  const store = JournalIdempotencyStore.open(db, { audit, redactor: new Redactor(), ...(over.now ? { monotonic: over.now } : {}), ...over });
+  const store = JournalIdempotencyStore.open(db, { audit, redactor: new Redactor(), ...over });
   return { db, audit, store };
 }
 
@@ -100,7 +100,7 @@ test("multi-byte results are bounded by UTF-8 bytes, not characters", () => {
 
 test("the total result bytes are bounded: the oldest completed rows make room", () => {
   let now = 0;
-  const { db, store } = make(openDatabase(":memory:"), { now: () => ++now, maxTotalBytes: 60, maxShareBytes: 60 });
+  const { db, store } = make(openDatabase(":memory:"), { monotonic: () => ++now, maxTotalBytes: 60, maxShareBytes: 60 });
   for (const n of ["1", "2", "3", "4"]) {
     store.begin(key(n), "h");
     store.complete(key(n), "z".repeat(20), "c"); // 22 canonical bytes each
@@ -113,7 +113,7 @@ test("the total result bytes are bounded: the oldest completed rows make room", 
 
 test("TTL: a settled key expires and can run again; an in-progress one does not", () => {
   let now = 1_000;
-  const { store } = make(openDatabase(":memory:"), { now: () => now, ttlMs: 100, sweepEveryMs: 10_000 });
+  const { store } = make(openDatabase(":memory:"), { monotonic: () => now, ttlMs: 100, sweepEveryMs: 10_000 });
   store.begin(key("s"), "h");
   store.complete(key("s"), 1, "c");
   store.begin(key("p"), "h");
@@ -127,7 +127,7 @@ test("TTL: a settled key expires and can run again; an in-progress one does not"
 
 test("expired rows are swept on an interval, not forgotten forever", () => {
   let now = 0;
-  const { store } = make(openDatabase(":memory:"), { now: () => now, ttlMs: 10, sweepEveryMs: 50 });
+  const { store } = make(openDatabase(":memory:"), { monotonic: () => now, ttlMs: 10, sweepEveryMs: 50 });
   for (let i = 0; i < 5; i++) {
     store.begin(key(`e${i}`), "h");
     store.complete(key(`e${i}`), i, "c");
@@ -143,7 +143,7 @@ test("expired rows are swept on an interval, not forgotten forever", () => {
 
 test("an actor at its cap evicts only its own oldest settled rows, never another actor's or an in-progress one", () => {
   let now = 0;
-  const { store } = make(openDatabase(":memory:"), { now: () => ++now, maxPerActor: 3 });
+  const { store } = make(openDatabase(":memory:"), { monotonic: () => ++now, maxPerActor: 3 });
   store.begin(key("v", { actorId: "victim" }), "h");
   store.complete(key("v", { actorId: "victim" }), "v", "c");
   for (let i = 0; i < 20; i++) {

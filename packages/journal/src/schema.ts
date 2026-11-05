@@ -95,8 +95,8 @@ export const JOURNAL_MIGRATIONS: readonly Migration[] = [
     `,
   },
   {
-    // The idempotency store's trusted time, saved apart from row timestamps: a boot starts its clock from it, so a wrong
-    // reading that was written into a row cannot carry into the next boot. One row.
+    // The idempotency store's clock: accumulated process uptime in milliseconds, one row, advanced inside each write's
+    // transaction. Rows are created, expire and are deleted by it; the wall clock is never used.
     version: 3,
     sql: `
       CREATE TABLE daemon_idempotency_clock (

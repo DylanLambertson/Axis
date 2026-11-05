@@ -14,7 +14,7 @@ const CHILD = fileURLToPath(new URL("./fixtures/idem-child.js", import.meta.url)
 const key = (k: string, over: Partial<StoreKey> = {}): StoreKey => ({ actorId: "a", workspaceId: "w", contract: "axis.test", version: 1, method: "m", key: k, ...over });
 function make(over: Partial<IdempotencyStoreOptions> = {}, db: DatabaseSync = openDatabase(":memory:")) {
   const audit = new AuditLog(db);
-  return { db, audit, store: JournalIdempotencyStore.open(db, { audit, redactor: new Redactor(), ...(over.now ? { monotonic: over.now } : {}), ...over }) };
+  return { db, audit, store: JournalIdempotencyStore.open(db, { audit, redactor: new Redactor(), ...over }) };
 }
 const done = (s: JournalIdempotencyStore, k: StoreKey, v: unknown = 1): void => {
   s.begin(k, "h");
@@ -24,8 +24,8 @@ const done = (s: JournalIdempotencyStore, k: StoreKey, v: unknown = 1): void => 
 test("S1: an unknown key is never evicted by its caller's later calls, and a full caller of unknown rows is exhausted", () => {
   let now = 0;
   const db = openDatabase(":memory:");
-  make({ now: () => ++now, maxPerActor: 5 }, db).store.begin(key("destructive"), "h"); // the daemon dies mid-call
-  const { store } = make({ now: () => ++now, maxPerActor: 5 }, db); // restart
+  make({ monotonic: () => ++now, maxPerActor: 5 }, db).store.begin(key("destructive"), "h"); // the daemon dies mid-call
+  const { store } = make({ monotonic: () => ++now, maxPerActor: 5 }, db); // restart
   assert.equal(store.begin(key("destructive"), "h").state, "unknown");
   for (let i = 0; i < 50; i++) done(store, key(`f${i}`));
   assert.deepEqual(store.begin(key("destructive"), "h"), { state: "unknown", reason: "interrupted" });
@@ -49,7 +49,7 @@ test("S1: a result-not-stored key survives the flood too", () => {
 
 test("S2: callers filling the row table cannot starve another caller; completed rows are evicted first", () => {
   let now = 0;
-  const { store } = make({ now: () => ++now, maxEntries: 6, maxPerActor: 3 });
+  const { store } = make({ monotonic: () => ++now, maxEntries: 6, maxPerActor: 3 });
   for (const actorId of ["f1", "f2"]) for (let i = 0; i < 3; i++) done(store, key(`k${i}`, { actorId }));
   assert.deepEqual(store.begin(key("v1", { actorId: "victim" }), "h"), { state: "new" });
   store.complete(key("v1", { actorId: "victim" }), "mine", "c");
@@ -66,7 +66,7 @@ test("S2: the row table is exhausted only when nothing in it is completed", () =
 
 test("S2: one caller cannot use the whole result byte budget; another caller's results still replay", () => {
   let now = 0;
-  const { store } = make({ now: () => ++now, maxTotalBytes: 800, maxShareBytes: 100 });
+  const { store } = make({ monotonic: () => ++now, maxTotalBytes: 800, maxShareBytes: 100 });
   for (let i = 0; i < 30; i++) done(store, key(`f${i}`, { actorId: "flood" }), "z".repeat(18)); // 20 bytes each
   for (let i = 0; i < 20; i++) done(store, key(`v${i}`, { actorId: "victim" }), "y".repeat(18));
   const states = (id: string, n: number) => Array.from({ length: n }, (_, i) => store.begin(key(`${id === "flood" ? "f" : "v"}${i}`, { actorId: id }), "h").state);
@@ -82,7 +82,7 @@ test("S2: a result larger than a caller's share is not stored", () => {
 
 test("rulings: an interrupted key is remembered for 7 days, a result-not-stored one for the TTL", () => {
   let now = 1_000;
-  const { store } = make({ now: () => now, monotonic: () => now, maxResultBytes: 10 });
+  const { store } = make({ monotonic: () => now, maxResultBytes: 10 });
   store.begin(key("i"), "h");
   store.markUnknown(key("i"));
   store.begin(key("r"), "h");
@@ -132,12 +132,12 @@ test("N2: the stored text is the checked text: a getter cannot change it between
 
 test("N3: option and clock validation", () => {
   assert.throws(() => make({ sweepEveryMs: Number.NaN }), { code: "E_INVALID_ARGUMENT" });
-  assert.throws(() => make({ now: () => 1.5 }), { code: "E_INTERNAL" });
+  assert.throws(() => make({ monotonic: () => Number.NaN }), { code: "E_INTERNAL" });
 });
 
 test("N4: inside one boot the clock never runs backwards", () => {
   let now = 1_000;
-  const { store } = make({ now: () => now, ttlMs: 100 });
+  const { store } = make({ monotonic: () => now, ttlMs: 100 });
   done(store, key("k"));
   now = 1_050;
   now = 0; // the clock jumps back
@@ -207,25 +207,9 @@ test("SIGKILL while large commits run back to back: every surviving key is intac
   assert.ok(total > 0, "at least one commit survived a kill, so the check above ran");
 });
 
-test("R3: one far-future clock reading does not pin expiries for the rest of the run", () => {
-  let real = 1_000_000; // the true time; the monotonic clock follows it
-  let spike = false;
-  const { store } = make({ now: () => (spike ? 4_000_000_000_000 : real), monotonic: () => real }); // a bad reading in 2096
-  spike = true;
-  done(store, key("spike"));
-  spike = false; // the clock is right again
-  real += 1000;
-  store.begin(key("poke"), "h"); // any later call; the sweep brings the bad expiry back
-  real += 60_001;
-  store.begin(key("poke2"), "h");
-  real += 8 * 24 * 3600_000;
-  store.begin(key("tick"), "h");
-  assert.equal(store.begin(key("spike"), "h").state, "new", "the row expires in the real timeline");
-});
-
 test("R4: at the row limit the caller holding the most rows loses its oldest, not the one with the biggest results", () => {
   let now = 0;
-  const { store } = make({ now: () => ++now, maxEntries: 12, maxPerActor: 10 });
+  const { store } = make({ monotonic: () => ++now, maxEntries: 12, maxPerActor: 10 });
   for (let i = 0; i < 3; i++) done(store, key(`v${i}`, { actorId: "victim" }), "v".repeat(2000)); // few rows, big results
   for (let w = 0; w < 3; w++) for (let i = 0; i < 3; i++) done(store, key(`a${i}`, { actorId: "attacker", workspaceId: `w${w}` }), 1); // many rows, tiny
   for (let i = 0; i < 6; i++) store.begin(key(`n${i}`, { actorId: "new" }), "h");
