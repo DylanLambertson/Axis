@@ -34,6 +34,9 @@ function listing(f: Fixture, data: Buffer, split: number | null): string {
   return join(dir, "git");
 }
 
+// A whole second, so that restoring an mtime restores every nanosecond of it.
+const SECOND = 1_700_000_000;
+
 const digestOf = async (f: Fixture, g: string): Promise<string | null> =>
   (await takeSnapshot(opts(f, { gitPath: g }))).entries.find((e) => e.id === "index/flags")?.sha256 ?? null;
 
@@ -47,6 +50,10 @@ test("the digest does not depend on where the pipe splits the listing", { skip: 
     // An over-long record is dropped whole wherever it is split, and blocks.
     const long = Buffer.concat([Buffer.from("S a.ts\0S "), Buffer.alloc(5000, 0x61), Buffer.from("\0S b.ts\0")]);
     const ref = await digestOf(f, listing(f, long, null));
+    // A record whose tail looks like a record: after a split past the bound, that tail must not be taken as one.
+    const tail = Buffer.concat([Buffer.from("S a.ts\0S "), Buffer.alloc(4300, 0x61), Buffer.from("S x.ts\0S b.ts\0")]);
+    const tailRef = await digestOf(f, listing(f, tail, null));
+    assert.equal(await digestOf(f, listing(f, tail, 7 + 2 + 4300)), tailRef, "a fragment of an over-long record was hashed");
     for (const k of [3, 9, 4090, 4096, 4100, 5005]) {
       const g = listing(f, long, k);
       assert.equal(await digestOf(f, g), ref, `long split at ${k}`);
@@ -63,6 +70,7 @@ test("identity: an edit of the same size with the mtime put back still changes t
     track(f, "src/main.ts");
     git(f.wt, "update-index", "--skip-worktree", "src/main.ts");
     const p = join(f.wt, "src", "main.ts");
+    utimesSync(p, SECOND, SECOND);
     const st = statSync(p);
     const before = await takeSnapshot(opts(f));
     writeFileSync(p, "[]\n");
@@ -81,6 +89,7 @@ test("identity: a rename-replace with the same size and mtime changes the digest
     track(f, "src/main.ts");
     git(f.wt, "update-index", "--skip-worktree", "src/main.ts");
     const p = join(f.wt, "src", "main.ts");
+    utimesSync(p, SECOND, SECOND);
     const st = statSync(p);
     const before = await takeSnapshot(opts(f));
     writeFileSync(`${p}.new`, "{}\n");
