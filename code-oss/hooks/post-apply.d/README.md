@@ -17,3 +17,5 @@ Executables run by `scripts/code-oss/apply.sh` after the patches, removals, repl
 `apply.sh` records each hook and its SHA-256 in `vendor/code-oss.applied`.
 
 From M3: `10-regen-locks` regenerates the root and remote lockfiles after the Copilot and agent SDK dependencies are dropped, and asserts the exact result (`docs/design/axis-shell.md` §2.8).
+
+From ADR 0005: `20-stage-axis-packages` stages `packages/*` into `src/vs/axis/packages/` (package sources with rewritten imports, a vendored zod and `stage-manifest.json`). It needs `npm ci --ignore-scripts` at the repository root, adds only new untracked files, and is covered by `test/code-oss/stage-packages.test.mjs`.

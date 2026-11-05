@@ -35,4 +35,10 @@ npm test            # clean build (scripts/clean-dist.mjs), then node --test "di
 
 ## Reaching the app
 
-Planned in ADR 0005 D3: a post-apply hook stages package sources into `src/vs/axis/packages/` so Code OSS's own esbuild bundles them into the daemon. Not implemented yet.
+`apply.sh` runs `code-oss/hooks/post-apply.d/20-stage-axis-packages` (logic in `scripts/code-oss/stage-packages.mjs`), which writes new files under `src/vs/axis/packages/` in the Code OSS tree:
+
+- `<name>/**`: the package's `src/**/*.ts` with `@axis/*` and `zod` imports rewritten to relative paths;
+- `vendor/zod/**`: the ESM JavaScript and declarations of zod reachable from its entry, taken from the repository's `node_modules` (run `npm ci --ignore-scripts` first);
+- `stage-manifest.json`: SHA-256 of every staged file.
+
+The overlay entry `vs/axis/daemon/node/axisDaemonMain` imports `../../packages/protocol/index.js`, and patch `0200-axis-daemon-entry.patch` lists it in `build/next/index.ts`. Why zod is vendored: see ADR 0005 D3.

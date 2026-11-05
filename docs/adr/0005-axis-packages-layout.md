@@ -1,12 +1,12 @@
 # ADR 0005: Axis packages layout (`packages/*`)
 
-- **Status:** Proposed. Becomes Accepted when the staging spike (validation criteria below) shows a package reaching the daemon utility process in a Code OSS build.
+- **Status:** Proposed. Becomes Accepted when the remaining spike criterion (the packaged-build smoke, below) is recorded; the others were proved on 2026-11-02 against Code OSS 1.144.0 (`2c33b50b16c4`).
 - **Date:** 2026-11-02.
 - **Decision owner:** Dylan Lambertson.
 - **Depends on:** ADR 0002 (Code OSS integration strategy), ADR 0003 (Electron IPC bridge) and ADR 0004 (agent-first workspace shell), all Proposed.
 - **Refines:** ADR 0003 D6, which placed the envelope, errors and contract definitions under `src/vs/axis/platform/protocol/common/`. Those move to `packages/protocol` (this ADR). The renderer client, the main seam and the daemon entry stay in the overlay. Also refines the ADR 0003 D3 envelope sketch (see D8).
 - **Related:** `docs/design/axis-agent-shell.md` §5 and §8 (worktree contract, task B4), `docs/design/axis-agent-shell-policies.md`, `docs/ci.md`, `docs/packages.md`.
-- **Evidence tags:** **[V]** verified in the Code OSS 1.144.0 tree or an Axis document; **[I]** inferred, not verified.
+- **Evidence tags:** **[V]** verified in the Code OSS 1.144.0 tree, an Axis document or by running the staging spike; **[I]** inferred, not verified.
 
 ## Context
 
@@ -16,7 +16,7 @@ Facts that shape the answer:
 
 - **A Code OSS build is expensive.** The checkout and build are about 7.6 GB, and `npm run compile` needs more than 8 GiB of RAM; PR CI cannot run it (`docs/ci.md`, `docs/feasibility/code-oss-build.md` §7) [V]. Code that can only be tested inside that build would be tested rarely.
 - **Daemon logic does not need the workbench.** The daemon is a Node utility process with its own entry point (ADR 0003 D1). Worktree management, journal and audit code need `node:*` and a schema library, not `vs/*` services.
-- **Code OSS already bundles with esbuild.** `build/next/index.ts` lists entry points by module id (for example `vs/platform/terminal/node/ptyHostMain`, `:100-112`) and bundles each with esbuild 0.27.2 [V]. Its tsconfig is `strict`, `module: nodenext`, `target: ES2024`, with `noUnusedLocals`, `exactOptionalPropertyTypes: false` and `moduleDetection: legacy` (`src/tsconfig.base.json`) [V].
+- **Code OSS already bundles with esbuild, but leaves packages external.** `build/next/index.ts` lists entry points by module id (for example `vs/platform/terminal/node/ptyHostMain`, `:100-112`) and bundles each with esbuild 0.27.2 [V]. `build/next/bundle.ts` sets `packages: 'external'`, so a bare import such as `zod` is **not** bundled: it stays an import and resolves at run time to the application's own `node_modules`, which at this commit holds zod 4.4.3 [V, run: a one-file esbuild with the same option kept `import { z } from "zod"`]. Its tsconfig is `strict`, `module: nodenext`, `target: ES2024`, with `noUnusedLocals`, `exactOptionalPropertyTypes: false` and `moduleDetection: legacy` (`src/tsconfig.base.json`) [V].
 - **The overlay is new-files-only** and copies into `vendor/code-oss` after the patches (`code-oss/overlay/README.md`). Post-apply hooks may add untracked files but may change no upstream file except lockfiles (`code-oss/hooks/post-apply.d/README.md`) [V].
 - **Zod** is a direct dependency of Code OSS 1.144.0 (`package.json:173`, locked at 4.4.3) and ADR 0003 D2 chose it for contracts [V]. 4.4.3 carries a high advisory (see D4).
 
@@ -71,15 +71,18 @@ Not yet implemented: the renderer-imports-contracts-only rule (overlay import-pa
 
 ### D3. How packages reach the app
 
-Option C, in four parts. All of this is **[I]** until the spike.
+Option C, implemented and proved by the staging spike [V]. In four parts:
 
-1. **A post-apply hook `code-oss/hooks/post-apply.d/20-stage-axis-packages`** copies every non-test source `packages/<name>/src/**/*.ts` to `src/vs/axis/packages/<name>/**` in the Code OSS tree. These are new untracked files, which the hook contract allows. The hook:
-   - rewrites `@axis/<name>` imports to the relative path of the staged package index (the only transformation; the sources already use `.js`-suffixed relative imports, the same convention Code OSS uses);
-   - writes a generated-file header and a manifest of copied files with SHA-256 hashes into `vendor/code-oss.applied`;
-   - refuses to run if a package imports anything outside D2.1, or if the staged `zod` is not the version pinned in `packages/*/package.json`;
-2. **No new bundler.** Code OSS's esbuild (`build/next`) bundles the staged sources because `axisDaemonMain.ts` (overlay) imports them. The entry list line in `build/next/index.ts` that ADR 0003 D6 already budgets (≤ 2 lines) is the only build-system seam; this ADR adds none.
-3. **Type-checking twice, on purpose.** The packages are checked in `packages/` with strict flags that are a superset of Code OSS's (`exactOptionalPropertyTypes`, `noUncheckedIndexedAccess`; `noUnusedLocals` is added to the base config to match). The staged copy is then checked again by Code OSS's compiler, which catches flag drift early. A package that compiles in `packages/` but not in the tree is a staging bug to fix in the package, not by loosening the tree.
-4. **Overlay lint.** The `build/axis/eslint.axis.ts` import-patterns target (ADR 0003 D6 moved it to the overlay) allows `src/vs/axis/packages/<name>` only from `daemon/node`, `server/node` and, for `protocol` only, the renderer client. This holds the line that the renderer imports contracts only.
+1. **A post-apply hook `code-oss/hooks/post-apply.d/20-stage-axis-packages`** (logic in `scripts/code-oss/stage-packages.mjs`, unit-tested in `test/code-oss/stage-packages.test.mjs`) writes new untracked files under `src/vs/axis/packages/` in the Code OSS tree, which the hook contract allows. It:
+   - copies every non-test `packages/<name>/src/**/*.ts` to `src/vs/axis/packages/<name>/**`, with a generated-file header after the copyright line;
+   - rewrites `@axis/<name>` to the relative path of the staged package `index.js` and bare `zod` to the vendored copy (the only transformations; the sources already use `.js`-suffixed relative imports, the same convention Code OSS uses);
+   - vendors zod (D4);
+   - writes `stage-manifest.json` with the SHA-256 of every staged file and its source. The tree fingerprint recorded in `vendor/code-oss.applied` covers the staged files, and the stamp records the hook script's hash;
+   - refuses to run if a package imports anything outside D2.1, uses a dynamic load with a non-literal argument, imports a relative path that leaves the package, imports a `zod` subpath, or if the installed zod is not the version pinned in `packages/*/package.json`. It also refuses if `src/vs/axis/packages` already exists and was not staged by it;
+   - is deterministic and idempotent: it deletes and rebuilds its output directory, so files of deleted sources disappear.
+2. **No new bundler.** Code OSS's esbuild (`build/next`) bundles the staged sources because the overlay entry `vs/axis/daemon/node/axisDaemonMain.ts` imports them. The only build-system seam is the entry-list lines, `code-oss/patches/0200-axis-daemon-entry.patch`: three added lines in each of the desktop and server entry lists (6 lines, one file that the shell block already counts). The entry in this change is a stub that prints the protocol and contract list and the zod version, enough to prove bundling.
+3. **Type-checking twice, on purpose.** The packages are checked in `packages/` with strict flags that are a superset of Code OSS's (`exactOptionalPropertyTypes`, `noUncheckedIndexedAccess`; `noUnusedLocals` matches). The staged copy is then checked again by Code OSS's compiler. [V] The staged `@axis/protocol` plus the vendored zod declarations and the stub compile with no errors under `src/tsconfig.base.json` (105 `vs/axis` files, `tsc` 7.0.2), with no change to the package.
+4. **Overlay lint.** The `build/axis/eslint.axis.ts` import-patterns target (ADR 0003 D6 moved it to the overlay) allows `src/vs/axis/packages/<name>` only from `daemon/node`, `server/node` and, for `protocol` only, the renderer client. This holds the line that the renderer imports contracts only. **[I]** Not implemented yet.
 
 The same staged code serves desktop (utility process) and web (the reh child process, ADR 0003 D1.7), because both are Node.
 
@@ -90,7 +93,7 @@ The same staged code serves desktop (utility process) and web (the reh child pro
 - **No other runtime dependency** without an ADR amendment. `node:sqlite` or the Code OSS-provided SQLite is chosen by the journal workstream, not assumed here.
 - **Exact pins and a committed lockfile.** CI installs with `npm ci`; `--ignore-scripts` is used wherever install scripts are not needed.
 - **Known advisory.** `zod@4.4.3` has GHSA-mrhx-c7xc-m3w5 (memory exhaustion validating oversized constrained collections; fixed in 4.6.6) [V, npm audit]. (a) Packages use the patched zod 4.6.6. (b) The Code OSS tree still pins 4.4.3 upstream. Follow-up for the security-hardening patch block (2000-2999): bump it with a `package.json` change plus lockfile regeneration, if zod is still used at runtime after the agent-host removal (to be checked).
-- **How 4.6.6 reaches the daemon bundle** [I]. Staged sources import bare `zod`, which esbuild and Code OSS's `tsc` resolve from `vendor/code-oss/node_modules`, i.e. 4.4.3, unless something changes that. The staging hook must make bare `zod` resolve to 4.6.6 for the daemon bundle, either by vendoring zod 4.6.6 into the staged tree (for example `src/vs/axis/packages/node_modules/zod`) or with an esbuild alias in the entry-list seam. If neither works, the tree bump in (b) becomes a prerequisite rather than a follow-up. Also check that the packages type-check against 4.4.3 types, because Code OSS's `tsc` sees that version first. Spike criterion 2 verifies this.
+- **How 4.6.6 reaches the daemon bundle** [V]. Because `build/next` leaves packages external (Context), neither a nested `node_modules` nor an esbuild alias would be needed if only the bundle mattered, but both fail the other requirement: dev (`transpile`) runs and the packaged app resolve a bare `zod` to the application's 4.4.3. The chosen mechanism is **vendoring**: the hook copies the ESM JavaScript and declarations of zod 4.6.6 that are reachable from its entry point (198 files, about 1.7 MB with the packages) from the repository's `node_modules` to `src/vs/axis/packages/vendor/zod/` and rewrites the packages' `zod` import to it. Relative imports are bundled by esbuild, `transpile` copies the non-TypeScript files for development runs, and Code OSS's `tsc` type-checks against the `.d.ts` files, so one copy of 4.6.6 serves bundle, dev and types. An esbuild alias was rejected because it needs more lines in `build/next/index.ts` and does not help the dev build; a tree bump (below, (b)) stays the cleaner long-term fix but is not a prerequisite. The vendored `LICENSE` (MIT) and `package.json` are kept beside it; add zod to the Axis notices when a distributable build is prepared. Evidence from the spike: the minified daemon bundle contains `major:4,minor:6,patch:6`, has no bare `zod` import and no `4.4.3`, and running it prints `"zod":"4.6.6"`.
 - **Message bounds, exactly as coded** (`packages/protocol/src/limits.ts`; defence in depth against the advisory, not a replacement for the patch). `inspectMessage` is one bounded, iterative walk over the decoded value, which works on structured-clone input where no byte length is known:
   - `MAX_MESSAGE_BYTES` = 1 MiB in total, counting strings and keys by UTF-8 length and other values by a small fixed charge (an approximation);
   - `MAX_STRING_BYTES` = 256 KiB per string or key;
@@ -130,19 +133,25 @@ Every Axis-owned source file starts with `// Copyright (c) 2026 Dylan Lambertson
 
 - Domain logic is testable in seconds on any machine, in parallel by separate workstreams, with no checkout.
 - A staging step is a new moving part. Its failure modes (flag drift, import rewrite bugs) are caught by the double type-check and the hook's own tests, but they exist.
+- The vendored zod is third-party source in the tree (untracked, regenerated on every apply). It must follow the zod pin, and it counts toward the notices work for distributable builds.
 - Source staging couples packages to Code OSS's compiler flags. The base config is kept a superset of them so drift shows in `packages/` first.
 - ADR 0003's file budget is unchanged: no upstream file is touched beyond what D6 already counted. The hook adds untracked files only.
 - Two homes for Axis code need a clear rule. D1 is that rule; reviews should reject code in the wrong home.
-- Two zod versions may exist in the tree until the 2000-2999 follow-up lands. The staged packages are expected to resolve 4.6.6 in the daemon bundle [I, see D4]; renderer code that still imports Code OSS's zod gets 4.4.3.
+- Two zod versions may exist in the tree until the 2000-2999 follow-up lands. The staged packages carry their own vendored zod 4.6.6 [V, see D4]; renderer code that still imports Code OSS's zod gets 4.4.3.
 
-## Validation criteria (staging spike, before Accepted)
+## Validation criteria (staging spike)
 
-1. A package's staged copy compiles under Code OSS's `src/tsconfig.json` with no changes to the package.
-2. `build/next` bundles `axisDaemonMain.ts` with a staged package, and the bundle contains zod 4.6.6, checked by grepping the bundled zod version string (and not finding 4.4.3).
-3. The daemon utility process in a packaged build imports and runs a package function.
-4. The import-patterns lint rejects a renderer import of a domain package and a package import of `vs/*`.
-5. Dev and packaged builds both work: `node build/next/index.ts transpile` completes and the daemon starts from `out/` with a staged package function callable; the packaged smoke (`scripts/code-oss/build.sh`, then launching the packaged app) does the same.
-6. The hook is idempotent: a second `apply.sh` run is a no-op, and the recorded manifest hashes match the staged files.
+Run on 2026-11-02 in a clone of the build tree, `AXIS_CODE_OSS_VENDOR_DIR`/`AXIS_CODE_OSS_TOOLS_DIR` pointing at it, Node 24.22.1.
+
+| # | Criterion | Result |
+|---|---|---|
+| 1 | A package's staged copy compiles under Code OSS's `src/tsconfig.base.json` with no changes to the package | [V] pass: `tsc -p` over `vs/axis/**` has no errors |
+| 2 | `build/next` bundles `axisDaemonMain.ts` with a staged package; the bundle contains zod 4.6.6, checked by grepping the bundled version | [V] pass: `bundle --minify --nls` output has `major:4,minor:6,patch:6`, no bare `zod` import, no `4.4.3`; running the bundle prints `"zod":"4.6.6"` |
+| 3 | The daemon utility process in a packaged build imports and runs a package function | see criterion 5 |
+| 4 | The import-patterns lint rejects a renderer import of a domain package and a package import of `vs/*` | not yet: the overlay lint target is not implemented (D3.4). The package side is enforced by `test/packages/imports.test.mjs` and the hook |
+| 5 | Dev and packaged builds both work: `node build/next/index.ts transpile` and the daemon stub runs from `out/`; the packaged build (`npm run gulp vscode-darwin-x64-min`) contains the bundled stub, which runs under the packaged Electron binary with `ELECTRON_RUN_AS_NODE=1` | dev [V] pass: `transpile` copies the staged files and `node out/vs/axis/daemon/node/axisDaemonMain.js` prints the contract list. Packaged: see the results note below |
+| 6 | The hook is idempotent: a second `apply.sh` run is a no-op and the manifest hashes match | [V] pass: the tree fingerprint is identical after two runs; the unit test checks the manifest hashes |
+| 7 | `footprint.sh` reports no UNATTRIBUTED rows | [V] pass: the staged files are new untracked files; the patch adds 6 lines to one file the shell block already counts |
 
 ## Rollback
 
