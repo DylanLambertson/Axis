@@ -188,3 +188,16 @@ test("the default worktree cap is 1024: 260 entries are not refused for their nu
     f.cleanup();
   }
 });
+
+test("the worktrees directory is listed once per snapshot", { skip: !posix }, async () => {
+  const f = makeFixture();
+  try {
+    const { readdirSync } = await import("node:fs");
+    const s = await takeSnapshot(opts(f));
+    assert.ok(readdirSync(join(f.common, "worktrees")).length >= 1);
+    // Both the sibling scan and the link entries come from one listing: every listed entry has its link records.
+    for (const n of readdirSync(join(f.common, "worktrees"))) assert.ok(s.entries.some((e) => e.id === `worktrees/${n}/gitdir`), n);
+  } finally {
+    f.cleanup();
+  }
+});

@@ -41,7 +41,8 @@ test("protected: the documented list", () => {
     ["sub/.git/hooks/x", "git-dir"],
   ];
   for (const [p, c] of yes) assert.equal(cat(p), c, p);
-  for (const p of ["src/index.ts", "README.md", "docs/github/workflows.md", "src/.github/workflows/x.yml", "a/.gitignore", "dockerfile-notes.txt"]) {
+  assert.equal(cat("src/.github/workflows/x.yml"), "hidden-config", "not a CI rule below the root, but a dot name at any depth");
+  for (const p of ["src/index.ts", "README.md", "docs/github/workflows.md", "dockerfile-notes.txt"]) {
     assert.equal(cat(p), null, p);
   }
 });
@@ -63,7 +64,7 @@ test("protected: NTFS trailing dots and spaces, streams and 8.3 short names", ()
     assert.notEqual(cat(p), null, p);
   }
   assert.equal(cat("GITX~1/x"), "hidden-config", "a short name may stand for a dot name");
-  assert.equal(cat("src/GITX~1/x"), null, "short names are judged at the root only");
+  assert.equal(cat("src/GITX~1/x"), "hidden-config", "and at any depth");
 });
 
 test("protected: paths that leave the root or cannot be parsed are flagged", () => {

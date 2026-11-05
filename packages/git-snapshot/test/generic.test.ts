@@ -14,11 +14,28 @@ test("hidden-config: any root-level dot name outside the small allowlist, file o
   }
 });
 
-test("hidden-config: not a match for the allowlist, nested dot names, or plain names", () => {
-  for (const p of [".gitignore", ".editorconfig", ".nvmrc", ".node-version", ".prettierignore", ".eslintignore", ".dockerignore", ".GITIGNORE"]) {
-    assert.equal(cat(p), null, p);
+const sev = (p: string): string | undefined => classifyPath(p)?.severity;
+
+test("hidden-config: any depth, high severity; ordinary names are not matches", () => {
+  for (const p of ["src/.alpha/x.ts", "a/b/.beta.json", "sub/.toolx/settings.json", "sub/deep/.toolx.json", "x/.nvmrc", ".nvmrc", ".node-version"]) {
+    assert.equal(cat(p), "hidden-config", p);
+    assert.equal(sev(p), "high", p);
   }
-  for (const p of ["src/.alpha/x.ts", "a/b/.beta.json", "src/index.ts", "alpha", "a.b", "docs/README.md", "src/PLAYBOOK.md"]) assert.equal(cat(p), null, p);
+  for (const p of ["src/index.ts", "alpha", "a.b", "docs/README.md", "src/notes.md", "a.b.md", "docs/design.md"]) assert.equal(cat(p), null, p);
+});
+
+test("ignore and style files are reviewable, not exempt: medium severity, any depth, exact final name only", () => {
+  for (const p of [".gitignore", "sub/.gitignore", ".DOCKERIGNORE", ".prettierignore", "a/b/.eslintignore", ".gitignore ", ".gitignore::$DATA"]) {
+    assert.equal(cat(p), "ignore-rules", p);
+    assert.equal(sev(p), "medium", p);
+  }
+  assert.equal(cat(".editorconfig"), "hidden-config");
+  assert.equal(sev(".editorconfig"), "medium");
+  // An exemption never covers anything under that name.
+  for (const p of [".gitignore/x", "sub/.editorconfig/x", ".dockerignore/a/b"]) {
+    assert.equal(cat(p), "hidden-config", p);
+    assert.equal(sev(p), "high", p);
+  }
 });
 
 test("hidden-config: the specific categories keep their dot names", () => {
@@ -32,6 +49,7 @@ test("hidden-config: the specific categories keep their dot names", () => {
   assert.equal(cat(".gitmodules"), "git-config");
   for (const p of [".env", ".env.local", ".ENV.production", "sub/.env"]) assert.equal(cat(p), "shell-env", p);
   assert.equal(cat(".github/CODEOWNERS"), "hidden-config");
+  assert.equal(cat(".github/workflows/x.yml/.gitignore"), "ci");
 });
 
 test("hidden-config: case, separators, normalisation, ignorable code points, NTFS dots, streams and 8.3 names", () => {
@@ -51,14 +69,23 @@ test("instruction-file: a root-level .md file that is not a common project docum
   }
 });
 
-test("instruction-file: root only, .md only, and not names outside the character set", () => {
-  for (const p of ["docs/PLAYBOOK.md", "src/NOTES.md", "PLAYBOOK.txt", "PLAYBOOK", "PLAY BOOK.md", "PLAYBOOK.md.bak", "a.b.md"]) assert.equal(cat(p), null, p);
+test("instruction-file: upper-case stems, dotted or not, at any depth; severity high", () => {
+  for (const p of ["TOOLX.md", "TOOLX.local.md", "TOOLX.override.md", "sub/TOOLX.md", "a/b/TOOLX.local.md", "PLAYBOOK.v2.md", "sub/NOTES.MD", "RUN_BOOK-2.md", "toolx.md"]) {
+    assert.equal(cat(p), "instruction-file", p);
+    assert.equal(sev(p), "high", p);
+  }
+});
+
+test("instruction-file: lower-case ordinary documents below the root, other extensions and odd names stay unmarked", () => {
+  for (const p of ["docs/PLAYBOOK.txt", "PLAYBOOK.txt", "PLAYBOOK", "PLAY BOOK.md", "PLAYBOOK.md.bak", "a.b.md", "docs/toolx.md", "docs/Toolx.local.md", "docs/README.md", "docs/README.local.md", "docs/LICENSE.md", "sub/CHANGELOG.md"]) {
+    assert.equal(cat(p), null, p);
+  }
 });
 
 test("the caller's own names are still added through extraPaths, with the same rules", () => {
   assert.equal(cat("tools/x/y", ["tools/x"]), "caller-defined");
   assert.equal(cat("TOOLS/X", ["tools/x"]), "caller-defined");
-  assert.equal(cat("nested/PLAYBOOK.md", ["nested/PLAYBOOK.md"]), "caller-defined");
+  assert.equal(cat("nested/notes.md", ["nested/notes.md"]), "caller-defined");
 });
 
 test("overlap: a path in two categories reports the specific one", () => {

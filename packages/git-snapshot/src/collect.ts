@@ -93,7 +93,7 @@ export async function takeSnapshot(opts: TakeOptions): Promise<Snapshot> {
     const pathKey = Object.keys(env).find((k) => k.toUpperCase() === "PATH");
     // Every checkout of this repository is a place the CLI can write, so none may hold the git that runs: the ones the
     // caller names, and the ones the repository itself lists in the `gitdir` file of each `worktrees` entry.
-    const siblings = await siblingRoots(ctx, commonDir);
+    const siblings = await siblingRoots(ctx, commonDir, names);
     const forbidden = [...roots, ...siblings];
     const given = opts.gitPath === undefined ? null : absolute(opts.gitPath, "gitPath");
     // The caller's own mistake is an error. A path inside a place only the repository's files name (they are
@@ -182,19 +182,12 @@ async function collectLink(
   view: GitView,
 ): Promise<WorktreeLink> {
   await record(ctx, "worktree/.git", "link", join(worktreePath, ".git"));
-  const list = await listDir(join(commonDir, "worktrees"), ctx.budget, ctx.limits.maxWorktrees);
-  if (list.ok) {
-    for (const hex of list.undecodable) {
-      ctx.incomplete.push({ id: `worktrees/${hex}`, reason: "name is not valid UTF-8, so it was not read", blocking: true });
-    }
-    for (const name of list.names) {
-      names.push(name);
-      const base = `worktrees/${escapeDisplay(name)}`;
-      await record(ctx, `${base}/gitdir`, "link", join(commonDir, "worktrees", name, "gitdir"));
-      await record(ctx, `${base}/commondir`, "link", join(commonDir, "worktrees", name, "commondir"));
-    }
+  // The `worktrees` directory is listed once, by `siblingRoots`, which fills `names` and blocks on anything odd.
+  for (const name of names) {
+    const base = `worktrees/${escapeDisplay(name)}`;
+    await record(ctx, `${base}/gitdir`, "link", join(commonDir, "worktrees", name, "gitdir"));
+    await record(ctx, `${base}/commondir`, "link", join(commonDir, "worktrees", name, "commondir"));
   }
-  // A directory that cannot be listed is blocked once, by `siblingRoots`, which lists it first.
   const { gitDir, commonDir: found, topLevel } = view.discovered;
   // A top level that is not the worktree (core.worktree in config.worktree) means git runs hooks from somewhere else.
   let mismatch =
@@ -230,7 +223,7 @@ export async function takeStableSnapshot(opts: StableOptions): Promise<Snapshot>
  * like any other: bounded, non-blocking, within the time budget and the abort signal. Anything that cannot be read
  * as one short path blocks the snapshot (the set of excluded places is then unknown), and is never skipped.
  */
-async function siblingRoots(ctx: Ctx, commonDir: string): Promise<string[]> {
+async function siblingRoots(ctx: Ctx, commonDir: string, names: string[]): Promise<string[]> {
   const out: string[] = [];
   const dir = join(commonDir, "worktrees");
   const block = (id: string, reason: string): void => void ctx.incomplete.push({ id, reason, blocking: true });
@@ -248,6 +241,7 @@ async function siblingRoots(ctx: Ctx, commonDir: string): Promise<string[]> {
   }
   if (list.undecodable.length > 0) block("worktrees", "entry names that are not valid UTF-8");
   for (const n of list.names) {
+    names.push(n);
     const id = `worktrees/${escapeDisplay(n)}/gitdir`;
     const r = await readItem(join(dir, n, "gitdir"), ctx.budget, { maxBytes: 4096, keep: 4096 });
     if (r.state === "missing") continue;

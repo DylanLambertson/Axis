@@ -15,6 +15,7 @@ export type ProtectedCategory =
   | "build-script"
   | "hidden-config"
   | "instruction-file"
+  | "ignore-rules"
   | "caller-defined"
   | "git-dir"
   | "git-config"
@@ -131,26 +132,30 @@ function shortMatches(comp: string, literal: string): boolean {
 
 const compEquals = (comp: string, literal: string): boolean => comp === literal || shortMatches(comp, literal);
 
-type Parts = { readonly parts: string[]; readonly escapes: boolean } | null;
+/** `parts` are folded for comparison; `raws` keep their spelling (after normalisation and NTFS clean-up) for the one rule that reads case. */
+type Parts = { readonly parts: string[]; readonly raws: string[]; readonly escapes: boolean } | null;
 
 /** Splits on `/` and `\`, applies `.` and `..`, drops empty parts, folds each name. Null when the path is not usable. */
 function split(rel: string): Parts {
   if (rel.length > MAX_PATH || rel.includes("\0")) return null;
   const stack: string[] = [];
+  const raws: string[] = [];
   let escapes = false;
   const raw = rel.replace(IGNORABLE, "").normalize("NFKC").split(/[\\/]+/);
   if (raw.length > MAX_PARTS) return null;
   for (const piece of raw) {
     if (piece === "" || piece === ".") continue;
     if (piece === "..") {
+      raws.pop();
       if (stack.pop() === undefined) escapes = true;
       continue;
     }
     const clean = ntfsClean(piece);
     if (clean === "") continue;
     stack.push(foldName(clean));
+    raws.push(clean);
   }
-  return { parts: stack, escapes };
+  return { parts: stack, raws, escapes };
 }
 
 function matchRule(parts: readonly string[], r: Rule): boolean {
@@ -189,39 +194,56 @@ function matchExtra(parts: readonly string[], extra: readonly string[] | undefin
   return null;
 }
 
-// Generic rules for what no list can name: configuration other programs read from the root of a checkout. Root-only,
-// and judged after the specific rules above so those keep their own categories. No product is named here: the
-// host adds the names it knows about through `extraPaths`, from the user's own settings, never from the repository.
-const BENIGN_DOT = new Set([".gitignore", ".editorconfig", ".nvmrc", ".node-version", ".prettierignore", ".eslintignore", ".dockerignore"]);
+// Generic rules for what no list can name: configuration other programs read from a checkout. They are judged after
+// the specific rules above, so those keep their own categories, and they apply at any depth. No product is named
+// here: the host adds the names it knows about through `extraPaths`, from the user's own settings, never from the
+// repository.
+//
+// Ignore and style files are not exempt, only less severe: a run that adds a new config file and an ignore rule for
+// it must still show a change. An exemption covers the exact final name, never a directory of that name.
+const IGNORE_FILES = new Set([".gitignore", ".dockerignore", ".prettierignore", ".eslintignore"]);
+const STYLE_FILES = new Set([".editorconfig"]);
 const COMMON_DOCS = new Set([
   "readme", "license", "licence", "copying", "copyright", "notice", "changelog", "changes", "history", "news", "contributing",
   "contributors", "security", "code_of_conduct", "authors", "maintainers", "codeowners", "support", "governance", "todo",
   "release", "releases", "roadmap", "install", "upgrading", "citation", "credits", "thanks", "patents", "acknowledgements",
 ]);
-// A generated short name (`ALPHA~1`, `PLAYBO~1.MD`) may stand for a dot-name or a long name: it cannot be ruled out.
+// A generated short name (`ALPHA~1`, `PLAYBO~1.MD`) may stand for a dot name or a long name: it cannot be ruled out.
 const SHORT_NAME = /^[^~.]{1,6}~\d{1,7}(?:\.[^.]{0,3})?$/;
+// An upper-case first segment, any further segments, and `.md`: `NAME.md`, `NAME.local.md`, `NAME.override.md`.
+const UPPER_MD = /^([A-Z0-9_-]*[A-Z][A-Z0-9_-]*)(?:\.[A-Za-z0-9_-]+)*\.[mM][dD]$/;
 
-function matchGeneric(parts: readonly string[]): ProtectedMatch | null {
-  const first = parts[0];
-  if (first === undefined) return null;
-  if (first.startsWith(".") && first !== "." && first !== ".." && !BENIGN_DOT.has(first)) {
-    return { category: "hidden-config", severity: "high", rule: "root-level dot name", via: "path" };
-  }
-  if (parts.length === 1) {
-    const m = /^([a-z0-9_-]+)\.md$/.exec(first);
-    if (m !== null && !COMMON_DOCS.has(m[1] as string)) {
-      return { category: "instruction-file", severity: "high", rule: "root-level upper-case or plain .md file", via: "path" };
+const generic = (category: ProtectedCategory, severity: "high" | "medium", rule: string): ProtectedMatch => ({ category, severity, rule, via: "path" });
+
+function matchGeneric(parts: readonly string[], raws: readonly string[]): ProtectedMatch | null {
+  const lastIdx = parts.length - 1;
+  for (let i = 0; i <= lastIdx; i++) {
+    const c = parts[i] as string;
+    if (c.startsWith(".") && c !== "." && c !== "..") {
+      const exact = i === lastIdx;
+      if (exact && IGNORE_FILES.has(c)) return generic("ignore-rules", "medium", "ignore rules (reviewable)");
+      if (exact && STYLE_FILES.has(c)) return generic("hidden-config", "medium", "style file (reviewable)");
+      return generic("hidden-config", "high", "dot name");
     }
+    if (SHORT_NAME.test(c)) return generic("hidden-config", "high", "short name");
   }
-  if (SHORT_NAME.test(first)) return { category: "hidden-config", severity: "high", rule: "root-level short name", via: "path" };
+  const last = raws[lastIdx];
+  if (last === undefined) return null;
+  // At the root any plain `.md` name counts, in any case: it is the same file on a case-insensitive volume.
+  if (lastIdx === 0 && /^[a-z0-9_-]+\.md$/.test(parts[0] as string) && !COMMON_DOCS.has((parts[0] as string).slice(0, -3))) {
+    return generic("instruction-file", "high", "root-level .md file");
+  }
+  // Below the root only the upper-case spelling counts, so ordinary lower-case documents stay unmarked.
+  const m = UPPER_MD.exec(last);
+  if (m !== null && !COMMON_DOCS.has((m[1] as string).toLowerCase())) return generic("instruction-file", "high", "upper-case .md file");
   return null;
 }
 
-function matchParts(parts: readonly string[]): ProtectedMatch | null {
+function matchParts(parts: readonly string[], raws: readonly string[]): ProtectedMatch | null {
   for (const r of RULES) {
     if (matchRule(parts, r)) return { category: r.category, severity: r.severity, rule: r.rule, via: "path" };
   }
-  return matchGeneric(parts);
+  return matchGeneric(parts, raws);
 }
 
 /**
@@ -235,7 +257,7 @@ export function classifyPath(relPath: string, opts: MatchOptions = {}): Protecte
   const sp = split(relPath);
   if (sp === null) return { category: "invalid-path", severity: "high", rule: "unusable path", via: "path" };
   if (sp.escapes) return { category: "outside-worktree", severity: "high", rule: "leaves the worktree", via: "path" };
-  return matchParts(sp.parts) ?? matchExtra(sp.parts, opts.extraPaths);
+  return matchParts(sp.parts, sp.raws) ?? matchExtra(sp.parts, opts.extraPaths);
 }
 
 const MAX_HOPS = 40;
