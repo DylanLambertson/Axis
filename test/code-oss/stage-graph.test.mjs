@@ -241,7 +241,7 @@ test("the daemon host's review handler is the one exact file outside the daemon 
   const exportsOf = (n) => ({ journal: [".", "./daemon-principal"] })[n] ?? null;
   const spec = "@axis/journal/daemon-principal";
   assert.equal(classifySpecifier(spec, "daemon-host", exportsOf, "handlers/review.ts").kind, "axis");
-  for (const file of ["handlers/other.ts", "handlers/review.tsx", "handlers/sub/review.ts", "review.ts", null]) {
+  for (const file of ["handlers/other.ts", "handlers/review.tsx", "handlers/sub/review.ts", "handlers/Review.ts", "Handlers/review.ts", "review.ts", null]) {
     assert.throws(() => classifySpecifier(spec, "daemon-host", exportsOf, file), (e) => typeof e === "string", String(file));
   }
   assert.throws(() => classifySpecifier(spec, "providers", exportsOf, "handlers/review.ts"), (e) => typeof e === "string");
