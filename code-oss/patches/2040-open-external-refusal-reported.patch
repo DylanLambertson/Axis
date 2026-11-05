@@ -1,0 +1,40 @@
+diff --git a/src/vs/editor/browser/services/openerService.ts b/src/vs/editor/browser/services/openerService.ts
+--- a/src/vs/editor/browser/services/openerService.ts
++++ b/src/vs/editor/browser/services/openerService.ts
+@@ -215,6 +215,12 @@ export class OpenerService implements IOpenerService {
+ 			if (externalUriOpenTarget && opener === this._externalResourceOpener) {
+ 				return this._openDefaultExternal(externalUriOpenTarget);
+ 			}
++			// --- Start Axis ---
++			// Security patch 2040: report whether the external open succeeded, without falling through to the editor
++			if (opener === this._externalResourceOpener && shouldOpenExternal(target, options)) {
++				return this._doOpenExternal(target, options);
++			}
++			// --- End Axis ---
+ 			const handled = await opener.open(target, options);
+ 			if (handled) {
+ 				return true;
+diff --git a/src/vs/workbench/electron-browser/window.ts b/src/vs/workbench/electron-browser/window.ts
+--- a/src/vs/workbench/electron-browser/window.ts
++++ b/src/vs/workbench/electron-browser/window.ts
+@@ -874,15 +874,11 @@ export class NativeWindow extends BaseWindow {
+ 		this.openerService.setDefaultExternalOpener({
+ 			openExternal: async (href: string) => {
+ 				const success = await this.nativeHostService.openExternal(href, this.configurationService.getValue<string>('workbench.externalBrowser'));
+-				if (!success) {
+-					const fileCandidate = URI.parse(href);
+-					if (fileCandidate.scheme === Schemas.file) {
+-						// if opening failed, and this is a file, we can still try to reveal it
+-						await this.nativeHostService.showItemInFolder(fileCandidate.fsPath);
+-					}
+-				}
+-
+-				return true;
++				// --- Start Axis ---
++				// Security patch 2040 (threat model EL-5): main refuses every scheme but http, https and
++				// mailto (patch 2030). Report the result as is, and do not reveal a refused file: URL instead
++				return success;
++				// --- End Axis ---
+ 			}
+ 		});
+ 
