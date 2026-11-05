@@ -115,6 +115,14 @@ describe('restoreFromRunBase', () => {
       assert.equal(readFileSync(path.join(other.path, 'a.txt'), 'utf8'), 'other unsaved\n');
     });
 
+    it('refuses a symlinked parent that stays inside the same worktree (only the parent rule can refuse it)', async () => {
+      symlinkSync(path.join(wt, 'sub'), path.join(wt, 'alias'));
+      await assert.rejects(
+        fx.manager.restoreFromRunBase({ path: path.join(wt, 'alias', 'b.txt'), expectedWorktree: wt }),
+        (e: unknown) => e instanceof WorktreeError && e.code === 'E_POLICY_DENIED' && e.details['reason'] === 'symlink-component',
+      );
+    });
+
     it('still restores normally when the expected worktree matches', async () => {
       write(path.join(wt, 'a.txt'), 'clobbered\n');
       await fx.manager.restoreFromRunBase({ path: path.join(wt, 'a.txt'), expectedWorktree: wt });
