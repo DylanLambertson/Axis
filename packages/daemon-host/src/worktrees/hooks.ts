@@ -1,0 +1,81 @@
+// Copyright (c) 2026 Dylan Lambertson. All rights reserved.
+import type { ApprovalContentHook } from "@axis/daemon";
+import type { Journal } from "@axis/journal";
+import type { RunsService } from "../ports/runs.js";
+import type { WorktreeLocator } from "../ports/worktree-locator.js";
+import { worktreeFailure } from "./errors.js";
+import { assertNoActiveRun, liveWorkspace } from "./guards.js";
+import type { ProjectMutex } from "./project-mutex.js";
+import type { ManagerShape } from "./shapes.js";
+
+export interface WorktreeHookDeps {
+  readonly journal: Pick<Journal, "getWorkspace" | "listRuns">;
+  readonly runs: Pick<RunsService, "hasActiveRun">;
+  readonly locator: WorktreeLocator;
+  readonly manager: Pick<ManagerShape, "previewDiscard" | "assertNoDrift">;
+  readonly mutex: ProjectMutex;
+  /** True for a workspace the last reconcile reported: no dialog is shown for a call that will be refused. */
+  readonly needsAttention: (workspaceId: string, method?: string) => boolean;
+  /**
+   * Told what a call would discard, in words, at the moment its content digest was taken (under the lock). The
+   * gate's `describe` callback shows it in the native dialog (`gate/worktrees-confirm.ts`). Display text only,
+   * built from the branch the host named and counts, never from file names.
+   */
+  readonly onPreview?: (target: string, contentDigest: string, text: string) => void;
+}
+
+/** What a workspace discard call would lose, as one short line of counts (no file names, nothing an agent wrote). */
+function previewText(branch: string, scan: { dirty: readonly unknown[]; skippedLarge: readonly string[]; ignored: readonly string[]; skippedUnsupported: readonly string[] }): string {
+  const unbacked = scan.skippedLarge.length + scan.ignored.length + scan.skippedUnsupported.length;
+  return `${branch}: ${scan.dirty.length} changed, ${unbacked} not backed up`;
+}
+
+/**
+ * The approval content hooks of `finalise` and `remove` (design section 7.2, `docs/packages.md` "Calling
+ * `@axis/worktrees` from the daemon"). The target is `workspace:<id>`, never a path. `withLock(fn)` takes the project
+ * mutex, refuses while a run is active (BEFORE `fn`, so a refusal never spends an approval), checks that the git
+ * configuration did not drift (`assertNoDrift`), then hands `fn` the `previewDiscard` fingerprint as the content
+ * digest: the same read at issue and again at execute under the same lock, so a file added, removed or changed after
+ * the user confirmed makes the spend refuse. The handler then runs inside this lock (the mutex is re-entrant for
+ * it). A workspace the caller cannot name is `E_NOT_FOUND` and nothing is issued.
+ */
+export function createWorktreeContentHooks(deps: WorktreeHookDeps): { readonly finalise: ApprovalContentHook; readonly remove: ApprovalContentHook } {
+  /**
+   * Everything that would make the handler refuse, checked BEFORE a challenge or a dialog exists (and again at execute,
+   * before the spend): an unknown workspace, one needing attention, one in the wrong state. The errors are `DaemonError`s
+   * with the codes they should have on the wire (`E_NOT_FOUND`, `E_UNAVAILABLE`, `E_CONFLICT`), which the daemon maps once
+   * it answers a content hook's refusal as a closed error instead of `E_INTERNAL` (a daemon change, not made here).
+   */
+  const check = (id: string, needs: "READY" | "FINALISED"): ReturnType<typeof liveWorkspace> => {
+    const ws = liveWorkspace(deps.journal, id);
+    if (deps.needsAttention(ws.id, needs === "READY" ? "finalise" : "remove")) throw worktreeFailure("E_UNAVAILABLE", "needs_attention");
+    if (ws.state !== needs) throw worktreeFailure("E_CONFLICT", needs === "FINALISED" ? "not_finalised" : ws.state === "FINALISED" ? "already_finalised" : "not_ready");
+    return ws;
+  };
+  const make = (needs: "READY" | "FINALISED"): ApprovalContentHook => (context, payload) => {
+    // Only the user's own attested connection can see a workspace: anyone else gets the same answer as for an unknown one.
+    if (context.identity.actor !== "user") throw worktreeFailure("E_NOT_FOUND");
+    const id = (payload as { id?: unknown }).id;
+    if (typeof id !== "string") throw worktreeFailure("E_INVALID_ARGUMENT");
+    const first = check(id, needs);
+    const target = `workspace:${first.id}`;
+    return {
+      target,
+      withLock: <T>(fn: (contentDigest: string) => Promise<T>): Promise<T> =>
+        deps.mutex.run(
+          first.projectId,
+          async () => {
+            const ws = check(id, needs);
+            assertNoActiveRun(deps.journal, deps.runs, ws.id);
+            const ref = await deps.locator.locate(ws.id);
+            await deps.manager.assertNoDrift(ref.workTree);
+            const scan = await deps.manager.previewDiscard(ref.workTree);
+            deps.onPreview?.(target, scan.fingerprint, previewText(ws.branch, scan));
+            return fn(scan.fingerprint);
+          },
+          context.signal,
+        ),
+    };
+  };
+  return { finalise: make("READY"), remove: make("FINALISED") };
+}

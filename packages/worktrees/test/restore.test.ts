@@ -91,4 +91,42 @@ describe('restoreFromRunBase', () => {
     await assert.rejects(fx.manager.restoreFromRunBase({ path: path.join(wt, 'a.txt') }), code('E_CONFLICT'));
     assert.ok(existsSync(path.join(wt, 'a.txt')));
   });
+
+  describe('with expectedWorktree', () => {
+    it('refuses a symlink that leads into another workspace and writes nothing there', async () => {
+      const other = await fx.manager.create({ repoPath: fx.repo, slug: 'rb-other' });
+      write(path.join(other.path, 'a.txt'), 'other unsaved\n');
+      symlinkSync(other.path, path.join(wt, 'link'));
+      await assert.rejects(
+        fx.manager.restoreFromRunBase({ path: path.join(wt, 'link', 'a.txt'), expectedWorktree: wt }),
+        code('E_POLICY_DENIED'),
+      );
+      assert.equal(readFileSync(path.join(other.path, 'a.txt'), 'utf8'), 'other unsaved\n');
+      assert.equal(sh(fx.repo, 'for-each-ref', `refs/axis/backup/${other.id}`), '');
+    });
+
+    it('refuses a worktree that is not the expected one even without a visible symlink', async () => {
+      const other = await fx.manager.create({ repoPath: fx.repo, slug: 'rb-other2' });
+      write(path.join(other.path, 'a.txt'), 'other unsaved\n');
+      await assert.rejects(
+        fx.manager.restoreFromRunBase({ path: path.join(other.path, 'a.txt'), expectedWorktree: wt }),
+        code('E_POLICY_DENIED'),
+      );
+      assert.equal(readFileSync(path.join(other.path, 'a.txt'), 'utf8'), 'other unsaved\n');
+    });
+
+    it('refuses a symlinked parent that stays inside the same worktree (only the parent rule can refuse it)', async () => {
+      symlinkSync(path.join(wt, 'sub'), path.join(wt, 'alias'));
+      await assert.rejects(
+        fx.manager.restoreFromRunBase({ path: path.join(wt, 'alias', 'b.txt'), expectedWorktree: wt }),
+        (e: unknown) => e instanceof WorktreeError && e.code === 'E_POLICY_DENIED' && e.details['reason'] === 'symlink-component',
+      );
+    });
+
+    it('still restores normally when the expected worktree matches', async () => {
+      write(path.join(wt, 'a.txt'), 'clobbered\n');
+      await fx.manager.restoreFromRunBase({ path: path.join(wt, 'a.txt'), expectedWorktree: wt });
+      assert.equal(readFileSync(path.join(wt, 'a.txt'), 'utf8'), 'alpha\n');
+    });
+  });
 });
