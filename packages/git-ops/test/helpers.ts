@@ -24,7 +24,7 @@ export class FakeRunner {
   async run(req: GitRunRequest): Promise<GitRunResult> {
     this.calls.push(req);
     const r = this.responder(sub(req.argv), req) ?? {};
-    return { code: 0, stdout: "", stderr: "", ...r };
+    return { code: 0, stdout: "", stderr: "", ...(req.raw === true ? { raw: true } : {}), ...r };
   }
   subs(): string[][] {
     return this.calls.map((c) => sub(c.argv));

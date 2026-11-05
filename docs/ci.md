@@ -54,11 +54,11 @@ Branch protection requires `Secret scan`. Once these jobs are on `main`, also re
 
 Plan for applying this after the jobs are on `main`:
 
-1. Open a PR, or use the first push to `main`, and confirm the exact names and app on a real run: `gh api repos/DylanLambertson/Project-Axis/commits/<sha>/check-runs --jq '.check_runs[] | [.name, .app.id] | @tsv'`. Every row should show app id 15368 (GitHub Actions).
+1. Open a PR, or use the first push to `main`, and confirm the exact names and app on a real run: `gh api repos/DylanLambertson/Axis/commits/<sha>/check-runs --jq '.check_runs[] | [.name, .app.id] | @tsv'`. Every row should show app id 15368 (GitHub Actions).
 2. Replace the required checks with all six contexts, each tied to GitHub Actions. Keep `strict` as it is now:
 
    ```bash
-   gh api -X PATCH repos/DylanLambertson/Project-Axis/branches/main/protection/required_status_checks --input - <<'JSON'
+   gh api -X PATCH repos/DylanLambertson/Axis/branches/main/protection/required_status_checks --input - <<'JSON'
    {"strict": true, "checks": [
      {"context": "Secret scan", "app_id": 15368},
      {"context": "Code OSS scripts (ubuntu-24.04)", "app_id": 15368},

@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   GitOpsError, createNodeRunner, executeCommit, executePush, guardedRunner, planCommit, planPush, prefix,
@@ -163,6 +163,8 @@ test("a filter driver in the config is neutralised by the daemon prefix, and the
   assert.ok(call && call.argv.includes("filter.x.clean="), "the prefix neutralises the configured filter");
   const env = { PATH: PATHS, HOME: f.deps.env.daemon["HOME"] as string };
   const head = call.argv.slice(0, call.argv.indexOf("write-tree"));
+  // Setup above ran unhardened git (write-tree), which on some versions (2.53) runs the clean filter itself; start from a clean slate.
+  rmSync(f.marker, { force: true });
   writeFileSync(join(f.wt.workTree, "a.txt"), "touched 1\n");
   execFileSync("git", [...head, "add", "-A"], { cwd: f.wt.workTree, env });
   assert.equal(existsSync(f.marker), false, "hardened add did not run the clean filter");
