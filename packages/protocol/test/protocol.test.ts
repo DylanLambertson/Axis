@@ -457,3 +457,24 @@ test("boundedJsonSchema returns a copy, not the inspected object", () => {
   input.a.b.push(3);
   assert.deepEqual(r.data, { a: { b: [1, 2] } });
 });
+
+test("parseClientMessage never throws: an uncloneable payload is invalid", () => {
+  // A plain Proxy passes the walk (plain prototype, no own keys) but structuredClone throws on it.
+  const proxied = { ...goodRequest, payload: new Proxy({}, {}) };
+  assert.deepEqual(parseClientMessage(proxied), { ok: false, reason: "invalid" });
+  const hello = { type: "hello", protocolVersions: [1], contracts: [{ id: "axis.worktrees", versions: [1] }] };
+  assert.equal(parseClientMessage(hello).ok, true);
+});
+
+test("parseClientMessage never throws: hostile proxies and traps are invalid", () => {
+  const boom = (): never => {
+    throw new Error("trap");
+  };
+  const trapped = new Proxy({}, { ownKeys: boom, getPrototypeOf: boom, getOwnPropertyDescriptor: boom });
+  assert.deepEqual(parseClientMessage(trapped), { ok: false, reason: "invalid" });
+  assert.deepEqual(parseClientMessage({ ...goodRequest, payload: trapped }), { ok: false, reason: "invalid" });
+  const revoked = Proxy.revocable({}, {});
+  revoked.revoke();
+  assert.deepEqual(parseClientMessage(revoked.proxy), { ok: false, reason: "invalid" });
+  assert.deepEqual(parseClientMessage({ ...goodRequest, payload: [revoked.proxy] }), { ok: false, reason: "invalid" });
+});
