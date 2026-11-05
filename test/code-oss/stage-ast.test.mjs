@@ -176,7 +176,6 @@ test("a mint function may only be called: every way of keeping, passing or expor
     `export * from ${MINT};`,
     `export * as p from ${MINT};`,
     `export { userPrincipal as mint } from ${MINT};`,
-    `export type { UserPrincipal } from ${MINT};`,
     `export { attestTrust } from "@axis/runs/daemon-attestation";`,
     `export { userPrincipal } from "./daemon-principal.js";`,
     `${imp}export { userPrincipal };`,
@@ -257,7 +256,8 @@ test("legitimate uses of a mint function and of mint types pass", () => {
   assert.deepEqual(bad(`import * as ns from ${MINT};\nexport const p = ns.userPrincipal();`), []);
   assert.deepEqual(bad(`import type { UserPrincipal } from ${MINT};\nexport function f(p: UserPrincipal): UserPrincipal { return p; }`), []);
   assert.deepEqual(bad(`import { userPrincipal } from ${MINT};\nexport type Make = typeof userPrincipal;`), []);
-  assert.deepEqual(bad(`import { mintUserPrincipal, type UserPrincipal } from "./principal.js";\nexport function userPrincipal(): UserPrincipal { return mintUserPrincipal(); }`), []);
+  assert.deepEqual(bad(`import { mintUserPrincipal, type UserPrincipal } from "./principal.js";\nexport function userPrincipal(): UserPrincipal { return mintUserPrincipal(); }`, "src/daemon-principal.ts"), []);
+  assert.deepEqual(bad(`export type { UserPrincipal } from ${MINT};\nexport { type UserPrincipal as U } from ${MINT};`), [], "a type-only re-export carries no mint");
   assert.deepEqual(bad('export { userPrincipal } from "./other.js";'), []);
   assert.deepEqual(bad(`// export * from ${MINT};\n/* import { a } from ${MINT}; export { a }; */`), []);
 });
@@ -294,4 +294,38 @@ test("only MessageChannel and MessagePort may be imported from node:worker_threa
   assert.deepEqual(bad('import { MessageChannel, type MessagePort } from "node:worker_threads";'), []);
   assert.deepEqual(bad('import type { MessagePort } from "node:worker_threads";'), []);
   assert.deepEqual(bad('import { Worker } from "node:worker_threads";', "x.ts", { shipped: false }), []);
+});
+
+test("holder modules: namespace, default and dynamic imports are refused in the holder packages, and the mint is entry-file only", () => {
+  const j = { pkg: "journal" };
+  const leak = (f, o = j) => bad(f, "src/records-x.ts", o);
+  assert.equal(leak('import * as P from "./principal.js"; export const actingUser = P.mintUserPrincipal;').length >= 1, true, "namespace import and re-export");
+  assert.equal(leak('import * as P from "./principal.js"; export const u = P;').length >= 1, true, "namespace import alone");
+  assert.equal(leak('import P from "./principal.js"; export const u = P;').length >= 1, true, "default import");
+  assert.equal(leak('export const m = await import("./principal.js");').length >= 1, true, "dynamic import");
+  assert.equal(leak('const m = require("./attestation.js");', { pkg: "runs" }).length >= 1, true, "require");
+  assert.equal(leak('import * as L from "./lock.js"; L.x();', { pkg: "audit" }).length >= 1, true, "audit lock");
+  assert.deepEqual(bad('import * as L from "./lock.js"; L.x();', "src/x.ts", { pkg: "daemon-host" }), [], "other packages are untouched");
+  assert.deepEqual(bad('const m = await import("./principal.js");', "x.test.ts", { pkg: "journal", shipped: false }), [], "tests may introspect");
+  assert.equal(leak('import { mintUserPrincipal } from "./principal.js"; export const w = () => mintUserPrincipal();').length >= 1, true, "an exported wrapper outside the entry files");
+  assert.deepEqual(bad('import { mintUserPrincipal } from "./principal.js"; export const w = () => mintUserPrincipal();', "src/daemon-principal.ts", j), []);
+  assert.deepEqual(bad('import { mintTrustAttestation } from "./attestation.js"; export const w = (f: F) => mintTrustAttestation(f);', "dist/src/daemon-attestation.js", { pkg: "runs" }), []);
+});
+
+test("a mint function read through a property is call-only", () => {
+  for (const f of ["export const a = P.mintUserPrincipal;", "export const a = P['mintTrustAttestation'];", "const f = ns.userPrincipal; f();", "export const a = ns.attestTrust;", "x(ns.userPrincipal);"]) assert.equal(bad(f).length >= 1, true, f);
+  for (const f of ["ns.userPrincipal();", "ns['attestTrust'](f);", "new ns.mintUserPrincipal();"]) assert.deepEqual(bad(f), [], f);
+  assert.deepEqual(bad("const f = ns.userPrincipal;", "x.test.ts", { shipped: false }), []);
+});
+
+test("node:process is refused, worker_threads cannot be imported dynamically or re-exported", async () => {
+  const { LOADER_BUILTINS } = await import("../../scripts/code-oss/stage-scan.mjs");
+  assert.equal(LOADER_BUILTINS.get("node:process")?.size, 0);
+  for (const f of ['const w = await import("node:worker_threads");', 'const w = require("node:worker_threads");', 'export * from "node:worker_threads";', 'export { Worker } from "node:worker_threads";']) assert.equal(bad(f).length >= 1, true, f);
+  assert.deepEqual(bad('const w = await import("node:worker_threads");', "x.test.ts", { shipped: false }), []);
+});
+
+test("Reflect.get, getOwnPropertyDescriptor and assignment destructuring of constructor are refused", () => {
+  for (const f of ['Reflect.get(f, "constructor");', 'Object.getOwnPropertyDescriptor(f, "constructor");', "Reflect.get(f, `constructor`);", "({ constructor: C } = f);", "({ constructor } = f);"]) assert.equal(bad(f).length >= 1, true, f);
+  assert.deepEqual(bad('Reflect.get(f, "name"); Object.getOwnPropertyDescriptor(f, "length"); ({ name } = f);'), []);
 });

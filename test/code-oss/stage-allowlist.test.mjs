@@ -326,3 +326,18 @@ test("the hook refuses a non-literal load in an Axis source before anything is w
     assert.equal(existsSync(join(tree, `${STAGE_ROOT}.staging`)), false);
   });
 });
+
+test("the hook judges each source in its own package: holder rules apply in journal, not in other packages", () => {
+  withFixture(({ repo, tree }) => {
+    put(repo, "packages/journal/package.json", JSON.stringify({ name: "@axis/journal", exports: { ".": { default: "./dist/src/index.js" } } }));
+    put(repo, "packages/journal/src/index.ts", "export {};\n");
+    put(repo, "packages/journal/src/principal.ts", "export class P {}\n");
+    put(repo, "packages/journal/src/leak.ts", 'import * as P from "./principal.js";\nexport const u = P;\n');
+    assert.throws(() => stage({ repo, tree }), /^StageError: packages\/journal\/src\/leak\.ts: .*namespace import/);
+  });
+  withFixture(({ repo, tree }) => {
+    otherPackage(repo, "principal.ts", "export class P {}\n");
+    otherPackage(repo, "ok.ts", 'import * as P from "./principal.js";\nexport const u = P;\n');
+    stage({ repo, tree });
+  });
+});

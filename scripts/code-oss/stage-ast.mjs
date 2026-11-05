@@ -39,10 +39,14 @@ const PROCESS_SAFE = new Set(["platform", "env", "stdout", "stderr", "stdin", "e
 const GLOBAL_SAFE = new Set(["fetch", "setTimeout", "clearTimeout", "setInterval", "clearInterval", "setImmediate", "clearImmediate", "structuredClone", "queueMicrotask", "AbortController", "AbortSignal", "URL", "URLSearchParams", "TextEncoder", "TextDecoder", "performance"]);
 const GUARDED = new Map([["process", PROCESS_SAFE], ["globalThis", GLOBAL_SAFE], ["global", GLOBAL_SAFE], ["module", new Set()]]);
 
-/** Mint functions: the only things that turn a private symbol into a principal or an attestation. Calls only. */
 /** Packages that hold a mint symbol in a module named principal, attestation or lock. */
 const MINT_HOLDER_PACKAGES = new Set(["journal", "runs", "audit"]);
+/** Mint functions: the only things that turn a private symbol into a principal or an attestation. Calls only. */
 export const MINT_FUNCTIONS = new Set(["mintUserPrincipal", "mintTrustAttestation"]);
+/** Every name under which a mint function is reachable (the holder-module functions and the daemon-only wrappers). */
+const MINT_NAMES = new Set([...MINT_FUNCTIONS, "userPrincipal", "attestTrust"]);
+/** The only files that may import a mint function from a holder module: the daemon entry files of the holder packages. */
+const DAEMON_ENTRY_FILE = /(^|[\\/])daemon-(?:principal|attestation)\.[mc]?[jt]s$/;
 
 /** True for a specifier naming a mint module (the daemon-only principal and attestation minting functions). */
 export const isMintModuleSpec = (spec) => /(^|\/)daemon-(?:principal|attestation)(?:\.js)?$/.test(spec);
@@ -124,6 +128,19 @@ export function scanModules(source, file = "x.ts", { vendored = false, shipped =
       const key = keyText(n.argumentExpression);
       if (key !== null && (HIDDEN_NAMES.has(key) || key === "Function")) bad.push(`${at(n)}: ["${key}"] reaches code without a visible import specifier`);
     }
+    // Reflect.get / getOwnPropertyDescriptor(s) with the constant key "constructor", and assignment destructuring of it.
+    if (shipped && ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression) && ["get", "getOwnPropertyDescriptor"].includes(n.expression.name.text) && ts.isIdentifier(n.expression.expression) && ["Reflect", "Object"].includes(n.expression.expression.text) && keyText(n.arguments[1]) === "constructor") {
+      bad.push(`${at(n)}: reading "constructor" through ${n.expression.expression.text}.${n.expression.name.text} reaches the Function constructor`);
+    }
+    if (shipped && (ts.isPropertyAssignment(n) || ts.isShorthandPropertyAssignment(n)) && n.name.text === "constructor" && ts.isObjectLiteralExpression(n.parent) && ts.isBinaryExpression(n.parent.parent) && n.parent.parent.left === n.parent) {
+      bad.push(`${at(n)}: destructuring assignment of constructor reaches the Function constructor`);
+    }
+    if (shipped && ts.isCallExpression(n) && (n.expression.kind === K.ImportKeyword || (ts.isIdentifier(n.expression) && n.expression.text === "require")) && keyText(n.arguments[0]) === "node:worker_threads") {
+      bad.push(`${at(n)}: node:worker_threads is imported statically, with only MessageChannel and MessagePort`);
+    }
+    if (shipped && ts.isExportDeclaration(n) && n.moduleSpecifier !== undefined && keyText(n.moduleSpecifier) === "node:worker_threads") {
+      bad.push(`${at(n)}: node:worker_threads is never re-exported`);
+    }
     if (shipped && ts.isBindingElement(n) && (n.propertyName ?? n.name).text === "constructor") bad.push(`${at(n)}: destructuring constructor reaches the Function constructor`);
     // process, globalThis, global and module: only a direct read of a known-safe property.
     if (shipped && ts.isIdentifier(n) && GUARDED.has(n.text) && !isNamePosition(n) && !inType(n)) {
@@ -145,7 +162,7 @@ export function scanModules(source, file = "x.ts", { vendored = false, shipped =
     }
   };
   visit(sf);
-  if (!vendored) bad.push(...mintUses(sf, at, !shipped, pkg));
+  if (!vendored) bad.push(...mintUses(sf, at, !shipped, pkg, file));
   return { refs, bad };
 }
 
@@ -205,7 +222,8 @@ export function privateNameCount(source, file = "x.ts") {
  *      (`principal`, `attestation`, `lock`); no `export { mintUserPrincipal | mintTrustAttestation } from`.
  *   4. No dynamic `import()` or `require()` of a mint module.
  */
-function mintUses(sf, at, testFile, pkg) {
+function mintUses(sf, at, testFile, pkg, file) {
+  const inHolderPackage = pkg === null || MINT_HOLDER_PACKAGES.has(pkg);
   const bad = [];
   const bound = new Set();
   const namespaces = new Set(); // bindings of a whole module: `ns.fn(...)` is a call of fn, `fn.bind(...)` is not
@@ -217,6 +235,9 @@ function mintUses(sf, at, testFile, pkg) {
       const mint = isMintModuleSpec(n.moduleSpecifier.text);
       const c = n.importClause;
       if (mint && c?.name) bound.add(c.name.text);
+      if (holder(n.moduleSpecifier.text) && inHolderPackage && c !== undefined && (c.name !== undefined || (c.namedBindings !== undefined && ts.isNamespaceImport(c.namedBindings)))) {
+        bad.push(`${at(n)}: a default or namespace import of ${n.moduleSpecifier.text} would carry its mint function out of the module (import the names you need)`);
+      }
       const nb = c?.namedBindings;
       if (mint && nb && ts.isNamespaceImport(nb)) {
         bound.add(nb.name.text);
@@ -227,6 +248,7 @@ function mintUses(sf, at, testFile, pkg) {
           const imported = (e.propertyName ?? e.name).text;
           if (imported === "MINT") bad.push(`${at(e)}: the raw mint symbol is never exported, so it cannot be imported`);
           if (mint || MINT_FUNCTIONS.has(imported)) bound.add(e.name.text);
+          if (MINT_FUNCTIONS.has(imported) && !testFile && !DAEMON_ENTRY_FILE.test(file)) bad.push(`${at(e)}: ${imported} may be imported only by the daemon-principal and daemon-attestation entry files`);
         }
       }
     } else if (ts.isImportEqualsDeclaration(n) && ts.isExternalModuleReference(n.moduleReference) && isMintModuleSpec(specOf(n.moduleReference.expression) ?? "")) {
@@ -248,8 +270,8 @@ function mintUses(sf, at, testFile, pkg) {
   const visit = (n) => {
     if (ts.isExportDeclaration(n)) {
       const spec = specOf(n.moduleSpecifier);
-      if (spec !== null && isMintModuleSpec(spec)) bad.push(`${at(n)}: re-exports a mint module (${spec})`);
-      if (spec !== null && holder(spec) && (pkg === null || MINT_HOLDER_PACKAGES.has(pkg)) && (n.exportClause === undefined || ts.isNamespaceExport(n.exportClause))) bad.push(`${at(n)}: export * from ${spec} would re-export the module's mint symbol`);
+      if (spec !== null && isMintModuleSpec(spec) && !n.isTypeOnly && !(n.exportClause && ts.isNamedExports(n.exportClause) && n.exportClause.elements.every((e) => e.isTypeOnly))) bad.push(`${at(n)}: re-exports a mint module (${spec})`);
+      if (spec !== null && holder(spec) && inHolderPackage && (n.exportClause === undefined || ts.isNamespaceExport(n.exportClause))) bad.push(`${at(n)}: export * from ${spec} would re-export the module's mint symbol`);
       if (n.exportClause && ts.isNamedExports(n.exportClause)) {
         for (const e of n.exportClause.elements) {
           const names = [(e.propertyName ?? e.name).text, e.name.text];
@@ -262,8 +284,12 @@ function mintUses(sf, at, testFile, pkg) {
       if (names.includes("MINT")) bad.push(`${at(n)}: the raw mint symbol is never exported`);
     } else if (ts.isCallExpression(n) && (n.expression.kind === K.ImportKeyword || (ts.isIdentifier(n.expression) && n.expression.text === "require")) && isLiteral(n.arguments[0]) && isMintModuleSpec(n.arguments[0].text)) {
       bad.push(`${at(n)}: a mint module is imported statically only`);
+    } else if (ts.isCallExpression(n) && (n.expression.kind === K.ImportKeyword || (ts.isIdentifier(n.expression) && n.expression.text === "require")) && isLiteral(n.arguments[0]) && holder(n.arguments[0].text) && inHolderPackage && !testFile) {
+      bad.push(`${at(n)}: a holder module is imported statically, by name, only`);
     } else if (ts.isImportEqualsDeclaration(n) && ts.isExternalModuleReference(n.moduleReference) && exportedName(n) && isMintModuleSpec(specOf(n.moduleReference.expression) ?? "")) {
       bad.push(`${at(n)}: re-exports a mint module`);
+    } else if (!testFile && (ts.isPropertyAccessExpression(n) || ts.isElementAccessExpression(n)) && MINT_NAMES.has(ts.isPropertyAccessExpression(n) ? n.name.text : (isLiteral(n.argumentExpression) ? n.argumentExpression.text : "")) && !calleeOf(n)) {
+      bad.push(`${at(n)}: a mint function reached through a property may only be called`);
     } else if (!testFile && ts.isIdentifier(n) && bound.has(n.text)) {
       const p = n.parent;
       const declaration = p !== undefined && (ts.isImportSpecifier(p) || ts.isImportClause(p) || ts.isNamespaceImport(p) || (ts.isImportEqualsDeclaration(p) && p.name === n));

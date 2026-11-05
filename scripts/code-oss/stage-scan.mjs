@@ -14,6 +14,7 @@ export { importSpecifiers, unsafeForms, rewriteSpecifiers, scanModules } from ".
  */
 export const LOADER_BUILTINS = new Map([
   ["node:module", new Set()],
+  ["node:process", new Set()],
   ["node:vm", new Set()],
   ["node:repl", new Set()],
   ["node:inspector", new Set()],
