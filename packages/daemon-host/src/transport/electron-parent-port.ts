@@ -16,7 +16,11 @@ export interface ParentPortLike {
 export interface ElectronControl {
   /** Messages that arrived without a port. */
   readonly channel: SupervisorChannel;
-  /** Messages that arrived with exactly one transferred port (a `connect`). */
+  /**
+   * Messages that arrived with exactly one transferred port (a `connect`). There is one handler at most, so two
+   * parties can never both wrap the same port (`E_CONFLICT` for a second); if it throws, the port is closed. The
+   * handler must validate `data` itself (the connect router's `fromPortMessage` does).
+   */
   onPort(handler: (data: unknown, port: ElectronPortLike) => void): Unsubscribe;
   /** Counts of what was refused, for tests and the shutdown report. */
   readonly stats: () => { readonly portsClosed: number; readonly multiPortDropped: number; readonly unclaimedPorts: number };
@@ -69,7 +73,12 @@ export function adaptParentPort(parentPort: ParentPortLike): ElectronControl {
       closeAll(ports);
       return;
     }
-    for (const h of [...portHandlers]) safe(() => h(event.data, port));
+    try {
+      (portHandlers[0] as (data: unknown, port: ElectronPortLike) => void)(event.data, port);
+    } catch {
+      portsClosed++;
+      closeAll(ports);
+    }
   };
   parentPort.on("message", listener);
 
@@ -100,6 +109,7 @@ export function adaptParentPort(parentPort: ParentPortLike): ElectronControl {
   return {
     channel,
     onPort(handler): Unsubscribe {
+      if (portHandlers.length > 0) throw new AxisError("E_CONFLICT", "A port handler is already set");
       portHandlers.push(handler);
       return remove(portHandlers, handler);
     },

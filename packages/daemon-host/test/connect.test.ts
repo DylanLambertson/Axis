@@ -181,3 +181,54 @@ test("router over a transferred port: allowed, limited and closed on throw", () 
   assert.equal(accepted.length, 1);
   assert.deepEqual([ok.closed, over.closed], [0, 1]);
 });
+
+test("fromPortMessage: only a valid connect without a cid reaches accept; everything else closes the port", () => {
+  const accepted: Connection[] = [];
+  const router = createConnectRouter({ limiter: createConnectLimiter({ clock: fakeClock() }), accept: (c) => accepted.push(c) });
+  const good = { type: "connect", attestation: att() };
+  const bad: unknown[] = [
+    { type: "connect" },
+    { type: "shutdown" },
+    { ...good, cid: "conn-0001" },
+    { ...good, extra: 1 },
+    "connect",
+    null,
+    new Proxy({ ...good }, {}),
+    JSON.parse('{"type":"connect","__proto__":{"a":1},"attestation":{"identity":{},"issuedAt":1,"mac":"' + "m".repeat(43) + '"}}'),
+  ];
+  const ports = bad.map(() => fakePort());
+  bad.forEach((data, i) => router.fromPortMessage(data, ports[i] as never));
+  assert.deepEqual(ports.map((p) => p.closed), bad.map(() => 1));
+  assert.equal(router.refusedPortMessages(), bad.length);
+  assert.equal(accepted.length, 0);
+  const ok = fakePort();
+  router.fromPortMessage(good, ok);
+  assert.equal(accepted.length, 1);
+  assert.equal(ok.closed, 0);
+});
+
+test("fromPortMessage: an accept that throws closes the connection and never throws", () => {
+  const router = createConnectRouter({
+    limiter: createConnectLimiter({ clock: fakeClock() }),
+    accept: () => {
+      throw new Error("x");
+    },
+  });
+  let closed = 0;
+  const port = { ...fakePort(), close: () => void closed++ };
+  assert.doesNotThrow(() => router.fromPortMessage({ type: "connect", attestation: att() }, port));
+  assert.equal(closed >= 1, true);
+});
+
+test("electron adapter: one port handler only, and a throwing handler closes the port", () => {
+  const parent = fakeParent();
+  const ctl = adaptParentPort(parent.port);
+  ctl.onPort(() => {
+    throw new Error("boom");
+  });
+  assert.throws(() => ctl.onPort(() => undefined), { code: "E_CONFLICT" });
+  const p = fakePort();
+  assert.doesNotThrow(() => parent.emit({ data: {}, ports: [p] }));
+  assert.equal(p.closed, 1);
+  ctl.dispose();
+});
