@@ -307,7 +307,7 @@ test("review.complete: a run id in, a COMPLETED run out, and no actor in the req
 });
 
 test("the git commit reasons are the ones the packages use and are a closed set", () => {
-  assert.deepEqual([...GIT_COMMIT_REASONS].sort(), ["detached_head", "head_moved", "index_changed", "no_head", "not_found", "operation_in_progress", "ref_update_failed", "snapshot_failed", "stale", "too_large"]);
+  assert.deepEqual([...GIT_COMMIT_REASONS].sort(), ["detached_head", "git_drift", "head_moved", "index_changed", "no_head", "not_found", "operation_in_progress", "ref_update_failed", "snapshot_failed", "stale", "too_large"]);
   assert.deepEqual([...REVIEW_DIFF_REASONS].sort(), ["filtered_path", "hunks_do_not_apply", "index_refused", "no_head", "not_found", "not_head", "nothing_accepted", "path_conflict", "snapshot_failed", "too_large", "truncated_hunk", "unsafe_path"]);
   assert.equal((REVIEW_DIFF_REASONS as readonly string[]).includes("not_a_commit"), false);
 });

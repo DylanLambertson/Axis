@@ -13,8 +13,20 @@ export class GitOpsError extends Error {
   }
 }
 
-export function denied(message: string): GitOpsError {
-  return new GitOpsError("E_POLICY_DENIED", message);
+/**
+ * What an injected scanner throws when it could not cover all of the text (too large, out of time or work) and is not a bug: the
+ * outgoing scan is then incomplete, which `refuse` mode blocks as `scan_incomplete`. Any other throw from a scanner is a failure
+ * (`E_UNAVAILABLE`). It carries no text.
+ */
+export class ScanIncomplete extends Error {
+  constructor() {
+    super("the secret scan could not cover all of the outgoing changes");
+    this.name = "ScanIncomplete";
+  }
+}
+
+export function denied(message: string, reason?: string): GitOpsError {
+  return new GitOpsError("E_POLICY_DENIED", message, reason === undefined ? undefined : { reason });
 }
 export function invalid(message: string): GitOpsError {
   return new GitOpsError("E_INVALID_ARGUMENT", message);

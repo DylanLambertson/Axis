@@ -21,6 +21,11 @@ const REASON_TEXT: Readonly<Record<string, string>> = {
   detached_head: "HEAD is detached. Commit from an axis branch.",
   no_head: "The branch has no commit to build on.",
   plan_changed: "The outgoing changes are not the ones you confirmed. Review the new plan.",
+  secrets_found: "The outgoing changes match a secret pattern, so they cannot be pushed. Review the plan.",
+  scan_incomplete: "The outgoing changes are too large to scan completely, so they cannot be pushed.",
+  binary_unscanned: "The outgoing changes include binary files that cannot be scanned. Review the plan.",
+  message_unscannable: "A commit message in the outgoing changes cannot be scanned, so it cannot be pushed.",
+  git_drift: "The repository's git configuration changed since it was recorded. Acknowledge the change first.",
 };
 
 const REASONS: ReadonlySet<string> = new Set<string>([...GIT_COMMIT_REASONS, ...GIT_PUSH_REASONS]);

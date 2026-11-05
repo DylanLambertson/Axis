@@ -5,7 +5,9 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
 import type { Policy } from "@axis/daemon";
+import { gitCommitReasonSchema } from "@axis/protocol";
 import type { CommitInput } from "@axis/git-ops";
+import { DaemonError } from "@axis/daemon";
 import { GitRefusal } from "../src/index.js";
 import { gitRig, gitUnavailable, type GitClient, type GitRig, type GitRigOptions } from "./git-rig.js";
 
@@ -248,4 +250,17 @@ test("commit: only the user may commit, whatever the policy allows; an unknown o
   assert.equal(gone.ok, false);
   assert.equal(r.calls.prepare, 0);
   assert.equal(r.head(), req.expectedParent);
+});
+
+test("commit: a drifted git configuration is E_CONFLICT git_drift (a reason of the commit contract) and nothing is committed", { skip: SKIP ?? false }, async (t) => {
+  const { r, c } = await setup(t, { assertNoDrift: () => Promise.reject(new DaemonError("E_CONFLICT", "drift /private/path", { reason: "git_drift" })) });
+  const before = r.head();
+  const req = await review(r, c);
+  const res = await commit(c, r, req);
+  assert.equal(res.error?.code, "E_CONFLICT", JSON.stringify(res.error));
+  const reason = (res.error?.details as { reason?: string } | undefined)?.reason;
+  assert.equal(reason, "git_drift");
+  assert.equal(gitCommitReasonSchema.safeParse(reason).success, true, "the reason is in the commit contract's closed set");
+  assert.equal(r.head(), before);
+  assert.ok(!JSON.stringify(res.error).includes("/private/path"));
 });

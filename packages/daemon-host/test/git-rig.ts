@@ -62,6 +62,8 @@ export interface GitRigOptions {
   /** Make `journal.recordPushed` throw. */
   recordPushedFails?: boolean;
   ptyRunner?: "node" | "none";
+  /** The drift check of the git port (default: no drift). */
+  assertNoDrift?: () => Promise<void>;
 }
 
 /** A real repository on `axis/feat`, a bare remote named `origin`, the real daemon, gate, registrar and git handlers. */
@@ -103,7 +105,7 @@ export async function gitRig(options: GitRigOptions = {}) {
     runHooks: false,
     scanner,
     ...(options.ptyRunner === "none" ? {} : { ptyRunner }),
-    assertNoDrift: async () => undefined,
+    assertNoDrift: options.assertNoDrift ?? (async () => undefined),
   });
 
   const db = openDatabase(":memory:");
