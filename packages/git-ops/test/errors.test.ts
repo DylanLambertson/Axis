@@ -9,7 +9,7 @@ import { FakeRunner, TREE, WT, BASE, healthy, makeDeps } from "./helpers.js";
 import { fixture } from "./realFixture.js";
 
 const push = { worktree: WT, remote: "origin", branch: "axis/feat", baseSha: BASE };
-const commit = { worktree: WT, reviewedTreeHash: TREE, message: "m" };
+const commit = { worktree: WT, reviewedTreeHash: TREE, message: "m", expectedParent: "c".repeat(40), expectedBranch: "axis/feat" };
 
 async function outcome(p: Promise<unknown>): Promise<GitOpsError> {
   try {

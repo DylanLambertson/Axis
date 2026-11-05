@@ -2,10 +2,34 @@
 // Real-git fixture: a throwaway repository on axis/feat, a bare local remote, and a runner that records requests.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { GitOpsError, createNodeRunner, type GitOpsDeps, type GitRunRequest, type WorktreeRef } from "../src/index.js";
+
+const created: string[] = [];
+let hooked = false;
+
+/** Removes every directory made by `tmp()` (also runs at process exit, so a failing test does not leak it). */
+export function cleanupTmp(): void {
+  for (const d of created.splice(0)) rmSync(d, { recursive: true, force: true, maxRetries: 3 });
+}
+
+/** The directories not yet removed, for the test that checks the helper registers them. */
+export function liveTmpDirs(): readonly string[] {
+  return created;
+}
+
+/** A real (symlink-free) temporary directory that is removed when the test process ends. Use this, never mkdtempSync. */
+export function tmp(prefix: string): string {
+  if (!hooked) {
+    hooked = true;
+    process.on("exit", cleanupTmp);
+  }
+  const d = realpathSync(mkdtempSync(join(tmpdir(), prefix)));
+  created.push(d);
+  return d;
+}
 
 export const PATHS = process.env["PATH"] ?? "/usr/bin:/bin";
 
@@ -23,7 +47,7 @@ export interface Fixture {
 }
 
 export function fixture(over: Partial<GitOpsDeps> = {}): Fixture {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "axis-gitops-")));
+  const root = tmp("axis-gitops-");
   const home = join(root, "home");
   mkdirSync(home);
   const env = { PATH: PATHS, HOME: home, GIT_CONFIG_NOSYSTEM: "1" };
@@ -79,4 +103,9 @@ export async function refusal(p: Promise<unknown>): Promise<GitOpsError> {
 /** The journaled base of the fixture: the commit axis/feat was cut from. */
 export function baseOf(f: Pick<Fixture, "git">): string {
   return f.git("rev-parse", "main").trim();
+}
+
+/** The pin a review hands over: HEAD's commit and the short name of the checked-out branch. */
+export function pin(f: Pick<Fixture, "git">, branch = "axis/feat"): { expectedParent: string; expectedBranch: string } {
+  return { expectedParent: f.git("rev-parse", "HEAD").trim(), expectedBranch: branch };
 }

@@ -1,10 +1,11 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
-// Axis commit (threat model GIT-3, REV-1, GIT-7; gate 1a/L24). The daemon orchestrates; git runs in the pty
-// process, so repository hooks never run in the daemon. The commit is of the tree the user reviewed.
+// Axis commit (threat model GIT-3, REV-1, GIT-7; gate 1a/L24). The commit is of the tree the user reviewed, on the parent
+// and branch they reviewed it on: it is built with commit-tree in the pty context and the branch is moved by compare-and-swap.
+// Commit hooks do not run on this path (OPEN DECISION for the owner, see docs/packages.md "Commit hooks").
 import { branchFor, checkWorktree, daemonGitFor, platformOf, prefix, OBJECT_ID, type DaemonGit } from "./args.js";
 import { findOverride, identityOverrides, overrideMessage, withNoPrompt } from "./env.js";
 import { runBound } from "./boundCommit.js";
-import { GitOpsError, conflict, denied, headMoved, internal, invalid, mapUnexpected, redactUrls, sanitizeText } from "./errors.js";
+import { GitOpsError, conflict, denied, headMoved, invalid, mapUnexpected } from "./errors.js";
 import { assertNoOperation } from "./operation.js";
 import type { GitOpsDeps, GitRunRequest, WorktreeRef } from "./types.js";
 
@@ -19,15 +20,18 @@ export interface CommitInput {
    */
   readonly author?: { readonly name: string; readonly email: string };
   /**
-   * G3: the commit HEAD pointed at when the diff was reviewed. When present the commit is BOUND: it is built with
-   * `commit-tree` from `reviewedTreeHash` and this parent, checked again against the new commit, and the branch is moved
-   * by compare-and-swap from this value, so it cannot land on another parent or overwrite a commit made meanwhile.
-   * Refused with E_CONFLICT `details.reason: "head_moved"` when HEAD is elsewhere. Full lower-case object id.
-   * Absent: the older `git commit` path, which commits on whatever HEAD is when git runs (no pin).
+   * G3, REQUIRED: the full commit id HEAD pointed at when the diff was reviewed. The commit is built with `commit-tree` from
+   * `reviewedTreeHash` and this parent, verified against the new object, and the branch is moved by compare-and-swap
+   * from this value, so it cannot land on another parent or overwrite a commit made meanwhile. HEAD elsewhere:
+   * E_CONFLICT `details.reason: "head_moved"`. A malformed id: E_INVALID_ARGUMENT.
    */
-  readonly expectedParent?: string;
-  /** G3: the branch that was checked out at review time (`axis/<slug>`). Needs `expectedParent`. A different branch: `head_moved`. */
-  readonly expectedBranch?: string;
+  readonly expectedParent: string;
+  /**
+   * G3, REQUIRED: the SHORT name of the branch that was checked out at review time, `axis/<slug>` (not `refs/heads/...`, not
+   * null). A full ref or a non-string is E_INVALID_ARGUMENT, another name E_POLICY_DENIED; a different checked-out
+   * branch is `head_moved`. A detached HEAD or an unborn branch cannot be committed to: E_POLICY_DENIED.
+   */
+  readonly expectedBranch: string;
 }
 
 export interface CommitPlan {
@@ -35,9 +39,7 @@ export interface CommitPlan {
   readonly branch: string;
   readonly reviewedTreeHash: string;
   readonly parent: string;
-  /** True when `expectedParent` was given: `command` is then `commit-tree` (it prints the new commit id and moves no ref). */
-  readonly bound: boolean;
-  /** Runs in the pty process. */
+  /** `commit-tree`, run in the pty process. It prints the new commit id and moves no ref; use `executeCommit`. */
   readonly command: GitRunRequest;
 }
 
@@ -60,12 +62,11 @@ async function check(deps: GitOpsDeps, input: CommitInput): Promise<{ plan: Comm
   if (typeof msg !== "string" || msg.trim().length === 0 || msg.length > MAX_MESSAGE || msg.includes("\0")) {
     throw invalid("the commit message must be non-empty text of at most 64 KiB without NUL");
   }
-  const bound = input.expectedParent !== undefined;
-  if (bound && (typeof input.expectedParent !== "string" || !OBJECT_ID.test(input.expectedParent))) throw invalid("expectedParent must be a full lower-case object id");
-  if (input.expectedBranch !== undefined) {
-    if (!bound) throw invalid("expectedBranch needs expectedParent");
-    branchFor(input.expectedBranch);
+  if (typeof input.expectedParent !== "string" || !OBJECT_ID.test(input.expectedParent)) throw invalid("expectedParent must be a full lower-case object id");
+  if (typeof input.expectedBranch !== "string" || input.expectedBranch.startsWith("refs/")) {
+    throw invalid("expectedBranch must be the short branch name axis/<slug>");
   }
+  branchFor(input.expectedBranch);
   const bad = findOverride(deps.env.pty);
   if (bad) throw denied(overrideMessage(bad));
 
@@ -77,10 +78,10 @@ async function check(deps: GitOpsDeps, input: CommitInput): Promise<{ plan: Comm
   if (head.code !== 0) throw denied("HEAD is detached; Axis commits only on axis/<slug>");
   const { branch } = branchFor(line(head));
 
-  if (input.expectedBranch !== undefined && branch !== input.expectedBranch) throw headMoved("the checked-out branch is not the one that was reviewed");
+  if (branch !== input.expectedBranch) throw headMoved("the checked-out branch is not the one that was reviewed");
   const parentR = await git(["rev-parse", "--verify", "--end-of-options", "HEAD^{commit}"]);
   if (parentR.code !== 0) throw denied("the branch has no commit to build on");
-  if (bound && line(parentR) !== input.expectedParent) throw headMoved("HEAD is not the commit that was reviewed; review the changes again");
+  if (line(parentR) !== input.expectedParent) throw headMoved("HEAD is not the commit that was reviewed; review the changes again");
   await assertNoOperation(git, input.worktree, deps);
 
   const index = await git(["write-tree"]);
@@ -109,36 +110,38 @@ async function check(deps: GitOpsDeps, input: CommitInput): Promise<{ plan: Comm
     }
   }
 
-  const base = prefix(input.worktree, deps, { context: "pty", hooks: deps.runHooks, filters: [] });
-  // A repository can set i18n.commitEncoding; the message is recorded as UTF-8 so that the secret scan reads what is pushed.
-  const encoding = ["-c", "i18n.commitEncoding=utf-8"];
-  let command: GitRunRequest;
-  if (bound) {
-    // commit-tree ignores commit.gpgsign, so the setting is read and honoured here rather than silently dropped.
-    const sign = await gpgSigning(deps, input.worktree);
-    command = {
-      argv: [...base, ...encoding, "commit-tree", ...(sign ? ["-S"] : []), "-p", input.expectedParent as string, "-F", "-", input.reviewedTreeHash],
-      cwd: input.worktree.workTree,
-      env: withNoPrompt(deps.env.pty),
-      stdin: normalisedMessage(msg),
-      context: "pty",
-    };
-  } else {
-    command = {
-      argv: [...base, ...encoding, "commit", "-F", "-", "--no-edit", ...(deps.runHooks ? [] : ["--no-verify"])],
-      cwd: input.worktree.workTree,
-      env: withNoPrompt(deps.env.pty),
-      stdin: msg,
-      context: "pty",
-    };
-  }
+  // commit-tree ignores commit.gpgsign, so the setting is read and honoured here rather than silently dropped.
+  const sign = await gpgSigning(deps, input.worktree);
+  const command: GitRunRequest = {
+    argv: [
+      ...prefix(input.worktree, deps, { context: "pty", hooks: deps.runHooks, filters: [] }),
+      // A repository can set i18n.commitEncoding; the message is recorded as UTF-8 so that the secret scan reads what is pushed.
+      "-c", "i18n.commitEncoding=utf-8",
+      "commit-tree", ...(sign ? ["-S"] : []), "-p", input.expectedParent, "-F", "-", input.reviewedTreeHash,
+    ],
+    cwd: input.worktree.workTree,
+    env: withNoPrompt(deps.env.pty),
+    stdin: normalisedMessage(msg),
+    context: "pty",
+  };
   if (deps.assertReviewFresh) await reviewFresh(deps, input);
-  return { plan: { worktree: input.worktree, branch, reviewedTreeHash: input.reviewedTreeHash, parent: line(parentR), bound, command }, git };
+  return { plan: { worktree: input.worktree, branch, reviewedTreeHash: input.reviewedTreeHash, parent: line(parentR), command }, git };
 }
 
-/** What `git commit` would record: trailing blanks removed, no leading or trailing blank lines, one final newline. */
-function normalisedMessage(msg: string): string {
-  return `${msg.replace(/[ \t]+$/gm, "").replace(/^\n+/, "").replace(/\n{3,}/g, "\n\n").trimEnd()}\n`;
+/**
+ * Git's default cleanup (`stripspace`): trailing white space (space, tab, CR, VT, FF) removed from every line, runs of blank
+ * lines collapsed, none at the start or end, one final newline. `commit.cleanup` and comment stripping are not applied
+ * (commit-tree has neither); a non-breaking space is not white space to git and is kept.
+ */
+export function normalisedMessage(msg: string): string {
+  const lines = msg.split("\n").map((l) => l.replace(/[ \t\r\v\f]+$/, ""));
+  const out: string[] = [];
+  for (const l of lines) {
+    if (l === "" && (out.length === 0 || out[out.length - 1] === "")) continue;
+    out.push(l);
+  }
+  while (out[out.length - 1] === "") out.pop();
+  return `${out.join("\n")}\n`;
 }
 
 /** `commit.gpgsign` as the pty context sees it. An unreadable or non-boolean value refuses rather than commits unsigned. */
@@ -174,37 +177,14 @@ export async function planCommit(deps: GitOpsDeps, input: CommitInput): Promise<
 }
 
 /**
- * Re-validates immediately before running (the plan is not trusted), runs the commit in the pty context, and
- * verifies that the new commit has the reviewed tree and sits directly on the reviewed parent.
- *
- * - A wrong tree on the expected parent is undone by compare-and-swap (new value the parent, old value the commit);
- *   the undo is reported only when `update-ref` really succeeded.
- * - Any other outcome (the parent is not the reviewed one, or the undo failed) leaves the branch alone and reports
- *   E_INTERNAL with `undone: false`: dropping a commit that someone else made is not ours to do.
+ * Re-validates immediately before running (the plan is not trusted), then builds the commit with `commit-tree` (pty
+ * context), verifies the new object (one parent, the expected one; the reviewed tree) and moves the branch with a
+ * compare-and-swap from `expectedParent`. A failure before the update leaves the branch where it was; after a successful
+ * update that fails its read-back the commit is NOT rolled back (E_INTERNAL, `updated: true`).
  */
 export function executeCommit(deps: GitOpsDeps, input: CommitInput): Promise<CommitResult> {
-  return mapUnexpected(() => runCommit(deps, input));
-}
-
-async function runCommit(deps: GitOpsDeps, input: CommitInput): Promise<CommitResult> {
-  const { plan, git } = await check(deps, input);
-  if (plan.bound) return runBound(deps, plan, git);
-  const r = await deps.runner.run(plan.command);
-  if (r.code !== 0) throw conflict(`git commit failed (exit ${r.code}): ${redactUrls(sanitizeText(r.stderr)).trim().slice(0, 500)}`);
-  const commit = line(await git(["rev-parse", "--verify", "--end-of-options", "HEAD^{commit}"]));
-  const tree = line(await git(["rev-parse", "--verify", "--end-of-options", "HEAD^{tree}"]));
-  const parentR = OBJECT_ID.test(commit) ? await git(["rev-parse", "--verify", "--quiet", "--end-of-options", `${commit}^1`]) : undefined;
-  const parent = parentR?.code === 0 ? line(parentR) : "";
-  if (!OBJECT_ID.test(commit) || !OBJECT_ID.test(tree)) {
-    throw internal("the new commit could not be read back, so it was not verified", { undone: false });
-  }
-  if (parent !== plan.parent) {
-    throw internal(`the new commit ${commit} is not built on the reviewed base ${plan.parent}: the branch moved while the commit ran; it was not undone`, { undone: false });
-  }
-  if (tree === plan.reviewedTreeHash) return { commit, tree };
-  const undo = await git(["update-ref", "-m", "axis: undo commit of an unreviewed tree", `refs/heads/${plan.branch}`, parent, commit]);
-  if (undo.code !== 0) {
-    throw internal(`the commit ${commit} did not contain the reviewed tree and could not be undone; the branch was left as it is`, { undone: false });
-  }
-  throw new GitOpsError("E_CONFLICT", "the commit did not contain the reviewed tree and was undone", { undone: true });
+  return mapUnexpected(async () => {
+    const { plan, git } = await check(deps, input);
+    return runBound(deps, plan, git);
+  });
 }

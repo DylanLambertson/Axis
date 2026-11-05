@@ -2,34 +2,39 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   GitOpsError, createNodeRunner, executeCommit, executePush, guardedRunner, planCommit, planPush, prefix,
 } from "../src/index.js";
 import { withNoPrompt } from "../src/env.js";
-import { PATHS, baseOf, fixture, plantHook, refusal, stage } from "./realFixture.js";
+import { PATHS, baseOf, fixture, pin, plantHook, refusal, stage } from "./realFixture.js";
 
-test("commit: the reviewed tree is committed with the config identity and hooks run in the pty context", async () => {
+test("commit: the reviewed tree is committed with the config identity", async () => {
   const f = fixture();
-  plantHook(f, "pre-commit");
   const tree = stage(f, "b.txt", "two\n");
-  const r = await executeCommit(f.deps, { worktree: f.wt, reviewedTreeHash: tree, message: "feat: b\n\nbody", author: { name: "Dylan Lambertson", email: "me@dylanlambertson.dev" } });
+  const r = await executeCommit(f.deps, { worktree: f.wt, reviewedTreeHash: tree, message: "feat: b\n\nbody", ...pin(f), author: { name: "Dylan Lambertson", email: "me@dylanlambertson.dev" } });
   assert.equal(r.tree, tree);
   assert.equal(f.git("rev-parse", "HEAD^{tree}").trim(), tree);
   assert.equal(f.git("log", "-1", "--format=%an <%ae>|%cn <%ce>|%B").trim().split("|")[0], "Dylan Lambertson <me@dylanlambertson.dev>");
   assert.match(f.git("log", "-1", "--format=%B"), /feat: b\n\nbody/);
-  assert.equal(readFileSync(f.marker, "utf8"), "pre-commit\n", "hook ran once, in the pty context");
-  assert.ok(f.seen.filter((c) => c.context === "pty").length === 1);
+  assert.equal(f.seen.filter((c) => c.context === "pty" && c.argv.includes("commit-tree")).length, 1);
 });
 
-test("commit with hooks off does not run a planted pre-commit hook", async () => {
-  const f = fixture({ runHooks: false });
-  plantHook(f, "pre-commit");
-  plantHook(f, "commit-msg");
-  const tree = stage(f, "b.txt", "two\n");
-  await executeCommit(f.deps, { worktree: f.wt, reviewedTreeHash: tree, message: "feat: b" });
-  assert.equal(existsSync(f.marker), false);
+// OPEN DECISION (docs/packages.md "Commit hooks"): today no commit hook runs, whatever axis.git.runHooks says. This test
+// records that behaviour so a change to it is deliberate; the owner's answer replaces it.
+test("commit: no commit hook runs on the bound path, with runHooks on or off", async () => {
+  for (const runHooks of [true, false]) {
+    const f = fixture({ runHooks });
+    for (const h of ["pre-commit", "commit-msg", "post-commit", "reference-transaction"]) plantHook(f, h);
+    // Control: a plain git commit DOES run the planted hook here, so the absence below is not a broken fixture.
+    f.git("commit", "-q", "--allow-empty", "-m", "control");
+    assert.ok(existsSync(f.marker), "the planted hook is live");
+    rmSync(f.marker);
+    const tree = stage(f, "b.txt", "two\n");
+    await executeCommit(f.deps, { worktree: f.wt, reviewedTreeHash: tree, message: "feat: b", ...pin(f) });
+    assert.equal(existsSync(f.marker), false, `runHooks=${runHooks}`);
+  }
 });
 
 test("commit: a tree mismatch is refused and nothing is committed", async () => {
@@ -37,7 +42,7 @@ test("commit: a tree mismatch is refused and nothing is committed", async () => 
   const reviewed = stage(f, "b.txt", "two\n");
   stage(f, "c.txt", "changed after review\n");
   const before = f.git("rev-parse", "HEAD").trim();
-  const e = await refusal(executeCommit(f.deps, { worktree: f.wt, reviewedTreeHash: reviewed, message: "m" }));
+  const e = await refusal(executeCommit(f.deps, { worktree: f.wt, reviewedTreeHash: reviewed, message: "m", ...pin(f) }));
   assert.equal(e.code, "E_CONFLICT");
   assert.equal(f.git("rev-parse", "HEAD").trim(), before);
 });
@@ -45,7 +50,7 @@ test("commit: a tree mismatch is refused and nothing is committed", async () => 
 test("commit: refused while a CLI run is active", async () => {
   const f = fixture({ isCliRunActive: () => true });
   const tree = stage(f, "b.txt", "two\n");
-  const e = await refusal(executeCommit(f.deps, { worktree: f.wt, reviewedTreeHash: tree, message: "m" }));
+  const e = await refusal(executeCommit(f.deps, { worktree: f.wt, reviewedTreeHash: tree, message: "m", ...pin(f) }));
   assert.equal(e.code, "E_POLICY_DENIED");
   assert.equal(f.seen.length, 0);
 });
@@ -63,7 +68,7 @@ test("daemon-side reads run no hook and no fsmonitor, even with planted ones", a
   writeFileSync(f.marker, "");
   const tree = stage(f, "b.txt", "two\n");
   writeFileSync(f.marker, "");
-  await planCommit(f.deps, { worktree: f.wt, reviewedTreeHash: tree, message: "m" });
+  await planCommit(f.deps, { worktree: f.wt, reviewedTreeHash: tree, message: "m", ...pin(f) });
   await planPush(f.deps, { worktree: f.wt, remote: "origin", branch: "axis/feat", baseSha: baseOf(f) });
   assert.equal(readFileSync(f.marker, "utf8"), "", "no daemon-side call ran planted code");
 });
@@ -158,7 +163,7 @@ test("a filter driver in the config is neutralised by the daemon prefix, and the
   f.git("config", "filter.x.smudge", filt);
   writeFileSync(join(f.wt.gitDir, "info", "attributes"), "*.txt filter=x\n");
   const tree = f.git("write-tree").trim();
-  await planCommit(f.deps, { worktree: f.wt, reviewedTreeHash: tree, message: "m" }).catch(() => undefined);
+  await planCommit(f.deps, { worktree: f.wt, reviewedTreeHash: tree, message: "m", ...pin(f) }).catch(() => undefined);
   const call = f.seen.find((c) => c.context === "daemon" && c.argv.includes("write-tree"));
   assert.ok(call && call.argv.includes("filter.x.clean="), "the prefix neutralises the configured filter");
   const env = { PATH: PATHS, HOME: f.deps.env.daemon["HOME"] as string };

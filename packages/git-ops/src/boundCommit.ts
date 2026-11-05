@@ -2,7 +2,7 @@
 // G3: the commit is made from the reviewed tree and the expected parent with `commit-tree`, and the branch is moved by
 // compare-and-swap, so it cannot land on a parent other than the reviewed one and cannot overwrite a racing commit.
 import { OBJECT_ID, type DaemonGit } from "./args.js";
-import { GitOpsError, conflict, headMoved, internal, redactUrls, sanitizeText } from "./errors.js";
+import { GitOpsError, conflict, headMoved, internal } from "./errors.js";
 import { assertNoOperation } from "./operation.js";
 import type { CommitPlan, CommitResult } from "./commit.js";
 import type { GitOpsDeps } from "./types.js";
@@ -19,7 +19,7 @@ const notUpdated = { updated: false } as const;
  */
 export async function runBound(deps: GitOpsDeps, plan: CommitPlan, git: DaemonGit): Promise<CommitResult> {
   const r = await deps.runner.run(plan.command);
-  if (r.code !== 0) throw conflict(`git commit-tree failed (exit ${r.code}): ${redactUrls(sanitizeText(r.stderr)).trim().slice(0, 500)}`);
+  if (r.code !== 0) throw conflict(`git commit-tree failed (exit ${r.code}); the branch was not updated`);
   const commit = line(r);
   if (!OBJECT_ID.test(commit)) throw internal("commit-tree did not return a commit id; the branch was not updated", notUpdated);
 
@@ -48,13 +48,13 @@ export async function runBound(deps: GitOpsDeps, plan: CommitPlan, git: DaemonGi
     if (now.code !== 0 || line(now) !== plan.parent) throw headMoved("the branch moved while the commit was made; it was left as it is");
     throw new GitOpsError(
       "E_CONFLICT",
-      `the branch could not be updated: ${redactUrls(sanitizeText(update.stderr)).trim().slice(0, 300)}`,
+      "the branch could not be updated (git refused the compare-and-swap, for example a lock); it was left as it is",
       { reason: "ref_update_failed" },
     );
   }
   const after = await git(["rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`]);
   if (after.code !== 0 || line(after) !== commit) {
-    throw internal(`the branch no longer points at the new commit ${commit}`, { updated: true });
+    throw internal(`the branch no longer points at the new commit ${commit}`, { updated: true, rolledBack: false });
   }
   return { commit, tree: plan.reviewedTreeHash };
 }

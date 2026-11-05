@@ -9,7 +9,7 @@ Axis-owned TypeScript that does not need Code OSS services lives in `packages/*`
 | `@axis/challenge` | Daemon-side approval challenges for tier 3-5 destructive operations: issue, user resolve, native confirmation, single-use `consume`. Node `crypto` only. |
 | `@axis/daemon` | Transport-agnostic daemon core: connections, handshake, dispatch, tiers, idempotency, cancel and timeout, backpressure, error sanitisation. Every service (identity, policy, approvals, idempotency store, audit sink, handlers) is injected. No Electron. `MemoryIdempotencyStore` is for tests and dev wiring only (it forgets on restart); the product uses the journal-backed store. The pipeline owns approvals (`ApprovalGate.issue` and `execute`, see "Wiring the daemon"). |
 | `@axis/providers` | Provider adapter API (v1): normalized requests, stream events, capability reports, error taxonomy; the daemon-side guard (budget hook PRV-6, redaction hook PRV-2, timeouts, cancellation, stream checks); the mock provider. `@axis/providers/contract` is the reusable adapter contract suite (test support in `packages/providers/contract/`, outside `src/` so it is never staged; imports `node:test`). |
-| `@axis/git-ops` | Daemon-orchestrated Axis commit and push, and GitHub compare URLs. Takes an injected git runner (`context: "pty" \| "daemon"`): hooks run only in the pty context. Commit binds the reviewed tree, push uses one explicit refspec, both are refused while a CLI run is active. |
+| `@axis/git-ops` | Daemon-orchestrated Axis commit and push, and GitHub compare URLs. Takes an injected git runner (`context: "pty" \| "daemon"`): hooks run only in the pty context. Commit binds the reviewed tree, parent and branch (`commit-tree` plus a ref compare-and-swap), push uses one explicit refspec, both are refused while a CLI run is active. Depends on `@axis/protocol` and `@axis/pty-policy` (executable resolution); the dependency never points back. |
 | `@axis/audit` | Secret redaction, canonical JSON, and the hash-chained append-only audit log on `node:sqlite` (DMN-5, DMN-6). Also the SQLite helpers (`openDatabase`, `withTransaction`, `runMigrations`). |
 | `@axis/journal` | Durable `agent_workspaces` and `agent_runs`, the Phase 1a run state machine, idempotency keys and restart recovery (DMN-7). Depends on `@axis/audit`. |
 | `@axis/anthropic` | Anthropic (Claude) Messages API adapter for `@axis/providers` (ticket 9, ANT-1): hand-written SSE parser with byte, event and depth limits, redirects refused, error text never built from a response body, injected `fetch`. Design: `docs/design/anthropic-adapter.md`. |
@@ -92,34 +92,56 @@ Fixed vectors (`sha256hex` as lowercase hex):
 
 ### Bound commit contract (what `@axis/review` implements against)
 
-`executeCommit(deps, input)` and `planCommit` take, besides `worktree`, `reviewedTreeHash`, `message` and `author?`:
+There is one commit path, and it is bound. `executeCommit(deps, input)` and `planCommit` take:
 
-| Field | Type | Meaning |
-|---|---|---|
-| `expectedParent` | `string?` (full lower-case object id) | The commit HEAD pointed at when the diff was reviewed. **When present the commit is bound.** Absent: the older `git commit` path, which commits on whatever HEAD is when git runs. A caller that reviewed a diff must always send it. |
-| `expectedBranch` | `string?` (`axis/<slug>`) | The branch checked out at review time. Needs `expectedParent` (`E_INVALID_ARGUMENT` otherwise). |
+| Field | Type | Required | Meaning |
+|---|---|---|---|
+| `worktree` | `WorktreeRef` | yes | The registered worktree (never discovered). |
+| `reviewedTreeHash` | `string`, full lower-case object id | yes | The tree the user reviewed. The index must write to exactly this tree. |
+| `message` | `string`, 1 to 64 KiB, no NUL | yes | Cleaned like git's default `stripspace` (trailing white space, repeated blank lines, outer blank lines, one final newline); `commit.cleanup` is ignored. |
+| `expectedParent` | `string`, full lower-case object id | **yes** | The commit HEAD pointed at when the diff was reviewed. |
+| `expectedBranch` | `string`, the SHORT name `axis/<slug>` | **yes** | The branch checked out at review time. Same slug rules as always. Not `refs/heads/axis/<slug>`, never `null`; a review that has no branch (a detached HEAD) omits nothing and commits nothing. |
+| `author` | `{ name, email }` | no | Only compared with the configured identity; never passed to git. |
 
-A bound commit (the review's `PinnedCommitInput` is exactly this shape) does the following, in order, with the caller holding the workspace lock:
+`@axis/review`'s `PinnedCommitInput` must therefore carry `expectedParent: string` and `expectedBranch: string` (the short name), and `handoff()` refuses a detached HEAD or an unborn branch itself; the field is omitted from nothing and is never `null`. (An earlier version of this page said review's type was "exactly this shape"; it was not: review sent `refs/heads/axis/<slug>` and `null`.)
 
-1. `check()`: argument checks; CLI-run and drift gates (`assertNoDrift`); the branch must be `expectedBranch` and HEAD must equal `expectedParent` (else `E_CONFLICT`, `details.reason: "head_moved"`); an operation in progress is refused (`E_CONFLICT`, `reason: "operation_in_progress"`); the index must write to `reviewedTreeHash` (else `E_CONFLICT`, no reason); then, as the last step before git runs, `assertReviewFresh`.
-2. `commit-tree <reviewedTreeHash> -p <expectedParent> -F -` runs in the **pty context** (so signing and identity come from the user's configuration; `commit.gpgsign=true` adds `-S`, and an unreadable value refuses). The message is cleaned as `git commit` would (trailing blanks, outer blank lines, final newline). It creates an object and moves no ref.
-3. The new object is verified with the daemon-side git: its parent list is exactly `[expectedParent]` and its tree is `reviewedTreeHash` (else `E_INTERNAL`, `details.updated: false`).
-4. Immediately before the ref update the checked-out branch and the operation state are asked again (`head_moved` / `operation_in_progress`).
-5. `update-ref refs/heads/<branch> <new> <expectedParent>`: an atomic compare-and-swap. A branch that is anywhere else, or a racing commit, fails it: `E_CONFLICT` with `reason: "head_moved"` (the ref is not at `expectedParent` any more) or `reason: "ref_update_failed"` (it still is, but git could not lock or write it). Of two commits racing on one parent exactly one wins; the other leaves the ref untouched.
-6. The ref is read back; a mismatch is `E_INTERNAL` with `details.updated: true`.
+Errors. Argument shape: `E_INVALID_ARGUMENT` for a malformed `expectedParent`, and for an `expectedBranch` that is not a string or is a full ref (`refs/...`); `E_POLICY_DENIED` for a short name that is not `axis/<slug>`, a detached HEAD, an unborn branch, a CLI run in progress, drift, and an identity that is not the expected one. `E_CONFLICT` carries `details.reason`:
 
-Consequences to know: a bound commit **runs no commit hooks** (`pre-commit`, `commit-msg`, `post-commit`, `reference-transaction`): `commit-tree` has none and the ref update is a daemon call, which never runs hooks (GIT-3). Hooks still run on the unbound path. `planCommit` for a bound input returns `bound: true` and a `commit-tree` command; run alone it only makes a dangling object, so use `executeCommit`.
+| `reason` | Meaning |
+|---|---|
+| `head_moved` | The checked-out branch is not `expectedBranch`, HEAD is not `expectedParent`, or the compare-and-swap found the branch elsewhere. |
+| `operation_in_progress` | Unmerged index entries, or `MERGE_HEAD`, `CHERRY_PICK_HEAD`, `REVERT_HEAD`, `REBASE_HEAD`, `rebase-merge`, `rebase-apply`, `sequencer`, `BISECT_LOG` or `BISECT_START` exists (paths from `git rev-parse --git-path`, so a linked worktree's own directory is the one asked). |
+| `stale` | `assertReviewFresh` refused. |
+| `ref_update_failed` | The branch is still at `expectedParent` but git could not update it (a lock, for example). The message is fixed text; git's output is not carried. |
 
-`GitOpsDeps` gained two optional members:
+`E_CONFLICT` without a reason: the index does not write to `reviewedTreeHash`. `E_INTERNAL` with `details.updated: false`: the commit object that was built failed verification (not exactly the expected parent, or not the reviewed tree) and the branch was not touched; `updated: true, rolledBack: false`: the update succeeded but the branch no longer points at the new commit when read back, and nothing was rolled back. `E_UNAVAILABLE`: git could not run, or the repository state could not be read, so an operation in progress cannot be ruled out.
 
-- `assertReviewFresh(worktree, reviewedTreeHash): Promise<void>` (G2). Called inside `check()`. **It refuses by throwing and must resolve `undefined`**: any returned value (`false`, a `{ fresh: false }` result) is also a refusal, so a `Freshness` object cannot be wired through by mistake. A throw becomes `E_CONFLICT` with `reason: "stale"`; a `GitOpsError` with another code (for example `E_UNAVAILABLE`) passes through. The daemon wires it to `checkFresh` and throws when `fresh` is false. It runs for bound and unbound commits.
-- `fileExists(path)`: the existence test for operation markers (default `lstat`; a missing path is false, any other error refuses). Inject it in tests.
+Order, with the caller holding the workspace lock:
 
-The operation-in-progress refusal (G5, both paths) covers unmerged index entries and `MERGE_HEAD`, `CHERRY_PICK_HEAD`, `REVERT_HEAD`, `REBASE_HEAD`, `rebase-merge`, `rebase-apply`, `sequencer`, `BISECT_LOG` and `BISECT_START`, with paths from `git rev-parse --git-path`, so a linked worktree's own directory is the one checked. A state that cannot be read (a failing call, a path containing a newline, a stat error other than "absent") is `E_UNAVAILABLE`: it never passes as clean. The marker list is exported as `OPERATION_MARKERS`, the check as `assertNoOperation(git, worktree, deps)`.
+1. `check()`: argument checks; CLI-run and drift gates; the branch must be `expectedBranch` and HEAD `expectedParent`; operation in progress; the index must write to `reviewedTreeHash`; the identity checks; the signing setting; then, as the last step before git builds anything, `assertReviewFresh`.
+2. `commit-tree [-S] -p <expectedParent> -F - <reviewedTreeHash>` in the **pty context**. Signing and identity come from the user's configuration; `commit.gpgsign=true` adds `-S` (commit-tree ignores the setting by itself), and an unreadable value refuses. It creates an object and moves no ref.
+3. The new object is verified with the daemon-side git: its parent list is exactly `[expectedParent]` and its tree is `reviewedTreeHash`.
+4. The checked-out branch and the operation state are asked again.
+5. `update-ref refs/heads/<branch> <new> <expectedParent>`, an atomic compare-and-swap (packed refs included). Of two commits racing on one parent exactly one wins; the other fails and leaves the ref untouched.
+6. The ref is read back.
 
-Exports for building hardened calls (G4): `daemonGitFor(worktree, deps, extraEnv?)` (`extraEnv` may hold only `GIT_INDEX_FILE`, an absolute path; any other name is `E_INVALID_ARGUMENT`, so it cannot redirect the repository or the config), `checkWorktree`, `OBJECT_ID` and the `DaemonGit` type.
+What this cannot close, accepted: HEAD switched to another branch between step 4 and step 5 still moves the reviewed branch (its content is what was reviewed; it is just not checked out); a `MERGE_HEAD` or `CHERRY_PICK_HEAD` written after step 4 does not affect the commit but stays for the user's next commit; a branch also checked out in a second linked worktree leaves that worktree's index stale, as with `git commit`. `planCommit` returns the `commit-tree` command; run alone it only makes a dangling object, so use `executeCommit`.
 
-Error summary: `E_CONFLICT` + `head_moved` | `operation_in_progress` | `stale` | `ref_update_failed`; `E_INTERNAL` + `updated: false | true` for a verification that failed; `E_INVALID_ARGUMENT` for a malformed pin.
+`GitOpsDeps` has two optional members:
+
+- `assertReviewFresh(worktree, reviewedTreeHash): Promise<void>` (G2). **It refuses by throwing and must resolve `undefined`**: any returned value (`false`, a `{ fresh: false }` result) is also a refusal, so a `Freshness` object cannot be wired through by mistake. A throw becomes `E_CONFLICT` `stale`; a `GitOpsError` with another code (for example `E_UNAVAILABLE`) passes through. The daemon wires it to `checkFresh` and throws when `fresh` is false.
+- `fileExists(path)`: the existence test for operation markers (default `pathExists`: a missing path is false, any other error, such as `EACCES`, refuses).
+
+Exports for building hardened calls (G4): `daemonGitFor(worktree, deps, extraEnv?)` (`extraEnv` may hold only `GIT_INDEX_FILE`, an absolute path; any other name is `E_INVALID_ARGUMENT`), `checkWorktree`, `OBJECT_ID`, `DaemonGit`, `assertNoOperation`, `OPERATION_MARKERS`, `resolveGit`.
+
+#### Commit hooks (OPEN DECISION for the owner)
+
+Decision Q-4, ADR 0004 section 4 and policies section 6.1 say Axis commit runs the repository's hooks in the pty process, with `axis.git.runHooks` on in 1a. **The code does not do that today:** a bound commit runs no `pre-commit`, `commit-msg`, `post-commit` or `reference-transaction` hook, whatever `runHooks` says (`commit-tree` has no hooks, and the ref update is a daemon call, which never runs hooks, GIT-3). The old `git commit` path that ran them is removed, so `runHooks` currently has no effect on commit. This was not decided by the owner and is kept as it is until they answer. The options:
+
+1. The daemon never runs repository hooks. The pty process (or the host) runs `pre-commit` and `commit-msg` against the reviewed tree before the commit when `axis.git.runHooks` is on, as policies section 6.1 says (hooks run in the pty context, not the daemon). `git hook run` needs git 2.36, so with the 2.24 floor this means invoking the hook path directly, behind the same baseline gate.
+2. Keep running hooks in the daemon. Rejected by GIT-3 as written, listed for completeness.
+
+Implemented today: neither (no commit hooks). Push still runs `pre-push` in the pty context.
 
 `planPush` and `executePush` take a required `baseSha`: **the last commit that was actually pushed** (or the workspace's recorded base before the first push), read from the journal by the daemon. The secret scan covers `baseSha..tip`, every commit's patch and its commit message, so everything reachable from `baseSha` is assumed to be on the remote already. If a workspace's base is a local commit that was never pushed, its ancestors go out unscanned: the journal must record the sha of each successful push and supply it next time. A `baseSha` that is not in the repository or not an ancestor of the branch (history was rewritten) is refused with `E_CONFLICT`. Never derive it from a ref under `refs/remotes`: the code in the worktree can write those.
 

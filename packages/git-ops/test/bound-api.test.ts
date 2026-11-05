@@ -3,9 +3,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
-import { GitOpsError, OBJECT_ID, checkWorktree, daemonGitFor, executeCommit, planCommit } from "../src/index.js";
+import { GitOpsError, OBJECT_ID, checkWorktree, daemonGitFor, executeCommit, normalisedMessage, pathExists, planCommit } from "../src/index.js";
 import { FakeRunner, HEAD, TREE, WT, healthy, makeDeps, sub } from "./helpers.js";
-import { fixture } from "./realFixture.js";
+import { fixture, tmp } from "./realFixture.js";
 
 const input = { worktree: WT, reviewedTreeHash: TREE, message: "feat: add thing  \n\n\n\nbody\n", expectedParent: HEAD, expectedBranch: "axis/feat" };
 
@@ -21,18 +21,41 @@ async function code(p: Promise<unknown>): Promise<string> {
 
 test("a bound plan is a commit-tree of the reviewed tree on the expected parent, with the message on stdin", async () => {
   const plan = await planCommit(makeDeps(new FakeRunner(healthy())), input);
-  assert.equal(plan.bound, true);
   assert.equal(plan.command.context, "pty");
   assert.deepEqual(sub(plan.command.argv), ["commit-tree", "-p", HEAD, "-F", "-", TREE]);
   assert.equal(plan.command.stdin, "feat: add thing\n\nbody\n");
   assert.ok(plan.command.argv.includes("i18n.commitEncoding=utf-8"));
 });
 
-test("without expectedParent the plan is the older `git commit`, unchanged", async () => {
-  const { expectedParent: _p, expectedBranch: _b, ...old } = input;
-  const plan = await planCommit(makeDeps(new FakeRunner(healthy())), old);
-  assert.equal(plan.bound, false);
-  assert.deepEqual(sub(plan.command.argv), ["commit", "-F", "-", "--no-edit"]);
+test("the pin is required: review-core's literal shapes (a full ref, null) and missing fields are refused before git runs", async () => {
+  const bad: Array<Record<string, unknown>> = [
+    { expectedBranch: "refs/heads/axis/feat" },
+    { expectedBranch: null },
+    { expectedBranch: undefined },
+    { expectedBranch: 5 },
+    { expectedParent: undefined },
+    { expectedParent: null },
+  ];
+  for (const over of bad) {
+    const run = new FakeRunner(healthy());
+    assert.equal(await code(planCommit(makeDeps(run), { ...input, ...over } as typeof input)), "E_INVALID_ARGUMENT", JSON.stringify(over));
+    assert.equal(run.calls.length, 0, "nothing ran");
+  }
+  assert.equal(await code(planCommit(makeDeps(new FakeRunner(healthy())), { ...input, expectedBranch: "main" })), "E_POLICY_DENIED");
+});
+
+test("a detached HEAD and an unborn branch are refused before any pty call", async () => {
+  const detached = new FakeRunner(healthy((s) => (s[0] === "symbolic-ref" ? { code: 1 } : undefined)));
+  assert.equal(await code(planCommit(makeDeps(detached), input)), "E_POLICY_DENIED");
+  const unborn = new FakeRunner(healthy((s) => (s[0] === "rev-parse" && s.includes("HEAD^{commit}") ? { code: 128 } : undefined)));
+  assert.equal(await code(planCommit(makeDeps(unborn), input)), "E_POLICY_DENIED");
+  assert.equal(detached.ptyCalls().length + unborn.ptyCalls().length, 0);
+});
+
+test("message cleanup matches git's stripspace: CRLF is white space, a non-breaking space is not, blank runs collapse", () => {
+  assert.equal(normalisedMessage("a\r\n\r\nb\r\n"), "a\n\nb\n");
+  assert.equal(normalisedMessage("\n\n a \t\n\n\n\nb\u00a0\n\n"), " a\n\nb\u00a0\n");
+  assert.equal(normalisedMessage("x"), "x\n");
 });
 
 test("a moved HEAD, another branch, or a malformed pin is refused before any pty call", async () => {
@@ -47,8 +70,6 @@ test("a moved HEAD, another branch, or a malformed pin is refused before any pty
     assert.equal(await code(p), want, JSON.stringify(over));
     assert.equal(run.ptyCalls().filter((c) => sub(c.argv)[0] !== "config").length, 0);
   }
-  const { expectedParent: _p, ...noParent } = input;
-  assert.equal(await code(planCommit(makeDeps(new FakeRunner(healthy())), noParent)), "E_INVALID_ARGUMENT");
 });
 
 test("an index that cannot be listed, or a git-path answer that cannot be read, refuses (fails closed)", async () => {
@@ -84,4 +105,20 @@ test("G4: daemonGitFor takes GIT_INDEX_FILE only, as an absolute path; checkWork
     await assert.rejects(daemonGitFor(f.wt, f.deps, bad), (e: unknown) => e instanceof GitOpsError && e.code === "E_INVALID_ARGUMENT", JSON.stringify(bad));
   }
   assert.throws(() => checkWorktree({ workTree: "rel", gitDir: "/g" }, "linux"), GitOpsError);
+});
+
+test("the default existence check refuses on an error other than 'absent' (a directory git cannot read is not an empty one)", { skip: process.platform === "win32" || process.getuid?.() === 0 }, async () => {
+  const { chmodSync, mkdirSync, writeFileSync } = await import("node:fs");
+  const dir = join(tmp("axis-exists-"), "locked");
+  mkdirSync(dir);
+  writeFileSync(join(dir, "MERGE_HEAD"), "x\n");
+  assert.equal(await pathExists(join(dir, "MERGE_HEAD")), true);
+  assert.equal(await pathExists(join(dir, "nothing")), false, "a missing file is absent");
+  assert.equal(await pathExists(join(dir, "nothing", "deeper")), false, "a missing parent is absent");
+  chmodSync(dir, 0o000);
+  try {
+    await assert.rejects(pathExists(join(dir, "MERGE_HEAD")), (e: unknown) => (e as { code?: string }).code === "EACCES");
+  } finally {
+    chmodSync(dir, 0o700);
+  }
 });

@@ -11,7 +11,8 @@ export const OPERATION_MARKERS = [
   "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "REBASE_HEAD", "rebase-merge", "rebase-apply", "sequencer", "BISECT_LOG", "BISECT_START",
 ] as const;
 
-async function defaultExists(path: string): Promise<boolean> {
+/** Whether a path exists: a missing path (or a missing parent) is false, any other error (EACCES, ELOOP...) is thrown so it refuses. */
+export async function pathExists(path: string): Promise<boolean> {
   try {
     await lstat(path);
     return true;
@@ -37,7 +38,7 @@ export async function assertNoOperation(git: DaemonGit, w: WorktreeRef, deps: Gi
   if (r.code !== 0 || paths.length !== OPERATION_MARKERS.length || paths.some((p) => p === "")) {
     throw new GitOpsError("E_UNAVAILABLE", "the repository state could not be read, so an operation in progress cannot be ruled out");
   }
-  const exists = deps.fileExists ?? defaultExists;
+  const exists = deps.fileExists ?? pathExists;
   for (const [i, p] of paths.entries()) {
     if (await exists(isAbsolute(p) ? p : join(w.workTree, p))) throw opInProgress(`${OPERATION_MARKERS[i] as string} exists`);
   }

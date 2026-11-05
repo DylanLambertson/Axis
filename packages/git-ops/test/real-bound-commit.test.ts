@@ -3,7 +3,7 @@
 // progress, a branch switch, a stale review and racing commits. Each uses real git directories and no git version.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { GitOpsError, OPERATION_MARKERS, executeCommit, planCommit, type CommitInput, type GitOpsDeps } from "../src/index.js";
 import { around, foreignCommit, isDaemon, isPtyCommitTree, reviewed, subOf } from "./boundFixture.js";
@@ -107,8 +107,10 @@ test("G3: expectedParent and expectedBranch are validated before git runs", asyn
     const e = await refusal(executeCommit(f.deps, { ...input, ...bad }));
     assert.ok(e.code === "E_INVALID_ARGUMENT" || e.code === "E_POLICY_DENIED", `${JSON.stringify(bad)} ${e.code}`);
   }
-  const { expectedParent: _drop, ...noParent } = input;
-  assert.equal((await refusal(executeCommit(f.deps, noParent))).code, "E_INVALID_ARGUMENT", "expectedBranch alone is not a pin");
+  // The shapes @axis/review's handoff() sends today: the full ref, and null for a detached HEAD.
+  for (const bad of [{ expectedBranch: "refs/heads/axis/feat" }, { expectedBranch: null }, { expectedBranch: undefined }, { expectedParent: undefined }]) {
+    assert.equal((await refusal(executeCommit(f.deps, { ...input, ...bad } as CommitInput))).code, "E_INVALID_ARGUMENT", JSON.stringify(bad));
+  }
   assert.equal(f.seen.filter(isPtyCommitTree).length, 0);
 });
 
@@ -116,19 +118,18 @@ test("G3: expectedParent and expectedBranch are validated before git runs", asyn
 const EXPECTED_MARKERS = ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "REBASE_HEAD", "rebase-merge", "rebase-apply", "sequencer", "BISECT_LOG", "BISECT_START"];
 const MARKERS_AS_DIR = new Set(["rebase-merge", "rebase-apply", "sequencer"]);
 
-test("G5: every operation marker refuses (bound and unbound), at the review-bypass shape where the index already equals the reviewed tree", async () => {
+test("G5: every operation marker refuses, at the review-bypass shape where the index already equals the reviewed tree", async () => {
   assert.deepEqual([...OPERATION_MARKERS], EXPECTED_MARKERS);
   for (const marker of EXPECTED_MARKERS) {
-    for (const bound of [true, false]) {
+    {
       const f = fixture();
       const input = reviewed(f);
       const p = join(f.wt.gitDir, marker);
       if (MARKERS_AS_DIR.has(marker)) mkdirSync(p);
       else writeFileSync(p, `${input.expectedParent}\n`);
-      const { expectedParent: _a, expectedBranch: _b, ...unbound } = input;
       const before = head(f);
-      await refused(executeCommit(f.deps, bound ? input : (unbound as CommitInput)), "operation_in_progress");
-      assert.equal(head(f), before, `${marker} bound=${bound}`);
+      await refused(executeCommit(f.deps, input), "operation_in_progress");
+      assert.equal(head(f), before, marker);
       assert.equal(f.seen.filter((r) => r.context === "pty" && ["commit", "commit-tree"].includes(subOf(r))).length, 0, marker);
     }
   }
@@ -166,7 +167,7 @@ test("G5: unmerged index entries alone (no marker file) refuse with the same rea
   f.git("merge", "--quit");
   assert.ok(f.git("ls-files", "-u").length > 0);
   const tree = f.git("rev-parse", "HEAD^{tree}").trim();
-  await refused(executeCommit(f.deps, { worktree: f.wt, reviewedTreeHash: tree, message: "m", expectedParent: head(f) }), "operation_in_progress");
+  await refused(executeCommit(f.deps, { worktree: f.wt, reviewedTreeHash: tree, message: "m", expectedParent: head(f), expectedBranch: "axis/feat" }), "operation_in_progress");
 });
 
 test("G5: MERGE_HEAD or CHERRY_PICK_HEAD appearing after check and before the ref update is refused, and nothing moves", async () => {
@@ -285,7 +286,8 @@ test("racing commits on one expected parent: exactly one wins, the other fails w
 test("commit.gpgsign is honoured on the bound path: a failing signer fails the commit instead of recording it unsigned", { skip: process.platform === "win32" }, async () => {
   const f = fixture();
   f.git("config", "commit.gpgsign", "true");
-  const gpg = join(mkdtempSync(join(f.root, "gpg-")), "sign.sh");
+  mkdirSync(join(f.root, "gpg"));
+  const gpg = join(f.root, "gpg", "sign.sh");
   writeFileSync(gpg, "#!/bin/sh\nexit 1\n", { mode: 0o755 });
   f.git("config", "gpg.program", gpg);
   const input = reviewed(f);
@@ -293,4 +295,37 @@ test("commit.gpgsign is honoured on the bound path: a failing signer fails the c
   assert.equal(e.code, "E_CONFLICT");
   assert.equal(head(f), input.expectedParent);
   assert.ok(f.seen.some((r) => isPtyCommitTree(r) && r.argv.includes("-S")));
+});
+
+test("a detached HEAD and an unborn branch refuse before commit-tree runs, whatever was reviewed", async () => {
+  const f = fixture();
+  const input = reviewed(f);
+  f.git("checkout", "-q", "--detach");
+  assert.equal((await refusal(executeCommit(f.deps, input))).code, "E_POLICY_DENIED");
+  const g = fixture();
+  const gi = reviewed(g);
+  g.git("checkout", "-q", "--orphan", "axis/orphan");
+  assert.equal((await refusal(executeCommit(g.deps, { ...gi, expectedBranch: "axis/orphan" }))).code, "E_POLICY_DENIED");
+  assert.equal(f.seen.concat(g.seen).filter(isPtyCommitTree).length, 0);
+});
+
+test("G3: a branch that moves right after the compare-and-swap is reported as updated and not rolled back", async () => {
+  const f = fixture();
+  const input = reviewed(f);
+  let x = "";
+  const deps = around(f, isDaemon("update-ref"), { after: () => { x = foreignCommit(f); } });
+  const e = await refusal(executeCommit(deps, input));
+  assert.equal(e.code, "E_INTERNAL");
+  assert.deepEqual(e.details, { updated: true, rolledBack: false });
+  assert.equal(head(f), x, "the foreign commit is left as it is");
+});
+
+test("G3: a ref lock held by another process fails the update with ref_update_failed, and the ref is untouched", async () => {
+  const f = fixture();
+  const input = reviewed(f);
+  // The lock file git itself takes: while it exists no other process can update the ref.
+  const deps = around(f, isDaemon("update-ref"), { before: () => { writeFileSync(join(f.wt.gitDir, "refs", "heads", "axis", "feat.lock"), ""); } });
+  const e = await refused(executeCommit(deps, input), "ref_update_failed");
+  assert.doesNotMatch(e.message, /\.lock/);
+  assert.equal(head(f), input.expectedParent);
 });

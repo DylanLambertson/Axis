@@ -2,12 +2,12 @@
 // CLI-1/CFG-1: a `git` planted in the worktree must not run, whatever PATH looks like.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { GitOpsError, createNodeRunner } from "../src/index.js";
 import { resolveGit, trustedPath } from "../src/gitPath.js";
-import { fixture } from "./realFixture.js";
+import { fixture, tmp } from "./realFixture.js";
 
 const posix = process.platform !== "win32";
 const REAL_PATH = process.env["PATH"] ?? "";
@@ -76,7 +76,7 @@ test("a relative gitPath is refused, and an injected absolute one outside the wo
 });
 
 test("resolveGit and trustedPath skip empty and relative entries and return a real absolute path", { skip: !posix }, () => {
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), "axis-path-")));
+  const dir = tmp("axis-path-");
   mkdirSync(join(dir, "bin"));
   writeFileSync(join(dir, "bin", "git"), "#!/bin/sh\n");
   chmodSync(join(dir, "bin", "git"), 0o755);
