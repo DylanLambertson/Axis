@@ -35,6 +35,15 @@ test("findLongFiles flags new and grown files, exempts generated ones", () => {
   assert.deepEqual(out.map((f) => f.path), ["a/grown.ts", "b/new.ts"]);
 });
 
+test("a path exemption covers the exact path only", () => {
+  const exempt = "scripts/code-oss/icons/jobs.json";
+  const out = findLongFiles(
+    [{ path: exempt, lines: 9000 }, { path: "other/jobs.json", lines: 9000 }],
+    config
+  );
+  assert.deepEqual(out.map((f) => f.path), ["other/jobs.json"]);
+});
+
 test("scanWording rejects attribution and tool names", () => {
   for (const text of [
     "feat: x\n\nCo-Authored-By: Someone <a@b.c>",

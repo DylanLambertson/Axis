@@ -492,5 +492,563 @@
 			"type": "ico",
 			"path": "resources/server/favicon.ico"
 		}
+	},
+	{
+		"name": "doc-icns-16",
+		"src": "document",
+		"w": 16,
+		"h": 16,
+		"crop": [
+			0,
+			0,
+			1024
+		],
+		"fill": 1,
+		"format": "png",
+		"out": {
+			"type": "png",
+			"path": "doc.iconset/icon_16x16.png"
+		}
+	},
+	{
+		"name": "doc-icns-16@2x",
+		"src": "document",
+		"w": 32,
+		"h": 32,
+		"crop": [
+			0,
+			0,
+			1024
+		],
+		"fill": 1,
+		"format": "png",
+		"out": {
+			"type": "png",
+			"path": "doc.iconset/icon_16x16@2x.png"
+		}
+	},
+	{
+		"name": "doc-icns-32",
+		"src": "document",
+		"w": 32,
+		"h": 32,
+		"crop": [
+			0,
+			0,
+			1024
+		],
+		"fill": 1,
+		"format": "png",
+		"out": {
+			"type": "png",
+			"path": "doc.iconset/icon_32x32.png"
+		}
+	},
+	{
+		"name": "doc-icns-32@2x",
+		"src": "document",
+		"w": 64,
+		"h": 64,
+		"crop": [
+			0,
+			0,
+			1024
+		],
+		"fill": 1,
+		"format": "png",
+		"out": {
+			"type": "png",
+			"path": "doc.iconset/icon_32x32@2x.png"
+		}
+	},
+	{
+		"name": "doc-icns-128",
+		"src": "document",
+		"w": 128,
+		"h": 128,
+		"crop": [
+			0,
+			0,
+			1024
+		],
+		"fill": 1,
+		"format": "png",
+		"out": {
+			"type": "png",
+			"path": "doc.iconset/icon_128x128.png"
+		}
+	},
+	{
+		"name": "doc-icns-128@2x",
+		"src": "document",
+		"w": 256,
+		"h": 256,
+		"crop": [
+			0,
+			0,
+			1024
+		],
+		"fill": 1,
+		"format": "png",
+		"out": {
+			"type": "png",
+			"path": "doc.iconset/icon_128x128@2x.png"
+		}
+	},
+	{
+		"name": "doc-icns-256",
+		"src": "document",
+		"w": 256,
+		"h": 256,
+		"crop": [
+			0,
+			0,
+			1024
+		],
+		"fill": 1,
+		"format": "png",
+		"out": {
+			"type": "png",
+			"path": "doc.iconset/icon_256x256.png"
+		}
+	},
+	{
+		"name": "doc-icns-256@2x",
+		"src": "document",
+		"w": 512,
+		"h": 512,
+		"crop": [
+			0,
+			0,
+			1024
+		],
+		"fill": 1,
+		"format": "png",
+		"out": {
+			"type": "png",
+			"path": "doc.iconset/icon_256x256@2x.png"
+		}
+	},
+	{
+		"name": "doc-icns-512",
+		"src": "document",
+		"w": 512,
+		"h": 512,
+		"crop": [
+			0,
+			0,
+			1024
+		],
+		"fill": 1,
+		"format": "png",
+		"out": {
+			"type": "png",
+			"path": "doc.iconset/icon_512x512.png"
+		}
+	},
+	{
+		"name": "doc-icns-512@2x",
+		"src": "document",
+		"w": 1024,
+		"h": 1024,
+		"crop": [
+			0,
+			0,
+			1024
+		],
+		"fill": 1,
+		"format": "png",
+		"out": {
+			"type": "png",
+			"path": "doc.iconset/icon_512x512@2x.png"
+		}
+	},
+	{
+		"name": "doc-ico-16",
+		"src": "document",
+		"w": 16,
+		"h": 16,
+		"crop": [
+			0,
+			0,
+			1024
+		],
+		"fill": 1,
+		"format": "png",
+		"out": {
+			"type": "ico",
+			"path": "resources/win32/default.ico"
+		}
+	},
+	{
+		"name": "doc-ico-20",
+		"src": "document",
+		"w": 20,
+		"h": 20,
+		"crop": [
+			0,
+			0,
+			1024
+		],
+		"fill": 1,
+		"format": "png",
+		"out": {
+			"type": "ico",
+			"path": "resources/win32/default.ico"
+		}
+	},
+	{
+		"name": "doc-ico-24",
+		"src": "document",
+		"w": 24,
+		"h": 24,
+		"crop": [
+			0,
+			0,
+			1024
+		],
+		"fill": 1,
+		"format": "png",
+		"out": {
+			"type": "ico",
+			"path": "resources/win32/default.ico"
+		}
+	},
+	{
+		"name": "doc-ico-32",
+		"src": "document",
+		"w": 32,
+		"h": 32,
+		"crop": [
+			0,
+			0,
+			1024
+		],
+		"fill": 1,
+		"format": "png",
+		"out": {
+			"type": "ico",
+			"path": "resources/win32/default.ico"
+		}
+	},
+	{
+		"name": "doc-ico-40",
+		"src": "document",
+		"w": 40,
+		"h": 40,
+		"crop": [
+			0,
+			0,
+			1024
+		],
+		"fill": 1,
+		"format": "png",
+		"out": {
+			"type": "ico",
+			"path": "resources/win32/default.ico"
+		}
+	},
+	{
+		"name": "doc-ico-48",
+		"src": "document",
+		"w": 48,
+		"h": 48,
+		"crop": [
+			0,
+			0,
+			1024
+		],
+		"fill": 1,
+		"format": "png",
+		"out": {
+			"type": "ico",
+			"path": "resources/win32/default.ico"
+		}
+	},
+	{
+		"name": "doc-ico-64",
+		"src": "document",
+		"w": 64,
+		"h": 64,
+		"crop": [
+			0,
+			0,
+			1024
+		],
+		"fill": 1,
+		"format": "png",
+		"out": {
+			"type": "ico",
+			"path": "resources/win32/default.ico"
+		}
+	},
+	{
+		"name": "doc-ico-256",
+		"src": "document",
+		"w": 256,
+		"h": 256,
+		"crop": [
+			0,
+			0,
+			1024
+		],
+		"fill": 1,
+		"format": "png",
+		"out": {
+			"type": "ico",
+			"path": "resources/win32/default.ico"
+		}
+	},
+	{
+		"name": "inno-big-100",
+		"src": "mark",
+		"w": 164,
+		"h": 314,
+		"crop": [
+			0,
+			0,
+			554
+		],
+		"fill": 0.72,
+		"bg": "#111214",
+		"format": "rgba",
+		"out": {
+			"type": "bmp",
+			"path": "resources/win32/inno-big-100.bmp"
+		}
+	},
+	{
+		"name": "inno-big-125",
+		"src": "mark",
+		"w": 192,
+		"h": 386,
+		"crop": [
+			0,
+			0,
+			554
+		],
+		"fill": 0.72,
+		"bg": "#111214",
+		"format": "rgba",
+		"out": {
+			"type": "bmp",
+			"path": "resources/win32/inno-big-125.bmp"
+		}
+	},
+	{
+		"name": "inno-big-150",
+		"src": "mark",
+		"w": 246,
+		"h": 459,
+		"crop": [
+			0,
+			0,
+			554
+		],
+		"fill": 0.72,
+		"bg": "#111214",
+		"format": "rgba",
+		"out": {
+			"type": "bmp",
+			"path": "resources/win32/inno-big-150.bmp"
+		}
+	},
+	{
+		"name": "inno-big-175",
+		"src": "mark",
+		"w": 273,
+		"h": 556,
+		"crop": [
+			0,
+			0,
+			554
+		],
+		"fill": 0.72,
+		"bg": "#111214",
+		"format": "rgba",
+		"out": {
+			"type": "bmp",
+			"path": "resources/win32/inno-big-175.bmp"
+		}
+	},
+	{
+		"name": "inno-big-200",
+		"src": "mark",
+		"w": 328,
+		"h": 604,
+		"crop": [
+			0,
+			0,
+			554
+		],
+		"fill": 0.72,
+		"bg": "#111214",
+		"format": "rgba",
+		"out": {
+			"type": "bmp",
+			"path": "resources/win32/inno-big-200.bmp"
+		}
+	},
+	{
+		"name": "inno-big-225",
+		"src": "mark",
+		"w": 355,
+		"h": 700,
+		"crop": [
+			0,
+			0,
+			554
+		],
+		"fill": 0.72,
+		"bg": "#111214",
+		"format": "rgba",
+		"out": {
+			"type": "bmp",
+			"path": "resources/win32/inno-big-225.bmp"
+		}
+	},
+	{
+		"name": "inno-big-250",
+		"src": "mark",
+		"w": 410,
+		"h": 797,
+		"crop": [
+			0,
+			0,
+			554
+		],
+		"fill": 0.72,
+		"bg": "#111214",
+		"format": "rgba",
+		"out": {
+			"type": "bmp",
+			"path": "resources/win32/inno-big-250.bmp"
+		}
+	},
+	{
+		"name": "inno-small-100",
+		"src": "icon",
+		"w": 55,
+		"h": 55,
+		"crop": [
+			0,
+			0,
+			1024
+		],
+		"fill": 1,
+		"bg": "#FFFFFF",
+		"format": "rgba",
+		"out": {
+			"type": "bmp",
+			"path": "resources/win32/inno-small-100.bmp"
+		}
+	},
+	{
+		"name": "inno-small-125",
+		"src": "icon",
+		"w": 64,
+		"h": 68,
+		"crop": [
+			0,
+			0,
+			1024
+		],
+		"fill": 1,
+		"bg": "#FFFFFF",
+		"format": "rgba",
+		"out": {
+			"type": "bmp",
+			"path": "resources/win32/inno-small-125.bmp"
+		}
+	},
+	{
+		"name": "inno-small-150",
+		"src": "icon",
+		"w": 83,
+		"h": 80,
+		"crop": [
+			0,
+			0,
+			1024
+		],
+		"fill": 1,
+		"bg": "#FFFFFF",
+		"format": "rgba",
+		"out": {
+			"type": "bmp",
+			"path": "resources/win32/inno-small-150.bmp"
+		}
+	},
+	{
+		"name": "inno-small-175",
+		"src": "icon",
+		"w": 92,
+		"h": 97,
+		"crop": [
+			0,
+			0,
+			1024
+		],
+		"fill": 1,
+		"bg": "#FFFFFF",
+		"format": "rgba",
+		"out": {
+			"type": "bmp",
+			"path": "resources/win32/inno-small-175.bmp"
+		}
+	},
+	{
+		"name": "inno-small-200",
+		"src": "icon",
+		"w": 110,
+		"h": 106,
+		"crop": [
+			0,
+			0,
+			1024
+		],
+		"fill": 1,
+		"bg": "#FFFFFF",
+		"format": "rgba",
+		"out": {
+			"type": "bmp",
+			"path": "resources/win32/inno-small-200.bmp"
+		}
+	},
+	{
+		"name": "inno-small-225",
+		"src": "icon",
+		"w": 119,
+		"h": 123,
+		"crop": [
+			0,
+			0,
+			1024
+		],
+		"fill": 1,
+		"bg": "#FFFFFF",
+		"format": "rgba",
+		"out": {
+			"type": "bmp",
+			"path": "resources/win32/inno-small-225.bmp"
+		}
+	},
+	{
+		"name": "inno-small-250",
+		"src": "icon",
+		"w": 138,
+		"h": 140,
+		"crop": [
+			0,
+			0,
+			1024
+		],
+		"fill": 1,
+		"bg": "#FFFFFF",
+		"format": "rgba",
+		"out": {
+			"type": "bmp",
+			"path": "resources/win32/inno-small-250.bmp"
+		}
 	}
 ]

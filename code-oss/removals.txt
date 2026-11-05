@@ -4,3 +4,7 @@
 # exist, otherwise scripts/code-oss/apply.sh fails so that upstream moves are
 # noticed at sync time. Ignored build output (node_modules, out, ...) and any
 # spelling of a .git component cannot be listed.
+
+# 1570: the upstream About-dialog test covers only the Copilot version lines that
+# 1570 removes; overlay src/vs/workbench/contrib/axis/test/electron-browser/axisAboutDialog.test.ts replaces it.
+src/vs/platform/dialogs/test/electron-browser/dialog.test.ts

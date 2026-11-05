@@ -14,4 +14,4 @@ Axis-owned source files that do not exist upstream (for example `src/vs/axis/**`
 
 `apply.sh` records each copied file in `vendor/code-oss.applied`. Files dropped from the overlay are removed from the tree on the next run.
 
-Contents from M3: the Axis themes (`extensions/theme-axis/**`), the Axis defaults contribution and its tests (`src/vs/workbench/contrib/axis/**`) and the Axis ESLint additions (`build/axis/eslint.axis.ts`); see `docs/design/axis-shell.md` §2.9.
+Contents from M3: the Axis themes (`extensions/theme-axis/**`), the Axis defaults contribution and its tests (`src/vs/workbench/contrib/axis/**`) and the Axis ESLint additions (`build/axis/eslint.axis.ts`); see `docs/design/axis-shell-stage1-built.md` §2.9.

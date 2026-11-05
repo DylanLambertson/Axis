@@ -2,12 +2,12 @@
 # Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 #
 # Regenerates the Axis icon and image replacements in code-oss/replace/ from
-# assets/brand/ (docs/design/axis-shell.md §2.6). The outputs are committed, so
+# assets/brand/ (docs/design/axis-shell-stage1.md §2.6). The outputs are committed, so
 # builds need no image toolchain; rerun this script after a brand change and
 # review the diff.
 #
 # Rasters are drawn from the vector at their final size by headless Chrome
-# (scripts/code-oss/icons/render.html), packed into ICO/XPM by
+# (scripts/code-oss/icons/render.html), packed into ICO/XPM/BMP by
 # scripts/code-oss/icons/pack.py (Python 3 standard library) and into ICNS by
 # iconutil. macOS only: iconutil ships with macOS.
 #
@@ -98,7 +98,18 @@ chrome="${AXIS_CHROME:-/Applications/Google Chrome.app/Contents/MacOS/Google Chr
 [ -x "$chrome" ] || die "Chrome not found at '$chrome'; set AXIS_CHROME"
 
 b64() { base64 <"$1" | tr -d '\n'; }
-sources="{\"icon\":\"data:image/svg+xml;base64,$(b64 "$APP_ICON")\"}"
+
+# Raster-only sources: the brand mark on a square canvas (Inno Setup wizard
+# images) and a generic Axis document icon, the mark on a page (the per-language
+# document icons; one design for every file type, design section 2.6).
+printf '<svg xmlns="http://www.w3.org/2000/svg" width="554" height="554" viewBox="%s">%s%s</svg>\n' \
+	"$SQUARE_VIEWBOX" "$(mark_defs)" "$(mark_paths)" >"$work/mark.svg"
+printf '%s\n' '<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">' \
+	'<path d="M232 72h392l232 232v600a48 48 0 0 1-48 48H232a48 48 0 0 1-48-48V120a48 48 0 0 1 48-48z" fill="#FFFFFF" stroke="#C9CCD2" stroke-width="12" stroke-linejoin="round"/>' \
+	'<path d="M624 72v184a48 48 0 0 0 48 48h184z" fill="#E5E7EB" stroke="#C9CCD2" stroke-width="12" stroke-linejoin="round"/>' \
+	"<svg x=\"262\" y=\"402\" width=\"500\" height=\"500\" viewBox=\"$SQUARE_VIEWBOX\">$(mark_defs)$(mark_paths)</svg>" \
+	'</svg>' >"$work/document.svg"
+sources="{\"icon\":\"data:image/svg+xml;base64,$(b64 "$APP_ICON")\",\"mark\":\"data:image/svg+xml;base64,$(b64 "$work/mark.svg")\",\"document\":\"data:image/svg+xml;base64,$(b64 "$work/document.svg")\"}"
 # The page has two placeholders; jobs.json is inlined as a JavaScript literal.
 # Literal replacement (index/substr): sub() would expand "&" in the inlined text.
 awk -v sources="$sources" -v jobsfile="$ICONS_DIR/jobs.json" '
@@ -128,7 +139,19 @@ python3 -I "$ICONS_DIR/pack.py" "$ICONS_DIR/jobs.json" "$work/dom.html" "$work/r
 mkdir -p "$work/raster/resources/darwin"
 iconutil -c icns -o "$work/raster/resources/darwin/code.icns" "$work/raster/code.iconset" ||
 	die "iconutil failed"
-rm -rf "$work/raster/code.iconset"
+iconutil -c icns -o "$work/raster/resources/darwin/default.icns" "$work/raster/doc.iconset" ||
+	die "iconutil failed"
+rm -rf "$work/raster/code.iconset" "$work/raster/doc.iconset"
+
+# Every per-language document icon upstream ships gets the same Axis document
+# icon (28 on macOS, 27 on Windows, which has no bat.ico), and sessions.ico (the
+# Agents window icon) gets the Axis application icon.
+for lang in bat bower c config cpp csharp css go html jade java javascript json less markdown php \
+	powershell python react ruby sass shell sql typescript vue xml yaml; do
+	cp "$work/raster/resources/darwin/default.icns" "$work/raster/resources/darwin/$lang.icns"
+	[ "$lang" = bat ] || cp "$work/raster/resources/win32/default.ico" "$work/raster/resources/win32/$lang.ico"
+done
+cp "$work/raster/resources/win32/code.ico" "$work/raster/resources/win32/sessions.ico"
 
 # --- Install into code-oss/replace -------------------------------------------
 

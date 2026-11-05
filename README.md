@@ -173,7 +173,7 @@ Axis runs other people's code on your machine and holds your provider credential
 - **Git is handled defensively.** Daemon Git calls never run hooks or filter drivers. User-controlled values are passed after `--`. A worktree's Git directory is snapshotted around every run, and drift in hooks, `core.hooksPath`, `insteadOf`, `pushurl` or credential helpers is flagged and blocks commit and push until acknowledged.
 - **Secrets stay in the vault.** Provider keys live in a connection vault, never in logs, renderer state, prompts or agent environments. A run stops before the next provider request once its budget is reached.
 - **Official paths only.** Axis never reads another tool's private session store, extracts tokens or impersonates a client.
-- **Supply chain.** Code OSS is pinned by commit with checksum-verified toolchains, patches are reviewable, third-party extensions come from Open VSX with signature verification, and a tampered package is refused.
+- **Supply chain.** Code OSS is pinned by commit with checksum-verified toolchains, patches are reviewable, third-party extensions come from Open VSX. Packaged builds refuse to install an extension because the signature verifier is not yet available, and the signed, unsigned and tampered-package test is still open.
 
 <p align="center"><img src="assets/readme/divider.svg" alt="" width="100%"></p>
 
