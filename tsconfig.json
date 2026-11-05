@@ -5,6 +5,7 @@
     { "path": "packages/pty-policy" },
     { "path": "packages/challenge" },
     { "path": "packages/daemon" },
+    { "path": "packages/daemon-host" },
     { "path": "packages/providers" },
     { "path": "packages/git-ops" },
     { "path": "packages/audit" },
