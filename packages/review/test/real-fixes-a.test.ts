@@ -145,7 +145,7 @@ test("prepare checks the git directory of a linked worktree, not the main one", 
 
 /** A runner that runs `after` once the real index has been written by `read-tree` (the staging step of prepare). */
 function afterStaging(f: Fixture, act: () => void): Fixture["gitOps"] {
-  const inner = createNodeRunner({ allowPtyContext: true });
+  const inner = createNodeRunner({ allowPtyContext: true, allowUnpinnedGit: true });
   let done = false;
   return {
     ...f.gitOps,

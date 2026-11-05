@@ -68,7 +68,7 @@ export function fixture(over: { objectFormat?: "sha1" | "sha256"; deps?: Partial
   git("checkout", "-q", "-b", "axis/feat");
 
   const seen: GitRunRequest[] = [];
-  const inner = createNodeRunner({ allowPtyContext: true });
+  const inner = createNodeRunner({ allowPtyContext: true, allowUnpinnedGit: true });
   const runner = { run: (req: GitRunRequest) => { seen.push(req); return inner.run(req); } };
   const gitOps: GitOpsDeps = {
     runner,
