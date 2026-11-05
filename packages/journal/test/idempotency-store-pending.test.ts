@@ -9,7 +9,7 @@ const HOUR = 3600_000;
 const key = (k: string, over: Partial<StoreKey> = {}): StoreKey => ({ actorId: "a", workspaceId: "w", contract: "axis.test", version: 1, method: "m", key: k, ...over });
 function make(over: Partial<IdempotencyStoreOptions> = {}) {
   const db = openDatabase(":memory:");
-  return JournalIdempotencyStore.open(db, { audit: new AuditLog(db), redactor: new Redactor(), ...over });
+  return JournalIdempotencyStore.open(db, { audit: new AuditLog(db), redactor: new Redactor(), ...(over.now ? { monotonic: over.now } : {}), ...over });
 }
 /** A write that started and was cancelled: its key stays unknown and cannot be evicted. */
 const cancelled = (s: JournalIdempotencyStore, k: StoreKey): string => {

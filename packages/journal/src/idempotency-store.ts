@@ -142,8 +142,10 @@ export class JournalIdempotencyStore {
   readonly #poisoned = new Set<string>();
   #lastSweep: number;
   #clock = 0;
-  /** The time rows expire by: it does not follow a forward jump until a second reading agrees with it. */
+  /** The time rows are deleted by: it follows a forward jump only as the monotonic clock allows (see `#time`). */
   #trusted = 0;
+  /** The time new expiries are written from: never behind where uptime says the clock should be, so a clock that is behind never shortens one. */
+  #expiryBase = 0;
   /** Set while the latest reading is further ahead than the monotonic clock allows and has not yet held steady. */
   #unconfirmed = false;
   readonly #monotonic: () => number;
@@ -175,7 +177,7 @@ export class JournalIdempotencyStore {
       .prepare("SELECT MAX(MAX(created_at), MAX(expires_at) - ?) AS t FROM daemon_idempotency")
       .get(Math.max(this.#ttlMs, this.#interruptedTtlMs)) as { t: number | bigint | null };
     this.#base = newest.t !== null && newest.t > 0 ? Number(newest.t) : this.#reading();
-    this.#clock = this.#trusted = this.#base;
+    this.#clock = this.#trusted = this.#expiryBase = this.#base;
     this.#lastSweep = this.#trusted;
   }
 
@@ -220,6 +222,7 @@ export class JournalIdempotencyStore {
       }
     }
     this.#clock = t;
+    this.#expiryBase = Math.max(t, Math.floor(this.#base + (mono - this.#mono0))); // whole milliseconds: the column is an integer
     return t;
   }
 
@@ -242,7 +245,8 @@ export class JournalIdempotencyStore {
       throw new AxisError("E_INVALID_ARGUMENT", "A request hash must be 1 to 128 characters");
     }
     return withTransaction(this.#db, (): StoreBegin => {
-      const t = this.#time();
+      this.#time();
+      const x = this.#expiryBase;
       this.#sweep(this.#trusted);
       let row = this.#db.prepare(`SELECT * FROM daemon_idempotency WHERE ${WHERE}`).get(...k) as unknown as Row | undefined;
       if (row && row.state !== "in-progress" && row.expires_at <= this.#trusted) {
@@ -253,7 +257,7 @@ export class JournalIdempotencyStore {
         // The process that began this call is gone. The side effect may or may not have happened.
         this.#db
           .prepare(`UPDATE daemon_idempotency SET state = 'unknown', unknown_reason = 'interrupted', expires_at = ? WHERE ${WHERE}`)
-          .run(t + this.#interruptedTtlMs, ...k);
+          .run(x + this.#interruptedTtlMs, ...k);
         row = { ...row, state: "unknown", unknown_reason: "interrupted" };
       }
       if (row) {
@@ -272,7 +276,7 @@ export class JournalIdempotencyStore {
           "INSERT INTO daemon_idempotency (actor_id, workspace_id, contract, version, method, key, request_hash, state, boot_id, created_at, expires_at) " +
             "VALUES (?, ?, ?, ?, ?, ?, ?, 'in-progress', ?, ?, ?)",
         )
-        .run(...k, payloadHash, this.#boot, t, t + this.#ttlMs);
+        .run(...k, payloadHash, this.#boot, x, x + this.#ttlMs);
       return { state: "new" };
     });
   }
@@ -284,7 +288,8 @@ export class JournalIdempotencyStore {
     try {
       if (this.#db.isTransaction) throw new AxisError("E_INTERNAL", "complete must not run inside an outer transaction");
       withTransaction(this.#db, () => {
-        const t = this.#time();
+        this.#time();
+        const x = this.#expiryBase;
         const stored = this.#storable(result);
         const fits = stored.text !== undefined && this.#makeRoom(k[0], k[1], stored.bytes);
         const res = fits
@@ -292,12 +297,12 @@ export class JournalIdempotencyStore {
               .prepare(
                 `UPDATE daemon_idempotency SET state = 'completed', result = ?, result_bytes = ?, origin = ?, expires_at = ? WHERE ${WHERE} AND state = 'in-progress' AND boot_id = ?`,
               )
-              .run(stored.text ?? "", stored.bytes, origin.slice(0, 256), t + this.#ttlMs, ...k, this.#boot)
+              .run(stored.text ?? "", stored.bytes, origin.slice(0, 256), x + this.#ttlMs, ...k, this.#boot)
           : this.#db
               .prepare(
                 `UPDATE daemon_idempotency SET state = 'unknown', unknown_reason = 'result-not-stored', origin = ?, expires_at = ? WHERE ${WHERE} AND state = 'in-progress' AND boot_id = ?`,
               )
-              .run(origin.slice(0, 256), t + this.#ttlMs, ...k, this.#boot);
+              .run(origin.slice(0, 256), x + this.#ttlMs, ...k, this.#boot);
         if (Number(res.changes) !== 1) throw new AxisError("E_INTERNAL", "The idempotency key is not in progress");
       });
     } catch (error) {
@@ -334,7 +339,7 @@ export class JournalIdempotencyStore {
       .prepare(
         `UPDATE daemon_idempotency SET state = 'unknown', unknown_reason = 'failed-after-start', expires_at = ? WHERE ${WHERE} AND state = 'in-progress' AND boot_id = ?`,
       )
-      .run(this.#time() + this.#interruptedTtlMs, ...k, this.#boot);
+      .run((this.#time(), this.#expiryBase) + this.#interruptedTtlMs, ...k, this.#boot);
   }
 
   /**
@@ -350,13 +355,14 @@ export class JournalIdempotencyStore {
       throw new AxisError("E_INVALID_ARGUMENT", "The instance lock does not guard this database's directory");
     }
     return withTransaction(this.#db, () => {
-      const t = this.#time();
+      this.#time();
+      const x = this.#expiryBase;
       this.#sweep(this.#trusted, true);
       const res = this.#db
         .prepare(
           "UPDATE daemon_idempotency SET state = 'unknown', unknown_reason = 'interrupted', expires_at = ? WHERE state = 'in-progress' AND boot_id <> ?",
         )
-        .run(t + this.#interruptedTtlMs, this.#boot);
+        .run(x + this.#interruptedTtlMs, this.#boot);
       const interrupted = Number(res.changes);
       if (interrupted > 0) {
         this.#audit.append({
@@ -456,7 +462,7 @@ export class JournalIdempotencyStore {
     this.#db.prepare("DELETE FROM daemon_idempotency WHERE state <> 'in-progress' AND expires_at <= ?").run(t);
     if (this.#unconfirmed) return;
     // An expiry further ahead than the longest TTL allows came from a bad clock reading: bring it back.
-    const latest = t + Math.max(this.#ttlMs, this.#interruptedTtlMs);
+    const latest = Math.max(t, this.#expiryBase) + Math.max(this.#ttlMs, this.#interruptedTtlMs);
     this.#db.prepare("UPDATE daemon_idempotency SET expires_at = ? WHERE state <> 'in-progress' AND expires_at > ?").run(latest, latest);
   }
 }

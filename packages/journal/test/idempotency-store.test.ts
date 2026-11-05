@@ -22,7 +22,7 @@ const key = (k: string, over: Partial<StoreKey> = {}): StoreKey => ({
 
 function make(db: DatabaseSync = openDatabase(":memory:"), over: Partial<IdempotencyStoreOptions> = {}) {
   const audit = new AuditLog(db);
-  const store = JournalIdempotencyStore.open(db, { audit, redactor: new Redactor(), ...over });
+  const store = JournalIdempotencyStore.open(db, { audit, redactor: new Redactor(), ...(over.now ? { monotonic: over.now } : {}), ...over });
   return { db, audit, store };
 }
 

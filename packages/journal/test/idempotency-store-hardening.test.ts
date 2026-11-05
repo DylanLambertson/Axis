@@ -14,7 +14,7 @@ const CHILD = fileURLToPath(new URL("./fixtures/idem-child.js", import.meta.url)
 const key = (k: string, over: Partial<StoreKey> = {}): StoreKey => ({ actorId: "a", workspaceId: "w", contract: "axis.test", version: 1, method: "m", key: k, ...over });
 function make(over: Partial<IdempotencyStoreOptions> = {}, db: DatabaseSync = openDatabase(":memory:")) {
   const audit = new AuditLog(db);
-  return { db, audit, store: JournalIdempotencyStore.open(db, { audit, redactor: new Redactor(), ...over }) };
+  return { db, audit, store: JournalIdempotencyStore.open(db, { audit, redactor: new Redactor(), ...(over.now ? { monotonic: over.now } : {}), ...over }) };
 }
 const done = (s: JournalIdempotencyStore, k: StoreKey, v: unknown = 1): void => {
   s.begin(k, "h");
