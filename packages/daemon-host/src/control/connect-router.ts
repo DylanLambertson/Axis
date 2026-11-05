@@ -111,6 +111,7 @@ export function createConnectRouter(options: ConnectRouterOptions): ConnectRoute
         }
         fromPort({ attestation: parsed.data.attestation }, port);
       } catch {
+        // Defensive: nothing above is expected to throw, but this entry point must never throw into the adapter.
         refusedPortMessages++;
         closePort(port);
       }
