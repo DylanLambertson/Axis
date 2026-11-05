@@ -129,6 +129,10 @@ test("finalise: git done but the journal write failed is recoverable over the wi
   assert.equal(done.ok, true, JSON.stringify(done.error));
   assert.equal(r.journal.getWorkspace(id)?.state, "FINALISED");
   assert.equal(r.git(r.repo, "for-each-ref"), before, "git was not run again");
+  // The repair lifted the flag itself: no second reconcile (a restart) is needed for the other methods to answer.
+  assert.equal(r.binding.needsAttention(id), false);
+  assert.equal((await user.call(WT, "status", { ids: [id] })).ok, true);
+  assert.ok(r.db.prepare("SELECT 1 FROM audit_events WHERE action = 'worktree.finalise' AND payload LIKE '%recovered%'").get(), "the repair is labelled recovered");
   assert.deepEqual((await r.binding.service.reconcile(new AbortController().signal)).needsAttention, []);
   // Every other method stays blocked while it needs attention.
   r.db.exec(`UPDATE agent_workspaces SET base_sha = '${"1".repeat(40)}' WHERE id = '${id}'`);

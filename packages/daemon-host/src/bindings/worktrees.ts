@@ -40,12 +40,17 @@ export interface WorktreesBindingDeps {
   readonly lockTimeoutMs?: number;
   /** Told what a discard would lose, for the native dialog (`createWorktreesApprovals().onPreview`). */
   readonly onPreview?: (target: string, contentDigest: string, text: string) => void;
-  /** Test seams (never set by the product): replace the on-disk restore path check, wrap the manager shape, force the case rule. */
-  readonly testSeams?: {
-    readonly restorePathCheck?: (workTree: string, rel: string, platform: NodeJS.Platform) => Promise<void>;
-    readonly wrapManager?: (manager: ManagerShape) => ManagerShape;
-    readonly caseInsensitiveFs?: boolean;
-  };
+}
+
+/**
+ * Test seams: replace the on-disk restore path check, wrap the manager shape, force the case rule. They are NOT accepted by
+ * `createWorktreesBinding` and not exported from the package index; only `createWorktreesBindingForTest` takes them, so no
+ * production caller can switch a check off or reach the raw manager.
+ */
+export interface WorktreesTestSeams {
+  readonly restorePathCheck?: (workTree: string, rel: string, platform: NodeJS.Platform) => Promise<void>;
+  readonly wrapManager?: (manager: ManagerShape) => ManagerShape;
+  readonly caseInsensitiveFs?: boolean;
 }
 
 export interface WorktreesBinding {
@@ -122,6 +127,15 @@ function adapt(manager: WorktreeManager, runner: GitRunner): ManagerShape {
  * Ids become paths only through the journal and the locator.
  */
 export function createWorktreesBinding(deps: WorktreesBindingDeps): WorktreesBinding {
+  return build(deps, {});
+}
+
+/** The same binding with test seams. Not exported from `src/index.ts`. */
+export function createWorktreesBindingForTest(deps: WorktreesBindingDeps, seams: WorktreesTestSeams): WorktreesBinding {
+  return build(deps, seams);
+}
+
+function build(deps: WorktreesBindingDeps, seams: WorktreesTestSeams): WorktreesBinding {
   const runner = createExecGitRunner({ gitPath: deps.gitPath, baseEnv: deps.env, platform: deps.platform });
   const manager = new WorktreeManager({
     runner,
@@ -137,7 +151,7 @@ export function createWorktreesBinding(deps: WorktreesBindingDeps): WorktreesBin
     },
     ...(deps.lockTimeoutMs === undefined ? {} : { lockTimeoutMs: deps.lockTimeoutMs }),
   });
-  const shape = deps.testSeams?.wrapManager?.(adapt(manager, runner)) ?? adapt(manager, runner);
+  const shape = seams.wrapManager?.(adapt(manager, runner)) ?? adapt(manager, runner);
   const mutex = new ProjectMutex();
   const locator = createWorktreeLocator({
     journal: deps.journal,
@@ -155,8 +169,8 @@ export function createWorktreesBinding(deps: WorktreesBindingDeps): WorktreesBin
     runs: deps.runs,
     random: deps.random,
     platform: deps.platform,
-    restorePathCheck: deps.testSeams?.restorePathCheck ?? assertSafeRestorePath,
-    caseInsensitiveFs: deps.testSeams?.caseInsensitiveFs ?? (deps.platform === "win32" || deps.platform === "darwin"),
+    restorePathCheck: seams.restorePathCheck ?? assertSafeRestorePath,
+    caseInsensitiveFs: seams.caseInsensitiveFs ?? (deps.platform === "win32" || deps.platform === "darwin"),
   });
   const content = createWorktreeContentHooks({
     journal: deps.journal,

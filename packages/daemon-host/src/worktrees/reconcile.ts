@@ -29,6 +29,8 @@ const key = (p: string, platform: NodeJS.Platform): string => (platform === "win
  *   its journal row, or a workspace the journal gave up on);
  * - `ref_mismatch`: the worktree is there but disagrees with the journal: another path, another base commit, another
  *   state in its own `WorkspaceMeta`, or a missing `refs/axis/runbase` or (once finalised) `refs/axis/archive` ref;
+ * - `finalise_incomplete`: the journal says READY, the manager's own record says FINALISED and the archive ref exists (an
+ *   interrupted finalise); the one reason that does not block `finalise`, which re-verifies with git and repairs it;
  * - `failed`: it could not be read.
  * It runs under each project's mutex, one project at a time, and stops at the next step when `signal` aborts (the
  * startup budget). A REMOVING workspace is reported (its removal may or may not have finished) and left as it is.

@@ -18,12 +18,12 @@ import {
   createChallengeAuditLog,
   createChallengeAuditSink,
   createWorktreesApprovals,
-  createWorktreesBinding,
   createWorktreesHandlers,
   resolveGitOnce,
   type Approvals,
   type WorktreesBinding,
 } from "../src/index.js";
+import { createWorktreesBindingForTest, type WorktreesTestSeams } from "../src/bindings/worktrees.js";
 import { memoryChannelPair } from "../testing/memory-channel.js";
 import { memoryPair } from "@axis/daemon";
 import { Client, newKey, type Msg } from "./approvals-rig.js";
@@ -99,7 +99,7 @@ export interface RigOptions {
   /** Fixed bytes for the slug suffix (`010203`), so a test can predict a branch name. */
   fixedSuffix?: boolean;
   /** Make the binding's audit appends fail for matching events (the journal's own audit is unaffected). */
-  testSeams?: NonNullable<Parameters<typeof createWorktreesBinding>[0]["testSeams"]>;
+  testSeams?: WorktreesTestSeams;
   failAudit?: (e: { action: string; payload?: unknown }) => boolean;
 }
 
@@ -154,7 +154,7 @@ export async function worktreesRig(options: RigOptions = {}): Promise<Rig> {
     clock,
     ...(options.preflight === undefined ? {} : { preflight: options.preflight }),
   });
-  const binding = createWorktreesBinding({
+  const binding = createWorktreesBindingForTest({
     journal,
     audit: { append: (e) => (options.failAudit?.(e) === true ? ((): never => { throw new Error("audit down"); })() : audit.append(e)) },
     transact: (fn) => withTransaction(db, fn),
@@ -165,8 +165,7 @@ export async function worktreesRig(options: RigOptions = {}): Promise<Rig> {
     platform: process.platform,
     worktreeRoot: root,
     onPreview: approvals.onPreview,
-    ...(options.testSeams === undefined ? {} : { testSeams: options.testSeams }),
-  });
+  }, options.testSeams ?? {});
 
   const trust = new InMemoryTrustRegistry();
   trust.set({ windowId: "win-1" }, true);

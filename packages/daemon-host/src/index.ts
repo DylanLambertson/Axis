@@ -45,7 +45,7 @@ export * from "./handlers/review-audit.js";
 export * from "./handlers/review-store.js";
 export * from "./handlers/review-wire.js";
 // Worktrees binding over the real @axis/worktrees (ticket H8).
-export * from "./bindings/worktrees.js";
+export { createWorktreesBinding, type WorktreesBinding, type WorktreesBindingDeps } from "./bindings/worktrees.js";
 // Only the factory is public: the capability minter is closed over inside it and never returned (see worktrees-gate-exports.test.ts).
 export { createWorktreesApprovals, type WorktreesApprovals } from "./gate/worktrees-confirm.js";
 export * from "./handlers/worktrees.js";

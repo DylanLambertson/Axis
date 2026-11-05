@@ -48,11 +48,14 @@ test("workspaceSlug: reduced to the package's slug pattern with a suffix", () =>
 test("worktreesCapability: only finalise and remove of axis.worktrees/1, bound to the approved target; a mismatch is refused", () => {
   const digest = "a".repeat(64);
   const input = (method: string, id: unknown, contract = "axis.worktrees") =>
-    ({ contract, contractVersion: 1, method, args: { id }, digest: "d" }) as never;
+    ({ contract, contractVersion: 1, method, args: { id }, digest: "d", tier: 4 }) as never;
   const content = { target: "workspace:ws-1", contentDigest: digest };
   assert.notEqual(worktreesCapability(input("remove", "ws-1"), content), undefined);
   assert.notEqual(worktreesCapability(input("finalise", "ws-1"), content), undefined);
   assert.equal(worktreesCapability(input("create", "ws-1"), content), undefined);
+  // Below tier 4 there was no native dialog: no token, whatever else matches.
+  assert.equal(worktreesCapability({ ...(input("remove", "ws-1") as object), tier: 3 } as never, content), undefined);
+  assert.equal(worktreesCapability({ ...(input("remove", "ws-1") as object), tier: undefined } as never, content), undefined);
   assert.equal(worktreesCapability(input("remove", "ws-1", "axis.git"), content), undefined);
   assert.throws(() => worktreesCapability(input("remove", "ws-2"), content));
   assert.throws(() => worktreesCapability(input("remove", "ws-1"), { target: "request:" + digest, contentDigest: digest }));

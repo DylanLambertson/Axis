@@ -33,7 +33,7 @@ const metaFile = (r: Rig, id: string): string => {
   return path.join(dir, name, "axis-workspace.json");
 };
 
-test("recovery: merged is recorded only when git finds the commit in the base branch; an unmerged branch is refused and stays flagged", { skip }, async (t) => {
+test("recovery: merged is recorded when git finds the commit in the base branch", { skip }, async (t) => {
   const { r, id } = await interrupted(t, "abandoned");
   await r.binding.service.reconcile(live);
   // The branch has the base commit only (an ancestor of main): git verifies it, so merged is accepted ...

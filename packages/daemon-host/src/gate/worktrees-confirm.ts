@@ -11,7 +11,7 @@ import { createApprovals, type Approvals, type ApprovalsDeps } from "./approvals
  * `worktreesCapability` runs inside the gate's approval action, AFTER the approval was spent, and binds the token to
  * what the user confirmed: the workspace named by `content.target`, the operation (the method) and the fingerprint
  * the content hook computed under the lock (`content.contentDigest`). The token lives 30 seconds on a monotonic
- * clock and the first `finalise` or `remove` that accepts it spends it. A method that discards nothing (anything
+ * clock and the first `finalise` or `remove` that accepts it spends it. A call below tier 4 gets none (its approval had no native dialog). A method that discards nothing (anything
  * but `finalise` and `remove` of `axis.worktrees/1`) gets none, and a request whose `id` disagrees with its approved
  * target is refused (the action fails; the approval is already spent).
  */
@@ -21,6 +21,9 @@ const DIGEST = /^[0-9a-f]{64}$/;
 export function worktreesCapability(input: ApprovalInput, content: ApprovalContent): unknown {
   if (input.contract !== "axis.worktrees" || input.contractVersion !== 1) return undefined;
   if (input.method !== "remove" && input.method !== "finalise") return undefined;
+  // Only a challenge that had a NATIVE confirmation (tier 4 and above) may yield a token. A tier 3 challenge is approved by
+  // `resolve` alone, so whoever holds the gate and the approvals port could otherwise obtain a token with no dialog.
+  if (!(input.tier >= 4)) return undefined;
   const id = TARGET.exec(content.target)?.[1];
   const args = input.args;
   const named = typeof args === "object" && args !== null && !Array.isArray(args) ? args["id"] : undefined;

@@ -58,7 +58,7 @@ const exists = (p: string | null): Promise<boolean> => (p === null ? Promise.res
  */
 export function createWorktreesService(deps: WorktreesServiceDeps): WorktreesRuntime {
   const { journal, manager, locator, mutex } = deps;
-  let attention: ReadonlyMap<string, string> = new Map();
+  let attention = new Map<string, string>();
   const actorOf = (ctx: { caller: { actor: string } }): AuditActor => ctx.caller.actor as AuditActor;
 
   /** The lock record around one mutating call (advisory: the mutex and the manager's file lock are the real locks). */
@@ -206,6 +206,8 @@ export function createWorktreesService(deps: WorktreesServiceDeps): WorktreesRun
                   payload: { workspaceId: ws.id, outcome, phase: "done", result: recovering ? "recovered" : "finalised", backupRef, skippedLarge },
                 });
               });
+              // The repair is complete: lift the flag that asked for it (not only at the next reconcile, i.e. a restart).
+              if (recovering) attention.delete(ws.id);
               return { id: ws.id, state: "FINALISED" as const, archiveRef: `refs/axis/archive/${ws.id}` };
             } catch (e) {
               // The second row: what actually happened. A refusal is `denied`, anything else `failure`; neither says "success".

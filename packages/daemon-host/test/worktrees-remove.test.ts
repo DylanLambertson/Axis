@@ -89,14 +89,13 @@ test("remove of a dirty workspace: the confirmation is minted after the spend, t
 test("remove: a workspace that was not finalised, an unknown id and a non-user caller are refused before any challenge or dialog", { skip }, async (t) => {
   const { r, user } = await setup(t);
   const { id } = await createWs(user);
-  // A refusal by the content hook reaches the wire as E_INTERNAL until @axis/daemon maps a hook's DaemonError (see the
-  // docs); what matters here is that no challenge and no dialog exist, and nothing changed.
+  // A content hook's refusal is answered as a closed error with fixed text, and no challenge or dialog exists.
   const early = await user.call(WT, "remove", { id }, newKey());
-  assert.equal(early.ok, false);
-  assert.notEqual(early.error?.code, "E_APPROVAL_REQUIRED");
+  assert.equal(early.error?.code, "E_CONFLICT");
+  assert.deepEqual(early.error?.details, { reason: "not_finalised" });
   const unknown = await user.call(WT, "remove", { id: "ws-unknown" }, newKey());
-  assert.equal(unknown.ok, false);
-  assert.notEqual(unknown.error?.code, "E_APPROVAL_REQUIRED");
+  assert.equal(unknown.error?.code, "E_NOT_FOUND");
+  assert.ok(!JSON.stringify(unknown).includes("ws-unknown"), "the id is not echoed");
   const agent = await r.connect("agent:x#conn-3#win-1");
   assert.equal((await agent.call(WT, "remove", { id }, newKey())).error?.code, "E_POLICY_DENIED");
   assert.equal(r.nativeConfirms().length, 0, "no dialog for a call that will be refused");
@@ -109,15 +108,16 @@ test("remove: refused while a run is active, before the approval is spent; the s
   const { id, dir } = await finalised(r, user);
   r.active.add(id);
   const early = await user.call(WT, "remove", { id }, newKey());
-  assert.equal(early.ok, false);
-  assert.notEqual(early.error?.code, "E_APPROVAL_REQUIRED");
+  assert.equal(early.error?.code, "E_CONFLICT");
+  assert.deepEqual(early.error?.details, { reason: "active_run" });
   assert.equal(r.nativeConfirms().length, 0, "no challenge and no dialog while a run is active");
   r.active.clear();
   const i = await challenge(r, user, { id });
   await approve4(r as never, user, { challenge: i.c, proof: i.proof, key: i.key, sent: i.sent, first: {} as Msg });
   r.active.add(id);
   const blocked = await retry(user, id, i.c.challengeId, i.key);
-  assert.equal(blocked.ok, false);
+  assert.equal(blocked.error?.code, "E_CONFLICT");
+  assert.deepEqual(blocked.error?.details, { reason: "active_run" });
   assert.equal(existsSync(dir), true);
   assert.equal(r.journal.getWorkspace(id)?.state, "FINALISED");
   r.active.clear();
@@ -133,8 +133,7 @@ test("preflight seam: a stall check throwing refuses tier 4 before any challenge
   });
   const { id } = await finalised(r, user);
   const refused = await user.call(WT, "remove", { id }, newKey());
-  assert.equal(refused.ok, false);
-  assert.notEqual(refused.error?.code, "E_APPROVAL_REQUIRED");
+  assert.equal(refused.error?.code, "E_UNAVAILABLE");
   assert.equal(r.nativeConfirms().length, 0);
   stalled = false;
   assert.equal((await user.call(WT, "remove", { id }, newKey())).error?.code, "E_APPROVAL_REQUIRED");
