@@ -77,6 +77,8 @@ interface Shape {
   readonly required?: readonly string[];
   /** False when the command must take no positional argument (such as a path). */
   readonly positional?: boolean;
+  /** Upper bound on positional arguments (a second one would turn a read into a write). */
+  readonly maxPositional?: number;
 }
 
 /**
@@ -87,9 +89,9 @@ interface Shape {
  * refused: widening a shape needs proof that it stays filter-free.
  */
 const SHAPES: Readonly<Record<string, Shape>> = {
-  'config': { flags: ['--null', '--name-only', '--list', '--show-origin', '--show-scope', '--get-regexp'], required: ['--null'] },
+  'config': { flags: ['--null', '--list', '--show-origin', '--show-scope'], required: ['--null', '--list'], positional: false },
   'rev-parse': { flags: ['--verify', '--quiet'] },
-  'symbolic-ref': { flags: ['-q', '--short'] },
+  'symbolic-ref': { flags: ['-q', '--short'], maxPositional: 1 },
   'show-ref': { flags: ['--verify', '--quiet'] },
   'check-ref-format': { flags: ['--branch'] },
   'for-each-ref': { prefixed: ['--format='] },
@@ -113,16 +115,20 @@ const SHAPES: Readonly<Record<string, Shape>> = {
   'worktree list': { flags: ['--porcelain', '-z'], positional: false },
 };
 
+/** The only variable a caller may add to git's environment (a temporary index in a private directory). */
+const CALLER_ENV = new Set(['GIT_INDEX_FILE']);
+
 /** Leading `-c` pairs a caller may add (commit identity only); any other global option is refused. */
 const CALLER_CONFIG = /^user\.(name|email)=/;
 
 function fits(shape: Shape, rest: readonly string[]): boolean {
   const seen = new Set<string>();
   let literal = false;
+  let positionals = 0;
   for (let i = 0; i < rest.length; i++) {
     const a = rest[i] as string;
     if (literal || !a.startsWith('-') || a === '-') {
-      if (shape.positional === false) return false;
+      if (shape.positional === false || ++positionals > (shape.maxPositional ?? Infinity)) return false;
     } else if (a === '--' || a === '--end-of-options') {
       literal = true;
     } else if (shape.flags?.includes(a)) {
@@ -187,6 +193,13 @@ export class HardenedGit {
       // Fail closed: a command that cannot be shown filter-free never runs (NB-2, R3-3).
       throw new WorktreeError('E_INTERNAL', 'refusing a git command that is not on the filter-free allow-list', {
         reason: 'git-command-refused', args: args.slice(0, 4),
+      });
+    }
+    const badEnv = Object.keys(opts.extraEnv ?? {}).filter((k) => !CALLER_ENV.has(k));
+    if (badEnv.length > 0) {
+      // GIT_DIR, GIT_CONFIG_PARAMETERS, GIT_EXEC_PATH and the like would bypass the shape check (R4-2).
+      throw new WorktreeError('E_INTERNAL', 'refusing a git environment variable that is not allow-listed', {
+        reason: 'git-env-refused', names: badEnv.slice(0, 4),
       });
     }
     await this.hooks.assertInert();
