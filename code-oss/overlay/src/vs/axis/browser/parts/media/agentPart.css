@@ -7,9 +7,81 @@
 	color: var(--vscode-foreground);
 }
 
-.monaco-workbench .part.axis-agent > .content {
+.monaco-workbench .part.axis-agent > .axis-agent-root {
+	display: flex;
+	flex-direction: column;
 	height: 100%;
 	overflow: hidden;
+}
+
+.monaco-workbench .part.axis-agent .axis-agent-content {
+	flex: 1 1 auto;
+	min-height: 0;
+	overflow: hidden;
+}
+
+.monaco-workbench .part.axis-agent .axis-agent-root.collapsed .axis-agent-content {
+	display: none;
+}
+
+/* Split header: the collapse controls of both halves. */
+.monaco-workbench .part.axis-agent .axis-split-header {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	height: 32px;
+	flex: 0 0 32px;
+	padding: 0 8px;
+	border-bottom: 1px solid var(--vscode-panel-border, transparent);
+	font-size: 12px;
+}
+
+.monaco-workbench .part.axis-agent .axis-split-header[hidden] {
+	display: none;
+}
+
+.monaco-workbench .part.axis-agent .axis-split-title {
+	flex: 1 1 auto;
+	color: var(--vscode-descriptionForeground);
+}
+
+.monaco-workbench .part.axis-agent .axis-split-actions {
+	display: flex;
+	gap: 4px;
+}
+
+.monaco-workbench .part.axis-agent .axis-split-button {
+	font: inherit;
+	color: var(--vscode-foreground);
+	background: transparent;
+	border: 1px solid var(--vscode-button-border, var(--vscode-panel-border, transparent));
+	border-radius: 4px;
+	padding: 2px 8px;
+	cursor: pointer;
+}
+
+.monaco-workbench .part.axis-agent .axis-split-button:hover {
+	background-color: var(--vscode-toolbar-hoverBackground);
+}
+
+.monaco-workbench .part.axis-agent .axis-split-button:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+
+/* The collapsed agent half: a thin strip with a vertical label. */
+.monaco-workbench .part.axis-agent .axis-agent-root.collapsed .axis-split-header {
+	height: 100%;
+	flex: 1 1 auto;
+	padding: 8px 0;
+	border-bottom: none;
+	align-items: flex-start;
+	justify-content: center;
+}
+
+.monaco-workbench .part.axis-agent .axis-agent-root.collapsed .axis-split-button {
+	writing-mode: vertical-rl;
+	padding: 8px 2px;
 }
 
 .monaco-workbench .part.axis-agent .axis-agent-placeholder {

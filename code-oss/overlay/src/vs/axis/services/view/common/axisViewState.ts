@@ -3,12 +3,14 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
-import { AxisViewKind, AxisViewMode, DEFAULT_AXIS_VIEW, isAxisViewKind } from '../../../common/axisView.js';
+import { AxisSplitCollapse, AxisViewKind, DEFAULT_AXIS_VIEW, isAxisViewKind, toAxisSplitCollapse } from '../../../common/axisView.js';
 
 /** Per-workspace view records, in the per-project Code OSS workspace (design section 3.6). */
 export const AXIS_WORKSPACE_VIEWS_STORAGE_KEY = 'axis.view.workspaces';
 /** The view used in `global` mode, for every project. */
 export const AXIS_GLOBAL_VIEW_STORAGE_KEY = 'axis.view.global';
+/** Which split half is collapsed. */
+export const AXIS_SPLIT_COLLAPSED_STORAGE_KEY = 'axis.view.split.collapsed';
 
 /** The key used for the window while no workspace is focused (the dashboard). */
 export const NO_WORKSPACE_KEY = '';
@@ -22,13 +24,14 @@ interface IWorkspaceViewRecord {
 
 /**
  * The persisted view state of `IAxisViewService` (design section 3.3): one view
- * per workspace in `perWorkspace` mode, one view for all in `global` mode.
+ * per workspace in `perWorkspace` mode, one view for all in `global` mode, and
+ * the collapsed half in `split` mode. Every key is under `axis.*`.
  */
 export class AxisViewState {
 
 	constructor(private readonly storageService: IStorageService) { }
 
-	get(mode: AxisViewMode, workspaceId: string | undefined): AxisViewKind {
+	get(mode: 'perWorkspace' | 'global', workspaceId: string | undefined): AxisViewKind {
 		if (mode === 'global') {
 			const value = this.storageService.get(AXIS_GLOBAL_VIEW_STORAGE_KEY, StorageScope.APPLICATION);
 			return isAxisViewKind(value) ? value : DEFAULT_AXIS_VIEW;
@@ -37,7 +40,7 @@ export class AxisViewState {
 		return this.readWorkspaceRecords().get(workspaceId ?? NO_WORKSPACE_KEY)?.view ?? DEFAULT_AXIS_VIEW;
 	}
 
-	set(mode: AxisViewMode, workspaceId: string | undefined, view: AxisViewKind): void {
+	set(mode: 'perWorkspace' | 'global', workspaceId: string | undefined, view: AxisViewKind): void {
 		if (mode === 'global') {
 			this.storageService.store(AXIS_GLOBAL_VIEW_STORAGE_KEY, view, StorageScope.APPLICATION, StorageTarget.MACHINE);
 			return;
@@ -56,6 +59,14 @@ export class AxisViewState {
 		}
 
 		this.storageService.store(AXIS_WORKSPACE_VIEWS_STORAGE_KEY, JSON.stringify(Object.fromEntries(records)), StorageScope.WORKSPACE, StorageTarget.MACHINE);
+	}
+
+	getSplitCollapsed(): AxisSplitCollapse {
+		return toAxisSplitCollapse(this.storageService.get(AXIS_SPLIT_COLLAPSED_STORAGE_KEY, StorageScope.WORKSPACE));
+	}
+
+	setSplitCollapsed(collapsed: AxisSplitCollapse): void {
+		this.storageService.store(AXIS_SPLIT_COLLAPSED_STORAGE_KEY, collapsed, StorageScope.WORKSPACE, StorageTarget.MACHINE);
 	}
 
 	private readWorkspaceRecords(): Map<string, IWorkspaceViewRecord> {
