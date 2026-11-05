@@ -121,10 +121,14 @@ export async function checkFresh(deps: ReviewDeps, binding: ReviewBinding): Prom
   });
 }
 
-/** What git-ops' `CommitInput` should also carry (design §6, G3): the parent and branch the review was made on. git-ops ignores them today. */
+/**
+ * What git-ops' `CommitInput` carries for a bound commit (design §6, G3): the commit the review was made on (a full object id)
+ * and the branch it was checked out as, in git-ops' form: the short name (`axis/<slug>`, not `refs/heads/axis/<slug>`), and
+ * left out when HEAD was detached. git-ops that predates the fields ignores them.
+ */
 export interface PinnedCommitInput extends CommitInput {
   readonly expectedParent: string;
-  readonly expectedBranch: string | null;
+  readonly expectedBranch?: string;
 }
 
 export interface PreparedCommit {
@@ -206,7 +210,7 @@ export function prepareCommit(deps: ReviewDeps, binding: ReviewBinding): Promise
             message,
             ...(author === undefined ? {} : { author }),
             expectedParent: binding.head,
-            expectedBranch: binding.branch,
+            ...(binding.branch === null ? {} : { expectedBranch: binding.branch.slice("refs/heads/".length) }),
           };
         }),
     };

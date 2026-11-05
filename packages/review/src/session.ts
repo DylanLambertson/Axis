@@ -44,8 +44,8 @@ export class ReviewSession {
   readonly #byPath: Map<string, ReviewFile>;
   readonly #loaded = new Map<string, Loaded>();
   readonly #inflight = new Map<string, Promise<Loaded>>();
-  /** `ack`: the user acknowledged text the view cut (see `acceptTruncated`). */
-  readonly #decisions = new Map<string, { whole: boolean; hunks: Set<number>; ack: boolean }>();
+  /** `ack`: the user acknowledged text the view cut in a whole-file accept; `acked`: the hunks acknowledged one by one (see `acceptTruncated`). */
+  readonly #decisions = new Map<string, { whole: boolean; hunks: Set<number>; ack: boolean; acked: Set<number> }>();
   #cached = 0;
 
   private constructor(deps: ReviewDeps, limits: ReviewLimits, git: ReviewGit, input: ReviewInput, againstTree: string, snap: { tree: string; skipped: readonly SkippedFile[]; skippedCount: number }, files: readonly ReviewFile[]) {
@@ -157,7 +157,7 @@ export class ReviewSession {
   /** Accepts everything about a file: content, mode, rename, delete, type. */
   acceptFile(path: string, opts: { readonly acceptTruncated?: boolean } = {}): void {
     this.#acceptable(path);
-    this.#decisions.set(path, { whole: true, hunks: new Set(), ack: opts.acceptTruncated === true });
+    this.#decisions.set(path, { whole: true, hunks: new Set(), ack: opts.acceptTruncated === true, acked: new Set() });
   }
 
   /** Takes a file back out of the review's accepted set (and every hunk of it). */
@@ -185,11 +185,12 @@ export class ReviewSession {
     if (hunk && opts.acceptTruncated !== true && hunkTruncated(hunk, this.#limits)) {
       throw denied("a line of this hunk is longer than the view shows; accept it only after acknowledging that", "truncated_hunk");
     }
-    const cur = this.#decisions.get(path) ?? { whole: false, hunks: new Set<number>(), ack: false };
+    const cur = this.#decisions.get(path) ?? { whole: false, hunks: new Set<number>(), ack: false, acked: new Set<number>() };
     if (cur.whole) return;
     cur.hunks.add(index);
+    if (opts.acceptTruncated === true) cur.acked.add(index);
     // Every hunk accepted is the whole file, mode and rename included (design §5). Each hunk passed the cut-line gate above.
-    this.#decisions.set(path, cur.hunks.size === hunks.length ? { whole: true, hunks: new Set(), ack: true } : cur);
+    this.#decisions.set(path, cur.hunks.size === hunks.length ? { whole: true, hunks: new Set(), ack: true, acked: new Set() } : cur);
   }
 
   rejectHunk(path: string, id: string): void {
@@ -200,7 +201,8 @@ export class ReviewSession {
     const rest = cur.whole ? new Set(hunks.map((h) => h.index)) : cur.hunks;
     rest.delete(index);
     if (rest.size === 0) this.#decisions.delete(path);
-    else this.#decisions.set(path, { whole: false, hunks: rest, ack: false });
+    // What was acknowledged for the whole file stays acknowledged for the hunks that remain; nothing else is.
+    else this.#decisions.set(path, { whole: false, hunks: rest, ack: false, acked: cur.whole ? (cur.ack ? new Set(rest) : new Set()) : cur.acked });
   }
 
   /**
@@ -210,6 +212,7 @@ export class ReviewSession {
   async hasCutLines(path: string): Promise<boolean> {
     return mapUnexpected(async () => {
       const f = this.file(path);
+      if (f.kind === "symlink") return f.newMode === "120000" && f.link?.targetCut === true;
       if (f.kind !== "text" || f.status === "D" || f.unsafePath) return false;
       const loaded = await this.#load(f);
       if (loaded.kind === "hunks") return loaded.hunks.some((h) => hunkTruncated(h, this.#limits));
@@ -217,6 +220,13 @@ export class ReviewSession {
       if (size === undefined || size > this.#limits.maxPreviewBytes) return false;
       return textCut(expectComplete(await this.#git(["cat-file", "blob", f.newOid]), "read a file version"), this.#limits);
     });
+  }
+
+  async #partialHasUnackedCut(path: string, chosen: ReadonlySet<number>, acked: ReadonlySet<number>): Promise<boolean> {
+    const loaded = this.#loaded.get(path);
+    // A partial decision exists only for a file whose hunks were loaded; if not, it is refused here rather than trusted.
+    if (loaded?.kind !== "hunks") return true;
+    return loaded.hunks.some((h) => chosen.has(h.index) && !acked.has(h.index) && hunkTruncated(h, this.#limits));
   }
 
   reset(): void {
@@ -242,11 +252,11 @@ export class ReviewSession {
     return mapUnexpected(async () => {
       const decisions = new Map<string, FileDecision>();
       // Copied first: a decision made while this build awaits must not change it.
-      for (const [p, d] of [...this.#decisions].map(([k, v]) => [k, { ...v, hunks: new Set(v.hunks) }] as const)) {
+      // The one place every accepted byte passes, however the decision was assembled: a whole file, or each hunk of a partial one.
+      for (const [p, d] of [...this.#decisions].map(([k, v]) => [k, { ...v, hunks: new Set(v.hunks), acked: new Set(v.acked) }] as const)) {
         decisions.set(p, { whole: d.whole, hunks: new Set(d.hunks) });
-        if (d.whole && !d.ack && (await this.hasCutLines(p))) {
-          throw denied("a line of an accepted file is longer than the view shows; accept it again with the acknowledgement", "truncated_hunk");
-        }
+        const cut = d.whole ? !d.ack && (await this.hasCutLines(p)) : await this.#partialHasUnackedCut(p, d.hunks, d.acked);
+        if (cut) throw denied("a line of an accepted file is longer than the view shows; accept it again with the acknowledgement", "truncated_hunk");
       }
       const git = await reviewGitFor(this.#deps, this.worktree);
       const headNow = await headState(git);

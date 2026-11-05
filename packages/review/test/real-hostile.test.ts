@@ -169,7 +169,7 @@ test("thousands of changed files are listed and accepted without a per-file proc
     const before = f.seen.length;
     const s = await ReviewSession.start(f.deps, { worktree: f.wt, against: f.head() });
     assert.equal(s.files.length, 2500);
-    assert.ok(f.seen.length - before < 20, `${f.seen.length - before} git calls for the list`);
+    assert.ok(f.seen.length - before < 40, `${f.seen.length - before} git calls for the list (a fixed number, not one per file)`);
     for (const x of s.files) s.acceptFile(x.path);
     assert.equal((await s.build()).reviewedTree, s.worktreeTree);
   } finally {

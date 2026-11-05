@@ -20,7 +20,7 @@ function filtered(clean = REVERSE, extra?: (a: Parameters<ReturnType<typeof with
 async function assertNotOffered(f: Fixture, path: string): Promise<void> {
   const s = await ReviewSession.start(f.deps, { worktree: f.wt, against: f.head() });
   assert.equal(s.file(path).kind, "filtered", `${path} is listed as filtered`);
-  assert.throws(() => s.acceptFile(path), (e: unknown) => e instanceof ReviewError && e.details?.["reason"] === "filtered_path");
+  assert.throws(() => s.acceptFile(path), (e: unknown) => e instanceof ReviewError && (e.details?.["reason"] === "filtered_path" || e.details?.["reason"] === "attributes_untrusted"));
 }
 
 const BYPASSES: readonly (readonly [string, (f: Fixture) => void])[] = [

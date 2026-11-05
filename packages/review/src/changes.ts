@@ -1,9 +1,10 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 // The changed-files list (design §3): two trees compared by `diff-tree -z`, parsed from NUL-separated records.
-import { escapeForDisplay, pathProblem, symlinkEscapes } from "./display.js";
+import { escapeForDisplay, escapeWithInfo, pathProblem, symlinkEscapes } from "./display.js";
 import { invalid, unavailable } from "./errors.js";
 import type { WorktreeRef } from "@axis/git-ops";
-import { OBJECT_ID, expectComplete, expectOk, gitPaths, type ReviewGit } from "./gitcall.js";
+import { OBJECT_ID, expectComplete, expectOk, type ReviewGit } from "./gitcall.js";
+import { attributesUntrusted } from "./attrtrust.js";
 import { acquireIndex } from "./tempindex.js";
 import type { ChangeKind, ChangeStatus, ProtectedPathMatcher, ReviewDeps, ReviewFile, ReviewLimits } from "./types.js";
 
@@ -116,9 +117,12 @@ export async function filteredPaths(git: ReviewGit, paths: readonly string[] | s
   // tree's (a temporary index holding it). The base is where the stored blob came from: a CLI that stages an edit of
   // `.gitattributes`, removes it, or writes `-filter` into `.git/info/attributes` cannot make the stored blob look plain.
   // A path whose answer differs between them is therefore filtered too: nothing is offered on a changed answer.
-  for (const read of [{ extra: [] as string[] }, { extra: ["--cached"] }, { extra: ["--cached"], index: baseIndex }] as const) {
+  // Each read runs with core.ignorecase both ways: the setting changes which paths a pattern matches, and a `-filter` line can
+  // match more paths one way than the other, so a path is filtered if either reading names a driver.
+  const reads = [{ extra: [] as string[] }, { extra: ["--cached"] }, { extra: ["--cached"], index: baseIndex }] as const;
+  for (const [read, ignorecase] of reads.flatMap((r) => [[r, "true"], [r, "false"]] as const)) {
     const out = expectComplete(
-      await git(["check-attr", "-z", "--stdin", ...read.extra, "filter"], { stdin, ..."index" in read ? { index: read.index } : {} }),
+      await git(["check-attr", "-z", "--stdin", ...read.extra, "filter"], { stdin, config: [`core.ignorecase=${ignorecase}`], ..."index" in read ? { index: read.index } : {} }),
       "read the file attributes",
     );
     const t = out.split("\0");
@@ -130,22 +134,6 @@ export async function filteredPaths(git: ReviewGit, paths: readonly string[] | s
     }
   }
   return found;
-}
-
-/**
- * `$GIT_DIR/info/attributes` has the highest priority and every `check-attr` read consults it, so it can hide a base `filter`
- * line (`secret.env -filter`) from all three reads, and it is in no tracked file. Its content is read through git (the package has
- * no file system); when it mentions `filter` at all, or cannot be read, no path is offered (fail closed). It is rare.
- */
-async function infoAttributesMentionFilter(deps: ReviewDeps, git: ReviewGit, w: WorktreeRef, limits: ReviewLimits): Promise<boolean> {
-  const [path] = await gitPaths(deps, git, w, ["info/attributes"]);
-  if (path === undefined || !(await deps.fileExists(path))) return false;
-  const h = await git(["hash-object", "-w", "--no-filters", "--", path]);
-  const oid = h.stdout.trim();
-  if (h.code !== 0 || !OBJECT_ID.test(oid)) return true;
-  const body = await git(["cat-file", "blob", oid]);
-  if (body.code !== 0 || body.truncated === true || body.stdout.length > limits.maxPreviewBytes) return true;
-  return /filter/i.test(body.stdout);
 }
 
 function protectedRules(matcher: ProtectedPathMatcher | undefined, paths: readonly string[], maxDisplay: number): string[] {
@@ -189,8 +177,9 @@ export async function listChanges(
   const sizes = await objectSizes(git, [...wanted]);
   const allPaths = [...new Set(entries.flatMap((e) => (e.oldPath === undefined ? [e.path] : [e.path, e.oldPath])))];
   let filtered: Set<string>;
+  let untrusted = false;
   if (allPaths.length === 0) filtered = new Set();
-  else if (await infoAttributesMentionFilter(deps, git, w, limits)) filtered = new Set(allPaths);
+  else if ((untrusted = await attributesUntrusted(deps, git, w, limits))) filtered = new Set(allPaths);
   else {
     const idx = await acquireIndex(deps.tempIndex);
     try {
@@ -232,13 +221,14 @@ export async function listChanges(
       }
       // A link whose target could not be read is treated as escaping: it is never assumed harmless.
       const escapesWorktree = target === undefined ? true : symlinkEscapes(e.path, target);
-      link = { target: target === undefined ? undefined : escapeForDisplay(target, { maxLength: limits.maxDisplay }), escapesWorktree };
+      const shown = target === undefined ? undefined : escapeWithInfo(target, { maxLength: limits.maxDisplay });
+      link = { target: shown?.text, escapesWorktree, targetCut: shown === undefined || shown.truncated };
       if (escapesWorktree && e.newMode === "120000") warnings.push("symlink-outside");
     }
 
     let reason: string | undefined;
     if (problem) reason = "unsafe_path";
-    else if (isFiltered) reason = "filtered_path";
+    else if (isFiltered) reason = untrusted ? "attributes_untrusted" : "filtered_path";
     else if (e.status === "A" || e.status === "D" || e.status === "T") reason = e.status === "A" ? "added" : e.status === "D" ? "deleted" : "type_change";
     else if (kind !== "text") reason = kind;
     else if (e.oldOid === e.newOid) reason = "no_content_change";

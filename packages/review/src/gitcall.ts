@@ -23,6 +23,8 @@ export interface GitCallOptions {
   readonly stdin?: string;
   /** Absolute path of a temporary index: sets GIT_INDEX_FILE and turns sparse checkout off for the call. */
   readonly index?: string;
+  /** `key=value` settings placed before the subcommand (`-c`), for this call only. */
+  readonly config?: readonly string[];
 }
 
 export interface ReviewGit {
@@ -63,7 +65,7 @@ export async function reviewGitFor(deps: ReviewDeps, w: WorktreeRef): Promise<Re
       return Promise.reject(invalid("a temporary index must be an absolute path"));
     }
     return runner.run({
-      argv: [...head, ...(index === undefined ? [] : ["-c", "core.sparseCheckout=false"]), ...sub],
+      argv: [...head, ...(index === undefined ? [] : ["-c", "core.sparseCheckout=false"]), ...(opts.config ?? []).flatMap((c) => ["-c", c]), ...sub],
       cwd: w.workTree,
       env: index === undefined ? env : { ...env, GIT_INDEX_FILE: index },
       context: "daemon",

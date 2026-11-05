@@ -195,7 +195,7 @@ test("the hand-over refuses when HEAD moved after prepare, and carries the paren
     assert.equal(prepared.previousIndexTree, staged, "the user's staging can be put back if the commit is refused");
     const input = await prepared.handoff("m");
     assert.equal(input.expectedParent, b.head);
-    assert.equal(input.expectedBranch, "refs/heads/axis/feat");
+    assert.equal(input.expectedBranch, "axis/feat");
     const c = f.git("commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "foreign").trim();
     f.git("update-ref", "refs/heads/axis/feat", c);
     const e = await refusal(prepared.handoff("m"));

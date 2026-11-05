@@ -73,7 +73,8 @@ export interface ReviewFile {
   readonly protectedRules: readonly string[];
   /** Why only a whole-file decision is offered, when hunks are not. */
   readonly fileLevelReason?: string;
-  readonly link?: { readonly target: string | undefined; readonly escapesWorktree: boolean };
+  /** `targetCut`: the displayed target is shorter than the real one (or could not be read), so accepting the link needs the acknowledgement. */
+  readonly link?: { readonly target: string | undefined; readonly escapesWorktree: boolean; readonly targetCut: boolean };
   /** Short machine-readable labels for the UI: "unsafe-path:<why>", "symlink-outside", "submodule", "binary", and so on. */
   readonly warnings: readonly string[];
 }
