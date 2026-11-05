@@ -17,18 +17,40 @@ export const PROVIDERS_VERSION = 1 as const;
 
 export const MAX_PROVIDERS = 64;
 
+/**
+ * Bounds follow `@axis/providers` (the descriptor `guardProvider` checks), or
+ * are looser, so no adapter that passes there can make the whole list fail:
+ * display name 1 to 128, description 1 to 512, origin a bare https origin.
+ * The connection id is the one deliberate tightening: it must be a vault
+ * connection name (`NAME_RE` in `@axis/vault`), never free text, so a
+ * credential or a URL with a password in a wrongly wired adapter cannot reach
+ * the renderer. `@axis/providers` accepts any 1 to 256 characters there and
+ * should adopt this pattern.
+ */
+const CONNECTION_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+
+/** `new URL(o).origin === o`: the same https-origin rule `@axis/providers` applies. */
+const isHttpsOrigin = (o: string): boolean => {
+  try {
+    const u = new URL(o);
+    return u.protocol === "https:" && u.origin === o;
+  } catch {
+    return false;
+  }
+};
+
 export const providerInfoSchema = z.strictObject({
   /** Stable adapter id such as `anthropic` or `mock` (the pattern `@axis/providers` enforces). */
   providerId: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/),
-  displayName: safeTextSchema(80),
+  displayName: safeTextSchema(128),
   /** Version of the provider adapter API the adapter implements. */
   apiVersion: z.number().int().min(1).max(1_000),
-  /** The vault connection this adapter instance is bound to: an id, never a credential. */
-  connectionId: safeTextSchema(256),
+  /** The vault connection this adapter instance is bound to: a name, never a credential. */
+  connectionId: z.string().regex(CONNECTION_NAME),
   destination: z.strictObject({
-    /** Fixed network origin (scheme, host, optional port), or absent for an adapter that makes no request. */
-    origin: z.string().max(300).regex(/^https?:\/\/[A-Za-z0-9.-]{1,253}(?::\d{1,5})?$/).optional(),
-    description: safeTextSchema(256),
+    /** Fixed https origin (scheme, host, optional port), or absent for an adapter that makes no request. */
+    origin: z.string().max(256).refine(isHttpsOrigin, "an https origin").optional(),
+    description: safeTextSchema(512),
   }),
 });
 export type ProviderInfo = z.infer<typeof providerInfoSchema>;

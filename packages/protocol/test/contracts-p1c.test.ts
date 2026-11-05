@@ -180,7 +180,20 @@ test("providers.list: request takes nothing; response names adapters and destina
   rejects(schemaOf("axis.providers", "list", "request"), { connectionId: "c" }, "request with a field");
   accepts(providersRes(), { providers: [] }, "empty");
   accepts(providersRes(), { providers: [provider()] }, "mock");
-  accepts(providersRes(), { providers: [provider({ destination: { origin: "http://localhost:11434", description: "Local server" } })] }, "http origin with a port");
+  for (const origin of ["https://api.example.com", "https://localhost:8443", "https://[::1]", "https://[::1]:8443"]) {
+    accepts(providersRes(), { providers: [provider({ destination: { origin, description: "d" } })] }, origin);
+  }
+  for (const origin of ["http://localhost:11434", "http://0", "https://..:99999", "https://API.example.com", "https://api.example.com/", "https://api.example.com:443", "https://user:pass@api.example.com", "ws://api.example.com", "api.example.com", "https://"]) {
+    rejects(providersRes(), { providers: [provider({ destination: { origin, description: "d" } })] }, origin);
+  }
+  accepts(providersRes(), { providers: [provider({ displayName: "n".repeat(100), destination: { description: "d".repeat(512) } })] }, "a 100-character name and a 512-character description (valid for @axis/providers)");
+  accepts(providersRes(), { providers: [provider({ displayName: "n".repeat(128) })] }, "name at 128");
+  rejects(providersRes(), { providers: [provider({ displayName: "n".repeat(129) })] }, "name at 129");
+  rejects(providersRes(), { providers: [provider({ destination: { description: "d".repeat(513) } })] }, "description at 513");
+  for (const connectionId of ["sk-ant-api03-ZZZZSECRET", "https://user:pass@host/x", "/home/u/.ssh/id_rsa", "Conn-1", "-x", "a b", "a".repeat(65)]) {
+    rejects(providersRes(), { providers: [provider({ connectionId })] }, `connection id ${connectionId}`);
+  }
+  for (const connectionId of ["conn-1", "a", "a.b_c-1", "a".repeat(64)]) accepts(providersRes(), { providers: [provider({ connectionId })] }, connectionId);
   const bad: Record<string, Record<string, unknown>> = {
     "provider id upper": { providerId: "Anthropic" },
     "provider id with dot": { providerId: "a.b" },
@@ -194,7 +207,6 @@ test("providers.list: request takes nothing; response names adapters and destina
     "display name paragraph separator": { displayName: "a\u2029b" },
     "display name leading space": { displayName: " Mock" },
     "display name trailing space": { displayName: "Mock " },
-    "display name 81": { displayName: "n".repeat(81) },
     "api version 0": { apiVersion: 0 },
     "api version NaN": { apiVersion: Number.NaN },
     "api version 1.5": { apiVersion: 1.5 },
@@ -208,18 +220,18 @@ test("providers.list: request takes nothing; response names adapters and destina
     "origin with a query": { destination: { origin: "https://api.example.com?x=1", description: "d" } },
     "origin with another scheme": { destination: { origin: "ftp://api.example.com", description: "d" } },
     "origin empty": { destination: { origin: "", description: "d" } },
-    "origin 301": { destination: { origin: `https://${"a".repeat(293)}`, description: "d" } },
+    "origin 257": { destination: { origin: `https://${"a".repeat(250)}.com`, description: "d" } },
     "description empty": { destination: { description: "" } },
     "description trailing space": { destination: { description: "d " } },
     "description bidi": { destination: { description: "a\u202eb" } },
-    "description 257": { destination: { description: "d".repeat(257) } },
+    
     "destination extra field": { destination: { description: "d", token: "x" } },
     "no destination": { destination: undefined },
     "extra field": { apiKey: "x" },
     "credential field": { credential: "x" },
   };
   for (const [name, patch] of Object.entries(bad)) rejects(providersRes(), { providers: [provider(patch)] }, name);
-  accepts(providersRes(), { providers: [provider({ providerId: `a${"b".repeat(63)}`, displayName: "n".repeat(80), connectionId: "c".repeat(256) })] }, "ids at their caps");
+  accepts(providersRes(), { providers: [provider({ providerId: `a${"b".repeat(63)}`, displayName: "n".repeat(80), connectionId: "c".repeat(64) })] }, "ids at their caps");
   const many = (n: number) => Array.from({ length: n }, (_, i) => provider({ connectionId: `conn-${i}` }));
   accepts(providersRes(), { providers: many(MAX_PROVIDERS) }, "at the cap");
   rejects(providersRes(), { providers: many(MAX_PROVIDERS + 1) }, "over the cap");
