@@ -1,4 +1,5 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
+import { createHash } from "node:crypto";
 import {
   GitOpsError,
   compareUrl,
@@ -147,6 +148,14 @@ export function createGitOperations(deps: GitOperationsDeps): GitOperations {
   });
   return {
     scanMode,
+    pushTarget: (call) =>
+      guarded(async () => {
+        const git = await daemonGitFor(call.worktree, deps.git);
+        const urls = await git(["remote", "get-url", "--push", "--all", "--", call.remote]);
+        const list = urls.stdout.split("\n").map((l) => l.trim()).filter((l) => l !== "");
+        if (urls.code !== 0 || list.length === 0) throw new GitRefusal("E_INVALID_ARGUMENT");
+        return createHash("sha256").update(JSON.stringify(list.sort())).digest("hex");
+      }),
     planPush: (call) =>
       guarded(async () => {
         const plan = await planPush(forWorkspace(call.workspaceId), pushInput(call));

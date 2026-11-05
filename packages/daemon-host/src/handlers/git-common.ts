@@ -89,9 +89,12 @@ export function runActive(deps: GitHandlerDeps, workspaceId: string): boolean {
 }
 
 /**
- * The scan base of a push of `workspaceId` to `remote`: what Axis last pushed THERE, else the workspace's recorded base. The
- * last pushed sha of the journal is per workspace and a push names its remote per request, so it is not a base for another
- * remote: commits confirmed for one remote would go to the next unscanned. Bounded; eviction only widens a later scan.
+ * The scan base of a push of `workspaceId` to the destination `target` (a hash of the resolved push URLs, see
+ * `GitOperations.pushTarget`): what Axis last pushed THERE, else the workspace's recorded base. The journal's last pushed sha is
+ * per workspace and the destination is chosen per request, so it is no base for another one; and the key is the destination,
+ * not the remote's name, so a remote that is re-pointed after a push misses (and is scanned from the recorded base) while two
+ * names for one URL share an entry (the same destination). Only a hash is kept, never a URL (userinfo). Bounded; eviction
+ * only widens a later scan.
  */
 export class PushedBases {
   readonly #map = new Map<string, string>();
@@ -99,12 +102,12 @@ export class PushedBases {
     if (!Number.isInteger(max) || max < 1) throw new RangeError("the bound must be a positive integer");
   }
 
-  baseFor(workspaceId: string, remote: string, recordedBase: string): string {
-    return this.#map.get(`${workspaceId}\0${remote}`) ?? recordedBase;
+  baseFor(workspaceId: string, target: string, recordedBase: string): string {
+    return this.#map.get(`${workspaceId}\0${target}`) ?? recordedBase;
   }
 
-  record(workspaceId: string, remote: string, sha: string): void {
-    const key = `${workspaceId}\0${remote}`;
+  record(workspaceId: string, target: string, sha: string): void {
+    const key = `${workspaceId}\0${target}`;
     this.#map.delete(key);
     this.#map.set(key, sha);
     while (this.#map.size > this.max) {
@@ -112,6 +115,10 @@ export class PushedBases {
       if (oldest.done === true) break;
       this.#map.delete(oldest.value);
     }
+  }
+
+  get size(): number {
+    return this.#map.size;
   }
 }
 

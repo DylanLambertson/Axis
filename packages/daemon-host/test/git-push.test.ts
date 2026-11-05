@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
 import type { Policy } from "@axis/daemon";
-import { GitRefusal } from "../src/index.js";
+import { GitRefusal, PushedBases } from "../src/index.js";
 import { gitRig, gitUnavailable, type GitClient, type GitRig, type GitRigOptions } from "./git-rig.js";
 
 const SKIP = gitUnavailable();
@@ -336,4 +336,52 @@ test("an error that is no refusal is E_INTERNAL with a fixed text on the wire an
   assert.equal(res.error?.code, "E_INTERNAL");
   assert.ok(!JSON.stringify(res.error).includes("/home"));
   assert.equal(r.gate.internal.length, 1);
+});
+
+test("a remote re-pointed after a push is scanned from the base again, and two names for one URL share what was pushed", { skip: SKIP ?? false }, async (t) => {
+  const { r, c } = await setup(t, { scanMode: "warn" });
+  const other = join(r.root, "other.git");
+  r.git("init", "-q", "--bare", other);
+  commitFile(r, "cfg.txt", `aws_id = ${CANARY}\n`);
+  const p = (await plan(c, r)).result as unknown as Plan;
+  assert.equal((await pushOnce(r, c, confirmed(p))).ok, true);
+  commitFile(r, "clean.txt", "nothing here\n");
+  assert.equal(((await plan(c, r)).result as unknown as Plan).requiresConfirmation, false);
+  // A second name for the SAME destination shares the entry: nothing new to scan there either.
+  r.git("remote", "add", "alias", r.remote);
+  assert.equal(((await plan(c, r, { remote: "alias" })).result as unknown as Plan).requiresConfirmation, false);
+  assert.equal(r.calls.planPush.at(-1)?.baseSha, p.tip);
+  // The same name now points elsewhere: what was confirmed for the old URL says nothing about this one.
+  r.git("remote", "set-url", "origin", other);
+  const moved = (await plan(c, r)).result as unknown as Plan;
+  assert.equal(moved.requiresConfirmation, true);
+  assert.deepEqual(moved.findings.map((f) => f["rule"]), ["aws-access-key-id"]);
+  assert.equal(r.calls.planPush.at(-1)?.baseSha, r.baseSha);
+  // A push-only URL counts too.
+  r.git("remote", "set-url", "--push", "alias", other);
+  assert.equal(((await plan(c, r, { remote: "alias" })).result as unknown as Plan).requiresConfirmation, true);
+});
+
+test("a push the remote refuses records no base: the next plan still scans from the recorded base", { skip: SKIP ?? false }, async (t) => {
+  const { r, c } = await setup(t);
+  commitFile(r, "a.txt", "hello\n");
+  r.git("push", "-q", "origin", `${r.baseSha}:refs/heads/axis/feat`);
+  const other = r.git("commit-tree", "-m", "other", `${r.baseSha}^{tree}`).trim();
+  r.git("push", "-q", "-f", "origin", `${other}:refs/heads/axis/feat`);
+  const p = (await plan(c, r)).result as unknown as Plan;
+  assert.equal((await pushOnce(r, c, confirmed(p))).ok, false);
+  await plan(c, r);
+  assert.equal(r.calls.planPush.at(-1)?.baseSha, r.baseSha);
+});
+
+test("PushedBases is bounded (the oldest entry is forgotten and falls back to the recorded base) and refuses a bad bound", () => {
+  const b = new PushedBases(2);
+  b.record("w", "t1", "a".repeat(40));
+  b.record("w", "t2", "b".repeat(40));
+  b.record("w", "t3", "c".repeat(40));
+  assert.equal(b.size, 2);
+  assert.equal(b.baseFor("w", "t1", "base"), "base");
+  assert.equal(b.baseFor("w", "t3", "base"), "c".repeat(40));
+  assert.equal(b.baseFor("other", "t3", "base"), "base", "per workspace");
+  for (const bad of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) assert.throws(() => new PushedBases(bad), RangeError);
 });

@@ -9,15 +9,18 @@ import { locate, mapError, requireUser, runActive, workspaceFor, type GitHandler
 async function pushCall(deps: GitHandlerDeps, id: string, method: string, request: GitRequest<"push">) {
   const ws = workspaceFor(deps, id, method, true);
   const worktree = await locate(deps, id);
+  // Read under the lock, before the plan: the base is of where the push goes now. A URL changed after this read and before git
+  // runs is not covered, and that is also what the drift gate (`assertNoDrift`) is for.
+  const target = await deps.ops.pushTarget({ workspaceId: id, worktree, remote: request.remote });
   const call: PushCall = {
     workspaceId: id,
     worktree,
     remote: request.remote,
     branch: ws.branch,
-    baseSha: deps.bases.baseFor(id, request.remote, ws.baseSha),
+    baseSha: deps.bases.baseFor(id, target, ws.baseSha),
     ...(request.allowedBinaryPaths === undefined ? {} : { allowedBinaryPaths: request.allowedBinaryPaths }),
   };
-  return { ws, call };
+  return { ws, call, target };
 }
 
 /**
@@ -88,13 +91,13 @@ export function createGitPushHandler(deps: GitHandlerDeps): Handler {
       return await deps.mutex.run(
         first.projectId,
         async () => {
-          const { ws, call } = await pushCall(deps, workspaceId, "push", request.data);
+          const { ws, call, target } = await pushCall(deps, workspaceId, "push", request.data);
           if (ws.projectId !== first.projectId) throw gitFailure("E_NOT_FOUND");
           if (runActive(deps, workspaceId)) throw gitFailure("E_CONFLICT");
           if (signal.aborted) throw gitFailure("E_CANCELLED");
           await deps.ops.executePush(call, confirmedPlan);
-          // Known pushed to THIS remote now (before the journal write, which can fail without undoing the push).
-          deps.bases.record(workspaceId, request.data.remote, confirmedPlan.tip);
+          // Known pushed to THIS destination now (before the journal write, which can fail without undoing the push).
+          deps.bases.record(workspaceId, target, confirmedPlan.tip);
           try {
             deps.journal.recordPushed(workspaceId, confirmedPlan.tip, "user");
           } catch (e) {

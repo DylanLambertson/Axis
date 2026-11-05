@@ -143,7 +143,8 @@ export function createCommitPreparer(deps: ReviewBindingDeps): CommitPreparer {
               const git = await daemonGitFor(prepared.worktree, deps.git);
               // Only while HEAD is still the reviewed commit: a commit that may have landed is never rewound under the person.
               const head = (await git(["rev-parse", "--verify", "--quiet", "--end-of-options", "HEAD^{commit}"])).stdout.trim();
-              // And only while the index still holds what Axis staged: anything the person staged since is theirs.
+              // And only while the index still holds what Axis staged: anything the person staged since is theirs. A window of one
+              // git call remains between this check and `read-tree` (closing it would need the restore to hold index.lock).
               const staged = (await git(["write-tree"])).stdout.trim();
               if (head === prepared.head && staged === prepared.reviewedTreeHash) await git(["read-tree", previous]);
             } catch {

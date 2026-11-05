@@ -34,12 +34,13 @@ function createPushPlanHandler(deps: GitHandlerDeps): Handler {
         async () => {
           const ws = workspaceFor(deps, workspaceId, "pushPlan", true);
           const worktree = await locate(deps, workspaceId);
+          const target = await deps.ops.pushTarget({ workspaceId, worktree, remote });
           const facts = await deps.ops.planPush({
             workspaceId,
             worktree,
             remote,
             branch: ws.branch,
-            baseSha: deps.bases.baseFor(workspaceId, remote, ws.baseSha),
+            baseSha: deps.bases.baseFor(workspaceId, target, ws.baseSha),
             ...(allowedBinaryPaths === undefined ? {} : { allowedBinaryPaths }),
           });
           // A plan the contract cannot carry is not shown: fail closed rather than cut it.

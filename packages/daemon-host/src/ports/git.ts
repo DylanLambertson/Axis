@@ -61,6 +61,11 @@ export interface PushCall {
 export interface GitOperations {
   /** The mode of the scanner the push scan really runs with (validated when the operations were built): `git.push` is not registered without it. */
   readonly scanMode: "refuse" | "warn";
+  /**
+   * Where a push to `remote` goes right now: a SHA-256 over the sorted resolved push URLs (`git remote get-url --push --all`,
+   * so `pushurl` and `pushInsteadOf` rewrites count). A hash, never the URL: userinfo must not be stored or logged.
+   */
+  pushTarget(call: { readonly workspaceId: string; readonly worktree: WorktreeRef; readonly remote: string }): Promise<string>;
   planPush(call: PushCall): Promise<PushPlanFacts>;
   /** Pushes the one scanned tip, or refuses `E_CONFLICT` `plan_changed` when the outgoing changes are not the confirmed plan. */
   executePush(call: PushCall, confirmed: { readonly tip: string; readonly digest: string }): Promise<void>;
