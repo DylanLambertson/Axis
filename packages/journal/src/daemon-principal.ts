@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 // Subpath `@axis/journal/daemon-principal`. Only the daemon's connection layer may import this
 // (enforced by test/packages/imports.test.mjs); it is not part of the package root.
-import { MINT, UserPrincipal } from "./principal.js";
+import { mintUserPrincipal, type UserPrincipal } from "./principal.js";
 
 export type { UserPrincipal };
 
@@ -11,5 +11,5 @@ export type { UserPrincipal };
  * Never derive it from a request payload.
  */
 export function userPrincipal(): UserPrincipal {
-  return new UserPrincipal(MINT);
+  return mintUserPrincipal();
 }

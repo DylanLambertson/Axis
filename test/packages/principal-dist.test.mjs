@@ -68,7 +68,7 @@ for (const pkg of packages) {
         const why = distViolation(pkg, file, spec);
         if (why) bad.push(`${relative(packagesDir, file)}: ${spec} (${why})`);
       }
-      for (const why of unsafeForms(source, file)) bad.push(`${relative(packagesDir, file)}: ${why}`);
+      for (const why of unsafeForms(source, file, { pkg, shipped: false })) bad.push(`${relative(packagesDir, file)}: ${why}`);
     }
     assert.deepEqual(bad, []);
   });

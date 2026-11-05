@@ -9,7 +9,8 @@ export { importSpecifiers, unsafeForms, rewriteSpecifiers, scanModules } from ".
 
 /**
  * Node built-ins that load or run code by other means than a module specifier. No package needs them, except the
- * listed ones: `node:worker_threads` for the daemon's in-process transport (MessageChannel). Judged on `src/` files.
+ * listed ones: `node:worker_threads` (MessageChannel only, enforced on the parse) for the daemon's in-process
+ * transport, and `node:child_process` for the packages that spawn processes. Judged on `src/` files.
  */
 export const LOADER_BUILTINS = new Map([
   ["node:module", new Set()],
@@ -18,6 +19,8 @@ export const LOADER_BUILTINS = new Map([
   ["node:inspector", new Set()],
   ["node:wasi", new Set()],
   ["node:worker_threads", new Set(["daemon"])],
+  // Runs programs: only the packages that spawn processes today. A new one needs an ADR 0005 amendment.
+  ["node:child_process", new Set(["audit", "broker", "git-ops", "git-snapshot", "worktrees"])],
 ]);
 
 /** Subpaths of `@axis/*` that only some packages may import (ADR 0005 D2; mirrors test/packages/imports.test.mjs). */

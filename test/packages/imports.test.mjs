@@ -134,7 +134,7 @@ for (const pkg of packages) {
         const why = violation(pkg, spec, file, pkgDir);
         if (why) bad.push(`${file}: ${spec} (${why})`);
       }
-      for (const call of unsafeForms(source, file)) bad.push(`${file}: ${call}`);
+      for (const call of unsafeForms(source, file, { pkg, shipped: relative(pkgDir, file).split(sep)[0] === "src" })) bad.push(`${file}: ${call}`);
     }
     assert.deepEqual(bad, []);
   });
@@ -302,7 +302,7 @@ test("scanner: a .mts file that imports and re-exports the principal is caught e
     assert.equal(bad[0], "@axis/journal/daemon-principal");
     assert.equal(bad.length, 3);
     assert.match(bad[1], /createRequire/);
-    assert.match(bad[2], /^exports userPrincipal, which came from a mint module/);
+    assert.match(bad[2], /userPrincipal comes from a mint module and may only be called/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

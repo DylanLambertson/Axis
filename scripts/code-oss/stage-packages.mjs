@@ -224,7 +224,7 @@ export function stage({ repo, tree, now = Date.now(), maxFutureSkewMs = DEFAULT_
   for (const n of names) {
     for (const [rel, { abs, data, text }] of sources[n]) {
       const sourceRel = `packages/${n}/src/${rel}`;
-      for (const t of unsafeForms(text, sourceRel)) fail(`${sourceRel}: ${t}`);
+      for (const t of unsafeForms(text, sourceRel, { pkg: n })) fail(`${sourceRel}: ${t}`);
       for (const spec of importSpecifiers(text, sourceRel)) {
         let c;
         try {

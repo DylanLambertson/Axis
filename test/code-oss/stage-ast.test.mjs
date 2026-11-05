@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { importSpecifiers, unsafeForms, rewriteSpecifiers, scanModules } from "../../scripts/code-oss/stage-ast.mjs";
 
 const specs = (src, file) => importSpecifiers(src, file).sort();
-const bad = (src, file) => unsafeForms(src, file);
+const bad = (src, file, opts) => unsafeForms(src, file, opts);
 
 test("every import form names its specifier", () => {
   assert.deepEqual(specs('import a from "a";'), ["a"]);
@@ -147,7 +147,9 @@ test("process.binding, module.require and friends are refused", () => {
   assert.equal(bad('process["binding"]("fs");').length, 1);
   assert.equal(bad('module.require("fs");').length, 1);
   assert.equal(bad('module["constructor"]._load("fs");').length >= 1, true);
-  assert.deepEqual(bad("const binding = 1; o.binding; module.exports;"), []);
+  assert.deepEqual(bad("const binding = 1; o.binding; o.module; const x = { module: 1, process: 2 };"), []);
+  assert.match(bad("module.exports = 1;")[0], /module used other than/);
+  assert.match(bad('process._linkedBinding("x");')[0], /process used other than/);
 });
 
 test("element access with a computed key on process, globalThis, global and module is refused", () => {
@@ -155,7 +157,8 @@ test("element access with a computed key on process, globalThis, global and modu
     assert.match(bad(`${base}[k]("x");`)[0], /computed key/, base);
     assert.equal(bad(`${base}["ev" + "al"]("x");`).length >= 1, true, base);
   }
-  assert.deepEqual(bad('const a = other[k]; const b = process["env"]; const c = globalThis["x"];'), []);
+  assert.deepEqual(bad('const a = other[k]; const b = process["env"]; const c = globalThis["fetch"];'), []);
+  assert.match(bad('const c = globalThis["x"];')[0], /globalThis used other than/);
 });
 
 test("vendored mode keeps the module-loading rules and skips the hidden-name rules", () => {
@@ -166,7 +169,8 @@ test("vendored mode keeps the module-loading rules and skips the hidden-name rul
   assert.equal(unsafeForms("export const = ;", "z.js", { vendored: true }).length >= 1, true);
 });
 
-test("re-exporting a mint module is refused in every form, whatever the comments and strings around it", () => {
+test("a mint function may only be called: every way of keeping, passing or exporting it is refused", () => {
+  const imp = `import { userPrincipal } from ${MINT};\n`;
   const forms = [
     `export { userPrincipal } from ${MINT};`,
     `export * from ${MINT};`,
@@ -175,31 +179,119 @@ test("re-exporting a mint module is refused in every form, whatever the comments
     `export type { UserPrincipal } from ${MINT};`,
     `export { attestTrust } from "@axis/runs/daemon-attestation";`,
     `export { userPrincipal } from "./daemon-principal.js";`,
-    `import { userPrincipal } from ${MINT};\nexport { userPrincipal };`,
-    `import { userPrincipal as mint } from ${MINT};\nexport { a, mint as other, b };`,
+    `${imp}export { userPrincipal };`,
+    `${imp}export { userPrincipal as mint };`,
+    `${imp}const p = userPrincipal;\nexport { p };`,
+    `${imp}const p = userPrincipal;\nexport const q = () => p();`,
+    `${imp}export const mint = userPrincipal;`,
+    `${imp}export const bag = { mint: userPrincipal };`,
+    `${imp}export const bag = { userPrincipal };`,
+    `${imp}export const list = [userPrincipal];`,
+    `${imp}export const list = [...[userPrincipal]];`,
+    `${imp}export default userPrincipal;`,
+    `${imp}export class K { static f = userPrincipal; }`,
+    `${imp}export function get() { return userPrincipal; }`,
+    `${imp}export const get = () => userPrincipal;`,
+    `${imp}export function pass(f: (g: unknown) => void) { f(userPrincipal); }`,
+    `${imp}export function viaBind() { return userPrincipal.bind(null); }`,
+    `${imp}export function viaCall() { return userPrincipal.call(null); }`,
+    `${imp}export function viaIndex() { return (userPrincipal as any)["name"]; }`,
+    `${imp}export const { name } = { name: userPrincipal };`,
     `import * as ns from ${MINT};\nexport { ns };`,
+    `import * as ns from ${MINT};\nexport const f = ns.userPrincipal;`,
+    `import * as ns from ${MINT};\nexport import p = ns.userPrincipal;`,
+    `import * as ns from ${MINT};\nexport const all = ns;`,
+    `import * as ns from ${MINT};\nexport const keys = Object.keys(ns);`,
     `import d from ${MINT};\nexport default d;`,
-    `import { userPrincipal } from ${MINT};\nexport const mint = userPrincipal;`,
-    `import { userPrincipal } from ${MINT};\nexport const bag = { mint: userPrincipal };`,
-    `import { userPrincipal } from ${MINT};\nexport const principal = userPrincipal();`,
-    `import { userPrincipal } from ${MINT};\nexport default userPrincipal;`,
     `import p = require(${MINT});\nexport { p };`,
     `export import p = require(${MINT});`,
     `export const loaded = await import(${MINT});`,
     `export default await import(${MINT});`,
+    `const r = require(${MINT});`,
+    `import { mintUserPrincipal } from "./principal.js";\nexport { mintUserPrincipal };`,
+    `export { mintUserPrincipal } from "./principal.js";`,
+    `export { mintTrustAttestation as m } from "./attestation.js";`,
+    `import { mintTrustAttestation } from "./attestation.js";\nexport const f = mintTrustAttestation;`,
   ];
   for (const f of forms) {
-    assert.equal(bad(f).filter((m) => /mint module/.test(m)).length >= 1, true, f);
+    assert.equal(bad(f).length >= 1, true, f);
     // The reviewed bypass: two strings that look like comment delimiters around the line.
     const hidden = `export const probeOpen = "/*";\n${f}\nexport const probeClose = "*/";`;
-    assert.equal(bad(hidden).filter((m) => /mint module/.test(m)).length >= 1, true, hidden);
+    assert.equal(bad(hidden).length >= 1, true, hidden);
   }
 });
 
-test("using a mint module without exporting it is allowed", () => {
+test("the raw mint symbol is never imported or exported, in any form", () => {
+  for (const f of ["export const MINT = Symbol('x');", "const MINT = Symbol('x'); export { MINT };", "const K = Symbol('x'); export { K as MINT };", 'export { MINT } from "./principal.js";', 'import { MINT } from "./principal.js";', 'import { MINT as m } from "./principal.js";', "export function MINT() {}", "export class MINT {}"]) {
+    assert.equal(bad(f).length >= 1, true, f);
+  }
+  assert.deepEqual(bad("const MINT = Symbol('x'); export function mintIt() { return new Thing(MINT); }"), []);
+});
+
+test("export * from a module that holds a mint symbol is refused in the holder packages, not in others", () => {
+  for (const spec of ["./principal.js", "./attestation.js", "./lock.js", "../x/principal.js"]) {
+    assert.equal(bad(`export * from "${spec}";`, "x.ts", { pkg: "journal" }).length, 1, spec);
+    assert.equal(bad(`export * as ns from "${spec}";`, "x.ts", { pkg: "runs" }).length, 1, spec);
+    assert.equal(bad(`export * from "${spec}";`).length, 1, `${spec} (unknown package is judged strictly)`);
+    assert.deepEqual(bad(`export * from "${spec}";`, "x.ts", { pkg: "daemon-host" }), [], spec);
+  }
+  assert.deepEqual(bad('export { TrustAttestation } from "./attestation.js";', "x.ts", { pkg: "runs" }), []);
+});
+
+test("the cross-file chain is closed because every file obeys the same rules", () => {
+  const holder = "const MINT = Symbol('x'); export class P { constructor(m: symbol) {} } export function mintP(): P { return new P(MINT); }";
+  assert.deepEqual(bad(holder), [], "the holder is fine");
+  // Step 1 leaks the symbol through an intermediate file; step 2 re-exports through the index.
+  assert.equal(bad('export { MINT } from "./principal.js";').length >= 1, true);
+  assert.equal(bad('export * from "./principal.js";').length >= 1, true);
+  assert.equal(bad('import { MINT } from "./principal.js"; export const leak = MINT;').length >= 1, true);
+  assert.equal(bad('import { mintUserPrincipal } from "./principal.js"; export const leak = mintUserPrincipal;').length >= 1, true);
+  assert.equal(bad('import { userPrincipal } from "@axis/journal/daemon-principal"; export const leak = { userPrincipal };').length >= 1, true);
+});
+
+test("legitimate uses of a mint function and of mint types pass", () => {
   assert.deepEqual(bad(`import { userPrincipal } from ${MINT};\nexport function connect() { return userPrincipal(); }`), []);
   assert.deepEqual(bad(`import { userPrincipal } from ${MINT};\nexport const connect = () => userPrincipal();`), []);
   assert.deepEqual(bad(`import { userPrincipal } from ${MINT};\nconst p = userPrincipal();\nexport function use() { return p; }`), []);
+  assert.deepEqual(bad(`import { userPrincipal } from ${MINT};\nexport const principal = userPrincipal();`), []);
+  assert.deepEqual(bad(`import * as ns from ${MINT};\nexport const p = ns.userPrincipal();`), []);
+  assert.deepEqual(bad(`import type { UserPrincipal } from ${MINT};\nexport function f(p: UserPrincipal): UserPrincipal { return p; }`), []);
+  assert.deepEqual(bad(`import { userPrincipal } from ${MINT};\nexport type Make = typeof userPrincipal;`), []);
+  assert.deepEqual(bad(`import { mintUserPrincipal, type UserPrincipal } from "./principal.js";\nexport function userPrincipal(): UserPrincipal { return mintUserPrincipal(); }`), []);
   assert.deepEqual(bad('export { userPrincipal } from "./other.js";'), []);
   assert.deepEqual(bad(`// export * from ${MINT};\n/* import { a } from ${MINT}; export { a }; */`), []);
+});
+
+test("test files (shipped: false) may introspect a mint module, but never re-export or import the raw symbol", () => {
+  const t = { shipped: false };
+  assert.deepEqual(bad(`import * as ns from ${MINT};\nexport const keys = Object.keys(ns);`, "x.test.ts", t), []);
+  assert.equal(bad(`export * from ${MINT};`, "x.test.ts", t).length, 1);
+  assert.equal(bad('import { MINT } from "./principal.js";', "x.test.ts", t).length, 1);
+});
+
+test("process, globalThis and global: only a direct read of a listed property is allowed, aliases and casts are not", () => {
+  for (const f of ["const g = globalThis;", "const p = process;", "const g = global;", "f(process);", "return process;", "const { env } = process;", "const g = (globalThis as any);", "const k = (process as any)[name];", "(globalThis as any)[k]();", "(<any>process)[k];", "(0, process)[k];", "const x = [process];", "const o = { p: process };", "const s = globalThis ?? other;", "process.binding('fs');", "process._linkedBinding('x');", "process.mainModule;", "process.dlopen(m, f);", "globalThis.Function('x');", "globalThis.process;"]) {
+    assert.equal(bad(f).length >= 1, true, f);
+  }
+  for (const f of ["process.platform;", "process.env.HOME;", 'process["env"].HOME;', "process.on('exit', f);", "globalThis.fetch(u);", "global.setTimeout(f, 1);", "typeof process !== 'undefined';", "type T = typeof process;", "const o = { process: 1 }; o.process;", "function f(process: number) { return 1; }"]) {
+    const found = bad(f).filter((m) => !/Function constructor/.test(m));
+    assert.deepEqual(f.startsWith("function f(process") ? [] : found, [], f);
+  }
+});
+
+test(".constructor is refused as a read, destructuring and aliasing; .constructor.name and writes are allowed", () => {
+  for (const f of ["const C = f.constructor;", "const { constructor: C } = f;", "const { constructor } = f;", "const C = f['constructor'];", "g(f.constructor);", "return f.constructor;", "const c = (f as any).constructor; c('x');", "(0, f.constructor)('x');"]) {
+    assert.equal(bad(f).length >= 1, true, f);
+  }
+  assert.deepEqual(bad("const n = err.constructor.name; extra.constructor = 5; class C { constructor() {} }"), []);
+  assert.deepEqual(bad("const C = f.constructor;", "x.test.ts", { shipped: false }), [], "test files are not shipped");
+});
+
+test("only MessageChannel and MessagePort may be imported from node:worker_threads", () => {
+  for (const f of ['import { Worker } from "node:worker_threads";', 'import * as w from "node:worker_threads";', 'import w from "node:worker_threads";', 'import { MessageChannel, Worker } from "node:worker_threads";', 'import { Worker as W } from "node:worker_threads";']) {
+    assert.match(bad(f)[0], /only MessageChannel and MessagePort/, f);
+  }
+  assert.deepEqual(bad('import { MessageChannel, type MessagePort } from "node:worker_threads";'), []);
+  assert.deepEqual(bad('import type { MessagePort } from "node:worker_threads";'), []);
+  assert.deepEqual(bad('import { Worker } from "node:worker_threads";', "x.ts", { shipped: false }), []);
 });

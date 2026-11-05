@@ -61,11 +61,11 @@ const REFUSED = [
   ["a relative import of a missing file", (r) => put(r, src("a.ts"), 'import "./missing.js";\n'), /\.js suffix/],
   ["a non-literal dynamic import", (r) => put(r, src("a.ts"), "await import(name);\n"), /string literal/],
   ["a template dynamic import", (r) => put(r, src("a.ts"), "await import(`./x/${n}.js`);\n"), /string literal/],
-  ["createRequire", (r) => put(r, src("a.ts"), 'import { createRequire } from "node:module";\nvoid createRequire;\n'), /reaches code without a visible import specifier|Function constructor|directive/],
-  ["process.getBuiltinModule", (r) => put(r, src("a.ts"), "process.getBuiltinModule('fs');\n"), /reaches code without a visible import specifier|Function constructor|directive/],
-  ["eval", (r) => put(r, src("a.ts"), "eval('1');\n"), /reaches code without a visible import specifier|Function constructor|directive/],
-  ["new Function", (r) => put(r, src("a.ts"), "new Function('return 1');\n"), /reaches code without a visible import specifier|Function constructor|directive/],
-  ["a triple-slash reference", (r) => put(r, src("a.ts"), '/// <reference path="../../../vs/x.d.ts" />\n'), /reaches code without a visible import specifier|Function constructor|directive/],
+  ["createRequire", (r) => put(r, src("a.ts"), 'import { createRequire } from "node:module";\nvoid createRequire;\n'), /reaches code without a visible import specifier|Function constructor|directive|known-safe property/],
+  ["process.getBuiltinModule", (r) => put(r, src("a.ts"), "process.getBuiltinModule('fs');\n"), /reaches code without a visible import specifier|Function constructor|directive|known-safe property/],
+  ["eval", (r) => put(r, src("a.ts"), "eval('1');\n"), /reaches code without a visible import specifier|Function constructor|directive|known-safe property/],
+  ["new Function", (r) => put(r, src("a.ts"), "new Function('return 1');\n"), /reaches code without a visible import specifier|Function constructor|directive|known-safe property/],
+  ["a triple-slash reference", (r) => put(r, src("a.ts"), '/// <reference path="../../../vs/x.d.ts" />\n'), /reaches code without a visible import specifier|Function constructor|directive|known-safe property/],
   // zod.
   ["a zod file importing outside zod", (r) => put(r, "node_modules/zod/index.js", 'export * from "../../outside.js";\n'), /leaves the package/],
   ["a zod file with a bare import", (r) => put(r, "node_modules/zod/v4/core.js", 'import "left-pad";\n'), /bare specifier/],
@@ -276,15 +276,23 @@ const otherPackage = (r, file, text) => {
   put(r, `packages/other/src/${file}`, text);
 };
 
-for (const m of ["module", "vm", "repl", "inspector", "wasi", "worker_threads"]) {
+for (const m of ["module", "vm", "repl", "inspector", "wasi", "worker_threads", "child_process"]) {
   test(`stage refuses node:${m} outside the packages that need it, and leaves no staged output`, () => {
     withFixture(({ repo, tree }) => {
-      otherPackage(repo, "b.ts", `import * as m from "node:${m}";\nexport { m };\n`);
+      otherPackage(repo, "b.ts", `import { MessageChannel } from "node:${m}";\nexport const c = MessageChannel;\n`);
       assert.throws(() => stage({ repo, tree }), new RegExp(`^StageError: packages/other/src/b\\.ts: node:${m} loads or runs code`));
       assert.equal(existsSync(join(tree, STAGE_ROOT)), false);
     });
   });
 }
+
+test("stage allows node:child_process in the packages that spawn processes", () => {
+  withFixture(({ repo, tree }) => {
+    put(repo, "packages/git-ops/package.json", JSON.stringify({ name: "@axis/git-ops", exports: { ".": { default: "./dist/src/index.js" } } }));
+    put(repo, "packages/git-ops/src/index.ts", 'import { spawn } from "node:child_process";\nexport const s = spawn;\n');
+    stage({ repo, tree });
+  });
+});
 
 test("stage allows node:worker_threads in the daemon package only", () => {
   withFixture(({ repo, tree }) => {

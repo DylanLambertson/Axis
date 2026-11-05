@@ -17,7 +17,7 @@ import { put, withFixture } from "./stage-fixture.mjs";
 
 const staged = (tree, rel) => join(tree, STAGE_ROOT, rel);
 
-test("unsafeForms and hiddenLoaders", () => {
+test("unsafeForms reports non-literal loads and nothing for a plain file", () => {
   assert.equal(unsafeForms("await import(name)").length, 1);
   assert.equal(unsafeForms('await import("zod"); require("./x.js")').length, 0);
 });

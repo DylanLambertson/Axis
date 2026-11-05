@@ -29,7 +29,7 @@ export function treeHash(files) {
 export function checkStagedFile(rel, text, fileSet) {
   const here = posix.dirname(rel);
   const pkg = rel.split("/")[0];
-  if (rel.endsWith(".ts") || rel.endsWith(".js")) for (const t of unsafeForms(text, rel, { vendored: pkg === "vendor" })) fail(`staged ${rel}: ${t}`);
+  if (rel.endsWith(".ts") || rel.endsWith(".js")) for (const t of unsafeForms(text, rel, { vendored: pkg === "vendor", pkg })) fail(`staged ${rel}: ${t}`);
   for (const spec of importSpecifiers(text, rel)) {
     if (/^node:[a-z_]+(?:\/[a-z0-9_]+)*$/.test(spec)) {
       if (pkg === "vendor") fail(`staged ${rel}: vendored code imports ${spec}`);
