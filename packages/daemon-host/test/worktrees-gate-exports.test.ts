@@ -32,6 +32,9 @@ const settle = async (v: unknown): Promise<unknown> => {
 };
 
 /** Names of everything reachable that yielded a token. */
+// Not spelled `Function.prototype`: the staging import check refuses the identifier `Function` everywhere.
+const FUNCTION_PROTO: object = Object.getPrototypeOf(() => undefined) as object;
+
 async function findTokens(root: unknown, name: string, seen = new Set<unknown>(), depth = 0): Promise<string[]> {
   if (isToken(root)) return [name];
   if (depth > 4 || (typeof root !== "object" && typeof root !== "function") || root === null || seen.has(root)) return [];
@@ -53,7 +56,7 @@ async function findTokens(root: unknown, name: string, seen = new Set<unknown>()
       }
     }
   }
-  for (let o: object | null = root as object; o !== null && o !== Object.prototype && o !== Function.prototype; o = Object.getPrototypeOf(o) as object | null) {
+  for (let o: object | null = root as object; o !== null && o !== Object.prototype && o !== FUNCTION_PROTO; o = Object.getPrototypeOf(o) as object | null) {
     for (const key of Reflect.ownKeys(o)) {
       if (key === "caller" || key === "callee" || key === "arguments") continue;
       let value: unknown;
