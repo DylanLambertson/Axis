@@ -22,7 +22,7 @@ async function outcome(p: Promise<unknown>): Promise<GitOpsError> {
 }
 
 test("N-2: a missing git binary, or a throwing hook, comes out as E_UNAVAILABLE", async () => {
-  const noGit = { ...makeDeps(new FakeRunner()), runner: createNodeRunner() };
+  const noGit = { ...makeDeps(new FakeRunner()), runner: createNodeRunner({ allowUnpinnedGit: true }) };
   const deps = { ...noGit, env: { daemon: { PATH: "/nonexistent" }, pty: { PATH: "/nonexistent" } } };
   for (const p of [planPush(deps, push), executePush(deps, push), planCommit(deps, commit), executeCommit(deps, commit)]) {
     const e = await outcome(p);
@@ -46,7 +46,7 @@ test("N-2: a timeout kills the whole process group, not just git", async () => {
   const pidFile = join(f.root, "pid");
   const alias = `alias.slow=!sh -c 'echo $$ > "${pidFile}"; exec sleep 60' & wait`;
   const started = Date.now();
-  const r = await createNodeRunner({ allowPtyContext: true, timeoutMs: 700 }).run({
+  const r = await createNodeRunner({ allowPtyContext: true, allowUnpinnedGit: true, timeoutMs: 700 }).run({
     argv: ["-c", alias, "slow"], cwd: f.root, env: { PATH: process.env["PATH"] ?? "", HOME: f.home }, context: "pty",
   });
   assert.ok(Date.now() - started < 10_000, "the run ended at the timeout, not when the grandchild exited");

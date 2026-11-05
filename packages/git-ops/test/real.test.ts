@@ -76,7 +76,7 @@ test("daemon-side reads run no hook and no fsmonitor, even with planted ones", a
 test("a hardened call runs no pre-push hook, a daemon-side push is refused by the transport allow-list, and the guard refuses an unhardened daemon call", async () => {
   const f = fixture();
   plantHook(f, "pre-push");
-  const inner = createNodeRunner();
+  const inner = createNodeRunner({ allowUnpinnedGit: true });
   const guarded = guardedRunner(inner, f.deps);
   const refspec = "refs/heads/axis/feat:refs/heads/axis/feat";
   const hardened = [...prefix(f.wt, f.deps, { context: "daemon", hooks: false, filters: [] }), "push", "--", "origin", refspec];
@@ -189,7 +189,7 @@ test("S-7: git itself refuses a remote-helper transport on the pty push, and the
   const at = argv.lastIndexOf(plan.remote);
   argv[at] = "foo::x";
   const env = { ...plan.command.env, PATH: `${bin}:${PATHS}` };
-  const run = createNodeRunner({ allowPtyContext: true }).run;
+  const run = createNodeRunner({ allowPtyContext: true, allowUnpinnedGit: true }).run;
   const refused = await run({ ...plan.command, argv, env });
   assert.notEqual(refused.code, 0);
   assert.match(refused.stderr, /not allowed|protocol/i);
@@ -235,7 +235,7 @@ test("RR-2: GIT_ALLOW_PROTOCOL would override the -c allow-list, so Axis refuses
   writeFileSync(prog, `#!/bin/sh\necho ext >> "${f.marker}"\n`);
   chmodSync(prog, 0o755);
   argv[argv.lastIndexOf(plan.remote)] = `ext::${prog}`;
-  const run = createNodeRunner({ allowPtyContext: true }).run;
+  const run = createNodeRunner({ allowPtyContext: true, allowUnpinnedGit: true }).run;
   const loud = { ...plan.command.env, GIT_ALLOW_PROTOCOL: "ext" };
   await run({ ...plan.command, argv, env: loud });
   assert.ok(existsSync(f.marker), "fixture: with the variable honoured, ext:: runs despite the -c allow-list");

@@ -63,7 +63,7 @@ export function fixture(over: Partial<GitOpsDeps> = {}): Fixture {
   run(repo, "checkout", "-q", "-b", "axis/feat");
   run(repo, "remote", "add", "origin", remote);
   const seen: GitRunRequest[] = [];
-  const inner = createNodeRunner({ allowPtyContext: true });
+  const inner = createNodeRunner({ allowPtyContext: true, allowUnpinnedGit: true });
   const runner = { run: (req: GitRunRequest) => { seen.push(req); return inner.run(req); } };
   const deps: GitOpsDeps = {
     runner,

@@ -36,7 +36,7 @@ test("an empty or relative PATH entry does not run a git planted in the worktree
     const f = fixture();
     const marker = planted(f.wt.workTree);
     const path = `${bad}${delimiter}${REAL_PATH}`;
-    const r = await withPath(path, () => createNodeRunner({ allowPtyContext: true }).run({ ...version, cwd: f.wt.workTree, env: { PATH: path } }));
+    const r = await withPath(path, () => createNodeRunner({ allowPtyContext: true, allowUnpinnedGit: true }).run({ ...version, cwd: f.wt.workTree, env: { PATH: path } }));
     assert.match(r.stdout, /^git version /);
     assert.equal(existsSync(marker), false, `entry "${bad}"`);
   }
@@ -47,9 +47,9 @@ test("an absolute PATH entry that IS the worktree is ignored too, for the daemon
   const marker = planted(f.wt.workTree);
   const probe = planted(f.wt.workTree, "git-axisprobe");
   const path = `${f.wt.workTree}${delimiter}${REAL_PATH}`;
-  const r = await withPath(path, () => createNodeRunner({ allowPtyContext: true }).run({ ...version, cwd: f.wt.workTree, env: { PATH: path } }));
+  const r = await withPath(path, () => createNodeRunner({ allowPtyContext: true, allowUnpinnedGit: true }).run({ ...version, cwd: f.wt.workTree, env: { PATH: path } }));
   assert.match(r.stdout, /^git version /);
-  const p = await withPath(path, () => createNodeRunner({ allowPtyContext: true }).run({ argv: ["axisprobe"], cwd: f.wt.workTree, env: { PATH: path, HOME: f.home }, context: "pty" }));
+  const p = await withPath(path, () => createNodeRunner({ allowPtyContext: true, allowUnpinnedGit: true }).run({ argv: ["axisprobe"], cwd: f.wt.workTree, env: { PATH: path, HOME: f.home }, context: "pty" }));
   assert.notEqual(p.code, 0, "git does not know the command");
   assert.equal(existsSync(marker) || existsSync(probe), false);
 });
@@ -127,7 +127,7 @@ test("an upgrade that replaces the git behind a stable path is followed; a vanis
   }
   mkdirSync(join(root, "bin"));
   symlinkSync(join(root, "v1", "git"), join(root, "bin", "git"));
-  const runner = createNodeRunner({ allowPtyContext: true, env: { PATH: join(root, "bin") } });
+  const runner = createNodeRunner({ allowPtyContext: true, allowUnpinnedGit: true, env: { PATH: join(root, "bin") } });
   const ask = () => runner.run({ ...version, cwd: f.wt.workTree });
   assert.match((await ask()).stdout, /fake-v1/);
   rmSync(join(root, "bin", "git"));
@@ -197,7 +197,7 @@ test("git's own children never see a PATH entry that leads into the worktree, by
   const link = join(f.root, "wt-link");
   symlinkSync(f.wt.workTree, link);
   const path = `${link}${delimiter}${REAL_PATH}`;
-  const p = await createNodeRunner({ allowPtyContext: true }).run({ argv: ["axisprobe"], cwd: f.wt.workTree, env: { PATH: path, HOME: f.home }, context: "pty" });
+  const p = await createNodeRunner({ allowPtyContext: true, allowUnpinnedGit: true }).run({ argv: ["axisprobe"], cwd: f.wt.workTree, env: { PATH: path, HOME: f.home }, context: "pty" });
   assert.notEqual(p.code, 0);
   assert.equal(existsSync(probe), false);
 });
@@ -206,7 +206,81 @@ test("with no git in a trusted PATH entry the runner reports E_UNAVAILABLE and s
   const f = fixture();
   const marker = planted(f.wt.workTree);
   await withPath(delimiter, async () => {
-    await assert.rejects(createNodeRunner({ allowPtyContext: true }).run({ ...version, cwd: f.wt.workTree, env: { PATH: delimiter } }), (e: unknown) => e instanceof GitOpsError && e.code === "E_UNAVAILABLE");
+    await assert.rejects(createNodeRunner({ allowPtyContext: true, allowUnpinnedGit: true }).run({ ...version, cwd: f.wt.workTree, env: { PATH: delimiter } }), (e: unknown) => e instanceof GitOpsError && e.code === "E_UNAVAILABLE");
   });
   assert.equal(existsSync(marker), false);
+});
+
+// ---- the host's excludeDirs result is validated; nothing the host returned or threw is echoed ----
+
+function vanishedSetup(): { gitPath: string; env: { PATH: string }; cwd: string; marker: string } {
+  const a = fixture();
+  const b = fixture();
+  const marker = planted(b.wt.workTree);
+  const inst = tmp("axis-vanish-");
+  mkdirSync(join(inst, "bin"));
+  symlinkSync(realGit(), join(inst, "bin", "git"));
+  const gitPath = join(inst, "bin", "git");
+  return { gitPath, env: { PATH: `${join(inst, "bin")}${delimiter}${b.wt.workTree}${delimiter}${REAL_PATH}` }, cwd: a.wt.workTree, marker };
+}
+
+test("a bad excludeDirs result (undefined, relative or empty entry, throw, Promise, string, number) refuses with a closed E_UNAVAILABLE and the planted git never runs", { skip: !posix }, async () => {
+  const bad: Array<[string, () => unknown]> = [
+    ["undefined", () => undefined],
+    ["relative entry", () => ["rel/b"]],
+    ["empty entry", () => [""]],
+    ["unnormalised entry", () => ["/tmp/x/../y"]],
+    ["number entry", () => [42]],
+    ["throws", () => { throw new Error("SECRET-host-message /home/secret"); }],
+    ["Promise", () => Promise.resolve([])],
+    ["string", () => "/"],
+    ["number", () => 7],
+    ["null", () => null],
+  ];
+  for (const [name, fn] of bad) {
+    const s = vanishedSetup();
+    const runner = createNodeRunner({ allowPtyContext: true, gitPath: join(tmp("axis-gone-"), "git"), env: s.env, excludeDirs: fn as () => readonly string[] });
+    await assert.rejects(runner.run({ ...version, cwd: s.cwd }), (e: unknown) => {
+      assert.ok(e instanceof GitOpsError, `${name}: a raw error leaked`);
+      assert.equal(e.code, "E_UNAVAILABLE", name);
+      assert.doesNotMatch(e.message, /SECRET|secret|rel\/b|\/tmp\/x/, `${name}: the host's value or message was echoed`);
+      return true;
+    });
+    assert.equal(existsSync(s.marker), false, `${name}: the planted git ran`);
+  }
+});
+
+test("a good excludeDirs result is copied: changing the host's array later changes nothing, and the real git is found", { skip: !posix }, async () => {
+  const s = vanishedSetup();
+  const list = [s.cwd];
+  const runner = createNodeRunner({ allowPtyContext: true, gitPath: join(tmp("axis-gone-"), "git"), env: { PATH: realGit().replace(/\/git$/, "") }, excludeDirs: () => list });
+  assert.match((await runner.run({ ...version, cwd: s.cwd })).stdout, /^git version /);
+});
+
+test("with neither gitPath nor excludeDirs the runner refuses; allowUnpinnedGit opts into the weaker lookup", { skip: !posix }, async () => {
+  const f = fixture();
+  const refuse = (e: unknown): boolean => e instanceof GitOpsError && e.code === "E_UNAVAILABLE" && /gitPath or excludeDirs/.test(e.message);
+  await assert.rejects(createNodeRunner({ allowPtyContext: true }).run({ ...version, cwd: f.wt.workTree }), refuse);
+  assert.match((await createNodeRunner({ allowPtyContext: true, allowUnpinnedGit: true }).run({ ...version, cwd: f.wt.workTree })).stdout, /^git version /);
+  assert.match((await createNodeRunner({ allowPtyContext: true, excludeDirs: () => [] }).run({ ...version, cwd: f.wt.workTree })).stdout, /^git version /);
+  assert.match((await createNodeRunner({ allowPtyContext: true, gitPath: realGit() }).run({ ...version, cwd: f.wt.workTree })).stdout, /^git version /);
+});
+
+test("an empty cwd, an empty --work-tree= and the -C and split --git-dir/--work-tree forms are refused before git runs", async () => {
+  const f = fixture();
+  const runner = createNodeRunner({ allowPtyContext: true, allowUnpinnedGit: true });
+  const denied = (e: unknown): boolean => e instanceof GitOpsError && e.code === "E_POLICY_DENIED";
+  const base = f.wt.workTree;
+  for (const [cwd, argv] of [
+    ["", ["--version"]],
+    [base, ["--work-tree=", "--version"]],
+    [base, ["--git-dir=", "--version"]],
+    [base, ["-C", base, "--version"]],
+    [base, ["-C" + base, "--version"]],
+    [base, ["--git-dir", base, "--version"]],
+    [base, ["--work-tree", base, "--version"]],
+  ] as Array<[string, string[]]>) {
+    await assert.rejects(runner.run({ argv, cwd, env: {}, context: "pty" }), denied, JSON.stringify([cwd, argv]));
+  }
+  assert.match((await runner.run({ ...version, cwd: base })).stdout, /^git version /, "control");
 });
