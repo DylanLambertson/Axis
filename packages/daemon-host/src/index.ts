@@ -9,3 +9,4 @@ export * from "./log/index.js";
 export * from "./ports/index.js";
 export * from "./control/attestation.js";
 export * from "./control/messages.js";
+export * from "./transport/mux.js";
