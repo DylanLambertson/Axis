@@ -7,10 +7,10 @@ import { fixture } from "./realFixture.js";
 test("RR-N4: the node runner reports truncated when stdout passes its limit, and not otherwise", async () => {
   const f = fixture();
   const req = { argv: ["var", "-l"], cwd: f.wt.workTree, env: { PATH: process.env["PATH"] ?? "", HOME: f.home }, context: "pty" as const };
-  const small = await createNodeRunner({ allowPtyContext: true, maxOutput: 40 }).run(req);
+  const small = await createNodeRunner({ allowPtyContext: true, allowUnpinnedGit: true, maxOutput: 40 }).run(req);
   assert.equal(small.truncated, true);
   assert.equal(small.stdout.length, 40);
-  const big = await createNodeRunner({ allowPtyContext: true }).run(req);
+  const big = await createNodeRunner({ allowPtyContext: true, allowUnpinnedGit: true }).run(req);
   assert.equal(big.truncated, undefined);
   assert.ok(big.stdout.length > 40);
 });
@@ -25,7 +25,7 @@ test("RR-N5: a normal daemon exit kills git's live process groups (a crash canno
   const script = `
     import { createNodeRunner } from ${JSON.stringify(runnerUrl)};
     import { existsSync } from "node:fs";
-    createNodeRunner({ allowPtyContext: true }).run({
+    createNodeRunner({ allowPtyContext: true, allowUnpinnedGit: true }).run({
       argv: ["-c", ${JSON.stringify(`alias.slow=!sh -c 'echo $$ > "${pidFile}"; exec sleep 60' & wait`)}, "slow"],
       cwd: ${JSON.stringify(f.root)}, env: { PATH: process.env.PATH, HOME: ${JSON.stringify(f.home)} }, context: "pty",
     });
