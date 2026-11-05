@@ -80,7 +80,8 @@ function hostViolation(pkg, spec, file, pkgDir) {
   if (file === null || pkgDir === null) return "this specifier is allowed only in named files of the daemon host";
   const rel = relative(pkgDir, file).split(sep).join("/");
   if (files !== undefined) return files.includes(rel) ? "ok" : `only ${files.join(", ")} may import this`;
-  return /^src\/bindings\/[^/]+\.ts$/.test(rel) ? "ok" : "only src/bindings/*.ts may import this";
+  // A type test may import the real types to compile the port against them (type-only, never shipped).
+  return /^src\/bindings\/[^/]+\.ts$/.test(rel) || /^test\/types\/[^/]+\.ts$/.test(rel) ? "ok" : "only src/bindings/*.ts may import this";
 }
 
 /**
@@ -368,6 +369,8 @@ test("scanner: the daemon host is imported by nothing and imports the restricted
     assert.equal(violation("daemon-host", spec, at("src/bindings/runs.ts"), dir), null, spec);
     assert.notEqual(violation("daemon-host", spec, at("src/handlers/cliRuns.ts"), dir), null, spec);
     assert.notEqual(violation("daemon-host", spec, at("src/bindings/deep/runs.ts"), dir), null, spec);
+    assert.equal(violation("daemon-host", spec, at("test/types/runs-port.test.ts"), dir), null, spec);
+    assert.notEqual(violation("daemon-host", spec, at("test/unit.test.ts"), dir), null, spec);
   }
   // Other packages keep their existing rules for the worktrees root.
   assert.equal(violation("daemon", "@axis/worktrees"), null);

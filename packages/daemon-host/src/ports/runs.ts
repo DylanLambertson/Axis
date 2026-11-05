@@ -1,12 +1,18 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
+import type { AuditActor } from "@axis/audit";
+import type { RunStateValue, RunStatusValue, SNAPSHOT_AFTER_VALUES } from "@axis/protocol";
+import { RUN_STATE_VALUES } from "@axis/protocol";
 
 /**
- * Run states and status as `@axis/journal` and `@axis/runs` define them. This port repeats the shapes of
- * `RunSupervisor` (only `src/bindings/runs.ts` may import the package); the contract-facing summary is the protocol's
- * `axis.cli-runs` run schema, which the handler maps to.
+ * Mirrors the `RunSupervisor` of `@axis/runs` for `start`, `stop`, `get`, `list` and `hasActiveRun` (only
+ * `src/bindings/runs.ts` may import that package). Its enums are the protocol's `axis.cli-runs` copies. `tail`,
+ * `resize`, `onChange`, `workspaceStatus` and `discardInterrupted` are not part of this port yet. A type test
+ * (`test/types/runs-port.test.ts`) compiles the port against the real supervisor, so drift fails the build.
  */
-export const RUN_STATES = ["QUEUED", "RUNNING", "REVIEWING", "BLOCKED", "COMPLETED", "FAILED", "CANCELLED"] as const;
-export type RunState = (typeof RUN_STATES)[number];
+export const RUN_STATES = RUN_STATE_VALUES;
+export type RunState = RunStateValue;
+export type RunStatus = RunStatusValue;
+export type RunSnapshotAfter = (typeof SNAPSHOT_AFTER_VALUES)[number];
 
 declare const attestationBrand: unique symbol;
 
@@ -29,7 +35,7 @@ export interface RunsStartRequest {
   /** The `axis.cliAgents` entry the host resolved from user-scope settings; never a command line from a payload. */
   readonly agent: unknown;
   /** The authenticated principal of the connection, never a value from a payload. */
-  readonly actor: string;
+  readonly actor: AuditActor;
   readonly trust: RunTrustAttestation;
   readonly idempotencyKey?: string;
 }
@@ -38,7 +44,7 @@ export interface RunSummary {
   readonly runId: string;
   readonly workspaceId: string;
   readonly state: RunState;
-  readonly status: string;
+  readonly status: RunStatus;
   readonly reason: string | null;
   readonly exitCode: number | null;
   readonly createdAt: string;
@@ -48,16 +54,16 @@ export interface RunSummary {
   readonly lastOutputAt: number | null;
   readonly outputChars: number;
   readonly droppedChars: number;
-  readonly snapshotAfter: string;
+  readonly snapshotAfter: RunSnapshotAfter;
 }
 
 /** The CLI run lifecycle: a binding over `RunSupervisor`. Ids only; no path or command line crosses it. */
 export interface RunsService {
   start(req: RunsStartRequest): Promise<{ readonly run: RunSummary; readonly replayed: boolean }>;
-  stop(runId: string, actor: string): RunSummary;
+  stop(runId: string, actor: AuditActor): RunSummary;
   get(runId: string): RunSummary;
-  /** Bounded: `limit` is at most 1000, there is no cursor. */
+  /** Bounded: the supervisor caps `limit` at 1000 and the contract at 500; there is no cursor. */
   list(options?: { readonly workspaceId?: string; readonly limit?: number }): readonly RunSummary[];
   /** True while a CLI run is active in the workspace (the `@axis/git-ops` guard and the worktrees refusals). */
-  isActive(workspaceId: string): boolean;
+  hasActiveRun(workspaceId: string): boolean;
 }

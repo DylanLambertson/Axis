@@ -142,7 +142,7 @@ export class Disposables {
    * like registering after it (see `add`).
    */
   dispose(): Promise<DisposeResult> {
-    // A disposer that calls `dispose()` would wait for itself. It gets an empty result at once instead: the run it
+    // A disposer that calls `dispose()` (or async work it started, even after it returned) would wait for itself. It gets an empty result at once instead: the run it
     // belongs to is already underway and will dispose everything else.
     if (running.getStore() === this) return Promise.resolve(Object.freeze({ disposed: 0, failures: Object.freeze([]) }));
     this.#pending ??= this.#run();
