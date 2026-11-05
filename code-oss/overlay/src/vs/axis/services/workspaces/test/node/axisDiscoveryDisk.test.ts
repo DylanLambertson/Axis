@@ -4,7 +4,7 @@
 
 import assert from 'assert';
 import { execFileSync } from 'child_process';
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from '../../../../../base/common/path.js';
 import { DisposableStore } from '../../../../../base/common/lifecycle.js';
@@ -63,8 +63,21 @@ function gitHasRelativePaths(): boolean {
 
 	teardown(() => rmSync(home, { recursive: true, force: true }));
 
-	async function paths(folder: string): Promise<string[]> {
-		const context = new TestContextService(testWorkspace(URI.file(folder)));
+	/** Discovery must finish within this bound even when a link never resolves in a JS realpath (review finding S-2). */
+	const BOUND_MS = 4000;
+
+	async function paths(...folders: string[]): Promise<string[]> {
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`discovery did not finish within ${BOUND_MS} ms`)), BOUND_MS); });
+		try {
+			return await Promise.race([discover(folders), timeout]);
+		} finally {
+			clearTimeout(timer);
+		}
+	}
+
+	async function discover(folders: string[]): Promise<string[]> {
+		const context = new TestContextService(testWorkspace(...folders.map(folder => URI.file(folder))));
 		const trust = disposables.add(new TestWorkspaceTrustManagementService());
 		const source = disposables.add(new AxisDiscoveryDataSource(fileService, context, trust, new TestConfigurationService()));
 		const result: string[] = [];
@@ -72,6 +85,36 @@ function gitHasRelativePaths(): boolean {
 			result.push(...(await source.listWorktrees(project.id)).map(w => `${w.path.slice(home.length)}@${w.branch}`));
 		}
 		return result;
+	}
+
+	/**
+	 * A link `x` in `dir` to a folder nine levels down, and the target text that reaches `fromHome` (a path
+	 * relative to home) through it: `x/../../…`. The kernel follows `x` before each `..`; a lexical resolver
+	 * collapses `x/..` and ends somewhere else, which is how a JS realpath was fooled.
+	 */
+	function deepLinkTarget(dir: string, fromHome: string): string {
+		const levels = ['zz', '1', '2', '3', '4', '5', '6', '7', '8'];
+		mkdirSync(join(dir, ...levels), { recursive: true });
+		symlinkSync(levels.join('/'), join(dir, 'x'));
+		const depth = dir.slice(home.length).split('/').filter(Boolean).length;
+		return `x/${'../'.repeat(levels.length + depth)}${fromHome}`;
+	}
+
+	/** A link `loop` in `dir` whose target `x/../loop` the kernel resolves to `dir/d/loop`, and a JS realpath never finishes. */
+	function loopLink(dir: string): string {
+		mkdirSync(join(dir, 'd', 'e'), { recursive: true });
+		mkdirSync(join(dir, 'd', 'loop'), { recursive: true });
+		symlinkSync('d/e', join(dir, 'x'));
+		symlinkSync('x/../loop', join(dir, 'loop'));
+		return join(dir, 'd', 'loop');
+	}
+
+	function fakeRepoWithEntry(fake: string, gitdir: string): void {
+		mkdirSync(join(fake, '.git', 'worktrees', 'feat'), { recursive: true });
+		mkdirSync(join(fake, '.git', 'refs', 'heads'), { recursive: true });
+		writeFileSync(join(fake, '.git', 'HEAD'), 'ref: refs/heads/main\n');
+		writeFileSync(join(fake, '.git', 'worktrees', 'feat', 'gitdir'), gitdir);
+		writeFileSync(join(fake, '.git', 'worktrees', 'feat', 'HEAD'), 'ref: refs/heads/innocent\n');
 	}
 
 	test('genuine relative-path worktrees are listed, also when the folder is opened through a link', async () => {
@@ -91,6 +134,56 @@ function gitHasRelativePaths(): boolean {
 		writeFileSync(join(fake, '.git', 'worktrees', 'feat', 'HEAD'), 'ref: refs/heads/innocent\n');
 		symlinkSync('../src/proj-worktrees', join(home, 'Downloads', 's'));
 		assert.deepStrictEqual(await paths(fake), ['/Downloads/proj@main']);
+	});
+
+	test('a worktree entry reached through a link whose target goes through a deeper link (x/..) is refused', async () => {
+		const downloads = join(home, 'Downloads');
+		symlinkSync(deepLinkTarget(downloads, 'src/proj-worktrees'), join(downloads, 's'));
+		assert.ok(existsSync(join(downloads, 's', 'feat', '.git')), 'the kernel reaches the real worktree');
+		fakeRepoWithEntry(join(downloads, 'proj'), '../../../../s/feat/.git\n');
+		assert.deepStrictEqual(await paths(join(downloads, 'proj')), ['/Downloads/proj@main']);
+	});
+
+	test('a common dir and a submodule git dir reached through a deeper link (x/..) are not projects', async () => {
+		const pw = join(home, 'Downloads', 'proj-worktrees');
+		mkdirSync(join(pw, 'feat'), { recursive: true });
+		symlinkSync(deepLinkTarget(pw, 'src/proj/.git'), join(pw, '.git'));
+		writeFileSync(join(pw, 'feat', '.git'), 'gitdir: ../.git/worktrees/feat\n');
+		assert.ok(existsSync(join(pw, '.git', 'worktrees', 'feat', 'gitdir')), 'the kernel reaches the real common dir');
+
+		const modules = join(home, 'src', 'super', '.git', 'modules', 'sub');
+		mkdirSync(modules, { recursive: true });
+		writeFileSync(join(modules, 'HEAD'), 'ref: refs/heads/private-sub-branch\n');
+		writeFileSync(join(modules, 'config'), '[core]\n\tworktree = ../../../sub\n');
+		const sub = join(home, 'Downloads', 'sub');
+		mkdirSync(join(sub, 'm'), { recursive: true });
+		symlinkSync(deepLinkTarget(join(sub, 'm'), 'src/super/.git/modules/sub'), join(sub, 'm', 'lnk'));
+		writeFileSync(join(sub, '.git'), 'gitdir: m/lnk\n');
+		assert.ok(existsSync(join(sub, 'm', 'lnk', 'config')), 'the kernel reaches the real submodule git dir');
+
+		assert.deepStrictEqual(await paths(join(pw, 'feat')), []);
+		assert.deepStrictEqual(await paths(sub), []);
+	});
+
+	test('a folder opened through a deeper link (x/..), whose realpath comes back as written, is not a project', async () => {
+		const downloads = join(home, 'Downloads');
+		symlinkSync(deepLinkTarget(downloads, 'src/proj'), join(downloads, 'r'));
+		assert.ok(existsSync(join(downloads, 'r', '.git', 'HEAD')), 'the kernel reaches the real repository');
+		assert.deepStrictEqual(await paths(join(downloads, 'r')), []);
+	});
+
+		test('a looping link in a worktree entry or a submodule git dir neither hangs discovery nor hides the other entries', async () => {
+		const downloads = join(home, 'Downloads');
+		const real = loopLink(downloads);
+		mkdirSync(join(real, 'feat'));
+		writeFileSync(join(real, 'feat', '.git'), 'gitdir: ../../proj/.git/worktrees/feat\n');
+		writeFileSync(join(real, 'HEAD'), 'ref: refs/heads/main\n');
+		writeFileSync(join(real, 'config'), '[core]\n\tworktree = ../sub2\n');
+		fakeRepoWithEntry(join(downloads, 'proj'), '../../../../loop/feat/.git\n');
+		mkdirSync(join(downloads, 'sub2'));
+		writeFileSync(join(downloads, 'sub2', '.git'), 'gitdir: ../loop\n');
+		assert.deepStrictEqual(await paths(join(downloads, 'proj')), ['/Downloads/proj@main']);
+		assert.deepStrictEqual(await paths(join(downloads, 'sub2'), join(home, 'src', 'proj')), ['/src/proj@main', '/src/proj-worktrees/feat@secret-feat']);
 	});
 
 	test('a worktree whose common dir is reached through a link is not a project', async () => {

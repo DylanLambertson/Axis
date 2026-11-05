@@ -2,6 +2,7 @@
  *  Copyright (c) 2026 Dylan Lambertson. All rights reserved.
  *--------------------------------------------------------------------------------------------*/
 
+import { raceTimeout } from '../../../../base/common/async.js';
 import { Emitter } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { Schemas } from '../../../../base/common/network.js';
@@ -29,6 +30,15 @@ interface IFoundRepository {
 	readonly localCheckout: string | undefined;
 	readonly listsWorktrees: boolean;
 }
+
+/** Most components a checked path may have; a longer path is refused. */
+const MAX_PATH_COMPONENTS = 64;
+
+/** Time allowed to resolve the real path of a folder the user opened; on timeout the folder is not a project. */
+const OPENED_FOLDER_REALPATH_TIMEOUT_MS = 3000;
+
+/** Time allowed to check one opened folder or one worktree entry; on timeout it is refused and the others go on. */
+const ENTRY_TIMEOUT_MS = 5000;
 
 /** The workspace key the UI uses for a worktree: its journal id, else a stable digest of its path. */
 export function workspaceKeyOf(worktree: IAxisWorktreeInfo): string {
@@ -140,7 +150,7 @@ export class AxisDiscoveryDataSource extends Disposable implements IAxisWorkspac
 					if (folder.uri.scheme !== Schemas.file) {
 						continue;
 					}
-					const repo = await this.findRepository(folder.uri.fsPath);
+					const repo = await raceTimeout(this.findRepository(folder.uri.fsPath), ENTRY_TIMEOUT_MS);
 					if (!repo) {
 						continue;
 					}
@@ -166,9 +176,10 @@ export class AxisDiscoveryDataSource extends Disposable implements IAxisWorkspac
 	 */
 	private async findRepository(openedRoot: string): Promise<IFoundRepository | undefined> {
 		const path = isWindows ? win32 : posix;
-		// Work in physical paths, as git does: the folder the user opened may itself be reached through a link.
-		const root = await this.realPath(openedRoot);
-		if (!root) {
+		// Work in physical paths, as git does: the folder the user opened may itself be reached through a
+		// link. Its real path is the only one Axis asks for, and the answer is checked component by component.
+		const root = await raceTimeout(this.realPath(openedRoot), OPENED_FOLDER_REALPATH_TIMEOUT_MS);
+		if (!root || !(await this.isPhysical(root))) {
 			return undefined;
 		}
 		const dotGit = path.join(root, '.git');
@@ -228,15 +239,18 @@ export class AxisDiscoveryDataSource extends Disposable implements IAxisWorkspac
 			return { worktrees: result, refused: 0 };
 		}
 		const worktreesDir = path.join(project.commonDir, 'worktrees');
+		if (!(await this.isPhysical(worktreesDir))) {
+			return { worktrees: result, refused: 0 }; // a linked or missing `worktrees` folder: nothing to list
+		}
 		// Names and types only (no stat per child), so a huge directory costs one read; then a bounded slice.
 		const names = (await this.listDirectories(worktreesDir)).sort((a, b) => a.localeCompare(b));
 		const entries = names.slice(0, MAX_DISCOVERED_WORKTREES);
 		let refused = names.length - entries.length;
 		for (const name of entries) {
 			const entryDir = path.join(worktreesDir, name);
-			const worktreeDir = worktreeDirFromGitdir(await this.readText(path.join(entryDir, 'gitdir')) ?? '', entryDir, isWindows);
-			if (!worktreeDir || !(await this.isLinkedBack(worktreeDir, entryDir))) {
-				refused++; // missing, malformed, or naming a folder that is not this worktree: never listed or opened
+			const worktreeDir = await raceTimeout(this.verifiedWorktreeDir(entryDir), ENTRY_TIMEOUT_MS);
+			if (!worktreeDir) {
+				refused++; // missing, malformed, naming a folder that is not this worktree, or too slow: never listed or opened
 				continue;
 			}
 			const head = parseHead(await this.readText(path.join(entryDir, 'HEAD')) ?? '');
@@ -255,6 +269,12 @@ export class AxisDiscoveryDataSource extends Disposable implements IAxisWorkspac
 		} catch {
 			return [];
 		}
+	}
+
+	/** The worktree folder of a `<common dir>/worktrees/<name>` entry, if it links back; else `undefined`. */
+	private async verifiedWorktreeDir(entryDir: string): Promise<string | undefined> {
+		const worktreeDir = worktreeDirFromGitdir(await this.readText((isWindows ? win32 : posix).join(entryDir, 'gitdir')) ?? '', entryDir, isWindows);
+		return worktreeDir && (await this.isLinkedBack(worktreeDir, entryDir)) ? worktreeDir : undefined;
 	}
 
 	/**
@@ -298,7 +318,11 @@ export class AxisDiscoveryDataSource extends Disposable implements IAxisWorkspac
 		return loose ?? packed.get(head.ref) ?? null; // null: an unborn branch
 	}
 
-	/** The physical form of a path (every symbolic link resolved), or `undefined` when it cannot be resolved. */
+	/**
+	 * The physical form of a path (every symbolic link resolved), or `undefined` when it cannot be resolved.
+	 * Used only for the folder the user opened, and its answer is checked by `isPhysical`: the upstream
+	 * realpath may return a path as written when its own resolution fails, and may not finish on some loops.
+	 */
 	private async realPath(fsPath: string): Promise<string | undefined> {
 		try {
 			return (await this.fileService.realpath(URI.file(fsPath)))?.fsPath;
@@ -307,10 +331,32 @@ export class AxisDiscoveryDataSource extends Disposable implements IAxisWorkspac
 		}
 	}
 
-	/** True when no component of a path is a symbolic link: its physical form is the form it was written with. */
+	/**
+	 * True when every component of an absolute path exists and none is a symbolic link, checked one prefix
+	 * at a time (the file service's `stat` reports a link at the last component, as `lstat` does). Then the
+	 * path as written is the path the kernel follows. Fails closed: a missing or unreadable component, a
+	 * relative path or more than `MAX_PATH_COMPONENTS` components gives `false`.
+	 */
 	private async isPhysical(fsPath: string): Promise<boolean> {
-		const real = await this.realPath(fsPath);
-		return !!real && samePath(real, fsPath);
+		const path = isWindows ? win32 : posix;
+		if (!path.isAbsolute(fsPath)) {
+			return false;
+		}
+		const normalized = path.normalize(fsPath);
+		const root = path.parse(normalized).root;
+		const parts = normalized.slice(root.length).split(path.sep).filter(Boolean);
+		if (parts.length > MAX_PATH_COMPONENTS) {
+			return false;
+		}
+		let current = root;
+		for (const part of parts) {
+			current = path.join(current, part);
+			const stat = await this.statOrUndefined(current);
+			if (!stat || stat.isSymbolicLink) {
+				return false;
+			}
+		}
+		return true;
 	}
 
 	private async statOrUndefined(fsPath: string) {

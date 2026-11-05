@@ -268,6 +268,14 @@ class SymlinkMarkingProvider extends InMemoryFileSystemProvider {
 		assert.deepStrictEqual(await paths('/wt/feat'), []);
 	});
 
+	test('entries under a worktrees folder that is a link are not listed', async () => {
+		await mainRepo('/repo');
+		await linkedWorktree('/repo', 'e', '/wt/e', 'ref: refs/heads/main\n');
+		assert.deepStrictEqual(await paths('/repo'), ['/repo', '/wt/e'], 'control');
+		provider.links.add('/repo/.git/worktrees');
+		assert.deepStrictEqual(await paths('/repo'), ['/repo']);
+	});
+
 		test('at most MAX_DISCOVERED_WORKTREES entries are read; the rest are counted as not listed', async () => {
 		await mainRepo('/repo');
 		for (let i = 0; i < MAX_DISCOVERED_WORKTREES; i++) {
