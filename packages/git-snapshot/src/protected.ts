@@ -203,17 +203,24 @@ function matchExtra(parts: readonly string[], extra: readonly string[] | undefin
 // it must still show a change. An exemption covers the exact final name, never a directory of that name.
 // Every first component any specific rule names, folded: a path with none of them, and no generic match, is not protected.
 const RULE_LITERALS: ReadonlySet<string> = new Set(RULES.flatMap((r) => (r.path === undefined ? [] : [foldLiteral(r.path[0] as string)])));
-const PLAIN_PATH = /^[a-z0-9_-]+(?:\.[a-z0-9_-]+)*(?:\/[a-z0-9_-]+(?:\.[a-z0-9_-]+)*)*$/;
+const PLAIN_PATH = /^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*(?:\/[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*)*$/;
+// Beyond these `classifyPath` calls a path invalid (a high match), so the pre-filter never skips one.
+const SKIP_MAX_CHARS = 2048;
+const SKIP_MAX_PARTS = 128;
 
 /**
  * True only when a path is provably not protected, without the full classification: every component is plain ASCII
- * lower case (so nothing folds, normalises, starts with a dot or can be a short name), none is a name any rule lists
- * or a family the rules test (container build and compose files), and none ends in `.md`. False means "ask
- * `classifyPath`". A test compares it with `classifyPath` over a large generated corpus.
+ * (letters in either case, digits, `_`, `-`, inner dots, so nothing normalises, starts with a dot or can be a short
+ * name), none is, in lower case, a name any rule lists or a family the rules test (container build and compose
+ * files), none ends in `.md`, and the path is short enough to be parsed at all. False means "ask `classifyPath`".
+ * A test compares it with `classifyPath` over a large generated corpus.
  */
 export function canSkipClassification(path: string): boolean {
-  if (!PLAIN_PATH.test(path)) return false;
-  for (const c of path.split("/")) {
+  if (path.length > SKIP_MAX_CHARS || !PLAIN_PATH.test(path)) return false;
+  const lower = path.toLowerCase();
+  const parts = lower.split("/");
+  if (parts.length > SKIP_MAX_PARTS) return false;
+  for (const c of parts) {
     if (RULE_LITERALS.has(c) || c.endsWith(".md") || c.includes("docker") || c.includes("compose") || c.includes("containerfile")) return false;
   }
   return true;

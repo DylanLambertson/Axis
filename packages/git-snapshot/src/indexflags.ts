@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { lstatSync } from "node:fs";
+import { lstatSync, type BigIntStats } from "node:fs";
 import { join, parse } from "node:path";
 import { displayValue } from "./display.js";
 import { baseArgs, snapshotGitEnv, type AskInput } from "./git.js";
@@ -10,6 +10,11 @@ import type { Setting } from "./types.js";
 
 const MAX_RECORD = 4096;
 const COUNT_KEY = "index.flagged-count";
+
+/** What distinguishes one file from another, and one state of it from the next: git's stat fields, and more. */
+export function identityOf(st: Pick<BigIntStats, "size" | "mtimeNs" | "ctimeNs" | "ino" | "dev" | "mode" | "uid" | "gid">): string {
+  return `${st.size}:${st.mtimeNs}:${st.ctimeNs}:${st.ino}:${st.dev}:${st.mode}:${st.uid}:${st.gid}`;
+}
 
 export interface IndexFlags {
   readonly settings: readonly Setting[];
@@ -30,8 +35,9 @@ export interface IndexFlags {
  * `git status` nor `git diff`. The index holds the flags, outside every file this package hashes, so they are read
  * from `git ls-files -v` as a stream (a large repository is not held in memory). Sparse checkouts set the same flag
  * on files that are legitimately absent, so a flagged path is listed one by one only when the protected-path matcher
- * marks it. EVERY flagged path is hashed, with its flag and the file's identity in the worktree (size, mtime, mode,
- * or absent), so moving a flag to another file, or editing a flagged file, changes the digest.
+ * marks it. EVERY flagged path is hashed, with its flag and the file's identity in the worktree (`identityOf`: size,
+ * mtime, ctime, inode, device, mode, owner and group; `absent` for ENOENT and ENOTDIR; any other error is its own
+ * state and blocks), so moving a flag to another file, or editing or replacing a flagged file, changes the digest.
  */
 export async function readIndexFlags(i: AskInput): Promise<IndexFlags> {
   i.budget.tick();
@@ -80,7 +86,7 @@ export async function readIndexFlags(i: AskInput): Promise<IndexFlags> {
       let identity: string;
       try {
         const st = lstatSync(join(i.worktree, path), { bigint: true, throwIfNoEntry: false });
-        identity = st === undefined ? "absent" : `${st.size}:${st.mtimeNs}:${st.ctimeNs}:${st.ino}:${st.dev}:${st.mode}`;
+        identity = st === undefined ? "absent" : identityOf(st);
       } catch (e) {
         const code = (e as NodeJS.ErrnoException).code ?? "ERR";
         identity = code === "ENOENT" || code === "ENOTDIR" ? "absent" : `unreadable:${code}`;
