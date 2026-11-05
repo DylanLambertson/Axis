@@ -9,7 +9,7 @@ NNNN-short-name.patch
 ```
 
 - `NNNN`: four digits, unique across the series. The number sets the order and the block (below); leave gaps if you expect to insert patches later.
-- `short-name`: lowercase letters, digits, `-` and `.`, describing the change (for example `1010-product-identity.patch`).
+- `short-name`: lowercase letters, digits, `-` and `.`, describing the change (for example `1000-product-identity.patch`).
 
 `apply.sh` rejects files that do not match this pattern, numbers outside the blocks below, duplicate numbers and symlinks. This `README.md` is the only other file allowed here.
 
@@ -39,4 +39,4 @@ Numbers `0000` and `3000`–`9999` are unassigned; extend this table and `patch_
 - Mark edited regions in upstream files with `// --- Start Axis ---` and `// --- End Axis ---`.
 - Keep each patch focused on one concern, so that conflicts during an upstream sync stay local.
 
-From M3 the series holds the Stage 1 patches in blocks `0001`–`0999`, `1000`–`1499` and `1500`–`1999`, and from Stage 1b the security block `2000`–`2999` (`2010` Trusted Types, `2020` cookie `Secure`, `2030` `openExternal` scheme allow-list, `2040` refused external opens reported and not revealed, `2050` full URL in the link prompt, `2060` extension recommendations application-scoped). `docs/design/axis-shell-stage1-built.md` §2.9 lists every patch with its footprint; the security block uses 5 of its 1000 numbers.
+From M3 the series holds the Stage 1 patches in blocks `0001`–`0999`, `1000`–`1499` and `1500`–`1999`, and from Stage 1b the security block `2000`–`2999` (`2010` Trusted Types, `2020` cookie `Secure`, `2030` `openExternal` scheme allow-list, `2040` refused external opens reported and not revealed, `2050` full URL in the link prompt, `2060` extension recommendations application-scoped). The shell block also has `0200` for the daemon entry points and private-field preservation. `docs/design/axis-shell-stage1-built.md` §2.9 lists every patch with its footprint; the security block uses 6 of its 1000 numbers.

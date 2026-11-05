@@ -122,7 +122,7 @@ async function check(deps: GitOpsDeps, input: PushInput): Promise<{ plan: PushPl
   // The GIT-SNAP-1 re-take comes last so nothing can change between it and the push.
   await deps.assertNoDrift(input.worktree);
 
-  const { findings, binaryPaths, truncated, undecodable } = await scanOutgoing(deps, git, input.worktree, input.baseSha, tipSha);
+  const { findings, binaryPaths, truncated, undecodable } = await scanOutgoing(deps, git, input.worktree, input.baseSha, tipSha, input.allowedBinaryPaths ?? []);
   const refuse = (deps.scanMode ?? "warn") === "refuse";
   // Fail closed in either mode: a message with NUL bytes, bytes invalid in its encoding or an unknown encoding is hiding from the scan, and the user
   // cannot meaningfully confirm text that nothing could read. The message names commits only, never their content.
