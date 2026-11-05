@@ -44,7 +44,9 @@ test("start: main's refusal, or its silence, refuses the start before any run ex
   assert.equal(no.error?.code, "E_CONFLICT");
   assert.equal(no.error?.details?.["reason"], "untrusted");
   r.answers.trust = "silent";
-  const silent = await user.call(RUNS, "start", START(id), newKey());
+  // Main never answers: the control request times out at 2 s, so wait longer than the client's own default.
+  user.send(RUNS, "start", START(id), "q-silent", newKey());
+  const silent = await user.until((m) => m.id === "q-silent", 8000);
   assert.equal(silent.ok, false);
   assert.equal(silent.error?.details?.["reason"], "untrusted");
   assert.equal(r.pty.spawns.length, 0);
