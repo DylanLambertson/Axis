@@ -60,6 +60,10 @@ import {
   type WorkspaceState,
 } from "./states.js";
 
+function inRecords<T>(db: DatabaseSync, audit: AuditLog, now: () => Date, fn: (ctx: RecordsContext) => T): T {
+  return withTransaction(db, () => fn({ db, audit, ts: () => now().toISOString() }));
+}
+
 export interface JournalOptions {
   /**
    * Where recovery events go. It must be an `AuditLog` bound to the same
@@ -155,9 +159,11 @@ export class Journal {
       this.#expectOne(
         this.#db
           .prepare(
-            "UPDATE agent_workspaces SET state = ?, reconcile_reported = 0, updated_at = ?, finalise_outcome = COALESCE(?, finalise_outcome) WHERE id = ? AND state = ?",
+            "UPDATE agent_workspaces SET state = ?, reconcile_reported = 0, updated_at = ?, finalise_outcome = COALESCE(?, finalise_outcome), " +
+              "lock_state = CASE WHEN ? IN ('REMOVED','FAILED') THEN 'unlocked' ELSE lock_state END, " +
+              "locked_at = CASE WHEN ? IN ('REMOVED','FAILED') THEN NULL ELSE locked_at END WHERE id = ? AND state = ?",
           )
-          .run(to, ts, opts.outcome ?? null, id, current.state),
+          .run(to, ts, opts.outcome ?? null, to, to, id, current.state),
       );
       this.#recordTransition("workspace", id, current.state, to, opts.reason ?? null, opts.actor ?? "daemon", ts);
       return this.#mustWorkspace(id);
@@ -167,7 +173,7 @@ export class Journal {
   // ---- host records (projects, worktree path, lock, last pushed sha, reviewed tree): each with its audit event, one transaction ----
 
   registerProject(input: RegisterProjectInput): Project {
-    return this.#records((ctx) => registerProject(ctx, input));
+    return inRecords(this.#db, this.#audit, this.#now, (ctx) => registerProject(ctx, input));
   }
   getProject(id: string): Project | undefined {
     return getProject(this.#db, id);
@@ -176,19 +182,19 @@ export class Journal {
     return listProjects(this.#db);
   }
   setWorktreePath(id: string, path: string, actor: AuditActor): Workspace {
-    return this.#records((ctx) => setWorktreePath(ctx, id, path, actor));
+    return inRecords(this.#db, this.#audit, this.#now, (ctx) => setWorktreePath(ctx, id, path, actor));
   }
   lockWorkspace(id: string, actor: AuditActor): Workspace {
-    return this.#records((ctx) => lockWorkspace(ctx, id, actor));
+    return inRecords(this.#db, this.#audit, this.#now, (ctx) => lockWorkspace(ctx, id, actor));
   }
   unlockWorkspace(id: string, actor: AuditActor): Workspace {
-    return this.#records((ctx) => unlockWorkspace(ctx, id, actor));
+    return inRecords(this.#db, this.#audit, this.#now, (ctx) => unlockWorkspace(ctx, id, actor));
   }
   recordPushed(id: string, sha: string, actor: AuditActor): Workspace {
-    return this.#records((ctx) => recordPushed(ctx, id, sha, actor));
+    return inRecords(this.#db, this.#audit, this.#now, (ctx) => recordPushed(ctx, id, sha, actor));
   }
-  recordReviewedTree(id: string, treeHash: string, actor: AuditActor): Workspace {
-    return this.#records((ctx) => recordReviewedTree(ctx, id, treeHash, actor));
+  recordReviewedTree(id: string, treeHash: string, principal: UserPrincipal): Workspace {
+    return inRecords(this.#db, this.#audit, this.#now, (ctx) => recordReviewedTree(ctx, id, treeHash, principal));
   }
 
   // ---- runs ----
@@ -249,6 +255,7 @@ export class Journal {
     const target = runStateSchema.safeParse(to);
     if (!target.success) throw invalid(target.error, "run state");
     const { opts, approvedByUser } = this.#parseTransitionOptions(options);
+    if (opts.outcome !== undefined) throw new AxisError("E_INVALID_ARGUMENT", "An outcome applies only to finalising a workspace");
     return withTransaction(this.#db, () => {
       const current = this.#mustRun(id);
       this.#guard("run", current.state, to, RUN_TRANSITIONS[current.state], opts.expectedFrom);
@@ -335,6 +342,8 @@ export class Journal {
     }
     return withTransaction(this.#db, () => {
       const ts = this.#ts();
+      // First, so a CREATING workspace that holds a stale lock is reported as unlocked before it becomes FAILED.
+      const locksCleared = clearStaleLocks({ db: this.#db, audit: this.#audit, ts: () => ts });
       const runsInterrupted: string[] = [];
       const workspacesFailed: string[] = [];
       const workspacesNeedingReconcile: string[] = [];
@@ -399,16 +408,11 @@ export class Journal {
         });
         runsInterrupted.push(row.id);
       }
-      const locksCleared = clearStaleLocks({ db: this.#db, audit: this.#audit, ts: () => ts });
       return { runsInterrupted, workspacesFailed, workspacesNeedingReconcile, runsLeftAlone, locksCleared };
     });
   }
 
   // ---- internals ----
-
-  #records<T>(fn: (ctx: RecordsContext) => T): T {
-    return withTransaction(this.#db, () => fn({ db: this.#db, audit: this.#audit, ts: () => this.#ts() }));
-  }
 
   #ts(): string {
     return this.#now().toISOString();

@@ -25,6 +25,8 @@ export const DEFAULT_PAYLOAD_ALLOWLIST: Readonly<Record<string, readonly string[
   "tier4.execute": ["phase", "op", "ref", "tier", "reason", "approvedBy", "errorName", "code", ...POLICY_KEYS],
   "policy.decision": [...POLICY_KEYS],
   "rpc.execute": [...POLICY_KEYS],
+  // The field name is a fixed literal chosen by the journal, never a caller value: it says which record changed, not what it now holds.
+  "journal.workspace.record": ["field"],
   "journal.recovery": ["from", "to", "reason", "kind", "workspaceId", "projectId", "count"],
 };
 

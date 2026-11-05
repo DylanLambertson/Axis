@@ -1,8 +1,9 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
-import { isAbsolute, normalize } from "node:path";
+import { dirname, isAbsolute, normalize } from "node:path";
 import { AxisError, isWellFormedString, type AuditActor, type AuditLog, type DatabaseSync } from "@axis/audit";
 import { z } from "zod";
 import { RUN_STATES, RUN_TERMINAL_STATES } from "./states.js";
+import { UserPrincipal } from "./principal.js";
 import { invalid, toProject, toWorkspace, type Project, type ProjectRow, type Workspace, type WorkspaceRow } from "./model.js";
 
 const noControl = (s: string): boolean => !/[\u0000-\u001f\u007f]/.test(s);
@@ -16,7 +17,10 @@ const absolutePath = z
   .max(4096)
   .refine(noControl)
   .refine(isWellFormedString)
-  .refine((p) => isAbsolute(p) && normalize(p) === p, { message: "absolute and normalised" });
+  .refine((p) => isAbsolute(p), { message: "absolute" })
+  // `/repo/` and `/repo` are one directory: store the one without the trailing separator. A root is never a project or worktree.
+  .transform((p) => (p.length > 1 ? p.replace(/[\\/]+$/, "") || p.slice(0, 1) : p))
+  .refine((p) => normalize(p) === p && dirname(p) !== p, { message: "normalised and not a root" });
 
 export const registerProjectSchema = z
   .object({
@@ -42,6 +46,9 @@ export interface RecordsContext {
   readonly ts: () => string;
 }
 
+/** SQLITE_CONSTRAINT_UNIQUE (2067) or _PRIMARYKEY (1555); a CHECK or NOT NULL failure is something else. */
+const isUnique = (error: unknown): boolean => [1555, 2067].includes((error as { errcode?: number } | null)?.errcode ?? 0);
+
 /**
  * Journal-first audit for the host's records. The action has no payload allow-list entry, so only a
  * content summary is stored: the event names what changed (`target`, `field`), never the value.
@@ -60,9 +67,7 @@ export function registerProject(ctx: RecordsContext, input: RegisterProjectInput
       .prepare("INSERT INTO projects (id, path, display_name, trusted, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)")
       .run(p.id, p.path, p.displayName, p.trusted ? 1 : 0, ts, ts);
   } catch (error) {
-    if (/UNIQUE|constraint/i.test(String((error as Error).message))) {
-      throw new AxisError("E_CONFLICT", "A project with that id or path is already registered");
-    }
+    if (isUnique(error)) throw new AxisError("E_CONFLICT", "A project with that id or path is already registered");
     throw error;
   }
   audit(ctx, input.actor, "journal.project.register", `project:${p.id}`, "project");
@@ -115,7 +120,13 @@ export function setWorktreePath(ctx: RecordsContext, id: string, path: string, a
   }
   if (row.worktree_path === parsed.data) return toWorkspace(row);
   if (row.worktree_path !== null) throw new AxisError("E_CONFLICT", "The worktree path is already recorded and does not change");
-  const out = update(ctx, "worktree_path = ?", [parsed.data], row.id);
+  let out: Workspace;
+  try {
+    out = update(ctx, "worktree_path = ?", [parsed.data], row.id);
+  } catch (error) {
+    if (isUnique(error)) throw new AxisError("E_CONFLICT", "Another live workspace already uses that worktree path");
+    throw error;
+  }
   audit(ctx, a, "journal.workspace.record", `workspace:${row.id}`, "worktreePath");
   return out;
 }
@@ -154,8 +165,12 @@ export function recordPushed(ctx: RecordsContext, id: string, sha: string, actor
   return out;
 }
 
-export function recordReviewedTree(ctx: RecordsContext, id: string, treeHash: string, actor: AuditActor): Workspace {
-  const a = parseActor(actor);
+/** Recording the reviewed tree is the person's act (REV-1: the commit is built from it), so it takes the minted principal, as run approval does. */
+export function recordReviewedTree(ctx: RecordsContext, id: string, treeHash: string, principal: UserPrincipal): Workspace {
+  if (!UserPrincipal.is(principal)) {
+    throw new AxisError("E_POLICY_DENIED", "Only the user, acting through the daemon, can record a reviewed tree");
+  }
+  const a: AuditActor = "user";
   const parsed = hashSchema.safeParse(treeHash);
   if (!parsed.success) throw invalid(parsed.error, "reviewed tree hash");
   const row = load(ctx.db, id);
@@ -195,7 +210,8 @@ export function checkWorkspaceTransition(db: DatabaseSync, id: string, from: str
 export function clearStaleLocks(ctx: RecordsContext): string[] {
   const rows = ctx.db.prepare("SELECT id, project_id FROM agent_workspaces WHERE lock_state = 'locked' ORDER BY created_at, id").all() as unknown as Array<{ id: string; project_id: string }>;
   for (const row of rows) {
-    ctx.db.prepare("UPDATE agent_workspaces SET lock_state = 'unlocked', locked_at = NULL WHERE id = ? AND lock_state = 'locked'").run(row.id);
+    const r = ctx.db.prepare("UPDATE agent_workspaces SET lock_state = 'unlocked', locked_at = NULL, updated_at = ? WHERE id = ? AND lock_state = 'locked'").run(ctx.ts(), row.id);
+    if (Number(r.changes) !== 1) throw new AxisError("E_INTERNAL", "A lock update did not apply to exactly one row");
     ctx.audit.append({
       actor: "daemon",
       action: "journal.recovery",

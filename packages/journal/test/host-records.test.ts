@@ -8,6 +8,7 @@ import { AuditLog, AxisError, acquireInstanceLock, openDatabase } from "@axis/au
 import { userPrincipal } from "../src/daemon-principal.js";
 import { Journal, WORKSPACE_TRANSITIONS } from "../src/index.js";
 
+const USER = userPrincipal();
 const SHA = "b".repeat(40);
 const SHA2 = "c".repeat(40);
 const TREE = "d".repeat(40);
@@ -109,18 +110,18 @@ test("last pushed sha and reviewed tree hash are validated, state-gated and audi
   assert.equal(s.journal.getWorkspace(s.id)?.lastPushedSha, null);
   for (const bad of ["", "ABC", "g".repeat(40), SHA.toUpperCase(), "a".repeat(39), `${SHA}\n`]) {
     assert.throws(() => s.journal.recordPushed(s.id, bad, "daemon"), code("E_INVALID_ARGUMENT"));
-    assert.throws(() => s.journal.recordReviewedTree(s.id, bad, "user"), code("E_INVALID_ARGUMENT"));
+    assert.throws(() => s.journal.recordReviewedTree(s.id, bad, USER), code("E_INVALID_ARGUMENT"));
   }
   const n = s.audit.head()?.seq ?? 0;
   assert.equal(s.journal.recordPushed(s.id, SHA2, "daemon").lastPushedSha, SHA2);
-  const r = s.journal.recordReviewedTree(s.id, TREE, "user");
+  const r = s.journal.recordReviewedTree(s.id, TREE, USER);
   assert.equal(r.reviewedTreeHash, TREE);
   assert.ok(r.reviewedAt);
   assert.equal(s.audit.head()?.seq, n + 2);
   assert.equal(s.audit.verify().ok, true);
   s.journal.transitionWorkspace(s.id, "FINALISED", { outcome: "merged" });
   assert.equal(s.journal.recordPushed(s.id, SHA, "daemon").lastPushedSha, SHA);
-  assert.throws(() => s.journal.recordReviewedTree(s.id, TREE, "user"), code("E_CONFLICT"), "review only while READY");
+  assert.throws(() => s.journal.recordReviewedTree(s.id, TREE, USER), code("E_CONFLICT"), "review only while READY");
 });
 
 test("an audit failure rolls the record back (journal-first: the row and its event commit together)", () => {
