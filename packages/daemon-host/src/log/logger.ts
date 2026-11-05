@@ -15,6 +15,8 @@ import { summarizeError } from "./summarize-error.js";
 /** The events the host can log. Later tickets add theirs here, in the same change as the code that logs them. */
 export const LOG_EVENTS = [
   "host.starting",
+  "anchor.stalled",
+  "anchor.resumed",
   "host.ready",
   "host.degraded",
   "host.start_failed",
