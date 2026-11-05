@@ -51,6 +51,30 @@ export interface StartupPorts {
   readonly trust?: TrustRegistry;
   /** Compare git with the journal at startup (the worktrees port, ticket H8). Absent: skipped. */
   readonly reconcile?: (signal: AbortSignal) => Promise<ReconcileReport>;
+  /**
+   * Composition hook (ticket H12), called once the journal, audit log and idempotency store exist and BEFORE recovery, so the
+   * composition can build what recovery needs (the worktrees binding behind `reconcile`). Never called when the host is
+   * degraded (nothing may write). A throw fails startup (exit 70): nothing is served.
+   */
+  readonly afterStorage?: (parts: StorageParts) => void;
+  /**
+   * Composition hook (ticket H12), called after recovery and the coverage check and BEFORE `ready` is sent: the composition
+   * builds the `Daemon`, registers every handler and installs the lifecycle here, so no connection can reach a half built host.
+   * Also called when degraded (with the read-only `services`). A throw (or a rejection) fails startup: no `ready` is sent.
+   */
+  readonly beforeReady?: (services: HostServices, lock: InstanceLock | undefined) => void | Promise<void>;
+}
+
+/** What `afterStorage` may build on: the writable stores and the anchor guard. For the composition root only. */
+export interface StorageParts {
+  readonly db: DatabaseSync;
+  readonly lock: InstanceLock;
+  readonly journal: Journal;
+  readonly audit: AuditLog;
+  readonly idempotency: JournalIdempotencyStore;
+  readonly gitPath: string;
+  readonly excludeDirs: () => readonly string[];
+  readonly anchors: AnchorGuard;
 }
 
 export interface HostOptions {
@@ -61,7 +85,7 @@ export interface HostOptions {
 }
 
 /** The reads of the journal, safe in every mode. A frozen facade of closures: no writer is reachable from it. */
-export type JournalReader = Pick<Journal, "getWorkspace" | "listWorkspaces" | "getRun" | "listRuns" | "transitions">;
+export type JournalReader = Pick<Journal, "getWorkspace" | "listWorkspaces" | "getRun" | "listRuns" | "transitions" | "listProjects">;
 /** The reads of the audit log, safe in every mode (`axis.audit/1.list`, `verify`, `status`). A frozen facade too. */
 export type AuditReader = Pick<AuditLog, "list" | "verify" | "head">;
 
@@ -72,6 +96,7 @@ function journalReader(j: Journal): JournalReader {
     getRun: (id: string) => j.getRun(id),
     listRuns: (o?: Parameters<Journal["listRuns"]>[0]) => j.listRuns(o),
     transitions: (e: "workspace" | "run", id: string) => j.transitions(e, id),
+    listProjects: () => j.listProjects(),
   });
 }
 
@@ -116,6 +141,8 @@ export interface HostServices {
   readonly recovery: RecoveryOutcome | undefined;
   /** Stall check, status and write notification for handlers and the audit sink. No put, no ack, no timer. */
   readonly anchors: AnchorGuard;
+  /** Checkpoint and send the newest head now (the final anchor of a graceful shutdown). Never throws; a no-op when degraded. */
+  readonly flushAnchor: () => void;
   /** The anchor the supervisor held at startup, the newest head this process put, and the highest acknowledged sequence. */
   readonly anchor: () => { readonly atStart: ChainHead | null; readonly put: ChainHead | null; readonly ackedSeq: number };
 }
@@ -229,6 +256,7 @@ export function createDaemonHost(config: HostConfig, ports: StartupPorts, option
       disposables.setInterval(() => void uptime.read(), UPTIME_TICK_MS, "uptime.tick");
       idempotency = JournalIdempotencyStore.open(db, { audit, redactor: ports.redactor, monotonic: () => uptime.read() });
       // Step 9: recovery, then anchor what recovery wrote.
+      ports.afterStorage?.({ db, lock: dir.lock, journal, audit, idempotency, gitPath, excludeDirs, anchors });
       recovery = await runRecovery({
         lock: dir.lock,
         journal,
@@ -251,10 +279,7 @@ export function createDaemonHost(config: HostConfig, ports: StartupPorts, option
     checkCoverage(surface);
     const served = [...new Set(Object.keys(surface.registry).map((k) => k.slice(0, k.indexOf("/"))))];
     alive();
-    // Step 12: ready. Signals (step 11) are installed by the caller with `installHostLifecycle` (H7).
-    ports.control.send({ type: "ready", protocolVersion: PROTOCOL_VERSION, contracts: served, ...(degraded === undefined ? {} : { degraded }) });
-    ports.logger?.info("host.ready");
-    return Object.freeze({
+    const services: HostServices = Object.freeze({
       journalRead: journalReader(journal),
       auditRead: auditReader(audit),
       journal: degraded === undefined ? journal : undefined,
@@ -271,8 +296,16 @@ export function createDaemonHost(config: HostConfig, ports: StartupPorts, option
       served,
       recovery,
       anchors: Object.freeze({ check: (t: number) => anchors.check(t), status: () => anchors.status(), noteWrite: () => anchors.noteWrite() }),
+      flushAnchor: () => anchors.flush(),
       anchor: () => Object.freeze({ atStart: check.anchor, put: anchors.put, ackedSeq: anchors.ackedSeq }),
     });
+    // Steps 10 and 11 of the composition (handlers, lifecycle) happen here, before `ready`: a throw sends no `ready`.
+    await ports.beforeReady?.(services, degraded === undefined ? dir.lock : undefined);
+    alive();
+    // Step 12: ready. Signals (step 11) are installed by the composition with `installHostLifecycle` (H7, H12).
+    ports.control.send({ type: "ready", protocolVersion: PROTOCOL_VERSION, contracts: served, ...(degraded === undefined ? {} : { degraded }) });
+    ports.logger?.info("host.ready");
+    return services;
   };
 
   return {

@@ -41,6 +41,12 @@ const HOST_FILE_RULES = new Map([
   ["@axis/worktrees/daemon-confirm", ["src/gate/worktrees-confirm.ts"]],
   ["@axis/runs/daemon-attestation", ["src/gate/run-trust.ts"]],
 ]);
+/**
+ * The files that may load the two minter modules (`gate/worktrees-confirm.ts`, `gate/run-trust.ts`): the public index (which re-exports
+ * their closed-over factories) and the composition root (ticket H12), the one place that builds the gate and hands handler code only
+ * the registrar. A handler, a service, a binding or another composition part may not.
+ */
+const COMPOSITION_FILES = new Set(["src/index.ts", "src/compose.ts"]);
 /** Packages whose bindings live in `src/bindings/*.ts` of the host (they land with their own changes). */
 const HOST_BINDING_PACKAGES = ["@axis/runs", "@axis/review"];
 
@@ -82,11 +88,11 @@ export function violation(pkg, spec, file = null, pkgDir = null) {
     }
     if (pkg === HOST_PACKAGE && /^src[\\/]gate[\\/]worktrees-confirm(\.[cm]?[jt]s)?$/.test(rel)) {
       const from = relative(pkgDir, file).split(sep).join("/");
-      if (from.startsWith("src/") && from !== "src/index.ts") return "only src/index.ts may import the discard token minter";
+      if (from.startsWith("src/") && !COMPOSITION_FILES.has(from)) return "only src/index.ts and the composition root src/compose.ts may import the discard token minter";
     }
     if (pkg === HOST_PACKAGE && /^src[\\/]gate[\\/]run-trust(\.[cm]?[jt]s)?$/.test(rel)) {
       const from = relative(pkgDir, file).split(sep).join("/");
-      if (from.startsWith("src/") && from !== "src/index.ts") return "only src/index.ts may import the run trust minter";
+      if (from.startsWith("src/") && !COMPOSITION_FILES.has(from)) return "only src/index.ts and the composition root src/compose.ts may import the run trust minter";
     }
     return rel === ".." || rel.startsWith(`..${sep}`) || resolve(rel) === rel
       ? "relative import leaves the package directory"
@@ -355,6 +361,8 @@ test("scanner: the daemon host is imported by nothing and imports the restricted
   assert.notEqual(violation("daemon-host", "@axis/runs/daemon-attestation"), null, "a call without a file is judged strictly");
   // The run trust minter module (a relative import): only the public index, never a handler, binding or gate neighbour.
   assert.equal(violation("daemon-host", "./gate/run-trust.js", at("src/index.ts"), dir), null);
+  assert.equal(violation("daemon-host", "./gate/run-trust.js", at("src/compose.ts"), dir), null, "the composition root");
+  assert.notEqual(violation("daemon-host", "./gate/run-trust.js", at("src/compose-parts.ts"), dir), null, "its helper file is not the root");
   for (const [f, spec] of [
     ["src/handlers/cli-runs.ts", "../gate/run-trust.js"],
     ["src/bindings/runs.ts", "../gate/run-trust.js"],
@@ -368,6 +376,8 @@ test("scanner: the daemon host is imported by nothing and imports the restricted
   assert.notEqual(violation("daemon-host", "@axis/worktrees/daemon-confirm", at("src/bindings/worktrees.ts"), dir), null);
   // The minter itself (a relative import): only the public index, never a handler, service, binding or the gate neighbours.
   assert.equal(violation("daemon-host", "./gate/worktrees-confirm.js", at("src/index.ts"), dir), null);
+  assert.equal(violation("daemon-host", "./gate/worktrees-confirm.js", at("src/compose.ts"), dir), null, "the composition root");
+  assert.notEqual(violation("daemon-host", "./gate/worktrees-confirm.js", at("src/compose-parts.ts"), dir), null, "its helper file is not the root");
   for (const [f, spec] of [
     ["src/handlers/worktrees.ts", "../gate/worktrees-confirm.js"],
     ["src/worktrees/service.ts", "../gate/worktrees-confirm.js"],

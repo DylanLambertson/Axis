@@ -54,9 +54,10 @@ export const RESTRICTED_MODULES = [
   { pkg: "journal", file: "principal.ts", importers: new Set() },
   { pkg: "runs", file: "attestation.ts", importers: new Set() },
   { pkg: "audit", file: "lock.ts", importers: new Set() },
-  // The host's run trust minter: even inside its own package only the composition point (the public index) may load it, so no
-  // handler, service or binding can mint an attestation without main's per-start trust.check (TRU-2).
-  { pkg: "daemon-host", file: "gate/run-trust.ts", importers: new Set(), files: new Set(["daemon-host/index.ts"]), exact: true },
+  // The host's run trust minter: even inside its own package only the composition points (the public index, and the composition
+  // root `compose.ts`, which hands handler code the registrar only) may load it, so no handler, service or binding can mint an
+  // attestation without main's per-start trust.check (TRU-2).
+  { pkg: "daemon-host", file: "gate/run-trust.ts", importers: new Set(), files: new Set(["daemon-host/index.ts", "daemon-host/compose.ts"]), exact: true },
 ];
 
 /** True when the staged file `rel` (package `importerPkg`) may import restricted module `r`. `exact` ignores the owner package. */

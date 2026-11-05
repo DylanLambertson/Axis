@@ -1,0 +1,355 @@
+// Copyright (c) 2026 Dylan Lambertson. All rights reserved.
+import { mkdirSync, rmSync } from "node:fs";
+import { access } from "node:fs/promises";
+import { join } from "node:path";
+import { randomBytes, randomUUID } from "node:crypto";
+import { AxisError, withTransaction, type InstanceLock } from "@axis/audit";
+import { Daemon, MemoryIdempotencyStore, protocolRegistry, type ContractRegistry, type ShutdownOptions } from "@axis/daemon";
+import type { GitRunner } from "@axis/git-ops";
+import { PROJECTS_CONTRACT, PROJECTS_VERSION, PROVIDERS_CONTRACT, PROVIDERS_VERSION, APPROVALS_CONTRACT, APPROVALS_VERSION, REVIEW_CONTRACT, REVIEW_VERSION, WORKTREES_CONTRACT, WORKTREES_VERSION, lookupMethod } from "@axis/protocol";
+import { createSecretScanner, type ScanMode } from "@axis/secret-scan";
+import { anchorPreflight } from "./anchor/preflight.js";
+import { createGitOperations, createGitPort } from "./bindings/git.js";
+import { createCommitPreparer, createReviewService } from "./bindings/review.js";
+import { createTempIndexProvider } from "./bindings/review-tempindex.js";
+import { createRunsBinding, type RunsBinding, type RunsBindingDeps } from "./bindings/runs.js";
+import { createWorktreesBinding, type WorktreesBinding } from "./bindings/worktrees.js";
+import { createActiveRunForwarder, createRunsClock, daemonAuditSink, handleProjectsRegister, recordingRegistrar } from "./compose-parts.js";
+import type { HostConfig } from "./config.js";
+import { createAttestationVerifier } from "./control/attestation.js";
+import type { ControlClient } from "./control/client.js";
+import { createConnectLimiter } from "./control/connect-limiter.js";
+import { createConnectRouter } from "./control/connect-router.js";
+import type { DisposeResult, ListenerTarget } from "./disposables.js";
+import { createChallengeAuditSink } from "./gate/audit-sink.js";
+import { createRunTrustMinter } from "./gate/run-trust.js";
+import { createWorktreesApprovals, type WorktreesApprovals } from "./gate/worktrees-confirm.js";
+import { createApprovalsHandlers } from "./handlers/approvals.js";
+import { createHandlerRegistrar, registerAuditHandlers } from "./handlers/anchor-guard.js";
+import { registerCliRunsHandlers } from "./handlers/cli-runs.js";
+import { PushedBases } from "./handlers/git-common.js";
+import { registerGitHandlers } from "./handlers/git.js";
+import { createProjectsHandlers } from "./handlers/projects.js";
+import { createProvidersHandlers } from "./handlers/providers.js";
+import { createReviewHandlers } from "./handlers/review.js";
+import { createReviewAuditSink } from "./handlers/review-audit.js";
+import { ReviewedTrees } from "./handlers/review-store.js";
+import { createWorktreesHandlers } from "./handlers/worktrees.js";
+import { createDaemonHost, type DaemonHost, type HostOptions, type HostServices, type StartupPorts } from "./host.js";
+import { installHostLifecycle, type LifecycleHandle, type LifecycleOptions } from "./lifecycle.js";
+import type { Logger } from "./log/logger.js";
+import { checkCoverage } from "./policy/coverage.js";
+import type { PtyPort } from "./ports/pty.js";
+import type { ChannelMux } from "./transport/mux.js";
+
+/**
+ * The composition root (ticket H12, design section 3 steps 10 and 11, plan section 1 and questions 18 and 19). It is the one
+ * place that builds the `Daemon` and every binding, and it hands handler code ONLY the `HandlerRegistrar` (never the
+ * `Daemon`, the raw `register`, the database or a minter).
+ *
+ * What it guarantees, and what fails closed:
+ * - It REFUSES TO BE BUILT without a pty port and a pty git runner (`pty_required`, exit 78, before a lock or a file exists):
+ *   `commit-tree` and `push` run in the `pty` git context and the runs binding spawns in it, so a host that could not reach
+ *   it would serve `axis.git/1` and `axis.cli-runs/1` and fail on first use. A missing snapshotter is refused too: a run
+ *   with no GIT-SNAP-1 check must be a decision, not a default.
+ * - ONE `ProjectMutex` (the one of the worktrees binding) reaches the worktrees, git and runs handlers. The worktrees binding is
+ *   built first with a forwarder that answers `true` ("a run may be active", never `false`) until the runs binding is bound.
+ * - `createApprovals` gets `anchorPreflight(services.anchors)` as `preflight`, so a stalled anchor refuses tier 3 and above
+ *   before a challenge or a dialog. The registrar guards every tier 3 method structurally as well.
+ * - The startup reconcile is the worktrees service's: every workspace is `needs attention` until it has completed.
+ * - Every served method has a handler and every handler is a served method (`checkCoverage` `also: handlers`), or startup fails.
+ * - A degraded host (design 5.5) registers only the audit reads and `axis.projects/1.list`, over a registry that holds nothing else.
+ * - `installHostLifecycle` runs before `ready`; the final anchor is flushed and awaited (bounded) once nothing can still write.
+ */
+export interface ComposeOptions {
+  readonly config: HostConfig;
+  readonly control: ControlClient;
+  /** The mux the control client speaks over (child process and web hosts); a connect that names a `cid` needs it. */
+  readonly mux?: ChannelMux;
+  readonly ports: Omit<StartupPorts, "control" | "reconcile" | "afterStorage" | "beforeReady">;
+  readonly host?: HostOptions;
+  /** The Axis pty process: spawns CLI runs. REQUIRED. */
+  readonly pty: PtyPort | undefined;
+  /** The `pty` git context runner (commit-tree and push run where the credentials and signing are). REQUIRED. */
+  readonly ptyGitRunner: GitRunner | undefined;
+  /** GIT-SNAP-1 around a run (`@axis/git-snapshot` or worktrees `gitSnap`, question 10). REQUIRED. */
+  readonly snapshotter: RunsBindingDeps["snapshotter"] | undefined;
+  /** `refuse` by default; `warn` is the user setting (question 15). */
+  readonly scanMode?: ScanMode;
+  /** `axis.git.runHooks` (affects push only; decision B2). Default false. */
+  readonly runHooks?: boolean;
+  /** Where signals and crashes are listened for: the composition caller passes the real `process`. */
+  readonly process: ListenerTarget;
+  readonly exit: LifecycleOptions["exit"];
+  readonly shutdown?: ShutdownOptions;
+  readonly finalizeTimeoutMs?: number;
+  /** How long the final anchor waits for its acknowledgement (default 1500). It never outlives `finalizeTimeoutMs`. */
+  readonly finalAnchorWaitMs?: number;
+}
+
+export interface ComposedHost {
+  readonly host: DaemonHost;
+  start(): Promise<HostServices>;
+  stop(): Promise<DisposeResult>;
+  /** Resolves after the lifecycle's exit hook ran (never before `start` resolved). */
+  readonly finished: Promise<void>;
+}
+
+function refuse(reason: string): never {
+  throw new AxisError("E_INVALID_ARGUMENT", "The host composition is incomplete", { reason });
+}
+
+const isRunner = (r: unknown): r is GitRunner => typeof (r as { run?: unknown } | null)?.run === "function";
+const isPty = (p: unknown): p is PtyPort => typeof (p as { spawn?: unknown } | null)?.spawn === "function";
+
+/** The registry restricted to what the host serves, so an unserved method does not exist (and `hello` does not offer it). */
+function registryOf(surface: HostServices["surface"]): ContractRegistry {
+  return {
+    lookup: (contract, version, method) => (surface.registry[`${contract}/${version}`]?.[method] === undefined ? undefined : lookupMethod(contract, version, method)),
+    versions: (contract) => protocolRegistry.versions(contract).filter((v) => surface.registry[`${contract}/${v}`] !== undefined),
+  };
+}
+
+export function composeDaemonHost(options: ComposeOptions): ComposedHost {
+  if (!isPty(options.pty)) refuse("pty_required");
+  if (!isRunner(options.ptyGitRunner)) refuse("pty_git_runner_required");
+  if (typeof options.snapshotter?.before !== "function" || typeof options.snapshotter?.after !== "function") refuse("snapshotter_required");
+  const { config, control, ports } = options;
+  const pty = options.pty;
+  const ptyGitRunner = options.ptyGitRunner;
+  const snapshotter = options.snapshotter;
+  const logger: Logger | undefined = ports.logger;
+  const scanner = createSecretScanner({ mode: options.scanMode ?? "refuse" });
+
+  /** Undo, in reverse order, what composition created (everything below is idempotent). */
+  const cleanups: Array<() => void> = [];
+  const runCleanups = (): void => {
+    for (const fn of cleanups.splice(0).reverse()) {
+      try {
+        fn();
+      } catch {
+        // one failing cleanup must not stop the others
+      }
+    }
+  };
+
+  // Built in `afterStorage`, used by `reconcile` and `beforeReady`.
+  const built: { worktrees?: WorktreesBinding; runs?: RunsBinding; approvals?: WorktreesApprovals; projectPaths?: () => string[] } = {};
+  let lifecycle: LifecycleHandle | undefined;
+  let finish: () => void = () => undefined;
+  const finished = new Promise<void>((resolve) => void (finish = resolve));
+  let stopping: Promise<DisposeResult> | undefined;
+
+  const host: DaemonHost = createDaemonHost(
+    config,
+    {
+      ...ports,
+      control,
+      // The registered repositories (design 5a): git is never taken from one of them. Known to the journal once it is open.
+      registeredRepoRoots: () => [...(ports.registeredRepoRoots?.() ?? []), ...(built.projectPaths?.() ?? [])],
+      reconcile: (signal) => {
+        const worktrees = built.worktrees;
+        if (worktrees === undefined) throw new AxisError("E_INTERNAL", "Reconcile ran before the worktrees binding", { reason: "not_built" });
+        return worktrees.service.reconcile(signal);
+      },
+      afterStorage(parts) {
+        const forwarder = createActiveRunForwarder();
+        const approvals = createWorktreesApprovals({
+          audit: createChallengeAuditSink({ append: (e) => (parts.audit.append(e), parts.anchors.noteWrite(), undefined) }),
+          control,
+          clock: ports.clock,
+          ...(logger === undefined ? {} : { logger }),
+          preflight: anchorPreflight(parts.anchors),
+        });
+        cleanups.push(() => approvals.dispose());
+        const worktrees = createWorktreesBinding({
+          journal: parts.journal,
+          audit: parts.audit,
+          transact: (fn) => withTransaction(parts.db, fn),
+          random: { bytes: (n) => randomBytes(n), uuid: () => randomUUID() },
+          runs: forwarder,
+          gitPath: parts.gitPath,
+          env: ports.env,
+          platform: config.platform,
+          worktreeRoot: config.worktreeRoot,
+          onPreview: approvals.onPreview,
+        });
+        const runs = createRunsBinding({
+          journal: parts.journal,
+          audit: parts.audit,
+          pty,
+          clock: createRunsClock(ports.clock),
+          locator: worktrees.locator,
+          snapshotter,
+          env: () => ports.env,
+          redactor: ports.redactor,
+          mutex: worktrees.mutex,
+          platform: config.platform,
+          managedWorktreeRoots: () => [config.worktreeRoot],
+          onInternalError: (where) => logger?.error("request.failed", { reason: `runs_${String(where).slice(0, 24)}` }),
+        });
+        cleanups.push(() => runs.dispose());
+        forwarder.bind(runs.service);
+        Object.assign(built, { worktrees, runs, approvals, projectPaths: () => parts.journal.listProjects().map((p) => p.path) });
+      },
+      async beforeReady(services, lock) {
+        try {
+          await assemble(services, lock);
+        } catch (e) {
+          lifecycle?.dispose();
+          runCleanups();
+          throw e;
+        }
+      },
+    },
+    options.host,
+  );
+
+  async function assemble(services: HostServices, lock: InstanceLock | undefined): Promise<void> {
+    const { journal, audit } = services;
+    const writable = services.degraded === undefined && journal !== undefined && audit !== undefined && services.idempotency !== undefined;
+    if (writable && lock !== undefined) built.runs?.recover(lock); // DMN-7 for CLI runs: QUEUED never reached a process; nothing starts before this
+    // Contracts: identity, policy, the daemon.
+    const verifier = createAttestationVerifier({ key: config.attestationKey, clock: ports.clock });
+    cleanups.push(() => verifier.close());
+    const daemon = new Daemon({
+      identity: verifier,
+      audit: daemonAuditSink(audit, () => services.anchors.noteWrite()),
+      policy: services.policy,
+      ...(built.approvals === undefined ? {} : { approvals: built.approvals.gate }),
+      // A degraded host has no durable store: everything it serves is a read with no key, so the in-memory one is never written.
+      idempotency: services.idempotency ?? new MemoryIdempotencyStore(),
+      registry: registryOf(services.surface),
+      onInternalError: (_correlationId, error) => logger?.error("request.failed", { reason: "daemon_internal", error }),
+      ...(config.limits.maxConnections === undefined ? {} : { maxConnections: config.limits.maxConnections }),
+      ...(options.shutdown === undefined ? {} : { shutdown: options.shutdown }),
+    });
+    cleanups.push(() => daemon.stop());
+    const recorded = recordingRegistrar(createHandlerRegistrar(daemon, services.anchors));
+    const registrar = recorded.registrar;
+
+    registerAuditHandlers(registrar, { audit: services.auditRead, anchors: services.anchors, degraded: () => services.degraded, clock: ports.clock });
+    registrar.register(PROJECTS_CONTRACT, PROJECTS_VERSION, createProjectsHandlers({ projects: () => services.journalRead.listProjects() }));
+    if (writable) registerServing(registrar, services);
+    // Every served method has a handler and every handler is a served method; a mismatch is exit 70 before `ready`.
+    checkCoverage({ ...services.surface, also: { handlers: recorded.methods() } });
+
+    const limiter = createConnectLimiter({
+      clock: ports.clock,
+      ...(config.limits.connectsPerMinute === undefined ? {} : { connectsPerMinute: config.limits.connectsPerMinute }),
+      ...(config.limits.connectBurst === undefined ? {} : { burst: config.limits.connectBurst }),
+    });
+    const router = createConnectRouter({ limiter, accept: (connection, attestation) => daemon.accept(connection, attestation), ...(options.mux === undefined ? {} : { mux: options.mux }), ...(logger === undefined ? {} : { logger }) });
+    cleanups.push(control.onConnect((request) => router.fromMux(request)));
+    cleanups.push(control.onTrustSet((m) => {
+      try {
+        services.trust.set({ windowId: m.windowId, ...(m.workspaceId === undefined ? {} : { workspaceId: m.workspaceId }) }, m.trusted);
+      } catch {
+        logger?.warn("request.failed", { reason: "trust_set_refused" }); // the registry fails closed by itself
+      }
+    }));
+    cleanups.push(control.onProjectsRegister((m) => handleProjectsRegister({ journal, control, ...(logger === undefined ? {} : { logger }) }, m)));
+
+    // Step 11: signals, the control `shutdown` message, crash handlers.
+    lifecycle = installHostLifecycle({
+      daemon,
+      control,
+      stop: () => stop(),
+      finalize: () => finalAnchor(services),
+      ...(options.finalizeTimeoutMs === undefined ? {} : { finalizeTimeoutMs: options.finalizeTimeoutMs }),
+      ...(logger === undefined ? {} : { logger }),
+      exit: options.exit,
+      process: options.process,
+    });
+    void lifecycle.finished.then(finish);
+  }
+
+  /** The services of a healthy host, each registered through the registrar and nothing else. */
+  function registerServing(registrar: ReturnType<typeof createHandlerRegistrar>, services: HostServices): void {
+    const { worktrees, runs, approvals } = built;
+    const journal = services.journal;
+    const audit = services.audit;
+    if (worktrees === undefined || runs === undefined || approvals === undefined || journal === undefined || audit === undefined) throw new AxisError("E_INTERNAL", "The host composition is incomplete", { reason: "not_built" });
+    const git = createGitPort({
+      gitPath: services.gitPath,
+      env: { daemon: ports.env, pty: ports.env },
+      platform: config.platform,
+      runHooks: options.runHooks ?? false,
+      scanner,
+      ptyRunner: ptyGitRunner,
+      assertNoDrift: (w) => worktrees.assertNoDrift(w),
+      excludeDirs: services.excludeDirs,
+    });
+    const reviewDir = join(config.dataDir, "review-index");
+    rmSync(reviewDir, { recursive: true, force: true }); // stale temporary indexes of an earlier process (this one holds the lock)
+    mkdirSync(reviewDir, { recursive: true, mode: 0o700 });
+    const reviewDeps = { git, locator: worktrees.locator, tempIndex: createTempIndexProvider(reviewDir), fileExists: (p: string) => access(p).then(() => true, () => false) };
+    const trees = new ReviewedTrees();
+    registrar.register(APPROVALS_CONTRACT, APPROVALS_VERSION, createApprovalsHandlers({ approvals: approvals.port }));
+    registrar.register(PROVIDERS_CONTRACT, PROVIDERS_VERSION, createProvidersHandlers({ providers: () => [] }));
+    registrar.register(WORKTREES_CONTRACT, WORKTREES_VERSION, createWorktreesHandlers({ service: worktrees.service, needsAttention: worktrees.needsAttention }), { content: worktrees.content });
+    registerCliRunsHandlers(registrar, { service: runs.service, journal, control, minter: createRunTrustMinter(ports.clock), mutex: worktrees.mutex, needsAttention: worktrees.needsAttention, platform: config.platform });
+    registrar.register(
+      REVIEW_CONTRACT,
+      REVIEW_VERSION,
+      createReviewHandlers({ review: createReviewService(reviewDeps), journal, runs: runs.service, trees, audit: createReviewAuditSink({ append: (e) => (audit.append(e), services.anchors.noteWrite()) }) }),
+    );
+    registerGitHandlers(registrar, {
+      ops: createGitOperations({ git, runs: runs.service }),
+      review: createCommitPreparer(reviewDeps),
+      trees,
+      journal,
+      locator: worktrees.locator,
+      mutex: worktrees.mutex,
+      needsAttention: worktrees.needsAttention,
+      anchors: services.anchors,
+      runs: runs.service,
+      bases: new PushedBases(),
+      onInternalError: () => logger?.error("request.failed", { reason: "git_internal" }),
+      onBookkeepingError: () => logger?.warn("request.failed", { reason: "git_bookkeeping" }),
+    });
+  }
+
+  /** The final checkpoint (design 8, step 4): nothing can still write. The put is synchronous; only the acknowledgement is awaited, bounded. */
+  async function finalAnchor(services: HostServices): Promise<void> {
+    services.flushAnchor();
+    const target = services.anchor().put;
+    if (target === undefined || target === null || services.anchor().ackedSeq >= target.seq) return;
+    await new Promise<void>((resolve) => {
+      const off = control.onAnchorAck(() => {
+        if (services.anchor().ackedSeq >= target.seq) done();
+      });
+      const timer = setTimeout(done, options.finalAnchorWaitMs ?? 1_500) as unknown as NodeJS.Timeout; // opaque handle under Code OSS's typings (ADR 0005)
+      timer.unref();
+      function done(): void {
+        clearTimeout(timer);
+        off();
+        resolve();
+      }
+    });
+  }
+
+  function stop(): Promise<DisposeResult> {
+    stopping ??= (async () => {
+      lifecycle?.dispose();
+      runCleanups();
+      return host.stop();
+    })();
+    return stopping;
+  }
+
+  return {
+    host,
+    start: async () => {
+      try {
+        return await host.start();
+      } catch (e) {
+        lifecycle?.dispose();
+        runCleanups();
+        throw e;
+      }
+    },
+    stop,
+    finished,
+  };
+}
