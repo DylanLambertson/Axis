@@ -133,7 +133,9 @@ test("swap between check and use: the file replaced by another file is detected 
   const w = world();
   writeFileSync(join(w.wt, "f.txt"), "one");
   const target = await resolveTarget(w.deps(), "wt1", "f.txt", "read");
-  rmSync(join(w.wt, "f.txt"));
+  // The old file stays linked while the new one is created, so the new one cannot be given the old inode number: the
+  // identity (`dev:ino`) differs by construction, whatever the file system and its timestamp granularity.
+  renameSync(join(w.wt, "f.txt"), join(w.wt, "f-old.txt"));
   writeFileSync(join(w.wt, "f.txt"), "two");
   assert.equal(await reason(openContained(w.deps(), target, "read")), "swapped");
 });

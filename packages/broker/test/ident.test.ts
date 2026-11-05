@@ -3,7 +3,7 @@
 // or chained script is not judged as a plain program, and invisible characters are shown as code points.
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, copyFileSync, mkdirSync, realpathSync, statSync, utimesSync, writeFileSync, readFileSync } from "node:fs";
+import { chmodSync, copyFileSync, mkdirSync, realpathSync, utimesSync, writeFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
 import { ToolBroker, createCommandRunner, nodeBrokerFs, type ApprovalRequest, type BrokerFs, type FileStat, type ToolContext } from "../src/index.js";
@@ -54,20 +54,25 @@ for (const field of ["id", "size", "mtime", "ctime"] as const) {
   });
 }
 
-test("R5-A: a same-size rewrite in place with the modification time put back does not run", { skip: skipSh }, async () => {
-  let old: { atime: Date; mtime: Date } | undefined;
+// Kernel timestamps tick every few milliseconds, so the rewrite waits well past a tick: only then does ctime differ.
+const pause = (ms: number): void => void Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+const SECOND = new Date(1_000_000_000_000);
+
+test("R5-A: a same-size rewrite in place with the modification time put back (to the second) does not run", { skip: skipSh }, async () => {
   const t = build({
     mutate: (bin) => {
       const p = join(bin, "prog");
+      pause(40);
       const bytes = readFileSync(p);
       bytes[bytes.length - 1] = (bytes[bytes.length - 1] as number) ^ 1;
       writeFileSync(p, bytes);
-      if (old !== undefined) utimesSync(p, old.atime, old.mtime);
+      // A whole second is exact in every time type: dev:ino, size and mtime are all as they were, and only ctime is left.
+      utimesSync(p, SECOND, SECOND);
     },
   });
   const p = t.install();
-  const st = statSync(p);
-  old = { atime: st.atime, mtime: st.mtime };
+  utimesSync(p, SECOND, SECOND);
+  pause(40);
   assert.equal(await why(t.broker.invoke(call("t", {}))), "E_POLICY_DENIED/program-changed");
 });
 
