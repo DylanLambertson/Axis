@@ -3,6 +3,8 @@
 export interface TrustSubject {
   readonly windowId: string;
   readonly workspaceId?: string;
+  /** The journal's project id; trust is held per project (design Q6), so this is the most specific level. */
+  readonly projectId?: string;
 }
 
 /**
@@ -12,6 +14,8 @@ export interface TrustSubject {
  */
 export interface TrustRegistry {
   isTrusted(subject: TrustSubject): boolean;
-  /** Record a supervisor decision. */
+  /** Has the supervisor explicitly withdrawn trust at any level of `subject`? A revoke refuses the next run start (TRU-2). */
+  isRevoked(subject: TrustSubject): boolean;
+  /** Record a supervisor decision at the most specific level the subject names (project, else workspace, else window). */
   set(subject: TrustSubject, trusted: boolean): void;
 }
