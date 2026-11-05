@@ -1,9 +1,10 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import assert from "node:assert/strict";
+import { getEventListeners } from "node:events";
 import { test } from "node:test";
 import { ChannelMux, ControlClient } from "../src/index.js";
 import { memoryChannelPair, type MemoryEnd } from "../testing/memory-channel.js";
-import { processSnapshot, wait } from "./helpers.js";
+import { processSnapshot, trackTimers, wait } from "./helpers.js";
 
 const chal = "C".repeat(43);
 const proof = "q".repeat(32);
@@ -183,4 +184,33 @@ test("the channel closing rejects waiting requests with E_UNAVAILABLE", async ()
   b.close();
   await assert.rejects(p, { code: "E_UNAVAILABLE" });
   assert.equal(client.stats().pending, 0);
+});
+
+test("every way a request can end clears its timer and abort listener at once", async () => {
+  const timers = trackTimers();
+  try {
+    const { b, client, peer } = setup();
+    const ac = new AbortController();
+    // answered
+    const watched = new AbortController();
+    const answered = client.anchorGet({ signal: watched.signal });
+    await wait(0);
+    assert.equal(getEventListeners(watched.signal, "abort").length, 1);
+    b.send({ type: "anchor.result", requestId: last(peer)?.["requestId"], anchor: null });
+    await answered;
+    assert.equal(getEventListeners(watched.signal, "abort").length, 0);
+    // cancelled
+    const cancelled = client.anchorGet({ signal: ac.signal });
+    ac.abort();
+    await assert.rejects(cancelled, { code: "E_CANCELLED" });
+    // timed out
+    await assert.rejects(client.anchorGet({ timeoutMs: 5 }), { code: "E_TIMEOUT" });
+    // channel closed
+    const closed = client.anchorGet();
+    b.close();
+    await assert.rejects(closed, { code: "E_UNAVAILABLE" });
+    assert.equal(timers.live(), 0);
+  } finally {
+    timers.restore();
+  }
 });
