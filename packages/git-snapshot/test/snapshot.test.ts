@@ -369,7 +369,11 @@ test("a file rewritten while the snapshot reads is never accepted torn", async (
       stop = true;
       await writer;
     }
-    assert.ok(accepted >= 0);
+    // With the writer stopped the read must settle on one of the written contents.
+    const quiet = (await f.snap()).entries.find((x) => x.id === "hooks/busy");
+    assert.equal(quiet?.state, "file");
+    assert.ok(allowed.has(quiet?.sha256 as string));
+    assert.ok(accepted + 1 > 0);
   } finally {
     f.cleanup();
   }

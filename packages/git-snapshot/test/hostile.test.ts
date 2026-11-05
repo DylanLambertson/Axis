@@ -200,10 +200,14 @@ test("nits: short userinfo tokens and secret-named lines in file text are redact
   try {
     const base = await f.snap();
     git(f.wt, "config", "remote.origin.url", "https://plainuser7@example.invalid/o/r.git");
+    git(f.wt, "config", "remote.backup.url", "bob:scppass9@example.invalid:o/r.git");
+    git(f.wt, "config", "remote.other.url", "git@example.invalid:o/r.git");
     appendFileSync(join(f.common, "config"), '[http "https://example.invalid/"]\n\textraheader = X-Auth sekritword\n');
     const cur = await f.snap();
     const blob = JSON.stringify([diffSnapshots(base, cur), cur]);
     assert.ok(!blob.includes("plainuser7"), "userinfo leaked");
+    assert.ok(!blob.includes("scppass9"), "scp-form password leaked");
+    assert.ok(blob.includes("git@example.invalid:o/r.git"), "a plain scp URL is not a secret");
     assert.ok(!blob.includes("sekritword"), "secret-named line leaked");
   } finally {
     f.cleanup();
