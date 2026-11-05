@@ -12,6 +12,7 @@ import {
   type RequestEnvelope,
 } from "@axis/protocol";
 import { newCorrelationId } from "./digest.js";
+import type { DrainGate } from "./drain.js";
 import type { OrphanTracker } from "./orphans.js";
 import { CANCELLED, CLOSED, TIMED_OUT, runPipeline, type Outcome, type PipelineDeps } from "./pipeline.js";
 import { RateLimiter } from "./support.js";
@@ -30,6 +31,8 @@ export interface SessionDeps {
   readonly limits: SessionLimits;
   readonly now: () => number;
   readonly orphans: OrphanTracker;
+  /** Graceful shutdown state (see drain.ts). */
+  readonly drain: DrainGate;
   readonly onClosed: (session: Session) => void;
 }
 
@@ -123,6 +126,20 @@ export class Session {
     this.#d.onClosed(this);
   }
 
+  /**
+   * Graceful shutdown (drain.ts): cancel every request whose caller has not been answered, through the
+   * same path as a client `cancel`. Slots are untouched: they are released only when each pipeline settles.
+   */
+  cancelAll(): number {
+    let n = 0;
+    for (const [id, entry] of [...this.#inFlight]) {
+      if (entry.answered) continue;
+      this.#cancel(id);
+      n++;
+    }
+    return n;
+  }
+
   /** The transport reported the peer is gone: cancel everything, send nothing. */
   onPeerClosed(): void {
     this.close();
@@ -179,6 +196,10 @@ export class Session {
   // ---- handshake ----
 
   #hello(hello: Hello): void {
+    if (this.#d.drain.draining) {
+      this.#rejectHello(this.#err("E_UNAVAILABLE", "The daemon is shutting down"), true);
+      return;
+    }
     const version = negotiateVersion(hello.protocolVersions);
     if (!version.ok) {
       this.#rejectHello(this.#err("E_VERSION_UNSUPPORTED", "No common protocol version"), true);
@@ -225,6 +246,11 @@ export class Session {
   async #request(req: RequestEnvelope): Promise<void> {
     const d = this.#d;
     const id = req.id;
+    // Graceful shutdown: no handler starts once draining has begun.
+    if (d.drain.draining) {
+      this.#reply(id, { ok: false, error: this.#err("E_UNAVAILABLE", "The daemon is shutting down") });
+      return;
+    }
     if (this.#inFlight.has(id)) {
       this.#violation();
       this.#reply(id, { ok: false, error: this.#err("E_CONFLICT", "That request id is already in flight") });
@@ -261,6 +287,7 @@ export class Session {
     const controller = new AbortController();
     const entry: InFlight = { controller, answered: false, settled: false, timer: undefined };
     this.#inFlight.set(id, entry);
+    d.drain.enter();
     const timeoutMs = Math.min(spec.timeoutMs, req.timeoutMs ?? Infinity, MAX_TIMEOUT_MS);
     entry.timer = setTimeout(() => controller.abort(TIMED_OUT), timeoutMs);
     entry.timer.unref();
@@ -311,6 +338,7 @@ export class Session {
       })
       .finally(() => {
         entry.settled = true;
+        d.drain.leave();
         if (entry.timer) clearTimeout(entry.timer);
         if (controller.signal.aborted) d.orphans.remove(this.#identity.windowId);
         this.#inFlight.delete(id);

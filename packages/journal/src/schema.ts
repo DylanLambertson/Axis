@@ -64,6 +64,47 @@ export const JOURNAL_MIGRATIONS: readonly Migration[] = [
       ) STRICT;
     `,
   },
+  {
+    // The daemon's idempotency store (ADR 0005 D9: same database, same transactions). The older `idempotency`
+    // table above only dedupes journal creates; this one holds request outcomes for the RPC pipeline.
+    version: 2,
+    sql: `
+      CREATE TABLE daemon_idempotency (
+        actor_id       TEXT NOT NULL,
+        workspace_id   TEXT NOT NULL,
+        contract       TEXT NOT NULL,
+        version        INTEGER NOT NULL,
+        method         TEXT NOT NULL,
+        key            TEXT NOT NULL,
+        request_hash   TEXT NOT NULL CHECK (length(request_hash) <= 128),
+        state          TEXT NOT NULL CHECK (state IN ('in-progress','completed','unknown')),
+        -- the store instance that began the call; an in-progress row from another boot is a dead process's
+        boot_id        TEXT NOT NULL,
+        unknown_reason TEXT CHECK (unknown_reason IN ('interrupted','result-not-stored','failed-after-start')),
+        result         TEXT CHECK (result IS NULL OR length(result) <= 1048576),
+        result_bytes   INTEGER NOT NULL DEFAULT 0,
+        origin         TEXT NOT NULL DEFAULT '' CHECK (length(origin) <= 256),
+        created_at     INTEGER NOT NULL,
+        expires_at     INTEGER NOT NULL,
+        PRIMARY KEY (actor_id, workspace_id, contract, version, method, key),
+        CHECK ((state = 'completed') = (result IS NOT NULL)),
+        CHECK ((state = 'unknown') = (unknown_reason IS NOT NULL))
+      ) STRICT;
+      CREATE INDEX daemon_idempotency_expiry ON daemon_idempotency (expires_at);
+      CREATE INDEX daemon_idempotency_budget ON daemon_idempotency (actor_id, workspace_id, created_at);
+    `,
+  },
+  {
+    // The idempotency store's clock: accumulated process uptime in milliseconds, one row, advanced inside each write's
+    // transaction. Rows are created, expire and are deleted by it; the wall clock is never used.
+    version: 3,
+    sql: `
+      CREATE TABLE daemon_idempotency_clock (
+        id         INTEGER PRIMARY KEY CHECK (id = 1),
+        trusted_ms INTEGER NOT NULL CHECK (trusted_ms >= 0)
+      ) STRICT;
+    `,
+  },
 ];
 
 export const JOURNAL_SCHEMA_VERSION = JOURNAL_MIGRATIONS.length;
