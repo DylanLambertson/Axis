@@ -30,6 +30,9 @@ Lines are counted in the order the bullets appear in `docs/ROADMAP.md`. L1 to L1
 | | | 1a/L28 | External links (EL-5) |
 | | | 1a/L29 | No reh-web listener (NET-1) |
 | | | 1a/L30 | Typing after a view switch reaches only the destination's last focused element (IDE-1 c) |
+| | | 1a/L31 | Executable resolution: no CLI binary from the worktree or a relative `PATH` entry (CLI-1, CFG-1) |
+| | | 1a/L32 | Attribute swap window in the review reads (REV-2, G-27) |
+| | | 1a/L33 | No debugging ports in a packaged build (G-28) |
 
 | Line | Gate (1b) |
 |---|---|
@@ -181,7 +184,7 @@ Each of these is accepted for Phase 1 on purpose. The wording is the wording the
 12. **Hooks for Axis commit and push run with the user's credentials** in the pty process context (not the daemon, decision Q-4), while the common dir matches the acknowledged baseline. They are user-controlled code. Re-evaluated in 1b when the vault ships (GIT-3).
 13. **User paths bypass the Axis gate** (GIT-6, R32): a commit from the terminal or SCM view runs planted hooks without GIT-SNAP-1, and the user's local checkout shares the common dir.
 14. **The OS sandbox is Phase 3.** Until then no process Axis starts is contained by the OS.
-15. **Phase 0 worktree discovery checks paths once (TOCTOU).** Until the daemon owns worktree paths (task B5), the Agent view reads git metadata in the renderer, checks each worktree's two-way link and that the folder and its `.git` are not symbolic links, and then uses the path as a string (Files tree root, terminal cwd). A process that swaps a checked folder for a symbolic link after discovery redirects those uses. It needs a live writer in that folder; a downloaded archive or a `git pull` cannot do it (`docs/feasibility/axis-shell-phase0.md` §6).
+15. **Phase 0 worktree discovery checks paths once (TOCTOU).** Until the daemon owns worktree paths (task B5), the Agent view reads git metadata in the renderer, checks each worktree's two-way link and that every path in that check is physical (its real path equals the path as written, so no symbolic link anywhere in it), and then uses the path as a string (Files tree root, terminal cwd). A process that swaps a checked folder for a symbolic link after discovery redirects those uses. It needs a live writer in that folder; a downloaded archive or a `git pull` cannot do it (`docs/feasibility/axis-shell-phase0.md` §6).
 
 ## 8. Re-tag list applied (ADR 0004 implication 7)
 
