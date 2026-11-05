@@ -35,6 +35,9 @@ const settle = async (v: unknown): Promise<unknown> => {
 async function findTokens(root: unknown, name: string, seen = new Set<unknown>(), depth = 0): Promise<string[]> {
   if (isToken(root)) return [name];
   if (depth > 4 || (typeof root !== "object" && typeof root !== "function") || root === null || seen.has(root)) return [];
+  // zod schemas: calling their internals with hostile arguments rewrites the shared prototypes of zod's classes for the whole
+  // process (zod's own `$constructor` installs trait members on the receiver's prototype). They hold no capability.
+  if (Object.hasOwn(root, "_zod")) return [];
   seen.add(root);
   const found: string[] = [];
   if (typeof root === "function") {

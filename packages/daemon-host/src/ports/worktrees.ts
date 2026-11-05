@@ -22,6 +22,8 @@ export const RECONCILE_REASONS = ["missing_worktree", "unknown_worktree", "ref_m
 export type ReconcileReason = (typeof RECONCILE_REASONS)[number];
 
 export interface ReconcileReport {
+  /** True when the report is not the whole truth (the cap on entries was reached): every workspace then counts as needing attention. */
+  readonly incomplete?: boolean;
   /** Workspaces that answer `E_UNAVAILABLE` until looked at. Never aborts startup. */
   readonly needsAttention: readonly { readonly workspaceId: string; readonly reason: ReconcileReason }[];
 }

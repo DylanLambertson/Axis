@@ -143,7 +143,7 @@ Tier and `sideEffect` are the contract's declared minimum; policy may raise, nev
 |---|---|---|---|---|---|---|---|---|---|
 | `axis.worktrees/1` | `list`, `status` | read | 0 | none | | | user | `WorktreesService` | 1a, exists |
 | | `create` | write | 2 | req | | yes | user | same | 1a, exists |
-| | `finalise` | write | 2 now, **3 after P1d+** | req | yes after P1d+ | | user | same, content hook after P1d+ | 1a, exists. **Decided:** becomes tier 3 with a challenge, as a follow-up outside the first protocol PR |
+| | `finalise` | write | 2 now, **4 after P1d+** | req | yes after P1d+ | | user | same, content hook after P1d+ | 1a, exists. **Decided (amended by H8):** becomes tier 4 (challenge with a native confirmation), as a follow-up outside the first protocol PR: a discard token is minted only for a challenge issued at tier 4 or above, because a tier 3 approval has no dialog |
 | | `remove` | destructive | 4 | req | yes, native | | user | same, content hook (§7.2) | 1a, exists |
 | | `restoreFromRunBase` | write | 2 | req | | yes | user | same | 1a, exists |
 | | `discard`, `setUserEditing` | write | 2 | req / none | | | user | same | 1a, **named in the design docs, absent in the protocol** (additive, ticket P1d) |

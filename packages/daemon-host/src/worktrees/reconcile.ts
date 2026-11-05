@@ -38,8 +38,11 @@ const key = (p: string, platform: NodeJS.Platform): string => (platform === "win
 export async function reconcileWorktrees(deps: ReconcileDeps, signal: AbortSignal): Promise<ReconcileReport> {
   const cap = deps.maxReports ?? DEFAULT_MAX_REPORTS;
   const found = new Map<string, ReconcileReason>();
+  let truncated = false;
   const note = (id: string, reason: ReconcileReason): void => {
-    if (!found.has(id) && found.size < cap) found.set(id, reason);
+    if (found.has(id)) return;
+    if (found.size < cap) found.set(id, reason);
+    else truncated = true; // past the cap: the report is incomplete, and the caller must fail closed
   };
   const live = deps.journal.listWorkspaces().filter((w) => LIVE.has(w.state));
   for (const project of deps.journal.listProjects()) {
@@ -106,5 +109,5 @@ export async function reconcileWorktrees(deps: ReconcileDeps, signal: AbortSigna
     // A REMOVING workspace is always worth a look, even when everything on disk agrees.
     for (const w of mine) if (w.state === "REMOVING") note(w.id, "ref_mismatch");
   }
-  return { needsAttention: [...found].map(([workspaceId, reason]) => ({ workspaceId, reason })) };
+  return { needsAttention: [...found].map(([workspaceId, reason]) => ({ workspaceId, reason })), ...(truncated ? { incomplete: true } : {}) };
 }

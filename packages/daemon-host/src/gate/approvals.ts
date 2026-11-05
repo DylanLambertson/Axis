@@ -170,6 +170,12 @@ export function createApprovals(deps: ApprovalsDeps): Approvals {
     }
   };
 
+  // The tier each live challenge was ISSUED at. `execute` is handed a tier by its caller and the challenge manager does not
+  // compare it, so a challenge issued at 3 (no native dialog) could otherwise be executed as 4 and be given a capability.
+  // Kept until the challenge is spent (resolve and withdraw end other things first); bounded, the oldest goes first.
+  const issuedTiers = new Map<string, number>();
+  const ISSUED_CAP = Math.min(total * 2, 131_072);
+
   const forget = (challengeId: string): void => {
     registry.remove(challengeId);
     bridge.end(challengeId);
@@ -187,6 +193,8 @@ export function createApprovals(deps: ApprovalsDeps): Approvals {
 
   const gate: ApprovalGate = {
     async issue(input: ApprovalInput, content: ApprovalContent): Promise<Challenge> {
+      // A tier is an integer: anything else (the manager would default it to the native tier) is refused before anything exists.
+      if (!Number.isInteger(input.tier)) throw new ApprovalError("E_INVALID_ARGUMENT");
       preflight(input.tier);
       // A native wait is reserved BEFORE the challenge exists, so a full bridge refuses with no challenge, no audit row
       // and no quota used (a withdrawn challenge would keep counting against its window for the whole TTL).
@@ -214,6 +222,8 @@ export function createApprovals(deps: ApprovalsDeps): Approvals {
         reservation?.release();
         throw toGateError(e);
       }
+      issuedTiers.set(challenge.challengeId, input.tier);
+      while (issuedTiers.size > ISSUED_CAP) issuedTiers.delete(issuedTiers.keys().next().value as string);
       const caller = { actor: input.actor, connectionId: input.connectionId };
       inflight.set(challenge.challengeId, input.connectionId);
       try {
@@ -256,7 +266,11 @@ export function createApprovals(deps: ApprovalsDeps): Approvals {
       content: ApprovalContent,
       action: (confirmed: DaemonConfirmedAction) => Promise<T>,
     ): Promise<T> {
+      if (!Number.isInteger(input.tier)) throw new ApprovalError("E_INVALID_ARGUMENT");
       preflight(input.tier);
+      // The tier the call claims must be the tier the challenge was issued at (checked before the spend, so a refusal costs nothing).
+      const issuedAt = issuedTiers.get(approval.challengeId);
+      if (issuedAt !== undefined && issuedAt !== input.tier) throw new ApprovalError("E_CONFLICT");
       try {
         const result = await manager.consume(
           approval.challengeId,
@@ -271,16 +285,20 @@ export function createApprovals(deps: ApprovalsDeps): Approvals {
             currentContentDigest: content.contentDigest,
           },
           (confirmed) => {
-            const capability = deps.capability?.(input, content);
+            const capability = issuedAt === input.tier ? deps.capability?.(input, content) : undefined; // an unknown issue tier gets none
             return action(capability === undefined ? confirmed : { ...confirmed, capability });
           },
         );
         forget(approval.challengeId);
+        issuedTiers.delete(approval.challengeId);
         return result;
       } catch (e) {
         // The approval was spent only when the action ran. Any other refusal (a bystander, a retry that came before
         // the native answer) leaves the challenge and its native wait as they were; expiry ends what is stale.
-        if (e instanceof ChallengeError && e.detail["executed"] === true) forget(approval.challengeId);
+        if (e instanceof ChallengeError && e.detail["executed"] === true) {
+          forget(approval.challengeId);
+          issuedTiers.delete(approval.challengeId);
+        }
         throw toGateError(e);
       }
     },
@@ -344,6 +362,7 @@ export function createApprovals(deps: ApprovalsDeps): Approvals {
       disposed = true;
       bridge.dispose();
       registry.clear();
+      issuedTiers.clear();
     },
   };
 }

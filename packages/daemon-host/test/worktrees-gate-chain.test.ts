@@ -6,7 +6,8 @@ import { ChannelMux, ControlClient, createChallengeAuditSink, createWorktreesApp
 import { memoryChannelPair } from "../testing/memory-channel.js";
 import { fakeClock } from "./helpers.js";
 
-// A separate file: the export walker calls every export with hostile arguments and must not share a process's state with this.
+// This file stays separate from the export walker, which calls every export with hostile arguments; the walker now skips zod
+// schemas (whose internals rewrite zod's shared prototypes when called that way), but isolation costs nothing.
 test("a tier 3 challenge (no native dialog) issued, approved with the port and executed through the gate yields NO capability", async () => {
   const { a } = memoryChannelPair();
   const mux = new ChannelMux(a);
@@ -36,5 +37,70 @@ test("a tier 3 challenge (no native dialog) issued, approved with the port and e
     approvals.dispose();
     control.dispose();
     mux.dispose();
+  }
+});
+
+const fresh = (method: string, tier: number) => {
+  const args = { id: "ws-1" };
+  return {
+    contract: "axis.worktrees", contractVersion: 1, method, tier, args, digest: requestDigest("axis.worktrees", 1, method, args),
+    actor: "user", connectionId: "c".padEnd(22, "_"), requestId: "r", correlationId: "c", signal: new AbortController().signal,
+    identity: { connectionId: "c".padEnd(22, "_"), windowId: "w", actorId: "a", actor: "user", trusted: true, clientKind: "desktop" },
+  };
+};
+
+test("issued at tier 3 and executed claiming tier 4: refused before the spend, no capability; the real tier 3 execute still works", async () => {
+  const { a } = memoryChannelPair();
+  const mux = new ChannelMux(a);
+  const control = new ControlClient({ mux });
+  const approvals = createWorktreesApprovals({ audit: createChallengeAuditSink({ append: () => undefined }), control, clock: fakeClock() });
+  try {
+    const content = { target: "workspace:ws-1", contentDigest: "a".repeat(64) };
+    const challenge = await approvals.gate.issue(fresh("remove", 3) as never, content);
+    approvals.port.resolve({ actor: "user", windowId: "w" }, { challengeId: challenge.challengeId, decision: "approve", digest: challenge.digest } as never);
+    let ran = false;
+    await assert.rejects(
+      approvals.gate.execute(fresh("remove", 4) as never, { challengeId: challenge.challengeId } as never, content, async (c) => {
+        ran = true;
+        return (c as { capability?: unknown }).capability;
+      }),
+      (e: unknown) => (e as { code?: string }).code === "E_CONFLICT",
+    );
+    assert.equal(ran, false, "the action did not run");
+    // The refusal spent nothing: executing at the tier it was issued at works, with no capability.
+    let seen: unknown = "not run";
+    await approvals.gate.execute(fresh("remove", 3) as never, { challengeId: challenge.challengeId } as never, content, async (c) => {
+      seen = (c as { capability?: unknown }).capability;
+    });
+    assert.equal(seen, undefined);
+    // A tier that is not an integer is refused at issue and at execute.
+    for (const tier of [undefined, 3.5, Number.NaN, "4"]) {
+      await assert.rejects(async () => approvals.gate.issue({ ...fresh("remove", 4), tier } as never, content), (e: unknown) => (e as { code?: string }).code === "E_INVALID_ARGUMENT");
+    }
+  } finally {
+    approvals.dispose();
+    control.dispose();
+    mux.dispose();
+  }
+});
+
+test("issued at tier 4 (native) and executed claiming tier 3: refused", async () => {
+  const { a, b } = memoryChannelPair();
+  const mux = new ChannelMux(a);
+  const control = new ControlClient({ mux });
+  b.onMessage(() => undefined);
+  const approvals = createWorktreesApprovals({ audit: createChallengeAuditSink({ append: () => undefined }), control, clock: fakeClock() });
+  try {
+    const content = { target: "workspace:ws-1", contentDigest: "a".repeat(64) };
+    const challenge = await approvals.gate.issue(fresh("remove", 4) as never, content);
+    await assert.rejects(
+      approvals.gate.execute(fresh("remove", 3) as never, { challengeId: challenge.challengeId } as never, content, async () => undefined),
+      (e: unknown) => (e as { code?: string }).code === "E_CONFLICT",
+    );
+  } finally {
+    approvals.dispose();
+    control.dispose();
+    mux.dispose();
+    b.close();
   }
 });

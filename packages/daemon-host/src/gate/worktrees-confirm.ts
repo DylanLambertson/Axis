@@ -21,8 +21,9 @@ const DIGEST = /^[0-9a-f]{64}$/;
 export function worktreesCapability(input: ApprovalInput, content: ApprovalContent): unknown {
   if (input.contract !== "axis.worktrees" || input.contractVersion !== 1) return undefined;
   if (input.method !== "remove" && input.method !== "finalise") return undefined;
-  // Only a challenge that had a NATIVE confirmation (tier 4 and above) may yield a token. A tier 3 challenge is approved by
-  // `resolve` alone, so whoever holds the gate and the approvals port could otherwise obtain a token with no dialog.
+  // Only a challenge that had a NATIVE confirmation (tier 4 and above) may yield a token. A tier 3 challenge is approved
+  // by `resolve` alone, so whoever holds the gate and the approvals port could otherwise obtain a token with no dialog.
+  // `input.tier` is the tier the challenge was ISSUED at: `createApprovals` refuses an `execute` that claims another.
   if (!(input.tier >= 4)) return undefined;
   const id = TARGET.exec(content.target)?.[1];
   const args = input.args;
@@ -62,7 +63,8 @@ export interface WorktreesApprovals extends Approvals {
  * `createApprovals` for the worktrees binding: the challenge manager and gate of ticket H5 with the discard capability and
  * the dialog text wired in. The capability minter is CLOSED OVER here: it is not an option, a property or a return value
  * of anything exported, so no caller (a handler, a service, the composition root) can obtain a function that mints a
- * discard token without a spent approval; the only way to a token is a call that went through `gate.execute`. What
+ * discard token without a spent approval; the only way to a token is a `gate.execute` of a challenge that was issued at
+ * tier 4 or above and approved with its native dialog. What
  * comes back is the gate, the narrow port the `axis.approvals/1` handlers use, `stats`, `dispose` and `onPreview`.
  * `preflight` (the anchor stall check, ticket H4) is passed through; it must be synchronous.
  */

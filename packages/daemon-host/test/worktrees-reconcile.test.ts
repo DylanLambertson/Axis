@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync, rmSync } from "node:fs";
 import { test, type TestContext } from "node:test";
 import { newKey, type Client } from "./approvals-rig.js";
+import { reconcileWorktrees } from "../src/index.js";
 import { createWs, gitSkipReason, worktreesRig, type Rig } from "./worktrees-rig.js";
 
 const skip = gitSkipReason();
@@ -16,6 +17,7 @@ async function setup(t: TestContext): Promise<{ r: Rig; user: Client; id: string
   return { r, user, id, dir: String(r.journal.getWorkspace(id)?.worktreePath) };
 }
 
+const dirOf = (r: Rig, id: string): string => String(r.journal.getWorkspace(id)?.worktreePath);
 const snapshot = (r: Rig): string =>
   [r.git(r.repo, "for-each-ref"), r.git(r.repo, "worktree", "list", "--porcelain"), JSON.stringify(r.journal.listWorkspaces({ includeRemoved: true }))].join("|");
 const live = new AbortController().signal;
@@ -70,13 +72,29 @@ test("reconcile reports and never repairs: repository and journal are byte for b
   assert.equal(r.binding.needsAttention(id), false);
 });
 
-test("reconcile honours the abort signal and does not change the report of the last full run", { skip }, async (t) => {
-  const { r, id, dir } = await setup(t);
-  rmSync(dir, { recursive: true, force: true });
+test("an aborted reconcile fails CLOSED: every workspace needs attention until a full one completes, reads still work", { skip }, async (t) => {
+  const { r, user, id } = await setup(t);
   const c = new AbortController();
   c.abort();
   await assert.rejects(r.binding.service.reconcile(c.signal));
-  assert.equal(r.binding.needsAttention(id), false, "an aborted run reports nothing and sets nothing");
+  assert.equal(r.binding.needsAttention(id), true, "an aborted run never means nothing is wrong");
+  assert.equal(r.binding.needsAttention("any-other-id"), true);
+  assert.equal((await user.call("axis.worktrees", "status", { ids: [id] })).error?.code, "E_UNAVAILABLE");
+  assert.equal((await user.call("axis.worktrees", "finalise", { id, outcome: "archived" }, newKey())).error?.code, "E_UNAVAILABLE");
+  assert.equal((await user.call("axis.worktrees", "list", { projectId: "proj-1" })).ok, true, "listing still works");
+  assert.deepEqual((await r.binding.service.reconcile(live)).needsAttention, []);
+  assert.equal(r.binding.needsAttention(id), false, "a full reconcile lifts it");
+  assert.equal((await user.call("axis.worktrees", "status", { ids: [id] })).ok, true);
+});
+
+test("a report cut at the cap is incomplete: the caller fails closed instead of trusting a partial list", { skip }, async (t) => {
+  const { r, user, id } = await setup(t);
+  const second = (await createWs(user, ok, "Second")).id;
+  rmSync(dirOf(r, id), { recursive: true, force: true });
+  rmSync(dirOf(r, second), { recursive: true, force: true });
+  const report = await reconcileWorktrees({ journal: r.journal, manager: r.manager, mutex: r.binding.mutex, platform: process.platform, maxReports: 1 }, live);
+  assert.equal(report.needsAttention.length, 1);
+  assert.equal(report.incomplete, true);
 });
 
 test("the manager runs git only through the one pinned path (no PATH lookup), and a wrapper there sees every call", { skip: skip ?? (process.platform === "win32" ? "posix wrapper" : undefined) }, async (t) => {

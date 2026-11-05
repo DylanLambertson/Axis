@@ -21,6 +21,7 @@ import {
   createWorktreesHandlers,
   resolveGitOnce,
   type Approvals,
+  type ManagerShape,
   type WorktreesBinding,
 } from "../src/index.js";
 import { createWorktreesBindingForTest, type WorktreesTestSeams } from "../src/bindings/worktrees.js";
@@ -55,6 +56,8 @@ export interface Rig {
   readonly db: DatabaseSync;
   readonly journal: Journal;
   readonly binding: WorktreesBinding;
+  /** The manager shape the service uses (for tests that call `reconcileWorktrees` directly). */
+  readonly manager: ManagerShape;
   readonly approvals: Approvals;
   readonly daemon: Daemon;
   readonly rpcEvents: DaemonAuditEvent[];
@@ -154,6 +157,7 @@ export async function worktreesRig(options: RigOptions = {}): Promise<Rig> {
     clock,
     ...(options.preflight === undefined ? {} : { preflight: options.preflight }),
   });
+  let manager: ManagerShape | undefined;
   const binding = createWorktreesBindingForTest({
     journal,
     audit: { append: (e) => (options.failAudit?.(e) === true ? ((): never => { throw new Error("audit down"); })() : audit.append(e)) },
@@ -165,7 +169,13 @@ export async function worktreesRig(options: RigOptions = {}): Promise<Rig> {
     platform: process.platform,
     worktreeRoot: root,
     onPreview: approvals.onPreview,
-  }, options.testSeams ?? {});
+  }, {
+    ...options.testSeams,
+    wrapManager: (m) => {
+      manager = options.testSeams?.wrapManager?.(m) ?? m;
+      return manager;
+    },
+  });
 
   const trust = new InMemoryTrustRegistry();
   trust.set({ windowId: "win-1" }, true);
@@ -184,7 +194,7 @@ export async function worktreesRig(options: RigOptions = {}): Promise<Rig> {
   });
   const ports: Array<{ close(): void }> = [];
   return {
-    tmp, repo, root, db, journal, binding, approvals, daemon, rpcEvents, supervisor, active, script, trust, home, gitPath, gitLog, projectId,
+    tmp, repo, root, db, journal, binding, manager: manager as ManagerShape, approvals, daemon, rpcEvents, supervisor, active, script, trust, home, gitPath, gitLog, projectId,
     git: g,
     async connect(attestation = "user#conn-1#win-1") {
       const { client, server } = memoryPair();

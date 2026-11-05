@@ -202,3 +202,21 @@ test("locator: a recorded path replaced by a symlink to ANOTHER live worktree is
   await assert.rejects(r.binding.locator.locate(a), (e: unknown) => e instanceof DaemonError && e.code === "E_NOT_FOUND");
   assert.equal((await r.binding.locator.locate(b)).workTree, dirOf(r, b));
 });
+
+test("a repair whose journal transaction fails leaves the workspace flagged (the flag is lifted only after the commit)", { skip }, async (t) => {
+  let fail = true;
+  const { r, user } = await setup(t, { failAudit: (e) => fail && e.action === "worktree.finalise" && (e.payload as { phase?: string }).phase === "done" });
+  const { id } = await createWs(user);
+  assert.equal((await user.call(WT, "finalise", { id, outcome: "archived" }, newKey())).ok, false);
+  await r.binding.service.reconcile(new AbortController().signal);
+  assert.equal(r.binding.needsAttention(id), true);
+  // The repair runs (finalise_incomplete allows it) and its own journal write fails: still READY, still flagged.
+  const again = await user.call(WT, "finalise", { id, outcome: "archived" }, newKey());
+  assert.equal(again.ok, false);
+  assert.equal(r.journal.getWorkspace(id)?.state, "READY");
+  assert.equal(r.binding.needsAttention(id), true, "not lifted by a repair that did not commit");
+  assert.equal((await user.call(WT, "status", { ids: [id] })).error?.code, "E_UNAVAILABLE");
+  fail = false;
+  assert.equal((await user.call(WT, "finalise", { id, outcome: "archived" }, newKey())).ok, true);
+  assert.equal(r.binding.needsAttention(id), false);
+});

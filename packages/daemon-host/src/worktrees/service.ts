@@ -59,6 +59,10 @@ const exists = (p: string | null): Promise<boolean> => (p === null ? Promise.res
 export function createWorktreesService(deps: WorktreesServiceDeps): WorktreesRuntime {
   const { journal, manager, locator, mutex } = deps;
   let attention = new Map<string, string>();
+  // True after a reconcile that did not finish (aborted by the startup budget, failed, or cut at the report cap): until a
+  // full one completes, EVERY workspace needs attention (design section 3 step 9, gate G-12); never "nothing is wrong".
+  let incomplete = false;
+  const repaired = new Set<string>(); // ids repaired while a reconcile was running (its stale entry must not come back)
   const actorOf = (ctx: { caller: { actor: string } }): AuditActor => ctx.caller.actor as AuditActor;
 
   /** The lock record around one mutating call (advisory: the mutex and the manager's file lock are the real locks). */
@@ -207,7 +211,10 @@ export function createWorktreesService(deps: WorktreesServiceDeps): WorktreesRun
                 });
               });
               // The repair is complete: lift the flag that asked for it (not only at the next reconcile, i.e. a restart).
-              if (recovering) attention.delete(ws.id);
+              if (recovering) {
+                attention.delete(ws.id);
+                repaired.add(ws.id);
+              }
               return { id: ws.id, state: "FINALISED" as const, archiveRef: `refs/axis/archive/${ws.id}` };
             } catch (e) {
               // The second row: what actually happened. A refusal is `denied`, anything else `failure`; neither says "success".
@@ -341,12 +348,20 @@ export function createWorktreesService(deps: WorktreesServiceDeps): WorktreesRun
     },
 
     async reconcile(signal) {
-      const report = await reconcileWorktrees({ journal, manager, mutex, platform: deps.platform }, signal);
-      attention = new Map(report.needsAttention.map((n) => [n.workspaceId, n.reason]));
+      repaired.clear();
+      let report;
+      try {
+        report = await reconcileWorktrees({ journal, manager, mutex, platform: deps.platform }, signal);
+      } catch (e) {
+        incomplete = true;
+        throw e;
+      }
+      attention = new Map(report.needsAttention.filter((n) => !repaired.has(n.workspaceId)).map((n) => [n.workspaceId, n.reason]));
+      incomplete = report.incomplete === true;
       return report;
     },
   };
 
   // An interrupted finalise (`finalise_incomplete`) does not block `finalise` itself: that call is its repair.
-  return { service, needsAttention: (id, method) => attention.has(id) && !(method === "finalise" && attention.get(id) === "finalise_incomplete") };
+  return { service, needsAttention: (id, method) => incomplete || (attention.has(id) && !(method === "finalise" && attention.get(id) === "finalise_incomplete")) };
 }
