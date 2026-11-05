@@ -59,6 +59,37 @@ const JOURNAL_SUBPATHS = new Map([["@axis/journal/daemon-principal", new Set(["d
 const RUNS_SUBPATHS = new Map([["@axis/runs/daemon-attestation", new Set(["daemon"])]]);
 
 /**
+ * The composition root (docs/design/daemon-host.md section 2.1). It is the only package that may import every other
+ * package, and nothing imports it. Some packages are reachable only from named files of `daemon-host`, relative to its
+ * directory; `@axis/journal/daemon-principal` is also kept for the daemon package, as above.
+ */
+const HOST_PACKAGE = "daemon-host";
+const HOST_FILE_RULES = new Map([
+  ["@axis/journal/daemon-principal", ["src/handlers/review.ts"]],
+  ["@axis/worktrees", ["src/bindings/worktrees.ts"]],
+  ["@axis/worktrees/daemon-confirm", ["src/gate/worktrees-confirm.ts"]],
+]);
+/** Packages whose bindings live in `src/bindings/*.ts` of the host (they land with their own changes). */
+const HOST_BINDING_PACKAGES = ["@axis/runs", "@axis/review"];
+
+/** Judge the host-only rules; null means no host rule applies and the general rules decide. */
+function hostViolation(pkg, spec, file, pkgDir) {
+  if (spec === "@axis/daemon-host" || spec.startsWith("@axis/daemon-host/")) {
+    return "nothing in packages/* may import the daemon host";
+  }
+  const files = HOST_FILE_RULES.get(spec);
+  const binding = HOST_BINDING_PACKAGES.some((p) => spec === p || spec.startsWith(`${p}/`));
+  if (files === undefined && !binding) return null;
+  // Other packages keep their existing rules for these specifiers (checked by the caller after this returns null).
+  if (pkg !== HOST_PACKAGE) return null;
+  if (file === null || pkgDir === null) return "this specifier is allowed only in named files of the daemon host";
+  const rel = relative(pkgDir, file).split(sep).join("/");
+  if (files !== undefined) return files.includes(rel) ? "ok" : `only ${files.join(", ")} may import this`;
+  // A type test may import the real types to compile the port against them (type-only, never shipped).
+  return /^src\/bindings\/[^/]+\.ts$/.test(rel) || /^test\/types\/[^/]+\.ts$/.test(rel) ? "ok" : "only src/bindings/*.ts may import this";
+}
+
+/**
  * Why a specifier is not allowed in `pkg`, or null when it is. The node:*
  * ban for contract packages (D2.4) applies to shipped sources under `src/`;
  * tests and test-support entry points (`test/`, `contract/`) may use node:*.
@@ -75,6 +106,12 @@ export function violation(pkg, spec, file = null, pkgDir = null) {
       : null;
   }
   if (spec === "zod" || spec.startsWith("zod/")) return null;
+  const host = hostViolation(pkg, spec, file, pkgDir);
+  if (host === "ok") return null;
+  if (host !== null) return host;
+  if (spec === "@axis/worktrees/daemon-confirm" && pkg !== HOST_PACKAGE) {
+    return "this subpath may only be imported by the daemon host gate adapter";
+  }
   if (spec.startsWith("@axis/journal/")) {
     const allowed = JOURNAL_SUBPATHS.get(spec);
     if (allowed === undefined) return "deep imports into @axis/journal are not allowed";
@@ -307,4 +344,43 @@ test("scanner: re-exporting the user-principal subpath is flagged, importing it 
   assert.equal(principalReexports(`import { userPrincipal } from ${sub};\nexport function connect() { return userPrincipal(); }`).length, 0);
   assert.equal(principalReexports(`export { userPrincipal } from "./other.js";`).length, 0);
   assert.equal(principalReexports(`// export * from ${sub};`).length, 0);
+});
+
+test("scanner: the daemon host is imported by nothing and imports the restricted packages only from named files", () => {
+  const dir = join(packagesDir, "daemon-host");
+  const at = (rel) => join(dir, ...rel.split("/"));
+  // Nothing imports the host.
+  for (const pkg of ["daemon", "runs", "protocol", "daemon-host"]) {
+    assert.notEqual(violation(pkg, "@axis/daemon-host"), null, pkg);
+    assert.notEqual(violation(pkg, "@axis/daemon-host/dist/src/index.js"), null, pkg);
+  }
+  // The host imports the ordinary packages anywhere.
+  for (const spec of ["@axis/protocol", "@axis/daemon", "@axis/challenge", "@axis/audit", "@axis/journal", "@axis/git-ops", "@axis/pty-policy", "@axis/providers", "zod", "node:fs"]) {
+    assert.equal(violation("daemon-host", spec, at("src/config.ts"), dir), null, spec);
+  }
+  // The user principal: only src/handlers/review.ts of the host, and still the daemon package.
+  assert.equal(violation("daemon-host", "@axis/journal/daemon-principal", at("src/handlers/review.ts"), dir), null);
+  assert.notEqual(violation("daemon-host", "@axis/journal/daemon-principal", at("src/handlers/git.ts"), dir), null);
+  assert.notEqual(violation("daemon-host", "@axis/journal/daemon-principal", at("test/review.test.ts"), dir), null);
+  assert.notEqual(violation("daemon-host", "@axis/journal/daemon-principal"), null, "a call without a file is judged strictly");
+  assert.equal(violation("daemon", "@axis/journal/daemon-principal"), null);
+  // Worktrees: the package only from the binding, the confirm subpath only from the gate file.
+  assert.equal(violation("daemon-host", "@axis/worktrees", at("src/bindings/worktrees.ts"), dir), null);
+  for (const f of ["src/handlers/worktrees.ts", "src/ports/worktrees.ts", "src/host.ts", "src/bindings/runs.ts"]) {
+    assert.notEqual(violation("daemon-host", "@axis/worktrees", at(f), dir), null, f);
+  }
+  assert.equal(violation("daemon-host", "@axis/worktrees/daemon-confirm", at("src/gate/worktrees-confirm.ts"), dir), null);
+  assert.notEqual(violation("daemon-host", "@axis/worktrees/daemon-confirm", at("src/bindings/worktrees.ts"), dir), null);
+  assert.notEqual(violation("runs", "@axis/worktrees/daemon-confirm"), null);
+  assert.notEqual(violation("daemon", "@axis/worktrees/daemon-confirm"), null);
+  // Runs and review: bindings only.
+  for (const spec of ["@axis/runs", "@axis/review"]) {
+    assert.equal(violation("daemon-host", spec, at("src/bindings/runs.ts"), dir), null, spec);
+    assert.notEqual(violation("daemon-host", spec, at("src/handlers/cliRuns.ts"), dir), null, spec);
+    assert.notEqual(violation("daemon-host", spec, at("src/bindings/deep/runs.ts"), dir), null, spec);
+    assert.equal(violation("daemon-host", spec, at("test/types/runs-port.test.ts"), dir), null, spec);
+    assert.notEqual(violation("daemon-host", spec, at("test/unit.test.ts"), dir), null, spec);
+  }
+  // Other packages keep their existing rules for the worktrees root.
+  assert.equal(violation("daemon", "@axis/worktrees"), null);
 });

@@ -250,19 +250,22 @@ test("a bad excludeDirs result (undefined, relative or empty entry, throw, Promi
   }
 });
 
-test("a good excludeDirs result is copied: changing the host's array later changes nothing, and the real git is found", { skip: !posix }, async () => {
-  const s = vanishedSetup();
-  const list = [s.cwd];
-  const runner = createNodeRunner({ allowPtyContext: true, gitPath: join(tmp("axis-gone-"), "git"), env: { PATH: realGit().replace(/\/git$/, "") }, excludeDirs: () => list });
-  assert.match((await runner.run({ ...version, cwd: s.cwd })).stdout, /^git version /);
-});
-
 test("with neither gitPath nor excludeDirs the runner refuses; allowUnpinnedGit opts into the weaker lookup", { skip: !posix }, async () => {
   const f = fixture();
   const refuse = (e: unknown): boolean => e instanceof GitOpsError && e.code === "E_UNAVAILABLE" && /gitPath or excludeDirs/.test(e.message);
   await assert.rejects(createNodeRunner({ allowPtyContext: true }).run({ ...version, cwd: f.wt.workTree }), refuse);
   assert.match((await createNodeRunner({ allowPtyContext: true, allowUnpinnedGit: true }).run({ ...version, cwd: f.wt.workTree })).stdout, /^git version /);
-  assert.match((await createNodeRunner({ allowPtyContext: true, excludeDirs: () => [] }).run({ ...version, cwd: f.wt.workTree })).stdout, /^git version /);
+  // A list that covers none of the request's directories re-opens the sibling-git hole: refused, nothing is spawned.
+  const sibling = fixture();
+  const marker = planted(sibling.wt.workTree);
+  const env = { PATH: `${sibling.wt.workTree}${delimiter}${REAL_PATH}` };
+  const uncovered = (e: unknown): boolean => e instanceof GitOpsError && e.code === "E_UNAVAILABLE" && /does not cover/.test(e.message);
+  await assert.rejects(createNodeRunner({ allowPtyContext: true, env, excludeDirs: () => [] }).run({ ...version, cwd: f.wt.workTree }), uncovered);
+  await assert.rejects(createNodeRunner({ allowPtyContext: true, env, excludeDirs: () => [sibling.wt.workTree] }).run({ ...version, cwd: f.wt.workTree }), uncovered);
+  assert.equal(existsSync(marker), false);
+  // A list that covers the request is accepted, and the planted sibling listed in it is skipped.
+  assert.match((await createNodeRunner({ allowPtyContext: true, env, excludeDirs: () => [f.wt.workTree, sibling.wt.workTree] }).run({ ...version, cwd: f.wt.workTree })).stdout, /^git version /);
+  assert.equal(existsSync(marker), false);
   assert.match((await createNodeRunner({ allowPtyContext: true, gitPath: realGit() }).run({ ...version, cwd: f.wt.workTree })).stdout, /^git version /);
 });
 
