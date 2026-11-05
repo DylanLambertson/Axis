@@ -37,6 +37,13 @@ export * from "./gate/native-bridge.js";
 export * from "./gate/pending-registry.js";
 export * from "./gate/summary.js";
 export * from "./handlers/approvals.js";
+// axis.review/1 (ticket H10b).
+export * from "./bindings/review.js";
+export * from "./bindings/review-tempindex.js";
+export * from "./handlers/review.js";
+export * from "./handlers/review-audit.js";
+export * from "./handlers/review-store.js";
+export * from "./handlers/review-wire.js";
 // Worktrees binding over the real @axis/worktrees (ticket H8).
 export * from "./bindings/worktrees.js";
 // Only the factory is public: the capability minter is closed over inside it and never returned (see worktrees-gate-exports.test.ts).
