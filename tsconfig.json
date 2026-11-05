@@ -13,6 +13,7 @@
     { "path": "packages/anthropic" },
     { "path": "packages/worktrees" },
     { "path": "packages/runs" },
+    { "path": "packages/broker" },
     { "path": "packages/git-snapshot" }
   ]
 }
