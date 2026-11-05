@@ -1,7 +1,7 @@
 # Linux x64 build validation (native, WSL2)
 
 - Dates: 2026-11-03 and 2026-11-04.
-- Upstream: `microsoft/vscode` tag `1.144.0`, commit `2c33b50b16c472efe58357d1d2a8a5414bc23fbf`, with the patch series, `replace/`, overlay and hook as at `origin/main` `dc29b38` (15 patches, 16 replaced files, 9 overlay files, 1 hook). Every build, package and matrix number below covers that commit. `origin/main` has since moved (docs, packages and daemon changes); the build was not repeated on it, and the patch series was not re-checked.
+- Upstream: `microsoft/vscode` tag `1.144.0`, commit `2c33b50b16c472efe58357d1d2a8a5414bc23fbf`, with the patch series, `replace/`, overlay and hook as at `origin/main` `dc29b38` (15 patches, 16 replaced files, 9 overlay files, 1 hook). Every build, package and matrix number below covers that commit. `origin/main` has since moved (it was `f022e79` at the last check; docs, packages and daemon changes); the build was not repeated on it, and the patch series was not re-checked.
 - Scope: `docs/feasibility/code-oss-build.md` §7 recorded the Linux build as failed in Docker (compile OOM-killed at 7.75 GiB) and deferred it. This document validates it natively on a Linux host, runs the checks CI runs on Linux, runs the Open VSX extension matrix headless against the packaged build, and checks the reh-web output and loopback listeners.
 - Status words follow `code-oss-build.md`: **passed**, **failed**, **not run**, **not applicable**. Every number below was measured, not estimated; the memory rows are readings of a 15-second sampler on a shared host. A failure is a recorded result.
 - Nothing recorded in `docs/feasibility/extension-compatibility.md`, `scenarios.json` or `extensions.json` was edited. This document records outcomes next to them; moving them into that matrix is a separate change.
@@ -80,7 +80,7 @@ Parallelism: `npm_config_jobs=16` for the native module compiles. The Node heap 
    error: post-apply hook 10-regen-locks failed; the tree is marked incomplete
    ```
 
-   The advice does not work: `build.sh --toolchain-only` calls `require_applied_tree` first and fails with `patches and overlay are not (completely) applied`. The way out used here was to source `lib.sh`, call `load_manifest; download_node` (the repository's own pin-checked download), and rerun `apply.sh`. Cost: 10 s. The hook's other branch, `NODE24_BIN`, works only if the exact pinned Node 24.22.1 already exists on the host. **Recommended change** (`scripts/code-oss/build.sh`, `apply.sh`): resolve Node before the applied-tree check in `--toolchain-only`, or let `apply.sh` call the same pin-checked download when a hook needs it; correct the hook message to say what works.
+   The advice does not work: `build.sh --toolchain-only` calls `require_applied_tree` first and fails with `patches and overlay are not (completely) applied`. The way out used here was to source `lib.sh`, call `load_manifest; download_node` (the repository's own pin-checked download), and rerun `apply.sh`. Cost: 10 s. The hook's other branch, `NODE24_BIN`, works only if the exact pinned Node 24.22.1 already exists on the host. **Recommended change** (`scripts/code-oss/build.sh`, `apply.sh`): resolve Node before the applied-tree check in `--toolchain-only` (`scripts/code-oss/build.sh:37-49`), or let `apply.sh` call the same pin-checked download when a hook needs it; correct the hook message to say what works.
 2. **`build.sh` does not check host packages; `npm ci` fails late (fails).** Attempt 1 ran for 95 s and failed in `native-keymap`:
 
    ```text
@@ -131,17 +131,19 @@ Comparison with the macOS baseline in `code-oss-build.md` §5.2 (`npm ci` 956 s,
 
 The reh-web retry (3 min 31 s) was a second run of the same gulp target; whether it reused any output of the failed first run was not checked, so treat it as a possibly warm timing.
 
-**Memory.** The largest single process was 8.3 GiB RSS over the whole `build.sh`, with the Node heap cap at 8192 MiB; the step that peaked was not recorded. The data does not establish a minimum, and says nothing about the 7.75 GiB Docker VM that failed in `code-oss-build.md` §7, because this host had about 25 GiB free and the cap equals that VM's size. One narrow sweep was run afterwards, on the compile step only (`gulp compile-client` re-run on the built tree, host shared):
+**Memory.** The largest single process was 8.3 GiB RSS over the whole `build.sh`, with the Node heap cap at 8192 MiB; the step that peaked was not recorded. The data does not establish a minimum, and says nothing about the 7.75 GiB Docker VM that failed in `code-oss-build.md` §7, because this host had about 25 GiB free and the cap equals that VM's size. One narrow sweep was run afterwards, on the compile step only (`gulp compile-client` re-run on the built tree, host shared). A first attempt was **invalid and is discarded**: it passed `--max-old-space-size=N` to the `gulp.js` process only. The heavy work runs in a `tsc` child that does not inherit that flag and kept its default limit (4288 MiB), which is why times and RSS were identical at every cap. The valid run sets the cap for both processes (`NODE_OPTIONS=--max-old-space-size=N` plus the same flag on `node … gulp.js`) and records `v8.getHeapStatistics().heap_size_limit` and `process.execArgv` in each process through a `--require` probe:
 
-| `--max-old-space-size` | Result | Wall time | Max RSS, largest process (`time -v`) |
-|---|---|---|---|
-| 6144 MiB | passed | 54.8 s | 3.28 GiB |
-| 4096 MiB | passed | 54.4 s | 3.29 GiB |
-| 3072 MiB | passed | 56.5 s | 3.35 GiB |
-| 2048 MiB | passed | 55.8 s | 3.31 GiB |
-| 1024 MiB | passed | 52.3 s | 3.32 GiB |
+| Requested cap | Proven limit in `gulp.js` and in `tsc` | Result | Wall time | Max RSS, largest process (`time -v`) |
+|---|---|---|---|---|
+| 3072 MiB | 3264 MiB in both | passed | 72 s | 3.28 GiB |
+| 2048 MiB | 2240 MiB in both | passed | 87 s | 3.33 GiB |
+| 1536 MiB | 1728 MiB in both | passed | 118 s | 3.34 GiB |
+| 1024 MiB | 1216 MiB in both | passed | 84 s | 3.32 GiB |
+| 768 MiB | 960 MiB in both | passed | 122 s | 3.29 GiB |
 
-The compile step finished at every cap down to 1024 MiB, with the largest process near 3.3 GiB RSS in each run (the cap limits the V8 heap of the gulp process; child processes are not capped by it). So the compile step is not what needs 8 GiB; which step reached the 8.3 GiB peak was not recorded. Not measured: `npm ci` and the two packaging targets under a lower cap, and any cgroup memory limit (no privileges for one here). The M8 runner decision should therefore size for the 8.3 GiB peak plus the OS, and treat anything smaller, including a 16 GiB runner, as unmeasured until the full build is run under that limit.
+Wall times are noisy (shared host; the uncapped runs took 52 to 56 s) and rise somewhat at low caps. The limit is the V8 heap, not the process: RSS stays near 3.3 GiB because it includes memory outside the heap. So the compile step works with a V8 heap cap as low as 768 MiB (lower caps were not tried), but its resident size is still about 3.3 GiB, and which step reached the 8.3 GiB peak was not recorded. Reproduce: run `node --experimental-strip-types --max-old-space-size=N ./node_modules/gulp/bin/gulp.js compile-client` from the vendor `code-oss` directory with `NODE_OPTIONS="--max-old-space-size=N --require <probe>"`, where the probe appends `heap_size_limit` and `execArgv` to a file.
+
+Not measured: `npm ci` and the two packaging targets under a lower cap, and any cgroup memory limit. The M8 runner decision should therefore size for the 8.3 GiB peak plus the OS, and treat anything smaller, including a 16 GiB runner, as unmeasured until the full build is run under that limit.
 
 Memory and disk (15-second sampler over `free -m` and `du`):
 
@@ -285,7 +287,7 @@ Outbound traffic: with an empty extensions directory, an `axis` utility process 
 - Optional tier (Jupyter, Java), Layer C UI smoke, the signature test (D4), and the Playwright web runner (M6).
 - The `vscode-reh-linux-x64` (non-web) target, so `check-artifacts.sh` ran with `--expect desktop,reh-web` rather than its all-three default.
 - Dev-build launch with `run.sh`, startup timing of either build, packaged-build RSS under a real workspace.
-- A full heap or parallelism sweep. Only the compile step was swept (§5); `npm ci` and packaging ran at upstream's 8192 MiB, and no cgroup limit was tried, so the minimum working memory is unknown.
+- A full heap or parallelism sweep. Only the compile step was swept (§5); `npm ci` and packaging ran at upstream's 8192 MiB, and no cgroup limit was tried, so the minimum working memory of the whole build is unknown.
 - Any browser session against reh-web.
 
 ## 12. Reproduce
@@ -300,3 +302,5 @@ scripts/code-oss/apply.sh && scripts/code-oss/build.sh
 (cd "$AXIS_CODE_OSS_VENDOR_DIR/code-oss" && npm run gulp vscode-linux-x64-min && npm run gulp vscode-reh-web-linux-x64-min)
 scripts/code-oss/check-artifacts.sh --expect desktop,reh-web "$AXIS_CODE_OSS_VENDOR_DIR"/VSCode-linux-x64 "$AXIS_CODE_OSS_VENDOR_DIR"/vscode-reh-web-linux-x64
 ```
+
+The resource figures came from `/usr/bin/time -v` around each command and a 15-second sampler over `free -m` and `du`; the compile heap sweep is described in §5; the later secret scan was `gitleaks git --no-banner --redact --log-opts="origin/main..HEAD" .`. The sampler and the probe were scratch scripts and are not committed.
