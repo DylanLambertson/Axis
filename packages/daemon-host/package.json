@@ -20,8 +20,10 @@
   },
   "dependencies": {
     "@axis/audit": "0.0.0",
+    "@axis/daemon": "0.0.0",
     "@axis/git-ops": "0.0.0",
     "@axis/protocol": "0.0.0",
+    "@axis/providers": "0.0.0",
     "zod": "4.6.6"
   },
   "devDependencies": {
