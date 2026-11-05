@@ -49,7 +49,7 @@ Re-derived on 2026-11-04 from what is on main: `@axis/runs` and `@axis/worktrees
 | **H5** | Challenge manager, gate adapter, native bridge, `axis.approvals/1` | M | H2, H3, P1 merged | review |
 | **H7** | Shutdown and signals integration, crash handlers, Windows `shutdown` message, exit-by-draining test | S | H2, H3, `fix/daemon-sigterm` merged | review |
 | **H8** | Worktrees binding over the real `@axis/worktrees`: `WorktreeLocator`, id to path, content hooks, `refuseIfActiveRun`, `reconcile` (new code), `gate/worktrees-confirm.ts`, conformance suite | L | H1, H5, J1 | review |
-| **H9** | Git handlers: commit, pushPlan, push (content hook, last pushed sha), compareUrl; `GitOpsDeps` assembly | M | J1, P1b, H5, H6, H8, `fix/git-ops-bound-commit` (merged, #47) | review |
+| **H9** | Git handlers: commit, pushPlan, push (content hook, last pushed sha), compareUrl; `GitOpsDeps` assembly | M | J1, P1b, H5, H6, H8, the bound commit (merged, #47) | review |
 | **H9-scan** | The secret scanner (PSH-1) and its mode, per Q15; the product refuses to register `git.push` without it | M | Q15, H1 | review |
 | **H9-hooks** | **Not built yet.** Host side of the hooks decision: pre-commit and commit-msg in the pty process on a scratch checkout under the lock; closes the ROADMAP hooks gate line | M | H9, B9 channel (or the fake runner) | review |
 | **H10** | `axis.cli-runs` handlers, `bindings/runs.ts` over `RunSupervisor`, `gate/run-trust.ts` (`attestTrust`) | M | P1 merged, H3, H6, H8 | review |
