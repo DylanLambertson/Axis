@@ -1,9 +1,10 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 
 import { createHash } from 'node:crypto';
-import { createReadStream, promises as fs } from 'node:fs';
+import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
 import { WorktreeError } from './errors.js';
+import { readPinnedFile, underRealDirs, type FileIdentity } from './fsSafe.js';
 import type { HardenedGit } from './hardenedGit.js';
 import type { DirtyFile } from './types.js';
 
@@ -18,16 +19,15 @@ function algoFor(sha: string): 'sha1' | 'sha256' {
   return sha.length === 64 ? 'sha256' : 'sha1';
 }
 
-/** The object id git would give these bytes as a blob, with no filter or conversion applied. */
-async function blobId(file: string, size: number, algo: 'sha1' | 'sha256'): Promise<string> {
+/**
+ * The object id git would give the bytes of `rel`, with no filter or conversion
+ * applied, or null when the path is no longer the regular file of `size` bytes
+ * that was lstat-ed (swapped, grown or shrunk): the caller reports it modified.
+ */
+async function blobId(root: string, rel: string, id: FileIdentity, size: number, algo: 'sha1' | 'sha256'): Promise<string | null> {
   const h = createHash(algo).update(`blob ${size}\0`);
-  let seen = 0;
-  for await (const chunk of createReadStream(file) as AsyncIterable<Buffer>) {
-    seen += chunk.length;
-    h.update(chunk);
-  }
-  if (seen !== size) throw new WorktreeError('E_CONFLICT', 'a file changed while it was being read', { reason: 'file-changed' });
-  return h.digest('hex');
+  const seen = await readPinnedFile(root, rel, id, size, (chunk) => h.update(chunk));
+  return seen === size ? h.digest('hex') : null;
 }
 
 function parseIndex(stdout: string): Map<string, Entry & { stage: number }> {
@@ -55,8 +55,9 @@ function parseTree(stdout: string): Map<string, Entry> {
 }
 
 /** Worktree side of one tracked path: ' ' same, 'D' gone, 'M' different. */
-async function worktreeState(workTree: string, rel: string, e: Entry): Promise<string> {
+async function worktreeState(workTree: string, rel: string, e: Entry, dirs: Map<string, Promise<boolean>>): Promise<string> {
   const abs = path.join(workTree, rel);
+  if (!(await underRealDirs(workTree, rel, dirs))) return 'D'; // beyond a symlinked directory, as git reports it
   const st = await fs.lstat(abs).catch(() => null);
   if (!st) return 'D';
   if (st.isSymbolicLink()) {
@@ -68,7 +69,7 @@ async function worktreeState(workTree: string, rel: string, e: Entry): Promise<s
   if (!st.isFile()) return st.isDirectory() ? 'D' : 'M'; // never open a FIFO or device
   if (e.mode === '120000') return 'M';
   if (process.platform !== 'win32' && ((st.mode & 0o111) !== 0) !== (e.mode === '100755')) return 'M';
-  return (await blobId(abs, st.size, algoFor(e.sha))) === e.sha ? ' ' : 'M';
+  return (await blobId(workTree, rel, st, st.size, algoFor(e.sha))) === e.sha ? ' ' : 'M';
 }
 
 /**
@@ -93,6 +94,7 @@ export async function readDirtyFilterFree(git: HardenedGit, workTree: string): P
   const dirty: DirtyFile[] = [];
   const queue = paths.filter((p) => index.get(p)?.mode !== '160000' && head.get(p)?.mode !== '160000');
   const rows = new Map<string, DirtyFile | null>();
+  const dirs = new Map<string, Promise<boolean>>();
   let next = 0;
   const worker = async (): Promise<void> => {
     for (;;) {
@@ -105,7 +107,7 @@ export async function readDirtyFilterFree(git: HardenedGit, workTree: string): P
         continue;
       }
       const x = !i ? (h ? 'D' : ' ') : !h ? 'A' : i.sha !== h.sha || i.mode !== h.mode ? 'M' : ' ';
-      const y = i ? await worktreeState(workTree, rel, i) : ' ';
+      const y = i ? await worktreeState(workTree, rel, i, dirs) : ' ';
       rows.set(rel, x === ' ' && y === ' ' ? null : { path: rel, index: x, worktree: y });
     }
   };

@@ -1,8 +1,10 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 
+import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
 import { WorktreeError } from './errors.js';
+import { readPinnedFile, underRealDirs, type FileIdentity } from './fsSafe.js';
 import type { HardenedGit } from './hardenedGit.js';
 
 export const MAX_SNAPSHOT_FILE_BYTES = 50 * 1024 * 1024;
@@ -47,6 +49,8 @@ export interface WorktreeScan {
   /** Untracked directories (nested repositories), FIFOs, sockets and devices: not in any snapshot. */
   readonly skippedUnsupported: string[];
   readonly executable: ReadonlySet<string>;
+  /** What the scan's lstat saw for each entry of `files`; content is read only while this still holds. */
+  readonly ids: ReadonlyMap<string, FileIdentity & { readonly size: number }>;
 }
 
 /** Lists what a snapshot would hold, applying the size limit. Runs no filter. */
@@ -59,9 +63,15 @@ export async function scanWorktree(git: HardenedGit, worktree: string, maxFileBy
   const candidates = [...new Set([...cached, ...othersOut.stdout.split('\0').filter((p) => p !== '')])];
   const scan = {
     files: [] as string[], symlinks: [] as string[], removed: [] as string[], skippedLarge: [] as string[],
-    skippedUnsupported: [] as string[], executable: new Set<string>(),
+    skippedUnsupported: [] as string[], executable: new Set<string>(), ids: new Map<string, FileIdentity & { size: number }>(),
   };
+  const dirs = new Map<string, Promise<boolean>>();
   for (const rel of candidates) {
+    if (!(await underRealDirs(worktree, rel, dirs))) {
+      // Beyond a symlinked directory: never followed. Tracked means gone (as git sees it).
+      (cached.has(rel) ? scan.removed : scan.skippedUnsupported).push(rel);
+      continue;
+    }
     let st;
     try {
       st = await fs.lstat(path.join(worktree, rel));
@@ -76,6 +86,7 @@ export async function scanWorktree(git: HardenedGit, worktree: string, maxFileBy
       if (st.size > maxFileBytes) scan.skippedLarge.push(rel);
       else {
         scan.files.push(rel);
+        scan.ids.set(rel, { dev: st.dev, ino: st.ino, size: st.size });
         if (process.platform !== 'win32' && (st.mode & 0o111) !== 0) scan.executable.add(rel);
       }
     } else scan.skippedUnsupported.push(rel);
@@ -83,20 +94,42 @@ export async function scanWorktree(git: HardenedGit, worktree: string, maxFileBy
   return scan;
 }
 
-/** Hashes working files into the object store byte for byte, with filters off. */
-async function hashRaw(git: HardenedGit, worktree: string, rels: readonly string[]): Promise<Map<string, string>> {
+const changed = (rel: string): WorktreeError =>
+  new WorktreeError('E_CONFLICT', 'a file changed while it was being read', { reason: 'file-changed', relPath: rel });
+
+/** Reads `rel` only while it is still the scanned regular file, exactly `size` bytes; anything else is E_CONFLICT. */
+async function readScanned(worktree: string, rel: string, id: FileIdentity & { size: number }, onChunk: (b: Buffer) => void): Promise<void> {
+  if ((await readPinnedFile(worktree, rel, id, id.size, onChunk)) !== id.size) throw changed(rel);
+}
+
+/**
+ * Stores the scanned files' bytes as blobs, with no filter or conversion. Git
+ * is never given a worktree path (it would follow a symlink or block on a FIFO
+ * swapped in after the scan): each file is read in this process through
+ * `readPinnedFile`, its blob id computed here, and only blobs missing from the
+ * object store are written, from memory, with `hash-object --stdin`.
+ */
+async function hashPinned(git: HardenedGit, worktree: string, scan: WorktreeScan, algo: 'sha1' | 'sha256'): Promise<Map<string, string>> {
   const out = new Map<string, string>();
-  const batch = rels.filter((r) => !/[\r\n]/.test(r));
-  if (batch.length > 0) {
-    const res = await git.run(['hash-object', '-w', '--no-filters', '--stdin-paths'], {
-      cwd: worktree, input: batch.join('\n') + '\n',
-    });
-    const shas = res.stdout.split('\n').filter(Boolean);
-    if (shas.length !== batch.length) throw new WorktreeError('E_INTERNAL', 'hash-object returned an unexpected result');
-    batch.forEach((r, i) => out.set(r, shas[i] as string));
+  for (const rel of scan.files) {
+    const id = scan.ids.get(rel) as FileIdentity & { size: number };
+    const h = createHash(algo).update(`blob ${id.size}\0`);
+    await readScanned(worktree, rel, id, (b) => h.update(b));
+    out.set(rel, h.digest('hex'));
   }
-  for (const r of rels.filter((p) => /[\r\n]/.test(p))) {
-    out.set(r, await git.text(['hash-object', '-w', '--no-filters', '--', r], { cwd: worktree }));
+  const ids = [...new Set(out.values())];
+  if (ids.length === 0) return out;
+  const check = await git.run(['cat-file', '--batch-check'], { cwd: worktree, input: ids.join('\n') + '\n' });
+  const present = new Set(check.stdout.split('\n').filter((l) => / blob \d+$/.test(l)).map((l) => l.split(' ')[0]));
+  const written = new Set<string>();
+  for (const [rel, sha] of out) {
+    if (present.has(sha) || written.has(sha)) continue;
+    const id = scan.ids.get(rel) as FileIdentity & { size: number };
+    const chunks: Buffer[] = [];
+    await readScanned(worktree, rel, id, (b) => chunks.push(b));
+    const stored = await git.text(['hash-object', '-w', '--no-filters', '--stdin'], { cwd: worktree, input: Buffer.concat(chunks) });
+    if (stored !== sha) throw changed(rel);
+    written.add(sha);
   }
   return out;
 }
@@ -105,7 +138,8 @@ async function hashRaw(git: HardenedGit, worktree: string, rels: readonly string
  * Writes a snapshot commit of a worktree to a NEW `ref` (policies 7): HEAD,
  * plus the tracked and untracked-but-not-ignored working files, excluding any
  * file over `maxFileBytes`. A temporary index in a private daemon directory keeps the
- * worktree's real index untouched and out of reach of an agent. Content is hashed with `--no-filters` and entered with
+ * worktree's real index untouched and out of reach of an agent. Content is read in
+ * this process (see `hashPinned`), stored with `--no-filters` and entered with
  * `update-index --index-info`, so no clean/smudge/process driver, attribute or
  * end-of-line conversion can run or alter the bytes.
  */
@@ -123,7 +157,8 @@ export async function writeSnapshotRef(
   try {
     await git.run(['read-tree', 'HEAD'], { cwd: worktree, extraEnv: env });
     const scan = await scanWorktree(git, worktree, maxFileBytes);
-    const blobs = await hashRaw(git, worktree, scan.files);
+    const head = await git.text(['rev-parse', 'HEAD'], { cwd: worktree });
+    const blobs = await hashPinned(git, worktree, scan, head.length === 64 ? 'sha256' : 'sha1');
     const lines: string[] = [];
     for (const rel of scan.files) {
       lines.push(`${scan.executable.has(rel) ? '100755' : '100644'} ${blobs.get(rel) as string}\t${rel}\0`);
@@ -133,7 +168,6 @@ export async function writeSnapshotRef(
       const sha = await git.text(['hash-object', '-w', '--no-filters', '--stdin'], { cwd: worktree, input: target });
       lines.push(`120000 ${sha}\t${rel}\0`);
     }
-    const head = await git.text(['rev-parse', 'HEAD'], { cwd: worktree });
     for (const rel of scan.removed) lines.push(`0 ${zeroOid(head)}\t${rel}\0`);
     if (lines.length > 0) {
       await git.run(['update-index', '-z', '--index-info'], { cwd: worktree, extraEnv: env, input: lines.join('') });

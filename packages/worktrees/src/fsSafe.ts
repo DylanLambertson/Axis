@@ -81,6 +81,79 @@ export async function readRegularFile(file: string, maxBytes = MAX_RECORD_BYTES)
   }
 }
 
+/** Identity of a file as seen by an earlier lstat. */
+export interface FileIdentity {
+  readonly dev: number;
+  readonly ino: number;
+}
+
+/**
+ * True when every directory between `root` and the file `rel` (git's `/`
+ * separated path) is a real directory, not a symlink. Like git, Axis treats a
+ * path beyond a symlinked directory as absent: following it would read
+ * outside the worktree. `cache` may be shared by the calls of one scan.
+ */
+export async function underRealDirs(root: string, rel: string, cache?: Map<string, Promise<boolean>>): Promise<boolean> {
+  const parts = rel.split('/').slice(0, -1);
+  for (let i = 1; i <= parts.length; i++) {
+    const dir = parts.slice(0, i).join('/');
+    let p = cache?.get(dir);
+    if (!p) {
+      p = fs.lstat(path.join(root, dir)).then((st) => st.isDirectory() && !st.isSymbolicLink(), () => false);
+      cache?.set(dir, p);
+    }
+    if (!(await p)) return false;
+  }
+  return true;
+}
+
+const GONE = new Set(['ENOENT', 'ENOTDIR', 'ELOOP', 'EMLINK', 'ENXIO', 'EISDIR', 'EOPNOTSUPP', 'EACCES', 'EPERM']);
+
+/**
+ * Streams the content of worktree file `rel` to `onChunk`, but only while the
+ * path is still the regular file an earlier lstat saw (`expect`). The open
+ * never follows a final symlink (O_NOFOLLOW) and never blocks (O_NONBLOCK: a
+ * FIFO opens at once, then fails the fstat check). The handle must be a
+ * regular file with the same device and inode, at most `maxBytes` are read,
+ * and afterwards the parent directories must still be real directories and
+ * the path must still name that inode. Resolves to the byte count, or null when
+ * any of this does not hold (the caller treats the file as changed).
+ * Residual (no openat in Node): a parent directory swapped for a symlink and
+ * back again around the open is caught only by the identity checks.
+ */
+export async function readPinnedFile(
+  root: string, rel: string, expect: FileIdentity, maxBytes: number, onChunk: (chunk: Buffer) => void,
+): Promise<number | null> {
+  const abs = path.join(root, rel);
+  const flags = fsc.O_RDONLY | (fsc.O_NOFOLLOW ?? 0) | (fsc.O_NONBLOCK ?? 0);
+  const same = (st: { dev: number; ino: number }): boolean => st.dev === expect.dev && st.ino === expect.ino;
+  let fh;
+  try {
+    fh = await fs.open(abs, flags);
+  } catch (e) {
+    if (GONE.has((e as NodeJS.ErrnoException).code ?? '')) return null;
+    throw e;
+  }
+  let total = 0;
+  try {
+    const st = await fh.stat();
+    if (!st.isFile() || !same(st)) return null;
+    const buf = Buffer.alloc(64 * 1024);
+    for (;;) {
+      const { bytesRead } = await fh.read(buf, 0, buf.length, null);
+      if (bytesRead === 0) break;
+      total += bytesRead;
+      if (total > maxBytes) return null;
+      onChunk(Buffer.from(buf.subarray(0, bytesRead)));
+    }
+  } finally {
+    await fh.close();
+  }
+  const after = await fs.lstat(abs).catch(() => null);
+  if (!after || !after.isFile() || !same(after) || !(await underRealDirs(root, rel))) return null;
+  return total;
+}
+
 /**
  * A directory only this user can enter, for scratch files (such as the
  * temporary index of a snapshot) that must not live in the agent-writable

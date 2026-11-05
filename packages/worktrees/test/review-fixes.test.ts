@@ -181,7 +181,7 @@ describe('review fixes', () => {
       const spy: GitRunner = {
         gitPath: real.gitPath as string,
         run: async (args, o) => {
-          if (args.includes('cat-file') && !args.includes('--batch') && wtPath) symlinkSync(outside, path.join(wtPath, 'new1'));
+          if (args.includes('cat-file') && args.includes('blob') && wtPath) symlinkSync(outside, path.join(wtPath, 'new1'));
           return real.run(args, o);
         },
       };
