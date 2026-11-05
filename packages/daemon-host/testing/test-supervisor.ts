@@ -41,6 +41,12 @@ export interface TestSupervisorOptions {
   readonly anchor?: ChainHead;
   /** Do not ack `anchor.put`. */
   readonly holdAcks?: boolean;
+  /** Environment of the host child process (a process host only; replaces the test's own). Default: the test's own. */
+  readonly env?: Readonly<Record<string, string | undefined>>;
+  /** Reuse this directory (a second host on the same data, the way a restart does). It is not removed by `dispose()`. */
+  readonly root?: string;
+  /** The attestation key of an earlier host on the same data (default: a fresh one). */
+  readonly key?: Buffer;
 }
 
 export interface ExitInfo {
@@ -52,7 +58,7 @@ const MAX_STDERR_CHARS = 65_536;
 const nextCid = ((n = 0) => () => `tc${String(++n).padStart(8, "0")}`)();
 
 export class TestSupervisor {
-  readonly key = randomBytes(32);
+  readonly key: Buffer;
   readonly dataDir: string;
   readonly mux: ChannelMux;
   /** Everything the host sent on the control plane, parsed (an invalid one is kept raw under `invalid`). */
@@ -70,6 +76,7 @@ export class TestSupervisor {
 
   readonly #channel: DisposableChannel;
   readonly #root: string;
+  readonly #ownsRoot: boolean;
   readonly #kill: (signal?: NodeJS.Signals) => void;
   readonly #waiters = new Set<{ type: string; resolve: (m: OutboundMessage) => void }>();
   readonly #connections = new Set<Connection>();
@@ -84,6 +91,8 @@ export class TestSupervisor {
     appendStderr: (hook: (text: string) => void) => void,
   ) {
     this.#root = root;
+    this.#ownsRoot = options.root === undefined;
+    this.key = options.key ?? randomBytes(32);
     this.dataDir = join(root, "data");
     this.#channel = channel;
     this.#kill = kill;
@@ -96,7 +105,7 @@ export class TestSupervisor {
   }
 
   static async start(options: TestSupervisorOptions = {}): Promise<TestSupervisor> {
-    const root = await mkdtemp(join(tmpdir(), "axis-supervisor-"));
+    const root = options.root ?? (await mkdtemp(join(tmpdir(), "axis-supervisor-")));
     const entry = options.entry ?? ECHO_HOST_ENTRY;
     let sup: TestSupervisor;
     // Whatever was started is killed again if anything below throws, so a failed start leaves no child behind.
@@ -112,7 +121,7 @@ export class TestSupervisor {
         const channel = adaptNodePort(worker, "exit");
         sup = new TestSupervisor(root, channel, () => void worker.terminate(), exited, options, (hook) => worker.stderr.on("data", (d: Buffer) => hook(d.toString("utf8"))));
       } else {
-        const child: ChildProcess = fork(entry, [], { stdio: ["ignore", "ignore", "pipe", "ipc"], serialization: "json" });
+        const child: ChildProcess = fork(entry, [], { stdio: ["ignore", "ignore", "pipe", "ipc"], serialization: "json", ...(options.env === undefined ? {} : { env: options.env as NodeJS.ProcessEnv }) });
         killStarted = () => void child.kill("SIGKILL");
         // `error` (spawn failure, failed kill) may arrive without `exit`: `dispose()` must not wait for one forever.
         const exited = new Promise<ExitInfo>((resolve) => {
@@ -125,7 +134,7 @@ export class TestSupervisor {
       if (options.skipInit !== true) sup.sendInit(options.config);
     } catch (e) {
       killStarted();
-      await rm(root, { recursive: true, force: true });
+      if (options.root === undefined) await rm(root, { recursive: true, force: true });
       throw e;
     }
     return sup;
@@ -208,7 +217,7 @@ export class TestSupervisor {
     this.mux.dispose();
     this.#channel.dispose();
     this.#waiters.clear();
-    await rm(this.#root, { recursive: true, force: true });
+    if (this.#ownsRoot) await rm(this.#root, { recursive: true, force: true });
     return info;
   }
 
