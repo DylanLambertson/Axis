@@ -6,7 +6,7 @@ import { Extensions, IConfigurationRegistry } from '../../../../platform/configu
 import { Registry } from '../../../../platform/registry/common/platform.js';
 
 /**
- * Axis default settings (docs/design/axis-shell.md section 2.2). They change only the
+ * Axis default settings (docs/design/axis-shell-stage1.md section 2.2). They change only the
  * defaults: users can still override every key. Registered as built-in defaults,
  * so APPLICATION-scoped keys are honoured, and experiments cannot override them.
  */
@@ -42,6 +42,14 @@ export const AXIS_DEFAULT_SETTINGS: Readonly<Record<string, unknown>> = Object.f
 	'telemetry.telemetryLevel': 'off',
 	'telemetry.feedback.enabled': false,
 	'workbench.settings.enableNaturalLanguageSearch': false,
+
+	// No background gallery traffic until the user opts in: Open VSX is the gallery (patch 1030), and
+	// development builds install updates without signature verification.
+	// autoUpdate takes 'on' | 'off' in this Code OSS version, not a boolean: the menus compare against 'off'.
+	'extensions.autoUpdate': 'off',
+	'extensions.autoCheckUpdates': false,
+	// Workspace recommendations (.vscode/extensions.json) query the gallery without user action.
+	'extensions.ignoreRecommendations': true,
 });
 
 Registry.as<IConfigurationRegistry>(Extensions.Configuration).registerDefaultConfigurations([{

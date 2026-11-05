@@ -1,0 +1,112 @@
+diff --git a/src/vs/platform/windows/electron-main/windowsMainService.ts b/src/vs/platform/windows/electron-main/windowsMainService.ts
+--- a/src/vs/platform/windows/electron-main/windowsMainService.ts
++++ b/src/vs/platform/windows/electron-main/windowsMainService.ts
+@@ -182,6 +182,10 @@ function isSingleFolderWorkspacePathToOpen(path: IPathToOpen | undefined): path
+ 
+ //#endregion
+ 
++// --- Start Axis ---
++const axisAgentsWindowAvailable: boolean = false;
++// --- End Axis ---
++
+ export class WindowsMainService extends Disposable implements IWindowsMainService {
+ 
+ 	declare readonly _serviceBrand: undefined;
+@@ -296,6 +300,16 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
+ 	async openAgentsWindow(openConfig: IOpenConfiguration, folderUri?: URI, reveal?: URI | 'new', source?: AgentsWindowOpenSource, folderUriIsDefault = false, draft?: IAgentsWindowDraft, onboardingSessionResource?: URI): Promise<ICodeWindow[]> {
+ 		this.logService.trace('windowsManager#openAgentsWindow');
+ 
++		// --- Start Axis ---
++		// Axis does not ship the Agents window (design D8). Every trigger (renderer,
++		// --agents, jump list, protocol links, global keybinding) ends here: open
++		// nothing, except a normal window when this is the first window of the app.
++		if (!axisAgentsWindowAvailable) {
++			this.logService.info('windowsManager#openAgentsWindow: the Agents window is not available in Axis');
++			return openConfig.initialStartup ? this.open({ context: openConfig.context, cli: openConfig.cli, userEnv: openConfig.userEnv, initialStartup: true }) : [];
++		}
++		// --- End Axis ---
++
+ 		const existingWindows = this.getWindows();
+ 		folderUri = await resolveAgentsWindowFolder(openConfig, folderUri, reveal === 'new' ? undefined : reveal, source, cli => this.doExtractPathsFromCLI(cli));
+ 
+@@ -1596,7 +1610,10 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
+ 
+ 			cssModules: this.cssDevelopmentService.isEnabled ? await this.cssDevelopmentService.getCssModules() : undefined,
+ 
+-			isSessionsWindow: isWorkspaceIdentifier(options.workspace) && isEqual(options.workspace.configPath, this.environmentMainService.agentSessionsWorkspace),
++			// --- Start Axis ---
++			// Never an Agents window (design D8), even when restoring its workspace
++			isSessionsWindow: axisAgentsWindowAvailable && isWorkspaceIdentifier(options.workspace) && isEqual(options.workspace.configPath, this.environmentMainService.agentSessionsWorkspace),
++			// --- End Axis ---
+ 		};
+ 
+ 		// New window
+diff --git a/build/next/index.ts b/build/next/index.ts
+--- a/build/next/index.ts
++++ b/build/next/index.ts
+@@ -103,7 +103,9 @@ const desktopWorkerEntryPoints = [
+ // Desktop workbench and code entry points
+ const desktopEntryPoints = [
+ 	'vs/workbench/workbench.desktop.main',
+-	'vs/sessions/sessions.desktop.main',
++	// --- Start Axis ---
++	// No Agents window (design D8)
++	// --- End Axis ---
+ 	'vs/workbench/contrib/debug/node/telemetryApp',
+ 	'vs/platform/files/node/watcher/watcherMain',
+ 	'vs/platform/localTranscription/node/localTranscriptionMain',
+@@ -118,7 +120,9 @@ const codeEntryPoints = [
+ 	'vs/code/node/cliProcessMain',
+ 	'vs/code/electron-utility/sharedProcess/sharedProcessMain',
+ 	'vs/code/electron-browser/workbench/workbench',
+-	'vs/sessions/electron-browser/sessions',
++	// --- Start Axis ---
++	// No Agents window (design D8)
++	// --- End Axis ---
+ ];
+ 
+ // Additional web-only entry points (CDN build only, not in server-web)
+@@ -187,8 +191,9 @@ function getCssBundleEntryPointsForTarget(target: BuildTarget): Set<string> {
+ 			return new Set([
+ 				'vs/workbench/workbench.desktop.main',
+ 				'vs/code/electron-browser/workbench/workbench',
+-				'vs/sessions/sessions.desktop.main',
+-				'vs/sessions/electron-browser/sessions',
++				// --- Start Axis ---
++				// No Agents window (design D8)
++				// --- End Axis ---
+ 			]);
+ 		case 'server':
+ 			return new Set(); // Server has no UI
+diff --git a/build/next/resources.ts b/build/next/resources.ts
+--- a/build/next/resources.ts
++++ b/build/next/resources.ts
+@@ -37,8 +37,9 @@ const desktopResourcePatterns = [
+ 	// HTML
+ 	'vs/code/electron-browser/workbench/workbench.html',
+ 	'vs/code/electron-browser/workbench/workbench-dev.html',
+-	'vs/sessions/electron-browser/sessions.html',
+-	'vs/sessions/electron-browser/sessions-dev.html',
++	// --- Start Axis ---
++	// No Agents window (design D8)
++	// --- End Axis ---
+ 	'vs/workbench/services/extensions/worker/webWorkerExtensionHostIframe.html',
+ 	'vs/workbench/contrib/webview/browser/pre/*.html',
+ 
+diff --git a/build/gulpfile.vscode.ts b/build/gulpfile.vscode.ts
+--- a/build/gulpfile.vscode.ts
++++ b/build/gulpfile.vscode.ts
+@@ -140,10 +140,9 @@ function packageTask(platform: string, arch: string, sourceFolderName: string, d
+ 			'vs/workbench/api/node/extensionHostProcess.js',
+ 			'vs/code/electron-browser/workbench/workbench.html',
+ 			'vs/code/electron-browser/workbench/workbench.js',
+-			'vs/sessions/sessions.desktop.main.js',
+-			'vs/sessions/sessions.desktop.main.css',
+-			'vs/sessions/electron-browser/sessions.html',
+-			'vs/sessions/electron-browser/sessions.js'
++			// --- Start Axis ---
++			// No Agents window (design D8)
++			// --- End Axis ---
+ 		]);
+ 
+ 		const src = gulp.src(out + '/**', { base: '.' })

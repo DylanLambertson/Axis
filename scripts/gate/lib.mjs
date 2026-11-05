@@ -13,6 +13,7 @@ export function countLines(text) {
 export function isLineLimitExempt(path, config) {
   const name = path.slice(path.lastIndexOf("/") + 1);
   if (config.lineLimitExemptFiles.includes(name)) return true;
+  if ((config.lineLimitExemptPaths ?? []).includes(path)) return true;
   const dot = name.lastIndexOf(".");
   return dot > 0 && config.lineLimitExemptExtensions.includes(name.slice(dot).toLowerCase());
 }
