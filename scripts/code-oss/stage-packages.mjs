@@ -40,15 +40,14 @@ import {
 } from "./stage-fs.mjs";
 import {
   classifySpecifier,
-  hiddenLoaders,
   importSpecifiers,
-  nonLiteralLoads,
+  unsafeForms,
   rewriteSpecifiers,
 } from "./stage-scan.mjs";
 import { MANIFEST_NAME, MAX_FILE_BYTES, STAGE_ROOT, checkStagedFile, sha256, treeHash, verifyStaged } from "./stage-verify.mjs";
 
 export { STAGE_ROOT };
-export { importSpecifiers, nonLiteralLoads, rewriteSpecifiers } from "./stage-scan.mjs";
+export { importSpecifiers, unsafeForms, rewriteSpecifiers } from "./stage-scan.mjs";
 
 const GENERATED = "Staged by code-oss/hooks/post-apply.d/20-stage-axis-packages. Do not edit; edit the source and rerun apply.sh.";
 const MAX_TOTAL_BYTES = 32 * 1024 * 1024;
@@ -225,8 +224,7 @@ export function stage({ repo, tree, now = Date.now(), maxFutureSkewMs = DEFAULT_
   for (const n of names) {
     for (const [rel, { abs, data, text }] of sources[n]) {
       const sourceRel = `packages/${n}/src/${rel}`;
-      for (const t of hiddenLoaders(text)) fail(`${sourceRel}: ${t} hides a load from the import check`);
-      for (const t of nonLiteralLoads(text, sourceRel)) fail(`${sourceRel}: ${t}`);
+      for (const t of unsafeForms(text, sourceRel)) fail(`${sourceRel}: ${t}`);
       for (const spec of importSpecifiers(text, sourceRel)) {
         let c;
         try {

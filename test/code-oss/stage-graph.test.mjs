@@ -3,23 +3,23 @@
 // and the metafile rules of check-daemon-graph.mjs.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { checkMetafile } from "../../scripts/code-oss/check-daemon-graph.mjs";
 import { PROBE_MARKER, brandVerdict, restoreStaleProbe, mangleExemptionPresent, privateNameCount, privatesSurvive } from "../../scripts/code-oss/check-privates.mjs";
 import { STAGE_ROOT, stage } from "../../scripts/code-oss/stage-packages.mjs";
-import { RESTRICTED_MODULES, RESTRICTED_SUBPATHS, classifySpecifier, hiddenLoaders, importSpecifiers, nonLiteralLoads } from "../../scripts/code-oss/stage-scan.mjs";
+import { RESTRICTED_MODULES, RESTRICTED_SUBPATHS, classifySpecifier, importSpecifiers, unsafeForms } from "../../scripts/code-oss/stage-scan.mjs";
 import { checkStagedFile, sha256, treeHash, verifyStaged } from "../../scripts/code-oss/stage-verify.mjs";
 import { put, withFixture } from "./stage-fixture.mjs";
 
 const staged = (tree, rel) => join(tree, STAGE_ROOT, rel);
 
-test("nonLiteralLoads and hiddenLoaders", () => {
-  assert.equal(nonLiteralLoads("await import(name)").length, 1);
-  assert.equal(nonLiteralLoads('await import("zod"); require("./x.js")').length, 0);
-  assert.deepEqual(hiddenLoaders("createRequire(import.meta.url); process.getBuiltinModule('x'); eval('1'); new  Function('a'); import.meta.resolve('x'); process.binding('x');").length, 6);
-  assert.deepEqual(hiddenLoaders("export const x = 1;"), []);
+test("unsafeForms and hiddenLoaders", () => {
+  assert.equal(unsafeForms("await import(name)").length, 1);
+  assert.equal(unsafeForms('await import("zod"); require("./x.js")').length, 0);
 });
 
 test("classifySpecifier: the allowlist is relative, zod, declared @axis subpaths and node:*", () => {
@@ -67,7 +67,9 @@ test("the import allowlist holds on the staged files themselves, even when the m
     ["a bare zod", 'import { z } from "zod";\n', /bare import zod/],
     ["a relative import leaving the staged tree", 'import "../../../../vs/base/common/event.js";\n', /leaves the staged tree/],
     ["a relative import to a file that is not staged", 'import "./ghost.js";\n', /does not resolve to a staged file/],
-    ["a hidden loader", "eval('1');\n", /hides a load/],
+    ["a hidden loader", "eval('1');\n", /eval reaches code/],
+    ["a computed dynamic import", "export const m = () => import([\"z\", \"od\"].join(\"\"));\n", /import\(\) needs a single string literal/],
+    ["node:vm", "import \"node:vm\";\n", /loads or runs code|not allowed in the protocol/],
     ["the principal reached by relative path from another package", 'import "../../journal/daemon-principal.js";\n', /only daemon may import/],
   ];
   for (const [name, text, pattern] of forged) {
@@ -146,6 +148,24 @@ test("checkMetafile: another package reaching a mint holder is refused", () => {
   const meta = { inputs: { [P("daemon/index.ts")]: { imports: [{ path: P("journal/principal.ts"), kind: "import-statement" }, { path: P("audit/lock.ts"), kind: "import-statement" }] }, [P("journal/principal.ts")]: { imports: [] }, [P("audit/lock.ts")]: { imports: [] } } };
   const found = checkMetafile(meta, manifest);
   assert.equal(found.length, 2, found.join("; "));
+  assert.ok(found.every((m) => !/\s{2}/.test(m)), `no double spaces: ${found.join("; ")}`);
+  assert.match(found[0], /which only journal may import$/);
+});
+
+test("check-staged heals a probe left in the daemon entry by a killed run before any check reads it", () => {
+  const dir = mkdtempSync(join(tmpdir(), "axis-heal-"));
+  try {
+    const entry = join(dir, "src/vs/axis/daemon/node/axisDaemonMain.ts");
+    mkdirSync(dirname(entry), { recursive: true });
+    writeFileSync(entry, `// ${PROBE_MARKER} (leftover)\nexport const probe = 1;\n`);
+    const r = spawnSync(process.execPath, [fileURLToPath(new URL("../../scripts/code-oss/check-staged.mjs", import.meta.url)), "--tree", dir], { encoding: "utf8" });
+    assert.equal(r.status, 1, "there is nothing staged in the scratch tree, so the run still fails");
+    assert.match(r.stdout, /^0\. restored the daemon entry/);
+    const overlay = readFileSync(new URL("../../code-oss/overlay/src/vs/axis/daemon/node/axisDaemonMain.ts", import.meta.url), "utf8");
+    assert.equal(readFileSync(entry, "utf8"), overlay);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("check-privates: counts # names on tokens, sees the exemption, and flags mangled bundles", () => {
@@ -203,4 +223,16 @@ test("the committed probe carries the marker the stale-probe guard looks for, an
   const text = readFileSync(new URL("../../scripts/code-oss/brand-probe.ts", import.meta.url), "utf8");
   assert.ok(text.includes(PROBE_MARKER));
   assert.match(text, /typeof holder\[key\] === 'boolean'/);
+});
+
+test("checkStagedFile alone (the re-check) refuses unsafe forms, loader built-ins and the protocol node ban", () => {
+  const files = new Set(["protocol/a.ts", "other/a.ts", "vendor/zod/index.js"]);
+  assert.throws(() => checkStagedFile("protocol/a.ts", "export const m = () => import(name);\n", files), /^StageError: staged protocol\/a\.ts: .*import\(\) needs/);
+  assert.throws(() => checkStagedFile("protocol/a.ts", "eval('1');\n", files), /staged protocol\/a\.ts: .*eval reaches code/);
+  assert.throws(() => checkStagedFile("other/a.ts", 'import "node:vm";\n', files), /staged other\/a\.ts: node:vm loads or runs code/);
+  assert.throws(() => checkStagedFile("protocol/a.ts", 'import "node:path";\n', files), /node:\* is not allowed in the protocol package/);
+  assert.throws(() => checkStagedFile("other/a.ts", 'export { userPrincipal } from "../journal/daemon-principal.js";\n', new Set([...files, "journal/daemon-principal.ts"])), /mint module/);
+  assert.throws(() => checkStagedFile("vendor/zod/index.js", "export const z = () => import(name);\n", files), /import\(\) needs/);
+  checkStagedFile("vendor/zod/index.js", 'export const f = new Function("a", "return a");\n', files); // pinned third-party code
+  checkStagedFile("other/a.ts", 'import { join } from "node:path";\nexport const j = join;\n', files);
 });

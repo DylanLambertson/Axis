@@ -2,10 +2,10 @@
 // One test per rule of the module scanner (scripts/code-oss/stage-ast.mjs): removing any rule fails one of them.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { importSpecifiers, nonLiteralLoads, rewriteSpecifiers, scanModules } from "../../scripts/code-oss/stage-ast.mjs";
+import { importSpecifiers, unsafeForms, rewriteSpecifiers, scanModules } from "../../scripts/code-oss/stage-ast.mjs";
 
 const specs = (src, file) => importSpecifiers(src, file).sort();
-const bad = (src, file) => nonLiteralLoads(src, file);
+const bad = (src, file) => unsafeForms(src, file);
 
 test("every import form names its specifier", () => {
   assert.deepEqual(specs('import a from "a";'), ["a"]);
@@ -105,4 +105,101 @@ test("rewriteSpecifiers rewrites every form, leaves comments and unresolved spec
   const src = 'import a from "zod";\n// import "zod";\nexport * from "@axis/p";\nconst b = import("zod");\nimport "./keep.js";\n';
   const out = rewriteSpecifiers(src, "src/vs/axis/packages/w/sub/f.ts", (s) => (s === "zod" ? "src/vs/axis/packages/vendor/zod/index.js" : s === "@axis/p" ? "src/vs/axis/packages/p/index.js" : null));
   assert.equal(out, 'import a from "../../vendor/zod/index.js";\n// import "zod";\nexport * from "../../p/index.js";\nconst b = import("../../vendor/zod/index.js");\nimport "./keep.js";\n');
+});
+
+// ---- hidden names, Function constructors and mint re-exports, found on the syntax tree ----
+
+const MINT = '"@axis/journal/daemon-principal"';
+
+test("hidden loader names are found as identifiers, property names, string keys and escaped identifiers", () => {
+  for (const name of ["createRequire", "getBuiltinModule", "dlopen", "eval", "mainModule", "AsyncFunction", "GeneratorFunction", "AsyncGeneratorFunction"]) {
+    assert.equal(bad(`const x = ${name};`).length, 1, `identifier ${name}`);
+    assert.equal(bad(`o.${name}("x");`).length, 1, `property ${name}`);
+    assert.equal(bad(`o["${name}"]("x");`).length, 1, `string key ${name}`);
+    assert.equal(bad(`o[\`${name}\`]("x");`).length, 1, `template key ${name}`);
+  }
+  assert.equal(bad("const e = \\u0065val; e(1);").length, 1, "unicode-escaped identifier");
+  assert.equal(bad('o["\\u0065val"](1);').length, 1, "unicode-escaped string key");
+});
+
+test("a mention in a comment or an unrelated string is not a loader", () => {
+  assert.deepEqual(bad('// createRequire eval\n/* getBuiltinModule */ const s = "createRequire"; const requireX = 1; const created = 2;'), []);
+});
+
+test("the Function constructor is refused, the Function type is not", () => {
+  assert.equal(bad('Function("return 1")();').length, 1);
+  assert.equal(bad('new Function("return 1");').length, 1);
+  assert.equal(bad('globalThis["Function"]("x");').length >= 1, true);
+  assert.deepEqual(bad("export const f: Function = () => 1; export type G = Function;"), []);
+});
+
+test(".constructor is refused where it builds code and allowed for ordinary reflection", () => {
+  assert.equal(bad('(() => {}).constructor("return 1")();').length >= 1, true);
+  assert.equal(bad('(async function () {}).constructor("x");').length >= 1, true);
+  assert.equal(bad('const f = () => 1; f.constructor("x");').length >= 1, true);
+  assert.equal(bad('x.constructor.constructor("x");').length >= 1, true);
+  assert.equal(bad('x["constructor"]["constructor"]("x");').length >= 1, true);
+  assert.deepEqual(bad("const n = err.constructor.name; extra.constructor = 5; class C { constructor() {} }"), []);
+});
+
+test("process.binding, module.require and friends are refused", () => {
+  assert.equal(bad('process.binding("fs");').length, 1);
+  assert.equal(bad('process["binding"]("fs");').length, 1);
+  assert.equal(bad('module.require("fs");').length, 1);
+  assert.equal(bad('module["constructor"]._load("fs");').length >= 1, true);
+  assert.deepEqual(bad("const binding = 1; o.binding; module.exports;"), []);
+});
+
+test("element access with a computed key on process, globalThis, global and module is refused", () => {
+  for (const base of ["process", "globalThis", "global", "module"]) {
+    assert.match(bad(`${base}[k]("x");`)[0], /computed key/, base);
+    assert.equal(bad(`${base}["ev" + "al"]("x");`).length >= 1, true, base);
+  }
+  assert.deepEqual(bad('const a = other[k]; const b = process["env"]; const c = globalThis["x"];'), []);
+});
+
+test("vendored mode keeps the module-loading rules and skips the hidden-name rules", () => {
+  const code = 'const f = new Function("a", "return a"); const c = f.constructor;';
+  assert.equal(bad(code).length >= 1, true);
+  assert.deepEqual(unsafeForms(code, "z.js", { vendored: true }), []);
+  assert.equal(unsafeForms("import(name)", "z.js", { vendored: true }).length, 1);
+  assert.equal(unsafeForms("export const = ;", "z.js", { vendored: true }).length >= 1, true);
+});
+
+test("re-exporting a mint module is refused in every form, whatever the comments and strings around it", () => {
+  const forms = [
+    `export { userPrincipal } from ${MINT};`,
+    `export * from ${MINT};`,
+    `export * as p from ${MINT};`,
+    `export { userPrincipal as mint } from ${MINT};`,
+    `export type { UserPrincipal } from ${MINT};`,
+    `export { attestTrust } from "@axis/runs/daemon-attestation";`,
+    `export { userPrincipal } from "./daemon-principal.js";`,
+    `import { userPrincipal } from ${MINT};\nexport { userPrincipal };`,
+    `import { userPrincipal as mint } from ${MINT};\nexport { a, mint as other, b };`,
+    `import * as ns from ${MINT};\nexport { ns };`,
+    `import d from ${MINT};\nexport default d;`,
+    `import { userPrincipal } from ${MINT};\nexport const mint = userPrincipal;`,
+    `import { userPrincipal } from ${MINT};\nexport const bag = { mint: userPrincipal };`,
+    `import { userPrincipal } from ${MINT};\nexport const principal = userPrincipal();`,
+    `import { userPrincipal } from ${MINT};\nexport default userPrincipal;`,
+    `import p = require(${MINT});\nexport { p };`,
+    `export import p = require(${MINT});`,
+    `export const loaded = await import(${MINT});`,
+    `export default await import(${MINT});`,
+  ];
+  for (const f of forms) {
+    assert.equal(bad(f).filter((m) => /mint module/.test(m)).length >= 1, true, f);
+    // The reviewed bypass: two strings that look like comment delimiters around the line.
+    const hidden = `export const probeOpen = "/*";\n${f}\nexport const probeClose = "*/";`;
+    assert.equal(bad(hidden).filter((m) => /mint module/.test(m)).length >= 1, true, hidden);
+  }
+});
+
+test("using a mint module without exporting it is allowed", () => {
+  assert.deepEqual(bad(`import { userPrincipal } from ${MINT};\nexport function connect() { return userPrincipal(); }`), []);
+  assert.deepEqual(bad(`import { userPrincipal } from ${MINT};\nexport const connect = () => userPrincipal();`), []);
+  assert.deepEqual(bad(`import { userPrincipal } from ${MINT};\nconst p = userPrincipal();\nexport function use() { return p; }`), []);
+  assert.deepEqual(bad('export { userPrincipal } from "./other.js";'), []);
+  assert.deepEqual(bad(`// export * from ${MINT};\n/* import { a } from ${MINT}; export { a }; */`), []);
 });

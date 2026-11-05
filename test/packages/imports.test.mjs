@@ -7,8 +7,9 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, wr
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { forbiddenLoaders, isScriptFile, principalReexports } from "./loaders.mjs";
-import { importSpecifiers, nonLiteralLoads } from "../../scripts/code-oss/stage-ast.mjs";
+import { isScriptFile } from "./loaders.mjs";
+import { importSpecifiers, unsafeForms } from "../../scripts/code-oss/stage-ast.mjs";
+import { LOADER_BUILTINS } from "../../scripts/code-oss/stage-scan.mjs";
 
 const packagesDir = fileURLToPath(new URL("../../packages/", import.meta.url));
 
@@ -93,7 +94,11 @@ export function violation(pkg, spec, file = null, pkgDir = null) {
     return allowed.has(pkg) ? null : "this subpath may only be imported by the daemon integration code";
   }
   if (spec.startsWith("@axis/")) return null;
-  if (spec.startsWith("node:")) return NO_NODE.has(pkg) && inSrc ? "node:* is not allowed in this package" : null;
+  if (spec.startsWith("node:")) {
+    if (NO_NODE.has(pkg) && inSrc) return "node:* is not allowed in this package";
+    const only = LOADER_BUILTINS.get(spec.replace(/\/.*$/, ""));
+    return only !== undefined && !only.has(pkg) && inSrc ? "this built-in loads or runs code without a module specifier" : null;
+  }
   return "only relative, zod, @axis/* and node:* imports are allowed";
 }
 
@@ -129,9 +134,7 @@ for (const pkg of packages) {
         const why = violation(pkg, spec, file, pkgDir);
         if (why) bad.push(`${file}: ${spec} (${why})`);
       }
-      for (const call of nonLiteralLoads(source, file)) bad.push(`${file}: ${call}`);
-      for (const name of forbiddenLoaders(source)) bad.push(`${file}: ${name} (loads a module without a visible specifier)`);
-      for (const re of principalReexports(source)) bad.push(`${file}: ${re} (the user-principal subpath must not be re-exported)`);
+      for (const call of unsafeForms(source, file)) bad.push(`${file}: ${call}`);
     }
     assert.deepEqual(bad, []);
   });
@@ -200,12 +203,12 @@ test("scanner: relative imports must stay inside the package", () => {
 });
 
 test("scanner: dynamic loads need a string literal", () => {
-  assert.deepEqual(nonLiteralLoads(`const a = await import("zod"); const b = require('./x.js');`), []);
-  assert.equal(nonLiteralLoads("await import(name)").length, 1);
-  assert.equal(nonLiteralLoads("await import(`./x/${n}.js`)").length, 1);
-  assert.equal(nonLiteralLoads("await import('./x/' + n)").length, 1);
-  assert.equal(nonLiteralLoads("require(path)").length, 1);
-  assert.deepEqual(nonLiteralLoads('// import(name)\n/* require(x) */'), []);
+  assert.deepEqual(unsafeForms(`const a = await import("zod"); const b = require('./x.js');`), []);
+  assert.equal(unsafeForms("await import(name)").length, 1);
+  assert.equal(unsafeForms("await import(`./x/${n}.js`)").length, 1);
+  assert.equal(unsafeForms("await import('./x/' + n)").length, 1);
+  assert.equal(unsafeForms("require(path)").length, 1);
+  assert.deepEqual(unsafeForms('// import(name)\n/* require(x) */'), []);
 });
 
 test("scanner: walks the whole package except dist and node_modules", () => {
@@ -294,35 +297,15 @@ test("scanner: a .mts file that imports and re-exports the principal is caught e
         const why = violation("providers", spec, f, root);
         if (why) bad.push(spec);
       }
-      bad.push(...forbiddenLoaders(source), ...principalReexports(source));
+      bad.push(...unsafeForms(source, f).map((m) => m.replace(/^line \d+: /, "")));
     }
-    assert.deepEqual(bad, ["@axis/journal/daemon-principal", "createRequire", "export { userPrincipal }"]);
+    assert.equal(bad[0], "@axis/journal/daemon-principal");
+    assert.equal(bad.length, 3);
+    assert.match(bad[1], /createRequire/);
+    assert.match(bad[2], /^exports userPrincipal, which came from a mint module/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
-});
-
-test("scanner: loaders that hide a specifier are flagged", () => {
-  assert.deepEqual(forbiddenLoaders('const r = createRequire(import.meta.url); r("@axis/journal/daemon-principal");'), ["createRequire"]);
-  assert.deepEqual(forbiddenLoaders('process.getBuiltinModule("node:module").createRequire(import.meta.url)'), ["getBuiltinModule", "createRequire"]);
-  assert.deepEqual(forbiddenLoaders('import { createRequire } from "node:module";'), ["createRequire"]);
-  assert.deepEqual(forbiddenLoaders('// createRequire in a comment\n/* getBuiltinModule */ const a = 1;'), []);
-  assert.deepEqual(forbiddenLoaders("const requireX = 1; const created = 2;"), []);
-});
-
-test("scanner: re-exporting the user-principal subpath is flagged, importing it for use is not", () => {
-  const sub = '"@axis/journal/daemon-principal"';
-  assert.equal(principalReexports(`export * from ${sub};`).length, 1);
-  assert.equal(principalReexports(`export { userPrincipal } from ${sub};`).length, 1);
-  assert.equal(principalReexports(`export type { UserPrincipal } from ${sub};`).length, 1);
-  assert.equal(principalReexports(`export * as p from ${sub};`).length, 1);
-  assert.equal(principalReexports(`import { userPrincipal } from ${sub};\nexport { userPrincipal };`).length, 1);
-  assert.equal(principalReexports(`import { userPrincipal as mint } from ${sub};\nexport { a, userPrincipal, b };`).length, 1);
-  assert.equal(principalReexports(`import { userPrincipal } from ${sub};\nexport const mint = userPrincipal;`).length, 1);
-  assert.equal(principalReexports(`import { userPrincipal } from ${sub};\nexport default userPrincipal;`).length, 1);
-  assert.equal(principalReexports(`import { userPrincipal } from ${sub};\nexport function connect() { return userPrincipal(); }`).length, 0);
-  assert.equal(principalReexports(`export { userPrincipal } from "./other.js";`).length, 0);
-  assert.equal(principalReexports(`// export * from ${sub};`).length, 0);
 });
 
 test("scanner: the daemon host is imported by nothing and imports the restricted packages only from named files", () => {

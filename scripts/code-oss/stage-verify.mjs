@@ -5,7 +5,7 @@
 import { createHash } from "node:crypto";
 import { join, posix } from "node:path";
 import { StageError, fail, readRegular, walkFiles } from "./stage-fs.mjs";
-import { RESTRICTED_MODULES, hiddenLoaders, importSpecifiers, nonLiteralLoads } from "./stage-scan.mjs";
+import { LOADER_BUILTINS, RESTRICTED_MODULES, importSpecifiers, unsafeForms } from "./stage-scan.mjs";
 
 export const STAGE_ROOT = "src/vs/axis/packages";
 export const MANIFEST_NAME = "stage-manifest.json";
@@ -29,14 +29,13 @@ export function treeHash(files) {
 export function checkStagedFile(rel, text, fileSet) {
   const here = posix.dirname(rel);
   const pkg = rel.split("/")[0];
-  const isTs = rel.endsWith(".ts");
-  if (isTs && !rel.endsWith(".d.ts")) {
-    for (const t of hiddenLoaders(text)) fail(`staged ${rel}: ${t} hides a load from the import check`);
-  }
-  if (rel.endsWith(".ts") || rel.endsWith(".js")) for (const t of nonLiteralLoads(text, rel)) fail(`staged ${rel}: ${t}`);
+  if (rel.endsWith(".ts") || rel.endsWith(".js")) for (const t of unsafeForms(text, rel, { vendored: pkg === "vendor" })) fail(`staged ${rel}: ${t}`);
   for (const spec of importSpecifiers(text, rel)) {
     if (/^node:[a-z_]+(?:\/[a-z0-9_]+)*$/.test(spec)) {
       if (pkg === "vendor") fail(`staged ${rel}: vendored code imports ${spec}`);
+      if (pkg === "protocol") fail(`staged ${rel}: node:* is not allowed in the protocol package`);
+      const only = LOADER_BUILTINS.get(spec.replace(/\/.*$/, ""));
+      if (only !== undefined && !only.has(pkg)) fail(`staged ${rel}: ${spec} loads or runs code without a module specifier`);
       continue;
     }
     if (!spec.startsWith("./") && !spec.startsWith("../")) fail(`staged ${rel}: bare import ${spec} would resolve from the tree at run time`);

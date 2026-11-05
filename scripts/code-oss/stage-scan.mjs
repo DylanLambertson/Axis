@@ -3,27 +3,22 @@
 // Text scanners and rewrite rules for scripts/code-oss/stage-packages.mjs (ADR 0005 D3).
 //
 // WHAT THIS IS, AND IS NOT. Module references are found by parsing the file with the TypeScript parser
-// (stage-ast.mjs), not by pattern matching text. `hiddenLoaders` below is a deliberate text lint on the raw
-// source, comments included, for names that reach code without a visible specifier (a false positive on a
-// comment is accepted: the staging hook fails closed). The guarantee that matters is the bundle-time
-// module-graph check (scripts/code-oss/check-daemon-graph.mjs), which reads what esbuild really resolved.
-export { importSpecifiers, nonLiteralLoads, rewriteSpecifiers, scanModules } from "./stage-ast.mjs";
+// (stage-ast.mjs), not by pattern matching text; the same parse finds the names that reach code without a
+// visible specifier. The guarantee that matters is the bundle-time module-graph check (scripts/code-oss/check-daemon-graph.mjs), which reads what esbuild really resolved.
+export { importSpecifiers, unsafeForms, rewriteSpecifiers, scanModules } from "./stage-ast.mjs";
 
 /**
- * Other ways to reach code the specifier scan cannot see. Packages have no use for any of them, so a mention is
- * refused. Returns the offending tokens.
+ * Node built-ins that load or run code by other means than a module specifier. No package needs them, except the
+ * listed ones: `node:worker_threads` for the daemon's in-process transport (MessageChannel). Judged on `src/` files.
  */
-export function hiddenLoaders(source) {
-  const found = [];
-  const words = /\b(createRequire|getBuiltinModule|dlopen|eval)\b/g;
-  for (const m of source.matchAll(words)) found.push(m[1]);
-  for (const m of source.matchAll(/\bnew\s+Function\b/g)) found.push(m[0]);
-  for (const m of source.matchAll(/\bimport\s*\.\s*meta\s*\.\s*resolve\b/g)) found.push(m[0].replace(/\s+/g, ""));
-  for (const m of source.matchAll(/\bprocess\s*\.\s*binding\b/g)) found.push(m[0].replace(/\s+/g, ""));
-  for (const m of source.matchAll(/\bmodule\s*\.\s*(?:require|constructor)\b/g)) found.push(m[0].replace(/\s+/g, ""));
-  for (const m of source.matchAll(/\/\/\/\s*<reference\b/g)) found.push("triple-slash reference");
-  return found;
-}
+export const LOADER_BUILTINS = new Map([
+  ["node:module", new Set()],
+  ["node:vm", new Set()],
+  ["node:repl", new Set()],
+  ["node:inspector", new Set()],
+  ["node:wasi", new Set()],
+  ["node:worker_threads", new Set(["daemon"])],
+]);
 
 /** Subpaths of `@axis/*` that only some packages may import (ADR 0005 D2; mirrors test/packages/imports.test.mjs). */
 export const RESTRICTED_SUBPATHS = new Map([
@@ -59,6 +54,9 @@ export function classifySpecifier(spec, pkg, exportsOf) {
   if (spec.startsWith("zod/")) throw `only the "zod" entry is staged, not ${spec}`;
   if (spec.startsWith("node:")) {
     if (!/^node:[a-z_]+(?:\/[a-z0-9_]+)*$/.test(spec)) throw `malformed built-in specifier ${spec}`;
+    if (pkg === "protocol") throw `node:* is not allowed in the protocol package (contracts shared with the web target): ${spec}`;
+    const only = LOADER_BUILTINS.get(spec.replace(/\/.*$/, ""));
+    if (only !== undefined && !only.has(pkg)) throw `${spec} loads or runs code without a module specifier and is not allowed${only.size > 0 ? ` outside ${[...only].join(", ")}` : ""}`;
     return { kind: "node" };
   }
   if (spec.startsWith("@axis/")) {

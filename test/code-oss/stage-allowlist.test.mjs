@@ -61,11 +61,11 @@ const REFUSED = [
   ["a relative import of a missing file", (r) => put(r, src("a.ts"), 'import "./missing.js";\n'), /\.js suffix/],
   ["a non-literal dynamic import", (r) => put(r, src("a.ts"), "await import(name);\n"), /string literal/],
   ["a template dynamic import", (r) => put(r, src("a.ts"), "await import(`./x/${n}.js`);\n"), /string literal/],
-  ["createRequire", (r) => put(r, src("a.ts"), 'import { createRequire } from "node:module";\nvoid createRequire;\n'), /hides a load/],
-  ["process.getBuiltinModule", (r) => put(r, src("a.ts"), "process.getBuiltinModule('fs');\n"), /hides a load/],
-  ["eval", (r) => put(r, src("a.ts"), "eval('1');\n"), /hides a load/],
-  ["new Function", (r) => put(r, src("a.ts"), "new Function('return 1');\n"), /hides a load/],
-  ["a triple-slash reference", (r) => put(r, src("a.ts"), '/// <reference path="../../../vs/x.d.ts" />\n'), /hides a load/],
+  ["createRequire", (r) => put(r, src("a.ts"), 'import { createRequire } from "node:module";\nvoid createRequire;\n'), /reaches code without a visible import specifier|Function constructor|directive/],
+  ["process.getBuiltinModule", (r) => put(r, src("a.ts"), "process.getBuiltinModule('fs');\n"), /reaches code without a visible import specifier|Function constructor|directive/],
+  ["eval", (r) => put(r, src("a.ts"), "eval('1');\n"), /reaches code without a visible import specifier|Function constructor|directive/],
+  ["new Function", (r) => put(r, src("a.ts"), "new Function('return 1');\n"), /reaches code without a visible import specifier|Function constructor|directive/],
+  ["a triple-slash reference", (r) => put(r, src("a.ts"), '/// <reference path="../../../vs/x.d.ts" />\n'), /reaches code without a visible import specifier|Function constructor|directive/],
   // zod.
   ["a zod file importing outside zod", (r) => put(r, "node_modules/zod/index.js", 'export * from "../../outside.js";\n'), /leaves the package/],
   ["a zod file with a bare import", (r) => put(r, "node_modules/zod/v4/core.js", 'import "left-pad";\n'), /bare specifier/],
@@ -98,7 +98,7 @@ test("stage: a restricted subpath is accepted from the package allowed to import
   withFixture(({ repo, tree }) => {
     restrictedFixture(repo);
     put(repo, "packages/daemon/package.json", JSON.stringify({ name: "@axis/daemon", exports: { ".": { default: "./dist/src/index.js" } } }));
-    put(repo, "packages/daemon/src/index.ts", 'import { userPrincipal } from "@axis/journal/daemon-principal";\nexport const p = userPrincipal;\n');
+    put(repo, "packages/daemon/src/index.ts", 'import { userPrincipal } from "@axis/journal/daemon-principal";\nexport const p = () => userPrincipal();\n');
     stage({ repo, tree });
   });
 });
@@ -160,12 +160,12 @@ const REFUSED_2 = [
   ["a template-literal desync hiding an import", (r) => put(r, src("a.ts"), "export const t = `${`}`}'`; export * from \"electron\";\n"), /outside the allowlist/],
   ["a concatenated specifier", (r) => put(r, src("a.ts"), "export const m = () => import(\"elec\" + \"tron\");\n"), /import\(\) needs a single string literal/],
   ["import of a variable", (r) => put(r, src("a.ts"), "declare const name: string; export const m = () => import(name);\n"), /import\(\) needs a single string literal/],
-  ["require of a variable", (r) => put(r, src("a.ts"), "declare const name: string; export const m = require(name);\n"), /require\(\) needs a single string literal|hides a load/],
+  ["require of a variable", (r) => put(r, src("a.ts"), "declare const name: string; export const m = require(name);\n"), /require\(\) needs a single string literal/],
   ["require used as a value", (r) => put(r, src("a.ts"), "declare const require: (x: string) => unknown; const r = require; export const m = r(\"fs\");\n"), /require used as a value/],
-  ["import.meta.resolve", (r) => put(r, src("a.ts"), "export const m = import.meta.resolve(\"electron\");\n"), /import\.meta can reach modules|hides a load/],
-  ["import.meta indexed by a string", (r) => put(r, src("a.ts"), "export const m = (import.meta as any)[\"resolve\"](\"electron\");\n"), /import\.meta can reach modules|hides a load/],
+  ["import.meta.resolve", (r) => put(r, src("a.ts"), "export const m = import.meta.resolve(\"electron\");\n"), /import\.meta can reach modules/],
+  ["import.meta indexed by a string", (r) => put(r, src("a.ts"), "export const m = (import.meta as any)[\"resolve\"](\"electron\");\n"), /import\.meta can reach modules/],
   ["an import type of a forbidden module", (r) => put(r, src("a.ts"), "export type T = import(\"electron\").App;\n"), /outside the allowlist/],
-  ["a triple-slash path reference", (r) => put(r, src("a.ts"), "/// <reference path=\"../../elsewhere/x.ts\" />\nexport {};\n"), /directive|hides a load/],
+  ["a triple-slash path reference", (r) => put(r, src("a.ts"), "/// <reference path=\"../../elsewhere/x.ts\" />\nexport {};\n"), /directive/],
   ["a syntax error", (r) => put(r, src("a.ts"), "export const = ;\n"), /syntax error/],
   ["a package named vendor", (r) => { put(r, "packages/vendor/package.json", JSON.stringify({ name: "@axis/vendor", exports: { ".": { default: "./dist/src/index.js" } } })); put(r, "packages/vendor/src/index.ts", "export {};\n"); }, /reserved for vendored code/],
   ["a hard link to a file outside the repository", (r, b) => { put(b, "outside/creds.ts", "export const secret = 1;\n"); linkSync(join(b, "outside/creds.ts"), join(r, src("creds.ts"))); }, /hard links/],
@@ -265,5 +265,56 @@ test("stage ignores an import that only appears in a comment and leaves the comm
     stage({ repo, tree });
     const text = readFileSync(join(tree, STAGE_ROOT, "protocol/c.ts"), "utf8");
     assert.match(text, /\/\/ import x from "vs\/base\/common\/event";/);
+  });
+});
+
+// ---- Loader built-ins, protocol node ban, and which check refuses what ----
+
+const otherPackage = (r, file, text) => {
+  put(r, "packages/other/package.json", JSON.stringify({ name: "@axis/other", exports: { ".": { default: "./dist/src/index.js" } } }));
+  put(r, "packages/other/src/index.ts", "export {};\n");
+  put(r, `packages/other/src/${file}`, text);
+};
+
+for (const m of ["module", "vm", "repl", "inspector", "wasi", "worker_threads"]) {
+  test(`stage refuses node:${m} outside the packages that need it, and leaves no staged output`, () => {
+    withFixture(({ repo, tree }) => {
+      otherPackage(repo, "b.ts", `import * as m from "node:${m}";\nexport { m };\n`);
+      assert.throws(() => stage({ repo, tree }), new RegExp(`^StageError: packages/other/src/b\\.ts: node:${m} loads or runs code`));
+      assert.equal(existsSync(join(tree, STAGE_ROOT)), false);
+    });
+  });
+}
+
+test("stage allows node:worker_threads in the daemon package only", () => {
+  withFixture(({ repo, tree }) => {
+    put(repo, "packages/daemon/package.json", JSON.stringify({ name: "@axis/daemon", exports: { ".": { default: "./dist/src/index.js" } } }));
+    put(repo, "packages/daemon/src/index.ts", 'import { MessageChannel } from "node:worker_threads";\nexport const c = () => new MessageChannel();\n');
+    stage({ repo, tree });
+  });
+});
+
+test("stage refuses any node:* import in the protocol package", () => {
+  withFixture(({ repo, tree }) => {
+    put(repo, src("n.ts"), 'import { join } from "node:path";\nexport const j = join;\n');
+    assert.throws(() => stage({ repo, tree }), /^StageError: packages\/protocol\/src\/n\.ts: node:\* is not allowed in the protocol package/);
+  });
+});
+
+test("the hook refuses an unsafe form in a source file with the source path in the message (not only in the staged re-check)", () => {
+  for (const text of ["export const m = () => import(name);\n", "eval('1');\n", 'export { userPrincipal } from "@axis/journal/daemon-principal";\n']) {
+    withFixture(({ repo, tree }) => {
+      put(repo, src("a.ts"), text);
+      assert.throws(() => stage({ repo, tree }), /^StageError: packages\/protocol\/src\/a\.ts: /);
+    });
+  }
+});
+
+test("the hook refuses a non-literal load in an Axis source before anything is written, and in vendored zod too", () => {
+  withFixture(({ repo, tree }) => {
+    put(repo, "node_modules/zod/v4/core.js", 'export const z = () => import(name);\n');
+    assert.throws(() => stage({ repo, tree }), /import\(\) needs a single string literal/);
+    assert.equal(existsSync(join(tree, STAGE_ROOT)), false);
+    assert.equal(existsSync(join(tree, `${STAGE_ROOT}.staging`)), false);
   });
 });
