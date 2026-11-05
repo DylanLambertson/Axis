@@ -224,7 +224,6 @@ test("providers.list: request takes nothing; response names adapters and destina
     "description empty": { destination: { description: "" } },
     "description trailing space": { destination: { description: "d " } },
     "description bidi": { destination: { description: "a\u202eb" } },
-    
     "destination extra field": { destination: { description: "d", token: "x" } },
     "no destination": { destination: undefined },
     "extra field": { apiKey: "x" },
