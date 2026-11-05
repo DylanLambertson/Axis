@@ -161,7 +161,7 @@ Tier and `sideEffect` are the contract's declared minimum; policy may raise, nev
 | | `compareUrl` | read | 0 | none | | | user | `compareUrl` | 1a, new |
 | `axis.audit/1` | `status` | read | 0 | none | | | user | anchor manager | 1a, new |
 | | `list` (`afterSeq`, `limit` ≤ 200) | read | 1 | none | | | user | `AuditLog.list` (events are redacted at write) | 1a, new |
-| | `verify` | read | 1 | none | | | user | `AuditLog.verify`, one at a time, bounded, cancellable | 1a, new |
+| | `verify` | read | 1 | none | | | user | `AuditLog.verify` in slices of 2000 events with a yield between them, one at a time (a second call is `E_BACKPRESSURE`), cancellable and under a 25 s deadline (`E_TIMEOUT`, progress kept); see 5.5 | 1a, new |
 | `axis.providers/1` | `list` | read | 0 | none | | | user | `@axis/providers` mock and registered adapters | 1a, new (list only) |
 | `axis.runs/1` | `start`, `cancel`, `get`, `list` (composer) | write / read | 2 / 0 | req / none | | yes | user | composer service, broker, `GuardedProvider` | **1b**, not served in 1a |
 
@@ -218,7 +218,10 @@ No sink runs inside a journal transaction: handlers are async, transactions are 
 
 ### 5.5 Degraded mode
 
+
 Entered when the anchor check fails (step 6), the database is behind the anchor, or an unrecoverable storage error occurs after start. In degraded mode only `axis.audit/1.status`, `axis.audit/1.list`, `axis.audit/1.verify` and `axis.projects/1.list` are served; everything else is `E_UNAVAILABLE` with `details.reason`. `ready` carries `degraded`, so main can show the integrity failure to the user. The host never self-heals the chain and never re-anchors on its own (open question Q2).
+
+**`axis.audit/1.verify` and its cache.** The host keeps the last head it verified. A later call checks only the events after it, so after an edit to a row before that head `verify` can still answer `ok` for up to 10 minutes (accepted for 1a): a full scan from the first event runs at every start (step 6) and at least every 10 monotonic minutes, and whenever the cached head no longer matches the chain. A cached head that has vanished or changed is reported as a failure (a cut or rewritten tail), never as `ok`; a cached head row that alone vanished, with later rows present, is reported as a gap at that row: the full scan is held to the higher of the anchor and the cached head. `count` is the chain length, not the number of events this call checked, and the answer does not say it was incremental.
 
 ## 6. Identity, trust and the transport
 

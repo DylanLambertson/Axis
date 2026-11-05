@@ -185,3 +185,77 @@ test("D2-N2: the first time a window reaches its orphan quota it is reported loc
   const reports = r.internal.filter((e) => /orphan quota/.test(String((e.error as Error).message)));
   assert.equal(reports.length, 1);
 });
+
+// ---- a gate that cannot serve the tier now refuses with the closed E_UNAVAILABLE, before issuing or spending ----
+
+test("a gate that throws DaemonError E_UNAVAILABLE from issue is answered as that closed error; nothing is issued", async (t) => {
+  const { gate } = fakeGate();
+  let issued = 0;
+  const refusing = { ...gate, issue: () => (issued++, ((): never => { throw new DaemonError("E_UNAVAILABLE", "The audit anchor is not being acknowledged.", { reason: "anchor_stalled" }); })()) };
+  const r = await ready(t, { gate: refusing });
+  r.daemon.register(CONTRACT, 1, { danger: () => ({ done: true }) });
+  r.client.postMessage(request("a1", { id: "ws-1" }));
+  const res = (await r.inbox.response("a1")) as { ok: boolean; error?: { code: string; message: string; details?: unknown } };
+  assert.equal(res.ok, false);
+  assert.equal(res.error?.code, "E_UNAVAILABLE");
+  assert.equal(res.error?.message, "The audit anchor is not being acknowledged.");
+  assert.deepEqual(res.error?.details, { reason: "anchor_stalled" });
+  assert.equal(issued, 1);
+});
+
+test("a gate that throws DaemonError E_UNAVAILABLE from execute before the action refuses; the handler never runs; other DaemonError codes stay E_INTERNAL", async (t) => {
+  const { gate } = fakeGate();
+  let mode: "unavailable" | "conflict" = "unavailable";
+  const refusing = {
+    ...gate,
+    execute: (): never => {
+      throw new DaemonError(mode === "unavailable" ? "E_UNAVAILABLE" : "E_CONFLICT", "The audit anchor is not being acknowledged.", { reason: "anchor_stalled" });
+    },
+  };
+  const r = await ready(t, { gate: refusing });
+  let ran = 0;
+  r.daemon.register(CONTRACT, 1, { danger: () => (ran++, { done: true }) });
+  const approval = { challengeId: "A".repeat(43) };
+  r.client.postMessage(request("b1", { id: "ws-1", approval }, KEY1));
+  const first = (await r.inbox.response("b1")) as { error?: { code: string; details?: unknown } };
+  assert.equal(first.error?.code, "E_UNAVAILABLE");
+  assert.deepEqual(first.error?.details, { reason: "anchor_stalled" });
+  mode = "conflict";
+  r.client.postMessage(request("b2", { id: "ws-1", approval }, KEY2));
+  const second = (await r.inbox.response("b2")) as { error?: { code: string } };
+  assert.equal(second.error?.code, "E_INTERNAL");
+  assert.equal(ran, 0);
+});
+
+test("a gate that runs the action and THEN throws E_UNAVAILABLE is E_INTERNAL with the key outcome-unknown, never a retryable E_UNAVAILABLE", async (t) => {
+  const { gate } = fakeGate();
+  let ran = 0;
+  const lying = {
+    ...gate,
+    execute: async (...args: Parameters<typeof gate.execute>) => {
+      await args[3]({} as never);
+      throw new DaemonError("E_UNAVAILABLE", "The audit anchor is not being acknowledged.", { reason: "anchor_stalled" });
+    },
+  } as typeof gate;
+  const r = await ready(t, { gate: lying });
+  r.daemon.register(CONTRACT, 1, { danger: () => (ran++, { done: true }) });
+  const approval = { challengeId: "A".repeat(43) };
+  r.client.postMessage(request("c1", { id: "ws-1", approval }, KEY1));
+  const first = (await r.inbox.response("c1")) as { error?: { code: string } };
+  assert.equal(first.error?.code, "E_INTERNAL");
+  assert.equal(ran, 1);
+  r.client.postMessage(request("c2", { id: "ws-1", approval }, KEY1));
+  const retry = (await r.inbox.response("c2")) as { error?: { code: string } };
+  assert.equal(retry.error?.code, "E_CONFLICT", "the key is outcome-unknown, so a retry is refused");
+  assert.equal(ran, 1, "the handler ran once");
+});
+
+test("a gate's E_UNAVAILABLE refusal is audited as approval_unavailable", async (t) => {
+  const { gate } = fakeGate();
+  const refusing = { ...gate, issue: (): never => { throw new DaemonError("E_UNAVAILABLE", "The audit anchor is not being acknowledged.", { reason: "anchor_stalled" }); } };
+  const r = await ready(t, { gate: refusing });
+  r.daemon.register(CONTRACT, 1, { danger: () => ({ done: true }) });
+  r.client.postMessage(request("d1", { id: "ws-1" }));
+  await r.inbox.response("d1");
+  assert.ok(JSON.stringify(r.events).includes("approval_unavailable"), JSON.stringify(r.events));
+});
