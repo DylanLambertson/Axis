@@ -32,7 +32,8 @@ test("protected: the documented list", () => {
     [".npmrc", "package-config"],
     [".envrc", "shell-env"],
     ["Makefile", "build-script"],
-    [".mcp.json", "agent-config"],
+    [".env", "shell-env"],
+    [".env.local", "shell-env"],
     [".gitmodules", "git-config"],
     [".gitattributes", "git-config"],
     [".git/config", "git-dir"],
@@ -40,7 +41,7 @@ test("protected: the documented list", () => {
     ["sub/.git/hooks/x", "git-dir"],
   ];
   for (const [p, c] of yes) assert.equal(cat(p), c, p);
-  for (const p of ["src/index.ts", "README.md", "docs/github/workflows.md", "src/.github/workflows/x.yml", ".github/CODEOWNERS", "a/.gitignore", "dockerfile-notes.txt"]) {
+  for (const p of ["src/index.ts", "README.md", "docs/github/workflows.md", "src/.github/workflows/x.yml", "a/.gitignore", "dockerfile-notes.txt"]) {
     assert.equal(cat(p), null, p);
   }
 });
@@ -61,7 +62,8 @@ test("protected: NTFS trailing dots and spaces, streams and 8.3 short names", ()
   for (const p of [".git./config", ".git /config", ".git::$INDEX_ALLOCATION/x", ".github./workflows /x", "GIT~1/hooks/x", "GITHUB~1/WORKFL~1/ci.yml", "VSCODE~1/TASKS~1.JSO", ".husky:stream/x", "PACKAG~1.JSO"]) {
     assert.notEqual(cat(p), null, p);
   }
-  assert.equal(cat("GITX~1/x"), null);
+  assert.equal(cat("GITX~1/x"), "hidden-config", "a short name may stand for a dot name");
+  assert.equal(cat("src/GITX~1/x"), null, "short names are judged at the root only");
 });
 
 test("protected: paths that leave the root or cannot be parsed are flagged", () => {

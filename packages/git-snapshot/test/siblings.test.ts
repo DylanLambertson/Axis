@@ -177,3 +177,14 @@ test("more worktrees than maxWorktrees: the reason names that limit, and raising
     f.cleanup();
   }
 });
+
+test("the default worktree cap is 1024: 260 entries are not refused for their number", { skip: !posix }, async () => {
+  const f = makeFixture();
+  try {
+    for (let i = 0; i < 260; i++) mkdirSync(join(f.common, "worktrees", `w${i}`));
+    const s = await takeSnapshot(opts(f));
+    assert.ok(!s.incomplete.some((i) => /maxWorktrees|entries/.test(i.reason)), JSON.stringify(s.incomplete.slice(0, 3)));
+  } finally {
+    f.cleanup();
+  }
+});

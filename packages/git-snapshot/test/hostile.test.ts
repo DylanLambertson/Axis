@@ -166,7 +166,7 @@ test("S2, S4: dotless i, script g, short names with a dash, and the added entrie
   assert.equal(classifyPath(`.g${dotless}thub/workflows/x`)?.category, "ci");
   assert.equal(classifyPath(`.${script}ithub/workflows/x`)?.category, "ci");
   assert.equal(classifyPath(`MA${kelvin}EFILE`)?.category, "build-script", "the Kelvin sign folds to k");
-  assert.equal(classifyPath(`.husk${dotless}`), null, "a lookalike that is not part of a protected name stays unmatched");
+  assert.equal(classifyPath(`.husk${dotless}`)?.category, "hidden-config", "a lookalike is no protected name, but a root-level dot name is hidden-config");
   assert.equal(classifyPath("PRE-CO~1.YAM")?.category, "git-hooks");
   assert.equal(classifyPath("AZURE-~1.YML")?.category, "ci");
   for (const p of ["conftest.py", "tests/conftest.py", "build.rs", "pyproject.toml", ".yarn/plugins/x.cjs"]) assert.notEqual(classifyPath(p), null, p);
