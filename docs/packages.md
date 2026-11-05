@@ -17,6 +17,7 @@ Axis-owned TypeScript that does not need Code OSS services lives in `packages/*`
 | `@axis/anthropic` | Anthropic (Claude) Messages API adapter for `@axis/providers` (ticket 9, ANT-1): hand-written SSE parser with byte, event and depth limits, redirects refused, error text never built from a response body, injected `fetch`. Design: `docs/design/anthropic-adapter.md`. |
 | `@axis/vault` | Connection vault: key storage interface, backend reporting, the PRV-1 rule for the Linux `basic_text` backend (consent or refusal), an in-memory test backend, and the seam for real OS backends. Runs in the daemon only. |
 | `@axis/worktrees` | Lifecycle of isolated git worktrees, one per agent workspace: create, list, status, finalise, remove, restore from the run base, GIT-SNAP-1 drift detection and a hardened git environment (GIT-ENV-1) that never runs hooks or filter drivers. Imports `node:*`, `zod` and `@axis/*` only. |
+| `@axis/broker` | Tool broker core for the composer (Phase 1b prerequisites): worktree path containment (WT-1, DMN-2), the PTY-2 environment allow-list, argv-only command runner with timeout, output cap and process-group kill (PTY-4), broker-run git on the `@axis/git-ops` hardened prefix (WT-2, GIT-ENV-1), tiered tool policy with an injected approval hook and protected paths (WT-3, DMN-3), and redacted audit events. Every service is injected; design in `docs/design/tool-broker.md`. Depends on `@axis/audit`, `@axis/git-ops`, `@axis/pty-policy`, `@axis/protocol`. |
 
 More packages are added by their own changes.
 
