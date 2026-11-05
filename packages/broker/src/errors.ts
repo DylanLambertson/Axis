@@ -10,7 +10,7 @@ export type Reason =
   | "approval-declined" | "approval-malformed" | "approval-expired" | "approval-mismatch" | "approval-replayed"
   | "approval-timeout" | "approval-error" | "bad-approver" | "audit-failed"
   | "invalid-command" | "invalid-env" | "unresolved-command" | "too-many-processes"
-  | "undeclared-path" | "undeclared-command" | "undeclared-git" | "path-changed" | "approval-limit" | "git-command" | "git-flag" | "git-rev" | "git-path" | "git-drift" | "git-unavailable" | "aborted";
+  | "undeclared-path" | "undeclared-command" | "undeclared-git" | "program-changed" | "path-changed" | "approval-limit" | "git-command" | "git-flag" | "git-rev" | "git-path" | "git-drift" | "git-unavailable" | "aborted";
 
 type Scalar = string | number | boolean;
 

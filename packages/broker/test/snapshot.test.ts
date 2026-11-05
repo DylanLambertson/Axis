@@ -109,7 +109,7 @@ test("NS-B: the program is pinned: a PATH that changes after approval does not r
     approval: { request: async (q: ApprovalRequest) => { path = two; return grant(q); } },
   });
   b.register(def({ name: "t", tier: "network", args: z.strictObject({}), command: () => "pinme", run: async (ctx) => ctx.run({ command: "pinme", ...lim }) }));
-  assert.equal(await why(b.invoke(call("t", {}))), "E_POLICY_DENIED/undeclared-command");
+  assert.equal(await why(b.invoke(call("t", {}))), "E_POLICY_DENIED/program-changed");
 });
 
 // NS-C: checks that had no failing test ---------------------------------------------------------------------------

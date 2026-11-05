@@ -10,7 +10,7 @@ import { BrokerError, denied, invalid, toBrokerError } from "./errors.js";
 import type { BrokerFs } from "./fs.js";
 import { checkGitCall, createBrokerGit, gitCallTier, gitKey, snapGit, GIT_COMMANDS, type BrokerGit, type GitCall } from "./git.js";
 import { pinProgram, type PinnedProgram } from "./program.js";
-import { clip, clipText, escapeBidi, printable, sha } from "./text.js";
+import { clip, clipText, escapeDisplay, printable, sha } from "./text.js";
 import { ApprovalLedger, ToolPolicy, verifyApproval, type ApprovalHook, type PolicyOptions, type VerifiedApproval } from "./policy.js";
 import type { CommandRunner, RunRecord } from "./runner.js";
 import { matchProtected } from "./protectedPaths.js";
@@ -139,7 +139,12 @@ export class ToolBroker {
     if ((copy.command !== undefined || copy.argv !== undefined) && !this.#policy.needsApproval(copy.tier)) {
       throw denied("invalid-tier", "a tool that starts a command must sit at or above the approval floor");
     }
-    this.#tools.set(copy.name, copy);
+    // Frozen all the way down: the nested lists and records the broker reads later cannot change either.
+    this.#tools.set(copy.name, Object.freeze({
+      ...copy,
+      ...(copy.envAdditions === undefined ? {} : { envAdditions: Object.freeze([...copy.envAdditions]) }),
+      ...(copy.envFixed === undefined ? {} : { envFixed: Object.freeze({ ...copy.envFixed }) }),
+    }) as ToolDefinition);
   }
 
   async invoke(call: ToolCall): Promise<unknown> {
@@ -185,10 +190,13 @@ export class ToolBroker {
     const labels: string[] = [];
     let protectedHit = false;
     try {
-      const targets = tool.targets?.(args) ?? [];
-      if (targets.length > MAX_TARGETS) throw invalid("invalid-args", "too many paths");
+      const rawTargets = tool.targets?.(args) ?? [];
+      if (!Array.isArray(rawTargets)) throw invalid("invalid-args", "the paths are not valid");
+      // A copy, then the cap: a Set or a proxy cannot show the cap one length and the loop another.
       // Each target is read once: its access and path cannot differ between the policy and the declaration.
-      for (const { access: a0, path } of [...targets].map((t) => ({ access: t.access, path: t.path }))) {
+      const targets = [...rawTargets].map((t: ToolTarget) => ({ access: t.access, path: t.path }));
+      if (targets.length > MAX_TARGETS) throw invalid("invalid-args", "too many paths");
+      for (const { access: a0, path } of targets) {
         const access = a0 === "read" ? "read" : "write";
         const r = await resolveTarget(this.#contain, worktreeId, path, access === "read" ? "read" : "upsert");
         rels.push(r.rel);
@@ -222,17 +230,21 @@ export class ToolBroker {
       if (argv0 !== undefined) {
         // The program is found and pinned now: the approval names the file, and the run must start that file.
         const { root } = await resolveRoot(this.#contain, worktreeId);
-        const env = this.#toolEnv(tool, worktreeId, root, this.#d.registry.repositoryRoots());
+        // No vault grants yet: they are fetched when the command runs, after the user approved, and only PATH matters here.
+        const env = this.#toolEnv(tool, worktreeId, root, this.#d.registry.repositoryRoots(), false);
         pinned = await pinProgram({ fs: this.#d.fs, platform: this.#platform }, argv0, env, [root, ...this.#d.registry.repositoryRoots()]);
+        // The argument list is a JSON array: `["echo","a b","c"]` and `["echo","a","b c"]` are different lines.
+        const via = pinned.interpreter === undefined ? "" : `; interpreter: ${pinned.interpreter.real}`;
         commands.push(declaredArgv === undefined
-          ? `${argv0} [arguments are chosen when it runs; program: ${pinned.real}]`
-          : `${declaredArgv.join(" ")} [program: ${pinned.real}]`);
+          ? `${JSON.stringify([argv0])} [arguments are chosen when it runs; program: ${pinned.real}${via}]`
+          : `${JSON.stringify(declaredArgv)} [program: ${pinned.real}${via}]`);
       }
       raised = tool.raise?.(args);
       const rawCalls = tool.git?.(args);
-      if (rawCalls !== undefined && (!Array.isArray(rawCalls) || rawCalls.length > 8)) throw invalid("invalid-args", "too many git calls");
+      if (rawCalls !== undefined && !Array.isArray(rawCalls)) throw invalid("invalid-args", "the git calls are not valid");
       // One frozen copy of each call: the tier, the paths, the key and the line below all describe the same values.
-      const calls = (rawCalls ?? []).map(snapGit);
+      const calls = [...(rawCalls ?? [])].map(snapGit);
+      if (calls.length > 8) throw invalid("invalid-args", "too many git calls");
       if (calls.length > 0) {
         const { root } = await resolveRoot(this.#contain, worktreeId);
         for (const g of calls) {
@@ -261,7 +273,7 @@ export class ToolBroker {
             ops.push({ access: writes ? "write" : "read", path: p });
           }
           gitKeys.add(gitKey(g));
-          commands.push(["git", g.command, ...(g.flags ?? []), ...(g.revs ?? []), ...(g.paths === undefined || g.paths.length === 0 ? [] : ["--", ...g.paths])].join(" "));
+          commands.push(JSON.stringify(["git", g.command, ...(g.flags ?? []), ...(g.revs ?? []), ...(g.paths === undefined || g.paths.length === 0 ? [] : ["--", ...g.paths])]));
         }
       }
     } catch (e) {
@@ -269,7 +281,7 @@ export class ToolBroker {
     }
     const decision = this.#policy.decide({
       tool: tool.name, tier: tool.tier, protectedHit, protectedLabels: [...new Set(labels)],
-      ...(argv0 === undefined ? {} : { argv0 }), ...(pinned === undefined ? {} : { program: pinned.real }),
+      ...(argv0 === undefined ? {} : { argv0 }), ...(pinned === undefined ? {} : { program: pinned.real }), ...(pinned?.interpreter === undefined ? {} : { interpreter: pinned.interpreter.real }),
       ...(argv0 !== undefined && declaredArgv === undefined ? { argsAtRunTime: true } : {}),
       ...(raised === undefined ? {} : { raisedTier: raised }),
     });
@@ -285,7 +297,7 @@ export class ToolBroker {
     let approval: VerifiedApproval | undefined;
     if (decision.effect === "approve") {
       try {
-        const preview = escapeBidi(this.#redactor.redactString(canonicalize(args as never)));
+        const preview = escapeDisplay(this.#redactor.redactString(canonicalize(args as never)));
         approval = await this.#approve(signal, tool.name, decision.tier, decision.reasons, ops, preview, commands.map((c) => this.#redactor.redactString(c)), digest, worktreeId, actor);
       } catch (e) {
         return refuse(toBrokerError(e), { tier: decision.tier, digest, reasons: decision.reasons.join(",") });
@@ -343,7 +355,7 @@ export class ToolBroker {
     const ac = new AbortController();
     const abort = (): void => ac.abort();
     signal?.addEventListener("abort", abort, { once: true });
-    const shownCommands = commands.map((c) => clipText(escapeBidi(c), 1024));
+    const shownCommands = commands.map((c) => clipText(escapeDisplay(c), 1024));
     let timer: NodeJS.Timeout | undefined;
     let onCancel: (() => void) | undefined;
     try {
@@ -364,7 +376,7 @@ export class ToolBroker {
           digest, tool, tier, worktreeId, actor, reasons: [...reasons], targets: ops.map((o) => printable(o.path)), maxTtlMs,
           // Every operation and every command line is listed (declared targets and git calls are capped), so nothing is cut from what is shown.
           operations: ops.map((o) => ({ access: o.access, path: printable(o.path) })),
-          commands: shownCommands, commandsTruncated: shownCommands.some((c, i) => c.length < escapeBidi(commands[i] as string).length),
+          commands: shownCommands, commandsTruncated: shownCommands.some((c, i) => c.length < escapeDisplay(commands[i] as string).length),
           preview: clipText(preview, PREVIEW_CHARS), previewTruncated: preview.length > PREVIEW_CHARS,
         }, ac.signal)),
         timeout, cancelled,
@@ -430,7 +442,8 @@ export class ToolBroker {
         const env = this.#toolEnv(tool, worktreeId, root.root, repos);
         const pin = await pinProgram({ fs: d.fs, platform: this.#platform }, command, env, [root.root, ...repos]);
         // The file that runs is the file that was approved. A same-user process that swaps it after this check can still win the race (design §5).
-        if (pin.exe !== cmd.pinned.exe || pin.real !== cmd.pinned.real) throw denied("undeclared-command", "the program is not the one that was approved");
+        // The same file, not the same name: a rename over it, a copy or an edit in place changes its identity.
+        if (JSON.stringify(pin) !== JSON.stringify(cmd.pinned)) throw denied("program-changed", "the program is not the one that was approved");
         const rec = await d.runner.run({
           argv: [pin.exe, ...args], cwd, env, timeoutMs, maxOutputBytes,
           ...(stdin === undefined ? {} : { stdin }), signal,
@@ -463,10 +476,10 @@ export class ToolBroker {
   }
 
   /** The environment a tool's command gets, and the one its program is looked up on. */
-  #toolEnv(tool: ToolDefinition, worktreeId: string, root: string, repos: readonly string[]): Readonly<Record<string, string>> {
+  #toolEnv(tool: ToolDefinition, worktreeId: string, root: string, repos: readonly string[], grants = true): Readonly<Record<string, string>> {
     const d = this.#d;
     return buildToolEnv(d.parentEnv(), { tool: tool.name, worktreeId, ...(tool.envAdditions === undefined ? {} : { additions: tool.envAdditions }), ...(tool.envFixed === undefined ? {} : { fixed: tool.envFixed }) }, {
-      platform: this.#platform, now: this.#now(), grants: d.grants?.grantsFor(tool.name, worktreeId) ?? [], excludeDirs: [root, ...repos],
+      platform: this.#platform, now: this.#now(), grants: grants ? (d.grants?.grantsFor(tool.name, worktreeId) ?? []) : [], excludeDirs: [root, ...repos],
     }).env;
   }
 

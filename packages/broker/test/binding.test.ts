@@ -124,7 +124,7 @@ test("NB1: git is only what the tool declared; a worktree rewrite is destructive
   b2.register(decl);
   await b2.invoke(call("t", {}));
   assert.ok(asked[0]?.reasons.includes("tier:destructive") && asked[0].reasons.includes("protected:git-worktree"));
-  assert.ok(asked[0]?.commands[0]?.includes("restore --worktree -- .github/workflows/ci.yml"));
+  assert.ok(asked[0]?.commands[0]?.includes('"restore","--worktree","--",".github/workflows/ci.yml"'));
   assert.ok(asked[0]?.operations.some((o) => o.access === "write" && o.path === ".github/workflows/ci.yml"));
   const b3 = mk(false);
   b3.register(decl);

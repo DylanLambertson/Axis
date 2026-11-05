@@ -9,6 +9,9 @@ export interface FileStat {
   readonly kind: FileKind;
   readonly nlink: number;
   readonly size: number;
+  /** Modification and status-change times in nanoseconds, as text: with `id` and `size` they identify the contents of a file at a moment. */
+  readonly mtime: string;
+  readonly ctime: string;
 }
 /** How a file is opened. No mode truncates: truncation happens only after the open was verified. */
 export type OpenMode = "read" | "overwrite" | "create" | "upsert";
@@ -31,11 +34,11 @@ export interface BrokerFs {
   open(path: string, mode: OpenMode): Promise<BrokerFile>;
 }
 
-type Stats = { dev: bigint; ino: bigint; nlink: bigint; size: bigint; isFile(): boolean; isDirectory(): boolean; isSymbolicLink(): boolean };
+type Stats = { dev: bigint; ino: bigint; nlink: bigint; size: bigint; mtimeNs: bigint; ctimeNs: bigint; isFile(): boolean; isDirectory(): boolean; isSymbolicLink(): boolean };
 
 function toStat(s: Stats): FileStat {
   const kind: FileKind = s.isSymbolicLink() ? "symlink" : s.isDirectory() ? "dir" : s.isFile() ? "file" : "other";
-  return { id: `${s.dev}:${s.ino}`, kind, nlink: Number(s.nlink), size: Number(s.size) };
+  return { id: `${s.dev}:${s.ino}`, kind, nlink: Number(s.nlink), size: Number(s.size), mtime: String(s.mtimeNs), ctime: String(s.ctimeNs) };
 }
 
 const NOFOLLOW = constants.O_NOFOLLOW ?? 0;

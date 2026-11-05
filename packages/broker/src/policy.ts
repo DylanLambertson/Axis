@@ -16,17 +16,19 @@ const LAUNCHERS = new Set([
   "rbash", "mksh", "yash", "stdbuf", "chroot", "unshare", "nsenter", "find", "make", "gmake", "npx", "pnpx", "xvfb-run", "flock", "strace", "ltrace",
   "setarch", "linux32", "linux64", "taskset", "ionice", "chrt", "prlimit", "setpriv", "runuser", "watch", "run-parts", "systemd-run", "dbus-run-session",
   "tar", "bsdtar", "rsync", "vim", "vi", "nvim", "view", "ex", "ed", "emacs", "less", "more", "man", "npm", "pnpm", "yarn", "cargo", "go", "uv", "pip", "pip3",
-  "docker", "podman", "gdb", "lldb", "py", "forfiles", "msiexec", "regsvr32", "msbuild", "scp", "sftp",
+  "docker", "podman", "coreutils", "gdb", "lldb", "py", "forfiles", "msiexec", "regsvr32", "msbuild", "scp", "sftp",
   "git", "gh", "awk", "gawk", "mawk", "nawk", "sed", "perl", "php", "lua", "tclsh", "expect", "deno", "bun", "bunx", "osascript", "cscript", "wscript", "mshta", "rundll32",
 ]);
 /** Interpreters carry a version in the name (`python3.12`, `ruby3.2`, `node22`). */
+/** Multi-call binaries: `busybox`, `busybox-static`, `busybox.nosuid`. */
+const MULTICALL = /^busybox[\w.-]*$/;
 const INTERPRETER = /^(?:python|pypy|ruby|node|nodejs|perl|php|lua|java)[\d.]*$/;
 /** The dynamic loader runs any program it is given: `ld.so`, `ld-linux-x86-64.so.2`, `ld-2.31.so`. */
 const LOADER = /^ld(?:-[\w.-]+)?\.so(?:\.\d+)*$/;
 
 export function isLauncher(argv0: string): boolean {
   const base = (argv0.split(/[\\/]/).pop() ?? "").toLowerCase().replace(/\.(exe|com|bat|cmd)$/, "");
-  return LAUNCHERS.has(base) || INTERPRETER.test(base) || LOADER.test(base);
+  return LAUNCHERS.has(base) || INTERPRETER.test(base) || MULTICALL.test(base) || LOADER.test(base);
 }
 
 export interface PolicyInput {
@@ -39,6 +41,8 @@ export interface PolicyInput {
   readonly argv0?: string;
   /** The real path of the program, when it was resolved: judged like `argv0`. */
   readonly program?: string;
+  /** The `#!` interpreter of a script, judged the same way: `#!/bin/sh` runs a shell whatever the file is called. */
+  readonly interpreter?: string;
   /** True when the tool declared only the program: its arguments are chosen when it runs, so the approval cannot show them. */
   readonly argsAtRunTime?: boolean;
   /** A tier the git table or another computed rule raised, validated here. */
@@ -78,7 +82,7 @@ export class ToolPolicy {
       tier = maxTier(tier, raised);
     }
     const reasons: string[] = [];
-    if ((input.argv0 !== undefined && isLauncher(input.argv0)) || (input.program !== undefined && isLauncher(input.program))) {
+    if ((input.argv0 !== undefined && isLauncher(input.argv0)) || (input.program !== undefined && isLauncher(input.program)) || (input.interpreter !== undefined && isLauncher(input.interpreter))) {
       tier = maxTier(tier, "privileged");
       reasons.push("launcher");
     }
