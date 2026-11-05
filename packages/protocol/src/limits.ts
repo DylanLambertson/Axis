@@ -56,7 +56,7 @@ function utf8Length(s: string, cap: number): number {
  * One bounded, iterative walk. Rejects:
  * - values JSON cannot carry (undefined, functions, symbols, bigint, non-finite
  *   numbers, class instances such as Date or Map), accessor properties, and
- *   arrays with holes or extra own properties;
+ *   arrays with holes or extra own properties (symbol keys included);
  * - forbidden keys at any depth;
  * - any object reached twice. A structured-clone MessagePort preserves shared
  *   references, so a tiny message can expand into an exponential tree; decoded
@@ -106,6 +106,7 @@ export function inspectMessage(value: unknown, limits: InspectLimits = {}): Insp
           if (node.length + nodes > maxNodes) return { ok: false, reason: "too-many-nodes" };
           // Exactly the indices plus `length`: no holes and no extra own properties.
           if (Object.getOwnPropertyNames(node).length !== node.length + 1) return { ok: false, reason: "invalid" };
+          if (Object.getOwnPropertySymbols(node).length > 0) return { ok: false, reason: "invalid" };
           for (let i = 0; i < node.length; i++) {
             const d = Object.getOwnPropertyDescriptor(node, i);
             if (d === undefined || d.get !== undefined || d.set !== undefined) return { ok: false, reason: "invalid" };
