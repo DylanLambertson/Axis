@@ -15,6 +15,7 @@
     { "path": "packages/worktrees" },
     { "path": "packages/runs" },
     { "path": "packages/broker" },
+    { "path": "packages/review" },
     { "path": "packages/git-snapshot" }
   ]
 }

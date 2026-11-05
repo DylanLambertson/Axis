@@ -26,3 +26,30 @@ export function processSnapshot(): { resources: string[]; listeners: Record<stri
 }
 
 export const wait = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Count the timers created and not yet fired or cleared while it is installed. `getActiveResourcesInfo` does not
+ * list `unref`ed timers, so it cannot see a leaked one; this does. Call `restore()` in a `finally`.
+ */
+export function trackTimers(): { live(): number; restore(): void } {
+  const realSet = globalThis.setTimeout;
+  const realClear = globalThis.clearTimeout;
+  const live = new Set<unknown>();
+  globalThis.setTimeout = ((fn: (...a: unknown[]) => void, ms?: number, ...args: unknown[]) => {
+    const h = realSet(
+      (...a: unknown[]) => {
+        live.delete(h);
+        fn(...a);
+      },
+      ms,
+      ...args,
+    );
+    live.add(h);
+    return h;
+  }) as typeof setTimeout;
+  globalThis.clearTimeout = ((h: unknown) => {
+    live.delete(h);
+    realClear(h as NodeJS.Timeout);
+  }) as typeof clearTimeout;
+  return { live: () => live.size, restore: () => void ((globalThis.setTimeout = realSet), (globalThis.clearTimeout = realClear)) };
+}
