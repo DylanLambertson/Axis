@@ -165,6 +165,17 @@ test("the defaults: 2000-event slices, a 25 s deadline and a 10 minute full re-s
   }
 });
 
+test("only the cached head row deleted, later rows present: reported where the row is missing", async () => {
+  const { db, log } = memoryLog(3000);
+  const r = rig(log, { sliceEvents: 1000 });
+  await r.run();
+  for (let i = 0; i < 10; i++) log.append({ actor: "daemon", action: "policy.decision", target: `n:${i}`, outcome: "success", payload: { tier: 0 } });
+  unlock(db);
+  db.exec("DELETE FROM audit_events WHERE seq = 3000");
+  const out = auditVerifyResponseSchema.parse(await r.run());
+  assert.deepEqual(out, { ok: false, firstBadSeq: 3000, reason: "seq_gap", checked: 2999 });
+});
+
 test("a failure in a later slice reports the absolute number of events checked", async () => {
   const { db, log } = memoryLog(3000);
   unlock(db);

@@ -75,3 +75,13 @@ test("the limit is validated before anything else, even when `from` would fail f
   const { log: l } = log(2);
   assert.throws(() => l.verify({ from: { seq: 99, hash: "0".repeat(64) }, limit: 0 }), (e: unknown) => (e as { code?: string }).code === "E_INVALID_ARGUMENT");
 });
+
+test("a missing start row with later rows present is a gap at that row; with nothing after it, a cut tail", () => {
+  const { db, log: l } = log(10);
+  const at5 = l.list({ afterSeq: 4, limit: 1 })[0] as { seq: number; hash: string };
+  db.exec("DROP TRIGGER audit_events_no_update; DROP TRIGGER audit_events_no_delete");
+  db.exec("DELETE FROM audit_events WHERE seq = 5");
+  assert.deepEqual(l.verify({ from: { seq: at5.seq, hash: at5.hash } }), { ok: false, firstBadSeq: 5, reason: "seq_gap", checked: 0 });
+  db.exec("DELETE FROM audit_events WHERE seq > 3");
+  assert.deepEqual(l.verify({ from: { seq: at5.seq, hash: at5.hash } }), { ok: false, firstBadSeq: 4, reason: "truncated", checked: 0 });
+});

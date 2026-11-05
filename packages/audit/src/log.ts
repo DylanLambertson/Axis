@@ -346,6 +346,8 @@ export class AuditLog implements AuditSink {
       const row = this.#db.prepare(`SELECT ${COLUMNS} FROM audit_events WHERE seq = ?`).get(from.seq) as unknown as Row | undefined;
       if (!row) {
         const h = this.head();
+        // Later rows exist but the start row is gone: a deleted row in the middle, reported where it is missing.
+        if (h !== null && h.seq > from.seq) return { ok: false, firstBadSeq: from.seq, reason: "seq_gap", checked };
         return { ok: false, firstBadSeq: (h?.seq ?? 0) + 1, reason: "truncated", checked };
       }
       // Do not trust the stored hash column: recompute it from the row's content, so an edit to the anchor row itself is caught.

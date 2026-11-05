@@ -27,5 +27,13 @@ export * from "./storage/recovery.js";
 export * from "./storage/uptime-clock.js";
 // Anchor manager and audit handlers (ticket H4).
 export * from "./anchor/manager.js";
+export * from "./anchor/preflight.js";
 export * from "./handlers/anchor-guard.js";
 export * from "./handlers/audit.js";
+// Challenge manager, gate adapter, native bridge and axis.approvals/1 (ticket H5).
+export * from "./gate/approvals.js";
+export * from "./gate/audit-sink.js";
+export * from "./gate/native-bridge.js";
+export * from "./gate/pending-registry.js";
+export * from "./gate/summary.js";
+export * from "./handlers/approvals.js";
