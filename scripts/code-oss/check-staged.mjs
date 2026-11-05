@@ -20,7 +20,7 @@
 //      and a trust attestation is rejected and a used attestation stays used.
 // Needs the tree's node_modules (npm ci) and Node on PATH. Exit code 1 on any failure.
 import { spawnSync } from "node:child_process";
-import { copyFileSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DEFAULT_ENTRY, checkTree } from "./check-daemon-graph.mjs";
@@ -55,6 +55,9 @@ if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(
   let failed = false;
   const buildBundle = process.argv.includes("--build-bundle");
   try {
+    // A --build-bundle run that was killed leaves the probe in the daemon entry; heal that before any check reads it.
+    const overlayEntry = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "code-oss", "overlay", DEFAULT_ENTRY);
+    if (existsSync(join(tree, DEFAULT_ENTRY)) && restoreStaleProbe(join(tree, DEFAULT_ENTRY), overlayEntry)) console.log("0. restored the daemon entry: a previous --build-bundle run was interrupted");
     const m = verifyStaged(tree);
     console.log(`1. staged output verified: ${m.files.length} files, tree ${m.treeSha256}`);
     const t = typecheckAxis(tree);
@@ -82,8 +85,6 @@ if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(
     if (buildBundle) {
       const out = "out-axis-bundle-check";
       const entryFile = join(tree, DEFAULT_ENTRY);
-      const overlayEntry = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "code-oss", "overlay", DEFAULT_ENTRY);
-      if (restoreStaleProbe(entryFile, overlayEntry)) console.log("   restored the daemon entry: a previous --build-bundle run was interrupted");
       const original = readFileSync(entryFile);
       // The build blocks this process, so a kill cannot run cleanup: the next run restores a stale probe (above).
       rmSync(join(tree, out), { recursive: true, force: true });

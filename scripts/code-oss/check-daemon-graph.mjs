@@ -9,8 +9,9 @@
 // (NLS, `--mangle-privates`): see check-privates.mjs and ADR 0005 D3.6.
 //
 // Bundles the daemon entry (and, with --all-packages, every staged package index) with Code OSS's own esbuild and
-// the options of build/next/bundle.ts, with a metafile, then checks what esbuild really resolved. Unlike the text
-// scans, the metafile cannot be fooled by how an import is spelled:
+// the options of build/next/bundle.ts, with a metafile, then checks what esbuild really resolved. It does not depend
+// on how an import is spelled, but it sees only static edges esbuild can resolve: a computed `import(x)` is invisible
+// to it, which is why the parse-based source check (stage-ast.mjs) refuses those:
 //   1. every input under src/vs/axis/packages is a file the staging hook wrote (listed in its manifest);
 //   2. no input comes from node_modules (so zod is the vendored 4.6.6, never the tree's own copy);
 //   3. a staged module imports only `node:*` externals and other staged modules (an import that esbuild dropped as
@@ -52,7 +53,7 @@ export function checkMetafile(metafile, manifest, { bundledText = null, treeZod 
         if (target !== `${r.pkg}/${r.file}`) continue;
         const importerPkg = rel === null ? null : pkgOf(rel);
         if (importerPkg !== r.pkg && !(importerPkg !== null && r.importers.has(importerPkg))) {
-          bad.push(`${input}: imports ${imp.path}, which only ${r.pkg} and ${[...r.importers].join(", ")} may import`);
+          bad.push(`${input}: imports ${imp.path}, which only ${[r.pkg, ...r.importers].join(" and ")} may import`);
         }
       }
     }

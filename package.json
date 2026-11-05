@@ -22,5 +22,8 @@
     "@types/node": "24.19.2",
     "typescript": "7.0.2",
     "typescript6": "npm:@typescript/typescript6@6.0.2"
+  },
+  "overrides": {
+    "@typescript/old": "npm:typescript@6.0.3"
   }
 }
