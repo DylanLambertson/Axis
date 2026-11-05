@@ -160,22 +160,35 @@ export async function requireGitVersion(deps: GitOpsDeps, w: WorktreeRef, env: R
 }
 
 export interface DaemonGit {
-  (sub: readonly string[], stdin?: string): Promise<GitRunResult>;
+  (sub: readonly string[], stdin?: string, opts?: { readonly raw?: boolean }): Promise<GitRunResult>;
 }
 
-/** A daemon-side git caller bound to a worktree: hardened prefix, filters neutralised, GIT-ENV-1 environment. */
-export async function daemonGitFor(w: WorktreeRef, deps: GitOpsDeps): Promise<DaemonGit> {
-  const env = daemonEnv(deps);
+/** The only variable a caller may add to the daemon environment: a private index for a tree that is built off to the side. */
+const EXTRA_ENV = new Set(["GIT_INDEX_FILE"]);
+
+/**
+ * A daemon-side git caller bound to a worktree: hardened prefix, filters neutralised, GIT-ENV-1 environment.
+ * `extraEnv` may hold only `GIT_INDEX_FILE` (an absolute path without NUL); every other name is refused, so a caller
+ * cannot use it to redirect the repository, the objects or the config.
+ */
+export async function daemonGitFor(w: WorktreeRef, deps: GitOpsDeps, extraEnv: Readonly<Record<string, string>> = {}): Promise<DaemonGit> {
+  const platform = platformOf(deps);
+  for (const [k, v] of Object.entries(extraEnv)) {
+    const abs = typeof v === "string" && (platform === "win32" ? winAbs(v) : posixAbs(v));
+    if (!EXTRA_ENV.has(k) || !abs || (v as string).includes("\0")) throw invalid(`the daemon git environment cannot be extended with ${k}`);
+  }
+  const env = { ...daemonEnv(deps), ...extraEnv };
   await requireGitVersion(deps, w, env);
   const filters = await filterNames(w, deps, env);
   const runner = guardedRunner(deps.runner, deps);
-  return (sub, stdin) =>
+  return (sub, stdin, opts) =>
     runner.run({
       argv: [...prefix(w, deps, { context: "daemon", hooks: false, filters }), ...sub],
       cwd: w.workTree,
       env,
       context: "daemon",
       ...(stdin === undefined ? {} : { stdin }),
+      ...(opts?.raw === true ? { raw: true } : {}),
     });
 }
 

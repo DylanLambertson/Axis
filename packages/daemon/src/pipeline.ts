@@ -69,6 +69,8 @@ export interface PipelineState {
   /** The approval was spent (the action started). */
   spent?: boolean;
   withdrawn?: boolean;
+  /** A side-effecting handler started and did not fail on its own: it returned, or it was aborted mid-call. */
+  effectPossible?: boolean;
 }
 
 export const handlerKey = (contract: string, version: number, method: string): string =>
@@ -97,7 +99,7 @@ const abortCode = (reason: unknown): ErrorCode => (reason === TIMED_OUT ? "E_TIM
  * promise is what holds the in-flight slot and the idempotency key.
  *
  * The key is finalised after the body, whatever happened: stored on success,
- * freed on error, cancel or timeout.
+ * freed on error, cancel or timeout, except after a side-effecting handler started and returned or was aborted: that stays unknown.
  */
 export async function runPipeline(p: PipelineInput): Promise<Outcome> {
   const state: PipelineState = {};
@@ -117,7 +119,7 @@ export async function runPipeline(p: PipelineInput): Promise<Outcome> {
       ),
     };
   }
-  await finaliseKey(p, state.key, outcome);
+  await finaliseKey(p, state.key, outcome, state.effectPossible === true);
   return outcome;
 }
 
@@ -145,7 +147,7 @@ export async function withdrawChallenge(p: PipelineInput, challengeId: unknown):
   }
 }
 
-async function finaliseKey(p: PipelineInput, key: IdempotencyKey | undefined, outcome: Outcome): Promise<void> {
+async function finaliseKey(p: PipelineInput, key: IdempotencyKey | undefined, outcome: Outcome, effected: boolean): Promise<void> {
   if (!key) return;
   const store = p.deps.idempotency;
   if (outcome.ok) {
@@ -157,7 +159,9 @@ async function finaliseKey(p: PipelineInput, key: IdempotencyKey | undefined, ou
     }
   }
   try {
-    await store.abandon(key);
+    if (!effected) await store.abandon(key);
+    // Fail closed: a store without markUnknown leaves the key in progress (unknown after a restart), never freed.
+    else if (typeof store.markUnknown === "function") await store.markUnknown(key);
   } catch (e) {
     p.deps.onInternalError?.(p.correlationId, e);
   }
@@ -252,6 +256,12 @@ async function steps(p: PipelineInput, state: PipelineState): Promise<Outcome> {
       case "in-progress":
         await auditor.soft("denied", { decision: "allow", reason: "in_progress" });
         return fail("E_CONFLICT", "A request with that key is still running", { reason: "in-progress" });
+      case "unknown":
+        await auditor.soft("denied", { decision: "allow", reason: "idempotency_unknown" });
+        return fail("E_CONFLICT", "The outcome of an earlier request with that key is unknown; check the result, then use a new key", {
+          reason: "outcome-unknown",
+          cause: begun.reason,
+        });
       case "exhausted":
         await auditor.soft("denied", { decision: "allow", reason: "idempotency_exhausted" });
         return fail("E_BACKPRESSURE", "Too many idempotency keys in use");
@@ -272,7 +282,7 @@ async function steps(p: PipelineInput, state: PipelineState): Promise<Outcome> {
     return fail("E_UNAVAILABLE", "The daemon is shutting down");
   }
   const action = (confirmed: ConfirmedAction | undefined): Promise<Outcome> =>
-    runAction({ p, auditor, tier, confirmed, replayed, data: withoutApprovalOf(payloadParsed.data) });
+    runAction({ p, state, auditor, tier, confirmed, replayed, data: withoutApprovalOf(payloadParsed.data) });
   if (tier < 3) return action(undefined);
 
   // 4. approval for tier >= 3 (fail closed when no gate is configured). The pipeline owns the whole sequence.
