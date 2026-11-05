@@ -14,10 +14,10 @@ import {
 } from "@axis/audit";
 import { JOURNAL_MIGRATIONS } from "./schema.js";
 import { RESTART_REASON } from "./states.js";
+import { parts, positive } from "./idempotency-keys.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const INTERRUPTED_TTL_MS = 7 * DAY_MS;
-const MAX_FIELD = 512;
 const MAX_TTL_MS = 365 * DAY_MS;
 const HOUR_MS = 60 * 60 * 1000;
 /** An actor below this many unevictable rows is never refused by the table-wide rule (the daemon's default in-flight limit). */
@@ -486,20 +486,4 @@ export class JournalIdempotencyStore {
     const latest = t + Math.max(this.#ttlMs, this.#interruptedTtlMs);
     this.#db.prepare("UPDATE daemon_idempotency SET expires_at = ? WHERE state <> 'in-progress' AND expires_at > ?").run(latest, latest);
   }
-}
-
-function positive(n: number, name: string, max = Number.MAX_SAFE_INTEGER): number {
-  if (!Number.isSafeInteger(n) || n <= 0 || n > max) throw new AxisError("E_INVALID_ARGUMENT", `${name} must be a positive integer within its limit`);
-  return n;
-}
-
-function parts(k: StoreKey): [string, string, string, number, string, string] {
-  const text = (v: unknown, name: string, allowEmpty = false): string => {
-    if (typeof v !== "string" || (!allowEmpty && v.length === 0) || v.length > MAX_FIELD) {
-      throw new AxisError("E_INVALID_ARGUMENT", `Idempotency key field ${name} is invalid`);
-    }
-    return v;
-  };
-  if (!Number.isSafeInteger(k.version) || k.version < 0) throw new AxisError("E_INVALID_ARGUMENT", "Idempotency key field version is invalid");
-  return [text(k.actorId, "actorId"), text(k.workspaceId, "workspaceId", true), text(k.contract, "contract"), k.version, text(k.method, "method"), text(k.key, "key")];
 }
