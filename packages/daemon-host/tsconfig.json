@@ -2,5 +2,5 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": { "rootDir": ".", "outDir": "dist" },
   "include": ["src", "test", "testing"],
-  "references": [{ "path": "../audit" }, { "path": "../challenge" }, { "path": "../daemon" }, { "path": "../git-ops" }, { "path": "../journal" }, { "path": "../protocol" }, { "path": "../providers" }, { "path": "../review" }, { "path": "../runs" }, { "path": "../worktrees" }]
+  "references": [{ "path": "../audit" }, { "path": "../challenge" }, { "path": "../daemon" }, { "path": "../git-ops" }, { "path": "../journal" }, { "path": "../protocol" }, { "path": "../providers" }, { "path": "../pty-policy" }, { "path": "../review" }, { "path": "../runs" }, { "path": "../worktrees" }]
 }

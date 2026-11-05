@@ -34,10 +34,12 @@ export const RESTRICTED_SUBPATHS = new Map([
  * Exact-file exceptions to RESTRICTED_SUBPATHS: specifier -> package -> paths inside that package's `src` that may
  * import it, despite the package not being listed there. Exact paths, never patterns; mirrors HOST_FILE_RULES in
  * test/packages/imports.test.mjs and the single mint file in test/packages/principal-dist.test.mjs. The daemon host's
- * review handler mints the user principal for a person's acceptance (ADR 0005 D2).
+ * review handler mints the user principal for a person's acceptance, and its run trust minter mints the single-use run
+ * attestation after main's `trust.check` (ADR 0005 D2).
  */
 export const RESTRICTED_FILE_EXCEPTIONS = new Map([
   ["@axis/journal/daemon-principal", new Map([["daemon-host", new Set(["handlers/review.ts"])]])],
+  ["@axis/runs/daemon-attestation", new Map([["daemon-host", new Set(["gate/run-trust.ts"])]])],
 ]);
 
 /**
@@ -47,7 +49,7 @@ export const RESTRICTED_FILE_EXCEPTIONS = new Map([
  */
 export const RESTRICTED_MODULES = [
   { pkg: "journal", file: "daemon-principal.ts", importers: new Set(["daemon"]), files: new Set(["daemon-host/handlers/review.ts"]) },
-  { pkg: "runs", file: "daemon-attestation.ts", importers: new Set(["daemon"]) },
+  { pkg: "runs", file: "daemon-attestation.ts", importers: new Set(["daemon"]), files: new Set(["daemon-host/gate/run-trust.ts"]) },
   // The modules that hold the mint symbols: only their own package may reach them.
   { pkg: "journal", file: "principal.ts", importers: new Set() },
   { pkg: "runs", file: "attestation.ts", importers: new Set() },

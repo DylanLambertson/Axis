@@ -260,3 +260,21 @@ test("checkMetafile and checkStagedFile allow the review handler to reach the pr
   checkStagedFile("daemon-host/handlers/review.ts", 'import { userPrincipal } from "../../journal/daemon-principal.js";\nexport const u = () => userPrincipal();\n', files);
   assert.throws(() => checkStagedFile("daemon-host/handlers/x.ts", 'import "../../journal/daemon-principal.js";\n', files), /only daemon may import/);
 });
+
+test("the daemon host's run trust minter is the one exact file outside the daemon that may import the attestation subpath", () => {
+  const exportsOf = (n) => ({ runs: [".", "./daemon-attestation"] })[n] ?? null;
+  const spec = "@axis/runs/daemon-attestation";
+  assert.equal(classifySpecifier(spec, "daemon-host", exportsOf, "gate/run-trust.ts").kind, "axis");
+  for (const file of ["gate/other.ts", "gate/run-trust.tsx", "gate/sub/run-trust.ts", "bindings/runs.ts", "handlers/cli-runs.ts", "run-trust.ts", null]) {
+    assert.throws(() => classifySpecifier(spec, "daemon-host", exportsOf, file), (e) => typeof e === "string", String(file));
+  }
+  assert.throws(() => classifySpecifier(spec, "providers", exportsOf, "gate/run-trust.ts"), (e) => typeof e === "string");
+  assert.deepEqual([...RESTRICTED_FILE_EXCEPTIONS.get(spec).get("daemon-host")], ["gate/run-trust.ts"]);
+  const text = readFileSync(new URL("../packages/imports.test.mjs", import.meta.url), "utf8");
+  assert.ok(text.includes('["@axis/runs/daemon-attestation", ["src/gate/run-trust.ts"]]'), "matches HOST_FILE_RULES");
+  const P = (rel) => `${STAGE_ROOT}/${rel}`;
+  const manifest = { zod: null, files: ["runs/daemon-attestation.ts", "daemon-host/gate/run-trust.ts", "daemon-host/bindings/runs.ts"].map((p) => ({ path: p })) };
+  const meta = (from) => ({ inputs: { [P(from)]: { imports: [{ path: P("runs/daemon-attestation.ts"), kind: "import-statement" }] }, [P("runs/daemon-attestation.ts")]: { imports: [] } } });
+  assert.deepEqual(checkMetafile(meta("daemon-host/gate/run-trust.ts"), manifest), []);
+  assert.equal(checkMetafile(meta("daemon-host/bindings/runs.ts"), manifest).length, 1);
+});

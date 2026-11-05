@@ -27,6 +27,12 @@ export interface PtyHandle {
   write(data: string): void;
   resize(cols: number, rows: number): void;
   kill(signal: PtySignal): void;
+  /**
+   * True while any process of the run's process group exists (POSIX: the group id answers `kill(-pgid, 0)`; Windows: the job
+   * is not empty). The leader's exit does not end it: a CLI can leave children behind. Axis must not restore, finalise or
+   * remove a workspace while this is true. It may throw: a throw counts as alive (fail closed).
+   */
+  groupAlive(): boolean;
   onData(listener: (chunk: string) => void): { dispose(): void };
   onExit(listener: (exit: PtyExit) => void): { dispose(): void };
 }

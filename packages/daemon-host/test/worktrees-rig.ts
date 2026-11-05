@@ -5,7 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
-import { Redactor, withTransaction } from "@axis/audit";
+import { Redactor, withTransaction, type AuditLog } from "@axis/audit";
 import { Daemon, protocolRegistry, type Identity, type IdentityVerifier, type DaemonAuditEvent } from "@axis/daemon";
 import { Journal, JournalIdempotencyStore } from "@axis/journal";
 import {
@@ -70,6 +70,12 @@ export interface Rig {
   readonly gitPath: string;
   readonly gitLog: string;
   readonly projectId: string;
+  /** The audit log the journal and the services write through (the run supervisor writes `cli_run.*` rows to it). */
+  readonly audit: AuditLog;
+  readonly clock: ReturnType<typeof fakeClock>;
+  readonly control: ControlClient;
+  /** The supervisor's end of the control channel (answer `trust.check` and `settings.get` here). */
+  readonly channel: { onMessage(h: (m: unknown) => void): unknown; send(m: unknown): void };
   git(cwd: string, ...args: string[]): string;
   connect(attestation?: string): Promise<Client>;
   nativeConfirms(): Array<Record<string, unknown>>;
@@ -104,6 +110,8 @@ export interface RigOptions {
   /** Make the binding's audit appends fail for matching events (the journal's own audit is unaffected). */
   testSeams?: WorktreesTestSeams;
   failAudit?: (e: { action: string; payload?: unknown }) => boolean;
+  /** Replaces the binding's view of active runs (the runs rig points it at the real run binding, built after this rig). */
+  hasActiveRun?: (workspaceId: string) => boolean;
 }
 
 export async function worktreesRig(options: RigOptions = {}): Promise<Rig> {
@@ -163,7 +171,7 @@ export async function worktreesRig(options: RigOptions = {}): Promise<Rig> {
     audit: { append: (e) => (options.failAudit?.(e) === true ? ((): never => { throw new Error("audit down"); })() : audit.append(e)) },
     transact: (fn) => withTransaction(db, fn),
     random: { bytes: (n) => (options.fixedSuffix === true ? Uint8Array.from({ length: n }, (_, i) => i + 1) : randomBytes(n)), uuid: () => randomUUID() },
-    runs: { hasActiveRun: (id) => (script.length > 0 ? (script.shift() as boolean) : active.has(id)) },
+    runs: { hasActiveRun: (id) => (options.hasActiveRun !== undefined ? options.hasActiveRun(id) : script.length > 0 ? (script.shift() as boolean) : active.has(id)) },
     gitPath,
     env,
     platform: process.platform,
@@ -195,6 +203,7 @@ export async function worktreesRig(options: RigOptions = {}): Promise<Rig> {
   const ports: Array<{ close(): void }> = [];
   return {
     tmp, repo, root, db, journal, binding, manager: manager as ManagerShape, approvals, daemon, rpcEvents, supervisor, active, script, trust, home, gitPath, gitLog, projectId,
+    audit, clock, channel: b, control,
     git: g,
     async connect(attestation = "user#conn-1#win-1") {
       const { client, server } = memoryPair();
