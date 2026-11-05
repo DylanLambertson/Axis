@@ -2,7 +2,7 @@
 export { createSecretScanner, parseScanMode, type SecretScanner } from "./scanner.js";
 export { scanText } from "./scan.js";
 export { PatchReader, unquotePath, type PatchEvent } from "./diff.js";
-export { CONTENT_RULES, isLockFile, isSensitiveFilename, looksRandom } from "./rules.js";
+export { CONTENT_RULES, isDigestName, isLockFile, isSensitiveFilename, looksRandom } from "./rules.js";
 export { shannonEntropy } from "./entropy.js";
 export {
   DEFAULT_LIMITS,

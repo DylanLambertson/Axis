@@ -9,6 +9,9 @@ const NON_ASCII = /[^\x00-\x7f]/;
 // Soft hyphen, combining grapheme joiner, Mongolian vowel separator, zero-width and bidi controls, word joiner and invisible operators, variation selectors, BOM, tag characters.
 const INVISIBLE = /[\u00ad\u034f\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufe00-\ufe0f\ufeff\u{e0000}-\u{e007f}]/gu;
 const LONG_BLANKS = /[ \t]{65,}/g;
+// Any blank that is not a plain space or tab (NBSP, U+3000, form feed, ...) or a control character, and runs of them.
+const ODD_BLANK = /[^\S \t]|[\x00-\x08\x0e-\x1f\x7f-\x9f]/;
+const BLANK_RUN = /[\s\x00-\x1f\x7f-\x9f]+/g;
 const BASE64_RUN = /[A-Za-z0-9+/_-]{24,}/g;
 const HEX_RUN = /(?<![0-9A-Fa-f])[0-9A-Fa-f]{40,}/g;
 const MAX_DECODE_CHARS = 2048;
@@ -79,12 +82,16 @@ export function scanText(text: string, ctx: ScanContext, limits: ScanLimits, now
 
   const content = (text: string, path: string | undefined, line: number | undefined): void => {
     const lock = isLockFile(path);
-    // Invisible characters and long runs of blanks are folded on the whole line, so padding cannot push a match over a window edge.
+    // Invisible characters and odd or long runs of blanks are folded on the whole line, so padding cannot push a match over a window edge.
     let raw = NON_ASCII.test(text) ? text.replace(INVISIBLE, "") : text;
-    if (raw.length > 64 && LONG_BLANKS.test(raw)) raw = raw.replace(LONG_BLANKS, " ");
+    if (ODD_BLANK.test(raw) || (raw.length > 64 && LONG_BLANKS.test(raw))) raw = raw.replace(BLANK_RUN, " ");
     LONG_BLANKS.lastIndex = 0;
     for (let at = 0; at === 0 || at < raw.length; at += step) {
-      if (findings.length >= limits.maxFindings || timedOut()) return;
+      if (findings.length >= limits.maxFindings) {
+        incomplete.add("findings_capped");
+        return;
+      }
+      if (timedOut()) return;
       const window = normalizeLine(raw.slice(at, at + limits.maxLineLength));
       if (window.length >= 8) for (const rule of matchWindow(window, lock, budget)) add(rule, path, line);
       if (at + limits.maxLineLength >= raw.length) break;

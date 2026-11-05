@@ -41,7 +41,7 @@ export interface ScanLimits {
   readonly maxFindings: number;
   /** Added bytes of one binary file that are scanned. A larger one is `binary-unscanned`. Default 262,144. */
   readonly maxBinaryBytes: number;
-  /** Wall time of one scan in milliseconds, checked between lines. Default 5000. */
+  /** Wall time of one scan in milliseconds, checked between lines and between windows. Default 5000. */
   readonly deadlineMs: number;
   /** Matches a rule looked at and rejected (a decoy), summed over the scan. At the limit the scan is incomplete. Default 2,000,000. */
   readonly maxRejectedMatches: number;

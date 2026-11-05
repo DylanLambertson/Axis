@@ -75,9 +75,9 @@ test("false positives: ids, hashes, words, placeholders and test fixtures stay q
   const sha256 = hexOf(7, 64);
   const quiet = [
     `commit ${sha1}`,
-    `token_sha = "${sha1}"`,
-    `integrityKey: "${sha256}"`,
-    `git_commit_token = "${sha1}"`,
+    `tokenizer_sha = "${sha1}"`,
+    `tokenizer_hash: "${sha256}"`,
+    `tokenizerRev = "${sha1}"`,
     `--token-file=/some/very/long/path/to/a/file2`,
     `token=/usr/local/lib/node_modules/some-package-name2`,
     `${canary.name("token")}: "${uuid}"`,

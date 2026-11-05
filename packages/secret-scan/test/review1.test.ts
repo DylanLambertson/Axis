@@ -44,7 +44,7 @@ test("S-1: 40 and 64 digit hex under key, token and secret names is key material
   for (const [name, len] of [["PRIVATE_KEY", 64], ["ENCRYPTION_KEY", 64], ["signing_key", 64], ["SENTRY_AUTH_TOKEN", 64], ["api_key", 40], ["GITHUB_TOKEN", 40], ["master_key", 64]] as const) {
     assert.deepEqual(rules(one(`${name}=${hexOf(len, len)}`)), ["generic-secret-assignment"], name);
   }
-  for (const name of ["commit_token", "token_sha", "tokenHash", "secret_digest", "api_key_checksum", "key_fingerprint", "TOKEN_ETAG"]) {
+  for (const name of ["tokenizer_sha", "tokenizer_hash", "tokenizerDigest", "tokenizer_checksum", "tokenizerRev"]) {
     assert.deepEqual(one(`${name}=${hexOf(7, 40)}`), [], name);
   }
 });

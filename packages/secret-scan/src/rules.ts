@@ -10,7 +10,7 @@ export interface ContentRule {
   /** The rule name reported in a finding; `nameOf` may refine it per match. */
   readonly rule: string;
   readonly re: RegExp;
-  /** A match that fails the check is skipped; the next one is tried (at most `MAX_ATTEMPTS`). */
+  /** A match that fails the check is skipped (the search resumes one character on) and costs one unit of the scan's `Budget`. */
   readonly accept?: (m: RegExpExecArray) => boolean;
   readonly nameOf?: (m: RegExpExecArray) => string;
   /** A fixed credential format. Only these are tried on a base64 or hex decoded value. */
@@ -30,13 +30,25 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 // A path: a root, `./`, `../` or `~/`, then segments, at least one of which is a lower-case word (see `isPathLike`).
 const PATHLIKE = /^(?:\/|\.{1,2}\/|~\/)[\w.@+=-]*(?:\/[\w.@+=-]*)+$/;
 const FLAG = /^--[a-z][a-z0-9-]*(?:=|$)/;
-const DIGEST_NAME = /sha|hash|digest|commit|checksum|integrity|etag|fingerprint|thumbprint|(?:^|[^a-z])(?:rev|oid|md5)(?:[^a-z]|$)/i;
+const DIGEST_WORDS = new Set(["sha", "hash", "digest", "checksum", "commit", "integrity", "etag", "fingerprint", "thumbprint", "rev", "oid", "md"]);
+const SECRET_WORDS = new Set(["key", "apikey", "secret", "token", "password", "passwd", "pwd", "credential", "credentials", "private", "auth"]);
+// Calls, member chains, indexing, blocks and arrow functions: code, never key material.
+const CODE_CHARS = /[()[\]{}]|\?\.|=>/;
 const HEX = /^[0-9a-fA-F]+$/;
 const SCREAMING = /^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$/;
 const DOTTED = /^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+$/;
 const SEGMENTED = /^[a-z][a-z0-9]*(?:[_.-][a-z0-9]+)+$/;
 const PLACEHOLDER = /example|changeme|change-me|placeholder|your[-_ ]|<|>|xxxx|\*\*\*|dummy|sample|redacted|notasecret|insert|fixme|todo|\$\{|\{\{|%s|%\(/i;
 const WEAK_PASSWORDS = new Set(["password", "passwd", "pass", "secret", "postgres", "mysql", "root", "admin", "test", "changeme", "example", "guest", "user", "username", "redis", "mongo"]);
+
+/**
+ * Does the identifier say the value is a digest? Whole words only (split on `_`, `-`, digits and camel case), so `shared`
+ * and `hashicorp` are not `sha` and `hash`; and never when a word says secret, so `SHARED_SECRET` and `tokenHash` stay secrets.
+ */
+export function isDigestName(name: string): boolean {
+  const words = name.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase().split(/[^a-z]+/).filter(Boolean);
+  return words.some((w) => DIGEST_WORDS.has(w)) && !words.some((w) => SECRET_WORDS.has(w));
+}
 
 function isPathLike(v: string): boolean {
   return PATHLIKE.test(v) && v.split("/").some((s) => /^[a-z][a-z._-]{2,}$/.test(s));
@@ -46,13 +58,13 @@ function isPathLike(v: string): boolean {
 export function looksRandom(v: string, name = ""): boolean {
   if (v.length < 16 || v.length > 512) return false;
   if (UUID.test(v) || PLACEHOLDER.test(v)) return false;
-  if (/^(?:https?:|file:)/i.test(v) || v.includes("://") || v.includes("...") || isPathLike(v) || FLAG.test(v)) return false;
+  if (/^(?:https?:|file:)/i.test(v) || v.includes("://") || v.includes("...") || CODE_CHARS.test(v) || isPathLike(v) || FLAG.test(v)) return false;
   if (SCREAMING.test(v) || SEGMENTED.test(v) || DOTTED.test(v)) return false;
   if (!/[0-9]/.test(v) || !/[A-Za-z]/.test(v)) return false;
   const hex = HEX.test(v);
-  // A 40 or 64 digit hex value is a git object id or a digest only under a name that says so. Under key, secret, token or
-  // password names (private keys, AES keys, classic GitHub tokens) it is key material.
-  if (hex && (v.length === 40 || v.length === 64) && DIGEST_NAME.test(name)) return false;
+  // A 40 or 64 digit hex value is a git object id or a digest only under a name that says so (`isDigestName`). Under key,
+  // secret, token or password names (private keys, AES keys, classic GitHub tokens, shared secrets) it is key material.
+  if (hex && (v.length === 40 || v.length === 64) && isDigestName(name)) return false;
   return shannonEntropy(v) >= (hex ? 3.0 : 3.5);
 }
 
@@ -128,7 +140,7 @@ export const CONTENT_RULES: readonly ContentRule[] = Object.freeze([
     specific: false,
     skipInLockFiles: true,
     // Keyword, a bounded name tail, an optional closing quote, the separator, an optional opening quote, then the value.
-    re: new RegExp(`${KEYWORD}[A-Za-z0-9_.-]{0,40}["']?\\]?[ \\t]{0,64}(?::=|=>|[:=])(?![=>])[ \\t]{0,64}["'\`]?([^\\s"'\`,;]{16,256})`, "gi"),
+    re: new RegExp(`${KEYWORD}[A-Za-z0-9_.-]{0,40}["']?\\]?[ \\t]{0,64}(?::=|=>|[:=])(?![=>])[ \\t]{0,64}["'\`]?([^\\s"'\`,;)\\]}]{16,256})`, "gi"),
     accept: (m) => looksRandom(m[2] ?? "", assignmentName(m)),
   },
 ]);
