@@ -19,7 +19,7 @@ function deferred<T = void>() {
   const promise = new Promise<T>((res) => (resolve = res));
   return { promise, resolve };
 }
-const store: FlushableIdempotencyStore = { ...new MemoryIdempotencyStore(), begin: () => ({ state: "new" as const }), complete: () => undefined, abandon: () => undefined };
+const store: FlushableIdempotencyStore = { ...new MemoryIdempotencyStore(), begin: () => ({ state: "new" as const }), complete: () => undefined, abandon: () => undefined, markUnknown: () => undefined };
 const target = (drain: DrainGate, extra: Partial<ShutdownTarget> = {}) => ({
   drain,
   cancelAll: () => 1,

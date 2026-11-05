@@ -184,7 +184,7 @@ test("SD10: shutdown leaves no timers behind, even when it cancels and flushes",
   const count = () => process.getActiveResourcesInfo().filter((x) => x === "Timeout").length;
   const drain = new DrainGate();
   drain.enter();
-  const store: FlushableIdempotencyStore = { ...new MemoryIdempotencyStore(), begin: () => ({ state: "new" }), complete: () => undefined, abandon: () => undefined, flush: () => undefined };
+  const store: FlushableIdempotencyStore = { ...new MemoryIdempotencyStore(), begin: () => ({ state: "new" }), complete: () => undefined, abandon: () => undefined, markUnknown: () => undefined, flush: () => undefined };
   const before = count();
   const c = new ShutdownCoordinator(
     { drain, cancelAll: () => 1, closeAll: () => undefined, store, onError: () => undefined },
