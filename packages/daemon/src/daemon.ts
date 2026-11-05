@@ -228,7 +228,7 @@ export class Daemon {
       let timer: NodeJS.Timeout | undefined;
       try {
         const expired = new Promise<undefined>((resolve) => {
-          timer = setTimeout(() => resolve(undefined), this.#limits.handshakeTimeoutMs);
+          timer = setTimeout(() => resolve(undefined), this.#limits.handshakeTimeoutMs) as unknown as NodeJS.Timeout; // opaque handle under Code OSS's typings (ADR 0005)
           timer.unref();
         });
         identity = parseIdentity(await Promise.race([Promise.resolve(this.#opts.identity.verify(attestation)), expired]));

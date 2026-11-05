@@ -473,7 +473,7 @@ export class ChallengeManager {
       }
     } catch {
       // The sink's own error may name paths or hosts, and is not a protocol code.
-      const detail = action === "tier4.execute" ? { executed: false } : {};
+      const detail: Record<string, boolean> = action === "tier4.execute" ? { executed: false } : {};
       throw new ChallengeError("E_INTERNAL", "The approval audit log is unavailable", detail);
     }
   }

@@ -55,7 +55,7 @@ export interface Clock {
 export const systemClock: Clock = {
   now: () => Date.now(),
   setTimeout: (fn, ms) => {
-    const t = setTimeout(fn, ms);
+    const t = setTimeout(fn, ms) as unknown as NodeJS.Timeout; // opaque handle under Code OSS's typings (ADR 0005)
     t.unref();
     return t;
   },
