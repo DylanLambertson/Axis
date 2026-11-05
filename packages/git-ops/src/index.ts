@@ -2,8 +2,9 @@
 export * from "./types.js";
 export * from "./errors.js";
 export { daemonGitEnv, findOverride } from "./env.js";
-export { guardedRunner, branchFor, safeRef, prefix, hooksOffPath, filterNames, requireGitVersion, MIN_GIT_VERSION } from "./args.js";
+export { guardedRunner, branchFor, safeRef, prefix, hooksOffPath, filterNames, requireGitVersion, MIN_GIT_VERSION, daemonGitFor, checkWorktree, OBJECT_ID, type DaemonGit } from "./args.js";
 export * from "./commit.js";
+export { assertNoOperation, OPERATION_MARKERS } from "./operation.js";
 export * from "./push.js";
 export { scanOutgoing, MAX_DIFF, MAX_COMMITS, MAX_TOTAL } from "./scan.js";
 export * from "./compareUrl.js";

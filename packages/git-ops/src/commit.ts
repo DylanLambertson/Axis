@@ -3,7 +3,9 @@
 // process, so repository hooks never run in the daemon. The commit is of the tree the user reviewed.
 import { branchFor, checkWorktree, daemonGitFor, platformOf, prefix, OBJECT_ID, type DaemonGit } from "./args.js";
 import { findOverride, identityOverrides, overrideMessage, withNoPrompt } from "./env.js";
-import { GitOpsError, conflict, denied, internal, invalid, mapUnexpected, redactUrls, sanitizeText } from "./errors.js";
+import { runBound } from "./boundCommit.js";
+import { GitOpsError, conflict, denied, headMoved, internal, invalid, mapUnexpected, redactUrls, sanitizeText } from "./errors.js";
+import { assertNoOperation } from "./operation.js";
 import type { GitOpsDeps, GitRunRequest, WorktreeRef } from "./types.js";
 
 export interface CommitInput {
@@ -16,6 +18,16 @@ export interface CommitInput {
    * passed to git: author and committer come from the config, never from Axis.
    */
   readonly author?: { readonly name: string; readonly email: string };
+  /**
+   * G3: the commit HEAD pointed at when the diff was reviewed. When present the commit is BOUND: it is built with
+   * `commit-tree` from `reviewedTreeHash` and this parent, checked again against the new commit, and the branch is moved
+   * by compare-and-swap from this value, so it cannot land on another parent or overwrite a commit made meanwhile.
+   * Refused with E_CONFLICT `details.reason: "head_moved"` when HEAD is elsewhere. Full lower-case object id.
+   * Absent: the older `git commit` path, which commits on whatever HEAD is when git runs (no pin).
+   */
+  readonly expectedParent?: string;
+  /** G3: the branch that was checked out at review time (`axis/<slug>`). Needs `expectedParent`. A different branch: `head_moved`. */
+  readonly expectedBranch?: string;
 }
 
 export interface CommitPlan {
@@ -23,6 +35,8 @@ export interface CommitPlan {
   readonly branch: string;
   readonly reviewedTreeHash: string;
   readonly parent: string;
+  /** True when `expectedParent` was given: `command` is then `commit-tree` (it prints the new commit id and moves no ref). */
+  readonly bound: boolean;
   /** Runs in the pty process. */
   readonly command: GitRunRequest;
 }
@@ -46,6 +60,12 @@ async function check(deps: GitOpsDeps, input: CommitInput): Promise<{ plan: Comm
   if (typeof msg !== "string" || msg.trim().length === 0 || msg.length > MAX_MESSAGE || msg.includes("\0")) {
     throw invalid("the commit message must be non-empty text of at most 64 KiB without NUL");
   }
+  const bound = input.expectedParent !== undefined;
+  if (bound && (typeof input.expectedParent !== "string" || !OBJECT_ID.test(input.expectedParent))) throw invalid("expectedParent must be a full lower-case object id");
+  if (input.expectedBranch !== undefined) {
+    if (!bound) throw invalid("expectedBranch needs expectedParent");
+    branchFor(input.expectedBranch);
+  }
   const bad = findOverride(deps.env.pty);
   if (bad) throw denied(overrideMessage(bad));
 
@@ -57,13 +77,17 @@ async function check(deps: GitOpsDeps, input: CommitInput): Promise<{ plan: Comm
   if (head.code !== 0) throw denied("HEAD is detached; Axis commits only on axis/<slug>");
   const { branch } = branchFor(line(head));
 
+  if (input.expectedBranch !== undefined && branch !== input.expectedBranch) throw headMoved("the checked-out branch is not the one that was reviewed");
+  const parentR = await git(["rev-parse", "--verify", "--end-of-options", "HEAD^{commit}"]);
+  if (parentR.code !== 0) throw denied("the branch has no commit to build on");
+  if (bound && line(parentR) !== input.expectedParent) throw headMoved("HEAD is not the commit that was reviewed; review the changes again");
+  await assertNoOperation(git, input.worktree, deps);
+
   const index = await git(["write-tree"]);
   if (index.code !== 0) throw conflict("the index cannot be written as a tree (unmerged paths?)");
   if (line(index) !== input.reviewedTreeHash) {
     throw conflict("the index differs from the tree that was reviewed; review the changes again");
   }
-  const parentR = await git(["rev-parse", "--verify", "--end-of-options", "HEAD^{commit}"]);
-  if (parentR.code !== 0) throw denied("the branch has no commit to build on");
   const headTree = await git(["rev-parse", "--verify", "--end-of-options", "HEAD^{tree}"]);
   if (headTree.code === 0 && line(headTree) === input.reviewedTreeHash) throw invalid("nothing to commit");
 
@@ -85,21 +109,63 @@ async function check(deps: GitOpsDeps, input: CommitInput): Promise<{ plan: Comm
     }
   }
 
-  const argv = [
-    ...prefix(input.worktree, deps, { context: "pty", hooks: deps.runHooks, filters: [] }),
-    // A repository can set i18n.commitEncoding; the message is recorded as UTF-8 so that the secret scan reads what is pushed.
-    "-c", "i18n.commitEncoding=utf-8",
-    "commit", "-F", "-", "--no-edit",
-    ...(deps.runHooks ? [] : ["--no-verify"]),
-  ];
-  const command: GitRunRequest = {
-    argv,
-    cwd: input.worktree.workTree,
+  const base = prefix(input.worktree, deps, { context: "pty", hooks: deps.runHooks, filters: [] });
+  // A repository can set i18n.commitEncoding; the message is recorded as UTF-8 so that the secret scan reads what is pushed.
+  const encoding = ["-c", "i18n.commitEncoding=utf-8"];
+  let command: GitRunRequest;
+  if (bound) {
+    // commit-tree ignores commit.gpgsign, so the setting is read and honoured here rather than silently dropped.
+    const sign = await gpgSigning(deps, input.worktree);
+    command = {
+      argv: [...base, ...encoding, "commit-tree", ...(sign ? ["-S"] : []), "-p", input.expectedParent as string, "-F", "-", input.reviewedTreeHash],
+      cwd: input.worktree.workTree,
+      env: withNoPrompt(deps.env.pty),
+      stdin: normalisedMessage(msg),
+      context: "pty",
+    };
+  } else {
+    command = {
+      argv: [...base, ...encoding, "commit", "-F", "-", "--no-edit", ...(deps.runHooks ? [] : ["--no-verify"])],
+      cwd: input.worktree.workTree,
+      env: withNoPrompt(deps.env.pty),
+      stdin: msg,
+      context: "pty",
+    };
+  }
+  if (deps.assertReviewFresh) await reviewFresh(deps, input);
+  return { plan: { worktree: input.worktree, branch, reviewedTreeHash: input.reviewedTreeHash, parent: line(parentR), bound, command }, git };
+}
+
+/** What `git commit` would record: trailing blanks removed, no leading or trailing blank lines, one final newline. */
+function normalisedMessage(msg: string): string {
+  return `${msg.replace(/[ \t]+$/gm, "").replace(/^\n+/, "").replace(/\n{3,}/g, "\n\n").trimEnd()}\n`;
+}
+
+/** `commit.gpgsign` as the pty context sees it. An unreadable or non-boolean value refuses rather than commits unsigned. */
+async function gpgSigning(deps: GitOpsDeps, w: WorktreeRef): Promise<boolean> {
+  const r = await deps.runner.run({
+    argv: [...prefix(w, deps, { context: "pty", hooks: deps.runHooks, filters: [] }), "config", "--type=bool", "--get", "commit.gpgsign"],
+    cwd: w.workTree,
     env: withNoPrompt(deps.env.pty),
-    stdin: msg,
     context: "pty",
-  };
-  return { plan: { worktree: input.worktree, branch, reviewedTreeHash: input.reviewedTreeHash, parent: line(parentR), command }, git };
+  });
+  if (r.code === 1) return false;
+  if (r.code !== 0) throw denied("commit.gpgsign could not be read as true or false");
+  return r.stdout.trim() === "true";
+}
+
+/** G2. The hook refuses by throwing; a value it returns is a refusal too, so a wrong wiring cannot fail open. */
+async function reviewFresh(deps: GitOpsDeps, input: CommitInput): Promise<void> {
+  let returned: unknown;
+  try {
+    returned = await (deps.assertReviewFresh as NonNullable<GitOpsDeps["assertReviewFresh"]>)(input.worktree, input.reviewedTreeHash);
+  } catch (e) {
+    if (e instanceof GitOpsError && e.code !== "E_CONFLICT") throw e;
+    throw new GitOpsError("E_CONFLICT", "the worktree changed after the review; review the changes again", { reason: "stale" });
+  }
+  if (returned !== undefined) {
+    throw new GitOpsError("E_CONFLICT", "the review freshness check returned a value instead of passing; treating the review as stale", { reason: "stale" });
+  }
 }
 
 /** Validates everything and returns the exact command. Nothing is written except tree objects. */
@@ -122,6 +188,7 @@ export function executeCommit(deps: GitOpsDeps, input: CommitInput): Promise<Com
 
 async function runCommit(deps: GitOpsDeps, input: CommitInput): Promise<CommitResult> {
   const { plan, git } = await check(deps, input);
+  if (plan.bound) return runBound(deps, plan, git);
   const r = await deps.runner.run(plan.command);
   if (r.code !== 0) throw conflict(`git commit failed (exit ${r.code}): ${redactUrls(sanitizeText(r.stderr)).trim().slice(0, 500)}`);
   const commit = line(await git(["rev-parse", "--verify", "--end-of-options", "HEAD^{commit}"]));

@@ -86,6 +86,37 @@ Fixed vectors (`sha256hex` as lowercase hex):
 `@axis/daemon` implements the identical function and pins the same vectors; the two copies must stay in step. The shared function moves into `@axis/protocol` later, and both packages will then import it.
 ## Using `@axis/git-ops`
 
+### Bound commit contract (what `@axis/review` implements against)
+
+`executeCommit(deps, input)` and `planCommit` take, besides `worktree`, `reviewedTreeHash`, `message` and `author?`:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `expectedParent` | `string?` (full lower-case object id) | The commit HEAD pointed at when the diff was reviewed. **When present the commit is bound.** Absent: the older `git commit` path, which commits on whatever HEAD is when git runs. A caller that reviewed a diff must always send it. |
+| `expectedBranch` | `string?` (`axis/<slug>`) | The branch checked out at review time. Needs `expectedParent` (`E_INVALID_ARGUMENT` otherwise). |
+
+A bound commit (the review's `PinnedCommitInput` is exactly this shape) does the following, in order, with the caller holding the workspace lock:
+
+1. `check()`: argument checks; CLI-run and drift gates (`assertNoDrift`); the branch must be `expectedBranch` and HEAD must equal `expectedParent` (else `E_CONFLICT`, `details.reason: "head_moved"`); an operation in progress is refused (`E_CONFLICT`, `reason: "operation_in_progress"`); the index must write to `reviewedTreeHash` (else `E_CONFLICT`, no reason); then, as the last step before git runs, `assertReviewFresh`.
+2. `commit-tree <reviewedTreeHash> -p <expectedParent> -F -` runs in the **pty context** (so signing and identity come from the user's configuration; `commit.gpgsign=true` adds `-S`, and an unreadable value refuses). The message is cleaned as `git commit` would (trailing blanks, outer blank lines, final newline). It creates an object and moves no ref.
+3. The new object is verified with the daemon-side git: its parent list is exactly `[expectedParent]` and its tree is `reviewedTreeHash` (else `E_INTERNAL`, `details.updated: false`).
+4. Immediately before the ref update the checked-out branch and the operation state are asked again (`head_moved` / `operation_in_progress`).
+5. `update-ref refs/heads/<branch> <new> <expectedParent>`: an atomic compare-and-swap. A branch that is anywhere else, or a racing commit, fails it: `E_CONFLICT` with `reason: "head_moved"` (the ref is not at `expectedParent` any more) or `reason: "ref_update_failed"` (it still is, but git could not lock or write it). Of two commits racing on one parent exactly one wins; the other leaves the ref untouched.
+6. The ref is read back; a mismatch is `E_INTERNAL` with `details.updated: true`.
+
+Consequences to know: a bound commit **runs no commit hooks** (`pre-commit`, `commit-msg`, `post-commit`, `reference-transaction`): `commit-tree` has none and the ref update is a daemon call, which never runs hooks (GIT-3). Hooks still run on the unbound path. `planCommit` for a bound input returns `bound: true` and a `commit-tree` command; run alone it only makes a dangling object, so use `executeCommit`.
+
+`GitOpsDeps` gained two optional members:
+
+- `assertReviewFresh(worktree, reviewedTreeHash): Promise<void>` (G2). Called inside `check()`. **It refuses by throwing and must resolve `undefined`**: any returned value (`false`, a `{ fresh: false }` result) is also a refusal, so a `Freshness` object cannot be wired through by mistake. A throw becomes `E_CONFLICT` with `reason: "stale"`; a `GitOpsError` with another code (for example `E_UNAVAILABLE`) passes through. The daemon wires it to `checkFresh` and throws when `fresh` is false. It runs for bound and unbound commits.
+- `fileExists(path)`: the existence test for operation markers (default `lstat`; a missing path is false, any other error refuses). Inject it in tests.
+
+The operation-in-progress refusal (G5, both paths) covers unmerged index entries and `MERGE_HEAD`, `CHERRY_PICK_HEAD`, `REVERT_HEAD`, `REBASE_HEAD`, `rebase-merge`, `rebase-apply`, `sequencer`, `BISECT_LOG` and `BISECT_START`, with paths from `git rev-parse --git-path`, so a linked worktree's own directory is the one checked. A state that cannot be read (a failing call, a path containing a newline, a stat error other than "absent") is `E_UNAVAILABLE`: it never passes as clean. The marker list is exported as `OPERATION_MARKERS`, the check as `assertNoOperation(git, worktree, deps)`.
+
+Exports for building hardened calls (G4): `daemonGitFor(worktree, deps, extraEnv?)` (`extraEnv` may hold only `GIT_INDEX_FILE`, an absolute path; any other name is `E_INVALID_ARGUMENT`, so it cannot redirect the repository or the config), `checkWorktree`, `OBJECT_ID` and the `DaemonGit` type.
+
+Error summary: `E_CONFLICT` + `head_moved` | `operation_in_progress` | `stale` | `ref_update_failed`; `E_INTERNAL` + `updated: false | true` for a verification that failed; `E_INVALID_ARGUMENT` for a malformed pin.
+
 `planPush` and `executePush` take a required `baseSha`: **the last commit that was actually pushed** (or the workspace's recorded base before the first push), read from the journal by the daemon. The secret scan covers `baseSha..tip`, every commit's patch and its commit message, so everything reachable from `baseSha` is assumed to be on the remote already. If a workspace's base is a local commit that was never pushed, its ancestors go out unscanned: the journal must record the sha of each successful push and supply it next time. A `baseSha` that is not in the repository or not an ancestor of the branch (history was rewritten) is refused with `E_CONFLICT`. Never derive it from a ref under `refs/remotes`: the code in the worktree can write those.
 
 A plan that needs confirmation (warn mode findings, binary files, a scan that was too large) carries `tip` and `digest`. The caller passes `confirmed: true` and `confirmedPlan: { tip, digest }` to `executePush`, which re-scans and answers `E_CONFLICT` with `details.reason: "plan_changed"` if either differs. The runner reports `truncated` when it cut off output, and any truncated scan call fails closed.
