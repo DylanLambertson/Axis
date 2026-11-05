@@ -2,7 +2,7 @@
 // Subpath `@axis/runs/daemon-attestation`. Only the daemon's connection layer may import this
 // (enforced by test/packages/imports.test.mjs); it is not part of the package root.
 import { AxisError } from "@axis/audit";
-import { MINT, TrustAttestation, type AttestationFacts } from "./attestation.js";
+import { mintTrustAttestation, type TrustAttestation, type AttestationFacts } from "./attestation.js";
 
 export type { TrustAttestation };
 
@@ -16,5 +16,5 @@ export function attestTrust(facts: AttestationFacts): TrustAttestation {
   if (typeof facts !== "object" || facts === null || !ok(facts.workspaceId) || !ok(facts.projectId) || !Number.isFinite(facts.issuedAt)) {
     throw new AxisError("E_INVALID_ARGUMENT", "Invalid trust attestation");
   }
-  return new TrustAttestation(MINT, { workspaceId: facts.workspaceId, projectId: facts.projectId, issuedAt: facts.issuedAt });
+  return mintTrustAttestation({ workspaceId: facts.workspaceId, projectId: facts.projectId, issuedAt: facts.issuedAt });
 }

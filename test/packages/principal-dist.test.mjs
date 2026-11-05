@@ -8,7 +8,8 @@ import assert from "node:assert/strict";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { PRINCIPAL_SUBPATH, forbiddenLoaders, isScriptFile, principalReexports } from "./loaders.mjs";
+import { PRINCIPAL_SUBPATH, isScriptFile } from "./loaders.mjs";
+import { unsafeForms } from "../../scripts/code-oss/stage-ast.mjs";
 
 const packagesDir = fileURLToPath(new URL("../../packages/", import.meta.url));
 /** The packages whose emitted code may import the principal subpath: the daemon's connection layer, and one file of the host. */
@@ -69,8 +70,7 @@ for (const pkg of packages) {
         const why = distViolation(pkg, file, spec);
         if (why) bad.push(`${relative(packagesDir, file)}: ${spec} (${why})`);
       }
-      for (const name of forbiddenLoaders(source)) bad.push(`${relative(packagesDir, file)}: ${name} (hidden loader)`);
-      for (const re of principalReexports(source)) bad.push(`${relative(packagesDir, file)}: ${re} (re-export)`);
+      for (const why of unsafeForms(source, file, { pkg, shipped: false })) bad.push(`${relative(packagesDir, file)}: ${why}`);
     }
     assert.deepEqual(bad, []);
   });

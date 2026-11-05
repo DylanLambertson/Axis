@@ -1,8 +1,8 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { AxisError } from "@axis/audit";
 
-/** Held by `daemon-principal.ts` and nothing else. It is deliberately not re-exported from the package root. */
-export const MINT = Symbol("axis.journal.userPrincipal");
+/** Module-private: the raw symbol is never exported. `mintUserPrincipal` below is the only way to use it. */
+const MINT = Symbol("axis.journal.userPrincipal");
 
 /**
  * The user, as an unforgeable principal. Completing a run in review is the
@@ -28,4 +28,9 @@ export class UserPrincipal {
   static is(value: unknown): value is UserPrincipal {
     return typeof value === "object" && value !== null && #actor in value;
   }
+}
+
+/** Called only by `daemon-principal.ts` (the staging scan refuses any other use of it outside a call). */
+export function mintUserPrincipal(): UserPrincipal {
+  return new UserPrincipal(MINT);
 }

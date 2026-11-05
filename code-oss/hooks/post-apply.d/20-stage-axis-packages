@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Copyright (c) 2026 Dylan Lambertson. All rights reserved.
+#
+# Stages packages/* into the Code OSS tree (ADR 0005 D3): package sources under
+# src/vs/axis/packages/<name>/ with @axis/* and zod imports rewritten to relative
+# paths, and zod itself vendored under src/vs/axis/packages/vendor/zod/.
+# All output is new untracked files, which the hook contract allows; no upstream
+# file changes. The work is in scripts/code-oss/stage-packages.mjs.
+#
+# Needs: the pinned Node (AXIS_NODE_BIN_DIR, set by apply.sh when available) and
+# `npm ci --ignore-scripts` run at the repository root (for node_modules/zod).
+# Network: none.
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd -P)"
+: "${AXIS_CODE_OSS_TREE:?AXIS_CODE_OSS_TREE is not set}"
+
+if [ -n "${AXIS_NODE_BIN_DIR:-}" ]; then
+	PATH="$AXIS_NODE_BIN_DIR:$PATH"
+fi
+command -v node >/dev/null 2>&1 || {
+	echo "20-stage-axis-packages: node is not available; run scripts/code-oss/build.sh --toolchain-only or set NODE24_BIN" >&2
+	exit 1
+}
+[ -d "$root/node_modules/zod" ] || {
+	echo "20-stage-axis-packages: $root/node_modules/zod is missing; run 'npm ci --ignore-scripts' at the repository root" >&2
+	exit 1
+}
+
+exec node "$root/scripts/code-oss/stage-packages.mjs" --repo "$root" --tree "$AXIS_CODE_OSS_TREE"
