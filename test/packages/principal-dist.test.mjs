@@ -11,8 +11,9 @@ import { fileURLToPath } from "node:url";
 import { PRINCIPAL_SUBPATH, forbiddenLoaders, isScriptFile, principalReexports } from "./loaders.mjs";
 
 const packagesDir = fileURLToPath(new URL("../../packages/", import.meta.url));
-/** The only package whose emitted code may import the principal subpath: the daemon's connection layer. */
+/** The packages whose emitted code may import the principal subpath: the daemon's connection layer, and one file of the host. */
 const MAY_MINT = new Set(["daemon"]);
+const HOST_MINT_FILE = join("daemon-host", "dist", "src", "handlers", "review.js");
 const PRINCIPAL_FILES = ["src/principal.js", "src/daemon-principal.js"];
 
 function* jsFiles(dir) {
@@ -39,6 +40,7 @@ export function emittedSpecifiers(source) {
 /** Why `spec`, imported by `file` in package `pkg`, is not allowed, or null. */
 export function distViolation(pkg, file, spec) {
   if (spec === PRINCIPAL_SUBPATH || spec.startsWith(`${PRINCIPAL_SUBPATH}/`)) {
+    if (pkg === "daemon-host" && relative(packagesDir, file) === HOST_MINT_FILE) return null;
     return MAY_MINT.has(pkg) ? null : "only the daemon package may import the user-principal subpath";
   }
   if (spec.startsWith("@axis/journal/")) return "deep imports into @axis/journal are not allowed";
@@ -87,4 +89,11 @@ test("dist scanner: specifiers, the principal subpath, relative reaches and load
   assert.notEqual(distViolation("daemon", fromDaemon, "../../../journal/dist/src/daemon-principal.js"), null);
   assert.equal(distViolation("journal", journalFile, "./principal.js"), null);
   assert.equal(distViolation("daemon", fromDaemon, "./local.js"), null);
+  // The host's one exception is exactly its review handler file: any other host file (or another package's file of that name) is refused.
+  const hostDist = (...p) => join(packagesDir, "daemon-host", "dist", ...p);
+  assert.equal(distViolation("daemon-host", hostDist("src", "handlers", "review.js"), PRINCIPAL_SUBPATH), null);
+  for (const f of [["src", "handlers", "git.js"], ["src", "handlers", "review-store.js"], ["src", "bindings", "review.js"], ["test", "review.test.js"], ["src", "review.js"]]) {
+    assert.notEqual(distViolation("daemon-host", hostDist(...f), PRINCIPAL_SUBPATH), null, f.join("/"));
+  }
+  assert.notEqual(distViolation("runs", join(packagesDir, "runs", "dist", "src", "handlers", "review.js"), PRINCIPAL_SUBPATH), null);
 });
