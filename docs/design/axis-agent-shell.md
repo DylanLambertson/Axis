@@ -218,7 +218,7 @@ The rail and the main region are an internal split view inside the agent part, s
 | Name, project | Workspace label; worktree folder name | Discovery (§5.2) | `axis.worktrees/1.list` |
 | Branch, base | Branch; base ref and short SHA; ahead/behind | HEAD from discovery; base "not recorded" | Journal plus `git rev-list --left-right --count` |
 | State | idle · running · waiting for approval (1b) · quiet (may be waiting for input) · failed · changes to review · done (policies §9) | idle, or "external" for a worktree Axis did not create | Runs and approvals from the daemon (`AGENT_SYSTEM.md` state machine) |
-| Agents | Composer run (provider, model, mode, state) and CLI agent runs (label, §4.5 status) | none | `axis.runs/1.list`, `axis.cliRuns/1.list` |
+| Agents | Composer run (provider, model, mode, state) and CLI agent runs (label, §4.5 status) | none | `axis.runs/1.list`, `axis.cli-runs/1.list` |
 | Drift | "Files changed outside the agent" count per run, and "Git configuration changed" (policies §3, §6) | none | daemon drift ledger |
 | Terminals | Count and running processes (this window) | `AxisWorkspaceTerminals` | same |
 | Changes | Files and +/- lines | Focused workspace: `IGitService` state. Others: "—" | `axis.worktrees/1.status` (batched) |
@@ -255,7 +255,7 @@ The rail and the main region are an internal split view inside the agent part, s
    └─brokers ports──► renderer ┘  data channel (renderer ↔ pty): input, output, resize, for terminal ids the daemon issued
   ```
 
-  - The renderer asks the daemon (`axis.terminals/1.create`, `axis.cliRuns/1.start`). The daemon validates the worktree, builds the PTY-5 environment (policies §4) and sends the exact spawn to the pty process.
+  - The renderer asks the daemon (`axis.terminals/1.create`, `axis.cli-runs/1.start`). The daemon validates the worktree, builds the PTY-5 environment (policies §4) and sends the exact spawn to the pty process.
   - The pty process accepts spawns only on its daemon channel, and data attachments only for terminal ids the daemon issued.
   - Keystrokes do not pass through the daemon.
   - Main brokers the renderer ↔ pty data port only after ADR 0003 D1's window-identity checks: `getWindowByWebContents` must return an Axis workbench code window, `senderFrame.url` must be the workbench URL, and the sender must be the main frame. Auxiliary windows and `about:blank` frames get no port.
@@ -272,7 +272,7 @@ The rail and the main region are an internal split view inside the agent part, s
 ### 4.5 CLI agent runs (ADR 0004 decision 8)
 
 - **Configuration.** `axis.cliAgents` is a list of `{ id, label, command, args[], envPassthrough[] }`. It, `axis.terminals.scrubEnvironment`, `axis.git.runHooks` and `axis.worktrees.root` are **user, application or machine scope (never workspace or folder)**: workspace and folder `.vscode/settings.json` values are ignored and a warning is surfaced (threat model CFG-1, decision Q-3), so a cloned repository cannot define a CLI agent or weaken PTY-5. `envPassthrough` can add variables but never a denied one. Axis offers presets for known official CLIs, but only resolves the command on `PATH` and uses documented arguments. It never adds flags that bypass the CLI's own permission prompts.
-- **Launch.** The user starts a run from the workspace view or the dashboard. The renderer calls `axis.cliRuns/1.start { workspaceId, agentId }` and the daemon:
+- **Launch.** The user starts a run from the workspace view or the dashboard. The renderer calls `axis.cli-runs/1.start { workspaceId, agentId }` and the daemon:
   1. resolves the worktree from the journal and checks it with `realpath` (never the local checkout; ADR 0004 decision 6), and **refuses to start unless main attests that the worktree's source repository is trusted** (policies §2; threat model TRU-2); a renderer claim alone never gates a run. Restricted Mode shows the workspace read-only with a "Trust to run" action;
   2. builds the environment: `getResolvedShellEnv` (`platform/shell/node/shellEnv.ts:32`) [V], resolved by main and passed to the daemon, then `envPassthrough`, then the PTY-5 deny-list, which always wins. It keeps `SSH_AUTH_SOCK` and adds no vault value (policies §4.2);
   3. resolves `command[0]` itself: a bare name against the PATH of the resolved shell environment only, ignoring empty and relative entries, the cwd and anything inside the worktree (on Windows with PATHEXT minus `.bat` and `.cmd`), and passes the absolute path as argv[0], so the pty never searches. On Windows an absolute `command[0]` must be a drive-letter path (no UNC or root-relative path) and `.bat` and `.cmd` are refused; the workaround is the real `.exe`;
