@@ -4,19 +4,29 @@ import { z } from "zod";
 import { BrokerError, denied } from "./errors.js";
 import { maxTier, parseTier, tierRank, type Tier } from "./types.js";
 
-/** Programs that run other programs or interpret a command string. Starting one raises the call to `privileged`. */
+/**
+ * Programs known to run other programs or interpret a command string. A match raises the call to `privileged`. This is a
+ * deny-list: it is a convenience that adds a reason and a tier, not a boundary. A wrapper or an editor that is not on it
+ * runs at the tool's own tier, so the approval for a command shows the resolved program and, when the tool declared
+ * `argv`, the whole command line (see `args-at-run-time`).
+ */
 const LAUNCHERS = new Set([
   "sh", "bash", "zsh", "dash", "ksh", "fish", "csh", "tcsh", "ash", "busybox", "env", "xargs", "sudo", "su", "doas", "nohup", "nice",
   "timeout", "time", "setsid", "script", "cmd", "powershell", "pwsh", "wsl", "start", "runas", "osascript", "open", "launchctl", "ssh",
   "rbash", "mksh", "yash", "stdbuf", "chroot", "unshare", "nsenter", "find", "make", "gmake", "npx", "pnpx", "xvfb-run", "flock", "strace", "ltrace",
+  "setarch", "linux32", "linux64", "taskset", "ionice", "chrt", "prlimit", "setpriv", "runuser", "watch", "run-parts", "systemd-run", "dbus-run-session",
+  "tar", "bsdtar", "rsync", "vim", "vi", "nvim", "view", "ex", "ed", "emacs", "less", "more", "man", "npm", "pnpm", "yarn", "cargo", "go", "uv", "pip", "pip3",
+  "docker", "podman", "gdb", "lldb", "py", "forfiles", "msiexec", "regsvr32", "msbuild", "scp", "sftp",
   "git", "gh", "awk", "gawk", "mawk", "nawk", "sed", "perl", "php", "lua", "tclsh", "expect", "deno", "bun", "bunx", "osascript", "cscript", "wscript", "mshta", "rundll32",
 ]);
 /** Interpreters carry a version in the name (`python3.12`, `ruby3.2`, `node22`). */
 const INTERPRETER = /^(?:python|pypy|ruby|node|nodejs|perl|php|lua|java)[\d.]*$/;
+/** The dynamic loader runs any program it is given: `ld.so`, `ld-linux-x86-64.so.2`, `ld-2.31.so`. */
+const LOADER = /^ld(?:-[\w.-]+)?\.so(?:\.\d+)*$/;
 
 export function isLauncher(argv0: string): boolean {
   const base = (argv0.split(/[\\/]/).pop() ?? "").toLowerCase().replace(/\.(exe|com|bat|cmd)$/, "");
-  return LAUNCHERS.has(base) || INTERPRETER.test(base);
+  return LAUNCHERS.has(base) || INTERPRETER.test(base) || LOADER.test(base);
 }
 
 export interface PolicyInput {
@@ -27,6 +37,10 @@ export interface PolicyInput {
   readonly protectedHit: boolean;
   readonly protectedLabels: readonly string[];
   readonly argv0?: string;
+  /** The real path of the program, when it was resolved: judged like `argv0`. */
+  readonly program?: string;
+  /** True when the tool declared only the program: its arguments are chosen when it runs, so the approval cannot show them. */
+  readonly argsAtRunTime?: boolean;
   /** A tier the git table or another computed rule raised, validated here. */
   readonly raisedTier?: unknown;
 }
@@ -64,10 +78,11 @@ export class ToolPolicy {
       tier = maxTier(tier, raised);
     }
     const reasons: string[] = [];
-    if (input.argv0 !== undefined && isLauncher(input.argv0)) {
+    if ((input.argv0 !== undefined && isLauncher(input.argv0)) || (input.program !== undefined && isLauncher(input.program))) {
       tier = maxTier(tier, "privileged");
       reasons.push("launcher");
     }
+    if (input.argsAtRunTime === true) reasons.push("args-at-run-time");
     let approve = tierRank(tier) >= tierRank(this.#floor);
     if (approve) reasons.push(`tier:${tier}`);
     if (input.protectedHit) {
@@ -88,12 +103,17 @@ export interface ApprovalRequest {
   readonly actor: string;
   readonly reasons: readonly string[];
   readonly targets: readonly string[];
-  /** The real, worktree-relative paths and what the call does to each, so the UI can name what it approves. */
-  /** The command lines (program and arguments, or git calls) the call may run, redacted, bidi controls escaped. */
+  /**
+   * The command lines the call may run (the declared program with its resolved path, and each git call), redacted, bidi
+   * controls escaped. When the tool declared only a program, the line says its arguments are chosen at run time.
+   */
   readonly commands: readonly string[];
+  /** True if a command line was cut to its display limit. */
+  readonly commandsTruncated: boolean;
+  /** The real, worktree-relative paths and what the call does to each, so the UI can name what it approves. */
   readonly operations: readonly { readonly access: "read" | "write"; readonly path: string }[];
-  /** The canonical arguments (content included), redacted and bounded. The digest is over the full arguments. */
-  readonly preview: string; // bidirectional controls are escaped; the UI should still treat it as untrusted text
+  /** The canonical arguments (content included), redacted, bidi controls escaped, bounded. The UI should still treat it as untrusted text. The digest is over the full arguments. */
+  readonly preview: string;
   readonly previewTruncated: boolean;
   readonly maxTtlMs: number;
 }

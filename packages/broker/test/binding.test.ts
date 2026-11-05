@@ -77,22 +77,27 @@ test("NB1: a declared command line is the only one that runs, and the approval s
   assert.equal(await why(r.broker.invoke(call("t2", {}))), "E_POLICY_DENIED/undeclared-command");
 });
 
-test("NB1: a launcher found by resolution is refused unless approved as one", { skip: skipLinks }, async () => {
+test("NB1: a launcher found by resolution is judged as one when the policy decides: it asks at privileged", { skip: skipLinks }, async () => {
   const r = rig();
-  // `nothing-shaped-like-a-launcher` resolves, on PATH, to a symlink to a shell.
+  // `innocent` resolves, on PATH, to a symlink to a shell.
   const bin = join(r.w.base, "bin");
   mkdirSync(bin);
   symlinkSync("/bin/sh", join(bin, "innocent"));
-  const b2 = new ToolBroker({
+  const asked: ApprovalRequest[] = [];
+  const mk = (hook: boolean) => new ToolBroker({
     registry: r.w.registry, fs: nodeBrokerFs, audit: { append: () => ({}) as never }, runner: createCommandRunner({ killGraceMs: 200 }),
-    parentEnv: () => ({ PATH: bin, HOME: r.w.base }), approval: { request: async (q) => grant(q) },
+    parentEnv: () => ({ PATH: bin, HOME: r.w.base }), ...(hook ? { approval: { request: async (q: ApprovalRequest) => { asked.push(q); return grant(q); } } } : {}),
   });
-  b2.register(def({
+  const tool = def({
     name: "t", tier: "network", args: z.strictObject({}), command: () => "innocent",
     run: async (ctx) => ctx.run({ command: "innocent", args: ["-c", "echo hi > made.txt"], timeoutMs: 5000, maxOutputBytes: 1000 }),
-  }));
-  assert.equal(await why(b2.invoke(call("t", {}))), "E_POLICY_DENIED/undeclared-command");
-  assert.equal(existsSync(join(r.w.wt, "made.txt")), false);
+  });
+  const b = mk(true);
+  b.register(tool);
+  await b.invoke(call("t", {}));
+  assert.equal(asked[0]?.tier, "privileged");
+  assert.ok(asked[0]?.reasons.includes("launcher"), "the real path is judged when the policy decides, not only when it runs");
+  assert.ok(asked[0]?.commands[0]?.includes("program: /"), "the approval names the file");
 });
 
 test("NB1: git is only what the tool declared; a worktree rewrite is destructive and always asks", async () => {

@@ -23,13 +23,13 @@ export const DEFAULT_PROTECTED: readonly (readonly string[])[] = [
   [".gitmodules"],
 ];
 
+/** File-name suffixes protected at any depth: a `.code-workspace` file carries `tasks` and `settings` like `.vscode/`. */
+export const PROTECTED_SUFFIXES: readonly string[] = [".code-workspace"];
+
 /**
  * Names that take effect from any directory (WT-3: `package.json` scripts, `.npmrc`, `.envrc`, `Makefile`), so a
  * file called this anywhere below the root is protected. `.gitattributes` is read from every directory by git.
  */
-/** File-name suffixes protected at any depth: a `.code-workspace` file carries `tasks` and `settings` like `.vscode/`. */
-export const PROTECTED_SUFFIXES: readonly string[] = [".code-workspace"];
-
 export const PROTECTED_ANYWHERE: readonly string[] = [
   "package.json", ".npmrc", ".envrc", ".gitattributes", "makefile", "gnumakefile", "justfile", ".yarnrc", ".yarnrc.yml", ".pnpmfile.cjs",
 ];

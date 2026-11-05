@@ -62,6 +62,20 @@ function validRev(r: unknown): r is string {
   return m === null ? revPart(r) : revPart(m[1] as string) && revPart(m[3] as string);
 }
 
+/**
+ * One deep, frozen copy of a call: every field is read exactly once and the arrays are copied, so a getter or a later
+ * mutation by the tool cannot show the check one call and the runner another. Validation happens on the copy.
+ */
+export function snapGit(call: unknown): GitCall {
+  if (call === null || typeof call !== "object") throw denied("git-command", "the git command is not allowed");
+  const { command, flags, revs, paths } = call as { command?: unknown; flags?: unknown; revs?: unknown; paths?: unknown };
+  const copy = (v: unknown): readonly string[] | undefined => (Array.isArray(v) ? Object.freeze([...(v as string[])]) : (v as undefined));
+  return Object.freeze({ command: command as GitCommand, flags: copy(flags), revs: copy(revs), paths: copy(paths) }) as GitCall;
+}
+
+/** What identifies a call: the declaration and the call at the time of use are compared by this. */
+export const gitKey = (g: GitCall): string => JSON.stringify([g.command, g.flags ?? [], g.revs ?? [], g.paths ?? []]);
+
 /** The tier of a call. `restore` of the working tree discards uncommitted work, so it is destructive. */
 export function gitCallTier(call: GitCall): Tier {
   if (call === null || typeof call !== "object" || typeof call.command !== "string" || !Object.hasOwn(GIT_COMMANDS, call.command)) {

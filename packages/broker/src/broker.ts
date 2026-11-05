@@ -1,17 +1,17 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
-import { createHash } from "node:crypto";
 import { z } from "zod";
 import { Redactor, canonicalize, type AuditActor, type AuditSink } from "@axis/audit";
-import { resolveExecutable, nodeFs } from "@axis/pty-policy";
 import type { GitRunResult, GitRunner } from "@axis/git-ops";
 import { BrokerAudit, BROKER_ACTIONS } from "./audit.js";
 import { foldName } from "./lexical.js";
-import { isUnder, readContained, resolveRoot, resolveTarget, writeContained, type ContainDeps, type TargetGuard } from "./contain.js";
+import { readContained, resolveRoot, resolveTarget, writeContained, type ContainDeps, type TargetGuard } from "./contain.js";
 import { buildToolEnv, type EnvGrantSource } from "./env.js";
 import { BrokerError, denied, invalid, toBrokerError } from "./errors.js";
 import type { BrokerFs } from "./fs.js";
-import { checkGitCall, createBrokerGit, gitCallTier, GIT_COMMANDS, type BrokerGit, type GitCall } from "./git.js";
-import { ApprovalLedger, ToolPolicy, isLauncher, verifyApproval, type ApprovalHook, type PolicyOptions, type VerifiedApproval } from "./policy.js";
+import { checkGitCall, createBrokerGit, gitCallTier, gitKey, snapGit, GIT_COMMANDS, type BrokerGit, type GitCall } from "./git.js";
+import { pinProgram, type PinnedProgram } from "./program.js";
+import { clip, clipText, escapeBidi, printable, sha } from "./text.js";
+import { ApprovalLedger, ToolPolicy, verifyApproval, type ApprovalHook, type PolicyOptions, type VerifiedApproval } from "./policy.js";
 import type { CommandRunner, RunRecord } from "./runner.js";
 import { matchProtected } from "./protectedPaths.js";
 import { maxTier, parseTier, tierRank, type Clock, type Env, type Tier, type ToolTarget, type WorktreeRegistry } from "./types.js";
@@ -42,7 +42,8 @@ export interface ToolDefinition<A = unknown> {
   readonly targets?: (args: A) => readonly ToolTarget[];
   /**
    * `argv[0]` of the command the call will start. `ctx.run` is refused unless the tool declared this (or `argv`) and starts
-   * exactly that program; a launcher raises the call to `privileged`.
+   * exactly that program, found and pinned when the policy decides. The arguments are then chosen at run time and the
+   * approval says so: declare `argv` where they are known. A name on the launcher deny-list raises the call to `privileged`.
    */
   readonly command?: (args: A) => string | undefined;
   /** The whole command line, when it is known up front: `ctx.run` must then start exactly it, and the approval shows it. */
@@ -84,28 +85,14 @@ export interface BrokerDeps {
   readonly maxApprovalTtlMs?: number;
 }
 
+const isAborted = (s: AbortSignal | undefined): boolean => s?.aborted === true;
+
 /** What a call declared it touches, resolved when the policy decided. A use that resolves anywhere else is refused. */
 interface Declared {
   readonly access: "read" | "write";
   readonly lex: string;
   readonly real: string;
 }
-
-const isAborted = (s: AbortSignal | undefined): boolean => s?.aborted === true;
-const BIDI = new RegExp("[\\u061c\\u200e\\u200f\\u202a-\\u202e\\u2066-\\u2069]", "g");
-/** Bidirectional controls can reorder text in an approval dialog; they are shown as their code points instead. */
-const escapeBidi = (s: string): string => s.replace(BIDI, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
-/** Cuts at `n` UTF-16 units without leaving half of a surrogate pair. */
-const clipText = (s: string, n: number): string => {
-  if (s.length <= n) return s;
-  const cut = s.charCodeAt(n - 1);
-  return s.slice(0, cut >= 0xd800 && cut <= 0xdbff ? n - 1 : n);
-};
-const gitKey = (g: GitCall): string => JSON.stringify([g.command, g.flags ?? [], g.revs ?? [], g.paths ?? []]);
-const clip = (s: string, n: number): string => (s.length > n ? s.slice(0, n) : s);
-const CTRL = new RegExp("[\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]", "g");
-const printable = (s: string): string => clip(s.replace(CTRL, "?"), 200);
-const sha = (t: string): string => createHash("sha256").update(t).digest("hex");
 
 export class ToolBroker {
   readonly #d: BrokerDeps;
@@ -135,15 +122,24 @@ export class ToolBroker {
       : createBrokerGit({ runner: deps.gitRunner, parentEnv: deps.parentEnv(), assertNoDrift: deps.assertNoDrift, platform: this.#platform });
   }
 
-  /** A tool with an invalid name or tier is refused here, not at call time. */
+  /**
+   * A tool with an invalid name or tier is refused here, not at call time. The definition is copied and frozen first
+   * (every field read once, getters evaluated once) and every check, and every later call, uses that copy.
+   */
   register<A>(def: ToolDefinition<A>): void {
-    if (typeof def?.name !== "string" || !TOOL_NAME.test(def.name) || this.#tools.has(def.name)) throw invalid("invalid-call", "the tool name is not valid");
-    if (parseTier(def.tier) === undefined) throw denied("invalid-tier", "the tool tier is not valid");
+    let copy: ToolDefinition;
+    try {
+      copy = Object.freeze({ ...def }) as unknown as ToolDefinition;
+    } catch {
+      throw invalid("invalid-call", "the tool definition is not valid");
+    }
+    if (typeof copy.name !== "string" || !TOOL_NAME.test(copy.name) || this.#tools.has(copy.name)) throw invalid("invalid-call", "the tool name is not valid");
+    if (parseTier(copy.tier) === undefined) throw denied("invalid-tier", "the tool tier is not valid");
     // A command can leave its process group (setsid), so the approval floor is the only gate for it (PTY-4 residual).
-    if ((def.command !== undefined || def.argv !== undefined) && !this.#policy.needsApproval(def.tier)) {
+    if ((copy.command !== undefined || copy.argv !== undefined) && !this.#policy.needsApproval(copy.tier)) {
       throw denied("invalid-tier", "a tool that starts a command must sit at or above the approval floor");
     }
-    this.#tools.set(def.name, Object.freeze({ ...def }) as ToolDefinition);
+    this.#tools.set(copy.name, copy);
   }
 
   async invoke(call: ToolCall): Promise<unknown> {
@@ -191,13 +187,14 @@ export class ToolBroker {
     try {
       const targets = tool.targets?.(args) ?? [];
       if (targets.length > MAX_TARGETS) throw invalid("invalid-args", "too many paths");
-      for (const t of targets) {
-        const mode = t.access === "read" ? "read" : "upsert";
-        const r = await resolveTarget(this.#contain, worktreeId, t.path, mode);
+      // Each target is read once: its access and path cannot differ between the policy and the declaration.
+      for (const { access: a0, path } of [...targets].map((t) => ({ access: t.access, path: t.path }))) {
+        const access = a0 === "read" ? "read" : "write";
+        const r = await resolveTarget(this.#contain, worktreeId, path, access === "read" ? "read" : "upsert");
         rels.push(r.rel);
-        ops.push({ access: t.access === "read" ? "read" : "write", path: r.rel });
-        declared.push({ access: t.access === "read" ? "read" : "write", lex: this.#key(r.segments), real: this.#key(r.realSegments) });
-        if (r.protected !== undefined && (t.access === "write" || r.protected.gitDir)) {
+        ops.push({ access, path: r.rel });
+        declared.push({ access, lex: this.#key(r.segments), real: this.#key(r.realSegments) });
+        if (r.protected !== undefined && (access === "write" || r.protected.gitDir)) {
           protectedHit = true;
           labels.push(r.protected.label);
         }
@@ -208,19 +205,34 @@ export class ToolBroker {
 
     let argv0: string | undefined;
     let declaredArgv: readonly string[] | undefined;
+    let pinned: PinnedProgram | undefined;
     let raised: Tier | undefined;
     const gitKeys = new Set<string>();
     const commands: string[] = [];
     try {
-      declaredArgv = tool.argv?.(args);
-      if (declaredArgv !== undefined && (!Array.isArray(declaredArgv) || declaredArgv.some((x) => typeof x !== "string") || declaredArgv.length === 0 || declaredArgv.length > 256)) {
-        throw invalid("invalid-args", "the command line is not valid");
+      const rawArgv = tool.argv?.(args);
+      if (rawArgv !== undefined) {
+        // A copy: the tool keeps no handle on what was judged and approved.
+        declaredArgv = Array.isArray(rawArgv) ? Object.freeze([...rawArgv]) : undefined;
+        if (declaredArgv === undefined || declaredArgv.some((x) => typeof x !== "string") || declaredArgv.length === 0 || declaredArgv.length > 256) {
+          throw invalid("invalid-args", "the command line is not valid");
+        }
       }
       argv0 = declaredArgv?.[0] ?? tool.command?.(args);
-      if (argv0 !== undefined) commands.push(declaredArgv === undefined ? argv0 : declaredArgv.join(" "));
+      if (argv0 !== undefined) {
+        // The program is found and pinned now: the approval names the file, and the run must start that file.
+        const { root } = await resolveRoot(this.#contain, worktreeId);
+        const env = this.#toolEnv(tool, worktreeId, root, this.#d.registry.repositoryRoots());
+        pinned = await pinProgram({ fs: this.#d.fs, platform: this.#platform }, argv0, env, [root, ...this.#d.registry.repositoryRoots()]);
+        commands.push(declaredArgv === undefined
+          ? `${argv0} [arguments are chosen when it runs; program: ${pinned.real}]`
+          : `${declaredArgv.join(" ")} [program: ${pinned.real}]`);
+      }
       raised = tool.raise?.(args);
-      const calls = tool.git?.(args) ?? [];
-      if (calls.length > 8) throw invalid("invalid-args", "too many git calls");
+      const rawCalls = tool.git?.(args);
+      if (rawCalls !== undefined && (!Array.isArray(rawCalls) || rawCalls.length > 8)) throw invalid("invalid-args", "too many git calls");
+      // One frozen copy of each call: the tier, the paths, the key and the line below all describe the same values.
+      const calls = (rawCalls ?? []).map(snapGit);
       if (calls.length > 0) {
         const { root } = await resolveRoot(this.#contain, worktreeId);
         for (const g of calls) {
@@ -234,7 +246,14 @@ export class ToolBroker {
             labels.push("git-worktree");
           }
           for (const p of checked.paths) {
-            const hit = matchProtected(p.split("/").filter((s) => s !== "." && s !== ""), this.#d.extraProtected, this.#platform);
+            const segs = p.split("/").filter((x) => x !== "." && x !== "");
+            // `git add .` stages every changed file, protected ones included. A named directory is only checked lexically
+            // (staging is not a write to the tree, and the commit is reviewed), but the whole tree always asks.
+            if (writes && segs.length === 0) {
+              protectedHit = true;
+              labels.push("git-worktree");
+            }
+            const hit = matchProtected(segs, this.#d.extraProtected, this.#platform);
             if (hit !== undefined && (writes || hit.gitDir)) {
               protectedHit = true;
               labels.push(hit.label);
@@ -250,7 +269,9 @@ export class ToolBroker {
     }
     const decision = this.#policy.decide({
       tool: tool.name, tier: tool.tier, protectedHit, protectedLabels: [...new Set(labels)],
-      ...(argv0 === undefined ? {} : { argv0 }), ...(raised === undefined ? {} : { raisedTier: raised }),
+      ...(argv0 === undefined ? {} : { argv0 }), ...(pinned === undefined ? {} : { program: pinned.real }),
+      ...(argv0 !== undefined && declaredArgv === undefined ? { argsAtRunTime: true } : {}),
+      ...(raised === undefined ? {} : { raisedTier: raised }),
     });
     if (decision.effect === "deny") return refuse(denied("invalid-tier", "the tool tier is not valid"));
 
@@ -289,7 +310,7 @@ export class ToolBroker {
     try {
       // Cancelled between the decision and the action: nothing has run, so nothing runs.
       if (ac.signal.aborted) throw new BrokerError("E_CANCELLED", "aborted", "the call was cancelled");
-      result = await tool.run(this.#context(worktreeId, tool, ac.signal, stats, declared, { tier: decision.tier, argv0, argv: declaredArgv, gitKeys }), args);
+      result = await tool.run(this.#context(worktreeId, tool, ac.signal, stats, declared, { tier: decision.tier, argv0, argv: declaredArgv, gitKeys, pinned }), args);
     } catch (e) {
       failure = toBrokerError(e);
     } finally {
@@ -322,6 +343,7 @@ export class ToolBroker {
     const ac = new AbortController();
     const abort = (): void => ac.abort();
     signal?.addEventListener("abort", abort, { once: true });
+    const shownCommands = commands.map((c) => clipText(escapeBidi(c), 1024));
     let timer: NodeJS.Timeout | undefined;
     let onCancel: (() => void) | undefined;
     try {
@@ -340,9 +362,9 @@ export class ToolBroker {
       const raw = await Promise.race([
         Promise.resolve().then(() => hook.request({
           digest, tool, tier, worktreeId, actor, reasons: [...reasons], targets: ops.map((o) => printable(o.path)), maxTtlMs,
-          // Every operation is listed (the call is capped at MAX_TARGETS), so no protected path can be cut from what is shown.
+          // Every operation and every command line is listed (declared targets and git calls are capped), so nothing is cut from what is shown.
           operations: ops.map((o) => ({ access: o.access, path: printable(o.path) })),
-          commands: commands.slice(0, 8).map((c) => clipText(escapeBidi(c), 1024)),
+          commands: shownCommands, commandsTruncated: shownCommands.some((c, i) => c.length < escapeBidi(commands[i] as string).length),
           preview: clipText(preview, PREVIEW_CHARS), previewTruncated: preview.length > PREVIEW_CHARS,
         }, ac.signal)),
         timeout, cancelled,
@@ -359,7 +381,7 @@ export class ToolBroker {
     }
   }
 
-  #context(worktreeId: string, tool: ToolDefinition, signal: AbortSignal, stats: { bytesRead: number; bytesWritten: number; effects: number; endedBy: string | null; exitCode: number | null; outputBytes: number }, declared: readonly Declared[], cmd: { readonly tier: Tier; readonly argv0: string | undefined; readonly argv: readonly string[] | undefined; readonly gitKeys: ReadonlySet<string> }): ToolContext {
+  #context(worktreeId: string, tool: ToolDefinition, signal: AbortSignal, stats: { bytesRead: number; bytesWritten: number; effects: number; endedBy: string | null; exitCode: number | null; outputBytes: number }, declared: readonly Declared[], cmd: { readonly tier: Tier; readonly argv0: string | undefined; readonly argv: readonly string[] | undefined; readonly gitKeys: ReadonlySet<string>; readonly pinned: PinnedProgram | undefined }): ToolContext {
     const d = this.#d;
     const contain = this.#contain;
     const guardFor = (access: "read" | "write"): TargetGuard => (t) => {
@@ -390,27 +412,28 @@ export class ToolBroker {
       },
       run: async (o) => {
         alive();
+        // One read of every field: what is checked below is what is started, whatever the tool does to `o` afterwards.
+        const { command, args: rawArgs, cwd: cwd0, timeoutMs, maxOutputBytes, stdin } = o;
+        const args = rawArgs === undefined ? [] : Array.isArray(rawArgs) ? [...rawArgs] : undefined;
         // PTY-4 at the time of use: only the program (and, when declared, the exact arguments) the policy judged and the user approved.
-        if (cmd.argv0 === undefined || o?.command !== cmd.argv0) throw denied("undeclared-command", "the tool started a command it did not declare");
+        if (cmd.argv0 === undefined || cmd.pinned === undefined || command !== cmd.argv0 || args === undefined || args.some((x) => typeof x !== "string")) {
+          throw denied("undeclared-command", "the tool started a command it did not declare");
+        }
         if (cmd.argv !== undefined) {
           const want = cmd.argv.slice(1);
-          const got = o.args ?? [];
-          if (got.length !== want.length || got.some((x, i) => x !== want[i])) throw denied("undeclared-command", "the command line is not the one that was approved");
+          if (args.length !== want.length || args.some((x, i) => x !== want[i])) throw denied("undeclared-command", "the command line is not the one that was approved");
         }
         const root = await resolveRoot(contain, worktreeId);
-        const cwdTarget = await resolveTarget(contain, worktreeId, o.cwd ?? ".", "dir");
+        const cwdTarget = await resolveTarget(contain, worktreeId, cwd0 ?? ".", "dir");
         const cwd = cwdTarget.segments.length === 0 ? root.root : [cwdTarget.parent, cwdTarget.name].join(this.#platform === "win32" ? "\\" : "/");
         const repos = d.registry.repositoryRoots();
-        const built = buildToolEnv(d.parentEnv(), { tool: tool.name, worktreeId, ...(tool.envAdditions === undefined ? {} : { additions: tool.envAdditions }), ...(tool.envFixed === undefined ? {} : { fixed: tool.envFixed }) }, {
-          platform: this.#platform, now: this.#now(), grants: d.grants?.grantsFor(tool.name, worktreeId) ?? [], excludeDirs: [root.root, ...repos],
-        });
-        const exe = await this.#executable(o.command, built.env, [root.root, ...repos]);
-        // A bare name can resolve to a launcher (a symlink to a shell): that is judged like one named outright.
-        const exeReal = await d.fs.realpath(exe).catch(() => exe);
-        if ((isLauncher(exe) || isLauncher(exeReal)) && tierRank(cmd.tier) < tierRank("privileged")) throw denied("undeclared-command", "the command is a launcher that was not approved as one");
+        const env = this.#toolEnv(tool, worktreeId, root.root, repos);
+        const pin = await pinProgram({ fs: d.fs, platform: this.#platform }, command, env, [root.root, ...repos]);
+        // The file that runs is the file that was approved. A same-user process that swaps it after this check can still win the race (design §5).
+        if (pin.exe !== cmd.pinned.exe || pin.real !== cmd.pinned.real) throw denied("undeclared-command", "the program is not the one that was approved");
         const rec = await d.runner.run({
-          argv: [exe, ...(o.args ?? [])], cwd, env: built.env, timeoutMs: o.timeoutMs, maxOutputBytes: o.maxOutputBytes,
-          ...(o.stdin === undefined ? {} : { stdin: o.stdin }), signal,
+          argv: [pin.exe, ...args], cwd, env, timeoutMs, maxOutputBytes,
+          ...(stdin === undefined ? {} : { stdin }), signal,
         });
         stats.effects++;
         stats.endedBy = rec.endedBy;
@@ -420,16 +443,17 @@ export class ToolBroker {
       },
       git: async (call) => {
         alive();
-        let key: string;
+        // One frozen copy: the key checked here is the call that runs.
+        let snap: GitCall;
         try {
-          key = gitKey(call);
+          snap = snapGit(call);
+          if (!cmd.gitKeys.has(gitKey(snap))) throw new Error("undeclared");
         } catch {
-          key = "";
+          throw denied("undeclared-git", "the tool made a git call it did not declare");
         }
-        if (!cmd.gitKeys.has(key)) throw denied("undeclared-git", "the tool made a git call it did not declare");
         if (this.#git === undefined) throw new BrokerError("E_UNAVAILABLE", "git-unavailable", "git is not configured");
         const { worktree, root } = await resolveRoot(contain, worktreeId);
-        const result = await this.#git.run({ workTree: root, gitDir: worktree.gitDir }, call, signal);
+        const result = await this.#git.run({ workTree: root, gitDir: worktree.gitDir }, snap, signal);
         stats.effects++;
         stats.exitCode = result.code;
         stats.outputBytes += result.stdout.length + result.stderr.length;
@@ -438,24 +462,15 @@ export class ToolBroker {
     };
   }
 
-  #key(segs: readonly string[]): string {
-    return segs.map((s) => foldName(s, this.#platform)).join("\0");
+  /** The environment a tool's command gets, and the one its program is looked up on. */
+  #toolEnv(tool: ToolDefinition, worktreeId: string, root: string, repos: readonly string[]): Readonly<Record<string, string>> {
+    const d = this.#d;
+    return buildToolEnv(d.parentEnv(), { tool: tool.name, worktreeId, ...(tool.envAdditions === undefined ? {} : { additions: tool.envAdditions }), ...(tool.envFixed === undefined ? {} : { fixed: tool.envFixed }) }, {
+      platform: this.#platform, now: this.#now(), grants: d.grants?.grantsFor(tool.name, worktreeId) ?? [], excludeDirs: [root, ...repos],
+    }).env;
   }
 
-  async #executable(command: string, env: Readonly<Record<string, string>>, exclude: readonly string[]): Promise<string> {
-    if (typeof command !== "string") throw invalid("invalid-command", "the command is not valid");
-    if (/^[A-Za-z]:[\\/]|^\//.test(command)) {
-      // An absolute path is judged by its real path: never a program that lives in the worktree or a repository.
-      const realExe = await this.#d.fs.realpath(command).catch(() => {
-        throw new BrokerError("E_NOT_FOUND", "unresolved-command", "the command was not found");
-      });
-      if (exclude.some((x) => isUnder(realExe, x, this.#platform) || isUnder(command, x, this.#platform))) {
-        throw denied("unresolved-command", "the command is inside the worktree");
-      }
-      return realExe;
-    }
-    const found = resolveExecutable(command, env, this.#platform, nodeFs, { excludeDirs: exclude });
-    if (found === undefined) throw new BrokerError("E_NOT_FOUND", "unresolved-command", "the command was not found on PATH");
-    return found;
+  #key(segs: readonly string[]): string {
+    return segs.map((s) => foldName(s, this.#platform)).join("\0");
   }
 }
