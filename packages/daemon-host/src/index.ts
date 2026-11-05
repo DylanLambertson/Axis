@@ -4,6 +4,7 @@
 export * from "./config.js";
 export * from "./disposables.js";
 export * from "./exit-codes.js";
+export * from "./lifecycle.js";
 export { registerHostSecrets } from "./secrets.js";
 export * from "./log/index.js";
 export * from "./policy/index.js";

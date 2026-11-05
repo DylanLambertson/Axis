@@ -64,7 +64,7 @@ export function createWorktreesService(deps: WorktreesServiceDeps): WorktreesRun
   // True after a reconcile that did not finish (aborted by the startup budget, failed, or cut at the report cap): until a
   // full one completes, EVERY workspace needs attention (design section 3 step 9, gate G-12); never "nothing is wrong".
   let incomplete = false;
-  const repaired = new Set<string>(); // ids repaired while a reconcile was running (its stale entry must not come back)
+  const repaired = new Set<string>(); // ids repaired while a reconcile was running (its stale finalise_incomplete entry must not come back)
   const actorOf = (ctx: { caller: { actor: string } }): AuditActor => ctx.caller.actor as AuditActor;
 
   /** The lock record around one mutating call (advisory: the mutex and the manager's file lock are the real locks). */
@@ -350,7 +350,7 @@ export function createWorktreesService(deps: WorktreesServiceDeps): WorktreesRun
     },
 
     async reconcile(signal) {
-      repaired.clear();
+      repaired.clear(); // bounds memory only: a repaired id can never be reported finalise_incomplete again, so a leftover entry suppresses nothing
       let report;
       try {
         report = await reconcileWorktrees({ journal, manager, mutex, platform: deps.platform, ...(deps.maxReports === undefined ? {} : { maxReports: deps.maxReports }) }, signal);

@@ -31,10 +31,10 @@ const settle = async (v: unknown): Promise<unknown> => {
   return Promise.race([Promise.resolve(v).catch(() => undefined), new Promise((r) => setTimeout(() => r(undefined), 20).unref())]);
 };
 
-/** Names of everything reachable that yielded a token. */
 // Not spelled `Function.prototype`: the staging import check refuses the identifier `Function` everywhere.
 const FUNCTION_PROTO: object = Object.getPrototypeOf(() => undefined) as object;
 
+/** Names of everything reachable that yielded a token. */
 async function findTokens(root: unknown, name: string, seen = new Set<unknown>(), depth = 0): Promise<string[]> {
   if (isToken(root)) return [name];
   if (depth > 4 || (typeof root !== "object" && typeof root !== "function") || root === null || seen.has(root)) return [];
