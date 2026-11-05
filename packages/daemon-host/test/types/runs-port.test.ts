@@ -3,13 +3,18 @@
 // import @axis/runs; if the supervisor's shapes drift from the port, `tsc` fails here.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { RunSummary as RealSummary, RunSupervisor } from "@axis/runs";
-import type { RunSummary, RunsService } from "../../src/index.js";
+import type { RunSummary as RealSummary, RunSupervisor, StartRequest } from "@axis/runs";
+import type { RunSummary, RunsService, RunsStartRequest } from "../../src/index.js";
 
 type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
 const yes = <T extends true>(): T | undefined => undefined;
 
 yes<Equal<RunSummary, RealSummary>>();
+// The request, without the trust attestation (a class in the real package, an opaque brand in the port): same
+// fields, same types, both directions.
+yes<Equal<Omit<RunsStartRequest, "trust">, Omit<StartRequest, "trust">>>();
+yes<Equal<Parameters<RunsService["start"]>[0], RunsStartRequest>>();
+yes<Equal<Omit<Parameters<RunSupervisor["start"]>[0], "trust">, Omit<StartRequest, "trust">>>();
 // Every method of the port exists on the supervisor with the same parameters and result (the supervisor's `start`
 // takes a `TrustAttestation` class where the port holds an opaque brand, so `start` is compared without it).
 yes<Equal<Parameters<RunsService["stop"]>, Parameters<RunSupervisor["stop"]>>>();
