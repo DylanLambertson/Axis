@@ -104,10 +104,21 @@ jobs:
       - name: Check generated SVG replacements match assets/brand
         run: scripts/code-oss/gen-icons.sh --check
 
+      - name: Read the pinned Node version from the manifest
+        id: manifest
+        run: |
+          set -euo pipefail
+          node_version="$(jq -er '.node' code-oss/upstream.json)"
+          [[ "$node_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "::error file=code-oss/upstream.json::node is not MAJOR.MINOR.PATCH: $node_version"
+            exit 1
+          }
+          echo "node=$node_version" >>"$GITHUB_OUTPUT"
+
       - name: Set up Node.js for the staging tests
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24.22.1 # the version the manifest pins
+          node-version: ${{ steps.manifest.outputs.node }}
           package-manager-cache: false
 
       - name: Install dependencies for the staging tests (lockfile only, no install scripts)
