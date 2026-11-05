@@ -61,6 +61,8 @@ export interface Rig {
   readonly rpcEvents: DaemonAuditEvent[];
   readonly supervisor: Array<Record<string, unknown>>;
   readonly active: Set<string>;
+  /** Answers for the next `hasActiveRun` calls, in order, before falling back to `active` (a call that sees a run only later). */
+  readonly script: boolean[];
   readonly trust: InMemoryTrustRegistry;
   readonly home: string;
   readonly gitPath: string;
@@ -97,6 +99,8 @@ export interface RigOptions {
   gitWrapper?: boolean;
   /** Fixed bytes for the slug suffix (`010203`), so a test can predict a branch name. */
   fixedSuffix?: boolean;
+  /** Make the binding's audit appends fail for matching events (the journal's own audit is unaffected). */
+  failAudit?: (e: { action: string; payload?: unknown }) => boolean;
 }
 
 export async function worktreesRig(options: RigOptions = {}): Promise<Rig> {
@@ -138,13 +142,14 @@ export async function worktreesRig(options: RigOptions = {}): Promise<Rig> {
     env = { PATH: home, HOME: home }; // an empty directory: any lookup of a bare `git` would fail
   }
   const active = new Set<string>();
+  const script: boolean[] = [];
   const wiring = createWorktreesApprovalWiring(options.preflight === undefined ? {} : { preflight: options.preflight });
   const binding = createWorktreesBinding({
     journal,
-    audit,
+    audit: { append: (e) => (options.failAudit?.(e) === true ? ((): never => { throw new Error("audit down"); })() : audit.append(e)) },
     transact: (fn) => withTransaction(db, fn),
     random: { bytes: (n) => (options.fixedSuffix === true ? Uint8Array.from({ length: n }, (_, i) => i + 1) : randomBytes(n)), uuid: () => randomUUID() },
-    runs: { hasActiveRun: (id) => active.has(id) },
+    runs: { hasActiveRun: (id) => (script.length > 0 ? (script.shift() as boolean) : active.has(id)) },
     gitPath,
     env,
     platform: process.platform,
@@ -180,7 +185,7 @@ export async function worktreesRig(options: RigOptions = {}): Promise<Rig> {
   });
   const ports: Array<{ close(): void }> = [];
   return {
-    tmp, repo, root, db, journal, binding, approvals, daemon, rpcEvents, supervisor, active, trust, home, gitPath, gitLog, projectId,
+    tmp, repo, root, db, journal, binding, approvals, daemon, rpcEvents, supervisor, active, script, trust, home, gitPath, gitLog, projectId,
     git: g,
     async connect(attestation = "user#conn-1#win-1") {
       const { client, server } = memoryPair();
@@ -215,4 +220,12 @@ export async function createWs(
 ): Promise<{ id: string; msg: Msg }> {
   const msg = check("create", await user.call("axis.worktrees", "create", { projectId: "proj-1", name, ...over }, key));
   return { id: (msg.result as { id: string }).id, msg };
+}
+
+/** A finished run of `id` with its run base ref (the workspace's creation snapshot), as the supervisor leaves one. */
+export function finishedRun(r: Rig, id: string): string {
+  const run = r.journal.createRun({ workspaceId: id, kind: "cli", createdBy: "user" }).value;
+  r.git(r.repo, "update-ref", `refs/axis/runbase/${run.id}`, r.git(r.repo, "rev-parse", `refs/axis/runbase/${id}`).trim());
+  r.journal.transitionRun(run.id, "CANCELLED", { actor: "user" });
+  return run.id;
 }

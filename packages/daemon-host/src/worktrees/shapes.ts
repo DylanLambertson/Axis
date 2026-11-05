@@ -81,7 +81,7 @@ export interface ManagerShape {
   assertNoDrift(worktreePath: string): Promise<void>;
   finalise(input: { path: string; outcome: "merged" | "archived" | "abandoned"; discardConfirmation?: unknown }): Promise<ManagerFinalised>;
   remove(input: { path: string; deleteBranch: boolean; discardConfirmation?: unknown }): Promise<ManagerRemoved>;
-  restoreFromRunBase(input: { path: string; runId: string }): Promise<ManagerRestored>;
+  restoreFromRunBase(input: { path: string; runId: string; expectedWorktree: string }): Promise<ManagerRestored>;
 }
 
 /** What the locator needs to know about a repository location (`resolveRepo` of the package). */

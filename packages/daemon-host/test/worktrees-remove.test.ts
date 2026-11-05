@@ -86,22 +86,22 @@ test("remove of a dirty workspace: the confirmation is minted after the spend, t
   assert.equal(existsSync(dir), false);
 });
 
-test("remove: a workspace that was not finalised, an unknown id, and a non-user caller are refused before any challenge", { skip }, async (t) => {
+test("remove: a workspace that was not finalised, an unknown id and a non-user caller are refused before any challenge or dialog", { skip }, async (t) => {
   const { r, user } = await setup(t);
   const { id } = await createWs(user);
-  // A refusal by the content hook (before any challenge) reaches the wire as E_INTERNAL: @axis/daemon maps only handler
-  // errors, not a hook's (ambiguity recorded in the ticket report). What matters here is that nothing is issued.
+  // A refusal by the content hook reaches the wire as E_INTERNAL until @axis/daemon maps a hook's DaemonError (see the
+  // docs); what matters here is that no challenge and no dialog exist, and nothing changed.
+  const early = await user.call(WT, "remove", { id }, newKey());
+  assert.equal(early.ok, false);
+  assert.notEqual(early.error?.code, "E_APPROVAL_REQUIRED");
   const unknown = await user.call(WT, "remove", { id: "ws-unknown" }, newKey());
   assert.equal(unknown.ok, false);
   assert.notEqual(unknown.error?.code, "E_APPROVAL_REQUIRED");
   const agent = await r.connect("agent:x#conn-3#win-1");
   assert.equal((await agent.call(WT, "remove", { id }, newKey())).error?.code, "E_POLICY_DENIED");
-  const i = await challenge(r, user, { id }, newKey());
-  await approve4(r as never, user, { challenge: i.c, proof: i.proof, key: i.key, sent: i.sent, first: {} as Msg });
-  const refused = await retry(user, id, i.c.challengeId, i.key);
-  assert.equal(refused.error?.code, "E_CONFLICT");
-  assert.deepEqual(refused.error?.details, { reason: "not_finalised" });
-  assert.equal(r.journal.getWorkspace(id)?.state, "READY", "the REMOVING write is not made for a workspace that cannot be removed");
+  assert.equal(r.nativeConfirms().length, 0, "no dialog for a call that will be refused");
+  assert.equal(r.journal.getWorkspace(id)?.state, "READY");
+  assert.deepEqual(r.journal.transitions("workspace", id).map((x) => x.to), ["CREATING", "READY"]);
 });
 
 test("remove: refused while a run is active, before the approval is spent; the same approval works once the run ends", { skip }, async (t) => {
@@ -122,23 +122,6 @@ test("remove: refused while a run is active, before the approval is spent; the s
   assert.equal(r.journal.getWorkspace(id)?.state, "FINALISED");
   r.active.clear();
   assert.equal((await retry(user, id, i.c.challengeId, i.key)).ok, true, "the approval was not spent by the refusal");
-});
-
-test("remove: the manager's own refusal (active run seen after the hook) returns the journal to FINALISED", { skip }, async (t) => {
-  const { r, user } = await setup(t);
-  const { id, dir } = await finalised(r, user);
-  const i = await challenge(r, user, { id });
-  await approve4(r as never, user, { challenge: i.c, proof: i.proof, key: i.key, sent: i.sent, first: {} as Msg });
-  // The hook's check passes, then a run appears before the manager looks (a race the host cannot close alone).
-  let calls = 0;
-  const real = r.active;
-  Object.defineProperty(r, "active", { value: { has: (x: string) => (calls++ >= 2 && real.has(x)) || (calls > 2 && x === id), add: real.add.bind(real), clear: real.clear.bind(real) } });
-  r.active.add(id);
-  const res = await retry(user, id, i.c.challengeId, i.key);
-  assert.equal(res.ok, false);
-  assert.equal(existsSync(dir), true);
-  assert.equal(r.journal.getWorkspace(id)?.state, "FINALISED");
-  assert.equal(r.journal.getWorkspace(id)?.lockState, "unlocked");
 });
 
 test("preflight seam: a stall check throwing refuses tier 4 before any challenge or dialog, and resumes when it clears", { skip }, async (t) => {

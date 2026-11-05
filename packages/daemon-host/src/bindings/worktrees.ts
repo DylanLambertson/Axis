@@ -92,7 +92,7 @@ function adapt(manager: WorktreeManager, runner: GitRunner): ManagerShape {
       mapped(() => manager.finalise({ path, outcome, ...(discardConfirmation === undefined ? {} : { discardConfirmation: cap(discardConfirmation) as DiscardConfirmation }) })),
     remove: ({ path, deleteBranch, discardConfirmation }) =>
       mapped(() => manager.remove({ path, deleteBranch, ...(discardConfirmation === undefined ? {} : { discardConfirmation: cap(discardConfirmation) as DiscardConfirmation }) })),
-    restoreFromRunBase: ({ path, runId }) => mapped(() => manager.restoreFromRunBase({ path, runId })),
+    restoreFromRunBase: ({ path, runId, expectedWorktree }) => mapped(() => manager.restoreFromRunBase({ path, runId, expectedWorktree })),
   };
 }
 
@@ -144,6 +144,7 @@ export function createWorktreesBinding(deps: WorktreesBindingDeps): WorktreesBin
     locator,
     manager: shape,
     mutex,
+    needsAttention: runtime.needsAttention,
     ...(deps.onPreview === undefined ? {} : { onPreview: deps.onPreview }),
   });
   return { service: runtime.service, locator, content, needsAttention: runtime.needsAttention, mutex };

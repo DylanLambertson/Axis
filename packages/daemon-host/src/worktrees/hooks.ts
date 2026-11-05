@@ -14,6 +14,8 @@ export interface WorktreeHookDeps {
   readonly locator: WorktreeLocator;
   readonly manager: Pick<ManagerShape, "previewDiscard" | "assertNoDrift">;
   readonly mutex: ProjectMutex;
+  /** True for a workspace the last reconcile reported: no dialog is shown for a call that will be refused. */
+  readonly needsAttention: (workspaceId: string) => boolean;
   /**
    * Told what a call would discard, in words, at the moment its content digest was taken (under the lock). The
    * gate's `describe` callback shows it in the native dialog (`gate/worktrees-confirm.ts`). Display text only,
@@ -38,17 +40,30 @@ function previewText(branch: string, scan: { dirty: readonly unknown[]; skippedL
  * it). A workspace the caller cannot name is `E_NOT_FOUND` and nothing is issued.
  */
 export function createWorktreeContentHooks(deps: WorktreeHookDeps): { readonly finalise: ApprovalContentHook; readonly remove: ApprovalContentHook } {
-  const hook: ApprovalContentHook = (context, payload) => {
+  /**
+   * Everything that would make the handler refuse, checked BEFORE a challenge or a dialog exists (and again at execute,
+   * before the spend): an unknown workspace, one needing attention, one in the wrong state. The errors are `DaemonError`s
+   * with the codes they should have on the wire (`E_NOT_FOUND`, `E_UNAVAILABLE`, `E_CONFLICT`), which the daemon maps once
+   * it answers a content hook's refusal as a closed error instead of `E_INTERNAL` (a daemon change, not made here).
+   */
+  const check = (id: string, needs: "READY" | "FINALISED"): ReturnType<typeof liveWorkspace> => {
+    const ws = liveWorkspace(deps.journal, id);
+    if (deps.needsAttention(ws.id)) throw worktreeFailure("E_UNAVAILABLE", "needs_attention");
+    if (ws.state !== needs) throw worktreeFailure("E_CONFLICT", needs === "FINALISED" ? "not_finalised" : ws.state === "FINALISED" ? "already_finalised" : "not_ready");
+    return ws;
+  };
+  const make = (needs: "READY" | "FINALISED"): ApprovalContentHook => (context, payload) => {
     const id = (payload as { id?: unknown }).id;
     if (typeof id !== "string") throw worktreeFailure("E_INVALID_ARGUMENT");
-    const ws = liveWorkspace(deps.journal, id);
-    const target = `workspace:${ws.id}`;
+    const first = check(id, needs);
+    const target = `workspace:${first.id}`;
     return {
       target,
       withLock: <T>(fn: (contentDigest: string) => Promise<T>): Promise<T> =>
         deps.mutex.run(
-          ws.projectId,
+          first.projectId,
           async () => {
+            const ws = check(id, needs);
             assertNoActiveRun(deps.journal, deps.runs, ws.id);
             const ref = await deps.locator.locate(ws.id);
             await deps.manager.assertNoDrift(ref.workTree);
@@ -60,5 +75,5 @@ export function createWorktreeContentHooks(deps: WorktreeHookDeps): { readonly f
         ),
     };
   };
-  return { finalise: hook, remove: hook };
+  return { finalise: make("READY"), remove: make("FINALISED") };
 }

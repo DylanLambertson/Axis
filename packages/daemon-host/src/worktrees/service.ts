@@ -9,6 +9,7 @@ import type { WorktreeLocator } from "../ports/worktree-locator.js";
 import type { DiscardPreview, WorktreesService } from "../ports/worktrees.js";
 import { worktreeFailure } from "./errors.js";
 import { assertNoActiveRun, liveWorkspace } from "./guards.js";
+import { assertSafeRestorePath } from "./restore-paths.js";
 import { externalInfo, workspaceInfo, type WorktreeInfo } from "./info.js";
 import type { ProjectMutex } from "./project-mutex.js";
 import { reconcileWorktrees } from "./reconcile.js";
@@ -171,15 +172,35 @@ export function createWorktreesService(deps: WorktreesServiceDeps): WorktreesRun
           assertNoActiveRun(journal, deps.runs, ws.id);
           const ref = await locator.locate(ws.id);
           return withLockRecord(ws.id, actor, async () => {
-            const done = await manager.finalise({ path: ref.workTree, outcome: req.outcome, discardConfirmation: ctx.confirmation });
+            // The manager's own record is read first: a record that already says FINALISED while the journal says READY is
+            // what a crash (or a failed journal write) between the two steps leaves. It is completed here, without git.
+            const live = await manager.status(ref.workTree);
+            if (live.id !== ws.id) throw worktreeFailure("E_CONFLICT", "path_changed");
+            const archiveRef = `refs/axis/archive/${ws.id}`;
+            let backupRef: string | null = null;
+            let skippedLarge = 0;
+            if (live.state === "FINALISED") {
+              if (!(await manager.listRefs(journal.getProject(ws.projectId)?.path ?? "", "refs/axis/archive/")).has(archiveRef)) {
+                throw worktreeFailure("E_CONFLICT", "no_archive");
+              }
+            } else {
+              // Journal first: the intent is recorded and audited BEFORE git changes. If this write fails, git is untouched.
+              deps.audit.append({
+                actor, action: "worktree.finalise", target: `workspace:${ws.id}`, outcome: "success",
+                payload: { workspaceId: ws.id, outcome: req.outcome, phase: "begin" },
+              });
+              const done = await manager.finalise({ path: ref.workTree, outcome: req.outcome, discardConfirmation: ctx.confirmation });
+              backupRef = done.backupRef;
+              skippedLarge = done.skippedLarge.length;
+            }
             deps.transact(() => {
               journal.transitionWorkspace(ws.id, "FINALISED", { actor, outcome: req.outcome, expectedFrom: "READY" });
               deps.audit.append({
                 actor, action: "worktree.finalise", target: `workspace:${ws.id}`, outcome: "success",
-                payload: { workspaceId: ws.id, outcome: req.outcome, backupRef: done.backupRef, skippedLarge: done.skippedLarge.length },
+                payload: { workspaceId: ws.id, outcome: req.outcome, phase: "done", backupRef, skippedLarge },
               });
             });
-            return { id: ws.id, state: "FINALISED" as const, archiveRef: done.archiveRef };
+            return { id: ws.id, state: "FINALISED" as const, archiveRef };
           });
         },
         ctx.signal,
@@ -245,13 +266,16 @@ export function createWorktreesService(deps: WorktreesServiceDeps): WorktreesRun
           if (run === undefined || run.workspaceId !== ws.id) throw worktreeFailure("E_NOT_FOUND");
           assertNoActiveRun(journal, deps.runs, ws.id);
           const ref = await locator.locate(ws.id);
+          // Before any write: every path must be a plain file path inside THIS workspace (a symlink in it could lead elsewhere).
+          for (const rel of req.paths) await assertSafeRestorePath(ref.workTree, rel, deps.platform);
           return withLockRecord(ws.id, actor, async () => {
             const restored: string[] = [];
             let backupRef: string | undefined;
             try {
               for (const rel of req.paths) {
                 ctx.signal.throwIfAborted();
-                const one = await manager.restoreFromRunBase({ path: path.join(ref.workTree, ...rel.split("/")), runId: run.id });
+                const one = await manager.restoreFromRunBase({ path: path.join(ref.workTree, ...rel.split("/")), runId: run.id, expectedWorktree: ref.workTree });
+                if (one.relPath !== rel) throw worktreeFailure("E_INTERNAL");
                 restored.push(one.relPath);
                 backupRef ??= one.backupRef; // the first backup holds the state before anything was restored
               }

@@ -6,7 +6,8 @@ import * as path from "node:path";
 import { DaemonError } from "@axis/daemon";
 import { AxisError } from "@axis/audit";
 import { newKey } from "./approvals-rig.js";
-import { ProjectMutex, toDaemonError, worktreesCapability, fromWorktreeError, workspaceSlug } from "../src/index.js";
+import { ProjectMutex, toDaemonError, fromWorktreeError, workspaceSlug } from "../src/index.js";
+import { worktreesCapability } from "../src/gate/worktrees-confirm.js";
 import { createWs, gitSkipReason, worktreesRig } from "./worktrees-rig.js";
 import { wait } from "./helpers.js";
 
