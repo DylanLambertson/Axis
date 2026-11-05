@@ -33,6 +33,8 @@ export interface NativeBridgeOptions {
    * shared with `trust.check`, `anchor.get` and `settings.get`), so this stays well below that.
    */
   readonly maxEntries: number;
+  /** Native waits of one window at once (default: half of `maxEntries`, rounded up), so one window cannot take every slot. */
+  readonly maxPerWindow?: number;
   /** A wait that failed for a reason other than the user or the clock (channel closed, no slot) after `start` returned. */
   readonly onLost?: (lost: { challengeId: string; connectionId: string; actor: string }) => void;
 }
@@ -71,9 +73,47 @@ export class NativeBridge {
   #lost = 0;
   #applyErrors = 0;
   #disposed = false;
+  readonly #perWindow: number;
+  readonly #reserved = new Map<string, number>();
+  #reservedTotal = 0;
 
   constructor(options: NativeBridgeOptions) {
+    const ok = (n: number | undefined, max: number): boolean => n === undefined || (Number.isInteger(n) && n >= 1 && n <= max);
+    if (!ok(options.maxEntries, 1024) || options.maxEntries === undefined || !ok(options.maxPerWindow, options.maxEntries)) {
+      throw new AxisError("E_INVALID_ARGUMENT", "Invalid native wait limit");
+    }
     this.#opts = options;
+    this.#perWindow = options.maxPerWindow ?? Math.ceil(options.maxEntries / 2);
+  }
+
+  /**
+   * Take a place for a wait BEFORE the challenge is issued, so a full bridge refuses with no challenge, no audit row
+   * and no quota used. `undefined` when the bridge is full or the window already holds its share. `start` takes the
+   * place over; `release` gives it back (idempotent) when the challenge was never started.
+   */
+  reserve(windowId: string): { release(): void } | undefined {
+    if (this.#disposed) return undefined;
+    this.#sweep();
+    if (!this.#room(windowId)) return undefined;
+    this.#reserved.set(windowId, (this.#reserved.get(windowId) ?? 0) + 1);
+    this.#reservedTotal++;
+    let held = true;
+    return {
+      release: () => {
+        if (!held) return;
+        held = false;
+        this.#reservedTotal--;
+        const n = (this.#reserved.get(windowId) ?? 1) - 1;
+        if (n <= 0) this.#reserved.delete(windowId);
+        else this.#reserved.set(windowId, n);
+      },
+    };
+  }
+
+  #room(windowId: string): boolean {
+    let inWindow = this.#reserved.get(windowId) ?? 0;
+    for (const e of this.#entries.values()) if (e.windowId === windowId) inWindow++;
+    return this.#entries.size + this.#reservedTotal < this.#opts.maxEntries && inWindow < this.#perWindow;
   }
 
   stats(): NativeStats {
@@ -93,10 +133,15 @@ export class NativeBridge {
    * refuses the request at once (channel closed, no free slot): the caller then withdraws the challenge, so the user is
    * never shown one whose dialog cannot open. A failure that comes later is reported through `onLost`.
    */
-  async start(request: NativeConfirmRequest & { readonly connectionId: string; readonly actor: string }): Promise<void> {
+  async start(
+    request: NativeConfirmRequest & { readonly connectionId: string; readonly actor: string },
+    reservation?: { release(): void },
+  ): Promise<void> {
+    // The reserved place becomes this entry (or is given back if the start fails): never counted twice.
+    reservation?.release();
     if (this.#disposed) throw new AxisError("E_UNAVAILABLE", "The native confirmation is closed", { reason: "bridge_closed" });
     this.#sweep();
-    if (this.#entries.size >= this.#opts.maxEntries || this.#entries.has(request.challengeId)) {
+    if (this.#entries.has(request.challengeId) || (reservation === undefined && !this.#room(request.windowId))) {
       throw new AxisError("E_BACKPRESSURE", "Too many native confirmations are waiting");
     }
     const { connectionId, actor, ...wire } = request;

@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import type { ChallengeAuditEvent, ChallengeAuditSink } from "@axis/challenge";
-import { AxisError, DEFAULT_PAYLOAD_ALLOWLIST } from "@axis/audit";
+import { AuditLog, AxisError, DEFAULT_PAYLOAD_ALLOWLIST, type AuditLogOptions, type DatabaseSync } from "@axis/audit";
 
 /**
  * The audit payload keys of the challenge events: the package's own plus `method`, so a stored row says which action
@@ -38,4 +38,12 @@ export function createChallengeAuditSink(writer: SyncAuditWriter): ChallengeAudi
       }
     },
   };
+}
+
+/**
+ * The host's audit log: the standard one with the challenge payload keys, so every place that builds it keeps the
+ * `method` of a challenge row (a stored row must say which action was approved or run).
+ */
+export function createChallengeAuditLog(db: DatabaseSync, options: Omit<AuditLogOptions, "payloadAllowlist"> = {}): AuditLog {
+  return new AuditLog(db, { ...options, payloadAllowlist: CHALLENGE_PAYLOAD_ALLOWLIST });
 }

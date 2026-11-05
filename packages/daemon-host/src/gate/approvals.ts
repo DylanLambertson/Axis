@@ -1,4 +1,5 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
+import { AxisError } from "@axis/audit";
 import {
   ApprovalError,
   type ActorId,
@@ -47,14 +48,17 @@ export interface ApprovalsDeps {
   readonly limits?: ChallengeLimits;
   readonly logger?: Logger;
   /**
-   * Native waits at once (default 16, at most the manager's total). Each holds a slot of the control client, which is
-   * shared with `trust.check`, `anchor.get` and `settings.get`, so keep it well below its `maxPending` (64).
+   * Native waits at once (an integer from 1 to 32, default 16, at most the manager's total). Each holds a slot of the
+   * control client, which is shared with `trust.check`, `anchor.get` and `settings.get`, so keep it well below its `maxPending` (64).
    */
   readonly nativeWaitLimit?: number;
+  /** Native waits of one window at once: an integer from 1 to `nativeWaitLimit` (default half of it, rounded up). */
+  readonly nativeWaitPerWindow?: number;
   /**
    * Called with the final tier first thing in `issue` (before any challenge, quota or dialog) and in `execute` (before
-   * the approval is spent), so a refusal costs nothing and a retry keeps its approval. Whatever it throws reaches the
-   * daemon unchanged. The host passes the anchor check here once ticket H4 has merged; the daemon then needs to map
+   * the spend, so a refusal costs nothing and a retry keeps its approval). Synchronous only: a function that returns a
+   * promise is refused, because a rejection would be ignored. Whatever it throws reaches the daemon unchanged. The
+   * host passes the anchor check here once ticket H4 has merged; the daemon then needs to map
    * its `E_UNAVAILABLE` (today a gate error that is not an `ApprovalError` answers `E_INTERNAL`).
    */
   readonly preflight?: (tier: number) => void;
@@ -110,6 +114,11 @@ export function createApprovals(deps: ApprovalsDeps): Approvals {
     monotonic: () => clock.monotonic(),
     ...deps.limits,
   });
+  const waitLimit = deps.nativeWaitLimit ?? 16;
+  const perWindow = deps.nativeWaitPerWindow;
+  const validInt = (n: number, max: number): boolean => Number.isInteger(n) && n >= 1 && n <= max;
+  if (!validInt(waitLimit, 32)) throw new AxisError("E_INVALID_ARGUMENT", "Invalid nativeWaitLimit");
+  if (perWindow !== undefined && !validInt(perWindow, waitLimit)) throw new AxisError("E_INVALID_ARGUMENT", "Invalid nativeWaitPerWindow");
   const ttl = deps.limits?.challengeTtlMs ?? 60_000;
   const total = deps.limits?.maxOutstandingTotal ?? 128;
   const registry = new PendingRegistry({ monotonic: () => clock.monotonic(), ttlMs: ttl, cap: Math.min(total * 2, 131_072) });
@@ -119,7 +128,8 @@ export function createApprovals(deps: ApprovalsDeps): Approvals {
     control: deps.control,
     monotonic: () => clock.monotonic(),
     ttlMs: ttl,
-    maxEntries: Math.min(deps.nativeWaitLimit ?? 16, total),
+    maxEntries: Math.min(waitLimit, total),
+    ...(perWindow === undefined ? {} : { maxPerWindow: Math.min(perWindow, waitLimit, total) }),
     onLost: (l) => quietWithdraw(l.challengeId, { actor: l.actor as ActorId, connectionId: l.connectionId }),
     apply: (a) => {
       try {
@@ -129,6 +139,20 @@ export function createApprovals(deps: ApprovalsDeps): Approvals {
       }
     },
   });
+
+  /** The synchronous preflight only: an async one would be ignored (fail open), so a promise is refused. */
+  const preflight = (tier: number): void => {
+    if (deps.preflight === undefined) return;
+    const result: unknown = deps.preflight(tier);
+    if (typeof (result as { then?: unknown } | null | undefined)?.then === "function") {
+      Promise.resolve(result).catch(() => undefined);
+      throw new AxisError("E_INTERNAL", "The preflight check must be synchronous", { reason: "preflight_async" });
+    }
+  };
+
+  // Challenges whose connection closed while `issue` waited for the native request: not listed, not withdrawn twice.
+  const gone = new Set<string>();
+  const inflight = new Map<string, string>();
 
   const describe = (input: ApprovalInput, content: ApprovalContent): string | undefined => {
     try {
@@ -156,7 +180,14 @@ export function createApprovals(deps: ApprovalsDeps): Approvals {
 
   const gate: ApprovalGate = {
     async issue(input: ApprovalInput, content: ApprovalContent): Promise<Challenge> {
-      deps.preflight?.(input.tier);
+      preflight(input.tier);
+      // A native wait is reserved BEFORE the challenge exists, so a full bridge refuses with no challenge, no audit row
+      // and no quota used (a withdrawn challenge would keep counting against its window for the whole TTL).
+      let reservation: { release(): void } | undefined;
+      if (input.tier >= 4) {
+        reservation = bridge.reserve(input.identity.windowId);
+        if (reservation === undefined) throw new ApprovalError("E_BACKPRESSURE");
+      }
       let challenge: Challenge;
       try {
         challenge = manager.issue({
@@ -173,9 +204,11 @@ export function createApprovals(deps: ApprovalsDeps): Approvals {
           tier: input.tier,
         });
       } catch (e) {
+        reservation?.release();
         throw toGateError(e);
       }
       const caller = { actor: input.actor, connectionId: input.connectionId };
+      inflight.set(challenge.challengeId, input.connectionId);
       try {
         if (challenge.nativeConfirmationRequired) {
           // Once, right after issue and before the challenge reaches anyone: the proof goes to the supervisor only.
@@ -188,16 +221,24 @@ export function createApprovals(deps: ApprovalsDeps): Approvals {
             connectionId: input.connectionId,
             actor: input.actor,
             summary: nativeSummary(`${input.contract}/${input.contractVersion}.${input.method}`, challenge.targetSummary, describe(input, content)),
-          });
+          }, reservation);
         }
-        registry.add(challenge, input.identity.windowId, input.connectionId);
+        // The connection may have closed during the wait: `withdrawConnection` already ended the challenge.
+        if (gone.has(challenge.challengeId)) {
+          bridge.end(challenge.challengeId);
+        } else {
+          registry.add(challenge, input.identity.windowId, input.connectionId);
+        }
       } catch (e) {
+        reservation?.release();
         // The user is never asked to approve something whose native dialog could not be started (a closed channel, no
         // free control slot, a full bridge): the challenge ends here and nobody has seen it.
         quietWithdraw(challenge.challengeId, caller);
         forget(challenge.challengeId);
         if (e instanceof Error && (e as { code?: unknown }).code === "E_BACKPRESSURE") throw new ApprovalError("E_BACKPRESSURE");
         throw new Error("native confirmation unavailable");
+      } finally {
+        inflight.delete(challenge.challengeId);
       }
       return challenge;
     },
@@ -208,7 +249,7 @@ export function createApprovals(deps: ApprovalsDeps): Approvals {
       content: ApprovalContent,
       action: (confirmed: DaemonConfirmedAction) => Promise<T>,
     ): Promise<T> {
-      deps.preflight?.(input.tier);
+      preflight(input.tier);
       try {
         const result = await manager.consume(
           approval.challengeId,
@@ -235,6 +276,8 @@ export function createApprovals(deps: ApprovalsDeps): Approvals {
     },
 
     withdraw(challengeId: string, caller: { readonly actor: ActorId; readonly connectionId: string }): unknown {
+      // Ended already by its connection closing during `issue`: nothing to withdraw, and no audit row for it.
+      if (gone.delete(challengeId)) return undefined;
       quietWithdraw(challengeId, { actor: caller.actor, connectionId: caller.connectionId });
       return undefined;
     },
@@ -244,6 +287,12 @@ export function createApprovals(deps: ApprovalsDeps): Approvals {
         manager.withdrawConnection(connectionId);
       } catch {
         withdrawErrors++;
+      }
+      for (const [id, conn] of inflight) {
+        if (conn === connectionId) {
+          gone.add(id);
+          if (gone.size > 256) gone.delete(gone.values().next().value as string);
+        }
       }
       registry.removeConnection(connectionId);
       bridge.endConnection(connectionId);

@@ -96,6 +96,7 @@ export interface RigOptions {
   failAudit?: (e: ChallengeAuditEvent) => boolean;
   controlMaxPending?: number;
   nativeWaitLimit?: number;
+  nativeWaitPerWindow?: number;
   /** Where the challenge events go instead of the in-memory list (a real `AuditLog`). */
   audit?: { append(e: ChallengeAuditEvent): unknown };
 }
@@ -141,6 +142,7 @@ export async function rig(options: RigOptions = {}) {
     clock,
     ...(options.limits ? { limits: options.limits } : {}),
     ...(options.nativeWaitLimit ? { nativeWaitLimit: options.nativeWaitLimit } : {}),
+    ...(options.nativeWaitPerWindow ? { nativeWaitPerWindow: options.nativeWaitPerWindow } : {}),
   });
   const trust = new InMemoryTrustRegistry();
   const runs: Array<{ id: string; approved: unknown; payload: unknown }> = [];
