@@ -4,7 +4,7 @@ import { escapeForDisplay, escapeWithInfo, pathProblem, symlinkEscapes } from ".
 import { invalid, unavailable } from "./errors.js";
 import type { WorktreeRef } from "@axis/git-ops";
 import { OBJECT_ID, expectComplete, expectOk, type ReviewGit } from "./gitcall.js";
-import { attributesUntrusted } from "./attrtrust.js";
+import { attributeSources } from "./attrtrust.js";
 import { acquireIndex } from "./tempindex.js";
 import type { ChangeKind, ChangeStatus, ProtectedPathMatcher, ReviewDeps, ReviewFile, ReviewLimits } from "./types.js";
 
@@ -179,14 +179,25 @@ export async function listChanges(
   let filtered: Set<string>;
   let untrusted = false;
   if (allPaths.length === 0) filtered = new Set();
-  else if ((untrusted = await attributesUntrusted(deps, git, w, limits))) filtered = new Set(allPaths);
   else {
-    const idx = await acquireIndex(deps.tempIndex);
-    try {
-      expectOk(await git(["read-tree", againstTree], { index: idx.path }), "read the base tree");
-      filtered = await filteredPaths(git, allPaths, idx.path);
-    } finally {
-      await idx.release();
+    const before = await attributeSources(deps, git, w, limits);
+    if (before.untrusted) {
+      filtered = new Set(allPaths);
+      untrusted = true;
+    } else {
+      const idx = await acquireIndex(deps.tempIndex);
+      try {
+        expectOk(await git(["read-tree", againstTree], { index: idx.path }), "read the base tree");
+        filtered = await filteredPaths(git, allPaths, idx.path);
+      } finally {
+        await idx.release();
+      }
+      // The reads above obey these files, so a file swapped in while they ran would have hidden a filter: read them again.
+      const after = await attributeSources(deps, git, w, limits);
+      if (after.untrusted || after.fingerprint !== before.fingerprint) {
+        filtered = new Set(allPaths);
+        untrusted = true;
+      }
     }
   }
 

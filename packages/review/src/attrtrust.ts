@@ -7,14 +7,14 @@ import type { WorktreeRef } from "@axis/git-ops";
 import { OBJECT_ID, gitPaths, type ReviewGit } from "./gitcall.js";
 import type { ReviewDeps, ReviewLimits } from "./types.js";
 
-/** The content of a file read through git (the package has no file system); undefined when it could not be read whole. */
-async function readThroughGit(git: ReviewGit, path: string, limits: ReviewLimits): Promise<string | undefined> {
+/** The object id and content of a file read through git (the package has no file system); undefined when it could not be read whole. */
+async function readThroughGit(git: ReviewGit, path: string, limits: ReviewLimits): Promise<{ readonly oid: string; readonly text: string } | undefined> {
   const h = await git(["hash-object", "-w", "--no-filters", "--", path]);
   const oid = h.stdout.trim();
   if (h.code !== 0 || !OBJECT_ID.test(oid)) return undefined;
   const body = await git(["cat-file", "blob", oid]);
   if (body.code !== 0 || body.truncated === true || body.stdout.length > limits.maxPreviewBytes) return undefined;
-  return body.stdout;
+  return { oid, text: body.stdout };
 }
 
 /**
@@ -72,28 +72,44 @@ async function outsideFiles(deps: ReviewDeps, git: ReviewGit, w: WorktreeRef): P
   return [...found];
 }
 
+export interface AttributeSources {
+  /** True when a path should not be offered because an attribute source outside the tracked tree cannot be trusted. */
+  readonly untrusted: boolean;
+  /** The object id of every source that exists (`absent` for one that does not), so two reads can be compared. */
+  readonly fingerprint: string;
+}
+
 /**
- * True when no path should be offered because an attribute source outside the tracked tree cannot be trusted:
+ * Reads the attribute sources outside the tracked tree:
  *  - `$GIT_DIR/info/attributes` holds any attribute line (comments and blank lines do not count): it outranks every tracked
  *    `.gitattributes`, so it can switch a filter off, directly or through a macro;
  *  - `core.attributesFile` (or the default user file) or the system file defines a macro, quoted or not: those files rank below
  *    every tracked file, so only a macro defined there (which replaces one the tree uses) can hide a filter. A line that merely
- *    names a filter does not matter and does not block;
+ *    names a filter does not block;
  *  - one of those files exists and cannot be read whole.
- * Known limits: a tracked `.gitattributes` that uses a macro defined outside the tree is checked against the macro as it is
- * now; the system file is found with `git var GIT_ATTR_SYSTEM` (git 2.42 and later), so on an older git it is not checked
- * (design §2).
+ * The caller reads this before and after the `check-attr` reads and refuses unless both are trusted and equal, so a file swapped
+ * in while the reads ran is seen (design §2). Known limits: a file swapped in and back around both reads is not; a tracked
+ * `.gitattributes` that uses a macro defined outside the tree is checked against the macro as it is now; deleting a filter that
+ * only the user's file sets makes the stored file look unfiltered; the system file is found with `git var GIT_ATTR_SYSTEM`
+ * (git 2.42 and later), so on an older git it is not checked.
  */
-export async function attributesUntrusted(deps: ReviewDeps, git: ReviewGit, w: WorktreeRef, limits: ReviewLimits): Promise<boolean> {
+export async function attributeSources(deps: ReviewDeps, git: ReviewGit, w: WorktreeRef, limits: ReviewLimits): Promise<AttributeSources> {
+  let untrusted = false;
+  const ids: string[] = [];
   const [info] = await gitPaths(deps, git, w, ["info/attributes"]);
   if (info !== undefined && (await deps.fileExists(info))) {
-    const text = await readThroughGit(git, info, limits);
-    if (text === undefined || patterns(text).length > 0) return true;
-  }
+    const read = await readThroughGit(git, info, limits);
+    ids.push(read?.oid ?? "unreadable");
+    if (read === undefined || patterns(read.text).length > 0) untrusted = true;
+  } else ids.push("absent");
   for (const path of await outsideFiles(deps, git, w)) {
-    if (!(await deps.fileExists(path))) continue;
-    const text = await readThroughGit(git, path, limits);
-    if (text === undefined || patterns(text).some((p) => p.bad || p.pattern?.startsWith("[attr]") === true)) return true;
+    if (!(await deps.fileExists(path))) {
+      ids.push("absent");
+      continue;
+    }
+    const read = await readThroughGit(git, path, limits);
+    ids.push(read?.oid ?? "unreadable");
+    if (read === undefined || patterns(read.text).some((p) => p.bad || p.pattern?.startsWith("[attr]") === true)) untrusted = true;
   }
-  return false;
+  return { untrusted, fingerprint: ids.join(",") };
 }
