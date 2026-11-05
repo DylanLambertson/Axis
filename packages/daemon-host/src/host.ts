@@ -250,7 +250,7 @@ export function createDaemonHost(config: HostConfig, ports: StartupPorts, option
     checkCoverage(surface);
     const served = [...new Set(Object.keys(surface.registry).map((k) => k.slice(0, k.indexOf("/"))))];
     alive();
-    // Step 12: ready. Signals (step 11) belong to the shutdown ticket (H7).
+    // Step 12: ready. Signals (step 11) are installed by the caller with `installHostLifecycle` (H7).
     ports.control.send({ type: "ready", protocolVersion: PROTOCOL_VERSION, contracts: served, ...(degraded === undefined ? {} : { degraded }) });
     ports.logger?.info("host.ready");
     return Object.freeze({
