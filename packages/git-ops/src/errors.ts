@@ -23,6 +23,11 @@ export function conflict(message: string): GitOpsError {
   return new GitOpsError("E_CONFLICT", message);
 }
 
+/** HEAD, the branch or the parent is no longer what was reviewed (E_CONFLICT, `details.reason: "head_moved"`). */
+export function headMoved(message: string): GitOpsError {
+  return new GitOpsError("E_CONFLICT", message, { reason: "head_moved" });
+}
+
 export function internal(message: string, details?: Readonly<Record<string, string | number | boolean>>): GitOpsError {
   return new GitOpsError("E_INTERNAL", message, details);
 }

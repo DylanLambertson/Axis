@@ -51,7 +51,7 @@ test("B-1: a submodule diff.submodule=diff preference cannot run a nested reposi
   for (const c of scans) for (const want of ["--submodule=short", "--ignore-submodules=all", "diff.submodule=short"]) assert.ok(c.argv.includes(want), want);
   const last = scans.at(-1) as (typeof scans)[number];
   const attack = last.argv.filter((a) => a !== "--ignore-submodules=all").map((a) => (a === "--submodule=short" ? "--submodule=diff" : a === "diff.submodule=short" ? "diff.submodule=diff" : a));
-  await createNodeRunner().run({ ...last, argv: attack });
+  await createNodeRunner({ allowUnpinnedGit: true }).run({ ...last, argv: attack });
   assert.ok(readFileSync(f.marker, "utf8").includes("daemon-exec"), "fixture: without the protections the same scan call runs the nested diff.external");
 });
 
