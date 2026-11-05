@@ -204,7 +204,7 @@ async function runFinalize(fn: () => void | Promise<void>, ms: number): Promise<
   try {
     const work = Promise.resolve().then(fn).then(() => true as const);
     work.catch(() => undefined); // a failure after the bound is not an unhandled rejection
-    const bound = new Promise<false>((resolve) => void (timer = setTimeout(() => resolve(false), ms)));
+    const bound = new Promise<false>((resolve) => void (timer = setTimeout(() => resolve(false), ms) as unknown as NodeJS.Timeout));
     return await Promise.race([work, bound]);
   } catch {
     return false;

@@ -100,14 +100,14 @@ export class Disposables {
 
   /** A one-shot timer, `unref`ed and cleared on dispose. */
   setTimeout(fn: () => void, ms: number, label = "timer"): () => Promise<void> {
-    const handle = setTimeout(fn, ms);
+    const handle = setTimeout(fn, ms) as unknown as NodeJS.Timeout; // opaque handle under Code OSS's typings (ADR 0005)
     handle.unref();
     return this.#track(() => clearTimeout(handle), label, handle);
   }
 
   /** A repeating timer, `unref`ed and cleared on dispose. */
   setInterval(fn: () => void, ms: number, label = "interval"): () => Promise<void> {
-    const handle = setInterval(fn, ms);
+    const handle = setInterval(fn, ms) as unknown as NodeJS.Timeout; // opaque handle under Code OSS's typings (ADR 0005)
     handle.unref();
     return this.#track(() => clearInterval(handle), label, handle);
   }
@@ -167,7 +167,7 @@ export class Disposables {
       const timeout = new Promise<"timeout">((resolve) => {
         // Not unref'ed: while a disposer hangs, this timer is what keeps the process alive to abandon it. It is
         // always cleared below, so it cannot outlive the call.
-        timer = setTimeout(() => resolve("timeout"), this.#itemTimeoutMs);
+        timer = setTimeout(() => resolve("timeout"), this.#itemTimeoutMs) as unknown as NodeJS.Timeout; // opaque handle under Code OSS's typings (ADR 0005)
       });
       // The abandoned disposer may still reject later; that must not become an unhandled rejection.
       work.catch(() => undefined);

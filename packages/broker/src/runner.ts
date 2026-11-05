@@ -138,7 +138,7 @@ export function createCommandRunner(options: RunnerOptions = {}): CommandRunner 
         const t = setTimeout(() => {
           timers.delete(t);
           fn();
-        }, ms);
+        }, ms) as unknown as NodeJS.Timeout; // opaque handle under Code OSS's typings (ADR 0005)
         // A timer armed after the run settled (the unkillable path) would never be cleared by `finish`.
         if (settled) clearTimeout(t);
         else timers.add(t);
