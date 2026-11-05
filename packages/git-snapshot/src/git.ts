@@ -163,6 +163,12 @@ export interface AskInput {
   readonly configTooBig?: boolean;
 }
 
+/** The arguments every call starts with: `-C <worktree>`, no pager, no replace refs, no fsmonitor, `safe.directory` for exactly our directories. */
+export function baseArgs(i: Pick<AskInput, "worktree" | "gitDir" | "commonDir">): string[] {
+  const safe = [i.worktree, i.commonDir, ...(i.gitDir === null ? [] : [i.gitDir])].flatMap((d) => ["-c", `safe.directory=${d}`]);
+  return ["-C", i.worktree, "--no-pager", "--no-replace-objects", "-c", "core.fsmonitor=false", ...safe];
+}
+
 /**
  * Asks git, with the hardened environment, for what the parser only second-guesses: where the worktree's git dirs and
  * top level are (discovery, as a terminal would), every config entry with its origin (includes followed by git), and
@@ -175,8 +181,7 @@ export async function askGit(i: AskInput): Promise<GitView> {
   const env = snapshotGitEnv(i.env, i.home, i.worktree);
   const problems: string[] = [];
   const cwd = parse(i.worktree).root;
-  const safe = [i.worktree, i.commonDir, ...(i.gitDir === null ? [] : [i.gitDir])].flatMap((d) => ["-c", `safe.directory=${d}`]);
-  const base = ["-C", i.worktree, "--no-pager", "--no-replace-objects", "-c", "core.fsmonitor=false", ...safe];
+  const base = baseArgs(i);
   const maxBuffer = Math.max(1024 * 1024, i.limits.maxConfigBytes * 2);
   const run = (argv: readonly string[]): Promise<Out> => {
     i.budget.tick();

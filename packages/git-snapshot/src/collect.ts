@@ -1,4 +1,5 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
+import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { stat } from "node:fs/promises";
@@ -8,7 +9,8 @@ import { escapeDisplay } from "./display.js";
 import { record, recordTree, type Ctx } from "./entry.js";
 import { SnapshotError, invalid } from "./errors.js";
 import { listDir, readItem } from "./fsread.js";
-import { askGit, cachedGit, type GitView } from "./git.js";
+import { askGit, cachedGit, type AskInput, type GitView } from "./git.js";
+import { readIndexFlags } from "./indexflags.js";
 import { Budget, Exhausted, resolveLimits, type Limits } from "./limits.js";
 import { isWithin, realish, samePath } from "./paths.js";
 import { collectRefs } from "./refs.js";
@@ -103,8 +105,8 @@ export async function takeSnapshot(opts: TakeOptions): Promise<Snapshot> {
     if (givenBad) ctx.incomplete.push({ id: "git", reason: "the given git is inside a checkout the repository lists", blocking: true });
     const pathValue = pathKey === undefined ? undefined : env[pathKey];
     const configTooBig = await tooBig([join(commonDir, "config"), join(commonDir, "config.worktree")], limits.maxConfigBytes);
-    const ask = (gitPath: string): Promise<GitView> =>
-      askGit({ worktree: worktreePath, gitDir: expected ?? null, commonDir, home: ctx.homeDir, env, gitPath, budget, limits, configTooBig });
+    const input = (gitPath: string): AskInput => ({ worktree: worktreePath, gitDir: expected ?? null, commonDir, home: ctx.homeDir, env, gitPath, budget, limits, configTooBig });
+    const ask = (gitPath: string): Promise<GitView> => askGit(input(gitPath));
     let gitPath = givenBad ? null : (given ?? (await cachedGit(pathValue, forbidden)));
     let view: GitView =
       gitPath === null
@@ -116,6 +118,21 @@ export async function takeSnapshot(opts: TakeOptions): Promise<Snapshot> {
       if (gitPath !== null) view = await ask(gitPath);
     }
     for (const p of view.problems) ctx.incomplete.push({ id: "git", reason: p, blocking: true });
+    if (gitPath !== null && view.discovered.gitDir !== null) {
+      // Flags in the index that stop git looking at a tracked file would hide an edit from status and diff.
+      const flags = await readIndexFlags(input(gitPath));
+      ctx.settings.push(...flags.settings);
+      if (flags.settings.length > 0) {
+        // The flags live in the index, which is not hashed: they get an entry of their own, so a new flag changes the digest.
+        const text = flags.settings.map((x) => `${x.value ?? ""} ${x.key.startsWith("index.flag.") ? x.key.slice(11) : x.key}`).join("\n");
+        ctx.budget.addEntry();
+        ctx.entries.set("index/flags", {
+          id: "index/flags", group: "link", path: "index", state: "file", mode: null, size: Buffer.byteLength(text),
+          sha256: createHash("sha256").update(text).digest("hex"), linkTarget: null, text, textTruncated: false, binary: false, detail: null,
+        });
+      }
+      if (flags.problem !== null) ctx.incomplete.push({ id: "index", reason: flags.problem, blocking: true });
+    }
     link = await collectLink(ctx, worktreePath, commonDir, expected, names, view);
     // Relative paths start where git runs hooks: its own top level, which `core.worktree` can move.
     const top = view.discovered.topLevel ?? worktreePath;

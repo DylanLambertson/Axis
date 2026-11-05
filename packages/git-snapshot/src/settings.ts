@@ -83,4 +83,5 @@ export const CRITICAL_LABELS: ReadonlySet<string> = new Set([
   "gpg program",
   "http transport",
   "protocol allow",
+  "index flag hides changes",
 ]);

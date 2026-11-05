@@ -21,7 +21,7 @@ test("hidden-config: any depth, high severity; ordinary names are not matches", 
     assert.equal(cat(p), "hidden-config", p);
     assert.equal(sev(p), "high", p);
   }
-  for (const p of ["src/index.ts", "alpha", "a.b", "docs/README.md", "src/notes.md", "a.b.md", "docs/design.md"]) assert.equal(cat(p), null, p);
+  for (const p of ["src/index.ts", "alpha", "a.b", "docs/README.md", "src/notes.md", "docs/design.md"]) assert.equal(cat(p), null, p);
 });
 
 test("ignore and style files are reviewable, not exempt: medium severity, any depth, exact final name only", () => {
@@ -77,7 +77,7 @@ test("instruction-file: upper-case stems, dotted or not, at any depth; severity 
 });
 
 test("instruction-file: lower-case ordinary documents below the root, other extensions and odd names stay unmarked", () => {
-  for (const p of ["docs/PLAYBOOK.txt", "PLAYBOOK.txt", "PLAYBOOK", "PLAY BOOK.md", "PLAYBOOK.md.bak", "a.b.md", "docs/toolx.md", "docs/Toolx.local.md", "docs/README.md", "docs/README.local.md", "docs/LICENSE.md", "sub/CHANGELOG.md"]) {
+  for (const p of ["docs/PLAYBOOK.txt", "PLAYBOOK.txt", "PLAYBOOK", "PLAY BOOK.md", "PLAYBOOK.md.bak", "docs/toolx.md", "docs/a.b.md", "docs/README.md", "docs/README.local.md", "docs/Readme.md", "docs/LICENSE.md", "sub/CHANGELOG.md"]) {
     assert.equal(cat(p), null, p);
   }
 });
@@ -124,4 +124,25 @@ test("100,000 paths are classified in bounded time", () => {
   for (const p of paths) if (classifyPath(p) !== null) hits++;
   assert.equal(hits, 50_000);
   assert.ok(Date.now() - t0 < 15_000, `took ${Date.now() - t0} ms`);
+});
+
+test("instruction-file at the root: dotted names in any case, judged by the first segment against the common documents", () => {
+  for (const p of ["toolx.local.md", "Toolx.Local.md", "TOOLX.local.md", "toolx.override.md", "a.b.md", "PLAYBO~1.MD"]) {
+    assert.ok(cat(p) !== null, p);
+  }
+  for (const p of ["toolx.local.md", "a.b.md"]) assert.equal(cat(p), "instruction-file", p);
+  for (const p of ["readme.local.md", "README.ja.md", "License.txt.md", "changelog.2024.md"]) assert.equal(cat(p), null, p);
+});
+
+test("instruction-file below the root: any upper-case letter in the first segment, so one changed letter does not evade", () => {
+  for (const p of ["sub/Toolx.md", "sub/tOOLx.md", "sub/Toolx.local.md", "sub/NOTE\u017f.md", "sub/not\u212a.md", "a/b/ToolX.md"]) {
+    assert.equal(cat(p), "instruction-file", p);
+  }
+  for (const p of ["sub/toolx.md", "sub/toolx.local.md", "sub/notes.md"]) assert.equal(cat(p), null, p);
+});
+
+test("a path with dot segments is judged where it lands", () => {
+  assert.equal(cat("sub/x/../TOOLX.md"), "instruction-file");
+  assert.equal(cat("sub/x/../../.alpha/c"), "hidden-config");
+  assert.equal(cat("./sub//TOOLX.md"), "instruction-file");
 });

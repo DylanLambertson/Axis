@@ -211,7 +211,9 @@ const COMMON_DOCS = new Set([
 // A generated short name (`ALPHA~1`, `PLAYBO~1.MD`) may stand for a dot name or a long name: it cannot be ruled out.
 const SHORT_NAME = /^[^~.]{1,6}~\d{1,7}(?:\.[^.]{0,3})?$/;
 // An upper-case first segment, any further segments, and `.md`: `NAME.md`, `NAME.local.md`, `NAME.override.md`.
-const UPPER_MD = /^([A-Z0-9_-]*[A-Z][A-Z0-9_-]*)(?:\.[A-Za-z0-9_-]+)*\.[mM][dD]$/;
+const UPPER_MD = /^([A-Za-z0-9_-]*[A-Z][A-Za-z0-9_-]*)(?:\.[A-Za-z0-9_-]+)*\.[mM][dD]$/;
+// At the root the spelling does not matter: the name, with any dotted segments, in any case.
+const ROOT_MD = /^([a-z0-9_-]+)(?:\.[a-z0-9_-]+)*\.md$/;
 
 const generic = (category: ProtectedCategory, severity: "high" | "medium", rule: string): ProtectedMatch => ({ category, severity, rule, via: "path" });
 
@@ -230,10 +232,9 @@ function matchGeneric(parts: readonly string[], raws: readonly string[]): Protec
   const last = raws[lastIdx];
   if (last === undefined) return null;
   // At the root any plain `.md` name counts, in any case: it is the same file on a case-insensitive volume.
-  if (lastIdx === 0 && /^[a-z0-9_-]+\.md$/.test(parts[0] as string) && !COMMON_DOCS.has((parts[0] as string).slice(0, -3))) {
-    return generic("instruction-file", "high", "root-level .md file");
-  }
-  // Below the root only the upper-case spelling counts, so ordinary lower-case documents stay unmarked.
+  const rootMd = lastIdx === 0 ? ROOT_MD.exec(parts[0] as string) : null;
+  if (rootMd !== null && !COMMON_DOCS.has(rootMd[1] as string)) return generic("instruction-file", "high", "root-level .md file");
+  // Below the root a first segment with any upper-case letter counts, so ordinary lower-case documents stay unmarked.
   const m = UPPER_MD.exec(last);
   if (m !== null && !COMMON_DOCS.has((m[1] as string).toLowerCase())) return generic("instruction-file", "high", "upper-case .md file");
   return null;
