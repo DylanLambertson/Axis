@@ -160,6 +160,8 @@ New gate lines were appended to the Gate (1a) and Gate (1b) lists in `docs/ROADM
 | G-21 | Gate added | 1b/L15 |
 | Q-4 re-evaluation | Decision recorded (1b/L16) | 1b/L16 |
 | Review items S2, S3, S7, S10 and the reh-web assertion | Gates added | 1a/L24 to 1a/L29 |
+| G-27 | Gate added; control open | 1a/L32 |
+| G-28 | Gate added; control open | 1a/L33 |
 
 ## 7. Honest residual risks
 
@@ -179,6 +181,7 @@ Each of these is accepted for Phase 1 on purpose. The wording is the wording the
 12. **Hooks for Axis commit and push run with the user's credentials** in the pty process context (not the daemon, decision Q-4), while the common dir matches the acknowledged baseline. They are user-controlled code. Re-evaluated in 1b when the vault ships (GIT-3).
 13. **User paths bypass the Axis gate** (GIT-6, R32): a commit from the terminal or SCM view runs planted hooks without GIT-SNAP-1, and the user's local checkout shares the common dir.
 14. **The OS sandbox is Phase 3.** Until then no process Axis starts is contained by the OS.
+15. **Phase 0 worktree discovery checks paths once (TOCTOU).** Until the daemon owns worktree paths (task B5), the Agent view reads git metadata in the renderer, checks each worktree's two-way link and that the folder and its `.git` are not symbolic links, and then uses the path as a string (Files tree root, terminal cwd). A process that swaps a checked folder for a symbolic link after discovery redirects those uses. It needs a live writer in that folder; a downloaded archive or a `git pull` cannot do it (`docs/feasibility/axis-shell-phase0.md` §6).
 
 ## 8. Re-tag list applied (ADR 0004 implication 7)
 

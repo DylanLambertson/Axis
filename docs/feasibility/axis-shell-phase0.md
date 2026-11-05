@@ -17,7 +17,7 @@
 | Gate item 3: switching in `perWorkspace` and `split`; a file click opens IDE view at the file; returning keeps workspace and editor state | **Passed** by keyboard (§4): 12 of 12 smoke steps; key events and typed text only, plus a settings-file write for the mode |
 | Gate item 4: shell footprint measured against criterion 2 | **Passed** (§2) |
 | No part recreated and no extension host restart across 20 toggles | **Passed**: the part element is the same object and the app's Node utility processes (the extension host among them) keep the same pids |
-| Unit tests (`./scripts/test.sh --grep Axis`, Electron renderer) | **Passed**: 46 of 46 |
+| Unit tests (`./scripts/test.sh --grep Axis`, Electron renderer) | **Passed**: 53 of 53 |
 | macOS | **Not run** on this host. The runbook gives the commands and the one background launch |
 | Screen reader | **Not run**. Announcements were checked as live-region text, not with Orca or VoiceOver |
 
@@ -109,6 +109,14 @@ An independent review of the branch found no blocker. What changed after it, all
 
 - **Worktree paths from repository metadata are checked before use.** A `<common dir>/worktrees/<name>/gitdir` is followed only if the folder it names, and that folder's `.git` file, are real (no symbolic link) and the `.git` file points back to the same `worktrees/<name>` entry, which is git's own two-way link. An opened folder whose `.git` file names a linked worktree is accepted only if that admin dir sits under `<common dir>/worktrees` and links back to the folder. Anything else, including a worktree whose folder is missing, is not listed or opened (only the two links are read); the dashboard says how many entries it left out. Links may still point outside the repository, as git allows (`git worktree add ../x`).
 - **No terminal opens by itself in Restricted Mode.** The terminal on first focus needs a trusted window and a project discovered while trusted; **New Terminal** stays available.
-- **Branch names from `HEAD` are cleaned:** control, format and bidi characters become U+FFFD, the name is cut to the contract's 256 characters and to 128 for display.
+- **Branch names from `HEAD` are cleaned:** control, format, bidi, private-use and unassigned characters become U+FFFD, runs of combining marks are cut to two, and the name is cut to the contract's 256 characters and to 128 for display.
 - **Ids** of discovered projects and worktrees are 128 bits of SHA-1 of the path instead of a 32-bit hash.
 - **Tests:** the ref-escape test now plants a file where an unguarded read would land; the ref-name and back-link guards were each replaced by `return true` in the compiled output and the data-source tests failed, then restored. The `split-mode` smoke step asserts its last condition.
+
+A second review found one more hole and asked for tests of the link checks; fixed the same day:
+
+- **A `.git` file is a claim, not a project.** A folder whose `.git` file names a git dir is a project only if that git dir points back at the folder: a linked worktree's admin dir under `<common dir>/worktrees` whose `gitdir` names the folder's `.git`, or a submodule's git dir whose `core.worktree` names the folder. Only a `.git` directory in the folder, or a verified linked worktree, lists the repository's other worktrees; a submodule is one checkout. Before, a lone `.git` file naming another repository's git dir listed that repository's worktrees. A `--separate-git-dir` repository has no back-pointer and is not a project in Phase 0.
+- **Bounded listing.** `<common dir>/worktrees` is read with one `readdir` (no stat per child), symbolic links among the entries are skipped, and at most 200 entries are read; the rest count as not listed.
+- **Every link check has a test that fails without it**, mutation-checked on the compiled output: the B-1 rule (3 tests fail), the `core.worktree` check (2), the no-listing rule for submodules (1), the opened `.git` symbolic link (1), the `readdir` filter (1), the worktree folder symbolic link, from the reviewer's relative-path case (1), the worktree `.git` symbolic link (1) and the folder type check (2). A separate "`.git` is a file" check was dropped: reading a `.git` directory as a file fails, and that read already refuses it.
+- **Residual:** paths are checked once and used later as strings (a time-of-check to time-of-use gap until the daemon owns worktree paths); recorded as item 15 of the residual risks in `docs/security/threat-model-phase1-controls.md`.
+- **Follow-up, not done:** a check that the copied contract interfaces in `axisWorkspaceData.ts` still match `@axis/protocol` (review finding F-10); it needs a root test that reads the overlay file, and belongs with task B5.

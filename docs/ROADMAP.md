@@ -54,6 +54,8 @@ A minimal, end-to-end agent manager on desktop, with the full IDE view. Phase 1 
 - **No reh-web listener:** during a desktop run, a loopback port scan finds no Axis or reh-web listener, and the desktop artifact does not start a reh-web server;
 - **View switch input routing (IDE-1):** after a view switch, typed keys reach only the destination view's last focused element, never a terminal of another workspace, and the switch is announced to screen readers.
 - **Executable resolution (CLI-1, CFG-1):** a binary with the CLI's name planted in the worktree, and a relative or empty `PATH` entry that resolves to the worktree, are not run: Axis resolves bare command names itself, ignoring the cwd and empty or relative `PATH` entries, and refuses to launch when only such a candidate exists (automated test);
+- **Attribute swap window (REV-2, G-27):** a `filter` attribute swapped in after the review's first attribute read and removed before the second does not reach the reviewed tree;
+- **No debugging ports in a packaged build (G-28):** launching a packaged build with `--remote-debugging-port` or `--inspect*` leaves nothing listening on the requested port;
 
 ### Phase 1b — Composer and brokered agent
 - **Composer and single agent:** Ask / Edit / Agent composer; agent activity stream; mock provider plus the **Anthropic (Claude) API** adapter; connection vault holding its API key; model selection within that connection; streaming; single-agent tool broker with approval policy and approval UI, reusing the Phase 1a challenge mechanism; drift notification to the composer agent; run journal; the Phase 1a audit log extended to agent approvals and tool calls.
