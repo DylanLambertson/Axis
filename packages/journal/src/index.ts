@@ -2,6 +2,7 @@
 export { Journal, type JournalOptions } from "./journal.js";
 export {
   type Created,
+  type Project,
   type CreateRunInput,
   type CreateWorkspaceInput,
   type RecoveryReport,
@@ -10,8 +11,11 @@ export {
   type TransitionOptions,
   type Workspace,
 } from "./model.js";
+export { type RegisterProjectInput } from "./records.js";
 export { JOURNAL_MIGRATIONS, JOURNAL_SCHEMA_VERSION } from "./schema.js";
 export {
+  FINALISE_OUTCOMES,
+  LOCK_STATES,
   RESTART_REASON,
   RUN_KINDS,
   RUN_STATES,
@@ -19,6 +23,8 @@ export {
   RUN_TRANSITIONS,
   WORKSPACE_STATES,
   WORKSPACE_TRANSITIONS,
+  type FinaliseOutcome,
+  type LockState,
   type RunKind,
   type RunState,
   type WorkspaceState,

@@ -23,6 +23,7 @@ import {
   transitionOptionsSchema,
   workspaceStateSchema,
   type Created,
+  type Project,
   type CreateRunInput,
   type CreateWorkspaceInput,
   type RecoveryReport,
@@ -33,6 +34,20 @@ import {
   type Workspace,
   type WorkspaceRow,
 } from "./model.js";
+import {
+  checkWorkspaceTransition,
+  clearStaleLocks,
+  getProject,
+  listProjects,
+  lockWorkspace,
+  recordPushed,
+  recordReviewedTree,
+  registerProject,
+  setWorktreePath,
+  unlockWorkspace,
+  type RecordsContext,
+  type RegisterProjectInput,
+} from "./records.js";
 import { UserPrincipal } from "./principal.js";
 import { JOURNAL_MIGRATIONS } from "./schema.js";
 import {
@@ -135,23 +150,45 @@ export class Journal {
     return withTransaction(this.#db, () => {
       const current = this.#mustWorkspace(id);
       this.#guard("workspace", current.state, to, WORKSPACE_TRANSITIONS[current.state], opts.expectedFrom);
-      if (to === "REMOVING") {
-        const open = this.#db
-          .prepare(`SELECT COUNT(*) AS n FROM agent_runs WHERE workspace_id = ? AND state IN (${OPEN_RUN_STATES.map(() => "?").join(",")})`)
-          .get(id, ...OPEN_RUN_STATES) as { n: number };
-        if (open.n > 0) {
-          throw new AxisError("E_CONFLICT", "The workspace still has runs that are not finished", { openRuns: open.n });
-        }
-      }
+      checkWorkspaceTransition(this.#db, id, current.state, to, opts.outcome);
       const ts = this.#ts();
       this.#expectOne(
         this.#db
-          .prepare("UPDATE agent_workspaces SET state = ?, reconcile_reported = 0, updated_at = ? WHERE id = ? AND state = ?")
-          .run(to, ts, id, current.state),
+          .prepare(
+            "UPDATE agent_workspaces SET state = ?, reconcile_reported = 0, updated_at = ?, finalise_outcome = COALESCE(?, finalise_outcome) WHERE id = ? AND state = ?",
+          )
+          .run(to, ts, opts.outcome ?? null, id, current.state),
       );
       this.#recordTransition("workspace", id, current.state, to, opts.reason ?? null, opts.actor ?? "daemon", ts);
       return this.#mustWorkspace(id);
     });
+  }
+
+  // ---- host records (projects, worktree path, lock, last pushed sha, reviewed tree): each with its audit event, one transaction ----
+
+  registerProject(input: RegisterProjectInput): Project {
+    return this.#records((ctx) => registerProject(ctx, input));
+  }
+  getProject(id: string): Project | undefined {
+    return getProject(this.#db, id);
+  }
+  listProjects(): Project[] {
+    return listProjects(this.#db);
+  }
+  setWorktreePath(id: string, path: string, actor: AuditActor): Workspace {
+    return this.#records((ctx) => setWorktreePath(ctx, id, path, actor));
+  }
+  lockWorkspace(id: string, actor: AuditActor): Workspace {
+    return this.#records((ctx) => lockWorkspace(ctx, id, actor));
+  }
+  unlockWorkspace(id: string, actor: AuditActor): Workspace {
+    return this.#records((ctx) => unlockWorkspace(ctx, id, actor));
+  }
+  recordPushed(id: string, sha: string, actor: AuditActor): Workspace {
+    return this.#records((ctx) => recordPushed(ctx, id, sha, actor));
+  }
+  recordReviewedTree(id: string, treeHash: string, actor: AuditActor): Workspace {
+    return this.#records((ctx) => recordReviewedTree(ctx, id, treeHash, actor));
   }
 
   // ---- runs ----
@@ -279,7 +316,8 @@ export class Journal {
    * - run RUNNING            -> BLOCKED / INTERRUPTED_BY_RESTART (the composer loop or the CLI supervision is gone);
    * - workspace CREATING     -> FAILED / INTERRUPTED_BY_RESTART (the worktree manager sweeps any stray Git worktree);
    * - workspace REMOVING     -> unchanged; reported on every call, audited once;
-   * - run QUEUED/REVIEWING/BLOCKED -> unchanged (durable states a person or the scheduler acts on).
+   * - run QUEUED/REVIEWING/BLOCKED -> unchanged (durable states a person or the scheduler acts on);
+   * - workspace lock_state locked -> unlocked (the process that took it is gone).
    *
    * One transaction: each change is written with its transition record and a
    * `journal.recovery` audit event, all or nothing. Converges: a second call
@@ -361,11 +399,16 @@ export class Journal {
         });
         runsInterrupted.push(row.id);
       }
-      return { runsInterrupted, workspacesFailed, workspacesNeedingReconcile, runsLeftAlone };
+      const locksCleared = clearStaleLocks({ db: this.#db, audit: this.#audit, ts: () => ts });
+      return { runsInterrupted, workspacesFailed, workspacesNeedingReconcile, runsLeftAlone, locksCleared };
     });
   }
 
   // ---- internals ----
+
+  #records<T>(fn: (ctx: RecordsContext) => T): T {
+    return withTransaction(this.#db, () => fn({ db: this.#db, audit: this.#audit, ts: () => this.#ts() }));
+  }
 
   #ts(): string {
     return this.#now().toISOString();
