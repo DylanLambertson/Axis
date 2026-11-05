@@ -4,11 +4,12 @@
 // vector. `npm test` builds before it runs this.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { requestDigest } from "@axis/daemon";
 import { RUN_STATES } from "@axis/journal";
 import { RUN_STATUS_VALUES, RUN_STATE_VALUES, contracts, lookupMethod } from "@axis/protocol";
 import { RUN_STATUSES } from "@axis/runs";
+import { GIT_COMMIT_REASONS, GIT_PUSH_REASONS, REVIEW_DIFF_REASONS } from "@axis/protocol";
 
 test("the protocol's run states are the journal's run states", () => {
   assert.deepEqual([...RUN_STATE_VALUES], [...RUN_STATES]);
@@ -36,8 +37,12 @@ test("every registry method that needs approval has a pinned digest under its ow
   const pinned = new Map([
     // contract id, version, method -> digest of the payload below
     ["axis.worktrees/1#remove", "adb7a157e75395816cf74974fbdfa2b5bdf32831996a578ff80cdb46fe9d2735"],
+    ["axis.git/1#push", "2ecb81c9079eaa3d3702f0cdb2b4c46e846306ac7cac7ad43938605541cf1747"],
   ]);
-  const payloads = new Map([["axis.worktrees/1#remove", { id: "ws-1", deleteBranch: false }]]);
+  const payloads = new Map([
+    ["axis.worktrees/1#remove", { id: "ws-1", deleteBranch: false }],
+    ["axis.git/1#push", { workspaceId: "ws-1", remote: "origin", confirmedPlan: { tip: "a".repeat(40), digest: "d".repeat(64) }, allowedBinaryPaths: ["assets/logo.png"] }],
+  ]);
   const needing = [];
   for (const [key, methods] of Object.entries(contracts)) {
     const at = key.lastIndexOf("/");
@@ -58,5 +63,16 @@ test("every registry method that needs approval has a pinned digest under its ow
     // `approval` is not part of the digest, so the retry digests the same as the first request.
     const retry = { ...payloads.get(key), approval: { challengeId: "A".repeat(22) } };
     assert.equal(requestDigest(contractVersion.slice(0, at), Number(contractVersion.slice(at + 1)), method, retry), digest);
+  }
+});
+
+test("every closed-set refusal reason of axis.git/1 and axis.review/1 is raised by @axis/git-ops or @axis/review", () => {
+  const read = (dir) => {
+    const root = new URL(`../../packages/${dir}/src/`, import.meta.url);
+    return readdirSync(root).filter((f) => f.endsWith(".ts")).map((f) => readFileSync(new URL(f, root), "utf8")).join("\n");
+  };
+  const source = `${read("git-ops")}\n${read("review")}`;
+  for (const reason of [...GIT_COMMIT_REASONS, ...GIT_PUSH_REASONS, ...REVIEW_DIFF_REASONS]) {
+    assert.ok(source.includes(`"${reason}"`), `no package raises the reason "${reason}"`);
   }
 });

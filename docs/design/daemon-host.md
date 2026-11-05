@@ -131,7 +131,7 @@ Startup is a straight line. Any failure before step 12 exits with a typed code a
 
 ### 4.1 Where definitions live
 
-Contract schemas (strict Zod objects, `MethodSpec`) live in `@axis/protocol`, one file per contract, because the renderer client and the web target import them and the package has no Node imports ([V] `NO_NODE`). `@axis/protocol`'s `contracts` table on main holds six contracts [V `contracts.ts`, #44]: `axis.worktrees`, `axis.projects`, `axis.approvals`, `axis.audit`, `axis.cli-runs` and `axis.providers`. Only `axis.git/1` and `axis.review/1` are unstarted (ticket P1b). **Contract ids contain no uppercase letters:** the id is `axis.cli-runs`, not `axis.cliRuns`; `contractIdSchema` rejects the latter, so a wrong spelling fails the coverage check. The host builds its registry with `protocolRegistry` filtered by `config.contracts` (an allow-list), so a build or test can serve fewer contracts, never more than the table holds.
+Contract schemas (strict Zod objects, `MethodSpec`) live in `@axis/protocol`, one file per contract, because the renderer client and the web target import them and the package has no Node imports ([V] `NO_NODE`). `@axis/protocol`'s `contracts` table on main holds six contracts [V `contracts.ts`, #44]: `axis.worktrees`, `axis.projects`, `axis.approvals`, `axis.audit`, `axis.cli-runs` and `axis.providers`. `axis.git/1` and `axis.review/1` are added by ticket P1b (`git.ts`, `review.ts`), so the table holds eight contracts. **Contract ids contain no uppercase letters:** the id is `axis.cli-runs`, not `axis.cliRuns`; `contractIdSchema` rejects the latter, so a wrong spelling fails the coverage check. The host builds its registry with `protocolRegistry` filtered by `config.contracts` (an allow-list), so a build or test can serve fewer contracts, never more than the table holds.
 
 The envelope carries only `hello`/`welcome`/request/cancel/response frames [V `envelope.ts`]. **There is no server-push event or stream frame.** ADR 0003 D2/D3 describe `stream` and `event`, but neither exists in the protocol or the daemon. Phase 1a UI state therefore polls (`get`/`list`, 1 to 2 s with jitter) and the headless slice does the same. A protocol extension (ticket E1) is a UI-quality item, not a blocker for the slice.
 
@@ -157,7 +157,7 @@ Tier and `sideEffect` are the contract's declared minimum; policy may raise, nev
 | | `complete` (run REVIEWING to COMPLETED) | write | 2 | req | | | **user only**, mints `UserPrincipal` | journal | 1a, new |
 | `axis.git/1` (**decided:** a separate contract) | `pushPlan` | read | 1 | none | | | user | `git-ops` `planPush` | 1a, new |
 | | `commit` | write | 2 | req | | yes | user | `executeCommit` | 1a, new |
-| | `push` | network | 4 | req | yes, native | yes | user | `executePush` (content hook, §6.4; unstarted, P1b) | 1a, new |
+| | `push` | network | 4 | req | yes, native | yes | user | `executePush` (content hook, §6.4; contract in P1b, handler H9) | 1a, new |
 | | `compareUrl` | read | 0 | none | | | user | `compareUrl` | 1a, new |
 | `axis.audit/1` | `status` | read | 0 | none | | | user | anchor manager | 1a, new |
 | | `list` (`afterSeq`, `limit` ≤ 200) | read | 1 | none | | | user | `AuditLog.list` (events are redacted at write) | 1a, new |
@@ -170,7 +170,7 @@ Notes on the table:
 - **Default deny at two layers.** A method with no handler is not served. A method with no policy row is denied (I2). Both are enforced at startup (§4.2.1), not left to review.
 - **Agent actors.** In 1a no agent actor connects through a port. Every `Actors` cell is `user`. A connection whose identity is `agent:*` or `daemon` is refused for every method, so the DMN-3 negative test (an agent resolving a challenge, or completing a review) is a policy-table test, not a special case in handlers. In 1b the broker is in-process and gets its own rows.
 - **No path in any payload.** Projects and workspaces are named by journal ids, and the host resolves paths itself ([V] `worktrees.ts` header). Review each new schema against this (DMN-2).
-- **Contracts not yet in the protocol.** `axis.git/1` and `axis.review/1` do not exist in any branch; P1b also amends `axis-agent-shell.md` §5.4 and `axis-agent-shell-policies.md` §6.1, which still name `axis.worktrees/1.commit` and `.push`.
+- **Contracts not yet in the protocol.** `axis.git/1` and `axis.review/1` exist in `@axis/protocol` since P1b, which also amended `axis-agent-shell.md` §5.4 and `axis-agent-shell-policies.md` §6.1 (they named `axis.worktrees/1.commit` and `.push`). Their rows are served rules in `rules.ts`, no longer planned.
 - **`approvals.resolve` is not itself tier 3 or above**, otherwise resolving would need a challenge.
 
 #### 4.2.1 Coverage check

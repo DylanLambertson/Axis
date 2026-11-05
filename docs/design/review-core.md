@@ -2,7 +2,7 @@
 
 - **Status:** Design, Phase 1a (ROADMAP ticket 7, design task B7). Written before the code.
 - **Covers:** the changed-files list against a base, per-file and per-hunk accept and reject, the reviewed tree and its binding to `@axis/git-ops` commit (REV-1), the "files changed outside the agent" model, protected-path flags, display escaping, symlink-safe preview and the secret-warning data for the push dialog (PSH-1, FT-1, DASH-1, WT-3, DRF-2 to DRF-4).
-- **Does not cover:** the UI, the daemon handlers (`axis.worktrees/1.commit`, `.discard`, `.applyPatch`), the drift ledger watcher, the run-base ref writer, the protected-path list itself, writing rejected changes back to the worktree (the `discard` action).
+- **Does not cover:** the UI, the daemon handlers (`axis.git/1.commit`, `axis.worktrees/1.discard`, `.applyPatch`), the drift ledger watcher, the run-base ref writer, the protected-path list itself, writing rejected changes back to the worktree (the `discard` action).
 
 ## 1. Shape
 
