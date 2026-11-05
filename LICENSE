@@ -1,5 +1,16 @@
 Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 
-Third-party components, including Code - OSS (MIT License), remain under their
-own licenses, as listed in the LICENSE.txt and ThirdPartyNotices.txt files
-shipped with Axis.
+This repository contains proprietary software. No licence is granted to
+copy, modify, merge, publish, distribute, sublicense, sell or otherwise use
+the Axis source code, documentation, designs or brand assets in this
+repository, except as follows:
+
+  1. GitHub's Terms of Service allow other GitHub users to view and fork a
+     public repository within the GitHub service. That permission comes from
+     those terms and does not extend beyond them.
+  2. The third-party components listed in NOTICE remain under their own
+     licences, which this file does not change.
+
+The names, logos and icons of Axis are not licensed for use. Publishing this
+repository is not a release of the software, and no warranty of any kind is
+given.

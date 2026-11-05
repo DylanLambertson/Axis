@@ -1,0 +1,17 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/protocol" },
+    { "path": "packages/pty-policy" },
+    { "path": "packages/challenge" },
+    { "path": "packages/daemon" },
+    { "path": "packages/providers" },
+    { "path": "packages/git-ops" },
+    { "path": "packages/audit" },
+    { "path": "packages/journal" },
+    { "path": "packages/vault" },
+    { "path": "packages/anthropic" },
+    { "path": "packages/worktrees" },
+    { "path": "packages/runs" }
+  ]
+}

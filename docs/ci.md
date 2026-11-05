@@ -10,6 +10,7 @@ CI covers the cheap, deterministic layers on Linux and macOS. Full Code OSS buil
 | `Code OSS scripts (ubuntu-24.04)` | ubuntu-24.04 | shellcheck 0.11.0 on `scripts/code-oss/*.sh`, then `scripts/code-oss/test.sh` (offline, uses a fake upstream). |
 | `Code OSS scripts (macos-15)` | macos-15 (arm64) | `test.sh` on `/bin/bash` 3.2. A PATH shim makes `#!/usr/bin/env bash` resolve to 3.2 for child scripts too, which catches bash 4+ constructs. See the cost note below. |
 | `Extension matrix unit tests` | ubuntu-24.04 | Node from `code-oss/upstream.json` (`node`) through `actions/setup-node`; shellcheck on `test/extension-matrix/*.sh`; `node --check` on the probe; `node --test 'test/extension-matrix/tests/*.test.js'`. |
+| `Axis packages` | ubuntu-24.04 | Node from `code-oss/upstream.json` through `actions/setup-node`; `npm ci --ignore-scripts`, then `npm run typecheck`, `npm run build` and `npm test` for the `packages/*` workspaces (`docs/packages.md`). Needs no Code OSS checkout. |
 | `Workflow lint` | ubuntu-24.04 | actionlint 1.7.12, with the pinned shellcheck, over `.github/workflows/`. |
 
 Rules for every workflow:
@@ -27,6 +28,7 @@ Reproduce locally (bash 3.2 on macOS; tools cached under `~/.cache/project-axis/
 shellcheck -x scripts/code-oss/*.sh test/extension-matrix/*.sh
 /bin/bash scripts/code-oss/test.sh
 node --test 'test/extension-matrix/tests/*.test.js'    # with Node 24.22.1
+npm ci --ignore-scripts && npm run typecheck && npm test   # Axis packages, with Node 24.22.1
 actionlint -shellcheck "$(command -v shellcheck)" -pyflakes=
 ```
 
@@ -44,20 +46,23 @@ The workflow runs only on `workflow_dispatch`, never on PRs or pushes. It runs `
 
 ## Required status checks on `main`
 
-Branch protection requires `Secret scan`. Once these jobs are on `main`, also require `Code OSS scripts (ubuntu-24.04)`, `Code OSS scripts (macos-15)`, `Extension matrix unit tests` and `Workflow lint`. A matrix job reports one check per matrix entry, named `<job name> (<matrix value>)`; the bare `Code OSS scripts` check no longer exists. If the matrix changes (for example, a new macOS image), update the required checks in the same PR.
+Branch protection requires `Secret scan`. Once these jobs are on `main`, also require `Code OSS scripts (ubuntu-24.04)`, `Code OSS scripts (macos-15)`, `Extension matrix unit tests`, `Axis packages` and `Workflow lint`. A matrix job reports one check per matrix entry, named `<job name> (<matrix value>)`; the bare `Code OSS scripts` check no longer exists. If the matrix changes (for example, a new macOS image), update the required checks in the same PR.
+
+**`Axis packages` should become a required check after this change merges.** Add it in the same step as the others, once its name is confirmed on a real run.
 
 Plan for applying this after the jobs are on `main`:
 
-1. Open a PR, or use the first push to `main`, and confirm the exact names and app on a real run: `gh api repos/DylanLambertson/Project-Axis/commits/<sha>/check-runs --jq '.check_runs[] | [.name, .app.id] | @tsv'`. Every row should show app id 15368 (GitHub Actions).
-2. Replace the required checks with all five contexts, each tied to GitHub Actions. Keep `strict` as it is now:
+1. Open a PR, or use the first push to `main`, and confirm the exact names and app on a real run: `gh api repos/DylanLambertson/Axis/commits/<sha>/check-runs --jq '.check_runs[] | [.name, .app.id] | @tsv'`. Every row should show app id 15368 (GitHub Actions).
+2. Replace the required checks with all six contexts, each tied to GitHub Actions. Keep `strict` as it is now:
 
    ```bash
-   gh api -X PATCH repos/DylanLambertson/Project-Axis/branches/main/protection/required_status_checks --input - <<'JSON'
+   gh api -X PATCH repos/DylanLambertson/Axis/branches/main/protection/required_status_checks --input - <<'JSON'
    {"strict": true, "checks": [
      {"context": "Secret scan", "app_id": 15368},
      {"context": "Code OSS scripts (ubuntu-24.04)", "app_id": 15368},
      {"context": "Code OSS scripts (macos-15)", "app_id": 15368},
      {"context": "Extension matrix unit tests", "app_id": 15368},
+     {"context": "Axis packages", "app_id": 15368},
      {"context": "Workflow lint", "app_id": 15368}
    ]}
    JSON

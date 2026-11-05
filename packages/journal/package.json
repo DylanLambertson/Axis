@@ -1,0 +1,29 @@
+{
+  "name": "@axis/journal",
+  "version": "0.0.0",
+  "private": true,
+  "license": "UNLICENSED",
+  "type": "module",
+  "engines": {
+    "node": "24.22.1"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "default": "./dist/src/index.js"
+    },
+    "./daemon-principal": {
+      "types": "./dist/src/daemon-principal.d.ts",
+      "default": "./dist/src/daemon-principal.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc --noEmit -p .",
+    "test": "tsc -b && node --test \"dist/test/**/*.test.js\""
+  },
+  "dependencies": {
+    "@axis/audit": "0.0.0",
+    "zod": "4.6.6"
+  }
+}
