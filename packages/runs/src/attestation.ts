@@ -1,8 +1,8 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { AxisError } from "@axis/audit";
 
-/** Held by `daemon-attestation.ts` and nothing else. It is deliberately not re-exported from the package root. */
-export const MINT = Symbol("axis.runs.trustAttestation");
+/** Module-private: the raw symbol is never exported. `mintTrustAttestation` below is the only way to use it. */
+const MINT = Symbol("axis.runs.trustAttestation");
 
 export interface AttestationFacts {
   readonly workspaceId: string;
@@ -62,4 +62,9 @@ export class TrustAttestation {
     const age = now - value.#facts.issuedAt;
     return Number.isFinite(age) && age <= ttlMs && age >= -MAX_FUTURE_SKEW_MS;
   }
+}
+
+/** Called only by `daemon-attestation.ts` (the staging scan refuses any other use of it outside a call). */
+export function mintTrustAttestation(facts: AttestationFacts): TrustAttestation {
+  return new TrustAttestation(MINT, facts);
 }

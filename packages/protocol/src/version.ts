@@ -29,3 +29,9 @@ export function negotiateVersion(
   }
   return best < 0 ? { ok: false } : { ok: true, version: best };
 }
+
+/**
+ * The zod this package was loaded with. A staged copy vendors zod, so the
+ * daemon reports it to show which copy a bundle contains (ADR 0005 D4).
+ */
+export const ZOD_VERSION = `${z.core.version.major}.${z.core.version.minor}.${z.core.version.patch}`;

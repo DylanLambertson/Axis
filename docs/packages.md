@@ -438,7 +438,27 @@ npm test            # clean build (scripts/clean-dist.mjs), then node --test "di
 
 ## Reaching the app
 
-Planned in ADR 0005 D3: a post-apply hook stages package sources into `src/vs/axis/packages/` so Code OSS's own esbuild bundles them into the daemon. Not implemented yet.
+`apply.sh` runs `code-oss/hooks/post-apply.d/20-stage-axis-packages` (logic in `scripts/code-oss/stage-packages.mjs`), which writes new files under `src/vs/axis/packages/` in the Code OSS tree:
+
+- `<name>/**`: the package's `src/**/*.ts` with `@axis/*` and `zod` imports rewritten to relative paths;
+- `vendor/zod/**`: the ESM JavaScript and declarations of zod reachable from its entry, taken from the repository's `node_modules` (run `npm ci --ignore-scripts` first);
+- `stage-manifest.json`: SHA-256 of every staged file and its source, and `treeSha256` over all of them.
+
+The hook is an allowlist: only regular `packages/<name>/src/**/*.ts` files and zod's files are read, never through a link, and anything else (links, `node_modules`, `dist`, `.d.ts`, other extensions, tests in `src`, files dated in the future or changed while staging) fails the run and leaves no staged output. Hard links and links anywhere in the zod tree are refused too, and the hook writes into a temporary directory and renames it, so a failed run leaves nothing behind. Put a package's test-support code outside `src/` (as `@axis/providers` does with `contract/`) so it is never staged. A package can export a subpath to other packages only if `exports` maps it to `./dist/src/<file>.js`.
+
+The overlay entry `vs/axis/daemon/node/axisDaemonMain` imports `../../packages/protocol/index.js`, and patch `0200-axis-daemon-entry.patch` lists it in `build/next/index.ts`. Why zod is vendored: see ADR 0005 D3.
+
+After `apply.sh`, on a built tree, check the result:
+
+```bash
+node scripts/code-oss/check-staged.mjs --tree "$AXIS_CODE_OSS_VENDOR_DIR/code-oss"
+```
+
+It verifies the staged files against the manifest, type-checks `src/vs/axis` with the tree's own compiler and flags, bundles the daemon entry and every staged package with the tree's esbuild, and checks the module graph (zod 4.6.6 vendored, never the tree's 4.4.3; the user principal and the trust attestation reached only from `daemon`). `scripts/code-oss/stage-packages.mjs --tree <tree> --verify` re-checks the staged files alone. `check-staged.mjs` also takes `--full-typecheck` (the tree's real `typecheck-client`, 8.2 GiB) and `--build-bundle` (the tree's real minified `--target server` bundle step with the committed brand probe, about 30 seconds, which fails unless the `#private` brands of the user principal and the trust attestation reject every forgery) for the slow checks, under `flock ~/.cache/project-axis/build.lock`.
+
+## Security markers and `#private` fields
+
+Code OSS's minified builds rewrite native `#private` fields into plain properties (`--mangle-privates`). Patch 0200 exempts `vs/axis/` outputs from that, and `check-staged.mjs` verifies the exemption (ADR 0005 D3.6). **Rule:** a security marker in an `@axis/*` package (`UserPrincipal`, `TrustAttestation`, `InstanceLock`, a single-use flag) may rely on `#private` surviving only while that exemption and its check exist, and only in code that reaches the build through an `vs/axis/` entry (the daemon). Renderer code must not import such a package (ADR 0005 D2.2): the workbench bundle is mangled. Ticket BRAND-1 replaces the dependence with a module-private `WeakSet` or closure marker, after which the exemption can go.
 
 ## Calling `@axis/worktrees` from the daemon
 
