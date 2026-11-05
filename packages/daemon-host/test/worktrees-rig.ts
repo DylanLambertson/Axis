@@ -64,6 +64,7 @@ export interface Rig {
   readonly trust: InMemoryTrustRegistry;
   readonly home: string;
   readonly gitPath: string;
+  readonly gitLog: string;
   readonly projectId: string;
   git(cwd: string, ...args: string[]): string;
   connect(attestation?: string): Promise<Client>;
@@ -92,6 +93,10 @@ export interface RigOptions {
   prepare?: (repo: string, home: string) => void;
   /** Make the binding think a run is active (workspace ids). */
   preflight?: (tier: number) => void;
+  /** Run git through a logging wrapper at the pinned path, with no git on PATH (posix only). */
+  gitWrapper?: boolean;
+  /** Fixed bytes for the slug suffix (`010203`), so a test can predict a branch name. */
+  fixedSuffix?: boolean;
 }
 
 export async function worktreesRig(options: RigOptions = {}): Promise<Rig> {
@@ -121,15 +126,24 @@ export async function worktreesRig(options: RigOptions = {}): Promise<Rig> {
   const projectId = "proj-1";
   journal.registerProject({ id: projectId, path: repo, displayName: "fixture", trusted: true, actor: "user" });
 
-  const env = { PATH: process.env["PATH"] ?? "", HOME: home };
-  const gitPath = resolveGitOnce({ env, platform: process.platform, excludeDirs: [root, tmp, repo] });
+  let env: Record<string, string> = { PATH: process.env["PATH"] ?? "", HOME: home };
+  let gitPath = resolveGitOnce({ env, platform: process.platform, excludeDirs: [root, tmp, repo] });
+  const gitLog = path.join(tmp, "git.log");
+  if (options.gitWrapper === true) {
+    const bin = path.join(tmp, "bin");
+    mkdirSync(bin);
+    const wrapper = path.join(bin, "git");
+    writeFileSync(wrapper, `#!/bin/sh\necho x >> "${gitLog}"\nexec "${gitPath}" "$@"\n`, { mode: 0o755 });
+    gitPath = wrapper;
+    env = { PATH: home, HOME: home }; // an empty directory: any lookup of a bare `git` would fail
+  }
   const active = new Set<string>();
   const wiring = createWorktreesApprovalWiring(options.preflight === undefined ? {} : { preflight: options.preflight });
   const binding = createWorktreesBinding({
     journal,
     audit,
     transact: (fn) => withTransaction(db, fn),
-    random: { bytes: (n) => randomBytes(n), uuid: () => randomUUID() },
+    random: { bytes: (n) => (options.fixedSuffix === true ? Uint8Array.from({ length: n }, (_, i) => i + 1) : randomBytes(n)), uuid: () => randomUUID() },
     runs: { hasActiveRun: (id) => active.has(id) },
     gitPath,
     env,
@@ -166,7 +180,7 @@ export async function worktreesRig(options: RigOptions = {}): Promise<Rig> {
   });
   const ports: Array<{ close(): void }> = [];
   return {
-    tmp, repo, root, db, journal, binding, approvals, daemon, rpcEvents, supervisor, active, trust, home, gitPath, projectId,
+    tmp, repo, root, db, journal, binding, approvals, daemon, rpcEvents, supervisor, active, trust, home, gitPath, gitLog, projectId,
     git: g,
     async connect(attestation = "user#conn-1#win-1") {
       const { client, server } = memoryPair();
