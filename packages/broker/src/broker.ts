@@ -369,7 +369,7 @@ export class ToolBroker {
         timer = setTimeout(() => {
           ac.abort();
           reject(new BrokerError("E_TIMEOUT", "approval-timeout", "the approval timed out"));
-        }, timeoutMs);
+        }, timeoutMs) as unknown as NodeJS.Timeout; // opaque handle under Code OSS's typings (ADR 0005)
       });
       const raw = await Promise.race([
         Promise.resolve().then(() => hook.request({
