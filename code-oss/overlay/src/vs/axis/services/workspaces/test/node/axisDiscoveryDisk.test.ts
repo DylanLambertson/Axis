@@ -15,6 +15,10 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { TestConfigurationService } from '../../../../../platform/configuration/test/common/testConfigurationService.js';
 import { FileService } from '../../../../../platform/files/common/fileService.js';
 import { DiskFileSystemProvider } from '../../../../../platform/files/node/diskFileSystemProvider.js';
+import { NullLogService } from '../../../../../platform/log/common/log.js';
+import { testWorkspace } from '../../../../../platform/workspace/test/common/testWorkspace.js';
+import { TestContextService, TestWorkspaceTrustManagementService } from '../../../../../workbench/test/common/workbenchTestServices.js';
+import { AxisDiscoveryDataSource } from '../../common/axisDiscoveryDataSource.js';
 
 /** The disk provider, counting real-path requests (each one may never finish on a link loop). */
 class CountingDiskProvider extends DiskFileSystemProvider {
@@ -25,10 +29,6 @@ class CountingDiskProvider extends DiskFileSystemProvider {
 		return super.realpath(resource);
 	}
 }
-import { NullLogService } from '../../../../../platform/log/common/log.js';
-import { testWorkspace } from '../../../../../platform/workspace/test/common/testWorkspace.js';
-import { TestContextService, TestWorkspaceTrustManagementService } from '../../../../../workbench/test/common/workbenchTestServices.js';
-import { AxisDiscoveryDataSource } from '../../common/axisDiscoveryDataSource.js';
 
 /** `git worktree add --relative-paths` needs git 2.48 or later; older hosts skip the suite. */
 function gitHasRelativePaths(): boolean {
@@ -226,6 +226,18 @@ function gitHasRelativePaths(): boolean {
 		}
 		assert.deepStrictEqual(await paths(...folders, join(home, 'src', 'proj')), ['/src/proj@main', '/src/proj-worktrees/feat@secret-feat']);
 		assert.strictEqual(provider.realpathCalls, 5, 'no request for a folder without a link');
+	});
+
+	test('only the first 50 opened folders are checked', async () => {
+		mkdirSync(join(home, 'Downloads', 'target'));
+		const folders: string[] = [];
+		for (let i = 0; i < 60; i++) {
+			const link = join(home, 'Downloads', `link${i}`);
+			symlinkSync('target', link);
+			folders.push(link);
+		}
+		assert.deepStrictEqual(await paths(...folders), []);
+		assert.strictEqual(provider.realpathCalls, 50, 'the folders past the bound are not looked at');
 	});
 
 	test('a worktree whose common dir is reached through a link is not a project', async () => {

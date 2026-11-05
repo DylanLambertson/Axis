@@ -283,7 +283,7 @@ class SymlinkMarkingProvider extends InMemoryFileSystemProvider {
 		assert.deepStrictEqual(await paths(`${deep}/wt`), [`${deep}/repo`, `${deep}/wt`]);
 	});
 
-		test('at most MAX_DISCOVERED_WORKTREES entries are read; the rest are counted as not listed', async () => {
+	test('at most MAX_DISCOVERED_WORKTREES entries are read; the rest are counted as not listed', async () => {
 		await mainRepo('/repo');
 		for (let i = 0; i < MAX_DISCOVERED_WORKTREES; i++) {
 			await write(`/repo/.git/worktrees/e${String(i).padStart(4, '0')}/gitdir`, '/nowhere/.git\n');

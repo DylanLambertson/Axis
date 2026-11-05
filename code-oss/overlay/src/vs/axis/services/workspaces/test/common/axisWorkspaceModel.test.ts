@@ -67,7 +67,7 @@ suite('Axis worktree discovery parsers', () => {
 	test('metadata paths: leading .. only; a . or .. after a name, or in an absolute path, is refused', () => {
 		assert.strictEqual(resolveMetadataPath('../../../wt/a/.git', '/r/.git/worktrees/a', false), '/r/wt/a/.git');
 		assert.strictEqual(resolveMetadataPath('/wt/a/.git', '/r', false), '/wt/a/.git');
-		for (const bad of ['x/../../wt/.git', '../s/../wt/.git', 'a/./b', '/wt/../a/.git', '/wt/./a']) {
+		for (const bad of ['x/../../wt/.git', '../s/../wt/.git', 'a/./b', '/wt/../a/.git', '/wt/./a', '/../wt/a', '/./wt/a']) {
 			assert.strictEqual(resolveMetadataPath(bad, '/r/.git/worktrees/a', false), undefined, bad);
 		}
 		assert.strictEqual(resolveMetadataPath('C:\\wt\\..\\a', 'C:\\r', true), undefined);
@@ -75,7 +75,7 @@ suite('Axis worktree discovery parsers', () => {
 		assert.ok(!linksBack('gitdir: ../x/../r/.git/worktrees/a', '/wt/a', '/r/.git/worktrees/a', false));
 	});
 
-		test('core.worktree of a git config', () => {
+	test('core.worktree of a git config', () => {
 		assert.strictEqual(parseCoreWorktree('[core]\n\trepositoryformatversion = 0\n\tworktree = ../../../sub\n'), '../../../sub');
 		assert.strictEqual(parseCoreWorktree('[core]\n\tworktree = "/a b/c"\n'), '/a b/c');
 		assert.strictEqual(parseCoreWorktree('[core]\n\tWorkTree = /x ; comment\n'), '/x');
