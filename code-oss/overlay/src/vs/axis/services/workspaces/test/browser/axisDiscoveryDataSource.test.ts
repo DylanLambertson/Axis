@@ -11,12 +11,12 @@ import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { TestConfigurationService } from '../../../../../platform/configuration/test/common/testConfigurationService.js';
 import { FileService } from '../../../../../platform/files/common/fileService.js';
-import { FileType, IStat } from '../../../../../platform/files/common/files.js';
+import { FileSystemProviderCapabilities, FileType, IStat } from '../../../../../platform/files/common/files.js';
 import { InMemoryFileSystemProvider } from '../../../../../platform/files/common/inMemoryFilesystemProvider.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { testWorkspace } from '../../../../../platform/workspace/test/common/testWorkspace.js';
 import { TestContextService, TestWorkspaceTrustManagementService } from '../../../../../workbench/test/common/workbenchTestServices.js';
-import { AxisDiscoveryDataSource, workspaceKeyOf } from '../../browser/axisDiscoveryDataSource.js';
+import { AxisDiscoveryDataSource, workspaceKeyOf } from '../../common/axisDiscoveryDataSource.js';
 import { AXIS_SAMPLE_RUNS_SETTING } from '../../common/axisSampleRuns.js';
 import { MAX_DISCOVERED_WORKTREES } from '../../common/worktreeDiscovery.js';
 import { AXIS_ID_PATTERN } from '../../common/axisWorkspaceData.js';
@@ -25,9 +25,22 @@ import { branchLabel, MAX_BRANCH_LABEL_LENGTH } from '../../common/axisWorkspace
 const SHA_A = 'a'.repeat(40);
 const SHA_B = 'b'.repeat(40);
 
-/** An in-memory provider that reports chosen paths as symbolic links (the in-memory provider has none). */
+/**
+ * An in-memory provider that reports chosen paths as symbolic links (the in-memory provider has none):
+ * `stat` and `readdir` flag them, and `realpath` of a path at or under one gives a different physical path.
+ */
 class SymlinkMarkingProvider extends InMemoryFileSystemProvider {
 	readonly links = new Set<string>();
+
+	override get capabilities(): FileSystemProviderCapabilities {
+		return super.capabilities | FileSystemProviderCapabilities.FileRealpath;
+	}
+
+	async realpath(resource: URI): Promise<string> {
+		await super.stat(resource); // a missing path fails, as on disk
+		const linked = [...this.links].some(link => resource.path === link || resource.path.startsWith(`${link}/`));
+		return linked ? `/physical${resource.path}` : resource.path;
+	}
 
 	override async stat(resource: URI): Promise<IStat> {
 		const stat = await super.stat(resource);
@@ -221,7 +234,41 @@ class SymlinkMarkingProvider extends InMemoryFileSystemProvider {
 		assert.deepStrictEqual(await paths('/linked'), []);
 	});
 
-	test('at most MAX_DISCOVERED_WORKTREES entries are read; the rest are counted as not listed', async () => {
+	test('a symbolic link higher up a worktree path is refused (the folder and its .git are real)', async () => {
+		// The reviewer's case: /d/s links to the victim's worktrees folder; feat and feat/.git are real, the relative link reads back.
+		await mainRepo('/d/proj');
+		await write('/d/proj/.git/worktrees/feat/gitdir', '../../../../s/feat/.git\n');
+		await write('/d/s/feat/.git', 'gitdir: ../../proj/.git/worktrees/feat\n');
+		assert.deepStrictEqual(await paths('/d/proj'), ['/d/proj', '/d/s/feat'], 'control: accepted while /d/s is a real folder');
+		provider.links.add('/d/s');
+		assert.deepStrictEqual(await paths('/d/proj'), ['/d/proj']);
+	});
+
+	test('a linked worktree whose common dir, or a submodule whose git dir, is reached through a link is not a project', async () => {
+		await mainRepo('/d/pw');
+		await linkedWorktree('/d/pw', 'feat', '/d/pw/feat', 'ref: refs/heads/main\n');
+		await write('/d/pw/feat/.git', 'gitdir: ../.git/worktrees/feat\n');
+		await write('/d/pw/.git/worktrees/feat/gitdir', '/d/pw/feat/.git\n');
+		await write('/d/sub/.git', 'gitdir: x/lnk\n');
+		await write('/d/sub/x/lnk/HEAD', 'ref: refs/heads/main\n');
+		await write('/d/sub/x/lnk/config', '[core]\n\tworktree = ../../../sub\n');
+		assert.deepStrictEqual(await paths('/d/pw/feat'), ['/d/pw', '/d/pw/feat'], 'control: the linked worktree lists the main checkout and itself');
+		assert.deepStrictEqual(await paths('/d/sub'), ['/d/sub'], 'control: the submodule');
+		provider.links.add('/d/pw/.git');
+		provider.links.add('/d/sub/x/lnk');
+		assert.deepStrictEqual(await paths('/d/pw/feat'), []);
+		assert.deepStrictEqual(await paths('/d/sub'), []);
+	});
+
+	test('an opened worktree whose admin dir entry is a link is not a project', async () => {
+		await mainRepo('/repo');
+		await linkedWorktree('/repo', 'feat', '/wt/feat', 'ref: refs/heads/main\n');
+		assert.deepStrictEqual(await paths('/wt/feat'), ['/repo', '/wt/feat'], 'control');
+		provider.links.add('/repo/.git/worktrees/feat');
+		assert.deepStrictEqual(await paths('/wt/feat'), []);
+	});
+
+		test('at most MAX_DISCOVERED_WORKTREES entries are read; the rest are counted as not listed', async () => {
 		await mainRepo('/repo');
 		for (let i = 0; i < MAX_DISCOVERED_WORKTREES; i++) {
 			await write(`/repo/.git/worktrees/e${String(i).padStart(4, '0')}/gitdir`, '/nowhere/.git\n');
@@ -236,11 +283,13 @@ class SymlinkMarkingProvider extends InMemoryFileSystemProvider {
 	test('opening a linked worktree finds the same project and its local checkout', async () => {
 		await mainRepo('/repo');
 		await linkedWorktree('/repo', 'feature', '/wt/feature', 'ref: refs/heads/main\n');
+		await linkedWorktree('/repo', 'other', '/wt/other', 'ref: refs/heads/main\n');
 		const fromMain = await createSource('/repo').listProjects();
 		const source = createSource('/wt/feature');
 		const fromWorktree = await source.listProjects();
 		assert.strictEqual(fromWorktree[0].id, fromMain[0].id);
 		assert.strictEqual(await source.getLocalCheckout(fromWorktree[0].id), '/repo');
+		assert.deepStrictEqual((await source.listWorktrees(fromWorktree[0].id)).map(w => w.path), ['/repo', '/wt/feature', '/wt/other'], 'a verified linked worktree lists its siblings');
 	});
 
 	test('a hostile branch name reaches the dashboard cleaned and bounded', async () => {

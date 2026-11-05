@@ -69,6 +69,7 @@ suite('Axis worktree discovery parsers', () => {
 		assert.strictEqual(parseCoreWorktree('[core]\n\tworktree = "/a b/c"\n'), '/a b/c');
 		assert.strictEqual(parseCoreWorktree('[core]\n\tWorkTree = /x ; comment\n'), '/x');
 		assert.strictEqual(parseCoreWorktree('[remote "origin"]\n\tworktree = /x\n'), undefined, 'another section');
+		assert.strictEqual(parseCoreWorktree('[core "x"]\n\tworktree = /x\n'), undefined, 'a core subsection is not core');
 		assert.strictEqual(parseCoreWorktree('[core]\n\tbare = false\n'), undefined);
 		assert.strictEqual(parseCoreWorktree(''), undefined);
 	});

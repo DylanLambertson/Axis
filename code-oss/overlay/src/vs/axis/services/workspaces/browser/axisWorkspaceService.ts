@@ -13,7 +13,7 @@ import { IAxisShowViewOptions, IAxisViewService } from '../../view/browser/axisV
 import { AxisDataProvenance, IAxisProjectInfo } from '../common/axisWorkspaceData.js';
 import { attentionOf, cycleIndex, IAxisWorkspaceEntry, orderEntries } from '../common/axisWorkspaceModel.js';
 import { displayName } from '../common/worktreeDiscovery.js';
-import { AxisDiscoveryDataSource, workspaceKeyOf } from './axisDiscoveryDataSource.js';
+import { AxisDiscoveryDataSource, workspaceKeyOf } from '../common/axisDiscoveryDataSource.js';
 
 /** The focused workspace key, per Code OSS workspace (design section 3.6). */
 const FOCUSED_WORKSPACE_STORAGE_KEY = 'axis.workspaces.focused';

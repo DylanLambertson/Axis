@@ -12,9 +12,9 @@ import { IConfigurationService } from '../../../../platform/configuration/common
 import { FileType, IFileService } from '../../../../platform/files/common/files.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IWorkspaceTrustManagementService } from '../../../../platform/workspace/common/workspaceTrust.js';
-import { AxisDataProvenance, IAxisCliRun, IAxisProjectInfo, IAxisWorkspaceDataSource, IAxisWorktreeInfo } from '../common/axisWorkspaceData.js';
-import { AXIS_SAMPLE_RUNS_SETTING, sampleCliRuns } from '../common/axisSampleRuns.js';
-import { branchOf, displayName, GitHead, parseCoreWorktree, isSafeRefName, linksBack, MAX_DISCOVERED_WORKTREES, MAX_GIT_METADATA_BYTES, parseGitFile, parseHead, parseLooseRef, parsePackedRefs, resolveMetadataPath, stableId, worktreeDirFromGitdir } from '../common/worktreeDiscovery.js';
+import { AxisDataProvenance, IAxisCliRun, IAxisProjectInfo, IAxisWorkspaceDataSource, IAxisWorktreeInfo } from './axisWorkspaceData.js';
+import { AXIS_SAMPLE_RUNS_SETTING, sampleCliRuns } from './axisSampleRuns.js';
+import { branchOf, displayName, GitHead, parseCoreWorktree, isSafeRefName, linksBack, MAX_DISCOVERED_WORKTREES, MAX_GIT_METADATA_BYTES, parseGitFile, parseHead, parseLooseRef, parsePackedRefs, resolveMetadataPath, stableId, worktreeDirFromGitdir } from './worktreeDiscovery.js';
 
 interface IDiscoveredProject {
 	readonly info: IAxisProjectInfo;
@@ -164,8 +164,13 @@ export class AxisDiscoveryDataSource extends Disposable implements IAxisWorkspac
 	 * a submodule's `core.worktree`. Only a `.git` directory in the folder, or a
 	 * verified linked worktree, lists the repository's other worktrees.
 	 */
-	private async findRepository(root: string): Promise<IFoundRepository | undefined> {
+	private async findRepository(openedRoot: string): Promise<IFoundRepository | undefined> {
 		const path = isWindows ? win32 : posix;
+		// Work in physical paths, as git does: the folder the user opened may itself be reached through a link.
+		const root = await this.realPath(openedRoot);
+		if (!root) {
+			return undefined;
+		}
 		const dotGit = path.join(root, '.git');
 		const stat = await this.statOrUndefined(dotGit);
 		if (!stat || stat.isSymbolicLink) {
@@ -184,6 +189,9 @@ export class AxisDiscoveryDataSource extends Disposable implements IAxisWorkspac
 			// A submodule: its git dir's `core.worktree` must name this folder. It is one checkout; its
 			// git dir's `worktrees/` is not listed. (A `--separate-git-dir` repository has no such
 			// back-pointer and is not a project in Phase 0.)
+			if (!(await this.isPhysical(gitDir))) {
+				return undefined;
+			}
 			const coreWorktree = parseCoreWorktree(await this.readText(path.join(gitDir, 'config')) ?? '');
 			if (!coreWorktree || !samePath(resolveMetadataPath(coreWorktree, gitDir, isWindows), root)) {
 				return undefined;
@@ -194,7 +202,8 @@ export class AxisDiscoveryDataSource extends Disposable implements IAxisWorkspac
 		const commonDir = resolveMetadataPath(commonDirLine, gitDir, isWindows);
 		const adminParent = path.join(commonDir, 'worktrees');
 		const gitdirBack = resolveMetadataPath((await this.readText(path.join(gitDir, 'gitdir')))?.split('\n')[0].trim() || '.', gitDir, isWindows);
-		if (!samePath(path.dirname(gitDir), adminParent) || !samePath(gitdirBack, dotGit)) {
+		// The common dir is the git dir's grandparent here, so a physical git dir means a physical common dir too.
+		if (!samePath(path.dirname(gitDir), adminParent) || !samePath(gitdirBack, dotGit) || !(await this.isPhysical(gitDir))) {
 			return undefined;
 		}
 		const localCheckout = path.basename(commonDir) === '.git' ? path.dirname(commonDir) : undefined;
@@ -256,7 +265,7 @@ export class AxisDiscoveryDataSource extends Disposable implements IAxisWorkspac
 	private async isLinkedBack(worktreeDir: string, adminDir: string): Promise<boolean> {
 		const dotGit = (isWindows ? win32 : posix).join(worktreeDir, '.git');
 		const [dirStat, fileStat] = await Promise.all([this.statOrUndefined(worktreeDir), this.statOrUndefined(dotGit)]);
-		if (!dirStat?.isDirectory || dirStat.isSymbolicLink || fileStat?.isSymbolicLink) {
+		if (!dirStat?.isDirectory || fileStat?.isSymbolicLink || !(await this.isPhysical(worktreeDir))) {
 			return false;
 		}
 		return linksBack(await this.readText(dotGit) ?? '', worktreeDir, adminDir, isWindows);
@@ -287,6 +296,21 @@ export class AxisDiscoveryDataSource extends Disposable implements IAxisWorkspac
 		}
 		const loose = parseLooseRef(await this.readText((isWindows ? win32 : posix).join(commonDir, ...head.ref.split('/'))) ?? '');
 		return loose ?? packed.get(head.ref) ?? null; // null: an unborn branch
+	}
+
+	/** The physical form of a path (every symbolic link resolved), or `undefined` when it cannot be resolved. */
+	private async realPath(fsPath: string): Promise<string | undefined> {
+		try {
+			return (await this.fileService.realpath(URI.file(fsPath)))?.fsPath;
+		} catch {
+			return undefined;
+		}
+	}
+
+	/** True when no component of a path is a symbolic link: its physical form is the form it was written with. */
+	private async isPhysical(fsPath: string): Promise<boolean> {
+		const real = await this.realPath(fsPath);
+		return !!real && samePath(real, fsPath);
 	}
 
 	private async statOrUndefined(fsPath: string) {
