@@ -1,0 +1,31 @@
+{
+  "name": "@axis/worktrees",
+  "version": "0.0.0",
+  "private": true,
+  "license": "UNLICENSED",
+  "type": "module",
+  "engines": {
+    "node": "24.22.1"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "default": "./dist/src/index.js"
+    },
+    "./daemon-confirm": {
+      "types": "./dist/src/daemonConfirm.d.ts",
+      "default": "./dist/src/daemonConfirm.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc --noEmit -p .",
+    "test": "tsc -b && node --test \"dist/test/**/*.test.js\""
+  },
+  "dependencies": {
+    "zod": "4.6.6"
+  },
+  "devDependencies": {
+    "@axis/protocol": "*"
+  }
+}
