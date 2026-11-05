@@ -16,3 +16,4 @@ export * from "./transport/electron-parent-port.js";
 export * from "./transport/mux.js";
 export * from "./transport/node-ipc.js";
 export * from "./transport/node-port.js";
+export * from "./handlers/providers.js";
