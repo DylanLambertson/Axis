@@ -66,6 +66,30 @@ test("every registry method that needs approval has a pinned digest under its ow
   }
 });
 
+/** The top-level arguments of the call whose `(` is just before `start`, string literals and nested brackets respected. */
+function callArguments(text, start) {
+  const args = [];
+  let depth = 0;
+  let from = start;
+  for (let i = start; i < text.length; i++) {
+    const c = text[i];
+    if (c === '"' || c === "'" || c === "`") {
+      for (i++; i < text.length && text[i] !== c; i++) if (text[i] === "\\") i++;
+    } else if (c === "(" || c === "[" || c === "{") depth++;
+    else if (c === ")" || c === "]" || c === "}") {
+      if (depth === 0) {
+        args.push(text.slice(from, i));
+        return args;
+      }
+      depth--;
+    } else if (c === "," && depth === 0) {
+      args.push(text.slice(from, i));
+      from = i + 1;
+    }
+  }
+  return args;
+}
+
 /** Every `reason` the two packages raise or report, with the error codes it is raised under (empty when it is not an error). */
 function packageReasons() {
   const found = new Map();
@@ -78,10 +102,15 @@ function packageReasons() {
   for (const dir of ["git-ops", "review"]) {
     const root = new URL(`../../packages/${dir}/src/`, import.meta.url);
     for (const file of readdirSync(root).filter((f) => f.endsWith(".ts"))) {
-      const lines = readFileSync(new URL(file, root), "utf8").split("\n");
+      const text = readFileSync(new URL(file, root), "utf8");
+      const lines = text.split("\n");
+      // conflict(message, "reason"[, extra]) and the like, wherever the call breaks its lines
+      for (const m of text.matchAll(/\b(conflict|denied|invalid)\(/g)) {
+        const second = callArguments(text, m.index + m[0].length)[1]?.trim();
+        const literal = second === undefined ? null : /^"([a-z][a-z_]*)"$/.exec(second);
+        if (literal) add(literal[1], byHelper[m[1]]);
+      }
       lines.forEach((line, i) => {
-        // conflict(message, "reason"[, extra]) and the like
-        for (const m of line.matchAll(/\b(conflict|denied|invalid)\(.*?,\s*"([a-z][a-z_]*)"\s*[,)]/g)) add(m[2], byHelper[m[1]]);
         // new GitOpsError("E_X", message, { reason: "..." }): the code is on this line or a few lines above in the same statement
         for (const m of line.matchAll(/\breason:\s*"([a-z][a-z_]*)"/g)) {
           let code;

@@ -65,13 +65,19 @@ export const GIT_COMMIT_REFUSALS = {
    * `head_moved`: HEAD, the checked-out branch or the parent is not the one reviewed. `stale`: `assertReviewFresh`, the
    * worktree no longer matches the reviewed tree. `index_changed`: the staged index changed since the review.
    * `operation_in_progress`: a merge, cherry-pick, revert, rebase or bisect is under way or the index has unmerged paths.
-   * `ref_update_failed`: the branch could not be moved by compare-and-swap (a lock); it was left as it was.
+   * `ref_update_failed`: the branch could not be moved by compare-and-swap (a lock); it was left as it was. `snapshot_failed`: the worktree could not be read for the freshness check.
    */
-  E_CONFLICT: ["head_moved", "stale", "index_changed", "operation_in_progress", "ref_update_failed"],
+  E_CONFLICT: ["head_moved", "stale", "index_changed", "operation_in_progress", "ref_update_failed", "snapshot_failed"],
+  /** `too_large` and `not_found`: the freshness re-check reads the worktree and HEAD through `@axis/review`. */
+  E_INVALID_ARGUMENT: ["too_large", "not_found"],
   /** HEAD is detached, or the branch has no commit: Axis commits on `axis/<slug>` only. */
   E_POLICY_DENIED: ["detached_head", "no_head"],
 } as const;
-export const GIT_COMMIT_REASONS = [...GIT_COMMIT_REFUSALS.E_CONFLICT, ...GIT_COMMIT_REFUSALS.E_POLICY_DENIED] as const;
+export const GIT_COMMIT_REASONS = [
+  ...GIT_COMMIT_REFUSALS.E_CONFLICT,
+  ...GIT_COMMIT_REFUSALS.E_INVALID_ARGUMENT,
+  ...GIT_COMMIT_REFUSALS.E_POLICY_DENIED,
+] as const;
 export const GIT_PUSH_REFUSALS = {
   /** The tip or the scan result differs from the plan the user confirmed: show the new plan. */
   E_CONFLICT: ["plan_changed"],
@@ -85,11 +91,13 @@ const wellFormed = (t: string): boolean => !/[\ud800-\udbff](?![\udc00-\udfff])|
 
 /**
  * Refused in a commit message: NUL and the other C0 controls (ESC starts a terminal sequence) except tab, newline and
- * carriage return, DEL and C1, line and paragraph separators, and the bidi controls that make text read differently from how
- * it is stored. Other format characters (the joiners emoji and some scripts need) are allowed.
+ * carriage return, DEL and C1, line and paragraph separators, the bidi controls that make text read differently from how it is
+ * stored, and invisible characters (soft hyphen, zero-width space, word joiner and the invisible math operators, BOM, and the
+ * tag block that smuggles ASCII). The joiners U+200C and U+200D that emoji and some scripts need are allowed.
  */
 // eslint-disable-next-line no-control-regex
-const UNSAFE_MESSAGE_CHARS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u2028\u2029\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/;
+const UNSAFE_MESSAGE_CHARS =
+  /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u00ad\u2028\u2029\u061c\u200b\u200e\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff\u{e0000}-\u{e007f}]/u;
 
 /** `check()` in commit: non-empty text, at most 64 KiB, no NUL. Newlines and tabs are fine. */
 export const commitMessageSchema = z

@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { GIT_COMMIT_REASONS, REVIEW_DIFF_REASONS, MAX_ALLOWED_BINARY_PATHS, MAX_COMMIT_MESSAGE, MAX_PUSH_FINDINGS, MAX_COMPARE_URL, MAX_REVIEW_FILES, MAX_REVIEW_SKIPPED, contracts, lookupMethod, requiresIdempotencyKey, tableProblems } from "../src/index.js";
+import { GIT_COMMIT_REASONS, REVIEW_DIFF_REASONS, isAcknowledged, MAX_ALLOWED_BINARY_PATHS, MAX_COMMIT_MESSAGE, MAX_PUSH_FINDINGS, MAX_COMPARE_URL, MAX_REVIEW_FILES, MAX_REVIEW_SKIPPED, contracts, lookupMethod, requiresIdempotencyKey, tableProblems } from "../src/index.js";
 import { DIGEST, SHA1, SHA2, SHA3, completed, diffResponse, file, plan, P1B_SAMPLES } from "./samples-p1b.js";
 import { accepts, rejects, runSuite, schemaOf } from "./suite.js";
 
@@ -158,7 +158,7 @@ test("review.diff request and response", () => {
   accepts(req, { workspaceId: "ws-1" }, "workspace");
   for (const k of ["path", "paths", "against", "base", "worktree", "limit", "head", "acknowledge", "acceptTruncated", "ack"]) rejects(req, { workspaceId: "ws-1", [k]: "x" }, k);
   for (const w of ["", "../x", "a/b", 1, null, undefined]) rejects(req, { workspaceId: w }, JSON.stringify(w));
-  const many = (n: number) => Array.from({ length: n }, (_, i) => ({ ...structuredClone(file), displayPath: `f${i}` }));
+  const many = (n: number) => Array.from({ length: n }, (_, i) => ({ ...structuredClone(file), displayPath: `f${i}`, fileId: String(i).padStart(64, "0") }));
   const withFiles = (files: unknown[], treeHash: string | null) => ({ ...structuredClone(diffResponse), files, treeHash });
   accepts(res, withFiles(many(MAX_REVIEW_FILES), SHA2), "full list");
   rejects(res, withFiles(many(MAX_REVIEW_FILES + 1), SHA2), "one too many files");
@@ -177,37 +177,67 @@ test("review.diff request and response", () => {
   accepts(res, { ...diffResponse, treeHash: SHA3 }, "sha-256 tree");
 });
 
-test("review.diff request: acknowledged names are bounded, unique display paths", () => {
+const ID = (n: number) => String(n).padStart(64, "0");
+
+test("review.diff request: acknowledgements are { fileId, contentId } pairs, bounded and unique by file", () => {
   const req = schemaOf(R, "diff", "request");
+  const ack = (i: number) => ({ fileId: ID(i), contentId: SHA1 });
   accepts(req, { workspaceId: "ws-1", acknowledged: [] }, "empty");
-  accepts(req, { workspaceId: "ws-1", acknowledged: Array.from({ length: MAX_REVIEW_FILES }, (_, i) => `f${i}`) }, "at the cap");
-  rejects(req, { workspaceId: "ws-1", acknowledged: Array.from({ length: MAX_REVIEW_FILES + 1 }, (_, i) => `f${i}`) }, "over the cap");
-  for (const a of [[""], ["a", "a"], ["a\nb"], ["a\u202eb"], ["x".repeat(257)], [1], [null], "a", { a: 1 }]) rejects(req, { workspaceId: "ws-1", acknowledged: a }, JSON.stringify(a).slice(0, 30));
+  accepts(req, { workspaceId: "ws-1", acknowledged: [{ fileId: ID(1), contentId: SHA3 }] }, "sha-256 content id");
+  accepts(req, { workspaceId: "ws-1", acknowledged: Array.from({ length: MAX_REVIEW_FILES }, (_, i) => ack(i)) }, "at the cap");
+  rejects(req, { workspaceId: "ws-1", acknowledged: Array.from({ length: MAX_REVIEW_FILES + 1 }, (_, i) => ack(i)) }, "over the cap");
+  rejects(req, { workspaceId: "ws-1", acknowledged: [ack(1), { fileId: ID(1), contentId: SHA3 }] }, "same file twice");
+  for (const a of ["src/a.ts", ["src/a.ts"], [""], [1], [null], [{ fileId: ID(1) }], [{ contentId: SHA1 }], [{ displayPath: "a", contentId: SHA1 }],
+    [{ fileId: ID(1), contentId: SHA1, extra: 1 }], [{ fileId: "A".repeat(64), contentId: SHA1 }], [{ fileId: "1".repeat(63), contentId: SHA1 }],
+    [{ fileId: "1".repeat(65), contentId: SHA1 }], [{ fileId: ID(1), contentId: "A".repeat(40) }], [{ fileId: ID(1), contentId: "a".repeat(41) }],
+    [{ fileId: ID(1), contentId: "blob" }], [{ fileId: ID(1), contentId: null }], { fileId: ID(1), contentId: SHA1 }]) {
+    rejects(req, { workspaceId: "ws-1", acknowledged: a }, JSON.stringify(a).slice(0, 40));
+  }
 });
 
 test("review.diff response: a treeHash is impossible while the review cannot be committed (REV-1)", () => {
   const res = schemaOf(R, "diff", "response");
+  const cut = { truncated: true, contentId: SHA1 };
   const resp = (patch: Record<string, unknown>, filePatch: Record<string, unknown> = {}) => ({ ...structuredClone(diffResponse), ...patch, files: [{ ...structuredClone(file), ...filePatch }] });
   accepts(res, resp({ treeHash: SHA2 }), "a clean review has a tree");
-  accepts(res, resp({ treeHash: null }, { truncated: true }), "a cut file without a tree");
-  accepts(res, resp({ treeHash: SHA2 }, { truncated: true, acknowledged: true }), "an acknowledged cut file has a tree");
-  rejects(res, resp({ treeHash: SHA2 }, { truncated: true }), "tree for an unacknowledged cut file");
+  accepts(res, resp({ treeHash: null }, cut), "a cut file without a tree");
+  accepts(res, resp({ treeHash: SHA2 }, { ...cut, acknowledged: true }), "an acknowledged cut file has a tree");
+  rejects(res, resp({ treeHash: SHA2 }, cut), "tree for an unacknowledged cut file");
   rejects(res, resp({ treeHash: SHA2 }, { acknowledged: true }), "acknowledged but not truncated");
   rejects(res, resp({ treeHash: null }, { acknowledged: true }), "acknowledged but not truncated, no tree");
+  rejects(res, resp({ treeHash: null }, { truncated: true }), "a cut file without a content id");
+  rejects(res, resp({ treeHash: null }, { contentId: SHA1 }), "a content id on a file that is not cut");
+  rejects(res, resp({ treeHash: null }, { ...cut, contentId: "blob" }), "a content id that is not an object id");
   rejects(res, resp({ treeHash: SHA2 }, { unsafePath: true }), "tree with an unsafe path");
   rejects(res, resp({ treeHash: SHA2 }, { kind: "filtered" }), "tree with a filtered file");
   rejects(res, resp({ treeHash: SHA2, branch: null }), "tree on a detached HEAD");
   rejects(res, { ...structuredClone(diffResponse), treeHash: SHA2, files: [] }, "tree for no change");
   accepts(res, { ...structuredClone(diffResponse), treeHash: null, files: [] }, "no change, no tree");
   // One unacknowledged file among acknowledged ones is enough to refuse the tree.
-  const mixed = { ...structuredClone(diffResponse), treeHash: SHA2, files: [{ ...structuredClone(file), truncated: true, acknowledged: true }, { ...structuredClone(file), displayPath: "b", truncated: true }] };
+  const mixed = { ...structuredClone(diffResponse), treeHash: SHA2, files: [{ ...structuredClone(file), ...cut, acknowledged: true }, { ...structuredClone(file), fileId: ID(9), displayPath: "b", ...cut }] };
   rejects(res, mixed, "mixed acknowledgements");
-  rejects(res, { ...structuredClone(diffResponse), files: [structuredClone(file), structuredClone(file)] }, "duplicate display path");
+  // Ids are the identity: equal display strings are fine, equal ids are not.
+  accepts(res, { ...structuredClone(diffResponse), files: [structuredClone(file), { ...structuredClone(file), fileId: ID(7) }] }, "same display path, different ids");
+  rejects(res, { ...structuredClone(diffResponse), files: [structuredClone(file), { ...structuredClone(file), displayPath: "other" }] }, "same id twice");
+  for (const fileId of ["", "A".repeat(64), "1".repeat(63), "src/a.ts", null, 1]) rejects(res, resp({}, { fileId }), `fileId ${String(fileId)}`);
   const sk = diffResponse.skipped[0];
   rejects(res, { ...structuredClone(diffResponse), skippedCount: 0 }, "skipped entry with a zero count");
   rejects(res, { ...structuredClone(diffResponse), skippedCount: 5 }, "count above the list while the list is short");
   rejects(res, { ...structuredClone(diffResponse), skipped: [], skippedCount: 1 }, "count without a list");
   accepts(res, { ...structuredClone(diffResponse), skipped: Array.from({ length: MAX_REVIEW_SKIPPED }, () => structuredClone(sk)), skippedCount: 500 }, "a long list is cut at the cap");
+});
+
+test("isAcknowledged: both the file id and the content id must match the current entry, exactly", () => {
+  const f = { fileId: ID(1), truncated: true, contentId: SHA1 };
+  const acks = [{ fileId: ID(1), contentId: SHA1 }];
+  assert.equal(isAcknowledged(f, acks), true);
+  assert.equal(isAcknowledged(f, [{ fileId: ID(1), contentId: SHA2 }]), false, "the content changed since the user looked");
+  assert.equal(isAcknowledged(f, [{ fileId: ID(2), contentId: SHA1 }]), false, "another file");
+  assert.equal(isAcknowledged({ ...f, fileId: "ab".repeat(32) }, [{ fileId: "AB".repeat(32), contentId: SHA1 }]), false, "no case folding");
+  assert.equal(isAcknowledged(f, [{ fileId: ID(2), contentId: SHA2 }, { fileId: ID(1), contentId: SHA2 }, { fileId: ID(2), contentId: SHA1 }]), false, "the ids must come from the same pair");
+  assert.equal(isAcknowledged({ ...f, truncated: false, contentId: null }, acks), false, "a file that is not cut needs no acknowledgement and has none");
+  assert.equal(isAcknowledged(f, undefined), false);
+  assert.equal(isAcknowledged(f, []), false);
 });
 
 test("git.compareUrl base: ASCII only, so the longest URL still fits the response bound", () => {
@@ -222,9 +252,10 @@ test("git.compareUrl base: ASCII only, so the longest URL still fits the respons
 
 test("git.commit message: terminal and bidi control characters are refused, joiners are not", () => {
   const req = schemaOf(G, "commit", "request");
-  for (const c of ["\u001b[2J", "\u0007", "\u007f", "\u0085", "\u202e", "\u2066", "\u200f", "\u061c", "\u2028", "\u0008"]) rejects(req, commitReq({ message: `fix${c}x` }), JSON.stringify(c));
+  for (const c of ["\u001b[2J", "\u0007", "\u007f", "\u0085", "\u202e", "\u2066", "\u200f", "\u061c", "\u2028", "\u0008", "\u200b", "\u2060", "\ufeff", "\u00ad", "\u2064", "\u{e0041}", "\u{e0001}", "\u{e007f}"]) rejects(req, commitReq({ message: `fix${c}x` }), JSON.stringify(c));
   accepts(req, commitReq({ message: "a\tb\r\nc\n" }), "tab, CRLF");
   accepts(req, commitReq({ message: "family \u{1F468}\u200d\u{1F469}" }), "zero-width joiner in emoji");
+  accepts(req, commitReq({ message: "\u0645\u200c\u0646" }), "zero-width non-joiner");
 });
 
 test("git remote names: what git refuses as a ref component is refused", () => {
@@ -245,7 +276,7 @@ test("review.complete: a run id in, a COMPLETED run out, and no actor in the req
 });
 
 test("the git commit reasons are the ones the packages use and are a closed set", () => {
-  assert.deepEqual([...GIT_COMMIT_REASONS].sort(), ["detached_head", "head_moved", "index_changed", "no_head", "operation_in_progress", "ref_update_failed", "stale"]);
+  assert.deepEqual([...GIT_COMMIT_REASONS].sort(), ["detached_head", "head_moved", "index_changed", "no_head", "not_found", "operation_in_progress", "ref_update_failed", "snapshot_failed", "stale", "too_large"]);
   assert.deepEqual([...REVIEW_DIFF_REASONS].sort(), ["filtered_path", "hunks_do_not_apply", "index_refused", "no_head", "not_found", "not_head", "nothing_accepted", "path_conflict", "snapshot_failed", "too_large", "truncated_hunk", "unsafe_path"]);
   assert.equal((REVIEW_DIFF_REASONS as readonly string[]).includes("not_a_commit"), false);
 });

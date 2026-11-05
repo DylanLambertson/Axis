@@ -63,11 +63,45 @@ export const CHANGE_KIND_VALUES = ["text", "binary", "symlink", "submodule", "to
 export const changeStatusSchema = z.enum(CHANGE_STATUS_VALUES);
 export const changeKindSchema = z.enum(CHANGE_KIND_VALUES);
 
+/**
+ * Names a file within one review. Minted by the host: the SHA-256, in lower-case hex, of the raw repository path bytes
+ * (`ReviewFile.path`), never of the display string. Unique within a response; two files can show the same
+ * `displayPath` (a cut in the middle of long paths) but never the same `fileId`. It is an identity, not a secret.
+ */
+export const fileIdSchema = z.string().regex(/^[0-9a-f]{64}$/);
+
+/**
+ * The content binding of an acknowledgement: the object id of the exact content the user is told is cut and the commit
+ * holds, taken from the same snapshot tree the `treeHash` is built from (the `newOid` of the file in that tree; for a symlink
+ * the blob of its target). Only a `truncated` file has one.
+ */
+export const contentIdSchema = objectIdSchema;
+
+/** One acknowledgement: this file, with exactly this content. Both must equal the current entry, byte for byte (no case folding, no normalisation). */
+export const acknowledgementSchema = z.strictObject({ fileId: fileIdSchema, contentId: contentIdSchema });
+export type Acknowledgement = z.infer<typeof acknowledgementSchema>;
+
+/**
+ * Whether the request's acknowledgements cover this file of the CURRENT review. True only for a truncated file whose
+ * `fileId` AND `contentId` both equal an acknowledgement's, as exact strings (no case folding, no normalisation). The handler
+ * decides `acceptTruncated` and `acknowledged` with this and nothing else, so a changed file, a moved file or a replayed
+ * list acknowledges nothing.
+ */
+export function isAcknowledged(
+  file: { readonly fileId: string; readonly truncated: boolean; readonly contentId: string | null },
+  acknowledged: readonly Acknowledgement[] | undefined,
+): boolean {
+  if (!file.truncated || file.contentId === null || acknowledged === undefined) return false;
+  return acknowledged.some((a) => a.fileId === file.fileId && a.contentId === file.contentId);
+}
+
 const tag = (max: number) => z.array(displayTextSchema(64)).max(max);
 
 /** One changed file, as `ReviewFile` in `@axis/review` minus the raw paths, object ids and modes. */
 export const reviewFileSchema = z
   .strictObject({
+  fileId: fileIdSchema,
+  /** For display only: `toDisplayPath(path, MAX_REVIEW_PATH)`. Not unique, not an identity. */
   displayPath: displayTextSchema(MAX_REVIEW_PATH),
   /** Set for a rename. */
   displayOldPath: displayTextSchema(MAX_REVIEW_PATH).optional(),
@@ -83,7 +117,9 @@ export const reviewFileSchema = z
    * `hasCutLines` in `@axis/review`. It needs the user's acknowledgement before a `treeHash` is returned.
    */
   truncated: z.boolean(),
-  /** The request's `acknowledged` named this file (and it is `truncated`). Never true for a file that is not truncated. */
+  /** Set exactly when `truncated`: what an acknowledgement of this file must name (`contentIdSchema`). */
+  contentId: contentIdSchema.nullable(),
+  /** The request acknowledged this `fileId` AND this `contentId`, and both equal this entry's. Never true for a file that is not truncated. */
   acknowledged: z.boolean(),
   /** WT-3: names of the protected-path rules that matched. */
   protectedRules: tag(MAX_FILE_TAGS),
@@ -92,7 +128,8 @@ export const reviewFileSchema = z
   /** Short labels such as `symlink-outside` or `binary`. */
   warnings: tag(MAX_FILE_TAGS),
   })
-  .refine((f) => !f.acknowledged || f.truncated, "only a truncated file can be acknowledged");
+  .refine((f) => !f.acknowledged || f.truncated, "only a truncated file can be acknowledged")
+  .refine((f) => f.truncated === (f.contentId !== null), "a truncated file, and only a truncated file, has a content id");
 export type ReviewFileWire = z.infer<typeof reviewFileSchema>;
 
 /** `SkippedFile` in `@axis/review`. */
@@ -107,15 +144,16 @@ export const reviewDiffRequestSchema = guarded(
   z.strictObject({
     workspaceId: workspaceIdSchema,
     /**
-     * The `displayPath` of each truncated file the user explicitly acknowledged (REV-1): they saw that part of a line or link
-     * target was cut and accept it. The handler passes `acceptTruncated` to `@axis/review` for exactly these files and
-     * only when `hasCutLines` is true for them, and for no other file, ever. A name that is not a truncated file of this
-     * review is ignored for the tree and not echoed as acknowledged.
+     * The files the user explicitly acknowledged (REV-1): each `{ fileId, contentId }` as a previous response gave it. The
+     * handler passes `acceptTruncated` to `@axis/review` for a file ONLY when its `fileId` and its `contentId` both equal
+     * the entry of THIS review (exact string equality), `hasCutLines` is true for it, and the content id was computed from
+     * the same snapshot tree the `treeHash` is built from, in the same read. A pair that matches no truncated entry (the
+     * file changed, moved, or was never cut) acknowledges nothing and is not echoed. Unique by `fileId`, at most 200.
      */
     acknowledged: z
-      .array(displayTextSchema(MAX_REVIEW_PATH).refine((p) => p.length > 0, "empty"))
+      .array(acknowledgementSchema)
       .max(MAX_REVIEW_FILES)
-      .refine((a) => new Set(a).size === a.length, "duplicate name")
+      .refine((a) => new Set(a.map((x) => x.fileId)).size === a.length, "duplicate file id")
       .optional(),
   }),
 );
@@ -143,7 +181,7 @@ export const reviewDiffResponseSchema = guarded(
     .refine((r) => r.treeHash === null || r.files.length > 0, "a tree needs a change")
     .refine((r) => r.treeHash === null || !r.files.some((f) => f.unsafePath || f.kind === "filtered"), "a tree needs committable files")
     .refine((r) => r.treeHash === null || !r.files.some((f) => f.truncated && !f.acknowledged), "a tree needs every cut file acknowledged")
-    .refine((r) => new Set(r.files.map((f) => f.displayPath)).size === r.files.length, "duplicate display path")
+    .refine((r) => new Set(r.files.map((f) => f.fileId)).size === r.files.length, "duplicate file id")
     .refine((r) => r.skippedCount >= r.skipped.length && r.skipped.length === Math.min(r.skippedCount, MAX_REVIEW_SKIPPED), "skipped list does not match its count"),
 );
 

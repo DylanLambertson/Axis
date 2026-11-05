@@ -6,10 +6,13 @@ export const SHA1 = "a".repeat(40);
 export const SHA2 = "b".repeat(40);
 export const SHA3 = "c".repeat(64);
 export const DIGEST = "d".repeat(64);
+export const FILE1 = "1".repeat(64);
+export const FILE2 = "2".repeat(64);
 
 export const completed = { ...structuredClone(reviewing), state: "COMPLETED", endedAt: "2026-11-04T10:00:09.000Z" };
 
 export const file = {
+  fileId: FILE1,
   displayPath: "src/a.ts",
   status: "M",
   kind: "text",
@@ -17,11 +20,13 @@ export const file = {
   deletions: 1,
   unsafePath: false,
   truncated: false,
+  contentId: null as string | null,
   acknowledged: false,
   protectedRules: [] as string[],
   warnings: [] as string[],
 };
 export const renamed = {
+  fileId: FILE2,
   displayPath: "src/new.ts",
   displayOldPath: "src/old.ts",
   status: "R",
@@ -29,6 +34,7 @@ export const renamed = {
   similarity: 90,
   unsafePath: false,
   truncated: true,
+  contentId: SHA3,
   acknowledged: true,
   protectedRules: ["ci-workflow"],
   fileLevelReason: "renamed",
@@ -54,7 +60,7 @@ export const plan = {
 };
 
 /** Optional and nullable fields replaced by null or a string stay valid or are refused as the schema says; these are the valid ones. */
-const NULLABLE = /^null at (branch|treeHash)$/;
+const NULLABLE = /^null at (branch|treeHash|files\.\d+\.contentId)$/;
 
 export const P1B_SAMPLES: readonly Sample[] = [
   { contract: "axis.git", method: "pushPlan", side: "request", name: "minimal", value: { workspaceId: "ws-1", remote: "origin" } },
@@ -71,7 +77,7 @@ export const P1B_SAMPLES: readonly Sample[] = [
   { contract: "axis.git", method: "compareUrl", side: "request", name: "with base", value: { workspaceId: "ws-1", remote: "origin", base: "main" } },
   { contract: "axis.git", method: "compareUrl", side: "response", name: "url", value: { url: "https://github.com/owner/repo/compare/main...axis/fix-it" } },
   { contract: "axis.review", method: "diff", side: "request", name: "diff", value: { workspaceId: "ws-1" } },
-  { contract: "axis.review", method: "diff", side: "request", name: "with acknowledgements", value: { workspaceId: "ws-1", acknowledged: ["src/new.ts"] } },
+  { contract: "axis.review", method: "diff", side: "request", name: "with acknowledgements", value: { workspaceId: "ws-1", acknowledged: [{ fileId: FILE2, contentId: SHA3 }] } },
   { contract: "axis.review", method: "diff", side: "response", name: "files", value: diffResponse, toleratedPattern: NULLABLE },
   { contract: "axis.review", method: "diff", side: "response", name: "detached or blocked", value: { ...diffResponse, branch: null, treeHash: null, files: [], skipped: [], skippedCount: 0 } },
   { contract: "axis.review", method: "complete", side: "request", name: "complete", value: { runId: "run-1" } },

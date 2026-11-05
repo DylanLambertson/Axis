@@ -102,7 +102,7 @@ The **binding** is an instance of `ReviewBinding`, a class whose constructor nee
 
 ## 6a. What the daemon wire adds (ticket P1b)
 
-`axis.review/1.diff` is bounded-line review: the wire carries display paths, counts and flags, no hunks. It reports `truncated` for a file whose whole-file accept needs `acceptTruncated` (`hasCutLines`), and returns a `treeHash` only when no file is truncated and unacknowledged. The user acknowledges a file through the request's `acknowledged` list; the handler passes `acceptTruncated: true` for those files only, and MUST NOT pass it in any other case. See `docs/design/daemon-host.md` section 4.2.
+`axis.review/1.diff` is file-level review: the wire carries display paths, kinds, counts and flags, no line of any file, and there is no hunk method. It reports `truncated` and a `contentId` for a file whose whole-file accept needs `acceptTruncated` (`hasCutLines`), and returns a `treeHash` only when no such file lacks an acknowledgement. The user acknowledges a file with `{ fileId, contentId }` from the response; the handler passes `acceptTruncated: true` only when both equal the entry of the current review, and MUST NOT pass it in any other case. Files the view would not cut, binaries and over-size text are committed unseen: a recorded residual (threat model REV-1). See `docs/design/daemon-host.md` section 4.2.
 
 ## 7. Display (FT-1, DASH-1)
 

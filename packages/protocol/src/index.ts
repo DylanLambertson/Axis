@@ -11,6 +11,7 @@ export * from "./approvals.js";
 export * from "./audit.js";
 export * from "./cliRuns.js";
 export * from "./providers.js";
+export * from "./display.js";
 export * from "./git.js";
 export * from "./review.js";
 export * from "./contracts.js";
