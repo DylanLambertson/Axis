@@ -1,29 +1,63 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
-import type { PortContext } from "./common.js";
 
+/**
+ * Run states and status as `@axis/journal` and `@axis/runs` define them. This port repeats the shapes of
+ * `RunSupervisor` (only `src/bindings/runs.ts` may import the package); the contract-facing summary is the protocol's
+ * `axis.cli-runs` run schema, which the handler maps to.
+ */
 export const RUN_STATES = ["QUEUED", "RUNNING", "REVIEWING", "BLOCKED", "COMPLETED", "FAILED", "CANCELLED"] as const;
 export type RunState = (typeof RUN_STATES)[number];
 
-export interface RunStartRequest {
+declare const attestationBrand: unique symbol;
+
+/**
+ * Main's statement that the workspace's repository is trusted right now (TRU-2): bound to a workspace and project,
+ * expiring and single use. It is opaque here and only the binding can make or read one; a plain `trusted: true`
+ * is not accepted anywhere.
+ */
+export interface RunTrustAttestation {
+  readonly [attestationBrand]: true;
+}
+
+/** Mints a `RunTrustAttestation` from the window-verified call main attested. Fed by the control channel. */
+export interface RunTrustMinter {
+  attest(facts: { readonly workspaceId: string; readonly projectId: string }): RunTrustAttestation;
+}
+
+export interface RunsStartRequest {
   readonly workspaceId: string;
-  /** A key of the `axis.cliAgents` setting, never a command line. */
-  readonly agentId: string;
+  /** The `axis.cliAgents` entry the host resolved from user-scope settings; never a command line from a payload. */
+  readonly agent: unknown;
+  /** The authenticated principal of the connection, never a value from a payload. */
+  readonly actor: string;
+  readonly trust: RunTrustAttestation;
+  readonly idempotencyKey?: string;
 }
 
 export interface RunSummary {
-  readonly id: string;
+  readonly runId: string;
   readonly workspaceId: string;
   readonly state: RunState;
-  /** Why a BLOCKED, FAILED or CANCELLED run ended, as a closed code such as `INTERRUPTED_BY_RESTART`. */
-  readonly reason?: string;
+  readonly status: string;
+  readonly reason: string | null;
+  readonly exitCode: number | null;
+  readonly createdAt: string;
+  readonly startedAt: string | null;
+  readonly endedAt: string | null;
+  readonly live: boolean;
+  readonly lastOutputAt: number | null;
+  readonly outputChars: number;
+  readonly droppedChars: number;
+  readonly snapshotAfter: string;
 }
 
-/** CLI run lifecycle over the journal. Ids only: no path and no command line crosses this port. */
+/** The CLI run lifecycle: a binding over `RunSupervisor`. Ids only; no path or command line crosses it. */
 export interface RunsService {
-  start(req: RunStartRequest, ctx: PortContext): Promise<RunSummary>;
-  stop(runId: string, ctx: PortContext): Promise<RunSummary>;
-  get(runId: string, ctx: PortContext): Promise<RunSummary>;
-  list(workspaceId: string, ctx: PortContext): Promise<readonly RunSummary[]>;
+  start(req: RunsStartRequest): Promise<{ readonly run: RunSummary; readonly replayed: boolean }>;
+  stop(runId: string, actor: string): RunSummary;
+  get(runId: string): RunSummary;
+  /** Bounded: `limit` is at most 1000, there is no cursor. */
+  list(options?: { readonly workspaceId?: string; readonly limit?: number }): readonly RunSummary[];
   /** True while a CLI run is active in the workspace (the `@axis/git-ops` guard and the worktrees refusals). */
   isActive(workspaceId: string): boolean;
 }

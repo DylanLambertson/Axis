@@ -1,19 +1,21 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
-import type { CliProcessHost } from "./cli-process.js";
 import type { Clock } from "./clock.js";
-import type { GitRunners } from "./git-runners.js";
+import type { GitPort } from "./git.js";
+import type { PtyPort } from "./pty.js";
 import type { RandomSource } from "./random.js";
 import type { ReviewService } from "./review.js";
-import type { RunsService } from "./runs.js";
+import type { RunTrustMinter, RunsService } from "./runs.js";
 import type { StoragePort } from "./storage.js";
 import type { SupervisorChannel } from "./supervisor.js";
 import type { TrustRegistry } from "./trust.js";
+import type { WorktreeLocator } from "./worktree-locator.js";
 import type { WorktreesService } from "./worktrees.js";
 
-export type * from "./cli-process.js";
 export type * from "./clock.js";
 export type * from "./common.js";
-export type * from "./git-runners.js";
+export type * from "./git.js";
+export type * from "./pty.js";
+export type * from "./worktree-locator.js";
 export type * from "./random.js";
 export * from "./review.js";
 export * from "./runs.js";
@@ -31,7 +33,9 @@ export interface HostPorts {
   readonly worktrees: WorktreesService;
   readonly runs: RunsService;
   readonly review: ReviewService;
-  readonly cliProcess: CliProcessHost;
-  readonly gitRunners: GitRunners;
+  readonly pty: PtyPort;
+  readonly git: GitPort;
+  readonly locator: WorktreeLocator;
+  readonly runTrust: RunTrustMinter;
   readonly trust: TrustRegistry;
 }
