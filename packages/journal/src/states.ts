@@ -45,21 +45,33 @@ export const RUN_TRANSITIONS: Readonly<Record<RunState, readonly RunState[]>> = 
 export const RUN_TERMINAL_STATES: readonly RunState[] = ["COMPLETED", "FAILED", "CANCELLED"];
 
 /**
- * Workspace lifecycle: CREATING -> READY -> REMOVING -> REMOVED, plus FAILED
- * when creation does not finish. REMOVING can fall back to READY when removal
- * is refused or fails cleanly. (The design's `agent_workspaces.state` starts
- * at READY; CREATING and REMOVING exist so a crash between the journal write
- * and the Git operation is visible and recoverable, journal-first.)
+ * Workspace lifecycle: CREATING -> READY -> (FINALISED ->) REMOVING -> REMOVED, plus FAILED
+ * when creation does not finish. REMOVING can fall back to the state it came from (READY or
+ * FINALISED) when removal is refused or fails cleanly. (The design's `agent_workspaces.state`
+ * starts at READY; CREATING and REMOVING exist so a crash between the journal write and the Git
+ * operation is visible and recoverable, journal-first.)
+ *
+ * Names against the other packages: `@axis/worktrees` and the protocol say READY and FINALISED
+ * under the same names. The protocol's CLEANED is this journal's REMOVED (wire name for the same
+ * end state; the host maps it, the journal does not store two names). CREATING, REMOVING and
+ * FAILED are journal-only crash-visibility states and are never sent on the wire as such.
  */
-export const WORKSPACE_STATES = ["CREATING", "READY", "REMOVING", "REMOVED", "FAILED"] as const;
+export const WORKSPACE_STATES = ["CREATING", "READY", "FINALISED", "REMOVING", "REMOVED", "FAILED"] as const;
 export type WorkspaceState = (typeof WORKSPACE_STATES)[number];
 
 export const WORKSPACE_TRANSITIONS: Readonly<Record<WorkspaceState, readonly WorkspaceState[]>> = {
   CREATING: ["READY", "FAILED"],
-  READY: ["REMOVING"],
-  REMOVING: ["REMOVED", "READY"],
+  READY: ["FINALISED", "REMOVING"],
+  FINALISED: ["REMOVING"],
+  REMOVING: ["REMOVED", "READY", "FINALISED"],
   REMOVED: [],
   FAILED: [],
 };
+
+export const FINALISE_OUTCOMES = ["merged", "archived", "abandoned"] as const;
+export type FinaliseOutcome = (typeof FINALISE_OUTCOMES)[number];
+
+export const LOCK_STATES = ["unlocked", "locked"] as const;
+export type LockState = (typeof LOCK_STATES)[number];
 
 export const RESTART_REASON = "INTERRUPTED_BY_RESTART";
