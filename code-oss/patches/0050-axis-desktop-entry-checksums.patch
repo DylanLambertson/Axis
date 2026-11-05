@@ -1,0 +1,15 @@
+diff --git a/build/gulpfile.vscode.ts b/build/gulpfile.vscode.ts
+index 0256e9e..2494ccc 100644
+--- a/build/gulpfile.vscode.ts
++++ b/build/gulpfile.vscode.ts
+@@ -146,6 +146,10 @@ function packageTask(platform: string, arch: string, sourceFolderName: string, d
+ 			'vs/base/parts/sandbox/electron-browser/preload.js',
+ 			'vs/workbench/workbench.desktop.main.js',
+ 			'vs/workbench/workbench.desktop.main.css',
++			// --- Start Axis ---
++			'vs/axis/axis.desktop.main.js',
++			'vs/axis/axis.desktop.main.css',
++			// --- End Axis ---
+ 			'vs/workbench/api/node/extensionHostProcess.js',
+ 			'vs/code/electron-browser/workbench/workbench.html',
+ 			'vs/code/electron-browser/workbench/workbench.js',

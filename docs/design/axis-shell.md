@@ -46,6 +46,7 @@ This design is split into files of under 500 lines each. Section numbers are unc
 | §3 | `axis-shell-stage2.md`: the `src/vs/axis` shell layer (superseded by ADR 0004) |
 | §4 to §6 | `axis-shell-stage2-plan.md`: React, accessibility, M3 tasks |
 | §7, §8 | `axis-shell-risks.md`: risks, open questions, decisions D1 to D9 |
+| Agent-first Stage 2 (ADR 0004) | `axis-agent-shell.md`: the agent-first shell design; `axis-shell-runbook.md`: building and running it; `../feasibility/axis-shell-phase0.md`: what Phase 0 measured |
 
 ## 0. Summary of decisions
 
