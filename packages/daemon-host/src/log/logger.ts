@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { types } from "node:util";
-import type { Redactor } from "@axis/audit";
+import { AxisError, type Redactor } from "@axis/audit";
 import type { LogLevel } from "../config.js";
 import type { Clock } from "../ports/clock.js";
 import { summarizeError } from "./summarize-error.js";
@@ -84,6 +84,10 @@ const EVENTS: ReadonlySet<string> = new Set(LOG_EVENTS);
 const FIELDS: ReadonlySet<string> = new Set(LOG_FIELDS);
 const DEFAULT_QUEUE = 256;
 const MAX_FIELD_CHARS = 256;
+/** A string longer than this is not scanned at all: it becomes a fixed marker, never a prefix that could cut a secret. */
+const MAX_SCAN_CHARS = 4096;
+const MAX_KEYS_COUNTED = 1024;
+const MAX_QUEUE = 100_000;
 const MAX_LINE_CHARS = 2048;
 
 interface Queued {
@@ -95,6 +99,9 @@ export function createLogger(options: LoggerOptions): Logger {
   const { redactor, clock, sink } = options;
   const threshold = RANK[options.level ?? "info"];
   const capacity = options.queueSize ?? DEFAULT_QUEUE;
+  if (!Number.isInteger(capacity) || capacity < 1 || capacity > MAX_QUEUE) {
+    throw new AxisError("E_INVALID_ARGUMENT", "Invalid logger queueSize");
+  }
   const queue: Queued[] = [];
   let blocked = false;
   let draining = false;
@@ -110,6 +117,17 @@ export function createLogger(options: LoggerOptions): Logger {
       return "1970-01-01T00:00:00.000Z";
     }
   };
+
+  /** Redact first, then cut, so a secret straddling the cut cannot survive as a prefix. */
+  function boundField(v: string): string {
+    if (v.length > MAX_SCAN_CHARS) return "[truncated]";
+    const clean = redactor.redactString(v);
+    if (clean.length <= MAX_FIELD_CHARS) return clean;
+    let end = MAX_FIELD_CHARS;
+    const last = clean.charCodeAt(end - 1);
+    if (last >= 0xd800 && last <= 0xdbff) end--; // never split a surrogate pair
+    return `${clean.slice(0, end)}[cut]`;
+  }
 
   /** The safe scalar fields of `input`: closed names only, values bounded then redacted, nothing else read. */
   function collect(input: unknown): Record<string, string | number | boolean> {
@@ -131,7 +149,7 @@ export function createLogger(options: LoggerOptions): Logger {
         if (s.code !== undefined) out["errorCode"] = s.code;
         if (s.errno !== undefined) out["errno"] = s.errno;
       } else if (typeof v === "string") {
-        out[name] = redactor.redactString(v.length > MAX_FIELD_CHARS ? v.slice(0, MAX_FIELD_CHARS) : v);
+        out[name] = boundField(v);
       } else if (typeof v === "number") {
         out[name] = Number.isFinite(v) ? v : 0;
       } else if (typeof v === "boolean") {
@@ -142,7 +160,11 @@ export function createLogger(options: LoggerOptions): Logger {
     }
     // Names outside the closed set are counted, not copied (their keys are client text too).
     let extra = 0;
-    for (const key of Object.keys(input)) if (!FIELDS.has(key) && key !== "error") extra++;
+    let visited = 0;
+    for (const key in input) {
+      if (++visited > MAX_KEYS_COUNTED) break; // bounded: a huge object costs a bounded walk
+      if (Object.hasOwn(input, key) && !FIELDS.has(key) && key !== "error") extra++;
+    }
     if (skipped + extra > 0) out["fieldsDropped"] = skipped + extra;
     return out;
   }

@@ -1,9 +1,10 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { isAbsolute } from "node:path";
-import { types } from "node:util";
 import { z } from "zod";
-import { AxisError } from "@axis/audit";
+import { AxisError, type Redactor } from "@axis/audit";
 import { contractIdSchema } from "@axis/protocol";
+import { refuseNonPlainData } from "./inspect.js";
+import { registerHostSecrets } from "./secrets.js";
 
 /**
  * `HostConfig`: the one `init` message the supervisor sends (design section 3, step 2). The data directory and the
@@ -109,20 +110,21 @@ function invalid(issues: string): AxisError {
 
 /**
  * Parse the `init` payload. Throws `AxisError` `E_INVALID_ARGUMENT` (exit code 78) whose detail lists the failing
- * paths and issue codes only. The input is not modified, a `Proxy` is refused unread, and the result is frozen.
+ * paths and issue codes only. The input is checked for a `Proxy`, accessors and class instances at every depth
+ * before a schema reads it, and is never modified. The result is frozen, and its `attestationKey` is a getter that
+ * returns a fresh copy on every read, so a holder that zeroes or changes its copy cannot change the host's. The
+ * key (and its derived forms) is registered with `redactor` before this returns, so no later log line can carry it.
  */
-export function parseHostConfig(input: unknown): HostConfig {
-  if (typeof input !== "object" || input === null || Array.isArray(input) || types.isProxy(input)) {
-    throw invalid("(root):invalid_type");
-  }
-  let result: ReturnType<typeof hostConfigSchema.safeParse>;
-  try {
-    result = hostConfigSchema.safeParse(input);
-  } catch {
-    // A getter that throws, or any other hostile input the schema could not read.
-    throw invalid("(root):unreadable");
-  }
+export function parseHostConfig(input: unknown, redactor: Redactor): HostConfig {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) throw invalid("(root):invalid_type");
+  const refusal = refuseNonPlainData(input);
+  if (refusal !== undefined) throw invalid(`(root):${refusal}`);
+  const result = hostConfigSchema.safeParse(input);
   if (!result.success) throw invalid(describeIssues(result.error));
-  const c = result.data;
-  return Object.freeze({ ...c, limits: Object.freeze({ ...c.limits }) });
+  const { attestationKey, ...rest } = result.data;
+  const key = new Uint8Array(attestationKey);
+  registerHostSecrets(redactor, key);
+  const config = { ...rest, limits: Object.freeze({ ...rest.limits }) };
+  Object.defineProperty(config, "attestationKey", { enumerable: true, get: () => new Uint8Array(key) });
+  return Object.freeze(config) as HostConfig;
 }

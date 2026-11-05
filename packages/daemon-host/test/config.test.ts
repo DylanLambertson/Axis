@@ -1,13 +1,13 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { AxisError } from "@axis/audit";
+import { AxisError, Redactor } from "@axis/audit";
 import { exitCodeForStartupError, EXIT, parseHostConfig } from "../src/index.js";
 import { validConfig } from "./helpers.js";
 
 function refused(input: unknown): AxisError {
   try {
-    parseHostConfig(input);
+    parseHostConfig(input, new Redactor());
   } catch (e) {
     assert.ok(e instanceof AxisError, "an AxisError");
     assert.equal(e.code, "E_INVALID_ARGUMENT");
@@ -18,7 +18,7 @@ function refused(input: unknown): AxisError {
 }
 
 test("a valid config parses, applies defaults, turns the key into bytes and is frozen", () => {
-  const c = parseHostConfig(validConfig());
+  const c = parseHostConfig(validConfig(), new Redactor());
   assert.equal(c.logLevel, "info");
   assert.equal(c.devDiagnostics, false);
   assert.equal(c.devMemoryIdempotency, false);
@@ -32,7 +32,7 @@ test("a valid config parses, applies defaults, turns the key into bytes and is f
 test("the input is not modified", () => {
   const input = validConfig({ limits: { maxConnections: 4 } });
   const before = JSON.stringify(input);
-  parseHostConfig(input);
+  parseHostConfig(input, new Redactor());
   assert.equal(JSON.stringify(input), before);
 });
 
@@ -83,8 +83,8 @@ test("paths must be absolute, free of NUL and bounded", () => {
 
 test("attestationKey: at least 32 bytes of canonical base64url", () => {
   const key = (bytes: number): string => Buffer.from(Array.from({ length: bytes }, (_, i) => (i * 7 + 1) & 255)).toString("base64url");
-  assert.equal(parseHostConfig(validConfig({ attestationKey: key(32) })).attestationKey.length, 32);
-  assert.equal(parseHostConfig(validConfig({ attestationKey: key(96) })).attestationKey.length, 96);
+  assert.equal(parseHostConfig(validConfig({ attestationKey: key(32) }), new Redactor()).attestationKey.length, 32);
+  assert.equal(parseHostConfig(validConfig({ attestationKey: key(96) }), new Redactor()).attestationKey.length, 96);
   refused(validConfig({ attestationKey: key(31) }));
   refused(validConfig({ attestationKey: key(97) }));
   refused(validConfig({ attestationKey: "" }));
@@ -108,7 +108,7 @@ test("attestationKey: an all-zero or low-entropy key is refused", () => {
 });
 
 test("limits: integers within bounds only; NaN, Infinity, floats and negatives are refused", () => {
-  assert.equal(parseHostConfig(validConfig({ limits: { maxConnections: 8, connectBurst: 1 } })).limits.maxConnections, 8);
+  assert.equal(parseHostConfig(validConfig({ limits: { maxConnections: 8, connectBurst: 1 } }), new Redactor()).limits.maxConnections, 8);
   for (const bad of [NaN, Infinity, -Infinity, -1, 0, 1.5, 2 ** 53, "8", null, true, 1025]) {
     refused(validConfig({ limits: { maxConnections: bad } }));
   }
@@ -118,7 +118,7 @@ test("limits: integers within bounds only; NaN, Infinity, floats and negatives a
 });
 
 test("contracts: valid ids, unique, bounded", () => {
-  assert.deepEqual(parseHostConfig(validConfig({ contracts: ["axis.worktrees", "axis.audit"] })).contracts, ["axis.worktrees", "axis.audit"]);
+  assert.deepEqual(parseHostConfig(validConfig({ contracts: ["axis.worktrees", "axis.audit"] }), new Redactor()).contracts, ["axis.worktrees", "axis.audit"]);
   refused(validConfig({ contracts: ["axis.worktrees", "axis.worktrees"] }));
   refused(validConfig({ contracts: ["axis.worktrees/1"] }));
   refused(validConfig({ contracts: ["worktrees"] }));
@@ -128,7 +128,7 @@ test("contracts: valid ids, unique, bounded", () => {
 test("devMemoryIdempotency needs devDiagnostics", () => {
   refused(validConfig({ devMemoryIdempotency: true }));
   refused(validConfig({ devMemoryIdempotency: true, devDiagnostics: false }));
-  assert.equal(parseHostConfig(validConfig({ devMemoryIdempotency: true, devDiagnostics: true })).devMemoryIdempotency, true);
+  assert.equal(parseHostConfig(validConfig({ devMemoryIdempotency: true, devDiagnostics: true }), new Redactor()).devMemoryIdempotency, true);
 });
 
 test("non-objects, arrays and null are refused", () => {

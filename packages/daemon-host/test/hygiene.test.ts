@@ -16,8 +16,8 @@ test("using every part of the scaffold leaves no timers and no process listeners
   d.add(() => { throw new Error("x"); }, "throws");
   await wait(10);
   for (let i = 0; i < 100; i++) {
-    parseHostConfig(validConfig());
-    try { parseHostConfig({}); } catch (e) { exitCodeForStartupError(e); summarizeError(e); }
+    parseHostConfig(validConfig(), new Redactor());
+    try { parseHostConfig({}, new Redactor()); } catch (e) { exitCodeForStartupError(e); summarizeError(e); }
   }
   await d.dispose();
   await wait(5);
