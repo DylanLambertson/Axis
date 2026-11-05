@@ -14,8 +14,9 @@
   "scripts": {
     "clean": "node scripts/clean-dist.mjs",
     "build": "node scripts/clean-dist.mjs && tsc -b",
+    "gate": "node scripts/gate.mjs",
     "typecheck": "tsc -b && npm run typecheck --workspaces --if-present",
-    "test": "npm run build && npm test --workspaces --if-present && node --test \"test/packages/*.test.mjs\""
+    "test": "node scripts/test-all.mjs"
   },
   "devDependencies": {
     "@types/node": "24.19.2",
