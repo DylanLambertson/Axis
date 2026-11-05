@@ -110,3 +110,56 @@ test("a scanner that reports ScanIncomplete ends the scan: refuse blocks scan_in
   assert.equal(e.details, undefined);
   assert.ok(!e.message.includes("/secret"));
 });
+
+const MSG = (s: string[], req: { raw?: boolean }) => (s[0] === "cat-file" && req.raw === true ? { stdout: "tree x\n\nreal message\n" } : undefined);
+
+test("S2: once the scanner gave up on the patch nothing else is read or scanned, so a later failure cannot replace scan_incomplete", async () => {
+  const parts: string[] = [];
+  const scanner = async (_t: string, m: { part: string }): Promise<SecretFinding[]> => {
+    parts.push(m.part);
+    if (m.part === "patch") throw new ScanIncomplete();
+    throw new Error("a later, ordinary failure");
+  };
+  const r = new FakeRunner(healthy(MSG));
+  const p = await planPush(makeDeps(r, { scanner, scanMode: "refuse" }), { ...input, reportBlocked: true });
+  assert.equal(p.blocked?.reason, "scan_incomplete");
+  assert.deepEqual(parts, ["patch"]);
+  assert.equal(r.subs().some((s) => s[0] === "cat-file"), false, "the commit object is not even read");
+  // A failing read of the commit object (never reached) cannot replace it either.
+  const failing = new FakeRunner(healthy((s, req) => (s[0] === "cat-file" ? { code: 128 } : MSG(s, req))));
+  assert.equal((await planPush(makeDeps(failing, { scanner, scanMode: "refuse" }), { ...input, reportBlocked: true })).blocked?.reason, "scan_incomplete");
+});
+
+test("S2: a scanner that gives up on a message view ends the scan there (no further view, no later failure)", async () => {
+  const parts: string[] = [];
+  const scanner = async (_t: string, m: { part: string }): Promise<SecretFinding[]> => {
+    parts.push(m.part);
+    if (m.part === "message") throw new ScanIncomplete();
+    return [];
+  };
+  // Latin-1 bytes: the message has two views (the bytes read as UTF-8, and decoded from its declared encoding).
+  const twoViews = (s: string[], req: { raw?: boolean }) => (s[0] === "cat-file" && req.raw === true ? { stdout: "tree x\nencoding iso-8859-1\n\nmsg \xe9\n" } : undefined);
+  const d = makeDeps(new FakeRunner(healthy(twoViews)), { scanner, scanMode: "refuse" });
+  assert.equal((await planPush(d, { ...input, reportBlocked: true })).blocked?.reason, "scan_incomplete");
+  assert.deepEqual(parts, ["patch", "message"], "the second view is not scanned");
+  const ok: string[] = [];
+  await planPush(makeDeps(new FakeRunner(healthy(twoViews)), { scanner: async (_t, m) => (ok.push(m.part), []), scanMode: "refuse" }), input);
+  assert.deepEqual(ok, ["patch", "message", "message"], "without a give-up both views are scanned");
+});
+
+test("S1: a binary name with U+FFFD stays blocked even when listed, and the scanner is never told it is allowed", async () => {
+  const name = "alias�.bin";
+  const stat = (s: string[]) => (s[0] === "diff-tree" && s.includes("--numstat") ? { stdout: `-\t-\t${name}\0-\t-\tplain.bin\0` } : undefined);
+  const allowedSeen: string[][] = [];
+  const scanner = async (_t: string, m: { part: string; allowedBinaryPaths?: readonly string[] }): Promise<SecretFinding[]> => {
+    if (m.part === "patch") allowedSeen.push([...(m.allowedBinaryPaths ?? [])]);
+    return [];
+  };
+  const d = makeDeps(new FakeRunner(healthy(stat)), { scanner, scanMode: "refuse" });
+  const p = await planPush(d, { ...input, reportBlocked: true, allowedBinaryPaths: [name, "plain.bin"] });
+  assert.deepEqual(p.blocked, { reason: "binary_unscanned", unlistedBinaryPaths: [name] });
+  assert.deepEqual(allowedSeen, [["plain.bin"]]);
+  assert.equal((await refusal(planPush(d, { ...input, allowedBinaryPaths: [name, "plain.bin"] }))).details?.["reason"], "binary_unscanned");
+  const e = await refusal(executePush(d, { ...input, allowedBinaryPaths: [name, "plain.bin"] }, { confirmed: true }));
+  assert.equal(e.details?.["reason"], "binary_unscanned");
+});

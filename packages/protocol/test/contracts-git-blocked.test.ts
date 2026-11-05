@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { GIT_PUSH_BLOCKS, GIT_PUSH_REASONS, GIT_PUSH_REFUSALS, MAX_ALLOWED_BINARY_PATHS, MAX_BLOCKED_BINARY_PATHS, gitPushReasonSchema } from "../src/index.js";
+import { GIT_COMMIT_REFUSALS, GIT_COMMIT_REASONS, gitCommitReasonSchema, GIT_PUSH_BLOCKS, GIT_PUSH_REASONS, GIT_PUSH_REFUSALS, MAX_ALLOWED_BINARY_PATHS, MAX_BLOCKED_BINARY_PATHS, gitPushReasonSchema } from "../src/index.js";
 import { DIGEST, SHA1, plan } from "./samples-p1b.js";
 import { accepts, rejects, schemaOf } from "./suite.js";
 
@@ -58,4 +58,17 @@ test("git.push request: the refusal reasons are not accepted as input, and the p
   const req = schemaOf(G, "push", "request");
   accepts(req, { workspaceId: "ws-1", remote: "origin", confirmedPlan: { tip: SHA1, digest: DIGEST } }, "plain push");
   for (const k of ["blocked", "reason", "force"]) rejects(req, { workspaceId: "ws-1", remote: "origin", confirmedPlan: { tip: SHA1, digest: DIGEST }, [k]: "x" }, k);
+});
+
+test("git_drift is a closed E_CONFLICT reason of commit and of push, each in its own table", () => {
+  assert.ok((GIT_COMMIT_REFUSALS.E_CONFLICT as readonly string[]).includes("git_drift"));
+  assert.ok((GIT_PUSH_REFUSALS.E_CONFLICT as readonly string[]).includes("git_drift"));
+  assert.ok((GIT_COMMIT_REASONS as readonly string[]).includes("git_drift"));
+  assert.equal(gitCommitReasonSchema.safeParse("git_drift").success, true);
+  for (const b of GIT_PUSH_BLOCKS) assert.equal(gitCommitReasonSchema.safeParse(b).success, false, `${b} is not a commit reason`);
+});
+
+test("git.pushPlan response: display paths that were shortened or escaped are still bounded display text", () => {
+  const res = schemaOf(G, "pushPlan", "response");
+  for (const p of [`${"a".repeat(120)}\u2026${"b".repeat(120)}`, "dir\\u{5c}name.bin", "a\\b.bin", "x\u2026y.bin"]) accepts(res, blocked({ binaryPaths: [p] }), p.slice(0, 20));
 });

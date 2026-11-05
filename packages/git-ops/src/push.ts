@@ -141,7 +141,7 @@ async function check(deps: GitOpsDeps, input: PushInput): Promise<{ plan: PushPl
   const { findings, binaryPaths, truncated, undecodable } = await scanOutgoing(deps, git, input.worktree, input.baseSha, tipSha, input.allowedBinaryPaths ?? []);
   const refuse = (deps.scanMode ?? "warn") === "refuse";
   const allowed = new Set(input.allowedBinaryPaths ?? []);
-  const unlisted = refuse ? binaryPaths.filter((p) => !allowed.has(p)) : [];
+  const unlisted = refuse ? binaryPaths.filter((p) => p.includes("\ufffd") || !allowed.has(p)) : [];
   const shown = (ps: readonly string[]): string => sanitizeText(ps.slice(0, 5).join(", ")) + (ps.length > 5 ? ` and ${ps.length - 5} more` : "");
   const reasons: string[] = [];
   // The first of these that applies is the block. Fail closed in either mode for a message: one with NUL bytes, bytes invalid in its encoding

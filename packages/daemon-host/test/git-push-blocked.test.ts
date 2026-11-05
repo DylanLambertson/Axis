@@ -2,6 +2,7 @@
 // Ticket P1e: a scan that blocks a push is shown (closed reason, rule names, display paths) and refused with a closed reason.
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { writeFileSync } from "node:fs";
 import { test, type TestContext } from "node:test";
 import { DaemonError } from "@axis/daemon";
 import { GIT_PUSH_BLOCKS, MAX_BLOCKED_BINARY_PATHS, gitPushPlanResponseSchema } from "@axis/protocol";
@@ -110,6 +111,25 @@ test("blocked binary paths are escaped, bounded and the truncation is said; a se
   assert.ok(odd.blocked.binaryPaths.some((x) => x.includes("odd\\u{202e}name.bin")), JSON.stringify(odd.blocked.binaryPaths));
 });
 
+test("S1: three different files whose names decode to one displayed name are never waived by allowing that name (the real U+FFFD name included)", { skip: SKIP ?? false }, async (t) => {
+  const { r, c } = await setup(t, { scanMode: "refuse" });
+  // Raw name bytes: `alias` + 0xff, `alias` + 0xfe (invalid UTF-8), and the genuine UTF-8 name `alias` + U+FFFD.
+  const tail = Buffer.from(".bin");
+  for (const b of [Buffer.from([0xff]), Buffer.from([0xfe]), Buffer.from("\ufffd")]) writeFileSync(Buffer.concat([Buffer.from(`${r.repo}/alias`), b, tail]), Buffer.from([0, 1, 2]));
+  r.git("add", "-A");
+  r.git("commit", "-q", "-m", "three names");
+  const shown = "alias\ufffd.bin";
+  const p = await planOf(c, r);
+  assert.equal(p.blocked?.reason, "binary_unscanned");
+  assert.deepEqual(p.blocked?.binaryPaths, [shown]);
+  // Allowing the displayed name waives none of them: still blocked, push refused, nothing sent.
+  const allowed = { allowedBinaryPaths: [shown] };
+  const q = await planOf(c, r, allowed);
+  assert.equal(q.blocked?.reason, "binary_unscanned", "the lossy name cannot be allowed");
+  assert.deepEqual(q.blocked?.binaryPaths, [shown]);
+  await assertRefused(r, c, q, "binary_unscanned", allowed);
+});
+
 test("a commit message nothing can read: blocked message_unscannable in refuse and in warn mode, and push is refused", { skip: SKIP ?? false }, async (t) => {
   for (const scanMode of ["refuse", "warn"] as const) {
     const { r, c } = await setup(t, { scanMode });
@@ -172,4 +192,9 @@ test("pushPlanReply: a blocked plan keeps only the closed reason, display-safe p
   // A block that also asks for confirmation is not a plan the contract carries.
   assert.equal(pushPlanReply({ ...facts, requiresConfirmation: true, reasons: ["r"], blocked: { reason: "secrets_found", binaryPaths: [] } }, "origin", "axis/feat"), null);
   assert.equal(pushPlanReply(facts, "origin", "axis/feat")?.blocked, undefined);
+  // Display text is not an identity: a long path, a backslash and an ellipsis are cut or escaped, so they differ from the path.
+  const odd = ["d/".repeat(200) + "x.bin", "a\\b.bin", "a\u2026b.bin"];
+  const shown = pushPlanReply({ ...facts, blocked: { reason: "binary_unscanned", binaryPaths: odd } }, "origin", "axis/feat")?.blocked?.binaryPaths;
+  assert.equal(shown?.length, 3);
+  odd.forEach((p, i) => assert.notEqual(shown?.[i], p, p.slice(0, 12)));
 });

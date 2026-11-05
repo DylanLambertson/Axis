@@ -69,8 +69,9 @@ export const GIT_COMMIT_REFUSALS = {
    * worktree no longer matches the reviewed tree. `index_changed`: the staged index changed since the review.
    * `operation_in_progress`: a merge, cherry-pick, revert, rebase or bisect is under way or the index has unmerged paths.
    * `ref_update_failed`: the branch could not be moved by compare-and-swap (a lock); it was left as it was. `snapshot_failed`: the worktree could not be read for the freshness check.
+   * `git_drift`: the repository's git configuration changed since it was recorded (`commit` re-takes the drift check before it commits).
    */
-  E_CONFLICT: ["head_moved", "stale", "index_changed", "operation_in_progress", "ref_update_failed", "snapshot_failed"],
+  E_CONFLICT: ["head_moved", "stale", "index_changed", "operation_in_progress", "ref_update_failed", "snapshot_failed", "git_drift"],
   /** `too_large` and `not_found`: the freshness re-check reads the worktree and HEAD through `@axis/review`. */
   E_INVALID_ARGUMENT: ["too_large", "not_found"],
   /** HEAD is detached, or the branch has no commit: Axis commits on `axis/<slug>` only. */
@@ -173,8 +174,9 @@ export const gitPushPlanResponseSchema = guarded(
       /**
        * Present only when the scan blocks the push (`GIT_PUSH_BLOCKS`): the plan cannot be confirmed and `push` refuses it with the
        * same reason. `findings` says which rules matched and where. `binaryPaths` are the binary paths still to be listed in
-       * `allowedBinaryPaths` (the escaped display form, which equals the path unless it holds a control or format character, so
-       * such a path cannot be allowed from here); `binaryPathsTruncated` says there were more than are listed.
+       * `allowedBinaryPaths`, in the DISPLAY form: it equals the path only when the path is not shortened (over 256 units) and holds no
+       * backslash, ellipsis, control or format character, so any other path cannot be copied from here. A name the host decoded
+       * lossily (U+FFFD: invalid bytes, or a real U+FFFD) can never be allowed. `binaryPathsTruncated` says there were more than listed.
        */
       blocked: z
         .strictObject({
