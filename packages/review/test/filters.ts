@@ -18,4 +18,3 @@ export function withFilter(clean: string, smudge: string): (a: { repo: string; g
 export const REVERSE = `let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write([...s].reverse().join("")));`;
 export const POINTER = `let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const h=require("node:crypto").createHash("sha256").update(s).digest("hex");process.stdout.write("version https://git-lfs.github.com/spec/v1\\noid sha256:"+h+"\\nsize "+s.length+"\\n");});`;
 export const PASS = `process.stdin.pipe(process.stdout);`;
-
