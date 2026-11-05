@@ -1,16 +1,19 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { spawn } from "node:child_process";
 import { GitOpsError, denied } from "./errors.js";
-import { assertGitOutsideWorktree, resolveGit, withTrustedPath } from "./gitPath.js";
+import { nodeFs } from "@axis/pty-policy";
+import { assertGitOutsideWorktree, requestDirs, resolveGit, withTrustedPath } from "./gitPath.js";
 import type { GitRunRequest, GitRunResult, GitRunner } from "./types.js";
 
 export interface NodeRunnerOptions {
   /** Tests only: allow the "pty" context in this process. The daemon must leave this false. */
   readonly allowPtyContext?: boolean;
   /**
-   * Absolute path of the git executable, chosen by the host. Default: the first `git` in the trusted entries of the
-   * daemon's own PATH (empty and relative entries ignored), resolved once. A bare `git` is never spawned, and a path
-   * inside the request's worktree is refused.
+   * Absolute path of the git executable, resolved ONCE by the host at daemon start with `resolveGit` and every registered
+   * worktree excluded. Default: resolved on the first request from the daemon's own PATH with only that request's
+   * directories excluded. Either way it is cached for the life of the runner and used by absolute path (a bare `git` is
+   * never spawned); a path inside the request's directories is refused. It is looked up again, through `resolveGit`
+   * only, when the cached file has gone (a package manager replaced it).
    */
   readonly gitPath?: string;
   readonly timeoutMs?: number;
@@ -37,24 +40,38 @@ function killLiveGroups(): void {
 /** Runs git with an argv vector and no shell. Refuses the pty context unless explicitly allowed. */
 export function createNodeRunner(opts: NodeRunnerOptions = {}): GitRunner {
   const maxOutput = opts.maxOutput ?? 32 * 1024 * 1024;
-  let resolved: string | undefined = opts.gitPath;
+  let cached: string | undefined = opts.gitPath;
+  const platform = process.platform;
+  /** The real path to spawn. A vanished file is looked up once more, through the one trusted resolver. */
+  function pickGit(req: GitRunRequest): string {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      cached ??= resolveGit(process.env, platform, requestDirs(req));
+      if (cached === undefined) throw new GitOpsError("E_UNAVAILABLE", "no git executable was found in a trusted PATH entry");
+      assertGitOutsideWorktree(cached, req, platform);
+      const real = nodeFs.realPath?.(cached);
+      if (real !== undefined) {
+        assertGitOutsideWorktree(real, req, platform);
+        return real;
+      }
+      cached = undefined; // gone: the next round looks again through resolveGit, the only trusted lookup
+    }
+    throw new GitOpsError("E_UNAVAILABLE", "the git executable could not be found");
+  }
   return {
     run(req: GitRunRequest): Promise<GitRunResult> {
       if (req.context === "pty" && opts.allowPtyContext !== true) {
         return Promise.reject(denied("the daemon process must not run pty-context git"));
       }
-      resolved ??= resolveGit(process.env["PATH"]);
-      if (resolved === undefined) return Promise.reject(new GitOpsError("E_UNAVAILABLE", "no git executable was found in a trusted PATH entry"));
-      const gitPath = resolved;
+      let gitPath: string;
       try {
-        assertGitOutsideWorktree(gitPath, req);
+        gitPath = pickGit(req);
       } catch (e) {
         return Promise.reject(e);
       }
       return new Promise((resolve, reject) => {
         // Its own process group on POSIX, so a timeout can kill git's children too (filters, submodule diffs, ssh).
         const group = process.platform !== "win32";
-        const child = spawn(gitPath, [...req.argv], { cwd: req.cwd, env: withTrustedPath(req.env), shell: false, detached: group, stdio: ["pipe", "pipe", "pipe"] });
+        const child = spawn(gitPath, [...req.argv], { cwd: req.cwd, env: withTrustedPath(req.env, req, platform), shell: false, detached: group, stdio: ["pipe", "pipe", "pipe"] });
         if (group && child.pid !== undefined) {
           liveGroups.add(child.pid);
           if (!exitHookInstalled) {

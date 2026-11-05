@@ -88,7 +88,14 @@ Fixed vectors (`sha256hex` as lowercase hex):
 
 ### Finding git (CLI-1, CFG-1)
 
-`createNodeRunner` never spawns a bare `git`. It resolves an absolute, symlink-free path once from the daemon's own `PATH` (empty and relative entries ignored, as they mean the current directory, which is the worktree), or takes one from the host (`gitPath`, absolute). Each request refuses (`E_POLICY_DENIED`) a git inside the request's working directory, `--work-tree` or `--git-dir`, and with no usable git the call fails with `E_UNAVAILABLE` without spawning anything. The child's own `PATH` is cleaned the same way, so git's helpers, hooks and external commands are not found through an empty or relative entry. The working directory of a request is unchanged (callers pass the work tree); only the executable lookup moved out of it.
+`createNodeRunner` never spawns a bare `git`, and git is found by one rule: `resolveExecutable` from `@axis/pty-policy` (the same resolver the pty launcher uses; `@axis/git-ops` depends on `@axis/pty-policy`, never the reverse). Empty, relative and `.` PATH entries are ignored; on Windows UNC, device, root-relative and quoted entries are refused as well (a network share would run code from elsewhere and leak credentials at launch) and only `.exe` and `.com` count. That behaviour is kept on purpose.
+
+- **The host resolves once.** At daemon start it calls `resolveGit(process.env, process.platform, excludeDirs)` with EVERY registered worktree and git directory in `excludeDirs` (so a git planted in a sibling worktree whose folder is on PATH is never chosen) and passes the result as `createNodeRunner({ gitPath })`. The path is cached for the life of the runner. No request re-reads PATH.
+- **Default.** Without `gitPath` the runner resolves once on the first request, excluding only that request's directories. That is weaker (siblings are not excluded); a daemon should pass `gitPath`.
+- **Per request.** The real path (symlinks resolved) is compared by path component with the request's cwd, `--work-tree` and `--git-dir`; a git inside any of them is `E_POLICY_DENIED` (`<worktree>/..bin/git` is inside; a symlink into the worktree is inside). The real path is what is spawned. A relative `gitPath` is refused.
+- **Gone.** If the cached file has vanished (a package manager replaced it) the runner looks again, through `resolveGit` only, and retries once; failing that, `E_UNAVAILABLE` and nothing is spawned.
+- **Children.** The environment git runs with gets a PATH holding only plain absolute entries outside the request's directories, so git's helpers and external commands are not found through an empty, relative or worktree entry. The working directory of a request is unchanged (callers pass the work tree).
+- Not covered: the pty-side runner (not in this repository yet) must resolve the same way; an absolute PATH entry inside a worktree the host did not list is trusted.
 
 ### Bound commit contract (what `@axis/review` implements against)
 
