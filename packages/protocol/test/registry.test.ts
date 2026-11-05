@@ -1,7 +1,6 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import { z } from "zod";
 import {
   MAX_TIMEOUT_MS,
@@ -239,31 +238,6 @@ test("the guard keeps `shape` so the daemon still sees an approval field", () =>
   assert.notEqual((approvalSchema as { shape?: unknown }).shape, undefined);
   const worktreesRemove = lookupMethod("axis.worktrees", 1, "remove") as MethodSpec;
   assert.notEqual((worktreesRemove.request as { shape?: unknown }).shape, undefined);
-});
-
-/** The shared digest of docs/packages.md "Shared request digest", written out independently of the daemon. */
-function canonicalJson(value: unknown): string {
-  const sort = (v: unknown): unknown =>
-    Array.isArray(v) ? v.map(sort) : v !== null && typeof v === "object"
-      ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, sort((v as Record<string, unknown>)[k])]))
-      : v;
-  const { approval: _a, ...rest } = value as Record<string, unknown>;
-  return JSON.stringify(sort(rest));
-}
-const requestDigest = (contract: string, version: number, method: string, payload: unknown): string =>
-  createHash("sha256").update(JSON.stringify(["axis.request/1", contract, version, method, canonicalJson(payload)])).digest("hex");
-
-test("request digest vectors: the registry's names reproduce the shared vectors", () => {
-  // Function-level vectors, pinned in @axis/challenge and @axis/daemon too.
-  assert.equal(requestDigest("axis.worktrees/1", 1, "remove", { id: "ws-1", deleteBranch: false }), "ccb3a71aa0bc5bd6db5ccfe6fe9a09abef12092dce13ba4f6d99e929a30e0fd7");
-  assert.equal(requestDigest("c", 1, "m", { b: [1, { z: null, y: true }], a: "x" }), "de8399306f850ad7498d82c8f95ec94ca317181b2422480425c52ad8ed55e596");
-  // The same request under the registry's own contract id and method.
-  assert.equal(requestDigest("axis.worktrees", 1, "remove", { id: "ws-1", deleteBranch: false }), "adb7a157e75395816cf74974fbdfa2b5bdf32831996a578ff80cdb46fe9d2735");
-  // `approval` never enters the digest, so the retry digests the same as the first request.
-  assert.equal(
-    requestDigest("axis.worktrees", 1, "remove", { id: "ws-1", deleteBranch: false, approval: { challengeId: "A".repeat(22) } }),
-    "adb7a157e75395816cf74974fbdfa2b5bdf32831996a578ff80cdb46fe9d2735",
-  );
 });
 
 test("methods that need approval: tier 3 and above, an optional approval field, and only those", () => {

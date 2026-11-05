@@ -38,8 +38,10 @@ export const cliRunsCursorSchema = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/);
  * The enums below are copies. Source: `@axis/journal` (`RUN_STATES`) and
  * `@axis/runs` (`RUN_STATUSES`, `SnapshotVerdict`, the `RunSummary` fields), read at
  * `@axis/runs` on origin/feat/runs 40963ac. `@axis/protocol` must not depend on
- * either package, so a root test (test/packages/protocol-copies.test.mjs) compares
- * these lists with the built packages. Change both together.
+ * either package, so a root test over the built packages
+ * (test/packages/protocol-copies.test.mjs) compares the run states with the
+ * journal's; the status and snapshot lists are to be added there when `@axis/runs`
+ * is on main. Change the copies and their source together.
  */
 export const RUN_STATE_VALUES = ["QUEUED", "RUNNING", "REVIEWING", "BLOCKED", "COMPLETED", "FAILED", "CANCELLED"] as const;
 export const runStateSchema = z.enum(RUN_STATE_VALUES);
