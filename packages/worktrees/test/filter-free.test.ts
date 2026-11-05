@@ -22,7 +22,7 @@ after(() => fixtures.forEach((f) => f.cleanup()));
 const hardened = (): HardenedGit => new HardenedGit(createExecGitRunner(), createHooksGuard('linux'));
 
 describe('NB-1: a filter with an empty name is neutralised', () => {
-  it('blanks `[filter ""]` for a command that is off the allow-list (best effort path)', async () => {
+  it('refuses a command that is off the allow-list, so even `[filter ""]` never runs', async () => {
     const fx = fresh();
     const marker = path.join(fx.tmp, 'PWNED-empty');
     // Written as text: `git config` refuses some spellings of an empty subsection on some versions.
@@ -35,7 +35,8 @@ describe('NB-1: a filter with an empty name is neutralised', () => {
     sh(fx.repo, 'status', '--porcelain');
     assert.equal(existsSync(marker), true, 'fixture is vacuous: plain git did not run the empty-name filter');
     rmSync(marker);
-    await hardened().run(['status', '--porcelain'], { cwd: fx.repo });
+    await assert.rejects(hardened().run(['status', '--porcelain'], { cwd: fx.repo }), (e: unknown) =>
+      e instanceof Error && 'code' in e && e.code === 'E_INTERNAL');
     assert.equal(existsSync(marker), false, 'empty-name filter executed through HardenedGit');
   });
 });

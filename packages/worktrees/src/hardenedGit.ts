@@ -13,7 +13,12 @@ export interface HardenedRunOptions {
   readonly allowFailure?: boolean;
   /** Skip optional index refreshes (for read-only status calls). */
   readonly noOptionalLocks?: boolean;
+  /** Overrides the instance default (`DEFAULT_GIT_TIMEOUT_MS`). */
+  readonly timeoutMs?: number;
 }
+
+/** A git call that has not finished by then is killed and fails with E_INTERNAL, so a hung git never holds a lock. */
+export const DEFAULT_GIT_TIMEOUT_MS = 120_000;
 
 /**
  * Supplies `core.hooksPath` for every daemon git call. On POSIX this is
@@ -61,63 +66,110 @@ export function redact(text: string): string {
   return text.replace(/(\w[\w+.-]*:\/\/)[^/\s]*@/g, '$1***@');
 }
 
-/** Skips leading `-c key=value` pairs and global flags to find the git subcommand. */
-function subcommandOf(args: readonly string[]): { sub: string | undefined; rest: readonly string[] } {
-  let i = 0;
-  while (i < args.length) {
-    const a = args[i] as string;
-    if (a === '-c' || a === '-C') i += 2;
-    else if (a.startsWith('--') && a.length > 2 && !a.startsWith('--end')) i += 1;
-    else break;
-  }
-  return { sub: args[i], rest: args.slice(i + 1) };
+interface Shape {
+  /** Flags allowed anywhere before `--` / `--end-of-options`. */
+  readonly flags?: readonly string[];
+  /** Flags that take the next argument as their value. */
+  readonly valued?: readonly string[];
+  /** Flags allowed in `--name=value` form. */
+  readonly prefixed?: readonly string[];
+  /** Flags that must be present. */
+  readonly required?: readonly string[];
+  /** False when the command must take no positional argument (such as a path). */
+  readonly positional?: boolean;
 }
 
 /**
- * Allow-list of git commands that cannot invoke a filter driver, because they
- * neither read the working tree through attributes nor check files out. Only
- * these are used by the manager (a test pins this). They skip the per-call
- * filter scan, which would otherwise be a time-of-check race (the repository
- * configuration is agent-writable): a command that is not on this list gets
- * `-c filter.<n>.*` overrides built from a scan taken just before the call,
- * which is best effort only and can lose that race. Do not add such a
- * command to the daemon.
+ * The exact command shapes the manager uses (a test pins every call), keyed by
+ * subcommand, or `worktree <op>`. None of them reads a working file through
+ * attributes, checks a file out, or starts an editor, so no filter driver or
+ * configured program can run. Anything else, including any other flag, is
+ * refused: widening a shape needs proof that it stays filter-free.
+ */
+const SHAPES: Readonly<Record<string, Shape>> = {
+  'config': { flags: ['--null', '--name-only', '--list', '--show-origin', '--show-scope', '--get-regexp'], required: ['--null'] },
+  'rev-parse': { flags: ['--verify', '--quiet'] },
+  'symbolic-ref': { flags: ['-q', '--short'] },
+  'show-ref': { flags: ['--verify', '--quiet'] },
+  'check-ref-format': { flags: ['--branch'] },
+  'for-each-ref': { prefixed: ['--format='] },
+  'update-ref': { flags: ['-d'] },
+  'branch': { flags: ['-D'], required: ['-D'] },
+  'merge-base': { flags: ['--is-ancestor'] },
+  'rev-list': { flags: ['--left-right', '--count'] },
+  'ls-tree': { flags: ['-r', '-z', '-l', '--full-tree'] },
+  'cat-file': { flags: ['--batch', '--batch-check'] },
+  'ls-files': { flags: ['-z', '-s', '--cached', '--others', '--exclude-standard', '--ignored', '--directory'], positional: false },
+  'write-tree': { positional: false },
+  'commit-tree': { valued: ['-p', '-m'] },
+  'read-tree': {},
+  'hash-object': { flags: ['-w', '--no-filters', '--stdin'], required: ['--no-filters', '--stdin'], positional: false },
+  'update-index': { flags: ['-z', '--index-info'], required: ['--index-info'], positional: false },
+  'worktree add': { flags: ['--no-checkout'], valued: ['-b'], required: ['--no-checkout'] },
+  'worktree lock': { valued: ['--reason'] },
+  'worktree unlock': {},
+  'worktree remove': { flags: ['--force'], required: ['--force'] },
+  'worktree prune': { positional: false },
+  'worktree list': { flags: ['--porcelain', '-z'], positional: false },
+};
+
+/** Leading `-c` pairs a caller may add (commit identity only); any other global option is refused. */
+const CALLER_CONFIG = /^user\.(name|email)=/;
+
+function fits(shape: Shape, rest: readonly string[]): boolean {
+  const seen = new Set<string>();
+  let literal = false;
+  for (let i = 0; i < rest.length; i++) {
+    const a = rest[i] as string;
+    if (literal || !a.startsWith('-') || a === '-') {
+      if (shape.positional === false) return false;
+    } else if (a === '--' || a === '--end-of-options') {
+      literal = true;
+    } else if (shape.flags?.includes(a)) {
+      seen.add(a);
+    } else if (shape.valued?.includes(a)) {
+      if (++i >= rest.length) return false;
+    } else if (!shape.prefixed?.some((p) => a.startsWith(p))) {
+      return false;
+    }
+  }
+  return (shape.required ?? []).every((r) => seen.has(r));
+}
+
+/**
+ * True only for a command that matches one of `SHAPES` exactly. `run()`
+ * refuses everything else instead of trying to neutralise filters with a scan
+ * of the (agent-writable) configuration, which would be a time-of-check race.
  */
 export function runsNoFilters(args: readonly string[]): boolean {
-  const { sub, rest } = subcommandOf(args);
-  switch (sub) {
-    case 'config': case 'rev-parse': case 'symbolic-ref': case 'show-ref': case 'check-ref-format':
-    case 'for-each-ref': case 'update-ref': case 'branch': case 'merge-base': case 'rev-list':
-    case 'ls-tree': case 'cat-file': case 'ls-files': case 'write-tree': case 'commit-tree':
-      return !rest.includes('--filters') && !rest.includes('--textconv') && !rest.includes('--eol');
-    case 'worktree': {
-      const op = rest[0];
-      if (op === 'add') return rest.includes('--no-checkout');
-      if (op === 'remove') return rest.includes('--force');
-      return op === 'list' || op === 'lock' || op === 'unlock' || op === 'prune';
-    }
-    case 'read-tree':
-      return !rest.includes('-u') && !rest.includes('-m');
-    case 'hash-object':
-      return rest.includes('--no-filters');
-    case 'update-index':
-      return rest.includes('--index-info') && !rest.includes('--refresh') && !rest.includes('--really-refresh');
-    default:
-      return false;
+  let i = 0;
+  while (args[i] === '-c') {
+    if (!CALLER_CONFIG.test(args[i + 1] ?? '')) return false;
+    i += 2;
   }
+  const sub = args[i];
+  const key = sub === 'worktree' ? `worktree ${args[i + 1] ?? ''}` : sub;
+  if (key === undefined || !Object.hasOwn(SHAPES, key)) return false;
+  return fits(SHAPES[key] as Shape, args.slice(i + (sub === 'worktree' ? 2 : 1)));
 }
 
 /**
  * Every daemon git call except commit and push (design 5.3 invariant 4):
- * hooks off, core.fsmonitor=false, no signing, literal pathspecs, and every
- * configured filter driver (clean, smudge, process) blanked, so nothing the
- * repository configuration names can execute in the daemon.
+ * hooks off, core.fsmonitor=false, no signing, literal pathspecs, a timeout,
+ * and only command shapes that cannot start a filter driver (clean, smudge,
+ * process) or an editor (`runsNoFilters`); any other command is refused, so
+ * nothing the repository configuration names can execute in the daemon.
  */
 export class HardenedGit {
+  private readonly timeoutMs: number;
+
   constructor(
     private readonly runner: GitRunner,
     private readonly hooks: HooksGuard,
-  ) {}
+    options: { readonly timeoutMs?: number } = {},
+  ) {
+    this.timeoutMs = options.timeoutMs ?? DEFAULT_GIT_TIMEOUT_MS;
+  }
 
   private prefix(noOptionalLocks: boolean | undefined): string[] {
     return [
@@ -130,41 +182,17 @@ export class HardenedGit {
     ];
   }
 
-  /** `-c filter.<n>.{clean,smudge,process}=` for every filter named in any config scope. */
-  private async filterOverrides(cwd: string): Promise<string[]> {
-    await this.hooks.assertInert();
-    const res = await this.runner.run(
-      [...this.prefix(true), 'config', '--null', '--name-only', '--get-regexp', '^filter\\.'],
-      { cwd },
-    );
-    const names = new Set<string>();
-    for (const key of res.stdout.split('\0')) {
-      if (key === '') continue;
-      // The name may be empty (`[filter ""]` is `filter..clean`) or contain dots.
-      const m = /^filter\.(.*)\.([^.]+)$/is.exec(key);
-      if (!m) {
-        throw new WorktreeError('E_POLICY_DENIED', 'a filter configuration key cannot be neutralised', { reason: 'filter-name' });
-      }
-      names.add(m[1] as string);
-    }
-    const out: string[] = [];
-    for (const n of names) {
-      if (n.includes('=') || n.includes('\n')) {
-        throw new WorktreeError('E_POLICY_DENIED', 'a filter driver name cannot be neutralised', { reason: 'filter-name' });
-      }
-      out.push(
-        '-c', `filter.${n}.clean=`, '-c', `filter.${n}.smudge=`,
-        '-c', `filter.${n}.process=`, '-c', `filter.${n}.required=false`,
-      );
-    }
-    return out;
-  }
-
   async run(args: readonly string[], opts: HardenedRunOptions): Promise<GitResult> {
+    if (!runsNoFilters(args)) {
+      // Fail closed: a command that cannot be shown filter-free never runs (NB-2, R3-3).
+      throw new WorktreeError('E_INTERNAL', 'refusing a git command that is not on the filter-free allow-list', {
+        reason: 'git-command-refused', args: args.slice(0, 4),
+      });
+    }
     await this.hooks.assertInert();
-    const filters = runsNoFilters(args) ? [] : await this.filterOverrides(opts.cwd);
-    const result = await this.runner.run([...this.prefix(opts.noOptionalLocks), ...filters, ...args], {
+    const result = await this.runner.run([...this.prefix(opts.noOptionalLocks), ...args], {
       cwd: opts.cwd,
+      timeoutMs: opts.timeoutMs ?? this.timeoutMs,
       ...(opts.input !== undefined ? { input: opts.input } : {}),
       ...(opts.extraEnv ? { extraEnv: opts.extraEnv } : {}),
     });
