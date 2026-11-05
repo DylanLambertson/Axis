@@ -58,7 +58,7 @@ export const P1A_SAMPLES: readonly Sample[] = [
     name: "approve",
     value: { challengeId: CHALLENGE_A, decision: "approve", digest: "a".repeat(64) },
   },
-  { contract: "axis.approvals", method: "resolve", side: "response", name: "approved", value: { challengeId: CHALLENGE_A, state: "approved" } },
+  { contract: "axis.approvals", method: "resolve", side: "response", name: "approved", value: { challengeId: CHALLENGE_A, state: "approved", nativeRequired: true } },
   { contract: "axis.approvals", method: "pending", side: "request", name: "empty", value: {} },
   { contract: "axis.approvals", method: "pending", side: "response", name: "two challenges", value: { challenges: [challengeA, challengeB] } },
   { contract: "axis.audit", method: "status", side: "request", name: "empty", value: {} },

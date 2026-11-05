@@ -61,9 +61,11 @@ test("approvals.resolve: request bounds and identity", () => {
 });
 
 test("approvals.resolve: response states are the closed three", () => {
-  for (const state of ["approved", "denied", "expired"]) accepts(resolveRes(), { challengeId: CHALLENGE_A, state }, state);
-  for (const state of ["pending", "confirmed", "APPROVED", "", null]) rejects(resolveRes(), { challengeId: CHALLENGE_A, state }, String(state));
-  rejects(resolveRes(), { challengeId: CHALLENGE_A, state: "approved", nativeRequired: true }, "extra field");
+  for (const state of ["approved", "denied", "expired"]) accepts(resolveRes(), { challengeId: CHALLENGE_A, state, nativeRequired: false }, state);
+  for (const state of ["pending", "confirmed", "APPROVED", "", null]) rejects(resolveRes(), { challengeId: CHALLENGE_A, state, nativeRequired: false }, String(state));
+  rejects(resolveRes(), { challengeId: CHALLENGE_A, state: "approved", nativeRequired: false, approver: "user" }, "extra field");
+  rejects(resolveRes(), { challengeId: CHALLENGE_A, state: "approved" }, "nativeRequired missing");
+  rejects(resolveRes(), { challengeId: CHALLENGE_A, state: "approved", nativeRequired: "yes" }, "nativeRequired as string");
 });
 
 test("approvals.pending: bounds, shape and unique ids", () => {

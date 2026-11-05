@@ -22,12 +22,23 @@ import type { MethodSpec } from "./worktrees.js";
 export const APPROVALS_CONTRACT = "axis.approvals" as const;
 export const APPROVALS_VERSION = 1 as const;
 
-/** Most open challenges one listing can carry (the challenge manager's overall default). */
-export const MAX_PENDING_CHALLENGES = 128;
+/**
+ * Most open challenges one listing can carry: the challenge manager's per-window
+ * quota can be configured up to 1024, and 1024 challenges (nine values each)
+ * still fit the message walk's 10,000-value ceiling.
+ */
+export const MAX_PENDING_CHALLENGES = 1024;
 
 // resolve (write, tier 2, user only)
 export const approvalsResolveRequestSchema = guarded(resolveChallengeRequestSchema);
-export const approvalsResolveResponseSchema = guarded(resolveChallengeResponseSchema);
+/**
+ * `nativeRequired` is true while a native confirmation is still outstanding
+ * (`ChallengeManager.resolve` reports it), so the UI can tell "approved" from
+ * "approved, waiting for the native dialog" without re-reading `pending`.
+ */
+export const approvalsResolveResponseSchema = guarded(
+  z.strictObject({ ...resolveChallengeResponseSchema.shape, nativeRequired: z.boolean() }),
+);
 
 // pending (read, tier 0): the caller's own window, so no parameters
 export const approvalsPendingRequestSchema = emptyRequestSchema;
