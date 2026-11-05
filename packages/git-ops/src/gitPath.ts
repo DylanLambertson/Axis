@@ -20,7 +20,8 @@ export function resolveGit(env: EnvLike, platform: NodeJS.Platform, excludeDirs:
 // The closed set of git global options a request may carry before the subcommand. Anything else that starts with "-" is
 // refused (fail closed): git has value-taking options its usage text does not list (--shallow-file <file>), and one it
 // does not know to skip would hide a later -C, --git-dir or --exec-path from this scan.
-const FLAGS = new Set(["--no-pager", "--no-replace-objects", "--version"]);
+// --literal-pathspecs and --no-optional-locks are added by @axis/broker after the git-ops prefix.
+const FLAGS = new Set(["--no-pager", "--no-replace-objects", "--version", "--literal-pathspecs", "--no-optional-locks"]);
 
 /**
  * The directories a request works in: cwd, `--work-tree` and `--git-dir`. A value that is not a plain absolute path
@@ -46,8 +47,9 @@ export function requestDirs(req: GitRunRequest, platform: NodeJS.Platform = proc
     else if (a === "-c") {
       const kv = req.argv[++i];
       if (kv === undefined) throw denied("-c needs a key=value");
-      if (/^alias\./i.test(kv)) throw denied("-c alias.* is not allowed: an alias can run a shell command");
-    } else if (!FLAGS.has(a)) throw denied(`the git option ${a.split("=")[0]} is not allowed before the subcommand`);
+      // An alias beginning with `!` runs a command, and so does one loaded from a file by include.path / includeIf.*.path.
+      if (/^(alias|include|includeif)\./i.test(kv)) throw denied("-c alias.*, include.* and includeIf.* are not allowed: they can load or run a command");
+    } else if (!FLAGS.has(a)) throw denied("an unrecognised git option precedes the subcommand");
   }
   if (!dirs.every((d) => isPlainAbsolute(d, platform))) throw denied("cwd, --work-tree and --git-dir must be absolute paths");
   return dirs;

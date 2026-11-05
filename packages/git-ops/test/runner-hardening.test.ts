@@ -122,6 +122,7 @@ test("the option area is a closed set: an unknown global option (--shallow-file 
   const runner = createNodeRunner({ allowPtyContext: true, allowUnpinnedGit: true });
   const wt = f.wt.workTree;
   const bypass: string[][] = [
+    ["--my-token-SECRETVALUE123", "status"],
     ["--shallow-file", "x", `--exec-path=${wt}`, "axisx"],
     ["--shallow-file", "x", "--exec-path", wt, "axisx"],
     ["--shallow-file", "x", "-C", other.wt.workTree, "rev-parse", "--show-toplevel"],
@@ -134,19 +135,32 @@ test("the option area is a closed set: an unknown global option (--shallow-file 
     ["-p", "status"],
     ["-c"],
   ];
-  for (const argv of bypass) await assert.rejects(runner.run({ argv, cwd: wt, env: {}, context: "pty" }), denied, JSON.stringify(argv));
+  for (const argv of bypass) {
+    await assert.rejects(runner.run({ argv, cwd: wt, env: {}, context: "pty" }), (e: unknown) => {
+      assert.ok(denied(e), JSON.stringify(argv));
+      assert.doesNotMatch((e as Error).message, /SECRET|shallow|bogus|my-token/, "the refusal echoes caller argv text");
+      return true;
+    }, JSON.stringify(argv));
+  }
+  // The flags the broker adds after the git-ops prefix are in the closed set.
+  const okRun = await runner.run({ argv: ["--literal-pathspecs", "--no-optional-locks", "status", "--porcelain"], cwd: wt, env: {}, context: "pty" });
+  assert.equal(okRun.code, 0, okRun.stderr);
   assert.equal(existsSync(join(wt, "planted-ran-git-axisx")), false);
 });
 
-test("-c alias.* and --config-env are refused, so no alias can run a planted helper or shell command", { skip: !posix }, async () => {
+test("-c alias.*, include.*, includeIf.* and --config-env are refused, so no alias given on the command line can run a planted helper or shell command", { skip: !posix }, async () => {
   const f = fixture();
   planted(f.wt.workTree, "git-axisx");
   const runner = createNodeRunner({ allowPtyContext: true, allowUnpinnedGit: true });
   const marker = join(f.root, "alias-ran");
+  writeFileSync(join(f.wt.workTree, "inc.cfg"), `[alias]\n\tzz = "!touch ${marker}"\n`);
   const cases: Array<{ argv: string[]; env?: Record<string, string> }> = [
     { argv: ["-c", `alias.zz=!${join(f.wt.workTree, "git-axisx")}`, "zz"] },
     { argv: ["-c", `alias.zz=!touch ${marker}`, "zz"] },
     { argv: ["-c", `ALIAS.zz=!touch ${marker}`, "zz"] },
+    { argv: ["-c", `include.path=${join(f.wt.workTree, "inc.cfg")}`, "zz"] },
+    { argv: ["-c", `includeIf.gitdir:/.path=${join(f.wt.workTree, "inc.cfg")}`, "zz"] },
+    { argv: ["-c", `INCLUDE.path=${join(f.wt.workTree, "inc.cfg")}`, "zz"] },
     { argv: ["--config-env=alias.zz=V", "zz"], env: { V: `!touch ${marker}` } },
     { argv: ["--config-env", "alias.zz=V", "zz"], env: { V: `!touch ${marker}` } },
   ];
@@ -190,4 +204,31 @@ test("run() reads argv and env once: a getter or Proxy request cannot show the c
   assert.equal(envReads, 1, "env was read more than once");
   assert.equal(existsSync(marker), false);
   await assert.rejects(runner.run({ argv: [1 as unknown as string], cwd: f.wt.workTree, env: {}, context: "pty" }), denied);
+});
+
+test("run() copies a Proxy argv array once: reads after the copy are never made, so later changes do not reach the checks or the spawn", { skip: !posix }, async () => {
+  const f = fixture();
+  planted(f.wt.workTree, "git-axisx");
+  const runner = createNodeRunner({ allowPtyContext: true, allowUnpinnedGit: true });
+  const evil = [`--exec-path=${f.wt.workTree}`, "axisx"];
+  // Serves ["--version"] for the first `limit` property reads and the planted-helper argv after that.
+  const make = (limit: number, counter: { n: number }): string[] => {
+    const good = ["--version"];
+    return new Proxy(good, {
+      get(t, k, r) {
+        const late = counter.n++ >= limit;
+        const src = late ? evil : t;
+        return Reflect.get(src, k, src === t ? r : src);
+      },
+    });
+  };
+  // Calibrate: how many reads the one copy makes.
+  const calibration = { n: 0 };
+  await runner.run({ argv: make(Infinity, calibration), cwd: f.wt.workTree, env: {}, context: "pty" });
+  assert.ok(calibration.n > 0);
+  const counter = { n: 0 };
+  const r = await runner.run({ argv: make(calibration.n, counter), cwd: f.wt.workTree, env: {}, context: "pty" });
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(counter.n, calibration.n, "argv was read again after the copy");
+  assert.equal(existsSync(join(f.wt.workTree, "planted-ran-git-axisx")), false);
 });
