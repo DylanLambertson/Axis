@@ -3,7 +3,7 @@
 - **Status:** Proposed. Implemented in `packages/runs`.
 - **Scope:** the daemon-side lifecycle of a CLI agent run (design `axis-agent-shell.md` §4.5): launch, status, stop, restart recovery, the "run active" query for commit and push, and the disclosure copy. Pure TypeScript over injected ports, so it runs without Electron.
 - **Threat model rows:** TRU-2, PTY-4, PTY-5, CLI-1, DMN-6, DMN-7, WT-2 and the REV-1 and GIT-SNAP-1 rule "commit and push are refused while a CLI run is active".
-- **Not in scope:** the real `node-pty` or Code OSS pty host (a `PtyPort` adapter plugs in later), the GIT-SNAP-1 and run-base implementation (`@axis/git-snapshot`, injected as `RunSnapshotter`), the worktree manager (injected as `WorktreeLocator`), the bridge contract `axis.cliRuns/1`, BEL "attention", and drift attribution (B11).
+- **Not in scope:** the real `node-pty` or Code OSS pty host (a `PtyPort` adapter plugs in later), the GIT-SNAP-1 and run-base implementation (`@axis/git-snapshot`, injected as `RunSnapshotter`), the worktree manager (injected as `WorktreeLocator`), the bridge contract `axis.cli-runs/1`, BEL "attention", and drift attribution (B11).
 
 ## 1. Layering
 
