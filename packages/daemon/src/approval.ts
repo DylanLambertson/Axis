@@ -99,10 +99,13 @@ export async function runApproval(a: ApprovalStep): Promise<Outcome> {
     ...(req.idempotencyKey !== undefined ? { idempotencyKey: req.idempotencyKey } : {}),
     signal,
   };
+  const wire = (x: DaemonError): Outcome => ({ ok: false, error: toWireError(x, correlationId, p.version, d.onInternalError) });
   let lock: ApprovalContentLock;
   try {
     lock = await resolveContent(p, data, input.digest);
   } catch (e) {
+    const refused = await hookRefusal(e, auditor, fail);
+    if (refused) return refused;
     await auditor.soft("error", { decision: "allow", reason: "content_hook_error" });
     throw e;
   }
@@ -121,7 +124,10 @@ export async function runApproval(a: ApprovalStep): Promise<Outcome> {
         return Promise.resolve(cd);
       });
     } catch (e) {
+      const refused = await hookRefusal(e, auditor, fail);
+      if (refused) return refused;
       if (e instanceof ContentHookError) return hookBug(e);
+      await auditor.soft("error", { decision: "allow", reason: "content_hook_error" });
       throw e;
     }
     guard();
@@ -129,7 +135,7 @@ export async function runApproval(a: ApprovalStep): Promise<Outcome> {
     try {
       challenge = await gate.issue(input, { target: lock.target, contentDigest });
     } catch (e) {
-      const refused = await refusal(e, auditor, fail, (x) => ({ ok: false, error: toWireError(x, correlationId, req.contractVersion, d.onInternalError) }));
+      const refused = await refusal(e, auditor, fail, wire);
       if (refused) return refused;
       throw e;
     }
@@ -171,6 +177,7 @@ export async function runApproval(a: ApprovalStep): Promise<Outcome> {
     if (pending) await pending.catch(() => undefined);
   };
   let refusedForShutdown = false;
+  let gateEntered = false; // from here on a DaemonError is the gate's (or the action's), never the content hook's
   try {
     await lock.withLock((contentDigest) => {
       checkDigest(contentDigest);
@@ -178,6 +185,7 @@ export async function runApproval(a: ApprovalStep): Promise<Outcome> {
         refusedForShutdown = true; // a flag, not the error type: a content lock that wraps errors must not turn this into E_INTERNAL
         throw new ShuttingDown(); // shutdown began: refuse before the approval is spent
       }
+      gateEntered = true;
       return gate.execute(input, approval, { target: lock.target, contentDigest }, wrapped);
     });
     completedAtReturn = captured !== undefined;
@@ -187,11 +195,17 @@ export async function runApproval(a: ApprovalStep): Promise<Outcome> {
       await auditor.soft("denied", { decision: "allow", reason: "shutting_down" });
       return fail("E_UNAVAILABLE", "The daemon is shutting down");
     }
-    if (e instanceof ContentHookError && !started) return hookBug(e);
+    if (!started && !gateEntered) {
+      const hookRefused = await hookRefusal(e, auditor, fail);
+      if (hookRefused) return hookRefused;
+      if (e instanceof ContentHookError) return hookBug(e);
+      await auditor.soft("error", { decision: "allow", reason: "content_hook_error" });
+      throw e;
+    }
     const done = captured as Outcome | undefined;
     if (done && !done.ok) return done;
     if (started) throw e; // the action ran (aborted, audit failure) or the gate failed after it
-    const refused = await refusal(e, auditor, fail, (x) => ({ ok: false, error: toWireError(x, correlationId, req.contractVersion, d.onInternalError) }));
+    const refused = await refusal(e, auditor, fail, wire);
     if (refused) return refused;
     throw e;
   }
@@ -209,6 +223,34 @@ export async function runApproval(a: ApprovalStep): Promise<Outcome> {
     return fail("E_INTERNAL", "Internal error");
   }
   return outcome;
+}
+
+/** What a content hook's refusal says on the wire, per code: fixed text, never the hook's (it can reach a caller with no approval). */
+const HOOK_REFUSAL_TEXT: Readonly<Partial<Record<ErrorCode, string>>> = {
+  E_NOT_FOUND: "Not found",
+  E_CONFLICT: "Request conflicts with current state",
+  E_UNAVAILABLE: "Temporarily unavailable",
+  E_INVALID_ARGUMENT: "Invalid request",
+};
+const REASON_TOKEN = /^[a-z][a-z0-9_]{0,31}$/;
+
+/**
+ * A content hook's refusal as an answer, or undefined for anything else. Only call it for errors thrown while the hook
+ * (or its lock) was running, before the gate was asked to issue or spend: nothing was issued, spent or run. The wire
+ * carries the fixed text of the code and, only if the hook's `details.reason` is a closed token, that reason.
+ */
+async function hookRefusal(
+  e: unknown,
+  auditor: Auditor,
+  fail: (code: ErrorCode, message: string, details?: Record<string, JsonValue>) => Outcome,
+): Promise<Outcome | undefined> {
+  if (!(e instanceof DaemonError)) return undefined;
+  const text = Object.hasOwn(HOOK_REFUSAL_TEXT, e.code) ? HOOK_REFUSAL_TEXT[e.code] : undefined;
+  if (text === undefined) return undefined;
+  const raw = e.details?.["reason"];
+  const reason = typeof raw === "string" && REASON_TOKEN.test(raw) ? raw : undefined;
+  await auditor.soft("denied", { decision: "allow", reason: "content_hook_refused", ...(reason !== undefined ? { detail: reason } : {}) });
+  return fail(e.code, text, reason !== undefined ? { reason } : undefined);
 }
 
 /** A gate refusal as an answer, or undefined for anything else. */
