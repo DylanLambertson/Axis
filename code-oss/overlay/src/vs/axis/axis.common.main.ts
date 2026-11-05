@@ -16,11 +16,13 @@ import '../workbench/contrib/axis/browser/axisDefaults.contribution.js';
 //#region --- Axis services
 
 import './services/view/browser/axisViewService.js';
+import './services/workspaces/browser/axisWorkspaceService.js';
 
 //#endregion
 
 //#region --- Axis contributions
 
 import './contrib/view/browser/axisView.contribution.js';
+import './contrib/agent/browser/axisAgent.contribution.js';
 
 //#endregion
