@@ -93,4 +93,4 @@ Merge-conflict note: each contract has its own handler file, protocol file and p
 | 12 | Platforms | **Still accurate:** the `Axis packages` job runs on ubuntu-24.04 only (`docs/ci.md`) | Add a macOS job for the slice before the 1a gate |
 | 13 | Daemon lifetime (ADR 0003 open question 1) | Open | Lives and dies with the app in 1a |
 | 14 | Retention of idempotency and audit records | Open | 24 h fixed for keys; audit "keep", as config |
-| 15 | **New:** who supplies the secret scanner (PSH-1) and in which mode | Open | A small dedicated scanner (ticket H9-scan) run in the daemon context over the diff text, `refuse` by default, `warn` as a user setting |
+| 15 | **New:** who supplies the secret scanner (PSH-1) and in which mode | Decided (built as `@axis/secret-scan`, see docs/packages.md) | A small dedicated scanner (ticket H9-scan) run in the daemon context over the diff text, `refuse` by default, `warn` as a user setting |
