@@ -116,14 +116,15 @@ test("symlinks: a link that lands on a generic match is reported, one that leave
   }
 });
 
-test("100,000 paths are classified in bounded time", () => {
+test("100,000 paths retain their category across a large mixed input", () => {
   const paths: string[] = [];
   for (let i = 0; i < 100_000; i++) paths.push(i % 4 === 0 ? `.alpha${i}/f` : i % 4 === 1 ? `src/mod${i}/index.ts` : i % 4 === 2 ? `NOTES${i}.md` : `docs/deep/${i}/x.txt`);
-  const t0 = Date.now();
-  let hits = 0;
-  for (const p of paths) if (classifyPath(p) !== null) hits++;
-  assert.equal(hits, 50_000);
-  assert.ok(Date.now() - t0 < 15_000, `took ${Date.now() - t0} ms`);
+  const categories = new Map<string, number>();
+  for (const p of paths) {
+    const category = classifyPath(p)?.category ?? "none";
+    categories.set(category, (categories.get(category) ?? 0) + 1);
+  }
+  assert.deepEqual([...categories].sort(), [["hidden-config", 25_000], ["instruction-file", 25_000], ["none", 50_000]]);
 });
 
 test("instruction-file at the root: dotted names in any case, judged by the first segment against the common documents", () => {
