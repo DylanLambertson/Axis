@@ -13,7 +13,7 @@ export const cancelledEarly = { runId: "run-4", workspaceId: "ws-1", agentId: "c
 export const blocked = { runId: "run-5", workspaceId: "ws-1", agentId: "fake", state: "BLOCKED", status: "interrupted", reason: "INTERRUPTED_BY_RESTART", exitCode: null, createdAt: T0, startedAt: T1, endedAt: null, ...live };
 
 /** A nullable field replaced by null stays valid; these are the variants that are. */
-const NULLABLE = /^((null|string) at ((run|runs\.\d+)\.agentId)|null at ((run|runs\.\d+)\.(reason|exitCode|lastOutputAt)|next))$/;
+const NULLABLE = /^((null|string) at ((run|runs\.\d+)\.agentId)|null at ((run|runs\.\d+)\.(reason|exitCode|lastOutputAt)))$/;
 
 export const P1C_SAMPLES: readonly Sample[] = [
   { contract: "axis.cli-runs", method: "start", side: "request", name: "start", value: { workspaceId: "ws-1", agentId: "fake" } },
@@ -24,13 +24,13 @@ export const P1C_SAMPLES: readonly Sample[] = [
   { contract: "axis.cli-runs", method: "get", side: "response", name: "reviewing run", value: { run: reviewing }, toleratedPattern: NULLABLE },
   { contract: "axis.cli-runs", method: "get", side: "response", name: "failed run", value: { run: failed }, toleratedPattern: NULLABLE },
   { contract: "axis.cli-runs", method: "list", side: "request", name: "minimal", value: {} },
-  { contract: "axis.cli-runs", method: "list", side: "request", name: "paged", value: { workspaceId: "ws-1", limit: 500, cursor: "page_2-abc" } },
+  { contract: "axis.cli-runs", method: "list", side: "request", name: "workspace and limit", value: { workspaceId: "ws-1", limit: 500 } },
   {
     contract: "axis.cli-runs",
     method: "list",
     side: "response",
     name: "mixed runs",
-    value: { runs: [reviewing, queued, failed, cancelledEarly, blocked].map((r) => structuredClone(r)), next: "older-1" },
+    value: { runs: [reviewing, queued, failed, cancelledEarly, blocked].map((r) => structuredClone(r)) },
     toleratedPattern: NULLABLE,
   },
   { contract: "axis.providers", method: "list", side: "request", name: "empty", value: {} },

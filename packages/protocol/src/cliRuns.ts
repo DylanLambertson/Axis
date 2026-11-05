@@ -22,26 +22,23 @@ export const CLI_RUNS_CONTRACT = "axis.cli-runs" as const;
 export const CLI_RUNS_VERSION = 1 as const;
 
 /**
- * Most runs one `list` reply holds. A run is sixteen values and the message
- * walk allows 10,000, so 500 fit and 1000 (what `@axis/runs` accepts) do not:
- * the handler clamps a page to this and the client follows `next`.
+ * Most runs one `list` reply holds. `@axis/runs` `RunSupervisor.list` accepts a
+ * limit up to 1000, but a run is sixteen values and the message walk allows
+ * 10,000, so 1000 runs can never be sent: the handler clamps to this. There is
+ * no cursor because `RunSupervisor.list` has none; older runs need a
+ * `runs.list` cursor (follow-up "R1", docs/packages.md).
  */
 export const MAX_CLI_RUNS_LIST = 500;
 
 /** Same pattern as an `axis.cliAgents` entry id (`@axis/pty-policy`). */
 export const cliAgentIdSchema = z.string().regex(/^[a-z0-9][a-z0-9._-]{0,63}$/);
 
-/** Opaque page cursor: only ever a value from a previous `next`, never built by a client. */
-export const cliRunsCursorSchema = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/);
-
 /*
  * The enums below are copies. Source: `@axis/journal` (`RUN_STATES`) and
- * `@axis/runs` (`RUN_STATUSES`, `SnapshotVerdict`, the `RunSummary` fields), read at
- * `@axis/runs` on origin/feat/runs 40963ac. `@axis/protocol` must not depend on
+ * `@axis/runs` (`RUN_STATUSES`, `SnapshotVerdict`, the `RunSummary` fields). `@axis/protocol` must not depend on
  * either package, so a root test over the built packages
  * (test/packages/protocol-copies.test.mjs) compares the run states with the
- * journal's; the status and snapshot lists are to be added there when `@axis/runs`
- * is on main. Change the copies and their source together.
+ * journal's and the statuses with `RUN_STATUSES`. Change the copies and their source together.
  */
 export const RUN_STATE_VALUES = ["QUEUED", "RUNNING", "REVIEWING", "BLOCKED", "COMPLETED", "FAILED", "CANCELLED"] as const;
 export const runStateSchema = z.enum(RUN_STATE_VALUES);
@@ -101,17 +98,14 @@ export const cliRunsGetRequestSchema = runIdRequest;
 export const cliRunsGetResponseSchema = runResponse;
 
 /**
- * list (read, tier 0). Pages go from newest to older: a request without `cursor`
- * returns the newest `limit` runs, and `next` (null on the last page) is the
- * `cursor` for the next older page. Runs inside a page are oldest first, like
- * the journal. `limit` is at most MAX_CLI_RUNS_LIST; the handler picks the
- * default (`@axis/runs` uses 200).
+ * list (read, tier 0), as `RunSupervisor.list({ workspaceId, limit })`: the
+ * newest `limit` runs (oldest first inside the reply, like the journal), no
+ * cursor. The handler picks the default (`@axis/runs` uses 200).
  */
 export const cliRunsListRequestSchema = guarded(
   z.strictObject({
     workspaceId: workspaceIdSchema.optional(),
     limit: z.number().int().min(1).max(MAX_CLI_RUNS_LIST).optional(),
-    cursor: cliRunsCursorSchema.optional(),
   }),
 );
 export const cliRunsListResponseSchema = guarded(
@@ -120,7 +114,6 @@ export const cliRunsListResponseSchema = guarded(
       .array(cliRunSchema)
       .max(MAX_CLI_RUNS_LIST)
       .refine((rs) => new Set(rs.map((r) => r.runId)).size === rs.length, "duplicate run id"),
-    next: cliRunsCursorSchema.nullable(),
   }),
 );
 

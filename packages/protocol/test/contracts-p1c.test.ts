@@ -70,28 +70,27 @@ test("cli-runs.stop and get take one run id", () => {
   }
 });
 
-test("cli-runs.list request: workspace, a bounded limit and an opaque bounded cursor", () => {
+test("cli-runs.list request: a workspace and a bounded limit, no cursor (RunSupervisor.list has none)", () => {
+  accepts(listReq(), {}, "empty");
   accepts(listReq(), { workspaceId: "ws-1" }, "workspace only");
   accepts(listReq(), { limit: 1 }, "limit 1");
   accepts(listReq(), { limit: MAX_CLI_RUNS_LIST }, "limit at the cap");
-  accepts(listReq(), { cursor: "a".repeat(128) }, "cursor at 128");
+  assert.equal(MAX_CLI_RUNS_LIST, 500);
   for (const limit of [0, -1, MAX_CLI_RUNS_LIST + 1, 1000, 1_000_000, 1.5, Number.NaN, Number.POSITIVE_INFINITY, "10", null]) {
     rejects(listReq(), { limit }, `limit ${String(limit)}`);
   }
-  for (const cursor of ["", "a".repeat(129), "a b", "../x", "a/b", "a\nb", "\u00e9", 1, null, { a: 1 }]) {
-    rejects(listReq(), { cursor }, JSON.stringify(cursor));
-  }
-  for (const k of ["states", "offset", "page", "before", "after", "afterId"]) rejects(listReq(), { [k]: 1 }, k);
+  for (const k of ["cursor", "next", "states", "offset", "page", "before", "after", "afterId"]) rejects(listReq(), { [k]: "x" }, k);
   rejects(listReq(), { workspaceId: "../x" }, "bad workspace");
 });
 
-test("cli-runs.list: a workspace with more runs than one page pages instead of failing", () => {
+test("cli-runs.list response: only the runs, at most the cap, no next", () => {
   const many = (n: number) => Array.from({ length: n }, (_, i) => ({ ...structuredClone(reviewing), runId: `run-${i}` }));
-  accepts(listRes(), { runs: many(MAX_CLI_RUNS_LIST), next: "older-501" }, "a full page with a cursor for the 501st run");
-  accepts(listRes(), { runs: many(1), next: null }, "the last page");
-  rejects(listRes(), { runs: many(MAX_CLI_RUNS_LIST + 1), next: null }, "501 runs in one reply");
-  rejects(listRes(), { runs: many(1) }, "next missing");
-  for (const next of ["", "a b", "x".repeat(129), 5, undefined]) rejects(listRes(), { runs: many(1), next }, JSON.stringify(next));
+  accepts(listRes(), { runs: many(MAX_CLI_RUNS_LIST) }, "a full reply");
+  accepts(listRes(), { runs: many(1) }, "one run");
+  rejects(listRes(), { runs: many(MAX_CLI_RUNS_LIST + 1) }, "501 runs in one reply");
+  rejects(listRes(), { runs: many(1), next: null }, "next beside runs");
+  rejects(listRes(), { runs: many(1), next: "older-1" }, "a cursor beside runs");
+  rejects(listRes(), {}, "runs missing");
 });
 
 test("cli-runs run: the fields and enums are those of @axis/runs RunSummary", () => {
@@ -153,6 +152,18 @@ test("cli-runs run: state, reason, exit code and timestamps", () => {
   rejects(getRes(), {}, "no run");
 });
 
+test("cli-runs run: every field is required, so status, live and agentId cannot be made optional", () => {
+  for (const key of Object.keys(reviewing)) {
+    const { [key]: _gone, ...without } = structuredClone(reviewing) as Record<string, unknown>;
+    rejects(getRes(), { run: without }, `${key} missing`);
+    rejects(listRes(), { runs: [without] }, `${key} missing in a list`);
+  }
+  for (const key of ["status", "live", "agentId"]) assert.ok(key in reviewing, key);
+  rejects(getRes(), { run: run({ live: undefined }) }, "live undefined");
+  rejects(getRes(), { run: run({ status: undefined }) }, "status undefined");
+  rejects(getRes(), { run: run({ agentId: undefined }) }, "agentId undefined");
+});
+
 test("cli-runs run: endedAt is set exactly when the run is terminal, and only queued or cancelled runs can lack a start", () => {
   for (const state of ["COMPLETED", "FAILED", "CANCELLED"]) {
     accepts(getRes(), { run: run({ state, endedAt: "2026-11-04T10:00:05.000Z" }) }, `${state} ended`);
@@ -170,10 +181,10 @@ test("cli-runs run: endedAt is set exactly when the run is terminal, and only qu
 
 test("cli-runs.list response: cap and unique ids", () => {
   const many = (n: number) => Array.from({ length: n }, (_, i) => ({ ...structuredClone(queued), runId: `run-${i}` }));
-  accepts(listRes(), { runs: [], next: null }, "empty");
-  accepts(listRes(), { runs: many(MAX_CLI_RUNS_LIST), next: null }, "at the cap");
-  rejects(listRes(), { runs: many(MAX_CLI_RUNS_LIST + 1), next: null }, "over the cap");
-  rejects(listRes(), { runs: [{ ...queued }, { ...queued }], next: null }, "duplicate run id (separate objects)");
+  accepts(listRes(), { runs: [] }, "empty");
+  accepts(listRes(), { runs: many(MAX_CLI_RUNS_LIST) }, "at the cap");
+  rejects(listRes(), { runs: many(MAX_CLI_RUNS_LIST + 1) }, "over the cap");
+  rejects(listRes(), { runs: [{ ...queued }, { ...queued }] }, "duplicate run id (separate objects)");
 });
 
 test("providers.list: request takes nothing; response names adapters and destinations, never a credential", () => {
