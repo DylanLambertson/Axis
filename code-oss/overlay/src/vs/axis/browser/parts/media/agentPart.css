@@ -1,0 +1,33 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) 2026 Dylan Lambertson. All rights reserved.
+ *--------------------------------------------------------------------------------------------*/
+
+.monaco-workbench .part.axis-agent {
+	background-color: var(--vscode-editor-background);
+	color: var(--vscode-foreground);
+}
+
+.monaco-workbench .part.axis-agent > .content {
+	height: 100%;
+	overflow: hidden;
+}
+
+.monaco-workbench .part.axis-agent .axis-agent-placeholder {
+	padding: 24px;
+}
+
+.monaco-workbench .part.axis-agent .axis-agent-placeholder:focus {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+
+.monaco-workbench .part.axis-agent .axis-agent-placeholder h2 {
+	margin: 0 0 8px;
+	font-size: 16px;
+	font-weight: 600;
+}
+
+.monaco-workbench .part.axis-agent .axis-agent-placeholder p {
+	margin: 0;
+	color: var(--vscode-descriptionForeground);
+}

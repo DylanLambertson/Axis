@@ -1,0 +1,31 @@
+diff --git a/src/vs/workbench/electron-browser/desktop.main.ts b/src/vs/workbench/electron-browser/desktop.main.ts
+index 6188835c..b55ea8bd 100644
+--- a/src/vs/workbench/electron-browser/desktop.main.ts
++++ b/src/vs/workbench/electron-browser/desktop.main.ts
+@@ -130,10 +130,12 @@ export class DesktopMain extends Disposable {
+ 		this.applyWindowZoomLevel(services.configurationService);
+ 
+ 		// Create Workbench
+-		const workbench = new Workbench(mainWindow.document.body, {
++		// --- Start Axis ---
++		const workbench = this.createWorkbench(mainWindow.document.body, {
+ 			extraClasses: this.getExtraClasses(),
+ 			resetLayout: this.configuration['disable-layout-restore'] === true
+ 		}, services.serviceCollection, services.logService);
++		// --- End Axis ---
+ 
+ 		// Listeners
+ 		this.registerListeners(workbench, services.storageService);
+@@ -165,6 +167,12 @@ export class DesktopMain extends Disposable {
+ 		return [];
+ 	}
+ 
++	// --- Start Axis ---
++	protected createWorkbench(...args: ConstructorParameters<typeof Workbench>): Workbench {
++		return new Workbench(...args);
++	}
++	// --- End Axis ---
++
+ 	private registerListeners(workbench: Workbench, storageService: NativeWorkbenchStorageService): void {
+ 
+ 		// Workbench Lifecycle
