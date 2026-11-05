@@ -152,3 +152,8 @@ test("root instruction names: the dotless-i spelling and the grown common-docume
   assert.equal(cat("TOOLXı.local.md"), "instruction-file");
   for (const p of ["FAQ.md", "HACKING.md", "OWNERS.md", "ARCHITECTURE.md", "sub/FUNDING.md", "THIRD-PARTY-NOTICES.md"]) assert.equal(cat(p), null, p);
 });
+
+test("the dotless-i spelling counts below the root too", () => {
+  for (const p of ["sub/toolx\u0131.md", "sub/\u0131ool.local.md", "a/b/n\u0131tes.md"]) assert.equal(cat(p), "instruction-file", p);
+  assert.equal(cat("sub/toolxi.md"), null);
+});

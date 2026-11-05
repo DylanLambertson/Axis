@@ -44,6 +44,9 @@ export const DEFAULT_LIMITS: Limits = Object.freeze({
   maxIndexBytes: 512 * 1024 * 1024,
 });
 
+/** What the snapshot schema allows for one entry's text, less room for a header line. */
+const MAX_TEXT_CHARS = 60_000;
+
 export function resolveLimits(over: Partial<Limits> | undefined): Limits {
   const out: Record<string, number> = { ...DEFAULT_LIMITS };
   for (const [k, v] of Object.entries(over ?? {})) {
@@ -52,6 +55,8 @@ export function resolveLimits(over: Partial<Limits> | undefined): Limits {
     }
     out[k] = v;
   }
+  // A kept text longer than the schema allows would make a saved snapshot impossible to load.
+  out["maxTextChars"] = Math.min(out["maxTextChars"] as number, MAX_TEXT_CHARS);
   return Object.freeze(out) as unknown as Limits;
 }
 

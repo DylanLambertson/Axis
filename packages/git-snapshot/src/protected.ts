@@ -201,6 +201,24 @@ function matchExtra(parts: readonly string[], extra: readonly string[] | undefin
 //
 // Ignore and style files are not exempt, only less severe: a run that adds a new config file and an ignore rule for
 // it must still show a change. An exemption covers the exact final name, never a directory of that name.
+// Every first component any specific rule names, folded: a path with none of them, and no generic match, is not protected.
+const RULE_LITERALS: ReadonlySet<string> = new Set(RULES.flatMap((r) => (r.path === undefined ? [] : [foldLiteral(r.path[0] as string)])));
+const PLAIN_PATH = /^[a-z0-9_-]+(?:\.[a-z0-9_-]+)*(?:\/[a-z0-9_-]+(?:\.[a-z0-9_-]+)*)*$/;
+
+/**
+ * True only when a path is provably not protected, without the full classification: every component is plain ASCII
+ * lower case (so nothing folds, normalises, starts with a dot or can be a short name), none is a name any rule lists
+ * or a family the rules test (container build and compose files), and none ends in `.md`. False means "ask
+ * `classifyPath`". A test compares it with `classifyPath` over a large generated corpus.
+ */
+export function canSkipClassification(path: string): boolean {
+  if (!PLAIN_PATH.test(path)) return false;
+  for (const c of path.split("/")) {
+    if (RULE_LITERALS.has(c) || c.endsWith(".md") || c.includes("docker") || c.includes("compose") || c.includes("containerfile")) return false;
+  }
+  return true;
+}
+
 const IGNORE_FILES = new Set([".gitignore", ".dockerignore", ".prettierignore", ".eslintignore"]);
 const STYLE_FILES = new Set([".editorconfig"]);
 const COMMON_DOCS = new Set([
@@ -214,6 +232,8 @@ const SHORT_NAME = /^[^~.]{1,6}~\d{1,7}(?:\.[^.]{0,3})?$/;
 // An upper-case first segment, any further segments, and `.md`: `NAME.md`, `NAME.local.md`, `NAME.override.md`.
 const UPPER_MD = /^([A-Za-z0-9_-]*[A-Z][A-Za-z0-9_-]*)(?:\.[A-Za-z0-9_-]+)*\.[mM][dD]$/;
 // At the root the spelling does not matter: the name, with any dotted segments, in any case.
+// A dotless i upper-cases to `I` on NTFS, so a name spelled with one is the upper-case name below the root as well.
+const DOTLESS_MD = /^([A-Za-z0-9_-]*\u0131[A-Za-z0-9_\u0131-]*)(?:\.[A-Za-z0-9_\u0131-]+)*\.[mM][dD]$/;
 const ROOT_MD = /^([a-z0-9_-]+)(?:\.[a-z0-9_-]+)*\.md$/;
 
 const generic = (category: ProtectedCategory, severity: "high" | "medium", rule: string): ProtectedMatch => ({ category, severity, rule, via: "path" });
@@ -236,7 +256,7 @@ function matchGeneric(parts: readonly string[], raws: readonly string[]): Protec
   const rootMd = lastIdx === 0 ? ROOT_MD.exec(parts[0] as string) : null;
   if (rootMd !== null && !COMMON_DOCS.has(rootMd[1] as string)) return generic("instruction-file", "high", "root-level .md file");
   // Below the root a first segment with any upper-case letter counts, so ordinary lower-case documents stay unmarked.
-  const m = UPPER_MD.exec(last);
+  const m = UPPER_MD.exec(last) ?? DOTLESS_MD.exec(last);
   if (m !== null && !COMMON_DOCS.has((m[1] as string).toLowerCase())) return generic("instruction-file", "high", "upper-case .md file");
   return null;
 }

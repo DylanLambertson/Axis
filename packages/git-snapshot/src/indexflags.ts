@@ -5,7 +5,7 @@ import { lstatSync } from "node:fs";
 import { join, parse } from "node:path";
 import { displayValue } from "./display.js";
 import { baseArgs, snapshotGitEnv, type AskInput } from "./git.js";
-import { classifyPath } from "./protected.js";
+import { canSkipClassification, classifyPath } from "./protected.js";
 import type { Setting } from "./types.js";
 
 const MAX_RECORD = 4096;
@@ -65,6 +65,8 @@ export async function readIndexFlags(i: AskInput): Promise<IndexFlags> {
     let carry = Buffer.alloc(0);
     let listed = 0;
     let seen = 0;
+    let dropping = false;
+    let unreadable = 0;
     const take = (rec: Buffer): void => {
       if (rec.length < 3 || rec[1] !== 0x20) return;
       const tag = String.fromCharCode(rec[0] as number);
@@ -73,23 +75,32 @@ export async function readIndexFlags(i: AskInput): Promise<IndexFlags> {
       // lower-case letter, so a file with both flags reads as assume-unchanged. Either hides the file.
       const kind = tag === "S" ? "skip-worktree" : "assume-unchanged";
       const path = rec.toString("utf8", 2);
-      let identity = "absent";
+      // What git's own stat check looks at, and more: size, mtime, ctime, inode, device and mode. Only a missing file
+      // (ENOENT, ENOTDIR) reads as absent; any other error is its own state, and the snapshot is then incomplete.
+      let identity: string;
       try {
-        const st = lstatSync(join(i.worktree, path));
-        identity = `${st.size}:${Math.trunc(st.mtimeMs)}:${st.mode}`;
-      } catch {
-        // Missing, as in a sparse checkout: that is its identity.
+        const st = lstatSync(join(i.worktree, path), { bigint: true, throwIfNoEntry: false });
+        identity = st === undefined ? "absent" : `${st.size}:${st.mtimeNs}:${st.ctimeNs}:${st.ino}:${st.dev}:${st.mode}`;
+      } catch (e) {
+        const code = (e as NodeJS.ErrnoException).code ?? "ERR";
+        identity = code === "ENOENT" || code === "ENOTDIR" ? "absent" : `unreadable:${code}`;
+        if (identity !== "absent") unreadable++;
       }
       hash.update(rec);
       hash.update(`\0${identity}\n`);
       total++;
       bytes += rec.length + identity.length + 2;
-      const shown = `${kind} ${displayValue(path, 300)}`;
-      if (textChars + shown.length < i.limits.maxTextChars) {
-        lines.push(shown);
-        textChars += shown.length + 1;
+      // Text and settings are formatted only for what is shown; the digest above uses the raw fields.
+      if (textChars < i.limits.maxTextChars) {
+        const shown = `${kind} ${displayValue(path, 300)}`;
+        if (textChars + shown.length < i.limits.maxTextChars) {
+          lines.push(shown);
+          textChars += shown.length + 1;
+        } else {
+          textChars = i.limits.maxTextChars;
+        }
       }
-      if (classifyPath(path) !== null && settings.length < i.limits.maxSettings) {
+      if (!canSkipClassification(path) && settings.length < i.limits.maxSettings && classifyPath(path) !== null) {
         settings.push({ key: `index.flag.${displayValue(path, 300)}`, value: kind, origin: "index/flags", label: "index flag hides changes", severity: "high", note: null });
       } else {
         counted++;
@@ -105,7 +116,14 @@ export async function readIndexFlags(i: AskInput): Promise<IndexFlags> {
       let buf = carry.length === 0 ? chunk : Buffer.concat([carry, chunk]);
       let start = 0;
       for (let nul = buf.indexOf(0, start); nul >= 0; nul = buf.indexOf(0, start)) {
-        if (nul - start <= MAX_RECORD) take(buf.subarray(start, nul));
+        // Records are reassembled across chunks before anything is hashed; an over-long one is dropped whole and blocks,
+        // so the digest never depends on where the pipe happened to split the output.
+        if (dropping || nul - start > MAX_RECORD) {
+          problem ??= "a flagged path is too long to read";
+          dropping = false;
+        } else {
+          take(buf.subarray(start, nul));
+        }
         start = nul + 1;
         if ((++seen & 0xffff) === 0) {
           try {
@@ -118,13 +136,20 @@ export async function readIndexFlags(i: AskInput): Promise<IndexFlags> {
         }
       }
       buf = buf.subarray(start);
-      carry = buf.length > MAX_RECORD ? Buffer.alloc(0) : Buffer.from(buf);
+      if (buf.length > MAX_RECORD) {
+        dropping = true;
+        carry = Buffer.alloc(0);
+      } else {
+        carry = Buffer.from(buf);
+      }
     });
     child.on("error", () => {
       problem ??= "git could not list the index flags";
       finish();
     });
     child.on("close", (code) => {
+      if (dropping) problem ??= "a flagged path is too long to read";
+      if (unreadable > 0) problem ??= "a flagged file could not be examined";
       if (problem === null && code !== 0) problem = "git could not list the index flags";
       finish();
     });
