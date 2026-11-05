@@ -40,17 +40,20 @@ async function identify(d: Deps, path: string): Promise<FileIdentity> {
 
 /** The interpreter a `#!` line names, `"none"` for a file that starts like a binary, or `"unreadable"` for one that cannot be read or judged. */
 async function shebang(d: Deps, real: string): Promise<{ readonly line: string } | "none" | "unreadable"> {
-  let head: Buffer;
+  let all: Buffer, size: number;
   try {
     const f = await d.fs.open(real, "read");
     try {
-      head = await f.read(256);
+      size = (await f.stat()).size;
+      // One page: the most the kernel reads for an ELF program header table. The `#!` rules only ever look at the first 256 bytes.
+      all = await f.read(4096);
     } finally {
       await f.close();
     }
   } catch {
     return "unreadable";
   }
+  const head = all.subarray(0, 256);
   if (head.length >= 2 && head[0] === 0x23 && head[1] === 0x21) {
     // The kernel's rule: blanks, then a word on the same line that stops at a blank, a newline or a NUL.
     const m = /^#![ \t]*([^ \t\n\0]+)/.exec(head.toString("latin1"));
@@ -59,7 +62,7 @@ async function shebang(d: Deps, real: string): Promise<{ readonly line: string }
     return { line: m[1] as string };
   }
   // No `#!`: a program only if it is one the loader accepts. Text the kernel refuses (even with a magic prefix) is run by /bin/sh.
-  return isNativeExecutable(head, d.platform) ? "none" : "unreadable";
+  return isNativeExecutable(all, d.platform, { size }) ? "none" : "unreadable";
 }
 
 /**
