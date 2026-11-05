@@ -35,8 +35,8 @@ describe("headless slice: shutdown", { skip: gitSkipReason(), timeout: SUITE_TIM
     else sup.kill("SIGTERM");
     return sup.exited;
   };
-  const boot = async (agents: unknown) => {
-    const h = await startHost(fx, { agents });
+  const boot = async (agents: unknown, breakPutFile?: string) => {
+    const h = await startHost(fx, { agents, ...(breakPutFile === undefined ? {} : { breakPutFile }) });
     await h.ready;
     trustWindow(h.sup);
     const projectId = await registerProject(h.sup, fx.repo);
@@ -73,6 +73,19 @@ describe("headless slice: shutdown", { skip: gitSkipReason(), timeout: SUITE_TIM
     await until(() => sup.anchorPuts.length > 0, "the first anchor");
     sup.holdAcks = true;
     await client.ok("axis.cli-runs", "list", {}); // more audited writes that nothing acknowledges
+    client.close();
+    const exit = await stop(sup);
+    assert.deepEqual(exit, { code: 1, signal: null });
+    assert.ok(!sup.stderr.includes("slice.forced_exit"), "the store was released: it ended by draining");
+  });
+
+  test("a final anchor that cannot be sent exits 1, without a forced exit or a hang", async () => {
+    const broken = join(scratch, "break-put");
+    const { sup, client, projectId } = await boot([], broken);
+    await createWorkspace(client, projectId, "Unsent");
+    await until(() => sup.anchorPuts.length > 0, "the first anchor");
+    writeFileSync(broken, "x"); // from now on no anchor can be sent
+    await client.ok("axis.cli-runs", "list", {}); // rows that no put covers
     client.close();
     const exit = await stop(sup);
     assert.deepEqual(exit, { code: 1, signal: null });

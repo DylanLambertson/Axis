@@ -2,6 +2,7 @@
 // The host of the headless slice (plan section 1): the REAL composition root in a child process, on the real `process` (real lock,
 // real signals, real exit code), over the Node IPC channel the test supervisor speaks. What is fake is listed in `fake-pty.ts`
 // (the pty port and the `pty` git runner) and below (the run snapshotter). No Electron, no UI, no Code OSS.
+import { existsSync } from "node:fs";
 import { Redactor } from "@axis/audit";
 import { resolveGit } from "@axis/git-ops";
 import {
@@ -49,6 +50,16 @@ const release = (): void => {
  * never refused for a changed repository and never reports drift. The slice does not assert drift.
  */
 const snapshotter: NonNullable<ComposeOptions["snapshotter"]> = { before: () => Promise.resolve(), after: () => Promise.resolve({ drift: false }) };
+
+/**
+ * TEST ONLY (`AXIS_SLICE_BREAK_PUT=<file>`): while that file exists, `anchor.put` cannot be sent (as on a closed channel), so the
+ * final anchor of a shutdown cannot go out. It cannot be reached from `HostConfig`.
+ */
+const breakPut = process.env["AXIS_SLICE_BREAK_PUT"];
+if (breakPut !== undefined) {
+  const realPut = client.anchorPut.bind(client);
+  client.anchorPut = (head) => (existsSync(breakPut) ? ((): never => { throw new Error("channel closed"); })() : realPut(head));
+}
 
 client.onInit((raw) => {
   const redactor = new Redactor();
