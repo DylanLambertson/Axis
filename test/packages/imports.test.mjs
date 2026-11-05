@@ -232,7 +232,7 @@ test("scanner: the user-principal subpath is restricted to the daemon; other jou
   assert.equal(violation("journal", "@axis/audit"), null);
   assert.equal(violation("daemon", "@axis/journal"), null);
   assert.equal(violation("daemon", "@axis/journal/daemon-principal"), null);
-  for (const pkg of ["protocol", "audit", "journal", "worktrees", "git-ops", "pty-policy", "providers", "challenge"]) {
+  for (const pkg of ["protocol", "audit", "journal", "worktrees", "git-ops", "git-snapshot", "pty-policy", "providers", "challenge"]) {
     assert.notEqual(violation(pkg, "@axis/journal/daemon-principal"), null, pkg);
   }
   assert.notEqual(violation("daemon", "@axis/journal/dist/src/principal.js"), null);
