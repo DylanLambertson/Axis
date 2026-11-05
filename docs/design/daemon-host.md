@@ -4,12 +4,22 @@
 - **Date:** 2026-11-04.
 - **Decision owner:** Dylan Lambertson.
 - **Depends on:** ADR 0003 (Electron IPC bridge; D1 handshake, D2 contracts, D3 call semantics, D4 policy and approvals, D5 audit, validation criteria 1 to 7), ADR 0005 (D3 staging, D9 `node:sqlite`), `docs/packages.md` ("Wiring the daemon", "Audit anchor", "Single instance", "Principals", "Data directory"), `docs/design/axis-agent-shell.md` §5 and §8.2, `docs/design/axis-agent-shell-policies.md` §6, threat model Phase 1 (DMN-1 to DMN-7, G-11, G-12, G-20, G-24).
-- **Evidence tags:** **[V]** verified in this repository at `e961613` (or on the named branch); **[I]** inferred, not verified.
-- **Branches this design waits on (not edited by it):** `fix/daemon-sigterm` (graceful shutdown, in review), `feat/daemon-idempotency-store` (journal-backed store, in review), `feat/worktree-manager` (the macOS host's `@axis/worktrees`, in re-review), `feat/tool-broker-core` and `feat/git-snapshot` (1b and drift, in review).
+- **Evidence tags:** **[V]** verified in this repository at `f022e79` (`origin/main` on 2026-11-04) or on the named branch; **[I]** inferred, not verified. **Decided** marks a choice the owner delegated to the master session on 2026-11-04.
+- **Companion page:** `docs/design/daemon-host-plan.md` holds the headless slice test, the ticket plan and the open questions (this page stays under the 500 line limit).
+- **Dependency status (2026-11-04).** On main: `@axis/runs` (#39), `@axis/worktrees` (#40), `@axis/vault`, `@axis/anthropic` (#31), the git-ops UTF-16 fix (#30). Not on main, so every claim about them is tagged to the branch and must be re-checked when it merges:
+
+| Branch | Provides | Status |
+|---|---|---|
+| `fix/daemon-sigterm` | `Daemon.shutdown`, `escalate`, `installShutdownSignals` | in review |
+| `feat/daemon-idempotency-store` | `JournalIdempotencyStore`, the daemon `unknown` key state | in review. Its clock handling must be re-reviewed before the product uses it (decided) |
+| `feat/protocol-contracts-p1` | `axis.projects`, `axis.approvals`, `axis.audit`, `axis.cli-runs`, `axis.providers` | in review |
+| `fix/git-ops-bound-commit` | the bound commit, the commit hooks decision (ADR 0004 §4 amendment) | in review / fix |
+| `feat/daemon-host-scaffold` | ticket H1 | in review / fix; see §2.3 for the corrections it needs |
+| `feat/tool-broker-core`, `feat/review-core`, `feat/git-snapshot` | broker (1b), `@axis/review`, the GIT-SNAP-1 snapshot | in review / fix |
 
 ## 1. Purpose and scope
 
-The merged libraries (`protocol`, `challenge`, `daemon`, `pty-policy`, `git-ops`, `audit`, `journal`, `providers`) are parts. Nothing yet starts a process, opens the database, takes the lock, registers handlers, wires approvals or answers a request. `@axis/daemon` is deliberately a core with every service injected ([V] `DaemonOptions`: `identity`, `audit`, `idempotency` required; `policy` absent means deny all; `approvals` absent refuses tier 3 and above). **`@axis/daemon-host` is the one place that chooses and connects those services.** It is the earliest thing that can answer a real request, so it is also the first demonstrable vertical slice (§10), before any UI work.
+The merged libraries (`protocol`, `challenge`, `daemon`, `pty-policy`, `git-ops`, `audit`, `journal`, `providers`, `runs`, `worktrees`, `vault`, `anthropic`) are parts. Nothing yet starts a process, opens the database, takes the lock, registers handlers, wires approvals or answers a request. `@axis/daemon` is deliberately a core with every service injected ([V] `DaemonOptions`: `identity`, `audit`, `idempotency` required; `policy` absent means deny all; `approvals` absent refuses tier 3 and above). **`@axis/daemon-host` is the one place that chooses and connects those services.** It is the earliest thing that can answer a real request, so it is also the first demonstrable vertical slice (`daemon-host-plan.md` §1), before any UI work.
 
 In scope: package boundary, startup and shutdown order, the contract registry and policy table, the wiring of challenge, idempotency, audit and anchor, the worktrees port, trust attestation, transports, error and logging policy, the headless slice test, tickets.
 
@@ -32,7 +42,7 @@ flowchart LR
   end
   S -- control messages, connections --> T
   P --> WT[worktrees port]
-  P --> RN[runs / cli process port]
+  P --> RN[runs binding + pty port]
   P --> RV[review port]
   H --> GO[@axis/git-ops]
   H --> PV[@axis/providers]
@@ -45,12 +55,15 @@ flowchart LR
 |---|---|---|
 | `node:*`, `zod` 4.6.6 | anywhere | `electron`, `vs/*`, DOM, a socket listener (ADR 0003 D1.1, DMN-4) |
 | `@axis/protocol`, `daemon`, `challenge`, `audit`, `journal`, `git-ops`, `pty-policy`, `providers` | anywhere | |
+| `@axis/vault`, `@axis/anthropic` | `src/bindings/providers.ts` only, 1b | handlers |
 | `@axis/journal/daemon-principal` | `src/handlers/review.ts` only | any handler that is not the person's own act |
 | `@axis/worktrees` | `src/bindings/worktrees.ts` only | handlers, ports, compose |
 | `@axis/worktrees/daemon-confirm` | `src/gate/worktrees-confirm.ts` only | everything else. This is "the integration package that implements the gate adapter" of `docs/packages.md`, which is this package. |
-| `@axis/runs`, `@axis/review` (when they land) | `src/bindings/*.ts` only | |
+| `@axis/runs` (root: `RunSupervisor` and its port types) | `src/bindings/runs.ts` only | handlers |
+| `@axis/runs/daemon-attestation` (`attestTrust`) | `src/gate/run-trust.ts` only | everything else. Today `imports.test.mjs` allows it only to package `daemon`; it mints the single-use `TrustAttestation` and is the daemon's connection layer's job, which this package now is |
+| `@axis/review` (when it lands) | `src/bindings/review.ts` only | handlers |
 
-`test/packages/imports.test.mjs` must be extended with these rows: today it allows `@axis/journal/daemon-principal` only to package `daemon` [V `docs/packages.md` "Principals"], so ticket H1 changes the rule to "package `daemon-host`, file `src/handlers/review.ts`" and keeps the rule for package `daemon` if its connection layer still needs it.
+**Amendments this design requires, in the same pull request as H1.** (1) `docs/packages.md` "Principals" says only package `daemon` may import `@axis/journal/daemon-principal` and that "the daemon mints it". The mint moves to `daemon-host/src/handlers/review.ts` (the person's act, from the attested connection), so that paragraph changes. (2) `test/packages/imports.test.mjs` gets the rows above: `daemon-principal` and `daemon-attestation` to package `daemon-host` at the named files; the rule for package `daemon` stays while its connection layer still needs it. Open question Q8 is answered by this.
 
 ### 2.2 Layout (every file under 500 lines)
 
@@ -59,9 +72,9 @@ packages/daemon-host/
   src/
     config.ts            HostConfig schema (strict), parsed from the init message
     ports/               service interfaces the handlers use (the only thing handlers import)
-      worktrees.ts runs.ts review.ts cli-process.ts git-runners.ts trust.ts clock.ts
+      worktrees.ts review.ts worktree-locator.ts git-ops-deps.ts trust.ts clock.ts
     contracts/           registry assembly, handler/policy coverage check
-    handlers/            one file per contract: approvals, audit, cliRuns, git, projects, providers, review, worktrees
+    handlers/            one file per contract: approvals, audit, cli-runs, git, projects, providers, review, worktrees
     gate/                ApprovalGate adapter, native-confirm bridge, worktrees-confirm.ts
     policy/              rule table, trust registry
     storage/             lock, directory, database, journal, idempotency store, recovery
@@ -69,7 +82,7 @@ packages/daemon-host/
     control/             privileged message schemas, attestation verifier, connect limiter
     transport/           mux, node-port and electron-port adapters (re-uses @axis/daemon's)
     log/                 logger, redaction, safe error summary
-    bindings/            the only files that import @axis/worktrees, @axis/runs, @axis/review
+    bindings/            the only files that import @axis/worktrees, @axis/runs, @axis/review (and gate/ for the two daemon-only subpaths)
     host.ts              createHost(deps) -> { start, shutdown }
     node-main.ts         runHost(): crash handlers, signals, exit codes
   testing/               support outside src/ (never staged): supervisor, fake ports, typed client, fixtures
@@ -84,12 +97,17 @@ Handlers see only these interfaces. A port is defined against `@axis/protocol` s
 
 | Port | Shape (summary) | Fake in `testing/` | Real binding |
 |---|---|---|---|
-| `WorktreesService` | `list, status, create, finalise, remove, restoreFromRunBase, previewDiscard, assertNoDrift, reconcile`, all **id-based**, returning the `axis.worktrees/1` response shapes | yes, real `git worktree add` through a hooks-off plain runner (fixture only) | `bindings/worktrees.ts` over `WorktreeManager` (§7) |
-| `CliProcessHost` | `spawn(exactCommand) -> { pid, exited: Promise<exit>, kill() }`, status only, never output into the daemon | Node `child_process` with the PTY-5 env (fixture) | the Axis pty process control channel (B9) |
-| `RunsService` | CLI run lifecycle over the journal: `start, stop, get, list`, run-base refs | fake over `Journal` | `@axis/runs` |
-| `ReviewService` | `diff(workspaceId) -> { treeHash, files, patchesBounded }` | fake over `git diff` | `@axis/review` |
-| `GitRunners` | `{ daemon: GitRunner, pty: GitRunner }` for `@axis/git-ops` (`GitContext`) | one local Node runner for both (labelled test only) | `daemon`: `createNodeRunner`; `pty`: control-channel runner (B9) |
-| `TrustRegistry` | `isTrusted(identity)`, updated by main | in-memory | same, fed by control messages |
+| `WorktreesService` | `list, status, create, finalise, remove, restoreFromRunBase, previewDiscard, assertNoDrift, reconcile`, all **id-based**, returning the `axis.worktrees/1` response shapes | none: tests use the real `@axis/worktrees` on a temporary repository (it is on main, [V]) | `bindings/worktrees.ts` over `WorktreeManager` (§7) |
+| `WorktreeLocator` | `locate(workspaceId) -> { workTree, gitDir }`, absolute and normalised, `realpath` at the moment of use, from the journal and project registry, never from a payload or by discovering the directory (GIT-4) | in-memory map | one implementation in `bindings/worktrees.ts`, **shared** by the three consumers below, which declare the same structural shape (`@axis/runs` `WorktreeLocator`/`RunWorktree`, `@axis/git-ops` `WorktreeRef`, the worktrees binding) |
+| `PtyPort` (from `@axis/runs`) | `spawn({ runId, argv, cwd, env, cols, rows }) -> PtyHandle` (`write`, `resize`, `kill`, `onData`, `onExit`) | Node `child_process` behind the same interface, with the exact argv and env `@axis/runs` built through `@axis/pty-policy` (fixture) | the Axis pty process control channel (B9) |
+| Runs | **no host-defined port.** `bindings/runs.ts` builds one `RunSupervisor` ([V] `packages/runs`: `SupervisorOptions` = `journal, audit, pty, clock, locator, snapshotter, env, redactor`, optional `limits`, `managedWorktreeRoots`, `onInternalError`). Handlers call `start({ workspaceId, agent, actor, trust, idempotencyKey })` returning `{ run: RunSummary, replayed }`, `stop(runId, actor)`, `get`, `list({ workspaceId, limit })`; the wire shape is the protocol `cliRunSchema`, not a host type | the real supervisor with the fake `PtyPort` | same |
+| `RunSnapshotter` | `before(ctx)`, `after(ctx) -> { drift }` | no-op | the GIT-SNAP-1 snapshot (`@axis/git-snapshot` or `@axis/worktrees` `gitSnap`, Q10) |
+| `ReviewService` | `diff(workspaceId) -> { treeHash, files, patchesBounded }` | fake over `git diff` | `@axis/review` (`feat/review-core`, in review) |
+| `GitRunner` (one, routing) | `run(req)` dispatching on `req.context`: `"daemon"` to the Node runner (`createNodeRunner`, hooks off), `"pty"` to the control-channel runner. **There is no pair of runners:** `GitOpsDeps` takes ONE `runner` ([V] `packages/git-ops/src/types.ts`) | one local Node runner serving both contexts (labelled test only) | `daemon`: `createNodeRunner`; `pty`: B9 channel |
+| `GitOpsDeps` inputs | `runner`, `env: { daemon, pty }` (GIT-ENV-1 and PTY-5 environments), `runHooks` (`axis.git.runHooks`, user scope), `isCliRunActive` (from the supervisor), `assertNoDrift` (from the worktrees/snapshot binding), `scanner?`, `scanMode?`, `emptyHooksDir?`, `platform?` | test values | assembled once in `bindings/git.ts` |
+| `TrustRegistry` | `isTrusted(identity)` for methods other than run start, updated by main | in-memory | fed by control messages (§6.2) |
+
+H1 as scaffolded on `feat/daemon-host-scaffold` has `ports/git-runners.ts` (`GitRunners {daemon, pty}`) and its own `RunsService`/`RunSummary`; both must be replaced by the rows above before more code builds on them (review items D-5, D-9).
 
 ## 3. Startup order
 
@@ -100,12 +118,13 @@ Startup is a straight line. Any failure before step 12 exits with a typed code a
 3. **Data directory and instance lock.** `acquireInstanceLock(dir)` from `@axis/audit` (creates the directory 0700, applies the ownership, symlink and parent checks of `docs/packages.md` "Data directory"). Failure: `E_CONFLICT` (a second daemon) exits 75; `E_INVALID_ARGUMENT` or `E_POLICY_DENIED` exits 78. Hold the lock object until exit.
 4. **One database handle.** `openDatabase(dir/axis.db)` once. **The journal, the audit log and the idempotency store all use this `DatabaseSync`** (`Journal.open` already refuses an `AuditLog` on another handle, [V]; the store does the same on its branch [V]).
 5. **Redactor.** One process `Redactor` (`@axis/audit`), seeded with the built-in rules. Registered secrets are added in 1b by the vault. The audit log, the idempotency store, the logger and the providers guard all receive this instance (§9.2).
+5a. **Resolve git once (decided).** Find the absolute `git` path once, searching `PATH` with the current directory and every managed worktree root and registered repository excluded, and pass **the same absolute `gitPath`** to `@axis/git-ops`, `@axis/worktrees` and the snapshotter. No component re-resolves git later, so none can be redirected to a binary planted in a worktree. (`docs/packages.md` on `fix/git-ops-bound-commit` records the options; `@axis/worktrees` has its own resolver today, tracked as FU-GIT-RESOLVE, which the host replaces by passing the path in.)
 6. **Audit log and anchor check.** `new AuditLog(db, { redactor })`. Ask the supervisor for the stored anchor (`anchor.get`, bounded 5 s) and run `verify({ expectedHead: anchor })`, then a full `checkpoint()` ([V] `docs/packages.md` "Audit anchor", requirements 1 and 3).
    - `ok: true`: continue. `reason: "truncated"` with a chain that is shorter than the anchor: report "the database is behind the anchor", never "tampering" and never silence.
    - `ok: false` or no anchor reachable on a database that already has events: enter **degraded mode** (§5.5), do not continue to step 10 with mutating methods.
    - A first start (empty chain, no anchor) is normal and creates the first anchor after step 9.
 7. **Journal.** `Journal.open(db, { audit })`.
-8. **Idempotency store.** `JournalIdempotencyStore.open(db, { audit, redactor })` (`feat/daemon-idempotency-store`). It marks keys of the previous boot as `unknown: interrupted` itself ([V] `UnknownReason`). Until that branch merges, the host refuses to start with `MemoryIdempotencyStore` unless `config.devMemoryIdempotency` is set by the test supervisor; the product path has no such flag.
+8. **Idempotency store.** `JournalIdempotencyStore.open(db, { audit, redactor })` (`feat/daemon-idempotency-store`). It marks keys of the previous boot as `unknown: interrupted` itself ([V] `UnknownReason`). **Its clock handling must be re-reviewed before the product uses it (decided; ticket H2 checks it).** Until that branch merges, the host refuses to start with `MemoryIdempotencyStore` unless `config.devMemoryIdempotency` is set by the test supervisor; the product path has no such flag.
 9. **Recovery.** `journal.recover(lock)` (interrupts RUNNING runs, DMN-7), then `worktrees.reconcile()` (§7.3: `git worktree list --porcelain` and `refs/axis/*` against the journal, gate G-12). Reconcile has a time budget (default 20 s). Failure or timeout marks only the affected workspaces `needs attention` (their methods answer `E_UNAVAILABLE`), and is audited. It never blocks the other workspaces and never aborts startup. Then `checkpoint(previousAnchor)` and persist the new anchor (the recovery events are in the chain).
 10. **Services.** Build, in this order: `ChallengeManager` (synchronous sink, §5.2), the gate adapter, `TrustRegistry`, the attestation `IdentityVerifier`, `RuleTablePolicy`, the `Daemon`; `register()` every handler with its content hooks; run the **coverage check** (§4.2). A mismatch throws, and the host exits 70 before listening.
 11. **Signals.** Install the shutdown handlers (§8).
@@ -115,7 +134,7 @@ Startup is a straight line. Any failure before step 12 exits with a typed code a
 
 ### 4.1 Where definitions live
 
-Contract schemas (strict Zod objects, `MethodSpec`) live in `@axis/protocol`, one file per contract, because the renderer client and the web target import them and the package has no Node imports ([V] `NO_NODE`). `@axis/protocol`'s `contracts` table today holds **only `axis.worktrees/1`** [V `contracts.ts`]. Every contract below except that one is new work (tickets P1a to P1c). The host builds its registry with `protocolRegistry` filtered by `config.contracts` (an allow-list), so a build or test can serve fewer contracts, never more than the table holds.
+Contract schemas (strict Zod objects, `MethodSpec`) live in `@axis/protocol`, one file per contract, because the renderer client and the web target import them and the package has no Node imports ([V] `NO_NODE`). `@axis/protocol`'s `contracts` table on main holds **only `axis.worktrees/1`** [V `contracts.ts`]. `origin/feat/protocol-contracts-p1` (in review) adds `axis.projects`, `axis.approvals`, `axis.audit`, `axis.cli-runs` and `axis.providers`. `axis.git/1` and `axis.review/1` are unstarted (ticket P1b). **Contract ids contain no uppercase letters:** the id is `axis.cli-runs`, not `axis.cliRuns`; `contractIdSchema` rejects the latter, so a wrong spelling fails the coverage check. The host builds its registry with `protocolRegistry` filtered by `config.contracts` (an allow-list), so a build or test can serve fewer contracts, never more than the table holds.
 
 The envelope carries only `hello`/`welcome`/request/cancel/response frames [V `envelope.ts`]. **There is no server-push event or stream frame.** ADR 0003 D2/D3 describe `stream` and `event`, but neither exists in the protocol or the daemon. Phase 1a UI state therefore polls (`get`/`list`, 1 to 2 s with jitter) and the headless slice does the same. A protocol extension (ticket E1) is a UI-quality item, not a blocker for the slice.
 
@@ -127,21 +146,21 @@ Tier and `sideEffect` are the contract's declared minimum; policy may raise, nev
 |---|---|---|---|---|---|---|---|---|---|
 | `axis.worktrees/1` | `list`, `status` | read | 0 | none | | | user | `WorktreesService` | 1a, exists |
 | | `create` | write | 2 | req | | yes | user | same | 1a, exists |
-| | `finalise` | write | 2 | req | | | user | same | 1a, exists |
+| | `finalise` | write | 2 now, **3 after P1d+** | req | yes after P1d+ | | user | same, content hook after P1d+ | 1a, exists. **Decided:** becomes tier 3 with a challenge, as a follow-up outside the first protocol PR |
 | | `remove` | destructive | 4 | req | yes, native | | user | same, content hook (§7.2) | 1a, exists |
 | | `restoreFromRunBase` | write | 2 | req | | yes | user | same | 1a, exists |
 | | `discard`, `setUserEditing` | write | 2 | req / none | | | user | same | 1a, **named in the design docs, absent in the protocol** (additive, ticket P1d) |
 | `axis.projects/1` | `list` | read | 0 | none | | | user | journal | 1a, new |
 | `axis.approvals/1` | `resolve` | write | 2 | none | | | **user only** | `ChallengeManager.resolve` | 1a, new (the request and challenge shapes exist in `@axis/protocol`, [V] `challenge.ts`) |
 | | `pending` | read | 0 | none | | | user | challenge listing for the caller's own window | 1a, new |
-| `axis.cliRuns/1` | `start` | write | 2 | req | | yes | user | `RunsService` + `CliProcessHost` | 1a, new |
-| | `stop` | write | 2 | req | | | user | same | 1a, new |
-| | `get`, `list` | read | 0 | none | | | user | journal | 1a, new |
+| `axis.cli-runs/1` | `start` | write | 2 | req | | via `TrustAttestation` (§6.2) | user | `RunSupervisor.start` | 1a, new (P1 branch). **Decided:** stays tier 2, with the EXT-2 amendment |
+| | `stop` | write | 2 | req | | | user | `RunSupervisor.stop` | 1a, new |
+| | `get`, `list` | read | 0 | none | | | user | `RunSupervisor` queries; `list` is bounded and has no cursor (limit up to 500 on the P1 branch, decided at most 1000); a cursor is a follow-up | 1a, new |
 | `axis.review/1` | `diff` | read | 1 | none | | | user | `ReviewService` | 1a, new |
 | | `complete` (run REVIEWING to COMPLETED) | write | 2 | req | | | **user only**, mints `UserPrincipal` | journal | 1a, new |
-| `axis.git/1` (recommended, see Q1) | `pushPlan` | read | 1 | none | | | user | `git-ops` `planPush` | 1a, new |
+| `axis.git/1` (**decided:** a separate contract) | `pushPlan` | read | 1 | none | | | user | `git-ops` `planPush` | 1a, new |
 | | `commit` | write | 2 | req | | yes | user | `executeCommit` | 1a, new |
-| | `push` | network | 4 | req | yes, native | yes | user | `executePush` (content hook, §6.4) | 1a, new |
+| | `push` | network | 4 | req | yes, native | yes | user | `executePush` (content hook, §6.4; unstarted, P1b) | 1a, new |
 | | `compareUrl` | read | 0 | none | | | user | `compareUrl` | 1a, new |
 | `axis.audit/1` | `status` | read | 0 | none | | | user | anchor manager | 1a, new |
 | | `list` (`afterSeq`, `limit` ≤ 200) | read | 1 | none | | | user | `AuditLog.list` (events are redacted at write) | 1a, new |
@@ -154,11 +173,12 @@ Notes on the table:
 - **Default deny at two layers.** A method with no handler is not served. A method with no policy row is denied (I2). Both are enforced at startup (§4.2.1), not left to review.
 - **Agent actors.** In 1a no agent actor connects through a port. Every `Actors` cell is `user`. A connection whose identity is `agent:*` or `daemon` is refused for every method, so the DMN-3 negative test (an agent resolving a challenge, or completing a review) is a policy-table test, not a special case in handlers. In 1b the broker is in-process and gets its own rows.
 - **No path in any payload.** Projects and workspaces are named by journal ids, and the host resolves paths itself ([V] `worktrees.ts` header). Review each new schema against this (DMN-2).
+- **Contracts not yet in the protocol.** `axis.git/1` and `axis.review/1` do not exist in any branch; P1b also amends `axis-agent-shell.md` §5.4 and `axis-agent-shell-policies.md` §6.1, which still name `axis.worktrees/1.commit` and `.push`.
 - **`approvals.resolve` is not itself tier 3 or above**, otherwise resolving would need a challenge.
 
 #### 4.2.1 Coverage check
 
-At startup and as a unit test, assert: the set of `(contract, version, method)` in the served registry equals the set with a handler, equals the set with a policy row, equals the set with an audit action declaration (§5.3). Any difference throws. Every tier 3 or above method has a content hook or is explicitly marked "request digest content" in the table. This stops "a method was added to the protocol and is silently served, or silently dropped".
+At startup and as a unit test, assert: the set of `(contract, version, method)` in the served registry equals the set with a handler, equals the set with a policy row, equals the set with an audit action declaration (§5.3). Any difference throws. Every tier 3 or above method (including `worktrees.finalise` once it is tier 3) has a content hook or is explicitly marked "request digest content" in the table. This stops "a method was added to the protocol and is silently served, or silently dropped".
 
 ### 4.3 Handler shape
 
@@ -168,7 +188,7 @@ A handler is an adapter: validate nothing (the daemon already did, strict), deri
 
 ### 5.1 Idempotency
 
-`JournalIdempotencyStore` (not `MemoryIdempotencyStore`) is passed as `DaemonOptions.idempotency`. Scope is `(actorId, workspaceId, contract, version, method, key)`, 24 h. The store's `unknown` states (`interrupted`, `result-not-stored`, `failed-after-start`) map to `E_CONFLICT` with `details.reason`, never to a re-run, because the side effect may have happened. `exhausted` is `E_BACKPRESSURE`. These mappings are in the `feat/daemon-idempotency-store` daemon change; the host adds no logic. Retention for audit and keys is a config value with the ADR 0003 defaults (open question 4 there).
+`JournalIdempotencyStore` (not `MemoryIdempotencyStore`) is passed as `DaemonOptions.idempotency`. Scope is `(actorId, workspaceId, contract, version, method, key)`, 24 h. The store's `unknown` states (`interrupted`, `result-not-stored`, `failed-after-start`) map to `E_CONFLICT` with `details.reason`, never to a re-run, because the side effect may have happened. `exhausted` is `E_BACKPRESSURE`. These mappings are in the `feat/daemon-idempotency-store` daemon change; the host adds no logic. The store uses an injected clock for its 24 h and 7 day windows; a clock that goes backwards or jumps must not extend or drop a key early (re-review item, §3 step 8). Retention for audit and keys is a config value with the ADR 0003 defaults (open question 4 there).
 
 ### 5.2 Challenge manager and the approval gate
 
@@ -218,7 +238,16 @@ The key reaches the host in `init` from the supervisor over the control channel 
 
 ### 6.2 Trust
 
-`identity.trusted` is fixed for a connection, but Workspace Trust can be revoked while it is open, and the gate requires "a revoked trust refuses the next run start" (ROADMAP 1a trust line). So trust is two inputs ANDed in policy: the attested `identity.trusted` and a live `TrustRegistry`, fed by supervisor control messages `trust.set { windowId, workspaceId?, trusted }`. Default for an unknown window is untrusted. Policy rows with `requireTrusted` (`worktrees.create`, `restoreFromRunBase`, `cliRuns.start`, `git.commit`, `git.push`) consult it **at policy evaluation and again inside the handler immediately before the side effect** (a revoke between the two refuses). Granularity (per repository versus per window) is Q6.
+Two mechanisms, for two kinds of method.
+
+**Run start: the single-use `TrustAttestation`.** `RunSupervisor.start` requires a `TrustAttestation` ([V] `packages/runs`): a class instance minted only by `attestTrust` from `@axis/runs/daemon-attestation`, carrying `{ workspaceId, projectId, issuedAt }`, workspace-bound, expiring and **single use**. TRU-2: main attests, per start, that the source repository of this workspace is trusted now. So the host cannot hold a long-lived "trusted" flag for runs. The flow:
+
+1. The renderer calls `axis.cli-runs/1.start { workspaceId, agentId }`.
+2. The handler asks the supervisor channel for a fresh per-start decision: control message `trust.check { windowId, workspaceId, projectId } -> trust.result { trusted }`. Main answers from its live Workspace Trust state. No answer within 2 s, or `trusted: false`, is `E_POLICY_DENIED` (`details.reason: "untrusted"`).
+3. Only then `src/gate/run-trust.ts` calls `attestTrust({ workspaceId, projectId, issuedAt: clock.now() })` and passes the result to `start` in the same tick. The attestation is never stored, logged or reused; `projectId` comes from the journal, not the payload.
+4. A revoked trust therefore refuses the next start (ROADMAP 1a trust line). A running run is not stopped by a revoke in 1a (Q6).
+
+**Other methods (`worktrees.create`, `restoreFromRunBase`, `git.commit`, `git.push`): attested flag plus live registry.** `identity.trusted` is fixed for a connection, so trust is two inputs ANDed in policy: the attested `identity.trusted` and a live `TrustRegistry`, fed by supervisor control messages `trust.set { windowId, workspaceId?, trusted }`. The default for an unknown window is untrusted. The policy row `requireTrusted` consults it at evaluation and the handler re-checks immediately before the side effect (a revoke between the two refuses). Granularity (per repository or per window) is Q6.
 
 ### 6.3 Transport abstraction
 
@@ -236,30 +265,37 @@ Two planes, never mixed:
 
 `ChannelMux` limits: per-connection queue bounded by messages and bytes (overflow closes that connection and counts it, never drops silently), at most `maxConnections` virtual connections, frames for an unknown or closed `cid` ignored and counted, and close is idempotent. A mux frame is size-checked before it reaches `daemon.accept`'s own pre-identity limits.
 
+### 6.4 Git: hooks, the scanner and what a push is bound to
+
+- **Hooks (decided).** The daemon never runs repository commit hooks. When `axis.git.runHooks` is on (user, application or machine scope, never workspace: CFG-1; default true in 1a), the **host** runs `pre-commit` and `commit-msg` **in the pty process**, on a scratch checkout of the reviewed tree, under the same lock as the commit. The sequence, as recorded in `docs/packages.md` on `fix/git-ops-bound-commit` once merged: CLI-run check and drift re-check; hooks on a temporary index; freshness re-check; commit. A hook that modifies files refuses the commit. A `commit-msg` hook that rewrites the message has its message committed and audited. `post-commit` style hooks are not run in 1a. The daemon runner (`context: "daemon"`) always has hooks off; the `"pty"` runner is the only one that can run them. ADR 0004 §4 is amended by that branch (ticket H9-hooks implements the host side).
+- **Scanner (PSH-1).** `GitOpsDeps.scanner` is injected and optional, and the mode is `warn` or `refuse`. Who supplies the scanner is open (Q15). Until one is wired the host serves `git.push` with `scanMode: "refuse"` and no scanner only in tests; the product path refuses to register `git.push` without a scanner.
+- **Push content hook.** For `git.push` the hook returns `target = workspace:<id>` and `withLock(fn)` takes the per-project git mutex, runs `planPush` and passes `plan.digest` as the `contentDigest`. A challenge is therefore bound to the exact tip and findings the user saw. `executePush` receives `confirmedPlan: { tip, digest }` taken from that locked plan, never from the payload. `baseSha` is the last pushed sha from the journal (J1), never a ref under `refs/remotes`.
+- **Commit.** Built from the reviewed tree hash recorded at diff review (REV-1); the remote and branch come from the journal.
+
 ## 7. Worktrees through the contract only
 
 ### 7.1 The seam
 
 The host depends on `WorktreesService` (§2.3), defined from the `axis.worktrees/1` request and response schemas in `@axis/protocol` (merged, [V]). It does not import `@axis/worktrees` outside `bindings/worktrees.ts`. So:
 
-- the handlers, policy rows, content hooks, the headless slice and the conformance tests are built and run now against the fake;
-- when `feat/worktree-manager` lands, **one file** (`bindings/worktrees.ts`) and one gate file (`gate/worktrees-confirm.ts`) are added, and the slice test is run a second time against the real manager (H8b) with no other change;
-- the fake and the real binding are checked by the same **port conformance suite** (`testing/worktrees-conformance.ts`, node:test) that asserts the contract schemas on every response and the error-code mapping.
+- the handlers, policy rows and content hooks are written against the port, so the host never depends on the manager's path-based types;
+- `@axis/worktrees` is on main, so there is no fake manager: **one file** (`bindings/worktrees.ts`) and one gate file (`gate/worktrees-confirm.ts`) bind the real package (ticket H8, a single ticket), and the slice runs against it from the start;
+- a **port conformance suite** (`testing/worktrees-conformance.ts`, node:test) asserts the contract schemas on every response and the error-code mapping, so a later change of manager cannot drift from the contract.
 
 ### 7.2 What the binding must do (stated now so the fake does not drift)
 
-`WorktreeManager`'s public API is **path-based** (`list(repoPath)`, `status(worktreePath)`, `restoreFromRunBase({ path })`, [V on `origin/feat/worktree-manager`]) while the contract is **id-based**. The binding is therefore the DMN-2 enforcement point:
+`WorktreeManager`'s public API on main is **path-based** (`list(repoPath)`, `status(worktreePath)`, `restoreFromRunBase({ path })`, [V on `origin/feat/worktree-manager`]) while the contract is **id-based**. The binding is therefore the DMN-2 enforcement point:
 
 - ids to paths only through the journal and project registry at the moment of use; `realpath` at use; never a path from a payload;
 - `projectId` to repository root from the project registry (registered by main, §7.4);
-- `refuseIfActiveRun` wired to `RunsService` so finalise, remove and restore refuse while a run is active;
+- `refuseIfActiveRun` wired to the `RunSupervisor` (live run state) so finalise, remove and restore refuse while a run is active;
 - `remove`'s content hook returns `target = workspace:<id>` and `withLock(fn)` that takes the per-project git mutex then the manager's workspace lock, computes the `previewDiscard` fingerprint under it as `contentDigest`, and runs `fn`. Lock order is always project mutex, then workspace lock;
 - the capability is `markDiscardConfirmed` from `daemon-confirm`, minted in the gate adapter (§5.2), not in the binding;
 - `registeredRepos` returns the project registry roots, so the worktree root is never inside a registered repository.
 
 ### 7.3 Reconcile on start
 
-`WorktreesService.reconcile()` compares `git worktree list --porcelain` and `refs/axis/*` with the journal (G-12) and returns a report of workspaces needing attention. It is read-only on the repository except through the manager's own safe operations, runs under the same per-project mutex, and is bounded (§3 step 9).
+`reconcile` is **new code in the binding, not a manager call** ([V] `WorktreeManager` has no `reconcile`; it has `list(repoPath)` and `sweepSnapshotRefs`). It compares `git worktree list --porcelain` and `refs/axis/*` with the journal (G-12) and returns a report of workspaces needing attention. It is read-only on the repository except through the manager's own safe operations, runs under the same per-project mutex, and is bounded (§3 step 9).
 
 ### 7.4 Projects
 
@@ -267,7 +303,7 @@ A project is registered by **main** over the control channel (`projects.register
 
 ### 7.5 Journal gaps this exposes [V `packages/journal/src/schema.ts`]
 
-The journal today has `agent_workspaces`, `agent_runs`, `state_transitions`, `idempotency`. Not present: a `projects` table, worktree path and lock state, the last **pushed** sha per workspace (git-ops needs it as `baseSha`, [V] `docs/packages.md` "Using `@axis/git-ops`"), and the reviewed tree hash recorded at diff review. Its workspace states are `CREATING, READY, REMOVING, REMOVED, FAILED` while the protocol's are `READY, FINALISED, CLEANED`; `FINALISED` has no journal state. Ticket J1 is a journal migration for these. This is also a question of who is the source of truth, the journal or the manager's own `WorkspaceMeta` files (Q7).
+The journal today has `agent_workspaces`, `agent_runs`, `state_transitions`, `idempotency`. Not present: a `projects` table, worktree path and lock state, the last **pushed** sha per workspace (git-ops needs it as `baseSha`, [V] `docs/packages.md` "Using `@axis/git-ops`"), and the reviewed tree hash recorded at diff review. Its workspace states are `CREATING, READY, REMOVING, REMOVED, FAILED` while the protocol's are `READY, FINALISED, CLEANED`; `FINALISED` has no journal state. Likewise `assertNoDrift(worktreePath, { baseline })` needs a stored GIT-SNAP baseline per workspace, and nothing stores one. Ticket J1 is a journal migration for these, **including the baseline column** (or the `WorkspaceMeta` source, Q7). This is also a question of who is the source of truth, the journal or the manager's own `WorkspaceMeta` files (Q7).
 
 ## 8. Shutdown
 
@@ -300,37 +336,9 @@ The daemon owns the wire answer and the correlation id ([V]). Handlers throw onl
 
 `uncaughtException` and `unhandledRejection`: log a summary, make one best-effort audit append in a `try/catch` (`daemon.crash`), send `fatal` to the supervisor, exit 70. After an uncaught exception state is unknown, so the host does not try to continue; DMN-7 recovery on the next start repairs the journal.
 
-## 10. The headless slice test
+## 10. Review checklist (bug classes already found in this codebase)
 
-The earliest demonstrable vertical slice, with **no Electron, no UI, no Code OSS**: `packages/daemon-host/test/slice/headless.test.ts` (`node:test` only, Node 24.22.1, runs in `npm test`). It also becomes the Phase 1a gate evidence for L7, L8, L10 and L24 items it covers.
-
-### 10.1 Fixtures (`testing/`)
-
-- `TestSupervisor`: forks the host as a **child process** (real `process`, real lock, real signals, real exit code), sends `init` with a fresh data directory under `os.tmpdir()`, answers `anchor.get/put/ack` from an in-memory store it owns, answers `native.confirm` on command, mints attestations with the real HMAC key, and speaks `ChannelMux`. A second variant runs the host in a worker thread for fast non-process tests.
-- `TestClient`: typed over `@axis/protocol` schemas (hello/welcome, request, cancel), generates UUIDv4 idempotency keys, polls `get`/`list`.
-- Git fixture: a source repository and a **bare remote** (`git init --bare`), created with feature-detected git (initial branch set with `symbolic-ref`, no `-b`; the identity through `GIT_*` env of the fixture only). The test skips with an explicit reason if `requireGitVersion` from `@axis/git-ops` says the host git is too old. It assumes no git version beyond that and no OS (paths built with `node:path`, no shell strings).
-- Fake `WorktreesService` (§2.3): creates a real worktree and branch `axis/<slug>` with hooks off, records `baseSha`. Fake `CliProcessHost` runs a tiny Node script (the "fake CLI", launched through `@axis/pty-policy` `resolveLaunch` and `buildCliEnv` from a test `axis.cliAgents` entry) that writes `src/hello.txt` in its working directory and exits 0; a slow variant sleeps, for the kill test. If `resolveLaunch` refuses an absolute interpreter path, the fixture puts a shim on a temporary PATH directory (resolution is PATH only by design).
-- A project is registered through the supervisor (`projects.register`), as main would.
-
-### 10.2 The flow and what it asserts
-
-1. **Start.** `ready` arrives, not degraded; `hello`/`welcome` selects the served contracts. A second host on the same data directory exits 75 (`E_CONFLICT`).
-2. **Create.** `axis.worktrees/1.create` with an idempotency key returns an id and a worktree with `baseSha`. Replaying the same key and payload returns the stored result and creates nothing new; the same key with another payload is `E_IDEMPOTENCY_CONFLICT`. The journal has the workspace READY, `createdBy` is the attested actor (not anything in the payload).
-3. **Run.** `axis.cliRuns/1.start { workspaceId, agentId: "fake" }`. Polling shows QUEUED, RUNNING, then REVIEWING when the fake CLI exits 0. The CLI environment contains none of the PTY-5 denied names (the fake CLI dumps its env to a file the test reads).
-4. **Review.** `axis.review/1.diff` lists `src/hello.txt` and returns `treeHash`. `axis.review/1.complete` as the `user` connection moves the run to COMPLETED; the same call from a connection attested as `agent:*` is `E_POLICY_DENIED`.
-5. **Commit.** `axis.git/1.commit { workspaceId, reviewedTreeHash, message }` returns a commit whose tree equals `treeHash` (checked with git in the test). Altering the worktree after the review and committing again is refused (the reviewed-tree binding).
-6. **Push.** `axis.git/1.pushPlan` shows no findings. `axis.git/1.push` without `approval` is `E_APPROVAL_REQUIRED` with a challenge; the supervisor receives `native.confirm` with a proof; the user connection calls `axis.approvals/1.resolve` (approve) and the supervisor answers `native.result` (confirmed); the retry with `approval` succeeds. Asserted on the bare remote: `refs/heads/axis/<slug>` equals the commit and **no other ref changed**. Then: the same challenge reused is refused; the same request from a second connection needs its own approval; a replay of the same idempotency key returns the stored result and the remote is not pushed twice.
-7. **Secret path.** A second workspace commits a file containing a canary assembled at runtime to look like a credential; `pushPlan` reports a finding by rule name and path only (never the matched text) and requires confirmation; a push whose plan changed after confirmation is `E_CONFLICT` (`plan_changed`).
-8. **Audit chain.** After graceful shutdown (SIGTERM, exit code 0, process exits by draining): open the database read-only and assert (a) `verify({ expectedHead: supervisorAnchor })` is ok and the supervisor holds the final anchor; (b) the ordered actions include the policy decision and execution for every call above, the challenge issue, resolve and consume, the run transitions, the commit and the push, each with actor `user` and the connection's workspace; (c) the canary, the attestation key and the absolute temporary paths appear **nowhere** in the database file bytes, in the host's stderr or in any response; (d) the destructive or privileged actions (push, commit) each have exactly one `success` event.
-9. **Tamper and truncation.** Editing a stored event's payload makes `verify` fail with `hash_mismatch`. Deleting the last N events (dropping the append-only triggers, as an attacker with file access could) and restarting yields `ready.degraded` ("database behind the anchor"), serves only the audit read methods, and refuses `worktrees.create` with `E_UNAVAILABLE`.
-10. **Kill and recover.** SIGKILL the host while the slow fake CLI is RUNNING; restart on the same directory: the stale lock is taken over, the run is BLOCKED with `INTERRUPTED_BY_RESTART`, the worktree is intact, the old idempotency key answers `unknown`, not a re-run, and the next start's anchor check is ok.
-11. **Anchor stall.** With the supervisor withholding acks, the host stops serving tier 3 and above after the lag limit and resumes when acks return.
-
-Run the same test a second time with `AXIS_SLICE_WORKTREES=real` semantics (a config switch in the fixture, not an environment read in the host) against `@axis/worktrees` when H8b lands, with no other change.
-
-## 11. Review checklist (bug classes already found in this codebase)
-
-Each ticket's reviewer maps its diff to this table. They come from `~/.cache/project-axis/reviews/`.
+Each ticket's reviewer maps its diff to this table. They come from the earlier review reports for the merged packages (not in the repository), summarised here.
 
 | Class | Host rule |
 |---|---|
@@ -342,60 +350,3 @@ Each ticket's reviewer maps its diff to this table. They come from `~/.cache/pro
 | Timers and listeners left behind | `Disposables` registry; exit-by-draining assertion (§8) |
 | Slot or resource released while work still runs | Mutex and lock released only when the work settles, not on abort; database closed only when `unsettled === 0` |
 | Fallback paths that fail open | No memory-store fallback; no default policy; no "continue" after an anchor failure; no unattested identity |
-
-## 12. Tickets (dependency order)
-
-Sizes: **S** under half a day, **M** one to two days, **L** several days. "Review" marks security-critical code that goes to an independent review before any PR. Tickets in the same wave have no dependency on each other and can be built by separate sessions.
-
-| ID | Ticket | Size | Depends on | Review |
-|---|---|---|---|---|
-| **P1a** | Protocol: `axis.approvals/1`, `axis.audit/1`, `axis.projects/1` (schemas, tiers, registry entries, vectors) | S | none | yes (identity, tiers) |
-| **P1b** | Protocol: `axis.git/1` and `axis.review/1` | M | Q1 | yes |
-| **P1c** | Protocol: `axis.cliRuns/1` and `axis.providers/1` (list) | S | none | |
-| **P1d** | Protocol: add `discard` and `setUserEditing` to `axis.worktrees/1` (additive) | S | coordinate with the macOS host | |
-| **J1** | Journal migration: projects, worktree rows, last pushed sha, reviewed tree hash, `FINALISED` alignment | M | `feat/daemon-idempotency-store` merged | yes |
-| **H1** | Scaffold `@axis/daemon-host`: package, root and package tsconfig references, docs row, lockfile, import-allowlist rows, `config.ts`, ports, `Disposables`, logger, `summarizeError` | M | none | partly |
-| **H2** | Storage and startup: lock, directory, database, redactor, audit, journal, idempotency store, recovery, exit codes | M | H1, idempotency store merged | yes |
-| **H3** | Control channel and transports: message schemas, attestation verifier, `ChannelMux`, Electron parent-port adapter, connect limiter, `TestSupervisor` | M | H1 | yes |
-| **H6** | Policy rule table, `TrustRegistry`, coverage check | S | H1, P1a | yes |
-| **H8a** | Worktrees port, fake, handlers, content hook, conformance suite | M | H1, P1d (optional) | |
-| **H4** | Anchor manager, degraded mode, `axis.audit/1` handlers | M | H2, H3, P1a | yes |
-| **H5** | Challenge manager, gate adapter, native bridge, `axis.approvals/1` | M | H2, H3, P1a | yes |
-| **H7** | Shutdown and signals integration, crash handlers, Windows `shutdown` message, exit-by-draining test | S | H2, H3, `fix/daemon-sigterm` merged | yes |
-| **H9** | Git handlers: commit, pushPlan, push (content hook, last pushed sha), compareUrl, `GitRunners` | M | J1, P1b, H5, H6, H8a | yes |
-| **H10** | `axis.cliRuns/1` and `axis.review/1` handlers, `UserPrincipal` minting, runs and review ports and fakes | M | J1, P1b, P1c, H6 | yes |
-| **H11** | `axis.providers/1.list` over the mock provider and the guard | S | P1c, H1 | |
-| **H12** | Headless slice test, fixtures, CI wiring | L | H4, H5, H7, H9, H10 (fakes are enough) | |
-| **H8b** | Real worktrees binding and gate confirm, reconcile on start, slice rerun | M | `feat/worktree-manager` merged, H8a, H5 | yes |
-| **R1, R2** | `@axis/runs` and `@axis/review` packages (their own designs) | L | n/a; owner decides who | |
-| **E1** | Protocol and daemon: server events or stream frames, subscribe | L | after H12; not needed for the slice | yes |
-| **X1** | Overlay entry `axisDaemonMain.ts`, main seam, staging (ADR 0005 D3) | M | H3, H7; **outside this repo's package work, needs the Code OSS build** | |
-| **W1** | Web host entry over `ChannelMux` (reh tunnel) | M | H3, X1 | yes |
-
-Order and parallelism:
-
-- **Wave 0 (start now, all independent):** P1a, P1c, P1d, H1. J1 starts as soon as the idempotency store merges.
-- **Wave 1 (after H1):** H2, H3, H6, H8a, H11 in parallel (five sessions are possible; H2 and H3 are the critical path).
-- **Wave 2:** H4, H5, H7 in parallel once H2 and H3 are done; H9 and H10 once J1, P1b and their ports are in.
-- **Wave 3:** H12 (the slice). It uses fakes, so it does **not** wait for the worktree manager, `@axis/runs` or `@axis/review`.
-- **Later:** H8b when the worktree manager lands; E1, X1, W1 after the slice.
-- **Critical path to the first slice:** H1, H2 and H3, H5, H9 and H10, H12.
-
-Merge-conflict note: each contract's handler file, protocol file and policy rows are separate files, so Wave 2 sessions touch disjoint files. `contracts/registry.ts` and the policy table are the shared files; each ticket adds one line, and the coverage check catches an omission.
-
-## 13. Open questions for the owner
-
-1. **`axis.git/1` or `axis.worktrees/1.commit/.push`?** The design docs ([V] shell §5.4, policies §6.1) name `axis.worktrees/1.commit` and `.push`. This design recommends a separate `axis.git/1` because the worktrees contract belongs to the macOS host's in-review package and git-ops is a different library and policy domain. It means amending those two docs. Decide before P1b.
-2. **Audit integrity failure.** Recommended: degraded read-only mode with a native dialog in main, no automatic re-anchor. Should a user ever be allowed to re-anchor (an audited, native-confirmed act), or is the only way out a reset of the data directory?
-3. **Where the anchor lives.** The product answer is the OS keychain through main. On Linux without a keyring (the `basic_text` backend) the anchor is as weak as the database. Accept that, refuse to anchor there, or use a different principal? Phase 1a CI would use the in-memory supervisor store.
-4. **Project registration.** Main registers repositories over the control channel (§7.4). Who owns the "add repository" UX and its trust decision, and may a project ever be added without a window?
-5. **UI updates in 1a.** Poll until E1, or block the dashboard on server events?
-6. **Trust granularity and revocation.** Per repository, or per window and workspace? Is a revoke while a run is active a stop, or only a block on the next start?
-7. **Source of truth for a worktree.** The journal (J1) or the manager's `WorkspaceMeta` files, and which direction does reconcile repair?
-8. **Import allowlist.** Approve granting `@axis/journal/daemon-principal` to `daemon-host/src/handlers/review.ts` and keeping the daemon package's own entry (§2.1).
-9. **Tiers.** Is `git.commit` right at tier 2 with no challenge (the reviewed-tree binding is the guard), and `git.push` always tier 4 with native confirmation, including when the scan finds nothing?
-10. **Drift gate package.** `feat/git-snapshot` (`@axis/git-snapshot`) and `@axis/worktrees` (`gitSnap.ts`, `diffGitSnapshots`) both implement GIT-SNAP-1 pieces. Which one backs `assertNoDrift` for `git-ops`?
-11. **One package or several.** This design keeps one `@axis/daemon-host` with a directory per contract. Splitting handlers into per-contract packages would cut conflicts but multiplies the `docs/packages.md` and allowlist overhead.
-12. **Platforms.** The `Axis packages` CI job runs on ubuntu-24.04 only ([V] `docs/ci.md`), so the slice runs on Linux in CI; the macOS path and the Windows shutdown message and shim are untested until those jobs exist.
-13. **Daemon lifetime.** ADR 0003 open question 1 (does the daemon outlive windows or the app) changes the lock, the supervisor `shutdown` rules and the connect limiter. This design assumes the daemon lives and dies with the app.
-14. **Retention.** Idempotency keys 24 h are fixed by ADR 0003 D3; audit retention is not decided (ADR 0003 open question 4). The host takes it as config, default "keep".
