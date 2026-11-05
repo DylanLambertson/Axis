@@ -1,7 +1,8 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 // Axis commit (threat model GIT-3, REV-1, GIT-7; gate 1a/L24). The commit is of the tree the user reviewed, on the parent
 // and branch they reviewed it on: it is built with commit-tree in the pty context and the branch is moved by compare-and-swap.
-// Commit hooks do not run on this path (OPEN DECISION for the owner, see docs/packages.md "Commit hooks").
+// The daemon never runs repository commit hooks: none runs on this path. The host is to run pre-commit and commit-msg under the
+// commit lock before commit-tree; NOT BUILT YET (H9-hooks), see docs/packages.md "Commit hooks".
 import { branchFor, checkWorktree, daemonGitFor, platformOf, prefix, OBJECT_ID, type DaemonGit } from "./args.js";
 import { findOverride, identityOverrides, overrideMessage, withNoPrompt } from "./env.js";
 import { runBound } from "./boundCommit.js";
