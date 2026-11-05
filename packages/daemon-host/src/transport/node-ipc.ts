@@ -7,7 +7,9 @@ import type { SupervisorChannel, Unsubscribe } from "../ports/index.js";
  * `advanced`, so no shared references or exotic types reach the walk of `inspectMessage`). `process` in the child
  * and the `ChildProcess` in the parent both satisfy `IpcLike`, so the host and the test supervisor use the same
  * adapter. It adds listeners only for as long as someone is subscribed, and removes them all in `dispose()`, so the
- * channel no longer keeps the process alive afterwards (the process then exits by draining).
+ * channel no longer keeps the process alive afterwards (the process then exits by draining). Sends are not bounded:
+ * the return value of `send` (backlog) is ignored, which is fine for the control plane and the tests. The web host
+ * (W1), whose peer can be slow, must add an outbound bound before it carries frames over this adapter.
  */
 export interface IpcLike {
   send?(message: unknown): boolean;

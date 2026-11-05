@@ -214,3 +214,15 @@ test("every way a request can end clears its timer and abort listener at once", 
     timers.restore();
   }
 });
+
+test("native.confirm ignores an answer for another window or with another proof", async () => {
+  const { b, client, peer } = setup();
+  const req = { challengeId: chal, proof, windowId: "win-1", summary: "Push" };
+  const p = client.nativeConfirm(req, { timeoutMs: 100 });
+  await wait(0);
+  assert.equal(last(peer)?.["type"], "native.confirm");
+  b.send({ type: "native.result", challengeId: chal, proof, confirmed: true, windowId: "win-2" });
+  b.send({ type: "native.result", challengeId: chal, proof: "x".repeat(32), confirmed: true, windowId: "win-1" });
+  await assert.rejects(p, { code: "E_TIMEOUT" });
+  assert.equal(client.stats().ignoredAnswers, 2);
+});

@@ -178,3 +178,13 @@ test("the host ignores a second init and a message that is not a valid control m
     assert.equal(sup.received.slice(from).filter((m) => m.type === "ready").length, 0);
   });
 });
+
+test("a host that cannot start does not hang dispose and leaves nothing behind", async () => {
+  const before = processSnapshot();
+  const sup = await TestSupervisor.start({ entry: "/nonexistent/axis-host.js" });
+  const dataDir = sup.dataDir;
+  assert.equal(await within(10_000, sup.dispose()), "done");
+  await assert.rejects(stat(dataDir), { code: "ENOENT" });
+  await wait(5);
+  assert.deepEqual(processSnapshot(), before);
+});

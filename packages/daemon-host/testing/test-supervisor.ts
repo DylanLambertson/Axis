@@ -99,23 +99,35 @@ export class TestSupervisor {
     const root = await mkdtemp(join(tmpdir(), "axis-supervisor-"));
     const entry = options.entry ?? ECHO_HOST_ENTRY;
     let sup: TestSupervisor;
+    // Whatever was started is killed again if anything below throws, so a failed start leaves no child behind.
+    let killStarted: () => void = () => undefined;
     try {
       if (options.mode === "worker") {
         const worker = new Worker(entry, { stderr: true });
-        const exited = new Promise<ExitInfo>((resolve) => worker.once("exit", (code) => resolve({ code, signal: null })));
+        killStarted = () => void worker.terminate();
+        const exited = new Promise<ExitInfo>((resolve) => {
+          worker.once("exit", (code) => resolve({ code, signal: null }));
+          worker.once("error", () => resolve({ code: null, signal: null }));
+        });
         const channel = adaptNodePort(worker, "exit");
         sup = new TestSupervisor(root, channel, () => void worker.terminate(), exited, options, (hook) => worker.stderr.on("data", (d: Buffer) => hook(d.toString("utf8"))));
       } else {
         const child: ChildProcess = fork(entry, [], { stdio: ["ignore", "ignore", "pipe", "ipc"], serialization: "json" });
-        const exited = new Promise<ExitInfo>((resolve) => child.once("exit", (code, signal) => resolve({ code, signal })));
+        killStarted = () => void child.kill("SIGKILL");
+        // `error` (spawn failure, failed kill) may arrive without `exit`: `dispose()` must not wait for one forever.
+        const exited = new Promise<ExitInfo>((resolve) => {
+          child.once("exit", (code, signal) => resolve({ code, signal }));
+          child.once("error", () => resolve({ code: null, signal: null }));
+        });
         const channel = adaptNodeIpc(child);
-        sup = new TestSupervisor(root, channel, (s) => void child.kill(s ?? "SIGKILL"), exited, options, (hook) => child.stderr?.on("data", (d: Buffer) => hook(d.toString("utf8"))));
+        sup = new TestSupervisor(root, channel, (sig) => void child.kill(sig ?? "SIGKILL"), exited, options, (hook) => child.stderr?.on("data", (d: Buffer) => hook(d.toString("utf8"))));
       }
+      if (options.skipInit !== true) sup.sendInit(options.config);
     } catch (e) {
+      killStarted();
       await rm(root, { recursive: true, force: true });
       throw e;
     }
-    if (options.skipInit !== true) sup.sendInit(options.config);
     return sup;
   }
 

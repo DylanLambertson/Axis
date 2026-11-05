@@ -24,7 +24,7 @@ export interface MuxLimits {
   readonly maxFrameBytes: number;
   /** Frames held for a connection whose reader has not attached or is behind (default 64). */
   readonly maxQueuedMessages: number;
-  /** Bytes held for such a connection (default 2 MiB). */
+  /** Size held for such a connection, counted as UTF-16 code units of its JSON text (default 2 Mi). */
   readonly maxQueuedBytes: number;
   /** Largest control message in bytes (default 256 KiB). */
   readonly maxControlBytes: number;

@@ -178,8 +178,9 @@ export class ControlClient {
       { type: "native.confirm", ...request },
       DEFAULT_TIMEOUTS_MS.native,
       options,
+      // An answer for another window, or with another proof, is not the answer to this request: ignored and counted.
       (m) =>
-        m.type === "native.result"
+        m.type === "native.result" && m.windowId === request.windowId && m.proof === request.proof
           ? { value: { confirmed: m.confirmed, proof: m.proof, windowId: m.windowId } }
           : undefined,
     );
@@ -208,7 +209,10 @@ export class ControlClient {
     if (!trusted) throw new AxisError("E_POLICY_DENIED", "The workspace is not trusted", { reason: "untrusted" });
   }
 
-  /** A setting from main, `null` when unset. `E_TIMEOUT` when main does not answer (a refusal for the caller). */
+  /**
+   * A setting from main, `null` when unset. `E_TIMEOUT` (no answer) and `E_UNAVAILABLE` (channel closed) are
+   * refusals: a caller must never fall back to a default value on them.
+   */
   settingsGet(key: SettingKey, options: RequestOptions = {}): Promise<JsonValue> {
     const requestId = this.#id();
     return this.#request<JsonValue>(
