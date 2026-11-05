@@ -415,7 +415,7 @@ Proposed changes to `@axis/git-ops` (not made here, see `docs/design/review-core
 
 - Packages may import `node:*`, `zod` (exactly 4.6.6) and other `@axis/*` packages. They never import `vs/*`, Electron or the DOM.
 - The UI and workbench code in `code-oss/overlay/src/vs/axis/**` reaches the daemon only through `@axis/protocol`.
-- Tests use `node:test`. No other test framework. `test/packages/imports.test.mjs` enforces the import allowlist.
+- Tests use `node:test`. No other test framework. `test/packages/imports.test.mjs` enforces the import allowlist. `test/packages/staged-typecheck.test.mjs` type-checks the staged packages under Code OSS's timer typings, where `setTimeout` returns an opaque handle: cast a stored timer with `as unknown as NodeJS.Timeout` (ADR 0005 D3.4).
 
 ## Commands
 

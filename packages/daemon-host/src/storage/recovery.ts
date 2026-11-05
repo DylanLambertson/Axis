@@ -51,7 +51,7 @@ export async function runRecovery(input: RecoveryInput): Promise<RecoveryOutcome
       timer = setTimeout(() => {
         resolve("timeout"); // before the abort, which settles the "cancelled" branch of the race
         controller.abort();
-      }, input.reconcileBudgetMs);
+      }, input.reconcileBudgetMs) as unknown as NodeJS.Timeout; // opaque handle under Code OSS's typings (ADR 0005)
     });
     const work = Promise.resolve().then(() => input.reconcile?.(controller.signal));
     work.catch(() => undefined); // an abandoned reconcile may still reject later
