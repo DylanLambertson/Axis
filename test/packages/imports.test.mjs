@@ -39,12 +39,13 @@ export function importSpecifiers(source) {
     /\bimport\s*['"]([^'"]+)['"]/g,
     /\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/g,
     /\brequire\s*\(\s*['"]([^'"]+)['"]\s*\)/g,
+    /(?<![\w'"`])from\s*['"]([^'"\s,;]+)['"]/g,
   ];
   for (const re of patterns) for (const m of text.matchAll(re)) found.push(m[1]);
   // The text patterns miss string-named bindings (`import { "z" as z } from "zod"`) and a quote inside a comment
   // before the specifier; the staging hook's tokenizer sees both.
   for (const t of tokenSpecifiers(source)) if (!found.includes(t.spec)) found.push(t.spec);
-  return found;
+  return [...new Set(found)];
 }
 
 /**
@@ -198,6 +199,15 @@ test("scanner: finds every import form and ignores comments", () => {
 
 test("scanner: string-named bindings and a quote in a comment do not hide a specifier", () => {
   assert.deepEqual(importSpecifiers('import { "z" as z } from "zod";\nexport { "default" as e } from "vs/base/common/event";\nimport /* \' */ { x } from "child_process";').sort(), ["child_process", "vs/base/common/event", "zod"]);
+});
+
+test("scanner: a regex literal after a closing parenthesis does not hide a specifier", () => {
+  const trick = `if (Date.now() < 0) /'/.test(""); export { "z" as zTree } from "zod";`;
+  assert.deepEqual(importSpecifiers(trick), ["zod"]);
+  assert.deepEqual(importSpecifiers(`if (a) /'/.test(b); export * from "electron";`), ["electron"]);
+  assert.deepEqual(importSpecifiers(`if (a) /'/.test(b); const m = import("electron");`), ["electron"]);
+  assert.deepEqual(importSpecifiers(`if (a) /'/.test(b); import fs = require("fs");`), ["fs"]);
+  assert.deepEqual(importSpecifiers(`const x = (a) / 2; import { y } from "./y.js";`), ["./y.js"]);
 });
 
 test("scanner: policy", () => {

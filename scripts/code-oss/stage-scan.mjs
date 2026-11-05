@@ -15,6 +15,8 @@ export const SPECIFIER_PATTERNS = [
   /(\bimport\s*['"])([^'"]+)(?=['"])/g,
   /(\bimport\s*\(\s*['"])([^'"]+)(?=['"])/g,
   /(\brequire\s*\(\s*['"])([^'"]+)(?=['"])/g,
+  // Independent of what precedes `from` (a regex literal, a string-named binding, a comment): fail closed.
+  /((?<![\w'"`])from\s*['"])([^'"\s,;]+)(?=['"])/g,
 ];
 
 /**
@@ -76,7 +78,7 @@ const IMPORT_CLAUSE_STOP = new Set(["function", "class", "const", "let", "var", 
  * `start`/`end` of their contents (inside the quotes). It does not need to be a full lexer: it has to tell code from
  * comments and strings, which the regular expressions cannot do (`import /* ' *\/ ...`, `{ "z" as z }`).
  */
-export function tokenize(src) {
+export function tokenize(src, { regexAfterParen = false } = {}) {
   const toks = [];
   const stack = []; // "tmpl" marks a `${` inside a template literal; "{" an ordinary block
   let i = 0;
@@ -85,7 +87,8 @@ export function tokenize(src) {
     if (!t) return false;
     if (t.type === "id") return !NOT_VALUE_END.has(t.value);
     if (t.type === "str" || t.type === "tmpl" || t.type === "re") return true;
-    return t.value === ")" || t.value === "]" || t.value === "}";
+    if (t.value === ")") return !regexAfterParen; // `if (x) /re/.test(y)` is a regex, `(a) / b` a division: scan both
+    return t.value === "]" || t.value === "}";
   };
   const readTemplate = () => {
     // i is just after a backtick or just after the `}` that closes a `${`
@@ -162,7 +165,12 @@ export function tokenize(src) {
  * taken as a specifier, whatever precedes it (fail closed).
  */
 export function tokenSpecifiers(src) {
-  const t = tokenize(src);
+  const all = new Map();
+  for (const regexAfterParen of [false, true]) for (const s of tokenSpecifiersOf(tokenize(src, { regexAfterParen }))) all.set(s.start, s);
+  return [...all.values()].sort((a, b) => a.start - b.start);
+}
+
+function tokenSpecifiersOf(t) {
   const found = new Map();
   const add = (tok) => found.set(tok.start, { spec: tok.value, start: tok.start, end: tok.end });
   const isId = (k, v) => t[k]?.type === "id" && t[k].value === v && t[k - 1]?.value !== ".";
@@ -179,7 +187,15 @@ export function tokenSpecifiers(src) {
 
 /** Dynamic loads whose argument is not a single string literal, found on tokens. */
 export function tokenNonLiteralLoads(src) {
-  const t = tokenize(src);
+  const bad = [];
+  for (const regexAfterParen of [false, true]) {
+    const here = nonLiteralOf(tokenize(src, { regexAfterParen }));
+    if (here.length > bad.length) bad.splice(0, bad.length, ...here);
+  }
+  return bad;
+}
+
+function nonLiteralOf(t) {
   const bad = [];
   for (let k = 0; k < t.length; k++) {
     const call = (t[k].value === "import" || t[k].value === "require") && t[k].type === "id" && t[k - 1]?.value !== "." && t[k + 1]?.value === "(";
