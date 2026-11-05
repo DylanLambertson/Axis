@@ -99,14 +99,14 @@ Handlers see only these interfaces. A port is defined against `@axis/protocol` s
 | `WorktreesService` | `list, status, create, finalise, remove, restoreFromRunBase, previewDiscard, assertNoDrift, reconcile`, all **id-based**, returning the `axis.worktrees/1` response shapes | none: tests use the real `@axis/worktrees` on a temporary repository (it is on main, [V]) | `bindings/worktrees.ts` over `WorktreeManager` (§7) |
 | `WorktreeLocator` | `locate(workspaceId) -> { workTree, gitDir }`, absolute and normalised, `realpath` at the moment of use, from the journal and project registry, never from a payload or by discovering the directory (GIT-4) | in-memory map | one implementation in `bindings/worktrees.ts`, **shared** by the three consumers below, which declare the same structural shape (`@axis/runs` `WorktreeLocator`/`RunWorktree`, `@axis/git-ops` `WorktreeRef`, the worktrees binding) |
 | `PtyPort` (from `@axis/runs`) | `spawn({ runId, argv, cwd, env, cols, rows }) -> PtyHandle` (`write`, `resize`, `kill`, `onData`, `onExit`) | Node `child_process` behind the same interface, with the exact argv and env `@axis/runs` built through `@axis/pty-policy` (fixture) | the Axis pty process control channel (B9) |
-| Runs | **no host-defined port.** `bindings/runs.ts` builds one `RunSupervisor` ([V] `packages/runs`: `SupervisorOptions` = `journal, audit, pty, clock, locator, snapshotter, env, redactor`, optional `limits`, `managedWorktreeRoots`, `onInternalError`). Handlers call `start({ workspaceId, agent, actor, trust, idempotencyKey })` returning `{ run: RunSummary, replayed }`, `stop(runId, actor)`, `get`, `list({ workspaceId, limit })`; the wire shape is the protocol `cliRunSchema`, not a host type. `start` needs `agent`, the `axis.cliAgents` entry the daemon resolved: the wire request carries only `agentId`, so the host reads `axis.cliAgents` from the user-scope settings main holds (CFG-1: user, application or machine scope, never workspace or folder) through the control message `settings.get { key }`, validates it with the `@axis/pty-policy` schema, and re-reads it on every start; the same channel supplies `axis.git.runHooks` | the real supervisor with the fake `PtyPort` | same |
+| Runs | **no host-defined port.** `bindings/runs.ts` builds one `RunSupervisor` ([V] `packages/runs`: `SupervisorOptions` = `journal, audit, pty, clock, locator, snapshotter, env, redactor`, optional `limits`, `managedWorktreeRoots`, `onInternalError`). Handlers call `start({ workspaceId, agent, actor, trust, idempotencyKey })` returning `{ run: RunSummary, replayed }`, `stop(runId, actor)`, `get`, `list({ workspaceId, limit })`; the wire shape is the protocol `cliRunSchema`, not a host type. `start` needs `agent`, the `axis.cliAgents` entry the daemon resolved: the wire request carries only `agentId`, so the host reads `axis.cliAgents` from the application or machine scope setting main holds (CFG-1: user, application or machine scope, never workspace or folder) through the control message `settings.get { key }` (control-plane table, §6.3), validates it with the `@axis/pty-policy` schema, and re-reads it on every start; the same channel supplies `axis.git.runHooks` | the real supervisor with the fake `PtyPort` | same |
 | `RunSnapshotter` | `before(ctx)`, `after(ctx) -> { drift }` | no-op | the GIT-SNAP-1 snapshot (`@axis/git-snapshot` or `@axis/worktrees` `gitSnap`, Q10) |
 | `ReviewService` | `diff(workspaceId) -> { treeHash, files, patchesBounded }` | fake over `git diff` | `@axis/review` (`feat/review-core`, in review) |
 | `GitRunner` (one, routing) | `run(req)` dispatching on `req.context`: `"daemon"` to the Node runner (`createNodeRunner`, hooks off), `"pty"` to the control-channel runner. **There is no pair of runners:** `GitOpsDeps` takes ONE `runner` ([V] `packages/git-ops/src/types.ts`) | one local Node runner serving both contexts (labelled test only) | `daemon`: `createNodeRunner`; `pty`: B9 channel |
 | `GitOpsDeps` inputs | `runner`, `env: { daemon, pty }` (GIT-ENV-1 and PTY-5 environments), `runHooks` (`axis.git.runHooks`, user scope), `isCliRunActive` (from the supervisor), `assertNoDrift` (from the worktrees/snapshot binding), `scanner?`, `scanMode?`, `emptyHooksDir?`, `platform?` | test values | assembled once in `bindings/git.ts` |
 | `TrustRegistry` | `isTrusted(identity)` for methods other than run start, updated by main | in-memory | fed by control messages (§6.2) |
 
-H1 as scaffolded on `feat/daemon-host-scaffold` has `ports/git-runners.ts` (`GitRunners {daemon, pty}`) and its own `RunsService`/`RunSummary`; both must be replaced by the rows above before more code builds on them: `GitOpsDeps` takes one routing runner, and the run lifecycle is `RunSupervisor`, not a host type.
+H1 on `feat/daemon-host-scaffold` replaced `GitRunners` by a `GitPort` over `GitOpsDeps`, which matches the rows above. It still defines a host `RunsService`, `RunSummary` and `PtyPort`; this design says there is no host-defined runs port (the host binds `RunSupervisor` and uses the `@axis/runs` `PtyPort`), so those three go before H1 merges.
 
 ## 3. Startup order
 
@@ -252,7 +252,21 @@ Two mechanisms, for two kinds of method.
 
 Two planes, never mixed:
 
-- **Control plane** (supervisor to host): `init`, `connect`, `trust.set`, `anchor.get/ack`, `native.result`, `projects.register`, `shutdown` in; `ready`, `anchor.put`, `native.confirm`, `fatal`, `log` out. Every message is a strict Zod union. **Everything on this channel is supervisor-authenticated by construction**; a client's byte stream is never parsed as host control.
+- **Control plane** (supervisor to host). Every message is a strict Zod union, and everything on this channel is supervisor-authenticated by construction; a client's byte stream is never parsed as host control.
+
+| Message | Direction | Payload summary | Answered by |
+|---|---|---|---|
+| `init` | in | `HostConfig` (data directory, key, limits) | once, at start |
+| `connect` | in | attestation plus a transferred port or mux connection id | host accepts or closes |
+| `ready` | out | protocol version, served contracts, `degraded?` | n/a |
+| `anchor.get` / `anchor.put` | out | request the stored anchor; send `{ seq, hash }` | supervisor (`anchor.ack { seq }` in, after it is durable) |
+| `native.confirm` | out | `{ challengeId, proof, windowId, summary }` | supervisor shows the dialog, replies `native.result { challengeId, proof, confirmed, windowId }` in |
+| `trust.check` | out | `{ windowId, workspaceId, projectId }`, once per run start (§6.2) | main, from its live Workspace Trust state: `trust.result { trusted }` in; no answer in 2 s is a refusal |
+| `trust.set` | in | `{ windowId, workspaceId?, trusted }` for the live registry | n/a |
+| `settings.get` | out | `{ key }` for `axis.cliAgents` or `axis.git.runHooks` | main, from the user, application or machine scope value only (CFG-1; a workspace or folder value is never returned): `settings.result { key, value }` in, validated by the host with the `@axis/pty-policy` schema, 2 s timeout is a refusal |
+| `projects.register` | in | `{ path, trusted }` (§7.4) | host replies `{ projectId }` out |
+| `shutdown` | in | none | host starts graceful shutdown (§8) |
+| `fatal`, `log` | out | summary only (§9) | n/a |
 - **Data plane** (client to host): `Connection` as `@axis/daemon` defines it (`send`, `onMessage`, `onClose`, `close`). The daemon already ships `fromElectronPort`, `fromNodePort` and `memoryPair`.
 
 | Host | Control channel | How a `Connection` arrives |
