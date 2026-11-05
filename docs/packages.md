@@ -353,7 +353,7 @@ After `apply.sh`, on a built tree, check the result:
 node scripts/code-oss/check-staged.mjs --tree "$AXIS_CODE_OSS_VENDOR_DIR/code-oss"
 ```
 
-It verifies the staged files against the manifest, type-checks `src/vs/axis` with the tree's own compiler and flags, bundles the daemon entry and every staged package with the tree's esbuild, and checks the module graph (zod 4.6.6 vendored, never the tree's 4.4.3; the user principal and the trust attestation reached only from `daemon`). `scripts/code-oss/stage-packages.mjs --tree <tree> --verify` re-checks the staged files alone. `check-staged.mjs` also takes `--full-typecheck` (the tree's real `typecheck-client`, 8.2 GiB) and `--build-bundle` (the tree's minified bundle step, about 6 minutes) for the slow checks, under `flock ~/.cache/project-axis/build.lock`.
+It verifies the staged files against the manifest, type-checks `src/vs/axis` with the tree's own compiler and flags, bundles the daemon entry and every staged package with the tree's esbuild, and checks the module graph (zod 4.6.6 vendored, never the tree's 4.4.3; the user principal and the trust attestation reached only from `daemon`). `scripts/code-oss/stage-packages.mjs --tree <tree> --verify` re-checks the staged files alone. `check-staged.mjs` also takes `--full-typecheck` (the tree's real `typecheck-client`, 8.2 GiB) and `--build-bundle` (the tree's real minified `--target server` bundle step with the committed brand probe, about 30 seconds, which fails unless the `#private` brands of the user principal and the trust attestation reject every forgery) for the slow checks, under `flock ~/.cache/project-axis/build.lock`.
 
 ## Security markers and `#private` fields
 

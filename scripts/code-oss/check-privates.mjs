@@ -8,7 +8,8 @@
 // of a real one, and a single-use flag becomes resettable. Patch 0200 exempts outputs under `vs/axis/`. These
 // checks keep that exemption honest:
 //   - mangleExemptionPresent: the tree's build/next/index.ts carries the exemption in its mangle condition;
-//   - privatesSurvive: a built bundle still has `#` members when the staged sources it came from declare some.
+//   - privatesSurvive: a built bundle still has `#` members when the staged sources it came from declare some;
+//   - brandVerdict: the built brand probe (scripts/code-oss/brand-probe.ts) rejects every forgery.
 // The metafile graph check cannot see this: it bundles without the tree's post-processing.
 import { tokenize } from "./stage-scan.mjs";
 
@@ -34,4 +35,27 @@ export function privatesSurvive({ file, sourcePrivates, builtText }) {
     return [`${file}: the staged sources declare ${sourcePrivates} #private name(s) but the built bundle has none (they were mangled into plain properties)`];
   }
   return [];
+}
+
+/**
+ * Problems in the JSON the brand probe printed from a minified `--target server` build: the real objects must be
+ * accepted, every forgery (hand-written, structuredClone, own-property copy) rejected, no own keys exposed, and a
+ * consumed attestation must stay used.
+ */
+export function brandVerdict(r) {
+  const bad = [];
+  const expect = (key, want) => {
+    if (r?.[key] !== want) bad.push(`brand probe: ${key} is ${JSON.stringify(r?.[key])}, expected ${JSON.stringify(want)}`);
+  };
+  expect("realPrincipal", true);
+  expect("handWritten", false);
+  expect("cloned", false);
+  expect("copied", false);
+  expect("ownKeys", 0);
+  expect("realAttestation", true);
+  expect("attestationHandWritten", false);
+  expect("attestationCloned", false);
+  expect("first", null);
+  expect("second", "ATTESTATION_USED");
+  return bad;
 }

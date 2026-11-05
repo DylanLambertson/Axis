@@ -283,6 +283,7 @@ export function stage({ repo, tree, now = Date.now(), maxFutureSkewMs = DEFAULT_
   const tmpRoot = join(tree, TMP_ROOT);
   const dirs = new Set();
   const files = [];
+  let manifest;
   try {
     mkdirSync(tmpRoot, { recursive: true });
     beforeWrite?.(tmpRoot);
@@ -294,7 +295,7 @@ export function stage({ repo, tree, now = Date.now(), maxFutureSkewMs = DEFAULT_
       chmodSync(dest, 0o644);
       files.push({ path, sha256: sha256(content), source, sourceSha256 });
     }
-    var manifest = { schema: 1, zod: zodPinned ?? null, packages: names, treeSha256: treeHash(files), files }; // eslint-disable-line no-var
+    manifest = { schema: 1, zod: zodPinned ?? null, packages: names, treeSha256: treeHash(files), files };
     const manifestPath = join(tmpRoot, MANIFEST_NAME);
     writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, { flag: "wx", mode: 0o644 });
     chmodSync(manifestPath, 0o644);

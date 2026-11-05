@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { checkMetafile } from "../../scripts/code-oss/check-daemon-graph.mjs";
-import { mangleExemptionPresent, privateNameCount, privatesSurvive } from "../../scripts/code-oss/check-privates.mjs";
+import { brandVerdict, mangleExemptionPresent, privateNameCount, privatesSurvive } from "../../scripts/code-oss/check-privates.mjs";
 import { STAGE_ROOT, stage } from "../../scripts/code-oss/stage-packages.mjs";
 import { RESTRICTED_MODULES, RESTRICTED_SUBPATHS, classifySpecifier, hiddenLoaders, importSpecifiers, maskComments, nonLiteralLoads } from "../../scripts/code-oss/stage-scan.mjs";
 import { checkStagedFile, sha256, treeHash, verifyStaged } from "../../scripts/code-oss/stage-verify.mjs";
@@ -169,4 +169,26 @@ test("check-privates: counts # names on tokens, sees the exemption, and flags ma
   assert.deepEqual(privatesSurvive({ file: "a.js", sourcePrivates: 3, builtText: "class A { #a = 1; }" }), []);
   assert.deepEqual(privatesSurvive({ file: "a.js", sourcePrivates: 0, builtText: "class A { $a = 1; }" }), []);
   assert.match(privatesSurvive({ file: "a.js", sourcePrivates: 3, builtText: "class A { $a = 1; }" })[0], /mangled into plain properties/);
+});
+
+const GOOD_PROBE = { realPrincipal: true, handWritten: false, cloned: false, copied: false, ownKeys: 0, realAttestation: true, attestationHandWritten: false, attestationCloned: false, first: null, second: "ATTESTATION_USED" };
+
+test("brandVerdict accepts a probe whose forgeries are all rejected", () => {
+  assert.deepEqual(brandVerdict(GOOD_PROBE), []);
+});
+
+test("brandVerdict fails on each accepted forgery, an exposed key, a reset single-use flag and a missing result", () => {
+  for (const key of ["handWritten", "cloned", "copied", "attestationHandWritten", "attestationCloned"]) {
+    assert.match(brandVerdict({ ...GOOD_PROBE, [key]: true })[0], new RegExp(`${key} is true`));
+  }
+  assert.match(brandVerdict({ ...GOOD_PROBE, ownKeys: 1 })[0], /ownKeys is 1/);
+  assert.match(brandVerdict({ ...GOOD_PROBE, second: null })[0], /second is null/);
+  assert.match(brandVerdict({ ...GOOD_PROBE, realPrincipal: false })[0], /realPrincipal/);
+  assert.equal(brandVerdict(null).length, 10);
+});
+
+test("the committed brand probe imports the brand classes and mints through the daemon-only modules", () => {
+  const text = readFileSync(new URL("../../scripts/code-oss/brand-probe.ts", import.meta.url), "utf8");
+  for (const want of ["journal/principal.js", "journal/daemon-principal.js", "runs/attestation.js", "runs/daemon-attestation.js", "structuredClone", "UserPrincipal.is", "TrustAttestation.is"]) assert.ok(text.includes(want), want);
+  for (const key of Object.keys(GOOD_PROBE)) assert.ok(new RegExp(`\\b${key}\\b`).test(text), `probe reports ${key}`);
 });

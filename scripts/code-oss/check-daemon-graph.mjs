@@ -85,7 +85,7 @@ export function checkMetafile(metafile, manifest, { bundledText = null, treeZod 
 }
 
 /** Bundles `entries` (tree-relative) in `tree` with Code OSS's esbuild, then checks the metafile. */
-export async function checkTree({ tree, entries, graphOf = null }) {
+export async function checkTree({ tree, entries }) {
   const manifest = verifyStaged(tree); // the hook's output must be intact before its graph means anything
   const req = createRequire(join(tree, "build", "package.json"));
   const esbuild = req("esbuild");
@@ -103,14 +103,8 @@ export async function checkTree({ tree, entries, graphOf = null }) {
   const bundledText = result.outputFiles.map((f) => f.text).join("\n");
   const violations = checkMetafile(result.metafile, manifest, { bundledText, treeZod });
   const inputs = Object.keys(result.metafile.inputs);
-  // The staged sources that went into one entry's bundle (for the #private survival check).
-  let stagedSources = [];
-  if (graphOf !== null) {
-    const single = await esbuild.build({ ...getBundleOptions(false, "node"), entryPoints: [join(tree, graphOf)], outdir: join(tree, "out-axis-graph"), absWorkingDir: tree, metafile: true, sourcemap: false, write: false });
-    stagedSources = Object.keys(single.metafile.inputs).filter((i) => i.startsWith(PREFIX) && i.endsWith(".ts")).map((i) => readFileSync(join(tree, i), "utf8"));
-  }
   return {
-    stagedSources, violations, manifest, entries, inputs: inputs.length, stagedInputs: inputs.filter((i) => i.startsWith(PREFIX)).length, zod: manifest.zod, treeZod };
+    violations, manifest, entries, inputs: inputs.length, stagedInputs: inputs.filter((i) => i.startsWith(PREFIX)).length, zod: manifest.zod, treeZod };
 }
 
 if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

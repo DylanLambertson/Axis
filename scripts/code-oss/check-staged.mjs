@@ -14,16 +14,17 @@
 //   3. the daemon entry and every staged package index bundle with the tree's esbuild, and the module graph is
 //      clean (check-daemon-graph.mjs): zod 4.6.6 vendored, never the tree's copy; no restricted module leaks.
 //   4. the tree's build/next/index.ts exempts vs/axis outputs from `#private` mangling (check-privates.mjs). With
-//      --build-bundle it also runs the tree's real minified bundle step (about 6 minutes, 4 GiB: run it under
-//      `flock ~/.cache/project-axis/build.lock`) and checks that the built daemon bundle still has the `#` fields
-//      its staged sources declare.
+//      --build-bundle it also swaps scripts/code-oss/brand-probe.ts in for the daemon entry (restored afterwards),
+//      runs the tree's real minified `--target server` bundle step (about 30 s: run it under
+//      `flock ~/.cache/project-axis/build.lock`), runs the output and fails unless every forgery of a user principal
+//      and a trust attestation is rejected and a used attestation stays used.
 // Needs the tree's node_modules (npm ci) and Node on PATH. Exit code 1 on any failure.
 import { spawnSync } from "node:child_process";
-import { readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { copyFileSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DEFAULT_ENTRY, checkTree } from "./check-daemon-graph.mjs";
-import { mangleExemptionPresent, privateNameCount, privatesSurvive } from "./check-privates.mjs";
+import { brandVerdict, mangleExemptionPresent, privateNameCount, privatesSurvive } from "./check-privates.mjs";
 import { STAGE_ROOT, verifyStaged } from "./stage-verify.mjs";
 
 export function typecheckAxis(tree) {
@@ -70,7 +71,7 @@ if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(
       if (f.status !== 0) failed = true;
     }
     const entries = [DEFAULT_ENTRY, ...m.packages.map((n) => `${STAGE_ROOT}/${n}/index.ts`)];
-    const g = await checkTree({ tree, entries, graphOf: DEFAULT_ENTRY });
+    const g = await checkTree({ tree, entries });
     console.log(`3. bundled ${entries.length} entries (${g.inputs} inputs, ${g.stagedInputs} staged); zod ${g.zod}, tree has ${g.treeZod}: ${g.violations.length === 0 ? "graph ok" : "FAILED"}`);
     for (const v of g.violations) console.error(`   ${v}`);
     if (g.violations.length > 0) failed = true;
@@ -80,14 +81,30 @@ if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(
     if (!exempt) failed = true;
     if (buildBundle) {
       const out = "out-axis-bundle-check";
+      const entryFile = join(tree, DEFAULT_ENTRY);
+      const original = readFileSync(entryFile);
       rmSync(join(tree, out), { recursive: true, force: true });
-      const r = spawnSync(process.execPath, ["build/next/index.ts", "bundle", "--minify", "--nls", "--mangle-privates", "--target", "desktop", "--out", out], { cwd: tree, stdio: "inherit" });
-      if (r.status !== 0) throw new Error("the tree's bundle step failed");
-      const sourcePrivates = g.stagedSources.reduce((n, t) => n + privateNameCount(t), 0);
+      try {
+        // The probe stands in for the daemon entry for the duration of one real minified build, then is restored.
+        copyFileSync(join(dirname(fileURLToPath(import.meta.url)), "brand-probe.ts"), entryFile);
+        const r = spawnSync(process.execPath, ["build/next/index.ts", "bundle", "--minify", "--nls", "--mangle-privates", "--target", "server", "--out", out], { cwd: tree, stdio: "inherit" });
+        if (r.status !== 0) throw new Error("the tree's bundle step failed");
+      } finally {
+        writeFileSync(entryFile, original);
+      }
       const builtFile = join(tree, out, DEFAULT_ENTRY.replace(/^src\//, "").replace(/\.ts$/, ".js"));
       statSync(builtFile);
-      const problems = privatesSurvive({ file: builtFile, sourcePrivates, builtText: readFileSync(builtFile, "utf8") });
-      console.log(`   built daemon bundle: ${privateNameCount(readFileSync(builtFile, "utf8"))} #private names, staged sources of its graph declare ${sourcePrivates}: ${problems.length === 0 ? "ok" : "FAILED"}`);
+      const builtText = readFileSync(builtFile, "utf8");
+      const sourcePrivates = ["journal/principal.ts", "runs/attestation.ts"].reduce((n, f) => n + privateNameCount(readFileSync(join(tree, STAGE_ROOT, f), "utf8")), 0);
+      const run = spawnSync(process.execPath, [builtFile], { encoding: "utf8", env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" } });
+      let probe = null;
+      try {
+        probe = JSON.parse(run.stdout.trim().split("\n").pop());
+      } catch {
+        // reported below
+      }
+      const problems = [...privatesSurvive({ file: builtFile, sourcePrivates, builtText }), ...(probe === null ? [`brand probe printed no result (exit ${run.status}): ${run.stderr.trim().slice(0, 300)}`] : brandVerdict(probe))];
+      console.log(`   built brand probe: ${privateNameCount(builtText)} #private names (staged brand sources declare ${sourcePrivates}); forgeries ${problems.length === 0 ? "rejected" : "NOT rejected: FAILED"}`);
       for (const v of problems) console.error(`   ${v}`);
       if (problems.length > 0) failed = true;
     }
