@@ -39,4 +39,4 @@ Numbers `0000` and `3000`–`9999` are unassigned; extend this table and `patch_
 - Mark edited regions in upstream files with `// --- Start Axis ---` and `// --- End Axis ---`.
 - Keep each patch focused on one concern, so that conflicts during an upstream sync stay local.
 
-From M3 the series holds the Stage 1 patches in blocks `0001`–`0999`, `1000`–`1499` and `1500`–`1999`; `docs/design/axis-shell.md` §2.9 lists them with their footprint.
+From M3 the series holds the Stage 1 patches in blocks `0001`–`0999`, `1000`–`1499` and `1500`–`1999`, and from Stage 1b the security block `2000`–`2999` (`2010` Trusted Types, `2020` cookie `Secure`, `2030` `openExternal` scheme allow-list, `2040` refused external opens reported and not revealed, `2050` full URL in the link prompt). `docs/design/axis-shell-stage1-built.md` §2.9 lists every patch with its footprint; the security block uses 5 of its 1000 numbers.

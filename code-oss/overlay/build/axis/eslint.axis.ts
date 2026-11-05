@@ -3,7 +3,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 // Axis additions to the upstream ESLint flat config, spread into eslint.config.js
-// by the shell patch (docs/design/axis-shell.md section 3.7, P8). Keeping them here
+// by the shell patch (docs/design/axis-shell-stage2.md section 3.7, P8). Keeping them here
 // keeps the upstream footprint to the import and the spread lines.
 
 /** Paths owned by Axis. Upstream files keep the Microsoft MIT header. */

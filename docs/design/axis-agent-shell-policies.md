@@ -18,7 +18,7 @@
   - the Files view (`sessions/contrib/files/**`). The adaptation drops its `AGENT_HOST_SCHEME` import from `platform/agentHost` (`files.contribution.ts:14`) [V];
   - the terminal background/foreground pattern (`sessionsTerminalContribution.ts:689-760`, `showBackgroundTerminal` `:749`, `moveToBackground` `:756`) [V];
   - the per-owner working-set rules (`sessions/contrib/layout/**`).
-- **D8 stays.** The Agents Window entry points and window type are removed in range `1500–1999` (`axis-shell.md` D8). Axis uses none of them at runtime. The sessions sources stay in the tree, unbundled, as the source of the adapted copies.
+- **D8 stays.** The Agents Window entry points and window type are removed in range `1500–1999` (`axis-shell-risks.md` D8). Axis uses none of them at runtime. The sessions sources stay in the tree, unbundled, as the source of the adapted copies.
 
 ## 2. How IDE view follows the focused workspace (deferred item 2), and trust (ADR 0004 decision 12)
 

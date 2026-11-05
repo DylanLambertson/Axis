@@ -2,7 +2,7 @@
 # Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 #
 # Regenerates the Axis icon and image replacements in code-oss/replace/ from
-# assets/brand/ (docs/design/axis-shell.md §2.6). The outputs are committed, so
+# assets/brand/ (docs/design/axis-shell-stage1.md §2.6). The outputs are committed, so
 # builds need no image toolchain; rerun this script after a brand change and
 # review the diff.
 #

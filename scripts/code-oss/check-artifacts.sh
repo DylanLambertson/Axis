@@ -2,7 +2,7 @@
 # Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 #
 # SC-3 artifact check (docs/security/threat-model-phase0.md SC-3,
-# docs/design/axis-shell.md §2.7): fails if a built Axis artifact contains
+# docs/design/axis-shell-stage1.md §2.7): fails if a built Axis artifact contains
 # Copilot or agent-host code. It fails closed: any error while listing or
 # reading an artifact is a failure, never a pass.
 #

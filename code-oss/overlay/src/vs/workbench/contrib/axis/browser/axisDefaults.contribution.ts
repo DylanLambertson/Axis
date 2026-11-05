@@ -6,7 +6,7 @@ import { Extensions, IConfigurationRegistry } from '../../../../platform/configu
 import { Registry } from '../../../../platform/registry/common/platform.js';
 
 /**
- * Axis default settings (docs/design/axis-shell.md section 2.2). They change only the
+ * Axis default settings (docs/design/axis-shell-stage1.md section 2.2). They change only the
  * defaults: users can still override every key. Registered as built-in defaults,
  * so APPLICATION-scoped keys are honoured, and experiments cannot override them.
  */
