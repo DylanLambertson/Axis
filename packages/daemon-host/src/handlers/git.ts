@@ -3,8 +3,8 @@ import type { Handler, HandlerContext } from "@axis/daemon";
 import { GIT_CONTRACT, GIT_VERSION, gitCompareUrlRequestSchema, gitCompareUrlResponseSchema, gitPushPlanRequestSchema, type GitMethod } from "@axis/protocol";
 import type { HandlerRegistrar } from "./anchor-guard.js";
 import { createGitCommitHandler } from "./git-commit.js";
-import { locate, requireUser, workspaceFor, type GitHandlerDeps } from "./git-common.js";
-import { gitFailure, toGitError } from "./git-errors.js";
+import { locate, mapError, requireUser, workspaceFor, type GitHandlerDeps } from "./git-common.js";
+import { gitFailure } from "./git-errors.js";
 import { createGitPushContentHook, createGitPushHandler } from "./git-push.js";
 import { pushPlanReply } from "./git-wire.js";
 
@@ -39,7 +39,7 @@ function createPushPlanHandler(deps: GitHandlerDeps): Handler {
             worktree,
             remote,
             branch: ws.branch,
-            baseSha: ws.lastPushedSha ?? ws.baseSha,
+            baseSha: deps.bases.baseFor(workspaceId, remote, ws.baseSha),
             ...(allowedBinaryPaths === undefined ? {} : { allowedBinaryPaths }),
           });
           // A plan the contract cannot carry is not shown: fail closed rather than cut it.
@@ -50,7 +50,7 @@ function createPushPlanHandler(deps: GitHandlerDeps): Handler {
         context.signal,
       );
     } catch (e) {
-      throw toGitError(e, context.signal);
+      throw mapError(deps, e, context.signal);
     }
   };
 }
@@ -72,7 +72,7 @@ function createCompareUrlHandler(deps: GitHandlerDeps): Handler {
       if (!reply.success) throw gitFailure("E_INTERNAL");
       return reply.data;
     } catch (e) {
-      throw toGitError(e, context.signal);
+      throw mapError(deps, e, context.signal);
     }
   };
 }
@@ -89,8 +89,8 @@ export function createGitHandlers(deps: GitHandlerDeps): Readonly<Record<GitMeth
  * scanner, is refused too. Nothing is registered when it throws.
  */
 export function registerGitHandlers(registrar: HandlerRegistrar, deps: GitHandlerDeps): void {
-  const { scanner, scanMode } = deps.scan;
-  if (typeof scanner !== "function" || (scanMode !== "refuse" && scanMode !== "warn")) {
+  // The mode is the one of the operations the scan runs in (`createGitOperations` refuses a port without a scanner).
+  if (deps.ops.scanMode !== "refuse" && deps.ops.scanMode !== "warn") {
     throw new Error("axis.git/1 cannot be registered without a secret scanner and its mode");
   }
   registrar.register(GIT_CONTRACT, GIT_VERSION, createGitHandlers(deps), { content: { push: createGitPushContentHook(deps) } });

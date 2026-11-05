@@ -38,14 +38,12 @@ test("commit: the commit holds exactly the reviewed tree on the reviewed parent,
   const { r, c } = await setup(t);
   const marker = join(r.root, "hook-ran");
   r.write(".git/hooks/pre-commit", `#!/bin/sh\necho ran > "${marker}"\n`);
-  r.git("update-index", "--chmod=+x", "--add", "keep.txt");
   try {
     r.git("config", "core.hooksPath", join(r.repo, ".git/hooks"));
     (await import("node:fs")).chmodSync(join(r.repo, ".git/hooks/pre-commit"), 0o755);
   } catch {
     /* a platform without modes: the hook is simply not executable, and still must not run */
   }
-  r.git("reset", "-q");
   const req = await review(r, c);
   const res = await commit(c, r, req);
   assert.equal(res.ok, true, JSON.stringify(res.error));
@@ -133,6 +131,30 @@ test("commit: after the branch already moved, nothing is rewound and the index i
   const res = await commit(c, r, req);
   assert.equal(res.error?.code, "E_INTERNAL");
   assert.equal(r.calls.restoreIndex, 0, "updated: the index is not put back");
+  // The branch moved, so the reviewed tree is spent: a retry says stale instead of pretending it can still be committed.
+  const again = await commit(c, r, req);
+  assert.equal(again.error?.details?.["reason"], "stale");
+});
+
+test("commit: staging the person did after prepare is not wiped by the put-back", { skip: SKIP ?? false }, async (t) => {
+  const { r, c } = await setup(t, {
+    review: (real) => ({
+      ...real,
+      prepare: async (h, ctx) => {
+        const p = await real.prepare(h, ctx);
+        // The person stages a file (terminal or IDE) between prepare and the refusal.
+        r.write("mine.txt", "mine\n");
+        r.git("add", "mine.txt");
+        return p;
+      },
+    }),
+  });
+  const req = await review(r, c);
+  const res = await commit(c, r, req);
+  assert.equal(res.error?.details?.["reason"], "index_changed");
+  assert.equal(r.calls.restoreIndex, 1);
+  assert.ok(r.git("diff", "--cached", "--name-only").split("\n").includes("mine.txt"), "the person's staging is still there");
+  assert.equal(r.head(), req.expectedParent);
 });
 
 test("commit: restoreIndex does not touch the index when HEAD is no longer the reviewed commit", { skip: SKIP ?? false }, async (t) => {

@@ -59,6 +59,8 @@ export interface PushCall {
  * a `GitRefusal`.
  */
 export interface GitOperations {
+  /** The mode of the scanner the push scan really runs with (validated when the operations were built): `git.push` is not registered without it. */
+  readonly scanMode: "refuse" | "warn";
   planPush(call: PushCall): Promise<PushPlanFacts>;
   /** Pushes the one scanned tip, or refuses `E_CONFLICT` `plan_changed` when the outgoing changes are not the confirmed plan. */
   executePush(call: PushCall, confirmed: { readonly tip: string; readonly digest: string }): Promise<void>;

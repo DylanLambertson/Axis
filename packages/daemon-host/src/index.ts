@@ -68,3 +68,4 @@ export { createGitOperations, createGitPort, type GitBindingDeps, type GitOperat
 export * from "./handlers/git.js";
 export * from "./handlers/git-errors.js";
 export * from "./handlers/git-wire.js";
+export { PushedBases } from "./handlers/git-common.js";

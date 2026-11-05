@@ -10,6 +10,9 @@ import type { WorktreeLocator } from "../ports/worktree-locator.js";
 import { liveWorkspace } from "../worktrees/guards.js";
 import type { ProjectMutex } from "../worktrees/project-mutex.js";
 import { gitFailure } from "./git-errors.js";
+import { GitRefusal } from "../ports/git.js";
+import { ReviewRefusal } from "../ports/review.js";
+import { toGitError } from "./git-errors.js";
 import type { ReviewedTrees } from "./review-store.js";
 
 export interface GitHandlerDeps {
@@ -26,8 +29,14 @@ export interface GitHandlerDeps {
   readonly anchors: Pick<AnchorGuard, "check">;
   /** For the early refusal of a push while a run is live in the workspace. A throw counts as active. */
   readonly runs: Pick<RunsService, "hasActiveRun">;
-  /** The scanner and its mode as the git port carries them: `git.push` is not registered without both (PSH-1). */
-  readonly scan: { readonly scanner?: unknown; readonly scanMode?: unknown };
+  /**
+   * What was pushed to each remote, per workspace (the scan base). In memory and bounded: a remote
+   * with no entry (never pushed, forgotten for the bound, or a restart) is scanned from the workspace's recorded base, which
+   * is only ever a larger range.
+   */
+  readonly bases: PushedBases;
+  /** Told about an error that is not a refusal (a bug in a binding): the wire says `E_INTERNAL` and nothing else. */
+  readonly onInternalError?: (error: unknown) => void;
   /** A bookkeeping write that failed AFTER its git side effect succeeded (the last pushed sha). The reply is still the success. */
   readonly onBookkeepingError?: (error: unknown) => void;
 }
@@ -77,4 +86,44 @@ export function runActive(deps: GitHandlerDeps, workspaceId: string): boolean {
   } catch {
     return true;
   }
+}
+
+/**
+ * The scan base of a push of `workspaceId` to `remote`: what Axis last pushed THERE, else the workspace's recorded base. The
+ * last pushed sha of the journal is per workspace and a push names its remote per request, so it is not a base for another
+ * remote: commits confirmed for one remote would go to the next unscanned. Bounded; eviction only widens a later scan.
+ */
+export class PushedBases {
+  readonly #map = new Map<string, string>();
+  constructor(readonly max = 1024) {
+    if (!Number.isInteger(max) || max < 1) throw new RangeError("the bound must be a positive integer");
+  }
+
+  baseFor(workspaceId: string, remote: string, recordedBase: string): string {
+    return this.#map.get(`${workspaceId}\0${remote}`) ?? recordedBase;
+  }
+
+  record(workspaceId: string, remote: string, sha: string): void {
+    const key = `${workspaceId}\0${remote}`;
+    this.#map.delete(key);
+    this.#map.set(key, sha);
+    while (this.#map.size > this.max) {
+      const oldest = this.#map.keys().next();
+      if (oldest.done === true) break;
+      this.#map.delete(oldest.value);
+    }
+  }
+}
+
+/** `toGitError`, and a report when the cause was no refusal of ours. A reporter that throws changes nothing. */
+export function mapError(deps: GitHandlerDeps, e: unknown, signal?: AbortSignal) {
+  const out = toGitError(e, signal);
+  if (!(e instanceof DaemonError || e instanceof GitRefusal || e instanceof ReviewRefusal)) {
+    try {
+      deps.onInternalError?.(e);
+    } catch {
+      /* reporting must not change the answer */
+    }
+  }
+  return out;
 }

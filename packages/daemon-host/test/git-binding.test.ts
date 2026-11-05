@@ -6,7 +6,7 @@ import { DaemonError, type Handler } from "@axis/daemon";
 import { GitOpsError, type GitRunRequest, type GitRunResult } from "@axis/git-ops";
 import { createSecretScanner } from "@axis/secret-scan";
 import { MAX_PUSH_FINDINGS, gitPushPlanResponseSchema } from "@axis/protocol";
-import { createGitPort, gitFailure, pushPlanReply, registerGitHandlers, toGitError, type HandlerRegistrar } from "../src/index.js";
+import { createGitOperations, createGitPort, gitFailure, pushPlanReply, registerGitHandlers, toGitError, type HandlerRegistrar } from "../src/index.js";
 import { gitRig, gitUnavailable } from "./git-rig.js";
 import { createWs, gitSkipReason, worktreesRig } from "./worktrees-rig.js";
 
@@ -47,12 +47,22 @@ test("the git port's runner routes by context: pty only to the pty runner, never
   assert.deepEqual(seen, ["pty"]);
 });
 
-test("axis.git/1 is not registered without a scanner and a mode, and nothing is registered when it refuses", () => {
+test("the git operations refuse a port without a scanner and a mode, and expose the mode the scan runs with", () => {
+  const port = createGitPort({ ...base, scanner });
+  const runs = { hasActiveRun: () => false };
+  assert.equal(createGitOperations({ git: port, runs }).scanMode, "refuse");
+  const { scanner: _s, ...noScanner } = port;
+  const { scanMode: _m, ...noMode } = port;
+  for (const git of [noScanner, noMode, { ...port, scanMode: "off" }, { ...port, scanner: "scan" }]) {
+    assert.throws(() => createGitOperations({ git: git as never, runs }), TypeError);
+  }
+});
+
+test("axis.git/1 is not registered without the scan mode of its operations, and nothing is registered when it refuses", () => {
   const registered: string[] = [];
   const registrar: HandlerRegistrar = { register: (c) => void registered.push(c) };
-  const deps = (scan: { scanner?: unknown; scanMode?: unknown }) => ({ scan }) as never;
-  for (const scan of [{}, { scanner: scanner.scan }, { scanMode: "refuse" }, { scanner: scanner.scan, scanMode: "off" }, { scanner: "scan", scanMode: "warn" }]) {
-    assert.throws(() => registerGitHandlers(registrar, deps(scan)), /secret scanner/);
+  for (const scanMode of [undefined, "off", "", 1]) {
+    assert.throws(() => registerGitHandlers(registrar, { ops: { scanMode } } as never), /secret scanner/);
   }
   assert.deepEqual(registered, []);
 });
@@ -60,7 +70,7 @@ test("axis.git/1 is not registered without a scanner and a mode, and nothing is 
 test("axis.git/1 registers four handlers with a content hook for push only, through the registrar", () => {
   const seen: Array<{ methods: string[]; content: string[] }> = [];
   const registrar: HandlerRegistrar = { register: (_c, _v, handlers: Readonly<Record<string, Handler>>, o) => void seen.push({ methods: Object.keys(handlers).sort(), content: Object.keys(o?.content ?? {}) }) };
-  registerGitHandlers(registrar, { scan: { scanner: scanner.scan, scanMode: "refuse" } } as never);
+  registerGitHandlers(registrar, { ops: { scanMode: "warn" } } as never);
   assert.deepEqual(seen, [{ methods: ["commit", "compareUrl", "push", "pushPlan"], content: ["push"] }]);
 });
 

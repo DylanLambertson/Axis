@@ -2,8 +2,8 @@
 import { DaemonError, type ApprovalContentHook, type Handler, type HandlerContext } from "@axis/daemon";
 import { gitPushRequestSchema, type GitRequest } from "@axis/protocol";
 import type { PushCall } from "../ports/git.js";
-import { gitFailure, toGitError } from "./git-errors.js";
-import { locate, requireUser, runActive, workspaceFor, type GitHandlerDeps } from "./git-common.js";
+import { gitFailure } from "./git-errors.js";
+import { locate, mapError, requireUser, runActive, workspaceFor, type GitHandlerDeps } from "./git-common.js";
 
 /** Both read the plan's inputs from the JOURNAL, inside the lock: the branch is the workspace's, the base its last pushed sha. */
 async function pushCall(deps: GitHandlerDeps, id: string, method: string, request: GitRequest<"push">) {
@@ -14,7 +14,7 @@ async function pushCall(deps: GitHandlerDeps, id: string, method: string, reques
     worktree,
     remote: request.remote,
     branch: ws.branch,
-    baseSha: ws.lastPushedSha ?? ws.baseSha,
+    baseSha: deps.bases.baseFor(id, request.remote, ws.baseSha),
     ...(request.allowedBinaryPaths === undefined ? {} : { allowedBinaryPaths: request.allowedBinaryPaths }),
   };
   return { ws, call };
@@ -29,6 +29,8 @@ async function pushCall(deps: GitHandlerDeps, id: string, method: string, reques
  * `GitRefusal` caused (a scanner that refuses or cannot decide) is mapped, never forwarded.
  */
 export function createGitPushContentHook(deps: GitHandlerDeps): ApprovalContentHook {
+  // The anchor and run checks below are each also made by the gate, the registrar guard and git-ops: defence in depth, so a
+  // refusal costs no scan and no challenge.
   return (context, payload: never) => {
     if (context.identity.actor !== "user") throw gitFailure("E_NOT_FOUND");
     deps.anchors.check(4);
@@ -52,7 +54,7 @@ export function createGitPushContentHook(deps: GitHandlerDeps): ApprovalContentH
               if (plan.tip !== confirmedPlan.tip || plan.digest !== confirmedPlan.digest) throw gitFailure("E_CONFLICT", "plan_changed");
               digest = plan.digest;
             } catch (e) {
-              throw toGitError(e, context.signal);
+              throw mapError(deps, e, context.signal);
             }
             return fn(digest);
           },
@@ -91,6 +93,8 @@ export function createGitPushHandler(deps: GitHandlerDeps): Handler {
           if (runActive(deps, workspaceId)) throw gitFailure("E_CONFLICT");
           if (signal.aborted) throw gitFailure("E_CANCELLED");
           await deps.ops.executePush(call, confirmedPlan);
+          // Known pushed to THIS remote now (before the journal write, which can fail without undoing the push).
+          deps.bases.record(workspaceId, request.data.remote, confirmedPlan.tip);
           try {
             deps.journal.recordPushed(workspaceId, confirmedPlan.tip, "user");
           } catch (e) {
@@ -105,7 +109,7 @@ export function createGitPushHandler(deps: GitHandlerDeps): Handler {
         signal,
       );
     } catch (e) {
-      throw toGitError(e, signal);
+      throw mapError(deps, e, signal);
     }
   };
 }

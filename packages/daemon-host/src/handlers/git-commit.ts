@@ -2,8 +2,8 @@
 import type { Handler, HandlerContext } from "@axis/daemon";
 import { gitCommitRequestSchema } from "@axis/protocol";
 import type { PreparedCommitPort } from "../ports/review.js";
-import { gitFailure, toGitError } from "./git-errors.js";
-import { locate, portContext, requireUser, workspaceFor, type GitHandlerDeps } from "./git-common.js";
+import { gitFailure } from "./git-errors.js";
+import { locate, mapError, portContext, requireUser, workspaceFor, type GitHandlerDeps } from "./git-common.js";
 
 /**
  * `axis.git/1.commit` (tier 2, idempotency required). The commit is of the tree the user reviewed, on the parent and branch
@@ -60,14 +60,15 @@ export function createGitCommitHandler(deps: GitHandlerDeps): Handler {
             return finish(deps, workspaceId, result);
           } catch (e) {
             // The branch is moved only by the compare-and-swap at the very end; a failure that says it happened leaves the index alone.
-            if (!landed && (e as { updated?: unknown } | null)?.updated !== true) await restore(prepared);
+            if ((e as { updated?: unknown } | null)?.updated === true) forgetTrees(deps, workspaceId); // it did land: the reviewed tree is spent
+            else if (!landed) await restore(prepared);
             throw e;
           }
         },
         signal,
       );
     } catch (e) {
-      throw toGitError(e, signal);
+      throw mapError(deps, e, signal);
     }
   };
 }
@@ -86,10 +87,14 @@ async function restore(prepared: PreparedCommitPort): Promise<void> {
  * checks the reply against the contract itself, and marks the key unknown if it is wrong).
  */
 function finish(deps: GitHandlerDeps, workspaceId: string, result: { readonly commit: string; readonly tree: string }) {
+  forgetTrees(deps, workspaceId);
+  return { commit: result.commit, tree: result.tree };
+}
+
+function forgetTrees(deps: GitHandlerDeps, workspaceId: string): void {
   try {
     deps.trees.forget(workspaceId);
   } catch {
     // The lookup only ever refuses more; a failure to forget is not a failure of the commit.
   }
-  return { commit: result.commit, tree: result.tree };
 }

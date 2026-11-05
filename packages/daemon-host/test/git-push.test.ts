@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { join } from "node:path";
 import { test, type TestContext } from "node:test";
 import type { Policy } from "@axis/daemon";
 import { GitRefusal } from "../src/index.js";
@@ -66,16 +67,72 @@ test("pushPlan: the tip of the workspace's branch, no findings, and the plan is 
   noLeak(r, res);
 });
 
-test("pushPlan: the scan base is the workspace's last pushed sha once there is one, the recorded base before", { skip: SKIP ?? false }, async (t) => {
+test("pushPlan: the scan base is the recorded base until something was pushed to THAT remote, then the pushed tip", { skip: SKIP ?? false }, async (t) => {
   const { r, c } = await setup(t);
-  const first = commitFile(r, "a.txt", "one\n");
+  commitFile(r, "a.txt", "one\n");
   await plan(c, r);
   assert.equal(r.calls.planPush.at(-1)?.baseSha, r.baseSha);
+  assert.equal(r.calls.planPush.at(-1)?.branch, "axis/feat", "the branch is the journal's");
+  // A sha the journal records is the workspace's, not a remote's: it is not a base for any push.
+  const first = r.head();
   r.journal.recordPushed(r.workspaceId, first, "user");
   commitFile(r, "b.txt", "two\n");
   await plan(c, r);
-  assert.equal(r.calls.planPush.at(-1)?.baseSha, first, "never the base again, never a remote-tracking ref");
-  assert.equal(r.calls.planPush.at(-1)?.branch, "axis/feat", "the branch is the journal's");
+  assert.equal(r.calls.planPush.at(-1)?.baseSha, r.baseSha, "never a base for a remote nothing was pushed to");
+});
+
+test("a secret confirmed and pushed to one remote is still scanned, and shown, for another remote", { skip: SKIP ?? false }, async (t) => {
+  const { r, c } = await setup(t, { scanMode: "warn" });
+  const mirror = join(r.root, "mirror.git");
+  r.git("init", "-q", "--bare", mirror);
+  r.git("remote", "add", "mirror", mirror);
+  commitFile(r, "cfg.txt", `aws_id = ${CANARY}\n`);
+  const p = (await plan(c, r)).result as unknown as Plan;
+  assert.equal(p.requiresConfirmation, true);
+  assert.equal((await pushOnce(r, c, confirmed(p))).ok, true);
+  commitFile(r, "clean.txt", "nothing here\n");
+  // origin: scanned from what origin has, so only the clean commit and no finding.
+  const origin = (await plan(c, r)).result as unknown as Plan;
+  assert.deepEqual([origin.requiresConfirmation, origin.findings], [false, []]);
+  assert.equal(r.calls.planPush.at(-1)?.baseSha, p.tip);
+  // mirror has none of it: the whole range is scanned and the finding is shown again.
+  const other = (await plan(c, r, { remote: "mirror" })).result as unknown as Plan;
+  assert.equal(other.requiresConfirmation, true);
+  assert.deepEqual(other.findings.map((f) => f["rule"]), ["aws-access-key-id"]);
+  assert.equal(r.calls.planPush.at(-1)?.baseSha, r.baseSha);
+  // And the push to mirror is bound to that plan: the plan that was clean for origin is not a plan for mirror.
+  const stale = await c.rpc("axis.git", "push", pushReq(r, confirmed(origin), { remote: "mirror" }), randomUUID());
+  assert.equal(stale.error?.details?.["reason"], "plan_changed");
+  assert.throws(() => r.git("--git-dir", mirror, "rev-parse", "--verify", "refs/heads/axis/feat"));
+});
+
+test("the push that went out and then failed to answer is retried as a no-op push, not a second one", { skip: SKIP ?? false }, async (t) => {
+  let boom = true;
+  const { r, c } = await setup(t, {
+    ops: (real) => ({
+      ...real,
+      executePush: async (call, conf) => {
+        await real.executePush(call, conf);
+        if (boom) {
+          boom = false;
+          throw new GitRefusal("E_UNAVAILABLE");
+        }
+      },
+    }),
+  });
+  const tip = commitFile(r, "a.txt", "hello\n");
+  const p = (await plan(c, r)).result as unknown as Plan;
+  const first = await pushOnce(r, c, confirmed(p));
+  assert.equal(first.error?.code, "E_UNAVAILABLE");
+  assert.equal(r.remoteTip(), tip, "it went out");
+  // The key was freed and the approval spent: the user confirms again, and the same plan is a no-op push.
+  const again = await pushOnce(r, c, confirmed(p));
+  assert.equal(again.ok, true, JSON.stringify(again.error));
+  assert.equal(r.remoteTip(), tip);
+  assert.equal(r.git("--no-pager", "--git-dir", r.remote, "rev-list", "--count", "refs/heads/axis/feat").trim(), "2");
+  const next = (await plan(c, r)).result as unknown as Plan;
+  assert.equal(r.calls.planPush.at(-1)?.baseSha, tip);
+  assert.equal(next.requiresConfirmation, false);
 });
 
 test("secret path (warn mode): a finding by rule and path only, confirmation is required, and the matched text is never shown", { skip: SKIP ?? false }, async (t) => {
@@ -212,7 +269,7 @@ test("if recording the pushed sha fails after the push went out, the reply is st
   assert.equal(res.ok, true, JSON.stringify(res.error));
   assert.equal(r.remoteTip(), tip);
   assert.equal(r.gate.bookkeeping.length, 1, "the failure was reported");
-  assert.equal(r.journal.getWorkspace(r.workspaceId)?.lastPushedSha, null, "the next scan covers the larger range");
+  assert.equal(r.journal.getWorkspace(r.workspaceId)?.lastPushedSha, null, "the journal write failed; the in-memory base still knows the push");
 });
 
 test("a push the remote refuses is a fixed error, records nothing and leaks no path", { skip: SKIP ?? false }, async (t) => {
@@ -270,4 +327,13 @@ test("git refusals map to the closed error set: no text, no unknown reason, POLI
     assert.equal(res.error?.details?.["reason"], reason);
     assert.ok(!JSON.stringify(res.error).includes("/home"));
   }
+});
+
+test("an error that is no refusal is E_INTERNAL with a fixed text on the wire and is reported to the host", { skip: SKIP ?? false }, async (t) => {
+  const { r, c } = await setup(t, { ops: (real) => ({ ...real, planPush: async () => { throw new Error("fatal: /home/x/secret"); } }) });
+  commitFile(r, "a.txt", "x\n");
+  const res = await plan(c, r);
+  assert.equal(res.error?.code, "E_INTERNAL");
+  assert.ok(!JSON.stringify(res.error).includes("/home"));
+  assert.equal(r.gate.internal.length, 1);
 });

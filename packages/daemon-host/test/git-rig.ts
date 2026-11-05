@@ -24,6 +24,7 @@ import {
   ControlClient,
   InMemoryTrustRegistry,
   ProjectMutex,
+  PushedBases,
   ReviewedTrees,
   RULES,
   RuleTablePolicy,
@@ -124,7 +125,7 @@ export async function gitRig(options: GitRigOptions = {}) {
   };
   const workspaceId = newWorkspace();
 
-  const gate = { runsActive: options.runsActive ?? false, stalled: false, branchOverride: undefined as string | undefined, recordPushed: [] as string[], bookkeeping: [] as unknown[] };
+  const gate = { runsActive: options.runsActive ?? false, stalled: false, branchOverride: undefined as string | undefined, recordPushed: [] as string[], bookkeeping: [] as unknown[], internal: [] as unknown[] };
   const runs: Pick<RunsService, "hasActiveRun"> = { hasActiveRun: () => gate.runsActive };
   const calls = { planPush: [] as Array<{ baseSha: string; branch: string; remote: string }>, executePush: 0, executeCommit: 0, prepare: 0, restoreIndex: 0, assertFresh: 0 };
   const realOps = createGitOperations({ git: gitPort, runs });
@@ -207,7 +208,8 @@ export async function gitRig(options: GitRigOptions = {}) {
     needsAttention: () => false,
     anchors: guard,
     runs,
-    scan: { scanner: gitPort.scanner, scanMode: gitPort.scanMode },
+    bases: new PushedBases(),
+    onInternalError: (e) => void gate.internal.push(e),
     onBookkeepingError: (e) => void gate.bookkeeping.push(e),
   };
   registerGitHandlers(createHandlerRegistrar(daemon, guard), handlerDeps);

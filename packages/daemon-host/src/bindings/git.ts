@@ -120,6 +120,12 @@ export interface GitOperationsDeps {
 }
 
 export function createGitOperations(deps: GitOperationsDeps): GitOperations {
+  // The scan runs inside git-ops with THIS port: git-ops finds nothing when `scanner` is absent and defaults to `warn`, so a
+  // port without both is refused here, where the scan is, rather than checked on a copy somewhere else (PSH-1).
+  const scanMode = deps.git.scanMode;
+  if (typeof deps.git.scanner !== "function" || (scanMode !== "refuse" && scanMode !== "warn")) {
+    throw new TypeError("the git operations need a port with a secret scanner and its mode");
+  }
   const runActive = (workspaceId: string): boolean => {
     try {
       return deps.runs.hasActiveRun(workspaceId);
@@ -140,6 +146,7 @@ export function createGitOperations(deps: GitOperationsDeps): GitOperations {
     ...(call.allowedBinaryPaths === undefined ? {} : { allowedBinaryPaths: call.allowedBinaryPaths }),
   });
   return {
+    scanMode,
     planPush: (call) =>
       guarded(async () => {
         const plan = await planPush(forWorkspace(call.workspaceId), pushInput(call));
