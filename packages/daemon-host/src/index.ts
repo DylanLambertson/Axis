@@ -25,3 +25,7 @@ export * from "./storage/git-path.js";
 export * from "./storage/node-storage.js";
 export * from "./storage/recovery.js";
 export * from "./storage/uptime-clock.js";
+// Anchor manager and audit handlers (ticket H4).
+export * from "./anchor/manager.js";
+export * from "./handlers/anchor-guard.js";
+export * from "./handlers/audit.js";

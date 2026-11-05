@@ -13,6 +13,7 @@ import type { Clock } from "./ports/clock.js";
 import type { StoragePort } from "./ports/storage.js";
 import type { TrustRegistry } from "./ports/trust.js";
 import type { ReconcileReport } from "./ports/worktrees.js";
+import { AnchorManager, type AnchorGuard } from "./anchor/manager.js";
 import { checkAnchor, type DegradedReason } from "./storage/anchor-check.js";
 import { resolveGitOnce } from "./storage/git-path.js";
 import { DEFAULT_RECONCILE_BUDGET_MS, runRecovery, type RecoveryOutcome } from "./storage/recovery.js";
@@ -110,6 +111,8 @@ export interface HostServices {
   readonly served: readonly string[];
   readonly recovery: RecoveryOutcome | undefined;
   /** The anchor the supervisor held at startup, and the newest head this process asked it to store and it acknowledged. */
+  /** Stall check, status and write notification for handlers and the audit sink. No put, no ack, no timer. */
+  readonly anchors: AnchorGuard;
   readonly anchor: () => { readonly atStart: ChainHead | null; readonly put: ChainHead | null; readonly ackedSeq: number };
 }
 
@@ -187,7 +190,11 @@ export function createDaemonHost(config: HostConfig, ports: StartupPorts, option
     const excludeDirs = (): readonly string[] => [config.worktreeRoot, config.dataDir, ports.cwd, ...(ports.registeredRepoRoots?.() ?? [])];
     const gitPath = resolveGitOnce({ env: ports.env, platform: config.platform, excludeDirs: excludeDirs() });
     // Step 6: audit log and the anchor check (reads only).
-    const audit = new AuditLog(db, { redactor: ports.redactor, now: () => new Date(ports.clock.now()) });
+    const audit = new AuditLog(db, {
+      redactor: ports.redactor,
+      now: () => new Date(ports.clock.now()),
+      payloadAllowlist: { "anchor.stalled": ["reason"], "anchor.resumed": ["code"] },
+    });
     const check = await checkAnchor(audit, () => ports.control.anchorGet({ timeoutMs: options.anchorTimeoutMs ?? 5_000, signal: startup.signal }));
     alive();
     const degraded = check.degraded;
@@ -199,8 +206,19 @@ export function createDaemonHost(config: HostConfig, ports: StartupPorts, option
     const journal = Journal.open(db, { audit, now: () => new Date(ports.clock.now()) });
     let idempotency: JournalIdempotencyStore | undefined;
     let recovery: RecoveryOutcome | undefined;
-    const anchorState = { put: null as ChainHead | null, ackedSeq: 0 };
+    const anchors = new AnchorManager({
+      clock: ports.clock,
+      audit: degraded === undefined ? audit : { head: () => audit.head() },
+      put: (h) => ports.control.anchorPut(h),
+      baseline: check.anchor,
+      writable: degraded === undefined,
+      disposables,
+      ...(config.limits.anchorMaxLagEvents === undefined ? {} : { maxLagEvents: config.limits.anchorMaxLagEvents }),
+      ...(config.limits.anchorMaxAgeMs === undefined ? {} : { maxAgeMs: config.limits.anchorMaxAgeMs }),
+      onTransition: (stalled) => void (stalled ? ports.logger?.warn("anchor.stalled") : ports.logger?.info("anchor.resumed")),
+    });
     if (degraded === undefined) {
+      disposables.add(ports.control.onAnchorAck((seq) => void anchors.ack(seq)), "anchor.ack");
       // Step 8: the durable store, on the uptime clock (never the wall clock, jumps bounded).
       const uptime = createUptimeClock(ports.clock);
       disposables.setInterval(() => void uptime.read(), UPTIME_TICK_MS, "uptime.tick");
@@ -216,12 +234,8 @@ export function createDaemonHost(config: HostConfig, ports: StartupPorts, option
         signal: startup.signal,
       });
       alive();
-      disposables.add(ports.control.onAnchorAck((seq) => void (anchorState.ackedSeq = Math.max(anchorState.ackedSeq, seq))), "anchor.ack");
-      const head = audit.checkpoint(check.anchor ?? undefined);
-      if (head !== null && (check.anchor === null || head.seq > check.anchor.seq)) {
-        ports.control.anchorPut(head);
-        anchorState.put = head;
-      }
+      // Anchor what recovery wrote (and the verified head, when the supervisor holds an older or no anchor).
+      anchors.flush();
     }
     // Step 10: policy over the one surface (only the degraded methods when degraded), then the coverage check (a
     // mismatch throws: exit 70, no ready).
@@ -251,7 +265,8 @@ export function createDaemonHost(config: HostConfig, ports: StartupPorts, option
       degraded,
       served,
       recovery,
-      anchor: () => Object.freeze({ atStart: check.anchor, put: anchorState.put, ackedSeq: anchorState.ackedSeq }),
+      anchors: Object.freeze({ check: (t: number) => anchors.check(t), status: () => anchors.status(), noteWrite: () => anchors.noteWrite() }),
+      anchor: () => Object.freeze({ atStart: check.anchor, put: anchors.put, ackedSeq: anchors.ackedSeq }),
     });
   };
 
