@@ -16,6 +16,7 @@ import type { WorktreeLocator } from "../ports/worktree-locator.js";
 import type { WorktreesService } from "../ports/worktrees.js";
 import { fromWorktreeError, worktreeFailure } from "../worktrees/errors.js";
 import { createWorktreeContentHooks } from "../worktrees/hooks.js";
+import { assertSafeRestorePath } from "../worktrees/restore-paths.js";
 import { createWorktreeLocator } from "../worktrees/locator.js";
 import { ProjectMutex } from "../worktrees/project-mutex.js";
 import { createWorktreesService, type ServiceJournal } from "../worktrees/service.js";
@@ -37,8 +38,14 @@ export interface WorktreesBindingDeps {
   readonly worktreeRoot: string;
   /** How long a mutating call waits for another process's workspace lock (default: the package's own). */
   readonly lockTimeoutMs?: number;
-  /** Told what a discard would lose, for the native dialog (`createWorktreesApprovalWiring().onPreview`). */
+  /** Told what a discard would lose, for the native dialog (`createWorktreesApprovals().onPreview`). */
   readonly onPreview?: (target: string, contentDigest: string, text: string) => void;
+  /** Test seams (never set by the product): replace the on-disk restore path check, wrap the manager shape, force the case rule. */
+  readonly testSeams?: {
+    readonly restorePathCheck?: (workTree: string, rel: string, platform: NodeJS.Platform) => Promise<void>;
+    readonly wrapManager?: (manager: ManagerShape) => ManagerShape;
+    readonly caseInsensitiveFs?: boolean;
+  };
 }
 
 export interface WorktreesBinding {
@@ -47,7 +54,7 @@ export interface WorktreesBinding {
   /** For `daemon.register("axis.worktrees", 1, handlers, { content })`. */
   readonly content: { readonly finalise: ApprovalContentHook; readonly remove: ApprovalContentHook };
   /** For `createWorktreesHandlers`. */
-  readonly needsAttention: (workspaceId: string) => boolean;
+  readonly needsAttention: (workspaceId: string, method?: string) => boolean;
   /** The one project mutex (also taken by the git handlers of ticket H9). */
   readonly mutex: ProjectMutex;
 }
@@ -76,6 +83,17 @@ function adapt(manager: WorktreeManager, runner: GitRunner): ManagerShape {
         const sha = out.stdout.trim();
         if (out.code !== 0 || !/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(sha)) throw worktreeFailure("E_NOT_FOUND", "base_ref");
         return sha;
+      }),
+    isMerged: (repoPath, headSha, baseRef) =>
+      mapped(async () => {
+        if (!/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(headSha) || !REF_NAME.test(baseRef) || baseRef.includes("..")) return false;
+        let base = baseRef;
+        if (baseRef === "HEAD") {
+          const head = await git(repoPath, ["symbolic-ref", "-q", "HEAD"]);
+          if (head.code !== 0) return false;
+          base = head.stdout.trim();
+        } else if (!baseRef.startsWith("refs/")) base = `refs/heads/${baseRef}`;
+        return (await git(repoPath, ["merge-base", "--is-ancestor", "--end-of-options", headSha, base])).code === 0;
       }),
     listRefs: (repoPath, prefix) =>
       mapped(async () => {
@@ -119,7 +137,7 @@ export function createWorktreesBinding(deps: WorktreesBindingDeps): WorktreesBin
     },
     ...(deps.lockTimeoutMs === undefined ? {} : { lockTimeoutMs: deps.lockTimeoutMs }),
   });
-  const shape = adapt(manager, runner);
+  const shape = deps.testSeams?.wrapManager?.(adapt(manager, runner)) ?? adapt(manager, runner);
   const mutex = new ProjectMutex();
   const locator = createWorktreeLocator({
     journal: deps.journal,
@@ -137,6 +155,8 @@ export function createWorktreesBinding(deps: WorktreesBindingDeps): WorktreesBin
     runs: deps.runs,
     random: deps.random,
     platform: deps.platform,
+    restorePathCheck: deps.testSeams?.restorePathCheck ?? assertSafeRestorePath,
+    caseInsensitiveFs: deps.testSeams?.caseInsensitiveFs ?? (deps.platform === "win32" || deps.platform === "darwin"),
   });
   const content = createWorktreeContentHooks({
     journal: deps.journal,

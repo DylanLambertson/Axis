@@ -8,7 +8,8 @@ import { DEFAULT_PAYLOAD_ALLOWLIST } from "@axis/audit";
  * already showed them.) Merged over the audit package's own entries by `createChallengeAuditLog`.
  */
 export const WORKTREE_PAYLOAD_ALLOWLIST: Readonly<Record<string, readonly string[]>> = Object.freeze({
-  "worktree.finalise": Object.freeze(["workspaceId", "outcome", "phase", "backupRef", "skippedLarge"]),
+  "worktree.finalise": Object.freeze(["workspaceId", "outcome", "phase", "result", "backupRef", "skippedLarge"]),
+  "worktree.finalise.intent": Object.freeze(["workspaceId", "outcome", "phase"]),
   "worktree.remove": Object.freeze([
     ...(DEFAULT_PAYLOAD_ALLOWLIST["worktree.remove"] ?? []),
     "branchBackupRef",

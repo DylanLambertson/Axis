@@ -15,7 +15,7 @@ export interface WorktreeHookDeps {
   readonly manager: Pick<ManagerShape, "previewDiscard" | "assertNoDrift">;
   readonly mutex: ProjectMutex;
   /** True for a workspace the last reconcile reported: no dialog is shown for a call that will be refused. */
-  readonly needsAttention: (workspaceId: string) => boolean;
+  readonly needsAttention: (workspaceId: string, method?: string) => boolean;
   /**
    * Told what a call would discard, in words, at the moment its content digest was taken (under the lock). The
    * gate's `describe` callback shows it in the native dialog (`gate/worktrees-confirm.ts`). Display text only,
@@ -48,11 +48,13 @@ export function createWorktreeContentHooks(deps: WorktreeHookDeps): { readonly f
    */
   const check = (id: string, needs: "READY" | "FINALISED"): ReturnType<typeof liveWorkspace> => {
     const ws = liveWorkspace(deps.journal, id);
-    if (deps.needsAttention(ws.id)) throw worktreeFailure("E_UNAVAILABLE", "needs_attention");
+    if (deps.needsAttention(ws.id, needs === "READY" ? "finalise" : "remove")) throw worktreeFailure("E_UNAVAILABLE", "needs_attention");
     if (ws.state !== needs) throw worktreeFailure("E_CONFLICT", needs === "FINALISED" ? "not_finalised" : ws.state === "FINALISED" ? "already_finalised" : "not_ready");
     return ws;
   };
   const make = (needs: "READY" | "FINALISED"): ApprovalContentHook => (context, payload) => {
+    // Only the user's own attested connection can see a workspace: anyone else gets the same answer as for an unknown one.
+    if (context.identity.actor !== "user") throw worktreeFailure("E_NOT_FOUND");
     const id = (payload as { id?: unknown }).id;
     if (typeof id !== "string") throw worktreeFailure("E_INVALID_ARGUMENT");
     const first = check(id, needs);

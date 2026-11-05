@@ -13,7 +13,12 @@ export interface DiscardPreview {
   readonly skippedUnsupported: number;
 }
 
-export const RECONCILE_REASONS = ["missing_worktree", "unknown_worktree", "ref_mismatch", "timeout", "failed"] as const;
+/**
+ * `finalise_incomplete` is the one reason that does not block its own repair: the journal says READY, the manager's record says
+ * FINALISED and the archive ref exists (what a crash between git and the journal leaves). Only an explicit `finalise` call
+ * may proceed on it, and that call re-verifies the state with git itself before it records anything.
+ */
+export const RECONCILE_REASONS = ["missing_worktree", "unknown_worktree", "ref_mismatch", "finalise_incomplete", "timeout", "failed"] as const;
 export type ReconcileReason = (typeof RECONCILE_REASONS)[number];
 
 export interface ReconcileReport {

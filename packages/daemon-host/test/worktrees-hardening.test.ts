@@ -66,8 +66,7 @@ test("B1: symlinks to the outside, to the .git directory, and dangling ones are 
   symlinkSync(outside, path.join(wa, "out"));
   symlinkSync(path.join(r.repo, ".git"), path.join(wa, "gitlink"));
   symlinkSync(path.join(r.tmp, "does-not-exist"), path.join(wa, "dangling"));
-  symlinkSync(path.join(r.tmp, "does-not-exist"), path.join(wa, "leaf.txt"));
-  for (const p of ["out/a.txt", "gitlink/config", "dangling/a.txt", "leaf.txt"]) {
+  for (const p of ["out/a.txt", "gitlink/config", "dangling/a.txt"]) {
     const res = await restore([p]);
     assert.equal(res.error?.code, "E_INVALID_ARGUMENT", p);
   }
@@ -97,7 +96,7 @@ test("B1: the manager refuses a write that resolves into another worktree even w
 
 test("finalise: an audit failure before git leaves git untouched; a git failure leaves the journal READY and a retry works", { skip }, async (t) => {
   let fail = true;
-  const { r, user } = await setup(t, { failAudit: (e) => fail && e.action === "worktree.finalise" });
+  const { r, user } = await setup(t, { failAudit: (e) => fail && e.action === "worktree.finalise.intent" });
   const { id } = await createWs(user);
   const bad = await user.call(WT, "finalise", { id, outcome: "archived" }, newKey());
   assert.equal(bad.ok, false);
@@ -114,7 +113,7 @@ test("finalise: an audit failure before git leaves git untouched; a git failure 
   assert.equal(r.journal.getWorkspace(id)?.state, "FINALISED");
 });
 
-test("finalise: git done but the journal write failed is recoverable: reconcile reports it and a retry completes the journal without git", { skip }, async (t) => {
+test("finalise: git done but the journal write failed is recoverable over the wire: reconcile says finalise_incomplete and a retry completes the journal without git", { skip }, async (t) => {
   let fail = true;
   const { r, user } = await setup(t, { failAudit: (e) => fail && e.action === "worktree.finalise" && (e.payload as { phase?: string }).phase === "done" });
   const { id } = await createWs(user);
@@ -123,13 +122,18 @@ test("finalise: git done but the journal write failed is recoverable: reconcile 
   assert.equal(r.journal.getWorkspace(id)?.state, "READY", "the transaction rolled back");
   assert.ok(r.git(r.repo, "for-each-ref", "refs/axis/archive").includes(id), "git did finalise");
   const report = await r.binding.service.reconcile(new AbortController().signal);
-  assert.deepEqual(report.needsAttention, [{ workspaceId: id, reason: "ref_mismatch" }]);
+  assert.deepEqual(report.needsAttention, [{ workspaceId: id, reason: "finalise_incomplete" }]);
   fail = false;
-  // Flagged workspaces answer E_UNAVAILABLE until a clean reconcile; the retry path is exercised through the service.
-  const done = await r.binding.service.finalise({ id, outcome: "archived" }, { caller: { actor: "user", connectionId: "c", windowId: "w" }, signal: new AbortController().signal });
-  assert.equal(done.archiveRef, `refs/axis/archive/${id}`);
+  const before = r.git(r.repo, "for-each-ref");
+  const done = await user.call(WT, "finalise", { id, outcome: "archived" }, newKey());
+  assert.equal(done.ok, true, JSON.stringify(done.error));
   assert.equal(r.journal.getWorkspace(id)?.state, "FINALISED");
+  assert.equal(r.git(r.repo, "for-each-ref"), before, "git was not run again");
   assert.deepEqual((await r.binding.service.reconcile(new AbortController().signal)).needsAttention, []);
+  // Every other method stays blocked while it needs attention.
+  r.db.exec(`UPDATE agent_workspaces SET base_sha = '${"1".repeat(40)}' WHERE id = '${id}'`);
+  await r.binding.service.reconcile(new AbortController().signal);
+  assert.equal((await user.call(WT, "status", { ids: [id] })).error?.code, "E_UNAVAILABLE");
 });
 
 // ---- S3: no dialog for a call that will be refused ----

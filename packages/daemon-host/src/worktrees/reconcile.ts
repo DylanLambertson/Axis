@@ -86,7 +86,13 @@ export async function reconcileWorktrees(deps: ReconcileDeps, signal: AbortSigna
             const st = await deps.manager.status(entry.path);
             // REMOVING is the journal's crash-visibility state: its meta is still the state it started from.
             const stateOk = w.state === "REMOVING" || st.state === w.state;
-            if (!stateOk || st.baseSha !== w.baseSha || st.id !== w.id) note(w.id, "ref_mismatch");
+            if (st.baseSha !== w.baseSha || st.id !== w.id) note(w.id, "ref_mismatch");
+            else if (!stateOk) {
+              // READY in the journal but finalised in git's own record (with its archive ref): a finalise interrupted before the
+              // journal step. It is told apart so that an explicit finalise can repair it; anything else is a plain mismatch.
+              const half = w.state === "READY" && st.state === "FINALISED" && archive.has(`refs/axis/archive/${w.id}`);
+              note(w.id, half ? "finalise_incomplete" : "ref_mismatch");
+            }
           } catch {
             signal.throwIfAborted();
             note(w.id, "failed");

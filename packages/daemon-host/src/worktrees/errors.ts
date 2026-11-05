@@ -62,6 +62,7 @@ const EXTRA_TEXT: Readonly<Record<string, string>> = {
   busy: "The workspace is busy.",
   needs_attention: "This workspace needs attention and is unavailable.",
   path_changed: "The workspace location changed.",
+  unverified: "The earlier finalise could not be verified; it needs attention.",
   unsafe_path: "A path in the request is not a plain file path inside the workspace.",
   partial_restore: "Some files were restored before the request failed.",
 };

@@ -7,9 +7,10 @@ import type { RunsService } from "../ports/runs.js";
 import type { RandomSource } from "../ports/random.js";
 import type { WorktreeLocator } from "../ports/worktree-locator.js";
 import type { DiscardPreview, WorktreesService } from "../ports/worktrees.js";
+import { DaemonError } from "@axis/daemon";
 import { worktreeFailure } from "./errors.js";
+import { verifyFinalised } from "./finalise-recovery.js";
 import { assertNoActiveRun, liveWorkspace } from "./guards.js";
-import { assertSafeRestorePath } from "./restore-paths.js";
 import { externalInfo, workspaceInfo, type WorktreeInfo } from "./info.js";
 import type { ProjectMutex } from "./project-mutex.js";
 import { reconcileWorktrees } from "./reconcile.js";
@@ -33,12 +34,16 @@ export interface WorktreesServiceDeps {
   readonly runs: Pick<RunsService, "hasActiveRun">;
   readonly random: RandomSource;
   readonly platform: NodeJS.Platform;
+  /** Checks a restore path on disk before anything is written (default: `assertSafeRestorePath`). A test seam; never weaken it in the product. */
+  readonly restorePathCheck: (workTree: string, rel: string, platform: NodeJS.Platform) => Promise<void>;
+  /** True when the file system compares names without case (macOS, Windows): the manager reports the on-disk spelling. */
+  readonly caseInsensitiveFs: boolean;
 }
 
 export interface WorktreesRuntime {
   readonly service: WorktreesService;
   /** True while the last reconcile found this workspace in disagreement: its methods answer `E_UNAVAILABLE`. */
-  needsAttention(workspaceId: string): boolean;
+  needsAttention(workspaceId: string, method?: string): boolean;
 }
 
 const MAX_LIST = 1000;
@@ -172,35 +177,49 @@ export function createWorktreesService(deps: WorktreesServiceDeps): WorktreesRun
           assertNoActiveRun(journal, deps.runs, ws.id);
           const ref = await locator.locate(ws.id);
           return withLockRecord(ws.id, actor, async () => {
-            // The manager's own record is read first: a record that already says FINALISED while the journal says READY is
-            // what a crash (or a failed journal write) between the two steps leaves. It is completed here, without git.
+            const project = journal.getProject(ws.projectId);
+            if (project === undefined) throw worktreeFailure("E_NOT_FOUND");
+            const target = `workspace:${ws.id}`;
             const live = await manager.status(ref.workTree);
             if (live.id !== ws.id) throw worktreeFailure("E_CONFLICT", "path_changed");
-            const archiveRef = `refs/axis/archive/${ws.id}`;
-            let backupRef: string | null = null;
-            let skippedLarge = 0;
-            if (live.state === "FINALISED") {
-              if (!(await manager.listRefs(journal.getProject(ws.projectId)?.path ?? "", "refs/axis/archive/")).has(archiveRef)) {
-                throw worktreeFailure("E_CONFLICT", "no_archive");
-              }
-            } else {
-              // Journal first: the intent is recorded and audited BEFORE git changes. If this write fails, git is untouched.
-              deps.audit.append({
-                actor, action: "worktree.finalise", target: `workspace:${ws.id}`, outcome: "success",
-                payload: { workspaceId: ws.id, outcome: req.outcome, phase: "begin" },
-              });
-              const done = await manager.finalise({ path: ref.workTree, outcome: req.outcome, discardConfirmation: ctx.confirmation });
-              backupRef = done.backupRef;
-              skippedLarge = done.skippedLarge.length;
+            const recovering = live.state === "FINALISED"; // git's record says done while the journal says READY
+            // Journal first: the intent is audited BEFORE git changes (the audit log has no "started" outcome, so the intent row is
+            // its own action). If this write fails, git is untouched.
+            if (!recovering) {
+              deps.audit.append({ actor, action: "worktree.finalise.intent", target, outcome: "success", payload: { workspaceId: ws.id, outcome: req.outcome, phase: "started" } });
             }
-            deps.transact(() => {
-              journal.transitionWorkspace(ws.id, "FINALISED", { actor, outcome: req.outcome, expectedFrom: "READY" });
-              deps.audit.append({
-                actor, action: "worktree.finalise", target: `workspace:${ws.id}`, outcome: "success",
-                payload: { workspaceId: ws.id, outcome: req.outcome, phase: "done", backupRef, skippedLarge },
+            try {
+              let backupRef: string | null = null;
+              let skippedLarge = 0;
+              let outcome: "merged" | "archived" | "abandoned" = req.outcome;
+              if (recovering) {
+                outcome = await verifyFinalised(manager, project.path, ws, live, ref.workTree, req.outcome);
+              } else {
+                const done = await manager.finalise({ path: ref.workTree, outcome: req.outcome, discardConfirmation: ctx.confirmation });
+                backupRef = done.backupRef;
+                skippedLarge = done.skippedLarge.length;
+              }
+              deps.transact(() => {
+                journal.transitionWorkspace(ws.id, "FINALISED", { actor, outcome, expectedFrom: "READY" });
+                deps.audit.append({
+                  actor, action: "worktree.finalise", target, outcome: "success",
+                  payload: { workspaceId: ws.id, outcome, phase: "done", result: recovering ? "recovered" : "finalised", backupRef, skippedLarge },
+                });
               });
-            });
-            return { id: ws.id, state: "FINALISED" as const, archiveRef };
+              return { id: ws.id, state: "FINALISED" as const, archiveRef: `refs/axis/archive/${ws.id}` };
+            } catch (e) {
+              // The second row: what actually happened. A refusal is `denied`, anything else `failure`; neither says "success".
+              const refused = e instanceof DaemonError && (e.code === "E_CONFLICT" || e.code === "E_NOT_FOUND" || e.code === "E_INVALID_ARGUMENT");
+              try {
+                deps.audit.append({
+                  actor, action: "worktree.finalise", target, outcome: refused ? "denied" : "failure",
+                  payload: { workspaceId: ws.id, outcome: req.outcome, phase: "done", result: refused ? "refused" : "failed" },
+                });
+              } catch {
+                // the audit log is what failed; the original error is the answer
+              }
+              throw e;
+            }
           });
         },
         ctx.signal,
@@ -267,7 +286,7 @@ export function createWorktreesService(deps: WorktreesServiceDeps): WorktreesRun
           assertNoActiveRun(journal, deps.runs, ws.id);
           const ref = await locator.locate(ws.id);
           // Before any write: every path must be a plain file path inside THIS workspace (a symlink in it could lead elsewhere).
-          for (const rel of req.paths) await assertSafeRestorePath(ref.workTree, rel, deps.platform);
+          for (const rel of req.paths) await deps.restorePathCheck(ref.workTree, rel, deps.platform);
           return withLockRecord(ws.id, actor, async () => {
             const restored: string[] = [];
             let backupRef: string | undefined;
@@ -275,9 +294,11 @@ export function createWorktreesService(deps: WorktreesServiceDeps): WorktreesRun
               for (const rel of req.paths) {
                 ctx.signal.throwIfAborted();
                 const one = await manager.restoreFromRunBase({ path: path.join(ref.workTree, ...rel.split("/")), runId: run.id, expectedWorktree: ref.workTree });
-                if (one.relPath !== rel) throw worktreeFailure("E_INTERNAL");
-                restored.push(one.relPath);
+                // The file is written: count it (and so audit it) BEFORE any check of what the manager says it wrote.
+                restored.push(rel);
                 backupRef ??= one.backupRef; // the first backup holds the state before anything was restored
+                const same = deps.caseInsensitiveFs ? one.relPath.toLowerCase() === rel.toLowerCase() : one.relPath === rel;
+                if (!same) throw worktreeFailure("E_INTERNAL");
               }
             } catch (e) {
               if (restored.length === 0) throw e;
@@ -324,5 +345,6 @@ export function createWorktreesService(deps: WorktreesServiceDeps): WorktreesRun
     },
   };
 
-  return { service, needsAttention: (id) => attention.has(id) };
+  // An interrupted finalise (`finalise_incomplete`) does not block `finalise` itself: that call is its repair.
+  return { service, needsAttention: (id, method) => attention.has(id) && !(method === "finalise" && attention.get(id) === "finalise_incomplete") };
 }

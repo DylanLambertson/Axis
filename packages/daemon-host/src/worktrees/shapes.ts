@@ -74,6 +74,8 @@ export interface ManagerShape {
   resolveCommit(repoPath: string, ref: string): Promise<string>;
   /** Full names of the refs under `prefix` (for example `refs/axis/archive/`) in the project's repository (read only). */
   listRefs(repoPath: string, prefix: string): Promise<ReadonlySet<string>>;
+  /** True when `headSha` is reachable from the base branch `baseRef` names (a branch, or `HEAD` of the project checkout), by git itself. */
+  isMerged(repoPath: string, headSha: string, baseRef: string): Promise<boolean>;
   list(repoPath: string): Promise<readonly ListedWorktree[]>;
   create(input: { repoPath: string; slug: string; baseRef: string; id: string }): Promise<ManagerCreated>;
   status(worktreePath: string): Promise<ManagerStatus>;

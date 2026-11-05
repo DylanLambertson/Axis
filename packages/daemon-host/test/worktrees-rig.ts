@@ -14,11 +14,10 @@ import {
   InMemoryTrustRegistry,
   RULES,
   RuleTablePolicy,
-  createApprovals,
   createApprovalsHandlers,
   createChallengeAuditLog,
   createChallengeAuditSink,
-  createWorktreesApprovalWiring,
+  createWorktreesApprovals,
   createWorktreesBinding,
   createWorktreesHandlers,
   resolveGitOnce,
@@ -100,6 +99,7 @@ export interface RigOptions {
   /** Fixed bytes for the slug suffix (`010203`), so a test can predict a branch name. */
   fixedSuffix?: boolean;
   /** Make the binding's audit appends fail for matching events (the journal's own audit is unaffected). */
+  testSeams?: NonNullable<Parameters<typeof createWorktreesBinding>[0]["testSeams"]>;
   failAudit?: (e: { action: string; payload?: unknown }) => boolean;
 }
 
@@ -143,7 +143,17 @@ export async function worktreesRig(options: RigOptions = {}): Promise<Rig> {
   }
   const active = new Set<string>();
   const script: boolean[] = [];
-  const wiring = createWorktreesApprovalWiring(options.preflight === undefined ? {} : { preflight: options.preflight });
+  const { a, b } = memoryChannelPair();
+  const mux = new ChannelMux(a);
+  const control = new ControlClient({ mux });
+  const supervisor: Array<Record<string, unknown>> = [];
+  b.onMessage((m) => supervisor.push(m as Record<string, unknown>));
+  const approvals = createWorktreesApprovals({
+    audit: createChallengeAuditSink(audit),
+    control,
+    clock,
+    ...(options.preflight === undefined ? {} : { preflight: options.preflight }),
+  });
   const binding = createWorktreesBinding({
     journal,
     audit: { append: (e) => (options.failAudit?.(e) === true ? ((): never => { throw new Error("audit down"); })() : audit.append(e)) },
@@ -154,20 +164,10 @@ export async function worktreesRig(options: RigOptions = {}): Promise<Rig> {
     env,
     platform: process.platform,
     worktreeRoot: root,
-    onPreview: wiring.onPreview,
+    onPreview: approvals.onPreview,
+    ...(options.testSeams === undefined ? {} : { testSeams: options.testSeams }),
   });
 
-  const { a, b } = memoryChannelPair();
-  const mux = new ChannelMux(a);
-  const control = new ControlClient({ mux });
-  const supervisor: Array<Record<string, unknown>> = [];
-  b.onMessage((m) => supervisor.push(m as Record<string, unknown>));
-  const approvals = createApprovals({
-    audit: createChallengeAuditSink(audit),
-    control,
-    clock,
-    ...wiring.approvals,
-  });
   const trust = new InMemoryTrustRegistry();
   trust.set({ windowId: "win-1" }, true);
   const rpcEvents: DaemonAuditEvent[] = [];

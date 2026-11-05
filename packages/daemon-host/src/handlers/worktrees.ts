@@ -16,7 +16,7 @@ import { toDaemonError, worktreeFailure } from "../worktrees/errors.js";
 export interface WorktreesHandlerDeps {
   readonly service: WorktreesService;
   /** True for a workspace the last reconcile reported (see `createWorktreesBinding`). */
-  readonly needsAttention: (workspaceId: string) => boolean;
+  readonly needsAttention: (workspaceId: string, method?: string) => boolean;
 }
 
 function portContext(context: HandlerContext): PortContext {
@@ -31,6 +31,7 @@ function portContext(context: HandlerContext): PortContext {
 export function createWorktreesHandlers(deps: WorktreesHandlerDeps): Readonly<Record<WorktreesMethod, Handler>> {
   const run =
     <M extends WorktreesMethod>(
+      method: M,
       ids: (payload: WorktreesRequest<M>) => readonly string[],
       call: (payload: WorktreesRequest<M>, ctx: PortContext, context: HandlerContext) => Promise<unknown>,
     ): Handler =>
@@ -40,7 +41,7 @@ export function createWorktreesHandlers(deps: WorktreesHandlerDeps): Readonly<Re
       if (context.identity.actor !== "user") throw worktreeFailure("E_NOT_FOUND");
       const request = payload as WorktreesRequest<M>;
       try {
-        if (ids(request).some((id) => deps.needsAttention(id))) throw worktreeFailure("E_UNAVAILABLE", "needs_attention");
+        if (ids(request).some((id) => deps.needsAttention(id, method))) throw worktreeFailure("E_UNAVAILABLE", "needs_attention");
         return await call(request, portContext(context), context);
       } catch (e) {
         throw toDaemonError(e);
@@ -52,11 +53,11 @@ export function createWorktreesHandlers(deps: WorktreesHandlerDeps): Readonly<Re
     if (context.approved === undefined) throw new DaemonError("E_INTERNAL", "The worktree operation failed.");
   };
   return {
-    list: run<"list">(none, (p, ctx) => deps.service.list(p, ctx)),
-    status: run<"status">((p) => p.ids, (p, ctx) => deps.service.status(p, ctx)),
-    create: run<"create">(none, (p, ctx) => deps.service.create(p, ctx)),
-    finalise: run<"finalise">((p) => [p.id], (p, ctx) => deps.service.finalise(p, ctx)),
-    remove: run<"remove">((p) => [p.id], (p, ctx, context) => (approved(context), deps.service.remove(p, ctx))),
-    restoreFromRunBase: run<"restoreFromRunBase">((p) => [p.id], (p, ctx) => deps.service.restoreFromRunBase(p, ctx)),
+    list: run<"list">("list", none, (p, ctx) => deps.service.list(p, ctx)),
+    status: run<"status">("status", (p) => p.ids, (p, ctx) => deps.service.status(p, ctx)),
+    create: run<"create">("create", none, (p, ctx) => deps.service.create(p, ctx)),
+    finalise: run<"finalise">("finalise", (p) => [p.id], (p, ctx) => deps.service.finalise(p, ctx)),
+    remove: run<"remove">("remove", (p) => [p.id], (p, ctx, context) => (approved(context), deps.service.remove(p, ctx))),
+    restoreFromRunBase: run<"restoreFromRunBase">("restoreFromRunBase", (p) => [p.id], (p, ctx) => deps.service.restoreFromRunBase(p, ctx)),
   };
 }
