@@ -137,6 +137,7 @@ A gap is either a missing control (G-1 to G-13) or a missing ROADMAP gate line f
 | G-24 | Challenge TOCTOU | B4 | 1a/L8 extended: a request altered after approval is refused |
 | G-25 | EL-1 Axis bundle under Trusted Types | M3 check (Phase 0 §5.1) | Smoke test that fails on a Trusted Types violation |
 | G-26 | PTY-3 cwd spoof | B10 | 1a/L2 extended |
+| G-27 | REV-2, REV-1, WT-2 | Close the attribute swap-and-restore window in the diff review reads: a git-ops hardened read with a private empty `GIT_DIR`, `GIT_OBJECT_DIRECTORY` at the real store, a single read of `info/attributes`, `GIT_ATTR_NOSYSTEM=1` and a private snapshot of the system and user attribute files. **Open; Phase 1a gate item.** | 1a: a filter attribute swapped in after the first attribute read and removed before the second does not reach the reviewed tree |
 
 ### 6.3 Resolution after the owner decisions, and ROADMAP tracking
 
