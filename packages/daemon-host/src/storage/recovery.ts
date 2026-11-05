@@ -47,7 +47,6 @@ export async function runRecovery(input: RecoveryInput): Promise<RecoveryOutcome
         controller.abort();
         resolve("timeout");
       }, input.reconcileBudgetMs);
-      timer.unref();
     });
     const work = Promise.resolve().then(() => input.reconcile?.(controller.signal));
     work.catch(() => undefined); // an abandoned reconcile may still reject later

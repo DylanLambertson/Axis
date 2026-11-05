@@ -1,13 +1,14 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import assert from "node:assert/strict";
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { withTransaction } from "@axis/audit";
 import { contracts } from "@axis/protocol";
+import { AxisError, openDatabase } from "@axis/audit";
 import { createDaemonHost, DegradedStartError, exitCodeForStartupError, EXIT, type DaemonHost, type HostServices } from "../src/index.js";
 import { hostFixture, type HostFixture } from "../testing/host-fixture.js";
-import { processSnapshot, wait } from "./helpers.js";
+import { processSnapshot, wait, must } from "./helpers.js";
 
 const idsOf = (): string[] => [...new Set(Object.keys(contracts).map((k) => k.slice(0, k.indexOf("/"))))].sort();
 const ready = (f: HostFixture): Array<Record<string, unknown>> => f.sent.filter((m) => m["type"] === "ready");
@@ -39,10 +40,10 @@ test("a first start sends ready with every contract, not degraded, and holds the
     assert.equal(ready(fix)[0]?.["degraded"], undefined);
     assert.equal(s.degraded, undefined);
     assert.ok(s.idempotency !== undefined);
-    assert.equal(s.lock.held, true);
+    assert.equal(must(s.unsafe).lock.held, true);
     assert.ok(existsSync(join(fix.dataDir, "axis.lock")));
     assert.ok(existsSync(join(fix.dataDir, "axis.db")));
-    assert.equal(s.audit.verify().ok, true);
+    assert.equal(must(s.audit).verify().ok, true);
     assert.deepEqual(fix.supervisor.puts, [], "an empty chain has nothing to anchor");
   });
   assert.ok(!existsSync(fix.dataDir) || !existsSync(join(fix.dataDir, "axis.lock")));
@@ -59,8 +60,8 @@ test("stop closes the database handle, releases the lock and is idempotent; star
     const first = await host.stop();
     assert.equal(first.failures.length, 0);
     assert.equal(host.state, "stopped");
-    assert.throws(() => s.db.prepare("SELECT 1").get());
-    assert.equal(s.lock.held, false);
+    assert.throws(() => must(s.unsafe).db.prepare("SELECT 1").get());
+    assert.equal(must(s.unsafe).lock.held, false);
     assert.ok(!existsSync(join(fix.dataDir, "axis.lock")));
     assert.equal((await host.stop()).disposed, first.disposed);
   } finally {
@@ -94,7 +95,7 @@ test("a second host on the same data directory fails with E_CONFLICT (exit 75) a
   }
 });
 
-test("a refused data directory is exit 78; a failure after the lock leaves no lock, handle or timer behind", async () => {
+test("a failure after the lock (git not found) is exit 70 and leaves no lock, handle or timer behind", async () => {
   const before = processSnapshot();
   const bad = hostFixture({ env: { PATH: "" } });
   const host = createDaemonHost(bad.config, bad.ports);
@@ -111,6 +112,10 @@ test("a refused data directory is exit 78; a failure after the lock leaves no lo
   } finally {
     bad.cleanup();
   }
+  assert.deepEqual(processSnapshot(), before);
+});
+
+test("a refused data directory is exit 78", async () => {
   const refused = hostFixture();
   writeFileSync(refused.dataDir, "not a directory");
   const h2 = createDaemonHost(refused.config, refused.ports);
@@ -124,7 +129,6 @@ test("a refused data directory is exit 78; a failure after the lock leaves no lo
   } finally {
     refused.cleanup();
   }
-  assert.deepEqual(processSnapshot(), before);
 });
 
 test("exit codes: degraded is 79, conflict 75, bad config 78, anything else 70", () => {
@@ -149,21 +153,94 @@ test("the policy and the coverage check use the SAME surface: a host serving a s
 test("the audit sink inside a journal transaction commits or rolls back with it (design 5.3, confirmed)", async () => {
   const fix = hostFixture();
   await started(fix, (_host, s) => {
-    const append = (n: number): void => void s.audit.append({ actor: "daemon", action: "policy.decision", target: `t:${n}`, outcome: "success", payload: { tier: 0 } });
+    const append = (n: number): void => void must(s.audit).append({ actor: "daemon", action: "policy.decision", target: `t:${n}`, outcome: "success", payload: { tier: 0 } });
     assert.throws(() =>
-      withTransaction(s.db, () => {
-        s.journal.createWorkspace({ projectId: "p1", branch: "axis/x", baseRef: "main", baseSha: "a".repeat(40), createdBy: "user" });
+      withTransaction(must(s.unsafe).db, () => {
+        must(s.journal).createWorkspace({ projectId: "p1", branch: "axis/x", baseRef: "main", baseSha: "a".repeat(40), createdBy: "user" });
         append(1);
         throw new Error("boom");
       }),
     );
-    assert.equal(s.audit.head(), null, "the rolled-back event left no trace");
-    assert.equal(s.journal.listWorkspaces().length, 0);
-    withTransaction(s.db, () => {
+    assert.equal(must(s.audit).head(), null, "the rolled-back event left no trace");
+    assert.equal(must(s.journal).listWorkspaces().length, 0);
+    withTransaction(must(s.unsafe).db, () => {
       append(2);
       append(3);
     });
-    assert.equal(s.audit.head()?.seq, 2, "sequence numbers stay contiguous after a rollback");
-    assert.equal(s.audit.verify().ok, true);
+    assert.equal(must(s.audit).head()?.seq, 2, "sequence numbers stay contiguous after a rollback");
+    assert.equal(must(s.audit).verify().ok, true);
   });
+});
+
+test("exit codes follow the step: a conflict raised after the lock is internal (70), not 'another daemon' (75)", async () => {
+  const fix = hostFixture({
+    ports: {
+      registeredRepoRoots: () => {
+        throw new AxisError("E_CONFLICT", "illegal transition in a damaged journal");
+      },
+    },
+  });
+  const host = createDaemonHost(fix.config, fix.ports);
+  try {
+    const error = await host.start().then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    assert.ok(error !== undefined);
+    assert.equal(exitCodeForStartupError(error), EXIT.INTERNAL);
+    assert.ok(!existsSync(join(fix.dataDir, "axis.lock")));
+  } finally {
+    fix.cleanup();
+  }
+});
+
+test("a database that the held lock does not guard is refused, and the lock is released", async () => {
+  const fix = hostFixture();
+  const other = join(fix.root, "other");
+  mkdirSync(other, { mode: 0o700 });
+  const real = fix.ports.storage;
+  const host = createDaemonHost(fix.config, {
+    ...fix.ports,
+    storage: { acquire: async (path) => ({ ...(await real.acquire(path)), openDatabase: () => openDatabase(join(other, "axis.db")) }) },
+  });
+  try {
+    await assert.rejects(host.start(), (e: AxisError) => e.code === "E_INTERNAL" && e.detail["reason"] === "lock_database");
+    assert.ok(!existsSync(join(fix.dataDir, "axis.lock")));
+  } finally {
+    fix.cleanup();
+  }
+});
+
+test("stop() during start(): no ready, no anchor.put, start rejects E_CANCELLED, nothing is held; start after stop is refused", async () => {
+  let entered!: () => void;
+  const reached = new Promise<void>((r) => (entered = r));
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  const fix = hostFixture({
+    ports: {
+      reconcile: async () => {
+        entered();
+        await gate;
+        return { needsAttention: [{ workspaceId: "ws-1", reason: "missing_worktree" as const }] };
+      },
+    },
+  });
+  const host = createDaemonHost(fix.config, fix.ports);
+  try {
+    const started = host.start();
+    const outcome = started.then(() => "resolved", (e: { code?: string }) => e.code);
+    await reached;
+    const stopped = host.stop();
+    release();
+    assert.equal(await outcome, "E_CANCELLED");
+    await stopped;
+    await wait(5);
+    assert.equal(fix.sent.filter((m) => m["type"] === "ready").length, 0);
+    assert.deepEqual(fix.supervisor.puts, []);
+    assert.ok(!existsSync(join(fix.dataDir, "axis.lock")));
+    await assert.rejects(host.start(), { code: "E_CANCELLED" });
+    assert.ok(!existsSync(join(fix.dataDir, "axis.lock")), "a start after stop never takes the lock");
+  } finally {
+    fix.cleanup();
+  }
 });

@@ -1,5 +1,5 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
-import { isAbsolute } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 import { AxisError } from "@axis/audit";
 import { resolveGit } from "@axis/git-ops";
 
@@ -19,6 +19,13 @@ export interface GitResolveInput {
  * Not found is `E_UNAVAILABLE` with a fixed message: nothing falls back to a bare `git`.
  */
 export function resolveGitOnce(input: GitResolveInput): string {
+  // Every excluded directory must be a plain absolute, normalised path: a relative or `..` entry would exclude
+  // nothing, silently. (The same rule git-ops applies to its own `excludeDirs`.)
+  for (const d of input.excludeDirs) {
+    if (typeof d !== "string" || d === "" || d.includes("\0") || !isAbsolute(d) || resolve(d) !== d) {
+      throw new AxisError("E_INVALID_ARGUMENT", "An excluded directory is not a normalised absolute path", { reason: "bad_exclude_dir" });
+    }
+  }
   const found = resolveGit(input.env, input.platform, input.excludeDirs);
   if (found === undefined || !isAbsolute(found)) {
     throw new AxisError("E_UNAVAILABLE", "git was not found outside the managed directories", { reason: "git_not_found" });

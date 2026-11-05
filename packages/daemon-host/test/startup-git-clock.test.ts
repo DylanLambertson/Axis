@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
-import { test } from "node:test";
+import { mock, test } from "node:test";
 import { createDaemonHost, createUptimeClock, resolveGitOnce, type Clock } from "../src/index.js";
 import { hostFixture } from "../testing/host-fixture.js";
 import { wait } from "./helpers.js";
@@ -115,4 +115,47 @@ test("the host feeds the idempotency store a bounded clock: a monotonic jump doe
     fix.cleanup();
   }
   await wait(1);
+});
+
+test("uptime clock: a source whose first sample fails starts counting at the first good one", () => {
+  const samples: Array<number | "throw"> = ["throw", 100, 160, 220];
+  const u = createUptimeClock({ now: () => 0, monotonic: () => { const v = samples.shift(); if (v === "throw" || v === undefined) throw new Error("x"); return v; } }, 60_000);
+  assert.equal(u.read(), 0); // construction took the failing sample; this read is the first good one
+  assert.equal(u.read(), 60, "counting started");
+  assert.equal(u.read(), 120);
+});
+
+test("honest idle time is counted: the one-minute tick keeps steps small, so a key expires after 24 h of uptime", async () => {
+  let mono = 0;
+  const fix = hostFixture({ clock: { now: () => Date.now(), monotonic: () => mono } });
+  mock.timers.enable({ apis: ["setInterval"] });
+  const host = createDaemonHost(fix.config, fix.ports);
+  try {
+    const s = await host.start();
+    const store = s.idempotency;
+    assert.ok(store !== undefined);
+    const key = { actorId: "user", workspaceId: "w", contract: "axis.worktrees", version: 1, method: "create", key: "k-idle-1" };
+    store.begin(key, "h");
+    store.complete(key, { ok: true }, "c1");
+    for (let i = 0; i < 23 * 60; i++) {
+      mono += 60_000;
+      mock.timers.tick(60_000);
+    }
+    assert.equal(store.begin(key, "h").state, "replay", "23 h: still inside the window");
+    for (let i = 0; i < 2 * 60; i++) {
+      mono += 60_000;
+      mock.timers.tick(60_000);
+    }
+    assert.notEqual(store.begin(key, "h").state, "replay", "25 h of ticks: expired");
+  } finally {
+    mock.timers.reset();
+    await host.stop();
+    fix.cleanup();
+  }
+});
+
+test("a relative or unnormalised excluded directory is refused (it would exclude nothing)", () => {
+  for (const bad of ["relative/dir", "", `${tmpdir()}/a/../b`, "/x\0y"]) {
+    assert.throws(() => resolveGitOnce({ env: { PATH: "" }, platform: process.platform, excludeDirs: [bad] }), { code: "E_INVALID_ARGUMENT" }, bad);
+  }
 });

@@ -33,7 +33,7 @@ export interface HostFixture {
   readonly peer: MemoryEnd;
   /** Everything the host sent. */
   readonly sent: Array<Record<string, unknown>>;
-  readonly supervisor: { anchor: ChainHead | null; answerAnchorGet: boolean; ackPuts: boolean; puts: ChainHead[] };
+  readonly supervisor: { anchor: ChainHead | null; answerAnchorGet: boolean; ackPuts: boolean; puts: ChainHead[]; answerDelayMs: number };
   cleanup(): void;
 }
 
@@ -61,12 +61,18 @@ export function hostFixture(options: FixtureOptions = {}): HostFixture {
   const mux = new ChannelMux(a);
   const client = new ControlClient({ mux });
   const sent: Array<Record<string, unknown>> = [];
-  const supervisor = { anchor: null as ChainHead | null, answerAnchorGet: true, ackPuts: true, puts: [] as ChainHead[] };
+  const supervisor = { anchor: null as ChainHead | null, answerAnchorGet: true, ackPuts: true, puts: [] as ChainHead[], answerDelayMs: 0 };
+  const timers = new Set<NodeJS.Timeout>();
   b.onMessage((raw) => {
     const m = raw as Record<string, unknown>;
     sent.push(m);
     if (m["type"] === "anchor.get" && supervisor.answerAnchorGet) {
-      b.send({ type: "anchor.result", requestId: m["requestId"], anchor: supervisor.anchor });
+      const answer = { type: "anchor.result", requestId: m["requestId"], anchor: supervisor.anchor };
+      if (supervisor.answerDelayMs > 0) {
+        const t = setTimeout(() => (timers.delete(t), b.send(answer)), supervisor.answerDelayMs);
+        t.unref();
+        timers.add(t);
+      } else b.send(answer);
     } else if (m["type"] === "anchor.put") {
       const head = { seq: m["seq"] as number, hash: m["hash"] as string };
       supervisor.puts.push(head);
@@ -83,8 +89,9 @@ export function hostFixture(options: FixtureOptions = {}): HostFixture {
     control: client,
     redactor,
     env: options.env ?? process.env,
+    cwd: process.cwd(),
     ...options.ports,
-  };
+  } as StartupPorts;
   return {
     root,
     dataDir,
@@ -97,6 +104,7 @@ export function hostFixture(options: FixtureOptions = {}): HostFixture {
     sent,
     supervisor,
     cleanup(): void {
+      for (const t of timers) clearTimeout(t);
       client.dispose();
       mux.dispose();
       a.close();

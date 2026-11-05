@@ -11,7 +11,8 @@ import type { Clock } from "../ports/clock.js";
  * So this wrapper:
  *  - never returns less than it returned before, and never a value that is not finite and non-negative;
  *  - never advances by more than `maxStepMs` between two reads (a suspended machine, a stepped clock or a bad source
- *    shortens nothing: the excess is dropped, so keys live LONGER, the safe direction).
+ *    can make a key expire early by at most `maxStepMs` per jump; the excess is dropped, so everything beyond that
+ *    makes keys live LONGER, the safe direction).
  * The host also reads it on a timer well inside `maxStepMs`, so honest idle time is counted in full.
  */
 export const DEFAULT_MAX_UPTIME_STEP_MS = 10 * 60_000;
@@ -19,7 +20,7 @@ export const DEFAULT_MAX_UPTIME_STEP_MS = 10 * 60_000;
 export interface UptimeClock {
   /** Accumulated, bounded monotonic milliseconds. Pass this as the store's `monotonic`. */
   read(): number;
-  /** Source steps that were clamped (a jump) or hidden (backwards or invalid), for the log. */
+  /** Source steps that were clamped (a jump) or hidden (backwards or invalid), for tests and diagnostics. */
   readonly anomalies: () => number;
 }
 
