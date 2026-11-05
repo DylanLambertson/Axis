@@ -148,6 +148,7 @@ export async function collectConfigs(ctx: Ctx, input: ConfigInput): Promise<Path
 
   const targets: PathTarget[] = [];
   let full = false;
+  let highCount = 0;
   // Targets first, by key: a cap on the displayed settings never decides what is hashed.
   for (const s of source) {
     const k = splitKey(s.key);
@@ -167,10 +168,14 @@ export async function collectConfigs(ctx: Ctx, input: ConfigInput): Promise<Path
         targets.push({ kind: pathKind, path: abs });
       }
     }
-    if (ctx.settings.length >= ctx.limits.maxSettings) {
-      full = true;
+    // Only settings that decide what git runs count toward the cap that blocks; a repository with thousands of
+    // tracked branches has thousands of harmless `branch.*.remote` entries. Those past the list are not shown.
+    const counted = cls.severity === "high";
+    if (counted ? highCount >= ctx.limits.maxSettings : ctx.settings.length >= ctx.limits.maxSettings * 4) {
+      if (counted) full = true;
       continue;
     }
+    if (counted) highCount++;
     const subShown = k.sub === null ? "" : `.${displayValue(Buffer.from(k.sub, "latin1").toString("utf8"), 200)}`;
     const shown = text ?? (s.value === null ? null : Buffer.from(s.value, "latin1").toString("utf8"));
     const value = shown === null ? null : secretNamed(k.name) ? "[REDACTED]" : displayValue(shown);

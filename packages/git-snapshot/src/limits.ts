@@ -69,8 +69,13 @@ export class Budget {
   #entries = 0;
   constructor(
     private readonly limits: Limits,
-    private readonly signal: AbortSignal | undefined,
+    readonly signal: AbortSignal | undefined,
   ) {}
+
+  /** Milliseconds left of the wall clock (never negative). */
+  remaining(): number {
+    return Math.max(0, this.limits.maxMillis - (performance.now() - this.#start));
+  }
 
   /** Throws `E_CANCELLED` when aborted, `Exhausted` when the time is spent. */
   tick(): void {

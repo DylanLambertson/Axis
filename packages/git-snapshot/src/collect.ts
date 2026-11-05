@@ -8,9 +8,9 @@ import { escapeDisplay } from "./display.js";
 import { record, recordTree, type Ctx } from "./entry.js";
 import { SnapshotError, invalid } from "./errors.js";
 import { listDir } from "./fsread.js";
-import { askGit, type GitView } from "./git.js";
+import { askGit, resolveGit, type GitView } from "./git.js";
 import { Budget, Exhausted, resolveLimits, type Limits } from "./limits.js";
-import { samePath } from "./paths.js";
+import { isWithin, realish, samePath } from "./paths.js";
 import { collectRefs } from "./refs.js";
 import type { Incomplete, Snapshot, SnapshotEntry, WorktreeLink } from "./types.js";
 
@@ -27,6 +27,11 @@ export interface TakeOptions {
   readonly homeDir?: string;
   readonly limits?: Partial<Limits>;
   readonly signal?: AbortSignal;
+  /**
+   * Absolute path of `git`, resolved once by the caller outside every worktree. When absent, the first absolute
+   * `PATH` entry that holds an executable `git` outside the worktrees is used; a bare `git` is never started.
+   */
+  readonly gitPath?: string;
   /** The environment git is started from (only the GIT-ENV-1 allow-list is passed on). Defaults to `process.env`. */
   readonly env?: Readonly<Record<string, string | undefined>>;
   /** Tests only. */
@@ -47,6 +52,12 @@ const DRIVER_FILES = [
   ".pre-commit-config.yaml",
 ];
 
+async function insideAny(p: string, roots: readonly string[]): Promise<boolean> {
+  const real = await realish(p);
+  for (const r of roots) if (isWithin(await realish(r), real) || isWithin(resolve(r), resolve(p))) return true;
+  return false;
+}
+
 function absolute(p: unknown, what: string): string {
   if (typeof p !== "string" || p.length === 0 || p.length > 4096 || p.includes("\0") || !isAbsolute(p)) {
     throw invalid(`${what} must be an absolute path`);
@@ -55,7 +66,7 @@ function absolute(p: unknown, what: string): string {
 }
 
 /**
- * Takes the GIT-SNAP-1 snapshot of one worktree and its common dir. Reads only; runs no git. Every bound in
+ * Takes the GIT-SNAP-1 snapshot of one worktree and its common dir. Reads files and asks git read-only questions (see `askGit`). Every bound in
  * `Limits` applies, and an item that cannot be read in full is recorded as incomplete, never skipped. Rejects only
  * for bad arguments, a missing common dir, or cancellation.
  */
@@ -78,10 +89,24 @@ export async function takeSnapshot(opts: TakeOptions): Promise<Snapshot> {
 
   try {
     const names: string[] = [];
-    const view = await askGit(worktreePath, expected ?? null, ctx.homeDir, opts.env ?? process.env, budget);
+    const env = opts.env ?? process.env;
+    const pathKey = Object.keys(env).find((k) => k.toUpperCase() === "PATH");
+    let gitPath: string | null = null;
+    if (opts.gitPath !== undefined) {
+      gitPath = absolute(opts.gitPath, "gitPath");
+      if (await insideAny(gitPath, roots)) throw invalid("gitPath must be outside every worktree");
+    } else {
+      gitPath = await resolveGit(pathKey === undefined ? undefined : env[pathKey], roots);
+    }
+    const view: GitView =
+      gitPath === null
+        ? { discovered: { gitDir: null, commonDir: null, topLevel: null }, config: null, hooksDir: null, problems: ["git was not found outside the worktrees"] }
+        : await askGit({ worktree: worktreePath, gitDir: expected ?? null, commonDir, home: ctx.homeDir, env, gitPath, budget, limits });
     for (const p of view.problems) ctx.incomplete.push({ id: "git", reason: p, blocking: true });
     link = await collectLink(ctx, worktreePath, commonDir, expected, names, view);
-    const targets = await collectConfigs(ctx, { commonDir, worktreePath, worktreeRoots: roots, worktreeNames: names, git: view });
+    // Relative paths start where git runs hooks: its own top level, which `core.worktree` can move.
+    const top = view.discovered.topLevel ?? worktreePath;
+    const targets = await collectConfigs(ctx, { commonDir, worktreePath: top, worktreeRoots: [...roots, top], worktreeNames: names, git: view });
     // Hook scripts can dispatch to subdirectories (pre-commit.d/*): walk them like any in-tree hook directory.
     await recordTree(ctx, "hooks", "hooks", join(commonDir, "hooks"), limits.maxWalkDepth, true);
     if (view.hooksDir !== null && view.hooksDir !== join(commonDir, "hooks")) targets.push({ kind: "hooks", path: view.hooksDir });
@@ -116,7 +141,7 @@ export async function takeSnapshot(opts: TakeOptions): Promise<Snapshot> {
     return seenGap.has(k) ? false : (seenGap.add(k), true);
   });
   return {
-    version: 1,
+    version: 2,
     takenAtMs: (opts.now ?? Date.now)(),
     worktreePath,
     commonDir,
@@ -158,8 +183,10 @@ async function collectLink(
   } else if (list.detail !== "missing") {
     ctx.incomplete.push({ id: "worktrees", reason: `unreadable (${list.detail})`, blocking: true });
   }
-  const { gitDir, commonDir: found } = view.discovered;
-  let mismatch = gitDir === null || found === null || !(await samePath(found, commonDir));
+  const { gitDir, commonDir: found, topLevel } = view.discovered;
+  // A top level that is not the worktree (core.worktree in config.worktree) means git runs hooks from somewhere else.
+  let mismatch =
+    gitDir === null || found === null || topLevel === null || !(await samePath(found, commonDir)) || !(await samePath(topLevel, worktreePath));
   if (!mismatch && expected !== undefined && gitDir !== null) mismatch = !(await samePath(gitDir, expected));
   return { declared: gitDir, expected: expected ?? null, mismatch };
 }

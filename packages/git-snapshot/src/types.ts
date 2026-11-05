@@ -50,7 +50,7 @@ export interface WorktreeLink {
 }
 
 export interface Snapshot {
-  readonly version: 1;
+  readonly version: 2;
   readonly takenAtMs: number;
   readonly worktreePath: string;
   readonly commonDir: string;

@@ -37,7 +37,7 @@ const Setting = z
 
 const SnapshotSchema = z
   .object({
-    version: z.literal(1),
+    version: z.literal(2),
     takenAtMs: z.number().int().min(0),
     worktreePath: str(4096),
     commonDir: str(4096),

@@ -23,6 +23,6 @@ export function computeDigest(
       const y = JSON.stringify(b);
       return x < y ? -1 : x > y ? 1 : 0;
     });
-  const body = JSON.stringify(["git-snapshot-v1", rows, link.declared, link.mismatch, gaps]);
+  const body = JSON.stringify(["git-snapshot-v2", rows, link.declared, link.mismatch, gaps]);
   return createHash("sha256").update(body).digest("hex");
 }

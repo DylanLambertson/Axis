@@ -75,6 +75,8 @@ export function secretNamed(name: string): boolean {
 }
 
 // Anything between `scheme://` and the `@` is userinfo, however short: `https://token@host` is a credential too.
+// The scp form `user:password@host:path` has no scheme, but the password is as much a secret.
+const SCP_PASSWORD = /(?<![A-Za-z0-9._@-])[A-Za-z0-9._-]+:[^\s@/:]+@(?=[A-Za-z0-9.-]+:)/g;
 const USERINFO = /([A-Za-z][A-Za-z0-9+.-]*:\/\/)[^/\s@]*@/g;
 // `name = value` or `name: value` where the name ends like a secret's (extraheader, token, password ...).
 const SECRET_LINE = /^(\s*[A-Za-z0-9_.-]{1,64}\s*[=:]\s*)(.*)$/;
@@ -90,7 +92,7 @@ export function redactText(s: string): string {
       return secretNamed(name.slice(name.lastIndexOf(".") + 1)) && (m[2] as string).length > 0 ? `${m[1]}[REDACTED]` : line;
     })
     .join("\n");
-  return redactor.redactString(named.replace(USERINFO, "$1[REDACTED]@"));
+  return redactor.redactString(named.replace(USERINFO, "$1[REDACTED]@").replace(SCP_PASSWORD, "[REDACTED]@"));
 }
 
 /** A value shown on a single line: redacted, then escaped. */

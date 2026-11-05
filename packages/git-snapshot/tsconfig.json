@@ -16,7 +16,7 @@
       "path": "../audit"
     },
     {
-      "path": "../git-ops"
+      "path": "../pty-policy"
     }
   ]
 }
