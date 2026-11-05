@@ -41,6 +41,12 @@ export interface TestSupervisorOptions {
   readonly anchor?: ChainHead;
   /** Do not ack `anchor.put`. */
   readonly holdAcks?: boolean;
+  /** Environment of the host child process (a process host only; replaces the test's own). Default: the test's own. */
+  readonly env?: Readonly<Record<string, string | undefined>>;
+  /** Reuse this directory (a second host on the same data, the way a restart does). It is not removed by `dispose()`. */
+  readonly root?: string;
+  /** The attestation key of an earlier host on the same data (default: a fresh one). */
+  readonly key?: Buffer;
 }
 
 export interface ExitInfo {
@@ -49,10 +55,12 @@ export interface ExitInfo {
 }
 
 const MAX_STDERR_CHARS = 65_536;
+/** A generous bound (not an assertion about speed): a host that has not answered by now is stuck. */
+const WAIT_BOUND_MS = 30_000;
 const nextCid = ((n = 0) => () => `tc${String(++n).padStart(8, "0")}`)();
 
 export class TestSupervisor {
-  readonly key = randomBytes(32);
+  readonly key: Buffer;
   readonly dataDir: string;
   readonly mux: ChannelMux;
   /** Everything the host sent on the control plane, parsed (an invalid one is kept raw under `invalid`). */
@@ -70,8 +78,9 @@ export class TestSupervisor {
 
   readonly #channel: DisposableChannel;
   readonly #root: string;
+  readonly #ownsRoot: boolean;
   readonly #kill: (signal?: NodeJS.Signals) => void;
-  readonly #waiters = new Set<{ type: string; resolve: (m: OutboundMessage) => void }>();
+  readonly #waiters = new Set<{ type: string; resolve: (m: OutboundMessage) => void; reject: (e: Error) => void }>();
   readonly #connections = new Set<Connection>();
   #disposed = false;
 
@@ -84,6 +93,8 @@ export class TestSupervisor {
     appendStderr: (hook: (text: string) => void) => void,
   ) {
     this.#root = root;
+    this.#ownsRoot = options.root === undefined;
+    this.key = options.key ?? randomBytes(32);
     this.dataDir = join(root, "data");
     this.#channel = channel;
     this.#kill = kill;
@@ -96,7 +107,7 @@ export class TestSupervisor {
   }
 
   static async start(options: TestSupervisorOptions = {}): Promise<TestSupervisor> {
-    const root = await mkdtemp(join(tmpdir(), "axis-supervisor-"));
+    const root = options.root ?? (await mkdtemp(join(tmpdir(), "axis-supervisor-")));
     const entry = options.entry ?? ECHO_HOST_ENTRY;
     let sup: TestSupervisor;
     // Whatever was started is killed again if anything below throws, so a failed start leaves no child behind.
@@ -112,7 +123,7 @@ export class TestSupervisor {
         const channel = adaptNodePort(worker, "exit");
         sup = new TestSupervisor(root, channel, () => void worker.terminate(), exited, options, (hook) => worker.stderr.on("data", (d: Buffer) => hook(d.toString("utf8"))));
       } else {
-        const child: ChildProcess = fork(entry, [], { stdio: ["ignore", "ignore", "pipe", "ipc"], serialization: "json" });
+        const child: ChildProcess = fork(entry, [], { stdio: ["ignore", "ignore", "pipe", "ipc"], serialization: "json", ...(options.env === undefined ? {} : { env: options.env as NodeJS.ProcessEnv }) });
         killStarted = () => void child.kill("SIGKILL");
         // `error` (spawn failure, failed kill) may arrive without `exit`: `dispose()` must not wait for one forever.
         const exited = new Promise<ExitInfo>((resolve) => {
@@ -125,7 +136,7 @@ export class TestSupervisor {
       if (options.skipInit !== true) sup.sendInit(options.config);
     } catch (e) {
       killStarted();
-      await rm(root, { recursive: true, force: true });
+      if (options.root === undefined) await rm(root, { recursive: true, force: true });
       throw e;
     }
     return sup;
@@ -179,7 +190,20 @@ export class TestSupervisor {
   waitFor<T extends OutboundMessage["type"]>(type: T, from = 0): Promise<Extract<OutboundMessage, { type: T }>> {
     const have = this.received.slice(from).find((m) => m.type === type);
     if (have !== undefined) return Promise.resolve(have as Extract<OutboundMessage, { type: T }>);
-    return new Promise((resolve) => this.#waiters.add({ type, resolve: resolve as (m: OutboundMessage) => void }));
+    // A host that exits, or says nothing within the bound, rejects the wait: a failing step reports instead of hanging.
+    return new Promise((resolve, reject) => {
+      const waiter = {
+        type,
+        resolve: (m: OutboundMessage) => (clearTimeout(timer), resolve(m as Extract<OutboundMessage, { type: T }>)),
+        reject: (e: Error) => (clearTimeout(timer), reject(e)),
+      };
+      const timer = setTimeout(() => (this.#waiters.delete(waiter), reject(new Error(`no ${type} message from the host within ${WAIT_BOUND_MS} ms`))), WAIT_BOUND_MS);
+      timer.unref();
+      this.#waiters.add(waiter);
+      void this.exited.then(() => {
+        if (this.#waiters.delete(waiter)) waiter.reject(new Error(`the host exited before sending ${type}`));
+      });
+    });
   }
 
   /** Answer a recorded `native.confirm` (the host then calls `confirmNative`). */
@@ -207,8 +231,10 @@ export class TestSupervisor {
     for (const c of [...this.#connections]) c.close();
     this.mux.dispose();
     this.#channel.dispose();
+    for (const w of [...this.#waiters]) w.reject(new Error("the supervisor was disposed"));
     this.#waiters.clear();
-    await rm(this.#root, { recursive: true, force: true });
+    // A CLI the killed host left behind may still be writing for a moment: retry the removal.
+    if (this.#ownsRoot) await rm(this.#root, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
     return info;
   }
 

@@ -74,3 +74,7 @@ export * from "./handlers/git.js";
 export * from "./handlers/git-errors.js";
 export * from "./handlers/git-wire.js";
 export { PushedBases } from "./handlers/git-common.js";
+// The composition root and its parts (ticket H12).
+export { composeDaemonHost, type ComposeOptions, type ComposedHost } from "./compose.js";
+export * from "./compose-parts.js";
+export * from "./handlers/projects.js";

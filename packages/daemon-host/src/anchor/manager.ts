@@ -87,6 +87,7 @@ export class AnchorManager implements AnchorGuard {
   #broken = false;
   #stalled = false;
   #stopped = false;
+  #halted = false;
 
   constructor(options: AnchorManagerOptions) {
     this.#o = options;
@@ -112,9 +113,17 @@ export class AnchorManager implements AnchorGuard {
     return this.#ackedHead?.seq ?? 0;
   }
 
+  /**
+   * Shutdown step 3 (design section 8): from now on nothing is put by itself (no tick, no write notification). Only an explicit
+   * `flush()` still sends, so the final anchor is the last one. Irreversible.
+   */
+  halt(): void {
+    this.#halted = true;
+  }
+
   /** An audited write happened: send a checkpoint now, or leave it to the next tick when one went out recently. */
   noteWrite(): void {
-    if (!this.#o.writable || this.#stopped) return;
+    if (!this.#o.writable || this.#stopped || this.#halted) return;
     const now = this.#o.clock.monotonic();
     this.#dirtySince ??= now;
     if (now - this.#lastPutAt >= this.#coalesce) this.flush();
@@ -221,7 +230,7 @@ export class AnchorManager implements AnchorGuard {
 
   /** Flush what is unsent and re-evaluate. The interval calls it; tests call it directly. */
   tick(): void {
-    if (!this.#o.writable || this.#stopped) return;
+    if (!this.#o.writable || this.#stopped || this.#halted) return;
     const head = this.#safeHead();
     const sent = Math.max(this.#lastPut?.seq ?? 0, this.#o.baseline?.seq ?? 0);
     // Writes by other writers (the journal, the challenge sink) are noticed here, not only those that call noteWrite.
@@ -252,6 +261,7 @@ export class AnchorManager implements AnchorGuard {
 
   /** One audit row per transition, written best effort: a failing append must not change the decision. */
   #audit(stalled: boolean): void {
+    if (this.#halted) return; // after the final checkpoint nothing may be appended: the final anchor must cover the last row
     if (this.#broken || this.#o.audit.append === undefined) return;
     try {
       this.#o.audit.append({
