@@ -41,9 +41,9 @@ const shapes: Record<string, string> = {
   "connection string": repeat("Server=a;"),
   "connection string x": "Server=a;" + repeat("x;"),
   "assignment values": repeat("key=" + "a".repeat(300) + " "),
-  "zero width": repeat("a​"),
-  "non ascii": repeat("éあ"),
-  "nfkc expansion": repeat("ﷺ"),
+  "zero width": repeat("a\u200b"),
+  "non ascii": repeat("\u00e9\u3042"),
+  "nfkc expansion": repeat("\ufdfa"),
   "cr only": repeat("a\rb"),
 };
 

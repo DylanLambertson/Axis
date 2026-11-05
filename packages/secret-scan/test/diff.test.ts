@@ -33,7 +33,7 @@ test("paths: spaces, quoted non-ASCII, renames off, tab suffix and a path under 
   const k = canary.aws(6);
   assert.deepEqual(scan(patch("my dir/a b.txt", [k])), [{ rule: "aws-access-key-id", path: "my dir/a b.txt", line: 1 }]);
   const quoted = `diff --git "a/caf\\303\\251.txt" "b/caf\\303\\251.txt"\nnew file mode 100644\n--- /dev/null\n+++ "b/caf\\303\\251.txt"\n@@ -0,0 +1 @@\n+${k}\n`;
-  assert.deepEqual(scan(quoted), [{ rule: "aws-access-key-id", path: "café.txt", line: 1 }]);
+  assert.deepEqual(scan(quoted), [{ rule: "aws-access-key-id", path: "caf\u00e9.txt", line: 1 }]);
   assert.equal(unquotePath('"a\\tb\\"c\\\\d"'), 'a\tb"c\\d');
   assert.equal(unquotePath("plain"), "plain");
   const tab = `diff --git a/x y b/x y\n--- a/x y\t\n+++ b/x y\t\n@@ -0,0 +1 @@\n+${k}\n`;

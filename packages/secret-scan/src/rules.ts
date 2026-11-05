@@ -1,7 +1,9 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
-// The content rules. Every pattern is built from literals, character classes with a bound on their repetition, and
-// no group that is repeated and itself holds a repetition, so matching is linear in the text for a fixed pattern
-// (each start position costs at most a few hundred steps). No rule reads more than a bounded stretch past its start.
+// The content rules. Every pattern is built from literals and character classes with a bound on every repetition
+// (whitespace included, at most 64), and no group that is repeated holds a repetition, so matching is linear in the text for
+// a fixed pattern (each start position costs at most a few hundred steps) and no match is longer than the window overlap.
+// A match that a rule rejects (a decoy) is skipped one character on, never past the whole value, so a secret embedded in or
+// after a decoy is still seen; the work spent on decoys is bounded by `Budget`, and running out of it makes the scan incomplete.
 import { shannonEntropy } from "./entropy.js";
 
 export interface ContentRule {
@@ -17,10 +19,18 @@ export interface ContentRule {
   readonly skipInLockFiles?: boolean;
 }
 
-export const MAX_ATTEMPTS = 32;
+/** Rejected matches left in this scan. Shared by every rule and window; `exhausted` makes the scan incomplete. */
+export interface Budget {
+  left: number;
+  exhausted: boolean;
+}
 
 const DB_SCHEMES = /^(?:postgres(?:ql)?|mysql|mariadb|mongodb(?:\+srv)?|redis|rediss|amqps?|mssql|sqlserver|cockroachdb|clickhouse|jdbc:[a-z0-9]+|ldaps?|smtps?)$/i;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+// A path: a root, `./`, `../` or `~/`, then segments, at least one of which is a lower-case word (see `isPathLike`).
+const PATHLIKE = /^(?:\/|\.{1,2}\/|~\/)[\w.@+=-]*(?:\/[\w.@+=-]*)+$/;
+const FLAG = /^--[a-z][a-z0-9-]*(?:=|$)/;
+const DIGEST_NAME = /sha|hash|digest|commit|checksum|integrity|etag|fingerprint|thumbprint|(?:^|[^a-z])(?:rev|oid|md5)(?:[^a-z]|$)/i;
 const HEX = /^[0-9a-fA-F]+$/;
 const SCREAMING = /^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$/;
 const DOTTED = /^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+$/;
@@ -28,16 +38,21 @@ const SEGMENTED = /^[a-z][a-z0-9]*(?:[_.-][a-z0-9]+)+$/;
 const PLACEHOLDER = /example|changeme|change-me|placeholder|your[-_ ]|<|>|xxxx|\*\*\*|dummy|sample|redacted|notasecret|insert|fixme|todo|\$\{|\{\{|%s|%\(/i;
 const WEAK_PASSWORDS = new Set(["password", "passwd", "pass", "secret", "postgres", "mysql", "root", "admin", "test", "changeme", "example", "guest", "user", "username", "redis", "mongo"]);
 
+function isPathLike(v: string): boolean {
+  return PATHLIKE.test(v) && v.split("/").some((s) => /^[a-z][a-z._-]{2,}$/.test(s));
+}
+
 /** Does `v` look like generated key material rather than a word, a name, an id or a placeholder? */
-export function looksRandom(v: string, keyword = "secret"): boolean {
+export function looksRandom(v: string, name = ""): boolean {
   if (v.length < 16 || v.length > 512) return false;
   if (UUID.test(v) || PLACEHOLDER.test(v)) return false;
-  if (/^(?:https?:|file:|[./~*-])/i.test(v) || v.includes("://") || v.includes("...")) return false;
+  if (/^(?:https?:|file:)/i.test(v) || v.includes("://") || v.includes("...") || isPathLike(v) || FLAG.test(v)) return false;
   if (SCREAMING.test(v) || SEGMENTED.test(v) || DOTTED.test(v)) return false;
   if (!/[0-9]/.test(v) || !/[A-Za-z]/.test(v)) return false;
   const hex = HEX.test(v);
-  // A 40 or 64 digit hex value is a git object id or a SHA-256 unless the name says it is a secret.
-  if (hex && (v.length === 40 || v.length === 64) && !/secret|passw|pwd/i.test(keyword)) return false;
+  // A 40 or 64 digit hex value is a git object id or a digest only under a name that says so. Under key, secret, token or
+  // password names (private keys, AES keys, classic GitHub tokens) it is key material.
+  if (hex && (v.length === 40 || v.length === 64) && DIGEST_NAME.test(name)) return false;
   return shannonEntropy(v) >= (hex ? 3.0 : 3.5);
 }
 
@@ -98,14 +113,14 @@ export const CONTENT_RULES: readonly ContentRule[] = Object.freeze([
     rule: "bearer-token",
     specific: false,
     skipInLockFiles: true,
-    re: /(?<![A-Za-z0-9])bearer[ \t]+([A-Za-z0-9._~+/-]{20,512})={0,2}/gi,
+    re: /(?<![A-Za-z0-9])bearer[ \t]{1,64}([A-Za-z0-9._~+/-]{20,512})={0,2}/gi,
     accept: (m) => looksRandom(m[1] ?? ""),
   },
   {
     rule: "basic-auth-header",
     specific: false,
     skipInLockFiles: true,
-    re: /(?<![A-Za-z0-9])basic[ \t]+([A-Za-z0-9+/]{12,512}={0,2})/gi,
+    re: /(?<![A-Za-z0-9])basic[ \t]{1,64}([A-Za-z0-9+/]{12,512}={0,2})/gi,
     accept: (m) => decodesToBasicCredentials(m[1] ?? ""),
   },
   {
@@ -113,10 +128,17 @@ export const CONTENT_RULES: readonly ContentRule[] = Object.freeze([
     specific: false,
     skipInLockFiles: true,
     // Keyword, a bounded name tail, an optional closing quote, the separator, an optional opening quote, then the value.
-    re: new RegExp(`${KEYWORD}[A-Za-z0-9_.-]{0,40}["']?\\]?[ \\t]*(?::=|=>|[:=])(?![=>])[ \\t]*["'\`]?([^\\s"'\`,;]{16,256})`, "gi"),
-    accept: (m) => looksRandom(m[2] ?? "", m[1] ?? ""),
+    re: new RegExp(`${KEYWORD}[A-Za-z0-9_.-]{0,40}["']?\\]?[ \\t]{0,64}(?::=|=>|[:=])(?![=>])[ \\t]{0,64}["'\`]?([^\\s"'\`,;]{16,256})`, "gi"),
+    accept: (m) => looksRandom(m[2] ?? "", assignmentName(m)),
   },
 ]);
+
+/** The identifier an assignment match hangs on: up to 40 name characters before the keyword, then the keyword and its tail. */
+function assignmentName(m: RegExpExecArray): string {
+  const value = m[2] ?? "";
+  const before = /[A-Za-z0-9_.-]{0,40}$/.exec(m.input.slice(Math.max(0, m.index - 40), m.index))?.[0] ?? "";
+  return before + m[0].slice(0, Math.max(0, m[0].length - value.length));
+}
 
 /** Lock files and checksum lists: digests and ids by design. The generic rules skip them; the fixed formats do not. */
 export function isLockFile(path: string | undefined): boolean {
@@ -137,19 +159,26 @@ export function isSensitiveFilename(path: string): boolean {
   return base === ".netrc" || base === "_netrc" || base === ".pgpass" || base === ".htpasswd" || base === ".git-credentials";
 }
 
-/** First match of `rule` in `text` that passes its own check, or undefined. At most MAX_ATTEMPTS matches are looked at. */
-export function firstMatch(rule: ContentRule, text: string): string | undefined {
+/**
+ * First match of `rule` in `text` that passes its own check, or undefined. A rejected match costs one unit of `budget`
+ * and the search resumes one character after its start, so what is embedded in the rejected value is still looked at.
+ * Without budget the result is "no match" and `budget.exhausted` is set: the caller must treat the scan as incomplete.
+ */
+export function firstMatch(rule: ContentRule, text: string, budget: Budget): string | undefined {
   const re = rule.re;
   re.lastIndex = 0;
-  for (let i = 0; i < MAX_ATTEMPTS; i++) {
+  for (;;) {
     const m = re.exec(text);
     if (m === null) return undefined;
-    if (m[0].length === 0) re.lastIndex++;
     if (rule.accept === undefined || rule.accept(m)) {
       re.lastIndex = 0;
       return rule.nameOf === undefined ? rule.rule : rule.nameOf(m);
     }
+    if (--budget.left < 0) {
+      budget.exhausted = true;
+      re.lastIndex = 0;
+      return undefined;
+    }
+    re.lastIndex = m.index + 1;
   }
-  re.lastIndex = 0;
-  return undefined;
 }

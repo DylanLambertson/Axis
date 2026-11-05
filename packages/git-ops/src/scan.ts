@@ -41,7 +41,7 @@ function unavailable(what: string): GitOpsError {
  * so a secret that exists only in a merge resolution is seen. Attributes, textconv, external diff, submodule
  * recursion and rename detection are all off; the content scanned is the content pushed.
  */
-export async function scanOutgoing(deps: GitOpsDeps, git: DaemonGit, worktree: WorktreeRef, base: string, tip: string): Promise<OutgoingScan> {
+export async function scanOutgoing(deps: GitOpsDeps, git: DaemonGit, worktree: WorktreeRef, base: string, tip: string, allowedBinaryPaths: readonly string[] = []): Promise<OutgoingScan> {
   const scanner = deps.scanner;
   if (!scanner) return { findings: [], truncated: false, binaryPaths: [], undecodable: [] };
   const list = await git(["rev-list", "--reverse", "--end-of-options", tip, `^${base}`]);
@@ -76,7 +76,7 @@ export async function scanOutgoing(deps: GitOpsDeps, git: DaemonGit, worktree: W
     const cut = d.stdout.length > MAX_DIFF || d.truncated === true;
     total += d.stdout.length;
     if (cut || stat.truncated === true) truncated = true;
-    for (const f of await scanner(cut ? d.stdout.slice(0, MAX_DIFF) : d.stdout, { worktree, truncated: cut, commit, binaryPaths, part: "patch" })) findings.push({ ...f, commit });
+    for (const f of await scanner(cut ? d.stdout.slice(0, MAX_DIFF) : d.stdout, { worktree, truncated: cut, commit, binaryPaths, allowedBinaryPaths, part: "patch" })) findings.push({ ...f, commit });
 
     // The commit object, headers and message, is pushed too, and a message is as good a place for a secret as a file.
     const raw = await git(["cat-file", "commit", commit], undefined, { raw: true });
@@ -89,7 +89,7 @@ export async function scanOutgoing(deps: GitOpsDeps, git: DaemonGit, worktree: W
       const { views, undecodable: bad } = messageViews(text);
       if (bad) undecodable.push(commit);
       for (const view of views) {
-        for (const f of await scanner(view, { worktree, truncated: cutMessage, commit, binaryPaths: [], part: "message" })) findings.push({ ...f, commit });
+        for (const f of await scanner(view, { worktree, truncated: cutMessage, commit, binaryPaths: [], allowedBinaryPaths: [], part: "message" })) findings.push({ ...f, commit });
       }
     }
   }

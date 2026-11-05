@@ -26,6 +26,8 @@ export interface ScanContext {
   readonly commit?: string;
   /** Paths git treats as binary. Their content is scanned only below `maxBinaryBytes`. */
   readonly binaryPaths?: readonly string[];
+  /** Binary paths the user allowed for this push (exact match; the first 50 are used). Not scanned beyond the budget and not reported as `binary-unscanned`. */
+  readonly allowedBinaryPaths?: readonly string[];
   /** The caller cut the text at its own limit. Not an error here: the caller fails closed on it. */
   readonly truncated?: boolean;
 }
@@ -41,6 +43,8 @@ export interface ScanLimits {
   readonly maxBinaryBytes: number;
   /** Wall time of one scan in milliseconds, checked between lines. Default 5000. */
   readonly deadlineMs: number;
+  /** Matches a rule looked at and rejected (a decoy), summed over the scan. At the limit the scan is incomplete. Default 2,000,000. */
+  readonly maxRejectedMatches: number;
 }
 
 export interface ScannerOptions extends Partial<ScanLimits> {
@@ -56,10 +60,11 @@ export const DEFAULT_LIMITS: ScanLimits = Object.freeze({
   maxFindings: 100_000,
   maxBinaryBytes: 256 * 1024,
   deadlineMs: 5000,
+  maxRejectedMatches: 2_000_000,
 });
 
 /** Why a scan did not look at everything. The text never appears in the reason. */
-export type IncompleteReason = "too_large" | "deadline" | "findings_capped";
+export type IncompleteReason = "too_large" | "deadline" | "budget" | "findings_capped";
 
 export interface ScanOutcome {
   readonly findings: readonly Finding[];
@@ -68,14 +73,16 @@ export interface ScanOutcome {
 
 /** Fixed messages only: an error from the scanner never carries, wraps or points at the text it was reading. */
 export class SecretScanError extends Error {
-  readonly code: "too_large" | "deadline" | "internal";
-  constructor(code: "too_large" | "deadline" | "internal") {
+  readonly code: "too_large" | "deadline" | "budget" | "internal";
+  constructor(code: "too_large" | "deadline" | "budget" | "internal") {
     super(
       code === "too_large"
         ? "the secret scan could not cover all of the text"
         : code === "deadline"
           ? "the secret scan ran out of time"
-          : "the secret scan failed",
+          : code === "budget"
+            ? "the secret scan ran out of work"
+            : "the secret scan failed",
     );
     this.name = "SecretScanError";
     this.code = code;

@@ -18,7 +18,7 @@ export function parseScanMode(value: unknown): ScanMode {
   return typeof value === "string" && (SCAN_MODES as readonly string[]).includes(value) ? (value as ScanMode) : DEFAULT_SCAN_MODE;
 }
 
-const UPPER: ScanLimits = { maxBytes: 128 * 1024 * 1024, maxLineLength: 1024 * 1024, maxFindings: 1_000_000, maxBinaryBytes: 128 * 1024 * 1024, deadlineMs: 10 * 60 * 1000 };
+const UPPER: ScanLimits = { maxBytes: 128 * 1024 * 1024, maxLineLength: 1024 * 1024, maxFindings: 1_000_000, maxBinaryBytes: 128 * 1024 * 1024, deadlineMs: 10 * 60 * 1000, maxRejectedMatches: 100_000_000 };
 
 function resolveLimits(o: ScannerOptions): ScanLimits {
   const out = { ...DEFAULT_LIMITS };
@@ -49,9 +49,11 @@ export function createSecretScanner(options: ScannerOptions = {}): SecretScanner
       return [{ rule: "scanner-error", ...(typeof meta?.commit === "string" ? { commit: meta.commit } : {}) }];
     }
     const findings: Finding[] = [...outcome.findings];
-    const gap = outcome.incomplete.find((r) => r === "deadline") ?? outcome.incomplete.find((r) => r === "too_large");
-    if (gap !== undefined) {
-      if (mode === "refuse") throw new SecretScanError(gap);
+    const gap = outcome.incomplete.find((r) => r === "deadline") ?? outcome.incomplete.find((r) => r === "budget") ?? outcome.incomplete.find((r) => r === "too_large");
+    // A cap on findings means findings exist, which already refuses; in warn mode it is still said, so the list is not taken for the whole.
+    const capped = mode === "warn" && outcome.incomplete.includes("findings_capped");
+    if (gap !== undefined || capped) {
+      if (mode === "refuse" && gap !== undefined) throw new SecretScanError(gap);
       findings.push({ rule: "scan-incomplete", ...(meta?.commit !== undefined ? { commit: meta.commit } : {}) });
     }
     return findings;
