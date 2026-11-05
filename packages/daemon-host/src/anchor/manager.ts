@@ -19,6 +19,9 @@ import type { Clock } from "../ports/clock.js";
  *    supervisor cannot lift a stall it did not earn.
  *  - Nothing is dropped or reordered: every head goes out in order. The list of waiting puts is bounded by merging
  *    the middle entries (an ack is cumulative, so only the oldest and the newest matter).
+ *  - A burst of more than `maxLagEvents` audited events between two ack round trips stalls tier 3 and above for as
+ *    long as the acks take; that is deliberate (fail closed) and self-healing.
+ *  - A broken chain stalls for good but is not audited: the log is the thing that failed.
  *  - One interval timer (registered with the lifecycle registry, `unref`ed) retries a failed send and flushes the
  *    writes that were coalesced within `coalesceMs`.
  */
@@ -135,21 +138,33 @@ export class AnchorManager implements AnchorGuard {
       return;
     }
     const now = this.#o.clock.monotonic();
-    try {
-      this.#o.put(head);
-    } catch {
-      return; // not sent: stays dirty, retried by the tick, and the age keeps growing
-    }
-    if (this.#waiting.length >= MAX_WAITING_PUTS) this.#waiting.splice(1, 1);
+    // Record the put BEFORE sending: a supervisor on a synchronous link may acknowledge from inside `put`, and that
+    // ack must find the put. A send that throws is rolled back, so nothing unsent is ever waited on.
+    const previous = { last: this.#lastPut, at: this.#lastPutAt, dirty: this.#dirtySince };
     this.#waiting.push({ head, at: now });
     this.#lastPut = head;
     this.#lastPutAt = now;
     this.#dirtySince = undefined;
+    try {
+      this.#o.put(head);
+    } catch {
+      // Not sent: undo (unless an ack already consumed the entry), stay dirty, retry on the next tick.
+      const i = this.#waiting.findIndex((w) => w.head === head);
+      if (i >= 0) this.#waiting.splice(i, 1);
+      if (this.#lastPut === head) {
+        this.#lastPut = previous.last;
+        this.#lastPutAt = previous.at;
+      }
+      this.#dirtySince = previous.dirty ?? now;
+      return;
+    }
+    // Merge the middle once the list is full: an ack is cumulative, so the oldest and the newest are what matter.
+    if (this.#waiting.length > MAX_WAITING_PUTS) this.#waiting.splice(1, 1);
   }
 
   /** `anchor.ack`. Returns whether it moved the acknowledged position. */
   ack(seq: number): boolean {
-    if (this.#stopped || !Number.isSafeInteger(seq) || seq < 1 || seq <= this.ackedSeq) return false;
+    if (this.#stopped || !Number.isSafeInteger(seq) || seq <= this.ackedSeq) return false;
     // Nothing above the newest head this process sent can be durable: such an ack is ignored, never believed.
     if (this.#lastPut === null || seq > this.#lastPut.seq) return false;
     let covered: ChainHead | undefined;
@@ -189,6 +204,8 @@ export class AnchorManager implements AnchorGuard {
     if (!this.#o.writable) return false;
     const head = this.#safeHead();
     const age = this.#age();
+    // A log that ends before a position the supervisor acknowledged was cut: never anchor it, refuse tier 3 and above.
+    if (head !== undefined && (head?.seq ?? 0) < this.ackedSeq) this.#broken = true;
     const stalled = this.#broken || head === undefined || this.#lag(head) > this.#maxLag || (age !== null && age > this.#maxAge);
     if (stalled !== this.#stalled) {
       this.#stalled = stalled;

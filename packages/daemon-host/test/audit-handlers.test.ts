@@ -6,7 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { Daemon, memoryPair, type ApprovalGate, type Handler, type Identity } from "@axis/daemon";
 import { auditListResponseSchema, auditStatusResponseSchema, auditVerifyResponseSchema } from "@axis/protocol";
-import { createDaemonHost, guardHandlers, registerAuditHandlers, type HostServices } from "../src/index.js";
+import { createDaemonHost, createHandlerRegistrar, guardHandlers, registerAuditHandlers, type HostServices } from "../src/index.js";
 import { hostFixture, type HostFixture } from "../testing/host-fixture.js";
 import { must, wait } from "./helpers.js";
 
@@ -20,7 +20,7 @@ interface Reply {
 }
 
 /** A real Daemon over `memoryPair`, with the host's own policy, so what the test sees is what a window sees. */
-async function serve(services: HostServices, extra?: (d: Daemon) => void, approvals?: ApprovalGate) {
+async function serve(services: HostServices, extra?: (d: Daemon, r: ReturnType<typeof createHandlerRegistrar>) => void, approvals?: ApprovalGate) {
   const internal: unknown[] = [];
   const daemon = new Daemon({
     identity: { verify: () => user },
@@ -30,8 +30,9 @@ async function serve(services: HostServices, extra?: (d: Daemon) => void, approv
     ...(approvals === undefined ? {} : { approvals }),
     onInternalError: (_id, e) => void internal.push(e),
   });
-  registerAuditHandlers(daemon, { audit: services.auditRead, anchors: services.anchors, degraded: () => services.degraded });
-  extra?.(daemon);
+  const registrar = createHandlerRegistrar(daemon, services.anchors);
+  registerAuditHandlers(registrar, { audit: services.auditRead, anchors: services.anchors, degraded: () => services.degraded, clock: { monotonic: () => performance.now() } });
+  extra?.(daemon, registrar);
   const { client, server } = memoryPair();
   const replies: Array<Record<string, unknown>> = [];
   client.on("message", (m) => void replies.push(m as Record<string, unknown>));
@@ -204,13 +205,23 @@ test("stalled: status says so, list and verify (tier 1) are still served, a tier
   withHost(
     async (fix, s) => {
       fix.supervisor.ackPuts = false;
+      // A gate that implements the requirement (design 5.4): the stall check comes before issue and before execute.
+      let gateCalls = 0;
       const gate: ApprovalGate = {
-        issue: () => assert.fail("a refused request must not issue a challenge"),
-        execute: (_i, _a, _c, action) => action({} as never),
+        issue: (input) => {
+          s.anchors.check(input.tier);
+          gateCalls++;
+          return assert.fail("not reached while stalled");
+        },
+        execute: (input, _a, _c, action) => {
+          s.anchors.check(input.tier);
+          gateCalls++;
+          return action({} as never);
+        },
       };
       let ran = 0;
       const reached: Handler = () => void ran++;
-      const w = await serve(s, (d) => d.register("axis.worktrees", 1, guardHandlers("axis.worktrees", 1, { remove: reached }, s.anchors)), gate);
+      const w = await serve(s, (_d, r) => r.register("axis.worktrees", 1, { remove: reached }), gate);
       try {
         append(s, 4);
         s.anchors.noteWrite();
@@ -221,12 +232,16 @@ test("stalled: status says so, list and verify (tier 1) are still served, a tier
         assert.ok(status.lag > 2);
         assert.equal((await w.call("list", {})).ok, true);
         assert.equal((await w.call("verify", {})).ok, true);
+        const noApproval = await w.callOn("axis.worktrees", "remove", { id: "ws1" });
+        assert.equal(noApproval.error?.code, "E_UNAVAILABLE", JSON.stringify(noApproval));
+        assert.deepEqual(noApproval.error?.details, { reason: "anchor_stalled" });
         const refused = await w.callOn("axis.worktrees", "remove", { id: "ws1", approval: { challengeId: "A".repeat(43) } });
         assert.equal(refused.ok, false);
         assert.equal(refused.error?.code, "E_UNAVAILABLE", JSON.stringify(refused));
         assert.equal(refused.error?.message, "The audit anchor is not being acknowledged.");
         assert.deepEqual(refused.error?.details, { reason: "anchor_stalled" });
         assert.equal(ran, 0, "the tier 4 handler never ran");
+        assert.equal(gateCalls, 0, "neither issue nor execute was reached");
         // Acks return: the supervisor acknowledges what it was sent (the head before the stall row), and the request is served.
         fix.peer.send({ type: "anchor.ack", seq: fix.supervisor.puts.at(-1)?.seq });
         await wait(20);
@@ -292,7 +307,7 @@ test("a cancelled request is E_CANCELLED before anything is read", async () => {
   const { createAuditHandlers } = await import("../src/index.js");
   let reads = 0;
   const audit = { list: () => (reads++, []), verify: () => (reads++, { ok: true as const, count: 0, head: null }), head: () => (reads++, null) };
-  const h = createAuditHandlers({ audit, anchors: { status: () => (reads++, { head: null, anchor: null, lag: 0, oldestUnackedAgeMs: null, stalled: false }) }, degraded: () => undefined });
+  const h = createAuditHandlers({ audit, anchors: { status: () => (reads++, { head: null, anchor: null, lag: 0, oldestUnackedAgeMs: null, stalled: false }) }, degraded: () => undefined, clock: { monotonic: () => 0 } });
   const ac = new AbortController();
   ac.abort();
   for (const m of [h.status, h.list, h.verify]) {

@@ -206,6 +206,7 @@ test("a checkpoint that fails verification stalls tier 3 and above for good and 
   assert.equal(refusal(() => r.manager.check(2)), undefined);
   r.manager.ack(1);
   assert.equal(r.manager.status().stalled, true, "an ack does not clear a broken chain");
+  assert.deepEqual(r.appended, [], "a broken chain is not audited: the log is what failed");
 });
 
 test("an audit log that cannot be read stalls (fail closed)", () => {
@@ -256,12 +257,16 @@ test("the timer is unref'd, registered with the lifecycle registry and gone afte
   assert.equal(handles.length, 1);
   assert.equal(handles[0]?.hasRef(), false, "an unref'd timer cannot keep the process alive");
   assert.equal(r.disposables.size, 2);
+  r.write(1);
+  assert.equal(r.puts.length, 1);
   await r.disposables.dispose();
   assert.equal(r.disposables.size, 0);
+  r.advance(600);
   r.write(1);
   r.manager.tick();
-  assert.equal(r.puts.length, 0, "a stopped manager sends nothing");
-  assert.equal(r.manager.ack(1), false);
+  assert.equal(r.puts.length, 1, "a stopped manager sends nothing");
+  assert.equal(r.manager.ack(1), false, "and a late ack changes nothing");
+  assert.equal(r.manager.ackedSeq, 0);
 });
 
 test("degraded (not writable): no timer, no put, never stalled, status still reported", () => {
@@ -290,4 +295,49 @@ test("the age is a whole number of milliseconds even when the monotonic clock is
   const r = rig({ clock: { monotonic: () => 1000.75 } });
   r.write(1);
   assert.ok(Number.isInteger(r.manager.status().oldestUnackedAgeMs));
+});
+
+test("a supervisor that acknowledges from inside put (a synchronous link) is not ignored", () => {
+  let acked = false;
+  const sync = rig({
+    maxLagEvents: 1000,
+    put: (h) => {
+      acked = sync.manager.ack(h.seq);
+    },
+  });
+  sync.write(1);
+  assert.equal(acked, true, "the ack found the put");
+  assert.equal(sync.manager.ackedSeq, 1);
+  sync.advance(600_000);
+  assert.equal(sync.manager.status().stalled, false);
+  assert.equal(sync.manager.waiting, 0);
+});
+
+test("a put that throws leaves nothing waiting and the next flush sends it", () => {
+  const r = rig({ maxLagEvents: 1000 });
+  r.state.putThrows = true;
+  r.write(1);
+  assert.equal(r.manager.waiting, 0);
+  assert.equal(r.manager.put, null);
+  r.state.putThrows = false;
+  r.manager.tick();
+  assert.deepEqual(r.puts.map((p) => p.seq), [1]);
+  assert.equal(r.manager.waiting, 1);
+});
+
+test("a log cut below an acknowledged position is a broken chain: tier 3 and above are refused for good", () => {
+  const r = rig({ maxLagEvents: 1000 });
+  r.write(3);
+  r.manager.ack(3);
+  assert.equal(r.manager.status().stalled, false);
+  r.state.seq = 1; // the tail was deleted
+  assert.equal(refusal(() => r.manager.check(3))?.code, "E_UNAVAILABLE");
+  r.state.seq = 3;
+  assert.equal(refusal(() => r.manager.check(3))?.code, "E_UNAVAILABLE", "it does not heal when the rows come back");
+  assert.equal(refusal(() => r.manager.check(2)), undefined);
+  const empty = rig({ maxLagEvents: 1000 });
+  empty.write(2);
+  empty.manager.ack(2);
+  empty.state.seq = 0;
+  assert.equal(refusal(() => empty.manager.check(4))?.code, "E_UNAVAILABLE");
 });

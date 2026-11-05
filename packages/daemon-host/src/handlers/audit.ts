@@ -6,14 +6,21 @@ import {
   auditVerifyResponseSchema,
   inspectMessage,
   MAX_AUDIT_LIST,
+  type JsonValue,
 } from "@axis/protocol";
+import type { ChainHead } from "@axis/audit";
 import type { AnchorGuard } from "../anchor/manager.js";
 import type { AuditReader } from "../host.js";
+import type { Clock } from "../ports/clock.js";
 import type { DegradedReason } from "../storage/anchor-check.js";
 
 /**
  * `axis.audit/1` (design sections 4.2, 5.4 and 5.5): status, list and verify. All three are reads served in every
- * mode, degraded included, from the frozen read facade: no writer is reachable from here.
+ * mode, degraded included, from the frozen read facade: the handlers hold no writer.
+ *
+ * `status` evaluates the anchor state, which may append one `anchor.stalled` or `anchor.resumed` row (a transition,
+ * audited once); nothing else here writes. `verify` uses the head this process put whose sequence the supervisor
+ * acknowledged (the ack carries only a sequence), or else the anchor held at start.
  *
  * Like every handler it validates nothing the daemon already validated (strict request schemas, design section 4.3),
  * and it checks its own answer against the protocol schema, so a result that fails the contract is an internal
@@ -25,14 +32,26 @@ export interface AuditHandlerDeps {
   readonly anchors: Pick<AnchorGuard, "status">;
   /** The reason the host started degraded, or `undefined`. */
   readonly degraded: () => DegradedReason | undefined;
+  /** The monotonic clock: deadlines and the age of the verified-head cache. Never the wall clock. */
+  readonly clock: Pick<Clock, "monotonic">;
+  /** Events checked between two yields to the event loop (default 2000). */
+  readonly sliceEvents?: number;
+  /** A verification that runs longer than this ends with `E_TIMEOUT`, keeping its progress (default 25 s, under the 30 s contract timeout). */
+  readonly deadlineMs?: number;
+  /** A full re-scan from the first event happens at most this often; in between only new events are checked (default 10 min). */
+  readonly fullRescanMs?: number;
+  /** Largest `list` reply, in bytes of the bounded walk (default 900 000, under the 1 MiB message limit). */
+  readonly maxReplyBytes?: number;
+  /** Yields to the event loop between slices (default `setImmediate`). Tests replace it. */
+  readonly yieldNow?: () => Promise<void>;
 }
 
 /** Events returned when `limit` is absent. */
 export const DEFAULT_AUDIT_LIST = 100;
 const UNAVAILABLE = "The audit log is unavailable.";
 
-const fail = (code: "E_CANCELLED" | "E_INTERNAL", message: string): never => {
-  throw new DaemonError(code, message);
+const fail = (code: "E_CANCELLED" | "E_INTERNAL" | "E_BACKPRESSURE" | "E_TIMEOUT", message: string, details?: Record<string, JsonValue>): never => {
+  throw new DaemonError(code, message, details);
 };
 const live = (c: HandlerContext): void => {
   if (c.signal.aborted) fail("E_CANCELLED", "The request was cancelled.");
@@ -53,8 +72,8 @@ function checked<T>(parsed: { success: true; data: T } | { success: false }): T 
 }
 
 /** The most events that fit one message: the longest prefix the bounded walk accepts (monotone, so a binary search). */
-function fitPrefix<E>(events: readonly E[]): E[] {
-  const fits = (n: number): boolean => inspectMessage({ events: events.slice(0, n) }, { maxBytes: 900_000 }).ok;
+function fitPrefix<E>(events: readonly E[], maxBytes: number): E[] {
+  const fits = (n: number): boolean => inspectMessage({ events: events.slice(0, n) }, { maxBytes }).ok;
   let lo = 0;
   let hi = events.length;
   while (lo < hi) {
@@ -90,20 +109,65 @@ export function createAuditHandlers(deps: AuditHandlerDeps): { readonly status: 
     return read(() => {
       const limit = Math.min(request.limit ?? DEFAULT_AUDIT_LIST, MAX_AUDIT_LIST);
       const rows = deps.audit.list({ afterSeq: request.afterSeq ?? 0, limit });
-      const events = fitPrefix(rows);
+      const events = fitPrefix(rows, deps.maxReplyBytes ?? 900_000);
       if (events.length === 0 && rows.length > 0) return fail("E_INTERNAL", UNAVAILABLE);
       return checked(auditListResponseSchema.safeParse({ events }));
     });
   };
 
-  // The scan is synchronous (the audit log has no incremental form with an upper bound), so two calls cannot overlap.
+  // Verify (design 4.2: one at a time, bounded, cancellable). The scan runs in slices with a yield to the event loop
+  // between them; the signal and the deadline are checked between slices. A second call while one runs is refused,
+  // never queued. The verified head is cached: later calls check only the events after it, and a full re-scan from the
+  // first event happens once per `fullRescanMs` or when the cached head is no longer on the chain. The cache is a
+  // speed-up only: an edit at or before the cached head is found by the next full re-scan (and at the next start).
+  const slice = deps.sliceEvents ?? 2000;
+  const deadline = deps.deadlineMs ?? 25_000;
+  const fullEvery = deps.fullRescanMs ?? 600_000;
+  const yieldNow = deps.yieldNow ?? ((): Promise<void> => new Promise((resolve) => setImmediate(resolve)));
+  let running = false;
+  let cache: { head: ChainHead; fullAt: number } | undefined;
+
+  const scan = async (context: HandlerContext): Promise<unknown> => {
+    const started = deps.clock.monotonic();
+    const anchor = read(() => deps.anchors.status().anchor);
+    let fullAt = started;
+    let from: ChainHead | undefined;
+    if (cache !== undefined && started - cache.fullAt < fullEvery) ({ head: from, fullAt } = cache);
+    let base = from?.seq ?? 0; // events before this call's first slice
+    let done = 0; // events checked by this call's completed slices
+    let restarted = from === undefined;
+    for (;;) {
+      if (context.signal.aborted) return fail("E_CANCELLED", "The request was cancelled.");
+      if (deps.clock.monotonic() - started > deadline) return fail("E_TIMEOUT", "The verification took too long.", { retryAfterMs: 1000 });
+      const r = read(() =>
+        deps.audit.verify({ limit: slice, ...(from === undefined ? {} : { from }), ...(anchor === null ? {} : { expectedHead: anchor }) }),
+      );
+      if (!r.ok) {
+        cache = undefined;
+        // A failure at or before the cached head means the cache no longer matches the chain: start over once.
+        if (!restarted && from !== undefined && r.firstBadSeq <= from.seq) {
+          restarted = true;
+          from = undefined;
+          base = 0;
+          done = 0;
+          fullAt = deps.clock.monotonic();
+          continue;
+        }
+        return checked(auditVerifyResponseSchema.safeParse({ ...r, checked: base + done + r.checked }));
+      }
+      if (r.head !== null) cache = { head: r.head, fullAt };
+      if (r.more !== true) return checked(auditVerifyResponseSchema.safeParse({ ok: true, count: r.count, head: r.head }));
+      done += slice;
+      from = r.head as ChainHead;
+      await yieldNow();
+    }
+  };
+
   const verify: Handler = (context) => {
     live(context);
-    return read(() => {
-      const anchor = deps.anchors.status().anchor;
-      const result = deps.audit.verify(anchor === null ? {} : { expectedHead: anchor });
-      return checked(auditVerifyResponseSchema.safeParse(result));
-    });
+    if (running) return fail("E_BACKPRESSURE", "A verification is already running.", { retryAfterMs: 1000 });
+    running = true;
+    return scan(context).finally(() => void (running = false));
   };
 
   return { status, list, verify };

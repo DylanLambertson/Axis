@@ -110,9 +110,9 @@ export interface HostServices {
   /** Contract ids the host serves now: all of `surface`, or only the audit and projects contracts when degraded. */
   readonly served: readonly string[];
   readonly recovery: RecoveryOutcome | undefined;
-  /** The anchor the supervisor held at startup, and the newest head this process asked it to store and it acknowledged. */
   /** Stall check, status and write notification for handlers and the audit sink. No put, no ack, no timer. */
   readonly anchors: AnchorGuard;
+  /** The anchor the supervisor held at startup, the newest head this process put, and the highest acknowledged sequence. */
   readonly anchor: () => { readonly atStart: ChainHead | null; readonly put: ChainHead | null; readonly ackedSeq: number };
 }
 

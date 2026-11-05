@@ -2,7 +2,7 @@
 import { challengeReferenceSchema, challengeSchema, makeError, type ChallengeReference, type ErrorCode, type JsonValue } from "@axis/protocol";
 import type { Auditor } from "./audit.js";
 import { requestDigest, withoutApproval } from "./digest.js";
-import { CONTROL_CHARS } from "./errors.js";
+import { CONTROL_CHARS, DaemonError, toWireError } from "./errors.js";
 import { Aborted } from "./execute.js";
 import { ShuttingDown, handlerKey, withdrawChallenge, withdrawIfUnspent, type Outcome, type PipelineInput, type PipelineState } from "./pipeline.js";
 import {
@@ -129,7 +129,7 @@ export async function runApproval(a: ApprovalStep): Promise<Outcome> {
     try {
       challenge = await gate.issue(input, { target: lock.target, contentDigest });
     } catch (e) {
-      const refused = await refusal(e, auditor, fail);
+      const refused = await refusal(e, auditor, fail, (x) => ({ ok: false, error: toWireError(x, correlationId, req.contractVersion, d.onInternalError) }));
       if (refused) return refused;
       throw e;
     }
@@ -191,7 +191,7 @@ export async function runApproval(a: ApprovalStep): Promise<Outcome> {
     const done = captured as Outcome | undefined;
     if (done && !done.ok) return done;
     if (started) throw e; // the action ran (aborted, audit failure) or the gate failed after it
-    const refused = await refusal(e, auditor, fail);
+    const refused = await refusal(e, auditor, fail, (x) => ({ ok: false, error: toWireError(x, correlationId, req.contractVersion, d.onInternalError) }));
     if (refused) return refused;
     throw e;
   }
@@ -216,7 +216,14 @@ async function refusal(
   e: unknown,
   auditor: Auditor,
   fail: (code: ErrorCode, message: string) => Outcome,
+  unavailable: (e: DaemonError) => Outcome,
 ): Promise<Outcome | undefined> {
+  // The host cannot serve this tier now (for example the audit anchor is stalled): the gate refuses before it issues or
+  // spends anything, and the answer is the closed `E_UNAVAILABLE` a handler could give (constrained message and details).
+  if (e instanceof DaemonError && e.code === "E_UNAVAILABLE") {
+    await auditor.soft("denied", { decision: "allow", reason: "approval_unavailable" });
+    return unavailable(e);
+  }
   if (!(e instanceof ApprovalError) || e.executed) return undefined;
   switch (e.code) {
     case "E_CONFLICT":
