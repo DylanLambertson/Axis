@@ -11,6 +11,7 @@
     { "path": "packages/journal" },
     { "path": "packages/vault" },
     { "path": "packages/anthropic" },
-    { "path": "packages/worktrees" }
+    { "path": "packages/worktrees" },
+    { "path": "packages/runs" }
   ]
 }
