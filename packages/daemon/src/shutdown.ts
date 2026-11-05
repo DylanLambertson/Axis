@@ -60,7 +60,7 @@ function timing(name: string, value: unknown, fallback: number): number {
 
 /** A timer for a finite wait; none for Infinity. */
 function arm(ms: number, fn: () => void): NodeJS.Timeout | undefined {
-  return Number.isFinite(ms) ? setTimeout(fn, ms) : undefined;
+  return Number.isFinite(ms) ? (setTimeout(fn, ms) as unknown as NodeJS.Timeout) : undefined; // opaque handle under Code OSS's typings (ADR 0005)
 }
 
 /**
