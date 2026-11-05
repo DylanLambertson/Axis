@@ -136,6 +136,9 @@ export interface ApprovalContentLock {
  * (for example arguments the approval manager refuses). `executed: true` means the approval was spent and the
  * action then failed (or could not be audited): the daemon answers
  * E_INTERNAL and frees the idempotency key, and the user confirms again.
+ * A `DaemonError` with code `E_UNAVAILABLE` thrown before anything was spent (by `issue`, or by `execute` before it ran
+ * the action) is answered as that closed error, with its constrained message and `details.reason`: a gate that cannot
+ * serve a tier now (a stalled audit anchor) refuses without issuing a challenge or burning an approval.
  * Any other error from the gate is E_INTERNAL.
  */
 export class ApprovalError extends Error {
