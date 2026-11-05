@@ -1,12 +1,13 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import {
   CLI_RUNS_CONTRACT,
   MAX_CLI_RUNS_LIST,
   MAX_PROVIDERS,
-  RUN_STATE_VALUES,
+  RUN_STATUS_VALUES,
+  SNAPSHOT_AFTER_VALUES,
+  cliRunSchema,
   contractIdSchema,
   lookupMethod,
 } from "../src/index.js";
@@ -42,14 +43,6 @@ test("the design's name axis.cliRuns is not a legal contract id, so the contract
   assert.notEqual(lookupMethod("axis.cli-runs", 1, "start"), undefined);
 });
 
-test("run states equal the journal's Phase 1a run states", () => {
-  const source = readFileSync(new URL("../../../journal/src/states.ts", import.meta.url), "utf8");
-  const match = /export const RUN_STATES = \[([^\]]*)\] as const/.exec(source);
-  assert.ok(match, "RUN_STATES not found in packages/journal/src/states.ts");
-  const journal = (match[1] ?? "").split(",").map((s) => s.trim().replace(/"/g, "")).filter((s) => s.length > 0);
-  assert.deepEqual([...RUN_STATE_VALUES], journal);
-});
-
 test("cli-runs.start: a workspace id and a CLI agent id, nothing else", () => {
   accepts(startReq(), { workspaceId: "ws-1", agentId: "claude" }, "claude");
   accepts(startReq(), { workspaceId: "ws-1", agentId: "a.b_c-1" }, "all allowed characters");
@@ -77,16 +70,56 @@ test("cli-runs.stop and get take one run id", () => {
   }
 });
 
-test("cli-runs.list request: optional workspace and a set of states", () => {
-  accepts(listReq(), { states: [...RUN_STATE_VALUES] }, "all seven states");
+test("cli-runs.list request: workspace, a bounded limit and an opaque bounded cursor", () => {
   accepts(listReq(), { workspaceId: "ws-1" }, "workspace only");
-  rejects(listReq(), { states: [] }, "empty states");
-  rejects(listReq(), { states: ["RUNNING", "RUNNING"] }, "duplicate state");
-  rejects(listReq(), { states: [...RUN_STATE_VALUES, "RUNNING"] }, "eight states");
-  for (const s of ["running", "DONE", "", null, 1]) rejects(listReq(), { states: [s] }, String(s));
-  rejects(listReq(), { states: "RUNNING" }, "states as a string");
+  accepts(listReq(), { limit: 1 }, "limit 1");
+  accepts(listReq(), { limit: MAX_CLI_RUNS_LIST }, "limit at the cap");
+  accepts(listReq(), { cursor: "a".repeat(128) }, "cursor at 128");
+  for (const limit of [0, -1, MAX_CLI_RUNS_LIST + 1, 1000, 1_000_000, 1.5, Number.NaN, Number.POSITIVE_INFINITY, "10", null]) {
+    rejects(listReq(), { limit }, `limit ${String(limit)}`);
+  }
+  for (const cursor of ["", "a".repeat(129), "a b", "../x", "a/b", "a\nb", "\u00e9", 1, null, { a: 1 }]) {
+    rejects(listReq(), { cursor }, JSON.stringify(cursor));
+  }
+  for (const k of ["states", "offset", "page", "before", "after", "afterId"]) rejects(listReq(), { [k]: 1 }, k);
   rejects(listReq(), { workspaceId: "../x" }, "bad workspace");
-  rejects(listReq(), { limit: 5 }, "limit");
+});
+
+test("cli-runs.list: a workspace with more runs than one page pages instead of failing", () => {
+  const many = (n: number) => Array.from({ length: n }, (_, i) => ({ ...structuredClone(reviewing), runId: `run-${i}` }));
+  accepts(listRes(), { runs: many(MAX_CLI_RUNS_LIST), next: "older-501" }, "a full page with a cursor for the 501st run");
+  accepts(listRes(), { runs: many(1), next: null }, "the last page");
+  rejects(listRes(), { runs: many(MAX_CLI_RUNS_LIST + 1), next: null }, "501 runs in one reply");
+  rejects(listRes(), { runs: many(1) }, "next missing");
+  for (const next of ["", "a b", "x".repeat(129), 5, undefined]) rejects(listRes(), { runs: many(1), next }, JSON.stringify(next));
+});
+
+test("cli-runs run: the fields and enums are those of @axis/runs RunSummary", () => {
+  assert.deepEqual([...RUN_STATUS_VALUES], ["starting", "running", "quiet", "finished", "failed", "killed", "interrupted", "stopping"]);
+  assert.deepEqual([...SNAPSHOT_AFTER_VALUES], ["pending", "ok", "drift", "unknown"]);
+  assert.deepEqual(Object.keys(cliRunSchema.def.shape ?? {}).sort(), [
+    "agentId", "createdAt", "droppedChars", "endedAt", "exitCode", "lastOutputAt", "live", "outputChars", "reason", "runId",
+    "snapshotAfter", "startedAt", "state", "status", "workspaceId",
+  ]);
+  for (const status of RUN_STATUS_VALUES) accepts(getRes(), { run: run({ status }) }, status);
+  for (const status of ["done", "exited", "RUNNING", "", null, 1]) rejects(getRes(), { run: run({ status }) }, String(status));
+  for (const snapshotAfter of SNAPSHOT_AFTER_VALUES) accepts(getRes(), { run: run({ snapshotAfter }) }, snapshotAfter);
+  for (const snapshotAfter of ["true", "false", "changed", "", null, true]) rejects(getRes(), { run: run({ snapshotAfter }) }, String(snapshotAfter));
+  rejects(getRes(), { run: run({ id: "run-1" }) }, "id beside runId");
+  const { runId: _r, ...noRunId } = run();
+  rejects(getRes(), { run: { ...noRunId, id: "run-1" } }, "id instead of runId");
+  rejects(getRes(), { run: run({ updatedAt: "2026-11-04T10:00:05.000Z" }) }, "updatedAt is not a field of RunSummary");
+  for (const [k, v] of [["live", "yes"], ["lastOutputAt", -1], ["lastOutputAt", 1.5], ["outputChars", -1], ["droppedChars", Number.NaN], ["agentId", "Bad Id"], ["agentId", 5]] as const) {
+    rejects(getRes(), { run: run({ [k]: v }) }, `${k} ${String(v)}`);
+  }
+  accepts(getRes(), { run: run({ agentId: null, lastOutputAt: null }) }, "unknown agent, no output yet");
+});
+
+test("cli-runs.start response says whether the idempotency key replayed", () => {
+  const res = schemaOf(C, "start", "response");
+  accepts(res, { run: queued, replayed: true }, "replayed");
+  rejects(res, { run: queued }, "replayed missing");
+  rejects(res, { run: queued, replayed: "no" }, "replayed as string");
 });
 
 test("cli-runs run: state, reason, exit code and timestamps", () => {
@@ -103,7 +136,10 @@ test("cli-runs run: state, reason, exit code and timestamps", () => {
     "exit code NaN": { exitCode: Number.NaN },
     "exit code as string": { exitCode: "0" },
     "createdAt date only": { createdAt: "2026-11-04" },
-    "updatedAt offset": { updatedAt: "2026-11-04T10:00:05.000+00:00" },
+    "createdAt not a real date": { createdAt: "2026-99-99T99:99:99.999Z" },
+    "createdAt year zero": { createdAt: "0000-00-00T00:00:00.000Z" },
+    "createdAt 30 February": { createdAt: "2026-02-30T10:00:00.000Z" },
+    "createdAt offset": { createdAt: "2026-11-04T10:00:05.000+00:00" },
     "startedAt without millis": { startedAt: "2026-11-04T10:00:01Z" },
     "extra field": { pid: 4242 },
     "path field": { worktree: "/tmp/x" },
@@ -133,11 +169,11 @@ test("cli-runs run: endedAt is set exactly when the run is terminal, and only qu
 });
 
 test("cli-runs.list response: cap and unique ids", () => {
-  const many = (n: number) => Array.from({ length: n }, (_, i) => ({ ...structuredClone(queued), id: `run-${i}` }));
-  accepts(listRes(), { runs: [] }, "empty");
-  accepts(listRes(), { runs: many(MAX_CLI_RUNS_LIST) }, "at the cap");
-  rejects(listRes(), { runs: many(MAX_CLI_RUNS_LIST + 1) }, "over the cap");
-  rejects(listRes(), { runs: [{ ...queued }, { ...queued }] }, "duplicate run id (separate objects)");
+  const many = (n: number) => Array.from({ length: n }, (_, i) => ({ ...structuredClone(queued), runId: `run-${i}` }));
+  accepts(listRes(), { runs: [], next: null }, "empty");
+  accepts(listRes(), { runs: many(MAX_CLI_RUNS_LIST), next: null }, "at the cap");
+  rejects(listRes(), { runs: many(MAX_CLI_RUNS_LIST + 1), next: null }, "over the cap");
+  rejects(listRes(), { runs: [{ ...queued }, { ...queued }], next: null }, "duplicate run id (separate objects)");
 });
 
 test("providers.list: request takes nothing; response names adapters and destinations, never a credential", () => {

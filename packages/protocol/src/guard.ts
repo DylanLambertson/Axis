@@ -58,8 +58,11 @@ export function guarded<S extends z.ZodType>(inner: S): Guarded<S> {
 /** A strict object with no fields: the request of a method that takes nothing. */
 export const emptyRequestSchema = guarded(z.strictObject({}));
 
-/** Epoch-free UTC timestamp as `Date.prototype.toISOString` writes it. */
-export const timestampSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+/** UTC timestamp exactly as `Date.prototype.toISOString` writes it: a real date, not just the right shape. */
+export const timestampSchema = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/)
+  .refine((t) => !Number.isNaN(Date.parse(t)) && new Date(t).toISOString() === t, "not a real date");
 
 /** Non-negative safe integer (sequence numbers, counts, durations). */
 export const countSchema = z.number().int().min(0);
