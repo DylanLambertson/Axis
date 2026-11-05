@@ -88,7 +88,7 @@ export interface AttributeSources {
  *    names a filter does not block;
  *  - one of those files exists and cannot be read whole.
  * The caller reads this before and after the `check-attr` reads and refuses unless both are trusted and equal, so a file swapped
- * in while the reads ran is seen (design §2). Known limits: a file swapped in and back around both reads is not; a tracked
+ * in while the reads ran is seen (design §2). Known limits: a swap made after the first read and undone before the second is not seen (a file watcher can time it; design §14); a tracked
  * `.gitattributes` that uses a macro defined outside the tree is checked against the macro as it is now; deleting a filter that
  * only the user's file sets makes the stored file look unfiltered; the system file is found with `git var GIT_ATTR_SYSTEM`
  * (git 2.42 and later), so on an older git it is not checked.
