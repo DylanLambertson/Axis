@@ -10,6 +10,7 @@ import {
   reviewDiffReasonSchema,
   reviewDiffRequestSchema,
   reviewDiffResponseSchema,
+  axisBranchSchema,
   type ReviewFileWire,
 } from "@axis/protocol";
 import type { PortContext } from "../ports/common.js";
@@ -47,7 +48,7 @@ export interface ReviewAuditSink {
 
 export interface ReviewHandlerDeps {
   readonly review: ReviewService;
-  readonly journal: Pick<Journal, "recordReviewedTree" | "getRun" | "transitionRun">;
+  readonly journal: Pick<Journal, "recordReviewedTree" | "getRun" | "transitionRun" | "getWorkspace">;
   readonly runs: Pick<RunsService, "get">;
   readonly audit: ReviewAuditSink;
   /** Shared with the git handler, which asks it for the binding of a reviewed tree. */
@@ -91,6 +92,8 @@ function mapRefusal(e: unknown): never {
         return fail("E_NOT_FOUND", "The workspace was not found.");
       case "E_CANCELLED":
         return fail("E_CANCELLED", "The request was cancelled.");
+      case "E_INTERNAL":
+        return fail("E_INTERNAL", "The review could not be completed.");
       // A handler cannot raise E_POLICY_DENIED: a review the package would not build is a conflict with the state.
       case "E_CONFLICT":
       case "E_POLICY_DENIED":
@@ -140,46 +143,71 @@ export function createReviewDiffHandler(deps: ReviewHandlerDeps): Handler {
         else accepted.push({ path: f.path, acceptTruncated: truncated && ack, ackFileId: truncated && ack ? fileId : undefined, contentId });
         rows.push(wireRow(f, { fileId, truncated, contentId, acknowledged: ack, unsafe }));
       }
-      if (files.length === 0 || round.branch === null) committable = false;
+      if (files.length === 0) committable = false;
     } catch (e) {
       return mapRefusal(e);
     }
     if (context.signal.aborted) return fail("E_CANCELLED", "The request was cancelled.");
 
+    // Only an `axis/<slug>` branch is a branch of this product; anything else is treated like a detached HEAD. The tree is
+    // also withheld when the checked-out branch is not the workspace's own branch in the journal (the commit's branch comes
+    // from the journal, never from whatever a process checked out).
+    const axisBranch = axisBranchSchema.safeParse(round.branch).success ? round.branch : null;
+    let ownBranch: string | undefined;
+    try {
+      ownBranch = deps.journal.getWorkspace(workspaceId)?.branch;
+    } catch {
+      return fail("E_INTERNAL", "The review could not be completed.");
+    }
+    const mayBuild = committable && axisBranch !== null && axisBranch === ownBranch;
+    const reply = (treeHash: string | null) =>
+      reviewDiffResponseSchema.safeParse({ head: round.head, branch: axisBranch, treeHash, files: rows, skipped: wireSkipped(round.skipped), skippedCount: round.skippedCount });
+    // The reply must be one the contract accepts BEFORE anything is audited or recorded (a tree no one is shown is not recorded).
+    if (!reply(mayBuild ? "0".repeat(round.head.length) : null).success) return fail("E_INTERNAL", "The review could not be completed.");
+
     let treeHash: string | null = null;
-    if (committable && round.branch !== null) {
+    if (mayBuild) {
+      const session = `${workspaceId}\u0000${identity.connectionId}\u0000${round.head}`;
       try {
-        const session = `${workspaceId}\u0000${identity.connectionId}\u0000${round.head}`;
         for (const a of accepted) {
           // acceptTruncated reaches the review for acknowledged files only (isAcknowledged above, nothing else).
           round.accept(a.path, { acceptTruncated: a.acceptTruncated });
         }
-        // One audit event per first application of an acknowledgement in this review session, before any tree is released.
-        for (const a of accepted) {
-          if (a.ackFileId === undefined || a.contentId === null || !acks.isFirst(session, a.ackFileId, a.contentId)) continue;
+      } catch (e) {
+        return mapRefusal(e);
+      }
+      // One audit event per first application of an acknowledgement in this review session, before any tree is released.
+      for (const a of accepted) {
+        if (a.ackFileId === undefined || a.contentId === null || !acks.isFirst(session, a.ackFileId, a.contentId)) continue;
+        try {
           deps.audit.append({ action: "review.acknowledge", actor: "user", workspaceId, connectionId: identity.connectionId, fileId: a.ackFileId });
-          acks.commit(session, a.ackFileId, a.contentId);
+        } catch {
+          return fail("E_INTERNAL", "The review could not be recorded.");
         }
-        const built = await round.build();
-        // Journal first (it needs the minted principal and a READY workspace); the lookup is filled only when it succeeded.
-        deps.journal.recordReviewedTree(workspaceId, built.reviewedTree, userPrincipal());
+        acks.commit(session, a.ackFileId, a.contentId);
+      }
+      let built;
+      try {
+        built = await round.build();
+      } catch (e) {
+        return mapRefusal(e);
+      }
+      // A request that timed out or was cancelled while the tree was built records nothing.
+      if (context.signal.aborted) return fail("E_CANCELLED", "The request was cancelled.");
+      if (built.branch === ownBranch) {
+        try {
+          // Journal first (it needs the minted principal and a READY workspace); the lookup is filled only when it succeeded.
+          deps.journal.recordReviewedTree(workspaceId, built.reviewedTree, userPrincipal());
+        } catch (e) {
+          if (e instanceof AxisError && e.code === "E_CONFLICT") return fail("E_CONFLICT", "The review could not be recorded for this workspace.");
+          return fail("E_INTERNAL", "The review could not be recorded.");
+        }
         deps.trees.record({ workspaceId, treeHash: built.reviewedTree, parent: built.head, branch: built.branch, handle: built.handle });
         treeHash = built.reviewedTree;
-      } catch (e) {
-        if (e instanceof AxisError && e.code === "E_CONFLICT") return fail("E_CONFLICT", "The review could not be recorded for this workspace.");
-        if (e instanceof AxisError || !(e instanceof DaemonError || e instanceof ReviewRefusal)) return fail("E_INTERNAL", "The review could not be recorded.");
-        return mapRefusal(e);
       }
     }
 
-    const answer = reviewDiffResponseSchema.safeParse({
-      head: round.head,
-      branch: round.branch,
-      treeHash,
-      files: rows,
-      skipped: wireSkipped(round.skipped),
-      skippedCount: round.skippedCount,
-    });
+    const answer = reply(treeHash);
     if (!answer.success) return fail("E_INTERNAL", "The review could not be completed.");
     return answer.data;
   };

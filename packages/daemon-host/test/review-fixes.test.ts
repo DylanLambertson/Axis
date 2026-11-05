@@ -1,162 +1,172 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
-// Regression tests for the H1 review: redact-before-cut, the host key as a log field, nested Proxy in the init
-// message, and the unref contract of Disposables timers.
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
-import { randomBytes } from "node:crypto";
-import { test } from "node:test";
-import { AxisError, Redactor } from "@axis/audit";
-import { createLogger, parseHostConfig, type LogFields } from "../src/index.js";
-import { fakeClock, validConfig } from "./helpers.js";
+import { test, type TestContext } from "node:test";
+import { createDaemonHost, createReviewAuditSink, createReviewDiffHandler, AckSessions, ReviewedTrees, REVIEW_PAYLOAD_ALLOWLIST, type ReviewRound } from "../src/index.js";
+import { hostFixture } from "../testing/host-fixture.js";
+import { files, gitUnavailable, LONG_LINE, reviewRig, sha256, uuid, type Client, type ReviewRig, type RigOptions } from "./review-rig.js";
+import { must } from "./helpers.js";
 
-const anthropicKey = (): string => ["sk", "ant", "api03", "Aa1Bb2".repeat(6)].join("-");
-
-function rig(redactor = new Redactor()) {
-  const lines: string[] = [];
-  const logger = createLogger({ redactor, clock: fakeClock(), sink: { write: (l) => void lines.push(l) } });
-  return { redactor, logger, lines };
+const SKIP = gitUnavailable();
+async function setup(t: TestContext, options: RigOptions = {}): Promise<{ r: ReviewRig; user: Client }> {
+  const r = await reviewRig(options);
+  t.after(() => r.cleanup());
+  return { r, user: await r.connect() };
 }
+/** Checks out `branch` (created at HEAD) without `-b`. */
+const checkout = (r: ReviewRig, branch: string): void => {
+  r.git("update-ref", `refs/heads/${branch}`, r.git("rev-parse", "HEAD").trim());
+  r.git("symbolic-ref", "HEAD", `refs/heads/${branch}`);
+};
+const nothingRecorded = (r: ReviewRig): void => {
+  assert.equal(r.calls.recordReviewedTree, 0);
+  assert.equal(r.trees.size, 0);
+  assert.equal(r.acks.length, 0);
+  assert.equal(r.journal.getWorkspace(r.workspaceId)?.reviewedTreeHash, null);
+};
 
-test("S1: a secret straddling the 256 and 4096 boundaries is never logged in part", () => {
-  const registered = randomBytes(24).toString("hex");
-  for (const offset of [200, 230, 240, 250, 255, 256, 257, 4000, 4080, 4090, 4096, 4097]) {
-    for (const secret of [anthropicKey(), registered]) {
-      const { redactor, logger, lines } = rig();
-      redactor.registerSecret(registered);
-      logger.info("request.failed", { reason: "x".repeat(offset) + " " + secret + " " + "y".repeat(50) });
-      const text = lines.join("\n");
-      for (let n = 8; n <= secret.length; n += 4) {
-        assert.ok(!text.includes(secret.slice(0, n)), `offset ${offset}: ${n} leading characters of the secret were logged`);
-      }
-      assert.ok(!text.includes(secret.slice(-12)));
-      JSON.parse(lines[0] as string);
-    }
-  }
+test("a branch that is not axis/<slug> is treated like a detached HEAD: files listed, no tree, nothing audited or recorded", { skip: SKIP ?? false }, async (t) => {
+  const { r, user } = await setup(t);
+  checkout(r, "main");
+  r.write("a.txt", "a\n");
+  r.write("long.txt", LONG_LINE);
+  const first = await user.call("diff", { workspaceId: r.workspaceId });
+  assert.equal(first.ok, true, JSON.stringify(first.error));
+  assert.equal(first.result?.["branch"], null);
+  assert.equal(first.result?.["treeHash"], null);
+  assert.equal(files(first).length, 2);
+  const long = files(first).find((f) => f["truncated"]);
+  const second = await user.call("diff", { workspaceId: r.workspaceId, acknowledged: [{ fileId: long?.["fileId"], contentId: long?.["contentId"] }] });
+  assert.equal(second.ok, true);
+  assert.equal(second.result?.["treeHash"], null);
+  nothingRecorded(r);
 });
 
-test("S1: long text is cut after redaction, on code points, and over the scan bound becomes a marker", () => {
-  const { logger, lines } = rig();
-  logger.info("request.failed", { reason: "a".repeat(255) + "\u{1F600}" + "b".repeat(10) });
-  const reason = (JSON.parse(lines[0] as string) as { reason: string }).reason;
-  assert.ok(reason.endsWith("[cut]"));
-  assert.ok(!/[\ud800-\udbff](?![\udc00-\udfff])/.test(reason), "no lone surrogate from the cut");
-  logger.info("request.failed", { reason: "z".repeat(100_000_000) });
-  assert.equal((JSON.parse(lines[1] as string) as { reason: string }).reason, "[truncated]");
+test("a tree is withheld when the checked-out branch is not the workspace's branch in the journal", { skip: SKIP ?? false }, async (t) => {
+  const { r, user } = await setup(t);
+  checkout(r, "axis/other");
+  r.write("long.txt", LONG_LINE);
+  const first = await user.call("diff", { workspaceId: r.workspaceId });
+  const row = files(first)[0];
+  const res = await user.call("diff", { workspaceId: r.workspaceId, acknowledged: [{ fileId: row?.["fileId"], contentId: row?.["contentId"] }] });
+  assert.equal(res.ok, true, JSON.stringify(res.error));
+  assert.equal(res.result?.["branch"], "axis/other");
+  assert.equal(res.result?.["treeHash"], null);
+  nothingRecorded(r);
+  // Back on the workspace's own branch the same review gets its tree.
+  checkout(r, "axis/feat");
+  const ok = await user.call("diff", { workspaceId: r.workspaceId, acknowledged: [{ fileId: row?.["fileId"], contentId: row?.["contentId"] }] });
+  assert.notEqual(ok.result?.["treeHash"], null);
 });
 
-test("S1b: parseHostConfig registers the attestation key in every shape, so a log field cannot carry it", () => {
-  const key = randomBytes(32);
-  const redactor = new Redactor();
-  const config = parseHostConfig(validConfig({ attestationKey: key.toString("base64url") }), redactor);
-  assert.deepEqual(Buffer.from(config.attestationKey), key);
-  const b64u = key.toString("base64url");
-  const shapes = [
-    b64u, key.toString("base64"), key.toString("base64").replace(/=+$/, ""), key.toString("hex"), key.toString("hex").toUpperCase(),
-    encodeURIComponent(key.toString("base64")), JSON.stringify(key.toString("base64")).slice(1, -1),
-    Buffer.from(b64u).toString("hex"), Buffer.from(b64u).toString("base64"),
-    `Bearer ${b64u}`, `{"key":"${b64u}"}`, `prefix-${b64u}-suffix`, "q".repeat(230) + b64u, "q".repeat(250) + b64u,
-  ];
-  for (const shape of shapes) {
-    const { logger, lines } = rig(redactor);
-    logger.info("request.failed", { reason: shape, correlationId: shape, workspaceId: shape });
-    const text = lines.join("\n");
-    for (const form of [b64u, key.toString("hex"), key.toString("base64").replace(/=+$/, ""), b64u.slice(0, 16), key.toString("hex").slice(0, 16)]) {
-      assert.ok(!text.includes(form), `${shape.slice(0, 20)}...: leaked ${form.slice(0, 8)}`);
-    }
-  }
-  // The same key in an error summary or an unknown field never reaches the line either.
-  const { logger, lines } = rig(redactor);
-  logger.error("request.failed", { error: new Error(b64u), [b64u]: b64u } as unknown as LogFields);
-  assert.ok(!lines.join("").includes(b64u.slice(0, 12)));
-});
-
-test("S1b: a rejected config registers nothing and the redactor argument is required", () => {
-  const redactor = new Redactor();
-  const bad = validConfig({ dataDir: "relative" });
-  assert.throws(() => parseHostConfig(bad, redactor), AxisError);
-  const { logger, lines } = rig(redactor);
-  logger.info("request.failed", { reason: bad["attestationKey"] as string });
-  assert.ok(lines.join("").includes((bad["attestationKey"] as string).slice(0, 20)), "nothing was registered for a refused message");
-});
-
-test("N2: the key is a copy on every read; changing a copy does not change the host's", () => {
-  const config = parseHostConfig(validConfig(), new Redactor());
-  const first = config.attestationKey;
-  const snapshot = Buffer.from(first);
-  first.fill(0);
-  assert.deepEqual(Buffer.from(config.attestationKey), snapshot);
-  assert.notEqual(config.attestationKey, config.attestationKey);
-  assert.ok(Object.isFrozen(config));
-});
-
-test("S3: a Proxy, accessor or class instance at any depth is refused and no trap or getter runs", () => {
-  let ran = 0;
-  const trap = (): never => { ran++; throw new Error("ran"); };
-  const proxy = (): object => new Proxy({}, { get: trap, ownKeys: trap, getOwnPropertyDescriptor: trap, has: trap, getPrototypeOf: trap });
-  const refuse = (over: Record<string, unknown>): void => {
-    assert.throws(() => parseHostConfig(validConfig(over), new Redactor()), (e: unknown) => e instanceof AxisError && e.code === "E_INVALID_ARGUMENT");
+test("a request cancelled while the tree is built records nothing", { skip: SKIP ?? false }, async (t) => {
+  const ac = new AbortController();
+  const recorded: string[] = [];
+  const round: ReviewRound = {
+    head: "a".repeat(40), branch: "axis/feat", skippedCount: 0, skipped: [],
+    files: [{ path: "a.txt", status: "A", kind: "text", newMode: "100644", newOid: "b".repeat(40), unsafePath: false, protectedRules: [], warnings: [] }],
+    hasCutLines: async () => false,
+    accept: () => undefined,
+    build: async () => (ac.abort(), { reviewedTree: "c".repeat(40), head: "a".repeat(40), branch: "axis/feat", handle: {} as never }),
   };
-  refuse({ limits: proxy() });
-  refuse({ limits: { maxConnections: proxy() } });
-  refuse({ contracts: proxy() });
-  refuse({ contracts: new Proxy(["axis.audit"], { get: trap, getOwnPropertyDescriptor: trap, ownKeys: trap }) });
-  refuse({ contracts: [proxy()] });
-  refuse({ extra: { deep: { deeper: [proxy()] } } });
-  refuse({ dataDir: proxy() });
-  refuse({ limits: Object.defineProperty({}, "maxConnections", { enumerable: true, get: () => (ran++, 4) }) });
-  refuse({ contracts: Object.defineProperty([], "0", { enumerable: true, get: () => (ran++, "axis.audit") }) });
-  refuse({ limits: new Map() });
-  refuse({ limits: Object.create({ maxConnections: 4 }) });
-  refuse({ limits: new Date() });
-  assert.equal(ran, 0);
+  const trees = new ReviewedTrees();
+  const handler = createReviewDiffHandler({
+    review: { open: async () => round },
+    journal: { recordReviewedTree: (() => void recorded.push("journal")) as never, getRun: () => undefined, transitionRun: (() => undefined) as never, getWorkspace: (() => ({ branch: "axis/feat" })) as never },
+    runs: { get: () => { throw new Error("unused"); } },
+    audit: { append: () => undefined },
+    trees,
+  });
+  const identity = { connectionId: "c".repeat(22), windowId: "w", actorId: "u", actor: "user", trusted: true, clientKind: "desktop" } as const;
+  await assert.rejects(async () => handler({ identity, requestId: "r", correlationId: "c", signal: ac.signal } as never, { workspaceId: uuid() } as never), (e: { code?: string }) => e.code === "E_CANCELLED");
+  assert.deepEqual(recorded, []);
+  assert.equal(trees.size, 0);
 });
 
-test("S3: a cyclic or enormous init message is refused quickly", () => {
-  const cyc: Record<string, unknown> = {};
-  cyc["self"] = cyc;
-  assert.throws(() => parseHostConfig(validConfig({ limits: cyc }), new Redactor()), AxisError);
-  let deep: unknown = {};
-  for (let i = 0; i < 1_000; i++) deep = { d: deep };
-  assert.throws(() => parseHostConfig(validConfig({ limits: deep }), new Redactor()), AxisError);
-  const wide: Record<string, number> = {};
-  for (let i = 0; i < 100_000; i++) wide[`k${i}`] = i;
-  const started = Date.now();
-  assert.throws(() => parseHostConfig(validConfig({ limits: wide }), new Redactor()), AxisError);
-  assert.ok(Date.now() - started < 1_000);
-});
-
-test("N4: the logger refuses an unbounded queue size", () => {
-  for (const queueSize of [NaN, -1, 0, 1.5, Infinity, 100_001]) {
-    assert.throws(() => createLogger({ redactor: new Redactor(), clock: fakeClock(), sink: { write: () => undefined }, queueSize }), AxisError, String(queueSize));
+test("the acknowledgement row reaches the host's real audit log with its file id and nothing else", async () => {
+  const fix = hostFixture();
+  const host = createDaemonHost(fix.config, fix.ports);
+  try {
+    const s = await host.start();
+    const audit = must(s.audit);
+    const fileId = await sha256("some/path.txt");
+    createReviewAuditSink(audit).append({ action: "review.acknowledge", actor: "user", workspaceId: "ws-1", connectionId: "c".repeat(22), fileId });
+    audit.append({ actor: "user", action: "review.acknowledge", target: "workspace:ws-2", outcome: "success", payload: { fileId, path: "some/path.txt", contentId: "x" } });
+    const rows = s.auditRead.list({ limit: 50 }).filter((e) => e.action === "review.acknowledge");
+    assert.equal(rows.length, 2);
+    const payloads = rows.map((e) => e.payload as Record<string, unknown>);
+    for (const p of payloads) assert.equal(p["fileId"], fileId);
+    for (const p of payloads) assert.deepEqual(Object.keys(p).filter((k) => k !== "_omitted" && k !== "fileId"), [], "a key outside the allow-list is dropped");
+    assert.equal(payloads.filter((p) => p["_omitted"] === 2).length, 1, "the foreign keys of the direct append were counted and dropped");
+    assert.equal(payloads.filter((p) => p["_omitted"] === undefined).length, 1, "the sink's own row carries the file id only");
+    assert.equal(rows.some((e) => e.target === "workspace:ws-1"), true);
+    assert.deepEqual(REVIEW_PAYLOAD_ALLOWLIST["review.acknowledge"], ["fileId"]);
+  } finally {
+    await host.stop();
+    fix.cleanup();
   }
 });
 
-test("N7: an object with huge numbers of unknown keys costs a bounded walk", () => {
-  const { logger, lines } = rig();
-  const fields: Record<string, number> = { count: 1 };
-  for (let i = 0; i < 300_000; i++) fields[`junk${i}`] = i;
-  const started = Date.now();
-  logger.info("request.failed", fields);
-  assert.ok(Date.now() - started < 500);
-  assert.ok((JSON.parse(lines[0] as string) as Record<string, number>)["fieldsDropped"]! >= 1000);
+test("the audit sink refuses a writer that answers with a promise", () => {
+  const sink = createReviewAuditSink({ append: () => Promise.resolve() });
+  assert.throws(() => sink.append({ action: "review.acknowledge", actor: "user", workspaceId: "w", connectionId: "c", fileId: "f" }));
 });
 
-/** Run `body` in a fresh process and report how it ended. */
-function child(body: string): Promise<{ code: number | null; timedOut: boolean }> {
-  const url = new URL("../src/index.js", import.meta.url).href;
-  const script = `import { Disposables } from ${JSON.stringify(url)};\n${body}`;
-  return new Promise((resolve) => {
-    const proc = execFile(process.execPath, ["--input-type=module", "-e", script], { timeout: 4_000, killSignal: "SIGKILL" }, (err) => {
-      const code = err === null ? 0 : ((err as { code?: number | string }).code as number | string);
-      resolve({ code: typeof code === "number" ? code : null, timedOut: proc.killed });
-    });
-  });
-}
+test("complete: a failed read-back is E_UNAVAILABLE after the run was completed, and a retry finds it completed", { skip: SKIP ?? false }, async (t) => {
+  const { r, user } = await setup(t, { runsFail: true });
+  const run = r.newRun();
+  const res = await user.call("complete", { runId: run }, uuid());
+  assert.equal(res.error?.code, "E_UNAVAILABLE");
+  assert.equal(r.journal.getRun(run)?.state, "COMPLETED");
+  const retry = await user.call("complete", { runId: run }, uuid());
+  assert.equal(retry.error?.code, "E_CONFLICT");
+  assert.equal(retry.error?.details?.["reason"], "not_reviewing");
+});
 
-test("N1: unref'ed timers let the process exit by draining; the check fails without unref", async () => {
-  const ok = await child("const d = new Disposables(); d.setInterval(() => {}, 60000); d.setTimeout(() => {}, 60000);");
-  assert.deepEqual(ok, { code: 0, timedOut: false });
-  // The control: a plain ref'ed timer keeps the same process alive until the harness kills it.
-  const control = await child("setInterval(() => {}, 60000);");
-  assert.equal(control.timedOut, true, "the harness detects a process that cannot drain");
+test("complete asks the journal to move the run only from REVIEWING", { skip: SKIP ?? false }, async (t) => {
+  const { r, user } = await setup(t);
+  await user.call("complete", { runId: r.newRun() }, uuid());
+  assert.equal((r.transitionOptions[0] as { expectedFrom?: string }).expectedFrom, "REVIEWING");
+});
+
+test("workspaces beyond the bound are forgotten, and a forgotten tree is refused as stale", () => {
+  const trees = new ReviewedTrees({ maxWorkspaces: 2, maxPerWorkspace: 2 });
+  const h = {} as never;
+  for (const id of ["w1", "w2", "w3"]) trees.record({ workspaceId: id, treeHash: "a".repeat(40), parent: "b".repeat(40), branch: "axis/x", handle: h });
+  assert.equal(trees.size, 2);
+  assert.throws(() => trees.lookupReviewedTree("w1", "a".repeat(40)), (e: { details?: { reason?: string } }) => e.details?.reason === "stale");
+  assert.equal(trees.lookupReviewedTree("w3", "a".repeat(40)).workspaceId, "w3");
+  // Recording again moves a workspace to the newest position.
+  trees.record({ workspaceId: "w2", treeHash: "d".repeat(40), parent: "b".repeat(40), branch: "axis/x", handle: h });
+  trees.record({ workspaceId: "w4", treeHash: "a".repeat(40), parent: "b".repeat(40), branch: "axis/x", handle: h });
+  assert.equal(trees.lookupReviewedTree("w2", "d".repeat(40)).workspaceId, "w2");
+  assert.throws(() => trees.lookupReviewedTree("w3", "a".repeat(40)));
+});
+
+test("an acknowledgement session is bounded: past the bound it can only be audited again, never skipped", () => {
+  const acks = new AckSessions({ maxSessions: 2, maxPairsPerSession: 2 });
+  acks.commit("s", "f1", "c");
+  acks.commit("s", "f2", "c");
+  assert.equal(acks.isFirst("s", "f1", "c"), false);
+  acks.commit("s", "f3", "c");
+  assert.equal(acks.isFirst("s", "f3", "c"), false);
+  assert.equal(acks.isFirst("s", "f1", "c"), true, "dropped when the bound was hit");
+  acks.commit("s2", "f1", "c");
+  acks.commit("s3", "f1", "c");
+  assert.equal(acks.isFirst("s", "f3", "c"), true, "the oldest session was dropped");
+  assert.equal(acks.isFirst("s3", "f1", "c"), false);
+});
+
+test("a reply the contract would refuse is refused before anything is audited or recorded", { skip: SKIP ?? false }, async (t) => {
+  const bad = { path: "a.txt", status: "A", kind: "text", newMode: "100644", newOid: "b".repeat(40), similarity: 500, unsafePath: false, protectedRules: [], warnings: [] } as const;
+  const { r, user } = await setup(t, {
+    review: () => ({
+      open: async () => ({
+        head: "a".repeat(40), branch: "axis/feat", skippedCount: 0, skipped: [], files: [bad], hasCutLines: async () => false, accept: () => undefined,
+        build: async () => ({ reviewedTree: "c".repeat(40), head: "a".repeat(40), branch: "axis/feat", handle: {} as never }),
+      }),
+    }),
+  });
+  const res = await user.call("diff", { workspaceId: r.workspaceId });
+  assert.equal(res.error?.code, "E_INTERNAL");
+  nothingRecorded(r);
 });

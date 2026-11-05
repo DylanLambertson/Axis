@@ -81,6 +81,8 @@ export interface RigOptions {
   unborn?: boolean;
   /** A workspace state other than READY. */
   workspaceNotReady?: boolean;
+  /** Make `runs.get` throw. */
+  runsFail?: boolean;
 }
 
 export async function reviewRig(options: RigOptions = {}) {
@@ -136,15 +138,18 @@ export async function reviewRig(options: RigOptions = {}) {
     return id;
   };
 
+  const transitionOptions: Array<unknown> = [];
   const calls = { recordReviewedTree: 0, transitionRun: 0, open: 0 };
   const spyJournal = {
     recordReviewedTree: ((...a: Parameters<Journal["recordReviewedTree"]>) => (calls.recordReviewedTree++, journal.recordReviewedTree(...a))) as Journal["recordReviewedTree"],
     getRun: (id: string) => journal.getRun(id),
-    transitionRun: ((...a: Parameters<Journal["transitionRun"]>) => (calls.transitionRun++, journal.transitionRun(...a))) as Journal["transitionRun"],
+    getWorkspace: (id: string) => journal.getWorkspace(id),
+    transitionRun: ((...a: Parameters<Journal["transitionRun"]>) => (calls.transitionRun++, transitionOptions.push(a[2]), journal.transitionRun(...a))) as Journal["transitionRun"],
   };
   const spyReview: ReviewService = { open: (id, ctx) => (calls.open++, (options.review ? options.review(real) : real).open(id, ctx)) };
   const runs: Pick<RunsService, "get"> = {
     get(runId) {
+      if (options.runsFail) throw new Error("runs down");
       const r = journal.getRun(runId);
       if (!r) throw new Error("no run");
       const done = r.state === "COMPLETED";
@@ -175,7 +180,7 @@ export async function reviewRig(options: RigOptions = {}) {
   const ports: MessagePort[] = [];
   let conn = 0;
   return {
-    root, repo, git, write, journal, trees, acks, calls, rpcEvents, workspaceId, newWorkspace, newRun, genv,
+    root, repo, git, write, journal, trees, transitionOptions, acks, calls, rpcEvents, workspaceId, newWorkspace, newRun, genv,
     async connect(actor = "user"): Promise<Client> {
       const { client, server } = memoryPair();
       ports.push(client);

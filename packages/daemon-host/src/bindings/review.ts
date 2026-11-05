@@ -7,7 +7,7 @@ import { ReviewRefusal, type BuiltTree, type ReviewHandle, type ReviewRound, typ
 import type { WorktreeLocator } from "../ports/worktree-locator.js";
 
 /**
- * The binding of the review port over `@axis/review` (the only file that imports it, design section 2.1).
+ * The binding of the review port over `@axis/review` (with `review-tempindex.ts`, the only files that import it, design section 2.1).
  *
  * The session is built with `maxFiles` and `maxDisplay` at the wire's bounds, so a change set the reply could not list in
  * full fails the review (`too_large`) instead of being cut. Every `ReviewError` becomes a `ReviewRefusal` that carries the
@@ -109,7 +109,10 @@ export function createReviewService(deps: ReviewBindingDeps): ReviewService {
   };
 }
 
-/** Narrowing for the git handler (ticket H9): the review package's own binding behind an opaque handle. */
+/**
+ * Narrowing for the git handler (ticket H9): the review package's own binding behind an opaque handle. The check here is
+ * a type guard only; `prepareCommit` of `@axis/review` is the real brand check and must be what H9 relies on.
+ */
 export function reviewBindingOf(handle: ReviewHandle): ReviewBinding {
   if (!(handle instanceof ReviewBinding)) throw new ReviewRefusal("E_INTERNAL");
   return handle;

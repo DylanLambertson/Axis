@@ -41,5 +41,6 @@ export * from "./handlers/approvals.js";
 export * from "./bindings/review.js";
 export * from "./bindings/review-tempindex.js";
 export * from "./handlers/review.js";
+export * from "./handlers/review-audit.js";
 export * from "./handlers/review-store.js";
 export * from "./handlers/review-wire.js";
