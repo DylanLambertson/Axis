@@ -37,7 +37,7 @@ async function identify(d: Deps, path: string): Promise<FileIdentity> {
   return { real, identity: [st.id, st.size, st.mtime, st.ctime].join(":") };
 }
 
-/** The interpreter a `#!` line names, `"none"` for a binary, or `"unreadable"` when the file cannot be read. */
+/** The interpreter a `#!` line names, `"none"` for a file that starts like a binary, or `"unreadable"` for one that cannot be read or judged. */
 async function shebang(d: Deps, real: string): Promise<{ readonly line: string } | "none" | "unreadable"> {
   let head: Buffer;
   try {
@@ -50,10 +50,20 @@ async function shebang(d: Deps, real: string): Promise<{ readonly line: string }
   } catch {
     return "unreadable";
   }
-  if (head.length < 2 || head[0] !== 0x23 || head[1] !== 0x21) return "none";
-  const line = /^#!\s*(\S+)/.exec(head.toString("latin1"))?.[1];
-  return line === undefined ? "unreadable" : { line };
+  if (head.length >= 2 && head[0] === 0x23 && head[1] === 0x21) {
+    // The kernel's rule: blanks, then a word on the same line. Anything else is run by /bin/sh (ENOEXEC), not by a named interpreter.
+    const line = /^#![ \t]*([^ \t\n]+)/.exec(head.toString("latin1"))?.[1];
+    return line === undefined ? "unreadable" : { line };
+  }
+  // No `#!`: a binary only if it starts like one. Text the kernel refuses is run by /bin/sh and cannot be judged here.
+  return EXECUTABLE_MAGIC.some((m) => head.subarray(0, m.length).equals(m)) ? "none" : "unreadable";
 }
+const EXECUTABLE_MAGIC: readonly Buffer[] = [
+  Buffer.from("7f454c46", "hex"), // ELF
+  Buffer.from("feedface", "hex"), Buffer.from("feedfacf", "hex"), Buffer.from("cefaedfe", "hex"), Buffer.from("cffaedfe", "hex"), // Mach-O
+  Buffer.from("cafebabe", "hex"), // Mach-O universal
+  Buffer.from("MZ", "latin1"), // PE
+];
 
 /**
  * Resolves `command` the way `ctx.run` will: an absolute path is judged by its real path, a bare name is searched on

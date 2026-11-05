@@ -110,6 +110,33 @@ test("N-3: an interpreter that is itself a script is not followed: the call is p
   assert.ok(!plain.requests[0]?.reasons.includes("opaque-program"));
 });
 
+// R6-A: text the kernel refuses is run by /bin/sh, so it is not judged as a plain binary ------------------------------
+
+const refused: ReadonlyArray<readonly [string, string]> = [
+  ["no #! line", "echo hi\n"],
+  ["an empty #! line followed by a path", "#!\n/bin/true\necho hi\n"],
+  ["blanks, then a newline, then a path", "#! \t\n/usr/bin/true\necho hi\n"],
+  ["an empty file", ""],
+];
+for (const [name, body] of refused) {
+  test(`R6-A: ${name} is opaque and privileged, with no interpreter named`, { skip: skipSh }, async () => {
+    const t = build();
+    writeFileSync(join(t.bin, "prog"), body, { mode: 0o755 });
+    await t.broker.invoke(call("t", {}));
+    assert.equal(t.requests[0]?.tier, "privileged");
+    assert.ok(t.requests[0]?.reasons.includes("opaque-program"));
+    assert.ok(!t.requests[0]?.commands[0]?.includes("interpreter: "), "an approval must not name an interpreter that does not run");
+  });
+}
+
+test("R6-A: a #! line with blanks before the interpreter on the same line is still followed", { skip: skipSh }, async () => {
+  const t = build();
+  writeFileSync(join(t.bin, "prog"), "#! \t/bin/sh\nexit 0\n", { mode: 0o755 });
+  await t.broker.invoke(call("t", {}));
+  assert.ok(t.requests[0]?.commands[0]?.includes('interpreter: "'));
+  assert.ok(!t.requests[0]?.reasons.includes("opaque-program"));
+});
+
 // N-1 / N-2 --------------------------------------------------------------------------------------------------------
 
 test("N-1 / N-2: invisible format characters are shown as code points, and paths in the line are quoted", async () => {
