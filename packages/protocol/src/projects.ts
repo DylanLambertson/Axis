@@ -4,7 +4,7 @@ import { emptyRequestSchema, guarded } from "./guard.js";
 import { projectIdSchema, workspaceNameSchema, type MethodSpec } from "./worktrees.js";
 
 /**
- * `axis.projects/1` (docs/design/daemon-host.md section 4.2 and 7.4).
+ * `axis.projects/1` (docs/design/daemon-host.md on branch docs/daemon-host-design, section 4.2 and 7.4).
  *
  * Read only. A project is registered by main over the control channel, never
  * by a renderer request, so this contract has no write method. It returns ids,

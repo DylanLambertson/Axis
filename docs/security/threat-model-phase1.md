@@ -219,6 +219,8 @@ Writers per workspace: the user (editors, terminals, SCM view), at most one comp
 | EL-4 (**changed**) | T/E | Forged approvals. Tiers 4–5 native dialog (APR-2) ship in 1a; agent approval UI in 1b. | As APR-1, APR-2. | PE, PI |
 | EXT-2 (**changed**) | E | New 1a Axis actions (start CLI run, commit, push, remove) must not be registered as side-effecting commands. | Commands only open UI; side effects go over the bridge with a challenge (axis, 1a, ADR 0003 D4). | PE |
 
+> **Amendment 2026-11-04 (EXT-2).** Starting a CLI run is tier 2, not a challenged action. A CLI run does only what the user could do themselves under their own login in a terminal, and the launch dialog carries the disclosure (the run is governed by the CLI's own permissions). Commit, push and remove stay challenged over the bridge.
+
 ### 4.5 Providers, vault and the Anthropic adapter (Phase 1b)
 
 | ID | Class | Threat and gap | Control (phase) | Test |

@@ -18,9 +18,9 @@ test("the protocol's run statuses are the runs package's RUN_STATUSES", () => {
   assert.deepEqual([...RUN_STATUS_VALUES], [...RUN_STATUSES]);
 });
 
-test("@axis/protocol has no dependency on another @axis package (runtime, peer or optional)", () => {
+test("@axis/protocol has no dependency on another @axis package (runtime, dev, peer or optional)", () => {
   const pkg = JSON.parse(readFileSync(new URL("../../packages/protocol/package.json", import.meta.url), "utf8"));
-  for (const field of ["dependencies", "peerDependencies", "optionalDependencies", "bundledDependencies", "bundleDependencies"]) {
+  for (const field of ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies", "bundledDependencies", "bundleDependencies"]) {
     const names = Array.isArray(pkg[field]) ? pkg[field] : Object.keys(pkg[field] ?? {});
     assert.deepEqual(names.filter((n) => n.startsWith("@axis/")), [], field);
   }

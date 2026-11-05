@@ -9,7 +9,7 @@ import { displayTextSchema, emptyRequestSchema, guarded } from "./guard.js";
 import type { MethodSpec } from "./worktrees.js";
 
 /**
- * `axis.approvals/1` (docs/design/daemon-host.md section 4.2, ADR 0003 D4).
+ * `axis.approvals/1` (docs/design/daemon-host.md on branch docs/daemon-host-design, section 4.2, ADR 0003 D4).
  *
  * `resolve` is the user's answer to a challenge the daemon issued. It is tier
  * 2 on purpose: at tier 3 or above resolving would itself need a challenge.
@@ -25,8 +25,9 @@ export const APPROVALS_VERSION = 1 as const;
 /**
  * Most open challenges one listing can carry: the challenge manager's per-window
  * quota can be configured up to 1024. 1024 challenges are nine values each
- * (9,217 of the 10,000 the message walk allows) and, with the text bounds below
- * at their worst (three UTF-8 bytes per character), about 960 KB of the 1 MiB
+ * (9,218 values counting the envelope, of the 10,000 the message walk allows) and,
+ * with 64-character ids and the text bounds below at their worst (three UTF-8
+ * bytes per character), about 1,003 KB of the 1 MiB (1,048,576 bytes)
  * message limit, so a full listing always fits.
  */
 export const MAX_PENDING_CHALLENGES = 1024;
@@ -34,7 +35,9 @@ export const MAX_PENDING_CHALLENGES = 1024;
 /**
  * Longest `targetSummary` a listing carries. `@axis/challenge` allows 512, which
  * would not fit 1024 challenges in one message; the handler that builds the
- * listing must shorten a longer summary (the full text stays in the
+ * listing must shorten a longer summary to a head, an ellipsis and a tail, cut on
+ * code-point boundaries (never between the halves of a surrogate pair), as
+ * `defaultSummary` in `@axis/challenge` does (the full text stays in the
  * E_APPROVAL_REQUIRED details). The listing fails as a whole otherwise.
  */
 export const MAX_LISTED_SUMMARY = 192;

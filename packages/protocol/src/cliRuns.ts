@@ -4,7 +4,7 @@ import { countSchema, guarded, timestampSchema } from "./guard.js";
 import { runIdSchema, workspaceIdSchema, type MethodSpec } from "./worktrees.js";
 
 /**
- * Runs of a CLI agent in a workspace (docs/design/daemon-host.md section 4.2).
+ * Runs of a CLI agent in a workspace (docs/design/daemon-host.md on branch docs/daemon-host-design, section 4.2).
  *
  * The contract id is `axis.cli-runs`, not the design's `axis.cliRuns`:
  * `contractIdSchema` (the envelope and the hello message) allows lower-case

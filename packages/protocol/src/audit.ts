@@ -5,7 +5,7 @@ import { inspectMessage, type JsonValue } from "./limits.js";
 import type { MethodSpec } from "./worktrees.js";
 
 /**
- * `axis.audit/1` (docs/design/daemon-host.md sections 4.2, 5.4 and 5.5).
+ * `axis.audit/1` (docs/design/daemon-host.md on branch docs/daemon-host-design, sections 4.2, 5.4 and 5.5).
  *
  * Read only. Events are redacted when they are written, and these methods only
  * read them back; nothing here writes, repairs or re-anchors the chain. All

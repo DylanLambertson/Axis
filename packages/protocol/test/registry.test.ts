@@ -22,7 +22,7 @@ import {
 type Row = readonly [contract: string, method: string, sideEffect: string, tier: number, idempotency: string, timeoutMs: number];
 
 /**
- * The registry as docs/design/daemon-host.md section 4.2 gives it (tier, side
+ * The registry as docs/design/daemon-host.md (on branch docs/daemon-host-design) section 4.2 gives it (tier, side
  * effect, idempotency), pinned literally. Adding, removing or changing any
  * method fails this test until the table and the design agree.
  */

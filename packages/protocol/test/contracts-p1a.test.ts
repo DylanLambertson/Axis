@@ -73,13 +73,13 @@ test("approvals.pending: the cap is 1024 and a full listing of worst-case challe
   assert.equal(MAX_LISTED_SUMMARY, 192);
   const fat = (i: number) => ({
     ...challengeA,
-    challengeId: `C${String(i).padStart(21, "0")}`,
+    challengeId: `C${String(i).padStart(63, "0")}`,
     contract: `a${"b".repeat(63)}`,
     method: `A${"b".repeat(63)}`,
     targetSummary: "\u20ac".repeat(MAX_LISTED_SUMMARY),
   });
   const full = Array.from({ length: 1024 }, (_, i) => fat(i));
-  accepts(pendingRes(), { challenges: full }, "1024 challenges with 3-byte summaries and 64-character names");
+  accepts(pendingRes(), { challenges: full }, "1024 challenges with 3-byte summaries and 64-character ids and names");
   rejects(pendingRes(), { challenges: [...full, fat(1024)] }, "1025 challenges");
 });
 

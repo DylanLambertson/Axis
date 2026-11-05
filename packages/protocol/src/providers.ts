@@ -4,7 +4,7 @@ import { emptyRequestSchema, guarded, safeTextSchema } from "./guard.js";
 import type { MethodSpec } from "./worktrees.js";
 
 /**
- * `axis.providers/1`, list only (docs/design/daemon-host.md section 4.2).
+ * `axis.providers/1`, list only (docs/design/daemon-host.md on branch docs/daemon-host-design, section 4.2).
  *
  * Read only and without any credential: it names the registered adapters, the
  * connection each is bound to and where its requests go (PRV-4), so the UI can
@@ -18,9 +18,12 @@ export const PROVIDERS_VERSION = 1 as const;
 export const MAX_PROVIDERS = 64;
 
 /**
- * Bounds follow `@axis/providers` (the descriptor `guardProvider` checks), or
- * are looser, so no adapter that passes there can make the whole list fail:
- * display name 1 to 128, description 1 to 512, origin a bare https origin.
+ * Length bounds follow `@axis/providers` (the descriptor `guardProvider`
+ * checks): display name 1 to 128, description 1 to 512, origin a bare https
+ * origin. The character rules are stricter, not looser (display text has no
+ * edge whitespace and no control, bidi or zero-width characters), so an adapter
+ * that passes `@axis/providers` can still make the whole list fail until it
+ * adopts them (docs/packages.md, "Display text is held to rules").
  * The connection id is the one deliberate tightening: it must be a vault
  * connection name (`NAME_RE` in `@axis/vault`), never free text, so a
  * credential or a URL with a password in a wrongly wired adapter cannot reach
