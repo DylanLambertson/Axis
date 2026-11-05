@@ -14,7 +14,7 @@ diff --git a/src/vs/platform/native/common/native.ts b/src/vs/platform/native/co
 + * characters, and nothing else, because any other part of a URL can carry tokens or line breaks.
 + */
 +export function axisOpenExternalSchemeForLog(url: string): string {
-+	const scheme = /^([a-z][a-z0-9+.-]{0,31}):/i.exec(url)?.[1].toLowerCase();
++	const scheme = /^([a-z][a-z0-9+.-]{0,15}):/i.exec(url)?.[1].toLowerCase();
 +	return scheme ?? 'invalid';
 +}
 +

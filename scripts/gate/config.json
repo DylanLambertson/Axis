@@ -1,6 +1,7 @@
 {
   "lineLimit": 500,
-  "lineLimitExemptFiles": ["package-lock.json", "jobs.json"],
+  "lineLimitExemptFiles": ["package-lock.json"],
+  "lineLimitExemptPaths": ["scripts/code-oss/icons/jobs.json"],
   "lineLimitExemptExtensions": [".png", ".icns", ".xpm", ".svg", ".patch", ".lock", ".ico", ".jpg", ".woff", ".woff2"],
   "forbiddenWording": [
     "co-authored-by",

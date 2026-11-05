@@ -29,7 +29,8 @@ suite('Axis defaults', () => {
 	});
 
 	test('makes no background extension gallery requests by default', () => {
-		assert.strictEqual(AXIS_DEFAULT_SETTINGS['extensions.autoUpdate'], false);
+		assert.strictEqual(AXIS_DEFAULT_SETTINGS['extensions.autoUpdate'], 'off');
+		assert.strictEqual(AXIS_DEFAULT_SETTINGS['extensions.ignoreRecommendations'], true);
 		assert.strictEqual(AXIS_DEFAULT_SETTINGS['extensions.autoCheckUpdates'], false);
 	});
 

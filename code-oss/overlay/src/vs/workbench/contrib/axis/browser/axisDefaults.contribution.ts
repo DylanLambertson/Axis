@@ -45,8 +45,11 @@ export const AXIS_DEFAULT_SETTINGS: Readonly<Record<string, unknown>> = Object.f
 
 	// No background gallery traffic until the user opts in: Open VSX is the gallery (patch 1030), and
 	// development builds install updates without signature verification.
-	'extensions.autoUpdate': false,
+	// autoUpdate takes 'on' | 'off' in this Code OSS version, not a boolean: the menus compare against 'off'.
+	'extensions.autoUpdate': 'off',
 	'extensions.autoCheckUpdates': false,
+	// Workspace recommendations (.vscode/extensions.json) query the gallery without user action.
+	'extensions.ignoreRecommendations': true,
 });
 
 Registry.as<IConfigurationRegistry>(Extensions.Configuration).registerDefaultConfigurations([{
