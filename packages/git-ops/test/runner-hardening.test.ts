@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { chmodSync, existsSync, symlinkSync, writeFileSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { GitOpsError, createNodeRunner } from "../src/index.js";
-import { readExcludeDirs } from "../src/excludeDirs.js";
+import { BAD_EXCLUDES, readExcludeDirs } from "../src/excludeDirs.js";
 import { fixture } from "./realFixture.js";
 
 const posix = process.platform !== "win32";
@@ -49,6 +49,7 @@ test("exotic excludeDirs results (Proxy, throwing getter, subclasses, extra prop
     await assert.rejects(runner.run({ ...version, cwd: a.wt.workTree }), (e: unknown) => {
       assert.ok(e instanceof GitOpsError, `${name}: a raw error leaked: ${String(e)}`);
       assert.equal(e.code, "E_UNAVAILABLE", name);
+      assert.equal(e.message, BAD_EXCLUDES, `${name}: refused by something other than the shape check`);
       assert.doesNotMatch(e.message, /SECRET/, name);
       return true;
     });
@@ -98,7 +99,7 @@ test("GIT_EXEC_PATH, GIT_CONFIG* and GIT_DIR in the request environment are refu
   assert.equal(existsSync(join(f.wt.workTree, "planted-ran-git-axisx")), false);
 });
 
-test("only git's option area is scanned: a pathspec -Cache after `--` or the subcommand and a -c value starting with -C are data", { skip: !posix }, async () => {
+test("only git's option area is scanned: a pathspec -Cache after the subcommand and a -c value starting with -C are data", { skip: !posix }, async () => {
   const f = fixture();
   const runner = createNodeRunner({ allowPtyContext: true, allowUnpinnedGit: true });
   const ok = async (argv: string[]): Promise<void> => {
@@ -108,7 +109,60 @@ test("only git's option area is scanned: a pathspec -Cache after `--` or the sub
   await ok(["status", "--porcelain", "--", "-Cache"]);
   await ok(["ls-files", "--", "-Cache", "--exec-path=x"]);
   await ok(["-c", "user.name=-Cx", "status", "--porcelain"]);
+  await ok(["--no-pager", "--no-replace-objects", `--git-dir=${f.wt.gitDir}`, `--work-tree=${f.wt.workTree}`, "-c", "core.fsmonitor=false", "status", "--porcelain"]);
   // Control: the same text in the option area is refused.
   await assert.rejects(runner.run({ argv: ["-Cache", "status"], cwd: f.wt.workTree, env: {}, context: "pty" }), denied);
   await assert.rejects(runner.run({ argv: ["-c", "a.b=c", "-C", f.wt.workTree, "status"], cwd: f.wt.workTree, env: {}, context: "pty" }), denied);
 });
+
+test("the option area is a closed set: an unknown global option (--shallow-file <file>, or a typo) cannot hide -C, --git-dir, --work-tree or --exec-path", { skip: !posix }, async () => {
+  const f = fixture();
+  const other = fixture();
+  planted(f.wt.workTree, "git-axisx");
+  const runner = createNodeRunner({ allowPtyContext: true, allowUnpinnedGit: true });
+  const wt = f.wt.workTree;
+  const bypass: string[][] = [
+    ["--shallow-file", "x", `--exec-path=${wt}`, "axisx"],
+    ["--shallow-file", "x", "--exec-path", wt, "axisx"],
+    ["--shallow-file", "x", "-C", other.wt.workTree, "rev-parse", "--show-toplevel"],
+    ["--shallow-file", "x", "--git-dir", `${other.wt.gitDir}`, "--work-tree", other.wt.workTree, "rev-parse", "--show-toplevel"],
+    ["--shallow-file=x", "status"],
+    ["--shallow-file", "status"],
+    ["--exec-path=x", "status"],
+    ["--bogus", "x", "status"],
+    ["--", "status"],
+    ["-p", "status"],
+    ["-c"],
+  ];
+  for (const argv of bypass) await assert.rejects(runner.run({ argv, cwd: wt, env: {}, context: "pty" }), denied, JSON.stringify(argv));
+  assert.equal(existsSync(join(wt, "planted-ran-git-axisx")), false);
+});
+
+test("-c alias.* and --config-env are refused, so no alias can run a planted helper or shell command", { skip: !posix }, async () => {
+  const f = fixture();
+  planted(f.wt.workTree, "git-axisx");
+  const runner = createNodeRunner({ allowPtyContext: true, allowUnpinnedGit: true });
+  const marker = join(f.root, "alias-ran");
+  const cases: Array<{ argv: string[]; env?: Record<string, string> }> = [
+    { argv: ["-c", `alias.zz=!${join(f.wt.workTree, "git-axisx")}`, "zz"] },
+    { argv: ["-c", `alias.zz=!touch ${marker}`, "zz"] },
+    { argv: ["-c", `ALIAS.zz=!touch ${marker}`, "zz"] },
+    { argv: ["--config-env=alias.zz=V", "zz"], env: { V: `!touch ${marker}` } },
+    { argv: ["--config-env", "alias.zz=V", "zz"], env: { V: `!touch ${marker}` } },
+  ];
+  for (const c of cases) await assert.rejects(runner.run({ argv: c.argv, cwd: f.wt.workTree, env: c.env ?? {}, context: "pty" }), denied, JSON.stringify(c.argv));
+  assert.equal(existsSync(marker), false);
+  assert.equal(existsSync(join(f.wt.workTree, "planted-ran-git-axisx")), false);
+});
+
+test("the redirect variables the package's own lists name are refused in the request environment", { skip: !posix }, async () => {
+  const f = fixture();
+  const runner = createNodeRunner({ allowPtyContext: true, allowUnpinnedGit: true });
+  for (const name of ["GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE", "GIT_SHALLOW_FILE", "GIT_TEMPLATE_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR"]) {
+    await assert.rejects(runner.run({ argv: ["--version"], cwd: f.wt.workTree, env: { [name]: "/x" }, context: "pty" }), denied, name);
+  }
+  // GIT_INDEX_FILE is set by the bound commit itself, and a shell profile's identity variables are checked elsewhere.
+  const r = await runner.run({ argv: ["--version"], cwd: f.wt.workTree, env: { GIT_INDEX_FILE: join(f.root, "idx"), GIT_AUTHOR_NAME: "x" }, context: "pty" });
+  assert.equal(r.code, 0);
+});
+
