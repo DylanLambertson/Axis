@@ -5,6 +5,7 @@ import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { diffSnapshots, judgeDrift, parseSnapshot, takeSnapshot, type TakeOptions } from "../src/index.js";
 import { resolveGit } from "../src/git.js";
+import { CRITICAL_LABELS } from "../src/settings.js";
 import { git, makeFixture, type Fixture } from "./helpers.js";
 
 const posix = process.platform !== "win32";
@@ -162,4 +163,30 @@ test("a listing over the byte limit blocks, it is not scanned to the end", { ski
   } finally {
     f.cleanup();
   }
+});
+
+test("moving a flag among files that are past the shown text still changes the digest", { skip: !posix }, async () => {
+  const f = makeFixture();
+  try {
+    const many: string[] = [];
+    for (let i = 0; i < 1500; i++) many.push(`src/m${i}.ts`);
+    track(f, ...many, "zz/one.ts", "zz/two.ts");
+    git(f.wt, "update-index", "--skip-worktree", ...many, "zz/one.ts");
+    const before = await takeSnapshot(opts(f));
+    const entry = before.entries.find((e) => e.id === "index/flags");
+    assert.equal(entry?.textTruncated, true);
+    assert.ok(!entry.text?.includes("zz/one.ts"), "the file is past the shown text");
+    git(f.wt, "update-index", "--no-skip-worktree", "zz/one.ts");
+    git(f.wt, "update-index", "--skip-worktree", "zz/two.ts");
+    const after = await takeSnapshot(opts(f));
+    assert.equal(after.settings.find((s) => s.key === "index.flagged-count")?.value, before.settings.find((s) => s.key === "index.flagged-count")?.value);
+    assert.equal(after.entries.find((e) => e.id === "index/flags")?.text, entry.text, "the shown text is the same");
+    assert.equal(judgeDrift({ baseline: before, current: after }).status, "unacknowledged");
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("the index flag label is a critical label", () => {
+  assert.equal(CRITICAL_LABELS.has("index flag hides changes"), true);
 });
