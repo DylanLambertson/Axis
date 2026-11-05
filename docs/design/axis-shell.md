@@ -44,7 +44,7 @@ This design was one document; it is now split into focused files. Section number
 | §2 Stage 1: restyle (§2.1–§2.9) | [`axis-shell-stage1.md`](axis-shell-stage1.md) |
 | §3 Stage 2: the `src/vs/axis` layer (§3.1–§3.10), §4 React plan, §5 accessibility | [`axis-shell-stage2.md`](axis-shell-stage2.md) |
 | §6 M3 tasks (S1.x, GATE-D, S2.x) | [`axis-shell-tasks.md`](axis-shell-tasks.md) |
-| Agent-first Stage 2 (ADR 0004) | [`axis-agent-shell.md`](axis-agent-shell.md) |
+| Agent-first Stage 2 (ADR 0004); building and running the shell; what Phase 0 measured | [`axis-agent-shell.md`](axis-agent-shell.md), [`axis-shell-runbook.md`](axis-shell-runbook.md), [`../feasibility/axis-shell-phase0.md`](../feasibility/axis-shell-phase0.md) |
 
 ## 0. Summary of decisions
 

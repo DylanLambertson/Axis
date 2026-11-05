@@ -2,6 +2,7 @@
 
 - **Status:** Draft; design decisions D-1 to D-13 recorded 2026-11-02 (§9.2); D-11 is now ADR 0004 decision 14. Aligned with ADR 0004 as merged on `main` (`a0cb0a3`, amended in this branch for D-13 and the Phase 1a audit log), including its resolved questions. The items ADR 0004 defers to this design, and the terminal, git, snapshot, shortcut and wording policies, are in the companion `axis-agent-shell-policies.md` (the "policies"). It replaces the IDE-first Stage 2 of `docs/design/axis-shell.md` §3 and §6 (S2.x). Stage 1 (§2 and §2.9 there) is done and still applies. Product direction comes from ADR 0004 (`docs/adr/0004-agent-first-workspace-shell.md`), which this document implements and does not restate.
 - **Date:** 2026-11-02
+- **As built:** the Phase 0 slice of tasks A1 to A4 and A6 (view modes, dashboard, workspace view, split) is on `feat/axis-shell-a1`; its deviations from this design and what it does not do yet are in `docs/feasibility/axis-shell-phase0.md` §5, and how to run it in `axis-shell-runbook.md`.
 - **Upstream baseline:** Code OSS `1.144.0`, commit `2c33b50b16c472efe58357d1d2a8a5414bc23fbf`.
 - **Inputs:** ADR 0002 (decisions 1–7, criteria 1–7), ADR 0003 (D1–D7), ADR 0004 (decisions 1–14, as merged), `docs/design/axis-shell.md`, `docs/security/threat-model-phase0.md`, `docs/AGENT_SYSTEM.md`, `docs/feasibility/code-oss-inventory.md` §3–4, and the upstream `src/vs/sessions` specifications (`README.md`, `LAYOUT.md`, `LAYERS.md`, `LAYOUT_CONTROLLER.md`, `DESKTOP.md`, `SESSIONS.md`).
 - **Conventions:** as in `axis-shell.md`.
