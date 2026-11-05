@@ -72,7 +72,7 @@ test("R4-A: a script is judged by its #! interpreter: a shell raises the tier, a
   writeFileSync(join(a.bin, "prog"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
   await a.broker.invoke(call("t", {}));
   assert.ok(a.requests[0]?.reasons.includes("launcher"), "a script run by a shell is a launcher");
-  assert.ok(a.requests[0]?.commands[0]?.includes("interpreter: "));
+  assert.ok(a.requests[0]?.commands[0]?.includes('interpreter: "'), "the interpreter path is quoted");
   // An interpreter that is not a launcher by name is pinned: replacing it after the decision is refused.
   const b = pinRig((bin) => appendFileSync(join(bin, "..", "interp"), "\n"));
   const interp = join(b.w.base, "interp");

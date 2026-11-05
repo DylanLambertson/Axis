@@ -3,37 +3,14 @@
 // or chained script is not judged as a plain program, and invisible characters are shown as code points.
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, copyFileSync, mkdirSync, realpathSync, utimesSync, writeFileSync, readFileSync } from "node:fs";
+import { chmodSync, realpathSync, utimesSync, writeFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
-import { ToolBroker, createCommandRunner, nodeBrokerFs, type ApprovalRequest, type BrokerFs, type FileStat, type ToolContext } from "../src/index.js";
-import { call, cleanupWorlds, def, grant, rig, skipSh, why, worlds } from "./rig.js";
-import { makeWorld } from "./helpers.js";
+import { nodeBrokerFs, type FileStat } from "../src/index.js";
+import { call, cleanupWorlds, def, grant, rig, skipSh, why } from "./rig.js";
+import { build } from "./buildRig.js";
 
 after(cleanupWorlds);
-const lim = { timeoutMs: 5000, maxOutputBytes: 1000 };
-
-function build(o: { fs?: (flag: { on: boolean }) => BrokerFs; mutate?: (bin: string) => void } = {}) {
-  const w = makeWorld();
-  worlds.push(w);
-  const bin = join(w.base, "bin");
-  mkdirSync(bin);
-  const flag = { on: false };
-  const requests: ApprovalRequest[] = [];
-  const broker = new ToolBroker({
-    registry: w.registry, fs: o.fs?.(flag) ?? nodeBrokerFs, audit: { append: () => ({}) as never }, runner: createCommandRunner({ killGraceMs: 200 }),
-    parentEnv: () => ({ PATH: bin, HOME: w.base }),
-    approval: { request: async (q: ApprovalRequest) => { requests.push(q); flag.on = true; o.mutate?.(bin); return grant(q); } },
-  });
-  broker.register(def({ name: "t", tier: "network", args: z.strictObject({}), argv: () => ["prog"], run: async (ctx: ToolContext) => ctx.run({ command: "prog", args: [], ...lim }) }));
-  const install = (name = "prog"): string => {
-    copyFileSync(realpathSync("/bin/true"), join(bin, name));
-    chmodSync(join(bin, name), 0o755);
-    return join(bin, name);
-  };
-  return { w, bin, broker, requests, install };
-}
-
 // R5-A: each identity field, alone -----------------------------------------------------------------------------------
 
 for (const field of ["id", "size", "mtime", "ctime"] as const) {
@@ -108,6 +85,33 @@ test("N-3: an interpreter that is itself a script is not followed: the call is p
   plain.install();
   await plain.broker.invoke(call("t", {}));
   assert.ok(!plain.requests[0]?.reasons.includes("opaque-program"));
+});
+
+// R6-A: text the kernel refuses is run by /bin/sh, so it is not judged as a plain binary ------------------------------
+
+const refused: ReadonlyArray<readonly [string, string]> = [
+  ["no #! line", "echo hi\n"],
+  ["an empty #! line followed by a path", "#!\n/bin/true\necho hi\n"],
+  ["blanks, then a newline, then a path", "#! \t\n/usr/bin/true\necho hi\n"],
+  ["an empty file", ""],
+];
+for (const [name, body] of refused) {
+  test(`R6-A: ${name} is opaque and privileged, with no interpreter named`, { skip: skipSh }, async () => {
+    const t = build();
+    writeFileSync(join(t.bin, "prog"), body, { mode: 0o755 });
+    await t.broker.invoke(call("t", {}));
+    assert.equal(t.requests[0]?.tier, "privileged");
+    assert.ok(t.requests[0]?.reasons.includes("opaque-program"));
+    assert.ok(!t.requests[0]?.commands[0]?.includes("interpreter: "), "an approval must not name an interpreter that does not run");
+  });
+}
+
+test("R6-A: a #! line with blanks before the interpreter on the same line is still followed", { skip: skipSh }, async () => {
+  const t = build();
+  writeFileSync(join(t.bin, "prog"), "#! \t/bin/sh\nexit 0\n", { mode: 0o755 });
+  await t.broker.invoke(call("t", {}));
+  assert.ok(t.requests[0]?.commands[0]?.includes('interpreter: "'));
+  assert.ok(!t.requests[0]?.reasons.includes("opaque-program"));
 });
 
 // N-1 / N-2 --------------------------------------------------------------------------------------------------------

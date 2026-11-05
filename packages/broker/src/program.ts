@@ -4,6 +4,7 @@ import { resolveExecutable, nodeFs } from "@axis/pty-policy";
 import { BrokerError, denied, invalid } from "./errors.js";
 import type { BrokerFs } from "./fs.js";
 import { isUnder } from "./contain.js";
+import { isNativeExecutable } from "./executable.js";
 import type { Env } from "./types.js";
 
 /** A file at a moment: `dev:ino`, size and both times. A rename over it, a copy in its place or an in-place edit all change it. */
@@ -37,22 +38,31 @@ async function identify(d: Deps, path: string): Promise<FileIdentity> {
   return { real, identity: [st.id, st.size, st.mtime, st.ctime].join(":") };
 }
 
-/** The interpreter a `#!` line names, `"none"` for a binary, or `"unreadable"` when the file cannot be read. */
+/** The interpreter a `#!` line names, `"none"` for a file that starts like a binary, or `"unreadable"` for one that cannot be read or judged. */
 async function shebang(d: Deps, real: string): Promise<{ readonly line: string } | "none" | "unreadable"> {
-  let head: Buffer;
+  let all: Buffer, size: number;
   try {
     const f = await d.fs.open(real, "read");
     try {
-      head = await f.read(256);
+      size = (await f.stat()).size;
+      // One page: the most the kernel reads for an ELF program header table. The `#!` rules only ever look at the first 256 bytes.
+      all = await f.read(4096);
     } finally {
       await f.close();
     }
   } catch {
     return "unreadable";
   }
-  if (head.length < 2 || head[0] !== 0x23 || head[1] !== 0x21) return "none";
-  const line = /^#!\s*(\S+)/.exec(head.toString("latin1"))?.[1];
-  return line === undefined ? "unreadable" : { line };
+  const head = all.subarray(0, 256);
+  if (head.length >= 2 && head[0] === 0x23 && head[1] === 0x21) {
+    // The kernel's rule: blanks, then a word on the same line that stops at a blank, a newline or a NUL.
+    const m = /^#![ \t]*([^ \t\n\0]+)/.exec(head.toString("latin1"));
+    // A full buffer with no newline whose word runs to its end is refused by the kernel (the path may be cut): /bin/sh runs it.
+    if (m === null || (head.length === 256 && !head.includes(0x0a) && m[0].length === head.length)) return "unreadable";
+    return { line: m[1] as string };
+  }
+  // No `#!`: a program only if it is one the loader accepts. Text the kernel refuses (even with a magic prefix) is run by /bin/sh.
+  return isNativeExecutable(all, d.platform, { size }) ? "none" : "unreadable";
 }
 
 /**
