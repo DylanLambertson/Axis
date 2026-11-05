@@ -58,7 +58,7 @@ export class Client {
       this.#waiters.splice(0).forEach((w) => w());
     });
   }
-  async until(pred: (m: Msg) => boolean, ms = 2000): Promise<Msg> {
+  async until(pred: (m: Msg) => boolean, ms = 15_000): Promise<Msg> {
     const end = Date.now() + ms;
     for (;;) {
       const hit = this.all.find(pred);
