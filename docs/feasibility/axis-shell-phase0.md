@@ -17,7 +17,7 @@
 | Gate item 3: switching in `perWorkspace` and `split`; a file click opens IDE view at the file; returning keeps workspace and editor state | **Passed** by keyboard (§4): 12 of 12 smoke steps; key events and typed text only, plus a settings-file write for the mode |
 | Gate item 4: shell footprint measured against criterion 2 | **Passed** (§2) |
 | No part recreated and no extension host restart across 20 toggles | **Passed**: the part element is the same object and the app's Node utility processes (the extension host among them) keep the same pids |
-| Unit tests (`./scripts/test.sh --grep Axis`, Electron renderer) | **Passed**: 65 of 65, eight of them on the real disk with real git and symbolic links |
+| Unit tests (`./scripts/test.sh --grep Axis`, Electron renderer) | **Passed**: 78 of 78, ten of them on the real disk with real git and symbolic links |
 | macOS | **Not run** on this host. The runbook gives the commands and the one background launch |
 | Screen reader | **Not run**. Announcements were checked as live-region text, not with Orca or VoiceOver |
 
@@ -132,4 +132,13 @@ A fourth review showed that the upstream `realpath` is not a safe check. When No
 - **Component walk.** A path is physical only if every prefix exists and none is a symbolic link, checked one component at a time with the file service's `stat` (which reports a link at the last component, as `lstat` does), with at most 64 components; any failure refuses. It applies to every git dir, the `worktrees` folder and every worktree folder; worktree entries are real directories from `readdir`, and the common dir is a prefix of a checked git dir.
 - **`realpath` only for the opened folder**, raced against 3 seconds, and its answer is walked too. Each opened folder and each worktree entry is also raced against 5 seconds, so one slow entry is refused without holding up the others.
 - **Tests on the real disk** (fail on the previous head): the `x/..` form for a worktree entry, a common dir and a submodule git dir; a folder opened through that form; and the looping link in a worktree entry and in a submodule `gitdir`, with discovery finishing within 4 seconds and still listing the other folder's worktrees. Mutants: links ignored by the walk (10 tests fail), the earlier `realpath` comparison put back (3), the opened folder's answer not walked (1), the `worktrees` folder not walked (1).
-- **Residual:** a `realpath` that never finishes on the opened folder keeps running in the background after the 3-second limit (it cannot be cancelled); only a folder the user chose to open can cause it, and the folder is refused.
+- **Residual:** a `realpath` that never finishes on the opened folder keeps running in the background after its limit (it cannot be cancelled); only a folder the user chose to open can cause it, and the folder is refused. The fifth review narrowed this further (below).
+
+A fifth review approved the walk and found that each refresh started another stranded `realpath` on a looping opened folder, so CPU use grew with every refresh, and that a workspace file listing several such folders added three seconds each. Fixed the same day:
+
+- **No `realpath` for a folder without a link.** The opened folder is walked first and used as it is when no component is a link; `realpath` is asked only when one is.
+- **One request per path.** A `realpath` request for an opened folder is kept and reused by later discoveries: while it is pending past its 1-second limit the folder is refused at once, and a settled answer (or refusal) is reused for five minutes. So a looping folder costs one stranded request, not one per refresh.
+- **Bounded opened folders.** At most 50 opened folders are checked per discovery, four at a time.
+- **Metadata paths.** A `.` or `..` in a git metadata path after a name, or anywhere in an absolute one, is refused instead of normalised (git writes only leading `..`), so `x/..` can never be collapsed before the walk.
+- **Depth.** The component limit is 96, so a linked worktree's admin dir (its checkout's depth plus three) still fits for a repository about 90 folders deep.
+- **Tests:** on disk, a looping opened folder discovered three times makes exactly one `realpath` request (counted on the provider) and only the first discovery waits; five looping folders and a real repository in one workspace finish within 4 seconds and list the real one, with no request for the folder that has no link. In memory, a repository 90 folders deep lists its worktrees from the worktree side; the `.`/`..` rule has unit tests. Mutants: no memoization, `realpath` even without a link, a pending request waited for again, one folder at a time, dots allowed after a name, and a 64-component limit each fail one test.
