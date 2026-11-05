@@ -113,7 +113,7 @@ test("the verified head is cached: later calls check only new events, a full re-
   assert.deepEqual(found, { ok: false, firstBadSeq: 100, reason: "hash_mismatch", checked: 99 });
 });
 
-test("a cached head that is no longer on the chain makes one full re-scan, and its result is reported", async () => {
+test("a cached head that is no longer on the chain is a cut tail: reported as a failure, never ok", async () => {
   const { db, log } = memoryLog(3000);
   const r = rig(log, { sliceEvents: 1000 });
   await r.run();
@@ -121,9 +121,48 @@ test("a cached head that is no longer on the chain makes one full re-scan, and i
   db.exec("DELETE FROM audit_events WHERE seq > 2500");
   r.verifyCalls.length = 0;
   const out = auditVerifyResponseSchema.parse(await r.run());
-  assert.deepEqual(out, { ok: true, count: 2500, head: log.head() });
+  assert.deepEqual(out, { ok: false, firstBadSeq: 2501, reason: "truncated", checked: 2500 });
   assert.equal(r.verifyCalls[0]?.from?.seq, 3000, "tried the cached head first");
-  assert.equal(r.verifyCalls[1]?.from, undefined, "then started over");
+  assert.equal(r.verifyCalls[1]?.from, undefined, "then started over from the first event");
+  // The failure dropped the cache: the next call starts from the first event again.
+  r.verifyCalls.length = 0;
+  await r.run();
+  assert.equal(r.verifyCalls[0]?.from, undefined);
+});
+
+test("a tail cut below the verified head but above the acknowledged anchor is not reported ok", async () => {
+  const { db, log } = memoryLog(3000);
+  const anchor = must(log.list({ afterSeq: 2989, limit: 1 })[0]);
+  const r = rig(log, { sliceEvents: 1000, anchors: { status: () => ({ ...idle, anchor: { seq: 2990, hash: anchor.hash } }) } });
+  assert.equal(auditVerifyResponseSchema.parse(await r.run()).ok, true);
+  unlock(db);
+  db.exec("DELETE FROM audit_events WHERE seq > 2994");
+  const out = auditVerifyResponseSchema.parse(await r.run());
+  assert.deepEqual(out, { ok: false, firstBadSeq: 2995, reason: "truncated", checked: 2994 });
+});
+
+test("the defaults: 2000-event slices, a 25 s deadline and a 10 minute full re-scan", async () => {
+  const { log } = memoryLog(4001);
+  const r = rig(log);
+  await r.run();
+  assert.deepEqual(r.verifyCalls.map((c) => c.limit), [2000, 2000, 2000]);
+  assert.deepEqual(r.verifyCalls.map((c) => c.from?.seq), [undefined, 2000, 4000]);
+  r.advance(599_999);
+  r.verifyCalls.length = 0;
+  await r.run();
+  assert.equal(r.verifyCalls[0]?.from?.seq, 4001);
+  r.advance(1);
+  r.verifyCalls.length = 0;
+  await r.run();
+  assert.equal(r.verifyCalls[0]?.from, undefined);
+  // The deadline: 25 000 ms elapsed is still served, one more is not.
+  const two = memoryLog(2001).log; // two slices, so one yield
+  for (const [elapsed, ok] of [[25_000, true], [25_001, false]] as const) {
+    let t = 0;
+    const d = rig(two, { clock: { monotonic: () => t } , yieldNow: async () => void (t += elapsed) });
+    if (ok) assert.equal(auditVerifyResponseSchema.parse(await d.run()).ok, true, String(elapsed));
+    else await assert.rejects(d.run(), (e) => code(e) === "E_TIMEOUT");
+  }
 });
 
 test("a failure in a later slice reports the absolute number of events checked", async () => {
@@ -134,16 +173,20 @@ test("a failure in a later slice reports the absolute number of events checked",
   assert.deepEqual(out, { ok: false, firstBadSeq: 2200, reason: "hash_mismatch", checked: 2199 });
 });
 
-test("a verification past its deadline ends with E_TIMEOUT and keeps its progress", async () => {
+test("a verification past its deadline ends with E_TIMEOUT and the next call resumes from the progress", async () => {
   const { log } = memoryLog(4000);
+  let step = 10;
   let t = 0;
-  const r = rig(log, { sliceEvents: 1000, deadlineMs: 25, clock: { monotonic: () => (t += 10) } });
+  const r = rig(log, { sliceEvents: 1000, deadlineMs: 25, clock: { monotonic: () => (t += step) } });
   await assert.rejects(r.run(), (e) => code(e) === "E_TIMEOUT" && (e as Error).message === "The verification took too long.");
-  assert.ok(r.verifyCalls.length >= 1 && r.verifyCalls.length < 4);
   const done = r.verifyCalls.length;
-  const again = rig(log, { sliceEvents: 1000 });
-  assert.equal(done > 0, true);
-  assert.equal(auditVerifyResponseSchema.parse(await again.run()).ok, true);
+  assert.ok(done >= 1 && done < 4, `${done} slices before the deadline`);
+  step = 0;
+  r.verifyCalls.length = 0;
+  const out = auditVerifyResponseSchema.parse(await r.run());
+  assert.equal(out.ok && out.count, 4000);
+  assert.equal(r.verifyCalls[0]?.from?.seq, done * 1000, "resumed from the head the first call reached");
+  assert.equal(r.verifyCalls.length, 4 - done);
 });
 
 const bigEvent = (seq: number) => ({
@@ -195,6 +238,32 @@ test("the registrar guards every tier 3 and above handler itself: an unguarded o
   assert.equal(ran, 1);
   assert.throws(() => registrar.register("axis.audit", 1, { nope: raw }), /No such method/);
   assert.ok(Object.isFrozen(registrar));
+});
+
+test("handlers registered with a content hook (the tier 4 path) are guarded too, and the options reach the daemon", () => {
+  const seen: Array<{ handlers: Record<string, Handler>; options: unknown }> = [];
+  let stalled = true;
+  const guard = {
+    check: (tier: number) => {
+      if (stalled && tier >= 3) throw Object.assign(new Error("stalled"), { code: "E_UNAVAILABLE" });
+    },
+  };
+  const registrar = createHandlerRegistrar(
+    { register: (_c: string, _v: number, handlers: Readonly<Record<string, Handler>>, options?: unknown) => void seen.push({ handlers: { ...handlers }, options }) },
+    guard,
+  );
+  let ran = 0;
+  const raw: Handler = () => void ran++;
+  const content = { remove: (() => undefined) as never };
+  registrar.register("axis.worktrees", 1, { remove: raw }, { content });
+  const only = must(seen[0]);
+  assert.notEqual(only.handlers["remove"], raw, "wrapped although options were given");
+  assert.deepEqual(only.options, { content }, "the options are passed through unchanged");
+  assert.throws(() => (only.handlers["remove"] as Handler)({} as never, {} as never), (e) => code(e) === "E_UNAVAILABLE");
+  assert.equal(ran, 0);
+  stalled = false;
+  (only.handlers["remove"] as Handler)({} as never, {} as never);
+  assert.equal(ran, 1);
 });
 
 test("a handler that is already guarded is not wrapped twice", () => {

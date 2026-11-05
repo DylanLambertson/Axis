@@ -70,3 +70,8 @@ test("a limit that is not a positive integer is refused", () => {
     assert.throws(() => l.verify({ limit }), (e: unknown) => (e as { code?: string }).code === "E_INVALID_ARGUMENT", String(limit));
   }
 });
+
+test("the limit is validated before anything else, even when `from` would fail first", () => {
+  const { log: l } = log(2);
+  assert.throws(() => l.verify({ from: { seq: 99, hash: "0".repeat(64) }, limit: 0 }), (e: unknown) => (e as { code?: string }).code === "E_INVALID_ARGUMENT");
+});

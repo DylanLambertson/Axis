@@ -129,7 +129,7 @@ export function createAuditHandlers(deps: AuditHandlerDeps): { readonly status: 
 
   const scan = async (context: HandlerContext): Promise<unknown> => {
     const started = deps.clock.monotonic();
-    const anchor = read(() => deps.anchors.status().anchor);
+    let anchor = read(() => deps.anchors.status().anchor);
     let fullAt = started;
     let from: ChainHead | undefined;
     if (cache !== undefined && started - cache.fullAt < fullEvery) ({ head: from, fullAt } = cache);
@@ -144,13 +144,15 @@ export function createAuditHandlers(deps: AuditHandlerDeps): { readonly status: 
       );
       if (!r.ok) {
         cache = undefined;
-        // A failure at or before the cached head means the cache no longer matches the chain: start over once.
+        // A failure at or before the cached head means the cache no longer matches the chain: start over once. Rows
+        // are append-only, so a head this handler verified that has since vanished or changed is tampering: the full
+        // scan is held to the HIGHER of the anchor and that head, and so reports a cut tail instead of an ok.
         if (!restarted && from !== undefined && r.firstBadSeq <= from.seq) {
           restarted = true;
+          if (anchor === null || from.seq > anchor.seq) anchor = from;
           from = undefined;
           base = 0;
           done = 0;
-          fullAt = deps.clock.monotonic();
           continue;
         }
         return checked(auditVerifyResponseSchema.safeParse({ ...r, checked: base + done + r.checked }));

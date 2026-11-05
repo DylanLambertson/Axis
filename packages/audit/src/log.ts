@@ -334,6 +334,10 @@ export class AuditLog implements AuditSink {
   }
 
   #verify(options: VerifyOptions): VerifyResult {
+    const limit = options.limit;
+    if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1)) {
+      throw new AxisError("E_INVALID_ARGUMENT", "limit must be a positive integer");
+    }
     const from = options.from;
     let expectedSeq = (from?.seq ?? 0) + 1;
     let prevHash = from?.hash ?? GENESIS_HASH;
@@ -351,10 +355,6 @@ export class AuditLog implements AuditSink {
       if (anchorRow.hash !== from.hash || hashEvent(anchorRow) !== from.hash) {
         return { ok: false, firstBadSeq: from.seq, reason: "hash_mismatch", checked };
       }
-    }
-    const limit = options.limit;
-    if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1)) {
-      throw new AxisError("E_INVALID_ARGUMENT", "limit must be a positive integer");
     }
     let more = false;
     // One row past the limit tells whether the slice ended before the log did.

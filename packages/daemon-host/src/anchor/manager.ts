@@ -150,11 +150,11 @@ export class AnchorManager implements AnchorGuard {
     } catch {
       // Not sent: undo (unless an ack already consumed the entry), stay dirty, retry on the next tick.
       const i = this.#waiting.findIndex((w) => w.head === head);
-      if (i >= 0) this.#waiting.splice(i, 1);
-      if (this.#lastPut === head) {
-        this.#lastPut = previous.last;
-        this.#lastPutAt = previous.at;
-      }
+      // An ack that arrived from inside `put` already consumed the entry: the head is anchored, keep it as the newest put.
+      if (i < 0) return;
+      this.#waiting.splice(i, 1);
+      this.#lastPut = previous.last;
+      this.#lastPutAt = previous.at;
       this.#dirtySince = previous.dirty ?? now;
       return;
     }

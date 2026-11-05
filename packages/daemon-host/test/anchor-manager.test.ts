@@ -341,3 +341,32 @@ test("a log cut below an acknowledged position is a broken chain: tier 3 and abo
   empty.state.seq = 0;
   assert.equal(refusal(() => empty.manager.check(4))?.code, "E_UNAVAILABLE");
 });
+
+test("an ack from inside put followed by a throwing send keeps the acknowledged head as the newest put", () => {
+  let ackedInside = false;
+  const r = rig({
+    maxLagEvents: 1000,
+    put: (h) => {
+      ackedInside = r.manager.ack(h.seq);
+      throw new Error("closed");
+    },
+  });
+  r.write(1);
+  assert.equal(ackedInside, true);
+  assert.equal(r.manager.ackedSeq, 1);
+  assert.deepEqual(r.manager.put, headOf(1), "put is never reported below the acknowledged position");
+  assert.equal(r.manager.status().oldestUnackedAgeMs, null, "nothing is waiting or dirty for an acknowledged head");
+});
+
+test("a send that fails keeps the head dirty from the failed attempt even when no write was noted before", () => {
+  const r = rig({ maxLagEvents: 1000 });
+  r.state.seq = 2; // written by another writer; the first flush is the one that fails
+  r.state.putThrows = true;
+  r.manager.flush();
+  assert.equal(r.manager.status().oldestUnackedAgeMs, 0, "dirty since the failed attempt");
+  r.advance(1001);
+  assert.equal(r.manager.status().stalled, true);
+  r.state.putThrows = false;
+  r.manager.tick();
+  assert.deepEqual(r.puts.map((p) => p.seq), [2]);
+});

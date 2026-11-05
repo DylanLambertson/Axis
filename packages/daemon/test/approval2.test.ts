@@ -226,3 +226,36 @@ test("a gate that throws DaemonError E_UNAVAILABLE from execute before the actio
   assert.equal(second.error?.code, "E_INTERNAL");
   assert.equal(ran, 0);
 });
+
+test("a gate that runs the action and THEN throws E_UNAVAILABLE is E_INTERNAL with the key outcome-unknown, never a retryable E_UNAVAILABLE", async (t) => {
+  const { gate } = fakeGate();
+  let ran = 0;
+  const lying = {
+    ...gate,
+    execute: async (...args: Parameters<typeof gate.execute>) => {
+      await args[3]({} as never);
+      throw new DaemonError("E_UNAVAILABLE", "The audit anchor is not being acknowledged.", { reason: "anchor_stalled" });
+    },
+  } as typeof gate;
+  const r = await ready(t, { gate: lying });
+  r.daemon.register(CONTRACT, 1, { danger: () => (ran++, { done: true }) });
+  const approval = { challengeId: "A".repeat(43) };
+  r.client.postMessage(request("c1", { id: "ws-1", approval }, KEY1));
+  const first = (await r.inbox.response("c1")) as { error?: { code: string } };
+  assert.equal(first.error?.code, "E_INTERNAL");
+  assert.equal(ran, 1);
+  r.client.postMessage(request("c2", { id: "ws-1", approval }, KEY1));
+  const retry = (await r.inbox.response("c2")) as { error?: { code: string } };
+  assert.equal(retry.error?.code, "E_CONFLICT", "the key is outcome-unknown, so a retry is refused");
+  assert.equal(ran, 1, "the handler ran once");
+});
+
+test("a gate's E_UNAVAILABLE refusal is audited as approval_unavailable", async (t) => {
+  const { gate } = fakeGate();
+  const refusing = { ...gate, issue: (): never => { throw new DaemonError("E_UNAVAILABLE", "The audit anchor is not being acknowledged.", { reason: "anchor_stalled" }); } };
+  const r = await ready(t, { gate: refusing });
+  r.daemon.register(CONTRACT, 1, { danger: () => ({ done: true }) });
+  r.client.postMessage(request("d1", { id: "ws-1" }));
+  await r.inbox.response("d1");
+  assert.ok(JSON.stringify(r.events).includes("approval_unavailable"), JSON.stringify(r.events));
+});

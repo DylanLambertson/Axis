@@ -12,6 +12,9 @@ import { createAuditHandlers, type AuditHandlerDeps } from "./audit.js";
  * 3 and above method itself, so a later ticket cannot forget the guard (the raw `Daemon.register` is not handed to
  * handler code). A handler that is already guarded is not wrapped twice.
  *
+ * The tier is the contract's. That is the effective tier only because the coverage check (design 4.2.1) fails startup
+ * when a policy rule tier differs from the contract tier; the gate adapter receives the effective `input.tier`.
+ *
  * LIMIT, and a requirement on the approval gate adapter (ticket H5): this guard runs inside the handler, which the
  * daemon calls AFTER the approval step. A stalled host would therefore issue a challenge (and for tier 4 show a
  * native dialog) or spend an approval, and only then refuse. The gate adapter MUST call `anchors.check(tier)` before
