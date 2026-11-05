@@ -110,7 +110,7 @@ export function checkGitCall(call: GitCall, root: string, platform: NodeJS.Platf
 }
 
 export interface BrokerGitDeps {
-  /** The production runner is `createNodeRunner()` from @axis/git-ops; tests may fake it. */
+  /** The production runner is `createNodeRunner({ gitPath | excludeDirs })` from @axis/git-ops (it refuses to run without one); tests may fake it. */
   readonly runner: GitRunner;
   /** The parent environment; only the GIT-ENV-1 allow-list is used. */
   readonly parentEnv: Env;

@@ -127,7 +127,7 @@ test("real git: a planted hook, fsmonitor and external diff driver do not run", 
     writeFileSync(hook, `#!/bin/sh\necho hook >> ${marker}\n`);
     chmodSync(hook, 0o755);
     appendFileSync(join(base, ".git", "config"), `[core]\n\tfsmonitor = ${script("fsm.sh")}\n[diff]\n\texternal = ${script("ext.sh")}\n`);
-    const git = createBrokerGit({ runner: createNodeRunner(), parentEnv: { PATH: process.env["PATH"] ?? "", HOME: base }, assertNoDrift: async () => undefined });
+    const git = createBrokerGit({ runner: createNodeRunner({ excludeDirs: () => [base] }), parentEnv: { PATH: process.env["PATH"] ?? "", HOME: base }, assertNoDrift: async () => undefined });
     const wt = { workTree: base, gitDir: join(base, ".git") };
     const add = await git.run(wt, { command: "add", paths: ["a.txt"] });
     assert.equal(add.code, 0, add.stderr);
