@@ -8,6 +8,7 @@ import { DisposableStore } from '../../../../../base/common/lifecycle.js';
 import { Schemas } from '../../../../../base/common/network.js';
 import { isWindows } from '../../../../../base/common/platform.js';
 import { URI } from '../../../../../base/common/uri.js';
+import { runWithFakedTimers } from '../../../../../base/test/common/timeTravelScheduler.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { TestConfigurationService } from '../../../../../platform/configuration/test/common/testConfigurationService.js';
 import { FileService } from '../../../../../platform/files/common/fileService.js';
@@ -31,6 +32,8 @@ const SHA_B = 'b'.repeat(40);
  */
 class SymlinkMarkingProvider extends InMemoryFileSystemProvider {
 	readonly links = new Set<string>();
+	/** Paths whose `stat` never finishes. */
+	readonly hanging = new Set<string>();
 
 	override get capabilities(): FileSystemProviderCapabilities {
 		return super.capabilities | FileSystemProviderCapabilities.FileRealpath;
@@ -43,6 +46,9 @@ class SymlinkMarkingProvider extends InMemoryFileSystemProvider {
 	}
 
 	override async stat(resource: URI): Promise<IStat> {
+		if (this.hanging.has(resource.path)) {
+			return new Promise<IStat>(() => { });
+		}
 		const stat = await super.stat(resource);
 		return this.links.has(resource.path) ? { ...stat, type: stat.type | FileType.SymbolicLink } : stat;
 	}
@@ -282,6 +288,22 @@ class SymlinkMarkingProvider extends InMemoryFileSystemProvider {
 		await linkedWorktree(`${deep}/repo`, 'feat', `${deep}/wt`, 'ref: refs/heads/main\n');
 		assert.deepStrictEqual(await paths(`${deep}/wt`), [`${deep}/repo`, `${deep}/wt`]);
 	});
+
+	test('a path over the component limit is refused and one at the limit is not', async () => {
+		const at = (count: number) => '/' + [...Array.from({ length: count - 1 }, (_, i) => `d${i}`), 'repo'].join('/');
+		await mainRepo(at(96));
+		await mainRepo(at(97));
+		assert.deepStrictEqual(await paths(at(96)), [at(96)]);
+		assert.deepStrictEqual(await paths(at(97)), []);
+	});
+
+	test('a folder whose check never finishes is refused after the entry limit and the others still list', () => runWithFakedTimers({}, async () => {
+		await mainRepo('/repo');
+		await write('/slow/file.txt', 'x');
+		provider.hanging.add('/slow');
+		const source = createSource('/slow', '/repo');
+		assert.deepStrictEqual((await source.listProjects()).map(p => p.name), ['repo']);
+	}));
 
 	test('at most MAX_DISCOVERED_WORKTREES entries are read; the rest are counted as not listed', async () => {
 		await mainRepo('/repo');

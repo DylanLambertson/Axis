@@ -40,23 +40,22 @@ const MAX_PATH_COMPONENTS = 96;
  */
 const OPENED_FOLDER_REALPATH_TIMEOUT_MS = 1000;
 
-/** How long a settled real path of an opened folder (or its refusal) is reused before it is asked again. */
-const OPENED_FOLDER_REALPATH_CACHE_MS = 5 * 60 * 1000;
+/** Most real-path requests allowed pending at once; a link folder that needs another is refused. Stuck requests cannot be cancelled, so this bounds the work they leave behind. */
+const MAX_PENDING_REALPATH_REQUESTS = 8;
 
 /** Most opened folders checked per discovery, and how many are checked at once. */
 const MAX_OPENED_FOLDERS = 50;
 const OPENED_FOLDER_CONCURRENCY = 4;
 
 /**
- * One real-path request for an opened folder. The upstream request cannot be cancelled and may never
- * finish (a link loop), so there is at most one per path: later discoveries reuse it instead of starting
- * another, and a request still pending after the timeout counts as a refusal.
+ * One real-path request for an opened folder, kept only while it is pending. The upstream request cannot
+ * be cancelled and may never finish (a link loop), so a pending one is reused instead of starting another,
+ * and one pending past the timeout counts as a refusal. A request that settles is dropped, so a later
+ * discovery (Refresh) asks again and sees a retargeted link.
  */
 interface IRealpathRequest {
 	readonly startedAt: number;
 	readonly promise: Promise<string | undefined>;
-	settledAt?: number;
-	value?: string;
 }
 
 /** Time allowed to check one opened folder or one worktree entry; on timeout it is refused and the others go on. */
@@ -88,7 +87,7 @@ export class AxisDiscoveryDataSource extends Disposable implements IAxisWorkspac
 
 	private projects: Promise<Map<string, IDiscoveredProject>> | undefined;
 	private worktrees = new Map<string, Promise<IDiscoveredWorktrees>>();
-	/** Real-path requests for opened folders, kept across discoveries (insertion order is age). */
+	/** Real-path requests for opened folders that are still pending. */
 	private readonly realpathRequests = new Map<string, IRealpathRequest>();
 
 	constructor(
@@ -364,31 +363,20 @@ export class AxisDiscoveryDataSource extends Disposable implements IAxisWorkspac
 	private async realPathOnce(fsPath: string): Promise<string | undefined> {
 		const now = Date.now();
 		let request = this.realpathRequests.get(fsPath);
-		if (request?.settledAt !== undefined && now - request.settledAt > OPENED_FOLDER_REALPATH_CACHE_MS) {
-			request = undefined;
-		}
 		if (!request) {
+			if (this.realpathRequests.size >= MAX_PENDING_REALPATH_REQUESTS) {
+				return undefined;
+			}
 			const started: IRealpathRequest = {
 				startedAt: now,
-				promise: this.realPath(fsPath).then(value => {
-					started.settledAt = Date.now();
-					started.value = value;
-					return value;
+				promise: this.realPath(fsPath).finally(() => {
+					if (this.realpathRequests.get(fsPath) === started) {
+						this.realpathRequests.delete(fsPath);
+					}
 				}),
 			};
-			this.realpathRequests.delete(fsPath);
 			this.realpathRequests.set(fsPath, started);
-			while (this.realpathRequests.size > MAX_OPENED_FOLDERS * 2) {
-				const oldest = this.realpathRequests.keys().next().value;
-				if (oldest === undefined) {
-					break;
-				}
-				this.realpathRequests.delete(oldest);
-			}
 			request = started;
-		}
-		if (request.settledAt !== undefined) {
-			return request.value;
 		}
 		const remaining = OPENED_FOLDER_REALPATH_TIMEOUT_MS - (now - request.startedAt);
 		return remaining > 0 ? raceTimeout(request.promise, remaining) : undefined;

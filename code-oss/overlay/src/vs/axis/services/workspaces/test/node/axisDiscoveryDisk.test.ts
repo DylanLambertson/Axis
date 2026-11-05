@@ -4,7 +4,7 @@
 
 import assert from 'assert';
 import { execFileSync } from 'child_process';
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from '../../../../../base/common/path.js';
 import { DisposableStore } from '../../../../../base/common/lifecycle.js';
@@ -238,6 +238,46 @@ function gitHasRelativePaths(): boolean {
 		}
 		assert.deepStrictEqual(await paths(...folders), []);
 		assert.strictEqual(provider.realpathCalls, 50, 'the folders past the bound are not looked at');
+	});
+
+	test('Refresh follows a link that was retargeted, and a target that appears later', async () => {
+		const other = join(home, 'src', 'other');
+		mkdirSync(other, { recursive: true });
+		git(other, 'init', '-q');
+		git(other, 'commit', '-q', '--allow-empty', '-m', 'init');
+		git(other, 'checkout', '-q', '-b', 'other-branch');
+		const link = join(home, 'Downloads', 'p');
+		symlinkSync(join(home, 'src', 'proj'), link);
+		const source = createSource([link]);
+		assert.deepStrictEqual((await discover([link], source))[0], '/src/proj@main');
+		unlinkSync(link);
+		symlinkSync(other, link);
+		source.refresh();
+		assert.deepStrictEqual(await discover([link], source), ['/src/other@other-branch']);
+
+		const later = join(home, 'src', 'later');
+		const late = join(home, 'Downloads', 'q');
+		symlinkSync(later, late);
+		const lateSource = createSource([late]);
+		assert.deepStrictEqual(await discover([late], lateSource), []);
+		mkdirSync(later);
+		git(later, 'init', '-q');
+		git(later, 'commit', '-q', '--allow-empty', '-m', 'init');
+		lateSource.refresh();
+		assert.deepStrictEqual(await discover([late], lateSource), ['/src/later@main']);
+	});
+
+	test('ten looping opened folders leave at most eight pending requests and do not hide a real one', async function () {
+		this.timeout(15_000);
+		const folders: string[] = [];
+		for (let i = 0; i < 10; i++) {
+			const dir = join(home, 'Downloads', `m${i}`);
+			mkdirSync(dir);
+			loopLink(dir);
+			folders.push(join(dir, 'loop'));
+		}
+		assert.deepStrictEqual(await paths(...folders, join(home, 'src', 'proj')), ['/src/proj@main', '/src/proj-worktrees/feat@secret-feat']);
+		assert.strictEqual(provider.realpathCalls, 8);
 	});
 
 	test('a worktree whose common dir is reached through a link is not a project', async () => {
