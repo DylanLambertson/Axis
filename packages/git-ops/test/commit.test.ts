@@ -22,6 +22,7 @@ test("a healthy plan commits the reviewed tree, message on stdin, in the pty con
   assert.equal(plan.command.context, "pty");
   assert.equal(plan.command.stdin, "feat: add thing");
   assert.deepEqual(sub(plan.command.argv), ["commit", "-F", "-", "--no-edit"]);
+  assert.ok(plan.command.argv.includes("i18n.commitEncoding=utf-8"), "the message is recorded as UTF-8 whatever the repository config says");
   assert.equal(plan.command.env["GIT_TERMINAL_PROMPT"], "0");
   assert.equal(plan.command.env["SSH_AUTH_SOCK"], "/s");
   assert.equal(plan.parent, HEAD);

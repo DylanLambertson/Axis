@@ -29,6 +29,10 @@ function replyFor(s: ContractScenario): MockReply {
       return { kind: "hang" };
     case "malformed":
       return { kind: "malformed" };
+    case "redirect":
+      // The mock has no wire; a redirect is the invalid response a
+      // non-following adapter reports.
+      return { kind: "error", code: "invalid_response" };
   }
 }
 
@@ -36,12 +40,14 @@ runProviderContractSuite({
   name: "mock",
   canary: CANARY,
   credential: CREDENTIAL,
+  noNetwork: "the mock provider runs in process and makes no network request",
   setup(scenario) {
     const mock = createMockProvider({
       replies: [replyFor(scenario)],
       chunkChars: 4,
       credential: CREDENTIAL,
       ...(scenario.kind === "error" && scenario.code === "authentication" ? { connectionError: "authentication" as const } : {}),
+      ...(scenario.kind === "redirect" ? { connectionError: "invalid_response" as const } : {}),
     });
     return {
       adapter: mock,
