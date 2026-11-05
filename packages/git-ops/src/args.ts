@@ -160,7 +160,7 @@ export async function requireGitVersion(deps: GitOpsDeps, w: WorktreeRef, env: R
 }
 
 export interface DaemonGit {
-  (sub: readonly string[], stdin?: string): Promise<GitRunResult>;
+  (sub: readonly string[], stdin?: string, opts?: { readonly raw?: boolean }): Promise<GitRunResult>;
 }
 
 /** A daemon-side git caller bound to a worktree: hardened prefix, filters neutralised, GIT-ENV-1 environment. */
@@ -169,13 +169,14 @@ export async function daemonGitFor(w: WorktreeRef, deps: GitOpsDeps): Promise<Da
   await requireGitVersion(deps, w, env);
   const filters = await filterNames(w, deps, env);
   const runner = guardedRunner(deps.runner, deps);
-  return (sub, stdin) =>
+  return (sub, stdin, opts) =>
     runner.run({
       argv: [...prefix(w, deps, { context: "daemon", hooks: false, filters }), ...sub],
       cwd: w.workTree,
       env,
       context: "daemon",
       ...(stdin === undefined ? {} : { stdin }),
+      ...(opts?.raw === true ? { raw: true } : {}),
     });
 }
 
