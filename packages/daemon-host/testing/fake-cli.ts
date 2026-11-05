@@ -15,6 +15,8 @@ if (dumpPath !== undefined) {
 if (mode === "until-file" && releasePath !== undefined) {
   // Exits (0) once the test creates the file: the test, not a timer, decides when the run ends.
   setInterval(() => existsSync(releasePath) && process.exit(0), 10);
+  for (const e of ["end", "close", "error"] as const) process.stdin.on(e, () => process.exit(0)); // the host died: do not poll forever
+  process.stdin.resume();
 } else if (mode === "slow") {
   process.stdin.on("end", () => process.exit(0));
   process.stdin.on("close", () => process.exit(0));

@@ -261,6 +261,7 @@ export class AnchorManager implements AnchorGuard {
 
   /** One audit row per transition, written best effort: a failing append must not change the decision. */
   #audit(stalled: boolean): void {
+    if (this.#halted) return; // after the final checkpoint nothing may be appended: the final anchor must cover the last row
     if (this.#broken || this.#o.audit.append === undefined) return;
     try {
       this.#o.audit.append({

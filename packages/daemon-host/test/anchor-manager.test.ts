@@ -384,3 +384,17 @@ test("halt (shutdown step 3): nothing is put by itself afterwards, only an expli
   assert.deepEqual(r.puts.map((p) => p.seq), [1, 3], "the final flush still sends the newest head");
   await r.disposables.dispose();
 });
+
+test("halt: a stall that ends with the final acknowledgement appends no row after the final anchor", async () => {
+  const r = rig();
+  r.write(5); // lag 5 > 3: stalled, recorded once
+  assert.deepEqual(r.appended.map((a) => a.action), ["anchor.stalled"]);
+  r.manager.halt();
+  r.manager.flush();
+  const last = r.puts[r.puts.length - 1] as ChainHead;
+  assert.equal(r.manager.ack(last.seq), true);
+  assert.equal(r.manager.status().stalled, false, "the stall ended");
+  assert.deepEqual(r.appended.map((a) => a.action), ["anchor.stalled"], "but nothing was appended after the final anchor");
+  assert.equal(r.state.seq, last.seq, "the final anchor is the last row");
+  await r.disposables.dispose();
+});

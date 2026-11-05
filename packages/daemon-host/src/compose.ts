@@ -85,7 +85,7 @@ export interface ComposeOptions {
   readonly finalizeTimeoutMs?: number;
   /** TEST ONLY: contract ids whose handlers are not registered. Startup must then fail the coverage check (it can only make the host refuse). */
   readonly withholdHandlers?: ReadonlySet<string>;
-  /** How long the final anchor waits for its acknowledgement (default 1500). It never outlives `finalizeTimeoutMs`. */
+  /** How long the final anchor waits for its acknowledgement (default 1500). A longer wait than `finalizeTimeoutMs` only turns a slow acknowledgement into exit 1. */
   readonly finalAnchorWaitMs?: number;
 }
 
@@ -329,6 +329,11 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
     built.runs?.dispose();
     services.flushAnchor();
     const target = services.anchor().put;
+    const head = services.auditRead.head();
+    // The final put must cover the newest row; one that could not be sent (a closed channel) leaves rows unanchored.
+    if (head !== null && (target === undefined || target === null || target.seq < head.seq) && services.anchor().ackedSeq < head.seq) {
+      throw new AxisError("E_UNAVAILABLE", "The final audit anchor could not be sent", { reason: "final_anchor_unsent" });
+    }
     if (target === undefined || target === null || services.anchor().ackedSeq >= target.seq) return;
     const acked = await new Promise<boolean>((resolve) => {
       const off = control.onAnchorAck(() => {
