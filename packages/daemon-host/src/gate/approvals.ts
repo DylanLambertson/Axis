@@ -58,7 +58,7 @@ export interface ApprovalsDeps {
    * Called with the final tier first thing in `issue` (before any challenge, quota or dialog) and in `execute` (before
    * the spend, so a refusal costs nothing and a retry keeps its approval). Synchronous only: a function that returns a
    * promise is refused, because a rejection would be ignored. Whatever it throws reaches the daemon unchanged. The
-   * host passes `anchorPreflight(services.anchors)` here (ticket H4): a `DaemonError` `E_UNAVAILABLE` from it is
+   * host composition (H12) passes `anchorPreflight(services.anchors)` here (from ticket H4): a `DaemonError` `E_UNAVAILABLE` from it is
    * answered as that closed error, before anything is issued or spent.
    */
   readonly preflight?: (tier: number) => void;
