@@ -58,4 +58,3 @@ test("the default pending caps are a twentieth of the table per actor and half o
   for (let i = 0; i < 250; i++) assert.equal(at("w2", i), "new");
   assert.equal(at("w3", 0), "exhausted");
 });
-
