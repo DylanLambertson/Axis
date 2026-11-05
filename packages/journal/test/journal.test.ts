@@ -419,10 +419,11 @@ test("NEW-H: listRuns reports a bad state as E_INVALID_ARGUMENT, never a raw Zod
 test("the shipped journal migration is pinned by hash (add a new migration instead of editing it)", async () => {
   const { createHash } = await import("node:crypto");
   const { JOURNAL_MIGRATIONS } = await import("../src/index.js");
-  assert.equal(JOURNAL_MIGRATIONS.length, 3);
+  assert.equal(JOURNAL_MIGRATIONS.length, 4);
   assert.equal(createHash("sha256").update(JOURNAL_MIGRATIONS[0]?.sql ?? "").digest("hex"), "92332f71a375b32c59a45d0059e20ffd5a90090032b72c567ac0698c5db4d2e9");
   assert.equal(createHash("sha256").update(JOURNAL_MIGRATIONS[1]?.sql ?? "").digest("hex"), "9302852a810e1b6069f421ebb3af4b5493bbeb28753da79d24ed832e2571d0bf");
   assert.equal(createHash("sha256").update(JOURNAL_MIGRATIONS[2]?.sql ?? "").digest("hex"), "d5e282807fca70f2c7d4d627af46c38106a0395e67107f20a0c07012adf0d139");
+  assert.equal(createHash("sha256").update(JOURNAL_MIGRATIONS[3]?.sql ?? "").digest("hex"), "689b6d14fcc586797d3cdda5153c583a068f8576f1e297f06cea66c841291041");
 });
 
 // ---- the user principal is a brand the daemon mints, not a value a caller can assert ----

@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
-// Scaffold (ticket H1) and policy (ticket H6): configuration, ports, lifecycle registry, logging and error summaries.
-// No handlers, contracts or startup sequence yet (H2 onward). Nothing in packages/* imports this package.
+// Scaffold (ticket H1), policy (H6), control channel (H3), storage and startup (H2).
+// Nothing in packages/* imports this package.
 export * from "./config.js";
 export * from "./disposables.js";
 export * from "./exit-codes.js";
@@ -18,3 +18,10 @@ export * from "./transport/mux.js";
 export * from "./transport/node-ipc.js";
 export * from "./transport/node-port.js";
 export * from "./handlers/providers.js";
+// Storage and startup (ticket H2).
+export * from "./host.js";
+export * from "./storage/anchor-check.js";
+export * from "./storage/git-path.js";
+export * from "./storage/node-storage.js";
+export * from "./storage/recovery.js";
+export * from "./storage/uptime-clock.js";
