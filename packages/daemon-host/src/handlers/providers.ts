@@ -1,7 +1,6 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
-import { AxisError } from "@axis/audit";
-import type { Handler, HandlerContext } from "@axis/daemon";
-import { providersListRequestSchema, providersListResponseSchema, type ProviderInfo } from "@axis/protocol";
+import { DaemonError, type Handler, type HandlerContext } from "@axis/daemon";
+import { MAX_PROVIDERS, providersListResponseSchema, type ProviderInfo } from "@axis/protocol";
 import type { GuardedProvider } from "@axis/providers";
 
 /**
@@ -10,16 +9,18 @@ import type { GuardedProvider } from "@axis/providers";
  * It answers from the descriptors of the guarded providers, copying exactly the fields the contract names. A
  * descriptor is data an adapter produced, so nothing else on it (a label, a credential, a stray property) is ever
  * copied, and every error is built from the fixed messages below, never from the request, a descriptor or a caught
- * error. The request and the answer are both checked with the protocol's schemas; an answer that fails its own
- * schema is an internal error, not a partial list.
+ * error. The daemon has already checked the request against the contract (strict, design section 4.3), so the
+ * handler does not parse it again; it does check its own answer with the protocol schema, so an answer that fails
+ * it is an internal error, not a partial list. Errors are `DaemonError`, the only class the daemon turns into a
+ * wire code and message (anything else reaches the client as an opaque `E_INTERNAL`).
  */
 export interface ProvidersHandlerDeps {
   /** The registered providers, read on every call so a later registration shows up. */
   readonly providers: () => readonly Pick<GuardedProvider, "descriptor">[];
 }
 
-const fail = (code: "E_INVALID_ARGUMENT" | "E_CANCELLED" | "E_INTERNAL", message: string): never => {
-  throw new AxisError(code, message);
+const fail = (code: "E_CANCELLED" | "E_INTERNAL", message: string): never => {
+  throw new DaemonError(code, message);
 };
 
 function infoOf(provider: Pick<GuardedProvider, "descriptor">): ProviderInfo {
@@ -35,13 +36,13 @@ function infoOf(provider: Pick<GuardedProvider, "descriptor">): ProviderInfo {
 }
 
 export function createProvidersListHandler(deps: ProvidersHandlerDeps): Handler {
-  return (context: HandlerContext, payload: unknown) => {
+  return (context: HandlerContext) => {
     if (context.signal.aborted) return fail("E_CANCELLED", "The request was cancelled.");
-    if (!providersListRequestSchema.safeParse(payload).success) return fail("E_INVALID_ARGUMENT", "The request is not valid.");
     let providers: ProviderInfo[];
     try {
-      providers = deps
-        .providers()
+      const sources = deps.providers();
+      if (sources.length > MAX_PROVIDERS) return fail("E_INTERNAL", "The provider list is unavailable.");
+      providers = sources
         .map(infoOf)
         .sort((a, b) => (a.connectionId < b.connectionId ? -1 : a.connectionId > b.connectionId ? 1 : 0));
     } catch {

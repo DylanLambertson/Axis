@@ -1,9 +1,8 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { ERROR_CODES } from "@axis/audit";
-import type { HandlerContext } from "@axis/daemon";
-import { contracts, lookupMethod, providersListResponseSchema } from "@axis/protocol";
+import { Daemon, DaemonError, MemoryIdempotencyStore, memoryPair, type HandlerContext, type Identity } from "@axis/daemon";
+import { contracts, ERROR_CODES, lookupMethod, providersListResponseSchema } from "@axis/protocol";
 import { createMockProvider, guardProvider, NO_SECRETS, type AdapterDescriptor } from "@axis/providers";
 import { createProvidersHandlers, createProvidersListHandler } from "../src/index.js";
 
@@ -42,9 +41,9 @@ test("list over the guarded mock conforms to the protocol response schema and na
 });
 
 test("an empty provider set and several providers (sorted by connection id) both conform", () => {
-  const h = createProvidersListHandler({ providers: () => [mock("zeta"), mock("alpha")] });
+  const h = createProvidersListHandler({ providers: () => [mock("zeta"), mock("alpha"), mock("mid")] });
   const out = providersListResponseSchema.parse(call(h));
-  assert.deepEqual(out.providers.map((p) => p.connectionId), ["alpha", "zeta"]);
+  assert.deepEqual(out.providers.map((p) => p.connectionId), ["alpha", "mid", "zeta"]);
 });
 
 test("extra properties on a descriptor (a label, a credential) never reach the output", () => {
@@ -67,16 +66,6 @@ test("an https origin is passed through and a wrong one fails the whole answer",
   assert.ok(!e.message.includes("pw"));
 });
 
-test("a non-empty or malformed request is refused with E_INVALID_ARGUMENT and a fixed message", () => {
-  const h = createProvidersListHandler({ providers: () => [mock()] });
-  for (const payload of [{ x: 1 }, null, [], "s", { __proto__: { a: 1 }, extra: CANARY }, { get a() { return 1; } }]) {
-    const e = errorOf(() => call(h, payload));
-    assert.equal(e.code, "E_INVALID_ARGUMENT");
-    assert.equal(e.message, "The request is not valid.");
-    assert.ok(!JSON.stringify(e).includes(CANARY));
-  }
-});
-
 test("a cancelled request is E_CANCELLED and reads no provider", () => {
   let reads = 0;
   const h = createProvidersListHandler({ providers: () => { reads++; return []; } });
@@ -84,6 +73,7 @@ test("a cancelled request is E_CANCELLED and reads no provider", () => {
   ac.abort();
   assert.equal(errorOf(() => call(h, {}, ctx(ac.signal))).code, "E_CANCELLED");
   assert.equal(reads, 0);
+  try { call(h, {}, ctx(ac.signal)); } catch (e) { assert.ok(e instanceof DaemonError); }
 });
 
 test("a hostile descriptor (throwing getter, Proxy) gives a fixed E_INTERNAL that echoes nothing", () => {
@@ -102,7 +92,7 @@ test("every error code the handler throws is in the closed set", () => {
   const h = createProvidersListHandler({ providers: () => [{ descriptor: undefined as never }] });
   const ac = new AbortController();
   ac.abort();
-  const codes = [errorOf(() => call(h, 1)).code, errorOf(() => call(h)).code, errorOf(() => call(h, {}, ctx(ac.signal))).code];
+  const codes = [errorOf(() => call(h)).code, errorOf(() => call(h, {}, ctx(ac.signal))).code];
   for (const c of codes) assert.ok((ERROR_CODES as readonly string[]).includes(c), c);
 });
 
@@ -113,4 +103,54 @@ test("more providers than the contract allows fails closed instead of truncating
 
 test("two providers on one connection id fail closed", () => {
   assert.equal(errorOf(() => call(createProvidersListHandler({ providers: () => [mock("same"), mock("same")] }))).code, "E_INTERNAL");
+});
+
+// Through the real daemon: only a DaemonError keeps its code and message on the wire.
+const user: Identity = { connectionId: "conn-1".padEnd(22, "_"), windowId: "win-1", actorId: "actor-1", actor: "user", trusted: true, clientKind: "desktop" };
+
+async function overWire(providers: () => readonly { descriptor: AdapterDescriptor }[], payload: unknown): Promise<{ ok: boolean; result?: unknown; error?: { code: string; message: string } }> {
+  const internal: unknown[] = [];
+  const daemon = new Daemon({
+    identity: { verify: () => user },
+    audit: { append: () => undefined },
+    idempotency: new MemoryIdempotencyStore(),
+    policy: { evaluate: () => ({ effect: "allow" }) },
+    onInternalError: (_id, e) => void internal.push(e),
+  });
+  daemon.register("axis.providers", 1, createProvidersHandlers({ providers }));
+  const { client, server } = memoryPair();
+  const replies: Array<{ id?: string; type?: string; ok?: boolean; result?: unknown; error?: { code: string; message: string } }> = [];
+  client.on("message", (m) => void replies.push(m as never));
+  daemon.accept(server, "attestation");
+  try {
+    client.postMessage({ type: "hello", protocolVersions: [1], contracts: [{ id: "axis.providers", versions: [1] }] });
+    for (let i = 0; i < 200 && !replies.some((r) => r.type === "welcome"); i++) await new Promise((r) => setTimeout(r, 5));
+    client.postMessage({ v: 1, id: "q1", contract: "axis.providers", contractVersion: 1, method: "list", payload });
+    for (let i = 0; i < 200 && !replies.some((r) => r.id === "q1"); i++) await new Promise((r) => setTimeout(r, 5));
+    const r = replies.find((x) => x.id === "q1");
+    assert.ok(r, "no response");
+    return r as never;
+  } finally {
+    daemon.stop();
+    client.close();
+  }
+}
+
+test("on the wire: a list succeeds", async () => {
+  const r = await overWire(() => [mock()], {});
+  assert.equal(r.ok, true);
+  providersListResponseSchema.parse(r.result);
+});
+
+test("on the wire: a bad request is E_INVALID_ARGUMENT (the daemon validates it, not the handler)", async () => {
+  const r = await overWire(() => [mock()], { x: 1 });
+  assert.equal(r.ok, false);
+  assert.equal(r.error?.code, "E_INVALID_ARGUMENT");
+});
+
+test("on the wire: an internal failure keeps the handler's fixed code and message, not the opaque default", async () => {
+  const r = await overWire(() => Array.from({ length: 65 }, (_, i) => mock(`conn-${i}`)), {});
+  assert.equal(r.ok, false);
+  assert.equal(r.error?.code, "E_INTERNAL");
+  assert.equal(r.error?.message, "The provider list is unavailable.");
 });
