@@ -73,7 +73,7 @@ export interface GitOpsDeps {
   readonly runner: GitRunner;
   /** daemon: GIT-ENV-1 environment. pty: the PTY-5 environment (credentials, signing). */
   readonly env: { readonly daemon: Env; readonly pty: Env };
-  /** axis.git.runHooks. When false, commit and push add --no-verify and an empty hooks path. */
+  /** axis.git.runHooks. Push adds --no-verify and an empty hooks path when false. A bound commit runs no hook either way: the host runs `pre-commit` and `commit-msg` itself before asking the daemon to commit (docs/packages.md "Commit hooks"). */
   readonly runHooks: boolean;
   /** Gate 1a/L24: Axis commit and push are refused while a CLI run is active in the workspace. */
   readonly isCliRunActive: (worktree: WorktreeRef) => boolean | Promise<boolean>;

@@ -10,12 +10,18 @@ export interface NodeRunnerOptions {
   readonly allowPtyContext?: boolean;
   /**
    * Absolute path of the git executable, resolved ONCE by the host at daemon start with `resolveGit` and every registered
-   * worktree excluded. Default: resolved on the first request from the daemon's own PATH with only that request's
-   * directories excluded. Either way it is cached for the life of the runner and used by absolute path (a bare `git` is
-   * never spawned); a path inside the request's directories is refused. It is looked up again, through `resolveGit`
-   * only, when the cached file has gone (a package manager replaced it).
+   * worktree excluded. Default: resolved on the first request from the environment snapshot with the request's
+   * directories (and `excludeDirs()`) excluded. Either way it is cached for the life of the runner and used by absolute
+   * path (a bare `git` is never spawned); a path inside the request's directories is refused. When the cached file has
+   * gone (a package manager replaced it) it is looked up again through `resolveGit` only, with `excludeDirs()` in force.
+   * An injected path with no `excludeDirs` is NOT looked up again: the request fails with `E_UNAVAILABLE` and the host
+   * resolves again with its full list.
    */
   readonly gitPath?: string;
+  /** Every registered worktree and git directory, read on EACH lookup (the list changes). Required for any re-resolve of an injected `gitPath`. */
+  readonly excludeDirs?: () => readonly string[];
+  /** The environment git is looked up in. Default: a copy of `process.env` taken when the runner is created. */
+  readonly env?: Readonly<Record<string, string | undefined>>;
   readonly timeoutMs?: number;
   readonly maxOutput?: number;
 }
@@ -41,11 +47,16 @@ function killLiveGroups(): void {
 export function createNodeRunner(opts: NodeRunnerOptions = {}): GitRunner {
   const maxOutput = opts.maxOutput ?? 32 * 1024 * 1024;
   let cached: string | undefined = opts.gitPath;
+  const injected = opts.gitPath !== undefined;
   const platform = process.platform;
+  const lookupEnv = { ...(opts.env ?? process.env) };
   /** The real path to spawn. A vanished file is looked up once more, through the one trusted resolver. */
   function pickGit(req: GitRunRequest): string {
     for (let attempt = 0; attempt < 2; attempt++) {
-      cached ??= resolveGit(process.env, platform, requestDirs(req));
+      if (cached === undefined && injected && opts.excludeDirs === undefined) {
+        throw new GitOpsError("E_UNAVAILABLE", "the git executable the host gave has gone; the host must resolve it again");
+      }
+      cached ??= resolveGit(lookupEnv, platform, [...(opts.excludeDirs?.() ?? []), ...requestDirs(req, platform)]);
       if (cached === undefined) throw new GitOpsError("E_UNAVAILABLE", "no git executable was found in a trusted PATH entry");
       assertGitOutsideWorktree(cached, req, platform);
       const real = nodeFs.realPath?.(cached);

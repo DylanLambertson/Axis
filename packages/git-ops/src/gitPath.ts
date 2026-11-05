@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
-// CLI-1/CFG-1: the git executable is found by @axis/pty-policy's resolver (one rule for the whole product), outside every
+// CLI-1/CFG-1: the git executable is found by @axis/pty-policy's resolver (the rule the pty launcher uses; @axis/worktrees still has its own, docs/packages.md FU-GIT-RESOLVE), outside every
 // worktree, and spawned by absolute path. This file only adds the per-request containment check and the child's PATH.
-import { delimiterOf, isInsideAny, isPlainAbsolute, isInside, nodeFs, resolveExecutable } from "@axis/pty-policy";
+import { delimiterOf, isInsideAny, isPlainAbsolute, nodeFs, resolveExecutable } from "@axis/pty-policy";
 import { denied } from "./errors.js";
 import type { GitRunRequest } from "./types.js";
 
@@ -17,14 +17,19 @@ export function resolveGit(env: EnvLike, platform: NodeJS.Platform, excludeDirs:
   return resolveExecutable("git", env, platform, nodeFs, { excludeDirs });
 }
 
-/** The directories a request works in: cwd, `--work-tree` and `--git-dir`. */
-export function requestDirs(req: GitRunRequest): string[] {
+/**
+ * The directories a request works in: cwd, `--work-tree` and `--git-dir`. A value that is not a plain absolute path
+ * (a relative `--git-dir=.git` would be read against cwd by git, never matching anything here) is refused.
+ */
+export function requestDirs(req: GitRunRequest, platform: NodeJS.Platform = process.platform): string[] {
   const out = [req.cwd];
   for (const a of req.argv) {
     if (a.startsWith("--work-tree=")) out.push(a.slice(12));
     else if (a.startsWith("--git-dir=")) out.push(a.slice(10));
   }
-  return out.filter((d) => d !== "");
+  const dirs = out.filter((d) => d !== "");
+  if (!dirs.every((d) => isPlainAbsolute(d, platform))) throw denied("cwd, --work-tree and --git-dir must be absolute paths");
+  return dirs;
 }
 
 /**
@@ -32,23 +37,24 @@ export function requestDirs(req: GitRunRequest): string[] {
  * (symlinks resolved). `<worktree>/..bin/git` is inside: containment is judged by path component, not by a `..` prefix.
  */
 export function assertGitOutsideWorktree(gitPath: string, req: GitRunRequest, platform: NodeJS.Platform): void {
-  if (!isPlainAbsolute(gitPath, platform) || isInsideAny(gitPath, requestDirs(req), platform, nodeFs)) {
+  if (!isPlainAbsolute(gitPath, platform) || isInsideAny(gitPath, requestDirs(req, platform), platform, nodeFs)) {
     throw denied("the git executable must be an absolute path outside the worktree");
   }
 }
 
 /**
  * The request's environment with a PATH that holds only plain absolute entries outside the request's directories
- * (git's own children - helpers, hooks, external commands - resolve through it).
+ * (git's own children - helpers, hooks, external commands - resolve through it). Containment is judged by real path, as
+ * for the executable itself, so a symlinked entry that leads into the worktree is dropped too.
  */
 export function withTrustedPath(env: Record<string, string>, req: GitRunRequest, platform: NodeJS.Platform): Record<string, string> {
   const out = { ...env };
-  const dirs = requestDirs(req);
+  const dirs = requestDirs(req, platform);
   for (const k of Object.keys(out)) {
     if (k !== "PATH" && !(platform === "win32" && k.toUpperCase() === "PATH")) continue;
     out[k] = (out[k] as string)
       .split(delimiterOf(platform))
-      .filter((d) => isPlainAbsolute(d, platform) && !dirs.some((x) => isInside(d, x, platform)))
+      .filter((d) => isPlainAbsolute(d, platform) && !isInsideAny(d, dirs, platform, nodeFs))
       .join(delimiterOf(platform));
   }
   return out;

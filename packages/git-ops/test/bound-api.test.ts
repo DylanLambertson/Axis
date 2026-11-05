@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
-import { GitOpsError, OBJECT_ID, checkWorktree, daemonGitFor, executeCommit, normalisedMessage, pathExists, planCommit } from "../src/index.js";
+import { GitOpsError, OBJECT_ID, checkWorktree, daemonGitFor, executeCommit, pathExists, planCommit } from "../src/index.js";
 import { FakeRunner, HEAD, TREE, WT, healthy, makeDeps, sub } from "./helpers.js";
 import { fixture, tmp } from "./realFixture.js";
 
@@ -52,10 +52,11 @@ test("a detached HEAD and an unborn branch are refused before any pty call", asy
   assert.equal(detached.ptyCalls().length + unborn.ptyCalls().length, 0);
 });
 
-test("message cleanup matches git's stripspace: CRLF is white space, a non-breaking space is not, blank runs collapse", () => {
-  assert.equal(normalisedMessage("a\r\n\r\nb\r\n"), "a\n\nb\n");
-  assert.equal(normalisedMessage("\n\n a \t\n\n\n\nb\u00a0\n\n"), " a\n\nb\u00a0\n");
-  assert.equal(normalisedMessage("x"), "x\n");
+test("message cleanup matches git's stripspace: CRLF is white space, a non-breaking space is not, blank runs collapse", async () => {
+  const stdin = async (message: string): Promise<string | undefined> => (await planCommit(makeDeps(new FakeRunner(healthy())), { ...input, message })).command.stdin;
+  assert.equal(await stdin("a\r\n\r\nb\r\n"), "a\n\nb\n");
+  assert.equal(await stdin("\n\n a \t\n\n\n\nb\u00a0\n\n"), " a\n\nb\u00a0\n");
+  assert.equal(await stdin("x"), "x\n");
 });
 
 test("a moved HEAD, another branch, or a malformed pin is refused before any pty call", async () => {

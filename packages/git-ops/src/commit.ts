@@ -133,7 +133,7 @@ async function check(deps: GitOpsDeps, input: CommitInput): Promise<{ plan: Comm
  * lines collapsed, none at the start or end, one final newline. `commit.cleanup` and comment stripping are not applied
  * (commit-tree has neither); a non-breaking space is not white space to git and is kept.
  */
-export function normalisedMessage(msg: string): string {
+function normalisedMessage(msg: string): string {
   const lines = msg.split("\n").map((l) => l.replace(/[ \t\r\v\f]+$/, ""));
   const out: string[] = [];
   for (const l of lines) {
