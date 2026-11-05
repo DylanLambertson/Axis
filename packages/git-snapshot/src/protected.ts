@@ -207,6 +207,7 @@ const COMMON_DOCS = new Set([
   "readme", "license", "licence", "copying", "copyright", "notice", "changelog", "changes", "history", "news", "contributing",
   "contributors", "security", "code_of_conduct", "authors", "maintainers", "codeowners", "support", "governance", "todo",
   "release", "releases", "roadmap", "install", "upgrading", "citation", "credits", "thanks", "patents", "acknowledgements",
+  "faq", "hacking", "owners", "building", "development", "usage", "design", "architecture", "funding", "manifest", "version", "migration", "upgrade", "troubleshooting", "versioning", "notices", "third_party_notices", "third-party-notices", "code-of-conduct", "contributing-guide",
 ]);
 // A generated short name (`ALPHA~1`, `PLAYBO~1.MD`) may stand for a dot name or a long name: it cannot be ruled out.
 const SHORT_NAME = /^[^~.]{1,6}~\d{1,7}(?:\.[^.]{0,3})?$/;

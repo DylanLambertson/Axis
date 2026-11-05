@@ -1,5 +1,4 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
-import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { stat } from "node:fs/promises";
@@ -122,13 +121,14 @@ export async function takeSnapshot(opts: TakeOptions): Promise<Snapshot> {
       // Flags in the index that stop git looking at a tracked file would hide an edit from status and diff.
       const flags = await readIndexFlags(input(gitPath));
       ctx.settings.push(...flags.settings);
-      if (flags.settings.length > 0) {
-        // The flags live in the index, which is not hashed: they get an entry of their own, so a new flag changes the digest.
-        const text = flags.settings.map((x) => `${x.value ?? ""} ${x.key.startsWith("index.flag.") ? x.key.slice(11) : x.key}`).join("\n");
+      if (flags.total > 0) {
+        // The flags live in the index, which is not hashed: they get an entry of their own. Its hash covers every flagged
+        // path (flag and file identity included); its text shows only the first few within the text bound.
+        const text = `${flags.total} flagged\n${flags.lines.join("\n")}`;
         ctx.budget.addEntry();
         ctx.entries.set("index/flags", {
-          id: "index/flags", group: "link", path: "index", state: "file", mode: null, size: Buffer.byteLength(text),
-          sha256: createHash("sha256").update(text).digest("hex"), linkTarget: null, text, textTruncated: false, binary: false, detail: null,
+          id: "index/flags", group: "link", path: "index", state: "file", mode: null, size: flags.bytes,
+          sha256: flags.digest, linkTarget: null, text, textTruncated: flags.lines.length < flags.total, binary: false, detail: null,
         });
       }
       if (flags.problem !== null) ctx.incomplete.push({ id: "index", reason: flags.problem, blocking: true });

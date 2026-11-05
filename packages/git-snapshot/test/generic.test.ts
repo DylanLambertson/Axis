@@ -146,3 +146,9 @@ test("a path with dot segments is judged where it lands", () => {
   assert.equal(cat("sub/x/../../.alpha/c"), "hidden-config");
   assert.equal(cat("./sub//TOOLX.md"), "instruction-file");
 });
+
+test("root instruction names: the dotless-i spelling and the grown common-documents list", () => {
+  assert.equal(cat("toolxı.md"), "instruction-file");
+  assert.equal(cat("TOOLXı.local.md"), "instruction-file");
+  for (const p of ["FAQ.md", "HACKING.md", "OWNERS.md", "ARCHITECTURE.md", "sub/FUNDING.md", "THIRD-PARTY-NOTICES.md"]) assert.equal(cat(p), null, p);
+});

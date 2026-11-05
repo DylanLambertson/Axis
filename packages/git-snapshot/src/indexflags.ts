@@ -1,18 +1,26 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { spawn } from "node:child_process";
-import { parse } from "node:path";
+import { createHash } from "node:crypto";
+import { lstatSync } from "node:fs";
+import { join, parse } from "node:path";
 import { displayValue } from "./display.js";
 import { baseArgs, snapshotGitEnv, type AskInput } from "./git.js";
 import { classifyPath } from "./protected.js";
 import type { Setting } from "./types.js";
 
 const MAX_RECORD = 4096;
-// A repository with millions of files is read as a stream; this many bytes of listing is the most that is scanned.
-const MAX_BYTES = 512 * 1024 * 1024;
 const COUNT_KEY = "index.flagged-count";
 
 export interface IndexFlags {
   readonly settings: readonly Setting[];
+  /** Every flagged path, whether or not it is listed. */
+  readonly total: number;
+  /** SHA-256 over every flagged path, its flag and the identity of the file in the worktree, in index order. */
+  readonly digest: string;
+  /** Bytes hashed. */
+  readonly bytes: number;
+  /** Display lines for the first flagged paths, within the text bound. */
+  readonly lines: readonly string[];
   /** Fixed-text reason the flags could not all be read; null when they were. */
   readonly problem: string | null;
 }
@@ -22,7 +30,8 @@ export interface IndexFlags {
  * `git status` nor `git diff`. The index holds the flags, outside every file this package hashes, so they are read
  * from `git ls-files -v` as a stream (a large repository is not held in memory). Sparse checkouts set the same flag
  * on files that are legitimately absent, so a flagged path is listed one by one only when the protected-path matcher
- * marks it; the others are counted, and a change in that count is drift.
+ * marks it. EVERY flagged path is hashed, with its flag and the file's identity in the worktree (size, mtime, mode,
+ * or absent), so moving a flag to another file, or editing a flagged file, changes the digest.
  */
 export async function readIndexFlags(i: AskInput): Promise<IndexFlags> {
   i.budget.tick();
@@ -30,6 +39,11 @@ export async function readIndexFlags(i: AskInput): Promise<IndexFlags> {
   const argv = [...baseArgs(i), "ls-files", "-v", "-z"];
   const settings: Setting[] = [];
   let counted = 0;
+  let total = 0;
+  let bytes = 0;
+  let textChars = 0;
+  const lines: string[] = [];
+  const hash = createHash("sha256");
   let problem: string | null = null;
   await new Promise<void>((done) => {
     const ac = new AbortController();
@@ -49,14 +63,32 @@ export async function readIndexFlags(i: AskInput): Promise<IndexFlags> {
       return finish();
     }
     let carry = Buffer.alloc(0);
-    let total = 0;
+    let listed = 0;
     let seen = 0;
     const take = (rec: Buffer): void => {
       if (rec.length < 3 || rec[1] !== 0x20) return;
       const tag = String.fromCharCode(rec[0] as number);
       if (tag !== "S" && !(tag >= "a" && tag <= "z")) return;
-      const kind = tag === "S" || tag === "s" ? "skip-worktree" : "assume-unchanged";
+      // git prints `S` for skip-worktree and a lower-case letter for assume-unchanged; with both set it prints the
+      // lower-case letter, so a file with both flags reads as assume-unchanged. Either hides the file.
+      const kind = tag === "S" ? "skip-worktree" : "assume-unchanged";
       const path = rec.toString("utf8", 2);
+      let identity = "absent";
+      try {
+        const st = lstatSync(join(i.worktree, path));
+        identity = `${st.size}:${Math.trunc(st.mtimeMs)}:${st.mode}`;
+      } catch {
+        // Missing, as in a sparse checkout: that is its identity.
+      }
+      hash.update(rec);
+      hash.update(`\0${identity}\n`);
+      total++;
+      bytes += rec.length + identity.length + 2;
+      const shown = `${kind} ${displayValue(path, 300)}`;
+      if (textChars + shown.length < i.limits.maxTextChars) {
+        lines.push(shown);
+        textChars += shown.length + 1;
+      }
       if (classifyPath(path) !== null && settings.length < i.limits.maxSettings) {
         settings.push({ key: `index.flag.${displayValue(path, 300)}`, value: kind, origin: "index/flags", label: "index flag hides changes", severity: "high", note: null });
       } else {
@@ -64,8 +96,8 @@ export async function readIndexFlags(i: AskInput): Promise<IndexFlags> {
       }
     };
     child.stdout.on("data", (chunk: Buffer) => {
-      total += chunk.length;
-      if (total > MAX_BYTES) {
+      listed += chunk.length;
+      if (listed > i.limits.maxIndexBytes) {
         problem = "the index listing is too large to scan";
         child.kill();
         return;
@@ -101,5 +133,5 @@ export async function readIndexFlags(i: AskInput): Promise<IndexFlags> {
   if (counted > 0) {
     settings.push({ key: COUNT_KEY, value: String(counted), origin: "index/flags", label: "index flag hides changes", severity: "medium", note: null });
   }
-  return { settings, problem };
+  return { settings, total, digest: hash.digest("hex"), bytes, lines, problem };
 }

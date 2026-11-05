@@ -24,6 +24,8 @@ export interface Limits {
   readonly maxRefs: number;
   /** Parsed settings kept per snapshot. */
   readonly maxSettings: number;
+  /** Bytes of `git ls-files` output scanned for index flags. */
+  readonly maxIndexBytes: number;
 }
 
 export const DEFAULT_LIMITS: Limits = Object.freeze({
@@ -39,6 +41,7 @@ export const DEFAULT_LIMITS: Limits = Object.freeze({
   maxWorktrees: 1024,
   maxRefs: 4096,
   maxSettings: 2048,
+  maxIndexBytes: 512 * 1024 * 1024,
 });
 
 export function resolveLimits(over: Partial<Limits> | undefined): Limits {
