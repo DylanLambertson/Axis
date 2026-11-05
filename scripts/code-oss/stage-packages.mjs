@@ -32,6 +32,7 @@ import {
   NAME_RE,
   StageError,
   assertRealDirChain,
+  caseCollision,
   fail,
   listDir,
   readRegular,
@@ -256,12 +257,8 @@ export function stage({ repo, tree, now = Date.now(), maxFutureSkewMs = DEFAULT_
   }
 
   // Two paths that differ only in case would overwrite each other on a case-insensitive file system (macOS).
-  const folded = new Map();
-  for (const path of plan.keys()) {
-    const key = path.toLowerCase();
-    if (folded.has(key)) fail(`${folded.get(key)} and ${path} differ only in case`);
-    folded.set(key, path);
-  }
+  const collision = caseCollision(plan.keys());
+  if (collision !== null) fail(`${collision[0]} and ${collision[1]} differ only in case`);
 
   // The import allowlist on the OUTPUT, before anything is written.
   const fileSet = new Set(plan.keys());

@@ -2,7 +2,7 @@
 # Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 #
 # SC-3 artifact check (docs/security/threat-model-phase0.md SC-3,
-# docs/design/axis-shell.md §2.7): fails if a built Axis artifact contains
+# docs/design/axis-shell-stage1.md §2.7): fails if a built Axis artifact contains
 # Copilot or agent-host code. It fails closed: any error while listing or
 # reading an artifact is a failure, never a pass.
 #
@@ -12,13 +12,15 @@
 #   - an artifact without an out/ directory (an empty or wrong directory);
 #   - any path with a component @github/copilot*, @vscode/copilot-api,
 #     @anthropic-ai, @openai/codex, extensions/copilot or a GitHub.copilot*
-#     extension folder, anywhere in the tree (node_modules.asar.unpacked
-#     included) and inside every .asar archive (its header is read directly;
-#     no asar tool needed);
+#     extension folder, anywhere in the tree (node_modules.asar.unpacked and
+#     .asar files themselves included) and inside every .asar archive (its
+#     header is read directly; no asar tool needed);
 #   - any agentHostMain or diffWorkerMain file;
-#   - any .js, .mjs or .cjs file that imports or requires those packages
-#     (import specifiers, not plain strings: the workbench names some packages
-#     as strings).
+#   - any .js, .mjs or .cjs file, on disk or packed inside an .asar archive,
+#     that imports or requires those packages (import specifiers, not plain
+#     strings: the workbench names some packages as strings);
+#   - any symbolic link that resolves outside the artifact directory, or that
+#     cannot be resolved, since the scans do not follow links.
 # With --notices it also fails when LICENSE.txt or ThirdPartyNotices.txt is
 # missing, and with --axis-license when the Axis LICENSE is missing as well.
 #
@@ -26,7 +28,8 @@
 # vscode-reh-web-* directories next to the Code OSS tree (the upstream gulp
 # packaging output location) and requires all three kinds. --expect
 # KIND[,KIND...] (desktop, reh, reh-web) requires those kinds among the
-# directories given; a kind is recognised by the directory name.
+# directories given; a kind is recognised by the artifact directory's own name
+# (*.app or VSCode-*, vscode-reh-web-*, vscode-reh-*), never by a parent's.
 #
 # Usage: scripts/code-oss/check-artifacts.sh [--notices] [--axis-license] [--expect KINDS] [DIR...]
 set -euo pipefail
@@ -58,12 +61,13 @@ while [ $# -gt 0 ]; do
 	shift
 done
 
-# artifact_kind DIR: prints desktop, reh or reh-web from the directory name, or nothing.
+# artifact_kind DIR: prints desktop, reh or reh-web from the directory's own
+# name (not its parents'), or nothing.
 artifact_kind() {
-	case "$1" in
-	*.app | */VSCode-* | VSCode-*) echo desktop ;;
-	*/vscode-reh-web-* | vscode-reh-web-*) echo reh-web ;;
-	*/vscode-reh-* | vscode-reh-*) echo reh ;;
+	case "$(basename "$1")" in
+	*.app | VSCode-*) echo desktop ;;
+	vscode-reh-web-*) echo reh-web ;;
+	vscode-reh-*) echo reh ;;
 	esac
 }
 
@@ -115,33 +119,75 @@ grep_hits() {
 	[ "$rc" -le 1 ] || die "grep failed ($rc) on $2"
 }
 
-# asar_list FILE OUT: writes every path inside an asar archive to OUT, one per
-# line. Fails on an unreadable, truncated or corrupt archive.
+# The same import pattern for JavaScript (no POSIX character classes).
+FORBIDDEN_IMPORTS_JS="${FORBIDDEN_IMPORTS//\[\[:space:\]\]/\\s}"
+
+# asar_list FILE OUT IMPORTS: writes every path inside an asar archive to OUT,
+# one per line, and the packed .js, .mjs and .cjs entries that match
+# FORBIDDEN_IMPORTS to IMPORTS (entries marked unpacked live on disk and are
+# scanned there). Fails on an unreadable, truncated or corrupt archive.
 asar_list() {
 	"$NODE_BIN" -e '
 		const fs = require("fs");
-		const file = process.argv[1];
+		const [file, outFile, importsFile, pattern] = process.argv.slice(1);
+		const importRe = new RegExp(pattern);
 		const size = fs.statSync(file).size;
 		const fd = fs.openSync(file, "r");
 		const head = Buffer.alloc(16);
 		if (fs.readSync(fd, head, 0, 16, 0) !== 16) throw new Error("truncated asar header");
+		const headerSize = head.readUInt32LE(4);
 		const jsonLength = head.readUInt32LE(12);
 		if (jsonLength <= 0 || 16 + jsonLength > size) throw new Error("asar header length " + jsonLength + " exceeds the file size " + size);
 		const json = Buffer.alloc(jsonLength);
 		if (fs.readSync(fd, json, 0, jsonLength, 16) !== jsonLength) throw new Error("truncated asar header");
 		const table = JSON.parse(json.toString("utf8"));
 		if (!table || typeof table.files !== "object") throw new Error("asar header has no file table");
+		const dataStart = 8 + headerSize;
 		const out = [];
+		const imports = [];
 		const walk = (node, prefix) => {
 			for (const [name, child] of Object.entries(node.files || {})) {
 				const p = prefix + "/" + name;
 				out.push(p);
-				walk(child, p);
+				if (child.files) {
+					walk(child, p);
+				} else if (/\.(m|c)?js$/.test(name) && !child.unpacked && child.link === undefined) {
+					const offset = Number(child.offset);
+					const length = Number(child.size);
+					if (!Number.isSafeInteger(offset) || !Number.isSafeInteger(length) || offset < 0 || length < 0 || dataStart + offset + length > size) {
+						throw new Error("entry " + p + " lies outside the archive");
+					}
+					const data = Buffer.alloc(length);
+					if (length && fs.readSync(fd, data, 0, length, dataStart + offset) !== length) throw new Error("truncated entry " + p);
+					if (importRe.test(data.toString("utf8"))) imports.push(p);
+				}
 			}
 		};
 		walk(table, "");
-		fs.writeFileSync(process.argv[2], out.length ? out.join("\n") + "\n" : "");
-	' "$1" "$2" || die "cannot read asar archive $1"
+		const lines = a => a.length ? a.join("\n") + "\n" : "";
+		fs.writeFileSync(outFile, lines(out));
+		fs.writeFileSync(importsFile, lines(imports));
+	' "$1" "$2" "$3" "$FORBIDDEN_IMPORTS_JS" || die "cannot read asar archive $1"
+}
+
+# resolve_link LINK: prints the canonical location a symbolic link points to.
+# The link's parent directories are canonicalised; its last component is not
+# followed further, because a target that is itself a link inside the
+# artifact is checked in its own right. Fails when the target's directory
+# does not exist.
+resolve_link() {
+	local target abs parent
+	target="$(readlink "$1")" || return 1
+	case "$target" in
+	/*) abs="$target" ;;
+	*) abs="$(dirname "$1")/$target" ;;
+	esac
+	if [ -d "$abs" ]; then
+		(cd -P "$abs" 2>/dev/null && pwd -P)
+	else
+		parent="$(cd -P "$(dirname "$abs")" 2>/dev/null && pwd -P)" || return 1
+		printf '%s/%s\n' "$parent" "$(basename "$abs")"
+	fi
 }
 
 failures=0
@@ -166,15 +212,30 @@ for dir in "${dirs[@]}"; do
 
 	grep_hits "$FORBIDDEN_PATHS" "$work/paths" "$work/hits"
 	while IFS= read -r p; do
-		case "$p" in *.asar) continue ;; esac
 		fail "$dir: forbidden path ${p#"$dir"/}"
 	done <"$work/hits"
+
+	# find and grep -r do not follow links, so a link leading out of the
+	# artifact would hide its target from every scan.
+	real_dir="$(cd -P "$dir" && pwd -P)" || die "cannot resolve $dir"
+	find "$dir" -type l >"$work/links" 2>"$work/find.err" ||
+		die "cannot list links in $dir: $(head -3 "$work/find.err")"
+	while IFS= read -r link; do
+		if ! resolved="$(resolve_link "$link")"; then
+			fail "$dir: symbolic link ${link#"$dir"/} cannot be resolved"
+			continue
+		fi
+		case "$resolved" in
+		"$real_dir" | "$real_dir"/*) ;;
+		*) fail "$dir: symbolic link ${link#"$dir"/} points outside the artifact ($resolved)" ;;
+		esac
+	done <"$work/links"
 
 	grep_hits '\.asar$' "$work/paths" "$work/asars"
 	while IFS= read -r asar; do
 		[ -f "$asar" ] || continue
 		[ -n "$NODE_BIN" ] || die "node is needed to read $asar; put node on PATH"
-		asar_list "$asar" "$work/asar-paths"
+		asar_list "$asar" "$work/asar-paths" "$work/asar-imports"
 		# node_modules.asar lists "/@scope/pkg/..."; prefix the archive name so
 		# the messages show where the entry lives.
 		prefix="$(basename "$asar" .asar)"
@@ -183,6 +244,9 @@ for dir in "${dirs[@]}"; do
 		while IFS= read -r p; do
 			fail "$dir: forbidden path ${asar#"$dir"/}:$p"
 		done <"$work/asar-hits"
+		while IFS= read -r p; do
+			fail "$dir: ${asar#"$dir"/}:$p imports a Copilot or agent SDK package"
+		done <"$work/asar-imports"
 	done <"$work/asars"
 
 	rc=0

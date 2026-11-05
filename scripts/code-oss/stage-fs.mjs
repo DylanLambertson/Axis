@@ -23,6 +23,20 @@ export const NAME_RE = /^[A-Za-z0-9_][A-Za-z0-9._-]*$/;
 /** Directory names that are never staged, wherever they appear under a package's src. */
 export const FORBIDDEN_DIRS = new Set(["node_modules", "dist"]);
 
+/**
+ * The first pair of paths in `paths` that differ only in case, or null. Pure (no file system): on a case-insensitive
+ * file system (macOS default) such a pair would overwrite each other when written.
+ */
+export function caseCollision(paths) {
+  const folded = new Map();
+  for (const path of paths) {
+    const key = path.toLowerCase();
+    if (folded.has(key)) return [folded.get(key), path];
+    folded.set(key, path);
+  }
+  return null;
+}
+
 export const byteOrder = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
 
 /** Opens `path` without following a final link and returns its bytes and a change signature. */

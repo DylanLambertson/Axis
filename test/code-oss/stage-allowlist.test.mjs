@@ -3,9 +3,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, linkSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { STAGE_ROOT, stage } from "../../scripts/code-oss/stage-packages.mjs";
+import { caseCollision } from "../../scripts/code-oss/stage-fs.mjs";
 import { fixture, put, withFixture } from "./stage-fixture.mjs";
 
 const src = (rel) => `packages/protocol/src/${rel}`;
@@ -173,7 +175,6 @@ const REFUSED_2 = [
   ["a symlinked directory inside zod", (r, b) => { put(b, "elsewhere/core.js", "export const z = 'outside';\n"); put(b, "elsewhere/core.d.ts", "export declare const z: string;\n"); rmSync(join(r, "node_modules/zod/v4"), { recursive: true }); symlinkSync(join(b, "elsewhere"), join(r, "node_modules/zod/v4")); }, /symbolic link/],
   ["a symlinked zod declaration file", (r, b) => { put(b, "o.d.ts", "export {};\n"); rmSync(join(r, "node_modules/zod/v4/core.d.ts")); symlinkSync(join(b, "o.d.ts"), join(r, "node_modules/zod/v4/core.d.ts")); }, /symbolic link/],
   ["a symlink anywhere in the zod tree, even an unused one", (r) => symlinkSync("/etc", join(r, "node_modules/zod/v3/loop")), /symbolic link/],
-  ["two sources that differ only in case", (r) => { put(r, src("Dup.ts"), "export {};\n"); put(r, src("dup.ts"), "export {};\n"); }, /differ only in case/],
 ];
 
 for (const [name, mutate, pattern] of REFUSED_2) {
@@ -339,5 +340,33 @@ test("the hook judges each source in its own package: holder rules apply in jour
     otherPackage(repo, "principal.ts", "export class P {}\n");
     otherPackage(repo, "ok.ts", 'import * as P from "./principal.js";\nexport const u = P;\n');
     stage({ repo, tree });
+  });
+});
+
+// Case collisions: the rule is a pure function over a list of names, tested everywhere; the end-to-end test needs a
+// case-sensitive file system (on macOS' default one the second file overwrites the first, so no pair ever exists).
+const caseSensitiveFs = () => {
+  const dir = mkdtempSync(join(tmpdir(), "axis-case-"));
+  try {
+    writeFileSync(join(dir, "a.txt"), "");
+    return !existsSync(join(dir, "A.TXT"));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+};
+
+test("caseCollision finds the first pair of names that differ only in case, over a plain list", () => {
+  assert.deepEqual(caseCollision(["a/Dup.ts", "a/dup.ts"]), ["a/Dup.ts", "a/dup.ts"]);
+  assert.deepEqual(caseCollision(["x.ts", "a/B.ts", "c.ts", "A/b.ts", "a/b.ts"]), ["a/B.ts", "A/b.ts"]);
+  assert.equal(caseCollision(["a.ts", "b.ts", "a/a.ts", "ab.ts"]), null);
+  assert.equal(caseCollision([]), null);
+});
+
+test("stage refuses two sources that differ only in case, and leaves no staged output", { skip: caseSensitiveFs() ? false : "the file system is case-insensitive: the two files cannot both exist (the rule is covered by the caseCollision test)" }, () => {
+  withFixture(({ repo, tree }) => {
+    put(repo, src("Dup.ts"), "export {};\n");
+    put(repo, src("dup.ts"), "export {};\n");
+    assert.throws(() => stage({ repo, tree }), /differ only in case/);
+    assert.equal(existsSync(join(tree, STAGE_ROOT)), false);
   });
 });
