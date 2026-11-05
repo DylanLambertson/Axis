@@ -38,6 +38,8 @@ export interface WorktreesServiceDeps {
   readonly restorePathCheck: (workTree: string, rel: string, platform: NodeJS.Platform) => Promise<void>;
   /** True when the file system compares names without case (macOS, Windows): the manager reports the on-disk spelling. */
   readonly caseInsensitiveFs: boolean;
+  /** Cap on the entries one reconcile keeps (default 1000); a test seam. */
+  readonly maxReports?: number;
 }
 
 export interface WorktreesRuntime {
@@ -351,12 +353,16 @@ export function createWorktreesService(deps: WorktreesServiceDeps): WorktreesRun
       repaired.clear();
       let report;
       try {
-        report = await reconcileWorktrees({ journal, manager, mutex, platform: deps.platform }, signal);
+        report = await reconcileWorktrees({ journal, manager, mutex, platform: deps.platform, ...(deps.maxReports === undefined ? {} : { maxReports: deps.maxReports }) }, signal);
       } catch (e) {
         incomplete = true;
         throw e;
       }
-      attention = new Map(report.needsAttention.filter((n) => !repaired.has(n.workspaceId)).map((n) => [n.workspaceId, n.reason]));
+      // Only the STALE finding is dropped: a repair makes `finalise_incomplete` untrue (the journal is FINALISED now, so a fresh
+      // pass cannot report it again). Any other reason this pass found is fresh and stays.
+      attention = new Map(
+        report.needsAttention.filter((n) => !(n.reason === "finalise_incomplete" && repaired.has(n.workspaceId))).map((n) => [n.workspaceId, n.reason]),
+      );
       incomplete = report.incomplete === true;
       return report;
     },

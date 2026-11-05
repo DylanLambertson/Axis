@@ -104,3 +104,35 @@ test("issued at tier 4 (native) and executed claiming tier 3: refused", async ()
     b.close();
   }
 });
+
+test("a tier 3 challenge whose issue record was evicted, executed claiming tier 4, still gets no capability", async () => {
+  const { a } = memoryChannelPair();
+  const mux = new ChannelMux(a);
+  const control = new ControlClient({ mux });
+  const approvals = createWorktreesApprovals({
+    audit: createChallengeAuditSink({ append: () => undefined }),
+    control,
+    clock: fakeClock(),
+    limits: { maxOutstandingTotal: 4, maxOutstandingPerActor: 4, maxOutstandingPerActorOverall: 4, maxOutstandingPerWindow: 4 },
+  });
+  try {
+    const content = { target: "workspace:ws-1", contentDigest: "a".repeat(64) };
+    const victim = await approvals.gate.issue(fresh("remove", 3) as never, content);
+    approvals.port.resolve({ actor: "user", windowId: "w" }, { challengeId: victim.challengeId, decision: "approve", digest: victim.digest } as never);
+    // More issues than the tier table holds (its cap is twice the quota): the victim's record is pushed out. Each other
+    // challenge is DENIED at once, which leaves the quota (a withdrawn one would keep counting), so the quota never refuses.
+    for (let i = 0; i < 12; i++) {
+      const other = await approvals.gate.issue(fresh("remove", 3) as never, { target: `workspace:ws-${i + 2}`, contentDigest: "a".repeat(64) });
+      approvals.port.resolve({ actor: "user", windowId: "w" }, { challengeId: other.challengeId, decision: "deny", digest: other.digest } as never);
+    }
+    let seen: unknown = "not run";
+    await approvals.gate.execute(fresh("remove", 4) as never, { challengeId: victim.challengeId } as never, content, async (c) => {
+      seen = (c as { capability?: unknown }).capability;
+    });
+    assert.equal(seen, undefined, "no capability without a record of the tier it was issued at");
+  } finally {
+    approvals.dispose();
+    control.dispose();
+    mux.dispose();
+  }
+});

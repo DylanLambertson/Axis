@@ -462,7 +462,7 @@ Code OSS's minified builds rewrite native `#private` fields into plain propertie
 
 Use one `WorktreeManager` per daemon process, built with the pinned absolute git path and a `refuseIfActiveRun` hook. Its in-process mutex assumes a single instance, and each mutating call also takes a pid and start-time lockfile (workspace operations lock the worktree admin dir; create and sweep lock the common dir).
 
-`finalise` and `remove` are destructive, so they are tier 3 or higher and go through the approval pipeline in "Wiring the daemon". The content hook for them is:
+`remove` (tier 4) and a discarding `finalise` (tier 4 after P1d; a tier 3 approval has no native dialog and can never yield the discard token) are destructive, so they go through the approval pipeline in "Wiring the daemon". The content hook for them is:
 
 - `target`: `workspace:<id>`, never a path.
 - `withLock(fn)`: takes the daemon's per-project mutex, calls `assertNoDrift(path)` (a `git-drift` `E_CONFLICT` means the user reviews the change and the daemon then calls `acknowledgeDrift(path)`), then `previewDiscard(path)` and calls `fn(scan.fingerprint)`. The fingerprint is passed as the `contentDigest`, read at issue and again at execute under the same lock. It is a SHA-256 over metadata, not over file content: the path, status, size and mtime of each dirty file, plus the path lists of the large, ignored and nested-repository or unsupported entries. This is the TOCTOU binding: if such an entry is added, removed, or changes status, size or mtime after the user approved, `consume` refuses and nothing runs. A rewrite that keeps a file's size and mtime (for example with `touch -r`) does not change it; no data is lost then, because the backup captures the content at execute time.

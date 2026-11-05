@@ -51,6 +51,7 @@ export interface WorktreesTestSeams {
   readonly restorePathCheck?: (workTree: string, rel: string, platform: NodeJS.Platform) => Promise<void>;
   readonly wrapManager?: (manager: ManagerShape) => ManagerShape;
   readonly caseInsensitiveFs?: boolean;
+  readonly maxReports?: number;
 }
 
 export interface WorktreesBinding {
@@ -170,6 +171,7 @@ function build(deps: WorktreesBindingDeps, seams: WorktreesTestSeams): Worktrees
     random: deps.random,
     platform: deps.platform,
     restorePathCheck: seams.restorePathCheck ?? assertSafeRestorePath,
+    ...(seams.maxReports === undefined ? {} : { maxReports: seams.maxReports }),
     caseInsensitiveFs: seams.caseInsensitiveFs ?? (deps.platform === "win32" || deps.platform === "darwin"),
   });
   const content = createWorktreeContentHooks({
