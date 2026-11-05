@@ -1,0 +1,24 @@
+diff --git a/build/next/index.ts b/build/next/index.ts
+index e2f5663..0cdb567 100644
+--- a/build/next/index.ts
++++ b/build/next/index.ts
+@@ -103,6 +103,9 @@ const desktopWorkerEntryPoints = [
+ // Desktop workbench and code entry points
+ const desktopEntryPoints = [
+ 	'vs/workbench/workbench.desktop.main',
++	// --- Start Axis ---
++	'vs/axis/axis.desktop.main',
++	// --- End Axis ---
+ 	'vs/sessions/sessions.desktop.main',
+ 	'vs/workbench/contrib/debug/node/telemetryApp',
+ 	'vs/platform/files/node/watcher/watcherMain',
+@@ -184,6 +187,9 @@ function getCssBundleEntryPointsForTarget(target: BuildTarget): Set<string> {
+ 		case 'desktop':
+ 			return new Set([
+ 				'vs/workbench/workbench.desktop.main',
++				// --- Start Axis ---
++				'vs/axis/axis.desktop.main',
++				// --- End Axis ---
+ 				'vs/code/electron-browser/workbench/workbench',
+ 				'vs/sessions/sessions.desktop.main',
+ 				'vs/sessions/electron-browser/sessions',

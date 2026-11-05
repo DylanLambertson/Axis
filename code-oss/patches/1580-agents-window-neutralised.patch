@@ -44,10 +44,16 @@ diff --git a/src/vs/platform/windows/electron-main/windowsMainService.ts b/src/v
 diff --git a/build/next/index.ts b/build/next/index.ts
 --- a/build/next/index.ts
 +++ b/build/next/index.ts
-@@ -103,7 +103,9 @@ const desktopWorkerEntryPoints = [
+@@ -103,13 +103,15 @@ const desktopWorkerEntryPoints = [
  // Desktop workbench and code entry points
  const desktopEntryPoints = [
+ 	// --- Start Axis ---
+ 	'vs/axis/daemon/node/axisDaemonMain',
+ 	// --- End Axis ---
  	'vs/workbench/workbench.desktop.main',
+ 	// --- Start Axis ---
+ 	'vs/axis/axis.desktop.main',
+ 	// --- End Axis ---
 -	'vs/sessions/sessions.desktop.main',
 +	// --- Start Axis ---
 +	// No Agents window (design D8)
@@ -66,9 +72,12 @@ diff --git a/build/next/index.ts b/build/next/index.ts
  ];
  
  // Additional web-only entry points (CDN build only, not in server-web)
-@@ -187,8 +191,9 @@ function getCssBundleEntryPointsForTarget(target: BuildTarget): Set<string> {
+@@ -187,11 +191,12 @@ function getCssBundleEntryPointsForTarget(target: BuildTarget): Set<string> {
  			return new Set([
  				'vs/workbench/workbench.desktop.main',
+ 				// --- Start Axis ---
+ 				'vs/axis/axis.desktop.main',
+ 				// --- End Axis ---
  				'vs/code/electron-browser/workbench/workbench',
 -				'vs/sessions/sessions.desktop.main',
 -				'vs/sessions/electron-browser/sessions',

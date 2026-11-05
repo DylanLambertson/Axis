@@ -1,0 +1,35 @@
+diff --git a/src/vs/code/electron-browser/workbench/workbench.html b/src/vs/code/electron-browser/workbench/workbench.html
+index 47c5748b..99d9272b 100644
+--- a/src/vs/code/electron-browser/workbench/workbench.html
++++ b/src/vs/code/electron-browser/workbench/workbench.html
+@@ -70,7 +70,9 @@
+ 		"/>
+ 
+ 		<!-- Workbench CSS -->
+-		<link rel="stylesheet" href="../../../workbench/workbench.desktop.main.css">
++		<!-- --- Start Axis --- -->
++		<link rel="stylesheet" href="../../../axis/axis.desktop.main.css">
++		<!-- --- End Axis --- -->
+ 	</head>
+ 
+ 	<body aria-label="">
+diff --git a/src/vs/code/electron-browser/workbench/workbench.ts b/src/vs/code/electron-browser/workbench/workbench.ts
+index 5b8c2499..1cacb1ae 100644
+--- a/src/vs/code/electron-browser/workbench/workbench.ts
++++ b/src/vs/code/electron-browser/workbench/workbench.ts
+@@ -508,11 +508,13 @@ import { getPartsSplashColors, getPartsSplashLayoutMetrics } from './partsSplash
+ 		// ESM Import
+ 		try {
+ 			let workbenchUrl: string;
++			// --- Start Axis ---
+ 			if (!!safeProcess.env['VSCODE_DEV'] && globalThis._VSCODE_USE_RELATIVE_IMPORTS) {
+-				workbenchUrl = '../../../workbench/workbench.desktop.main.js'; // for dev purposes only
++				workbenchUrl = '../../../axis/axis.desktop.main.js'; // for dev purposes only
+ 			} else {
+-				workbenchUrl = new URL(`vs/workbench/workbench.desktop.main.js`, baseUrl).href;
++				workbenchUrl = new URL(`vs/axis/axis.desktop.main.js`, baseUrl).href;
+ 			}
++			// --- End Axis ---
+ 
+ 			const result = await import(workbenchUrl);
+ 			if (developerDeveloperKeybindingsDisposable && removeDeveloperKeybindingsAfterLoad) {

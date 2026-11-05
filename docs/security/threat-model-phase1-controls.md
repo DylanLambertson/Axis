@@ -30,6 +30,9 @@ Lines are counted in the order the bullets appear in `docs/ROADMAP.md`. L1 to L1
 | | | 1a/L28 | External links (EL-5) |
 | | | 1a/L29 | No reh-web listener (NET-1) |
 | | | 1a/L30 | Typing after a view switch reaches only the destination's last focused element (IDE-1 c) |
+| | | 1a/L31 | Executable resolution: no CLI binary from the worktree or a relative `PATH` entry (CLI-1, CFG-1) |
+| | | 1a/L32 | Attribute swap window in the review reads (REV-2, G-27) |
+| | | 1a/L33 | No debugging ports in a packaged build (G-28) |
 
 | Line | Gate (1b) |
 |---|---|
@@ -138,6 +141,7 @@ A gap is either a missing control (G-1 to G-13) or a missing ROADMAP gate line f
 | G-25 | EL-1 Axis bundle under Trusted Types | M3 check (Phase 0 §5.1) | Smoke test that fails on a Trusted Types violation |
 | G-26 | PTY-3 cwd spoof | B10 | 1a/L2 extended |
 | G-27 | REV-2, REV-1, WT-2 | Close the attribute swap-and-restore window in the diff review reads: a git-ops hardened read with a private empty `GIT_DIR`, `GIT_OBJECT_DIRECTORY` at the real store, a single read of `info/attributes`, `GIT_ATTR_NOSYSTEM=1` and a private snapshot of the system and user attribute files. **Open; Phase 1a gate item.** | 1a: a filter attribute swapped in after the first attribute read and removed before the second does not reach the reviewed tree |
+| G-28 | EL-1 (any local process driving the window) | A packaged Axis build refuses `--remote-debugging-port` and `--inspect*` (the DevTools protocol and the Node inspector). Today they are used only with development builds and a throwaway profile (`docs/design/axis-shell-runbook.md`), and the shell's smoke test checks that the port listens on loopback only. **Open.** | 1a: launching a packaged build with `--remote-debugging-port` leaves nothing listening on that port |
 
 ### 6.3 Resolution after the owner decisions, and ROADMAP tracking
 
@@ -159,6 +163,8 @@ New gate lines were appended to the Gate (1a) and Gate (1b) lists in `docs/ROADM
 | G-21 | Gate added | 1b/L15 |
 | Q-4 re-evaluation | Decision recorded (1b/L16) | 1b/L16 |
 | Review items S2, S3, S7, S10 and the reh-web assertion | Gates added | 1a/L24 to 1a/L29 |
+| G-27 | Gate added; control open | 1a/L32 |
+| G-28 | Gate added; control open | 1a/L33 |
 
 ## 7. Honest residual risks
 
@@ -179,6 +185,7 @@ Each of these is accepted for Phase 1 on purpose. The wording is the wording the
 13. **User paths bypass the Axis gate** (GIT-6, R32): a commit from the terminal or SCM view runs planted hooks without GIT-SNAP-1, and the user's local checkout shares the common dir.
 14. **The OS sandbox is Phase 3.** Until then no process Axis starts is contained by the OS.
 15. **The 1a review shows no file content (REV-1).** `axis.review/1.diff` lists names, kinds and line counts, and the user acknowledges, by file id and content id, each file whose text a viewer would cut. No line of any file is on the wire, and there is no hunk accept. A text file the view would not cut, a binary file and a text file over the preview size can therefore be committed (tier 2, bound to the reviewed tree) on the strength of the file list alone, and the push scan (PSH-1) is the only content check before it leaves. Decided 2026-11-05 by the master under delegated authority; the owner may revisit. Closed when a content-showing review method exists.
+16. **Phase 0 worktree discovery checks paths once (TOCTOU).** Until the daemon owns worktree paths (task B5), the Agent view reads git metadata in the renderer, checks each worktree's two-way link and that every path in that check is physical (each component exists and is not a symbolic link, checked one at a time), and then uses the path as a string (Files tree root, terminal cwd). A process that swaps a checked folder for a symbolic link after discovery redirects those uses. It needs a live writer in that folder; a downloaded archive or a `git pull` cannot do it (`docs/feasibility/axis-shell-phase0.md` §6).
 
 ## 8. Re-tag list applied (ADR 0004 implication 7)
 
