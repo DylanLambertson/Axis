@@ -44,9 +44,12 @@ diff --git a/src/vs/platform/windows/electron-main/windowsMainService.ts b/src/v
 diff --git a/build/next/index.ts b/build/next/index.ts
 --- a/build/next/index.ts
 +++ b/build/next/index.ts
-@@ -103,10 +103,12 @@ const desktopWorkerEntryPoints = [
+@@ -103,13 +103,15 @@ const desktopWorkerEntryPoints = [
  // Desktop workbench and code entry points
  const desktopEntryPoints = [
+ 	// --- Start Axis ---
+ 	'vs/axis/daemon/node/axisDaemonMain',
+ 	// --- End Axis ---
  	'vs/workbench/workbench.desktop.main',
  	// --- Start Axis ---
  	'vs/axis/axis.desktop.main',

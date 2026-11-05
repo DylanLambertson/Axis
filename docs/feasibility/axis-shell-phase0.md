@@ -11,7 +11,7 @@
 
 | Item | Result |
 |---|---|
-| ADR 0002 criterion 2 (shell block `0001–0999`: ≤ 12 upstream files, ≤ 300 lines) | **Passed**: 7 files, 45 added (22 of them marker lines) and 5 deleted lines (§2). The Agent view adds **no** upstream file or line: everything it needs is overlay |
+| ADR 0002 criterion 2 (shell block `0001–0999`: ≤ 12 upstream files, ≤ 300 lines) | **Passed**: 7 files, 56 added (28 of them marker lines) and 6 deleted lines (§2), including main's daemon entry patch `0200`. The Agent view adds **no** upstream file or line: everything it needs is overlay |
 | Gate item 1: boots into a dashboard listing workspaces, and a workspace view with a file tree and a terminal bound to a folder | **Passed**, with read-only discovery of real worktrees and labelled sample runs (§4) |
 | Gate item 2: IDE view passes ADR 0002 criterion 1 | **Not run.** The IDE view is the upstream workbench, reached and left in every smoke step, but the criterion 1 smoke subset (editor, explorer, search, SCM, terminal, debugger, diagnostics, palette, extension host) was not run here |
 | Gate item 3: switching in `perWorkspace` and `split`; a file click opens IDE view at the file; returning keeps workspace and editor state | **Passed** by keyboard (§4): 12 of 12 smoke steps; key events and typed text only, plus a settings-file write for the mode |
@@ -27,11 +27,11 @@
 
 | Block | Patches | Upstream files | Added | Deleted | Marker lines (in added) |
 |---|---|---|---|---|---|
-| shell `0001–0999` | 6 | 7 | 45 | 5 | 22 |
-| shell, criterion 2 count (without `product.json`, `resources/**`) | 6 | 7 | 45 | 5 | 22 |
-| guardrails `1000–1499` | 4 | 4 | 97 | 109 | 10 |
-| copilot `1500–1999` | 8 | 19 | 190 | 122 | 84 |
-| security `2000–2999` | 0 | 0 | 0 | 0 | 0 |
+| shell `0001–0999` | 7 | 7 | 56 | 6 | 28 |
+| shell, criterion 2 count (without `product.json`, `resources/**`) | 7 | 7 | 56 | 6 | 28 |
+| guardrails `1000–1499` | 5 | 4 | 105 | 109 | 10 |
+| copilot `1500–1999` | 10 | 22 | 231 | 143 | 104 |
+| security `2000–2999` | 6 | 10 | 132 | 29 | 36 |
 
 The shell block, patch by patch:
 
@@ -43,12 +43,13 @@ The shell block, patch by patch:
 | `0035-desktop-workbench-axis-entry` | `workbench.html`, `workbench.ts` (`code/electron-browser/workbench`) | 7 / 3 (4) | P3, P4 |
 | `0040-axis-desktop-entry-bundle` | `build/next/index.ts` | 6 / 0 (4) | P6 |
 | `0050-axis-desktop-entry-checksums` | `build/gulpfile.vscode.ts` | 4 / 0 (2) | P7 |
+| `0200-axis-daemon-entry` (from main, ADR 0005 D3) | `build/next/index.ts` | 11 / 1 (6) | daemon entry and unmangled `vs/axis` privates |
 
-- Without markers that is **23 added and 5 deleted lines in 7 files**, against 12 files and 300 lines. The design estimate was 10 files and about 50 lines with the bridge seams B1 to B3 (`app.ts`, `serverServices.ts`), which are Phase 1 and not in this count; adding them as estimated keeps the block at 9 files.
+- Without markers that is **28 added and 6 deleted lines in 7 files**, against 12 files and 300 lines (the shell's own patches: 23 added and 5 deleted; `0200`, merged from main, adds 5 and 1 in a file the shell already patches). The design estimate was 10 files and about 50 lines with the bridge seams B1 to B3 (`app.ts`, `serverServices.ts`), which are Phase 1 and not in this count; adding them as estimated keeps the block at 9 files.
 - The temporary restyle import P10 (`0100-axis-defaults-import`) is retired: `axis.common.main.ts` imports the defaults contribution instead, as the design planned.
 - **Deviation from the design, inside the budget:** the desktop entry is reached through `DesktopMain.createWorkbench` (P2), but `AxisWorkbench` **extends** the upstream `Workbench` instead of replacing it, and adds the agent part as one more leaf of the upstream grid. It reads the private `Layout.workbenchGrid` through one guarded accessor that fails the launch with a clear message if a sync renames the field; it overrides only public layout methods (`isVisible`, `isPanelMaximized`, `toggleMaximizedPanel`) and the protected `initLayout`/`createWorkbenchLayout`. This is the approved deviation recorded in the handover; it is why no `layout.ts` patch exists.
 
-Axis-owned code (overlay, not counted by criterion 2): `src/vs/axis` holds 3,250 lines of TypeScript outside tests, 617 lines of tests and 365 lines of CSS.
+Axis-owned code (overlay, not counted by criterion 2): `src/vs/axis` holds 3,614 lines of TypeScript outside tests (not counting main's `daemon/` entry stub), 1,129 lines of tests and 365 lines of CSS.
 
 ## 3. Build on this host
 
