@@ -104,11 +104,25 @@ export function isSafeRefName(ref: string): boolean {
 
 /**
  * Resolves a path read from git metadata. Git writes absolute paths, or, with
- * `worktree.useRelativePaths`, paths relative to the file's own directory.
+ * `worktree.useRelativePaths`, paths relative to the file's own directory,
+ * whose only `..` components come first. A `.` or `..` anywhere else (any in
+ * an absolute path, or one after a name) is refused rather than normalised:
+ * after a link, `x/..` is not where a lexical resolver says it is.
  */
-export function resolveMetadataPath(value: string, baseDir: string, windows: boolean): string {
+export function resolveMetadataPath(value: string, baseDir: string, windows: boolean): string | undefined {
 	const path = windows ? win32 : posix;
-	return path.isAbsolute(value) ? path.normalize(value) : path.resolve(baseDir, value);
+	const absolute = path.isAbsolute(value);
+	let afterName = false;
+	for (const part of value.split(windows ? /[\\/]/ : '/')) {
+		if (part === '.' || part === '..') {
+			if (absolute || afterName) {
+				return undefined;
+			}
+		} else if (part !== '') {
+			afterName = true;
+		}
+	}
+	return absolute ? path.normalize(value) : path.resolve(baseDir, value);
 }
 
 /**
@@ -123,7 +137,7 @@ export function worktreeDirFromGitdir(gitdirContent: string, entryDir: string, w
 	}
 	const path = windows ? win32 : posix;
 	const dotGit = resolveMetadataPath(line, entryDir, windows);
-	return path.basename(dotGit) === '.git' ? path.dirname(dotGit) : undefined;
+	return dotGit && path.basename(dotGit) === '.git' ? path.dirname(dotGit) : undefined;
 }
 
 /**
@@ -139,6 +153,9 @@ export function linksBack(dotGitContent: string, worktreeDir: string, adminDir: 
 	}
 	const path = windows ? win32 : posix;
 	const target = resolveMetadataPath(line, worktreeDir, windows);
+	if (!target) {
+		return false;
+	}
 	const expected = path.normalize(adminDir);
 	return windows ? target.toLowerCase() === expected.toLowerCase() : target === expected;
 }

@@ -15,6 +15,16 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { TestConfigurationService } from '../../../../../platform/configuration/test/common/testConfigurationService.js';
 import { FileService } from '../../../../../platform/files/common/fileService.js';
 import { DiskFileSystemProvider } from '../../../../../platform/files/node/diskFileSystemProvider.js';
+
+/** The disk provider, counting real-path requests (each one may never finish on a link loop). */
+class CountingDiskProvider extends DiskFileSystemProvider {
+	realpathCalls = 0;
+
+	override realpath(resource: URI): Promise<string> {
+		this.realpathCalls++;
+		return super.realpath(resource);
+	}
+}
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { testWorkspace } from '../../../../../platform/workspace/test/common/testWorkspace.js';
 import { TestContextService, TestWorkspaceTrustManagementService } from '../../../../../workbench/test/common/workbenchTestServices.js';
@@ -40,6 +50,7 @@ function gitHasRelativePaths(): boolean {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 	let disposables: DisposableStore;
 	let fileService: FileService;
+	let provider: CountingDiskProvider;
 	let home: string;
 
 	const git = (cwd: string, ...args: string[]) => execFileSync('git', ['-c', 'init.defaultBranch=main', '-c', 'user.name=t', '-c', 'user.email=t@t', ...args], {
@@ -51,7 +62,8 @@ function gitHasRelativePaths(): boolean {
 	setup(() => {
 		disposables = store.add(new DisposableStore());
 		fileService = disposables.add(new FileService(new NullLogService()));
-		disposables.add(fileService.registerProvider(Schemas.file, disposables.add(new DiskFileSystemProvider(new NullLogService()))));
+		provider = disposables.add(new CountingDiskProvider(new NullLogService()));
+		disposables.add(fileService.registerProvider(Schemas.file, provider));
 		home = realpathSync(mkdtempSync(join(tmpdir(), 'axis-discovery-')));
 		// The victim: a repository with a worktree that uses relative paths.
 		mkdirSync(join(home, 'src', 'proj'), { recursive: true });
@@ -76,10 +88,13 @@ function gitHasRelativePaths(): boolean {
 		}
 	}
 
-	async function discover(folders: string[]): Promise<string[]> {
+	function createSource(folders: string[]): AxisDiscoveryDataSource {
 		const context = new TestContextService(testWorkspace(...folders.map(folder => URI.file(folder))));
 		const trust = disposables.add(new TestWorkspaceTrustManagementService());
-		const source = disposables.add(new AxisDiscoveryDataSource(fileService, context, trust, new TestConfigurationService()));
+		return disposables.add(new AxisDiscoveryDataSource(fileService, context, trust, new TestConfigurationService()));
+	}
+
+	async function discover(folders: string[], source = createSource(folders)): Promise<string[]> {
 		const result: string[] = [];
 		for (const project of await source.listProjects()) {
 			result.push(...(await source.listWorktrees(project.id)).map(w => `${w.path.slice(home.length)}@${w.branch}`));
@@ -172,7 +187,7 @@ function gitHasRelativePaths(): boolean {
 		assert.deepStrictEqual(await paths(join(downloads, 'r')), []);
 	});
 
-		test('a looping link in a worktree entry or a submodule git dir neither hangs discovery nor hides the other entries', async () => {
+	test('a looping link in a worktree entry or a submodule git dir neither hangs discovery nor hides the other entries', async () => {
 		const downloads = join(home, 'Downloads');
 		const real = loopLink(downloads);
 		mkdirSync(join(real, 'feat'));
@@ -184,6 +199,33 @@ function gitHasRelativePaths(): boolean {
 		writeFileSync(join(downloads, 'sub2', '.git'), 'gitdir: ../loop\n');
 		assert.deepStrictEqual(await paths(join(downloads, 'proj')), ['/Downloads/proj@main']);
 		assert.deepStrictEqual(await paths(join(downloads, 'sub2'), join(home, 'src', 'proj')), ['/src/proj@main', '/src/proj-worktrees/feat@secret-feat']);
+	});
+
+	test('a looping opened folder is refused, and later discoveries reuse its one real-path request', async function () {
+		this.timeout(10_000);
+		loopLink(join(home, 'Downloads'));
+		const loop = join(home, 'Downloads', 'loop');
+		const source = createSource([loop]);
+		const started = Date.now();
+		assert.deepStrictEqual(await discover([loop], source), []);
+		source.refresh();
+		assert.deepStrictEqual(await discover([loop], source), []);
+		source.refresh();
+		assert.deepStrictEqual(await discover([loop], source), []);
+		assert.strictEqual(provider.realpathCalls, 1, 'one request for the folder, however often discovery runs');
+		assert.ok(Date.now() - started < 3000, 'only the first discovery waits for the request');
+	});
+
+	test('five looping opened folders do not hold up a real one', async () => {
+		const folders: string[] = [];
+		for (let i = 0; i < 5; i++) {
+			const dir = join(home, 'Downloads', `l${i}`);
+			mkdirSync(dir);
+			loopLink(dir);
+			folders.push(join(dir, 'loop'));
+		}
+		assert.deepStrictEqual(await paths(...folders, join(home, 'src', 'proj')), ['/src/proj@main', '/src/proj-worktrees/feat@secret-feat']);
+		assert.strictEqual(provider.realpathCalls, 5, 'no request for a folder without a link');
 	});
 
 	test('a worktree whose common dir is reached through a link is not a project', async () => {

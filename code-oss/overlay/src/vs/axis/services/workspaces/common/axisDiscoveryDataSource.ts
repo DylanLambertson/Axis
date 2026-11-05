@@ -31,11 +31,33 @@ interface IFoundRepository {
 	readonly listsWorktrees: boolean;
 }
 
-/** Most components a checked path may have; a longer path is refused. */
-const MAX_PATH_COMPONENTS = 64;
+/** Most components a checked path may have (a linked worktree's admin dir is its checkout's depth plus three); a longer path is refused. */
+const MAX_PATH_COMPONENTS = 96;
 
-/** Time allowed to resolve the real path of a folder the user opened; on timeout the folder is not a project. */
-const OPENED_FOLDER_REALPATH_TIMEOUT_MS = 3000;
+/**
+ * Time allowed to resolve the real path of an opened folder that contains a link; on timeout the folder
+ * is not a project. A real path of a few links takes milliseconds.
+ */
+const OPENED_FOLDER_REALPATH_TIMEOUT_MS = 1000;
+
+/** How long a settled real path of an opened folder (or its refusal) is reused before it is asked again. */
+const OPENED_FOLDER_REALPATH_CACHE_MS = 5 * 60 * 1000;
+
+/** Most opened folders checked per discovery, and how many are checked at once. */
+const MAX_OPENED_FOLDERS = 50;
+const OPENED_FOLDER_CONCURRENCY = 4;
+
+/**
+ * One real-path request for an opened folder. The upstream request cannot be cancelled and may never
+ * finish (a link loop), so there is at most one per path: later discoveries reuse it instead of starting
+ * another, and a request still pending after the timeout counts as a refusal.
+ */
+interface IRealpathRequest {
+	readonly startedAt: number;
+	readonly promise: Promise<string | undefined>;
+	settledAt?: number;
+	value?: string;
+}
 
 /** Time allowed to check one opened folder or one worktree entry; on timeout it is refused and the others go on. */
 const ENTRY_TIMEOUT_MS = 5000;
@@ -66,6 +88,8 @@ export class AxisDiscoveryDataSource extends Disposable implements IAxisWorkspac
 
 	private projects: Promise<Map<string, IDiscoveredProject>> | undefined;
 	private worktrees = new Map<string, Promise<IDiscoveredWorktrees>>();
+	/** Real-path requests for opened folders, kept across discoveries (insertion order is age). */
+	private readonly realpathRequests = new Map<string, IRealpathRequest>();
 
 	constructor(
 		@IFileService private readonly fileService: IFileService,
@@ -146,20 +170,19 @@ export class AxisDiscoveryDataSource extends Disposable implements IAxisWorkspac
 			this.projects = (async () => {
 				const projects = new Map<string, IDiscoveredProject>();
 				const trusted = this.trustService.isWorkspaceTrusted();
-				for (const folder of this.contextService.getWorkspace().folders) {
-					if (folder.uri.scheme !== Schemas.file) {
-						continue;
-					}
-					const repo = await raceTimeout(this.findRepository(folder.uri.fsPath), ENTRY_TIMEOUT_MS);
+				const folders = this.contextService.getWorkspace().folders.filter(folder => folder.uri.scheme === Schemas.file).slice(0, MAX_OPENED_FOLDERS);
+				const repos = await mapWithConcurrency(folders, OPENED_FOLDER_CONCURRENCY, folder => raceTimeout(this.findRepository(folder.uri.fsPath), ENTRY_TIMEOUT_MS));
+				folders.forEach((folder, index) => {
+					const repo = repos[index];
 					if (!repo) {
-						continue;
+						return;
 					}
 					const id = stableId('p', repo.commonDir);
 					if (!projects.has(id)) {
 						const name = displayName(basename(repo.localCheckout ?? folder.uri.fsPath));
 						projects.set(id, { info: { id, name, trusted }, ...repo });
 					}
-				}
+				});
 				return projects;
 			})();
 		}
@@ -176,10 +199,9 @@ export class AxisDiscoveryDataSource extends Disposable implements IAxisWorkspac
 	 */
 	private async findRepository(openedRoot: string): Promise<IFoundRepository | undefined> {
 		const path = isWindows ? win32 : posix;
-		// Work in physical paths, as git does: the folder the user opened may itself be reached through a
-		// link. Its real path is the only one Axis asks for, and the answer is checked component by component.
-		const root = await raceTimeout(this.realPath(openedRoot), OPENED_FOLDER_REALPATH_TIMEOUT_MS);
-		if (!root || !(await this.isPhysical(root))) {
+		// Work in physical paths, as git does: the folder the user opened may itself be reached through a link.
+		const root = await this.physicalOpenedFolder(openedRoot);
+		if (!root) {
 			return undefined;
 		}
 		const dotGit = path.join(root, '.git');
@@ -195,6 +217,9 @@ export class AxisDiscoveryDataSource extends Disposable implements IAxisWorkspac
 			return undefined;
 		}
 		const gitDir = resolveMetadataPath(gitDirLine, root, isWindows);
+		if (!gitDir) {
+			return undefined;
+		}
 		const commonDirLine = (await this.readText(path.join(gitDir, 'commondir')))?.split('\n')[0].trim();
 		if (!commonDirLine) {
 			// A submodule: its git dir's `core.worktree` must name this folder. It is one checkout; its
@@ -204,15 +229,19 @@ export class AxisDiscoveryDataSource extends Disposable implements IAxisWorkspac
 				return undefined;
 			}
 			const coreWorktree = parseCoreWorktree(await this.readText(path.join(gitDir, 'config')) ?? '');
-			if (!coreWorktree || !samePath(resolveMetadataPath(coreWorktree, gitDir, isWindows), root)) {
+			const coreWorktreeDir = coreWorktree ? resolveMetadataPath(coreWorktree, gitDir, isWindows) : undefined;
+			if (!coreWorktreeDir || !samePath(coreWorktreeDir, root)) {
 				return undefined;
 			}
 			return { commonDir: gitDir, localCheckout: root, listsWorktrees: false };
 		}
 		// A linked worktree: git keeps its admin dir at `<common dir>/worktrees/<name>`, whose `gitdir` names this folder's `.git`.
 		const commonDir = resolveMetadataPath(commonDirLine, gitDir, isWindows);
-		const adminParent = path.join(commonDir, 'worktrees');
 		const gitdirBack = resolveMetadataPath((await this.readText(path.join(gitDir, 'gitdir')))?.split('\n')[0].trim() || '.', gitDir, isWindows);
+		if (!commonDir || !gitdirBack) {
+			return undefined;
+		}
+		const adminParent = path.join(commonDir, 'worktrees');
 		// The common dir is the git dir's grandparent here, so a physical git dir means a physical common dir too.
 		if (!samePath(path.dirname(gitDir), adminParent) || !samePath(gitdirBack, dotGit) || !(await this.isPhysical(gitDir))) {
 			return undefined;
@@ -319,6 +348,53 @@ export class AxisDiscoveryDataSource extends Disposable implements IAxisWorkspac
 	}
 
 	/**
+	 * The physical path of a folder the user opened, or `undefined`. A path with no link in it is used as it
+	 * is, without asking for a real path. Otherwise the real path is asked for once per path (see
+	 * `IRealpathRequest`) and the answer is walked as well.
+	 */
+	private async physicalOpenedFolder(openedRoot: string): Promise<string | undefined> {
+		const normalized = (isWindows ? win32 : posix).normalize(openedRoot);
+		if (await this.isPhysical(normalized)) {
+			return normalized;
+		}
+		const real = await this.realPathOnce(normalized);
+		return real && (await this.isPhysical(real)) ? real : undefined;
+	}
+
+	private async realPathOnce(fsPath: string): Promise<string | undefined> {
+		const now = Date.now();
+		let request = this.realpathRequests.get(fsPath);
+		if (request?.settledAt !== undefined && now - request.settledAt > OPENED_FOLDER_REALPATH_CACHE_MS) {
+			request = undefined;
+		}
+		if (!request) {
+			const started: IRealpathRequest = {
+				startedAt: now,
+				promise: this.realPath(fsPath).then(value => {
+					started.settledAt = Date.now();
+					started.value = value;
+					return value;
+				}),
+			};
+			this.realpathRequests.delete(fsPath);
+			this.realpathRequests.set(fsPath, started);
+			while (this.realpathRequests.size > MAX_OPENED_FOLDERS * 2) {
+				const oldest = this.realpathRequests.keys().next().value;
+				if (oldest === undefined) {
+					break;
+				}
+				this.realpathRequests.delete(oldest);
+			}
+			request = started;
+		}
+		if (request.settledAt !== undefined) {
+			return request.value;
+		}
+		const remaining = OPENED_FOLDER_REALPATH_TIMEOUT_MS - (now - request.startedAt);
+		return remaining > 0 ? raceTimeout(request.promise, remaining) : undefined;
+	}
+
+	/**
 	 * The physical form of a path (every symbolic link resolved), or `undefined` when it cannot be resolved.
 	 * Used only for the folder the user opened, and its answer is checked by `isPhysical`: the upstream
 	 * realpath may return a path as written when its own resolution fails, and may not finish on some loops.
@@ -379,4 +455,18 @@ export class AxisDiscoveryDataSource extends Disposable implements IAxisWorkspac
 
 function samePath(a: string, b: string): boolean {
 	return isWindows ? win32.normalize(a).toLowerCase() === win32.normalize(b).toLowerCase() : posix.normalize(a) === posix.normalize(b);
+}
+
+/** Maps items with at most `limit` calls in flight, keeping the order of the results. */
+async function mapWithConcurrency<T, R>(items: readonly T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+	const results: R[] = new Array(items.length);
+	let next = 0;
+	const worker = async () => {
+		while (next < items.length) {
+			const index = next++;
+			results[index] = await fn(items[index]);
+		}
+	};
+	await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+	return results;
 }
