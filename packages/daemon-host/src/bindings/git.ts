@@ -1,7 +1,9 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { createHash } from "node:crypto";
+import { DaemonError } from "@axis/daemon";
 import {
   GitOpsError,
+  ScanIncomplete,
   compareUrl,
   createNodeRunner,
   daemonGitFor,
@@ -15,7 +17,7 @@ import {
   type GitRunResult,
   type WorktreeRef,
 } from "@axis/git-ops";
-import type { SecretScanner } from "@axis/secret-scan";
+import { SecretScanError, type SecretScanner } from "@axis/secret-scan";
 import { GitRefusal, type GitOperations, type GitPort, type PushCall } from "../ports/git.js";
 import type { RunsService } from "../ports/runs.js";
 
@@ -62,6 +64,40 @@ function unavailable(): Promise<GitRunResult> {
   return Promise.reject(new GitOpsError("E_UNAVAILABLE", "The git runner for this context is not available."));
 }
 
+/**
+ * git-ops turns whatever the drift check throws into `E_UNAVAILABLE` (it cannot know the reason is safe). The worktrees binding
+ * refuses with the closed `git_drift`: that one is passed on as a conflict with the reason, so the client can send the user to the
+ * acknowledgement instead of "try again". Anything else is left as it was.
+ */
+function driftAsRefusal(check: (worktree: WorktreeRef) => Promise<void>): (worktree: WorktreeRef) => Promise<void> {
+  return async (worktree) => {
+    try {
+      await check(worktree);
+    } catch (e) {
+      if (e instanceof DaemonError && e.details?.["reason"] === "git_drift") {
+        throw new GitOpsError("E_CONFLICT", "The repository's git configuration changed.", { reason: "git_drift" });
+      }
+      throw e;
+    }
+  };
+}
+
+/**
+ * `refuse` mode: a scanner that could not cover the text (too large, out of time or work) throws a `SecretScanError`. git-ops
+ * would call that a failure (`E_UNAVAILABLE`); it is an incomplete scan, which the push refuses as `scan_incomplete` and
+ * `pushPlan` shows. A scanner failure of its own (`internal`) and every other throw stay failures.
+ */
+function incompleteAsScan(scan: SecretScanner["scan"]): SecretScanner["scan"] {
+  return async (text, meta) => {
+    try {
+      return await scan(text, meta);
+    } catch (e) {
+      if (e instanceof SecretScanError && e.code !== "internal") throw new ScanIncomplete();
+      throw e;
+    }
+  };
+}
+
 export function createGitPort(deps: GitBindingDeps): GitPort {
   if (typeof deps.scanner?.scan !== "function" || (deps.scanner.mode !== "refuse" && deps.scanner.mode !== "warn")) {
     throw new TypeError("the git port needs a secret scanner with a mode");
@@ -84,8 +120,8 @@ export function createGitPort(deps: GitBindingDeps): GitPort {
     env: { daemon: deps.env.daemon, pty: deps.env.pty },
     runHooks: deps.runHooks,
     isCliRunActive: deps.isCliRunActive ?? (() => false),
-    assertNoDrift: deps.assertNoDrift,
-    scanner: deps.scanner.scan,
+    assertNoDrift: driftAsRefusal(deps.assertNoDrift),
+    scanner: incompleteAsScan(deps.scanner.scan),
     scanMode: deps.scanner.mode,
     platform: deps.platform,
     ...(deps.emptyHooksDir === undefined ? {} : { emptyHooksDir: deps.emptyHooksDir }),
@@ -158,8 +194,10 @@ export function createGitOperations(deps: GitOperationsDeps): GitOperations {
       }),
     planPush: (call) =>
       guarded(async () => {
-        const plan = await planPush(forWorkspace(call.workspaceId), pushInput(call));
+        // `reportBlocked`: a scan that blocks the push comes back as `blocked` (with the binary paths), not as a bare refusal.
+        const plan = await planPush(forWorkspace(call.workspaceId), { ...pushInput(call), reportBlocked: true });
         return {
+          ...(plan.blocked === undefined ? {} : { blocked: { reason: plan.blocked.reason, binaryPaths: [...plan.blocked.unlistedBinaryPaths] } }),
           tip: plan.tip,
           digest: plan.digest,
           requiresConfirmation: plan.requiresConfirmation,

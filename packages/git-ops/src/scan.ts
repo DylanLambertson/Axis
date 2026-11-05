@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 // PSH-1: scan the patch of every commit that a push will send, not the net change between two trees.
 import { OBJECT_ID, type DaemonGit } from "./args.js";
-import { GitOpsError } from "./errors.js";
+import { GitOpsError, ScanIncomplete } from "./errors.js";
 import { messageViews } from "./messageViews.js";
 import type { GitOpsDeps, SecretFinding, WorktreeRef } from "./types.js";
 
@@ -50,12 +50,28 @@ export async function scanOutgoing(deps: GitOpsDeps, git: DaemonGit, worktree: W
   let truncated = list.truncated === true;
   const commits = list.stdout.split("\n").map((l) => l.trim()).filter(Boolean);
   if (commits.some((c) => !OBJECT_ID.test(c))) throw unavailable("list the outgoing commits");
+  // A name with U+FFFD is a lossy decoding: several different files (invalid bytes, or a real U+FFFD) can share it, so no allow-list entry
+  // can name one of them. The scanner is never told it is allowed (and `planPush` keeps it blocked).
+  const allowedForScan = allowedBinaryPaths.filter((p) => !p.includes("\ufffd"));
   const findings: SecretFinding[] = [];
   const binary = new Set<string>();
   const undecodable: string[] = [];
   let total = 0;
+  // A scanner that reports it could not cover the text ends the scan: what follows is unscanned, so the result is incomplete.
+  let gaveUp = false;
+  const scan = async (text: string, meta: Parameters<typeof scanner>[1]): Promise<readonly SecretFinding[]> => {
+    try {
+      return await scanner(text, meta);
+    } catch (e) {
+      if (!(e instanceof ScanIncomplete)) throw e;
+      gaveUp = true;
+      truncated = true;
+      return [];
+    }
+  };
   if (commits.length > MAX_COMMITS) truncated = true;
   for (const commit of commits.slice(0, MAX_COMMITS)) {
+    if (gaveUp) break;
     if (total >= MAX_TOTAL) {
       truncated = true;
       break;
@@ -76,7 +92,9 @@ export async function scanOutgoing(deps: GitOpsDeps, git: DaemonGit, worktree: W
     const cut = d.stdout.length > MAX_DIFF || d.truncated === true;
     total += d.stdout.length;
     if (cut || stat.truncated === true) truncated = true;
-    for (const f of await scanner(cut ? d.stdout.slice(0, MAX_DIFF) : d.stdout, { worktree, truncated: cut, commit, binaryPaths, allowedBinaryPaths, part: "patch" })) findings.push({ ...f, commit });
+    for (const f of await scan(cut ? d.stdout.slice(0, MAX_DIFF) : d.stdout, { worktree, truncated: cut, commit, binaryPaths, allowedBinaryPaths: allowedForScan, part: "patch" })) findings.push({ ...f, commit });
+    // Once the scanner gave up nothing else is read or scanned: a later failure must not replace the incomplete result.
+    if (gaveUp) break;
 
     // The commit object, headers and message, is pushed too, and a message is as good a place for a secret as a file.
     const raw = await git(["cat-file", "commit", commit], undefined, { raw: true });
@@ -89,7 +107,8 @@ export async function scanOutgoing(deps: GitOpsDeps, git: DaemonGit, worktree: W
       const { views, undecodable: bad } = messageViews(text);
       if (bad) undecodable.push(commit);
       for (const view of views) {
-        for (const f of await scanner(view, { worktree, truncated: cutMessage, commit, binaryPaths: [], allowedBinaryPaths: [], part: "message" })) findings.push({ ...f, commit });
+        for (const f of await scan(view, { worktree, truncated: cutMessage, commit, binaryPaths: [], allowedBinaryPaths: [], part: "message" })) findings.push({ ...f, commit });
+        if (gaveUp) break;
       }
     }
   }

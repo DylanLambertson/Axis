@@ -40,6 +40,8 @@ export interface PushPlanFacts {
   readonly requiresConfirmation: boolean;
   readonly reasons: readonly string[];
   readonly findings: readonly PushFindingFacts[];
+  /** Set when the scan blocks the push (a `GIT_PUSH_BLOCKS` value, validated by the wire reply) with the binary paths still to allow. */
+  readonly blocked?: { readonly reason: string; readonly binaryPaths: readonly string[] };
 }
 
 export interface PushCall {

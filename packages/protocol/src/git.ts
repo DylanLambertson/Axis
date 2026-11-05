@@ -55,6 +55,8 @@ export const MAX_FINDING_PATH = 256;
 export const MAX_PLAN_REASONS = 8;
 export const MAX_PLAN_REASON_TEXT = 1024;
 export const MAX_COMPARE_URL = 2048;
+/** Most binary paths a blocked plan lists: what `allowedBinaryPaths` can hold, so every listed path can be allowed. */
+export const MAX_BLOCKED_BINARY_PATHS = MAX_ALLOWED_BINARY_PATHS;
 
 /**
  * `details.reason` values of a refusal, by error code: the ones `@axis/git-ops` and `@axis/review`'s `prepareCommit` raise
@@ -67,8 +69,9 @@ export const GIT_COMMIT_REFUSALS = {
    * worktree no longer matches the reviewed tree. `index_changed`: the staged index changed since the review.
    * `operation_in_progress`: a merge, cherry-pick, revert, rebase or bisect is under way or the index has unmerged paths.
    * `ref_update_failed`: the branch could not be moved by compare-and-swap (a lock); it was left as it was. `snapshot_failed`: the worktree could not be read for the freshness check.
+   * `git_drift`: the repository's git configuration changed since it was recorded (`commit` re-takes the drift check before it commits).
    */
-  E_CONFLICT: ["head_moved", "stale", "index_changed", "operation_in_progress", "ref_update_failed", "snapshot_failed"],
+  E_CONFLICT: ["head_moved", "stale", "index_changed", "operation_in_progress", "ref_update_failed", "snapshot_failed", "git_drift"],
   /** `too_large` and `not_found`: the freshness re-check reads the worktree and HEAD through `@axis/review`. */
   E_INVALID_ARGUMENT: ["too_large", "not_found"],
   /** HEAD is detached, or the branch has no commit: Axis commits on `axis/<slug>` only. */
@@ -79,13 +82,26 @@ export const GIT_COMMIT_REASONS = [
   ...GIT_COMMIT_REFUSALS.E_INVALID_ARGUMENT,
   ...GIT_COMMIT_REFUSALS.E_POLICY_DENIED,
 ] as const;
+/**
+ * Why a plan can never be pushed (`blocked` of `pushPlan`, and the `push` refusal of the same name), in the order the scan
+ * decides (the first that applies): `message_unscannable` (a commit message nothing could read: NUL bytes, invalid text or an
+ * unknown encoding; in either scan mode), `secrets_found` (`refuse` mode: the scan matched), `scan_incomplete` (`refuse` mode:
+ * too large to scan completely), `binary_unscanned` (`refuse` mode: a binary path that is not in `allowedBinaryPaths`). In
+ * `warn` mode only the first blocks; the others ask for confirmation instead.
+ */
+export const GIT_PUSH_BLOCKS = ["message_unscannable", "secrets_found", "scan_incomplete", "binary_unscanned"] as const;
 export const GIT_PUSH_REFUSALS = {
-  /** The tip or the scan result differs from the plan the user confirmed: show the new plan. */
-  E_CONFLICT: ["plan_changed"],
+  /**
+   * `plan_changed`: the tip or the scan result differs from the plan the user confirmed: show the new plan. The four blocks:
+   * the plan is refused before any challenge (the package raises them as `E_POLICY_DENIED` and the host answers `E_CONFLICT`).
+   * `git_drift`: the repository's git configuration changed since it was recorded; the user must acknowledge the change first.
+   */
+  E_CONFLICT: ["plan_changed", ...GIT_PUSH_BLOCKS, "git_drift"],
 } as const;
 export const GIT_PUSH_REASONS = GIT_PUSH_REFUSALS.E_CONFLICT;
 export const gitCommitReasonSchema = z.enum(GIT_COMMIT_REASONS);
 export const gitPushReasonSchema = z.enum(GIT_PUSH_REASONS);
+export const gitPushBlockSchema = z.enum(GIT_PUSH_BLOCKS);
 
 /** No lone surrogate: it would be written to git as U+FFFD, so the message that is committed would not be the one that was shown. */
 const wellFormed = (t: string): boolean => !/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/.test(t);
@@ -155,7 +171,23 @@ export const gitPushPlanResponseSchema = guarded(
       findingsTruncated: z.boolean(),
       /** `PushPlan.digest`: a confirmation is bound to it and `push` sends it back as `confirmedPlan`. */
       digest: planDigestSchema,
+      /**
+       * Present only when the scan blocks the push (`GIT_PUSH_BLOCKS`): the plan cannot be confirmed and `push` refuses it with the
+       * same reason. `findings` says which rules matched and where. `binaryPaths` are the binary paths still to be listed in
+       * `allowedBinaryPaths`, in the DISPLAY form: it equals the path only when the path is not shortened (over 256 units) and holds no
+       * backslash, ellipsis, control or format character, so any other path cannot be copied from here. A name the host decoded
+       * lossily (U+FFFD: invalid bytes, or a real U+FFFD) can never be allowed. `binaryPathsTruncated` says there were more than listed.
+       */
+      blocked: z
+        .strictObject({
+          reason: gitPushBlockSchema,
+          binaryPaths: z.array(shownPathSchema).max(MAX_BLOCKED_BINARY_PATHS),
+          binaryPathsTruncated: z.boolean(),
+        })
+        .refine((b) => !b.binaryPathsTruncated || b.binaryPaths.length === MAX_BLOCKED_BINARY_PATHS, "a truncated list is a full one")
+        .optional(),
     })
+    .refine((p) => p.blocked === undefined || (!p.requiresConfirmation && p.reasons.length === 0), "a blocked plan cannot be confirmed")
     .refine((p) => p.requiresConfirmation === (p.reasons.length > 0), "confirmation is required exactly when there are reasons")
     .refine((p) => !p.findingsTruncated || p.findings.length === MAX_PUSH_FINDINGS, "a truncated list is a full one"),
 );
