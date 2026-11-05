@@ -53,3 +53,9 @@ export function trackTimers(): { live(): number; restore(): void } {
   }) as typeof clearTimeout;
   return { live: () => live.size, restore: () => void ((globalThis.setTimeout = realSet), (globalThis.clearTimeout = realClear)) };
 }
+
+/** Narrow a possibly absent service (absent only when the host is degraded) or fail the test. */
+export function must<T>(value: T | undefined): T {
+  if (value === undefined) throw new Error("expected a defined value");
+  return value;
+}

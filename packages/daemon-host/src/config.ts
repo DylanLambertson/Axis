@@ -1,5 +1,5 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
-import { isAbsolute } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 import { z } from "zod";
 import { AxisError, type Redactor } from "@axis/audit";
 import { contractIdSchema } from "@axis/protocol";
@@ -28,7 +28,7 @@ const pathSchema = z
   .string()
   .min(1)
   .max(MAX_PATH_CHARS)
-  .refine((p) => !p.includes("\0") && isAbsolute(p), "absolute path required");
+  .refine((p) => !p.includes("\0") && isAbsolute(p) && resolve(p) === p, "normalised absolute path required");
 
 /** The key as base64url text on the wire (no padding); parsed into bytes. */
 const attestationKeySchema = z
