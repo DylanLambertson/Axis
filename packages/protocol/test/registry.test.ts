@@ -140,14 +140,14 @@ test("lookup fails closed on unknown contracts, versions and methods", () => {
 });
 
 const approvalSchema = guarded(z.strictObject({ approval: challengeReferenceSchema.optional() }));
-const base: MethodSpec = {
+const base: MethodSpec = Object.freeze({
   request: guarded(z.strictObject({})),
   response: guarded(z.strictObject({})),
   sideEffect: "read",
   tier: 0,
   idempotency: "none",
   timeoutMs: 1000,
-};
+} as const);
 const tableOf = (spec: unknown) => ({ "axis.fake/1": { m: spec as MethodSpec } });
 
 test("a spec with an invalid tier is not served (NaN, out of range, fractional, wrong type)", () => {
@@ -186,7 +186,7 @@ test("a spec outside the closed sets or bounds is not served", () => {
     assert.notEqual(specProblem(spec), null, name);
     assert.equal(lookupMethodIn(tableOf(spec), "axis.fake", 1, "m"), undefined, name);
   }
-  const fine = { ...base, sideEffect: "destructive", tier: 4, request: approvalSchema } as MethodSpec;
+  const fine = Object.freeze({ ...base, sideEffect: "destructive", tier: 4, request: approvalSchema }) as MethodSpec;
   assert.equal(specProblem(fine), null, "tier 4 with an optional approval is servable");
   assert.equal(lookupMethodIn(tableOf(fine), "axis.fake", 1, "m"), fine);
   // A table is bad as a whole when any entry is, and a bad contract key is reported.
@@ -196,8 +196,40 @@ test("a spec outside the closed sets or bounds is not served", () => {
   assert.equal(tableProblems({ "axis.fake/1": { "a/b": base } }).length, 1);
 });
 
+test("a spec whose fields are accessors or Proxy traps is not served, and a served copy cannot change", () => {
+  let reads = 0;
+  const flipping = { ...base };
+  Object.defineProperty(flipping, "tier", { get: () => (++reads === 1 ? 0 : Number.NaN), enumerable: true });
+  assert.notEqual(specProblem(flipping), null, "an accessor tier fails the check");
+  assert.equal(lookupMethodIn(tableOf(flipping), "axis.fake", 1, "m"), undefined);
+  for (const field of ["sideEffect", "idempotency", "timeoutMs", "request", "response"] as const) {
+    const o = { ...base };
+    Object.defineProperty(o, field, { get: () => base[field], enumerable: true });
+    assert.notEqual(specProblem(o), null, `accessor ${field}`);
+  }
+  const trap = (): never => { throw new Error("CANARY"); };
+  assert.notEqual(specProblem(new Proxy({ ...base }, { getOwnPropertyDescriptor: trap, get: trap })), null, "a throwing Proxy is a problem, not an exception");
+  // An unfrozen spec is served as a frozen snapshot of what was checked.
+  const loose = { ...base };
+  const served = lookupMethodIn(tableOf(loose), "axis.fake", 1, "m") as MethodSpec;
+  assert.notEqual(served, loose);
+  assert.equal(Object.isFrozen(served), true);
+  (loose as { tier: number }).tier = Number.NaN;
+  assert.equal(served.tier, 0, "a change to the original after lookup is not seen");
+  Object.freeze(loose);
+});
+
+test("a table key that no lookup can reach, or a missing method table, is a problem", () => {
+  for (const key of ["axis.fake/01", "axis.fake/1e0", "axis.fake/ 1", "axis.fake/+1", "axis.fake/1.0", "axis.fake/"]) {
+    assert.ok(tableProblems({ [key]: { m: base } }).length >= 1, key);
+  }
+  assert.ok(tableProblems({ "axis.fake/1": null as unknown as Record<string, MethodSpec> }).length >= 1, "null method table");
+  assert.ok(tableProblems({ "axis.fake/1": "x" as unknown as Record<string, MethodSpec> }).length >= 1, "string method table");
+  assert.deepEqual(tableProblems({ "axis.fake/1": { m: base } }), []);
+});
+
 test("lookup counts own entries only: an inherited contract key or method is not served", () => {
-  const own = { m: base };
+  const own = Object.freeze({ m: base });
   assert.equal(lookupMethodIn({ "axis.fake/1": own }, "axis.fake", 1, "m"), base);
   assert.equal(lookupMethodIn({ "axis.fake/1": Object.create(own) as Record<string, MethodSpec> }, "axis.fake", 1, "m"), undefined, "inherited method");
   assert.equal(lookupMethodIn(Object.create({ "axis.fake/1": own }) as Record<string, Record<string, MethodSpec>>, "axis.fake", 1, "m"), undefined, "inherited contract");

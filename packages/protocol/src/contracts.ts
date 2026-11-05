@@ -49,25 +49,43 @@ function declaresApproval(spec: MethodSpec): boolean {
  * tier 3 or above method that cannot take an optional `approval`.
  */
 export function specProblem(spec: unknown): string | null {
-  if (typeof spec !== "object" || spec === null) return "spec is not an object";
-  const s = spec as Partial<Record<keyof MethodSpec, unknown>>;
-  const tier = permissionTierSchema.safeParse(s.tier);
+  const f = dataFields(spec);
+  if (f === null) return "spec is not an object whose fields are plain data properties";
+  const tier = permissionTierSchema.safeParse(f.tier);
   if (!tier.success) return "tier is not an integer from 0 to 5";
-  if (!SIDE_EFFECTS.has(s.sideEffect)) return "unknown side effect";
-  if (!IDEMPOTENCY.has(s.idempotency)) return "unknown idempotency mode";
-  if (typeof s.timeoutMs !== "number" || !Number.isInteger(s.timeoutMs) || s.timeoutMs < 1 || s.timeoutMs > MAX_TIMEOUT_MS) {
+  if (!SIDE_EFFECTS.has(f.sideEffect)) return "unknown side effect";
+  if (!IDEMPOTENCY.has(f.idempotency)) return "unknown idempotency mode";
+  if (typeof f.timeoutMs !== "number" || !Number.isInteger(f.timeoutMs) || f.timeoutMs < 1 || f.timeoutMs > MAX_TIMEOUT_MS) {
     return "timeout is not an integer from 1 to the ceiling";
   }
-  for (const part of [s.request, s.response]) {
+  for (const part of [f.request, f.response]) {
     if (typeof (part as { safeParse?: unknown } | null)?.safeParse !== "function") return "missing request or response schema";
   }
   const t = tier.data;
-  if ((s.sideEffect === "none" || s.sideEffect === "read") && t > 1) return "a read method is above tier 1";
-  if ((s.sideEffect === "destructive" || s.sideEffect === "network" || s.sideEffect === "credential") && t < 3) {
+  if ((f.sideEffect === "none" || f.sideEffect === "read") && t > 1) return "a read method is above tier 1";
+  if ((f.sideEffect === "destructive" || f.sideEffect === "network" || f.sideEffect === "credential") && t < 3) {
     return "a destructive, network or credential method is below tier 3";
   }
-  if (t >= 3 && !declaresApproval(spec as MethodSpec)) return "tier 3 or above without an optional approval field";
+  if (t >= 3 && !declaresApproval(f as unknown as MethodSpec)) return "tier 3 or above without an optional approval field";
   return null;
+}
+
+const SPEC_FIELDS = ["tier", "sideEffect", "idempotency", "timeoutMs", "request", "response"] as const;
+
+/** The six fields of a spec read as own data properties (never through an accessor or a Proxy trap), or null. */
+function dataFields(spec: unknown): Record<(typeof SPEC_FIELDS)[number], unknown> | null {
+  if (typeof spec !== "object" || spec === null) return null;
+  try {
+    const out: Record<string, unknown> = {};
+    for (const k of SPEC_FIELDS) {
+      const d = Object.getOwnPropertyDescriptor(spec, k);
+      if (d === undefined || !("value" in d)) return null;
+      out[k] = d.value;
+    }
+    return out as Record<(typeof SPEC_FIELDS)[number], unknown>;
+  } catch {
+    return null;
+  }
 }
 
 /** Every problem in a contract table, as `<contract>/<major>.<method>: <reason>`. Empty when the table can be served. */
@@ -77,10 +95,15 @@ export function tableProblems(table: Table): string[] {
     const at = key.lastIndexOf("/");
     const id = key.slice(0, at);
     const version = Number(key.slice(at + 1));
-    if (!contractIdSchema.safeParse(id).success || !contractVersionSchema.safeParse(version).success) {
+    // The key must be exactly what a lookup builds, so no entry can be unreachable (`axis.x/01`, `axis.x/1e0`).
+    if (!contractIdSchema.safeParse(id).success || !contractVersionSchema.safeParse(version).success || `${id}/${version}` !== key) {
       out.push(`${key}: not a valid contract key`);
     }
-    const methods = table[key] ?? {};
+    const methods = table[key];
+    if (typeof methods !== "object" || methods === null) {
+      out.push(`${key}: not a method table`);
+      continue;
+    }
     for (const name of Object.keys(methods)) {
       if (!methodNameSchema.safeParse(name).success) out.push(`${key}.${name}: not a valid method name`);
       const problem = specProblem(methods[name]);
@@ -93,7 +116,10 @@ export function tableProblems(table: Table): string[] {
 /**
  * The method's spec in `table`, or undefined (the daemon answers
  * E_METHOD_NOT_FOUND). Only own entries count, and a spec that `specProblem`
- * rejects is treated as absent, so a bad tier can never be served.
+ * rejects is treated as absent, so a bad tier can never be served. The
+ * fields are read once, as data properties: an accessor (a tier that is valid
+ * during the check and NaN after it) fails the check, and a spec that is not
+ * frozen is served as a frozen copy of what was checked.
  */
 export function lookupMethodIn(table: Table, contract: string, version: number, method: string): MethodSpec | undefined {
   // The key is built by concatenation, so anything but a string and a safe integer could name another entry.
@@ -102,7 +128,9 @@ export function lookupMethodIn(table: Table, contract: string, version: number, 
   const methods = Object.hasOwn(table, key) ? table[key] : undefined;
   if (methods === undefined || !Object.hasOwn(methods, method)) return undefined;
   const spec = methods[method];
-  return spec !== undefined && specProblem(spec) === null ? spec : undefined;
+  if (spec === undefined || specProblem(spec) !== null) return undefined;
+  // Every field is a data property, so a frozen spec cannot change after the check; anything else is served as a frozen copy.
+  return Object.isFrozen(spec) ? spec : Object.freeze(dataFields(spec) as unknown as MethodSpec);
 }
 
 /** The method's spec, or undefined (the daemon answers E_METHOD_NOT_FOUND). */
