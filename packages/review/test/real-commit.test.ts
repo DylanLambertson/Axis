@@ -47,7 +47,8 @@ test("Axis commit alone refuses a reviewed tree that was never staged: the prepa
   try {
     twoEdits(f);
     const { b } = await reviewed(f, async (s) => s.acceptHunk("a.txt", (await s.hunks("a.txt")).hunks?.[0]?.id ?? ""));
-    const e = await refusal2(executeCommit(f.gitOps, { worktree: f.wt, reviewedTreeHash: b.reviewedTree, message: "m" }));
+    const raw = { worktree: f.wt, reviewedTreeHash: b.reviewedTree, message: "m", expectedParent: f.head(), expectedBranch: "axis/feat" };
+    const e = await refusal2(executeCommit(f.gitOps, raw));
     assert.equal(e.code, "E_CONFLICT");
     assert.match(e.message, /index differs from the tree that was reviewed/);
   } finally {
@@ -232,7 +233,7 @@ test("git-ops refuses what the review layer prepared if the index is changed bet
     f.write("evil.txt", "x\n");
     f.git("add", "evil.txt");
     assert.equal((await refusal(prepared.handoff("m"))).details?.["reason"], "index_changed", "the hand-over notices first");
-    const raw = { worktree: f.wt, reviewedTreeHash: b.reviewedTree, message: "m" };
+    const raw = { worktree: f.wt, reviewedTreeHash: b.reviewedTree, message: "m", expectedParent: f.head(), expectedBranch: "axis/feat" };
     const e = await refusal2(executeCommit(f.gitOps, raw));
     assert.equal(e.code, "E_CONFLICT");
     const plan = await refusal2(planCommit(f.gitOps, raw));
