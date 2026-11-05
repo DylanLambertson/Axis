@@ -17,6 +17,7 @@ export const LOG_EVENTS = [
   "host.starting",
   "host.ready",
   "host.degraded",
+  "host.start_failed",
   "host.shutdown",
   "host.crash",
   "init.duplicate",
