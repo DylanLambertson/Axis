@@ -30,7 +30,10 @@ import {
 const skip = gitSkipReason();
 const PROJECT = "axis.worktrees";
 
-describe("headless slice", { skip }, () => {
+/** A generous bound so a stuck step fails the suite instead of hanging CI; the steps themselves wait on conditions. */
+const SUITE_TIMEOUT_MS = 240_000;
+
+describe("headless slice", { skip, timeout: SUITE_TIMEOUT_MS }, () => {
   let fx: GitFixture;
   let scratch: string;
   let sup: TestSupervisor;
@@ -299,6 +302,8 @@ describe("headless slice", { skip }, () => {
       assert.equal(status.degraded?.reason, reason);
       const refused = await h.client.call("axis.worktrees", "create", { projectId, name: "Not now" }, true);
       assert.equal(refused.ok, false, "a degraded host creates nothing");
+      assert.equal(refused.error?.code, "E_METHOD_NOT_FOUND", "the contract does not exist on a degraded host");
+      assert.deepEqual(h.client.welcome.contracts.map((c) => c.id).sort(), ["axis.audit", "axis.projects"], "the registry offers nothing else");
       assert.equal(readdirSync(join(scratch, "unused-worktrees"), { recursive: true }).length, 0, "and touched no worktree directory");
       h.client.close();
       await h.sup.dispose();

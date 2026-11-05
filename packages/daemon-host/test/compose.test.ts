@@ -1,5 +1,6 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import { existsSync } from "node:fs";
 import { test } from "node:test";
 import { AxisError } from "@axis/audit";
@@ -120,4 +121,28 @@ test("axis.projects/1.list answers ids, names and trust only, and only to the us
   assert.throws(() => handler(ctx("agent:x"), undefined as never), { code: "E_NOT_FOUND" });
   const bad = createProjectsListHandler({ projects: () => [{ id: "p-1", displayName: "", trusted: true }] });
   assert.throws(() => bad(ctx("user"), undefined as never), { code: "E_INTERNAL" }, "a reply that breaks the contract is not sent");
+});
+
+test("startup fails when a served method has no handler, and succeeds when every one has", async () => {
+  for (const withhold of [new Set(["axis.review"]), undefined]) {
+    const fix = hostFixture();
+    const composed = composeDaemonHost(options(fix, { process: new EventEmitter(), ...(withhold === undefined ? {} : { withholdHandlers: withhold }) }));
+    try {
+      if (withhold === undefined) {
+        const s = await composed.start();
+        assert.ok(s.served.includes("axis.review"));
+      } else {
+        await assert.rejects(composed.start(), /policy coverage: .*axis\.review\/1\.diff: served but missing from handlers/);
+        assert.equal(composed.host.state, "stopped", "nothing is held after the refusal");
+      }
+    } finally {
+      await composed.stop();
+      fix.cleanup();
+    }
+  }
+});
+
+test("the composition module exports only composeDaemonHost: no minter can be imported through it", async () => {
+  const mod = await import("../src/compose.js");
+  assert.deepEqual(Object.keys(mod), ["composeDaemonHost"]);
 });

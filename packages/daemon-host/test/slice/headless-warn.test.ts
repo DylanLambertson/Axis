@@ -15,7 +15,10 @@ import { confirmNative, createWorkspace, disposeHosts, registerProject, startHos
  * push runs with. A finding does not block the push; it makes the plan require a confirmation, and the push then needs the
  * challenge and the native dialog like every push (the refuse-mode half is in `headless.test.ts`).
  */
-describe("headless slice: warn mode", { skip: gitSkipReason() }, () => {
+/** A generous bound so a stuck step fails the suite instead of hanging CI; the steps themselves wait on conditions. */
+const SUITE_TIMEOUT_MS = 240_000;
+
+describe("headless slice: warn mode", { skip: gitSkipReason(), timeout: SUITE_TIMEOUT_MS }, () => {
   let fx: GitFixture;
   let scratch: string;
   let sup: TestSupervisor;

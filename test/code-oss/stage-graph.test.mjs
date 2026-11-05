@@ -292,3 +292,14 @@ test("the host's run trust minter module is loadable only by the host's public i
   assert.throws(() => checkStagedFile("daemon-host/compose-parts.ts", 'import "./gate/run-trust.js";\n', files), /run-trust/);
   assert.throws(() => checkStagedFile("daemon-host/handlers/cli-runs.ts", 'import "../gate/run-trust.js";\n', files), /run-trust/);
 });
+
+test("the composition root is loadable only by the host's public index, so no handler can reach a minter through it", () => {
+  const P = (rel) => `${STAGE_ROOT}/${rel}`;
+  const manifest = { zod: null, files: ["daemon-host/compose.ts", "daemon-host/index.ts", "daemon-host/handlers/projects.ts", "daemon-host/compose-parts.ts"].map((p) => ({ path: p })) };
+  const meta = (from) => ({ inputs: { [P(from)]: { imports: [{ path: P("daemon-host/compose.ts"), kind: "import-statement" }] }, [P("daemon-host/compose.ts")]: { imports: [] } } });
+  assert.deepEqual(checkMetafile(meta("daemon-host/index.ts"), manifest), []);
+  for (const from of ["daemon-host/handlers/projects.ts", "daemon-host/compose-parts.ts"]) assert.equal(checkMetafile(meta(from), manifest).length, 1, from);
+  const files = new Set(manifest.files.map((f) => f.path));
+  checkStagedFile("daemon-host/index.ts", 'export * from "./compose.js";\n', files);
+  assert.throws(() => checkStagedFile("daemon-host/handlers/projects.ts", 'import "../compose.js";\n', files), /compose/);
+});

@@ -370,3 +370,17 @@ test("a send that fails keeps the head dirty from the failed attempt even when n
   r.manager.tick();
   assert.deepEqual(r.puts.map((p) => p.seq), [2]);
 });
+
+test("halt (shutdown step 3): nothing is put by itself afterwards, only an explicit flush sends", async () => {
+  const r = rig();
+  r.write();
+  assert.equal(r.puts.length, 1);
+  r.manager.halt();
+  r.advance(10_000);
+  r.write(2); // a write notification after the halt
+  r.manager.tick();
+  assert.equal(r.puts.length, 1, "no put by itself after the halt");
+  r.manager.flush();
+  assert.deepEqual(r.puts.map((p) => p.seq), [1, 3], "the final flush still sends the newest head");
+  await r.disposables.dispose();
+});

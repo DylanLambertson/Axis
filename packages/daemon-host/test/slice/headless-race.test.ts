@@ -1,8 +1,8 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { after, before, describe, test } from "node:test";
 import { approvalRequiredDetailsSchema } from "@axis/protocol";
 import { createGitFixture, gitSkipReason, type GitFixture } from "../../testing/git-fixture.js";
@@ -18,7 +18,10 @@ import { FAKE_CLI, awaitRun, confirmNative, createWorkspace, disposeHosts, regis
  */
 const PROJECT = "axis.worktrees";
 
-describe("headless slice: races", { skip: gitSkipReason() }, () => {
+/** A generous bound so a stuck step fails the suite instead of hanging CI; the steps themselves wait on conditions. */
+const SUITE_TIMEOUT_MS = 240_000;
+
+describe("headless slice: races", { skip: gitSkipReason(), timeout: SUITE_TIMEOUT_MS }, () => {
   let fx: GitFixture;
   let scratch: string;
   let sup: TestSupervisor;
@@ -37,7 +40,9 @@ describe("headless slice: races", { skip: gitSkipReason() }, () => {
     user = await TestClient.open(sup);
   });
   after(async () => {
+    const root = dirname(sup.dataDir);
     await disposeHosts();
+    assert.equal(existsSync(root), false, "the supervisor's temporary directory is gone");
     fx.cleanup();
     rmSync(scratch, { recursive: true, force: true });
   });
@@ -92,7 +97,13 @@ describe("headless slice: races", { skip: gitSkipReason() }, () => {
     ]);
     const pushed = fx.remoteRefs().some((r) => r.startsWith(`refs/heads/${ws.branch} `));
     assert.equal(push.ok, pushed, "the push answered success exactly when the branch is on the remote");
-    if (started.ok) assert.ok(push.ok || push.error?.code === "E_CONFLICT", "a push refused for a live run is a conflict");
+    if (started.ok) {
+      assert.ok(push.ok || push.error?.code === "E_CONFLICT", "a push refused for a live run is a conflict");
+      // End the run and wait for it, so no CLI is still starting (and writing into the worktree) when the host is torn down.
+      const runId = (started.result as { run: { runId: string } }).run.runId;
+      await user.ok("axis.cli-runs", "stop", { runId }, true);
+      await until(async () => ["CANCELLED", "FAILED", "REVIEWING", "BLOCKED"].includes(String((await user.ok<{ run: { state: string } }>("axis.cli-runs", "get", { runId })).run.state)), "the stopped run to end");
+    }
   });
 
   test("the worktrees, git and runs handlers shared one project mutex", () => {

@@ -143,6 +143,8 @@ export interface HostServices {
   readonly anchors: AnchorGuard;
   /** Checkpoint and send the newest head now (the final anchor of a graceful shutdown). Never throws; a no-op when degraded. */
   readonly flushAnchor: () => void;
+  /** Shutdown step 3: the anchor manager stops putting by itself; only `flushAnchor` still sends. Irreversible. */
+  readonly haltAnchor: () => void;
   /** The anchor the supervisor held at startup, the newest head this process put, and the highest acknowledged sequence. */
   readonly anchor: () => { readonly atStart: ChainHead | null; readonly put: ChainHead | null; readonly ackedSeq: number };
 }
@@ -297,6 +299,7 @@ export function createDaemonHost(config: HostConfig, ports: StartupPorts, option
       recovery,
       anchors: Object.freeze({ check: (t: number) => anchors.check(t), status: () => anchors.status(), noteWrite: () => anchors.noteWrite() }),
       flushAnchor: () => anchors.flush(),
+      haltAnchor: () => anchors.halt(),
       anchor: () => Object.freeze({ atStart: check.anchor, put: anchors.put, ackedSeq: anchors.ackedSeq }),
     });
     // Steps 10 and 11 of the composition (handlers, lifecycle) happen here, before `ready`: a throw sends no `ready`.

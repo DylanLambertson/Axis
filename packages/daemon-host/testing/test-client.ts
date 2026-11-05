@@ -16,6 +16,9 @@ export interface Answer {
   readonly error?: { readonly code: string; readonly message: string; readonly details?: Record<string, unknown> | undefined; readonly retryable?: boolean };
 }
 
+/** A generous bound (not an assertion about speed): a host that has not answered by now is stuck. */
+const CALL_BOUND_MS = 30_000;
+
 export const newKey = (): string => randomUUID();
 
 /** Every frame any client received, as JSON text: the "appears in no response" checks read it. */
@@ -31,6 +34,15 @@ export class TestClient {
     this.#conn = conn;
     this.welcome = welcome;
     conn.onMessage((m) => this.#receive(m));
+    // A connection that closes (the host died) fails every call still waiting.
+    conn.onClose(() => this.#failAll("the connection closed"));
+  }
+
+  #failAll(why: string): void {
+    for (const [id, resolve] of [...this.#pending]) {
+      this.#pending.delete(id);
+      resolve({ __failed: why });
+    }
   }
 
   /** Connect with `attestation` (a fresh `user` one by default), send `hello` for every contract the protocol has, and wait for `welcome`. */
@@ -63,7 +75,11 @@ export class TestClient {
     const idempotencyKey = key === true ? newKey() : key;
     const spec = lookupMethod(contract, 1, method);
     return new Promise<Answer>((resolve, reject) => {
+      const timer = setTimeout(() => (this.#pending.delete(id), reject(new Error(`${contract}.${method}: no answer within ${CALL_BOUND_MS} ms`))), CALL_BOUND_MS);
+      timer.unref();
       this.#pending.set(id, (raw) => {
+        clearTimeout(timer);
+        if (typeof raw === "object" && raw !== null && "__failed" in raw) return reject(new Error(`${contract}.${method}: ${String((raw as { __failed: unknown }).__failed)}`));
         const parsed = responseEnvelopeSchema.safeParse(raw);
         if (!parsed.success) return reject(new Error(`${contract}.${method}: the answer is not a response envelope`));
         if (!parsed.data.ok) return resolve({ ok: false, error: parsed.data.error as NonNullable<Answer["error"]> });
@@ -83,7 +99,7 @@ export class TestClient {
   }
 
   close(): void {
-    this.#pending.clear();
+    this.#failAll("the client was closed");
     this.#conn.close();
   }
 }

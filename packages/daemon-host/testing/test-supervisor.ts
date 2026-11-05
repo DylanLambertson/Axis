@@ -55,6 +55,8 @@ export interface ExitInfo {
 }
 
 const MAX_STDERR_CHARS = 65_536;
+/** A generous bound (not an assertion about speed): a host that has not answered by now is stuck. */
+const WAIT_BOUND_MS = 30_000;
 const nextCid = ((n = 0) => () => `tc${String(++n).padStart(8, "0")}`)();
 
 export class TestSupervisor {
@@ -78,7 +80,7 @@ export class TestSupervisor {
   readonly #root: string;
   readonly #ownsRoot: boolean;
   readonly #kill: (signal?: NodeJS.Signals) => void;
-  readonly #waiters = new Set<{ type: string; resolve: (m: OutboundMessage) => void }>();
+  readonly #waiters = new Set<{ type: string; resolve: (m: OutboundMessage) => void; reject: (e: Error) => void }>();
   readonly #connections = new Set<Connection>();
   #disposed = false;
 
@@ -188,7 +190,20 @@ export class TestSupervisor {
   waitFor<T extends OutboundMessage["type"]>(type: T, from = 0): Promise<Extract<OutboundMessage, { type: T }>> {
     const have = this.received.slice(from).find((m) => m.type === type);
     if (have !== undefined) return Promise.resolve(have as Extract<OutboundMessage, { type: T }>);
-    return new Promise((resolve) => this.#waiters.add({ type, resolve: resolve as (m: OutboundMessage) => void }));
+    // A host that exits, or says nothing within the bound, rejects the wait: a failing step reports instead of hanging.
+    return new Promise((resolve, reject) => {
+      const waiter = {
+        type,
+        resolve: (m: OutboundMessage) => (clearTimeout(timer), resolve(m as Extract<OutboundMessage, { type: T }>)),
+        reject: (e: Error) => (clearTimeout(timer), reject(e)),
+      };
+      const timer = setTimeout(() => (this.#waiters.delete(waiter), reject(new Error(`no ${type} message from the host within ${WAIT_BOUND_MS} ms`))), WAIT_BOUND_MS);
+      timer.unref();
+      this.#waiters.add(waiter);
+      void this.exited.then(() => {
+        if (this.#waiters.delete(waiter)) waiter.reject(new Error(`the host exited before sending ${type}`));
+      });
+    });
   }
 
   /** Answer a recorded `native.confirm` (the host then calls `confirmNative`). */
@@ -216,8 +231,10 @@ export class TestSupervisor {
     for (const c of [...this.#connections]) c.close();
     this.mux.dispose();
     this.#channel.dispose();
+    for (const w of [...this.#waiters]) w.reject(new Error("the supervisor was disposed"));
     this.#waiters.clear();
-    if (this.#ownsRoot) await rm(this.#root, { recursive: true, force: true });
+    // A CLI the killed host left behind may still be writing for a moment: retry the removal.
+    if (this.#ownsRoot) await rm(this.#root, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
     return info;
   }
 

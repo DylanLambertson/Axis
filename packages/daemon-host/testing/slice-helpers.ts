@@ -40,7 +40,9 @@ export async function startHost(fx: GitFixture, over: Partial<TestSupervisorOpti
   const sup = await TestSupervisor.start({ entry: SLICE_HOST, env, ...rest });
   started.push(sup);
   sup.settings["axis.cliAgents"] = agents ?? [];
-  return { sup, ready: sup.waitFor("ready") as unknown as Promise<Record<string, unknown>> };
+  const ready = sup.waitFor("ready") as unknown as Promise<Record<string, unknown>>;
+  ready.catch(() => undefined); // a host that is meant to exit (a lock conflict) is not an unhandled rejection; awaiters still see it
+  return { sup, ready };
 }
 
 /** `projects.register` through the supervisor, as main would; resolves the project id. */

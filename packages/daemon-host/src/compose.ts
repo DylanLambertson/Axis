@@ -25,7 +25,7 @@ import { createChallengeAuditSink } from "./gate/audit-sink.js";
 import { createRunTrustMinter } from "./gate/run-trust.js";
 import { createWorktreesApprovals, type WorktreesApprovals } from "./gate/worktrees-confirm.js";
 import { createApprovalsHandlers } from "./handlers/approvals.js";
-import { createHandlerRegistrar, registerAuditHandlers } from "./handlers/anchor-guard.js";
+import { createHandlerRegistrar, registerAuditHandlers, type HandlerRegistrar } from "./handlers/anchor-guard.js";
 import { registerCliRunsHandlers } from "./handlers/cli-runs.js";
 import { PushedBases } from "./handlers/git-common.js";
 import { registerGitHandlers } from "./handlers/git.js";
@@ -45,7 +45,7 @@ import type { ChannelMux } from "./transport/mux.js";
 /**
  * The composition root (ticket H12, design section 3 steps 10 and 11, plan section 1 and questions 18 and 19). It is the one
  * place that builds the `Daemon` and every binding, and it hands handler code ONLY the `HandlerRegistrar` (never the
- * `Daemon`, the raw `register`, the database or a minter).
+ * `Daemon`, the raw `register`, the database or the discard minter; the run trust minter goes to the cli-runs handlers alone, TRU-2).
  *
  * What it guarantees, and what fails closed:
  * - It REFUSES TO BE BUILT without a pty port and a pty git runner (`pty_required`, exit 78, before a lock or a file exists):
@@ -59,7 +59,7 @@ import type { ChannelMux } from "./transport/mux.js";
  * - The startup reconcile is the worktrees service's: every workspace is `needs attention` until it has completed.
  * - Every served method has a handler and every handler is a served method (`checkCoverage` `also: handlers`), or startup fails.
  * - A degraded host (design 5.5) registers only the audit reads and `axis.projects/1.list`, over a registry that holds nothing else.
- * - `installHostLifecycle` runs before `ready`; the final anchor is flushed and awaited (bounded) once nothing can still write.
+ * - `installHostLifecycle` runs before `ready`; the final anchor is flushed and awaited (bounded) once nothing can still write; an unacknowledged one exits 1.
  */
 export interface ComposeOptions {
   readonly config: HostConfig;
@@ -83,6 +83,8 @@ export interface ComposeOptions {
   readonly exit: LifecycleOptions["exit"];
   readonly shutdown?: ShutdownOptions;
   readonly finalizeTimeoutMs?: number;
+  /** TEST ONLY: contract ids whose handlers are not registered. Startup must then fail the coverage check (it can only make the host refuse). */
+  readonly withholdHandlers?: ReadonlySet<string>;
   /** How long the final anchor waits for its acknowledgement (default 1500). It never outlives `finalizeTimeoutMs`. */
   readonly finalAnchorWaitMs?: number;
 }
@@ -136,6 +138,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
   // Built in `afterStorage`, used by `reconcile` and `beforeReady`.
   const built: { worktrees?: WorktreesBinding; runs?: RunsBinding; approvals?: WorktreesApprovals; projectPaths?: () => string[] } = {};
   let lifecycle: LifecycleHandle | undefined;
+  let offConnect: (() => void) | undefined;
   let finish: () => void = () => undefined;
   const finished = new Promise<void>((resolve) => void (finish = resolve));
   let stopping: Promise<DisposeResult> | undefined;
@@ -226,7 +229,9 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
     });
     cleanups.push(() => daemon.stop());
     const recorded = recordingRegistrar(createHandlerRegistrar(daemon, services.anchors));
-    const registrar = recorded.registrar;
+    const withheld = options.withholdHandlers;
+    // Test seam: a contract listed in `withholdHandlers` is not registered, and the coverage check below must then fail startup.
+    const registrar: HandlerRegistrar = withheld === undefined ? recorded.registrar : Object.freeze({ register: ((c, v, h, o) => (withheld.has(c) ? undefined : recorded.registrar.register(c, v, h, o))) as HandlerRegistrar["register"] });
 
     registerAuditHandlers(registrar, { audit: services.auditRead, anchors: services.anchors, degraded: () => services.degraded, clock: ports.clock });
     registrar.register(PROJECTS_CONTRACT, PROJECTS_VERSION, createProjectsHandlers({ projects: () => services.journalRead.listProjects() }));
@@ -240,7 +245,8 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
       ...(config.limits.connectBurst === undefined ? {} : { burst: config.limits.connectBurst }),
     });
     const router = createConnectRouter({ limiter, accept: (connection, attestation) => daemon.accept(connection, attestation), ...(options.mux === undefined ? {} : { mux: options.mux }), ...(logger === undefined ? {} : { logger }) });
-    cleanups.push(control.onConnect((request) => router.fromMux(request)));
+    offConnect = control.onConnect((request) => router.fromMux(request));
+    cleanups.push(() => offConnect?.());
     cleanups.push(control.onTrustSet((m) => {
       try {
         services.trust.set({ windowId: m.windowId, ...(m.workspaceId === undefined ? {} : { workspaceId: m.workspaceId }) }, m.trusted);
@@ -310,23 +316,33 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
     });
   }
 
-  /** The final checkpoint (design 8, step 4): nothing can still write. The put is synchronous; only the acknowledgement is awaited, bounded. */
+  /**
+   * Shutdown steps 3 and 4 (design 8). Step 3: nothing may write after the final anchor, so the connect listener goes, the anchor
+   * manager stops putting by itself, and the run supervisor kills live process groups and stops listening to them (a CLI that
+   * exits now writes nothing). Step 4: the final checkpoint is put (synchronously) and its acknowledgement awaited, bounded; one
+   * that does not arrive in time throws, and the lifecycle reports it as exit code 1 (the anchor on the supervisor is older than
+   * the database).
+   */
   async function finalAnchor(services: HostServices): Promise<void> {
+    offConnect?.();
+    services.haltAnchor();
+    built.runs?.dispose();
     services.flushAnchor();
     const target = services.anchor().put;
     if (target === undefined || target === null || services.anchor().ackedSeq >= target.seq) return;
-    await new Promise<void>((resolve) => {
+    const acked = await new Promise<boolean>((resolve) => {
       const off = control.onAnchorAck(() => {
-        if (services.anchor().ackedSeq >= target.seq) done();
+        if (services.anchor().ackedSeq >= target.seq) done(true);
       });
-      const timer = setTimeout(done, options.finalAnchorWaitMs ?? 1_500) as unknown as NodeJS.Timeout; // opaque handle under Code OSS's typings (ADR 0005)
+      const timer = setTimeout(() => done(false), options.finalAnchorWaitMs ?? 1_500) as unknown as NodeJS.Timeout; // opaque handle under Code OSS's typings (ADR 0005)
       timer.unref();
-      function done(): void {
+      function done(ok: boolean): void {
         clearTimeout(timer);
         off();
-        resolve();
+        resolve(ok);
       }
     });
+    if (!acked) throw new AxisError("E_UNAVAILABLE", "The final audit anchor was not acknowledged", { reason: "final_anchor_unacked" });
   }
 
   function stop(): Promise<DisposeResult> {
