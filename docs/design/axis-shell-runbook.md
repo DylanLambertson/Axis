@@ -26,7 +26,7 @@ export AXIS_CODE_OSS_TOOLS_DIR=$HOME/.cache/project-axis/shell-mac/tools
 
 # 2. Fetch the pinned Code OSS, fetch and verify the pinned Node, apply the series
 scripts/code-oss/fetch.sh
-bash -c '. scripts/code-oss/lib.sh; load_manifest; download_node'   # apply.sh's hook needs Node first
+scripts/code-oss/build.sh --toolchain-only   # apply.sh's hook needs Node first
 scripts/code-oss/apply.sh
 
 # 3. Build: npm ci, compile, Electron, built-in extensions (about 20 minutes cold)
@@ -60,7 +60,7 @@ What to look at (macOS shortcuts; on Windows and Linux replace `Ctrl+Cmd` with `
 | Try | Expect |
 |---|---|
 | Start | The dashboard: four rows (the local checkout, `fix-login`, `add-search` locked, `spike` detached); sample runs in the Agents column; focus on the first row |
-| Arrow keys, Enter | Moves along the rows; Enter opens that workspace's view: header, Files tree, and a terminal in the panel whose cwd is the worktree |
+| Arrow keys, Enter | Moves along the rows; Enter opens that workspace's view: header and Files tree. If you trusted the folder, a terminal opens in the panel with the worktree as its cwd; in Restricted Mode none opens by itself, and **New Terminal** opens one |
 | In Files: Right on `src`, Down, Enter on `login.ts` | The IDE view opens at the file, focus in the editor |
 | `Ctrl+Cmd+V` twice | Back to the workspace view with focus on `login.ts`; then the IDE view again with the editor and any unsaved change intact |
 | `Ctrl+Cmd+0`, `Ctrl+Alt+Cmd+2` | The dashboard; then workspace 2 |
@@ -87,18 +87,24 @@ Xvfb warns that it cannot create `/tmp/.X11-unix/X101` (the directory belongs to
 
 Build as on macOS with `AXIS_CODE_OSS_VENDOR_DIR=$HOME/.cache/project-axis/shell-lx/vendor` and `AXIS_CODE_OSS_TOOLS_DIR=$HOME/.cache/project-axis/shell-lx/tools`, plus the sysroot variables of the Linux report (`CPATH`, `LIBRARY_PATH`, `PKG_CONFIG`). On this host the sysroot's `libX11.so` (and the Kerberos `.so` links) point at runtime libraries the sysroot does not hold, so the linker fell back to `libX11.a` and `native-keymap` failed to link; a directory of links to the host's runtime libraries, first in `LIBRARY_PATH`, fixed it without editing the shared sysroot.
 
-Launch with remote debugging, then drive it:
+Launch a throwaway profile with remote debugging, then drive it:
 
 ```bash
 export DISPLAY=:101 LD_LIBRARY_PATH=$SYSROOT/usr/lib/x86_64-linux-gnu   # NSS, ALSA and Xss for Electron
-AXIS_CODE_OSS_RUN_DIR=$HOME/.cache/project-axis/shell-lx/run-smoke \
-  scripts/code-oss/run.sh --remote-debugging-port=9333 --disable-gpu --skip-welcome \
+RUN=$HOME/.cache/project-axis/shell-lx/run-smoke
+rm -rf $RUN && mkdir -p $RUN/user-data/User
+printf '{\n\t"axis.preview.sampleRuns": true,\n\t"security.workspace.trust.enabled": false\n}\n' > $RUN/user-data/User/settings.json
+AXIS_CODE_OSS_RUN_DIR=$RUN scripts/code-oss/run.sh --remote-debugging-port=9333 --disable-gpu --skip-welcome \
   $HOME/.cache/project-axis/shell-lx/demo/demo-repo &
 node test/axis-shell/smoke.mjs --port 9333 --out <screenshot dir> \
-  --settings $HOME/.cache/project-axis/shell-lx/run-smoke/user-data/User/settings.json
+  --settings $RUN/user-data/User/settings.json --app-path $AXIS_CODE_OSS_VENDOR_DIR/code-oss
 ```
 
-`smoke.mjs` uses keys only (the Windows and Linux shortcuts), writes one PNG per step and `results.json`, and exits non-zero on the first failed step. It changes `axis.view.mode` by editing the settings file, as a user would.
+The profile turns workspace trust off so the demo repository counts as trusted and a terminal opens on first focus, as the smoke test expects; never do that in a profile you use.
+
+**The DevTools port.** `--remote-debugging-port` lets any process of the same machine drive the window, read its contents and run code in it. Use it only with a development build, a throwaway profile and the demo repository, and stop the app when the run ends. Chromium binds the port to `127.0.0.1`; Electron ignores `--remote-debugging-address`, so asking for loopback on the command line changes nothing, and `smoke.mjs` instead checks that the port listens on loopback only (Linux, from `/proc/net`) and fails otherwise. A packaged Axis build must refuse the flag; that check does not exist yet and is tracked as G-28 in `docs/security/threat-model-phase1-controls.md`.
+
+`smoke.mjs` drives the app with key events (the Windows and Linux shortcuts) and typed text in the editor and the command palette; it reads the page to assert what renders and where focus is, but never clicks or focuses anything by script. The one action that is not a key is the mode change: it writes `axis.view.mode` to the profile's settings file, as a user editing it would. It writes one PNG per step and `results.json`, and exits non-zero on the first failed step. `--app-path` turns on the check that the app's Node utility processes (the extension host among them) keep their pids across twenty toggles; without it that check is skipped.
 
 ## Unit tests
 

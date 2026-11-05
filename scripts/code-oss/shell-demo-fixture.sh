@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 # Creates a small Git repository with three linked worktrees, for looking at
 # the Axis Agent view by hand or from test/axis-shell/smoke.mjs. The worktrees
 # are plain `git worktree add` worktrees, so the Phase 0 dashboard lists them

@@ -1,6 +1,6 @@
 # Axis Agent view shell, Phase 0: footprint and headless run (Linux)
 
-- Date: 2026-11-04 and 2026-11-05.
+- Date: 2026-11-04 and 2026-11-05; re-run on 2026-11-05 after the review fixes (§6).
 - Branch: `feat/axis-shell-a1`. Code OSS `1.144.0` at `2c33b50b16c472efe58357d1d2a8a5414bc23fbf`, with the patch series, `replace/`, overlay and hook of this branch.
 - Scope: ADR 0004's Phase 0 gate items for the agent-view skeleton (`docs/adr/0004-agent-first-workspace-shell.md`, "Phase 0 gate impact"), measured on the Linux host; ADR 0002 criterion 2 for the shell block. Design: `docs/design/axis-agent-shell.md` tasks A1 to A7; how to build and run: `docs/design/axis-shell-runbook.md`.
 - Status words as in `code-oss-build.md`: **passed**, **failed**, **not run**. Every number was measured on this host, shared with other builds.
@@ -14,10 +14,10 @@
 | ADR 0002 criterion 2 (shell block `0001–0999`: ≤ 12 upstream files, ≤ 300 lines) | **Passed**: 7 files, 45 added (22 of them marker lines) and 5 deleted lines (§2). The Agent view adds **no** upstream file or line: everything it needs is overlay |
 | Gate item 1: boots into a dashboard listing workspaces, and a workspace view with a file tree and a terminal bound to a folder | **Passed**, with read-only discovery of real worktrees and labelled sample runs (§4) |
 | Gate item 2: IDE view passes ADR 0002 criterion 1 | **Not run.** The IDE view is the upstream workbench, reached and left in every smoke step, but the criterion 1 smoke subset (editor, explorer, search, SCM, terminal, debugger, diagnostics, palette, extension host) was not run here |
-| Gate item 3: switching in `perWorkspace` and `split`; a file click opens IDE view at the file; returning keeps workspace and editor state | **Passed** keyboard-only (§4): 12 of 12 smoke steps |
+| Gate item 3: switching in `perWorkspace` and `split`; a file click opens IDE view at the file; returning keeps workspace and editor state | **Passed** by keyboard (§4): 12 of 12 smoke steps; key events and typed text only, plus a settings-file write for the mode |
 | Gate item 4: shell footprint measured against criterion 2 | **Passed** (§2) |
 | No part recreated and no extension host restart across 20 toggles | **Passed**: the part element is the same object and the app's Node utility processes (the extension host among them) keep the same pids |
-| Unit tests (`./scripts/test.sh --grep Axis`, Electron renderer) | **Passed**: 39 of 39 |
+| Unit tests (`./scripts/test.sh --grep Axis`, Electron renderer) | **Passed**: 46 of 46 |
 | macOS | **Not run** on this host. The runbook gives the commands and the one background launch |
 | Screen reader | **Not run**. Announcements were checked as live-region text, not with Orca or VoiceOver |
 
@@ -69,21 +69,21 @@ Running app, idle on the demo repository after the smoke run: 16 processes, 2,24
 
 ## 4. Headless run
 
-`test/axis-shell/smoke.mjs` attached over the Chrome DevTools Protocol to the development build on Xvfb, opened on the demo repository of `scripts/code-oss/shell-demo-fixture.sh` with `axis.preview.sampleRuns` on and a fresh profile. Keys only, using the Windows and Linux shortcuts; the mode change edits the user settings file. One screenshot per step.
+`test/axis-shell/smoke.mjs` attached over the Chrome DevTools Protocol to the development build on Xvfb, opened on the demo repository of `scripts/code-oss/shell-demo-fixture.sh` with `axis.preview.sampleRuns` on, workspace trust off and a fresh profile, with `--app-path` set. Every action is a key event (the Windows and Linux shortcuts) or typed text in the editor and the command palette; the script reads the page but never clicks or focuses by script. The mode change writes the user settings file. Before the steps it checks that the DevTools port listens on loopback only. One screenshot per step.
 
 | Step | What it asserts | Result |
 |---|---|---|
 | dashboard | Agent part shown, editor hidden; rows for the local checkout (labelled), `fix-login`, `add-search`, `spike` (shown as "detached at …"); focus not on the body | passed |
-| keyboard-open-workspace | Home, Down to `fix-login`, Enter: workspace view, Files tree, a terminal; focus inside the view | passed |
+| keyboard-open-workspace | Startup focus on the dashboard; Home, Down to `fix-login`, Enter: workspace view, Files tree, a terminal; focus inside the view | passed |
 | file-opens-ide-view | In Files: Home, Right on `src`, Down, Enter on `login.ts`: IDE view, `login.ts` open, focus in the editor | passed |
 | edit-then-back-to-agent | Type into the editor (dirty), `Ctrl+Shift+Alt+V`: Agent view, same workspace, focus back on `login.ts`, "Agent view, workspace fix-login" announced | passed |
 | back-to-ide-keeps-editor | Toggle again: IDE view, focus in the editor, `login.ts` still open and still dirty, announced | passed |
 | twenty-toggles-keep-parts | 20 toggles: same part element; Node utility process pids unchanged | passed |
 | dashboard-shortcut-and-workspace-2 | `Ctrl+Shift+Alt+0`: dashboard with focus; `Ctrl+Shift+Alt+2`: workspace 2 | passed |
-| split-mode | Both halves shown; the agent half right of the IDE half | passed |
+| split-mode | Both halves shown; the agent half right of the IDE half; the agent half has its split header | passed |
 | split-toggle-moves-focus | The toggle moves focus between halves and hides neither | passed |
-| split-collapse-ide-and-file-click | Collapse the IDE half; Enter on `README.md` expands it and opens the file there, no view switch | passed |
-| split-collapse-agent-f6 | Collapse the agent half to a strip of at most 40 px; F6 reaches it; Enter on its header expands it | passed |
+| split-collapse-ide-and-file-click | Collapse the IDE half from the command palette; arrow keys to `README.md`, Enter expands the IDE half and opens the file there, no view switch | passed |
+| split-collapse-agent-f6 | Collapse the agent half from the command palette to a strip of at most 40 px; F6 reaches it; Enter on its header expands it | passed |
 | back-to-per-workspace | One view again | passed |
 
 Two defects found by these runs were fixed before the results above: the part element was not sized to its grid cell (the dashboard filled a quarter of the window), and upstream restore reopened the Explorer after the Axis layout was applied, which the shell took as a request for the IDE view.
@@ -102,3 +102,13 @@ Two defects found by these runs were fixed before the results above: the part el
 | Panel per view, auxiliary bar containers | User's visibility in every view | The design's per-view panel and auxiliary-bar memory is not built |
 
 Not run: the ADR 0002 criterion 1 smoke subset in IDE view, any macOS or Windows run, a screen reader, a packaged build with the shell, startup timing, keystroke latency of workspace terminals.
+
+## 6. Review fixes (2026-11-05)
+
+An independent review of the branch found no blocker. What changed after it, all re-run with the results above:
+
+- **Worktree paths from repository metadata are checked before use.** A `<common dir>/worktrees/<name>/gitdir` is followed only if the folder it names, and that folder's `.git` file, are real (no symbolic link) and the `.git` file points back to the same `worktrees/<name>` entry, which is git's own two-way link. An opened folder whose `.git` file names a linked worktree is accepted only if that admin dir sits under `<common dir>/worktrees` and links back to the folder. Anything else, including a worktree whose folder is missing, is not listed or opened (only the two links are read); the dashboard says how many entries it left out. Links may still point outside the repository, as git allows (`git worktree add ../x`).
+- **No terminal opens by itself in Restricted Mode.** The terminal on first focus needs a trusted window and a project discovered while trusted; **New Terminal** stays available.
+- **Branch names from `HEAD` are cleaned:** control, format and bidi characters become U+FFFD, the name is cut to the contract's 256 characters and to 128 for display.
+- **Ids** of discovered projects and worktrees are 128 bits of SHA-1 of the path instead of a 32-bit hash.
+- **Tests:** the ref-escape test now plants a file where an unguarded read would land; the ref-name and back-link guards were each replaced by `return true` in the compiled output and the data-source tests failed, then restored. The `split-mode` smoke step asserts its last condition.
