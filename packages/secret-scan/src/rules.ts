@@ -31,14 +31,20 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const PATHLIKE = /^(?:\/|\.{1,2}\/|~\/)[\w.@+=-]*(?:\/[\w.@+=-]*)+$/;
 const FLAG = /^--[a-z][a-z0-9-]*(?:=|$)/;
 const DIGEST_WORDS = new Set(["sha", "hash", "digest", "checksum", "commit", "integrity", "etag", "fingerprint", "thumbprint", "rev", "oid", "md"]);
-const SECRET_WORDS = new Set(["key", "apikey", "secret", "token", "password", "passwd", "pwd", "credential", "credentials", "private", "auth"]);
-// Calls, member chains, indexing, blocks and arrow functions: code, never key material.
-const CODE_CHARS = /[()[\]{}]|\?\.|=>/;
+// A name word that ends in one of these (`secret`, `webhooksecret`, `tokens`, `oauth`) makes the name a secret name. A bare `key` does
+// not: `hash_key` is a digest key name, and a random value under it is still reported by the generic rule.
+const SECRET_KEY_NAME = /(?:api|access|secret|private|auth|signing|encryption|master|client|license|session)[^a-z]*key/;
+const SECRET_SUFFIX = /(?:secrets?|tokens?|passwords?|passwds?|pwds?|credentials?|privates?|apikeys?|auth)$/;
+// The SHAPE of code, not any bracket (generated passwords and Django keys hold brackets): a name or member chain directly
+// followed by a call, an index or a block (with an optional generic), an optional chain, an arrow, or a chained `).name`.
+const CODE_SHAPE = /^\(?[A-Za-z_$][\w$]*(?:\??\.[A-Za-z_$][\w$]*)*(?:<[\w$.,<> ]*>)?[([{]|\?\.[A-Za-z_$]|=>|[)\]]\??\.[A-Za-z_$]/;
+// A regular expression literal: a slash, then an idiom no key has.
+const REGEX_LITERAL = /^\/[^/]*(?:\\[A-Za-z]|\(\?|\[\^|\[[A-Za-z0-9]-[A-Za-z0-9])/;
 const HEX = /^[0-9a-fA-F]+$/;
 const SCREAMING = /^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$/;
 const DOTTED = /^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+$/;
 const SEGMENTED = /^[a-z][a-z0-9]*(?:[_.-][a-z0-9]+)+$/;
-const PLACEHOLDER = /example|changeme|change-me|placeholder|your[-_ ]|<|>|xxxx|\*\*\*|dummy|sample|redacted|notasecret|insert|fixme|todo|\$\{|\{\{|%s|%\(/i;
+const PLACEHOLDER = /example|changeme|change-me|placeholder|your[-_ ]|^<|>$|xxxx|\*\*\*|dummy|sample|redacted|notasecret|insert|fixme|todo|\$\{|\{\{|%s|%\(/i;
 const WEAK_PASSWORDS = new Set(["password", "passwd", "pass", "secret", "postgres", "mysql", "root", "admin", "test", "changeme", "example", "guest", "user", "username", "redis", "mongo"]);
 
 /**
@@ -46,8 +52,9 @@ const WEAK_PASSWORDS = new Set(["password", "passwd", "pass", "secret", "postgre
  * and `hashicorp` are not `sha` and `hash`; and never when a word says secret, so `SHARED_SECRET` and `tokenHash` stay secrets.
  */
 export function isDigestName(name: string): boolean {
-  const words = name.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase().split(/[^a-z]+/).filter(Boolean);
-  return words.some((w) => DIGEST_WORDS.has(w)) && !words.some((w) => SECRET_WORDS.has(w));
+  const spaced = name.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase();
+  const words = spaced.split(/[^a-z]+/).filter(Boolean);
+  return words.some((w) => DIGEST_WORDS.has(w)) && !words.some((w) => SECRET_SUFFIX.test(w)) && !SECRET_KEY_NAME.test(spaced);
 }
 
 function isPathLike(v: string): boolean {
@@ -58,7 +65,7 @@ function isPathLike(v: string): boolean {
 export function looksRandom(v: string, name = ""): boolean {
   if (v.length < 16 || v.length > 512) return false;
   if (UUID.test(v) || PLACEHOLDER.test(v)) return false;
-  if (/^(?:https?:|file:)/i.test(v) || v.includes("://") || v.includes("...") || CODE_CHARS.test(v) || isPathLike(v) || FLAG.test(v)) return false;
+  if (/^(?:https?:|file:)/i.test(v) || v.includes("://") || v.includes("...") || CODE_SHAPE.test(v) || REGEX_LITERAL.test(v) || isPathLike(v) || FLAG.test(v)) return false;
   if (SCREAMING.test(v) || SEGMENTED.test(v) || DOTTED.test(v)) return false;
   if (!/[0-9]/.test(v) || !/[A-Za-z]/.test(v)) return false;
   const hex = HEX.test(v);
@@ -83,7 +90,7 @@ function urlPasswordOk(m: RegExpExecArray): boolean {
 }
 
 const KEYWORD =
-  "(api[_-]?key|(?:access|secret|private|auth|signing|encryption|master|client|license|session)[_-]?key|secret|token|passw(?:or)?d|pwd|credential)";
+  "(api[_-]?key|(?:access|secret|private|auth|signing|encryption|master|client|license|session)[_-]?key|[A-Za-z0-9]{1,30}[_-]key|secret|token|passw(?:or)?d|pwd|credential)";
 
 export const CONTENT_RULES: readonly ContentRule[] = Object.freeze([
   { rule: "private-key-block", specific: true, re: /-----BEGIN (?:[A-Z0-9]+ ){0,3}PRIVATE KEY(?: BLOCK)?-----/g },
@@ -140,7 +147,7 @@ export const CONTENT_RULES: readonly ContentRule[] = Object.freeze([
     specific: false,
     skipInLockFiles: true,
     // Keyword, a bounded name tail, an optional closing quote, the separator, an optional opening quote, then the value.
-    re: new RegExp(`${KEYWORD}[A-Za-z0-9_.-]{0,40}["']?\\]?[ \\t]{0,64}(?::=|=>|[:=])(?![=>])[ \\t]{0,64}["'\`]?([^\\s"'\`,;)\\]}]{16,256})`, "gi"),
+    re: new RegExp(`${KEYWORD}[A-Za-z0-9_.-]{0,40}["']?\\]?[ \\t]{0,64}(?::=|=>|[:=])(?![=>])[ \\t]{0,64}["'\`]?([^\\s"'\`,;]{16,256})`, "gi"),
     accept: (m) => looksRandom(m[2] ?? "", assignmentName(m)),
   },
 ]);

@@ -6,8 +6,9 @@ import { CONTENT_RULES, firstMatch, isLockFile, isSensitiveFilename, type Budget
 import type { Finding, IncompleteReason, ScanContext, ScanLimits, ScanOutcome } from "./types.js";
 
 const NON_ASCII = /[^\x00-\x7f]/;
-// Soft hyphen, combining grapheme joiner, Mongolian vowel separator, zero-width and bidi controls, word joiner and invisible operators, variation selectors, BOM, tag characters.
-const INVISIBLE = /[\u00ad\u034f\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufe00-\ufe0f\ufeff\u{e0000}-\u{e007f}]/gu;
+// Every default-ignorable code point (soft hyphen, joiners, zero-width, bidi and invisible operators, variation selectors, Hangul
+// and Braille fillers, tag characters) and every other format character, plus the Braille blank.
+const INVISIBLE = /[\p{Default_Ignorable_Code_Point}\p{Cf}\u2800]/gu;
 const LONG_BLANKS = /[ \t]{65,}/g;
 // Any blank that is not a plain space or tab (NBSP, U+3000, form feed, ...) or a control character, and runs of them.
 const ODD_BLANK = /[^\S \t]|[\x00-\x08\x0e-\x1f\x7f-\x9f]/;
