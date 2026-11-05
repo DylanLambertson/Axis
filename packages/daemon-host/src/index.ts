@@ -68,3 +68,9 @@ export { createRunsBinding, MAX_TRACKED_GROUPS, RUN_PAYLOAD_ALLOWLIST, type Runs
 export { createRunTrustMinter } from "./gate/run-trust.js";
 export * from "./handlers/cli-runs.js";
 export * from "./runs/errors.js";
+// axis.git/1 handlers and the GitOpsDeps assembly (ticket H9).
+export { createGitOperations, createGitPort, type GitBindingDeps, type GitOperationsDeps } from "./bindings/git.js";
+export * from "./handlers/git.js";
+export * from "./handlers/git-errors.js";
+export * from "./handlers/git-wire.js";
+export { PushedBases } from "./handlers/git-common.js";

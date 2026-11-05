@@ -63,6 +63,8 @@ export interface WorktreesBinding {
   readonly needsAttention: (workspaceId: string, method?: string) => boolean;
   /** The one project mutex (also taken by the git handlers of ticket H9). */
   readonly mutex: ProjectMutex;
+  /** The GIT-SNAP-1 re-take for a registered worktree (refuses by throwing, a closed `DaemonError`): `GitOpsDeps.assertNoDrift` of ticket H9. */
+  readonly assertNoDrift: (worktree: { readonly workTree: string }) => Promise<void>;
 }
 
 /** Runs one manager call and turns what the package throws into the closed `DaemonError` set (no message is forwarded). */
@@ -183,5 +185,5 @@ function build(deps: WorktreesBindingDeps, seams: WorktreesTestSeams): Worktrees
     needsAttention: runtime.needsAttention,
     ...(deps.onPreview === undefined ? {} : { onPreview: deps.onPreview }),
   });
-  return { service: runtime.service, locator, content, needsAttention: runtime.needsAttention, mutex };
+  return { service: runtime.service, locator, content, needsAttention: runtime.needsAttention, mutex, assertNoDrift: (w) => shape.assertNoDrift(w.workTree) };
 }

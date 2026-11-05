@@ -1,9 +1,9 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { daemonGitFor, OBJECT_ID } from "@axis/git-ops";
 import { MAX_REVIEW_FILES, MAX_REVIEW_PATH } from "@axis/protocol";
-import { ReviewBinding, ReviewError, ReviewSession, type ProtectedPathMatcher, type ReviewDeps, type ReviewLimits, type TempIndexProvider } from "@axis/review";
+import { ReviewBinding, ReviewError, ReviewSession, checkFresh, prepareCommit, type ProtectedPathMatcher, type ReviewDeps, type ReviewLimits, type TempIndexProvider } from "@axis/review";
 import type { GitPort } from "../ports/git.js";
-import { ReviewRefusal, type BuiltTree, type ReviewHandle, type ReviewRound, type ReviewService } from "../ports/review.js";
+import { ReviewRefusal, type BuiltTree, type CommitPreparer, type ReviewHandle, type ReviewRound, type ReviewService } from "../ports/review.js";
 import type { WorktreeLocator } from "../ports/worktree-locator.js";
 
 /**
@@ -44,19 +44,23 @@ async function guarded<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
-export function createReviewService(deps: ReviewBindingDeps): ReviewService {
+function reviewDepsOf(deps: ReviewBindingDeps): ReviewDeps {
   const limits: Partial<ReviewLimits> = {
     ...deps.limits,
     maxFiles: Math.min(deps.limits?.maxFiles ?? MAX_REVIEW_FILES, MAX_REVIEW_FILES),
     maxDisplay: Math.min(deps.limits?.maxDisplay ?? MAX_REVIEW_PATH, MAX_REVIEW_PATH),
   };
-  const reviewDeps: ReviewDeps = {
+  return {
     git: deps.git,
     tempIndex: deps.tempIndex,
     fileExists: deps.fileExists,
     ...(deps.protectedPaths === undefined ? {} : { protectedPaths: deps.protectedPaths }),
     limits,
   };
+}
+
+export function createReviewService(deps: ReviewBindingDeps): ReviewService {
+  const reviewDeps = reviewDepsOf(deps);
 
   return {
     open: (workspaceId, ctx) =>
@@ -116,4 +120,43 @@ export function createReviewService(deps: ReviewBindingDeps): ReviewService {
 export function reviewBindingOf(handle: ReviewHandle): ReviewBinding {
   if (!(handle instanceof ReviewBinding)) throw new ReviewRefusal("E_INTERNAL");
   return handle;
+}
+
+/**
+ * The commit side of the review binding (ticket H9): `prepareCommit`, its `handoff`, `checkFresh` for `assertReviewFresh`,
+ * and the put-back of the person's own index when a prepared commit is refused. `prepareCommit` is the brand check: the
+ * handle is passed to it before anything is read from it. Every failure is a `ReviewRefusal` (code and closed reason).
+ */
+export function createCommitPreparer(deps: ReviewBindingDeps): CommitPreparer {
+  const reviewDeps = reviewDepsOf(deps);
+  return {
+    prepare: (handle, ctx) =>
+      guarded(async () => {
+        if (ctx.signal.aborted) throw new ReviewRefusal("E_CANCELLED");
+        const prepared = await prepareCommit(reviewDeps, reviewBindingOf(handle));
+        return {
+          handoff: (message, author) => guarded(() => prepared.handoff(message, author)),
+          restoreIndex: async (): Promise<void> => {
+            const previous = prepared.previousIndexTree;
+            if (previous === undefined) return;
+            try {
+              const git = await daemonGitFor(prepared.worktree, deps.git);
+              // Only while HEAD is still the reviewed commit: a commit that may have landed is never rewound under the person.
+              const head = (await git(["rev-parse", "--verify", "--quiet", "--end-of-options", "HEAD^{commit}"])).stdout.trim();
+              // And only while the index still holds what Axis staged: anything the person staged since is theirs. A window of one
+              // git call remains between this check and `read-tree` (closing it would need the restore to hold index.lock).
+              const staged = (await git(["write-tree"])).stdout.trim();
+              if (head === prepared.head && staged === prepared.reviewedTreeHash) await git(["read-tree", previous]);
+            } catch {
+              // The index is the person's staging only; a failed put-back is not worth masking the refusal that caused it.
+            }
+          },
+        };
+      }),
+    assertFresh: (handle) =>
+      guarded(async () => {
+        const fresh = await checkFresh(reviewDeps, reviewBindingOf(handle));
+        if (!fresh.fresh) throw new ReviewRefusal("E_CONFLICT", fresh.reason);
+      }),
+  };
 }

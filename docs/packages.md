@@ -387,6 +387,10 @@ The host is the one place that chooses and connects the daemon's services (`docs
 - **Recovery** (`runRecovery`): `journal.recover(lock)`, the store's `recover(lock)`, then `reconcile` under `limits.reconcileBudgetMs` (default 20 s). A reconcile that fails or times out is audited as `journal.recovery` (`kind: "reconcile"`, a closed `reason`) and never aborts startup. The recovery events are checkpointed from the previous anchor and the new head is sent as `anchor.put`; acknowledgements are only tracked (`anchor().ackedSeq`), the anchor manager is ticket H4.
 - **Policy.** `policySurface(config.contracts)` feeds both `RuleTablePolicy` and `checkCoverage`, so a host serving a subset of contracts starts and denies the rest. `devMemoryIdempotency` is accepted and ignored: the journal store has merged, and the host has no memory-store path.
 
+### `axis.git/1` handlers and the `GitOpsDeps` assembly (ticket H9)
+
+Moved to [docs/design/daemon-host-git.md](design/daemon-host-git.md) (this page is at its line limit).
+
 ### Challenge manager, gate adapter and `axis.approvals/1` (ticket H5)
 
 - **`createApprovals({ audit, control, clock, limits? })`** (`src/gate/approvals.ts`) builds the one `ChallengeManager` (every deadline on the host's monotonic clock; `limits` are the manager's quotas), the `ApprovalGate` for `DaemonOptions.approvals`, and `port`, the only thing the `axis.approvals/1` handlers see (`resolve(caller, request)` and `pending(windowId)`). The manager, a proof and a challenge id are never handed to a handler. `createChallengeAuditSink(auditLog)` is the synchronous audit adapter: a throw or a promise is a failed write, so the manager fails closed before it changes a challenge.

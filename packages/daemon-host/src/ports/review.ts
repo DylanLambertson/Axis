@@ -1,4 +1,5 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
+import type { CommitInput } from "@axis/git-ops";
 import type { PortContext } from "./common.js";
 
 /**
@@ -82,4 +83,23 @@ export class ReviewRefusal extends Error {
 export interface ReviewService {
   /** Rejects `ReviewRefusal` (or `E_NOT_FOUND` from the locator) and never with a message that holds a path. */
   open(workspaceId: string, ctx: PortContext): Promise<ReviewRound>;
+}
+
+/** A review whose staging was done: the input of the commit, and a way to put the person's own staging back. */
+export interface PreparedCommitPort {
+  /** Re-checks HEAD, the branch and the index, and returns what `executeCommit` takes (`expectedParent` and `expectedBranch` included). */
+  handoff(message: string, author?: { readonly name: string; readonly email: string }): Promise<CommitInput>;
+  /** Best effort, and only while HEAD is still the reviewed commit: puts back the index `prepare` replaced. Never throws. */
+  restoreIndex(): Promise<void>;
+}
+
+/**
+ * The review package's `prepareCommit` and `checkFresh` behind the opaque handle `diff` minted. The handle is only ever
+ * passed in here: nothing outside the binding reads a field of it before `prepare` has checked it is a real binding.
+ */
+export interface CommitPreparer {
+  /** Under the project lock. Refuses with a `ReviewRefusal` when anything moved or changed since the review. */
+  prepare(handle: ReviewHandle, ctx: PortContext): Promise<PreparedCommitPort>;
+  /** The freshness check of `GitOpsDeps.assertReviewFresh`: refuses by throwing, resolves with `undefined`. */
+  assertFresh(handle: ReviewHandle): Promise<void>;
 }
