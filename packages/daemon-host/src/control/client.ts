@@ -272,7 +272,7 @@ export class ControlClient {
     if (this.#pending.size >= this.#maxPending) return Promise.reject(new AxisError("E_BACKPRESSURE", "Too many control requests waiting"));
 
     return new Promise<T>((resolve, reject) => {
-      const timer = setTimeout(() => settle(() => reject(new AxisError("E_TIMEOUT", "The supervisor did not answer in time"))), timeoutMs);
+      const timer = setTimeout(() => settle(() => reject(new AxisError("E_TIMEOUT", "The supervisor did not answer in time"))), timeoutMs) as unknown as NodeJS.Timeout; // opaque handle under Code OSS's typings (ADR 0005)
       timer.unref();
       const onAbort = (): void => settle(() => reject(new AxisError("E_CANCELLED", "The request was cancelled")));
       signal?.addEventListener("abort", onAbort, { once: true });
