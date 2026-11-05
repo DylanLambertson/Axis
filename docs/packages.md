@@ -9,7 +9,7 @@ Axis-owned TypeScript that does not need Code OSS services lives in `packages/*`
 | `@axis/challenge` | Daemon-side approval challenges for tier 3-5 destructive operations: issue, user resolve, native confirmation, single-use `consume`. Node `crypto` only. |
 | `@axis/daemon` | Transport-agnostic daemon core: connections, handshake, dispatch, tiers, idempotency, cancel and timeout, backpressure, error sanitisation. Every service (identity, policy, approvals, idempotency store, audit sink, handlers) is injected. No Electron. `MemoryIdempotencyStore` is for tests and dev wiring only (it forgets on restart); the product uses `JournalIdempotencyStore` from `@axis/journal`. The pipeline owns approvals (`ApprovalGate.issue` and `execute`, see "Wiring the daemon"). |
 | `@axis/providers` | Provider adapter API (v1): normalized requests, stream events, capability reports, error taxonomy; the daemon-side guard (budget hook PRV-6, redaction hook PRV-2, timeouts, cancellation, stream checks); the mock provider. `@axis/providers/contract` is the reusable adapter contract suite (test support in `packages/providers/contract/`, outside `src/` so it is never staged; imports `node:test`). |
-| `@axis/git-ops` | Daemon-orchestrated Axis commit and push, and GitHub compare URLs. Takes an injected git runner (`context: "pty" \| "daemon"`): hooks run only in the pty context. Commit binds the reviewed tree, push uses one explicit refspec, both are refused while a CLI run is active. |
+| `@axis/git-ops` | Daemon-orchestrated Axis commit and push, and GitHub compare URLs. Takes an injected git runner (`context: "pty" \| "daemon"`): hooks run only in the pty context. Commit binds the reviewed tree, parent and branch (`commit-tree` plus a ref compare-and-swap), push uses one explicit refspec, both are refused while a CLI run is active. Depends on `@axis/protocol` and `@axis/pty-policy` (executable resolution); the dependency never points back. |
 | `@axis/audit` | Secret redaction, canonical JSON, and the hash-chained append-only audit log on `node:sqlite` (DMN-5, DMN-6). Also the SQLite helpers (`openDatabase`, `withTransaction`, `runMigrations`). |
 | `@axis/journal` | Durable `agent_workspaces` and `agent_runs`, the Phase 1a run state machine, idempotency keys and restart recovery (DMN-7), and `JournalIdempotencyStore`, the daemon's durable idempotency store (see "Idempotency store"). Depends on `@axis/audit`. |
 | `@axis/runs` | CLI run lifecycle over injected ports (pty, clock, worktree locator, snapshotter, environment): launch through `@axis/pty-policy`, the journal state machine and restart recovery (DMN-7), status derivation, the per-device limit, trust attestation (TRU-2), the `isCliRunActive` guard for `@axis/git-ops`, output bounds and the disclosure copy. Design: `docs/design/runs.md`. Depends on `@axis/audit`, `@axis/journal` and `@axis/pty-policy`. |
@@ -113,6 +113,91 @@ Fixed vectors (`sha256hex` as lowercase hex):
 
 `@axis/daemon` implements the identical function and pins the same vectors; the two copies must stay in step. The shared function moves into `@axis/protocol` later, and both packages will then import it.
 ## Using `@axis/git-ops`
+
+### Finding git (CLI-1, CFG-1)
+
+`createNodeRunner` never spawns a bare `git`, and git is found by `resolveExecutable` from `@axis/pty-policy` (the same resolver the pty launcher uses; `@axis/git-ops` depends on `@axis/pty-policy`, never the reverse). Empty, relative and `.` PATH entries are ignored; on Windows UNC, device, root-relative and quoted entries are refused as well (a network share would run code from elsewhere and leak credentials at launch) and only `.exe` and `.com` count. That behaviour is kept on purpose.
+
+**Not yet one rule for the whole product.** `@axis/worktrees` has its own `resolveGitPath` (`packages/worktrees/src/git.ts`). It searches absolute PATH entries too, but it does not exclude worktree folders, does not compare real paths, accepts an absolute `explicit` as given, and on Windows looks only for `git.exe` without the UNC, device and quoted-entry refusals. So `@axis/git-ops` and the pty launcher share one rule and `@axis/worktrees` does not. Named follow-up **FU-GIT-RESOLVE**: point `@axis/worktrees` at the shared resolver (or have the host resolve once and pass `gitPath` to both), with the worktree package's tests passing. It is not done in the git-ops change because it edits another package that has its own owner.
+
+- **The host resolves once.** At daemon start it calls `resolveGit(env, process.platform, excludeDirs)` with EVERY registered worktree and git directory in `excludeDirs` (so a git planted in a sibling worktree whose folder is on PATH is never chosen) and passes the result as `createNodeRunner({ gitPath, excludeDirs: () => allWorktreeRoots })`. The path is cached for the life of the runner. The PATH used for any later lookup is a copy of the environment taken when the runner is created (`env` overrides it), not `process.env` at request time.
+- **Default.** Without `gitPath` and without `excludeDirs` the runner refuses every request with `E_UNAVAILABLE` ("host must supply gitPath or excludeDirs"): it could otherwise pick a git planted in a sibling worktree whose folder is on PATH. Tests may set `allowUnpinnedGit: true` to get the weaker lookup (only the request's own directories excluded); a daemon must not. With `excludeDirs` alone the runner resolves on the first request, excluding that request's directories and `excludeDirs()`. `excludeDirs()` must return a plain array of absolute, normalised path strings; a throw, a Promise, a string, `undefined`, a relative, empty or unnormalised entry is `E_UNAVAILABLE` with fixed text (nothing the host returned or threw is echoed). The list is copied on each lookup.
+- **Per request.** The real path (symlinks resolved) is compared by path component with the request's cwd, `--work-tree` and `--git-dir`; a git inside any of them is `E_POLICY_DENIED` (`<worktree>/..bin/git` is inside; a symlink into the worktree is inside). The real path is what is spawned. A relative `gitPath` is refused, and so is a relative or empty cwd, `--work-tree=` or `--git-dir=` (git would read it against cwd), and any caller argv carrying `-C` or the space-separated `--git-dir <dir>` and `--work-tree <dir>` forms (git-ops builds only the `=` forms; the others are not parsed, so they are refused). Git's own children (helpers, hooks, external commands) get a PATH without empty, relative or Windows-unsafe entries and without any entry that lies in the request's directories, by spelling or through a symlink.
+- **Gone.** If the cached file has vanished (a package manager replaced it) the runner looks again, through `resolveGit` only, with `excludeDirs()` applied to that lookup too, and retries once; failing that, `E_UNAVAILABLE` and nothing is spawned. **An injected `gitPath` with no `excludeDirs` is not looked up again at all:** the request fails with `E_UNAVAILABLE`, and the runner stays unavailable for good (there is no setter): the host must build a NEW runner (and new `GitOpsDeps`) with its full list. The same holds after any `E_UNAVAILABLE` for a vanished injected path.
+- **Accepted limit.** A request whose directory is an ancestor of git's folder (cwd `/`, or a worktree at `$HOME` with git under `~/.local/bin`) is refused with `E_POLICY_DENIED`: git would then be "inside" the request. It fails closed and Axis worktrees live under `axis.worktrees.root`, so this is accepted.
+- **Children.** The environment git runs with gets a PATH holding only plain absolute entries outside the request's directories, so git's helpers and external commands are not found through an empty, relative or worktree entry. The working directory of a request is unchanged (callers pass the work tree).
+- Not covered: the pty-side runner (not in this repository yet) must resolve the same way; an absolute PATH entry inside a worktree the host did not list is trusted.
+
+### Bound commit contract (what `@axis/review` implements against)
+
+There is one commit path, and it is bound. `executeCommit(deps, input)` and `planCommit` take:
+
+| Field | Type | Required | Meaning |
+|---|---|---|---|
+| `worktree` | `WorktreeRef` | yes | The registered worktree (never discovered). |
+| `reviewedTreeHash` | `string`, full lower-case object id | yes | The tree the user reviewed. The index must write to exactly this tree. |
+| `message` | `string`, 1 to 64 KiB, no NUL | yes | Cleaned like git's default `stripspace` (trailing white space, repeated blank lines, outer blank lines, one final newline); `commit.cleanup` is ignored. |
+| `expectedParent` | `string`, full lower-case object id | **yes** | The commit HEAD pointed at when the diff was reviewed. |
+| `expectedBranch` | `string`, the SHORT name `axis/<slug>` | **yes** | The branch checked out at review time. Same slug rules as always. Not `refs/heads/axis/<slug>`, never `null`; a review with no branch (a detached HEAD) cannot be committed: git-ops refuses it. |
+| `author` | `{ name, email }` | no | Only compared with the configured identity; never passed to git. |
+
+Who refuses what. `@axis/git-ops` refuses a missing, `null` or full-ref `expectedBranch` or `expectedParent` (`E_INVALID_ARGUMENT`, no git call), and a detached or unborn HEAD at commit time (`E_POLICY_DENIED`). `@axis/review`'s `PinnedCommitInput` must carry `expectedParent: string` and `expectedBranch: string` (the short name), and `handoff()` refuses a detached HEAD or an unborn branch itself, so the user sees a review-level reason. review-core refuses a detached HEAD and an unborn branch itself; git-ops refuses them too, as a second line. Do not rely on review to be the only check. (An earlier version of this page said review's type was "exactly this shape"; it was not: review sent `refs/heads/axis/<slug>` and `null`.)
+
+Errors. Argument shape: `E_INVALID_ARGUMENT` for a malformed `expectedParent`, and for an `expectedBranch` that is not a string or is a full ref (`refs/...`); `E_POLICY_DENIED` for a short name that is not `axis/<slug>`, a detached HEAD, an unborn branch, a CLI run in progress, drift, and an identity that is not the expected one. `E_CONFLICT` carries `details.reason`:
+
+| `reason` | Meaning |
+|---|---|
+| `head_moved` | The checked-out branch is not `expectedBranch`, HEAD is not `expectedParent`, or the compare-and-swap found the branch elsewhere. |
+| `operation_in_progress` | Unmerged index entries, or `MERGE_HEAD`, `CHERRY_PICK_HEAD`, `REVERT_HEAD`, `REBASE_HEAD`, `rebase-merge`, `rebase-apply`, `sequencer`, `BISECT_LOG` or `BISECT_START` exists (paths from `git rev-parse --git-path`, so a linked worktree's own directory is the one asked). |
+| `stale` | `assertReviewFresh` refused. |
+| `ref_update_failed` | The branch is still at `expectedParent` but git could not update it (a lock, for example). The message is fixed text; git's output is not carried. |
+
+`E_CONFLICT` without a reason: the index does not write to `reviewedTreeHash`. `E_INTERNAL` with `details.updated: false`: the commit object that was built failed verification (not exactly the expected parent, or not the reviewed tree) and the branch was not touched; `updated: true, rolledBack: false`: the update succeeded but the branch no longer points at the new commit when read back, and nothing was rolled back. `E_UNAVAILABLE`: git could not run, or the repository state could not be read, so an operation in progress cannot be ruled out.
+
+Order, with the caller holding the workspace lock:
+
+1. `check()`: argument checks; CLI-run and drift gates; the branch must be `expectedBranch` and HEAD `expectedParent`; operation in progress; the index must write to `reviewedTreeHash`; the identity checks; the signing setting; then, as the last step before git builds anything, `assertReviewFresh`.
+2. `commit-tree [-S] -p <expectedParent> -F - <reviewedTreeHash>` in the **pty context**. Signing and identity come from the user's configuration; `commit.gpgsign=true` adds `-S` (commit-tree ignores the setting by itself), and an unreadable value refuses. It creates an object and moves no ref.
+3. The new object is verified with the daemon-side git: its parent list is exactly `[expectedParent]` and its tree is `reviewedTreeHash`.
+4. The checked-out branch and the operation state are asked again.
+5. `update-ref refs/heads/<branch> <new> <expectedParent>`, an atomic compare-and-swap (packed refs included). Of two commits racing on one parent exactly one wins; the other fails and leaves the ref untouched.
+6. The ref is read back.
+
+What this cannot close, accepted: HEAD switched to another branch between step 4 and step 5 still moves the reviewed branch (its content is what was reviewed; it is just not checked out); a `MERGE_HEAD` or `CHERRY_PICK_HEAD` written after step 4 does not affect the commit but stays for the user's next commit; a branch also checked out in a second linked worktree leaves that worktree's index stale, as with `git commit`. `planCommit` returns the `commit-tree` command; run alone it only makes a dangling object, so use `executeCommit`.
+
+`GitOpsDeps` has two optional members:
+
+- `assertReviewFresh(worktree, reviewedTreeHash): Promise<void>` (G2). **It refuses by throwing and must resolve `undefined`**: any returned value (`false`, a `{ fresh: false }` result) is also a refusal, so a `Freshness` object cannot be wired through by mistake. A throw becomes `E_CONFLICT` `stale`; a `GitOpsError` with another code (for example `E_UNAVAILABLE`) passes through. The daemon wires it to `checkFresh` and throws when `fresh` is false.
+- `fileExists(path)`: the existence test for operation markers (default `pathExists`: a missing path is false, any other error, such as `EACCES`, refuses).
+
+Exports for building hardened calls (G4): `daemonGitFor(worktree, deps, extraEnv?)` (`extraEnv` may hold only `GIT_INDEX_FILE`, an absolute path; any other name is `E_INVALID_ARGUMENT`), `checkWorktree`, `OBJECT_ID`, `DaemonGit`, `assertNoOperation`, `OPERATION_MARKERS`, `resolveGit`.
+
+#### Commit hooks (decided 2026-11-04)
+
+**The daemon never runs repository commit hooks.** The bound commit is `commit-tree` plus a compare-and-swap `update-ref`: neither runs `pre-commit`, `commit-msg`, `post-commit` or `reference-transaction`, and the daemon must not run hooks (GIT-3). So `axis.git.runHooks` does not change what `@axis/git-ops` does on commit.
+
+**NOT BUILT YET: today no commit hook runs; building the hook step is a named follow-up (ticket H9-hooks).** Until it is built an Axis commit runs no `pre-commit` or `commit-msg` hook (the outcome rejected below), and the gate at ROADMAP line 40 stays open.
+
+When `axis.git.runHooks` is on, **the host** will run the repository's `pre-commit` and `commit-msg` hooks in the Axis pty process context. The sequence, all UNDER the daemon's commit lock (so the hooks sit inside the CLI-run refusal and the GIT-SNAP-1 re-take that threat-model row GIT-3 and ROADMAP line 49 rely on):
+
+1. the daemon refuses while a CLI run is active and re-takes GIT-SNAP-1, refusing on unacknowledged drift;
+2. the host runs `pre-commit` and then `commit-msg` against a TEMPORARY index and scratch checkout of the reviewed tree. The hooks never see the user's worktree or real index (a partial-accept review differs from both);
+3. a freshness re-check (`assertReviewFresh`), with the drift check, runs again;
+4. then `commit-tree` and the compare-and-swap `update-ref`.
+
+Decided behaviour for the points that were open:
+
+- **A hook that modifies files** makes the commit refused with a hook-specific reason, not a bare `stale`. The changes are discarded and the user is told to run the formatter and review again. Axis commits exactly the reviewed tree.
+- **A message rewritten by `commit-msg`** is the message that is committed, and it is recorded in the audit event after the user has been shown it.
+- **`post-commit`** and the other hooks are not run in 1a.
+
+This matches policies section 6.1 (hooks run in the pty process, not the daemon). Push is unchanged: `pre-push` runs in the pty process, and `runHooks: false` still adds `--no-verify` to it. `git hook run` needs git 2.36, so with the 2.24 floor the host invokes the hook file directly.
+
+This amends ADR 0004 section 4, decision Q-4 and threat-model control GIT-3 (an "Amendment 2026-11-04" paragraph in each, not a rewrite).
+
+Rejected: accepting no commit hooks at all (ratify the current behaviour, make `runHooks` push-only). It is simpler, but a repository's `pre-commit` checks (formatters, secret scanners, lint) would silently stop applying to commits made from the review, and the policies document already promises them.
+
+Rejected: running hooks in the daemon. Hooks are user-controlled code, and in 1b the daemon holds the vault (GIT-3).
 
 `planPush` and `executePush` take a required `baseSha`: **the last commit that was actually pushed** (or the workspace's recorded base before the first push), read from the journal by the daemon. The secret scan covers `baseSha..tip`, every commit's patch and its commit message, so everything reachable from `baseSha` is assumed to be on the remote already. If a workspace's base is a local commit that was never pushed, its ancestors go out unscanned: the journal must record the sha of each successful push and supply it next time. A `baseSha` that is not in the repository or not an ancestor of the branch (history was rewritten) is refused with `E_CONFLICT`. Never derive it from a ref under `refs/remotes`: the code in the worktree can write those.
 
