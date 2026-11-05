@@ -17,22 +17,50 @@ export function resolveGit(env: EnvLike, platform: NodeJS.Platform, excludeDirs:
   return resolveExecutable("git", env, platform, nodeFs, { excludeDirs });
 }
 
+// The closed set of git global options a request may carry before the subcommand. Anything else that starts with "-" is
+// refused (fail closed): git has value-taking options its usage text does not list (--shallow-file <file>), and one it
+// does not know to skip would hide a later -C, --git-dir or --exec-path from this scan.
+// --literal-pathspecs and --no-optional-locks are added by @axis/broker after the git-ops prefix.
+const FLAGS = new Set(["--no-pager", "--no-replace-objects", "--version", "--literal-pathspecs", "--no-optional-locks"]);
+
 /**
  * The directories a request works in: cwd, `--work-tree` and `--git-dir`. A value that is not a plain absolute path
  * (a relative `--git-dir=.git` would be read against cwd by git, never matching anything here) is refused.
+ * Only git's OPTION area is read: from the start up to the subcommand (the first argument that does not start with `-`).
+ * Every argument in it must be one of FLAGS, `--git-dir=<abs>`, `--work-tree=<abs>` or `-c <key=value>` (the value is
+ * data, but an `alias.*` key is refused: an alias beginning with `!` runs a shell command). A pathspec such as `-Cache`
+ * after the subcommand is data.
  */
 export function requestDirs(req: GitRunRequest, platform: NodeJS.Platform = process.platform): string[] {
   const dirs = [req.cwd];
-  for (const a of req.argv) {
+  for (let i = 0; i < req.argv.length; i++) {
+    const a = req.argv[i] as string;
+    if (!a.startsWith("-")) break;
     // git-ops builds only the `=` forms; the split forms and -C are never parsed here, so a caller may not carry them.
-    if (a === "-C" || a === "--git-dir" || a === "--work-tree" || (a.startsWith("-C") && a.length > 2 && !a.startsWith("--"))) {
+    if (a === "-C" || a === "--git-dir" || a === "--work-tree" || (a.startsWith("-C") && !a.startsWith("--"))) {
       throw denied("-C and the split --git-dir and --work-tree forms are not allowed; use --git-dir=<abs> and --work-tree=<abs>");
     }
+    // --exec-path[=<dir>] makes git run its helpers (git-<name>) from <dir>, which may be inside the worktree.
+    if (a === "--exec-path" || a.startsWith("--exec-path=")) throw denied("--exec-path is not allowed");
     if (a.startsWith("--work-tree=")) dirs.push(a.slice(12));
     else if (a.startsWith("--git-dir=")) dirs.push(a.slice(10));
+    else if (a === "-c") {
+      const kv = req.argv[++i];
+      if (kv === undefined) throw denied("-c needs a key=value");
+      // An alias beginning with `!` runs a command, and so does one loaded from a file by include.path / includeIf.*.path.
+      if (/^(alias|include|includeif)\./i.test(kv)) throw denied("-c alias.*, include.* and includeIf.* are not allowed: they can load or run a command");
+    } else if (!FLAGS.has(a)) throw denied("an unrecognised git option precedes the subcommand");
   }
   if (!dirs.every((d) => isPlainAbsolute(d, platform))) throw denied("cwd, --work-tree and --git-dir must be absolute paths");
   return dirs;
+}
+
+// Variables that move git's helpers, config or repository. GIT_INDEX_FILE is NOT here: the bound commit sets it itself.
+const ENV_OVERRIDE = /^GIT_(EXEC_PATH|CONFIG.*|DIR|WORK_TREE|COMMON_DIR|OBJECT_DIRECTORY|ALTERNATE_OBJECT_DIRECTORIES|NAMESPACE|SHALLOW_FILE|TEMPLATE_DIR)$/i;
+
+/** Refuses an environment that moves git's helpers, config or repository (GIT_EXEC_PATH, GIT_CONFIG*, GIT_DIR, the object, namespace, shallow and template variables). */
+export function assertNoEnvOverride(env: Record<string, string>): void {
+  if (Object.keys(env).some((n) => ENV_OVERRIDE.test(n))) throw denied("the environment must not set GIT_EXEC_PATH, GIT_CONFIG*, GIT_DIR, GIT_WORK_TREE, GIT_COMMON_DIR, GIT_OBJECT_DIRECTORY, GIT_ALTERNATE_OBJECT_DIRECTORIES, GIT_NAMESPACE, GIT_SHALLOW_FILE or GIT_TEMPLATE_DIR");
 }
 
 /**
