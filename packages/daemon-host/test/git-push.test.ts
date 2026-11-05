@@ -151,12 +151,14 @@ test("secret path (refuse mode): the plan is refused with a fixed error that doe
   const { r, c } = await setup(t, { scanMode: "refuse" });
   commitFile(r, "cfg.txt", `aws_id = ${CANARY}\n`);
   const res = await plan(c, r);
-  assert.equal(res.ok, false);
-  assert.equal(res.error?.code, "E_CONFLICT");
+  // The plan comes back blocked (git-push-blocked.test.ts), never as a plan to confirm and never as a bare error.
+  assert.equal(res.ok, true, JSON.stringify(res.error));
+  assert.equal((res.result as { blocked?: { reason: string } }).blocked?.reason, "secrets_found");
   noLeak(r, res);
   // The push is refused before any challenge: nothing for the user to confirm.
   const push = await c.rpc("axis.git", "push", pushReq(r, { tip: r.head(), digest: "a".repeat(64) }), randomUUID());
   assert.equal(push.error?.code, "E_CONFLICT");
+  assert.equal((push.error?.details as { reason?: string } | undefined)?.reason, "secrets_found");
   assert.equal(r.supervisor.filter((m) => m["type"] === "native.confirm").length, 0);
   noLeak(r, push);
 });
@@ -165,8 +167,9 @@ test("an incomplete scan fails closed: refused in refuse mode, a finding that ne
   const refuse = await setup(t, { scanMode: "refuse", maxBytes: 8 });
   commitFile(refuse.r, "a.txt", "some text that is longer than eight bytes\n");
   const res = await plan(refuse.c, refuse.r);
-  assert.equal(res.ok, false, "never a clean plan");
-  assert.ok(["E_UNAVAILABLE", "E_CONFLICT"].includes(res.error?.code ?? ""), JSON.stringify(res.error));
+  assert.equal(res.ok, true, JSON.stringify(res.error));
+  assert.equal((res.result as { blocked?: { reason: string }; requiresConfirmation: boolean }).blocked?.reason, "scan_incomplete", "never a clean plan");
+  assert.equal((res.result as { requiresConfirmation: boolean }).requiresConfirmation, false);
   noLeak(refuse.r, res);
   const warn = await setup(t, { scanMode: "warn", maxBytes: 8 });
   commitFile(warn.r, "a.txt", "some text that is longer than eight bytes\n");
@@ -315,6 +318,11 @@ test("git refusals map to the closed error set: no text, no unknown reason, POLI
     [new GitRefusal("E_POLICY_DENIED", "detached_head"), "E_CONFLICT", "detached_head"],
     [new GitRefusal("E_POLICY_DENIED", "not in the set /home/x"), "E_CONFLICT", undefined],
     [new GitRefusal("E_CONFLICT", "plan_changed"), "E_CONFLICT", "plan_changed"],
+    [new GitRefusal("E_POLICY_DENIED", "secrets_found"), "E_CONFLICT", "secrets_found"],
+    [new GitRefusal("E_POLICY_DENIED", "scan_incomplete"), "E_CONFLICT", "scan_incomplete"],
+    [new GitRefusal("E_POLICY_DENIED", "binary_unscanned"), "E_CONFLICT", "binary_unscanned"],
+    [new GitRefusal("E_POLICY_DENIED", "message_unscannable"), "E_CONFLICT", "message_unscannable"],
+    [new GitRefusal("E_CONFLICT", "git_drift"), "E_CONFLICT", "git_drift"],
     [new GitRefusal("E_INVALID_ARGUMENT", "too_large"), "E_INVALID_ARGUMENT", "too_large"],
     [new GitRefusal("E_APPROVAL_REQUIRED"), "E_INTERNAL", undefined],
     [new GitRefusal("E_SOMETHING_ELSE"), "E_UNAVAILABLE", undefined],

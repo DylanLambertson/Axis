@@ -54,6 +54,9 @@ export function createGitPushContentHook(deps: GitHandlerDeps): ApprovalContentH
               if (ws.projectId !== first.projectId) throw gitFailure("E_NOT_FOUND");
               if (runActive(deps, workspaceId)) throw gitFailure("E_CONFLICT");
               const plan = await deps.ops.planPush(call);
+              // A blocked plan (refuse-mode finding, incomplete scan, unlisted binary path, unreadable message) is refused with its closed
+              // reason before a challenge exists; no confirmation could make it pushable.
+              if (plan.blocked !== undefined) throw gitFailure("E_CONFLICT", plan.blocked.reason);
               if (plan.tip !== confirmedPlan.tip || plan.digest !== confirmedPlan.digest) throw gitFailure("E_CONFLICT", "plan_changed");
               digest = plan.digest;
             } catch (e) {

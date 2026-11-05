@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import * as path from "node:path";
 import { test } from "node:test";
 import { DaemonError, type Handler } from "@axis/daemon";
-import { GitOpsError, type GitRunRequest, type GitRunResult } from "@axis/git-ops";
-import { createSecretScanner } from "@axis/secret-scan";
+import { GitOpsError, ScanIncomplete, type GitRunRequest, type GitRunResult } from "@axis/git-ops";
+import { SecretScanError, createSecretScanner } from "@axis/secret-scan";
 import { MAX_PUSH_FINDINGS, gitPushPlanResponseSchema } from "@axis/protocol";
 import { createGitOperations, createGitPort, gitFailure, pushPlanReply, registerGitHandlers, toGitError, type HandlerRegistrar } from "../src/index.js";
 import { gitRig, gitUnavailable } from "./git-rig.js";
@@ -21,10 +21,14 @@ const base = {
 };
 const req = (context: string): GitRunRequest => ({ argv: ["--version"], cwd: path.resolve("/"), env: {}, context: context as "pty" });
 
-test("the git port takes its scanner and its mode from one value, and refuses a missing or modeless scanner", () => {
+test("the git port takes its scanner and its mode from one value, and refuses a missing or modeless scanner", async () => {
   assert.equal(createGitPort({ ...base, scanner }).scanMode, "refuse");
   assert.equal(createGitPort({ ...base, scanner: createSecretScanner({ mode: "warn" }) }).scanMode, "warn");
-  assert.equal(createGitPort({ ...base, scanner }).scanner, scanner.scan);
+  // The port's scanner is the scanner's own `scan` (wrapped only to tell an incomplete scan from a failure): same findings.
+  const meta = { worktree: { workTree: path.resolve("/"), gitDir: path.resolve("/.git") }, truncated: false, commit: "a".repeat(40), binaryPaths: [], allowedBinaryPaths: [], part: "patch" as const };
+  const text = `+aws = ${["AKIA", "ABCDEFGHIJKLMNOP"].join("")}\n`;
+  assert.deepEqual(await createGitPort({ ...base, scanner }).scanner?.(text, meta), await scanner.scan(text, meta));
+  assert.ok((await scanner.scan(text, meta)).length > 0);
   assert.throws(() => createGitPort({ ...base } as never), TypeError);
   assert.throws(() => createGitPort({ ...base, scanner: { scan: scanner.scan, limits: scanner.limits } } as never), TypeError);
   assert.throws(() => createGitPort({ ...base, scanner: { ...scanner, mode: "off" } } as never), TypeError);
@@ -154,4 +158,27 @@ test("executePush sends only the confirmed plan: a tip or digest that is not the
   assert.equal(r.remoteTip(), null);
   await r.handlerDeps.ops.executePush(call, { tip: plan.tip, digest: plan.digest });
   assert.equal(r.remoteTip(), plan.tip);
+});
+
+test("the port's scanner reports an incomplete scan as ScanIncomplete and leaves a scanner failure and any other throw as they are", async () => {
+  const meta = { worktree: { workTree: path.resolve("/"), gitDir: path.resolve("/.git") }, truncated: false, commit: "a".repeat(40), binaryPaths: [], allowedBinaryPaths: [], part: "patch" as const };
+  const thrower = (e: unknown) => {
+    const scan = createGitPort({ ...base, scanner: { ...scanner, scan: async () => Promise.reject(e) } }).scanner;
+    assert.ok(scan !== undefined);
+    return (text: string) => scan(text, meta);
+  };
+  for (const code of ["too_large", "deadline", "budget"] as const) await assert.rejects(thrower(new SecretScanError(code))("x"), ScanIncomplete, code);
+  const internal = new SecretScanError("internal");
+  await assert.rejects(thrower(internal)("x"), (e: unknown) => e === internal);
+  const other = new Error("boom");
+  await assert.rejects(thrower(other)("x"), (e: unknown) => e === other);
+});
+
+test("a drift refusal other than git_drift, and a DaemonError git_drift only, reach git-ops as they are or as the closed conflict", async () => {
+  const drift = (e: unknown) => createGitPort({ ...base, scanner, assertNoDrift: () => Promise.reject(e) }).assertNoDrift({ workTree: path.resolve("/"), gitDir: path.resolve("/.git") });
+  await assert.rejects(drift(new DaemonError("E_CONFLICT", "leaky /home/x", { reason: "git_drift" })), (e: unknown) => e instanceof GitOpsError && e.code === "E_CONFLICT" && e.details?.["reason"] === "git_drift" && !e.message.includes("/home/x"));
+  const plain = new DaemonError("E_CONFLICT", "other", { reason: "not_drift" });
+  await assert.rejects(drift(plain), (e: unknown) => e === plain);
+  const raw = new Error("x");
+  await assert.rejects(drift(raw), (e: unknown) => e === raw);
 });
