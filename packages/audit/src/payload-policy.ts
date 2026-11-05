@@ -25,7 +25,7 @@ export const DEFAULT_PAYLOAD_ALLOWLIST: Readonly<Record<string, readonly string[
   "tier4.execute": ["phase", "op", "ref", "tier", "reason", "approvedBy", "errorName", "code", ...POLICY_KEYS],
   "policy.decision": [...POLICY_KEYS],
   "rpc.execute": [...POLICY_KEYS],
-  "journal.recovery": ["from", "to", "reason", "kind", "workspaceId", "projectId"],
+  "journal.recovery": ["from", "to", "reason", "kind", "workspaceId", "projectId", "count"],
 };
 
 const isScalar = (v: JsonValue): v is string | number | boolean | null =>

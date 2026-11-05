@@ -7,26 +7,29 @@ import { fixture } from "./realFixture.js";
 test("RR-N4: the node runner reports truncated when stdout passes its limit, and not otherwise", async () => {
   const f = fixture();
   const req = { argv: ["var", "-l"], cwd: f.wt.workTree, env: { PATH: process.env["PATH"] ?? "", HOME: f.home }, context: "pty" as const };
-  const small = await createNodeRunner({ allowPtyContext: true, maxOutput: 40 }).run(req);
+  const small = await createNodeRunner({ allowPtyContext: true, allowUnpinnedGit: true, maxOutput: 40 }).run(req);
   assert.equal(small.truncated, true);
   assert.equal(small.stdout.length, 40);
-  const big = await createNodeRunner({ allowPtyContext: true }).run(req);
+  const big = await createNodeRunner({ allowPtyContext: true, allowUnpinnedGit: true }).run(req);
   assert.equal(big.truncated, undefined);
   assert.ok(big.stdout.length > 40);
 });
 
 test("RR-N5: a normal daemon exit kills git's live process groups (a crash cannot; that is documented)", async () => {
   const { spawnSync } = await import("node:child_process");
-  const { existsSync, readFileSync } = await import("node:fs");
+  const { existsSync, readFileSync, writeFileSync } = await import("node:fs");
   const { join } = await import("node:path");
   const f = fixture();
   const pidFile = join(f.root, "pid");
   const runnerUrl = new URL("../src/nodeRunner.js", import.meta.url).href;
+  // The runner refuses `-c alias.*`, so the alias lives in the user-level config under HOME.
+  const alias = `!sh -c 'echo $$ > "${pidFile}"; exec sleep 60' & wait`;
+  writeFileSync(join(f.home, ".gitconfig"), `[alias]\n\tslow = "${alias.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"\n`);
   const script = `
     import { createNodeRunner } from ${JSON.stringify(runnerUrl)};
     import { existsSync } from "node:fs";
-    createNodeRunner({ allowPtyContext: true }).run({
-      argv: ["-c", ${JSON.stringify(`alias.slow=!sh -c 'echo $$ > "${pidFile}"; exec sleep 60' & wait`)}, "slow"],
+    createNodeRunner({ allowPtyContext: true, allowUnpinnedGit: true }).run({
+      argv: ["slow"],
       cwd: ${JSON.stringify(f.root)}, env: { PATH: process.env.PATH, HOME: ${JSON.stringify(f.home)} }, context: "pty",
     });
     const t = setInterval(() => { if (existsSync(${JSON.stringify(pidFile)})) { clearInterval(t); setTimeout(() => process.exit(0), 100); } }, 20);

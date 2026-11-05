@@ -2,7 +2,7 @@
 import { inspectMessage, makeError, type ErrorCode, type JsonValue } from "@axis/protocol";
 import type { Auditor } from "./audit.js";
 import { toWireError } from "./errors.js";
-import { TIMED_OUT, handlerKey, type Outcome, type PipelineInput } from "./pipeline.js";
+import { TIMED_OUT, handlerKey, type Outcome, type PipelineInput, type PipelineState } from "./pipeline.js";
 import type { ConfirmedAction } from "./types.js";
 
 export class Aborted extends Error {}
@@ -18,6 +18,7 @@ function readOnly(c: ConfirmedAction): ConfirmedAction {
 
 export interface ActionInput {
   readonly p: PipelineInput;
+  readonly state: PipelineState;
   readonly auditor: Auditor;
   readonly tier: number;
   /** Set exactly when the approval gate ran this inside a spent approval (tier >= 3). */
@@ -45,10 +46,17 @@ export async function runAction(a: ActionInput): Promise<Outcome> {
   await auditor.strict("success", replayed === undefined ? { decision: "allow" } : { decision: "allow", replay: true });
   if (signal.aborted) throw new Aborted();
   if (replayed !== undefined) return { ok: true, result: replayed };
+  // Shutdown began while this request waited (policy, idempotency, audit): do not start a handler now.
+  // At tier >= 3 the approval is already spent, so the check ran before the spend (approval.ts) and cannot refuse here.
+  if (confirmed === undefined && d.draining?.()) {
+    await auditor.soft("denied", { decision: "allow", reason: "shutting_down" }); // closes the "allow" row above
+    return fail("E_UNAVAILABLE", "The daemon is shutting down");
+  }
 
   const handler = d.handlers.get(handlerKey(req.contract, req.contractVersion, req.method));
   if (!handler) return fail("E_UNAVAILABLE", "This method is not available right now");
-  const sideEffecting = spec.sideEffect !== "none" && spec.sideEffect !== "read";
+  // Fail closed: a method at tier 2 or above is treated as side-effecting whatever its declared flag says.
+  const sideEffecting = (spec.sideEffect !== "none" && spec.sideEffect !== "read") || tier >= 2;
   let raw: unknown;
   try {
     raw = await (handler as (c: unknown, p: unknown) => unknown)(
@@ -64,6 +72,8 @@ export async function runAction(a: ActionInput): Promise<Outcome> {
     );
   } catch (error) {
     if (signal.aborted) {
+      // Cancelled or timed out mid-call: the side effect may have happened, so the key must not be freed.
+      if (sideEffecting) a.state.effectPossible = true;
       if (sideEffecting) await auditor.soft("failure", { phase: "completed", result: "aborted", code: abortCode(signal.reason) }, "rpc.execute");
       throw new Aborted();
     }
@@ -72,6 +82,7 @@ export async function runAction(a: ActionInput): Promise<Outcome> {
     return { ok: false, error: wire };
   }
 
+  if (sideEffecting) a.state.effectPossible = true;
   // The response must match the contract exactly: this is what stops a handler leaking extra fields.
   const checked = spec.response.safeParse(raw ?? null);
   if (!checked.success || !inspectMessage(checked.data).ok) {
