@@ -193,9 +193,8 @@ async function collectLink(
       await record(ctx, `${base}/gitdir`, "link", join(commonDir, "worktrees", name, "gitdir"));
       await record(ctx, `${base}/commondir`, "link", join(commonDir, "worktrees", name, "commondir"));
     }
-  } else if (list.detail !== "missing") {
-    ctx.incomplete.push({ id: "worktrees", reason: `unreadable (${list.detail})`, blocking: true });
   }
+  // A directory that cannot be listed is blocked once, by `siblingRoots`, which lists it first.
   const { gitDir, commonDir: found, topLevel } = view.discovered;
   // A top level that is not the worktree (core.worktree in config.worktree) means git runs hooks from somewhere else.
   let mismatch =

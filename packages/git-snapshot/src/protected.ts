@@ -13,7 +13,8 @@ export type ProtectedCategory =
   | "package-config"
   | "shell-env"
   | "build-script"
-  | "agent-config"
+  | "hidden-config"
+  | "instruction-file"
   | "caller-defined"
   | "git-dir"
   | "git-config"
@@ -84,7 +85,7 @@ const RULES: readonly Rule[] = [
   ...names("shell-env", "high", ".envrc", ".mise.toml", "mise.toml"),
   dir(".yarn/plugins", "package-config", "high", false, ".yarn", "plugins"),
   ...names("build-script", "medium", "conftest.py", "build.rs", "pyproject.toml", "makefile", "gnumakefile", "justfile", "taskfile.yml", "taskfile.yaml", "rakefile", "build.gradle", "build.gradle.kts", "setup.py", "noxfile.py"),
-  ...names("agent-config", "high", ".mcp.json"),
+  fam(".env family", "shell-env", (c) => c === ".env" || c.startsWith(".env.")),
   dir(".git", "git-dir", "high", true, ".git"),
   ...names("git-config", "high", ".gitmodules", ".gitattributes"),
 ];
@@ -162,7 +163,12 @@ function matchRule(parts: readonly string[], r: Rule): boolean {
   return false;
 }
 
-const foldLiteral = (lit: string): string => foldName(lit);
+const foldCache = new Map<string, string>();
+const foldLiteral = (lit: string): string => {
+  let v = foldCache.get(lit);
+  if (v === undefined) foldCache.set(lit, (v = foldName(lit)));
+  return v;
+};
 
 export interface MatchOptions {
   /**
@@ -183,11 +189,39 @@ function matchExtra(parts: readonly string[], extra: readonly string[] | undefin
   return null;
 }
 
+// Generic rules for what no list can name: configuration other programs read from the root of a checkout. Root-only,
+// and judged after the specific rules above so those keep their own categories. No product is named here: the
+// host adds the names it knows about through `extraPaths`, from the user's own settings, never from the repository.
+const BENIGN_DOT = new Set([".gitignore", ".editorconfig", ".nvmrc", ".node-version", ".prettierignore", ".eslintignore", ".dockerignore"]);
+const COMMON_DOCS = new Set([
+  "readme", "license", "licence", "copying", "copyright", "notice", "changelog", "changes", "history", "news", "contributing",
+  "contributors", "security", "code_of_conduct", "authors", "maintainers", "codeowners", "support", "governance", "todo",
+  "release", "releases", "roadmap", "install", "upgrading", "citation", "credits", "thanks", "patents", "acknowledgements",
+]);
+// A generated short name (`ALPHA~1`, `PLAYBO~1.MD`) may stand for a dot-name or a long name: it cannot be ruled out.
+const SHORT_NAME = /^[^~.]{1,6}~\d{1,7}(?:\.[^.]{0,3})?$/;
+
+function matchGeneric(parts: readonly string[]): ProtectedMatch | null {
+  const first = parts[0];
+  if (first === undefined) return null;
+  if (first.startsWith(".") && first !== "." && first !== ".." && !BENIGN_DOT.has(first)) {
+    return { category: "hidden-config", severity: "high", rule: "root-level dot name", via: "path" };
+  }
+  if (parts.length === 1) {
+    const m = /^([a-z0-9_-]+)\.md$/.exec(first);
+    if (m !== null && !COMMON_DOCS.has(m[1] as string)) {
+      return { category: "instruction-file", severity: "high", rule: "root-level upper-case or plain .md file", via: "path" };
+    }
+  }
+  if (SHORT_NAME.test(first)) return { category: "hidden-config", severity: "high", rule: "root-level short name", via: "path" };
+  return null;
+}
+
 function matchParts(parts: readonly string[]): ProtectedMatch | null {
   for (const r of RULES) {
     if (matchRule(parts, r)) return { category: r.category, severity: r.severity, rule: r.rule, via: "path" };
   }
-  return null;
+  return matchGeneric(parts);
 }
 
 /**
