@@ -86,7 +86,7 @@ export class Session {
     this.#limiter = new RateLimiter(deps.limits.maxMessagesPerSecond, deps.limits.burst, deps.now);
     this.#handshakeTimer = setTimeout(() => {
       if (!this.#negotiated) this.close();
-    }, Math.max(1, handshakeBudgetMs));
+    }, Math.max(1, handshakeBudgetMs)) as unknown as NodeJS.Timeout; // opaque handle under Code OSS's typings (ADR 0005)
     this.#handshakeTimer.unref();
   }
 
@@ -262,7 +262,7 @@ export class Session {
     const entry: InFlight = { controller, answered: false, settled: false, timer: undefined };
     this.#inFlight.set(id, entry);
     const timeoutMs = Math.min(spec.timeoutMs, req.timeoutMs ?? Infinity, MAX_TIMEOUT_MS);
-    entry.timer = setTimeout(() => controller.abort(TIMED_OUT), timeoutMs);
+    entry.timer = setTimeout(() => controller.abort(TIMED_OUT), timeoutMs) as unknown as NodeJS.Timeout; // opaque handle under Code OSS's typings (ADR 0005)
     entry.timer.unref();
 
     const answer = (outcome: Outcome): void => {
