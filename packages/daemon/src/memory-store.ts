@@ -7,9 +7,10 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 interface Entry {
   readonly hash: string;
   readonly budget: string;
-  readonly at: number;
+  at: number;
   result?: JsonValue;
   origin?: string;
+  unknown?: "interrupted" | "failed-after-start";
 }
 
 export interface MemoryStoreOptions {
@@ -74,7 +75,7 @@ export class MemoryIdempotencyStore implements IdempotencyStore {
   }
 
   #expired(e: Entry, t: number): boolean {
-    return e.result !== undefined && t - e.at >= this.#ttlMs;
+    return (e.result !== undefined || e.unknown !== undefined) && t - e.at >= this.#ttlMs;
   }
 
   #sweep(t: number): void {
@@ -91,6 +92,7 @@ export class MemoryIdempotencyStore implements IdempotencyStore {
     if (found && this.#expired(found, t)) this.#drop(id, found);
     else if (found) {
       if (found.hash !== hash) return { state: "conflict" };
+      if (found.unknown) return { state: "unknown", reason: found.unknown };
       return found.result === undefined
         ? { state: "in-progress" }
         : { state: "replay", result: found.result, origin: found.origin ?? "" };
@@ -109,7 +111,7 @@ export class MemoryIdempotencyStore implements IdempotencyStore {
   #evictOldestCompleted(ids: Set<string>): boolean {
     for (const id of ids) {
       const e = this.#entries.get(id);
-      if (e && e.result !== undefined) {
+      if (e && e.result !== undefined && !e.unknown) {
         this.#drop(id, e);
         return true;
       }
@@ -128,6 +130,14 @@ export class MemoryIdempotencyStore implements IdempotencyStore {
   abandon(key: IdempotencyKey): void {
     const id = this.#id(key);
     const e = this.#entries.get(id);
-    if (e && e.result === undefined) this.#drop(id, e);
+    if (e && e.result === undefined && !e.unknown) this.#drop(id, e);
+  }
+
+  markUnknown(key: IdempotencyKey): void {
+    const e = this.#entries.get(this.#id(key));
+    if (e && e.result === undefined) {
+      e.unknown = "failed-after-start";
+      e.at = this.#now();
+    }
   }
 }
