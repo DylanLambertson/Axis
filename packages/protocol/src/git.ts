@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { z } from "zod";
 import { challengeReferenceSchema } from "./challenge.js";
+import { CF_RANGES, INVISIBLE_RANGES, rangesToClass } from "./display.js";
 import { displayTextSchema, guarded } from "./guard.js";
 import { refNameSchema, relativePathSchema, workspaceIdSchema, type MethodSpec } from "./worktrees.js";
 
@@ -90,14 +91,18 @@ export const gitPushReasonSchema = z.enum(GIT_PUSH_REASONS);
 const wellFormed = (t: string): boolean => !/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/.test(t);
 
 /**
- * Refused in a commit message: NUL and the other C0 controls (ESC starts a terminal sequence) except tab, newline and
- * carriage return, DEL and C1, line and paragraph separators, the bidi controls that make text read differently from how it is
- * stored, and invisible characters (soft hyphen, zero-width space, word joiner and the invisible math operators, BOM, and the
- * tag block that smuggles ASCII). The joiners U+200C and U+200D that emoji and some scripts need are allowed.
+ * Refused in a commit message: the C0 controls except tab, newline and carriage return (ESC starts a terminal sequence),
+ * DEL and C1, line and paragraph separators, every format character (Cf: bidi controls, soft hyphen, zero-width space, word
+ * joiner and invisible operators, BOM, the tag block that smuggles ASCII, the interlinear marks) EXCEPT the joiners U+200C and
+ * U+200D that emoji and some scripts need, and the other invisible code points (variation selectors, the combining grapheme
+ * joiner, Hangul fillers, blank braille). Explicit ranges (see `display.ts`), so every side agrees.
  */
-// eslint-disable-next-line no-control-regex
-const UNSAFE_MESSAGE_CHARS =
-  /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u00ad\u2028\u2029\u061c\u200b\u200e\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff\u{e0000}-\u{e007f}]/u;
+/** `CF_RANGES` without U+200C and U+200D (written out: the set is data, not computed). */
+const CF_EXCEPT_JOINERS = CF_RANGES.flatMap((r): Array<number | readonly [number, number]> => (typeof r !== "number" && r[0] === 0x200b ? [0x200b, [0x200e, 0x200f]] : [r]));
+const UNSAFE_MESSAGE_CHARS = new RegExp(
+  `[${rangesToClass([[0x0, 0x8], 0xb, 0xc, [0xe, 0x1f], [0x7f, 0x9f], 0x2028, 0x2029, ...CF_EXCEPT_JOINERS, ...INVISIBLE_RANGES])}]`,
+  "u",
+);
 
 /** `check()` in commit: non-empty text, at most 64 KiB, no NUL. Newlines and tabs are fine. */
 export const commitMessageSchema = z

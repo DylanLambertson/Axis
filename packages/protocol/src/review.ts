@@ -64,18 +64,24 @@ export const changeStatusSchema = z.enum(CHANGE_STATUS_VALUES);
 export const changeKindSchema = z.enum(CHANGE_KIND_VALUES);
 
 /**
- * Names a file within one review. Minted by the host: the SHA-256, in lower-case hex, of the raw repository path bytes
- * (`ReviewFile.path`), never of the display string. Unique within a response; two files can show the same
- * `displayPath` (a cut in the middle of long paths) but never the same `fileId`. It is an identity, not a secret.
+ * Names a file within one review. Minted by the host: the SHA-256, in lower-case hex, of the UTF-8 encoding of the repository
+ * path as the host DECODED it (`ReviewFile.path`), never of the display string. The host has the path as a string, not as raw
+ * bytes, so two different byte paths that decode to the same string would share an id: a path that does not decode as strict
+ * UTF-8 (it holds U+FFFD) is therefore `unsafePath` (`not_utf8`), which blocks the tree, and the handler folds entries with
+ * equal path strings into one row instead of listing equal ids. Among files that can be committed an id is unique within a
+ * response. Two files can show the same `displayPath` (a cut in the middle of long paths) but never the same `fileId`.
+ * It is an identity, not a secret.
  */
 export const fileIdSchema = z.string().regex(/^[0-9a-f]{64}$/);
 
 /**
- * The content binding of an acknowledgement: the object id of the exact content the user is told is cut and the commit
- * holds, taken from the same snapshot tree the `treeHash` is built from (the `newOid` of the file in that tree; for a symlink
- * the blob of its target). Only a `truncated` file has one.
+ * The content AND mode binding of an acknowledgement: the SHA-256, in lower-case hex, of the string
+ * `<newMode> <newOid>` (for example `100644 3b18e5...`), where mode and oid are the file's entry in the SNAPSHOT TREE the
+ * `treeHash` is built from (for a symlink, mode `120000` and the blob of its target). An object id hashes bytes only, so
+ * the mode is part of the binding: the same bytes made executable (`100755`) or turned into a symlink (`120000`) give a
+ * different `contentId`, and an acknowledgement of one does not carry to the other. Only a `truncated` file has one.
  */
-export const contentIdSchema = objectIdSchema;
+export const contentIdSchema = z.string().regex(/^[0-9a-f]{64}$/);
 
 /** One acknowledgement: this file, with exactly this content. Both must equal the current entry, byte for byte (no case folding, no normalisation). */
 export const acknowledgementSchema = z.strictObject({ fileId: fileIdSchema, contentId: contentIdSchema });
@@ -85,7 +91,7 @@ export type Acknowledgement = z.infer<typeof acknowledgementSchema>;
  * Whether the request's acknowledgements cover this file of the CURRENT review. True only for a truncated file whose
  * `fileId` AND `contentId` both equal an acknowledgement's, as exact strings (no case folding, no normalisation). The handler
  * decides `acceptTruncated` and `acknowledged` with this and nothing else, so a changed file, a moved file or a replayed
- * list acknowledges nothing.
+ * list acknowledges only the identical file with identical content and mode.
  */
 export function isAcknowledged(
   file: { readonly fileId: string; readonly truncated: boolean; readonly contentId: string | null },
@@ -148,7 +154,7 @@ export const reviewDiffRequestSchema = guarded(
      * handler passes `acceptTruncated` to `@axis/review` for a file ONLY when its `fileId` and its `contentId` both equal
      * the entry of THIS review (exact string equality), `hasCutLines` is true for it, and the content id was computed from
      * the same snapshot tree the `treeHash` is built from, in the same read. A pair that matches no truncated entry (the
-     * file changed, moved, or was never cut) acknowledges nothing and is not echoed. Unique by `fileId`, at most 200.
+     * file changed, moved, or was never cut) is not acknowledged and is not echoed. Unique by `fileId`, at most 200.
      */
     acknowledged: z
       .array(acknowledgementSchema)

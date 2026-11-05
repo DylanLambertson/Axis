@@ -1,4 +1,5 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
+import { createHash } from "node:crypto";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { GIT_COMMIT_REASONS, REVIEW_DIFF_REASONS, isAcknowledged, MAX_ALLOWED_BINARY_PATHS, MAX_COMMIT_MESSAGE, MAX_PUSH_FINDINGS, MAX_COMPARE_URL, MAX_REVIEW_FILES, MAX_REVIEW_SKIPPED, contracts, lookupMethod, requiresIdempotencyKey, tableProblems } from "../src/index.js";
@@ -178,26 +179,32 @@ test("review.diff request and response", () => {
 });
 
 const ID = (n: number) => String(n).padStart(64, "0");
+/** The documented definition of a content id: SHA-256 of `<newMode> <newOid>`. */
+const contentIdOf = (mode: string, oid: string): string => createHash("sha256").update(`${mode} ${oid}`).digest("hex");
+const BLOB = "3b18e512dba79e4c8300dd08aeb37f8e728b8dad";
+const CID1 = contentIdOf("100644", BLOB);
+const CID2 = contentIdOf("100755", BLOB);
+const CID3 = contentIdOf("120000", BLOB);
 
 test("review.diff request: acknowledgements are { fileId, contentId } pairs, bounded and unique by file", () => {
   const req = schemaOf(R, "diff", "request");
-  const ack = (i: number) => ({ fileId: ID(i), contentId: SHA1 });
+  const ack = (i: number) => ({ fileId: ID(i), contentId: CID1 });
   accepts(req, { workspaceId: "ws-1", acknowledged: [] }, "empty");
-  accepts(req, { workspaceId: "ws-1", acknowledged: [{ fileId: ID(1), contentId: SHA3 }] }, "sha-256 content id");
+  accepts(req, { workspaceId: "ws-1", acknowledged: [{ fileId: ID(1), contentId: CID3 }] }, "sha-256 content id");
   accepts(req, { workspaceId: "ws-1", acknowledged: Array.from({ length: MAX_REVIEW_FILES }, (_, i) => ack(i)) }, "at the cap");
   rejects(req, { workspaceId: "ws-1", acknowledged: Array.from({ length: MAX_REVIEW_FILES + 1 }, (_, i) => ack(i)) }, "over the cap");
-  rejects(req, { workspaceId: "ws-1", acknowledged: [ack(1), { fileId: ID(1), contentId: SHA3 }] }, "same file twice");
-  for (const a of ["src/a.ts", ["src/a.ts"], [""], [1], [null], [{ fileId: ID(1) }], [{ contentId: SHA1 }], [{ displayPath: "a", contentId: SHA1 }],
-    [{ fileId: ID(1), contentId: SHA1, extra: 1 }], [{ fileId: "A".repeat(64), contentId: SHA1 }], [{ fileId: "1".repeat(63), contentId: SHA1 }],
-    [{ fileId: "1".repeat(65), contentId: SHA1 }], [{ fileId: ID(1), contentId: "A".repeat(40) }], [{ fileId: ID(1), contentId: "a".repeat(41) }],
-    [{ fileId: ID(1), contentId: "blob" }], [{ fileId: ID(1), contentId: null }], { fileId: ID(1), contentId: SHA1 }]) {
+  rejects(req, { workspaceId: "ws-1", acknowledged: [ack(1), { fileId: ID(1), contentId: CID3 }] }, "same file twice");
+  for (const a of ["src/a.ts", ["src/a.ts"], [""], [1], [null], [{ fileId: ID(1) }], [{ contentId: CID1 }], [{ displayPath: "a", contentId: CID1 }],
+    [{ fileId: ID(1), contentId: CID1, extra: 1 }], [{ fileId: "A".repeat(64), contentId: CID1 }], [{ fileId: "1".repeat(63), contentId: CID1 }],
+    [{ fileId: "1".repeat(65), contentId: CID1 }], [{ fileId: ID(1), contentId: "A".repeat(64) }], [{ fileId: ID(1), contentId: "a".repeat(40) }], [{ fileId: ID(1), contentId: "a".repeat(65) }],
+    [{ fileId: ID(1), contentId: "blob" }], [{ fileId: ID(1), contentId: null }], { fileId: ID(1), contentId: CID1 }]) {
     rejects(req, { workspaceId: "ws-1", acknowledged: a }, JSON.stringify(a).slice(0, 40));
   }
 });
 
 test("review.diff response: a treeHash is impossible while the review cannot be committed (REV-1)", () => {
   const res = schemaOf(R, "diff", "response");
-  const cut = { truncated: true, contentId: SHA1 };
+  const cut = { truncated: true, contentId: CID1 };
   const resp = (patch: Record<string, unknown>, filePatch: Record<string, unknown> = {}) => ({ ...structuredClone(diffResponse), ...patch, files: [{ ...structuredClone(file), ...filePatch }] });
   accepts(res, resp({ treeHash: SHA2 }), "a clean review has a tree");
   accepts(res, resp({ treeHash: null }, cut), "a cut file without a tree");
@@ -206,7 +213,7 @@ test("review.diff response: a treeHash is impossible while the review cannot be 
   rejects(res, resp({ treeHash: SHA2 }, { acknowledged: true }), "acknowledged but not truncated");
   rejects(res, resp({ treeHash: null }, { acknowledged: true }), "acknowledged but not truncated, no tree");
   rejects(res, resp({ treeHash: null }, { truncated: true }), "a cut file without a content id");
-  rejects(res, resp({ treeHash: null }, { contentId: SHA1 }), "a content id on a file that is not cut");
+  rejects(res, resp({ treeHash: null }, { contentId: CID1 }), "a content id on a file that is not cut");
   rejects(res, resp({ treeHash: null }, { ...cut, contentId: "blob" }), "a content id that is not an object id");
   rejects(res, resp({ treeHash: SHA2 }, { unsafePath: true }), "tree with an unsafe path");
   rejects(res, resp({ treeHash: SHA2 }, { kind: "filtered" }), "tree with a filtered file");
@@ -227,15 +234,28 @@ test("review.diff response: a treeHash is impossible while the review cannot be 
   accepts(res, { ...structuredClone(diffResponse), skipped: Array.from({ length: MAX_REVIEW_SKIPPED }, () => structuredClone(sk)), skippedCount: 500 }, "a long list is cut at the cap");
 });
 
+test("contentId binds the mode as well as the bytes: the same blob as text, executable or symlink never shares an id", () => {
+  assert.equal(new Set([CID1, CID2, CID3]).size, 3);
+  const f = { fileId: ID(1), truncated: true, contentId: CID1 };
+  assert.equal(isAcknowledged(f, [{ fileId: ID(1), contentId: CID1 }]), true);
+  assert.equal(isAcknowledged({ ...f, contentId: CID2 }, [{ fileId: ID(1), contentId: CID1 }]), false, "made executable since");
+  assert.equal(isAcknowledged({ ...f, contentId: CID3 }, [{ fileId: ID(1), contentId: CID1 }]), false, "turned into a symlink since");
+  const res = schemaOf(R, "diff", "response");
+  accepts(res, { ...structuredClone(diffResponse), treeHash: null, files: [{ ...structuredClone(file), truncated: true, contentId: CID3 }] }, "a 64-hex content id");
+  rejects(res, { ...structuredClone(diffResponse), treeHash: null, files: [{ ...structuredClone(file), truncated: true, contentId: BLOB }] }, "a bare object id is not a content id");
+});
+
 test("isAcknowledged: both the file id and the content id must match the current entry, exactly", () => {
-  const f = { fileId: ID(1), truncated: true, contentId: SHA1 };
-  const acks = [{ fileId: ID(1), contentId: SHA1 }];
+  const f = { fileId: ID(1), truncated: true, contentId: CID1 };
+  const acks = [{ fileId: ID(1), contentId: CID1 }];
   assert.equal(isAcknowledged(f, acks), true);
-  assert.equal(isAcknowledged(f, [{ fileId: ID(1), contentId: SHA2 }]), false, "the content changed since the user looked");
-  assert.equal(isAcknowledged(f, [{ fileId: ID(2), contentId: SHA1 }]), false, "another file");
-  assert.equal(isAcknowledged({ ...f, fileId: "ab".repeat(32) }, [{ fileId: "AB".repeat(32), contentId: SHA1 }]), false, "no case folding");
-  assert.equal(isAcknowledged(f, [{ fileId: ID(2), contentId: SHA2 }, { fileId: ID(1), contentId: SHA2 }, { fileId: ID(2), contentId: SHA1 }]), false, "the ids must come from the same pair");
+  assert.equal(isAcknowledged(f, [{ fileId: ID(1), contentId: CID2 }]), false, "the content changed since the user looked");
+  assert.equal(isAcknowledged(f, [{ fileId: ID(2), contentId: CID1 }]), false, "another file");
+  assert.equal(isAcknowledged({ ...f, fileId: "ab".repeat(32) }, [{ fileId: "AB".repeat(32), contentId: CID1 }]), false, "no case folding");
+  assert.equal(isAcknowledged(f, [{ fileId: ID(2), contentId: CID2 }, { fileId: ID(1), contentId: CID2 }, { fileId: ID(2), contentId: CID1 }]), false, "the ids must come from the same pair");
   assert.equal(isAcknowledged({ ...f, truncated: false, contentId: null }, acks), false, "a file that is not cut needs no acknowledgement and has none");
+  // The helper takes unvalidated objects: a file that is not truncated is never acknowledged, whatever its content id says.
+  assert.equal(isAcknowledged({ ...f, truncated: false }, acks), false, "not truncated but with a content id");
   assert.equal(isAcknowledged(f, undefined), false);
   assert.equal(isAcknowledged(f, []), false);
 });
@@ -252,10 +272,21 @@ test("git.compareUrl base: ASCII only, so the longest URL still fits the respons
 
 test("git.commit message: terminal and bidi control characters are refused, joiners are not", () => {
   const req = schemaOf(G, "commit", "request");
-  for (const c of ["\u001b[2J", "\u0007", "\u007f", "\u0085", "\u202e", "\u2066", "\u200f", "\u061c", "\u2028", "\u0008", "\u200b", "\u2060", "\ufeff", "\u00ad", "\u2064", "\u{e0041}", "\u{e0001}", "\u{e007f}"]) rejects(req, commitReq({ message: `fix${c}x` }), JSON.stringify(c));
+  for (const c of ["\u001b[2J", "\u0007", "\u007f", "\u0085", "\u202e", "\u2066", "\u200f", "\u061c", "\u2028", "\u0008", "\u200b", "\u2060", "\ufeff", "\u00ad", "\u2064", "\u{e0041}", "\u{e0001}", "\u{e007f}", "\ufe0f", "\ufe00", "\u{e0100}", "\u{e01ef}", "\u180e", "\ufff9", "\ufffb", "\u206a", "\u206f", "\u115f", "\u1160", "\u3164", "\uffa0", "\u034f", "\u2800", "\u0600", "\u{110bd}", "\u{1d173}"]) rejects(req, commitReq({ message: `fix${c}x` }), JSON.stringify(c));
   accepts(req, commitReq({ message: "a\tb\r\nc\n" }), "tab, CRLF");
   accepts(req, commitReq({ message: "family \u{1F468}\u200d\u{1F469}" }), "zero-width joiner in emoji");
   accepts(req, commitReq({ message: "\u0645\u200c\u0646" }), "zero-width non-joiner");
+});
+
+test("git.commit message: every format character is refused except the two joiners (exhaustive)", () => {
+  const req = schemaOf(G, "commit", "request");
+  for (let cp = 0; cp <= 0x10ffff; cp++) {
+    if (cp >= 0xd800 && cp <= 0xdfff) continue;
+    const ch = String.fromCodePoint(cp);
+    if (!/\p{Cf}/u.test(ch)) continue;
+    const ok = cp === 0x200c || cp === 0x200d;
+    assert.equal(req.safeParse(commitReq({ message: `a${ch}b` })).success, ok, `U+${cp.toString(16)}`);
+  }
 });
 
 test("git remote names: what git refuses as a ref component is refused", () => {

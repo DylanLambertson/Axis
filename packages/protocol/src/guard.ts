@@ -1,5 +1,6 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { z } from "zod";
+import { REFUSED_DISPLAY } from "./display.js";
 import { inspectMessage, type InspectLimits } from "./limits.js";
 
 /**
@@ -86,7 +87,7 @@ export const safeTextSchema = (max: number) =>
     .string()
     .min(1)
     .max(max)
-    .refine((t) => t === t.trim() && !/[\p{Cc}\p{Cf}\u2028\u2029]/u.test(t), {
+    .refine((t) => t === t.trim() && !REFUSED_DISPLAY.test(t), {
       message: "no leading or trailing whitespace, no control or invisible characters",
     });
 
@@ -99,4 +100,4 @@ export const displayTextSchema = (max: number) =>
   z
     .string()
     .max(max)
-    .refine((t) => !/[\p{Cc}\p{Cf}\p{Cs}\u2028\u2029]/u.test(t), { message: "no control or invisible characters" });
+    .refine((t) => !REFUSED_DISPLAY.test(t), { message: "no control or invisible characters" });

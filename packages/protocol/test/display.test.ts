@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { MAX_REVIEW_PATH, MIN_DISPLAY_LIMIT, displayTextSchema, toDisplayPath } from "../src/index.js";
+import { CC_CS_LS_RANGES, CF_RANGES, MAX_REVIEW_PATH, MIN_DISPLAY_LIMIT, REFUSED_DISPLAY, displayTextSchema, rangesToClass, toDisplayPath } from "../src/index.js";
 import { FILE1, SHA1, diffResponse, file } from "./samples-p1b.js";
 import { schemaOf } from "./suite.js";
 
@@ -87,4 +87,38 @@ test("a response of hostile names, each passed through toDisplayPath, is always 
   for (const n of ["a\u0600b", "\u202e", "x".repeat(400)]) {
     assert.equal(res.safeParse({ ...structuredClone(diffResponse), files: [{ ...structuredClone(file), displayPath: n }] }).success, false);
   }
+});
+
+test("the refused set is explicit data and equals the property classes of the Unicode version it was generated from", () => {
+  // If a newer engine adds a format code point this fails on purpose: extend CF_RANGES on every side together (display.ts).
+  const property = /[\p{Cc}\p{Cf}\p{Cs}\u2028\u2029]/u;
+  for (let cp = 0; cp <= 0x10ffff; cp++) {
+    const ch = String.fromCodePoint(cp);
+    assert.equal(REFUSED_DISPLAY.test(ch), property.test(ch), `U+${cp.toString(16)}`);
+  }
+  assert.ok(CF_RANGES.length > 10 && CC_CS_LS_RANGES.length > 3);
+  assert.equal(new RegExp(`[${rangesToClass([0x41, [0x61, 0x63]])}]`, "u").source, "[\\u{41}\\u{61}-\\u{63}]");
+  assert.equal(displayTextSchema(10).safeParse("a\u0600").success, false);
+});
+
+test("toDisplayPath: a literal ellipsis is escaped, so an ellipsis in the output always means a cut", () => {
+  assert.equal(check("a\u2026b"), "a\\u{2026}b");
+  const cutOut = check("x".repeat(400));
+  assert.equal(cutOut.split("\u2026").length - 1, 1);
+  assert.equal(check(`${"a".repeat(100)}\u2026${"b".repeat(100)}`).includes("\\u{2026}"), true);
+});
+
+test("toDisplayPath: the limit is exact on the escaped length (max stays whole, max + 1 is cut)", () => {
+  const max = 40;
+  // 35 plain characters plus one 5-unit escape (\u{1}) is 40 units: kept whole. One more plain character makes 41: cut.
+  const whole = `${"a".repeat(35)}\u0001`;
+  assert.equal(toDisplayPath(whole, max), `${"a".repeat(35)}\\u{1}`);
+  assert.equal(toDisplayPath(whole, max).length, max);
+  const over = toDisplayPath(`${whole}b`, max);
+  assert.ok(over.includes("\u2026") && over.length <= max);
+  assert.equal(toDisplayPath("a".repeat(max), max), "a".repeat(max));
+  assert.ok(toDisplayPath("a".repeat(max + 1), max).includes("\u2026"));
+  // Five-unit escapes: 8 of them (40 units) fit 40, 9 (45) do not.
+  assert.equal(toDisplayPath("\u0001".repeat(8), max), "\\u{1}".repeat(8));
+  assert.ok(toDisplayPath("\u0001".repeat(9), max).includes("\u2026"));
 });
