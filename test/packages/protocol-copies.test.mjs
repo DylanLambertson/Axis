@@ -4,11 +4,12 @@
 // vector. `npm test` builds before it runs this.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { requestDigest } from "@axis/daemon";
 import { RUN_STATES } from "@axis/journal";
 import { RUN_STATUS_VALUES, RUN_STATE_VALUES, contracts, lookupMethod } from "@axis/protocol";
 import { RUN_STATUSES } from "@axis/runs";
+import { GIT_COMMIT_REFUSALS, GIT_PUSH_REFUSALS, REVIEW_DIFF_REFUSALS } from "@axis/protocol";
 
 test("the protocol's run states are the journal's run states", () => {
   assert.deepEqual([...RUN_STATE_VALUES], [...RUN_STATES]);
@@ -36,8 +37,12 @@ test("every registry method that needs approval has a pinned digest under its ow
   const pinned = new Map([
     // contract id, version, method -> digest of the payload below
     ["axis.worktrees/1#remove", "adb7a157e75395816cf74974fbdfa2b5bdf32831996a578ff80cdb46fe9d2735"],
+    ["axis.git/1#push", "2ecb81c9079eaa3d3702f0cdb2b4c46e846306ac7cac7ad43938605541cf1747"],
   ]);
-  const payloads = new Map([["axis.worktrees/1#remove", { id: "ws-1", deleteBranch: false }]]);
+  const payloads = new Map([
+    ["axis.worktrees/1#remove", { id: "ws-1", deleteBranch: false }],
+    ["axis.git/1#push", { workspaceId: "ws-1", remote: "origin", confirmedPlan: { tip: "a".repeat(40), digest: "d".repeat(64) }, allowedBinaryPaths: ["assets/logo.png"] }],
+  ]);
   const needing = [];
   for (const [key, methods] of Object.entries(contracts)) {
     const at = key.lastIndexOf("/");
@@ -59,4 +64,94 @@ test("every registry method that needs approval has a pinned digest under its ow
     const retry = { ...payloads.get(key), approval: { challengeId: "A".repeat(22) } };
     assert.equal(requestDigest(contractVersion.slice(0, at), Number(contractVersion.slice(at + 1)), method, retry), digest);
   }
+});
+
+/** The top-level arguments of the call whose `(` is just before `start`, string literals and nested brackets respected. */
+function callArguments(text, start) {
+  const args = [];
+  let depth = 0;
+  let from = start;
+  for (let i = start; i < text.length; i++) {
+    const c = text[i];
+    if (c === '"' || c === "'" || c === "`") {
+      for (i++; i < text.length && text[i] !== c; i++) if (text[i] === "\\") i++;
+    } else if (c === "(" || c === "[" || c === "{") depth++;
+    else if (c === ")" || c === "]" || c === "}") {
+      if (depth === 0) {
+        args.push(text.slice(from, i));
+        return args;
+      }
+      depth--;
+    } else if (c === "," && depth === 0) {
+      args.push(text.slice(from, i));
+      from = i + 1;
+    }
+  }
+  return args;
+}
+
+/** Every `reason` the two packages raise or report, with the error codes it is raised under (empty when it is not an error). */
+function packageReasons() {
+  const found = new Map();
+  const add = (reason, code) => {
+    const codes = found.get(reason) ?? new Set();
+    if (code) codes.add(code);
+    found.set(reason, codes);
+  };
+  const byHelper = { conflict: "E_CONFLICT", denied: "E_POLICY_DENIED", invalid: "E_INVALID_ARGUMENT" };
+  for (const dir of ["git-ops", "review"]) {
+    const root = new URL(`../../packages/${dir}/src/`, import.meta.url);
+    for (const file of readdirSync(root).filter((f) => f.endsWith(".ts"))) {
+      const text = readFileSync(new URL(file, root), "utf8");
+      const lines = text.split("\n");
+      // conflict(message, "reason"[, extra]) and the like, wherever the call breaks its lines
+      for (const m of text.matchAll(/\b(conflict|denied|invalid)\(/g)) {
+        const second = callArguments(text, m.index + m[0].length)[1]?.trim();
+        const literal = second === undefined ? null : /^"([a-z][a-z_]*)"$/.exec(second);
+        if (literal) add(literal[1], byHelper[m[1]]);
+      }
+      lines.forEach((line, i) => {
+        // new GitOpsError("E_X", message, { reason: "..." }): the code is on this line or a few lines above in the same statement
+        for (const m of line.matchAll(/\breason:\s*"([a-z][a-z_]*)"/g)) {
+          let code;
+          for (let j = i; j >= Math.max(0, i - 4) && code === undefined; j--) {
+            if (j < i && /;\s*$/.test(lines[j])) break;
+            code = /"(E_[A-Z_]+)"/.exec(lines[j])?.[1];
+          }
+          add(m[1], code);
+        }
+        if (/\bheadMoved\(/.test(line) && !/function headMoved/.test(line)) add("head_moved", "E_CONFLICT");
+      });
+    }
+  }
+  return found;
+}
+
+test("the closed-set refusal reasons of axis.git/1 and axis.review/1 are what the packages raise, with the same codes, in both directions", () => {
+  const raised = packageReasons();
+  const wire = new Map();
+  for (const table of [GIT_COMMIT_REFUSALS, GIT_PUSH_REFUSALS, REVIEW_DIFF_REFUSALS]) {
+    for (const [code, reasons] of Object.entries(table)) {
+      for (const r of reasons) wire.set(r, new Set([...(wire.get(r) ?? []), code]));
+    }
+  }
+  // Wire to packages: every listed reason exists, and is raised under the code the contract lists it under.
+  for (const [reason, codes] of wire) {
+    assert.ok(raised.has(reason), `no package raises "${reason}"`);
+    for (const code of codes) assert.ok(raised.get(reason).has(code), `"${reason}" is not raised under ${code} by the packages`);
+  }
+  // Packages to wire: everything a package raises or reports is on the wire or named here as not on it, with the reason why.
+  const NOT_ON_THE_WIRE = {
+    not_a_commit: "diff has no `against` field",
+    no_hunks: "no hunk API on the wire",
+    too_large_to_review: "a SkippedFile reason, not a refusal",
+    binary: "a per-file label (fileLevelReason), not a refusal",
+    malformed: "a per-file label (fileLevelReason), not a refusal",
+    too_many_hunks: "a per-file label (fileLevelReason), not a refusal",
+  };
+  for (const reason of raised.keys()) {
+    assert.ok(wire.has(reason) || Object.hasOwn(NOT_ON_THE_WIRE, reason), `the packages raise "${reason}", which is neither on the wire nor listed as off it`);
+  }
+  for (const reason of Object.keys(NOT_ON_THE_WIRE)) assert.ok(raised.has(reason), `"${reason}" is listed as off the wire but no package uses it`);
+  for (const reason of Object.keys(NOT_ON_THE_WIRE)) assert.equal(wire.has(reason), false, `"${reason}" is both on and off the wire`);
 });

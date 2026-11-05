@@ -25,3 +25,10 @@ export * from "./storage/git-path.js";
 export * from "./storage/node-storage.js";
 export * from "./storage/recovery.js";
 export * from "./storage/uptime-clock.js";
+// Challenge manager, gate adapter, native bridge and axis.approvals/1 (ticket H5).
+export * from "./gate/approvals.js";
+export * from "./gate/audit-sink.js";
+export * from "./gate/native-bridge.js";
+export * from "./gate/pending-registry.js";
+export * from "./gate/summary.js";
+export * from "./handlers/approvals.js";

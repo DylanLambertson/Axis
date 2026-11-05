@@ -5,6 +5,7 @@ import { PROTOCOL_VERSION } from "@axis/protocol";
 import type { HostConfig } from "./config.js";
 import type { ControlClient } from "./control/client.js";
 import { Disposables, type DisposeResult } from "./disposables.js";
+import { createChallengeAuditLog } from "./gate/audit-sink.js";
 import { DegradedStartError } from "./exit-codes.js";
 import { summarizeError } from "./log/summarize-error.js";
 import type { Logger } from "./log/logger.js";
@@ -187,7 +188,7 @@ export function createDaemonHost(config: HostConfig, ports: StartupPorts, option
     const excludeDirs = (): readonly string[] => [config.worktreeRoot, config.dataDir, ports.cwd, ...(ports.registeredRepoRoots?.() ?? [])];
     const gitPath = resolveGitOnce({ env: ports.env, platform: config.platform, excludeDirs: excludeDirs() });
     // Step 6: audit log and the anchor check (reads only).
-    const audit = new AuditLog(db, { redactor: ports.redactor, now: () => new Date(ports.clock.now()) });
+    const audit = createChallengeAuditLog(db, { redactor: ports.redactor, now: () => new Date(ports.clock.now()) });
     const check = await checkAnchor(audit, () => ports.control.anchorGet({ timeoutMs: options.anchorTimeoutMs ?? 5_000, signal: startup.signal }));
     alive();
     const degraded = check.degraded;

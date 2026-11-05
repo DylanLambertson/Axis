@@ -53,7 +53,7 @@ Re-derived on 2026-11-04 from what is on main: `@axis/runs` and `@axis/worktrees
 | **H9-scan** | The secret scanner (PSH-1) and its mode, per Q15; the product refuses to register `git.push` without it | M | Q15, H1 | review |
 | **H9-hooks** | **Not built yet.** Host side of the hooks decision: pre-commit and commit-msg in the pty process on a scratch checkout under the lock; closes the ROADMAP hooks gate line | M | H9, B9 channel (or the fake runner) | review |
 | **H10** | `axis.cli-runs` handlers, `bindings/runs.ts` over `RunSupervisor`, `gate/run-trust.ts` (`attestTrust`) | M | P1 merged, H3, H6, H8 | review |
-| **H10b** | `axis.review` handlers, `UserPrincipal` minting | M | P1b, J1, `feat/review-core` merged (fake until then) | review |
+| **H10b** | `axis.review` handlers, `UserPrincipal` minting; acceptance: `acceptTruncated` only through `isAcknowledged` on the current snapshot, `contentId` from the same read as `treeHash`, one audit event per first-applied acknowledgement per (`fileId`, `contentId`) (`fileId` only), `contentId` = SHA-256 of `<newMode> <newOid>`, equal-path (non-UTF-8) entries folded into one unsafe row, UI marks repeated display rows with a short `fileId` suffix, `toDisplayPath` for every display string, `skipped` cut to 50 | M | P1b, J1, `feat/review-core` merged (fake until then) | review |
 | **H12** | Headless slice test, fixtures, CI wiring | L | H4, H5, H7, H8, H9, H9-scan, H10, H10b | review |
 | **E1** | Protocol and daemon: server events or stream frames | L | after H12 | review |
 | **X1** | Overlay entry `axisDaemonMain.ts`, main seam, staging (ADR 0005 D3); needs the Code OSS build | M | H3, H7 | outside the package work |
