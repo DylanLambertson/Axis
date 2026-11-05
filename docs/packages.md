@@ -13,6 +13,8 @@ Axis-owned TypeScript that does not need Code OSS services lives in `packages/*`
 | `@axis/audit` | Secret redaction, canonical JSON, and the hash-chained append-only audit log on `node:sqlite` (DMN-5, DMN-6). Also the SQLite helpers (`openDatabase`, `withTransaction`, `runMigrations`). |
 | `@axis/journal` | Durable `agent_workspaces` and `agent_runs`, the Phase 1a run state machine, idempotency keys and restart recovery (DMN-7). Depends on `@axis/audit`. |
 | `@axis/git-snapshot` | GIT-SNAP-1 and WT-2/WT-3 logic over a worktree path and a git common dir path: bounded snapshot of hooks, config (includes, in-tree `core.hooksPath`), attributes, the worktree `.git` link and `refs/axis/*`; a redacted before/after diff; the drift verdict that Axis commit and push consult; and the protected-path matcher. Reads files, and asks git only read-only questions (`config --list --show-origin`, `rev-parse`) with the GIT-ENV-1 environment, from an absolute `git` outside every worktree. Design: `docs/design/git-snapshot.md`. |
+| `@axis/anthropic` | Anthropic (Claude) Messages API adapter for `@axis/providers` (ticket 9, ANT-1): hand-written SSE parser with byte, event and depth limits, redirects refused, error text never built from a response body, injected `fetch`. Design: `docs/design/anthropic-adapter.md`. |
+| `@axis/vault` | Connection vault: key storage interface, backend reporting, the PRV-1 rule for the Linux `basic_text` backend (consent or refusal), an in-memory test backend, and the seam for real OS backends. Runs in the daemon only. |
 
 More packages (worktrees, and so on) are added by their own changes.
 
