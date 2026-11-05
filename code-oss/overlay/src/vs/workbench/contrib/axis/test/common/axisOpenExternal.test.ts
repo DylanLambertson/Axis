@@ -4,7 +4,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { AXIS_OPEN_EXTERNAL_ALLOWED_SCHEMES, axisIsAllowedOpenExternalUrl } from '../../../../../platform/native/common/native.js';
+import { AXIS_OPEN_EXTERNAL_ALLOWED_SCHEMES, axisIsAllowedOpenExternalUrl, axisOpenExternalSchemeForLog } from '../../../../../platform/native/common/native.js';
 
 // Security patch 2030 (threat model EL-5): openExternal hands only these schemes to the OS.
 suite('Axis openExternal allow-list', () => {
@@ -21,6 +21,14 @@ suite('Axis openExternal allow-list', () => {
 	test('refuses file, custom and malformed URLs', () => {
 		for (const url of ['file:///etc/passwd', 'FILE:///C:/Windows/System32/calc.exe', 'axis://agents/new', 'vscode://file/a', 'x-apple.systempreferences:com.apple.preference.security', 'smb://host/share', 'javascript:alert(1)', 'C:\\Windows\\notepad.exe', '/usr/bin/open', '', ' https://example.com', 'https//example.com']) {
 			assert.strictEqual(axisIsAllowedOpenExternalUrl(url), false, url);
+		}
+	});
+
+	test('logs only a valid scheme, never another part of the URL', () => {
+		assert.strictEqual(axisOpenExternalSchemeForLog('FILE:///etc/passwd'), 'file');
+		assert.strictEqual(axisOpenExternalSchemeForLog('x-apple.systempreferences:com.apple.preference.security'), 'x-apple.systempreferences');
+		for (const url of ['//evil.example/cb?access_token=SECRET:1', 'x\n[info] forged line\ny:1', '', 'no scheme', ' file:///a', `${'a'.repeat(33)}:rest`, '1abc:rest']) {
+			assert.strictEqual(axisOpenExternalSchemeForLog(url), 'invalid', url);
 		}
 	});
 });

@@ -42,6 +42,11 @@ export const AXIS_DEFAULT_SETTINGS: Readonly<Record<string, unknown>> = Object.f
 	'telemetry.telemetryLevel': 'off',
 	'telemetry.feedback.enabled': false,
 	'workbench.settings.enableNaturalLanguageSearch': false,
+
+	// No background gallery traffic until the user opts in: Open VSX is the gallery (patch 1030), and
+	// development builds install updates without signature verification.
+	'extensions.autoUpdate': false,
+	'extensions.autoCheckUpdates': false,
 });
 
 Registry.as<IConfigurationRegistry>(Extensions.Configuration).registerDefaultConfigurations([{

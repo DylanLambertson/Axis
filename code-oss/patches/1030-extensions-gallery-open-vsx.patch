@@ -1,15 +1,14 @@
 diff --git a/product.json b/product.json
 --- a/product.json
 +++ b/product.json
-@@ -35,6 +35,15 @@
+@@ -35,6 +35,14 @@
  	"nodejsArtifactFeed": "",
  	"electronArtifactFeed": "",
  	"urlProtocol": "axis",
 +	"extensionsGallery": {
 +		"serviceUrl": "https://open-vsx.org/vscode/gallery",
 +		"itemUrl": "https://open-vsx.org/vscode/item",
-+		"latestUrlTemplate": "https://open-vsx.org/vscode/gallery/{publisher}/{name}/latest",
-+		"controlUrl": "https://raw.githubusercontent.com/EclipseFdn/publish-extensions/refs/heads/master/extension-control/extensions.json"
++		"latestUrlTemplate": "https://open-vsx.org/vscode/gallery/{publisher}/{name}/latest"
 +	},
 +	"linkProtectionTrustedDomains": [
 +		"https://open-vsx.org"

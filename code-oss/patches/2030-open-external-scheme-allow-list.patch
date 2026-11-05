@@ -1,13 +1,22 @@
 diff --git a/src/vs/platform/native/common/native.ts b/src/vs/platform/native/common/native.ts
 --- a/src/vs/platform/native/common/native.ts
 +++ b/src/vs/platform/native/common/native.ts
-@@ -503,6 +503,16 @@ export type ThermalState = 'unknown' | 'nominal' | 'fair' | 'serious' | 'critica
+@@ -503,6 +503,25 @@ export type ThermalState = 'unknown' | 'nominal' | 'fair' | 'serious' | 'critica
   */
  export type PowerSaveBlockerType = 'prevent-app-suspension' | 'prevent-display-sleep';
  
 +// --- Start Axis ---
 +/** Threat model EL-5: the only URL schemes that openExternal hands to the operating system. */
 +export const AXIS_OPEN_EXTERNAL_ALLOWED_SCHEMES: readonly string[] = ['http', 'https', 'mailto'];
++
++/**
++ * What a log line may say about a refused URL: its scheme when that is a valid scheme token of at most 32
++ * characters, and nothing else, because any other part of a URL can carry tokens or line breaks.
++ */
++export function axisOpenExternalSchemeForLog(url: string): string {
++	const scheme = /^([a-z][a-z0-9+.-]{0,31}):/i.exec(url)?.[1].toLowerCase();
++	return scheme ?? 'invalid';
++}
 +
 +export function axisIsAllowedOpenExternalUrl(url: string): boolean {
 +	const scheme = /^([a-z][a-z0-9+.-]*):/i.exec(url)?.[1].toLowerCase();
@@ -28,7 +37,7 @@ diff --git a/src/vs/platform/native/electron-main/nativeHostMainService.ts b/src
 -import { FocusMode, IApplicationBadge, ICommonNativeHostService, INativeHostOptions, INativeSystemWideKeybinding, INativeSystemWideKeybindingResult, INativeZipFile, INativeZipOptions, INativeZipProgress, INativeZipResult, IOpenAgentsWindowOptions, IOSProperties, IOSProxy, IOSProxyConfig, IOSStatistics, IStartTracingOptions, IToastOptions, IToastResult, PowerSaveBlockerType, SystemIdleState, ThermalState } from '../common/native.js';
 +import { FocusMode, IApplicationBadge, ICommonNativeHostService, INativeHostOptions, INativeSystemWideKeybinding, INativeSystemWideKeybindingResult, INativeZipFile, INativeZipOptions, INativeZipProgress, INativeZipResult, IOpenAgentsWindowOptions, IOSProperties, IOSProxy, IOSProxyConfig, IOSStatistics, IStartTracingOptions, IToastOptions, IToastResult, PowerSaveBlockerType, SystemIdleState, ThermalState,
 +	// --- Start Axis ---
-+	axisIsAllowedOpenExternalUrl
++	axisIsAllowedOpenExternalUrl, axisOpenExternalSchemeForLog
 +	// --- End Axis ---
 +} from '../common/native.js';
  import { IGlobalKeybindingsMainService } from '../../globalKeybindings/electron-main/globalKeybindingsMainService.js';
@@ -39,9 +48,9 @@ diff --git a/src/vs/platform/native/electron-main/nativeHostMainService.ts b/src
  
  	async openExternal(windowId: number | undefined, url: string, defaultApplication?: string): Promise<boolean> {
 +		// --- Start Axis ---
-+		// Only http, https and mailto reach the OS (threat model EL-5); the URL is not logged, as it may carry tokens
++		// Only http, https and mailto reach the OS (threat model EL-5); only a valid scheme is logged, never the rest of the URL, as it may carry tokens
 +		if (!axisIsAllowedOpenExternalUrl(url)) {
-+			this.logService.warn(`openExternal: refused a URL with scheme '${/^([^:]*):/.exec(url)?.[1] ?? ''}'; Axis opens only http, https and mailto links externally`);
++			this.logService.warn(`openExternal: refused a URL with scheme '${axisOpenExternalSchemeForLog(url)}'; Axis opens only http, https and mailto links externally`);
 +			return false;
 +		}
 +		// --- End Axis ---

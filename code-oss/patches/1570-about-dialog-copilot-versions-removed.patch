@@ -27,7 +27,7 @@ index 71d2a8a9..1986a2a1 100644
 -			"Version: {0}\nCommit: {1}\nDate: {2}\nElectron: {3}\nElectronBuildId: {4}\nChromium: {5}\nNode.js: {6}\nV8: {7}\n@github/copilot: {8}\n@github/copilot-sdk: {9}\nOS: {10}",
 +		// --- Start Axis ---
 +		// No Copilot runtime or SDK lines: Axis does not ship them (ADR 0002 decision 6)
-+		return localize({ key: 'aboutDetail', comment: ['Electron, Chromium, Node.js and V8 are product names that need no translation'] },
++		return localize({ key: 'axisAboutDetail', comment: ['Electron, Chromium, Node.js and V8 are product names that need no translation'] },
 +			"Version: {0}\nCommit: {1}\nDate: {2}\nElectron: {3}\nElectronBuildId: {4}\nChromium: {5}\nNode.js: {6}\nV8: {7}\nOS: {8}",
 +			// --- End Axis ---
  			version,

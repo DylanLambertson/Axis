@@ -28,6 +28,11 @@ suite('Axis defaults', () => {
 		assert.strictEqual(AXIS_DEFAULT_SETTINGS['workbench.welcomePage.experimentalOnboarding'], false);
 	});
 
+	test('makes no background extension gallery requests by default', () => {
+		assert.strictEqual(AXIS_DEFAULT_SETTINGS['extensions.autoUpdate'], false);
+		assert.strictEqual(AXIS_DEFAULT_SETTINGS['extensions.autoCheckUpdates'], false);
+	});
+
 	test('defaults to the Axis themes', () => {
 		assert.strictEqual(AXIS_DEFAULT_SETTINGS['workbench.colorTheme'], 'Axis Dark');
 		assert.strictEqual(AXIS_DEFAULT_SETTINGS['workbench.preferredDarkColorTheme'], 'Axis Dark');
