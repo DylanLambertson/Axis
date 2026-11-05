@@ -9,7 +9,7 @@ import { requestDigest } from "@axis/daemon";
 import { RUN_STATES } from "@axis/journal";
 import { RUN_STATUS_VALUES, RUN_STATE_VALUES, contracts, lookupMethod } from "@axis/protocol";
 import { RUN_STATUSES } from "@axis/runs";
-import { GIT_COMMIT_REASONS, GIT_PUSH_REASONS, REVIEW_DIFF_REASONS } from "@axis/protocol";
+import { GIT_COMMIT_REFUSALS, GIT_PUSH_REFUSALS, REVIEW_DIFF_REFUSALS } from "@axis/protocol";
 
 test("the protocol's run states are the journal's run states", () => {
   assert.deepEqual([...RUN_STATE_VALUES], [...RUN_STATES]);
@@ -66,13 +66,63 @@ test("every registry method that needs approval has a pinned digest under its ow
   }
 });
 
-test("every closed-set refusal reason of axis.git/1 and axis.review/1 is raised by @axis/git-ops or @axis/review", () => {
-  const read = (dir) => {
-    const root = new URL(`../../packages/${dir}/src/`, import.meta.url);
-    return readdirSync(root).filter((f) => f.endsWith(".ts")).map((f) => readFileSync(new URL(f, root), "utf8")).join("\n");
+/** Every `reason` the two packages raise or report, with the error codes it is raised under (empty when it is not an error). */
+function packageReasons() {
+  const found = new Map();
+  const add = (reason, code) => {
+    const codes = found.get(reason) ?? new Set();
+    if (code) codes.add(code);
+    found.set(reason, codes);
   };
-  const source = `${read("git-ops")}\n${read("review")}`;
-  for (const reason of [...GIT_COMMIT_REASONS, ...GIT_PUSH_REASONS, ...REVIEW_DIFF_REASONS]) {
-    assert.ok(source.includes(`"${reason}"`), `no package raises the reason "${reason}"`);
+  const byHelper = { conflict: "E_CONFLICT", denied: "E_POLICY_DENIED", invalid: "E_INVALID_ARGUMENT" };
+  for (const dir of ["git-ops", "review"]) {
+    const root = new URL(`../../packages/${dir}/src/`, import.meta.url);
+    for (const file of readdirSync(root).filter((f) => f.endsWith(".ts"))) {
+      const lines = readFileSync(new URL(file, root), "utf8").split("\n");
+      lines.forEach((line, i) => {
+        // conflict(message, "reason"[, extra]) and the like
+        for (const m of line.matchAll(/\b(conflict|denied|invalid)\(.*?,\s*"([a-z][a-z_]*)"\s*[,)]/g)) add(m[2], byHelper[m[1]]);
+        // new GitOpsError("E_X", message, { reason: "..." }): the code is on this line or a few lines above in the same statement
+        for (const m of line.matchAll(/\breason:\s*"([a-z][a-z_]*)"/g)) {
+          let code;
+          for (let j = i; j >= Math.max(0, i - 4) && code === undefined; j--) {
+            if (j < i && /;\s*$/.test(lines[j])) break;
+            code = /"(E_[A-Z_]+)"/.exec(lines[j])?.[1];
+          }
+          add(m[1], code);
+        }
+        if (/\bheadMoved\(/.test(line) && !/function headMoved/.test(line)) add("head_moved", "E_CONFLICT");
+      });
+    }
   }
+  return found;
+}
+
+test("the closed-set refusal reasons of axis.git/1 and axis.review/1 are what the packages raise, with the same codes, in both directions", () => {
+  const raised = packageReasons();
+  const wire = new Map();
+  for (const table of [GIT_COMMIT_REFUSALS, GIT_PUSH_REFUSALS, REVIEW_DIFF_REFUSALS]) {
+    for (const [code, reasons] of Object.entries(table)) {
+      for (const r of reasons) wire.set(r, new Set([...(wire.get(r) ?? []), code]));
+    }
+  }
+  // Wire to packages: every listed reason exists, and is raised under the code the contract lists it under.
+  for (const [reason, codes] of wire) {
+    assert.ok(raised.has(reason), `no package raises "${reason}"`);
+    for (const code of codes) assert.ok(raised.get(reason).has(code), `"${reason}" is not raised under ${code} by the packages`);
+  }
+  // Packages to wire: everything a package raises or reports is on the wire or named here as not on it, with the reason why.
+  const NOT_ON_THE_WIRE = {
+    not_a_commit: "diff has no `against` field",
+    no_hunks: "no hunk API on the wire",
+    too_large_to_review: "a SkippedFile reason, not a refusal",
+    binary: "a per-file label (fileLevelReason), not a refusal",
+    malformed: "a per-file label (fileLevelReason), not a refusal",
+    too_many_hunks: "a per-file label (fileLevelReason), not a refusal",
+  };
+  for (const reason of raised.keys()) {
+    assert.ok(wire.has(reason) || Object.hasOwn(NOT_ON_THE_WIRE, reason), `the packages raise "${reason}", which is neither on the wire nor listed as off it`);
+  }
+  for (const reason of Object.keys(NOT_ON_THE_WIRE)) assert.ok(raised.has(reason), `"${reason}" is listed as off the wire but no package uses it`);
+  for (const reason of Object.keys(NOT_ON_THE_WIRE)) assert.equal(wire.has(reason), false, `"${reason}" is both on and off the wire`);
 });

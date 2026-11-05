@@ -25,7 +25,7 @@ export const REVIEW_VERSION = 1 as const;
  * Most files one `diff` reply lists. `@axis/review` allows 5000 (`maxFiles`), but a file is about ten values and the
  * message walk allows 10,000 and 1 MiB, so the host must construct the review with `maxFiles` and `maxDisplay` at most
  * `MAX_REVIEW_FILES` and `MAX_REVIEW_PATH`: a larger change set then fails the review itself (`E_CONFLICT`,
- * `reason: "too_large"`) instead of being listed in part, so what the user reviews is all of what is committed.
+ * `E_INVALID_ARGUMENT`, `reason: "too_large"`) instead of being listed in part, so what the user reviews is all of what is committed.
  */
 export const MAX_REVIEW_FILES = 200;
 export const MAX_REVIEW_PATH = 256;
@@ -33,15 +33,24 @@ export const MAX_REVIEW_PATH = 256;
 export const MAX_REVIEW_SKIPPED = 50;
 const MAX_FILE_TAGS = 4;
 
-/** `details.reason` values `diff` can answer with. Closed set, the names `@axis/review` raises; never free text. */
+/**
+ * `details.reason` values `diff` can answer with, by error code: what `@axis/review` raises on the path the host runs
+ * (`ReviewSession.start`, `hasCutLines`, `acceptFile`, `build`). Closed set; never free text. `unsafe_path`, `filtered_path`,
+ * `truncated_hunk` and `nothing_accepted` are refusals of `build()` that a handler following the rules below never
+ * triggers (it does not build such a review and answers `treeHash: null`), but a handler bug would, so they are on the
+ * wire. Not on this wire: `not_a_commit` and `no_hunks` (no `against`, no hunk API), and the commit-side reasons
+ * (`head_moved`, `stale`, `index_changed`, `operation_in_progress`, `detached_head`), which are `axis.git/1.commit`'s.
+ */
+export const REVIEW_DIFF_REFUSALS = {
+  /** `too_large`: more files than the review holds (see `MAX_REVIEW_FILES`), or git output cut off. `not_found`: HEAD is gone. */
+  E_INVALID_ARGUMENT: ["too_large", "not_found"],
+  E_CONFLICT: ["snapshot_failed", "hunks_do_not_apply", "index_refused", "path_conflict", "not_head"],
+  E_POLICY_DENIED: ["no_head", "unsafe_path", "filtered_path", "nothing_accepted", "truncated_hunk"],
+} as const;
 export const REVIEW_DIFF_REASONS = [
-  /** The branch has no commit to review against. */
-  "no_head",
-  "not_a_commit",
-  /** The worktree could not be read into a tree. */
-  "snapshot_failed",
-  /** More files than the review holds (see `MAX_REVIEW_FILES`). */
-  "too_large",
+  ...REVIEW_DIFF_REFUSALS.E_INVALID_ARGUMENT,
+  ...REVIEW_DIFF_REFUSALS.E_CONFLICT,
+  ...REVIEW_DIFF_REFUSALS.E_POLICY_DENIED,
 ] as const;
 export const reviewDiffReasonSchema = z.enum(REVIEW_DIFF_REASONS);
 
@@ -57,7 +66,8 @@ export const changeKindSchema = z.enum(CHANGE_KIND_VALUES);
 const tag = (max: number) => z.array(displayTextSchema(64)).max(max);
 
 /** One changed file, as `ReviewFile` in `@axis/review` minus the raw paths, object ids and modes. */
-export const reviewFileSchema = z.strictObject({
+export const reviewFileSchema = z
+  .strictObject({
   displayPath: displayTextSchema(MAX_REVIEW_PATH),
   /** Set for a rename. */
   displayOldPath: displayTextSchema(MAX_REVIEW_PATH).optional(),
@@ -68,13 +78,21 @@ export const reviewFileSchema = z.strictObject({
   deletions: countSchema.optional(),
   /** The path is not usable: the file cannot be accepted, so the review has no `treeHash`. */
   unsafePath: z.boolean(),
+  /**
+   * Accepting this file would accept text the view cuts off (a line longer than the view, or a symlink target that was cut):
+   * `hasCutLines` in `@axis/review`. It needs the user's acknowledgement before a `treeHash` is returned.
+   */
+  truncated: z.boolean(),
+  /** The request's `acknowledged` named this file (and it is `truncated`). Never true for a file that is not truncated. */
+  acknowledged: z.boolean(),
   /** WT-3: names of the protected-path rules that matched. */
   protectedRules: tag(MAX_FILE_TAGS),
   /** Why only a whole-file decision is offered, when hunks are not. */
   fileLevelReason: displayTextSchema(128).optional(),
   /** Short labels such as `symlink-outside` or `binary`. */
   warnings: tag(MAX_FILE_TAGS),
-});
+  })
+  .refine((f) => !f.acknowledged || f.truncated, "only a truncated file can be acknowledged");
 export type ReviewFileWire = z.infer<typeof reviewFileSchema>;
 
 /** `SkippedFile` in `@axis/review`. */
@@ -85,24 +103,48 @@ export const skippedFileSchema = z.strictObject({
 });
 
 // diff (read, tier 1): reads the worktree into a tree object; changes nothing the user can see.
-export const reviewDiffRequestSchema = guarded(z.strictObject({ workspaceId: workspaceIdSchema }));
-export const reviewDiffResponseSchema = guarded(
+export const reviewDiffRequestSchema = guarded(
   z.strictObject({
+    workspaceId: workspaceIdSchema,
+    /**
+     * The `displayPath` of each truncated file the user explicitly acknowledged (REV-1): they saw that part of a line or link
+     * target was cut and accept it. The handler passes `acceptTruncated` to `@axis/review` for exactly these files and
+     * only when `hasCutLines` is true for them, and for no other file, ever. A name that is not a truncated file of this
+     * review is ignored for the tree and not echoed as acknowledged.
+     */
+    acknowledged: z
+      .array(displayTextSchema(MAX_REVIEW_PATH).refine((p) => p.length > 0, "empty"))
+      .max(MAX_REVIEW_FILES)
+      .refine((a) => new Set(a).size === a.length, "duplicate name")
+      .optional(),
+  }),
+);
+export const reviewDiffResponseSchema = guarded(
+  z
+    .strictObject({
     /** The commit the review is against: HEAD. It is `expectedParent` of the commit. */
     head: objectIdSchema,
     /** The checked-out branch in the short form, or null when HEAD is detached (nothing can be committed). */
     branch: axisBranchSchema.nullable(),
     /**
      * The tree that a commit of everything listed would hold (`reviewedTree` of the binding): the `reviewedTreeHash` of
-     * the commit. Null when the review cannot be committed as a whole: a file has an unusable path or a content filter
-     * (`unsafePath`, kind `filtered`), or HEAD is detached.
+     * the commit. Null, and the schema enforces it, whenever the review cannot be committed as a whole: no file, HEAD
+     * detached, a file with an unusable path or a content filter (`unsafePath`, kind `filtered`), or a `truncated` file the
+     * user has not acknowledged. The wire carries no content, only bounded lines the view may cut, so a tree is never
+     * returned for text the user was not shown unless they acknowledged that per file (the 1a review is bounded-line review).
      */
     treeHash: objectIdSchema.nullable(),
     files: z.array(reviewFileSchema).max(MAX_REVIEW_FILES),
     skipped: z.array(skippedFileSchema).max(MAX_REVIEW_SKIPPED),
     /** All files left out of the snapshot for their size; `skipped` lists the first. */
     skippedCount: countSchema,
-  }),
+  })
+    .refine((r) => r.treeHash === null || r.branch !== null, "a tree needs a branch")
+    .refine((r) => r.treeHash === null || r.files.length > 0, "a tree needs a change")
+    .refine((r) => r.treeHash === null || !r.files.some((f) => f.unsafePath || f.kind === "filtered"), "a tree needs committable files")
+    .refine((r) => r.treeHash === null || !r.files.some((f) => f.truncated && !f.acknowledged), "a tree needs every cut file acknowledged")
+    .refine((r) => new Set(r.files.map((f) => f.displayPath)).size === r.files.length, "duplicate display path")
+    .refine((r) => r.skippedCount >= r.skipped.length && r.skipped.length === Math.min(r.skippedCount, MAX_REVIEW_SKIPPED), "skipped list does not match its count"),
 );
 
 // complete (write, tier 2, idempotency required, user principal only): REVIEWING to COMPLETED.

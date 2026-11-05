@@ -28,7 +28,11 @@ export const GIT_VERSION = 1 as const;
 export const objectIdSchema = z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/);
 
 /** A configured remote name, never a URL or an option (`REMOTE_NAME` in `@axis/git-ops`). */
-export const remoteNameSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/);
+export const remoteNameSchema = z
+  .string()
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/)
+  // Stricter than `REMOTE_NAME`: git refuses a remote name that is not a valid ref component.
+  .refine((n) => !n.includes("..") && !n.endsWith(".") && !n.endsWith(".lock"), "not a remote name");
 
 /** The short name of an Axis branch: `axis/<slug>`, never `refs/heads/...` (`SLUG` in `@axis/git-ops`). */
 export const axisBranchSchema = z.string().regex(/^axis\/[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/);
@@ -52,40 +56,46 @@ export const MAX_PLAN_REASON_TEXT = 1024;
 export const MAX_COMPARE_URL = 2048;
 
 /**
- * `details.reason` values of an `E_CONFLICT` or `E_POLICY_DENIED` answer, by method. Closed sets: the names are the
- * ones `@axis/git-ops` and `@axis/review` raise (`test/packages/protocol-copies.test.mjs` checks each against their
- * sources), and a client must treat another value as an unknown refusal. Never free text.
+ * `details.reason` values of a refusal, by error code: the ones `@axis/git-ops` and `@axis/review`'s `prepareCommit` raise
+ * on the commit path (`test/packages/protocol-copies.test.mjs` compares both directions with their sources, codes
+ * included). Closed sets; a client must treat another value as an unknown refusal. Never free text.
  */
-export const GIT_COMMIT_REASONS = [
-  /** HEAD, the checked-out branch or the parent is not the one reviewed (also `prepareCommit`). */
-  "head_moved",
-  /** `assertReviewFresh`: the worktree no longer matches the reviewed tree. */
-  "stale",
-  /** The staged index changed between the review and the commit. */
-  "index_changed",
-  /** A merge, cherry-pick, revert, rebase or bisect is under way, or the index has unmerged paths. */
-  "operation_in_progress",
-  /** The branch could not be moved by compare-and-swap (a lock, for example); it was left as it was. */
-  "ref_update_failed",
+export const GIT_COMMIT_REFUSALS = {
+  /**
+   * `head_moved`: HEAD, the checked-out branch or the parent is not the one reviewed. `stale`: `assertReviewFresh`, the
+   * worktree no longer matches the reviewed tree. `index_changed`: the staged index changed since the review.
+   * `operation_in_progress`: a merge, cherry-pick, revert, rebase or bisect is under way or the index has unmerged paths.
+   * `ref_update_failed`: the branch could not be moved by compare-and-swap (a lock); it was left as it was.
+   */
+  E_CONFLICT: ["head_moved", "stale", "index_changed", "operation_in_progress", "ref_update_failed"],
   /** HEAD is detached, or the branch has no commit: Axis commits on `axis/<slug>` only. */
-  "detached_head",
-  "no_head",
-] as const;
-export const GIT_PUSH_REASONS = [
+  E_POLICY_DENIED: ["detached_head", "no_head"],
+} as const;
+export const GIT_COMMIT_REASONS = [...GIT_COMMIT_REFUSALS.E_CONFLICT, ...GIT_COMMIT_REFUSALS.E_POLICY_DENIED] as const;
+export const GIT_PUSH_REFUSALS = {
   /** The tip or the scan result differs from the plan the user confirmed: show the new plan. */
-  "plan_changed",
-] as const;
+  E_CONFLICT: ["plan_changed"],
+} as const;
+export const GIT_PUSH_REASONS = GIT_PUSH_REFUSALS.E_CONFLICT;
 export const gitCommitReasonSchema = z.enum(GIT_COMMIT_REASONS);
 export const gitPushReasonSchema = z.enum(GIT_PUSH_REASONS);
 
 /** No lone surrogate: it would be written to git as U+FFFD, so the message that is committed would not be the one that was shown. */
 const wellFormed = (t: string): boolean => !/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/.test(t);
 
+/**
+ * Refused in a commit message: NUL and the other C0 controls (ESC starts a terminal sequence) except tab, newline and
+ * carriage return, DEL and C1, line and paragraph separators, and the bidi controls that make text read differently from how
+ * it is stored. Other format characters (the joiners emoji and some scripts need) are allowed.
+ */
+// eslint-disable-next-line no-control-regex
+const UNSAFE_MESSAGE_CHARS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u2028\u2029\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/;
+
 /** `check()` in commit: non-empty text, at most 64 KiB, no NUL. Newlines and tabs are fine. */
 export const commitMessageSchema = z
   .string()
   .max(MAX_COMMIT_MESSAGE)
-  .refine((m) => m.trim().length > 0 && !m.includes("\0") && wellFormed(m), { message: "not a commit message" });
+  .refine((m) => m.trim().length > 0 && wellFormed(m) && !UNSAFE_MESSAGE_CHARS.test(m), { message: "not a commit message" });
 
 /** The identity the user expects. It is only compared with what the repository configuration yields; git never receives it. */
 export const commitAuthorSchema = z.strictObject({
@@ -169,7 +179,7 @@ export const gitPushResponseSchema = guarded(z.strictObject({ remote: remoteName
 
 // compareUrl (read, tier 0): the GitHub compare URL for the workspace's branch; the remote's own URL, from the repository.
 export const gitCompareUrlRequestSchema = guarded(
-  z.strictObject({ workspaceId: workspaceIdSchema, remote: remoteNameSchema, base: refNameSchema.optional() }),
+  z.strictObject({ workspaceId: workspaceIdSchema, remote: remoteNameSchema, base: refNameSchema.refine((b) => /^[\x21-\x7e]+$/.test(b), "ASCII only, so the URL fits").optional() }),
 );
 const URL_CHARS = "[A-Za-z0-9._~%!*'()-]";
 export const compareUrlSchema = z

@@ -71,7 +71,7 @@ test("a push or push plan with 50 maximal binary paths still fits the message li
 test("worst-case replies fit one message: 200 files of three-byte display paths, 500 findings, 50 skipped", () => {
   const wide = (n: number) => "€".repeat(n);
   const file = (i: number) => ({
-    displayPath: wide(256),
+    displayPath: wide(256 - String(i).length) + String(i),
     displayOldPath: wide(256),
     status: "R",
     kind: "filtered",
@@ -79,17 +79,23 @@ test("worst-case replies fit one message: 200 files of three-byte display paths,
     additions: Number.MAX_SAFE_INTEGER,
     deletions: Number.MAX_SAFE_INTEGER,
     unsafePath: true,
+    truncated: true,
+    acknowledged: true,
     protectedRules: [1, 2, 3, 4].map((n) => wide(64) + (i + n)).map((s) => s.slice(0, 64)),
     fileLevelReason: wide(128),
     warnings: [1, 2, 3, 4].map((n) => wide(64) + (i + n)).map((s) => s.slice(0, 64)),
   });
   const diff = {
     ...structuredClone(diffResponse),
+    treeHash: null,
     files: Array.from({ length: MAX_REVIEW_FILES }, (_, i) => file(i)),
     skipped: Array.from({ length: MAX_REVIEW_SKIPPED }, () => ({ displayPath: wide(256), size: Number.MAX_SAFE_INTEGER, reason: "too_large_to_review" })),
     skippedCount: Number.MAX_SAFE_INTEGER,
   };
   assert.deepEqual(inspectMessage({ id: "r".repeat(64), result: diff }), { ok: true });
+  const ack = { workspaceId: "ws-1", acknowledged: diff.files.map((f) => f.displayPath) };
+  assert.deepEqual(inspectMessage({ id: "r".repeat(64), payload: ack }), { ok: true });
+  assert.equal(parse(schemaOf("axis.review", "diff", "request"), ack, "ack").success, true);
   assert.ok(Buffer.byteLength(JSON.stringify(diff)) < MAX_MESSAGE_BYTES);
   assert.equal(parse(schemaOf("axis.review", "diff", "response"), diff, "diff").success, true);
 
