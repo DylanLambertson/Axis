@@ -212,13 +212,17 @@ export class ReviewSession {
   async hasCutLines(path: string): Promise<boolean> {
     return mapUnexpected(async () => {
       const f = this.file(path);
-      if (f.kind === "symlink") return f.newMode === "120000" && f.link?.targetCut === true;
-      if (f.kind !== "text" || f.status === "D" || f.unsafePath) return false;
+      // Decided from what the NEW side would hold, whatever the old side or the kind was (a symlink that becomes a file, a file
+      // that becomes a link, a binary that becomes text).
+      if (f.status === "D" || f.unsafePath || f.kind === "filtered" || f.kind === "submodule" || f.newMode === "160000") return false;
+      if (f.newMode === "120000") return f.link?.targetCut === true;
+      if (f.oldOid === f.newOid) return false;
       const loaded = await this.#load(f);
       if (loaded.kind === "hunks") return loaded.hunks.some((h) => hunkTruncated(h, this.#limits));
       const size = await objectSize(this.#git, f.newOid);
       if (size === undefined || size > this.#limits.maxPreviewBytes) return false;
-      return textCut(expectComplete(await this.#git(["cat-file", "blob", f.newOid]), "read a file version"), this.#limits);
+      const body = expectComplete(await this.#git(["cat-file", "blob", f.newOid]), "read a file version");
+      return !body.includes("\0") && textCut(body, this.#limits);
     });
   }
 
