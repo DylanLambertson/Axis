@@ -2,12 +2,10 @@
 // The reviewed-tree binding (REV-1, design §6): what the user reviewed, and the checks that make a commit refuse when the
 // worktree or HEAD is no longer what was reviewed.
 import { createHash } from "node:crypto";
-import { isAbsolute as posixAbs, join as posixJoin } from "node:path/posix";
-import { isAbsolute as winAbs, join as winJoin } from "node:path/win32";
 import type { CommitInput, WorktreeRef } from "@axis/git-ops";
 import { escapeForDisplay } from "./display.js";
 import { conflict, denied, internal, invalid, mapUnexpected, unavailable } from "./errors.js";
-import { OBJECT_ID, expectComplete, expectOk, reviewGitFor, type ReviewGit } from "./gitcall.js";
+import { OBJECT_ID, expectComplete, expectOk, gitPaths, reviewGitFor, type ReviewGit } from "./gitcall.js";
 import { resolveLimits } from "./limits.js";
 import { snapshotWorktree } from "./snapshot.js";
 import type { ReviewDeps } from "./types.js";
@@ -152,16 +150,10 @@ const IN_PROGRESS = ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "REBASE_HE
  * refuse, and git would then record the operation's second parent or another author (design §6).
  */
 async function assertNoOperation(deps: ReviewDeps, git: ReviewGit, w: WorktreeRef): Promise<void> {
-  const platform = deps.git.platform ?? process.platform;
   const unmerged = await git(["ls-files", "-u", "-z"]);
   if (unmerged.code !== 0) throw unavailable("could not read the index");
   if (unmerged.stdout !== "" || unmerged.truncated === true) throw conflict("the index has unmerged paths; finish or abort the operation first", "operation_in_progress");
-  const where = await git(["rev-parse", ...IN_PROGRESS.flatMap((n) => ["--git-path", n])]);
-  const paths = where.stdout.split("\n");
-  if (paths[paths.length - 1] === "") paths.pop();
-  if (where.code !== 0 || paths.length !== IN_PROGRESS.length) throw unavailable("could not find the git directory's state files");
-  for (const p of paths) {
-    const abs = (platform === "win32" ? winAbs(p) : posixAbs(p)) ? p : (platform === "win32" ? winJoin : posixJoin)(w.workTree, p);
+  for (const abs of await gitPaths(deps, git, w, IN_PROGRESS)) {
     if (await deps.fileExists(abs)) throw conflict("a merge, cherry-pick, revert, rebase or bisect is in progress; finish or abort it first", "operation_in_progress");
   }
 }

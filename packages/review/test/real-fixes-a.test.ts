@@ -7,25 +7,10 @@ import { join } from "node:path";
 import { createNodeRunner, executeCommit, type GitRunRequest } from "@axis/git-ops";
 import { ReviewError, ReviewSession, prepareCommit } from "../src/index.js";
 import { fixture, refusal, type Fixture } from "./fixture.js";
+import { PASS, POINTER, REVERSE, withFilter } from "./filters.js";
 
 const posix = process.platform !== "win32";
 const BASE = Array.from({ length: 20 }, (_, i) => `l${i + 1}\n`).join("");
-
-/** A clean filter written as a node script, and the repository config that uses it. */
-function withFilter(clean: string, smudge: string): (a: { repo: string; git: (...a: string[]) => string; write: (rel: string, d: string | Buffer) => void }) => void {
-  return ({ repo, git, write }) => {
-    const dir = join(repo, "..");
-    writeFileSync(join(dir, "clean.cjs"), clean);
-    writeFileSync(join(dir, "smudge.cjs"), smudge);
-    git("config", "filter.vault.clean", `"${process.execPath}" "${join(dir, "clean.cjs")}"`);
-    git("config", "filter.vault.smudge", `"${process.execPath}" "${join(dir, "smudge.cjs")}"`);
-    write(".gitattributes", "*.dat filter=vault\n");
-    write("vault.dat", "hello world\n");
-  };
-}
-const REVERSE = `let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write([...s].reverse().join("")));`;
-const POINTER = `let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const h=require("node:crypto").createHash("sha256").update(s).digest("hex");process.stdout.write("version https://git-lfs.github.com/spec/v1\\noid sha256:"+h+"\\nsize "+s.length+"\\n");});`;
-const PASS = `process.stdin.pipe(process.stdout);`;
 
 for (const [name, clean, expected] of [
   ["a clean filter that encrypts", REVERSE, "\ndlrow olleh"],

@@ -190,10 +190,10 @@ test("a temporary index that cannot be removed does not hide the result, and a f
     f.write("a.txt", BASE.replace("l2\n", "L2\n"));
     const s = await ReviewSession.start(deps, { worktree: f.wt, against: f.head() });
     assert.equal(s.files.length, 1);
-    assert.equal(disposed, 1);
+    assert.equal(disposed, 2, "the snapshot and the attribute read each released theirs");
     s.acceptFile("a.txt");
     await s.build();
-    assert.equal(disposed, 2);
+    assert.equal(disposed, 3);
     assert.deepEqual(leftoverIndexes(f), []);
   } finally {
     f.cleanup();

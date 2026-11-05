@@ -4,7 +4,7 @@
 import type { GitOpsDeps, GitRunRequest, GitRunResult, WorktreeRef } from "@axis/git-ops";
 import type { ReviewDeps } from "../src/index.js";
 import { tempIndexes } from "./fixture.js";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -59,7 +59,9 @@ export function fakeFixture(entries: readonly Entry[], opts: { patch?: string; b
     isCliRunActive: () => false,
     assertNoDrift: async () => undefined,
   };
-  const { provider, counts } = tempIndexes(join(mkdtempSync(join(tmpdir(), "axis-review-fake-")), "idx"));
+  const dir = mkdtempSync(join(tmpdir(), "axis-review-fake-"));
+  process.on("exit", () => rmSync(dir, { recursive: true, force: true }));
+  const { provider, counts } = tempIndexes(join(dir, "idx"));
   return {
     counts,
     deps: { git: gitOps, tempIndex: provider, fileExists: async () => false },

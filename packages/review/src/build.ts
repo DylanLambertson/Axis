@@ -70,6 +70,7 @@ export async function buildReviewedTree(deps: ReviewDeps, git: ReviewGit, input:
     const f = input.files.get(path);
     if (!f) throw internal("a decision names a file that is not in the review");
     if (f.unsafePath) throw denied("a file with an unusable path cannot be accepted", "unsafe_path");
+    // Defence in depth, no test of its own: the session refuses a filtered file at accept time, before a decision exists.
     if (f.kind === "filtered") throw denied("a file with a content filter cannot be accepted", "filtered_path");
     zero = "0".repeat(f.newOid.length);
     baseline.set(path, baselineOf(f, "path"));

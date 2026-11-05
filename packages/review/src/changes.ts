@@ -2,8 +2,10 @@
 // The changed-files list (design §3): two trees compared by `diff-tree -z`, parsed from NUL-separated records.
 import { escapeForDisplay, pathProblem, symlinkEscapes } from "./display.js";
 import { invalid, unavailable } from "./errors.js";
-import { OBJECT_ID, expectComplete, type ReviewGit } from "./gitcall.js";
-import type { ChangeKind, ChangeStatus, ProtectedPathMatcher, ReviewFile, ReviewLimits } from "./types.js";
+import type { WorktreeRef } from "@axis/git-ops";
+import { OBJECT_ID, expectComplete, expectOk, gitPaths, type ReviewGit } from "./gitcall.js";
+import { acquireIndex } from "./tempindex.js";
+import type { ChangeKind, ChangeStatus, ProtectedPathMatcher, ReviewDeps, ReviewFile, ReviewLimits } from "./types.js";
 
 export interface RawEntry {
   readonly oldMode: string;
@@ -104,14 +106,21 @@ async function objectSizes(git: ReviewGit, oids: readonly string[]): Promise<Map
  * the smudged ones and "modified" may only mean "not cleaned", and a clean filter must not run inside the daemon.
  * (A filter literally named `unspecified` or `set` or `unset` cannot be told from no filter by check-attr; known limit.)
  */
-export async function filteredPaths(git: ReviewGit, paths: readonly string[] | string[]): Promise<Set<string>> {
+export async function filteredPaths(git: ReviewGit, paths: readonly string[] | string[], baseIndex: string): Promise<Set<string>> {
   const found = new Set<string>();
   // A path that cannot be accepted anyway is not asked about (a `..` or absolute path would make check-attr refuse the batch).
   paths = paths.filter((p) => pathProblem(p) === undefined);
   if (paths.length === 0) return found;
   const stdin = `${paths.join("\0")}\0`;
-  for (const extra of [[], ["--cached"]] as const) {
-    const out = expectComplete(await git(["check-attr", "-z", "--stdin", ...extra, "filter"], { stdin }), "read the file attributes");
+  // Three reads, and a path is filtered if any names a driver: the worktree's attribute files, the real index's, and the base
+  // tree's (a temporary index holding it). The base is where the stored blob came from: a CLI that stages an edit of
+  // `.gitattributes`, removes it, or writes `-filter` into `.git/info/attributes` cannot make the stored blob look plain.
+  // A path whose answer differs between them is therefore filtered too: nothing is offered on a changed answer.
+  for (const read of [{ extra: [] as string[] }, { extra: ["--cached"] }, { extra: ["--cached"], index: baseIndex }] as const) {
+    const out = expectComplete(
+      await git(["check-attr", "-z", "--stdin", ...read.extra, "filter"], { stdin, ..."index" in read ? { index: read.index } : {} }),
+      "read the file attributes",
+    );
     const t = out.split("\0");
     if (t[t.length - 1] === "") t.pop();
     if (t.length !== paths.length * 3) return malformed();
@@ -121,6 +130,22 @@ export async function filteredPaths(git: ReviewGit, paths: readonly string[] | s
     }
   }
   return found;
+}
+
+/**
+ * `$GIT_DIR/info/attributes` has the highest priority and every `check-attr` read consults it, so it can hide a base `filter`
+ * line (`secret.env -filter`) from all three reads, and it is in no tracked file. Its content is read through git (the package has
+ * no file system); when it mentions `filter` at all, or cannot be read, no path is offered (fail closed). It is rare.
+ */
+async function infoAttributesMentionFilter(deps: ReviewDeps, git: ReviewGit, w: WorktreeRef, limits: ReviewLimits): Promise<boolean> {
+  const [path] = await gitPaths(deps, git, w, ["info/attributes"]);
+  if (path === undefined || !(await deps.fileExists(path))) return false;
+  const h = await git(["hash-object", "-w", "--no-filters", "--", path]);
+  const oid = h.stdout.trim();
+  if (h.code !== 0 || !OBJECT_ID.test(oid)) return true;
+  const body = await git(["cat-file", "blob", oid]);
+  if (body.code !== 0 || body.truncated === true || body.stdout.length > limits.maxPreviewBytes) return true;
+  return /filter/i.test(body.stdout);
 }
 
 function protectedRules(matcher: ProtectedPathMatcher | undefined, paths: readonly string[], maxDisplay: number): string[] {
@@ -140,6 +165,8 @@ function protectedRules(matcher: ProtectedPathMatcher | undefined, paths: readon
 
 /** Lists what changed between two trees. Throws `too_large` when the list could not be complete. */
 export async function listChanges(
+  deps: ReviewDeps,
+  w: WorktreeRef,
   git: ReviewGit,
   againstTree: string,
   worktreeTree: string,
@@ -160,7 +187,19 @@ export async function listChanges(
     }
   }
   const sizes = await objectSizes(git, [...wanted]);
-  const filtered = await filteredPaths(git, [...new Set(entries.flatMap((e) => (e.oldPath === undefined ? [e.path] : [e.path, e.oldPath])))]);
+  const allPaths = [...new Set(entries.flatMap((e) => (e.oldPath === undefined ? [e.path] : [e.path, e.oldPath])))];
+  let filtered: Set<string>;
+  if (allPaths.length === 0) filtered = new Set();
+  else if (await infoAttributesMentionFilter(deps, git, w, limits)) filtered = new Set(allPaths);
+  else {
+    const idx = await acquireIndex(deps.tempIndex);
+    try {
+      expectOk(await git(["read-tree", againstTree], { index: idx.path }), "read the base tree");
+      filtered = await filteredPaths(git, allPaths, idx.path);
+    } finally {
+      await idx.release();
+    }
+  }
 
   let linkReads = 0;
   const files: ReviewFile[] = [];

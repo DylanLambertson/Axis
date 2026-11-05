@@ -3,8 +3,8 @@
 // GIT-ENV-1 environment. GIT_INDEX_FILE is added to the environment of a call that names a temporary index and is
 // never present otherwise. (@axis/git-ops does not export its own caller, so this is rebuilt from what it exports;
 // see docs/design/review-core.md §6, G4.)
-import { isAbsolute as posixAbs, normalize as posixNorm } from "node:path/posix";
-import { isAbsolute as winAbs, normalize as winNorm } from "node:path/win32";
+import { isAbsolute as posixAbs, join as posixJoin, normalize as posixNorm } from "node:path/posix";
+import { isAbsolute as winAbs, join as winJoin, normalize as winNorm } from "node:path/win32";
 import {
   daemonGitEnv,
   filterNames,
@@ -98,4 +98,14 @@ export async function objectSize(git: ReviewGit, oid: string): Promise<number | 
   const r = await git(["cat-file", "-s", oid]);
   const t = r.stdout.trim();
   return r.code === 0 && /^\d{1,15}$/.test(t) ? Number(t) : undefined;
+}
+
+/** Absolute paths of git-directory entries, from `rev-parse --git-path` (so a linked worktree's own directory is used). */
+export async function gitPaths(deps: ReviewDeps, git: ReviewGit, w: WorktreeRef, names: readonly string[]): Promise<string[]> {
+  const platform = platformOf(deps);
+  const where = await git(["rev-parse", ...names.flatMap((n) => ["--git-path", n])]);
+  const paths = where.stdout.split("\n");
+  if (paths[paths.length - 1] === "") paths.pop();
+  if (where.code !== 0 || paths.length !== names.length) throw unavailable("could not find the git directory's state files");
+  return paths.map((p) => ((platform === "win32" ? winAbs(p) : posixAbs(p)) ? p : (platform === "win32" ? winJoin : posixJoin)(w.workTree, p)));
 }

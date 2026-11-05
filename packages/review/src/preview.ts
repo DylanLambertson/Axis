@@ -22,14 +22,20 @@ export interface HunkView {
   readonly id: string;
   readonly header: string;
   readonly lines: readonly HunkViewLine[];
-  /** At least one line is cut. Accepting this hunk accepts text the reviewer was not shown (see `acceptHunk`). */
+  /** At least one added or removed line is cut. Accepting this hunk accepts text the reviewer was not shown (see `acceptHunk`). */
   readonly truncated: boolean;
 }
 
-/** Whether a hunk has a line the view cannot show whole. */
-export function hunkTruncated(h: Hunk, limits: ReviewLimits): boolean {
+/** Whether the view cuts this line (a trailing CR is not text, as in the view). */
+export function lineCut(text: string, limits: ReviewLimits): boolean {
   const max = limits.maxDisplay * 4;
-  return h.lines.some((l) => l.text.length > max && Array.from(l.text).length > max);
+  const t = text.endsWith("\r") ? text.slice(0, -1) : text;
+  return t.length > max && Array.from(t).length > max;
+}
+
+/** Whether an added or removed line of the hunk is cut. Context lines are not accepted content, so they do not count. */
+export function hunkTruncated(h: Hunk, limits: ReviewLimits): boolean {
+  return h.lines.some((l) => l.kind !== " " && lineCut(l.text, limits));
 }
 
 export function hunkView(h: Hunk, limits: ReviewLimits): HunkView {
@@ -77,4 +83,9 @@ export async function previewSide(git: ReviewGit, f: ReviewFile, side: "old" | "
     })
     .join("\n");
   return { kind: "text", text, lines: lines.length, truncatedLines };
+}
+
+/** Whether any line of a text blob is cut by the view. */
+export function textCut(body: string, limits: ReviewLimits): boolean {
+  return body.split("\n").some((l) => lineCut(l, limits));
 }
