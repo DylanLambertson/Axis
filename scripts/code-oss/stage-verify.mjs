@@ -47,7 +47,7 @@ export function checkStagedFile(rel, text, fileSet) {
     if (pkg === "vendor" && targetPkg !== "vendor") fail(`staged ${rel}: vendored code reaches ${spec}`);
     if (pkg !== "vendor" && targetPkg === "vendor" && !target.startsWith("vendor/zod/")) fail(`staged ${rel}: ${spec} reaches an unknown vendored module`);
     for (const r of RESTRICTED_MODULES) {
-      if (target.startsWith(`${r.pkg}/${r.file.replace(/\.ts$/, "")}.`) && pkg !== r.pkg && !r.importers.has(pkg)) {
+      if (target.startsWith(`${r.pkg}/${r.file.replace(/\.ts$/, "")}.`) && pkg !== r.pkg && !r.importers.has(pkg) && r.files?.has(rel) !== true) {
         fail(`staged ${rel}: ${spec} reaches ${r.pkg}/${r.file}, which only ${[...r.importers].join(", ")} may import`);
       }
     }

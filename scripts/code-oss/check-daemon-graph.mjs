@@ -52,7 +52,7 @@ export function checkMetafile(metafile, manifest, { bundledText = null, treeZod 
       for (const r of RESTRICTED_MODULES) {
         if (target !== `${r.pkg}/${r.file}`) continue;
         const importerPkg = rel === null ? null : pkgOf(rel);
-        if (importerPkg !== r.pkg && !(importerPkg !== null && r.importers.has(importerPkg))) {
+        if (importerPkg !== r.pkg && !(importerPkg !== null && r.importers.has(importerPkg)) && r.files?.has(rel) !== true) {
           bad.push(`${input}: imports ${imp.path}, which only ${[r.pkg, ...r.importers].join(" and ")} may import`);
         }
       }

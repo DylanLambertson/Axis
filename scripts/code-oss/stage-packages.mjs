@@ -228,7 +228,7 @@ export function stage({ repo, tree, now = Date.now(), maxFutureSkewMs = DEFAULT_
       for (const spec of importSpecifiers(text, sourceRel)) {
         let c;
         try {
-          c = classifySpecifier(spec, n, exportsOf);
+          c = classifySpecifier(spec, n, exportsOf, rel);
         } catch (reason) {
           if (typeof reason !== "string") throw reason;
           return fail(`${sourceRel}: ${reason}`);

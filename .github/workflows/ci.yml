@@ -104,6 +104,17 @@ jobs:
       - name: Check generated SVG replacements match assets/brand
         run: scripts/code-oss/gen-icons.sh --check
 
+      - name: Set up Node.js for the staging tests
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.22.1 # the version the manifest pins
+          package-manager-cache: false
+
+      - name: Install dependencies for the staging tests (lockfile only, no install scripts)
+        # scripts/code-oss/stage-ast.mjs parses with the pinned typescript6 dev dependency, and the staging tests
+        # stage the real packages (zod comes from node_modules).
+        run: npm ci --ignore-scripts
+
       - name: Test the SC-3 artifact check
         run: node --test test/code-oss/*.test.mjs
 

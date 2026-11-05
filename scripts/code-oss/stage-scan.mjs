@@ -31,12 +31,22 @@ export const RESTRICTED_SUBPATHS = new Map([
 ]);
 
 /**
+ * Exact-file exceptions to RESTRICTED_SUBPATHS: specifier -> package -> paths inside that package's `src` that may
+ * import it, despite the package not being listed there. Exact paths, never patterns; mirrors HOST_FILE_RULES in
+ * test/packages/imports.test.mjs and the single mint file in test/packages/principal-dist.test.mjs. The daemon host's
+ * review handler mints the user principal for a person's acceptance (ADR 0005 D2).
+ */
+export const RESTRICTED_FILE_EXCEPTIONS = new Map([
+  ["@axis/journal/daemon-principal", new Map([["daemon-host", new Set(["handlers/review.ts"])]])],
+]);
+
+/**
  * Staged modules (package name, path inside the package's src) that only the listed packages may import. The
  * owning package may always import its own modules. This is the module-graph form of RESTRICTED_SUBPATHS and the
  * rule check-daemon-graph.mjs enforces on the esbuild metafile.
  */
 export const RESTRICTED_MODULES = [
-  { pkg: "journal", file: "daemon-principal.ts", importers: new Set(["daemon"]) },
+  { pkg: "journal", file: "daemon-principal.ts", importers: new Set(["daemon"]), files: new Set(["daemon-host/handlers/review.ts"]) },
   { pkg: "runs", file: "daemon-attestation.ts", importers: new Set(["daemon"]) },
   // The modules that hold the mint symbols: only their own package may reach them.
   { pkg: "journal", file: "principal.ts", importers: new Set() },
@@ -52,7 +62,7 @@ export const RESTRICTED_MODULES = [
  *   node:     a `node:*` built-in
  * `exportsOf(name)` returns the subpath keys the package declares (for example "./daemon-principal"), or null for an unknown package.
  */
-export function classifySpecifier(spec, pkg, exportsOf) {
+export function classifySpecifier(spec, pkg, exportsOf, fileRel = null) {
   if (spec.startsWith("./") || spec.startsWith("../")) return { kind: "relative" };
   if (spec === "zod") return { kind: "zod" };
   if (spec.startsWith("zod/")) throw `only the "zod" entry is staged, not ${spec}`;
@@ -72,7 +82,8 @@ export function classifySpecifier(spec, pkg, exportsOf) {
     if (sub !== undefined) {
       if (!keys.includes(`.${sub}`)) throw `${spec} is not a subpath the package exports (or is not stageable)`;
       const allowed = RESTRICTED_SUBPATHS.get(spec);
-      if (allowed !== undefined && !allowed.has(pkg)) throw `${spec} may only be imported by: ${[...allowed].join(", ")}`;
+      const exact = RESTRICTED_FILE_EXCEPTIONS.get(spec)?.get(pkg)?.has(fileRel) === true;
+      if (allowed !== undefined && !allowed.has(pkg) && !exact) throw `${spec} may only be imported by: ${[...allowed].join(", ")}`;
     }
     return { kind: "axis", name, subpath: sub === undefined ? null : `.${sub}` };
   }

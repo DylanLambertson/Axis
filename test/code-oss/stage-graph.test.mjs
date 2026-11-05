@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 import { checkMetafile } from "../../scripts/code-oss/check-daemon-graph.mjs";
 import { PROBE_MARKER, brandVerdict, restoreStaleProbe, mangleExemptionPresent, privateNameCount, privatesSurvive } from "../../scripts/code-oss/check-privates.mjs";
 import { STAGE_ROOT, stage } from "../../scripts/code-oss/stage-packages.mjs";
-import { RESTRICTED_MODULES, RESTRICTED_SUBPATHS, classifySpecifier, importSpecifiers, unsafeForms } from "../../scripts/code-oss/stage-scan.mjs";
+import { RESTRICTED_FILE_EXCEPTIONS, RESTRICTED_MODULES, RESTRICTED_SUBPATHS, classifySpecifier, importSpecifiers, unsafeForms } from "../../scripts/code-oss/stage-scan.mjs";
 import { checkStagedFile, sha256, treeHash, verifyStaged } from "../../scripts/code-oss/stage-verify.mjs";
 import { put, withFixture } from "./stage-fixture.mjs";
 
@@ -235,4 +235,28 @@ test("checkStagedFile alone (the re-check) refuses unsafe forms, loader built-in
   assert.throws(() => checkStagedFile("vendor/zod/index.js", "export const z = () => import(name);\n", files), /import\(\) needs/);
   checkStagedFile("vendor/zod/index.js", 'export const f = new Function("a", "return a");\n', files); // pinned third-party code
   checkStagedFile("other/a.ts", 'import { join } from "node:path";\nexport const j = join;\n', files);
+});
+
+test("the daemon host's review handler is the one exact file outside the daemon that may import the principal subpath", () => {
+  const exportsOf = (n) => ({ journal: [".", "./daemon-principal"] })[n] ?? null;
+  const spec = "@axis/journal/daemon-principal";
+  assert.equal(classifySpecifier(spec, "daemon-host", exportsOf, "handlers/review.ts").kind, "axis");
+  for (const file of ["handlers/other.ts", "handlers/review.tsx", "handlers/sub/review.ts", "review.ts", null]) {
+    assert.throws(() => classifySpecifier(spec, "daemon-host", exportsOf, file), (e) => typeof e === "string", String(file));
+  }
+  assert.throws(() => classifySpecifier(spec, "providers", exportsOf, "handlers/review.ts"), (e) => typeof e === "string");
+  assert.deepEqual([...RESTRICTED_FILE_EXCEPTIONS.get(spec).get("daemon-host")], ["handlers/review.ts"]);
+  const text = readFileSync(new URL("../packages/imports.test.mjs", import.meta.url), "utf8");
+  assert.ok(text.includes('["@axis/journal/daemon-principal", ["src/handlers/review.ts"]]'), "matches HOST_FILE_RULES");
+});
+
+test("checkMetafile and checkStagedFile allow the review handler to reach the principal module, and no other daemon-host file", () => {
+  const P = (rel) => `${STAGE_ROOT}/${rel}`;
+  const manifest = { zod: null, files: ["journal/daemon-principal.ts", "daemon-host/handlers/review.ts", "daemon-host/handlers/x.ts"].map((p) => ({ path: p })) };
+  const meta = (from) => ({ inputs: { [P(from)]: { imports: [{ path: P("journal/daemon-principal.ts"), kind: "import-statement" }] }, [P("journal/daemon-principal.ts")]: { imports: [] } } });
+  assert.deepEqual(checkMetafile(meta("daemon-host/handlers/review.ts"), manifest), []);
+  assert.equal(checkMetafile(meta("daemon-host/handlers/x.ts"), manifest).length, 1);
+  const files = new Set(manifest.files.map((f) => f.path));
+  checkStagedFile("daemon-host/handlers/review.ts", 'import { userPrincipal } from "../../journal/daemon-principal.js";\nexport const u = () => userPrincipal();\n', files);
+  assert.throws(() => checkStagedFile("daemon-host/handlers/x.ts", 'import "../../journal/daemon-principal.js";\n', files), /only daemon may import/);
 });
