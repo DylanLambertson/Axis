@@ -13,6 +13,8 @@ Axis-owned TypeScript that does not need Code OSS services lives in `packages/*`
 | `@axis/audit` | Secret redaction, canonical JSON, and the hash-chained append-only audit log on `node:sqlite` (DMN-5, DMN-6). Also the SQLite helpers (`openDatabase`, `withTransaction`, `runMigrations`). |
 | `@axis/journal` | Durable `agent_workspaces` and `agent_runs`, the Phase 1a run state machine, idempotency keys and restart recovery (DMN-7). Depends on `@axis/audit`. |
 | `@axis/runs` | CLI run lifecycle over injected ports (pty, clock, worktree locator, snapshotter, environment): launch through `@axis/pty-policy`, the journal state machine and restart recovery (DMN-7), status derivation, the per-device limit, trust attestation (TRU-2), the `isCliRunActive` guard for `@axis/git-ops`, output bounds and the disclosure copy. Design: `docs/design/runs.md`. Depends on `@axis/audit`, `@axis/journal` and `@axis/pty-policy`. |
+| `@axis/anthropic` | Anthropic (Claude) Messages API adapter for `@axis/providers` (ticket 9, ANT-1): hand-written SSE parser with byte, event and depth limits, redirects refused, error text never built from a response body, injected `fetch`. Design: `docs/design/anthropic-adapter.md`. |
+| `@axis/vault` | Connection vault: key storage interface, backend reporting, the PRV-1 rule for the Linux `basic_text` backend (consent or refusal), an in-memory test backend, and the seam for real OS backends. Runs in the daemon only. |
 
 More packages (worktrees, and so on) are added by their own changes.
 
