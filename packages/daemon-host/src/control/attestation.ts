@@ -1,7 +1,9 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { createHmac, timingSafeEqual } from "node:crypto";
+import { AxisError } from "@axis/audit";
 import { canonicalJson, identitySchema, type Identity, type IdentityVerifier } from "@axis/daemon";
 import type { JsonValue } from "@axis/protocol";
+import { refuseNonPlainData } from "../inspect.js";
 import type { Clock } from "../ports/clock.js";
 import { attestationSchema, type Attestation } from "./messages.js";
 
@@ -10,6 +12,11 @@ import { attestationSchema, type Attestation } from "./messages.js";
  * `mac = HMAC-SHA256(key, canonicalJson(["axis.attest/1", identity, issuedAt]))`. The MAC covers every identity
  * field, so the actor, the workspace, the window and the connection id are all bound; changing one invalidates it.
  * It is single use: a connection id seen within the freshness window is refused the second time.
+ *
+ * Time. Freshness and the replay ring are judged against the highest clock reading seen so far (a high-water mark),
+ * never the current one: if the wall clock steps back, an attestation that already left the ring does not become
+ * fresh again. A step back can make a new attestation look stale for as long as the step, which fails closed. A
+ * clock that is not a finite number refuses everything.
  */
 
 export const ATTESTATION_TAG = "axis.attest/1";
@@ -20,7 +27,7 @@ export const MAX_SKEW_MS = 5_000;
 /** Connection ids remembered at once. A full ring of fresh ids refuses new attestations (fail closed). */
 export const DEFAULT_RING_SIZE = 4_096;
 
-export const REFUSAL_REASONS = ["malformed", "bad_mac", "stale", "future", "bad_identity", "replayed", "ring_full", "closed"] as const;
+export const REFUSAL_REASONS = ["malformed", "bad_mac", "stale", "future", "bad_identity", "replayed", "ring_full", "bad_clock", "closed"] as const;
 export type RefusalReason = (typeof REFUSAL_REASONS)[number];
 
 function macOf(key: Uint8Array, identity: unknown, issuedAt: number): Buffer {
@@ -33,6 +40,10 @@ function macOf(key: Uint8Array, identity: unknown, issuedAt: number): Buffer {
  * supervisor mints with the same code and the two cannot drift.
  */
 export function signAttestation(key: Uint8Array, identity: Identity, issuedAt: number): Attestation {
+  // An `undefined` field would be MACed as text that never survives JSON or structured clone: refuse it here.
+  if (!Number.isSafeInteger(issuedAt) || issuedAt < 0 || Object.values(identity).some((v) => v === undefined)) {
+    throw new AxisError("E_INVALID_ARGUMENT", "Attestation not signable", { reason: "unsignable" });
+  }
   return { identity: { ...identity } as Attestation["identity"], issuedAt, mac: macOf(key, identity, issuedAt).toString("base64url") };
 }
 
@@ -58,6 +69,8 @@ export function createAttestationVerifier(options: AttestationVerifierOptions): 
   const seen = new Map<string, number>();
   const counts = Object.fromEntries(REFUSAL_REASONS.map((r) => [r, 0])) as Record<RefusalReason, number>;
   let closed = false;
+  /** The highest finite clock reading seen. */
+  let latest = Number.NEGATIVE_INFINITY;
 
   const refuse = (reason: RefusalReason): undefined => {
     counts[reason]++;
@@ -67,6 +80,12 @@ export function createAttestationVerifier(options: AttestationVerifierOptions): 
   return {
     verify(raw: unknown): Identity | undefined {
       if (closed) return refuse("closed");
+      const reading = clock.now();
+      if (typeof reading !== "number" || !Number.isFinite(reading)) return refuse("bad_clock");
+      latest = Math.max(latest, reading);
+      // Plain data only, with no `__proto__` or other forbidden key: a key that a schema would drop silently could
+      // otherwise give one attestation several byte forms that all verify.
+      if (refuseNonPlainData(raw) !== undefined) return refuse("malformed");
       const parsed = attestationSchema.safeParse(raw);
       if (!parsed.success) return refuse("malformed");
       const { identity, issuedAt, mac } = parsed.data;
@@ -76,7 +95,7 @@ export function createAttestationVerifier(options: AttestationVerifierOptions): 
       if (given.length !== expected.length || given.toString("base64url") !== mac || !timingSafeEqual(given, expected)) {
         return refuse("bad_mac");
       }
-      const now = clock.now();
+      const now = latest;
       if (now - issuedAt > MAX_AGE_MS) return refuse("stale");
       if (issuedAt > now + MAX_SKEW_MS) return refuse("future");
       const checked = identitySchema.safeParse(identity);

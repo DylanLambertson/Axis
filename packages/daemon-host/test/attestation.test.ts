@@ -96,7 +96,7 @@ test("the replay memory is bounded, expires with freshness, and a full ring refu
   assert.equal(verifier.verify(signAttestation(key, ids[0] as Identity, clock.now() - MAX_AGE_MS - 1)), undefined);
 });
 
-test("close zeroes its key copy, forgets ids and refuses; the caller's key is untouched", () => {
+test("close forgets ids and refuses later use; the caller's key is untouched", () => {
   const own = randomBytes(32);
   const before = Buffer.from(own);
   const clock = fakeClock();
@@ -106,4 +106,86 @@ test("close zeroes its key copy, forgets ids and refuses; the caller's key is un
   assert.equal(verifier.verify(a), undefined);
   assert.equal(verifier.refusals().closed, 1);
   assert.deepEqual(Buffer.from(own), before);
+});
+
+/** A clock the test moves in either direction, or sets to any value. */
+function movableClock(start = 1_700_000_000_000) {
+  let t = start;
+  return { now: () => t, monotonic: () => t, set: (v: number) => void (t = v) };
+}
+
+test("an id is remembered until its attestation is stale: a replay at exactly 30 s is 'replayed', at 30 s + 1 'stale'", () => {
+  const clock = movableClock();
+  const verifier = createAttestationVerifier({ key, clock, ringSize: 2 });
+  const t0 = clock.now();
+  const a = signAttestation(key, identity(), t0);
+  assert.notEqual(verifier.verify(a), undefined);
+  // Other traffic fills and churns the ring while A is still fresh; it must not push A out.
+  clock.set(t0 + 10_000);
+  assert.notEqual(verifier.verify(signAttestation(key, identity(), clock.now())), undefined);
+  clock.set(t0 + MAX_AGE_MS);
+  assert.equal(verifier.verify(a), undefined);
+  assert.equal(verifier.refusals().replayed, 1, "still fresh at exactly 30 s: refused as a replay");
+  assert.equal(verifier.refusals().stale, 0);
+  clock.set(t0 + MAX_AGE_MS + 1);
+  assert.equal(verifier.verify(a), undefined);
+  assert.equal(verifier.refusals().stale, 1);
+});
+
+test("a wall clock that steps back does not revive an attestation that left the ring", () => {
+  const clock = movableClock();
+  const verifier = createAttestationVerifier({ key, clock });
+  const t0 = clock.now();
+  const a = signAttestation(key, identity(), t0);
+  assert.notEqual(verifier.verify(a), undefined);
+  clock.set(t0 + 31_000);
+  assert.equal(verifier.verify(signAttestation(key, identity(), clock.now())) !== undefined, true, "this call evicts A");
+  clock.set(t0 + 6_000);
+  assert.equal(verifier.verify(a), undefined, "A is stale for the high-water mark, not fresh again");
+  assert.equal(verifier.refusals().replayed, 0);
+  assert.equal(verifier.refusals().stale, 1);
+});
+
+test("a clock that is not a finite number refuses everything", () => {
+  const clock = movableClock();
+  const verifier = createAttestationVerifier({ key, clock });
+  const a = signAttestation(key, identity(), 0);
+  for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+    clock.set(bad);
+    assert.equal(verifier.verify(a), undefined);
+    assert.equal(verifier.verify(signAttestation(key, identity(), 0)), undefined);
+  }
+  assert.equal(verifier.refusals().bad_clock, 6);
+  (clock as { now: () => unknown }).now = () => "now";
+  assert.equal(verifier.verify(a), undefined);
+});
+
+test("a MAC with the same bytes in another base64url form is refused", () => {
+  const { clock, verifier } = setup();
+  const good = signAttestation(key, identity(), clock.now());
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+  const last = good.mac[42] as string;
+  const alt = `${good.mac.slice(0, 42)}${alphabet[alphabet.indexOf(last) ^ 1]}`;
+  assert.notEqual(alt, good.mac);
+  assert.deepEqual(Buffer.from(alt, "base64url"), Buffer.from(good.mac, "base64url"), "same bytes");
+  assert.equal(verifier.verify({ ...good, mac: alt }), undefined);
+  assert.notEqual(verifier.verify(good), undefined);
+});
+
+test("an identity with an own __proto__ key is refused, not silently reduced", () => {
+  const { clock, verifier } = setup();
+  const signed = signAttestation(key, identity(), clock.now());
+  const hostile = JSON.parse(JSON.stringify(signed).replace('"identity":{', '"identity":{"__proto__":{"x":1},')) as unknown;
+  assert.equal(verifier.verify(hostile), undefined);
+  assert.equal(verifier.refusals().malformed, 1);
+  assert.notEqual(verifier.verify(signed), undefined);
+});
+
+test("signing refuses an identity with undefined fields or a bad time", () => {
+  const id = identity();
+  assert.throws(() => signAttestation(key, { ...id, workspaceId: undefined } as never, 1), { code: "E_INVALID_ARGUMENT" });
+  assert.throws(() => signAttestation(key, id, Number.NaN), { code: "E_INVALID_ARGUMENT" });
+  assert.throws(() => signAttestation(key, id, -1), { code: "E_INVALID_ARGUMENT" });
+  const { workspaceId: _omit, ...without } = id;
+  assert.doesNotThrow(() => signAttestation(key, without, 1));
 });
