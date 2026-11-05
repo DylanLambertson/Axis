@@ -5,6 +5,7 @@
     { "path": "packages/pty-policy" },
     { "path": "packages/challenge" },
     { "path": "packages/daemon" },
+    { "path": "packages/daemon-host" },
     { "path": "packages/providers" },
     { "path": "packages/git-ops" },
     { "path": "packages/audit" },
@@ -13,6 +14,7 @@
     { "path": "packages/anthropic" },
     { "path": "packages/worktrees" },
     { "path": "packages/runs" },
+    { "path": "packages/broker" },
     { "path": "packages/review" }
   ]
 }
