@@ -97,7 +97,7 @@ test("NB1: a launcher found by resolution is judged as one when the policy decid
   await b.invoke(call("t", {}));
   assert.equal(asked[0]?.tier, "privileged");
   assert.ok(asked[0]?.reasons.includes("launcher"), "the real path is judged when the policy decides, not only when it runs");
-  assert.ok(asked[0]?.commands[0]?.includes("program: /"), "the approval names the file");
+  assert.ok(asked[0]?.commands[0]?.includes('program: "/'), "the approval names the file");
 });
 
 test("NB1: git is only what the tool declared; a worktree rewrite is destructive and always asks", async () => {

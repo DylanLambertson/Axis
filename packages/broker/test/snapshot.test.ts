@@ -88,7 +88,7 @@ test("NS-B: a tool that declares only a program is flagged: its arguments are ch
   await r.broker.invoke(call("t2", {}));
   assert.ok(r.requests[0]?.reasons.includes("args-at-run-time"));
   assert.ok(r.requests[0]?.commands[0]?.includes("arguments are chosen when it runs"));
-  assert.ok(r.requests[0]?.commands[0]?.includes("program: /"), "the resolved file is named");
+  assert.ok(r.requests[0]?.commands[0]?.includes('program: "/'), "the resolved file is named");
   assert.ok(!r.requests[1]?.reasons.includes("args-at-run-time"), "the whole command line is shown instead");
 });
 

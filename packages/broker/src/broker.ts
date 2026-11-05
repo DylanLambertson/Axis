@@ -234,10 +234,10 @@ export class ToolBroker {
         const env = this.#toolEnv(tool, worktreeId, root, this.#d.registry.repositoryRoots(), false);
         pinned = await pinProgram({ fs: this.#d.fs, platform: this.#platform }, argv0, env, [root, ...this.#d.registry.repositoryRoots()]);
         // The argument list is a JSON array: `["echo","a b","c"]` and `["echo","a","b c"]` are different lines.
-        const via = pinned.interpreter === undefined ? "" : `; interpreter: ${pinned.interpreter.real}`;
+        const via = pinned.interpreter === undefined ? "" : `; interpreter: ${JSON.stringify(pinned.interpreter.real)}`;
         commands.push(declaredArgv === undefined
-          ? `${JSON.stringify([argv0])} [arguments are chosen when it runs; program: ${pinned.real}${via}]`
-          : `${JSON.stringify(declaredArgv)} [program: ${pinned.real}${via}]`);
+          ? `${JSON.stringify([argv0])} [arguments are chosen when it runs; program: ${JSON.stringify(pinned.real)}${via}]`
+          : `${JSON.stringify(declaredArgv)} [program: ${JSON.stringify(pinned.real)}${via}]`);
       }
       raised = tool.raise?.(args);
       const rawCalls = tool.git?.(args);
@@ -281,7 +281,7 @@ export class ToolBroker {
     }
     const decision = this.#policy.decide({
       tool: tool.name, tier: tool.tier, protectedHit, protectedLabels: [...new Set(labels)],
-      ...(argv0 === undefined ? {} : { argv0 }), ...(pinned === undefined ? {} : { program: pinned.real }), ...(pinned?.interpreter === undefined ? {} : { interpreter: pinned.interpreter.real }),
+      ...(argv0 === undefined ? {} : { argv0 }), ...(pinned === undefined ? {} : { program: pinned.real }), ...(pinned?.interpreter === undefined ? {} : { interpreter: pinned.interpreter.real }), ...(pinned?.opaque === true ? { opaque: true } : {}),
       ...(argv0 !== undefined && declaredArgv === undefined ? { argsAtRunTime: true } : {}),
       ...(raised === undefined ? {} : { raisedTier: raised }),
     });

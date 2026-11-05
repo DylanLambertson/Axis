@@ -17,6 +17,11 @@ export interface PinnedProgram extends FileIdentity {
   readonly exe: string;
   /** The `#!` interpreter of a script, pinned the same way: the script's own name says nothing about what runs it. */
   readonly interpreter?: FileIdentity;
+  /**
+   * True when what runs cannot be judged from here: the `#!` line could not be read (the kernel can run a script
+   * that mode 0111 hides from us), or the interpreter is itself a script. The policy treats such a program as a launcher.
+   */
+  readonly opaque: boolean;
 }
 
 type Deps = { readonly fs: BrokerFs; readonly platform: NodeJS.Platform };
@@ -32,8 +37,8 @@ async function identify(d: Deps, path: string): Promise<FileIdentity> {
   return { real, identity: [st.id, st.size, st.mtime, st.ctime].join(":") };
 }
 
-/** The interpreter a `#!` line names, or undefined for a binary. */
-async function shebang(d: Deps, real: string): Promise<string | undefined> {
+/** The interpreter a `#!` line names, `"none"` for a binary, or `"unreadable"` when the file cannot be read. */
+async function shebang(d: Deps, real: string): Promise<{ readonly line: string } | "none" | "unreadable"> {
   let head: Buffer;
   try {
     const f = await d.fs.open(real, "read");
@@ -43,10 +48,11 @@ async function shebang(d: Deps, real: string): Promise<string | undefined> {
       await f.close();
     }
   } catch {
-    return undefined;
+    return "unreadable";
   }
-  if (head.length < 2 || head[0] !== 0x23 || head[1] !== 0x21) return undefined;
-  return /^#!\s*(\S+)/.exec(head.toString("latin1"))?.[1];
+  if (head.length < 2 || head[0] !== 0x23 || head[1] !== 0x21) return "none";
+  const line = /^#!\s*(\S+)/.exec(head.toString("latin1"))?.[1];
+  return line === undefined ? "unreadable" : { line };
 }
 
 /**
@@ -69,8 +75,11 @@ export async function pinProgram(d: Deps, command: unknown, env: Env, exclude: r
   }
   // A bare name can resolve to a symlink to a shell: the real path is what is judged.
   const self = await identify(d, exe);
-  const line = await shebang(d, self.real);
-  if (line === undefined) return { exe, ...self };
-  if (!/^[A-Za-z]:[\\/]|^\//.test(line)) throw denied("unresolved-command", "the script's interpreter is not an absolute path");
-  return { exe, ...self, interpreter: await identify(d, line) };
+  const first = await shebang(d, self.real);
+  if (first === "none") return { exe, ...self, opaque: false };
+  if (first === "unreadable") return { exe, ...self, opaque: true };
+  if (!/^[A-Za-z]:[\\/]|^\//.test(first.line)) throw denied("unresolved-command", "the script's interpreter is not an absolute path");
+  const interpreter = await identify(d, first.line);
+  // One level is judged and pinned; an interpreter that is itself a script (or unreadable) is not followed.
+  return { exe, ...self, interpreter, opaque: (await shebang(d, interpreter.real)) !== "none" };
 }

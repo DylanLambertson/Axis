@@ -43,6 +43,8 @@ export interface PolicyInput {
   readonly program?: string;
   /** The `#!` interpreter of a script, judged the same way: `#!/bin/sh` runs a shell whatever the file is called. */
   readonly interpreter?: string;
+  /** The program cannot be judged (an unreadable script, or a chain of scripts): it is treated as a launcher. */
+  readonly opaque?: boolean;
   /** True when the tool declared only the program: its arguments are chosen when it runs, so the approval cannot show them. */
   readonly argsAtRunTime?: boolean;
   /** A tier the git table or another computed rule raised, validated here. */
@@ -85,6 +87,10 @@ export class ToolPolicy {
     if ((input.argv0 !== undefined && isLauncher(input.argv0)) || (input.program !== undefined && isLauncher(input.program)) || (input.interpreter !== undefined && isLauncher(input.interpreter))) {
       tier = maxTier(tier, "privileged");
       reasons.push("launcher");
+    }
+    if (input.opaque === true) {
+      tier = maxTier(tier, "privileged");
+      reasons.push("opaque-program");
     }
     if (input.argsAtRunTime === true) reasons.push("args-at-run-time");
     let approve = tierRank(tier) >= tierRank(this.#floor);
