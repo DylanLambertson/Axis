@@ -4,8 +4,7 @@ import type { Migration } from "@axis/audit";
 /**
  * Journal schema, versioned in `axis_schema` under component `journal`.
  * Later migrations append to this list; they never edit an earlier entry.
- * `projects`, `worktrees` and `approvals` (docs/IMPLEMENTATION.md) arrive with
- * the worktree manager and the approval broker.
+ * `approvals` (docs/IMPLEMENTATION.md) arrives with the approval broker.
  */
 export const JOURNAL_MIGRATIONS: readonly Migration[] = [
   {
@@ -103,6 +102,96 @@ export const JOURNAL_MIGRATIONS: readonly Migration[] = [
         id         INTEGER PRIMARY KEY CHECK (id = 1),
         trusted_ms INTEGER NOT NULL CHECK (trusted_ms >= 0)
       ) STRICT;
+    `,
+  },
+  {
+    // Daemon host records (docs/design/daemon-host.md 7.5, ticket J1). The journal is authoritative for what a worktree is
+    // (Q7); the worktree manager's own `WorkspaceMeta` file is checked against it. One transaction, so a failure part way
+    // leaves version 3 untouched.
+    //
+    // SQLite cannot alter a CHECK, and `FINALISED` has to join the state list, so `agent_workspaces` is rebuilt. With
+    // foreign keys on, a parent cannot be dropped while `agent_runs` points at it, so `agent_runs` is rebuilt first
+    // (copied verbatim, same columns, same indexes) and renamed back after the parent. Neither `state_transitions`,
+    // `idempotency`, the daemon idempotency tables nor any audit table is touched.
+    //
+    // Not recorded, on purpose (design Q7): the acknowledged GIT-SNAP baseline. It stays in the worktree's git directory
+    // under the manager's own checks.
+    version: 4,
+    sql: `
+      CREATE TABLE projects (
+        id           TEXT PRIMARY KEY CHECK (length(id) BETWEEN 1 AND 128),
+        -- canonical absolute path, chosen by the host, never taken from a request
+        -- absolute, no NUL, no trailing separator, not a root: two spellings of one directory cannot both register
+        path         TEXT NOT NULL UNIQUE CHECK (length(path) BETWEEN 2 AND 4096 AND instr(path, char(0)) = 0
+                       AND substr(path, -1) NOT IN ('/', '\\') AND (substr(path, 1, 1) IN ('/', '\\') OR substr(path, 2, 1) = ':')),
+        display_name TEXT NOT NULL CHECK (length(display_name) BETWEEN 1 AND 256),
+        trusted      INTEGER NOT NULL CHECK (trusted IN (0, 1)),
+        created_at   TEXT NOT NULL,
+        updated_at   TEXT NOT NULL
+      ) STRICT;
+
+      CREATE TABLE agent_workspaces_v4 (
+        id         TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        branch     TEXT NOT NULL,
+        base_ref   TEXT NOT NULL,
+        base_sha   TEXT NOT NULL,
+        created_by TEXT NOT NULL,
+        state      TEXT NOT NULL
+                   CHECK (state IN ('CREATING','READY','FINALISED','REMOVING','REMOVED','FAILED')),
+        reconcile_reported INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        -- canonical absolute path of the worktree, set once it exists
+        worktree_path TEXT CHECK (worktree_path IS NULL OR (length(worktree_path) BETWEEN 2 AND 4096 AND instr(worktree_path, char(0)) = 0
+          AND substr(worktree_path, -1) NOT IN ('/', '\\') AND (substr(worktree_path, 1, 1) IN ('/', '\\') OR substr(worktree_path, 2, 1) = ':'))),
+        -- advisory record of the per-worktree lock; the lock itself is the host mutex. Recovery clears a stale one.
+        lock_state TEXT NOT NULL DEFAULT 'unlocked' CHECK (lock_state IN ('unlocked','locked')),
+        locked_at  TEXT,
+        -- the last sha this workspace's branch was pushed at (the push base for @axis/git-ops), never a remote-tracking ref
+        last_pushed_sha TEXT CHECK (last_pushed_sha IS NULL
+          OR (length(last_pushed_sha) IN (40, 64) AND last_pushed_sha NOT GLOB '*[^0-9a-f]*')),
+        -- the tree hash the person reviewed (REV-1)
+        reviewed_tree_hash TEXT CHECK (reviewed_tree_hash IS NULL
+          OR (length(reviewed_tree_hash) IN (40, 64) AND reviewed_tree_hash NOT GLOB '*[^0-9a-f]*')),
+        reviewed_at TEXT,
+        finalise_outcome TEXT CHECK (finalise_outcome IS NULL OR finalise_outcome IN ('merged','archived','abandoned')),
+        CHECK ((lock_state = 'locked') = (locked_at IS NOT NULL)),
+        -- a workspace that is gone holds no lock
+        CHECK (lock_state = 'unlocked' OR state NOT IN ('REMOVED','FAILED')),
+        CHECK ((reviewed_tree_hash IS NULL) = (reviewed_at IS NULL)),
+        CHECK (state <> 'FINALISED' OR finalise_outcome IS NOT NULL),
+        CHECK (finalise_outcome IS NULL OR state IN ('FINALISED','REMOVING','REMOVED'))
+      ) STRICT;
+      INSERT INTO agent_workspaces_v4 (id, project_id, branch, base_ref, base_sha, created_by, state, reconcile_reported, created_at, updated_at)
+        SELECT id, project_id, branch, base_ref, base_sha, created_by, state, reconcile_reported, created_at, updated_at
+        FROM agent_workspaces;
+
+      CREATE TABLE agent_runs_v4 (
+        id           TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL REFERENCES agent_workspaces_v4(id),
+        kind         TEXT NOT NULL CHECK (kind IN ('composer','cli')),
+        state        TEXT NOT NULL
+                     CHECK (state IN ('QUEUED','RUNNING','REVIEWING','BLOCKED','COMPLETED','FAILED','CANCELLED')),
+        reason       TEXT,
+        exit_code    INTEGER,
+        created_at   TEXT NOT NULL,
+        updated_at   TEXT NOT NULL,
+        started_at   TEXT,
+        ended_at     TEXT
+      ) STRICT;
+      INSERT INTO agent_runs_v4 SELECT id, workspace_id, kind, state, reason, exit_code, created_at, updated_at, started_at, ended_at
+        FROM agent_runs;
+
+      DROP TABLE agent_runs;
+      DROP TABLE agent_workspaces;
+      ALTER TABLE agent_workspaces_v4 RENAME TO agent_workspaces;
+      ALTER TABLE agent_runs_v4 RENAME TO agent_runs;
+      CREATE INDEX agent_runs_by_workspace ON agent_runs (workspace_id);
+      CREATE INDEX agent_runs_by_state ON agent_runs (state);
+      -- one live workspace per worktree path; a path can be reused once its workspace is removed or failed
+      CREATE UNIQUE INDEX agent_workspaces_live_worktree_path ON agent_workspaces (worktree_path)
+        WHERE worktree_path IS NOT NULL AND state NOT IN ('REMOVED','FAILED');
     `,
   },
 ];
