@@ -40,7 +40,7 @@ Re-derived on 2026-11-04 from what is on main: `@axis/runs` and `@axis/worktrees
 | **P1b** | Protocol: `axis.git/1` and `axis.review/1`; amend shell §5.4 and policies §6.1 | M | none (Q1 decided) | review |
 | **P1d** | Protocol: `worktrees.finalise` to tier 3 with `approval`, plus `discard` and `setUserEditing` | S | coordinate with the worktrees owner | review |
 | **J1** | Journal migration: projects, worktree path and lock state, last pushed sha, reviewed tree hash, `FINALISED` alignment, and (only if Q7 decides it) a recorded acknowledged baseline; the manager already keeps the baseline in the git directory | M | idempotency store merged | review |
-| **H1** | Scaffold `@axis/daemon-host` (exists on `feat/daemon-host-scaffold`); replace `GitRunners` and `RunsService`/`RunSummary` by the design §2.3 ports; add the import rows and the packages.md "Principals" amendment (design §2.1) | S remaining | none | in review / fix |
+| **H1** | Scaffold `@axis/daemon-host` (exists on `feat/daemon-host-scaffold`; `GitRunners` is already replaced by `GitPort`); keep its runs port, with the compile-time type test against `@axis/runs` (design §2.3); add the import rows and the packages.md "Principals" amendment (design §2.1) | S remaining | none | in review / fix |
 | **H2** | Storage and startup: lock, directory, database, git resolved once, redactor, audit, journal, idempotency store (clock re-review), recovery, exit codes | M | H1, idempotency store merged | review |
 | **H3** | Control channel and transports: message schemas incl. `trust.check`, attestation verifier, `ChannelMux`, Electron parent-port adapter, connect limiter, `TestSupervisor` | M | H1 | review |
 | **H6** | Policy rule table, `TrustRegistry`, coverage check | S | H1, P1 merged | review |
@@ -49,7 +49,7 @@ Re-derived on 2026-11-04 from what is on main: `@axis/runs` and `@axis/worktrees
 | **H5** | Challenge manager, gate adapter, native bridge, `axis.approvals/1` | M | H2, H3, P1 merged | review |
 | **H7** | Shutdown and signals integration, crash handlers, Windows `shutdown` message, exit-by-draining test | S | H2, H3, `fix/daemon-sigterm` merged | review |
 | **H8** | Worktrees binding over the real `@axis/worktrees`: `WorktreeLocator`, id to path, content hooks, `refuseIfActiveRun`, `reconcile` (new code), `gate/worktrees-confirm.ts`, conformance suite | L | H1, H5, J1 | review |
-| **H9** | Git handlers: commit, pushPlan, push (content hook, last pushed sha), compareUrl; `GitOpsDeps` assembly | M | J1, P1b, H5, H6, H8, `fix/git-ops-bound-commit` merged | review |
+| **H9** | Git handlers: commit, pushPlan, push (content hook, last pushed sha), compareUrl; `GitOpsDeps` assembly | M | J1, P1b, H5, H6, H8, `fix/git-ops-bound-commit` (merged, #47) | review |
 | **H9-scan** | The secret scanner (PSH-1) and its mode, per Q15; the product refuses to register `git.push` without it | M | Q15, H1 | review |
 | **H9-hooks** | **Not built yet.** Host side of the hooks decision: pre-commit and commit-msg in the pty process on a scratch checkout under the lock; closes the ROADMAP hooks gate line | M | H9, B9 channel (or the fake runner) | review |
 | **H10** | `axis.cli-runs` handlers, `bindings/runs.ts` over `RunSupervisor`, `gate/run-trust.ts` (`attestTrust`) | M | P1 merged, H3, H6, H8 | review |
@@ -69,7 +69,7 @@ Order and parallelism:
 - **Later:** E1, X1, W1.
 - **Critical path to the first slice:** H1, H2 and H3, H5, H8, H9 and H10, H12.
 
-FU-GIT-RESOLVE is the follow-up in `docs/packages.md` (on `fix/git-ops-bound-commit`) to replace the separate git resolver in `@axis/worktrees` with the single path the host passes in; it is folded into H2.
+FU-GIT-RESOLVE is the follow-up in `docs/packages.md` (on main, #47) to replace the separate git resolver in `@axis/worktrees` with the single path the host passes in; it is folded into H2.
 
 Merge-conflict note: each contract has its own handler file, protocol file and policy rows; the registry file and the policy table are the shared files (one line per ticket), and the coverage check catches an omission.
 
