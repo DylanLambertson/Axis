@@ -6,6 +6,7 @@ import type { HostConfig } from "./config.js";
 import type { ControlClient } from "./control/client.js";
 import { Disposables, type DisposeResult } from "./disposables.js";
 import { CHALLENGE_PAYLOAD_ALLOWLIST } from "./gate/audit-sink.js";
+import { REVIEW_PAYLOAD_ALLOWLIST } from "./handlers/review-audit.js";
 import { ANCHOR_PAYLOAD_ALLOWLIST } from "./anchor/preflight.js";
 import { DegradedStartError } from "./exit-codes.js";
 import { summarizeError } from "./log/summarize-error.js";
@@ -195,8 +196,8 @@ export function createDaemonHost(config: HostConfig, ports: StartupPorts, option
     const audit = new AuditLog(db, {
       redactor: ports.redactor,
       now: () => new Date(ports.clock.now()),
-      // The challenge rows keep their `method`; the anchor rows keep their one fixed field (a literal, never caller text).
-      payloadAllowlist: { ...CHALLENGE_PAYLOAD_ALLOWLIST, ...ANCHOR_PAYLOAD_ALLOWLIST },
+      // The challenge rows keep their `method`; the anchor rows keep their one fixed field (a literal, never caller text); the review acknowledgement keeps its file id.
+      payloadAllowlist: { ...CHALLENGE_PAYLOAD_ALLOWLIST, ...ANCHOR_PAYLOAD_ALLOWLIST, ...REVIEW_PAYLOAD_ALLOWLIST },
     });
     const check = await checkAnchor(audit, () => ports.control.anchorGet({ timeoutMs: options.anchorTimeoutMs ?? 5_000, signal: startup.signal }));
     alive();
