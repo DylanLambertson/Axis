@@ -123,12 +123,12 @@ export async function checkFresh(deps: ReviewDeps, binding: ReviewBinding): Prom
 
 /**
  * What git-ops' `CommitInput` carries for a bound commit (design §6, G3): the commit the review was made on (a full object id)
- * and the branch it was checked out as, in git-ops' form: the short name (`axis/<slug>`, not `refs/heads/axis/<slug>`), and
- * left out when HEAD was detached. git-ops that predates the fields ignores them.
+ * and the branch it was checked out as, in git-ops' form: the short name (`axis/<slug>`, not `refs/heads/axis/<slug>`). Both are
+ * required: `prepareCommit` refuses a detached HEAD or an unborn branch itself, so there is always a branch to name.
  */
 export interface PinnedCommitInput extends CommitInput {
   readonly expectedParent: string;
-  readonly expectedBranch?: string;
+  readonly expectedBranch: string;
 }
 
 export interface PreparedCommit {
@@ -170,6 +170,9 @@ async function assertNoOperation(deps: ReviewDeps, git: ReviewGit, w: WorktreeRe
 export function prepareCommit(deps: ReviewDeps, binding: ReviewBinding): Promise<PreparedCommit> {
   return mapUnexpected(async () => {
     assertBinding(binding);
+    // Nothing is handed over for a detached HEAD: git-ops commits on a branch only, and a refusal here comes before any git call.
+    // (An unborn branch never gets a binding: `headState` refuses it with `no_head`.)
+    if (binding.branch === null) throw denied("HEAD is detached; commit from a branch", "detached_head");
     const git = await reviewGitFor(deps, binding.worktree);
     // read-tree into the real index would drop skip-worktree bits, so a sparse checkout is not supported (design §14).
     const sparse = await git(["config", "--type=bool", "--get", "core.sparseCheckout"]);
@@ -191,6 +194,7 @@ export function prepareCommit(deps: ReviewDeps, binding: ReviewBinding): Promise
     await assertNoOperation(deps, git, binding.worktree);
     const headNow = await headState(git);
     if (headNow.commit !== binding.head || headNow.branch !== binding.branch) throw conflict("HEAD or the branch moved since the review; review the changes again", "head_moved");
+    const branch = binding.branch.slice("refs/heads/".length);
     return {
       worktree: binding.worktree,
       reviewedTreeHash: binding.reviewedTree,
@@ -210,7 +214,7 @@ export function prepareCommit(deps: ReviewDeps, binding: ReviewBinding): Promise
             message,
             ...(author === undefined ? {} : { author }),
             expectedParent: binding.head,
-            ...(binding.branch === null ? {} : { expectedBranch: binding.branch.slice("refs/heads/".length) }),
+            expectedBranch: branch,
           };
         }),
     };

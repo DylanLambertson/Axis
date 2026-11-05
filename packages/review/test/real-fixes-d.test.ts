@@ -214,22 +214,23 @@ test("handoff() returns git-ops' shape: a full parent id and the short branch na
     assert.equal(asGitOps.reviewedTreeHash, input.reviewedTreeHash);
     assert.equal(input.expectedParent, f.head());
     assert.equal(input.expectedBranch, "axis/feat");
-    assert.equal(input.expectedBranch?.startsWith("refs/"), false);
+    assert.equal(input.expectedBranch.startsWith("refs/"), false);
   } finally {
     f.cleanup();
   }
 });
 
-test("handoff() leaves expectedBranch out, not null, when HEAD is detached", async () => {
+test("a detached HEAD is refused by prepareCommit itself, before any hand-over", async () => {
   const f = fixture();
   try {
     f.git("checkout", "-q", "--detach");
     f.write("a.txt", BASE.replace("l2\n", "L2\n"));
     const s = await ReviewSession.start(f.deps, { worktree: f.wt, against: f.head() });
     s.acceptFile("a.txt");
-    const input = await (await prepareCommit(f.deps, await s.build())).handoff("m");
-    assert.equal("expectedBranch" in input, false);
-    assert.equal(input.expectedParent, f.head());
+    const b = await s.build();
+    const e = await refusal(prepareCommit(f.deps, b));
+    assert.equal(e.details?.["reason"], "detached_head");
+    assert.equal(f.git("diff", "--cached", "--name-only").trim(), "", "the index was not touched");
   } finally {
     f.cleanup();
   }
