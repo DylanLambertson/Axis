@@ -73,3 +73,16 @@ export type ChainHead = z.infer<typeof chainHeadSchema>;
 
 /** Short lower-case reason code such as `anchor_stalled`; never free text. */
 export const reasonCodeSchema = z.string().regex(/^[a-z][a-z0-9_]{0,63}$/);
+
+/**
+ * One line of display text: bounded, no leading or trailing whitespace, and no
+ * control, format (bidi, zero-width) or line-separator characters.
+ */
+export const safeTextSchema = (max: number) =>
+  z
+    .string()
+    .min(1)
+    .max(max)
+    .refine((t) => t === t.trim() && !/[\p{Cc}\p{Cf}\u2028\u2029]/u.test(t), {
+      message: "no leading or trailing whitespace, no control or invisible characters",
+    });

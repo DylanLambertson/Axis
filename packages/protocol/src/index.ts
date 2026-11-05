@@ -9,4 +9,6 @@ export * from "./guard.js";
 export * from "./projects.js";
 export * from "./approvals.js";
 export * from "./audit.js";
+export * from "./cliRuns.js";
+export * from "./providers.js";
 export * from "./contracts.js";

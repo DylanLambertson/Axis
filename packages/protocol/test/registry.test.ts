@@ -40,6 +40,11 @@ const EXPECTED: readonly Row[] = [
   ["axis.audit", "status", "read", 0, "none", 5_000],
   ["axis.audit", "list", "read", 1, "none", 10_000],
   ["axis.audit", "verify", "read", 1, "none", 30_000],
+  ["axis.cli-runs", "start", "write", 2, "required", 30_000],
+  ["axis.cli-runs", "stop", "write", 2, "required", 15_000],
+  ["axis.cli-runs", "get", "read", 0, "none", 5_000],
+  ["axis.cli-runs", "list", "read", 0, "none", 10_000],
+  ["axis.providers", "list", "read", 0, "none", 10_000],
 ];
 
 function actualRows(): Row[] {

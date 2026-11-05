@@ -2,8 +2,10 @@
 import { APPROVALS_CONTRACT, APPROVALS_VERSION, approvalsMethods } from "./approvals.js";
 import { permissionTierSchema } from "./challenge.js";
 import { AUDIT_CONTRACT, AUDIT_VERSION, auditMethods } from "./audit.js";
+import { CLI_RUNS_CONTRACT, CLI_RUNS_VERSION, cliRunsMethods } from "./cliRuns.js";
 import { MAX_TIMEOUT_MS, methodNameSchema } from "./envelope.js";
 import { PROJECTS_CONTRACT, PROJECTS_VERSION, projectsMethods } from "./projects.js";
+import { PROVIDERS_CONTRACT, PROVIDERS_VERSION, providersMethods } from "./providers.js";
 import { contractIdSchema, contractVersionSchema } from "./version.js";
 import { WORKTREES_CONTRACT, WORKTREES_VERSION, worktreesMethods, type MethodSpec } from "./worktrees.js";
 
@@ -21,6 +23,8 @@ export const contracts: Table = Object.freeze({
   [`${PROJECTS_CONTRACT}/${PROJECTS_VERSION}`]: frozen(projectsMethods),
   [`${APPROVALS_CONTRACT}/${APPROVALS_VERSION}`]: frozen(approvalsMethods),
   [`${AUDIT_CONTRACT}/${AUDIT_VERSION}`]: frozen(auditMethods),
+  [`${CLI_RUNS_CONTRACT}/${CLI_RUNS_VERSION}`]: frozen(cliRunsMethods),
+  [`${PROVIDERS_CONTRACT}/${PROVIDERS_VERSION}`]: frozen(providersMethods),
 });
 
 const SIDE_EFFECTS: ReadonlySet<unknown> = new Set(["none", "read", "write", "network", "destructive", "credential"]);
