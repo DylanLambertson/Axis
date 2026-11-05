@@ -93,11 +93,52 @@ test("an abandoned disposer that rejects later does not become an unhandled reje
   assert.deepEqual(seen, []);
 });
 
-test("itemTimeoutMs 0 waits as long as the disposer takes; bad options are refused", async () => {
+test("itemTimeoutMs 0 means the default (5 s), never unbounded; bad options are refused", async (t) => {
+  for (const t0 of [-1, 1.5, NaN, 600_001]) assert.throws(() => new Disposables({ itemTimeoutMs: t0 }), AxisError);
+  t.mock.timers.enable({ apis: ["setTimeout"] });
   const d = new Disposables({ itemTimeoutMs: 0 });
-  d.add(async () => { await wait(40); }, "slow");
-  assert.equal((await d.dispose()).disposed, 1);
-  for (const t of [-1, 1.5, NaN, 600_001]) assert.throws(() => new Disposables({ itemTimeoutMs: t }), AxisError);
+  d.add(() => new Promise<void>(() => undefined), "hangs");
+  let result: unknown;
+  const run = d.dispose().then((r) => (result = r));
+  for (let i = 0; i < 5; i++) await Promise.resolve();
+  t.mock.timers.tick(4_999);
+  for (let i = 0; i < 5; i++) await Promise.resolve();
+  assert.equal(result, undefined, "still waiting just before 5 s");
+  t.mock.timers.tick(1);
+  await run;
+  assert.deepEqual(result, { disposed: 0, failures: [{ label: "hangs", error: "timeout" }] });
+});
+
+test("a disposer that calls dispose() does not wait for itself", async () => {
+  for (const itemTimeoutMs of [0, 5_000, 200]) {
+    const d = new Disposables({ itemTimeoutMs });
+    const order: string[] = [];
+    let nested: unknown;
+    d.add(() => void order.push("first"), "first");
+    d.add(async () => {
+      nested = await d.dispose();
+      await Promise.resolve().then(() => d.dispose());
+      await wait(1);
+      await d.dispose();
+      order.push("shutdown");
+    }, "shutdown");
+    const started = Date.now();
+    const r = await d.dispose();
+    assert.ok(Date.now() - started < 150, `stalled ${Date.now() - started} ms (timeout ${itemTimeoutMs})`);
+    assert.deepEqual(order, ["shutdown", "first"]);
+    assert.deepEqual(nested, { disposed: 0, failures: [] });
+    assert.deepEqual(r, { disposed: 2, failures: [] });
+  }
+});
+
+test("another registry's dispose() from inside a disposer still waits for that registry", async () => {
+  const outer = new Disposables();
+  const inner = new Disposables();
+  const order: string[] = [];
+  inner.add(async () => { await wait(10); order.push("inner"); }, "inner");
+  outer.add(async () => { await inner.dispose(); order.push("outer"); }, "outer");
+  await outer.dispose();
+  assert.deepEqual(order, ["inner", "outer"]);
 });
 
 test("the unregister handle runs one disposer once and removes it", async () => {

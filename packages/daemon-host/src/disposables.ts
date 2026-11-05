@@ -1,4 +1,5 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
+import { AsyncLocalStorage } from "node:async_hooks";
 import { AxisError } from "@axis/audit";
 import { summarizeError, type ErrorSummary } from "./log/summarize-error.js";
 
@@ -31,12 +32,14 @@ export interface ListenerTarget {
 }
 
 export interface DisposablesOptions {
-  /** A disposer that has not settled after this long is abandoned and reported (default 5000; 0 disables). */
+  /** A disposer that has not settled after this long is abandoned and reported (default 5000; 0 means the default, never unbounded). */
   readonly itemTimeoutMs?: number;
 }
 
 const LABEL = /^[a-z][a-z0-9._:-]{0,63}$/;
 const DEFAULT_ITEM_TIMEOUT_MS = 5_000;
+/** Set while a disposer of this registry runs, so a disposer that calls `dispose()` is recognised. */
+const running = new AsyncLocalStorage<Disposables>();
 const MAX_ENTRIES = 10_000;
 
 interface Entry {
@@ -52,7 +55,7 @@ export class Disposables {
   constructor(options: DisposablesOptions = {}) {
     const t = options.itemTimeoutMs ?? DEFAULT_ITEM_TIMEOUT_MS;
     if (!Number.isInteger(t) || t < 0 || t > 600_000) throw new AxisError("E_INVALID_ARGUMENT", "Invalid itemTimeoutMs");
-    this.#itemTimeoutMs = t;
+    this.#itemTimeoutMs = t === 0 ? DEFAULT_ITEM_TIMEOUT_MS : t;
   }
 
   /** Entries not yet disposed. */
@@ -66,7 +69,8 @@ export class Disposables {
   }
 
   /**
-   * Register a disposer. The returned function runs and unregisters just this one (once). On a registry that is
+   * Register a disposer. The returned function runs and unregisters just this one (once); an error from the disposer reaches its caller as
+   * thrown, so a caller that logs it must use `summarizeError`. On a registry that is
    * already disposed, the disposer runs immediately, because the caller already created the resource, and the call
    * then throws: something started work after shutdown began.
    */
@@ -138,6 +142,9 @@ export class Disposables {
    * like registering after it (see `add`).
    */
   dispose(): Promise<DisposeResult> {
+    // A disposer that calls `dispose()` would wait for itself. It gets an empty result at once instead: the run it
+    // belongs to is already underway and will dispose everything else.
+    if (running.getStore() === this) return Promise.resolve(Object.freeze({ disposed: 0, failures: Object.freeze([]) }));
     this.#pending ??= this.#run();
     return this.#pending;
   }
@@ -156,11 +163,7 @@ export class Disposables {
   async #runOne(fn: DisposeFn): Promise<"ok" | ErrorSummary | "timeout"> {
     let timer: NodeJS.Timeout | undefined;
     try {
-      const work = Promise.resolve().then(fn);
-      if (this.#itemTimeoutMs === 0) {
-        await work;
-        return "ok";
-      }
+      const work = running.run(this, () => Promise.resolve().then(fn));
       const timeout = new Promise<"timeout">((resolve) => {
         // Not unref'ed: while a disposer hangs, this timer is what keeps the process alive to abandon it. It is
         // always cleared below, so it cannot outlive the call.
