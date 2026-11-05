@@ -38,7 +38,7 @@ export interface SignalHandle {
  * after that gets the default behaviour back. Never throws.
  */
 export function installShutdownSignals(daemon: ShutdownCapable, options: SignalOptions): SignalHandle {
-  const source: SignalSource = options.source ?? process;
+  const source: SignalSource = options.source ?? { on: (signal, listener) => process.on(signal, listener), off: (signal, listener) => process.off(signal, listener) };
   const signals = [...new Set(options.signals ?? (["SIGTERM", "SIGINT"] as const))];
   let seen = 0;
   let disposed = false;

@@ -1,9 +1,11 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import {
   ERROR_CODES,
   PROTOCOL_VERSION,
+  ZOD_VERSION,
   cancelEnvelopeSchema,
   boundedJsonSchema,
   inspectMessage,
@@ -405,6 +407,13 @@ test("idempotency is required per method and is a daemon-side check", () => {
   // the envelope itself accepts a request with no key, so the daemon must check
   const { idempotencyKey: _k, ...noKey } = goodRequest;
   assert.equal(requestEnvelopeSchema.safeParse(noKey).success, true);
+});
+
+test("ZOD_VERSION is the pinned zod", () => {
+  const pkg = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")) as {
+    dependencies: { zod: string };
+  };
+  assert.equal(ZOD_VERSION, pkg.dependencies.zod);
 });
 
 test("inspectMessage: accessor properties are refused", () => {
