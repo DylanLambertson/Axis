@@ -6,7 +6,6 @@ import { delimiter, join } from "node:path";
 import { mock, test } from "node:test";
 import { createDaemonHost, createUptimeClock, resolveGitOnce, type Clock } from "../src/index.js";
 import { hostFixture } from "../testing/host-fixture.js";
-import { wait } from "./helpers.js";
 
 const EXE = process.platform === "win32" ? "git.exe" : "git";
 
@@ -97,7 +96,7 @@ test("uptime clock: monotone, a forward jump is clamped, backwards and invalid r
 
 test("the host feeds the idempotency store a bounded clock: a monotonic jump does not expire a key early", async () => {
   let mono = 0;
-  const fix = hostFixture({ clock: { now: () => Date.now(), monotonic: () => mono } });
+  const fix = hostFixture({ clock: { now: () => 1_700_000_000_000, monotonic: () => mono } });
   const host = createDaemonHost(fix.config, fix.ports);
   try {
     const s = await host.start();
@@ -114,7 +113,6 @@ test("the host feeds the idempotency store a bounded clock: a monotonic jump doe
     await host.stop();
     fix.cleanup();
   }
-  await wait(1);
 });
 
 test("uptime clock: a source whose first sample fails starts counting at the first good one", () => {
@@ -127,7 +125,7 @@ test("uptime clock: a source whose first sample fails starts counting at the fir
 
 test("honest idle time is counted: the one-minute tick keeps steps small, so a key expires after 24 h of uptime", async () => {
   let mono = 0;
-  const fix = hostFixture({ clock: { now: () => Date.now(), monotonic: () => mono } });
+  const fix = hostFixture({ clock: { now: () => 1_700_000_000_000, monotonic: () => mono } });
   mock.timers.enable({ apis: ["setInterval"] });
   const host = createDaemonHost(fix.config, fix.ports);
   try {

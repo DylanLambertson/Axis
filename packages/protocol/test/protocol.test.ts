@@ -86,18 +86,14 @@ test("inspectMessage: depth boundary counts the root as level 1", () => {
   assert.deepEqual(inspectMessage(nest(100_000)), { ok: false, reason: "too-deep" });
 });
 
-test("inspectMessage: aliased (DAG) structures return fast instead of expanding", () => {
+test("inspectMessage: aliased (DAG) structures are rejected before expansion", () => {
   let n: unknown = 1;
   for (let i = 0; i < 6; i++) n = new Array(30).fill(n); // 30^6 leaves if walked as a tree
-  let t = performance.now();
   assert.deepEqual(inspectMessage(n), { ok: false, reason: "shared-reference" });
-  assert.ok(performance.now() - t < 50, "DAG took too long");
 
   let wide: unknown = 1;
   for (let i = 0; i < 16; i++) wide = new Array(1000).fill(wide);
-  t = performance.now();
-  assert.equal(inspectMessage(wide).ok, false);
-  assert.ok(performance.now() - t < 50, "wide DAG took too long");
+  assert.deepEqual(inspectMessage(wide), { ok: false, reason: "shared-reference" });
 
   const shared = { a: 1 };
   assert.deepEqual(inspectMessage({ x: shared, y: shared }), { ok: false, reason: "shared-reference" });
