@@ -50,6 +50,9 @@ export function importSpecifiers(source) {
  */
 const JOURNAL_SUBPATHS = new Map([["@axis/journal/daemon-principal", new Set(["daemon"])]]);
 
+/** The trust attestation is minted by the daemon's connection layer from main's attestation (threat model TRU-2). */
+const RUNS_SUBPATHS = new Map([["@axis/runs/daemon-attestation", new Set(["daemon"])]]);
+
 /**
  * Why a specifier is not allowed in `pkg`, or null when it is. The node:*
  * ban for contract packages (D2.4) applies to shipped sources under `src/`;
@@ -70,6 +73,11 @@ export function violation(pkg, spec, file = null, pkgDir = null) {
   if (spec.startsWith("@axis/journal/")) {
     const allowed = JOURNAL_SUBPATHS.get(spec);
     if (allowed === undefined) return "deep imports into @axis/journal are not allowed";
+    return allowed.has(pkg) ? null : "this subpath may only be imported by the daemon integration code";
+  }
+  if (spec.startsWith("@axis/runs/")) {
+    const allowed = RUNS_SUBPATHS.get(spec);
+    if (allowed === undefined) return "deep imports into @axis/runs are not allowed";
     return allowed.has(pkg) ? null : "this subpath may only be imported by the daemon integration code";
   }
   if (spec.startsWith("@axis/")) return null;
@@ -203,6 +211,23 @@ test("scanner: the user-principal subpath is restricted to the daemon; other jou
   assert.notEqual(violation("daemon", "@axis/journal/src/principal"), null);
   // Other packages' own subpaths stay allowed, as on main.
   assert.equal(violation("daemon", "@axis/providers/contract"), null);
+});
+
+test("scanner: the trust-attestation subpath is restricted to the daemon; other runs deep imports are refused", () => {
+  assert.equal(violation("daemon", "@axis/runs"), null);
+  assert.equal(violation("daemon", "@axis/runs/daemon-attestation"), null);
+  for (const pkg of ["protocol", "audit", "journal", "runs", "git-ops", "pty-policy", "providers", "challenge"]) {
+    assert.notEqual(violation(pkg, "@axis/runs/daemon-attestation"), null, pkg);
+  }
+  assert.notEqual(violation("daemon", "@axis/runs/dist/src/attestation.js"), null);
+  assert.notEqual(violation("daemon", "@axis/runs/src/attestation"), null);
+});
+
+test("the runs package root does not export the attestation minting function", () => {
+  const json = JSON.parse(readFileSync(join(packagesDir, "runs", "package.json"), "utf8"));
+  assert.deepEqual(Object.keys(json.exports).sort(), [".", "./daemon-attestation"]);
+  const index = readFileSync(join(packagesDir, "runs", "src", "index.ts"), "utf8");
+  assert.ok(!/attestTrust|daemon-attestation|MINT/.test(index), "src/index.ts must not expose the minting function");
 });
 
 test("the journal package root exports the principal subpath only through package.json exports", () => {
