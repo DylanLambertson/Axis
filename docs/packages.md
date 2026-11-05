@@ -170,9 +170,19 @@ npm test            # clean build (scripts/clean-dist.mjs), then node --test "di
 
 - `<name>/**`: the package's `src/**/*.ts` with `@axis/*` and `zod` imports rewritten to relative paths;
 - `vendor/zod/**`: the ESM JavaScript and declarations of zod reachable from its entry, taken from the repository's `node_modules` (run `npm ci --ignore-scripts` first);
-- `stage-manifest.json`: SHA-256 of every staged file.
+- `stage-manifest.json`: SHA-256 of every staged file and its source, and `treeSha256` over all of them.
+
+The hook is an allowlist: only regular `packages/<name>/src/**/*.ts` files and zod's files are read, never through a link, and anything else (links, `node_modules`, `dist`, `.d.ts`, other extensions, tests in `src`, files dated in the future or changed while staging) fails the run and leaves no staged output. Put a package's test-support code outside `src/` (as `@axis/providers` does with `contract/`) so it is never staged. A package can export a subpath to other packages only if `exports` maps it to `./dist/src/<file>.js`.
 
 The overlay entry `vs/axis/daemon/node/axisDaemonMain` imports `../../packages/protocol/index.js`, and patch `0200-axis-daemon-entry.patch` lists it in `build/next/index.ts`. Why zod is vendored: see ADR 0005 D3.
+
+After `apply.sh`, on a built tree, check the result:
+
+```bash
+node scripts/code-oss/check-staged.mjs --tree "$AXIS_CODE_OSS_VENDOR_DIR/code-oss"
+```
+
+It verifies the staged files against the manifest, type-checks `src/vs/axis` with the tree's own compiler and flags, bundles the daemon entry and every staged package with the tree's esbuild, and checks the module graph (zod 4.6.6 vendored, never the tree's 4.4.3; the user principal and the trust attestation reached only from `daemon`). `scripts/code-oss/stage-packages.mjs --tree <tree> --verify` re-checks the staged files alone.
 
 ## Calling `@axis/worktrees` from the daemon
 
