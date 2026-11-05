@@ -1,22 +1,20 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
-
-/** A database the host opened. Opaque here: only the storage layer (ticket H2) knows what is behind it. */
-export interface DatabaseHandle {
-  close(): void;
-}
+import type { DatabaseSync, InstanceLock } from "@axis/audit";
 
 /** The held data directory: its path, with the exclusive instance lock taken until `release`. */
 export interface DataDirectory {
   readonly path: string;
+  /** The proof of the held lock that `Journal.recover` and the idempotency store's `recover` require. */
+  readonly lock: InstanceLock;
   /** Open `axis.db` in the directory. One handle is shared by the journal, the audit log and the idempotency store. */
-  openDatabase(): DatabaseHandle;
+  openDatabase(): DatabaseSync;
   /** Drop the lock. The host calls it only when no handler is still running (design section 8, step 5). */
   release(): void;
 }
 
 /**
- * The filesystem seam of the host: the instance lock, the data directory checks and the database. `createHost`
- * takes it as an argument, so tests can run the host without touching a real directory.
+ * The filesystem seam of the host: the instance lock, the data directory checks and the database. `createDaemonHost`
+ * takes it as an argument, so tests can run the host on a temporary directory or on a fake lock policy.
  */
 export interface StoragePort {
   /**
