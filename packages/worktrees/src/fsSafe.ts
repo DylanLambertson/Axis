@@ -119,7 +119,9 @@ const GONE = new Set(['ENOENT', 'ENOTDIR', 'ELOOP', 'EMLINK', 'ENXIO', 'EISDIR',
  * the path must still name that inode. Resolves to the byte count, or null when
  * any of this does not hold (the caller treats the file as changed).
  * Residual (no openat in Node): a parent directory swapped for a symlink and
- * back again around the open is caught only by the identity checks.
+ * back again around the open is caught only by the identity checks. A hard
+ * link (nlink > 1) to a file outside is read as that file; making one needs
+ * access to it already, so this is left to the Phase 3 sandbox.
  */
 export async function readPinnedFile(
   root: string, rel: string, expect: FileIdentity, maxBytes: number, onChunk: (chunk: Buffer) => void,

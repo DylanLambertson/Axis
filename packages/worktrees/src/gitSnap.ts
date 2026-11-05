@@ -1,8 +1,9 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
+import { readPinnedFile } from './fsSafe.js';
 import { isOutsideRel } from './pathGuard.js';
 
 /** Stored `text` is capped so a huge hook cannot bloat the baseline. */
@@ -135,18 +136,34 @@ async function hashFile(abs: string, rel: string, out: Record<string, GitSnapFil
   } catch {
     return;
   }
-  if (st.isDirectory()) return;
-  let buf: Buffer;
-  if (st.isSymbolicLink()) buf = Buffer.from('symlink:' + (await fs.readlink(abs)));
-  else if (st.isFile()) buf = await fs.readFile(abs);
-  else return;
-  const isText = buf.length <= MAX_TEXT_BYTES && !buf.includes(0);
-  out[rel] = {
-    sha256: createHash('sha256').update(buf).digest('hex'),
-    size: buf.length,
-    exec: (st.mode & 0o111) !== 0,
-    ...(isText ? { text: buf.toString('utf8') } : {}),
-  };
+  const exec = (st.mode & 0o111) !== 0;
+  if (st.isSymbolicLink()) {
+    const buf = Buffer.from('symlink:' + (await fs.readlink(abs)));
+    const isText = buf.length <= MAX_TEXT_BYTES && !buf.includes(0);
+    out[rel] = { sha256: createHash('sha256').update(buf).digest('hex'), size: buf.length, exec, ...(isText ? { text: buf.toString('utf8') } : {}) };
+    return;
+  }
+  if (!st.isFile()) return;
+  // Agent-writable: never a blocking open, never through a link, never more than lstat saw (NS-5, R4-1).
+  const h = createHash('sha256');
+  const head: Buffer[] = [];
+  let kept = 0;
+  const n = await readPinnedFile(path.dirname(abs), path.basename(abs), st, st.size, (c) => {
+    h.update(c);
+    if (kept <= MAX_TEXT_BYTES) {
+      head.push(c);
+      kept += c.length;
+    }
+  });
+  if (n === null) {
+    // It stopped being the lstat-ed regular file (swapped, a FIFO or link put in, grown). Record a
+    // random digest: it matches no content and no later read, so the file always shows as drift.
+    out[rel] = { sha256: createHash('sha256').update(randomBytes(32)).digest('hex'), size: 0, exec, text: '<changed while it was read>' };
+    return;
+  }
+  const buf = Buffer.concat(head);
+  const isText = n <= MAX_TEXT_BYTES && !buf.includes(0);
+  out[rel] = { sha256: h.digest('hex'), size: n, exec, ...(isText ? { text: buf.toString('utf8') } : {}) };
 }
 
 async function walk(dir: string, rel: string, out: Record<string, GitSnapFile>): Promise<void> {
