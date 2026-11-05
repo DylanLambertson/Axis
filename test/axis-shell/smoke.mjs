@@ -1,11 +1,13 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
-// Keyboard-only smoke test of the Axis Agent view shell (ADR 0004 Phase 0
-// gate items 1 and 3; docs/UX.md view switching and focus rules). It attaches
-// to a running Axis development build started with --remote-debugging-port on
-// the demo repository of scripts/code-oss/shell-demo-fixture.sh, drives it
-// with key events only (the split mode setting is written to the user
-// settings file, as a user would), asserts what renders and where focus goes,
-// and saves a screenshot per step.
+// Keyboard smoke test of the Axis Agent view shell (ADR 0004 Phase 0 gate
+// items 1 and 3; docs/UX.md view switching and focus rules). It attaches to a
+// running Axis development build started with --remote-debugging-port on the
+// demo repository of scripts/code-oss/shell-demo-fixture.sh. Every action is
+// a key event (Input.dispatchKeyEvent) or typed text (Input.insertText, in the
+// editor and the command palette); the page is only read, never clicked or
+// focused by script. The one exception is the split mode setting, which the
+// test writes to the user settings file, as a user editing it would. It
+// asserts what renders and where focus goes and saves a screenshot per step.
 //
 // Usage: node test/axis-shell/smoke.mjs --port <n> --out <dir> --settings <user settings.json> [--app-path <tree>]
 // With --app-path (the Code OSS tree the app runs from), the Node utility
@@ -27,10 +29,35 @@ if (!args.port || !args.out || !args.settings) {
   process.exit(2);
 }
 
+/**
+ * The DevTools port must listen on loopback only. Chromium binds 127.0.0.1 for
+ * --remote-debugging-port, and Electron ignores --remote-debugging-address, so
+ * this is checked rather than requested. Linux only (/proc/net); elsewhere it is skipped.
+ */
+async function assertLoopbackOnly(port) {
+  const hexPort = port.toString(16).toUpperCase().padStart(4, "0");
+  const loopback = new Set(["0100007F", "00000000000000000000000001000000"]);
+  let found = 0;
+  for (const table of ["/proc/net/tcp", "/proc/net/tcp6"]) {
+    const text = await readFile(table, "utf8").catch(() => undefined);
+    if (text === undefined) {
+      continue;
+    }
+    for (const line of text.split("\n").slice(1)) {
+      const [, local, , state] = line.trim().split(/\s+/);
+      if (state === "0A" && local?.endsWith(`:${hexPort}`)) {
+        found++;
+        assert.ok(loopback.has(local.split(":")[0]), `the DevTools port listens beyond loopback: ${local}`);
+      }
+    }
+  }
+  console.log(found ? `     DevTools port ${port} listens on loopback only` : `     DevTools port binding not checked (no /proc/net)`);
+}
 const AXIS = ["Control", "Shift", "Alt"]; // Windows and Linux defaults (docs/UX.md); macOS differs
 const out = args.out;
 await mkdir(out, { recursive: true });
 const cdp = await connect(Number(args.port));
+await assertLoopbackOnly(Number(args.port));
 const results = [];
 let shot = 0;
 
@@ -49,8 +76,8 @@ async function step(name, body) {
   }
 }
 
-/** Page-side helpers, installed once. */
-await cdp.eval(`(() => {
+/** Page-side read-only helpers; installed now and on every new document, so a reload during startup does not lose them. */
+const HELPERS = `(() => {
   const shown = el => !!el && el.getClientRects().length > 0 && el.getBoundingClientRect().width > 2;
   window.__axis = {
     shown,
@@ -72,7 +99,10 @@ await cdp.eval(`(() => {
     rect: id => { const r = document.getElementById(id)?.getBoundingClientRect(); return r && { x: Math.round(r.x), w: Math.round(r.width) }; },
   };
   return true;
-})()`);
+})()`;
+await cdp.send("Page.enable");
+await cdp.send("Page.addScriptToEvaluateOnNewDocument", { source: HELPERS });
+await cdp.eval(HELPERS);
 const page = (expr) => cdp.eval(`window.__axis.${expr}`);
 
 /** Pids of the app's Node utility processes (the extension host is one), or undefined without --app-path. */
@@ -88,11 +118,26 @@ function nodeServicePids() {
     .join(",");
 }
 
+/** Sets axis.view.mode in the user settings file. The test profile's file is plain JSON (no comments); anything else is refused. */
 async function setMode(mode) {
-  const current = JSON.parse(await readFile(args.settings, "utf8").catch(() => "{}"));
+  const text = await readFile(args.settings, "utf8").catch(() => "{}");
+  let current;
+  try {
+    current = JSON.parse(text);
+  } catch {
+    throw new Error(`${args.settings} is not plain JSON; use a fresh test profile`);
+  }
   current["axis.view.mode"] = mode;
   await writeFile(args.settings, JSON.stringify(current, null, "\t"));
-  await cdp.waitFor(`document.querySelector('.monaco-workbench') && true`);
+}
+
+/** Runs a command through the command palette, by keys and typed text. */
+async function runCommand(title) {
+  await cdp.press("p", ["Control", "Shift"]);
+  await cdp.waitFor("!!document.querySelector('.quick-input-widget input:focus')", { what: "the command palette" });
+  await cdp.type(title);
+  await cdp.waitFor(`[...document.querySelectorAll('.quick-input-list .monaco-list-row.focused')].some(r => r.textContent.includes(${JSON.stringify(title)}))`, { what: `palette entry ${title}` });
+  await cdp.press("Enter");
 }
 
 try {
@@ -110,7 +155,7 @@ try {
   });
 
   await step("keyboard-open-workspace", async () => {
-    await cdp.eval(`document.querySelector('.axis-dashboard-row[tabindex="0"]').focus(), true`);
+    assert.ok(await page("focusInAgent()"), "startup focus is on the dashboard");
     await cdp.press("Home");
     // Down to fix-login: find its index in the dashboard order.
     const rows = await page("rows()");
@@ -188,7 +233,7 @@ try {
     const editor = await page("rect('workbench.parts.editor')");
     const agent = await page("rect('axis.parts.agent')");
     assert.ok(agent.x >= editor.x + editor.w - 2, `agent half right of the IDE half: ${JSON.stringify({ editor, agent })}`);
-    await cdp.eval("window.__axis.agent().querySelector('.axis-split-title') !== null");
+    assert.ok(await cdp.eval("window.__axis.agent().querySelector('.axis-split-title') !== null"), "the agent half has its split header");
   });
 
   await step("split-toggle-moves-focus", async () => {
@@ -201,17 +246,23 @@ try {
   });
 
   await step("split-collapse-ide-and-file-click", async () => {
-    await cdp.eval("window.__axis.agent().querySelector('.axis-split-button.collapse-ide').click(), true");
+    await runCommand("Collapse or Expand the IDE Pane");
     await cdp.waitFor("window.__axis.agentShown() && !window.__axis.editorShown()", { what: "IDE half collapsed" });
     await cdp.waitFor("window.__axis.treeRows().length > 0", { what: "the file tree" });
-    await cdp.eval("[...document.querySelectorAll('.axis-file-tree-row')].find(r => r.textContent === 'README.md').focus(), true");
+    await cdp.waitFor("window.__axis.focusInAgent()", { what: "focus in the agent half" });
+    // The tree is the workspace view's primary region; walk it with the arrow keys to README.md.
+    await cdp.press("Home");
+    for (let i = 0; i < 20 && (await page("activeLabel()")) !== "README.md"; i++) {
+      await cdp.press("ArrowDown");
+    }
+    assert.equal(await page("activeLabel()"), "README.md", "README.md reached by keys");
     await cdp.press("Enter");
     await cdp.waitFor("window.__axis.editorShown() && window.__axis.agentShown()", { what: "the IDE half expanded, no view switch" });
     await cdp.waitFor("window.__axis.activeTab().includes('README.md')", { what: "README.md open in the IDE half" });
   });
 
   await step("split-collapse-agent-f6", async () => {
-    await cdp.eval("window.__axis.agent().querySelector('.axis-split-button.collapse-agent').click(), true");
+    await runCommand("Collapse or Expand the Agent Pane");
     await cdp.waitFor("window.__axis.agentCollapsed()", { what: "agent half collapsed" });
     const agent = await page("rect('axis.parts.agent')");
     assert.ok(agent.w <= 40, `collapsed strip is thin: ${agent.w}`);
