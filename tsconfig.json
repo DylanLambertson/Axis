@@ -16,6 +16,7 @@
     { "path": "packages/runs" },
     { "path": "packages/broker" },
     { "path": "packages/review" },
-    { "path": "packages/git-snapshot" }
+    { "path": "packages/git-snapshot" },
+    { "path": "packages/secret-scan" }
   ]
 }

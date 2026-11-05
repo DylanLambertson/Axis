@@ -185,6 +185,14 @@ test("S-2: the patch is taken with --text and binary paths are parsed from numst
   assert.ok(statCall && !sub(statCall.argv).includes("--text"), "numstat must not use --text or git would count binary files as text");
 });
 
+test("the scanner is told which binary paths the user allowed", async () => {
+  const stat = (s: string[]) => (s[0] === "diff-tree" && s.includes("--numstat") ? { stdout: "-\t-\tkey.p12\0" } : undefined);
+  const seen: [string, readonly string[]][] = [];
+  const scanner = async (_d: string, m: { part: string; allowedBinaryPaths?: readonly string[] }) => { seen.push([m.part, [...(m.allowedBinaryPaths ?? [])]]); return []; };
+  await planPush(makeDeps(new FakeRunner(healthy(stat)), { scanner, scanMode: "refuse" }), { ...input, allowedBinaryPaths: ["key.p12"] });
+  assert.deepEqual(seen.filter(([part]) => part === "patch"), [["patch", ["key.p12"]]]);
+});
+
 test("S-8: a patch past the size limit fails closed: refused in refuse mode, confirmation in warn mode", async () => {
   const big = "+x\n".repeat(MAX_DIFF);
   const runner = () => new FakeRunner(healthy((s) => (s[0] === "diff-tree" && !s.includes("--numstat") ? { stdout: big } : undefined)));

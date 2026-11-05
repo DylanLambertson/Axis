@@ -59,6 +59,8 @@ export interface ScanMeta {
   readonly commit: string;
   /** Paths git treats as binary in this commit (a NUL byte, a `-diff` attribute or key material). Content is still passed with --text. */
   readonly binaryPaths: readonly string[];
+  /** `PushInput.allowedBinaryPaths`: the user said these binary files may go unscanned. Exact paths; a scanner reports them as unscanned never. */
+  readonly allowedBinaryPaths?: readonly string[];
   /**
    * What `diff` holds: the commit's patch, or its raw commit object (author, committer and message). The scanner is
    * called once for each, per commit, and must treat "message" as plain text rather than a diff.
