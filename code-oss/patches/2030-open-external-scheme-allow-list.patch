@@ -1,7 +1,7 @@
 diff --git a/src/vs/platform/native/common/native.ts b/src/vs/platform/native/common/native.ts
 --- a/src/vs/platform/native/common/native.ts
 +++ b/src/vs/platform/native/common/native.ts
-@@ -503,6 +503,25 @@ export type ThermalState = 'unknown' | 'nominal' | 'fair' | 'serious' | 'critica
+@@ -503,6 +503,30 @@ export type ThermalState = 'unknown' | 'nominal' | 'fair' | 'serious' | 'critica
   */
  export type PowerSaveBlockerType = 'prevent-app-suspension' | 'prevent-display-sleep';
  
@@ -9,13 +9,18 @@ diff --git a/src/vs/platform/native/common/native.ts b/src/vs/platform/native/co
 +/** Threat model EL-5: the only URL schemes that openExternal hands to the operating system. */
 +export const AXIS_OPEN_EXTERNAL_ALLOWED_SCHEMES: readonly string[] = ['http', 'https', 'mailto'];
 +
++/** Schemes a refusal log line may name. Any other scheme is logged as 'invalid'. */
++const AXIS_LOGGABLE_SCHEMES: ReadonlySet<string> = new Set([
++	'http', 'https', 'mailto', 'file', 'ftp', 'sftp', 'ssh', 'smb', 'vscode', 'vscode-insiders', 'axis', 'data', 'javascript', 'tel', 'sms'
++]);
++
 +/**
-+ * What a log line may say about a refused URL: its scheme when that is a valid scheme token of at most 32
-+ * characters, and nothing else, because any other part of a URL can carry tokens or line breaks.
++ * What a log line may say about a refused URL: its scheme when it is a known one, and nothing else, because any
++ * other part of a URL, or an unknown scheme-shaped prefix, can carry tokens, data or line breaks.
 + */
 +export function axisOpenExternalSchemeForLog(url: string): string {
 +	const scheme = /^([a-z][a-z0-9+.-]{0,15}):/i.exec(url)?.[1].toLowerCase();
-+	return scheme ?? 'invalid';
++	return scheme !== undefined && AXIS_LOGGABLE_SCHEMES.has(scheme) ? scheme : 'invalid';
 +}
 +
 +export function axisIsAllowedOpenExternalUrl(url: string): boolean {

@@ -24,13 +24,12 @@ suite('Axis openExternal allow-list', () => {
 		}
 	});
 
-	test('logs only a valid scheme, never another part of the URL', () => {
+	test('logs only a known scheme, never another part of the URL', () => {
 		assert.strictEqual(axisOpenExternalSchemeForLog('FILE:///etc/passwd'), 'file');
 		assert.strictEqual(axisOpenExternalSchemeForLog('vscode://file/a'), 'vscode');
-		// A token is capped at 16 characters, so a scheme-shaped token cannot carry data.
-		assert.strictEqual(axisOpenExternalSchemeForLog(`${'a'.repeat(16)}:rest`), 'a'.repeat(16));
-		assert.strictEqual(axisOpenExternalSchemeForLog('x-apple.systempreferences:com.apple.preference.security'), 'invalid');
-		for (const url of ['//evil.example/cb?access_token=SECRET:1', 'x\n[info] forged line\ny:1', '', 'no scheme', ' file:///a', `${'a'.repeat(17)}:rest`, '1abc:rest']) {
+		// An unknown scheme-shaped token, even a short valid one, is not logged: it could be a token prefix.
+		for (const url of ['ghp_abc123:rest', 'x-apple.systempreferences:com.apple.preference.security', `${'a'.repeat(17)}:rest`,
+			'//evil.example/cb?access_token=SECRET:1', 'x\n[info] forged line\ny:1', '', 'no scheme', ' file:///a', '1abc:rest']) {
 			assert.strictEqual(axisOpenExternalSchemeForLog(url), 'invalid', url);
 		}
 	});

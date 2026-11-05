@@ -4,8 +4,9 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { Extensions, IConfigurationRegistry } from '../../../../../platform/configuration/common/configurationRegistry.js';
+import { ConfigurationScope, Extensions, IConfigurationRegistry } from '../../../../../platform/configuration/common/configurationRegistry.js';
 import { Registry } from '../../../../../platform/registry/common/platform.js';
+import '../../../extensions/browser/extensions.contribution.js';
 import { AXIS_DEFAULT_SETTINGS } from '../../browser/axisDefaults.contribution.js';
 
 suite('Axis defaults', () => {
@@ -32,6 +33,12 @@ suite('Axis defaults', () => {
 		assert.strictEqual(AXIS_DEFAULT_SETTINGS['extensions.autoUpdate'], 'off');
 		assert.strictEqual(AXIS_DEFAULT_SETTINGS['extensions.ignoreRecommendations'], true);
 		assert.strictEqual(AXIS_DEFAULT_SETTINGS['extensions.autoCheckUpdates'], false);
+	});
+
+	test('a repository cannot turn extension recommendations back on', () => {
+		// Patch 2060: application scope means a workspace .vscode/settings.json cannot override the default.
+		const property = Registry.as<IConfigurationRegistry>(Extensions.Configuration).getConfigurationProperties()['extensions.ignoreRecommendations'];
+		assert.strictEqual(property.scope, ConfigurationScope.APPLICATION);
 	});
 
 	test('defaults to the Axis themes', () => {
