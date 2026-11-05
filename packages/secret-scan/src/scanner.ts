@@ -3,7 +3,7 @@
 // errors, runs out of time or cannot cover all of the text throws a fixed `SecretScanError`, and git-ops then refuses the push.
 // In `warn` mode the same events become findings (`scanner-error`, `scan-incomplete`) so that the user must confirm them.
 import { scanText } from "./scan.js";
-import { DEFAULT_LIMITS, DEFAULT_SCAN_MODE, SCAN_MODES, SecretScanError, type Finding, type ScanContext, type ScanLimits, type ScanMode, type ScannerOptions } from "./types.js";
+import { DEFAULT_LIMITS, MIN_LINE_LENGTH, DEFAULT_SCAN_MODE, SCAN_MODES, SecretScanError, type Finding, type ScanContext, type ScanLimits, type ScanMode, type ScannerOptions } from "./types.js";
 
 export interface SecretScanner {
   /** Pass as `GitOpsDeps.scanner`. */
@@ -29,7 +29,8 @@ function resolveLimits(o: ScannerOptions): ScanLimits {
     if (!Number.isSafeInteger(v) || v < 1 || v > UPPER[k]) throw new RangeError(`secret scanner option ${k} is out of range`);
     (out as Record<string, number>)[k] = v;
   }
-  if (out.maxLineLength < 64) throw new RangeError("secret scanner option maxLineLength is out of range");
+  // A window must hold the longest match twice over, or a token could straddle two windows and be missed with no flag: fail closed.
+  if (out.maxLineLength < MIN_LINE_LENGTH) throw new RangeError("secret scanner option maxLineLength is out of range");
   return Object.freeze(out);
 }
 

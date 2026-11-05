@@ -90,7 +90,7 @@ function urlPasswordOk(m: RegExpExecArray): boolean {
 }
 
 const KEYWORD =
-  "(api[_-]?key|(?:access|secret|private|auth|signing|encryption|master|client|license|session)[_-]?key|[A-Za-z0-9]{1,30}[_-]key|secret|token|passw(?:or)?d|pwd|credential)";
+  "(api[_-]?key|(?:access|secret|private|auth|signing|encryption|master|client|license|session)[_-]?key|(?<![A-Za-z0-9])[A-Za-z0-9]{1,64}[_-]key|secret|token|passw(?:or)?d|pwd|credential)";
 
 export const CONTENT_RULES: readonly ContentRule[] = Object.freeze([
   { rule: "private-key-block", specific: true, re: /-----BEGIN (?:[A-Z0-9]+ ){0,3}PRIVATE KEY(?: BLOCK)?-----/g },

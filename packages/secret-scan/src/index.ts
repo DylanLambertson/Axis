@@ -6,6 +6,8 @@ export { CONTENT_RULES, isDigestName, isLockFile, isSensitiveFilename, looksRand
 export { shannonEntropy } from "./entropy.js";
 export {
   DEFAULT_LIMITS,
+  MIN_LINE_LENGTH,
+  WINDOW_OVERLAP,
   DEFAULT_SCAN_MODE,
   SCAN_MODES,
   SecretScanError,

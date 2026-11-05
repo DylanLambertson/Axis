@@ -54,6 +54,11 @@ export interface ScannerOptions extends Partial<ScanLimits> {
   readonly now?: () => number;
 }
 
+/** No pattern match is longer than this, so consecutive windows of a long line share this many characters. */
+export const WINDOW_OVERLAP = 4096;
+/** The smallest window: it must hold the longest match twice over, or a token could straddle two windows unseen. */
+export const MIN_LINE_LENGTH = 2 * WINDOW_OVERLAP;
+
 export const DEFAULT_LIMITS: ScanLimits = Object.freeze({
   maxBytes: 16 * 1024 * 1024,
   maxLineLength: 16 * 1024,

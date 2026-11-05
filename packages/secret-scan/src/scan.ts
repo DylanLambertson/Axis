@@ -3,7 +3,7 @@
 // nothing else. No finding, error or log line made here holds any part of the text read.
 import { PatchReader } from "./diff.js";
 import { CONTENT_RULES, firstMatch, isLockFile, isSensitiveFilename, type Budget, type ContentRule } from "./rules.js";
-import type { Finding, IncompleteReason, ScanContext, ScanLimits, ScanOutcome } from "./types.js";
+import { MIN_LINE_LENGTH, WINDOW_OVERLAP, type Finding, type IncompleteReason, type ScanContext, type ScanLimits, type ScanOutcome } from "./types.js";
 
 const NON_ASCII = /[^\x00-\x7f]/;
 // Every default-ignorable code point (soft hyphen, joiners, zero-width, bidi and invisible operators, variation selectors, Hangul
@@ -53,6 +53,8 @@ export function scanText(text: string, ctx: ScanContext, limits: ScanLimits, now
   const findings: Finding[] = [];
   const seen = new Set<string>();
   const incomplete = new Set<IncompleteReason>();
+  // Windows smaller than twice the longest match cannot promise to see a token that crosses them: refuse rather than report a partial scan as complete.
+  if (!(limits.maxLineLength >= MIN_LINE_LENGTH)) throw new RangeError("secret scanner option maxLineLength is out of range");
   const binary = new Set(ctx.binaryPaths ?? []);
   const binaryBytes = new Map<string, number>();
   const unscanned = new Set<string>();
@@ -61,7 +63,7 @@ export function scanText(text: string, ctx: ScanContext, limits: ScanLimits, now
   const reader = isPatch ? new PatchReader() : undefined;
   const budget: Budget = { left: limits.maxRejectedMatches, exhausted: false };
   const allowed = new Set((ctx.allowedBinaryPaths ?? []).slice(0, 50));
-  const overlap = Math.min(4096, limits.maxLineLength >> 2);
+  const overlap = WINDOW_OVERLAP;
   const step = Math.max(1, limits.maxLineLength - overlap);
 
   const add = (rule: string, path: string | undefined, line: number | undefined): void => {
