@@ -28,6 +28,7 @@ import { createChallengeAuditSink } from "./gate/audit-sink.js";
 import { createRunTrustMinter } from "./gate/run-trust.js";
 import { createWorktreesApprovals, type WorktreesApprovals } from "./gate/worktrees-confirm.js";
 import { createComposerService, type ComposerService } from "./composer/service.js";
+import type { ToolCaps } from "./composer/loop.js";
 import { createApprovalsHandlers } from "./handlers/approvals.js";
 import { createHandlerRegistrar, registerAuditHandlers, type HandlerRegistrar } from "./handlers/anchor-guard.js";
 import { registerCliRunsHandlers } from "./handlers/cli-runs.js";
@@ -105,7 +106,7 @@ export interface ComposeOptions {
   /** How long shutdown waits for composer runs to record their last rows before the audit writers are sealed (default 1000). */
   readonly composerSettleMs?: number;
   /** Composer runs (`axis.runs/1`, docs/design/composer-runtime.md): the mock provider's script and the per-run budget. */
-  readonly composer?: { readonly mock?: MockProviderOptions; readonly budget?: RunBudgetLimits; readonly maxTurns?: number };
+  readonly composer?: { readonly mock?: MockProviderOptions; readonly budget?: RunBudgetLimits; readonly maxTurns?: number; readonly toolCaps?: Partial<ToolCaps> };
   /** Period of the event sources (docs/design/events.md section 4; default 250 ms). */
   readonly eventPumpMs?: number;
 }
@@ -239,6 +240,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
           now: () => ports.clock.now(),
           ...(options.composer?.budget === undefined ? {} : { budget: options.composer.budget }),
           ...(options.composer?.maxTurns === undefined ? {} : { maxTurns: options.composer.maxTurns }),
+          ...(options.composer?.toolCaps === undefined ? {} : { toolCaps: options.composer.toolCaps }),
           onInternalError: (where) => logger?.error("request.failed", { reason: `composer_${where.slice(0, 24)}` }),
         });
         cleanups.push(() => (composer.dispose(), agent.dispose()));

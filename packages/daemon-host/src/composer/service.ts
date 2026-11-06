@@ -5,7 +5,7 @@ import { createRunBudget, type RunBudget, type RunBudgetLimits } from "@axis/pro
 import type { ComposerEngine, ComposerEventsPage, ComposerRunsService, ComposerStartInput } from "../ports/composer.js";
 import { RunActivity, type ActivityLimits } from "./activity.js";
 import { composerFailure } from "./errors.js";
-import { runComposerLoop, type LoopEnd } from "./loop.js";
+import { resolveToolCaps, runComposerLoop, type LoopEnd, type ToolCaps } from "./loop.js";
 
 /**
  * Composer runs (docs/design/composer-runtime.md section 4): the journal record of each run, one active run per
@@ -29,6 +29,8 @@ export interface ComposerServiceDeps {
   /** Live composer runs across the host. Default 8. */
   readonly maxActive?: number;
   readonly maxTurns?: number;
+  /** Tool fan-out caps (review r1 S4); unset ones take `DEFAULT_TOOL_CAPS`. An invalid cap is refused here. */
+  readonly toolCaps?: Partial<ToolCaps>;
   readonly activity?: ActivityLimits;
   readonly onInternalError?: (where: string) => void;
 }
@@ -62,6 +64,7 @@ export function createComposerService(deps: ComposerServiceDeps): ComposerServic
   const maxActive = deps.maxActive ?? 8;
   const limits = deps.budget ?? DEFAULT_COMPOSER_BUDGET;
   createRunBudget(limits); // refuses invalid limits now, not at the first run
+  const caps = resolveToolCaps(deps.toolCaps); // likewise
   let closed = false;
 
   const internal = (where: string): void => {
@@ -201,6 +204,7 @@ export function createComposerService(deps: ComposerServiceDeps): ComposerServic
           signal: controller.signal,
           emit: (e) => activity.push(runId, e),
           ...(deps.maxTurns === undefined ? {} : { maxTurns: deps.maxTurns }),
+          caps,
         }),
       );
       return { run: view(running), replayed: false };

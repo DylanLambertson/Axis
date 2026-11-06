@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { isScriptFile } from "./loaders.mjs";
 import { importSpecifiers, unsafeForms } from "../../scripts/code-oss/stage-ast.mjs";
 import { LOADER_BUILTINS } from "../../scripts/code-oss/stage-scan.mjs";
+import { listenerBuiltinRefusal, webHostEdgeRefusal } from "../../scripts/code-oss/web-rules.mjs";
 
 const packagesDir = fileURLToPath(new URL("../../packages/", import.meta.url));
 
@@ -93,6 +94,12 @@ export function violation(pkg, spec, file = null, pkgDir = null) {
       const from = relative(pkgDir, file).split(sep).join("/");
       if (from.startsWith("src/")) return "nothing inside src/ may import the public index";
     }
+    // The web host (docs/design/web-host-entry.md): only src/web/ may load src/web/, so no desktop entry can reach the listener.
+    const fromSrc = relative(pkgDir, file).split(sep).join("/");
+    if (fromSrc.startsWith("src/")) {
+      const web = webHostEdgeRefusal(`${pkg}/${fromSrc.slice(4)}`, `${pkg}/${rel.split(sep).join("/").slice(4)}`);
+      if (web !== null && rel.startsWith(`src${sep}`)) return web;
+    }
     // The process entry reaches the composition root, so it is a composition point: nothing inside src/ may load it, only the overlay entry.
     if (pkg === HOST_PACKAGE && /^src[\\/]entry(\.[cm]?[jt]s)?$/.test(rel)) {
       const from = relative(pkgDir, file).split(sep).join("/");
@@ -136,7 +143,9 @@ export function violation(pkg, spec, file = null, pkgDir = null) {
   if (spec.startsWith("node:")) {
     if (NO_NODE.has(pkg) && inSrc) return "node:* is not allowed in this package";
     const only = LOADER_BUILTINS.get(spec.replace(/\/.*$/, ""));
-    return only !== undefined && !only.has(pkg) && inSrc ? "this built-in loads or runs code without a module specifier" : null;
+    if (only !== undefined && !only.has(pkg) && inSrc) return "this built-in loads or runs code without a module specifier";
+    const staged = file === null || pkgDir === null ? null : `${pkg}/${relative(pkgDir, file).split(sep).join("/").slice(4)}`;
+    return inSrc ? listenerBuiltinRefusal(spec, staged) : null;
   }
   return "only relative, zod, @axis/* and node:* imports are allowed";
 }
@@ -442,4 +451,24 @@ test("scanner: the daemon host is imported by nothing and imports the restricted
   }
   // Other packages keep their existing rules for the worktrees root.
   assert.equal(violation("daemon", "@axis/worktrees"), null);
+});
+
+test("scanner: only the web host listener loads a socket built-in, and only src/web/ loads src/web/ (docs/design/web-host-entry.md)", () => {
+  const dir = join(packagesDir, "daemon-host");
+  const at = (rel) => join(dir, ...rel.split("/"));
+  for (const spec of ["node:http", "node:net", "node:https", "node:http2", "node:tls", "node:dgram"]) {
+    assert.equal(violation("daemon-host", spec, at("src/web/server.ts"), dir), null, spec);
+    for (const f of ["src/web/session.ts", "src/web/index.ts", "src/entry.ts", "src/supervisor.ts", "src/host.ts", "src/compose.ts"]) assert.notEqual(violation("daemon-host", spec, at(f), dir), null, `${f} ${spec}`);
+    assert.notEqual(violation("daemon-host", spec), null, "a call without a file is judged strictly");
+    assert.notEqual(violation("git-ops", spec, join(packagesDir, "git-ops", "src", "web", "server.ts"), join(packagesDir, "git-ops")), null, "another package's web/server.ts is not the listener");
+    assert.equal(violation("daemon-host", spec, at("test/web-host.test.ts"), dir), null, "tests may");
+  }
+  for (const [f, spec] of [["src/index.ts", "./web/index.js"], ["src/entry.ts", "./web/server.js"], ["src/compose.ts", "./web/index"], ["src/supervisor.ts", "./web/config.js"], ["src/transport/mux.ts", "../web/session.js"]]) {
+    assert.notEqual(violation("daemon-host", spec, at(f), dir), null, `${f} -> ${spec}`);
+  }
+  assert.equal(violation("daemon-host", "./server.js", at("src/web/index.ts"), dir), null);
+  assert.equal(violation("daemon-host", "../control/attestation.js", at("src/web/server.ts"), dir), null);
+  assert.equal(violation("daemon-host", "../src/web/index.js", at("test/web-host.test.ts"), dir), null, "tests may");
+  // The web host is not a composition point: it may not load the composition root, the process entry, the index or a minter.
+  for (const spec of ["../compose.js", "../entry.js", "../index.js", "../gate/run-trust.js", "../gate/worktrees-confirm.js"]) assert.notEqual(violation("daemon-host", spec, at("src/web/server.ts"), dir), null, spec);
 });

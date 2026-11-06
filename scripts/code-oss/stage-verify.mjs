@@ -6,6 +6,7 @@ import { createHash } from "node:crypto";
 import { join, posix } from "node:path";
 import { StageError, fail, readRegular, walkFiles } from "./stage-fs.mjs";
 import { LOADER_BUILTINS, RESTRICTED_MODULES, mayImportRestricted, importSpecifiers, unsafeForms } from "./stage-scan.mjs";
+import { listenerBuiltinRefusal, webHostEdgeRefusal } from "./web-rules.mjs";
 
 export const STAGE_ROOT = "src/vs/axis/packages";
 export const MANIFEST_NAME = "stage-manifest.json";
@@ -36,6 +37,8 @@ export function checkStagedFile(rel, text, fileSet) {
       if (pkg === "protocol") fail(`staged ${rel}: node:* is not allowed in the protocol package`);
       const only = LOADER_BUILTINS.get(spec.replace(/\/.*$/, ""));
       if (only !== undefined && !only.has(pkg)) fail(`staged ${rel}: ${spec} loads or runs code without a module specifier`);
+      const listener = listenerBuiltinRefusal(spec, rel);
+      if (listener !== null) fail(`staged ${rel}: ${listener}`);
       continue;
     }
     if (!spec.startsWith("./") && !spec.startsWith("../")) fail(`staged ${rel}: bare import ${spec} would resolve from the tree at run time`);
@@ -43,6 +46,8 @@ export function checkStagedFile(rel, text, fileSet) {
     if (target.startsWith("../") || target === "..") fail(`staged ${rel}: ${spec} leaves the staged tree`);
     const candidates = target.endsWith(".js") ? [target, target.replace(/\.js$/, ".ts"), target.replace(/\.js$/, ".d.ts")] : [target];
     if (!candidates.some((c) => fileSet.has(c))) fail(`staged ${rel}: ${spec} does not resolve to a staged file`);
+    const web = webHostEdgeRefusal(rel, target.replace(/\.js$/, ".ts"));
+    if (web !== null) fail(`staged ${rel}: ${spec}: ${web}`);
     const targetPkg = target.split("/")[0];
     if (pkg === "vendor" && targetPkg !== "vendor") fail(`staged ${rel}: vendored code reaches ${spec}`);
     if (pkg !== "vendor" && targetPkg === "vendor" && !target.startsWith("vendor/zod/")) fail(`staged ${rel}: ${spec} reaches an unknown vendored module`);

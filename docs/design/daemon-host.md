@@ -50,7 +50,7 @@ flowchart LR
 
 | May import | Only where | Never |
 |---|---|---|
-| `node:*`, `zod` 4.6.6 | anywhere | `electron`, `vs/*`, DOM, a socket listener (ADR 0003 D1.1, DMN-4) |
+| `node:*`, `zod` 4.6.6 | anywhere | `electron`, `vs/*`, DOM, a socket listener (ADR 0003 D1.1, DMN-4). The one exception is the supervisor-side web host, `src/web/server.ts`, which no desktop entry can reach (`docs/design/web-host-entry.md`) |
 | `@axis/protocol`, `daemon`, `challenge`, `audit`, `journal`, `git-ops`, `pty-policy`, `providers` | anywhere | |
 | `@axis/vault`, `@axis/anthropic` | `src/bindings/providers.ts` only, 1b | handlers |
 | `@axis/journal/daemon-principal` | `src/handlers/review.ts` only | any handler that is not the person's own act |
@@ -284,7 +284,7 @@ Two planes, never mixed:
 | Electron `utilityProcess` | `process.parentPort` (structural type `ElectronPortLike`; no `electron` import) | `connect` message carries a transferred `MessagePortMain`; wrapped by `fromElectronPort` (it already closes extra transferred ports, [V]) |
 | Node child process (tests) | the `child_process` IPC channel, JSON serialization (not `advanced`, so no shared references or exotic types reach `inspectMessage`) | **`ChannelMux`**: node IPC cannot transfer a `MessagePort`, so virtual connections are multiplexed over the one ordered channel as `{ kind: "frame", cid, data }` / `{ kind: "close", cid }`, wrapped as `Connection`s |
 | Worker thread (fast in-process tests) | a `MessagePort` pair | `fromNodePort` |
-| Web (reh child process, later) | the reh server's child IPC | `ChannelMux`; the reh server authenticates the user and mints the attestation (ADR 0003 D1.7); same contracts, no host change |
+| Web (reh child process, later) | the reh server's child IPC | `ChannelMux`; the reh server authenticates the user and mints the attestation (ADR 0003 D1.7); same contracts, no host change. The web host entry (W1, `docs/design/web-host-entry.md`) is that supervisor side |
 
 `ChannelMux` limits: per-connection queue bounded by messages and bytes (overflow closes that connection and counts it, never drops silently), at most `maxConnections` virtual connections, frames for an unknown or closed `cid` ignored and counted, and close is idempotent. A mux frame is size-checked before it reaches `daemon.accept`'s own pre-identity limits.
 

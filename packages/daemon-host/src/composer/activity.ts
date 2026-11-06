@@ -4,7 +4,7 @@ import type { ComposerEventsPage } from "../ports/composer.js";
 
 /**
  * The activity of composer runs, in memory and bounded (docs/design/composer-runtime.md section 3). Each run keeps at
- * most `maxEvents` events and `maxTextChars` characters of model text (the oldest go first, and a reader whose cursor
+ * most `maxEvents` events and `maxTextChars` characters of model text and approval preview heads (the oldest go first, and a reader whose cursor
  * fell behind simply continues from what is left); at most `maxRuns` runs are kept, the oldest finished one is evicted
  * first. Nothing here survives a restart: `available` is then false (ticket J2 adds a journal table).
  */
@@ -53,6 +53,9 @@ export function activityTexts(raw: string): string[] {
   if (cur.length > 0) out.push(cur);
   return out;
 }
+
+/** The text an event holds: model output, or the content head of an approval preview (both count against `maxTextChars`). */
+const charsOf = (ev: RunEvent): number => (ev.type === "text" ? ev.text.length : ev.type === "approval" ? (ev.preview?.content?.head.length ?? 0) : 0);
 
 export class RunActivity {
   readonly #runs = new Map<string, Entry>();
@@ -120,10 +123,10 @@ export class RunActivity {
 
   #add(e: Entry, ev: RunEvent): void {
     e.events.push(ev);
-    if (ev.type === "text") e.textChars += ev.text.length;
+    e.textChars += charsOf(ev);
     while (e.events.length > this.#maxEvents || e.textChars > this.#maxText) {
       const old = e.events.shift() as RunEvent;
-      if (old.type === "text") e.textChars -= old.text.length;
+      e.textChars -= charsOf(old);
     }
   }
 }
