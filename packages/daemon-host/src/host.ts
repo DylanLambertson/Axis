@@ -1,12 +1,13 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { AuditLog, AxisError, type ChainHead, type DatabaseSync, type InstanceLock, type Redactor } from "@axis/audit";
-import { Journal, JournalIdempotencyStore } from "@axis/journal";
+import { Journal, JournalIdempotencyStore, lastTransitionId, transitionsSince, type TransitionTail } from "@axis/journal";
 import { PROTOCOL_VERSION } from "@axis/protocol";
 import type { HostConfig } from "./config.js";
 import type { ControlClient } from "./control/client.js";
 import { Disposables, type DisposeResult } from "./disposables.js";
 import { CHALLENGE_PAYLOAD_ALLOWLIST } from "./gate/audit-sink.js";
 import { REVIEW_PAYLOAD_ALLOWLIST } from "./handlers/review-audit.js";
+import { AGENT_PAYLOAD_ALLOWLIST } from "./bindings/agent.js";
 import { RUN_PAYLOAD_ALLOWLIST } from "./bindings/runs.js";
 import { ANCHOR_PAYLOAD_ALLOWLIST } from "./anchor/preflight.js";
 import { DegradedStartError } from "./exit-codes.js";
@@ -85,11 +86,15 @@ export interface HostOptions {
 }
 
 /** The reads of the journal, safe in every mode. A frozen facade of closures: no writer is reachable from it. */
-export type JournalReader = Pick<Journal, "getWorkspace" | "listWorkspaces" | "getRun" | "listRuns" | "transitions" | "listProjects">;
+export type JournalReader = Pick<Journal, "getWorkspace" | "listWorkspaces" | "getRun" | "listRuns" | "transitions" | "listProjects"> & {
+  /** Committed transitions after the row `afterId`, oldest first (the event sources' cursor, docs/design/events.md). */
+  transitionsSince(afterId: number, limit: number): TransitionTail[];
+  lastTransitionId(): number;
+};
 /** The reads of the audit log, safe in every mode (`axis.audit/1.list`, `verify`, `status`). A frozen facade too. */
 export type AuditReader = Pick<AuditLog, "list" | "verify" | "head">;
 
-function journalReader(j: Journal): JournalReader {
+function journalReader(j: Journal, db: DatabaseSync): JournalReader {
   return Object.freeze({
     getWorkspace: (id: string) => j.getWorkspace(id),
     listWorkspaces: (o?: Parameters<Journal["listWorkspaces"]>[0]) => j.listWorkspaces(o),
@@ -97,6 +102,8 @@ function journalReader(j: Journal): JournalReader {
     listRuns: (o?: Parameters<Journal["listRuns"]>[0]) => j.listRuns(o),
     transitions: (e: "workspace" | "run", id: string) => j.transitions(e, id),
     listProjects: () => j.listProjects(),
+    transitionsSince: (afterId: number, limit: number) => transitionsSince(db, afterId, limit),
+    lastTransitionId: () => lastTransitionId(db),
   });
 }
 
@@ -227,7 +234,7 @@ export function createDaemonHost(config: HostConfig, ports: StartupPorts, option
       redactor: ports.redactor,
       now: () => new Date(ports.clock.now()),
       // The challenge rows keep their `method`; the anchor rows keep their one fixed field (a literal, never caller text); the review acknowledgement keeps its file id.
-      payloadAllowlist: { ...CHALLENGE_PAYLOAD_ALLOWLIST, ...ANCHOR_PAYLOAD_ALLOWLIST, ...REVIEW_PAYLOAD_ALLOWLIST, ...RUN_PAYLOAD_ALLOWLIST },
+      payloadAllowlist: { ...CHALLENGE_PAYLOAD_ALLOWLIST, ...ANCHOR_PAYLOAD_ALLOWLIST, ...REVIEW_PAYLOAD_ALLOWLIST, ...RUN_PAYLOAD_ALLOWLIST, ...AGENT_PAYLOAD_ALLOWLIST },
     });
     const check = await checkAnchor(audit, () => ports.control.anchorGet({ timeoutMs: options.anchorTimeoutMs ?? 5_000, signal: startup.signal }));
     alive();
@@ -282,7 +289,7 @@ export function createDaemonHost(config: HostConfig, ports: StartupPorts, option
     const served = [...new Set(Object.keys(surface.registry).map((k) => k.slice(0, k.indexOf("/"))))];
     alive();
     const services: HostServices = Object.freeze({
-      journalRead: journalReader(journal),
+      journalRead: journalReader(journal, db),
       auditRead: auditReader(audit),
       journal: degraded === undefined ? journal : undefined,
       audit: degraded === undefined ? audit : undefined,
