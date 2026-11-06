@@ -65,7 +65,8 @@ export interface WorktreesApprovals extends Approvals {
  * of anything exported, so no caller (a handler, a service, the composition root) can obtain a function that mints a
  * discard token without a spent approval; the only way to a token is a `gate.execute` of a challenge that was issued at
  * tier 4 or above and approved with its native dialog. What
- * comes back is the gate, the narrow port the `axis.approvals/1` handlers use, `stats`, `dispose` and `onPreview`.
+ * comes back is the gate, the narrow port the `axis.approvals/1` handlers use, the composer tool-call approvals (`runs`,
+ * which never mint a capability), `stats`, `dispose` and `onPreview`.
  * `preflight` (the anchor stall check, ticket H4) is passed through; it must be synchronous.
  */
 export function createWorktreesApprovals(deps: Omit<ApprovalsDeps, "capability" | "describe">): WorktreesApprovals {
@@ -74,6 +75,7 @@ export function createWorktreesApprovals(deps: Omit<ApprovalsDeps, "capability" 
   return Object.freeze({
     gate: approvals.gate,
     port: approvals.port,
+    runs: approvals.runs,
     stats: approvals.stats,
     dispose: approvals.dispose,
     onPreview: notes.record,
