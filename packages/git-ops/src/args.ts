@@ -171,19 +171,25 @@ const EXTRA_ENV = new Set(["GIT_INDEX_FILE"]);
  * `extraEnv` may hold only `GIT_INDEX_FILE` (an absolute path without NUL); every other name is refused, so a caller
  * cannot use it to redirect the repository, the objects or the config.
  */
-export async function daemonGitFor(w: WorktreeRef, deps: GitOpsDeps, extraEnv: Readonly<Record<string, string>> = {}): Promise<DaemonGit> {
+export async function daemonGitFor(
+  w: WorktreeRef,
+  deps: GitOpsDeps,
+  extraEnv: Readonly<Record<string, string>> = {},
+  /** Axis-built additions only (never caller input): more `-c key=value` pins and fixed variables such as GIT_ATTR_NOSYSTEM. */
+  fixed: { readonly config?: readonly string[]; readonly env?: Readonly<Record<string, string>> } = {},
+): Promise<DaemonGit> {
   const platform = platformOf(deps);
   for (const [k, v] of Object.entries(extraEnv)) {
     const abs = typeof v === "string" && (platform === "win32" ? winAbs(v) : posixAbs(v));
     if (!EXTRA_ENV.has(k) || !abs || (v as string).includes("\0")) throw invalid(`the daemon git environment cannot be extended with ${k}`);
   }
-  const env = { ...daemonEnv(deps), ...extraEnv };
+  const env = { ...daemonEnv(deps), ...extraEnv, ...fixed.env };
   await requireGitVersion(deps, w, env);
   const filters = await filterNames(w, deps, env);
   const runner = guardedRunner(deps.runner, deps);
   return (sub, stdin, opts) =>
     runner.run({
-      argv: [...prefix(w, deps, { context: "daemon", hooks: false, filters }), ...sub],
+      argv: [...prefix(w, deps, { context: "daemon", hooks: false, filters }), ...(fixed.config ?? []).flatMap((c) => ["-c", c]), ...sub],
       cwd: w.workTree,
       env,
       context: "daemon",

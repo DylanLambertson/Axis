@@ -68,7 +68,7 @@ Re-derived on 2026-11-04 from what is on main: `@axis/runs` and `@axis/worktrees
 | **RV-CONTENT** | A content-showing review method (bounded, escaped text of uncut, binary and over-size files) that closes the 1a file-level residual (RR-10) | L | P1b, H10b | proposed |
 | **H9-base** | Push scan base: persist or re-derive the destination base and resolve path or ssh aliases (RR-11) | S | H9 | proposed |
 | **P1f** | Protocol: an opaque identity for push binary rows so every path can be allowed or refused without display text (RR-12) | S | P1e | proposed |
-| **REV2-FIX** | REV-2 / G-27: hardened attribute reads in git-ops (private empty `GIT_DIR`, single `info/attributes` read, `GIT_ATTR_NOSYSTEM=1`, private snapshot of system and user attribute files); gate 1a/L32 (RR-13) | M | review core | proposed |
+| **REV2-FIX** | REV-2 / G-27: hardened attribute reads in git-ops (private empty `GIT_DIR`, single `info/attributes` read, `GIT_ATTR_NOSYSTEM=1`, private snapshot of system and user attribute files); gate 1a/L32 (RR-13) | M | review core | git-ops half built (`attributeReadGit`, `docs/design/daemon-host-git.md`); `@axis/review` still has to switch its `check-attr` reads to it, so RR-13 stays open |
 | **OVSX-TEST** | The Open VSX signed, unsigned and tampered install test on a packaged build, outcomes recorded in `docs/feasibility/extension-compatibility.md`; gate 1a/L22 (RR-18) | M | a packaged build | proposed |
 | **NET-GATE** | Packaged-build checks: no reh-web or Axis listener in a desktop run, and `--remote-debugging-port` and `--inspect*` refused; gates 1a/L29 and L33 (RR-19) | S | X1 | proposed |
 | **REF1-SCAN** | Secret scan of snapshot trees before a snapshot is written; gate 1b/L13 (RR-24) | M | `@axis/secret-scan` | proposed |
