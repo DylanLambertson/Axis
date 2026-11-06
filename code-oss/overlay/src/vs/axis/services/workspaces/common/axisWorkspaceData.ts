@@ -68,7 +68,7 @@ export interface IAxisCliRun {
 }
 
 /** Where the data came from, shown to the user so sample data is never mistaken for real state. */
-export type AxisDataProvenance = 'discovery' | 'sample';
+export type AxisDataProvenance = 'daemon' | 'discovery' | 'sample';
 
 /**
  * The read side of the daemon contracts the dashboard needs. The Phase 0
@@ -89,3 +89,12 @@ export interface IAxisWorkspaceDataSource {
 
 /** Journal-id pattern of the contracts: `^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`. */
 export const AXIS_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+
+/**
+ * What the loader needs from the disk reader beyond the three `list` calls:
+ * the local checkout of a project and the count of worktree entries it refused.
+ */
+export interface IAxisWorkspaceLoadSource extends IAxisWorkspaceDataSource {
+	getLocalCheckout(projectId: string): Promise<string | undefined>;
+	countRefusedWorktrees(projectId: string): Promise<number>;
+}
