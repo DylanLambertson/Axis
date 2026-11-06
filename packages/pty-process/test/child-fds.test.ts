@@ -1,6 +1,8 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import assert from "node:assert/strict";
-import { closeSync, openSync } from "node:fs";
+import { closeSync, mkdtempSync, openSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import { createPtyProcessPort, createPtyService } from "../src/index.js";
 import { channelPair, pipeSpawn, settle, until } from "../testing/helpers.js";
@@ -8,11 +10,14 @@ import { SPEC } from "../testing/rig.js";
 
 /**
  * PTY-7 child-fd test. The spawn function is the thing that decides what a child inherits, so this is a conformance test for it:
- * a shell spawned through the service sees only fds 0, 1 and 2 even while the parent holds other descriptors (a stand-in for the
- * daemon's SQLite, sockets and log files). The shipped native binding runs the same test.
+ * a shell spawned through the service inherits none of the parent's other descriptors (a stand-in for the daemon's SQLite,
+ * sockets and log files). The parent's descriptors point at uniquely named files, and the test looks for those names among the
+ * child's descriptors. It does not count descriptors: a shell may open some of its own (a script copy, saved redirections, high
+ * numbers when the runner raises the descriptor limit), and those are not inherited. The shipped native binding runs the same test.
  */
 test("PTY-7: a spawned shell sees only stdio, although the parent holds more descriptors", { skip: process.platform === "linux" ? false : "reads /proc/<pid>/fd (Linux only)" }, async () => {
-  const held = [openSync("/dev/null", "r"), openSync("/dev/null", "w")];
+  const dir = mkdtempSync(join(tmpdir(), "axis-fds-"));
+  const held = [openSync(join(dir, "held-one"), "w"), openSync(join(dir, "held-two"), "w")];
   const pair = channelPair();
   const svc = createPtyService({ spawn: pipeSpawn() });
   svc.serveControl(pair.b);
@@ -30,10 +35,13 @@ test("PTY-7: a spawned shell sees only stdio, although the parent holds more des
     await until(() => data.sent.b.length > 0);
     data.a.send({ t: "write", term, data: "go\n" });
     await until(() => out.includes("end"));
-    const fds = [...out.matchAll(/(\d+) -> /g)].map((m) => m[1]).sort();
-    assert.deepEqual(fds, ["0", "1", "2"]);
+    const fds = new Map([...out.matchAll(/(\d+) -> (\S+)/g)].map((m) => [m[1] as string, m[2] as string]));
+    for (const stdio of ["0", "1", "2"]) assert.ok(fds.has(stdio), `fd ${stdio} is the child's stdio`);
+    assert.ok(fds.size >= 3);
+    assert.deepEqual([...fds.values()].filter((target) => target.includes("axis-fds-") || target.includes("held-")), [], "no descriptor of the parent's reached the child");
   } finally {
     held.forEach(closeSync);
+    rmSync(dir, { recursive: true, force: true });
     svc.dispose();
     port.dispose();
   }
