@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { createSecretScanner, PatchReader, unquotePath } from '@axis/secret-scan';
 import { WorktreeError } from '../src/index.js';
-import { binaryViews, entryPatches, isBinary, quotePath, startSnapshotScan, type SnapshotScanner } from '../src/snapshotScan.js';
+import { binaryViews, entryPatches, isBinary, namePatches, quotePath, startSnapshotScan, type SnapshotScanner } from '../src/snapshotScan.js';
 
 const PEM = '-----BEGIN ' + 'RSA PRIVATE' + ' KEY-----';
 const TOKEN = ['gh', 'p_'].join('') + 'Ab1'.repeat(12);
@@ -70,6 +70,12 @@ describe('entry patches for the scanner', () => {
     assert.match(texts('l', Buffer.from('../t'), { maxBinaryBytes: 1, maxBytes: 1 << 20 }, '120000')[0] as string, /^\+\.\.\/t$/m);
   });
 
+  it('text over 4 x the byte cap is too large without being decoded at all', () => {
+    const bytes = Buffer.alloc(41, 0x41);
+    bytes.toString = () => assert.fail('decoded');
+    assert.equal(entryPatches({ rel: 'x', mode: '100644', bytes }, { maxBinaryBytes: 1, maxBytes: 10 }), 'too-large');
+  });
+
   it('text over the byte cap is too large before it is split: by bytes, and by decoded length', () => {
     assert.equal(entryPatches({ rel: 'x', mode: '100644', bytes: Buffer.alloc(41, 0x41) }, { maxBinaryBytes: 1, maxBytes: 10 }), 'too-large');
     assert.equal(entryPatches({ rel: 'x', mode: '100644', bytes: Buffer.alloc(11, 0x41) }, { maxBinaryBytes: 1, maxBytes: 10 }), 'too-large');
@@ -101,6 +107,21 @@ describe('UTF-16 and other NUL-bearing text', () => {
     });
   }
 
+  it('UTF-16 text after the first 8000 bytes of an ASCII file is still found', async () => {
+    const bytes = Buffer.concat([Buffer.from('log line\n'.repeat(900)), le]);
+    assert.equal(isBinary(bytes), false, "git's probe sees text");
+    const check = startSnapshotScan(createSecretScanner());
+    await check.add({ rel: 'app.log', mode: '100644', bytes });
+    const rules = new Set(((await refusal(() => check.finish())).details['findings'] as { rule: string }[]).map((f) => f.rule));
+    assert.ok(rules.has('private-key-block') && rules.has('github-token'), [...rules].join());
+  });
+
+  it('a late-NUL text whose views do not fit one scan is too large', () => {
+    const bytes = Buffer.concat([Buffer.alloc(9000, 0x41), Buffer.from([0])]);
+    assert.equal(entryPatches({ rel: 'x', mode: '100644', bytes }, { maxBinaryBytes: 1, maxBytes: 9000 }), 'too-large');
+    assert.notEqual(entryPatches({ rel: 'x', mode: '100644', bytes }, { maxBinaryBytes: 1, maxBytes: 9001 }), 'too-large');
+  });
+
   it('non-ASCII UTF-16 text is decoded in both byte orders', () => {
     const t = 'clé=日本';
     const views = binaryViews(Buffer.from(t, 'utf16le'));
@@ -120,7 +141,7 @@ describe('the scan of one snapshot', () => {
     t = 101;
     assert.equal((await refusal(() => check.add({ rel: 'c', mode: '100644', bytes: Buffer.from('x') }))).details['reason'], 'snapshot-unscanned');
     t = Number.NaN;
-    assert.equal((await refusal(() => check.addMessage('0'.repeat(40), 'm'))).details['reason'], 'snapshot-unscanned');
+    assert.equal((await refusal(() => check.addCommit('0'.repeat(40), Buffer.from('m')))).details['reason'], 'snapshot-unscanned');
     check.finish();
   });
 
@@ -134,15 +155,36 @@ describe('the scan of one snapshot', () => {
     assert.ok(!JSON.stringify([e.message, e.details, e.stack]).includes(TOKEN));
   });
 
-  it('a commit message is scanned as a message and names its commit, and an over-long one is unscanned', async () => {
+  it('a commit object is scanned whole as a message, with binary views when it holds a NUL, and an over-long one is unscanned', async () => {
     const seen: string[] = [];
-    const real = createSecretScanner({ maxBytes: 64 });
+    const real = createSecretScanner({ maxBytes: 200 });
     const s: SnapshotScanner = { limits: real.limits, scan: (t, m) => (seen.push(m.part), real.scan(t, m)) };
     const check = startSnapshotScan(s);
-    await check.addMessage('a'.repeat(40), `wip\n${PEM}\n`);
-    await check.addMessage('b'.repeat(40), 'x'.repeat(65));
-    assert.deepEqual(seen, ['message']);
+    await check.addCommit('a'.repeat(40), Buffer.from(`tree 1\nauthor ${TOKEN} <x@y> 0 +0000\n\nwip\n`));
+    await check.addCommit('b'.repeat(40), Buffer.from(`tree 1\n\n${PEM}\n`, 'utf16le'));
+    await check.addCommit('c'.repeat(40), Buffer.from('x'.repeat(201)));
+    assert.deepEqual(seen, Array(5).fill('message'), 'one text, then four views, then none');
     const e = await refusal(() => check.finish());
-    assert.deepEqual(e.details['findings'], [{ rule: 'private-key-block', line: 2, commit: 'a'.repeat(40) }, { rule: 'scan-incomplete', commit: 'b'.repeat(40) }]);
+    assert.deepEqual(e.details['findings'], [
+      { rule: 'github-token', line: 2, commit: 'a'.repeat(40) },
+      { rule: 'private-key-block', line: 3, commit: 'b'.repeat(40) },
+      { rule: 'scan-incomplete', commit: 'c'.repeat(40) },
+    ]);
+  });
+
+  it('names are scanned in bounded batches; a path comes back only for whole-file rules and only when it is ours', async () => {
+    const entries = [{ rel: 'id_rsa', mode: '100644' }, { rel: `${TOKEN}.txt`, mode: '100644' }, ...Array.from({ length: 40 }, (_, i) => ({ rel: `f${i}`, mode: '100644' }))];
+    const texts = namePatches(entries, 400);
+    assert.ok(texts.length > 1 && texts.every((t) => t.length <= 400));
+    assert.equal(texts.join(''), namePatches(entries, 1 << 20)[0]);
+    const liar: SnapshotScanner = { limits: LIMITS, scan: async () => [{ rule: 'sensitive-filename', path: '/etc/elsewhere' }] };
+    const c1 = startSnapshotScan(liar);
+    await c1.addNames([{ rel: 'a', mode: '100644' }]);
+    assert.deepEqual((await refusal(() => c1.finish())).details['findings'], [{ rule: 'sensitive-filename' }]);
+    const c2 = startSnapshotScan(createSecretScanner());
+    await c2.addNames(entries);
+    const e = await refusal(() => c2.finish());
+    assert.deepEqual(e.details['findings'], [{ rule: 'sensitive-filename', path: 'id_rsa' }, { rule: 'github-token' }]);
+    assert.ok(!JSON.stringify(e.details).includes(TOKEN));
   });
 });

@@ -81,26 +81,47 @@ function patch(rel: string, mode: string, body: string | null): string {
 }
 
 /**
- * The entry as the patches to scan, or `too-large` when its text cannot fit one scan: decided from the byte count before
- * decoding and from the decoded length before splitting, so a large file costs at most one decode.
+ * The texts a byte string may say: one UTF-8 text, or the binary views when it holds a NUL ANYWHERE (git's 8000-byte probe
+ * only decides the binary budget: UTF-16 appended to a text file after that point must still be read as text). `too-large`
+ * when any text cannot fit one scan, decided from the byte count before decoding and from each decoded length before it is
+ * split, so a large entry costs at most one decode.
  */
+export function textViews(bytes: Buffer, maxBytes: number): string[] | 'too-large' {
+  if (bytes.length > 4 * maxBytes) return 'too-large';
+  const views = bytes.includes(0) ? binaryViews(bytes) : [bytes.toString('utf8')];
+  return views.some((v) => v.length > maxBytes) ? 'too-large' : views;
+}
+
+/** The entry as the patches to scan, or `too-large` (see `textViews`). A binary over the budget is one patch with the binary marker. */
 export function entryPatches(e: ScanEntry, limits: SnapshotScanner['limits']): { texts: string[]; binary: boolean } | 'too-large' {
   const binary = e.mode !== '120000' && isBinary(e.bytes);
-  if (binary) {
-    if (e.bytes.length > limits.maxBinaryBytes) return { texts: [patch(e.rel, e.mode, null)], binary };
-    return { texts: binaryViews(e.bytes).map((v) => patch(e.rel, e.mode, v)), binary };
+  if (binary && e.bytes.length > limits.maxBinaryBytes) return { texts: [patch(e.rel, e.mode, null)], binary };
+  const views = binary ? binaryViews(e.bytes) : textViews(e.bytes, limits.maxBytes);
+  if (views === 'too-large') return views;
+  return { texts: views.map((v) => patch(e.rel, e.mode, v)), binary };
+}
+
+/** Name-only patches (headers, no hunk) of many entries, each patch under `maxChars`. */
+export function namePatches(entries: readonly { readonly rel: string; readonly mode: string }[], maxChars: number): string[] {
+  const out: string[] = [];
+  let cur = '';
+  for (const e of entries) {
+    const one = patch(e.rel, e.mode, '');
+    if (cur.length > 0 && cur.length + one.length > maxChars) {
+      out.push(cur);
+      cur = '';
+    }
+    cur += one;
   }
-  if (e.bytes.length > 4 * limits.maxBytes) return 'too-large';
-  const body = e.bytes.toString('utf8');
-  if (body.length > limits.maxBytes) return 'too-large';
-  return { texts: [patch(e.rel, e.mode, body)], binary };
+  if (cur.length > 0) out.push(cur);
+  return out;
 }
 
 const UNSCANNED = 'the snapshot was refused: its content could not be fully scanned for secrets';
 const unscanned = (): WorktreeError => new WorktreeError('E_POLICY_DENIED', UNSCANNED, { reason: 'snapshot-unscanned' });
 
 /** Calls the scanner and reads its answer. A throw, a rejection, or an answer that is not a list of findings is `snapshot-unscanned`. */
-async function ask(scanner: SnapshotScanner, text: string, meta: Parameters<SnapshotScanner['scan']>[1]): Promise<SnapshotFinding[]> {
+async function ask(scanner: SnapshotScanner, text: string, meta: Parameters<SnapshotScanner['scan']>[1], withPath = false): Promise<SnapshotFinding[]> {
   try {
     const raw: unknown = await scanner.scan(text, meta);
     if (!Array.isArray(raw)) throw unscanned();
@@ -108,8 +129,10 @@ async function ask(scanner: SnapshotScanner, text: string, meta: Parameters<Snap
     for (const f of raw as unknown[]) {
       const rule = (f as { rule?: unknown } | null)?.rule;
       const line = (f as { line?: unknown } | null)?.line;
+      const path = withPath ? (f as { path?: unknown } | null)?.path : undefined;
       const named = typeof rule === 'string' && RULE.test(rule) ? rule : 'scanner-error';
-      out.push(Number.isSafeInteger(line) && (line as number) > 0 ? { rule: named, line: line as number } : { rule: named });
+      const at = typeof path === 'string' ? { path } : {};
+      out.push(Number.isSafeInteger(line) && (line as number) > 0 ? { rule: named, line: line as number, ...at } : { rule: named, ...at });
     }
     return out;
   } catch {
@@ -121,10 +144,12 @@ async function ask(scanner: SnapshotScanner, text: string, meta: Parameters<Snap
 export interface SnapshotScan {
   /** Scans one entry (call it with the bytes that will be stored). */
   add(e: ScanEntry): Promise<void>;
-  /** Records an entry too large to read for a scan. */
-  unscannable(rel: string): void;
-  /** Scans a commit message that a snapshot ref will keep reachable. */
-  addMessage(commit: string, text: string): Promise<void>;
+  /** Scans only the names of entries whose content is already known (the base's, or scanned under another name). */
+  addNames(entries: readonly { readonly rel: string; readonly mode: string }[]): Promise<void>;
+  /** Records an entry (by path) or a commit (by id) too large to read for a scan. */
+  unscannable(at: { readonly path?: string; readonly commit?: string }): void;
+  /** Scans a whole commit object (headers, identities and message) that a snapshot ref will keep reachable. */
+  addCommit(commit: string, bytes: Buffer): Promise<void>;
   /** Refuses the snapshot when anything was found (`snapshot-secret`) or could not be covered (`snapshot-unscanned`). */
   finish(): void;
 }
@@ -170,14 +195,34 @@ export function startSnapshotScan(scanner: SnapshotScanner, now: () => number = 
       const nameMatched = out.some((f) => f.line === undefined && !PATH_SAFE_RULES.has(f.rule));
       record(nameMatched ? out : out.map((f) => ({ ...f, path: e.rel })));
     },
-    unscannable(rel) {
-      record([{ rule: 'scan-incomplete', path: rel }]);
+    async addNames(entries) {
+      const rels = new Set(entries.map((e) => e.rel));
+      for (const text of namePatches(entries, Math.floor(limits.maxBytes / 2))) {
+        inTime();
+        for (const f of await ask(scanner, text, { part: 'patch' }, true)) {
+          // The path comes back only for rules about the file as a whole, and only when it is one of ours: a token rule
+          // matched the name itself, so naming the path would repeat the token.
+          const named = PATH_SAFE_RULES.has(f.rule) && typeof f.path === 'string' && rels.has(f.path);
+          record([named ? { rule: f.rule, path: f.path as string } : { rule: f.rule }]);
+        }
+      }
     },
-    async addMessage(commit, text) {
+    unscannable(at) {
+      record([{ rule: 'scan-incomplete', ...(at.path === undefined ? {} : { path: at.path }), ...(at.commit !== undefined && OID.test(at.commit) ? { commit: at.commit } : {}) }]);
+    },
+    async addCommit(commit, bytes) {
       inTime();
       const c = OID.test(commit) ? { commit } : {};
-      if (text.length > limits.maxBytes) return void record([{ rule: 'scan-incomplete', ...c }]);
-      record((await ask(scanner, text, { part: 'message' })).map((f) => ({ ...f, ...c })));
+      const views = textViews(bytes, limits.maxBytes);
+      if (views === 'too-large') return void record([{ rule: 'scan-incomplete', ...c }]);
+      const seen = new Set<string>();
+      for (const v of views) {
+        for (const f of await ask(scanner, v, { part: 'message' })) {
+          const key = `${f.rule}\0${f.line ?? ''}`;
+          if (!seen.has(key)) record([{ ...f, ...c }]);
+          seen.add(key);
+        }
+      }
     },
     finish() {
       if (count === 0) return;

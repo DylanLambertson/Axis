@@ -16,16 +16,39 @@ const OID = /^[0-9a-f]{40,64}$/;
 const tooMuch = (): WorktreeError =>
   new WorktreeError('E_POLICY_DENIED', 'the snapshot was refused: its content could not be fully scanned for secrets', { reason: 'snapshot-unscanned' });
 
-/** Blob ids of the trusted base commit's tree: content the user's own history already holds. */
-export async function baseTreeBlobs(git: HardenedGit, cwd: string, base: string): Promise<Set<string>> {
+/** What the trusted base commit's tree holds: content the user's own history already has, and its `path\0blob` names. */
+export interface BaseTree {
+  readonly ids: ReadonlySet<string>;
+  readonly pairs: ReadonlySet<string>;
+}
+
+export async function baseTree(git: HardenedGit, cwd: string, base: string): Promise<BaseTree> {
   if (!OID.test(base)) throw tooMuch();
   const out = await git.run(['ls-tree', '-r', '-z', '--end-of-options', base], { cwd });
   const ids = new Set<string>();
+  const pairs = new Set<string>();
   for (const rec of out.stdout.split('\0')) {
-    const m = /^\d{6} blob ([0-9a-f]{40,64})\t/.exec(rec);
-    if (m) ids.add(m[1] as string);
+    const m = /^\d{6} blob ([0-9a-f]{40,64})\t([\s\S]+)$/.exec(rec);
+    if (!m) continue;
+    ids.add(m[1] as string);
+    pairs.add(`${m[2] as string}\0${m[1] as string}`);
   }
-  return ids;
+  return { ids, pairs };
+}
+
+/** The blob entries of a tree object (`<mode> <name>\0<raw id>`), as `{ name, mode, id }`. Gitlinks and subtrees are left out. */
+export function treeBlobs(bytes: Buffer, idBytes: number): { name: string; mode: string; id: string }[] {
+  const out: { name: string; mode: string; id: string }[] = [];
+  for (let at = 0; at < bytes.length;) {
+    const sp = bytes.indexOf(0x20, at);
+    const nul = sp < 0 ? -1 : bytes.indexOf(0, sp);
+    if (nul < 0 || nul + 1 + idBytes > bytes.length) throw tooMuch();
+    const mode = bytes.toString('latin1', at, sp);
+    const id = bytes.toString('hex', nul + 1, nul + 1 + idBytes);
+    if (mode !== '40000' && mode !== '160000') out.push({ name: bytes.toString('utf8', sp + 1, nul), mode: mode.padStart(6, '0'), id });
+    at = nul + 1 + idBytes;
+  }
+  return out;
 }
 
 interface Obj {
@@ -57,17 +80,20 @@ async function readObjects(git: HardenedGit, cwd: string, objs: readonly Obj[], 
 }
 
 /**
- * Scans every blob and commit message reachable from `tip` but not from `base` (`git rev-list --objects base..tip`), except
- * blobs of the base's own tree. Returns the blob ids it scanned, so the working-tree pass need not read them again.
+ * Scans every blob, every whole commit object, and every blob name in every tree reachable from `tip` but not from `base`
+ * (`git rev-list --objects base..tip`), except what the base's own tree holds (a blob by id, a name by path and id). A name is
+ * scanned for every tree that holds it, not once per blob, so content shared with the base cannot carry a new name past the
+ * scan. Objects too large to scan are refused unread. Returns the blob ids whose content it scanned.
  */
 export async function scanHistory(
-  git: HardenedGit, cwd: string, base: string, tip: string, check: SnapshotScan, limits: SnapshotScanner['limits'], baseBlobs: ReadonlySet<string>,
+  git: HardenedGit, cwd: string, base: string, tip: string, check: SnapshotScan, limits: SnapshotScanner['limits'], baseT: BaseTree,
+  maxObjects = MAX_HISTORY_OBJECTS,
 ): Promise<Set<string>> {
   const scanned = new Set<string>();
   if (!OID.test(base) || !OID.test(tip)) throw tooMuch();
   if (base === tip) return scanned;
   const listed = (await git.run(['rev-list', '--objects', '--end-of-options', `${base}..${tip}`], { cwd })).stdout.split('\n').filter((l) => l !== '');
-  if (listed.length > MAX_HISTORY_OBJECTS) throw tooMuch();
+  if (listed.length > maxObjects) throw tooMuch();
   const paths = new Map<string, string>();
   for (const line of listed) {
     const sp = line.indexOf(' ');
@@ -81,22 +107,26 @@ export async function scanHistory(
     const m = /^([0-9a-f]{40,64}) (\w+) (\d+)$/.exec(rec);
     if (!m) continue;
     const o: Obj = { id: m[1] as string, type: m[2] as string, size: Number(m[3]), path: paths.get(m[1] as string) ?? '' };
-    if (o.type === 'commit') toRead.push(o);
-    else if (o.type === 'blob' && !baseBlobs.has(o.id)) {
-      scanned.add(o.id);
-      // Too large to read for a scan: refused without reading it.
-      if (o.size > 4 * limits.maxBytes && o.size > limits.maxBinaryBytes) check.unscannable(o.path);
-      else toRead.push(o);
-    }
+    // Too large to scan: refused without reading it (a blob that is a small enough binary still gets its marker).
+    const tooLarge = o.size > 4 * limits.maxBytes && (o.type !== 'blob' || o.size > limits.maxBinaryBytes);
+    if (o.type === 'blob' && baseT.ids.has(o.id)) continue;
+    if (o.type === 'blob') scanned.add(o.id);
+    if (o.type !== 'blob' && o.type !== 'commit' && o.type !== 'tree') continue;
+    if (tooLarge) check.unscannable(o.type === 'commit' ? { commit: o.id } : { path: o.path });
+    else toRead.push(o);
   }
+  const names = new Map<string, string>();
   await readObjects(git, cwd, toRead, async (o, bytes) => {
-    if (o.type === 'commit') {
-      const split = bytes.indexOf('\n\n');
-      await check.addMessage(o.id, split < 0 ? '' : bytes.subarray(split + 2).toString('utf8'));
-    } else {
-      await check.add({ rel: o.path, mode: '100644', bytes });
+    if (o.type === 'commit') await check.addCommit(o.id, bytes);
+    else if (o.type === 'blob') await check.add({ rel: o.path, mode: '100644', bytes });
+    else {
+      for (const e of treeBlobs(bytes, o.id.length / 2)) {
+        const rel = o.path === '' ? e.name : `${o.path}/${e.name}`;
+        if (!baseT.pairs.has(`${rel}\0${e.id}`)) names.set(rel, e.mode);
+      }
     }
   });
+  await check.addNames([...names].map(([rel, mode]) => ({ rel, mode })));
   return scanned;
 }
 
@@ -106,6 +136,6 @@ export async function scanHistory(
  */
 export async function assertHistoryClean(git: HardenedGit, cwd: string, base: string, tip: string, scanner: SnapshotScanner = defaultSnapshotScanner()): Promise<void> {
   const check = startSnapshotScan(scanner);
-  await scanHistory(git, cwd, base, tip, check, scanner.limits, await baseTreeBlobs(git, cwd, base));
+  await scanHistory(git, cwd, base, tip, check, scanner.limits, await baseTree(git, cwd, base));
   check.finish();
 }

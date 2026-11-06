@@ -10,6 +10,7 @@ import { WorktreeError } from '../src/index.js';
 import { makeFixture, sh, write, type Fixture } from './helpers.js';
 
 const PEM = '-----BEGIN ' + 'RSA PRIVATE' + ' KEY-----';
+const TOKEN = ['gh', 'p_'].join('') + 'Ab1'.repeat(12);
 
 const refs = (repo: string, prefix: string): string => sh(repo, 'for-each-ref', '--format=%(refname)', prefix);
 
@@ -67,7 +68,30 @@ describe('snapshot secret scan of run-made history (REF-1)', () => {
     sh(wt, 'commit', '-q', '--allow-empty', '-m', `note\n\n${PEM}`);
     const id = sh(wt, 'rev-parse', 'HEAD').trim();
     const e = await refusal(fx.manager.restoreFromRunBase({ path: path.join(wt, 'a.txt') }));
-    assert.deepEqual(e.details['findings'], [{ rule: 'private-key-block', line: 3, commit: id }]);
+    assert.deepEqual((e.details['findings'] as { rule: string; commit?: string }[]).map((f) => [f.rule, f.commit]), [['private-key-block', id]]);
+  });
+
+  it('a token in a run-made commit author name refuses', async () => {
+    write(path.join(wt, 'ok.txt'), 'fine\n');
+    sh(wt, 'add', '--', 'ok.txt');
+    sh(wt, '-c', `user.name=${TOKEN}`, 'commit', '-q', '-m', 'plain');
+    const e = await refusal(fx.manager.finalise({ path: wt, outcome: 'archived' }));
+    assert.deepEqual((e.details['findings'] as { rule: string }[]).map((f) => f.rule), ['github-token', 'github-token']);
+    assert.ok(!JSON.stringify(e.details).includes(TOKEN));
+  });
+
+  it('a sensitive or token name whose content the base already holds still refuses, committed or untracked', async () => {
+    write(path.join(wt, 'id_rsa'), 'alpha\n');
+    write(path.join(wt, `${TOKEN}.txt`), 'alpha\n');
+    const e = await refusal(fx.manager.restoreFromRunBase({ path: path.join(wt, 'a.txt') }));
+    assert.deepEqual(e.details['findings'], [{ rule: 'github-token' }, { rule: 'sensitive-filename', path: 'id_rsa' }]);
+    rmSync(path.join(wt, `${TOKEN}.txt`));
+    sh(wt, 'add', '--', 'id_rsa');
+    sh(wt, 'commit', '-q', '-m', 'k');
+    // Committed, the name lives only in a run-made tree: the history scan reads every tree's names.
+    const h = await refusal(fx.manager.finalise({ path: wt, outcome: 'archived' }));
+    assert.deepEqual(h.details['findings'], [{ rule: 'sensitive-filename', path: 'id_rsa' }]);
+    assert.equal(refs(fx.repo, 'refs/axis/archive'), '');
   });
 
   it('finalise refuses to pin an unscanned commit as the archive, with nothing to back up', async () => {

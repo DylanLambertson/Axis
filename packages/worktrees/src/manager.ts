@@ -148,9 +148,9 @@ export class WorktreeManager {
         }
         const scan = await scanDiscard(this.git, workTree, this.maxFile);
         const { needsBackup } = requireDiscardConfirmation('finalise', meta.id, scan, input.discardConfirmation);
+        await assertHistoryClean(this.git, workTree, meta.baseSha, head, this.options.snapshotScanner);
         const backupRef = needsBackup ? await this.writeBackup(workTree, meta, 'finalise') : null;
         const archiveRef = `refs/axis/archive/${meta.id}`;
-        if (backupRef === null) await assertHistoryClean(this.git, workTree, meta.baseSha, head, this.options.snapshotScanner);
         await createRefOnce(this.git, workTree, archiveRef, head);
         await writeMeta(repo.gitDir, { ...meta, state: 'FINALISED', outcome: input.outcome });
         return { archiveRef, archiveSha: head, backupRef, outcome: input.outcome, skippedLarge: scan.skippedLarge };
