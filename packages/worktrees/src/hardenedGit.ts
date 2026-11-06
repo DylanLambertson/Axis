@@ -90,7 +90,7 @@ interface Shape {
  */
 const SHAPES: Readonly<Record<string, Shape>> = {
   'config': { flags: ['--null', '--list', '--show-origin', '--show-scope'], required: ['--null', '--list'], positional: false },
-  'rev-parse': { flags: ['--verify', '--quiet'] },
+  'rev-parse': { flags: ['--verify', '--quiet', '--git-path'] },
   'symbolic-ref': { flags: ['-q', '--short'], maxPositional: 1 },
   'show-ref': { flags: ['--verify', '--quiet'] },
   'check-ref-format': { flags: ['--branch'] },
@@ -115,8 +115,8 @@ const SHAPES: Readonly<Record<string, Shape>> = {
   'worktree list': { flags: ['--porcelain', '-z'], positional: false },
 };
 
-/** The only variable a caller may add to git's environment (a temporary index in a private directory). */
-const CALLER_ENV = new Set(['GIT_INDEX_FILE']);
+/** The only variables a caller may add to git's environment: a temporary index, and the two that make the merged check ignore replace refs and grafts. */
+const CALLER_ENV = new Set(['GIT_INDEX_FILE', 'GIT_NO_REPLACE_OBJECTS', 'GIT_GRAFT_FILE']);
 
 /** Leading `-c` pairs a caller may add (commit identity only); any other global option is refused. */
 const CALLER_CONFIG = /^user\.(name|email)=/;

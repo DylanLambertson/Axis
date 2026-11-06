@@ -85,6 +85,8 @@ export interface Workspace {
   readonly reviewedTreeHash: string | null;
   readonly reviewedAt: string | null;
   readonly finaliseOutcome: FinaliseOutcome | null;
+  /** The full `refs/heads/...` name the base resolved to at create, recorded by the daemon; null when unknown (refuse `merged`). */
+  readonly baseBranch: string | null;
 }
 
 export interface Project {
@@ -208,6 +210,7 @@ export interface WorkspaceRow {
   reviewed_tree_hash: string | null;
   reviewed_at: string | null;
   finalise_outcome: string | null;
+  base_branch: string | null;
 }
 export interface RunRow {
   id: string;
@@ -239,6 +242,7 @@ export const toWorkspace = (r: WorkspaceRow): Workspace => ({
   reviewedTreeHash: r.reviewed_tree_hash,
   reviewedAt: r.reviewed_at,
   finaliseOutcome: r.finalise_outcome as FinaliseOutcome | null,
+  baseBranch: r.base_branch,
 });
 export const toRun = (r: RunRow): Run => ({
   id: r.id,
