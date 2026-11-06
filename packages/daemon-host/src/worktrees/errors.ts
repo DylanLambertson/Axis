@@ -24,6 +24,8 @@ const REASONS: Readonly<Record<string, string>> = {
   "branch-mismatch": "branch_mismatch",
   "runbase-moved": "runbase_moved",
   "git-path": "git_path",
+  "snapshot-secret": "snapshot_secret",
+  "snapshot-unscanned": "snapshot_unscanned",
 };
 
 const REASON_TEXT: Readonly<Record<string, string>> = {
@@ -41,6 +43,8 @@ const REASON_TEXT: Readonly<Record<string, string>> = {
   branch_mismatch: "The branch does not belong to this workspace.",
   runbase_moved: "The run base moved since the run started.",
   git_path: "The git executable is not usable.",
+  snapshot_secret: "The workspace holds a file that looks like a secret, so no snapshot was written; ignore or remove it first.",
+  snapshot_unscanned: "A file in the workspace could not be scanned for secrets, so no snapshot was written; ignore or remove it first.",
 };
 
 const CODE_TEXT = {

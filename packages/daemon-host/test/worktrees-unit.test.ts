@@ -82,6 +82,15 @@ test("errors: closed codes, fixed texts, nothing from the cause", () => {
   assert.equal(toDaemonError(same), same);
 });
 
+test("a snapshot refused by the REF-1 secret scan reaches the wire as its own closed reason, with fixed text", () => {
+  for (const [pkg, wire] of [["snapshot-secret", "snapshot_secret"], ["snapshot-unscanned", "snapshot_unscanned"]] as const) {
+    const d = fromWorktreeError("E_POLICY_DENIED", pkg);
+    assert.equal(d.code, "E_CONFLICT");
+    assert.deepEqual(d.details, { reason: wire });
+    assert.match(d.message, /no snapshot was written/);
+  }
+});
+
 test("a failure after the journal row leaves it FAILED and unlocked, and the error text names no path or ref", { skip }, async (t) => {
   const r = await worktreesRig({ fixedSuffix: true });
   t.after(() => r.cleanup());
