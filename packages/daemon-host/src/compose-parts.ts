@@ -123,3 +123,48 @@ export function handleProjectsRegister(
     reply({ ok: false, code });
   }
 }
+
+/**
+ * A switch that closes the composer's audit writers for good (review r1 S1): once the final anchor is being taken, a late
+ * `broker.decision`, `broker.result` or challenge row must not land after it. `guard()` throws `E_UNAVAILABLE`
+ * (`audit_sealed`) after `seal()`, so the broker fails the call closed (`audit-failed`) and the loop stops; nothing is
+ * written past the checkpoint.
+ */
+export interface AuditSeal {
+  readonly guard: () => void;
+  readonly seal: () => void;
+  readonly sealed: () => boolean;
+}
+
+export function createAuditSeal(): AuditSeal {
+  let closed = false;
+  return Object.freeze({
+    guard: () => {
+      if (closed) throw new AxisError("E_UNAVAILABLE", "The audit log is closed for shutdown", { reason: "audit_sealed" });
+    },
+    seal: () => void (closed = true),
+    sealed: () => closed,
+  });
+}
+
+/**
+ * Shutdown step 3 for composer runs (design 8; review r1 S1): stop every loop (the service then writes nothing to the
+ * journal), give what was already running a bounded moment to record its result (a cancelled approval records its
+ * withdrawal), then seal the audit writers, so the final checkpoint covers the last composer row. Resolves `true` when
+ * every loop settled in time. The bounding timer is always cleared.
+ */
+export async function settleComposer(composer: { dispose(): void; idle(): Promise<void> } | undefined, seal: Pick<AuditSeal, "seal">, waitMs: number): Promise<boolean> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    if (composer === undefined) return true;
+    composer.dispose();
+    const late = new Promise<false>((resolve) => {
+      timer = setTimeout(() => resolve(false), waitMs) as unknown as NodeJS.Timeout; // opaque handle under Code OSS's typings (ADR 0005)
+      timer.unref();
+    });
+    return await Promise.race([composer.idle().then(() => true as const, () => true as const), late]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+    seal.seal();
+  }
+}

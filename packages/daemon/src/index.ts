@@ -1,5 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 export { Daemon, type DaemonOptions } from "./daemon.js";
+export { EventHub, type EventAttachment, type EventAudience, type EventHubOptions, type OutboundFrame } from "./events.js";
+export { Subscription, coalesceKey, type SubscriptionLimits } from "./event-sub.js";
 export { fromElectronPort, fromNodePort, memoryPair, type ElectronPortLike } from "./transport.js";
 export { protocolRegistry } from "./support.js";
 export { MemoryIdempotencyStore, type MemoryStoreOptions } from "./memory-store.js";

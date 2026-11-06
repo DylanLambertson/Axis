@@ -83,6 +83,8 @@ client.onInit((raw) => {
       ptyGitRunner: localPtyGitRunner(gitPath, env),
       snapshotter,
       scanMode: process.env["AXIS_SLICE_SCAN_MODE"] === "warn" ? "warn" : "refuse",
+      // A composer run's first turn writes the root Makefile (a protected path: it waits for the user's approval); later turns answer text.
+      composer: { mock: { respond: (req) => (req.messages.length === 1 ? { kind: "tool_use", name: "write_file", input: { path: "Makefile", content: "all:\n" } } : { kind: "text", text: "done" }) } },
       process,
       exit: (code, info) => {
         process.exitCode = code;
