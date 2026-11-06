@@ -1,5 +1,5 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
-import type { ComposerMode, ComposerRun, JsonValue, RunEvent } from "@axis/protocol";
+import type { ApprovalPreview, ComposerMode, ComposerRun, JsonValue, RunEvent } from "@axis/protocol";
 import type { GuardedProvider } from "@axis/providers";
 
 /**
@@ -53,6 +53,8 @@ export interface ComposerApprovalNote {
   readonly digest: string;
   readonly reasons: readonly string[];
   readonly paths: readonly { readonly access: "read" | "write"; readonly path: string }[];
+  /** What the call will do, bound to `digest` (C8): set on `requested`, null on the later states. */
+  readonly preview: ApprovalPreview | null;
 }
 
 export interface ComposerRunTools {

@@ -92,6 +92,48 @@ const displayPath = displayTextSchema(512).pipe(z.string().min(1));
 
 export const APPROVAL_EVENT_STATES = ["requested", "approved", "denied", "expired", "withdrawn"] as const;
 
+/** Longest head of written content one approval preview shows, in UTF-16 units after escaping. */
+export const MAX_PREVIEW_HEAD = 2048;
+/** Most secret-scan rule names one preview lists. */
+export const MAX_PREVIEW_FINDINGS = 8;
+/** The broker tiers, lowest first (`@axis/broker` `Tier`). */
+export const BROKER_TIERS = ["read", "write", "network", "destructive", "privileged"] as const;
+
+/** A head of content: activity text rules (control and invisible characters escaped by the daemon), and it may be empty. */
+const previewHeadSchema = z
+  .string()
+  .max(MAX_PREVIEW_HEAD)
+  .refine((t) => !REFUSED_ACTIVITY.test(t), { message: "no control or invisible characters" });
+
+/**
+ * What a tool call will do, as the user answers its approval (review r1 S2, ticket C8). The daemon builds it from the
+ * exact arguments the broker's digest covers (it recomputes the digest from them and shows nothing when they differ), so
+ * the content the user judges is the content that runs. `content` is null for a call that writes no content.
+ */
+export const approvalPreviewSchema = z
+  .strictObject({
+    /** The broker tier the challenge was issued for (recorded at issue; the digest covers it). */
+    tier: z.enum(BROKER_TIERS),
+    /** A protected path (WT-3: `.envrc`, `.vscode/`, `Makefile`, ...) is among the targets. */
+    protected: z.boolean(),
+    content: z
+      .strictObject({
+        /** UTF-8 bytes the call writes. */
+        bytes: countSchema,
+        /** SHA-256 of exactly those bytes. */
+        sha256: z.string().regex(/^[0-9a-f]{64}$/),
+        /** The start of the content, escaped; redacted when the scan found a secret, empty when it could not be shown safely. */
+        head: previewHeadSchema,
+        /** The head is not the whole content. */
+        truncated: z.boolean(),
+        /** Rule names of the secret scan over the whole content (`@axis/secret-scan`), empty when it found nothing. */
+        findings: z.array(z.string().regex(/^[A-Za-z0-9._-]{1,64}$/)).max(MAX_PREVIEW_FINDINGS),
+      })
+      .refine((c) => c.truncated || c.findings.length > 0 || c.bytes === 0 || c.head.length > 0, "a whole, clean, non-empty content shows a head")
+      .nullable(),
+  });
+export type ApprovalPreview = z.infer<typeof approvalPreviewSchema>;
+
 export const runEventSchema = z.discriminatedUnion("type", [
   z.strictObject({ ...eventBase, type: z.literal("state"), state: runStateSchema, reason: z.string().regex(/^[A-Z][A-Z0-9_]{0,63}$/).nullable() }),
   /** Model output. Untrusted text: the renderer shows it as text, never as markup. */
@@ -108,6 +150,8 @@ export const runEventSchema = z.discriminatedUnion("type", [
     reasons: z.array(z.string().regex(/^[a-z][a-z0-9:._-]{0,63}$/)).max(16),
     /** The worktree-relative paths the call reads or writes, as display text (never an identity). */
     paths: z.array(z.strictObject({ access: z.enum(["read", "write"]), path: displayPath })).max(MAX_APPROVAL_PATHS),
+    /** What the call will do (C8). Set on `requested` (a challenge is never issued without it), null on the later states. */
+    preview: approvalPreviewSchema.nullable(),
   }),
   z.strictObject({ ...eventBase, type: z.literal("usage"), usage: composerUsageSchema }),
 ]);
@@ -174,7 +218,8 @@ export const composerEventsResponseSchema = guarded(
     })
     .refine((r) => r.events.every((e, i) => i === 0 || e.seq > (r.events[i - 1] as RunEvent).seq), "events are in sequence order")
     .refine((r) => r.events.length === 0 || (r.events[r.events.length - 1] as RunEvent).seq === r.nextSeq, "nextSeq is the last event's")
-    .refine((r) => r.available || (r.events.length === 0 && r.complete), "an unavailable stream is empty and complete"),
+    .refine((r) => r.available || (r.events.length === 0 && r.complete), "an unavailable stream is empty and complete")
+    .refine((r) => r.events.every((e) => e.type !== "approval" || (e.state === "requested") === (e.preview !== null)), "a requested approval carries its preview"),
 );
 
 export const composerRunsMethods = {

@@ -7,7 +7,7 @@ import { Journal } from "@axis/journal";
 import type { RunEvent } from "@axis/protocol";
 import type { MockProviderOptions, MockReply, RunBudgetLimits } from "@axis/providers";
 import type { Policy } from "@axis/daemon";
-import { AGENT_PAYLOAD_ALLOWLIST, createAgentBinding, createComposerService, type AgentBinding, type ComposerService } from "../src/index.js";
+import { AGENT_PAYLOAD_ALLOWLIST, createAgentBinding, createComposerService, type AgentBinding, type ComposerService, type PreviewScanner, type ToolCaps } from "../src/index.js";
 import { rig, type Client, type Rig } from "./approvals-rig.js";
 
 /**
@@ -46,6 +46,8 @@ export interface ComposerRigOptions {
   /** The agent binding's audit sink throws for these rows (the journal's own log is unaffected). */
   readonly failAudit?: (action: string) => boolean;
   readonly maxActive?: number;
+  readonly toolCaps?: Partial<ToolCaps>;
+  readonly previewScanner?: PreviewScanner;
 }
 
 const SHA = "b".repeat(40);
@@ -80,6 +82,7 @@ export async function composerRig(options: ComposerRigOptions): Promise<Composer
     approvals: r.approvals.runs,
     now: () => r.clock.now(),
     mock: { ...options.mock, replies, respond: () => ({ kind: "text", text: "no more replies" }) },
+    ...(options.previewScanner === undefined ? {} : { previewScanner: options.previewScanner }),
   });
   const service = createComposerService({
     journal,
@@ -87,6 +90,7 @@ export async function composerRig(options: ComposerRigOptions): Promise<Composer
     now: () => r.clock.now(),
     ...(options.budget === undefined ? {} : { budget: options.budget }),
     ...(options.maxActive === undefined ? {} : { maxActive: options.maxActive }),
+    ...(options.toolCaps === undefined ? {} : { toolCaps: options.toolCaps }),
   });
   return {
     r,
