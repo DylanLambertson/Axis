@@ -30,6 +30,13 @@ test("the bound is the configured milliseconds", async () => {
   assert.deepEqual(seen, [1234]);
 });
 
+test("the default bound is ten seconds", () => {
+  const seen: number[] = [];
+  const port = createPtyProcessPort({ channel: channelPair().a, clock: { setTimeout: (_f, ms) => (seen.push(ms), 1), clearTimeout: () => undefined } });
+  void port.spawn(SPEC).catch(() => undefined);
+  assert.deepEqual(seen, [10000]);
+});
+
 test("a late `spawned` after the timeout kills the orphan group instead of leaking it", async () => {
   const { port, pair, clock } = silentPort();
   const p = port.spawn(SPEC);
