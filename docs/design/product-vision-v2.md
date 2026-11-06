@@ -1,7 +1,7 @@
 # Product vision v2: the agent home
 
 - **Status:** Proposed (planning only). Nothing here changes `docs/ROADMAP.md`, `docs/PRODUCT.md`, `docs/UX.md` or an ADR. Proposed edits to those files are collected in §6 and need the owner's approval before they are applied.
-- **Date:** 2026-11-05. Verified against `origin/main` at `ffbcaad`.
+- **Date:** 2026-11-05. Verified against `origin/main` at `74cd12e`.
 - **Decision owner:** Dylan Lambertson.
 - **Companion files:** `docs/design/inter-agent-communication.md` (messaging between agents), `docs/design/extensibility.md` (plugins, pages, tasks, integrations), `docs/design/product-vision-v2-tickets.md` (ticket breakdown and ADR list).
 - **Evidence tags:** **[V]** verified on `origin/main` or on the named branch at the stated commit; **[B]** exists only on an unmerged branch or open PR; **[I]** inferred or uncertain; **[N]** new, nothing exists.
@@ -49,7 +49,7 @@ Recommended default: keep "Space" in documents and UI. If the owner prefers "wor
 
 | # | Ask | Exists on main [V] | In flight [B] | New [N] | Proposed phase |
 |---|---|---|---|---|---|
-| 1 | Make projects | `projects` table (J1, #59); `axis.projects/1` contract (#44) and its `list` handler over the real host (H12, #445); registration through the supervisor control channel, main only (`daemon-host-plan.md` §3 Q4, still open); shell dashboard from read-only discovery (A1, #429) | daemon utility process entry and main seam (X1, PR #454 open) | "New project" flow (pick a local repository; clone from URL later), project settings, project archive | 1a for registration (already required); UI flow in 1c |
+| 1 | Make projects | `projects` table (J1, #59); `axis.projects/1` contract (#44) and its `list` handler over the real host (H12, #445); registration through the supervisor control channel, main only (`daemon-host-plan.md` §3 Q4, still open); shell dashboard from read-only discovery (A1, #429) | none for this row (the daemon utility process entry and main seam, X1, merged in #454 after this plan was drafted) | "New project" flow (pick a local repository; clone from URL later), project settings, project archive | 1a for registration (already required); UI flow in 1c |
 | 2 | Make agents inside projects | Runs, not agents: `@axis/runs` CLI supervisor (#39), `axis.cli-runs/1` handlers (H10, #430), user-scope `axis.cliAgents` launch entries (`@axis/pty-policy`, #19); `agent_runs.kind` `composer`/`cli` | composer runtime C1, `axis.runs/1` on the mock provider (branch `feat/composer-runtime`, not merged) | `agents` record (name, type, launch config, home workspace, group), `axis.agents/1` contract, agent create = workspace create + record | 1c |
 | 3 | Group agents | nothing | nothing | `agent_groups` record and contract; groups as folders in the side panel and as a messaging scope | 1c |
 | 4 | Agents talk to each other, any type | nothing; relevant controls exist: user-only resolve (`@axis/challenge`, #21), digest-bound single-use consume (APR-1), audit chain (`@axis/audit`, #26), secret scanner (`@axis/secret-scan`, H9-scan, #425) | server events E1 (branch `feat/events-e1`); pty process B9 (branch `feat/pty-process`); composer C1 | daemon-mediated message service, composer tools, a CLI endpoint; see `inter-agent-communication.md` | 2a |

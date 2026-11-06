@@ -1,7 +1,7 @@
 # Extensibility: plugins, pages, tasks and third-party integrations
 
 - **Status:** Proposed (design only; nothing is built). Proposed phases: pages and tasks 2a, plugins and integrations 4a (`product-vision-v2.md` §5).
-- **Date:** 2026-11-05. Verified against `origin/main` at `ffbcaad`.
+- **Date:** 2026-11-05. Verified against `origin/main` at `74cd12e`.
 - **Depends on:** ADR 0003 (bridge, policy pipeline, principals, D4, D5), ADR 0004, `docs/security/threat-model-phase1.md` (EXT-1, EXT-3, EXT-4, PRV-1, PRV-2, PRV-4, PRV-5, ANT-1, ANT-2, EL-5, NET-1), `docs/feasibility/extension-compatibility.md`, `docs/PROVIDERS.md`, `inter-agent-communication.md`.
 - **Evidence tags:** as in `product-vision-v2.md`.
 

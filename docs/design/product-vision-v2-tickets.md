@@ -1,14 +1,14 @@
 # Product vision v2: ticket breakdown and ADRs to write
 
 - **Status:** Proposed plan. Companion to `docs/design/product-vision-v2.md`. Nothing here is scheduled until the owner approves the phase proposal (`product-vision-v2.md` §5–§7).
-- **Date:** 2026-11-05. Verified against `origin/main` at `ffbcaad`.
+- **Date:** 2026-11-05. Verified against `origin/main` at `74cd12e`.
 
 ## 1. Conventions
 
 - Style follows `docs/design/daemon-host-plan.md` §2: **S** under half a day, **M** one to two days, **L** several days. "Review" marks trust-boundary code that goes to an independent security review before any PR.
 - **Builder:** **large** means a long session that owns a design and its security reasoning (the master's development builders); **small** means a short, non-architectural job for a secondary builder (docs, schemas over an agreed design, UI wiring, tests).
 - New prefixes avoid the ones in use (A and B in `axis-agent-shell.md` §8; C in both the shell design and `composer-runtime.md`; H, P, J, E, X, W, FU in the daemon-host plan): **G** agents and groups, **D** dashboard, **V** views, **M** messaging, **T** tasks, **Q** pages, **K** plugins, **N** integrations, **R** ADRs and threat-model docs.
-- Dependencies on existing tickets use their existing ids: E1 (server events, branch `feat/events-e1`), B9 (pty process, branch `feat/pty-process`), X1 (daemon entry, PR #454), C1 to C12 and J2 (`composer-runtime.md` §5, branch `feat/composer-runtime`), H10 (merged, #430), H9-scan (merged, #425).
+- Dependencies on existing tickets use their existing ids: E1 (server events, branch `feat/events-e1`), B9 (pty process, branch `feat/pty-process`), X1 (daemon entry, merged, #454), C1 to C12 and J2 (`composer-runtime.md` §5, branch `feat/composer-runtime`), H10 (merged, #430), H9-scan (merged, #425).
 
 ## 2. Docs first
 

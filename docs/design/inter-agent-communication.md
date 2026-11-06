@@ -1,7 +1,7 @@
 # Inter-agent communication
 
 - **Status:** Proposed (design only; nothing is built). Proposed phase 2a (`product-vision-v2.md` §5).
-- **Date:** 2026-11-05. Verified against `origin/main` at `ffbcaad`.
+- **Date:** 2026-11-05. Verified against `origin/main` at `74cd12e`.
 - **Depends on:** ADR 0003 (bridge, policy pipeline, D4 challenges, D5 audit), ADR 0004 (decisions 8 and 10, implication 3), `docs/security/threat-model-phase1.md` §4.4–4.5 (DMN-2, DMN-3, APR-1, APR-2, DMN-5, DMN-6, DMN-8, ANT-2), `docs/design/composer-runtime.md` (branch `feat/composer-runtime`, C1, not merged), `docs/design/daemon-host.md`.
 - **Evidence tags:** as in `product-vision-v2.md`.
 
