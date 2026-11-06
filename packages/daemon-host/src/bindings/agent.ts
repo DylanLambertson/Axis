@@ -3,7 +3,7 @@ import { realpath } from "node:fs/promises";
 import { z } from "zod";
 import type { AuditSink, Redactor } from "@axis/audit";
 import { BROKER_PAYLOAD_ALLOWLIST, BrokerError, ToolBroker, callDigest, createCommandRunner, nodeBrokerFs, type ApprovalHook, type ApprovalRequest, type CommandRunner } from "@axis/broker";
-import { MAX_APPROVAL_PATHS, toDisplayPath } from "@axis/protocol";
+import { MAX_APPROVAL_PATHS, toDisplayPath, type ApprovalPreview } from "@axis/protocol";
 import { createSecretScanner } from "@axis/secret-scan";
 import { createMockProvider, guardProvider, type GuardedProvider, type MockProviderOptions, type Redactor as ProviderRedactor } from "@axis/providers";
 import { buildApprovalPreview, type PreviewScanner } from "../composer/preview.js";
@@ -87,6 +87,12 @@ const PREVIEWED: ReadonlyMap<string, { readonly args: z.ZodType; readonly conten
   ["write_file", { args: writeArgs, content: (a: z.infer<typeof writeArgs>) => a.content }],
 ]);
 
+/** The user can judge the call from the preview: it writes nothing, or it is not protected, or its whole content is shown. */
+export function shownWhole(preview: ApprovalPreview): boolean {
+  const c = preview.content;
+  return c === null || !preview.protected || (!c.truncated && c.findings.length === 0);
+}
+
 /** A scanner over plain text that fails closed (`refuse`: an incomplete scan throws). */
 function defaultPreviewScanner(): PreviewScanner {
   const s = createSecretScanner({ mode: "refuse" });
@@ -147,10 +153,14 @@ export function createAgentBinding(deps: AgentBindingDeps): AgentBinding {
       async request(req: ApprovalRequest, signal: AbortSignal): Promise<unknown> {
         const call = covered(req);
         const spec = PREVIEWED.get(req.tool);
-        // Fail closed: no preview bound to this digest, no challenge (the broker records the decline).
-        if (call === undefined || spec === undefined || req.actor !== actor || req.worktreeId !== worktree.id) return { approved: false };
+        // Fail closed: no preview bound to this digest, no challenge (the broker records the decline). The digest covers the
+        // actor and the worktree, so a match is already this run's own call in this worktree.
+        if (call === undefined || spec === undefined) return { approved: false };
         const preview = await buildApprovalPreview({ tier: req.tier, reasons: req.reasons, content: spec.content(call.args as never) }, { scanner, redact: (t) => deps.redactor.redactString(t) });
-        if (preview === undefined || signal.aborted) return { approved: false };
+        // A protected write (WT-3) is put to the user only when the head shows the whole content: a payload past the head,
+        // a secret (the head is then redacted) or a scan that could not complete is never approved blind (review c2 S1). A call
+        // cancelled during the preview is refused by `approvals.request`, which issues nothing for an aborted signal.
+        if (preview === undefined || !shownWhole(preview)) return { approved: false };
         const base = {
           tool: req.tool,
           reasons: req.reasons.filter((r) => LABEL.test(r)).slice(0, 16),

@@ -33,13 +33,25 @@ export interface PreviewDeps {
 
 const RULE = /^[A-Za-z0-9._-]{1,64}$/;
 
-const token = (ch: string): string => (REFUSED_ACTIVITY.test(ch) ? `\\u{${(ch.codePointAt(0) as number).toString(16)}}` : ch);
+/** Blank letters that draw nothing (Hangul fillers, the braille blank): shown escaped in a head although activity text allows them. */
+const BLANK_LETTER = /^[\u115f\u1160\u2800\u3164\uffa0]$/u;
+const MARK = /^\p{M}$/u;
+/** Combining marks in a row kept as they are; more are escaped, so a stack cannot draw over the text around it. */
+export const MAX_COMBINING_RUN = 2;
 
-/** The start of `text` with every refused code point escaped, cut on a code point boundary at `max` UTF-16 units. */
+const hex = (ch: string): string => `\\u{${(ch.codePointAt(0) as number).toString(16)}}`;
+
+/**
+ * The start of `text` as the user sees it, cut on a code point boundary at `max` UTF-16 units. Every code point activity
+ * text refuses, every blank letter and every combining mark past `MAX_COMBINING_RUN` in a row is written `\u{hex}`, and a
+ * backslash is written `\\`, so the escaping is reversible: what the head shows names exactly one content.
+ */
 export function escapedHead(text: string, max = MAX_PREVIEW_HEAD): { readonly head: string; readonly truncated: boolean } {
   let head = "";
+  let marks = 0;
   for (const ch of text) {
-    const t = token(ch);
+    marks = MARK.test(ch) ? marks + 1 : 0;
+    const t = ch === "\\" ? "\\\\" : REFUSED_ACTIVITY.test(ch) || BLANK_LETTER.test(ch) || marks > MAX_COMBINING_RUN ? hex(ch) : ch;
     if (head.length + t.length > max) return { head, truncated: true };
     head += t;
   }

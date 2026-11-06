@@ -115,7 +115,7 @@ test("S4: the composition hands its tool caps to the composer service (an invali
   const composed = composeDaemonHost(options(fix, { composer: { toolCaps: { callsPerReply: 0 } } }));
   try {
     const outcome = await composed.start().then((s) => s.degraded ?? "started", (e: unknown) => (e instanceof RangeError ? "refused" : `other:${String(e)}`));
-    assert.notEqual(outcome, "started");
+    assert.equal(outcome, "refused");
   } finally {
     await composed.stop();
     fix.cleanup();
