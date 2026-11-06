@@ -4,7 +4,7 @@ import { access } from "node:fs/promises";
 import { join } from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
 import { AxisError, withTransaction, type InstanceLock } from "@axis/audit";
-import { Daemon, MemoryIdempotencyStore, protocolRegistry, type ContractRegistry, type ShutdownOptions } from "@axis/daemon";
+import { Daemon, MemoryIdempotencyStore, protocolRegistry, type ContractRegistry, type ElectronPortLike, type ShutdownOptions } from "@axis/daemon";
 import type { GitRunner } from "@axis/git-ops";
 import { PROJECTS_CONTRACT, PROJECTS_VERSION, PROVIDERS_CONTRACT, PROVIDERS_VERSION, APPROVALS_CONTRACT, APPROVALS_VERSION, REVIEW_CONTRACT, REVIEW_VERSION, WORKTREES_CONTRACT, WORKTREES_VERSION, lookupMethod } from "@axis/protocol";
 import { createSecretScanner, type ScanMode } from "@axis/secret-scan";
@@ -66,6 +66,11 @@ export interface ComposeOptions {
   readonly control: ControlClient;
   /** The mux the control client speaks over (child process and web hosts); a connect that names a `cid` needs it. */
   readonly mux?: ChannelMux;
+  /**
+   * Where a `connect` that carries a transferred port arrives (Electron: `adaptParentPort(...).onPort`). Each message goes to the
+   * connect router (limiter first, then `daemon.accept`); the listener is removed when the connect listener goes, at shutdown step 3.
+   */
+  readonly portSource?: { onPort(handler: (data: unknown, port: ElectronPortLike) => void): () => void };
   readonly ports: Omit<StartupPorts, "control" | "reconcile" | "afterStorage" | "beforeReady">;
   readonly host?: HostOptions;
   /** The Axis pty process: spawns CLI runs. REQUIRED. */
@@ -245,7 +250,12 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
       ...(config.limits.connectBurst === undefined ? {} : { burst: config.limits.connectBurst }),
     });
     const router = createConnectRouter({ limiter, accept: (connection, attestation) => daemon.accept(connection, attestation), ...(options.mux === undefined ? {} : { mux: options.mux }), ...(logger === undefined ? {} : { logger }) });
-    offConnect = control.onConnect((request) => router.fromMux(request));
+    const offMux = control.onConnect((request) => router.fromMux(request));
+    const offPort = options.portSource?.onPort((data, port) => router.fromPortMessage(data, port));
+    offConnect = () => {
+      offMux();
+      offPort?.();
+    };
     cleanups.push(() => offConnect?.());
     cleanups.push(control.onTrustSet((m) => {
       try {

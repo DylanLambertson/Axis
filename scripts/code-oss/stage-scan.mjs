@@ -58,8 +58,8 @@ export const RESTRICTED_MODULES = [
   // root `compose.ts`, which hands handler code the registrar only) may load it, so no handler, service or binding can mint an
   // attestation without main's per-start trust.check (TRU-2).
   { pkg: "daemon-host", file: "gate/run-trust.ts", importers: new Set(), files: new Set(["daemon-host/index.ts", "daemon-host/compose.ts"]), exact: true },
-  // The composition root loads the minters: only the public index may load it, so no handler can import a minter through it.
-  { pkg: "daemon-host", file: "compose.ts", importers: new Set(), files: new Set(["daemon-host/index.ts"]), exact: true },
+  // The composition root loads the minters: only the public index and the process entry (`entry.ts`, which calls `composeDaemonHost` and nothing else of it) may load it, so no handler can import a minter through it.
+  { pkg: "daemon-host", file: "compose.ts", importers: new Set(), files: new Set(["daemon-host/index.ts", "daemon-host/entry.ts"]), exact: true },
 ];
 
 /** True when the staged file `rel` (package `importerPkg`) may import restricted module `r`. `exact` ignores the owner package. */

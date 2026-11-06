@@ -1,0 +1,25 @@
+diff --git a/src/vs/code/electron-main/app.ts b/src/vs/code/electron-main/app.ts
+--- a/src/vs/code/electron-main/app.ts
++++ b/src/vs/code/electron-main/app.ts
+@@ -62,6 +62,9 @@ import { ProcessMainService } from '../../platform/process/electron-main/process
+ import { IKeyboardLayoutMainService, KeyboardLayoutMainService } from '../../platform/keyboardLayout/electron-main/keyboardLayoutMainService.js';
+ import { ILaunchMainService, LaunchMainService } from '../../platform/launch/electron-main/launchMainService.js';
+ import { ILifecycleMainService, LifecycleMainPhase, ShutdownReason } from '../../platform/lifecycle/electron-main/lifecycleMainService.js';
++// --- Start Axis ---
++import { startAxisMainSeam } from '../../axis/code/electron-main/axisMainSeam.js';
++// --- End Axis ---
+ import { ILoggerService, ILogService } from '../../platform/log/common/log.js';
+ import { IMenubarMainService, MenubarMainService } from '../../platform/menubar/electron-main/menubarMainService.js';
+ import type { IOSProxyConfig } from '../../platform/native/common/native.js';
+@@ -785,6 +788,11 @@ export class CodeApplication extends Disposable {
+ 		appInstantiationService.invokeFunction(accessor => this.initChannels(accessor, mainProcessElectronServer, sharedProcessClient));
+ 		mark('code/didInitChannels');
+ 
++		// --- Start Axis ---
++		// The Axis daemon utility process (ADR 0003 D1): fixed entry, supervised, stopped on quit.
++		startAxisMainSeam(this.lifecycleMainService, this.logService, this.environmentMainService.userDataPath);
++		// --- End Axis ---
++
+ 		// Setup Protocol URL Handlers
+ 		mark('code/willSetupProtocolUrlHandlers');
+ 		const initialProtocolUrls = await appInstantiationService.invokeFunction(accessor => this.setupProtocolUrlHandlers(accessor, mainProcessElectronServer));
