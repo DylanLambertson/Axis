@@ -91,6 +91,11 @@ export interface ComposeOptions {
   readonly withholdHandlers?: ReadonlySet<string>;
   /** How long the final anchor waits for its acknowledgement (default 1500). A longer wait than `finalizeTimeoutMs` only turns a slow acknowledgement into exit 1. */
   readonly finalAnchorWaitMs?: number;
+  /**
+   * TEST ONLY: receives the two audit writers the composition seals at the final anchor (the challenge sink and the composer
+   * binding's sink), so a test can prove a write after shutdown is refused. It can only observe them, never unseal them.
+   */
+  readonly observeSealedWriters?: (writers: { readonly challenge: { append(e: never): unknown }; readonly composer: { append(e: never): unknown } }) => void;
   /** How long shutdown waits for composer runs to record their last rows before the audit writers are sealed (default 1000). */
   readonly composerSettleMs?: number;
   /** Composer runs (`axis.runs/1`, docs/design/composer-runtime.md): the mock provider's script and the per-run budget. */
@@ -167,8 +172,12 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
       },
       afterStorage(parts) {
         const forwarder = createActiveRunForwarder();
+        // Both writers are guarded by the seal (review r1 S1); removing either guard fails compose-composer.test.ts.
+        const challengeWriter = { append: (e: Parameters<typeof parts.audit.append>[0]) => (auditSeal.guard(), parts.audit.append(e), parts.anchors.noteWrite(), undefined) };
+        const composerWriter = { append: (e: Parameters<typeof parts.audit.append>[0]) => { auditSeal.guard(); const row = parts.audit.append(e); parts.anchors.noteWrite(); return row; } };
+        options.observeSealedWriters?.({ challenge: challengeWriter as never, composer: composerWriter as never });
         const approvals = createWorktreesApprovals({
-          audit: createChallengeAuditSink({ append: (e) => (auditSeal.guard(), parts.audit.append(e), parts.anchors.noteWrite(), undefined) }),
+          audit: createChallengeAuditSink(challengeWriter),
           control,
           clock: ports.clock,
           ...(logger === undefined ? {} : { logger }),
@@ -208,7 +217,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
         const agent = createAgentBinding({
           locator: worktrees.locator,
           repositoryRoots: projectPaths,
-          audit: { append: (e) => { auditSeal.guard(); const row = parts.audit.append(e); parts.anchors.noteWrite(); return row; } },
+          audit: composerWriter,
           redactor: ports.redactor,
           env: () => ports.env,
           approvals: approvals.runs,

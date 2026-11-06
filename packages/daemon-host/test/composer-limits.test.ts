@@ -128,4 +128,14 @@ test("S4: the run stops once its tool results exceed the per-run size cap", asyn
   });
   assert.deepEqual(end, { state: "FAILED", reason: "TOOL_RESULT_LIMIT" });
   assert.equal(tools.calls, 3, "the third result crossed the cap, and nothing more was asked");
+  // Exactly at the cap is allowed (review r2 N3): two results of 1000 against a cap of 2000, then the model ends.
+  const exact = fakeTools("x".repeat(1000));
+  let turns = 0;
+  const atCap = await runComposerLoop({
+    runId: "r2", mode: "agent", prompt: "p", model: "mock-model", budget: createRunBudget({}), signal: new AbortController().signal, emit: () => undefined, tools: exact,
+    provider: { generate: async () => (turns++ < 2 ? reply(1) : { ...reply(0), stopReason: "end_turn" }) },
+    maxResultChars: 2000,
+  });
+  assert.deepEqual(atCap, { state: "REVIEWING", reason: null });
+  assert.equal(exact.calls, 2);
 });

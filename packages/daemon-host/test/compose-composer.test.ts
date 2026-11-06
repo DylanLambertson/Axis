@@ -14,10 +14,34 @@ const pty: PtyPort = { spawn: () => Promise.reject(new Error("unused")) };
 const runner: GitRunner = { run: () => Promise.reject(new Error("unused")) };
 const snapshotter: NonNullable<ComposeOptions["snapshotter"]> = { before: () => Promise.resolve(), after: () => Promise.resolve({ drift: false }) };
 
-function options(fix: ReturnType<typeof hostFixture>): ComposeOptions {
+function options(fix: ReturnType<typeof hostFixture>, over: Partial<ComposeOptions> = {}): ComposeOptions {
   const { control: _control, ...ports } = fix.ports as typeof fix.ports & { control: unknown };
-  return { config: fix.config, control: fix.client, ports, pty, ptyGitRunner: runner, snapshotter, process: new EventEmitter(), exit: () => undefined };
+  return { config: fix.config, control: fix.client, ports, pty, ptyGitRunner: runner, snapshotter, process: new EventEmitter(), exit: () => undefined, ...over };
 }
+
+test("N1 (review r2): after the final anchor both composed audit writers refuse a row; before it both write", async () => {
+  const fix = hostFixture();
+  const proc = new EventEmitter();
+  let writers: Parameters<NonNullable<ComposeOptions["observeSealedWriters"]>>[0] | undefined;
+  const composed = composeDaemonHost(options(fix, { process: proc, observeSealedWriters: (w) => void (writers = w) }));
+  const row = (n: number) => ({ actor: "daemon", action: "tier4.challenge", target: `sha256:${n}`, outcome: "success", payload: { phase: "probe" } }) as never;
+  try {
+    const s = await composed.start();
+    const w = must(writers);
+    w.challenge.append(row(1));
+    w.composer.append(row(2));
+    const head = s.auditRead.head()?.seq ?? 0;
+    proc.emit("SIGTERM");
+    await composed.finished;
+    const sealed = (e: unknown): boolean => (e as { code?: string; detail?: Record<string, unknown> }).code === "E_UNAVAILABLE" && (e as { detail: Record<string, unknown> }).detail["reason"] === "audit_sealed";
+    assert.throws(() => w.challenge.append(row(3)), sealed, "the challenge writer is sealed");
+    assert.throws(() => w.composer.append(row(4)), sealed, "the composer writer is sealed");
+    assert.ok(head >= 2, "both writers wrote before the shutdown");
+  } finally {
+    await composed.stop();
+    fix.cleanup();
+  }
+});
 
 test("startup cancels a composer run that was QUEUED when the host died, and leaves a CLI run to the run supervisor's rules", async () => {
   const first = hostFixture();
