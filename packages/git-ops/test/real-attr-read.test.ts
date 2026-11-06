@@ -109,11 +109,14 @@ test("planted filter, textconv and external diff drivers run nothing through the
   const ext = driver(f, "extdiff");
   const globalClean = driver(f, "globalclean");
   const repo = f.wt.workTree;
-  f.git("config", "filter.x.clean", clean);
-  f.git("config", "filter.x.smudge", smudge);
-  f.git("config", "filter.x.required", "true");
-  f.git("config", "diff.x.textconv", textconv);
-  f.git("config", "diff.external", ext);
+  // Drivers in the repository config AND in the user's global config (the private read must not find either).
+  for (const g of [[], ["--global"]] as const) {
+    f.run(repo, "config", ...g, "filter.x.clean", clean);
+    f.run(repo, "config", ...g, "filter.x.smudge", smudge);
+    f.run(repo, "config", ...g, "filter.x.required", "true");
+    f.run(repo, "config", ...g, "diff.x.textconv", textconv);
+    f.run(repo, "config", ...g, "diff.external", ext);
+  }
   f.run(repo, "config", "--global", "filter.g.clean", globalClean);
   setInfo(f, "a.txt filter=x diff=x\n");
   writeFileSync(join(repo, ".gitattributes"), "*.txt filter=x diff=x\nb.txt filter=g\n");
@@ -127,7 +130,7 @@ test("planted filter, textconv and external diff drivers run nothing through the
   f.git("hash-object", "--path=a.txt", "a.txt");
   f.git("cat-file", "--filters", "HEAD:a.txt");
   f.git("diff", "--textconv", "--no-ext-diff", "HEAD~1", "HEAD");
-  f.git("diff", "--ext-diff", "HEAD~1", "HEAD");
+  f.git("diff", "HEAD~1", "HEAD");
   const ran = readFileSync(f.marker, "utf8");
   for (const n of ["clean", "smudge", "textconv", "extdiff"]) assert.ok(ran.includes(n), `fixture: ${n} runs unprotected`);
   writeFileSync(f.marker, "");
@@ -141,6 +144,8 @@ test("planted filter, textconv and external diff drivers run nothing through the
       ["hash-object", "--path=b.txt", "--", "b.txt"],
       ["cat-file", "--filters", `${head}:a.txt`],
       ["diff", "--no-ext-diff", "--no-textconv", prev, head],
+      ["diff", prev, head],
+      ["diff", "--textconv", prev, head],
       ["diff", "--ext-diff", "--textconv", prev, head],
       ["diff-tree", "-p", "--no-ext-diff", "--no-textconv", head],
     ];
@@ -195,4 +200,33 @@ test("dispose removes the private directory", async () => {
   assert.equal(existsSync(gd), true);
   r.dispose();
   assert.equal(existsSync(gd), false);
+});
+
+test("info/attributes is snapshotted byte for byte, including bytes that are not UTF-8", async () => {
+  const f = fixture();
+  const bytes = Buffer.concat([Buffer.from([0xff]), Buffer.from(".txt binary\n")]);
+  mkdirSync(join(f.wt.gitDir, "info"), { recursive: true });
+  writeFileSync(infoFile(f), bytes);
+  const r = await attributeReadGit(f.wt, f.deps);
+  try {
+    assert.deepEqual(Buffer.from(r.infoAttributesBytes), bytes);
+    f.seen.length = 0;
+    await attrOf(r.git);
+    const gd = (f.seen.at(-1)?.argv.find((a) => a.startsWith("--git-dir=")) as string).slice(10);
+    assert.deepEqual(readFileSync(join(gd, "info", "attributes")), bytes, "the copy git reads differs from the source");
+  } finally {
+    r.dispose();
+  }
+});
+
+test("a relative user attributes file and a git directory that cannot go in an alternates file are refused", async () => {
+  const f = fixture();
+  assert.equal((await refusal(attributeReadGit(f.wt, f.deps, { userAttributesFile: "attrs" }))).code, "E_INVALID_ARGUMENT");
+  const odd = join(f.root, "re\npo", ".git");
+  try {
+    mkdirSync(odd, { recursive: true });
+  } catch {
+    return; // a file system that cannot name a line break has nothing to test
+  }
+  assert.equal((await refusal(attributeReadGit({ workTree: join(f.root, "re\npo"), gitDir: odd }, f.deps))).code, "E_POLICY_DENIED");
 });

@@ -1,10 +1,11 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 // REV2-FIX (REV-2, G-27): attribute reads that no later write to the repository's attribute sources can change.
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, constants, fstatSync, mkdirSync, mkdtempSync, openSync, readSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { isAbsolute as posixAbs, join, resolve } from "node:path/posix";
+import { isAbsolute as winAbs } from "node:path/win32";
 import { checkWorktree, daemonGitFor, type DaemonGit } from "./args.js";
-import { GitOpsError, denied } from "./errors.js";
+import { GitOpsError, denied, invalid } from "./errors.js";
 import type { GitOpsDeps, WorktreeRef } from "./types.js";
 
 /** Largest attribute source snapshotted; a larger one is refused rather than cut (a cut file reads as a different rule set). */
@@ -20,33 +21,41 @@ export interface AttributeReadOptions {
 export interface AttributeRead {
   /** Daemon-hardened git over a private empty git directory: nothing in the real git directory (config, `info/attributes`) is read. */
   readonly git: DaemonGit;
-  /** The text of `info/attributes` taken ONCE; it is what `git` sees, so the caller can refuse any line in it. */
+  /** `info/attributes` taken ONCE, as a UTF-8 view for display and for refusing any line in it. Invalid UTF-8 shows as U+FFFD here; git reads the exact bytes (`infoAttributesBytes`). */
   readonly infoAttributes: string;
+  /** The exact bytes of `info/attributes` that `git` reads. */
+  readonly infoAttributesBytes: Uint8Array;
   /** Removes the private directory. Call it in a `finally`. */
   dispose(): void;
 }
 
-/** One bounded read; a missing file is "", anything else that is not a plain file within the limit is a refusal. */
-function readOnce(path: string): string {
-  let size: number;
+/** One bounded read of the bytes through ONE open file (no stat-then-read gap); a missing file is empty, anything else that is not a plain file within the limit is a refusal. */
+function readOnce(path: string): Buffer {
+  let fd: number;
   try {
-    const st = statSync(path);
-    if (!st.isFile()) throw denied("an attribute source is not a regular file");
-    size = st.size;
+    fd = openSync(path, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0));
   } catch (e) {
-    if (e instanceof GitOpsError) throw e;
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") return "";
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return Buffer.alloc(0);
     throw new GitOpsError("E_UNAVAILABLE", "could not read an attribute source");
   }
-  if (size > MAX_ATTRIBUTE_FILE) throw denied("an attribute source is too large to snapshot");
-  const text = readFileSync(path, "utf8");
-  if (text.length > MAX_ATTRIBUTE_FILE) throw denied("an attribute source is too large to snapshot");
-  return text;
+  try {
+    if (!fstatSync(fd).isFile()) throw denied("an attribute source is not a regular file");
+    const buf = Buffer.alloc(MAX_ATTRIBUTE_FILE + 1);
+    let n = 0;
+    for (let r = 1; r > 0 && n < buf.length; n += r) r = readSync(fd, buf, n, buf.length - n, null);
+    if (n > MAX_ATTRIBUTE_FILE) throw denied("an attribute source is too large to snapshot");
+    return buf.subarray(0, n);
+  } catch (e) {
+    if (e instanceof GitOpsError) throw e;
+    throw new GitOpsError("E_UNAVAILABLE", "could not read an attribute source");
+  } finally {
+    closeSync(fd);
+  }
 }
 
 /** Where `info/` and `objects/` live: the git directory, or its `commondir` for a linked worktree. */
 function commonDirOf(gitDir: string): string {
-  const link = readOnce(join(gitDir, "commondir")).split("\n")[0]?.trim() ?? "";
+  const link = readOnce(join(gitDir, "commondir")).toString("utf8").split("\n")[0]?.trim() ?? "";
   return link === "" ? gitDir : resolve(gitDir, link);
 }
 
@@ -56,15 +65,24 @@ function commonDirOf(gitDir: string): string {
  * after this call changes nothing git reads), `GIT_ATTR_NOSYSTEM=1` drops the system file, and the repository config is
  * not read (core.attributesFile, filters and drivers defined there do not apply; the user's global config filters are
  * still neutralised as for every daemon call). The work tree's tracked attribute files are read as before.
+ *
+ * LIMITS (this is half of REV2-FIX): (1) the work tree's tracked `.gitattributes` files are read LIVE from the work tree (or the
+ * index passed as `indexFile`), so a write there between two calls changes the answer; only `info/attributes` and the user file
+ * are snapshotted. (2) The system git config is still read. (3) The user's global config is not found (HOME is private), and
+ * the repository config is not read. Nothing calls this yet: `@axis/review` still reads attributes from the real git directory.
  */
 export async function attributeReadGit(w: WorktreeRef, deps: GitOpsDeps, opts: AttributeReadOptions = {}): Promise<AttributeRead> {
   checkWorktree(w, deps.platform ?? process.platform);
   const common = commonDirOf(w.gitDir);
   const objects = join(common, "objects");
-  // alternates is one path per line: a name with a line break or a leading '#' would be read as something else.
-  if (/[\r\n]/.test(objects) || objects.startsWith("#")) throw denied("the object directory cannot be named in an alternates file");
+  // alternates is one path per line: a name with a line break would be read as two entries (an absolute path cannot start with '#').
+  if (/[\r\n]/.test(objects)) throw denied("the object directory cannot be named in an alternates file");
+  const platform = deps.platform ?? process.platform;
+  if (opts.userAttributesFile !== undefined && (opts.userAttributesFile.includes("\0") || !(platform === "win32" ? winAbs : posixAbs)(opts.userAttributesFile))) {
+    throw invalid("the user attributes file must be an absolute path");
+  }
   const infoAttributes = readOnce(join(common, "info", "attributes"));
-  const userAttributes = opts.userAttributesFile === undefined ? "" : readOnce(opts.userAttributesFile);
+  const userAttributes = opts.userAttributesFile === undefined ? Buffer.alloc(0) : readOnce(opts.userAttributesFile);
   const dir = mkdtempSync(join(tmpdir(), "axis-attr-"));
   const dispose = (): void => rmSync(dir, { recursive: true, force: true, maxRetries: 3 });
   try {
@@ -74,11 +92,16 @@ export async function attributeReadGit(w: WorktreeRef, deps: GitOpsDeps, opts: A
     writeFileSync(join(dir, "info", "attributes"), infoAttributes);
     const userFile = join(dir, "user-attributes");
     writeFileSync(userFile, userAttributes);
+    // HOME and the XDG/profile variables point at an empty directory, so the user's global config (diff.external, diff.<x>.textconv,
+    // filters) is not found. GIT_CONFIG_* cannot be used (the runner refuses them), so the system config is still read: callers pass
+    // --no-ext-diff and --no-textconv on any diff.
+    const home = join(dir, "home");
+    mkdirSync(home);
     const git = await daemonGitFor({ workTree: w.workTree, gitDir: dir }, deps, opts.indexFile === undefined ? {} : { GIT_INDEX_FILE: opts.indexFile }, {
       config: [`core.attributesFile=${userFile}`],
-      env: { GIT_ATTR_NOSYSTEM: "1" },
+      env: { GIT_ATTR_NOSYSTEM: "1", HOME: home, XDG_CONFIG_HOME: home, ...(platform === "win32" ? { USERPROFILE: home } : {}) },
     });
-    return { git, infoAttributes, dispose };
+    return { git, infoAttributes: infoAttributes.toString("utf8"), infoAttributesBytes: new Uint8Array(infoAttributes), dispose };
   } catch (e) {
     dispose();
     throw e;
