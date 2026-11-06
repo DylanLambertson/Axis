@@ -3,6 +3,7 @@
 import { WorktreeError } from './errors.js';
 import type { RepoLocation } from './discovery.js';
 import type { GitRunner } from './git.js';
+import type { SnapshotScanner } from './snapshotScan.js';
 import type { WorkspaceMeta } from './meta.js';
 export const DAY_MS = 24 * 60 * 60 * 1000;
 export const RUNBASE_RETENTION_DAYS = 7;
@@ -24,6 +25,11 @@ export interface WorktreeManagerOptions {
   readonly now?: () => Date;
   readonly platform?: NodeJS.Platform;
   readonly maxSnapshotFileBytes?: number;
+  /**
+   * REF-1: scans every entry a snapshot ref adds before anything is written (docs/design/snapshot-scan.md). Pass the host's
+   * `createSecretScanner` value; absent, `createSecretScanner()` in refuse mode is used. There is no "off".
+   */
+  readonly snapshotScanner?: SnapshotScanner;
   /** Windows only: a daemon-owned zero-byte file under the app-data root, used as `core.hooksPath`. Defaults beside the worktree root. */
   readonly windowsNoHooksFile?: string;
   /** How long to wait for another process's workspace lock. */
