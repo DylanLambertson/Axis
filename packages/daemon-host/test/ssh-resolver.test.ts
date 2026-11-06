@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
+import { delimiter, join, parse } from "node:path";
 import { test } from "node:test";
 import { createSshResolver, parseSshConfig, type SshProcess, type SshSpawn } from "../src/index.js";
 
@@ -8,6 +9,7 @@ interface Call {
   file: string;
   args: readonly string[];
   env: Readonly<Record<string, string>>;
+  options: Record<string, unknown>;
 }
 type Script = (child: FakeChild) => void;
 class FakeChild extends EventEmitter {
@@ -18,17 +20,18 @@ class FakeChild extends EventEmitter {
     return true;
   }
 }
-function rig(script: Script, extra: { timeoutMs?: number; maxOutputBytes?: number; maxPending?: number } = {}) {
+function rig(script: Script, extra: { timeoutMs?: number; maxOutputBytes?: number; maxPending?: number; excludeDirs?: () => readonly string[]; path?: string } = {}) {
   const calls: Call[] = [];
   const children: FakeChild[] = [];
   const spawn: SshSpawn = (file, args, options) => {
-    calls.push({ file, args, env: options.env });
+    const { env, ...rest } = options;
+    calls.push({ file, args, env, options: rest });
     const c = new FakeChild();
     children.push(c);
     setImmediate(() => script(c));
     return c as unknown as SshProcess;
   };
-  const resolve = createSshResolver({ spawn, env: { PATH: "/p", HOME: "/h", SECRETISH: "x", SSH_ASKPASS: "/evil", USER: "u" }, ...extra });
+  const resolve = createSshResolver({ spawn, env: { PATH: extra.path ?? "/p", HOME: "/h", SECRETISH: "x", SSH_ASKPASS: "/evil", USER: "u" }, ...extra });
   return { calls, children, resolve };
 }
 const answer = (text: string, code = 0): Script => (c) => {
@@ -45,6 +48,7 @@ test("the argv is pinned, no shell, the environment is scrubbed, and only hostna
   assert.equal(r.calls[0]?.file, "ssh");
   assert.deepEqual(r.calls[0]?.args, ["-G", "--", "alias"]);
   assert.deepEqual(r.calls[0]?.env, { LC_ALL: "C", PATH: "/p", HOME: "/h", USER: "u" });
+  assert.deepEqual(r.calls[0]?.options, { shell: false, stdio: ["ignore", "pipe", "ignore"], windowsHide: true, detached: true }, "the options make a pass-through embedder correct");
   const withUser = rig(answer(GOOD));
   await withUser.resolve("alias", "bob", 2200);
   assert.deepEqual(withUser.calls[0]?.args, ["-G", "-l", "bob", "-p", "2200", "--", "alias"]);
@@ -132,4 +136,17 @@ test("with no way to start ssh, an ssh destination is refused and a path destina
   const { unavailableSshResolver } = await import("../src/index.js");
   await assert.rejects(pushTargetKey(["work:team/app.git"], "/", unavailableSshResolver), (e: unknown) => (e as { code?: string }).code === "E_INVALID_ARGUMENT");
   assert.equal(typeof (await pushTargetKey(["/"], "/", unavailableSshResolver)), "string");
+});
+
+test("PATH keeps absolute entries only, minus the excluded directories; with none left nothing starts", async () => {
+  const abs = (p: string) => join(parse(process.cwd()).root, p);
+  const bin = abs("usr-bin");
+  const work = abs("work-tree");
+  const path = ["", ".", "rel", "./x", bin, join(work, "bin"), work, `${work}-sibling`].join(delimiter);
+  const r = rig(answer(GOOD), { path, excludeDirs: () => [work] });
+  await r.resolve("alias", undefined, undefined);
+  assert.equal(r.calls[0]?.env["PATH"], [bin, `${work}-sibling`].join(delimiter), "empty, relative and worktree entries are gone; a sibling with the same prefix stays");
+  const none = rig(answer(GOOD), { path: [".", "", "rel"].join(delimiter) });
+  await assert.rejects(none.resolve("alias", undefined, undefined));
+  assert.equal(none.calls.length, 0, "no safe PATH: ssh is not started");
 });

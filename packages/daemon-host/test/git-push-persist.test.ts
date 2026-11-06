@@ -57,3 +57,36 @@ test("if the base file cannot be written after the push went out, the push still
   assert.equal(r.journal.getWorkspace(r.workspaceId)?.lastPushedSha, r.remoteTip(), "the journal write still ran after the failed base write");
   assert.equal(bases.size, 1, "the in-memory base is kept");
 });
+
+test("a destination base whose history was rewritten is dropped and the push scans from the recorded base instead of conflicting", { skip: SKIP ?? false }, async (t) => {
+  const bases = new PushedBases(8);
+  const r = await gitRig({ bases });
+  t.after(() => r.cleanup());
+  const c = await r.connect();
+  const res = await pushed(r, c);
+  assert.equal(res.ok, true, JSON.stringify(res));
+  assert.equal(bases.size, 1);
+  // Rebase away the pushed commit and force-push elsewhere: the kept base is no longer an ancestor of the branch.
+  r.git("reset", "-q", "--hard", r.baseSha);
+  r.write("b.txt", "rewritten\n");
+  r.git("add", "-A");
+  r.git("commit", "-q", "-m", "add b");
+  const plan = await c.rpc("axis.git", "pushPlan", { workspaceId: r.workspaceId, remote: "origin" });
+  assert.equal(plan.ok, true, JSON.stringify(plan.error));
+  assert.equal((plan.result as unknown as { tip: string }).tip, r.head());
+  assert.equal(bases.size, 0, "the stale entry was dropped");
+});
+
+test("a destination base that is still an ancestor is kept", { skip: SKIP ?? false }, async (t) => {
+  const bases = new PushedBases(8);
+  const r = await gitRig({ bases });
+  t.after(() => r.cleanup());
+  const c = await r.connect();
+  assert.equal((await pushed(r, c)).ok, true);
+  r.write("b.txt", "more\n");
+  r.git("add", "-A");
+  r.git("commit", "-q", "-m", "add b");
+  const plan = await c.rpc("axis.git", "pushPlan", { workspaceId: r.workspaceId, remote: "origin" });
+  assert.equal(plan.ok, true, JSON.stringify(plan.error));
+  assert.equal(bases.size, 1);
+});

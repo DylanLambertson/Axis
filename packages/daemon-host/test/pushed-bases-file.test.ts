@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
@@ -135,4 +135,17 @@ test("persist writes one at a time, in order, and a failed write rejects without
   assert.equal(peak, 1);
   assert.deepEqual(order, [2], "the second write carries both entries");
   assert.equal(new PushedBases().persist() instanceof Promise, true, "no store: a resolved promise");
+});
+
+test("the saved file is private (0600) where the platform has modes, and a taken temporary name is left alone and refused", async (t) => {
+  const dir = scratch(t);
+  const path = join(dir, "b.json");
+  await savePushedBases(path, [["w", T(1), S(1)]]);
+  if (process.platform !== "win32") assert.equal(statSync(path).mode & 0o777, 0o600);
+  const taken = join(dir, "b.json.tmp-fixed");
+  writeFileSync(taken, "somebody else's file");
+  await assert.rejects(savePushedBases(path, [["w", T(2), S(2)]], process.platform, () => "fixed"));
+  assert.equal(readFileSync(taken, "utf8"), "somebody else's file", "a file this save did not create is not removed");
+  assert.deepEqual(loadPushedBases(path, 5), [["w", T(1), S(1)]], "the old table is kept");
+  assert.deepEqual(readdirSync(dir).sort(), ["b.json", "b.json.tmp-fixed"]);
 });

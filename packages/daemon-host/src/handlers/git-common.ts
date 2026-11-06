@@ -3,6 +3,7 @@ import { DaemonError, type HandlerContext } from "@axis/daemon";
 import type { Journal, Workspace } from "@axis/journal";
 import type { AnchorGuard } from "../anchor/manager.js";
 import type { PortContext } from "../ports/common.js";
+import type { WorktreeRef } from "@axis/git-ops";
 import type { GitOperations } from "../ports/git.js";
 import type { CommitPreparer } from "../ports/review.js";
 import type { RunsService } from "../ports/runs.js";
@@ -124,6 +125,10 @@ export class PushedBases {
     return this.#map.get(`${workspaceId}\0${target}`)?.[2] ?? recordedBase;
   }
 
+  forget(workspaceId: string, target: string): void {
+    this.#map.delete(`${workspaceId}\0${target}`);
+  }
+
   record(workspaceId: string, target: string, sha: string): void {
     this.#put([workspaceId, target, sha]);
   }
@@ -141,6 +146,29 @@ export class PushedBases {
   get size(): number {
     return this.#map.size;
   }
+}
+
+/**
+ * The scan base of a push to `target`: what Axis last pushed there while that is still an ancestor of the branch, else the
+ * workspace's recorded base. A destination base whose history was rewritten (a rebase and force-push from a terminal) is dropped
+ * and replaced by the recorded base, so a rewrite costs a larger scan and never blocks the destination; only the recorded base
+ * can conflict.
+ */
+export async function scanBase(deps: GitHandlerDeps, ws: Workspace, workspaceId: string, worktree: WorktreeRef, target: string): Promise<string> {
+  const kept = deps.bases.baseFor(workspaceId, target, ws.baseSha);
+  if (kept === ws.baseSha) return kept;
+  if (await deps.ops.baseUsable({ worktree, branch: ws.branch, base: kept })) return kept;
+  deps.bases.forget(workspaceId, target);
+  try {
+    await deps.bases.persist();
+  } catch (e) {
+    try {
+      deps.onBookkeepingError?.(e);
+    } catch {
+      /* a reporter that throws changes nothing */
+    }
+  }
+  return ws.baseSha;
 }
 
 /** `toGitError`, and a report when the cause was no refusal of ours. A reporter that throws changes nothing. */

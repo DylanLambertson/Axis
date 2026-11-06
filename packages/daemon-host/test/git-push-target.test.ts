@@ -135,3 +135,34 @@ test("end to end: an ssh alias that cannot be resolved refuses the plan before a
   assert.equal(res.error?.code, "E_INVALID_ARGUMENT");
   assert.equal(r.calls.planPush.length, 1, "no scan ran for a destination that could not be named");
 });
+
+test("end to end: when git is set to run another ssh command, an ssh destination is refused before any scan and a path one is not", { skip: SKIP ?? false }, async (t) => {
+  const { r, c } = await setup(t, { scanMode: "warn", resolveSshHost: resolver({ work: { hostname: "git.example.test" } }) });
+  r.git("remote", "add", "viassh", "work:team/app.git");
+  const plain = await c.rpc("axis.git", "pushPlan", { workspaceId: r.workspaceId, remote: "viassh" });
+  assert.equal(plain.ok, true, JSON.stringify(plain.error));
+  r.git("config", "core.sshCommand", "ssh -F other.conf");
+  const custom = await c.rpc("axis.git", "pushPlan", { workspaceId: r.workspaceId, remote: "viassh" });
+  assert.equal(custom.error?.code, "E_INVALID_ARGUMENT", "the key would ignore the -F file the push really uses");
+  const path = await c.rpc("axis.git", "pushPlan", { workspaceId: r.workspaceId, remote: "origin" });
+  assert.equal(path.ok, true, "a path remote does not run ssh");
+  assert.equal(r.calls.planPush.length, 2);
+});
+
+test("a custom ssh command in the environment refuses ssh destinations only", async (t) => {
+  const wt = scratch(t);
+  const ok = resolver({ work: { hostname: "git.example.test" } });
+  assert.equal(typeof (await pushTargetKey(["work:a.git"], wt, ok, false)), "string");
+  await assert.rejects(pushTargetKey(["work:a.git"], wt, ok, true), refused);
+  await assert.rejects(pushTargetKey(["ssh://work/a.git"], wt, ok, true), refused);
+  assert.equal(typeof (await pushTargetKey([wt], wt, ok, true)), "string", "a path destination is not affected");
+});
+
+test("end to end: GIT_SSH_COMMAND or GIT_SSH in the push environment refuses an ssh destination", { skip: SKIP ?? false }, async (t) => {
+  for (const name of ["GIT_SSH_COMMAND", "GIT_SSH"]) {
+    const { r, c } = await setup(t, { scanMode: "warn", resolveSshHost: resolver({ work: { hostname: "git.example.test" } }), ptyEnv: { [name]: "other-ssh" } });
+    r.git("remote", "add", "viassh", "work:team/app.git");
+    const res = await c.rpc("axis.git", "pushPlan", { workspaceId: r.workspaceId, remote: "viassh" });
+    assert.equal(res.error?.code, "E_INVALID_ARGUMENT", name);
+  }
+});

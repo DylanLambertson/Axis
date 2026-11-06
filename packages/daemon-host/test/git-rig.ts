@@ -65,6 +65,8 @@ export interface GitRigOptions {
   recordPushedFails?: boolean;
   /** The table of push scan bases (default: a new in-memory one). */
   bases?: PushedBases;
+  /** Extra variables of the `pty` git environment. */
+  ptyEnv?: Record<string, string>;
   ptyRunner?: "node" | "none";
   /** The drift check of the git port (default: no drift). */
   assertNoDrift?: () => Promise<void>;
@@ -104,7 +106,7 @@ export async function gitRig(options: GitRigOptions = {}) {
   const ptyRunner: GitRunner = { run: (req) => (ptyCalls.push(req.context), nodePty.run(req)) };
   const gitPort = createGitPort({
     gitPath,
-    env: { daemon: { PATH: PATHS, HOME: home }, pty: { PATH: PATHS, HOME: home } },
+    env: { daemon: { PATH: PATHS, HOME: home }, pty: { PATH: PATHS, HOME: home, ...options.ptyEnv } },
     platform: process.platform,
     runHooks: false,
     scanner,

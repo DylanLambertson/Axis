@@ -53,15 +53,22 @@ export function loadPushedBases(path: string, max: number): BaseEntry[] {
   }
 }
 
-export async function savePushedBases(path: string, entries: readonly BaseEntry[], platform: string = process.platform): Promise<void> {
+export async function savePushedBases(
+  path: string,
+  entries: readonly BaseEntry[],
+  platform: string = process.platform,
+  suffix: () => string = () => randomBytes(6).toString("hex"),
+): Promise<void> {
   const dir = dirname(path);
   const data = JSON.stringify({ v: 1, entries });
   if (Buffer.byteLength(data) > MAX_FILE_BYTES) throw new Error("push bases too large");
   await mkdir(dir, { recursive: true, mode: 0o700 });
   if (!(await lstat(dir)).isDirectory()) throw new Error("push bases directory unusable");
-  const tmp = join(dir, `${basename(path)}.tmp-${randomBytes(6).toString("hex")}`);
+  const tmp = join(dir, `${basename(path)}.tmp-${suffix()}`);
+  let created = false;
   try {
     const fh = await open(tmp, "wx", 0o600);
+    created = true; // a name that was taken (`wx` fails) is somebody else's file and is left alone
     try {
       await fh.writeFile(data);
       await fh.sync();
@@ -70,7 +77,7 @@ export async function savePushedBases(path: string, entries: readonly BaseEntry[
     }
     await rename(tmp, path);
   } catch {
-    await rm(tmp, { force: true }).catch(() => undefined);
+    if (created) await rm(tmp, { force: true }).catch(() => undefined);
     throw new Error("push bases write failed");
   }
   if (platform !== "win32") {

@@ -396,7 +396,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
       createReviewHandlers({ review: createReviewService(reviewDeps), journal, runs: runs.service, trees, audit: createReviewAuditSink({ append: (e) => (audit.append(e), services.anchors.noteWrite()) }) }),
     );
     registerGitHandlers(registrar, {
-      ops: createGitOperations({ git, runs: runs.service, resolveSshHost: options.sshSpawn === undefined ? unavailableSshResolver : createSshResolver({ spawn: options.sshSpawn, env: ports.env }) }),
+      ops: createGitOperations({ git, runs: runs.service, resolveSshHost: options.sshSpawn === undefined ? unavailableSshResolver : createSshResolver({ spawn: options.sshSpawn, env: ports.env, excludeDirs: services.excludeDirs }) }),
       review: createCommitPreparer(reviewDeps),
       trees,
       journal,

@@ -3,7 +3,7 @@ import { DaemonError, type ApprovalContentHook, type Handler, type HandlerContex
 import { gitPushRequestSchema, type GitRequest } from "@axis/protocol";
 import type { PushCall } from "../ports/git.js";
 import { gitFailure } from "./git-errors.js";
-import { locate, mapError, requireUser, runActive, workspaceFor, type GitHandlerDeps } from "./git-common.js";
+import { locate, mapError, scanBase, requireUser, runActive, workspaceFor, type GitHandlerDeps } from "./git-common.js";
 
 /** Both read the plan's inputs from the JOURNAL, inside the lock: the branch is the workspace's, the base its last pushed sha. */
 async function pushCall(deps: GitHandlerDeps, id: string, method: string, request: GitRequest<"push">) {
@@ -17,7 +17,7 @@ async function pushCall(deps: GitHandlerDeps, id: string, method: string, reques
     worktree,
     remote: request.remote,
     branch: ws.branch,
-    baseSha: deps.bases.baseFor(id, target, ws.baseSha),
+    baseSha: await scanBase(deps, ws, id, worktree, target),
     ...(request.allowedBinaryPaths === undefined ? {} : { allowedBinaryPaths: request.allowedBinaryPaths }),
   };
   return { ws, call, target };
