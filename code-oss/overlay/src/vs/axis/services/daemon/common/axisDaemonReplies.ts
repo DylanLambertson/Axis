@@ -30,6 +30,10 @@ const RUN_STATES = ['QUEUED', 'RUNNING', 'REVIEWING', 'BLOCKED', 'COMPLETED', 'F
 const RUN_STATUSES = ['starting', 'running', 'quiet', 'finished', 'failed', 'killed', 'interrupted', 'stopping'];
 const SNAPSHOTS = ['pending', 'ok', 'drift', 'unknown'];
 const WORKSPACE_STATES = ['READY', 'FINALISED', 'CLEANED'];
+/** Control, format (bidi, zero-width) and line-separator characters, NUL included. */
+const UNSAFE_PATH_CHARS = /[\p{Cc}\p{Cf}\u2028\u2029]/u;
+/** POSIX absolute, a drive path, or a UNC path. */
+const ABSOLUTE_PATH = /^(\/|[A-Za-z]:[\\/]|\\\\)/;
 const TERMINAL = new Set(['COMPLETED', 'FAILED', 'CANCELLED']);
 
 function invalid(): never {
@@ -64,6 +68,12 @@ function id(value: unknown): string {
 
 function text(value: unknown, max: number): string {
 	return typeof value === 'string' && value.length <= max ? value : invalid();
+}
+
+/** A worktree path: used as a terminal cwd and a file tree root, so it must be absolute and free of control characters. */
+function absolutePath(value: unknown): string {
+	const path = text(value, MAX_PATH);
+	return ABSOLUTE_PATH.test(path) && !UNSAFE_PATH_CHARS.test(path) ? path : invalid();
 }
 
 function bool(value: unknown): boolean {
@@ -112,7 +122,7 @@ function readWorktree(item: unknown): IAxisWorktreeInfo {
 		...(w.baseRef !== undefined && { baseRef: cleanDisplayText(text(w.baseRef, MAX_REF), MAX_REF) }),
 		...(w.baseSha !== undefined && { baseSha: typeof w.baseSha === 'string' && SHA.test(w.baseSha) ? w.baseSha : invalid() }),
 		head: nullable(w.head, v => typeof v === 'string' && SHA.test(v) ? v : invalid()),
-		path: text(w.path, MAX_PATH),
+		path: absolutePath(w.path),
 		locked: bool(w.locked),
 		present: bool(w.present),
 		...(dirty && { dirty: { staged: count(dirty.staged), unstaged: count(dirty.unstaged), untracked: count(dirty.untracked) } }),
@@ -123,7 +133,10 @@ function readWorktree(item: unknown): IAxisWorktreeInfo {
 
 /** `axis.worktrees/1.list` reply (at most `max` worktrees, 1000 by default) and `status` reply (`max` = 100). */
 export function readWorktrees(reply: unknown, max: number = MAX_WORKTREES): IAxisWorktreeInfo[] {
-	return array(record(reply, ['worktrees'], ['worktrees']).worktrees, max).map(readWorktree);
+	const worktrees = array(record(reply, ['worktrees'], ['worktrees']).worktrees, max).map(readWorktree);
+	// One workspace key per row: the journal id, else the path (ids and paths of id-less rows are told apart by prefix).
+	noDuplicates(worktrees.map(w => w.id !== undefined ? `id:${w.id}` : `path:${w.path}`));
+	return worktrees;
 }
 
 function readRun(item: unknown): IAxisCliRun {

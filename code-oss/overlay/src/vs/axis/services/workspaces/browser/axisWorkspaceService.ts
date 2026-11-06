@@ -102,6 +102,7 @@ export class AxisWorkspaceService extends Disposable implements IAxisWorkspaceSe
 		this._register(this.daemon.onDidChangeStatus(() => this.onDaemonStatus()));
 		this._focusedKey = this.storageService.get(FOCUSED_WORKSPACE_STORAGE_KEY, StorageScope.WORKSPACE) || undefined;
 		this._register(this.source.onDidChange(() => this.refresh()));
+		this.driver.setPaused(mainWindow.document.hidden);
 		this.updateDriver();
 		this.refresh();
 	}

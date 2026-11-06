@@ -59,6 +59,22 @@ suite('Axis daemon replies', () => {
 		assert.strictEqual(readWorktrees({ worktrees: [wire({ baseSha: SHA })] })[0].baseSha, SHA);
 	});
 
+	test('worktrees: a duplicate id, or a duplicate path among id-less rows, is refused', () => {
+		invalidReply(() => readWorktrees({ worktrees: [wire({ id: 'a', path: '/x' }), wire({ id: 'a', path: '/y' })] }), 'two rows with one id');
+		invalidReply(() => readWorktrees({ worktrees: [wire({ origin: 'external', path: '/x' }), wire({ origin: 'external', path: '/x' })] }), 'two id-less rows with one path');
+		assert.strictEqual(readWorktrees({ worktrees: [wire({ origin: 'external', path: '/x' }), wire({ origin: 'external', path: '/y' })] }).length, 2, 'id-less rows with different paths are fine');
+		assert.strictEqual(readWorktrees({ worktrees: [wire({ id: 'a', path: '/x' }), wire({ origin: 'external', path: '/x' })] }).length, 2, 'an id and an id-less row may share a path');
+	});
+
+	test('worktrees: the path must be absolute and free of control characters', () => {
+		for (const good of ['/work/wt', 'C:\\work\\wt', 'C:/work/wt', '\\\\host\\share\\wt']) {
+			assert.strictEqual(readWorktrees({ worktrees: [wire({ path: good })] })[0].path, good);
+		}
+		for (const bad of ['relative/x', './x', '', 'x:y', '/a\u0000b', '/a\nb', '/a\u202Eb', '/a\u2028b']) {
+			invalidReply(() => readWorktrees({ worktrees: [wire({ path: bad })] }), JSON.stringify(bad));
+		}
+	});
+
 	test('runs: shape, enums and the terminal-state rules', () => {
 		const [run] = readCliRuns({ runs: [runWire()] });
 		assert.strictEqual(run.status, 'running');
