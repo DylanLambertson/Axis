@@ -23,6 +23,9 @@ import { AxisEventBody, AxisServerFrame, EVENT_WINDOW, readServerFrame, readSubs
 
 export const ACK_BATCH = 8;
 export const ACK_DELAY_MS = 50;
+/** Other subscriptions' frames seen before the reply (the old one still being released, say) are held per id, for at most this many ids. */
+const MAX_EARLY_SUBS = 8;
+const TOKEN_SHAPE = /^[A-Za-z0-9_-]{22,43}$/;
 
 export interface IAxisEventSink {
 	/** A valid event: a hint that the named thing changed. Called synchronously; must not throw (a throw is swallowed). */
@@ -51,8 +54,9 @@ export class AxisEventSubscription implements IDisposable {
 	private unacked = 0;
 	private ackTimer: unknown;
 	private hasAckTimer = false;
-	private early: unknown[] = [];
-	private earlyOverflow = false;
+	/** Frames that arrived before the reply, by the `sub` they name; each list holds at most one window. */
+	private early = new Map<string, unknown[]>();
+	private readonly earlyOverflow = new Set<string>();
 	private opening = false;
 	private disposed = false;
 	private ended = false;
@@ -67,6 +71,15 @@ export class AxisEventSubscription implements IDisposable {
 	/** The last `{ epoch, seq }` seen, for `resumeFrom` on the next subscription; `undefined` before the first reply. */
 	get position(): IAxisEventPosition | undefined {
 		return this.epoch === undefined ? undefined : { epoch: this.epoch, seq: this.lastSeq };
+	}
+
+	/** Frames held before the reply was processed (bounded: a few ids, one window each). */
+	get bufferedEarly(): number {
+		let n = 0;
+		for (const list of this.early.values()) {
+			n += list.length;
+		}
+		return n;
 	}
 
 	/** Frames received and not yet acknowledged (never more than the window). */
@@ -104,9 +117,11 @@ export class AxisEventSubscription implements IDisposable {
 		this.window = reply.window;
 		// Replayed frames follow `resumeFrom.seq`; a fresh subscription's frames follow the head in the reply.
 		this.lastSeq = reply.resumed && resumeFrom ? resumeFrom.seq : reply.seq;
-		const early = this.early;
-		this.early = [];
-		if (this.earlyOverflow) {
+		const early = this.early.get(reply.subscriptionId) ?? [];
+		const overflow = this.earlyOverflow.has(reply.subscriptionId);
+		this.early.clear();
+		this.earlyOverflow.clear();
+		if (overflow) {
 			this.violation();
 		} else {
 			for (const frame of early) {
@@ -125,7 +140,7 @@ export class AxisEventSubscription implements IDisposable {
 		for (const off of this.offs.splice(0)) {
 			off();
 		}
-		this.early = [];
+		this.early.clear();
 		const id = this.id;
 		this.id = undefined;
 		if (id !== undefined && !this.ended) {
@@ -140,11 +155,12 @@ export class AxisEventSubscription implements IDisposable {
 		const sub = subOf(raw);
 		if (this.id === undefined) {
 			// Before the reply is processed the id is unknown: keep at most one window of frames, judge them once it is.
-			if (this.opening) {
-				if (this.early.length < EVENT_WINDOW) {
-					this.early.push(raw);
-				} else {
-					this.earlyOverflow = true;
+			if (this.opening && typeof sub === 'string' && TOKEN_SHAPE.test(sub)) {
+				const list = this.early.get(sub);
+				if (list) {
+					list.length < EVENT_WINDOW ? list.push(raw) : this.earlyOverflow.add(sub);
+				} else if (this.early.size < MAX_EARLY_SUBS) {
+					this.early.set(sub, [raw]);
 				}
 			}
 			return;
@@ -165,7 +181,7 @@ export class AxisEventSubscription implements IDisposable {
 			this.finish('end');
 			return;
 		}
-		const increases = frame.kind === 'event' ? frame.seq > this.lastSeq : frame.seq >= this.lastSeq;
+		const increases = frame.kind !== 'resync' ? frame.seq > this.lastSeq : frame.seq >= this.lastSeq;
 		if (!increases || this.unacked + 1 > this.window) {
 			return this.violation();
 		}
@@ -174,6 +190,8 @@ export class AxisEventSubscription implements IDisposable {
 		try {
 			if (frame.kind === 'event') {
 				this.sink.onEvent(frame.event);
+			} else if (frame.kind === 'opaque') {
+				this.sink.onResync(); // an unknown hint: its body is discarded and everything shown is read again
 			} else {
 				this.sink.onResync();
 			}
@@ -190,14 +208,21 @@ export class AxisEventSubscription implements IDisposable {
 	private consumed(): void {
 		if (this.unacked >= Math.min(ACK_BATCH, this.window)) {
 			this.flushAck();
-		} else if (!this.hasAckTimer) {
-			this.hasAckTimer = true;
-			this.ackTimer = this.timers.set(() => {
-				this.hasAckTimer = false;
-				this.ackTimer = undefined;
-				this.flushAck();
-			}, ACK_DELAY_MS);
+		} else {
+			this.scheduleAck();
 		}
+	}
+
+	private scheduleAck(): void {
+		if (this.hasAckTimer || this.disposed) {
+			return;
+		}
+		this.hasAckTimer = true;
+		this.ackTimer = this.timers.set(() => {
+			this.hasAckTimer = false;
+			this.ackTimer = undefined;
+			this.flushAck();
+		}, ACK_DELAY_MS);
 	}
 
 	private flushAck(): void {
@@ -209,7 +234,8 @@ export class AxisEventSubscription implements IDisposable {
 			this.transport.ack(this.id, this.lastSeq);
 			this.unacked = 0;
 		} catch {
-			// the connection is closed; `onDidClose` ends this subscription
+			// the connection is closed (`onDidClose` ends this subscription) or the send failed: try again shortly, credit must not stay lost
+			this.scheduleAck();
 		}
 	}
 

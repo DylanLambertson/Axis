@@ -196,9 +196,51 @@ suite('Axis event driver', () => {
 		assert.deepStrictEqual(h.live, [true, false]);
 		await h.timers.fire(d => d >= 1000 && d < RECONCILE_MIN_MS);
 		assert.deepStrictEqual(h.live, [true, false, true]);
-		h.transport.push(eventFrame(20, { topic: 'workspaces', workspaceId: '../x' }));
+		h.transport.push({ ...eventFrame(20), extra: 1 });
 		assert.deepStrictEqual(h.live, [true, false, true, false]);
 		h.driver.dispose();
+	});
+
+	test('a stream that breaks the protocol as soon as it opens backs off with growing delays and restarts from a fresh baseline', async () => {
+		const timers = new ManualTimers();
+		const transport = new FakeEventTransport();
+		transport.replies = [() => {
+			transport.push(eventFrame(10)); // not above the head in the reply: a violation, and the daemon would replay it
+			return reply({ resumed: false });
+		}];
+		const driver = new AxisEventDriver(() => transport, () => { }, timers, () => 0.5);
+		driver.start(async () => true);
+		const delays: number[] = [];
+		for (let i = 0; i < 8; i++) {
+			const d = timers.delays.filter(x => x !== 50 && x < RECONCILE_MIN_MS && x !== EVENT_DEBOUNCE_MS);
+			assert.strictEqual(d.length, 1, JSON.stringify(timers.delays));
+			delays.push(d[0]);
+			await timers.fire(x => x === d[0]);
+		}
+		assert.strictEqual(delays[0], 0);
+		for (let i = 2; i < 5; i++) {
+			assert.ok(delays[i] > delays[i - 1], `strictly growing at first: ${delays}`);
+		}
+		assert.ok(delays[1] >= 1000);
+		assert.strictEqual(delays[delays.length - 1], POLL_MAX_BACKOFF_MS);
+		assert.ok(transport.subscribes.every(p => !('resumeFrom' in p)), 'no resume after a violation');
+		driver.dispose();
+	});
+
+	test('a stream that delivered a valid frame starts the backoff over; an additive body never breaks the stream', async () => {
+		const timers = new ManualTimers();
+		const transport = new FakeEventTransport();
+		const driver = new AxisEventDriver(() => transport, () => { }, timers, () => 0);
+		driver.start(async () => true);
+		await timers.fire();
+		transport.push(eventFrame(11, { topic: 'runs', runId: 'run-1', newField: 1 }));
+		assert.strictEqual(driver.live, true, 'a body this shell does not know is a hint, not a violation');
+		transport.close();
+		await timers.fire(d => d === 1000);
+		transport.close();
+		const second = timers.delays.find(d => d >= 1000 && d < RECONCILE_MIN_MS);
+		assert.strictEqual(second, 1000, 'the first stream was good, so the second loss is not a second failure');
+		driver.dispose();
 	});
 
 	test('a refused subscribe retries with backoff capped at 16 s and reports not-live', async () => {

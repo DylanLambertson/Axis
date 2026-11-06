@@ -145,7 +145,7 @@ suite('Axis event subscription', () => {
 
 	test('a malformed frame of this subscription ends it; a frame of another subscription is ignored and not acknowledged', async () => {
 		const a = await opened();
-		a.transport.push(eventFrame(20, { topic: 'workspaces', workspaceId: '/etc/passwd' }));
+		a.transport.push({ ...eventFrame(20), extra: 1 });
 		assert.deepStrictEqual(a.sink.closed, ['violation']);
 		assert.deepStrictEqual(a.sink.events, []);
 		const b = await opened();
@@ -156,6 +156,85 @@ suite('Axis event subscription', () => {
 		assert.deepStrictEqual(b.sink.events, []);
 		assert.strictEqual(b.timers.pending.size, 0);
 		b.sub.dispose();
+	});
+
+	test('an event with an unknown body is a hint: the body is dropped, everything is read again, credit is returned, the stream goes on', async () => {
+		const { transport, sink } = await opened();
+		transport.push(eventFrame(11, { topic: 'runs', runId: 'run-1', newField: 1 }));
+		transport.push(eventFrame(12, { topic: 'newtopic' }));
+		transport.push(eventFrame(12, { topic: 'newtopic' })); // a repeated seq is still a violation, as for any event
+		assert.deepStrictEqual(sink.events, []);
+		assert.strictEqual(sink.resyncs, 2);
+		assert.deepStrictEqual(sink.closed, ['violation']);
+		const b = await opened();
+		b.transport.push(eventFrame(11, { topic: 'newtopic' }));
+		await b.timers.fire();
+		assert.deepStrictEqual(b.transport.acks, [{ id: SUB, seq: 11 }]);
+		assert.deepStrictEqual(b.sink.closed, []);
+		b.sub.dispose();
+	});
+
+	test('a flood of frames of another subscription before the reply does not end this one, and cannot crowd its frames out', async () => {
+		const transport = new FakeEventTransport();
+		transport.replies = [() => {
+			for (let i = 0; i < 100; i++) {
+				transport.push(eventFrame(100 + i, { topic: 'approvals' }, SUB2));
+			}
+			transport.push(eventFrame(11, { topic: 'runs', runId: 'run-1' }));
+			for (let i = 0; i < 100; i++) {
+				transport.push(eventFrame(300 + i, { topic: 'approvals' }, SUB2));
+			}
+			transport.push(eventFrame(12, { topic: 'approvals' }));
+			return reply();
+		}];
+		const sink = new Sink();
+		const sub = new AxisEventSubscription(transport, new ManualTimers(), sink);
+		await sub.open();
+		assert.deepStrictEqual(sink.closed, []);
+		assert.deepStrictEqual(sink.events, [{ topic: 'runs', runId: 'run-1' }, { topic: 'approvals' }]);
+		assert.deepStrictEqual(transport.acks, [], 'foreign frames are never acknowledged');
+		sub.dispose();
+	});
+
+	test('what is held before the reply stays bounded however many subscriptions flood', async () => {
+		const transport = new FakeEventTransport();
+		let held = -1;
+		let subscription: AxisEventSubscription | undefined;
+		transport.replies = [() => {
+			for (let i = 0; i < 100; i++) {
+				for (let j = 0; j < 40; j++) {
+					transport.push(eventFrame(100 + j, { topic: 'approvals' }, `sub-${String(i).padStart(22, 'X')}`));
+				}
+			}
+			held = subscription!.bufferedEarly;
+			return reply();
+		}];
+		subscription = new AxisEventSubscription(transport, new ManualTimers(), new Sink());
+		await subscription.open();
+		assert.ok(held > 0 && held <= 8 * 32, `held ${held}`);
+		subscription.dispose();
+	});
+
+	test('frames with no usable sub before the reply are dropped, and several foreign subscriptions flooding at once do not hide the real one', async () => {
+		const transport = new FakeEventTransport();
+		transport.replies = [() => {
+			transport.push({ seq: 1 });
+			transport.push(null);
+			transport.push({ sub: 5 });
+			for (let i = 0; i < 7; i++) { // the ids that can really be around: this connection's earlier subscriptions (at most 4)
+				for (let j = 0; j < 40; j++) {
+					transport.push(eventFrame(100 + j, { topic: 'approvals' }, `sub-${String(i).padStart(22, 'X')}`));
+				}
+			}
+			transport.push(eventFrame(11, { topic: 'runs', runId: 'run-1' }));
+			return reply();
+		}];
+		const sink = new Sink();
+		const sub = new AxisEventSubscription(transport, new ManualTimers(), sink);
+		await sub.open();
+		assert.deepStrictEqual(sink.closed, []);
+		assert.deepStrictEqual(sink.events, [{ topic: 'runs', runId: 'run-1' }]);
+		sub.dispose();
 	});
 
 	test('frames that arrive before the reply is processed are applied afterwards, in order', async () => {
@@ -281,13 +360,19 @@ suite('Axis event subscription', () => {
 		sub.dispose();
 	});
 
-	test('a failed ack leaves the credit outstanding and ends nothing by itself', async () => {
+	test('a failed ack leaves the credit outstanding, ends nothing by itself, and is retried', async () => {
 		const { transport, timers, sink, sub } = await opened();
 		transport.ackThrows = true;
 		transport.push(eventFrame(11));
 		await timers.fire();
 		assert.strictEqual(sub.outstanding, 1);
 		assert.deepStrictEqual(sink.closed, []);
+		assert.deepStrictEqual(timers.delays, [ACK_DELAY_MS], 'a retry is scheduled');
+		transport.ackThrows = false;
+		await timers.fire();
+		assert.deepStrictEqual(transport.acks, [{ id: SUB, seq: 11 }]);
+		assert.strictEqual(sub.outstanding, 0);
+		assert.strictEqual(timers.pending.size, 0);
 		sub.dispose();
 	});
 });

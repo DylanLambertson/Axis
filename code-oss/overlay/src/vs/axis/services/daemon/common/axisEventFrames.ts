@@ -36,6 +36,8 @@ export interface IAxisSubscribeReply {
 
 export type AxisServerFrame =
 	| { readonly kind: 'event'; readonly sub: string; readonly seq: number; readonly event: AxisEventBody }
+	/** A frame whose envelope is sound (version, sub, seq, exactly one `event` key) but whose body is not one this shell knows (a newer daemon's additive field or topic). Only ever a hint: the body is discarded. */
+	| { readonly kind: 'opaque'; readonly sub: string; readonly seq: number }
 	| { readonly kind: 'resync'; readonly sub: string; readonly seq: number }
 	| { readonly kind: 'end'; readonly sub: string };
 
@@ -110,8 +112,11 @@ export function readServerFrame(value: unknown): AxisServerFrame | undefined {
 		return undefined;
 	}
 	if ('event' in f) {
-		const event = exactKeys(f, ['v', 'sub', 'seq', 'event']) && seqOf(f.seq) ? readEventBody(f.event) : undefined;
-		return event ? { kind: 'event', sub: f.sub, seq: f.seq as number, event } : undefined;
+		if (!exactKeys(f, ['v', 'sub', 'seq', 'event']) || !seqOf(f.seq)) {
+			return undefined;
+		}
+		const event = readEventBody(f.event);
+		return event ? { kind: 'event', sub: f.sub, seq: f.seq, event } : { kind: 'opaque', sub: f.sub, seq: f.seq };
 	}
 	if ('resync' in f) {
 		const r = plain(f.resync);

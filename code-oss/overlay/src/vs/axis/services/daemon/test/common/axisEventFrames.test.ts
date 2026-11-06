@@ -54,13 +54,22 @@ suite('Axis event frames', () => {
 		for (const frame of [
 			{ ...eventFrame(5), v: 2 }, { ...eventFrame(5), sub: 'short' }, { ...eventFrame(5), sub: 'sub/AAAAAAAAAAAAAAAAAAAAAA' },
 			{ ...eventFrame(5), seq: -1 }, { ...eventFrame(5), seq: '5' }, { ...eventFrame(5), seq: Number.MAX_SAFE_INTEGER + 1 },
-			{ ...eventFrame(5), extra: 1 }, { ...eventFrame(5), event: { topic: 'approvals', x: 1 } },
+			{ ...eventFrame(5), extra: 1 },
 			{ ...resyncFrame(5), resync: { reason: 'other' } }, { ...resyncFrame(5), resync: { reason: 'overflow', x: 1 } }, { ...resyncFrame(5), extra: 1 },
 			{ ...endFrame(), end: { reason: 'other' } }, { ...endFrame(), seq: 3 },
 			{ v: 1, sub: SUB, seq: 5 }, { v: 1, sub: SUB, seq: 5, event: { topic: 'approvals' }, resync: { reason: 'overflow' }, end: { reason: 'shutdown' } },
 			null, 'x', 5,
 		]) {
 			assert.strictEqual(readServerFrame(frame), undefined, JSON.stringify(frame));
+		}
+	});
+
+	test('an event whose body is unknown (additive field, new topic, bad id) is opaque: sound envelope, body discarded', () => {
+		for (const event of [{ topic: 'approvals', x: 1 }, { topic: 'newtopic' }, { topic: 'workspaces', workspaceId: '/etc/passwd' }, 'x', null]) {
+			assert.deepStrictEqual(readServerFrame(eventFrame(5, event as Record<string, unknown>)), { kind: 'opaque', sub: SUB, seq: 5 }, JSON.stringify(event));
+		}
+		for (const frame of [{ ...eventFrame(5, { topic: 'x' }), seq: -1 }, { ...eventFrame(5, { topic: 'x' }), v: 2 }, { ...eventFrame(5, { topic: 'x' }), extra: 1 }, { ...eventFrame(5, { topic: 'x' }), sub: 'bad' }]) {
+			assert.strictEqual(readServerFrame(frame), undefined, 'a broken envelope is never opaque');
 		}
 	});
 

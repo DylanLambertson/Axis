@@ -39,7 +39,11 @@ export class AxisEventDriver implements IAxisRefreshDriver {
 	private refreshing = false;
 	private dirty = false;
 	private urgent = false;
+	/** Failed reads in a row. */
 	private failures = 0;
+	/** Failed or lost subscriptions in a row; reset only when a stream delivers a valid frame, so a stream that breaks at once keeps backing off. */
+	private connectFailures = 0;
+	private watchHandle: { dispose(): void } | undefined;
 	private paused = false;
 	private disposed = false;
 	private generation = 0;
@@ -65,6 +69,7 @@ export class AxisEventDriver implements IAxisRefreshDriver {
 		}
 		this.refresh = refresh;
 		this.failures = 0;
+		this.connectFailures = 0;
 		this.dirty = false;
 		this.urgent = false;
 		this.generation++;
@@ -108,10 +113,10 @@ export class AxisEventDriver implements IAxisRefreshDriver {
 		let delay: number;
 		if (!this.subscription) {
 			kind = 'connect';
-			delay = this.failures === 0 ? 0 : this.backoff();
+			delay = this.connectFailures === 0 ? 0 : this.backoff(this.connectFailures);
 		} else if (this.dirty) {
 			kind = 'refresh';
-			delay = this.failures > 0 ? this.backoff() : this.urgent ? 0 : EVENT_DEBOUNCE_MS;
+			delay = this.failures > 0 ? this.backoff(this.failures) : this.urgent ? 0 : EVENT_DEBOUNCE_MS;
 		} else {
 			kind = 'reconcile';
 			delay = RECONCILE_MIN_MS + this.unit() * (RECONCILE_MAX_MS - RECONCILE_MIN_MS);
@@ -140,8 +145,8 @@ export class AxisEventDriver implements IAxisRefreshDriver {
 		return Number.isFinite(r) ? Math.min(1, Math.max(0, r)) : 0;
 	}
 
-	private backoff(): number {
-		return Math.min(POLL_MAX_BACKOFF_MS, RETRY_BASE_MS * (1 + this.unit()) * 2 ** Math.min(this.failures - 1, 8));
+	private backoff(failures: number): number {
+		return Math.min(POLL_MAX_BACKOFF_MS, RETRY_BASE_MS * (1 + this.unit()) * 2 ** Math.min(failures - 1, 8));
 	}
 
 	private teardown(): void {
@@ -166,7 +171,7 @@ export class AxisEventDriver implements IAxisRefreshDriver {
 		const subscription = new AxisEventSubscription(transport, this.timers, {
 			onEvent: () => this.hint(false),
 			onResync: () => this.hint(true),
-			onClosed: () => this.dropped(subscription),
+			onClosed: reason => this.dropped(subscription, reason),
 		});
 		this.watchHandle?.dispose();
 		this.watchHandle = transport.onDidClose(() => subscription.connectionClosed());
@@ -177,7 +182,6 @@ export class AxisEventDriver implements IAxisRefreshDriver {
 				return; // stopped, or the subscription was already lost while opening
 			}
 			this.connecting = false;
-			this.failures = 0;
 			this.position = subscription.position;
 			if (!resumed) {
 				this.hint(true); // a fresh stream says nothing about the past: read everything
@@ -192,20 +196,21 @@ export class AxisEventDriver implements IAxisRefreshDriver {
 		}
 	}
 
-	private watchHandle: { dispose(): void } | undefined;
-
+	/** A valid frame was consumed: the stream works, so connection backoff starts over. */
 	private hint(urgent: boolean): void {
+		this.connectFailures = 0;
 		this.dirty = true;
 		this.urgent = this.urgent || urgent;
 		this.arm();
 	}
 
 	/** The subscription ended (the daemon said so, broke the protocol, or the connection closed): reconnect with backoff. */
-	private dropped(subscription: AxisEventSubscription): void {
+	private dropped(subscription: AxisEventSubscription, reason: 'end' | 'violation' | 'connection'): void {
 		if (this.subscription !== subscription) {
 			return;
 		}
-		this.position = subscription.position ?? this.position;
+		// After a protocol violation the old position is not trusted: no resume, so the next stream starts from a fresh baseline.
+		this.position = reason === 'violation' ? undefined : subscription.position ?? this.position;
 		this.watchHandle?.dispose();
 		this.watchHandle = undefined;
 		this.subscription = undefined;
@@ -219,7 +224,7 @@ export class AxisEventDriver implements IAxisRefreshDriver {
 			return;
 		}
 		this.connecting = false;
-		this.failures++;
+		this.connectFailures++;
 		this.onLive(false); // events may be missed from here on: the next subscription reads everything unless it resumes
 
 		this.arm();

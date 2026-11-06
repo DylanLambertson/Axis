@@ -22,15 +22,15 @@ An event is an invalidation hint (`events.md` section 1): it names an id and, fo
 ## Credit and validation rules (subscription)
 
 - Topics: `workspaces`, `runs`, `approvals` (the ones the dashboard shows). `resumeFrom` is sent only with a position this client saw.
-- A frame of this subscription that is malformed, that adds an unknown field, that carries an `event` `seq` not above the last one (a `resync` may repeat it, never go below), or that would take the unacknowledged count above the granted window ends the subscription as a violation. A gap in `seq` is never a loss; only `resync`, `end` or a closed connection are.
-- Frames of other subscriptions are ignored and never acknowledged.
+- An `event` frame whose envelope is sound but whose body is not one the shell knows (an additive field or a new topic from a newer daemon) is **tolerated as an opaque hint**: the body is discarded, the frame is counted and acknowledged like any other, and everything shown is read again. A frame of this subscription whose envelope is broken (version, `sub`, `seq`, extra or missing keys), that carries an `event` `seq` not above the last one (a `resync` may repeat it, never go below), or that would take the unacknowledged count above the granted window ends the subscription as a violation. A gap in `seq` is never a loss; only `resync`, `end` or a closed connection are.
+- Frames of other subscriptions are ignored and never acknowledged, also before the `subscribe` reply is processed: until then frames are held per `sub` (at most 8 ids, one window each), so another subscription's flood cannot end or crowd out this one.
 - Frames are handed to the driver synchronously and then counted as consumed. Nothing is queued except frames that arrive before the `subscribe` reply is processed: at most one window (32); more is a violation.
-- Credit goes back with `ack` after 8 consumed frames or 50 ms, whichever comes first, and always names the last `seq` received, so the shell never grants more than the daemon delivered. Unacknowledged frames can therefore never reach the window while acks go through; if acks cannot be sent (closed port) the window check ends the subscription.
+- Credit goes back with `ack` after 8 consumed frames or 50 ms, whichever comes first (a failed send is retried after 50 ms), and always names the last `seq` received, so the shell never grants more than the daemon delivered. Unacknowledged frames can therefore never reach the window while acks go through; if acks cannot be sent (closed port) the window check ends the subscription.
 - A reply with `resumed: true` that was not asked for is `invalid_reply`.
 
 ## Driver behaviour
 
-- **Connect.** On `start` the driver subscribes (retry with jittered backoff 1 s doubling to 16 s on failure, `unavailable` code or not). A fresh (not resumed) subscription starts with one full read; a resumed one relies on the replayed events.
+- **Connect.** On `start` the driver subscribes (jittered backoff 1 s doubling to 16 s on every failed or lost subscription). The backoff starts over only when a stream has delivered a valid frame, so a stream that breaks at once keeps backing off; after a protocol violation the next subscription does not resume (fresh baseline). A fresh (not resumed) subscription starts with one full read; a resumed one relies on the replayed events.
 - **Hints become reads.** Events within 150 ms cause one read; a `resync` reads at once. Reads never overlap; an event during a read causes one more afterwards. A failed read is retried with the same backoff and keeps the data marked changed.
 - **Reconcile.** With no event, everything is read again after 30 to 60 s, in case a hint was lost. A hint cancels the wait.
 - **Loss.** `end`, a violation or a closed connection drops the subscription, reports "not live" and reconnects with `resumeFrom` set to the last `{epoch, seq}`; the daemon says `resumed: false` after a restart, which triggers the full read.
