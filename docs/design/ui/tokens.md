@@ -1,8 +1,8 @@
 # Axis UI tokens: proposal for direction C
 
-- **Status:** proposal; it applies only if the owner picks direction C (`directions.md` §6). Nothing here is implemented, and `docs/UX.md` stays the source of truth until the owner accepts the changes listed in `directions.md` §7.
+- **Status:** proposal; it applies only if the owner picks direction C (`directions.md` §7). Nothing here is implemented, and `docs/UX.md` stays the source of truth until the owner accepts the changes listed in `directions.md` §8.
 - **Date:** 2026-11-05
-- **Used by:** `mockup-c.html` (the same values, under shorter mockup names).
+- **Used by:** `mockup-c.html` and `mockup-c.css` (the same values, under shorter mockup names).
 - **Contrast method:** WCAG 2.x relative luminance, computed for each pair below rather than estimated. Text needs at least 4.5:1 (SC 1.4.3); component boundaries, focus indicators and status glyphs need at least 3:1 (SC 1.4.11).
 - **Upstream facts:** **[V]** means read in the pinned Code OSS source (`1.144.0`, `2c33b50b`); **[I]** means inferred.
 
@@ -278,7 +278,26 @@ Upstream registers sizes with one value for all themes (`sizeForAllThemes`) [V].
 | Upstream parts (title bar, activity bar, sidebar, editor, panel, auxiliary bar, status bar) [V] | Theme keys only; no CSS overrides of upstream markup |
 | Quick input, menus, notifications [V] | `overlay`, `widget.shadow` and upstream radii; no blur |
 
-## 7. Open points for the owner
+## 7. Components of the project-level screens
+
+These screens use no new colour values. They reuse the roles above, so every contrast figure comes from §2.
+
+| Component | Tokens | Contrast and non-colour cue |
+|---|---|---|
+| Navigation rail (72 px, Agent view) | `surface`; item text `text-2`; current item `accent-soft` with a 2 px `accent-text` edge; 11 px label under a 15 px icon | Labels 6.50:1 (dark) and 7.48:1 (light); current item text 13.17:1 and 14.98:1. Current page is also `aria-current="page"` in the product (`true` in the mockup) and marked by the edge, not by colour alone |
+| Agent avatar | 24 px, `radius-sm`, monogram in `--ax-font-mono` 10 px weight 600; composer: `accent-soft` fill; CLI: `surface` fill with a dashed `control-border` edge | Monogram 13.17:1 and 14.98:1. Type is also written next to the name ("Composer · Agent", "shipit · CLI agent"); shape only repeats it |
+| Thread message | Sender in weight 600, `→`, receiver in `text-2`, time in mono `text-2`; relay state as a footer line in `text-2` | Every state is text: "Relayed by Axis · delivered", "not relayed", "Stopped by you" |
+| Message not relayed | `bad` 1 px border, body struck through in `text-2`, a "not relayed" pill with the failed glyph, the reason as a sentence, and one action | Border 6.40:1 and 5.90:1 on surface. The strikethrough is never the only cue |
+| Relay banner | `surface`, 3 px `accent-text` left edge, bold first sentence | Text 14.35:1 and 17.60:1 |
+| Permissions card | ✓ in `ok`, ✕ in `bad`, sentence in `text`; visually hidden "Can:" or "Cannot:" before each sentence | Glyphs 7.87:1 / 6.51:1 (✓) and 6.40:1 / 5.90:1 (✕) on surface; meaning is in the words |
+| Budget meter | Track `hover` with a 1 px `control-border` inset; fill `accent-text`; percentage and amounts as text beside it; `role="img"` with a label in the mockup (`progressbar` with value attributes in the product) | Fill against track 5.64:1 (dark) and 6.40:1 (light); track edge 4.05:1 and 3.71:1 on surface |
+| Destructive button ("Stop thread", "Disconnect") | `bad` text and 1 px `bad` border on `surface`; hover `hover` | 6.40:1 and 5.90:1. The verb is explicit |
+| Code panel editor | `--ax-font-mono` 12.5/20 px, `canvas` background, `control-border` edge, `radius-sm`; in the product, the upstream editor widget with the `editor.*` theme keys of §6.1 | Text 15.43:1 and 16.87:1; focus ring as §2.4; unsaved state is a pill with text ("unsaved", "saved") |
+
+Mapping: the rail, lists, cards, thread and code panel are all Axis DOM inside the agent part (§6.4). The code panel's editor is the one exception: it is an upstream editor instance, so it is themed by the theme keys alone [I].
+
+## 8. Open points for the owner
 - Do you accept Geist and Geist Mono as the bundled UI fonts, or prefer the system UI font with a bundled mono?
 - Should the light theme be equal in priority to dark? Both are specified to the same standard here.
 - Should the accent stay user-configurable (`docs/UX.md` says it is)? If so, Axis must validate a user accent against the contrast table at runtime or derive `accent-text` from it.
+- Should composer agents and CLI agents share one avatar style, with type in text only? The mockups add a shape difference (rounded or dashed square).

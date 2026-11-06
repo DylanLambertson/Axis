@@ -3,7 +3,13 @@
 - **Status:** proposal for the owner's decision. Nothing here is implemented in the product.
 - **Date:** 2026-11-05
 - **Inputs:** `docs/UX.md` (design thesis and provisional tokens), `docs/PRODUCT.md`, `docs/design/axis-shell.md` and `axis-shell-stage1-built.md`, `assets/brand/`, the Axis themes in `code-oss/overlay/extensions/theme-axis/themes/`, and the Axis shell sources in `code-oss/overlay/src/vs/axis/browser/` (`workbench.ts`, `parts/agentPart.ts`, `parts/media/agentPart.css`).
-- **Deliverables in this folder:** this file; `mockup-b.html` and `mockup-c.html` (standalone, open them in a browser); `tokens.md` (the token set for the recommended direction). Direction A's mockup is the existing first mockup; it is described here and not copied into the repository.
+- **Deliverables in this folder:**
+  - this file;
+  - `mockup-b.html` and `mockup-c.html`: open either in a browser. Each has its own stylesheet (`mockup-b.css`, `mockup-c.css`). Both load the same markup for the project-level screens (`mockup-screens.js`) and the same behaviour (`mockup.js`), so the two directions show identical content. They need no build step; fonts come from Google Fonts;
+  - `tokens.md`: the token set for the recommended direction.
+
+  Direction A's mockup is the existing first mockup; it is described here and not copied into the repository.
+- **Product model:** the owner's update of 2026-11-05. Axis is an **agent home management system**: projects are containers; agents of any type (composer or CLI) are created inside a project and organised into groups; Agent view shows what each agent is doing, and IDE view is the second focus, toggled. The names used here (project home, agent, group, thread, task, page, plugin, integration) follow that update. They will be aligned with `docs/design/product-vision-v2.md` once it lands; it was not available when this was written.
 - **Upstream facts.** Where this document says how something maps onto the Code OSS workbench, **[V]** means read in the pinned source (Code OSS `1.144.0`, `2c33b50b`) and **[I]** means inferred, not verified by running anything.
 
 ## 1. The problem
@@ -60,7 +66,7 @@ All motion is triggered by an event; nothing loops.
 Under `prefers-reduced-motion: reduce` (and the workbench's own `workbench.reduceMotion`) every animation is removed and state changes are instant.
 
 ### 3.5 Signature interactions
-1. **Workspace spine.** A narrow column on the far left with a monogram tile per workspace. Each tile carries a status glyph, and its accessible name gives the state ("Fix proration rounding, waiting for approval"). It is the dashboard in miniature, visible in every view; one click or the existing focus-workspace shortcut (`axis.workspace.focus.1` … `.9`) jumps to a workspace.
+1. **Spine.** A narrow column on the far left. Icon-only project navigation (home, workspaces, agents, threads, tasks, pages, plugins, integrations) sits at the top, and a monogram tile per agent below it. Each agent tile carries a status glyph, and its accessible name gives the state ("Proration fixer, waiting for approval"). It is the project in miniature, visible in every view. One click jumps to an agent, or the existing focus-workspace shortcut (`axis.workspace.focus.1` … `.9`). The icons have no visible labels, only names and tooltips: this costs learnability.
 2. **"Needs you" lane.** The dashboard pins a lane above the projects with every workspace that needs the user, with the reason in text.
 3. **Activity trace.** Each dashboard row has a 2-hour strip of event ticks. It is coloured by kind (event, live, waiting, failure) and has a text alternative ("12 events, 1 waiting"). It answers "is anything happening?" without a chart.
 4. **Decision card.** The approval request shows action, scope and consequence, and has keyboard bindings shown on its buttons (`⌘↵` approve once, `⌘⌫` deny). Deciding replaces the card with a timeline event and moves focus to the composer.
@@ -99,7 +105,7 @@ Each is deliberate, and each needs the owner's approval.
 - Tiles on a void.
 - Translucency and blur.
 - The teal live colour: running uses the accent, as in A.
-- The spine: the top bar's activity indicator and the dashboard cover it.
+- The spine: C uses a labelled navigation rail instead (§5.3), and the top bar's activity indicator and the project home cover agent status.
 - The activity trace: it stays a candidate for a later "density" option once real event data exists.
 
 **Adjusted tokens.** These are A's tokens with the contrast fixes from `tokens.md`:
@@ -108,7 +114,39 @@ Each is deliberate, and each needs the owner's approval.
 - the light `control-border` becomes `#80858E` (3:1 on the hover background);
 - the status colours are defined for both themes.
 
-## 5. Decision table
+## 5. Project-level screens (owner update)
+
+The owner's update adds eight screens to the four above. Mockups B and C both show all twelve; the screen bar at the top of each mockup switches between them. The project home is the first screen when a project opens. The content is identical in both mockups; only the visual language differs.
+
+| Screen | What it shows | Rules it demonstrates |
+|---|---|---|
+| **Project home** | A "Needs you" list first; open pull requests with checks and review state; usage and cost against a budget; runs by state; open tasks; recent activity across agents | A dense list per section, not a metric wall. Every number has a text label. CLI agents are listed as not metered by Axis, never as zero cost |
+| **Agents** | Groups on the left (all, each group, ungrouped); the selected group's agents in one table, composer and CLI agents together, with type, what each is doing now, workspace and last activity; the group's rules (messages, approvals, budget) in plain words | Agent type is shown by text and by avatar shape (rounded for composer, dashed square for CLI), not by colour. An agent with no workspace says "reads only" |
+| **Thread** | A conversation between two agents of any type: thread list on the left; each message shows sender → receiver, time and its relay state | See §5.1 |
+| **Code panel** | A workspace in Agent view with one side panel: the group's agents above, an editable file below, with Save and "Open in IDE view" | See §5.2 |
+| **Pages, Plugins, Tasks, Integrations** | Each is a list with one open item (list on the left, detail on the right) | Every plugin, integration and page shows a **Permissions** card. It lists what the item *can* do (✓) and *cannot* do (✕) in plain sentences, with the words "Can" and "Cannot" for screen readers. Examples: "Agents never receive this token"; "CLI agents use their own credentials, not this connection" |
+
+### 5.1 The inter-agent thread
+- **Mediated.** Axis relays every message and says so in a banner. Each message carries its relay state: "Relayed by Axis · delivered", or "not relayed".
+- **Visible and stoppable.** The user sees every message. **Pause relay** holds new messages until resumed. **Stop thread** ends the relay; both agents keep running, and the stream records "Stopped by you". The user can post into the thread as themselves.
+- **Nothing but text and file references travels.** Approvals, credentials, tools and permissions never travel in a message, and each agent keeps its own. The mockup shows the enforcement case. A composer agent asks a CLI agent to approve `npm publish`. Axis does not relay the message and shows it struck through, with the reason in text. It offers "Review Planner's request", so the decision stays with the user.
+- **Flags appear inline.** When an agent changes Git configuration or hooks during the thread, Axis's flag appears inline as a system line.
+
+### 5.2 The code panel
+The side panel holds agents together with the codebase, so a quick fix needs no switch to IDE view.
+
+- **Saving.** Save writes to the workspace's worktree. Review then lists the file under "changed outside the agent", and the activity stream records it.
+- **Moving to the IDE.** "Open in IDE view" moves to the same file and line.
+- **Scope.** It is one editor, not a second IDE. Search, debugging and extensions stay in IDE view.
+- **Implementation [I].** Embed the upstream code editor widget in the agent part, so syntax colours, fonts and keybindings match IDE view.
+
+### 5.3 Navigation in each direction
+- **B** keeps everything in the spine.
+- **C** adds a 72 px labelled navigation rail at the left of Agent view: an icon and a word per destination, with the current page marked by fill, a 2 px accent edge and `aria-current`. In IDE view the upstream activity bar takes its place.
+
+In both directions the rail lives inside the Axis agent part. Agent view already hides the upstream activity bar and sidebar [V, `workbench.ts`], so the rail costs no upstream change.
+
+## 6. Decision table
 
 | | A Restrained | B Instrument | C Precise instrument |
 |---|---|---|---|
@@ -117,9 +155,10 @@ Each is deliberate, and each needs the owner's approval.
 | **Cost on Code OSS workbench parts** | Low: Axis agent part (own DOM) plus theme colours (already shipped in `theme-axis`) | High. Gaps between grid leaves need the Axis grid to inset every part. Rounded, shadowed tiles mean CSS overrides on upstream `.part` elements (title bar, sidebar, editor, panel, auxiliary bar, status bar), which upstream churn can break. The spine is a new part or an activity-bar replacement. Blur on quick input costs GPU on Electron | Low to medium: agent part (own DOM), theme colours, Axis-registered colour and size tokens, one small CSS file for overlays and radii |
 | **Accessibility (WCAG 2.2 AA)** | Meets text and control contrast with the tokens in `docs/UX.md`. Status leans on colour (1.4.1 at risk). Some hunk buttons are 22 px tall (2.5.8 needs 24 px) | Meets contrast as specified. Shapes for status. Extra checks needed: text over translucency in every theme and wallpaper, forced colours (shadows and blur disappear, so tiles need borders), focus visibility on tiles | Meets contrast as specified in `tokens.md`, with status shapes and 24 px minimum targets. Flat surfaces behave well in forced colours |
 | **Dark and light** | Both, from `docs/UX.md` | Both, but light mode loses much of the instrument feel (the void becomes pale grey) | Both, equal quality; the lifted layer works in both |
+| **Project-level screens** | Not drawn | All eight. The icon-only spine is hard to learn for eight destinations | All eight. The labelled rail is self-explanatory |
 | **Consistency with IDE view** | High: same flat panes | Low unless every upstream part is restyled; otherwise Agent view and IDE view look like two apps | High: IDE view gets the same tokens, overlays and focus ring |
 
-### 5.1 Implementation cost by part
+### 6.1 Implementation cost by part
 The Axis shell owns the grid and the agent part, and reuses every upstream part as-is (`docs/design/axis-shell.md` §0.1, §1).
 
 | Part | A | B | C |
@@ -130,8 +169,10 @@ The Axis shell owns the grid and the agent part, and reuses every upstream part 
 | Quick input, menus, notifications, hovers [V] | Theme colours | Translucency and blur via CSS override [I] | `widget.shadow` theme colour plus overlay radius; no override |
 | Status bar [V] | Theme colours | Tile chrome via CSS override | Theme colours |
 | New parts | None | Spine (part or activity-bar replacement) | None |
+| Navigation rail (Agent view) [V: Agent view hides the activity bar and sidebar] | Not drawn | Inside the spine | Axis DOM inside the agent part |
+| Code panel editor [I] | Not drawn | Upstream code editor widget in the agent part | Same |
 
-## 6. Recommendation
+## 7. Recommendation
 
 **Adopt direction C.**
 
@@ -140,16 +181,18 @@ The Axis shell owns the grid and the agent part, and reuses every upstream part 
 - It is the only distinctive direction that fits inside the shell budget (ADR 0002 criterion 2) without per-part CSS overrides of upstream markup.
 - It meets WCAG 2.2 AA with margin in both themes, and the token set is ready (`tokens.md`).
 
+C also carries the project-level screens better than B. A labelled rail makes eight destinations learnable without tooltips, and flat list-and-detail pages stay consistent with the dense dashboard.
+
 Keep two elements of B as **candidates** for a later density setting, once real data exists to judge them: the workspace spine (for users who run many workspaces at once) and the activity trace (once the daemon reports event history). Neither is needed for Phase 1.
 
-### 6.1 Validation before the owner signs off
+### 7.1 Validation before the owner signs off
 1. A keyboard-only walkthrough of `docs/PRODUCT.md` scenarios 1–4 in the C mockup: every step reachable, focus always visible, focus returns after the palette and after a decision.
 2. Screen reader passes (VoiceOver on macOS, NVDA on Windows). Check that statuses read as text, that the activity stream is announced as a log, and that view switches are announced.
 3. Zoom to 200% and reflow at 1280 px window width; forced-colours (Windows high contrast); reduced motion on and off.
 4. Contrast re-checked with `tokens.md` values after any token change.
 5. A five-person comprehension test on the dashboard: "which workspace needs you, and why?" within 5 seconds.
 
-## 7. Proposed changes to `docs/UX.md`
+## 8. Proposed changes to `docs/UX.md`
 
 These are proposals only; `docs/UX.md` is unchanged in this branch. Each applies if the owner picks C. Most of them also apply to B.
 
@@ -177,3 +220,17 @@ These are proposals only; `docs/UX.md` is unchanged in this branch. Each applies
 7. **Focus.** The focus indicator is a 2 px `accent-text` outline with a 2 px offset (inset by 2 px inside lists and tables), at least 3:1 against adjacent colours, and never hidden by a sticky header or the composer (SC 2.4.11).
 8. **Motion.** Name the three durations (120, 160, 200 ms) and the ease-out curve. All motion is triggered by an event. Under reduced motion, durations become 0 and no transform is applied.
 9. **Keyboard hints.** Primary actions show their shortcut on the control. The dashboard supports `J` / `K` / `Enter` and `N` for a new workspace; these are single-key bindings scoped to the dashboard list, and are re-checked against upstream bindings in shell task A6 like the others.
+10. **Information architecture.** Add a "Project" section above the surfaces:
+    - opening a project shows the **project home** (needs you, pull requests, usage and cost, runs, tasks, recent activity);
+    - Agent view has a labelled navigation rail: home, workspaces, agents, threads, tasks, pages, plugins, integrations;
+    - agents live in **groups** inside a project.
+
+    To be reconciled with `docs/design/product-vision-v2.md`.
+11. **Inter-agent threads.** Add the rules in §5.1 to Agent UX:
+    - messages are relayed by Axis and visible to the user;
+    - the thread can be paused and stopped;
+    - only text and file references travel;
+    - a message that asks another agent to approve or grant something is not relayed, and the reason is shown.
+12. **Code panel.** Add to the workspace view: a side panel with the group's agents and one editable file. Its saves count as edits outside the agent, and it has a one-step path to IDE view at the same location.
+13. **Permissions in plain words.** Every plugin, integration and page shows a Permissions card listing what it can and cannot do, in sentences, with "Can" and "Cannot" announced to screen readers. It always says whether agents receive the credential.
+14. **Usage and cost.** The project home shows spend against a budget, with the percentage in text. CLI agents are labelled "not metered by Axis", never shown as zero cost.
