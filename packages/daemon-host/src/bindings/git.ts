@@ -1,5 +1,4 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
-import { createHash } from "node:crypto";
 import { DaemonError } from "@axis/daemon";
 import {
   GitOpsError,
@@ -20,6 +19,7 @@ import {
 import { SecretScanError, type SecretScanner } from "@axis/secret-scan";
 import { GitRefusal, type GitOperations, type GitPort, type PushCall } from "../ports/git.js";
 import type { RunsService } from "../ports/runs.js";
+import { pushTargetKey, type SshHostResolver } from "./push-target.js";
 
 /**
  * The assembly of `GitOpsDeps` over the real `@axis/git-ops` (ticket H9, design section 2.1: with `worktrees.ts` and the
@@ -154,6 +154,12 @@ export interface GitOperationsDeps {
   readonly runs: Pick<RunsService, "hasActiveRun">;
   /** Extra hosts for compare URLs (GitHub Enterprise). github.com is always allowed. */
   readonly allowedHosts?: readonly string[];
+  /**
+   * Resolves an ssh host or alias of a push URL to where it connects (H9-base), so the scan base is keyed by the real
+   * destination. Absent: the host is keyed as written (an alias edited behind the same name is then not seen). Present: a
+   * resolver that throws or answers badly refuses the scan base.
+   */
+  readonly resolveSshHost?: SshHostResolver;
 }
 
 export function createGitOperations(deps: GitOperationsDeps): GitOperations {
@@ -190,7 +196,7 @@ export function createGitOperations(deps: GitOperationsDeps): GitOperations {
         const urls = await git(["remote", "get-url", "--push", "--all", "--", call.remote]);
         const list = urls.stdout.split("\n").map((l) => l.trim()).filter((l) => l !== "");
         if (urls.code !== 0 || list.length === 0) throw new GitRefusal("E_INVALID_ARGUMENT");
-        return createHash("sha256").update(JSON.stringify(list.sort())).digest("hex");
+        return pushTargetKey(list, call.worktree.workTree, deps.resolveSshHost);
       }),
     planPush: (call) =>
       guarded(async () => {
