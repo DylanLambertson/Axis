@@ -18,7 +18,8 @@ import { AxisDataProvenance, IAxisProjectInfo } from '../common/axisWorkspaceDat
 import { cycleIndex, IAxisWorkspaceEntry } from '../common/axisWorkspaceModel.js';
 import { AxisDiscoveryDataSource } from '../common/axisDiscoveryDataSource.js';
 import { AxisDataOrigin, AxisSnapshotLoader, IAxisSnapshot, sameSnapshot } from '../common/axisSnapshotLoader.js';
-import { AxisPollDriver, IAxisRefreshDriver } from '../common/axisRefreshDriver.js';
+import { IAxisRefreshDriver } from '../common/axisRefreshDriver.js';
+import { AxisAdaptiveRefreshDriver } from '../common/axisEventDriver.js';
 
 /** The focused workspace key, per Code OSS workspace (design section 3.6). */
 const FOCUSED_WORKSPACE_STORAGE_KEY = 'axis.workspaces.focused';
@@ -97,7 +98,7 @@ export class AxisWorkspaceService extends Disposable implements IAxisWorkspaceSe
 		this.source = this._register(instantiationService.createInstance(AxisDiscoveryDataSource));
 		const cancellation = this._register(new CancellationTokenSource());
 		this.loader = new AxisSnapshotLoader(this.source, new AxisDaemonApi(this.daemon, cancellation.token));
-		this.driver = this._register(new AxisPollDriver());
+		this.driver = this._register(new AxisAdaptiveRefreshDriver(this.daemon));
 		this._register(addDisposableListener(mainWindow.document, 'visibilitychange', () => this.driver.setPaused(mainWindow.document.hidden)));
 		this._register(this.daemon.onDidChangeStatus(() => this.onDaemonStatus()));
 		this._focusedKey = this.storageService.get(FOCUSED_WORKSPACE_STORAGE_KEY, StorageScope.WORKSPACE) || undefined;
