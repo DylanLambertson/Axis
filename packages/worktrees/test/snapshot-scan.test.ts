@@ -99,7 +99,7 @@ describe('snapshot secret scan (REF-1)', () => {
   });
 
   it('a run base adds nothing to scan even with a scanner that finds everything', async () => {
-    const always: SnapshotScanner = { limits: { maxBinaryBytes: 1 }, scan: async () => [{ rule: 'jwt', line: 1 }] };
+    const always: SnapshotScanner = { limits: { maxBinaryBytes: 1, maxBytes: 1 << 20 }, scan: async () => [{ rule: 'jwt', line: 1 }] };
     const wt = await workspace({ snapshotScanner: always });
     write(path.join(wt, 'new.txt'), 'harmless\n');
     const e = await refusal(fx.manager.restoreFromRunBase({ path: path.join(wt, 'a.txt') }));
@@ -122,7 +122,7 @@ describe('snapshot secret scan (REF-1)', () => {
     const e = await refusal(fx.manager.restoreFromRunBase({ path: path.join(wt, 'a.txt') }));
     assert.equal(e.details['reason'], 'snapshot-secret');
     assert.deepEqual(e.details['findings'], [{ rule: 'private-key-block', line: 2, path: 'small.bin' }]);
-    assert.deepEqual(scanner.calls.map((c) => c.binaryPaths), [['small.bin']]);
+    assert.deepEqual(scanner.calls.map((c) => c.binaryPaths), Array(4).fill(['small.bin']), 'four views, all as binary');
     sh(wt, 'clean', '-fq');
     const large = Buffer.alloc(scanner.limits.maxBinaryBytes + 1);
     write(path.join(wt, 'large.bin'), large);
@@ -155,6 +155,19 @@ describe('snapshot secret scan (REF-1)', () => {
     assert.ok(!visible(e).includes(TOKEN_NAME));
   });
 
+  it('a text file too large for one scan is refused as unscanned, and is never sent to the scanner', async () => {
+    const real = createSecretScanner({ maxBytes: 200, maxBinaryBytes: 100 });
+    const scanner = recording(real);
+    const wt = await workspace({ snapshotScanner: scanner });
+    write(path.join(wt, 'big.txt'), 'word '.repeat(200));
+    write(path.join(wt, 'small.txt'), 'ok\n');
+    const e = await refusal(fx.manager.restoreFromRunBase({ path: path.join(wt, 'a.txt') }));
+    assert.equal(e.details['reason'], 'snapshot-unscanned');
+    assert.deepEqual(e.details['findings'], [{ rule: 'scan-incomplete', path: 'big.txt' }]);
+    assert.equal(scanner.calls.length, 1);
+    assert.match(scanner.calls[0]?.text ?? '', /small\.txt/);
+  });
+
   it('keeps 50 findings and counts the rest', async () => {
     const wt = await workspace();
     write(path.join(wt, 'many.txt'), `${PEM}\n`.repeat(60));
@@ -164,8 +177,8 @@ describe('snapshot secret scan (REF-1)', () => {
   });
 
   for (const [name, scanner] of [
-    ['a scanner that throws the content back', { limits: { maxBinaryBytes: 10 }, scan: async (t: string) => { throw new Error(t); } }],
-    ['a scanner that answers no list', { limits: { maxBinaryBytes: 10 }, scan: async () => ({ ok: true }) }],
+    ['a scanner that throws the content back', { limits: { maxBinaryBytes: 10, maxBytes: 1 << 20 }, scan: async (t: string) => { throw new Error(t); } }],
+    ['a scanner that answers no list', { limits: { maxBinaryBytes: 10, maxBytes: 1 << 20 }, scan: async () => ({ ok: true }) }],
     ['a refuse-mode scanner over its byte cap', createSecretScanner({ maxBytes: 16 })],
     ['a warn-mode scanner over its byte cap', createSecretScanner({ mode: 'warn', maxBytes: 16 })],
   ] as const) {
@@ -189,6 +202,7 @@ describe('a malformed scanner', () => {
   for (const [name, scanner] of [
     ['no scan function', { limits: { maxBinaryBytes: 10 } }],
     ['no limits', { scan: async () => [] }],
+    ['no byte cap', { scan: async () => [], limits: { maxBinaryBytes: 10 } }],
   ] as const) {
     it(`with ${name} refuses even a run base, and the create rolls back`, async () => {
       fx = makeFixture({ snapshotScanner: scanner as unknown as SnapshotScanner });

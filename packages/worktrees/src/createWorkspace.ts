@@ -111,7 +111,7 @@ export async function createWorkspace(host: CreateHost, repo: RepoLocation, p: C
     await git.run(['worktree', 'lock', '--reason', `axis:${p.id}`, '--', wtPath], { cwd });
     await populateFilterFree(git, wtPath);
     const wt = await resolveRepo(wtPath);
-    const snap = await writeSnapshotRef(git, wtPath, runBaseRef, `axis run base ${p.id}`, host.maxFile, scratchDir, host.snapshotScanner);
+    const snap = await writeSnapshotRef(git, wtPath, runBaseRef, `axis run base ${p.id}`, host.maxFile, scratchDir, baseSha, host.snapshotScanner);
     runBaseSha = snap.commit;
     await writeMeta(wt.gitDir, {
       version: 1, id: p.id, slug: p.slug, branch, baseRef: p.baseRef, baseSha, baseBranch, runBaseSha,

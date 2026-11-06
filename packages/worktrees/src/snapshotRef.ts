@@ -6,7 +6,10 @@ import * as path from 'node:path';
 import { WorktreeError } from './errors.js';
 import { readPinnedFile, underRealDirs, type FileIdentity } from './fsSafe.js';
 import type { HardenedGit } from './hardenedGit.js';
-import { defaultSnapshotScanner, startSnapshotScan, type SnapshotScanner } from './snapshotScan.js';
+import { baseTreeBlobs, scanHistory } from './snapshotHistory.js';
+import { defaultSnapshotScanner, startSnapshotScan, type SnapshotScan, type SnapshotScanner } from './snapshotScan.js';
+
+export { assertHistoryClean } from './snapshotHistory.js';
 
 export const MAX_SNAPSHOT_FILE_BYTES = 50 * 1024 * 1024;
 
@@ -103,17 +106,6 @@ async function readScanned(worktree: string, rel: string, id: FileIdentity & { s
   if ((await readPinnedFile(worktree, rel, id, id.size, onChunk)) !== id.size) throw changed(rel);
 }
 
-/** Blob ids of the snapshot's base, by path, from the temporary index `read-tree HEAD` filled. */
-async function baseBlobs(git: HardenedGit, worktree: string, env: Record<string, string>): Promise<Map<string, string>> {
-  const out = await git.run(['ls-files', '-z', '-s'], { cwd: worktree, extraEnv: env });
-  const map = new Map<string, string>();
-  for (const rec of out.stdout.split('\0')) {
-    const m = /^\d{6} ([0-9a-f]{40,64}) \d\t([\s\S]+)$/.exec(rec);
-    if (m) map.set(m[2] as string, m[1] as string);
-  }
-  return map;
-}
-
 const blobId = (algo: 'sha1' | 'sha256', bytes: Buffer): string => createHash(algo).update(`blob ${bytes.length}\0`).update(bytes).digest('hex');
 
 interface Hashed {
@@ -123,33 +115,39 @@ interface Hashed {
 }
 
 /**
- * Reads every file the scan found through `readPinnedFile` and every symlink target once, computes their blob ids, and
- * secret-scans each one whose blob is not already the base's at that path (REF-1, docs/design/snapshot-scan.md). Writes
- * nothing: a refusal leaves no object behind.
+ * Hashes every file the scan found (streamed through `readPinnedFile`) and every symlink target (read once), and
+ * secret-scans each one whose blob id is not in `skip` (the trusted base's tree and the history already scanned; REF-1,
+ * docs/design/snapshot-scan.md). A file to scan is read again whole and must hash to the same id, so the bytes scanned
+ * are the bytes stored; one too large to scan is refused unread. Writes nothing.
  */
 async function hashAndScan(
-  git: HardenedGit, worktree: string, scan: WorktreeScan, algo: 'sha1' | 'sha256', env: Record<string, string>, scanner: SnapshotScanner,
+  worktree: string, scan: WorktreeScan, algo: 'sha1' | 'sha256', skip: ReadonlySet<string>, check: SnapshotScan, limits: SnapshotScanner['limits'],
 ): Promise<Hashed> {
-  const check = startSnapshotScan(scanner);
-  const base = await baseBlobs(git, worktree, env);
   const blobs = new Map<string, string>();
   for (const rel of scan.files) {
     const id = scan.ids.get(rel) as FileIdentity & { size: number };
+    const h = createHash(algo).update(`blob ${id.size}\0`);
+    await readScanned(worktree, rel, id, (b) => h.update(b));
+    const sha = h.digest('hex');
+    blobs.set(rel, sha);
+    if (skip.has(sha)) continue;
+    if (id.size > 4 * limits.maxBytes && id.size > limits.maxBinaryBytes) {
+      check.unscannable(rel);
+      continue;
+    }
     const chunks: Buffer[] = [];
     await readScanned(worktree, rel, id, (b) => chunks.push(b));
     const bytes = Buffer.concat(chunks);
-    const sha = blobId(algo, bytes);
-    blobs.set(rel, sha);
-    if (base.get(rel) !== sha) await check.add({ rel, mode: scan.executable.has(rel) ? '100755' : '100644', bytes });
+    if (blobId(algo, bytes) !== sha) throw changed(rel);
+    await check.add({ rel, mode: scan.executable.has(rel) ? '100755' : '100644', bytes });
   }
   const links = new Map<string, { target: Buffer; sha: string }>();
   for (const rel of scan.symlinks) {
     const target = Buffer.from(await fs.readlink(path.join(worktree, rel)), 'utf8');
     const sha = blobId(algo, target);
     links.set(rel, { target, sha });
-    if (base.get(rel) !== sha) await check.add({ rel, mode: '120000', bytes: target });
+    if (!skip.has(sha)) await check.add({ rel, mode: '120000', bytes: target });
   }
-  check.finish();
   return { blobs, links };
 }
 
@@ -191,8 +189,9 @@ async function storeMissing(git: HardenedGit, worktree: string, scan: WorktreeSc
  * worktree's real index untouched and out of reach of an agent. Content is read in
  * this process (see `hashAndScan`), stored with `--no-filters` and entered with
  * `update-index --index-info`, so no clean/smudge/process driver, attribute or
- * end-of-line conversion can run or alter the bytes. Every added entry is
- * secret-scanned first; a finding refuses before any object is written.
+ * end-of-line conversion can run or alter the bytes. Everything the ref would
+ * add beyond `trustedBase` is secret-scanned first; a finding refuses before
+ * any object is written.
  */
 export async function writeSnapshotRef(
   git: HardenedGit,
@@ -202,6 +201,11 @@ export async function writeSnapshotRef(
   maxFileBytes: number,
   /** A private directory (see `privateDir`) for the temporary index; never `$TMPDIR`. */
   scratchDir: string,
+  /**
+   * The workspace's recorded base commit (never live HEAD, which the run controls): only its tree's blobs are taken as
+   * already shared; every blob and message HEAD adds beyond it, and every changed working file, is scanned.
+   */
+  trustedBase: string,
   /** REF-1 scanner; absent means `createSecretScanner()` (refuse mode), never no scan. */
   scanner: SnapshotScanner = defaultSnapshotScanner(),
 ): Promise<SnapshotResult> {
@@ -211,7 +215,11 @@ export async function writeSnapshotRef(
     await git.run(['read-tree', 'HEAD'], { cwd: worktree, extraEnv: env });
     const scan = await scanWorktree(git, worktree, maxFileBytes);
     const head = await git.text(['rev-parse', 'HEAD'], { cwd: worktree });
-    const hashed = await hashAndScan(git, worktree, scan, head.length === 64 ? 'sha256' : 'sha1', env, scanner);
+    const check = startSnapshotScan(scanner);
+    const base = await baseTreeBlobs(git, worktree, trustedBase);
+    const history = await scanHistory(git, worktree, trustedBase, head, check, scanner.limits, base);
+    const hashed = await hashAndScan(worktree, scan, head.length === 64 ? 'sha256' : 'sha1', new Set([...base, ...history]), check, scanner.limits);
+    check.finish();
     await storeMissing(git, worktree, scan, hashed);
     const lines: string[] = [];
     for (const rel of scan.files) {
