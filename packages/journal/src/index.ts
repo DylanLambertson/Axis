@@ -11,7 +11,7 @@ export {
   type TransitionOptions,
   type Workspace,
 } from "./model.js";
-export { type RegisterProjectInput } from "./records.js";
+export { baseBranchSchema, type RegisterProjectInput } from "./records.js";
 export { JOURNAL_MIGRATIONS, JOURNAL_SCHEMA_VERSION } from "./schema.js";
 export {
   FINALISE_OUTCOMES,
