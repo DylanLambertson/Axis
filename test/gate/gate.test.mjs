@@ -216,3 +216,8 @@ test("gitleaks: the recorded binary hash is enforced and reported", { skip: proc
     assert.match(r.out, /PASS {2}gitleaks .*hash verified/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test("the npm test runner runs the renderer-imports suite", () => {
+  const src = readFileSync(fileURLToPath(new URL("../../scripts/test-all.mjs", import.meta.url)), "utf8");
+  assert.match(src, /test\/code-oss\/renderer-imports\.test\.mjs/);
+});
