@@ -41,7 +41,7 @@ async function listWithin(provider: Pick<GuardedProvider, "listModels">, signal:
   const own = new AbortController();
   const stop = (): void => own.abort();
   signal.addEventListener("abort", stop, { once: true });
-  let timer: NodeJS.Timeout | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const limit = new Promise<undefined>((resolve) => {
       timer = setTimeout(() => (own.abort(), resolve(undefined)), timeoutMs);
