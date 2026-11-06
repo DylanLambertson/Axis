@@ -104,6 +104,7 @@ export class FakeChild implements PtyChild {
   readonly killed: string[] = [];
   readonly resized: Array<[number, number]> = [];
   pending = 0;
+  entries = 0;
   pauses = 0;
   resumes = 0;
   private readonly dl = new Set<(c: string) => void>();
@@ -114,6 +115,7 @@ export class FakeChild implements PtyChild {
   resize(c: number, r: number): void { this.resized.push([c, r]); }
   kill(s: string): void { this.killed.push(s); }
   pendingWrite(): number { return this.pending; }
+  pendingEntries(): number { return this.entries; }
   pause(): void { this.pauses++; }
   resume(): void { this.resumes++; }
   onData(l: (c: string) => void): Disposable { this.dl.add(l); return { dispose: () => void this.dl.delete(l) }; }
@@ -154,6 +156,7 @@ export function pipeSpawn(children: number[] = []): SpawnFn {
       group: { kind: "pgid", pgid: cp.pid },
       write: (d) => void cp.stdin.write(d),
       pendingWrite: () => cp.stdin.writableLength,
+      pendingEntries: () => (cp.stdin.writableLength > 0 ? 1 : 0),
       resize: () => undefined,
       kill: (s) => void cp.kill(s),
       onData: (l) => (dl.add(l), { dispose: () => void dl.delete(l) }),

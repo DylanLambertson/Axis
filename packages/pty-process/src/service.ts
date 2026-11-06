@@ -21,7 +21,9 @@ export interface PtyServiceOptions {
   /** Output flow-control bounds per terminal (characters in flight to the viewer). Default 1 MiB pause, 256 KiB resume, 4 MiB drop. */
   readonly flow?: FlowLimits;
   /** Bytes of unconsumed input per terminal and in the whole process before further input is refused (PTY-4). Default 1 MiB and 8 MiB. */
-  readonly input?: { readonly terminal: number; readonly process: number };
+  readonly input?: Partial<{ terminal: number; process: number; entriesTerminal: number; entriesProcess: number }>;
+  /** Distinct data-connection names served over the life of the service; past this a new name is refused. Default 65536. */
+  readonly maxConnNames?: number;
 }
 
 export interface PtyService {
@@ -51,12 +53,15 @@ interface Terminal {
   cancel: boolean;
   /** A viewer has been attached at some point. */
   seen: boolean;
+  /** Input was refused: every write is refused until the child has taken all it was given, so a long paste is never spliced. */
+  inputBlocked: boolean;
   exited: boolean;
   groupGone: boolean;
 }
 
 export const DEFAULT_MAX_TERMINALS = 64;
-export const DEFAULT_INPUT_LIMITS = { terminal: 1024 * 1024, process: 8 * 1024 * 1024 } as const;
+export const DEFAULT_INPUT_LIMITS = { terminal: 1024 * 1024, process: 8 * 1024 * 1024, entriesTerminal: 1024, entriesProcess: 8192 } as const;
+export const DEFAULT_MAX_CONN_NAMES = 65536;
 
 export function createPtyService(options: PtyServiceOptions): PtyService {
   const ops = options.ops ?? systemProcessOps;
@@ -65,6 +70,8 @@ export function createPtyService(options: PtyServiceOptions): PtyService {
   const terminals = new Map<string, Terminal>();
   const dataChannels = new Map<Channel, string>();
   const platform = options.platform ?? process.platform;
+  const usedNames = new Set<string>();
+  const maxNames = options.maxConnNames ?? DEFAULT_MAX_CONN_NAMES;
   const channelSubs = new Map<Channel, Disposable[]>();
   let control: Channel | undefined;
   let disposed = false;
@@ -121,18 +128,35 @@ export function createPtyService(options: PtyServiceOptions): PtyService {
     if (t.flow.reset()) tryChild(t.child.resume?.bind(t.child));
   };
 
-  const inputLimits = options.input ?? DEFAULT_INPUT_LIMITS;
-  /** PTY-4: whether the child (or the process as a whole) already holds more unconsumed input than allowed. Unmeasurable counts as full. */
+  const inputLimits = { ...DEFAULT_INPUT_LIMITS, ...options.input };
+  /**
+   * PTY-4: whether the child (or the process as a whole) holds more unconsumed input than allowed. Checked cheapest first, and
+   * every scan is bounded by the entry limits: the terminal's queue by `entriesTerminal`, all queues together by `entriesProcess`.
+   * Unmeasurable counts as full. Once refused, a terminal stays refused until its queue is empty (no spliced input).
+   */
   const inputFull = (t: Terminal): boolean => {
+    const block = (): true => (t.inputBlocked = true);
     try {
-      const own = t.child.pendingWrite?.();
+      const entries = t.child.pendingEntries?.();
+      const bytes = (): number | undefined => t.child.pendingWrite?.();
+      if (t.inputBlocked) {
+        if ((entries ?? 0) > 0 || (bytes() ?? 0) > 0) return true;
+        t.inputBlocked = false;
+      }
+      if (entries !== undefined) {
+        if (!(entries <= inputLimits.entriesTerminal)) return block();
+        let totalEntries = 0;
+        for (const x of terminals.values()) totalEntries += x.child.pendingEntries?.() ?? 0;
+        if (!(totalEntries <= inputLimits.entriesProcess)) return block();
+      }
+      const own = bytes();
       if (own === undefined) return false;
-      if (!(own < inputLimits.terminal)) return true;
+      if (!(own < inputLimits.terminal)) return block();
       let total = 0;
       for (const x of terminals.values()) total += x.child.pendingWrite?.() ?? 0;
-      return !(total < inputLimits.process);
+      return total < inputLimits.process ? false : block();
     } catch {
-      return true;
+      return block();
     }
   };
 
@@ -176,7 +200,7 @@ export function createPtyService(options: PtyServiceOptions): PtyService {
     let idText = "";
     do idText = "pty_" + Buffer.from(rand(16)).toString("hex");
     while (terminals.has(idText));
-    const t: Terminal = { id: idText, child, filter: new OscCwdFilter(), resync: true, cancel: false, seen: false, flow: new OutputFlow(options.flow ?? DEFAULT_FLOW), subs: [], granted: undefined, owner: undefined, exited: false, groupGone: false };
+    const t: Terminal = { id: idText, child, filter: new OscCwdFilter(), resync: true, cancel: false, seen: false, inputBlocked: false, flow: new OutputFlow(options.flow ?? DEFAULT_FLOW), subs: [], granted: undefined, owner: undefined, exited: false, groupGone: false };
     terminals.set(t.id, t);
     t.subs.push(
       child.onData((chunk) => {
@@ -237,7 +261,10 @@ export function createPtyService(options: PtyServiceOptions): PtyService {
     try {
       if (m.t === "kill") killTerminal(t, m.signal);
       else if (m.t === "resize") t.child.resize(m.cols, m.rows);
-      else if (!t.exited && !inputFull(t)) t.child.write(m.data);
+      else if (!t.exited) {
+        if (inputFull(t)) sendTo(control, { t: "input-refused", term: t.id });
+        else t.child.write(m.data);
+      }
     } catch {
       /* a dying child */
     }
@@ -319,7 +346,8 @@ export function createPtyService(options: PtyServiceOptions): PtyService {
       return { dispose: () => void (subs.forEach((s) => s.dispose()), closeChannel(channel)) };
     },
     serveData(channel, conn) {
-      if (disposed || [...dataChannels.values()].includes(conn)) {
+      // A name is served once for the life of the service: a `grant` that lands after its view closed cannot be claimed by a later port.
+      if (disposed || usedNames.has(conn) || usedNames.size >= maxNames) {
         try {
           channel.close();
         } catch {
@@ -327,6 +355,7 @@ export function createPtyService(options: PtyServiceOptions): PtyService {
         }
         return { dispose: () => undefined };
       }
+      usedNames.add(conn);
       dataChannels.set(channel, conn);
       const subs = [channel.onMessage((m) => onData(channel, m)), channel.onClose(() => closeChannel(channel))];
       channelSubs.set(channel, subs);
@@ -340,6 +369,7 @@ export function createPtyService(options: PtyServiceOptions): PtyService {
       terminals.clear();
       for (const subs of channelSubs.values()) subs.forEach((d) => d.dispose());
       channelSubs.clear();
+      usedNames.clear();
       for (const ch of [...dataChannels.keys(), ...(control === undefined ? [] : [control])]) {
         try {
           ch.close();

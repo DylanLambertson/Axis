@@ -6,7 +6,7 @@ import { oscIds } from "../testing/osc-oracle.js";
 import { channelPair, counterRandom, FakeChild, FakeProcs, pipeSpawn, settle, until } from "../testing/helpers.js";
 import { SPEC } from "../testing/rig.js";
 
-async function viewer(spawn: SpawnFn, opts: { real?: boolean; input?: { terminal: number; process: number }; flow?: { high: number; low: number; hard: number } } = {}) {
+async function viewer(spawn: SpawnFn, opts: { real?: boolean; input?: { terminal?: number; process?: number; entriesTerminal?: number; entriesProcess?: number }; flow?: { high: number; low: number; hard: number } } = {}) {
   const procs = new FakeProcs();
   const pair = channelPair();
   const svc = createPtyService({ spawn: (r) => { const c = spawn(r); procs.live.add(c.pid); return c; }, ...(opts.real === true ? {} : { ops: procs }), randomBytes: counterRandom(), ...(opts.input === undefined ? {} : { input: opts.input }), ...(opts.flow === undefined ? {} : { flow: opts.flow }) });
@@ -21,7 +21,7 @@ async function viewer(spawn: SpawnFn, opts: { real?: boolean; input?: { terminal
   data.a.onMessage((m) => void got.push(m as DataReply));
   data.a.send({ t: "attach", term: h.terminalId });
   await settle();
-  return { svc, port, handle: h, data, term: h.terminalId, got, close: () => (svc.dispose(), port.dispose()) };
+  return { status: pair.a, svc, port, handle: h, data, term: h.terminalId, got, close: () => (svc.dispose(), port.dispose()) };
 }
 
 test("PTY-4: input past the per-terminal bound is refused (input_full) and never reaches the child", async () => {
@@ -37,7 +37,11 @@ test("PTY-4: input past the per-terminal bound is refused (input_full) and never
   child.pending = 99;
   v.data.a.send({ t: "write", term: v.term, data: "c" });
   await settle();
-  assert.deepEqual(child.written, ["a", "c"], "input flows again once the child has taken it");
+  assert.deepEqual(child.written, ["a"], "refused input stays refused until the child has taken everything: no spliced paste");
+  child.pending = 0;
+  v.data.a.send({ t: "write", term: v.term, data: "d" });
+  await settle();
+  assert.deepEqual(child.written, ["a", "d"], "input flows again once the child has taken it all");
   v.close();
 });
 
@@ -205,4 +209,103 @@ test("flow: output the OSC filter removes is not charged to the viewer, which wi
   assert.ok(received.endsWith("visible"), "not dropped for output the viewer never saw");
   assert.equal(child.pauses, 0);
   v.close();
+});
+
+test("PTY-4: the number of queued writes is bounded too, checked before any byte count, for the terminal and for the process", async () => {
+  const child = new FakeChild(101);
+  let scans = 0;
+  child.pendingWrite = () => (scans++, 1);
+  const v = await viewer(() => child, { input: { entriesTerminal: 5, entriesProcess: 100 } });
+  child.entries = 5;
+  v.data.a.send({ t: "write", term: v.term, data: "ok" });
+  await settle();
+  assert.deepEqual(child.written, ["ok"]);
+  child.entries = 6; // one-byte writes into a child that never reads: tiny in bytes, expensive in entries
+  scans = 0;
+  v.data.a.send({ t: "write", term: v.term, data: "x" });
+  await settle();
+  assert.deepEqual(child.written, ["ok"]);
+  assert.equal(scans, 0, "refused on the O(1) entry count; no queue was scanned for bytes");
+  assert.equal(v.got.some((r) => r.t === "refused" && r.code === "input_full"), true);
+  v.close();
+});
+
+test("PTY-4: the process-wide entry bound refuses a terminal whose own queue is small", async () => {
+  const children: FakeChild[] = [];
+  const v = await viewer(() => (children.push(new FakeChild(101 + children.length)), children.at(-1) as PtyChild), { input: { entriesTerminal: 10, entriesProcess: 12 } });
+  await v.port.spawn({ ...SPEC, argv: ["/bin/sh", "-c", "sleep 30"], cwd: "/", env: { PATH: "/usr/bin:/bin" } });
+  children[0]!.entries = 8;
+  children[1]!.entries = 8;
+  v.data.a.send({ t: "write", term: v.term, data: "x" });
+  await settle();
+  assert.deepEqual(children[0]!.written, []);
+  v.close();
+});
+
+test("PTY-4: the daemon is told when its input was dropped (status only), and a blocked terminal stays blocked until drained", async () => {
+  const child = new FakeChild(101);
+  const v = await viewer(() => child, { input: { terminal: 10 } });
+  const status: unknown[] = [];
+  v.status.onMessage((m) => void status.push(m));
+  child.pending = 10;
+  v.handle.write("one");
+  await settle();
+  child.pending = 3;
+  v.handle.write("two");
+  await settle();
+  assert.deepEqual(child.written, []);
+  assert.deepEqual(status.filter((m) => (m as { t: string }).t === "input-refused").length, 2);
+  v.close();
+});
+
+test("S1: switching viewers mid-sequence gives the returning viewer a CAN and a fresh filter (no forged OSC 7)", async () => {
+  const child = new FakeChild(101);
+  const v = await viewer(() => child);
+  child.emit("\x1b]"); // viewer A's parser is now inside an OSC, waiting for its id
+  await settle(1);
+  const b = channelPair();
+  v.svc.serveData(b.b, "c2");
+  v.port.grant(v.term, "c2");
+  await settle();
+  b.a.send({ t: "attach", term: v.term });
+  await settle();
+  child.emit("junk-for-b");
+  await settle(1);
+  v.port.grant(v.term, "c1b");
+  const a2 = channelPair();
+  v.svc.serveData(a2.b, "c1b");
+  await settle();
+  const got: DataReply[] = [];
+  a2.a.onMessage((m) => void got.push(m as DataReply));
+  a2.a.send({ t: "attach", term: v.term });
+  await settle();
+  child.emit("7;file:///e\x07tail");
+  await settle(1);
+  const text = got.filter((r) => r.t === "data").map((r) => (r as { chunk: string }).chunk).join("");
+  assert.ok(text.startsWith("\x18"), "CAN first");
+  assert.deepEqual(oscIds(text).filter((id) => id === 7), []);
+  v.close();
+});
+
+test("a connection name is single use in the service too, also after its port closed, and the number of names is capped", async () => {
+  const svc = createPtyService({ spawn: () => new FakeChild(101), ops: new FakeProcs(), randomBytes: counterRandom(), maxConnNames: 3 });
+  const ends: Array<ReturnType<typeof channelPair>> = [];
+  const serve = (name: string): ReturnType<typeof channelPair> => {
+    const p = channelPair();
+    svc.serveData(p.b, name);
+    ends.push(p);
+    return p;
+  };
+  const first = serve("a");
+  first.a.close();
+  await settle();
+  const reused = serve("a");
+  await settle();
+  assert.throws(() => reused.a.send({}), /closed/, "a closed name stays used");
+  serve("b");
+  serve("c");
+  const over = serve("d");
+  await settle();
+  assert.throws(() => over.a.send({}), /closed/, "past the cap a new name is refused");
+  svc.dispose();
 });

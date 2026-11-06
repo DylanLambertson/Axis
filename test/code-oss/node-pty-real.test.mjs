@@ -87,3 +87,16 @@ test("PTY-4: node-pty's write queue has the shape the meter reads, and a flood i
     r.end();
   }
 });
+
+test("PTY-4: a flood of one-byte writes into a child that never reads is refused on the entry bound, not scanned for ever", { skip }, async () => {
+  const r = await rig();
+  const h = await r.start(["/bin/sleep", "30"]);
+  try {
+    for (let i = 0; i < 5000; i++) r.data.a.send({ t: "write", term: h.terminalId, data: "x" });
+    await r.helpers.until(() => r.out.replies.some((m) => m.t === "refused" && m.code === "input_full"));
+    const refused = r.out.replies.filter((m) => m.code === "input_full").length;
+    assert.ok(refused > 3000, `refused ${refused}`);
+  } finally {
+    r.end();
+  }
+});

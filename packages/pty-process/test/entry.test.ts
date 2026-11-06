@@ -117,13 +117,13 @@ test("closing the control port kills the real child's whole group and discards t
 test("S2: a late grant for a closed view is useless: a later port with the same name is refused by the entry", { skip: posix }, async () => {
   const h = harness();
   const { host, data } = await wire(h, "view-1");
+  const second = nodePair();
   try {
     const t = await host.spawn({ ...SPEC, argv: ["/bin/sh", "-c", "echo secret-output; sleep 30"], cwd: "/", env: { PATH: "/usr/bin:/bin" } });
     data.close(); // the view's window reloads before the daemon's grant lands
     await settle();
     host.grant(t.terminalId, "view-1"); // the late grant
     await settle();
-    const second = nodePair();
     let closed = false;
     second.a.on("close", () => void (closed = true));
     h.send({ type: "pty-data", conn: "view-1" }, [electronShaped(second.b)]);
@@ -133,6 +133,7 @@ test("S2: a late grant for a closed view is useless: a later port with the same 
     await settle();
     assert.deepEqual(seen, [], "the reused name never reached the service, so it can attach to nothing");
   } finally {
+    second.a.close();
     h.entry.dispose();
     host.dispose();
   }

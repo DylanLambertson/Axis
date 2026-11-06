@@ -62,6 +62,8 @@ export const controlReply = z.discriminatedUnion("t", [
   z.object({ t: z.literal("spawn-failed"), req: id, code: z.enum(["env_denied", "bad_group", "capacity", "spawn_failed", "no_control"]) }).strict(),
   z.object({ t: z.literal("exit"), term: id, exitCode: z.number().int().nullable(), signal: z.string().max(32).nullable() }).strict(),
   z.object({ t: z.literal("group-empty"), term: id }).strict(),
+  /** Input for this terminal was dropped because the child holds too much unread input (PTY-4). Status only. */
+  z.object({ t: z.literal("input-refused"), term: id }).strict(),
 ]);
 export type ControlReply = z.infer<typeof controlReply>;
 

@@ -42,12 +42,19 @@ export function signalName(signal: number | undefined): string | null {
  * signal. This reads that private queue; the shape is pinned by the opt-in test against Code OSS's own copy
  * (`test/code-oss/node-pty-real.test.mjs`). Any other shape returns undefined here (the spawn then fails) or Infinity later.
  */
-function inputQueueMeter(pty: NodePtyLike): (() => number) | undefined {
+/** Past this many entries the byte count is not worth a scan: the queue is reported as full (the service bounds entries far below it). */
+const MAX_SCAN_ENTRIES = 4096;
+
+function inputQueueMeter(pty: NodePtyLike): { bytes(): number; entries(): number } | undefined {
   const queueOf = (): unknown => (pty as unknown as { _writeStream?: { _writeQueue?: unknown } })._writeStream?._writeQueue;
   if (!Array.isArray(queueOf())) return undefined;
-  return () => {
+  const entries = (): number => {
     const queue = queueOf();
-    if (!Array.isArray(queue)) return Number.POSITIVE_INFINITY;
+    return Array.isArray(queue) ? queue.length : Number.POSITIVE_INFINITY;
+  };
+  const bytes = (): number => {
+    const queue = queueOf();
+    if (!Array.isArray(queue) || queue.length > MAX_SCAN_ENTRIES) return Number.POSITIVE_INFINITY;
     let bytes = 0;
     for (const entry of queue as Array<{ buffer?: { byteLength?: number }; offset?: number } | undefined>) {
       const length = entry?.buffer?.byteLength;
@@ -56,6 +63,7 @@ function inputQueueMeter(pty: NodePtyLike): (() => number) | undefined {
     }
     return bytes;
   };
+  return { bytes, entries };
 }
 
 /**
@@ -88,7 +96,8 @@ export function createNodePtySpawn(spawnPty: NodePtySpawn, platform: string = pr
       throw new Error("input queue not measurable");
     }
     const child: PtyChild = {
-      pendingWrite: pending,
+      pendingWrite: pending.bytes,
+      pendingEntries: pending.entries,
       pid: pty.pid,
       group: { kind: "pgid", pgid: pty.pid },
       write: (data) => pty.write(data),

@@ -19,8 +19,6 @@ import { createPtyService, type PtyService } from "./service.js";
  */
 export const PTY_EXIT_REFUSED = 78;
 const MAX_CONN_CHARS = 128;
-/** Names remembered for the life of the process (at most 128 characters each); past this a new data port is refused. Main mints a fresh random name per view. */
-const MAX_USED_NAMES = 65536;
 const DEBUG_FLAG = /^--(?:inspect|debug|remote-debugging)/i;
 
 export interface PtyParentPortLike {
@@ -79,8 +77,6 @@ export function runPtyEntry(deps: PtyEntryDeps): PtyEntryHandle {
 
   const parentPort = deps.parentPort;
   const service = createPtyService({ spawn: deps.spawn, ...(deps.platform === undefined ? {} : { platform: deps.platform }) });
-  /** Every `conn` name handed over so far: a name is never served twice, so a late `grant` for a closed view cannot reach a later one. */
-  const usedNames = new Set<string>();
   let disposed = false;
 
   const onMessage = (event: { data: unknown; ports?: readonly MessagePortLike[] }): void => {
@@ -93,8 +89,6 @@ export function runPtyEntry(deps: PtyEntryDeps): PtyEntryHandle {
     if (kind === "pty-control" && Object.keys(data as object).length === 1) {
       service.serveControl(adaptMessagePort(only, { shape: "electron" }));
     } else if (kind === "pty-data" && typeof conn === "string" && conn.length >= 1 && conn.length <= MAX_CONN_CHARS && Object.keys(data as object).length === 2) {
-      if (usedNames.has(conn) || usedNames.size >= MAX_USED_NAMES) return closeAll(ports);
-      usedNames.add(conn);
       service.serveData(adaptMessagePort(only, { shape: "electron" }), conn);
     } else {
       closeAll(ports);
@@ -114,7 +108,6 @@ export function runPtyEntry(deps: PtyEntryDeps): PtyEntryHandle {
     deps.process.removeListener("SIGINT", terminate);
     deps.process.removeListener("exit", end);
     service.dispose();
-    usedNames.clear();
   }
   parentPort.on("message", onMessage);
   deps.process.on("SIGTERM", terminate);

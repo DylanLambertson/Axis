@@ -109,3 +109,13 @@ test("PTY-4: a node-pty whose input queue cannot be measured is killed and the s
   assert.throws(() => spawn(REQ));
   assert.deepEqual(pty.calls, ["kill:SIGKILL"]);
 });
+
+test("PTY-4: pendingEntries is O(1) queue length, and a queue too long to scan reports its bytes as unbounded without scanning", () => {
+  const { pty, spawn } = rig();
+  const c = spawn(REQ);
+  for (let i = 0; i < 5000; i++) pty._writeStream._writeQueue.push({ buffer: { byteLength: 1 }, offset: 0 });
+  assert.equal(c.pendingEntries?.(), 5000);
+  assert.equal(c.pendingWrite?.(), Number.POSITIVE_INFINITY);
+  pty._writeStream._writeQueue.length = 3;
+  assert.equal(c.pendingWrite?.(), 3);
+});
