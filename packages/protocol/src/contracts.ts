@@ -3,6 +3,7 @@ import { APPROVALS_CONTRACT, APPROVALS_VERSION, approvalsMethods } from "./appro
 import { permissionTierSchema } from "./challenge.js";
 import { AUDIT_CONTRACT, AUDIT_VERSION, auditMethods } from "./audit.js";
 import { CLI_RUNS_CONTRACT, CLI_RUNS_VERSION, cliRunsMethods } from "./cliRuns.js";
+import { COMPOSER_RUNS_CONTRACT, COMPOSER_RUNS_VERSION, composerRunsMethods } from "./composer-runs.js";
 import { GIT_CONTRACT, GIT_VERSION, gitMethods } from "./git.js";
 import { MAX_TIMEOUT_MS, methodNameSchema } from "./envelope.js";
 import { PROJECTS_CONTRACT, PROJECTS_VERSION, projectsMethods } from "./projects.js";
@@ -29,6 +30,7 @@ export const contracts: Table = Object.freeze({
   [`${PROVIDERS_CONTRACT}/${PROVIDERS_VERSION}`]: frozen(providersMethods),
   [`${GIT_CONTRACT}/${GIT_VERSION}`]: frozen(gitMethods),
   [`${REVIEW_CONTRACT}/${REVIEW_VERSION}`]: frozen(reviewMethods),
+  [`${COMPOSER_RUNS_CONTRACT}/${COMPOSER_RUNS_VERSION}`]: frozen(composerRunsMethods),
 });
 
 const SIDE_EFFECTS: ReadonlySet<unknown> = new Set(["none", "read", "write", "network", "destructive", "credential"]);
