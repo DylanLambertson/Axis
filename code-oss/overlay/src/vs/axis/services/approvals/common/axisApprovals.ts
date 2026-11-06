@@ -6,8 +6,9 @@ import { AxisDaemonCallError } from '../../daemon/common/axisDaemonClient.js';
 
 /*
  * Approval cards (docs/design/axis-shell-a4.md). The cards are display of daemon-issued challenges; the daemon
- * decides everything. The renderer's only power is to forward a user's answer to `axis.approvals/1.resolve` for a
- * challenge below tier 4, and only on a trusted gesture. Tier 4 and above are answered in the native dialog.
+ * decides everything. The renderer's only power is to forward a user's answer to `axis.approvals/1.resolve`, and only
+ * on a trusted gesture. For tier 4 and above (or a native flag) Approve is the first step only: it moves the
+ * challenge to awaiting the native confirmation, which main shows and the user settles in that dialog.
  */
 
 /** A pending challenge as `axis.approvals/1.pending` lists it, text already cleaned. */
@@ -25,15 +26,22 @@ export interface IAxisApprovalCard {
 
 export type AxisApprovalDecision = 'approve' | 'deny';
 
-/** The highest tier the renderer may answer. Tier 4 and 5 need the native confirmation from main. */
-export const MAX_RENDERER_TIER = 3;
+/** The lowest tier whose approval also needs the native confirmation from main (ADR 0003 D4). */
+export const NATIVE_TIER = 4;
+
+/** Shared by the view and any composer: a node inside a match of this selector never counts as a place an answer may come from. */
+export const COMPOSER_SELECTOR = '.axis-composer';
+
+/** How long a card must have been visible and in the same place before a click on it counts. */
+export const APPROVAL_GUARD_MS = 500;
 
 /**
- * Whether the card gets approve and deny buttons. Both signals must agree that it is not native: a tier of 4 or
- * more, or a daemon that asks for a native confirmation, makes the card display-only (fail closed on a mismatch).
+ * Whether Approve only starts the native confirmation (so the button says so and the user is told to expect the
+ * dialog). Either signal is enough: a tier of 4 or more, or a daemon flag. The native dialog is the real gate and
+ * is never answered from the renderer.
  */
-export function isRendererResolvable(card: Pick<IAxisApprovalCard, 'tier' | 'nativeConfirmationRequired'>): boolean {
-	return card.tier <= MAX_RENDERER_TIER && !card.nativeConfirmationRequired;
+export function needsNativeConfirmation(card: Pick<IAxisApprovalCard, 'tier' | 'nativeConfirmationRequired'>): boolean {
+	return card.tier >= NATIVE_TIER || card.nativeConfirmationRequired;
 }
 
 export function isExpired(card: Pick<IAxisApprovalCard, 'expiresAt'>, now: number): boolean {
@@ -82,6 +90,14 @@ export function isTrustedGesture(event: IAxisGestureEvent, scope: IAxisGestureSc
 		&& !scope.isInComposer(scope.activeElement);
 }
 
+/**
+ * The scope the view hands to the gate, read at the time of the event: the card element itself, the button, and the
+ * document's active element. The view calls this and nothing else to build it.
+ */
+export function scopeFor(card: IAxisGestureNode & { readonly ownerDocument: { readonly activeElement: unknown } }, button: unknown, isInComposer: (node: unknown) => boolean): IAxisGestureScope {
+	return { card, button, activeElement: card.ownerDocument.activeElement, isInComposer };
+}
+
 /** Closed outcomes the controller reports; the view maps each to fixed text. */
 export type AxisApprovalOutcome =
 	| { readonly kind: 'approved' }
@@ -90,7 +106,8 @@ export type AxisApprovalOutcome =
 	| { readonly kind: 'expired' }
 	| { readonly kind: 'stale' }
 	| { readonly kind: 'untrusted' }
-	| { readonly kind: 'native-only' }
+	| { readonly kind: 'too-soon' }
+	| { readonly kind: 'settled' }
 	| { readonly kind: 'busy' }
 	| { readonly kind: 'failed'; readonly code: string };
 
@@ -105,19 +122,62 @@ export interface IAxisApprovalResolver {
 }
 
 /**
- * Decides whether a gesture may become an `axis.approvals/1.resolve` call. It holds no timer and no listener.
+ * Decides whether a gesture may become an `axis.approvals/1.resolve` call, and keeps the cards in a stable order
+ * with a guard time per card. It holds no timer and no listener; both clocks are injected (`now` is epoch time, for
+ * expiry; `mono` is monotonic, for the guard).
  * `cards` is the latest listing; the digest sent is the one the user was shown and must still be the listed one.
  */
 export class AxisApprovalController {
 
 	private readonly inFlight = new Set<string>();
+	/** Answered ids, kept until the id leaves the listing, so a repeated click or key repeat sends nothing. */
+	private readonly settled = new Set<string>();
+	/** Display order: existing cards never move, new ones go last. */
+	private order: string[] = [];
+	/** When each card last appeared, moved or changed (monotonic). */
+	private readonly since = new Map<string, { mono: number; index: number; digest: string }>();
 
 	constructor(
 		private readonly resolver: IAxisApprovalResolver,
 		private readonly cards: () => readonly IAxisApprovalCard[] | undefined,
 		private readonly now: () => number,
+		private readonly mono: () => number,
 		private readonly refresh: () => void,
 	) { }
+
+	/**
+	 * The cards in display order. An id that was shown keeps its place (a gone card closes the gap behind it, which
+	 * counts as a move for the cards after it); a new id goes last. A card that is new, moved or has another digest
+	 * starts its guard time again.
+	 */
+	layout(): IAxisApprovalCard[] {
+		const listed = this.cards() ?? [];
+		const byId = new Map(listed.map(card => [card.challengeId, card]));
+		const kept = this.order.filter(id => byId.has(id));
+		const added = listed.map(card => card.challengeId).filter(id => !kept.includes(id));
+		this.order = [...kept, ...added];
+		const t = this.mono();
+		const ordered = this.order.map(id => byId.get(id)!);
+		ordered.forEach((card, index) => {
+			const before = this.since.get(card.challengeId);
+			if (!before || before.index !== index || before.digest !== card.digest) {
+				this.since.set(card.challengeId, { mono: t, index, digest: card.digest });
+			}
+		});
+		for (const id of [...this.since.keys()]) {
+			if (!byId.has(id)) {
+				this.since.delete(id);
+				this.settled.delete(id);
+			}
+		}
+		return ordered;
+	}
+
+	/** Milliseconds until a click on this card counts; 0 when it may be answered. Unknown ids are guarded for the whole time. */
+	guardRemaining(challengeId: string): number {
+		const entry = this.since.get(challengeId);
+		return entry ? Math.max(0, APPROVAL_GUARD_MS - (this.mono() - entry.mono)) : APPROVAL_GUARD_MS;
+	}
 
 	async decide(shown: Pick<IAxisApprovalCard, 'challengeId' | 'digest'>, decision: AxisApprovalDecision, event: IAxisGestureEvent, scope: IAxisGestureScope): Promise<AxisApprovalOutcome> {
 		if (!isTrustedGesture(event, scope)) {
@@ -128,12 +188,15 @@ export class AxisApprovalController {
 			this.refresh();
 			return { kind: 'stale' };
 		}
+		if (this.guardRemaining(current.challengeId) > 0) {
+			return { kind: 'too-soon' };
+		}
 		if (isExpired(current, this.now())) {
 			this.refresh();
 			return { kind: 'expired' };
 		}
-		if (!isRendererResolvable(current)) {
-			return { kind: 'native-only' };
+		if (this.settled.has(current.challengeId)) {
+			return { kind: 'settled' };
 		}
 		if (this.inFlight.has(current.challengeId)) {
 			return { kind: 'busy' };
@@ -145,12 +208,17 @@ export class AxisApprovalController {
 				return { kind: 'failed', code: 'invalid_reply' };
 			}
 			if (reply.state === 'expired') {
+				this.settled.add(current.challengeId);
 				return { kind: 'expired' };
 			}
 			if (reply.state !== (decision === 'approve' ? 'approved' : 'denied')) {
 				return { kind: 'failed', code: 'invalid_reply' }; // the answer must be the one that was asked for
 			}
-			return reply.state === 'approved' && reply.nativeRequired ? { kind: 'awaiting-native' } : { kind: reply.state };
+			if (reply.nativeRequired && !(reply.state === 'approved' && needsNativeConfirmation(current))) {
+				return { kind: 'failed', code: 'invalid_reply' }; // a native step was asked for on a card that has none
+			}
+			this.settled.add(current.challengeId);
+			return reply.nativeRequired ? { kind: 'awaiting-native' } : { kind: reply.state };
 		} catch (error) {
 			return { kind: 'failed', code: error instanceof AxisDaemonCallError ? error.code : 'E_INTERNAL' };
 		} finally {

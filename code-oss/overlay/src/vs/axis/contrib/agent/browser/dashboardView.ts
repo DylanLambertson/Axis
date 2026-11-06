@@ -70,11 +70,12 @@ export class AxisDashboardView extends Disposable {
 		this.notice = append(this.element, $('.axis-dashboard-note.axis-dashboard-notice'));
 		this.notice.setAttribute('role', 'status');
 		this.header = append(this.element, $('.axis-dashboard-header'));
-		this.element.appendChild(this._register(new AxisApprovalCards(this.workspaceService)).element); // after the header, before the list
 		this.list = append(this.element, $('.axis-dashboard-list'));
 		this.list.setAttribute('role', 'listbox');
 		this.list.tabIndex = -1;
 		this.list.setAttribute('aria-label', localize('axis.dashboard.listLabel', "Workspaces"));
+		// Below the list: a card appearing never moves a workspace row (docs/design/axis-shell-a4.md, layout).
+		this.element.appendChild(this._register(new AxisApprovalCards(this.workspaceService)).element);
 		this._register(addDisposableListener(this.list, EventType.KEY_DOWN, e => this.onKeyDown(new StandardKeyboardEvent(e))));
 		this._register(this.workspaceService.onDidChangeWorkspaces(() => this.render()));
 		this.render();

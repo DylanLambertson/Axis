@@ -19,6 +19,8 @@ const FORGERIES = new Set(["click", "dispatchEvent", "requestSubmit", "submit"])
 export function cardViewViolations(source) {
   const sf = ts.createSourceFile("f.ts", source, ts.ScriptTarget.Latest, true);
   const bad = [];
+  let scopeCalls = 0;
+  let layouts = 0;
   const visit = (n) => {
     const name = ts.isPropertyAccessExpression(n) ? n.name.text : ts.isIdentifier(n) ? n.text : undefined;
     if (name !== undefined && HTML_SINKS.has(name)) bad.push(`html sink ${name}`);
@@ -29,6 +31,14 @@ export function cardViewViolations(source) {
       const target = n.arguments[0];
       if (!(target && ts.isIdentifier(target) && target.text === "button")) bad.push("listener not on the card button");
     }
+    if (name === "activeElement" || name === "body" || name === "documentElement") bad.push(`view reads ${name} itself (the scope comes from scopeFor)`);
+    if (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && n.expression.text === "scopeFor") {
+      scopeCalls++;
+      const [card, button] = n.arguments;
+      if (!(card && ts.isIdentifier(card) && card.text === "cardElement" && button && ts.isIdentifier(button) && button.text === "button")) bad.push("scopeFor not given the card element and its button");
+    }
+    if (ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression) && n.expression.name.text === "layoutApprovals") layouts++;
+    if (ts.isPropertyAccessExpression(n) && n.name.text === "approvalCards") bad.push("cards drawn from the unordered listing, not layoutApprovals");
     if (ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression) && n.expression.name.text === "decideApproval") {
       const event = n.arguments[2];
       if (!(event && ts.isIdentifier(event) && event.text === "event")) bad.push("decideApproval not given the DOM event itself");
@@ -36,6 +46,8 @@ export function cardViewViolations(source) {
     ts.forEachChild(n, visit);
   };
   visit(sf);
+  if (scopeCalls !== 1) bad.push("the view must build the scope with exactly one scopeFor call");
+  if (layouts !== 1) bad.push("the view must draw from one layoutApprovals call");
   return bad;
 }
 
@@ -57,16 +69,28 @@ test("the checker finds each way of breaking the rules", () => {
   const breaks = [
     [GOOD.replace("title.textContent = localize", "title.innerHTML = localize"), "html sink innerHTML"],
     [GOOD.replace("append(fields, $('dd')).textContent = value;", "append(fields, $('dd')).insertAdjacentHTML('beforeend', value);"), "html sink insertAdjacentHTML"],
+    [GOOD.replace("const scope = scopeFor(cardElement, button,", "const scope = scopeFor(cardElement.ownerDocument.body, button,"), "scopeFor not given the card element and its button"],
+    [GOOD.replace("const scope = scopeFor(cardElement, button,", "const scope = scopeFor(cardElement, cardElement,"), "scopeFor not given the card element and its button"],
+    [GOOD.replace("const scope = scopeFor(", "const focus = cardElement.ownerDocument.activeElement; const scope = scopeFor("), "view reads activeElement itself (the scope comes from scopeFor)"],
+    [GOOD.replace("this.workspaceService.layoutApprovals()", "this.workspaceService.approvalCards"), "cards drawn from the unordered listing, not layoutApprovals"],
     [GOOD.replace("button.type = 'button';", "button.type = 'button'; button.click();"), "script-made event click"],
     [GOOD.replace("button.type = 'button';", "button.type = 'button'; button.dispatchEvent(new MouseEvent('click'));"), "script-made event dispatchEvent"],
     [GOOD.replace("addDisposableListener(button, 'click'", "addDisposableListener(button, 'keydown'"), "listener that is not a click"],
     [GOOD.replace("addDisposableListener(button, 'click'", "addDisposableListener(cardElement, 'click'"), "listener not on the card button"],
-    [GOOD.replace("decideApproval(card, decision, event, scope)", "decideApproval(card, decision, { isTrusted: true, type: 'click', target: button }, scope)"), "decideApproval not given the DOM event itself"],
+    [GOOD.replace("decideApproval(view.card, decision, event, scope)", "decideApproval(view.card, decision, { isTrusted: true, type: 'click', target: button }, scope)"), "decideApproval not given the DOM event itself"],
   ];
   for (const [source, expected] of breaks) {
     assert.notEqual(source, GOOD, `the mutation applies: ${expected}`);
     assert.ok(cardViewViolations(source).includes(expected), expected);
   }
+});
+
+test("the cards sit below the workspace list, so a new card cannot move a row", () => {
+  const dash = readFileSync(join(OVERLAY, "contrib/agent/browser/dashboardView.ts"), "utf8");
+  const list = dash.indexOf("$('.axis-dashboard-list')");
+  const cards = dash.indexOf("new AxisApprovalCards(");
+  assert.ok(list > 0 && cards > list, "AxisApprovalCards is created after the list");
+  assert.ok(dash.indexOf("$('.axis-dashboard-header')") < list);
 });
 
 test("only the approval cards view asks the service for a decision", () => {

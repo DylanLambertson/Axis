@@ -58,9 +58,14 @@ export interface IAxisWorkspaceService {
 	readonly pendingApprovals: number | undefined;
 	/** The challenges to show as cards (display data from the daemon); empty when unknown. */
 	readonly approvalCards: readonly IAxisApprovalCard[];
+	/** The cards in a stable order (a shown card never moves, a new one goes last); starts each card's guard time. Call it when drawing. */
+	layoutApprovals(): readonly IAxisApprovalCard[];
+	/** Milliseconds until a click on the card counts (0: now). */
+	approvalGuardRemaining(challengeId: string): number;
 	/**
 	 * A user's answer to a card (docs/design/axis-shell-a4.md). Calls `axis.approvals/1.resolve` only for a trusted
-	 * gesture on a card below tier 4; every other case returns a closed outcome and sends nothing.
+	 * gesture on a listed, unexpired card that has been in place long enough; every other case returns a closed
+	 * outcome and sends nothing. For tier 4 and above Approve only starts the native confirmation.
 	 */
 	decideApproval(card: Pick<IAxisApprovalCard, 'challengeId' | 'digest'>, decision: AxisApprovalDecision, event: IAxisGestureEvent, scope: IAxisGestureScope): Promise<AxisApprovalOutcome>;
 
@@ -108,7 +113,7 @@ export class AxisWorkspaceService extends Disposable implements IAxisWorkspaceSe
 		const cancellation = this._register(new CancellationTokenSource());
 		const api = new AxisDaemonApi(this.daemon, cancellation.token);
 		this.loader = new AxisSnapshotLoader(this.source, api);
-		this.approvals = new AxisApprovalController(api, () => this.snapshot?.approvals, () => Date.now(), () => { this.refresh(); });
+		this.approvals = new AxisApprovalController(api, () => this.snapshot?.approvals, () => Date.now(), () => performance.now(), () => { this.refresh(); });
 		this.driver = this._register(new AxisAdaptiveRefreshDriver(this.daemon));
 		this._register(addDisposableListener(mainWindow.document, 'visibilitychange', () => this.driver.setPaused(mainWindow.document.hidden)));
 		this._register(this.daemon.onDidChangeStatus(() => this.onDaemonStatus()));
@@ -131,6 +136,9 @@ export class AxisWorkspaceService extends Disposable implements IAxisWorkspaceSe
 	get truncatedProjects(): boolean { return this.snapshot?.truncatedProjects ?? false; }
 	get pendingApprovals(): number | undefined { return this.snapshot?.approvals?.length; }
 	get approvalCards(): readonly IAxisApprovalCard[] { return this.snapshot?.approvals ?? []; }
+
+	layoutApprovals(): readonly IAxisApprovalCard[] { return this.approvals.layout(); }
+	approvalGuardRemaining(challengeId: string): number { return this.approvals.guardRemaining(challengeId); }
 
 	decideApproval(card: Pick<IAxisApprovalCard, 'challengeId' | 'digest'>, decision: AxisApprovalDecision, event: IAxisGestureEvent, scope: IAxisGestureScope): Promise<AxisApprovalOutcome> {
 		return this.approvals.decide(card, decision, event, scope);

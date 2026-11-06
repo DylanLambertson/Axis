@@ -3,29 +3,41 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { $, addDisposableListener, append } from '../../../../base/browser/dom.js';
+import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { localize } from '../../../../nls.js';
-import { AxisApprovalDecision, IAxisApprovalCard, isRendererResolvable } from '../../../services/approvals/common/axisApprovals.js';
+import { AxisApprovalDecision, COMPOSER_SELECTOR, IAxisApprovalCard, needsNativeConfirmation, scopeFor } from '../../../services/approvals/common/axisApprovals.js';
 import { outcomeText } from '../../../services/approvals/common/axisApprovalText.js';
 import { IAxisWorkspaceService } from '../../../services/workspaces/browser/axisWorkspaceService.js';
 
 /** Cards drawn at once; the rest are counted in a note. */
 export const MAX_RENDERED_CARDS = 20;
-/** Anything inside a node matching this is the composer or another agent-facing input; a decision from there is refused. */
-export const COMPOSER_SELECTOR = '.axis-composer';
+
+interface ICardView {
+	readonly card: IAxisApprovalCard;
+	readonly element: HTMLElement;
+	readonly buttons: HTMLButtonElement[];
+	readonly disposables: DisposableStore;
+}
 
 /**
- * The approval cards of the Agent view (docs/design/axis-shell-a4.md). Every card is display of a challenge the
- * daemon issued, written with `textContent` only. Tier 4 and 5 cards, and any card the daemon marks as needing a
- * native confirmation, have no buttons. The others get approve and deny, whose handler passes the DOM event to the
- * workspace service so the gesture is judged there; this class decides nothing about trust.
+ * The approval cards of the dashboard (docs/design/axis-shell-a4.md). Every card is display of a challenge the
+ * daemon issued, written with `textContent` only. Every card has Deny and Approve; for tier 4 and above (or a native
+ * flag) the Approve button says that a native confirmation follows, and that dialog, not this view, settles it.
+ * The handler passes the DOM event itself to the workspace service so the gesture is judged there.
+ *
+ * A card keeps its element for as long as its challenge (and digest) stays listed, and new cards are added last, so
+ * a button the user is aiming at is never replaced by another card's. Buttons are disabled while a card is new or has
+ * moved (the guard time) and once it has expired.
  */
 export class AxisApprovalCards extends Disposable {
 
 	readonly element: HTMLElement;
 	private readonly status: HTMLElement;
 	private readonly list: HTMLElement;
-	private readonly cardDisposables = this._register(new DisposableStore());
+	private readonly more: HTMLElement;
+	private readonly views = new Map<string, ICardView>();
+	private readonly buttonTimer = this._register(new RunOnceScheduler(() => this.updateButtons(), 0));
 
 	constructor(private readonly workspaceService: IAxisWorkspaceService) {
 		super();
@@ -35,31 +47,64 @@ export class AxisApprovalCards extends Disposable {
 		this.status = append(this.element, $('.axis-approvals-status'));
 		this.status.setAttribute('role', 'status');
 		this.list = append(this.element, $('.axis-approvals-list'));
+		this.more = append(this.element, $('.axis-approvals-more'));
 		this._register(this.workspaceService.onDidChangeWorkspaces(() => this.render()));
+		this._register({ dispose: () => this.views.forEach(view => view.disposables.dispose()) });
 		this.render();
 	}
 
 	render(): void {
-		const cards = this.workspaceService.approvalCards;
-		const focused = this.list.ownerDocument.activeElement;
-		const refocus = focused instanceof HTMLElement && this.list.contains(focused) ? { id: focused.dataset.challenge, decision: focused.dataset.decision } : undefined;
-		this.cardDisposables.clear();
-		this.list.replaceChildren();
+		const all = this.workspaceService.layoutApprovals();
+		const cards = all.slice(0, MAX_RENDERED_CARDS);
+		const ids = new Set(cards.map(card => card.challengeId));
+		for (const [id, view] of this.views) {
+			if (!ids.has(id)) {
+				view.disposables.dispose();
+				view.element.remove();
+				this.views.delete(id);
+			}
+		}
+		for (const card of cards) {
+			const existing = this.views.get(card.challengeId);
+			if (existing && existing.card.digest === card.digest) {
+				continue; // same challenge, same place: keep the element the user may be aiming at
+			}
+			const view = this.createCard(card);
+			if (existing) {
+				existing.disposables.dispose();
+				existing.element.replaceWith(view.element);
+			} else {
+				this.list.appendChild(view.element); // new cards go last
+			}
+			this.views.set(card.challengeId, view);
+		}
 		this.element.hidden = !cards.length;
-		for (const card of cards.slice(0, MAX_RENDERED_CARDS)) {
-			this.renderCard(card);
+		this.more.textContent = all.length > cards.length ? localize('axis.approvals.more', "{0} more approvals are not shown.", all.length - cards.length) : '';
+		this.updateButtons();
+	}
+
+	/** Disables the buttons of a card that is new, moved or expired, and schedules the next moment that changes that. */
+	private updateButtons(): void {
+		const now = Date.now();
+		let next = Number.POSITIVE_INFINITY;
+		for (const [id, view] of this.views) {
+			const guard = this.workspaceService.approvalGuardRemaining(id);
+			const untilExpiry = view.card.expiresAt - now;
+			const disabled = guard > 0 || untilExpiry <= 0;
+			view.buttons.forEach(button => { button.disabled = disabled; });
+			for (const wait of [guard, untilExpiry]) {
+				if (wait > 0) {
+					next = Math.min(next, wait);
+				}
+			}
 		}
-		if (cards.length > MAX_RENDERED_CARDS) {
-			append(this.list, $('.axis-approvals-more')).textContent = localize('axis.approvals.more', "{0} more approvals are not shown.", cards.length - MAX_RENDERED_CARDS);
-		}
-		if (refocus?.id) {
-			const target = [...this.list.querySelectorAll<HTMLElement>('button')].find(b => b.dataset.challenge === refocus.id && b.dataset.decision === refocus.decision);
-			target?.focus();
+		if (next !== Number.POSITIVE_INFINITY) {
+			this.buttonTimer.schedule(Math.max(next, 1));
 		}
 	}
 
-	private renderCard(card: IAxisApprovalCard): void {
-		const element = append(this.list, $('.axis-approval-card'));
+	private createCard(card: IAxisApprovalCard): ICardView {
+		const element = $('.axis-approval-card');
 		element.setAttribute('role', 'group');
 		element.dataset.challenge = card.challengeId;
 		element.dataset.tier = String(card.tier);
@@ -78,31 +123,31 @@ export class AxisApprovalCards extends Disposable {
 			append(fields, $('dt')).textContent = label;
 			append(fields, $('dd')).textContent = value;
 		}
-		if (!isRendererResolvable(card)) {
-			append(element, $('p.axis-approval-native')).textContent = localize('axis.approval.native', "This approval is answered in the confirmation dialog, not here.");
-			return;
+		const view: ICardView = { card, element, buttons: [], disposables: new DisposableStore() };
+		const native = needsNativeConfirmation(card);
+		if (native) {
+			append(element, $('p.axis-approval-native')).textContent = localize('axis.approval.native', "Approving starts a native confirmation. Confirm it in the dialog that opens; Axis never answers that dialog for you.");
 		}
 		const actions = append(element, $('.axis-approval-actions'));
-		this.addButton(actions, element, card, 'approve', localize('axis.approval.approve', "Approve"));
-		this.addButton(actions, element, card, 'deny', localize('axis.approval.deny', "Deny"));
+		this.addButton(view, actions, name, 'deny', localize('axis.approval.deny', "Deny"));
+		this.addButton(view, actions, name, 'approve', native ? localize('axis.approval.approveNative', "Approve, then confirm in the dialog") : localize('axis.approval.approve', "Approve"));
+		return view;
 	}
 
-	private addButton(actions: HTMLElement, cardElement: HTMLElement, card: IAxisApprovalCard, decision: AxisApprovalDecision, label: string): void {
+	private addButton(view: ICardView, actions: HTMLElement, name: string, decision: AxisApprovalDecision, label: string): void {
+		const cardElement = view.element;
 		const button = append(actions, $<HTMLButtonElement>('button.axis-button'));
 		button.type = 'button';
 		button.textContent = label;
-		button.dataset.challenge = card.challengeId;
+		button.dataset.challenge = view.card.challengeId;
 		button.dataset.decision = decision;
-		this.cardDisposables.add(addDisposableListener(button, 'click', event => {
-			const scope = {
-				card: cardElement,
-				button,
-				activeElement: cardElement.ownerDocument.activeElement,
-				isInComposer: (node: unknown) => node instanceof Element && node.closest(COMPOSER_SELECTOR) !== null,
-			};
-			this.workspaceService.decideApproval(card, decision, event, scope).then(outcome => {
+		button.disabled = true; // enabled by updateButtons once the guard time has passed
+		view.buttons.push(button);
+		view.disposables.add(addDisposableListener(button, 'click', event => {
+			const scope = scopeFor(cardElement, button, (node: unknown) => node instanceof Element && node.closest(COMPOSER_SELECTOR) !== null);
+			this.workspaceService.decideApproval(view.card, decision, event, scope).then(outcome => {
 				if (!this._store.isDisposed) {
-					this.status.textContent = outcomeText(outcome);
+					this.status.textContent = localize('axis.approval.outcomeFor', "{0}: {1}", name, outcomeText(outcome));
 				}
 			});
 		}));
