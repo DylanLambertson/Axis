@@ -50,7 +50,7 @@ test("with every port supplied the entry starts, serves an attested connection o
     execArgv: [],
     stderr: (l) => void lines.push(l),
     // TEST ONLY stand-ins for the ports that do not exist yet (pty process B9, GIT-SNAP-1): never reachable from the overlay entry.
-    ports: { pty: new LocalPty(), ptyGitRunner: localPtyGitRunner(gitPath, env), snapshotter: { before: () => Promise.resolve(), after: () => Promise.resolve({ drift: false }) } },
+    ports: { pty: new LocalPty(), ptyGitRunner: localPtyGitRunner(gitPath, env) },
   };
   const open: MessagePort[] = [];
   try {

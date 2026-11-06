@@ -51,7 +51,7 @@ const HOST_FILE_RULES = new Map([
 const COMPOSE_IMPORTERS = new Set(["src/index.ts", "src/entry.ts"]);
 const COMPOSITION_FILES = new Set(["src/index.ts", "src/compose.ts"]);
 /** Packages whose bindings live in `src/bindings/*.ts` of the host (they land with their own changes). */
-const HOST_BINDING_PACKAGES = ["@axis/broker", "@axis/runs", "@axis/review"];
+const HOST_BINDING_PACKAGES = ["@axis/broker", "@axis/git-snapshot", "@axis/runs", "@axis/review"];
 
 /** Judge the host-only rules; null means no host rule applies and the general rules decide. */
 function hostViolation(pkg, spec, file, pkgDir) {
@@ -385,6 +385,9 @@ test("scanner: the daemon host is imported by nothing and imports the restricted
   for (const f of ["src/handlers/worktrees.ts", "src/ports/worktrees.ts", "src/host.ts", "src/bindings/runs.ts"]) {
     assert.notEqual(violation("daemon-host", "@axis/worktrees", at(f), dir), null, f);
   }
+  // GIT-SNAP-1 (H13): the run snapshotter binding is the host's one importer of @axis/git-snapshot.
+  assert.equal(violation("daemon-host", "@axis/git-snapshot", at("src/bindings/snapshot.ts"), dir), null);
+  for (const f of ["src/compose.ts", "src/entry.ts", "src/handlers/cli-runs.ts"]) assert.notEqual(violation("daemon-host", "@axis/git-snapshot", at(f), dir), null, f);
   // The trust attestation: only src/gate/run-trust.ts of the host (the binding and the handler cannot mint one).
   assert.equal(violation("daemon-host", "@axis/runs/daemon-attestation", at("src/gate/run-trust.ts"), dir), null);
   for (const f of ["src/bindings/runs.ts", "src/handlers/cli-runs.ts", "src/gate/approvals.ts", "test/runs-rig.ts"]) {

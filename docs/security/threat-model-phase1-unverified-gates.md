@@ -15,7 +15,7 @@ These need building first. Platform is secondary.
 | Gate | What is missing | Ticket |
 |---|---|---|
 | 1a/L2, L10, L17, L24 | The Axis pty process is on `feat/pty-process` (B9, in review), not on main. The slice's pty on main is a plain child process. The group-liveness acceptance test (`sh -c 'sleep 30 & exit 0'`) must pass on POSIX and with a job object on Windows. | B9; RR-2 |
-| 1a/L3, L14, L18 | GIT-SNAP-1 wired into runs (the slice snapshotter is a no-op). | RR-3 |
+| 1a/L3, L14, L18 | GIT-SNAP-1 wired into runs (H13, real in the slice); the commit and push gate moves onto it in H13b. | RR-3 |
 | 1a/L15 | The commit-hook step (pre-commit, commit-msg on a scratch checkout). | H9-hooks; RR-4 |
 | 1a/L32 | REV-2 hardened attribute reads. | RR-13 |
 | 1a/L13 | Workbench registration of the four `axis.*` settings with user, application or machine scope. | RR-15 |
