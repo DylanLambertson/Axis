@@ -11,8 +11,8 @@ import { LocalPty, localPtyGitRunner } from "./fake-pty.js";
  * child's `process.parentPort` is a shim over the Node IPC channel. Node cannot transfer a `MessagePort` between processes, so a
  * message the parent sends with a port (`{ kind: "port", pid, data }`) becomes a REAL `MessageChannel` here: one end is handed to
  * the entry exactly as Electron hands a transferred `MessagePortMain`, the other is tunnelled to the parent as `frame` and `closed`
- * messages. The entry, the host and the attestation verifier are the production code; only the pty port, the pty git runner and the
- * snapshotter are the test fakes the production entry does not have (it refuses `pty_required`).
+ * messages. The entry, the host and the attestation verifier are the production code; only the pty port and the pty git runner
+ * are the test fakes the production entry does not have (it refuses `pty_required`); the run snapshotter is the real one.
  */
 
 type Wire =
@@ -68,7 +68,7 @@ const handle = runDaemonEntry({
   platform: process.platform,
   execArgv: process.execArgv,
   stderr: (line) => void process.stderr.write(`${line}\n`),
-  ports: { pty: new LocalPty(), ptyGitRunner: localPtyGitRunner(gitPath, env), snapshotter: { before: () => Promise.resolve(), after: () => Promise.resolve({ drift: false }) } },
+  ports: { pty: new LocalPty(), ptyGitRunner: localPtyGitRunner(gitPath, env) },
 });
 // A drained exit must not be held open by the IPC channel or a tunnel.
 void handle.finished.then(() => {

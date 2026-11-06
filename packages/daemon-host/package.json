@@ -24,6 +24,7 @@
     "@axis/challenge": "0.0.0",
     "@axis/daemon": "0.0.0",
     "@axis/git-ops": "0.0.0",
+    "@axis/git-snapshot": "0.0.0",
     "@axis/journal": "0.0.0",
     "@axis/protocol": "0.0.0",
     "@axis/providers": "0.0.0",

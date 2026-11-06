@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 // The overlay entry of the daemon utility process must stay a hand-over: it imports only the entry logic and passes the process
-// objects, never `ports` (the pty process, the pty git runner and the run snapshotter do not exist yet, so the host must refuse
+// objects, never `ports` (the pty process and the pty git runner do not exist yet, so the host must refuse
 // to start), a storage, a clock or an init timeout. A fake passed from here would run in production with no other test failing.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";

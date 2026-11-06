@@ -122,7 +122,7 @@ test("a platform that is not the process's own is refused", async () => {
   }
 });
 
-test("the production wiring (no pty process, no pty git runner, no snapshotter) fails closed: exit 78, no data directory, no ready, key in no line", async () => {
+test("the production wiring (no pty process, no pty git runner) fails closed: exit 78, no data directory, no ready, key in no line", async () => {
   const box = sandbox();
   try {
     const { port, proc, lines, deps } = rig();
