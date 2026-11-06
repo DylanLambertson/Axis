@@ -1,7 +1,7 @@
 # Inter-agent communication: the CLI agent endpoint
 
 - **Status:** Proposed (design only; nothing is built). Companion to `docs/design/inter-agent-communication.md` ("the main design"); split out after security design review 1 (items S3, S4, S5, S11, N5) to keep both files short.
-- **Date:** 2026-11-06. Verified against `origin/main` at `74cd12e`.
+- **Date:** 2026-11-06. Verified against `origin/main` at `74cd12e`; E1 (`116ef22`) and P1d (`e52114f`) have merged since.
 - **Depends on:** ADR 0004 decisions 8 and 10 and implication 3 (PTY-5), `docs/security/threat-model-phase1.md` (PTY-3, PTY-5, NET-1, A10, assumption on same-user processes), `docs/design/daemon-host-plan.md` §3 Q16 (permission-bypass entries), B9 (pty process, branch `feat/pty-process`).
 - **Evidence tags:** as in `product-vision-v2.md`.
 
@@ -31,7 +31,7 @@
 | Response | a read returns at most 50 messages and 256 KiB (the main design §7.1) |
 | Reads | 60 per minute per endpoint, shared by all its connections |
 | Sends | the main design's per-agent limits |
-| Authentication failures | compared in constant time; after 5 failures the endpoint refuses new connections for 60 s; audited as one aggregated `message.endpoint` row per endpoint per minute (count, first and last time), never one row per attempt |
+| Authentication failures | compared in constant time; counted only **after** the peer checks of §2 pass (so another uid or a process outside the run's tree cannot lock the shim out); backoff is per peer process id (5 failures, then that peer is refused for 60 s), not for the whole endpoint; where peer checks are unavailable, the per-peer backoff uses the connection and the residual is stated (review 2, N-D); audited as one aggregated `message.endpoint` row per endpoint per minute (count, first and last time), never one row per attempt |
 | Revocation | at run end, at a settings change that disables messaging, or at Pause of its scope: open connections are closed at once and later calls answer `revoked` or `paused` |
 
 All per-connection buffers are bounded; an idle authenticated connection is closed after 10 minutes.

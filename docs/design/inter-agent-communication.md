@@ -1,7 +1,7 @@
 # Inter-agent communication
 
 - **Status:** Proposed (design only; nothing is built). Proposed phase 2a (`product-vision-v2.md` §5). Revised after security design review 1 (one blocker, twelve should-fix, eight nits; all addressed here, in `inter-agent-cli-endpoint.md` and in `extensibility.md`).
-- **Date:** 2026-11-06 (owner direction of 2026-11-06). Verified against `origin/main` at `74cd12e`.
+- **Date:** 2026-11-06 (owner direction of 2026-11-06). Verified against `origin/main` at `74cd12e`; E1 (`116ef22`) and P1d (`e52114f`) have merged since.
 - **Depends on:** ADR 0003 (bridge, policy pipeline, D4 challenges, D5 audit), ADR 0004 (decisions 8 and 10, implication 3), `docs/security/threat-model-phase1.md` §4.4–4.5 (DMN-2, DMN-3, APR-1, APR-2, DMN-5, DMN-6, DMN-8, ANT-2, PTY-3, R19), `docs/design/composer-runtime.md` (C1, PR #458, open), `docs/design/daemon-host.md`.
 - **Companion:** `docs/design/inter-agent-cli-endpoint.md` holds how CLI agents take part (the local endpoint, its bounds, the token residual, escaping on the read path).
 - **Evidence tags:** as in `product-vision-v2.md`.
@@ -38,7 +38,7 @@ Contract `axis.messages/1` (new) in `@axis/protocol`. Every field marked *daemon
 
 The schema is strict (unknown keys refused, as in `@axis/protocol`'s existing guarded schemas). There is no field for an approval, a challenge, a grant, a token, a tool call, a command or a path to execute.
 
-**Excerpt refs.** To share code or a diff from its own workspace, the sender attaches an `excerpt`: the daemon reads it from the **sender's** worktree at send time, through the same locator and containment rules as `axis.review/1.diff` (DMN-2, the FT-1 symlink rule), caps it (64 KiB), and stores the copy with the message. The recipient gets the copied text, not access to the sender's worktree. **Path refusals before the scan (review S6):** an excerpt of a WT-3 protected path, a gitignored file, or a path on the maintained secret-path list (for example `.env*`, `*.pem`, `*.key`, `.npmrc`, `.netrc`, `.aws/`, `.ssh/`, `config/master.key`, `credentials*`) is refused with `excerpt_path_refused`; the secret scan (§8.2) runs on what remains. The list is a defence in depth, never a guarantee.
+**Excerpt refs.** To share code or a diff from its own workspace, the sender attaches an `excerpt`: the daemon reads it from the **sender's** worktree at send time, through the same locator and containment rules as `axis.review/1.diff` (DMN-2, the FT-1 symlink rule), caps it (64 KiB), and stores the copy with the message. The recipient gets the copied text, not access to the sender's worktree. **Path refusals before the scan (review S6):** an excerpt of a WT-3 protected path, a gitignored file, or a path on the maintained secret-path list (for example `.env*`, `*.pem`, `*.key`, `.npmrc`, `.netrc`, `.aws/`, `.ssh/`, `config/master.key`, `credentials*`) is refused with `excerpt_path_refused`; the secret scan (§8.2) runs on what remains. The list is a defence in depth, never a guarantee. **Matching (review 2, NS3):** the refusal is checked against the canonical real path at time of use (after the review path's `realpath` and containment), case-folded and Unicode-normalised on case-insensitive volumes (macOS, Windows); Windows 8.3 short names, trailing dots or spaces and alternate-stream suffixes (`:`) are refused outright (the DMN-2 and G-10 class).
 
 ## 3. Mediation: the daemon is the only router
 
@@ -78,7 +78,7 @@ Settings that widen messaging (cross-group, an agent accepting from `project`, e
 
 - **Participant set.** Each thread has a daemon-held participant set of principals (the user, agent ids, plugin ids). It is fixed at creation from the sender and the policy-checked, expanded recipients. It grows only (a) by a user action ("add to thread"), or (b) when a send to the thread names a recipient that the send policy (§4.1) allows for that sender; the new participant sees messages from the moment it joined, not the history, unless the user adds it with history.
 - **Reads.** `thread`, `threads`, `read` (the composer tool `read_messages` and the CLI endpoint's read) and `markRead` return only threads where the caller is a participant, and within them only messages addressed to the caller or sent after it joined. Thread lists never include ids of other threads.
-- **Posting into a thread.** `send` with a `threadId` requires the sender to be a participant; the recipients must be a subset of the participants plus targets the send policy allows the sender.
+- **Posting into a thread.** `send` with a `threadId` requires the sender to be a participant; the recipients must be a subset of the participants plus targets the send policy allows the sender. **Participation is necessary, not sufficient:** every recipient, participant or not, passes §4.1 (including the recipient's `accepts from`) at accept and again at delivery; a participant the policy no longer allows stays a reader of the history only (review 2, NS1).
 - **No existence oracle.** A thread that exists but is not visible to the caller answers with the same closed `not_found`, same shape and same timing class, as a thread that does not exist. Ids are random (§2), never sequential.
 - **The user.** The user (actor `user`) can read every thread of the project; that is the visibility guarantee in §10.
 - **Policy rows.** Every read method has its own policy row (actors, tier 0 or 1); a read by an actor without a row is `E_POLICY_DENIED`. The coverage check (the H6 pattern) covers them.
@@ -134,15 +134,16 @@ Every broker tool except pure reads of the run's own worktree and of Axis state 
 ### 6.6 The taint rule IAC-T (review S1)
 
 - **A sticky, daemon-held, per-run flag.** Once set it is never cleared for that run. The broker sets it **before** the tool result or delivery that carries tainted content is returned to the model, so a later call in the same model reply is already covered (16 calls per reply is the C1 cap).
-- **Effect.** While set, every side-effecting call (§6.5) of the run needs a user approval, whatever its usual floor. The broker records the tier at challenge issue and re-checks the flag at consume (the C1 and H5 lesson: decide from the state at issue, verify at use). The approval card lists the taint sources the run has received (type, sender or author, time, a link).
+- **Effect.** While set, every side-effecting call (§6.5) of the run needs a user approval, whatever its usual floor. The broker records the tier at challenge issue and re-checks the flag at consume, so a challenge issued before taint and consumed after it is re-tiered to need the user's approval of the tainted state (the C1 and H5 lesson: decide from the state at issue, verify at use). The approval card lists the taint sources the run has received (type, sender or author, time, a link).
 - **Closed source list:**
   1. a delivered message from an agent, a plugin or a CLI endpoint sender;
   2. the result of `read_messages` that contains such a message;
   3. an excerpt received in such a message;
-  4. `read_page` of a page with any revision since the user's last edit that the user did not write;
+  4. `read_page` of a page whose current content contains text from any non-user revision, unless the user has explicitly marked that version reviewed (a later user edit elsewhere does not clear it; review 2, NS2);
   5. a run started from a task whose title or body has any non-user revision, or whose `source` is not `user` (Start is a user action, but the text is not the user's);
   6. plugin output of any kind delivered to the run;
   7. integration data (issue bodies, PR comments, chat text) delivered to the run.
+  8. a task read result (any task tool) that includes a task with any non-user revision or a `source` other than `user` (review 2, NS2).
   A new source is added to this list (and gets a gate line) before it can reach a model.
 - **Precedence.** IAC-T overrides every standing grant, auto mode, "always allow" rule or future wake grant (M-4). Nothing disables it in 2a (M-2).
 - **Separate ticket.** The taint core (flag, sources, broker decision hook, approval-card list) is ticket PV-M0, which PV-M4, PV-Q1 and PV-T1 depend on, so no source ships before the rule exists.
@@ -241,19 +242,20 @@ TSK-2 (task text laundering taint) and PAG-3 (page script reaching the bridge) a
 2. A body containing a challenge id, a digest or the word "approved" changes no approval; an agent connection calling `axis.approvals/1.resolve` is denied (DMN-3 re-run with messaging on).
 3. After a composer run receives an agent message, its next side-effecting call raises an approval whose card lists that message (IAC-T, source 1).
 4. Two composer agents replying to each other stop at hop 8 with a user notice; no further provider request is made for that hop; a relay through a page or a task carries the hop.
-5. A planted secret pattern in a body or excerpt is refused and appears nowhere in the audit log, journal audit fields or logs (canary); an excerpt of `.env`, a gitignored file or a WT-3 path is refused before the scan.
+5. A planted secret pattern in a body or excerpt is refused and appears nowhere in the audit log, journal audit fields or logs (canary); an excerpt of `.env`, a gitignored file or a WT-3 path is refused before the scan. Case and alias variants (`.ENV`, `Config/Master.KEY`, an NFD-decomposed name, `ENV~1`, `.env.`, `.env::$DATA`) and a symlink alias to `.env` are refused too.
 6. CLI endpoint lines are in `inter-agent-cli-endpoint.md` §7.
 7. Pause blocks sends, deliveries and endpoint calls in its scope within one request, including plugin senders; resume restores them; both are audited.
 8. Control and bidirectional characters in a body are escaped in the thread view, in composer delivery and on the CLI read path.
 9. No message crosses a project, including through a group id or thread id from another project, and a send whose recipients span projects is refused.
 10. **Read authorization (B1):** an agent of group 1, and a CLI token of an agent in group 1, reading or posting into a group-2 thread id get `not_found`, identical to an unknown id, audited as `message.read.refused` or `message.send.refused` with both ids; `threads` lists only the caller's threads.
-11. **Taint, one line per source:** a `read_messages` result followed by `write_file` in the **same** model reply needs approval; `read_page` of a page with an agent revision, a run started from an agent-edited or imported task, plugin output and integration data each set the flag; a standing "always allow" does not bypass it.
+11. **Taint, one line per source:** a `read_messages` result followed by `write_file` in the **same** model reply needs approval; `read_page` of a page with an agent revision, a run started from an agent-edited or imported task, plugin output and integration data each set the flag; a user edit after an agent revision of a page still leaves `read_page` tainting; a task read of an agent-edited task taints; a standing "always allow" does not bypass it.
 12. **Queues:** a flood from one sender is refused at its quota; the user's earlier message to the same recipient is still delivered; the user gets one notice.
 13. **Minter walk:** the transitive reachability test fails if any minter becomes reachable from the message binding.
-14. **Delivery re-check:** a message accepted under a cross-group setting is not delivered after the user turns the setting off.
+14. **Delivery re-check:** a message accepted under a cross-group setting is not delivered after the user turns the setting off. A send after the setting is turned off, into a thread created while it was on, is refused for the recipient the policy no longer allows; a recipient with `accepts from: none` gets nothing inside an existing thread.
 15. **Bounds:** with limits lowered in a test build, rings, inboxes and read responses stay at their caps and count drops.
 16. **Retention:** a message older than the retention period is purged from the journal; its audit events remain with keyed hashes only.
 17. **Keyed hash:** the audit holds no plain SHA-256 of any body; a scan-refused send has no body hash.
+18. **Taint at consume:** a challenge issued before a run became tainted and consumed after it is re-checked and needs the user's approval under IAC-T; the consume of the old grant alone is refused.
 
 ## 12. Open questions for the owner
 
