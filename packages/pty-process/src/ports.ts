@@ -63,6 +63,9 @@ export interface PtyChild {
   kill(signal: PtySignal): void;
   onData(listener: (chunk: string) => void): Disposable;
   onExit(listener: (exit: PtyExit) => void): Disposable;
+  /** Stops and restarts reading the child's output, so the child blocks on a full pty buffer (backpressure). Absent: output over the hard bound is dropped. */
+  pause?(): void;
+  resume?(): void;
   /** `job` groups only: called once when the job has no active process left. */
   onGroupEmpty?(listener: () => void): Disposable;
 }

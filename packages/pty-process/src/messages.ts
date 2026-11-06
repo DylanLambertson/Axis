@@ -12,6 +12,7 @@ export const LIMITS = {
   dimension: 1000,
   writeChars: 65536,
   idChars: 128,
+  ackChars: 16 * 1024 * 1024,
 } as const;
 
 const id = z.string().min(1).max(LIMITS.idChars);
@@ -48,6 +49,8 @@ export const dataRequest = z.discriminatedUnion("t", [
   z.object({ t: z.literal("attach") }).merge(term).strict(),
   z.object({ t: z.literal("write"), data: z.string().max(LIMITS.writeChars) }).merge(term).strict(),
   z.object({ t: z.literal("resize"), cols: dim, rows: dim }).merge(term).strict(),
+  /** Flow control: the renderer has consumed `chars` characters of output. Without acks the pty process pauses the child (see flow.ts). */
+  z.object({ t: z.literal("ack"), chars: z.number().int().min(1).max(LIMITS.ackChars) }).merge(term).strict(),
 ]);
 export type DataRequest = z.infer<typeof dataRequest>;
 
@@ -67,4 +70,5 @@ export type DataReply =
   | { readonly t: "attached"; readonly term: string }
   | { readonly t: "refused"; readonly term: string | null; readonly code: "foreign_terminal" | "unsupported" | "invalid" }
   | { readonly t: "data"; readonly term: string; readonly chunk: string }
+  | { readonly t: "overflow"; readonly term: string; readonly chars: number }
   | { readonly t: "exit"; readonly term: string };

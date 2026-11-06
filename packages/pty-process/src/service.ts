@@ -2,6 +2,7 @@
 import { randomBytes } from "node:crypto";
 import { classifyDeniedName, isValidName } from "@axis/pty-policy";
 import { controlRequest, dataRequest, type ControlReply, type ControlRequest, type DataReply } from "./messages.js";
+import { DEFAULT_FLOW, OutputFlow, type FlowLimits } from "./flow.js";
 import { probeGroup, signalGroup, validPgid } from "./group.js";
 import { OscCwdFilter } from "./osc.js";
 import { hasNul, isAbsolutePath } from "./paths.js";
@@ -17,6 +18,8 @@ export interface PtyServiceOptions {
   readonly maxTerminals?: number;
   /** Decides what an absolute path is for `argv[0]` and `cwd`. Default: this process's platform. */
   readonly platform?: NodeJS.Platform;
+  /** Output flow-control bounds per terminal (characters in flight to the viewer). Default 1 MiB pause, 256 KiB resume, 4 MiB drop. */
+  readonly flow?: FlowLimits;
 }
 
 export interface PtyService {
@@ -35,6 +38,7 @@ interface Terminal {
   readonly id: string;
   readonly child: PtyChild;
   readonly filter: OscCwdFilter;
+  readonly flow: OutputFlow;
   readonly subs: Disposable[];
   /** The data connection that may attach (set by `grant`, cleared when that connection closes). */
   granted: string | undefined;
@@ -96,6 +100,18 @@ export function createPtyService(options: PtyServiceOptions): PtyService {
     }
   };
 
+  const tryChild = (fn: (() => void) | undefined): void => {
+    try {
+      fn?.();
+    } catch {
+      /* a dying child */
+    }
+  };
+  /** The viewer changed or left: nothing is outstanding, so a paused child must run again (its output is dropped without a viewer). */
+  const releaseFlow = (t: Terminal): void => {
+    if (t.flow.reset()) tryChild(t.child.resume?.bind(t.child));
+  };
+
   const refuseSpawn = (req: string, code: Extract<ControlReply, { t: "spawn-failed" }>["code"]): void => void sendTo(control, { t: "spawn-failed", req, code });
 
   /** Ends a terminal nobody can own any more: kills its group, releases its listeners and tells its viewer. */
@@ -136,12 +152,15 @@ export function createPtyService(options: PtyServiceOptions): PtyService {
     let idText = "";
     do idText = "pty_" + Buffer.from(rand(16)).toString("hex");
     while (terminals.has(idText));
-    const t: Terminal = { id: idText, child, filter: new OscCwdFilter(), subs: [], granted: undefined, owner: undefined, exited: false, groupGone: false };
+    const t: Terminal = { id: idText, child, filter: new OscCwdFilter(), flow: new OutputFlow(options.flow ?? DEFAULT_FLOW), subs: [], granted: undefined, owner: undefined, exited: false, groupGone: false };
     terminals.set(t.id, t);
     t.subs.push(
       child.onData((chunk) => {
         const out = t.filter.push(chunk);
-        if (out !== "") sendTo(t.owner, { t: "data", term: t.id, chunk: out });
+        if (out === "" || t.owner === undefined) return;
+        const verdict = t.flow.offer(out.length);
+        if (verdict.send) sendTo(t.owner, { t: "data", term: t.id, chunk: out });
+        if (verdict.pause) tryChild(t.child.pause?.bind(t.child));
       }),
       child.onExit((exit) => {
         t.exited = true;
@@ -174,7 +193,10 @@ export function createPtyService(options: PtyServiceOptions): PtyService {
     const t = terminals.get(m.term);
     if (t === undefined) return; // already reaped: the group is gone
     if (m.t === "grant") {
-      if (t.owner !== undefined && dataChannels.get(t.owner) !== m.conn) t.owner = undefined; // re-granted to another connection
+      if (t.owner !== undefined && dataChannels.get(t.owner) !== m.conn) {
+        t.owner = undefined; // re-granted to another connection
+        releaseFlow(t);
+      }
       t.granted = m.conn;
       return;
     }
@@ -199,11 +221,18 @@ export function createPtyService(options: PtyServiceOptions): PtyService {
     const refuse = (): void => void sendTo(channel, { t: "refused", term: null, code: "foreign_terminal" });
     if (t === undefined || t.granted === undefined || t.granted !== dataChannels.get(channel)) return refuse();
     if (m.t === "attach") {
+      if (t.owner !== channel) releaseFlow(t);
       t.owner = channel;
       sendTo(channel, { t: "attached", term: t.id });
       return;
     }
     if (t.owner !== channel) return refuse();
+    if (m.t === "ack") {
+      const r = t.flow.ack(m.chars);
+      if (r.resume) tryChild(t.child.resume?.bind(t.child));
+      if (r.overflow > 0) sendTo(channel, { t: "overflow", term: t.id, chars: r.overflow });
+      return;
+    }
     try {
       if (m.t === "resize") t.child.resize(m.cols, m.rows);
       else if (!t.exited) t.child.write(m.data);
@@ -215,7 +244,10 @@ export function createPtyService(options: PtyServiceOptions): PtyService {
   const closeChannel = (channel: Channel): void => {
     const conn = dataChannels.get(channel);
     for (const t of terminals.values()) {
-      if (t.owner === channel) t.owner = undefined;
+      if (t.owner === channel) {
+        t.owner = undefined;
+        releaseFlow(t);
+      }
       if (conn !== undefined && t.granted === conn) t.granted = undefined; // the grant dies with the connection: only a new grant lets one attach
     }
     dataChannels.delete(channel);

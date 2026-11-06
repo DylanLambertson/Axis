@@ -103,6 +103,8 @@ export class FakeChild implements PtyChild {
   readonly written: string[] = [];
   readonly killed: string[] = [];
   readonly resized: Array<[number, number]> = [];
+  pauses = 0;
+  resumes = 0;
   private readonly dl = new Set<(c: string) => void>();
   private readonly el = new Set<(e: PtyExit) => void>();
   private readonly gl = new Set<() => void>();
@@ -110,6 +112,8 @@ export class FakeChild implements PtyChild {
   write(d: string): void { this.written.push(d); }
   resize(c: number, r: number): void { this.resized.push([c, r]); }
   kill(s: string): void { this.killed.push(s); }
+  pause(): void { this.pauses++; }
+  resume(): void { this.resumes++; }
   onData(l: (c: string) => void): Disposable { this.dl.add(l); return { dispose: () => void this.dl.delete(l) }; }
   onExit(l: (e: PtyExit) => void): Disposable { this.el.add(l); return { dispose: () => void this.el.delete(l) }; }
   onGroupEmpty(l: () => void): Disposable { this.gl.add(l); return { dispose: () => void this.gl.delete(l) }; }
