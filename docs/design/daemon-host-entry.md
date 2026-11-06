@@ -51,7 +51,7 @@ On app quit (`onWillShutdown`, joined) the supervisor posts `{ type: "shutdown" 
 
 ## Not done (follow-ups)
 
-- **X1b** (built: the handshake, the window checks and the signing, `docs/design/main-answers.md`); still open: `trust.set` and `projects.register` from main (until main registers projects, every `trust.check` answers `false`).
+- **X1b** (built: the handshake, the window checks and the signing, `docs/design/main-answers.md`); still open: `trust.set` and `projects.register` from main (until main registers projects, every `trust.check` answers `false`). Invariant (W1): a desktop window id is `w<n>` (`windowIdOf`) and never `web`, which the web host uses for every browser socket; the policy refuses a desktop identity with window id `web` and a test pins `windowIdOf`.
 - **X1c** (built, `docs/design/main-answers.md`); the Electron adapters (`axisMainPorts.ts`) are verified on macOS and Windows only.
 - Verify on macOS and Windows: that an unref'd init timer when `parentPort` does not keep the process alive (it would exit 0, which the supervisor counts as a crash, instead of 78), `init` posted right after `fork` is queued until the child attaches its listener (the entry also bounds the wait at 10 s), the ESM entry path under a packaged app, and `kill()` semantics.
 - An ESLint import-patterns target for `vs/axis/code/electron-main` and `vs/axis/daemon/node`.

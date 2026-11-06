@@ -6,6 +6,8 @@
 // (stage-ast.mjs), not by pattern matching text; the same parse finds the names that reach code without a
 // visible specifier. The guarantee that matters is the bundle-time module-graph check (scripts/code-oss/check-daemon-graph.mjs), which reads what esbuild really resolved.
 export { importSpecifiers, unsafeForms, rewriteSpecifiers, scanModules } from "./stage-ast.mjs";
+import { listenerBuiltinRefusal } from "./web-rules.mjs";
+export { LISTENER_BUILTINS, LISTENER_FILE, WEB_HOST_DIR } from "./web-rules.mjs";
 
 /**
  * Node built-ins that load or run code by other means than a module specifier. No package needs them, except the
@@ -98,6 +100,8 @@ export function classifySpecifier(spec, pkg, exportsOf, fileRel = null) {
     if (pkg === "protocol") throw `node:* is not allowed in the protocol package (contracts shared with the web target): ${spec}`;
     const only = LOADER_BUILTINS.get(spec.replace(/\/.*$/, ""));
     if (only !== undefined && !only.has(pkg)) throw `${spec} loads or runs code without a module specifier and is not allowed${only.size > 0 ? ` outside ${[...only].join(", ")}` : ""}`;
+    const listener = listenerBuiltinRefusal(spec, fileRel === null ? null : `${pkg}/${fileRel}`);
+    if (listener !== null) throw listener;
     return { kind: "node" };
   }
   if (spec.startsWith("@axis/")) {
