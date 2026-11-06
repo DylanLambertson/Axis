@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import { mkdirSync, rmSync } from "node:fs";
 import { test, type TestContext } from "node:test";
 import * as path from "node:path";
-import { newKey, type Client } from "./approvals-rig.js";
-import { createWs as createWsRaw, gitSkipReason, worktreesRig, type Rig } from "./worktrees-rig.js";
+import { type Client } from "./approvals-rig.js";
+import { finaliseApproved, createWs as createWsRaw, gitSkipReason, worktreesRig, type Rig } from "./worktrees-rig.js";
 
 const skip = gitSkipReason();
 const createWs = (user: Client, name?: string) => createWsRaw(user, (_m, x) => (assert.equal(x.ok, true, JSON.stringify(x.error)), x), name);
@@ -37,7 +37,7 @@ async function repairDuringReconcile(t: TestContext, tamper: boolean) {
   t.after(() => r.cleanup());
   const user = await r.connect();
   const { id } = await createWs(user);
-  assert.equal((await user.call("axis.worktrees", "finalise", { id, outcome: "archived" }, newKey())).ok, false);
+  assert.equal((await finaliseApproved(r, user, id, "archived")).ok, false);
   state.fail = false;
   const second = path.join(r.tmp, "repo2");
   mkdirSync(second);

@@ -6,7 +6,7 @@ import type { WorktreesService } from "../ports/worktrees.js";
 import { toDaemonError, worktreeFailure } from "../worktrees/errors.js";
 
 /**
- * `axis.worktrees/1` (design section 4.2): six methods over the `WorktreesService` port. Nothing here touches a path, git
+ * `axis.worktrees/1` (design section 4.2): eight methods over the `WorktreesService` port. Nothing here touches a path, git
  * or the journal. Who is calling comes from `ctx.identity` only (the payload names a workspace, never an actor), and
  * the only thing taken from a spent approval is `ctx.approved.capability`, passed through untouched for the service to
  * hand to the manager: a handler never makes one. A workspace the last reconcile found in disagreement answers
@@ -27,6 +27,8 @@ function portContext(context: HandlerContext): PortContext {
     ...(approved?.capability === undefined ? {} : { confirmation: approved.capability }),
   };
 }
+
+const notServed = (): Promise<never> => Promise.reject(worktreeFailure("E_UNAVAILABLE", "not_available"));
 
 export function createWorktreesHandlers(deps: WorktreesHandlerDeps): Readonly<Record<WorktreesMethod, Handler>> {
   const run =
@@ -59,5 +61,9 @@ export function createWorktreesHandlers(deps: WorktreesHandlerDeps): Readonly<Re
     finalise: run<"finalise">("finalise", (p) => [p.id], (p, ctx) => deps.service.finalise(p, ctx)),
     remove: run<"remove">("remove", (p) => [p.id], (p, ctx, context) => (approved(context), deps.service.remove(p, ctx))),
     restoreFromRunBase: run<"restoreFromRunBase">("restoreFromRunBase", (p) => [p.id], (p, ctx) => deps.service.restoreFromRunBase(p, ctx)),
+    // The contract and policy rows exist (ticket P1d); the service behind them does not (it needs a discard entry point and a
+    // user-editing set in `@axis/worktrees`). Until then both answer a fixed refusal and touch nothing.
+    discard: run<"discard">("discard", (p) => [p.id], notServed),
+    setUserEditing: run<"setUserEditing">("setUserEditing", (p) => [p.id], notServed),
   };
 }

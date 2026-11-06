@@ -121,6 +121,8 @@ export type WorktreeInfo = z.infer<typeof worktreeInfoSchema>;
 
 export const MAX_STATUS_IDS = 100;
 export const MAX_RESTORE_PATHS = 500;
+export const MAX_DISCARD_PATHS = 500;
+export const MAX_USER_EDITING_PATHS = 200;
 
 // list (read, tier 0)
 export const listRequestSchema = z.strictObject({ projectId: projectIdSchema });
@@ -147,10 +149,14 @@ export const createResponseSchema = z.strictObject({
   worktree: worktreeInfoSchema,
 });
 
-// finalise (write, tier 2, idempotency required)
+// finalise (destructive, tier 4: challenge plus native confirmation, idempotency required). A finalise can discard
+// uncommitted work, and a discard token is minted only for a challenge issued at tier 4 or above (a tier 3 approval has
+// no native dialog), so the method floor is 4 and `approval` is the retry reference after the user confirmed.
 export const finaliseRequestSchema = z.strictObject({
   id: workspaceIdSchema,
   outcome: finaliseOutcomeSchema,
+  /** Present on the retry after the user approved the challenge. */
+  approval: challengeReferenceSchema.optional(),
 });
 export const finaliseResponseSchema = z.strictObject({
   id: workspaceIdSchema,
@@ -183,6 +189,26 @@ export const restoreFromRunBaseResponseSchema = z.strictObject({
   backupRef: z.string().max(256),
   restored: z.array(relativePathSchema).max(MAX_RESTORE_PATHS),
 });
+
+// discard (write, tier 2, idempotency required): reject, the reversible one. The daemon writes a backup commit of the
+// worktree to `refs/axis/backup/<id>/<ts>` first, then restores exactly these paths; hunk-level discard is not in 1a.
+export const discardRequestSchema = z.strictObject({
+  id: workspaceIdSchema,
+  paths: z.array(relativePathSchema).min(1).max(MAX_DISCARD_PATHS),
+});
+export const discardResponseSchema = z.strictObject({
+  backupRef: z.string().max(256),
+  discarded: z.array(relativePathSchema).max(MAX_DISCARD_PATHS),
+});
+
+// setUserEditing (write, tier 2, no idempotency key): the renderer reports, as the user, the paths with unsaved editors.
+// The list REPLACES the previous one (an empty list clears it), so a repeat is harmless. Advisory only: it never blocks
+// a user action and is never an authorisation.
+export const setUserEditingRequestSchema = z.strictObject({
+  id: workspaceIdSchema,
+  paths: z.array(relativePathSchema).max(MAX_USER_EDITING_PATHS),
+});
+export const setUserEditingResponseSchema = z.strictObject({ id: workspaceIdSchema });
 
 export type SideEffect = "none" | "read" | "write" | "network" | "destructive" | "credential";
 
@@ -224,8 +250,8 @@ export const worktreesMethods = {
   finalise: {
     request: guarded(finaliseRequestSchema),
     response: guarded(finaliseResponseSchema),
-    sideEffect: "write",
-    tier: 2,
+    sideEffect: "destructive",
+    tier: 4,
     idempotency: "required",
     timeoutMs: 30_000,
   },
@@ -244,6 +270,22 @@ export const worktreesMethods = {
     tier: 2,
     idempotency: "required",
     timeoutMs: 30_000,
+  },
+  discard: {
+    request: guarded(discardRequestSchema),
+    response: guarded(discardResponseSchema),
+    sideEffect: "write",
+    tier: 2,
+    idempotency: "required",
+    timeoutMs: 30_000,
+  },
+  setUserEditing: {
+    request: guarded(setUserEditingRequestSchema),
+    response: guarded(setUserEditingResponseSchema),
+    sideEffect: "write",
+    tier: 2,
+    idempotency: "none",
+    timeoutMs: 10_000,
   },
 } as const satisfies Record<string, MethodSpec>;
 
