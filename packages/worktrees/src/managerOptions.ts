@@ -3,6 +3,8 @@
 import { WorktreeError } from './errors.js';
 import type { RepoLocation } from './discovery.js';
 import type { GitRunner } from './git.js';
+import type { HardenedGit } from './hardenedGit.js';
+import { deleteRefIf } from './snapshotRef.js';
 import { IdSchema, type WorkspaceMeta } from './meta.js';
 import { assertNoTraversal } from './paths.js';
 import type { ExpectedWorktree } from './types.js';
@@ -51,4 +53,22 @@ export function parseExpected(e: ExpectedWorktree): ExpectedWorktree {
   assertNoTraversal(e.path, 'expected worktree');
   if (!path.isAbsolute(e.path) || !IdSchema.safeParse(e.id).success) throw invalid('invalid expected worktree');
   return e;
+}
+
+/** Deletes expired run-base and backup refs by commit age, each only while it still points at the commit that was inspected. */
+export async function sweepExpiredRefs(git: HardenedGit, cwd: string, now: Date): Promise<string[]> {
+  const out = await git.text(
+    ['for-each-ref', '--format=%(refname)%09%(objectname)%09%(committerdate:unix)', 'refs/axis/runbase', 'refs/axis/backup'],
+    { cwd },
+  );
+  const deleted: string[] = [];
+  for (const line of out.split('\n').filter(Boolean)) {
+    const [ref = '', sha = '', secs = ''] = line.split('\t');
+    const days = ref.startsWith('refs/axis/runbase/') ? RUNBASE_RETENTION_DAYS : BACKUP_RETENTION_DAYS;
+    if (now.getTime() - Number(secs) * 1000 > days * DAY_MS) {
+      await deleteRefIf(git, cwd, ref, sha);
+      deleted.push(ref);
+    }
+  }
+  return deleted;
 }

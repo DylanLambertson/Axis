@@ -26,14 +26,14 @@ import {
 } from './paths.js';
 import { assertIsRoot, assertUnder, hasGitComponent, isOutsideRel } from './pathGuard.js';
 import { parseLsTree, writeRestoredEntry } from './restore.js';
-import { MAX_SNAPSHOT_FILE_BYTES, createRefOnce, deleteRefIf, writeSnapshotRef } from './snapshotRef.js';
+import { MAX_SNAPSHOT_FILE_BYTES, createRefOnce, writeSnapshotRef } from './snapshotRef.js';
 import type {
   CreateInput, CreatedWorkspace, ExpectedWorktree, FinaliseOutcome, FinaliseResult, RemoveResult, RestoreResult,
   WorkspaceStatus, WorktreeInfo,
 } from './types.js';
 import * as os from 'node:os';
 import {
-  BACKUP_RETENTION_DAYS, DAY_MS, RUNBASE_RETENTION_DAYS, invalid, parseExpected, type ActiveRunOp, type Located, type WorktreeManagerOptions,
+  BACKUP_RETENTION_DAYS, RUNBASE_RETENTION_DAYS, invalid, parseExpected, sweepExpiredRefs, type ActiveRunOp, type Located, type WorktreeManagerOptions,
 } from './managerOptions.js';
 
 export { BACKUP_RETENTION_DAYS, RUNBASE_RETENTION_DAYS, type ActiveRunOp, type WorktreeManagerOptions };
@@ -227,21 +227,7 @@ export class WorktreeManager {
     return this.boundary(async () => {
       const repo = await resolveRepo(repoPath);
       return this.withLock(repo.commonDir, path.join(repo.commonDir, 'axis-create.lock'), async () => {
-        const cwd = repo.workTree ?? repo.commonDir;
-        const out = await this.git.text(
-          ['for-each-ref', '--format=%(refname)%09%(objectname)%09%(committerdate:unix)', 'refs/axis/runbase', 'refs/axis/backup'],
-          { cwd },
-        );
-        const deleted: string[] = [];
-        for (const line of out.split('\n').filter(Boolean)) {
-          const [ref = '', sha = '', secs = ''] = line.split('\t');
-          const days = ref.startsWith('refs/axis/runbase/') ? RUNBASE_RETENTION_DAYS : BACKUP_RETENTION_DAYS;
-          if (now.getTime() - Number(secs) * 1000 > days * DAY_MS) {
-            await deleteRefIf(this.git, cwd, ref, sha);
-            deleted.push(ref);
-          }
-        }
-        return deleted;
+        return sweepExpiredRefs(this.git, repo.workTree ?? repo.commonDir, now);
       });
     });
   }
