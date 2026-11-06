@@ -131,7 +131,7 @@ Startup is a straight line. Any failure before step 12 exits with a typed code a
 
 ### 4.1 Where definitions live
 
-Contract schemas (strict Zod objects, `MethodSpec`) live in `@axis/protocol`, one file per contract, because the renderer client and the web target import them and the package has no Node imports ([V] `NO_NODE`). `@axis/protocol`'s `contracts` table on main holds six contracts [V `contracts.ts`, #44]: `axis.worktrees`, `axis.projects`, `axis.approvals`, `axis.audit`, `axis.cli-runs` and `axis.providers`. `axis.git/1` and `axis.review/1` are added by ticket P1b (`git.ts`, `review.ts`), so the table holds eight contracts (six before P1b). **Contract ids contain no uppercase letters:** the id is `axis.cli-runs`, not `axis.cliRuns`; `contractIdSchema` rejects the latter, so a wrong spelling fails the coverage check. The host builds its registry with `protocolRegistry` filtered by `config.contracts` (an allow-list), so a build or test can serve fewer contracts, never more than the table holds.
+Contract schemas (strict Zod objects, `MethodSpec`) live in `@axis/protocol`, one file per contract, because the renderer client and the web target import them and the package has no Node imports ([V] `NO_NODE`). `@axis/protocol`'s `contracts` table on main holds six contracts [V `contracts.ts`, #44]: `axis.worktrees`, `axis.projects`, `axis.approvals`, `axis.audit`, `axis.cli-runs` and `axis.providers`. `axis.git/1` and `axis.review/1` are added by ticket P1b (`git.ts`, `review.ts`), so the table holds eight contracts (six before P1b), and nine since `axis.runs/1` (ticket C1, `docs/design/composer-runtime.md`). **Contract ids contain no uppercase letters:** the id is `axis.cli-runs`, not `axis.cliRuns`; `contractIdSchema` rejects the latter, so a wrong spelling fails the coverage check. The host builds its registry with `protocolRegistry` filtered by `config.contracts` (an allow-list), so a build or test can serve fewer contracts, never more than the table holds.
 
 The envelope carries only `hello`/`welcome`/request/cancel/response frames [V `envelope.ts`]. **There is no server-push event or stream frame.** ADR 0003 D2/D3 describe `stream` and `event`, but neither exists in the protocol or the daemon. Phase 1a UI state therefore polls (`get`/`list`, 1 to 2 s with jitter) and the headless slice does the same. A protocol extension (ticket E1) is a UI-quality item, not a blocker for the slice.
 
@@ -163,7 +163,7 @@ Tier and `sideEffect` are the contract's declared minimum; policy may raise, nev
 | | `list` (`afterSeq`, `limit` ≤ 200) | read | 1 | none | | | user | `AuditLog.list` (events are redacted at write) | 1a, new |
 | | `verify` | read | 1 | none | | | user | `AuditLog.verify` in slices of 2000 events with a yield between them, one at a time (a second call is `E_BACKPRESSURE`), cancellable and under a 25 s deadline (`E_TIMEOUT`, progress kept); see 5.5 | 1a, new |
 | `axis.providers/1` | `list` | read | 0 | none | | | user | `@axis/providers` mock and registered adapters | 1a, new (list only) |
-| `axis.runs/1` | `start`, `cancel`, `get`, `list` (composer) | write / read | 2 / 0 | req / none | | yes | user | composer service, broker, `GuardedProvider` | **1b**, not served in 1a |
+| `axis.runs/1` | `start`, `cancel`, `get`, `list`, `events` (composer) | write / read | 2 / 0 | req / none | | `start` | user | composer service, broker, `GuardedProvider` (`docs/design/composer-runtime.md`) | **1b**, ticket C1 |
 
 Notes on the table:
 

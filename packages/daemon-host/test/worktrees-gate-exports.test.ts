@@ -84,7 +84,7 @@ test("no export of the public index and nothing the approvals wiring returns can
   const control = new ControlClient({ mux });
   const approvals = createWorktreesApprovals({ audit: createChallengeAuditSink({ append: () => undefined }), control, clock: fakeClock() });
   try {
-    assert.deepEqual(Object.keys(approvals).sort(), ["dispose", "gate", "onPreview", "port", "stats"], "the wiring exposes exactly these");
+    assert.deepEqual(Object.keys(approvals).sort(), ["dispose", "gate", "onPreview", "port", "runs", "stats"], "the wiring exposes exactly these (runs: composer tool-call approvals, no capability)");
     assert.deepEqual(await findTokens(approvals, "wiring"), []);
     // Skip the factories that need real resources: they refuse hostile input before touching any.
     // `policySurface()` returns frozen tables that are legitimately empty (no planned rows): data, not a capability.

@@ -104,7 +104,7 @@ export class TestClient {
   }
 }
 
-const ALL_CONTRACTS = ["axis.worktrees", "axis.projects", "axis.approvals", "axis.audit", "axis.cli-runs", "axis.providers", "axis.git", "axis.review"] as const;
+const ALL_CONTRACTS = ["axis.worktrees", "axis.projects", "axis.approvals", "axis.audit", "axis.cli-runs", "axis.providers", "axis.git", "axis.review", "axis.runs"] as const;
 
 /** The result of an answer that must have succeeded; the failure names the closed code and reason (never a message). */
 export function resultOf<T = Record<string, unknown>>(a: Answer, what: string): T {

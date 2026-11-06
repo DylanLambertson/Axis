@@ -29,4 +29,9 @@ export const RULES: Readonly<Record<string, Rule>> = Object.freeze({
   "axis.git/1.compareUrl": userRule(0),
   "axis.review/1.diff": userRule(1),
   "axis.review/1.complete": userRule(2),
+  "axis.runs/1.start": userRule(2, "registry"),
+  "axis.runs/1.cancel": userRule(2),
+  "axis.runs/1.get": userRule(0),
+  "axis.runs/1.list": userRule(0),
+  "axis.runs/1.events": userRule(0),
 });

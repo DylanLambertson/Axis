@@ -48,7 +48,7 @@ const HOST_FILE_RULES = new Map([
  */
 const COMPOSITION_FILES = new Set(["src/index.ts", "src/compose.ts"]);
 /** Packages whose bindings live in `src/bindings/*.ts` of the host (they land with their own changes). */
-const HOST_BINDING_PACKAGES = ["@axis/runs", "@axis/review"];
+const HOST_BINDING_PACKAGES = ["@axis/broker", "@axis/runs", "@axis/review"];
 
 /** Judge the host-only rules; null means no host rule applies and the general rules decide. */
 function hostViolation(pkg, spec, file, pkgDir) {

@@ -6,9 +6,11 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { AxisError, withTransaction, type InstanceLock } from "@axis/audit";
 import { Daemon, MemoryIdempotencyStore, protocolRegistry, type ContractRegistry, type ShutdownOptions } from "@axis/daemon";
 import type { GitRunner } from "@axis/git-ops";
+import type { MockProviderOptions, RunBudgetLimits } from "@axis/providers";
 import { PROJECTS_CONTRACT, PROJECTS_VERSION, PROVIDERS_CONTRACT, PROVIDERS_VERSION, APPROVALS_CONTRACT, APPROVALS_VERSION, REVIEW_CONTRACT, REVIEW_VERSION, WORKTREES_CONTRACT, WORKTREES_VERSION, lookupMethod } from "@axis/protocol";
 import { createSecretScanner, type ScanMode } from "@axis/secret-scan";
 import { anchorPreflight } from "./anchor/preflight.js";
+import { createAgentBinding, type AgentBinding } from "./bindings/agent.js";
 import { createGitOperations, createGitPort } from "./bindings/git.js";
 import { createCommitPreparer, createReviewService } from "./bindings/review.js";
 import { createTempIndexProvider } from "./bindings/review-tempindex.js";
@@ -24,9 +26,11 @@ import type { DisposeResult, ListenerTarget } from "./disposables.js";
 import { createChallengeAuditSink } from "./gate/audit-sink.js";
 import { createRunTrustMinter } from "./gate/run-trust.js";
 import { createWorktreesApprovals, type WorktreesApprovals } from "./gate/worktrees-confirm.js";
+import { createComposerService, type ComposerService } from "./composer/service.js";
 import { createApprovalsHandlers } from "./handlers/approvals.js";
 import { createHandlerRegistrar, registerAuditHandlers, type HandlerRegistrar } from "./handlers/anchor-guard.js";
 import { registerCliRunsHandlers } from "./handlers/cli-runs.js";
+import { registerComposerRunsHandlers } from "./handlers/composer-runs.js";
 import { PushedBases } from "./handlers/git-common.js";
 import { registerGitHandlers } from "./handlers/git.js";
 import { createProjectsHandlers } from "./handlers/projects.js";
@@ -87,6 +91,8 @@ export interface ComposeOptions {
   readonly withholdHandlers?: ReadonlySet<string>;
   /** How long the final anchor waits for its acknowledgement (default 1500). A longer wait than `finalizeTimeoutMs` only turns a slow acknowledgement into exit 1. */
   readonly finalAnchorWaitMs?: number;
+  /** Composer runs (`axis.runs/1`, docs/design/composer-runtime.md): the mock provider's script and the per-run budget. */
+  readonly composer?: { readonly mock?: MockProviderOptions; readonly budget?: RunBudgetLimits; readonly maxTurns?: number };
 }
 
 export interface ComposedHost {
@@ -136,7 +142,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
   };
 
   // Built in `afterStorage`, used by `reconcile` and `beforeReady`.
-  const built: { worktrees?: WorktreesBinding; runs?: RunsBinding; approvals?: WorktreesApprovals; projectPaths?: () => string[] } = {};
+  const built: { worktrees?: WorktreesBinding; runs?: RunsBinding; approvals?: WorktreesApprovals; projectPaths?: () => string[]; agent?: AgentBinding; composer?: ComposerService } = {};
   let lifecycle: LifecycleHandle | undefined;
   let offConnect: (() => void) | undefined;
   let finish: () => void = () => undefined;
@@ -193,7 +199,29 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
         });
         cleanups.push(() => runs.dispose());
         forwarder.bind(runs.service);
-        Object.assign(built, { worktrees, runs, approvals, projectPaths: () => parts.journal.listProjects().map((p) => p.path) });
+        const projectPaths = (): string[] => parts.journal.listProjects().map((p) => p.path);
+        // Composer runs: the broker's audit rows mark the anchor batch dirty like every other writer.
+        const agent = createAgentBinding({
+          locator: worktrees.locator,
+          repositoryRoots: projectPaths,
+          audit: { append: (e) => { const row = parts.audit.append(e); parts.anchors.noteWrite(); return row; } },
+          redactor: ports.redactor,
+          env: () => ports.env,
+          approvals: approvals.runs,
+          now: () => ports.clock.now(),
+          platform: config.platform,
+          ...(options.composer?.mock === undefined ? {} : { mock: options.composer.mock }),
+        });
+        const composer = createComposerService({
+          journal: parts.journal,
+          engine: agent,
+          now: () => ports.clock.now(),
+          ...(options.composer?.budget === undefined ? {} : { budget: options.composer.budget }),
+          ...(options.composer?.maxTurns === undefined ? {} : { maxTurns: options.composer.maxTurns }),
+          onInternalError: (where) => logger?.error("request.failed", { reason: `composer_${where.slice(0, 24)}` }),
+        });
+        cleanups.push(() => (composer.dispose(), agent.dispose()));
+        Object.assign(built, { worktrees, runs, approvals, projectPaths, agent, composer });
       },
       async beforeReady(services, lock) {
         try {
@@ -211,7 +239,10 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
   async function assemble(services: HostServices, lock: InstanceLock | undefined): Promise<void> {
     const { journal, audit } = services;
     const writable = services.degraded === undefined && journal !== undefined && audit !== undefined && services.idempotency !== undefined;
-    if (writable && lock !== undefined) built.runs?.recover(lock); // DMN-7 for CLI runs: QUEUED never reached a process; nothing starts before this
+    if (writable && lock !== undefined) {
+      built.runs?.recover(lock); // DMN-7 for CLI runs: QUEUED never reached a process; nothing starts before this
+      built.composer?.recover(); // after Journal.recover: a QUEUED composer run never reached its loop
+    }
     // Contracts: identity, policy, the daemon.
     const verifier = createAttestationVerifier({ key: config.attestationKey, clock: ports.clock });
     cleanups.push(() => verifier.close());
@@ -272,10 +303,10 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
 
   /** The services of a healthy host, each registered through the registrar and nothing else. */
   function registerServing(registrar: ReturnType<typeof createHandlerRegistrar>, services: HostServices): void {
-    const { worktrees, runs, approvals } = built;
+    const { worktrees, runs, approvals, composer } = built;
     const journal = services.journal;
     const audit = services.audit;
-    if (worktrees === undefined || runs === undefined || approvals === undefined || journal === undefined || audit === undefined) throw new AxisError("E_INTERNAL", "The host composition is incomplete", { reason: "not_built" });
+    if (worktrees === undefined || runs === undefined || approvals === undefined || composer === undefined || journal === undefined || audit === undefined) throw new AxisError("E_INTERNAL", "The host composition is incomplete", { reason: "not_built" });
     const git = createGitPort({
       gitPath: services.gitPath,
       env: { daemon: ports.env, pty: ports.env },
@@ -294,6 +325,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
     registrar.register(APPROVALS_CONTRACT, APPROVALS_VERSION, createApprovalsHandlers({ approvals: approvals.port }));
     registrar.register(PROVIDERS_CONTRACT, PROVIDERS_VERSION, createProvidersHandlers({ providers: () => [] }));
     registrar.register(WORKTREES_CONTRACT, WORKTREES_VERSION, createWorktreesHandlers({ service: worktrees.service, needsAttention: worktrees.needsAttention }), { content: worktrees.content });
+    registerComposerRunsHandlers(registrar, { service: composer, journal, mutex: worktrees.mutex, needsAttention: worktrees.needsAttention });
     registerCliRunsHandlers(registrar, { service: runs.service, journal, control, minter: createRunTrustMinter(ports.clock), mutex: worktrees.mutex, needsAttention: worktrees.needsAttention, platform: config.platform });
     registrar.register(
       REVIEW_CONTRACT,
@@ -327,6 +359,10 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
     offConnect?.();
     services.haltAnchor();
     built.runs?.dispose();
+    // Composer loops stop and write nothing more; a tool call already running gets a bounded moment to record its result.
+    built.composer?.dispose();
+    built.agent?.dispose();
+    if (built.composer !== undefined) await Promise.race([built.composer.idle(), new Promise<void>((r) => (setTimeout(r, 1_000) as unknown as NodeJS.Timeout).unref())]);
     services.flushAnchor();
     const target = services.anchor().put;
     const head = services.auditRead.head();
