@@ -114,32 +114,50 @@ test("closing the control port kills the real child's whole group and discards t
   }
 });
 
-test("a data port is closed by the entry when its peer closes: the terminal's grant dies with it", { skip: posix }, async () => {
+test("S2: a late grant for a closed view is useless: a later port with the same name is refused by the entry", { skip: posix }, async () => {
   const h = harness();
-  const { host, data, replies, dataPeer } = await wire(h);
+  const { host, data } = await wire(h, "view-1");
   try {
-    const t = await host.spawn({ ...SPEC, argv: ["/bin/sh", "-c", "sleep 30"], cwd: "/", env: { PATH: "/usr/bin:/bin" } });
-    host.grant(t.terminalId, "c1");
+    const t = await host.spawn({ ...SPEC, argv: ["/bin/sh", "-c", "echo secret-output; sleep 30"], cwd: "/", env: { PATH: "/usr/bin:/bin" } });
+    data.close(); // the view's window reloads before the daemon's grant lands
     await settle();
-    data.send({ t: "attach", term: t.terminalId });
-    await until(() => replies.some((r) => r.t === "attached"));
-    data.close();
+    host.grant(t.terminalId, "view-1"); // the late grant
     await settle();
-    // a new connection with the same name is not granted anything until a new grant
     const second = nodePair();
-    h.send({ type: "pty-data", conn: "c1" }, [electronShaped(second.b)]);
-    const again = adaptMessagePort(nodeShaped(second.a), { shape: "node" });
-    const got: DataReply[] = [];
-    again.onMessage((m) => void got.push(m as DataReply));
-    again.send({ t: "attach", term: t.terminalId });
-    await until(() => got.length > 0);
-    assert.deepEqual(got, [{ t: "refused", term: null, code: "foreign_terminal" }]);
-    again.close();
+    let closed = false;
+    second.a.on("close", () => void (closed = true));
+    h.send({ type: "pty-data", conn: "view-1" }, [electronShaped(second.b)]);
+    await until(() => closed);
+    const seen: unknown[] = [];
+    second.a.on("message", (m) => void seen.push(m));
+    await settle();
+    assert.deepEqual(seen, [], "the reused name never reached the service, so it can attach to nothing");
   } finally {
-    void dataPeer;
     h.entry.dispose();
     host.dispose();
   }
+});
+
+test("a name is never served twice, also after its port closed, and a new name still works", { skip: posix }, async () => {
+  const h = harness();
+  const a = nodePair();
+  const b = nodePair();
+  const c = nodePair();
+  let closedB = false;
+  b.a.on("close", () => void (closedB = true));
+  h.send({ type: "pty-data", conn: "n1" }, [electronShaped(a.b)]);
+  a.a.close();
+  await settle();
+  h.send({ type: "pty-data", conn: "n1" }, [electronShaped(b.b)]);
+  await until(() => closedB);
+  h.send({ type: "pty-data", conn: "n2" }, [electronShaped(c.b)]);
+  await settle();
+  let closedC = false;
+  c.a.on("close", () => void (closedC = true));
+  await settle();
+  assert.equal(closedC, false);
+  h.entry.dispose();
+  c.a.close();
 });
 
 test("dispose kills every terminal, closes every served port and removes every listener", { skip: posix }, async () => {

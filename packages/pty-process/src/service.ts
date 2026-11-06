@@ -20,6 +20,8 @@ export interface PtyServiceOptions {
   readonly platform?: NodeJS.Platform;
   /** Output flow-control bounds per terminal (characters in flight to the viewer). Default 1 MiB pause, 256 KiB resume, 4 MiB drop. */
   readonly flow?: FlowLimits;
+  /** Bytes of unconsumed input per terminal and in the whole process before further input is refused (PTY-4). Default 1 MiB and 8 MiB. */
+  readonly input?: { readonly terminal: number; readonly process: number };
 }
 
 export interface PtyService {
@@ -37,17 +39,24 @@ export interface PtyService {
 interface Terminal {
   readonly id: string;
   readonly child: PtyChild;
-  readonly filter: OscCwdFilter;
+  filter: OscCwdFilter;
   readonly flow: OutputFlow;
   readonly subs: Disposable[];
   /** The data connection that may attach (set by `grant`, cleared when that connection closes). */
   granted: string | undefined;
   owner: Channel | undefined;
+  /** The viewer parser may have missed output (a drop, or no viewer): the next chunk starts from a fresh filter and a CAN. */
+  resync: boolean;
+  /** A viewer parser has seen part of this stream and may now have a gap: the next chunk also starts with CAN. */
+  cancel: boolean;
+  /** A viewer has been attached at some point. */
+  seen: boolean;
   exited: boolean;
   groupGone: boolean;
 }
 
 export const DEFAULT_MAX_TERMINALS = 64;
+export const DEFAULT_INPUT_LIMITS = { terminal: 1024 * 1024, process: 8 * 1024 * 1024 } as const;
 
 export function createPtyService(options: PtyServiceOptions): PtyService {
   const ops = options.ops ?? systemProcessOps;
@@ -56,7 +65,7 @@ export function createPtyService(options: PtyServiceOptions): PtyService {
   const terminals = new Map<string, Terminal>();
   const dataChannels = new Map<Channel, string>();
   const platform = options.platform ?? process.platform;
-  const serviceSubs: Disposable[] = [];
+  const channelSubs = new Map<Channel, Disposable[]>();
   let control: Channel | undefined;
   let disposed = false;
 
@@ -112,6 +121,21 @@ export function createPtyService(options: PtyServiceOptions): PtyService {
     if (t.flow.reset()) tryChild(t.child.resume?.bind(t.child));
   };
 
+  const inputLimits = options.input ?? DEFAULT_INPUT_LIMITS;
+  /** PTY-4: whether the child (or the process as a whole) already holds more unconsumed input than allowed. Unmeasurable counts as full. */
+  const inputFull = (t: Terminal): boolean => {
+    try {
+      const own = t.child.pendingWrite?.();
+      if (own === undefined) return false;
+      if (!(own < inputLimits.terminal)) return true;
+      let total = 0;
+      for (const x of terminals.values()) total += x.child.pendingWrite?.() ?? 0;
+      return !(total < inputLimits.process);
+    } catch {
+      return true;
+    }
+  };
+
   const refuseSpawn = (req: string, code: Extract<ControlReply, { t: "spawn-failed" }>["code"]): void => void sendTo(control, { t: "spawn-failed", req, code });
 
   /** Ends a terminal nobody can own any more: kills its group, releases its listeners and tells its viewer. */
@@ -152,15 +176,25 @@ export function createPtyService(options: PtyServiceOptions): PtyService {
     let idText = "";
     do idText = "pty_" + Buffer.from(rand(16)).toString("hex");
     while (terminals.has(idText));
-    const t: Terminal = { id: idText, child, filter: new OscCwdFilter(), flow: new OutputFlow(options.flow ?? DEFAULT_FLOW), subs: [], granted: undefined, owner: undefined, exited: false, groupGone: false };
+    const t: Terminal = { id: idText, child, filter: new OscCwdFilter(), resync: true, cancel: false, seen: false, flow: new OutputFlow(options.flow ?? DEFAULT_FLOW), subs: [], granted: undefined, owner: undefined, exited: false, groupGone: false };
     terminals.set(t.id, t);
     t.subs.push(
       child.onData((chunk) => {
-        const out = t.filter.push(chunk);
-        if (out === "" || t.owner === undefined) return;
-        const verdict = t.flow.offer(out.length);
-        if (verdict.send) sendTo(t.owner, { t: "data", term: t.id, chunk: out });
+        // The drop decision comes BEFORE the OSC filter: the filter is only right if the viewer parser sees the same subsequence.
+        if (t.owner === undefined) return void (t.resync = true, t.cancel = t.cancel || t.seen);
+        const verdict = t.flow.offer(chunk.length);
         if (verdict.pause) tryChild(t.child.pause?.bind(t.child));
+        if (!verdict.send) return void (t.resync = true, t.cancel = true);
+        let out = "";
+        if (t.resync) {
+          t.filter = new OscCwdFilter();
+          t.resync = false;
+          if (t.cancel) out = "\x18"; // CAN: the viewer parser abandons any sequence a missed chunk left open
+          t.cancel = false;
+        }
+        out += t.filter.push(chunk);
+        t.flow.refund(chunk.length - out.length);
+        if (out !== "") sendTo(t.owner, { t: "data", term: t.id, chunk: out });
       }),
       child.onExit((exit) => {
         t.exited = true;
@@ -203,7 +237,7 @@ export function createPtyService(options: PtyServiceOptions): PtyService {
     try {
       if (m.t === "kill") killTerminal(t, m.signal);
       else if (m.t === "resize") t.child.resize(m.cols, m.rows);
-      else if (!t.exited) t.child.write(m.data);
+      else if (!t.exited && !inputFull(t)) t.child.write(m.data);
     } catch {
       /* a dying child */
     }
@@ -221,8 +255,13 @@ export function createPtyService(options: PtyServiceOptions): PtyService {
     const refuse = (): void => void sendTo(channel, { t: "refused", term: null, code: "foreign_terminal" });
     if (t === undefined || t.granted === undefined || t.granted !== dataChannels.get(channel)) return refuse();
     if (m.t === "attach") {
-      if (t.owner !== channel) releaseFlow(t);
+      if (t.owner !== channel) {
+        releaseFlow(t);
+        t.resync = true;
+        t.cancel = t.seen;
+      }
       t.owner = channel;
+      t.seen = true;
       sendTo(channel, { t: "attached", term: t.id });
       return;
     }
@@ -235,7 +274,10 @@ export function createPtyService(options: PtyServiceOptions): PtyService {
     }
     try {
       if (m.t === "resize") t.child.resize(m.cols, m.rows);
-      else if (!t.exited) t.child.write(m.data);
+      else if (!t.exited) {
+        if (inputFull(t)) sendTo(channel, { t: "refused", term: t.id, code: "input_full" });
+        else t.child.write(m.data);
+      }
     } catch {
       /* a dying child */
     }
@@ -251,6 +293,9 @@ export function createPtyService(options: PtyServiceOptions): PtyService {
       if (conn !== undefined && t.granted === conn) t.granted = undefined; // the grant dies with the connection: only a new grant lets one attach
     }
     dataChannels.delete(channel);
+    // A closed channel holds nothing: its listeners go, so a port opened and closed per view is not kept for the process lifetime.
+    for (const d of channelSubs.get(channel) ?? []) d.dispose();
+    channelSubs.delete(channel);
     if (control === channel) {
       control = undefined;
       // Nobody can signal these any more and no run row will ever name them: closing the control channel ends every terminal.
@@ -270,7 +315,7 @@ export function createPtyService(options: PtyServiceOptions): PtyService {
       }
       control = channel;
       const subs = [channel.onMessage((m) => onControl(channel, m)), channel.onClose(() => closeChannel(channel))];
-      serviceSubs.push(...subs);
+      channelSubs.set(channel, subs);
       return { dispose: () => void (subs.forEach((s) => s.dispose()), closeChannel(channel)) };
     },
     serveData(channel, conn) {
@@ -284,7 +329,7 @@ export function createPtyService(options: PtyServiceOptions): PtyService {
       }
       dataChannels.set(channel, conn);
       const subs = [channel.onMessage((m) => onData(channel, m)), channel.onClose(() => closeChannel(channel))];
-      serviceSubs.push(...subs);
+      channelSubs.set(channel, subs);
       return { dispose: () => void (subs.forEach((s) => s.dispose()), closeChannel(channel)) };
     },
     dispose() {
@@ -293,8 +338,8 @@ export function createPtyService(options: PtyServiceOptions): PtyService {
       for (const t of terminals.values()) killTerminal(t, "SIGKILL");
       for (const t of terminals.values()) t.subs.forEach((d) => d.dispose());
       terminals.clear();
-      serviceSubs.forEach((d) => d.dispose());
-      serviceSubs.length = 0;
+      for (const subs of channelSubs.values()) subs.forEach((d) => d.dispose());
+      channelSubs.clear();
       for (const ch of [...dataChannels.keys(), ...(control === undefined ? [] : [control])]) {
         try {
           ch.close();

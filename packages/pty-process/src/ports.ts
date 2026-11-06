@@ -66,6 +66,8 @@ export interface PtyChild {
   /** Stops and restarts reading the child's output, so the child blocks on a full pty buffer (backpressure). Absent: output over the hard bound is dropped. */
   pause?(): void;
   resume?(): void;
+  /** Bytes of input written to the child and not yet taken by it. The service refuses more input past a bound (PTY-4); absent: unbounded. */
+  pendingWrite?(): number;
   /** `job` groups only: called once when the job has no active process left. */
   onGroupEmpty?(listener: () => void): Disposable;
 }

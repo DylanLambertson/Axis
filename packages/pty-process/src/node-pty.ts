@@ -38,6 +38,27 @@ export function signalName(signal: number | undefined): string | null {
 }
 
 /**
+ * node-pty 1.2 queues every `write` in `_writeStream._writeQueue` (`{ buffer, offset }` entries) with no bound and no completion
+ * signal. This reads that private queue; the shape is pinned by the opt-in test against Code OSS's own copy
+ * (`test/code-oss/node-pty-real.test.mjs`). Any other shape returns undefined here (the spawn then fails) or Infinity later.
+ */
+function inputQueueMeter(pty: NodePtyLike): (() => number) | undefined {
+  const queueOf = (): unknown => (pty as unknown as { _writeStream?: { _writeQueue?: unknown } })._writeStream?._writeQueue;
+  if (!Array.isArray(queueOf())) return undefined;
+  return () => {
+    const queue = queueOf();
+    if (!Array.isArray(queue)) return Number.POSITIVE_INFINITY;
+    let bytes = 0;
+    for (const entry of queue as Array<{ buffer?: { byteLength?: number }; offset?: number } | undefined>) {
+      const length = entry?.buffer?.byteLength;
+      if (typeof length !== "number") return Number.POSITIVE_INFINITY;
+      bytes += length - (entry?.offset ?? 0);
+    }
+    return bytes;
+  };
+}
+
+/**
  * The shipped `SpawnFn`. node-pty forks the child with `setsid` on POSIX, so the group leader is the child and `pgid` equals `pid`
  * (the service refuses anything else). The environment is passed as given; node-pty itself adds `PWD` (the cwd) and, when `TERM` is
  * missing, `TERM`. Windows has no job object through ConPTY (design doc, decision 1), so a spawn there fails (`spawn_failed`).
@@ -56,7 +77,18 @@ export function createNodePtySpawn(spawnPty: NodePtySpawn, platform: string = pr
       encoding: "utf8",
       handleFlowControl: false,
     });
+    const pending = inputQueueMeter(pty);
+    if (pending === undefined) {
+      // Fail closed: input that cannot be measured cannot be bounded (PTY-4). A node-pty with another internal shape needs a new meter.
+      try {
+        pty.kill("SIGKILL");
+      } catch {
+        /* nothing more can be done */
+      }
+      throw new Error("input queue not measurable");
+    }
     const child: PtyChild = {
+      pendingWrite: pending,
       pid: pty.pid,
       group: { kind: "pgid", pgid: pty.pid },
       write: (data) => pty.write(data),

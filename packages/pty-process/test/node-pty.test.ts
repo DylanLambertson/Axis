@@ -6,6 +6,7 @@ import { createNodePtySpawn, signalName, type NodePtyLike, type NodePtySpawn, ty
 
 class FakePty implements NodePtyLike {
   readonly calls: string[] = [];
+  readonly _writeStream: { _writeQueue: Array<{ buffer: { byteLength: number }; offset: number }> } = { _writeQueue: [] };
   private dl: Array<(d: string) => void> = [];
   private el: Array<(e: { exitCode: number; signal?: number | undefined }) => void> = [];
   constructor(readonly pid: number) {}
@@ -87,4 +88,24 @@ test("Windows has no job object through ConPTY: the spawn throws and node-pty is
   const spawn = createNodePtySpawn(() => (seen.push(1), new FakePty(1)), "win32");
   assert.throws(() => spawn(REQ));
   assert.deepEqual(seen, []);
+});
+
+test("PTY-4: pendingWrite is the unwritten bytes of node-pty's own write queue, and a queue of another shape is Infinity", () => {
+  const { pty, spawn } = rig();
+  const c = spawn(REQ);
+  assert.equal(c.pendingWrite?.(), 0);
+  pty._writeStream._writeQueue.push({ buffer: { byteLength: 100 }, offset: 30 }, { buffer: { byteLength: 50 }, offset: 0 });
+  assert.equal(c.pendingWrite?.(), 120);
+  pty._writeStream._writeQueue.push({ buffer: {} as never, offset: 0 });
+  assert.equal(c.pendingWrite?.(), Number.POSITIVE_INFINITY);
+  (pty as unknown as { _writeStream: unknown })._writeStream = undefined;
+  assert.equal(c.pendingWrite?.(), Number.POSITIVE_INFINITY, "a node-pty that drops the queue is treated as full, not empty");
+});
+
+test("PTY-4: a node-pty whose input queue cannot be measured is killed and the spawn fails (nothing runs unbounded)", () => {
+  const pty = new FakePty(7);
+  (pty as unknown as { _writeStream: unknown })._writeStream = undefined;
+  const spawn = createNodePtySpawn(() => pty, "linux");
+  assert.throws(() => spawn(REQ));
+  assert.deepEqual(pty.calls, ["kill:SIGKILL"]);
 });

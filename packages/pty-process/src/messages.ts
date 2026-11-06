@@ -68,7 +68,7 @@ export type ControlReply = z.infer<typeof controlReply>;
 /** What the pty process may say on a data channel (not validated by the daemon; the renderer owns that end). */
 export type DataReply =
   | { readonly t: "attached"; readonly term: string }
-  | { readonly t: "refused"; readonly term: string | null; readonly code: "foreign_terminal" | "unsupported" | "invalid" }
+  | { readonly t: "refused"; readonly term: string | null; readonly code: "foreign_terminal" | "unsupported" | "invalid" | "input_full" }
   | { readonly t: "data"; readonly term: string; readonly chunk: string }
   | { readonly t: "overflow"; readonly term: string; readonly chars: number }
   | { readonly t: "exit"; readonly term: string };

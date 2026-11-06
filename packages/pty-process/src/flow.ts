@@ -28,11 +28,16 @@ export class OutputFlow {
   /** A chunk of `n` characters is ready. `send` false: drop it. `pause` true: the caller must pause the child. */
   offer(n: number): { readonly send: boolean; readonly pause: boolean } {
     if (this.unacked + n > this.limits.hard) {
-      this.dropped += n;
-      return { send: false, pause: this.pauseNow() };
+      this.dropped += n; // already paused when over `high`; a drop never asks for a pause itself
+      return { send: false, pause: false };
     }
     this.unacked += n;
     return { send: true, pause: this.unacked > this.limits.high && this.pauseNow() };
+  }
+
+  /** Output the filter removed was counted by `offer` but never sent, so the viewer will never acknowledge it: give it back. */
+  refund(n: number): void {
+    this.unacked = Math.max(0, this.unacked - n);
   }
 
   /** The viewer consumed `n` characters (clamped to what is outstanding). `resume`: restart the child. `overflow`: characters lost since the last report. */

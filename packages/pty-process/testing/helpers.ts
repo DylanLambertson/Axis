@@ -54,7 +54,7 @@ export async function settle(rounds = 20): Promise<void> {
 }
 
 /** Polls a condition by yielding to the event loop, bounded by iterations rather than by a clock. */
-export async function until(cond: () => boolean, iterations = 2_000_000): Promise<void> {
+export async function until(cond: () => boolean, iterations = 50_000): Promise<void> {
   for (let i = 0; i < iterations; i++) {
     if (cond()) return;
     await new Promise<void>((r) => setImmediate(r));
@@ -103,6 +103,7 @@ export class FakeChild implements PtyChild {
   readonly written: string[] = [];
   readonly killed: string[] = [];
   readonly resized: Array<[number, number]> = [];
+  pending = 0;
   pauses = 0;
   resumes = 0;
   private readonly dl = new Set<(c: string) => void>();
@@ -112,6 +113,7 @@ export class FakeChild implements PtyChild {
   write(d: string): void { this.written.push(d); }
   resize(c: number, r: number): void { this.resized.push([c, r]); }
   kill(s: string): void { this.killed.push(s); }
+  pendingWrite(): number { return this.pending; }
   pause(): void { this.pauses++; }
   resume(): void { this.resumes++; }
   onData(l: (c: string) => void): Disposable { this.dl.add(l); return { dispose: () => void this.dl.delete(l) }; }
@@ -151,6 +153,7 @@ export function pipeSpawn(children: number[] = []): SpawnFn {
       pid: cp.pid,
       group: { kind: "pgid", pgid: cp.pid },
       write: (d) => void cp.stdin.write(d),
+      pendingWrite: () => cp.stdin.writableLength,
       resize: () => undefined,
       kill: (s) => void cp.kill(s),
       onData: (l) => (dl.add(l), { dispose: () => void dl.delete(l) }),
