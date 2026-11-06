@@ -345,10 +345,15 @@ test("S11: recovery reports a REMOVING workspace every time but audits it once",
   assert.deepEqual(journal.recover(LOCK).workspacesNeedingReconcile, [ws.id]);
   assert.deepEqual(journal.recover(LOCK).workspacesNeedingReconcile, [ws.id]);
   assert.equal(audit.head()?.seq, seq);
-  const released = acquireInstanceLock(mkdtempSync(join(tmpdir(), "axis-journal-rel-")));
-  released.release();
-  assert.throws(() => journal.recover(released), code("E_CONFLICT"));
-  assert.throws(() => journal.recover(undefined as never), code("E_INVALID_ARGUMENT"));
+  const dir = mkdtempSync(join(tmpdir(), "axis-journal-rel-"));
+  try {
+    const released = acquireInstanceLock(dir);
+    released.release();
+    assert.throws(() => journal.recover(released), code("E_CONFLICT"));
+    assert.throws(() => journal.recover(undefined as never), code("E_INVALID_ARGUMENT"));
+  } finally {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  }
 });
 
 // ---- NEW-D / S10: recover() needs a genuine lock for this database's directory ----

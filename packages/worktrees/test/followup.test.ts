@@ -3,7 +3,7 @@
 
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
-import { existsSync, mkdirSync, readdirSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { after, describe, it } from 'node:test';
@@ -102,13 +102,15 @@ describe('nits', () => {
   it('N-B: the lock reads a real process start time here, so a reused pid is detected', async (t) => {
     if (process.platform === 'win32') return;
     const child = spawn('/bin/sleep', ['30'], { stdio: 'ignore' });
+    const closed = new Promise<void>((resolve) => child.once('close', () => resolve()));
+    let file: string | undefined;
     try {
       const spawnedAt = Date.now();
       await new Promise((r) => setTimeout(r, 300));
       const start = await processStartOf(child.pid as number);
       if (start === null) return t.skip('ps -o lstart= is unavailable here (no procps); the lock falls back to liveness only');
       assert.ok(Math.abs(start - spawnedAt) < 5_000, `start time ${start} is not near ${spawnedAt}`);
-      const file = path.join(os.tmpdir(), `axis-lock-${process.pid}-${Date.now()}`);
+      file = path.join(os.tmpdir(), `axis-lock-${process.pid}-${Date.now()}`);
       // A live pid that now belongs to a different process (a different start time) is a stale lock.
       writeFileSync(file, JSON.stringify({ pid: child.pid, processStart: Date.now() - 86_400_000, token: 'aa' }));
       const release = await acquireFileLock(file, { timeoutMs: 3_000 });
@@ -117,7 +119,9 @@ describe('nits', () => {
       writeFileSync(file, JSON.stringify({ pid: child.pid, processStart: start, token: 'bb' }));
       await assert.rejects(acquireFileLock(file, { timeoutMs: 300 }), code('E_CONFLICT'));
     } finally {
-      child.kill('SIGKILL');
+      if (child.exitCode === null) child.kill('SIGKILL');
+      await closed;
+      if (file !== undefined) rmSync(file, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   });
 

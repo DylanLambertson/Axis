@@ -9,7 +9,9 @@ import { hostFixture } from "./host-fixture.js";
  * nothing is left holding the event loop. stdin lines drive it: `pending` (start one unit of work), `release`
  * (finish it), `signal` (send itself SIGTERM), `message` (the control `shutdown` message), `again` (a repeat).
  */
-const fx = hostFixture();
+const root = process.argv[3];
+if (root === undefined) throw new Error("missing lifecycle test root");
+const fx = hostFixture({ root });
 const drain = new DrainGate();
 const flushMs = Number(process.argv[2] ?? "30000");
 const coordinator = new ShutdownCoordinator(

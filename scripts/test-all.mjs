@@ -3,7 +3,8 @@
 // failures. Exits non-zero if anything failed. `--json <file>` writes the per-suite
 // results for scripts/gate.mjs.
 import { spawnSync } from "node:child_process";
-import { readdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import { readdirSync, readFileSync, writeFileSync, existsSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseTestCounts } from "./gate/lib.mjs";
@@ -11,10 +12,13 @@ import { parseTestCounts } from "./gate/lib.mjs";
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const jsonAt = process.argv[2] === "--json" ? process.argv[3] : undefined;
 const npm = process.platform === "win32" ? "npm.cmd" : "npm";
+const testTmp = mkdtempSync(join(tmpdir(), "axis-test-run-"));
+const testEnv = { ...process.env, TMPDIR: testTmp, TMP: testTmp, TEMP: testTmp };
 
 function run(name, command, args) {
   const r = spawnSync(command, args, {
     cwd: root,
+    env: testEnv,
     encoding: "utf8",
     maxBuffer: 512 * 1024 * 1024,
     shell: false
@@ -38,6 +42,14 @@ for (const dir of readdirSync(packagesDir).sort()) {
 }
 suites.push(run("test/packages", process.execPath, ["--test", "test/packages/*.test.mjs"]));
 suites.push(run("test/gate", process.execPath, ["--test", "test/gate/*.test.mjs"]));
+
+const leaked = readdirSync(testTmp, { withFileTypes: true })
+  .filter((entry) => entry.isDirectory() && entry.name.startsWith("axis-"))
+  .map((entry) => entry.name).sort();
+const clean = leaked.length === 0;
+suites.push({ name: "temp cleanup", ok: clean, pass: Number(clean), fail: Number(!clean) });
+if (!clean) console.error(`Temporary directories left by this test run: ${leaked.join(", ")}`);
+rmSync(testTmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 
 console.log("Test summary");
 for (const s of suites) console.log(`  ${s.ok ? "ok    " : "FAILED"} ${s.name}: ${s.pass} pass, ${s.fail} fail`);

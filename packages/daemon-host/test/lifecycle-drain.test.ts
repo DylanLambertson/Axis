@@ -1,6 +1,8 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
+import { mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { tmpdir } from "node:os";
 import { test } from "node:test";
@@ -15,6 +17,7 @@ const CHILD = new URL("../testing/lifecycle-child.js", import.meta.url);
 
 interface Child {
   readonly proc: ChildProcessWithoutNullStreams;
+  readonly root: string;
   readonly out: Array<Record<string, unknown>>;
   readonly closed: Promise<number | null>;
   send(line: string): Promise<void>;
@@ -27,7 +30,8 @@ async function until(cond: () => boolean, ms: number): Promise<boolean> {
 }
 
 async function start(finalizeMs = 30_000): Promise<Child> {
-  const proc = spawn(process.execPath, [fileURLToPath(CHILD), String(finalizeMs)], {
+  const root = mkdtempSync(join(tmpdir(), "axis-host-lifecycle-"));
+  const proc = spawn(process.execPath, [fileURLToPath(CHILD), String(finalizeMs), root], {
     stdio: ["pipe", "pipe", "pipe"],
     shell: false,
     cwd: tmpdir(),
@@ -47,6 +51,7 @@ async function start(finalizeMs = 30_000): Promise<Child> {
   const closed = new Promise<number | null>((resolve) => proc.on("close", (code) => resolve(code)));
   const child: Child = {
     proc,
+    root,
     out,
     closed,
     async send(line) {
@@ -55,14 +60,25 @@ async function start(finalizeMs = 30_000): Promise<Child> {
       assert.ok(await until(() => out.filter((o) => o["ack"] === line).length > n || proc.exitCode !== null, 3000), `child acknowledged ${line}`);
     },
   };
-  assert.ok(await until(() => out.some((o) => o["ready"] === true), 15_000), `child became ready; stderr: ${errText}`);
-  return child;
+  try {
+    assert.ok(await until(() => out.some((o) => o["ready"] === true), 15_000), `child became ready; stderr: ${errText}`);
+    return child;
+  } catch (error) {
+    if (proc.exitCode === null) proc.kill("SIGKILL");
+    await closed;
+    rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    throw error;
+  }
 }
 
 for (const trigger of process.platform === "win32" ? (["message"] as const) : (["signal", "message"] as const)) {
   test(`exit by draining: after ${trigger} the process ends only once pending work has drained, then on its own within 2 s`, async (t) => {
     const c = await start();
-    t.after(() => void c.proc.kill("SIGKILL"));
+    t.after(async () => {
+      if (c.proc.exitCode === null) c.proc.kill("SIGKILL");
+      await c.closed;
+      rmSync(c.root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    });
     await c.send("pending");
     await c.send(trigger);
     // Shutdown has begun and must be waiting for the work: no exit report and a live process.
@@ -82,7 +98,11 @@ for (const trigger of process.platform === "win32" ? (["message"] as const) : ([
 
 test("a repeated trigger while work is still running ends the wait: exit 1, the store is not released, the caller forces the exit", async (t) => {
   const c = await start();
-  t.after(() => void c.proc.kill("SIGKILL"));
+  t.after(async () => {
+    if (c.proc.exitCode === null) c.proc.kill("SIGKILL");
+    await c.closed;
+    rmSync(c.root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  });
   await c.send("pending");
   await c.send("message");
   await wait(100);
