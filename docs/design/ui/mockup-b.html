@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<!-- Copyright (c) 2026 Dylan Lambertson. All rights reserved. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Axis mockup B: Instrument</title>
+<link rel="stylesheet" href="mockup-b.css">
+</head>
+<body>
+<div class="stage">
+  <div class="note">
+    <span><b>Axis, direction B: Instrument.</b> Fourteen screens: new project and project home first, IDE view last. Illustrative sample data. CLI and model names are placeholders.</span>
+    <span class="gap"></span>
+    <div class="screens" role="group" aria-label="Mockup screen"><button type="button" data-go="newproj" aria-pressed="false">New project</button><button type="button" data-go="home" aria-pressed="true">Project home</button><button type="button" data-go="dash" aria-pressed="false">Workspaces</button><button type="button" data-go="agent" aria-pressed="false">Agent</button><button type="button" data-go="ws" aria-pressed="false">Workspace</button><button type="button" data-go="rv" aria-pressed="false">Diff review</button><button type="button" data-go="agents" aria-pressed="false">Agents</button><button type="button" data-go="thread" aria-pressed="false">Thread</button><button type="button" data-go="code" aria-pressed="false">Code panel</button><button type="button" data-go="pages" aria-pressed="false">Pages</button><button type="button" data-go="plugins" aria-pressed="false">Plugins</button><button type="button" data-go="tasks" aria-pressed="false">Tasks</button><button type="button" data-go="integ" aria-pressed="false">Integrations</button><button type="button" data-go="ide" aria-pressed="false">IDE view</button></div>
+    <button class="btn sec" type="button" id="theme">Switch theme</button>
+  </div>
+  <div class="scroller"><div class="win">
+    <header class="top">
+      <div class="lights" aria-hidden="true"><i></i><i></i><i></i></div>
+      <button class="proj" type="button" aria-label="Project acme-web, switch project"><svg viewBox="320 163 554 406" aria-hidden="true"><defs><linearGradient id="mb" gradientUnits="userSpaceOnUse" x1="643" y1="294" x2="817" y2="549"><stop offset="0" stop-color="#2B029C"/><stop offset="1" stop-color="#5018F7"/></linearGradient><linearGradient id="mf" gradientUnits="userSpaceOnUse" x1="724" y1="286" x2="305" y2="470"><stop offset="0" stop-color="#4212F4"/><stop offset="1" stop-color="#C090F6"/></linearGradient></defs><path fill="url(#mb)" d="M552.42 333.13L669.27 202.03A15 15 0 0 1 693.25 204.16L863.48 481.63A38.5 38.5 0 0 1 830.67 540.27L711.49 540.27A57.16 57.16 0 0 1 662.77 513Z"/><path fill="url(#mf)" d="M573.64 172.63L673.11 172.63A52.94 52.94 0 0 1 717.76 254L538.53 535.38A61.81 61.81 0 0 1 486.4 563.98L386.92 563.98A52.94 52.94 0 0 1 342.27 482.61L521.5 201.23A61.81 61.81 0 0 1 573.64 172.63Z"/></svg>acme-web</button>
+      <nav class="crumb" id="crumb" aria-label="Breadcrumb"><b>Dashboard</b></nav>
+      <button class="cmd" type="button" id="cmdopen"><span aria-hidden="true">⌕</span>Search or run a command<span class="kbd">⌘K</span></button>
+      <div class="activity" role="status"><span class="g g-run" aria-hidden="true"></span><b class="num">3 running</b><span>·</span><span class="g g-wait" aria-hidden="true"></span><span class="num">1 needs you</span></div>
+      <div class="seg" role="group" aria-label="View"><button type="button" data-view="agent" aria-pressed="true">Agent</button><button type="button" data-view="ide" aria-pressed="false">IDE</button><button type="button" data-view="split" aria-pressed="false">Split</button></div>
+      <button class="ghost" type="button" aria-label="Model and account: large-2 on API key"><span class="mono" style="font-size:12px">large-2</span><span aria-hidden="true">⌄</span></button>
+    </header>
+    <div class="body">
+      <nav class="spine" aria-label="Project and agents"><button type="button" data-go="home" aria-current="false" aria-label="Home" title="Home">⌂</button><button type="button" data-go="dash" aria-current="false" aria-label="Workspaces" title="Workspaces">▦</button><button type="button" data-go="agents" aria-current="false" aria-label="Agents" title="Agents">◎</button><button type="button" data-go="thread" aria-current="false" aria-label="Threads" title="Threads">⇄</button><button type="button" data-go="tasks" aria-current="false" aria-label="Tasks" title="Tasks">☑</button><button type="button" data-go="pages" aria-current="false" aria-label="Pages" title="Pages">▤</button><button type="button" data-go="plugins" aria-current="false" aria-label="Plugins" title="Plugins">▣</button><button type="button" data-go="integ" aria-current="false" aria-label="Integrations" title="Integrations">⌘</button><hr><span class="lbl sp" aria-hidden="true">agents</span><button type="button" data-go="agent" aria-label="Proration fixer, waiting for approval" title="Proration fixer · waiting for approval">PF<span class="g g-wait"></span></button><button type="button" data-go="rv" aria-label="Invoice migrator, exited with code 1" title="Invoice migrator · exited 1">IM<span class="g g-bad"></span></button><button type="button" data-go="thread" aria-label="Planner, running" title="Planner · running">PL<span class="g g-run"></span></button><button type="button" aria-label="Webhook retry, running" title="Webhook retry · running">WR<span class="g g-run"></span></button><button type="button" aria-label="Date lib upgrade, quiet, may be waiting for input" title="Date lib upgrade · quiet">DL<span class="g g-quiet"></span></button><button class="add" type="button" aria-label="New agent" title="New agent">+</button></nav>
+
+      <!-- DASHBOARD -->
+      <section class="view" id="v-dash" aria-label="Workspaces" hidden>
+        <div class="tile dash" style="flex:1">
+          <div class="dh">
+            <h1>Workspaces</h1>
+            <div class="filters" role="group" aria-label="Filter"><button type="button" aria-pressed="true">All 6</button><button type="button" aria-pressed="false">Needs you 2</button><button type="button" aria-pressed="false">Running 3</button></div>
+            <span style="flex:1"></span>
+            <button class="btn sec" type="button">Open repository</button>
+            <button class="btn pri" type="button">New workspace <span class="kbd">N</span></button>
+          </div>
+          <div style="overflow:auto;flex:1" id="rows">
+            <div class="lane need" role="group" aria-label="Needs you">
+              <header><span class="lbl">Needs you</span><span class="sub">sorted first, reason in text</span><span class="gap"></span><span class="lbl">activity · 2 h</span></header>
+              <button class="row" type="button" data-go="ws"><span class="g g-wait" aria-hidden="true"></span><span class="who"><span class="nm">Fix proration rounding</span><span class="br">fix/proration-rounding</span></span><span class="who"><b>Composer · Agent</b><span class="why">waiting for approval</span></span><span class="sub">Run <span class="mono">npm test -- billing</span> in the worktree</span><span class="trace" aria-label="12 events, 1 waiting"><i class="e" style="height:6px"></i><i class="e" style="height:10px"></i><i class="e" style="height:8px"></i><i style="height:4px"></i><i class="e" style="height:12px"></i><i class="e" style="height:14px"></i><i class="x" style="height:9px"></i><i class="e" style="height:11px"></i><i class="w" style="height:18px"></i></span><span class="num"><span class="add">+48</span> <span class="del">−12</span> · 3</span><span class="sub num">2 min</span></button>
+              <button class="row" type="button" data-go="rv"><span class="g g-bad" aria-hidden="true"></span><span class="who"><span class="nm">Migrate invoice table</span><span class="br">feat/invoice-v2</span></span><span class="who"><b>shipit · CLI agent</b><span class="why">exited with code 1</span></span><span class="sub"><span class="flagtag">Git config or hooks changed</span> permissions: CLI-managed</span><span class="trace" aria-label="9 events, ended in failure"><i class="e" style="height:8px"></i><i class="e" style="height:12px"></i><i class="e" style="height:16px"></i><i class="e" style="height:10px"></i><i class="e" style="height:6px"></i><i class="x" style="height:18px"></i></span><span class="num"><span class="add">+210</span> <span class="del">−74</span> · 9</span><span class="sub num">11 min</span></button>
+            </div>
+            <div class="lane" role="group" aria-label="acme-web">
+              <header><span class="lbl">acme-web</span><span class="sub mono">github.com/acme/web</span><span class="gap"></span><span class="sub num">5 workspaces</span></header>
+              <button class="row" type="button" data-go="ws"><span class="g g-run" aria-hidden="true"></span><span class="who"><span class="nm">Add retry to webhook sender</span><span class="br">feat/webhook-retry</span></span><span class="who"><b>Composer · Agent</b><span class="why">running</span></span><span class="sub">Editing <span class="mono">src/webhooks/sender.ts</span></span><span class="trace" aria-label="7 events, live"><i class="e" style="height:5px"></i><i class="e" style="height:9px"></i><i class="e" style="height:7px"></i><i class="e" style="height:12px"></i><i class="l" style="height:15px"></i><i class="l" style="height:18px"></i></span><span class="num"><span class="add">+31</span> <span class="del">−4</span> · 2</span><span class="sub num">now</span></button>
+              <button class="row" type="button" data-go="ws"><span class="g g-quiet" aria-hidden="true"></span><span class="who"><span class="nm">Upgrade date library</span><span class="br">chore/date-lib</span></span><span class="who"><b>patchr · CLI agent</b><span class="why">quiet, may be waiting for input</span></span><span class="sub">permissions: CLI-managed · running 24 min</span><span class="trace" aria-label="5 events, quiet for 8 minutes"><i class="e" style="height:10px"></i><i class="e" style="height:6px"></i><i class="e" style="height:12px"></i><i style="height:3px"></i><i style="height:3px"></i><i style="height:3px"></i></span><span class="num"><span class="add">+18</span> <span class="del">−18</span> · 6</span><span class="sub num">8 min</span></button>
+              <button class="row" type="button" data-go="rv"><span class="g g-ok" aria-hidden="true"></span><span class="who"><span class="nm">Docs: auth flow</span><span class="br">docs/auth-flow</span></span><span class="who"><b>Composer · Edit</b><span class="why">done, ready to review</span></span><span class="sub">1 file changed against main</span><span class="trace" aria-label="4 events, done"><i class="e" style="height:8px"></i><i class="e" style="height:12px"></i><i class="e" style="height:6px"></i></span><span class="num"><span class="add">+64</span> <span class="del">−0</span> · 1</span><span class="sub num">1 h</span></button>
+            </div>
+            <div class="lane" role="group" aria-label="payments-core">
+              <header><span class="lbl">payments-core</span><span class="sub mono">~/code/payments-core</span></header>
+              <button class="row" type="button" data-go="ide"><span class="g g-idle" aria-hidden="true"></span><span class="who"><span class="nm">Local checkout</span><span class="br">main</span></span><span class="who"><span class="why">idle</span></span><span class="sub">Opens in IDE view. No agent runs in the project's own checkout.</span><span class="sub">—</span><span class="sub">clean</span><span class="sub num">yesterday</span></button>
+            </div>
+          </div>
+          <div class="hint" aria-hidden="true"><span><span class="kbd">J</span> <span class="kbd">K</span> move</span><span><span class="kbd">↵</span> open</span><span><span class="kbd">N</span> new workspace</span><span><span class="kbd">⌘K</span> command</span></div>
+        </div>
+      </section>
+
+      <!-- WORKSPACE -->
+      <section class="view" id="v-ws" aria-label="Workspace: Fix proration rounding" hidden>
+        <aside class="tile files" aria-label="Files and changes">
+          <div class="th"><span class="lbl">Worktree</span><span class="sub mono" style="margin-left:auto">fix-proration-rounding</span></div>
+          <div class="tree"><div>▾ src</div><div class="i1">▾ billing</div><div class="i2 sel">proration.ts<span class="m add">M</span></div><div class="i2">invoice.ts</div><div class="i2">proration.test.ts<span class="m add">M</span></div><div class="i1">▸ webhooks</div><div>▾ .github</div><div class="i1">workflows/ci.yml<span class="m" style="color:var(--warn)">M</span></div><div>package.json</div></div>
+          <div class="changes"><div class="th" style="border:0;min-height:30px;padding:0 8px"><span class="lbl">Changes</span><span class="sub num" style="margin-left:auto">3 files</span></div>
+            <button type="button" data-go="rv" aria-current="true"><span class="f">src/billing/proration.ts</span><span class="num"><span class="add">+31</span> <span class="del">−9</span></span></button>
+            <button type="button" data-go="rv"><span class="f">src/billing/proration.test.ts</span><span class="num"><span class="add">+17</span> <span class="del">−3</span></span></button>
+            <button type="button" data-go="rv"><span class="f">.github/workflows/ci.yml</span><span class="flagtag">protected</span></button>
+          </div>
+        </aside>
+        <div class="tile session">
+          <div class="th"><h2>Fix proration rounding</h2><span class="br">base main@a41c9e2</span><span style="flex:1"></span><span class="sub" id="wsstate" style="display:flex;gap:8px;align-items:center"><span class="g g-wait" aria-hidden="true"></span>Waiting for approval</span><button class="btn sec" type="button" data-go="rv">Review 3 files</button></div>
+          <div class="stream" id="stream" tabindex="0" aria-label="Agent activity" role="log">
+            <div class="axisline" aria-hidden="true"></div>
+            <div class="ev"><span class="node">›</span><span><b>You</b> Prorated amounts are off by a cent for annual plans switched mid-cycle. Find the rounding bug and cover it with a test.</span><time>14:02</time></div>
+            <div class="ev"><span class="node">⌕</span><span>Read <code>src/billing/proration.ts</code> and <code>invoice.ts</code>. Rounding happens per line item, then again on the total.</span><time>14:02</time></div>
+            <div class="ev"><span class="node">✎</span><span>Edited <code>src/billing/proration.ts</code> to round once, on the total. <span class="add num">+31</span> <span class="del num">−9</span></span><time>14:03</time></div>
+            <div class="ev"><span class="node">✎</span><span>Added a regression test in <code>proration.test.ts</code> for the 366-day leap-year case.</span><time>14:04</time></div>
+            <div class="ev err"><span class="node">!</span><span><b>Test run failed</b>, 1 of 42: <code>prorates leap year</code> expected 1633, received 1634. Retrying with the half-even rule.</span><time>14:05</time></div>
+            <section class="decision" id="decision" role="group" aria-labelledby="dtitle">
+              <header><span class="g g-wait" aria-hidden="true"></span><b id="dtitle">Approval needed: run a command</b><span style="flex:1"></span><span class="lbl">step 6</span></header>
+              <dl><dt>Action</dt><dd class="mono">npm test -- billing</dd><dt>Where</dt><dd>This workspace's worktree only</dd><dt>Consequence</dt><dd>Runs the repository's test script. It can read and write files in the worktree.</dd><dt>Received since last approval</dt><dd>Nothing from other agents, pages or tasks · hop 0</dd></dl>
+              <div class="acts"><button class="btn pri" type="button" id="approve">Approve once <span class="kbd">⌘↵</span></button><button class="btn sec" type="button">Always for this workspace</button><button class="btn sec" type="button" id="deny">Deny</button></div>
+              <p class="sub cardnote">⌘↵ approves only while focus is in this card. An "always" rule never covers a run that has read another agent's message or an agent-written page or task.</p>
+            </section>
+          </div>
+          <div class="composer"><label class="sr" for="ask">Message the agent</label><textarea id="ask" rows="2" placeholder="Ask, edit or run with the agent. Mention a file with @."></textarea>
+            <div class="cbar"><div class="modes" role="group" aria-label="Composer mode"><button type="button" aria-pressed="false">Ask</button><button type="button" aria-pressed="false">Edit</button><button type="button" aria-pressed="true">Agent</button></div><span class="sub">large-2 · fix/proration-rounding</span><span style="flex:1"></span><button class="btn pri" type="button">Send <span class="kbd">↵</span></button></div></div>
+        </div>
+        <aside class="tile terms" aria-label="Terminals">
+          <div class="ttabs"><button type="button" aria-pressed="true"><span class="g g-ok" aria-hidden="true"></span>shell</button><button type="button" aria-pressed="false"><span class="g g-quiet" aria-hidden="true"></span>patchr</button><span style="flex:1"></span><button type="button" aria-label="Split terminal pane">Split</button></div>
+          <div class="tbody"><span class="p">~/…/fix-proration-rounding</span> <span class="ok">$</span> git status -sb<br>## fix/proration-rounding<br>&nbsp;M src/billing/proration.ts<br>&nbsp;M src/billing/proration.test.ts<br>&nbsp;M .github/workflows/ci.yml<br><br><span class="p">~/…/fix-proration-rounding</span> <span class="ok">$</span> ▌</div>
+          <div class="launch"><b>Launch CLI agent</b><span>A CLI agent runs with your credentials, can push, and can write outside the worktree. It is governed by its own permissions, not Axis approvals.</span><div style="display:flex;gap:8px"><button class="btn sec" type="button">shipit</button><button class="btn sec" type="button">patchr</button></div></div>
+        </aside>
+      </section>
+
+      <!-- DIFF REVIEW -->
+      <section class="view" id="v-rv" aria-label="Diff review" hidden>
+        <aside class="tile files" aria-label="Changes">
+          <div class="th"><span class="lbl">Changes</span><span class="sub num" style="margin-left:auto">3 files</span></div>
+          <div class="changes" style="border:0"><button type="button" aria-current="true"><span class="f">src/billing/proration.ts</span><span class="num"><span class="add">+31</span> <span class="del">−9</span></span></button><button type="button"><span class="f">src/billing/proration.test.ts</span><span class="num"><span class="add">+17</span> <span class="del">−3</span></span></button><button type="button"><span class="f">.github/workflows/ci.yml</span><span class="flagtag">protected</span></button></div>
+          <div class="sub" style="padding:12px;border-top:1px solid var(--line);white-space:normal">Files changed outside the agent: <b style="color:var(--text);font-weight:500">none</b></div>
+        </aside>
+        <div class="tile session">
+          <div class="th"><h2>Review changes</h2><span class="br">3 files against main@a41c9e2</span><span style="flex:1"></span><span class="meter" id="meter" aria-hidden="true"><i class="a"></i><i></i><i class="r"></i></span><span class="sub" id="decided">2 of 3 hunks decided</span><button class="btn sec" type="button" data-go="ws">Back to session</button></div>
+          <div class="guard" role="note"><span class="g g-wait" aria-hidden="true"></span><span><b>Protected path changed:</b> <span class="mono">.github/workflows/ci.yml</span> controls what runs in CI. The change below adds <span class="mono">continue-on-error: true</span>, so a failing test would no longer fail the build. Check it before you commit.</span></div>
+          <div class="rv">
+            <div class="file"><header><b class="mono" style="font-weight:500">src/billing/proration.ts</b><span class="num"><span class="add">+31</span> <span class="del">−9</span></span><span style="flex:1"></span><button class="btn sec" type="button" style="height:26px">Restore from run base</button></header>
+              <div class="hh"><span>@@ -41,9 +41,13 @@ prorate()</span><span class="hunk-act" role="group" aria-label="Hunk 1 decision"><button class="a" type="button" aria-pressed="true">Accept</button><button class="r" type="button" aria-pressed="false">Reject</button></span></div>
+              <div class="ln"><span>41</span><span>41</span><span></span><pre>  const days = daysInPlan(plan, at);</pre></div>
+              <div class="ln d"><span>42</span><span></span><span>−</span><pre>  const lines = items.map((i) =&gt; Math.round(i.rate * ratio));</pre></div>
+              <div class="ln d"><span>43</span><span></span><span>−</span><pre>  return Math.round(sum(lines));</pre></div>
+              <div class="ln a"><span></span><span>42</span><span>+</span><pre>  const exact = sum(items.map((i) =&gt; i.rate * ratio));</pre></div>
+              <div class="ln a"><span></span><span>43</span><span>+</span><pre>  // Round once, half to even, so a leap year cannot drift by a cent.</pre></div>
+              <div class="ln a"><span></span><span>44</span><span>+</span><pre>  return roundHalfEven(exact, 0);</pre></div>
+              <div class="hh"><span>@@ -88,6 +92,10 @@ roundHalfEven()</span><span class="hunk-act" role="group" aria-label="Hunk 2 decision"><button class="a" type="button" aria-pressed="false">Accept</button><button class="r" type="button" aria-pressed="false">Reject</button></span></div>
+              <div class="ln a"><span></span><span>92</span><span>+</span><pre>export function roundHalfEven(v: number, digits: number) {</pre></div>
+              <div class="ln a"><span></span><span>93</span><span>+</span><pre>  const f = 10 ** digits, x = v * f, r = Math.round(x);</pre></div>
+              <div class="ln a"><span></span><span>94</span><span>+</span><pre>  return Math.abs(x % 1) === 0.5 &amp;&amp; r % 2 ? (r - 1) / f : r / f;</pre></div>
+            </div>
+            <div class="file"><header><b class="mono" style="font-weight:500">.github/workflows/ci.yml</b><span class="flagtag">protected path</span><span class="num"><span class="add">+2</span> <span class="del">−0</span></span></header>
+              <div class="hh"><span>@@ -12,3 +12,5 @@ jobs.test</span><span class="hunk-act" role="group" aria-label="Hunk 3 decision"><button class="a" type="button" aria-pressed="false">Accept</button><button class="r" type="button" aria-pressed="true">Reject</button></span></div>
+              <div class="ln"><span>12</span><span>12</span><span></span><pre>      - run: npm ci</pre></div>
+              <div class="ln a"><span></span><span>13</span><span>+</span><pre>      - run: npm run test:billing -- --coverage</pre></div>
+              <div class="ln a"><span></span><span>14</span><span>+</span><pre>        continue-on-error: true</pre></div>
+            </div>
+          </div>
+          <div class="commit"><label class="sr" for="cmsg">Commit message</label><input id="cmsg" value="fix(billing): round prorated totals once, half to even"><button class="btn pri" type="button">Commit <span class="kbd">⌘↵</span></button><button class="btn sec" type="button">Push branch</button><button class="btn sec" type="button">Open pull request</button></div>
+        </div>
+      </section>
+
+      <!-- IDE VIEW -->
+      <section class="view" id="v-ide" aria-label="IDE view" hidden>
+        <div class="tile rail" aria-hidden="true"><span class="on">▤</span><span>⌕</span><span>⋔</span><span>▷</span><span>⊞</span></div>
+        <aside class="tile files" style="width:232px" aria-label="Explorer"><div class="th"><span class="lbl">Explorer</span></div><div class="tree"><div>▾ payments-core</div><div class="i1">▾ src</div><div class="i2 sel">ledger.ts</div><div class="i2">settle.ts</div><div class="i2">retry.ts</div><div class="i1">▸ test</div><div class="i1">package.json</div></div></aside>
+        <div class="tile editor">
+          <div class="etabs"><div class="on">ledger.ts <span aria-hidden="true">×</span></div><div>settle.ts</div><div>ledger.test.ts</div></div>
+          <div class="code" tabindex="0" aria-label="Editor, ledger.ts">
+            <div><span>12</span><span><span class="k">export async function</span> <span class="fn">postEntry</span>(tx: Tx, entry: Entry) {</span></div>
+            <div><span>13</span><span>  <span class="k">const</span> existing = <span class="k">await</span> tx.find(entry.id);</span></div>
+            <div class="cur"><span>14</span><span>  <span class="k">if</span> (existing) <span class="k">return</span> existing; <span class="c">// idempotent by id</span></span></div>
+            <div><span>15</span><span>  <span class="k">const</span> balance = <span class="k">await</span> tx.balance(entry.account);</span></div>
+            <div><span>16</span><span>  <span class="k">if</span> (balance + entry.amount &lt; <span class="s">0</span>) <span class="k">throw new</span> InsufficientFunds(entry.account);</span></div>
+            <div><span>17</span><span>  <span class="k">return</span> tx.insert(entry);</span></div>
+            <div><span>18</span><span>}</span></div>
+          </div>
+          <div class="panel"><div class="ttabs"><button type="button" aria-pressed="true">Terminal</button><button type="button" aria-pressed="false">Problems 0</button><button type="button" aria-pressed="false">Output</button></div><div class="tbody"><span class="p">payments-core</span> <span class="ok">$</span> npm test -- ledger<br><span class="ok">✓</span> posts an entry once per id (12 ms)<br><span class="ok">✓</span> refuses an overdraft (4 ms)</div></div>
+        </div>
+        <aside class="tile terms" style="width:300px" aria-label="Workspace agent panel"><div class="th"><span class="lbl">Workspace agent</span><span class="sub" style="margin-left:auto;display:flex;gap:6px;align-items:center"><span class="g g-idle" aria-hidden="true"></span>idle</span></div><div class="tbody" style="font-family:var(--sans);font-size:12.5px">The local checkout has no agent. Agents in other workspaces stay in the top bar; <span class="kbd">⌃⌘0</span> opens the dashboard.</div><div class="composer"><label class="sr" for="ask2">Ask about ledger.ts</label><textarea id="ask2" rows="1" placeholder="Ask about ledger.ts"></textarea><div class="cbar"><div class="modes" role="group" aria-label="Composer mode"><button type="button" aria-pressed="true">Ask</button><button type="button" aria-pressed="false">Edit</button></div><span style="flex:1"></span><button class="btn pri" type="button">Send</button></div></div></aside>
+      </section>
+    </div>
+    <footer class="status"><span class="mono" id="sbranch">fix/proration-rounding</span><span>0 errors, 0 warnings</span><span class="num">Ln 14, Col 34</span><span>TypeScript</span></footer>
+  </div></div>
+</div>
+<dialog id="palette" aria-label="Command palette"><label class="sr" for="q">Command</label><input id="q" placeholder="Type a command or workspace name" autocomplete="off"><ul role="listbox" aria-label="Results"><li role="option" aria-selected="false">New project…</li><li role="option" aria-selected="false">Go to project home<span class="kbd">⌃⌘0</span></li><li role="option" aria-selected="false">Open thread Planner ↔ Invoice migrator</li><li role="option" aria-selected="true"><span class="g g-wait" aria-hidden="true"></span>Go to Fix proration rounding, waiting for approval<span class="kbd">↵</span></li><li role="option" aria-selected="false">New workspace…<span class="kbd">N</span></li><li role="option" aria-selected="false">Toggle Agent / IDE view<span class="kbd">⌃⌘V</span></li><li role="option" aria-selected="false">Show dashboard<span class="kbd">⌃⌘0</span></li></ul></dialog>
+<div class="sr" aria-live="polite" id="live"></div>
+<script src="mockup-screens.js"></script>
+<script src="mockup.js"></script>
+</body>
+</html>
