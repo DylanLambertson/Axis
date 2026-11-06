@@ -36,6 +36,7 @@ export type RegisterProjectInput = Omit<z.infer<typeof registerProjectSchema>, "
 const workspaceId = z.string().min(1).max(128).refine(noControl).refine(isWellFormedString);
 const actorOnly = z.string().regex(ACTOR);
 export const worktreePathSchema = absolutePath;
+export const baseBranchSchema = z.string().min(12).max(300).regex(/^refs\/heads\/[!-~]+$/).refine((r) => !r.includes(".."));
 export const hashSchema = z.string().regex(HASH);
 export const workspaceIdSchema = workspaceId;
 export const actorSchema = actorOnly;
@@ -128,6 +129,20 @@ export function setWorktreePath(ctx: RecordsContext, id: string, path: string, a
     throw error;
   }
   audit(ctx, a, "journal.workspace.record", `workspace:${row.id}`, "worktreePath");
+  return out;
+}
+
+/** The base branch the daemon resolved at create: once, only while CREATING, and only a printable `refs/heads/` name. */
+export function recordBaseBranch(ctx: RecordsContext, id: string, ref: string, actor: AuditActor): Workspace {
+  const a = parseActor(actor);
+  const parsed = baseBranchSchema.safeParse(ref);
+  if (!parsed.success) throw invalid(parsed.error, "base branch");
+  const row = load(ctx.db, id);
+  if (row.base_branch === parsed.data) return toWorkspace(row);
+  if (row.state !== "CREATING") throw new AxisError("E_CONFLICT", "A base branch can only be recorded while the workspace is being created", { state: row.state });
+  if (row.base_branch !== null) throw new AxisError("E_CONFLICT", "The base branch is already recorded and does not change");
+  const out = update(ctx, "base_branch = ?", [parsed.data], row.id);
+  audit(ctx, a, "journal.workspace.record", `workspace:${row.id}`, "baseBranch");
   return out;
 }
 
