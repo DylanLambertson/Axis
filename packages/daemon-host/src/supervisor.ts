@@ -1,5 +1,6 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { outboundMessageSchema, type OutboundMessage } from "./control/messages.js";
+import { base64url, signMainAttestation, type HmacSha256, type MainIdentity } from "./main/attest-sign.js";
 
 /**
  * The parent side of the daemon host (ticket X1, design `docs/design/daemon-host-entry.md`): spawn the fixed entry, send `init`,
@@ -17,8 +18,13 @@ import { outboundMessageSchema, type OutboundMessage } from "./control/messages.
  * A run that stayed `ready` for `stableMs` forgets earlier crashes.
  *
  * What main does NOT do here (no answer is a refusal on the host side, design 6.3): anchor storage, native confirmation, trust
- * checks and settings. `onRequest` is where main plugs them in; without it every request goes unanswered, so the host runs
- * degraded or refuses (a missing `anchor.get` answer is degraded mode, a missing `native.result` is a declined dialog).
+ * checks and settings. `onRequest` is where main plugs them in (`main/answers.ts`, ticket X1c); without it every request goes
+ * unanswered, so the host runs degraded or refuses (a missing `anchor.get` answer is degraded mode, a missing `native.result` is a
+ * declined dialog).
+ *
+ * The attestation key (ticket X1b, `docs/design/main-answers.md` section 2): the supervisor keeps a copy of the current
+ * generation's key bytes from the spawn until that child exits, a spawn fails, it fails or it stops, and zeroes it then. It never
+ * hands the key out: `connect(identity, port)` signs here and posts the `connect` message with the one transferred port.
  */
 
 /** The exit codes the supervisor treats specially (equal to `EXIT` in `exit-codes.ts`; a test holds them equal). */
@@ -30,7 +36,8 @@ export type SupervisorState = "idle" | "starting" | "running" | "backoff" | "sto
 export type FailureReason = "lock_held" | "bad_config" | "degraded" | "crash_loop";
 
 export interface DaemonChild {
-  postMessage(message: unknown): void;
+  /** `transfer` carries the one port of a `connect` (Electron `MessagePortMain`); absent for every other message. */
+  postMessage(message: unknown, transfer?: readonly unknown[]): void;
   /** Terminate now (no graceful path). */
   kill(): unknown;
   onMessage(handler: (message: unknown) => void): () => void;
@@ -94,6 +101,10 @@ export interface DaemonSupervisorOptions {
   /** Answers the host's requests (anchor, native confirm, trust, settings). Absent or silent: no answer, which the host treats as a refusal. */
   readonly onRequest?: (message: OutboundMessage, reply: (message: unknown) => void) => void;
   readonly onStateChange?: (state: SupervisorState, reason: FailureReason | undefined) => void;
+  /** HMAC-SHA256 for signing connects (the seam passes `crypto.createHmac`). Absent: `connect` always refuses. */
+  readonly hmacSha256?: HmacSha256;
+  /** Wall-clock milliseconds for `issuedAt` (the daemon judges freshness on its wall clock). Default `Date.now`. */
+  readonly wallNow?: () => number;
 }
 
 /** The names main lets through to the daemon (design 3, step 2: nothing a renderer can influence). `NODE_OPTIONS` is never one. */
@@ -145,25 +156,9 @@ export function axisDataRoots(platform: SupervisedConfig["platform"], env: Reado
   return { dataDir: `${base}${sep}daemon`, worktreeRoot: `${base}${sep}worktrees` };
 }
 
-const B64URL = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 const KEY_BYTES = 32;
 const MIN_DISTINCT = 16;
 const KEY_TRIES = 8;
-
-/** base64url without padding (no Buffer: this file runs in main without Node imports). */
-function base64url(bytes: Uint8Array): string {
-  let out = "";
-  for (let i = 0; i < bytes.length; i += 3) {
-    const a = bytes[i] as number;
-    const b = bytes[i + 1];
-    const c = bytes[i + 2];
-    out += B64URL[a >> 2];
-    out += B64URL[((a & 3) << 4) | ((b ?? 0) >> 4)];
-    if (b !== undefined) out += B64URL[((b & 15) << 2) | ((c ?? 0) >> 6)];
-    if (c !== undefined) out += B64URL[c & 63];
-  }
-  return out;
-}
 
 export class DaemonSupervisor {
   readonly #o: DaemonSupervisorOptions;
@@ -181,6 +176,8 @@ export class DaemonSupervisor {
   #readyAt: number | undefined;
   #sentReady = false;
   #unansweredLogged = 0;
+  /** The current generation's key bytes; zeroed and dropped when that child is gone. */
+  #key: Uint8Array | undefined;
 
   constructor(options: DaemonSupervisorOptions) {
     this.#o = options;
@@ -230,7 +227,31 @@ export class DaemonSupervisor {
     });
   }
 
+  /**
+   * Broker one renderer connection (ticket X1b): sign `identity` with the current generation's key and post `connect` with the
+   * one port. `false` (and nothing posted) unless the host is `running` (it sent `ready`; a degraded host is running) and a MAC
+   * function was given. The caller closes the port on `false`. Never throws.
+   */
+  connect(identity: MainIdentity, port: unknown): boolean {
+    const child = this.#child;
+    const key = this.#key;
+    const hmac = this.#o.hmacSha256;
+    if (this.#state !== "running" || child === undefined || key === undefined || hmac === undefined) return false;
+    try {
+      const attestation = signMainAttestation(hmac, key, identity, (this.#o.wallNow ?? Date.now)());
+      child.postMessage({ type: "connect", attestation }, [port]);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   // ---- internals ----------------------------------------------------------------------------------------------
+
+  #dropKey(): void {
+    this.#key?.fill(0);
+    this.#key = undefined;
+  }
 
   #spawn(): void {
     const generation = ++this.#generation;
@@ -238,21 +259,25 @@ export class DaemonSupervisor {
     this.#readyAt = undefined;
     this.#set("starting");
     // The key first: a source that cannot give random bytes must not even fork a host (it is a counted crash).
-    let key: string;
+    this.#dropKey();
+    let keyBytes: Uint8Array;
     try {
-      key = this.#freshKey();
+      keyBytes = this.#freshKey();
     } catch {
       this.#onCrash(null, generation);
       return;
     }
+    const key = base64url(keyBytes);
     let child: DaemonChild;
     try {
       child = this.#o.spawn();
     } catch {
       // A spawn that throws is a crash (counted), not a reason to stay silent.
+      keyBytes.fill(0);
       this.#onCrash(null, generation);
       return;
     }
+    this.#key = keyBytes;
     this.#child = child;
     this.#offs.push(child.onMessage((m) => this.#onMessage(m, generation)));
     this.#offs.push(child.onExit((code) => this.#onExit(code, generation)));
@@ -268,10 +293,11 @@ export class DaemonSupervisor {
     }
   }
 
-  #freshKey(): string {
+  #freshKey(): Uint8Array {
     for (let i = 0; i < KEY_TRIES; i++) {
       const bytes = this.#o.randomBytes(KEY_BYTES);
-      if (bytes.length === KEY_BYTES && new Set(bytes).size >= MIN_DISTINCT) return base64url(bytes);
+      // A copy: the source's buffer is not ours to keep or zero.
+      if (bytes.length === KEY_BYTES && new Set(bytes).size >= MIN_DISTINCT) return new Uint8Array(bytes);
     }
     // A source that cannot give random bytes must not start a host.
     throw new Error("no random key");
@@ -328,6 +354,7 @@ export class DaemonSupervisor {
     this.#clearTimers();
     for (const off of this.#offs.splice(0)) off();
     this.#child = undefined;
+    this.#dropKey();
     this.#emit("exited", { code });
     if (this.#state === "stopping") {
       this.#finishStop();
@@ -357,6 +384,7 @@ export class DaemonSupervisor {
   }
 
   #fail(reason: FailureReason): void {
+    this.#dropKey();
     this.#failure = reason;
     this.#clearTimers();
     this.#set("failed");
@@ -375,12 +403,14 @@ export class DaemonSupervisor {
       // A child that does not report its exit after the kill must not hold the app open: the stop is over.
       for (const off of this.#offs.splice(0)) off();
       this.#child = undefined;
+      this.#dropKey();
       this.#generation++;
       this.#finishStop();
     }
   }
 
   #finishStop(): void {
+    this.#dropKey();
     this.#clearTimers();
     this.#set("stopped");
     this.#emit("stopped", {});

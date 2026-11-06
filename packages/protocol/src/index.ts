@@ -17,3 +17,4 @@ export * from "./review.js";
 export * from "./composer-runs.js";
 export * from "./events.js";
 export * from "./contracts.js";
+export * from "./client.js";
