@@ -14,5 +14,6 @@ export * from "./providers.js";
 export * from "./display.js";
 export * from "./git.js";
 export * from "./review.js";
+export * from "./composer-runs.js";
 export * from "./events.js";
 export * from "./contracts.js";
