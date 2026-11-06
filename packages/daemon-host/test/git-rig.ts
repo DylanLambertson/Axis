@@ -43,6 +43,7 @@ import {
   type GitHandlerDeps,
   type GitOperations,
   type RunsService,
+  type SshHostResolver,
 } from "../src/index.js";
 import { memoryChannelPair } from "../testing/memory-channel.js";
 import { Client, gitUnavailable } from "./review-rig.js";
@@ -57,6 +58,7 @@ export interface GitRigOptions {
   maxBytes?: number;
   policy?: Policy;
   ops?: (real: GitOperations) => GitOperations;
+  resolveSshHost?: SshHostResolver;
   review?: (real: CommitPreparer) => CommitPreparer;
   runsActive?: boolean;
   /** Make `journal.recordPushed` throw. */
@@ -130,7 +132,7 @@ export async function gitRig(options: GitRigOptions = {}) {
   const gate = { runsActive: options.runsActive ?? false, stalled: false, branchOverride: undefined as string | undefined, recordPushed: [] as string[], bookkeeping: [] as unknown[], internal: [] as unknown[] };
   const runs: Pick<RunsService, "hasActiveRun"> = { hasActiveRun: () => gate.runsActive };
   const calls = { planPush: [] as Array<{ baseSha: string; branch: string; remote: string }>, executePush: 0, executeCommit: 0, prepare: 0, restoreIndex: 0, assertFresh: 0 };
-  const realOps = createGitOperations({ git: gitPort, runs });
+  const realOps = createGitOperations({ git: gitPort, runs, ...(options.resolveSshHost === undefined ? {} : { resolveSshHost: options.resolveSshHost }) });
   const baseOps: GitOperations = {
     ...realOps,
     planPush: (c) => (calls.planPush.push({ baseSha: c.baseSha, branch: c.branch, remote: c.remote }), realOps.planPush(c)),
