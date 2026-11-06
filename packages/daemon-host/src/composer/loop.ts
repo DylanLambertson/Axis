@@ -30,7 +30,14 @@ export interface LoopInput {
   readonly emit: (event: ActivityInput) => void;
   readonly maxTurns?: number;
   readonly maxOutputTokens?: number;
+  /** Most tool calls one model reply may make (review r1 S4). Default 16; a reply with more ends the run `TOOL_CALL_LIMIT`. */
+  readonly maxToolCallsPerTurn?: number;
+  /** Most characters of tool results a run may hand back to the model (S4). Default 4 Mi; past it the run ends `TOOL_RESULT_LIMIT`. */
+  readonly maxResultChars?: number;
 }
+
+export const MAX_TOOL_CALLS_PER_TURN = 16;
+export const MAX_RESULT_CHARS_PER_RUN = 4_194_304;
 
 const SYSTEM: Readonly<Record<ComposerMode, string>> = {
   ask: "You answer questions about the user's workspace. You have no tools.",
@@ -59,6 +66,9 @@ export async function runComposerLoop(input: LoopInput): Promise<LoopEnd> {
   const messages: Message[] = [{ role: "user", content: [{ type: "text", text: input.prompt }] }];
   let usage: Usage = { inputTokens: 0, outputTokens: 0 };
   let requests = 0;
+  const maxCalls = input.maxToolCallsPerTurn ?? MAX_TOOL_CALLS_PER_TURN;
+  const maxResult = input.maxResultChars ?? MAX_RESULT_CHARS_PER_RUN;
+  let resultChars = 0;
   for (let turn = 0; turn < maxTurns; turn++) {
     if (signal.aborted) return { state: "CANCELLED", reason: "USER_CANCELLED" };
     let result;
@@ -83,6 +93,8 @@ export async function runComposerLoop(input: LoopInput): Promise<LoopEnd> {
     if (result.stopReason === "refusal") return { state: "FAILED", reason: "MODEL_REFUSAL" };
     const calls = result.content.filter((b) => b.type === "tool_use");
     if (calls.length === 0) return { state: "REVIEWING", reason: null };
+    // Bounded fan-out (S4): a reply that asks for more calls than the cap runs none of them; the memory a run holds stays bounded.
+    if (calls.length > maxCalls) return { state: "FAILED", reason: "TOOL_CALL_LIMIT" };
     messages.push({ role: "assistant", content: result.content.map((b) => b as ContentBlock) });
     const results: ContentBlock[] = [];
     for (const call of calls) {
@@ -100,6 +112,9 @@ export async function runComposerLoop(input: LoopInput): Promise<LoopEnd> {
         return signal.aborted ? { state: "CANCELLED", reason: "USER_CANCELLED" } : { state: "FAILED", reason: "TOOL_FAILED" };
       }
       emit({ type: "tool", tool: safeName(call.name), outcome: outcome.ok ? "ok" : "error", reason: outcome.ok ? null : outcome.reason });
+      resultChars += outcome.content.length;
+      // The call ran (and is audited), but its result is not kept: the run stops before it holds more than the cap (S4).
+      if (resultChars > maxResult) return { state: "FAILED", reason: "TOOL_RESULT_LIMIT" };
       results.push({ type: "tool_result", toolUseId: call.id, content: outcome.content, ...(outcome.ok ? {} : { isError: true }) });
     }
     if (signal.aborted) return { state: "CANCELLED", reason: "USER_CANCELLED" };

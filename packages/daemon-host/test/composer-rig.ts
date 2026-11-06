@@ -37,10 +37,15 @@ export interface ComposerRig {
 
 export interface ComposerRigOptions {
   readonly replies: ReadonlyArray<MockReply>;
+  /** Replies built from the rig's own directories (used instead of `replies` when given). */
+  readonly script?: (paths: { readonly root: string; readonly outside: string }) => ReadonlyArray<MockReply>;
   readonly budget?: RunBudgetLimits;
   readonly mock?: Partial<MockProviderOptions>;
   /** Replace the rig's rule-table policy (to control trust). */
   readonly policy?: Policy;
+  /** The agent binding's audit sink throws for these rows (the journal's own log is unaffected). */
+  readonly failAudit?: (action: string) => boolean;
+  readonly maxActive?: number;
 }
 
 const SHA = "b".repeat(40);
@@ -60,22 +65,29 @@ export async function composerRig(options: ComposerRigOptions): Promise<Composer
   journal.transitionWorkspace(ws.id, "READY");
   let wire = 0;
   let tools = false;
-  const replies = options.replies.map((reply) => (req: { readonly tools?: readonly unknown[] | undefined }): MockReply => {
+  const replies = (options.script?.({ root, outside }) ?? options.replies).map((reply) => (req: { readonly tools?: readonly unknown[] | undefined }): MockReply => {
     wire++;
     if ((req.tools?.length ?? 0) > 0) tools = true;
     return reply;
   });
   const agent = createAgentBinding({
-    locator: { locate: async (id) => (id === ws.id ? { workTree: root, gitDir: join(root, ".git") } : Promise.reject(new Error("unknown"))) },
+    // Every workspace of the journal shares the one directory (enough for the service's limits; containment uses its id).
+    locator: { locate: async (id) => (journal.getWorkspace(id) !== undefined ? { workTree: root, gitDir: join(root, ".git") } : Promise.reject(new Error("unknown"))) },
     repositoryRoots: () => [],
-    audit,
+    audit: { append: (e) => (options.failAudit?.(e.action) === true ? ((): never => { throw new Error("disk full"); })() : audit.append(e)) },
     redactor: new Redactor(),
     env: () => ({ PATH: "/usr/bin:/bin", HOME: base }),
     approvals: r.approvals.runs,
     now: () => r.clock.now(),
     mock: { ...options.mock, replies, respond: () => ({ kind: "text", text: "no more replies" }) },
   });
-  const service = createComposerService({ journal, engine: agent, now: () => r.clock.now(), ...(options.budget === undefined ? {} : { budget: options.budget }) });
+  const service = createComposerService({
+    journal,
+    engine: agent,
+    now: () => r.clock.now(),
+    ...(options.budget === undefined ? {} : { budget: options.budget }),
+    ...(options.maxActive === undefined ? {} : { maxActive: options.maxActive }),
+  });
   return {
     r,
     user,

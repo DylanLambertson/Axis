@@ -135,13 +135,12 @@ test("destructive and privileged calls, a bad run id or digest, and a disposed h
   assert.deepEqual(await r.approvals.runs.request(input(), new AbortController().signal), { kind: "declined", state: "refused" });
 });
 
-test("settled() ignores a challenge that is not a run's, and a run's approval cannot be spent by another requester", async (t) => {
+test("settled() ignores a challenge that is not a run's, and a run's approval is spent exactly once", async (t) => {
   const r = await setup(t);
   const a = await ask(r);
   r.approvals.runs.settled({ challengeId: "x".repeat(43), state: "approved", nativeRequired: false });
   await ticks();
   assert.equal(a.settled(), undefined);
-  // The gate's execute path (an RPC retry naming this challenge) is refused: the requester is the run, not a connection.
   const challenge = a.issued() as Challenge;
   const user = await r.connect();
   await user.call("axis.approvals", "resolve", { challengeId: challenge.challengeId, decision: "approve", digest: challenge.digest });

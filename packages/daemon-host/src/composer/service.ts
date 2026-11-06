@@ -145,6 +145,9 @@ export function createComposerService(deps: ComposerServiceDeps): ComposerServic
       if (signal.aborted) throw composerFailure("E_CANCELLED");
       if (closed) throw composerFailure("E_UNAVAILABLE", "shutting_down");
       // Synchronous from here to the loop's start: no other start can interleave between the check and the record.
+      // The active-run check comes before the journal's own idempotency replay: a retry whose daemon-side key entry is gone
+      // while its run is still RUNNING answers `active_run`, not `replayed` (review r1 N5). The daemon's store normally
+      // answers such a retry first; after a restart the run is BLOCKED and the replay works.
       const open = deps.journal.listRuns({ workspaceId: input.workspaceId, states: OPEN }).filter((r) => r.kind === "composer");
       if (open.length > 0) throw composerFailure("E_CONFLICT", "active_run");
       if (live.size >= maxActive) throw composerFailure("E_BACKPRESSURE");
@@ -210,7 +213,10 @@ export function createComposerService(deps: ComposerServiceDeps): ComposerServic
         l.controller.abort();
         return view(run);
       }
-      if (run.state !== "QUEUED" && run.state !== "BLOCKED") throw composerFailure("E_CONFLICT", "not_cancellable");
+      // RUNNING but not driven by this daemon: its last transition could not be written (review r1 N7). Nothing runs it, so
+      // the user may end it; otherwise the workspace would refuse every new run until a restart.
+      const stranded = run.state === "RUNNING" && !closed;
+      if (run.state !== "QUEUED" && run.state !== "BLOCKED" && !stranded) throw composerFailure("E_CONFLICT", "not_cancellable");
       return view(deps.journal.transitionRun(runId, "CANCELLED", { reason: "USER_CANCELLED", actor: "user", expectedFrom: run.state }));
     },
 

@@ -91,14 +91,13 @@ test("DMN-3: a denied approval writes nothing; the model is told and the run goe
 });
 
 test("WT-1: writes through `..`, an absolute path and a planted symlink are refused and nothing lands outside", async (t) => {
-  const c = await setup(t, { replies: [] });
-  symlinkSync(c.outside, join(c.root, "src", "link"));
-  const attempts = ["../outside/a.txt", join(c.outside, "b.txt"), "src/link/c.txt"];
   const runs = [];
-  for (const path of attempts) {
-    const d = await composerRig({ replies: [write(path), say("x")] });
+  for (const attempt of ["dotdot", "absolute", "symlink"] as const) {
+    // Each attempt has its own rig, and the path aims at THAT rig's outside directory, so the check below means something.
+    const d = await composerRig({ replies: [], script: ({ outside }) => [write(attempt === "dotdot" ? "../outside/a.txt" : attempt === "absolute" ? join(outside, "b.txt") : "src/link/c.txt"), say("x")] });
     t.after(() => d.cleanup());
-    if (path === "src/link/c.txt") symlinkSync(d.outside, join(d.root, "src", "link"));
+    if (attempt === "symlink") symlinkSync(d.outside, join(d.root, "src", "link"));
+    const path = attempt;
     const { run } = await d.service.start(START(d.workspaceId), new AbortController().signal);
     await until(ended(d, run.runId));
     const tool = allEvents(d, run.runId).find((e) => e.type === "tool");

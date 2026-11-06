@@ -16,7 +16,7 @@ import { createCommitPreparer, createReviewService } from "./bindings/review.js"
 import { createTempIndexProvider } from "./bindings/review-tempindex.js";
 import { createRunsBinding, type RunsBinding, type RunsBindingDeps } from "./bindings/runs.js";
 import { createWorktreesBinding, type WorktreesBinding } from "./bindings/worktrees.js";
-import { createActiveRunForwarder, createRunsClock, daemonAuditSink, handleProjectsRegister, recordingRegistrar } from "./compose-parts.js";
+import { createActiveRunForwarder, createAuditSeal, createRunsClock, settleComposer, daemonAuditSink, handleProjectsRegister, recordingRegistrar } from "./compose-parts.js";
 import type { HostConfig } from "./config.js";
 import { createAttestationVerifier } from "./control/attestation.js";
 import type { ControlClient } from "./control/client.js";
@@ -91,6 +91,8 @@ export interface ComposeOptions {
   readonly withholdHandlers?: ReadonlySet<string>;
   /** How long the final anchor waits for its acknowledgement (default 1500). A longer wait than `finalizeTimeoutMs` only turns a slow acknowledgement into exit 1. */
   readonly finalAnchorWaitMs?: number;
+  /** How long shutdown waits for composer runs to record their last rows before the audit writers are sealed (default 1000). */
+  readonly composerSettleMs?: number;
   /** Composer runs (`axis.runs/1`, docs/design/composer-runtime.md): the mock provider's script and the per-run budget. */
   readonly composer?: { readonly mock?: MockProviderOptions; readonly budget?: RunBudgetLimits; readonly maxTurns?: number };
 }
@@ -128,6 +130,8 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
   const snapshotter = options.snapshotter;
   const logger: Logger | undefined = ports.logger;
   const scanner = createSecretScanner({ mode: options.scanMode ?? "refuse" });
+  // Closed when the final anchor is taken: no composer or challenge row may land after it (review r1 S1).
+  const auditSeal = createAuditSeal();
 
   /** Undo, in reverse order, what composition created (everything below is idempotent). */
   const cleanups: Array<() => void> = [];
@@ -164,7 +168,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
       afterStorage(parts) {
         const forwarder = createActiveRunForwarder();
         const approvals = createWorktreesApprovals({
-          audit: createChallengeAuditSink({ append: (e) => (parts.audit.append(e), parts.anchors.noteWrite(), undefined) }),
+          audit: createChallengeAuditSink({ append: (e) => (auditSeal.guard(), parts.audit.append(e), parts.anchors.noteWrite(), undefined) }),
           control,
           clock: ports.clock,
           ...(logger === undefined ? {} : { logger }),
@@ -204,7 +208,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
         const agent = createAgentBinding({
           locator: worktrees.locator,
           repositoryRoots: projectPaths,
-          audit: { append: (e) => { const row = parts.audit.append(e); parts.anchors.noteWrite(); return row; } },
+          audit: { append: (e) => { auditSeal.guard(); const row = parts.audit.append(e); parts.anchors.noteWrite(); return row; } },
           redactor: ports.redactor,
           env: () => ports.env,
           approvals: approvals.runs,
@@ -359,10 +363,10 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
     offConnect?.();
     services.haltAnchor();
     built.runs?.dispose();
-    // Composer loops stop and write nothing more; a tool call already running gets a bounded moment to record its result.
-    built.composer?.dispose();
+    // Composer loops stop and write nothing more to the journal; what was running gets a bounded moment to record its result,
+    // then the composer and challenge writers are sealed, so the final checkpoint below covers the last row (review r1 S1).
+    if (!(await settleComposer(built.composer, auditSeal, options.composerSettleMs ?? 1_000))) logger?.warn("request.failed", { reason: "composer_unsettled" });
     built.agent?.dispose();
-    if (built.composer !== undefined) await Promise.race([built.composer.idle(), new Promise<void>((r) => (setTimeout(r, 1_000) as unknown as NodeJS.Timeout).unref())]);
     services.flushAnchor();
     const target = services.anchor().put;
     const head = services.auditRead.head();

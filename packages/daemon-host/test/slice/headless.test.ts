@@ -233,6 +233,15 @@ describe("headless slice", { skip, timeout: SUITE_TIMEOUT_MS }, () => {
     return s.exited;
   };
 
+  let composerRunId = "";
+  test("7b. composer: a run waits for the user's approval of a protected write, and nothing is written meanwhile", async () => {
+    const started = await user.ok<{ run: { runId: string } }>("axis.runs", "start", { workspaceId: w1.id, mode: "edit", prompt: "Add a Makefile", providerId: "mock", modelId: "mock-model" }, true);
+    composerRunId = started.run.runId;
+    await until(async () => (await user.ok<{ run: { awaitingApproval: boolean } }>("axis.runs", "get", { runId: composerRunId })).run.awaitingApproval, "the approval to be asked");
+    assert.equal((await user.ok<{ challenges: unknown[] }>("axis.approvals", "pending", {})).challenges.length, 1);
+    assert.equal(existsSync(join(w1.path, "Makefile")), false);
+  });
+
   test("8. audit chain: graceful shutdown ends by draining, the chain verifies against the final anchor, every call is recorded", async () => {
     user.close();
     const exit = await stopGracefully(sup);
@@ -262,6 +271,12 @@ describe("headless slice", { skip, timeout: SUITE_TIMEOUT_MS }, () => {
     for (const p of ["issued", "resolve", "native", "authorised"]) at = find(at, phase(p));
     at = find(at, rpc("axis.git/1.push", "rpc.execute"));
     at = find(at, phase("completed"));
+    // The composer run waiting at shutdown: its challenge was withdrawn and recorded BEFORE the final anchor (the line above
+    // asserts the anchor covers the last row), and its journal row was left RUNNING for recovery (review r1 S1).
+    const issued = find(at, (r) => r.actor === `agent:composer.${composerRunId}` && (JSON.parse(r.payload) as { phase?: string }).phase === "issued");
+    at = find(issued, (r) => r.target === rows[issued]?.target && (JSON.parse(r.payload) as { phase?: string }).phase === "withdraw");
+    const composerStates = (stopped.prepare("SELECT to_state FROM state_transitions WHERE entity = 'run' AND entity_id = ? ORDER BY id").all(composerRunId) as Array<{ to_state: string }>).map((r) => r.to_state);
+    assert.deepEqual(composerStates, ["QUEUED", "RUNNING"], "nothing was written to the journal after the shutdown began");
     const runStates = (stopped.prepare("SELECT to_state FROM state_transitions WHERE entity = 'run' AND entity_id = ? ORDER BY id").all(runId) as Array<{ to_state: string }>).map((r) => r.to_state);
     assert.deepEqual(runStates.filter((x) => x !== "QUEUED"), ["RUNNING", "REVIEWING", "COMPLETED"]);
     const ws = stopped.prepare("SELECT state, created_by FROM agent_workspaces WHERE id = ?").get(w1.id) as { state: string; created_by: string };
@@ -341,6 +356,9 @@ describe("headless slice", { skip, timeout: SUITE_TIMEOUT_MS }, () => {
     const again = await c.client.call("axis.cli-runs", "start", { workspaceId: w1.id, agentId: "slow" }, slowKey);
     const replayedRun = again.ok ? (again.result as { run: { runId: string } }).run.runId : undefined;
     assert.ok(replayedRun === started.run.runId || again.error?.details?.["reason"] === "outcome-unknown", "the old key neither starts a second run nor answers anything else");
+    const composer = (await c.client.ok<{ run: { state: string; reason: string | null; live: boolean } }>("axis.runs", "get", { runId: composerRunId })).run;
+    assert.deepEqual([composer.state, composer.reason, composer.live], ["BLOCKED", "INTERRUPTED_BY_RESTART", false], "the composer run interrupted by the shutdown");
+    assert.equal(existsSync(join(w1.path, "Makefile")), false, "the unapproved write never happened");
     const runs = await c.client.ok<{ runs: unknown[] }>("axis.cli-runs", "list", { workspaceId: w1.id });
     assert.equal(runs.runs.length, 2, "no run was started by the retry");
     const status = await c.client.ok<{ worktrees: Array<{ present: boolean; head: string | null }> }>(PROJECT, "status", { ids: [w1.id] });
