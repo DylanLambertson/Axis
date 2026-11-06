@@ -38,7 +38,7 @@ Status: built as `@axis/pty-process`, without a native dependency. Sources: thre
    - call `node-pty`'s `spawn` **directly**, not upstream's `PtyService`/`TerminalProcess`, which add `VSCODE_*` variables and the nonce after this service's PTY-5 check (PTY-6); node-pty adds only `TERM`;
    - run `child-fds.test.ts` and the group tests against the node-pty `SpawnFn` when wiring (on Linux node-pty forks with `setsid`, so pgid equals pid; fd inheritance must be shown, not assumed);
    - Windows: ConPTY via node-pty gives no job object, so the `job` group path has no source. Either a job-object helper (new native piece, needs an ADR) or Windows CLI runs are unsupported for 1a;
-   - the ADR 0005 D3.4 overlay lint that stops renderer code importing this package is not built. Ticket row: **X1-lint**, land it (or a staged-graph check) with the entry.
+   - renderer code cannot import this package: `test/code-oss/renderer-imports.test.mjs` checks the overlay's `browser/`, `common/` and `electron-browser/` files (ADR 0005 D3.4; a source import-graph test, because the overlay ESLint config only runs inside a Code OSS tree).
 2. **Id binding: `grant`.** Main (through the control channel) names which brokered data port may attach; first-attach-wins is gone.
 3. **Channel transport.** `Channel` is a minimal interface; the entry adapts `MessagePort`. Not built here and it does not block this package. A utility process's `parentPort` has no `close` event, so the adapter must synthesise one from process exit, otherwise running terminals never see the control channel close.
 
