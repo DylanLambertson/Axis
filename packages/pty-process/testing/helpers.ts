@@ -86,6 +86,8 @@ export class ManualClock implements Clock {
 export class FakeProcs implements ProcessOps {
   readonly live = new Set<number>();
   readonly calls: Array<[number, number | string]> = [];
+  /** Groups that ignore SIGKILL and SIGTERM (a stand-in for a group that cannot be ended right now). */
+  readonly unkillable = new Set<number>();
   failWith: string | undefined;
   signal(pid: number, signal: number | NodeJS.Signals): void {
     this.calls.push([pid, signal]);
@@ -93,7 +95,7 @@ export class FakeProcs implements ProcessOps {
     if (pid >= 0) throw Object.assign(new Error("not a group"), { code: "EINVAL" });
     const pgid = -pid;
     if (!this.live.has(pgid)) throw Object.assign(new Error("no such process"), { code: "ESRCH" });
-    if (signal === "SIGKILL" || signal === "SIGTERM") this.live.delete(pgid);
+    if ((signal === "SIGKILL" || signal === "SIGTERM") && !this.unkillable.has(pgid)) this.live.delete(pgid);
   }
 }
 

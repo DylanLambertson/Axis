@@ -24,10 +24,21 @@ export interface PtyProcessPortOptions {
   readonly maxPending?: number;
 }
 
-export interface PtyProcessPort extends PtyPort, Disposable {}
+/** A `PtyHandle` that also names its terminal, so the entry can have main broker a data port for it (`grant`). */
+export interface PtyProcessHandle extends PtyHandle {
+  readonly terminalId: string;
+}
+
+export interface PtyProcessPort extends PtyPort, Disposable {
+  spawn(spec: PtySpawn): Promise<PtyProcessHandle>;
+  /** G-2: lets data connection `conn` (the name main gave the brokered port) attach to `terminalId`. Nothing else may. */
+  grant(terminalId: string, conn: string): void;
+  /** How many terminals the port still tracks (an exited terminal whose group is gone is forgotten). For diagnostics and tests. */
+  trackedTerminals(): number;
+}
 
 interface Pending {
-  readonly resolve: (h: PtyHandle) => void;
+  readonly resolve: (h: PtyProcessHandle) => void;
   readonly reject: (e: PtySpawnError) => void;
   readonly timer: unknown;
 }
@@ -96,6 +107,7 @@ export function createPtyProcessPort(options: PtyProcessPortOptions): PtyProcess
       pending.delete(m.req);
       clock.clearTimeout(p.timer);
       const t: Term = { group: m.group, exit: undefined, jobEmpty: false, exitListeners: new Set() };
+      prune();
       terms.set(m.term, t);
       p.resolve(makeHandle(m.term, t));
     } else if (m.t === "spawn-failed") {
@@ -107,15 +119,18 @@ export function createPtyProcessPort(options: PtyProcessPortOptions): PtyProcess
     } else if (m.t === "exit") {
       const t = terms.get(m.term);
       if (t !== undefined) settleExit(t, { exitCode: m.exitCode, signal: m.signal });
+      prune();
     } else {
       const t = terms.get(m.term);
       if (t !== undefined) t.jobEmpty = true;
+      prune();
     }
   };
 
-  function makeHandle(term: string, t: Term): PtyHandle {
+  function makeHandle(term: string, t: Term): PtyProcessHandle {
     const forward = (msg: unknown): void => void send(msg);
     return {
+      terminalId: term,
       write: (data) => forward({ t: "write", term, data }),
       resize: (cols, rows) => forward({ t: "resize", term, cols, rows }),
       kill(signal: PtySignal) {
@@ -142,6 +157,32 @@ export function createPtyProcessPort(options: PtyProcessPortOptions): PtyProcess
     };
   }
 
+  /** The pty process is gone or being shut down: end every group this port started that still lives (POSIX; a job cannot be reached from here). */
+  const killKnown = (): void => {
+    for (const t of terms.values()) {
+      if (t.group.kind !== "pgid") continue;
+      try {
+        signalGroup(ops, t.group.pgid, "SIGKILL");
+      } catch {
+        /* an unknown state stays visible through groupAlive */
+      }
+    }
+  };
+
+  /** Forgets terminals that exited and whose group is gone, so a long-lived daemon does not keep one entry per run. */
+  const prune = (): void => {
+    for (const [id, t] of terms) {
+      if (t.exit === undefined) continue;
+      let alive = true;
+      try {
+        alive = t.group.kind === "job" ? !t.jobEmpty : validPgid(t.group.pgid) ? probeGroup(ops, t.group.pgid) === "alive" : true;
+      } catch {
+        alive = true;
+      }
+      if (!alive) terms.delete(id);
+    }
+  };
+
   const failAll = (code: PtySpawnFailure): void => {
     for (const [req, p] of [...pending]) {
       pending.delete(req);
@@ -156,17 +197,18 @@ export function createPtyProcessPort(options: PtyProcessPortOptions): PtyProcess
       if (closed) return;
       closed = true;
       failAll("channel_closed");
+      killKnown();
       // The pty process is gone, so no `exit` will come. Say so with an unknown exit; the group probe still guards finalisation.
       for (const t of terms.values()) settleExit(t, { exitCode: null, signal: null });
     }),
   ];
 
   return {
-    spawn(spec: PtySpawn): Promise<PtyHandle> {
+    spawn(spec: PtySpawn): Promise<PtyProcessHandle> {
       if (closed) return Promise.reject(new PtySpawnError("channel_closed"));
       if (pending.size >= maxPending) return Promise.reject(new PtySpawnError("capacity"));
       const req = `r${++seq}`;
-      return new Promise<PtyHandle>((resolve, reject) => {
+      return new Promise<PtyProcessHandle>((resolve, reject) => {
         const timer = clock.setTimeout(() => {
           if (pending.delete(req)) reject(new PtySpawnError("timeout"));
         }, timeoutMs);
@@ -178,10 +220,15 @@ export function createPtyProcessPort(options: PtyProcessPortOptions): PtyProcess
         }
       });
     },
+    trackedTerminals: () => terms.size,
+    grant(terminalId, conn) {
+      send({ t: "grant", term: terminalId, conn });
+    },
     dispose() {
       if (!closed) {
         closed = true;
         failAll("channel_closed");
+        killKnown();
       }
       subs.forEach((s) => s.dispose());
       terms.clear();

@@ -39,9 +39,11 @@ test("an invalid signal is refused", async () => {
 test("when the pty process is gone the host signals the group itself", async () => {
   const r = rig();
   const h = await r.port.spawn(SPEC);
+  r.procs.unkillable.add(101); // survives the close-time kill, so the explicit kill below has something to do
   r.pair.a.close();
   await settle();
   r.procs.calls.length = 0;
+  r.procs.unkillable.clear();
   h.kill("SIGKILL");
   assert.ok(r.procs.calls.some(([pid, s]) => pid === -101 && s === "SIGKILL"));
   assert.equal(h.groupAlive(), false);
@@ -106,4 +108,22 @@ test("real processes: dispose of the service kills the whole group", posix, asyn
     for (const p of pids) try { process.kill(-p, "SIGKILL"); } catch { /* gone */ }
     port.dispose();
   }
+});
+
+test("N3: the host forgets a terminal once it exited and its group is gone, so the table does not grow with every run", async () => {
+  const r = rig();
+  for (let i = 0; i < 5; i++) {
+    await r.port.spawn({ ...SPEC, runId: `run${i}` });
+    const child = r.children[i] as FakeChild;
+    r.procs.live.delete(child.pid); // its group is gone
+    child.exit();
+    await settle();
+  }
+  assert.equal(r.port.trackedTerminals(), 0);
+  await r.port.spawn(SPEC);
+  assert.equal(r.port.trackedTerminals(), 1, "a running terminal is tracked");
+  const second = r.children.at(-1) as FakeChild;
+  second.exit(); // exited but its group lives (a background child): still tracked
+  await settle();
+  assert.equal(r.port.trackedTerminals(), 1);
 });

@@ -46,6 +46,7 @@ test("groupAlive: EPERM counts as alive, ESRCH as gone, any other error throws (
 test("groupAlive still answers after the pty process died, and no exit is invented as a success", async () => {
   const r = rig();
   const h = await r.port.spawn(SPEC);
+  r.procs.unkillable.add(101); // the host's own kill on close does not end it
   const exits: unknown[] = [];
   h.onExit((e) => exits.push(e));
   r.pair.a.close();

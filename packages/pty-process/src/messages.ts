@@ -38,6 +38,8 @@ export const controlRequest = z.discriminatedUnion("t", [
   z.object({ t: z.literal("kill"), signal }).merge(term).strict(),
   z.object({ t: z.literal("resize"), cols: dim, rows: dim }).merge(term).strict(),
   z.object({ t: z.literal("write"), data: z.string().max(LIMITS.writeChars) }).merge(term).strict(),
+  /** G-2: binds an issued terminal id to one brokered data connection. Only this message lets a data connection attach. */
+  z.object({ t: z.literal("grant"), conn: id }).merge(term).strict(),
 ]);
 export type ControlRequest = z.infer<typeof controlRequest>;
 
@@ -63,6 +65,6 @@ export type ControlReply = z.infer<typeof controlReply>;
 /** What the pty process may say on a data channel (not validated by the daemon; the renderer owns that end). */
 export type DataReply =
   | { readonly t: "attached"; readonly term: string }
-  | { readonly t: "refused"; readonly term: string | null; readonly code: "unknown_terminal" | "foreign_terminal" | "unsupported" | "invalid" }
+  | { readonly t: "refused"; readonly term: string | null; readonly code: "foreign_terminal" | "unsupported" | "invalid" }
   | { readonly t: "data"; readonly term: string; readonly chunk: string }
   | { readonly t: "exit"; readonly term: string };

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { closeSync, openSync } from "node:fs";
 import { test } from "node:test";
 import { createPtyProcessPort, createPtyService } from "../src/index.js";
-import { channelPair, pipeSpawn, until } from "../testing/helpers.js";
+import { channelPair, pipeSpawn, settle, until } from "../testing/helpers.js";
 import { SPEC } from "../testing/rig.js";
 
 /**
@@ -19,9 +19,11 @@ test("PTY-7: a spawned shell sees only stdio, although the parent holds more des
   const port = createPtyProcessPort({ channel: pair.a });
   try {
     const h = await port.spawn({ ...SPEC, argv: ["/bin/sh", "-c", 'read go; ls -l /proc/$$/fd; echo end'], cwd: "/", env: { PATH: "/usr/bin:/bin" } });
-    const term = (pair.sent.b.find((m) => (m as { t: string }).t === "spawned") as { term: string }).term;
+    const term = h.terminalId;
     const data = channelPair();
-    svc.serveData(data.b);
+    svc.serveData(data.b, "c1");
+    port.grant(h.terminalId, "c1");
+    await settle();
     let out = "";
     data.a.onMessage((m) => void (out += (m as { chunk?: string }).chunk ?? ""));
     data.a.send({ t: "attach", term });
@@ -30,7 +32,6 @@ test("PTY-7: a spawned shell sees only stdio, although the parent holds more des
     await until(() => out.includes("end"));
     const fds = [...out.matchAll(/(\d+) -> /g)].map((m) => m[1]).sort();
     assert.deepEqual(fds, ["0", "1", "2"]);
-    void h;
   } finally {
     held.forEach(closeSync);
     svc.dispose();
