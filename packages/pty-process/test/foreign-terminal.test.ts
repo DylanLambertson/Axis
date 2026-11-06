@@ -125,10 +125,10 @@ test("G-2: when the granted connection closes the id cannot be reused by another
   r.service.serveData(two.b, "win2");
   r.service.serveData(again.b, "win1"); // the same connection name, reconnected
   two.a.send({ t: "attach", term });
-  again.a.send({ t: "attach", term });
   await settle();
   assert.deepEqual(two.sent.b, [REFUSED]);
-  assert.deepEqual(again.sent.b, [REFUSED]);
+  assert.throws(() => again.a.send({ t: "attach", term }), /closed/, "the service closes a port that reuses a name: names are single use");
+  assert.deepEqual(again.sent.b, []);
   r.port.grant(term, "win2"); // main brokers a new port: only now
   await settle();
   two.a.send({ t: "attach", term });
