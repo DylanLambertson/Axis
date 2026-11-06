@@ -222,6 +222,7 @@ export function stage({ repo, tree, now = Date.now(), maxFutureSkewMs = DEFAULT_
   }
   const exportMaps = Object.fromEntries(names.map((n) => [n, stageableExports(n, pkgJson[n], sources[n])]));
   const exportsOf = (n) => (names.includes(n) ? Object.keys(exportMaps[n]) : null);
+  const targetOf = (n, key) => (names.includes(n) ? exportMaps[n][key] : undefined);
 
   for (const n of names) {
     for (const [rel, { abs, data, text }] of sources[n]) {
@@ -230,7 +231,7 @@ export function stage({ repo, tree, now = Date.now(), maxFutureSkewMs = DEFAULT_
       for (const spec of importSpecifiers(text, sourceRel)) {
         let c;
         try {
-          c = classifySpecifier(spec, n, exportsOf, rel);
+          c = classifySpecifier(spec, n, exportsOf, rel, targetOf);
         } catch (reason) {
           if (typeof reason !== "string") throw reason;
           return fail(`${sourceRel}: ${reason}`);
