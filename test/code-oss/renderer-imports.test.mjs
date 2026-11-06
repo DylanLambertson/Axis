@@ -41,14 +41,22 @@ export function isRendererFile(rel) {
   return /^axis\.[a-z.]+\.main(\.internal)?\.ts$/.test(parts[parts.length - 1]) || parts.slice(0, -1).some((s) => RENDERER_DIRS.has(s));
 }
 
+/** True when the specifier, resolved against the importing file, reaches the daemon folder or a package other than protocol (ADR 0005 D3.4: the renderer client may import the staged protocol package only). */
+function refusedTarget(rel, spec) {
+  const flat = spec.replace(/\\/g, "/").toLowerCase();
+  const t = posix.normalize(flat.startsWith(".") ? posix.join(posix.dirname(rel.toLowerCase()), flat) : flat);
+  if (/(^|\/)vs\/axis\/daemon(\/|$)/.test(t)) return true;
+  const pkg = /(^|\/)packages\/([^/]*)/.exec(t);
+  return pkg !== null && pkg[2] !== "protocol";
+}
+
 /** The reasons a renderer file's imports are refused (empty when fine). */
 export function violations(rel, source) {
   const bad = [];
   for (const s of specifiers(source)) {
     if (s === "<dynamic>") bad.push(`${rel}: non-literal module load`);
     else if (s.startsWith("@axis/") && (!ALLOWED_PACKAGES.has(s.split("/").slice(0, 2).join("/")) || s.split("/").some((x) => x === ".." || x === "."))) bad.push(`${rel}: ${s}`);
-    else if (/(^|\/)packages\//.test(s) || /(^|\/)vs\/axis\/daemon(\/|$)/.test(s)) bad.push(`${rel}: ${s}`);
-    else if (s.startsWith(".") && /^vs\/axis\/daemon(\/|$)|(^|\/)packages\//.test(posix.normalize(posix.join(posix.dirname(rel), s)))) bad.push(`${rel}: ${s}`);
+    else if (refusedTarget(rel, s)) bad.push(`${rel}: ${s}`);
   }
   return bad;
 }
@@ -111,6 +119,11 @@ test("a planted import in a renderer file is refused, in every import form", () 
     "import { a } from '../daemon/node/axisDaemonMain.js';",
     "import { a } from 'vs/axis/daemon/node/x.js';",
     "const m = import(name);",
+    "import { a } from '../../../packages/pty-process/x.js';",
+    "import { a } from '../../../packages/protocol/../daemon-host/x.js';",
+    "import { a } from '..\\\\..\\\\..\\\\packages\\\\pty-process\\\\x.js';",
+    "import { a } from '../DAEMON/node/x.js';",
+    "import { a } from 'vs/axis/services/../daemon/node/x.js';",
     "/// <reference path=\"../../../packages/pty-process/src/index.ts\" />\nexport {};",
     "type T = import('@axis/pty-process').PtyService;",
     "/// <reference types=\"@axis/pty-process\" />\nexport {};",
@@ -128,6 +141,12 @@ test("the contract package and ordinary imports are allowed, and daemon and elec
   assert.equal(isRendererFile("vs/axis/services/x/electron-sandbox/y.ts"), true);
   assert.equal(isRendererFile("vs/axis/services/x/worker/y.ts"), true);
   assert.equal(isRendererFile("vs/axis/daemon/node/main.ts"), false);
+});
+
+test("the renderer client may import the staged protocol package and no other package", () => {
+  const from = "vs/axis/services/daemon/electron-browser/x.ts";
+  assert.deepEqual(violations(from, "import { c } from '../../../packages/protocol/client.js'; import { d } from '../../../packages/protocol/src/index.js';"), []);
+  assert.equal(violations(from, "import { c } from '../../../packages/protocol-extra/client.js';").length, 1);
 });
 
 test("the renderer daemon client under services/daemon/common is allowed, the daemon folder is refused by resolved path", () => {
