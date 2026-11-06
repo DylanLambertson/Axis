@@ -5,6 +5,7 @@
 import { basename } from '../../../../base/common/path.js';
 import { AxisCallErrorCode, AxisDaemonCallError, AxisDaemonStatus, isUsable } from '../../daemon/common/axisDaemonClient.js';
 import { AxisDaemonApi } from '../../daemon/common/axisDaemonApi.js';
+import { IAxisApprovalCard } from '../../approvals/common/axisApprovals.js';
 import { MAX_POLLED_PROJECTS } from './axisDaemonNotice.js';
 import { AxisDataProvenance, IAxisCliRun, IAxisProjectInfo, IAxisWorkspaceLoadSource, IAxisWorktreeInfo } from './axisWorkspaceData.js';
 import { attentionOf, IAxisWorkspaceEntry, orderEntries } from './axisWorkspaceModel.js';
@@ -21,8 +22,8 @@ export interface IAxisSnapshot {
 	readonly projects: readonly IAxisProjectInfo[];
 	readonly entries: readonly IAxisWorkspaceEntry[];
 	readonly refusedWorktrees: number;
-	/** Open approval challenges; `undefined` when unknown. */
-	readonly pendingApprovals: number | undefined;
+	/** Open approval challenges, display data only; `undefined` when unknown. */
+	readonly approvals: readonly IAxisApprovalCard[] | undefined;
 	/** The daemon is usable but has no registered project, so the rows come from the disk reader. */
 	readonly notRegistered: boolean;
 	readonly truncatedProjects: boolean;
@@ -103,7 +104,7 @@ export class AxisSnapshotLoader {
 			projects,
 			entries: buildEntries(projects, worktrees, runs, (projectId, worktree) => worktree.path === localCheckouts.get(projectId)),
 			refusedWorktrees: refused,
-			pendingApprovals: undefined,
+			approvals: undefined,
 			notRegistered: extra.notRegistered ?? false,
 			truncatedProjects: false,
 			staleError: extra.staleError,
@@ -129,7 +130,7 @@ export class AxisSnapshotLoader {
 			}));
 		}
 		const runs = await this.api.listCliRuns();
-		const pendingApprovals = await this.api.pendingApprovals().catch(() => undefined);
+		const approvals = await this.api.pendingApprovals().catch(() => undefined);
 
 		// The local checkout is decided on this machine; a daemon path is only compared with it.
 		const local = new Set<string>();
@@ -149,7 +150,7 @@ export class AxisSnapshotLoader {
 			projects,
 			entries: buildEntries(projects, worktrees, runs, (_projectId, worktree) => local.has(worktree.path)),
 			refusedWorktrees: 0,
-			pendingApprovals,
+			approvals,
 			notRegistered: false,
 			truncatedProjects: all.length > projects.length,
 			staleError: undefined,

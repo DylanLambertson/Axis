@@ -9,6 +9,7 @@ import { KeyCode } from '../../../../base/common/keyCodes.js';
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { localize } from '../../../../nls.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
+import { AxisApprovalCards } from './approvalCards.js';
 import { IAxisCliRun } from '../../../services/workspaces/common/axisWorkspaceData.js';
 import { AxisRowState, branchLabel, changesLabel, IAxisWorkspaceEntry, rowStateOf } from '../../../services/workspaces/common/axisWorkspaceModel.js';
 import { daemonNotice } from '../../../services/workspaces/common/axisDaemonNotice.js';
@@ -69,6 +70,7 @@ export class AxisDashboardView extends Disposable {
 		this.notice = append(this.element, $('.axis-dashboard-note.axis-dashboard-notice'));
 		this.notice.setAttribute('role', 'status');
 		this.header = append(this.element, $('.axis-dashboard-header'));
+		this.element.appendChild(this._register(new AxisApprovalCards(this.workspaceService)).element); // after the header, before the list
 		this.list = append(this.element, $('.axis-dashboard-list'));
 		this.list.setAttribute('role', 'listbox');
 		this.list.tabIndex = -1;

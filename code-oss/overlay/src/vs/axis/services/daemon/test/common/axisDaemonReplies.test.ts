@@ -6,8 +6,8 @@ import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { AxisDaemonApi } from '../../common/axisDaemonApi.js';
 import { AxisDaemonCallError, sameStatus, sanitizeStatus, toCallErrorCode } from '../../common/axisDaemonClient.js';
-import { MAX_CLI_RUNS, MAX_PROJECTS, readCliRuns, readPendingCount, readProjects, readWorktrees } from '../../common/axisDaemonReplies.js';
-import { FakeDaemonClient, runWire, SHA, wire } from './axisDaemonFixtures.js';
+import { MAX_CLI_RUNS, MAX_PROJECTS, readCliRuns, readPendingChallenges, readProjects, readResolveReply, readWorktrees } from '../../common/axisDaemonReplies.js';
+import { challengeWire, FakeDaemonClient, runWire, SHA, wire } from './axisDaemonFixtures.js';
 
 function invalidReply(fn: () => unknown, message: string): void {
 	assert.throws(fn, error => error instanceof AxisDaemonCallError && error.code === 'invalid_reply', message);
@@ -91,12 +91,44 @@ suite('Axis daemon replies', () => {
 		assert.strictEqual(readCliRuns({ runs: [runWire({ state: 'QUEUED', status: 'starting', startedAt: null, live: false })] })[0].state, 'QUEUED');
 	});
 
-	test('approvals: only the number of open challenges is read, and a bad list is refused', () => {
-		assert.strictEqual(readPendingCount({ challenges: [{ challengeId: 'c1', targetSummary: 'secret text' }, { challengeId: 'c2' }] }), 2);
-		assert.strictEqual(readPendingCount({ challenges: [] }), 0);
-		invalidReply(() => readPendingCount({ challenges: [{ challengeId: 'c1' }, { challengeId: 'c1' }] }), 'a duplicate challenge');
-		invalidReply(() => readPendingCount({ challenges: [{}] }), 'a challenge without an id');
-		invalidReply(() => readPendingCount({ challenges: 3 }), 'not a list');
+	test('approvals: the exact listed-challenge shape is read and its text is cleaned', () => {
+		const [card] = readPendingChallenges({ challenges: [challengeWire({ targetSummary: 'a\u202Eb\u0007c' })] });
+		assert.strictEqual(card.targetSummary, 'a\uFFFDb\uFFFDc');
+		assert.strictEqual(card.tier, 3);
+		assert.deepStrictEqual(readPendingChallenges({ challenges: [] }), []);
+	});
+
+	test('approvals: a challenge that is not exactly the listed shape drops the whole listing', () => {
+		const bad: [string, unknown][] = [
+			['a duplicate challenge', { challenges: [challengeWire(), challengeWire()] }],
+			['an empty challenge', { challenges: [{}] }],
+			['not a list', { challenges: 3 }],
+			['an extra key', { challenges: [challengeWire({ workspace: 'x' })] }],
+			['a missing key', { challenges: [(({ digest: _d, ...rest }) => rest)(challengeWire() as { digest: string })] }],
+			['a short challenge id', { challenges: [challengeWire({ challengeId: 'c1' })] }],
+			['a digest that is not hex', { challenges: [challengeWire({ digest: 'zz'.repeat(32) })] }],
+			['a tier above 5', { challenges: [challengeWire({ tier: 6 })] }],
+			['a fractional tier', { challenges: [challengeWire({ tier: 1.5 })] }],
+			['a string expiry', { challenges: [challengeWire({ expiresAt: '2000' })] }],
+			['a zero expiry', { challenges: [challengeWire({ expiresAt: 0 })] }],
+			['an expiry no Date can show', { challenges: [challengeWire({ expiresAt: 9e15 })] }],
+			['a summary over 192', { challenges: [challengeWire({ targetSummary: 'x'.repeat(193) })] }],
+			['a contract with markup', { challenges: [challengeWire({ contract: '<b>x</b>' })] }],
+			['a method with a dot', { challenges: [challengeWire({ method: 'a.b' })] }],
+			['a string native flag', { challenges: [challengeWire({ nativeConfirmationRequired: 'yes' })] }],
+		];
+		for (const [name, reply] of bad) {
+			invalidReply(() => readPendingChallenges(reply), name);
+		}
+	});
+
+	test('approvals: the resolve reply is exact and its state is one of three', () => {
+		const ok = { challengeId: challengeWire().challengeId, state: 'approved', nativeRequired: false };
+		assert.deepStrictEqual(readResolveReply(ok), ok);
+		invalidReply(() => readResolveReply({ ...ok, state: 'maybe' }), 'unknown state');
+		invalidReply(() => readResolveReply({ ...ok, extra: 1 }), 'extra key');
+		invalidReply(() => readResolveReply({ challengeId: ok.challengeId, state: 'approved' }), 'no nativeRequired');
+		invalidReply(() => readResolveReply({ ...ok, challengeId: 'c1' }), 'bad id');
 	});
 
 	test('status and error codes are read from the closed sets only', () => {

@@ -49,6 +49,7 @@ This design is split into files of under 500 lines each. Section numbers are unc
 | Agent-first Stage 2 (ADR 0004) | `axis-agent-shell.md`: the agent-first shell design; `axis-shell-runbook.md`: building and running it; `../feasibility/axis-shell-phase0.md`: what Phase 0 measured |
 | Shell A2 (the dashboard reads the daemon) | `axis-shell-a2.md`: what is wired, the client interface, data flow, degraded states, accessibility |
 | Shell A3 (server-pushed events instead of polling) | `axis-shell-a3.md`: the event driver, credit rules, resync, fallback to polling |
+| Shell A4 (approval cards in the Agent view) | `axis-shell-a4.md`: display-only cards, the trusted-gesture rule for tiers below 4, what the listing does not carry |
 
 ## 0. Summary of decisions
 
