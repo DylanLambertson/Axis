@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import assert from "node:assert/strict";
 import { request } from "node:http";
-import { connect } from "node:net";
+import { connect, type Socket } from "node:net";
 import { test } from "node:test";
 import { AxisError } from "@axis/audit";
 import { CLOSE, createWebAttestor, isBoundTo, startWebHost } from "../src/web/index.js";
@@ -393,11 +393,75 @@ test("web host: when one session's replay refills the backlog, the drain resumes
     await new Promise<void>((resolve) => request({ host: "127.0.0.1", port, path: "/" }, (res) => res.resume().on("end", resolve)).end());
     assert.equal(db?.received.length, 0, "b was never resumed");
     assert.equal(da?.received.length, 2);
+    // a's socket stays paused after the re-pause: more data from it is not read into its held frames.
+    const held = rig.host.stats().heldFrames;
+    assert.equal(held, 48);
+    a.send(Buffer.concat(Array.from({ length: 10 }, (_, i) => clientFrame(1, `{"a":${50 + i}}`))));
+    await new Promise<void>((resolve) => request({ host: "127.0.0.1", port, path: "/" }, (res) => res.resume().on("end", resolve)).end());
+    assert.equal(rig.host.stats().heldFrames, held);
     rig.flow.drain();
-    await until(() => da?.received.length === 50 && db?.received.length === 50);
+    await until(() => da?.received.length === 60 && db?.received.length === 50);
     a.socket.destroy();
     b.socket.destroy();
   } finally {
+    await rig.dispose();
+  }
+});
+
+test("web host: the listener's pre-upgrade limits are the designed ones (5 s deadlines, sessions + pending + 1 sockets)", { timeout: T }, async () => {
+  const rig = await memoryRig({ config: { limits: { maxClients: 2 } } });
+  try {
+    assert.deepEqual(rig.host.stats().limits, { headersTimeoutMs: 5_000, requestTimeoutMs: 5_000, maxConnections: 2 + 4 + 1 });
+  } finally {
+    await rig.dispose();
+  }
+});
+
+/** Open a raw socket that sends half a request and stays silent. */
+async function holdHalfRequest(port: number): Promise<Socket> {
+  const s = connect({ host: "127.0.0.1", port });
+  s.on("error", () => undefined);
+  await new Promise<void>((r) => s.once("connect", () => r()));
+  s.write("GET /axis/1 HTTP/1.1\r\nHost: x\r\n");
+  return s;
+}
+
+test("web host: with every session slot taken and four sockets pending, one more still evicts (the +1 socket)", { timeout: T }, async () => {
+  const rig = await memoryRig({ config: { limits: { maxClients: 1 } } });
+  const { port } = rig.host.address;
+  const held: Socket[] = [];
+  try {
+    const c = await rawUpgrade(port, upgradeHeaders(port, rig.token));
+    assert.equal(c.status, 101);
+    for (let i = 0; i < 4; i++) held.push(await holdHalfRequest(port));
+    await until(() => rig.host.stats().pendingSockets === 4);
+    assert.equal(rig.host.stats().refused.pending_evicted, 0);
+    held.push(await holdHalfRequest(port));
+    await until(() => rig.host.stats().refused.pending_evicted === 1);
+    assert.equal(rig.host.stats().pendingSockets, 4);
+    c.socket.destroy();
+  } finally {
+    for (const s of held) s.destroy();
+    await rig.dispose();
+  }
+});
+
+test("web host: an upgraded session is no longer pending, so new pending sockets never evict it", { timeout: T }, async () => {
+  const rig = await memoryRig();
+  const { port } = rig.host.address;
+  const held: Socket[] = [];
+  try {
+    const c = await rawUpgrade(port, upgradeHeaders(port, rig.token));
+    await until(() => rig.daemon.size === 1);
+    for (let i = 0; i < 6; i++) held.push(await holdHalfRequest(port));
+    await until(() => rig.host.stats().refused.pending_evicted === 2);
+    c.send(clientFrame(1, '{"still":"here"}'));
+    const f = await c.next();
+    assert.deepEqual(JSON.parse(f.payload.toString("utf8")).echo, { still: "here" });
+    assert.equal(rig.host.stats().sessions, 1);
+    c.socket.destroy();
+  } finally {
+    for (const s of held) s.destroy();
     await rig.dispose();
   }
 });

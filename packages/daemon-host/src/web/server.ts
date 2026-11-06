@@ -56,6 +56,10 @@ export interface WebHostStats {
   readonly sessions: number;
   /** Sockets that have not upgraded yet. */
   readonly pendingSockets: number;
+  /** Frames decoded but not yet handled because their session is paused (at most one read per session). */
+  readonly heldFrames: number;
+  /** What the listener enforces before an upgrade, as the server reports it. */
+  readonly limits: { readonly headersTimeoutMs: number; readonly requestTimeoutMs: number; readonly maxConnections: number };
   readonly opened: number;
   readonly paused: boolean;
   readonly refused: Readonly<Record<WebRefusal, number>>;
@@ -102,6 +106,7 @@ export async function startWebHost(options: WebHostOptions): Promise<WebHost> {
   const closed: Record<string, number> = {};
   let opened = 0;
   let paused = false;
+  let drains = 0;
   let stopped = false;
   let channelClosed = false;
   let port = 0;
@@ -122,7 +127,10 @@ export async function startWebHost(options: WebHostOptions): Promise<WebHost> {
     if (!paused) return;
     paused = false;
     log("web.resumed");
-    for (const s of [...sessions]) {
+    // Start one session later each drain, so a session whose replay keeps refilling the backlog cannot starve the rest.
+    const order = [...sessions];
+    const first = order.length === 0 ? 0 : drains++ % order.length;
+    for (const s of [...order.slice(first), ...order.slice(0, first)]) {
       // A session replaying its held frames can fill the backlog again: then the rest stay paused.
       if (paused) break;
       s.resume();
@@ -247,7 +255,17 @@ export async function startWebHost(options: WebHostOptions): Promise<WebHost> {
       token = undefined;
       return t;
     },
-    stats: () => Object.freeze({ sessions: sessions.size, pendingSockets: pending.size, opened, paused, refused: Object.freeze({ ...refused }), closed: Object.freeze({ ...closed }) }),
+    stats: () =>
+      Object.freeze({
+        sessions: sessions.size,
+        pendingSockets: pending.size,
+        heldFrames: [...sessions].reduce((n, s) => n + s.held, 0),
+        opened,
+        paused,
+        refused: Object.freeze({ ...refused }),
+        closed: Object.freeze({ ...closed }),
+        limits: Object.freeze({ headersTimeoutMs: server.headersTimeout, requestTimeoutMs: server.requestTimeout, maxConnections: server.maxConnections ?? 0 }),
+      }),
     dispose(): Promise<void> {
       if (disposing !== undefined) return disposing;
       stopped = true;

@@ -4,6 +4,7 @@ import { AxisError } from "@axis/audit";
 import type { Identity } from "@axis/daemon";
 import { signAttestation } from "../control/attestation.js";
 import type { Attestation } from "../control/messages.js";
+import { WEB_WINDOW_ID } from "../policy/rule-table-policy.js";
 import type { Clock } from "../ports/clock.js";
 
 /**
@@ -12,7 +13,7 @@ import type { Clock } from "../ports/clock.js";
  * minting refuses (fails closed).
  */
 
-export const WEB_WINDOW_ID = "web";
+export { WEB_WINDOW_ID };
 export const WEB_ACTOR_ID = "web-user";
 
 export interface WebAttestor {

@@ -62,6 +62,11 @@ export class WebSession {
     return this.#closed;
   }
 
+  /** Frames decoded but not yet handled (the session paused part-way through a read). */
+  get held(): number {
+    return this.#held.length;
+  }
+
   /** Attach to the socket and the connection; `head` is what the HTTP parser read past the upgrade request. */
   start(head: Buffer, paused: boolean): void {
     const { socket, connection } = this.#o;
