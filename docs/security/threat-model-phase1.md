@@ -1,8 +1,8 @@
 # Threat model: Phase 1 (agent-first shell, 1a and 1b)
 
 - **Purpose:** the threat-model revision that ADR 0004 (security implication 7) requires before the Phase 1a gate, for the agent-first architecture.
-- **Status:** Draft for review.
-- **Date:** 2026-11-02.
+- **Status:** Draft for review. **Revised 2026-11-05 for the 1a-then-1b order: `docs/security/threat-model-phase1-revision-1a.md` records which controls are built (with packages and PRs), the threats found during implementation, and where its status differs from this file. On status it wins.**
+- **Date:** 2026-11-02 (revision: 2026-11-05).
 - **Relationship to Phase 0.** `docs/security/threat-model-phase0.md` is kept unchanged as history. Its threat IDs stay valid. This document does three things:
   - it adds the new threats and controls (§4);
   - it replaces the Phase 0 text for every row it marks **changed**, and re-tags owner phases (companion file §8);
