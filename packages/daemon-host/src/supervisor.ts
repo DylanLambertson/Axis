@@ -121,7 +121,7 @@ export function daemonEnvironment(source: Readonly<Record<string, string | undef
 }
 
 /**
- * Whether main starts the daemon at all. Until the pty process (B9) and the run snapshotter (GIT-SNAP-1) exist the daemon refuses to
+ * Whether main starts the daemon at all. Until the pty process (B9) exists (the run snapshotter is wired, H13) the daemon refuses to
  * start (exit 78) in every build, so a packaged app does not spawn it: the extra process and its error lines would give a user
  * nothing. Unpackaged builds do, which exercises `fork`, `init` and the refusal. REMOVE the condition in the change that wires the
  * real ports (and X1c must land before or with it: docs/design/daemon-host-plan.md).

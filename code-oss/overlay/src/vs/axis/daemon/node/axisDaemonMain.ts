@@ -8,9 +8,9 @@
 // `process.parentPort`, which only the main process can write.
 import { runDaemonEntry } from '../../packages/daemon-host/entry.js';
 
-// PLACEHOLDERS, deliberately absent: the Axis pty process (ticket B9: the pty port and the pty git runner) and the run
-// snapshotter (GIT-SNAP-1, plan question 10) do not exist yet. No fake is wired here, so `composeDaemonHost` refuses to build
-// (`pty_required`) and this process exits with code 78 after `init`. Pass the real ports in `ports` when they exist.
+// PLACEHOLDERS, deliberately absent: the Axis pty process (ticket B9: the pty port and the pty git runner) does not exist yet.
+// No fake is wired here, so `composeDaemonHost` refuses to build (`pty_required`) and this process exits with code 78 after
+// `init`. Pass the real ports in `ports` when they exist. The run snapshotter is wired inside the entry (ticket H13), not here.
 runDaemonEntry({
 	parentPort: (process as unknown as { parentPort?: Parameters<typeof runDaemonEntry>[0]['parentPort'] }).parentPort,
 	process: process as unknown as Parameters<typeof runDaemonEntry>[0]['process'],

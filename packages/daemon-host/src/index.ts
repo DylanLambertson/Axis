@@ -65,6 +65,7 @@ export * from "./worktrees/restore-paths.js";
 export * from "./worktrees/slug.js";
 // axis.cli-runs/1 over the real RunSupervisor (ticket H10).
 export { createRunsBinding, MAX_TRACKED_GROUPS, RUN_PAYLOAD_ALLOWLIST, type RunsBinding, type RunsBindingDeps } from "./bindings/runs.js";
+export { createRunSnapshotter, gitSnapshotRunSnapshotter, MAX_HELD_SNAPSHOTS, SNAPSHOT_ATTEMPTS, SNAPSHOT_TAKE_MS, SUPERVISOR_SNAPSHOT_MS, type RunSnapshotterDeps, type RunSnapshotterFactory, type SnapshotTaker } from "./bindings/snapshot.js";
 export { createRunTrustMinter } from "./gate/run-trust.js";
 export * from "./handlers/cli-runs.js";
 export * from "./runs/errors.js";
