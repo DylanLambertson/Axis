@@ -40,7 +40,7 @@ import {
   getProject,
   listProjects,
   lockWorkspace,
-  recordPushed,
+  recordBaseBranch, recordPushed,
   recordReviewedTree,
   registerProject,
   setWorktreePath,
@@ -183,6 +183,9 @@ export class Journal {
   }
   setWorktreePath(id: string, path: string, actor: AuditActor): Workspace {
     return inRecords(this.#db, this.#audit, this.#now, (ctx) => setWorktreePath(ctx, id, path, actor));
+  }
+  recordBaseBranch(id: string, ref: string, actor: AuditActor): Workspace {
+    return inRecords(this.#db, this.#audit, this.#now, (ctx) => recordBaseBranch(ctx, id, ref, actor));
   }
   lockWorkspace(id: string, actor: AuditActor): Workspace {
     return inRecords(this.#db, this.#audit, this.#now, (ctx) => lockWorkspace(ctx, id, actor));

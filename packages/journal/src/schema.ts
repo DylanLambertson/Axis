@@ -194,6 +194,23 @@ export const JOURNAL_MIGRATIONS: readonly Migration[] = [
         WHERE worktree_path IS NOT NULL AND state NOT IN ('REMOVED','FAILED');
     `,
   },
+  {
+    // The base branch the daemon resolved when the workspace was created (ticket FU-WT-BASE). `merged` is judged against
+    // this record, never against the shared `HEAD` or the worktree manager's own metadata file, both of which a finished
+    // run can write. A full `refs/heads/...` name of printable ASCII, or NULL when the base was not a local branch, when
+    // the name could not be recorded, or for every workspace made before this version: NULL means "not attestable", and
+    // a finalise to `merged` refuses. Set once, while the workspace is CREATING (the trigger refuses any later change, so
+    // no code path can move it). Additive: no table is rebuilt and no row changes.
+    version: 5,
+    sql: `
+      ALTER TABLE agent_workspaces ADD COLUMN base_branch TEXT CHECK (base_branch IS NULL OR (
+        substr(base_branch, 1, 11) = 'refs/heads/' AND length(base_branch) BETWEEN 12 AND 300
+        AND base_branch NOT GLOB '*[^!-~]*' AND instr(base_branch, '..') = 0));
+      CREATE TRIGGER agent_workspaces_base_branch_once BEFORE UPDATE OF base_branch ON agent_workspaces
+        WHEN OLD.base_branch IS NOT NULL AND NEW.base_branch IS NOT OLD.base_branch
+        BEGIN SELECT RAISE(ABORT, 'base_branch is recorded once'); END;
+    `,
+  },
 ];
 
 export const JOURNAL_SCHEMA_VERSION = JOURNAL_MIGRATIONS.length;
