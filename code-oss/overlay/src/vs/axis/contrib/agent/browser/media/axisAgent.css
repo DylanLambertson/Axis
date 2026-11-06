@@ -72,6 +72,10 @@
 	font-size: 12px;
 }
 
+.monaco-workbench .axis-dashboard-notice {
+	margin-bottom: 8px;
+}
+
 .monaco-workbench .axis-dashboard-columns,
 .monaco-workbench .axis-dashboard-row {
 	display: grid;
