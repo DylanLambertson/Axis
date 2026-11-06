@@ -10,7 +10,8 @@ CI covers the cheap, deterministic layers on Linux and macOS. Full Code OSS buil
 | `Code OSS scripts (ubuntu-24.04)` | ubuntu-24.04 | shellcheck 0.11.0 on `scripts/code-oss/*.sh`, then `scripts/code-oss/test.sh` (offline, uses a fake upstream). |
 | `Code OSS scripts (macos-15)` | macos-15 (arm64) | `test.sh` on `/bin/bash` 3.2. A PATH shim makes `#!/usr/bin/env bash` resolve to 3.2 for child scripts too, which catches bash 4+ constructs. See the cost note below. |
 | `Extension matrix unit tests` | ubuntu-24.04 | Node from `code-oss/upstream.json` (`node`) through `actions/setup-node`; shellcheck on `test/extension-matrix/*.sh`; `node --check` on the probe; `node --test 'test/extension-matrix/tests/*.test.js'`. |
-| `Axis packages` | ubuntu-24.04 | Node from `code-oss/upstream.json` through `actions/setup-node`; `npm ci --ignore-scripts`, then `npm run typecheck`, `npm run build` and `npm test` for the `packages/*` workspaces (`docs/packages.md`). Needs no Code OSS checkout. `npm test` includes the headless slice of `@axis/daemon-host` (`packages/daemon-host/test/slice/`, `docs/design/daemon-host-compose.md`), which starts the composed host as child processes and needs only `git` (preinstalled on the runner). A macOS job for the slice is a follow-up before the Phase 1a gate (plan question 12); the workflow is unchanged. |
+| `Axis packages` | ubuntu-24.04 | Node from `code-oss/upstream.json` through `actions/setup-node`; `npm ci --ignore-scripts`, then `npm run typecheck`, `npm run build` and `npm test` for the `packages/*` workspaces (`docs/packages.md`). Needs no Code OSS checkout. `npm test` includes the headless slice of `@axis/daemon-host` (`packages/daemon-host/test/slice/`, `docs/design/daemon-host-compose.md`), which starts the composed host as child processes and needs only `git` (preinstalled on the runner). |
+| `macOS headless slice` | macos-15 (arm64) | Node from `code-oss/upstream.json` through `actions/setup-node`; `npm ci --ignore-scripts`, `npm run build`, then the compiled `packages/daemon-host/test/slice/*.test.ts` tests and `test/packages/*.test.mjs`. Needs no Code OSS checkout. This check is not required by branch protection. |
 | `Workflow lint` | ubuntu-24.04 | actionlint 1.7.12, with the pinned shellcheck, over `.github/workflows/`. |
 
 Rules for every workflow:
@@ -31,6 +32,7 @@ shellcheck -x scripts/code-oss/*.sh test/extension-matrix/*.sh
 /bin/bash scripts/code-oss/test.sh
 node --test 'test/extension-matrix/tests/*.test.js'    # with Node 24.22.1
 npm ci --ignore-scripts && npm run typecheck && npm test   # Axis packages, with Node 24.22.1
+node --test 'packages/daemon-host/dist/test/slice/*.test.js' 'test/packages/*.test.mjs'  # after npm run build
 actionlint -shellcheck "$(command -v shellcheck)" -pyflakes=
 ```
 
