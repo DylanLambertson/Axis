@@ -2,9 +2,11 @@
 import { realpath } from "node:fs/promises";
 import { z } from "zod";
 import type { AuditSink, Redactor } from "@axis/audit";
-import { BROKER_PAYLOAD_ALLOWLIST, BrokerError, ToolBroker, createCommandRunner, nodeBrokerFs, type ApprovalHook, type ApprovalRequest, type CommandRunner } from "@axis/broker";
-import { MAX_APPROVAL_PATHS, toDisplayPath } from "@axis/protocol";
+import { BROKER_PAYLOAD_ALLOWLIST, BrokerError, ToolBroker, callDigest, createCommandRunner, nodeBrokerFs, type ApprovalHook, type ApprovalRequest, type CommandRunner } from "@axis/broker";
+import { MAX_APPROVAL_PATHS, toDisplayPath, type ApprovalPreview } from "@axis/protocol";
+import { createSecretScanner } from "@axis/secret-scan";
 import { createMockProvider, guardProvider, type GuardedProvider, type MockProviderOptions, type Redactor as ProviderRedactor } from "@axis/providers";
+import { buildApprovalPreview, type PreviewScanner } from "../composer/preview.js";
 import type { RunApprovals } from "../gate/run-approvals.js";
 import type { ComposerApprovalNote, ComposerEngine, ComposerRunContext, ComposerRunTools, ComposerToolSpec } from "../ports/composer.js";
 import type { WorktreeLocator } from "../ports/worktree-locator.js";
@@ -23,6 +25,10 @@ import type { WorktreeLocator } from "../ports/worktree-locator.js";
  *   process is started by a composer run, and the shared runner exists only so shutdown can kill one if C3 adds it.
  * - **Providers.** The mock, guarded (`guardProvider`: validation, outgoing secret scan with the host redactor, timeouts,
  *   stream grammar, the run budget). The Anthropic adapter comes with the vault in `bindings/providers.ts` (ticket C6).
+ * - **Approval preview (C8).** Each call's parsed arguments are held while the broker decides; when the broker asks, the
+ *   hook recomputes the broker's digest (`callDigest`) from those arguments and the request, and builds the preview
+ *   (`composer/preview.ts`) only from the arguments whose digest is the one the challenge is bound to. No match, or no
+ *   preview, declines the call before any challenge exists: the user never answers for content they were not shown.
  * - **What the model gets back.** File text, or a refusal word from the broker's closed set: never a path the broker
  *   resolved, an error message or a stack.
  */
@@ -42,6 +48,8 @@ export interface AgentBindingDeps {
   readonly mock?: MockProviderOptions;
   /** More protected paths (WT-3), from the host's private settings. */
   readonly extraProtected?: readonly (readonly string[])[];
+  /** The secret scan of approval previews. Default: `@axis/secret-scan` in `refuse` mode over plain text. */
+  readonly previewScanner?: PreviewScanner;
 }
 
 /** The broker's audit payload keys (`broker.decision`: approver, approval id, expiry; `broker.result`), for the host's `AuditLog` (DMN-5). */
@@ -53,6 +61,8 @@ export interface AgentBinding extends ComposerEngine {
 }
 
 export const MAX_READ_BYTES = 262_144;
+/** Calls of one run inside the broker at once (each holds its parsed arguments for the approval preview). */
+export const MAX_INFLIGHT_CALLS = 16;
 export const MAX_WRITE_BYTES = 1_048_576;
 const pathArg = z.string().min(1).max(1024);
 const readArgs = z.strictObject({ path: pathArg });
@@ -71,6 +81,24 @@ export const COMPOSER_TOOLS: readonly ComposerToolSpec[] = Object.freeze([
   },
 ]);
 
+/** The registered tools' argument schemas (the broker parses with the same ones) and the content each call writes. */
+const PREVIEWED: ReadonlyMap<string, { readonly args: z.ZodType; readonly content: (args: never) => string | undefined }> = new Map([
+  ["read_file", { args: readArgs, content: () => undefined }],
+  ["write_file", { args: writeArgs, content: (a: z.infer<typeof writeArgs>) => a.content }],
+]);
+
+/** The user can judge the call from the preview: it writes nothing, or it is not protected, or its whole content is shown. */
+export function shownWhole(preview: ApprovalPreview): boolean {
+  const c = preview.content;
+  return c === null || !preview.protected || (!c.truncated && c.findings.length === 0);
+}
+
+/** A scanner over plain text that fails closed (`refuse`: an incomplete scan throws). */
+function defaultPreviewScanner(): PreviewScanner {
+  const s = createSecretScanner({ mode: "refuse" });
+  return { scan: async (text) => (await s.scan(text, { part: "message" })).map((f) => f.rule) };
+}
+
 const LABEL = /^[a-z][a-z0-9:._-]{0,63}$/;
 /** A broker reason (`approval-declined`) as a wire reason code (`approval_declined`). */
 const reasonOf = (e: unknown): string => (e instanceof BrokerError ? e.reason.replace(/-/g, "_") : "tool_failed");
@@ -83,6 +111,7 @@ function providerRedactor(r: Redactor): ProviderRedactor {
 export function createAgentBinding(deps: AgentBindingDeps): AgentBinding {
   const platform = deps.platform ?? process.platform;
   const runner: CommandRunner = createCommandRunner({ platform });
+  const scanner = deps.previewScanner ?? defaultPreviewScanner();
   const providers = new Map<string, GuardedProvider>([["mock", guardProvider(createMockProvider(deps.mock ?? {}), { redactor: providerRedactor(deps.redactor) })]]);
 
   const roots = async (): Promise<string[]> => {
@@ -106,8 +135,32 @@ export function createAgentBinding(deps: AgentBindingDeps): AgentBinding {
 
   function tools(run: ComposerRunContext, worktree: { id: string; root: string; gitDir: string }, repos: readonly string[]): ComposerRunTools {
     const actor = `agent:composer.${run.runId}`;
+    // Calls inside the broker now, with their parsed arguments: the hook previews only the one whose digest it is asked for.
+    const inflight = new Set<{ readonly tool: string; readonly args: unknown }>();
+    const covered = (req: ApprovalRequest): { readonly tool: string; readonly args: unknown } | undefined => {
+      const paths = req.operations.map((o) => `${o.access}:${o.path}`);
+      for (const call of inflight) {
+        if (call.tool !== req.tool) continue;
+        try {
+          if (callDigest({ tool: req.tool, worktreeId: req.worktreeId, actor: req.actor, tier: req.tier, paths, commands: req.commands, args: call.args }) === req.digest) return call;
+        } catch {
+          // arguments that cannot be canonicalised cover nothing
+        }
+      }
+      return undefined;
+    };
     const hook: ApprovalHook = {
       async request(req: ApprovalRequest, signal: AbortSignal): Promise<unknown> {
+        const call = covered(req);
+        const spec = PREVIEWED.get(req.tool);
+        // Fail closed: no preview bound to this digest, no challenge (the broker records the decline). The digest covers the
+        // actor and the worktree, so a match is already this run's own call in this worktree.
+        if (call === undefined || spec === undefined) return { approved: false };
+        const preview = await buildApprovalPreview({ tier: req.tier, reasons: req.reasons, content: spec.content(call.args as never) }, { scanner, redact: (t) => deps.redactor.redactString(t) });
+        // A protected write (WT-3) is put to the user only when the head shows the whole content: a payload past the head,
+        // a secret (the head is then redacted) or a scan that could not complete is never approved blind (review c2 S1). A call
+        // cancelled during the preview is refused by `approvals.request`, which issues nothing for an aborted signal.
+        if (preview === undefined || !shownWhole(preview)) return { approved: false };
         const base = {
           tool: req.tool,
           reasons: req.reasons.filter((r) => LABEL.test(r)).slice(0, 16),
@@ -115,7 +168,7 @@ export function createAgentBinding(deps: AgentBindingDeps): AgentBinding {
         };
         let digest: string | undefined;
         const note = (state: ComposerApprovalNote["state"]): void => {
-          if (digest !== undefined) run.onApproval({ ...base, state, digest });
+          if (digest !== undefined) run.onApproval({ ...base, state, digest, preview: state === "requested" ? preview : null });
         };
         const out = await deps.approvals.request(
           { runId: run.runId, windowId: run.windowId, tool: req.tool, tier: req.tier, digest: req.digest, reasons: req.reasons },
@@ -166,6 +219,11 @@ export function createAgentBinding(deps: AgentBindingDeps): AgentBinding {
     return {
       specs: COMPOSER_TOOLS,
       async invoke(name, input, signal) {
+        const parsed = PREVIEWED.get(name)?.args.safeParse(input);
+        const call = parsed?.success === true ? { tool: name, args: parsed.data } : undefined;
+        // The loop runs one call at a time; a caller that floods the broker is refused before anything is held.
+        if (inflight.size >= MAX_INFLIGHT_CALLS) return { ok: false, reason: "too_many_calls", content: "The call was refused (too_many_calls)." };
+        if (call !== undefined) inflight.add(call);
         try {
           const out = await broker.invoke({ tool: name, worktreeId: worktree.id, actor, args: input, signal });
           return { ok: true, content: typeof out === "string" ? out : "done" };
@@ -174,6 +232,8 @@ export function createAgentBinding(deps: AgentBindingDeps): AgentBinding {
           if (e instanceof BrokerError && e.details["executed"] === true) throw new Error("unrecorded side effect");
           const reason = reasonOf(e);
           return { ok: false, reason, content: `The call was refused (${reason}).` };
+        } finally {
+          if (call !== undefined) inflight.delete(call);
         }
       },
     };

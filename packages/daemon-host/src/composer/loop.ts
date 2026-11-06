@@ -30,14 +30,110 @@ export interface LoopInput {
   readonly emit: (event: ActivityInput) => void;
   readonly maxTurns?: number;
   readonly maxOutputTokens?: number;
-  /** Most tool calls one model reply may make (review r1 S4). Default 16; a reply with more ends the run `TOOL_CALL_LIMIT`. */
-  readonly maxToolCallsPerTurn?: number;
-  /** Most characters of tool results a run may hand back to the model (S4). Default 4 Mi; past it the run ends `TOOL_RESULT_LIMIT`. */
-  readonly maxResultChars?: number;
+  /** Fan-out caps (review r1 S4); each one unset takes its `DEFAULT_TOOL_CAPS` value. */
+  readonly caps?: Partial<ToolCaps>;
 }
 
-export const MAX_TOOL_CALLS_PER_TURN = 16;
-export const MAX_RESULT_CHARS_PER_RUN = 4_194_304;
+/**
+ * The fan-out caps of a run (review r1 S4). Counts, UTF-8 bytes and nesting depth of the tool calls a model asks for,
+ * per reply and per run, and the bytes of what the calls hand back. The call caps are checked for the whole reply BEFORE
+ * any of its calls runs (a reply over a cap runs none); the result caps after each call (it ran and is audited, but its
+ * result is not kept). Exactly the cap is allowed. Each cap ends the run FAILED with its reason from `TOOL_LIMIT_REASONS`.
+ */
+export interface ToolCaps {
+  /** Calls in one reply (`TOOL_CALL_LIMIT`). */
+  readonly callsPerReply: number;
+  /** Calls over the whole run (`TOOL_CALL_RUN_LIMIT`). */
+  readonly callsPerRun: number;
+  /** Nesting depth of one call's input; `{}` is 1 (`TOOL_INPUT_DEPTH`). */
+  readonly inputDepth: number;
+  /** UTF-8 bytes of the JSON inputs of one reply's calls (`TOOL_INPUT_LIMIT`). */
+  readonly inputBytesPerReply: number;
+  /** UTF-8 bytes of the JSON inputs over the run (`TOOL_INPUT_RUN_LIMIT`). */
+  readonly inputBytesPerRun: number;
+  /** UTF-8 bytes of the results of one reply's calls (`TOOL_RESULT_REPLY_LIMIT`). */
+  readonly resultBytesPerReply: number;
+  /** UTF-8 bytes of results over the run (`TOOL_RESULT_LIMIT`). */
+  readonly resultBytesPerRun: number;
+}
+
+/**
+ * Defaults: 16 calls a reply and 128 a run; inputs 8 deep, 2 MiB a reply (two full writes) and 8 MiB a run; results 1 MiB a
+ * reply (four full reads) and 4 MiB a run. With at most 8 live runs the loops hold at most about 8 x (8 + 4) MiB of tool
+ * traffic as UTF-8, twice that as UTF-16 strings.
+ */
+export const DEFAULT_TOOL_CAPS: ToolCaps = Object.freeze({
+  callsPerReply: 16,
+  callsPerRun: 128,
+  inputDepth: 8,
+  inputBytesPerReply: 2_097_152,
+  inputBytesPerRun: 8_388_608,
+  resultBytesPerReply: 1_048_576,
+  resultBytesPerRun: 4_194_304,
+});
+
+/** The closed set of run reasons a cap ends a run with. */
+export const TOOL_LIMIT_REASONS = [
+  "TOOL_CALL_LIMIT",
+  "TOOL_CALL_RUN_LIMIT",
+  "TOOL_INPUT_DEPTH",
+  "TOOL_INPUT_LIMIT",
+  "TOOL_INPUT_RUN_LIMIT",
+  "TOOL_RESULT_REPLY_LIMIT",
+  "TOOL_RESULT_LIMIT",
+] as const;
+export type ToolLimitReason = (typeof TOOL_LIMIT_REASONS)[number];
+
+/** Caps from the defaults and an override; an override that is not a positive safe integer is refused (fail closed, at configuration). */
+export function resolveToolCaps(over: Partial<ToolCaps> = {}): ToolCaps {
+  const out: Record<string, number> = { ...DEFAULT_TOOL_CAPS };
+  for (const k of Object.keys(DEFAULT_TOOL_CAPS) as (keyof ToolCaps)[]) {
+    const v = over[k];
+    if (v === undefined) continue;
+    if (!Number.isSafeInteger(v) || v < 1) throw new RangeError(`composer tool cap ${k} is out of range`);
+    out[k] = v;
+  }
+  return Object.freeze(out as unknown as ToolCaps);
+}
+
+/** Nesting depth of a JSON value, counted up to `limit + 1` at most (the walk stops there). Scalars are 0. */
+export function jsonDepth(value: unknown, limit: number): number {
+  let max = 0;
+  const stack: { readonly v: unknown; readonly d: number }[] = [{ v: value, d: 0 }];
+  while (stack.length > 0) {
+    const { v, d } = stack.pop() as { v: unknown; d: number };
+    if (v === null || typeof v !== "object") continue;
+    const depth = d + 1;
+    if (depth > max) max = depth;
+    if (max > limit) return max;
+    for (const child of Array.isArray(v) ? v : Object.values(v as Record<string, unknown>)) stack.push({ v: child, d: depth });
+  }
+  return max;
+}
+
+const utf8 = (text: string): number => Buffer.byteLength(text, "utf8");
+
+/** The reason the calls of one reply break a cap before any of them runs, or undefined. Anything unmeasurable breaks one. */
+function checkCalls(calls: readonly { readonly input: unknown }[], caps: ToolCaps, used: { calls: number; inputBytes: number }): ToolLimitReason | undefined {
+  if (calls.length > caps.callsPerReply) return "TOOL_CALL_LIMIT";
+  if (used.calls + calls.length > caps.callsPerRun) return "TOOL_CALL_RUN_LIMIT";
+  let bytes = 0;
+  for (const call of calls) {
+    if (jsonDepth(call.input, caps.inputDepth) > caps.inputDepth) return "TOOL_INPUT_DEPTH";
+    let json: string | undefined;
+    try {
+      json = JSON.stringify(call.input);
+    } catch {
+      return "TOOL_INPUT_LIMIT";
+    }
+    bytes += utf8(json ?? "null");
+  }
+  if (bytes > caps.inputBytesPerReply) return "TOOL_INPUT_LIMIT";
+  if (used.inputBytes + bytes > caps.inputBytesPerRun) return "TOOL_INPUT_RUN_LIMIT";
+  used.calls += calls.length;
+  used.inputBytes += bytes;
+  return undefined;
+}
 
 const SYSTEM: Readonly<Record<ComposerMode, string>> = {
   ask: "You answer questions about the user's workspace. You have no tools.",
@@ -66,9 +162,8 @@ export async function runComposerLoop(input: LoopInput): Promise<LoopEnd> {
   const messages: Message[] = [{ role: "user", content: [{ type: "text", text: input.prompt }] }];
   let usage: Usage = { inputTokens: 0, outputTokens: 0 };
   let requests = 0;
-  const maxCalls = input.maxToolCallsPerTurn ?? MAX_TOOL_CALLS_PER_TURN;
-  const maxResult = input.maxResultChars ?? MAX_RESULT_CHARS_PER_RUN;
-  let resultChars = 0;
+  const caps = resolveToolCaps(input.caps);
+  const used = { calls: 0, inputBytes: 0, resultBytes: 0 };
   for (let turn = 0; turn < maxTurns; turn++) {
     if (signal.aborted) return { state: "CANCELLED", reason: "USER_CANCELLED" };
     let result;
@@ -93,8 +188,10 @@ export async function runComposerLoop(input: LoopInput): Promise<LoopEnd> {
     if (result.stopReason === "refusal") return { state: "FAILED", reason: "MODEL_REFUSAL" };
     const calls = result.content.filter((b) => b.type === "tool_use");
     if (calls.length === 0) return { state: "REVIEWING", reason: null };
-    // Bounded fan-out (S4): a reply that asks for more calls than the cap runs none of them; the memory a run holds stays bounded.
-    if (calls.length > maxCalls) return { state: "FAILED", reason: "TOOL_CALL_LIMIT" };
+    // Bounded fan-out (S4): a reply that breaks a call cap runs none of its calls; the memory a run holds stays bounded.
+    const over = checkCalls(calls, caps, used);
+    if (over !== undefined) return { state: "FAILED", reason: over };
+    let replyBytes = 0;
     messages.push({ role: "assistant", content: result.content.map((b) => b as ContentBlock) });
     const results: ContentBlock[] = [];
     for (const call of calls) {
@@ -112,9 +209,12 @@ export async function runComposerLoop(input: LoopInput): Promise<LoopEnd> {
         return signal.aborted ? { state: "CANCELLED", reason: "USER_CANCELLED" } : { state: "FAILED", reason: "TOOL_FAILED" };
       }
       emit({ type: "tool", tool: safeName(call.name), outcome: outcome.ok ? "ok" : "error", reason: outcome.ok ? null : outcome.reason });
-      resultChars += outcome.content.length;
-      // The call ran (and is audited), but its result is not kept: the run stops before it holds more than the cap (S4).
-      if (resultChars > maxResult) return { state: "FAILED", reason: "TOOL_RESULT_LIMIT" };
+      const bytes = utf8(outcome.content);
+      replyBytes += bytes;
+      used.resultBytes += bytes;
+      // The call ran (and is audited), but its result is not kept: the run stops before it holds more than a cap (S4).
+      if (replyBytes > caps.resultBytesPerReply) return { state: "FAILED", reason: "TOOL_RESULT_REPLY_LIMIT" };
+      if (used.resultBytes > caps.resultBytesPerRun) return { state: "FAILED", reason: "TOOL_RESULT_LIMIT" };
       results.push({ type: "tool_result", toolUseId: call.id, content: outcome.content, ...(outcome.ok ? {} : { isError: true }) });
     }
     if (signal.aborted) return { state: "CANCELLED", reason: "USER_CANCELLED" };

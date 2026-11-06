@@ -46,6 +46,7 @@ import {
   rewriteSpecifiers,
 } from "./stage-scan.mjs";
 import { MANIFEST_NAME, MAX_FILE_BYTES, STAGE_ROOT, checkStagedFile, sha256, treeHash, verifyStaged } from "./stage-verify.mjs";
+import { webHostEdgeRefusal } from "./web-rules.mjs";
 
 export { STAGE_ROOT };
 export { importSpecifiers, unsafeForms, rewriteSpecifiers } from "./stage-scan.mjs";
@@ -240,6 +241,8 @@ export function stage({ repo, tree, now = Date.now(), maxFutureSkewMs = DEFAULT_
           if (!target.endsWith(".js") || !sources[n].has(target.replace(/\.js$/, ".ts"))) {
             fail(`${sourceRel}: relative import ${spec} must name a staged .ts source with a .js suffix`);
           }
+          const web = webHostEdgeRefusal(`${n}/${rel}`, `${n}/${target.replace(/\.js$/, ".ts")}`);
+          if (web !== null) fail(`${sourceRel}: ${web}`);
         }
       }
       const fromFile = `${STAGE_ROOT}/${n}/${rel}`;
