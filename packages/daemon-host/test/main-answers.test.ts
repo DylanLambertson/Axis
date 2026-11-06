@@ -34,7 +34,9 @@ class Store implements AnchorStore {
 function rig(store: Store, over: Partial<MainAnswersOptions> = {}) {
   const replies: Array<Record<string, unknown>> = [];
   const events: MainAnswerEvent[] = [];
-  const shown: Array<{ codeWindowId: number; summary: string; answer: (v: boolean) => void; fail: () => void }> = [];
+  const shown: Array<{ codeWindowId: number; summary: string; signal: AbortSignal; answer: (v: boolean) => void; fail: () => void }> = [];
+  const timers = new Map<number, { fn: () => void; ms: number }>();
+  let tid = 0;
   let now = 0;
   const settings: Record<string, SettingInspect> = {};
   const answers = createMainAnswers({
@@ -46,10 +48,17 @@ function rig(store: Store, over: Partial<MainAnswersOptions> = {}) {
     platform: "linux",
     now: () => now,
     onEvent: (e) => void events.push(e),
+    nativeTimers: { set: (fn, ms) => (timers.set(++tid, { fn, ms }), tid), clear: (h) => void timers.delete(h as number) },
     ...over,
   });
   const ask = (m: OutboundMessage): void => answers.onRequest(m, (r) => void replies.push(r as Record<string, unknown>));
-  return { answers, replies, events, shown, ask, settings, tick: (ms: number) => void (now += ms) };
+  const fireTimers = (): void => {
+    for (const [k, t] of [...timers]) {
+      timers.delete(k);
+      t.fn();
+    }
+  };
+  return { answers, replies, events, shown, ask, settings, timers, fireTimers, tick: (ms: number) => void (now += ms) };
 }
 
 // ---- anchor.get ---------------------------------------------------------------------------------------------------
@@ -242,6 +251,43 @@ test("native.confirm: a duplicate while waiting is ignored, and after dispose no
   r.ask({ type: "anchor.get", requestId: "x" });
   await flush();
   assert.deepEqual(r.replies, []);
+});
+
+test("native.confirm: an open dialog is bounded by the challenge lifetime: aborted, answered false, and the next window's dialog opens", async () => {
+  const r = rig(new Store({ kind: "absent" }));
+  r.ask(confirm("a".repeat(22), "w1"));
+  r.tick(10_000);
+  r.ask(confirm("b".repeat(22), "w2"));
+  await flush();
+  assert.equal(r.shown.length, 1);
+  assert.deepEqual([...r.timers.values()].map((t) => t.ms), [60_000], "bounded from the request's arrival");
+  assert.equal(r.shown[0]!.signal.aborted, false);
+  r.tick(50_000);
+  r.fireTimers(); // the user walked away from w1's dialog
+  await flush();
+  assert.equal(r.shown[0]!.signal.aborted, true, "the dialog is closed");
+  assert.deepEqual(r.replies.map((x) => [x["challengeId"], x["confirmed"]]), [["a".repeat(22), false]]);
+  assert.equal(r.shown.length, 2, "w2's dialog is not held back");
+  assert.equal(r.shown[1]!.codeWindowId, 2);
+  assert.deepEqual([...r.timers.values()].map((t) => t.ms), [10_000], "w2's request is already 50 s old: its bound is what is left of 60 s");
+  r.shown[0]!.answer(true); // a late click on the first: never applied
+  await flush();
+  assert.equal(r.replies.length, 1);
+  r.shown[1]!.answer(true);
+  await flush();
+  assert.deepEqual(r.replies[1], { type: "native.result", challengeId: "b".repeat(22), proof: `proof-${"b".repeat(22)}-xxxxxxxx`, confirmed: true, windowId: "w2" });
+  assert.equal(r.timers.size, 0, "no timer left after the answer");
+  assert.equal(r.shown[1]!.signal.aborted, true, "the answered dialog's signal is released too");
+  assert.deepEqual(r.events.filter((e) => e.event === "native_refused"), [{ event: "native_refused", reason: "expired" }]);
+});
+
+test("native.confirm: dispose aborts an open dialog and clears its bound", async () => {
+  const r = rig(new Store({ kind: "absent" }));
+  r.ask(confirm("a".repeat(22)));
+  await flush();
+  r.answers.dispose();
+  assert.equal(r.shown[0]!.signal.aborted, true);
+  assert.equal(r.timers.size, 0);
 });
 
 // ---- trust.check --------------------------------------------------------------------------------------------------

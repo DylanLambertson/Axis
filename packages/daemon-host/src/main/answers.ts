@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { settingsResultSchema, type OutboundMessage } from "../control/messages.js";
 import type { AnchorHead, AnchorRead, AnchorStore, AnchorUnavailable } from "./anchor-store.js";
-import { NativeQueue, type NativeDialogPort, type NativeRefusal } from "./native-queue.js";
+import { NativeQueue, type NativeDialogPort, type NativeRefusal, type NativeTimers } from "./native-queue.js";
 import { userScopeValue, type SettingInspect } from "./settings-scope.js";
 import { isPathTrusted, trustedFolders } from "./trust-model.js";
 
@@ -17,7 +17,7 @@ import { isPathTrusted, trustedFolders } from "./trust-model.js";
 export interface TrustSource {
   /** The repository path of a project main registered; `undefined` for any other. */
   projectPath(projectId: string): string | undefined;
-  /** The raw Workspace Trust model (`content.trust.model.key`), `undefined` when absent. */
+  /** The raw Workspace Trust model (`content.trust.model.key`), `undefined` when absent. Renderer-writable: see main-answers.md 3.3. */
   trustModel(): string | undefined;
 }
 
@@ -45,6 +45,8 @@ export interface MainAnswersOptions {
   readonly onEvent?: (event: MainAnswerEvent) => void;
   readonly nativeTtlMs?: number;
   readonly nativeMaxWaiting?: number;
+  /** The bound of an open native dialog (default: the global timers). */
+  readonly nativeTimers?: NativeTimers;
 }
 
 type Reply = (message: unknown) => void;
@@ -74,6 +76,7 @@ export function createMainAnswers(options: MainAnswersOptions): MainAnswers {
     now: options.now,
     ...(options.nativeTtlMs === undefined ? {} : { ttlMs: options.nativeTtlMs }),
     ...(options.nativeMaxWaiting === undefined ? {} : { maxWaiting: options.nativeMaxWaiting }),
+    ...(options.nativeTimers === undefined ? {} : { timers: options.nativeTimers }),
     onRefused: (reason) => emit({ event: "native_refused", reason }),
   });
 

@@ -134,7 +134,8 @@ export function startAxisMainSeam(lifecycle: ILifecycle, log: ILog, instantiatio
 	});
 
 	// The shutdown message is the only graceful path on Windows, where a utility process is ended by TerminateProcess.
-	lifecycle.onWillShutdown(event => event.join('axisDaemon', started.shutdown().finally(() => answers.dispose())));
+	// A final anchor write still in flight is finished before the answers are disposed.
+	lifecycle.onWillShutdown(event => event.join('axisDaemon', started.shutdown().then(() => answers.idle()).finally(() => answers.dispose())));
 	// Read the anchor store first (a keychain prompt must not use up the daemon's anchor wait), then spawn.
 	void answers.prepare().finally(() => started.start());
 	return started;

@@ -5,7 +5,12 @@
  * inside a folder the Workspace Trust model marks trusted? The model is upstream's application-shared storage value
  * `content.trust.model.key`, `{ uriTrustInfo: [{ uri, trusted }] }`, where `uri` is a serialised `URI` (`scheme`, `authority`,
  * `path`) or its string form. Only local `file:` URIs without an authority count. Anything that does not parse is no trust.
- * Comparison is per path segment, case-insensitive on macOS and Windows. Pure.
+ * Comparison is per path segment, case-insensitive on macOS and Windows (as upstream's `extUri`: a case-sensitive APFS volume is
+ * treated as insensitive) and without Unicode normalisation (an NFD path against an NFC folder is untrusted, which fails closed). Pure.
+ *
+ * TRUST OF THE INPUT: the model is written by renderers (the workbench's storage channel), so it is renderer-controlled data, not a
+ * main-owned decision. See `docs/design/main-answers.md` section 3.3: it must not become the run-trust source once main registers
+ * projects.
  */
 
 export const TRUST_STORAGE_KEY = "content.trust.model.key";

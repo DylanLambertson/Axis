@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { randomBytes } from "node:crypto";
-import { lstat, mkdir, open, readFile, rename, rm } from "node:fs/promises";
+import { constants } from "node:fs";
+import { lstat, mkdir, open, rename, rm } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import type { AnchorFile } from "./anchor-store.js";
 
@@ -8,7 +9,9 @@ import type { AnchorFile } from "./anchor-store.js";
  * The anchor record file on the real file system (ticket X1c, `docs/design/main-answers.md` section 3.1). Runs in main.
  *
  * - `read` returns `null` ONLY for `ENOENT` of the file. A symlink, a directory, a file larger than 4 KiB, a parent that is not a
- *   directory and every other error throw, which the store reports as `unavailable` (never as a first start).
+ *   directory and every other error throw, which the store reports as `unavailable` (never as a first start). The file is opened
+ *   with `O_NOFOLLOW` (where the platform has it), checked with `fstat` on the handle and read at most 4 KiB + 1 bytes, so a swap
+ *   between the check and the read cannot make main read without bound.
  * - `write` is durable before it returns: a new temporary file (`wx`, `0600`) in the same directory, write, `fsync`, close,
  *   `rename` over the record, then `fsync` of the directory (not on Windows, which has no directory handle to flush). The
  *   directory is created `0700` and must not be a symlink. A failed write removes its temporary file and throws.
@@ -37,9 +40,27 @@ export function createAnchorFile(path: string, platform: string = process.platfo
         throw new Error("anchor file unreadable");
       }
       if (!st.isFile() || st.size > MAX_RECORD_BYTES) throw new Error("anchor file unreadable");
-      const data = await readFile(path);
-      if (data.length > MAX_RECORD_BYTES) throw new Error("anchor file unreadable");
-      return new Uint8Array(data);
+      let fh;
+      try {
+        fh = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+      } catch {
+        throw new Error("anchor file unreadable");
+      }
+      try {
+        const fst = await fh.stat();
+        if (!fst.isFile() || fst.size > MAX_RECORD_BYTES) throw new Error("anchor file unreadable");
+        const buf = new Uint8Array(MAX_RECORD_BYTES + 1);
+        let n = 0;
+        for (;;) {
+          const { bytesRead } = await fh.read(buf, n, buf.length - n, n);
+          if (bytesRead === 0) break;
+          n += bytesRead;
+          if (n > MAX_RECORD_BYTES) throw new Error("anchor file unreadable");
+        }
+        return buf.slice(0, n);
+      } finally {
+        await fh.close();
+      }
     },
     async write(data: Uint8Array): Promise<void> {
       if (data.length === 0 || data.length > MAX_RECORD_BYTES) throw new Error("anchor record size");

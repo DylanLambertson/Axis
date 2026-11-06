@@ -139,6 +139,12 @@ test("the real file: a failed write removes its temporary file and keeps the old
     await assert.rejects(f.write(new Uint8Array([8])));
     assert.deepEqual(readdirSync(dir), ["audit-anchor.v1"], "no temporary file left behind");
     await assert.rejects(f.write(new Uint8Array(0)), "an empty record is refused");
+    // A record that grows past the bound between the check and the read is still refused (bounded read on the handle).
+    const g = createAnchorFile(join(dir, "other"));
+    await g.write(new Uint8Array(4096));
+    assert.equal((await g.read())?.length, 4096, "exactly the bound is readable");
+    writeFileSync(join(dir, "other"), Buffer.alloc(4097));
+    await assert.rejects(g.read());
   } finally {
     b.cleanup();
   }

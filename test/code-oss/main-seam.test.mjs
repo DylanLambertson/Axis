@@ -48,6 +48,9 @@ test("the cipher is secure only for a real backend, and the dialog confirms only
   assert.match(PORTS, /backend === 'basic_text' \|\| backend === 'unknown' \? 'insecure' : 'secure'/);
   assert.match(PORTS, /buttons: \['Cancel', 'Confirm'\],\s*defaultId: 0,\s*cancelId: 0,/);
   assert.match(PORTS, /return response === 1;/);
+  assert.match(PORTS, /confirm: async \(\{ codeWindowId, summary, signal \}\)/);
+  assert.match(PORTS, /noLink: true,\s*signal,/);
+  assert.match(SEAM, /started\.shutdown\(\)\.then\(\(\) => answers\.idle\(\)\)\.finally\(\(\) => answers\.dispose\(\)\)/);
   // No project is registered by main yet: the trust source knows no path (every trust.check is false).
   assert.match(PORTS, /projectPath: \(\) => undefined/);
   assert.match(PORTS, /services\.configuration\.inspect\(key\)/);

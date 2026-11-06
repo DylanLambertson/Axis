@@ -78,7 +78,13 @@ export function messageChannel(): PortPair<MessagePortMain> {
 	return { daemonEnd: port1, rendererEnd: port2 };
 }
 
-/** The Workspace Trust model as main's application storage holds it (the renderer writes it, StorageScope.APPLICATION_SHARED). */
+/**
+ * The Workspace Trust model as main's application storage holds it (StorageScope.APPLICATION_SHARED). OPEN ITEM (main-answers.md
+ * section 3.3, ROADMAP trust enforcement line): renderers WRITE this value through the storage channel, so a compromised renderer
+ * can rewrite it. Today it only sets the connection's `trusted` flag (which grants nothing without a main `trust.set`, not built) and
+ * cannot make `trust.check` true (no project path is known). Before main registers projects, the run-trust decision must move to a
+ * record only main writes, from a prompt main shows.
+ */
 function trustModel(services: AxisMainServices): string | undefined {
 	return services.applicationStorage.get(TRUST_STORAGE_KEY, StorageScope.APPLICATION_SHARED);
 }
@@ -102,10 +108,13 @@ export function settingsSource(services: AxisMainServices): SettingsSource {
 	return { inspect: key => services.configuration.inspect(key) };
 }
 
-/** `dialog.showMessageBox`, modal on the code window; `true` only for the Confirm button. */
+/**
+ * `dialog.showMessageBox`, modal on the code window; `true` only for the Confirm button. `signal` is aborted when the challenge's
+ * lifetime runs out (native-queue.ts), which closes the box, so a dialog left open cannot hold back every other window's.
+ */
 export function nativeDialog(services: AxisMainServices): NativeDialogPort {
 	return {
-		confirm: async ({ codeWindowId, summary }) => {
+		confirm: async ({ codeWindowId, summary, signal }) => {
 			const win = services.windows.getWindowById(codeWindowId)?.win;
 			if (!win || win.isDestroyed()) {
 				return false;
@@ -118,6 +127,7 @@ export function nativeDialog(services: AxisMainServices): NativeDialogPort {
 				defaultId: 0,
 				cancelId: 0,
 				noLink: true,
+				signal,
 			});
 			return response === 1;
 		},

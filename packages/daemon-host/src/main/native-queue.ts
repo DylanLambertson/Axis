@@ -5,11 +5,20 @@
  * request names, answered `native.result` with the request's own proof. A window that is gone or never connected, an entry that
  * waited past the challenge's lifetime, a full queue and a dialog that throws are all `confirmed: false`. A second request for a
  * challenge that is already waiting is ignored. `dispose` answers nothing more. The proof is held only until the answer is sent.
+ *
+ * An OPEN dialog is bounded too: when the challenge's lifetime (counted from the request's arrival) runs out, the dialog's signal
+ * is aborted (Electron closes the box), the request is answered `false` (`expired`) and the next request's dialog opens. A dialog
+ * the user walked away from therefore cannot hold back confirmations for every other window, and a late click is never applied.
  */
 
 export interface NativeDialogPort {
   /** Show the dialog modal on the code window; `true` only for the confirm button. */
-  confirm(request: { readonly codeWindowId: number; readonly summary: string }): Promise<boolean>;
+  confirm(request: { readonly codeWindowId: number; readonly summary: string; readonly signal: AbortSignal }): Promise<boolean>;
+}
+
+export interface NativeTimers {
+  set(fn: () => void, ms: number): unknown;
+  clear(handle: unknown): void;
 }
 
 export interface NativeRequest {
@@ -30,7 +39,14 @@ export interface NativeQueueOptions {
   readonly ttlMs?: number;
   readonly maxWaiting?: number;
   readonly onRefused?: (reason: NativeRefusal) => void;
+  /** The bound of an open dialog (default: the global timers). */
+  readonly timers?: NativeTimers;
 }
+
+const realTimers: NativeTimers = {
+  set: (fn, ms) => setTimeout(fn, ms),
+  clear: (h) => clearTimeout(h as Parameters<typeof clearTimeout>[0]),
+};
 
 interface Entry {
   readonly request: NativeRequest;
@@ -47,6 +63,8 @@ export class NativeQueue {
   readonly #max: number;
   readonly #waiting: Entry[] = [];
   #open: Entry | undefined;
+  #openTimer: unknown;
+  #openAbort: AbortController | undefined;
   #disposed = false;
 
   constructor(options: NativeQueueOptions) {
@@ -72,6 +90,7 @@ export class NativeQueue {
   dispose(): void {
     this.#disposed = true;
     this.#waiting.length = 0;
+    this.#settleOpen();
     this.#open = undefined;
   }
 
@@ -93,9 +112,14 @@ export class NativeQueue {
         continue;
       }
       this.#open = entry;
+      const abort = new AbortController();
+      this.#openAbort = abort;
+      const timers = this.#o.timers ?? realTimers;
+      const left = Math.max(0, this.#ttl - (this.#o.now() - entry.at));
+      this.#openTimer = timers.set(() => this.#close(entry, false, "expired"), left);
       let shown: Promise<boolean>;
       try {
-        shown = Promise.resolve(this.#o.dialog.confirm({ codeWindowId, summary: entry.request.summary }));
+        shown = Promise.resolve(this.#o.dialog.confirm({ codeWindowId, summary: entry.request.summary, signal: abort.signal }));
       } catch (e) {
         shown = Promise.reject(e);
       }
@@ -107,10 +131,20 @@ export class NativeQueue {
   }
 
   #close(entry: Entry, confirmed: boolean, reason: NativeRefusal | undefined): void {
-    if (this.#open !== entry) return; // disposed meanwhile
+    if (this.#open !== entry) return; // disposed, or already ended by its time bound
+    this.#settleOpen();
     this.#open = undefined;
     this.#answer(entry, confirmed, reason);
     this.#pump();
+  }
+
+  /** Clear the open dialog's timer and abort its signal (closes a dialog still showing). */
+  #settleOpen(): void {
+    if (this.#openTimer !== undefined) (this.#o.timers ?? realTimers).clear(this.#openTimer);
+    this.#openTimer = undefined;
+    const abort = this.#openAbort;
+    this.#openAbort = undefined;
+    abort?.abort();
   }
 
   #answer(entry: Entry, confirmed: boolean, reason: NativeRefusal | undefined): void {
