@@ -88,7 +88,16 @@ export function branchOf(head: GitHead | undefined): string | null {
 		return null;
 	}
 	const name = head.ref.slice('refs/heads/'.length, 'refs/heads/'.length + MAX_BRANCH_LENGTH * 2);
-	return clampText(name.replace(UNSAFE_TEXT, '\uFFFD').replace(OPAQUE_TEXT, '\uFFFD').replace(MARK_RUN, '$1'), MAX_BRANCH_LENGTH);
+	return cleanDisplayText(name, MAX_BRANCH_LENGTH);
+}
+
+/**
+ * Text from outside the renderer (repository metadata, a daemon reply) made safe to show: control, format and bidi
+ * characters and unassigned or private-use code points become U+FFFD (visible, never reordering the row), runs of
+ * combining marks are cut to two, and the result is cut to `max` code points.
+ */
+export function cleanDisplayText(value: string, max: number): string {
+	return clampText(value.replace(UNSAFE_TEXT, '\uFFFD').replace(OPAQUE_TEXT, '\uFFFD').replace(MARK_RUN, '$1'), max);
 }
 
 /** Cuts text to at most `max` code points, ending with an ellipsis when it was longer. */

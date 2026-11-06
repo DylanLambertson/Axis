@@ -89,6 +89,35 @@ export function cycleIndex(current: number | undefined, delta: number, count: nu
 	return ((current + delta) % count + count) % count;
 }
 
+/**
+ * The Changes column from a worktree's `status` fields: "clean", "2 staged, 1 modified, 3 untracked", and
+ * "1 ahead, 2 behind"; "not read" when the source gave none of them (the disk reader never does).
+ */
+export function changesLabel(worktree: IAxisWorktreeInfo): string {
+	const parts: string[] = [];
+	const dirty = worktree.dirty;
+	if (dirty) {
+		const counts: string[] = [];
+		if (dirty.staged) {
+			counts.push(localize('axis.changes.staged', "{0} staged", dirty.staged));
+		}
+		if (dirty.unstaged) {
+			counts.push(localize('axis.changes.modified', "{0} modified", dirty.unstaged));
+		}
+		if (dirty.untracked) {
+			counts.push(localize('axis.changes.untracked', "{0} untracked", dirty.untracked));
+		}
+		parts.push(counts.length ? counts.join(', ') : localize('axis.changes.clean', "clean"));
+	}
+	if (worktree.ahead) {
+		parts.push(localize('axis.changes.ahead', "{0} ahead", worktree.ahead));
+	}
+	if (worktree.behind) {
+		parts.push(localize('axis.changes.behind', "{0} behind", worktree.behind));
+	}
+	return parts.length ? parts.join(', ') : localize('axis.changes.notRead', "not read");
+}
+
 /** Longest branch text shown in a row, its tooltip and its label. */
 export const MAX_BRANCH_LABEL_LENGTH = 128;
 
