@@ -76,6 +76,23 @@ export class AxisDaemonCallError extends Error {
 /** The contracts the shell reads. */
 export type AxisReadContract = 'axis.projects' | 'axis.worktrees' | 'axis.cli-runs' | 'axis.approvals';
 
+/**
+ * The server-pushed side of the connection (`axis.events/1`, docs/design/axis-shell-a3.md). Everything crossing it is raw:
+ * the shell validates replies and frames itself. An implementation that cannot offer events leaves `events` undefined.
+ */
+export interface IAxisEventTransport {
+	/** Calls `axis.events/1.subscribe` with plain JSON params and resolves with the raw `result`. Rejects with `AxisDaemonCallError`. */
+	subscribe(params: object, token?: CancellationToken): Promise<unknown>;
+	/** Calls `axis.events/1.unsubscribe`. */
+	unsubscribe(subscriptionId: string, token?: CancellationToken): Promise<unknown>;
+	/** Sends the credit message `{ v: 1, ack, seq }` (no reply). Throws if the connection is closed. */
+	ack(subscriptionId: string, seq: number): void;
+	/** Every raw frame the daemon pushes on this connection, in arrival order. */
+	readonly onFrame: Event<unknown>;
+	/** The connection closed (a daemon restart, a port error): every subscription on it is over. */
+	readonly onDidClose: Event<void>;
+}
+
 export const IAxisDaemonClient = createDecorator<IAxisDaemonClient>('axisDaemonClient');
 
 export interface IAxisDaemonClient {
@@ -83,6 +100,8 @@ export interface IAxisDaemonClient {
 
 	readonly status: AxisDaemonStatus;
 	readonly onDidChangeStatus: Event<AxisDaemonStatus>;
+	/** Present only when the connection can carry `axis.events/1`; the shell polls without it. */
+	readonly events?: IAxisEventTransport;
 
 	/**
 	 * Calls `<contract>/1.<method>` with plain JSON params and resolves with the reply `result`. Rejects with
