@@ -12,7 +12,7 @@ import { must, trackTimers } from "./helpers.js";
 
 const pty: PtyPort = { spawn: () => Promise.reject(new Error("unused")) };
 const runner: GitRunner = { run: () => Promise.reject(new Error("unused")) };
-const snapshotter: NonNullable<ComposeOptions["snapshotter"]> = { before: () => Promise.resolve(), after: () => Promise.resolve({ drift: false }) };
+const snapshotter: NonNullable<ComposeOptions["snapshotter"]> = () => ({ before: () => Promise.resolve(), after: () => Promise.resolve({ drift: false }) });
 
 function options(fix: ReturnType<typeof hostFixture>, over: Partial<ComposeOptions> = {}): ComposeOptions {
   const { control: _control, ...ports } = fix.ports as typeof fix.ports & { control: unknown };
