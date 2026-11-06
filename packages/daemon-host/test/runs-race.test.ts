@@ -4,7 +4,7 @@ import { test } from "node:test";
 import { challengeOf, newKey, type Msg } from "./approvals-rig.js";
 import { approve4, waitFor } from "./approvals-helpers.js";
 import { START, runsRig } from "./runs-rig.js";
-import { createWs as createWsRaw, gitSkipReason } from "./worktrees-rig.js";
+import { finaliseApproved, createWs as createWsRaw, gitSkipReason } from "./worktrees-rig.js";
 
 const skip = gitSkipReason();
 const create = async (user: Parameters<typeof createWsRaw>[0]): Promise<string> => (await createWsRaw(user, (_m, x) => (assert.equal(x.ok, true, JSON.stringify(x.error)), x))).id;
@@ -30,7 +30,7 @@ test("a start that races a finalise never runs in a workspace being changed (pro
   reached = new Promise<void>((res) => (hold.reached = res));
   hold.gate = new Promise<void>((res) => (hold.open = res));
 
-  const finalise = user.call("axis.worktrees", "finalise", { id, outcome: "archived" }, newKey());
+  const finalise = finaliseApproved(r, user, id, "archived");
   await reached; // the finalise holds the project mutex and the journal lock record, and has not touched git yet
   const start = user.call("axis.cli-runs", "start", START(id), newKey());
   // The binding is safe on its own too (a caller that is not the handler): its start waits for the project as well.
@@ -73,7 +73,7 @@ test("a start that races a remove never starts in a directory being deleted", { 
   t.after(() => r.cleanup());
   const user = await r.connect();
   const id = await create(user);
-  const fin = await user.call("axis.worktrees", "finalise", { id, outcome: "archived" }, newKey());
+  const fin = await finaliseApproved(r, user, id, "archived");
   assert.equal(fin.ok, true, JSON.stringify(fin.error));
   const reached = new Promise<void>((res) => (hold.reached = res));
   hold.gate = new Promise<void>((res) => (hold.open = res));

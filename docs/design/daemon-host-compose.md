@@ -21,7 +21,7 @@ Companion to `docs/design/daemon-host.md` and `docs/design/daemon-host-plan.md` 
 
 | Plan step | Test | Notes |
 |---|---|---|
-| 1 start, second host exits 75 | `1.` | ready not degraded; welcome lists the eight contracts |
+| 1 start, second host exits 75 | `1.` | ready not degraded; welcome lists the nine contracts (`axis.events` since E1) |
 | 2 create, replay, conflict | `2.` | principal comes from the attestation; a payload `createdBy` is refused |
 | 3 run, PTY-5 environment | `3.` | the fake CLI dumps env NAMES; seeded denied names are absent |
 | 4 review | `4.` | an `agent:*` connection gets `E_POLICY_DENIED` on `complete` |

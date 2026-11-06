@@ -6,6 +6,7 @@ import {
   negotiateVersion,
   parseClientMessage,
   responseEnvelopeSchema,
+  serverFrameSchema,
   type AxisError,
   type ErrorCode,
   type Hello,
@@ -13,6 +14,7 @@ import {
 } from "@axis/protocol";
 import { newCorrelationId } from "./digest.js";
 import type { DrainGate } from "./drain.js";
+import type { EventAttachment, EventHub, OutboundFrame } from "./events.js";
 import type { OrphanTracker } from "./orphans.js";
 import { CANCELLED, CLOSED, TIMED_OUT, runPipeline, type Outcome, type PipelineDeps } from "./pipeline.js";
 import { RateLimiter } from "./support.js";
@@ -34,6 +36,8 @@ export interface SessionDeps {
   /** Graceful shutdown state (see drain.ts). */
   readonly drain: DrainGate;
   readonly onClosed: (session: Session) => void;
+  /** Server-pushed events (`axis.events/1`, docs/design/events.md); absent: no frames are ever sent. */
+  readonly events?: EventHub;
 }
 
 /**
@@ -76,6 +80,7 @@ export class Session {
   #violations = 0;
   #closed = false;
   #handshakeTimer: NodeJS.Timeout | undefined;
+  readonly #events: EventAttachment | undefined;
 
   /**
    * `handshakeBudgetMs` is what is left of the handshake timeout after
@@ -91,6 +96,7 @@ export class Session {
       if (!this.#negotiated) this.close();
     }, Math.max(1, handshakeBudgetMs)) as unknown as NodeJS.Timeout; // opaque handle under Code OSS's typings (ADR 0005)
     this.#handshakeTimer.unref();
+    this.#events = deps.events?.attach(this.#identity, (frame) => this.#sendFrame(frame));
   }
 
   get identity(): Identity {
@@ -106,6 +112,7 @@ export class Session {
     if (this.#closed) return;
     this.#closed = true;
     if (this.#handshakeTimer) clearTimeout(this.#handshakeTimer);
+    this.#events?.detach(); // its subscriptions die with the connection
     // Slots are not freed here: a running handler keeps its entry (and the daemon-wide orphan count) until it settles.
     for (const entry of [...this.#inFlight.values()]) entry.controller.abort(CLOSED);
     // Challenges issued to this connection die with it (best effort, once).
@@ -176,7 +183,7 @@ export class Session {
     }
     if (!this.#negotiated) {
       this.#violation();
-      if (!("cancel" in msg)) {
+      if ("id" in msg) {
         this.#send({ v: this.#version, id: msg.id, ok: false, error: this.#err("E_UNAUTHENTICATED", "Complete the handshake first") });
       }
       this.close();
@@ -184,6 +191,10 @@ export class Session {
     }
     if ("cancel" in msg) {
       this.#cancel(msg.cancel);
+      return;
+    }
+    if ("ack" in msg) {
+      this.#events?.ack(msg.ack, msg.seq); // credit for a subscription of this connection; unknown ids are ignored
       return;
     }
     void this.#request(msg);
@@ -295,7 +306,9 @@ export class Session {
     const answer = (outcome: Outcome): void => {
       if (entry.answered) return;
       entry.answered = true;
-      this.#reply(id, outcome);
+      // A subscription made by this request becomes live only after its successful reply is on the wire.
+      const sent = this.#reply(id, outcome);
+      this.#events?.replied(id, sent && outcome.ok);
     };
     controller.signal.addEventListener(
       "abort",
@@ -351,19 +364,28 @@ export class Session {
     return makeError(code, message, newCorrelationId(), details);
   }
 
-  #reply(id: string, outcome: Outcome): void {
+  /** True when the outcome itself was sent (not a replacement). */
+  #reply(id: string, outcome: Outcome): boolean {
     const message = outcome.ok
       ? { v: this.#version, id, ok: true as const, result: outcome.result }
       : { v: this.#version, id, ok: false as const, error: outcome.error };
     const checked = responseEnvelopeSchema.safeParse(message);
     if (checked.success) {
       this.#send(checked.data);
-      return;
+      return !this.#closed;
     }
     // Keep the correlation id of the original answer so the replacement can still be joined to its audit rows.
     const correlationId = outcome.ok ? newCorrelationId() : outcome.error.correlationId;
     this.#d.pipeline.onInternalError?.(correlationId, new Error("outbound response failed schema validation"));
     this.#send({ v: this.#version, id, ok: false, error: makeError("E_INTERNAL", "Internal error", correlationId) });
+    return false;
+  }
+
+  /** An event frame, checked against the closed frame schema like every reply; a frame that fails is dropped and reported. */
+  #sendFrame(frame: OutboundFrame): void {
+    const checked = serverFrameSchema.safeParse({ v: this.#version, ...frame });
+    if (checked.success) this.#send(checked.data);
+    else this.#d.pipeline.onInternalError?.(newCorrelationId(), new Error("outbound event frame failed schema validation"));
   }
 
   #send(message: unknown): void {
