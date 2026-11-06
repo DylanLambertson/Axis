@@ -3,7 +3,7 @@ import { controlReply, type ControlReply } from "./messages.js";
 import { probeGroup, signalGroup, validPgid } from "./group.js";
 import { systemClock, systemProcessOps, type Channel, type Clock, type Disposable, type ProcessOps, type PtyExit, type PtyHandle, type PtyPort, type PtySignal, type PtySpawn } from "./ports.js";
 
-export type PtySpawnFailure = "timeout" | "channel_closed" | "capacity" | "env_denied" | "bad_group" | "spawn_failed" | "no_control";
+export type PtySpawnFailure = "timeout" | "channel_closed" | "capacity" | "env_denied" | "bad_group" | "spawn_failed" | "no_control" | "bad_bind" | "hook_changed";
 
 /** The rejection of `spawn`. Carries a code only: never the argv or the environment. */
 export class PtySpawnError extends Error {

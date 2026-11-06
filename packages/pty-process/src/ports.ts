@@ -100,3 +100,30 @@ export interface Channel {
   onClose(listener: () => void): Disposable;
   close(): void;
 }
+
+/** What the pty process asks its exec function for: a bounded, non-interactive command with pipes, no terminal. */
+export interface ExecRequest {
+  readonly argv: readonly string[];
+  readonly cwd: string;
+  readonly env: Readonly<Record<string, string>>;
+  readonly stdin?: Uint8Array;
+  /** Bytes kept per stream; the function stops collecting past it and reports `truncated`. */
+  readonly maxOutput: number;
+}
+
+export interface ExecOutcome {
+  readonly code: number | null;
+  readonly signal: string | null;
+  readonly stdout: Uint8Array;
+  readonly stderr: Uint8Array;
+  readonly truncated: boolean;
+}
+
+/** One running exec. `kill` must end its whole process group (the service calls it on a timeout, a channel close and dispose). */
+export interface ExecChild {
+  readonly done: Promise<ExecOutcome>;
+  kill(): void;
+}
+
+/** Starts a command in its own process group. A throw is a failed start. Injected: this package does not import node:child_process. */
+export type ExecFn = (request: ExecRequest) => ExecChild;

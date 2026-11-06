@@ -6,3 +6,8 @@ export * from "./osc.js";
 export * from "./paths.js";
 export * from "./service.js";
 export * from "./client.js";
+export * from "./exec-argv.js";
+export * from "./exec-env.js";
+export * from "./hooks-scope.js";
+export * from "./scratch-tree.js";
+export { createGitExec, MAX_ATTEMPTS, type GitExec, type GitExecConfig } from "./git-exec.js";

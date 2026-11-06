@@ -1,6 +1,6 @@
 # Commit and push hooks for Axis git operations (ticket H9-hooks)
 
-Status: DESIGN ONLY (revision 7, after design review 6). Nothing here is built; the headless slice still asserts that an Axis commit runs no hook. Sources: ADR 0004 §4 and its amendment of 2026-11-04, `docs/design/axis-agent-shell-policies.md` §6.1, `docs/packages.md` "Commit hooks", `docs/design/daemon-host.md` §6.4, `docs/design/pty-process.md` (open question 1), ROADMAP lines 28, 40, 49 and 80, threat model GIT-3 and PTY-5, residual register RR-4 and RR-29.
+Status: DESIGN (revision 7, after design review 6). Slice S1 part 1, the pty-process side of §4 and §5 steps 5 and 8, is built (`docs/design/daemon-host-hooks-s1.md`, which also records a finding against §4.1: filter drivers must be pinned off too); nothing is wired into the daemon, and the headless slice still asserts that an Axis commit runs no hook. Sources: ADR 0004 §4 and its amendment of 2026-11-04, `docs/design/axis-agent-shell-policies.md` §6.1, `docs/packages.md` "Commit hooks", `docs/design/daemon-host.md` §6.4, `docs/design/pty-process.md` (open question 1), ROADMAP lines 28, 40, 49 and 80, threat model GIT-3 and PTY-5, residual register RR-4 and RR-29.
 
 ## 1. What is true today (verified in the tree)
 
