@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<!-- Copyright (c) 2026 Dylan Lambertson. All rights reserved. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Axis mockup C: Precise instrument</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap">
+<style>
+/* Direction C, hybrid: direction A's flat, full-bleed, bordered workbench, plus direction B's timeline axis, glyph statuses,
+   mono labels, keyboard hints and a lifted layer for decisions and overlays only. Tokens follow docs/design/ui/tokens.md. */
+:root{
+  --canvas:#FAFAFB; --surface:#FFFFFF; --raised:#FFFFFF; --overlay:#FFFFFF; --hover:#F4F4F6; --line:#E5E7EB; --ctl:#80858E;
+  --text:#17191D; --text2:#50555F; --muted:#6B7280; --accent:#5823F6; --accent-hover:#4A1AD6; --accent-text:#5823F6; --accent-soft:#EFEAFE;
+  --ok:#146C34; --warn:#965506; --bad:#C0262D; --info:#1D66C2; --warn-soft:#FFF4E0; --add:#E7F5EC; --del:#FBE9EA; --on-status:#FFFFFF;
+  --e1:0 1px 2px #17191D0F; --e2:0 4px 12px #17191D14,0 1px 3px #17191D0F; --e3:0 16px 48px #17191D29,0 2px 8px #17191D14; --scrim:#17191D33;
+  --sans:"Geist",system-ui,-apple-system,"Segoe UI",sans-serif; --mono:"Geist Mono",ui-monospace,"SF Mono",Menlo,monospace;
+  --t-fast:120ms; --t-mid:160ms; --t-slow:200ms; --ease-out:cubic-bezier(.2,.8,.2,1);
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --canvas:#111214; --surface:#181A1D; --raised:#202227; --overlay:#272A30; --hover:#1F2125; --line:#2B2E34; --ctl:#757A84;
+  --text:#E8E9EB; --text2:#9A9EA7; --muted:#70757F; --accent:#5823F6; --accent-hover:#4A1AD6; --accent-text:#A386FA; --accent-soft:#241C3F;
+  --ok:#4CC38A; --warn:#E5A33D; --bad:#F2777C; --info:#6CA8F7; --warn-soft:#2A2114; --add:#14281D; --del:#2D1719; --on-status:#111214;
+  --e1:none; --e2:0 4px 12px #00000059; --e3:0 16px 48px #0000008C,0 0 0 1px #FFFFFF0A; --scrim:#00000066; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --canvas:#111214; --surface:#181A1D; --raised:#202227; --overlay:#272A30; --hover:#1F2125; --line:#2B2E34; --ctl:#757A84;
+  --text:#E8E9EB; --text2:#9A9EA7; --muted:#70757F; --accent:#5823F6; --accent-hover:#4A1AD6; --accent-text:#A386FA; --accent-soft:#241C3F;
+  --ok:#4CC38A; --warn:#E5A33D; --bad:#F2777C; --info:#6CA8F7; --warn-soft:#2A2114; --add:#14281D; --del:#2D1719; --on-status:#111214;
+  --e1:none; --e2:0 4px 12px #00000059; --e3:0 16px 48px #0000008C,0 0 0 1px #FFFFFF0A; --scrim:#00000066; color-scheme:dark}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{min-height:100%}
+body{background:var(--canvas);color:var(--text);font:13px/1.45 var(--sans);-webkit-font-smoothing:antialiased}
+button,input,textarea{font:inherit;color:inherit;background:none;border:0}
+button{cursor:pointer}
+:focus-visible{outline:2px solid var(--accent-text);outline-offset:2px;border-radius:6px}
+.mono{font-family:var(--mono)}.num{font-variant-numeric:tabular-nums}
+.lbl{font:500 11px/1 var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--text2)}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+.stage{display:flex;flex-direction:column;align-items:center;gap:12px;padding:16px}
+.note{max-width:1300px;width:100%;display:flex;gap:12px;align-items:center;flex-wrap:wrap;color:var(--text2);font-size:12px}
+.note b{color:var(--text);font-weight:600}.note .gap{flex:1}
+.screens{display:flex;gap:2px;padding:2px;border:1px solid var(--ctl);border-radius:8px}
+.screens button{height:26px;padding:0 10px;border-radius:6px;color:var(--text2);font-weight:500}
+.screens button[aria-pressed="true"]{background:var(--hover);color:var(--text);box-shadow:inset 0 0 0 1px var(--ctl)}
+.scroller{width:100%;max-width:1300px;overflow-x:auto;border-radius:12px}
+.win{min-width:1160px;height:780px;display:flex;flex-direction:column;background:var(--canvas);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+/* top bar */
+.top{height:44px;flex:none;display:flex;align-items:center;gap:10px;padding:0 12px;background:var(--surface);border-bottom:1px solid var(--line)}
+.lights{display:flex;gap:6px;margin-right:4px}.lights i{width:11px;height:11px;border-radius:50%;background:var(--line)}
+.proj{display:flex;align-items:center;gap:8px;height:28px;padding:0 8px;border-radius:6px;font-weight:600}
+.proj svg{width:19px;height:14px}
+.proj:hover,.ghost:hover{background:var(--hover)}
+.crumb{display:flex;gap:6px;align-items:center;color:var(--text2);white-space:nowrap;min-width:0;flex:0 1 auto;overflow:hidden}.crumb>*{flex:none}.crumb>:last-child{flex:0 1 auto;overflow:hidden;text-overflow:ellipsis}
+.top>*:not(.crumb):not(.cmd){flex:none;white-space:nowrap}.crumb b{color:var(--text);font-weight:500}.crumb i{font-style:normal;color:var(--text2)}
+.cmd{flex:1 1 200px;min-width:170px;white-space:nowrap;overflow:hidden;max-width:380px;margin:0 auto;height:28px;display:flex;align-items:center;gap:8px;padding:0 6px 0 10px;border:1px solid var(--ctl);border-radius:6px;color:var(--text2);background:var(--canvas);text-align:left}
+.kbd{font:11px/17px var(--mono);color:var(--text2);border:1px solid var(--line);border-radius:4px;padding:0 5px}
+.cmd .kbd{margin-left:auto}
+.activity{display:flex;align-items:center;gap:7px;height:28px;padding:0 9px;border-radius:6px;color:var(--text2)}
+.activity b{color:var(--text);font-weight:500}
+.seg{display:flex;padding:2px;border:1px solid var(--ctl);border-radius:8px;gap:2px}
+.seg button{height:24px;padding:0 11px;border-radius:6px;color:var(--text2);font-weight:500}
+.seg button[aria-pressed="true"]{background:var(--accent);color:#FFFFFF}
+.ghost{height:28px;padding:0 9px;border-radius:6px;color:var(--text2);display:flex;align-items:center;gap:6px}
+/* glyph statuses: shape, colour and a text label */
+.g{width:9px;height:9px;flex:none;display:inline-block}
+.g-run{border-radius:50%;background:var(--accent-text)}
+.g-wait{background:var(--warn);transform:rotate(45deg) scale(.86);border-radius:1.5px}
+.g-bad{background:var(--bad);border-radius:1.5px}
+.g-ok{border-radius:50%;border:2px solid var(--ok);position:relative}.g-ok::after{content:"";position:absolute;inset:1.5px;border-radius:50%;background:var(--ok)}
+.g-quiet{border-radius:50%;border:1.5px dashed var(--text2)}
+.g-idle{border-radius:50%;border:1.5px solid var(--muted)}
+.body{flex:1;min-height:0;display:flex}
+.view{flex:1;min-width:0;display:flex}.view[hidden]{display:none}
+.btn{height:30px;padding:0 12px;border-radius:6px;font-weight:500;display:inline-flex;align-items:center;gap:8px;white-space:nowrap}
+.btn.pri{background:var(--accent);color:#FFFFFF}.btn.pri:hover{background:var(--accent-hover)}
+.btn.sec{border:1px solid var(--ctl);color:var(--text)}.btn.sec:hover{background:var(--hover)}
+.btn .kbd{border-color:currentColor;color:inherit;opacity:.8}
+@media (prefers-reduced-motion:no-preference){
+  .view:not([hidden]){animation:fade var(--t-fast) var(--ease-out)}
+  .btn,.seg button,.row,.chip,.cmd,.hunk-act button,.changes button{transition:background var(--t-fast),border-color var(--t-fast),color var(--t-fast)}
+  .decision{animation:lift var(--t-slow) var(--ease-out)}
+  .ev.new .node{animation:mark var(--t-slow) var(--ease-out)}
+  dialog[open]{animation:lift var(--t-mid) var(--ease-out)}
+}
+@keyframes fade{from{opacity:.4}to{opacity:1}}
+@keyframes lift{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+@keyframes mark{from{background:var(--accent-soft);border-color:var(--accent-text)}}
+/* dashboard */
+.dash{flex:1;display:flex;flex-direction:column;overflow:auto;padding:18px 24px;gap:14px}
+.dh{display:flex;align-items:center;gap:12px}
+.dh h1{font-size:18px;font-weight:600;letter-spacing:-.01em}
+.chips{display:flex;gap:6px;margin-left:10px}
+.chip{height:26px;padding:0 10px;border:1px solid var(--line);border-radius:13px;color:var(--text2)}
+.chip[aria-pressed="true"]{border-color:var(--accent-text);color:var(--text);background:var(--accent-soft)}
+.grp{border:1px solid var(--line);border-radius:10px;background:var(--surface);box-shadow:var(--e1);overflow:hidden}
+.grp>header{display:flex;align-items:center;gap:10px;height:34px;padding:0 14px;border-bottom:1px solid var(--line)}
+.grp>header .gap{flex:1}
+.row{width:100%;display:grid;grid-template-columns:18px minmax(210px,1.3fr) minmax(150px,.9fr) minmax(250px,1.7fr) 56px 104px 64px;gap:12px;align-items:center;min-height:42px;padding:6px 14px;border-top:1px solid var(--line);text-align:left;position:relative}
+.grp>header+.row{border-top:0}
+.row:hover{background:var(--hover)}
+.row:focus-visible{outline-offset:-2px;border-radius:0}
+.row.need::before{content:"";position:absolute;left:0;top:0;bottom:0;width:2px;background:var(--warn)}
+.row.fail::before{content:"";position:absolute;left:0;top:0;bottom:0;width:2px;background:var(--bad)}
+.nm{font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.br{font:12px var(--mono);color:var(--text2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.who{display:flex;gap:8px;align-items:baseline;min-width:0;white-space:nowrap}.who b{font-weight:500}.who .why{color:var(--text2)}
+.cell2{display:flex;flex-direction:column;gap:2px;min-width:0}
+.sub{color:var(--text2);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.add{color:var(--ok)}.del{color:var(--bad)}
+.tag{font:500 11px var(--mono);padding:1px 6px;border-radius:5px;border:1px solid var(--line);color:var(--text2);white-space:nowrap}
+.tag.warn{border-color:var(--warn);color:var(--warn)}
+.hint{display:flex;gap:16px;color:var(--text2);font-size:12px}
+/* side panes */
+.side{width:250px;flex:none;border-right:1px solid var(--line);background:var(--surface);display:flex;flex-direction:column;min-height:0}
+.sech{display:flex;align-items:center;justify-content:space-between;height:32px;padding:0 12px}
+.tree{padding:0 6px 8px;font-size:12.5px;overflow:auto;flex:1}
+.tree div{display:flex;align-items:center;gap:7px;height:24px;padding:0 8px;border-radius:5px;color:var(--text2);white-space:nowrap}
+.tree div.sel{background:var(--accent-soft);color:var(--text)}.tree .i1{padding-left:22px}.tree .i2{padding-left:38px}.tree .m{margin-left:auto;font:11px var(--mono)}
+.changes{border-top:1px solid var(--line);padding-bottom:8px}
+.changes button{display:flex;width:100%;align-items:center;gap:8px;height:28px;padding:0 12px;color:var(--text2);text-align:left}
+.changes button:hover{background:var(--hover)}.changes button[aria-current="true"]{background:var(--accent-soft);color:var(--text);box-shadow:inset 2px 0 0 var(--accent-text)}
+.changes .f{font:12px var(--mono);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.center{flex:1;min-width:0;display:flex;flex-direction:column}
+.wsh{display:flex;align-items:center;gap:12px;height:44px;flex:none;padding:0 18px;border-bottom:1px solid var(--line)}
+.wsh h2{font-size:14px;font-weight:600}
+.state{display:flex;gap:8px;align-items:center;color:var(--text)}
+/* activity stream with the timeline axis */
+.stream{flex:1;overflow:auto;padding:14px 18px 8px;position:relative}
+.ev{position:relative;display:grid;grid-template-columns:22px 1fr auto;gap:12px;align-items:start;padding:5px 0;color:var(--text2)}
+.ev::before{content:"";position:absolute;left:10.5px;top:0;bottom:0;width:1px;background:var(--line)}
+.ev:first-of-type::before{top:14px}
+.node{width:22px;height:22px;border-radius:6px;display:grid;place-items:center;background:var(--surface);border:1px solid var(--line);font:500 11px var(--mono);color:var(--text2);position:relative}
+.ev b{color:var(--text);font-weight:500}.ev time{font:11px var(--mono);color:var(--text2)}
+.ev code{font:12px var(--mono);color:var(--text);background:var(--surface);border:1px solid var(--line);border-radius:4px;padding:0 5px}
+.ev.err .node{border-color:var(--bad);color:var(--bad)}
+.decision{margin:6px 0 10px 34px;border-radius:10px;background:var(--raised);box-shadow:var(--e2);border:1px solid var(--warn)}
+.decision header{display:flex;align-items:center;gap:9px;padding:10px 14px 0}
+.decision header b{font-weight:600}
+.decision dl{display:grid;grid-template-columns:92px 1fr;gap:4px 14px;padding:10px 14px}
+.decision dt{color:var(--text2)}
+.decision .acts{display:flex;gap:8px;padding:0 14px 12px;flex-wrap:wrap}
+.composer{margin:0 18px 14px;border:1px solid var(--ctl);border-radius:10px;background:var(--surface);padding:10px 12px;display:flex;flex-direction:column;gap:8px}
+.composer:focus-within{border-color:var(--accent-text);box-shadow:0 0 0 1px var(--accent-text)}
+.composer textarea{resize:none;min-height:36px;outline:none}
+.composer textarea::placeholder{color:var(--text2)}
+.cbar{display:flex;align-items:center;gap:8px}
+.modes{display:flex;border:1px solid var(--ctl);border-radius:6px;padding:2px;gap:2px}
+.modes button{height:24px;padding:0 9px;border-radius:5px;color:var(--text2)}.modes button[aria-pressed="true"]{background:var(--hover);color:var(--text);font-weight:500;box-shadow:inset 0 0 0 1px var(--ctl)}
+.right{width:340px;flex:none;border-left:1px solid var(--line);background:var(--surface);display:flex;flex-direction:column;min-height:0}
+.tabs{display:flex;align-items:center;height:34px;border-bottom:1px solid var(--line);padding:0 6px;gap:2px}
+.tabs button{height:26px;padding:0 10px;border-radius:6px;color:var(--text2);display:flex;align-items:center;gap:7px}
+.tabs button[aria-pressed="true"]{background:var(--hover);color:var(--text)}
+.tbody{flex:1;overflow:auto;padding:10px 12px;font:12px/1.55 var(--mono);color:var(--text2)}
+.tbody .p{color:var(--accent-text)}.tbody .ok{color:var(--ok)}
+.launch{border-top:1px solid var(--line);padding:12px;color:var(--text2);font-size:12px;display:flex;flex-direction:column;gap:8px}
+.launch b{color:var(--text);font-weight:500}
+/* review */
+.rv{flex:1;overflow:auto;padding:14px 18px;display:flex;flex-direction:column;gap:12px}
+.flag{border:1px solid var(--warn);border-left-width:4px;border-radius:8px;padding:10px 12px;background:var(--warn-soft);display:flex;gap:10px;align-items:flex-start}
+.flag b{font-weight:600}.flag .g{margin-top:5px}
+.file{border:1px solid var(--line);border-radius:10px;background:var(--surface);overflow:hidden}
+.file>header{display:flex;align-items:center;gap:10px;min-height:38px;padding:0 12px;border-bottom:1px solid var(--line)}
+.hh{display:flex;align-items:center;gap:10px;min-height:32px;padding:0 12px;color:var(--text2);font:12px var(--mono);background:var(--canvas);border-top:1px solid var(--line)}
+.file>header+.hh{border-top:0}
+.hunk-act{margin-left:auto;display:flex;gap:6px}
+.hunk-act button{min-height:24px;padding:0 10px;border:1px solid var(--ctl);border-radius:6px;color:var(--text2);font:500 12px var(--sans)}
+.hunk-act button[aria-pressed="true"].a{background:var(--ok);border-color:var(--ok);color:var(--on-status)}
+.hunk-act button[aria-pressed="true"].r{background:var(--bad);border-color:var(--bad);color:var(--on-status)}
+.ln{display:grid;grid-template-columns:44px 44px 18px 1fr;font:12px/20px var(--mono)}
+.ln span:nth-child(-n+2){color:var(--text2);text-align:right;padding-right:8px;user-select:none}
+.ln.a{background:var(--add)}.ln.d{background:var(--del)}.ln pre{font:inherit;white-space:pre;overflow:hidden}
+.commit{display:flex;align-items:center;gap:10px;padding:10px 18px;border-top:1px solid var(--line);background:var(--surface)}
+.commit input{flex:1;height:30px;border:1px solid var(--ctl);border-radius:6px;padding:0 10px}
+/* ide */
+.rail{width:44px;flex:none;background:var(--surface);border-right:1px solid var(--line);display:flex;flex-direction:column;align-items:center;gap:4px;padding-top:8px}
+.rail span{width:28px;height:28px;border-radius:6px;display:grid;place-items:center;color:var(--text2);font:600 11px var(--mono)}
+.rail span.on{background:var(--hover);color:var(--text);box-shadow:inset 2px 0 0 var(--accent-text)}
+.editor{flex:1;min-width:0;display:flex;flex-direction:column}
+.etabs{display:flex;height:34px;border-bottom:1px solid var(--line);background:var(--surface)}
+.etabs div{display:flex;align-items:center;gap:8px;padding:0 14px;border-right:1px solid var(--line);color:var(--text2);font:12.5px var(--mono)}
+.etabs div.on{background:var(--canvas);color:var(--text);box-shadow:inset 0 -2px 0 var(--accent-text)}
+.code{flex:1;overflow:auto;font:12.5px/21px var(--mono);padding:8px 0}
+.code div{display:grid;grid-template-columns:52px 1fr;padding-right:16px}.code div>span:first-child{color:var(--text2);text-align:right;padding-right:14px;user-select:none}
+.code div>span:last-child{white-space:pre}
+.code .cur{background:var(--hover)}
+.k{color:var(--accent-text)}.s{color:var(--ok)}.c{color:var(--text2);font-style:italic}.fn{color:var(--info)}
+.panel{height:150px;flex:none;border-top:1px solid var(--line);background:var(--surface);display:flex;flex-direction:column}
+.status{height:24px;flex:none;display:flex;align-items:center;gap:16px;padding:0 12px;background:var(--surface);border-top:1px solid var(--line);color:var(--text2);font-size:11.5px}
+.status span:last-child{margin-left:auto}
+dialog{margin:14vh auto auto;width:560px;max-width:92vw;border-radius:12px;border:1px solid var(--line);background:var(--overlay);color:var(--text);box-shadow:var(--e3)}
+dialog::backdrop{background:var(--scrim)}
+dialog input{width:100%;height:44px;padding:0 14px;border-bottom:1px solid var(--line);outline:none;font-size:14px}
+dialog input::placeholder{color:var(--text2)}
+dialog ul{list-style:none;padding:6px}dialog li{display:flex;gap:10px;align-items:center;height:32px;padding:0 10px;border-radius:6px;color:var(--text2)}
+dialog li[aria-selected="true"]{background:var(--accent-soft);color:var(--text)}dialog li .kbd{margin-left:auto}
+@media (forced-colors:active){.g,.row::before{forced-color-adjust:none;border:1px solid CanvasText}}
+</style>
+</head>
+<body>
+<div class="stage">
+  <div class="note">
+    <span><b>Axis, direction C: Precise instrument</b> (hybrid, recommended). Illustrative sample data. CLI and model names are placeholders.</span>
+    <span class="gap"></span>
+    <div class="screens" role="group" aria-label="Mockup screen"><button type="button" data-go="dash" aria-pressed="true">Dashboard</button><button type="button" data-go="ws" aria-pressed="false">Workspace</button><button type="button" data-go="rv" aria-pressed="false">Diff review</button><button type="button" data-go="ide" aria-pressed="false">IDE view</button></div>
+    <button class="btn sec" type="button" id="theme">Switch theme</button>
+  </div>
+  <div class="scroller"><div class="win">
+    <header class="top">
+      <div class="lights" aria-hidden="true"><i></i><i></i><i></i></div>
+      <button class="proj" type="button" aria-label="Project acme-web, switch project"><svg viewBox="320 163 554 406" aria-hidden="true"><defs><linearGradient id="mb" gradientUnits="userSpaceOnUse" x1="643" y1="294" x2="817" y2="549"><stop offset="0" stop-color="#2B029C"/><stop offset="1" stop-color="#5018F7"/></linearGradient><linearGradient id="mf" gradientUnits="userSpaceOnUse" x1="724" y1="286" x2="305" y2="470"><stop offset="0" stop-color="#4212F4"/><stop offset="1" stop-color="#C090F6"/></linearGradient></defs><path fill="url(#mb)" d="M552.42 333.13L669.27 202.03A15 15 0 0 1 693.25 204.16L863.48 481.63A38.5 38.5 0 0 1 830.67 540.27L711.49 540.27A57.16 57.16 0 0 1 662.77 513Z"/><path fill="url(#mf)" d="M573.64 172.63L673.11 172.63A52.94 52.94 0 0 1 717.76 254L538.53 535.38A61.81 61.81 0 0 1 486.4 563.98L386.92 563.98A52.94 52.94 0 0 1 342.27 482.61L521.5 201.23A61.81 61.81 0 0 1 573.64 172.63Z"/></svg>acme-web<span aria-hidden="true" style="color:var(--text2)">⌄</span></button>
+      <nav class="crumb" id="crumb" aria-label="Breadcrumb"><b>Dashboard</b></nav>
+      <button class="cmd" type="button" id="cmdopen"><span aria-hidden="true">⌕</span>Search files, run a command, jump to a workspace<span class="kbd">⌘K</span></button>
+      <div class="activity" role="status"><span class="g g-run" aria-hidden="true"></span><b class="num">3 running</b><span aria-hidden="true">·</span><span class="g g-wait" aria-hidden="true"></span><span class="num">1 needs you</span></div>
+      <div class="seg" role="group" aria-label="View"><button type="button" data-view="agent" aria-pressed="true">Agent</button><button type="button" data-view="ide" aria-pressed="false">IDE</button><button type="button" data-view="split" aria-pressed="false">Split</button></div>
+      <button class="ghost" type="button" aria-label="Model and account: large-2 on API key"><span class="mono" style="font-size:12px">large-2</span><span aria-hidden="true">⌄</span></button>
+    </header>
+    <div class="body">
+
+      <!-- DASHBOARD -->
+      <section class="view" id="v-dash" aria-label="Dashboard">
+        <div class="dash">
+          <div class="dh">
+            <h1>Workspaces</h1>
+            <div class="chips" role="group" aria-label="Filter"><button class="chip" type="button" aria-pressed="true">All 6</button><button class="chip" type="button" aria-pressed="false">Needs you 2</button><button class="chip" type="button" aria-pressed="false">Running 3</button></div>
+            <span style="flex:1"></span>
+            <button class="btn sec" type="button">Open repository</button>
+            <button class="btn pri" type="button">New workspace <span class="kbd">N</span></button>
+          </div>
+          <div class="grp" role="group" aria-label="acme-web, 5 workspaces">
+            <header><span class="lbl">acme-web</span><span class="sub mono">github.com/acme/web</span><span class="gap"></span><span class="sub num">5 workspaces · 2 need you</span></header>
+            <button class="row need" type="button" data-go="ws"><span class="g g-wait" aria-hidden="true"></span><span class="cell2"><span class="nm">Fix proration rounding</span><span class="br">fix/proration-rounding</span></span><span class="cell2"><span class="who"><b>Composer · Agent</b></span><span class="sub" style="color:var(--text)">waiting for approval</span></span><span class="sub">Run <span class="mono">npm test -- billing</span> in the worktree</span><span class="sub num">2 term</span><span class="num"><span class="add">+48</span> <span class="del">−12</span> · 3 files</span><span class="sub num">2 min</span></button>
+            <button class="row fail" type="button" data-go="rv"><span class="g g-bad" aria-hidden="true"></span><span class="cell2"><span class="nm">Migrate invoice table</span><span class="br">feat/invoice-v2</span></span><span class="cell2"><span class="who"><b>shipit · CLI agent</b></span><span class="sub" style="color:var(--text)">exited with code 1</span></span><span class="sub"><span class="tag warn">Git config or hooks changed</span> permissions: CLI-managed</span><span class="sub num">1 term</span><span class="num"><span class="add">+210</span> <span class="del">−74</span> · 9 files</span><span class="sub num">11 min</span></button>
+            <button class="row" type="button" data-go="ws"><span class="g g-run" aria-hidden="true"></span><span class="cell2"><span class="nm">Add retry to webhook sender</span><span class="br">feat/webhook-retry</span></span><span class="cell2"><span class="who"><b>Composer · Agent</b></span><span class="sub">running · step 7</span></span><span class="sub">Editing <span class="mono">src/webhooks/sender.ts</span></span><span class="sub num">1 term</span><span class="num"><span class="add">+31</span> <span class="del">−4</span> · 2 files</span><span class="sub num">now</span></button>
+            <button class="row" type="button" data-go="ws"><span class="g g-quiet" aria-hidden="true"></span><span class="cell2"><span class="nm">Upgrade date library</span><span class="br">chore/date-lib</span></span><span class="cell2"><span class="who"><b>patchr · CLI agent</b></span><span class="sub">quiet, may be waiting for input</span></span><span class="sub">permissions: CLI-managed · no output for 8 min</span><span class="sub num">2 term</span><span class="num"><span class="add">+18</span> <span class="del">−18</span> · 6 files</span><span class="sub num">8 min</span></button>
+            <button class="row" type="button" data-go="rv"><span class="g g-ok" aria-hidden="true"></span><span class="cell2"><span class="nm">Docs: auth flow</span><span class="br">docs/auth-flow</span></span><span class="cell2"><span class="who"><b>Composer · Edit</b></span><span class="sub">done, ready to review</span></span><span class="sub">1 file changed against main</span><span class="sub num">0 term</span><span class="num"><span class="add">+64</span> <span class="del">−0</span> · 1 file</span><span class="sub num">1 h</span></button>
+          </div>
+          <div class="grp" role="group" aria-label="payments-core, local checkout">
+            <header><span class="lbl">payments-core</span><span class="sub mono">~/code/payments-core</span><span class="gap"></span><span class="sub num">local checkout only</span></header>
+            <button class="row" type="button" data-go="ide"><span class="g g-idle" aria-hidden="true"></span><span class="cell2"><span class="nm">Local checkout</span><span class="br">main</span></span><span class="cell2"><span class="sub">idle</span></span><span class="sub">Opens in IDE view. No agent runs in the project's own checkout.</span><span class="sub num">0 term</span><span class="sub">clean</span><span class="sub num">yesterday</span></button>
+          </div>
+          <div class="hint" aria-hidden="true"><span><span class="kbd">J</span> <span class="kbd">K</span> move</span><span><span class="kbd">↵</span> open</span><span><span class="kbd">N</span> new workspace</span><span><span class="kbd">⌘K</span> command</span><span><span class="kbd">⌃⌘V</span> Agent / IDE</span></div>
+        </div>
+      </section>
+
+      <!-- WORKSPACE -->
+      <section class="view" id="v-ws" aria-label="Workspace: Fix proration rounding" hidden>
+        <aside class="side" aria-label="Files and changes">
+          <div class="sech"><span class="lbl">Files</span><span class="sub mono">worktree</span></div>
+          <div class="tree"><div>▾ src</div><div class="i1">▾ billing</div><div class="i2 sel">proration.ts<span class="m add">M</span></div><div class="i2">invoice.ts</div><div class="i2">proration.test.ts<span class="m add">M</span></div><div class="i1">▸ webhooks</div><div>▸ test</div><div>▾ .github</div><div class="i1">workflows/ci.yml<span class="m" style="color:var(--warn)">M</span></div><div>package.json</div></div>
+          <div class="changes"><div class="sech"><span class="lbl">Changes</span><span class="sub num">3 files</span></div>
+            <button type="button" data-go="rv" aria-current="true"><span class="f">src/billing/proration.ts</span><span class="num"><span class="add">+31</span> <span class="del">−9</span></span></button>
+            <button type="button" data-go="rv"><span class="f">src/billing/proration.test.ts</span><span class="num"><span class="add">+17</span> <span class="del">−3</span></span></button>
+            <button type="button" data-go="rv"><span class="f">.github/workflows/ci.yml</span><span class="tag warn">protected</span></button>
+          </div>
+        </aside>
+        <div class="center">
+          <div class="wsh"><h2>Fix proration rounding</h2><span class="br">fix/proration-rounding · base main@a41c9e2</span><span style="flex:1"></span><span class="state" id="wsstate"><span class="g g-wait" aria-hidden="true"></span>Waiting for approval</span><button class="btn sec" type="button" data-go="rv">Review changes <span class="num">3</span></button></div>
+          <div class="stream" id="stream" tabindex="0" role="log" aria-label="Agent activity">
+            <div class="ev"><span class="node">›</span><span><b>You</b> Prorated amounts are off by a cent for annual plans switched mid-cycle. Find the rounding bug and cover it with a test.</span><time>14:02</time></div>
+            <div class="ev"><span class="node">⌕</span><span>Read <code>src/billing/proration.ts</code> and <code>invoice.ts</code>. Rounding happens per line item, then again on the total.</span><time>14:02</time></div>
+            <div class="ev"><span class="node">✎</span><span>Edited <code>src/billing/proration.ts</code> to round once, on the total. <span class="add num">+31</span> <span class="del num">−9</span></span><time>14:03</time></div>
+            <div class="ev"><span class="node">✎</span><span>Added a regression test in <code>proration.test.ts</code> for the 366-day leap-year case.</span><time>14:04</time></div>
+            <div class="ev err"><span class="node">!</span><span><b>Test run failed</b>, 1 of 42: <code>prorates leap year</code> expected 1633, received 1634. Retrying with the half-even rule.</span><time>14:05</time></div>
+            <section class="decision" id="decision" role="group" aria-labelledby="dtitle">
+              <header><span class="g g-wait" aria-hidden="true"></span><b id="dtitle">Approval needed: run a command</b></header>
+              <dl><dt>Action</dt><dd class="mono">npm test -- billing</dd><dt>Where</dt><dd>This workspace's worktree only</dd><dt>Consequence</dt><dd>Runs the repository's test script. It can read and write files in the worktree.</dd></dl>
+              <div class="acts"><button class="btn pri" type="button" id="approve">Approve once <span class="kbd">⌘↵</span></button><button class="btn sec" type="button">Always for this workspace</button><button class="btn sec" type="button" id="deny">Deny</button></div>
+            </section>
+          </div>
+          <div class="composer"><label class="sr" for="ask">Message the agent</label><textarea id="ask" rows="2" placeholder="Ask, edit or run with the agent. Mention a file with @."></textarea>
+            <div class="cbar"><div class="modes" role="group" aria-label="Composer mode"><button type="button" aria-pressed="false">Ask</button><button type="button" aria-pressed="false">Edit</button><button type="button" aria-pressed="true">Agent</button></div><span class="sub">large-2 · fix/proration-rounding</span><span style="flex:1"></span><button class="btn pri" type="button">Send</button></div></div>
+        </div>
+        <aside class="right" aria-label="Terminals">
+          <div class="tabs"><button type="button" aria-pressed="true"><span class="g g-ok" aria-hidden="true"></span>shell</button><button type="button" aria-pressed="false"><span class="g g-quiet" aria-hidden="true"></span>patchr</button><span style="flex:1"></span><button type="button" aria-label="Split terminal pane">Split</button></div>
+          <div class="tbody"><span class="p">~/…/fix-proration-rounding</span> <span class="ok">$</span> git status -sb<br>## fix/proration-rounding<br>&nbsp;M src/billing/proration.ts<br>&nbsp;M src/billing/proration.test.ts<br>&nbsp;M .github/workflows/ci.yml<br><br><span class="p">~/…/fix-proration-rounding</span> <span class="ok">$</span> ▌</div>
+          <div class="launch"><b>Launch CLI agent</b><span>A CLI agent runs with your credentials, can push, and can write outside the worktree. It is governed by its own permissions, not Axis approvals.</span><div style="display:flex;gap:8px"><button class="btn sec" type="button">shipit</button><button class="btn sec" type="button">patchr</button></div></div>
+        </aside>
+      </section>
+
+      <!-- DIFF REVIEW -->
+      <section class="view" id="v-rv" aria-label="Diff review" hidden>
+        <aside class="side" aria-label="Changes">
+          <div class="sech"><span class="lbl">Changes</span><span class="sub num">3 files</span></div>
+          <div class="changes" style="border-top:0"><button type="button" aria-current="true"><span class="f">src/billing/proration.ts</span><span class="num"><span class="add">+31</span> <span class="del">−9</span></span></button><button type="button"><span class="f">src/billing/proration.test.ts</span><span class="num"><span class="add">+17</span> <span class="del">−3</span></span></button><button type="button"><span class="f">.github/workflows/ci.yml</span><span class="tag warn">protected</span></button></div>
+          <div class="sub" style="padding:12px;border-top:1px solid var(--line);white-space:normal">Files changed outside the agent: <b style="color:var(--text);font-weight:500">none</b></div>
+        </aside>
+        <div class="center">
+          <div class="wsh"><h2>Review changes</h2><span class="br">3 files against main@a41c9e2</span><span style="flex:1"></span><span class="sub" id="decided">2 of 3 hunks decided</span><button class="btn sec" type="button" data-go="ws">Back to session</button></div>
+          <div class="rv">
+            <div class="flag" role="note"><span class="g g-wait" aria-hidden="true"></span><span><b>Protected path changed:</b> <span class="mono">.github/workflows/ci.yml</span> controls what runs in CI. The change adds <span class="mono">continue-on-error: true</span>, so a failing test would no longer fail the build. Check it before you commit.</span></div>
+            <div class="file"><header><b class="mono" style="font-weight:500">src/billing/proration.ts</b><span class="num"><span class="add">+31</span> <span class="del">−9</span></span><span style="flex:1"></span><button class="btn sec" type="button" style="height:26px">Restore from run base</button></header>
+              <div class="hh"><span>@@ -41,9 +41,13 @@ prorate()</span><span class="hunk-act" role="group" aria-label="Hunk 1 decision"><button class="a" type="button" aria-pressed="true">Accept</button><button class="r" type="button" aria-pressed="false">Reject</button></span></div>
+              <div class="ln"><span>41</span><span>41</span><span></span><pre>  const days = daysInPlan(plan, at);</pre></div>
+              <div class="ln d"><span>42</span><span></span><span>−</span><pre>  const lines = items.map((i) =&gt; Math.round(i.rate * ratio));</pre></div>
+              <div class="ln d"><span>43</span><span></span><span>−</span><pre>  return Math.round(sum(lines));</pre></div>
+              <div class="ln a"><span></span><span>42</span><span>+</span><pre>  const exact = sum(items.map((i) =&gt; i.rate * ratio));</pre></div>
+              <div class="ln a"><span></span><span>43</span><span>+</span><pre>  // Round once, half to even, so a leap year cannot drift by a cent.</pre></div>
+              <div class="ln a"><span></span><span>44</span><span>+</span><pre>  return roundHalfEven(exact, 0);</pre></div>
+              <div class="ln"><span>44</span><span>45</span><span></span><pre>}</pre></div>
+              <div class="hh"><span>@@ -88,6 +92,10 @@ roundHalfEven()</span><span class="hunk-act" role="group" aria-label="Hunk 2 decision"><button class="a" type="button" aria-pressed="false">Accept</button><button class="r" type="button" aria-pressed="false">Reject</button></span></div>
+              <div class="ln a"><span></span><span>92</span><span>+</span><pre>export function roundHalfEven(v: number, digits: number) {</pre></div>
+              <div class="ln a"><span></span><span>93</span><span>+</span><pre>  const f = 10 ** digits, x = v * f, r = Math.round(x);</pre></div>
+              <div class="ln a"><span></span><span>94</span><span>+</span><pre>  return Math.abs(x % 1) === 0.5 &amp;&amp; r % 2 ? (r - 1) / f : r / f;</pre></div>
+              <div class="ln a"><span></span><span>95</span><span>+</span><pre>}</pre></div>
+            </div>
+            <div class="file"><header><b class="mono" style="font-weight:500">.github/workflows/ci.yml</b><span class="tag warn">protected path</span><span class="num"><span class="add">+2</span> <span class="del">−0</span></span></header>
+              <div class="hh"><span>@@ -12,3 +12,5 @@ jobs.test</span><span class="hunk-act" role="group" aria-label="Hunk 3 decision"><button class="a" type="button" aria-pressed="false">Accept</button><button class="r" type="button" aria-pressed="true">Reject</button></span></div>
+              <div class="ln"><span>12</span><span>12</span><span></span><pre>      - run: npm ci</pre></div>
+              <div class="ln a"><span></span><span>13</span><span>+</span><pre>      - run: npm run test:billing -- --coverage</pre></div>
+              <div class="ln a"><span></span><span>14</span><span>+</span><pre>        continue-on-error: true</pre></div>
+            </div>
+          </div>
+          <div class="commit"><label class="sr" for="cmsg">Commit message</label><input id="cmsg" value="fix(billing): round prorated totals once, half to even"><span class="sub" id="accepted">1 of 3 hunks accepted</span><button class="btn pri" type="button">Commit</button><button class="btn sec" type="button">Push branch</button><button class="btn sec" type="button">Open pull request</button></div>
+        </div>
+      </section>
+
+      <!-- IDE VIEW -->
+      <section class="view" id="v-ide" aria-label="IDE view" hidden>
+        <div class="rail" aria-hidden="true"><span class="on">▤</span><span>⌕</span><span>⋔</span><span>▷</span><span>⊞</span></div>
+        <aside class="side" style="width:232px" aria-label="Explorer"><div class="sech"><span class="lbl">Explorer</span></div><div class="tree"><div>▾ payments-core</div><div class="i1">▾ src</div><div class="i2 sel">ledger.ts</div><div class="i2">settle.ts</div><div class="i2">retry.ts</div><div class="i1">▸ test</div><div class="i1">package.json</div></div></aside>
+        <div class="editor">
+          <div class="etabs"><div class="on">ledger.ts <span aria-hidden="true">×</span></div><div>settle.ts</div><div>ledger.test.ts</div></div>
+          <div class="code" tabindex="0" aria-label="Editor, ledger.ts">
+            <div><span>12</span><span><span class="k">export async function</span> <span class="fn">postEntry</span>(tx: Tx, entry: Entry) {</span></div>
+            <div><span>13</span><span>  <span class="k">const</span> existing = <span class="k">await</span> tx.find(entry.id);</span></div>
+            <div class="cur"><span>14</span><span>  <span class="k">if</span> (existing) <span class="k">return</span> existing; <span class="c">// idempotent by id</span></span></div>
+            <div><span>15</span><span>  <span class="k">const</span> balance = <span class="k">await</span> tx.balance(entry.account);</span></div>
+            <div><span>16</span><span>  <span class="k">if</span> (balance + entry.amount &lt; <span class="s">0</span>) <span class="k">throw new</span> InsufficientFunds(entry.account);</span></div>
+            <div><span>17</span><span>  <span class="k">return</span> tx.insert(entry);</span></div>
+            <div><span>18</span><span>}</span></div>
+          </div>
+          <div class="panel"><div class="tabs"><button type="button" aria-pressed="true">Terminal</button><button type="button" aria-pressed="false">Problems 0</button><button type="button" aria-pressed="false">Output</button></div><div class="tbody"><span class="p">payments-core</span> <span class="ok">$</span> npm test -- ledger<br><span class="ok">✓</span> posts an entry once per id (12 ms)<br><span class="ok">✓</span> refuses an overdraft (4 ms)</div></div>
+        </div>
+        <aside class="right" style="width:300px" aria-label="Workspace agent panel"><div class="sech"><span class="lbl">Workspace agent</span><span class="state" style="font-size:12px"><span class="g g-idle" aria-hidden="true"></span>idle</span></div><div class="tbody" style="font-family:var(--sans);font-size:12.5px">The local checkout has no agent. Agents in other workspaces stay in the top bar; <span class="kbd">⌃⌘0</span> opens the dashboard.</div><div class="composer" style="margin:0 12px 12px"><label class="sr" for="ask2">Ask about ledger.ts</label><textarea id="ask2" rows="1" placeholder="Ask about ledger.ts"></textarea><div class="cbar"><div class="modes" role="group" aria-label="Composer mode"><button type="button" aria-pressed="true">Ask</button><button type="button" aria-pressed="false">Edit</button></div><span style="flex:1"></span><button class="btn pri" type="button">Send</button></div></div></aside>
+      </section>
+    </div>
+    <footer class="status"><span class="mono" id="sbranch">fix/proration-rounding</span><span>0 errors, 0 warnings</span><span class="num">Ln 14, Col 34</span><span>TypeScript</span></footer>
+  </div></div>
+</div>
+<dialog id="palette" aria-label="Command palette"><label class="sr" for="q">Command</label><input id="q" placeholder="Type a command or workspace name" autocomplete="off"><ul role="listbox" aria-label="Results"><li role="option" aria-selected="true"><span class="g g-wait" aria-hidden="true"></span>Go to Fix proration rounding, waiting for approval<span class="kbd">↵</span></li><li role="option" aria-selected="false">New workspace…<span class="kbd">N</span></li><li role="option" aria-selected="false">Toggle Agent / IDE view<span class="kbd">⌃⌘V</span></li><li role="option" aria-selected="false">Show dashboard<span class="kbd">⌃⌘0</span></li></ul></dialog>
+<div class="sr" aria-live="polite" id="live"></div>
+<script>
+(function(){
+  var crumbs={dash:'<b>Dashboard</b>',ws:'Dashboard <i>›</i> acme-web <i>›</i> <b>Fix proration rounding</b> <i>›</i> <span class="mono">fix/proration-rounding</span>',rv:'Dashboard <i>›</i> <b>Fix proration rounding</b> <i>›</i> Review',ide:'Dashboard <i>›</i> payments-core <i>›</i> <b>Local checkout</b>'};
+  var names={dash:'Dashboard',ws:'Workspace view, Fix proration rounding',rv:'Diff review',ide:'IDE view, local checkout'};
+  var live=document.getElementById('live'), cur='dash';
+  function q(s,r){return Array.prototype.slice.call((r||document).querySelectorAll(s))}
+  function show(n,focus){
+    cur=n; q('.view').forEach(function(v){v.hidden=v.id!=='v-'+n});
+    document.getElementById('crumb').innerHTML=crumbs[n];
+    q('.screens button').forEach(function(b){b.setAttribute('aria-pressed',String(b.dataset.go===n))});
+    q('.seg button').forEach(function(b){b.setAttribute('aria-pressed',String(b.dataset.view===(n==='ide'?'ide':'agent')))});
+    live.textContent=names[n]; document.getElementById('sbranch').textContent=n==='ide'?'main':'fix/proration-rounding';
+    if(focus){var t=n==='rv'?document.querySelector('#v-rv .hunk-act button'):document.querySelector('#v-'+n+' .row, #v-'+n+' textarea, #v-'+n+' .code');if(t)t.focus()}
+    try{history.replaceState(null,'','#'+n)}catch(e){}
+  }
+  function pressOne(btn){q('button',btn.parentNode).forEach(function(x){x.setAttribute('aria-pressed',String(x===btn))})}
+  function tally(){var hs=q('#v-rv .hunk-act'),d=0,a=0;hs.forEach(function(h){var p=h.querySelector('[aria-pressed="true"]');if(p){d++;if(p.classList.contains('a'))a++}});document.getElementById('decided').textContent=d+' of '+hs.length+' hunks decided';document.getElementById('accepted').textContent=a+' of '+hs.length+' hunks accepted';live.textContent=d+' of '+hs.length+' hunks decided, '+a+' accepted'}
+  document.addEventListener('click',function(e){
+    var t=e.target.closest('button'); if(!t)return;
+    if(t.dataset.go){show(t.dataset.go,!t.closest('.screens'));return}
+    if(t.dataset.view){show(t.dataset.view==='ide'?'ide':(cur==='ide'?'dash':cur));if(t.dataset.view==='split'){pressOne(t);live.textContent='Split view is not drawn in this mockup'}return}
+    if(t.closest('.hunk-act')){var on=t.getAttribute('aria-pressed')==='true';q('button',t.parentNode).forEach(function(x){x.setAttribute('aria-pressed','false')});t.setAttribute('aria-pressed',String(!on));tally();return}
+    if(t.closest('.chips,.modes,.tabs')&&t.hasAttribute('aria-pressed')){pressOne(t);return}
+  });
+  function decide(ok){
+    var d=document.getElementById('decision'); if(!d)return;
+    var ev=document.createElement('div'); ev.className='ev new';
+    ev.innerHTML='<span class="node">'+(ok?'✓':'×')+'</span><span><b>'+(ok?'Approved once':'Denied')+'</b> by you: <code>npm test -- billing</code>'+(ok?'. Running in the worktree.':'. The agent will propose another step.')+'</span><time>14:06</time>';
+    d.replaceWith(ev); document.getElementById('wsstate').innerHTML='<span class="g g-run" aria-hidden="true"></span>Running';
+    live.textContent=ok?'Approved once. Agent running.':'Denied.'; document.getElementById('ask').focus();
+  }
+  document.getElementById('approve').addEventListener('click',function(){decide(true)});
+  document.getElementById('deny').addEventListener('click',function(){decide(false)});
+  var pal=document.getElementById('palette'), opener=null;
+  function openPal(){opener=document.activeElement;pal.showModal();document.getElementById('q').focus()}
+  document.getElementById('cmdopen').addEventListener('click',openPal);
+  pal.addEventListener('close',function(){if(opener)opener.focus()});
+  pal.addEventListener('keydown',function(e){if(e.key==='Enter'){pal.close();show('ws',true)}});
+  document.addEventListener('keydown',function(e){
+    var typing=/INPUT|TEXTAREA/.test(document.activeElement.tagName);
+    if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='k'){e.preventDefault();openPal();return}
+    if(cur==='ws'&&(e.metaKey||e.ctrlKey)&&e.key==='Enter'&&document.getElementById('decision')){e.preventDefault();decide(true);return}
+    if(typing||cur!=='dash')return;
+    if(e.key==='j'||e.key==='k'){var rows=q('#v-dash .row'),i=rows.indexOf(document.activeElement);i=e.key==='j'?Math.min(rows.length-1,i+1):Math.max(0,i-1);rows[i].focus();e.preventDefault()}
+  });
+  document.getElementById('theme').addEventListener('click',function(){var r=document.documentElement,c=r.getAttribute('data-theme')||(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');r.setAttribute('data-theme',c==='dark'?'light':'dark');live.textContent=(c==='dark'?'Light':'Dark')+' theme'});
+  var h=(location.hash||'').slice(1); show(crumbs[h]?h:'dash',false);
+})();
+</script>
+</body>
+</html>
