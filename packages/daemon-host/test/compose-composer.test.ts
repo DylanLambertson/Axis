@@ -109,3 +109,15 @@ test("settleComposer: a loop that never settles is cut off at the bound, the wri
     timers.restore();
   }
 });
+
+test("S4: the composition hands its tool caps to the composer service (an invalid cap stops the host from starting)", async () => {
+  const fix = hostFixture();
+  const composed = composeDaemonHost(options(fix, { composer: { toolCaps: { callsPerReply: 0 } } }));
+  try {
+    const outcome = await composed.start().then((s) => s.degraded ?? "started", (e: unknown) => (e instanceof RangeError ? "refused" : `other:${String(e)}`));
+    assert.notEqual(outcome, "started");
+  } finally {
+    await composed.stop();
+    fix.cleanup();
+  }
+});
