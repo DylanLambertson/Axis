@@ -18,12 +18,12 @@ import {
 /**
  * The headless slice (plan section 1, ticket H12): the real composition root (`composeDaemonHost`) in a CHILD PROCESS, no Electron,
  * no UI, no Code OSS. Real: the process, its lock, signals and exit code, `@axis/worktrees` over a fixture repository, the run
- * supervisor, `@axis/review`, `@axis/git-ops`, the secret scanner, the audit chain and the anchor protocol.
+ * supervisor, the run snapshotter (`@axis/git-snapshot`, H13), `@axis/review`, `@axis/git-ops`, the secret scanner, the audit
+ * chain and the anchor protocol.
  *
  * FAKES (each replaced by a named later ticket):
  *  - the pty port (`LocalPty`: a plain child process; B9 brings the pty process and the process-group contract of question 18);
  *  - the `pty` git runner (a local node runner serving the pty context; B9);
- *  - the run snapshotter (no-op; GIT-SNAP-1, question 10);
  *  - the supervisor (`TestSupervisor`: answers anchors, trust, settings and native confirmations the way main would).
  * Hooks are not built (H9-hooks): step 5 asserts the interim, that a planted pre-commit hook does NOT run.
  */
@@ -124,6 +124,10 @@ describe("headless slice", { skip, timeout: SUITE_TIMEOUT_MS }, () => {
     assert.ok(dump.envNames.every((n) => classifyDeniedName(n) === undefined), "no denied name in the CLI environment");
     assert.ok(!dump.envNames.includes("AXIS_SLICE_SCAN_MODE"), "the host's own AXIS_ variable stays inside the host");
     assert.equal(readFileSync(join(w1.path, "src", "hello.txt"), "utf8"), "hello from the fake CLI\n");
+    // The real GIT-SNAP-1 snapshot (H13) ran before and after: a run that wrote only a work file left git's configuration as it was.
+    let verdict: unknown = "pending";
+    await until(async () => (verdict = (await user.ok<{ run: Record<string, unknown> }>("axis.cli-runs", "get", { runId })).run["snapshotAfter"]) !== "pending", "snapshot verdict");
+    assert.equal(verdict, "ok");
   });
 
   type Diff = { head: string; branch: string; treeHash: string; files: Array<{ displayPath: string }> };

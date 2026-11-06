@@ -1,7 +1,8 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { AxisError, Redactor } from "@axis/audit";
 import type { GitRunner } from "@axis/git-ops";
-import { composeDaemonHost, type ComposeOptions } from "./compose.js";
+import { gitSnapshotRunSnapshotter } from "./bindings/snapshot.js";
+import { composeDaemonHost } from "./compose.js";
 import { parseHostConfig } from "./config.js";
 import { ControlClient } from "./control/client.js";
 import type { ListenerTarget } from "./disposables.js";
@@ -27,9 +28,10 @@ import { ChannelMux } from "./transport/mux.js";
  * 3. exactly one `init` within `initTimeoutMs` (design 3, step 2); none in time: refused;
  * 4. `HostConfig` parsed strictly; a `platform` that is not the process's own: refused;
  * 5. `composeDaemonHost` with the real clock, the real storage, the one environment copy and the real `process` for signals. The
- *    pty port, the pty git runner and the run snapshotter are NOT defaults here: they come from `deps.ports` and the production
- *    entry passes none, so `composeDaemonHost` refuses (`pty_required`, exit 78) until the Axis pty process (B9) and GIT-SNAP-1
- *    (plan question 10) exist. No fake is imported by this file, by the overlay entry or by anything in `src`.
+ *    run snapshotter is always the real one (`gitSnapshotRunSnapshotter`, `@axis/git-snapshot`, ticket H13). The pty port and the
+ *    pty git runner are NOT defaults here: they come from `deps.ports` and the production entry passes none, so `composeDaemonHost`
+ *    refuses (`pty_required`, exit 78) until the Axis pty process (B9) exists. No fake is imported by this file, by the overlay
+ *    entry or by anything in `src`.
  *
  * It opens no socket and no port; `connect` messages arrive only on the parent port, which only the parent can write.
  */
@@ -40,11 +42,10 @@ export interface EntryProcess extends ListenerTarget {
   exit(code?: number): unknown;
 }
 
-/** The three ports that do not exist yet. Absent means the host refuses to start (never a default). */
+/** The two ports that do not exist yet. Absent means the host refuses to start (never a default). The snapshotter is not a port here. */
 export interface DaemonEntryPorts {
   readonly pty?: PtyPort;
   readonly ptyGitRunner?: GitRunner;
-  readonly snapshotter?: ComposeOptions["snapshotter"];
 }
 
 export interface DaemonEntryDeps {
@@ -188,7 +189,7 @@ export function runDaemonEntry(deps: DaemonEntryDeps): DaemonEntryHandle {
       const config = parseHostConfig(raw, redactor);
       if (config.platform !== deps.platform) throw new AxisError("E_INVALID_ARGUMENT", "The platform does not match", { reason: "platform_mismatch" });
       const logger = createLogger({ redactor, clock, level: config.logLevel, sink: { write: (text) => void line(text) } });
-      // Step 5. `ports.pty`, `ptyGitRunner` and `snapshotter` are whatever the caller has: nothing in production yet, so this throws.
+      // Step 5. `ports.pty` and `ptyGitRunner` are whatever the caller has: nothing in production yet, so this throws.
       const composed = composeDaemonHost({
         config,
         control: client,
@@ -197,7 +198,7 @@ export function runDaemonEntry(deps: DaemonEntryDeps): DaemonEntryHandle {
         ports: { clock, storage: deps.storage ?? createNodeStorage(), redactor, logger, env: { ...deps.env }, cwd: deps.cwd },
         pty: deps.ports?.pty,
         ptyGitRunner: deps.ports?.ptyGitRunner,
-        snapshotter: deps.ports?.snapshotter,
+        snapshotter: gitSnapshotRunSnapshotter,
         process: deps.process,
         exit: (code, info) => end(code, info.released),
       });

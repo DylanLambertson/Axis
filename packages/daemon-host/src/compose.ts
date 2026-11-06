@@ -14,7 +14,8 @@ import { createAgentBinding, type AgentBinding } from "./bindings/agent.js";
 import { createGitOperations, createGitPort } from "./bindings/git.js";
 import { createCommitPreparer, createReviewService } from "./bindings/review.js";
 import { createTempIndexProvider } from "./bindings/review-tempindex.js";
-import { createRunsBinding, type RunsBinding, type RunsBindingDeps } from "./bindings/runs.js";
+import { createRunsBinding, type RunsBinding } from "./bindings/runs.js";
+import type { RunSnapshotterFactory } from "./bindings/snapshot.js";
 import { createWorktreesBinding, type WorktreesBinding } from "./bindings/worktrees.js";
 import { createActiveRunForwarder, createAuditSeal, createRunsClock, settleComposer, daemonAuditSink, handleProjectsRegister, recordingRegistrar } from "./compose-parts.js";
 import type { HostConfig } from "./config.js";
@@ -56,8 +57,9 @@ import type { ChannelMux } from "./transport/mux.js";
  * What it guarantees, and what fails closed:
  * - It REFUSES TO BE BUILT without a pty port and a pty git runner (`pty_required`, exit 78, before a lock or a file exists):
  *   `commit-tree` and `push` run in the `pty` git context and the runs binding spawns in it, so a host that could not reach
- *   it would serve `axis.git/1` and `axis.cli-runs/1` and fail on first use. A missing snapshotter is refused too: a run
- *   with no GIT-SNAP-1 check must be a decision, not a default.
+ *   it would serve `axis.git/1` and `axis.cli-runs/1` and fail on first use. A missing snapshotter factory is refused too
+ *   (`snapshotter_required`): it is called once after storage with the host's one `gitPath`, and a result without `before` and
+ *   `after` fails startup before `ready` (ticket H13, docs/design/git-snapshot.md section 8).
  * - ONE `ProjectMutex` (the one of the worktrees binding) reaches the worktrees, git and runs handlers. The worktrees binding is
  *   built first with a forwarder that answers `true` ("a run may be active", never `false`) until the runs binding is bound.
  * - `createApprovals` gets `anchorPreflight(services.anchors)` as `preflight`, so a stalled anchor refuses tier 3 and above
@@ -83,8 +85,8 @@ export interface ComposeOptions {
   readonly pty: PtyPort | undefined;
   /** The `pty` git context runner (commit-tree and push run where the credentials and signing are). REQUIRED. */
   readonly ptyGitRunner: GitRunner | undefined;
-  /** GIT-SNAP-1 around a run (`@axis/git-snapshot` or worktrees `gitSnap`, question 10). REQUIRED. */
-  readonly snapshotter: RunsBindingDeps["snapshotter"] | undefined;
+  /** GIT-SNAP-1 around a run: production passes `gitSnapshotRunSnapshotter` (`@axis/git-snapshot`, question 10). REQUIRED. */
+  readonly snapshotter: RunSnapshotterFactory | undefined;
   /** `refuse` by default; `warn` is the user setting (question 15). */
   readonly scanMode?: ScanMode;
   /** `axis.git.runHooks` (affects push only; decision B2). Default false. */
@@ -137,11 +139,11 @@ function registryOf(surface: HostServices["surface"]): ContractRegistry {
 export function composeDaemonHost(options: ComposeOptions): ComposedHost {
   if (!isPty(options.pty)) refuse("pty_required");
   if (!isRunner(options.ptyGitRunner)) refuse("pty_git_runner_required");
-  if (typeof options.snapshotter?.before !== "function" || typeof options.snapshotter?.after !== "function") refuse("snapshotter_required");
+  if (typeof options.snapshotter !== "function") refuse("snapshotter_required");
   const { config, control, ports } = options;
   const pty = options.pty;
   const ptyGitRunner = options.ptyGitRunner;
-  const snapshotter = options.snapshotter;
+  const snapshotterFactory = options.snapshotter;
   const logger: Logger | undefined = ports.logger;
   const scanner = createSecretScanner({ mode: options.scanMode ?? "refuse" });
   // Closed when the final anchor is taken: no composer or challenge row may land after it (review r1 S1).
@@ -180,6 +182,13 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
         return worktrees.service.reconcile(signal);
       },
       afterStorage(parts) {
+        // Built with the git the host resolved once (design 5a), before anything else of the bindings: no snapshotter, no start.
+        const projectRoot = (workspaceId: string): string | undefined => {
+          const ws = parts.journal.getWorkspace(workspaceId);
+          return ws === undefined ? undefined : parts.journal.getProject(ws.projectId)?.path;
+        };
+        const snapshotter = snapshotterFactory({ gitPath: parts.gitPath, env: ports.env, projectRoot });
+        if (typeof snapshotter?.before !== "function" || typeof snapshotter?.after !== "function") refuse("snapshotter_required");
         const forwarder = createActiveRunForwarder();
         // Both writers are guarded by the seal (review r1 S1); removing either guard fails compose-composer.test.ts.
         const challengeWriter = { append: (e: Parameters<typeof parts.audit.append>[0]) => (auditSeal.guard(), parts.audit.append(e), parts.anchors.noteWrite(), undefined) };
