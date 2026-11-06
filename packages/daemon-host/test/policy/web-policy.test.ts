@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Identity, PolicyInput } from "@axis/daemon";
 import { contracts } from "@axis/protocol";
-import { InMemoryTrustRegistry, RULES, RuleTablePolicy, WEB_MAX_TIER } from "../../src/index.js";
+import { InMemoryTrustRegistry, RULES, RuleTablePolicy, WEB_MAX_TIER, userRule } from "../../src/index.js";
 
 /** docs/design/web-host-entry.md W-5: a web client is read-only and reaches no approval method, whatever it is attested with. */
 
@@ -44,4 +44,10 @@ test("web policy: an unknown client kind is treated like a web client (fails clo
   const odd = { ...identity("desktop", true), clientKind: "cli" } as unknown as Identity;
   assert.equal(policy.evaluate(input("axis.approvals/1.pending", odd)).effect, "deny");
   assert.equal(policy.evaluate(input("axis.projects/1.list", odd)).effect, "allow");
+});
+
+test("web policy: a per-start row is denied to a web client even at tier 0 (the tier limit does not hide it)", () => {
+  const policy = new RuleTablePolicy(new InMemoryTrustRegistry(), { "axis.projects/1.list": userRule(0, "per-start") });
+  assert.equal(policy.evaluate(input("axis.projects/1.list", identity("web", true))).effect, "deny");
+  assert.equal(policy.evaluate(input("axis.projects/1.list", identity("desktop", true))).effect, "allow");
 });

@@ -46,6 +46,8 @@ export interface WebHostOptions {
   /** The per-spawn attestation key the supervisor sent in `init` (copied; zeroed by `dispose`). */
   readonly attestationKey: Uint8Array;
   readonly clock: Clock;
+  /** Makes the private key copy (default: a new `Uint8Array`). A test seam only: `dispose()` zeroes what it returns. */
+  readonly keyCopy?: (key: Uint8Array) => Uint8Array;
   /** Closed event names and closed details only. */
   readonly log?: (event: WebHostEvent, detail?: { readonly reason?: WebRefusal; readonly code?: CloseCode }) => void;
 }
@@ -89,7 +91,7 @@ function refuseSocket(socket: Socket, status: number): void {
 export async function startWebHost(options: WebHostOptions): Promise<WebHost> {
   const config: WebHostConfig = parseWebHostConfig(options.config);
   const { mux, flow, clock } = options;
-  const attestor = createWebAttestor(options.attestationKey, clock);
+  const attestor = createWebAttestor(options.attestationKey, clock, options.keyCopy);
   const log = options.log ?? ((): void => undefined);
   const limits = config.limits;
   const origins = new Set(config.allowedOrigins);

@@ -12,7 +12,7 @@ import { fakeClock } from "./helpers.js";
 export const ORIGIN = "http://127.0.0.1:5173";
 
 /** A backlog the test drives by hand. */
-export function manualFlow(): ChannelFlow & { set(n: number): void; drain(): void; listeners(): number } {
+export function manualFlow(): ChannelFlow & { set(n: number): void; drain(): void; fireDrain(): void; listeners(): number } {
   let n = 0;
   const handlers: Array<() => void> = [];
   return {
@@ -24,6 +24,10 @@ export function manualFlow(): ChannelFlow & { set(n: number): void; drain(): voi
     set: (v) => void (n = v),
     drain: () => {
       n = 0;
+      for (const h of [...handlers]) h();
+    },
+    /** Report a drain without emptying the backlog (the next forward finds it full again). */
+    fireDrain: () => {
       for (const h of [...handlers]) h();
     },
     listeners: () => handlers.length,
@@ -186,7 +190,7 @@ export interface MemoryRig {
   dispose(): Promise<void>;
 }
 
-export async function memoryRig(options: { config?: Record<string, unknown>; key?: Buffer; echo?: boolean } = {}): Promise<MemoryRig> {
+export async function memoryRig(options: { config?: Record<string, unknown>; key?: Buffer; echo?: boolean; keyCopy?: (k: Uint8Array) => Uint8Array } = {}): Promise<MemoryRig> {
   const { a, b } = memoryChannelPair();
   const supMux = new ChannelMux(a);
   const daemonMux = new ChannelMux(b);
@@ -220,6 +224,7 @@ export async function memoryRig(options: { config?: Record<string, unknown>; key
     attestationKey: options.key ?? key,
     clock,
     log: (event, detail) => void events.push({ event, detail }),
+    ...(options.keyCopy === undefined ? {} : { keyCopy: options.keyCopy }),
   };
   const host = await startWebHost(opts);
   return {

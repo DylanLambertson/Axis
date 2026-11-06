@@ -365,3 +365,39 @@ test("web host: the bind check accepts only the configured literal on a real por
   }
   assert.equal(isBoundTo({ address: "127.0.0.1", family: "IPv4", port: 4000 }, "::1"), false);
 });
+
+test("web host: dispose zeroes the host's key copy", { timeout: T }, async () => {
+  let copy: Uint8Array = new Uint8Array();
+  const rig = await memoryRig({ keyCopy: (k) => (copy = new Uint8Array(k)) });
+  assert.ok(copy.some((b) => b !== 0));
+  await rig.dispose();
+  assert.ok(copy.length === 32 && copy.every((b) => b === 0));
+});
+
+test("web host: when one session's replay refills the backlog, the drain resumes no further session", { timeout: T }, async () => {
+  const rig = await memoryRig({ config: { limits: { maxChannelBacklog: 1 } }, echo: false });
+  const { port } = rig.host.address;
+  try {
+    const a = await rawUpgrade(port, upgradeHeaders(port, rig.token));
+    await until(() => rig.daemon.size === 1);
+    const b = await rawUpgrade(port, upgradeHeaders(port, rig.token));
+    await until(() => rig.daemon.size === 2);
+    const [da, db] = [...rig.daemon.values()];
+    rig.flow.set(1);
+    a.send(Buffer.concat(Array.from({ length: 50 }, (_, i) => clientFrame(1, `{"a":${i}}`))));
+    await until(() => rig.host.stats().paused && (da?.received.length ?? 0) === 1);
+    b.send(Buffer.concat(Array.from({ length: 50 }, (_, i) => clientFrame(1, `{"b":${i}}`))));
+    // The backlog stays full: the drain lets a replay one message, which pauses everything again.
+    rig.flow.fireDrain();
+    await until(() => (da?.received.length ?? 0) === 2 && rig.host.stats().paused);
+    await new Promise<void>((resolve) => request({ host: "127.0.0.1", port, path: "/" }, (res) => res.resume().on("end", resolve)).end());
+    assert.equal(db?.received.length, 0, "b was never resumed");
+    assert.equal(da?.received.length, 2);
+    rig.flow.drain();
+    await until(() => da?.received.length === 50 && db?.received.length === 50);
+    a.socket.destroy();
+    b.socket.destroy();
+  } finally {
+    await rig.dispose();
+  }
+});
