@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, relative, sep } from "node:path";
+import { dirname, join, posix, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import ts from "typescript6";
@@ -47,7 +47,8 @@ export function violations(rel, source) {
   for (const s of specifiers(source)) {
     if (s === "<dynamic>") bad.push(`${rel}: non-literal module load`);
     else if (s.startsWith("@axis/") && (!ALLOWED_PACKAGES.has(s.split("/").slice(0, 2).join("/")) || s.split("/").some((x) => x === ".." || x === "."))) bad.push(`${rel}: ${s}`);
-    else if (/(^|\/)packages\//.test(s) || /(^|\/)vs\/axis\/daemon(\/|$)/.test(s) || /(^|\/)daemon\/(node|common)(\/|$)/.test(s)) bad.push(`${rel}: ${s}`);
+    else if (/(^|\/)packages\//.test(s) || /(^|\/)vs\/axis\/daemon(\/|$)/.test(s)) bad.push(`${rel}: ${s}`);
+    else if (s.startsWith(".") && /^vs\/axis\/daemon(\/|$)|(^|\/)packages\//.test(posix.normalize(posix.join(posix.dirname(rel), s)))) bad.push(`${rel}: ${s}`);
   }
   return bad;
 }
@@ -110,6 +111,7 @@ test("a planted import in a renderer file is refused, in every import form", () 
     "import { a } from '../daemon/node/axisDaemonMain.js';",
     "import { a } from 'vs/axis/daemon/node/x.js';",
     "const m = import(name);",
+    "/// <reference path=\"../../../packages/pty-process/src/index.ts\" />\nexport {};",
     "type T = import('@axis/pty-process').PtyService;",
     "/// <reference types=\"@axis/pty-process\" />\nexport {};",
     "import { a } from '@axis/protocol/../pty-process';",
@@ -123,5 +125,15 @@ test("the contract package and ordinary imports are allowed, and daemon and elec
   assert.equal(isRendererFile("vs/axis/common/axisView.ts"), true);
   assert.equal(isRendererFile("vs/axis/services/x/electron-browser/y.ts"), true);
   assert.equal(isRendererFile("vs/axis/axis.common.main.ts"), true);
+  assert.equal(isRendererFile("vs/axis/services/x/electron-sandbox/y.ts"), true);
+  assert.equal(isRendererFile("vs/axis/services/x/worker/y.ts"), true);
   assert.equal(isRendererFile("vs/axis/daemon/node/main.ts"), false);
+});
+
+test("the renderer daemon client under services/daemon/common is allowed, the daemon folder is refused by resolved path", () => {
+  const from = "vs/axis/services/workspaces/common/x.ts";
+  assert.deepEqual(violations(from, "import { c } from '../../daemon/common/axisDaemonClient.js'; import { d } from '../../daemon/browser/y.js';"), []);
+  assert.equal(violations("vs/axis/browser/x.ts", "import { a } from '../daemon/node/axisDaemonMain.js';").length, 1);
+  assert.equal(violations("vs/axis/common/x.ts", "import { a } from '../daemon/common/y.js';").length, 1);
+  assert.equal(violations("vs/axis/services/a/common/x.ts", "import { a } from '../../../daemon/node/y.js';").length, 1);
 });
