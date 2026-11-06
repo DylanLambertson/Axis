@@ -46,6 +46,8 @@ const HOST_FILE_RULES = new Map([
  * their closed-over factories) and the composition root (ticket H12), the one place that builds the gate and hands handler code only
  * the registrar. A handler, a service, a binding or another composition part may not.
  */
+/** The files that may load the composition root: the public index, and the utility process entry (it calls `composeDaemonHost` and nothing else of it). */
+const COMPOSE_IMPORTERS = new Set(["src/index.ts", "src/entry.ts"]);
 const COMPOSITION_FILES = new Set(["src/index.ts", "src/compose.ts"]);
 /** Packages whose bindings live in `src/bindings/*.ts` of the host (they land with their own changes). */
 const HOST_BINDING_PACKAGES = ["@axis/runs", "@axis/review"];
@@ -91,10 +93,15 @@ export function violation(pkg, spec, file = null, pkgDir = null) {
       const from = relative(pkgDir, file).split(sep).join("/");
       if (from.startsWith("src/")) return "nothing inside src/ may import the public index";
     }
+    // The process entry reaches the composition root, so it is a composition point: nothing inside src/ may load it, only the overlay entry.
+    if (pkg === HOST_PACKAGE && /^src[\\/]entry(\.[cm]?[jt]s)?$/.test(rel)) {
+      const from = relative(pkgDir, file).split(sep).join("/");
+      if (from.startsWith("src/")) return "nothing inside src/ may import the process entry src/entry.ts";
+    }
     // The composition root loads both minters, so it is as privileged as the public index: only the index may load it.
     if (pkg === HOST_PACKAGE && /^src[\\/]compose(\.[cm]?[jt]s)?$/.test(rel)) {
       const from = relative(pkgDir, file).split(sep).join("/");
-      if (from.startsWith("src/") && from !== "src/index.ts") return "only src/index.ts may import the composition root";
+      if (from.startsWith("src/") && !COMPOSE_IMPORTERS.has(from)) return "only src/index.ts and the process entry src/entry.ts may import the composition root";
     }
     if (pkg === HOST_PACKAGE && /^src[\\/]gate[\\/]worktrees-confirm(\.[cm]?[jt]s)?$/.test(rel)) {
       const from = relative(pkgDir, file).split(sep).join("/");
@@ -409,10 +416,16 @@ test("scanner: the daemon host is imported by nothing and imports the restricted
   assert.equal(violation("daemon-host", "../src/gate/worktrees-confirm.js", at("test/worktrees-unit.test.ts"), dir), null, "tests may");
   // The composition root (it loads both minters): only the public index, never a handler, binding, gate or helper file.
   assert.equal(violation("daemon-host", "./compose.js", at("src/index.ts"), dir), null);
+  assert.equal(violation("daemon-host", "./compose.js", at("src/entry.ts"), dir), null, "the process entry calls composeDaemonHost");
   assert.equal(violation("daemon-host", "../src/compose.js", at("test/compose.test.ts"), dir), null, "tests may");
   for (const [f, spec] of [["src/handlers/projects.ts", "../compose.js"], ["src/compose-parts.ts", "./compose.js"], ["src/bindings/runs.ts", "../compose"], ["src/gate/approvals.ts", "../compose.ts"], ["src/host.ts", "./compose.js"]]) {
     assert.notEqual(violation("daemon-host", spec, at(f), dir), null, f);
   }
+  // The process entry is a composition point loadable by no staged file (the overlay entry is outside the package).
+  for (const [f, spec] of [["src/handlers/worktrees.ts", "../entry.js"], ["src/index.ts", "./entry.js"], ["src/compose.ts", "./entry"], ["src/supervisor.ts", "./entry.ts"], ["src/bindings/runs.ts", "../entry.js"]]) {
+    assert.notEqual(violation("daemon-host", spec, at(f), dir), null, `${f} -> ${spec}`);
+  }
+  assert.equal(violation("daemon-host", "../src/entry.js", at("test/entry.test.ts"), dir), null, "tests may");
   // The barrel hop: a handler loading the public index could reach whatever it exports.
   for (const [f, spec] of [["src/handlers/worktrees.ts", "../index.js"], ["src/worktrees/service.ts", "../index"], ["src/gate/approvals.ts", "../index.ts"]]) {
     assert.notEqual(violation("daemon-host", spec, at(f), dir), null, f);

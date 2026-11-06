@@ -58,18 +58,20 @@ export const RESTRICTED_MODULES = [
   // root `compose.ts`, which hands handler code the registrar only) may load it, so no handler, service or binding can mint an
   // attestation without main's per-start trust.check (TRU-2).
   { pkg: "daemon-host", file: "gate/run-trust.ts", importers: new Set(), files: new Set(["daemon-host/index.ts", "daemon-host/compose.ts"]), exact: true },
-  // The composition root loads the minters: only the public index may load it, so no handler can import a minter through it.
-  { pkg: "daemon-host", file: "compose.ts", importers: new Set(), files: new Set(["daemon-host/index.ts"]), exact: true },
+  // The composition root loads the minters: only the public index and the process entry (`entry.ts`, which calls `composeDaemonHost` and nothing else of it) may load it, so no handler can import a minter through it.
+  { pkg: "daemon-host", file: "compose.ts", importers: new Set(), files: new Set(["daemon-host/index.ts", "daemon-host/entry.ts"]), exact: true },
   // The discard token minter has the same two loaders as the run trust minter.
   { pkg: "daemon-host", file: "gate/worktrees-confirm.ts", importers: new Set(), files: new Set(["daemon-host/index.ts", "daemon-host/compose.ts"]), exact: true },
   // The public index re-exports the composition (and so, through it, both minters): no staged file may load it (a barrel hop), only
   // code outside the staged tree (the overlay entry, `rel === null`) may. `outside` is what lets that importer through.
   { pkg: "daemon-host", file: "index.ts", importers: new Set(), files: new Set(), exact: true, outside: true },
+  // The process entry reaches the composition root, so it is a composition point too: no staged file may load it, only the overlay entry may.
+  { pkg: "daemon-host", file: "entry.ts", importers: new Set(), files: new Set(), exact: true, outside: true },
 ];
 
 /** The staged modules that hold a host minter, and the only staged files that may load them or anything that reaches them. */
 export const HOST_MINTER_FILES = new Set(["daemon-host/gate/run-trust.ts", "daemon-host/gate/worktrees-confirm.ts"]);
-export const HOST_COMPOSITION_FILES = new Set(["daemon-host/index.ts", "daemon-host/compose.ts"]);
+export const HOST_COMPOSITION_FILES = new Set(["daemon-host/index.ts", "daemon-host/compose.ts", "daemon-host/entry.ts"]);
 
 /** True when the staged file `rel` (package `importerPkg`) may import restricted module `r`. `exact` ignores the owner package. */
 export function mayImportRestricted(r, importerPkg, rel) {
