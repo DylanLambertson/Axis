@@ -38,3 +38,30 @@ export function minterReachViolations(metafile, stagedOf) {
   }
   return bad;
 }
+
+/**
+ * Returns the reasons a metafile cannot be trusted for the walk: it has no inputs, none of them staged, or an edge to a staged module
+ * that has no input entry (the walk would treat that module as a leaf and never follow its imports). Empty means complete.
+ */
+export function metafileGaps(metafile, stagedOf) {
+  const inputs = metafile?.inputs;
+  if (inputs === null || typeof inputs !== "object" || Object.keys(inputs).length === 0) return ["the metafile has no inputs, so the graph walk saw nothing"];
+  const gaps = [];
+  if (!Object.keys(inputs).some((i) => stagedOf(i) !== null)) gaps.push("the metafile has no staged input, so the graph walk saw nothing of the staged tree");
+  for (const [input, info] of Object.entries(inputs)) {
+    if (!Array.isArray(info?.imports)) {
+      gaps.push(`${input}: the metafile entry has no imports list`);
+      continue;
+    }
+    for (const imp of info.imports) {
+      if (imp.external === true || stagedOf(imp.path) === null) continue;
+      if (!Object.hasOwn(inputs, imp.path)) gaps.push(`${input}: imports ${imp.path}, which the metafile has no input entry for (incomplete metafile)`);
+    }
+  }
+  return gaps;
+}
+
+/** The requested entries (metafile input paths) that are not among the metafile's inputs: a build that dropped an entry saw none of its graph. */
+export function missingEntries(metafile, entries) {
+  return entries.filter((e) => !Object.hasOwn(metafile?.inputs ?? {}, e));
+}

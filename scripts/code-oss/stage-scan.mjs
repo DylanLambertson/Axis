@@ -90,8 +90,10 @@ export function mayImportRestricted(r, importerPkg, rel) {
  *   axis:     `@axis/<name>` or a declared subpath, `{ name, subpath }`
  *   node:     a `node:*` built-in
  * `exportsOf(name)` returns the subpath keys the package declares (for example "./daemon-principal"), or null for an unknown package.
+ * `targetOf(name, key)` (optional) returns the staged file stem a declared key maps to ("./alias" -> "daemon-principal"); with it a restricted
+ * subpath binds the file it maps to, so a second export key onto the same file carries the same restriction (RR-6).
  */
-export function classifySpecifier(spec, pkg, exportsOf, fileRel = null) {
+export function classifySpecifier(spec, pkg, exportsOf, fileRel = null, targetOf = () => undefined) {
   if (spec.startsWith("./") || spec.startsWith("../")) return { kind: "relative" };
   if (spec === "zod") return { kind: "zod" };
   if (spec.startsWith("zod/")) throw `only the "zod" entry is staged, not ${spec}`;
@@ -112,9 +114,15 @@ export function classifySpecifier(spec, pkg, exportsOf, fileRel = null) {
     if (keys === null) throw `unknown workspace package ${spec}`;
     if (sub !== undefined) {
       if (!keys.includes(`.${sub}`)) throw `${spec} is not a subpath the package exports (or is not stageable)`;
-      const allowed = RESTRICTED_SUBPATHS.get(spec);
-      const exact = RESTRICTED_FILE_EXCEPTIONS.get(spec)?.get(pkg)?.has(fileRel) === true;
-      if (allowed !== undefined && !allowed.has(pkg) && !exact) throw `${spec} may only be imported by: ${[...allowed].join(", ")}`;
+      const stem = targetOf(name, `.${sub}`);
+      for (const [restricted, allowed] of RESTRICTED_SUBPATHS) {
+        const [, rName, rSub] = /^@axis\/([a-z][a-z0-9-]*)\/(.+)$/.exec(restricted);
+        // The restricted file comes from the module table, not from the restricted key's own mapping, so removing or remapping that key cannot free an alias.
+        const rFile = RESTRICTED_MODULES.find((m) => m.pkg === rName && m.file === `${rSub}.ts`)?.file.replace(/\.ts$/, "") ?? targetOf(rName, `./${rSub}`);
+        const sameFile = restricted === spec || (rName === name && stem !== undefined && rFile === stem);
+        const exact = RESTRICTED_FILE_EXCEPTIONS.get(restricted)?.get(pkg)?.has(fileRel) === true;
+        if (sameFile && !allowed.has(pkg) && !exact) throw `${spec} may only be imported by: ${[...allowed].join(", ")}${restricted === spec ? "" : ` (it maps to the file ${restricted} exports)`}`;
+      }
     }
     return { kind: "axis", name, subpath: sub === undefined ? null : `.${sub}` };
   }
