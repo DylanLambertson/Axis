@@ -1,26 +1,30 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
-// ADR 0005 D3.4 / ticket X1-lint: renderer-layer overlay code (browser/, common/, electron-browser/) must not import daemon-side
-// packages (@axis/pty-process, @axis/daemon-host, ...), the staged packages tree or the overlay's daemon/ folder. Only the contract
-// package @axis/protocol may be imported. The overlay ESLint config runs only inside a Code OSS tree, so the rule is enforced here
-// as a source import-graph check over the overlay files (a plain TypeScript parse; no Code OSS tree needed).
+// ADR 0005 D3.4 / ticket X1-lint: renderer-layer overlay code must not import daemon-side packages (@axis/pty-process,
+// @axis/daemon-host, ...), the staged packages tree or the overlay's daemon/ folder. Only the contract package @axis/protocol may be
+// imported. Renderer files are those in a browser/, common/, electron-browser/, electron-sandbox/ or worker/ folder and the entry
+// files at the overlay root (axis.*.main.ts). The overlay ESLint config only runs inside a Code OSS tree, so the rule is enforced
+// here as a source import-graph check (a plain TypeScript parse). Limit: an indirect `require` (alias, createRequire) is not seen.
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync } from "node:fs";
-import { join, relative, sep } from "node:path";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import ts from "typescript6";
 
 const OVERLAY = fileURLToPath(new URL("../../code-oss/overlay/src", import.meta.url));
-const RENDERER_DIRS = new Set(["browser", "common", "electron-browser"]);
+const RENDERER_DIRS = new Set(["browser", "common", "electron-browser", "electron-sandbox", "worker"]);
 const ALLOWED_PACKAGES = new Set(["@axis/protocol"]);
 
-/** Every module specifier a file loads: import/export-from, import(), require(), import-equals. */
+/** Every module specifier a file loads: import/export-from, import(), require(), import-equals, import types, reference directives. */
 export function specifiers(source) {
   const sf = ts.createSourceFile("f.ts", source, ts.ScriptTarget.Latest, true);
   const out = [];
+  for (const r of [...sf.referencedFiles, ...sf.typeReferenceDirectives, ...sf.libReferenceDirectives]) out.push(r.fileName);
   const visit = (n) => {
     if ((ts.isImportDeclaration(n) || ts.isExportDeclaration(n)) && n.moduleSpecifier !== undefined) out.push(n.moduleSpecifier.text);
     else if (ts.isImportEqualsDeclaration(n) && ts.isExternalModuleReference(n.moduleReference) && ts.isStringLiteralLike(n.moduleReference.expression)) out.push(n.moduleReference.expression.text);
+    else if (ts.isImportTypeNode(n)) out.push(ts.isLiteralTypeNode(n.argument) && ts.isStringLiteralLike(n.argument.literal) ? n.argument.literal.text : "<dynamic>");
     else if (ts.isCallExpression(n) && (n.expression.kind === ts.SyntaxKind.ImportKeyword || (ts.isIdentifier(n.expression) && n.expression.text === "require"))) {
       const a = n.arguments[0];
       out.push(a !== undefined && ts.isStringLiteralLike(a) ? a.text : "<dynamic>");
@@ -31,9 +35,10 @@ export function specifiers(source) {
   return out;
 }
 
-/** True for files in a renderer layer (a path segment named browser, common or electron-browser). */
+/** True for files in a renderer layer folder and for the entry files at the overlay root. */
 export function isRendererFile(rel) {
-  return rel.split(/[\\/]/).slice(0, -1).some((s) => RENDERER_DIRS.has(s));
+  const parts = rel.split(/[\\/]/);
+  return /^axis\.[a-z.]+\.main(\.internal)?\.ts$/.test(parts[parts.length - 1]) || parts.slice(0, -1).some((s) => RENDERER_DIRS.has(s));
 }
 
 /** The reasons a renderer file's imports are refused (empty when fine). */
@@ -41,7 +46,7 @@ export function violations(rel, source) {
   const bad = [];
   for (const s of specifiers(source)) {
     if (s === "<dynamic>") bad.push(`${rel}: non-literal module load`);
-    else if (s.startsWith("@axis/") && !ALLOWED_PACKAGES.has(s.split("/").slice(0, 2).join("/"))) bad.push(`${rel}: ${s}`);
+    else if (s.startsWith("@axis/") && (!ALLOWED_PACKAGES.has(s.split("/").slice(0, 2).join("/")) || s.split("/").some((x) => x === ".." || x === "."))) bad.push(`${rel}: ${s}`);
     else if (/(^|\/)packages\//.test(s) || /(^|\/)vs\/axis\/daemon(\/|$)/.test(s) || /(^|\/)daemon\/(node|common)(\/|$)/.test(s)) bad.push(`${rel}: ${s}`);
   }
   return bad;
@@ -55,17 +60,39 @@ function* walk(dir) {
   }
 }
 
-test("no renderer-layer overlay file imports a daemon-side package, the packages tree or the daemon folder", () => {
-  let seen = 0;
+/** Checks every renderer file under `root`: the renderer files seen and the violations found. */
+export function checkTree(root) {
+  const seen = [];
   const bad = [];
-  for (const file of walk(OVERLAY)) {
-    const rel = relative(OVERLAY, file).split(sep).join("/");
+  for (const file of walk(root)) {
+    const rel = relative(root, file).split(sep).join("/");
     if (!isRendererFile(rel)) continue;
-    seen++;
+    seen.push(rel);
     bad.push(...violations(rel, readFileSync(file, "utf8")));
   }
-  assert.ok(seen > 0, "the walk found renderer-layer files");
+  return { seen, bad };
+}
+
+test("no renderer-layer overlay file imports a daemon-side package, the packages tree or the daemon folder", () => {
+  const { seen, bad } = checkTree(OVERLAY);
+  for (const f of ["vs/axis/axis.common.main.ts", "vs/axis/axis.desktop.main.ts", "vs/axis/common/axisView.ts"]) assert.ok(seen.includes(f), `${f} is checked`);
   assert.deepEqual(bad, []);
+});
+
+test("the tree walk reports a violating file, in a layer folder and at the root, from a fixture tree", () => {
+  const dir = mkdtempSync(join(tmpdir(), "axis-renderer-imports-"));
+  try {
+    const put = (rel, src) => { mkdirSync(dirname(join(dir, rel)), { recursive: true }); writeFileSync(join(dir, rel), src); };
+    put("axis/common/ok.ts", "import { z } from '@axis/protocol';\n");
+    put("axis/browser/bad.ts", "import { s } from '@axis/pty-process';\n");
+    put("axis.desktop.main.ts", "import './x.js'; import '@axis/daemon-host';\n");
+    put("axis/daemon/node/main.ts", "import '@axis/daemon-host';\n");
+    const { seen, bad } = checkTree(dir);
+    assert.deepEqual(seen.sort(), ["axis.desktop.main.ts", "axis/browser/bad.ts", "axis/common/ok.ts"]);
+    assert.deepEqual(bad.sort(), ["axis.desktop.main.ts: @axis/daemon-host", "axis/browser/bad.ts: @axis/pty-process"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("a planted import in a renderer file is refused, in every import form", () => {
@@ -83,6 +110,9 @@ test("a planted import in a renderer file is refused, in every import form", () 
     "import { a } from '../daemon/node/axisDaemonMain.js';",
     "import { a } from 'vs/axis/daemon/node/x.js';",
     "const m = import(name);",
+    "type T = import('@axis/pty-process').PtyService;",
+    "/// <reference types=\"@axis/pty-process\" />\nexport {};",
+    "import { a } from '@axis/protocol/../pty-process';",
   ]) assert.equal(violations(f, src).length, 1, src);
 });
 
@@ -92,4 +122,6 @@ test("the contract package and ordinary imports are allowed, and daemon and elec
   assert.equal(isRendererFile("vs/axis/code/electron-main/axisMainSeam.ts"), false);
   assert.equal(isRendererFile("vs/axis/common/axisView.ts"), true);
   assert.equal(isRendererFile("vs/axis/services/x/electron-browser/y.ts"), true);
+  assert.equal(isRendererFile("vs/axis/axis.common.main.ts"), true);
+  assert.equal(isRendererFile("vs/axis/daemon/node/main.ts"), false);
 });
