@@ -10,7 +10,7 @@ import { BrokerError, denied, invalid, toBrokerError } from "./errors.js";
 import type { BrokerFs } from "./fs.js";
 import { checkGitCall, createBrokerGit, gitCallTier, gitKey, snapGit, GIT_COMMANDS, type BrokerGit, type GitCall } from "./git.js";
 import { pinProgram, type PinnedProgram } from "./program.js";
-import { clip, clipText, escapeDisplay, printable, sha } from "./text.js";
+import { callDigest, clip, clipText, escapeDisplay, printable } from "./text.js";
 import { ApprovalLedger, ToolPolicy, verifyApproval, type ApprovalHook, type PolicyOptions, type VerifiedApproval } from "./policy.js";
 import type { CommandRunner, RunRecord } from "./runner.js";
 import { matchProtected } from "./protectedPaths.js";
@@ -289,7 +289,7 @@ export class ToolBroker {
 
     let digest: string;
     try {
-      digest = sha(canonicalize({ tool: tool.name, worktreeId, actor, tier: decision.tier, paths: ops.map((o) => `${o.access}:${o.path}`), commands, args: args as never }));
+      digest = callDigest({ tool: tool.name, worktreeId, actor, tier: decision.tier, paths: ops.map((o) => `${o.access}:${o.path}`), commands, args });
     } catch {
       return refuse(invalid("invalid-args", "the arguments cannot be approved"), { tier: decision.tier });
     }

@@ -124,7 +124,7 @@ test("S4: the run stops once its tool results exceed the per-run size cap", asyn
   const end = await runComposerLoop({
     runId: "r1", mode: "agent", prompt: "p", model: "mock-model", budget: createRunBudget({}), signal: new AbortController().signal, emit: () => undefined, tools,
     provider: { generate: async () => reply(1) },
-    maxResultChars: 2500,
+    caps: { resultBytesPerRun: 2500 },
   });
   assert.deepEqual(end, { state: "FAILED", reason: "TOOL_RESULT_LIMIT" });
   assert.equal(tools.calls, 3, "the third result crossed the cap, and nothing more was asked");
@@ -134,7 +134,7 @@ test("S4: the run stops once its tool results exceed the per-run size cap", asyn
   const atCap = await runComposerLoop({
     runId: "r2", mode: "agent", prompt: "p", model: "mock-model", budget: createRunBudget({}), signal: new AbortController().signal, emit: () => undefined, tools: exact,
     provider: { generate: async () => (turns++ < 2 ? reply(1) : { ...reply(0), stopReason: "end_turn" }) },
-    maxResultChars: 2000,
+    caps: { resultBytesPerRun: 2000 },
   });
   assert.deepEqual(atCap, { state: "REVIEWING", reason: null });
   assert.equal(exact.calls, 2);
