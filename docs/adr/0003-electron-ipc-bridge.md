@@ -147,6 +147,7 @@ sequenceDiagram
   - Within a major version, changes are additive only: new optional fields and new methods.
   - Removing or retyping anything requires a new major version, and the daemon serves N and N-1 for at least one release.
   - The handshake negotiates versions; an unknown method yields `E_METHOD_NOT_FOUND`.
+  - **Recorded pre-release exception (2026-11-05, P1d):** `axis.worktrees/1.finalise` moved from `write`, tier 2 to `destructive`, tier 4 with an `approval` field, inside major version 1. No client has shipped and every in-repo caller was updated in the same change, so no N-1 was served. Once 1a ships, a tier or side-effect change is a new major version (or a policy raise, which never lowers). See `docs/design/worktrees-tier4.md`.
 - **Validation is authoritative in the daemon.** Every request is checked in this order:
   1. A hand-written **envelope check** (about 100 lines, no library) runs before any schema work: maximum message size (default 1 MiB, lower per method), maximum depth, known envelope keys, and string length limits.
   2. **Payload schema:** strict objects, so unknown keys are rejected.

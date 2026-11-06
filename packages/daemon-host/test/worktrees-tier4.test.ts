@@ -5,6 +5,7 @@ import { test, type TestContext } from "node:test";
 import * as path from "node:path";
 import { challengeOf, newKey, type Client } from "./approvals-rig.js";
 import { wait } from "./helpers.js";
+import { createWorktreesHandlers } from "../src/index.js";
 import { createWs as createWsRaw, finaliseApproved, gitSkipReason, worktreesRig, type Rig } from "./worktrees-rig.js";
 
 // Ticket P1d: `axis.worktrees/1.finalise` is tier 4 (challenge plus native confirmation), because a discard token is minted
@@ -83,4 +84,15 @@ test("discard and setUserEditing are served (policy and schema) but answer a fix
   assert.equal((await agent.call(WT, "discard", { id, paths: ["a.txt"] }, newKey())).error?.code, "E_POLICY_DENIED");
   assert.equal((await agent.call(WT, "setUserEditing", { id, paths: [] })).error?.code, "E_POLICY_DENIED");
   assert.equal(r.journal.transitions("workspace", id).length, before, "nothing changed");
+});
+
+test("the finalise and remove handlers stop with E_INTERNAL when they run outside a spent approval (defence in depth)", async () => {
+  let called = 0;
+  const service = new Proxy({}, { get: () => async () => (called++, {}) });
+  const handlers = createWorktreesHandlers({ service: service as never, needsAttention: () => false });
+  const context = { identity: { actor: "user", connectionId: "c", windowId: "w" }, signal: new AbortController().signal };
+  for (const [method, body] of [["finalise", { id: "ws-1", outcome: "archived" }], ["remove", { id: "ws-1" }]] as const) {
+    await assert.rejects(Promise.resolve(handlers[method](context as never, body as never)), (e: { code?: string }) => e.code === "E_INTERNAL", method);
+  }
+  assert.equal(called, 0, "the service was not reached");
 });

@@ -58,7 +58,7 @@ export function createWorktreesHandlers(deps: WorktreesHandlerDeps): Readonly<Re
     list: run<"list">("list", none, (p, ctx) => deps.service.list(p, ctx)),
     status: run<"status">("status", (p) => p.ids, (p, ctx) => deps.service.status(p, ctx)),
     create: run<"create">("create", none, (p, ctx) => deps.service.create(p, ctx)),
-    finalise: run<"finalise">("finalise", (p) => [p.id], (p, ctx) => deps.service.finalise(p, ctx)),
+    finalise: run<"finalise">("finalise", (p) => [p.id], (p, ctx, context) => (approved(context), deps.service.finalise(p, ctx))),
     remove: run<"remove">("remove", (p) => [p.id], (p, ctx, context) => (approved(context), deps.service.remove(p, ctx))),
     restoreFromRunBase: run<"restoreFromRunBase">("restoreFromRunBase", (p) => [p.id], (p, ctx) => deps.service.restoreFromRunBase(p, ctx)),
     // The contract and policy rows exist (ticket P1d); the service behind them does not (it needs a discard entry point and a

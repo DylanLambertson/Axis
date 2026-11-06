@@ -71,3 +71,19 @@ test("setUserEditing replaces the advisory set: an empty list clears it, the lis
   rejects(req, { id: "ws-1", paths: [], editing: true }, "unknown key");
   rejects(schemaOf(W, "setUserEditing", "response"), { id: "ws-1", paths: [] }, "the reply echoes nothing else");
 });
+
+test("discard's reply can say what the backup did not keep: a bounded count and display-safe paths, optional, strict", () => {
+  const res = schemaOf(W, "discard", "response");
+  const base = { backupRef: "refs/axis/backup/ws-1/1", discarded: ["big.bin"] };
+  accepts(res, { ...base, unbacked: { count: 1, paths: ["big.bin"] } }, "one");
+  accepts(res, { ...base, unbacked: { count: 0, paths: [] } }, "empty");
+  rejects(res, { ...base, unbacked: { count: -1, paths: [] } }, "negative count");
+  rejects(res, { ...base, unbacked: { count: MAX_DISCARD_PATHS + 1, paths: [] } }, "count over the bound");
+  rejects(res, { ...base, unbacked: { count: 1.5, paths: [] } }, "fractional count");
+  rejects(res, { ...base, unbacked: { count: 1, paths: Array.from({ length: 51 }, (_, i) => `f${i}`) } }, "too many paths");
+  rejects(res, { ...base, unbacked: { count: 1, paths: ["a".repeat(257)] } }, "path too long");
+  rejects(res, { ...base, unbacked: { count: 1, paths: ["a\u202Eb"] } }, "bidi character in a display path");
+  rejects(res, { ...base, unbacked: { count: 1, paths: ["a\nb"] } }, "control character in a display path");
+  rejects(res, { ...base, unbacked: { count: 1, paths: [], extra: 1 } }, "extra key in unbacked");
+  rejects(res, { ...base, unbacked: null }, "null");
+});

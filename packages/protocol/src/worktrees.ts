@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { z } from "zod";
 import { challengeReferenceSchema } from "./challenge.js";
-import { guarded } from "./guard.js";
+import { countSchema, displayTextSchema, guarded } from "./guard.js";
 
 /**
  * `axis.worktrees/1` (docs/design/axis-agent-shell.md section 5.3).
@@ -123,6 +123,9 @@ export const MAX_STATUS_IDS = 100;
 export const MAX_RESTORE_PATHS = 500;
 export const MAX_DISCARD_PATHS = 500;
 export const MAX_USER_EDITING_PATHS = 200;
+/** Paths named in a reply about files a backup could not keep; the rest are only counted. */
+export const MAX_UNBACKED_PATHS = 50;
+export const MAX_UNBACKED_DISPLAY = 256;
 
 // list (read, tier 0)
 export const listRequestSchema = z.strictObject({ projectId: projectIdSchema });
@@ -190,8 +193,12 @@ export const restoreFromRunBaseResponseSchema = z.strictObject({
   restored: z.array(relativePathSchema).max(MAX_RESTORE_PATHS),
 });
 
-// discard (write, tier 2, idempotency required): reject, the reversible one. The daemon writes a backup commit of the
-// worktree to `refs/axis/backup/<id>/<ts>` first, then restores exactly these paths; hunk-level discard is not in 1a.
+// discard (write, tier 2, idempotency required): reject. The daemon writes a backup commit of the worktree to
+// `refs/axis/backup/<id>/<ts>` first, then restores exactly these paths. The backup does NOT keep files over the size limit,
+// ignored files or entries a snapshot cannot hold (nested repositories and the like), so a discard is reversible only for
+// what it holds. The service must therefore REFUSE a request that names such a path (`E_CONFLICT`, reason `unbacked_data`):
+// a tier 2 call has no native dialog, and this contract has no confirmed variant. `unbacked` is for the day a confirmed path
+// exists: it says how much was not backed up, and its paths are display text only (`toDisplayPath`), never an identity.
 export const discardRequestSchema = z.strictObject({
   id: workspaceIdSchema,
   paths: z.array(relativePathSchema).min(1).max(MAX_DISCARD_PATHS),
@@ -199,6 +206,13 @@ export const discardRequestSchema = z.strictObject({
 export const discardResponseSchema = z.strictObject({
   backupRef: z.string().max(256),
   discarded: z.array(relativePathSchema).max(MAX_DISCARD_PATHS),
+  /** Present only when something discarded was not in the backup. `count` is the total, `paths` the first few, for display. */
+  unbacked: z
+    .strictObject({
+      count: countSchema.max(MAX_DISCARD_PATHS),
+      paths: z.array(displayTextSchema(MAX_UNBACKED_DISPLAY)).max(MAX_UNBACKED_PATHS),
+    })
+    .optional(),
 });
 
 // setUserEditing (write, tier 2, no idempotency key): the renderer reports, as the user, the paths with unsaved editors.
