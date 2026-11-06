@@ -12,6 +12,7 @@ export {
   type Workspace,
 } from "./model.js";
 export { type RegisterProjectInput } from "./records.js";
+export { MAX_TAIL_ROWS, lastTransitionId, transitionsSince, type TransitionTail } from "./tail.js";
 export { JOURNAL_MIGRATIONS, JOURNAL_SCHEMA_VERSION } from "./schema.js";
 export {
   FINALISE_OUTCOMES,

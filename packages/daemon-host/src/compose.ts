@@ -4,9 +4,9 @@ import { access } from "node:fs/promises";
 import { join } from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
 import { AxisError, withTransaction, type InstanceLock } from "@axis/audit";
-import { Daemon, MemoryIdempotencyStore, protocolRegistry, type ContractRegistry, type ShutdownOptions } from "@axis/daemon";
+import { Daemon, EventHub, MemoryIdempotencyStore, protocolRegistry, type ContractRegistry, type ShutdownOptions } from "@axis/daemon";
 import type { GitRunner } from "@axis/git-ops";
-import { PROJECTS_CONTRACT, PROJECTS_VERSION, PROVIDERS_CONTRACT, PROVIDERS_VERSION, APPROVALS_CONTRACT, APPROVALS_VERSION, REVIEW_CONTRACT, REVIEW_VERSION, WORKTREES_CONTRACT, WORKTREES_VERSION, lookupMethod } from "@axis/protocol";
+import { EVENTS_CONTRACT, EVENTS_VERSION, PROJECTS_CONTRACT, PROJECTS_VERSION, PROVIDERS_CONTRACT, PROVIDERS_VERSION, APPROVALS_CONTRACT, APPROVALS_VERSION, REVIEW_CONTRACT, REVIEW_VERSION, WORKTREES_CONTRACT, WORKTREES_VERSION, lookupMethod } from "@axis/protocol";
 import { createSecretScanner, type ScanMode } from "@axis/secret-scan";
 import { anchorPreflight } from "./anchor/preflight.js";
 import { createGitOperations, createGitPort } from "./bindings/git.js";
@@ -21,6 +21,7 @@ import type { ControlClient } from "./control/client.js";
 import { createConnectLimiter } from "./control/connect-limiter.js";
 import { createConnectRouter } from "./control/connect-router.js";
 import type { DisposeResult, ListenerTarget } from "./disposables.js";
+import { createEventSources } from "./events/sources.js";
 import { createChallengeAuditSink } from "./gate/audit-sink.js";
 import { createRunTrustMinter } from "./gate/run-trust.js";
 import { createWorktreesApprovals, type WorktreesApprovals } from "./gate/worktrees-confirm.js";
@@ -87,6 +88,8 @@ export interface ComposeOptions {
   readonly withholdHandlers?: ReadonlySet<string>;
   /** How long the final anchor waits for its acknowledgement (default 1500). A longer wait than `finalizeTimeoutMs` only turns a slow acknowledgement into exit 1. */
   readonly finalAnchorWaitMs?: number;
+  /** Period of the event sources (docs/design/events.md section 4; default 250 ms). */
+  readonly eventPumpMs?: number;
 }
 
 export interface ComposedHost {
@@ -215,6 +218,8 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
     // Contracts: identity, policy, the daemon.
     const verifier = createAttestationVerifier({ key: config.attestationKey, clock: ports.clock });
     cleanups.push(() => verifier.close());
+    // Server-pushed events (E1): only on a writable host that serves the contract (a degraded host does not).
+    const events = writable && services.served.includes(EVENTS_CONTRACT) ? new EventHub({ onInternalError: () => logger?.warn("request.failed", { reason: "events_refused" }) }) : undefined;
     const daemon = new Daemon({
       identity: verifier,
       audit: daemonAuditSink(audit, () => services.anchors.noteWrite()),
@@ -226,6 +231,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
       onInternalError: (_correlationId, error) => logger?.error("request.failed", { reason: "daemon_internal", error }),
       ...(config.limits.maxConnections === undefined ? {} : { maxConnections: config.limits.maxConnections }),
       ...(options.shutdown === undefined ? {} : { shutdown: options.shutdown }),
+      ...(events === undefined ? {} : { events }),
     });
     cleanups.push(() => daemon.stop());
     const recorded = recordingRegistrar(createHandlerRegistrar(daemon, services.anchors));
@@ -236,6 +242,20 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
     registerAuditHandlers(registrar, { audit: services.auditRead, anchors: services.anchors, degraded: () => services.degraded, clock: ports.clock });
     registrar.register(PROJECTS_CONTRACT, PROJECTS_VERSION, createProjectsHandlers({ projects: () => services.journalRead.listProjects() }));
     if (writable) registerServing(registrar, services);
+    if (events !== undefined) {
+      registrar.register(EVENTS_CONTRACT, EVENTS_VERSION, events.handlers());
+      const approvals = built.approvals;
+      const sources = createEventSources({
+        hub: events,
+        journal: services.journalRead,
+        auditHead: () => services.auditRead.head()?.seq ?? 0,
+        anchorStalled: () => services.anchors.status().stalled,
+        pending: (windowId) => approvals?.port.pending(windowId) ?? [],
+        ...(options.eventPumpMs === undefined ? {} : { intervalMs: options.eventPumpMs }),
+        onError: (reason) => logger?.warn("request.failed", { reason }),
+      });
+      cleanups.push(() => sources.dispose());
+    }
     // Every served method has a handler and every handler is a served method; a mismatch is exit 70 before `ready`.
     checkCoverage({ ...services.surface, also: { handlers: recorded.methods() } });
 

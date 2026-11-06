@@ -50,6 +50,8 @@ const EXPECTED: readonly Row[] = [
   ["axis.git", "compareUrl", "read", 0, "none", 10_000],
   ["axis.review", "diff", "read", 1, "none", 30_000],
   ["axis.review", "complete", "write", 2, "required", 15_000],
+  ["axis.events", "subscribe", "read", 0, "none", 5_000],
+  ["axis.events", "unsubscribe", "read", 0, "none", 5_000],
 ];
 
 function actualRows(): Row[] {

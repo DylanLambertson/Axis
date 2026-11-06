@@ -2,6 +2,7 @@
 import { randomBytes } from "node:crypto";
 import { inspectMessage, permissionTierSchema, type MethodSpec } from "@axis/protocol";
 import { DrainGate } from "./drain.js";
+import type { EventHub } from "./events.js";
 import { parseIdentity } from "./identity.js";
 import { OrphanTracker } from "./orphans.js";
 import { handlerKey, type PipelineDeps } from "./pipeline.js";
@@ -49,6 +50,11 @@ export interface DaemonOptions {
   readonly maxOrphanedHandlers?: number;
   /** Graceful shutdown timings (see shutdown.ts). */
   readonly shutdown?: ShutdownOptions;
+  /**
+   * Server-pushed events (docs/design/events.md). Each verified session is attached to it; its `axis.events/1`
+   * handlers are registered like any other. Shutdown ends every subscription before requests are cancelled.
+   */
+  readonly events?: EventHub;
 }
 
 /** Does the request schema declare an optional `approval` that accepts a challenge reference? */
@@ -98,7 +104,10 @@ export class Daemon {
     this.#shutdown = new ShutdownCoordinator(
       {
         drain: this.#drain,
-        cancelAll: () => [...this.#sessions.values()].reduce((n, s) => n + s.cancelAll(), 0),
+        cancelAll: () => {
+          this.#endEvents();
+          return [...this.#sessions.values()].reduce((n, s) => n + s.cancelAll(), 0);
+        },
         closeAll: () => this.stop(),
         store: this.#idempotency as FlushableIdempotencyStore,
         onError: (where, error) => options.onInternalError?.(where, error),
@@ -245,6 +254,7 @@ export class Daemon {
         now: this.#opts.now ?? Date.now,
         orphans: this.#orphans,
         drain: this.#drain,
+        ...(this.#opts.events === undefined ? {} : { events: this.#opts.events }),
         onClosed: (x) => {
           if (this.#sessions.get(x.identity.connectionId) === x) this.#sessions.delete(x.identity.connectionId);
         },
@@ -265,6 +275,15 @@ export class Daemon {
     return this.#shutdown.run(reason);
   }
 
+  /** Every subscription gets its final `end` frame and is removed; nothing is published afterwards. Never throws. */
+  #endEvents(): void {
+    try {
+      this.#opts.events?.endAll("shutdown");
+    } catch (e) {
+      this.#opts.onInternalError?.("events", e);
+    }
+  }
+
   /** A second shutdown signal: skip the wait in progress. No effect unless `shutdown` was called. */
   escalate(): void {
     this.#shutdown.escalate();
@@ -273,6 +292,7 @@ export class Daemon {
   /** Close every connection (in-flight calls are cancelled, runs owned by services continue). */
   stop(): void {
     this.#stopped = true;
+    this.#endEvents();
     for (const s of [...this.#sessions.values()]) s.close();
   }
 }
