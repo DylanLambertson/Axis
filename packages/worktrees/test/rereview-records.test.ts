@@ -67,11 +67,12 @@ describe('re-review S-2: compare-and-swap refs/axis/*', () => {
     const a = await fx.manager.create({ repoPath: fx.repo, slug: 'race' });
     const here = path.dirname(fileURLToPath(import.meta.url));
     const idx = path.join(here, '..', 'src', 'index.js');
+    const expected = exp(a.path);
     const child = (outcome: string) => new Promise<string>((resolve) => {
       const p = spawn(process.execPath, ['--input-type=module', '-e',
         `import {WorktreeManager,createExecGitRunner} from ${JSON.stringify(idx)};
          const m=new WorktreeManager({runner:createExecGitRunner(),worktreeRoot:${JSON.stringify(fx.root)}});
-         m.finalise({path:${JSON.stringify(a.path)}, expectedWorktree: exp(${JSON.stringify(a.path)}),outcome:${JSON.stringify(outcome)}})
+         m.finalise({path:${JSON.stringify(a.path)}, expectedWorktree:${JSON.stringify(expected)},outcome:${JSON.stringify(outcome)}})
           .then(()=>console.log('ok'),(e)=>console.log(e.code));`], { stdio: ['ignore', 'pipe', 'inherit'] });
       let out = '';
       p.stdout.on('data', (d) => { out += d; });
@@ -180,20 +181,20 @@ describe('re-review S-5: restore', () => {
     mkdirSync(outside);
     writeFileSync(path.join(outside, 'b.txt'), 'USER DATA OUTSIDE THE WORKTREE\n');
     write(path.join(a.path, 'sub', 'b.txt'), 'agent edit\n');
-    const orig = fsp.writeFile;
+    const orig = fsp.open;
     let swapped = false;
-    (fsp as { writeFile: typeof fsp.writeFile }).writeFile = (async (...args: Parameters<typeof fsp.writeFile>) => {
+    (fsp as { open: typeof fsp.open }).open = (async (...args: Parameters<typeof fsp.open>) => {
       if (!swapped && typeof args[0] === 'string' && args[0].includes('.axis-restore-')) {
         swapped = true; // a concurrent agent process wins the window after mkdirSafe's lstat
         renameSync(path.join(a.path, 'sub'), path.join(a.path, 'sub.real'));
         symlinkSync(outside, path.join(a.path, 'sub'));
       }
       return orig(...args);
-    }) as typeof fsp.writeFile;
+    }) as typeof fsp.open;
     try {
       await fx.manager.restoreFromRunBase({ path: path.join(a.path, 'sub', 'b.txt') , expectedWorktree: exp(path.join(a.path, 'sub', 'b.txt'))}).catch(() => undefined);
     } finally {
-      (fsp as { writeFile: typeof fsp.writeFile }).writeFile = orig;
+      (fsp as { open: typeof fsp.open }).open = orig;
     }
     assert.ok(swapped);
     assert.equal(

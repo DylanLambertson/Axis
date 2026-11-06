@@ -89,6 +89,12 @@ export function exp(p: string): ExpectedWorktree {
     dir = up;
   }
   const gitdir = /^gitdir: (.+)$/m.exec(readFileSync(path.join(dir, '.git'), 'utf8'))?.[1] ?? '';
-  const meta = JSON.parse(readFileSync(path.join(gitdir, 'axis-workspace.json'), 'utf8')) as { id: string };
-  return { path: dir, id: meta.id };
+  try {
+    const rec = path.join(gitdir, 'axis-workspace.json');
+    if (!lstatSync(rec).isFile()) throw new Error('not a regular record'); // never open a FIFO: it would block
+    const meta = JSON.parse(readFileSync(rec, 'utf8')) as { id: string };
+    return { path: dir, id: meta.id };
+  } catch {
+    return { path: dir, id: 'ws-none' }; // an unmanaged worktree or a corrupt record: a value that names no workspace
+  }
 }
