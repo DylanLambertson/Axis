@@ -43,6 +43,8 @@ interface Attempt {
   sizes: Map<string, number>;
   message: Buffer | undefined;
   ready: boolean;
+  /** The service generation the attempt was begun in; after a close (closeAll) nothing more runs or replies for it. */
+  readonly gen: number;
 }
 
 export interface GitExec {
@@ -170,15 +172,17 @@ export function createGitExec(cfg: GitExecConfig, clock: Clock, platform: NodeJS
 
   /** A bound git call the service makes itself (fill and verify). */
   const boundRun = async (a: Attempt, index: 1 | 2, args: readonly string[], stdin?: Uint8Array, maxOutput = 16 * 1024 * 1024): Promise<ExecOutcome | undefined> => {
+    // Checked after every await: a close (or scratch-end) while a read ran must not start the next git.
+    const gone = (): boolean => a.gen !== generation || attempts.get(a.id) !== a;
     const iso = isolation(await detectVersion());
-    if (iso === undefined) return undefined;
+    if (iso === undefined || gone()) return undefined;
     const redirect = redirectFor(a, index);
     const env = buildExecEnv(cfg.baseEnv, {}, { redirect, isolation: iso });
     if (env === undefined) return undefined;
     const argv = await pinned(boundPrefix(cfg.hooksOff), args, redirect.workTree, env);
-    if (argv === undefined) return undefined;
+    if (argv === undefined || gone()) return undefined;
     const r = await run(argv, redirect.workTree, env, stdin, stepMs, maxOutput);
-    return typeof r === "string" ? undefined : r;
+    return typeof r === "string" || gone() ? undefined : r;
   };
 
   /**
@@ -274,13 +278,14 @@ export function createGitExec(cfg: GitExecConfig, clock: Clock, platform: NodeJS
   };
 
   const begin = async (m: Extract<ScratchMsg, { t: "scratch-begin" }>): Promise<void> => {
-    const fail = (code: Extract<ExecReply, { t: "scratch-failed" }>["code"]): void => send({ t: "scratch-failed", req: m.req, code });
+    const gen = generation;
+    // After a close the reply would reach the next control channel, which never sent this request: say nothing.
+    const fail = (code: Extract<ExecReply, { t: "scratch-failed" }>["code"]): void => void (gen === generation && send({ t: "scratch-failed", req: m.req, code }));
     if (!ATTEMPT_ID.test(m.attempt) || attempts.has(m.attempt)) return fail("bad_bind");
     if (attempts.size >= MAX_ATTEMPTS) return fail("capacity");
     if (!gitDirOk(m.gitDir) || !isAbsolutePath(m.worktree, platform) || hasNul(m.worktree)) return fail("bad_bind");
     const dir = join(root, m.attempt);
-    const a: Attempt = { id: m.attempt, dir, gitDir: m.gitDir, worktree: m.worktree, tree: m.tree, manifest: undefined, sizes: new Map(), message: undefined, ready: false };
-    const gen = generation;
+    const a: Attempt = { id: m.attempt, dir, gitDir: m.gitDir, worktree: m.worktree, tree: m.tree, manifest: undefined, sizes: new Map(), message: undefined, ready: false, gen };
     attempts.set(a.id, a);
     try {
       mkdirSync(dir, { mode: 0o700 });
@@ -346,6 +351,7 @@ export function createGitExec(cfg: GitExecConfig, clock: Clock, platform: NodeJS
     if (a === undefined || !a.ready || a.manifest === undefined) return send({ t: "scratch-failed", req: m.req, code: "bad_bind" });
     const s1 = await writeTreeOf(a, 1);
     const s2 = await writeTreeOf(a, 2);
+    if (a.gen !== generation) return; // closed meanwhile: nobody asked the current channel
     if (attempts.get(a.id) !== a) return send({ t: "scratch-failed", req: m.req, code: "bad_bind" });
     if (s1 === undefined || s2 === undefined) return send({ t: "scratch-failed", req: m.req, code: "spawn_failed" });
     // Either index changed is a change; report the one that differs from the reviewed tree.

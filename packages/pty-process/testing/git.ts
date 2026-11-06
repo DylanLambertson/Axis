@@ -40,6 +40,8 @@ export interface GitRig {
   repo(name: string): { top: string; gitDir: string };
   /** A marker program that appends `name` to the marker log. */
   marker(name: string, tail?: string): string;
+  /** The marker directory, first on the service's PATH. */
+  readonly bin: string;
   markers(): string;
   cleanup(): void;
 }
@@ -57,7 +59,8 @@ export function gitRig(opts: { exec?: ExecFn; maxExecs?: number; gitPath?: strin
   writeFileSync(globalConfig, "");
   const markerLog = join(tmp, "markers.log");
   writeFileSync(markerLog, "");
-  const baseEnv: Record<string, string> = { PATH: process.env["PATH"] ?? "/usr/bin:/bin", HOME: home, GIT_CONFIG_GLOBAL: globalConfig, GIT_CONFIG_NOSYSTEM: "1", LANG: "C" };
+  // The marker directory leads PATH, so a test can plant a program git would look up there (a `git-remote-<x>` helper).
+  const baseEnv: Record<string, string> = { PATH: `${bin}:${process.env["PATH"] ?? "/usr/bin:/bin"}`, HOME: home, GIT_CONFIG_GLOBAL: globalConfig, GIT_CONFIG_NOSYSTEM: "1", LANG: "C" };
   const execLog: ExecRequest[] = [];
   const spawned: SpawnRequest[] = [];
   const pair = channelPair();
@@ -71,7 +74,7 @@ export function gitRig(opts: { exec?: ExecFn; maxExecs?: number; gitPath?: strin
   pair.a.onMessage((m) => void replies.push(m as Reply));
   const identity = { GIT_AUTHOR_NAME: "T", GIT_AUTHOR_EMAIL: "t@example.invalid", GIT_COMMITTER_NAME: "T", GIT_COMMITTER_EMAIL: "t@example.invalid" };
   const rig: GitRig = {
-    tmp, scratchParent, home, globalConfig, service, pair, execLog, spawned, baseEnv,
+    tmp, scratchParent, home, globalConfig, service, pair, execLog, spawned, baseEnv, bin,
     async send(msg) {
       const req = msg["req"] as string;
       pair.a.send(msg);

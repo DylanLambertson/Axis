@@ -4,7 +4,7 @@
 // program cannot pass vacuously. Real git; skipped with a reason where a git feature is missing.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { atLeastGit, GIT, gitRig, nextReq, SKIP, type GitRig } from "../testing/git.js";
@@ -130,37 +130,79 @@ function execMissing(r: GitRig, top: string, blob: string): boolean {
   }
 }
 
-test("PTY-EXEC-1 (old git): a repository protocol.file.allow=always cannot re-enable a lazy fetch when git ignores GIT_NO_LAZY_FETCH (control: it does without the transport allow-list)", { skip: LAZY_SKIP }, async (t) => {
-  // An old-git stand-in: the real git, but GIT_NO_LAZY_FETCH (git 2.44+) never reaches it. Runs on any git version.
-  const probe = gitRig();
-  t.after(() => probe.cleanup());
-  const oldGit = join(probe.tmp, "old-git");
-  writeFileSync(oldGit, `#!/bin/sh\nunset GIT_NO_LAZY_FETCH\nexec '${GIT}' "$@"\n`);
-  chmodSync(oldGit, 0o755);
-  const r = gitRig({ gitPath: oldGit });
-  t.after(() => r.cleanup());
-  const src = r.repo("src");
-  r.git(["config", "uploadpack.allowFilter", "true"], src.top);
-  const blob = r.git(["rev-parse", "HEAD:a.txt"], src.top).trim();
-  const upload = r.marker("uploadpack", `exec '${GIT}' upload-pack "$@"\n`);
-  const fresh = (dir: string): { top: string; gitDir: string } => {
-    r.git(["clone", "-q", "--no-checkout", "--filter=blob:none", `file://${src.top}`, dir], r.tmp);
-    const top = join(r.tmp, dir);
-    r.git(["config", "remote.origin.uploadpack", upload], top);
-    r.git(["config", "protocol.file.allow", "always"], top);
-    clear(r);
-    return { top, gitDir: join(top, ".git") };
-  };
-  const c = fresh("control");
-  assert.ok(execMissing(r, c.top, blob));
-  // Control: the protocol.allow=never pin alone, no lazy-fetch switch: the per-protocol setting wins and uploadpack runs.
-  control(r, c.top, ["-c", "protocol.allow=never", "-c", "core.fsmonitor=false", "cat-file", "-e", blob]);
-  assert.match(r.markers(), /uploadpack/, "control: protocol.file.allow=always overrides protocol.allow=never");
-  const p = fresh("pinned");
-  const reply = await r.send({ t: "exec", req: nextReq(), argv: [oldGit, "cat-file", "-e", blob], cwd: p.top, env: {}, timeoutMs: 60_000, maxOutput: 65536, repo: { gitDir: p.gitDir, workTree: p.top } });
-  assert.equal(reply["t"], "exec-result");
-  assert.notEqual(reply["code"], 0);
-  assert.equal(r.markers(), "", "no uploadpack marker");
-  assert.ok(execMissing(r, p.top, blob), "the blob is still missing");
-  assert.equal(r.execLog[r.execLog.length - 1]?.env["GIT_ALLOW_PROTOCOL"], "none");
-});
+/** Runs plain git with the rig's environment plus `env`, ignoring the exit code. */
+function controlEnv(r: GitRig, cwd: string, args: string[], env: Record<string, string>): void {
+  try {
+    execFileSync(GIT as string, args, { cwd, env: { ...r.baseEnv, ...env }, stdio: "ignore" });
+  } catch {
+    /* only whether a marker ran matters */
+  }
+}
+
+// Each case: repository config a CLI run could write, a control showing what it starts without the service's value of
+// GIT_ALLOW_PROTOCOL (undefined: no control, nothing can start), and the pinned call through the service on a fresh clone.
+const OLD_GIT_CASES: Array<{ name: string; setup: (r: GitRig, top: string, upload: string) => void; control?: { args: string[]; env: Record<string, string> } }> = [
+  {
+    name: "protocol.file.allow=always with a marker uploadpack",
+    setup: (r, top, upload) => (r.git(["config", "remote.origin.uploadpack", upload], top), r.git(["config", "protocol.file.allow", "always"], top)),
+    control: { args: ["-c", "protocol.allow=never"], env: {} },
+  },
+  {
+    name: "remote.origin.vcs=none with alias.remote-none",
+    setup: (r, top) => (r.git(["config", "remote.origin.vcs", "none"], top), r.git(["config", "alias.remote-none", `!'${r.marker("alias-none", "exit 1\n")}'`], top)),
+    control: { args: ["-c", "protocol.allow=never"], env: { GIT_ALLOW_PROTOCOL: "none" } },
+  },
+  {
+    name: "an empty remote.origin.vcs with git-remote- on PATH",
+    setup: (r, top) => {
+      r.git(["config", "remote.origin.vcs", ""], top);
+      writeFileSync(join(r.bin, "git-remote-"), `#!/bin/sh\n'${r.marker("helper-empty", "exit 1\n")}'\nexit 1\n`);
+      chmodSync(join(r.bin, "git-remote-"), 0o755);
+    },
+    control: { args: ["-c", "protocol.allow=never"], env: { GIT_ALLOW_PROTOCOL: "" } },
+  },
+  {
+    name: "remote.origin.vcs=/ (the service's own value) with a git-remote-/ directory in the work tree",
+    setup: (r, top) => (r.git(["config", "remote.origin.vcs", "/"], top), mkdirSync(join(top, "git-remote-"), { recursive: true })),
+  },
+];
+
+for (const c of OLD_GIT_CASES) {
+  test(`PTY-EXEC-1 (old git): ${c.name} cannot start anything on a lazy fetch when git ignores GIT_NO_LAZY_FETCH`, { skip: LAZY_SKIP }, async (t) => {
+    // An old-git stand-in: the real git, but GIT_NO_LAZY_FETCH (git 2.44+) never reaches it. Runs on any git version.
+    const r0 = gitRig();
+    t.after(() => r0.cleanup());
+    const oldGit = join(r0.tmp, "old-git");
+    writeFileSync(oldGit, `#!/bin/sh\nunset GIT_NO_LAZY_FETCH\nexec '${GIT}' "$@"\n`);
+    chmodSync(oldGit, 0o755);
+    const r = gitRig({ gitPath: oldGit });
+    t.after(() => r.cleanup());
+    const src = r.repo("src");
+    r.git(["config", "uploadpack.allowFilter", "true"], src.top);
+    const blob = r.git(["rev-parse", "HEAD:a.txt"], src.top).trim();
+    const head = r.git(["rev-parse", "HEAD"], src.top).trim();
+    const upload = r.marker("uploadpack", `exec '${GIT}' upload-pack "$@"\n`);
+    const fresh = (dir: string): { top: string; gitDir: string } => {
+      r.git(["clone", "-q", "--no-checkout", "--filter=blob:none", `file://${src.top}`, dir], r.tmp);
+      const top = join(r.tmp, dir);
+      c.setup(r, top, upload);
+      clear(r);
+      return { top, gitDir: join(top, ".git") };
+    };
+    if (c.control !== undefined) {
+      const k = fresh("control");
+      assert.ok(execMissing(r, k.top, blob));
+      controlEnv(r, k.top, [...c.control.args, "cat-file", "-e", blob], c.control.env);
+      assert.notEqual(r.markers(), "", "control: the repository setting does start a program without the service's allow-list");
+    }
+    for (const [i, form] of ([[["cat-file", "-e", blob]], [["cat-file", "--batch-check"], `${blob}\n`], [["rev-list", "--objects", head]]] as const).entries()) {
+      const p = fresh(`pinned${i}`);
+      const [args, stdin] = form as readonly [readonly string[], string?];
+      const reply = await r.send({ t: "exec", req: nextReq(), argv: [oldGit, ...args], cwd: p.top, env: {}, timeoutMs: 60_000, maxOutput: 65536, repo: { gitDir: p.gitDir, workTree: p.top }, ...(stdin === undefined ? {} : { stdin }) });
+      assert.equal(reply["t"], "exec-result");
+      assert.equal(r.markers(), "", `no marker after ${args.join(" ")}`);
+      assert.ok(execMissing(r, p.top, blob), "the blob is still missing");
+      assert.equal(r.execLog[r.execLog.length - 1]?.env["GIT_ALLOW_PROTOCOL"], "/");
+    }
+  });
+}

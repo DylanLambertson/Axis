@@ -146,7 +146,8 @@ export function checkExecArgv(argv: readonly string[], ctx: ArgvContext): ArgvVe
 /** The pins every call carries. `<off>` is git-ops' hooks-off path, fixed at service start. */
 const commonPins = (off: string, withHooksPin: boolean): string[] => [
   ...(withHooksPin ? ["-c", `core.hooksPath=${off}`] : []),
-  "-c", "core.fsmonitor=false",
+  // Empty, not `false`: git 2.24 to 2.35 reads core.fsmonitor as a hook PATH, so `false` names a program found on PATH.
+  "-c", "core.fsmonitor=",
   "-c", "protocol.allow=never",
   "-c", "protocol.ext.allow=never",
 ];
