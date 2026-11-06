@@ -109,6 +109,7 @@ export function createGitExec(cfg: GitExecConfig, clock: Clock, platform: NodeJS
   const attempts = new Map<string, Attempt>();
   let version: GitVersion | undefined;
   let generation = 0;
+  let inflight = 0;
 
   /** Runs one command under a timeout on the injected clock. Never throws. */
   const run = (argv: readonly string[], cwd: string, env: Record<string, string>, stdin: Uint8Array | undefined, ms: number, maxOutput: number): Promise<ExecOutcome | "timeout" | "spawn_failed"> => {
@@ -186,8 +187,10 @@ export function createGitExec(cfg: GitExecConfig, clock: Clock, platform: NodeJS
    */
   const pinned = async (prefix: readonly string[], args: readonly string[], cwd: string, env: Record<string, string>): Promise<string[] | undefined> => {
     if (args[0] === "config") return [cfg.gitPath, ...prefix, ...args];
+    const gen = generation;
     const r = await run([cfg.gitPath, ...prefix, "config", "--null", "--name-only", "--get-regexp", "^filter\\."], cwd, env, undefined, stepMs, 1 << 20);
-    if (typeof r === "string" || r.truncated || (r.code !== 0 && r.code !== 1)) return undefined;
+    // The channel closed (or the service was disposed) during the read: nothing may start after closeAll.
+    if (gen !== generation || typeof r === "string" || r.truncated || (r.code !== 0 && r.code !== 1)) return undefined;
     const pins = r.code === 1 ? [] : filterPins(Buffer.from(r.stdout).toString("utf8"));
     return pins === undefined ? undefined : [cfg.gitPath, ...prefix, ...pins, ...args];
   };
@@ -212,13 +215,26 @@ export function createGitExec(cfg: GitExecConfig, clock: Clock, platform: NodeJS
   };
 
   const handleExec = async (m: ExecMsg): Promise<void> => {
-    const fail = (code: Extract<ExecReply, { t: "exec-failed" }>["code"]): void => send({ t: "exec-failed", req: m.req, code });
+    const gen = generation;
+    // After a close the reply would reach the next control channel, which never sent this request: say nothing.
+    const fail = (code: Extract<ExecReply, { t: "exec-failed" }>["code"]): void => void (gen === generation && send({ t: "exec-failed", req: m.req, code }));
     // The env re-check runs for plain and bound calls alike: only allow-listed names, never a redirector.
     if (buildExecEnv({}, m.env, undefined) === undefined) return fail("env_denied");
     if ((m.repo === undefined) === (m.bind === undefined)) return fail("bad_bind");
     if (!isAbsolutePath(m.cwd, platform) || hasNul(m.cwd)) return fail("bad_argv");
-    if (running.size >= maxExecs) return fail("capacity");
+    // Reserved at entry, so handlers still awaiting their reads count too.
+    if (inflight >= maxExecs) return fail("capacity");
+    inflight++;
+    try {
+      await execReserved(m, gen, fail);
+    } finally {
+      inflight--;
+    }
+  };
+
+  const execReserved = async (m: ExecMsg, gen: number, fail: (code: Extract<ExecReply, { t: "exec-failed" }>["code"]) => void): Promise<void> => {
     const v = await detectVersion();
+    if (gen !== generation) return;
     const verdict = checkExecArgv(m.argv, { gitPath: cfg.gitPath, bound: m.bind !== undefined, version: v });
     if (!verdict.ok) return fail("bad_argv");
     let prefix: string[];
@@ -241,9 +257,11 @@ export function createGitExec(cfg: GitExecConfig, clock: Clock, platform: NodeJS
     }
     if (env === undefined) return fail("env_denied");
     const argv = await pinned(prefix, [verdict.sub, ...verdict.rest], cwd, env);
+    if (gen !== generation) return;
     if (argv === undefined) return fail("spawn_failed");
     const r = await run(argv, cwd, env, m.stdin === undefined ? undefined : Buffer.from(m.stdin, "utf8"), m.timeoutMs, m.maxOutput);
     if (r === "timeout" || r === "spawn_failed") return fail(r);
+    if (gen !== generation) return;
     const text = (b: Uint8Array): string => Buffer.from(b.buffer, b.byteOffset, b.byteLength).toString("utf8");
     send({ t: "exec-result", req: m.req, code: r.code, signal: r.signal, stdout: text(r.stdout), stderr: text(r.stderr), truncated: r.truncated });
   };

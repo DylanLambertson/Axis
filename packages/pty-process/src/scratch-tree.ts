@@ -37,7 +37,9 @@ export function componentOk(c: string): boolean {
   return true;
 }
 
-const foldKey = (p: string): string => p.normalize("NFC").toUpperCase().toLowerCase().replace(HFS_IGNORED, "").normalize("NFC");
+/** Case-fold, NFC and HFS-ignorable folding, and per component the NTFS drop of trailing dots and spaces (`dir.` is `dir`). */
+const foldKey = (p: string): string =>
+  p.normalize("NFC").toUpperCase().toLowerCase().replace(HFS_IGNORED, "").normalize("NFC").split("/").map((c) => c.replace(/[. ]+$/, "")).join("/");
 
 /** Parses `ls-tree -r -z` output. Undefined on anything unexpected (a name that is not UTF-8 included: refused, fail closed). */
 export function parseLsTree(out: Uint8Array): ManifestEntry[] | undefined {

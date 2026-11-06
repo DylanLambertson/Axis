@@ -157,7 +157,7 @@ test("PTY-EXEC-1: every exec carries the service prefix; only the exact hooksPat
     assert.equal(sent?.env["GIT_NO_LAZY_FETCH"], "1");
     assert.equal(sent?.env["GIT_AUTHOR_NAME"], "A");
     assert.equal(sent?.env["LC_ALL"], "C");
-    assert.equal(sent?.env["GIT_ALLOW_PROTOCOL"], undefined, "a startup GIT_ALLOW_PROTOCOL would undo protocol.allow=never");
+    assert.equal(sent?.env["GIT_ALLOW_PROTOCOL"], "none", "the startup GIT_ALLOW_PROTOCOL=file is replaced by an allow-list naming no transport");
     assert.equal(sent?.env["HOME"], "/home/u", "the user's own global config applies to plain calls");
     for (const k of ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"]) assert.equal(sent?.env[k], undefined);
   }
@@ -234,4 +234,32 @@ test("exec: every configured filter driver is pinned off before the subcommand; 
   t.after(() => r2.cleanup());
   assert.deepEqual(await r2.send({ ...base, req: "f2", argv: [FAKE_GIT, "write-tree"] }), { t: "exec-failed", req: "f2", code: "spawn_failed" });
   assert.equal(bad.log.length, 0);
+});
+
+test("exec: a request in flight when the control channel closes never starts its git, and its reply is not sent", async (t) => {
+  let release: () => void = () => undefined;
+  const gate = new Promise<void>((res) => (release = res));
+  const f = fakeExec({ filterGate: gate });
+  const r = fakeRig(f.exec);
+  t.after(() => r.cleanup());
+  r.pair.a.send({ ...base, req: "c1", argv: [FAKE_GIT, "write-tree"], timeoutMs: 600_000 });
+  await settle();
+  r.pair.a.close();
+  await settle();
+  release();
+  await settle();
+  assert.equal(f.log.length, 0, "the subcommand was never started");
+  assert.equal(r.replies.length, 0);
+});
+
+test("exec: capacity counts requests at entry, not only started children (two requests in one tick)", async (t) => {
+  const f = fakeExec();
+  const r = fakeRig(f.exec, 1);
+  t.after(() => r.cleanup());
+  await r.send({ ...base, req: "w0", argv: [FAKE_GIT, "write-tree"] }); // the version is cached from here on
+  r.pair.a.send({ ...base, req: "q1", argv: [FAKE_GIT, "write-tree"] });
+  r.pair.a.send({ ...base, req: "q2", argv: [FAKE_GIT, "write-tree"] });
+  await settle();
+  assert.deepEqual(["q1", "q2"].map((q) => r.replies.find((x) => x["req"] === q)?.["t"]), ["exec-result", "exec-failed"]);
+  assert.equal(r.replies.find((x) => x["req"] === "q2")?.["code"], "capacity");
 });

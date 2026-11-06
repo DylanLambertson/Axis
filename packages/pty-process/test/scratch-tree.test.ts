@@ -24,6 +24,8 @@ test("planManifest refuses case-fold and normalisation collisions between files,
   assert.equal(planManifest([e("D/x"), e("d/y")]), undefined);
   assert.equal(planManifest([e("café"), e("café")]), undefined);
   assert.equal(planManifest([e("a/.git/hooks/pre-commit")]), undefined);
+  assert.equal(planManifest([e("dir", "link"), e("dir./x")]), undefined, "NTFS drops a trailing dot: dir. is dir");
+  assert.equal(planManifest([e("a "), e("a")]), undefined, "and a trailing space");
   assert.deepEqual(planManifest([e("d/x"), e("d/y"), e("e")])?.dirs, ["d"]);
 });
 

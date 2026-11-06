@@ -4,7 +4,7 @@
 // program cannot pass vacuously. Real git; skipped with a reason where a git feature is missing.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { chmodSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { atLeastGit, GIT, gitRig, nextReq, SKIP, type GitRig } from "../testing/git.js";
@@ -129,3 +129,38 @@ function execMissing(r: GitRig, top: string, blob: string): boolean {
     return true;
   }
 }
+
+test("PTY-EXEC-1 (old git): a repository protocol.file.allow=always cannot re-enable a lazy fetch when git ignores GIT_NO_LAZY_FETCH (control: it does without the transport allow-list)", { skip: LAZY_SKIP }, async (t) => {
+  // An old-git stand-in: the real git, but GIT_NO_LAZY_FETCH (git 2.44+) never reaches it. Runs on any git version.
+  const probe = gitRig();
+  t.after(() => probe.cleanup());
+  const oldGit = join(probe.tmp, "old-git");
+  writeFileSync(oldGit, `#!/bin/sh\nunset GIT_NO_LAZY_FETCH\nexec '${GIT}' "$@"\n`);
+  chmodSync(oldGit, 0o755);
+  const r = gitRig({ gitPath: oldGit });
+  t.after(() => r.cleanup());
+  const src = r.repo("src");
+  r.git(["config", "uploadpack.allowFilter", "true"], src.top);
+  const blob = r.git(["rev-parse", "HEAD:a.txt"], src.top).trim();
+  const upload = r.marker("uploadpack", `exec '${GIT}' upload-pack "$@"\n`);
+  const fresh = (dir: string): { top: string; gitDir: string } => {
+    r.git(["clone", "-q", "--no-checkout", "--filter=blob:none", `file://${src.top}`, dir], r.tmp);
+    const top = join(r.tmp, dir);
+    r.git(["config", "remote.origin.uploadpack", upload], top);
+    r.git(["config", "protocol.file.allow", "always"], top);
+    clear(r);
+    return { top, gitDir: join(top, ".git") };
+  };
+  const c = fresh("control");
+  assert.ok(execMissing(r, c.top, blob));
+  // Control: the protocol.allow=never pin alone, no lazy-fetch switch: the per-protocol setting wins and uploadpack runs.
+  control(r, c.top, ["-c", "protocol.allow=never", "-c", "core.fsmonitor=false", "cat-file", "-e", blob]);
+  assert.match(r.markers(), /uploadpack/, "control: protocol.file.allow=always overrides protocol.allow=never");
+  const p = fresh("pinned");
+  const reply = await r.send({ t: "exec", req: nextReq(), argv: [oldGit, "cat-file", "-e", blob], cwd: p.top, env: {}, timeoutMs: 60_000, maxOutput: 65536, repo: { gitDir: p.gitDir, workTree: p.top } });
+  assert.equal(reply["t"], "exec-result");
+  assert.notEqual(reply["code"], 0);
+  assert.equal(r.markers(), "", "no uploadpack marker");
+  assert.ok(execMissing(r, p.top, blob), "the blob is still missing");
+  assert.equal(r.execLog[r.execLog.length - 1]?.env["GIT_ALLOW_PROTOCOL"], "none");
+});

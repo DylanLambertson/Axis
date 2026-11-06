@@ -47,7 +47,7 @@ export interface GitRig {
 let counter = 0;
 
 /** TEST ONLY: a pty service with a real exec function and pipe-spawned terminals, over an in-memory control channel. */
-export function gitRig(opts: { exec?: ExecFn; maxExecs?: number } = {}): GitRig {
+export function gitRig(opts: { exec?: ExecFn; maxExecs?: number; gitPath?: string } = {}): GitRig {
   const tmp = realpathSync(mkdtempSync(join(tmpdir(), "axis-pty-git-")));
   const scratchParent = join(tmp, "scratch");
   const home = join(tmp, "home");
@@ -64,7 +64,7 @@ export function gitRig(opts: { exec?: ExecFn; maxExecs?: number } = {}): GitRig 
   const spawnFn = pipeSpawn();
   const service = createPtyService({
     spawn: (r) => (spawned.push(r), spawnFn(r)),
-    git: { exec: opts.exec ?? pipeExec(execLog), gitPath: GIT as string, hooksOff: "/dev/null", scratchParent, baseEnv, ...(opts.maxExecs === undefined ? {} : { maxExecs: opts.maxExecs }) },
+    git: { exec: opts.exec ?? pipeExec(execLog), gitPath: opts.gitPath ?? (GIT as string), hooksOff: "/dev/null", scratchParent, baseEnv, ...(opts.maxExecs === undefined ? {} : { maxExecs: opts.maxExecs }) },
   });
   service.serveControl(pair.b);
   const replies: Reply[] = [];

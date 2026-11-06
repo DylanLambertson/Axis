@@ -8,12 +8,15 @@ import { channelPair, ManualClock, until, type ChannelPair } from "./helpers.js"
 export const FAKE_GIT = "/opt/fake-git/bin/git";
 
 /** TEST ONLY: a scripted exec function. `git version` answers `version`; everything else `answer(req)` (default: exit 0, no output). */
-export function fakeExec(opts: { version?: string; filters?: string; answer?: (req: ExecRequest) => ExecOutcome | "hang" } = {}): { exec: ExecFn; log: ExecRequest[]; killed: number } {
+export function fakeExec(opts: { version?: string; filters?: string; filterGate?: Promise<void>; answer?: (req: ExecRequest) => ExecOutcome | "hang" } = {}): { exec: ExecFn; log: ExecRequest[]; killed: number } {
   const state = { log: [] as ExecRequest[], killed: 0, exec: undefined as unknown as ExecFn };
   state.exec = (req) => {
     if (req.argv[1] === "version") return { done: Promise.resolve(out(`git version ${opts.version ?? "2.53.0"}\n`)), kill: () => undefined };
     // The service's own filter-driver read before each call: none configured unless `filters` says so.
-    if (req.argv.includes("--get-regexp")) return { done: Promise.resolve(out(opts.filters ?? "", opts.filters === undefined ? 1 : 0)), kill: () => undefined };
+    if (req.argv.includes("--get-regexp")) {
+      const answer = out(opts.filters ?? "", opts.filters === undefined ? 1 : 0);
+      return { done: (opts.filterGate ?? Promise.resolve()).then(() => answer), kill: () => undefined };
+    }
     state.log.push(req);
     const a = opts.answer?.(req) ?? out("");
     if (a === "hang") return { done: new Promise<ExecOutcome>(() => undefined), kill: () => void state.killed++ };

@@ -72,6 +72,9 @@ export function buildExecEnv(
   }
   for (const [name, value] of Object.entries(message)) put(name, value);
   put("GIT_NO_LAZY_FETCH", "1");
+  // A transport allow-list naming no transport. It overrides every protocol.* setting on every git since 2.12, so a
+  // repository `protocol.file.allow=always` cannot re-enable the lazy fetch that GIT_NO_LAZY_FETCH stops only from 2.44.
+  put("GIT_ALLOW_PROTOCOL", "none");
   if (bound !== undefined) {
     put("GIT_DIR", bound.redirect.gitDir);
     put("GIT_WORK_TREE", bound.redirect.workTree);
