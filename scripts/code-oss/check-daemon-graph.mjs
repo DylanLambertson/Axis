@@ -19,11 +19,13 @@
 //      any other external import (a bare `zod`, `vs/*`, `electron`) would resolve from the tree at run time and is refused;
 //   4. a restricted module (the user principal, the trust attestation; RESTRICTED_MODULES) is imported only by its
 //      own package and by the packages allowed to (the daemon), never by the overlay entry or any other package;
+//      and, transitively, no staged host module outside the composition points reaches a host minter or the composition files (graph-reach.mjs);
 //   5. the bundled text carries the pinned zod version and not the tree's.
 import { createRequire } from "node:module";
 import { join, posix, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { RESTRICTED_MODULES, mayImportRestricted } from "./stage-scan.mjs";
+import { minterReachViolations } from "./graph-reach.mjs";
 import { MANIFEST_NAME, STAGE_ROOT, verifyStaged } from "./stage-verify.mjs";
 import { readFileSync } from "node:fs";
 
@@ -41,6 +43,7 @@ const versionPattern = (v) => {
  */
 export function checkMetafile(metafile, manifest, { bundledText = null, treeZod = null } = {}) {
   const bad = [];
+  const flagged = new Set(); // direct edges the restricted-module table already named, so the walk does not repeat them
   const staged = new Set(manifest.files.map((f) => f.path));
   const stagedOf = (p) => (p.startsWith(PREFIX) ? p.slice(PREFIX.length) : null);
   const pkgOf = (rel) => rel.split("/")[0];
@@ -53,6 +56,7 @@ export function checkMetafile(metafile, manifest, { bundledText = null, treeZod 
         if (target !== `${r.pkg}/${r.file}`) continue;
         const importerPkg = rel === null ? null : pkgOf(rel);
         if (!mayImportRestricted(r, importerPkg, rel)) {
+          flagged.add(`${rel}->${target}`);
           bad.push(`${input}: imports ${imp.path}, which only ${[r.pkg, ...r.importers].join(" and ")} may import`);
         }
       }
@@ -77,6 +81,7 @@ export function checkMetafile(metafile, manifest, { bundledText = null, treeZod 
       }
     }
   }
+  for (const v of minterReachViolations(metafile, stagedOf)) if (v.path.length > 2 || !flagged.has(`${v.path[0]}->${v.path[1]}`)) bad.push(v.text);
   if (manifest.zod !== null && manifest.zod !== undefined && bundledText !== null) {
     const usesZod = Object.keys(metafile.inputs).some((i) => i.startsWith(`${PREFIX}vendor/zod/`));
     if (usesZod && !versionPattern(manifest.zod).test(bundledText)) bad.push(`bundle does not contain zod ${manifest.zod}`);
