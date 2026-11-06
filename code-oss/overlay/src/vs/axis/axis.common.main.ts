@@ -15,6 +15,7 @@ import '../workbench/contrib/axis/browser/axisDefaults.contribution.js';
 
 //#region --- Axis services
 
+import './services/daemon/browser/axisUnavailableDaemonClient.js';
 import './services/view/browser/axisViewService.js';
 import './services/workspaces/browser/axisWorkspaceService.js';
 

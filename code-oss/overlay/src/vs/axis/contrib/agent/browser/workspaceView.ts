@@ -110,7 +110,9 @@ export class AxisWorkspaceView extends Disposable {
 		} else {
 			append(this.activity, $('p.axis-note')).textContent = entry.isLocalCheckout
 				? localize('axis.workspace.localNoRuns', "Agents never run in the local checkout. Open a workspace to run one.")
-				: localize('axis.workspace.noService', "No agent runs. The composer and the activity stream need the Axis service, which is not running in this preview.");
+				: this.workspaceService.dataOrigin === 'daemon'
+					? localize('axis.workspace.noRuns', "No agent runs in this workspace yet. The composer and the activity stream come later.")
+					: localize('axis.workspace.noService', "No agent runs. The composer and the activity stream need the Axis service, which is not running in this preview.");
 		}
 		append(this.activity, $('p.axis-note')).textContent = localize('axis.workspace.hint', "Enter on a file opens it in the IDE view. The terminals of this workspace are in the panel.");
 	}
