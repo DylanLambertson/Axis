@@ -3,6 +3,7 @@ export * from "./types.js";
 export * from "./errors.js";
 export { daemonGitEnv, findOverride } from "./env.js";
 export { guardedRunner, branchFor, safeRef, prefix, hooksOffPath, filterNames, requireGitVersion, MIN_GIT_VERSION, daemonGitFor, checkWorktree, OBJECT_ID, type DaemonGit } from "./args.js";
+export { attributeReadGit, type AttributeRead, type AttributeReadOptions } from "./attrRead.js";
 export * from "./commit.js";
 export { assertNoOperation, pathExists, OPERATION_MARKERS } from "./operation.js";
 export * from "./push.js";

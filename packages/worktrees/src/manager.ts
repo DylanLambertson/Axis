@@ -26,7 +26,7 @@ import {
 } from './paths.js';
 import { assertIsRoot, assertUnder, hasGitComponent, isOutsideRel } from './pathGuard.js';
 import { parseLsTree, writeRestoredEntry } from './restore.js';
-import { MAX_SNAPSHOT_FILE_BYTES, createRefOnce, writeSnapshotRef } from './snapshotRef.js';
+import { MAX_SNAPSHOT_FILE_BYTES, assertHistoryClean, createRefOnce, writeSnapshotRef } from './snapshotRef.js';
 import type {
   CreateInput, CreatedWorkspace, ExpectedWorktree, FinaliseOutcome, FinaliseResult, RemoveResult, RestoreResult,
   WorkspaceStatus, WorktreeInfo,
@@ -149,7 +149,8 @@ export class WorktreeManager {
         }
         const scan = await scanDiscard(this.git, workTree, this.maxFile);
         const { needsBackup } = requireDiscardConfirmation('finalise', meta.id, scan, input.discardConfirmation);
-        const backupRef = needsBackup ? await this.writeBackup(workTree, meta.id, 'finalise') : null;
+        await assertHistoryClean(this.git, workTree, meta.baseSha, head, this.options.snapshotScanner);
+        const backupRef = needsBackup ? await this.writeBackup(workTree, meta, 'finalise') : null;
         const archiveRef = `refs/axis/archive/${meta.id}`;
         await createRefOnce(this.git, workTree, archiveRef, head);
         await writeMeta(repo.gitDir, { ...meta, state: 'FINALISED', outcome: input.outcome });
@@ -164,8 +165,8 @@ export class WorktreeManager {
     return this.boundary(() =>
       this.withWorkspace(input.path, true, input.expectedWorktree, 'remove', ({ repo, workTree, meta }) =>
         removeWorkspace(
-          { git: this.git, maxFile: this.maxFile, guardExecutionDrift: (r, w) => this.guardExecutionDrift(r, w),
-            writeBackup: (w, id, why) => this.writeBackup(w, id, why), now: () => this.now(),
+          { git: this.git, maxFile: this.maxFile, guardExecutionDrift: (r, w) => this.guardExecutionDrift(r, w), snapshotScanner: this.options.snapshotScanner,
+            writeBackup: (w, m, why) => this.writeBackup(w, m, why), now: () => this.now(),
             assertStillExpected: (r, w) => this.assertStillExpected(r, w) },
           { repo, workTree, meta, deleteBranch: input.deleteBranch === true, token: input.discardConfirmation })));
   }
@@ -210,7 +211,7 @@ export class WorktreeManager {
         const entry = parseLsTree(listed.stdout);
         if (!entry) throw new WorktreeError('E_NOT_FOUND', 'path is not in the run base (new, ignored or over the size limit)', { relPath: posix });
         if (entry.type !== 'blob') throw invalid('only files and symlinks can be restored', { relPath: posix, type: entry.type });
-        const backupRef = await this.writeBackup(workTree, meta.id, `restore ${posix}`);
+        const backupRef = await this.writeBackup(workTree, meta, `restore ${posix}`);
         const blob = await this.git.run(['cat-file', 'blob', entry.sha], { cwd: workTree });
         const written = await writeRestoredEntry(workTree, posix, entry, blob.raw);
         return { path: written, relPath: posix, runBaseRef, backupRef };
@@ -269,7 +270,7 @@ export class WorktreeManager {
     const repo = await resolveRepo(input.repoPath);
     const host: CreateHost = {
       git: this.git, worktreeRoot: this.options.worktreeRoot, platform: this.platform, now: this.now, maxFile: this.maxFile,
-      listRaw: (r) => this.listRaw(r),
+      snapshotScanner: this.options.snapshotScanner, listRaw: (r) => this.listRaw(r),
       protectedLocations: (r, local) => this.protectedLocations(r, local),
       takeGitSnapshot: (wt, common) => this.snapshotImpl(wt, common),
       assertExecutionClean: async (wt) => {
@@ -367,10 +368,10 @@ export class WorktreeManager {
     return `refs/axis/backup/${id}/${ts}-${randomBytes(16).toString('hex')}`;
   }
 
-  private async writeBackup(workTree: string, id: string, why: string): Promise<string> {
-    const ref = this.backupRefName(id);
+  private async writeBackup(workTree: string, meta: WorkspaceMeta, why: string): Promise<string> {
+    const ref = this.backupRefName(meta.id);
     const scratch = await privateDir(path.join(await canonicalise(this.options.worktreeRoot), '.axis-tmp'));
-    await writeSnapshotRef(this.git, workTree, ref, `axis backup before ${why}`, this.maxFile, scratch);
+    await writeSnapshotRef(this.git, workTree, ref, `axis backup before ${why}`, this.maxFile, scratch, meta.baseSha, this.options.snapshotScanner);
     return ref;
   }
 

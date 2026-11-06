@@ -76,7 +76,7 @@ describe('restoreFromRunBase', () => {
     const { createExecGitRunner } = await import('../src/index.js');
     const scratch = path.join(fx.tmp, 'scratch-ok');
     mkdirSync(scratch, { mode: 0o700 });
-    await snap.writeSnapshotRef(new HardenedGit(createExecGitRunner(), createHooksGuard('linux')), wt, 'refs/axis/runbase/run-1', 'run', 50 * 1024 * 1024, scratch);
+    await snap.writeSnapshotRef(new HardenedGit(createExecGitRunner(), createHooksGuard('linux')), wt, 'refs/axis/runbase/run-1', 'run', 50 * 1024 * 1024, scratch, sh(fx.repo, 'rev-parse', 'HEAD').trim());
     unlinkSync(path.join(wt, 'ln'));
     write(path.join(wt, 'ln'), 'now a file\n');
     await fx.manager.restoreFromRunBase({ path: path.join(wt, 'ln'), expectedWorktree: exp(path.join(wt, 'ln')), runId: 'run-1' });

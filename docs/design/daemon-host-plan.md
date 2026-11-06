@@ -69,10 +69,10 @@ Re-derived on 2026-11-04 from what is on main: `@axis/runs` and `@axis/worktrees
 | **H9-base** | Push scan base keyed by the canonical destination: path remotes by realpath, ssh by an injectable resolver, fail closed (RR-11 partly) | S | H9 | review |
 | **H9-base-ssh** | Wire the ssh host resolver in the composition (`ssh -G`, pinned argv and environment, bounded output, timeout) and persist the base atomically and bounded; closes RR-11 | S | H9-base | proposed |
 | **P1f** | Protocol: an opaque identity for push binary rows so every path can be allowed or refused without display text (RR-12) | S | P1e | proposed |
-| **REV2-FIX** | REV-2 / G-27: hardened attribute reads in git-ops (private empty `GIT_DIR`, single `info/attributes` read, `GIT_ATTR_NOSYSTEM=1`, private snapshot of system and user attribute files); gate 1a/L32 (RR-13) | M | review core | proposed |
+| **REV2-FIX** | REV-2 / G-27: hardened attribute reads in git-ops (private empty `GIT_DIR`, single `info/attributes` read, `GIT_ATTR_NOSYSTEM=1`, private snapshot of system and user attribute files); gate 1a/L32 (RR-13) | M | review core | HALF built: git-ops `attributeReadGit` (`docs/design/daemon-host-git.md`); nothing calls it yet, `@axis/review` still reads attributes from the real git directory, and tracked `.gitattributes` are still read live, so RR-13 and gate 1a/L32 stay open |
 | **OVSX-TEST** | The Open VSX signed, unsigned and tampered install test on a packaged build, outcomes recorded in `docs/feasibility/extension-compatibility.md`; gate 1a/L22 (RR-18) | M | a packaged build | proposed |
 | **NET-GATE** | Packaged-build checks: no reh-web or Axis listener in a desktop run, and `--remote-debugging-port` and `--inspect*` refused; gates 1a/L29 and L33 (RR-19) | S | X1 | proposed |
-| **REF1-SCAN** | Secret scan of snapshot trees before a snapshot is written; gate 1b/L13 (RR-24) | M | `@axis/secret-scan` | proposed |
+| **REF1-SCAN** | Secret scan of snapshot trees before a snapshot is written; gate 1b/L13 (RR-24) | M | `@axis/secret-scan` | built (`docs/design/snapshot-scan.md`): every ref `@axis/worktrees` writes under `refs/axis/*` is scanned against the recorded base (run-made commits, messages and working files; UTF-16 views of small binaries) and refused before any object is written; host passing its configured scanner and the end-to-end gate test open; review |
 
 Order and parallelism:
 
