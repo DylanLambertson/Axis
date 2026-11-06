@@ -5,9 +5,10 @@ import { join } from "node:path";
 import { AuditLog, Redactor, openDatabase } from "@axis/audit";
 import { Journal } from "@axis/journal";
 import type { RunEvent } from "@axis/protocol";
-import type { MockProviderOptions, MockReply, RunBudgetLimits } from "@axis/providers";
+import type { MockProviderOptions, MockReply, RunBudgetLimits, ValidRequest } from "@axis/providers";
 import type { Policy } from "@axis/daemon";
 import { AGENT_PAYLOAD_ALLOWLIST, createAgentBinding, createComposerService, type AgentBinding, type ComposerService, type PreviewScanner, type ToolCaps } from "../src/index.js";
+import { ProjectMutex } from "../src/worktrees/project-mutex.js";
 import { rig, type Client, type Rig } from "./approvals-rig.js";
 
 /**
@@ -23,6 +24,8 @@ export interface ComposerRig {
   readonly audit: AuditLog;
   readonly service: ComposerService;
   readonly agent: AgentBinding;
+  /** The project mutex every composer write of the rig takes (the host's worktrees mutex). */
+  readonly mutex: ProjectMutex;
   readonly workspaceId: string;
   /** The worktree root (real path). */
   readonly root: string;
@@ -48,6 +51,8 @@ export interface ComposerRigOptions {
   readonly maxActive?: number;
   readonly toolCaps?: Partial<ToolCaps>;
   readonly previewScanner?: PreviewScanner;
+  /** Called with each provider request (its 1-based number) before the mock answers: an outside writer, or a look at what the model gets. */
+  readonly onRequest?: (n: number, req: ValidRequest) => void;
 }
 
 const SHA = "b".repeat(40);
@@ -65,10 +70,12 @@ export async function composerRig(options: ComposerRigOptions): Promise<Composer
   const journal = Journal.open(db, { audit });
   const ws = journal.createWorkspace({ projectId: "p", branch: "axis/x", baseRef: "main", baseSha: SHA, createdBy: "user" }).value;
   journal.transitionWorkspace(ws.id, "READY");
+  const mutex = new ProjectMutex();
   let wire = 0;
   let tools = false;
-  const replies = (options.script?.({ root, outside }) ?? options.replies).map((reply) => (req: { readonly tools?: readonly unknown[] | undefined }): MockReply => {
+  const replies = (options.script?.({ root, outside }) ?? options.replies).map((reply) => (req: ValidRequest): MockReply => {
     wire++;
+    options.onRequest?.(wire, req);
     if ((req.tools?.length ?? 0) > 0) tools = true;
     return reply;
   });
@@ -83,6 +90,7 @@ export async function composerRig(options: ComposerRigOptions): Promise<Composer
     now: () => r.clock.now(),
     mock: { ...options.mock, replies, respond: () => ({ kind: "text", text: "no more replies" }) },
     ...(options.previewScanner === undefined ? {} : { previewScanner: options.previewScanner }),
+    writeLock: (_workspaceId, fn, signal) => mutex.exclusive("p", fn, signal),
   });
   const service = createComposerService({
     journal,
@@ -99,6 +107,7 @@ export async function composerRig(options: ComposerRigOptions): Promise<Composer
     audit,
     service,
     agent,
+    mutex,
     workspaceId: ws.id,
     root,
     outside,
