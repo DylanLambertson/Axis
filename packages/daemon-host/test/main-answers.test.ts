@@ -227,8 +227,15 @@ test("native.confirm: a duplicate while waiting is ignored, and after dispose no
   r.ask(confirm("a".repeat(22)));
   await flush();
   assert.equal(r.shown.length, 1);
-  r.answers.dispose();
   r.shown[0]!.answer(true);
+  await flush();
+  assert.equal(r.shown.length, 1, "the duplicate never gets a dialog of its own");
+  assert.equal(r.replies.length, 1, "and no answer of its own");
+  r.replies.length = 0;
+  r.ask(confirm("c".repeat(22)));
+  await flush();
+  r.answers.dispose();
+  r.shown[1]!.answer(true);
   await flush();
   assert.deepEqual(r.replies, []);
   r.ask(confirm("b".repeat(22)));
