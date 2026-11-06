@@ -24,6 +24,8 @@ export const EVENT_DEBOUNCE_MS = 150;
 export const RECONCILE_MIN_MS = 30_000;
 export const RECONCILE_MAX_MS = 60_000;
 const RETRY_BASE_MS = 1000;
+/** A stream that stays up this long without breaking the protocol counts as healthy: connection backoff starts over. */
+export const STREAM_STABLE_MS = 10_000;
 
 type TimerKind = 'connect' | 'refresh' | 'reconcile';
 
@@ -41,9 +43,11 @@ export class AxisEventDriver implements IAxisRefreshDriver {
 	private urgent = false;
 	/** Failed reads in a row. */
 	private failures = 0;
-	/** Failed or lost subscriptions in a row; reset only when a stream delivers a valid frame, so a stream that breaks at once keeps backing off. */
+	/** Failed or lost subscriptions in a row; reset only once a stream has stayed up for `STREAM_STABLE_MS`, so a stream that breaks soon after it opens keeps backing off. */
 	private connectFailures = 0;
 	private watchHandle: { dispose(): void } | undefined;
+	private stableTimer: unknown;
+	private hasStableTimer = false;
 	private paused = false;
 	private disposed = false;
 	private generation = 0;
@@ -91,8 +95,12 @@ export class AxisEventDriver implements IAxisRefreshDriver {
 		}
 		this.paused = paused;
 		if (paused) {
+			this.clearStableTimer();
 			this.cancelTimer(); // frames are still consumed and acknowledged; they only mark the data as changed
 		} else {
+			if (this.subscription && !this.connecting) {
+				this.watchStable(this.generation, this.subscription);
+			}
 			this.arm();
 		}
 	}
@@ -132,6 +140,29 @@ export class AxisEventDriver implements IAxisRefreshDriver {
 		}, delay);
 	}
 
+	private watchStable(generation: number, subscription: AxisEventSubscription): void {
+		this.clearStableTimer();
+		if (this.paused) {
+			return; // a paused driver holds no timer; resuming starts the wait again
+		}
+		this.hasStableTimer = true;
+		this.stableTimer = this.timers.set(() => {
+			this.hasStableTimer = false;
+			this.stableTimer = undefined;
+			if (generation === this.generation && this.subscription === subscription) {
+				this.connectFailures = 0;
+			}
+		}, STREAM_STABLE_MS);
+	}
+
+	private clearStableTimer(): void {
+		if (this.hasStableTimer) {
+			this.timers.clear(this.stableTimer);
+			this.hasStableTimer = false;
+			this.stableTimer = undefined;
+		}
+	}
+
 	private cancelTimer(): void {
 		if (this.timerKind !== undefined) {
 			this.timers.clear(this.timer);
@@ -150,6 +181,7 @@ export class AxisEventDriver implements IAxisRefreshDriver {
 	}
 
 	private teardown(): void {
+		this.clearStableTimer();
 		this.cancellation?.cancel();
 		this.cancellation?.dispose();
 		this.cancellation = undefined;
@@ -187,6 +219,7 @@ export class AxisEventDriver implements IAxisRefreshDriver {
 				this.hint(true); // a fresh stream says nothing about the past: read everything
 			}
 			this.onLive(true);
+			this.watchStable(generation, subscription);
 			this.arm();
 		} catch {
 			if (generation === this.generation && this.subscription === subscription) {
@@ -196,9 +229,7 @@ export class AxisEventDriver implements IAxisRefreshDriver {
 		}
 	}
 
-	/** A valid frame was consumed: the stream works, so connection backoff starts over. */
 	private hint(urgent: boolean): void {
-		this.connectFailures = 0;
 		this.dirty = true;
 		this.urgent = this.urgent || urgent;
 		this.arm();
@@ -215,6 +246,7 @@ export class AxisEventDriver implements IAxisRefreshDriver {
 		this.watchHandle = undefined;
 		this.subscription = undefined;
 		this.connecting = false;
+		this.clearStableTimer();
 		this.cancelTimer();
 		this.lost(this.generation);
 	}

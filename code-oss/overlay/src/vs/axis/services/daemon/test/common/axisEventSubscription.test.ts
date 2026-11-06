@@ -217,10 +217,16 @@ suite('Axis event subscription', () => {
 
 	test('frames with no usable sub before the reply are dropped, and several foreign subscriptions flooding at once do not hide the real one', async () => {
 		const transport = new FakeEventTransport();
+		let held = -1;
+		let subscription: AxisEventSubscription | undefined;
 		transport.replies = [() => {
 			transport.push({ seq: 1 });
 			transport.push(null);
 			transport.push({ sub: 5 });
+			for (let i = 0; i < 20; i++) {
+				transport.push({ v: 1, sub: `not a token ${i}`, seq: i }); // a string, but not shaped like an id
+			}
+			held = subscription!.bufferedEarly;
 			for (let i = 0; i < 7; i++) { // the ids that can really be around: this connection's earlier subscriptions (at most 4)
 				for (let j = 0; j < 40; j++) {
 					transport.push(eventFrame(100 + j, { topic: 'approvals' }, `sub-${String(i).padStart(22, 'X')}`));
@@ -230,8 +236,10 @@ suite('Axis event subscription', () => {
 			return reply();
 		}];
 		const sink = new Sink();
-		const sub = new AxisEventSubscription(transport, new ManualTimers(), sink);
+		subscription = new AxisEventSubscription(transport, new ManualTimers(), sink);
+		const sub = subscription;
 		await sub.open();
+		assert.strictEqual(held, 0, 'nothing without a token-shaped sub is held');
 		assert.deepStrictEqual(sink.closed, []);
 		assert.deepStrictEqual(sink.events, [{ topic: 'runs', runId: 'run-1' }]);
 		sub.dispose();

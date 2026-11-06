@@ -30,7 +30,7 @@ An event is an invalidation hint (`events.md` section 1): it names an id and, fo
 
 ## Driver behaviour
 
-- **Connect.** On `start` the driver subscribes (jittered backoff 1 s doubling to 16 s on every failed or lost subscription). The backoff starts over only when a stream has delivered a valid frame, so a stream that breaks at once keeps backing off; after a protocol violation the next subscription does not resume (fresh baseline). A fresh (not resumed) subscription starts with one full read; a resumed one relies on the replayed events.
+- **Connect.** On `start` the driver subscribes (jittered backoff 1 s doubling to 16 s on every failed or lost subscription). The backoff starts over only when a stream has stayed up for 10 s without breaking the protocol (the open-time read and valid frames do not count; a hidden window restarts the wait), so a stream that breaks soon after it opens keeps backing off; after a protocol violation the next subscription does not resume (fresh baseline). A fresh (not resumed) subscription starts with one full read; a resumed one relies on the replayed events.
 - **Hints become reads.** Events within 150 ms cause one read; a `resync` reads at once. Reads never overlap; an event during a read causes one more afterwards. A failed read is retried with the same backoff and keeps the data marked changed.
 - **Reconcile.** With no event, everything is read again after 30 to 60 s, in case a hint was lost. A hint cancels the wait.
 - **Loss.** `end`, a violation or a closed connection drops the subscription, reports "not live" and reconnects with `resumeFrom` set to the last `{epoch, seq}`; the daemon says `resumed: false` after a restart, which triggers the full read.

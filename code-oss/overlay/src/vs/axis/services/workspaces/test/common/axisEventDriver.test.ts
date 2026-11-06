@@ -6,7 +6,7 @@ import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { AxisDaemonCallError } from '../../../daemon/common/axisDaemonClient.js';
 import { endFrame, EPOCH, EPOCH2, eventFrame, FakeEventTransport, flush, ManualTimers, reply, resyncFrame, SUB, SUB2 } from '../../../daemon/test/common/axisEventFixtures.js';
-import { AxisAdaptiveRefreshDriver, AxisEventDriver, EVENT_DEBOUNCE_MS, RECONCILE_MAX_MS, RECONCILE_MIN_MS } from '../../common/axisEventDriver.js';
+import { AxisAdaptiveRefreshDriver, AxisEventDriver, EVENT_DEBOUNCE_MS, RECONCILE_MAX_MS, RECONCILE_MIN_MS, STREAM_STABLE_MS } from '../../common/axisEventDriver.js';
 import { POLL_MAX_BACKOFF_MS, POLL_MIN_MS } from '../../common/axisRefreshDriver.js';
 
 class Harness {
@@ -47,7 +47,7 @@ suite('Axis event driver', () => {
 		assert.strictEqual(h.refreshes, 0);
 		await h.timers.fire(d => d === 0); // the urgent first read
 		assert.strictEqual(h.refreshes, 1);
-		assert.deepStrictEqual(h.timers.delays.map(d => d >= RECONCILE_MIN_MS && d <= RECONCILE_MAX_MS), [true], 'only the slow reconcile is left');
+		assert.deepStrictEqual(h.timers.delays.filter(d => d !== STREAM_STABLE_MS).map(d => d >= RECONCILE_MIN_MS && d <= RECONCILE_MAX_MS), [true], 'only the slow reconcile is left');
 		h.driver.dispose();
 	});
 
@@ -136,7 +136,7 @@ suite('Axis event driver', () => {
 		await h.started();
 		const delays: number[] = [];
 		for (let i = 0; i < 6; i++) {
-			const d = h.timers.delays.filter(x => x !== 50);
+			const d = h.timers.delays.filter(x => x !== 50 && x !== STREAM_STABLE_MS);
 			assert.strictEqual(d.length, 1);
 			delays.push(d[0]);
 			await h.timers.fire(x => x === d[0]);
@@ -180,7 +180,7 @@ suite('Axis event driver', () => {
 		h.transport.close();
 		const before = h.refreshes;
 		await h.timers.fire(d => d >= 1000 && d < RECONCILE_MIN_MS);
-		assert.ok(!h.timers.delays.some(d => d < RECONCILE_MIN_MS), 'resumed: nothing to read');
+		assert.ok(!h.timers.delays.some(d => d < RECONCILE_MIN_MS && d !== STREAM_STABLE_MS), 'resumed: nothing to read');
 		h.transport.replies = [reply({ resumed: false, epoch: EPOCH2, subscriptionId: SUB2, seq: 3 })];
 		h.transport.close();
 		await h.timers.fire(d => d >= 1000 && d < RECONCILE_MIN_MS);
@@ -212,7 +212,7 @@ suite('Axis event driver', () => {
 		driver.start(async () => true);
 		const delays: number[] = [];
 		for (let i = 0; i < 8; i++) {
-			const d = timers.delays.filter(x => x !== 50 && x < RECONCILE_MIN_MS && x !== EVENT_DEBOUNCE_MS);
+			const d = timers.delays.filter(x => x !== 50 && x < RECONCILE_MIN_MS && x !== EVENT_DEBOUNCE_MS && x !== STREAM_STABLE_MS);
 			assert.strictEqual(d.length, 1, JSON.stringify(timers.delays));
 			delays.push(d[0]);
 			await timers.fire(x => x === d[0]);
@@ -227,7 +227,7 @@ suite('Axis event driver', () => {
 		driver.dispose();
 	});
 
-	test('a stream that delivered a valid frame starts the backoff over; an additive body never breaks the stream', async () => {
+	test('a stream that stays up for the stable time starts the backoff over; an additive body never breaks it', async () => {
 		const timers = new ManualTimers();
 		const transport = new FakeEventTransport();
 		const driver = new AxisEventDriver(() => transport, () => { }, timers, () => 0);
@@ -235,11 +235,86 @@ suite('Axis event driver', () => {
 		await timers.fire();
 		transport.push(eventFrame(11, { topic: 'runs', runId: 'run-1', newField: 1 }));
 		assert.strictEqual(driver.live, true, 'a body this shell does not know is a hint, not a violation');
+		transport.close(); // not stable yet: a first failure
+		await timers.fire(d => d === 1000);
+		transport.close(); // not stable either: a second failure
+		assert.ok(timers.delays.includes(2000));
+		await timers.fire(d => d === 2000);
+		await timers.fire(d => d === STREAM_STABLE_MS);
+		transport.close();
+		assert.ok(timers.delays.includes(1000), 'the stream was stable, so this loss is a first failure again');
+		assert.ok(!timers.delays.includes(4000));
+		driver.dispose();
+	});
+
+	test('a hidden window holds no stability timer, and showing it again starts the wait over', async () => {
+		const timers = new ManualTimers();
+		const transport = new FakeEventTransport();
+		const driver = new AxisEventDriver(() => transport, () => { }, timers, () => 0);
+		driver.start(async () => true);
+		await timers.fire();
+		transport.close(); // a first failure
+		await timers.fire(d => d === 1000);
+		driver.setPaused(true);
+		assert.ok(!timers.delays.includes(STREAM_STABLE_MS));
+		driver.setPaused(false);
+		assert.ok(timers.delays.includes(STREAM_STABLE_MS));
+		await timers.fire(d => d === STREAM_STABLE_MS);
+		transport.close();
+		assert.ok(timers.delays.includes(1000) && !timers.delays.includes(2000));
+		driver.dispose();
+	});
+
+	test('a valid frame alone does not make a stream healthy: losing it soon after keeps the backoff growing', async () => {
+		const timers = new ManualTimers();
+		const transport = new FakeEventTransport();
+		const driver = new AxisEventDriver(() => transport, () => { }, timers, () => 0);
+		driver.start(async () => true);
+		await timers.fire();
+		transport.push(eventFrame(11));
 		transport.close();
 		await timers.fire(d => d === 1000);
+		transport.push(eventFrame(12));
 		transport.close();
-		const second = timers.delays.find(d => d >= 1000 && d < RECONCILE_MIN_MS);
-		assert.strictEqual(second, 1000, 'the first stream was good, so the second loss is not a second failure');
+		assert.ok(timers.delays.includes(2000), `${timers.delays}`);
+		driver.dispose();
+	});
+
+	test('a stream that breaks the protocol shortly after it opened keeps backing off, however many times it reconnects', async () => {
+		const timers = new ManualTimers();
+		const transport = new FakeEventTransport();
+		const driver = new AxisEventDriver(() => transport, () => { }, timers, () => 0);
+		driver.start(async () => true);
+		const delays: number[] = [];
+		for (let i = 0; i < 8; i++) {
+			const d = timers.delays.filter(x => x !== 50 && x !== EVENT_DEBOUNCE_MS && x !== STREAM_STABLE_MS && x < RECONCILE_MIN_MS && x !== 0 || (i === 0 && x === 0));
+			assert.strictEqual(d.length, 1, JSON.stringify(timers.delays));
+			delays.push(d[0]);
+			await timers.fire(x => x === d[0]); // connect succeeds, then the fresh-stream read is scheduled
+			const refresh = timers.delays.includes(0);
+			if (refresh) {
+				await timers.fire(x => x === 0);
+			}
+			transport.push({ ...eventFrame(1000 + i), extra: 1 }); // broken envelope, after the stream opened
+		}
+		assert.deepStrictEqual(delays.slice(0, 4), [0, 1000, 2000, 4000]);
+		assert.strictEqual(delays[delays.length - 1], POLL_MAX_BACKOFF_MS);
+		assert.ok(transport.subscribes.every(p => !('resumeFrom' in p)));
+		driver.dispose();
+	});
+
+	test('a restart after a failed session starts the connection backoff at zero', async () => {
+		const timers = new ManualTimers();
+		const transport = new FakeEventTransport();
+		transport.replies = [new AxisDaemonCallError('E_UNAVAILABLE')];
+		const driver = new AxisEventDriver(() => transport, () => { }, timers, () => 0);
+		driver.start(async () => true);
+		await timers.fire(); // fails once, backoff armed
+		await timers.fire(d => d === 1000); // fails twice
+		driver.stop();
+		transport.replies = [reply()];
+		driver.start(async () => true);
+		assert.deepStrictEqual(timers.delays, [0]);
 		driver.dispose();
 	});
 
