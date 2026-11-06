@@ -157,8 +157,8 @@ export const runEventSchema = z.discriminatedUnion("type", [
   z.strictObject({ ...eventBase, type: z.literal("usage"), usage: composerUsageSchema }),
   /**
    * PRV-4: a provider request is about to be sent (the budget allowed it), and where it goes. `destination` is the
-   * adapter's https origin, or its own description when it makes no network request; display text, never a URL with a
-   * credential. The run uses the provider and connection it started with; a request never goes anywhere else.
+   * adapter's https origin, or its own description when it makes no network request; display text with any URL's userinfo,
+   * query and fragment removed. The run uses the provider and connection it started with; a request never goes anywhere else.
    */
   z.strictObject({
     ...eventBase,
@@ -167,6 +167,8 @@ export const runEventSchema = z.discriminatedUnion("type", [
     request: z.number().int().min(1),
     providerId: composerProviderIdSchema,
     connectionId: connectionNameSchema,
+    /** The model the run asked for; the provider cannot change it here. */
+    modelId: composerModelIdSchema,
     destination: destinationTextSchema,
   }),
 ]);

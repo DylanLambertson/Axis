@@ -1,5 +1,5 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
-import { composerProviderIdSchema, connectionNameSchema, destinationTextSchema } from "@axis/protocol";
+import { composerProviderIdSchema, connectionNameSchema, destinationTextSchema, sanitizeDestinationText } from "@axis/protocol";
 import type { AdapterDescriptor, BudgetHook } from "@axis/providers";
 import type { ActivityInput } from "./activity.js";
 
@@ -11,17 +11,19 @@ import type { ActivityInput } from "./activity.js";
 export interface RequestDestination {
   readonly providerId: string;
   readonly connectionId: string;
+  /** The model the run asked for (a reply from another model would still be shown against this one). */
+  readonly modelId: string;
   /** The https origin, or the adapter's own description when it makes no network request: one line of display text. */
   readonly text: string;
 }
 
 /** The destination of a provider, or undefined when its descriptor is not display-safe (the start is then refused). */
-export function destinationOf(descriptor: AdapterDescriptor): RequestDestination | undefined {
+export function destinationOf(descriptor: AdapterDescriptor, modelId: string): RequestDestination | undefined {
   try {
-    const text = destinationTextSchema.safeParse(descriptor.destination.origin ?? descriptor.destination.description);
+    const text = destinationTextSchema.safeParse(sanitizeDestinationText(descriptor.destination.origin ?? descriptor.destination.description));
     const providerId = composerProviderIdSchema.safeParse(descriptor.providerId);
     const connectionId = connectionNameSchema.safeParse(descriptor.connectionId);
-    return text.success && providerId.success && connectionId.success ? { providerId: providerId.data, connectionId: connectionId.data, text: text.data } : undefined;
+    return text.success && providerId.success && connectionId.success ? { providerId: providerId.data, connectionId: connectionId.data, modelId, text: text.data } : undefined;
   } catch {
     return undefined;
   }
@@ -38,7 +40,7 @@ export function withDestinationEvents(budget: BudgetHook, destination: RequestDe
       const decision = await budget.beforeRequest(info);
       if (decision.allow) {
         request += 1;
-        emit({ type: "request", request, providerId: destination.providerId, connectionId: destination.connectionId, destination: destination.text });
+        emit({ type: "request", request, providerId: destination.providerId, connectionId: destination.connectionId, modelId: destination.modelId, destination: destination.text });
       }
       return decision;
     },

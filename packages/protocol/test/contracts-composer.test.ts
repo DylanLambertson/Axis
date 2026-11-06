@@ -21,7 +21,7 @@ const events = [
   { seq: 4, at: T1, type: "approval", tool: "write_file", state: "denied", digest: D, reasons: ["protected:github"], paths: [{ access: "write", path: ".github/workflows/ci.yml" }], preview: null },
   { seq: 5, at: T1, type: "tool", tool: "write_file", outcome: "error", reason: "approval_declined" },
   { seq: 6, at: T2, type: "usage", usage: { inputTokens: 10, outputTokens: 4, requests: 1 } },
-  { seq: 7, at: T2, type: "request", request: 2, providerId: "anthropic", connectionId: "work-key", destination: "https://api.anthropic.com" },
+  { seq: 7, at: T2, type: "request", request: 2, providerId: "anthropic", connectionId: "work-key", modelId: "claude-opus-5-5", destination: "https://api.anthropic.com" },
 ];
 
 const NULLABLE = /^((null|string) at (run|runs\.\d+)\.(mode|providerId|modelId|reason|usage))|null at events\.\d+\.(reason|preview|preview\.content)$/;
@@ -142,6 +142,10 @@ test("runs.events: a request event names the provider, connection and destinatio
   rejects(eventsRes(), rq({ connectionId: "https://user:pw@host.example/x" }), "a URL with a password as the connection id");
   rejects(eventsRes(), rq({ connectionId: "A b" }), "connection id outside the vault alphabet");
   rejects(eventsRes(), rq({ destination: "" }), "empty destination");
+  rejects(eventsRes(), rq({ modelId: "" }), "empty model id");
+  rejects(eventsRes(), rq({ modelId: undefined }), "no model id");
+  rejects(eventsRes(), rq({ destination: "via https://user:pw@host.example/x" }), "credentials in a URL");
+  rejects(eventsRes(), rq({ destination: "via https://host.example/x?token=1" }), "a query in a URL");
   rejects(eventsRes(), rq({ destination: "a\u202eb" }), "bidi in the destination");
   rejects(eventsRes(), rq({ destination: "a\nb" }), "newline in the destination");
   rejects(eventsRes(), rq({ destination: "d".repeat(513) }), "destination at 513");

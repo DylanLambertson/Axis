@@ -36,7 +36,15 @@ const CONNECTION_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 /** A vault connection name (never a credential or a URL); `axis.runs/1` request events use it too. */
 export const connectionNameSchema = z.string().regex(CONNECTION_NAME);
 /** Where a provider request goes, as one line of display text (PRV-4): an https origin or the adapter's own description. */
-export const destinationTextSchema = safeTextSchema(512);
+export const destinationTextSchema = safeTextSchema(512).refine((t) => sanitizeDestinationText(t) === t, "no credentials, query or fragment in a URL");
+
+/**
+ * A URL inside destination text without its userinfo, query and fragment (`https://u:pw@host/p?x=1#f` becomes
+ * `https://host/p`). Producers apply it before the text reaches this contract, which refuses text it would still change.
+ */
+export function sanitizeDestinationText(text: string): string {
+  return text.replace(/\b([a-z][a-z0-9+.-]*:\/\/)[^\s/?#@]*@/gi, "$1").replace(/(\b[a-z][a-z0-9+.-]*:\/\/[^\s?#]*)[?#]\S*/gi, "$1");
+}
 
 export const MAX_MODELS_PER_PROVIDER = 200;
 /** A model id as the list shows it: a short, closed alphabet (no space, slash, quote or URL), so it cannot carry a URL with a password. */
@@ -59,29 +67,31 @@ const isHttpsOrigin = (o: string): boolean => {
 
 export const providerInfoSchema = z
   .strictObject({
-  /** Stable adapter id such as `anthropic` or `mock` (the pattern `@axis/providers` enforces). */
-  providerId: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/),
-  displayName: safeTextSchema(128),
-  /** Version of the provider adapter API the adapter implements. */
-  apiVersion: z.number().int().min(1).max(1_000),
-  /** The vault connection this adapter instance is bound to: a name, never a credential. */
-  connectionId: connectionNameSchema,
-  /**
-   * `unavailable`: the connection's models could not be listed (it could not be reached, or it answered something
-   * this contract refuses). Its `models` is then empty and a run on it is refused; nothing falls back to another
-   * provider or connection (PRV-4).
-   */
-  status: z.enum(["ready", "unavailable"]),
-  /** The models this connection offers, by model id. Empty unless `ready`. */
-  models: z
-    .array(providerModelSchema)
-    .max(MAX_MODELS_PER_PROVIDER)
-    .refine((ms) => new Set(ms.map((m) => m.modelId)).size === ms.length, "duplicate model id"),
-  destination: z.strictObject({
-    /** Fixed https origin (scheme, host, optional port), or absent for an adapter that makes no request. */
-    origin: z.string().max(256).refine(isHttpsOrigin, "an https origin").optional(),
-    description: destinationTextSchema,
-  }),
+    /** Stable adapter id such as `anthropic` or `mock` (the pattern `@axis/providers` enforces). */
+    providerId: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/),
+    displayName: safeTextSchema(128),
+    /** Version of the provider adapter API the adapter implements. */
+    apiVersion: z.number().int().min(1).max(1_000),
+    /** The vault connection this adapter instance is bound to: a name, never a credential. */
+    connectionId: connectionNameSchema,
+    /**
+     * `ready`: the connection's models are listed. `unavailable`: they could not be listed (it could not be reached,
+     * was too slow, or answered something this contract refuses); a run on it is refused and nothing falls back to
+     * another provider or connection (PRV-4). `unchecked`: the adapter sends requests over the network, so this
+     * read-only list does not ask it (no unapproved outbound request per list call) and no model list has been
+     * recorded yet. `models` is empty unless `ready`.
+     */
+    status: z.enum(["ready", "unavailable", "unchecked"]),
+    /** The models this connection offers, by model id. Empty unless `ready`. */
+    models: z
+      .array(providerModelSchema)
+      .max(MAX_MODELS_PER_PROVIDER)
+      .refine((ms) => new Set(ms.map((m) => m.modelId)).size === ms.length, "duplicate model id"),
+    destination: z.strictObject({
+      /** Fixed https origin (scheme, host, optional port), or absent for an adapter that makes no request. */
+      origin: z.string().max(256).refine(isHttpsOrigin, "an https origin").optional(),
+      description: destinationTextSchema,
+    }),
   })
   .refine((p) => p.status === "ready" || p.models.length === 0, "models only on a ready connection");
 export type ProviderInfo = z.infer<typeof providerInfoSchema>;

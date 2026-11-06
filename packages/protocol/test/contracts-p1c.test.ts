@@ -245,6 +245,10 @@ test("providers.list: request takes nothing; response names adapters and destina
     "unknown status": { status: "fallback" },
     "no models": { models: undefined },
     "models on an unavailable connection": { status: "unavailable" },
+    "models on an unchecked connection": { status: "unchecked" },
+    "description with credentials": { destination: { description: "via https://user:pw@host.example/x" } },
+    "description with a query": { destination: { description: "via https://host.example/x?token=1" } },
+    "description with a fragment": { destination: { description: "via https://host.example/x#f" } },
   };
   for (const [name, patch] of Object.entries(bad)) rejects(providersRes(), { providers: [provider(patch)] }, name);
   accepts(providersRes(), { providers: [provider({ providerId: `a${"b".repeat(63)}`, displayName: "n".repeat(80), connectionId: "c".repeat(64) })] }, "ids at their caps");
@@ -259,6 +263,8 @@ test("providers.list: a model is a closed id and an optional display name, at mo
   accepts(providersRes(), one({ modelId: "claude-opus-5-5" }), "id only");
   accepts(providersRes(), one({ modelId: "a:b.c_d-1", displayName: "n".repeat(128) }), "alphabet and name at 128");
   accepts(providersRes(), { providers: [provider({ status: "unavailable", models: [] })] }, "unavailable with none");
+  accepts(providersRes(), { providers: [provider({ status: "unchecked", models: [] })] }, "unchecked with none");
+  accepts(providersRes(), { providers: [provider({ destination: { description: "via https://host.example/x and mail me@example.com" } })] }, "a URL without userinfo, query or fragment");
   accepts(providersRes(), { providers: [provider({ models: [] })] }, "ready with none");
   for (const modelId of ["", "-x", "m 1", "a/b", "https://user:pw@h.example/m", "m\u0000", "é", "a".repeat(129)]) rejects(providersRes(), one({ modelId }), `model id ${JSON.stringify(modelId)}`);
   rejects(providersRes(), one({ modelId: "m", displayName: "" }), "empty name");

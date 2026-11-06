@@ -140,7 +140,7 @@ export function createComposerService(deps: ComposerServiceDeps): ComposerServic
       }
       if (!models.some((m) => m.id === input.modelId)) throw composerFailure("E_NOT_FOUND", "model_unknown");
       // PRV-4: the destination is fixed by the selected provider and shown with each request; one that cannot be shown refuses the start.
-      const destination = destinationOf(provider.descriptor);
+      const destination = destinationOf(provider.descriptor, input.modelId);
       if (destination === undefined) throw composerFailure("E_UNAVAILABLE", "provider_unavailable");
       let build;
       try {

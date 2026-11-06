@@ -89,7 +89,7 @@ test("C9/PRV-4: every provider request is shown with its destination, before its
   await until(ended(c, run.runId));
   const events = allEvents(c, run.runId);
   for (const e of events) runEventSchema.parse(e);
-  assert.deepEqual(requests(events).map((e) => [e.request, e.providerId, e.connectionId, e.destination]), [[1, "mock", "mock-connection", MOCK_TEXT], [2, "mock", "mock-connection", MOCK_TEXT]]);
+  assert.deepEqual(requests(events).map((e) => [e.request, e.providerId, e.connectionId, e.modelId, e.destination]), [[1, "mock", "mock-connection", "mock-model", MOCK_TEXT], [2, "mock", "mock-connection", "mock-model", MOCK_TEXT]]);
   assert.equal(requests(events).length, c.wire(), "one event per request that reached the provider");
   const order = events.map((e) => e.type).filter((x) => x === "request" || x === "usage");
   assert.deepEqual(order, ["request", "usage", "request", "usage"]);
@@ -117,7 +117,7 @@ function twoProviders(c: ComposerRig, alpha: MockProviderOptions, extra: Partial
 
 test("C9/PRV-4: an unavailable selected connection is refused, creates nothing, and no other provider is asked", async (t) => {
   const c = await rigged(t, []);
-  const { beta } = twoProviders(c, {});
+  const beta = createMockProvider({ providerId: "beta", connectionId: "conn-beta" });
   const raw = createMockProvider({ providerId: "alpha", connectionId: "conn-alpha" });
   const unreachable = guardProvider({ ...raw, descriptor: raw.descriptor, listModels: async () => { throw new Error(CANARY); } } as never, { redactor: NO_SECRETS });
   const beta2 = guardProvider(beta, { redactor: NO_SECRETS });
@@ -165,4 +165,106 @@ test("C9/PRV-4: a descriptor that cannot be shown safely (a URL with a password 
   assert.equal(raw.requests.length, 0);
   assert.equal(c.journal.listRuns({ workspaceId: c.workspaceId }).length, 0);
   service.dispose();
+});
+
+// ---- review round 1 ----
+
+const netProvider = (counter: { calls: number }, cached?: readonly ModelInfo[]) => {
+  const raw = createMockProvider({ providerId: "net", connectionId: "net-conn" });
+  const d = { ...raw.descriptor, destination: { origin: "https://api.example.com", description: "Example API" } };
+  const provider = { descriptor: d, listModels: async (): Promise<readonly ModelInfo[]> => { counter.calls++; return cached ?? [{ id: "live-model" }]; } };
+  return provider;
+};
+
+test("SF-1: the read-only list never calls a network adapter; it is unchecked until a list was recorded through an approved path", async () => {
+  const counter = { calls: 0 };
+  const p = netProvider(counter);
+  const h = createProvidersListHandler({ providers: () => [p] });
+  for (let i = 0; i < 3; i++) {
+    const out = providersListResponseSchema.parse(await h(ctx(), {} as never));
+    assert.deepEqual([out.providers[0]?.status, out.providers[0]?.models], ["unchecked", []]);
+    assert.equal(out.providers[0]?.destination.origin, "https://api.example.com");
+  }
+  assert.equal(counter.calls, 0, "listModels of a network adapter was never called by list");
+  const cached = createProvidersListHandler({ providers: () => [p], cachedModels: (id) => (id === "net-conn" ? [{ id: "recorded-model", displayName: "Recorded" }] : undefined) });
+  const out = providersListResponseSchema.parse(await cached(ctx(), {} as never));
+  assert.deepEqual([out.providers[0]?.status, out.providers[0]?.models], ["ready", [{ modelId: "recorded-model", displayName: "Recorded" }]]);
+  assert.equal(counter.calls, 0);
+  const bad = createProvidersListHandler({ providers: () => [p], cachedModels: () => [{ id: "https://u:pw@h.example" }] });
+  assert.equal(providersListResponseSchema.parse(await bad(ctx(), {} as never)).providers[0]?.status, "unavailable", "a recorded list is held to the contract too");
+});
+
+test("nit: one slow connection is unavailable after its own time limit and the others are still listed", async () => {
+  let aborted = false;
+  const slow = { descriptor: guarded({ connectionId: "slow" }).descriptor, listModels: (o: { signal: AbortSignal }) => new Promise<readonly ModelInfo[]>(() => o.signal.addEventListener("abort", () => (aborted = true))) };
+  const out = providersListResponseSchema.parse(await createProvidersListHandler({ providers: () => [slow as never, guarded({ connectionId: "fast" })], listTimeoutMs: 20 })(ctx(), {} as never));
+  assert.deepEqual(out.providers.map((p) => [p.connectionId, p.status]), [["fast", "ready"], ["slow", "unavailable"]]);
+  assert.equal(aborted, true, "the slow listing was told to stop");
+});
+
+test("nit: a destination description with a URL's credentials, query or fragment is shown without them, in the list and in the run event", async (t) => {
+  const c = await rigged(t, []);
+  const raw = createMockProvider({ providerId: "alpha", connectionId: "conn-alpha" });
+  const d = { ...raw.descriptor, destination: { description: "Via https://user:pw@gateway.example/v1?token=abc#frag now" } };
+  const out = await list([{ descriptor: d, listModels: async () => [{ id: "mock-model" }] }]);
+  assert.equal(out.providers[0]?.destination.description, "Via https://gateway.example/v1 now");
+  const p = guardProvider({ ...raw, descriptor: d } as never, { redactor: NO_SECRETS });
+  const service = createComposerService({ journal: c.journal, engine: { provider: () => p, prepare: async () => () => { throw new Error("no tools"); } }, now: () => c.r.clock.now() });
+  const { run } = await service.start(START(c.workspaceId, { providerId: "alpha", mode: "ask" }), new AbortController().signal);
+  await until(() => !service.get(run.runId).live);
+  const shown = requests(service.events(run.runId, 0, 200).events).map((e) => e.destination);
+  assert.deepEqual(shown, ["Via https://gateway.example/v1 now"]);
+  assert.ok(!JSON.stringify(out).concat(shown.join("")).match(/pw|token|abc|frag/));
+  service.dispose();
+  await service.idle();
+});
+
+test("SF-2: a long run that evicts its other events still shows where every request went", async (t) => {
+  const c = await rigged(t, []);
+  const raw = createMockProvider({ providerId: "alpha", connectionId: "conn-alpha", replies: [{ kind: "text", text: "x" }] });
+  const p = guardProvider(raw, { redactor: NO_SECRETS });
+  const service = createComposerService({ journal: c.journal, engine: { provider: () => p, prepare: async () => () => { throw new Error("no tools"); } }, now: () => c.r.clock.now(), activity: { maxEvents: 2 } });
+  const { run } = await service.start(START(c.workspaceId, { providerId: "alpha", mode: "ask" }), new AbortController().signal);
+  await until(() => !service.get(run.runId).live);
+  const events = service.events(run.runId, 0, 200).events;
+  assert.equal(events.length, 2, "the ring held to its cap");
+  assert.deepEqual(requests(events).map((e) => e.destination), [MOCK_TEXT], "the request record was not evicted before the other events");
+  service.dispose();
+  await service.idle();
+});
+
+test("nit: a model removed from the connection mid-run ends the run closed, on its own provider only", async (t) => {
+  const c = await rigged(t, []);
+  const models = [{ id: "mock-model" }];
+  const raw = createMockProvider({ providerId: "alpha", connectionId: "conn-alpha", models, replies: [{ kind: "text", text: "one" }, { kind: "text", text: "two" }] });
+  const beta = createMockProvider({ providerId: "beta", connectionId: "conn-beta" });
+  const p = guardProvider(raw, { redactor: NO_SECRETS });
+  const gone = { ...p, descriptor: p.descriptor, generate: (...a: Parameters<typeof p.generate>) => { models.splice(0, 1); return p.generate(...a); } } as GuardedProvider;
+  const map = new Map<string, GuardedProvider>([["alpha", gone], ["beta", guardProvider(beta, { redactor: NO_SECRETS })]]);
+  const service = createComposerService({ journal: c.journal, engine: { provider: (id) => map.get(id), prepare: async () => () => { throw new Error("no tools"); } }, now: () => c.r.clock.now() });
+  const { run } = await service.start(START(c.workspaceId, { providerId: "alpha", mode: "ask" }), new AbortController().signal);
+  await until(() => !service.get(run.runId).live);
+  const done = service.get(run.runId);
+  assert.equal(done.state, "FAILED");
+  assert.match(done.reason ?? "", /^PROVIDER_/);
+  assert.equal(beta.requests.length, 0);
+  service.dispose();
+  await service.idle();
+});
+
+test("nit: a connection removed from the registry mid-run does not redirect or stop the run: it ends on its original provider", async (t) => {
+  const c = await rigged(t, []);
+  const raw = createMockProvider({ providerId: "alpha", connectionId: "conn-alpha", replies: [{ kind: "text", text: "done" }] });
+  const beta = createMockProvider({ providerId: "beta", connectionId: "conn-beta" });
+  const map = new Map<string, GuardedProvider>([["alpha", guardProvider(raw, { redactor: NO_SECRETS })], ["beta", guardProvider(beta, { redactor: NO_SECRETS })]]);
+  const service = createComposerService({ journal: c.journal, engine: { provider: (id) => map.get(id), prepare: async () => () => { throw new Error("no tools"); } }, now: () => c.r.clock.now() });
+  const { run } = await service.start(START(c.workspaceId, { providerId: "alpha", mode: "ask" }), new AbortController().signal);
+  map.delete("alpha");
+  await until(() => !service.get(run.runId).live);
+  assert.equal(service.get(run.runId).state, "REVIEWING");
+  assert.equal(raw.requests.length, 1);
+  assert.equal(beta.requests.length, 0);
+  await assert.rejects(service.start(START(c.workspaceId, { providerId: "alpha", mode: "ask" }), new AbortController().signal), (e) => (e as { details?: Record<string, unknown> }).details?.["reason"] === "provider_unknown", "a new run on the removed connection is refused");
+  service.dispose();
+  await service.idle();
 });

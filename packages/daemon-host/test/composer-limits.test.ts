@@ -109,7 +109,7 @@ const reply = (calls: number): GenerateResult => ({
 
 test("S4: a reply that asks for more tool calls than the cap runs none of them and ends the run", async () => {
   const tools = fakeTools("x");
-  const base = { runId: "r1", mode: "agent" as const, prompt: "p", model: "mock-model", budget: createRunBudget({}), signal: new AbortController().signal, emit: () => undefined, destination: { providerId: "mock", connectionId: "mock-connection", text: "Local" }, tools };
+  const base = { runId: "r1", mode: "agent" as const, prompt: "p", model: "mock-model", budget: createRunBudget({}), signal: new AbortController().signal, emit: () => undefined, destination: { providerId: "mock", connectionId: "mock-connection", modelId: "mock-model", text: "Local" }, tools };
   const over = await runComposerLoop({ ...base, provider: { generate: async () => reply(17) } });
   assert.deepEqual(over, { state: "FAILED", reason: "TOOL_CALL_LIMIT" });
   assert.equal(tools.calls, 0);
@@ -122,7 +122,7 @@ test("S4: a reply that asks for more tool calls than the cap runs none of them a
 test("S4: the run stops once its tool results exceed the per-run size cap", async () => {
   const tools = fakeTools("x".repeat(1000));
   const end = await runComposerLoop({
-    runId: "r1", mode: "agent", prompt: "p", model: "mock-model", budget: createRunBudget({}), signal: new AbortController().signal, emit: () => undefined, destination: { providerId: "mock", connectionId: "mock-connection", text: "Local" }, tools,
+    runId: "r1", mode: "agent", prompt: "p", model: "mock-model", budget: createRunBudget({}), signal: new AbortController().signal, emit: () => undefined, destination: { providerId: "mock", connectionId: "mock-connection", modelId: "mock-model", text: "Local" }, tools,
     provider: { generate: async () => reply(1) },
     caps: { resultBytesPerRun: 2500 },
   });
@@ -132,7 +132,7 @@ test("S4: the run stops once its tool results exceed the per-run size cap", asyn
   const exact = fakeTools("x".repeat(1000));
   let turns = 0;
   const atCap = await runComposerLoop({
-    runId: "r2", mode: "agent", prompt: "p", model: "mock-model", budget: createRunBudget({}), signal: new AbortController().signal, emit: () => undefined, destination: { providerId: "mock", connectionId: "mock-connection", text: "Local" }, tools: exact,
+    runId: "r2", mode: "agent", prompt: "p", model: "mock-model", budget: createRunBudget({}), signal: new AbortController().signal, emit: () => undefined, destination: { providerId: "mock", connectionId: "mock-connection", modelId: "mock-model", text: "Local" }, tools: exact,
     provider: { generate: async () => (turns++ < 2 ? reply(1) : { ...reply(0), stopReason: "end_turn" }) },
     caps: { resultBytesPerRun: 2000 },
   });
