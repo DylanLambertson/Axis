@@ -4,16 +4,21 @@
 
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
-import { basename } from '../../../../base/common/path.js';
+import { CancellationTokenSource } from '../../../../base/common/cancellation.js';
+import { mainWindow } from '../../../../base/browser/window.js';
+import { addDisposableListener } from '../../../../base/browser/dom.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { createDecorator, IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { IAxisShowViewOptions, IAxisViewService } from '../../view/browser/axisViewService.js';
+import { AxisDaemonApi } from '../../daemon/common/axisDaemonApi.js';
+import { AxisCallErrorCode, AxisDaemonStatus, IAxisDaemonClient, isUsable, sameStatus, sanitizeStatus } from '../../daemon/common/axisDaemonClient.js';
 import { AxisDataProvenance, IAxisProjectInfo } from '../common/axisWorkspaceData.js';
-import { attentionOf, cycleIndex, IAxisWorkspaceEntry, orderEntries } from '../common/axisWorkspaceModel.js';
-import { displayName } from '../common/worktreeDiscovery.js';
-import { AxisDiscoveryDataSource, workspaceKeyOf } from '../common/axisDiscoveryDataSource.js';
+import { cycleIndex, IAxisWorkspaceEntry } from '../common/axisWorkspaceModel.js';
+import { AxisDiscoveryDataSource } from '../common/axisDiscoveryDataSource.js';
+import { AxisDataOrigin, AxisSnapshotLoader, IAxisSnapshot, sameSnapshot } from '../common/axisSnapshotLoader.js';
+import { AxisPollDriver, IAxisRefreshDriver } from '../common/axisRefreshDriver.js';
 
 /** The focused workspace key, per Code OSS workspace (design section 3.6). */
 const FOCUSED_WORKSPACE_STORAGE_KEY = 'axis.workspaces.focused';
@@ -38,6 +43,17 @@ export interface IAxisWorkspaceService {
 	readonly runsProvenance: AxisDataProvenance;
 	/** Worktree entries discovery refused to list, over all projects (their `.git` does not point back, or they are missing). */
 	readonly refusedWorktrees: number;
+	/** The Axis service state the rows were read under (docs/design/axis-shell-a2.md). */
+	readonly daemonStatus: AxisDaemonStatus;
+	/** Whether the rows come from the Axis service or from the worktrees on disk. */
+	readonly dataOrigin: AxisDataOrigin;
+	/** Set when the last read from the Axis service failed and the rows are the last good ones. */
+	readonly staleError: AxisCallErrorCode | undefined;
+	/** The daemon is usable but has no registered project, so the rows come from disk. */
+	readonly notRegistered: boolean;
+	readonly truncatedProjects: boolean;
+	/** Open approval challenges; `undefined` when unknown. */
+	readonly pendingApprovals: number | undefined;
 
 	/** Focuses a workspace by key, or the dashboard (`undefined`). */
 	focus(key: string | undefined, options?: IAxisShowViewOptions): void;
@@ -59,10 +75,13 @@ export class AxisWorkspaceService extends Disposable implements IAxisWorkspaceSe
 	readonly onDidChangeFocus = this._onDidChangeFocus.event;
 
 	private readonly source: AxisDiscoveryDataSource;
+	private readonly loader: AxisSnapshotLoader;
+	private readonly driver: IAxisRefreshDriver;
+	private snapshot: IAxisSnapshot | undefined;
+	private _daemonStatus: AxisDaemonStatus = { kind: 'down' };
+	private loadOk = true;
 	private _loaded = false;
-	private _projects: readonly IAxisProjectInfo[] = [];
 	private _workspaces: readonly IAxisWorkspaceEntry[] = [];
-	private _refusedWorktrees = 0;
 	private _focusedKey: string | undefined;
 	private loading: Promise<void> | undefined;
 	private reloadQueued = false;
@@ -72,19 +91,32 @@ export class AxisWorkspaceService extends Disposable implements IAxisWorkspaceSe
 		@IAxisViewService private readonly viewService: IAxisViewService,
 		@IStorageService private readonly storageService: IStorageService,
 		@ILogService private readonly logService: ILogService,
+		@IAxisDaemonClient private readonly daemon: IAxisDaemonClient,
 	) {
 		super();
 		this.source = this._register(instantiationService.createInstance(AxisDiscoveryDataSource));
+		const cancellation = this._register(new CancellationTokenSource());
+		this.loader = new AxisSnapshotLoader(this.source, new AxisDaemonApi(this.daemon, cancellation.token));
+		this.driver = this._register(new AxisPollDriver());
+		this._register(addDisposableListener(mainWindow.document, 'visibilitychange', () => this.driver.setPaused(mainWindow.document.hidden)));
+		this._register(this.daemon.onDidChangeStatus(() => this.onDaemonStatus()));
 		this._focusedKey = this.storageService.get(FOCUSED_WORKSPACE_STORAGE_KEY, StorageScope.WORKSPACE) || undefined;
 		this._register(this.source.onDidChange(() => this.refresh()));
+		this.updateDriver();
 		this.refresh();
 	}
 
 	get loaded(): boolean { return this._loaded; }
-	get projects(): readonly IAxisProjectInfo[] { return this._projects; }
+	get projects(): readonly IAxisProjectInfo[] { return this.snapshot?.projects ?? []; }
 	get workspaces(): readonly IAxisWorkspaceEntry[] { return this._workspaces; }
-	get runsProvenance(): AxisDataProvenance { return this.source.runsProvenance; }
-	get refusedWorktrees(): number { return this._refusedWorktrees; }
+	get runsProvenance(): AxisDataProvenance { return this.snapshot?.runsProvenance ?? this.source.runsProvenance; }
+	get refusedWorktrees(): number { return this.snapshot?.refusedWorktrees ?? 0; }
+	get daemonStatus(): AxisDaemonStatus { return this._daemonStatus; }
+	get dataOrigin(): AxisDataOrigin { return this.snapshot?.origin ?? 'discovery'; }
+	get staleError(): AxisCallErrorCode | undefined { return this.snapshot?.staleError; }
+	get notRegistered(): boolean { return this.snapshot?.notRegistered ?? false; }
+	get truncatedProjects(): boolean { return this.snapshot?.truncatedProjects ?? false; }
+	get pendingApprovals(): number | undefined { return this.snapshot?.pendingApprovals; }
 
 	get focused(): IAxisWorkspaceEntry | undefined {
 		return this._focusedKey ? this._workspaces.find(w => w.key === this._focusedKey) : undefined;
@@ -137,36 +169,22 @@ export class AxisWorkspaceService extends Disposable implements IAxisWorkspaceSe
 
 	private async load(): Promise<void> {
 		try {
-			const projects = await this.source.listProjects();
-			const runs = await this.source.listCliRuns();
-			const entries: IAxisWorkspaceEntry[] = [];
-			let refused = 0;
-			for (const project of projects) {
-				refused += await this.source.countRefusedWorktrees(project.id);
-				const localCheckout = await this.source.getLocalCheckout(project.id);
-				for (const worktree of await this.source.listWorktrees(project.id)) {
-					const key = workspaceKeyOf(worktree);
-					const isLocalCheckout = worktree.path === localCheckout;
-					const workspaceRuns = isLocalCheckout ? [] : runs.filter(run => run.workspaceId === key);
-					entries.push({
-						key,
-						project,
-						worktree,
-						isLocalCheckout,
-						label: displayName(basename(worktree.path)),
-						runs: workspaceRuns,
-						attention: attentionOf(worktree, workspaceRuns),
-					});
-				}
-			}
+			const status = sanitizeStatus(this.daemon.status);
+			const snapshot = await this.loader.load(status);
 			if (this._store.isDisposed) {
 				return;
 			}
-			const hadFocus = this.focused;
-			this._projects = projects;
-			this._refusedWorktrees = refused;
-			this._workspaces = orderEntries(entries, projects.map(p => p.id));
+			const statusChanged = !sameStatus(status, this._daemonStatus);
+			this._daemonStatus = status;
+			const unchanged = this._loaded && !statusChanged && sameSnapshot(this.snapshot, snapshot);
+			this.snapshot = snapshot;
 			this._loaded = true;
+			this.loadOk = snapshot.staleError === undefined;
+			if (unchanged) {
+				return;
+			}
+			const hadFocus = this.focused;
+			this._workspaces = snapshot.entries;
 			this._onDidChangeWorkspaces.fire();
 
 			const focused = this.focused;
@@ -177,9 +195,27 @@ export class AxisWorkspaceService extends Disposable implements IAxisWorkspaceSe
 				this.viewService.setFocusedWorkspace(focused.key, focused.label, { focus: false });
 			}
 		} catch (error) {
-			this.logService.error('[Axis] workspace discovery failed', error);
+			this.logService.error('[Axis] workspace load failed', error);
+			this.loadOk = false;
 			this._loaded = true;
 			this._onDidChangeWorkspaces.fire();
+		}
+	}
+
+	/** The daemon changed state: read again now, and poll only while it answers. */
+	private onDaemonStatus(): void {
+		this.updateDriver();
+		this.refresh();
+	}
+
+	private updateDriver(): void {
+		if (isUsable(sanitizeStatus(this.daemon.status))) {
+			this.driver.start(async () => {
+				await this.refresh();
+				return this.loadOk;
+			});
+		} else {
+			this.driver.stop();
 		}
 	}
 }
