@@ -8,7 +8,7 @@ import type { TestSupervisor } from "./test-supervisor.js";
  * The typed client of the headless slice (plan section 1.1). It speaks the envelope of `@axis/protocol` over a virtual connection
  * of the supervisor's mux: `hello`/`welcome`, request, cancel. Every answer is parsed with the protocol's own response envelope,
  * and an `ok` answer is parsed again with the method's response schema, so a handler that drifts from its contract fails the test
- * that called it. Idempotency keys are UUIDv4. Polling is the caller's (`until`): there is no server push in 1a.
+ * that called it. Idempotency keys are UUIDv4. Event frames (`axis.events/1`) are collected in `frames`; `ack` grants credit.
  */
 export interface Answer {
   readonly ok: boolean;
@@ -28,6 +28,8 @@ export class TestClient {
   readonly welcome: Welcome;
   readonly #conn: Connection;
   readonly #pending = new Map<string, (m: unknown) => void>();
+  /** Every event frame received (messages with `sub`), in arrival order. */
+  readonly frames: Array<{ sub: string; seq?: number; event?: Record<string, unknown>; resync?: unknown; end?: unknown }> = [];
   #n = 0;
 
   private constructor(conn: Connection, welcome: Welcome) {
@@ -60,6 +62,10 @@ export class TestClient {
 
   #receive(raw: unknown): void {
     transcript.push(JSON.stringify(raw));
+    if (typeof raw === "object" && raw !== null && "sub" in raw) {
+      this.frames.push(raw as TestClient["frames"][number]);
+      return;
+    }
     const id = (raw as { id?: unknown } | null)?.id;
     if (typeof id !== "string") return;
     const resolve = this.#pending.get(id);
@@ -98,13 +104,18 @@ export class TestClient {
     return a.result as T;
   }
 
+  /** Credit for a subscription: acknowledges every frame of it up to `seq`. */
+  ack(sub: string, seq: number): void {
+    this.#conn.send({ v: 1, ack: sub, seq });
+  }
+
   close(): void {
     this.#failAll("the client was closed");
     this.#conn.close();
   }
 }
 
-const ALL_CONTRACTS = ["axis.worktrees", "axis.projects", "axis.approvals", "axis.audit", "axis.cli-runs", "axis.providers", "axis.git", "axis.review", "axis.runs"] as const;
+const ALL_CONTRACTS = ["axis.worktrees", "axis.projects", "axis.approvals", "axis.audit", "axis.cli-runs", "axis.providers", "axis.git", "axis.review", "axis.events", "axis.runs"] as const;
 
 /** The result of an answer that must have succeeded; the failure names the closed code and reason (never a message). */
 export function resultOf<T = Record<string, unknown>>(a: Answer, what: string): T {
