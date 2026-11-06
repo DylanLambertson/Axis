@@ -7,6 +7,15 @@ import { ruleKey, type Rule } from "./rule-types.js";
 const DENY: PolicyDecision = Object.freeze({ effect: "deny" });
 
 /**
+ * What a web client (`clientKind: "web"`, minted only by the web host entry, `docs/design/web-host-entry.md` W-5) may
+ * call until a web approval and trust surface exists (Phase 2): reads only. Nothing above tier 1, no per-start trust
+ * (a CLI run start), and nothing of `axis.approvals` (a web client must not list or resolve a challenge, and every web
+ * tab shares one window). Fails closed for anything not listed.
+ */
+export const WEB_MAX_TIER = 1;
+export const WEB_DENIED_CONTRACTS: ReadonlySet<string> = new Set(["axis.approvals"]);
+
+/**
  * The daemon's `Policy`, answering from the rule table. It fails closed on everything it does not recognise: a method
  * with no row, an actor that is not `user` (including `agent:*` and `daemon`), a malformed identity or input, a
  * trust condition that is not met, and any throw. It may raise a tier above the contract minimum, never lower it.
@@ -37,6 +46,7 @@ export class RuleTablePolicy implements Policy {
     if (rule === undefined) return DENY;
     if (typeof identity !== "object" || identity === null) return DENY;
     if (!rule.actors.some((a) => a === identity.actor)) return DENY;
+    if (identity.clientKind !== "desktop" && !webAllowed(rule, contract, tier)) return DENY;
     if (!this.#trustOk(rule, identity)) return DENY;
     return rule.tier > tier ? { effect: "allow", tier: rule.tier } : { effect: "allow" };
   }
@@ -48,4 +58,9 @@ export class RuleTablePolicy implements Policy {
     if (rule.trust === "per-start") return !this.#trust.isRevoked(subject);
     return trusted === true && this.#trust.isTrusted(subject);
   }
+}
+
+/** True when a web client may call a method with this rule (see `WEB_MAX_TIER`). */
+function webAllowed(rule: Rule, contract: string, tier: number): boolean {
+  return Math.max(rule.tier, tier) <= WEB_MAX_TIER && rule.trust !== "per-start" && !WEB_DENIED_CONTRACTS.has(contract);
 }

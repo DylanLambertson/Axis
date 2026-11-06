@@ -75,3 +75,24 @@ test("codec: server frames are unmasked, use the shortest length and carry a clo
   const c = encodeClose(CLOSE.tooBig);
   assert.deepEqual([...c], [0x88, 2, 0x03, 0xf1]);
 });
+
+test("codec: a large frame arriving one byte at a time is joined once, not on every chunk", () => {
+  const frame = clientFrame(1, JSON.stringify({ s: "q".repeat(70_000) }));
+  const d = new FrameDecoder(1 << 20);
+  const real = Buffer.concat;
+  let calls = 0;
+  Buffer.concat = ((list: readonly Uint8Array[], total?: number) => {
+    calls++;
+    return real(list, total);
+  }) as typeof Buffer.concat;
+  let frames;
+  try {
+    for (let i = 0; i < frame.length - 1; i++) assert.deepEqual(d.push(frame.subarray(i, i + 1)), []);
+    frames = d.push(frame.subarray(frame.length - 1));
+  } finally {
+    Buffer.concat = real;
+  }
+  assert.equal(frames.length, 1);
+  assert.equal(d.buffered, 0);
+  assert.ok(calls <= 4, `joined ${calls} times`);
+});

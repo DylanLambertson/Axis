@@ -40,7 +40,7 @@ function open(host: WebHost, token: string, origin = ORIGIN): Client {
   };
 }
 
-test("web host e2e: a browser client reaches a real host process, which verifies the web attestation", async () => {
+test("web host e2e: a browser client reaches a real host process, which verifies the web attestation", { timeout: 60_000 }, async () => {
   const sup = await TestSupervisor.start();
   let host: WebHost | undefined;
   try {
@@ -75,7 +75,7 @@ test("web host e2e: a browser client reaches a real host process, which verifies
   }
 });
 
-test("web host e2e: with a key the host does not hold, the host closes the connection and the browser sees it end", async () => {
+test("web host e2e: with a key the host does not hold, the host refuses the connection and the browser sees 1008", { timeout: 60_000 }, async () => {
   const sup = await TestSupervisor.start();
   let host: WebHost | undefined;
   try {
@@ -83,7 +83,7 @@ test("web host e2e: with a key the host does not hold, the host closes the conne
     host = await startWebHost({ config: { enabled: true, port: 0, allowedOrigins: [ORIGIN] }, mux: sup.mux, flow: sup.flow, attestationKey: Buffer.alloc(32, 9), clock: { now: () => Date.now(), monotonic: () => performance.now() } });
     const c = open(host, host.takeToken());
     await c.opened;
-    assert.equal(await c.closed, 1000);
+    assert.equal(await c.closed, 1008, "a refused connection ends with 1008, not a normal close");
   } finally {
     await host?.dispose();
     await sup.dispose();

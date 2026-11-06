@@ -1,15 +1,14 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { randomBytes } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import type { Socket } from "node:net";
+import type { AddressInfo, Socket } from "node:net";
 import { AxisError } from "@axis/audit";
-import type { Identity } from "@axis/daemon";
-import { signAttestation } from "../control/attestation.js";
 import type { Clock } from "../ports/clock.js";
 import type { ChannelFlow } from "../transport/node-ipc.js";
 import type { ChannelMux } from "../transport/mux.js";
 import { parseWebHostConfig, type WebHostConfig } from "./config.js";
 import { SUBPROTOCOL, UPGRADE_REFUSALS, checkUpgrade, digestToken, type UpgradeRefusal } from "./handshake.js";
+import { createWebAttestor } from "./attestor.js";
 import { WebSession } from "./session.js";
 import type { CloseCode } from "./ws-codec.js";
 
@@ -26,14 +25,16 @@ import type { CloseCode } from "./ws-codec.js";
  * token, the attestation or browser data.
  */
 
-export const WEB_WINDOW_ID = "web";
-export const WEB_ACTOR_ID = "web-user";
-/** Raw sockets above the client limit that may be mid-handshake at once. */
+export { WEB_ACTOR_ID, WEB_WINDOW_ID } from "./attestor.js";
+/** Raw sockets that may be mid-handshake at once; one more evicts the oldest, so held sockets cannot lock a client out. */
 const PENDING_SOCKETS = 4;
 const MAX_HEADER_BYTES = 8_192;
+/** Node's own deadlines for a request's headers and the whole request, and how often it checks them (ms). */
+const HEADERS_TIMEOUT_MS = 5_000;
+const CHECK_INTERVAL_MS = 1_000;
 
 export type WebHostEvent = "web.listening" | "web.refused" | "web.opened" | "web.closed" | "web.paused" | "web.resumed" | "web.stopped";
-export type WebRefusal = UpgradeRefusal | "too_many_clients" | "unavailable" | "mux_refused" | "not_upgrade";
+export type WebRefusal = UpgradeRefusal | "too_many_clients" | "unavailable" | "mux_refused" | "not_upgrade" | "pending_evicted";
 
 export interface WebHostOptions {
   /** Raw configuration; parsed here with `parseWebHostConfig`, so an unparsed object cannot start a listener. */
@@ -51,6 +52,8 @@ export interface WebHostOptions {
 
 export interface WebHostStats {
   readonly sessions: number;
+  /** Sockets that have not upgraded yet. */
+  readonly pendingSockets: number;
   readonly opened: number;
   readonly paused: boolean;
   readonly refused: Readonly<Record<WebRefusal, number>>;
@@ -70,6 +73,11 @@ const STATUS_TEXT: Readonly<Record<number, string>> = { 400: "Bad Request", 403:
 
 const ignore = (): void => undefined;
 
+/** True when `server.address()` is the configured loopback literal on a TCP port (W-1: checked after every listen). */
+export function isBoundTo(bound: AddressInfo | string | null, host: string): bound is AddressInfo {
+  return bound !== null && typeof bound === "object" && bound.address === host && Number.isInteger(bound.port) && bound.port > 0;
+}
+
 function refuseSocket(socket: Socket, status: number): void {
   try {
     socket.end(`HTTP/1.1 ${status} ${STATUS_TEXT[status] ?? "Error"}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`, () => void socket.destroy());
@@ -80,18 +88,15 @@ function refuseSocket(socket: Socket, status: number): void {
 
 export async function startWebHost(options: WebHostOptions): Promise<WebHost> {
   const config: WebHostConfig = parseWebHostConfig(options.config);
-  if (!(options.attestationKey instanceof Uint8Array) || options.attestationKey.length < 32) {
-    throw new AxisError("E_INVALID_ARGUMENT", "Invalid web host key", { reason: "web_key_invalid" });
-  }
   const { mux, flow, clock } = options;
-  const key = new Uint8Array(options.attestationKey);
+  const attestor = createWebAttestor(options.attestationKey, clock);
   const log = options.log ?? ((): void => undefined);
   const limits = config.limits;
   const origins = new Set(config.allowedOrigins);
   let token: string | undefined = randomBytes(32).toString("base64url");
   const tokenDigest = digestToken(token);
   const sessions = new Set<WebSession>();
-  const refused = Object.fromEntries([...UPGRADE_REFUSALS, "too_many_clients", "unavailable", "mux_refused", "not_upgrade"].map((r) => [r, 0])) as Record<WebRefusal, number>;
+  const refused = Object.fromEntries([...UPGRADE_REFUSALS, "too_many_clients", "unavailable", "mux_refused", "not_upgrade", "pending_evicted"].map((r) => [r, 0])) as Record<WebRefusal, number>;
   const closed: Record<string, number> = {};
   let opened = 0;
   let paused = false;
@@ -115,7 +120,11 @@ export async function startWebHost(options: WebHostOptions): Promise<WebHost> {
     if (!paused) return;
     paused = false;
     log("web.resumed");
-    for (const s of [...sessions]) s.resume();
+    for (const s of [...sessions]) {
+      // A session replaying its held frames can fill the backlog again: then the rest stay paused.
+      if (paused) break;
+      s.resume();
+    }
   });
 
   const closeAll = (code: CloseCode): void => {
@@ -126,10 +135,25 @@ export async function startWebHost(options: WebHostOptions): Promise<WebHost> {
     closeAll(1001);
   });
 
-  const onUpgrade = (req: IncomingMessage, socket: Socket, head: Buffer): void => {
+  /** Sockets that have not upgraded yet, oldest first. */
+  const pending = new Set<Socket>();
+  const onConnection = (socket: Socket): void => {
     // Kept for the socket's whole life: a write to a socket the peer reset (a refusal, a close frame) reports its
     // error asynchronously, and an unhandled one would end the web server process.
     socket.on("error", ignore);
+    pending.add(socket);
+    socket.once("close", () => void pending.delete(socket));
+    if (pending.size > PENDING_SOCKETS) {
+      const oldest = pending.values().next().value as Socket;
+      pending.delete(oldest);
+      refused.pending_evicted++;
+      log("web.refused", { reason: "pending_evicted" });
+      oldest.destroy();
+    }
+  };
+
+  const onUpgrade = (req: IncomingMessage, socket: Socket, head: Buffer): void => {
+    pending.delete(socket);
     if (stopped || channelClosed) return refuse(socket, 503, "unavailable");
     if (sessions.size >= limits.maxClients) return refuse(socket, 503, "too_many_clients");
     const check = checkUpgrade(req, { host: config.host, port, allowedOrigins: origins, tokenDigest });
@@ -137,16 +161,8 @@ export async function startWebHost(options: WebHostOptions): Promise<WebHost> {
     const cid = randomBytes(16).toString("base64url");
     const connection = mux.open(cid);
     if (connection === undefined) return refuse(socket, 503, "mux_refused");
-    const identity: Identity = {
-      connectionId: randomBytes(18).toString("base64url"),
-      windowId: WEB_WINDOW_ID,
-      actorId: WEB_ACTOR_ID,
-      actor: "user",
-      trusted: false,
-      clientKind: "web",
-    };
     try {
-      mux.sendControl({ type: "connect", cid, attestation: signAttestation(key, identity, Math.floor(clock.now())) });
+      mux.sendControl({ type: "connect", cid, attestation: attestor.mint() });
     } catch {
       connection.close();
       return refuse(socket, 503, "unavailable");
@@ -177,8 +193,16 @@ export async function startWebHost(options: WebHostOptions): Promise<WebHost> {
     res.end();
   };
 
-  const server = createServer({ maxHeaderSize: MAX_HEADER_BYTES, requireHostHeader: true });
-  server.maxConnections = limits.maxClients + PENDING_SOCKETS;
+  const server = createServer({
+    maxHeaderSize: MAX_HEADER_BYTES,
+    requireHostHeader: true,
+    headersTimeout: HEADERS_TIMEOUT_MS,
+    requestTimeout: HEADERS_TIMEOUT_MS,
+    connectionsCheckingInterval: CHECK_INTERVAL_MS,
+  });
+  // One above sessions plus pending, so a new socket is always accepted and can evict the oldest pending one.
+  server.maxConnections = limits.maxClients + PENDING_SOCKETS + 1;
+  server.on("connection", onConnection);
   server.on("upgrade", onUpgrade);
   server.on("request", onRequest);
   server.on("clientError", (_e: Error, socket: Socket) => void socket.destroy());
@@ -186,7 +210,7 @@ export async function startWebHost(options: WebHostOptions): Promise<WebHost> {
   const release = (): void => {
     unsubscribeDrain();
     unsubscribeChannel();
-    key.fill(0);
+    attestor.close();
     token = undefined;
   };
 
@@ -203,12 +227,12 @@ export async function startWebHost(options: WebHostOptions): Promise<WebHost> {
     throw new AxisError("E_UNAVAILABLE", "The web host could not listen", { reason: "listen_failed" });
   }
   const bound = server.address();
-  if (bound === null || typeof bound === "string" || bound.address !== config.host) {
+  if (!isBoundTo(bound, config.host)) {
     release();
     await new Promise<void>((r) => server.close(() => r()));
     throw new AxisError("E_UNAVAILABLE", "The web host bound an unexpected address", { reason: "bind_mismatch" });
   }
-  port = bound.port;
+  port = (bound as AddressInfo).port;
   server.on("error", () => undefined);
   log("web.listening");
 
@@ -221,7 +245,7 @@ export async function startWebHost(options: WebHostOptions): Promise<WebHost> {
       token = undefined;
       return t;
     },
-    stats: () => Object.freeze({ sessions: sessions.size, opened, paused, refused: Object.freeze({ ...refused }), closed: Object.freeze({ ...closed }) }),
+    stats: () => Object.freeze({ sessions: sessions.size, pendingSockets: pending.size, opened, paused, refused: Object.freeze({ ...refused }), closed: Object.freeze({ ...closed }) }),
     dispose(): Promise<void> {
       if (disposing !== undefined) return disposing;
       stopped = true;

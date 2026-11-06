@@ -3,5 +3,6 @@
 // entry loads may reach this directory, and only this directory's server.ts may load a listener module.
 export { DEFAULT_WEB_LIMITS, WEB_HOSTS, isSerializedOrigin, parseWebHostConfig, type WebHostAddress, type WebHostConfig, type WebHostLimits } from "./config.js";
 export { AUTH_PREFIX, SUBPROTOCOL, UPGRADE_REFUSALS, WS_PATH, type UpgradeRefusal } from "./handshake.js";
-export { WEB_ACTOR_ID, WEB_WINDOW_ID, startWebHost, type WebHost, type WebHostEvent, type WebHostOptions, type WebHostStats, type WebRefusal } from "./server.js";
+export { WEB_ACTOR_ID, WEB_WINDOW_ID, isBoundTo, startWebHost, type WebHost, type WebHostEvent, type WebHostOptions, type WebHostStats, type WebRefusal } from "./server.js";
+export { createWebAttestor, type WebAttestor } from "./attestor.js";
 export { CLOSE, type CloseCode } from "./ws-codec.js";

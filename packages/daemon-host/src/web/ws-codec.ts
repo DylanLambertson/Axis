@@ -48,7 +48,9 @@ const MAX_CONTROL = 125;
 export class FrameDecoder {
   readonly #maxPayload: number;
   readonly #utf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
-  #buf: Buffer = Buffer.alloc(0);
+  /** Received bytes not yet consumed, as the chunks arrived; joined only when a whole frame (or a header) is there. */
+  #chunks: Buffer[] = [];
+  #length = 0;
   #done = false;
 
   constructor(maxPayload: number) {
@@ -58,7 +60,7 @@ export class FrameDecoder {
 
   /** Bytes held while waiting for the rest of a frame. */
   get buffered(): number {
-    return this.#buf.length;
+    return this.#length;
   }
 
   /**
@@ -67,7 +69,8 @@ export class FrameDecoder {
    */
   push(chunk: Buffer): InboundFrame[] {
     if (this.#done) return [];
-    this.#buf = this.#buf.length === 0 ? chunk : Buffer.concat([this.#buf, chunk]);
+    this.#chunks.push(chunk);
+    this.#length += chunk.length;
     const out: InboundFrame[] = [];
     try {
       for (;;) {
@@ -75,22 +78,41 @@ export class FrameDecoder {
         if (frame === undefined) break;
         out.push(frame);
         if (frame.kind === "close") {
-          this.#done = true;
-          this.#buf = Buffer.alloc(0);
+          this.#stop();
           break;
         }
       }
     } catch (e) {
-      this.#done = true;
-      this.#buf = Buffer.alloc(0);
+      this.#stop();
       throw e;
     }
     return out;
   }
 
+  #stop(): void {
+    this.#done = true;
+    this.#chunks = [];
+    this.#length = 0;
+  }
+
+  /** The first `n` held bytes as one buffer (joining the chunks once), or undefined while fewer are held. */
+  #head(n: number): Buffer | undefined {
+    if (this.#length < n) return undefined;
+    if ((this.#chunks[0] as Buffer).length < n) this.#chunks = [Buffer.concat(this.#chunks, this.#length)];
+    return this.#chunks[0] as Buffer;
+  }
+
+  /** Remove the first `n` held bytes. */
+  #consume(n: number): void {
+    const all = this.#head(n) as Buffer;
+    const rest = all.subarray(n);
+    this.#chunks = rest.length > 0 ? [rest, ...this.#chunks.slice(1)] : this.#chunks.slice(1);
+    this.#length -= n;
+  }
+
   #next(): InboundFrame | undefined {
-    const b = this.#buf;
-    if (b.length < 2) return undefined;
+    let b = this.#head(2);
+    if (b === undefined) return undefined;
     const b0 = b[0] as number;
     const b1 = b[1] as number;
     const fin = (b0 & 0x80) !== 0;
@@ -105,12 +127,14 @@ export class FrameDecoder {
     let offset = 2;
     let length = len7;
     if (len7 === 126) {
-      if (b.length < 4) return undefined;
+      b = this.#head(4);
+      if (b === undefined) return undefined;
       length = b.readUInt16BE(2);
       offset = 4;
       if (length < 126) throw new WsProtocolError(CLOSE.protocol);
     } else if (len7 === 127) {
-      if (b.length < 10) return undefined;
+      b = this.#head(10);
+      if (b === undefined) return undefined;
       const big = b.readBigUInt64BE(2);
       offset = 10;
       if (big > BigInt(Number.MAX_SAFE_INTEGER)) throw new WsProtocolError(CLOSE.protocol);
@@ -120,11 +144,12 @@ export class FrameDecoder {
     if (control && length > MAX_CONTROL) throw new WsProtocolError(CLOSE.protocol);
     if (length > this.#maxPayload) throw new WsProtocolError(CLOSE.tooBig);
     const total = offset + 4 + length;
-    if (b.length < total) return undefined;
-    const mask = b.subarray(offset, offset + 4);
-    const payload = Buffer.from(b.subarray(offset + 4, total));
+    if (this.#length < total) return undefined;
+    const whole = this.#head(total) as Buffer;
+    const mask = whole.subarray(offset, offset + 4);
+    const payload = Buffer.from(whole.subarray(offset + 4, total));
     for (let i = 0; i < payload.length; i++) payload[i] = (payload[i] as number) ^ (mask[i & 3] as number);
-    this.#buf = b.subarray(total);
+    this.#consume(total);
     switch (opcode) {
       case OP_TEXT: {
         let text: string;

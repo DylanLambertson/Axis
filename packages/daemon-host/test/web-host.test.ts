@@ -4,7 +4,8 @@ import { request } from "node:http";
 import { connect } from "node:net";
 import { test } from "node:test";
 import { AxisError } from "@axis/audit";
-import { CLOSE, startWebHost } from "../src/web/index.js";
+import { CLOSE, createWebAttestor, isBoundTo, startWebHost } from "../src/web/index.js";
+import { createAttestationVerifier } from "../src/index.js";
 import { ChannelMux } from "../src/index.js";
 import { memoryChannelPair } from "../testing/memory-channel.js";
 import { fakeClock } from "./helpers.js";
@@ -12,7 +13,10 @@ import { ORIGIN, clientFrame, closeCodeOf, manualFlow, memoryRig, rawUpgrade, un
 
 /** The web host over a real loopback socket, with the daemon side in memory (`memoryRig`). */
 
-test("web host: an accepted socket gets 101 with axis.v1 only and reaches the daemon with a web attestation the verifier accepts", async () => {
+/** A bound per test (not a speed assertion): a regression that stops a socket must fail the run, not hang it. */
+const T = 60_000;
+
+test("web host: an accepted socket gets 101 with axis.v1 only and reaches the daemon with a web attestation the verifier accepts", { timeout: T }, async () => {
   const rig = await memoryRig();
   try {
     const c = await rawUpgrade(rig.host.address.port, upgradeHeaders(rig.host.address.port, rig.token));
@@ -34,7 +38,7 @@ test("web host: an accepted socket gets 101 with axis.v1 only and reaches the da
   }
 });
 
-test("web host: browser data can never become a control message (it arrives as a frame of its own connection)", async () => {
+test("web host: browser data can never become a control message (it arrives as a frame of its own connection)", { timeout: T }, async () => {
   const rig = await memoryRig();
   try {
     const c = await rawUpgrade(rig.host.address.port, upgradeHeaders(rig.host.address.port, rig.token));
@@ -51,7 +55,7 @@ test("web host: browser data can never become a control message (it arrives as a
   }
 });
 
-test("web host: refused upgrades get a status with no body, open no connection and send no connect", async () => {
+test("web host: refused upgrades get a status with no body, open no connection and send no connect", { timeout: T }, async () => {
   const rig = await memoryRig();
   const { port } = rig.host.address;
   const wrong = `${rig.token[0] === "A" ? "B" : "A"}${rig.token.slice(1)}`;
@@ -95,7 +99,7 @@ test("web host: refused upgrades get a status with no body, open no connection a
   }
 });
 
-test("web host: the token is handed out once", async () => {
+test("web host: the token is handed out once", { timeout: T }, async () => {
   const rig = await memoryRig();
   try {
     assert.throws(() => rig.host.takeToken(), (e: unknown) => e instanceof AxisError && e.code === "E_CONFLICT");
@@ -104,7 +108,7 @@ test("web host: the token is handed out once", async () => {
   }
 });
 
-test("web host: maxClients is enforced before the upgrade and a slot is freed when a session ends", async () => {
+test("web host: maxClients is enforced before the upgrade and a slot is freed when a session ends", { timeout: T }, async () => {
   const rig = await memoryRig({ config: { limits: { maxClients: 1 } } });
   const { port } = rig.host.address;
   try {
@@ -124,7 +128,7 @@ test("web host: maxClients is enforced before the upgrade and a slot is freed wh
   }
 });
 
-test("web host: protocol errors close the one session with a closed code and close its daemon connection", async () => {
+test("web host: protocol errors close the one session with a closed code and close its daemon connection", { timeout: T }, async () => {
   const rig = await memoryRig({ config: { limits: { maxFrameBytes: 1024 } } });
   const { port } = rig.host.address;
   const cases: Array<[string, Buffer, number]> = [
@@ -150,12 +154,12 @@ test("web host: protocol errors close the one session with a closed code and clo
   }
 });
 
-test("web host: an attestation the daemon refuses ends the session", async () => {
+test("web host: an attestation the daemon refuses ends the session", { timeout: T }, async () => {
   const rig = await memoryRig({ key: Buffer.alloc(32, 7) });
   const { port } = rig.host.address;
   try {
     const c = await rawUpgrade(port, upgradeHeaders(port, rig.token));
-    assert.equal(closeCodeOf(await c.next()), CLOSE.normal);
+    assert.equal(closeCodeOf(await c.next()), CLOSE.policy, "a refusal is not a normal end");
     assert.equal(rig.daemon.size, 0);
     await until(() => rig.host.stats().sessions === 0);
   } finally {
@@ -163,7 +167,7 @@ test("web host: an attestation the daemon refuses ends the session", async () =>
   }
 });
 
-test("web host: while the channel backlog is at its bound no session reads; a drain resumes them in order", async () => {
+test("web host: while the channel backlog is at its bound no session reads; a drain resumes them in order", { timeout: T }, async () => {
   const rig = await memoryRig({ config: { limits: { maxChannelBacklog: 2 } } });
   const { port } = rig.host.address;
   try {
@@ -189,7 +193,7 @@ test("web host: while the channel backlog is at its bound no session reads; a dr
   }
 });
 
-test("web host: a browser that does not read is cut off once its unsent bytes pass the bound", async () => {
+test("web host: a browser that does not read is cut off once its unsent bytes pass the bound", { timeout: T }, async () => {
   const rig = await memoryRig({ config: { limits: { maxOutboundBytes: 65_536 } }, echo: false });
   const { port } = rig.host.address;
   try {
@@ -207,7 +211,7 @@ test("web host: a browser that does not read is cut off once its unsent bytes pa
   }
 });
 
-test("web host: the channel closing ends every session with 1001 and later upgrades get 503", async () => {
+test("web host: the channel closing ends every session with 1001 and later upgrades get 503", { timeout: T }, async () => {
   const rig = await memoryRig();
   const { port } = rig.host.address;
   try {
@@ -222,7 +226,7 @@ test("web host: the channel closing ends every session with 1001 and later upgra
   }
 });
 
-test("web host: dispose closes sessions with 1001, stops listening and removes its channel listeners", async () => {
+test("web host: dispose closes sessions with 1001, stops listening and removes its channel listeners", { timeout: T }, async () => {
   const rig = await memoryRig();
   const { port } = rig.host.address;
   const c = await rawUpgrade(port, upgradeHeaders(port, rig.token));
@@ -257,7 +261,7 @@ async function refusedStart(options: Parameters<typeof startWebHost>[0], reason:
   assert.fail(`started a listener; expected ${reason}`);
 }
 
-test("web host: a short key, an unparsed or default config and a non-loopback bind start nothing", async () => {
+test("web host: a short key, an unparsed or default config and a non-loopback bind start nothing", { timeout: T }, async () => {
   const { a } = memoryChannelPair();
   const mux = new ChannelMux(a);
   const base = { mux, flow: manualFlow(), clock: fakeClock(), attestationKey: Buffer.alloc(32, 1) };
@@ -271,7 +275,7 @@ test("web host: a short key, an unparsed or default config and a non-loopback bi
   }
 });
 
-test("web host: a port already in use fails closed with a closed reason", async () => {
+test("web host: a port already in use fails closed with a closed reason", { timeout: T }, async () => {
   const rig = await memoryRig();
   try {
     const { a } = memoryChannelPair();
@@ -283,7 +287,7 @@ test("web host: a port already in use fails closed with a closed reason", async 
   }
 });
 
-test("web host: a peer that resets while the host writes its close frame raises no uncaught error", async () => {
+test("web host: a peer that resets while the host writes its close frame raises no uncaught error", { timeout: T }, async () => {
   const rig = await memoryRig();
   const { port } = rig.host.address;
   const c = await rawUpgrade(port, upgradeHeaders(port, rig.token));
@@ -294,4 +298,70 @@ test("web host: a peer that resets while the host writes its close frame raises 
   await until(() => [...rig.daemon.values()].every((d) => d.closed));
   for (let i = 0; i < 50; i++) await new Promise<void>((r) => setImmediate(r));
   await rig.dispose();
+});
+
+test("web host: frames already read when the backlog fills wait for the drain (one read cannot overrun the bound)", { timeout: T }, async () => {
+  const rig = await memoryRig({ config: { limits: { maxChannelBacklog: 1 } }, echo: false });
+  const { port } = rig.host.address;
+  try {
+    const c = await rawUpgrade(port, upgradeHeaders(port, rig.token));
+    await until(() => rig.daemon.size === 1);
+    const d = [...rig.daemon.values()][0];
+    rig.flow.set(1);
+    const n = 3000;
+    c.send(Buffer.concat(Array.from({ length: n }, (_, i) => clientFrame(1, `{"n":${i}}`))));
+    await until(() => rig.host.stats().paused && (d?.received.length ?? 0) >= 1);
+    await new Promise<void>((resolve) => request({ host: "127.0.0.1", port, path: "/" }, (res) => res.resume().on("end", resolve)).end());
+    assert.equal(d?.received.length, 1, "only the message that filled the backlog went through");
+    rig.flow.drain();
+    await until(() => (d?.received.length ?? 0) === n);
+    assert.deepEqual(d?.received.map((m) => (m as { n: number }).n), Array.from({ length: n }, (_, i) => i), "in order, none lost");
+    c.socket.destroy();
+  } finally {
+    await rig.dispose();
+  }
+});
+
+test("web host: sockets held mid-request cannot lock a client out (the oldest pending socket is evicted)", { timeout: T }, async () => {
+  const rig = await memoryRig();
+  const { port } = rig.host.address;
+  const held = [];
+  try {
+    for (let i = 0; i < 12; i++) {
+      const s = connect({ host: "127.0.0.1", port });
+      s.on("error", () => undefined);
+      await new Promise<void>((r) => s.once("connect", () => r()));
+      s.write("GET /axis/1 HTTP/1.1\r\nHost: x\r\n");
+      held.push(s);
+    }
+    await until(() => rig.host.stats().refused.pending_evicted >= 8);
+    assert.ok(rig.host.stats().pendingSockets <= 4);
+    const c = await rawUpgrade(port, upgradeHeaders(port, rig.token));
+    assert.equal(c.status, 101);
+    c.socket.destroy();
+  } finally {
+    for (const s of held) s.destroy();
+    await rig.dispose();
+  }
+});
+
+test("web attestor: close() zeroes its key copy and later mints refuse; the mint verifies before", () => {
+  const key = Buffer.alloc(32, 5);
+  let copy: Uint8Array = new Uint8Array();
+  const attestor = createWebAttestor(key, fakeClock(), (k) => (copy = new Uint8Array(k)));
+  const verifier = createAttestationVerifier({ key, clock: fakeClock() });
+  assert.equal(verifier.verify(attestor.mint())?.clientKind, "web");
+  attestor.close();
+  assert.ok(copy.length === 32 && copy.every((b) => b === 0), "the copy is zeroed");
+  assert.ok(key.every((b) => b === 5), "the caller's key is untouched");
+  assert.throws(() => attestor.mint(), (e: unknown) => e instanceof AxisError && e.detail["reason"] === "web_stopped");
+  verifier.close();
+});
+
+test("web host: the bind check accepts only the configured literal on a real port", () => {
+  assert.equal(isBoundTo({ address: "127.0.0.1", family: "IPv4", port: 4000 }, "127.0.0.1"), true);
+  for (const b of [null, "/tmp/sock", { address: "0.0.0.0", family: "IPv4", port: 4000 }, { address: "::", family: "IPv6", port: 4000 }, { address: "127.0.0.1", family: "IPv4", port: 0 }]) {
+    assert.equal(isBoundTo(b as never, "127.0.0.1"), false, JSON.stringify(b));
+  }
+  assert.equal(isBoundTo({ address: "127.0.0.1", family: "IPv4", port: 4000 }, "::1"), false);
 });

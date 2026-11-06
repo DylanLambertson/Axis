@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { AxisError } from "@axis/audit";
 import type { Connection } from "@axis/daemon";
-import { CLOSE, FrameDecoder, WsProtocolError, encodeClose, encodePong, encodeText, type CloseCode } from "./ws-codec.js";
+import { CLOSE, FrameDecoder, WsProtocolError, encodeClose, encodePong, encodeText, type CloseCode, type InboundFrame } from "./ws-codec.js";
 
 /**
  * One browser socket after a successful upgrade, relayed onto one virtual connection of the supervisor's mux (ticket
@@ -45,6 +45,10 @@ export class WebSession {
   readonly #decoder: FrameDecoder;
   #closed = false;
   #paused = false;
+  /** The daemon has sent at least one message on this connection. */
+  #answered = false;
+  /** Decoded frames not yet handled because the session paused part-way through a read. */
+  #held: InboundFrame[] = [];
 
   readonly #onData = (chunk: Buffer): void => this.#receive(chunk);
   readonly #onGone = (): void => this.close(CLOSE.goingAway, { graceful: false });
@@ -66,8 +70,9 @@ export class WebSession {
     socket.on("error", this.#onGone);
     socket.on("end", this.#onGone);
     connection.onMessage((m) => this.#toBrowser(m));
-    // On a microtask: when the whole channel closed, the host's channel-close handler (1001) runs first.
-    connection.onClose(() => queueMicrotask(() => this.close(CLOSE.normal)));
+    // On a microtask: when the whole channel closed, the host's channel-close handler (1001) runs first. A daemon that
+    // closes before it sent anything refused the connection (bad attestation, connect limit): 1008, not a normal end.
+    connection.onClose(() => queueMicrotask(() => this.close(this.#answered ? CLOSE.normal : CLOSE.policy)));
     if (paused) this.pause();
     if (head.length > 0) this.#receive(head);
   }
@@ -82,7 +87,9 @@ export class WebSession {
   resume(): void {
     if (this.#closed || !this.#paused) return;
     this.#paused = false;
-    this.#o.socket.resume();
+    this.#drainHeld();
+    // Replaying the held frames may have filled the backlog again; read on only if it did not.
+    if (!this.#closed && !this.#paused) this.#o.socket.resume();
   }
 
   /**
@@ -106,28 +113,34 @@ export class WebSession {
     } catch {
       // The socket is already gone.
     }
+    this.#held = [];
     connection.close();
     this.#o.ended(code);
   }
 
   #receive(chunk: Buffer): void {
     if (this.#closed) return;
-    let frames;
+    let frames: InboundFrame[];
     try {
       frames = this.#decoder.push(chunk);
     } catch (e) {
       this.close(e instanceof WsProtocolError ? e.closeCode : CLOSE.protocol);
       return;
     }
-    for (const f of frames) {
-      if (this.#closed) return;
+    this.#held.push(...frames);
+    this.#drainHeld();
+  }
+
+  /**
+   * Handle decoded frames in order until the session pauses. One socket read can hold thousands of frames, so the pause
+   * must stop this loop too, not only later reads: what is left waits here (at most one read) for `resume()`.
+   */
+  #drainHeld(): void {
+    while (!this.#closed && !this.#paused && this.#held.length > 0) {
+      const f = this.#held.shift() as InboundFrame;
       if (f.kind === "close") return this.close(CLOSE.normal);
-      if (f.kind === "ping") {
-        this.#write(encodePong(f.payload));
-        continue;
-      }
-      if (f.kind === "pong") continue;
-      this.#fromBrowser(f.text);
+      if (f.kind === "ping") this.#write(encodePong(f.payload));
+      else if (f.kind === "text") this.#fromBrowser(f.text);
     }
   }
 
@@ -149,6 +162,7 @@ export class WebSession {
 
   #toBrowser(message: unknown): void {
     if (this.#closed) return;
+    this.#answered = true;
     let text: string;
     try {
       text = JSON.stringify(message);
