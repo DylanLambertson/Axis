@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { test, type TestContext } from "node:test";
 import * as path from "node:path";
 import { DaemonError } from "@axis/daemon";
@@ -108,4 +108,57 @@ test("merged still works when the recorded base holds the commit", { skip }, asy
   r.git(r.repo, "merge", "-q", "--ff-only", tip());
   assert.equal((await user.call(WT, "finalise", { id, outcome: "merged" }, newKey())).ok, true);
   assert.equal(r.journal.getWorkspace(id)?.finaliseOutcome, "merged");
+});
+
+/** What a finished run can do to the shared repository without moving the base branch ref. */
+const forge = {
+  replace(r: Rig, id: string): void {
+    const tip = r.git(r.repo, "rev-parse", "main").trim();
+    r.git(r.repo, "replace", tip, r.git(r.repo, "commit-tree", `${tip}^{tree}`, "-p", r.git(dirOf(r, id), "rev-parse", "HEAD").trim(), "-m", "x").trim());
+  },
+  graft(r: Rig, id: string): void {
+    mkdirSync(path.join(r.repo, ".git", "info"), { recursive: true });
+    writeFileSync(path.join(r.repo, ".git", "info", "grafts"), `${r.git(r.repo, "rev-parse", "main").trim()} ${r.git(dirOf(r, id), "rev-parse", "HEAD").trim()}\n`);
+  },
+  lookalike(r: Rig, id: string): void {
+    r.git(r.repo, "update-ref", "refs/heads/refs/heads/main", r.git(dirOf(r, id), "rev-parse", "HEAD").trim());
+    r.git(r.repo, "update-ref", "-d", "refs/heads/main");
+  },
+};
+
+for (const [name, attack, reason] of [["a replace ref", forge.replace, "not_merged"], ["a graft file", forge.graft, "not_merged"], ["a lookalike ref", forge.lookalike, "no_base_branch"]] as const) {
+  test(`merged: ${name} written by a run cannot make an unmerged workspace look merged (finalise and repair)`, { skip }, async (t) => {
+    const state = { fail: false };
+    const { r, user, id } = await unmerged(t, { failAudit: (e) => state.fail && e.action === "worktree.finalise" && (e.payload as { phase?: string }).phase === "done" });
+    attack(r, id);
+    const res = await user.call(WT, "finalise", { id, outcome: "merged" }, newKey());
+    assert.equal(res.error?.code, "E_CONFLICT", name);
+    assert.deepEqual(res.error?.details, { reason }, name);
+    assert.equal(r.journal.getWorkspace(id)?.state, "READY");
+    // The repair path: git finalised, the journal did not; the same forgery must not be believed there either.
+    state.fail = true;
+    assert.equal((await user.call(WT, "finalise", { id, outcome: "abandoned" }, newKey())).ok, false);
+    state.fail = false;
+    await r.binding.service.reconcile(new AbortController().signal);
+    await assert.rejects(r.binding.service.finalise({ id, outcome: "merged" }, svc), (e: unknown) => e instanceof DaemonError && e.details?.["reason"] === "not_merged");
+    assert.equal(r.journal.getWorkspace(id)?.state, "READY");
+  });
+}
+
+test("merged: a rewritten manager record cannot stand in for a missing journal base", { skip }, async (t) => {
+  const { r, user } = await rig(t);
+  const head = r.git(r.repo, "rev-parse", "HEAD").trim();
+  const { id } = await createWs(user, undefined, { baseRef: head });
+  const file = metaFile(r, id);
+  const meta = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
+  writeFileSync(file, JSON.stringify({ ...meta, baseBranch: "refs/heads/main" }));
+  const res = await user.call(WT, "finalise", { id, outcome: "merged" }, newKey());
+  assert.deepEqual(res.error?.details, { reason: "no_base_branch" });
+});
+
+test("create audits the recorded base branch", { skip }, async (t) => {
+  const { r, user } = await rig(t);
+  const { id } = await createWs(user);
+  const row = r.db.prepare("SELECT payload FROM audit_events WHERE action = 'worktree.create'").get() as { payload: string };
+  assert.equal((JSON.parse(row.payload) as { baseBranch?: string }).baseBranch, r.journal.getWorkspace(id)?.baseBranch);
 });

@@ -9,6 +9,7 @@ import {
   resolveRepo,
   type DiscardConfirmation,
   type GitRunner,
+  verifyMerged,
 } from "@axis/worktrees";
 import type { RandomSource } from "../ports/random.js";
 import type { RunsService } from "../ports/runs.js";
@@ -78,7 +79,6 @@ async function mapped<T>(call: () => Promise<T>): Promise<T> {
   }
 }
 
-const BASE_BRANCH = /^refs\/heads\/[!-~]+$/;
 const REF_NAME = /^[^\s\0-\x1f\x7f-]\S{0,254}$/;
 
 function adapt(manager: WorktreeManager, runner: GitRunner): ManagerShape {
@@ -94,11 +94,7 @@ function adapt(manager: WorktreeManager, runner: GitRunner): ManagerShape {
         return sha;
       }),
     isMerged: (repoPath, headSha, baseBranch) =>
-      mapped(async () => {
-        // Only a full local branch name: `HEAD` and short names depend on state a finished run can write.
-        if (!/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(headSha) || !BASE_BRANCH.test(baseBranch) || baseBranch.includes("..")) return false;
-        return (await git(repoPath, ["merge-base", "--is-ancestor", "--end-of-options", headSha, baseBranch])).code === 0;
-      }),
+      mapped(async () => (await verifyMerged({ cwd: repoPath, run: (args, extraEnv) => runner.run(args, { cwd: repoPath, timeoutMs: 30_000, extraEnv }) }, headSha, baseBranch)) === "merged"),
     listRefs: (repoPath, prefix) =>
       mapped(async () => {
         const out = await git(repoPath, ["for-each-ref", "--format=%(refname)", "--", prefix]);

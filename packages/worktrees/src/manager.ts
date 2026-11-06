@@ -7,6 +7,7 @@ import type { DiscardConfirmation } from './confirmation.js';
 import { createWorkspace, type CreateHost } from './createWorkspace.js';
 import { parseWorktreeList, resolveRepo, type RepoLocation } from './discovery.js';
 import { readDirty, requireDiscardConfirmation, scanDiscard, type DiscardScan } from './discard.js';
+import { verifyMerged } from './mergedCheck.js';
 import { removeWorkspace } from './removeWorkspace.js';
 import { toWorktreeError, WorktreeError } from './errors.js';
 import type { GitRunner } from './git.js';
@@ -136,11 +137,12 @@ export class WorktreeManager {
         const head = await this.git.text(['rev-parse', '--verify', '--end-of-options', 'HEAD'], { cwd: workTree });
         if (input.outcome === 'merged') {
           const target = 'trustedBaseBranch' in input ? input.trustedBaseBranch : meta.baseBranch;
-          if (target !== null && target !== undefined && !/^refs\/heads\/\S+$/.test(target)) throw invalid('invalid base branch');
-          if (!target || !(await this.git.ok(['rev-parse', '--verify', '--quiet', '--end-of-options', target], { cwd: workTree }))) {
+          const verdict = await verifyMerged(
+            { cwd: workTree, run: (args, extraEnv) => this.git.run(args, { cwd: workTree, allowFailure: true, extraEnv }) }, head, target);
+          if (verdict === 'no-base-branch') {
             throw new WorktreeError('E_CONFLICT', 'base branch is unavailable, cannot verify the merge', { reason: 'no-base-branch' });
           }
-          if (!(await this.git.ok(['merge-base', '--is-ancestor', '--end-of-options', head, target], { cwd: workTree }))) {
+          if (verdict !== 'merged') {
             throw new WorktreeError('E_CONFLICT', 'workspace tip is not reachable from the base branch', { reason: 'not-merged', baseBranch: target });
           }
         }
@@ -305,6 +307,7 @@ export class WorktreeManager {
     const counts = await this.git.text(['rev-list', '--left-right', '--count', '--end-of-options', `${meta.baseSha}...HEAD`], { cwd });
     const [behind = 0, ahead = 0] = counts.split(/\s+/).map(Number);
     let baseBranchBehind: number | null = null;
+    // Display only: `meta.baseBranch` is the record a run can write, so this count is never evidence of a merge.
     if (meta.baseBranch && await this.git.ok(['rev-parse', '--verify', '--quiet', '--end-of-options', meta.baseBranch], { cwd })) {
       baseBranchBehind = Number(await this.git.text(['rev-list', '--count', '--end-of-options', `HEAD..${meta.baseBranch}`], { cwd }));
     }

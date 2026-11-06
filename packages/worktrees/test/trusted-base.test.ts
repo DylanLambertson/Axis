@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 
 import assert from 'node:assert/strict';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import { WorktreeError } from '../src/index.js';
@@ -67,5 +67,44 @@ describe('finalise merged is judged against a trusted base branch', () => {
   it('archived does not need a base branch', async () => {
     const ws = await fx.manager.create({ repoPath: fx.repo, slug: 'feat' });
     assert.equal((await fx.manager.finalise({ path: ws.path, outcome: 'archived', trustedBaseBranch: null })).outcome, 'archived');
+  });
+
+  describe('a run that writes the shared repository without moving the base branch', () => {
+    const forgedMerge = async (ws: { path: string }, attack: () => void) => {
+      const main = sh(fx.repo, 'symbolic-ref', 'HEAD').trim();
+      attack();
+      return fx.manager.finalise({ path: ws.path, outcome: 'merged', trustedBaseBranch: main });
+    };
+
+    it('a replace ref on the base tip does not make the workspace look merged', async () => {
+      const ws = await withUnmergedCommit();
+      await assert.rejects(forgedMerge(ws, () => {
+        const tip = sh(fx.repo, 'rev-parse', 'HEAD').trim();
+        const work = sh(ws.path, 'rev-parse', 'HEAD').trim();
+        const fake = sh(fx.repo, 'commit-tree', `${tip}^{tree}`, '-p', work, '-m', 'x').trim();
+        sh(fx.repo, 'replace', tip, fake);
+      }), reason('not-merged'));
+    });
+
+    it('a graft file does not make the workspace look merged, and its presence is a refusal even for a true merge', async () => {
+      const ws = await withUnmergedCommit();
+      await assert.rejects(forgedMerge(ws, () => {
+        const tip = sh(fx.repo, 'rev-parse', 'HEAD').trim();
+        mkdirSync(path.join(fx.repo, '.git', 'info'), { recursive: true });
+        writeFileSync(path.join(fx.repo, '.git', 'info', 'grafts'), `${tip} ${sh(ws.path, 'rev-parse', 'HEAD').trim()}\n`);
+      }), reason('not-merged'));
+      sh(fx.repo, 'merge', '-q', '--ff-only', 'axis/feat');
+      await assert.rejects(fx.manager.finalise({ path: ws.path, outcome: 'merged', trustedBaseBranch: sh(fx.repo, 'symbolic-ref', 'HEAD').trim() }), reason('not-merged'));
+    });
+
+    it('a deleted base plus a lookalike refs/heads/refs/heads/<name> is no base, not a merged one', async () => {
+      const ws = await withUnmergedCommit();
+      await assert.rejects(forgedMerge(ws, () => {
+        const main = sh(fx.repo, 'symbolic-ref', 'HEAD').trim();
+        const work = sh(ws.path, 'rev-parse', 'HEAD').trim();
+        sh(fx.repo, 'update-ref', '-d', main);
+        sh(fx.repo, 'update-ref', `refs/heads/${main}`, work);
+      }), reason('no-base-branch'));
+    });
   });
 });

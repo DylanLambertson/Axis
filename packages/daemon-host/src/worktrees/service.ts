@@ -2,7 +2,7 @@
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
 import type { AuditActor, AuditLog } from "@axis/audit";
-import type { Journal, Workspace } from "@axis/journal";
+import { baseBranchSchema, type Journal, type Workspace } from "@axis/journal";
 import type { RunsService } from "../ports/runs.js";
 import type { RandomSource } from "../ports/random.js";
 import type { WorktreeLocator } from "../ports/worktree-locator.js";
@@ -16,8 +16,6 @@ import type { ProjectMutex } from "./project-mutex.js";
 import { reconcileWorktrees } from "./reconcile.js";
 import type { ManagerShape } from "./shapes.js";
 import { workspaceSlug } from "./slug.js";
-
-const BASE_BRANCH = /^refs\/heads\/[!-~]+$/;
 
 export type ServiceJournal = Pick<
   Journal,
@@ -152,11 +150,12 @@ export function createWorktreesService(deps: WorktreesServiceDeps): WorktreesRun
               return deps.transact(() => {
                 journal.setWorktreePath(id, made.path, actor);
                 // Recorded here, by the daemon, before the workspace is READY: `merged` is later judged against this alone.
-                if (made.baseBranch !== null && BASE_BRANCH.test(made.baseBranch)) journal.recordBaseBranch(id, made.baseBranch, actor);
+                const recorded = made.baseBranch !== null && baseBranchSchema.safeParse(made.baseBranch).success ? made.baseBranch : null;
+                if (recorded !== null) journal.recordBaseBranch(id, recorded, actor);
                 const ws = journal.transitionWorkspace(id, "READY", { actor, expectedFrom: "CREATING" });
                 deps.audit.append({
                   actor, action: "worktree.create", target: `workspace:${id}`, outcome: "success",
-                  payload: { workspaceId: id, projectId: project.id, branch, baseRef, baseSha },
+                  payload: { workspaceId: id, projectId: project.id, branch, baseRef, baseSha, ...(recorded === null ? {} : { baseBranch: recorded }) },
                 });
                 return ws;
               });
