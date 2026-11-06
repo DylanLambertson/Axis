@@ -58,6 +58,8 @@ export interface WebHostStats {
   readonly pendingSockets: number;
   /** Frames decoded but not yet handled because their session is paused (at most one read per session). */
   readonly heldFrames: number;
+  /** Sessions whose socket is being read (0 while the channel backlog is full). */
+  readonly readingSockets: number;
   /** What the listener enforces before an upgrade, as the server reports it. */
   readonly limits: { readonly headersTimeoutMs: number; readonly requestTimeoutMs: number; readonly maxConnections: number };
   readonly opened: number;
@@ -260,6 +262,7 @@ export async function startWebHost(options: WebHostOptions): Promise<WebHost> {
         sessions: sessions.size,
         pendingSockets: pending.size,
         heldFrames: [...sessions].reduce((n, s) => n + s.held, 0),
+        readingSockets: [...sessions].filter((s) => s.reading).length,
         opened,
         paused,
         refused: Object.freeze({ ...refused }),

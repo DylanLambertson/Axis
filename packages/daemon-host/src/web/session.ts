@@ -22,6 +22,7 @@ export interface SessionSocket {
   destroy(): unknown;
   pause(): unknown;
   resume(): unknown;
+  isPaused(): boolean;
   readonly writableLength: number;
   on(event: "data", listener: (chunk: Buffer) => void): unknown;
   on(event: "close" | "error" | "end", listener: () => void): unknown;
@@ -60,6 +61,11 @@ export class WebSession {
 
   get closed(): boolean {
     return this.#closed;
+  }
+
+  /** True while the socket is being read (it must not be while the session is paused). */
+  get reading(): boolean {
+    return !this.#closed && !this.#o.socket.isPaused();
   }
 
   /** Frames decoded but not yet handled (the session paused part-way through a read). */

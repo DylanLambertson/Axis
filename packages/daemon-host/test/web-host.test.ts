@@ -383,6 +383,7 @@ test("web host: when one session's replay refills the backlog, the drain resumes
     const b = await rawUpgrade(port, upgradeHeaders(port, rig.token));
     await until(() => rig.daemon.size === 2);
     const [da, db] = [...rig.daemon.values()];
+    assert.equal(rig.host.stats().readingSockets, 2);
     rig.flow.set(1);
     a.send(Buffer.concat(Array.from({ length: 50 }, (_, i) => clientFrame(1, `{"a":${i}}`))));
     await until(() => rig.host.stats().paused && (da?.received.length ?? 0) === 1);
@@ -393,12 +394,10 @@ test("web host: when one session's replay refills the backlog, the drain resumes
     await new Promise<void>((resolve) => request({ host: "127.0.0.1", port, path: "/" }, (res) => res.resume().on("end", resolve)).end());
     assert.equal(db?.received.length, 0, "b was never resumed");
     assert.equal(da?.received.length, 2);
-    // a's socket stays paused after the re-pause: more data from it is not read into its held frames.
-    const held = rig.host.stats().heldFrames;
-    assert.equal(held, 48);
+    // a's socket stays paused after the re-pause (no socket is read while the backlog is full), so its held frames cannot grow.
+    assert.equal(rig.host.stats().heldFrames, 48);
+    assert.equal(rig.host.stats().readingSockets, 0);
     a.send(Buffer.concat(Array.from({ length: 10 }, (_, i) => clientFrame(1, `{"a":${50 + i}}`))));
-    await new Promise<void>((resolve) => request({ host: "127.0.0.1", port, path: "/" }, (res) => res.resume().on("end", resolve)).end());
-    assert.equal(rig.host.stats().heldFrames, held);
     rig.flow.drain();
     await until(() => da?.received.length === 60 && db?.received.length === 50);
     a.socket.destroy();
