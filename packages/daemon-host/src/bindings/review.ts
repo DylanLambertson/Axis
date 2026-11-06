@@ -5,6 +5,7 @@ import { ReviewBinding, ReviewError, ReviewSession, checkFresh, prepareCommit, t
 import type { GitPort } from "../ports/git.js";
 import { ReviewRefusal, type BuiltTree, type CommitPreparer, type ReviewHandle, type ReviewRound, type ReviewService } from "../ports/review.js";
 import type { WorktreeLocator } from "../ports/worktree-locator.js";
+import { brokerProtectedPaths } from "./review-protected.js";
 
 /**
  * The binding of the review port over `@axis/review` (with `review-tempindex.ts`, the only files that import it, design section 2.1).
@@ -18,6 +19,7 @@ export interface ReviewBindingDeps {
   readonly locator: WorktreeLocator;
   readonly tempIndex: TempIndexProvider;
   readonly fileExists: (absolutePath: string) => Promise<boolean>;
+  /** The WT-3 matcher. Default: the broker's rules (`brokerProtectedPaths`), so no host can run a review that flags nothing by omission. */
   readonly protectedPaths?: ProtectedPathMatcher;
   /** Lower bounds only (tests); never above the wire's. */
   readonly limits?: Partial<ReviewLimits>;
@@ -54,7 +56,7 @@ function reviewDepsOf(deps: ReviewBindingDeps): ReviewDeps {
     git: deps.git,
     tempIndex: deps.tempIndex,
     fileExists: deps.fileExists,
-    ...(deps.protectedPaths === undefined ? {} : { protectedPaths: deps.protectedPaths }),
+    protectedPaths: deps.protectedPaths ?? brokerProtectedPaths,
     limits,
   };
 }
