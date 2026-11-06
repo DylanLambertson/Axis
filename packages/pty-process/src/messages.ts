@@ -12,6 +12,7 @@ export const LIMITS = {
   dimension: 1000,
   writeChars: 65536,
   idChars: 128,
+  ackChars: 16 * 1024 * 1024,
   execStdinChars: 1024 * 1024,
   execOutputBytes: 16 * 1024 * 1024,
   execTimeoutMs: 600_000,
@@ -98,6 +99,8 @@ export const dataRequest = z.discriminatedUnion("t", [
   z.object({ t: z.literal("attach") }).merge(term).strict(),
   z.object({ t: z.literal("write"), data: z.string().max(LIMITS.writeChars) }).merge(term).strict(),
   z.object({ t: z.literal("resize"), cols: dim, rows: dim }).merge(term).strict(),
+  /** Flow control: the renderer has consumed `chars` characters of output. Without acks the pty process pauses the child (see flow.ts). */
+  z.object({ t: z.literal("ack"), chars: z.number().int().min(1).max(LIMITS.ackChars) }).merge(term).strict(),
 ]);
 export type DataRequest = z.infer<typeof dataRequest>;
 
@@ -109,6 +112,8 @@ export const controlReply = z.discriminatedUnion("t", [
   z.object({ t: z.literal("spawn-failed"), req: id, code: z.enum(["env_denied", "bad_group", "capacity", "spawn_failed", "no_control", "bad_bind", "hook_changed"]) }).strict(),
   z.object({ t: z.literal("exit"), term: id, exitCode: z.number().int().nullable(), signal: z.string().max(32).nullable() }).strict(),
   z.object({ t: z.literal("group-empty"), term: id }).strict(),
+  /** Input for this terminal was dropped because the child holds too much unread input (PTY-4). Status only. */
+  z.object({ t: z.literal("input-refused"), term: id }).strict(),
 ]);
 export type ControlReply = z.infer<typeof controlReply>;
 
@@ -131,6 +136,7 @@ export type ExecReply = z.infer<typeof execReply>;
 /** What the pty process may say on a data channel (not validated by the daemon; the renderer owns that end). */
 export type DataReply =
   | { readonly t: "attached"; readonly term: string }
-  | { readonly t: "refused"; readonly term: string | null; readonly code: "foreign_terminal" | "unsupported" | "invalid" }
+  | { readonly t: "refused"; readonly term: string | null; readonly code: "foreign_terminal" | "unsupported" | "invalid" | "input_full" }
   | { readonly t: "data"; readonly term: string; readonly chunk: string }
+  | { readonly t: "overflow"; readonly term: string; readonly chars: number }
   | { readonly t: "exit"; readonly term: string };

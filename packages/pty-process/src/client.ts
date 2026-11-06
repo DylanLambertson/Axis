@@ -120,11 +120,12 @@ export function createPtyProcessPort(options: PtyProcessPortOptions): PtyProcess
       const t = terms.get(m.term);
       if (t !== undefined) settleExit(t, { exitCode: m.exitCode, signal: m.signal });
       prune();
-    } else {
+    } else if (m.t === "group-empty") {
       const t = terms.get(m.term);
       if (t !== undefined) t.jobEmpty = true;
       prune();
     }
+    // Any other reply (`input-refused`, or one a newer pty process adds) says nothing about the group: it must never mark it empty.
   };
 
   function makeHandle(term: string, t: Term): PtyProcessHandle {

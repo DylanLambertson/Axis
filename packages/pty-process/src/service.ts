@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import { classifyDeniedName, isValidName } from "@axis/pty-policy";
 import { createGitExec, type GitExec, type GitExecConfig } from "./git-exec.js";
 import { controlRequest, dataRequest, type ControlReply, type ControlRequest, type DataReply, type ExecReply } from "./messages.js";
+import { DEFAULT_FLOW, OutputFlow, type FlowLimits } from "./flow.js";
 import { probeGroup, signalGroup, validPgid } from "./group.js";
 import { OscCwdFilter } from "./osc.js";
 import { hasNul, isAbsolutePath } from "./paths.js";
@@ -22,6 +23,12 @@ export interface PtyServiceOptions {
   readonly git?: GitExecConfig;
   /** Times each exec. Default: the system clock. */
   readonly clock?: Clock;
+  /** Output flow-control bounds per terminal (characters in flight to the viewer). Default 1 MiB pause, 256 KiB resume, 4 MiB drop. */
+  readonly flow?: FlowLimits;
+  /** Bytes of unconsumed input per terminal and in the whole process before further input is refused (PTY-4). Default 1 MiB and 8 MiB. */
+  readonly input?: Partial<{ terminal: number; process: number; entriesTerminal: number; entriesProcess: number }>;
+  /** Distinct data-connection names served over the life of the service; past this a new name is refused. Default 65536. */
+  readonly maxConnNames?: number;
 }
 
 export interface PtyService {
@@ -39,16 +46,27 @@ export interface PtyService {
 interface Terminal {
   readonly id: string;
   readonly child: PtyChild;
-  readonly filter: OscCwdFilter;
+  filter: OscCwdFilter;
+  readonly flow: OutputFlow;
   readonly subs: Disposable[];
   /** The data connection that may attach (set by `grant`, cleared when that connection closes). */
   granted: string | undefined;
   owner: Channel | undefined;
+  /** The viewer parser may have missed output (a drop, or no viewer): the next chunk starts from a fresh filter and a CAN. */
+  resync: boolean;
+  /** A viewer parser has seen part of this stream and may now have a gap: the next chunk also starts with CAN. */
+  cancel: boolean;
+  /** A viewer has been attached at some point. */
+  seen: boolean;
+  /** Input was refused: every write is refused until the child has taken all it was given. */
+  inputBlocked: boolean;
   exited: boolean;
   groupGone: boolean;
 }
 
 export const DEFAULT_MAX_TERMINALS = 64;
+export const DEFAULT_INPUT_LIMITS = { terminal: 1024 * 1024, process: 8 * 1024 * 1024, entriesTerminal: 1024, entriesProcess: 8192 } as const;
+export const DEFAULT_MAX_CONN_NAMES = 65536;
 
 export function createPtyService(options: PtyServiceOptions): PtyService {
   const ops = options.ops ?? systemProcessOps;
@@ -57,7 +75,9 @@ export function createPtyService(options: PtyServiceOptions): PtyService {
   const terminals = new Map<string, Terminal>();
   const dataChannels = new Map<Channel, string>();
   const platform = options.platform ?? process.platform;
-  const serviceSubs: Disposable[] = [];
+  const usedNames = new Set<string>();
+  const maxNames = options.maxConnNames ?? DEFAULT_MAX_CONN_NAMES;
+  const channelSubs = new Map<Channel, Disposable[]>();
   let control: Channel | undefined;
   let disposed = false;
   // Replies go to whichever control channel is open when the work finishes; after a close they are dropped.
@@ -100,6 +120,50 @@ export function createPtyService(options: PtyServiceOptions): PtyService {
       } else if (!t.groupGone) t.child.kill(signal);
     } catch {
       /* a refused signal leaves the group alive, which stays visible through groupAlive */
+    }
+  };
+
+  const tryChild = (fn: (() => void) | undefined): void => {
+    try {
+      fn?.();
+    } catch {
+      /* a dying child */
+    }
+  };
+  /** The viewer changed or left: nothing is outstanding, so a paused child must run again (its output is dropped without a viewer). */
+  const releaseFlow = (t: Terminal): void => {
+    if (t.flow.reset()) tryChild(t.child.resume?.bind(t.child));
+  };
+
+  const inputLimits = { ...DEFAULT_INPUT_LIMITS, ...options.input };
+  /**
+   * PTY-4: whether the child (or the process as a whole) holds more unconsumed input than allowed. Checked cheapest first, and
+   * every scan is bounded by the entry limits: the terminal's queue by `entriesTerminal`, all queues together by `entriesProcess`.
+   * Unmeasurable counts as full. Once refused, a terminal stays refused until its queue is empty, so the writer notices; a writer that is refused must abandon the rest of that input (a later chunk of the same paste would otherwise splice).
+   */
+  const inputFull = (t: Terminal): boolean => {
+    const block = (): true => (t.inputBlocked = true);
+    try {
+      const entries = t.child.pendingEntries?.();
+      const bytes = (): number | undefined => t.child.pendingWrite?.();
+      if (t.inputBlocked) {
+        if ((entries ?? 0) > 0 || (bytes() ?? 0) > 0) return true;
+        t.inputBlocked = false;
+      }
+      if (entries !== undefined) {
+        if (!(entries <= inputLimits.entriesTerminal)) return block();
+        let totalEntries = 0;
+        for (const x of terminals.values()) totalEntries += x.child.pendingEntries?.() ?? 0;
+        if (!(totalEntries <= inputLimits.entriesProcess)) return block();
+      }
+      const own = bytes();
+      if (own === undefined) return false;
+      if (!(own < inputLimits.terminal)) return block();
+      let total = 0;
+      for (const x of terminals.values()) total += x.child.pendingWrite?.() ?? 0;
+      return total < inputLimits.process ? false : block();
+    } catch {
+      return block();
     }
   };
 
@@ -155,11 +219,24 @@ export function createPtyService(options: PtyServiceOptions): PtyService {
     let idText = "";
     do idText = "pty_" + Buffer.from(rand(16)).toString("hex");
     while (terminals.has(idText));
-    const t: Terminal = { id: idText, child, filter: new OscCwdFilter(), subs: [], granted: undefined, owner: undefined, exited: false, groupGone: false };
+    const t: Terminal = { id: idText, child, filter: new OscCwdFilter(), resync: true, cancel: false, seen: false, inputBlocked: false, flow: new OutputFlow(options.flow ?? DEFAULT_FLOW), subs: [], granted: undefined, owner: undefined, exited: false, groupGone: false };
     terminals.set(t.id, t);
     t.subs.push(
       child.onData((chunk) => {
-        const out = t.filter.push(chunk);
+        // The drop decision comes BEFORE the OSC filter: the filter is only right if the viewer parser sees the same subsequence.
+        if (t.owner === undefined) return void (t.resync = true, t.cancel = t.cancel || t.seen);
+        const verdict = t.flow.offer(chunk.length);
+        if (verdict.pause) tryChild(t.child.pause?.bind(t.child));
+        if (!verdict.send) return void (t.resync = true, t.cancel = true);
+        let out = "";
+        if (t.resync) {
+          t.filter = new OscCwdFilter();
+          t.resync = false;
+          if (t.cancel) out = "\x18"; // CAN: the viewer parser abandons any sequence a missed chunk left open
+          t.cancel = false;
+        }
+        out += t.filter.push(chunk);
+        t.flow.refund(chunk.length - out.length);
         if (out !== "") sendTo(t.owner, { t: "data", term: t.id, chunk: out });
       }),
       child.onExit((exit) => {
@@ -205,14 +282,20 @@ export function createPtyService(options: PtyServiceOptions): PtyService {
     const t = terminals.get(m.term);
     if (t === undefined) return; // already reaped: the group is gone
     if (m.t === "grant") {
-      if (t.owner !== undefined && dataChannels.get(t.owner) !== m.conn) t.owner = undefined; // re-granted to another connection
+      if (t.owner !== undefined && dataChannels.get(t.owner) !== m.conn) {
+        t.owner = undefined; // re-granted to another connection
+        releaseFlow(t);
+      }
       t.granted = m.conn;
       return;
     }
     try {
       if (m.t === "kill") killTerminal(t, m.signal);
       else if (m.t === "resize") t.child.resize(m.cols, m.rows);
-      else if (!t.exited) t.child.write(m.data);
+      else if (!t.exited) {
+        if (inputFull(t)) sendTo(control, { t: "input-refused", term: t.id });
+        else t.child.write(m.data);
+      }
     } catch {
       /* a dying child */
     }
@@ -230,14 +313,29 @@ export function createPtyService(options: PtyServiceOptions): PtyService {
     const refuse = (): void => void sendTo(channel, { t: "refused", term: null, code: "foreign_terminal" });
     if (t === undefined || t.granted === undefined || t.granted !== dataChannels.get(channel)) return refuse();
     if (m.t === "attach") {
+      if (t.owner !== channel) {
+        releaseFlow(t);
+        t.resync = true;
+        t.cancel = t.seen;
+      }
       t.owner = channel;
+      t.seen = true;
       sendTo(channel, { t: "attached", term: t.id });
       return;
     }
     if (t.owner !== channel) return refuse();
+    if (m.t === "ack") {
+      const r = t.flow.ack(m.chars);
+      if (r.resume) tryChild(t.child.resume?.bind(t.child));
+      if (r.overflow > 0) sendTo(channel, { t: "overflow", term: t.id, chars: r.overflow });
+      return;
+    }
     try {
       if (m.t === "resize") t.child.resize(m.cols, m.rows);
-      else if (!t.exited) t.child.write(m.data);
+      else if (!t.exited) {
+        if (inputFull(t)) sendTo(channel, { t: "refused", term: t.id, code: "input_full" });
+        else t.child.write(m.data);
+      }
     } catch {
       /* a dying child */
     }
@@ -246,10 +344,16 @@ export function createPtyService(options: PtyServiceOptions): PtyService {
   const closeChannel = (channel: Channel): void => {
     const conn = dataChannels.get(channel);
     for (const t of terminals.values()) {
-      if (t.owner === channel) t.owner = undefined;
+      if (t.owner === channel) {
+        t.owner = undefined;
+        releaseFlow(t);
+      }
       if (conn !== undefined && t.granted === conn) t.granted = undefined; // the grant dies with the connection: only a new grant lets one attach
     }
     dataChannels.delete(channel);
+    // A closed channel holds nothing: its listeners go, so a port opened and closed per view is not kept for the process lifetime.
+    for (const d of channelSubs.get(channel) ?? []) d.dispose();
+    channelSubs.delete(channel);
     if (control === channel) {
       control = undefined;
       // Nobody can signal these any more and no run row will ever name them: closing the control channel ends every terminal,
@@ -271,11 +375,12 @@ export function createPtyService(options: PtyServiceOptions): PtyService {
       }
       control = channel;
       const subs = [channel.onMessage((m) => onControl(channel, m)), channel.onClose(() => closeChannel(channel))];
-      serviceSubs.push(...subs);
+      channelSubs.set(channel, subs);
       return { dispose: () => void (subs.forEach((s) => s.dispose()), closeChannel(channel)) };
     },
     serveData(channel, conn) {
-      if (disposed || [...dataChannels.values()].includes(conn)) {
+      // A name is served once for the life of the service: a `grant` that lands after its view closed cannot be claimed by a later port.
+      if (disposed || usedNames.has(conn) || usedNames.size >= maxNames) {
         try {
           channel.close();
         } catch {
@@ -283,9 +388,10 @@ export function createPtyService(options: PtyServiceOptions): PtyService {
         }
         return { dispose: () => undefined };
       }
+      usedNames.add(conn);
       dataChannels.set(channel, conn);
       const subs = [channel.onMessage((m) => onData(channel, m)), channel.onClose(() => closeChannel(channel))];
-      serviceSubs.push(...subs);
+      channelSubs.set(channel, subs);
       return { dispose: () => void (subs.forEach((s) => s.dispose()), closeChannel(channel)) };
     },
     dispose() {
@@ -295,8 +401,9 @@ export function createPtyService(options: PtyServiceOptions): PtyService {
       for (const t of terminals.values()) t.subs.forEach((d) => d.dispose());
       git?.closeAll();
       terminals.clear();
-      serviceSubs.forEach((d) => d.dispose());
-      serviceSubs.length = 0;
+      for (const subs of channelSubs.values()) subs.forEach((d) => d.dispose());
+      channelSubs.clear();
+      usedNames.clear();
       for (const ch of [...dataChannels.keys(), ...(control === undefined ? [] : [control])]) {
         try {
           ch.close();
