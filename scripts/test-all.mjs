@@ -37,6 +37,7 @@ for (const dir of readdirSync(packagesDir).sort()) {
   suites.push(run(pkg.name, npm, ["test", "--workspace", pkg.name]));
 }
 suites.push(run("test/packages", process.execPath, ["--test", "test/packages/*.test.mjs"]));
+suites.push(run("test/code-oss/renderer-imports", process.execPath, ["--test", "test/code-oss/renderer-imports.test.mjs"]));
 suites.push(run("test/gate", process.execPath, ["--test", "test/gate/*.test.mjs"]));
 
 console.log("Test summary");

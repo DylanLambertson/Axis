@@ -142,7 +142,7 @@ test("the policy and the coverage check use the SAME surface: a host serving a s
   await started(fix, (_host, s) => {
     assert.deepEqual([...(ready(fix)[0]?.["contracts"] as string[])].sort(), ["axis.audit", "axis.projects"]);
     assert.deepEqual(Object.keys(s.surface.rules).sort(), Object.keys(s.surface.rules).filter((k) => /^axis\.(audit|projects)\//.test(k)).sort());
-    const base = { identity: { actor: "user", windowId: "w1", connectionId: "c".repeat(22), trusted: true, clientKind: "test" }, version: 1, tier: 0 };
+    const base = { identity: { actor: "user", windowId: "w1", connectionId: "c".repeat(22), trusted: true, clientKind: "desktop" }, version: 1, tier: 0 };
     const allow = s.policy.evaluate({ ...base, contract: "axis.projects", method: "list" } as never);
     assert.equal(allow.effect, "allow");
     const deny = s.policy.evaluate({ ...base, contract: "axis.worktrees", method: "list" } as never);
