@@ -11,7 +11,7 @@ import { STAGE_ROOT, checkStagedFile } from "../../scripts/code-oss/stage-verify
 const P = (rel) => `${STAGE_ROOT}/${rel}`;
 const ENTRY = "src/vs/axis/daemon/node/axisDaemonMain.ts";
 const stagedOf = (p) => (p.startsWith(`${STAGE_ROOT}/`) ? p.slice(STAGE_ROOT.length + 1) : null);
-const FILES = ["index.ts", "compose.ts", "compose-parts.ts", "gate/run-trust.ts", "gate/worktrees-confirm.ts", "handlers/git.ts", "handlers/helper.ts"].map((f) => `daemon-host/${f}`);
+const FILES = ["index.ts", "entry.ts", "compose.ts", "compose-parts.ts", "gate/run-trust.ts", "gate/worktrees-confirm.ts", "handlers/git.ts", "handlers/helper.ts"].map((f) => `daemon-host/${f}`);
 const manifest = { zod: null, files: FILES.map((path) => ({ path })) };
 /** A metafile of the given edges (importer -> targets); an importer starting with "src/" is outside the staged tree. */
 const graph = (edges) => {
@@ -89,4 +89,25 @@ test("the staged scan refuses the barrel hop and the discard token minter's othe
   assert.throws(() => checkStagedFile("daemon-host/handlers/git.ts", 'export * from "../index.js";\n', files), /index/);
   checkStagedFile("daemon-host/compose.ts", 'import "./gate/worktrees-confirm.js";\n', files);
   checkStagedFile("daemon-host/index.ts", 'export * from "./compose.js";\n', files);
+});
+
+test("the process entry is a composition point: the overlay may load it and it may load the composition root, no staged file may load it", () => {
+  const REAL = { ...GOOD, [ENTRY]: [D("entry.ts")], [D("entry.ts")]: [D("compose.ts")] };
+  assert.deepEqual(checkMetafile(graph(REAL), manifest), []);
+  assert.deepEqual(minterReachViolations(graph(REAL), stagedOf), []);
+  for (const from of ["handlers/git.ts", "compose-parts.ts", "index.ts"]) {
+    const found = checkMetafile(graph({ ...REAL, [D(from)]: [D("entry.ts")] }), manifest);
+    assert.ok(found.some((v) => v.includes(D("entry.ts"))), `${from}: ${found.join("; ")}`);
+  }
+  const saved = [...RESTRICTED_MODULES];
+  try {
+    RESTRICTED_MODULES.length = 0; // the walk alone
+    const found = minterReachViolations(graph({ ...REAL, [D("handlers/git.ts")]: [D("handlers/helper.ts")], [D("handlers/helper.ts")]: [D("entry.ts")] }), stagedOf);
+    assert.ok(found.some((v) => v.path.join(">").endsWith(`handlers/helper.ts>${D("entry.ts")}`)));
+  } finally {
+    RESTRICTED_MODULES.splice(0, RESTRICTED_MODULES.length, ...saved);
+  }
+  const files = new Set(FILES);
+  assert.throws(() => checkStagedFile("daemon-host/handlers/git.ts", 'import "../entry.js";\n', files), /entry/);
+  checkStagedFile("daemon-host/entry.ts", 'import { composeDaemonHost } from "./compose.js";\n', files);
 });

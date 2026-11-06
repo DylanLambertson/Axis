@@ -30,6 +30,8 @@ import { MANIFEST_NAME, STAGE_ROOT, verifyStaged } from "./stage-verify.mjs";
 import { readFileSync } from "node:fs";
 
 export const DEFAULT_ENTRY = "src/vs/axis/daemon/node/axisDaemonMain.ts";
+/** The Electron main side: it reaches the staged supervisor (and so the control message schemas), never the host. Checked with the daemon entry. */
+export const SEAM_ENTRY = "src/vs/axis/code/electron-main/axisMainSeam.ts";
 const PREFIX = `${STAGE_ROOT}/`;
 
 const versionPattern = (v) => {
