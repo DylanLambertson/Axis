@@ -1,12 +1,12 @@
 # Product vision v2: the agent home
 
 - **Status:** Proposed (planning only). Nothing here changes `docs/ROADMAP.md`, `docs/PRODUCT.md`, `docs/UX.md` or an ADR. Proposed edits to those files are collected in §6 and need the owner's approval before they are applied.
-- **Date:** 2026-11-05. Verified against `origin/main` at `74cd12e`.
+- **Date:** 2026-11-06 (owner direction of 2026-11-06). Verified against `origin/main` at `74cd12e`.
 - **Decision owner:** Dylan Lambertson.
 - **Companion files:** `docs/design/inter-agent-communication.md` (messaging between agents), `docs/design/extensibility.md` (plugins, pages, tasks, integrations), `docs/design/product-vision-v2-tickets.md` (ticket breakdown and ADR list).
 - **Evidence tags:** **[V]** verified on `origin/main` or on the named branch at the stated commit; **[B]** exists only on an unmerged branch or open PR; **[I]** inferred or uncertain; **[N]** new, nothing exists.
 
-## 1. The owner's direction (2026-11-05)
+## 1. The owner's direction (2026-11-06)
 
 Restated from the owner's words, item by item:
 
@@ -50,10 +50,10 @@ Recommended default: keep "Space" in documents and UI. If the owner prefers "wor
 | # | Ask | Exists on main [V] | In flight [B] | New [N] | Proposed phase |
 |---|---|---|---|---|---|
 | 1 | Make projects | `projects` table (J1, #59); `axis.projects/1` contract (#44) and its `list` handler over the real host (H12, #445); registration through the supervisor control channel, main only (`daemon-host-plan.md` §3 Q4, still open); shell dashboard from read-only discovery (A1, #429) | none for this row (the daemon utility process entry and main seam, X1, merged in #454 after this plan was drafted) | "New project" flow (pick a local repository; clone from URL later), project settings, project archive | 1a for registration (already required); UI flow in 1c |
-| 2 | Make agents inside projects | Runs, not agents: `@axis/runs` CLI supervisor (#39), `axis.cli-runs/1` handlers (H10, #430), user-scope `axis.cliAgents` launch entries (`@axis/pty-policy`, #19); `agent_runs.kind` `composer`/`cli` | composer runtime C1, `axis.runs/1` on the mock provider (branch `feat/composer-runtime`, not merged) | `agents` record (name, type, launch config, home workspace, group), `axis.agents/1` contract, agent create = workspace create + record | 1c |
+| 2 | Make agents inside projects | Runs, not agents: `@axis/runs` CLI supervisor (#39), `axis.cli-runs/1` handlers (H10, #430), user-scope `axis.cliAgents` launch entries (`@axis/pty-policy`, #19); `agent_runs.kind` `composer`/`cli` | composer runtime C1, `axis.runs/1` on the mock provider (PR #458, open) | `agents` record (name, type, launch config, home workspace, group), `axis.agents/1` contract, agent create = workspace create + record | 1c |
 | 3 | Group agents | nothing | nothing | `agent_groups` record and contract; groups as folders in the side panel and as a messaging scope | 1c |
-| 4 | Agents talk to each other, any type | nothing; relevant controls exist: user-only resolve (`@axis/challenge`, #21), digest-bound single-use consume (APR-1), audit chain (`@axis/audit`, #26), secret scanner (`@axis/secret-scan`, H9-scan, #425) | server events E1 (branch `feat/events-e1`); pty process B9 (branch `feat/pty-process`); composer C1 | daemon-mediated message service, composer tools, a CLI endpoint; see `inter-agent-communication.md` | 2a |
-| 5 | Codebase on the side, editable | workspace view with a Files tree (`ExplorerView` subclass) and terminals (A1, #429) [V]; the full editor in IDE view | Changes view (shell task A5) | a side panel with an Agents tab and a Code tab holding an embedded editor that shares text models with IDE view | 1c |
+| 4 | Agents talk to each other, any type | nothing; relevant controls exist: user-only resolve (`@axis/challenge`, #21), digest-bound single-use consume (APR-1), audit chain (`@axis/audit`, #26), secret scanner (`@axis/secret-scan`, H9-scan, #425) | server events E1 (PR #457, open); pty process B9 (branch `feat/pty-process`, no PR yet); composer C1 | daemon-mediated message service, composer tools, a CLI endpoint; see `inter-agent-communication.md` | 2a |
+| 5 | Codebase on the side, editable | workspace view with a Files tree (`ExplorerView` subclass) and terminals (A1, #429) [V]; the full editor in IDE view | none: the Changes view (shell task A5) is planned but unbuilt, with no branch | a side panel with an Agents tab and a Code tab holding an embedded editor that shares text models with IDE view | 1c |
 | 6 | Agent view shows what each agent is doing | dashboard rows (A1); CLI run status from process and terminal (`axis.cli-runs/1.get/list`) | composer activity as a polled `axis.runs/1.events` stream (C1); push events E1 | a multi-agent surface (one lane per agent with state, current step, waiting reason, changes) | data in 1a/1b; surface in 1c |
 | 7 | Project dashboard: PRs, usage, run status, tasks | "open a pull request" through the user's `gh` or the compare URL (`axis.git/1.compareUrl`, H9, #431); per-run token and cost budget `createRunBudget` (`@axis/providers`, #24); no PR listing; no usage persistence | composer usage in memory only (C1); usage columns are journal ticket J2 (`composer-runtime.md` §5) | project home part; PR list read through the user's `gh`; usage aggregation; attention summary | 1c (tasks section when tasks exist, 2a) |
 | 8 | Pages | nothing; `PRODUCT.md` §6 "native project documents" is unscheduled ("long-term" in `ROADMAP.md`) | nothing | project pages (Markdown first), rendered without script; see `extensibility.md` §5 | 2a |
@@ -152,7 +152,7 @@ A project-level navigation (in the side panel above the tabs, or as a rail; deci
 
 - **Agent entity and groups (1c):** small in the daemon (a table, a contract, handlers; patterns exist), medium in the shell. Risk: low for security if groups stay non-security scopes.
 - **Project home dashboard:** medium. The PR section runs a user binary and parses its output: a new untrusted-input path that needs review. Usage for CLI agents will stay "not available"; the owner should expect that.
-- **Side-panel editor:** **high uncertainty.** Embedding the editor widget in an Axis part outside the upstream editor part, with shared models, focus routing and the ADR 0002 criterion 2 budget (at most 12 upstream files, 300 lines), is unproven. A spike is the first ticket (V0). Fallback: the Code tab opens files in a split IDE half instead of an embedded editor.
+- **Side-panel editor:** **high uncertainty.** Embedding the editor widget in an Axis part outside the upstream editor part, with shared models, focus routing and the ADR 0002 criterion 2 budget (at most 12 upstream files, 300 lines), is unproven. A spike is the first ticket (PV-V0). Fallback: the Code tab opens files in a split IDE half instead of an embedded editor.
 - **Inter-agent messaging:** **high risk, large.** It creates a new path by which untrusted text from one agent reaches another agent's model or a CLI with the user's credentials. Composer-to-composer is buildable on existing controls; CLI participation needs a new local endpoint and an amendment to PTY-5. Estimate: several large tickets plus a threat-model revision.
 - **Plugins and integrations:** **largest risk.** Code-running plugins have no containment until the Phase 3 OS sandbox; v1 plugins should be declarative plus sandboxed UI only (`extensibility.md` §3.2).
 - **Pages and tasks:** medium, low-to-medium risk if rendering stays script-free and task text is treated as untrusted when it becomes a prompt.
@@ -165,7 +165,7 @@ Gates 0, 1a and 1b are **not changed**. The proposal inserts one phase and split
 | Phase | Contents | Status |
 |---|---|---|
 | 0, 1a, 1b | as in `ROADMAP.md` | unchanged |
-| **1c — Agent home (new)** | agent entity and groups; project home dashboard v1 (attention, agents, PRs via `gh`, usage after J2, run status); All-agents surface; side panel with Agents and Code tabs and the embedded editor (after the V0 spike); E1 server events in the UI | proposed |
+| **1c — Agent home (new)** | agent entity and groups; project home dashboard v1 (attention, agents, PRs via `gh`, usage after J2, run status); All-agents surface; side panel with Agents and Code tabs and the embedded editor (after the PV-V0 spike); E1 server events in the UI | proposed |
 | **2a — Agent collaboration (new split)** | inter-agent messaging (composer and user first, then CLI through the endpoint); tasks v1; pages v1 (Markdown); dashboard Tasks and Pages sections | proposed |
 | **2b — IDE-view AI** | today's Phase 2 contents unchanged (inline edit, context attachments, switcher, checkpoints, browser skeleton) | renamed only |
 | 3 | unchanged; the planner DAG builds on 2a tasks and messages; OS sandbox | unchanged contents |
@@ -204,16 +204,19 @@ Order rationale: 1c needs only shipped 1a/1b services plus E1. Messaging needs t
 | O-5 | PR data source | The user's `gh`, read-only, no stored token; a GitHub integration with a vault token only in 4a, and only if the owner reverses ADR 0004 decision 9's engineering addition "Axis stores no forge credentials" (`extensibility.md` D-9) |
 | O-6 | Plugins before Phase 3 | Declarative and sandboxed-UI plugins may move to 2a if wanted; code-running plugins only after the OS sandbox |
 | O-7 | Insert Phase 1c and split 2 and 4 (§5) | Yes |
-| O-8 | Side-panel editor scope | Quick edits only (§3.5 rule 4); fall back to the IDE split half if the V0 spike exceeds the footprint budget |
+| O-8 | Side-panel editor scope | Quick edits only (§3.5 rule 4); fall back to the IDE split half if the PV-V0 spike exceeds the footprint budget |
 
 ## 8. Impact on the UI mockups
 
 Screens to add to the design directions work. Each needs dark and light variants, keyboard focus order and the empty state; none uses sample metrics.
 
-1. **Project home dashboard:** needs-attention block, agents table grouped by group, PR table (with the "no `gh`" and "other forge" states), usage rows per agent with budget bars as text plus a thin bar (CLI rows say "not available"), run status, tasks and pages sections (2a).
-2. **Agent groups:** side-panel Agents tab with groups, drag to reorder, New agent and New group dialogs, the agent type picker (composer: connection and model; CLI: an `axis.cliAgents` entry, with the "governed by its own permissions, can push" disclosure), bulk actions.
-3. **All-agents surface:** one lane per agent with state, current step, waiting reason and changes; density at 5, 20 and 50 agents.
-4. **Inter-agent thread view:** sender and recipients with type badges (user, composer, CLI, plugin), provenance labels, the "untrusted content" marker, refused-message notices, hop and rate-limit notices, per-agent mute, the project **Pause messaging** kill switch; an approval card next to a thread must look unlike any message.
-5. **Side panel with editable code:** Agents and Code tabs; file tree, Changes list, embedded editor with dirty state, "Open in IDE", Restricted Mode read-only state, local-checkout switch; behaviour in split mode.
-6. **Navigation for pages, plugins, tasks and integrations:** the project nav; pages list and a page (Markdown, no script); task list and task detail with "assign to agent" (shows the full prompt that will be sent); plugin install dialog (publisher, hash, signature state, permissions, network origins) and permission-increase dialog on update; integration connect flow (system browser), connected-integration health and revoke.
-7. **Settings:** per-agent messaging (accept from: none, group, project), per-project messaging pause, retention.
+1. **Space and project switcher:** the Space-level list of projects (name, repository, agents running, needs-attention count), the top-bar project switcher open and closed, and the empty Space (no project yet).
+2. **New project flow:** pick a local repository folder (clone from URL is later), the trust question for an untrusted repository (Restricted Mode, "Trust to run"), the worktree location notice (outside the repository, under the app data directory), refusal states (folder is not a repository, already registered, inside another registered repository), and landing on the new project's empty home.
+3. **Project home dashboard:** needs-attention block, agents table grouped by group, PR table (with the "no `gh`" and "other forge" states), usage rows per agent with budget bars as text plus a thin bar (CLI rows say "not available"), run status, tasks and pages sections (2a).
+4. **Agent groups:** side-panel Agents tab with groups, drag to reorder, New agent and New group dialogs, the agent type picker (composer: connection and model; CLI: an `axis.cliAgents` entry, with the "governed by its own permissions, can push" disclosure), bulk actions.
+5. **All-agents surface:** one lane per agent with state, current step, waiting reason and changes; density at 5, 20 and 50 agents.
+6. **Focused agent view (main area):** the single-agent surface: header (name, type, group, branch, state, budget remaining), the activity stream with the composer docked below (composer agents) or the terminal panes with the "governed by its own permissions, can push" label (CLI agents), inline approval cards, diff review with accept and reject per file and hunk, Commit, Push branch and Open pull request, the drift and Git-config flags, and the agent's message threads in the right rail; states: running, waiting for approval, quiet (may be waiting for input), failed with reason, done.
+7. **Inter-agent thread view:** sender and recipients with type badges (user, composer, CLI, plugin), provenance labels, the "untrusted content" marker, refused-message notices, hop and rate-limit notices, per-agent mute, the project **Pause messaging** kill switch; an approval card next to a thread must look unlike any message.
+8. **Side panel with editable code:** Agents and Code tabs; file tree, Changes list, embedded editor with dirty state, "Open in IDE", Restricted Mode read-only state, local-checkout switch; behaviour in split mode.
+9. **Navigation for pages, plugins, tasks and integrations:** the project nav; pages list and a page (Markdown, no script); task list and task detail with "assign to agent" (shows the full prompt that will be sent); plugin install dialog (publisher, hash, signature state, permissions, network origins) and permission-increase dialog on update; integration connect flow (system browser), connected-integration health and revoke.
+10. **Settings:** per-agent messaging (accept from: none, group, project), per-project messaging pause, retention.

@@ -1,7 +1,7 @@
 # Extensibility: plugins, pages, tasks and third-party integrations
 
 - **Status:** Proposed (design only; nothing is built). Proposed phases: pages and tasks 2a, plugins and integrations 4a (`product-vision-v2.md` §5).
-- **Date:** 2026-11-05. Verified against `origin/main` at `74cd12e`.
+- **Date:** 2026-11-06 (owner direction of 2026-11-06). Verified against `origin/main` at `74cd12e`.
 - **Depends on:** ADR 0003 (bridge, policy pipeline, principals, D4, D5), ADR 0004, `docs/security/threat-model-phase1.md` (EXT-1, EXT-3, EXT-4, PRV-1, PRV-2, PRV-4, PRV-5, ANT-1, ANT-2, EL-5, NET-1), `docs/feasibility/extension-compatibility.md`, `docs/PROVIDERS.md`, `inter-agent-communication.md`.
 - **Evidence tags:** as in `product-vision-v2.md`.
 
@@ -18,11 +18,11 @@
 ## 2. What exists and was already decided
 
 - **Code OSS extensions are fully trusted** and run with the user's privileges; the Axis policy engine does not defend against a malicious extension (EXT-1) [V, threat model §4.6].
-- **Registry:** public open-vsx.org in Phases 0 and 1 (owner decision Q-7) [V]. The Microsoft Marketplace is excluded (`licensing-and-marketplace.md`).
+- **Registry:** public open-vsx.org in Phases 0 and 1 (owner decision Q-7) [V]. The proprietary marketplace is excluded (`licensing-and-marketplace.md`).
 - **Signatures:** behaviour of Open VSX signature verification at the pin is **unknown and suspected inverted** (signed blocked, unsigned accepted); the signed, unsigned and tampered install test is an **open** 1a gate line (EXT-3, 1a/L22) [V]. The curated test set is pinned by SHA-256 and does not verify `.sigzip` signatures (`extension-compatibility.md` §4 item 7, decision D4) [V].
 - **Updates:** `extensions.autoUpdate` off and `extensions.autoCheckUpdates` false, application scope (M3 Stage 1b, #68) [V].
 - **Credentials:** the connection vault `@axis/vault` (#31) with the PRV-1 rule (consent or refusal on Linux `basic_text`); plaintext only in the daemon (PRV-2); credentials never go through `SecretStorage` (EXT-4) [V for the package; wiring is composer ticket C6, not built].
-- **Outbound HTTP pattern:** the Anthropic adapter (ANT-1): fixed `https` origin, redirects refused, byte and depth caps, timeouts, error text never echoing the key [V, `@axis/anthropic`].
+- **Outbound HTTP pattern:** the provider adapter (ANT-1): fixed `https` origin, redirects refused, byte and depth caps, timeouts, error text never echoing the key [V, the provider adapter package from #31].
 - **No listener:** a desktop run has no loopback listener (NET-1, 1a gate line) [V as a gate line].
 - **Phase 4 today:** MCP, provider SDK, "plugin contract tests" gate item (`ROADMAP.md`) [V].
 
@@ -177,7 +177,7 @@ Issue bodies, PR comments, chat messages and monitoring alerts are attacker-reac
 | D-5 | Page storage | Axis data directory per project, with Export to repository |
 | D-6 | Page format | Markdown subset only in v1 |
 | D-7 | OAuth redirect | Device-code flow; one-shot loopback listener as a recorded NET-1 exception only when a service lacks it |
-| D-8 | First integration | GitHub read-only through the user's `gh` (no token) for the 1c dashboard; a token-based GitHub integration only if D-9 changes |
+| D-8 | First integration | GitHub read-only through the user's `gh` (no token) for the 1c dashboard (ticket PV-D2); a token-based GitHub integration (ticket PV-N3) is built only if D-9 is reversed |
 | D-9 | Reverse "Axis stores no forge credentials" (ADR 0004 decision 9 engineering addition) | Keep it until 4a; then allow a vault-held, read-only, fine-grained token behind the credential proxy |
 | D-10 | Integrations that write (comment on a PR, move an issue) | Each write operation is a separate permission and a tier-3 challenge |
 | D-11 | Inbound webhooks | Not on desktop; polling only |
