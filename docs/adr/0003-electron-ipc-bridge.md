@@ -113,7 +113,7 @@ sequenceDiagram
   D-->>R: welcome {selected versions, limits}
 ```
 
-1. Main forks the daemon at startup with a **fixed** entry point, through upstream `utilityProcess` support (`src/vs/platform/utilityProcess/electron-main/utilityProcess.ts`) [V].
+1. Main forks the daemon at startup with a **fixed** entry point, through upstream `utilityProcess` support (`src/vs/platform/utilityProcess/electron-main/utilityProcess.ts`) [V]. *As built (X1):* the seam calls Electron's `utilityProcess.fork` directly, because the `UtilityProcess` class injects `VSCODE_*` variables and the `bootstrap-fork` entry; see `docs/design/daemon-host-entry.md`.
    - It is **never** launched through the renderer-reachable `UtilityProcessWorker` channel, whose `moduleId` the renderer chooses (`app.ts:1532`) [V].
    - The daemon opens **no listening socket or port** in Phases 1–3 (threat model DMN-4).
 2. The handshake channel is `vscode:axisConnect` / `vscode:axisConnectResult`. The `vscode:` prefix passes upstream validation with no patch. The renderer uses upstream `acquirePort`, which sends only the nonce (`src/vs/base/parts/ipc/electron-browser/ipc.mp.ts:51`) [V]. Protocol versions and contract lists are negotiated in the first message on the port (`hello`/`welcome`), not in the handshake.
