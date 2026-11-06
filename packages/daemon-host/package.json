@@ -20,6 +20,7 @@
   },
   "dependencies": {
     "@axis/audit": "0.0.0",
+    "@axis/broker": "0.0.0",
     "@axis/challenge": "0.0.0",
     "@axis/daemon": "0.0.0",
     "@axis/git-ops": "0.0.0",

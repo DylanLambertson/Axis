@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 import { newKey, type Client } from "./approvals-rig.js";
 import { START, runsRig, until, type RunsRig } from "./runs-rig.js";
-import { createWs as createWsRaw, gitSkipReason } from "./worktrees-rig.js";
+import { finaliseApproved, createWs as createWsRaw, gitSkipReason } from "./worktrees-rig.js";
 
 const skip = gitSkipReason();
 const create = async (user: Client, name?: string): Promise<string> => (await createWsRaw(user, (_m, x) => (assert.equal(x.ok, true, JSON.stringify(x.error)), x), name)).id;
@@ -34,7 +34,7 @@ test("a finished run whose process group is still alive keeps the workspace acti
   const { handle } = await finishedRunWithGroup(r, user, id);
   assert.equal(handle.groupUp, true);
   assert.equal(r.runs.service.hasActiveRun(id), true, "the supervisor's own view is empty, the group is not");
-  const fin = await user.call("axis.worktrees", "finalise", { id, outcome: "archived" }, newKey());
+  const fin = await finaliseApproved(r, user, id, "archived");
   assert.equal(fin.error?.code, "E_CONFLICT");
   assert.equal(fin.error?.details?.["reason"], "active_run");
   assert.equal(r.journal.getWorkspace(id)?.state, "READY", "nothing was changed");
@@ -45,7 +45,7 @@ test("a finished run whose process group is still alive keeps the workspace acti
 
   handle.groupUp = false; // the last process of the group is gone
   assert.equal(r.runs.service.hasActiveRun(id), false);
-  const done = await user.call("axis.worktrees", "finalise", { id, outcome: "archived" }, newKey());
+  const done = await finaliseApproved(r, user, id, "archived");
   assert.equal(done.ok, true, JSON.stringify(done.error));
 });
 
@@ -56,7 +56,7 @@ test("a handle that cannot say whether its group is gone counts as alive", { ski
   handle.groupUp = false;
   handle.groupThrows = true;
   assert.equal(r.runs.service.hasActiveRun(id), true);
-  const fin = await user.call("axis.worktrees", "finalise", { id, outcome: "archived" }, newKey());
+  const fin = await finaliseApproved(r, user, id, "archived");
   assert.equal(fin.error?.details?.["reason"], "active_run");
   handle.groupThrows = false;
   // A probe that answers with anything but `false` (nothing, a string, a number) is not "gone".
