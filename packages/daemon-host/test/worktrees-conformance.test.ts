@@ -5,7 +5,7 @@ import { test, type TestContext } from "node:test";
 import * as path from "node:path";
 import { worktreesMethods, type WorktreesMethod } from "@axis/protocol";
 import { newKey, type Client, type Msg } from "./approvals-rig.js";
-import { createWs as createWsRaw, gitSkipReason, worktreesRig, type Rig } from "./worktrees-rig.js";
+import { finaliseApproved, createWs as createWsRaw, gitSkipReason, worktreesRig, type Rig } from "./worktrees-rig.js";
 
 const skip = gitSkipReason();
 const WT = "axis.worktrees";
@@ -111,18 +111,22 @@ test("finalise: archives, journal FINALISED with its outcome and audit; again is
   const { id } = await createWs(user);
   const ws = r.journal.getWorkspace(id);
   writeFileSync(path.join(String(ws?.worktreePath), "a.txt"), "dirty\n");
+  // Tier 4: a dirty workspace is not finalised by the plain call; it is a challenge with a native dialog and changes nothing.
   const dirty = await user.call(WT, "finalise", { id, outcome: "archived" }, newKey());
-  assert.equal(dirty.error?.code, "E_CONFLICT");
+  assert.equal(dirty.error?.code, "E_APPROVAL_REQUIRED");
+  const pending = (dirty.error?.details as { challenge: { challengeId: string; digest: string; nativeConfirmationRequired: boolean } }).challenge;
+  assert.equal(pending.nativeConfirmationRequired, true);
+  assert.equal((await user.call("axis.approvals", "resolve", { challengeId: pending.challengeId, decision: "deny", digest: pending.digest })).ok, true);
   assert.equal(r.journal.getWorkspace(id)?.state, "READY", "a refused finalise changes nothing");
   assert.equal(r.journal.getWorkspace(id)?.lockState, "unlocked");
   r.git(String(ws?.worktreePath), "checkout", "--", "a.txt");
-  const ok = conforms("finalise", await user.call(WT, "finalise", { id, outcome: "archived" }, newKey()));
+  const ok = conforms("finalise", await finaliseApproved(r, user, id, "archived"));
   assert.equal((ok.result as { archiveRef: string }).archiveRef, `refs/axis/archive/${id}`);
   const after = r.journal.getWorkspace(id);
   assert.equal(after?.state, "FINALISED");
   assert.equal(after?.finaliseOutcome, "archived");
   assert.ok(r.db.prepare("SELECT 1 FROM audit_events WHERE action = 'worktree.finalise'").get());
-  assert.equal((await user.call(WT, "finalise", { id, outcome: "archived" }, newKey())).error?.code, "E_CONFLICT");
+  assert.equal((await finaliseApproved(r, user, id, "archived")).error?.code, "E_CONFLICT");
   assert.equal(readFileSync(path.join(String(ws?.worktreePath), "a.txt"), "utf8"), "alpha\n");
 });
 
@@ -130,14 +134,14 @@ test("finalise: refused while a run is active, and while the journal has an unfi
   const { r, user } = await setup(t);
   const { id } = await createWs(user);
   r.active.add(id);
-  const a = await user.call(WT, "finalise", { id, outcome: "archived" }, newKey());
+  const a = await finaliseApproved(r, user, id, "archived");
   assert.equal(a.error?.code, "E_CONFLICT");
   assert.deepEqual(a.error?.details, { reason: "active_run" });
   r.active.clear();
   const run = r.journal.createRun({ workspaceId: id, kind: "cli", createdBy: "user" }).value;
-  assert.equal((await user.call(WT, "finalise", { id, outcome: "archived" }, newKey())).error?.details?.["reason"], "active_run");
+  assert.equal((await finaliseApproved(r, user, id, "archived")).error?.details?.["reason"], "active_run");
   r.journal.transitionRun(run.id, "CANCELLED", { actor: "user" });
-  conforms("finalise", await user.call(WT, "finalise", { id, outcome: "archived" }, newKey()));
+  conforms("finalise", await finaliseApproved(r, user, id, "archived"));
 });
 
 test("restoreFromRunBase: restores a file from the run base, one backup, and only for a run of this workspace", { skip }, async (t) => {

@@ -6,7 +6,7 @@ import * as path from "node:path";
 import { DaemonError } from "@axis/daemon";
 import { newKey, challengeOf, type Client } from "./approvals-rig.js";
 import { approve4, waitFor } from "./approvals-helpers.js";
-import { createWs as createWsRaw, finishedRun, gitSkipReason, worktreesRig, type Rig, type RigOptions } from "./worktrees-rig.js";
+import { finaliseApproved, createWs as createWsRaw, finishedRun, gitSkipReason, worktreesRig, type Rig, type RigOptions } from "./worktrees-rig.js";
 
 const skip = gitSkipReason();
 const posix = process.platform === "win32" ? "symlinks" : undefined;
@@ -113,7 +113,7 @@ test("hooks: only the user's own connection sees a workspace; the re-check under
   t.after(() => r.cleanup());
   const user = await r.connect();
   const { id } = await createWs(user);
-  assert.equal((await user.call(WT, "finalise", { id, outcome: "archived" }, newKey())).ok, true);
+  assert.equal((await finaliseApproved(r, user, id, "archived")).ok, true);
   const agentCtx = { identity: { connectionId: "c", windowId: "w", actorId: "a", actor: "agent:x", trusted: true, clientKind: "desktop" }, requestId: "q", correlationId: "c", signal: live };
   const hook = r.binding.content.remove as unknown as (c: unknown, p: unknown) => unknown;
   assert.throws(() => hook(agentCtx, { id }), (e: unknown) => e instanceof DaemonError && e.code === "E_NOT_FOUND" && e.message === "The workspace or item was not found.");
@@ -141,7 +141,7 @@ test("hook re-check under the lock: a workspace flagged while the call waits for
   t.after(() => r.cleanup());
   const user = await r.connect();
   const { id } = await createWs(user);
-  assert.equal((await user.call(WT, "finalise", { id, outcome: "archived" }, newKey())).ok, true);
+  assert.equal((await finaliseApproved(r, user, id, "archived")).ok, true);
   const first = await user.call(WT, "remove", { id }, newKey());
   const c = challengeOf(first);
   await waitFor(() => r.nativeConfirms().length > 0);

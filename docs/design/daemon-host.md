@@ -50,7 +50,7 @@ flowchart LR
 
 | May import | Only where | Never |
 |---|---|---|
-| `node:*`, `zod` 4.6.6 | anywhere | `electron`, `vs/*`, DOM, a socket listener (ADR 0003 D1.1, DMN-4) |
+| `node:*`, `zod` 4.6.6 | anywhere | `electron`, `vs/*`, DOM, a socket listener (ADR 0003 D1.1, DMN-4). The one exception is the supervisor-side web host, `src/web/server.ts`, which no desktop entry can reach (`docs/design/web-host-entry.md`) |
 | `@axis/protocol`, `daemon`, `challenge`, `audit`, `journal`, `git-ops`, `pty-policy`, `providers` | anywhere | |
 | `@axis/vault`, `@axis/anthropic` | `src/bindings/providers.ts` only, 1b | handlers |
 | `@axis/journal/daemon-principal` | `src/handlers/review.ts` only | any handler that is not the person's own act |
@@ -131,7 +131,7 @@ Startup is a straight line. Any failure before step 12 exits with a typed code a
 
 ### 4.1 Where definitions live
 
-Contract schemas (strict Zod objects, `MethodSpec`) live in `@axis/protocol`, one file per contract, because the renderer client and the web target import them and the package has no Node imports ([V] `NO_NODE`). `@axis/protocol`'s `contracts` table on main holds six contracts [V `contracts.ts`, #44]: `axis.worktrees`, `axis.projects`, `axis.approvals`, `axis.audit`, `axis.cli-runs` and `axis.providers`. `axis.git/1` and `axis.review/1` are added by ticket P1b (`git.ts`, `review.ts`), so the table holds eight contracts (six before P1b). **Contract ids contain no uppercase letters:** the id is `axis.cli-runs`, not `axis.cliRuns`; `contractIdSchema` rejects the latter, so a wrong spelling fails the coverage check. The host builds its registry with `protocolRegistry` filtered by `config.contracts` (an allow-list), so a build or test can serve fewer contracts, never more than the table holds.
+Contract schemas (strict Zod objects, `MethodSpec`) live in `@axis/protocol`, one file per contract, because the renderer client and the web target import them and the package has no Node imports ([V] `NO_NODE`). `@axis/protocol`'s `contracts` table on main holds six contracts [V `contracts.ts`, #44]: `axis.worktrees`, `axis.projects`, `axis.approvals`, `axis.audit`, `axis.cli-runs` and `axis.providers`. `axis.git/1` and `axis.review/1` are added by ticket P1b (`git.ts`, `review.ts`), so the table holds eight contracts (six before P1b), and nine since `axis.runs/1` (ticket C1, `docs/design/composer-runtime.md`). **Contract ids contain no uppercase letters:** the id is `axis.cli-runs`, not `axis.cliRuns`; `contractIdSchema` rejects the latter, so a wrong spelling fails the coverage check. The host builds its registry with `protocolRegistry` filtered by `config.contracts` (an allow-list), so a build or test can serve fewer contracts, never more than the table holds.
 
 The envelope carries only `hello`/`welcome`/request/cancel/response frames [V `envelope.ts`]. **There is no server-push event or stream frame.** ADR 0003 D2/D3 describe `stream` and `event`, but neither exists in the protocol or the daemon. Phase 1a UI state therefore polls (`get`/`list`, 1 to 2 s with jitter) and the headless slice does the same. A protocol extension (ticket E1) is a UI-quality item, not a blocker for the slice.
 
@@ -143,10 +143,10 @@ Tier and `sideEffect` are the contract's declared minimum; policy may raise, nev
 |---|---|---|---|---|---|---|---|---|---|
 | `axis.worktrees/1` | `list`, `status` | read | 0 | none | | | user | `WorktreesService` | 1a, exists |
 | | `create` | write | 2 | req | | yes | user | same | 1a, exists |
-| | `finalise` | write | 2 now, **4 after P1d+** | req | yes after P1d+ | | user | same, content hook after P1d+ | 1a, exists. **Decided (amended by H8):** becomes tier 4 (challenge with a native confirmation), as a follow-up outside the first protocol PR: a discard token is minted only for a challenge issued at tier 4 or above, because a tier 3 approval has no dialog |
+| | `finalise` | destructive | 4 | req | yes, native | | user | same, content hook (§7.2) | 1a, exists. **Decided (amended by H8), done by P1d:** tier 4 (challenge with a native confirmation): a discard token is minted only for a challenge issued at tier 4 or above, because a tier 3 approval has no dialog |
 | | `remove` | destructive | 4 | req | yes, native | | user | same, content hook (§7.2) | 1a, exists |
 | | `restoreFromRunBase` | write | 2 | req | | yes | user | same | 1a, exists |
-| | `discard`, `setUserEditing` | write | 2 | req / none | | | user | same | 1a, **named in the design docs, absent in the protocol** (additive, ticket P1d) |
+| | `discard`, `setUserEditing` | write | 2 | req / none | | `discard` yes | user | same | 1a, contract and policy rows served (P1d); the handlers answer `E_UNAVAILABLE` (`not_available`) until a service backs them. See `worktrees-tier4.md` |
 | `axis.projects/1` | `list` | read | 0 | none | | | user | journal | 1a, new |
 | `axis.approvals/1` | `resolve` | write | 2 | none | | | **user only** | `ChallengeManager.resolve` | 1a, new (the request and challenge shapes exist in `@axis/protocol`, [V] `challenge.ts`) |
 | | `pending` | read | 0 | none | | | user | challenge listing for the caller's own window. **Handler duty:** the list holds up to 1024 challenges and each `targetSummary` must be shortened to at most 192 characters (head, `...`, tail, cut on code-point boundaries) or the whole listing fails the response schema (`docs/packages.md`) | 1a, on main |
@@ -163,7 +163,7 @@ Tier and `sideEffect` are the contract's declared minimum; policy may raise, nev
 | | `list` (`afterSeq`, `limit` ≤ 200) | read | 1 | none | | | user | `AuditLog.list` (events are redacted at write) | 1a, new |
 | | `verify` | read | 1 | none | | | user | `AuditLog.verify` in slices of 2000 events with a yield between them, one at a time (a second call is `E_BACKPRESSURE`), cancellable and under a 25 s deadline (`E_TIMEOUT`, progress kept); see 5.5 | 1a, new |
 | `axis.providers/1` | `list` | read | 0 | none | | | user | `@axis/providers` mock and registered adapters | 1a, new (list only) |
-| `axis.runs/1` | `start`, `cancel`, `get`, `list` (composer) | write / read | 2 / 0 | req / none | | yes | user | composer service, broker, `GuardedProvider` | **1b**, not served in 1a |
+| `axis.runs/1` | `start`, `cancel`, `get`, `list`, `events` (composer) | write / read | 2 / 0 | req / none | | `start` | user | composer service, broker, `GuardedProvider` (`docs/design/composer-runtime.md`) | **1b**, ticket C1 |
 
 Notes on the table:
 
@@ -176,7 +176,7 @@ Notes on the table:
 
 #### 4.2.1 Coverage check
 
-At startup and as a unit test, assert: the set of `(contract, version, method)` in the served registry equals the set with a handler, equals the set with a policy row, equals the set with an audit action declaration (§5.3). Any difference throws. Every tier 3 or above method (including `worktrees.finalise` once it is tier 4) has a content hook or is explicitly marked "request digest content" in the table. This stops "a method was added to the protocol and is silently served, or silently dropped".
+At startup and as a unit test, assert: the set of `(contract, version, method)` in the served registry equals the set with a handler, equals the set with a policy row, equals the set with an audit action declaration (§5.3). Any difference throws. Every tier 3 or above method (including `worktrees.finalise`, tier 4 since P1d) has a content hook or is explicitly marked "request digest content" in the table. This stops "a method was added to the protocol and is silently served, or silently dropped".
 
 ### 4.3 Handler shape
 
@@ -284,7 +284,7 @@ Two planes, never mixed:
 | Electron `utilityProcess` | `process.parentPort` (structural type `ElectronPortLike`; no `electron` import) | `connect` message carries a transferred `MessagePortMain`; wrapped by `fromElectronPort` (it already closes extra transferred ports, [V]) |
 | Node child process (tests) | the `child_process` IPC channel, JSON serialization (not `advanced`, so no shared references or exotic types reach `inspectMessage`) | **`ChannelMux`**: node IPC cannot transfer a `MessagePort`, so virtual connections are multiplexed over the one ordered channel as `{ kind: "frame", cid, data }` / `{ kind: "close", cid }`, wrapped as `Connection`s |
 | Worker thread (fast in-process tests) | a `MessagePort` pair | `fromNodePort` |
-| Web (reh child process, later) | the reh server's child IPC | `ChannelMux`; the reh server authenticates the user and mints the attestation (ADR 0003 D1.7); same contracts, no host change |
+| Web (reh child process, later) | the reh server's child IPC | `ChannelMux`; the reh server authenticates the user and mints the attestation (ADR 0003 D1.7); same contracts, no host change. The web host entry (W1, `docs/design/web-host-entry.md`) is that supervisor side |
 
 `ChannelMux` limits: per-connection queue bounded by messages and bytes (overflow closes that connection and counts it, never drops silently), at most `maxConnections` virtual connections, frames for an unknown or closed `cid` ignored and counted, and close is idempotent. A mux frame is size-checked before it reaches `daemon.accept`'s own pre-identity limits.
 

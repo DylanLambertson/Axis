@@ -28,7 +28,7 @@ import { createWorktreesBindingForTest, type WorktreesTestSeams } from "../src/b
 import { memoryChannelPair } from "../testing/memory-channel.js";
 import { memoryPair } from "@axis/daemon";
 import { Client, newKey, type Msg } from "./approvals-rig.js";
-import { fakeClock } from "./helpers.js";
+import { fakeClock, wait } from "./helpers.js";
 
 /** Git, with no host config and a fixed identity; the working directory is where the command runs. */
 export function git(cwd: string, home: string, ...args: string[]): string {
@@ -246,4 +246,39 @@ export function finishedRun(r: Rig, id: string): string {
   r.git(r.repo, "update-ref", `refs/axis/runbase/${run.id}`, r.git(r.repo, "rev-parse", `refs/axis/runbase/${id}`).trim());
   r.journal.transitionRun(run.id, "CANCELLED", { actor: "user" });
   return run.id;
+}
+
+/**
+ * `finalise` is tier 4: the first call answers `E_APPROVAL_REQUIRED` with a challenge, the user approves it (resolve plus the
+ * native dialog's answer), and the retry with the same key and the reference runs it. Returns the answer that decided the
+ * call: the retry's, or the first call's when it did not ask for an approval (a refusal before any challenge).
+ */
+export async function finaliseApproved(
+  r: Rig,
+  user: Client,
+  id: string,
+  outcome: "merged" | "archived" | "abandoned" = "archived",
+  key = newKey(),
+): Promise<Msg> {
+  const body = { id, outcome };
+  const before = r.nativeConfirms().length;
+  const first = await user.call("axis.worktrees", "finalise", body, key);
+  if (first.error?.code !== "E_APPROVAL_REQUIRED") return first;
+  const challenge = (first.error.details as { challenge: { challengeId: string; digest: string } }).challenge;
+  for (let i = 0; r.nativeConfirms().length <= before; i++) {
+    if (i > 400) throw new Error("no native confirmation was requested");
+    await wait(5);
+  }
+  const proof = String((r.nativeConfirms().at(-1) as Record<string, unknown>)["proof"]);
+  const resolved = await user.call("axis.approvals", "resolve", { challengeId: challenge.challengeId, decision: "approve", digest: challenge.digest });
+  if (resolved.ok !== true) throw new Error("the approval was not accepted");
+  r.answer(challenge.challengeId, proof, true);
+  for (let i = 0; r.approvals.stats().native.entries !== 0; i++) {
+    if (i > 400) throw new Error("the native answer was not applied");
+    await wait(5);
+  }
+  const done = await user.call("axis.worktrees", "finalise", { ...body, approval: { challengeId: challenge.challengeId } }, key);
+  // The dialog is spent: forget it, so a later test line that asserts "no dialog was shown" counts only its own.
+  for (let i = r.supervisor.length - 1; i >= 0; i--) if (r.supervisor[i]?.["type"] === "native.confirm") r.supervisor.splice(i, 1);
+  return done;
 }

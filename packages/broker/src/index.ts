@@ -16,4 +16,5 @@ export {
   type ApprovalHook, type ApprovalRequest, type Decision, type PolicyInput, type PolicyOptions, type VerifiedApproval,
 } from "./policy.js";
 export { BrokerAudit, BROKER_ACTIONS, BROKER_PAYLOAD_ALLOWLIST, type AuditRecord } from "./audit.js";
+export { callDigest, type CallDigestInput } from "./text.js";
 export { ToolBroker, type BrokerDeps, type ToolCall, type ToolContext, type ToolDefinition } from "./broker.js";

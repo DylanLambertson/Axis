@@ -1,0 +1,6 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": { "rootDir": ".", "outDir": "dist" },
+  "include": ["src", "test", "testing"],
+  "references": [{ "path": "../pty-policy" }, { "path": "../runs" }]
+}

@@ -1,7 +1,7 @@
 # Threat model: Phase 1 controls, gates, residual risks and register
 
 - **Status:** Draft for review. Companion to `docs/security/threat-model-phase1.md` (the "model"), which holds the data-flow diagram and the threat tables (§1–§4). This file holds §5–§10. `docs/security/threat-model-phase0.md` is kept as history.
-- **Date:** 2026-11-02.
+- **Date:** 2026-11-02 (revision: 2026-11-05, verified against main `74cd12e`). Build status of each control, the residual-risk register with a ticket per item and the gate items Linux cannot verify are in `threat-model-phase1-revision-1a.md`, `threat-model-phase1-residual-register.md` and `threat-model-phase1-unverified-gates.md`; on status they win over §5.2 and §9 here.
 - **Conventions:** as in the model. **Gate line** `1a/Ln` or `1b/Ln` means the n-th bullet of the "Gate (1a)" or "Gate (1b)" list in `docs/ROADMAP.md`, counted in order (listed in §5.1). **Design task** means a task id in `docs/design/axis-agent-shell.md` §8 (A, B or C). **G-n** is a gap numbered in the model or §6 below.
 
 ## 5. Control matrix: control to phase to gate
