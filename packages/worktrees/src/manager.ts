@@ -285,7 +285,7 @@ export class WorktreeManager {
     const repo = await resolveRepo(input.repoPath);
     const host: CreateHost = {
       git: this.git, worktreeRoot: this.options.worktreeRoot, platform: this.platform, now: this.now, maxFile: this.maxFile,
-      listRaw: (r) => this.listRaw(r),
+      snapshotScanner: this.options.snapshotScanner, listRaw: (r) => this.listRaw(r),
       protectedLocations: (r, local) => this.protectedLocations(r, local),
       takeGitSnapshot: (wt, common) => this.snapshotImpl(wt, common),
       assertExecutionClean: async (wt) => {
@@ -386,7 +386,7 @@ export class WorktreeManager {
   private async writeBackup(workTree: string, id: string, why: string): Promise<string> {
     const ref = this.backupRefName(id);
     const scratch = await privateDir(path.join(await canonicalise(this.options.worktreeRoot), '.axis-tmp'));
-    await writeSnapshotRef(this.git, workTree, ref, `axis backup before ${why}`, this.maxFile, scratch);
+    await writeSnapshotRef(this.git, workTree, ref, `axis backup before ${why}`, this.maxFile, scratch, this.options.snapshotScanner);
     return ref;
   }
 

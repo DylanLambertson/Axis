@@ -11,6 +11,7 @@ import { readMeta, writeBaseline, writeMeta } from './meta.js';
 import { canonicalise, isSameOrInside, validateWorktreeRoot, type ProtectedLocation } from './paths.js';
 import { populateFilterFree } from './populate.js';
 import { deleteRefIf, writeSnapshotRef } from './snapshotRef.js';
+import type { SnapshotScanner } from './snapshotScan.js';
 import type { CreatedWorkspace } from './types.js';
 
 /** What `createWorkspace` needs from the manager. */
@@ -20,6 +21,8 @@ export interface CreateHost {
   readonly platform: NodeJS.Platform;
   readonly now: () => Date;
   readonly maxFile: number;
+  /** REF-1 scanner for the run base snapshot; undefined means the default (refuse mode). */
+  readonly snapshotScanner: SnapshotScanner | undefined;
   listRaw(repo: RepoLocation): Promise<WorktreeEntry[]>;
   protectedLocations(repo: RepoLocation, localCheckout: string | null): Promise<ProtectedLocation[]>;
   takeGitSnapshot(worktree: string, commonDir: string): Promise<GitSnapshot>;
@@ -108,7 +111,7 @@ export async function createWorkspace(host: CreateHost, repo: RepoLocation, p: C
     await git.run(['worktree', 'lock', '--reason', `axis:${p.id}`, '--', wtPath], { cwd });
     await populateFilterFree(git, wtPath);
     const wt = await resolveRepo(wtPath);
-    const snap = await writeSnapshotRef(git, wtPath, runBaseRef, `axis run base ${p.id}`, host.maxFile, scratchDir);
+    const snap = await writeSnapshotRef(git, wtPath, runBaseRef, `axis run base ${p.id}`, host.maxFile, scratchDir, host.snapshotScanner);
     runBaseSha = snap.commit;
     await writeMeta(wt.gitDir, {
       version: 1, id: p.id, slug: p.slug, branch, baseRef: p.baseRef, baseSha, baseBranch, runBaseSha,
