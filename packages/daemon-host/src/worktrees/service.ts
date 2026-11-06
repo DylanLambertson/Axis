@@ -17,9 +17,11 @@ import { reconcileWorktrees } from "./reconcile.js";
 import type { ManagerShape } from "./shapes.js";
 import { workspaceSlug } from "./slug.js";
 
+const BASE_BRANCH = /^refs\/heads\/[!-~]+$/;
+
 export type ServiceJournal = Pick<
   Journal,
-  | "getProject" | "listProjects" | "getWorkspace" | "listWorkspaces" | "createWorkspace" | "setWorktreePath"
+  | "getProject" | "listProjects" | "getWorkspace" | "listWorkspaces" | "createWorkspace" | "setWorktreePath" | "recordBaseBranch"
   | "transitionWorkspace" | "lockWorkspace" | "unlockWorkspace" | "getRun" | "listRuns"
 >;
 
@@ -149,6 +151,8 @@ export function createWorktreesService(deps: WorktreesServiceDeps): WorktreesRun
               if (made.baseSha !== baseSha || made.branch !== branch || made.id !== id) throw worktreeFailure("E_CONFLICT", "base_moved");
               return deps.transact(() => {
                 journal.setWorktreePath(id, made.path, actor);
+                // Recorded here, by the daemon, before the workspace is READY: `merged` is later judged against this alone.
+                if (made.baseBranch !== null && BASE_BRANCH.test(made.baseBranch)) journal.recordBaseBranch(id, made.baseBranch, actor);
                 const ws = journal.transitionWorkspace(id, "READY", { actor, expectedFrom: "CREATING" });
                 deps.audit.append({
                   actor, action: "worktree.create", target: `workspace:${id}`, outcome: "success",
@@ -201,7 +205,7 @@ export function createWorktreesService(deps: WorktreesServiceDeps): WorktreesRun
               if (recovering) {
                 outcome = await verifyFinalised(manager, project.path, ws, live, ref.workTree, req.outcome);
               } else {
-                const done = await manager.finalise({ path: ref.workTree, outcome: req.outcome, discardConfirmation: ctx.confirmation });
+                const done = await manager.finalise({ path: ref.workTree, outcome: req.outcome, discardConfirmation: ctx.confirmation, trustedBaseBranch: ws.baseBranch });
                 backupRef = done.backupRef;
                 skippedLarge = done.skippedLarge.length;
               }

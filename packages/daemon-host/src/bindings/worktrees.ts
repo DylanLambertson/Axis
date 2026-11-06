@@ -78,6 +78,7 @@ async function mapped<T>(call: () => Promise<T>): Promise<T> {
   }
 }
 
+const BASE_BRANCH = /^refs\/heads\/[!-~]+$/;
 const REF_NAME = /^[^\s\0-\x1f\x7f-]\S{0,254}$/;
 
 function adapt(manager: WorktreeManager, runner: GitRunner): ManagerShape {
@@ -92,16 +93,11 @@ function adapt(manager: WorktreeManager, runner: GitRunner): ManagerShape {
         if (out.code !== 0 || !/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(sha)) throw worktreeFailure("E_NOT_FOUND", "base_ref");
         return sha;
       }),
-    isMerged: (repoPath, headSha, baseRef) =>
+    isMerged: (repoPath, headSha, baseBranch) =>
       mapped(async () => {
-        if (!/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(headSha) || !REF_NAME.test(baseRef) || baseRef.includes("..")) return false;
-        let base = baseRef;
-        if (baseRef === "HEAD") {
-          const head = await git(repoPath, ["symbolic-ref", "-q", "HEAD"]);
-          if (head.code !== 0) return false;
-          base = head.stdout.trim();
-        } else if (!baseRef.startsWith("refs/")) base = `refs/heads/${baseRef}`;
-        return (await git(repoPath, ["merge-base", "--is-ancestor", "--end-of-options", headSha, base])).code === 0;
+        // Only a full local branch name: `HEAD` and short names depend on state a finished run can write.
+        if (!/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(headSha) || !BASE_BRANCH.test(baseBranch) || baseBranch.includes("..")) return false;
+        return (await git(repoPath, ["merge-base", "--is-ancestor", "--end-of-options", headSha, baseBranch])).code === 0;
       }),
     listRefs: (repoPath, prefix) =>
       mapped(async () => {
@@ -110,12 +106,16 @@ function adapt(manager: WorktreeManager, runner: GitRunner): ManagerShape {
         return new Set(out.stdout.split("\n").filter((l) => l !== ""));
       }),
     list: (repoPath) => mapped(() => manager.list(repoPath)),
-    create: ({ repoPath, slug, baseRef, id }) => mapped(() => manager.create({ repoPath, slug, baseRef, id })),
+    create: ({ repoPath, slug, baseRef, id }) =>
+      mapped(async () => {
+        const made = await manager.create({ repoPath, slug, baseRef, id });
+        return { id: made.id, branch: made.branch, path: made.path, baseSha: made.baseSha, baseBranch: made.baseBranch };
+      }),
     status: (p) => mapped(() => manager.status(p)),
     previewDiscard: (p) => mapped(() => manager.previewDiscard(p)),
     assertNoDrift: (p) => mapped(() => manager.assertNoDrift(p)),
-    finalise: ({ path, outcome, discardConfirmation }) =>
-      mapped(() => manager.finalise({ path, outcome, ...(discardConfirmation === undefined ? {} : { discardConfirmation: cap(discardConfirmation) as DiscardConfirmation }) })),
+    finalise: ({ path, outcome, discardConfirmation, trustedBaseBranch }) =>
+      mapped(() => manager.finalise({ path, outcome, trustedBaseBranch, ...(discardConfirmation === undefined ? {} : { discardConfirmation: cap(discardConfirmation) as DiscardConfirmation }) })),
     remove: ({ path, deleteBranch, discardConfirmation }) =>
       mapped(() => manager.remove({ path, deleteBranch, ...(discardConfirmation === undefined ? {} : { discardConfirmation: cap(discardConfirmation) as DiscardConfirmation }) })),
     restoreFromRunBase: ({ path, runId, expectedWorktree }) => mapped(() => manager.restoreFromRunBase({ path, runId, expectedWorktree })),

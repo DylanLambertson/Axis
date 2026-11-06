@@ -120,8 +120,13 @@ export class WorktreeManager {
     });
   }
 
+  /**
+   * `trustedBaseBranch` is the full `refs/heads/...` name a trusted record holds (the daemon passes the journal's). When the
+   * key is present it alone decides what `merged` is checked against and `null` refuses; the workspace's own metadata file
+   * lives in the git directory a finished run can write, so it is used only when the caller has no trusted record.
+   */
   finalise(input: {
-    path: string; outcome: FinaliseOutcome; discardConfirmation?: DiscardConfirmation;
+    path: string; outcome: FinaliseOutcome; discardConfirmation?: DiscardConfirmation; trustedBaseBranch?: string | null;
   }): Promise<FinaliseResult> {
     return this.boundary(async () => {
       if (!['merged', 'archived', 'abandoned'].includes(input.outcome)) throw invalid('invalid outcome');
@@ -130,7 +135,8 @@ export class WorktreeManager {
         await this.guardExecutionDrift(repo, workTree);
         const head = await this.git.text(['rev-parse', '--verify', '--end-of-options', 'HEAD'], { cwd: workTree });
         if (input.outcome === 'merged') {
-          const target = meta.baseBranch;
+          const target = 'trustedBaseBranch' in input ? input.trustedBaseBranch : meta.baseBranch;
+          if (target !== null && target !== undefined && !/^refs\/heads\/\S+$/.test(target)) throw invalid('invalid base branch');
           if (!target || !(await this.git.ok(['rev-parse', '--verify', '--quiet', '--end-of-options', target], { cwd: workTree }))) {
             throw new WorktreeError('E_CONFLICT', 'base branch is unavailable, cannot verify the merge', { reason: 'no-base-branch' });
           }
