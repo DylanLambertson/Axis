@@ -116,7 +116,7 @@ export async function createWorkspace(host: CreateHost, repo: RepoLocation, p: C
     });
     await writeBaseline(wt.gitDir, await host.takeGitSnapshot(wtPath, repo.commonDir));
     return {
-      id: p.id, slug: p.slug, branch, path: wtPath, baseRef: p.baseRef, baseSha, runBaseRef,
+      id: p.id, slug: p.slug, branch, path: wtPath, baseRef: p.baseRef, baseSha, baseBranch, runBaseRef,
       skippedLarge: snap.skippedLarge, localCheckout,
     };
   } catch (e) {
