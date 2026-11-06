@@ -103,6 +103,16 @@ export function isAcknowledged(
 
 const tag = (max: number) => z.array(displayTextSchema(64)).max(max);
 
+/** True when no protected file follows an ordinary one (WT-3: the review lists protected files first). */
+function protectedFirst(files: readonly { readonly protectedPath: boolean }[]): boolean {
+  let ordinary = false;
+  for (const f of files) {
+    if (!f.protectedPath) ordinary = true;
+    else if (ordinary) return false;
+  }
+  return true;
+}
+
 /** One changed file, as `ReviewFile` in `@axis/review` minus the raw paths, object ids and modes. */
 export const reviewFileSchema = z
   .strictObject({
@@ -127,13 +137,21 @@ export const reviewFileSchema = z
   contentId: contentIdSchema.nullable(),
   /** The request acknowledged this `fileId` AND this `contentId`, and both equal this entry's. Never true for a file that is not truncated. */
   acknowledged: z.boolean(),
-  /** WT-3: names of the protected-path rules that matched. */
+  /**
+   * WT-3, the closed flag: this file's path (either side of a rename, or where a symlink leads) matches a protected-path
+   * rule (CI, hooks, editor tasks, build scripts, the Git directory). True exactly when `protectedRules` is not empty. A
+   * response lists every protected file before every other. For a `truncated` file the flag is part of the `contentId`, so an
+   * acknowledgement given for a file shown as protected does not apply once the file is no longer reported as protected.
+   */
+  protectedPath: z.boolean(),
+  /** WT-3: names of the protected-path rules that matched (at most 4 shown). */
   protectedRules: tag(MAX_FILE_TAGS),
   /** Why only a whole-file decision is offered, when hunks are not. */
   fileLevelReason: displayTextSchema(128).optional(),
   /** Short labels such as `symlink-outside` or `binary`. */
   warnings: tag(MAX_FILE_TAGS),
   })
+  .refine((f) => f.protectedPath === f.protectedRules.length > 0, "the protected flag and the rule names disagree")
   .refine((f) => !f.acknowledged || f.truncated, "only a truncated file can be acknowledged")
   .refine((f) => f.truncated === (f.contentId !== null), "a truncated file, and only a truncated file, has a content id");
 export type ReviewFileWire = z.infer<typeof reviewFileSchema>;
@@ -188,6 +206,7 @@ export const reviewDiffResponseSchema = guarded(
     .refine((r) => r.treeHash === null || !r.files.some((f) => f.unsafePath || f.kind === "filtered"), "a tree needs committable files")
     .refine((r) => r.treeHash === null || !r.files.some((f) => f.truncated && !f.acknowledged), "a tree needs every cut file acknowledged")
     .refine((r) => new Set(r.files.map((f) => f.fileId)).size === r.files.length, "duplicate file id")
+    .refine((r) => protectedFirst(r.files), "protected files come first")
     .refine((r) => r.skippedCount >= r.skipped.length && r.skipped.length === Math.min(r.skippedCount, MAX_REVIEW_SKIPPED), "skipped list does not match its count"),
 );
 

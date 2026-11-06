@@ -114,7 +114,9 @@ There is no filesystem access, so nothing can follow a link: previews come from 
 
 ## 9. Protected paths (WT-3)
 
-`ProtectedPathMatcher.match(path): readonly ProtectedHit[]`, each hit `{ rule: string }`, is injected (the `@axis/git-snapshot` matcher will satisfy it structurally). It is called with the repository-relative path, and with both `oldPath` and `path` for a rename. A matcher that throws marks the file protected with rule `matcher-error` (fails closed). Rule names are bounded and escaped. No policy decision depends on it (highlight only, as WT-3 says for 1a).
+`ProtectedPathMatcher.match(path): readonly ProtectedHit[]`, each hit `{ rule: string }`, is injected (the `@axis/git-snapshot` matcher will satisfy it structurally). It is called with the repository-relative path, and with both `oldPath` and `path` for a rename. A matcher that throws marks the file protected with rule `matcher-error` (fails closed). Rule names are bounded and escaped. A symlink is also judged by where it leads: its target, resolved lexically from the link's directory, is passed to the matcher too (a target above the repository root is the `symlink-outside` warning, not a rule). No policy decision depends on it (highlight only, as WT-3 says for 1a).
+
+On the wire (`axis.review/1.diff`) each file has the closed flag `protectedPath`, true exactly when it has a rule name, and protected files are listed first (the response schema refuses another order). The flag is part of the `contentId` of a `truncated` file (`<mode> <oid> protected` instead of `<mode> <oid>`), so an acknowledgement made for a file shown as protected does not acknowledge it once it is no longer reported as protected, and the reverse. The daemon host uses the broker's rules (`matchProtected`: case folding, trailing dots and spaces, default-ignorable code points, 8.3 names) unless a test injects another matcher. A protected file that is not cut needs no acknowledgement, and requiring one would change the `contentId` contract (only a truncated file has one): proposed, not done.
 
 ## 10. Files changed outside the agent (DRF-2 to DRF-4)
 
