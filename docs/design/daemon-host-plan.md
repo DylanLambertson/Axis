@@ -63,6 +63,15 @@ Re-derived on 2026-11-04 from what is on main: `@axis/runs` and `@axis/worktrees
 | **E1** | Protocol and daemon: server-pushed events (`axis.events/1`, credit window, bounded coalescing queues, resume, host emitters) | L | after H12 | built (`docs/design/events.md`); review |
 | **X1** | Overlay entry `axisDaemonMain.ts`, main seam, staging (ADR 0005 D3); needs the Code OSS build | M | H3, H7 | staging merged (#67); entry, supervisor and main seam built (`docs/design/daemon-host-entry.md`); production wiring fails closed until B9 and GIT-SNAP-1; **X1c (anchor get/put through `safeStorage`, native confirm, trust, settings) must land before or with the change that wires the real pty ports**; review |
 | **W1** | Web host entry over `ChannelMux` | M | H3, X1 | review |
+| **H13** | Wire the GIT-SNAP-1 snapshot into runs as the run snapshotter and settle plan question 10 (one owner of GIT-SNAP-1); the host refuses to start without it (`snapshotter_required`). Proposed by the threat-model register (RR-3) | M | H10, `@axis/git-snapshot` merged | proposed |
+| **FU-STAGE** | Staging follow-ups: refuse an empty or incomplete metafile in the graph walk, and follow package subpath exports in the source lint (RR-6) | S | #453 | proposed |
+| **RV-CONTENT** | A content-showing review method (bounded, escaped text of uncut, binary and over-size files) that closes the 1a file-level residual (RR-10) | L | P1b, H10b | proposed |
+| **H9-base** | Push scan base: persist or re-derive the destination base and resolve path or ssh aliases (RR-11) | S | H9 | proposed |
+| **P1f** | Protocol: an opaque identity for push binary rows so every path can be allowed or refused without display text (RR-12) | S | P1e | proposed |
+| **REV2-FIX** | REV-2 / G-27: hardened attribute reads in git-ops (private empty `GIT_DIR`, single `info/attributes` read, `GIT_ATTR_NOSYSTEM=1`, private snapshot of system and user attribute files); gate 1a/L32 (RR-13) | M | review core | proposed |
+| **OVSX-TEST** | The Open VSX signed, unsigned and tampered install test on a packaged build, outcomes recorded in `docs/feasibility/extension-compatibility.md`; gate 1a/L22 (RR-18) | M | a packaged build | proposed |
+| **NET-GATE** | Packaged-build checks: no reh-web or Axis listener in a desktop run, and `--remote-debugging-port` and `--inspect*` refused; gates 1a/L29 and L33 (RR-19) | S | X1 | proposed |
+| **REF1-SCAN** | Secret scan of snapshot trees before a snapshot is written; gate 1b/L13 (RR-24) | M | `@axis/secret-scan` | proposed |
 
 Order and parallelism:
 
