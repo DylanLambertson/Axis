@@ -382,7 +382,7 @@ test("scanner: the daemon host is imported by nothing and imports the restricted
   // The launder (review daemon-host-runs-review2 N2): a handler imports a testing/ module that re-exports the minter.
   assert.notEqual(violation("daemon-host", "../../testing/zz-launder.js", at("src/handlers/zz-a.ts"), dir), null, "src importing testing/");
   assert.notEqual(violation("daemon-host", "../../test/zz-launder.js", at("src/handlers/zz-a.ts"), dir), null, "src importing test/");
-  assert.equal(violation("daemon-host", "../../testing/zz-launder.js", at("test/a.test.ts"), dir), null, "a test may import testing/");
+  assert.equal(violation("daemon-host", "../testing/zz-launder.js", at("test/a.test.ts"), dir), null, "a test may import testing/");
   for (const [f, spec] of [
     ["src/handlers/cli-runs.ts", "../gate/run-trust.js"],
     ["src/bindings/runs.ts", "../gate/run-trust.js"],
