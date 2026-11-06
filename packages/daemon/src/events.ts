@@ -68,6 +68,8 @@ export class EventHub {
   #total = 0;
   #ended = false;
   #refused = 0;
+  /** Drops of subscriptions that no longer exist (unsubscribed, closed, ended). */
+  #droppedGone = 0;
 
   constructor(options: EventHubOptions = {}) {
     const n = (v: number | undefined, d: number, max: number): number => (v !== undefined && Number.isInteger(v) && v >= 1 && v <= max ? v : d);
@@ -90,9 +92,9 @@ export class EventHub {
   get refused(): number {
     return this.#refused;
   }
-  /** Events dropped by overflows of the live subscriptions (each overflow also owes its client a resync). */
+  /** Events dropped by overflows since the hub was made, live and ended subscriptions alike (each overflow owes its client a resync). */
   get dropped(): number {
-    let n = 0;
+    let n = this.#droppedGone;
     for (const c of this.#conns.values()) for (const s of c.subs.values()) n += s.dropped;
     return n;
   }
@@ -162,7 +164,10 @@ export class EventHub {
       detach: () => {
         if (!live()) return;
         this.#conns.delete(key);
-        for (const s of self.subs.values()) s.close();
+        for (const s of self.subs.values()) {
+          s.close();
+          this.#droppedGone += s.dropped;
+        }
         this.#total -= self.subs.size;
         self.subs.clear();
         self.pending.clear();
@@ -180,6 +185,7 @@ export class EventHub {
         } catch (e) {
           this.#onError?.("events", e);
         }
+        this.#droppedGone += s.dropped;
       }
       this.#total -= c.subs.size;
       c.subs.clear();
@@ -246,6 +252,7 @@ export class EventHub {
   #remove(conn: Attached, sub: Subscription): void {
     if (conn.subs.get(sub.id) !== sub) return;
     sub.close();
+    this.#droppedGone += sub.dropped;
     conn.subs.delete(sub.id);
     for (const [rid, s] of conn.pending) if (s === sub) conn.pending.delete(rid);
     this.#total--;

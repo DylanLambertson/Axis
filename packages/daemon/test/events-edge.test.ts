@@ -75,3 +75,37 @@ test("EV11 Subscription unit: coalescing keys, nothing before activation, end on
   pending.close("shutdown");
   assert.equal(quiet.length, 0, "a subscription never activated gets no frame at all");
 });
+
+test("EV12 an ack frees only the frames up to its seq: partial, stale, out-of-order and over-large acks", async (t) => {
+  const r = await eventsRig(t, { window: 3 });
+  const c = { send: r.send, inbox: r.inbox };
+  const sub = (await r.subscribe(c, "s1", { topics: ["workspaces"] })).result?.["subscriptionId"] as string;
+  const seqs = async (id: string) => (await settle(c, id), framesOf(r.inbox, sub).map((f) => f.seq));
+  for (let i = 1; i <= 5; i++) r.hub.publish(ws(`w${i}`));
+  assert.deepEqual(await seqs("x1"), [1, 2, 3], "the window holds three");
+  c.send({ v: 1, ack: sub, seq: 1 });
+  assert.deepEqual(await seqs("x2"), [1, 2, 3, 4], "an ack of 1 frees exactly one frame");
+  c.send({ v: 1, ack: sub, seq: 1 });
+  c.send({ v: 1, ack: sub, seq: 0 });
+  assert.deepEqual(await seqs("x3"), [1, 2, 3, 4], "a stale ack frees nothing");
+  c.send({ v: 1, ack: sub, seq: 3 });
+  assert.deepEqual(await seqs("x4"), [1, 2, 3, 4, 5], "an ack of 3 frees 2 and 3; only 5 was queued");
+  for (let i = 6; i <= 9; i++) r.hub.publish(ws(`w${i}`));
+  assert.deepEqual(await seqs("x5"), [1, 2, 3, 4, 5, 6], "4, 5 and 6 outstanding: the window is full again");
+  c.send({ v: 1, ack: sub, seq: 2 });
+  assert.deepEqual(await seqs("x6"), [1, 2, 3, 4, 5, 6], "an ack older than the outstanding frames frees nothing");
+  c.send({ v: 1, ack: sub, seq: 99 });
+  assert.deepEqual(await seqs("x7"), [1, 2, 3, 4, 5, 6, 7, 8, 9], "an ack beyond everything sent frees all, never more than the window");
+});
+
+test("EV13 drops stay counted after their subscription is gone", async (t) => {
+  const r = await eventsRig(t, { window: 1, queueMax: 1 });
+  const c = { send: r.send, inbox: r.inbox };
+  const sub = (await r.subscribe(c, "s1", { topics: ["workspaces"] })).result?.["subscriptionId"] as string;
+  for (let i = 0; i < 4; i++) r.hub.publish(ws(`w${i}`));
+  const before = r.hub.dropped;
+  assert.ok(before >= 2);
+  c.send(ereq("u1", "unsubscribe", { subscriptionId: sub }));
+  assert.equal((await c.inbox.response("u1")).ok, true);
+  assert.equal(r.hub.dropped, before, "unsubscribing does not erase the count");
+});
