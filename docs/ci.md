@@ -21,7 +21,7 @@ Rules for every workflow:
 - `permissions: contents: read`, `persist-credentials: false`, no repository secrets, and a timeout on every job.
 - A new push to a PR cancels that PR's earlier run, whether it is running or queued. Each push to `main` gets its own concurrency group, keyed by commit SHA, so `main` runs are never cancelled or replaced by a newer push.
 
-**Cost of the macOS job.** The repository is private and user-owned, so Actions minutes come from the account's included allowance, and macOS minutes count at about 10 times the Linux rate. `Code OSS scripts (macos-15)` runs on every PR and every push to `main`. It only runs `test.sh`, so it is short, but it still uses the most minutes of any job. If minutes get tight, move the macOS entry out of the `code-oss-scripts` matrix into a separate job or workflow triggered by `schedule` (nightly) and `workflow_dispatch`. Then remove `Code OSS scripts (macos-15)` from the required checks in the same change, or every PR will wait for a check that never reports.
+**Cost of the macOS jobs.** `Code OSS scripts (macos-15)` and `macOS headless slice` run on every PR and every push to `main`. The slice job builds packages and runs focused tests, so it adds macOS runner time. If minutes get tight, move a macOS job to a separate workflow triggered by `schedule` (nightly) and `workflow_dispatch`. If moving `Code OSS scripts (macos-15)`, remove it from the required checks in the same change, or every PR will wait for a check that never reports. The slice check is not required.
 
 `npm test` runs `scripts/test-all.mjs`, which runs every suite even after a failure and exits non-zero if any failed; `npm run gate` runs all pre-push checks (DEVELOPMENT.md section 8).
 
