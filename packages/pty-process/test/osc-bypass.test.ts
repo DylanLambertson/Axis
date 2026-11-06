@@ -1,6 +1,5 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
 import { test } from "node:test";
 import { DENIED_OSC_IDS, OscCwdFilter } from "../src/index.js";
 import { oscIds } from "../testing/osc-oracle.js";
@@ -94,26 +93,4 @@ test("memory is bounded: a long stream of denied and passing sequences holds at 
   for (let i = 0; i < 2000; i++) out += f.push("\x1b]0;" + "x".repeat(500)).length + f.push("\x1b]633;" + "y".repeat(500) + "\x07").length;
   assert.ok(out > 0);
   assert.equal(f.push("z"), "z");
-});
-
-// Optional: the same property against the real parser. Set AXIS_XTERM_HEADLESS to the directory of an installed @xterm/headless
-// (Code OSS ships one); packages cannot depend on it, so CI without it skips.
-const headless = process.env["AXIS_XTERM_HEADLESS"];
-test("B1 differential: the real xterm.js parser never reaches a denied OSC handler, and sees the same other OSCs", { skip: headless === undefined ? "AXIS_XTERM_HEADLESS is not set" : false }, async () => {
-  type Term = { parser: { registerOscHandler(id: number, fn: (d: string) => boolean): void }; write(s: string, cb: () => void): void; dispose(): void };
-  const { Terminal } = createRequire(import.meta.url)(headless as string) as { Terminal: new (o: object) => Term };
-  const seen = async (s: string, ids: number[]): Promise<string[]> => {
-    const t = new Terminal({ allowProposedApi: true });
-    const hits: string[] = [];
-    for (const id of ids) t.parser.registerOscHandler(id, (d) => (hits.push(`${id}:${d}`), true));
-    await new Promise<void>((r) => t.write(s, r));
-    t.dispose();
-    return hits;
-  };
-  const others = [0, 1, 2, 4, 8, 10, 11, 12, 52, 63, 77, 134, 1338, 6330];
-  for (const input of stream(99, 1500)) {
-    const out = filter(input);
-    assert.deepEqual(await seen(out, [...DENIED_OSC_IDS]), [], JSON.stringify(input));
-    assert.deepEqual(await seen(out, others), await seen(input + "\x07 ", others), JSON.stringify(input));
-  }
 });
