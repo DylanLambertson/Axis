@@ -5,9 +5,6 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Axis mockup B: Instrument</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap">
 <link rel="stylesheet" href="mockup-b.css">
 </head>
 <body>
@@ -84,8 +81,9 @@
             <div class="ev err"><span class="node">!</span><span><b>Test run failed</b>, 1 of 42: <code>prorates leap year</code> expected 1633, received 1634. Retrying with the half-even rule.</span><time>14:05</time></div>
             <section class="decision" id="decision" role="group" aria-labelledby="dtitle">
               <header><span class="g g-wait" aria-hidden="true"></span><b id="dtitle">Approval needed: run a command</b><span style="flex:1"></span><span class="lbl">step 6</span></header>
-              <dl><dt>Action</dt><dd class="mono">npm test -- billing</dd><dt>Where</dt><dd>This workspace's worktree only</dd><dt>Consequence</dt><dd>Runs the repository's test script. It can read and write files in the worktree.</dd></dl>
-              <div class="acts"><button class="btn pri" type="button" id="approve">Approve once <span class="kbd">⌘↵</span></button><button class="btn sec" type="button">Always for this workspace</button><button class="btn sec" type="button" id="deny">Deny <span class="kbd">⌘⌫</span></button></div>
+              <dl><dt>Action</dt><dd class="mono">npm test -- billing</dd><dt>Where</dt><dd>This workspace's worktree only</dd><dt>Consequence</dt><dd>Runs the repository's test script. It can read and write files in the worktree.</dd><dt>Received since last approval</dt><dd>Nothing from other agents, pages or tasks · hop 0</dd></dl>
+              <div class="acts"><button class="btn pri" type="button" id="approve">Approve once <span class="kbd">⌘↵</span></button><button class="btn sec" type="button">Always for this workspace</button><button class="btn sec" type="button" id="deny">Deny</button></div>
+              <p class="sub cardnote">⌘↵ approves only while focus is in this card. An "always" rule never covers a run that has read another agent's message or an agent-written page or task.</p>
             </section>
           </div>
           <div class="composer"><label class="sr" for="ask">Message the agent</label><textarea id="ask" rows="2" placeholder="Ask, edit or run with the agent. Mention a file with @."></textarea>

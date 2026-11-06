@@ -1,5 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 // Shared behaviour for mockups B and C: screen switching, view control, decisions, palette, keyboard, theme.
+// innerHTML is used here only with static strings written in this file. Product code must build agent-authored text
+// with textContent or DOM construction, never innerHTML.
 (function () {
   var P = 'acme-web <i>›</i> ';
   var screens = {
@@ -32,7 +34,7 @@
     var sb = document.getElementById('sbranch'); if (sb) sb.textContent = n === 'ide' ? 'main' : 'fix/proration-rounding';
     say(screens[n][1]);
     if (focus) {
-      var t = n === 'rv' ? document.querySelector('#v-rv .hunk-act button') : n === 'newproj' ? document.getElementById('nppath') : n === 'agent' ? document.getElementById('agapprove') || document.getElementById('agask') : document.querySelector('#v-' + n + ' .row, #v-' + n + ' .tr[data-go], #v-' + n + ' .li[aria-current="true"], #v-' + n + ' textarea, #v-' + n + ' .code');
+      var t = n === 'rv' ? document.querySelector('#v-rv .hunk-act button') : n === 'newproj' ? document.getElementById('nppath') : n === 'agent' ? document.getElementById('agdeny') || document.getElementById('agask') : n === 'ws' && document.getElementById('decision') ? document.getElementById('deny') : document.querySelector('#v-' + n + ' .row, #v-' + n + ' .tr[data-go], #v-' + n + ' .li[aria-current="true"], #v-' + n + ' textarea, #v-' + n + ' .code');
       if (t) t.focus();
     }
     try { history.replaceState(null, '', '#' + n); } catch (e) { /* file: URLs in some browsers */ }
@@ -99,21 +101,19 @@
     var v = npname.value.trim(), st = document.getElementById('npstatus');
     if (!/^[A-Za-z0-9-]+$/.test(v)) {
       npname.setAttribute('aria-invalid', 'true'); npname.setAttribute('aria-describedby', 'npnameh npstatus');
-      st.textContent = 'Name: use letters, digits and dashes.'; st.className = 'err'; npname.focus(); return;
+      st.textContent = 'Name: use letters, digits and dashes.'; st.className = 'ferr'; npname.focus(); return;
     }
     npname.removeAttribute('aria-invalid'); st.className = 'sub';
     st.textContent = 'Created ' + v + ' with the group ' + (document.getElementById('npgroup').value || 'Ungrouped') + '. No agents yet.';
   }
   form.addEventListener('submit', function (e) { e.preventDefault(); createProject(); });
-  var pause = document.getElementById('pause'), stop = document.getElementById('stopthread');
+  var pause = document.getElementById('pause');
   pause.addEventListener('click', function () {
     var p = pause.getAttribute('aria-pressed') !== 'true';
-    pause.setAttribute('aria-pressed', String(p)); pause.textContent = p ? 'Resume relay' : 'Pause relay';
-    say(p ? 'Relay paused. Messages are held until you resume.' : 'Relay resumed.');
-  });
-  stop.addEventListener('click', function () {
-    document.getElementById('msgs').insertAdjacentHTML('beforeend', '<div class="sysmsg new"><span class="g g-bad" aria-hidden="true"></span><span><b>Stopped by you.</b> Axis relays no more messages in this thread. Both agents keep running.</span><time class="sub mono">14:15</time></div>');
-    stop.disabled = true; pause.disabled = true; say('Thread stopped. Both agents keep running.'); document.getElementById('tmsg').focus();
+    pause.setAttribute('aria-pressed', String(p)); pause.textContent = p ? 'Resume messaging' : 'Pause messaging';
+    var t = p ? '<b>Messaging paused by you</b> for Planner and Invoice migrator. New deliveries stop; queued messages wait. A message an agent has already read cannot be recalled. Both runs keep going; stopping them is a separate action.' : '<b>Messaging resumed by you.</b> Queued messages are delivered.';
+    document.getElementById('msgs').insertAdjacentHTML('beforeend', '<div class="sysmsg new"><span class="g g-' + (p ? 'bad' : 'idle') + '" aria-hidden="true"></span><span>' + t + '</span><time class="sub mono">14:15</time></div>');
+    say(p ? 'Messaging paused. Messages already read cannot be recalled.' : 'Messaging resumed.');
   });
   var ed = document.getElementById('minied'), dirty = document.getElementById('dirty');
   function setDirty(d) { dirty.innerHTML = '<span class="g g-' + (d ? 'wait' : 'idle') + '" aria-hidden="true"></span><span>' + (d ? 'unsaved' : 'saved') + '</span>'; }
@@ -129,8 +129,9 @@
     var typing = /INPUT|TEXTAREA/.test(document.activeElement.tagName), mod = e.metaKey || e.ctrlKey;
     if (mod && e.key.toLowerCase() === 'k') { e.preventDefault(); openPal(); return; }
     if (mod && e.key.toLowerCase() === 's' && document.activeElement === ed) { e.preventDefault(); save(); return; }
-    if (cur === 'ws' && mod && e.key === 'Enter' && document.getElementById('decision')) { e.preventDefault(); decide(true); return; }
-    if (cur === 'newproj' && mod && e.key === 'Enter') { e.preventDefault(); createProject(); return; }
+    var card = document.activeElement.closest && document.activeElement.closest('.decision');
+    if (mod && e.key === 'Enter' && card) { e.preventDefault(); if (card.id === 'decision') decide(true); else agDecide(true); return; }
+    if (mod && e.key === 'Enter' && document.activeElement.closest && document.activeElement.closest('#npform')) { e.preventDefault(); createProject(); return; }
     if (typing || mod || (cur !== 'dash' && cur !== 'home' && cur !== 'agents')) return;
     if (e.key === 'j' || e.key === 'k') {
       var rows = q('#v-' + cur + ' .row, #v-' + cur + ' button.tr'), i = rows.indexOf(document.activeElement);

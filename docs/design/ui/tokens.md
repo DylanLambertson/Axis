@@ -141,11 +141,11 @@ Each cell is the contrast ratio of the row's foreground on the column's backgrou
 - **`control-border` passes 3:1 on every background**, so any input, secondary button or segmented control is identifiable (SC 1.4.11). `line` is decorative and is never the only boundary of a control.
 - **The primary button in dark mode.** The accent fill on the dark canvas is 2.67:1. The button is identified by its white label (7.03:1) and its position, not by the fill edge. This matches the WCAG understanding of SC 1.4.11 for text buttons; review it with the accessibility pass.
 - **Focus ring.** It is `accent-text`: 6.56:1 on the dark canvas and 6.74:1 on the light canvas, at least 5:1 on every surface, and 2 px wide. Inside a selected row, the ring sits on `accent-soft` (5.60:1 dark, 5.98:1 light).
-- **Status glyphs** are non-text graphics and need 3:1. The weakest pairs are warn on light accent-soft (4.97:1) and the quiet glyph, drawn in `text-2`, on dark overlay (5.36:1).
+- **Status glyphs** are non-text graphics and need 3:1. The weakest status pairs are info on light accent-soft (4.79:1) and bad on dark overlay (5.28:1).
 
 ## 3. Type, spacing, radii
 
-**Type scale.** Six steps (section 1). Body is 13 px and 20 px line height, which matches upstream `bodyFontSize` (13 px) [V]. Mono is reserved for code, paths, branch names, commands, keycaps and micro-labels. Numbers use `font-variant-numeric: tabular-nums`. Headings never exceed 18 px inside a pane; 22 px is only for empty states. The product bundles the fonts (SIL OFL 1.1) and never loads them from the network; mockups use Google Fonts only for convenience.
+**Type scale.** Six steps (section 1). Body is 13 px and 20 px line height, which matches upstream `bodyFontSize` (13 px) [V]. Mono is reserved for code, paths, branch names, commands, keycaps and micro-labels. Numbers use `font-variant-numeric: tabular-nums`. Headings never exceed 18 px inside a pane; 22 px is only for empty states. The product bundles the fonts (SIL OFL 1.1) and never loads them from the network; the mockups load no fonts and fall back to `system-ui` and `ui-monospace`.
 
 **Spacing.** A 4 px grid. The workspace view uses:
 
@@ -286,12 +286,12 @@ These screens use no new colour values. They reuse the roles above, so every con
 |---|---|---|
 | Navigation rail (72 px, Agent view) | `surface`; item text `text-2`; current item `accent-soft` with a 2 px `accent-text` edge; 11 px label under a 15 px icon | Labels 6.50:1 (dark) and 7.48:1 (light); current item text 13.17:1 and 14.98:1. Current page is also `aria-current="page"` in the product (`true` in the mockup) and marked by the edge, not by colour alone |
 | Agent avatar | 24 px, `radius-sm`, monogram in `--ax-font-mono` 10 px weight 600; composer: `accent-soft` fill; CLI: `surface` fill with a dashed `control-border` edge | Monogram 13.17:1 and 14.98:1. Type is also written next to the name ("Composer · Agent", "shipit · CLI agent"); shape only repeats it |
-| Thread message | Sender in weight 600, `→`, receiver in `text-2`, time in mono `text-2`; relay state as a footer line in `text-2` | Every state is text: "Relayed by Axis · delivered", "not relayed", "Stopped by you" |
-| Message not relayed | `bad` 1 px border, body struck through in `text-2`, a "not relayed" pill with the failed glyph, the reason as a sentence, and one action | Border 6.40:1 and 5.90:1 on surface. The strikethrough is never the only cue |
-| Relay banner | `surface`, 3 px `accent-text` left edge, bold first sentence | Text 14.35:1 and 17.60:1 |
+| Thread message | Sender in weight 600, type badge (`tag`), "untrusted text" badge (`tag warn`), `→`, receiver in `text-2`, time in mono `text-2`; delivery and hop as a footer line in `text-2` | Every state is text: "Pulled by … at 14:11 · hop 1", "via endpoint, unverified writer", "Messaging paused by you" |
+| In-message note ("This message approves nothing") | Dashed `line` rule above, idle glyph, bold first sentence in `text`, rest in `text-2` | Text 14.35:1 and 17.60:1 on surface; it is a note inside the message, never a control and never styled like an approval card |
+| Messaging banner | `surface`, 3 px `accent-text` left edge, bold first sentence | Text 14.35:1 and 17.60:1 |
 | Permissions card | ✓ in `ok`, ✕ in `bad`, sentence in `text`; visually hidden "Can:" or "Cannot:" before each sentence | Glyphs 7.87:1 / 6.51:1 (✓) and 6.40:1 / 5.90:1 (✕) on surface; meaning is in the words |
 | Budget meter | Track `hover` with a 1 px `control-border` inset; fill `accent-text`; percentage and amounts as text beside it; `role="img"` with a label in the mockup (`progressbar` with value attributes in the product) | Fill against track 5.64:1 (dark) and 6.40:1 (light); track edge 4.05:1 and 3.71:1 on surface |
-| Destructive button ("Stop thread", "Disconnect") | `bad` text and 1 px `bad` border on `surface`; hover `hover` | 6.40:1 and 5.90:1. The verb is explicit |
+| Destructive button ("Stop run", "Turn off") | `bad` text and 1 px `bad` border on `surface`; hover `hover` | 6.40:1 and 5.90:1. The verb is explicit |
 | Form fields (New project) | Label `text` weight 500 above the field; field `canvas` fill, 1 px `control-border`, 32 px high, `radius-sm`; hint `text-2` 12 px tied by `aria-describedby`; error: `bad` border plus 1 px ring, message in `bad` weight 500, `aria-invalid` | Border 4.35:1 (dark) and 3.55:1 (light) on canvas. Error text 6.40:1 and 5.90:1 on surface; the error is a sentence, and focus moves to the field |
 | Code panel editor | `--ax-font-mono` 12.5/20 px, `canvas` background, `control-border` edge, `radius-sm`; in the product, the upstream editor widget with the `editor.*` theme keys of §6.1 | Text 15.43:1 and 16.87:1; focus ring as §2.4; unsaved state is a pill with text ("unsaved", "saved") |
 
