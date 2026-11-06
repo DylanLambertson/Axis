@@ -62,7 +62,7 @@ Re-derived on 2026-11-04 from what is on main: `@axis/runs` and `@axis/worktrees
 | **H12** | Headless slice test (fails startup, or does not register `axis.git/1`, when no pty runner is wired: `commit-tree` and push both run in the pty context), **(composition rule: the code that builds the `Daemon` hands handler code only the `HandlerRegistrar`, never the `Daemon`; it passes `anchorPreflight(services.anchors)` as the `preflight` option of `createApprovals`)**, fixtures, CI wiring | L | H4, H5, H7, H8, H9, H9-scan, H10, H10b | merged (#445); see `docs/design/daemon-host-compose.md` |
 | **E1** | Protocol and daemon: server events or stream frames | L | after H12 | review |
 | **X1** | Overlay entry `axisDaemonMain.ts`, main seam, staging (ADR 0005 D3); needs the Code OSS build | M | H3, H7 | staging merged (#67); entry, supervisor and main seam built (`docs/design/daemon-host-entry.md`); production wiring fails closed until B9 and GIT-SNAP-1; **X1c (anchor get/put through `safeStorage`, native confirm, trust, settings) must land before or with the change that wires the real pty ports**; review |
-| **W1** | Web host entry over `ChannelMux` | M | H3, X1 | review |
+| **W1** | Web host entry over `ChannelMux` | M | H3, X1 | built (`docs/design/web-host-entry.md`): loopback WebSocket listener behind a strict opt-in config, upgrade checks, per-socket attestation, bounded relay; isolated from the desktop bundles by the three checks; the reh tunnel is W1b; review |
 
 Order and parallelism:
 
