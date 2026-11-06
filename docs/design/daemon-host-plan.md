@@ -66,7 +66,7 @@ Re-derived on 2026-11-04 from what is on main: `@axis/runs` and `@axis/worktrees
 | **H13** | Wire the GIT-SNAP-1 snapshot into runs as the run snapshotter and settle plan question 10 (one owner of GIT-SNAP-1); the host refuses to start without it (`snapshotter_required`). Proposed by the threat-model register (RR-3) | M | H10, `@axis/git-snapshot` merged | proposed |
 | **FU-STAGE** | Staging follow-ups: refuse an empty or incomplete metafile in the graph walk, and follow package subpath exports in the source lint (RR-6) | S | #453 | proposed |
 | **RV-CONTENT** | A content-showing review method (bounded, escaped text of uncut, binary and over-size files) that closes the 1a file-level residual (RR-10) | L | P1b, H10b | proposed |
-| **H9-base** | Push scan base: persist or re-derive the destination base and resolve path or ssh aliases (RR-11) | S | H9 | proposed |
+| **H9-base** | Push scan base: persist or re-derive the destination base and resolve path or ssh aliases (RR-11) | S | H9 | review |
 | **P1f** | Protocol: an opaque identity for push binary rows so every path can be allowed or refused without display text (RR-12) | S | P1e | proposed |
 | **REV2-FIX** | REV-2 / G-27: hardened attribute reads in git-ops (private empty `GIT_DIR`, single `info/attributes` read, `GIT_ATTR_NOSYSTEM=1`, private snapshot of system and user attribute files); gate 1a/L32 (RR-13) | M | review core | proposed |
 | **OVSX-TEST** | The Open VSX signed, unsigned and tampered install test on a packaged build, outcomes recorded in `docs/feasibility/extension-compatibility.md`; gate 1a/L22 (RR-18) | M | a packaged build | proposed |
