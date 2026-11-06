@@ -4,7 +4,7 @@
 // program cannot pass vacuously. Real git; skipped with a reason where a git feature is missing.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
+import { chmodSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { atLeastGit, GIT, gitRig, nextReq, SKIP, type GitRig } from "../testing/git.js";
@@ -162,8 +162,14 @@ const OLD_GIT_CASES: Array<{ name: string; setup: (r: GitRig, top: string, uploa
     control: { args: ["-c", "protocol.allow=never"], env: { GIT_ALLOW_PROTOCOL: "" } },
   },
   {
-    name: "remote.origin.vcs=/ (the service's own value) with a git-remote-/ directory in the work tree",
-    setup: (r, top) => (r.git(["config", "remote.origin.vcs", "/"], top), mkdirSync(join(top, "git-remote-"), { recursive: true })),
+    name: "remote.origin.vcs=/ (the service's own value) with help.autocorrect and a near alias",
+    setup: (r, top) => {
+      r.git(["config", "remote.origin.vcs", "/"], top);
+      r.git(["config", "help.autocorrect", "-1"], top);
+      r.git(["config", "alias.remote-a", `!'${r.marker("autocorrect", "exit 1\n")}'`], top);
+    },
+    // Control: the service's own allow-list value without the autocorrect pin: git runs the closest alias.
+    control: { args: ["-c", "protocol.allow=never"], env: { GIT_ALLOW_PROTOCOL: "/" } },
   },
 ];
 

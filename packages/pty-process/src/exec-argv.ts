@@ -150,7 +150,19 @@ const commonPins = (off: string, withHooksPin: boolean): string[] => [
   "-c", "core.fsmonitor=",
   "-c", "protocol.allow=never",
   "-c", "protocol.ext.allow=never",
+  // GIT_ALLOW_PROTOCOL=/ admits a helper transport named `/` (remote.<r>.vcs=/). Its `git remote-/` is no builtin, no
+  // program and no alias, so git falls through to autocorrect, which with help.autocorrect set would run the closest alias
+  // (`alias.remote-a`). `0` (suggest only) on every version; `never` exists only from git 2.37.
+  "-c", "help.autocorrect=0",
 ];
+
+/**
+ * The lowest git the exec, scratch and hook messages accept, or undefined for none beyond what each feature needs. Only
+ * git 2.44 and later honour GIT_NO_LAZY_FETCH, the one switch that stops a lazy fetch whatever the repository's transport
+ * settings; below it the service relies on the transport and autocorrect pins (design §4.1, S1 note "Old git"). Setting
+ * this to [2, 44, 0] refuses older git instead, at the cost of the distributions that ship it.
+ */
+export const MIN_GIT_VERSION: GitVersion | undefined = undefined;
 
 /** The global options of a plain call (`repo` as `--git-dir`/`--work-tree`); the hooks pin is left out for the pinless read only. */
 export function plainPrefix(repo: { gitDir: string; workTree: string }, off: string, sub: string, pinless: boolean): string[] {

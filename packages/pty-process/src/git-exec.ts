@@ -4,7 +4,7 @@
 import { createHash } from "node:crypto";
 import { chmodSync, closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, rmSync, writeFileSync, writeSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
-import { boundPrefix, checkExecArgv, filterPins, OBJECT_ID, parseGitVersion, plainPrefix, atLeast, type GitVersion } from "./exec-argv.js";
+import { boundPrefix, checkExecArgv, filterPins, MIN_GIT_VERSION, OBJECT_ID, parseGitVersion, plainPrefix, atLeast, type GitVersion } from "./exec-argv.js";
 import { buildExecEnv, buildHookEnv, pty5Clean, type BoundRedirect, type ConfigIsolation } from "./exec-env.js";
 import { ATTEMPT_ID, type ControlReply, type ControlRequest, type ExecReply } from "./messages.js";
 import { hasNul, isAbsolutePath } from "./paths.js";
@@ -24,6 +24,8 @@ export interface GitExecConfig {
   readonly baseEnv: Readonly<Record<string, string | undefined>>;
   /** Execs running at once. Default 8. */
   readonly maxExecs?: number;
+  /** Refuse every exec and scratch step on git older than this (unknown counts as older). Default `MIN_GIT_VERSION`. */
+  readonly minGitVersion?: GitVersion;
   /** Bound on each internal git call of a scratch step. Default 120 s. */
   readonly stepTimeoutMs?: number;
 }
@@ -165,6 +167,9 @@ export function createGitExec(cfg: GitExecConfig, clock: Clock, platform: NodeJS
     return version;
   };
 
+  const floor = cfg.minGitVersion ?? MIN_GIT_VERSION;
+  const tooOld = (v: GitVersion | undefined): boolean => floor !== undefined && !atLeast(v, floor);
+
   const isolation = (v: GitVersion | undefined): ConfigIsolation | undefined =>
     atLeast(v, [2, 32, 0]) ? { kind: "env", emptyFile } : atLeast(v, [2, 24, 0]) ? { kind: "home", emptyDir } : undefined;
 
@@ -174,8 +179,9 @@ export function createGitExec(cfg: GitExecConfig, clock: Clock, platform: NodeJS
   const boundRun = async (a: Attempt, index: 1 | 2, args: readonly string[], stdin?: Uint8Array, maxOutput = 16 * 1024 * 1024): Promise<ExecOutcome | undefined> => {
     // Checked after every await: a close (or scratch-end) while a read ran must not start the next git.
     const gone = (): boolean => a.gen !== generation || attempts.get(a.id) !== a;
-    const iso = isolation(await detectVersion());
-    if (iso === undefined || gone()) return undefined;
+    const v = await detectVersion();
+    const iso = isolation(v);
+    if (iso === undefined || tooOld(v) || gone()) return undefined;
     const redirect = redirectFor(a, index);
     const env = buildExecEnv(cfg.baseEnv, {}, { redirect, isolation: iso });
     if (env === undefined) return undefined;
@@ -239,6 +245,7 @@ export function createGitExec(cfg: GitExecConfig, clock: Clock, platform: NodeJS
   const execReserved = async (m: ExecMsg, gen: number, fail: (code: Extract<ExecReply, { t: "exec-failed" }>["code"]) => void): Promise<void> => {
     const v = await detectVersion();
     if (gen !== generation) return;
+    if (tooOld(v)) return fail("spawn_failed");
     const verdict = checkExecArgv(m.argv, { gitPath: cfg.gitPath, bound: m.bind !== undefined, version: v });
     if (!verdict.ok) return fail("bad_argv");
     let prefix: string[];

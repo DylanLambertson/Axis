@@ -79,3 +79,21 @@ test("a close while the subcommand itself runs kills it, and its result never re
   await settle();
   assert.deepEqual(got, []);
 });
+
+test("a close while scratch-verify's write-tree runs sends nothing to the next channel", async (t) => {
+  const g = gatedExec(Promise.resolve());
+  const s = setup(t, g.exec);
+  const replies: unknown[] = [];
+  s.first.a.onMessage((m) => void replies.push(m));
+  s.first.a.send({ t: "scratch-begin", req: "v1", attempt: "attempt-close3", gitDir: s.gitDir, worktree: join(s.gitDir, ".."), tree: TREE });
+  await settle();
+  assert.deepEqual(replies, [{ t: "scratch-ready", req: "v1" }]);
+  s.first.a.send({ t: "scratch-verify", req: "v2", attempt: "attempt-close3" });
+  await settle();
+  assert.ok(g.log.some((r) => r.argv.includes("write-tree")), "verification is running write-tree");
+  s.first.a.close();
+  for (let i = 0; i < 4; i++) await Promise.resolve();
+  const got = s.reopen();
+  await settle();
+  assert.deepEqual(got, []);
+});

@@ -138,7 +138,7 @@ test("PTY-EXEC-1: every exec carries the service prefix; only the exact hooksPat
   const f = fakeExec();
   const r = fakeRig(f.exec);
   t.after(() => r.cleanup());
-  const pins = ["-c", "core.fsmonitor=", "-c", "protocol.allow=never", "-c", "protocol.ext.allow=never"];
+  const pins = ["-c", "core.fsmonitor=", "-c", "protocol.allow=never", "-c", "protocol.ext.allow=never", "-c", "help.autocorrect=0"];
   const head = ["--no-pager", "--no-replace-objects", "--git-dir=/w/.git", "--work-tree=/w"];
   const env = { GIT_AUTHOR_NAME: "A", LC_ALL: "C" };
   const cases: Array<[string[], string[]]> = [
