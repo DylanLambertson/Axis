@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { MAX_ACTIVITY_TEXT, MAX_PROMPT_CHARS, MAX_RUN_EVENTS, REFUSED_ACTIVITY } from "../src/index.js";
+import { MAX_ACTIVITY_TEXT, MAX_PREVIEW_FINDINGS, MAX_PREVIEW_HEAD, MAX_PROMPT_CHARS, MAX_RUN_EVENTS, REFUSED_ACTIVITY } from "../src/index.js";
 import { accepts, rejects, runSuite, schemaOf, type Sample } from "./suite.js";
 
 const T0 = "2026-11-05T10:00:00.000Z";
@@ -17,12 +17,13 @@ const queued = { ...running, runId: "run-4", state: "QUEUED", startedAt: null, l
 const events = [
   { seq: 1, at: T1, type: "state", state: "RUNNING", reason: null },
   { seq: 2, at: T1, type: "text", text: "line one\n\tline two" },
-  { seq: 3, at: T1, type: "approval", tool: "write_file", state: "requested", digest: D, reasons: ["protected:github"], paths: [{ access: "write", path: ".github/workflows/ci.yml" }] },
-  { seq: 4, at: T1, type: "tool", tool: "write_file", outcome: "error", reason: "approval_declined" },
-  { seq: 5, at: T2, type: "usage", usage: { inputTokens: 10, outputTokens: 4, requests: 1 } },
+  { seq: 3, at: T1, type: "approval", tool: "write_file", state: "requested", digest: D, reasons: ["protected:github"], paths: [{ access: "write", path: ".github/workflows/ci.yml" }], preview: { tier: "write", protected: true, content: { bytes: 8, sha256: "e".repeat(64), head: "on: push", truncated: false, findings: [] } } },
+  { seq: 4, at: T1, type: "approval", tool: "write_file", state: "denied", digest: D, reasons: ["protected:github"], paths: [{ access: "write", path: ".github/workflows/ci.yml" }], preview: null },
+  { seq: 5, at: T1, type: "tool", tool: "write_file", outcome: "error", reason: "approval_declined" },
+  { seq: 6, at: T2, type: "usage", usage: { inputTokens: 10, outputTokens: 4, requests: 1 } },
 ];
 
-const NULLABLE = /^((null|string) at (run|runs\.\d+)\.(mode|providerId|modelId|reason|usage))|null at events\.\d+\.reason$/;
+const NULLABLE = /^((null|string) at (run|runs\.\d+)\.(mode|providerId|modelId|reason|usage))|null at events\.\d+\.(reason|preview|preview\.content)$/;
 
 const SAMPLES: readonly Sample[] = [
   { contract: "axis.runs", method: "start", side: "request", name: "start", value: { workspaceId: "ws-1", mode: "agent", prompt: "Fix the bug", providerId: "mock", modelId: "mock-model" } },
@@ -32,7 +33,7 @@ const SAMPLES: readonly Sample[] = [
   { contract: "axis.runs", method: "list", side: "request", name: "list", value: { workspaceId: "ws-1", limit: 200 } },
   { contract: "axis.runs", method: "list", side: "response", name: "mixed", value: { runs: [running, failed, blocked, queued].map((r) => structuredClone(r)) }, toleratedPattern: NULLABLE },
   { contract: "axis.runs", method: "events", side: "request", name: "events", value: { runId: "run-1", afterSeq: 0, limit: 200 } },
-  { contract: "axis.runs", method: "events", side: "response", name: "all kinds", value: { events: structuredClone(events), nextSeq: 5, complete: false, available: true }, toleratedPattern: NULLABLE },
+  { contract: "axis.runs", method: "events", side: "response", name: "all kinds", value: { events: structuredClone(events), nextSeq: 6, complete: false, available: true }, toleratedPattern: NULLABLE },
 ];
 
 runSuite(SAMPLES);
@@ -102,4 +103,31 @@ test("runs.events: an approval names display paths and closed reasons only", () 
   rejects(eventsRes(), ap({ state: "approvedByAgent" }), "unknown state");
   rejects(eventsRes(), ap({ tool: "Write File" }), "tool name");
   rejects(eventsRes(), ap({ preview: "{\"content\":\"...\"}" }), "argument preview");
+});
+
+test("runs.events: a requested approval carries a bounded, escaped preview bound to its digest; later states carry none", () => {
+  const req = events[2] as { preview: { content: Record<string, unknown> } };
+  const ap = (over: Record<string, unknown>, content: Record<string, unknown> = {}, base: object = req) => {
+    const e = { ...structuredClone(base as object), ...over } as Record<string, unknown>;
+    if (Object.keys(content).length > 0) e["preview"] = { ...(e["preview"] as object), content: { ...req.preview.content, ...content } };
+    return { events: [e], nextSeq: 3, complete: false, available: true };
+  };
+  accepts(eventsRes(), ap({}), "as built");
+  accepts(eventsRes(), ap({ preview: { tier: "read", protected: false, content: null } }), "a call that writes nothing");
+  rejects(eventsRes(), ap({ preview: null }), "requested without a preview");
+  rejects(eventsRes(), ap({ state: "approved" }), "a later state with a preview");
+  accepts(eventsRes(), ap({ state: "approved", preview: null }), "a later state without one");
+  rejects(eventsRes(), ap({ preview: { tier: "admin", protected: false, content: null } }), "unknown tier");
+  rejects(eventsRes(), ap({ preview: { tier: "write", protected: false, content: null, args: "x" } }), "extra key");
+  accepts(eventsRes(), ap({}, { head: "h".repeat(MAX_PREVIEW_HEAD), truncated: true }), "head at the cap");
+  rejects(eventsRes(), ap({}, { head: "h".repeat(MAX_PREVIEW_HEAD + 1), truncated: true }), "head over the cap");
+  for (const bad of ["\r", "\u001b[2J", "\u202e", "\u200b", "\ud800"]) rejects(eventsRes(), ap({}, { head: `a${bad}b` }), `head ${JSON.stringify(bad)}`);
+  accepts(eventsRes(), ap({}, { head: "a\n\tb" }), "tab and newline");
+  rejects(eventsRes(), ap({}, { sha256: "E".repeat(64) }), "sha case");
+  rejects(eventsRes(), ap({}, { bytes: -1 }), "negative size");
+  rejects(eventsRes(), ap({}, { findings: ["has space"] }), "free-text finding");
+  rejects(eventsRes(), ap({}, { findings: Array.from({ length: MAX_PREVIEW_FINDINGS + 1 }, (_, i) => `r${i}`) }), "too many findings");
+  rejects(eventsRes(), ap({}, { head: "", truncated: false, findings: [] }), "a whole, clean content shown as nothing");
+  accepts(eventsRes(), ap({}, { head: "", truncated: true, findings: ["scan-incomplete"] }), "nothing shown, and said why");
+  accepts(eventsRes(), ap({}, { head: "", bytes: 0, sha256: "f".repeat(64), truncated: false, findings: [] }), "an empty file");
 });
