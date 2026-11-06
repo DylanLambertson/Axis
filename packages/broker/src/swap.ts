@@ -26,8 +26,9 @@ export interface SwapResult {
   /** The digest of what was written: the base of the caller's next write. */
   readonly digest: string;
   /**
-   * The replaced file changed after the last check and before the rename (a writer outside the lock, the residual window
-   * of section 3.3 item 5). That change is gone from the path; the caller must say so, never hide it.
+   * The replaced file was changed IN PLACE after the last check and before the rename (a writer outside the lock, the
+   * residual window of section 3.3 item 5). That change is gone from the path; the caller must say so, never hide it.
+   * A writer that instead renamed a new file over the name inside that window is NOT seen (see `swapContained` item 4).
    */
   readonly lostChange: boolean;
 }
@@ -52,8 +53,16 @@ async function digestOf(file: BrokerFile, max: number): Promise<string | undefin
  *    hash, checks again: the descriptor's identity, size and times (`fstat`), a second hash through the descriptor, the
  *    parent, and that the name still points at the same file. Only then is the temporary file renamed over the name.
  *    A writer that changed the file in place or replaced the name at any point before that last check is refused.
- * 4. A writer outside the lock between the last check and the rename is the residual window (one `lstat` and one
- *    `rename`); its change to the old file is detected through the still-open descriptor and reported (`lostChange`).
+ * 4. The residual window: a writer outside the lock acting between the last check (one `lstat`) and the `rename`.
+ *    A change it makes IN PLACE to the old file is seen through the still-open descriptor and reported (`lostChange`).
+ *    A writer that renames a new file over the name in that window (an editor's atomic save) is overwritten and NOT
+ *    seen: the rename discards that file and nothing here holds it. Without an atomic compare-and-rename (no portable
+ *    `renameat2(RENAME_EXCHANGE)` from Node) only the policies' ledger (section 3.2, a watcher) can flag it; until that
+ *    exists it is a known, bounded residual. The run base still holds the content from before the run.
+ * 5. The `link` and the `rename` are path-based, after the last parent check. A parent swapped for a symlink in that
+ *    window sends both names (they share the parent) into the moved directory; the parent is checked again afterwards
+ *    and the call fails `swapped`, which reports the write but cannot undo it. Whoever swaps it must already be able to
+ *    write there (the temporary file has to be in the destination too), so nothing is gained.
  */
 export async function swapContained(deps: ContainDeps, worktreeId: string, path: string, data: Uint8Array, o: SwapOptions): Promise<SwapResult> {
   const max = checkLimit(o.maxBytes);
@@ -103,6 +112,7 @@ export async function swapContained(deps: ContainDeps, worktreeId: string, path:
         if ((e as { code?: unknown } | null)?.code === "EEXIST") throw stale();
         throw e;
       }
+      await parentStill(); // item 5: detected, reported, not undone
       return { bytes: data.length, rel: target.rel, digest, lostChange: false };
     }
     const { file, stat } = await openContained(deps, target, "read");
@@ -121,6 +131,7 @@ export async function swapContained(deps: ContainDeps, worktreeId: string, path:
       cancelled(o.signal);
       await fs.rename(tmpPath, full);
       renamed = true;
+      await parentStill(); // item 5
       // The residual window: the old file is still open here, so a change made to it since the last check is seen.
       const last = await file.stat().catch(() => undefined);
       const lostChange = last === undefined || last.size !== stat.size || last.mtime !== stat.mtime || (await digestOf(file, max).catch(() => undefined)) !== base;

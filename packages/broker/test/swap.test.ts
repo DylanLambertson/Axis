@@ -2,7 +2,7 @@
 // Compare-and-swap writes (policies section 3.3, ticket C2): a write names the content it replaces, racing writers lose nothing silently.
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, linkSync, readdirSync, readFileSync, renameSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, linkSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ABSENT, BrokerError, contentDigest, nodeBrokerFs, swapContained, type BrokerFile, type BrokerFs } from "../src/index.js";
 import { makeWorld } from "./helpers.js";
@@ -171,4 +171,44 @@ test("a file system without rename and link cannot swap", async () => {
   const w = arena();
   const fs: BrokerFs = { lstat: nodeBrokerFs.lstat, realpath: nodeBrokerFs.realpath, open: nodeBrokerFs.open };
   assert.equal(await reason(swapContained(w.deps(fs), "wt1", "a.txt", Buffer.from("x"), o(ABSENT))), "E_POLICY_DENIED/fs-error");
+});
+
+test("a hard link made after the hash is refused by the descriptor re-check (same bytes, so no hash can see it)", { skip: skipLinks }, async () => {
+  const w = arena();
+  const p = join(w.wt, "a.txt");
+  writeFileSync(p, "base");
+  const fs = racing(p, { afterHash: () => linkSync(p, join(w.base, "kept-link")) });
+  assert.equal(await reason(swapContained(w.deps(fs), "wt1", "a.txt", Buffer.from("ours"), o(dg("base")))), "E_CONFLICT/stale");
+  assert.equal(readFileSync(p, "utf8"), "base");
+  noTemp(w.wt);
+});
+
+test("documented residual (item 4): a new file renamed over the name between the last check and the rename is overwritten, unflagged", async () => {
+  const w = arena();
+  const p = join(w.wt, "a.txt");
+  writeFileSync(p, "base");
+  const fs = racing(p, {
+    beforeRename: () => {
+      writeFileSync(join(w.base, "editor.tmp"), "editor save");
+      renameSync(join(w.base, "editor.tmp"), p);
+    },
+  });
+  const r = await swapContained(w.deps(fs), "wt1", "a.txt", Buffer.from("ours"), o(dg("base")));
+  // This is what the design says happens until the section 3.2 ledger exists: if it ever changes, update the docs.
+  assert.deepEqual([readFileSync(p, "utf8"), r.lostChange], ["ours", false]);
+});
+
+test("a parent swapped for a symlink just before the rename is reported `swapped` (item 5)", { skip: skipLinks }, async () => {
+  const w = arena();
+  const sub = join(w.wt, "sub");
+  mkdirSync(sub);
+  const p = join(sub, "a.txt");
+  writeFileSync(p, "base");
+  const fs = racing(p, {
+    beforeRename: () => {
+      renameSync(sub, join(w.outside, "sub"));
+      symlinkSync(join(w.outside, "sub"), sub);
+    },
+  });
+  assert.equal(await reason(swapContained(w.deps(fs), "wt1", "sub/a.txt", Buffer.from("ours"), o(dg("base")))), "E_POLICY_DENIED/swapped");
 });

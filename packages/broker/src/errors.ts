@@ -5,7 +5,7 @@ import type { ErrorCode } from "@axis/protocol";
 export type Reason =
   | "invalid-path" | "dotdot" | "backslash" | "drive-prefix" | "unc-or-device" | "win-name" | "outside-root"
   | "unregistered" | "root-moved" | "root-in-repository" | "symlink-escape" | "symlink-dangling" | "swapped"
-  | "not-regular" | "hardlink" | "exists" | "not-found" | "too-large" | "fs-error" | "stale"
+  | "not-regular" | "hardlink" | "exists" | "not-found" | "too-large" | "fs-error" | "stale" | "not-text"
   | "unknown-tool" | "invalid-tier" | "invalid-args" | "invalid-call" | "protected-path" | "no-approval-hook"
   | "approval-declined" | "approval-malformed" | "approval-expired" | "approval-mismatch" | "approval-replayed"
   | "approval-timeout" | "approval-error" | "bad-approver" | "audit-failed"

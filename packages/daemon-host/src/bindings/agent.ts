@@ -32,7 +32,8 @@ import type { WorktreeLocator } from "../ports/worktree-locator.js";
  *   (`composer/preview.ts`) only from the arguments whose digest is the one the challenge is bound to. No match, or no
  *   preview, declines the call before any challenge exists: the user never answers for content they were not shown.
  * - **Compare-and-swap writes (C2, policies section 3.3).** `read_file` answers with the content's digest on its first
- *   line; `write_file` names the digest it replaces as `base` (`absent`, the default, for a new file). The broker writes
+ *   line; `write_file` names the digest it replaces as `base` (`absent`, the default, for a new file), which must be the
+ *   one this run last saw for that file (any other is `stale`, so a predicted digest replaces nothing). The broker writes
  *   only if the file still holds that content (`swapContained`), under the workspace's write lock (`writeLock`: the
  *   project mutex that Axis git operations take), and otherwise refuses `stale` with nothing written. Axis never merges.
  * - **Drift (C2, policies section 3.4).** The digests a run saw are kept (`agent-observed.ts`); before each model turn
@@ -225,11 +226,18 @@ export function createAgentBinding(deps: AgentBindingDeps): AgentBinding {
       args: readArgs,
       targets: (a) => [{ path: a.path, access: "read" }],
       run: async (ctx, a) => {
-        const stat = await observed.statOf(a.path); // before the read: a change during it is hashed again next turn
+        const at = await observed.locate(a.path); // before the read: a change during it is hashed again next turn
         const data = await ctx.readFile(a.path, MAX_READ_BYTES);
+        let text: string;
+        try {
+          // Not lossy: text with U+FFFD in place of bad bytes, written back on this digest, would pass the compare-and-swap.
+          text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(data);
+        } catch {
+          throw new BrokerError("E_POLICY_DENIED", "not-text", "the file is not UTF-8 text");
+        }
         const digest = contentDigest(data);
-        observed.record(a.path, digest, stat);
-        return `digest: ${digest}\n${data.toString("utf8")}`;
+        if (at !== undefined) observed.record(a.path, at, digest, { wrote: false });
+        return `digest: ${digest}\n${text}`;
       },
     });
     broker.register({
@@ -239,8 +247,12 @@ export function createAgentBinding(deps: AgentBindingDeps): AgentBinding {
       targets: (a) => [{ path: a.path, access: "write" }],
       run: async (ctx, a) => {
         const data = Buffer.from(a.content, "utf8");
-        const r = await deps.writeLock(worktree.id, () => ctx.swapFile(a.path, data, { base: a.base ?? ABSENT, maxBytes: MAX_WRITE_BYTES }), ctx.signal);
-        observed.record(a.path, r.digest, undefined);
+        const base = a.base ?? ABSENT;
+        // §3.3: the base is the hash THIS run last observed for the file, not any digest that happens to match it.
+        if (base !== ABSENT && (await observed.seenBy(a.path)) !== base) throw new BrokerError("E_CONFLICT", "stale", "the base is not what the run last saw");
+        const at = await observed.locate(a.path);
+        const r = await deps.writeLock(worktree.id, () => ctx.swapFile(a.path, data, { base, maxBytes: MAX_WRITE_BYTES }), ctx.signal);
+        if (at !== undefined) observed.record(a.path, at, r.digest, { wrote: true, lost: r.lostChange });
         // The residual window of section 3.3: a change by a writer outside the lock was replaced. Say so; it is in the run base.
         const lost = r.lostChange ? "\nWarning: the file was changed by someone else while it was being replaced; that change was overwritten." : "";
         return `wrote ${data.length} bytes\ndigest: ${r.digest}${lost}`;
