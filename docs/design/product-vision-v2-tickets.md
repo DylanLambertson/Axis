@@ -16,12 +16,12 @@
 |---|---|---|---|---|---|
 | **PV-R1** | ADR 0006 "Agent home information architecture": Space, Project, Agent, Agent group, project home; agent to workspace rules; amendment to ADR 0004 (landing surface, row unit, terminology per O-1) | M | owner decisions O-1 to O-8 | large | design review |
 | **PV-R2** | Apply the approved §6 edits of `product-vision-v2.md` to `ROADMAP.md`, `PRODUCT.md`, `UX.md`, including whether ROADMAP's "first usable release target is the Phase 1 slice" still holds once 1c exists | S | PV-R1 approved | small | docs review |
-| **PV-R3** | ADR 0007 "Inter-agent messaging": daemon mediation, no capabilities, taint rule, CLI endpoint and the PTY-5 amendment, NET-1 note for the local socket | M | PV-R1 | large | security review |
-| **PV-R4** | Threat-model revision for 2a: IAC-1 to IAC-12, PAG-1, PAG-2, TSK-1 and the gate lines, on top of the open 1a revision (PR #459) | M | PV-R3; the 1a revision merged | large | security review |
-| **PV-R5** | ADR 0008 "Axis plugins": separate from Code OSS extensions; execution tiers; `plugin:*` principal (ADR 0003 change); permissions; install, signature, update | L | PV-R1, owner D-1 to D-4 | large | security review |
-| **PV-R6** | ADR 0009 "Integrations and the credential proxy": vault, egress rules, OAuth flow and the NET-1 exception, no inbound webhooks, D-9 | M | PV-R5, owner D-7 to D-11 | large | security review |
+| **PV-R3** | ADR 0007 "Inter-agent messaging": daemon mediation, no capabilities, thread participant sets and read authorization, the sticky taint rule and its closed source list, per-sender queue quotas, the CLI endpoint (bounds, token residual, Windows pipe and Unix directory rules, read-path escaping, bypass configuration) as a new local listener next to NET-1, and the PTY-5 amendment | M | PV-R1 | large | security review |
+| **PV-R4** | Threat-model revision for 2a: IAC-1 to IAC-16, PAG-1 to PAG-3, TSK-1, TSK-2 and the gate lines of `inter-agent-communication.md` §11, `inter-agent-cli-endpoint.md` §7 and `extensibility.md` §9, on top of the open 1a revision (PR #459) | M | PV-R3; the 1a revision merged | large | security review |
+| **PV-R5** | ADR 0008 "Axis plugins": separate from Code OSS extensions; execution tiers; the P1 host (a sandboxed view per plugin, navigation and WebRTC blocked, header CSP) and the `plugin:*` principal attested by main per view (ADR 0003 change); permissions and dangerous combinations; signed curated list with rollback protection; update diff; extraction rules | L | PV-R1, owner D-1 to D-4, D-12 | large | security review |
+| **PV-R6** | ADR 0009 "Integrations and the credential proxy": vault, request composition and URL pattern checks, egress rules (IP literals, proxy variables, mapped and NAT64 ranges), OAuth flow, user-only connect and the NET-1 exception, scope refusal, no inbound webhooks, D-9 | M | PV-R5, owner D-7 to D-11, D-14 | large | security review |
 | **PV-R7** | ADR 0010 "Pages": storage (D-5), format (D-6), rendering rules, agent access | S | PV-R1 | small | design review |
-| **PV-R8** | Threat-model revision for 4a: PLG, INT rows and gate lines | M | PV-R5, PV-R6 | large | security review |
+| **PV-R8** | Threat-model revision for 4a: PLG-1 to PLG-9, INT-1 to INT-6 and gate lines | M | PV-R5, PV-R6 | large | security review |
 
 ## 3. Phase 1c: agent home
 
@@ -45,29 +45,30 @@
 
 | ID | Ticket | Size | Depends on | Builder | Review |
 |---|---|---|---|---|---|
-| **PV-M1** | Protocol `axis.messages/1` (`send`, `thread`, `threads`, `markRead`, `pause`, `resume`, `settings`), strict schemas without capability fields, closed refusal reasons | M | PV-R3 | small | review |
+| **PV-M0** | Taint core (`inter-agent-communication.md` §6.5, §6.6): the sticky per-run flag set before tainted content is returned, the closed source list as a typed enum, the broker decision hook (tier recorded at issue, flag re-checked at consume), precedence over any standing grant, the `message.taint` audit event and the approval-card source list; one test per source | M | C1, C8 | large | review |
+| **PV-M1** | Protocol `axis.messages/1` (`send`, `thread`, `threads`, `read`, `markRead`, `pause`, `resume`, `settings`), strict schemas without capability fields, opaque random ids, closed refusal reasons; **policy rows for every read method** (B1) | M | PV-R3 | small | review |
 | **PV-M2** | Journal: `message_threads`, `agent_messages`, deliveries, settings; retention; bounded | M | PV-M1 | small | review |
-| **PV-M3** | Message service in the daemon host: routing and the per-recipient policy (`inter-agent-communication.md` §4), excerpts through review containment, limits and hop guard (§7), secret scan (H9-scan, merged), audit events (§8), pause and resume; import-allowlist test that it cannot reach minters | L | PV-M2, PV-G3 | large | review |
-| **PV-M4** | Composer participation: `send_message` and `read_messages` broker tools, turn-boundary delivery with labels and escaping, the taint rule IAC-T and the approval-card provenance list | L | PV-M3, C1, C8 | large | review |
+| **PV-M3** | Message service in the daemon host: send policy and **thread participant sets with participant-only reads, posting rules and `not_found` without an existence oracle** (`inter-agent-communication.md` §4), project derived from thread or recipients, excerpts with path refusals and review containment, limits, read caps, per-sender queue quotas and refuse-when-full, hop guard incl. pages and tasks (§7), secret scan (H9-scan, merged), keyed-hash audit events incl. `message.read.refused` (§8), pause and resume; transitive minter-walk test | L | PV-M2, PV-G3 | large | review |
+| **PV-M4** | Composer participation: `send_message` and `read_messages` broker tools, turn-boundary delivery as structured blocks with escaping, the taint sources 1 to 3 wired into PV-M0 | L | PV-M0, PV-M3, C1, C8 | large | review |
 | **PV-M5** | Thread view, unread counts, mute, Pause messaging; approval cards visually distinct from messages | M | PV-M3, E1 | small | UI review |
-| **PV-M6** | CLI endpoint: per-run socket or pipe, per-run token, revoke on run end, the PTY-5 amendment and test, rate limits | L | PV-M3, B9, H10 (merged), PV-R3 approved | large | review |
-| **PV-M7** | `axis-messages` stdio shim (two tools over the endpoint), packaging, user-facing setup copy; refusal for permission-bypass entries (M-3) | M | PV-M6 | large | review |
-| **PV-M8** | 2a messaging gate evidence (`inter-agent-communication.md` §11) | M | PV-M4 to PV-M7 | large | gate review |
-| **PV-T1** | Tasks journal and `axis.tasks/1`; agent task tools (tier 1, audited) | M | PV-G3 | small | review |
+| **PV-M6** | CLI endpoint (`inter-agent-cli-endpoint.md` §2 to §4): short user-owned runtime directory or hardened Windows pipe, peer checks, connection, framing, pre-auth and read bounds, aggregated auth-failure audit, revocation that closes open connections, per-run token and the PTY-5 amendment and test, "unverified writer" label | L | PV-M3, B9, H10 (merged), PV-R3 approved | large | review |
+| **PV-M7** | `axis-messages` stdio shim: two tools over the endpoint, directory or server-process checks before sending the token, daemon-side escaping of the read path and the label wrapper (§5), packaging, setup copy; enable rules for bypass entries and repository CLI configuration (§6, M-3) | M | PV-M6 | large | review |
+| **PV-M8** | 2a messaging gate evidence (`inter-agent-communication.md` §11, `inter-agent-cli-endpoint.md` §7) | M | PV-M4 to PV-M7 | large | gate review |
+| **PV-T1** | Tasks journal and `axis.tasks/1` with revisions (author, hop); agent task tools (side-effecting under IAC-T, audited); Start marks non-user text and taints the run (source 5) | M | PV-G3, PV-M0 | small | review |
 | **PV-T2** | Tasks UI and dashboard section; "Start" shows the full prompt and the source | M | PV-T1, PV-D1 | small | UI review |
-| **PV-Q1** | Pages store, versions and `axis.pages/1`; agent `read_page` and approved `write_page` | M | PV-R7, PV-G3 | small | review |
-| **PV-Q2** | Page renderer (sanitised Markdown, EL-5 links, no remote images) and the pages UI; Export to repository through diff review | M | PV-Q1 | large | review (renderer) |
+| **PV-Q1** | Pages store, versions with author and hop, and `axis.pages/1`; agent `read_page` (taint source 4) and approved `write_page` | M | PV-R7, PV-G3, PV-M0 | small | review |
+| **PV-Q2** | Isolated page view (opaque origin, no bridge port, header CSP, Trusted Types, pinned sanitizer), raster-only sniffed attachments, the pages UI; Export to repository through diff review; mXSS corpus test | M | PV-Q1 (PV-K3 later reuses this isolated view host) | large | review (renderer) |
 
 ## 5. Phase 4a: plugins and integrations
 
 | ID | Ticket | Size | Depends on | Builder | Review |
 |---|---|---|---|---|---|
-| **PV-K1** | `plugin:*` principal: attestation by main, identity step, policy rows, coverage check | L | PV-R5 | large | review |
-| **PV-K2** | Plugin manifest schema, permissions, contribution points; install with SHA-256 pinning, signature check, permission diff on update | L | PV-K1 | large | review |
-| **PV-K3** | P1 frame host and renderer plugin broker (sandbox, CSP, message port, per-call schema) | L | PV-K1, PV-K2 | large | review |
+| **PV-K1** | `plugin:*` principal: main mints one connection per plugin view bound to its `webContents` id; daemon identity step, policy rows, coverage check; the user connection never carries plugin calls | L | PV-R5 | large | review |
+| **PV-K2** | Plugin manifest schema, permissions, contribution points, dangerous-combination wording; install with SHA-256 pinning, publisher signature, signed curated list (embedded key, version, expiry, rotation, revocation), update diff over tier, permissions, origins, contributions and integrations; extraction rules | L | PV-K1 | large | review |
+| **PV-K3** | P1 host: sandboxed `WebContentsView` per plugin, own session partition, deny-all permission handlers, navigation and window-open denied, WebRTC removed, header CSP from the protocol handler | L | PV-K1, PV-K2 | large | review |
 | **PV-K4** | Contribution points: page, dashboard section, side-panel tab, task provider, message participant | M | PV-K3, PV-D1, PV-V2, PV-T1, PV-M3 | small | UI review |
 | **PV-K5** | Plugin contract tests (the existing Phase 4 gate item) | M | PV-K4 | small | gate review |
-| **PV-N1** | Credential proxy `axis.integrations/1` in the daemon: vault-held credentials, origin allowlist, redirect refusal, address checks, caps, closed errors | L | PV-R6, C6 (vault wiring) | large | review |
+| **PV-N1** | Credential proxy `axis.integrations/1` in the daemon: vault-held credentials, fixed method and path templates with typed encoded segments and a final URL pattern check, origin allowlist, IP literals refused, proxy variables ignored, redirect refusal, address checks incl. mapped and NAT64, caps, scope refusal, closed errors | L | PV-R6, C6 (vault wiring) | large | review |
 | **PV-N2** | OAuth (device-code first; one-shot loopback as a recorded NET-1 exception) | M | PV-N1 | large | review |
 | **PV-N3** | Only if the owner reverses D-9: first token-based integration (GitHub, read-only, behind the credential proxy). If D-9 stays, the first integration is the `gh`-based PR list (PV-D2) and PV-N3 is dropped; PV-N4 then evidences PV-N1 and PV-N2 with a test service | M | PV-N1, PV-N2 | small | review |
 | **PV-N4** | 4a gate evidence (`extensibility.md` §9) | M | PV-K5, PV-N3 | large | gate review |
@@ -78,7 +79,7 @@
 - **Docs wave (can start now):** PV-R1, then PV-R2, PV-R3 and PV-R7 in parallel; PV-R4 after PV-R3; PV-R5 and PV-R6 can wait for 4a planning.
 - **1c wave 1:** PV-G1 → PV-G2 → PV-G3; PV-V0 in parallel with PV-G1 (no dependency on daemon work).
 - **1c wave 2:** PV-G4, PV-D3, PV-D4 (small), PV-D2 (after B9 and X1), PV-V1 and PV-D1 (after E1), PV-V2 (after PV-V0, A5); then PV-V3, then PV-V4.
-- **2a:** PV-M1 → PV-M2 → PV-M3, then PV-M4 and PV-M5 in parallel, then PV-M6 → PV-M7, PV-M8 last; PV-T1, PV-T2, PV-Q1, PV-Q2 in parallel with messaging (only PV-T2 and PV-K4 cross over).
+- **2a:** PV-M0 first (PV-M4, PV-T1 and PV-Q1 depend on it); PV-M1 → PV-M2 → PV-M3, then PV-M4 and PV-M5 in parallel, then PV-M6 → PV-M7, PV-M8 last; PV-T1, PV-T2, PV-Q1, PV-Q2 in parallel with messaging (only PV-T2 and PV-K4 cross over).
 - **4a:** PV-K1 → PV-K2 → PV-K3 → PV-K4 → PV-K5; PV-N1 → PV-N2 → PV-N3; PV-N4 last.
 - **Critical path to 1c:** E1 (PR #457) and B9 merged, J2 for usage, A5 (unbuilt shell Changes view, needed by PV-V2), then PV-G1 to PV-G3, PV-V0, PV-V2, PV-D1, PV-V4. **Critical path to 4a integrations:** C6 (vault wiring, behind C1 to C5 and C8) before PV-N1. The side-panel editor (PV-V0, PV-V2) carries the most uncertainty.
 
@@ -90,7 +91,7 @@ Shared-file note: PV-G3, PV-M3, PV-T1 and PV-Q1 each add a contract, policy rows
 |---|---|---|---|---|
 | Docs | PV-R1–PV-R8 | 6 | 2 | PV-R3, PV-R5, PV-R6 decide most of the security shape |
 | 1c | PV-G1–PV-G4, PV-D1–PV-D4, PV-V0–PV-V4 | 7 | 6 | PV-V0 can change PV-V2's size by a lot |
-| 2a | PV-M1–PV-M8, PV-T1, PV-T2, PV-Q1, PV-Q2 | 7 | 5 | PV-M6 and PV-M7 depend on the PTY-5 amendment being accepted |
+| 2a | PV-M0–PV-M8, PV-T1, PV-T2, PV-Q1, PV-Q2 | 8 | 5 | PV-M6 and PV-M7 depend on the PTY-5 amendment being accepted |
 | 4a | PV-K1–PV-K5, PV-N1–PV-N4 | 6 | 3 | plugins with code wait for the Phase 3 sandbox |
 
 These counts are not a schedule. Each "Review" ticket has historically taken several review rounds before merge (trust-boundary packages so far needed between two and twelve review rounds); plan for that.

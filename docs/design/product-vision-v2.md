@@ -3,7 +3,7 @@
 - **Status:** Proposed (planning only). Nothing here changes `docs/ROADMAP.md`, `docs/PRODUCT.md`, `docs/UX.md` or an ADR. Proposed edits to those files are collected in §6 and need the owner's approval before they are applied.
 - **Date:** 2026-11-06 (owner direction of 2026-11-06). Verified against `origin/main` at `74cd12e`.
 - **Decision owner:** Dylan Lambertson.
-- **Companion files:** `docs/design/inter-agent-communication.md` (messaging between agents), `docs/design/extensibility.md` (plugins, pages, tasks, integrations), `docs/design/product-vision-v2-tickets.md` (ticket breakdown and ADR list).
+- **Companion files:** `docs/design/inter-agent-communication.md` (messaging between agents) with `docs/design/inter-agent-cli-endpoint.md` (the CLI agent endpoint), `docs/design/extensibility.md` (plugins, pages, tasks, integrations), `docs/design/product-vision-v2-tickets.md` (ticket breakdown and ADR list).
 - **Evidence tags:** **[V]** verified on `origin/main` or on the named branch at the stated commit; **[B]** exists only on an unmerged branch or open PR; **[I]** inferred or uncertain; **[N]** new, nothing exists.
 
 ## 1. The owner's direction (2026-11-06)
@@ -146,7 +146,7 @@ ADR 0004 decision 4 stands: `perWorkspace` (default), `global`, `split`. v2 adds
 
 ### 3.7 Pages, plugins, tasks, integrations in the navigation
 
-A project-level navigation (in the side panel above the tabs, or as a rail; decided in the UI directions work, §8): Home, Agents, Tasks, Pages, Integrations, Plugins, Settings. Plugins can add a page, a dashboard section, a side-panel tab or a task provider, only through declared contribution points (`extensibility.md` §3.3).
+A project-level navigation (in the side panel above the tabs, or as a rail; decided in the UI directions work, §8): Home, Agents, Tasks, Pages, Integrations, Plugins, Settings. Plugins can add a page, a dashboard section, a side-panel tab or a task provider, only through declared contribution points (`extensibility.md` §3.4).
 
 ## 4. Effort and risk, honestly
 
@@ -216,7 +216,7 @@ Screens to add to the design directions work. Each needs dark and light variants
 4. **Agent groups:** side-panel Agents tab with groups, drag to reorder, New agent and New group dialogs, the agent type picker (composer: connection and model; CLI: an `axis.cliAgents` entry, with the "governed by its own permissions, can push" disclosure), bulk actions.
 5. **All-agents surface:** one lane per agent with state, current step, waiting reason and changes; density at 5, 20 and 50 agents.
 6. **Focused agent view (main area):** the single-agent surface: header (name, type, group, branch, state, budget remaining), the activity stream with the composer docked below (composer agents) or the terminal panes with the "governed by its own permissions, can push" label (CLI agents), inline approval cards, diff review with accept and reject per file and hunk, Commit, Push branch and Open pull request, the drift and Git-config flags, and the agent's message threads in the right rail; states: running, waiting for approval, quiet (may be waiting for input), failed with reason, done.
-7. **Inter-agent thread view:** sender and recipients with type badges (user, composer, CLI, plugin), provenance labels, the "untrusted content" marker, refused-message notices, hop and rate-limit notices, per-agent mute, the project **Pause messaging** kill switch; an approval card next to a thread must look unlike any message.
+7. **Inter-agent thread view:** sender and recipients with type badges (user, composer, CLI, plugin), the "via CLI endpoint, unverified writer" label, provenance labels, bodies as escaped plain text, the "untrusted content" marker, refused-message notices, hop and rate-limit notices, per-agent mute, the project **Pause messaging** kill switch with its "stops new deliveries only" copy, refused-read and queue-full notices; an approval card next to a thread must look unlike any message.
 8. **Side panel with editable code:** Agents and Code tabs; file tree, Changes list, embedded editor with dirty state, "Open in IDE", Restricted Mode read-only state, local-checkout switch; behaviour in split mode.
 9. **Navigation for pages, plugins, tasks and integrations:** the project nav; pages list and a page (Markdown, no script); task list and task detail with "assign to agent" (shows the full prompt that will be sent); plugin install dialog (publisher, hash, signature state, permissions, network origins) and permission-increase dialog on update; integration connect flow (system browser), connected-integration health and revoke.
 10. **Settings:** per-agent messaging (accept from: none, group, project), per-project messaging pause, retention.
