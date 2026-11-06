@@ -99,12 +99,27 @@ export function zodClosure(zodDir, read = (rel) => readRegular(join(zodDir, rel)
   return [...wanted].filter((f) => listing.has(f)).sort();
 }
 
-/** Subpaths a package exports that map to a staged src file: `{ ".": "index", "./daemon-principal": "daemon-principal" }`. */
-function stageableExports(name, pkgJson, srcFiles) {
+/**
+ * Subpaths a package exports that map to a staged src file: `{ ".": "index", "./daemon-principal": "daemon-principal" }`.
+ * The lint must resolve exactly as the bundler does, so only the two shapes every package uses are modelled: a string, or an object
+ * whose keys are `types` and `default` only. Any other condition (`import`, `node`, ...), an array, a null or a non-string target,
+ * and any `*` pattern is refused outright rather than guessed at (RR-6, fail closed).
+ */
+export function stageableExports(name, pkgJson, srcFiles) {
   const out = {};
   for (const [key, val] of Object.entries(pkgJson.exports ?? {})) {
-    const target = typeof val === "string" ? val : val?.default;
-    const m = /^\.\/dist\/src\/([A-Za-z0-9_][A-Za-z0-9._/-]*)\.js$/.exec(target ?? "");
+    const at = `packages/${name}/package.json exports "${key}"`;
+    if (key.includes("*")) fail(`${at}: pattern exports are not supported by the staging lint`);
+    if (key !== "." && !key.startsWith("./")) fail(`${at}: not a subpath key`);
+    let target = val;
+    if (typeof val !== "string") {
+      if (val === null || typeof val !== "object" || Array.isArray(val)) fail(`${at}: only a string or a { types, default } object is supported`);
+      const extra = Object.keys(val).filter((k) => k !== "types" && k !== "default");
+      if (extra.length > 0) fail(`${at}: condition ${extra.join(", ")} is not supported (only types and default), the bundler could resolve it differently`);
+      if (typeof val.default !== "string") fail(`${at}: needs a string "default" target`);
+      target = val.default;
+    }
+    const m = /^\.\/dist\/src\/([A-Za-z0-9_][A-Za-z0-9._/-]*)\.js$/.exec(target);
     if (m && srcFiles.has(`${m[1]}.ts`)) out[key] = m[1];
   }
   if (out["."] !== "index") fail(`packages/${name}: package.json exports "." must be ./dist/src/index.js`);

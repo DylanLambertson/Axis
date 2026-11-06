@@ -60,3 +60,8 @@ export function metafileGaps(metafile, stagedOf) {
   }
   return gaps;
 }
+
+/** The requested entries (metafile input paths) that are not among the metafile's inputs: a build that dropped an entry saw none of its graph. */
+export function missingEntries(metafile, entries) {
+  return entries.filter((e) => !Object.hasOwn(metafile?.inputs ?? {}, e));
+}

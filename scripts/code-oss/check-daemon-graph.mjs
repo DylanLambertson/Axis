@@ -23,13 +23,13 @@
 //   4b. the web host (docs/design/web-host-entry.md): only `daemon-host/web/server.ts` imports a socket built-in (checked on staged
 //      modules and on the two desktop entry files themselves), and no module outside `daemon-host/web/` reaches it, directly or
 //      transitively (web-rules.mjs), so neither desktop bundle can contain a listener;
-//   0. the metafile is complete: not empty, every entry among its inputs, every staged edge target an input (graph-reach.mjs metafileGaps);
+//   0. (first) the metafile is complete: not empty, every entry among its inputs, every staged edge target an input (graph-reach.mjs metafileGaps);
 //   5. the bundled text carries the pinned zod version and not the tree's.
 import { createRequire } from "node:module";
 import { join, posix, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { RESTRICTED_MODULES, mayImportRestricted } from "./stage-scan.mjs";
-import { metafileGaps, minterReachViolations } from "./graph-reach.mjs";
+import { metafileGaps, minterReachViolations, missingEntries } from "./graph-reach.mjs";
 import { listenerBuiltinRefusal, listenerReachViolations, webHostEdgeRefusal } from "./web-rules.mjs";
 import { MANIFEST_NAME, STAGE_ROOT, verifyStaged } from "./stage-verify.mjs";
 import { readFileSync } from "node:fs";
@@ -50,13 +50,13 @@ const versionPattern = (v) => {
  */
 export function checkMetafile(metafile, manifest, { bundledText = null, treeZod = null } = {}) {
   const bad = [];
-  const stagedOf0 = (p) => (p.startsWith(PREFIX) ? p.slice(PREFIX.length) : null);
-  const gaps = metafileGaps(metafile, stagedOf0);
-  if (gaps.length > 0) return gaps.map((g) => `incomplete metafile: ${g}`); // every later rule would pass on a graph it did not see
+  const stagedOf = (p) => (p.startsWith(PREFIX) ? p.slice(PREFIX.length) : null);
+  const gaps = metafileGaps(metafile, stagedOf);
+  // Fail closed: every later rule would pass on a graph it did not see, so an incomplete metafile reports only its gaps (other violations show once it is complete).
+  if (gaps.length > 0) return gaps.map((g) => `incomplete metafile: ${g}`);
   const flagged = new Set(); // direct edges the restricted-module table already named, so the walk does not repeat them
   const flaggedWeb = new Set(); // direct edges into the web host already named
   const staged = new Set(manifest.files.map((f) => f.path));
-  const stagedOf = (p) => (p.startsWith(PREFIX) ? p.slice(PREFIX.length) : null);
   const pkgOf = (rel) => rel.split("/")[0];
   for (const [input, info] of Object.entries(metafile.inputs)) {
     if (/(^|\/)node_modules\//.test(input)) bad.push(`${input}: comes from node_modules (resolved from the tree, not vendored)`);
@@ -116,13 +116,12 @@ export function checkMetafile(metafile, manifest, { bundledText = null, treeZod 
   return bad;
 }
 
-/** Bundles `entries` (tree-relative) in `tree` with Code OSS's esbuild, then checks the metafile. */
-export async function checkTree({ tree, entries }) {
-  const manifest = verifyStaged(tree); // the hook's output must be intact before its graph means anything
+/** The real bundle: Code OSS's own esbuild with the options of build/next/bundle.ts. `build` in checkTree replaces it (tests). */
+async function realBuild(tree, entries) {
   const req = createRequire(join(tree, "build", "package.json"));
   const esbuild = req("esbuild");
   const { getBundleOptions } = await import(pathToFileURL(join(tree, "build", "next", "bundle.ts")).href);
-  const result = await esbuild.build({
+  return esbuild.build({
     ...getBundleOptions(false, "node"),
     entryPoints: entries.map((e) => join(tree, e)),
     outdir: join(tree, "out-axis-graph"),
@@ -131,12 +130,17 @@ export async function checkTree({ tree, entries }) {
     sourcemap: false,
     write: false,
   });
+}
+
+/** Bundles `entries` (tree-relative) in `tree` with Code OSS's esbuild, then checks the metafile. */
+export async function checkTree({ tree, entries, build = undefined }) {
+  const manifest = verifyStaged(tree); // the hook's output must be intact before its graph means anything
+  const result = await (build ?? realBuild)(tree, entries);
   const treeZod = JSON.parse(readFileSync(join(tree, "node_modules", "zod", "package.json"), "utf8")).version;
   const bundledText = result.outputFiles.map((f) => f.text).join("\n");
-  const missing = entries.filter((e) => !Object.hasOwn(result.metafile.inputs, posix.normalize(e)));
-  const violations = missing.map((e) => `incomplete metafile: entry ${e} is not among its inputs`);
+  const violations = missingEntries(result.metafile, entries.map((e) => posix.normalize(e))).map((e) => `incomplete metafile: entry ${e} is not among its inputs`);
   violations.push(...checkMetafile(result.metafile, manifest, { bundledText, treeZod }));
-  const inputs = Object.keys(result.metafile.inputs);
+  const inputs = Object.keys(result.metafile.inputs ?? {});
   return {
     violations, manifest, entries, inputs: inputs.length, stagedInputs: inputs.filter((i) => i.startsWith(PREFIX)).length, zod: manifest.zod, treeZod };
 }

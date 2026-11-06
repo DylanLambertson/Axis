@@ -117,7 +117,9 @@ export function classifySpecifier(spec, pkg, exportsOf, fileRel = null, targetOf
       const stem = targetOf(name, `.${sub}`);
       for (const [restricted, allowed] of RESTRICTED_SUBPATHS) {
         const [, rName, rSub] = /^@axis\/([a-z][a-z0-9-]*)\/(.+)$/.exec(restricted);
-        const sameFile = restricted === spec || (rName === name && stem !== undefined && targetOf(rName, `./${rSub}`) === stem);
+        // The restricted file comes from the module table, not from the restricted key's own mapping, so removing or remapping that key cannot free an alias.
+        const rFile = RESTRICTED_MODULES.find((m) => m.pkg === rName && m.file === `${rSub}.ts`)?.file.replace(/\.ts$/, "") ?? targetOf(rName, `./${rSub}`);
+        const sameFile = restricted === spec || (rName === name && stem !== undefined && rFile === stem);
         const exact = RESTRICTED_FILE_EXCEPTIONS.get(restricted)?.get(pkg)?.has(fileRel) === true;
         if (sameFile && !allowed.has(pkg) && !exact) throw `${spec} may only be imported by: ${[...allowed].join(", ")}${restricted === spec ? "" : ` (it maps to the file ${restricted} exports)`}`;
       }
