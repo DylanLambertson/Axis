@@ -9,7 +9,13 @@
   - `tokens.md`: the token set for the recommended direction.
 
   Direction A's mockup is the existing first mockup; it is described here and not copied into the repository.
-- **Product model:** the owner's update of 2026-11-05. Axis is an **agent home management system**: projects are containers; agents of any type (composer or CLI) are created inside a project and organised into groups; Agent view shows what each agent is doing, and IDE view is the second focus, toggled. The names used here (project home, agent, group, thread, task, page, plugin, integration) follow that update. They will be aligned with `docs/design/product-vision-v2.md` once it lands; it was not available when this was written.
+- **Product model:** the owner's update of 2026-11-05. Axis is an **agent home management system**: projects are containers; agents of any type (composer or CLI) are created inside a project and organised into groups; Agent view shows what each agent is doing, and IDE view is the second focus, toggled. The mockups follow `docs/design/product-vision-v2.md` (branch `docs/product-vision-v2`, proposed):
+  - the top container is a **Space** (personal in v1), and a project is one repository;
+  - each agent has one home workspace;
+  - a group is not a security boundary;
+  - pull requests are read through the user's own `gh` login, and Axis stores no forge credential;
+  - usage of CLI agents is "not available";
+  - the side panel with agents and code sits on the left.
 - **Upstream facts.** Where this document says how something maps onto the Code OSS workbench, **[V]** means read in the pinned source (Code OSS `1.144.0`, `2c33b50b`) and **[I]** means inferred, not verified by running anything.
 
 ## 1. The problem
@@ -116,10 +122,12 @@ Each is deliberate, and each needs the owner's approval.
 
 ## 5. Project-level screens (owner update)
 
-The owner's update adds eight screens to the four above. Mockups B and C both show all twelve; the screen bar at the top of each mockup switches between them. The project home is the first screen when a project opens. The content is identical in both mockups; only the visual language differs.
+The owner's update adds ten screens to the four above. Mockups B and C both show all fourteen; the screen bar at the top of each mockup switches between them. The project home is the first screen when a project opens. The content is identical in both mockups; only the visual language differs.
 
 | Screen | What it shows | Rules it demonstrates |
 |---|---|---|
+| **New project** | One form: repository (local folder; clone from a URL marked "later"), name, base branch, first agent group, default model for composer agents, monthly budget. Beside it, a plain list of what Axis will and will not do | Labels above fields, hints tied to fields (`aria-describedby`), and errors in text that move focus to the field. It states that the checkout is never changed and that no agent starts until the user creates one. `⌘↵` creates the project |
+| **Agent** (one agent, main area) | The agent's activity stream at full size, with the pending approval inline. A right column lists approval history, files changed (with a link to review) and this run's model and cost. Header actions: back to project home, threads, open in IDE view, stop run | Focus lands on the pending decision. Deciding records an event and moves focus to the composer. The approval is decided only here, never from the project home |
 | **Project home** | A "Needs you" list first; open pull requests with checks and review state; usage and cost against a budget; runs by state; open tasks; recent activity across agents | A dense list per section, not a metric wall. Every number has a text label. CLI agents are listed as not metered by Axis, never as zero cost |
 | **Agents** | Groups on the left (all, each group, ungrouped); the selected group's agents in one table, composer and CLI agents together, with type, what each is doing now, workspace and last activity; the group's rules (messages, approvals, budget) in plain words | Agent type is shown by text and by avatar shape (rounded for composer, dashed square for CLI), not by colour. An agent with no workspace says "reads only" |
 | **Thread** | A conversation between two agents of any type: thread list on the left; each message shows sender → receiver, time and its relay state | See §5.1 |
@@ -155,7 +163,7 @@ In both directions the rail lives inside the Axis agent part. Agent view already
 | **Cost on Code OSS workbench parts** | Low: Axis agent part (own DOM) plus theme colours (already shipped in `theme-axis`) | High. Gaps between grid leaves need the Axis grid to inset every part. Rounded, shadowed tiles mean CSS overrides on upstream `.part` elements (title bar, sidebar, editor, panel, auxiliary bar, status bar), which upstream churn can break. The spine is a new part or an activity-bar replacement. Blur on quick input costs GPU on Electron | Low to medium: agent part (own DOM), theme colours, Axis-registered colour and size tokens, one small CSS file for overlays and radii |
 | **Accessibility (WCAG 2.2 AA)** | Meets text and control contrast with the tokens in `docs/UX.md`. Status leans on colour (1.4.1 at risk). Some hunk buttons are 22 px tall (2.5.8 needs 24 px) | Meets contrast as specified. Shapes for status. Extra checks needed: text over translucency in every theme and wallpaper, forced colours (shadows and blur disappear, so tiles need borders), focus visibility on tiles | Meets contrast as specified in `tokens.md`, with status shapes and 24 px minimum targets. Flat surfaces behave well in forced colours |
 | **Dark and light** | Both, from `docs/UX.md` | Both, but light mode loses much of the instrument feel (the void becomes pale grey) | Both, equal quality; the lifted layer works in both |
-| **Project-level screens** | Not drawn | All eight. The icon-only spine is hard to learn for eight destinations | All eight. The labelled rail is self-explanatory |
+| **Project-level screens** | Not drawn | All ten. The icon-only spine is hard to learn for eight destinations | All eight. The labelled rail is self-explanatory |
 | **Consistency with IDE view** | High: same flat panes | Low unless every upstream part is restyled; otherwise Agent view and IDE view look like two apps | High: IDE view gets the same tokens, overlays and focus ring |
 
 ### 6.1 Implementation cost by part
@@ -234,3 +242,14 @@ These are proposals only; `docs/UX.md` is unchanged in this branch. Each applies
 12. **Code panel.** Add to the workspace view: a side panel with the group's agents and one editable file. Its saves count as edits outside the agent, and it has a one-step path to IDE view at the same location.
 13. **Permissions in plain words.** Every plugin, integration and page shows a Permissions card listing what it can and cannot do, in sentences, with "Can" and "Cannot" announced to screen readers. It always says whether agents receive the credential.
 14. **Usage and cost.** The project home shows spend against a budget, with the percentage in text. CLI agents are labelled "not metered by Axis", never shown as zero cost.
+
+**Not yet drawn from `product-vision-v2.md` §8:**
+- the All-agents lanes at 5, 20 and 50 agents;
+- the New agent dialog with the type picker and the CLI disclosure;
+- the plugin install and permission-increase dialogs;
+- the integration connect flow;
+- per-agent messaging settings and the project-wide "Pause messaging" switch;
+- the side panel's Restricted Mode and local-checkout states;
+- the empty states.
+
+These are the next mockup tickets once a direction is chosen.

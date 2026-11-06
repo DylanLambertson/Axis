@@ -14,6 +14,8 @@
     plugins: [P + 'Plugins <i>›</i> <b>Test reporter</b>', 'Plugins'],
     tasks: [P + 'Tasks <i>›</i> <b>Fix proration rounding</b>', 'Tasks'],
     integ: [P + 'Integrations <i>›</i> <b>GitHub</b>', 'Integrations'],
+    newproj: ['Personal space <i>›</i> <b>New project</b>', 'New project'],
+    agent: [P + 'Billing squad <i>›</i> <b>Proration fixer</b>', 'Agent view, Proration fixer, waiting for approval'],
     ide: ['payments-core <i>›</i> <b>Local checkout</b>', 'IDE view, local checkout']
   };
   var live = document.getElementById('live'), cur = 'home';
@@ -26,11 +28,11 @@
     document.getElementById('crumb').innerHTML = screens[n][0];
     q('.screens button').forEach(function (b) { b.setAttribute('aria-pressed', String(b.dataset.go === n)); });
     q('.seg button').forEach(function (b) { b.setAttribute('aria-pressed', String(b.dataset.view === (n === 'ide' ? 'ide' : 'agent'))); });
-    q('.nav [data-go], .spine [data-go]').forEach(function (b) { b.setAttribute('aria-current', String(b.dataset.go === n || (b.dataset.go === 'dash' && (n === 'ws' || n === 'rv')))); });
+    q('.nav [data-go], .spine [data-go]').forEach(function (b) { b.setAttribute('aria-current', String(b.dataset.go === n || (b.dataset.go === 'dash' && (n === 'ws' || n === 'rv')) || (b.dataset.go === 'agents' && n === 'agent' && !b.closest('.spine')))); });
     var sb = document.getElementById('sbranch'); if (sb) sb.textContent = n === 'ide' ? 'main' : 'fix/proration-rounding';
     say(screens[n][1]);
     if (focus) {
-      var t = n === 'rv' ? document.querySelector('#v-rv .hunk-act button') : document.querySelector('#v-' + n + ' .row, #v-' + n + ' .tr[data-go], #v-' + n + ' .li[aria-current="true"], #v-' + n + ' textarea, #v-' + n + ' .code');
+      var t = n === 'rv' ? document.querySelector('#v-rv .hunk-act button') : n === 'newproj' ? document.getElementById('nppath') : n === 'agent' ? document.getElementById('agapprove') || document.getElementById('agask') : document.querySelector('#v-' + n + ' .row, #v-' + n + ' .tr[data-go], #v-' + n + ' .li[aria-current="true"], #v-' + n + ' textarea, #v-' + n + ' .code');
       if (t) t.focus();
     }
     try { history.replaceState(null, '', '#' + n); } catch (e) { /* file: URLs in some browsers */ }
@@ -74,6 +76,35 @@
   }
   document.getElementById('approve').addEventListener('click', function () { decide(true); });
   document.getElementById('deny').addEventListener('click', function () { decide(false); });
+  function agDecide(ok) {
+    var d = document.getElementById('agdecision'); if (!d) return;
+    var ev = document.createElement('div'); ev.className = 'ev new';
+    ev.innerHTML = '<span class="node ping">' + (ok ? '✓' : '×') + '</span><span><b>' + (ok ? 'Approved once' : 'Denied') + '</b> by you: edit <code>.github/workflows/ci.yml</code>.' + (ok ? ' The file will be flagged in review.' : '') + '</span><time>14:10</time>';
+    d.replaceWith(ev);
+    document.getElementById('agstate').innerHTML = '<span class="g g-run" aria-hidden="true"></span><span>Running</span>';
+    document.getElementById('agpending').textContent = 'none waiting';
+    say(ok ? 'Approved once. Proration fixer running.' : 'Denied. Proration fixer running.'); document.getElementById('agask').focus();
+  }
+  document.getElementById('agapprove').addEventListener('click', function () { agDecide(true); });
+  document.getElementById('agdeny').addEventListener('click', function () { agDecide(false); });
+  document.getElementById('stoprun').addEventListener('click', function () {
+    var d = document.getElementById('agdecision'); if (d) d.remove();
+    document.getElementById('agstream').insertAdjacentHTML('beforeend', '<div class="ev new"><span class="node">■</span><span><b>Run stopped by you.</b> Changes so far stay in the worktree for review.</span><time>14:10</time></div>');
+    document.getElementById('agstate').innerHTML = '<span class="g g-idle" aria-hidden="true"></span><span>Stopped</span>';
+    document.getElementById('stoprun').disabled = true; say('Run stopped. Changes stay in the worktree.'); document.getElementById('agask').focus();
+  });
+  var form = document.getElementById('npform'), npname = document.getElementById('npname');
+  npname.addEventListener('input', function () { document.getElementById('npsumname').textContent = npname.value || 'the project'; });
+  function createProject() {
+    var v = npname.value.trim(), st = document.getElementById('npstatus');
+    if (!/^[A-Za-z0-9-]+$/.test(v)) {
+      npname.setAttribute('aria-invalid', 'true'); npname.setAttribute('aria-describedby', 'npnameh npstatus');
+      st.textContent = 'Name: use letters, digits and dashes.'; st.className = 'err'; npname.focus(); return;
+    }
+    npname.removeAttribute('aria-invalid'); st.className = 'sub';
+    st.textContent = 'Created ' + v + ' with the group ' + (document.getElementById('npgroup').value || 'Ungrouped') + '. No agents yet.';
+  }
+  form.addEventListener('submit', function (e) { e.preventDefault(); createProject(); });
   var pause = document.getElementById('pause'), stop = document.getElementById('stopthread');
   pause.addEventListener('click', function () {
     var p = pause.getAttribute('aria-pressed') !== 'true';
@@ -99,6 +130,7 @@
     if (mod && e.key.toLowerCase() === 'k') { e.preventDefault(); openPal(); return; }
     if (mod && e.key.toLowerCase() === 's' && document.activeElement === ed) { e.preventDefault(); save(); return; }
     if (cur === 'ws' && mod && e.key === 'Enter' && document.getElementById('decision')) { e.preventDefault(); decide(true); return; }
+    if (cur === 'newproj' && mod && e.key === 'Enter') { e.preventDefault(); createProject(); return; }
     if (typing || mod || (cur !== 'dash' && cur !== 'home' && cur !== 'agents')) return;
     if (e.key === 'j' || e.key === 'k') {
       var rows = q('#v-' + cur + ' .row, #v-' + cur + ' button.tr'), i = rows.indexOf(document.activeElement);

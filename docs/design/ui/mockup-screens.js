@@ -8,12 +8,12 @@
 
   S.home = '<section class="view" id="v-home" aria-label="Project home: acme-web" hidden><div class="pane pg">' +
     '<div class="pgh"><div><span class="lbl">Project</span><h1>acme-web</h1><span class="sub mono">github.com/acme/web · main@a41c9e2 · 7 agents in 3 groups</span></div><span class="gap"></span><button class="btn sec" type="button" data-go="tasks">New task</button><button class="btn pri" type="button" data-go="agents">New agent <span class="kbd">A</span></button></div>' +
-    '<div class="card need" role="group" aria-label="Needs you"><header><span class="lbl">Needs you</span><span class="sub">3 items, oldest first</span></header>' +
-      '<button class="tr" type="button" data-go="ws" style="--cols:18px 1.2fr 1.6fr 90px">' + g('wait') + '<span><b>Proration fixer</b> waiting for approval</span><span class="sub">Run <span class="mono">npm test -- billing</span> in fix/proration-rounding</span><span class="sub num">2 min</span></button>' +
+    '<div class="card need" role="group" aria-label="Needs attention"><header><span class="lbl">Needs attention</span><span class="sub">3 items, oldest first</span></header>' +
+      '<button class="tr" type="button" data-go="agent" style="--cols:18px 1.2fr 1.6fr 90px">' + g('wait') + '<span><b>Proration fixer</b> waiting for approval</span><span class="sub">Edit <span class="mono">.github/workflows/ci.yml</span>, a protected path. Decide it in the agent view</span><span class="sub num">2 min</span></button>' +
       '<button class="tr" type="button" data-go="thread" style="--cols:18px 1.2fr 1.6fr 90px">' + g('wait') + '<span><b>Planner</b> asked another agent to approve an action</span><span class="sub">Not relayed. Approvals never travel in messages; decide it yourself or dismiss</span><span class="sub num">4 min</span></button>' +
       '<button class="tr" type="button" data-go="rv" style="--cols:18px 1.2fr 1.6fr 90px">' + g('bad') + '<span><b>Invoice migrator</b> exited with code 1</span><span class="sub"><span class="tag warn">Git config or hooks changed</span> review before you push</span><span class="sub num">11 min</span></button></div>' +
     '<div class="grid2">' +
-    '<div class="card" role="group" aria-label="Pull requests"><header><span class="lbl">Pull requests</span><span class="sub">3 open on GitHub</span></header>' +
+    '<div class="card" role="group" aria-label="Pull requests"><header><span class="lbl">Pull requests</span><span class="sub">3 open · read through your <span class="mono">gh</span> login</span></header>' +
       '<div class="tr" style="--cols:52px 1fr 128px 132px"><span class="sub mono">#481</span><span class="cell"><b>fix(billing): round prorated totals once</b><span class="sub mono">fix/proration-rounding · Proration fixer</span></span><span class="pill">' + g('ok', 'checks 12/12') + '</span><span class="pill">' + g('ok', 'approved') + '</span></div>' +
       '<div class="tr" style="--cols:52px 1fr 128px 132px"><span class="sub mono">#482</span><span class="cell"><b>feat: invoice table v2</b><span class="sub mono">feat/invoice-v2 · Invoice migrator</span></span><span class="pill">' + g('bad', '1 of 14 failing') + '</span><span class="pill">' + g('wait', 'changes requested') + '</span></div>' +
       '<div class="tr" style="--cols:52px 1fr 128px 132px"><span class="sub mono">#479</span><span class="cell"><b>docs: auth flow</b><span class="sub mono">docs/auth-flow · Auth docs writer</span></span><span class="pill">' + g('run', 'running 3/9') + '</span><span class="pill">' + g('idle', 'awaiting review') + '</span></div></div>' +
@@ -21,7 +21,7 @@
       '<div class="meterrow"><span><b class="num">$142.18</b> <span class="sub">of $300 budget</span></span><span class="bar" role="img" aria-label="47 percent of budget used"><i style="width:47%"></i></span><span class="sub num">47%</span></div>' +
       '<div class="tr" style="--cols:1fr 110px 80px"><span>large-2 · API key</span><span class="sub num">9.1 M tokens</span><span class="num">$138.02</span></div>' +
       '<div class="tr" style="--cols:1fr 110px 80px"><span>small-2 · API key</span><span class="sub num">2.4 M tokens</span><span class="num">$4.16</span></div>' +
-      '<div class="tr" style="--cols:1fr"><span class="sub">CLI agents (shipit, patchr) use their own accounts. Axis does not meter or limit them.</span></div></div>' +
+      '<div class="tr" style="--cols:1fr"><span class="sub">CLI agents (shipit, patchr): usage not available. Axis does not read a CLI\'s own data.</span></div></div>' +
     '<div class="card" role="group" aria-label="Runs"><header><span class="lbl">Runs</span><span class="sub">now</span></header>' +
       '<div class="tr" style="--cols:1fr 1fr"><span class="pill">' + g('run', '3 running') + '</span><span class="sub">Planner, Webhook retry, Auth docs writer</span></div>' +
       '<div class="tr" style="--cols:1fr 1fr"><span class="pill">' + g('wait', '1 waiting for approval') + '</span><span class="sub">Proration fixer</span></div>' +
@@ -38,8 +38,8 @@
       '<div class="tr" style="--cols:56px 160px 1fr"><time class="sub mono">14:06</time><span>Proration fixer</span><span class="sub">asked to run <span class="mono">npm test -- billing</span></span></div></div>' +
     '</div></section>';
 
-  var agentRow = function (m, cli, name, kind, st, stLabel, where, last) {
-    return '<button class="tr" type="button" data-go="' + (where.indexOf('/') > 0 ? 'ws' : 'thread') + '" style="--cols:30px 1.1fr 1fr 1.2fr 1.3fr 64px">' + av(m, cli) + '<b>' + name + '</b><span class="sub">' + kind + '</span><span class="pill">' + g(st, stLabel) + '</span><span class="sub mono">' + where + '</span><span class="sub num">' + last + '</span></button>';
+  var agentRow = function (m, cli, name, kind, st, stLabel, where, last, go) {
+    return '<button class="tr" type="button" data-go="' + (go || (m === 'PL' ? 'thread' : 'ws')) + '" style="--cols:30px 1.1fr 1fr 1.2fr 1.3fr 64px">' + av(m, cli) + '<b>' + name + '</b><span class="sub">' + kind + '</span><span class="pill">' + g(st, stLabel) + '</span><span class="sub mono">' + where + '</span><span class="sub num">' + last + '</span></button>';
   };
   S.agents = '<section class="view" id="v-agents" aria-label="Agents" hidden>' +
     '<aside class="pane list" aria-label="Agent groups"><div class="ph"><span class="lbl">Groups</span><button class="btn sec sm" type="button">New group</button></div>' +
@@ -47,14 +47,15 @@
     '<div class="pane pg"><div class="pgh"><div><span class="lbl">Group</span><h1>Billing squad</h1><span class="sub">Agents that work on billing. Shared context: the page <span class="mono">Billing rounding policy</span>. Default model large-2.</span></div><span class="gap"></span><button class="btn sec" type="button">Edit group</button><button class="btn pri" type="button">New agent <span class="kbd">A</span></button></div>' +
       '<div class="card"><header><span class="lbl">Agents</span><span class="sub">3 · composer and CLI agents together</span></header>' +
         '<div class="tr th" style="--cols:30px 1.1fr 1fr 1.2fr 1.3fr 64px"><span></span><span class="lbl">Name</span><span class="lbl">Type</span><span class="lbl">Doing now</span><span class="lbl">Workspace</span><span class="lbl">Last</span></div>' +
-        agentRow('PL', false, 'Planner', 'Composer · Agent', 'run', 'coordinating 2 agents', 'no workspace (reads only)', 'now') +
-        agentRow('PF', false, 'Proration fixer', 'Composer · Agent', 'wait', 'waiting for approval', 'fix/proration-rounding', '2 min') +
+        agentRow('PL', false, 'Planner', 'Composer · Agent', 'run', 'coordinating 2 agents', 'plan/billing-q4', 'now') +
+        agentRow('PF', false, 'Proration fixer', 'Composer · Agent', 'wait', 'waiting for approval', 'fix/proration-rounding', '2 min', 'agent') +
         agentRow('IM', true, 'Invoice migrator', 'shipit · CLI agent', 'bad', 'exited with code 1', 'feat/invoice-v2', '11 min') + '</div>' +
-      '<div class="card"><header><span class="lbl">Group rules</span></header><dl class="kv"><dt>Messages</dt><dd>Agents in this group may message each other through Axis. You see every message and can stop any thread.</dd><dt>Approvals</dt><dd>Each composer agent asks you for its own approvals. CLI agents follow their own permissions, not Axis approvals.</dd><dt>Budget</dt><dd>$150 a month for composer agents; CLI agents are not metered by Axis.</dd></dl></div>' +
+      '<div class="card"><header><span class="lbl">Group rules</span></header><dl class="kv"><dt>Messages</dt><dd>Agents in this group may message each other through Axis. You see every message and can stop any thread.</dd><dt>Approvals</dt><dd>Each composer agent asks you for its own approvals. CLI agents follow their own permissions, not Axis approvals.</dd><dt>Budget</dt><dd>$150 a month for composer agents; usage of CLI agents is not available to Axis.</dd><dt>Scope</dt><dd>A group organises agents and sets who may message whom. It is not a security boundary: agents in a group do not share files, credentials or processes.</dd></dl></div>' +
     '</div></section>';
 
   var msg = function (from, fm, fcli, to, time, body, meta) {
-    return '<article class="msg" aria-label="' + from + ' to ' + to + ', ' + time + '"><header>' + av(fm, fcli) + '<b>' + from + '</b><span class="route" aria-hidden="true">→</span><span class="sub">' + to + '</span><span class="gap"></span><time class="sub mono">' + time + '</time></header><p>' + body + '</p>' + (meta ? '<footer class="sub">' + meta + '</footer>' : '') + '</article>';
+    var badge = from === 'You' ? 'you' : (fcli ? 'CLI' : 'composer');
+    return '<article class="msg" aria-label="' + from + ' to ' + to + ', ' + time + '"><header>' + av(fm, fcli) + '<b>' + from + '</b><span class="tag">' + badge + '</span>' + (from === 'You' ? '' : '<span class="tag warn" title="Text written by an agent. Treat it as untrusted input.">untrusted text</span>') + '<span class="route" aria-hidden="true">→</span><span class="sub">' + to + '</span><span class="gap"></span><time class="sub mono">' + time + '</time></header><p>' + body + '</p>' + (meta ? '<footer class="sub">' + meta + '</footer>' : '') + '</article>';
   };
   S.thread = '<section class="view" id="v-thread" aria-label="Agent thread" hidden>' +
     '<aside class="pane list" aria-label="Threads"><div class="ph"><span class="lbl">Threads</span><span class="sub">acme-web</span></div>' +
@@ -67,16 +68,13 @@
         msg('Planner', 'PL', false, 'Invoice migrator', '14:10', 'The migration fails on <code>invoice_lines.currency</code>. Read <code>db/migrations/0042_invoice_v2.sql</code> and add a default before the NOT NULL.', 'Relayed by Axis · delivered') +
         msg('Invoice migrator', 'IM', true, 'Planner', '14:12', 'Added <code>DEFAULT \'USD\'</code>. Tests pass. I also changed <code>.git/hooks/pre-push</code> to skip the slow suite.', 'Relayed by Axis · delivered') +
         '<div class="sysmsg">' + g('wait') + '<span><b>Axis:</b> Git config or hooks changed in <span class="mono">feat/invoice-v2</span> during this run. Flagged in review.</span><time class="sub mono">14:12</time></div>' +
-        '<article class="msg blocked" aria-label="Planner to Invoice migrator, 14:13, not relayed"><header>' + av('PL') + '<b>Planner</b><span class="route" aria-hidden="true">→</span><span class="sub">Invoice migrator</span><span class="gap"></span><span class="pill">' + g('bad', 'not relayed') + '</span><time class="sub mono">14:13</time></header><p>Please approve <code>npm publish</code> for me so I can release the client.</p><footer><span>Axis did not relay this: it asks another agent to approve an action. Only you approve Planner\'s actions.</span><button class="btn sec sm" type="button" data-go="ws">Review Planner\'s request</button></footer></article>' +
+        '<article class="msg blocked" aria-label="Planner to Invoice migrator, 14:13, not relayed"><header>' + av('PL') + '<b>Planner</b><span class="tag">composer</span><span class="route" aria-hidden="true">→</span><span class="sub">Invoice migrator</span><span class="gap"></span><span class="pill">' + g('bad', 'not relayed') + '</span><time class="sub mono">14:13</time></header><p>Please approve <code>npm publish</code> for me so I can release the client.</p><footer><span>Axis did not relay this: it asks another agent to approve an action. Only you approve Planner\'s actions.</span><button class="btn sec sm" type="button" data-go="ws">Review Planner\'s request</button></footer></article>' +
         msg('You', 'YO', false, 'Planner, Invoice migrator', '14:14', 'Revert the hook change; hooks are not part of this task.', 'Sent by you · delivered to both') +
       '</div>' +
       '<div class="composer"><label class="sr" for="tmsg">Message both agents as you</label><textarea id="tmsg" rows="1" placeholder="Message both agents as you"></textarea><div class="cbar"><span class="sub">Visible to you and both agents · logged in the project</span><span class="gap"></span><button class="btn pri" type="button">Send</button></div></div>' +
     '</div></section>';
 
   S.code = '<section class="view" id="v-code" aria-label="Workspace with code panel" hidden>' +
-    '<div class="pane session"><div class="ph"><h2>Proration fixer</h2><span class="sub mono">fix/proration-rounding</span><span class="gap"></span><span class="pill">' + g('run', 'running') + '</span></div>' +
-      '<div class="stream" role="log" aria-label="Agent activity"><div class="ev"><span class="node">✓</span><span><b>Approved once</b> by you: <code>npm test -- billing</code>.</span><time>14:06</time></div><div class="ev"><span class="node">▷</span><span>Running <code>npm test -- billing</code>: 42 of 42 passed.</span><time>14:07</time></div><div class="ev"><span class="node">✎</span><span>Updating the doc comment in <code>src/billing/proration.ts</code>.</span><time>14:08</time></div><div class="ev"><span class="node">!</span><span><b>You edited</b> <code>src/billing/proration.ts</code> while the agent was running. It is listed under files changed outside the agent.</span><time>14:09</time></div></div>' +
-      '<div class="composer"><label class="sr" for="cask">Message Proration fixer</label><textarea id="cask" rows="1" placeholder="Message Proration fixer. Mention a file with @."></textarea><div class="cbar"><span class="sub">large-2</span><span class="gap"></span><button class="btn pri" type="button">Send</button></div></div></div>' +
     '<aside class="pane sidepanel" aria-label="Agents and code"><div class="ph"><span class="lbl">Agents</span><span class="sub">Billing squad</span></div>' +
       '<button class="li" type="button">' + av('PL') + '<span class="cell"><b>Planner</b><span class="sub">coordinating</span></span>' + g('run') + '</button>' +
       '<button class="li" type="button" aria-current="true">' + av('PF') + '<span class="cell"><b>Proration fixer</b><span class="sub">running tests</span></span>' + g('run') + '</button>' +
@@ -85,7 +83,10 @@
       '<label class="sr" for="minied">Edit src/billing/proration.ts</label><textarea class="minied" id="minied" spellcheck="false">// Prorates a plan change. Rounds once, half to even.\nexport function prorate(plan: Plan, at: Date): number {\n  const ratio = remaining(plan, at) / daysInPlan(plan, at);\n  const exact = sum(items.map((i) => i.rate * ratio));\n  return roundHalfEven(exact, 0);\n}</textarea>' +
       '<div class="cbar pad"><button class="btn pri" type="button" id="save">Save <span class="kbd">⌘S</span></button><button class="btn sec" type="button" data-go="ide">Open in IDE view</button></div>' +
       '<p class="sub pad wrap">Edits here are yours, in the workspace\'s worktree. Review shows them as changed outside the agent.</p></aside>' +
-    '</section>';
+    '<div class="pane session"><div class="ph"><h2>Proration fixer</h2><span class="sub mono">fix/proration-rounding</span><span class="gap"></span><span class="pill">' + g('run', 'running') + '</span></div>' +
+      '<div class="stream" role="log" aria-label="Agent activity"><div class="ev"><span class="node">✓</span><span><b>Approved once</b> by you: <code>npm test -- billing</code>.</span><time>14:06</time></div><div class="ev"><span class="node">▷</span><span>Running <code>npm test -- billing</code>: 42 of 42 passed.</span><time>14:07</time></div><div class="ev"><span class="node">✎</span><span>Updating the doc comment in <code>src/billing/proration.ts</code>.</span><time>14:08</time></div><div class="ev"><span class="node">!</span><span><b>You edited</b> <code>src/billing/proration.ts</code> while the agent was running. It is listed under files changed outside the agent.</span><time>14:09</time></div></div>' +
+      '<div class="composer"><label class="sr" for="cask">Message Proration fixer</label><textarea id="cask" rows="1" placeholder="Message Proration fixer. Mention a file with @."></textarea><div class="cbar"><span class="sub">large-2</span><span class="gap"></span><button class="btn pri" type="button">Send</button></div></div></div>' +
+        '</section>';
 
   var lib = function (id, label, items, detail) {
     return '<section class="view" id="v-' + id + '" aria-label="' + label + '" hidden><aside class="pane list" aria-label="' + label + ' list"><div class="ph"><span class="lbl">' + label + '</span><button class="btn sec sm" type="button">New</button></div>' + items + '</aside><div class="pane pg">' + detail + '</div></section>';
@@ -114,11 +115,60 @@
     '<div class="card"><header><span class="lbl">Checklist</span></header><ul class="perm"><li class="can"><span aria-hidden="true">✓</span><span>Find where rounding drifts</span></li><li class="can"><span aria-hidden="true">✓</span><span>Add a leap-year regression test</span></li><li><span aria-hidden="true">○</span><span>Review the CI change before merge</span></li></ul></div>');
 
   S.integ = lib('integ', 'Integrations',
-    li(true, 'GitHub', 'connected · acme', 'ok') + li(false, 'Issue tracker', 'connected · read only', 'ok') + li(false, 'Error monitoring', 'not connected', 'idle') + li(false, 'Team chat', 'not connected', 'idle'),
-    '<div class="pgh"><div><span class="lbl">Integration</span><h1>GitHub</h1><span class="sub">Connected with your account to the organisation acme · 2 repositories</span></div><span class="gap"></span><button class="btn sec" type="button">Change access</button><button class="btn danger" type="button">Disconnect</button></div>' +
-    perms(['Read acme/web and acme/payments-core', 'Push a workspace branch when you press Push branch', 'Open pull requests and read checks and reviews'], ['Cannot merge, delete branches or change repository settings', 'Agents never receive this token', 'CLI agents use their own credentials, not this connection']) +
+    li(true, 'GitHub', 'through your gh login · read only', 'ok') + li(false, 'Issue tracker', 'connected · read only', 'ok') + li(false, 'Error monitoring', 'not connected', 'idle') + li(false, 'Team chat', 'not connected', 'idle'),
+    '<div class="pgh"><div><span class="lbl">Integration</span><h1>GitHub</h1><span class="sub">Uses the <span class="mono">gh</span> command-line tool under your own login · organisation acme · 2 repositories</span></div><span class="gap"></span><button class="btn sec" type="button">Refresh now</button><button class="btn danger" type="button">Turn off</button></div>' +
+    perms(['List open pull requests with their checks and reviews, at most once a minute', 'Open a pull request when you press Open pull request'], ['Axis stores no GitHub credential; your gh login stays with gh', 'Cannot merge, delete branches or change repository settings', 'Agents never receive your login; CLI agents use their own credentials', 'Output from gh is checked against a strict format and shown as text']) +
     '<div class="card"><header><span class="lbl">Recent use</span></header><div class="tr" style="--cols:56px 1fr"><time class="sub mono">13:58</time><span class="sub">Read checks for #481 (by Axis, for the project home)</span></div><div class="tr" style="--cols:56px 1fr"><time class="sub mono">11:20</time><span class="sub">Opened #482 (by you)</span></div></div>');
 
+  S.newproj = '<section class="view" id="v-newproj" aria-label="New project" hidden><div class="pane pg">' +
+    '<div class="pgh"><div><span class="lbl">Personal space</span><h1>New project</h1><span class="sub">A project is one repository. Agents and groups are created inside it.</span></div></div>' +
+    '<div class="formgrid"><form class="card form" id="npform" novalidate aria-describedby="npstatus">' +
+      '<fieldset><legend>Repository</legend>' +
+        '<label class="radio"><input type="radio" name="src" checked> Local repository</label>' +
+        '<div class="field inrow"><label class="sr" for="nppath">Repository folder</label><input id="nppath" class="mono" value="~/code/payments-api" aria-describedby="nppathh"><button class="btn sec" type="button">Choose…</button></div>' +
+        '<p class="fhint" id="nppathh">' + g('ok') + ' Git repository found. Your checkout is read, never changed; agents never run in it.</p>' +
+        '<label class="radio dis"><input type="radio" name="src" disabled> Clone from a URL <span class="sub">(later)</span></label></fieldset>' +
+      '<fieldset><legend>Project</legend>' +
+        '<div class="field"><label for="npname">Name</label><input id="npname" value="payments-api" aria-describedby="npnameh" required><p class="fhint" id="npnameh">Taken from the folder name. Letters, digits and dashes.</p></div>' +
+        '<div class="field"><label for="npbase">Base branch</label><select id="npbase" aria-describedby="npbaseh"><option>main</option><option>develop</option><option>release/2026-11</option></select><p class="fhint" id="npbaseh">main at <span class="mono">9f3c2d1</span>. New agents branch from here.</p></div></fieldset>' +
+      '<fieldset><legend>First agent group</legend>' +
+        '<div class="field"><label for="npgroup">Group name</label><input id="npgroup" value="Core"></div>' +
+        '<div class="field"><label for="npgdesc">What the group works on <span class="sub">(optional)</span></label><input id="npgdesc" placeholder="For example: the payments API and its tests"></div>' +
+        '<p class="fhint">A group organises agents and decides who may message whom. It is not a security boundary.</p></fieldset>' +
+      '<fieldset><legend>Composer agents</legend>' +
+        '<div class="field"><label for="npmodel">Default model</label><select id="npmodel" aria-describedby="npmodelh"><option>large-2 · API key connection</option><option>small-2 · API key connection</option></select><p class="fhint" id="npmodelh">Each agent can change it. CLI agents use their own model and login.</p></div>' +
+        '<div class="field"><label for="npbudget">Monthly budget, USD</label><div class="inrow"><input id="npbudget" type="number" min="0" step="10" value="200" aria-describedby="npbudgeth"><span class="sub">for composer agents in this project</span></div><p class="fhint" id="npbudgeth">When it is reached, composer runs stop and ask you. Usage of CLI agents is not available to Axis.</p></div></fieldset>' +
+      '<div class="formbar"><p class="sub" id="npstatus" role="status"></p><span class="gap"></span><button class="btn sec" type="button" data-go="home">Cancel</button><button class="btn pri" type="submit">Create project <span class="kbd">⌘↵</span></button></div>' +
+    '</form>' +
+    '<aside class="card doc" aria-label="What Axis will do"><span class="lbl">What happens</span><ul class="steps"><li>Axis registers <b id="npsumname">payments-api</b> in your personal space.</li><li>Nothing in your checkout changes. Each agent gets its own worktree and branch, kept in the Axis app data folder, not in the repository.</li><li>No agent starts until you create one.</li><li>Nothing leaves this computer except the model requests your composer agents make.</li></ul></aside></div>' +
+    '</div></section>';
+
+  S.agent = '<section class="view" id="v-agent" aria-label="Agent: Proration fixer" hidden><div class="pane pg focus">' +
+    '<div class="pgh"><button class="btn sec sm" type="button" data-go="home">← Project home</button><span class="gap"></span><button class="btn sec" type="button" data-go="thread">Threads 1</button><button class="btn sec" type="button" data-go="ide">Open in IDE view</button><button class="btn danger" type="button" id="stoprun">Stop run</button></div>' +
+    '<div class="agenthead">' + av('PF') + '<div><h1>Proration fixer</h1><span class="sub">Composer · Agent · Billing squad · <span class="mono">fix/proration-rounding</span> from main@a41c9e2</span></div><span class="gap"></span><span class="pill big" id="agstate">' + g('wait', 'Waiting for approval') + '</span></div>' +
+    '<div class="fgrid"><div class="fmain">' +
+      '<div class="stream big" role="log" aria-label="Activity of Proration fixer" id="agstream">' +
+        '<div class="ev"><span class="node">›</span><span><b>You</b> Prorated amounts are off by a cent for annual plans switched mid-cycle. Find the rounding bug and cover it with a test.</span><time>14:02</time></div>' +
+        '<div class="ev"><span class="node">✎</span><span>Rounded once, on the total, half to even, in <code>src/billing/proration.ts</code>. <span class="add num">+31</span> <span class="del num">−9</span></span><time>14:03</time></div>' +
+        '<div class="ev"><span class="node">✓</span><span><b>Approved once</b> by you: <code>npm test -- billing</code>. 42 of 42 passed.</span><time>14:07</time></div>' +
+        '<div class="ev"><span class="node">⇄</span><span>Planner asked for a CI job that runs the billing tests with coverage.</span><time>14:08</time></div>' +
+        '<section class="decision" id="agdecision" role="group" aria-labelledby="agdtitle"><header>' + g('wait') + '<b id="agdtitle">Approval needed: edit a protected path</b></header>' +
+          '<dl><dt>Action</dt><dd>Add a job step to <span class="mono">.github/workflows/ci.yml</span></dd><dt>Where</dt><dd>This agent\'s worktree only</dd><dt>Consequence</dt><dd>Changes what runs in CI once pushed. Review will flag the file at the top.</dd></dl>' +
+          '<div class="acts"><button class="btn pri" type="button" id="agapprove">Approve once</button><button class="btn sec" type="button" id="agdeny">Deny</button></div></section>' +
+      '</div>' +
+      '<div class="composer"><label class="sr" for="agask">Message Proration fixer</label><textarea id="agask" rows="2" placeholder="Message Proration fixer. Mention a file with @."></textarea><div class="cbar"><div class="modes" role="group" aria-label="Composer mode"><button type="button" aria-pressed="false">Ask</button><button type="button" aria-pressed="false">Edit</button><button type="button" aria-pressed="true">Agent</button></div><span class="gap"></span><button class="btn pri" type="button">Send</button></div></div>' +
+    '</div><div class="frail">' +
+      '<div class="card"><header><span class="lbl">Approvals</span><span class="sub" id="agpending">1 waiting, in the stream</span></header>' +
+        '<div class="tr" style="--cols:48px 1fr"><time class="sub mono">14:06</time><span class="sub">Approved once: <span class="mono">npm test -- billing</span></span></div>' +
+        '<div class="tr" style="--cols:48px 1fr"><time class="sub mono">13:51</time><span class="sub">Denied: read <span class="mono">~/.npmrc</span></span></div></div>' +
+      '<div class="card"><header><span class="lbl">Files changed</span><span class="sub num">3</span></header>' +
+        '<button class="tr" type="button" data-go="rv" style="--cols:1fr auto"><span class="mono sm">src/billing/proration.ts</span><span class="num"><span class="add">+31</span> <span class="del">−9</span></span></button>' +
+        '<button class="tr" type="button" data-go="rv" style="--cols:1fr auto"><span class="mono sm">src/billing/proration.test.ts</span><span class="num"><span class="add">+17</span> <span class="del">−3</span></span></button>' +
+        '<button class="tr" type="button" data-go="code" style="--cols:1fr auto"><span class="mono sm">src/billing/invoice.ts</span><span class="tag">edited by you</span></button>' +
+        '<div class="pad"><button class="btn sec" type="button" data-go="rv">Review changes</button></div></div>' +
+      '<div class="card"><header><span class="lbl">This run</span></header><dl class="kv"><dt>Model</dt><dd>large-2</dd><dt>Cost</dt><dd>$3.12 of $20 run budget</dd><dt>Started</dt><dd>14:02, by you</dd></dl></div>' +
+    '</div></div></div></section>';
+
   var body = document.querySelector('.body');
-  body.insertAdjacentHTML('beforeend', S.home + S.agents + S.thread + S.code + S.pages + S.plugins + S.tasks + S.integ);
+  body.insertAdjacentHTML('beforeend', S.home + S.agents + S.thread + S.code + S.pages + S.plugins + S.tasks + S.integ + S.newproj + S.agent);
 })();
