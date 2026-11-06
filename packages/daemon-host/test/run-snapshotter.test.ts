@@ -1,12 +1,12 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { chmodSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
 import { AxisError } from "@axis/audit";
 import { resolveGit, type GitRunner } from "@axis/git-ops";
-import { composeDaemonHost, createRunSnapshotter, type ComposeOptions, type PtyPort, type RunSnapshotterDeps, type RunSnapshotterFactory } from "../src/index.js";
+import { composeDaemonHost, createRunSnapshotter, SNAPSHOT_ATTEMPTS, SNAPSHOT_TAKE_MS, SUPERVISOR_SNAPSHOT_MS, type ComposeOptions, type PtyPort, type RunSnapshotterDeps, type RunSnapshotterFactory } from "../src/index.js";
 import { createGitFixture, gitSkipReason, type GitFixture } from "../testing/git-fixture.js";
 import { hostFixture } from "../testing/host-fixture.js";
 
@@ -24,8 +24,8 @@ describe("the run snapshotter over @axis/git-snapshot", { skip }, () => {
   let wt: { workTree: string; gitDir: string };
   let other: { workTree: string; gitDir: string };
   let n = 0;
-  const ctx = (worktree = wt): SnapshotContext => ({ runId: `run-${++n}`, workspaceId: "ws-1", worktree });
-  const make = (over: Partial<RunSnapshotterDeps> = {}, maxHeld?: number): RunSnapshotter => createRunSnapshotter({ gitPath, env: fx.env, ...over }, maxHeld);
+  const ctx = (worktree = wt, workspaceId = `ws-${n + 1}`): SnapshotContext => ({ runId: `run-${++n}`, workspaceId, worktree });
+  const make = (over: Partial<RunSnapshotterDeps> = {}, maxHeld?: number): RunSnapshotter => createRunSnapshotter({ gitPath, env: fx.env, projectRoot: () => fx.repo, ...over }, maxHeld);
   const linked = (name: string): { workTree: string; gitDir: string } => {
     fx.git(fx.repo, "worktree", "add", "-q", join(fx.root, name), "-b", `axis/${name}`);
     return { workTree: realpathSync(join(fx.root, name)), gitDir: realpathSync(join(fx.repo, ".git", "worktrees", name)) };
@@ -93,7 +93,48 @@ describe("the run snapshotter over @axis/git-snapshot", { skip }, () => {
     await assert.rejects(make({ gitPath: join(fx.root, "no-such-git") }).before(ctx()), "a git path that is not there is not replaced by a PATH lookup");
     assert.throws(() => make({ gitPath: "git" }), (e) => reasonOf(e) === "snapshotter_required");
     const main = { workTree: realpathSync(fx.repo), gitDir: realpathSync(join(fx.repo, ".git")) };
-    await assert.rejects(make().before(ctx(main)), (e) => reasonOf(e) === "commondir_unreadable");
+    await assert.rejects(make().before(ctx(main)), (e) => reasonOf(e) === "common_dir_mismatch", "the main checkout is not a linked worktree");
+    await assert.rejects(make({ projectRoot: () => undefined }).before(ctx()), (e) => reasonOf(e) === "project_unknown");
+    await assert.rejects(make({ projectRoot: () => fx.root }).before(ctx()), (e) => reasonOf(e) === "common_dir_mismatch", "another repository's root");
+  });
+
+  test("a run that points commondir at a decoy is drift, and the next launch is refused, not baselined on the decoy (review B1)", async () => {
+    const s = make();
+    const decoy = join(fx.root, "decoy.git");
+    cpSync(join(fx.repo, ".git"), decoy, { recursive: true });
+    const file = join(wt.gitDir, "commondir");
+    const saved = readFileSync(file);
+    const run1 = ctx(wt, "ws-decoy");
+    await s.before(run1);
+    writeFileSync(file, `${decoy}\n`);
+    try {
+      assert.deepEqual(await s.after(run1), { drift: true });
+      const run2 = ctx(wt, "ws-decoy");
+      await assert.rejects(s.before(run2), (e) => reasonOf(e) === "snapshot_refused", "the decoy never becomes a baseline");
+    } finally {
+      writeFileSync(file, saved);
+    }
+    const run3 = ctx(wt, "ws-decoy");
+    await s.before(run3);
+    assert.deepEqual(await s.after(run3), { drift: false }, "restored, the worktree is judged again");
+  });
+
+  test("launches cancelled after before cannot push out another workspace's live baseline; a newer run replaces an older one", async () => {
+    const s = make({}, 2);
+    const live = ctx(wt, "ws-live");
+    await s.before(live);
+    for (let i = 0; i < 5; i++) await s.before(ctx(other, "ws-churn"));
+    assert.deepEqual(await s.after(live), { drift: false });
+    const older = ctx(wt, "ws-same");
+    const newer = ctx(wt, "ws-same");
+    await s.before(older);
+    await s.before(newer);
+    await assert.rejects(s.after(older), (e) => reasonOf(e) === "no_baseline", "only the workspace's latest run has a baseline");
+    assert.deepEqual(await s.after(newer), { drift: false });
+  });
+
+  test("a stable snapshot fits inside the supervisor's bound with room to spawn git", () => {
+    assert.ok(SNAPSHOT_TAKE_MS * SNAPSHOT_ATTEMPTS + 2000 <= SUPERVISOR_SNAPSHOT_MS, `${SNAPSHOT_TAKE_MS} x ${SNAPSHOT_ATTEMPTS} vs ${SUPERVISOR_SNAPSHOT_MS}`);
   });
 });
 

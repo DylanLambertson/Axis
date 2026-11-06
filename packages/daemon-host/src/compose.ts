@@ -183,7 +183,11 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
       },
       afterStorage(parts) {
         // Built with the git the host resolved once (design 5a), before anything else of the bindings: no snapshotter, no start.
-        const snapshotter = snapshotterFactory({ gitPath: parts.gitPath, env: ports.env });
+        const projectRoot = (workspaceId: string): string | undefined => {
+          const ws = parts.journal.getWorkspace(workspaceId);
+          return ws === undefined ? undefined : parts.journal.getProject(ws.projectId)?.path;
+        };
+        const snapshotter = snapshotterFactory({ gitPath: parts.gitPath, env: ports.env, projectRoot });
         if (typeof snapshotter?.before !== "function" || typeof snapshotter?.after !== "function") refuse("snapshotter_required");
         const forwarder = createActiveRunForwarder();
         // Both writers are guarded by the seal (review r1 S1); removing either guard fails compose-composer.test.ts.

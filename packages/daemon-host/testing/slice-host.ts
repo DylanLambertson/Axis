@@ -45,7 +45,6 @@ const release = (): void => {
   channel.dispose();
 };
 
-
 /**
  * TEST ONLY (`AXIS_SLICE_BREAK_PUT=<file>`): while that file exists, `anchor.put` cannot be sent (as on a closed channel), so the
  * final anchor of a shutdown cannot go out. It cannot be reached from `HostConfig`.
