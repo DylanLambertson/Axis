@@ -2,11 +2,11 @@
 
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { markDiscardConfirmed, type DiscardConfirmation, type DiscardOp } from '../src/daemonConfirm.js';
-import { createExecGitRunner, WorktreeManager, type WorktreeManagerOptions } from '../src/index.js';
+import { createExecGitRunner, WorktreeManager, type ExpectedWorktree, type WorktreeManagerOptions } from '../src/index.js';
 
 export function sh(cwd: string, ...args: string[]): string {
   return execFileSync('git', [
@@ -60,6 +60,35 @@ export function checkoutFingerprint(repo: string): string {
 
 /** Mints a confirmation bound to what the workspace would discard right now. */
 export async function confirmFor(m: WorktreeManager, wtPath: string, id: string, op: DiscardOp): Promise<DiscardConfirmation> {
-  const scan = await m.previewDiscard(wtPath);
+  const scan = await m.previewDiscard(wtPath, exp(wtPath));
   return markDiscardConfirmed({ workspaceId: id, op, fingerprint: scan.fingerprint });
+}
+
+/**
+ * What a caller that resolved the workspace at (or under) `p` right now would pass as the expected worktree: the
+ * canonical root of the linked worktree containing `p`, and the id in its record. Reads the disk at call time, so it
+ * cannot detect a swap that happens before it (tests of that build the stale value first).
+ */
+export function exp(p: string): ExpectedWorktree {
+  let start = p;
+  const isDir = (x: string): boolean => {
+    try {
+      return lstatSync(x).isDirectory();
+    } catch {
+      return false;
+    }
+  };
+  while (!isDir(start)) start = path.dirname(start);
+  let dir = realpathSync(start);
+  const origin = dir;
+  for (;;) {
+    const dot = path.join(dir, '.git');
+    if (existsSync(dot) && statSync(dot).isFile()) break;
+    const up = path.dirname(dir);
+    if (up === dir) return { path: origin, id: 'ws-none' }; // not inside a linked worktree: a value that names no workspace
+    dir = up;
+  }
+  const gitdir = /^gitdir: (.+)$/m.exec(readFileSync(path.join(dir, '.git'), 'utf8'))?.[1] ?? '';
+  const meta = JSON.parse(readFileSync(path.join(gitdir, 'axis-workspace.json'), 'utf8')) as { id: string };
+  return { path: dir, id: meta.id };
 }

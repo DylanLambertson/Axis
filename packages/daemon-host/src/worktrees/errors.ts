@@ -24,6 +24,7 @@ const REASONS: Readonly<Record<string, string>> = {
   "branch-mismatch": "branch_mismatch",
   "runbase-moved": "runbase_moved",
   "git-path": "git_path",
+  "worktree-mismatch": "path_changed",
 };
 
 const REASON_TEXT: Readonly<Record<string, string>> = {

@@ -5,7 +5,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import { WorktreeError } from '../src/index.js';
-import { checkoutFingerprint, confirmFor, makeFixture, sh, write, type Fixture } from './helpers.js';
+import { checkoutFingerprint, confirmFor, makeFixture, sh, write, type Fixture, exp } from './helpers.js';
 
 const code = (c: string) => (e: unknown) => e instanceof WorktreeError && e.code === c;
 
@@ -31,12 +31,12 @@ describe('worktree lifecycle', () => {
     assert.equal(list[1]?.id, ws.id);
     assert.equal(list[1]?.locked, true);
 
-    const st = await fx.manager.status(ws.path);
+    const st = await fx.manager.status(ws.path, exp(ws.path));
     assert.deepEqual([st.dirty.length, st.ahead, st.behind, st.hasDrift], [0, 0, 0, false]);
 
-    const fin = await fx.manager.finalise({ path: ws.path, outcome: 'archived' });
+    const fin = await fx.manager.finalise({ path: ws.path, expectedWorktree: exp(ws.path), outcome: 'archived' });
     assert.equal(fin.archiveSha, ws.baseSha);
-    const rm = await fx.manager.remove({ path: ws.path, deleteBranch: true });
+    const rm = await fx.manager.remove({ path: ws.path, expectedWorktree: exp(ws.path), deleteBranch: true });
     assert.equal(rm.branchDeleted, true);
     assert.equal(existsSync(ws.path), false);
     assert.equal((await fx.manager.list(fx.repo)).length, 1);
@@ -53,7 +53,7 @@ describe('worktree lifecycle', () => {
     write(path.join(ws.path, 'ignored.log'), 'noise\n');
     sh(ws.path, 'commit', '-q', '-am', 'one');
     write(path.join(ws.path, 'sub', 'b.txt'), 'edit\n');
-    const st = await fx.manager.status(ws.path);
+    const st = await fx.manager.status(ws.path, exp(ws.path));
     assert.equal(st.ahead, 1);
     assert.equal(st.behind, 0);
     assert.deepEqual(st.dirty.map((d) => d.path).sort(), ['new.txt', 'sub/b.txt']);
@@ -62,7 +62,7 @@ describe('worktree lifecycle', () => {
     write(path.join(fx.repo, 'c.txt'), 'c\n');
     sh(fx.repo, 'add', 'c.txt');
     sh(fx.repo, 'commit', '-q', '-m', 'main moves');
-    const st2 = await fx.manager.status(ws.path);
+    const st2 = await fx.manager.status(ws.path, exp(ws.path));
     assert.equal(st2.baseSha, ws.baseSha);
     assert.equal(st2.baseBranchBehind, 1);
   });
@@ -86,19 +86,19 @@ describe('worktree lifecycle', () => {
     const ws = await fx.manager.create({ repoPath: fx.repo, slug: 'dirty' });
     write(path.join(ws.path, 'wip.txt'), 'secret work\n');
     write(path.join(ws.path, 'a.txt'), 'edited\n');
-    await assert.rejects(fx.manager.finalise({ path: ws.path, outcome: 'abandoned' }), (e) =>
+    await assert.rejects(fx.manager.finalise({ path: ws.path, expectedWorktree: exp(ws.path), outcome: 'abandoned' }), (e) =>
       e instanceof WorktreeError && e.code === 'E_CONFLICT' && e.details['reason'] === 'dirty');
     // a plain object (for example parsed from JSON) is not a confirmation
     const forged = JSON.parse('{}') as never;
-    await assert.rejects(fx.manager.finalise({ path: ws.path, outcome: 'abandoned', discardConfirmation: forged }), code('E_CONFLICT'));
+    await assert.rejects(fx.manager.finalise({ path: ws.path, expectedWorktree: exp(ws.path), outcome: 'abandoned', discardConfirmation: forged }), code('E_CONFLICT'));
     // removal requires finalise first
-    await assert.rejects(fx.manager.remove({ path: ws.path }), (e) =>
+    await assert.rejects(fx.manager.remove({ path: ws.path , expectedWorktree: exp(ws.path)}), (e) =>
       e instanceof WorktreeError && e.details['reason'] === 'not-finalised');
 
-    const fin = await fx.manager.finalise({ path: ws.path, outcome: 'abandoned', discardConfirmation: await confirmFor(fx.manager, ws.path, ws.id, 'finalise') });
+    const fin = await fx.manager.finalise({ path: ws.path, expectedWorktree: exp(ws.path), outcome: 'abandoned', discardConfirmation: await confirmFor(fx.manager, ws.path, ws.id, 'finalise') });
     assert.ok(fin.backupRef?.startsWith(`refs/axis/backup/${ws.id}/`));
-    await assert.rejects(fx.manager.remove({ path: ws.path }), code('E_CONFLICT'));
-    const rm = await fx.manager.remove({ path: ws.path, discardConfirmation: await confirmFor(fx.manager, ws.path, ws.id, 'remove') });
+    await assert.rejects(fx.manager.remove({ path: ws.path , expectedWorktree: exp(ws.path)}), code('E_CONFLICT'));
+    const rm = await fx.manager.remove({ path: ws.path, expectedWorktree: exp(ws.path), discardConfirmation: await confirmFor(fx.manager, ws.path, ws.id, 'remove') });
     assert.ok(rm.backupRef);
     assert.equal(existsSync(ws.path), false);
     // the dirty content is recoverable from the backup, including untracked files
@@ -111,19 +111,19 @@ describe('worktree lifecycle', () => {
     write(path.join(ws.path, 'f.txt'), 'f\n');
     sh(ws.path, 'add', 'f.txt');
     sh(ws.path, 'commit', '-q', '-m', 'feature');
-    await assert.rejects(fx.manager.finalise({ path: ws.path, outcome: 'merged' }), (e) =>
+    await assert.rejects(fx.manager.finalise({ path: ws.path, expectedWorktree: exp(ws.path), outcome: 'merged' }), (e) =>
       e instanceof WorktreeError && e.details['reason'] === 'not-merged');
     sh(fx.repo, 'merge', '-q', '--ff-only', 'axis/feat');
-    const fin = await fx.manager.finalise({ path: ws.path, outcome: 'merged' });
+    const fin = await fx.manager.finalise({ path: ws.path, expectedWorktree: exp(ws.path), outcome: 'merged' });
     assert.equal(fin.outcome, 'merged');
   });
 
   it('never operates on the local checkout or an unmanaged worktree', async () => {
-    await assert.rejects(fx.manager.status(fx.repo), code('E_POLICY_DENIED'));
-    await assert.rejects(fx.manager.remove({ path: fx.repo }), code('E_POLICY_DENIED'));
+    await assert.rejects(fx.manager.status(fx.repo, exp(fx.repo)), code('E_POLICY_DENIED'));
+    await assert.rejects(fx.manager.remove({ path: fx.repo , expectedWorktree: exp(fx.repo)}), code('E_POLICY_DENIED'));
     sh(fx.repo, 'worktree', 'add', '-q', '-b', 'other', path.join(fx.tmp, 'external'));
     const ext = path.join(fx.tmp, 'external');
-    await assert.rejects(fx.manager.status(ext), code('E_POLICY_DENIED'));
+    await assert.rejects(fx.manager.status(ext, exp(ext)), code('E_POLICY_DENIED'));
     const list = await fx.manager.list(fx.repo);
     assert.equal(list.find((w) => w.path === ext)?.external, true);
     assert.equal(readFileSync(path.join(ext, 'a.txt'), 'utf8'), 'alpha\n');
@@ -140,9 +140,9 @@ describe('worktree lifecycle', () => {
       chmodSync(path.join(fx.repo, '.git', 'hooks', hook), 0o755);
     }
     const ws = await fx.manager.create({ repoPath: fx.repo, slug: 'hooked' });
-    await fx.manager.status(ws.path);
-    await fx.manager.finalise({ path: ws.path, outcome: 'archived' });
-    await fx.manager.remove({ path: ws.path });
+    await fx.manager.status(ws.path, exp(ws.path));
+    await fx.manager.finalise({ path: ws.path, expectedWorktree: exp(ws.path), outcome: 'archived' });
+    await fx.manager.remove({ path: ws.path , expectedWorktree: exp(ws.path)});
     assert.equal(existsSync(marker), false);
   });
 
@@ -152,7 +152,7 @@ describe('worktree lifecycle', () => {
       const ws = await small.manager.create({ repoPath: small.repo, slug: 'big' });
       write(path.join(ws.path, 'huge.bin'), Buffer.alloc(4096, 1));
       write(path.join(ws.path, 'small.txt'), 'ok\n');
-      const r = await small.manager.restoreFromRunBase({ path: path.join(ws.path, 'a.txt') });
+      const r = await small.manager.restoreFromRunBase({ path: path.join(ws.path, 'a.txt') , expectedWorktree: exp(path.join(ws.path, 'a.txt'))});
       const files = sh(small.repo, 'ls-tree', '-r', '--name-only', r.backupRef);
       assert.ok(files.includes('small.txt'));
       assert.ok(!files.includes('huge.bin'));
@@ -163,7 +163,7 @@ describe('worktree lifecycle', () => {
 
   it('sweeps expired snapshot refs but never archive refs', async () => {
     const ws = await fx.manager.create({ repoPath: fx.repo, slug: 'sweep' });
-    await fx.manager.finalise({ path: ws.path, outcome: 'archived' });
+    await fx.manager.finalise({ path: ws.path, expectedWorktree: exp(ws.path), outcome: 'archived' });
     assert.deepEqual(await fx.manager.sweepSnapshotRefs(fx.repo), []);
     const later = new Date(Date.now() + 31 * 24 * 3600 * 1000);
     const gone = await fx.manager.sweepSnapshotRefs(fx.repo, later);

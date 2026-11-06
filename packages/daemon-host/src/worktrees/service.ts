@@ -88,7 +88,7 @@ export function createWorktreesService(deps: WorktreesServiceDeps): WorktreesRun
   async function inspect(ws: Workspace, signal: AbortSignal): Promise<WorktreeInfo> {
     try {
       const ref = await locator.locate(ws.id);
-      return workspaceInfo(ws, await manager.status(ref.workTree), true);
+      return workspaceInfo(ws, await manager.status(ref.workTree, { path: ref.workTree, id: ws.id }), true);
     } catch {
       signal.throwIfAborted();
       return workspaceInfo(ws, undefined, await exists(ws.worktreePath));
@@ -186,7 +186,7 @@ export function createWorktreesService(deps: WorktreesServiceDeps): WorktreesRun
             const project = journal.getProject(ws.projectId);
             if (project === undefined) throw worktreeFailure("E_NOT_FOUND");
             const target = `workspace:${ws.id}`;
-            const live = await manager.status(ref.workTree);
+            const live = await manager.status(ref.workTree, { path: ref.workTree, id: ws.id });
             if (live.id !== ws.id) throw worktreeFailure("E_CONFLICT", "path_changed");
             const recovering = live.state === "FINALISED"; // git's record says done while the journal says READY
             // Journal first: the intent is audited BEFORE git changes (the audit log has no "started" outcome, so the intent row is
@@ -201,7 +201,7 @@ export function createWorktreesService(deps: WorktreesServiceDeps): WorktreesRun
               if (recovering) {
                 outcome = await verifyFinalised(manager, project.path, ws, live, ref.workTree, req.outcome);
               } else {
-                const done = await manager.finalise({ path: ref.workTree, outcome: req.outcome, discardConfirmation: ctx.confirmation });
+                const done = await manager.finalise({ path: ref.workTree, expectedWorktree: { path: ref.workTree, id: ws.id }, outcome: req.outcome, discardConfirmation: ctx.confirmation });
                 backupRef = done.backupRef;
                 skippedLarge = done.skippedLarge.length;
               }
@@ -251,7 +251,7 @@ export function createWorktreesService(deps: WorktreesServiceDeps): WorktreesRun
           journal.transitionWorkspace(ws.id, "REMOVING", { actor, reason: "REMOVE_REQUESTED", expectedFrom: "FINALISED" });
           try {
             return await withLockRecord(ws.id, actor, async () => {
-              const done = await manager.remove({ path: ref.workTree, deleteBranch: req.deleteBranch === true, discardConfirmation: ctx.confirmation });
+              const done = await manager.remove({ path: ref.workTree, expectedWorktree: { path: ref.workTree, id: ws.id }, deleteBranch: req.deleteBranch === true, discardConfirmation: ctx.confirmation });
               deps.transact(() => {
                 journal.transitionWorkspace(ws.id, "REMOVED", { actor, expectedFrom: "REMOVING" });
                 deps.audit.append({
@@ -304,7 +304,7 @@ export function createWorktreesService(deps: WorktreesServiceDeps): WorktreesRun
             try {
               for (const rel of req.paths) {
                 ctx.signal.throwIfAborted();
-                const one = await manager.restoreFromRunBase({ path: path.join(ref.workTree, ...rel.split("/")), runId: run.id, expectedWorktree: ref.workTree });
+                const one = await manager.restoreFromRunBase({ path: path.join(ref.workTree, ...rel.split("/")), runId: run.id, expectedWorktree: { path: ref.workTree, id: ws.id } });
                 // The file is written: count it (and so audit it) BEFORE any check of what the manager says it wrote.
                 restored.push(rel);
                 backupRef ??= one.backupRef; // the first backup holds the state before anything was restored
@@ -334,7 +334,8 @@ export function createWorktreesService(deps: WorktreesServiceDeps): WorktreesRun
       return mutex.run(
         ws.projectId,
         async () => {
-          const scan = await manager.previewDiscard((await locator.locate(ws.id)).workTree);
+          const { workTree } = await locator.locate(ws.id);
+          const scan = await manager.previewDiscard(workTree, { path: workTree, id: ws.id });
           return {
             fingerprint: scan.fingerprint, dirtyFiles: scan.dirty.length, skippedLarge: scan.skippedLarge.length,
             ignored: scan.ignored.length, skippedUnsupported: scan.skippedUnsupported.length,
@@ -346,7 +347,10 @@ export function createWorktreesService(deps: WorktreesServiceDeps): WorktreesRun
 
     async assertNoDrift(workspaceId, ctx) {
       const ws = liveWorkspace(journal, workspaceId);
-      await mutex.run(ws.projectId, async () => manager.assertNoDrift((await locator.locate(ws.id)).workTree), ctx.signal);
+      await mutex.run(ws.projectId, async () => {
+        const { workTree } = await locator.locate(ws.id);
+        await manager.assertNoDrift(workTree, { path: workTree, id: ws.id });
+      }, ctx.signal);
     },
 
     async reconcile(signal) {

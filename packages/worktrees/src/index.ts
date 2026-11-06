@@ -24,7 +24,7 @@ export {
 } from './manager.js';
 export {
   parsePorcelainStatus,
-  type CreateInput, type CreatedWorkspace, type DirtyFile, type FinaliseOutcome, type FinaliseResult,
+  type CreateInput, type CreatedWorkspace, type DirtyFile, type ExpectedWorktree, type FinaliseOutcome, type FinaliseResult,
   type RemoveResult, type RestoreResult, type WorkspaceStatus, type WorktreeInfo,
 } from './types.js';
 export type { DiscardScan } from './discard.js';
