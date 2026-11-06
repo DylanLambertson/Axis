@@ -144,21 +144,23 @@ test("a name is never served twice, also after its port closed, and a new name s
   const a = nodePair();
   const b = nodePair();
   const c = nodePair();
-  let closedB = false;
-  b.a.on("close", () => void (closedB = true));
-  h.send({ type: "pty-data", conn: "n1" }, [electronShaped(a.b)]);
-  a.a.close();
-  await settle();
-  h.send({ type: "pty-data", conn: "n1" }, [electronShaped(b.b)]);
-  await until(() => closedB);
-  h.send({ type: "pty-data", conn: "n2" }, [electronShaped(c.b)]);
-  await settle();
-  let closedC = false;
-  c.a.on("close", () => void (closedC = true));
-  await settle();
-  assert.equal(closedC, false);
-  h.entry.dispose();
-  c.a.close();
+  try {
+    let closedB = false;
+    b.a.on("close", () => void (closedB = true));
+    h.send({ type: "pty-data", conn: "n1" }, [electronShaped(a.b)]);
+    a.a.close();
+    await settle();
+    h.send({ type: "pty-data", conn: "n1" }, [electronShaped(b.b)]);
+    await until(() => closedB);
+    let closedC = false;
+    c.a.on("close", () => void (closedC = true));
+    h.send({ type: "pty-data", conn: "n2" }, [electronShaped(c.b)]);
+    await settle();
+    assert.equal(closedC, false);
+  } finally {
+    h.entry.dispose();
+    for (const p of [a, b, c]) p.a.close();
+  }
 });
 
 test("dispose kills every terminal, closes every served port and removes every listener", { skip: posix }, async () => {

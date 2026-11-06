@@ -53,7 +53,7 @@ interface Terminal {
   cancel: boolean;
   /** A viewer has been attached at some point. */
   seen: boolean;
-  /** Input was refused: every write is refused until the child has taken all it was given, so a long paste is never spliced. */
+  /** Input was refused: every write is refused until the child has taken all it was given. */
   inputBlocked: boolean;
   exited: boolean;
   groupGone: boolean;
@@ -132,7 +132,7 @@ export function createPtyService(options: PtyServiceOptions): PtyService {
   /**
    * PTY-4: whether the child (or the process as a whole) holds more unconsumed input than allowed. Checked cheapest first, and
    * every scan is bounded by the entry limits: the terminal's queue by `entriesTerminal`, all queues together by `entriesProcess`.
-   * Unmeasurable counts as full. Once refused, a terminal stays refused until its queue is empty (no spliced input).
+   * Unmeasurable counts as full. Once refused, a terminal stays refused until its queue is empty, so the writer notices; a writer that is refused must abandon the rest of that input (a later chunk of the same paste would otherwise splice).
    */
   const inputFull = (t: Terminal): boolean => {
     const block = (): true => (t.inputBlocked = true);

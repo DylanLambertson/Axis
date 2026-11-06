@@ -283,7 +283,27 @@ test("S1: switching viewers mid-sequence gives the returning viewer a CAN and a 
   await settle(1);
   const text = got.filter((r) => r.t === "data").map((r) => (r as { chunk: string }).chunk).join("");
   assert.ok(text.startsWith("\x18"), "CAN first");
-  assert.deepEqual(oscIds(text).filter((id) => id === 7), []);
+  assert.deepEqual(oscIds(text), [], "no OSC starts in what the returning viewer sees");
+  assert.ok(text.includes("7;file:///e"), "the text after the gap arrives as plain text, not as an OSC id");
+  v.close();
+});
+
+test("PTY-4: the process-wide byte refusal is sticky too: a terminal under its own bound stays refused until drained", async () => {
+  const children: FakeChild[] = [];
+  const v = await viewer(() => (children.push(new FakeChild(101 + children.length)), children.at(-1) as PtyChild), { input: { terminal: 100, process: 150 } });
+  await v.port.spawn({ ...SPEC, argv: ["/bin/sh", "-c", "sleep 30"], cwd: "/", env: { PATH: "/usr/bin:/bin" } });
+  children[0]!.pending = 20;
+  children[1]!.pending = 140; // together over the process bound
+  v.data.a.send({ t: "write", term: v.term, data: "x" });
+  await settle();
+  children[1]!.pending = 0; // the other terminal drained: now only this one's 20 bytes remain
+  v.data.a.send({ t: "write", term: v.term, data: "y" });
+  await settle();
+  assert.deepEqual(children[0]!.written, [], "still refused: its own queue has not drained");
+  children[0]!.pending = 0;
+  v.data.a.send({ t: "write", term: v.term, data: "z" });
+  await settle();
+  assert.deepEqual(children[0]!.written, ["z"]);
   v.close();
 });
 
