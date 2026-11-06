@@ -12,7 +12,7 @@ import { createGitFixture, gitSkipReason, canary, type GitFixture } from "../../
 import { TestClient, newKey, resultOf, transcript, until } from "../../testing/test-client.js";
 import type { TestSupervisor } from "../../testing/test-supervisor.js";
 import {
-  DENIED_SEEDS, FAKE_CLI, auditRows, awaitRun, confirmNative, damagedCopy, disposeHosts, type AuditRow, createWorkspace, databaseBytes, openStopped, registerProject, startHost, trustWindow, type Workspace,
+  DENIED_SEEDS, FAKE_CLI, auditRows, awaitRun, confirmNative, finaliseApproved, damagedCopy, disposeHosts, type AuditRow, createWorkspace, databaseBytes, openStopped, registerProject, startHost, trustWindow, type Workspace,
 } from "../../testing/slice-helpers.js";
 
 /**
@@ -214,7 +214,8 @@ describe("headless slice", { skip, timeout: SUITE_TIMEOUT_MS }, () => {
     assert.equal(fx.remoteRefs().length, 1, "the secret workspace was not pushed");
     secrets.push(secret);
     // Archived, so `worktrees.remove` (tier 4) has a legal target for the stall step below.
-    assert.equal((await user.ok<{ state: string }>(PROJECT, "finalise", { id: w2.id, outcome: "archived" }, true)).state, "FINALISED");
+    assert.equal(((await finaliseApproved(sup, user, w2.id)).result as { state: string }).state, "FINALISED");
+    const confirmsAfterFinalise = sup.nativeConfirms.length; // the finalise showed its own tier 4 dialog
 
     // A plan that changed after it was shown: w1 gets a second commit, the old plan is refused before a challenge.
     writeFileSync(join(w1.path, "second.txt"), "second\n");
@@ -223,7 +224,7 @@ describe("headless slice", { skip, timeout: SUITE_TIMEOUT_MS }, () => {
     const stale = await user.call("axis.git", "push", { workspaceId: w1.id, remote: "origin", confirmedPlan: { tip: commit, digest: planDigest } }, true);
     assert.equal(stale.error?.code, "E_CONFLICT");
     assert.equal(stale.error?.details?.["reason"], "plan_changed");
-    assert.equal(sup.nativeConfirms.length, before.confirms, "no dialog for a stale plan");
+    assert.equal(sup.nativeConfirms.length, confirmsAfterFinalise, "no dialog for a stale plan");
     assert.deepEqual(fx.remoteRefs(), [`refs/heads/${w1.branch} ${commit}`]);
   });
 

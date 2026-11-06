@@ -8,7 +8,7 @@ import { AxisError } from "@axis/audit";
 import { newKey } from "./approvals-rig.js";
 import { ProjectMutex, toDaemonError, fromWorktreeError, workspaceSlug } from "../src/index.js";
 import { worktreesCapability } from "../src/gate/worktrees-confirm.js";
-import { createWs, gitSkipReason, worktreesRig } from "./worktrees-rig.js";
+import { finaliseApproved, createWs, gitSkipReason, worktreesRig } from "./worktrees-rig.js";
 import { wait } from "./helpers.js";
 
 const skip = gitSkipReason();
@@ -106,7 +106,7 @@ test("errors on the wire never echo a path, a ref or a secret-shaped input", { s
     await user.call("axis.worktrees", "create", { projectId: "proj-1", name: "n", baseRef: canary }, newKey()),
     await user.call("axis.worktrees", "create", { projectId: canary.slice(0, 20), name: "n" }, newKey()),
     await user.call("axis.worktrees", "status", { ids: [canary.slice(0, 30)] }),
-    await user.call("axis.worktrees", "finalise", { id: "ws-missing", outcome: "archived" }, newKey()),
+    await finaliseApproved(r, user, "ws-missing", "archived"),
   ];
   for (const a of answers) {
     assert.equal(a.ok, false);
