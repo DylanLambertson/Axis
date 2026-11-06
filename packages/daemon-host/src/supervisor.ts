@@ -97,7 +97,7 @@ export interface DaemonSupervisorOptions {
 }
 
 /** The names main lets through to the daemon (design 3, step 2: nothing a renderer can influence). `NODE_OPTIONS` is never one. */
-export const DAEMON_ENV_ALLOW = Object.freeze(["PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "TMPDIR", "TMP", "TEMP", "SystemRoot", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "XDG_RUNTIME_DIR"] as const);
+export const DAEMON_ENV_ALLOW = Object.freeze(["PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "TMPDIR", "TMP", "TEMP", "SystemRoot", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "XDG_RUNTIME_DIR", "PATHEXT", "WINDIR", "COMSPEC", "USERNAME", "HOMEDRIVE", "HOMEPATH"] as const);
 
 /** The environment of the daemon process: the allow-listed names of `source` that are strings, nothing else. */
 export function daemonEnvironment(source: Readonly<Record<string, string | undefined>>): Record<string, string> {
@@ -107,6 +107,42 @@ export function daemonEnvironment(source: Readonly<Record<string, string | undef
     if (typeof value === "string") env[name] = value;
   }
   return env;
+}
+
+/**
+ * Whether main starts the daemon at all. Until the pty process (B9) and the run snapshotter (GIT-SNAP-1) exist the daemon refuses to
+ * start (exit 78) in every build, so a packaged app does not spawn it: the extra process and its error lines would give a user
+ * nothing. Unpackaged builds do, which exercises `fork`, `init` and the refusal. REMOVE the condition in the change that wires the
+ * real ports (and X1c must land before or with it: docs/design/daemon-host-plan.md).
+ */
+export const shouldStartDaemon = (isPackaged: boolean): boolean => !isPackaged;
+
+export interface AxisDataRoots {
+  readonly dataDir: string;
+  readonly worktreeRoot: string;
+}
+
+const isAbsoluteFor = (platform: SupervisedConfig["platform"], p: string): boolean =>
+  platform === "win32" ? /^[A-Za-z]:[\\/]/.test(p) : p.startsWith("/");
+
+/**
+ * Where the daemon keeps its database and the managed worktrees (design D-3, ADR 0004 decision 7), per platform and NOT under
+ * Electron's `userData` (Linux: the config directory; Windows: Roaming AppData, which a domain profile syncs; and it follows
+ * `--user-data-dir`):
+ * - macOS `<home>/Library/Application Support/Axis`;
+ * - Linux `$XDG_DATA_HOME/Axis`, default `<home>/.local/share/Axis` (a relative or empty `XDG_DATA_HOME` is ignored, as the XDG spec says);
+ * - Windows `%LOCALAPPDATA%\Axis`, default `<home>\AppData\Local\Axis`.
+ * `dataDir` is `<base>/daemon` and `worktreeRoot` is `<base>/worktrees`, so both share one anchor. Pure: `env` and `home` come in.
+ */
+export function axisDataRoots(platform: SupervisedConfig["platform"], env: Readonly<Record<string, string | undefined>>, home: string): AxisDataRoots {
+  const sep = platform === "win32" ? "\\" : "/";
+  const clean = (p: string): string => p.replace(/[\\/]+$/, "");
+  const usable = (v: string | undefined): v is string => typeof v === "string" && v !== "" && !v.includes("\0") && isAbsoluteFor(platform, v);
+  let base: string;
+  if (platform === "darwin") base = `${clean(home)}/Library/Application Support/Axis`;
+  else if (platform === "win32") base = `${clean(usable(env["LOCALAPPDATA"]) ? (env["LOCALAPPDATA"] as string) : `${clean(home)}\\AppData\\Local`)}\\Axis`;
+  else base = `${clean(usable(env["XDG_DATA_HOME"]) ? (env["XDG_DATA_HOME"] as string) : `${clean(home)}/.local/share`)}/Axis`;
+  return { dataDir: `${base}${sep}daemon`, worktreeRoot: `${base}${sep}worktrees` };
 }
 
 const B64URL = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
@@ -201,6 +237,14 @@ export class DaemonSupervisor {
     this.#sentReady = false;
     this.#readyAt = undefined;
     this.#set("starting");
+    // The key first: a source that cannot give random bytes must not even fork a host (it is a counted crash).
+    let key: string;
+    try {
+      key = this.#freshKey();
+    } catch {
+      this.#onCrash(null, generation);
+      return;
+    }
     let child: DaemonChild;
     try {
       child = this.#o.spawn();
@@ -218,7 +262,7 @@ export class DaemonSupervisor {
       if (generation === this.#generation && this.#state === "starting") this.#killNow();
     }, this.#policy.readyTimeoutMs);
     try {
-      child.postMessage({ type: "init", config: { ...this.#o.config, attestationKey: this.#freshKey() } });
+      child.postMessage({ type: "init", config: { ...this.#o.config, attestationKey: key } });
     } catch {
       this.#killNow();
     }

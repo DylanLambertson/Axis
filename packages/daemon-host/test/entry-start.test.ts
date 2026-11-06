@@ -9,7 +9,7 @@ import { resolveGit } from "@axis/git-ops";
 import { welcomeSchema } from "@axis/protocol";
 import { runDaemonEntry, type DaemonEntryDeps } from "../src/entry.js";
 import { EXIT, signAttestation, type Attestation } from "../src/index.js";
-import { FakeParentPort, FakeProcess, initPayload, platformName, sandbox } from "../testing/entry-harness.js";
+import { FakeParentPort, FakeProcess, FakeTimers, initPayload, platformName, sandbox } from "../testing/entry-harness.js";
 import { LocalPty, localPtyGitRunner } from "../testing/fake-pty.js";
 import { gitSkipReason } from "../testing/git-fixture.js";
 
@@ -39,7 +39,9 @@ test("with every port supplied the entry starts, serves an attested connection o
     if (m["type"] === "anchor.get") deliver({ type: "anchor.result", requestId: m["requestId"], anchor: null });
     if (m["type"] === "anchor.put") deliver({ type: "anchor.ack", seq: m["seq"] });
   };
+  const timers = new FakeTimers();
   const deps: DaemonEntryDeps = {
+    timers,
     parentPort: port,
     process: proc,
     env,
@@ -55,7 +57,13 @@ test("with every port supplied the entry starts, serves an attested connection o
     const h = runDaemonEntry(deps);
     const init = initPayload(box);
     port.deliver(init.message);
+    // A second init while startup is still pending is ignored (design step 2): read, it would be an invalid configuration and end the host.
+    port.deliver(initPayload(box, { platform: "nonsense" }).message);
     assert.equal(await h.started, true, lines.join("\n"));
+    // The init timer is gone once init arrived: a timer that were still armed would stop this healthy host with exit 78.
+    assert.equal(timers.pending(), 0, "no init timer is left armed");
+    timers.fire();
+    assert.equal(port.posted.some((m) => m["type"] === "fatal"), false, "a healthy host is not stopped by the init timeout");
     const ready = port.posted.find((m) => m["type"] === "ready");
     assert.ok(ready, "ready was sent");
     assert.equal(ready["degraded"], undefined);

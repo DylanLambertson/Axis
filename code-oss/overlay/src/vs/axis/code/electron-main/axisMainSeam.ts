@@ -15,10 +15,10 @@
 //   daemon's requests (anchor storage, native confirmation, trust, settings). Without `onRequest` every request goes unanswered,
 //   which the daemon treats as a refusal.
 import { randomBytes } from 'crypto';
+import { homedir } from 'os';
 import { app, utilityProcess } from 'electron';
 import { FileAccess } from '../../../base/common/network.js';
-import { join } from '../../../base/common/path.js';
-import { DaemonSupervisor, daemonEnvironment, type DaemonChild, type SupervisedConfig } from '../../packages/daemon-host/supervisor.js';
+import { DaemonSupervisor, axisDataRoots, daemonEnvironment, shouldStartDaemon, type DaemonChild, type SupervisedConfig } from '../../packages/daemon-host/supervisor.js';
 
 const MAX_STDERR_LINE = 512;
 
@@ -26,12 +26,17 @@ interface IShutdownEvent { join(id: string, promise: Promise<void>): void }
 interface ILifecycle { readonly onWillShutdown: (listener: (event: IShutdownEvent) => unknown) => unknown }
 interface ILog { trace(message: string): void; warn(message: string): void; error(message: string): void }
 
-export function startAxisMainSeam(lifecycle: ILifecycle, log: ILog, userDataPath: string): DaemonSupervisor {
+export function startAxisMainSeam(lifecycle: ILifecycle, log: ILog): DaemonSupervisor | undefined {
+	// Until the real ports exist the daemon only refuses to start: spawn it in unpackaged builds only (supervisor.ts).
+	if (!shouldStartDaemon(app.isPackaged)) {
+		log.trace('axis daemon: not started in a packaged build');
+		return undefined;
+	}
+	const platform = process.platform === 'darwin' ? 'darwin' : process.platform === 'win32' ? 'win32' : 'linux';
 	const config: SupervisedConfig = {
-		// D-3: the application data directory. The worktree root is never inside a registered repository (the daemon checks).
-		dataDir: join(userDataPath, 'axis-daemon'),
-		worktreeRoot: join(userDataPath, 'worktrees'),
-		platform: process.platform === 'darwin' ? 'darwin' : process.platform === 'win32' ? 'win32' : 'linux',
+		// D-3, per platform and NOT Electron's userData (axisDataRoots). The daemon checks the root is not inside a registered repository.
+		...axisDataRoots(platform, process.env, homedir()),
+		platform,
 		logLevel: 'info',
 		devDiagnostics: !app.isPackaged,
 	};
@@ -48,6 +53,7 @@ export function startAxisMainSeam(lifecycle: ILifecycle, log: ILog, userDataPath
 				execArgv: [],
 				stdio: 'pipe',
 			});
+			child.stdout?.on('data', () => { /* drained and dropped: an unread pipe would block the daemon */ });
 			child.stderr?.on('data', (chunk: Buffer) => log.trace(`axis daemon: ${chunk.toString('utf8').trimEnd().slice(0, MAX_STDERR_LINE)}`));
 			const handle: DaemonChild = {
 				postMessage: message => child.postMessage(message),

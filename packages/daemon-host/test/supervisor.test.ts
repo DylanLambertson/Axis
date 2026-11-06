@@ -4,7 +4,7 @@ import { test } from "node:test";
 import { randomBytes } from "node:crypto";
 import { EXIT, parseHostConfig, type OutboundMessage } from "../src/index.js";
 import { Redactor } from "@axis/audit";
-import { DAEMON_ENV_ALLOW, DEFAULT_RESTART_POLICY, DaemonSupervisor, daemonEnvironment, SUPERVISED_EXIT, type DaemonChild, type DaemonSupervisorOptions, type SupervisorEvent } from "../src/supervisor.js";
+import { DAEMON_ENV_ALLOW, DEFAULT_RESTART_POLICY, DaemonSupervisor, axisDataRoots, daemonEnvironment, shouldStartDaemon, SUPERVISED_EXIT, type DaemonChild, type DaemonSupervisorOptions, type SupervisorEvent } from "../src/supervisor.js";
 
 class FakeChild implements DaemonChild {
   readonly sent: Array<Record<string, unknown>> = [];
@@ -106,7 +106,8 @@ test("start sends init with a config the host accepts and a fresh key per spawn 
 test("a source that cannot give a random key starts no host", () => {
   const t = rig({ randomBytes: () => new Uint8Array(32) }); // 1 distinct value
   t.sup.start();
-  assert.equal(t.last().killed, 1, "the child that got no init is killed");
+  assert.equal(t.children.length, 0, "no host is forked without a key");
+  assert.equal(t.sup.state(), "backoff", "a counted crash");
 });
 
 test("ready moves starting to running once; an invalid, stale or extra message changes nothing", () => {
@@ -329,8 +330,25 @@ test("a throwing request handler or observer cannot break the state machine", ()
 });
 
 test("the daemon's environment is the allow-list and nothing else: no NODE_OPTIONS, no debug or Electron variable, no secret", () => {
-  const source = { PATH: "/usr/bin", HOME: "/home/u", NODE_OPTIONS: "--inspect", ELECTRON_RUN_AS_NODE: "1", VSCODE_NONCE: "n", GIT_ASKPASS: "x", AXIS_TOKEN_LIKE: "y", LANG: undefined };
+  const source = { PATH: "/usr/bin", HOME: "/home/u", NODE_OPTIONS: "--inspect", ELECTRON_RUN_AS_NODE: "1", VSCODE_NONCE: "n", GIT_ASKPASS: "x", SSH_AUTH_SOCK: "/s", GITHUB_TOKEN: "t", AXIS_TOKEN_LIKE: "y", LANG: undefined };
   assert.deepEqual(daemonEnvironment(source), { PATH: "/usr/bin", HOME: "/home/u" });
-  assert.equal(DAEMON_ENV_ALLOW.includes("NODE_OPTIONS" as never), false);
+  // The list itself is pinned: adding a name (a secret or an agent socket) must be a visible change to this test.
+  assert.deepEqual([...DAEMON_ENV_ALLOW], ["PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "TMPDIR", "TMP", "TEMP", "SystemRoot", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "XDG_RUNTIME_DIR", "PATHEXT", "WINDIR", "COMSPEC", "USERNAME", "HOMEDRIVE", "HOMEPATH"]);
   assert.deepEqual(daemonEnvironment({}), {});
+});
+
+test("the data roots follow D-3 on each platform (not Electron's userData), with both under one base", () => {
+  assert.deepEqual(axisDataRoots("darwin", {}, "/Users/u"), { dataDir: "/Users/u/Library/Application Support/Axis/daemon", worktreeRoot: "/Users/u/Library/Application Support/Axis/worktrees" });
+  assert.deepEqual(axisDataRoots("darwin", { XDG_DATA_HOME: "/x", LOCALAPPDATA: "C:\\x" }, "/Users/u/"), { dataDir: "/Users/u/Library/Application Support/Axis/daemon", worktreeRoot: "/Users/u/Library/Application Support/Axis/worktrees" }, "macOS ignores the other platforms' variables; a trailing slash is dropped");
+  assert.deepEqual(axisDataRoots("linux", {}, "/home/u"), { dataDir: "/home/u/.local/share/Axis/daemon", worktreeRoot: "/home/u/.local/share/Axis/worktrees" });
+  assert.deepEqual(axisDataRoots("linux", { XDG_DATA_HOME: "/data/xdg/" }, "/home/u"), { dataDir: "/data/xdg/Axis/daemon", worktreeRoot: "/data/xdg/Axis/worktrees" });
+  for (const bad of ["", "relative/dir", "~/x", "/a\0b"]) assert.equal(axisDataRoots("linux", { XDG_DATA_HOME: bad }, "/home/u").dataDir, "/home/u/.local/share/Axis/daemon", `XDG_DATA_HOME ${JSON.stringify(bad)} is ignored`);
+  assert.deepEqual(axisDataRoots("win32", { LOCALAPPDATA: "C:\\Users\\u\\AppData\\Local" }, "C:\\Users\\u"), { dataDir: "C:\\Users\\u\\AppData\\Local\\Axis\\daemon", worktreeRoot: "C:\\Users\\u\\AppData\\Local\\Axis\\worktrees" });
+  assert.deepEqual(axisDataRoots("win32", { APPDATA: "C:\\Users\\u\\AppData\\Roaming" }, "C:\\Users\\u"), { dataDir: "C:\\Users\\u\\AppData\\Local\\Axis\\daemon", worktreeRoot: "C:\\Users\\u\\AppData\\Local\\Axis\\worktrees" }, "never Roaming");
+  assert.equal(axisDataRoots("win32", { LOCALAPPDATA: "relative" }, "C:\\Users\\u").dataDir, "C:\\Users\\u\\AppData\\Local\\Axis\\daemon");
+});
+
+test("the daemon is started in unpackaged builds only, until the real ports exist", () => {
+  assert.equal(shouldStartDaemon(false), true);
+  assert.equal(shouldStartDaemon(true), false);
 });

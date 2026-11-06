@@ -75,3 +75,29 @@ export function initPayload(box: Sandbox, over: Record<string, unknown> = {}): {
     message: { type: "init", config: { dataDir: box.dataDir, worktreeRoot: box.worktreeRoot, platform: platformName(), attestationKey: key.toString("base64url"), ...over } },
   };
 }
+
+/** Manual timers: nothing runs until `fire()`, so no test depends on a real clock. */
+export class FakeTimers {
+  readonly cleared: number[] = [];
+  readonly #pending = new Map<number, () => void>();
+  #next = 1;
+  set = (fn: () => void, _ms: number): number => {
+    const id = this.#next++;
+    this.#pending.set(id, fn);
+    return id;
+  };
+  clear = (handle: unknown): void => {
+    this.cleared.push(handle as number);
+    this.#pending.delete(handle as number);
+  };
+  pending(): number {
+    return this.#pending.size;
+  }
+  /** Run every timer that has not been cleared (the ones a real clock would still fire). */
+  fire(): void {
+    for (const [id, fn] of [...this.#pending]) {
+      this.#pending.delete(id);
+      fn();
+    }
+  }
+}

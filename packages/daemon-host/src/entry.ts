@@ -63,6 +63,13 @@ export interface DaemonEntryDeps {
   readonly ports?: DaemonEntryPorts;
   /** Design 3, step 2: default 10000. */
   readonly initTimeoutMs?: number;
+  /** The timer for the init wait (default: the global one). Injected so a test needs no wall clock. */
+  readonly timers?: EntryTimers;
+}
+
+export interface EntryTimers {
+  set(fn: () => void, ms: number): unknown;
+  clear(handle: unknown): void;
 }
 
 export interface DaemonEntryHandle {
@@ -75,6 +82,15 @@ export interface DaemonEntryHandle {
 export const DEFAULT_INIT_TIMEOUT_MS = 10_000;
 const DEBUG_FLAG = /^--(?:inspect|debug|remote-debugging)/i;
 const REASON = /^[a-z][a-z0-9_]{0,63}$/;
+/** Opaque handles under Code OSS's typings (ADR 0005), as in compose.ts. The init timer is unref'd: the parent port keeps the process alive. */
+const realTimers: EntryTimers = {
+  set: (fn, ms) => {
+    const t = setTimeout(fn, ms) as unknown as NodeJS.Timeout;
+    t.unref();
+    return t;
+  },
+  clear: (h) => clearTimeout(h as NodeJS.Timeout),
+};
 const realClock: Clock = { now: () => Date.now(), monotonic: () => performance.now() };
 
 /** True for an argument that opens a debugger or inspector port, in any spelling Node accepts. */
@@ -121,6 +137,8 @@ export function runDaemonEntry(deps: DaemonEntryDeps): DaemonEntryHandle {
   // Step 1: the process must be what the design says it is.
   if (deps.parentPort === undefined || typeof deps.parentPort.postMessage !== "function") return refuseEarly("not_utility_process");
   if (deps.execArgv.some(isDebugFlag)) return refuseEarly("debug_flag_refused");
+  // Main always forks with an empty `execArgv`; `--require`, `--import` and loaders would run code before this file does.
+  if (deps.execArgv.length > 0) return refuseEarly("exec_args_refused");
   const nodeOptions = deps.env["NODE_OPTIONS"];
   if (nodeOptions !== undefined && nodeOptions !== "") return refuseEarly("node_options_refused");
 
@@ -128,10 +146,11 @@ export function runDaemonEntry(deps: DaemonEntryDeps): DaemonEntryHandle {
   const control = adaptParentPort(deps.parentPort);
   const mux = new ChannelMux(control.channel);
   const client = new ControlClient({ mux });
-  let initTimer: NodeJS.Timeout | undefined;
+  let initTimer: unknown;
+  const timers: EntryTimers = deps.timers ?? realTimers;
   let ended = false;
   const release = (): void => {
-    if (initTimer !== undefined) clearTimeout(initTimer);
+    if (initTimer !== undefined) timers.clear(initTimer);
     initTimer = undefined;
     client.dispose();
     mux.dispose();
@@ -160,11 +179,9 @@ export function runDaemonEntry(deps: DaemonEntryDeps): DaemonEntryHandle {
   };
 
   // Step 3: exactly one init, bounded.
-  // Opaque handle under Code OSS's typings (ADR 0005), as in compose.ts.
-  initTimer = setTimeout(() => failStartup(new AxisError("E_INVALID_ARGUMENT", "No init message", { reason: "init_timeout" })), deps.initTimeoutMs ?? DEFAULT_INIT_TIMEOUT_MS) as unknown as NodeJS.Timeout;
-  initTimer.unref();
+  initTimer = timers.set(() => failStartup(new AxisError("E_INVALID_ARGUMENT", "No init message", { reason: "init_timeout" })), deps.initTimeoutMs ?? DEFAULT_INIT_TIMEOUT_MS);
   client.onInit((raw) => {
-    if (initTimer !== undefined) clearTimeout(initTimer);
+    if (initTimer !== undefined) timers.clear(initTimer);
     initTimer = undefined;
     try {
       // Step 4.

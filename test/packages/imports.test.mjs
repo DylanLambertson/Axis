@@ -81,12 +81,22 @@ export function violation(pkg, spec, file = null, pkgDir = null) {
     if (file === null || pkgDir === null) return null;
     const target = resolve(dirname(file), spec);
     const rel = relative(pkgDir, target);
+    // Shipped code stays inside src/: a src file importing test/, testing/ or contract/ could launder a minter through a
+    // test-support module (those may import the minters), so the rule holds for every package.
+    if (relative(pkgDir, file).split(sep)[0] === "src" && !(rel === "src" || rel.startsWith(`src${sep}`)) && !(rel === ".." || rel.startsWith(`..${sep}`) || resolve(rel) === rel)) {
+      return "src/ may not import outside src/ (test/, testing/ or contract/)";
+    }
     // The module that mints the discard token: inside the host's src/, only the public index may load it (a handler
     // or a service reaching it by a relative path could mint a token with no spent approval).
     // The public index re-exports the wiring that closes over it: nothing inside src/ may load the index (a barrel hop).
     if (pkg === HOST_PACKAGE && /^src[\\/]index(\.[cm]?[jt]s)?$/.test(rel)) {
       const from = relative(pkgDir, file).split(sep).join("/");
       if (from.startsWith("src/")) return "nothing inside src/ may import the public index";
+    }
+    // The process entry reaches the composition root, so it is a composition point: nothing inside src/ may load it, only the overlay entry.
+    if (pkg === HOST_PACKAGE && /^src[\\/]entry(\.[cm]?[jt]s)?$/.test(rel)) {
+      const from = relative(pkgDir, file).split(sep).join("/");
+      if (from.startsWith("src/")) return "nothing inside src/ may import the process entry src/entry.ts";
     }
     // The composition root loads both minters, so it is as privileged as the public index: only the index may load it.
     if (pkg === HOST_PACKAGE && /^src[\\/]compose(\.[cm]?[jt]s)?$/.test(rel)) {
@@ -225,7 +235,13 @@ test("scanner: relative imports must stay inside the package", () => {
   const dir = join(packagesDir, "protocol");
   const file = join(dir, "src", "a.ts");
   assert.equal(violation("protocol", "./b.js", file, dir), null);
-  assert.equal(violation("protocol", "../test/x.js", file, dir), null);
+  assert.notEqual(violation("protocol", "../test/x.js", file, dir), null, "src may not import test/");
+  assert.notEqual(violation("protocol", "../testing/x.js", file, dir), null, "src may not import testing/");
+  assert.notEqual(violation("protocol", "../contract/x.js", file, dir), null);
+  assert.notEqual(violation("protocol", "../src/../testing/x.js", file, dir), null, "a detour through src does not hide it");
+  assert.equal(violation("protocol", "../src/x.js", file, dir), null, "src may name itself");
+  assert.equal(violation("protocol", "../src/x.js", join(dir, "test", "a.test.ts"), dir), null, "tests import src");
+  assert.equal(violation("protocol", "../testing/x.js", join(dir, "test", "a.test.ts"), dir), null, "tests import testing/");
   assert.notEqual(violation("protocol", "../../worktrees/src/x.js", file, dir), null);
   assert.notEqual(violation("protocol", "../../../vendor/code-oss/x.js", file, dir), null);
   assert.notEqual(violation("protocol", "../../protocol-evil/x.js", file, dir), null);
@@ -370,6 +386,10 @@ test("scanner: the daemon host is imported by nothing and imports the restricted
   assert.equal(violation("daemon-host", "./gate/run-trust.js", at("src/index.ts"), dir), null);
   assert.equal(violation("daemon-host", "./gate/run-trust.js", at("src/compose.ts"), dir), null, "the composition root");
   assert.notEqual(violation("daemon-host", "./gate/run-trust.js", at("src/compose-parts.ts"), dir), null, "its helper file is not the root");
+  // The launder (review daemon-host-runs-review2 N2): a handler imports a testing/ module that re-exports the minter.
+  assert.notEqual(violation("daemon-host", "../../testing/zz-launder.js", at("src/handlers/zz-a.ts"), dir), null, "src importing testing/");
+  assert.notEqual(violation("daemon-host", "../../test/zz-launder.js", at("src/handlers/zz-a.ts"), dir), null, "src importing test/");
+  assert.equal(violation("daemon-host", "../testing/zz-launder.js", at("test/a.test.ts"), dir), null, "a test may import testing/");
   for (const [f, spec] of [
     ["src/handlers/cli-runs.ts", "../gate/run-trust.js"],
     ["src/bindings/runs.ts", "../gate/run-trust.js"],
@@ -401,6 +421,11 @@ test("scanner: the daemon host is imported by nothing and imports the restricted
   for (const [f, spec] of [["src/handlers/projects.ts", "../compose.js"], ["src/compose-parts.ts", "./compose.js"], ["src/bindings/runs.ts", "../compose"], ["src/gate/approvals.ts", "../compose.ts"], ["src/host.ts", "./compose.js"]]) {
     assert.notEqual(violation("daemon-host", spec, at(f), dir), null, f);
   }
+  // The process entry is a composition point loadable by no staged file (the overlay entry is outside the package).
+  for (const [f, spec] of [["src/handlers/worktrees.ts", "../entry.js"], ["src/index.ts", "./entry.js"], ["src/compose.ts", "./entry"], ["src/supervisor.ts", "./entry.ts"], ["src/bindings/runs.ts", "../entry.js"]]) {
+    assert.notEqual(violation("daemon-host", spec, at(f), dir), null, `${f} -> ${spec}`);
+  }
+  assert.equal(violation("daemon-host", "../src/entry.js", at("test/entry.test.ts"), dir), null, "tests may");
   // The barrel hop: a handler loading the public index could reach whatever it exports.
   for (const [f, spec] of [["src/handlers/worktrees.ts", "../index.js"], ["src/worktrees/service.ts", "../index"], ["src/gate/approvals.ts", "../index.ts"]]) {
     assert.notEqual(violation("daemon-host", spec, at(f), dir), null, f);

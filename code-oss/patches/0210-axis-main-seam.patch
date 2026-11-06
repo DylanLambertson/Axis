@@ -17,7 +17,7 @@ diff --git a/src/vs/code/electron-main/app.ts b/src/vs/code/electron-main/app.ts
  
 +		// --- Start Axis ---
 +		// The Axis daemon utility process (ADR 0003 D1): fixed entry, supervised, stopped on quit.
-+		startAxisMainSeam(this.lifecycleMainService, this.logService, this.environmentMainService.userDataPath);
++		startAxisMainSeam(this.lifecycleMainService, this.logService);
 +		// --- End Axis ---
 +
  		// Setup Protocol URL Handlers
