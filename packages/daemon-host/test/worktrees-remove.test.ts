@@ -6,7 +6,7 @@ import * as path from "node:path";
 import { DaemonError } from "@axis/daemon";
 import { newKey, challengeOf, type Client, type Msg } from "./approvals-rig.js";
 import { approve4, waitFor } from "./approvals-helpers.js";
-import { createWs as createWsRaw, gitSkipReason, worktreesRig, type Rig, type RigOptions } from "./worktrees-rig.js";
+import { finaliseApproved, createWs as createWsRaw, gitSkipReason, worktreesRig, type Rig, type RigOptions } from "./worktrees-rig.js";
 
 const skip = gitSkipReason();
 const WT = "axis.worktrees";
@@ -20,7 +20,7 @@ async function setup(t: TestContext, options: RigOptions = {}): Promise<{ r: Rig
 
 const finalised = async (r: Rig, user: Client, name = "Gone"): Promise<{ id: string; dir: string }> => {
   const { id } = await createWs(user, name);
-  const fin = await user.call(WT, "finalise", { id, outcome: "archived" }, newKey());
+  const fin = await finaliseApproved(r, user, id, "archived");
   assert.equal(fin.ok, true);
   return { id, dir: String(r.journal.getWorkspace(id)?.worktreePath) };
 };
@@ -131,7 +131,9 @@ test("preflight seam: a stall check throwing refuses tier 4 before any challenge
       if (stalled) throw new DaemonError("E_UNAVAILABLE", "stalled");
     },
   });
+  stalled = false; // finalise is tier 4 too: let it through first
   const { id } = await finalised(r, user);
+  stalled = true;
   const refused = await user.call(WT, "remove", { id }, newKey());
   assert.equal(refused.error?.code, "E_UNAVAILABLE");
   assert.equal(r.nativeConfirms().length, 0);

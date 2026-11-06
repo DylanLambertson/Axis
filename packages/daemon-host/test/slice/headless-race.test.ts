@@ -8,7 +8,7 @@ import { approvalRequiredDetailsSchema } from "@axis/protocol";
 import { createGitFixture, gitSkipReason, type GitFixture } from "../../testing/git-fixture.js";
 import { TestClient, newKey, until } from "../../testing/test-client.js";
 import type { TestSupervisor } from "../../testing/test-supervisor.js";
-import { FAKE_CLI, awaitRun, confirmNative, createWorkspace, disposeHosts, registerProject, startHost, trustWindow, type Workspace } from "../../testing/slice-helpers.js";
+import { FAKE_CLI, awaitRun, confirmNative, finaliseApproved, createWorkspace, disposeHosts, registerProject, startHost, trustWindow, type Workspace } from "../../testing/slice-helpers.js";
 
 /**
  * The composed races of the headless slice (plan section 1.2 step 3 and question 19), on their own host: a run start racing a
@@ -16,7 +16,6 @@ import { FAKE_CLI, awaitRun, confirmNative, createWorkspace, disposeHosts, regis
  * git and runs handlers take ONE project mutex (the probe in `testing/slice-host.ts` reports the instance of every `run`), and the
  * run forwarder answers from the real runs binding once it exists (a finalise works after the run ended).
  */
-const PROJECT = "axis.worktrees";
 
 /** A generous bound so a stuck step fails the suite instead of hanging CI; the steps themselves wait on conditions. */
 const SUITE_TIMEOUT_MS = 240_000;
@@ -54,7 +53,7 @@ describe("headless slice: races", { skip: gitSkipReason(), timeout: SUITE_TIMEOU
     for (const startFirst of [true, false]) {
       const ws = await createWorkspace(user, projectId, startFirst ? "Race A" : "Race B");
       const start = (): Promise<Awaited<ReturnType<TestClient["call"]>>> => user.call("axis.cli-runs", "start", { workspaceId: ws.id, agentId: "slow" }, true);
-      const finalise = (): Promise<Awaited<ReturnType<TestClient["call"]>>> => user.call(PROJECT, "finalise", { id: ws.id, outcome: "archived" }, true);
+      const finalise = (): Promise<Awaited<ReturnType<TestClient["call"]>>> => finaliseApproved(sup, user, ws.id);
       const [a, b] = await Promise.all(startFirst ? [start(), finalise()] : [finalise(), start()]);
       const [started, finalised] = startFirst ? [a, b] : [b, a];
       assert.equal([started, finalised].filter((x) => x?.ok).length, 1, "a run never starts in a workspace that is being finalised, nor the reverse");
