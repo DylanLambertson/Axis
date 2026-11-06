@@ -39,6 +39,8 @@ export interface ManagerCreated {
   readonly branch: string;
   readonly path: string;
   readonly baseSha: string;
+  /** The full `refs/heads/...` name the base resolved to, or null when it was not a local branch. */
+  readonly baseBranch: string | null;
 }
 
 export interface ManagerDiscardScan {
@@ -80,14 +82,14 @@ export interface ManagerShape {
   resolveCommit(repoPath: string, ref: string): Promise<string>;
   /** Full names of the refs under `prefix` (for example `refs/axis/archive/`) in the project's repository (read only). */
   listRefs(repoPath: string, prefix: string): Promise<ReadonlySet<string>>;
-  /** True when `headSha` is reachable from the base branch `baseRef` names (a branch, or `HEAD` of the project checkout), by git itself. */
-  isMerged(repoPath: string, headSha: string, baseRef: string): Promise<boolean>;
+  /** True when `headSha` is reachable from `baseBranch` (a full `refs/heads/...` name the journal recorded), by git itself. Never reads `HEAD`. */
+  isMerged(repoPath: string, headSha: string, baseBranch: string): Promise<boolean>;
   list(repoPath: string): Promise<readonly ListedWorktree[]>;
   create(input: { repoPath: string; slug: string; baseRef: string; id: string }): Promise<ManagerCreated>;
   status(worktreePath: string, expected: ExpectedWorktree): Promise<ManagerStatus>;
   previewDiscard(worktreePath: string, expected: ExpectedWorktree): Promise<ManagerDiscardScan>;
   assertNoDrift(worktreePath: string, expected: ExpectedWorktree): Promise<void>;
-  finalise(input: { path: string; expectedWorktree: ExpectedWorktree; outcome: "merged" | "archived" | "abandoned"; discardConfirmation?: unknown }): Promise<ManagerFinalised>;
+  finalise(input: { path: string; expectedWorktree: ExpectedWorktree; outcome: "merged" | "archived" | "abandoned"; discardConfirmation?: unknown; trustedBaseBranch: string | null }): Promise<ManagerFinalised>;
   remove(input: { path: string; expectedWorktree: ExpectedWorktree; deleteBranch: boolean; discardConfirmation?: unknown }): Promise<ManagerRemoved>;
   restoreFromRunBase(input: { path: string; runId: string; expectedWorktree: ExpectedWorktree }): Promise<ManagerRestored>;
 }

@@ -2,7 +2,7 @@
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
 import type { AuditActor, AuditLog } from "@axis/audit";
-import type { Journal, Workspace } from "@axis/journal";
+import { baseBranchSchema, type Journal, type Workspace } from "@axis/journal";
 import type { RunsService } from "../ports/runs.js";
 import type { RandomSource } from "../ports/random.js";
 import type { WorktreeLocator } from "../ports/worktree-locator.js";
@@ -19,7 +19,7 @@ import { workspaceSlug } from "./slug.js";
 
 export type ServiceJournal = Pick<
   Journal,
-  | "getProject" | "listProjects" | "getWorkspace" | "listWorkspaces" | "createWorkspace" | "setWorktreePath"
+  | "getProject" | "listProjects" | "getWorkspace" | "listWorkspaces" | "createWorkspace" | "setWorktreePath" | "recordBaseBranch"
   | "transitionWorkspace" | "lockWorkspace" | "unlockWorkspace" | "getRun" | "listRuns"
 >;
 
@@ -149,10 +149,13 @@ export function createWorktreesService(deps: WorktreesServiceDeps): WorktreesRun
               if (made.baseSha !== baseSha || made.branch !== branch || made.id !== id) throw worktreeFailure("E_CONFLICT", "base_moved");
               return deps.transact(() => {
                 journal.setWorktreePath(id, made.path, actor);
+                // Recorded here, by the daemon, before the workspace is READY: `merged` is later judged against this alone.
+                const recorded = made.baseBranch !== null && baseBranchSchema.safeParse(made.baseBranch).success ? made.baseBranch : null;
+                if (recorded !== null) journal.recordBaseBranch(id, recorded, actor);
                 const ws = journal.transitionWorkspace(id, "READY", { actor, expectedFrom: "CREATING" });
                 deps.audit.append({
                   actor, action: "worktree.create", target: `workspace:${id}`, outcome: "success",
-                  payload: { workspaceId: id, projectId: project.id, branch, baseRef, baseSha },
+                  payload: { workspaceId: id, projectId: project.id, branch, baseRef, baseSha, ...(recorded === null ? {} : { baseBranch: recorded }) },
                 });
                 return ws;
               });
@@ -201,7 +204,7 @@ export function createWorktreesService(deps: WorktreesServiceDeps): WorktreesRun
               if (recovering) {
                 outcome = await verifyFinalised(manager, project.path, ws, live, ref.workTree, req.outcome);
               } else {
-                const done = await manager.finalise({ path: ref.workTree, expectedWorktree: { path: ref.workTree, id: ws.id }, outcome: req.outcome, discardConfirmation: ctx.confirmation });
+                const done = await manager.finalise({ path: ref.workTree, expectedWorktree: { path: ref.workTree, id: ws.id }, outcome: req.outcome, discardConfirmation: ctx.confirmation, trustedBaseBranch: ws.baseBranch });
                 backupRef = done.backupRef;
                 skippedLarge = done.skippedLarge.length;
               }

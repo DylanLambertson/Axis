@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { isScriptFile } from "./loaders.mjs";
 import { importSpecifiers, unsafeForms } from "../../scripts/code-oss/stage-ast.mjs";
 import { LOADER_BUILTINS } from "../../scripts/code-oss/stage-scan.mjs";
+import { listenerBuiltinRefusal, webHostEdgeRefusal } from "../../scripts/code-oss/web-rules.mjs";
 
 const packagesDir = fileURLToPath(new URL("../../packages/", import.meta.url));
 
@@ -37,6 +38,7 @@ const RUNS_SUBPATHS = new Map([["@axis/runs/daemon-attestation", new Set(["daemo
 const HOST_PACKAGE = "daemon-host";
 const HOST_FILE_RULES = new Map([
   ["@axis/journal/daemon-principal", ["src/handlers/review.ts"]],
+  ["@axis/git-snapshot", ["src/bindings/snapshot.ts"]],
   ["@axis/worktrees", ["src/bindings/worktrees.ts"]],
   ["@axis/worktrees/daemon-confirm", ["src/gate/worktrees-confirm.ts"]],
   ["@axis/runs/daemon-attestation", ["src/gate/run-trust.ts"]],
@@ -46,9 +48,11 @@ const HOST_FILE_RULES = new Map([
  * their closed-over factories) and the composition root (ticket H12), the one place that builds the gate and hands handler code only
  * the registrar. A handler, a service, a binding or another composition part may not.
  */
+/** The files that may load the composition root: the public index, and the utility process entry (it calls `composeDaemonHost` and nothing else of it). */
+const COMPOSE_IMPORTERS = new Set(["src/index.ts", "src/entry.ts"]);
 const COMPOSITION_FILES = new Set(["src/index.ts", "src/compose.ts"]);
 /** Packages whose bindings live in `src/bindings/*.ts` of the host (they land with their own changes). */
-const HOST_BINDING_PACKAGES = ["@axis/runs", "@axis/review"];
+const HOST_BINDING_PACKAGES = ["@axis/broker", "@axis/runs", "@axis/review"];
 
 /** Judge the host-only rules; null means no host rule applies and the general rules decide. */
 function hostViolation(pkg, spec, file, pkgDir) {
@@ -79,6 +83,11 @@ export function violation(pkg, spec, file = null, pkgDir = null) {
     if (file === null || pkgDir === null) return null;
     const target = resolve(dirname(file), spec);
     const rel = relative(pkgDir, target);
+    // Shipped code stays inside src/: a src file importing test/, testing/ or contract/ could launder a minter through a
+    // test-support module (those may import the minters), so the rule holds for every package.
+    if (relative(pkgDir, file).split(sep)[0] === "src" && !(rel === "src" || rel.startsWith(`src${sep}`)) && !(rel === ".." || rel.startsWith(`..${sep}`) || resolve(rel) === rel)) {
+      return "src/ may not import outside src/ (test/, testing/ or contract/)";
+    }
     // The module that mints the discard token: inside the host's src/, only the public index may load it (a handler
     // or a service reaching it by a relative path could mint a token with no spent approval).
     // The public index re-exports the wiring that closes over it: nothing inside src/ may load the index (a barrel hop).
@@ -86,10 +95,21 @@ export function violation(pkg, spec, file = null, pkgDir = null) {
       const from = relative(pkgDir, file).split(sep).join("/");
       if (from.startsWith("src/")) return "nothing inside src/ may import the public index";
     }
+    // The web host (docs/design/web-host-entry.md): only src/web/ may load src/web/, so no desktop entry can reach the listener.
+    const fromSrc = relative(pkgDir, file).split(sep).join("/");
+    if (fromSrc.startsWith("src/")) {
+      const web = webHostEdgeRefusal(`${pkg}/${fromSrc.slice(4)}`, `${pkg}/${rel.split(sep).join("/").slice(4)}`);
+      if (web !== null && rel.startsWith(`src${sep}`)) return web;
+    }
+    // The process entry reaches the composition root, so it is a composition point: nothing inside src/ may load it, only the overlay entry.
+    if (pkg === HOST_PACKAGE && /^src[\\/]entry(\.[cm]?[jt]s)?$/.test(rel)) {
+      const from = relative(pkgDir, file).split(sep).join("/");
+      if (from.startsWith("src/")) return "nothing inside src/ may import the process entry src/entry.ts";
+    }
     // The composition root loads both minters, so it is as privileged as the public index: only the index may load it.
     if (pkg === HOST_PACKAGE && /^src[\\/]compose(\.[cm]?[jt]s)?$/.test(rel)) {
       const from = relative(pkgDir, file).split(sep).join("/");
-      if (from.startsWith("src/") && from !== "src/index.ts") return "only src/index.ts may import the composition root";
+      if (from.startsWith("src/") && !COMPOSE_IMPORTERS.has(from)) return "only src/index.ts and the process entry src/entry.ts may import the composition root";
     }
     if (pkg === HOST_PACKAGE && /^src[\\/]gate[\\/]worktrees-confirm(\.[cm]?[jt]s)?$/.test(rel)) {
       const from = relative(pkgDir, file).split(sep).join("/");
@@ -124,7 +144,9 @@ export function violation(pkg, spec, file = null, pkgDir = null) {
   if (spec.startsWith("node:")) {
     if (NO_NODE.has(pkg) && inSrc) return "node:* is not allowed in this package";
     const only = LOADER_BUILTINS.get(spec.replace(/\/.*$/, ""));
-    return only !== undefined && !only.has(pkg) && inSrc ? "this built-in loads or runs code without a module specifier" : null;
+    if (only !== undefined && !only.has(pkg) && inSrc) return "this built-in loads or runs code without a module specifier";
+    const staged = file === null || pkgDir === null ? null : `${pkg}/${relative(pkgDir, file).split(sep).join("/").slice(4)}`;
+    return inSrc ? listenerBuiltinRefusal(spec, staged) : null;
   }
   return "only relative, zod, @axis/* and node:* imports are allowed";
 }
@@ -223,7 +245,13 @@ test("scanner: relative imports must stay inside the package", () => {
   const dir = join(packagesDir, "protocol");
   const file = join(dir, "src", "a.ts");
   assert.equal(violation("protocol", "./b.js", file, dir), null);
-  assert.equal(violation("protocol", "../test/x.js", file, dir), null);
+  assert.notEqual(violation("protocol", "../test/x.js", file, dir), null, "src may not import test/");
+  assert.notEqual(violation("protocol", "../testing/x.js", file, dir), null, "src may not import testing/");
+  assert.notEqual(violation("protocol", "../contract/x.js", file, dir), null);
+  assert.notEqual(violation("protocol", "../src/../testing/x.js", file, dir), null, "a detour through src does not hide it");
+  assert.equal(violation("protocol", "../src/x.js", file, dir), null, "src may name itself");
+  assert.equal(violation("protocol", "../src/x.js", join(dir, "test", "a.test.ts"), dir), null, "tests import src");
+  assert.equal(violation("protocol", "../testing/x.js", join(dir, "test", "a.test.ts"), dir), null, "tests import testing/");
   assert.notEqual(violation("protocol", "../../worktrees/src/x.js", file, dir), null);
   assert.notEqual(violation("protocol", "../../../vendor/code-oss/x.js", file, dir), null);
   assert.notEqual(violation("protocol", "../../protocol-evil/x.js", file, dir), null);
@@ -358,6 +386,9 @@ test("scanner: the daemon host is imported by nothing and imports the restricted
   for (const f of ["src/handlers/worktrees.ts", "src/ports/worktrees.ts", "src/host.ts", "src/bindings/runs.ts"]) {
     assert.notEqual(violation("daemon-host", "@axis/worktrees", at(f), dir), null, f);
   }
+  // GIT-SNAP-1 (H13): the run snapshotter binding is the host's one importer of @axis/git-snapshot.
+  assert.equal(violation("daemon-host", "@axis/git-snapshot", at("src/bindings/snapshot.ts"), dir), null);
+  for (const f of ["src/compose.ts", "src/entry.ts", "src/handlers/cli-runs.ts", "src/bindings/runs.ts"]) assert.notEqual(violation("daemon-host", "@axis/git-snapshot", at(f), dir), null, f);
   // The trust attestation: only src/gate/run-trust.ts of the host (the binding and the handler cannot mint one).
   assert.equal(violation("daemon-host", "@axis/runs/daemon-attestation", at("src/gate/run-trust.ts"), dir), null);
   for (const f of ["src/bindings/runs.ts", "src/handlers/cli-runs.ts", "src/gate/approvals.ts", "test/runs-rig.ts"]) {
@@ -368,6 +399,10 @@ test("scanner: the daemon host is imported by nothing and imports the restricted
   assert.equal(violation("daemon-host", "./gate/run-trust.js", at("src/index.ts"), dir), null);
   assert.equal(violation("daemon-host", "./gate/run-trust.js", at("src/compose.ts"), dir), null, "the composition root");
   assert.notEqual(violation("daemon-host", "./gate/run-trust.js", at("src/compose-parts.ts"), dir), null, "its helper file is not the root");
+  // The launder (review daemon-host-runs-review2 N2): a handler imports a testing/ module that re-exports the minter.
+  assert.notEqual(violation("daemon-host", "../../testing/zz-launder.js", at("src/handlers/zz-a.ts"), dir), null, "src importing testing/");
+  assert.notEqual(violation("daemon-host", "../../test/zz-launder.js", at("src/handlers/zz-a.ts"), dir), null, "src importing test/");
+  assert.equal(violation("daemon-host", "../testing/zz-launder.js", at("test/a.test.ts"), dir), null, "a test may import testing/");
   for (const [f, spec] of [
     ["src/handlers/cli-runs.ts", "../gate/run-trust.js"],
     ["src/bindings/runs.ts", "../gate/run-trust.js"],
@@ -394,10 +429,16 @@ test("scanner: the daemon host is imported by nothing and imports the restricted
   assert.equal(violation("daemon-host", "../src/gate/worktrees-confirm.js", at("test/worktrees-unit.test.ts"), dir), null, "tests may");
   // The composition root (it loads both minters): only the public index, never a handler, binding, gate or helper file.
   assert.equal(violation("daemon-host", "./compose.js", at("src/index.ts"), dir), null);
+  assert.equal(violation("daemon-host", "./compose.js", at("src/entry.ts"), dir), null, "the process entry calls composeDaemonHost");
   assert.equal(violation("daemon-host", "../src/compose.js", at("test/compose.test.ts"), dir), null, "tests may");
   for (const [f, spec] of [["src/handlers/projects.ts", "../compose.js"], ["src/compose-parts.ts", "./compose.js"], ["src/bindings/runs.ts", "../compose"], ["src/gate/approvals.ts", "../compose.ts"], ["src/host.ts", "./compose.js"]]) {
     assert.notEqual(violation("daemon-host", spec, at(f), dir), null, f);
   }
+  // The process entry is a composition point loadable by no staged file (the overlay entry is outside the package).
+  for (const [f, spec] of [["src/handlers/worktrees.ts", "../entry.js"], ["src/index.ts", "./entry.js"], ["src/compose.ts", "./entry"], ["src/supervisor.ts", "./entry.ts"], ["src/bindings/runs.ts", "../entry.js"]]) {
+    assert.notEqual(violation("daemon-host", spec, at(f), dir), null, `${f} -> ${spec}`);
+  }
+  assert.equal(violation("daemon-host", "../src/entry.js", at("test/entry.test.ts"), dir), null, "tests may");
   // The barrel hop: a handler loading the public index could reach whatever it exports.
   for (const [f, spec] of [["src/handlers/worktrees.ts", "../index.js"], ["src/worktrees/service.ts", "../index"], ["src/gate/approvals.ts", "../index.ts"]]) {
     assert.notEqual(violation("daemon-host", spec, at(f), dir), null, f);
@@ -414,4 +455,24 @@ test("scanner: the daemon host is imported by nothing and imports the restricted
   }
   // Other packages keep their existing rules for the worktrees root.
   assert.equal(violation("daemon", "@axis/worktrees"), null);
+});
+
+test("scanner: only the web host listener loads a socket built-in, and only src/web/ loads src/web/ (docs/design/web-host-entry.md)", () => {
+  const dir = join(packagesDir, "daemon-host");
+  const at = (rel) => join(dir, ...rel.split("/"));
+  for (const spec of ["node:http", "node:net", "node:https", "node:http2", "node:tls", "node:dgram"]) {
+    assert.equal(violation("daemon-host", spec, at("src/web/server.ts"), dir), null, spec);
+    for (const f of ["src/web/session.ts", "src/web/index.ts", "src/entry.ts", "src/supervisor.ts", "src/host.ts", "src/compose.ts"]) assert.notEqual(violation("daemon-host", spec, at(f), dir), null, `${f} ${spec}`);
+    assert.notEqual(violation("daemon-host", spec), null, "a call without a file is judged strictly");
+    assert.notEqual(violation("git-ops", spec, join(packagesDir, "git-ops", "src", "web", "server.ts"), join(packagesDir, "git-ops")), null, "another package's web/server.ts is not the listener");
+    assert.equal(violation("daemon-host", spec, at("test/web-host.test.ts"), dir), null, "tests may");
+  }
+  for (const [f, spec] of [["src/index.ts", "./web/index.js"], ["src/entry.ts", "./web/server.js"], ["src/compose.ts", "./web/index"], ["src/supervisor.ts", "./web/config.js"], ["src/transport/mux.ts", "../web/session.js"]]) {
+    assert.notEqual(violation("daemon-host", spec, at(f), dir), null, `${f} -> ${spec}`);
+  }
+  assert.equal(violation("daemon-host", "./server.js", at("src/web/index.ts"), dir), null);
+  assert.equal(violation("daemon-host", "../control/attestation.js", at("src/web/server.ts"), dir), null);
+  assert.equal(violation("daemon-host", "../src/web/index.js", at("test/web-host.test.ts"), dir), null, "tests may");
+  // The web host is not a composition point: it may not load the composition root, the process entry, the index or a minter.
+  for (const spec of ["../compose.js", "../entry.js", "../index.js", "../gate/run-trust.js", "../gate/worktrees-confirm.js"]) assert.notEqual(violation("daemon-host", spec, at("src/web/server.ts"), dir), null, spec);
 });

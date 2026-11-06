@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 // The host of the headless slice (plan section 1): the REAL composition root in a child process, on the real `process` (real lock,
 // real signals, real exit code), over the Node IPC channel the test supervisor speaks. What is fake is listed in `fake-pty.ts`
-// (the pty port and the `pty` git runner) and below (the run snapshotter). No Electron, no UI, no Code OSS.
+// (the pty port and the `pty` git runner); the run snapshotter is the real `@axis/git-snapshot` one. No Electron, no UI, no Code OSS.
 import { existsSync } from "node:fs";
 import { Redactor } from "@axis/audit";
 import { resolveGit } from "@axis/git-ops";
@@ -16,7 +16,7 @@ import {
   parseHostConfig,
   ProjectMutex,
   type Clock,
-  type ComposeOptions,
+  gitSnapshotRunSnapshotter,
 } from "../src/index.js";
 import { LocalPty, localPtyGitRunner } from "./fake-pty.js";
 
@@ -44,12 +44,6 @@ const release = (): void => {
   mux.dispose();
   channel.dispose();
 };
-
-/**
- * FAKE (replaced by the GIT-SNAP-1 snapshot of `@axis/git-snapshot` or `@axis/worktrees` `gitSnap`, plan question 10): a run is
- * never refused for a changed repository and never reports drift. The slice does not assert drift.
- */
-const snapshotter: NonNullable<ComposeOptions["snapshotter"]> = { before: () => Promise.resolve(), after: () => Promise.resolve({ drift: false }) };
 
 /**
  * TEST ONLY (`AXIS_SLICE_BREAK_PUT=<file>`): while that file exists, `anchor.put` cannot be sent (as on a closed channel), so the
@@ -81,8 +75,10 @@ client.onInit((raw) => {
       ports: { clock, storage: createNodeStorage(), redactor, logger, env, cwd: process.cwd() },
       pty: new LocalPty(),
       ptyGitRunner: localPtyGitRunner(gitPath, env),
-      snapshotter,
+      snapshotter: gitSnapshotRunSnapshotter, // the real GIT-SNAP-1 snapshot (ticket H13), not a fake
       scanMode: process.env["AXIS_SLICE_SCAN_MODE"] === "warn" ? "warn" : "refuse",
+      // A composer run's first turn writes the root Makefile (a protected path: it waits for the user's approval); later turns answer text.
+      composer: { mock: { respond: (req) => (req.messages.length === 1 ? { kind: "tool_use", name: "write_file", input: { path: "Makefile", content: "all:\n" } } : { kind: "text", text: "done" }) } },
       process,
       exit: (code, info) => {
         process.exitCode = code;

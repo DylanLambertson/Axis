@@ -62,6 +62,7 @@ const EXTRA_TEXT: Readonly<Record<string, string>> = {
   base_ref: "The base ref does not exist.",
   busy: "The workspace is busy.",
   needs_attention: "This workspace needs attention and is unavailable.",
+  not_available: "This operation is not available yet.",
   path_changed: "The workspace location changed.",
   unverified: "The earlier finalise could not be verified; it needs attention.",
   unsafe_path: "A path in the request is not a plain file path inside the workspace.",

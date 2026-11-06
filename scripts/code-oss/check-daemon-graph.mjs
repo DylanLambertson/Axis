@@ -19,15 +19,24 @@
 //      any other external import (a bare `zod`, `vs/*`, `electron`) would resolve from the tree at run time and is refused;
 //   4. a restricted module (the user principal, the trust attestation; RESTRICTED_MODULES) is imported only by its
 //      own package and by the packages allowed to (the daemon), never by the overlay entry or any other package;
+//      and, transitively, no staged host module outside the composition points reaches a host minter or the composition files (graph-reach.mjs);
+//   4b. the web host (docs/design/web-host-entry.md): only `daemon-host/web/server.ts` imports a socket built-in (checked on staged
+//      modules and on the two desktop entry files themselves), and no module outside `daemon-host/web/` reaches it, directly or
+//      transitively (web-rules.mjs), so neither desktop bundle can contain a listener;
+//   0. (first) the metafile is complete: not empty, every entry among its inputs, every staged edge target an input (graph-reach.mjs metafileGaps);
 //   5. the bundled text carries the pinned zod version and not the tree's.
 import { createRequire } from "node:module";
 import { join, posix, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { RESTRICTED_MODULES, mayImportRestricted } from "./stage-scan.mjs";
+import { metafileGaps, minterReachViolations, missingEntries } from "./graph-reach.mjs";
+import { listenerBuiltinRefusal, listenerReachViolations, webHostEdgeRefusal } from "./web-rules.mjs";
 import { MANIFEST_NAME, STAGE_ROOT, verifyStaged } from "./stage-verify.mjs";
 import { readFileSync } from "node:fs";
 
 export const DEFAULT_ENTRY = "src/vs/axis/daemon/node/axisDaemonMain.ts";
+/** The Electron main side: it reaches the staged supervisor (and so the control message schemas), never the host. Checked with the daemon entry. */
+export const SEAM_ENTRY = "src/vs/axis/code/electron-main/axisMainSeam.ts";
 const PREFIX = `${STAGE_ROOT}/`;
 
 const versionPattern = (v) => {
@@ -41,8 +50,13 @@ const versionPattern = (v) => {
  */
 export function checkMetafile(metafile, manifest, { bundledText = null, treeZod = null } = {}) {
   const bad = [];
-  const staged = new Set(manifest.files.map((f) => f.path));
   const stagedOf = (p) => (p.startsWith(PREFIX) ? p.slice(PREFIX.length) : null);
+  const gaps = metafileGaps(metafile, stagedOf);
+  // Fail closed: every later rule would pass on a graph it did not see, so an incomplete metafile reports only its gaps (other violations show once it is complete).
+  if (gaps.length > 0) return gaps.map((g) => `incomplete metafile: ${g}`);
+  const flagged = new Set(); // direct edges the restricted-module table already named, so the walk does not repeat them
+  const flaggedWeb = new Set(); // direct edges into the web host already named
+  const staged = new Set(manifest.files.map((f) => f.path));
   const pkgOf = (rel) => rel.split("/")[0];
   for (const [input, info] of Object.entries(metafile.inputs)) {
     if (/(^|\/)node_modules\//.test(input)) bad.push(`${input}: comes from node_modules (resolved from the tree, not vendored)`);
@@ -53,7 +67,22 @@ export function checkMetafile(metafile, manifest, { bundledText = null, treeZod 
         if (target !== `${r.pkg}/${r.file}`) continue;
         const importerPkg = rel === null ? null : pkgOf(rel);
         if (!mayImportRestricted(r, importerPkg, rel)) {
+          flagged.add(`${rel}->${target}`);
           bad.push(`${input}: imports ${imp.path}, which only ${[r.pkg, ...r.importers].join(" and ")} may import`);
+        }
+      }
+    }
+    const desktopEntry = input === DEFAULT_ENTRY || input === SEAM_ENTRY;
+    for (const imp of info.imports) {
+      if (imp.external === true && /^node:/.test(imp.path) && (rel !== null || desktopEntry)) {
+        const why = listenerBuiltinRefusal(imp.path, rel);
+        if (why !== null) bad.push(`${input}: ${why}`);
+      }
+      if (imp.external !== true) {
+        const why = webHostEdgeRefusal(rel, stagedOf(imp.path), rel === null ? input : null);
+        if (why !== null) {
+          flaggedWeb.add(`${rel ?? input}->${stagedOf(imp.path)}`);
+          bad.push(`${input}: ${why}`);
         }
       }
     }
@@ -77,6 +106,8 @@ export function checkMetafile(metafile, manifest, { bundledText = null, treeZod 
       }
     }
   }
+  for (const v of minterReachViolations(metafile, stagedOf)) if (v.path.length > 2 || !flagged.has(`${v.path[0]}->${v.path[1]}`)) bad.push(v.text);
+  for (const v of listenerReachViolations(metafile, stagedOf)) if (v.path.length > 2 || !flaggedWeb.has(`${v.path[0]}->${v.path[1]}`)) bad.push(v.text);
   if (manifest.zod !== null && manifest.zod !== undefined && bundledText !== null) {
     const usesZod = Object.keys(metafile.inputs).some((i) => i.startsWith(`${PREFIX}vendor/zod/`));
     if (usesZod && !versionPattern(manifest.zod).test(bundledText)) bad.push(`bundle does not contain zod ${manifest.zod}`);
@@ -85,13 +116,12 @@ export function checkMetafile(metafile, manifest, { bundledText = null, treeZod 
   return bad;
 }
 
-/** Bundles `entries` (tree-relative) in `tree` with Code OSS's esbuild, then checks the metafile. */
-export async function checkTree({ tree, entries }) {
-  const manifest = verifyStaged(tree); // the hook's output must be intact before its graph means anything
+/** The real bundle: Code OSS's own esbuild with the options of build/next/bundle.ts. `build` in checkTree replaces it (tests). */
+async function realBuild(tree, entries) {
   const req = createRequire(join(tree, "build", "package.json"));
   const esbuild = req("esbuild");
   const { getBundleOptions } = await import(pathToFileURL(join(tree, "build", "next", "bundle.ts")).href);
-  const result = await esbuild.build({
+  return esbuild.build({
     ...getBundleOptions(false, "node"),
     entryPoints: entries.map((e) => join(tree, e)),
     outdir: join(tree, "out-axis-graph"),
@@ -100,10 +130,17 @@ export async function checkTree({ tree, entries }) {
     sourcemap: false,
     write: false,
   });
+}
+
+/** Bundles `entries` (tree-relative) in `tree` with Code OSS's esbuild, then checks the metafile. */
+export async function checkTree({ tree, entries, build = undefined }) {
+  const manifest = verifyStaged(tree); // the hook's output must be intact before its graph means anything
+  const result = await (build ?? realBuild)(tree, entries);
   const treeZod = JSON.parse(readFileSync(join(tree, "node_modules", "zod", "package.json"), "utf8")).version;
   const bundledText = result.outputFiles.map((f) => f.text).join("\n");
-  const violations = checkMetafile(result.metafile, manifest, { bundledText, treeZod });
-  const inputs = Object.keys(result.metafile.inputs);
+  const violations = missingEntries(result.metafile, entries.map((e) => posix.normalize(e))).map((e) => `incomplete metafile: entry ${e} is not among its inputs`);
+  violations.push(...checkMetafile(result.metafile, manifest, { bundledText, treeZod }));
+  const inputs = Object.keys(result.metafile.inputs ?? {});
   return {
     violations, manifest, entries, inputs: inputs.length, stagedInputs: inputs.filter((i) => i.startsWith(PREFIX)).length, zod: manifest.zod, treeZod };
 }

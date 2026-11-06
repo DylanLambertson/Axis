@@ -65,11 +65,13 @@ export * from "./worktrees/restore-paths.js";
 export * from "./worktrees/slug.js";
 // axis.cli-runs/1 over the real RunSupervisor (ticket H10).
 export { createRunsBinding, MAX_TRACKED_GROUPS, RUN_PAYLOAD_ALLOWLIST, type RunsBinding, type RunsBindingDeps } from "./bindings/runs.js";
+export { createRunSnapshotter, gitSnapshotRunSnapshotter, MAX_HELD_SNAPSHOTS, SNAPSHOT_ATTEMPTS, SNAPSHOT_TAKE_MS, SUPERVISOR_SNAPSHOT_MS, type RunSnapshotterDeps, type RunSnapshotterFactory, type SnapshotTaker } from "./bindings/snapshot.js";
 export { createRunTrustMinter } from "./gate/run-trust.js";
 export * from "./handlers/cli-runs.js";
 export * from "./runs/errors.js";
 // axis.git/1 handlers and the GitOpsDeps assembly (ticket H9).
 export { createGitOperations, createGitPort, type GitBindingDeps, type GitOperationsDeps } from "./bindings/git.js";
+export type { ResolvedSshHost, SshHostResolver } from "./bindings/push-target.js";
 export * from "./handlers/git.js";
 export * from "./handlers/git-errors.js";
 export * from "./handlers/git-wire.js";
@@ -78,3 +80,14 @@ export { PushedBases } from "./handlers/git-common.js";
 export { composeDaemonHost, type ComposeOptions, type ComposedHost } from "./compose.js";
 export * from "./compose-parts.js";
 export * from "./handlers/projects.js";
+// axis.runs/1: composer runs on the mock provider through the broker (ticket C1, docs/design/composer-runtime.md).
+export { AGENT_PAYLOAD_ALLOWLIST, createAgentBinding, COMPOSER_TOOLS, MAX_INFLIGHT_CALLS, MAX_READ_BYTES, shownWhole, MAX_WRITE_BYTES, type AgentBinding, type AgentBindingDeps } from "./bindings/agent.js";
+export * from "./composer/activity.js";
+export * from "./composer/errors.js";
+export * from "./composer/loop.js";
+export * from "./composer/preview.js";
+export * from "./composer/service.js";
+export * from "./gate/run-approvals.js";
+export * from "./handlers/composer-runs.js";
+// The parent side: spawn, restart policy, exit-code handling and shutdown (ticket X1; runs in Electron main).
+export * from "./supervisor.js";

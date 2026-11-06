@@ -20,6 +20,7 @@ import type { Logger } from "../log/logger.js";
 import type { Clock } from "../ports/clock.js";
 import { NativeBridge, type NativeControl, type NativeStats } from "./native-bridge.js";
 import { PendingRegistry } from "./pending-registry.js";
+import { createRunApprovals, type RunApprovals } from "./run-approvals.js";
 import { nativeSummary } from "./summary.js";
 
 /**
@@ -91,6 +92,8 @@ export interface ApprovalsStats {
 export interface Approvals {
   readonly gate: ApprovalGate;
   readonly port: ApprovalsPort;
+  /** Composer tool-call approvals over the same manager and listing (`gate/run-approvals.ts`, DMN-3). */
+  readonly runs: RunApprovals;
   stats(): ApprovalsStats;
   /** Cancel every native wait and forget every listing. Idempotent. */
   dispose(): void;
@@ -156,6 +159,8 @@ export function createApprovals(deps: ApprovalsDeps): Approvals {
       throw new AxisError("E_INTERNAL", "The preflight check must be synchronous", { reason: "preflight_async" });
     }
   };
+
+  const runs = createRunApprovals({ manager, listing: registry, now: () => clock.now(), ttlMs: ttl, preflight });
 
   // Challenges whose connection closed while `issue` waited for the native request: not listed, not withdrawn twice.
   const gone = new Set<string>();
@@ -339,6 +344,7 @@ export function createApprovals(deps: ApprovalsDeps): Approvals {
         const state = e instanceof ChallengeError ? e.detail["state"] : undefined;
         if (e instanceof ChallengeError && e.code === "E_CONFLICT" && (state === undefined || TERMINAL.has(String(state)))) {
           forget(request.challengeId);
+          runs.ended(request.challengeId);
         }
         throw e;
       }
@@ -347,6 +353,7 @@ export function createApprovals(deps: ApprovalsDeps): Approvals {
         registry.remove(result.challengeId);
         bridge.userApproved(result.challengeId);
       } else forget(result.challengeId);
+      runs.settled(result);
       return result;
     },
     pending: (windowId) => registry.list(windowId),
@@ -356,10 +363,12 @@ export function createApprovals(deps: ApprovalsDeps): Approvals {
   return {
     gate,
     port,
+    runs,
     stats: () => Object.freeze({ pending: registry.size, native: bridge.stats(), withdrawErrors }),
     dispose() {
       if (disposed) return;
       disposed = true;
+      runs.dispose();
       bridge.dispose();
       registry.clear();
       issuedTiers.clear();

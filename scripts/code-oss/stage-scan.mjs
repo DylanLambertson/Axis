@@ -6,6 +6,8 @@
 // (stage-ast.mjs), not by pattern matching text; the same parse finds the names that reach code without a
 // visible specifier. The guarantee that matters is the bundle-time module-graph check (scripts/code-oss/check-daemon-graph.mjs), which reads what esbuild really resolved.
 export { importSpecifiers, unsafeForms, rewriteSpecifiers, scanModules } from "./stage-ast.mjs";
+import { listenerBuiltinRefusal } from "./web-rules.mjs";
+export { LISTENER_BUILTINS, LISTENER_FILE, WEB_HOST_DIR } from "./web-rules.mjs";
 
 /**
  * Node built-ins that load or run code by other means than a module specifier. No package needs them, except the
@@ -58,13 +60,25 @@ export const RESTRICTED_MODULES = [
   // root `compose.ts`, which hands handler code the registrar only) may load it, so no handler, service or binding can mint an
   // attestation without main's per-start trust.check (TRU-2).
   { pkg: "daemon-host", file: "gate/run-trust.ts", importers: new Set(), files: new Set(["daemon-host/index.ts", "daemon-host/compose.ts"]), exact: true },
-  // The composition root loads the minters: only the public index may load it, so no handler can import a minter through it.
-  { pkg: "daemon-host", file: "compose.ts", importers: new Set(), files: new Set(["daemon-host/index.ts"]), exact: true },
+  // The composition root loads the minters: only the public index and the process entry (`entry.ts`, which calls `composeDaemonHost` and nothing else of it) may load it, so no handler can import a minter through it.
+  { pkg: "daemon-host", file: "compose.ts", importers: new Set(), files: new Set(["daemon-host/index.ts", "daemon-host/entry.ts"]), exact: true },
+  // The discard token minter has the same two loaders as the run trust minter.
+  { pkg: "daemon-host", file: "gate/worktrees-confirm.ts", importers: new Set(), files: new Set(["daemon-host/index.ts", "daemon-host/compose.ts"]), exact: true },
+  // The public index re-exports the composition (and so, through it, both minters): no staged file may load it (a barrel hop), only
+  // code outside the staged tree (the overlay entry, `rel === null`) may. `outside` is what lets that importer through.
+  { pkg: "daemon-host", file: "index.ts", importers: new Set(), files: new Set(), exact: true, outside: true },
+  // The process entry reaches the composition root, so it is a composition point too: no staged file may load it, only the overlay entry may.
+  { pkg: "daemon-host", file: "entry.ts", importers: new Set(), files: new Set(), exact: true, outside: true },
 ];
+
+/** The staged modules that hold a host minter, and the only staged files that may load them or anything that reaches them. */
+export const HOST_MINTER_FILES = new Set(["daemon-host/gate/run-trust.ts", "daemon-host/gate/worktrees-confirm.ts"]);
+export const HOST_COMPOSITION_FILES = new Set(["daemon-host/index.ts", "daemon-host/compose.ts", "daemon-host/entry.ts"]);
 
 /** True when the staged file `rel` (package `importerPkg`) may import restricted module `r`. `exact` ignores the owner package. */
 export function mayImportRestricted(r, importerPkg, rel) {
   if (r.files?.has(rel) === true) return true;
+  if (rel === null && r.outside === true) return true;
   if (r.exact === true) return false;
   return importerPkg === r.pkg || (importerPkg !== null && r.importers.has(importerPkg));
 }
@@ -76,8 +90,10 @@ export function mayImportRestricted(r, importerPkg, rel) {
  *   axis:     `@axis/<name>` or a declared subpath, `{ name, subpath }`
  *   node:     a `node:*` built-in
  * `exportsOf(name)` returns the subpath keys the package declares (for example "./daemon-principal"), or null for an unknown package.
+ * `targetOf(name, key)` (optional) returns the staged file stem a declared key maps to ("./alias" -> "daemon-principal"); with it a restricted
+ * subpath binds the file it maps to, so a second export key onto the same file carries the same restriction (RR-6).
  */
-export function classifySpecifier(spec, pkg, exportsOf, fileRel = null) {
+export function classifySpecifier(spec, pkg, exportsOf, fileRel = null, targetOf = () => undefined) {
   if (spec.startsWith("./") || spec.startsWith("../")) return { kind: "relative" };
   if (spec === "zod") return { kind: "zod" };
   if (spec.startsWith("zod/")) throw `only the "zod" entry is staged, not ${spec}`;
@@ -86,6 +102,8 @@ export function classifySpecifier(spec, pkg, exportsOf, fileRel = null) {
     if (pkg === "protocol") throw `node:* is not allowed in the protocol package (contracts shared with the web target): ${spec}`;
     const only = LOADER_BUILTINS.get(spec.replace(/\/.*$/, ""));
     if (only !== undefined && !only.has(pkg)) throw `${spec} loads or runs code without a module specifier and is not allowed${only.size > 0 ? ` outside ${[...only].join(", ")}` : ""}`;
+    const listener = listenerBuiltinRefusal(spec, fileRel === null ? null : `${pkg}/${fileRel}`);
+    if (listener !== null) throw listener;
     return { kind: "node" };
   }
   if (spec.startsWith("@axis/")) {
@@ -96,9 +114,15 @@ export function classifySpecifier(spec, pkg, exportsOf, fileRel = null) {
     if (keys === null) throw `unknown workspace package ${spec}`;
     if (sub !== undefined) {
       if (!keys.includes(`.${sub}`)) throw `${spec} is not a subpath the package exports (or is not stageable)`;
-      const allowed = RESTRICTED_SUBPATHS.get(spec);
-      const exact = RESTRICTED_FILE_EXCEPTIONS.get(spec)?.get(pkg)?.has(fileRel) === true;
-      if (allowed !== undefined && !allowed.has(pkg) && !exact) throw `${spec} may only be imported by: ${[...allowed].join(", ")}`;
+      const stem = targetOf(name, `.${sub}`);
+      for (const [restricted, allowed] of RESTRICTED_SUBPATHS) {
+        const [, rName, rSub] = /^@axis\/([a-z][a-z0-9-]*)\/(.+)$/.exec(restricted);
+        // The restricted file comes from the module table, not from the restricted key's own mapping, so removing or remapping that key cannot free an alias.
+        const rFile = RESTRICTED_MODULES.find((m) => m.pkg === rName && m.file === `${rSub}.ts`)?.file.replace(/\.ts$/, "") ?? targetOf(rName, `./${rSub}`);
+        const sameFile = restricted === spec || (rName === name && stem !== undefined && rFile === stem);
+        const exact = RESTRICTED_FILE_EXCEPTIONS.get(restricted)?.get(pkg)?.has(fileRel) === true;
+        if (sameFile && !allowed.has(pkg) && !exact) throw `${spec} may only be imported by: ${[...allowed].join(", ")}${restricted === spec ? "" : ` (it maps to the file ${restricted} exports)`}`;
+      }
     }
     return { kind: "axis", name, subpath: sub === undefined ? null : `.${sub}` };
   }

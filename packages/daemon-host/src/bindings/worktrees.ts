@@ -9,6 +9,7 @@ import {
   resolveRepo,
   type DiscardConfirmation,
   type GitRunner,
+  verifyMerged,
 } from "@axis/worktrees";
 import type { RandomSource } from "../ports/random.js";
 import type { RunsService } from "../ports/runs.js";
@@ -92,17 +93,8 @@ function adapt(manager: WorktreeManager, runner: GitRunner): ManagerShape {
         if (out.code !== 0 || !/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(sha)) throw worktreeFailure("E_NOT_FOUND", "base_ref");
         return sha;
       }),
-    isMerged: (repoPath, headSha, baseRef) =>
-      mapped(async () => {
-        if (!/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(headSha) || !REF_NAME.test(baseRef) || baseRef.includes("..")) return false;
-        let base = baseRef;
-        if (baseRef === "HEAD") {
-          const head = await git(repoPath, ["symbolic-ref", "-q", "HEAD"]);
-          if (head.code !== 0) return false;
-          base = head.stdout.trim();
-        } else if (!baseRef.startsWith("refs/")) base = `refs/heads/${baseRef}`;
-        return (await git(repoPath, ["merge-base", "--is-ancestor", "--end-of-options", headSha, base])).code === 0;
-      }),
+    isMerged: (repoPath, headSha, baseBranch) =>
+      mapped(async () => (await verifyMerged({ cwd: repoPath, run: (args, extraEnv) => runner.run(args, { cwd: repoPath, timeoutMs: 30_000, extraEnv }) }, headSha, baseBranch)) === "merged"),
     listRefs: (repoPath, prefix) =>
       mapped(async () => {
         const out = await git(repoPath, ["for-each-ref", "--format=%(refname)", "--", prefix]);
@@ -110,12 +102,16 @@ function adapt(manager: WorktreeManager, runner: GitRunner): ManagerShape {
         return new Set(out.stdout.split("\n").filter((l) => l !== ""));
       }),
     list: (repoPath) => mapped(() => manager.list(repoPath)),
-    create: ({ repoPath, slug, baseRef, id }) => mapped(() => manager.create({ repoPath, slug, baseRef, id })),
+    create: ({ repoPath, slug, baseRef, id }) =>
+      mapped(async () => {
+        const made = await manager.create({ repoPath, slug, baseRef, id });
+        return { id: made.id, branch: made.branch, path: made.path, baseSha: made.baseSha, baseBranch: made.baseBranch };
+      }),
     status: (p, expected) => mapped(() => manager.status(p, expected)),
     previewDiscard: (p, expected) => mapped(() => manager.previewDiscard(p, expected)),
     assertNoDrift: (p, expected) => mapped(() => manager.assertNoDrift(p, expected)),
-    finalise: ({ path, expectedWorktree, outcome, discardConfirmation }) =>
-      mapped(() => manager.finalise({ path, expectedWorktree, outcome, ...(discardConfirmation === undefined ? {} : { discardConfirmation: cap(discardConfirmation) as DiscardConfirmation }) })),
+    finalise: ({ path, expectedWorktree, outcome, discardConfirmation, trustedBaseBranch }) =>
+      mapped(() => manager.finalise({ path, expectedWorktree, outcome, trustedBaseBranch, ...(discardConfirmation === undefined ? {} : { discardConfirmation: cap(discardConfirmation) as DiscardConfirmation }) })),
     remove: ({ path, expectedWorktree, deleteBranch, discardConfirmation }) =>
       mapped(() => manager.remove({ path, expectedWorktree, deleteBranch, ...(discardConfirmation === undefined ? {} : { discardConfirmation: cap(discardConfirmation) as DiscardConfirmation }) })),
     restoreFromRunBase: ({ path, runId, expectedWorktree }) => mapped(() => manager.restoreFromRunBase({ path, runId, expectedWorktree })),

@@ -30,3 +30,4 @@ export {
 export type { DiscardScan } from './discard.js';
 export { acquireFileLock } from './lock.js';
 export { createHooksGuard, redact, type HooksGuard } from './hardenedGit.js';
+export { MERGED_CHECK_ENV, verifyMerged, type MergedProbe, type MergedVerdict } from './mergedCheck.js';

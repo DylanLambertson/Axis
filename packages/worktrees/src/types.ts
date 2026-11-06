@@ -36,6 +36,8 @@ export interface CreatedWorkspace {
   readonly path: string;
   readonly baseRef: string;
   readonly baseSha: string;
+  /** The full `refs/heads/...` name the base resolved to at create, or null when it was not a local branch. */
+  readonly baseBranch: string | null;
   readonly runBaseRef: string;
   readonly skippedLarge: readonly string[];
   readonly localCheckout: string | null;

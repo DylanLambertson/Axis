@@ -4,7 +4,7 @@ import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { type ChainHead } from "@axis/audit";
-import { MAX_AUDIT_LIST } from "@axis/protocol";
+import { MAX_AUDIT_LIST, approvalRequiredDetailsSchema } from "@axis/protocol";
 import type { GitFixture } from "./git-fixture.js";
 import { TestSupervisor, type TestSupervisorOptions } from "./test-supervisor.js";
 import { TestClient, newKey, until } from "./test-client.js";
@@ -146,4 +146,20 @@ export async function confirmNative(sup: TestSupervisor, client: TestClient, cha
   const before = await confirmed();
   sup.answerNative(challengeId, true);
   await until(async () => (await confirmed()) > before, "the native confirmation to be recorded");
+}
+
+/**
+ * `worktrees.finalise` is tier 4: the call is refused with a challenge, the user approves it and confirms natively, and the
+ * retry (same key) runs it. Returns the answer that decided the call (the first call's when no challenge was needed).
+ */
+export async function finaliseApproved(sup: TestSupervisor, client: TestClient, id: string, outcome: "merged" | "archived" | "abandoned" = "archived"): ReturnType<TestClient["call"]> {
+  const request = { id, outcome };
+  const key = newKey();
+  const asked = await client.call("axis.worktrees", "finalise", request, key);
+  if (asked.error?.code !== "E_APPROVAL_REQUIRED") return asked;
+  const { challenge } = approvalRequiredDetailsSchema.parse(asked.error.details);
+  await until(() => sup.nativeConfirms.some((c) => c.challengeId === challenge.challengeId), "native.confirm");
+  await client.ok("axis.approvals", "resolve", { challengeId: challenge.challengeId, decision: "approve", digest: challenge.digest });
+  await confirmNative(sup, client, challenge.challengeId);
+  return client.call("axis.worktrees", "finalise", { ...request, approval: { challengeId: challenge.challengeId } }, key);
 }
