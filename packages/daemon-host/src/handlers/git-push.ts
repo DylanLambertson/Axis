@@ -101,13 +101,16 @@ export function createGitPushHandler(deps: GitHandlerDeps): Handler {
           await deps.ops.executePush(call, confirmedPlan);
           // Known pushed to THIS destination now (before the journal write, which can fail without undoing the push).
           deps.bases.record(workspaceId, target, confirmedPlan.tip);
-          try {
-            deps.journal.recordPushed(workspaceId, confirmedPlan.tip, "user");
-          } catch (e) {
+          // Both writes can fail without undoing the push: a failed one is reported and the push still succeeds.
+          for (const write of [() => deps.bases.persist(), async () => deps.journal.recordPushed(workspaceId, confirmedPlan.tip, "user")]) {
             try {
-              deps.onBookkeepingError?.(e);
-            } catch {
-              // A reporter that throws must not turn a push that went out into a failure.
+              await write();
+            } catch (e) {
+              try {
+                deps.onBookkeepingError?.(e);
+              } catch {
+                // A reporter that throws must not turn a push that went out into a failure.
+              }
             }
           }
           return { remote: request.data.remote, branch: ws.branch, tip: confirmedPlan.tip };

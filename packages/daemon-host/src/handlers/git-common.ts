@@ -7,6 +7,7 @@ import type { GitOperations } from "../ports/git.js";
 import type { CommitPreparer } from "../ports/review.js";
 import type { RunsService } from "../ports/runs.js";
 import type { WorktreeLocator } from "../ports/worktree-locator.js";
+import { isBaseEntry, type BaseEntry } from "../storage/pushed-bases-file.js";
 import { liveWorkspace } from "../worktrees/guards.js";
 import type { ProjectMutex } from "../worktrees/project-mutex.js";
 import { gitFailure } from "./git-errors.js";
@@ -97,24 +98,44 @@ export function runActive(deps: GitHandlerDeps, workspaceId: string): boolean {
  * only widens a later scan.
  */
 export class PushedBases {
-  readonly #map = new Map<string, string>();
-  constructor(readonly max = 1024) {
+  readonly #map = new Map<string, BaseEntry>();
+  #chain: Promise<void> = Promise.resolve();
+  /**
+   * `initial` (oldest first, at most the newest `max` are kept) and `save` come from the disk store: `persist` hands `save` the
+   * well-formed entries, one write at a time and in call order. Without `save` nothing is persisted (memory only).
+   */
+  constructor(readonly max = 1024, initial: readonly BaseEntry[] = [], private readonly save?: (entries: readonly BaseEntry[]) => Promise<void>) {
     if (!Number.isInteger(max) || max < 1) throw new RangeError("the bound must be a positive integer");
+    for (const e of initial) if (isBaseEntry(e)) this.#put(e);
   }
 
-  baseFor(workspaceId: string, target: string, recordedBase: string): string {
-    return this.#map.get(`${workspaceId}\0${target}`) ?? recordedBase;
-  }
-
-  record(workspaceId: string, target: string, sha: string): void {
-    const key = `${workspaceId}\0${target}`;
+  #put(entry: BaseEntry): void {
+    const key = `${entry[0]}\0${entry[1]}`;
     this.#map.delete(key);
-    this.#map.set(key, sha);
+    this.#map.set(key, entry);
     while (this.#map.size > this.max) {
       const oldest = this.#map.keys().next();
       if (oldest.done === true) break;
       this.#map.delete(oldest.value);
     }
+  }
+
+  baseFor(workspaceId: string, target: string, recordedBase: string): string {
+    return this.#map.get(`${workspaceId}\0${target}`)?.[2] ?? recordedBase;
+  }
+
+  record(workspaceId: string, target: string, sha: string): void {
+    this.#put([workspaceId, target, sha]);
+  }
+
+  /** Writes the table; rejects when the write failed (the caller reports it, a push that went out is not undone). */
+  persist(): Promise<void> {
+    const save = this.save;
+    if (save === undefined) return Promise.resolve();
+    const snapshot = [...this.#map.values()].filter(isBaseEntry);
+    const written = this.#chain.then(() => save(snapshot));
+    this.#chain = written.catch(() => undefined);
+    return written;
   }
 
   get size(): number {

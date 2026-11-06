@@ -63,6 +63,8 @@ export interface GitRigOptions {
   runsActive?: boolean;
   /** Make `journal.recordPushed` throw. */
   recordPushedFails?: boolean;
+  /** The table of push scan bases (default: a new in-memory one). */
+  bases?: PushedBases;
   ptyRunner?: "node" | "none";
   /** The drift check of the git port (default: no drift). */
   assertNoDrift?: () => Promise<void>;
@@ -212,7 +214,7 @@ export async function gitRig(options: GitRigOptions = {}) {
     needsAttention: () => false,
     anchors: guard,
     runs,
-    bases: new PushedBases(),
+    bases: options.bases ?? new PushedBases(),
     onInternalError: (e) => void gate.internal.push(e),
     onBookkeepingError: (e) => void gate.bookkeeping.push(e),
   };
