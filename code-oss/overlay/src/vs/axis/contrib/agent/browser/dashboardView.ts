@@ -10,7 +10,8 @@ import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.j
 import { localize } from '../../../../nls.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { IAxisCliRun } from '../../../services/workspaces/common/axisWorkspaceData.js';
-import { AxisRowState, branchLabel, IAxisWorkspaceEntry, rowStateOf } from '../../../services/workspaces/common/axisWorkspaceModel.js';
+import { AxisRowState, branchLabel, changesLabel, IAxisWorkspaceEntry, rowStateOf } from '../../../services/workspaces/common/axisWorkspaceModel.js';
+import { daemonNotice } from '../../../services/workspaces/common/axisDaemonNotice.js';
 import { IAxisWorkspaceService } from '../../../services/workspaces/browser/axisWorkspaceService.js';
 import { MAX_DISCOVERED_WORKTREES } from '../../../services/workspaces/common/worktreeDiscovery.js';
 
@@ -50,6 +51,8 @@ export function runLabel(run: IAxisCliRun): string {
 export class AxisDashboardView extends Disposable {
 
 	readonly element: HTMLElement;
+	/** One persistent live region: it is updated only when its text changes, so an unchanged poll is not announced again. */
+	private readonly notice: HTMLElement;
 	private readonly header: HTMLElement;
 	private readonly list: HTMLElement;
 	private readonly rowDisposables = this._register(new DisposableStore());
@@ -63,6 +66,8 @@ export class AxisDashboardView extends Disposable {
 	) {
 		super();
 		this.element = $('.axis-dashboard');
+		this.notice = append(this.element, $('.axis-dashboard-note.axis-dashboard-notice'));
+		this.notice.setAttribute('role', 'status');
 		this.header = append(this.element, $('.axis-dashboard-header'));
 		this.list = append(this.element, $('.axis-dashboard-list'));
 		this.list.setAttribute('role', 'listbox');
@@ -74,8 +79,20 @@ export class AxisDashboardView extends Disposable {
 	}
 
 	render(): void {
+		this.renderNotice();
 		this.renderHeader();
 		this.renderRows();
+	}
+
+	private renderNotice(): void {
+		const service = this.workspaceService;
+		const notice = daemonNotice({ status: service.daemonStatus, notRegistered: service.notRegistered, staleError: service.staleError, truncatedProjects: service.truncatedProjects });
+		const sample = localize('axis.dashboard.sampleRuns', "Agent runs are sample data (axis.preview.sampleRuns); the Axis service is not running.");
+		const text = service.runsProvenance !== 'sample' ? notice.text : service.daemonStatus.kind === 'down' ? sample : `${notice.text} ${sample}`;
+		if (this.notice.textContent !== text) {
+			this.notice.textContent = text;
+		}
+		this.notice.dataset.severity = notice.severity;
 	}
 
 	private renderHeader(): void {
@@ -86,10 +103,12 @@ export class AxisDashboardView extends Disposable {
 		if (projects.length) {
 			append(this.header, $('span.axis-dashboard-project')).textContent = projects.map(p => p.trusted ? p.name : localize('axis.project.restricted', "{0} (Restricted Mode)", p.name)).join(', ');
 		}
-		const note = append(this.header, $('span.axis-dashboard-note'));
-		note.textContent = this.workspaceService.runsProvenance === 'sample'
-			? localize('axis.dashboard.sampleRuns', "Agent runs are sample data (axis.preview.sampleRuns); the Axis service is not running.")
-			: localize('axis.dashboard.noService', "Read from the worktrees on disk. The Axis service is not running, so no agent runs are shown.");
+		const pending = this.workspaceService.pendingApprovals;
+		if (pending) {
+			append(this.header, $('span.axis-dashboard-note')).textContent = pending === 1
+				? localize('axis.dashboard.approvalsOne', "1 approval waiting")
+				: localize('axis.dashboard.approvals', "{0} approvals waiting", pending);
+		}
 		const refused = this.workspaceService.refusedWorktrees;
 		if (refused) {
 			const warning = append(this.header, $('span.axis-dashboard-note.axis-dashboard-refused'));
@@ -161,7 +180,7 @@ export class AxisDashboardView extends Disposable {
 			['state', rowStateLabel(state)],
 			['agents', runs],
 			['terminals', String(terminals)],
-			['changes', localize('axis.changes.notRead', "not read")],
+			['changes', changesLabel(entry.worktree)],
 			['activity', lastOutput ? fromNow(lastOutput, true) : '—'],
 		];
 		for (const [kind, text] of cells) {
