@@ -35,7 +35,7 @@ const scripted = (script: readonly (readonly unknown[])[]): LoopInput["provider"
 
 async function loop(caps: Partial<ToolCaps>, script: readonly (readonly unknown[])[], tools = fakeTools()) {
   const end = await runComposerLoop({
-    runId: "r1", mode: "agent", prompt: "p", model: "mock-model", budget: createRunBudget({}), signal: new AbortController().signal, emit: () => undefined,
+    runId: "r1", mode: "agent", prompt: "p", model: "mock-model", budget: createRunBudget({}), signal: new AbortController().signal, emit: () => undefined, destination: { providerId: "mock", connectionId: "mock-connection", text: "Local" },
     tools, provider: scripted(script), caps,
   });
   return { end, calls: tools.calls };

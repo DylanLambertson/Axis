@@ -31,6 +31,8 @@ const provider = (patch: Record<string, unknown> = {}) => ({
   displayName: "Mock",
   apiVersion: 1,
   connectionId: "conn-1",
+  status: "ready",
+  models: [{ modelId: "mock-model", displayName: "Mock model" }],
   destination: { description: "Local" },
   ...patch,
 });
@@ -239,6 +241,10 @@ test("providers.list: request takes nothing; response names adapters and destina
     "no destination": { destination: undefined },
     "extra field": { apiKey: "x" },
     "credential field": { credential: "x" },
+    "no status": { status: undefined },
+    "unknown status": { status: "fallback" },
+    "no models": { models: undefined },
+    "models on an unavailable connection": { status: "unavailable" },
   };
   for (const [name, patch] of Object.entries(bad)) rejects(providersRes(), { providers: [provider(patch)] }, name);
   accepts(providersRes(), { providers: [provider({ providerId: `a${"b".repeat(63)}`, displayName: "n".repeat(80), connectionId: "c".repeat(64) })] }, "ids at their caps");
@@ -246,4 +252,21 @@ test("providers.list: request takes nothing; response names adapters and destina
   accepts(providersRes(), { providers: many(MAX_PROVIDERS) }, "at the cap");
   rejects(providersRes(), { providers: many(MAX_PROVIDERS + 1) }, "over the cap");
   rejects(providersRes(), { providers: [provider(), provider()] }, "duplicate connection id (separate objects)");
+});
+
+test("providers.list: a model is a closed id and an optional display name, at most 200 per connection, no duplicates", () => {
+  const one = (m: unknown) => ({ providers: [provider({ models: [m] })] });
+  accepts(providersRes(), one({ modelId: "claude-opus-5-5" }), "id only");
+  accepts(providersRes(), one({ modelId: "a:b.c_d-1", displayName: "n".repeat(128) }), "alphabet and name at 128");
+  accepts(providersRes(), { providers: [provider({ status: "unavailable", models: [] })] }, "unavailable with none");
+  accepts(providersRes(), { providers: [provider({ models: [] })] }, "ready with none");
+  for (const modelId of ["", "-x", "m 1", "a/b", "https://user:pw@h.example/m", "m\u0000", "é", "a".repeat(129)]) rejects(providersRes(), one({ modelId }), `model id ${JSON.stringify(modelId)}`);
+  rejects(providersRes(), one({ modelId: "m", displayName: "" }), "empty name");
+  rejects(providersRes(), one({ modelId: "m", displayName: "a\nb" }), "newline in name");
+  rejects(providersRes(), one({ modelId: "m", displayName: "n".repeat(129) }), "name at 129");
+  rejects(providersRes(), one({ modelId: "m", apiKey: "x" }), "extra field on a model");
+  const many = (n: number) => Array.from({ length: n }, (_, i) => ({ modelId: `m${i}` }));
+  accepts(providersRes(), { providers: [provider({ models: many(200) })] }, "200 models");
+  rejects(providersRes(), { providers: [provider({ models: many(201) })] }, "201 models");
+  rejects(providersRes(), { providers: [provider({ models: [{ modelId: "m" }, { modelId: "m" }] })] }, "duplicate model id");
 });

@@ -8,8 +8,10 @@ import type { MethodSpec } from "./worktrees.js";
  *
  * Read only and without any credential: it names the registered adapters, the
  * connection each is bound to and where its requests go (PRV-4), so the UI can
- * show them. Models, capabilities and connection checks are later methods; no
- * method here makes a network request.
+ * show them, with the models each connection offers (C5). Capabilities and
+ * connection checks are later methods. The list asks each adapter for its model
+ * list, so an adapter that lists over the network does so to the destination it
+ * shows here and to no other; a connection that cannot list is `unavailable`.
  */
 
 export const PROVIDERS_CONTRACT = "axis.providers" as const;
@@ -31,6 +33,19 @@ export const MAX_PROVIDERS = 64;
  * should adopt this pattern.
  */
 const CONNECTION_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+/** A vault connection name (never a credential or a URL); `axis.runs/1` request events use it too. */
+export const connectionNameSchema = z.string().regex(CONNECTION_NAME);
+/** Where a provider request goes, as one line of display text (PRV-4): an https origin or the adapter's own description. */
+export const destinationTextSchema = safeTextSchema(512);
+
+export const MAX_MODELS_PER_PROVIDER = 200;
+/** A model id as the list shows it: a short, closed alphabet (no space, slash, quote or URL), so it cannot carry a URL with a password. */
+const MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+export const providerModelSchema = z.strictObject({
+  modelId: z.string().regex(MODEL_ID),
+  displayName: safeTextSchema(128).optional(),
+});
+export type ProviderModel = z.infer<typeof providerModelSchema>;
 
 /** `new URL(o).origin === o`: the same https-origin rule `@axis/providers` applies. */
 const isHttpsOrigin = (o: string): boolean => {
@@ -42,20 +57,33 @@ const isHttpsOrigin = (o: string): boolean => {
   }
 };
 
-export const providerInfoSchema = z.strictObject({
+export const providerInfoSchema = z
+  .strictObject({
   /** Stable adapter id such as `anthropic` or `mock` (the pattern `@axis/providers` enforces). */
   providerId: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/),
   displayName: safeTextSchema(128),
   /** Version of the provider adapter API the adapter implements. */
   apiVersion: z.number().int().min(1).max(1_000),
   /** The vault connection this adapter instance is bound to: a name, never a credential. */
-  connectionId: z.string().regex(CONNECTION_NAME),
+  connectionId: connectionNameSchema,
+  /**
+   * `unavailable`: the connection's models could not be listed (it could not be reached, or it answered something
+   * this contract refuses). Its `models` is then empty and a run on it is refused; nothing falls back to another
+   * provider or connection (PRV-4).
+   */
+  status: z.enum(["ready", "unavailable"]),
+  /** The models this connection offers, by model id. Empty unless `ready`. */
+  models: z
+    .array(providerModelSchema)
+    .max(MAX_MODELS_PER_PROVIDER)
+    .refine((ms) => new Set(ms.map((m) => m.modelId)).size === ms.length, "duplicate model id"),
   destination: z.strictObject({
     /** Fixed https origin (scheme, host, optional port), or absent for an adapter that makes no request. */
     origin: z.string().max(256).refine(isHttpsOrigin, "an https origin").optional(),
-    description: safeTextSchema(512),
+    description: destinationTextSchema,
   }),
-});
+  })
+  .refine((p) => p.status === "ready" || p.models.length === 0, "models only on a ready connection");
 export type ProviderInfo = z.infer<typeof providerInfoSchema>;
 
 // list (read, tier 0)

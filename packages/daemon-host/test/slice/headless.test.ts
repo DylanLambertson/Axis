@@ -86,6 +86,9 @@ describe("headless slice", { skip, timeout: SUITE_TIMEOUT_MS }, () => {
     assert.deepEqual(user.welcome.contracts.map((c) => c.id).sort(), (ready["contracts"] as string[]).slice().sort());
     const projects = await user.ok<{ projects: Array<{ id: string; trusted: boolean }> }>("axis.projects", "list", {});
     assert.deepEqual(projects.projects.map((p) => p.id), [projectId]);
+    // C5: the composed list answers from the agent binding's registry (it was [] before), so the mock and its model are listed.
+    const listed = await user.ok<{ providers: Array<{ providerId: string; status: string; models: Array<{ modelId: string }> }> }>("axis.providers", "list", {});
+    assert.deepEqual(listed.providers.map((p) => [p.providerId, p.status, p.models.map((m) => m.modelId)]), [["mock", "ready", ["mock-model"]]]);
 
     const second = await startHost(fx, { config: { dataDir: sup.dataDir, worktreeRoot: join(scratch, "other-worktrees") } });
     assert.equal((await second.sup.exited).code, 75, "a second host on a locked data directory exits E_CONFLICT (75)");
