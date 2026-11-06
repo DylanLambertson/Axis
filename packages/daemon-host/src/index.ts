@@ -78,3 +78,5 @@ export { PushedBases } from "./handlers/git-common.js";
 export { composeDaemonHost, type ComposeOptions, type ComposedHost } from "./compose.js";
 export * from "./compose-parts.js";
 export * from "./handlers/projects.js";
+// The parent side: spawn, restart policy, exit-code handling and shutdown (ticket X1; runs in Electron main).
+export * from "./supervisor.js";
