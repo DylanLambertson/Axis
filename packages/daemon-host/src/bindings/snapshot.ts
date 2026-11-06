@@ -72,11 +72,14 @@ async function commonDirFor(root: string | undefined, gitDir: string): Promise<s
   return common;
 }
 
-export function createRunSnapshotter(deps: RunSnapshotterDeps, maxHeld = MAX_HELD_SNAPSHOTS): RunSnapshotter {
+/** TEST ONLY seam: the options every take passes (so a test can pin `attempts` and `maxMillis`); production uses the library's. */
+export type SnapshotTaker = (opts: Parameters<typeof takeStableSnapshot>[0]) => Promise<Snapshot>;
+
+export function createRunSnapshotter(deps: RunSnapshotterDeps, maxHeld = MAX_HELD_SNAPSHOTS, takeSnapshot: SnapshotTaker = takeStableSnapshot): RunSnapshotter {
   if (typeof deps?.gitPath !== "string" || !isAbsolute(deps.gitPath) || typeof deps.projectRoot !== "function") throw new AxisError("E_INVALID_ARGUMENT", "The snapshotter needs the host's git path", { reason: "snapshotter_required" });
   const held = new Map<string, Held>();
   const take = (h: { readonly worktree: RunWorktree; readonly commonDir: string }): Promise<Snapshot> =>
-    takeStableSnapshot({
+    takeSnapshot({
       worktreePath: h.worktree.workTree,
       commonDir: h.commonDir,
       expectedGitDir: h.worktree.gitDir,

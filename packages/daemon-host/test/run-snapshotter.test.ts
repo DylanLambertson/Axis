@@ -1,12 +1,12 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { chmodSync, cpSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
 import { AxisError } from "@axis/audit";
 import { resolveGit, type GitRunner } from "@axis/git-ops";
-import { composeDaemonHost, createRunSnapshotter, SNAPSHOT_ATTEMPTS, SNAPSHOT_TAKE_MS, SUPERVISOR_SNAPSHOT_MS, type ComposeOptions, type PtyPort, type RunSnapshotterDeps, type RunSnapshotterFactory } from "../src/index.js";
+import { composeDaemonHost, createRunSnapshotter, SNAPSHOT_ATTEMPTS, SNAPSHOT_TAKE_MS, SUPERVISOR_SNAPSHOT_MS, type ComposeOptions, type SnapshotTaker, type PtyPort, type RunSnapshotterDeps, type RunSnapshotterFactory } from "../src/index.js";
 import { createGitFixture, gitSkipReason, type GitFixture } from "../testing/git-fixture.js";
 import { hostFixture } from "../testing/host-fixture.js";
 
@@ -16,6 +16,15 @@ import { hostFixture } from "../testing/host-fixture.js";
 type RunSnapshotter = ReturnType<RunSnapshotterFactory>;
 type SnapshotContext = Parameters<RunSnapshotter["before"]>[0];
 const skip = gitSkipReason();
+/** A directory symlink, or false where this system cannot make one (the case is then skipped, never passed). */
+function link(target: string, at: string): boolean {
+  try {
+    symlinkSync(target, at, "dir");
+    return true;
+  } catch {
+    return false;
+  }
+}
 const reasonOf = (e: unknown): unknown => (e instanceof AxisError ? e.detail["reason"] : String(e));
 
 describe("the run snapshotter over @axis/git-snapshot", { skip }, () => {
@@ -133,8 +142,47 @@ describe("the run snapshotter over @axis/git-snapshot", { skip }, () => {
     assert.deepEqual(await s.after(newer), { drift: false });
   });
 
-  test("a stable snapshot fits inside the supervisor's bound with room to spawn git", () => {
+  test("a stable snapshot fits inside the supervisor's bound with room to spawn git, and every take is given that bound", async () => {
     assert.ok(SNAPSHOT_TAKE_MS * SNAPSHOT_ATTEMPTS + 2000 <= SUPERVISOR_SNAPSHOT_MS, `${SNAPSHOT_TAKE_MS} x ${SNAPSHOT_ATTEMPTS} vs ${SUPERVISOR_SNAPSHOT_MS}`);
+    const seen: Array<Parameters<SnapshotTaker>[0]> = [];
+    const spy: SnapshotTaker = (opts) => (seen.push(opts), Promise.reject(new Error("stop here")));
+    await assert.rejects(createRunSnapshotter({ gitPath, env: fx.env, projectRoot: () => fx.repo }, undefined, spy).before(ctx()));
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0]?.attempts, SNAPSHOT_ATTEMPTS);
+    assert.equal(seen[0]?.limits?.maxMillis, SNAPSHOT_TAKE_MS);
+    assert.equal(seen[0]?.gitPath, gitPath);
+    assert.equal(seen[0]?.expectedGitDir, wt.gitDir);
+    assert.equal(seen[0]?.commonDir, realpathSync(join(fx.repo, ".git")));
+  });
+
+  test("the common dir is checked by structure before git is asked: project root and the worktrees/<name> position (review 2 N1)", async (t) => {
+    assert.throws(() => make({ projectRoot: undefined as never }), (e) => reasonOf(e) === "snapshotter_required");
+    await assert.rejects(make({ projectRoot: () => "repo" }).before(ctx()), (e) => reasonOf(e) === "project_unknown", "a relative root");
+    // A git dir two levels below the common dir that is not under worktrees/ (refs/heads): refused by name, before any snapshot.
+    await assert.rejects(make().before(ctx({ workTree: wt.workTree, gitDir: join(fx.repo, ".git", "refs", "heads") })), (e) => reasonOf(e) === "common_dir_mismatch");
+    // A root reached through a symlinked directory is the same repository: accepted (the common dir is compared after realpath).
+    const aliasRoot = join(fx.root, "alias-root");
+    if (link(fx.repo, aliasRoot)) {
+      const c = ctx();
+      const s = make({ projectRoot: () => aliasRoot });
+      await s.before(c);
+      assert.deepEqual(await s.after(c), { drift: false });
+    } else t.diagnostic("symlinks unavailable: alias root case skipped");
+    // `<root>/.git` that is itself a symlink (not a real directory) is refused, even to the right place.
+    const symGitRoot = join(fx.root, "sym-git-root");
+    mkdirSync(symGitRoot);
+    if (link(join(fx.repo, ".git"), join(symGitRoot, ".git"))) {
+      await assert.rejects(make({ projectRoot: () => symGitRoot }).before(ctx()), (e) => reasonOf(e) === "common_dir_mismatch");
+    } else t.diagnostic("symlinks unavailable: symlinked .git case skipped");
+    // worktrees/<name> swapped for a symlink to a decoy's admin dir: its real path is not under the common dir.
+    const wt3 = linked("wt3");
+    const decoy = join(fx.root, "decoy3.git");
+    cpSync(join(fx.repo, ".git"), decoy, { recursive: true });
+    const admin = join(fx.repo, ".git", "worktrees", "wt3");
+    rmSync(admin, { recursive: true, force: true });
+    if (link(join(decoy, "worktrees", "wt3"), admin)) {
+      await assert.rejects(make().before(ctx({ workTree: wt3.workTree, gitDir: admin })), (e) => reasonOf(e) === "common_dir_mismatch");
+    } else t.diagnostic("symlinks unavailable: admin swap case skipped");
   });
 });
 
