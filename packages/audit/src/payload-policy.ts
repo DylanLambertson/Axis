@@ -16,7 +16,7 @@ const POLICY_KEYS = ["tier", "sideEffect", "connectionId", "decision", "reason",
  * content summary. Phase 1b adds its own entries.
  */
 export const DEFAULT_PAYLOAD_ALLOWLIST: Readonly<Record<string, readonly string[]>> = {
-  "worktree.create": ["workspaceId", "projectId", "branch", "baseRef", "baseSha"],
+  "worktree.create": ["workspaceId", "projectId", "branch", "baseRef", "baseSha", "baseBranch"],
   "worktree.remove": ["workspaceId", "deleteBranch", "backupRef", "dirty"],
   "git.commit": ["workspaceId", "fileCount", "sha"],
   "git.push": ["workspaceId", "remote", "branch", "ok"],

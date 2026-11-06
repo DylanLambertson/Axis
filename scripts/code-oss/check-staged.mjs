@@ -23,7 +23,7 @@ import { spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { DEFAULT_ENTRY, checkTree } from "./check-daemon-graph.mjs";
+import { DEFAULT_ENTRY, SEAM_ENTRY, checkTree } from "./check-daemon-graph.mjs";
 import { brandVerdict, mangleExemptionPresent, privateNameCount, privatesSurvive, restoreStaleProbe } from "./check-privates.mjs";
 import { STAGE_ROOT, verifyStaged } from "./stage-verify.mjs";
 
@@ -73,7 +73,7 @@ if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(
       for (const l of axisErrors) console.error(`   ${l}`);
       if (f.status !== 0) failed = true;
     }
-    const entries = [DEFAULT_ENTRY, ...m.packages.map((n) => `${STAGE_ROOT}/${n}/index.ts`)];
+    const entries = [DEFAULT_ENTRY, ...(existsSync(join(tree, SEAM_ENTRY)) ? [SEAM_ENTRY] : []), ...m.packages.map((n) => `${STAGE_ROOT}/${n}/index.ts`)];
     const g = await checkTree({ tree, entries });
     console.log(`3. bundled ${entries.length} entries (${g.inputs} inputs, ${g.stagedInputs} staged); zod ${g.zod}, tree has ${g.treeZod}: ${g.violations.length === 0 ? "graph ok" : "FAILED"}`);
     for (const v of g.violations) console.error(`   ${v}`);
