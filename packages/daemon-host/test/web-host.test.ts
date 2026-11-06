@@ -244,15 +244,28 @@ test("web host: dispose closes sessions with 1001, stops listening and removes i
   await rig.dispose();
 });
 
+/** Expect `startWebHost` to refuse with `reason`; a host that starts anyway is disposed first, so the failure cannot hang the run. */
+async function refusedStart(options: Parameters<typeof startWebHost>[0], reason: string): Promise<void> {
+  let host: Awaited<ReturnType<typeof startWebHost>> | undefined;
+  try {
+    host = await startWebHost(options);
+  } catch (e) {
+    assert.ok(e instanceof AxisError && e.detail["reason"] === reason, String(e));
+    return;
+  }
+  await host.dispose();
+  assert.fail(`started a listener; expected ${reason}`);
+}
+
 test("web host: a short key, an unparsed or default config and a non-loopback bind start nothing", async () => {
   const { a } = memoryChannelPair();
   const mux = new ChannelMux(a);
   const base = { mux, flow: manualFlow(), clock: fakeClock(), attestationKey: Buffer.alloc(32, 1) };
   try {
-    for (const config of [undefined, {}, { enabled: false, port: 0, allowedOrigins: [ORIGIN] }, { enabled: true, host: "0.0.0.0", port: 0, allowedOrigins: [ORIGIN] }]) {
-      await assert.rejects(startWebHost({ ...base, config }), (e: unknown) => e instanceof AxisError && e.detail["reason"] === "web_config_invalid");
+    for (const config of [undefined, {}, { enabled: false, port: 0, allowedOrigins: [ORIGIN] }, { enabled: true, host: "0.0.0.0", port: 0, allowedOrigins: [ORIGIN] }, { enabled: true, host: "::", port: 0, allowedOrigins: [ORIGIN] }]) {
+      await refusedStart({ ...base, config }, "web_config_invalid");
     }
-    await assert.rejects(startWebHost({ ...base, attestationKey: Buffer.alloc(16), config: { enabled: true, port: 0, allowedOrigins: [ORIGIN] } }), (e: unknown) => e instanceof AxisError && e.detail["reason"] === "web_key_invalid");
+    await refusedStart({ ...base, attestationKey: Buffer.alloc(16), config: { enabled: true, port: 0, allowedOrigins: [ORIGIN] } }, "web_key_invalid");
   } finally {
     mux.dispose();
   }
@@ -263,10 +276,7 @@ test("web host: a port already in use fails closed with a closed reason", async 
   try {
     const { a } = memoryChannelPair();
     const mux = new ChannelMux(a);
-    await assert.rejects(
-      startWebHost({ mux, flow: manualFlow(), clock: fakeClock(), attestationKey: Buffer.alloc(32, 1), config: { enabled: true, port: rig.host.address.port, allowedOrigins: [ORIGIN] } }),
-      (e: unknown) => e instanceof AxisError && e.detail["reason"] === "listen_failed",
-    );
+    await refusedStart({ mux, flow: manualFlow(), clock: fakeClock(), attestationKey: Buffer.alloc(32, 1), config: { enabled: true, port: rig.host.address.port, allowedOrigins: [ORIGIN] } }, "listen_failed");
     mux.dispose();
   } finally {
     await rig.dispose();
