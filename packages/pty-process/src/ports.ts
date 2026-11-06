@@ -63,6 +63,13 @@ export interface PtyChild {
   kill(signal: PtySignal): void;
   onData(listener: (chunk: string) => void): Disposable;
   onExit(listener: (exit: PtyExit) => void): Disposable;
+  /** Stops and restarts reading the child's output, so the child blocks on a full pty buffer (backpressure). Absent: output over the hard bound is dropped. */
+  pause?(): void;
+  resume?(): void;
+  /** Bytes of input written to the child and not yet taken by it. The service refuses more input past a bound (PTY-4); absent: unbounded. */
+  pendingWrite?(): number;
+  /** Writes queued and not yet taken, in O(1). The service bounds this too: a queue entry costs memory and scan time whatever its size. */
+  pendingEntries?(): number;
   /** `job` groups only: called once when the job has no active process left. */
   onGroupEmpty?(listener: () => void): Disposable;
 }

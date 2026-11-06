@@ -73,3 +73,27 @@ test("the main seam spawns only when shouldStartDaemon allows it, takes its data
   assert.match(src, /execArgv: \[\]/);
   assert.match(src, /env: daemonEnvironment\(process\.env\)/);
 });
+
+const PTY_FILE = new URL("../../code-oss/overlay/src/vs/axis/pty/node/axisPtyMain.ts", import.meta.url);
+
+test("the overlay pty entry imports only node-pty and the entry logic, calls it once, and spawns through node-pty directly", () => {
+  const src = readFileSync(PTY_FILE, "utf8");
+  const sf = ts.createSourceFile("axisPtyMain.ts", src, ts.ScriptTarget.Latest, true);
+  const imports = [];
+  const args = [];
+  let calls = 0;
+  const visit = (node) => {
+    if (ts.isImportDeclaration(node)) imports.push(node.moduleSpecifier.text);
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "runPtyEntry") {
+      calls++;
+      for (const p of node.arguments[0].properties) args.push(ts.isSpreadAssignment(p) ? "<spread>" : p.name.text);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
+  assert.deepEqual(imports, ["node-pty", "../../packages/pty-process/index.js"]);
+  assert.equal(calls, 1);
+  assert.deepEqual(args.sort(), ["env", "execArgv", "parentPort", "platform", "process", "spawn", "stderr"]);
+  assert.match(src, /nodePty\.spawn\(file, args, options\)/);
+  assert.equal(/PtyService|TerminalProcess|ptyHost/.test(src.replace(/\/\/[^\n]*/g, "")), false, "upstream's terminal service adds VSCODE_* and a nonce (PTY-6)");
+});

@@ -94,6 +94,26 @@ test("job group (Windows model): alive until the pty process reports the job emp
   assert.equal(h.groupAlive(), false);
 });
 
+test("job group: a status reply that is not group-empty (input-refused, or one nobody knows yet) never ends the group", async () => {
+  const pair = channelPair();
+  const child = new FakeChild(901, { kind: "job" });
+  const svc = createPtyService({ spawn: () => child, input: { terminal: 10 } });
+  svc.serveControl(pair.b);
+  const port = createPtyProcessPort({ channel: pair.a });
+  const h = await port.spawn(SPEC);
+  child.pending = 10;
+  h.write("refused"); // the service answers `input-refused` on the control channel
+  await settle();
+  assert.deepEqual(child.written, []);
+  assert.equal(h.groupAlive(), true, "the job still has a process");
+  pair.b.send({ t: "something-new", term: h.terminalId });
+  await settle();
+  assert.equal(h.groupAlive(), true);
+  child.groupEmpty();
+  await settle();
+  assert.equal(h.groupAlive(), false);
+});
+
 test("real group (Linux/macOS): `sh -c 'sleep 30 & exit 0'` is alive after the leader exits and gone after the child is killed", { skip: process.platform === "win32" ? "POSIX process groups only" : false }, async () => {
   const pids: number[] = [];
   const pair = channelPair();
