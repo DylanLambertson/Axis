@@ -4,9 +4,12 @@ import { createHash } from "node:crypto";
 import { OBJECT_ID, REMOTE_NAME, branchFor, checkWorktree, daemonGitFor, platformOf, prefix, type DaemonGit } from "./args.js";
 import { findOverride, overrideMessage, withNoPrompt } from "./env.js";
 import { assertPushUrl, protocolAllowList } from "./pushUrl.js";
-import { scanOutgoing } from "./scan.js";
+import { BINARY_ID, scanOutgoing, type BinaryRow } from "./scan.js";
 import { GitOpsError, conflict, denied, invalid, mapUnexpected, redactUrls, sanitizeText } from "./errors.js";
 import type { GitOpsDeps, GitRunRequest, SecretFinding, WorktreeRef } from "./types.js";
+
+/** Most binary file ids one request may allow (the wire's `MAX_ALLOWED_BINARY_IDS`). */
+export const MAX_ALLOWED_BINARY_IDS = 500;
 
 export interface PushInput {
   readonly worktree: WorktreeRef;
@@ -27,6 +30,12 @@ export interface PushInput {
    */
   readonly allowedBinaryPaths?: readonly string[];
   /**
+   * Binary files that may be pushed, by identity (`BinaryRow.id`, from a plan's `blocked.unlistedBinaryRows`): the same effect as an
+   * allowed path for the file whose path bytes the id was derived from, and for no other, whatever the display text looks like. An id
+   * of a lossy name is ignored (it stays blocked); an id that is not well formed is `E_INVALID_ARGUMENT`.
+   */
+  readonly allowedBinaryIds?: readonly string[];
+  /**
    * `planPush` only. A plan the scan blocks (see `PushBlocked`) is returned with `blocked` set instead of thrown as
    * `E_POLICY_DENIED`, so the caller can show why. `executePush` never pushes a blocked plan, with or without this.
    */
@@ -38,8 +47,8 @@ export type PushBlockReason = "message_unscannable" | "secrets_found" | "scan_in
 
 export interface PushBlocked {
   readonly reason: PushBlockReason;
-  /** Binary paths not in `allowedBinaryPaths` (refuse mode only, otherwise empty). Names only, in git's own spelling. */
-  readonly unlistedBinaryPaths: readonly string[];
+  /** Binary files neither allowed by path nor by id (refuse mode only, otherwise empty): identity and display name, never content. */
+  readonly unlistedBinaryRows: readonly BinaryRow[];
 }
 
 export interface PushPlan {
@@ -76,9 +85,12 @@ export interface ExecutePushOptions {
 }
 
 /** A digest of everything a confirmation covers. Findings carry names, paths, lines and commits, never matched text. */
-export function planDigest(tip: string, findings: readonly SecretFinding[], reasons: readonly string[]): string {
+export function planDigest(tip: string, findings: readonly SecretFinding[], reasons: readonly string[], waivedBinaryIds: readonly string[] = []): string {
   const f = findings.map((x) => [x.rule, x.path ?? "", x.line ?? 0, x.commit ?? ""]);
-  return createHash("sha256").update(JSON.stringify({ tip, findings: f, reasons })).digest("hex");
+  // The identities of the binary files a refuse-mode plan lets through are covered, so a confirmation names them, not their display text.
+  // Left out when there are none, so a plan that waives nothing keeps its digest.
+  const waived = waivedBinaryIds.length === 0 ? {} : { waived: [...waivedBinaryIds].sort() };
+  return createHash("sha256").update(JSON.stringify({ tip, findings: f, reasons, ...waived })).digest("hex");
 }
 
 /** The pinned source: the scanned tip, by object id, so a commit made after the scan cannot ride along. */
@@ -110,6 +122,10 @@ async function check(deps: GitOpsDeps, input: PushInput): Promise<{ plan: PushPl
   if (typeof input.baseSha !== "string" || !OBJECT_ID.test(input.baseSha)) {
     throw invalid("baseSha must be the journaled base commit as a full lower-case object id");
   }
+  const ids = input.allowedBinaryIds ?? [];
+  if (!Array.isArray(ids) || ids.length > MAX_ALLOWED_BINARY_IDS || ids.some((i) => typeof i !== "string" || !BINARY_ID.test(i))) {
+    throw invalid("allowedBinaryIds must be binary file ids from a plan");
+  }
   const bad = findOverride(deps.env.pty);
   if (bad) throw denied(overrideMessage(bad));
 
@@ -138,10 +154,15 @@ async function check(deps: GitOpsDeps, input: PushInput): Promise<{ plan: PushPl
   // The GIT-SNAP-1 re-take comes last so nothing can change between it and the push.
   await deps.assertNoDrift(input.worktree);
 
-  const { findings, binaryPaths, truncated, undecodable } = await scanOutgoing(deps, git, input.worktree, input.baseSha, tipSha, input.allowedBinaryPaths ?? []);
+  const { findings, binaryPaths, binaryRows, truncated, undecodable } = await scanOutgoing(deps, git, input.worktree, input.baseSha, tipSha, input.allowedBinaryPaths ?? [], ids);
   const refuse = (deps.scanMode ?? "warn") === "refuse";
   const allowed = new Set(input.allowedBinaryPaths ?? []);
-  const unlisted = refuse ? binaryPaths.filter((p) => p.includes("\ufffd") || !allowed.has(p)) : [];
+  const allowedIds = new Set(ids);
+  // Waived by path or by identity; a lossy name (U+FFFD) is never waived, by either, because its display cannot tell files apart.
+  const waivedRow = (r: BinaryRow): boolean => !r.lossy && (allowed.has(r.path) || allowedIds.has(r.id));
+  const unlistedRows = refuse ? binaryRows.filter((r) => !waivedRow(r)) : [];
+  const waivedIds = refuse ? binaryRows.filter(waivedRow).map((r) => r.id) : [];
+  const unlisted = unlistedRows.map((r) => r.path);
   const shown = (ps: readonly string[]): string => sanitizeText(ps.slice(0, 5).join(", ")) + (ps.length > 5 ? ` and ${ps.length - 5} more` : "");
   const reasons: string[] = [];
   // The first of these that applies is the block. Fail closed in either mode for a message: one with NUL bytes, bytes invalid in its encoding
@@ -182,11 +203,11 @@ async function check(deps: GitOpsDeps, input: PushInput): Promise<{ plan: PushPl
   const command: GitRunRequest = { argv, cwd: input.worktree.workTree, env: withNoPrompt(deps.env.pty), context: "pty" };
   // A blocked plan asks for no confirmation: it cannot be confirmed, only fixed (an allowed binary path) or pushed elsewhere.
   const shownReasons = block === undefined ? reasons : [];
-  const blocked: PushBlocked | undefined = block === undefined ? undefined : { reason: block.reason, unlistedBinaryPaths: unlisted };
+  const blocked: PushBlocked | undefined = block === undefined ? undefined : { reason: block.reason, unlistedBinaryRows: unlistedRows };
   return {
     plan: {
       worktree: input.worktree, remote: input.remote, branch, tip: tipSha, refspec, command, findings,
-      requiresConfirmation: shownReasons.length > 0, reasons: shownReasons, digest: planDigest(tipSha, findings, shownReasons),
+      requiresConfirmation: shownReasons.length > 0, reasons: shownReasons, digest: planDigest(tipSha, findings, shownReasons, waivedIds),
       ...(blocked === undefined ? {} : { blocked }),
     },
     git,
