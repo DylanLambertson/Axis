@@ -63,7 +63,8 @@ export interface GitRigOptions {
   runsActive?: boolean;
   /** Make `journal.recordPushed` throw. */
   recordPushedFails?: boolean;
-  ptyRunner?: "node" | "none";
+  /** The pty git context: a node runner (default), none, or one the test builds over the rig's home and git (the real pty process). */
+  ptyRunner?: "node" | "none" | ((env: { home: string; gitPath: string; path: string }) => GitRunner);
   /** The drift check of the git port (default: no drift). */
   assertNoDrift?: () => Promise<void>;
 }
@@ -99,7 +100,8 @@ export async function gitRig(options: GitRigOptions = {}) {
   const scanner = createSecretScanner({ mode: options.scanMode ?? "refuse", ...(options.maxBytes === undefined ? {} : { maxBytes: options.maxBytes }) });
   const ptyCalls: string[] = [];
   const nodePty = createNodeRunner({ allowPtyContext: true, allowUnpinnedGit: true });
-  const ptyRunner: GitRunner = { run: (req) => (ptyCalls.push(req.context), nodePty.run(req)) };
+  const inner: GitRunner = typeof options.ptyRunner === "function" ? options.ptyRunner({ home, gitPath, path: PATHS }) : nodePty;
+  const ptyRunner: GitRunner = { run: (req) => (ptyCalls.push(req.context), inner.run(req)) };
   const gitPort = createGitPort({
     gitPath,
     env: { daemon: { PATH: PATHS, HOME: home }, pty: { PATH: PATHS, HOME: home } },
