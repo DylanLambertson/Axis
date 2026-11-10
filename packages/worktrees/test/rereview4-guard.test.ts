@@ -7,7 +7,7 @@ import { mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { after, describe, it } from 'node:test';
 import { snapshotGuardFiles } from '../src/gitSnap.js';
-import { makeFixture, type Fixture } from './helpers.js';
+import { makeFixture, type Fixture, exp } from './helpers.js';
 
 const fixtures: Fixture[] = [];
 function fresh(): Fixture {
@@ -49,7 +49,7 @@ describe('R4-1: the guard snapshot reads common-dir files without blocking or fo
       const deadline = Date.now() + 20_000;
       while (Date.now() < deadline) {
         await within(snapshotGuardFiles(common), 10_000, `snapshotGuardFiles call ${calls + 1}`);
-        if (calls % 50 === 0) await within(fx.manager.status(ws.path).catch(() => undefined), 10_000, `status() at call ${calls + 1}`);
+        if (calls % 50 === 0) await within(fx.manager.status(ws.path, exp(ws.path)).catch(() => undefined), 10_000, `status() at call ${calls + 1}`);
         calls++;
       }
     } finally {

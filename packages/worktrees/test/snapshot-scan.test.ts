@@ -9,7 +9,7 @@ import * as path from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import { createSecretScanner } from '@axis/secret-scan';
 import { WorktreeError, type SnapshotScanner } from '../src/index.js';
-import { makeFixture, sh, write, type Fixture } from './helpers.js';
+import { makeFixture, sh, write, type Fixture, exp } from './helpers.js';
 
 // Built at run time so no secret pattern sits in this file.
 const PEM = '-----BEGIN ' + 'RSA PRIVATE' + ' KEY-----';
@@ -68,7 +68,7 @@ describe('snapshot secret scan (REF-1)', () => {
     const planted = `first\nsecond\n${PEM}\n`;
     write(path.join(wt, 'notes.txt'), planted);
     write(path.join(wt, 'a.txt'), 'clobbered\n');
-    const e = await refusal(fx.manager.restoreFromRunBase({ path: path.join(wt, 'a.txt') }));
+    const e = await refusal(fx.manager.restoreFromRunBase({ path: path.join(wt, 'a.txt') , expectedWorktree: exp(path.join(wt, 'a.txt'))}));
     assert.equal(e.code, 'E_POLICY_DENIED');
     assert.equal(e.details['reason'], 'snapshot-secret');
     assert.deepEqual(e.details['findings'], [{ rule: 'private-key-block', line: 3, path: 'notes.txt' }]);
@@ -89,12 +89,12 @@ describe('snapshot secret scan (REF-1)', () => {
     const wt = (await fx.manager.create({ repoPath: fx.repo, slug: 'scan' })).path;
     assert.equal(scanner.calls.length, 0, 'a fresh run base adds nothing to scan');
     write(path.join(wt, 'a.txt'), 'changed\n');
-    const r = await fx.manager.restoreFromRunBase({ path: path.join(wt, 'a.txt') });
+    const r = await fx.manager.restoreFromRunBase({ path: path.join(wt, 'a.txt') , expectedWorktree: exp(path.join(wt, 'a.txt'))});
     assert.ok(r.backupRef.startsWith('refs/axis/backup/'));
     assert.equal(scanner.calls.length, 1);
     assert.match(scanner.calls[0]?.text ?? '', /^\+\+\+ b\/a\.txt$/m);
     write(path.join(wt, 'sub', 'b.txt'), `bravo\n${PEM}\n`);
-    const e = await refusal(fx.manager.restoreFromRunBase({ path: path.join(wt, 'a.txt') }));
+    const e = await refusal(fx.manager.restoreFromRunBase({ path: path.join(wt, 'a.txt') , expectedWorktree: exp(path.join(wt, 'a.txt'))}));
     assert.deepEqual(e.details['findings'], [{ rule: 'private-key-block', line: 2, path: 'sub/b.txt' }]);
   });
 
@@ -102,7 +102,7 @@ describe('snapshot secret scan (REF-1)', () => {
     const always: SnapshotScanner = { limits: { maxBinaryBytes: 1, maxBytes: 1 << 20 }, scan: async () => [{ rule: 'jwt', line: 1 }] };
     const wt = await workspace({ snapshotScanner: always });
     write(path.join(wt, 'new.txt'), 'harmless\n');
-    const e = await refusal(fx.manager.restoreFromRunBase({ path: path.join(wt, 'a.txt') }));
+    const e = await refusal(fx.manager.restoreFromRunBase({ path: path.join(wt, 'a.txt') , expectedWorktree: exp(path.join(wt, 'a.txt'))}));
     assert.equal(e.details['reason'], 'snapshot-secret');
     assert.deepEqual(e.details['findings'], [{ rule: 'jwt', line: 1, path: 'new.txt' }]);
   });
@@ -110,7 +110,7 @@ describe('snapshot secret scan (REF-1)', () => {
   it('refuses with the default scanner when none is passed', async () => {
     const wt = await workspace();
     write(path.join(wt, 'deep', 'cfg.txt'), `x\n${PEM}\n`);
-    const e = await refusal(fx.manager.restoreFromRunBase({ path: path.join(wt, 'a.txt') }));
+    const e = await refusal(fx.manager.restoreFromRunBase({ path: path.join(wt, 'a.txt') , expectedWorktree: exp(path.join(wt, 'a.txt'))}));
     assert.equal(e.details['reason'], 'snapshot-secret');
   });
 
@@ -119,14 +119,14 @@ describe('snapshot secret scan (REF-1)', () => {
     const wt = await workspace({ snapshotScanner: scanner });
     const small = Buffer.concat([Buffer.from([0, 1, 2, 0]), Buffer.from(`\n${PEM}\n`)]);
     write(path.join(wt, 'small.bin'), small);
-    const e = await refusal(fx.manager.restoreFromRunBase({ path: path.join(wt, 'a.txt') }));
+    const e = await refusal(fx.manager.restoreFromRunBase({ path: path.join(wt, 'a.txt') , expectedWorktree: exp(path.join(wt, 'a.txt'))}));
     assert.equal(e.details['reason'], 'snapshot-secret');
     assert.deepEqual(e.details['findings'], [{ rule: 'private-key-block', line: 2, path: 'small.bin' }]);
     assert.deepEqual(scanner.calls.map((c) => c.binaryPaths), Array(4).fill(['small.bin']), 'four views, all as binary');
     sh(wt, 'clean', '-fq');
     const large = Buffer.alloc(scanner.limits.maxBinaryBytes + 1);
     write(path.join(wt, 'large.bin'), large);
-    const u = await refusal(fx.manager.restoreFromRunBase({ path: path.join(wt, 'a.txt') }));
+    const u = await refusal(fx.manager.restoreFromRunBase({ path: path.join(wt, 'a.txt') , expectedWorktree: exp(path.join(wt, 'a.txt'))}));
     assert.equal(u.details['reason'], 'snapshot-unscanned');
     assert.deepEqual(u.details['findings'], [{ rule: 'binary-unscanned', path: 'large.bin' }]);
     assert.equal(hasBlob(fx.repo, large), false);
@@ -136,7 +136,7 @@ describe('snapshot secret scan (REF-1)', () => {
   it('a token in a file name refuses without the name in any finding', async () => {
     const wt = await workspace();
     write(path.join(wt, `${TOKEN_NAME}.txt`), 'plain\n');
-    const e = await refusal(fx.manager.restoreFromRunBase({ path: path.join(wt, 'a.txt') }));
+    const e = await refusal(fx.manager.restoreFromRunBase({ path: path.join(wt, 'a.txt') , expectedWorktree: exp(path.join(wt, 'a.txt'))}));
     assert.equal(e.details['reason'], 'snapshot-secret');
     assert.deepEqual(e.details['findings'], [{ rule: 'github-token' }]);
     assert.ok(!visible(e).includes(TOKEN_NAME));
@@ -150,7 +150,7 @@ describe('snapshot secret scan (REF-1)', () => {
       t.skip('symlinks are not available here');
       return;
     }
-    const e = await refusal(fx.manager.restoreFromRunBase({ path: path.join(wt, 'a.txt') }));
+    const e = await refusal(fx.manager.restoreFromRunBase({ path: path.join(wt, 'a.txt') , expectedWorktree: exp(path.join(wt, 'a.txt'))}));
     assert.deepEqual(e.details['findings'], [{ rule: 'github-token', line: 1, path: 'link' }]);
     assert.ok(!visible(e).includes(TOKEN_NAME));
   });
@@ -161,7 +161,7 @@ describe('snapshot secret scan (REF-1)', () => {
     const wt = await workspace({ snapshotScanner: scanner });
     write(path.join(wt, 'big.txt'), 'word '.repeat(200));
     write(path.join(wt, 'small.txt'), 'ok\n');
-    const e = await refusal(fx.manager.restoreFromRunBase({ path: path.join(wt, 'a.txt') }));
+    const e = await refusal(fx.manager.restoreFromRunBase({ path: path.join(wt, 'a.txt') , expectedWorktree: exp(path.join(wt, 'a.txt'))}));
     assert.equal(e.details['reason'], 'snapshot-unscanned');
     assert.deepEqual(e.details['findings'], [{ rule: 'scan-incomplete', path: 'big.txt' }]);
     assert.equal(scanner.calls.length, 1);
@@ -171,7 +171,7 @@ describe('snapshot secret scan (REF-1)', () => {
   it('keeps 50 findings and counts the rest', async () => {
     const wt = await workspace();
     write(path.join(wt, 'many.txt'), `${PEM}\n`.repeat(60));
-    const e = await refusal(fx.manager.restoreFromRunBase({ path: path.join(wt, 'a.txt') }));
+    const e = await refusal(fx.manager.restoreFromRunBase({ path: path.join(wt, 'a.txt') , expectedWorktree: exp(path.join(wt, 'a.txt'))}));
     assert.equal((e.details['findings'] as unknown[]).length, 50);
     assert.equal(e.details['count'], 60);
   });
@@ -185,7 +185,7 @@ describe('snapshot secret scan (REF-1)', () => {
     it(`refuses as unscanned with ${name}, and keeps nothing it said`, async () => {
       const wt = await workspace({ snapshotScanner: scanner as unknown as SnapshotScanner });
       write(path.join(wt, 'notes.txt'), `${'plain words '.repeat(4)}\n${TOKEN_NAME}\n`);
-      const e = await refusal(fx.manager.restoreFromRunBase({ path: path.join(wt, 'a.txt') }));
+      const e = await refusal(fx.manager.restoreFromRunBase({ path: path.join(wt, 'a.txt') , expectedWorktree: exp(path.join(wt, 'a.txt'))}));
       assert.equal(e.code, 'E_POLICY_DENIED');
       assert.equal(e.details['reason'], 'snapshot-unscanned');
       assert.equal(e.message, 'the snapshot was refused: its content could not be fully scanned for secrets');
@@ -224,7 +224,7 @@ describe('snapshot scan without a workspace', () => {
     const wt = (await fx.manager.create({ repoPath: fx.repo, slug: 'clean' })).path;
     write(path.join(wt, 'new.txt'), 'nothing secret here\n');
     write(path.join(wt, 'a.txt'), 'changed\n');
-    const r = await fx.manager.restoreFromRunBase({ path: path.join(wt, 'a.txt') });
+    const r = await fx.manager.restoreFromRunBase({ path: path.join(wt, 'a.txt') , expectedWorktree: exp(path.join(wt, 'a.txt'))});
     assert.equal(sh(fx.repo, 'show', `${r.backupRef}:new.txt`), 'nothing secret here\n');
   });
 });

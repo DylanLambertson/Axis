@@ -68,8 +68,9 @@ export function createWorktreeContentHooks(deps: WorktreeHookDeps): { readonly f
             const ws = check(id, needs);
             assertNoActiveRun(deps.journal, deps.runs, ws.id);
             const ref = await deps.locator.locate(ws.id);
-            await deps.manager.assertNoDrift(ref.workTree);
-            const scan = await deps.manager.previewDiscard(ref.workTree);
+            const expected = { path: ref.workTree, id: ws.id };
+            await deps.manager.assertNoDrift(ref.workTree, expected);
+            const scan = await deps.manager.previewDiscard(ref.workTree, expected);
             deps.onPreview?.(target, scan.fingerprint, previewText(ws.branch, scan));
             return fn(scan.fingerprint);
           },
