@@ -359,10 +359,10 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
 
   /** The services of a healthy host, each registered through the registrar and nothing else. */
   function registerServing(registrar: ReturnType<typeof createHandlerRegistrar>, services: HostServices): void {
-    const { worktrees, runs, approvals, composer } = built;
+    const { worktrees, runs, approvals, composer, agent } = built;
     const journal = services.journal;
     const audit = services.audit;
-    if (worktrees === undefined || runs === undefined || approvals === undefined || composer === undefined || journal === undefined || audit === undefined) throw new AxisError("E_INTERNAL", "The host composition is incomplete", { reason: "not_built" });
+    if (worktrees === undefined || runs === undefined || approvals === undefined || composer === undefined || agent === undefined || journal === undefined || audit === undefined) throw new AxisError("E_INTERNAL", "The host composition is incomplete", { reason: "not_built" });
     const git = createGitPort({
       gitPath: services.gitPath,
       env: { daemon: ports.env, pty: ports.env },
@@ -379,7 +379,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
     const reviewDeps = { git, locator: worktrees.locator, tempIndex: createTempIndexProvider(reviewDir), fileExists: (p: string) => access(p).then(() => true, () => false) };
     const trees = new ReviewedTrees();
     registrar.register(APPROVALS_CONTRACT, APPROVALS_VERSION, createApprovalsHandlers({ approvals: approvals.port }));
-    registrar.register(PROVIDERS_CONTRACT, PROVIDERS_VERSION, createProvidersHandlers({ providers: () => [] }));
+    registrar.register(PROVIDERS_CONTRACT, PROVIDERS_VERSION, createProvidersHandlers({ providers: () => agent.providers() }));
     registrar.register(WORKTREES_CONTRACT, WORKTREES_VERSION, createWorktreesHandlers({ service: worktrees.service, needsAttention: worktrees.needsAttention }), { content: worktrees.content });
     registerComposerRunsHandlers(registrar, { service: composer, journal, mutex: worktrees.mutex, needsAttention: worktrees.needsAttention });
     registerCliRunsHandlers(registrar, { service: runs.service, journal, control, minter: createRunTrustMinter(ports.clock), mutex: worktrees.mutex, needsAttention: worktrees.needsAttention, platform: config.platform });

@@ -3,6 +3,7 @@ import type { ComposerMode } from "@axis/protocol";
 import { isProviderError, type BudgetHook, type ContentBlock, type GuardedProvider, type Message, type Usage } from "@axis/providers";
 import type { ComposerRunTools } from "../ports/composer.js";
 import type { ActivityInput } from "./activity.js";
+import { withDestinationEvents, type RequestDestination } from "./destination.js";
 
 /**
  * The composer turn loop (docs/design/composer-runtime.md section 4). One provider request per turn through the guarded
@@ -27,6 +28,8 @@ export interface LoopInput {
   /** Undefined in Ask mode: no tool is offered. */
   readonly tools: ComposerRunTools | undefined;
   readonly budget: BudgetHook;
+  /** Where the provider's requests go; each allowed request is shown with it (PRV-4). */
+  readonly destination: RequestDestination;
   readonly signal: AbortSignal;
   readonly emit: (event: ActivityInput) => void;
   readonly maxTurns?: number;
@@ -160,6 +163,7 @@ const add = (a: Usage, b: Usage): Usage => ({ inputTokens: a.inputTokens + b.inp
 export async function runComposerLoop(input: LoopInput): Promise<LoopEnd> {
   const { signal, emit, tools } = input;
   const maxTurns = input.maxTurns ?? 24;
+  const budget = withDestinationEvents(input.budget, input.destination, emit);
   const messages: Message[] = [{ role: "user", content: [{ type: "text", text: input.prompt }] }];
   let usage: Usage = { inputTokens: 0, outputTokens: 0 };
   let requests = 0;
@@ -177,7 +181,7 @@ export async function runComposerLoop(input: LoopInput): Promise<LoopEnd> {
           ...(tools === undefined || tools.specs.length === 0 ? {} : { tools: tools.specs.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema })) }),
           maxOutputTokens: input.maxOutputTokens ?? 4096,
         },
-        { runId: input.runId, signal, budget: input.budget },
+        { runId: input.runId, signal, budget },
       );
     } catch (e) {
       return failure(e, signal);
