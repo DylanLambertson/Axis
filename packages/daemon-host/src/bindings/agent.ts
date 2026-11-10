@@ -2,11 +2,13 @@
 import { realpath } from "node:fs/promises";
 import { z } from "zod";
 import type { AuditSink, Redactor } from "@axis/audit";
-import { BROKER_PAYLOAD_ALLOWLIST, BrokerError, ToolBroker, callDigest, createCommandRunner, nodeBrokerFs, type ApprovalHook, type ApprovalRequest, type CommandRunner } from "@axis/broker";
+import { ABSENT, BROKER_PAYLOAD_ALLOWLIST, BrokerError, ToolBroker, callDigest, contentDigest, createCommandRunner, nodeBrokerFs, type ApprovalHook, type ApprovalRequest, type BrokerFs, type CommandRunner, type ContainDeps } from "@axis/broker";
 import { MAX_APPROVAL_PATHS, toDisplayPath, type ApprovalPreview } from "@axis/protocol";
 import { createSecretScanner } from "@axis/secret-scan";
 import { createMockProvider, guardProvider, type GuardedProvider, type MockProviderOptions, type Redactor as ProviderRedactor } from "@axis/providers";
+import { formatDriftNotice } from "../composer/drift.js";
 import { buildApprovalPreview, type PreviewScanner } from "../composer/preview.js";
+import { ObservedFiles } from "./agent-observed.js";
 import type { RunApprovals } from "../gate/run-approvals.js";
 import type { ComposerApprovalNote, ComposerEngine, ComposerRunContext, ComposerRunTools, ComposerToolSpec } from "../ports/composer.js";
 import type { WorktreeLocator } from "../ports/worktree-locator.js";
@@ -29,6 +31,13 @@ import type { WorktreeLocator } from "../ports/worktree-locator.js";
  *   hook recomputes the broker's digest (`callDigest`) from those arguments and the request, and builds the preview
  *   (`composer/preview.ts`) only from the arguments whose digest is the one the challenge is bound to. No match, or no
  *   preview, declines the call before any challenge exists: the user never answers for content they were not shown.
+ * - **Compare-and-swap writes (C2, policies section 3.3).** `read_file` answers with the content's digest on its first
+ *   line; `write_file` names the digest it replaces as `base` (`absent`, the default, for a new file), which must be the
+ *   one this run last saw for that file (any other is `stale`, so a predicted digest replaces nothing). The broker writes
+ *   only if the file still holds that content (`swapContained`), under the workspace's write lock (`writeLock`: the
+ *   project mutex that Axis git operations take), and otherwise refuses `stale` with nothing written. Axis never merges.
+ * - **Drift (C2, policies section 3.4).** The digests a run saw are kept (`agent-observed.ts`); before each model turn
+ *   after the first, `drift()` lists the paths that changed outside the run since, as an untrusted-labelled notice.
  * - **What the model gets back.** File text, or a refusal word from the broker's closed set: never a path the broker
  *   resolved, an error message or a stack.
  */
@@ -50,6 +59,13 @@ export interface AgentBindingDeps {
   readonly extraProtected?: readonly (readonly string[])[];
   /** The secret scan of approval previews. Default: `@axis/secret-scan` in `refuse` mode over plain text. */
   readonly previewScanner?: PreviewScanner;
+  /**
+   * The workspace's write lock (policies 3.3 and 6.1): runs `fn` holding the lock Axis git operations take for this
+   * workspace, waiting for it like any other caller. Every composer write runs inside it.
+   */
+  readonly writeLock: <T>(workspaceId: string, fn: () => Promise<T>, signal: AbortSignal) => Promise<T>;
+  /** Wraps the file system the broker and the drift re-read use (tests inject races through it). Default: none. */
+  readonly wrapFs?: (real: BrokerFs) => BrokerFs;
 }
 
 /** The broker's audit payload keys (`broker.decision`: approver, approval id, expiry; `broker.result`), for the host's `AuditLog` (DMN-5). */
@@ -68,18 +84,19 @@ export const MAX_INFLIGHT_CALLS = 16;
 export const MAX_WRITE_BYTES = 1_048_576;
 const pathArg = z.string().min(1).max(1024);
 const readArgs = z.strictObject({ path: pathArg });
-const writeArgs = z.strictObject({ path: pathArg, content: z.string().max(MAX_WRITE_BYTES) });
+const baseArg = z.union([z.literal(ABSENT), z.string().regex(/^sha256:[0-9a-f]{64}$/)]);
+const writeArgs = z.strictObject({ path: pathArg, content: z.string().max(MAX_WRITE_BYTES), base: baseArg.optional() });
 
 export const COMPOSER_TOOLS: readonly ComposerToolSpec[] = Object.freeze([
   {
     name: "read_file",
-    description: "Read a UTF-8 text file of the workspace. The path is relative to the workspace root.",
+    description: "Read a UTF-8 text file of the workspace. The path is relative to the workspace root. The first line of the result is `digest: sha256:...`, the digest of the content; the file's text follows from the second line.",
     inputSchema: { type: "object", properties: { path: { type: "string" } }, required: ["path"], additionalProperties: false },
   },
   {
     name: "write_file",
-    description: "Create or replace a UTF-8 text file of the workspace. The path is relative to the workspace root.",
-    inputSchema: { type: "object", properties: { path: { type: "string" }, content: { type: "string" } }, required: ["path", "content"], additionalProperties: false },
+    description: "Create or replace a UTF-8 text file of the workspace. The path is relative to the workspace root. To replace a file, set `base` to the digest your last read_file or write_file of it returned; to create one, omit `base` (or set it to `absent`). The write is refused (stale) if the file changed since: read it again.",
+    inputSchema: { type: "object", properties: { path: { type: "string" }, content: { type: "string" }, base: { type: "string" } }, required: ["path", "content"], additionalProperties: false },
   },
 ]);
 
@@ -101,6 +118,13 @@ function defaultPreviewScanner(): PreviewScanner {
   return { scan: async (text) => (await s.scan(text, { part: "message" })).map((f) => f.rule) };
 }
 
+/**
+ * A `swapped` write is NOT a refusal: the parent directory was swapped for a symlink after the last check, and the bytes
+ * may already be in the directory it now points to (`swapContained` item 5, detected afterwards, never undone).
+ */
+export const SWAPPED_RESULT =
+  "The call failed (swapped): a folder of the path was replaced while the file was being written, and the write may have landed outside the workspace. Tell the user; do not retry.";
+
 const LABEL = /^[a-z][a-z0-9:._-]{0,63}$/;
 /** A broker reason (`approval-declined`) as a wire reason code (`approval_declined`). */
 const reasonOf = (e: unknown): string => (e instanceof BrokerError ? e.reason.replace(/-/g, "_") : "tool_failed");
@@ -112,6 +136,7 @@ function providerRedactor(r: Redactor): ProviderRedactor {
 
 export function createAgentBinding(deps: AgentBindingDeps): AgentBinding {
   const platform = deps.platform ?? process.platform;
+  const brokerFs = deps.wrapFs?.(nodeBrokerFs) ?? nodeBrokerFs;
   const runner: CommandRunner = createCommandRunner({ platform });
   const scanner = deps.previewScanner ?? defaultPreviewScanner();
   const providers = new Map<string, GuardedProvider>([["mock", guardProvider(createMockProvider(deps.mock ?? {}), { redactor: providerRedactor(deps.redactor) })]]);
@@ -137,6 +162,13 @@ export function createAgentBinding(deps: AgentBindingDeps): AgentBinding {
 
   function tools(run: ComposerRunContext, worktree: { id: string; root: string; gitDir: string }, repos: readonly string[]): ComposerRunTools {
     const actor = `agent:composer.${run.runId}`;
+    const contain: ContainDeps = {
+      registry: { get: (id) => (id === worktree.id ? worktree : undefined), repositoryRoots: () => repos },
+      fs: brokerFs,
+      platform,
+      ...(deps.extraProtected === undefined ? {} : { extraProtected: deps.extraProtected }),
+    };
+    const observed = new ObservedFiles(contain, worktree.id, MAX_WRITE_BYTES);
     // Calls inside the broker now, with their parsed arguments: the hook previews only the one whose digest it is asked for.
     const inflight = new Set<{ readonly tool: string; readonly args: unknown }>();
     const covered = (req: ApprovalRequest): { readonly tool: string; readonly args: unknown } | undefined => {
@@ -189,8 +221,8 @@ export function createAgentBinding(deps: AgentBindingDeps): AgentBinding {
       },
     };
     const broker = new ToolBroker({
-      registry: { get: (id) => (id === worktree.id ? worktree : undefined), repositoryRoots: () => repos },
-      fs: nodeBrokerFs,
+      registry: contain.registry,
+      fs: brokerFs,
       audit: deps.audit,
       runner,
       parentEnv: deps.env,
@@ -205,7 +237,20 @@ export function createAgentBinding(deps: AgentBindingDeps): AgentBinding {
       tier: "read",
       args: readArgs,
       targets: (a) => [{ path: a.path, access: "read" }],
-      run: async (ctx, a) => (await ctx.readFile(a.path, MAX_READ_BYTES)).toString("utf8"),
+      run: async (ctx, a) => {
+        const at = await observed.locate(a.path); // before the read: a change during it is hashed again next turn
+        const data = await ctx.readFile(a.path, MAX_READ_BYTES);
+        let text: string;
+        try {
+          // Not lossy: text with U+FFFD in place of bad bytes, written back on this digest, would pass the compare-and-swap.
+          text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(data);
+        } catch {
+          throw new BrokerError("E_POLICY_DENIED", "not-text", "the file is not UTF-8 text");
+        }
+        const digest = contentDigest(data);
+        if (at !== undefined) observed.record(a.path, at, digest, { wrote: false });
+        return `digest: ${digest}\n${text}`;
+      },
     });
     broker.register({
       name: "write_file",
@@ -214,12 +259,21 @@ export function createAgentBinding(deps: AgentBindingDeps): AgentBinding {
       targets: (a) => [{ path: a.path, access: "write" }],
       run: async (ctx, a) => {
         const data = Buffer.from(a.content, "utf8");
-        await ctx.writeFile(a.path, data, { mode: "upsert", maxBytes: MAX_WRITE_BYTES });
-        return `wrote ${data.length} bytes`;
+        const base = a.base ?? ABSENT;
+        // §3.3: the base is the hash THIS run last observed for the file, not any digest that happens to match it.
+        if (base !== ABSENT && (await observed.seenBy(a.path)) !== base) throw new BrokerError("E_CONFLICT", "stale", "the base is not what the run last saw");
+        const at = await observed.locate(a.path);
+        const r = await deps.writeLock(worktree.id, () => ctx.swapFile(a.path, data, { base, maxBytes: MAX_WRITE_BYTES }), ctx.signal);
+        if (at !== undefined) observed.record(a.path, at, r.digest, { wrote: true, lost: r.lostChange });
+        // The residual window of section 3.3: a writer outside the lock changed the file in place and our rename replaced
+        // it. That writer's content is gone and Axis cannot recover it (no run base could hold it); say so, never hide it.
+        const lost = r.lostChange ? "\nWarning: the file was changed by someone else while it was being replaced; that change was overwritten." : "";
+        return `wrote ${data.length} bytes\ndigest: ${r.digest}${lost}`;
       },
     });
     return {
       specs: COMPOSER_TOOLS,
+      drift: async (signal) => formatDriftNotice(await observed.drift(signal)),
       async invoke(name, input, signal) {
         const parsed = PREVIEWED.get(name)?.args.safeParse(input);
         const call = parsed?.success === true ? { tool: name, args: parsed.data } : undefined;
@@ -233,7 +287,9 @@ export function createAgentBinding(deps: AgentBindingDeps): AgentBinding {
           // The action ran but its audit row could not be written: the run must stop (never continue unrecorded).
           if (e instanceof BrokerError && e.details["executed"] === true) throw new Error("unrecorded side effect");
           const reason = reasonOf(e);
-          return { ok: false, reason, content: `The call was refused (${reason}).` };
+          if (reason === "swapped") return { ok: false, reason, content: SWAPPED_RESULT };
+          const hint = reason === "stale" ? " The file changed since you last read it: read it again before writing." : "";
+          return { ok: false, reason, content: `The call was refused (${reason}).${hint}` };
         } finally {
           if (call !== undefined) inflight.delete(call);
         }

@@ -37,4 +37,13 @@ export class ProjectMutex {
       if (this.#tails.get(key) === tail) this.#tails.delete(key);
     }
   }
+
+  /**
+   * `run` for work that was started by, but outlives, a call that held the key: a composer loop started by `start` under
+   * the mutex inherits that call's async context, so `run` would see the key as held and skip the wait long after the
+   * holder has gone. This always queues for the key as an unrelated caller would (never call it while holding the key).
+   */
+  exclusive<T>(key: string, fn: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    return this.#held.exit(() => this.run(key, fn, signal));
+  }
 }

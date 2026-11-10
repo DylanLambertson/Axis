@@ -68,6 +68,11 @@ export interface GitOperations {
    * so `pushurl` and `pushInsteadOf` rewrites count). A hash, never the URL: userinfo must not be stored or logged.
    */
   pushTarget(call: { readonly workspaceId: string; readonly worktree: WorktreeRef; readonly remote: string }): Promise<string>;
+  /**
+   * Whether `base` (the base kept for a destination) is a commit that is an ancestor of the branch's tip. A destination whose
+   * history was rewritten answers no, and the caller drops the entry and scans from the workspace's recorded base (a larger range).
+   */
+  baseUsable(call: { readonly worktree: WorktreeRef; readonly branch: string; readonly base: string }): Promise<boolean>;
   planPush(call: PushCall): Promise<PushPlanFacts>;
   /** Pushes the one scanned tip, or refuses `E_CONFLICT` `plan_changed` when the outgoing changes are not the confirmed plan. */
   executePush(call: PushCall, confirmed: { readonly tip: string; readonly digest: string }): Promise<void>;
