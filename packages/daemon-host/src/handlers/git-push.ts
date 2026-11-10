@@ -19,6 +19,7 @@ async function pushCall(deps: GitHandlerDeps, id: string, method: string, reques
     branch: ws.branch,
     baseSha: await scanBase(deps, ws, id, worktree, target),
     ...(request.allowedBinaryPaths === undefined ? {} : { allowedBinaryPaths: request.allowedBinaryPaths }),
+    ...(request.allowedBinaryIds === undefined ? {} : { allowedBinaryIds: request.allowedBinaryIds }),
   };
   return { ws, call, target };
 }

@@ -68,6 +68,18 @@ test("every registry method that needs approval has a pinned digest under its ow
   }
 });
 
+test("the push request digest covers allowedBinaryIds: another id set is another request", () => {
+  const body = { workspaceId: "ws-1", remote: "origin", confirmedPlan: { tip: "a".repeat(40), digest: "d".repeat(64) } };
+  const id = (n) => `bin_${String(n).repeat(32)}`;
+  const digest = (extra) => requestDigest("axis.git", 1, "push", { ...body, ...extra });
+  const none = digest({});
+  const one = digest({ allowedBinaryIds: [id(1)] });
+  assert.notEqual(one, none);
+  assert.notEqual(one, digest({ allowedBinaryIds: [id(2)] }));
+  assert.notEqual(one, digest({ allowedBinaryIds: [id(1), id(2)] }));
+  assert.equal(one, digest({ allowedBinaryIds: [id(1)], approval: { challengeId: "A".repeat(22) } }), "the approval stays out of the digest");
+});
+
 /** The top-level arguments of the call whose `(` is just before `start`, string literals and nested brackets respected. */
 function callArguments(text, start) {
   const args = [];

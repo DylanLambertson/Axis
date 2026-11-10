@@ -200,6 +200,7 @@ export function createGitOperations(deps: GitOperationsDeps): GitOperations {
     branch: call.branch,
     baseSha: call.baseSha,
     ...(call.allowedBinaryPaths === undefined ? {} : { allowedBinaryPaths: call.allowedBinaryPaths }),
+    ...(call.allowedBinaryIds === undefined ? {} : { allowedBinaryIds: call.allowedBinaryIds }),
   });
   return {
     scanMode,
@@ -226,7 +227,7 @@ export function createGitOperations(deps: GitOperationsDeps): GitOperations {
         // `reportBlocked`: a scan that blocks the push comes back as `blocked` (with the binary paths), not as a bare refusal.
         const plan = await planPush(forWorkspace(call.workspaceId), { ...pushInput(call), reportBlocked: true });
         return {
-          ...(plan.blocked === undefined ? {} : { blocked: { reason: plan.blocked.reason, binaryPaths: [...plan.blocked.unlistedBinaryPaths] } }),
+          ...(plan.blocked === undefined ? {} : { blocked: { reason: plan.blocked.reason, binaryFiles: plan.blocked.unlistedBinaryRows.map((r) => ({ id: r.id, path: r.path, lossy: r.lossy })) } }),
           tip: plan.tip,
           digest: plan.digest,
           requiresConfirmation: plan.requiresConfirmation,

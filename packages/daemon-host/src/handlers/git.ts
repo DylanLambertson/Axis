@@ -26,7 +26,7 @@ function createPushPlanHandler(deps: GitHandlerDeps): Handler {
     requireUser(context);
     const request = gitPushPlanRequestSchema.safeParse(payload);
     if (!request.success) throw gitFailure("E_INVALID_ARGUMENT");
-    const { workspaceId, remote, allowedBinaryPaths } = request.data;
+    const { workspaceId, remote, allowedBinaryPaths, allowedBinaryIds } = request.data;
     try {
       const first = workspaceFor(deps, workspaceId, "pushPlan", true);
       return await deps.mutex.run(
@@ -42,6 +42,7 @@ function createPushPlanHandler(deps: GitHandlerDeps): Handler {
             branch: ws.branch,
             baseSha: await scanBase(deps, ws, workspaceId, worktree, target),
             ...(allowedBinaryPaths === undefined ? {} : { allowedBinaryPaths }),
+            ...(allowedBinaryIds === undefined ? {} : { allowedBinaryIds }),
           });
           // A plan the contract cannot carry is not shown: fail closed rather than cut it.
           const reply = pushPlanReply(facts, remote, ws.branch);

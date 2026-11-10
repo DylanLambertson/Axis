@@ -5,14 +5,17 @@ import { randomUUID } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { test, type TestContext } from "node:test";
 import { DaemonError } from "@axis/daemon";
-import { GIT_PUSH_BLOCKS, MAX_BLOCKED_BINARY_PATHS, gitPushPlanResponseSchema } from "@axis/protocol";
+import { GIT_PUSH_BLOCKS, MAX_BLOCKED_BINARY_FILES, gitPushPlanResponseSchema } from "@axis/protocol";
+import { binaryRow } from "@axis/git-ops";
 import { pushPlanReply } from "../src/index.js";
 import { gitRig, gitUnavailable, type GitClient, type GitRig, type GitRigOptions } from "./git-rig.js";
 
 const SKIP = gitUnavailable();
 /** Assembled at runtime so no credential-shaped literal sits in this file. */
 const CANARY = ["AKIA", "ABCDEFGHIJKLMNOP"].join("");
-type Blocked = { reason: string; binaryPaths: string[]; binaryPathsTruncated: boolean };
+type BinaryFile = { id: string; path: string; lossy: boolean };
+type Blocked = { reason: string; binaryFiles: BinaryFile[]; binaryFilesTruncated: boolean };
+const pathsOf = (b: Blocked | undefined): string[] => (b?.binaryFiles ?? []).map((f) => f.path);
 type Plan = { tip: string; digest: string; requiresConfirmation: boolean; reasons: string[]; findings: Array<Record<string, unknown>>; blocked?: Blocked };
 
 async function setup(t: TestContext, options: GitRigOptions = {}): Promise<{ r: GitRig; c: GitClient }> {
@@ -59,7 +62,7 @@ test("refuse mode, a finding: pushPlan is blocked secrets_found with the rule an
   const res = await plan(c, r);
   noLeak(r, res);
   const p = res.result as unknown as Plan;
-  assert.deepEqual(p.blocked, { reason: "secrets_found", binaryPaths: [], binaryPathsTruncated: false });
+  assert.deepEqual(p.blocked, { reason: "secrets_found", binaryFiles: [], binaryFilesTruncated: false });
   assert.deepEqual(p.findings.map((f) => [f["rule"], f["path"], f["commit"]]), [["aws-access-key-id", "cfg.txt", tip]]);
   assert.deepEqual([p.requiresConfirmation, p.reasons], [false, []]);
   await assertRefused(r, c, p, "secrets_found");
@@ -80,10 +83,10 @@ test("refuse mode, a binary file: blocked binary_unscanned listing the path; all
   const { r, c } = await setup(t, { scanMode: "refuse" });
   commitFile(r, "img/logo.bin", Buffer.from([0x89, 0x50, 0, 1, 2, 0, 3]));
   const p = await planOf(c, r);
-  assert.deepEqual(p.blocked, { reason: "binary_unscanned", binaryPaths: ["img/logo.bin"], binaryPathsTruncated: false });
+  assert.deepEqual(p.blocked, { reason: "binary_unscanned", binaryFiles: [{ id: binaryRow(Buffer.from("img/logo.bin")).id, path: "img/logo.bin", lossy: false }], binaryFilesTruncated: false });
   await assertRefused(r, c, p, "binary_unscanned");
   const other = await planOf(c, r, { allowedBinaryPaths: ["img/other.bin"] });
-  assert.deepEqual(other.blocked?.binaryPaths, ["img/logo.bin"], "an unrelated path allows nothing");
+  assert.deepEqual(pathsOf(other.blocked), ["img/logo.bin"], "an unrelated path allows nothing");
   await assertRefused(r, c, other, "binary_unscanned", { allowedBinaryPaths: ["img/other.bin"] });
   // The allowed plan is a plan like any other: no block, and the tier 4 flow is reached (a challenge, not a refusal).
   const ok = await planOf(c, r, { allowedBinaryPaths: ["img/logo.bin"] });
@@ -94,21 +97,25 @@ test("refuse mode, a binary file: blocked binary_unscanned listing the path; all
 
 test("blocked binary paths are escaped, bounded and the truncation is said; a secret and a binary file together report the first reason and both lists", { skip: SKIP ?? false }, async (t) => {
   const { r, c } = await setup(t, { scanMode: "refuse" });
-  for (let i = 0; i < MAX_BLOCKED_BINARY_PATHS + 2; i++) r.write(`bin/${String(i).padStart(3, "0")}.bin`, Buffer.from([0, i]));
+  for (let i = 0; i < MAX_BLOCKED_BINARY_FILES + 2; i++) r.write(`bin/${String(i).padStart(3, "0")}.bin`, Buffer.from([0, i]));
   r.write("odd‮name.bin", Buffer.from([0, 9]));
   r.write("cfg.txt", `aws_id = ${CANARY}\n`);
   r.git("add", "-A");
   r.git("commit", "-q", "-m", "many");
   const p = await planOf(c, r);
   assert.equal(p.blocked?.reason, "secrets_found", "findings come before binary files");
-  assert.equal(p.blocked?.binaryPaths.length, MAX_BLOCKED_BINARY_PATHS);
-  assert.equal(p.blocked?.binaryPathsTruncated, true);
-  assert.ok(p.blocked?.binaryPaths.every((x) => !/[‮\u0000-\u001f]/.test(x)));
+  assert.equal(p.blocked?.binaryFiles.length, MAX_BLOCKED_BINARY_FILES);
+  assert.equal(p.blocked?.binaryFilesTruncated, true);
+  assert.ok(pathsOf(p.blocked).every((x) => !/[‮\u0000-\u001f]/.test(x)));
   assert.ok(p.findings.some((f) => f["path"] === "cfg.txt"));
   noLeak(r, p);
-  const odd = await planOf(c, r, { allowedBinaryPaths: Array.from({ length: MAX_BLOCKED_BINARY_PATHS }, (_, i) => `bin/${String(i).padStart(3, "0")}.bin`) });
-  assert.ok(odd.blocked !== undefined && odd.blocked.binaryPaths.length >= 1);
-  assert.ok(odd.blocked.binaryPaths.some((x) => x.includes("odd\\u{202e}name.bin")), JSON.stringify(odd.blocked.binaryPaths));
+  // At most 50 paths fit allowedBinaryPaths, but every listed file can be allowed by id.
+  const allIds = p.blocked.binaryFiles.map((f) => f.id);
+  const rest = await planOf(c, r, { allowedBinaryIds: allIds });
+  assert.equal(rest.blocked?.binaryFiles.length, 3, "502 plain files and the odd name, 500 listed and allowed by id: three remain");
+  assert.equal(rest.blocked?.binaryFilesTruncated, false);
+  assert.ok(pathsOf(rest.blocked).some((x) => x.includes("odd\\u{202e}name.bin")), JSON.stringify(pathsOf(rest.blocked)));
+  assert.ok(rest.blocked?.binaryFiles.every((f) => !allIds.includes(f.id)));
 });
 
 test("S1: three different files whose names decode to one displayed name are never waived by allowing that name (the real U+FFFD name included)", { skip: SKIP ?? false }, async (t) => {
@@ -121,12 +128,14 @@ test("S1: three different files whose names decode to one displayed name are nev
   const shown = "alias\ufffd.bin";
   const p = await planOf(c, r);
   assert.equal(p.blocked?.reason, "binary_unscanned");
-  assert.deepEqual(p.blocked?.binaryPaths, [shown]);
+  assert.deepEqual(pathsOf(p.blocked), [shown, shown, shown]);
+  assert.equal(new Set(p.blocked?.binaryFiles.map((f) => f.id)).size, 3, "three files, three ids");
+  assert.ok(p.blocked?.binaryFiles.every((f) => f.lossy));
   // Allowing the displayed name waives none of them: still blocked, push refused, nothing sent.
   const allowed = { allowedBinaryPaths: [shown] };
   const q = await planOf(c, r, allowed);
   assert.equal(q.blocked?.reason, "binary_unscanned", "the lossy name cannot be allowed");
-  assert.deepEqual(q.blocked?.binaryPaths, [shown]);
+  assert.deepEqual(pathsOf(q.blocked), [shown, shown, shown]);
   await assertRefused(r, c, q, "binary_unscanned", allowed);
 });
 
@@ -180,21 +189,27 @@ test("git_drift: a drifted git configuration is E_CONFLICT with the closed reaso
 
 test("pushPlanReply: a blocked plan keeps only the closed reason, display-safe paths and at most the cap; anything else fails closed", () => {
   const facts = { tip: "a".repeat(40), digest: "b".repeat(64), requiresConfirmation: false, reasons: [], findings: [] };
-  const paths = Array.from({ length: MAX_BLOCKED_BINARY_PATHS + 5 }, (_, i) => `p${i}‮.bin`);
-  const reply = pushPlanReply({ ...facts, blocked: { reason: "binary_unscanned", binaryPaths: paths } }, "origin", "axis/feat");
+  const rowOf = (path: string, i = 0) => ({ id: binaryRow(Buffer.from(`${i}:${path}`)).id, path, lossy: false });
+  const paths = Array.from({ length: MAX_BLOCKED_BINARY_FILES + 5 }, (_, i) => rowOf(`p${i}‮.bin`, i));
+  const reply = pushPlanReply({ ...facts, blocked: { reason: "binary_unscanned", binaryFiles: paths } }, "origin", "axis/feat");
   assert.ok(reply?.blocked !== undefined);
-  assert.equal(reply.blocked.binaryPaths.length, MAX_BLOCKED_BINARY_PATHS);
-  assert.equal(reply.blocked.binaryPathsTruncated, true);
-  assert.equal(reply.blocked.binaryPaths[0], "p0\\u{202e}.bin");
+  assert.equal(reply.blocked.binaryFiles.length, MAX_BLOCKED_BINARY_FILES);
+  assert.equal(reply.blocked.binaryFilesTruncated, true);
+  assert.deepEqual(reply.blocked.binaryFiles[0], { id: paths[0]?.id, path: "p0\\u{202e}.bin", lossy: false }, "the identity passes through; only the display text is escaped");
   assert.equal(gitPushPlanResponseSchema.safeParse(reply).success, true);
-  for (const reason of GIT_PUSH_BLOCKS) assert.equal(pushPlanReply({ ...facts, blocked: { reason, binaryPaths: [] } }, "origin", "axis/feat")?.blocked?.reason, reason);
-  for (const reason of ["plan_changed", "git_drift", "", "secrets", "/home/me/secret"]) assert.equal(pushPlanReply({ ...facts, blocked: { reason, binaryPaths: [] } }, "origin", "axis/feat"), null, reason);
+  for (const reason of GIT_PUSH_BLOCKS) assert.equal(pushPlanReply({ ...facts, blocked: { reason, binaryFiles: [] } }, "origin", "axis/feat")?.blocked?.reason, reason);
+  for (const reason of ["plan_changed", "git_drift", "", "secrets", "/home/me/secret"]) assert.equal(pushPlanReply({ ...facts, blocked: { reason, binaryFiles: [] } }, "origin", "axis/feat"), null, reason);
   // A block that also asks for confirmation is not a plan the contract carries.
-  assert.equal(pushPlanReply({ ...facts, requiresConfirmation: true, reasons: ["r"], blocked: { reason: "secrets_found", binaryPaths: [] } }, "origin", "axis/feat"), null);
+  assert.equal(pushPlanReply({ ...facts, requiresConfirmation: true, reasons: ["r"], blocked: { reason: "secrets_found", binaryFiles: [] } }, "origin", "axis/feat"), null);
   assert.equal(pushPlanReply(facts, "origin", "axis/feat")?.blocked, undefined);
   // Display text is not an identity: a long path, a backslash and an ellipsis are cut or escaped, so they differ from the path.
   const odd = ["d/".repeat(200) + "x.bin", "a\\b.bin", "a\u2026b.bin"];
-  const shown = pushPlanReply({ ...facts, blocked: { reason: "binary_unscanned", binaryPaths: odd } }, "origin", "axis/feat")?.blocked?.binaryPaths;
+  const shown = pushPlanReply({ ...facts, blocked: { reason: "binary_unscanned", binaryFiles: odd.map((p, i) => rowOf(p, i)) } }, "origin", "axis/feat")?.blocked?.binaryFiles;
   assert.equal(shown?.length, 3);
-  odd.forEach((p, i) => assert.notEqual(shown?.[i], p, p.slice(0, 12)));
+  odd.forEach((p, i) => assert.notEqual(shown?.[i]?.path, p, p.slice(0, 12)));
+  // ... and the identity is what recovers every one of them: the ids are the ones the host derived, whatever was shown.
+  odd.forEach((p, i) => assert.equal(shown?.[i]?.id, rowOf(p, i).id));
+  // A row the contract cannot carry (an id that is not an id, a repeated id) fails the whole reply.
+  assert.equal(pushPlanReply({ ...facts, blocked: { reason: "binary_unscanned", binaryFiles: [{ id: "x", path: "a", lossy: false }] } }, "origin", "axis/feat"), null);
+  assert.equal(pushPlanReply({ ...facts, blocked: { reason: "binary_unscanned", binaryFiles: [rowOf("a"), rowOf("a")] } }, "origin", "axis/feat"), null);
 });
