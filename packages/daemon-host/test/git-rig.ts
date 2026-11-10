@@ -63,6 +63,12 @@ export interface GitRigOptions {
   runsActive?: boolean;
   /** Make `journal.recordPushed` throw. */
   recordPushedFails?: boolean;
+  /** The table of push scan bases (default: a new in-memory one). */
+  bases?: PushedBases;
+  /** Extra variables of the `pty` git environment. */
+  ptyEnv?: Record<string, string>;
+  /** Extra variables of the `daemon` git environment. */
+  daemonEnv?: Record<string, string>;
   /** The pty git context: a node runner (default), none, or one the test builds over the rig's home and git (the real pty process). */
   ptyRunner?: "node" | "none" | ((env: { home: string; gitPath: string; path: string }) => GitRunner);
   /** The drift check of the git port (default: no drift). */
@@ -104,7 +110,7 @@ export async function gitRig(options: GitRigOptions = {}) {
   const ptyRunner: GitRunner = { run: (req) => (ptyCalls.push(req.context), inner.run(req)) };
   const gitPort = createGitPort({
     gitPath,
-    env: { daemon: { PATH: PATHS, HOME: home }, pty: { PATH: PATHS, HOME: home } },
+    env: { daemon: { PATH: PATHS, HOME: home, ...options.daemonEnv }, pty: { PATH: PATHS, HOME: home, ...options.ptyEnv } },
     platform: process.platform,
     runHooks: false,
     scanner,
@@ -214,7 +220,7 @@ export async function gitRig(options: GitRigOptions = {}) {
     needsAttention: () => false,
     anchors: guard,
     runs,
-    bases: new PushedBases(),
+    bases: options.bases ?? new PushedBases(),
     onInternalError: (e) => void gate.internal.push(e),
     onBookkeepingError: (e) => void gate.bookkeeping.push(e),
   };

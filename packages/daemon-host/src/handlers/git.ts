@@ -3,7 +3,7 @@ import type { Handler, HandlerContext } from "@axis/daemon";
 import { GIT_CONTRACT, GIT_VERSION, gitCompareUrlRequestSchema, gitCompareUrlResponseSchema, gitPushPlanRequestSchema, type GitMethod } from "@axis/protocol";
 import type { HandlerRegistrar } from "./anchor-guard.js";
 import { createGitCommitHandler } from "./git-commit.js";
-import { locate, mapError, requireUser, workspaceFor, type GitHandlerDeps } from "./git-common.js";
+import { locate, mapError, requireUser, scanBase, workspaceFor, type GitHandlerDeps } from "./git-common.js";
 import { gitFailure } from "./git-errors.js";
 import { createGitPushContentHook, createGitPushHandler } from "./git-push.js";
 import { pushPlanReply } from "./git-wire.js";
@@ -40,7 +40,7 @@ function createPushPlanHandler(deps: GitHandlerDeps): Handler {
             worktree,
             remote,
             branch: ws.branch,
-            baseSha: deps.bases.baseFor(workspaceId, target, ws.baseSha),
+            baseSha: await scanBase(deps, ws, workspaceId, worktree, target),
             ...(allowedBinaryPaths === undefined ? {} : { allowedBinaryPaths }),
           });
           // A plan the contract cannot carry is not shown: fail closed rather than cut it.
