@@ -149,9 +149,10 @@ export function createWorktreesService(deps: WorktreesServiceDeps): WorktreesRun
               if (made.baseSha !== baseSha || made.branch !== branch || made.id !== id) throw worktreeFailure("E_CONFLICT", "base_moved");
               return deps.transact(() => {
                 journal.setWorktreePath(id, made.path, actor);
-                // Recorded here, by the daemon, before the workspace is READY: `merged` is later judged against this alone.
+                // Recorded here, by the daemon, before the workspace is READY: `merged` is later judged against this alone. The
+                // manager keeps a base branch only when its exact ref held `baseSha` (checked above), so that is its tip (FU-WT-BASE2).
                 const recorded = made.baseBranch !== null && baseBranchSchema.safeParse(made.baseBranch).success ? made.baseBranch : null;
-                if (recorded !== null) journal.recordBaseBranch(id, recorded, actor);
+                if (recorded !== null) journal.recordBaseBranch(id, recorded, baseSha, actor);
                 const ws = journal.transitionWorkspace(id, "READY", { actor, expectedFrom: "CREATING" });
                 deps.audit.append({
                   actor, action: "worktree.create", target: `workspace:${id}`, outcome: "success",
@@ -204,7 +205,7 @@ export function createWorktreesService(deps: WorktreesServiceDeps): WorktreesRun
               if (recovering) {
                 outcome = await verifyFinalised(manager, project.path, ws, live, ref.workTree, req.outcome);
               } else {
-                const done = await manager.finalise({ path: ref.workTree, expectedWorktree: { path: ref.workTree, id: ws.id }, outcome: req.outcome, discardConfirmation: ctx.confirmation, trustedBaseBranch: ws.baseBranch });
+                const done = await manager.finalise({ path: ref.workTree, expectedWorktree: { path: ref.workTree, id: ws.id }, outcome: req.outcome, discardConfirmation: ctx.confirmation, trustedBaseBranch: ws.baseBranch, trustedBaseTip: ws.baseTip });
                 backupRef = done.backupRef;
                 skippedLarge = done.skippedLarge.length;
               }
