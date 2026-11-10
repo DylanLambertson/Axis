@@ -6,6 +6,9 @@ export const SHA1 = "a".repeat(40);
 export const SHA2 = "b".repeat(40);
 export const SHA3 = "c".repeat(64);
 export const DIGEST = "d".repeat(64);
+/** Opaque binary file ids, as the host derives them: `bin_` and 32 hex digits. */
+export const BIN1 = `bin_${"1".repeat(32)}`;
+export const BIN2 = `bin_${"2".repeat(32)}`;
 export const FILE1 = "1".repeat(64);
 export const FILE2 = "2".repeat(64);
 
@@ -67,12 +70,15 @@ const NULLABLE = /^null at (branch|treeHash|files\.\d+\.contentId)$/;
 export const P1B_SAMPLES: readonly Sample[] = [
   { contract: "axis.git", method: "pushPlan", side: "request", name: "minimal", value: { workspaceId: "ws-1", remote: "origin" } },
   { contract: "axis.git", method: "pushPlan", side: "request", name: "with binary paths", value: { workspaceId: "ws-1", remote: "origin", allowedBinaryPaths: ["assets/logo.png"] } },
+  { contract: "axis.git", method: "pushPlan", side: "request", name: "with binary ids", value: { workspaceId: "ws-1", remote: "origin", allowedBinaryPaths: ["assets/logo.png"], allowedBinaryIds: [BIN1] } },
   { contract: "axis.git", method: "pushPlan", side: "response", name: "findings by rule and path", value: plan },
+  { contract: "axis.git", method: "pushPlan", side: "response", name: "blocked with binary files by identity", value: { ...plan, requiresConfirmation: false, reasons: [], blocked: { reason: "binary_unscanned", binaryFiles: [{ id: BIN1, path: "assets/logo.png", lossy: false }, { id: BIN2, path: "alias\ufffd.bin", lossy: true }], binaryFilesTruncated: false } } },
   { contract: "axis.git", method: "pushPlan", side: "response", name: "clean plan", value: { ...plan, requiresConfirmation: false, reasons: [], findings: [] } },
   { contract: "axis.git", method: "commit", side: "request", name: "minimal", value: { workspaceId: "ws-1", reviewedTreeHash: SHA2, expectedParent: SHA1, expectedBranch: "axis/fix-it", message: "fix: the thing\n\nBody." } },
   { contract: "axis.git", method: "commit", side: "request", name: "sha-256 ids and author", value: { workspaceId: "ws-1", reviewedTreeHash: SHA3, expectedParent: SHA3, expectedBranch: "axis/a", message: "m", author: { name: "Dylan Lambertson", email: "me@example.com" } } },
   { contract: "axis.git", method: "commit", side: "response", name: "commit", value: { commit: SHA1, tree: SHA2 } },
   { contract: "axis.git", method: "push", side: "request", name: "first request", value: { workspaceId: "ws-1", remote: "origin", confirmedPlan: { tip: SHA1, digest: DIGEST } } },
+  { contract: "axis.git", method: "push", side: "request", name: "with binary ids", value: { workspaceId: "ws-1", remote: "origin", confirmedPlan: { tip: SHA1, digest: DIGEST }, allowedBinaryIds: [BIN1, BIN2] } },
   { contract: "axis.git", method: "push", side: "request", name: "retry with approval", value: { workspaceId: "ws-1", remote: "origin", confirmedPlan: { tip: SHA1, digest: DIGEST }, allowedBinaryPaths: ["a.png"], approval: { challengeId: "A".repeat(43), originalRequestId: "req-1" } } },
   { contract: "axis.git", method: "push", side: "response", name: "pushed", value: { remote: "origin", branch: "axis/fix-it", tip: SHA1 } },
   { contract: "axis.git", method: "compareUrl", side: "request", name: "minimal", value: { workspaceId: "ws-1", remote: "origin" } },
