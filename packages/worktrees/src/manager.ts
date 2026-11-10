@@ -125,10 +125,11 @@ export class WorktreeManager {
    * `trustedBaseBranch` is the full `refs/heads/...` name a trusted record holds (the daemon passes the journal's). When the
    * key is present it alone decides what `merged` is checked against and `null` refuses; the workspace's own metadata file
    * lives in the git directory a finished run can write, so it is used only when the caller has no trusted record.
+   * `trustedBaseTip` is the commit that record says the branch held at create (FU-WT-BASE2); absent or null refuses.
    */
   finalise(input: {
     path: string; expectedWorktree: ExpectedWorktree; outcome: FinaliseOutcome; discardConfirmation?: DiscardConfirmation;
-    trustedBaseBranch?: string | null;
+    trustedBaseBranch?: string | null; trustedBaseTip?: string | null;
   }): Promise<FinaliseResult> {
     return this.boundary(async () => {
       if (!['merged', 'archived', 'abandoned'].includes(input.outcome)) throw invalid('invalid outcome');
@@ -137,11 +138,12 @@ export class WorktreeManager {
         await this.guardExecutionDrift(repo, workTree);
         const head = await this.git.text(['rev-parse', '--verify', '--end-of-options', 'HEAD'], { cwd: workTree });
         if (input.outcome === 'merged') {
-          const target = 'trustedBaseBranch' in input ? input.trustedBaseBranch : meta.baseBranch;
-          const verdict = await verifyMerged(
-            { cwd: workTree, run: (args, extraEnv) => this.git.run(args, { cwd: workTree, allowFailure: true, extraEnv }) }, head, target);
-          if (verdict === 'no-base-branch') {
-            throw new WorktreeError('E_CONFLICT', 'base branch is unavailable, cannot verify the merge', { reason: 'no-base-branch' });
+          const trusted = 'trustedBaseBranch' in input;
+          const target = trusted ? input.trustedBaseBranch : meta.baseBranch;
+          const verdict = await verifyMerged({ cwd: workTree, run: (args, extraEnv) => this.git.run(args, { cwd: workTree, allowFailure: true, extraEnv }) },
+            head, target, trusted ? input.trustedBaseTip : meta.baseSha);
+          if (verdict === 'no-base-branch' || verdict === 'base-rewritten') {
+            throw new WorktreeError('E_CONFLICT', 'base branch is unavailable or rewritten, cannot verify the merge', { reason: verdict });
           }
           if (verdict !== 'merged') {
             throw new WorktreeError('E_CONFLICT', 'workspace tip is not reachable from the base branch', { reason: 'not-merged', baseBranch: target });

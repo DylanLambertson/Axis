@@ -13,7 +13,7 @@ import type { ManagerShape, ManagerStatus } from "./shapes.js";
  *  - git configuration did not drift;
  *  - `refs/axis/archive/<id>` resolves, and to exactly the worktree's HEAD;
  *  - the outcome is not taken from the caller or the record: `merged` is accepted only when git itself finds HEAD in the
- *    base branch the journal recorded at create (never the shared `HEAD` or the record in the git directory), and the two outcomes that claim no merge (`archived`, `abandoned`) cannot be told apart by git, so the
+ *    base branch the journal recorded at create, still descending from the tip recorded with it (never the shared `HEAD` or the record in the git directory), and the two outcomes that claim no merge (`archived`, `abandoned`) cannot be told apart by git, so the
  *    caller's choice of one of those is recorded.
  *
  * Returns the outcome to record.
@@ -32,8 +32,10 @@ export async function verifyFinalised(
   if (archived === undefined) throw worktreeFailure("E_CONFLICT", "no_archive");
   if (archived !== live.head) throw worktreeFailure("E_CONFLICT", "unverified");
   if (requested === "merged") {
-    // Judged against the branch the journal recorded at create; none recorded (an older workspace) is not attestable.
-    if (ws.baseBranch === null || !(await manager.isMerged(repoPath, live.head, ws.baseBranch))) throw worktreeFailure("E_CONFLICT", "not_merged");
+    // Judged against the branch and tip the journal recorded at create; none recorded (an older workspace) is not attestable.
+    if (ws.baseBranch === null || ws.baseTip === null || !(await manager.isMerged(repoPath, live.head, ws.baseBranch, ws.baseTip))) {
+      throw worktreeFailure("E_CONFLICT", "not_merged");
+    }
     return "merged";
   }
   return requested;

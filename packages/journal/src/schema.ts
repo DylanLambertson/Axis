@@ -211,6 +211,25 @@ export const JOURNAL_MIGRATIONS: readonly Migration[] = [
         BEGIN SELECT RAISE(ABORT, 'base_branch is recorded once'); END;
     `,
   },
+  {
+    // The commit the base branch pointed at when the workspace was created (ticket FU-WT-BASE2). `merged` is refused
+    // unless the base branch still descends from it, so a base reset to an unrelated commit, rewritten history or a
+    // deleted base cannot attest a merge. Recorded once, together with `base_branch` in one UPDATE (never added later to a
+    // row whose base branch is already recorded, so a version 5 row stays not attestable); a tip needs a base branch and,
+    // from this version on, a base branch needs a tip. NULL for every workspace made before this version. Additive.
+    version: 6,
+    sql: `
+      ALTER TABLE agent_workspaces ADD COLUMN base_tip TEXT CHECK (base_tip IS NULL OR (
+        length(base_tip) IN (40, 64) AND base_tip NOT GLOB '*[^0-9a-f]*'));
+      CREATE TRIGGER agent_workspaces_base_tip_once BEFORE UPDATE OF base_tip ON agent_workspaces
+        WHEN NEW.base_tip IS NOT OLD.base_tip
+          AND (OLD.base_tip IS NOT NULL OR OLD.base_branch IS NOT NULL OR NEW.base_branch IS NULL)
+        BEGIN SELECT RAISE(ABORT, 'base_tip is recorded once, with the base branch'); END;
+      CREATE TRIGGER agent_workspaces_base_branch_with_tip BEFORE UPDATE OF base_branch ON agent_workspaces
+        WHEN OLD.base_branch IS NULL AND NEW.base_branch IS NOT NULL AND NEW.base_tip IS NULL
+        BEGIN SELECT RAISE(ABORT, 'base_branch is recorded with its tip'); END;
+    `,
+  },
 ];
 
 export const JOURNAL_SCHEMA_VERSION = JOURNAL_MIGRATIONS.length;

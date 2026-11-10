@@ -103,6 +103,12 @@ export async function createWorkspace(host: CreateHost, repo: RepoLocation, p: C
     const full = p.baseRef.startsWith('refs/heads/') ? p.baseRef : `refs/heads/${p.baseRef}`;
     baseBranch = (await git.ok(['show-ref', '--verify', '--quiet', full], { cwd })) ? full : null;
   }
+  // FU-WT-BASE2: the base sha is also the base branch's recorded tip, so the branch is kept only when its exact ref holds
+  // that very commit now (not a moved branch, nor a tag or other ref the base name resolved to first); else not attestable.
+  if (baseBranch !== null) {
+    const tip = await git.run(['show-ref', '--verify', baseBranch], { cwd, allowFailure: true });
+    if (tip.code !== 0 || tip.stdout.trim() !== `${baseSha} ${baseBranch}`) baseBranch = null;
+  }
 
   const scratchDir = await privateDir(path.join(root, '.axis-tmp'));
   let runBaseSha: string | null = null;
