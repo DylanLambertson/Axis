@@ -3,9 +3,10 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { CancellationToken } from '../../../../base/common/cancellation.js';
+import { AxisApprovalDecision, IAxisApprovalCard, IAxisApprovalResolveReply } from '../../approvals/common/axisApprovals.js';
 import { AXIS_ID_PATTERN, IAxisCliRun, IAxisProjectInfo, IAxisWorktreeInfo } from '../../workspaces/common/axisWorkspaceData.js';
 import { AxisDaemonCallError, IAxisDaemonClient } from './axisDaemonClient.js';
-import { MAX_STATUS_IDS, readCliRuns, readPendingCount, readProjects, readWorktrees } from './axisDaemonReplies.js';
+import { MAX_STATUS_IDS, readCliRuns, readPendingChallenges, readProjects, readResolveReply, readWorktrees } from './axisDaemonReplies.js';
 
 /**
  * The read calls the dashboard makes (docs/design/axis-shell-a2.md). The only
@@ -41,9 +42,17 @@ export class AxisDaemonApi {
 		return readCliRuns(await this.client.request('axis.cli-runs', 'list', { limit: 200 }, this.token));
 	}
 
-	/** The number of open challenges in this window. */
-	async pendingApprovals(): Promise<number> {
-		return readPendingCount(await this.client.request('axis.approvals', 'pending', {}, this.token));
+	/** The open challenges of this window. */
+	async pendingApprovals(): Promise<IAxisApprovalCard[]> {
+		return readPendingChallenges(await this.client.request('axis.approvals', 'pending', {}, this.token));
+	}
+
+	/**
+	 * The one write the shell makes: the user's answer to a challenge. The request carries the challenge id, the
+	 * decision and the digest the user was shown, nothing else (identity comes from the port, never from here).
+	 */
+	async resolveApproval(challengeId: string, decision: AxisApprovalDecision, digest: string): Promise<IAxisApprovalResolveReply> {
+		return readResolveReply(await this.client.request('axis.approvals', 'resolve', { challengeId, decision, digest }, this.token));
 	}
 }
 

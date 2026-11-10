@@ -10,7 +10,8 @@ import { withDestinationEvents, type RequestDestination } from "./destination.js
  * provider, which asks the run's budget BEFORE every request (PRV-6): a refusal ends the run before the request is sent,
  * with the dimension as the reason. Every `tool_use` block goes through the run's tools (the broker, with its policy and
  * approvals), one at a time, and its result goes back to the model. The loop never sees a path, a credential or the
- * broker itself, and nothing it emits is model text that was not escaped by the activity store.
+ * broker itself, and nothing it emits is model text that was not escaped by the activity store. Before each turn after
+ * the first, the tools' drift notice (policies section 3.4, C2) is added after the tool results the model gets next.
  */
 
 export type LoopEnd =
@@ -222,7 +223,10 @@ export async function runComposerLoop(input: LoopInput): Promise<LoopEnd> {
       results.push({ type: "tool_result", toolUseId: call.id, content: outcome.content, ...(outcome.ok ? {} : { isError: true }) });
     }
     if (signal.aborted) return { state: "CANCELLED", reason: "USER_CANCELLED" };
-    messages.push({ role: "user", content: results });
+    // Drift before the next turn: what changed outside the run since this one, as context next to the tool results.
+    const notice = await tools?.drift?.(signal).catch(() => undefined);
+    if (signal.aborted) return { state: "CANCELLED", reason: "USER_CANCELLED" };
+    messages.push({ role: "user", content: notice === undefined ? results : [...results, { type: "text", text: notice }] });
   }
   return { state: "FAILED", reason: "TURN_LIMIT" };
 }

@@ -52,3 +52,13 @@ export function runWire(extra: Record<string, unknown> = {}): Record<string, unk
 		lastOutputAt: 1_000, outputChars: 10, droppedChars: 0, snapshotAfter: 'pending', ...extra,
 	};
 }
+
+export const CHALLENGE_ID = 'chal_AAAAAAAAAAAAAAAAAAAAAA';
+export const DIGEST = 'ab'.repeat(32);
+
+export function challengeWire(extra: Record<string, unknown> = {}): Record<string, unknown> {
+	return {
+		challengeId: CHALLENGE_ID, digest: DIGEST, contract: 'axis.worktrees', method: 'remove', tier: 3,
+		targetSummary: 'Remove the worktree feat-x', nativeConfirmationRequired: false, expiresAt: 2_000_000, ...extra,
+	};
+}
