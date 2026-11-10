@@ -1,21 +1,13 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 // Whether the attribute files outside the tracked tree can be trusted to leave a content filter visible (design §2).
 // `check-attr` reads them all, so a rule there can make an encrypted blob look plain, and none of them is in the base tree.
+// They are read ONCE, into the private git directory of @axis/git-ops' `attributeReadGit`, and judged on those exact bytes:
+// every `check-attr` read runs there, so a file written after the snapshot changes nothing (REV2-FIX, RR-13).
 import { isAbsolute as posixAbs, join as posixJoin } from "node:path/posix";
 import { isAbsolute as winAbs, join as winJoin } from "node:path/win32";
-import type { WorktreeRef } from "@axis/git-ops";
-import { OBJECT_ID, gitPaths, type ReviewGit } from "./gitcall.js";
-import type { ReviewDeps, ReviewLimits } from "./types.js";
-
-/** The object id and content of a file read through git (the package has no file system); undefined when it could not be read whole. */
-async function readThroughGit(git: ReviewGit, path: string, limits: ReviewLimits): Promise<{ readonly oid: string; readonly text: string } | undefined> {
-  const h = await git(["hash-object", "-w", "--no-filters", "--", path]);
-  const oid = h.stdout.trim();
-  if (h.code !== 0 || !OBJECT_ID.test(oid)) return undefined;
-  const body = await git(["cat-file", "blob", oid]);
-  if (body.code !== 0 || body.truncated === true || body.stdout.length > limits.maxPreviewBytes) return undefined;
-  return { oid, text: body.stdout };
-}
+import { GitOpsError, attributeReadGit, type AttributeRead, type WorktreeRef } from "@axis/git-ops";
+import type { ReviewGit } from "./gitcall.js";
+import type { ReviewDeps } from "./types.js";
 
 /**
  * The pattern of an attribute line the way git reads it (attr.c `parse_attr_line`): leading white space is skipped; a blank line
@@ -50,66 +42,63 @@ function patterns(text: string): { readonly pattern: string | undefined; readonl
   return text.split(/\r?\n/).map(attributePattern).filter((p) => p.pattern !== undefined || p.bad);
 }
 
-/** The user-level attribute files git reads: `core.attributesFile` (or its default under XDG/HOME) and the system file when git can name it. */
-async function outsideFiles(deps: ReviewDeps, git: ReviewGit, w: WorktreeRef): Promise<string[]> {
+/** The user-level attribute file git reads (`core.attributesFile`, or its default under XDG/HOME) and the system file when git can name it. */
+async function outsideFiles(deps: ReviewDeps, git: ReviewGit, w: WorktreeRef): Promise<{ user?: string; system?: string }> {
   const win = (deps.git.platform ?? process.platform) === "win32";
   const join = win ? winJoin : posixJoin;
   const abs = win ? winAbs : posixAbs;
   const env = deps.git.env.daemon;
-  const found = new Set<string>();
+  let user: string | undefined;
   // Like git: `core.attributesFile` when set, otherwise the default under XDG_CONFIG_HOME or HOME (never both).
   const cfg = await git(["config", "--type=path", "--get", "core.attributesFile"]);
   const p = cfg.code === 0 ? cfg.stdout.trim().replace(/\n[\s\S]*$/, "") : "";
-  if (p !== "") found.add(abs(p) ? p : join(w.workTree, p));
+  if (p !== "") user = abs(p) ? p : join(w.workTree, p);
   else {
     const xdg = env["XDG_CONFIG_HOME"];
     const home = env["HOME"] ?? env["USERPROFILE"];
-    if (xdg !== undefined && xdg !== "") found.add(join(xdg, "git", "attributes"));
-    else if (home !== undefined && home !== "") found.add(join(home, ".config", "git", "attributes"));
+    if (xdg !== undefined && xdg !== "") user = join(xdg, "git", "attributes");
+    else if (home !== undefined && home !== "") user = join(home, ".config", "git", "attributes");
   }
   const sys = await git(["var", "GIT_ATTR_SYSTEM"]);
-  if (sys.code === 0 && sys.stdout.trim() !== "") found.add(sys.stdout.trim());
-  return [...found];
+  const system = sys.code === 0 ? sys.stdout.trim() : "";
+  return { ...(user === undefined ? {} : { user }), ...(system !== "" && abs(system) ? { system } : {}) };
 }
 
-export interface AttributeSources {
-  /** True when a path should not be offered because an attribute source outside the tracked tree cannot be trusted. */
-  readonly untrusted: boolean;
-  /** The object id of every source that exists (`absent` for one that does not), so two reads can be compared. */
-  readonly fingerprint: string;
-}
+/** `read` is open (call its `dispose()`) exactly when the snapshot is trusted; `untrusted` paths are never offered. */
+export type AttributeSnapshot = { readonly untrusted: true; readonly read?: undefined } | { readonly untrusted: false; readonly read: AttributeRead };
 
 /**
- * Reads the attribute sources outside the tracked tree:
+ * Takes the snapshot every `check-attr` read then uses, and judges it:
  *  - `$GIT_DIR/info/attributes` holds any attribute line (comments and blank lines do not count): it outranks every tracked
  *    `.gitattributes`, so it can switch a filter off, directly or through a macro;
  *  - `core.attributesFile` (or the default user file) or the system file defines a macro, quoted or not: those files rank below
  *    every tracked file, so only a macro defined there (which replaces one the tree uses) can hide a filter. A line that merely
- *    names a filter does not block;
- *  - one of those files exists and cannot be read whole.
- * The caller reads this before and after the `check-attr` reads and refuses unless both are trusted and equal, so a file swapped
- * in while the reads ran is seen (design §2). Known limits: a swap made after the first read and undone before the second is not seen (a file watcher can time it; design §14); a tracked
- * `.gitattributes` that uses a macro defined outside the tree is checked against the macro as it is now; deleting a filter that
- * only the user's file sets makes the stored file look unfiltered; the system file is found with `git var GIT_ATTR_SYSTEM`
- * (git 2.42 and later), so on an older git it is not checked.
+ *    names a filter does not block: the reads see it, from the snapshot;
+ *  - a source cannot be snapshotted (not a regular file, larger than git-ops' bound, unreadable): untrusted, never skipped.
+ * Because git reads exactly the judged bytes, a source swapped after this call (even one restored before the review ends) is
+ * not seen (RR-13). Known limits: a tracked `.gitattributes` that uses a macro defined outside the tree is checked against the
+ * macro as it is now; deleting a filter that only the user's file sets makes the stored file look unfiltered; the system file is
+ * found with `git var GIT_ATTR_SYSTEM` (git 2.42 and later): on an older git it is not snapshotted and, since the reads set
+ * `GIT_ATTR_NOSYSTEM`, a filter only it sets is not seen.
  */
-export async function attributeSources(deps: ReviewDeps, git: ReviewGit, w: WorktreeRef, limits: ReviewLimits): Promise<AttributeSources> {
-  let untrusted = false;
-  const ids: string[] = [];
-  const [info] = await gitPaths(deps, git, w, ["info/attributes"]);
-  if (info !== undefined && (await deps.fileExists(info))) {
-    const read = await readThroughGit(git, info, limits);
-    ids.push(read?.oid ?? "unreadable");
-    if (read === undefined || patterns(read.text).length > 0) untrusted = true;
-  } else ids.push("absent");
-  for (const path of await outsideFiles(deps, git, w)) {
-    if (!(await deps.fileExists(path))) {
-      ids.push("absent");
-      continue;
-    }
-    const read = await readThroughGit(git, path, limits);
-    ids.push(read?.oid ?? "unreadable");
-    if (read === undefined || patterns(read.text).some((p) => p.bad || p.pattern?.startsWith("[attr]") === true)) untrusted = true;
+export async function snapshotAttributes(deps: ReviewDeps, git: ReviewGit, w: WorktreeRef, objectFormat: "sha1" | "sha256"): Promise<AttributeSnapshot> {
+  const files = await outsideFiles(deps, git, w);
+  let read: AttributeRead;
+  try {
+    read = await attributeReadGit(w, deps.git, {
+      objectFormat,
+      ...(files.user === undefined ? {} : { userAttributesFile: files.user }),
+      ...(files.system === undefined ? {} : { systemAttributesFile: files.system }),
+    });
+  } catch (e) {
+    if (e instanceof GitOpsError) return { untrusted: true };
+    throw e;
   }
-  return { untrusted, fingerprint: ids.join(",") };
+  const info = patterns(read.infoAttributes).length > 0;
+  const outside = patterns(read.outsideAttributes).some((p) => p.bad || p.pattern?.startsWith("[attr]") === true);
+  if (info || outside) {
+    read.dispose();
+    return { untrusted: true };
+  }
+  return { untrusted: false, read };
 }

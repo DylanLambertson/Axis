@@ -17,7 +17,7 @@ These need building first. Platform is secondary.
 | 1a/L2, L10, L17, L24 | The Axis pty process is on `feat/pty-process` (B9, in review), not on main. The slice's pty on main is a plain child process. The group-liveness acceptance test (`sh -c 'sleep 30 & exit 0'`) must pass on POSIX and with a job object on Windows. | B9; RR-2 |
 | 1a/L3, L14, L18 | GIT-SNAP-1 wired into runs (H13, real in the slice); the commit and push gate moves onto it in H13b. | RR-3 |
 | 1a/L15 | The commit-hook step (pre-commit, commit-msg on a scratch checkout). | H9-hooks; RR-4 |
-| 1a/L32 | REV-2 hardened attribute reads. | RR-13 |
+| 1a/L32 | REV-2 hardened attribute reads: built (REV2-FIX, in review); Linux evidence `packages/review/test/real-attr-snapshot.test.ts`; not run on macOS or Windows. | RR-13 |
 | 1a/L13 | Workbench registration of the four `axis.*` settings with user, application or machine scope. | RR-15 |
 | 1a/L33 | Refusal of `--remote-debugging-port` and `--inspect*` in a packaged build. | RR-19 |
 | 1b/L1 to L16 (daemon side) | Composer wiring, drift, command tools, native confirmation for destructive calls, Anthropic and vault wiring, REF-1 scan, hooks decision. Branch `feat/composer-runtime` carries C1 only. | C1 to C7, J2; RR-20 to RR-27 |

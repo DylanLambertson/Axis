@@ -109,16 +109,25 @@ test("every git call is daemon-context and hardened, and GIT_INDEX_FILE appears 
     await checkFresh(f.deps, b);
     await prepareCommit(f.deps, b);
     assert.ok(f.seen.length > 10);
+    let attrReads = 0;
     for (const r of f.seen) {
       assert.equal(r.context, "daemon");
       const gitEnv = Object.keys(r.env).filter((k) => k.startsWith("GIT_")).sort();
       const usesIndex = r.argv.includes("core.sparseCheckout=false");
-      assert.deepEqual(gitEnv, usesIndex ? ["GIT_INDEX_FILE", "GIT_TERMINAL_PROMPT"] : ["GIT_TERMINAL_PROMPT"], r.argv.join(" "));
+      // The attribute reads (REV2-FIX) run in git-ops' private git directory, which adds GIT_ATTR_NOSYSTEM and names an index per tree.
+      const isPrivate = r.argv.some((a) => a.startsWith("--git-dir=") && a !== `--git-dir=${f.wt.gitDir}` && a.includes("axis-attr-"));
+      if (r.argv.includes("check-attr")) {
+        attrReads++;
+        assert.ok(isPrivate && r.argv.includes("--cached"), `an attribute read used the real git directory or the work tree: ${r.argv.join(" ")}`);
+      }
+      if (isPrivate) assert.ok(gitEnv.includes("GIT_ATTR_NOSYSTEM") && gitEnv.every((k) => ["GIT_ATTR_NOSYSTEM", "GIT_INDEX_FILE", "GIT_TERMINAL_PROMPT"].includes(k)), r.argv.join(" "));
+      else assert.deepEqual(gitEnv, usesIndex ? ["GIT_INDEX_FILE", "GIT_TERMINAL_PROMPT"] : ["GIT_TERMINAL_PROMPT"], r.argv.join(" "));
       for (const must of ["--no-pager", "--no-replace-objects", "core.fsmonitor=false", "core.hooksPath=/dev/null", "protocol.allow=never", "diff.submodule=short"]) {
         assert.ok(r.argv.includes(must), `${must} missing from ${r.argv.join(" ")}`);
       }
-      assert.ok(r.argv.some((a) => a === `--git-dir=${f.wt.gitDir}`) && r.argv.some((a) => a === `--work-tree=${f.wt.workTree}`));
+      assert.ok((isPrivate || r.argv.some((a) => a === `--git-dir=${f.wt.gitDir}`)) && r.argv.some((a) => a === `--work-tree=${f.wt.workTree}`));
     }
+    assert.equal(attrReads, 6, "three indexes, each read with core.ignorecase both ways");
     const diffs = f.seen.filter((r) => r.argv.includes("diff") && !r.argv.includes("diff-tree"));
     assert.ok(diffs.length > 0);
     for (const d of diffs) assert.ok(d.argv.includes("--no-ext-diff") && d.argv.includes("--no-textconv") && d.argv.includes("--no-color"));
