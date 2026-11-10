@@ -206,7 +206,9 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
           return ws === undefined ? undefined : parts.journal.getProject(ws.projectId)?.path;
         };
         const snapshotter = snapshotterFactory({ gitPath: parts.gitPath, env: ports.env, projectRoot });
-        if (typeof snapshotter?.before !== "function" || typeof snapshotter?.after !== "function") refuse("snapshotter_required");
+        // WT-2 broker side (C3): the composer's commands get their own instance, so they never replace a CLI run's held baseline.
+        const commandSnapshotter = snapshotterFactory({ gitPath: parts.gitPath, env: ports.env, projectRoot });
+        for (const x of [snapshotter, commandSnapshotter]) if (typeof x?.before !== "function" || typeof x?.after !== "function") refuse("snapshotter_required");
         const forwarder = createActiveRunForwarder();
         // Both writers are guarded by the seal (review r1 S1); removing either guard fails compose-composer.test.ts.
         const challengeWriter = { append: (e: Parameters<typeof parts.audit.append>[0]) => (auditSeal.guard(), parts.audit.append(e), parts.anchors.noteWrite(), undefined) };
@@ -262,8 +264,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
           ...(options.composer?.mock === undefined ? {} : { mock: options.composer.mock }),
           // Composer writes take the project mutex Axis git operations take (policies 3.3, 6.1), queued like any caller.
           writeLock: composerWriteLock(parts.journal, worktrees.mutex),
-          // WT-2 broker side (C3): its own snapshotter, so a command's snapshots never replace a CLI run's held baseline.
-          commandSnapshotter: snapshotterFactory({ gitPath: parts.gitPath, env: ports.env, projectRoot }),
+          commandSnapshotter,
         });
         const composer = createComposerService({
           journal: parts.journal,

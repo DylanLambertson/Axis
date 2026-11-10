@@ -205,9 +205,16 @@ describe("the composition and the entry require the real snapshotter", () => {
   });
 
   test("start is refused when the factory gives no snapshotter, and the factory gets the host's one git", async () => {
-    for (const bad of [{}, { before: () => Promise.resolve() }, undefined]) {
+    const good = { before: () => Promise.resolve(), after: () => Promise.resolve({ drift: false }) };
+    // The first instance (CLI runs) or the second (composer commands, C3) without its methods both refuse the start.
+    const secondBad = (bad: unknown) => {
+      let n = 0;
+      return () => (n++ === 0 ? good : bad);
+    };
+    const factories = [{}, { before: () => Promise.resolve() }, undefined].flatMap((bad) => [() => bad, secondBad(bad)]);
+    for (const factory of factories) {
       const fix = hostFixture();
-      const composed = composeDaemonHost(options(fix, () => bad as never));
+      const composed = composeDaemonHost(options(fix, factory as never));
       try {
         // After the lock every step error is reported as `startup_step` with the step's own reason kept.
         await assert.rejects(composed.start(), (e) => reasonOf(e) === "startup_step" && (e as AxisError).detail["causeReason"] === "snapshotter_required");
@@ -222,9 +229,11 @@ describe("the composition and the entry require the real snapshotter", () => {
     const composed = composeDaemonHost(options(fix, (deps) => (calls.push(deps), { before: () => Promise.resolve(), after: () => Promise.resolve({ drift: false }) })));
     try {
       const services = await composed.start();
-      assert.equal(calls.length, 1);
-      assert.equal(calls[0]?.gitPath, services.gitPath, "the git resolved once at startup (design 5a)");
-      assert.equal(calls[0]?.env, fix.ports.env, "the host's environment copy");
+      assert.equal(calls.length, 2, "one for CLI runs, one for composer commands (C3)");
+      for (const c of calls) {
+        assert.equal(c.gitPath, services.gitPath, "the git resolved once at startup (design 5a)");
+        assert.equal(c.env, fix.ports.env, "the host's environment copy");
+      }
     } finally {
       await composed.stop();
       fix.cleanup();
