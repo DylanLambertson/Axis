@@ -49,12 +49,13 @@ test("git before 2.24: scratch-begin and therefore every bound call are refused,
   assert.equal(f.log.length, 0);
 });
 
-test("MIN_GIT_VERSION: the default adds no floor (pins only); a floor refuses exec and scratch-begin on older git and allows it from that version", async (t) => {
+test("MIN_GIT_VERSION: the default adds no floor (pins only); a floor refuses exec and scratch-begin on older or unknown git and allows it from that version", async (t) => {
   const { MIN_GIT_VERSION } = await import("../src/index.js");
   assert.equal(MIN_GIT_VERSION, undefined, "default: older git is served with the pins (design §4.1); raising it is the owner's decision");
   const { createPtyService } = await import("../src/index.js");
   const { channelPair, until } = await import("../testing/helpers.js");
-  for (const [version, allowed] of [["2.43.0", false], ["2.44.0", true]] as const) {
+  // An unparseable `git version` is unknown, and unknown counts as older (review N-11): plain exec is refused too.
+  for (const [version, allowed] of [["2.43.0", false], ["2.44.0", true], ["unknown-build", false]] as const) {
     const f = fakeExec({ version });
     const scratchParent = realpathSync(mkdtempSync(join(tmpdir(), "axis-pty-min-")));
     const service = createPtyService({ spawn: () => { throw new Error("no spawn"); }, git: { exec: f.exec, gitPath: FAKE_GIT, hooksOff: "/dev/null", scratchParent, baseEnv: {}, minGitVersion: [2, 44, 0] } });

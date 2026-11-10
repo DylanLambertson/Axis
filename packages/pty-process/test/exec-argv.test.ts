@@ -157,7 +157,7 @@ test("PTY-EXEC-1: every exec carries the service prefix; only the exact hooksPat
     assert.equal(sent?.env["GIT_NO_LAZY_FETCH"], "1");
     assert.equal(sent?.env["GIT_AUTHOR_NAME"], "A");
     assert.equal(sent?.env["LC_ALL"], "C");
-    assert.equal(sent?.env["GIT_ALLOW_PROTOCOL"], "/", "the startup GIT_ALLOW_PROTOCOL=file is replaced by an allow-list no transport can match");
+    assert.equal(sent?.env["GIT_ALLOW_PROTOCOL"], "/", "the startup GIT_ALLOW_PROTOCOL=file is replaced by `/`, which admits only a helper name that cannot run while help.autocorrect is pinned off");
     assert.equal(sent?.env["HOME"], "/home/u", "the user's own global config applies to plain calls");
     for (const k of ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"]) assert.equal(sent?.env[k], undefined);
   }
