@@ -120,3 +120,19 @@ export function symlinkEscapes(linkPath: string, target: string): boolean {
   }
   return false;
 }
+
+/**
+ * The repository-relative path a link at `linkPath` points to, resolved lexically (`.` and `..` applied, empty
+ * segments dropped), or undefined when it escapes the repository or the target is unusable. Used to ask the
+ * protected-path matcher about where a link leads; it follows nothing.
+ */
+export function resolveLinkTarget(linkPath: string, target: string): string | undefined {
+  if (symlinkEscapes(linkPath, target)) return undefined;
+  const stack = linkPath.split("/").slice(0, -1);
+  for (const seg of target.split(/[\\/]+/)) {
+    if (seg === "" || seg === ".") continue;
+    if (seg === "..") stack.pop();
+    else stack.push(seg);
+  }
+  return stack.length === 0 ? undefined : stack.join("/");
+}
