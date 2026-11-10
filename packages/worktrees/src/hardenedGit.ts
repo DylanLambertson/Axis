@@ -98,7 +98,7 @@ const SHAPES: Readonly<Record<string, Shape>> = {
   'update-ref': { flags: ['-d'] },
   'branch': { flags: ['-D'], required: ['-D'] },
   'merge-base': { flags: ['--is-ancestor'] },
-  'rev-list': { flags: ['--left-right', '--count'] },
+  'rev-list': { flags: ['--left-right', '--count', '--objects'] },
   'ls-tree': { flags: ['-r', '-z', '-l', '--full-tree'] },
   'cat-file': { flags: ['--batch', '--batch-check'] },
   'ls-files': { flags: ['-z', '-s', '--cached', '--others', '--exclude-standard', '--ignored', '--directory'], positional: false },

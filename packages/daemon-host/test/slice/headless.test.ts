@@ -41,6 +41,7 @@ describe("headless slice", { skip, timeout: SUITE_TIMEOUT_MS }, () => {
   let projectId: string;
   let w1: Workspace;
   let w2: Workspace;
+  let w3: Workspace;
   let runId = "";
   let commit = "";
   let treeHash = "";
@@ -217,8 +218,13 @@ describe("headless slice", { skip, timeout: SUITE_TIMEOUT_MS }, () => {
     assert.deepEqual({ confirms: sup.nativeConfirms.length, pending: (await user.ok<{ challenges: unknown[] }>("axis.approvals", "pending", {})).challenges.length }, before, "no challenge, no dialog");
     assert.equal(fx.remoteRefs().length, 1, "the secret workspace was not pushed");
     secrets.push(secret);
-    // Archived, so `worktrees.remove` (tier 4) has a legal target for the stall step below.
-    assert.equal(((await finaliseApproved(sup, user, w2.id)).result as { state: string }).state, "FINALISED");
+    // REF-1: the archive would pin the committed secret under refs/axis/*, so the approved finalise is refused, by reason only.
+    const pinned = await finaliseApproved(sup, user, w2.id);
+    assert.deepEqual([pinned.error?.code, pinned.error?.details], ["E_CONFLICT", { reason: "snapshot_secret" }]);
+    assert.ok(!JSON.stringify(pinned.error).includes(secret), "the refusal holds no secret text");
+    // A clean workspace, archived, so `worktrees.remove` (tier 4) has a legal target for the stall step below.
+    w3 = await createWorkspace(user, projectId, "Archived");
+    assert.equal(((await finaliseApproved(sup, user, w3.id)).result as { state: string }).state, "FINALISED");
     const confirmsAfterFinalise = sup.nativeConfirms.length; // the finalise showed its own tier 4 dialog
 
     // A plan that changed after it was shown: w1 gets a second commit, the old plan is refused before a challenge.
@@ -389,7 +395,7 @@ describe("headless slice", { skip, timeout: SUITE_TIMEOUT_MS }, () => {
     for (const a of [noApproval, bogus]) assert.deepEqual([a.error?.code, a.error?.details?.["reason"]], ["E_UNAVAILABLE", "anchor_stalled"]);
     // `worktrees.remove` (tier 4) has no content-hook check of its own: only the gate's preflight stops it before a challenge.
     for (const approval of [undefined, { challengeId: "A".repeat(43) }]) {
-      const removal = await client.call(PROJECT, "remove", { id: w2.id, ...(approval === undefined ? {} : { approval }) }, true);
+      const removal = await client.call(PROJECT, "remove", { id: w3.id, ...(approval === undefined ? {} : { approval }) }, true);
       assert.deepEqual([removal.error?.code, removal.error?.details?.["reason"]], ["E_UNAVAILABLE", "anchor_stalled"]);
     }
     assert.equal(s.nativeConfirms.length, 0, "no dialog while stalled");
