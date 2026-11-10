@@ -1,4 +1,5 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
+import { Redactor } from "@axis/audit";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { composerRunSchema } from "@axis/protocol";
@@ -92,7 +93,7 @@ test("S4: the defaults hold their documented values, and a cap override must be 
   for (const bad of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 2 ** 53]) {
     assert.throws(() => resolveToolCaps({ inputDepth: bad }), RangeError, String(bad));
   }
-  assert.throws(() => createComposerService({ journal: {} as never, engine: {} as never, now: () => 0, toolCaps: { callsPerReply: 0 } }), RangeError, "refused at configuration, not at the first run");
+  assert.throws(() => createComposerService({ redactor: new Redactor(), journal: {} as never, engine: {} as never, now: () => 0, toolCaps: { callsPerReply: 0 } }), RangeError, "refused at configuration, not at the first run");
 });
 
 test("S4: the limit reasons are a closed set of run reasons the contract accepts", () => {

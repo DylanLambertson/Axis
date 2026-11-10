@@ -211,6 +211,93 @@ export const JOURNAL_MIGRATIONS: readonly Migration[] = [
         BEGIN SELECT RAISE(ABORT, 'base_branch is recorded once'); END;
     `,
   },
+  {
+    // Composer runs across a restart (docs/design/composer-runtime.md, tickets J2 and C10). Additive: three new tables,
+    // one counter row and their triggers; no existing table or row changes.
+    //
+    // - `composer_runs`: what a composer run was started with (mode, provider, model: recorded once, never changed),
+    //   its last reported usage, its budget totals (settled plus reserved, so a request in flight when the process dies
+    //   stays charged), and counters of its stored activity kept by the triggers below.
+    // - `composer_activity`: the run's display-safe events (the host redacts and validates them first), append-only,
+    //   bounded by row and byte caps the store enforces (oldest first). `seq` only grows within a run.
+    // - `composer_workspace_budgets`: the per-workspace budget totals (PRV-6, C10). A row is never deleted and its
+    //   request count never goes down, so no restart or code path can hand a workspace a fresh budget.
+    version: 6,
+    sql: `
+      CREATE TABLE composer_runs (
+        run_id         TEXT PRIMARY KEY REFERENCES agent_runs(id),
+        mode           TEXT NOT NULL CHECK (mode IN ('ask','edit','agent')),
+        provider_id    TEXT NOT NULL CHECK (length(provider_id) BETWEEN 1 AND 64 AND provider_id NOT GLOB '*[^a-z0-9-]*'),
+        model_id       TEXT NOT NULL CHECK (length(model_id) BETWEEN 1 AND 256 AND model_id NOT GLOB '*[^!-~]*'),
+        input_tokens   INTEGER CHECK (input_tokens >= 0),
+        output_tokens  INTEGER CHECK (output_tokens >= 0),
+        usage_requests INTEGER CHECK (usage_requests >= 0),
+        budget_tokens  INTEGER NOT NULL DEFAULT 0 CHECK (budget_tokens >= 0),
+        budget_cost_micro_usd INTEGER NOT NULL DEFAULT 0 CHECK (budget_cost_micro_usd >= 0),
+        budget_requests INTEGER NOT NULL DEFAULT 0 CHECK (budget_requests >= 0),
+        budget_unpriced INTEGER NOT NULL DEFAULT 0 CHECK (budget_unpriced >= 0),
+        last_seq       INTEGER NOT NULL DEFAULT 0 CHECK (last_seq >= 0),
+        activity_rows  INTEGER NOT NULL DEFAULT 0 CHECK (activity_rows >= 0),
+        activity_bytes INTEGER NOT NULL DEFAULT 0 CHECK (activity_bytes >= 0),
+        created_at     TEXT NOT NULL,
+        CHECK ((input_tokens IS NULL) = (output_tokens IS NULL) AND (input_tokens IS NULL) = (usage_requests IS NULL))
+      ) STRICT;
+      CREATE TRIGGER composer_runs_started_once BEFORE UPDATE OF run_id, mode, provider_id, model_id, created_at ON composer_runs
+        WHEN NEW.run_id IS NOT OLD.run_id OR NEW.mode IS NOT OLD.mode OR NEW.provider_id IS NOT OLD.provider_id
+          OR NEW.model_id IS NOT OLD.model_id OR NEW.created_at IS NOT OLD.created_at
+        BEGIN SELECT RAISE(ABORT, 'a composer run is recorded once'); END;
+      CREATE TRIGGER composer_runs_kept BEFORE DELETE ON composer_runs
+        BEGIN SELECT RAISE(ABORT, 'a composer run record is never deleted'); END;
+      CREATE TRIGGER composer_runs_budget_forward BEFORE UPDATE OF budget_requests, budget_unpriced ON composer_runs
+        WHEN NEW.budget_requests < OLD.budget_requests OR NEW.budget_unpriced < OLD.budget_unpriced
+        BEGIN SELECT RAISE(ABORT, 'a run budget only moves forward'); END;
+
+      CREATE TABLE composer_activity (
+        id      INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id  TEXT NOT NULL REFERENCES composer_runs(run_id),
+        seq     INTEGER NOT NULL CHECK (seq >= 1),
+        type    TEXT NOT NULL CHECK (type IN ('state','text','tool','approval','usage','request')),
+        at      TEXT NOT NULL CHECK (length(at) BETWEEN 1 AND 64),
+        body    TEXT NOT NULL CHECK (length(CAST(body AS BLOB)) <= 65536 AND json_valid(body) AND json_extract(body, '$.type') = type),
+        UNIQUE (run_id, seq)
+      ) STRICT;
+      CREATE TABLE composer_activity_totals (
+        id    INTEGER PRIMARY KEY CHECK (id = 1),
+        rows  INTEGER NOT NULL CHECK (rows >= 0),
+        bytes INTEGER NOT NULL CHECK (bytes >= 0)
+      ) STRICT;
+      INSERT INTO composer_activity_totals (id, rows, bytes) VALUES (1, 0, 0);
+      CREATE TRIGGER composer_activity_in_order BEFORE INSERT ON composer_activity
+        WHEN NEW.seq <= (SELECT last_seq FROM composer_runs WHERE run_id = NEW.run_id)
+        BEGIN SELECT RAISE(ABORT, 'activity is appended in sequence order'); END;
+      CREATE TRIGGER composer_activity_append_only BEFORE UPDATE ON composer_activity
+        BEGIN SELECT RAISE(ABORT, 'activity rows are never changed'); END;
+      CREATE TRIGGER composer_activity_added AFTER INSERT ON composer_activity BEGIN
+        UPDATE composer_runs SET last_seq = NEW.seq, activity_rows = activity_rows + 1,
+          activity_bytes = activity_bytes + length(CAST(NEW.body AS BLOB)) WHERE run_id = NEW.run_id;
+        UPDATE composer_activity_totals SET rows = rows + 1, bytes = bytes + length(CAST(NEW.body AS BLOB)) WHERE id = 1;
+      END;
+      CREATE TRIGGER composer_activity_evicted AFTER DELETE ON composer_activity BEGIN
+        UPDATE composer_runs SET activity_rows = activity_rows - 1,
+          activity_bytes = activity_bytes - length(CAST(OLD.body AS BLOB)) WHERE run_id = OLD.run_id;
+        UPDATE composer_activity_totals SET rows = rows - 1, bytes = bytes - length(CAST(OLD.body AS BLOB)) WHERE id = 1;
+      END;
+
+      CREATE TABLE composer_workspace_budgets (
+        workspace_id   TEXT PRIMARY KEY REFERENCES agent_workspaces(id),
+        tokens         INTEGER NOT NULL CHECK (tokens >= 0),
+        cost_micro_usd INTEGER NOT NULL CHECK (cost_micro_usd >= 0),
+        requests       INTEGER NOT NULL CHECK (requests >= 0),
+        unpriced       INTEGER NOT NULL CHECK (unpriced >= 0),
+        updated_at     TEXT NOT NULL
+      ) STRICT;
+      CREATE TRIGGER composer_workspace_budgets_kept BEFORE DELETE ON composer_workspace_budgets
+        BEGIN SELECT RAISE(ABORT, 'a workspace budget is never deleted'); END;
+      CREATE TRIGGER composer_workspace_budgets_forward BEFORE UPDATE ON composer_workspace_budgets
+        WHEN NEW.workspace_id IS NOT OLD.workspace_id OR NEW.requests < OLD.requests OR NEW.unpriced < OLD.unpriced
+        BEGIN SELECT RAISE(ABORT, 'a workspace budget only moves forward'); END;
+    `,
+  },
 ];
 
 export const JOURNAL_SCHEMA_VERSION = JOURNAL_MIGRATIONS.length;

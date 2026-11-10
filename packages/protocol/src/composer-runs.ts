@@ -67,7 +67,7 @@ export const composerRunSchema = z
   .strictObject({
     runId: runIdSchema,
     workspaceId: workspaceIdSchema,
-    /** Null when the daemon no longer holds it (after a restart, until the journal records it: ticket J2). */
+    /** From the journal after a restart (ticket J2); null only for a run recorded before the journal kept it. */
     mode: composerModeSchema.nullable(),
     providerId: composerProviderIdSchema.nullable(),
     modelId: composerModelIdSchema.nullable(),
