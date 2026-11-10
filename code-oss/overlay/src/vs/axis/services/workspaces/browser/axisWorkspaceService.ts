@@ -12,6 +12,7 @@ import { createDecorator, IInstantiationService } from '../../../../platform/ins
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { IAxisShowViewOptions, IAxisViewService } from '../../view/browser/axisViewService.js';
+import { AxisApprovalController, AxisApprovalDecision, AxisApprovalOutcome, IAxisApprovalCard, IAxisGestureEvent, IAxisGestureScope } from '../../approvals/common/axisApprovals.js';
 import { AxisDaemonApi } from '../../daemon/common/axisDaemonApi.js';
 import { AxisCallErrorCode, AxisDaemonStatus, IAxisDaemonClient, isUsable, sameStatus, sanitizeStatus } from '../../daemon/common/axisDaemonClient.js';
 import { AxisDataProvenance, IAxisProjectInfo } from '../common/axisWorkspaceData.js';
@@ -55,6 +56,20 @@ export interface IAxisWorkspaceService {
 	readonly truncatedProjects: boolean;
 	/** Open approval challenges; `undefined` when unknown. */
 	readonly pendingApprovals: number | undefined;
+	/** The challenges to show as cards (display data from the daemon); empty when unknown. */
+	readonly approvalCards: readonly IAxisApprovalCard[];
+	/** The cards in a stable order (a shown card never moves, a new one goes last); starts each card's guard time. Call it when drawing. */
+	layoutApprovals(): readonly IAxisApprovalCard[];
+	/** Milliseconds until a click on the card counts (0: now). */
+	approvalGuardRemaining(challengeId: string): number;
+	/** Where the view sees the card on screen (viewport box); a card whose box changed is guarded again. */
+	approvalPlaced(challengeId: string, top: number, left: number, width: number, height: number): void;
+	/**
+	 * A user's answer to a card (docs/design/axis-shell-a4.md). Calls `axis.approvals/1.resolve` only for a trusted
+	 * gesture on a listed, unexpired card that has been in place long enough; every other case returns a closed
+	 * outcome and sends nothing. For tier 4 and above Approve only starts the native confirmation.
+	 */
+	decideApproval(card: Pick<IAxisApprovalCard, 'challengeId' | 'digest'>, decision: AxisApprovalDecision, event: IAxisGestureEvent, scope: IAxisGestureScope): Promise<AxisApprovalOutcome>;
 
 	/** Focuses a workspace by key, or the dashboard (`undefined`). */
 	focus(key: string | undefined, options?: IAxisShowViewOptions): void;
@@ -77,6 +92,7 @@ export class AxisWorkspaceService extends Disposable implements IAxisWorkspaceSe
 
 	private readonly source: AxisDiscoveryDataSource;
 	private readonly loader: AxisSnapshotLoader;
+	private readonly approvals: AxisApprovalController;
 	private readonly driver: IAxisRefreshDriver;
 	private snapshot: IAxisSnapshot | undefined;
 	private _daemonStatus: AxisDaemonStatus = { kind: 'down' };
@@ -97,7 +113,9 @@ export class AxisWorkspaceService extends Disposable implements IAxisWorkspaceSe
 		super();
 		this.source = this._register(instantiationService.createInstance(AxisDiscoveryDataSource));
 		const cancellation = this._register(new CancellationTokenSource());
-		this.loader = new AxisSnapshotLoader(this.source, new AxisDaemonApi(this.daemon, cancellation.token));
+		const api = new AxisDaemonApi(this.daemon, cancellation.token);
+		this.loader = new AxisSnapshotLoader(this.source, api);
+		this.approvals = new AxisApprovalController(api, () => this.snapshot?.approvals, () => Date.now(), () => performance.now(), () => { this.refresh(); });
 		this.driver = this._register(new AxisAdaptiveRefreshDriver(this.daemon));
 		this._register(addDisposableListener(mainWindow.document, 'visibilitychange', () => this.driver.setPaused(mainWindow.document.hidden)));
 		this._register(this.daemon.onDidChangeStatus(() => this.onDaemonStatus()));
@@ -118,7 +136,16 @@ export class AxisWorkspaceService extends Disposable implements IAxisWorkspaceSe
 	get staleError(): AxisCallErrorCode | undefined { return this.snapshot?.staleError; }
 	get notRegistered(): boolean { return this.snapshot?.notRegistered ?? false; }
 	get truncatedProjects(): boolean { return this.snapshot?.truncatedProjects ?? false; }
-	get pendingApprovals(): number | undefined { return this.snapshot?.pendingApprovals; }
+	get pendingApprovals(): number | undefined { return this.snapshot?.approvals?.length; }
+	get approvalCards(): readonly IAxisApprovalCard[] { return this.snapshot?.approvals ?? []; }
+
+	layoutApprovals(): readonly IAxisApprovalCard[] { return this.approvals.layout(); }
+	approvalGuardRemaining(challengeId: string): number { return this.approvals.guardRemaining(challengeId); }
+	approvalPlaced(challengeId: string, top: number, left: number, width: number, height: number): void { this.approvals.placed(challengeId, top, left, width, height); }
+
+	decideApproval(card: Pick<IAxisApprovalCard, 'challengeId' | 'digest'>, decision: AxisApprovalDecision, event: IAxisGestureEvent, scope: IAxisGestureScope): Promise<AxisApprovalOutcome> {
+		return this.approvals.decide(card, decision, event, scope);
+	}
 
 	get focused(): IAxisWorkspaceEntry | undefined {
 		return this._focusedKey ? this._workspaces.find(w => w.key === this._focusedKey) : undefined;
