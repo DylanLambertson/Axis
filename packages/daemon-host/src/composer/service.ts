@@ -1,9 +1,12 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
-import type { Journal, Run } from "@axis/journal";
+import { Redactor } from "@axis/audit";
+import { DEFAULT_ACTIVITY_BOUNDS, checkActivityBounds, type ActivityBounds, type ComposerRunRecord, type Journal, type Run } from "@axis/journal";
 import type { ComposerRun } from "@axis/protocol";
-import { createRunBudget, type RunBudget, type RunBudgetLimits } from "@axis/providers";
+import { createRunBudget, type BudgetHook, type RunBudget, type RunBudgetLimits } from "@axis/providers";
 import type { ComposerEngine, ComposerEventsPage, ComposerRunsService, ComposerStartInput } from "../ports/composer.js";
-import { RunActivity, type ActivityLimits } from "./activity.js";
+import { RunActivity, type ActivityInput, type ActivityLimits } from "./activity.js";
+import { createComposerBudget } from "./budget.js";
+import { fromActivityRecords, toActivityRecord } from "./persist.js";
 import { composerFailure } from "./errors.js";
 import { destinationOf } from "./destination.js";
 import { resolveToolCaps, runComposerLoop, type LoopEnd, type ToolCaps } from "./loop.js";
@@ -18,15 +21,29 @@ import { resolveToolCaps, runComposerLoop, type LoopEnd, type ToolCaps } from ".
  * - **Shutdown writes nothing.** `dispose` aborts every loop and closes the service: a loop that ends after that does not
  *   touch the journal (nothing may write after the final anchor). The run stays RUNNING and the next start's
  *   `Journal.recover` makes it BLOCKED / `INTERRUPTED_BY_RESTART`; `recover` here cancels a QUEUED composer run.
- * - **Budget.** One `createRunBudget(limits)` per run, handed to the guard: it is asked before every provider request.
+ * - **Budget.** One `createRunBudget(limits)` per run and one per-workspace budget seeded from the journal at each start
+ *   (C10), asked in that order before every provider request; both totals are written to the journal (J2) before the
+ *   guard is answered, so a restart cannot reset either (`./budget.ts`).
+ * - **Records (J2).** Mode, provider and model are recorded with the run, in the same transaction; usage and every
+ *   activity event (redacted, display-safe, bounded) are written as they happen. `get` and `events` answer from the
+ *   journal once the run is no longer held in memory.
  */
 
 export interface ComposerServiceDeps {
-  readonly journal: Pick<Journal, "getWorkspace" | "createRun" | "getRun" | "listRuns" | "transitionRun">;
+  readonly journal: Pick<Journal, "getWorkspace" | "getRun" | "listRuns" | "transitionRun" | "composer">;
   readonly engine: ComposerEngine;
   readonly now: () => number;
   /** Per-run budget. Default: 200,000 tokens and 50 requests, no cost cap (design question 2). */
   readonly budget?: RunBudgetLimits;
+  /** Per-workspace budget across its composer runs (C10). Default: 2,000,000 tokens and 500 requests (design question 2). */
+  readonly workspaceBudget?: RunBudgetLimits;
+  /** Applied to every stored activity event and to the model id: the host's own, with its registered secrets (review j2 N2). */
+  readonly redactor: Redactor;
+  /**
+   * Bounds of the activity kept in the journal. Default `DEFAULT_ACTIVITY_BOUNDS`. Refused when `maxActive` live runs at
+   * their per-run caps would not fit the totals, so total eviction never has to reach a live run's rows (review j2 N4).
+   */
+  readonly storedActivity?: ActivityBounds;
   /** Live composer runs across the host. Default 8. */
   readonly maxActive?: number;
   readonly maxTurns?: number;
@@ -51,12 +68,13 @@ interface Live {
   readonly runId: string;
   readonly workspaceId: string;
   readonly controller: AbortController;
-  readonly budget: RunBudget;
+  readonly budget: BudgetHook;
   awaiting: number;
   done: Promise<void>;
 }
 
 export const DEFAULT_COMPOSER_BUDGET: RunBudgetLimits = Object.freeze({ maxTokens: 200_000, maxRequests: 50 });
+export const DEFAULT_WORKSPACE_BUDGET: RunBudgetLimits = Object.freeze({ maxTokens: 2_000_000, maxRequests: 500 });
 const OPEN: readonly Run["state"][] = ["QUEUED", "RUNNING"];
 
 export function createComposerService(deps: ComposerServiceDeps): ComposerService {
@@ -65,6 +83,14 @@ export function createComposerService(deps: ComposerServiceDeps): ComposerServic
   const maxActive = deps.maxActive ?? 8;
   const limits = deps.budget ?? DEFAULT_COMPOSER_BUDGET;
   createRunBudget(limits); // refuses invalid limits now, not at the first run
+  const wsLimits = deps.workspaceBudget ?? DEFAULT_WORKSPACE_BUDGET;
+  createRunBudget(wsLimits);
+  const redactor = deps.redactor;
+  if (!(redactor instanceof Redactor)) throw new TypeError("the composer service needs the host redactor");
+  const stored = checkActivityBounds(deps.storedActivity ?? DEFAULT_ACTIVITY_BOUNDS);
+  if (maxActive * stored.maxRunRows > stored.maxRows || maxActive * stored.maxRunBytes > stored.maxBytes) {
+    throw new RangeError("stored activity totals must hold every live run at its per-run caps");
+  }
   const caps = resolveToolCaps(deps.toolCaps); // likewise
   let closed = false;
 
@@ -76,10 +102,42 @@ export function createComposerService(deps: ComposerServiceDeps): ComposerServic
     }
   };
 
+  /** The journal's record of a run; undefined for a run made before J2 or a record that cannot be read. */
+  function record(runId: string): ComposerRunRecord | undefined {
+    try {
+      return deps.journal.composer.get(runId);
+    } catch {
+      internal("record");
+      return undefined;
+    }
+  }
+
+  /** The live view, and the journal behind it. Nothing is written once the service is closed (shutdown). */
+  function emit(runId: string, input: ActivityInput): void {
+    const added = activity.push(runId, input);
+    if (closed) return;
+    for (const ev of added) {
+      const row = toActivityRecord(ev, redactor);
+      try {
+        if (row === undefined || deps.journal.composer.append(runId, row, stored) !== "stored") internal("activity_dropped");
+      } catch {
+        internal("activity");
+      }
+    }
+    if (input.type !== "usage") return;
+    try {
+      deps.journal.composer.recordUsage(runId, input.usage);
+    } catch {
+      internal("usage");
+    }
+  }
+
   function view(run: Run): ComposerRun {
     const l = live.get(run.id);
-    const meta = activity.meta(run.id);
+    const held = activity.meta(run.id);
     const used = activity.usage(run.id);
+    const rec = held === undefined || used === undefined ? record(run.id) : undefined;
+    const meta = held ?? rec;
     return {
       runId: run.id,
       workspaceId: run.workspaceId,
@@ -93,7 +151,7 @@ export function createComposerService(deps: ComposerServiceDeps): ComposerServic
       endedAt: run.endedAt,
       live: l !== undefined,
       awaitingApproval: l !== undefined && l.awaiting > 0,
-      usage: used ?? null,
+      usage: used ?? rec?.usage ?? null,
     };
   }
 
@@ -116,7 +174,7 @@ export function createComposerService(deps: ComposerServiceDeps): ComposerServic
     try {
       const opts = { actor: "daemon", expectedFrom: "RUNNING" } as const;
       const run = deps.journal.transitionRun(l.runId, end.state, end.reason === null ? opts : { ...opts, reason: end.reason });
-      activity.push(l.runId, { type: "state", state: run.state, reason: run.reason });
+      emit(l.runId, { type: "state", state: run.state, reason: run.reason });
     } catch {
       internal("transition");
     }
@@ -140,6 +198,8 @@ export function createComposerService(deps: ComposerServiceDeps): ComposerServic
       }
       if (!models.some((m) => m.id === input.modelId)) throw composerFailure("E_NOT_FOUND", "model_unknown");
       // PRV-4: the destination is fixed by the selected provider and shown with each request; one that cannot be shown refuses the start.
+      // The model id is stored with the run (J2): one the redactor would change (a URL with credentials) is refused.
+      if (redactor.redactString(input.modelId) !== input.modelId) throw composerFailure("E_UNAVAILABLE", "provider_unavailable");
       const destination = destinationOf(provider.descriptor, input.modelId);
       if (destination === undefined) throw composerFailure("E_UNAVAILABLE", "provider_unavailable");
       let build;
@@ -158,17 +218,33 @@ export function createComposerService(deps: ComposerServiceDeps): ComposerServic
       const open = deps.journal.listRuns({ workspaceId: input.workspaceId, states: OPEN }).filter((r) => r.kind === "composer");
       if (open.length > 0) throw composerFailure("E_CONFLICT", "active_run");
       if (live.size >= maxActive) throw composerFailure("E_BACKPRESSURE");
-      const created = deps.journal.createRun({
-        workspaceId: input.workspaceId,
-        kind: "composer",
-        createdBy: "user",
-        ...(input.idempotencyKey === undefined ? {} : { idempotencyKey: input.idempotencyKey }),
-      });
+      // C10: the workspace's budget is seeded from what the journal says it spent, never from zero; one that cannot be read
+      // refuses the start with nothing created.
+      let workspaceBudget: RunBudget;
+      try {
+        workspaceBudget = createRunBudget(wsLimits, deps.journal.composer.workspaceBudget(input.workspaceId));
+      } catch {
+        internal("budget");
+        throw composerFailure("E_INTERNAL");
+      }
+      const meta = { mode: input.mode, providerId: input.providerId, modelId: input.modelId };
+      const created = deps.journal.composer.createRun(
+        { workspaceId: input.workspaceId, createdBy: "user", ...(input.idempotencyKey === undefined ? {} : { idempotencyKey: input.idempotencyKey }) },
+        meta,
+      );
       if (created.replayed) return { run: view(created.value), replayed: true };
       const runId = created.value.id;
-      activity.open(runId, { mode: input.mode, providerId: input.providerId, modelId: input.modelId });
+      activity.open(runId, meta);
       const controller = new AbortController();
-      const budget = createRunBudget(limits);
+      const runBudget = createRunBudget(limits, record(runId)?.budget);
+      const budget = createComposerBudget({
+        run: runBudget,
+        workspace: workspaceBudget,
+        save: (run, workspace) => {
+          if (closed) throw new Error("closed"); // nothing is written after shutdown; the journal keeps the reservation
+          deps.journal.composer.recordBudget(runId, input.workspaceId, run, workspace);
+        },
+      });
       const l: Live = { runId, workspaceId: input.workspaceId, controller, budget, awaiting: 0, done: Promise.resolve() };
       let tools;
       try {
@@ -183,7 +259,7 @@ export function createComposerService(deps: ComposerServiceDeps): ComposerServic
               onApproval: (note) => {
                 if (note.state === "requested") l.awaiting += 1;
                 else l.awaiting = Math.max(0, l.awaiting - 1);
-                activity.push(runId, { type: "approval", ...note, reasons: [...note.reasons], paths: note.paths.map((p) => ({ ...p })) });
+                emit(runId, { type: "approval", ...note, reasons: [...note.reasons], paths: note.paths.map((p) => ({ ...p })) });
               },
             });
       } catch {
@@ -195,7 +271,7 @@ export function createComposerService(deps: ComposerServiceDeps): ComposerServic
       }
       const running = deps.journal.transitionRun(runId, "RUNNING", { actor: "daemon", expectedFrom: "QUEUED" });
       live.set(runId, l);
-      activity.push(runId, { type: "state", state: running.state, reason: null });
+      emit(runId, { type: "state", state: running.state, reason: null });
       l.done = drive(l, () =>
         runComposerLoop({
           runId,
@@ -207,7 +283,7 @@ export function createComposerService(deps: ComposerServiceDeps): ComposerServic
           budget,
           destination,
           signal: controller.signal,
-          emit: (e) => activity.push(runId, e),
+          emit: (e) => emit(runId, e),
           ...(deps.maxTurns === undefined ? {} : { maxTurns: deps.maxTurns }),
           caps,
         }),
@@ -238,7 +314,25 @@ export function createComposerService(deps: ComposerServiceDeps): ComposerServic
 
     events(runId, afterSeq, limit): ComposerEventsPage {
       composerRun(runId);
-      return activity.read(runId, afterSeq, limit);
+      if (activity.meta(runId) !== undefined) return activity.read(runId, afterSeq, limit);
+      // No longer held (a restart, or evicted from memory): the journal's bounded copy.
+      const rec = record(runId);
+      if (rec === undefined) return { events: [], nextSeq: 0, complete: true, available: false };
+      let rows;
+      try {
+        rows = deps.journal.composer.read(runId, afterSeq, limit);
+      } catch {
+        internal("activity_read");
+        return { events: [], nextSeq: 0, complete: true, available: false };
+      }
+      const events = fromActivityRecords(rows);
+      const running = live.has(runId);
+      // Nothing stored after the cursor. Unlike the memory ring, the journal's total bound can evict a finished run's
+      // newest row too (review j2 SF-1): for a run nobody drives, the cursor moves to its last sequence number and the
+      // page is complete, so a client never polls a run whose rows are gone forever.
+      const empty = running ? Math.min(afterSeq, rec.lastSeq) : Math.max(afterSeq, rec.lastSeq);
+      const nextSeq = events.at(-1)?.seq ?? rows.at(-1)?.seq ?? empty;
+      return { events, nextSeq, complete: !running && nextSeq >= rec.lastSeq, available: true };
     },
 
     recover() {

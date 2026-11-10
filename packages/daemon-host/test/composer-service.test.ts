@@ -1,4 +1,5 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
+import { Redactor } from "@axis/audit";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -197,6 +198,7 @@ test("events: the cursor returns only newer events and an unknown run is E_NOT_F
 test("a run whose tools cannot be built is cancelled at once, never left QUEUED", async (t) => {
   const c = await setup(t, { replies: [say("x")] });
   const broken = createComposerService({
+    redactor: new Redactor(),
     journal: c.journal,
     engine: { provider: (id) => c.agent.provider(id), prepare: async () => () => { throw new Error("no tools"); } },
     now: () => c.r.clock.now(),
