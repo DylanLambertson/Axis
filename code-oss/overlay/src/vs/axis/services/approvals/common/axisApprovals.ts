@@ -182,17 +182,18 @@ export class AxisApprovalController {
 	}
 
 	/**
-	 * Where the view sees a card on screen (its viewport position), reported after drawing, when anything around it
+	 * Where the view sees a card on screen (its viewport box), reported after drawing, when anything around it
 	 * changes size or scrolls, and at the click itself. A card whose position differs from the last one reported
 	 * starts its guard time again: the whole region moves when anything above it changes height, which an agent can
-	 * cause (for example by adding or removing worktrees). Unknown ids are ignored; they are guarded anyway.
+	 * cause (for example by adding or removing worktrees). A change of width or height counts too: a card that reflows
+	 * moves its buttons. The first report is only recorded. Unknown ids are ignored; they are guarded anyway.
 	 */
-	placed(challengeId: string, top: number, left: number): void {
+	placed(challengeId: string, top: number, left: number, width: number, height: number): void {
 		const entry = this.since.get(challengeId);
 		if (!entry) {
 			return;
 		}
-		const at = `${top},${left}`;
+		const at = `${top},${left},${width},${height}`;
 		if (entry.at !== undefined && entry.at !== at) {
 			entry.mono = this.mono();
 		}

@@ -324,24 +324,30 @@ suite('Axis approval cards', () => {
 	});
 
 	test('a card that moves on screen is guarded again; one that stays put is not', async () => {
-		controller.placed(CHALLENGE_ID, 300, 10);
+		controller.placed(CHALLENGE_ID, 300, 10, 200, 80);
 		assert.strictEqual(controller.guardRemaining(CHALLENGE_ID), 0, 'the first position is only recorded');
-		controller.placed(CHALLENGE_ID, 300, 10);
+		controller.placed(CHALLENGE_ID, 300, 10, 200, 80);
 		controller.layout();
 		assert.strictEqual(controller.guardRemaining(CHALLENGE_ID), 0, 'same place, same list: still answerable');
-		controller.placed(CHALLENGE_ID, 268, 10); // a worktree row above was removed: the region slid up 32 px
+		controller.placed(CHALLENGE_ID, 268, 10, 200, 80); // a worktree row above was removed: the region slid up 32 px
 		assert.strictEqual(controller.guardRemaining(CHALLENGE_ID), APPROVAL_GUARD_MS);
 		assert.deepStrictEqual(await controller.decide(card(), 'approve', dom.click(), dom.scope()), { kind: 'too-soon' });
 		mono += APPROVAL_GUARD_MS;
-		controller.placed(CHALLENGE_ID, 268, 40);
+		controller.placed(CHALLENGE_ID, 268, 40, 200, 80);
 		assert.strictEqual(controller.guardRemaining(CHALLENGE_ID), APPROVAL_GUARD_MS, 'a sideways move counts too');
+		mono += APPROVAL_GUARD_MS;
+		controller.placed(CHALLENGE_ID, 268, 40, 200, 112);
+		assert.strictEqual(controller.guardRemaining(CHALLENGE_ID), APPROVAL_GUARD_MS, 'a card that reflowed (another height) moved its buttons');
+		mono += APPROVAL_GUARD_MS;
+		controller.placed(CHALLENGE_ID, 268, 40, 180, 112);
+		assert.strictEqual(controller.guardRemaining(CHALLENGE_ID), APPROVAL_GUARD_MS, 'another width counts too');
 		mono += APPROVAL_GUARD_MS;
 		listed = [card({ digest: 'ee'.repeat(32) })];
 		controller.layout(); // guarded again for the digest; the last position is kept
 		mono += APPROVAL_GUARD_MS;
-		controller.placed(CHALLENGE_ID, 100, 40);
+		controller.placed(CHALLENGE_ID, 100, 40, 200, 80);
 		assert.strictEqual(controller.guardRemaining(CHALLENGE_ID), APPROVAL_GUARD_MS, 'a move after a re-layout is still a move');
-		controller.placed('chal_ZZZZZZZZZZZZZZZZZZZZZZ', 1, 1);
+		controller.placed('chal_ZZZZZZZZZZZZZZZZZZZZZZ', 1, 1, 200, 80);
 		assert.strictEqual(controller.guardRemaining('chal_ZZZZZZZZZZZZZZZZZZZZZZ'), APPROVAL_GUARD_MS, 'an unknown id stays guarded');
 		assert.strictEqual(resolves().length, 0);
 	});

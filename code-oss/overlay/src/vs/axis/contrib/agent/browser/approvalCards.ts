@@ -110,7 +110,7 @@ export class AxisApprovalCards extends Disposable {
 		this.observe();
 		for (const [id, view] of this.views) {
 			const rect = view.element.getBoundingClientRect();
-			this.workspaceService.approvalPlaced(id, rect.top, rect.left);
+			this.workspaceService.approvalPlaced(id, rect.top, rect.left, rect.width, rect.height);
 		}
 		this.updateButtons();
 	}
@@ -177,7 +177,7 @@ export class AxisApprovalCards extends Disposable {
 		view.buttons.push(button);
 		view.disposables.add(addDisposableListener(button, 'click', event => {
 			const rect = cardElement.getBoundingClientRect(); // where the card is now: a card that moved since it was last seen is guarded again
-			this.workspaceService.approvalPlaced(view.card.challengeId, rect.top, rect.left);
+			this.workspaceService.approvalPlaced(view.card.challengeId, rect.top, rect.left, rect.width, rect.height);
 			const scope = scopeFor(cardElement, button, (node: unknown) => node instanceof Element && node.closest(COMPOSER_SELECTOR) !== null);
 			this.workspaceService.decideApproval(view.card, decision, event, scope).then(outcome => {
 				if (!this._store.isDisposed) {
