@@ -7,6 +7,7 @@ export * from "./osc.js";
 export * from "./paths.js";
 export * from "./service.js";
 export * from "./client.js";
+export * from "./exec-client.js";
 export * from "./port-adapter.js";
 export * from "./node-pty.js";
 export * from "./entry.js";

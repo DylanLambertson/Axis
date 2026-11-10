@@ -40,3 +40,32 @@ export interface PtyHandle {
 export interface PtyPort {
   spawn(spec: PtySpawn): Promise<PtyHandle>;
 }
+
+/**
+ * A plain, bounded git command in the pty process (the `exec` message, docs/design/daemon-host-hooks.md §4.1), repeated from
+ * `@axis/pty-process` (`PtyExecCall`, `PtyExecOutcome`; `test/types/pty-exec-port.test.ts` compares both directions). `repo`
+ * is what the service emits as `--git-dir`/`--work-tree`; the argv carries no global option. Only `createPtyGitRunner`
+ * (`src/bindings/pty-git.ts`) builds one.
+ */
+export interface PtyExecCall {
+  readonly argv: readonly string[];
+  readonly cwd: string;
+  readonly env: Readonly<Record<string, string>>;
+  readonly stdin?: string;
+  readonly timeoutMs: number;
+  readonly maxOutput: number;
+  readonly repo: { readonly gitDir: string; readonly workTree: string };
+}
+
+export interface PtyExecOutcome {
+  readonly code: number | null;
+  readonly signal: string | null;
+  readonly stdout: string;
+  readonly stderr: string;
+  readonly truncated: boolean;
+}
+
+/** The pty process's `exec`. A rejection carries at most a closed `code` (`PtyExecError` of `@axis/pty-process`). */
+export interface PtyExecPort {
+  exec(call: PtyExecCall): Promise<PtyExecOutcome>;
+}

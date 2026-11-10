@@ -140,10 +140,17 @@ export function createApprovals(deps: ApprovalsDeps): Approvals {
     ttlMs: ttl,
     maxEntries: Math.min(waitLimit, total),
     ...(perWindow === undefined ? {} : { maxPerWindow: Math.min(perWindow, waitLimit, total) }),
-    onLost: (l) => quietWithdraw(l.challengeId, { actor: l.actor as ActorId, connectionId: l.connectionId }),
+    onLost: (l) => {
+      quietWithdraw(l.challengeId, { actor: l.actor as ActorId, connectionId: l.connectionId });
+      runs.ended(l.challengeId);
+    },
     apply: (a) => {
       try {
-        manager.confirmNative({ windowId: a.windowId }, { challengeId: a.challengeId, proof: a.proof, confirmed: a.confirmed });
+        const result = manager.confirmNative({ windowId: a.windowId }, { challengeId: a.challengeId, proof: a.proof, confirmed: a.confirmed });
+        runs.confirmed(result);
+      } catch (e) {
+        runs.ended(a.challengeId); // a burned or ended challenge: a run's wait declines
+        throw e;
       } finally {
         registry.remove(a.challengeId);
       }
@@ -160,7 +167,14 @@ export function createApprovals(deps: ApprovalsDeps): Approvals {
     }
   };
 
-  const runs = createRunApprovals({ manager, listing: registry, now: () => clock.now(), ttlMs: ttl, preflight });
+  const runs = createRunApprovals({
+    manager,
+    listing: registry,
+    now: () => clock.now(),
+    ttlMs: ttl,
+    preflight,
+    native: { reserve: (w) => bridge.reserve(w), start: (r, held) => bridge.start(r, held), end: (id) => bridge.end(id) },
+  });
 
   // Challenges whose connection closed while `issue` waited for the native request: not listed, not withdrawn twice.
   const gone = new Set<string>();
@@ -348,12 +362,13 @@ export function createApprovals(deps: ApprovalsDeps): Approvals {
         }
         throw e;
       }
+      // A run's wait learns of the user's approval first: the dialog's answer may be applied at once just below.
+      runs.settled(result);
       if (result.state === "approved" && result.nativeRequired) {
         // Approved by the user: no longer a prompt to answer, though the dialog is still awaited.
         registry.remove(result.challengeId);
         bridge.userApproved(result.challengeId);
       } else forget(result.challengeId);
-      runs.settled(result);
       return result;
     },
     pending: (windowId) => registry.list(windowId),

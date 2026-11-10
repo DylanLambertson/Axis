@@ -120,9 +120,9 @@ test("an expired challenge declines; a resolve with another digest burns it and 
   assert.equal(r.approvals.runs.waiting(), 0);
 });
 
-test("destructive and privileged calls, a bad run id or digest, and a disposed host are refused before any challenge exists", async (t) => {
+test("an unknown tier, a bad run id or digest, and a disposed host are refused before any challenge exists", async (t) => {
   const r = await setup(t);
-  for (const over of [{ tier: "destructive" }, { tier: "privileged" }, { tier: "4" }, { runId: "../x" }, { digest: "nothex" }] as Partial<RunApprovalInput>[]) {
+  for (const over of [{ tier: "4" }, { tier: "admin" }, { runId: "../x" }, { digest: "nothex" }] as Partial<RunApprovalInput>[]) {
     const a = await ask(r, over);
     assert.deepEqual(await a.outcome, { kind: "declined", state: "refused" }, JSON.stringify(over));
     assert.equal(a.issued(), undefined);

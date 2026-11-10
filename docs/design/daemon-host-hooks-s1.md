@@ -1,6 +1,6 @@
-# H9-hooks slice S1, part 1: the pty-process side (implementation notes)
+# H9-hooks slice S1, parts 1 and 2: the pty-process side and the host mapping (implementation notes)
 
-Status: BUILT in `@axis/pty-process`; nothing is wired into the daemon yet. Design: `docs/design/daemon-host-hooks.md` (§4, §5 steps 4, 5 and 8, §8 gate lines PTY-EXEC-1, PTY-5-HOOK and HOOK-REPLACE-1). This note records what part 1 builds, where it departs from the design text and why, and what slice S1 still owes.
+Status: part 1 BUILT in `@axis/pty-process`; part 2 (the host's `createPtyGitRunner`, below) BUILT in `@axis/daemon-host` and wired by the composition over a pty port that has `exec`. No production entry supplies such a port yet (the daemon entry still passes no pty port, `pty_required`). Design: `docs/design/daemon-host-hooks.md` (§4, §5 steps 4, 5 and 8, §8 gate lines PTY-EXEC-1, PTY-5-HOOK and HOOK-REPLACE-1). This note records what part 1 builds, where it departs from the design text and why, and what slice S1 still owes.
 
 ## What is built
 
@@ -50,7 +50,30 @@ Three review rounds found three ways a repository could start a program through 
 
 ## Left for the rest of S1 and later slices
 
-- `createPtyGitRunner` (the strict adapter from git-ops' prefixed argv to `exec` with `repo`) and its S1 tests (GIT-4 mapping, encoding pin), and the host port methods for `exec`, `hook` and `scratch-*`.
+- ~~`createPtyGitRunner` and the host port method for `exec`~~: built in part 2 (below). Still open: the host port methods for `hook` and `scratch-*`.
 - Host-side hook orchestration (§4.2: grant and attach before the spawn, timeout and cancel, `groupAlive` after exit) and the daemon's use of `judgeHooksPathRead` (S2), with `Snapshot` v3 storing the raw value (git-snapshot).
 - The shipped entry must supply the `ExecFn` (a process-group launcher), the startup git path, git-ops' `hooksOffPath()` and the scratch parent. Windows is unverified (the hooks-off directory and modes).
 - Open decisions D1 to D3 are unchanged; part 1 implements the D3 default (raw tree, any new file refuses).
+
+## Part 2: the host mapping (`createPtyGitRunner`)
+
+| Design item (§4.1 "Mapping git-ops' requests") | Where | Test |
+|---|---|---|
+| The host port's `exec`: a plain call with `repo`; settles on its reply, a send failure, the channel closing, or after its own `timeoutMs` plus the spawn bound; at most `maxPending` waiting; rejects with a closed code only (`PtyExecError`) | `pty-process/src/exec-client.ts`, `client.ts` (`PtyProcessPort.exec`) | `pty-process/test/exec-client.test.ts` |
+| The host's structural copy of that port (the host's `src/` imports nothing of `@axis/pty-process`) | `daemon-host/src/ports/pty.ts` (`PtyExecCall`, `PtyExecOutcome`, `PtyExecPort`) | `daemon-host/test/types/pty-exec-port.test.ts` (both directions) |
+| git-ops' leading options accepted only as the exact sequence `prefix()` builds, in order; `--git-dir`/`--work-tree` become `repo` (absolute, normalised); every pin is one the service re-emits; an unknown, missing, reordered or differently valued token is refused (`E_INTERNAL`, fixed text) | `daemon-host/src/bindings/pty-git.ts` `mapPtyArgv` | `daemon-host/test/pty-git-runner.test.ts` (built from git-ops' own `prefix()`, so a git-ops change that is not mapped fails it) |
+| `-c i18n.commitEncoding=utf-8` required for `commit-tree`, refused elsewhere; the service's own pin keeps the recorded encoding | `mapPtyArgv`; `exec-argv.ts` `plainPrefix` | unit test; `pty-git-runner-real.test.ts` (repository `latin1`, with a control that records `encoding latin1` without the pin) |
+| GIT-4: the commit lands in the journal's git directory whatever the cwd | `repo` mapping | `pty-git-runner-real.test.ts` (git-ops' real request replayed with a cwd whose `.git` file names another repository) |
+| Environment: only the service's allow-list leaves the host (identity, `GIT_TERMINAL_PROMPT`, `LANG`, `LC_*`); the rest of git-ops' PTY-5 copy is left out, the service builds it from its startup environment | `pty-git.ts` `allowedEnv` | unit test |
+| Fail closed: no port, a port without `exec`, a closed channel, a timeout, capacity or a signal-killed git is `E_UNAVAILABLE`; a service refusal of the mapped form (`bad_argv`, `env_denied`, `bad_bind`) is `E_INTERNAL` | `createPtyGitRunner` | unit test; `pty-git-runner-real.test.ts` (channel closed: commit refused, branch unchanged) |
+| Composition: a pty port with `exec` gets this runner (the host's one `gitPath`); a caller's runner alongside it is refused (`pty_git_runner_conflict`); without `exec` the caller's runner stays required (test fakes) | `pty-git.ts` `selectPtyGitRunner`, `compose.ts` | unit test, `compose.test.ts` |
+
+### Departures and decisions (part 2)
+
+1. **Narrower than the §4.1 list.** The host maps only the two forms git-ops sends to the pty context today: `commit-tree [-S] -p <id> -F - <id>` and `config --type=bool --get commit.gpgsign`. Every other subcommand is refused in the host before the service sees it. The S2 hook step adds its own forms (`config --show-scope --get-all core.hooksPath`) when it is built.
+2. **Push is not available until S4.** §5.2 makes push a terminal-bound run, never an `exec`. The host recognises git-ops' exact push form (its prefix, `-c protocol.allow=never` and the per-protocol `always` pins, then `push`) and answers it `E_UNAVAILABLE` with the host's fixed reason `push_not_available` (not on the wire's closed sets, so the client sees `E_UNAVAILABLE` and its fixed text), never as an internal fault; any other form around a push stays an unmapped `E_INTERNAL`. A host wired with an `exec` port therefore cannot push until **H9-hooks slice S4** (§9), which owns turning this into a real push. GUARD: `pty-git-runner-real.test.ts` "push over the pty process is not available until S4" runs a confirmed push through the real host and the real pty process and asserts `E_UNAVAILABLE`, an unmoved remote and no push sent to the pty process; S4 must replace that test. Today no production entry supplies a pty port at all, so nothing that worked stops working. The headless slice keeps its fake runner (its pty port has no `exec`).
+3. **The environment is filtered, not refused.** git-ops passes the host's whole PTY-5 copy (`PATH`, `HOME`, ...), which the service would refuse as `env_denied`; the host sends the allow-listed names only, matched case-insensitively like the service's own check (so `Lang` is kept by both). A NUL in a kept value refuses the call.
+4. **`argv[0]` is the host's `gitPath`.** The entry that starts the pty process must give it the same absolute git (the service checks `argv[0]` against its own startup path, so a mismatch is `bad_argv`, `E_INTERNAL`).
+5. **The hooks pin.** git-ops adds `core.hooksPath=<off>` unless `runHooks` is on; the host accepts only git-ops' POSIX off path `/dev/null`. On Windows the host wires no empty hooks directory, so a request with the pin is refused (the Windows path is unverified, as in part 1). The service pins hooks off on every exec either way.
+6. **`raw` requests are refused**: an exec reply is decoded text, so a request that needs the bytes is never sent.
+7. **Review nits of part 1:** N-10 (the stale "no transport can match" wording in `exec-env.ts` and the `exec-argv.test.ts` assertion message) and N-11 (an unparseable `git version` counts as older when `minGitVersion` is set: a third row in `exec-version.test.ts`) are fixed here.
