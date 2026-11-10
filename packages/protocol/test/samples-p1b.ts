@@ -22,6 +22,7 @@ export const file = {
   truncated: false,
   contentId: null as string | null,
   acknowledged: false,
+  protectedPath: false,
   protectedRules: [] as string[],
   warnings: [] as string[],
 };
@@ -36,6 +37,7 @@ export const renamed = {
   truncated: true,
   contentId: SHA3,
   acknowledged: true,
+  protectedPath: true,
   protectedRules: ["ci-workflow"],
   fileLevelReason: "renamed",
   warnings: ["binary"],
@@ -44,7 +46,7 @@ export const diffResponse = {
   head: SHA1,
   branch: "axis/fix-it",
   treeHash: SHA2,
-  files: [file, renamed],
+  files: [renamed, file],
   skipped: [{ displayPath: "big.bin", size: 60_000_000, reason: "too_large_to_review" }],
   skippedCount: 1,
 };

@@ -17,7 +17,7 @@ import type { PortContext } from "../ports/common.js";
 import { ReviewRefusal, type ReviewRound, type ReviewService, type RoundFile } from "../ports/review.js";
 import type { RunsService } from "../ports/runs.js";
 import { ReviewedTrees } from "./review-store.js";
-import { AckSessions, contentIdOf, fileIdOf, foldEqualPaths, hasReplacementChar, wireRow, wireSkipped } from "./review-wire.js";
+import { AckSessions, contentIdOf, fileIdOf, foldEqualPaths, hasReplacementChar, isProtected, protectedFirst, wireRow, wireSkipped } from "./review-wire.js";
 
 /**
  * `axis.review/1` (design section 4.2): `diff` (read, tier 1) and `complete` (write, tier 2).
@@ -122,7 +122,7 @@ export function createReviewDiffHandler(deps: ReviewHandlerDeps): Handler {
     let committable = true;
     try {
       round = await deps.review.open(workspaceId, portCtx);
-      const files = foldEqualPaths(round.files);
+      const files = protectedFirst(foldEqualPaths(round.files));
       const usable = (f: RoundFile): boolean => !(f.unsafePath || hasReplacementChar(f.path)) && f.kind !== "filtered";
       // The cut check reads git objects per file: a few at a time, so 200 files stay well inside the method's timeout.
       const cut = await mapLimit(files, CUT_CHECK_CONCURRENCY, (f) => (usable(f) ? round.hasCutLines(f.path) : Promise.resolve(false)));
@@ -136,7 +136,7 @@ export function createReviewDiffHandler(deps: ReviewHandlerDeps): Handler {
         if (!unsafe && !filtered) {
           // From the same entry (mode, object id) of the snapshot tree the tree hash is built from.
           truncated = cut[i] === true;
-          contentId = truncated ? contentIdOf(f.newMode, f.newOid) : null;
+          contentId = truncated ? contentIdOf(f.newMode, f.newOid, isProtected(f)) : null;
           ack = isAcknowledged({ fileId, truncated, contentId }, acknowledged);
         }
         if (unsafe || filtered || (truncated && !ack)) committable = false;

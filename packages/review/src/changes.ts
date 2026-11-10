@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 // The changed-files list (design §3): two trees compared by `diff-tree -z`, parsed from NUL-separated records.
-import { escapeForDisplay, escapeWithInfo, pathProblem, symlinkEscapes } from "./display.js";
+import { escapeForDisplay, escapeWithInfo, pathProblem, resolveLinkTarget, symlinkEscapes } from "./display.js";
 import { invalid, unavailable } from "./errors.js";
 import type { WorktreeRef } from "@axis/git-ops";
 import { OBJECT_ID, expectComplete, expectOk, type ReviewGit } from "./gitcall.js";
@@ -221,6 +221,7 @@ export async function listChanges(
     if (kind !== "text") warnings.push(kind);
 
     let link: ReviewFile["link"];
+    let linkTarget: string | undefined;
     if (kind === "symlink" && linkSide) {
       const oid = linkSide[0];
       const size = sizes.get(oid) ?? Infinity;
@@ -231,6 +232,7 @@ export async function listChanges(
         if (r.code === 0 && r.truncated !== true) target = r.stdout;
       }
       // A link whose target could not be read is treated as escaping: it is never assumed harmless.
+      linkTarget = target;
       const escapesWorktree = target === undefined ? true : symlinkEscapes(e.path, target);
       const shown = target === undefined ? undefined : escapeWithInfo(target, { maxLength: limits.maxDisplay });
       link = { target: shown?.text, escapesWorktree, targetCut: shown === undefined || shown.truncated };
@@ -245,7 +247,11 @@ export async function listChanges(
     else if (e.oldOid === e.newOid) reason = "no_content_change";
     else if (!REGULAR_MODES.has(e.oldMode) || !REGULAR_MODES.has(e.newMode)) reason = "not_a_regular_file";
 
-    const rules = protectedRules(matcher, e.oldPath === undefined ? [e.path] : [e.oldPath, e.path], limits.maxDisplay);
+    // Both sides of a rename, and where a symlink leads (a link at an ordinary path to a protected one is a way in).
+    const asked = e.oldPath === undefined ? [e.path] : [e.oldPath, e.path];
+    const resolved = linkTarget === undefined ? undefined : resolveLinkTarget(e.path, linkTarget);
+    const rules = protectedRules(matcher, asked, limits.maxDisplay);
+    if (resolved !== undefined) for (const r of protectedRules(matcher, [resolved], limits.maxDisplay)) if (rules.length < 8 && !rules.includes(r)) rules.push(r);
     files.push({
       path: e.path,
       ...(e.oldPath === undefined ? {} : { oldPath: e.oldPath }),
