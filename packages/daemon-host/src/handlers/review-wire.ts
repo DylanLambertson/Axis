@@ -9,8 +9,10 @@ export function fileIdOf(path: string): string {
 }
 
 /** `contentId`: SHA-256 of `<newMode> <newOid>` of the entry in the snapshot tree (mode is part of the binding). */
-export function contentIdOf(newMode: string, newOid: string): string {
-  return createHash("sha256").update(`${newMode} ${newOid}`, "utf8").digest("hex");
+export function contentIdOf(newMode: string, newOid: string, protectedPath = false): string {
+  // The WT-3 flag is part of what is acknowledged: a file shown as protected is acknowledged as protected, so an
+  // acknowledgement cannot be carried to a response that no longer reports the flag (and the other way round).
+  return createHash("sha256").update(protectedPath ? `${newMode} ${newOid} protected` : `${newMode} ${newOid}`, "utf8").digest("hex");
 }
 
 /** A path that does not decode as strict UTF-8 holds U+FFFD: it is not a usable path, whatever the review package said. */
@@ -35,6 +37,14 @@ export function foldEqualPaths(files: readonly RoundFile[]): RoundFile[] {
   return out;
 }
 
+/** The closed WT-3 flag of a file: any rule matched (a matcher that threw is `matcher-error`, which counts). */
+export const isProtected = (f: { readonly protectedRules: readonly string[] }): boolean => f.protectedRules.length > 0;
+
+/** Protected files first, the review's own order otherwise (a stable sort). */
+export function protectedFirst<T extends { readonly protectedRules: readonly string[] }>(files: readonly T[]): T[] {
+  return [...files.filter(isProtected), ...files.filter((f) => !isProtected(f))];
+}
+
 const tag = (s: string, max: number): string => toDisplayPath(s, max);
 const tags = (list: readonly string[]): string[] => list.slice(0, 4).map((s) => tag(s, 64));
 
@@ -53,6 +63,7 @@ export function wireRow(f: RoundFile, facts: { readonly fileId: string; readonly
     truncated: facts.truncated,
     contentId: facts.contentId,
     acknowledged: facts.acknowledged,
+    protectedPath: isProtected(f),
     protectedRules: tags(f.protectedRules),
     ...(f.fileLevelReason === undefined ? {} : { fileLevelReason: tag(f.fileLevelReason, 128) }),
     warnings: tags(f.warnings),
