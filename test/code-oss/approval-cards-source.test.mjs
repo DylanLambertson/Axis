@@ -14,6 +14,14 @@ const OVERLAY = fileURLToPath(new URL("../../code-oss/overlay/src/vs/axis", impo
 const VIEW = "contrib/agent/browser/approvalCards.ts";
 const HTML_SINKS = new Set(["innerHTML", "outerHTML", "insertAdjacentHTML", "insertAdjacentElement", "createContextualFragment", "DOMParser", "write", "writeln", "srcdoc"]);
 const FORGERIES = new Set(["click", "dispatchEvent", "requestSubmit", "submit"]);
+const AHEAD = new Set(["prepend", "insertBefore", "before", "after"]);
+
+const callName = (n) => ts.isCallExpression(n) && (ts.isPropertyAccessExpression(n.expression) ? n.expression.name.text : ts.isIdentifier(n.expression) ? n.expression.text : undefined);
+function find(node, pred, out = []) {
+  if (pred(node)) out.push(node);
+  ts.forEachChild(node, (c) => void find(c, pred, out));
+  return out;
+}
 
 /** The rule breaks in the source of the approval cards view (empty when fine). */
 export function cardViewViolations(source) {
@@ -27,10 +35,20 @@ export function cardViewViolations(source) {
     if (ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression) && FORGERIES.has(n.expression.name.text)) bad.push(`script-made event ${n.expression.name.text}`);
     if (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && n.expression.text === "addDisposableListener") {
       const type = n.arguments[1];
-      if (!(type && ts.isStringLiteralLike(type) && type.text === "click")) bad.push("listener that is not a click");
-      const target = n.arguments[0];
-      if (!(target && ts.isIdentifier(target) && target.text === "button")) bad.push("listener not on the card button");
+      const kind = type && ts.isStringLiteralLike(type) ? type.text : undefined;
+      if (kind === "scroll") {
+        // only re-reads card positions
+        if (find(n, (c) => callName(c) === "decideApproval").length) bad.push("a scroll listener asks for a decision");
+      } else {
+        if (kind !== "click") bad.push("listener that is not a click");
+        const target = n.arguments[0];
+        if (!(target && ts.isIdentifier(target) && target.text === "button")) bad.push("listener not on the card button");
+        const decide = find(n, (c) => callName(c) === "decideApproval")[0];
+        const placed = find(n, (c) => callName(c) === "approvalPlaced")[0];
+        if (decide && !(placed && placed.getStart() < decide.getStart() && /getBoundingClientRect\(\)/.test(n.getText()))) bad.push("click not checked against the card's current position");
+      }
     }
+    if (callName(n) && AHEAD.has(callName(n))) bad.push(`card inserted ahead of others (${callName(n)})`);
     if (name === "activeElement" || name === "body" || name === "documentElement") bad.push(`view reads ${name} itself (the scope comes from scopeFor)`);
     if (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && n.expression.text === "scopeFor") {
       scopeCalls++;
@@ -46,6 +64,26 @@ export function cardViewViolations(source) {
     ts.forEachChild(n, visit);
   };
   visit(sf);
+  const text = (n) => n.getText().replace(/\s+/g, " ");
+  const calls = (name) => find(sf, (c) => callName(c) === name);
+  if (calls("appendChild").filter((c) => text(c) === "this.list.appendChild(view.element)").length !== 1) bad.push("new cards are not added last with this.list.appendChild(view.element)");
+  const keep = find(sf, (c) => ts.isIfStatement(c) && text(c.expression) === "existing && existing.card.digest === card.digest" && find(c.thenStatement, ts.isContinueStatement).length > 0);
+  if (keep.length !== 1) bad.push("a listed card with the same digest is not kept: every card rebuilt on each render");
+  if (!find(sf, (c) => ts.isBinaryExpression(c) && text(c) === "button.disabled = true").length) bad.push("buttons do not start disabled");
+  const decl = (name) => find(sf, (c) => ts.isVariableDeclaration(c) && ts.isIdentifier(c.name) && c.name.text === name)[0];
+  const guard = decl("guard");
+  const disabled = decl("disabled");
+  if (!(guard?.initializer && callName(guard.initializer) === "approvalGuardRemaining" && disabled?.initializer && /^guard > 0 \|\| /.test(text(disabled.initializer)) && find(sf, (c) => ts.isBinaryExpression(c) && text(c) === "button.disabled = disabled").length)) bad.push("buttons are not disabled during the guard time");
+  const buttons = calls("addButton").filter((c) => c.arguments.length === 5);
+  const decisionOf = (c) => (ts.isStringLiteralLike(c.arguments[3]) ? c.arguments[3].text : undefined);
+  if (buttons.map(decisionOf).join(",") !== "deny,approve") bad.push("Deny must come before Approve, one of each");
+  const approveLabel = buttons.find((c) => decisionOf(c) === "approve")?.arguments[4];
+  if (!(approveLabel && ts.isConditionalExpression(approveLabel) && text(approveLabel.condition) === "native" && /'axis\.approval\.approveNative'/.test(text(approveLabel.whenTrue)))) bad.push("a native card's Approve does not say the dialog follows");
+  if (calls("approvalPlaced").length < 2) bad.push("card positions are not reported after drawing");
+  if (!find(sf, (c) => ts.isNewExpression(c) && ts.isIdentifier(c.expression) && c.expression.text === "ResizeObserver").length) bad.push("no size watch on what sits above the cards");
+  const listAt = source.indexOf("$('.axis-approvals-list')");
+  const statusAt = source.indexOf("$('.axis-approvals-status')");
+  if (!(listAt > 0 && statusAt > listAt)) bad.push("the status line is above the cards");
   if (scopeCalls !== 1) bad.push("the view must build the scope with exactly one scopeFor call");
   if (layouts !== 1) bad.push("the view must draw from one layoutApprovals call");
   return bad;
@@ -60,6 +98,21 @@ function overlayFiles(dir, out = []) {
 }
 
 const GOOD = readFileSync(join(OVERLAY, VIEW), "utf8");
+
+/** Approve drawn before Deny. */
+function swapButtons(src) {
+  const lines = src.split("\n");
+  const deny = lines.findIndex((l) => l.includes("this.addButton(view, actions, name, 'deny'"));
+  const approve = lines.findIndex((l) => l.includes("this.addButton(view, actions, name, 'approve'"));
+  [lines[deny], lines[approve]] = [lines[approve], lines[deny]];
+  return lines.join("\n");
+}
+
+/** The status line created above the list again. */
+function moveStatusUp(src) {
+  const status = "\t\tthis.status = append(this.element, $('.axis-approvals-status')); // below the cards: its text never moves one\n";
+  return src.replace(status, "").replace("\t\tthis.list = append(this.element,", `${status}\t\tthis.list = append(this.element,`);
+}
 
 test("the approval cards view follows the textContent-only and trusted-gesture rules", () => {
   assert.deepEqual(cardViewViolations(GOOD), []);
@@ -78,6 +131,19 @@ test("the checker finds each way of breaking the rules", () => {
     [GOOD.replace("addDisposableListener(button, 'click'", "addDisposableListener(button, 'keydown'"), "listener that is not a click"],
     [GOOD.replace("addDisposableListener(button, 'click'", "addDisposableListener(cardElement, 'click'"), "listener not on the card button"],
     [GOOD.replace("decideApproval(view.card, decision, event, scope)", "decideApproval(view.card, decision, { isTrusted: true, type: 'click', target: button }, scope)"), "decideApproval not given the DOM event itself"],
+    [GOOD.replace("this.list.appendChild(view.element);", "this.list.prepend(view.element);"), "card inserted ahead of others (prepend)"],
+    [GOOD.replace("this.list.appendChild(view.element);", "this.list.prepend(view.element);"), "new cards are not added last with this.list.appendChild(view.element)"],
+    [GOOD.replace("this.list.appendChild(view.element);", "this.list.insertBefore(view.element, this.list.firstChild);"), "card inserted ahead of others (insertBefore)"],
+    [GOOD.replace("if (existing && existing.card.digest === card.digest) {", "if (false) {"), "a listed card with the same digest is not kept: every card rebuilt on each render"],
+    [GOOD.replace("button.disabled = true;", "button.disabled = false;"), "buttons do not start disabled"],
+    [GOOD.replace("const disabled = guard > 0 || untilExpiry <= 0;", "const disabled = untilExpiry <= 0;"), "buttons are not disabled during the guard time"],
+    [GOOD.replace("native ? localize('axis.approval.approveNative', \"Approve, then confirm in the dialog\") : ", ""), "a native card's Approve does not say the dialog follows"],
+    [swapButtons(GOOD), "Deny must come before Approve, one of each"],
+    [GOOD.replace("this.workspaceService.approvalPlaced(view.card.challengeId, rect.top, rect.left);", ""), "click not checked against the card's current position"],
+    [GOOD.replace("this.workspaceService.approvalPlaced(id, rect.top, rect.left);", ""), "card positions are not reported after drawing"],
+    [GOOD.replace("new ResizeObserver(", "new Set<unknown>("), "no size watch on what sits above the cards"],
+    [moveStatusUp(GOOD), "the status line is above the cards"],
+    [GOOD.replace("() => this.placeTimer.schedule(), true)", "() => this.workspaceService.decideApproval(undefined!, 'approve', undefined!, undefined!), true)"), "a scroll listener asks for a decision"],
   ];
   for (const [source, expected] of breaks) {
     assert.notEqual(source, GOOD, `the mutation applies: ${expected}`);
@@ -85,7 +151,7 @@ test("the checker finds each way of breaking the rules", () => {
   }
 });
 
-test("the cards sit below the workspace list, so a new card cannot move a row", () => {
+test("the cards sit below the workspace list, so a new card cannot move a row (a moved card is guarded again: see the checker)", () => {
   const dash = readFileSync(join(OVERLAY, "contrib/agent/browser/dashboardView.ts"), "utf8");
   const list = dash.indexOf("$('.axis-dashboard-list')");
   const cards = dash.indexOf("new AxisApprovalCards(");

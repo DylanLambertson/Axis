@@ -32,7 +32,7 @@ export const NATIVE_TIER = 4;
 /** Shared by the view and any composer: a node inside a match of this selector never counts as a place an answer may come from. */
 export const COMPOSER_SELECTOR = '.axis-composer';
 
-/** How long a card must have been visible and in the same place before a click on it counts. */
+/** How long a card must have been visible and in the same place on screen before a click on it counts. */
 export const APPROVAL_GUARD_MS = 500;
 
 /**
@@ -134,8 +134,8 @@ export class AxisApprovalController {
 	private readonly settled = new Set<string>();
 	/** Display order: existing cards never move, new ones go last. */
 	private order: string[] = [];
-	/** When each card last appeared, moved or changed (monotonic). */
-	private readonly since = new Map<string, { mono: number; index: number; digest: string }>();
+	/** When each card last appeared, moved (in the list or on screen) or changed (monotonic), and where the view last saw it. */
+	private readonly since = new Map<string, { mono: number; index: number; digest: string; at?: string }>();
 
 	constructor(
 		private readonly resolver: IAxisApprovalResolver,
@@ -148,10 +148,12 @@ export class AxisApprovalController {
 	/**
 	 * The cards in display order. An id that was shown keeps its place (a gone card closes the gap behind it, which
 	 * counts as a move for the cards after it); a new id goes last. A card that is new, moved or has another digest
-	 * starts its guard time again.
+	 * starts its guard time again. A listing that could not be read (`undefined`) shows no card and guards every card
+	 * again, but keeps the answered ids: only a listing that was read and no longer has an id makes it answerable again.
 	 */
 	layout(): IAxisApprovalCard[] {
-		const listed = this.cards() ?? [];
+		const listing = this.cards();
+		const listed = listing ?? [];
 		const byId = new Map(listed.map(card => [card.challengeId, card]));
 		const kept = this.order.filter(id => byId.has(id));
 		const added = listed.map(card => card.challengeId).filter(id => !kept.includes(id));
@@ -161,16 +163,40 @@ export class AxisApprovalController {
 		ordered.forEach((card, index) => {
 			const before = this.since.get(card.challengeId);
 			if (!before || before.index !== index || before.digest !== card.digest) {
-				this.since.set(card.challengeId, { mono: t, index, digest: card.digest });
+				this.since.set(card.challengeId, { mono: t, index, digest: card.digest, at: before?.at });
 			}
 		});
 		for (const id of [...this.since.keys()]) {
 			if (!byId.has(id)) {
 				this.since.delete(id);
-				this.settled.delete(id);
+			}
+		}
+		if (listing !== undefined) {
+			for (const id of [...this.settled]) {
+				if (!byId.has(id)) {
+					this.settled.delete(id);
+				}
 			}
 		}
 		return ordered;
+	}
+
+	/**
+	 * Where the view sees a card on screen (its viewport position), reported after drawing, when anything around it
+	 * changes size or scrolls, and at the click itself. A card whose position differs from the last one reported
+	 * starts its guard time again: the whole region moves when anything above it changes height, which an agent can
+	 * cause (for example by adding or removing worktrees). Unknown ids are ignored; they are guarded anyway.
+	 */
+	placed(challengeId: string, top: number, left: number): void {
+		const entry = this.since.get(challengeId);
+		if (!entry) {
+			return;
+		}
+		const at = `${top},${left}`;
+		if (entry.at !== undefined && entry.at !== at) {
+			entry.mono = this.mono();
+		}
+		entry.at = at;
 	}
 
 	/** Milliseconds until a click on this card counts; 0 when it may be answered. Unknown ids are guarded for the whole time. */
@@ -214,11 +240,12 @@ export class AxisApprovalController {
 			if (reply.state !== (decision === 'approve' ? 'approved' : 'denied')) {
 				return { kind: 'failed', code: 'invalid_reply' }; // the answer must be the one that was asked for
 			}
-			if (reply.nativeRequired && !(reply.state === 'approved' && needsNativeConfirmation(current))) {
-				return { kind: 'failed', code: 'invalid_reply' }; // a native step was asked for on a card that has none
+			if (reply.nativeRequired !== needsNativeConfirmation(current)) {
+				// The daemon flags every reply for a native challenge (tier 4 and above), Deny included, and no other.
+				return { kind: 'failed', code: 'invalid_reply' };
 			}
 			this.settled.add(current.challengeId);
-			return reply.nativeRequired ? { kind: 'awaiting-native' } : { kind: reply.state };
+			return reply.state === 'approved' && reply.nativeRequired ? { kind: 'awaiting-native' } : { kind: reply.state };
 		} catch (error) {
 			return { kind: 'failed', code: error instanceof AxisDaemonCallError ? error.code : 'E_INTERNAL' };
 		} finally {

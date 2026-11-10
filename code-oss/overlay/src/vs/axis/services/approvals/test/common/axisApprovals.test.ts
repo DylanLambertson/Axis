@@ -8,6 +8,7 @@ import { AxisDaemonApi } from '../../../daemon/common/axisDaemonApi.js';
 import { AxisDaemonCallError } from '../../../daemon/common/axisDaemonClient.js';
 import { readPendingChallenges } from '../../../daemon/common/axisDaemonReplies.js';
 import { challengeWire, CHALLENGE_ID, DIGEST, FakeDaemonClient } from '../../../daemon/test/common/axisDaemonFixtures.js';
+import { DAEMON_RESOLVE_REPLIES } from '../../../daemon/test/common/axisResolveReplies.js';
 import { APPROVAL_GUARD_MS, AxisApprovalController, IAxisApprovalCard, IAxisGestureEvent, IAxisGestureScope, isTrustedGesture, needsNativeConfirmation, scopeFor } from '../../common/axisApprovals.js';
 import { outcomeText } from '../../common/axisApprovalText.js';
 
@@ -139,19 +140,31 @@ suite('Axis approval cards', () => {
 		assert.deepStrictEqual(resolves(), []);
 	});
 
-	test('a native card answered Approve may come back settled; a native step on a card that has none is refused; deny never waits', async () => {
-		relist([card({ tier: 4, nativeConfirmationRequired: true })]);
-		client.replies.set('axis.approvals.resolve', { challengeId: CHALLENGE_ID, state: 'approved', nativeRequired: false });
-		assert.deepStrictEqual(await controller.decide(listed![0], 'approve', dom.click(), dom.scope()), { kind: 'approved' }, 'the dialog was confirmed early and applied');
+	test('every reply the real daemon sends is read as what it means: a tier 4 or 5 Deny is denied, not a failure', async () => {
+		const expected = { approve: { kind: 'approved' }, deny: { kind: 'denied' } } as const;
+		for (const row of DAEMON_RESOLVE_REPLIES) {
+			relist([card({ tier: row.tier, nativeConfirmationRequired: row.tier >= 4 })]);
+			if (row.late) {
+				now = 2_000_000 - 1; // the card is not expired here; the daemon finds it expired
+			}
+			client.replies.set('axis.approvals.resolve', { challengeId: CHALLENGE_ID, state: row.state, nativeRequired: row.nativeRequired });
+			const outcome = row.state === 'expired' ? { kind: 'expired' } : row.decision === 'approve' && row.nativeRequired ? { kind: 'awaiting-native' } : expected[row.decision];
+			assert.deepStrictEqual(await controller.decide(listed![0], row.decision, dom.click(), dom.scope()), outcome, JSON.stringify(row));
+			assert.deepStrictEqual(await controller.decide(listed![0], row.decision, dom.click(), dom.scope()), { kind: 'settled' }, `${JSON.stringify(row)}: settled, so no second resolve`);
+			now = NOW;
+		}
+		assert.strictEqual(resolves().length, DAEMON_RESOLVE_REPLIES.length);
+	});
+
+	test('a native flag that does not match the card is refused, either way', async () => {
 		relist([card()]);
 		client.replies.set('axis.approvals.resolve', { challengeId: CHALLENGE_ID, state: 'approved', nativeRequired: true });
-		assert.deepStrictEqual(await controller.decide(listed![0], 'approve', dom.click(), dom.scope()), { kind: 'failed', code: 'invalid_reply' });
-		relist([card({ tier: 4, nativeConfirmationRequired: true })]);
+		assert.deepStrictEqual(await controller.decide(listed![0], 'approve', dom.click(), dom.scope()), { kind: 'failed', code: 'invalid_reply' }, 'a native step on a card that has none');
 		client.replies.set('axis.approvals.resolve', { challengeId: CHALLENGE_ID, state: 'denied', nativeRequired: true });
 		assert.deepStrictEqual(await controller.decide(listed![0], 'deny', dom.click(), dom.scope()), { kind: 'failed', code: 'invalid_reply' });
-		client.replies.set('axis.approvals.resolve', { challengeId: CHALLENGE_ID, state: 'denied', nativeRequired: false });
 		relist([card({ tier: 4, nativeConfirmationRequired: true })]);
-		assert.deepStrictEqual(await controller.decide(listed![0], 'deny', dom.click(), dom.scope()), { kind: 'denied' });
+		client.replies.set('axis.approvals.resolve', { challengeId: CHALLENGE_ID, state: 'approved', nativeRequired: false });
+		assert.deepStrictEqual(await controller.decide(listed![0], 'approve', dom.click(), dom.scope()), { kind: 'failed', code: 'invalid_reply' }, 'a native card is never settled without the dialog');
 	});
 
 	test('a stale challenge is refused: gone from the list, or listed with another digest', async () => {
@@ -308,5 +321,40 @@ suite('Axis approval cards', () => {
 		doc.activeElement = label;
 		assert.strictEqual(scopeFor({ ...cardElement, contains: () => true }, button, n => n === label).isInComposer(label), true);
 		assert.strictEqual(inComposer.isInComposer(button), false);
+	});
+
+	test('a card that moves on screen is guarded again; one that stays put is not', async () => {
+		controller.placed(CHALLENGE_ID, 300, 10);
+		assert.strictEqual(controller.guardRemaining(CHALLENGE_ID), 0, 'the first position is only recorded');
+		controller.placed(CHALLENGE_ID, 300, 10);
+		controller.layout();
+		assert.strictEqual(controller.guardRemaining(CHALLENGE_ID), 0, 'same place, same list: still answerable');
+		controller.placed(CHALLENGE_ID, 268, 10); // a worktree row above was removed: the region slid up 32 px
+		assert.strictEqual(controller.guardRemaining(CHALLENGE_ID), APPROVAL_GUARD_MS);
+		assert.deepStrictEqual(await controller.decide(card(), 'approve', dom.click(), dom.scope()), { kind: 'too-soon' });
+		mono += APPROVAL_GUARD_MS;
+		controller.placed(CHALLENGE_ID, 268, 40);
+		assert.strictEqual(controller.guardRemaining(CHALLENGE_ID), APPROVAL_GUARD_MS, 'a sideways move counts too');
+		mono += APPROVAL_GUARD_MS;
+		listed = [card({ digest: 'ee'.repeat(32) })];
+		controller.layout(); // guarded again for the digest; the last position is kept
+		mono += APPROVAL_GUARD_MS;
+		controller.placed(CHALLENGE_ID, 100, 40);
+		assert.strictEqual(controller.guardRemaining(CHALLENGE_ID), APPROVAL_GUARD_MS, 'a move after a re-layout is still a move');
+		controller.placed('chal_ZZZZZZZZZZZZZZZZZZZZZZ', 1, 1);
+		assert.strictEqual(controller.guardRemaining('chal_ZZZZZZZZZZZZZZZZZZZZZZ'), APPROVAL_GUARD_MS, 'an unknown id stays guarded');
+		assert.strictEqual(resolves().length, 0);
+	});
+
+	test('a listing that could not be read keeps the answered ids: no second resolve for a card already answered', async () => {
+		assert.deepStrictEqual(await controller.decide(card(), 'approve', dom.click(), dom.scope()), { kind: 'approved' });
+		listed = undefined;
+		assert.deepStrictEqual(controller.layout(), []);
+		show([card()]);
+		assert.deepStrictEqual(await controller.decide(card(), 'approve', dom.click(), dom.scope()), { kind: 'settled' });
+		assert.strictEqual(resolves().length, 1);
+		show([]); // a listing that was read and no longer has it
+		show([card()]);
+		assert.deepStrictEqual(await controller.decide(card(), 'approve', dom.click(), dom.scope()), { kind: 'approved' });
 	});
 });

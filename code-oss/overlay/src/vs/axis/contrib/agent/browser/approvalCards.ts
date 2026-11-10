@@ -4,7 +4,7 @@
 
 import { $, addDisposableListener, append } from '../../../../base/browser/dom.js';
 import { RunOnceScheduler } from '../../../../base/common/async.js';
-import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
+import { Disposable, DisposableStore, toDisposable } from '../../../../base/common/lifecycle.js';
 import { localize } from '../../../../nls.js';
 import { AxisApprovalDecision, COMPOSER_SELECTOR, IAxisApprovalCard, needsNativeConfirmation, scopeFor } from '../../../services/approvals/common/axisApprovals.js';
 import { outcomeText } from '../../../services/approvals/common/axisApprovalText.js';
@@ -28,7 +28,10 @@ interface ICardView {
  *
  * A card keeps its element for as long as its challenge (and digest) stays listed, and new cards are added last, so
  * a button the user is aiming at is never replaced by another card's. Buttons are disabled while a card is new or has
- * moved (the guard time) and once it has expired.
+ * moved (the guard time) and once it has expired. The whole region moves when anything above it changes height (an
+ * agent can add or remove worktree rows), so the view reports each card's screen position to the service after
+ * drawing, whenever an element above it or the list changes size or anything scrolls, and at the click itself; a card
+ * that moved is guarded again. The status line sits below the cards, so an answer's text never moves a card.
  */
 export class AxisApprovalCards extends Disposable {
 
@@ -38,17 +41,21 @@ export class AxisApprovalCards extends Disposable {
 	private readonly more: HTMLElement;
 	private readonly views = new Map<string, ICardView>();
 	private readonly buttonTimer = this._register(new RunOnceScheduler(() => this.updateButtons(), 0));
+	private readonly placeTimer = this._register(new RunOnceScheduler(() => this.place(), 0));
+	private observer: ResizeObserver | undefined;
 
 	constructor(private readonly workspaceService: IAxisWorkspaceService) {
 		super();
 		this.element = $('.axis-approvals');
 		this.element.setAttribute('role', 'region');
 		this.element.setAttribute('aria-label', localize('axis.approvals.label', "Approvals"));
-		this.status = append(this.element, $('.axis-approvals-status'));
-		this.status.setAttribute('role', 'status');
 		this.list = append(this.element, $('.axis-approvals-list'));
 		this.more = append(this.element, $('.axis-approvals-more'));
+		this.status = append(this.element, $('.axis-approvals-status')); // below the cards: its text never moves one
+		this.status.setAttribute('role', 'status');
 		this._register(this.workspaceService.onDidChangeWorkspaces(() => this.render()));
+		this._register(addDisposableListener(this.element.ownerDocument, 'scroll', () => this.placeTimer.schedule(), true));
+		this._register(toDisposable(() => this.observer?.disconnect()));
 		this._register({ dispose: () => this.views.forEach(view => view.disposables.dispose()) });
 		this.render();
 	}
@@ -80,6 +87,31 @@ export class AxisApprovalCards extends Disposable {
 		}
 		this.element.hidden = !cards.length;
 		this.more.textContent = all.length > cards.length ? localize('axis.approvals.more', "{0} more approvals are not shown.", all.length - cards.length) : '';
+		this.updateButtons();
+		this.placeTimer.schedule(); // after the rest of the dashboard has drawn for the same change
+	}
+
+	/** Watches the size of everything above the region (and the list itself): any change there moves the cards. */
+	private observe(): void {
+		const parent = this.element.parentElement;
+		if (this.observer || !parent) {
+			return;
+		}
+		const observer = this.observer = new ResizeObserver(() => this.placeTimer.schedule());
+		observer.observe(parent);
+		observer.observe(this.list);
+		for (let node = parent.firstElementChild; node && node !== this.element; node = node.nextElementSibling) {
+			observer.observe(node);
+		}
+	}
+
+	/** Reports where each card is on screen; the service guards a card again when its position changed. */
+	private place(): void {
+		this.observe();
+		for (const [id, view] of this.views) {
+			const rect = view.element.getBoundingClientRect();
+			this.workspaceService.approvalPlaced(id, rect.top, rect.left);
+		}
 		this.updateButtons();
 	}
 
@@ -126,7 +158,7 @@ export class AxisApprovalCards extends Disposable {
 		const view: ICardView = { card, element, buttons: [], disposables: new DisposableStore() };
 		const native = needsNativeConfirmation(card);
 		if (native) {
-			append(element, $('p.axis-approval-native')).textContent = localize('axis.approval.native', "Approving starts a native confirmation. Confirm it in the dialog that opens; Axis never answers that dialog for you.");
+			append(element, $('p.axis-approval-native')).textContent = localize('axis.approval.native', "Approve here, then confirm it in the Axis confirmation dialog; Axis never answers that dialog for you.");
 		}
 		const actions = append(element, $('.axis-approval-actions'));
 		this.addButton(view, actions, name, 'deny', localize('axis.approval.deny', "Deny"));
@@ -144,9 +176,12 @@ export class AxisApprovalCards extends Disposable {
 		button.disabled = true; // enabled by updateButtons once the guard time has passed
 		view.buttons.push(button);
 		view.disposables.add(addDisposableListener(button, 'click', event => {
+			const rect = cardElement.getBoundingClientRect(); // where the card is now: a card that moved since it was last seen is guarded again
+			this.workspaceService.approvalPlaced(view.card.challengeId, rect.top, rect.left);
 			const scope = scopeFor(cardElement, button, (node: unknown) => node instanceof Element && node.closest(COMPOSER_SELECTOR) !== null);
 			this.workspaceService.decideApproval(view.card, decision, event, scope).then(outcome => {
 				if (!this._store.isDisposed) {
+					this.updateButtons();
 					this.status.textContent = localize('axis.approval.outcomeFor', "{0}: {1}", name, outcomeText(outcome));
 				}
 			});

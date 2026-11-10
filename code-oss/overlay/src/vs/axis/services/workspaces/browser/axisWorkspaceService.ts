@@ -62,6 +62,8 @@ export interface IAxisWorkspaceService {
 	layoutApprovals(): readonly IAxisApprovalCard[];
 	/** Milliseconds until a click on the card counts (0: now). */
 	approvalGuardRemaining(challengeId: string): number;
+	/** Where the view sees the card on screen (viewport pixels); a card whose position changed is guarded again. */
+	approvalPlaced(challengeId: string, top: number, left: number): void;
 	/**
 	 * A user's answer to a card (docs/design/axis-shell-a4.md). Calls `axis.approvals/1.resolve` only for a trusted
 	 * gesture on a listed, unexpired card that has been in place long enough; every other case returns a closed
@@ -139,6 +141,7 @@ export class AxisWorkspaceService extends Disposable implements IAxisWorkspaceSe
 
 	layoutApprovals(): readonly IAxisApprovalCard[] { return this.approvals.layout(); }
 	approvalGuardRemaining(challengeId: string): number { return this.approvals.guardRemaining(challengeId); }
+	approvalPlaced(challengeId: string, top: number, left: number): void { this.approvals.placed(challengeId, top, left); }
 
 	decideApproval(card: Pick<IAxisApprovalCard, 'challengeId' | 'digest'>, decision: AxisApprovalDecision, event: IAxisGestureEvent, scope: IAxisGestureScope): Promise<AxisApprovalOutcome> {
 		return this.approvals.decide(card, decision, event, scope);
