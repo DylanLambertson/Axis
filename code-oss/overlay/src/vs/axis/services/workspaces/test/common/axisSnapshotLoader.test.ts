@@ -7,7 +7,7 @@ import { Event } from '../../../../../base/common/event.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { AxisDaemonApi } from '../../../daemon/common/axisDaemonApi.js';
 import { AxisDaemonCallError } from '../../../daemon/common/axisDaemonClient.js';
-import { FakeDaemonClient, runWire, wire } from '../../../daemon/test/common/axisDaemonFixtures.js';
+import { challengeWire, FakeDaemonClient, runWire, wire } from '../../../daemon/test/common/axisDaemonFixtures.js';
 import { MAX_POLLED_PROJECTS } from '../../common/axisDaemonNotice.js';
 import { AxisSnapshotLoader, sameSnapshot } from '../../common/axisSnapshotLoader.js';
 import { AxisDataProvenance, IAxisCliRun, IAxisProjectInfo, IAxisWorkspaceLoadSource, IAxisWorktreeInfo } from '../../common/axisWorkspaceData.js';
@@ -35,7 +35,7 @@ function daemonWith(client: FakeDaemonClient): void {
 	client.replies.set('axis.worktrees.list', { worktrees: [wire({ path: '/work/main', origin: 'external' }), wire({ id: 'ws-a', path: '/work/wt-a' })] });
 	client.replies.set('axis.worktrees.status', { worktrees: [wire({ id: 'ws-a', path: '/work/wt-a', dirty: { staged: 1, unstaged: 0, untracked: 0 }, ahead: 2, behind: 0 })] });
 	client.replies.set('axis.cli-runs.list', { runs: [runWire({ workspaceId: 'ws-a', status: 'quiet' })] });
-	client.replies.set('axis.approvals.pending', { challenges: [{ challengeId: 'c1' }] });
+	client.replies.set('axis.approvals.pending', { challenges: [challengeWire()] });
 }
 
 suite('Axis snapshot loader', () => {
@@ -54,7 +54,8 @@ suite('Axis snapshot loader', () => {
 		const snapshot = await loader.load({ kind: 'ready' });
 		assert.strictEqual(snapshot.origin, 'daemon');
 		assert.strictEqual(snapshot.runsProvenance, 'daemon');
-		assert.strictEqual(snapshot.pendingApprovals, 1);
+		assert.strictEqual(snapshot.approvals?.length, 1);
+		assert.strictEqual(snapshot.approvals?.[0].targetSummary, 'Remove the worktree feat-x');
 		assert.strictEqual(snapshot.staleError, undefined);
 		const wt = snapshot.entries.find(e => e.key === 'ws-a')!;
 		assert.deepStrictEqual(wt.worktree.dirty, { staged: 1, unstaged: 0, untracked: 0 });
@@ -92,7 +93,7 @@ suite('Axis snapshot loader', () => {
 			assert.strictEqual(snapshot.origin, 'discovery', status.kind);
 			assert.strictEqual(snapshot.runsProvenance, 'discovery');
 			assert.strictEqual(snapshot.refusedWorktrees, 2);
-			assert.strictEqual(snapshot.pendingApprovals, undefined);
+			assert.strictEqual(snapshot.approvals, undefined);
 			assert.strictEqual(client.calls.length, 0, 'no call to a daemon that is not usable');
 			client.dispose();
 		}
@@ -145,7 +146,7 @@ suite('Axis snapshot loader', () => {
 		client.replies.set('axis.approvals.pending', () => { throw new AxisDaemonCallError('E_UNAVAILABLE'); });
 		const snapshot = await loader.load({ kind: 'ready' });
 		assert.strictEqual(snapshot.origin, 'daemon');
-		assert.strictEqual(snapshot.pendingApprovals, undefined);
+		assert.strictEqual(snapshot.approvals, undefined);
 		assert.strictEqual(snapshot.staleError, undefined);
 		client.dispose();
 	});
