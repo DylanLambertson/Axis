@@ -13,7 +13,7 @@ const DIGEST = "ab".repeat(32);
 const ID = "c".repeat(43);
 const input = (over: Partial<RunApprovalInput> = {}): RunApprovalInput => ({ runId: RUN, windowId: "win-1", tool: "run_command", tier: "destructive", digest: DIGEST, reasons: [], ...over });
 
-function stub(opts: { issuedTier?: number; native?: boolean; startFails?: boolean; noNative?: boolean } = {}) {
+function stub(opts: { issuedTier?: number; native?: boolean; startFails?: boolean; noNative?: boolean; full?: boolean } = {}) {
   const log: string[] = [];
   const consumed: Array<{ caller: unknown; context: Record<string, unknown> }> = [];
   const listed: string[] = [];
@@ -31,21 +31,23 @@ function stub(opts: { issuedTier?: number; native?: boolean; startFails?: boolea
     }) as never,
   };
   const native: RunNativePort = {
-    reserve: () => ({ release: () => void log.push("release") }),
+    reserve: () => (opts.full ? undefined : { release: () => void log.push("release") }),
     start: async (r) => {
       log.push(`start:${r.summary}`);
       if (opts.startFails) throw new Error("closed");
     },
     end: () => void log.push("end"),
   };
+  const preflights: number[] = [];
   const runs = createRunApprovals({
     manager,
+    preflight: (tier) => void preflights.push(tier),
     listing: { add: (c) => void listed.push(c.challengeId), remove: () => undefined },
     now: () => 1_000,
     ttlMs: 60_000,
     ...(opts.noNative ? {} : { native }),
   });
-  return { runs, log, consumed, listed };
+  return { runs, log, consumed, listed, preflights };
 }
 
 const tick = (): Promise<void> => new Promise((r) => setImmediate(r));
@@ -126,4 +128,63 @@ test("the native detail is built from daemon-derived values only and refuses a t
   assert.equal(runNativeDetail({ tool: "Run Command: safe", tier: "destructive" }), undefined);
   assert.equal(runNativeDetail({ tool: "run_command", tier: "root" }), undefined);
   assert.equal(runNativeDetail({ tool: "run_command", tier: "privileged" }), "run_command (privileged)");
+});
+
+test("a full native bridge refuses before anything is issued: no challenge, no audit row, no quota used", async () => {
+  const s = stub({ full: true });
+  let shown = 0;
+  let out: unknown;
+  const p = s.runs.request(input(), new AbortController().signal, () => void shown++).then((o) => (out = o));
+  await tick();
+  assert.deepEqual(s.log, [], "nothing was issued (the manager audits and counts every issue)");
+  s.runs.dispose(); // ends a wait a broken check would have started
+  await p;
+  assert.deepEqual(out, { kind: "declined", state: "refused" });
+  assert.equal(shown + s.listed.length + s.consumed.length, 0);
+});
+
+test("the anchor preflight is asked with the challenge tier: 4 for destructive and privileged, 3 otherwise", async () => {
+  for (const [tier, want] of [["destructive", 4], ["privileged", 4], ["write", 3], ["network", 3]] as const) {
+    const s = stub();
+    const p = s.runs.request(input({ tier }), new AbortController().signal);
+    await tick();
+    s.runs.dispose();
+    await p;
+    assert.deepEqual(s.preflights, [want], tier);
+  }
+});
+
+test("a call cancelled after the native confirmation but before the consume is withdrawn, not consumed", async () => {
+  const s = stub();
+  const ac = new AbortController();
+  const p = s.runs.request(input(), ac.signal);
+  await tick();
+  s.runs.settled({ challengeId: ID, state: "approved", nativeRequired: true });
+  s.runs.confirmed({ challengeId: ID, state: "approved", nativeRequired: true });
+  ac.abort(); // before the request's continuation runs
+  assert.deepEqual(await p, { kind: "declined", state: "withdrawn" });
+  assert.equal(s.consumed.length, 0);
+  assert.equal(s.log.includes("withdraw"), true);
+});
+
+test("the native line keeps the protected label and the closing parenthesis whole, within 192 units", async () => {
+  const s = stub();
+  const tool = "a_twenty_one_char_tol";
+  const preview = { tier: "destructive" as const, protected: true, content: { bytes: 9_007_199_254_740_991, sha256: "0f".repeat(32), head: "", truncated: true, findings: [] } };
+  const p = s.runs.request(input({ tool, preview }), new AbortController().signal);
+  await tick();
+  s.runs.dispose();
+  await p;
+  const line = (s.log.find((l) => l.startsWith("start:")) as string).slice("start:".length);
+  assert.equal(line, `axis.runs/1.toolCall: ${tool} (destructive, protected path), 9007199254740991 bytes, SHA-256 0f0f0f0f0f0f0f0f`);
+  assert.equal(line.length <= 192, true);
+});
+
+test("a size or hash the daemon cannot vouch for is left out of the native detail", () => {
+  const content = { bytes: 3, sha256: "0f".repeat(32), head: "", truncated: false, findings: [] };
+  const detail = (c: Partial<typeof content>) => runNativeDetail({ tool: "run_command", tier: "destructive", preview: { tier: "destructive", protected: false, content: { ...content, ...c } } });
+  for (const bad of [{ bytes: -1 }, { bytes: Number.NaN }, { bytes: 1.5 }, { sha256: "0F".repeat(32) }, { sha256: "0f".repeat(31) }]) {
+    assert.equal(detail(bad), "run_command (destructive)", JSON.stringify(bad));
+  }
+  assert.equal(detail({}), "run_command (destructive), 3 bytes, SHA-256 0f0f0f0f0f0f0f0f");
 });

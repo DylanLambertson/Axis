@@ -2,7 +2,7 @@
 import { createHash } from "node:crypto";
 import type { ChallengeManager, ResolveResult } from "@axis/challenge";
 import { COMPOSER_RUNS_CONTRACT, COMPOSER_RUNS_VERSION, runIdSchema, type ApprovalPreview, type Challenge } from "@axis/protocol";
-import { nativeSummary } from "./summary.js";
+import { NATIVE_SUMMARY_MAX, nativeSummary } from "./summary.js";
 
 /**
  * The approval of a composer tool call (DMN-3, docs/design/composer-runtime.md section 4). The broker asks its
@@ -219,7 +219,8 @@ export function createRunApprovals(core: RunApprovalsCore): RunApprovals {
         // Once, before the challenge reaches anyone: the proof goes to the supervisor only.
         const proof = core.manager.takeNativeProof(id);
         if (proof === null) throw new Error("no native proof");
-        const summary = nativeSummary(ACTION, challenge.targetSummary, runNativeDetail(input));
+        // The detail is daemon-derived only, so it may use the whole line: the protected label is never cut off.
+        const summary = nativeSummary(ACTION, challenge.targetSummary, runNativeDetail(input), NATIVE_SUMMARY_MAX - ACTION.length - 2);
         await native.start({ challengeId: id, proof, windowId: input.windowId, connectionId, actor, summary }, reservation as { release(): void });
       } catch {
         // The user is never asked for a call whose dialog could not open.

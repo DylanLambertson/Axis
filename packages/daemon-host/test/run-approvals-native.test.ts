@@ -29,8 +29,8 @@ const input = (over: Partial<RunApprovalInput> = {}): RunApprovalInput => ({
   ...over,
 });
 
-async function setup(t: TestContext): Promise<{ r: Rig; user: Client }> {
-  const r = await rig();
+async function setup(t: TestContext, options: Parameters<typeof rig>[0] = {}): Promise<{ r: Rig; user: Client }> {
+  const r = await rig(options);
   t.after(() => r.cleanup());
   return { r, user: await r.connect() };
 }
@@ -170,4 +170,30 @@ test("C4: the agent cannot answer its own tier 4 challenge in the window", async
   r.approvals.runs.dispose();
   assert.deepEqual(await a.outcome, { kind: "declined", state: "withdrawn" });
   assert.equal(r.approvals.stats().native.entries, 0);
+});
+
+/** The outcome, or "pending" if it has not settled within `ms` (a wait only the TTL would end). */
+const within = (p: Promise<RunApprovalOutcome>, ms = 2_000): Promise<RunApprovalOutcome | "pending"> => {
+  let timer: NodeJS.Timeout | undefined;
+  return Promise.race([p, new Promise<"pending">((res) => (timer = setTimeout(() => res("pending"), ms)))]).finally(() => clearTimeout(timer));
+};
+
+test("C4: a native wait lost with the control channel declines the call at once, not at the TTL", async (t) => {
+  const { r, user } = await setup(t);
+  const a = await ask(r);
+  await resolve(user, a.challenge);
+  r.control.dispose(); // the supervisor channel is gone: the dialog can never answer
+  assert.deepEqual(await within(a.outcome), { kind: "declined", state: "expired" });
+  assert.equal(spent(r), 0);
+  assert.equal(r.approvals.runs.waiting(), 0);
+});
+
+test("C4: a native confirmation the manager cannot apply declines the call at once and spends nothing", async (t) => {
+  const { r, user } = await setup(t, { failAudit: (e) => e.payload["phase"] === "native" });
+  const a = await ask(r);
+  await resolve(user, a.challenge);
+  r.answer(a.challenge.challengeId, a.proof, true);
+  assert.deepEqual(await within(a.outcome), { kind: "declined", state: "expired" });
+  assert.equal(spent(r), 0);
+  assert.equal(r.approvals.stats().native.applyErrors, 1);
 });
