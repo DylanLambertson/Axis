@@ -10,6 +10,7 @@ import type { HandlerRegistrar } from "./handlers/anchor-guard.js";
 import type { Logger } from "./log/logger.js";
 import type { Clock } from "./ports/clock.js";
 import type { RunsService } from "./ports/runs.js";
+import type { ProjectMutex } from "./worktrees/project-mutex.js";
 
 /**
  * Small pieces of the composition root (ticket H12), kept apart so `compose.ts` stays readable. None of them touches a
@@ -26,6 +27,19 @@ export interface ActiveRunForwarder {
   readonly hasActiveRun: (workspaceId: string) => boolean;
   /** Bind the real service. Once; a second bind is refused (the answer must not be switched back and forth). */
   readonly bind: (service: Pick<RunsService, "hasActiveRun">) => void;
+}
+
+/**
+ * The composer's write lock (policies 3.3 and 6.1, ticket C2): the project mutex of the workspace's project, the one Axis
+ * commit and push take, queued as an unrelated caller (`exclusive`: the loop runs in the async context of the `start`
+ * that held the mutex long ago). A workspace the journal does not know is refused, so the write does not happen.
+ */
+export function composerWriteLock(journal: Pick<Journal, "getWorkspace">, mutex: Pick<ProjectMutex, "exclusive">) {
+  return <T>(workspaceId: string, fn: () => Promise<T>, signal: AbortSignal): Promise<T> => {
+    const ws = journal.getWorkspace(workspaceId);
+    if (ws === undefined) return Promise.reject(new AxisError("E_NOT_FOUND", "The workspace is not known", { reason: "unknown_workspace" }));
+    return mutex.exclusive(ws.projectId, fn, signal);
+  };
 }
 
 export function createActiveRunForwarder(): ActiveRunForwarder {
