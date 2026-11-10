@@ -17,7 +17,7 @@ import { createTempIndexProvider } from "./bindings/review-tempindex.js";
 import { createRunsBinding, type RunsBinding } from "./bindings/runs.js";
 import type { RunSnapshotterFactory } from "./bindings/snapshot.js";
 import { createWorktreesBinding, type WorktreesBinding } from "./bindings/worktrees.js";
-import { createActiveRunForwarder, createAuditSeal, createRunsClock, settleComposer, daemonAuditSink, handleProjectsRegister, recordingRegistrar } from "./compose-parts.js";
+import { composerWriteLock, createActiveRunForwarder, createAuditSeal, createRunsClock, settleComposer, daemonAuditSink, handleProjectsRegister, recordingRegistrar } from "./compose-parts.js";
 import type { HostConfig } from "./config.js";
 import { createAttestationVerifier } from "./control/attestation.js";
 import type { ControlClient } from "./control/client.js";
@@ -242,6 +242,8 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
           now: () => ports.clock.now(),
           platform: config.platform,
           ...(options.composer?.mock === undefined ? {} : { mock: options.composer.mock }),
+          // Composer writes take the project mutex Axis git operations take (policies 3.3, 6.1), queued like any caller.
+          writeLock: composerWriteLock(parts.journal, worktrees.mutex),
         });
         const composer = createComposerService({
           journal: parts.journal,
