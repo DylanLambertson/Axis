@@ -13,11 +13,12 @@ const DETAIL_MAX = 80;
  * project display name) when it gave one, else the challenge's own target summary. It must never carry text an agent
  * or a repository wrote (a plan or finding summary could say "read only, safe to confirm"), and it is never built
  * from the raw payload. A detail with an unsafe character is replaced by the target summary; runs of spaces collapse to
- * one; it is cut at 80 code units, and the whole line at 192, with the action always kept whole.
+ * one; it is cut at 80 code units (`detailMax`; a caller whose detail is built only from values the daemon derived may
+ * give it the rest of the line), and the whole line at 192, with the action always kept whole.
  */
-export function nativeSummary(action: string, targetSummary: string, detail?: string): string {
+export function nativeSummary(action: string, targetSummary: string, detail?: string, detailMax = DETAIL_MAX): string {
   const clean = detail === undefined ? "" : detail.replace(/\p{Z}+/gu, " ").trim();
-  const safe = clean.length > 0 && !UNSAFE.test(clean) ? shortenSummary(clean, DETAIL_MAX) : targetSummary;
+  const safe = clean.length > 0 && !UNSAFE.test(clean) ? shortenSummary(clean, detailMax) : targetSummary;
   const prefix = `${action}: `;
   if (prefix.length >= NATIVE_SUMMARY_MAX - 8) return shortenSummary(action, NATIVE_SUMMARY_MAX);
   return prefix + shortenSummary(safe, NATIVE_SUMMARY_MAX - prefix.length);
