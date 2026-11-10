@@ -72,11 +72,13 @@ export function buildExecEnv(
   }
   for (const [name, value] of Object.entries(message)) put(name, value);
   put("GIT_NO_LAZY_FETCH", "1");
-  // A transport allow-list no transport can match. It overrides every protocol.* setting on every git since 2.12, so a
-  // repository `protocol.file.allow=always` cannot re-enable the lazy fetch that GIT_NO_LAZY_FETCH stops only from 2.44.
-  // Not a word such as `none`: that is itself a transport name a repository can supply (`remote.<r>.vcs=none` with
-  // `alias.remote-none`, a `none::` URL, a `git-remote-none` on PATH), and an empty entry matches an empty `vcs`. `/` cannot:
-  // `alias.remote-/` is not a valid config key and `git-remote-/` can only be a directory.
+  // A transport allow-list that admits only the helper name `/`. It overrides every protocol.* setting on every git since
+  // 2.12, so a repository `protocol.file.allow=always` cannot re-enable the lazy fetch that GIT_NO_LAZY_FETCH stops only from
+  // 2.44. `/` IS still a name git admits (`remote.<r>.vcs=/`), but its helper `git remote-/` cannot run: no builtin, no
+  // program (`git-remote-/` can only be a directory), no alias (`alias.remote-/` is not a valid config key), and the
+  // `help.autocorrect=0` pin (exec-argv.ts) stops git from running the closest alias instead. Not a word such as `none`:
+  // that is a helper a repository can supply (`remote.<r>.vcs=none` with `alias.remote-none`, a `none::` URL, a
+  // `git-remote-none` on PATH), and an empty entry matches an empty `vcs`.
   put("GIT_ALLOW_PROTOCOL", "/");
   if (bound !== undefined) {
     put("GIT_DIR", bound.redirect.gitDir);
