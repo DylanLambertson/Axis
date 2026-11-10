@@ -9,6 +9,7 @@ import { KeyCode } from '../../../../base/common/keyCodes.js';
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { localize } from '../../../../nls.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
+import { AxisApprovalCards } from './approvalCards.js';
 import { IAxisCliRun } from '../../../services/workspaces/common/axisWorkspaceData.js';
 import { AxisRowState, branchLabel, changesLabel, IAxisWorkspaceEntry, rowStateOf } from '../../../services/workspaces/common/axisWorkspaceModel.js';
 import { daemonNotice } from '../../../services/workspaces/common/axisDaemonNotice.js';
@@ -73,6 +74,8 @@ export class AxisDashboardView extends Disposable {
 		this.list.setAttribute('role', 'listbox');
 		this.list.tabIndex = -1;
 		this.list.setAttribute('aria-label', localize('axis.dashboard.listLabel', "Workspaces"));
+		// Below the list: a card appearing never moves a workspace row (docs/design/axis-shell-a4.md, layout).
+		this.element.appendChild(this._register(new AxisApprovalCards(this.workspaceService)).element);
 		this._register(addDisposableListener(this.list, EventType.KEY_DOWN, e => this.onKeyDown(new StandardKeyboardEvent(e))));
 		this._register(this.workspaceService.onDidChangeWorkspaces(() => this.render()));
 		this.render();
