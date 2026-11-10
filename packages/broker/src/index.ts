@@ -8,6 +8,7 @@ export {
   isUnder, resolveRoot, resolveTarget, openContained, readContained, writeContained,
   type ContainDeps, type ResolveMode, type ResolvedRoot, type ResolvedTarget, type OpenFile, type ReadOptions, type WriteOptions,
 } from "./contain.js";
+export { swapContained, contentDigest, ABSENT, type SwapOptions, type SwapResult } from "./swap.js";
 export { buildToolEnv, sanitizePath, assertEnv, BASE_NAMES, type EnvGrant, type EnvGrantSource, type ToolEnvSpec, type ToolEnvOptions, type BuiltToolEnv, type EnvRemovalReason } from "./env.js";
 export { createCommandRunner, type CommandRunner, type CommandSpec, type RunRecord, type RunnerOptions, type EndReason, type SpawnFn } from "./runner.js";
 export { createBrokerGit, checkGitCall, gitCallTier, GIT_COMMANDS, type BrokerGit, type BrokerGitDeps, type GitCall, type GitCommand } from "./git.js";

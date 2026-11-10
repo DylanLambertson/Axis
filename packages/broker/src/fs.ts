@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { constants, realpath as realpathCb } from "node:fs";
-import { lstat as lstatP, open as openP, readlink } from "node:fs/promises";
+import { link as linkP, lstat as lstatP, open as openP, readlink, rename as renameP, unlink as unlinkP } from "node:fs/promises";
 
 export type FileKind = "file" | "dir" | "symlink" | "other";
 export interface FileStat {
@@ -12,6 +12,8 @@ export interface FileStat {
   /** Modification and status-change times in nanoseconds, as text: with `id` and `size` they identify the contents of a file at a moment. */
   readonly mtime: string;
   readonly ctime: string;
+  /** Permission bits (`mode & 0o7777`), where the file system reports them. */
+  readonly mode?: number;
 }
 /** How a file is opened. No mode truncates: truncation happens only after the open was verified. */
 export type OpenMode = "read" | "overwrite" | "create" | "upsert";
@@ -22,6 +24,8 @@ export interface BrokerFile {
   read(max: number): Promise<Buffer>;
   write(data: Uint8Array): Promise<void>;
   truncate(length: number): Promise<void>;
+  /** Set the permission bits of the open file (the compare-and-swap keeps the replaced file's mode). */
+  chmod?(mode: number): Promise<void>;
   /** The path the kernel reports for the open descriptor, where the platform offers one (Linux), else undefined. */
   fdPath(): Promise<string | undefined>;
   close(): Promise<void>;
@@ -32,13 +36,18 @@ export interface BrokerFs {
   realpath(path: string): Promise<string>;
   lstat(path: string): Promise<FileStat>;
   open(path: string, mode: OpenMode): Promise<BrokerFile>;
+  /** For the compare-and-swap (`swap.ts`); a file system without them cannot swap (refused `fs-error`). */
+  rename?(from: string, to: string): Promise<void>;
+  /** A new name for an existing file; fails `EEXIST` when `to` exists (the atomic no-clobber create). */
+  link?(existing: string, to: string): Promise<void>;
+  unlink?(path: string): Promise<void>;
 }
 
-type Stats = { dev: bigint; ino: bigint; nlink: bigint; size: bigint; mtimeNs: bigint; ctimeNs: bigint; isFile(): boolean; isDirectory(): boolean; isSymbolicLink(): boolean };
+type Stats = { dev: bigint; ino: bigint; mode: bigint; nlink: bigint; size: bigint; mtimeNs: bigint; ctimeNs: bigint; isFile(): boolean; isDirectory(): boolean; isSymbolicLink(): boolean };
 
 function toStat(s: Stats): FileStat {
   const kind: FileKind = s.isSymbolicLink() ? "symlink" : s.isDirectory() ? "dir" : s.isFile() ? "file" : "other";
-  return { id: `${s.dev}:${s.ino}`, kind, nlink: Number(s.nlink), size: Number(s.size), mtime: String(s.mtimeNs), ctime: String(s.ctimeNs) };
+  return { id: `${s.dev}:${s.ino}`, kind, nlink: Number(s.nlink), size: Number(s.size), mtime: String(s.mtimeNs), ctime: String(s.ctimeNs), mode: Number(s.mode & 0o7777n) };
 }
 
 const NOFOLLOW = constants.O_NOFOLLOW ?? 0;
@@ -62,6 +71,9 @@ export const nodeBrokerFs: BrokerFs = {
     new Promise((resolve, reject) => {
       realpathCb.native(p, (e, r) => (e === null ? resolve(r) : reject(e)));
     }),
+  rename: (from, to) => renameP(from, to),
+  link: (existing, to) => linkP(existing, to),
+  unlink: (p) => unlinkP(p),
   async lstat(p) {
     return toStat((await lstatP(p, { bigint: true })) as unknown as Stats);
   },
@@ -90,6 +102,7 @@ export const nodeBrokerFs: BrokerFs = {
         }
       },
       truncate: (n) => fh.truncate(n),
+      chmod: (m) => fh.chmod(m),
       async fdPath() {
         if (process.platform !== "linux") return undefined;
         try {

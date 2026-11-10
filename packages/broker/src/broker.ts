@@ -5,6 +5,7 @@ import type { GitRunResult, GitRunner } from "@axis/git-ops";
 import { BrokerAudit, BROKER_ACTIONS } from "./audit.js";
 import { foldName } from "./lexical.js";
 import { readContained, resolveRoot, resolveTarget, writeContained, type ContainDeps, type TargetGuard } from "./contain.js";
+import { swapContained, type SwapResult } from "./swap.js";
 import { buildToolEnv, type EnvGrantSource } from "./env.js";
 import { BrokerError, denied, invalid, toBrokerError } from "./errors.js";
 import type { BrokerFs } from "./fs.js";
@@ -28,6 +29,8 @@ export interface ToolContext {
   readonly signal: AbortSignal;
   readFile(path: string, maxBytes: number): Promise<Buffer>;
   writeFile(path: string, data: Uint8Array, o: { readonly mode: "overwrite" | "create" | "upsert"; readonly maxBytes: number }): Promise<void>;
+  /** A compare-and-swap write (`swap.ts`): refused `E_CONFLICT` / `stale` unless the path holds `base`. The caller holds the write lock. */
+  swapFile(path: string, data: Uint8Array, o: { readonly base: string; readonly maxBytes: number }): Promise<SwapResult>;
   /** `command` is a bare name (resolved on PATH outside the worktree) or an absolute path. No shell. */
   run(o: { readonly command: string; readonly args?: readonly string[]; readonly cwd?: string; readonly timeoutMs: number; readonly maxOutputBytes: number; readonly stdin?: Uint8Array }): Promise<RunRecord>;
   git(call: GitCall): Promise<GitRunResult>;
@@ -421,6 +424,13 @@ export class ToolBroker {
         const r = await writeContained(contain, worktreeId, path, data, { ...o, guard: guardFor("write"), signal });
         stats.effects++;
         stats.bytesWritten += r.bytes;
+      },
+      swapFile: async (path, data, o) => {
+        alive();
+        const r = await swapContained(contain, worktreeId, path, data, { base: o.base, maxBytes: o.maxBytes, guard: guardFor("write"), signal });
+        stats.effects++;
+        stats.bytesWritten += r.bytes;
+        return r;
       },
       run: async (o) => {
         alive();

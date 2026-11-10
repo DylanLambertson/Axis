@@ -20,7 +20,7 @@ Everything outside pure computation is a port, so tests run without a worktree m
 
 ## 2. Modules
 
-- `contain` (WT-1, DMN-2): `resolveInWorktree`, `readContained`, `writeContained`.
+- `contain` (WT-1, DMN-2): `resolveInWorktree`, `readContained`, `writeContained`; `swap` (ticket C2): `swapContained`, a write that names the digest it replaces (`docs/design/composer-runtime.md` section 4).
 - `protectedPaths` (WT-3): `matchProtected` over folded path segments.
 - `env` (PTY-2): `buildToolEnv`.
 - `runner` (PTY-4): `createCommandRunner().run` and `killAll`.

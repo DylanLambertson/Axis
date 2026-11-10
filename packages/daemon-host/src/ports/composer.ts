@@ -61,6 +61,11 @@ export interface ComposerRunTools {
   readonly specs: readonly ComposerToolSpec[];
   /** Never throws for a refusal: the model is told, the run goes on. Throws only when the run must stop (audit failure). */
   invoke(name: string, input: unknown, signal: AbortSignal): Promise<ComposerToolOutcome>;
+  /**
+   * The drift notice before a model turn (policies section 3.4, C2): the paths the run saw that changed outside it since
+   * its last turn, as untrusted-labelled text with no content, or undefined when nothing changed. Never throws.
+   */
+  drift?(signal: AbortSignal): Promise<string | undefined>;
 }
 
 export interface ComposerRunContext {
