@@ -10,7 +10,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { describe, it } from 'node:test';
 import { createExecGitRunner, WorktreeManager, type GitRunner } from '../src/index.js';
-import {  sh, write, type Fixture } from './helpers.js';
+import {  sh, write, type Fixture, exp } from './helpers.js';
 import { fresh, raw, statDirty, everyBlobPath, fired } from './rereview-support.js';
 // --------------------------------------------------------------------------------------------
 describe('re-review B-1: planted hooks never run in the daemon', () => {
@@ -118,7 +118,7 @@ describe('re-review B-2: planted filter drivers never run in the daemon', () => 
     attrs(fx, '');
     statDirty(path.join(a.path, 'a.txt'));
     // No baseline rewrite at all: status() has no drift guard. A UI status refresh is enough.
-    await fx.manager.status(a.path);
+    await fx.manager.status(a.path, exp(a.path));
     assert.equal(existsSync(marker), false, 'empty-named clean filter executed inside daemon status()');
   });
 
@@ -157,7 +157,7 @@ describe('re-review B-2: scan-then-run TOCTOU', () => {
     attrs(fx, 'race');
     statDirty(path.join(a.path, 'a.txt'));
     armed = true;
-    await m.status(a.path);
+    await m.status(a.path, exp(a.path));
     assert.equal(existsSync(marker), false, 'driver planted after the scan ran in daemon status()');
   });
 
@@ -182,7 +182,7 @@ describe('re-review B-2: scan-then-run TOCTOU', () => {
       while (Date.now() < deadline && !existsSync(marker)) {
         statDirty(path.join(a.path, 'a.txt'));
         tries++;
-        await fx.manager.status(a.path).catch(() => undefined);
+        await fx.manager.status(a.path, exp(a.path)).catch(() => undefined);
       }
     } finally {
       loop.kill('SIGKILL');

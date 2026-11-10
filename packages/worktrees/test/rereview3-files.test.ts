@@ -8,7 +8,7 @@ import { mkdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:
 import * as path from 'node:path';
 import { after, describe, it } from 'node:test';
 import { createExecGitRunner, WorktreeError, WorktreeManager, type GitRunner } from '../src/index.js';
-import { makeFixture, sh, write, type Fixture } from './helpers.js';
+import { makeFixture, sh, write, type Fixture, exp } from './helpers.js';
 
 const fixtures: Fixture[] = [];
 function fresh(): Fixture {
@@ -84,7 +84,7 @@ describe('R3-1: snapshot content is read in-process from the scanned file only',
     write(leak, 'harmless\n');
     write(path.join(ws.path, 'a.txt'), 'edit\n');
     hook.arm();
-    const got = await backupContent(fx, m.restoreFromRunBase({ path: path.join(ws.path, 'a.txt') }), 'leak.txt');
+    const got = await backupContent(fx, m.restoreFromRunBase({ path: path.join(ws.path, 'a.txt') , expectedWorktree: exp(path.join(ws.path, 'a.txt'))}), 'leak.txt');
     assert.ok(hook.fired(), 'the swap hook never ran: the test is vacuous');
     assert.notEqual(got, SECRET, 'the symlink target was copied into the agent-readable backup');
   });
@@ -101,9 +101,9 @@ describe('R3-1: snapshot content is read in-process from the scanned file only',
     rmSync(path.join(ws.path, 'd'), { recursive: true });
     symlinkSync(outside, path.join(ws.path, 'd'));
     write(path.join(ws.path, 'a.txt'), 'edit\n');
-    const got = await backupContent(fx, fx.manager.restoreFromRunBase({ path: path.join(ws.path, 'a.txt') }), 'd/id.txt');
+    const got = await backupContent(fx, fx.manager.restoreFromRunBase({ path: path.join(ws.path, 'a.txt') , expectedWorktree: exp(path.join(ws.path, 'a.txt'))}), 'd/id.txt');
     assert.notEqual(got, SECRET, 'a file outside the worktree was copied into the backup through a directory symlink');
-    const st = await fx.manager.status(ws.path);
+    const st = await fx.manager.status(ws.path, exp(ws.path));
     // As git does, a path beyond a symlinked directory is gone, not modified: nothing outside was opened.
     assert.equal(st.dirty.find((d) => d.path === 'd/id.txt')?.worktree, 'D', 'status compared a file outside the worktree');
   });
@@ -119,7 +119,7 @@ describe('R3-1: snapshot content is read in-process from the scanned file only',
     write(path.join(ws.path, 'a.txt'), 'edit\n');
     hook.arm();
     await within(
-      m.restoreFromRunBase({ path: path.join(ws.path, 'a.txt') }).then(() => undefined, () => undefined),
+      m.restoreFromRunBase({ path: path.join(ws.path, 'a.txt') , expectedWorktree: exp(path.join(ws.path, 'a.txt'))}).then(() => undefined, () => undefined),
       15_000, 'restoreFromRunBase with a FIFO swapped in',
     );
     assert.ok(hook.fired(), 'the swap hook never ran: the test is vacuous');
@@ -141,7 +141,7 @@ describe('R3-2: status() never blocks on a FIFO and never reads past a symlink',
     try {
       const deadline = Date.now() + 25_000;
       while (Date.now() < deadline && calls < 200) {
-        await within(fx.manager.status(ws.path).catch(() => undefined), 10_000, `status() call ${calls + 1}`);
+        await within(fx.manager.status(ws.path, exp(ws.path)).catch(() => undefined), 10_000, `status() call ${calls + 1}`);
         calls++;
       }
     } finally {
@@ -157,7 +157,7 @@ describe('R3-2: status() never blocks on a FIFO and never reads past a symlink',
     execFileSync('mkfifo', [path.join(ws.path, 'a.txt')]);
     unlinkSync(path.join(ws.path, 'sub', 'b.txt'));
     symlinkSync('/dev/zero', path.join(ws.path, 'sub', 'b.txt'));
-    const st = await within(fx.manager.status(ws.path), 10_000, 'status()');
+    const st = await within(fx.manager.status(ws.path, exp(ws.path)), 10_000, 'status()');
     assert.equal(st.dirty.find((d) => d.path === 'a.txt')?.worktree, 'M');
     assert.equal(st.dirty.find((d) => d.path === 'sub/b.txt')?.worktree, 'M');
   });
