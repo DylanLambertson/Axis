@@ -11,6 +11,21 @@ export {
   type TransitionOptions,
   type Workspace,
 } from "./model.js";
+export {
+  ACTIVITY_TYPES,
+  COMPOSER_RUN_MODES,
+  ComposerRecords,
+  DEFAULT_ACTIVITY_BOUNDS,
+  MAX_ACTIVITY_ROW_BYTES,
+  checkActivityBounds,
+  type ActivityBounds,
+  type ActivityRecord,
+  type ActivityType,
+  type BudgetTotals,
+  type ComposerRunMeta,
+  type ComposerRunRecord,
+  type ComposerUsageRecord,
+} from "./composer-store.js";
 export { baseBranchSchema, baseTipSchema, type RegisterProjectInput } from "./records.js";
 export { MAX_TAIL_ROWS, lastTransitionId, transitionsSince, type TransitionTail } from "./tail.js";
 export { JOURNAL_MIGRATIONS, JOURNAL_SCHEMA_VERSION } from "./schema.js";

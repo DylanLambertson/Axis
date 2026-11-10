@@ -12,6 +12,7 @@ import { createSecretScanner, type ScanMode } from "@axis/secret-scan";
 import { anchorPreflight } from "./anchor/preflight.js";
 import { createAgentBinding, type AgentBinding } from "./bindings/agent.js";
 import { createGitOperations, createGitPort } from "./bindings/git.js";
+import { selectPtyGitRunner } from "./bindings/pty-git.js";
 import { createCommitPreparer, createReviewService } from "./bindings/review.js";
 import { createTempIndexProvider } from "./bindings/review-tempindex.js";
 import { createRunsBinding, type RunsBinding } from "./bindings/runs.js";
@@ -48,7 +49,7 @@ import { createDaemonHost, type DaemonHost, type HostOptions, type HostServices,
 import { installHostLifecycle, type LifecycleHandle, type LifecycleOptions } from "./lifecycle.js";
 import type { Logger } from "./log/logger.js";
 import { checkCoverage } from "./policy/coverage.js";
-import type { PtyPort } from "./ports/pty.js";
+import type { PtyExecPort, PtyPort } from "./ports/pty.js";
 import type { ChannelMux } from "./transport/mux.js";
 
 /**
@@ -57,7 +58,8 @@ import type { ChannelMux } from "./transport/mux.js";
  * `Daemon`, the raw `register`, the database or the discard minter; the run trust minter goes to the cli-runs handlers alone, TRU-2).
  *
  * What it guarantees, and what fails closed:
- * - It REFUSES TO BE BUILT without a pty port and a pty git runner (`pty_required`, exit 78, before a lock or a file exists):
+ * - It REFUSES TO BE BUILT without a pty port and a pty git runner (`pty_required`, exit 78, before a lock or a file exists; the
+ *   runner is `createPtyGitRunner` over the port's `exec` when it has one, the only mapping of git-ops onto `exec`):
  *   `commit-tree` and `push` run in the `pty` git context and the runs binding spawns in it, so a host that could not reach
  *   it would serve `axis.git/1` and `axis.cli-runs/1` and fail on first use. A missing snapshotter factory is refused too
  *   (`snapshotter_required`): it is called once after storage with the host's one `gitPath`, and a result without `before` and
@@ -83,9 +85,9 @@ export interface ComposeOptions {
   readonly portSource?: { onPort(handler: (data: unknown, port: ElectronPortLike) => void): () => void };
   readonly ports: Omit<StartupPorts, "control" | "reconcile" | "afterStorage" | "beforeReady">;
   readonly host?: HostOptions;
-  /** The Axis pty process: spawns CLI runs. REQUIRED. */
-  readonly pty: PtyPort | undefined;
-  /** The `pty` git context runner (commit-tree and push run where the credentials and signing are). REQUIRED. */
+  /** The Axis pty process: spawns CLI runs. REQUIRED. With `exec`, the `pty` git context runs over it (`createPtyGitRunner`). */
+  readonly pty: (PtyPort & Partial<PtyExecPort>) | undefined;
+  /** The `pty` git context runner, REQUIRED exactly when `pty` has no `exec` (test fakes); refused alongside one that has. */
   readonly ptyGitRunner: GitRunner | undefined;
   /** GIT-SNAP-1 around a run: production passes `gitSnapshotRunSnapshotter` (`@axis/git-snapshot`, question 10). REQUIRED. */
   readonly snapshotter: RunSnapshotterFactory | undefined;
@@ -116,7 +118,14 @@ export interface ComposeOptions {
   /** How long shutdown waits for composer runs to record their last rows before the audit writers are sealed (default 1000). */
   readonly composerSettleMs?: number;
   /** Composer runs (`axis.runs/1`, docs/design/composer-runtime.md): the mock provider's script and the per-run budget. */
-  readonly composer?: { readonly mock?: MockProviderOptions; readonly budget?: RunBudgetLimits; readonly maxTurns?: number; readonly toolCaps?: Partial<ToolCaps> };
+  readonly composer?: {
+    readonly mock?: MockProviderOptions;
+    readonly budget?: RunBudgetLimits;
+    /** Per-workspace budget across composer runs (C10); default `DEFAULT_WORKSPACE_BUDGET`. */
+    readonly workspaceBudget?: RunBudgetLimits;
+    readonly maxTurns?: number;
+    readonly toolCaps?: Partial<ToolCaps>;
+  };
   /** Period of the event sources (docs/design/events.md section 4; default 250 ms). */
   readonly eventPumpMs?: number;
 }
@@ -133,7 +142,6 @@ function refuse(reason: string): never {
   throw new AxisError("E_INVALID_ARGUMENT", "The host composition is incomplete", { reason });
 }
 
-const isRunner = (r: unknown): r is GitRunner => typeof (r as { run?: unknown } | null)?.run === "function";
 const isPty = (p: unknown): p is PtyPort => typeof (p as { spawn?: unknown } | null)?.spawn === "function";
 
 /** The registry restricted to what the host serves, so an unserved method does not exist (and `hello` does not offer it). */
@@ -146,11 +154,13 @@ function registryOf(surface: HostServices["surface"]): ContractRegistry {
 
 export function composeDaemonHost(options: ComposeOptions): ComposedHost {
   if (!isPty(options.pty)) refuse("pty_required");
-  if (!isRunner(options.ptyGitRunner)) refuse("pty_git_runner_required");
+  // One source for the pty git context: the strict mapping over the pty process's `exec`, or (no `exec`) the caller's runner.
+  const chosenPtyGit = selectPtyGitRunner(options.pty, options.ptyGitRunner, options.config.platform);
+  if (typeof chosenPtyGit === "string") refuse(chosenPtyGit);
+  const ptyGitRunnerFor: (gitPath: string) => GitRunner = chosenPtyGit;
   if (typeof options.snapshotter !== "function") refuse("snapshotter_required");
   const { config, control, ports } = options;
   const pty = options.pty;
-  const ptyGitRunner = options.ptyGitRunner;
   const snapshotterFactory = options.snapshotter;
   const logger: Logger | undefined = ports.logger;
   const scanner = createSecretScanner({ mode: options.scanMode ?? "refuse" });
@@ -257,7 +267,9 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
           journal: parts.journal,
           engine: agent,
           now: () => ports.clock.now(),
+          redactor: ports.redactor,
           ...(options.composer?.budget === undefined ? {} : { budget: options.composer.budget }),
+          ...(options.composer?.workspaceBudget === undefined ? {} : { workspaceBudget: options.composer.workspaceBudget }),
           ...(options.composer?.maxTurns === undefined ? {} : { maxTurns: options.composer.maxTurns }),
           ...(options.composer?.toolCaps === undefined ? {} : { toolCaps: options.composer.toolCaps }),
           onInternalError: (where) => logger?.error("request.failed", { reason: `composer_${where.slice(0, 24)}` }),
@@ -377,7 +389,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
       platform: config.platform,
       runHooks: options.runHooks ?? false,
       scanner,
-      ptyRunner: ptyGitRunner,
+      ptyRunner: ptyGitRunnerFor(services.gitPath),
       assertNoDrift: (w) => worktrees.assertNoDrift(w),
       excludeDirs: services.excludeDirs,
     });

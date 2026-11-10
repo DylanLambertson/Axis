@@ -1,4 +1,5 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
+import { createExecCalls, type PtyExecCall, type PtyExecOutcome } from "./exec-client.js";
 import { controlReply, type ControlReply } from "./messages.js";
 import { probeGroup, signalGroup, validPgid } from "./group.js";
 import { systemClock, systemProcessOps, type Channel, type Clock, type Disposable, type ProcessOps, type PtyExit, type PtyHandle, type PtyPort, type PtySignal, type PtySpawn } from "./ports.js";
@@ -20,7 +21,7 @@ export interface PtyProcessPortOptions {
   readonly clock?: Clock;
   /** Every spawn settles (resolves or rejects) within this many milliseconds. Default 10000. */
   readonly spawnTimeoutMs?: number;
-  /** Spawns waiting for an answer. Default 64. */
+  /** Spawns waiting for an answer. Default 64; execs waiting for an answer are bounded by the same number, separately. */
   readonly maxPending?: number;
 }
 
@@ -33,6 +34,11 @@ export interface PtyProcessPort extends PtyPort, Disposable {
   spawn(spec: PtySpawn): Promise<PtyProcessHandle>;
   /** G-2: lets data connection `conn` (the name main gave the brokered port) attach to `terminalId`. Nothing else may. */
   grant(terminalId: string, conn: string): void;
+  /**
+   * A plain, bounded git command (`exec`, H9-hooks §4.1). Settles within `call.timeoutMs` plus `spawnTimeoutMs`, and when the
+   * channel closes; rejects with a `PtyExecError` code only. The daemon host's `createPtyGitRunner` is its one caller.
+   */
+  exec(call: PtyExecCall): Promise<PtyExecOutcome>;
   /** How many terminals the port still tracks (an exited terminal whose group is gone is forgotten). For diagnostics and tests. */
   trackedTerminals(): number;
 }
@@ -71,6 +77,7 @@ export function createPtyProcessPort(options: PtyProcessPortOptions): PtyProcess
   const terms = new Map<string, Term>();
   let seq = 0;
   let closed = false;
+  const execs = createExecCalls({ send: (m) => send(m), closed: () => closed, clock, graceMs: timeoutMs, maxPending });
 
   const send = (msg: unknown): boolean => {
     if (closed) return false;
@@ -96,7 +103,7 @@ export function createPtyProcessPort(options: PtyProcessPortOptions): PtyProcess
 
   const onMessage = (raw: unknown): void => {
     const parsed = controlReply.safeParse(raw);
-    if (!parsed.success) return;
+    if (!parsed.success) return execs.onMessage(raw);
     const m = parsed.data;
     if (m.t === "spawned") {
       const p = pending.get(m.req);
@@ -198,6 +205,7 @@ export function createPtyProcessPort(options: PtyProcessPortOptions): PtyProcess
       if (closed) return;
       closed = true;
       failAll("channel_closed");
+      execs.failAll("channel_closed");
       killKnown();
       // The pty process is gone, so no `exit` will come. Say so with an unknown exit; the group probe still guards finalisation.
       for (const t of terms.values()) settleExit(t, { exitCode: null, signal: null });
@@ -221,6 +229,7 @@ export function createPtyProcessPort(options: PtyProcessPortOptions): PtyProcess
         }
       });
     },
+    exec: (call) => execs.exec(call),
     trackedTerminals: () => terms.size,
     grant(terminalId, conn) {
       send({ t: "grant", term: terminalId, conn });
@@ -229,6 +238,7 @@ export function createPtyProcessPort(options: PtyProcessPortOptions): PtyProcess
       if (!closed) {
         closed = true;
         failAll("channel_closed");
+        execs.failAll("channel_closed");
         killKnown();
       }
       subs.forEach((s) => s.dispose());

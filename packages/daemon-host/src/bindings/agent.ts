@@ -205,7 +205,7 @@ export function createAgentBinding(deps: AgentBindingDeps): AgentBinding {
           if (digest !== undefined) run.onApproval({ ...base, state, digest, preview: state === "requested" ? preview : null });
         };
         const out = await deps.approvals.request(
-          { runId: run.runId, windowId: run.windowId, tool: req.tool, tier: req.tier, digest: req.digest, reasons: req.reasons },
+          { runId: run.runId, windowId: run.windowId, tool: req.tool, tier: req.tier, digest: req.digest, reasons: req.reasons, preview },
           signal,
           (challenge) => {
             digest = challenge.digest;

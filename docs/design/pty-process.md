@@ -44,7 +44,7 @@ Status: built as `@axis/pty-process`, without a native dependency. Sources: thre
 
 ## Open questions
 
-1. **Git in the pty context.** The `pty` git runner (`commit-tree`, `push`, hooks) is a separate control message family owned by H9-hooks. Its service side (`exec`, `hook`, `scratch-*`) is built (`docs/design/daemon-host-hooks-s1.md`); the host adapter `createPtyGitRunner` is not, so the fake runner remains.
+1. **Git in the pty context.** The `pty` git runner (`commit-tree`, `push`, hooks) is a separate control message family owned by H9-hooks. Its service side (`exec`, `hook`, `scratch-*`) is built (`docs/design/daemon-host-hooks-s1.md`); the host adapter `createPtyGitRunner` and the port's `exec` are built too (S1 part 2), and the composition uses them for a pty port that has `exec`. The headless slice keeps its fake runner (its `LocalPty` has no `exec`); `hook` and `scratch-*` have no host port method yet.
 2. **`@axis/daemon-host`'s `PtyPort`** (which requires `groupAlive`) is not compared by a type test here, because nothing may import the host; the entry that wires the port adds that check.
 3. **Differential OSC test in the overlay suite.** The oracle in `testing/osc-oracle.ts` is a model written from the xterm.js transition table; the real parser is only checked by a manual run. Move that run into the overlay tests (they may import `@xterm/headless`).
 

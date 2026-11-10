@@ -35,19 +35,10 @@ import {
   type WorkspaceRow,
 } from "./model.js";
 import {
-  checkWorkspaceTransition,
-  clearStaleLocks,
-  getProject,
-  listProjects,
-  lockWorkspace,
-  recordBaseBranch, recordPushed,
-  recordReviewedTree,
-  registerProject,
-  setWorktreePath,
-  unlockWorkspace,
-  type RecordsContext,
-  type RegisterProjectInput,
+  checkWorkspaceTransition, clearStaleLocks, getProject, listProjects, lockWorkspace, recordBaseBranch, recordPushed,
+  recordReviewedTree, registerProject, setWorktreePath, unlockWorkspace, type RecordsContext, type RegisterProjectInput,
 } from "./records.js";
+import { ComposerRecords } from "./composer-store.js";
 import { UserPrincipal } from "./principal.js";
 import { JOURNAL_MIGRATIONS } from "./schema.js";
 import {
@@ -90,12 +81,15 @@ export class Journal {
   readonly #audit: AuditLog;
   readonly #now: () => Date;
   readonly #newId: () => string;
+  /** Composer run records (mode, provider, model, usage, budgets, bounded activity; schema version 6). */
+  readonly composer: ComposerRecords;
 
   private constructor(db: DatabaseSync, options: JournalOptions) {
     this.#db = db;
     this.#audit = options.audit;
     this.#now = options.now ?? (() => new Date());
     this.#newId = options.newId ?? (() => randomUUID());
+    this.composer = new ComposerRecords(db, () => this.#ts(), (input) => this.createRun(input));
   }
 
   /** Migrate the schema and return a journal. On daemon start take the instance lock, then call `recover(lock)`. */

@@ -4,11 +4,11 @@
 
 ## What is recorded
 
-- **Journal migration 6, `base_tip`.** This is the commit the base branch's exact ref held when the workspace was created. It is a full lower-case sha (40 or 64 hex characters), or NULL.
+- **Journal migration 7, `base_tip`.** (Migration 6 is J2's composer records.) This is the commit the base branch's exact ref held when the workspace was created. It is a full lower-case sha (40 or 64 hex characters), or NULL.
 - **Set once, with the branch.** The daemon writes `base_branch` and `base_tip` in one `recordBaseBranch(id, ref, tip, actor)` call while the workspace is CREATING. That call happens in the same transaction that moves the workspace to READY. Two triggers enforce the pairing:
   - A tip can only be written in the UPDATE that first sets the base branch. It cannot be changed or cleared, and it cannot be added later to a row whose branch is already recorded.
   - From this version on, a base branch cannot be recorded without a tip.
-- **Older rows stay unattestable.** A workspace from version 5 that has a base branch but no tip can never be given a tip. `merged` stays refused for it.
+- **Older rows stay unattestable.** A workspace from before version 7 (5 or 6) that has a base branch but no tip can never be given a tip. `merged` stays refused for it.
 - **Where the tip comes from.** It is the base sha the workspace was made from. The manager keeps a base branch at create only when `show-ref --verify <branch>` gives exactly that sha at that moment. A branch that moved between the two reads, or a base name that resolved to a tag or another ref first, gives no base branch and therefore no attestable merge. The daemon already refuses a create whose base sha differs from its own resolution (`base_moved`).
 
 ## The check (`verifyMerged`)
@@ -43,4 +43,4 @@ The cases that remain open:
 - A run in an earlier workspace that moved the branch a default `HEAD` base resolved to before create. The base is only trusted as of create.
 - A forged `objects/info/commit-graph`. The check does not turn the commit-graph off, because the hardened git runner allows no extra `-c` keys.
 
-These stay under threat model WT-3 (residual register RR-7). Their mitigations are H10 (the run's process group is gone before finalise, so nothing of the run can still write the refs) and the Phase 3 sandbox. Nothing is lost through them: the discard scan, the backup and the archive ref still apply, and only the label is not attestable.
+These stay under threat model WT-3 (residual register RR-7). H10 (the run's process group is gone before finalise) does not mitigate them: it only stops a process that outlives the run, and the ref write can be made while the run is still running, before H10 ever applies. The mitigations are the Phase 3 sandbox, which keeps a run from writing the shared repository's refs at all, or a user confirmation of the merge commit itself. Nothing is lost through these cases: the discard scan, the backup and the archive ref still apply, and only the label is not attestable.

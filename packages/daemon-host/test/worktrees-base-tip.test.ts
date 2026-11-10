@@ -66,7 +66,7 @@ test("merged: a base deleted after create is refused", { skip }, async (t) => {
   assert.deepEqual((await finaliseApproved(r, user, id, "merged")).error?.details, { reason: "no_base_branch" });
 });
 
-test("merged fails closed for a workspace whose base branch was recorded before the tip was (a version 5 row)", { skip }, async (t) => {
+test("merged fails closed for a workspace whose base branch was recorded before the tip was (a row from before migration 7)", { skip }, async (t) => {
   const state = { fail: false };
   const { r, user } = await rig(t, { failAudit: (e) => state.fail && finaliseDone(e) });
   const { id } = await createWs(user);
