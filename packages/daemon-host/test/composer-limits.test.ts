@@ -1,4 +1,5 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
+import { Redactor } from "@axis/audit";
 import assert from "node:assert/strict";
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -64,7 +65,7 @@ test("a run whose last transition could not be written can be cancelled, so the 
       return c.journal.transitionRun(id, to, o);
     },
   };
-  const service = createComposerService({ journal, engine: c.agent, now: () => c.r.clock.now() });
+  const service = createComposerService({ redactor: new Redactor(), journal, engine: c.agent, now: () => c.r.clock.now() });
   t.after(() => service.dispose());
   const { run } = await service.start(START(c.workspaceId, { mode: "ask" }), new AbortController().signal);
   await until(() => !service.get(run.runId).live);

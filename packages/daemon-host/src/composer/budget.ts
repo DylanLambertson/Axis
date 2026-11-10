@@ -10,6 +10,9 @@ import type { BudgetDecision, BudgetHook, BudgetRequestInfo, BudgetUsageInfo, Ru
  *
  * Closed: a refusal carries a reason from `BUDGET_REASONS` (the workspace's prefixed `workspace_`); any other answer,
  * a hook that throws or a journal write that fails denies with `state_invalid`, and every later request is denied too.
+ *
+ * A workspace refusal releases the run's token and cost reservation (a zero-usage settlement) but not its request count:
+ * the run's stored total counts the one refused request, which never went out. The run ends there, so nothing is lost.
  */
 
 /** The reasons a refusal can carry; the run ends `BUDGET_<REASON>` in upper case. */

@@ -175,3 +175,17 @@ test("in total: rows of finished runs go first, even when newer, and a live run'
   assert.ok(totals.rows <= bounds.maxRows);
   assert.throws(() => journal.composer.append(a, ev(5), { ...bounds, maxRows: 0 }), code("E_INVALID_ARGUMENT"));
 });
+
+test("N1: a finished run's row appended when only live rows are older is kept; a live run's older row goes instead", () => {
+  const { journal, ws } = fresh();
+  const bounds = { maxRunRows: 100, maxRunBytes: 1_000_000, maxRows: 2, maxBytes: 1_000_000 };
+  const live = start(journal, ws);
+  journal.transitionRun(live, "RUNNING");
+  journal.composer.append(live, ev(1), bounds);
+  journal.composer.append(live, ev(2), bounds);
+  const finished = start(journal, ws);
+  journal.transitionRun(finished, "CANCELLED", { reason: "USER_CANCELLED" });
+  journal.composer.append(finished, ev(1, "state"), bounds);
+  assert.deepEqual(journal.composer.read(finished, 0, 10).map((r) => r.seq), [1], "the row just appended is never its own victim");
+  assert.deepEqual(journal.composer.read(live, 0, 10).map((r) => r.seq), [2]);
+});

@@ -1,15 +1,15 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
 import { AuditLog, Redactor, acquireInstanceLock, openDatabase } from "@axis/audit";
-import { Journal } from "@axis/journal";
+import { DEFAULT_ACTIVITY_BOUNDS, Journal } from "@axis/journal";
 import { composerRunsMethods, type RunEvent } from "@axis/protocol";
-import type { MockReply, RunBudgetLimits } from "@axis/providers";
+import type { MockReply } from "@axis/providers";
 import { AGENT_PAYLOAD_ALLOWLIST, createComposerService, fromActivityRecords, toActivityRecord, type ComposerService } from "../src/index.js";
-import { composerRig, START, until, type ComposerRig } from "./composer-rig.js";
+import { composerRig, START, until, type ComposerRig, type ComposerRigOptions } from "./composer-rig.js";
 
 /**
  * Tickets J2 and C10 through the real service, broker, guarded mock and a journal in a database FILE: the process is
@@ -21,7 +21,7 @@ const say = (text: string): MockReply => ({ kind: "text", text });
 // A fake credential in the env-secret shape the host redactor removes (low entropy, not a real secret).
 const LEAK = "db_password=hunter2hunter2";
 
-async function setup(t: TestContext, replies: MockReply[], over: { budget?: RunBudgetLimits; workspaceBudget?: RunBudgetLimits } = {}) {
+async function setup(t: TestContext, replies: MockReply[], over: Pick<ComposerRigOptions, "budget" | "workspaceBudget" | "storedActivity" | "maxActive" | "mock"> = {}) {
   const dir = mkdtempSync(join(tmpdir(), "axis-composer-j2-"));
   const c = await composerRig({ replies, dbPath: join(dir, "axis.db"), ...over });
   const opened: Array<{ close(): void }> = [];
@@ -140,5 +140,53 @@ test("stored rows: every string is redacted (registered secrets too), an event t
     { seq: 7, at, type: "text" as const, body: "[]" },
   ];
   assert.deepEqual(fromActivityRecords(rows), []);
-  assert.throws(() => createComposerService({ journal: {} as never, engine: {} as never, now: () => 0, storedActivity: { maxRunRows: 0, maxRunBytes: 1, maxRows: 1, maxBytes: 1 } }), /activity bounds/);
+  assert.throws(() => createComposerService({ redactor: new Redactor(), journal: {} as never, engine: {} as never, now: () => 0, storedActivity: { maxRunRows: 0, maxRunBytes: 1, maxRows: 1, maxBytes: 1 } }), /activity bounds/);
+});
+
+test("SF-1: after a restart, a finished run whose stored rows were all evicted reads complete, with the cursor at its end", async (t) => {
+  const storedActivity = { ...DEFAULT_ACTIVITY_BOUNDS, maxRunRows: 4, maxRows: 4 };
+  const { c, restart } = await setup(t, [say("one"), say("two")], { storedActivity, maxActive: 1 });
+  const first = await runToEnd(c, c.service);
+  const last = c.journal.composer.get(first.runId)?.lastSeq ?? 0;
+  assert.ok(last >= 4);
+  await runToEnd(c, c.service);
+  assert.equal(c.journal.composer.get(first.runId)?.activityRows, 0, "the second run's rows evicted all of the first run's");
+  const { service } = await restart(c.service);
+  for (const after of [0, 2, last, last + 3]) {
+    const page = service.events(first.runId, after, 100);
+    assert.deepEqual(page, { events: [], nextSeq: Math.max(after, last), complete: true, available: true }, `after ${after}`);
+    assert.ok(composerRunsMethods.events.response.safeParse(page).success);
+  }
+});
+
+test("SF-2: nothing reaches the journal after the shutdown, not even the withdrawal of a pending approval", async (t) => {
+  const { c, restart } = await setup(t, [{ kind: "tool_use", name: "write_file", input: { path: ".github/ci.yml", content: "x" } }]);
+  mkdirSync(join(c.root, ".github"), { recursive: true }); // the broker creates files, not directories
+  const { run } = await c.service.start(START(c.workspaceId), new AbortController().signal);
+  await until(() => c.service.get(run.runId).awaitingApproval);
+  const before = { record: c.journal.composer.get(run.runId), budget: c.journal.composer.workspaceBudget(c.workspaceId), rows: c.journal.composer.read(run.runId, 0, 1000) };
+  c.service.dispose();
+  await c.service.idle();
+  assert.ok(c.service.events(run.runId, 0, 100).events.some((e) => e.type === "approval" && e.state === "withdrawn"), "the live view saw the withdrawal");
+  const { journal } = await restart(c.service);
+  assert.deepEqual(journal.composer.get(run.runId), before.record);
+  assert.deepEqual(journal.composer.workspaceBudget(c.workspaceId), before.budget);
+  assert.deepEqual(journal.composer.read(run.runId, 0, 1000), before.rows);
+});
+
+test("N3: a model id the redactor would change (a URL with credentials) is refused before anything is stored", async (t) => {
+  const unsafe = "https://user:hunter2hunter2@models.example/m";
+  const { c } = await setup(t, [say("x")], { mock: { models: [{ id: "mock-model" }, { id: unsafe }] } });
+  const runs = c.journal.listRuns().length;
+  await assert.rejects(c.service.start(START(c.workspaceId, { modelId: unsafe }), new AbortController().signal), (e: unknown) => (e as { details?: { reason?: string } }).details?.reason === "provider_unavailable");
+  assert.equal(c.journal.listRuns().length, runs, "nothing was created");
+});
+
+test("N2, N4: the service needs the host redactor, and refuses stored bounds that cannot hold every live run at its caps", () => {
+  const base = { journal: {} as never, engine: {} as never, now: () => 0, redactor: new Redactor() };
+  assert.throws(() => createComposerService({ ...base, redactor: undefined as never }), TypeError);
+  assert.throws(() => createComposerService({ ...base, maxActive: 8, storedActivity: { ...DEFAULT_ACTIVITY_BOUNDS, maxRunRows: 1000, maxRows: 7999 } }), RangeError);
+  assert.throws(() => createComposerService({ ...base, maxActive: 2, storedActivity: { ...DEFAULT_ACTIVITY_BOUNDS, maxRunBytes: 10, maxBytes: 19 } }), RangeError);
+  createComposerService({ ...base, maxActive: 8, storedActivity: { ...DEFAULT_ACTIVITY_BOUNDS, maxRunRows: 1000, maxRows: 8000 } }).dispose();
+  createComposerService(base).dispose();
 });

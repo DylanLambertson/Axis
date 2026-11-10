@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
-import { acquireInstanceLock } from "@axis/audit";
+import { Redactor, acquireInstanceLock } from "@axis/audit";
 import { composerRunsMethods, type Challenge } from "@axis/protocol";
 import { InMemoryTrustRegistry, ProjectMutex, RULES, RuleTablePolicy, createComposerRunsHandlers, createComposerService } from "../src/index.js";
 import { newKey } from "./approvals-rig.js";
@@ -94,7 +94,7 @@ test("kill and restart: the journal keeps RUNNING, recovery makes it BLOCKED, a 
   const lock = acquireInstanceLock(lockDir);
   t.after(() => (lock.release(), rmSync(lockDir, { recursive: true, force: true })));
   c.journal.recover(lock);
-  const next = createComposerService({ journal: c.journal, engine: c.agent, now: () => c.r.clock.now() });
+  const next = createComposerService({ redactor: new Redactor(), journal: c.journal, engine: c.agent, now: () => c.r.clock.now() });
   t.after(() => next.dispose());
   assert.equal(next.recover(), 1);
   const blocked = next.get(runId);

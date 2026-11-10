@@ -37,9 +37,12 @@ export interface ComposerServiceDeps {
   readonly budget?: RunBudgetLimits;
   /** Per-workspace budget across its composer runs (C10). Default: 2,000,000 tokens and 500 requests (design question 2). */
   readonly workspaceBudget?: RunBudgetLimits;
-  /** Applied to every stored activity event. Default: the built-in rules only; the host passes its own (registered secrets). */
-  readonly redactor?: Redactor;
-  /** Bounds of the activity kept in the journal. Default `DEFAULT_ACTIVITY_BOUNDS`. */
+  /** Applied to every stored activity event and to the model id: the host's own, with its registered secrets (review j2 N2). */
+  readonly redactor: Redactor;
+  /**
+   * Bounds of the activity kept in the journal. Default `DEFAULT_ACTIVITY_BOUNDS`. Refused when `maxActive` live runs at
+   * their per-run caps would not fit the totals, so total eviction never has to reach a live run's rows (review j2 N4).
+   */
   readonly storedActivity?: ActivityBounds;
   /** Live composer runs across the host. Default 8. */
   readonly maxActive?: number;
@@ -82,8 +85,12 @@ export function createComposerService(deps: ComposerServiceDeps): ComposerServic
   createRunBudget(limits); // refuses invalid limits now, not at the first run
   const wsLimits = deps.workspaceBudget ?? DEFAULT_WORKSPACE_BUDGET;
   createRunBudget(wsLimits);
-  const redactor = deps.redactor ?? new Redactor();
+  const redactor = deps.redactor;
+  if (!(redactor instanceof Redactor)) throw new TypeError("the composer service needs the host redactor");
   const stored = checkActivityBounds(deps.storedActivity ?? DEFAULT_ACTIVITY_BOUNDS);
+  if (maxActive * stored.maxRunRows > stored.maxRows || maxActive * stored.maxRunBytes > stored.maxBytes) {
+    throw new RangeError("stored activity totals must hold every live run at its per-run caps");
+  }
   const caps = resolveToolCaps(deps.toolCaps); // likewise
   let closed = false;
 
@@ -191,6 +198,8 @@ export function createComposerService(deps: ComposerServiceDeps): ComposerServic
       }
       if (!models.some((m) => m.id === input.modelId)) throw composerFailure("E_NOT_FOUND", "model_unknown");
       // PRV-4: the destination is fixed by the selected provider and shown with each request; one that cannot be shown refuses the start.
+      // The model id is stored with the run (J2): one the redactor would change (a URL with credentials) is refused.
+      if (redactor.redactString(input.modelId) !== input.modelId) throw composerFailure("E_UNAVAILABLE", "provider_unavailable");
       const destination = destinationOf(provider.descriptor, input.modelId);
       if (destination === undefined) throw composerFailure("E_UNAVAILABLE", "provider_unavailable");
       let build;
@@ -317,8 +326,13 @@ export function createComposerService(deps: ComposerServiceDeps): ComposerServic
         return { events: [], nextSeq: 0, complete: true, available: false };
       }
       const events = fromActivityRecords(rows);
-      const nextSeq = events.at(-1)?.seq ?? rows.at(-1)?.seq ?? Math.min(afterSeq, rec.lastSeq);
-      return { events, nextSeq, complete: !live.has(runId) && nextSeq >= rec.lastSeq, available: true };
+      const running = live.has(runId);
+      // Nothing stored after the cursor. Unlike the memory ring, the journal's total bound can evict a finished run's
+      // newest row too (review j2 SF-1): for a run nobody drives, the cursor moves to its last sequence number and the
+      // page is complete, so a client never polls a run whose rows are gone forever.
+      const empty = running ? Math.min(afterSeq, rec.lastSeq) : Math.max(afterSeq, rec.lastSeq);
+      const nextSeq = events.at(-1)?.seq ?? rows.at(-1)?.seq ?? empty;
+      return { events, nextSeq, complete: !running && nextSeq >= rec.lastSeq, available: true };
     },
 
     recover() {
