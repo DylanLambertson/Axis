@@ -14,6 +14,7 @@ import type { WorktreesService } from "./worktrees.js";
 export type * from "./clock.js";
 export type * from "./common.js";
 export type * from "./composer.js";
+export { ComposerRunHalt, RUN_HALT_REASONS } from "./composer.js";
 export * from "./git.js";
 export type * from "./pty.js";
 export type * from "./worktree-locator.js";

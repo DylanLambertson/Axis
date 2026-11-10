@@ -55,6 +55,13 @@ export interface ComposerRigOptions {
   readonly onRequest?: (n: number, req: ValidRequest) => void;
   /** The broker's file system, built over the rig's directories (to inject a race inside a write). */
   readonly wrapFs?: (paths: { readonly root: string; readonly outside: string }) => NonNullable<AgentBindingDeps["wrapFs"]>;
+  /** A real worktree (a git fixture's linked worktree) instead of the rig's plain directory. */
+  readonly worktree?: { readonly workTree: string; readonly gitDir: string };
+  /** The host environment every tool child's PTY-2 environment is built from (built from the rig's directories). */
+  readonly env?: (paths: { readonly root: string; readonly outside: string; readonly base: string }) => Readonly<Record<string, string | undefined>>;
+  /** C3: the WT-2 snapshotter (offers `run_command`) and the command bounds. */
+  readonly commandSnapshotter?: AgentBindingDeps["commandSnapshotter"];
+  readonly commandLimits?: AgentBindingDeps["commandLimits"];
 }
 
 const SHA = "b".repeat(40);
@@ -63,7 +70,8 @@ export async function composerRig(options: ComposerRigOptions): Promise<Composer
   const r = await rig(options.policy === undefined ? {} : { policy: options.policy });
   const user = await r.connect();
   const base = realpathSync(mkdtempSync(join(tmpdir(), "axis-composer-")));
-  const root = join(base, "wt");
+  const root = options.worktree?.workTree ?? join(base, "wt");
+  const gitDir = options.worktree?.gitDir ?? join(root, ".git");
   const outside = join(base, "outside");
   mkdirSync(join(root, "src"), { recursive: true });
   mkdirSync(outside);
@@ -83,17 +91,19 @@ export async function composerRig(options: ComposerRigOptions): Promise<Composer
   });
   const agent = createAgentBinding({
     // Every workspace of the journal shares the one directory (enough for the service's limits; containment uses its id).
-    locator: { locate: async (id) => (journal.getWorkspace(id) !== undefined ? { workTree: root, gitDir: join(root, ".git") } : Promise.reject(new Error("unknown"))) },
+    locator: { locate: async (id) => (journal.getWorkspace(id) !== undefined ? { workTree: root, gitDir } : Promise.reject(new Error("unknown"))) },
     repositoryRoots: () => [],
     audit: { append: (e) => (options.failAudit?.(e.action) === true ? ((): never => { throw new Error("disk full"); })() : audit.append(e)) },
     redactor: new Redactor(),
-    env: () => ({ PATH: "/usr/bin:/bin", HOME: base }),
+    env: () => options.env?.({ root, outside, base }) ?? { PATH: "/usr/bin:/bin", HOME: base },
     approvals: r.approvals.runs,
     now: () => r.clock.now(),
     mock: { ...options.mock, replies, respond: () => ({ kind: "text", text: "no more replies" }) },
     ...(options.previewScanner === undefined ? {} : { previewScanner: options.previewScanner }),
     writeLock: (_workspaceId, fn, signal) => mutex.exclusive("p", fn, signal),
     ...(options.wrapFs === undefined ? {} : { wrapFs: options.wrapFs({ root, outside }) }),
+    ...(options.commandSnapshotter === undefined ? {} : { commandSnapshotter: options.commandSnapshotter }),
+    ...(options.commandLimits === undefined ? {} : { commandLimits: options.commandLimits }),
   });
   const service = createComposerService({
     journal,

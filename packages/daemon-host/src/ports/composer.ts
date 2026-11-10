@@ -57,9 +57,21 @@ export interface ComposerApprovalNote {
   readonly preview: ApprovalPreview | null;
 }
 
+/**
+ * The run must end now with a closed reason (C3, WT-2 broker side): a command changed the repository's hooks or common
+ * directory, or that could not be checked. Thrown by `ComposerRunTools.invoke`; the loop ends the run FAILED with `reason`.
+ */
+export const RUN_HALT_REASONS = ["GIT_DRIFT"] as const;
+export class ComposerRunHalt extends Error {
+  constructor(readonly reason: (typeof RUN_HALT_REASONS)[number]) {
+    super("the composer run was halted");
+    this.name = "ComposerRunHalt";
+  }
+}
+
 export interface ComposerRunTools {
   readonly specs: readonly ComposerToolSpec[];
-  /** Never throws for a refusal: the model is told, the run goes on. Throws only when the run must stop (audit failure). */
+  /** Never throws for a refusal: the model is told, the run goes on. Throws only when the run must stop (audit failure, or `ComposerRunHalt`). */
   invoke(name: string, input: unknown, signal: AbortSignal): Promise<ComposerToolOutcome>;
   /**
    * The drift notice before a model turn (policies section 3.4, C2): the paths the run saw that changed outside it since

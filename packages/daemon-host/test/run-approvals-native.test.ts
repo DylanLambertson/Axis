@@ -21,7 +21,7 @@ const preview: ApprovalPreview = {
 const input = (over: Partial<RunApprovalInput> = {}): RunApprovalInput => ({
   runId: RUN,
   windowId: "win-1",
-  tool: "run_command",
+  tool: "delete_file",
   tier: "destructive",
   digest: DIGEST,
   reasons: ["tier:destructive"],
@@ -61,7 +61,7 @@ test("C4: a destructive call needs the user's approval AND the native confirmati
   assert.equal(a.sent["windowId"], "win-1", "the dialog opens on the window that started the run");
   // APR-2: the dialog shows only what the daemon derived, never the content head the model wrote.
   const summary = String(a.sent["summary"]);
-  assert.match(summary, /^axis\.runs\/1\.toolCall: run_command \(destructive, protected path\), 4096 bytes, SHA-256 cdcdcdcdcdcdcdcd$/);
+  assert.match(summary, /^axis\.runs\/1\.toolCall: delete_file \(destructive, protected path\), 4096 bytes, SHA-256 cdcdcdcdcdcdcdcd$/);
   assert.equal(summary.includes("IGNORE"), false);
   assert.equal(summary.length <= 192, true);
 
@@ -94,7 +94,7 @@ test("C4: a privileged call is a tier 4 challenge too; a native confirmation tha
   const { r, user } = await setup(t);
   const a = await ask(r, { tier: "privileged", preview: { tier: "privileged", protected: false, content: null } });
   assert.equal(a.challenge.tier, 4);
-  assert.equal(String(a.sent["summary"]), "axis.runs/1.toolCall: run_command (privileged)");
+  assert.equal(String(a.sent["summary"]), "axis.runs/1.toolCall: delete_file (privileged)");
   r.answer(a.challenge.challengeId, a.proof, true);
   await ticks();
   assert.equal(a.settled(), undefined, "a dialog answer alone grants nothing");

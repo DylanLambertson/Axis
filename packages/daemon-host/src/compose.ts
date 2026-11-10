@@ -255,6 +255,8 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
           ...(options.composer?.mock === undefined ? {} : { mock: options.composer.mock }),
           // Composer writes take the project mutex Axis git operations take (policies 3.3, 6.1), queued like any caller.
           writeLock: composerWriteLock(parts.journal, worktrees.mutex),
+          // WT-2 broker side (C3): its own snapshotter, so a command's snapshots never replace a CLI run's held baseline.
+          commandSnapshotter: snapshotterFactory({ gitPath: parts.gitPath, env: ports.env, projectRoot }),
         });
         const composer = createComposerService({
           journal: parts.journal,

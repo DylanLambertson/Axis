@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { createHash } from "node:crypto";
-import { BROKER_TIERS, MAX_PREVIEW_FINDINGS, MAX_PREVIEW_HEAD, REFUSED_ACTIVITY, type ApprovalPreview } from "@axis/protocol";
+import { BROKER_TIERS, MAX_PREVIEW_ARGS, MAX_PREVIEW_ARGV_CHARS, MAX_PREVIEW_FINDINGS, MAX_PREVIEW_HEAD, REFUSED_ACTIVITY, type ApprovalPreview, type CommandPreview } from "@axis/protocol";
 
 /**
  * The approval preview of a composer tool call (review r1 S2, ticket C8; docs/design/composer-runtime.md section 4).
@@ -24,6 +24,45 @@ export interface PreviewInput {
   readonly reasons: readonly string[];
   /** What the call writes, exactly as the digest covers it; undefined for a call that writes no content. */
   readonly content: string | undefined;
+  /** The command the call starts (C3), as the broker pinned it and its digest covers it; undefined for none. */
+  readonly command?: CommandInput;
+}
+
+export interface CommandInput {
+  readonly argv: readonly string[];
+  /** The program's real path, and its `#!` interpreter's (null for a binary), as in the broker's command line. */
+  readonly program: string;
+  readonly interpreter: string | null;
+  /** The working directory below the worktree root (`.` for the root). */
+  readonly cwd: string;
+}
+
+/** SHA-256 over what runs: the program, the interpreter, the arguments and the working directory (canonical JSON). */
+export function commandIdentity(c: CommandInput): string {
+  return createHash("sha256").update(JSON.stringify([c.program, c.interpreter, [...c.argv], c.cwd]), "utf8").digest("hex");
+}
+
+/**
+ * The command as the user sees it, or undefined when it cannot be shown whole (an argument, the program or the directory
+ * cut by its bound, more than `MAX_PREVIEW_ARGS` arguments or `MAX_PREVIEW_ARGV_CHARS` escaped units): the call is then
+ * declined, never approved on part of its command line. The secret scan runs over every argument (a finding declines too).
+ */
+export async function commandPreview(c: CommandInput, deps: PreviewDeps): Promise<CommandPreview | undefined> {
+  if (c.argv.length === 0 || c.argv.length > MAX_PREVIEW_ARGS) return undefined;
+  const whole = (text: string, max: number): string | undefined => {
+    const { head, truncated } = escapedHead(text, max);
+    return truncated || head.length === 0 ? undefined : head;
+  };
+  const argv = c.argv.map((a) => whole(a, 4096));
+  const program = whole(c.program, 1024);
+  const interpreter = c.interpreter === null ? null : whole(c.interpreter, 1024);
+  const cwd = whole(c.cwd, 512);
+  if (argv.some((a) => a === undefined) || program === undefined || interpreter === undefined || cwd === undefined) return undefined;
+  if (argv.reduce((n, a) => n + (a as string).length, 0) > MAX_PREVIEW_ARGV_CHARS) return undefined;
+  for (const a of c.argv) {
+    if ((await deps.scanner.scan(a)).length > 0 || deps.redact(a) !== a) return undefined;
+  }
+  return { argv: argv as string[], program, interpreter, cwd, identity: commandIdentity(c) };
 }
 
 export interface PreviewDeps {
@@ -63,6 +102,11 @@ export async function buildApprovalPreview(input: PreviewInput, deps: PreviewDep
     const tier = (BROKER_TIERS as readonly string[]).includes(input.tier) ? (input.tier as ApprovalPreview["tier"]) : undefined;
     if (tier === undefined) return undefined;
     const isProtected = input.reasons.some((r) => r.startsWith("protected:"));
+    if (input.command !== undefined) {
+      // A command writes no content of its own here; what it starts is the whole preview, shown whole or not at all.
+      const command = input.content === undefined ? await commandPreview(input.command, deps) : undefined;
+      return command === undefined ? undefined : { tier, protected: isProtected, content: null, command };
+    }
     if (input.content === undefined) return { tier, protected: isProtected, content: null };
     const bytes = Buffer.from(input.content, "utf8");
     const sha256 = createHash("sha256").update(bytes).digest("hex");

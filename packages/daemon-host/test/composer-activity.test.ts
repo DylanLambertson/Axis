@@ -57,3 +57,13 @@ test("RunActivity: at most maxRuns runs are kept; the oldest finished goes first
   a.push("done", state);
   assert.equal(a.read("done", 0, 10).available, false, "an evicted run gains nothing");
 });
+
+test("RunActivity: a previewed command line counts against the text bound like a content head (C3)", () => {
+  const a = new RunActivity(() => 0, { maxTextChars: 10_000 });
+  a.open("r", meta);
+  const command = { argv: ["a".repeat(4000)], program: "/p", interpreter: null, cwd: ".", identity: "a".repeat(64) };
+  for (let i = 0; i < 3; i++) {
+    a.push("r", { type: "approval", tool: "run_command", state: "requested", digest: String(i).repeat(64), reasons: [], paths: [], preview: { tier: "privileged", protected: false, content: null, command } });
+  }
+  assert.equal(a.read("r", 0, 200).events.filter((e) => e.type === "approval").length, 2);
+});

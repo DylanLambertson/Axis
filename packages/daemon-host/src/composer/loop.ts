@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import type { ComposerMode } from "@axis/protocol";
 import { isProviderError, type BudgetHook, type ContentBlock, type GuardedProvider, type Message, type Usage } from "@axis/providers";
-import type { ComposerRunTools } from "../ports/composer.js";
+import { ComposerRunHalt, type ComposerRunTools } from "../ports/composer.js";
 import type { ActivityInput } from "./activity.js";
 import { withDestinationEvents, type RequestDestination } from "./destination.js";
 
@@ -209,7 +209,9 @@ export async function runComposerLoop(input: LoopInput): Promise<LoopEnd> {
       let outcome;
       try {
         outcome = await tools.invoke(call.name, call.input, signal);
-      } catch {
+      } catch (e) {
+        // A halt (WT-2: a command changed the repository's hooks or common dir) ends the run with its closed reason, even if cancelled.
+        if (e instanceof ComposerRunHalt) return { state: "FAILED", reason: e.reason };
         // The broker could not record what it did (audit): stop the run, never continue past an unrecorded side effect.
         return signal.aborted ? { state: "CANCELLED", reason: "USER_CANCELLED" } : { state: "FAILED", reason: "TOOL_FAILED" };
       }
