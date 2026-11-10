@@ -56,6 +56,8 @@ export interface AgentBindingDeps {
 export const AGENT_PAYLOAD_ALLOWLIST: Readonly<Record<string, readonly string[]>> = BROKER_PAYLOAD_ALLOWLIST;
 
 export interface AgentBinding extends ComposerEngine {
+  /** Every registered guarded provider: the one list `axis.providers/1.list` and `provider()` both answer from (C5). */
+  providers(): readonly GuardedProvider[];
   /** Kill any process a tool started (shutdown). */
   dispose(): void;
 }
@@ -241,6 +243,7 @@ export function createAgentBinding(deps: AgentBindingDeps): AgentBinding {
 
   return {
     provider: (providerId) => providers.get(providerId),
+    providers: () => [...providers.values()],
     prepare,
     dispose: () => void runner.killAll(),
   };

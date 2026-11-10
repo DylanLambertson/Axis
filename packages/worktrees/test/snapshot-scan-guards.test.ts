@@ -11,7 +11,7 @@ import { createHooksGuard, HardenedGit } from '../src/hardenedGit.js';
 import { baseTree, scanHistory } from '../src/snapshotHistory.js';
 import { snapshotTestHooks } from '../src/snapshotRef.js';
 import { startSnapshotScan } from '../src/snapshotScan.js';
-import { confirmFor, makeFixture, sh, write, type Fixture } from './helpers.js';
+import { confirmFor, makeFixture, sh, write, type Fixture, exp } from './helpers.js';
 
 const PEM = '-----BEGIN ' + 'RSA PRIVATE' + ' KEY-----';
 const quiet: SnapshotScanner = { limits: { maxBytes: 300, maxBinaryBytes: 10 }, scan: async () => [] };
@@ -70,7 +70,7 @@ describe('REF-1 guards', () => {
     secret = sh(wt, 'rev-parse', 'HEAD').trim();
     sh(wt, 'reset', '-q', '--hard', scanned);
     write(path.join(wt, 'a.txt'), 'changed\n');
-    const r = await fx.manager.restoreFromRunBase({ path: path.join(wt, 'a.txt') });
+    const r = await fx.manager.restoreFromRunBase({ path: path.join(wt, 'a.txt') , expectedWorktree: exp(path.join(wt, 'a.txt'))});
     assert.ok(moved, 'HEAD was moved mid-snapshot');
     assert.equal(sh(fx.repo, 'rev-parse', `${r.backupRef}^`).trim(), scanned);
     assert.throws(() => sh(fx.repo, 'merge-base', '--is-ancestor', secret, r.backupRef), 'the moved-to commit is not reachable from the backup');
@@ -99,7 +99,7 @@ describe('REF-1 guards', () => {
     write(path.join(wt, 'a.txt'), 'dirty\n');
     const confirmation = await confirmFor(fx.manager, wt, ws.id, 'finalise');
     base = sh(fx.repo, 'rev-parse', 'HEAD').trim();
-    const e = await refusal(fx.manager.finalise({ path: wt, outcome: 'archived', discardConfirmation: confirmation }));
+    const e = await refusal(fx.manager.finalise({ path: wt, expectedWorktree: exp(wt), outcome: 'archived', discardConfirmation: confirmation }));
     assert.equal(e.details['reason'], 'snapshot-secret');
     assert.equal(sh(fx.repo, 'for-each-ref', 'refs/axis/archive'), '');
   });
@@ -112,7 +112,7 @@ describe('REF-1 guards', () => {
     snapshotTestHooks.beforeReread = (rel) => {
       if (rel === 'notes.txt') writeFileSync(file, `${PEM}\n`);
     };
-    const e = await refusal(fx.manager.restoreFromRunBase({ path: path.join(wt, 'a.txt') }));
+    const e = await refusal(fx.manager.restoreFromRunBase({ path: path.join(wt, 'a.txt') , expectedWorktree: exp(path.join(wt, 'a.txt'))}));
     assert.deepEqual([e.code, e.details['reason']], ['E_CONFLICT', 'file-changed']);
   });
 
@@ -123,7 +123,7 @@ describe('REF-1 guards', () => {
     write(path.join(wt, 'small.txt'), 'ok\n');
     const reread: string[] = [];
     snapshotTestHooks.beforeReread = (rel) => void reread.push(rel);
-    const e = await refusal(fx.manager.restoreFromRunBase({ path: path.join(wt, 'a.txt') }));
+    const e = await refusal(fx.manager.restoreFromRunBase({ path: path.join(wt, 'a.txt') , expectedWorktree: exp(path.join(wt, 'a.txt'))}));
     assert.deepEqual(e.details['findings'], [{ rule: 'scan-incomplete', path: 'big.txt' }]);
     assert.deepEqual(reread, ['small.txt']);
   });
@@ -139,7 +139,7 @@ describe('REF-1 guards', () => {
     sh(wt, 'add', '--', 'big.txt');
     sh(wt, 'commit', '-q', '-m', 'big');
     const blob = sh(wt, 'rev-parse', 'HEAD:big.txt').trim();
-    const e = await refusal(fx.manager.finalise({ path: wt, outcome: 'archived' }));
+    const e = await refusal(fx.manager.finalise({ path: wt, expectedWorktree: exp(wt), outcome: 'archived' }));
     assert.deepEqual(e.details['findings'], [{ rule: 'scan-incomplete', path: 'big.txt' }]);
     assert.ok(batches.length > 0 && batches.every((b) => !b.includes(blob)), 'the big blob was never requested');
   });
@@ -157,7 +157,7 @@ describe('REF-1 guards', () => {
     const wt = (await fx.manager.create({ repoPath: fx.repo, slug: 'hdr' })).path;
     sh(wt, 'commit', '-q', '--allow-empty', '-m', 'run');
     corrupt = true;
-    const e = await refusal(fx.manager.finalise({ path: wt, outcome: 'archived' }));
+    const e = await refusal(fx.manager.finalise({ path: wt, expectedWorktree: exp(wt), outcome: 'archived' }));
     assert.equal(e.details['reason'], 'snapshot-unscanned');
   });
 

@@ -36,7 +36,7 @@ test("edit mode: a write inside the worktree runs through the broker, is audited
   const done = c.service.get(run.runId);
   assert.deepEqual([done.state, done.reason, done.live, done.mode, done.providerId], ["REVIEWING", null, false, "edit", "mock"]);
   assert.equal(readFileSync(join(c.root, "src/a.txt"), "utf8"), "hi");
-  assert.deepEqual(kinds(allEvents(c, run.runId)), ["state:RUNNING", "usage", "tool:write_file:ok:null", "usage", "text", "state:REVIEWING"]);
+  assert.deepEqual(kinds(allEvents(c, run.runId)), ["state:RUNNING", "request", "usage", "tool:write_file:ok:null", "request", "usage", "text", "state:REVIEWING"]);
   const page = c.service.events(run.runId, 0, 200);
   assert.equal(page.complete, true);
   assert.ok(composerRunsMethods.events.response.safeParse(page).success);

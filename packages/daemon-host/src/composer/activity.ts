@@ -4,7 +4,7 @@ import type { ComposerEventsPage } from "../ports/composer.js";
 
 /**
  * The activity of composer runs, in memory and bounded (docs/design/composer-runtime.md section 3). Each run keeps at
- * most `maxEvents` events and `maxTextChars` characters of model text and approval preview heads (the oldest go first, and a reader whose cursor
+ * most `maxEvents` events and `maxTextChars` characters of model text and approval preview heads (the oldest go first, except `request` events, which go last; a reader whose cursor
  * fell behind simply continues from what is left); at most `maxRuns` runs are kept, the oldest finished one is evicted
  * first. Nothing here survives a restart: `available` is then false (ticket J2 adds a journal table).
  */
@@ -125,7 +125,10 @@ export class RunActivity {
     e.events.push(ev);
     e.textChars += charsOf(ev);
     while (e.events.length > this.#maxEvents || e.textChars > this.#maxText) {
-      const old = e.events.shift() as RunEvent;
+      // A `request` event (where a provider request went, PRV-4) outlives the other events: the oldest other event goes first.
+      // Requests are bounded by the run's turns, and the oldest goes only when nothing else is left.
+      const at = e.events.findIndex((x) => x.type !== "request");
+      const [old] = e.events.splice(at < 0 ? 0 : at, 1) as [RunEvent];
       e.textChars -= charsOf(old);
     }
   }

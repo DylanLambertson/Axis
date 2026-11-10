@@ -1,12 +1,13 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { randomBytes } from "node:crypto";
 import { classifyDeniedName, isValidName } from "@axis/pty-policy";
-import { controlRequest, dataRequest, type ControlReply, type ControlRequest, type DataReply } from "./messages.js";
+import { createGitExec, type GitExec, type GitExecConfig } from "./git-exec.js";
+import { controlRequest, dataRequest, type ControlReply, type ControlRequest, type DataReply, type ExecReply } from "./messages.js";
 import { DEFAULT_FLOW, OutputFlow, type FlowLimits } from "./flow.js";
 import { probeGroup, signalGroup, validPgid } from "./group.js";
 import { OscCwdFilter } from "./osc.js";
 import { hasNul, isAbsolutePath } from "./paths.js";
-import { systemProcessOps, type Channel, type Disposable, type ProcessOps, type PtyChild, type PtySignal, type SpawnFn } from "./ports.js";
+import { systemClock, systemProcessOps, type Channel, type Clock, type Disposable, type ProcessOps, type PtyChild, type PtySignal, type SpawnFn } from "./ports.js";
 
 export interface PtyServiceOptions {
   /** Starts a child in its own session or job. In the shipped entry this is the native pty binding. */
@@ -18,6 +19,10 @@ export interface PtyServiceOptions {
   readonly maxTerminals?: number;
   /** Decides what an absolute path is for `argv[0]` and `cwd`. Default: this process's platform. */
   readonly platform?: NodeJS.Platform;
+  /** `exec`, `scratch-*` and `hook` (H9-hooks). Absent: every such message is refused. */
+  readonly git?: GitExecConfig;
+  /** Times each exec. Default: the system clock. */
+  readonly clock?: Clock;
   /** Output flow-control bounds per terminal (characters in flight to the viewer). Default 1 MiB pause, 256 KiB resume, 4 MiB drop. */
   readonly flow?: FlowLimits;
   /** Bytes of unconsumed input per terminal and in the whole process before further input is refused (PTY-4). Default 1 MiB and 8 MiB. */
@@ -75,8 +80,10 @@ export function createPtyService(options: PtyServiceOptions): PtyService {
   const channelSubs = new Map<Channel, Disposable[]>();
   let control: Channel | undefined;
   let disposed = false;
+  // Replies go to whichever control channel is open when the work finishes; after a close they are dropped.
+  const git: GitExec | undefined = options.git === undefined ? undefined : createGitExec(options.git, options.clock ?? systemClock, platform, (m) => void sendTo(control, m));
 
-  const sendTo = (ch: Channel | undefined, msg: ControlReply | DataReply): boolean => {
+  const sendTo = (ch: Channel | undefined, msg: ControlReply | DataReply | ExecReply): boolean => {
     if (ch === undefined) return false;
     try {
       ch.send(msg);
@@ -179,13 +186,25 @@ export function createPtyService(options: PtyServiceOptions): PtyService {
     // CLI-1 backstop: the daemon resolved an absolute executable and the worktree is an absolute directory; a relative one would be
     // searched in PATH by the spawn function, and a NUL would truncate silently in a native binding.
     if (!isAbsolutePath(m.argv[0] ?? "", platform) || !isAbsolutePath(m.cwd, platform) || m.argv.some(hasNul) || hasNul(m.cwd)) return refuseSpawn(m.req, "spawn_failed");
+    startTerminal(m.req, m.argv, m.cwd, m.env, m.cols, m.rows);
+  };
+
+  /** H9-hooks: a hook is a terminal like any other, but its argv, cwd and redirectors come from the service (§4.2, §4.3). */
+  const handleHook = (m: Extract<ControlRequest, { t: "hook" }>): void => {
+    if (disposed || git === undefined) return refuseSpawn(m.req, "spawn_failed");
+    const p = git.prepareHook(m);
+    if ("code" in p) return refuseSpawn(m.req, p.code);
+    startTerminal(m.req, p.argv, p.cwd, p.env, m.cols, m.rows);
+  };
+
+  const startTerminal = (req: string, argv: readonly string[], cwd: string, env: Readonly<Record<string, string>>, cols: number, rows: number): void => {
     reap();
-    if (terminals.size >= max) return refuseSpawn(m.req, "capacity");
+    if (terminals.size >= max) return refuseSpawn(req, "capacity");
     let child: PtyChild;
     try {
-      child = options.spawn({ argv: m.argv, cwd: m.cwd, env: m.env, cols: m.cols, rows: m.rows });
+      child = options.spawn({ argv, cwd, env, cols, rows });
     } catch {
-      return refuseSpawn(m.req, "spawn_failed");
+      return refuseSpawn(req, "spawn_failed");
     }
     const g = child.group;
     if (g.kind === "pgid" && (!validPgid(g.pgid) || g.pgid !== child.pid)) {
@@ -195,7 +214,7 @@ export function createPtyService(options: PtyServiceOptions): PtyService {
       } catch {
         /* nothing more can be done */
       }
-      return refuseSpawn(m.req, "bad_group");
+      return refuseSpawn(req, "bad_group");
     }
     let idText = "";
     do idText = "pty_" + Buffer.from(rand(16)).toString("hex");
@@ -235,7 +254,7 @@ export function createPtyService(options: PtyServiceOptions): PtyService {
       );
     }
     // Nobody to tell (the control channel closed or refuses the message): nobody could own or kill this group, so end it now.
-    if (!sendTo(control, { t: "spawned", req: m.req, term: t.id, group: g.kind === "pgid" ? { kind: "pgid", pgid: g.pgid } : { kind: "job" } })) discard(t);
+    if (!sendTo(control, { t: "spawned", req, term: t.id, group: g.kind === "pgid" ? { kind: "pgid", pgid: g.pgid } : { kind: "job" } })) discard(t);
   };
 
   const onControl = (channel: Channel, raw: unknown): void => {
@@ -243,11 +262,23 @@ export function createPtyService(options: PtyServiceOptions): PtyService {
     const parsed = controlRequest.safeParse(raw);
     if (!parsed.success) {
       const req = typeof raw === "object" && raw !== null && typeof (raw as { req?: unknown }).req === "string" ? (raw as { req: string }).req : undefined;
-      if (req !== undefined && req.length > 0 && req.length <= 128) refuseSpawn(req, "spawn_failed"); // a malformed spawn must not leave the daemon waiting for its bound
-      return;
+      if (req === undefined || req.length === 0 || req.length > 128) return;
+      // A malformed request must not leave the daemon waiting for its bound: answer in the family it was sent in.
+      const t = (raw as { t?: unknown }).t;
+      if (t === "exec") return void sendTo(control, { t: "exec-failed", req, code: "bad_argv" });
+      if (t === "scratch-begin" || t === "scratch-verify" || t === "scratch-end") return void sendTo(control, { t: "scratch-failed", req, code: "bad_bind" });
+      return refuseSpawn(req, "spawn_failed");
     }
     const m = parsed.data;
     if (m.t === "spawn") return handleSpawn(m);
+    if (m.t === "hook") return handleHook(m);
+    if (m.t === "exec" || m.t === "scratch-begin" || m.t === "scratch-verify" || m.t === "scratch-end") {
+      if (disposed || git === undefined) {
+        if (m.t === "exec") return void sendTo(control, { t: "exec-failed", req: m.req, code: "spawn_failed" });
+        return void sendTo(control, { t: "scratch-failed", req: m.req, code: "spawn_failed" });
+      }
+      return git.handle(m);
+    }
     const t = terminals.get(m.term);
     if (t === undefined) return; // already reaped: the group is gone
     if (m.t === "grant") {
@@ -325,8 +356,10 @@ export function createPtyService(options: PtyServiceOptions): PtyService {
     channelSubs.delete(channel);
     if (control === channel) {
       control = undefined;
-      // Nobody can signal these any more and no run row will ever name them: closing the control channel ends every terminal.
+      // Nobody can signal these any more and no run row will ever name them: closing the control channel ends every terminal,
+      // every exec and every scratch attempt.
       for (const t of [...terminals.values()]) discard(t);
+      git?.closeAll();
     }
   };
 
@@ -366,6 +399,7 @@ export function createPtyService(options: PtyServiceOptions): PtyService {
       disposed = true;
       for (const t of terminals.values()) killTerminal(t, "SIGKILL");
       for (const t of terminals.values()) t.subs.forEach((d) => d.dispose());
+      git?.closeAll();
       terminals.clear();
       for (const subs of channelSubs.values()) subs.forEach((d) => d.dispose());
       channelSubs.clear();
