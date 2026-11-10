@@ -71,6 +71,12 @@ export interface ManagerRestored {
   readonly backupRef: string;
 }
 
+/** The workspace the host resolved (its canonical root and its id): the manager refuses any path that no longer leads to exactly it. */
+export interface ExpectedWorktree {
+  readonly path: string;
+  readonly id: string;
+}
+
 export interface ManagerShape {
   /** The commit a ref names in the project's repository (read only). Rejects `E_NOT_FOUND` when it names none. */
   resolveCommit(repoPath: string, ref: string): Promise<string>;
@@ -80,12 +86,12 @@ export interface ManagerShape {
   isMerged(repoPath: string, headSha: string, baseBranch: string): Promise<boolean>;
   list(repoPath: string): Promise<readonly ListedWorktree[]>;
   create(input: { repoPath: string; slug: string; baseRef: string; id: string }): Promise<ManagerCreated>;
-  status(worktreePath: string): Promise<ManagerStatus>;
-  previewDiscard(worktreePath: string): Promise<ManagerDiscardScan>;
-  assertNoDrift(worktreePath: string): Promise<void>;
-  finalise(input: { path: string; outcome: "merged" | "archived" | "abandoned"; discardConfirmation?: unknown; trustedBaseBranch: string | null }): Promise<ManagerFinalised>;
-  remove(input: { path: string; deleteBranch: boolean; discardConfirmation?: unknown }): Promise<ManagerRemoved>;
-  restoreFromRunBase(input: { path: string; runId: string; expectedWorktree: string }): Promise<ManagerRestored>;
+  status(worktreePath: string, expected: ExpectedWorktree): Promise<ManagerStatus>;
+  previewDiscard(worktreePath: string, expected: ExpectedWorktree): Promise<ManagerDiscardScan>;
+  assertNoDrift(worktreePath: string, expected: ExpectedWorktree): Promise<void>;
+  finalise(input: { path: string; expectedWorktree: ExpectedWorktree; outcome: "merged" | "archived" | "abandoned"; discardConfirmation?: unknown; trustedBaseBranch: string | null }): Promise<ManagerFinalised>;
+  remove(input: { path: string; expectedWorktree: ExpectedWorktree; deleteBranch: boolean; discardConfirmation?: unknown }): Promise<ManagerRemoved>;
+  restoreFromRunBase(input: { path: string; runId: string; expectedWorktree: ExpectedWorktree }): Promise<ManagerRestored>;
 }
 
 /** What the locator needs to know about a repository location (`resolveRepo` of the package). */

@@ -10,7 +10,7 @@ import { after, describe, it } from 'node:test';
 import { createExecGitRunner, redact, WorktreeError, WorktreeManager, type GitRunner } from '../src/index.js';
 import { readRegularFile } from '../src/fsSafe.js';
 import { acquireFileLock, processStartOf } from '../src/lock.js';
-import { confirmFor, makeFixture, sh, write, type Fixture } from './helpers.js';
+import { confirmFor, makeFixture, sh, write, type Fixture, exp } from './helpers.js';
 
 const fixtures: Fixture[] = [];
 function fresh(extra: Parameters<typeof makeFixture>[0] = {}): Fixture {
@@ -30,8 +30,8 @@ describe('NS-2: the branch tip is recorded before any branch is deleted', () => 
     sh(ws.path, 'add', '-A');
     sh(ws.path, 'commit', '-q', '-m', 'work');
     const tip = sh(ws.path, 'rev-parse', 'HEAD').trim();
-    await fx.manager.finalise({ path: ws.path, outcome: 'archived' });
-    const res = await fx.manager.remove({ path: ws.path, deleteBranch: true });
+    await fx.manager.finalise({ path: ws.path, expectedWorktree: exp(ws.path), outcome: 'archived' });
+    const res = await fx.manager.remove({ path: ws.path, expectedWorktree: exp(ws.path), deleteBranch: true });
     assert.equal(res.branchDeleted, true);
     assert.match(res.branchBackupRef ?? '', /^refs\/axis\/backup\/[^/]+\/branch-\d{8}T\d{6}Z-[0-9a-f]{32}$/);
     assert.equal(sh(fx.repo, 'rev-parse', res.branchBackupRef as string).trim(), tip);
@@ -41,8 +41,8 @@ describe('NS-2: the branch tip is recorded before any branch is deleted', () => 
   it('keeps the branch and reports no backup ref when the branch is not deleted', async () => {
     const fx = fresh();
     const ws = await fx.manager.create({ repoPath: fx.repo, slug: 'keep' });
-    await fx.manager.finalise({ path: ws.path, outcome: 'archived' });
-    const res = await fx.manager.remove({ path: ws.path });
+    await fx.manager.finalise({ path: ws.path, expectedWorktree: exp(ws.path), outcome: 'archived' });
+    const res = await fx.manager.remove({ path: ws.path , expectedWorktree: exp(ws.path)});
     assert.equal(res.branchBackupRef, null);
     assert.notEqual(sh(fx.repo, 'branch', '--list', 'axis/keep').trim(), '');
   });
@@ -52,20 +52,20 @@ describe('NS-3: nested repositories are part of the confirmation', () => {
   it('lists the nested repo, binds it into the fingerprint, and requires a confirmation to remove', async () => {
     const fx = fresh();
     const ws = await fx.manager.create({ repoPath: fx.repo, slug: 'nest' });
-    await fx.manager.finalise({ path: ws.path, outcome: 'archived' });
-    const before = await fx.manager.previewDiscard(ws.path);
+    await fx.manager.finalise({ path: ws.path, expectedWorktree: exp(ws.path), outcome: 'archived' });
+    const before = await fx.manager.previewDiscard(ws.path, exp(ws.path));
     assert.deepEqual(before.skippedUnsupported, []);
     mkdirSync(path.join(ws.path, 'tool'));
     sh(path.join(ws.path, 'tool'), 'init', '-q');
-    const after1 = await fx.manager.previewDiscard(ws.path);
+    const after1 = await fx.manager.previewDiscard(ws.path, exp(ws.path));
     assert.deepEqual(after1.skippedUnsupported, ['tool/']);
     assert.notEqual(after1.fingerprint, before.fingerprint);
     await assert.rejects(
-      fx.manager.remove({ path: ws.path }),
+      fx.manager.remove({ path: ws.path , expectedWorktree: exp(ws.path)}),
       (e: unknown) => e instanceof WorktreeError && e.code === 'E_CONFLICT'
         && Array.isArray(e.details['skippedUnsupported']) && (e.details['skippedUnsupported'] as string[]).includes('tool/'),
     );
-    const res = await fx.manager.remove({ path: ws.path, discardConfirmation: await confirmFor(fx.manager, ws.path, ws.id, 'remove') });
+    const res = await fx.manager.remove({ path: ws.path, expectedWorktree: exp(ws.path), discardConfirmation: await confirmFor(fx.manager, ws.path, ws.id, 'remove') });
     assert.deepEqual(res.skippedUnsupported, ['tool/']);
   });
 });
@@ -93,7 +93,7 @@ describe('NS-5: records are read as bounded regular files', () => {
     const gitDir = sh(ws.path, 'rev-parse', '--absolute-git-dir').trim();
     execFileSync('rm', ['-f', path.join(gitDir, 'axis-gitsnap.json')]);
     execFileSync('mkfifo', [path.join(gitDir, 'axis-gitsnap.json')]);
-    const st = await fx.manager.status(ws.path);
+    const st = await fx.manager.status(ws.path, exp(ws.path));
     assert.equal(st.baselineMissing, true);
   });
 });
@@ -144,7 +144,7 @@ describe('nits', () => {
     const before = new Set(readdirSync(os.tmpdir()).filter((n) => n.startsWith('axis-snap-')));
     const ws = await fx.manager.create({ repoPath: fx.repo, slug: 'scratch' });
     write(path.join(ws.path, 'a.txt'), 'edit\n');
-    await fx.manager.restoreFromRunBase({ path: path.join(ws.path, 'a.txt') });
+    await fx.manager.restoreFromRunBase({ path: path.join(ws.path, 'a.txt') , expectedWorktree: exp(path.join(ws.path, 'a.txt'))});
     assert.deepEqual(readdirSync(os.tmpdir()).filter((n) => n.startsWith('axis-snap-') && !before.has(n)), []);
     const scratch = path.join(fx.root, '.axis-tmp');
     assert.equal(existsSync(scratch), true);

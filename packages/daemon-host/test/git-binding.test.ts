@@ -108,6 +108,8 @@ test("the worktrees binding exposes the GIT-SNAP-1 re-take for the git port, and
   await r.binding.assertNoDrift({ workTree });
   r.git(r.repo, "config", "core.hooksPath", path.join(r.tmp, "hooks"));
   await assert.rejects(r.binding.assertNoDrift({ workTree }), (e: unknown) => e instanceof DaemonError && e.details?.["reason"] === "git_drift");
+  // The re-take is made for the workspace the journal registered at that path; a path nobody registered is not one.
+  await assert.rejects(r.binding.assertNoDrift({ workTree: path.join(r.tmp, "not-registered") }), (e: unknown) => e instanceof DaemonError && e.code === "E_NOT_FOUND");
 });
 
 test("a refusal is a code of the closed set with a fixed text: no reason outside the contract, no text of the cause", () => {

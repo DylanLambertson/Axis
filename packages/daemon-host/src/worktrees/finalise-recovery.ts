@@ -27,7 +27,7 @@ export async function verifyFinalised(
   requested: "merged" | "archived" | "abandoned",
 ): Promise<"merged" | "archived" | "abandoned"> {
   if (live.dirty.length > 0) throw worktreeFailure("E_CONFLICT", "dirty");
-  await manager.assertNoDrift(workTree);
+  await manager.assertNoDrift(workTree, { path: workTree, id: ws.id });
   const archived = await manager.resolveCommit(repoPath, `refs/axis/archive/${ws.id}`).catch(() => undefined);
   if (archived === undefined) throw worktreeFailure("E_CONFLICT", "no_archive");
   if (archived !== live.head) throw worktreeFailure("E_CONFLICT", "unverified");

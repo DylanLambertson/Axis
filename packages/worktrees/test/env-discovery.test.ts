@@ -9,7 +9,7 @@ import {
   buildGitEnv, createExecGitRunner, parseWorktreeList, projectDirName, repoHash, resolveRepo,
   WorktreeError, WorktreeManager, type GitRunner,
 } from '../src/index.js';
-import { makeFixture, sh, type Fixture } from './helpers.js';
+import { makeFixture, sh, type Fixture, exp } from './helpers.js';
 
 describe('GIT-ENV-1', () => {
   const dirty = {
@@ -55,14 +55,14 @@ describe('GIT-ENV-1', () => {
     try {
       const m = new WorktreeManager({ runner: spy, worktreeRoot: fx.root });
       const ws = await m.create({ repoPath: fx.repo, slug: 'spy' });
-      await m.status(ws.path);
-      await m.assertNoDrift(ws.path);
+      await m.status(ws.path, exp(ws.path));
+      await m.assertNoDrift(ws.path, exp(ws.path));
       await m.acknowledgeDrift(ws.path);
       await m.list(fx.repo);
-      await m.restoreFromRunBase({ path: path.join(ws.path, 'a.txt') });
-      await m.finalise({ path: ws.path, outcome: 'archived' });
+      await m.restoreFromRunBase({ path: path.join(ws.path, 'a.txt') , expectedWorktree: exp(path.join(ws.path, 'a.txt'))});
+      await m.finalise({ path: ws.path, expectedWorktree: exp(ws.path), outcome: 'archived' });
       await m.sweepSnapshotRefs(fx.repo);
-      await m.remove({ path: ws.path, deleteBranch: true });
+      await m.remove({ path: ws.path, expectedWorktree: exp(ws.path), deleteBranch: true });
       assert.ok(calls.length > 40);
       assert.ok(calls.some((c) => c.includes('commit-tree')) && calls.some((c) => c.includes('for-each-ref')) && calls.some((c) => c.includes('cat-file')));
       for (const c of calls) {

@@ -5,7 +5,7 @@ import { mkdirSync, symlinkSync } from 'node:fs';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import { createExecGitRunner, defaultWorktreeRoot, WorktreeError, WorktreeManager } from '../src/index.js';
-import { makeFixture, sh, type Fixture } from './helpers.js';
+import { makeFixture, sh, type Fixture, exp } from './helpers.js';
 
 const policy = (e: unknown) => e instanceof WorktreeError && e.code === 'E_POLICY_DENIED';
 
@@ -39,7 +39,7 @@ describe('location policy', () => {
     const m = withRoot(`${fx.tmp}/outside/../wt`);
     await assert.rejects(m.create({ repoPath: fx.repo, slug: 'x' }), policy);
     await assert.rejects(fx.manager.create({ repoPath: `${fx.repo}/sub/..`, slug: 'x' }), policy);
-    await assert.rejects(fx.manager.restoreFromRunBase({ path: `${fx.root}/../a.txt` }), policy);
+    await assert.rejects(fx.manager.restoreFromRunBase({ path: `${fx.root}/../a.txt` , expectedWorktree: exp(`${fx.root}/../a.txt`)}), policy);
   });
 
   it('rejects a relative root', async () => {
@@ -59,8 +59,8 @@ describe('location policy', () => {
   it('rejects a per-project directory that is a planted symlink', async () => {
     const first = await fx.manager.create({ repoPath: fx.repo, slug: 'first' });
     const projDir = path.dirname(first.path);
-    await fx.manager.finalise({ path: first.path, outcome: 'archived' });
-    await fx.manager.remove({ path: first.path });
+    await fx.manager.finalise({ path: first.path, expectedWorktree: exp(first.path), outcome: 'archived' });
+    await fx.manager.remove({ path: first.path , expectedWorktree: exp(first.path)});
     // swap the project dir for a symlink that points into the checkout
     const { rmSync } = await import('node:fs');
     rmSync(projDir, { recursive: true });

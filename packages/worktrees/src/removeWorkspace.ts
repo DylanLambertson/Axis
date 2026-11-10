@@ -20,6 +20,8 @@ export interface RemoveHost {
   /** REF-1 scanner for what the branch backup pins; undefined means the default (refuse mode). */
   readonly snapshotScanner: SnapshotScanner | undefined;
   now(): Date;
+  /** Throws unless the directory at `workTree` still belongs to `repo` (checked right before the destructive step). */
+  assertStillExpected(repo: RepoLocation, workTree: string): Promise<void>;
 }
 
 export interface RemoveParams {
@@ -70,6 +72,7 @@ export async function removeWorkspace(host: RemoveHost, p: RemoveParams): Promis
     branchBackupRef = `refs/axis/backup/${meta.id}/branch-${ts}-${randomBytes(16).toString('hex')}`;
     await createRefOnce(git, workTree, branchBackupRef, tip);
   }
+  await host.assertStillExpected(repo, workTree);
   await git.run(['worktree', 'unlock', '--', workTree], { cwd, allowFailure: true });
   // Always --force: Axis's own filter-free check and confirmation above replace git's, which would run `git status`.
   await git.run(['worktree', 'remove', '--force', '--', workTree], { cwd });

@@ -7,7 +7,7 @@ import { existsSync, rmSync } from 'node:fs';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import { WorktreeError } from '../src/index.js';
-import { makeFixture, sh, write, type Fixture } from './helpers.js';
+import { makeFixture, sh, write, type Fixture, exp } from './helpers.js';
 
 const PEM = '-----BEGIN ' + 'RSA PRIVATE' + ' KEY-----';
 const TOKEN = ['gh', 'p_'].join('') + 'Ab1'.repeat(12);
@@ -42,7 +42,7 @@ describe('snapshot secret scan of run-made history (REF-1)', () => {
   it('a secret committed on the workspace branch refuses the backup', async () => {
     commitSecret();
     write(path.join(wt, 'a.txt'), 'changed\n');
-    const e = await refusal(fx.manager.restoreFromRunBase({ path: path.join(wt, 'a.txt') }));
+    const e = await refusal(fx.manager.restoreFromRunBase({ path: path.join(wt, 'a.txt') , expectedWorktree: exp(path.join(wt, 'a.txt'))}));
     assert.equal(e.details['reason'], 'snapshot-secret');
     assert.deepEqual(e.details['findings'], [{ rule: 'private-key-block', line: 2, path: 'creds.txt' }]);
     assert.equal(refs(fx.repo, 'refs/axis/backup'), '');
@@ -51,7 +51,7 @@ describe('snapshot secret scan of run-made history (REF-1)', () => {
   it('a secret committed on a detached HEAD refuses the backup', async () => {
     sh(wt, 'checkout', '-q', '--detach');
     commitSecret('deep/x.cfg');
-    const e = await refusal(fx.manager.restoreFromRunBase({ path: path.join(wt, 'a.txt') }));
+    const e = await refusal(fx.manager.restoreFromRunBase({ path: path.join(wt, 'a.txt') , expectedWorktree: exp(path.join(wt, 'a.txt'))}));
     assert.deepEqual(e.details['findings'], [{ rule: 'private-key-block', line: 2, path: 'deep/x.cfg' }]);
   });
 
@@ -60,14 +60,14 @@ describe('snapshot secret scan of run-made history (REF-1)', () => {
     sh(wt, 'rm', '-q', '--', 'creds.txt');
     sh(wt, 'commit', '-q', '-m', 'oops');
     assert.equal(existsSync(path.join(wt, 'creds.txt')), false);
-    const e = await refusal(fx.manager.restoreFromRunBase({ path: path.join(wt, 'a.txt') }));
+    const e = await refusal(fx.manager.restoreFromRunBase({ path: path.join(wt, 'a.txt') , expectedWorktree: exp(path.join(wt, 'a.txt'))}));
     assert.equal(e.details['reason'], 'snapshot-secret');
   });
 
   it('a secret in a run-made commit message refuses and names the commit', async () => {
     sh(wt, 'commit', '-q', '--allow-empty', '-m', `note\n\n${PEM}`);
     const id = sh(wt, 'rev-parse', 'HEAD').trim();
-    const e = await refusal(fx.manager.restoreFromRunBase({ path: path.join(wt, 'a.txt') }));
+    const e = await refusal(fx.manager.restoreFromRunBase({ path: path.join(wt, 'a.txt') , expectedWorktree: exp(path.join(wt, 'a.txt'))}));
     assert.deepEqual((e.details['findings'] as { rule: string; commit?: string }[]).map((f) => [f.rule, f.commit]), [['private-key-block', id]]);
   });
 
@@ -75,7 +75,7 @@ describe('snapshot secret scan of run-made history (REF-1)', () => {
     write(path.join(wt, 'ok.txt'), 'fine\n');
     sh(wt, 'add', '--', 'ok.txt');
     sh(wt, '-c', `user.name=${TOKEN}`, 'commit', '-q', '-m', 'plain');
-    const e = await refusal(fx.manager.finalise({ path: wt, outcome: 'archived' }));
+    const e = await refusal(fx.manager.finalise({ path: wt, expectedWorktree: exp(wt), outcome: 'archived' }));
     assert.deepEqual((e.details['findings'] as { rule: string }[]).map((f) => f.rule), ['github-token', 'github-token']);
     assert.ok(!JSON.stringify(e.details).includes(TOKEN));
   });
@@ -83,20 +83,20 @@ describe('snapshot secret scan of run-made history (REF-1)', () => {
   it('a sensitive or token name whose content the base already holds still refuses, committed or untracked', async () => {
     write(path.join(wt, 'id_rsa'), 'alpha\n');
     write(path.join(wt, `${TOKEN}.txt`), 'alpha\n');
-    const e = await refusal(fx.manager.restoreFromRunBase({ path: path.join(wt, 'a.txt') }));
+    const e = await refusal(fx.manager.restoreFromRunBase({ path: path.join(wt, 'a.txt') , expectedWorktree: exp(path.join(wt, 'a.txt'))}));
     assert.deepEqual(e.details['findings'], [{ rule: 'github-token' }, { rule: 'sensitive-filename', path: 'id_rsa' }]);
     rmSync(path.join(wt, `${TOKEN}.txt`));
     sh(wt, 'add', '--', 'id_rsa');
     sh(wt, 'commit', '-q', '-m', 'k');
     // Committed, the name lives only in a run-made tree: the history scan reads every tree's names.
-    const h = await refusal(fx.manager.finalise({ path: wt, outcome: 'archived' }));
+    const h = await refusal(fx.manager.finalise({ path: wt, expectedWorktree: exp(wt), outcome: 'archived' }));
     assert.deepEqual(h.details['findings'], [{ rule: 'sensitive-filename', path: 'id_rsa' }]);
     assert.equal(refs(fx.repo, 'refs/axis/archive'), '');
   });
 
   it('finalise refuses to pin an unscanned commit as the archive, with nothing to back up', async () => {
     commitSecret();
-    const e = await refusal(fx.manager.finalise({ path: wt, outcome: 'archived' }));
+    const e = await refusal(fx.manager.finalise({ path: wt, expectedWorktree: exp(wt), outcome: 'archived' }));
     assert.equal(e.details['reason'], 'snapshot-secret');
     assert.equal(refs(fx.repo, 'refs/axis/archive'), '');
   });
@@ -105,9 +105,9 @@ describe('snapshot secret scan of run-made history (REF-1)', () => {
     write(path.join(wt, 'ok.txt'), 'fine\n');
     sh(wt, 'add', '--', 'ok.txt');
     sh(wt, 'commit', '-q', '-m', 'fine');
-    await fx.manager.finalise({ path: wt, outcome: 'archived' });
+    await fx.manager.finalise({ path: wt, expectedWorktree: exp(wt), outcome: 'archived' });
     commitSecret();
-    const e = await refusal(fx.manager.remove({ path: wt, deleteBranch: true }));
+    const e = await refusal(fx.manager.remove({ path: wt, expectedWorktree: exp(wt), deleteBranch: true }));
     assert.equal(e.details['reason'], 'snapshot-secret');
     assert.equal(refs(fx.repo, 'refs/axis/backup'), '');
     assert.ok(existsSync(wt));
@@ -119,11 +119,11 @@ describe('snapshot secret scan of run-made history (REF-1)', () => {
     sh(wt, 'add', '--', 'ok.txt');
     sh(wt, 'commit', '-q', '-m', 'fine');
     write(path.join(wt, 'a.txt'), 'changed\n');
-    const r = await fx.manager.restoreFromRunBase({ path: path.join(wt, 'a.txt') });
+    const r = await fx.manager.restoreFromRunBase({ path: path.join(wt, 'a.txt') , expectedWorktree: exp(path.join(wt, 'a.txt'))});
     assert.equal(sh(fx.repo, 'show', `${r.backupRef}:ok.txt`), 'fine\n');
-    const fin = await fx.manager.finalise({ path: wt, outcome: 'archived' });
+    const fin = await fx.manager.finalise({ path: wt, expectedWorktree: exp(wt), outcome: 'archived' });
     assert.ok(fin.archiveRef.startsWith('refs/axis/archive/'));
-    const rm = await fx.manager.remove({ path: wt, deleteBranch: true });
+    const rm = await fx.manager.remove({ path: wt, expectedWorktree: exp(wt), deleteBranch: true });
     assert.ok(rm.branchBackupRef?.startsWith('refs/axis/backup/'));
     rmSync(wt, { recursive: true, force: true });
   });

@@ -24,16 +24,16 @@ import {
 import {
   assertNoTraversal, canonicalise, isSameOrInside, type ProtectedLocation,
 } from './paths.js';
-import { assertUnder, hasGitComponent, isOutsideRel } from './pathGuard.js';
+import { assertIsRoot, assertUnder, hasGitComponent, isOutsideRel } from './pathGuard.js';
 import { parseLsTree, writeRestoredEntry } from './restore.js';
-import { MAX_SNAPSHOT_FILE_BYTES, assertHistoryClean, createRefOnce, deleteRefIf, writeSnapshotRef } from './snapshotRef.js';
+import { MAX_SNAPSHOT_FILE_BYTES, assertHistoryClean, createRefOnce, writeSnapshotRef } from './snapshotRef.js';
 import type {
-  CreateInput, CreatedWorkspace, FinaliseOutcome, FinaliseResult, RemoveResult, RestoreResult,
+  CreateInput, CreatedWorkspace, ExpectedWorktree, FinaliseOutcome, FinaliseResult, RemoveResult, RestoreResult,
   WorkspaceStatus, WorktreeInfo,
 } from './types.js';
 import * as os from 'node:os';
 import {
-  BACKUP_RETENTION_DAYS, DAY_MS, RUNBASE_RETENTION_DAYS, invalid, type ActiveRunOp, type Located, type WorktreeManagerOptions,
+  BACKUP_RETENTION_DAYS, RUNBASE_RETENTION_DAYS, invalid, parseExpected, sweepExpiredRefs, type ActiveRunOp, type Located, type WorktreeManagerOptions,
 } from './managerOptions.js';
 
 export { BACKUP_RETENTION_DAYS, RUNBASE_RETENTION_DAYS, type ActiveRunOp, type WorktreeManagerOptions };
@@ -73,8 +73,8 @@ export class WorktreeManager {
     return this.boundary(() => this.createImpl(input));
   }
 
-  status(worktreePath: string, opts: { baseline?: GitSnapshot } = {}): Promise<WorkspaceStatus> {
-    return this.boundary(() => this.statusImpl(worktreePath, opts));
+  status(worktreePath: string, expected: ExpectedWorktree, opts: { baseline?: GitSnapshot } = {}): Promise<WorkspaceStatus> {
+    return this.boundary(() => this.statusImpl(worktreePath, expected, opts));
   }
 
   takeGitSnapshot(worktreePath: string, commonDir?: string): Promise<GitSnapshot> {
@@ -84,7 +84,7 @@ export class WorktreeManager {
   /** The user reviewed the drift: the current state becomes the new baseline. */
   acknowledgeDrift(worktreePath: string): Promise<GitSnapshot> {
     return this.boundary(() =>
-      this.withWorkspace(worktreePath, true, null, async ({ repo, workTree }) => {
+      this.withWorkspace(worktreePath, true, 'unchecked', null, async ({ repo, workTree }) => {
         const snap = await this.snapshotImpl(workTree, repo.commonDir);
         await writeBaseline(repo.gitDir, snap);
         return snap;
@@ -97,9 +97,9 @@ export class WorktreeManager {
    * 'git-drift') unless it matches the acknowledged baseline. Fails closed
    * when no baseline exists.
    */
-  assertNoDrift(worktreePath: string, opts: { baseline?: GitSnapshot } = {}): Promise<void> {
+  assertNoDrift(worktreePath: string, expected: ExpectedWorktree, opts: { baseline?: GitSnapshot } = {}): Promise<void> {
     return this.boundary(async () => {
-      const { repo, workTree } = await this.locate(worktreePath, true);
+      const { repo, workTree } = await this.locate(worktreePath, true, expected);
       const baseline = opts.baseline ?? (await readBaseline(repo.gitDir));
       if (!baseline) {
         throw new WorktreeError('E_CONFLICT', 'git configuration baseline is missing', { reason: 'git-drift', baselineMissing: true, items: [] });
@@ -114,9 +114,9 @@ export class WorktreeManager {
   }
 
   /** What a finalise/remove would discard, with the fingerprint a confirmation must be bound to. */
-  previewDiscard(worktreePath: string): Promise<DiscardScan> {
+  previewDiscard(worktreePath: string, expected: ExpectedWorktree): Promise<DiscardScan> {
     return this.boundary(async () => {
-      const { workTree } = await this.locate(worktreePath, true);
+      const { workTree } = await this.locate(worktreePath, true, expected);
       return scanDiscard(this.git, workTree, this.maxFile);
     });
   }
@@ -127,11 +127,12 @@ export class WorktreeManager {
    * lives in the git directory a finished run can write, so it is used only when the caller has no trusted record.
    */
   finalise(input: {
-    path: string; outcome: FinaliseOutcome; discardConfirmation?: DiscardConfirmation; trustedBaseBranch?: string | null;
+    path: string; expectedWorktree: ExpectedWorktree; outcome: FinaliseOutcome; discardConfirmation?: DiscardConfirmation;
+    trustedBaseBranch?: string | null;
   }): Promise<FinaliseResult> {
     return this.boundary(async () => {
       if (!['merged', 'archived', 'abandoned'].includes(input.outcome)) throw invalid('invalid outcome');
-      return this.withWorkspace(input.path, true, 'finalise', async ({ repo, workTree, meta }) => {
+      return this.withWorkspace(input.path, true, input.expectedWorktree, 'finalise', async ({ repo, workTree, meta }) => {
         if (meta.state === 'FINALISED') throw new WorktreeError('E_CONFLICT', 'workspace is already finalised', { id: meta.id });
         await this.guardExecutionDrift(repo, workTree);
         const head = await this.git.text(['rev-parse', '--verify', '--end-of-options', 'HEAD'], { cwd: workTree });
@@ -159,13 +160,14 @@ export class WorktreeManager {
   }
 
   remove(input: {
-    path: string; deleteBranch?: boolean; discardConfirmation?: DiscardConfirmation;
+    path: string; expectedWorktree: ExpectedWorktree; deleteBranch?: boolean; discardConfirmation?: DiscardConfirmation;
   }): Promise<RemoveResult> {
     return this.boundary(() =>
-      this.withWorkspace(input.path, true, 'remove', ({ repo, workTree, meta }) =>
+      this.withWorkspace(input.path, true, input.expectedWorktree, 'remove', ({ repo, workTree, meta }) =>
         removeWorkspace(
           { git: this.git, maxFile: this.maxFile, guardExecutionDrift: (r, w) => this.guardExecutionDrift(r, w), snapshotScanner: this.options.snapshotScanner,
-            writeBackup: (w, m, why) => this.writeBackup(w, m, why), now: () => this.now() },
+            writeBackup: (w, m, why) => this.writeBackup(w, m, why), now: () => this.now(),
+            assertStillExpected: (r, w) => this.assertStillExpected(r, w) },
           { repo, workTree, meta, deleteBranch: input.deleteBranch === true, token: input.discardConfirmation })));
   }
 
@@ -176,23 +178,19 @@ export class WorktreeManager {
    * workspace's creation snapshot is used and its recorded commit is enforced.
    */
   restoreFromRunBase(input: {
-    path: string; runId?: string; expectedRunBaseSha?: string; expectedWorktree?: string;
+    path: string; expectedWorktree: ExpectedWorktree; runId?: string; expectedRunBaseSha?: string;
   }): Promise<RestoreResult> {
     return this.boundary(async () => {
       assertNoTraversal(input.path, 'path');
-      // A caller that has already checked ONE workspace names it: the path must lie under it with no symlinked
-      // parent, and the worktree the path resolves to must be that same one (otherwise a symlink planted inside
-      // workspace A would send the write to workspace B, past every check made for A).
-      if (input.expectedWorktree !== undefined) await assertUnder(input.expectedWorktree, input.path);
+      // The path must lie under the named workspace with no symlinked parent, and resolve into that very workspace.
+      const expected = parseExpected(input.expectedWorktree);
+      await assertUnder(expected.path, input.path);
       if (input.runId !== undefined && !IdSchema.safeParse(input.runId).success) throw invalid('invalid run id');
       const parent = await canonicalise(path.dirname(input.path));
       const target = path.join(parent, path.basename(input.path));
       let existing = parent;
       while (!(await fs.stat(existing).then(() => true, () => false))) existing = path.dirname(existing);
-      return this.withWorkspace(existing, false, 'restore', async ({ repo, workTree, meta }) => {
-        if (input.expectedWorktree !== undefined && (await canonicalise(input.expectedWorktree)) !== workTree) {
-          throw new WorktreeError('E_POLICY_DENIED', 'path resolves into a different worktree', { reason: 'worktree-mismatch' });
-        }
+      return this.withWorkspace(existing, false, expected, 'restore', async ({ repo, workTree, meta }) => {
         const relPath = path.relative(workTree, target);
         if (relPath === '' || isOutsideRel(relPath) || !isSameOrInside(target, workTree, this.platform)) {
           throw new WorktreeError('E_POLICY_DENIED', 'path is outside the worktree');
@@ -230,21 +228,7 @@ export class WorktreeManager {
     return this.boundary(async () => {
       const repo = await resolveRepo(repoPath);
       return this.withLock(repo.commonDir, path.join(repo.commonDir, 'axis-create.lock'), async () => {
-        const cwd = repo.workTree ?? repo.commonDir;
-        const out = await this.git.text(
-          ['for-each-ref', '--format=%(refname)%09%(objectname)%09%(committerdate:unix)', 'refs/axis/runbase', 'refs/axis/backup'],
-          { cwd },
-        );
-        const deleted: string[] = [];
-        for (const line of out.split('\n').filter(Boolean)) {
-          const [ref = '', sha = '', secs = ''] = line.split('\t');
-          const days = ref.startsWith('refs/axis/runbase/') ? RUNBASE_RETENTION_DAYS : BACKUP_RETENTION_DAYS;
-          if (now.getTime() - Number(secs) * 1000 > days * DAY_MS) {
-            await deleteRefIf(this.git, cwd, ref, sha);
-            deleted.push(ref);
-          }
-        }
-        return deleted;
+        return sweepExpiredRefs(this.git, repo.workTree ?? repo.commonDir, now);
       });
     });
   }
@@ -299,8 +283,8 @@ export class WorktreeManager {
       createWorkspace(host, repo, { slug: slug.data, id, baseRef }));
   }
 
-  private async statusImpl(worktreePath: string, opts: { baseline?: GitSnapshot }): Promise<WorkspaceStatus> {
-    const { repo, workTree, meta } = await this.locate(worktreePath, true);
+  private async statusImpl(worktreePath: string, expected: ExpectedWorktree, opts: { baseline?: GitSnapshot }): Promise<WorkspaceStatus> {
+    const { repo, workTree, meta } = await this.locate(worktreePath, true, expected);
     const cwd = workTree;
     const dirty = await readDirty(this.git, cwd);
     const head = await this.git.text(['rev-parse', '--verify', '--end-of-options', 'HEAD'], { cwd });
@@ -391,6 +375,14 @@ export class WorktreeManager {
     return ref;
   }
 
+  /** Right before a destructive step: the directory at `workTree` must still belong to the validated repository location. */
+  private async assertStillExpected(repo: RepoLocation, workTree: string): Promise<void> {
+    const now = await resolveRepo(workTree);
+    if (now.gitDir !== repo.gitDir || now.workTree !== workTree) {
+      throw new WorktreeError('E_POLICY_DENIED', 'path resolves into a different worktree', { reason: 'worktree-mismatch' });
+    }
+  }
+
   /** Refuses daemon writes while unacknowledged drift could make git run commands. */
   private async guardExecutionDrift(repo: RepoLocation, workTree: string): Promise<void> {
     const baseline = await readBaseline(repo.gitDir);
@@ -428,9 +420,11 @@ export class WorktreeManager {
     return locs;
   }
 
-  /** Resolves and validates an Axis-managed worktree; never the local checkout. */
-  private async locate(p: string, mustBeRoot: boolean): Promise<Located> {
+  /** Resolves and validates an Axis-managed worktree (never the local checkout); `expected` pins its identity. */
+  private async locate(p: string, mustBeRoot: boolean, expectedIn: ExpectedWorktree | 'unchecked'): Promise<Located> {
     assertNoTraversal(p, 'path');
+    const expected = expectedIn === 'unchecked' ? null : parseExpected(expectedIn);
+    if (expected !== null && mustBeRoot) await assertIsRoot(expected.path, p, this.platform);
     const repo = await resolveRepo(p);
     if (!repo.linked || repo.workTree === null) {
       throw new WorktreeError('E_POLICY_DENIED', 'not a linked worktree; Axis never operates on the local checkout');
@@ -444,6 +438,10 @@ export class WorktreeManager {
     if (mustBeRoot && (await canonicalise(p)) !== repo.workTree) {
       throw invalid('path must be the worktree root');
     }
+    // Identity, not spelling: a directory swapped in under the same path leads to another workspace's record.
+    if (expected !== null && (meta.id !== expected.id || (await canonicalise(expected.path)) !== repo.workTree)) {
+      throw new WorktreeError('E_POLICY_DENIED', 'path resolves into a different worktree', { reason: 'worktree-mismatch' });
+    }
     return { repo, workTree: repo.workTree, meta };
   }
 
@@ -452,7 +450,7 @@ export class WorktreeManager {
    * lockfile, after re-reading and re-validating its record inside the lock.
    */
   private async withWorkspace<T>(
-    p: string, mustBeRoot: boolean, op: ActiveRunOp | null, fn: (l: Located) => Promise<T>,
+    p: string, mustBeRoot: boolean, expected: ExpectedWorktree | 'unchecked', op: ActiveRunOp | null, fn: (l: Located) => Promise<T>,
   ): Promise<T> {
     assertNoTraversal(p, 'path');
     const first = await resolveRepo(p);
@@ -460,7 +458,7 @@ export class WorktreeManager {
       throw new WorktreeError('E_POLICY_DENIED', 'not a linked worktree; Axis never operates on the local checkout');
     }
     return this.withLock(first.commonDir, path.join(first.gitDir, 'axis.lock'), async () => {
-      const located = await this.locate(p, mustBeRoot);
+      const located = await this.locate(p, mustBeRoot, expected);
       if (op && this.options.refuseIfActiveRun && (await this.options.refuseIfActiveRun(located.meta.id, op))) {
         throw new WorktreeError('E_CONFLICT', 'a run is active in this workspace', { reason: 'active-run' });
       }
