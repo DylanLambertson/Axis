@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { GitOpsError, prefix, type GitOpsDeps, type GitRunRequest } from "@axis/git-ops";
-import { createPtyGitRunner } from "../src/bindings/pty-git.js";
+import { createPtyGitRunner, PUSH_NOT_AVAILABLE } from "../src/bindings/pty-git.js";
 import type { PtyExecCall, PtyExecOutcome, PtyExecPort } from "../src/ports/pty.js";
 
 const GIT = "/usr/bin/git";
@@ -55,8 +55,11 @@ test("only the service's allow-listed names leave the host; redirectors, config 
   const port = recording();
   await runner(port).run(req(commitTree()));
   assert.deepEqual(port.calls[0]?.env, { GIT_TERMINAL_PROMPT: "0", GIT_AUTHOR_NAME: "A", LC_ALL: "C" });
+  // The name check is case-insensitive, as the service's is (and Windows names are): neither list drops what the other keeps.
+  await runner(port).run(req(commitTree(), { env: { Lang: "C", git_author_email: "a@example.invalid", Lc_Ctype: "C", Git_Dir: "/x", home: "/h" } }));
+  assert.deepEqual(port.calls[1]?.env, { Lang: "C", git_author_email: "a@example.invalid", Lc_Ctype: "C" });
   await assert.rejects(runner(port).run(req(commitTree(), { env: { GIT_AUTHOR_NAME: "a\0b" } })), isCode("E_INTERNAL"));
-  assert.equal(port.calls.length, 1);
+  assert.equal(port.calls.length, 2);
 });
 
 /** Every leading sequence that is not exactly git-ops' is refused before anything is sent. */
@@ -87,7 +90,12 @@ test("a command whose global options differ from git-ops' prefix is refused (clo
     ["--namespace", insert(at("commit-tree"), "--namespace=x")],
     ["order changed", [base[1] as string, base[0] as string, ...base.slice(2)]],
     ["prefix only", base.slice(0, at("commit-tree"))],
+    ["an unknown -c between the hooks pin and the encoding pin", insert(at("i18n.commitEncoding=utf-8") - 1, "-c", "core.editor=/bin/x")],
+    ["an unknown -c between the protocol.ext pin and the hooks pin", insert(at("core.hooksPath=/dev/null") - 1, "-c", "core.editor=/bin/x")],
   ];
+  // The runHooks form (no hooks pin): an unknown -c where the hooks pin would be.
+  const on = commitTree(true);
+  cases.push(["hooks on: an unknown -c before the encoding pin", [...on.slice(0, on.indexOf("i18n.commitEncoding=utf-8") - 1), "-c", "core.editor=/bin/x", ...on.slice(on.indexOf("i18n.commitEncoding=utf-8") - 1)]]);
   for (const [what, argv] of cases) {
     const port = recording();
     await assert.rejects(runner(port).run(req(argv)), isCode("E_INTERNAL"), what);
@@ -99,7 +107,7 @@ test("an unmappable subcommand or option is refused: closed list, exact tokens",
   const pre = gitOpsPrefix(false);
   const enc = ["-c", "i18n.commitEncoding=utf-8"];
   const cases: Array<[string, string[]]> = [
-    ["push (a terminal-bound run, §5.2)", [...pre, "push", "origin", "HEAD:refs/heads/axis/x"]],
+    ["push without git-ops' transport pins", [...pre, "push", "origin", "HEAD:refs/heads/axis/x"]],
     ["update-ref", [...pre, "update-ref", "refs/heads/axis/x", T]],
     ["an alias name", [...pre, "ci"]],
     ["commit-tree with -m", [...pre, ...enc, "commit-tree", "-p", P, "-m", "x", T]],
@@ -166,11 +174,45 @@ test("the composition's choice: a pty port with exec gets the strict runner over
   await (viaExec as (g: string) => ReturnType<typeof runner>)(GIT).run(req(commitTree()));
   assert.deepEqual(port.calls[0]?.argv, [GIT, "commit-tree", "-p", P, "-F", "-", T], "the host's git path, git-ops' request mapped");
   await assert.rejects((viaExec as (g: string) => ReturnType<typeof runner>)(GIT).run(req(["push"])), isCode("E_INTERNAL"), "the strict mapping, not a pass-through");
-  const win = selectPtyGitRunner(port, undefined, "win32") as (g: string) => ReturnType<typeof runner>;
-  await assert.rejects(win("C:\\git\\git.exe").run(req(commitTree())), isCode("E_INTERNAL"), "no hooks-off path wired on Windows: a pinned request is refused");
+  // Windows: real Windows paths, so only the hooks pin decides. No hooks-off path is wired there: the pinned form is refused
+  // and the runHooks form (no pin; the service pins hooks off itself) is sent.
+  const ww = { workTree: "C:\\r", gitDir: "C:\\r\\.git" };
+  const winArgv = (hooks: boolean): string[] => [...prefix(ww, { platform: "linux" } as unknown as GitOpsDeps, { context: "pty", hooks, filters: [] }), "-c", "i18n.commitEncoding=utf-8", "commit-tree", "-p", P, "-F", "-", T];
+  const winPort = recording();
+  const win = selectPtyGitRunner(winPort, undefined, "win32") as (g: string) => ReturnType<typeof runner>;
+  await assert.rejects(win("C:\\git\\git.exe").run(req(winArgv(false), { cwd: ww.workTree })), isCode("E_INTERNAL"), "a pinned request is refused on Windows");
+  assert.equal(winPort.calls.length, 0);
+  await win("C:\\git\\git.exe").run(req(winArgv(true), { cwd: ww.workTree }));
+  assert.deepEqual(winPort.calls[0]?.repo, ww, "the unpinned form with Windows paths is sent");
   assert.equal(selectPtyGitRunner(port, explicit, "linux"), "pty_git_runner_conflict");
   assert.equal(selectPtyGitRunner({}, undefined, "linux"), "pty_git_runner_required");
   assert.equal(selectPtyGitRunner(undefined, {} as never, "linux"), "pty_git_runner_required");
   const fake = selectPtyGitRunner({}, explicit, "linux") as (g: string) => unknown;
   assert.equal(fake(GIT), explicit, "a pty port without exec (a test fake) keeps the caller's runner");
+});
+
+/** git-ops' push (`push.ts`): its prefix, its transport allow-list (`protocolAllowList()`), then `push`. */
+const gitOpsPush = (hooks: boolean, protocols: readonly string[] = ["https", "ssh", "file"]): string[] => [
+  ...gitOpsPrefix(hooks), "-c", "protocol.allow=never", ...protocols.flatMap((p) => ["-c", `protocol.${p}.allow=always`]),
+  "push", "--no-follow-tags", "--no-recurse-submodules", ...(hooks ? [] : ["--no-verify"]), "--", "origin", "refs/heads/axis/x:refs/heads/axis/x",
+];
+
+test("git-ops' push is answered E_UNAVAILABLE with a fixed reason until H9-hooks S4 builds it, never as an internal fault, and nothing is sent", async () => {
+  for (const hooks of [false, true]) {
+    const port = recording();
+    await assert.rejects(runner(port).run(req(gitOpsPush(hooks))), (e: unknown) => isCode("E_UNAVAILABLE")(e) && (e as GitOpsError).details?.["reason"] === PUSH_NOT_AVAILABLE, `hooks ${hooks}`);
+    await assert.rejects(runner(undefined).run(req(gitOpsPush(hooks))), (e: unknown) => (e as GitOpsError).details?.["reason"] === PUSH_NOT_AVAILABLE);
+    assert.equal(port.calls.length, 0);
+  }
+  // Only git-ops' own form is recognised: anything else around a push stays a refused, unmapped form.
+  const base = gitOpsPush(false);
+  const at = base.indexOf("push");
+  for (const [what, argv] of [
+    ["an unknown -c among the transport pins", [...base.slice(0, at), "-c", "core.sshCommand=/bin/x", ...base.slice(at)]],
+    ["a transport pin set to never", base.map((a) => (a === "protocol.ssh.allow=always" ? "protocol.ssh.allow=never" : a))],
+    ["no protocol.allow=never first", base.filter((_, k) => k !== base.indexOf("protocol.allow=never") && k !== base.indexOf("protocol.allow=never") - 1)],
+    ["a lost --git-dir", base.filter((a) => !a.startsWith("--git-dir="))],
+  ] as const) {
+    await assert.rejects(runner(recording()).run(req(argv)), isCode("E_INTERNAL"), what);
+  }
 });

@@ -51,6 +51,15 @@ const FORM_REFUSALS: ReadonlySet<unknown> = new Set(["bad_argv", "env_denied", "
 
 const unmappable = (): GitOpsError => new GitOpsError("E_INTERNAL", "A git request for the pty process has a form Axis does not map.");
 const unavailable = (): GitOpsError => new GitOpsError("E_UNAVAILABLE", "The Axis pty process is not available for git.");
+/**
+ * git-ops' push, recognised only to say it is not built: push is a terminal-bound run (design §5.2), which H9-hooks slice S4
+ * builds. Until then a host wired with an `exec` port answers every push with this, never as an internal fault. The reason is
+ * the host's own; it is not in the wire's closed sets, so the client sees `E_UNAVAILABLE` with the fixed text of the code.
+ */
+export const PUSH_NOT_AVAILABLE = "push_not_available";
+const pushUnavailable = (): GitOpsError => new GitOpsError("E_UNAVAILABLE", "Pushing through the Axis pty process is not available yet.", { reason: PUSH_NOT_AVAILABLE });
+/** git-ops' push transport pins (`protocolAllowList()`): `protocol.allow=never`, then per-protocol `always`. */
+const PUSH_PIN = /^protocol\.[a-z][a-z0-9+.-]{0,31}\.allow=always$/;
 
 interface Mapped {
   readonly gitDir: string;
@@ -66,8 +75,8 @@ function absNormal(p: string, platform: NodeJS.Platform): boolean {
   return (win ? winAbs(p) : posixAbs(p)) && trim(win ? winNorm(p) : posixNorm(p)) === trim(p);
 }
 
-/** Reads git-ops' leading options exactly; undefined for anything else. */
-export function mapPtyArgv(argv: readonly string[], o: Pick<PtyGitRunnerOptions, "platform" | "hooksOffPath">): Mapped | undefined {
+/** Reads git-ops' leading options exactly; `"push"` for git-ops' push form (not built, S4); undefined for anything else. */
+export function mapPtyArgv(argv: readonly string[], o: Pick<PtyGitRunnerOptions, "platform" | "hooksOffPath">): Mapped | "push" | undefined {
   let i = 0;
   const next = (): string | undefined => argv[i++];
   const take = (want: string): boolean => argv[i] === want && (i++, true);
@@ -83,6 +92,11 @@ export function mapPtyArgv(argv: readonly string[], o: Pick<PtyGitRunnerOptions,
   if (!pair("core.fsmonitor=false") || !pair("protocol.ext.allow=never")) return undefined;
   if (argv[i] === "-c" && argv[i + 1]?.startsWith("core.hooksPath=")) {
     if (o.hooksOffPath === undefined || o.hooksOffPath.length === 0 || !pair(`core.hooksPath=${o.hooksOffPath}`)) return undefined;
+  }
+  if (argv[i] === "-c" && argv[i + 1] === "protocol.allow=never") {
+    let j = i + 2;
+    while (argv[j] === "-c" && PUSH_PIN.test(argv[j + 1] ?? "")) j += 2;
+    if (argv[j] === "push") return "push";
   }
   const encoding = pair("i18n.commitEncoding=utf-8");
   const sub = next();
@@ -109,7 +123,9 @@ function subcommandOk(sub: string, rest: readonly string[]): boolean {
 function allowedEnv(env: Readonly<Record<string, string>>): Record<string, string> | undefined {
   const out: Record<string, string> = {};
   for (const [name, value] of Object.entries(env)) {
-    if (!ENV_ALLOW.has(name) && !LC_NAME.test(name)) continue;
+    // Case-insensitive, as the service's own check (`execNameAllowed`) and Windows environment names are.
+    const upper = name.toUpperCase();
+    if (!ENV_ALLOW.has(upper) && !LC_NAME.test(upper)) continue;
     if (typeof value !== "string" || value.includes("\0")) return undefined;
     out[name] = value;
   }
@@ -130,6 +146,7 @@ export function createPtyGitRunner(port: PtyExecPort | undefined, options: PtyGi
       // The exec reply is decoded text; a request that needs the bytes (`raw`) cannot be honoured, so it is not sent.
       if (req.raw === true) throw unmappable();
       const m = mapPtyArgv(req.argv, options);
+      if (m === "push") throw pushUnavailable();
       const env = allowedEnv(req.env);
       if (m === undefined || env === undefined || !absNormal(req.cwd, options.platform)) throw unmappable();
       if (port === undefined || typeof port.exec !== "function") throw unavailable();
