@@ -98,9 +98,15 @@ test("kill and restart: the journal keeps RUNNING, recovery makes it BLOCKED, a 
   t.after(() => next.dispose());
   assert.equal(next.recover(), 1);
   const blocked = next.get(runId);
-  assert.deepEqual([blocked.state, blocked.reason, blocked.live, blocked.mode, blocked.usage], ["BLOCKED", "INTERRUPTED_BY_RESTART", false, null, null]);
+  // J2: what the run was started with, what it used and what it did come from the journal.
+  assert.deepEqual([blocked.state, blocked.reason, blocked.live, blocked.mode, blocked.providerId, blocked.modelId], ["BLOCKED", "INTERRUPTED_BY_RESTART", false, "edit", "mock", "mock-model"]);
+  assert.equal(blocked.usage?.requests, 1);
   assert.ok(composerRunsMethods.get.response.safeParse({ run: blocked }).success);
-  assert.deepEqual(next.events(runId, 0, 10), { events: [], nextSeq: 0, complete: true, available: false });
+  const page = next.events(runId, 0, 10);
+  assert.deepEqual([page.available, page.complete, page.events.map((e) => (e.type === "approval" ? `approval:${e.state}` : e.type))], [true, true, ["state", "request", "usage", "approval:requested"]]);
+  assert.ok(composerRunsMethods.events.response.safeParse(page).success);
+  assert.equal(page.events.some((e) => e.type === "approval" && e.state === "withdrawn"), false, "nothing was written after the shutdown");
+  assert.deepEqual(next.events(queued, 0, 10), { events: [], nextSeq: 0, complete: true, available: false }, "a run with no record has no stored activity");
   assert.deepEqual([c.journal.getRun(queued)?.state, c.journal.getRun(queued)?.reason], ["CANCELLED", "INTERRUPTED_BY_RESTART"]);
   assert.equal(c.journal.getRun(cli)?.state, "QUEUED", "a CLI run is the run supervisor's");
   assert.equal(next.recover(), 0, "recovery converges");

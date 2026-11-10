@@ -83,8 +83,10 @@ export * from "./handlers/projects.js";
 // axis.runs/1: composer runs on the mock provider through the broker (ticket C1, docs/design/composer-runtime.md).
 export { AGENT_PAYLOAD_ALLOWLIST, createAgentBinding, COMPOSER_TOOLS, MAX_INFLIGHT_CALLS, MAX_READ_BYTES, shownWhole, MAX_WRITE_BYTES, type AgentBinding, type AgentBindingDeps } from "./bindings/agent.js";
 export * from "./composer/activity.js";
+export * from "./composer/budget.js";
 export * from "./composer/errors.js";
 export * from "./composer/loop.js";
+export * from "./composer/persist.js";
 export * from "./composer/preview.js";
 export * from "./composer/service.js";
 export * from "./gate/run-approvals.js";

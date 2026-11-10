@@ -48,6 +48,9 @@ export interface ComposerRigOptions {
   readonly maxActive?: number;
   readonly toolCaps?: Partial<ToolCaps>;
   readonly previewScanner?: PreviewScanner;
+  /** A database file instead of memory (restart tests reopen it); its directory is the caller's. */
+  readonly dbPath?: string;
+  readonly workspaceBudget?: RunBudgetLimits;
 }
 
 const SHA = "b".repeat(40);
@@ -60,7 +63,7 @@ export async function composerRig(options: ComposerRigOptions): Promise<Composer
   const outside = join(base, "outside");
   mkdirSync(join(root, "src"), { recursive: true });
   mkdirSync(outside);
-  const db = openDatabase(":memory:");
+  const db = openDatabase(options.dbPath ?? ":memory:");
   const audit = new AuditLog(db, { payloadAllowlist: AGENT_PAYLOAD_ALLOWLIST });
   const journal = Journal.open(db, { audit });
   const ws = journal.createWorkspace({ projectId: "p", branch: "axis/x", baseRef: "main", baseSha: SHA, createdBy: "user" }).value;
@@ -89,6 +92,7 @@ export async function composerRig(options: ComposerRigOptions): Promise<Composer
     engine: agent,
     now: () => r.clock.now(),
     ...(options.budget === undefined ? {} : { budget: options.budget }),
+    ...(options.workspaceBudget === undefined ? {} : { workspaceBudget: options.workspaceBudget }),
     ...(options.maxActive === undefined ? {} : { maxActive: options.maxActive }),
     ...(options.toolCaps === undefined ? {} : { toolCaps: options.toolCaps }),
   });

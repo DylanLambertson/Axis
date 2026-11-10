@@ -56,7 +56,7 @@ test("a run whose last transition could not be written can be cancelled, so the 
   let failEnd = true;
   const journal = {
     getWorkspace: (id: string) => c.journal.getWorkspace(id),
-    createRun: (i: Parameters<typeof c.journal.createRun>[0]) => c.journal.createRun(i),
+    composer: c.journal.composer,
     getRun: (id: string) => c.journal.getRun(id),
     listRuns: (o?: Parameters<typeof c.journal.listRuns>[0]) => c.journal.listRuns(o),
     transitionRun: (id: string, to: Parameters<typeof c.journal.transitionRun>[1], o?: Parameters<typeof c.journal.transitionRun>[2]) => {
