@@ -61,10 +61,11 @@ export class ObservedFiles {
     this.#platform = contain.platform ?? process.platform;
   }
 
-  /** Over one real root on the node file system (tests; the binding passes its own containment). */
-  static forRoot(root: string, worktreeId: string, maxBytes: number): ObservedFiles {
+  /** Over one real root on the node file system (tests; the binding passes its own containment). `platform` folds names as that platform does. */
+  static forRoot(root: string, worktreeId: string, maxBytes: number, platform?: NodeJS.Platform): ObservedFiles {
     const entry = { id: worktreeId, root, gitDir: `${root}/.git` };
-    return new ObservedFiles({ registry: { get: (id) => (id === worktreeId ? entry : undefined), repositoryRoots: () => [] }, fs: nodeBrokerFs }, worktreeId, maxBytes);
+    const registry = { get: (id: string) => (id === worktreeId ? entry : undefined), repositoryRoots: () => [] };
+    return new ObservedFiles({ registry, fs: nodeBrokerFs, ...(platform === undefined ? {} : { platform }) }, worktreeId, maxBytes);
   }
 
   get size(): number {

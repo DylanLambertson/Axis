@@ -7,7 +7,7 @@ import { Journal } from "@axis/journal";
 import type { RunEvent } from "@axis/protocol";
 import type { MockProviderOptions, MockReply, RunBudgetLimits, ValidRequest } from "@axis/providers";
 import type { Policy } from "@axis/daemon";
-import { AGENT_PAYLOAD_ALLOWLIST, createAgentBinding, createComposerService, type AgentBinding, type ComposerService, type PreviewScanner, type ToolCaps } from "../src/index.js";
+import { AGENT_PAYLOAD_ALLOWLIST, createAgentBinding, createComposerService, type AgentBinding, type AgentBindingDeps, type ComposerService, type PreviewScanner, type ToolCaps } from "../src/index.js";
 import { ProjectMutex } from "../src/worktrees/project-mutex.js";
 import { rig, type Client, type Rig } from "./approvals-rig.js";
 
@@ -53,6 +53,8 @@ export interface ComposerRigOptions {
   readonly previewScanner?: PreviewScanner;
   /** Called with each provider request (its 1-based number) before the mock answers: an outside writer, or a look at what the model gets. */
   readonly onRequest?: (n: number, req: ValidRequest) => void;
+  /** The broker's file system, built over the rig's directories (to inject a race inside a write). */
+  readonly wrapFs?: (paths: { readonly root: string; readonly outside: string }) => NonNullable<AgentBindingDeps["wrapFs"]>;
 }
 
 const SHA = "b".repeat(40);
@@ -91,6 +93,7 @@ export async function composerRig(options: ComposerRigOptions): Promise<Composer
     mock: { ...options.mock, replies, respond: () => ({ kind: "text", text: "no more replies" }) },
     ...(options.previewScanner === undefined ? {} : { previewScanner: options.previewScanner }),
     writeLock: (_workspaceId, fn, signal) => mutex.exclusive("p", fn, signal),
+    ...(options.wrapFs === undefined ? {} : { wrapFs: options.wrapFs({ root, outside }) }),
   });
   const service = createComposerService({
     journal,

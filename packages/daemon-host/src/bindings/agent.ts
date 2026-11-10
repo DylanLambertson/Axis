@@ -2,7 +2,7 @@
 import { realpath } from "node:fs/promises";
 import { z } from "zod";
 import type { AuditSink, Redactor } from "@axis/audit";
-import { ABSENT, BROKER_PAYLOAD_ALLOWLIST, BrokerError, ToolBroker, callDigest, contentDigest, createCommandRunner, nodeBrokerFs, type ApprovalHook, type ApprovalRequest, type CommandRunner, type ContainDeps } from "@axis/broker";
+import { ABSENT, BROKER_PAYLOAD_ALLOWLIST, BrokerError, ToolBroker, callDigest, contentDigest, createCommandRunner, nodeBrokerFs, type ApprovalHook, type ApprovalRequest, type BrokerFs, type CommandRunner, type ContainDeps } from "@axis/broker";
 import { MAX_APPROVAL_PATHS, toDisplayPath, type ApprovalPreview } from "@axis/protocol";
 import { createSecretScanner } from "@axis/secret-scan";
 import { createMockProvider, guardProvider, type GuardedProvider, type MockProviderOptions, type Redactor as ProviderRedactor } from "@axis/providers";
@@ -64,6 +64,8 @@ export interface AgentBindingDeps {
    * workspace, waiting for it like any other caller. Every composer write runs inside it.
    */
   readonly writeLock: <T>(workspaceId: string, fn: () => Promise<T>, signal: AbortSignal) => Promise<T>;
+  /** Wraps the file system the broker and the drift re-read use (tests inject races through it). Default: none. */
+  readonly wrapFs?: (real: BrokerFs) => BrokerFs;
 }
 
 /** The broker's audit payload keys (`broker.decision`: approver, approval id, expiry; `broker.result`), for the host's `AuditLog` (DMN-5). */
@@ -114,6 +116,13 @@ function defaultPreviewScanner(): PreviewScanner {
   return { scan: async (text) => (await s.scan(text, { part: "message" })).map((f) => f.rule) };
 }
 
+/**
+ * A `swapped` write is NOT a refusal: the parent directory was swapped for a symlink after the last check, and the bytes
+ * may already be in the directory it now points to (`swapContained` item 5, detected afterwards, never undone).
+ */
+export const SWAPPED_RESULT =
+  "The call failed (swapped): a folder of the path was replaced while the file was being written, and the write may have landed outside the workspace. Tell the user; do not retry.";
+
 const LABEL = /^[a-z][a-z0-9:._-]{0,63}$/;
 /** A broker reason (`approval-declined`) as a wire reason code (`approval_declined`). */
 const reasonOf = (e: unknown): string => (e instanceof BrokerError ? e.reason.replace(/-/g, "_") : "tool_failed");
@@ -125,6 +134,7 @@ function providerRedactor(r: Redactor): ProviderRedactor {
 
 export function createAgentBinding(deps: AgentBindingDeps): AgentBinding {
   const platform = deps.platform ?? process.platform;
+  const brokerFs = deps.wrapFs?.(nodeBrokerFs) ?? nodeBrokerFs;
   const runner: CommandRunner = createCommandRunner({ platform });
   const scanner = deps.previewScanner ?? defaultPreviewScanner();
   const providers = new Map<string, GuardedProvider>([["mock", guardProvider(createMockProvider(deps.mock ?? {}), { redactor: providerRedactor(deps.redactor) })]]);
@@ -152,7 +162,7 @@ export function createAgentBinding(deps: AgentBindingDeps): AgentBinding {
     const actor = `agent:composer.${run.runId}`;
     const contain: ContainDeps = {
       registry: { get: (id) => (id === worktree.id ? worktree : undefined), repositoryRoots: () => repos },
-      fs: nodeBrokerFs,
+      fs: brokerFs,
       platform,
       ...(deps.extraProtected === undefined ? {} : { extraProtected: deps.extraProtected }),
     };
@@ -210,7 +220,7 @@ export function createAgentBinding(deps: AgentBindingDeps): AgentBinding {
     };
     const broker = new ToolBroker({
       registry: contain.registry,
-      fs: nodeBrokerFs,
+      fs: brokerFs,
       audit: deps.audit,
       runner,
       parentEnv: deps.env,
@@ -253,7 +263,8 @@ export function createAgentBinding(deps: AgentBindingDeps): AgentBinding {
         const at = await observed.locate(a.path);
         const r = await deps.writeLock(worktree.id, () => ctx.swapFile(a.path, data, { base, maxBytes: MAX_WRITE_BYTES }), ctx.signal);
         if (at !== undefined) observed.record(a.path, at, r.digest, { wrote: true, lost: r.lostChange });
-        // The residual window of section 3.3: a change by a writer outside the lock was replaced. Say so; it is in the run base.
+        // The residual window of section 3.3: a writer outside the lock changed the file in place and our rename replaced
+        // it. That writer's content is gone and Axis cannot recover it (no run base could hold it); say so, never hide it.
         const lost = r.lostChange ? "\nWarning: the file was changed by someone else while it was being replaced; that change was overwritten." : "";
         return `wrote ${data.length} bytes\ndigest: ${r.digest}${lost}`;
       },
@@ -274,6 +285,7 @@ export function createAgentBinding(deps: AgentBindingDeps): AgentBinding {
           // The action ran but its audit row could not be written: the run must stop (never continue unrecorded).
           if (e instanceof BrokerError && e.details["executed"] === true) throw new Error("unrecorded side effect");
           const reason = reasonOf(e);
+          if (reason === "swapped") return { ok: false, reason, content: SWAPPED_RESULT };
           const hint = reason === "stale" ? " The file changed since you last read it: read it again before writing." : "";
           return { ok: false, reason, content: `The call was refused (${reason}).${hint}` };
         } finally {

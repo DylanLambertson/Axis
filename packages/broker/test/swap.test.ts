@@ -212,3 +212,19 @@ test("a parent swapped for a symlink just before the rename is reported `swapped
   });
   assert.equal(await reason(swapContained(w.deps(fs), "wt1", "sub/a.txt", Buffer.from("ours"), o(dg("base")))), "E_POLICY_DENIED/swapped");
 });
+
+test("a parent swapped for a symlink just before the create's link is reported `swapped` (item 5)", { skip: skipLinks }, async () => {
+  const w = arena();
+  const sub = join(w.wt, "sub");
+  mkdirSync(sub);
+  const p = join(sub, "new.txt");
+  const fs = racing(p, {
+    beforeLink: () => {
+      renameSync(sub, join(w.outside, "sub"));
+      symlinkSync(join(w.outside, "sub"), sub);
+    },
+  });
+  assert.equal(await reason(swapContained(w.deps(fs), "wt1", "sub/new.txt", Buffer.from("ours"), o(ABSENT))), "E_POLICY_DENIED/swapped");
+  // The link landed in the moved directory: reported, not undone (the caller must say so, never call it a refusal).
+  assert.equal(readFileSync(join(w.outside, "sub", "new.txt"), "utf8"), "ours");
+});

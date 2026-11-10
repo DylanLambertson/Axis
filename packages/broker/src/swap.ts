@@ -56,9 +56,16 @@ async function digestOf(file: BrokerFile, max: number): Promise<string | undefin
  * 4. The residual window: a writer outside the lock acting between the last check (one `lstat`) and the `rename`.
  *    A change it makes IN PLACE to the old file is seen through the still-open descriptor and reported (`lostChange`).
  *    A writer that renames a new file over the name in that window (an editor's atomic save) is overwritten and NOT
- *    seen: the rename discards that file and nothing here holds it. Without an atomic compare-and-rename (no portable
- *    `renameat2(RENAME_EXCHANGE)` from Node) only the policies' ledger (section 3.2, a watcher) can flag it; until that
- *    exists it is a known, bounded residual. The run base still holds the content from before the run.
+ *    seen: the rename discards that file and nothing here holds it. In both cases what is lost is the OTHER writer's new
+ *    content, which no snapshot taken before the write can hold: Axis cannot recover it. (Restoring the content from
+ *    before the run needs the per-run base of section 3.2, which composer runs do not take yet.) Node has no portable
+ *    atomic compare-and-rename (`renameat2(RENAME_EXCHANGE)`), so without giving up an atomic replace only the policies'
+ *    ledger (section 3.2, a watcher) can flag it; until that exists it is a known, bounded residual. One option that
+ *    closes it, NOT built: rename aside. Rename the name to a side name (whatever is there now, an editor's fresh save
+ *    included, is kept), check the side name is the hashed file, `link` the temporary file to the name (no clobber: on
+ *    `EEXIST` refuse `stale` and link the side name back), then unlink the side name. It loses nothing silently, but
+ *    readers, editors and build watchers briefly see the name missing, and a crash between the steps leaves only the
+ *    side name, which would need recovery code.
  * 5. The `link` and the `rename` are path-based, after the last parent check. A parent swapped for a symlink in that
  *    window sends both names (they share the parent) into the moved directory; the parent is checked again afterwards
  *    and the call fails `swapped`, which reports the write but cannot undo it. Whoever swaps it must already be able to
