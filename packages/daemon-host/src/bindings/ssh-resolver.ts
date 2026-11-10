@@ -1,5 +1,6 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
-import { delimiter, isAbsolute, resolve as resolvePath, sep } from "node:path";
+import { resolve as resolvePath } from "node:path";
+import { delimiterOf, isInsideAny, isPlainAbsolute, nodeFs, resolveExecutable } from "@axis/pty-policy";
 import type { ResolvedSshHost, SshHostResolver } from "./push-target.js";
 
 /**
@@ -33,15 +34,22 @@ export const unavailableSshResolver: SshHostResolver = () => Promise.reject(new 
 export interface SshResolverOptions {
   readonly spawn: SshSpawn;
   /**
-   * The daemon's environment: only `PATH`, `HOME`, `USER` and `LOGNAME` are taken from it. `PATH` keeps its absolute entries only
-   * (an empty, `.` or relative entry would find `ssh` in the daemon's working directory), minus those inside `excludeDirs`. `HOME`
-   * is passed for ssh's helpers; ssh itself reads `~/.ssh/config` from the account database, not from `HOME`.
+   * The daemon's environment: only `PATH`, `HOME`, `USER` and `LOGNAME` are taken from it. `PATH` keeps its plain absolute entries
+   * only (an empty, `.` or relative entry would find `ssh` in the daemon's working directory), minus every entry inside
+   * `excludeDirs`, judged by spelling AND by real path (symlinks resolved on both sides, compared by path component), so a PATH
+   * entry that is a symlink into a worktree is dropped too. `HOME` is passed for ssh's helpers; ssh itself reads `~/.ssh/config`
+   * from the account database, not from `HOME`.
    */
   readonly env: Readonly<Record<string, string | undefined>>;
-  /** Directories (managed worktrees, the data directory) whose `PATH` entries are dropped; read at every resolution. */
+  /** Directories (managed worktrees, the data directory) whose `PATH` entries and programs are refused; read at every resolution. */
   readonly excludeDirs?: () => readonly string[];
-  /** The program, default `ssh` (found on the filtered `PATH`). */
+  /**
+   * The program: an absolute path, or absent to find `ssh` on the filtered `PATH`. Either way the REAL path (symlinks resolved) is
+   * what is spawned, and it is refused when it lies inside `excludeDirs`, so the spawn itself never looks anything up. A relative
+   * `file` is refused.
+   */
   readonly file?: string;
+  readonly platform?: NodeJS.Platform;
   readonly timeoutMs?: number;
   readonly maxOutputBytes?: number;
   /**
@@ -96,9 +104,10 @@ export function createSshResolver(options: SshResolverOptions): SshHostResolver 
   const timeoutMs = options.timeoutMs ?? 5_000;
   const maxBytes = options.maxOutputBytes ?? 65_536;
   const maxPending = options.maxPending ?? 16;
-  const buildEnv = (): Record<string, string> => {
+  const platform = options.platform ?? process.platform;
+  const excludedDirs = (): string[] => (options.excludeDirs?.() ?? []).map((d) => resolvePath(d));
+  const buildEnv = (excluded: readonly string[]): Record<string, string> => {
     const env: Record<string, string> = { LC_ALL: "C" };
-    const excluded = (options.excludeDirs?.() ?? []).map((d) => resolvePath(d));
     for (const k of KEPT_ENV) {
       const v = options.env[k];
       if (typeof v !== "string" || v === "" || v.includes("\0")) continue;
@@ -106,23 +115,27 @@ export function createSshResolver(options: SshResolverOptions): SshHostResolver 
         env[k] = v;
         continue;
       }
-      const kept = v.split(delimiter).filter((e) => {
-        if (e === "" || !isAbsolute(e)) return false;
-        const abs = resolvePath(e);
-        return !excluded.some((x) => abs === x || abs.startsWith(x.endsWith(sep) ? x : x + sep));
-      });
-      if (kept.length > 0) env.PATH = kept.join(delimiter);
+      const kept = v.split(delimiterOf(platform)).filter((e) => isPlainAbsolute(e, platform) && !isInsideAny(e, excluded, platform, nodeFs));
+      if (kept.length > 0) env.PATH = kept.join(delimiterOf(platform));
     }
     return env;
+  };
+  /** The absolute real path of the program, outside every excluded directory, or a throw (nothing falls back to a bare name). */
+  const program = (env: Record<string, string>, excluded: readonly string[]): string => {
+    const found = options.file ?? resolveExecutable("ssh", { PATH: env.PATH }, platform, nodeFs, { excludeDirs: excluded });
+    if (found === undefined || !isPlainAbsolute(found, platform)) throw new Error("ssh not found");
+    const real = nodeFs.realPath?.(found);
+    if (real === undefined || !isPlainAbsolute(real, platform) || !nodeFs.isExecutableFile(real) || isInsideAny(real, excluded, platform, nodeFs)) throw new Error("ssh not found");
+    return real;
   };
   let pending = 0;
   let tail: Promise<unknown> = Promise.resolve();
 
-  const run = (args: readonly string[], env: Record<string, string>): Promise<ResolvedSshHost> =>
+  const run = (file: string, args: readonly string[], env: Record<string, string>): Promise<ResolvedSshHost> =>
     new Promise((resolve, reject) => {
       let child: SshProcess;
       try {
-        child = options.spawn(options.file ?? "ssh", args, { env, shell: false, stdio: ["ignore", "pipe", "ignore"], windowsHide: true, detached: true });
+        child = options.spawn(file, args, { env, shell: false, stdio: ["ignore", "pipe", "ignore"], windowsHide: true, detached: true });
       } catch {
         reject(new Error("ssh did not start"));
         return;
@@ -169,10 +182,12 @@ export function createSshResolver(options: SshResolverOptions): SshHostResolver 
     if (port !== undefined && !(Number.isInteger(port) && port >= 1 && port <= 65535)) throw new Error("port refused");
     if (pending >= maxPending) throw new Error("too many resolutions");
     const args = ["-G", ...(user === undefined ? [] : ["-l", user]), ...(port === undefined ? [] : ["-p", String(port)]), "--", name];
-    const env = buildEnv();
+    const excluded = excludedDirs();
+    const env = buildEnv(excluded);
     if (env.PATH === undefined && options.file === undefined) throw new Error("no usable PATH"); // ssh could not be found safely
+    const file = program(env, excluded);
     pending += 1;
-    const result = tail.then(() => run(args, env));
+    const result = tail.then(() => run(file, args, env));
     tail = result.catch(() => undefined); // one ssh at a time
     try {
       return await result;

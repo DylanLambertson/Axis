@@ -67,6 +67,8 @@ export interface GitRigOptions {
   bases?: PushedBases;
   /** Extra variables of the `pty` git environment. */
   ptyEnv?: Record<string, string>;
+  /** Extra variables of the `daemon` git environment. */
+  daemonEnv?: Record<string, string>;
   ptyRunner?: "node" | "none";
   /** The drift check of the git port (default: no drift). */
   assertNoDrift?: () => Promise<void>;
@@ -106,7 +108,7 @@ export async function gitRig(options: GitRigOptions = {}) {
   const ptyRunner: GitRunner = { run: (req) => (ptyCalls.push(req.context), nodePty.run(req)) };
   const gitPort = createGitPort({
     gitPath,
-    env: { daemon: { PATH: PATHS, HOME: home }, pty: { PATH: PATHS, HOME: home, ...options.ptyEnv } },
+    env: { daemon: { PATH: PATHS, HOME: home, ...options.daemonEnv }, pty: { PATH: PATHS, HOME: home, ...options.ptyEnv } },
     platform: process.platform,
     runHooks: false,
     scanner,

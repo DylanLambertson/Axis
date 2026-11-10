@@ -2,7 +2,7 @@
 import { randomBytes } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from "node:fs";
 import { lstat, mkdir, open, rename, rm } from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, isAbsolute, join } from "node:path";
 
 /**
  * The push scan bases on disk (H9-base-ssh): `{ v: 1, entries: [[workspaceId, destinationHash, sha], ...] }`, oldest first, in
@@ -13,6 +13,9 @@ import { basename, dirname, join } from "node:path";
  *   ever a larger range). At most `max` entries are kept, the newest.
  * - `save` is atomic and durable: a new `wx` 0600 temporary file in the same directory, write, `fsync`, `rename` over the file,
  *   then `fsync` of the directory (not on Windows). A failed save removes its temporary file and throws; the old file stays.
+ * - Both take an absolute `path` only (a relative one would be read against the daemon's working directory): `load` gives no
+ *   entries for anything else and `save` refuses it, and an `entries` that is not an array of well-formed entries, before any
+ *   file is touched.
  */
 export const MAX_FILE_BYTES = 1 << 20;
 export type BaseEntry = readonly [workspaceId: string, target: string, sha: string];
@@ -28,6 +31,7 @@ export function isBaseEntry(e: unknown): e is BaseEntry {
 export function loadPushedBases(path: string, max: number): BaseEntry[] {
   let fd: number | undefined;
   try {
+    if (typeof path !== "string" || !isAbsolute(path) || path.includes("\0")) return [];
     const st = lstatSync(path);
     if (!st.isFile() || st.size > MAX_FILE_BYTES) return [];
     fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
@@ -59,6 +63,8 @@ export async function savePushedBases(
   platform: string = process.platform,
   suffix: () => string = () => randomBytes(6).toString("hex"),
 ): Promise<void> {
+  if (typeof path !== "string" || !isAbsolute(path) || path.includes("\0")) throw new Error("push bases path refused");
+  if (!Array.isArray(entries) || !entries.every(isBaseEntry)) throw new Error("push bases entries refused");
   const dir = dirname(path);
   const data = JSON.stringify({ v: 1, entries });
   if (Buffer.byteLength(data) > MAX_FILE_BYTES) throw new Error("push bases too large");

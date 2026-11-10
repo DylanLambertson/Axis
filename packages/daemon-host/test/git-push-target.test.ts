@@ -158,11 +158,13 @@ test("a custom ssh command in the environment refuses ssh destinations only", as
   assert.equal(typeof (await pushTargetKey([wt], wt, ok, true)), "string", "a path destination is not affected");
 });
 
-test("end to end: GIT_SSH_COMMAND or GIT_SSH in the push environment refuses an ssh destination", { skip: SKIP ?? false }, async (t) => {
-  for (const name of ["GIT_SSH_COMMAND", "GIT_SSH"]) {
-    const { r, c } = await setup(t, { scanMode: "warn", resolveSshHost: resolver({ work: { hostname: "git.example.test" } }), ptyEnv: { [name]: "other-ssh" } });
-    r.git("remote", "add", "viassh", "work:team/app.git");
-    const res = await c.rpc("axis.git", "pushPlan", { workspaceId: r.workspaceId, remote: "viassh" });
-    assert.equal(res.error?.code, "E_INVALID_ARGUMENT", name);
+test("end to end: GIT_SSH_COMMAND or GIT_SSH in the push or the daemon environment refuses an ssh destination", { skip: SKIP ?? false }, async (t) => {
+  for (const where of ["ptyEnv", "daemonEnv"] as const) {
+    for (const name of ["GIT_SSH_COMMAND", "GIT_SSH", "git_ssh_command"]) {
+      const { r, c } = await setup(t, { scanMode: "warn", resolveSshHost: resolver({ work: { hostname: "git.example.test" } }), [where]: { [name]: "other-ssh" } });
+      r.git("remote", "add", "viassh", "work:team/app.git");
+      const res = await c.rpc("axis.git", "pushPlan", { workspaceId: r.workspaceId, remote: "viassh" });
+      assert.equal(res.error?.code, "E_INVALID_ARGUMENT", `${name} in ${where}`);
+    }
   }
 });

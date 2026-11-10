@@ -1,8 +1,10 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { delimiter, join, parse } from "node:path";
-import { test } from "node:test";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { delimiter, join } from "node:path";
+import { after, test } from "node:test";
 import { createSshResolver, parseSshConfig, type SshProcess, type SshSpawn } from "../src/index.js";
 
 interface Call {
@@ -12,6 +14,26 @@ interface Call {
   options: Record<string, unknown>;
 }
 type Script = (child: FakeChild) => void;
+// A real directory holding an executable `ssh` (never run: the spawn is a fake), so the resolver finds a real file.
+const ROOT = realpathSync(mkdtempSync(join(tmpdir(), "axis-ssh-resolver-")));
+after(() => rmSync(ROOT, { recursive: true, force: true }));
+const EXE = process.platform === "win32" ? "ssh.exe" : "ssh";
+function binWithSsh(dir: string): string {
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, EXE), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+  return dir;
+}
+const BIN = binWithSsh(join(ROOT, "bin"));
+const SSH = join(BIN, EXE);
+/** A symlink, or undefined where the platform does not let this process make one. */
+function link(target: string, path: string): string | undefined {
+  try {
+    symlinkSync(target, path, "dir");
+    return path;
+  } catch {
+    return undefined;
+  }
+}
 class FakeChild extends EventEmitter {
   readonly stdout = new EventEmitter();
   killed = 0;
@@ -20,7 +42,7 @@ class FakeChild extends EventEmitter {
     return true;
   }
 }
-function rig(script: Script, extra: { timeoutMs?: number; maxOutputBytes?: number; maxPending?: number; excludeDirs?: () => readonly string[]; path?: string } = {}) {
+function rig(script: Script, extra: { timeoutMs?: number; maxOutputBytes?: number; maxPending?: number; excludeDirs?: () => readonly string[]; path?: string; file?: string } = {}) {
   const calls: Call[] = [];
   const children: FakeChild[] = [];
   const spawn: SshSpawn = (file, args, options) => {
@@ -31,7 +53,7 @@ function rig(script: Script, extra: { timeoutMs?: number; maxOutputBytes?: numbe
     setImmediate(() => script(c));
     return c as unknown as SshProcess;
   };
-  const resolve = createSshResolver({ spawn, env: { PATH: extra.path ?? "/p", HOME: "/h", SECRETISH: "x", SSH_ASKPASS: "/evil", USER: "u" }, ...extra });
+  const resolve = createSshResolver({ spawn, env: { PATH: extra.path ?? BIN, HOME: "/h", SECRETISH: "x", SSH_ASKPASS: "/evil", USER: "u" }, ...extra });
   return { calls, children, resolve };
 }
 const answer = (text: string, code = 0): Script => (c) => {
@@ -45,9 +67,9 @@ test("the argv is pinned, no shell, the environment is scrubbed, and only hostna
   const got = await r.resolve("alias", undefined, undefined);
   assert.deepEqual(got, { hostname: "git.example.test", port: 22, user: "git" });
   assert.equal(r.calls.length, 1);
-  assert.equal(r.calls[0]?.file, "ssh");
+  assert.equal(r.calls[0]?.file, SSH, "the absolute real path is spawned, so the spawn looks nothing up");
   assert.deepEqual(r.calls[0]?.args, ["-G", "--", "alias"]);
-  assert.deepEqual(r.calls[0]?.env, { LC_ALL: "C", PATH: "/p", HOME: "/h", USER: "u" });
+  assert.deepEqual(r.calls[0]?.env, { LC_ALL: "C", PATH: BIN, HOME: "/h", USER: "u" });
   assert.deepEqual(r.calls[0]?.options, { shell: false, stdio: ["ignore", "pipe", "ignore"], windowsHide: true, detached: true }, "the options make a pass-through embedder correct");
   const withUser = rig(answer(GOOD));
   await withUser.resolve("alias", "bob", 2200);
@@ -72,12 +94,14 @@ test("a host outside the strict character set never starts a process", async () 
 test("a non-zero exit, a start failure, a process error and an unusable answer all throw", async () => {
   await assert.rejects(rig(answer(GOOD, 255)).resolve("a1", undefined, undefined));
   await assert.rejects(rig((c) => c.emit("error", new Error("ENOENT"))).resolve("a1", undefined, undefined));
-  const thrower = createSshResolver({ spawn: () => { throw new Error("EACCES"); }, env: {} });
+  const thrower = createSshResolver({ spawn: () => { throw new Error("EACCES"); }, env: { PATH: BIN } });
   await assert.rejects(thrower("a1", undefined, undefined));
   for (const text of ["", "port 22\n", "hostname h\n", "hostname h\nport 0\n", "hostname h\nport 70000\n", "hostname h\nport 22x\n", "hostname a b\nport 22\n", "hostname h\nport 22\nuser -x\n", "hostname h\nport 22\nuser a b\n"]) {
     await assert.rejects(rig(answer(text)).resolve("a1", undefined, undefined), () => true, JSON.stringify(text));
   }
-  await assert.rejects(rig((c) => { c.stdout.emit("data", Buffer.from([0xff, 0xfe])); c.emit("close", 0); }).resolve("a1", undefined, undefined), () => true, "bad utf-8");
+  // The bad bytes sit on a line that is otherwise ignored, so only a strict decoder refuses this answer (a lossy one accepts it).
+  const badUtf8 = Buffer.concat([Buffer.from("hostname h\nport 22\nidentityfile "), Buffer.from([0xff, 0xfe]), Buffer.from("\n")]);
+  await assert.rejects(rig((c) => { c.stdout.emit("data", badUtf8); c.emit("close", 0); }).resolve("a1", undefined, undefined), /unusable/, "bad utf-8");
 });
 
 test("two different values for one key are an anomaly; a repeated equal value is not; other keys are ignored", () => {
@@ -96,7 +120,7 @@ test("too much output kills the process and throws; a late event changes nothing
   await assert.rejects(over.resolve("a1", undefined, undefined), () => true, "one byte over the bound is refused");
 });
 
-test("a process that never answers is killed at the timeout", async () => {
+test("a process that never answers is killed at the timeout", { timeout: 10_000 }, async () => {
   const r = rig(() => undefined, { timeoutMs: 20 });
   await assert.rejects(r.resolve("a1", undefined, undefined));
   assert.equal(r.children[0]?.killed, 1);
@@ -139,14 +163,61 @@ test("with no way to start ssh, an ssh destination is refused and a path destina
 });
 
 test("PATH keeps absolute entries only, minus the excluded directories; with none left nothing starts", async () => {
-  const abs = (p: string) => join(parse(process.cwd()).root, p);
-  const bin = abs("usr-bin");
-  const work = abs("work-tree");
-  const path = ["", ".", "rel", "./x", bin, join(work, "bin"), work, `${work}-sibling`].join(delimiter);
+  const work = join(ROOT, "work-tree");
+  binWithSsh(join(work, "bin"));
+  const sibling = binWithSsh(join(ROOT, "work-tree-sibling"));
+  const path = ["", ".", "rel", "./x", join(work, "bin"), BIN, work, sibling].join(delimiter);
   const r = rig(answer(GOOD), { path, excludeDirs: () => [work] });
   await r.resolve("alias", undefined, undefined);
-  assert.equal(r.calls[0]?.env["PATH"], [bin, `${work}-sibling`].join(delimiter), "empty, relative and worktree entries are gone; a sibling with the same prefix stays");
+  assert.equal(r.calls[0]?.env["PATH"], [BIN, sibling].join(delimiter), "empty, relative and worktree entries are gone; a sibling with the same prefix stays");
+  assert.equal(r.calls[0]?.file, SSH, "the ssh in the worktree, first on PATH, is not chosen");
   const none = rig(answer(GOOD), { path: [".", "", "rel"].join(delimiter) });
   await assert.rejects(none.resolve("alias", undefined, undefined));
   assert.equal(none.calls.length, 0, "no safe PATH: ssh is not started");
+  const notFound = rig(answer(GOOD), { path: [join(work, "bin"), sibling + "-missing"].join(delimiter), excludeDirs: () => [work] });
+  await assert.rejects(notFound.resolve("alias", undefined, undefined), /not found/);
+  assert.equal(notFound.calls.length, 0, "no ssh outside the worktrees: nothing starts, nothing falls back to a bare name");
+});
+
+test("a PATH entry that is a symlink into a worktree, or a worktree named through a symlink, is excluded by real path", async (t) => {
+  const work = join(ROOT, "linked-work");
+  const planted = binWithSsh(join(work, "bin"));
+  const outside = join(ROOT, "outside");
+  mkdirSync(outside, { recursive: true });
+  const intoWork = link(planted, join(outside, "link"));
+  const workAlias = link(work, join(outside, "work-alias"));
+  if (intoWork === undefined || workAlias === undefined) return t.skip("symlinks are not available here");
+  for (const entry of [intoWork, `${intoWork}/`, `${outside}/../outside/link`]) {
+    const r = rig(answer(GOOD), { path: [entry, BIN].join(delimiter), excludeDirs: () => [work] });
+    await r.resolve("alias", undefined, undefined);
+    assert.equal(r.calls[0]?.file, SSH, `the planted ssh behind ${entry} is not chosen`);
+    assert.equal(r.calls[0]?.env["PATH"], BIN, `${entry} is not passed on to ssh's children`);
+  }
+  const aliased = rig(answer(GOOD), { path: [planted, BIN].join(delimiter), excludeDirs: () => [workAlias] });
+  await aliased.resolve("alias", undefined, undefined);
+  assert.equal(aliased.calls[0]?.file, SSH, "an excluded directory given through a symlink still excludes its target");
+  assert.equal(aliased.calls[0]?.env["PATH"], BIN);
+});
+
+test("a configured program is spawned by its real path, and refused when relative or inside a worktree", async (t) => {
+  const outside = join(ROOT, "prog");
+  mkdirSync(outside, { recursive: true });
+  const alias = link(BIN, join(outside, "bin-alias"));
+  const ok = rig(answer(GOOD), { file: alias === undefined ? SSH : join(alias, EXE) });
+  await ok.resolve("alias", undefined, undefined);
+  assert.equal(ok.calls[0]?.file, SSH, "the real path, not the spelling, is spawned");
+  const rel = rig(answer(GOOD), { file: EXE });
+  const cwd = process.cwd();
+  process.chdir(BIN); // the relative name would find a real file here
+  try {
+    await assert.rejects(rel.resolve("alias", undefined, undefined), /not found/);
+  } finally {
+    process.chdir(cwd);
+  }
+  const inside = rig(answer(GOOD), { file: SSH, excludeDirs: () => [BIN] });
+  await assert.rejects(inside.resolve("alias", undefined, undefined), /not found/);
+  assert.equal(rel.calls.length + inside.calls.length, 0);
+  if (alias === undefined) return t.skip("symlinks are not available here");
+  const viaLink = rig(answer(GOOD), { file: SSH, excludeDirs: () => [alias] });
+  await assert.rejects(viaLink.resolve("alias", undefined, undefined), /not found/, "a worktree named through a symlink still holds the program");
 });

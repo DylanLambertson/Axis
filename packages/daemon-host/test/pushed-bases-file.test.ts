@@ -149,3 +149,24 @@ test("the saved file is private (0600) where the platform has modes, and a taken
   assert.deepEqual(loadPushedBases(path, 5), [["w", T(1), S(1)]], "the old table is kept");
   assert.deepEqual(readdirSync(dir).sort(), ["b.json", "b.json.tmp-fixed"]);
 });
+
+test("a relative path or entries that are not well-formed are refused before any file is touched", async (t) => {
+  const dir = scratch(t);
+  const before = process.cwd();
+  process.chdir(dir);
+  try {
+    for (const rel of ["x", "./b.json", "sub/b.json", ""]) {
+      await assert.rejects(savePushedBases(rel, [["w", T(1), S(1)]]), /path refused/, JSON.stringify(rel));
+      assert.deepEqual(loadPushedBases(rel, 5), [], JSON.stringify(rel));
+    }
+    const path = join(dir, "b.json");
+    for (const bad of [undefined, null, "x", {}, [["w", "short", S(1)]], [["w", T(1)]]]) {
+      await assert.rejects(savePushedBases(path, bad as unknown as BaseEntry[]), /entries refused/, JSON.stringify(bad));
+    }
+    assert.deepEqual(readdirSync(dir), [], "nothing was written, here or in the working directory");
+    await savePushedBases(path, [["w", T(1), S(1)]]);
+    assert.deepEqual(loadPushedBases("b.json", 5), [], "a relative name is not read, even where it names a good file");
+  } finally {
+    process.chdir(before);
+  }
+});

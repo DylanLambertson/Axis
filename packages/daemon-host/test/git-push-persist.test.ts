@@ -90,3 +90,22 @@ test("a destination base that is still an ancestor is kept", { skip: SKIP ?? fal
   assert.equal(plan.ok, true, JSON.stringify(plan.error));
   assert.equal(bases.size, 1);
 });
+
+test("a destination base that is no longer a commit here (collected, or from another clone) is dropped and the plan still works", { skip: SKIP ?? false }, async (t) => {
+  let saved: readonly (readonly [string, string, string])[] = [];
+  const bases = new PushedBases(8, [], async (e) => { saved = e; });
+  const r = await gitRig({ bases });
+  t.after(() => r.cleanup());
+  const c = await r.connect();
+  assert.equal((await pushed(r, c)).ok, true);
+  const entry = saved[0];
+  assert.ok(entry !== undefined);
+  // The same destination, but a base this repository has never had.
+  bases.record(entry[0], entry[1], "d".repeat(entry[2].length));
+  r.write("b.txt", "more\n");
+  r.git("add", "-A");
+  r.git("commit", "-q", "-m", "add b");
+  const plan = await c.rpc("axis.git", "pushPlan", { workspaceId: r.workspaceId, remote: "origin" });
+  assert.equal(plan.ok, true, JSON.stringify(plan.error));
+  assert.equal(bases.size, 0, "the missing base was dropped");
+});
