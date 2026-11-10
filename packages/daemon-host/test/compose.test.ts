@@ -40,6 +40,7 @@ test("the composition refuses to be built without the pty port, the pty git runn
       [{ pty: {} as PtyPort }, "pty_required"],
       [{ ptyGitRunner: undefined }, "pty_git_runner_required"],
       [{ ptyGitRunner: {} as GitRunner }, "pty_git_runner_required"],
+      [{ pty: { ...pty, exec: () => Promise.reject(new Error("unused")) } }, "pty_git_runner_conflict"],
       [{ snapshotter: undefined }, "snapshotter_required"],
     ] as const) {
       assert.throws(() => composeDaemonHost(options(fix, over)), (e: unknown) => JSON.stringify(reasonOf(e)) === JSON.stringify(["E_INVALID_ARGUMENT", reason]), reason);
