@@ -3,7 +3,7 @@ import { DaemonError, type ApprovalContentHook, type Handler, type HandlerContex
 import { gitPushRequestSchema, type GitRequest } from "@axis/protocol";
 import type { PushCall } from "../ports/git.js";
 import { gitFailure } from "./git-errors.js";
-import { locate, mapError, requireUser, runActive, workspaceFor, type GitHandlerDeps } from "./git-common.js";
+import { locate, mapError, scanBase, requireUser, runActive, workspaceFor, type GitHandlerDeps } from "./git-common.js";
 
 /** Both read the plan's inputs from the JOURNAL, inside the lock: the branch is the workspace's, the base its last pushed sha. */
 async function pushCall(deps: GitHandlerDeps, id: string, method: string, request: GitRequest<"push">) {
@@ -17,7 +17,7 @@ async function pushCall(deps: GitHandlerDeps, id: string, method: string, reques
     worktree,
     remote: request.remote,
     branch: ws.branch,
-    baseSha: deps.bases.baseFor(id, target, ws.baseSha),
+    baseSha: await scanBase(deps, ws, id, worktree, target),
     ...(request.allowedBinaryPaths === undefined ? {} : { allowedBinaryPaths: request.allowedBinaryPaths }),
   };
   return { ws, call, target };
@@ -101,13 +101,16 @@ export function createGitPushHandler(deps: GitHandlerDeps): Handler {
           await deps.ops.executePush(call, confirmedPlan);
           // Known pushed to THIS destination now (before the journal write, which can fail without undoing the push).
           deps.bases.record(workspaceId, target, confirmedPlan.tip);
-          try {
-            deps.journal.recordPushed(workspaceId, confirmedPlan.tip, "user");
-          } catch (e) {
+          // Both writes can fail without undoing the push: a failed one is reported and the push still succeeds.
+          for (const write of [() => deps.bases.persist(), async () => deps.journal.recordPushed(workspaceId, confirmedPlan.tip, "user")]) {
             try {
-              deps.onBookkeepingError?.(e);
-            } catch {
-              // A reporter that throws must not turn a push that went out into a failure.
+              await write();
+            } catch (e) {
+              try {
+                deps.onBookkeepingError?.(e);
+              } catch {
+                // A reporter that throws must not turn a push that went out into a failure.
+              }
             }
           }
           return { remote: request.data.remote, branch: ws.branch, tip: confirmedPlan.tip };

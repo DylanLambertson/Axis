@@ -57,7 +57,7 @@ function validHost(r: ResolvedSshHost): boolean {
 }
 
 /** One canonical text per push URL, equal only when two URLs go to the same place. Never stored: only its hash is. */
-async function canonical(url: string, workTree: string, resolveSsh: SshHostResolver | undefined): Promise<string> {
+async function canonical(url: string, workTree: string, resolveSsh: SshHostResolver | undefined, customSsh: boolean): Promise<string> {
   const p = parse(url);
   if (p.kind === "other") return `url\0${p.url}`;
   if (p.kind === "path") {
@@ -68,6 +68,9 @@ async function canonical(url: string, workTree: string, resolveSsh: SshHostResol
       throw new GitRefusal("E_INVALID_ARGUMENT");
     }
   }
+  // git runs another ssh command (`GIT_SSH`, `GIT_SSH_COMMAND`, `core.sshCommand`: `ssh -F other.conf`, a wrapper): the configuration
+  // `ssh -G` would read is then not the one the push uses, so the host cannot be named and the destination is refused (fail closed).
+  if (customSsh) throw new GitRefusal("E_INVALID_ARGUMENT");
   // A host that ssh would read as an option, or that is not one name, is refused before anything sees it.
   if (p.host === "" || p.host.startsWith("-") || /[\s\0-\x1f\x7f]/.test(p.host) || (p.user !== undefined && (p.user.startsWith("-") || /[\s\0-\x1f\x7f]/.test(p.user))) ||
     (p.port !== undefined && !(Number.isInteger(p.port) && p.port >= 1 && p.port <= 65535))) {
@@ -89,7 +92,7 @@ async function canonical(url: string, workTree: string, resolveSsh: SshHostResol
  * The scan-base key of a push: a SHA-256 over the sorted canonical destinations of the remote's push URLs. Two names for one
  * place share it (a trailing slash, `.git` suffix or the case of an https host is not folded: only extra misses, never a shared base), a path or ssh alias that now points somewhere else does not, and what cannot be resolved is refused.
  */
-export async function pushTargetKey(urls: readonly string[], workTree: string, resolveSsh?: SshHostResolver): Promise<string> {
-  const list = await Promise.all(urls.map((u) => canonical(u, workTree, resolveSsh)));
+export async function pushTargetKey(urls: readonly string[], workTree: string, resolveSsh?: SshHostResolver, customSsh = false): Promise<string> {
+  const list = await Promise.all(urls.map((u) => canonical(u, workTree, resolveSsh, customSsh)));
   return createHash("sha256").update(JSON.stringify(list.sort())).digest("hex");
 }
