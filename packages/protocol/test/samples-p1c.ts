@@ -41,12 +41,14 @@ export const P1C_SAMPLES: readonly Sample[] = [
     name: "mock and a network adapter",
     value: {
       providers: [
-        { providerId: "mock", displayName: "Mock provider", apiVersion: 1, connectionId: "conn-mock", destination: { description: "Stays on this machine" } },
+        { providerId: "mock", displayName: "Mock provider", apiVersion: 1, connectionId: "conn-mock", status: "ready", models: [{ modelId: "mock-model", displayName: "Mock model" }], destination: { description: "Stays on this machine" } },
         {
           providerId: "anthropic",
           displayName: "Anthropic",
           apiVersion: 1,
           connectionId: "conn-1",
+          status: "unavailable",
+          models: [],
           destination: { origin: "https://api.anthropic.com", description: "Anthropic Messages API" },
         },
       ],

@@ -5,6 +5,7 @@ import { createRunBudget, type RunBudget, type RunBudgetLimits } from "@axis/pro
 import type { ComposerEngine, ComposerEventsPage, ComposerRunsService, ComposerStartInput } from "../ports/composer.js";
 import { RunActivity, type ActivityLimits } from "./activity.js";
 import { composerFailure } from "./errors.js";
+import { destinationOf } from "./destination.js";
 import { resolveToolCaps, runComposerLoop, type LoopEnd, type ToolCaps } from "./loop.js";
 
 /**
@@ -138,6 +139,9 @@ export function createComposerService(deps: ComposerServiceDeps): ComposerServic
         throw composerFailure("E_UNAVAILABLE", "provider_unavailable");
       }
       if (!models.some((m) => m.id === input.modelId)) throw composerFailure("E_NOT_FOUND", "model_unknown");
+      // PRV-4: the destination is fixed by the selected provider and shown with each request; one that cannot be shown refuses the start.
+      const destination = destinationOf(provider.descriptor, input.modelId);
+      if (destination === undefined) throw composerFailure("E_UNAVAILABLE", "provider_unavailable");
       let build;
       try {
         build = await deps.engine.prepare(input.workspaceId);
@@ -201,6 +205,7 @@ export function createComposerService(deps: ComposerServiceDeps): ComposerServic
           provider,
           tools,
           budget,
+          destination,
           signal: controller.signal,
           emit: (e) => activity.push(runId, e),
           ...(deps.maxTurns === undefined ? {} : { maxTurns: deps.maxTurns }),
