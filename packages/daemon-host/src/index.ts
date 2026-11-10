@@ -72,6 +72,8 @@ export * from "./runs/errors.js";
 // axis.git/1 handlers and the GitOpsDeps assembly (ticket H9).
 export { createGitOperations, createGitPort, type GitBindingDeps, type GitOperationsDeps } from "./bindings/git.js";
 export type { ResolvedSshHost, SshHostResolver } from "./bindings/push-target.js";
+export { createSshResolver, parseSshConfig, unavailableSshResolver, type SshProcess, type SshResolverOptions, type SshSpawn } from "./bindings/ssh-resolver.js";
+export { loadPushedBases, savePushedBases, type BaseEntry } from "./storage/pushed-bases-file.js";
 export * from "./handlers/git.js";
 export * from "./handlers/git-errors.js";
 export * from "./handlers/git-wire.js";

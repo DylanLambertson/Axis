@@ -35,6 +35,8 @@ import { createHandlerRegistrar, registerAuditHandlers, type HandlerRegistrar } 
 import { registerCliRunsHandlers } from "./handlers/cli-runs.js";
 import { registerComposerRunsHandlers } from "./handlers/composer-runs.js";
 import { PushedBases } from "./handlers/git-common.js";
+import { createSshResolver, unavailableSshResolver, type SshSpawn } from "./bindings/ssh-resolver.js";
+import { loadPushedBases, savePushedBases } from "./storage/pushed-bases-file.js";
 import { registerGitHandlers } from "./handlers/git.js";
 import { createProjectsHandlers } from "./handlers/projects.js";
 import { createProvidersHandlers } from "./handlers/providers.js";
@@ -87,6 +89,12 @@ export interface ComposeOptions {
   readonly ptyGitRunner: GitRunner | undefined;
   /** GIT-SNAP-1 around a run: production passes `gitSnapshotRunSnapshotter` (`@axis/git-snapshot`, question 10). REQUIRED. */
   readonly snapshotter: RunSnapshotterFactory | undefined;
+  /**
+   * Starts the `ssh -G` of the push destination resolver (H9-base-ssh): `shell: false`, stdin closed, exactly the given `env`. This
+   * package starts no process itself (staging allowlist), so the embedder supplies it. Absent, a push over ssh refuses its scan
+   * base (`E_INVALID_ARGUMENT`) instead of keying the host as written; path remotes are unaffected.
+   */
+  readonly sshSpawn?: SshSpawn;
   /** `refuse` by default; `warn` is the user setting (question 15). */
   readonly scanMode?: ScanMode;
   /** `axis.git.runHooks` (affects push only; decision B2). Default false. */
@@ -373,6 +381,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
       assertNoDrift: (w) => worktrees.assertNoDrift(w),
       excludeDirs: services.excludeDirs,
     });
+    const basesPath = join(config.dataDir, "push-bases.v1.json");
     const reviewDir = join(config.dataDir, "review-index");
     rmSync(reviewDir, { recursive: true, force: true }); // stale temporary indexes of an earlier process (this one holds the lock)
     mkdirSync(reviewDir, { recursive: true, mode: 0o700 });
@@ -389,7 +398,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
       createReviewHandlers({ review: createReviewService(reviewDeps), journal, runs: runs.service, trees, audit: createReviewAuditSink({ append: (e) => (audit.append(e), services.anchors.noteWrite()) }) }),
     );
     registerGitHandlers(registrar, {
-      ops: createGitOperations({ git, runs: runs.service }),
+      ops: createGitOperations({ git, runs: runs.service, resolveSshHost: options.sshSpawn === undefined ? unavailableSshResolver : createSshResolver({ spawn: options.sshSpawn, env: ports.env, excludeDirs: services.excludeDirs, platform: config.platform }) }),
       review: createCommitPreparer(reviewDeps),
       trees,
       journal,
@@ -398,7 +407,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
       needsAttention: worktrees.needsAttention,
       anchors: services.anchors,
       runs: runs.service,
-      bases: new PushedBases(),
+      bases: new PushedBases(1024, loadPushedBases(basesPath, 1024), (entries) => savePushedBases(basesPath, entries)),
       onInternalError: () => logger?.error("request.failed", { reason: "git_internal" }),
       onBookkeepingError: () => logger?.warn("request.failed", { reason: "git_bookkeeping" }),
     });

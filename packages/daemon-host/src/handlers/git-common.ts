@@ -3,10 +3,12 @@ import { DaemonError, type HandlerContext } from "@axis/daemon";
 import type { Journal, Workspace } from "@axis/journal";
 import type { AnchorGuard } from "../anchor/manager.js";
 import type { PortContext } from "../ports/common.js";
+import type { WorktreeRef } from "@axis/git-ops";
 import type { GitOperations } from "../ports/git.js";
 import type { CommitPreparer } from "../ports/review.js";
 import type { RunsService } from "../ports/runs.js";
 import type { WorktreeLocator } from "../ports/worktree-locator.js";
+import { isBaseEntry, type BaseEntry } from "../storage/pushed-bases-file.js";
 import { liveWorkspace } from "../worktrees/guards.js";
 import type { ProjectMutex } from "../worktrees/project-mutex.js";
 import { gitFailure } from "./git-errors.js";
@@ -97,19 +99,21 @@ export function runActive(deps: GitHandlerDeps, workspaceId: string): boolean {
  * only widens a later scan.
  */
 export class PushedBases {
-  readonly #map = new Map<string, string>();
-  constructor(readonly max = 1024) {
+  readonly #map = new Map<string, BaseEntry>();
+  #chain: Promise<void> = Promise.resolve();
+  /**
+   * `initial` (oldest first, at most the newest `max` are kept) and `save` come from the disk store: `persist` hands `save` the
+   * well-formed entries, one write at a time and in call order. Without `save` nothing is persisted (memory only).
+   */
+  constructor(readonly max = 1024, initial: readonly BaseEntry[] = [], private readonly save?: (entries: readonly BaseEntry[]) => Promise<void>) {
     if (!Number.isInteger(max) || max < 1) throw new RangeError("the bound must be a positive integer");
+    for (const e of initial) if (isBaseEntry(e)) this.#put(e);
   }
 
-  baseFor(workspaceId: string, target: string, recordedBase: string): string {
-    return this.#map.get(`${workspaceId}\0${target}`) ?? recordedBase;
-  }
-
-  record(workspaceId: string, target: string, sha: string): void {
-    const key = `${workspaceId}\0${target}`;
+  #put(entry: BaseEntry): void {
+    const key = `${entry[0]}\0${entry[1]}`;
     this.#map.delete(key);
-    this.#map.set(key, sha);
+    this.#map.set(key, entry);
     while (this.#map.size > this.max) {
       const oldest = this.#map.keys().next();
       if (oldest.done === true) break;
@@ -117,9 +121,54 @@ export class PushedBases {
     }
   }
 
+  baseFor(workspaceId: string, target: string, recordedBase: string): string {
+    return this.#map.get(`${workspaceId}\0${target}`)?.[2] ?? recordedBase;
+  }
+
+  forget(workspaceId: string, target: string): void {
+    this.#map.delete(`${workspaceId}\0${target}`);
+  }
+
+  record(workspaceId: string, target: string, sha: string): void {
+    this.#put([workspaceId, target, sha]);
+  }
+
+  /** Writes the table; rejects when the write failed (the caller reports it, a push that went out is not undone). */
+  persist(): Promise<void> {
+    const save = this.save;
+    if (save === undefined) return Promise.resolve();
+    const snapshot = [...this.#map.values()].filter(isBaseEntry);
+    const written = this.#chain.then(() => save(snapshot));
+    this.#chain = written.catch(() => undefined);
+    return written;
+  }
+
   get size(): number {
     return this.#map.size;
   }
+}
+
+/**
+ * The scan base of a push to `target`: what Axis last pushed there while that is still an ancestor of the branch, else the
+ * workspace's recorded base. A destination base whose history was rewritten (a rebase and force-push from a terminal) is dropped
+ * and replaced by the recorded base, so a rewrite costs a larger scan and never blocks the destination; only the recorded base
+ * can conflict.
+ */
+export async function scanBase(deps: GitHandlerDeps, ws: Workspace, workspaceId: string, worktree: WorktreeRef, target: string): Promise<string> {
+  const kept = deps.bases.baseFor(workspaceId, target, ws.baseSha);
+  if (kept === ws.baseSha) return kept;
+  if (await deps.ops.baseUsable({ worktree, branch: ws.branch, base: kept })) return kept;
+  deps.bases.forget(workspaceId, target);
+  try {
+    await deps.bases.persist();
+  } catch (e) {
+    try {
+      deps.onBookkeepingError?.(e);
+    } catch {
+      /* a reporter that throws changes nothing */
+    }
+  }
+  return ws.baseSha;
 }
 
 /** `toGitError`, and a report when the cause was no refusal of ours. A reporter that throws changes nothing. */

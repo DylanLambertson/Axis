@@ -162,6 +162,19 @@ export interface GitOperationsDeps {
   readonly resolveSshHost?: SshHostResolver;
 }
 
+const SSH_ENV = /^(?:GIT_SSH|GIT_SSH_COMMAND)$/i;
+
+/**
+ * True when git may run an ssh other than the plain `ssh` of the person's configuration: `GIT_SSH` or `GIT_SSH_COMMAND` in either
+ * environment, or `core.sshCommand` in any config git reads. Only a clean "not set" (exit 1) is a no; any other result counts as set.
+ */
+async function customSshCommand(git: (args: string[]) => Promise<GitRunResult>, env: { readonly daemon: Readonly<Record<string, string | undefined>>; readonly pty: Readonly<Record<string, string | undefined>> }): Promise<boolean> {
+  for (const e of [env.daemon, env.pty]) {
+    for (const [k, v] of Object.entries(e)) if (SSH_ENV.test(k) && v !== undefined && v !== "") return true;
+  }
+  return (await git(["config", "--get", "core.sshCommand"])).code !== 1;
+}
+
 export function createGitOperations(deps: GitOperationsDeps): GitOperations {
   // The scan runs inside git-ops with THIS port: git-ops finds nothing when `scanner` is absent and defaults to `warn`, so a
   // port without both is refused here, where the scan is, rather than checked on a copy somewhere else (PSH-1).
@@ -196,7 +209,17 @@ export function createGitOperations(deps: GitOperationsDeps): GitOperations {
         const urls = await git(["remote", "get-url", "--push", "--all", "--", call.remote]);
         const list = urls.stdout.split("\n").map((l) => l.trim()).filter((l) => l !== "");
         if (urls.code !== 0 || list.length === 0) throw new GitRefusal("E_INVALID_ARGUMENT");
-        return pushTargetKey(list, call.worktree.workTree, deps.resolveSshHost);
+        return pushTargetKey(list, call.worktree.workTree, deps.resolveSshHost, await customSshCommand(git, deps.git.env));
+      }),
+    baseUsable: (call) =>
+      guarded(async () => {
+        const git = await daemonGitFor(call.worktree, deps.git);
+        // Anything but a yes (a missing commit, a rewritten history, a git failure) is a no: the caller scans from the recorded base.
+        const base = await git(["rev-parse", "--verify", "--quiet", "--end-of-options", `${call.base}^{commit}`]);
+        if (base.code !== 0) return false;
+        const tip = await git(["rev-parse", "--verify", "--quiet", "--end-of-options", `refs/heads/${call.branch}^{commit}`]);
+        if (tip.code !== 0) return true; // no branch tip: planPush reports that itself
+        return (await git(["merge-base", "--is-ancestor", call.base, tip.stdout.trim()])).code === 0;
       }),
     planPush: (call) =>
       guarded(async () => {
