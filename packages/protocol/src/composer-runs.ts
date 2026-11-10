@@ -5,6 +5,7 @@ import { CF_RANGES, rangesToClass } from "./display.js";
 import { countSchema, displayTextSchema, guarded, reasonCodeSchema, timestampSchema } from "./guard.js";
 import { runIdSchema, workspaceIdSchema, type MethodSpec } from "./worktrees.js";
 import { runStateSchema } from "./cliRuns.js";
+import { connectionNameSchema, destinationTextSchema } from "./providers.js";
 
 /**
  * `axis.runs/1`: composer runs (docs/design/composer-runtime.md section 3; docs/design/daemon-host.md section 4.2).
@@ -154,6 +155,22 @@ export const runEventSchema = z.discriminatedUnion("type", [
     preview: approvalPreviewSchema.nullable(),
   }),
   z.strictObject({ ...eventBase, type: z.literal("usage"), usage: composerUsageSchema }),
+  /**
+   * PRV-4: a provider request is about to be sent (the budget allowed it), and where it goes. `destination` is the
+   * adapter's https origin, or its own description when it makes no network request; display text with any URL's userinfo,
+   * query and fragment removed. The run uses the provider and connection it started with; a request never goes anywhere else.
+   */
+  z.strictObject({
+    ...eventBase,
+    type: z.literal("request"),
+    /** 1 for the first request of the run. */
+    request: z.number().int().min(1),
+    providerId: composerProviderIdSchema,
+    connectionId: connectionNameSchema,
+    /** The model the run asked for; the provider cannot change it here. */
+    modelId: composerModelIdSchema,
+    destination: destinationTextSchema,
+  }),
 ]);
 export type RunEvent = z.infer<typeof runEventSchema>;
 
