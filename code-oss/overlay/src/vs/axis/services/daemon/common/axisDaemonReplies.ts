@@ -4,6 +4,7 @@
 
 import { AXIS_ID_PATTERN, IAxisCliRun, IAxisProjectInfo, IAxisWorktreeInfo } from '../../workspaces/common/axisWorkspaceData.js';
 import { cleanDisplayText } from '../../workspaces/common/worktreeDiscovery.js';
+import { IAxisApprovalCard, IAxisApprovalResolveReply } from '../../approvals/common/axisApprovals.js';
 import { AxisDaemonCallError } from './axisDaemonClient.js';
 
 /*
@@ -175,18 +176,49 @@ export function readCliRuns(reply: unknown): IAxisCliRun[] {
 	return runs;
 }
 
-/**
- * `axis.approvals/1.pending` reply, reduced to the number of open challenges. Only the ids are checked: the
- * dashboard shows a count, never a challenge, so no challenge text enters the renderer here.
- */
-export function readPendingCount(reply: unknown): number {
-	const challenges = array(record(reply, ['challenges'], ['challenges']).challenges, MAX_PENDING_CHALLENGES);
-	const ids = challenges.map(item => {
-		if (typeof item !== 'object' || item === null || Array.isArray(item)) {
+const CHALLENGE_ID = /^[A-Za-z0-9_-]{22,64}$/;
+const DIGEST = /^[0-9a-f]{64}$/;
+const CONTRACT_NAME = /^[a-z][a-z0-9.-]{0,63}$/;
+const METHOD_NAME = /^[A-Za-z][A-Za-z0-9]{0,63}$/;
+/** The longest `targetSummary` a listing carries (`MAX_LISTED_SUMMARY` in `@axis/protocol`). */
+export const MAX_LISTED_SUMMARY = 192;
+/** The largest epoch value a `Date` can show. */
+const MAX_DATE_MS = 8.64e15;
+
+function match(value: unknown, pattern: RegExp): string {
+	return typeof value === 'string' && pattern.test(value) ? value : invalid();
+}
+
+/** `axis.approvals/1.pending` reply: the exact listed-challenge shape, the summary cleaned for display. */
+export function readPendingChallenges(reply: unknown): IAxisApprovalCard[] {
+	const keys = ['challengeId', 'digest', 'contract', 'method', 'tier', 'targetSummary', 'nativeConfirmationRequired', 'expiresAt'];
+	const cards = array(record(reply, ['challenges'], ['challenges']).challenges, MAX_PENDING_CHALLENGES).map(item => {
+		const c = record(item, keys, keys);
+		const tier = count(c.tier);
+		if (tier > 5 || typeof c.expiresAt !== 'number' || !Number.isSafeInteger(c.expiresAt) || c.expiresAt <= 0 || c.expiresAt > MAX_DATE_MS) {
 			return invalid();
 		}
-		return text((item as Record_).challengeId, 64);
+		return {
+			challengeId: match(c.challengeId, CHALLENGE_ID),
+			digest: match(c.digest, DIGEST),
+			contract: match(c.contract, CONTRACT_NAME),
+			method: match(c.method, METHOD_NAME),
+			tier,
+			targetSummary: cleanDisplayText(text(c.targetSummary, MAX_LISTED_SUMMARY), MAX_LISTED_SUMMARY),
+			nativeConfirmationRequired: bool(c.nativeConfirmationRequired),
+			expiresAt: c.expiresAt,
+		};
 	});
-	noDuplicates(ids);
-	return ids.length;
+	noDuplicates(cards.map(c => c.challengeId));
+	return cards;
+}
+
+/** `axis.approvals/1.resolve` reply. */
+export function readResolveReply(reply: unknown): IAxisApprovalResolveReply {
+	const r = record(reply, ['challengeId', 'state', 'nativeRequired'], ['challengeId', 'state', 'nativeRequired']);
+	return {
+		challengeId: match(r.challengeId, CHALLENGE_ID),
+		state: oneOf(r.state, ['approved', 'denied', 'expired'] as const),
+		nativeRequired: bool(r.nativeRequired),
+	};
 }
