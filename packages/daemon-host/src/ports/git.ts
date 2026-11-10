@@ -40,8 +40,8 @@ export interface PushPlanFacts {
   readonly requiresConfirmation: boolean;
   readonly reasons: readonly string[];
   readonly findings: readonly PushFindingFacts[];
-  /** Set when the scan blocks the push (a `GIT_PUSH_BLOCKS` value, validated by the wire reply) with the binary paths still to allow. */
-  readonly blocked?: { readonly reason: string; readonly binaryPaths: readonly string[] };
+  /** Set when the scan blocks the push (a `GIT_PUSH_BLOCKS` value, validated by the wire reply) with the binary files still to allow. */
+  readonly blocked?: { readonly reason: string; readonly binaryFiles: readonly { readonly id: string; readonly path: string; readonly lossy: boolean }[] };
 }
 
 export interface PushCall {
@@ -53,6 +53,8 @@ export interface PushCall {
   /** The last commit Axis pushed (or the recorded base before the first push), from the journal. */
   readonly baseSha: string;
   readonly allowedBinaryPaths?: readonly string[];
+  /** Binary files allowed by identity (`blocked.binaryFiles[].id` of an earlier plan). */
+  readonly allowedBinaryIds?: readonly string[];
 }
 
 /**

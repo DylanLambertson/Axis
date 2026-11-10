@@ -2,10 +2,12 @@
 // Ticket P1e: a plan the scan blocks is refused with a closed reason, or returned as `blocked` when the caller asks for it.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { GitOpsError, MAX_DIFF, ScanIncomplete, executePush, planPush } from "../src/index.js";
+import { GitOpsError, MAX_DIFF, ScanIncomplete, binaryRow, executePush, planPush } from "../src/index.js";
 import type { SecretFinding } from "../src/index.js";
 import { BASE, FakeRunner, WT, healthy, makeDeps } from "./helpers.js";
 
+/** The row of a plain name, as a scan derives it from the raw bytes. */
+const row = (name: string) => binaryRow(Buffer.from(name, "utf8"));
 const input = { worktree: WT, remote: "origin", branch: "axis/feat", baseSha: BASE };
 const found = async (): Promise<SecretFinding[]> => [{ rule: "private-key" }];
 const BIN = (s: string[]) => (s[0] === "diff-tree" && s.includes("--numstat") ? { stdout: "-\t-\tkey.p12\0-\t-\tb/two.png\0" } : undefined);
@@ -40,11 +42,11 @@ test("a blocked plan is refused E_POLICY_DENIED with its closed reason, by defau
 
 test("reportBlocked returns the plan with the reason, the findings and the unlisted binary paths instead of throwing; it never asks for confirmation", async () => {
   const p = await planPush(deps("refuse", BIN, found), { ...input, reportBlocked: true, allowedBinaryPaths: ["b/two.png"] });
-  assert.deepEqual(p.blocked, { reason: "secrets_found", unlistedBinaryPaths: ["key.p12"] });
+  assert.deepEqual(p.blocked, { reason: "secrets_found", unlistedBinaryRows: [row("key.p12")] });
   assert.deepEqual(p.findings.map((f) => f.rule), ["private-key"]);
   assert.deepEqual([p.requiresConfirmation, p.reasons], [false, []]);
   const bin = await planPush(deps("refuse", BIN), { ...input, reportBlocked: true });
-  assert.deepEqual(bin.blocked, { reason: "binary_unscanned", unlistedBinaryPaths: ["key.p12", "b/two.png"] });
+  assert.deepEqual(bin.blocked, { reason: "binary_unscanned", unlistedBinaryRows: [row("key.p12"), row("b/two.png")] });
   const all = await planPush(deps("refuse", BIN), { ...input, reportBlocked: true, allowedBinaryPaths: ["key.p12", "b/two.png"] });
   assert.equal(all.blocked, undefined);
   assert.equal(all.requiresConfirmation, false);
@@ -52,7 +54,7 @@ test("reportBlocked returns the plan with the reason, the findings and the unlis
   // Warn mode would have confirmation reasons for the same scan (a finding, a binary path); a block replaces them, it does not add to them.
   const warn = await planPush(deps("warn", (s, req) => BIN(s) ?? NUL(s, req), found), { ...input, reportBlocked: true });
   assert.equal(warn.blocked?.reason, "message_unscannable");
-  assert.deepEqual([warn.requiresConfirmation, warn.reasons, warn.blocked?.unlistedBinaryPaths], [false, [], []]);
+  assert.deepEqual([warn.requiresConfirmation, warn.reasons, warn.blocked?.unlistedBinaryRows], [false, [], []]);
   assert.ok(warn.findings.length >= 1);
 });
 
@@ -149,7 +151,8 @@ test("S2: a scanner that gives up on a message view ends the scan there (no furt
 
 test("S1: a binary name with U+FFFD stays blocked even when listed, and the scanner is never told it is allowed", async () => {
   const name = "alias�.bin";
-  const stat = (s: string[]) => (s[0] === "diff-tree" && s.includes("--numstat") ? { stdout: `-\t-\t${name}\0-\t-\tplain.bin\0` } : undefined);
+  // The numstat is read raw: one character per byte.
+  const stat = (s: string[]) => (s[0] === "diff-tree" && s.includes("--numstat") ? { stdout: `-\t-\t${Buffer.from(name).toString("latin1")}\0-\t-\tplain.bin\0` } : undefined);
   const allowedSeen: string[][] = [];
   const scanner = async (_t: string, m: { part: string; allowedBinaryPaths?: readonly string[] }): Promise<SecretFinding[]> => {
     if (m.part === "patch") allowedSeen.push([...(m.allowedBinaryPaths ?? [])]);
@@ -157,7 +160,7 @@ test("S1: a binary name with U+FFFD stays blocked even when listed, and the scan
   };
   const d = makeDeps(new FakeRunner(healthy(stat)), { scanner, scanMode: "refuse" });
   const p = await planPush(d, { ...input, reportBlocked: true, allowedBinaryPaths: [name, "plain.bin"] });
-  assert.deepEqual(p.blocked, { reason: "binary_unscanned", unlistedBinaryPaths: [name] });
+  assert.deepEqual(p.blocked, { reason: "binary_unscanned", unlistedBinaryRows: [row(name)] });
   assert.deepEqual(allowedSeen, [["plain.bin"]]);
   assert.equal((await refusal(planPush(d, { ...input, allowedBinaryPaths: [name, "plain.bin"] }))).details?.["reason"], "binary_unscanned");
   const e = await refusal(executePush(d, { ...input, allowedBinaryPaths: [name, "plain.bin"] }, { confirmed: true }));
