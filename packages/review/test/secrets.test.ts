@@ -120,12 +120,17 @@ test("every git call is daemon-context and hardened, and GIT_INDEX_FILE appears 
         attrReads++;
         assert.ok(isPrivate && r.argv.includes("--cached"), `an attribute read used the real git directory or the work tree: ${r.argv.join(" ")}`);
       }
-      if (isPrivate) assert.ok(gitEnv.includes("GIT_ATTR_NOSYSTEM") && gitEnv.every((k) => ["GIT_ATTR_NOSYSTEM", "GIT_INDEX_FILE", "GIT_TERMINAL_PROMPT"].includes(k)), r.argv.join(" "));
+      // GIT_ATTR_NOSYSTEM is absent on a git that cannot name the system file (real-attr-binary.test.ts), so it is allowed, not required.
+      if (isPrivate) assert.ok(gitEnv.every((k) => ["GIT_ATTR_NOSYSTEM", "GIT_INDEX_FILE", "GIT_TERMINAL_PROMPT"].includes(k)), r.argv.join(" "));
       else assert.deepEqual(gitEnv, usesIndex ? ["GIT_INDEX_FILE", "GIT_TERMINAL_PROMPT"] : ["GIT_TERMINAL_PROMPT"], r.argv.join(" "));
       for (const must of ["--no-pager", "--no-replace-objects", "core.fsmonitor=false", "core.hooksPath=/dev/null", "protocol.allow=never", "diff.submodule=short"]) {
         assert.ok(r.argv.includes(must), `${must} missing from ${r.argv.join(" ")}`);
       }
-      assert.ok((isPrivate || r.argv.some((a) => a === `--git-dir=${f.wt.gitDir}`)) && r.argv.some((a) => a === `--work-tree=${f.wt.workTree}`));
+      // A private caller bound to an index has an empty private work tree, so no lookup reads the live one.
+      const wt = r.argv.find((a) => a.startsWith("--work-tree=")) ?? "";
+      if (isPrivate && r.env["GIT_INDEX_FILE"] !== undefined) assert.ok(wt.includes("axis-attr-") && wt.endsWith("worktree"), r.argv.join(" "));
+      else assert.ok((isPrivate || r.argv.some((a) => a === `--git-dir=${f.wt.gitDir}`)) && wt === `--work-tree=${f.wt.workTree}`, r.argv.join(" "));
+      if (r.argv.includes("--numstat")) assert.ok(isPrivate && r.env["GIT_INDEX_FILE"] !== undefined, `the line counts read live attributes: ${r.argv.join(" ")}`);
     }
     assert.equal(attrReads, 6, "three indexes, each read with core.ignorecase both ways");
     const diffs = f.seen.filter((r) => r.argv.includes("diff") && !r.argv.includes("diff-tree"));

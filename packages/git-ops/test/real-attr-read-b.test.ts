@@ -60,6 +60,7 @@ test("withIndex reads tracked attributes from the index it names, inside the sam
     writeFileSync(join(f.wt.gitDir, "info", "attributes"), "a.txt -filter\n");
     const side = await r.withIndex(idx);
     assert.equal(await attrOf(side, "a.txt", true), "tree");
+    assert.equal(await attrOf(side, "a.txt"), "tree", "an index-bound caller has an empty work tree: even without --cached the live file is not read");
     assert.equal(await attrOf(side, "x.md", true), "info", "the index read uses the same info/attributes snapshot");
     assert.equal(await attrOf(r.git, "a.txt", true), "unspecified", "the base caller still has no index");
     assert.equal(await attrOf(r.git, "a.txt"), "live", "fixture: without --cached git reads the work tree");
@@ -109,4 +110,29 @@ test("a SHA-256 repository is read when its object format is named, and an unkno
     sha1.dispose();
   }
   assert.equal((await refusal(attributeReadGit(w, deps, { objectFormat: "md5" as never }))).code, "E_INVALID_ARGUMENT");
+});
+
+test("liveSystemAttributes leaves the system file to git (no GIT_ATTR_NOSYSTEM) and cannot be combined with a snapshot", async () => {
+  const f = fixture();
+  const r = await attributeReadGit(f.wt, f.deps, { liveSystemAttributes: true });
+  try {
+    const before = f.seen.length;
+    await (await r.withIndex(join(f.root, "no-index")))(["check-attr", "--cached", "filter", "--", "a.txt"]);
+    const calls = f.seen.slice(before);
+    assert.ok(calls.length > 0);
+    for (const c of calls) assert.equal("GIT_ATTR_NOSYSTEM" in c.env, false, c.argv.join(" "));
+  } finally {
+    r.dispose();
+  }
+  const snap = await attributeReadGit(f.wt, f.deps);
+  try {
+    const before = f.seen.length;
+    await snap.git(["check-attr", "filter", "--", "a.txt"]);
+    for (const c of f.seen.slice(before)) assert.equal(c.env["GIT_ATTR_NOSYSTEM"], "1");
+  } finally {
+    snap.dispose();
+  }
+  const sys = join(f.root, "sys");
+  writeFileSync(sys, "");
+  assert.equal((await refusal(attributeReadGit(f.wt, f.deps, { liveSystemAttributes: true, systemAttributesFile: sys }))).code, "E_INVALID_ARGUMENT");
 });

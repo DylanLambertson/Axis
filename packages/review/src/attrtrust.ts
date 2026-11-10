@@ -43,7 +43,7 @@ function patterns(text: string): { readonly pattern: string | undefined; readonl
 }
 
 /** The user-level attribute file git reads (`core.attributesFile`, or its default under XDG/HOME) and the system file when git can name it. */
-async function outsideFiles(deps: ReviewDeps, git: ReviewGit, w: WorktreeRef): Promise<{ user?: string; system?: string }> {
+async function outsideFiles(deps: ReviewDeps, git: ReviewGit, w: WorktreeRef): Promise<{ user?: string; system?: string; systemUnknown: boolean }> {
   const win = (deps.git.platform ?? process.platform) === "win32";
   const join = win ? winJoin : posixJoin;
   const abs = win ? winAbs : posixAbs;
@@ -59,13 +59,19 @@ async function outsideFiles(deps: ReviewDeps, git: ReviewGit, w: WorktreeRef): P
     if (xdg !== undefined && xdg !== "") user = join(xdg, "git", "attributes");
     else if (home !== undefined && home !== "") user = join(home, ".config", "git", "attributes");
   }
+  // git before 2.42 has no GIT_ATTR_SYSTEM: the file cannot be named, so it is read live (see snapshotAttributes). An empty
+  // answer from a git that knows the variable means system attributes are off.
   const sys = await git(["var", "GIT_ATTR_SYSTEM"]);
   const system = sys.code === 0 ? sys.stdout.trim() : "";
-  return { ...(user === undefined ? {} : { user }), ...(system !== "" && abs(system) ? { system } : {}) };
+  const known = sys.code === 0 && (system === "" || abs(system));
+  return { ...(user === undefined ? {} : { user }), ...(known && system !== "" ? { system } : {}), systemUnknown: !known };
 }
 
-/** `read` is open (call its `dispose()`) exactly when the snapshot is trusted; `untrusted` paths are never offered. */
-export type AttributeSnapshot = { readonly untrusted: true; readonly read?: undefined } | { readonly untrusted: false; readonly read: AttributeRead };
+/**
+ * `read` is open (the caller must `dispose()` it) whenever a snapshot could be taken, trusted or not: an untrusted one still
+ * fixes what the shown line counts read. `untrusted` paths are never offered. A trusted snapshot always has `read`.
+ */
+export type AttributeSnapshot = { readonly untrusted: true; readonly read?: AttributeRead } | { readonly untrusted: false; readonly read: AttributeRead };
 
 /**
  * Takes the snapshot every `check-attr` read then uses, and judges it:
@@ -78,8 +84,9 @@ export type AttributeSnapshot = { readonly untrusted: true; readonly read?: unde
  * Because git reads exactly the judged bytes, a source swapped after this call (even one restored before the review ends) is
  * not seen (RR-13). Known limits: a tracked `.gitattributes` that uses a macro defined outside the tree is checked against the
  * macro as it is now; deleting a filter that only the user's file sets makes the stored file look unfiltered; the system file is
- * found with `git var GIT_ATTR_SYSTEM` (git 2.42 and later): on an older git it is not snapshotted and, since the reads set
- * `GIT_ATTR_NOSYSTEM`, a filter only it sets is not seen.
+ * found with `git var GIT_ATTR_SYSTEM` (git 2.42 and later): on an older git it cannot be named, so git reads it LIVE
+ * (`liveSystemAttributes`) rather than not at all; a rule it sets is still seen, but a macro defined there is not judged and a
+ * swap of that file (which needs administrator rights) is not excluded.
  */
 export async function snapshotAttributes(deps: ReviewDeps, git: ReviewGit, w: WorktreeRef, objectFormat: "sha1" | "sha256"): Promise<AttributeSnapshot> {
   const files = await outsideFiles(deps, git, w);
@@ -89,6 +96,7 @@ export async function snapshotAttributes(deps: ReviewDeps, git: ReviewGit, w: Wo
       objectFormat,
       ...(files.user === undefined ? {} : { userAttributesFile: files.user }),
       ...(files.system === undefined ? {} : { systemAttributesFile: files.system }),
+      ...(files.systemUnknown ? { liveSystemAttributes: true } : {}),
     });
   } catch (e) {
     if (e instanceof GitOpsError) return { untrusted: true };
@@ -96,9 +104,5 @@ export async function snapshotAttributes(deps: ReviewDeps, git: ReviewGit, w: Wo
   }
   const info = patterns(read.infoAttributes).length > 0;
   const outside = patterns(read.outsideAttributes).some((p) => p.bad || p.pattern?.startsWith("[attr]") === true);
-  if (info || outside) {
-    read.dispose();
-    return { untrusted: true };
-  }
-  return { untrusted: false, read };
+  return info || outside ? { untrusted: true, read } : { untrusted: false, read };
 }

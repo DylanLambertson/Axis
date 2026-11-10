@@ -20,6 +20,12 @@ export interface AttributeReadOptions {
    * below user below every tracked file) while `GIT_ATTR_NOSYSTEM=1` stops git reading the real one.
    */
   readonly systemAttributesFile?: string;
+  /**
+   * True when the caller cannot name the system attribute file (git before 2.42 has no `git var GIT_ATTR_SYSTEM`): git then reads
+   * the real system file itself, live, instead of no system file at all (`GIT_ATTR_NOSYSTEM` is not set). Fails safe for rules
+   * the file sets; a macro defined there cannot be judged. Refused together with `systemAttributesFile`.
+   */
+  readonly liveSystemAttributes?: boolean;
   /** Absolute path of the index to read tracked attributes from; only `GIT_INDEX_FILE` reaches git. */
   readonly indexFile?: string;
   /** The real repository's object format (default `sha1`): the private directory must use the same one to read its objects and indexes. */
@@ -38,8 +44,10 @@ export interface AttributeRead {
   /** A UTF-8 view of `outsideAttributesBytes` (invalid UTF-8 shows as U+FFFD), so a caller can refuse a macro defined there. */
   readonly outsideAttributes: string;
   /**
-   * Another caller over the SAME private directory and snapshots, reading tracked attributes from `indexFile` (absolute) with
-   * `check-attr --cached`, so one snapshot serves reads of several trees. Valid until `dispose()`.
+   * Another caller over the SAME private directory and snapshots whose index is `indexFile` (absolute) and whose work tree is an
+   * EMPTY private directory, so every attribute lookup (`check-attr`, and the binary/diff decision of `diff-tree --numstat`)
+   * finds no `.gitattributes` in the work tree and falls back to that index: one snapshot serves reads of several trees and the
+   * live work tree is never read. Each call builds a caller (two git processes, the version check aside). Valid until `dispose()`.
    */
   withIndex(indexFile: string): Promise<DaemonGit>;
   /** Removes the private directory. Call it in a `finally`. */
@@ -83,9 +91,9 @@ function commonDirOf(gitDir: string): string {
  * not read (core.attributesFile, filters and drivers defined there do not apply; the user's global config filters are
  * still neutralised as for every daemon call). The work tree's tracked attribute files are read as before.
  *
- * LIMITS: (1) the tracked `.gitattributes` files are read from the work tree unless the caller passes `--cached` with an index it
- * built from a tree object (`withIndex`, as `@axis/review` does); only `info/attributes`, the user file and the system file are
- * snapshotted here. (2) The system git config is still read. (3) The user's global config is not found (HOME is private), and
+ * LIMITS: (1) `git` (not `withIndex`) has the real work tree, so its lookups read the live tracked `.gitattributes` unless the
+ * caller passes `--cached`; `withIndex` callers have an empty work tree. Only `info/attributes`, the user file and the system
+ * file are snapshotted here. (2) The system git config is still read. (3) The user's global config is not found (HOME is private), and
  * the repository config is not read.
  */
 export async function attributeReadGit(w: WorktreeRef, deps: GitOpsDeps, opts: AttributeReadOptions = {}): Promise<AttributeRead> {
@@ -95,6 +103,7 @@ export async function attributeReadGit(w: WorktreeRef, deps: GitOpsDeps, opts: A
   // alternates is one path per line: a name with a line break would be read as two entries (an absolute path cannot start with '#').
   if (/[\r\n]/.test(objects)) throw denied("the object directory cannot be named in an alternates file");
   const platform = deps.platform ?? process.platform;
+  if (opts.liveSystemAttributes === true && opts.systemAttributesFile !== undefined) throw invalid("a system attributes file cannot be both snapshotted and read live");
   if (opts.objectFormat !== undefined && opts.objectFormat !== "sha1" && opts.objectFormat !== "sha256") throw invalid("the object format must be sha1 or sha256");
   for (const [what, file] of [["user", opts.userAttributesFile], ["system", opts.systemAttributesFile]] as const) {
     if (file !== undefined && (file.includes("\0") || !(platform === "win32" ? winAbs : posixAbs)(file))) throw invalid(`the ${what} attributes file must be an absolute path`);
@@ -121,20 +130,22 @@ export async function attributeReadGit(w: WorktreeRef, deps: GitOpsDeps, opts: A
     // --no-ext-diff and --no-textconv on any diff.
     const home = join(dir, "home");
     mkdirSync(home);
+    const emptyTree = join(dir, "worktree");
+    mkdirSync(emptyTree);
     const fixed = {
       config: [`core.attributesFile=${userFile}`],
-      env: { GIT_ATTR_NOSYSTEM: "1", HOME: home, XDG_CONFIG_HOME: home, ...(platform === "win32" ? { USERPROFILE: home } : {}) },
+      env: { ...(opts.liveSystemAttributes === true ? {} : { GIT_ATTR_NOSYSTEM: "1" }), HOME: home, XDG_CONFIG_HOME: home, ...(platform === "win32" ? { USERPROFILE: home } : {}) },
     };
-    const at = (indexFile: string | undefined): Promise<DaemonGit> =>
-      daemonGitFor({ workTree: w.workTree, gitDir: dir }, deps, indexFile === undefined ? {} : { GIT_INDEX_FILE: indexFile }, fixed);
-    const git = await at(opts.indexFile);
+    const at = (workTree: string, indexFile: string | undefined): Promise<DaemonGit> =>
+      daemonGitFor({ workTree, gitDir: dir }, deps, indexFile === undefined ? {} : { GIT_INDEX_FILE: indexFile }, fixed);
+    const git = await at(w.workTree, opts.indexFile);
     return {
       git,
       infoAttributes: infoAttributes.toString("utf8"),
       infoAttributesBytes: new Uint8Array(infoAttributes),
       outsideAttributes: outside.toString("utf8"),
       outsideAttributesBytes: new Uint8Array(outside),
-      withIndex: (indexFile) => at(indexFile),
+      withIndex: (indexFile) => at(emptyTree, indexFile),
       dispose,
     };
   } catch (e) {
