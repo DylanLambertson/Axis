@@ -118,7 +118,14 @@ export interface ComposeOptions {
   /** How long shutdown waits for composer runs to record their last rows before the audit writers are sealed (default 1000). */
   readonly composerSettleMs?: number;
   /** Composer runs (`axis.runs/1`, docs/design/composer-runtime.md): the mock provider's script and the per-run budget. */
-  readonly composer?: { readonly mock?: MockProviderOptions; readonly budget?: RunBudgetLimits; readonly maxTurns?: number; readonly toolCaps?: Partial<ToolCaps> };
+  readonly composer?: {
+    readonly mock?: MockProviderOptions;
+    readonly budget?: RunBudgetLimits;
+    /** Per-workspace budget across composer runs (C10); default `DEFAULT_WORKSPACE_BUDGET`. */
+    readonly workspaceBudget?: RunBudgetLimits;
+    readonly maxTurns?: number;
+    readonly toolCaps?: Partial<ToolCaps>;
+  };
   /** Period of the event sources (docs/design/events.md section 4; default 250 ms). */
   readonly eventPumpMs?: number;
 }
@@ -260,7 +267,9 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
           journal: parts.journal,
           engine: agent,
           now: () => ports.clock.now(),
+          redactor: ports.redactor,
           ...(options.composer?.budget === undefined ? {} : { budget: options.composer.budget }),
+          ...(options.composer?.workspaceBudget === undefined ? {} : { workspaceBudget: options.composer.workspaceBudget }),
           ...(options.composer?.maxTurns === undefined ? {} : { maxTurns: options.composer.maxTurns }),
           ...(options.composer?.toolCaps === undefined ? {} : { toolCaps: options.composer.toolCaps }),
           onInternalError: (where) => logger?.error("request.failed", { reason: `composer_${where.slice(0, 24)}` }),

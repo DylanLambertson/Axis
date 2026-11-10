@@ -7,7 +7,7 @@ export { attributeReadGit, type AttributeRead, type AttributeReadOptions } from 
 export * from "./commit.js";
 export { assertNoOperation, pathExists, OPERATION_MARKERS } from "./operation.js";
 export * from "./push.js";
-export { scanOutgoing, MAX_DIFF, MAX_COMMITS, MAX_TOTAL } from "./scan.js";
+export { scanOutgoing, binaryRow, BINARY_ID, MAX_DIFF, MAX_COMMITS, MAX_TOTAL, type BinaryRow } from "./scan.js";
 export * from "./compareUrl.js";
 export * from "./nodeRunner.js";
 export { resolveGit } from "./gitPath.js";

@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AuditLog, Redactor, openDatabase } from "@axis/audit";
-import { Journal } from "@axis/journal";
+import { Journal, type ActivityBounds } from "@axis/journal";
 import type { RunEvent } from "@axis/protocol";
 import type { MockProviderOptions, MockReply, RunBudgetLimits, ValidRequest } from "@axis/providers";
 import type { Policy } from "@axis/daemon";
@@ -51,6 +51,10 @@ export interface ComposerRigOptions {
   readonly maxActive?: number;
   readonly toolCaps?: Partial<ToolCaps>;
   readonly previewScanner?: PreviewScanner;
+  /** A database file instead of memory (restart tests reopen it); its directory is the caller's. */
+  readonly dbPath?: string;
+  readonly workspaceBudget?: RunBudgetLimits;
+  readonly storedActivity?: ActivityBounds;
   /** Called with each provider request (its 1-based number) before the mock answers: an outside writer, or a look at what the model gets. */
   readonly onRequest?: (n: number, req: ValidRequest) => void;
   /** The broker's file system, built over the rig's directories (to inject a race inside a write). */
@@ -67,7 +71,7 @@ export async function composerRig(options: ComposerRigOptions): Promise<Composer
   const outside = join(base, "outside");
   mkdirSync(join(root, "src"), { recursive: true });
   mkdirSync(outside);
-  const db = openDatabase(":memory:");
+  const db = openDatabase(options.dbPath ?? ":memory:");
   const audit = new AuditLog(db, { payloadAllowlist: AGENT_PAYLOAD_ALLOWLIST });
   const journal = Journal.open(db, { audit });
   const ws = journal.createWorkspace({ projectId: "p", branch: "axis/x", baseRef: "main", baseSha: SHA, createdBy: "user" }).value;
@@ -96,10 +100,13 @@ export async function composerRig(options: ComposerRigOptions): Promise<Composer
     ...(options.wrapFs === undefined ? {} : { wrapFs: options.wrapFs({ root, outside }) }),
   });
   const service = createComposerService({
+    redactor: new Redactor(),
     journal,
     engine: agent,
     now: () => r.clock.now(),
     ...(options.budget === undefined ? {} : { budget: options.budget }),
+    ...(options.workspaceBudget === undefined ? {} : { workspaceBudget: options.workspaceBudget }),
+    ...(options.storedActivity === undefined ? {} : { storedActivity: options.storedActivity }),
     ...(options.maxActive === undefined ? {} : { maxActive: options.maxActive }),
     ...(options.toolCaps === undefined ? {} : { toolCaps: options.toolCaps }),
   });

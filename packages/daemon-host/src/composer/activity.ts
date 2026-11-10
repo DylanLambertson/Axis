@@ -6,7 +6,8 @@ import type { ComposerEventsPage } from "../ports/composer.js";
  * The activity of composer runs, in memory and bounded (docs/design/composer-runtime.md section 3). Each run keeps at
  * most `maxEvents` events and `maxTextChars` characters of model text and approval preview heads (the oldest go first, except `request` events, which go last; a reader whose cursor
  * fell behind simply continues from what is left); at most `maxRuns` runs are kept, the oldest finished one is evicted
- * first. Nothing here survives a restart: `available` is then false (ticket J2 adds a journal table).
+ * first. This is the live view; the service also writes each event to the journal (J2), which answers once a run is
+ * no longer held here (after a restart, or once evicted).
  */
 
 export type ActivityInput = DistributiveOmit<RunEvent, "seq" | "at">;
@@ -94,16 +95,16 @@ export class RunActivity {
     return u === undefined ? undefined : { ...u };
   }
 
-  push(runId: string, input: ActivityInput): void {
+  /** Append; returns the events added (a long text becomes several), none for a run that is closed or not held. */
+  push(runId: string, input: ActivityInput): RunEvent[] {
     const e = this.#runs.get(runId);
-    if (e === undefined || e.done) return;
+    if (e === undefined || e.done) return [];
     if (input.type === "usage") e.usage = { ...input.usage };
     const at = new Date(this.#now()).toISOString();
-    if (input.type === "text") {
-      for (const text of activityTexts(input.text)) this.#add(e, { type: "text", text, seq: ++e.seq, at });
-      return;
-    }
-    this.#add(e, { ...input, seq: ++e.seq, at } as RunEvent);
+    const added: RunEvent[] =
+      input.type === "text" ? activityTexts(input.text).map((text) => ({ type: "text", text, seq: ++e.seq, at })) : [{ ...input, seq: ++e.seq, at } as RunEvent];
+    for (const ev of added) this.#add(e, ev);
+    return structuredClone(added);
   }
 
   /** The run ended: its last event is in, and readers that reached it are told `complete`. */

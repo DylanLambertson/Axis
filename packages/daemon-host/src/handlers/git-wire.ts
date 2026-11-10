@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import {
-  MAX_BLOCKED_BINARY_PATHS,
+  MAX_BLOCKED_BINARY_FILES,
   MAX_FINDING_PATH,
   MAX_PLAN_REASON_TEXT,
   MAX_PLAN_REASONS,
@@ -32,7 +32,7 @@ function wireFinding(f: PushPlanFacts["findings"][number]): SecretFindingWire {
 /**
  * The `pushPlan` reply, or null when it is not one the contract accepts (the handler then fails closed, `E_INTERNAL`).
  * Every reason is escaped with `toDisplayPath`: a binary file name in a reason can carry bidi or zero-width characters.
- * A blocked plan (`facts.blocked`) lists its binary paths through `toDisplayPath` too, at most `MAX_BLOCKED_BINARY_PATHS`; a
+ * A blocked plan (`facts.blocked`) lists its binary files (identity, display name through `toDisplayPath`, lossy flag), at most `MAX_BLOCKED_BINARY_FILES`; a
  * reason outside the contract's closed set fails the whole reply. At most `MAX_PUSH_FINDINGS` findings are listed and `findingsTruncated` says there were more; the digest covers all.
  */
 export function pushPlanReply(facts: PushPlanFacts, remote: string, branch: string): GitResponse<"pushPlan"> | null {
@@ -53,8 +53,8 @@ export function pushPlanReply(facts: PushPlanFacts, remote: string, branch: stri
       : {
           blocked: {
             reason: facts.blocked.reason,
-            binaryPaths: facts.blocked.binaryPaths.slice(0, MAX_BLOCKED_BINARY_PATHS).map((p) => toDisplayPath(p, MAX_FINDING_PATH)),
-            binaryPathsTruncated: facts.blocked.binaryPaths.length > MAX_BLOCKED_BINARY_PATHS,
+            binaryFiles: facts.blocked.binaryFiles.slice(0, MAX_BLOCKED_BINARY_FILES).map((f) => ({ id: f.id, path: toDisplayPath(f.path, MAX_FINDING_PATH), lossy: f.lossy })),
+            binaryFilesTruncated: facts.blocked.binaryFiles.length > MAX_BLOCKED_BINARY_FILES,
           },
         }),
   });

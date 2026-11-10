@@ -1,4 +1,5 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
+import { Redactor } from "@axis/audit";
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 import type { HandlerContext } from "@axis/daemon";
@@ -111,7 +112,7 @@ function twoProviders(c: ComposerRig, alpha: MockProviderOptions, extra: Partial
   const bRaw = createMockProvider({ providerId: "beta", connectionId: "conn-beta", ...extra });
   const b = guardProvider(bRaw, { redactor: NO_SECRETS });
   const map = new Map<string, GuardedProvider>([["alpha", a], ["beta", b]]);
-  const service = createComposerService({ journal: c.journal, engine: { provider: (id) => map.get(id), prepare: async () => () => { throw new Error("no tools"); } }, now: () => c.r.clock.now() });
+  const service = createComposerService({ redactor: new Redactor(), journal: c.journal, engine: { provider: (id) => map.get(id), prepare: async () => () => { throw new Error("no tools"); } }, now: () => c.r.clock.now() });
   return { service, beta: bRaw };
 }
 
@@ -121,7 +122,7 @@ test("C9/PRV-4: an unavailable selected connection is refused, creates nothing, 
   const raw = createMockProvider({ providerId: "alpha", connectionId: "conn-alpha" });
   const unreachable = guardProvider({ ...raw, descriptor: raw.descriptor, listModels: async () => { throw new Error(CANARY); } } as never, { redactor: NO_SECRETS });
   const beta2 = guardProvider(beta, { redactor: NO_SECRETS });
-  const service = createComposerService({ journal: c.journal, engine: { provider: (id) => (id === "alpha" ? unreachable : id === "beta" ? beta2 : undefined), prepare: async () => () => { throw new Error("no tools"); } }, now: () => c.r.clock.now() });
+  const service = createComposerService({ redactor: new Redactor(), journal: c.journal, engine: { provider: (id) => (id === "alpha" ? unreachable : id === "beta" ? beta2 : undefined), prepare: async () => () => { throw new Error("no tools"); } }, now: () => c.r.clock.now() });
   const reason = (e: unknown): unknown => (e as { details?: Record<string, unknown> }).details?.["reason"];
   await assert.rejects(service.start(START(c.workspaceId, { providerId: "alpha", mode: "ask" }), new AbortController().signal), (e: Error & { code?: string }) => reason(e) === "provider_unavailable" && e.code === "E_UNAVAILABLE" && !JSON.stringify(e).includes(CANARY));
   assert.equal(beta.requests.length, 0, "the other provider was never asked");
@@ -148,7 +149,7 @@ test("C9/PRV-4: the shown destination is the adapter's https origin when it has 
   const raw = createMockProvider({ providerId: "alpha", connectionId: "conn-alpha" });
   const withOrigin = { ...raw, descriptor: { ...raw.descriptor, destination: { origin: "https://api.example.com", description: "Example API" } } };
   const p = guardProvider(withOrigin as never, { redactor: NO_SECRETS });
-  const service = createComposerService({ journal: c.journal, engine: { provider: () => p, prepare: async () => () => { throw new Error("no tools"); } }, now: () => c.r.clock.now() });
+  const service = createComposerService({ redactor: new Redactor(), journal: c.journal, engine: { provider: () => p, prepare: async () => () => { throw new Error("no tools"); } }, now: () => c.r.clock.now() });
   const { run } = await service.start(START(c.workspaceId, { providerId: "alpha", mode: "ask" }), new AbortController().signal);
   await until(() => !service.get(run.runId).live);
   assert.deepEqual(requests(service.events(run.runId, 0, 200).events).map((e) => e.destination), ["https://api.example.com"]);
@@ -160,7 +161,7 @@ test("C9/PRV-4: a descriptor that cannot be shown safely (a URL with a password 
   const c = await rigged(t, []);
   const raw = createMockProvider({ providerId: "alpha", connectionId: "https://user:pw@host.example/x" });
   const p = guardProvider(raw, { redactor: NO_SECRETS });
-  const service = createComposerService({ journal: c.journal, engine: { provider: () => p, prepare: async () => () => { throw new Error("no tools"); } }, now: () => c.r.clock.now() });
+  const service = createComposerService({ redactor: new Redactor(), journal: c.journal, engine: { provider: () => p, prepare: async () => () => { throw new Error("no tools"); } }, now: () => c.r.clock.now() });
   await assert.rejects(service.start(START(c.workspaceId, { providerId: "alpha", mode: "ask" }), new AbortController().signal), (e) => (e as { details?: Record<string, unknown> }).details?.["reason"] === "provider_unavailable");
   assert.equal(raw.requests.length, 0);
   assert.equal(c.journal.listRuns({ workspaceId: c.workspaceId }).length, 0);
@@ -209,7 +210,7 @@ test("nit: a destination description with a URL's credentials, query or fragment
   const out = await list([{ descriptor: d, listModels: async () => [{ id: "mock-model" }] }]);
   assert.equal(out.providers[0]?.destination.description, "Via https://gateway.example/v1 now");
   const p = guardProvider({ ...raw, descriptor: d } as never, { redactor: NO_SECRETS });
-  const service = createComposerService({ journal: c.journal, engine: { provider: () => p, prepare: async () => () => { throw new Error("no tools"); } }, now: () => c.r.clock.now() });
+  const service = createComposerService({ redactor: new Redactor(), journal: c.journal, engine: { provider: () => p, prepare: async () => () => { throw new Error("no tools"); } }, now: () => c.r.clock.now() });
   const { run } = await service.start(START(c.workspaceId, { providerId: "alpha", mode: "ask" }), new AbortController().signal);
   await until(() => !service.get(run.runId).live);
   const shown = requests(service.events(run.runId, 0, 200).events).map((e) => e.destination);
@@ -223,7 +224,7 @@ test("SF-2: a long run that evicts its other events still shows where every requ
   const c = await rigged(t, []);
   const raw = createMockProvider({ providerId: "alpha", connectionId: "conn-alpha", replies: [{ kind: "text", text: "x" }] });
   const p = guardProvider(raw, { redactor: NO_SECRETS });
-  const service = createComposerService({ journal: c.journal, engine: { provider: () => p, prepare: async () => () => { throw new Error("no tools"); } }, now: () => c.r.clock.now(), activity: { maxEvents: 2 } });
+  const service = createComposerService({ redactor: new Redactor(), journal: c.journal, engine: { provider: () => p, prepare: async () => () => { throw new Error("no tools"); } }, now: () => c.r.clock.now(), activity: { maxEvents: 2 } });
   const { run } = await service.start(START(c.workspaceId, { providerId: "alpha", mode: "ask" }), new AbortController().signal);
   await until(() => !service.get(run.runId).live);
   const events = service.events(run.runId, 0, 200).events;
@@ -241,7 +242,7 @@ test("nit: a model removed from the connection mid-run ends the run closed, on i
   const p = guardProvider(raw, { redactor: NO_SECRETS });
   const gone = { ...p, descriptor: p.descriptor, generate: (...a: Parameters<typeof p.generate>) => { models.splice(0, 1); return p.generate(...a); } } as GuardedProvider;
   const map = new Map<string, GuardedProvider>([["alpha", gone], ["beta", guardProvider(beta, { redactor: NO_SECRETS })]]);
-  const service = createComposerService({ journal: c.journal, engine: { provider: (id) => map.get(id), prepare: async () => () => { throw new Error("no tools"); } }, now: () => c.r.clock.now() });
+  const service = createComposerService({ redactor: new Redactor(), journal: c.journal, engine: { provider: (id) => map.get(id), prepare: async () => () => { throw new Error("no tools"); } }, now: () => c.r.clock.now() });
   const { run } = await service.start(START(c.workspaceId, { providerId: "alpha", mode: "ask" }), new AbortController().signal);
   await until(() => !service.get(run.runId).live);
   const done = service.get(run.runId);
@@ -257,7 +258,7 @@ test("nit: a connection removed from the registry mid-run does not redirect or s
   const raw = createMockProvider({ providerId: "alpha", connectionId: "conn-alpha", replies: [{ kind: "text", text: "done" }] });
   const beta = createMockProvider({ providerId: "beta", connectionId: "conn-beta" });
   const map = new Map<string, GuardedProvider>([["alpha", guardProvider(raw, { redactor: NO_SECRETS })], ["beta", guardProvider(beta, { redactor: NO_SECRETS })]]);
-  const service = createComposerService({ journal: c.journal, engine: { provider: (id) => map.get(id), prepare: async () => () => { throw new Error("no tools"); } }, now: () => c.r.clock.now() });
+  const service = createComposerService({ redactor: new Redactor(), journal: c.journal, engine: { provider: (id) => map.get(id), prepare: async () => () => { throw new Error("no tools"); } }, now: () => c.r.clock.now() });
   const { run } = await service.start(START(c.workspaceId, { providerId: "alpha", mode: "ask" }), new AbortController().signal);
   map.delete("alpha");
   await until(() => !service.get(run.runId).live);

@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { MAX_ALLOWED_BINARY_PATHS, MAX_PUSH_FINDINGS, MAX_REVIEW_FILES, MAX_REVIEW_SKIPPED, MAX_MESSAGE_BYTES, MAX_MESSAGE_NODES, contracts, inspectMessage } from "../src/index.js";
+import { MAX_ALLOWED_BINARY_IDS, MAX_ALLOWED_BINARY_PATHS, MAX_BLOCKED_BINARY_FILES, MAX_PUSH_FINDINGS, MAX_REVIEW_FILES, MAX_REVIEW_SKIPPED, MAX_MESSAGE_BYTES, MAX_MESSAGE_NODES, contracts, inspectMessage } from "../src/index.js";
 import { DIGEST, SHA1, SHA2, completed, diffResponse, plan } from "./samples-p1b.js";
 import { errorText, parse, schemaOf } from "./suite.js";
 
@@ -112,6 +112,30 @@ test("worst-case replies fit one message: 200 files of three-byte display paths,
   assert.ok(Buffer.byteLength(JSON.stringify(pushPlan)) < MAX_MESSAGE_BYTES);
   assert.ok(MAX_PUSH_FINDINGS * 5 + 100 < MAX_MESSAGE_NODES);
   assert.equal(parse(schemaOf("axis.git", "pushPlan", "response"), pushPlan, "plan").success, true);
+  // The same reply, blocked, with the most binary files it can list at their widest: still one message.
+  const blockedPlan = {
+    ...pushPlan,
+    requiresConfirmation: false,
+    reasons: [],
+    blocked: {
+      reason: "binary_unscanned",
+      binaryFiles: Array.from({ length: MAX_BLOCKED_BINARY_FILES }, (_, i) => ({ id: `bin_${i.toString(16).padStart(32, "0")}`, path: wide(256), lossy: true })),
+      binaryFilesTruncated: true,
+    },
+  };
+  assert.deepEqual(inspectMessage({ id: "r".repeat(64), result: blockedPlan }), { ok: true });
+  assert.ok(Buffer.byteLength(JSON.stringify(blockedPlan)) < MAX_MESSAGE_BYTES);
+  assert.ok(MAX_PUSH_FINDINGS * 5 + MAX_BLOCKED_BINARY_FILES * 4 + 100 < MAX_MESSAGE_NODES);
+  assert.equal(parse(schemaOf("axis.git", "pushPlan", "response"), blockedPlan, "blocked plan").success, true);
+});
+
+test("a push or push plan that allows the most ids still fits the message limits", () => {
+  const ids = Array.from({ length: MAX_ALLOWED_BINARY_IDS }, (_, i) => `bin_${i.toString(16).padStart(32, "0")}`);
+  for (const [m, base] of [["pushPlan", { workspaceId: "ws-1", remote: "origin" }], ["push", { workspaceId: "ws-1", remote: "origin", confirmedPlan: { tip: SHA1, digest: DIGEST } }]] as const) {
+    const full = { ...base, allowedBinaryPaths: Array.from({ length: MAX_ALLOWED_BINARY_PATHS }, (_, i) => `${String(i).padStart(4, "0")}${"d".repeat(4090)}`), allowedBinaryIds: ids };
+    assert.deepEqual(inspectMessage(full), { ok: true });
+    assert.equal(parse(schemaOf("axis.git", m, "request"), full, m).success, true);
+  }
 });
 
 test("responses are never shared with the input and a completed run echoes nothing it was not given", () => {
