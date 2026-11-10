@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { GIT_COMMIT_REASONS, REVIEW_DIFF_REASONS, isAcknowledged, MAX_ALLOWED_BINARY_PATHS, MAX_COMMIT_MESSAGE, MAX_PUSH_FINDINGS, MAX_COMPARE_URL, MAX_REVIEW_FILES, MAX_REVIEW_SKIPPED, contracts, lookupMethod, requiresIdempotencyKey, tableProblems } from "../src/index.js";
-import { DIGEST, SHA1, SHA2, SHA3, completed, diffResponse, file, plan, P1B_SAMPLES } from "./samples-p1b.js";
+import { DIGEST, SHA1, SHA2, SHA3, completed, diffResponse, file, plan, renamed, P1B_SAMPLES } from "./samples-p1b.js";
 import { accepts, rejects, runSuite, schemaOf } from "./suite.js";
 
 runSuite(P1B_SAMPLES);
@@ -171,6 +171,12 @@ test("review.diff request and response", () => {
   for (const kind of ["text", "binary", "symlink", "submodule", "too-large", "filtered"]) accepts(res, { ...diffResponse, treeHash: null, files: [{ ...file, kind }] }, kind);
   for (const displayPath of ["a\nb", "a\u202eb", "x".repeat(257)]) rejects(res, { ...diffResponse, files: [{ ...file, displayPath }] }, JSON.stringify(displayPath).slice(0, 20));
   rejects(res, { ...diffResponse, files: [{ ...structuredClone(file), protectedRules: ["a", "b", "c", "d", "e"] }] }, "five rules");
+  // WT-3: the closed flag agrees with the rule names, and protected files are listed before every other file.
+  rejects(res, { ...diffResponse, files: [{ ...structuredClone(file), protectedPath: true }] }, "flag without a rule");
+  rejects(res, { ...diffResponse, files: [{ ...structuredClone(file), protectedRules: ["ci-workflow"] }] }, "rule without the flag");
+  rejects(res, { ...diffResponse, files: [{ ...structuredClone(file), protectedPath: "true" }] }, "flag not a boolean");
+  rejects(res, { ...diffResponse, files: [structuredClone(file), structuredClone(renamed)] }, "protected file after an ordinary one");
+  accepts(res, { ...diffResponse, files: [structuredClone(renamed), structuredClone(file)] }, "protected file first");
   rejects(res, { ...diffResponse, files: [{ ...file, similarity: 101 }] }, "similarity");
   rejects(res, { ...diffResponse, head: "main" }, "head");
   rejects(res, { ...diffResponse, branch: "refs/heads/axis/x" }, "full ref");
