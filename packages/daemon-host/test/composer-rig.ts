@@ -8,7 +8,7 @@ import type { RunEvent } from "@axis/protocol";
 import type { MockProviderOptions, MockReply, RunBudgetLimits, ValidRequest } from "@axis/providers";
 import type { Policy } from "@axis/daemon";
 import { createProvidersBinding, type AnthropicConnectionOptions, type ProvidersBinding } from "../src/bindings/providers.js";
-import { AGENT_PAYLOAD_ALLOWLIST, PROVIDERS_PAYLOAD_ALLOWLIST, createAgentBinding, createComposerService, type AgentBinding, type AgentBindingDeps, type ComposerService, type PreviewScanner, type ToolCaps } from "../src/index.js";
+import { AGENT_PAYLOAD_ALLOWLIST, PROVIDERS_PAYLOAD_ALLOWLIST, TAINT_PAYLOAD_ALLOWLIST, createAgentBinding, createComposerService, type AgentBinding, type AgentBindingDeps, type ComposerService, type PreviewScanner, type ToolCaps } from "../src/index.js";
 import { ProjectMutex } from "../src/worktrees/project-mutex.js";
 import { rig, type Client, type Rig } from "./approvals-rig.js";
 
@@ -73,6 +73,10 @@ export interface ComposerRigOptions {
   /** C3: the WT-2 guard (offers `run_command`) and the command bounds. */
   readonly commandGuard?: AgentBindingDeps["commandGuard"];
   readonly commandLimits?: AgentBindingDeps["commandLimits"];
+  /** Broker tools without a preview schema (IAC-T tests of the taint source seam). */
+  readonly extraTools?: AgentBindingDeps["extraTools"];
+  /** The binding's test taint source (IAC-T): which successful calls taint the run. */
+  readonly taintSources?: AgentBindingDeps["taintSources"];
 }
 
 const SHA = "b".repeat(40);
@@ -87,7 +91,7 @@ export async function composerRig(options: ComposerRigOptions): Promise<Composer
   mkdirSync(join(root, "src"), { recursive: true });
   mkdirSync(outside);
   const db = openDatabase(options.dbPath ?? ":memory:");
-  const audit = new AuditLog(db, { payloadAllowlist: { ...AGENT_PAYLOAD_ALLOWLIST, ...PROVIDERS_PAYLOAD_ALLOWLIST } });
+  const audit = new AuditLog(db, { payloadAllowlist: { ...AGENT_PAYLOAD_ALLOWLIST, ...PROVIDERS_PAYLOAD_ALLOWLIST, ...TAINT_PAYLOAD_ALLOWLIST } });
   const journal = Journal.open(db, { audit });
   const ws = journal.createWorkspace({ projectId: "p", branch: "axis/x", baseRef: "main", baseSha: SHA, createdBy: "user" }).value;
   journal.transitionWorkspace(ws.id, "READY");
@@ -112,6 +116,7 @@ export async function composerRig(options: ComposerRigOptions): Promise<Composer
     providers: providers.providers,
     env: () => options.env?.({ root, outside, base }) ?? { PATH: "/usr/bin:/bin", HOME: base },
     approvals: r.approvals.runs,
+    taintStore: journal.composer,
     now: () => r.clock.now(),
     mock: { ...options.mock, replies, respond: () => ({ kind: "text", text: "no more replies" }) },
     ...(options.previewScanner === undefined ? {} : { previewScanner: options.previewScanner }),
@@ -119,6 +124,8 @@ export async function composerRig(options: ComposerRigOptions): Promise<Composer
     ...(options.wrapFs === undefined ? {} : { wrapFs: options.wrapFs({ root, outside }) }),
     ...(options.commandGuard === undefined ? {} : { commandGuard: options.commandGuard }),
     ...(options.commandLimits === undefined ? {} : { commandLimits: options.commandLimits }),
+    ...(options.taintSources === undefined ? {} : { taintSources: options.taintSources }),
+    ...(options.extraTools === undefined ? {} : { extraTools: options.extraTools }),
   });
   const service = createComposerService({
     redactor,

@@ -19,6 +19,11 @@ export interface GitRunRequest {
    * (E_UNAVAILABLE) when it asked for raw output and the result does not say it got it.
    */
   readonly raw?: boolean;
+  /**
+   * Keep at most this many characters of stdout for this call (a non-negative safe integer; the runner's own limit still
+   * applies when it is lower). Output past it is read and dropped, never held, and the result says `truncated`.
+   */
+  readonly maxOutput?: number;
 }
 
 export interface GitRunResult {
