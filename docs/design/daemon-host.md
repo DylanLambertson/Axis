@@ -53,6 +53,7 @@ flowchart LR
 | `node:*`, `zod` 4.6.6 | anywhere | `electron`, `vs/*`, DOM, a socket listener (ADR 0003 D1.1, DMN-4). The one exception is the supervisor-side web host, `src/web/server.ts`, which no desktop entry can reach (`docs/design/web-host-entry.md`) |
 | `@axis/protocol`, `daemon`, `challenge`, `audit`, `journal`, `git-ops`, `pty-policy`, `providers` | anywhere | |
 | `@axis/vault`, `@axis/anthropic` | `src/bindings/providers.ts` only, 1b | handlers |
+| The global network clients (`fetch`, `WebSocket`, `EventSource`, `XMLHttpRequest`) | `src/bindings/providers.ts` only, and there only `fetch` as the `fetch` option of `createAnthropicAdapter({ ... })` (the adapter keeps it to the fixed origin with redirects refused and the destination shown, PRV-4). Enforced on shipped code of every package by the module scanner (`EGRESS_NAMES` in `scripts/code-oss/stage-ast.mjs`, the file matched exactly), so the import lint, the staging hook and the staged-tree check agree; `globalThis.fetch` is refused everywhere. Only `src/compose.ts`, `src/host.ts` and `src/index.ts` import that binding (`PROVIDERS_IMPORTERS`, `RESTRICTED_MODULES`) | any other use of these names in shipped code. **Not covered (residual, FU-EGRESS):** `node:dns` is not gated, and `node:child_process` (allowed to `audit`, `broker`, `git-ops`, `git-snapshot`, `worktrees`) can start a program that makes requests; socket built-ins are confined to the web host listener by `web-rules.mjs` |
 | `@axis/journal/daemon-principal` | `src/handlers/review.ts` only | any handler that is not the person's own act |
 | `@axis/worktrees` | `src/bindings/worktrees.ts` only | handlers, ports, compose |
 | `@axis/worktrees/daemon-confirm` | `src/gate/worktrees-confirm.ts` only | everything else. This is "the integration package that implements the gate adapter" of `docs/packages.md`, which is this package. |
@@ -154,6 +155,7 @@ Tier and `sideEffect` are the contract's declared minimum; policy may raise, nev
 | | `stop` | write | 2 | req | | | user | `RunSupervisor.stop` | 1a, new |
 | | `get`, `list` | read | 0 | none | | | user | `RunSupervisor` queries; `list` takes a `limit` of 1 to 500 (the contract limit); `RunSupervisor.list` itself accepts up to 1000 and the handler clamps to the contract limit. There is no cursor: a `runs.list` cursor is the named follow-up in `docs/packages.md` | 1a, new |
 | `axis.review/1` | `diff` | read | 1 | none | | | user | `ReviewService` | 1a, new |
+| | `content` (bounded, escaped view of what a file would commit; ticket RV-CONTENT, `review-core.md` §6b) | read | 1 | none | | | user (not on the web host) | `ReviewService` (`readNewBlob`) | 1a, new |
 | | `complete` (run REVIEWING to COMPLETED) | write | 2 | req | | | **user only**, mints `UserPrincipal` | journal | 1a, new |
 | `axis.git/1` (**decided:** a separate contract) | `pushPlan` | read | 1 | none | | | user | `git-ops` `planPush` | 1a, new |
 | | `commit` | write | 2 | req | | yes | user | `executeCommit` | 1a, new |
