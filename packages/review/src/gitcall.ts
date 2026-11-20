@@ -27,6 +27,8 @@ export interface GitCallOptions {
   readonly config?: readonly string[];
   /** Ask the runner for stdout as one character per byte (latin1); the result says `raw: true` when it honoured it. */
   readonly raw?: boolean;
+  /** Keep at most this many characters of stdout (the runner drops the rest and says `truncated`). */
+  readonly maxOutput?: number;
 }
 
 export interface ReviewGit {
@@ -73,6 +75,7 @@ export async function reviewGitFor(deps: ReviewDeps, w: WorktreeRef): Promise<Re
       context: "daemon",
       ...(opts.stdin === undefined ? {} : { stdin: opts.stdin }),
       ...(opts.raw === true ? { raw: true } : {}),
+      ...(opts.maxOutput === undefined ? {} : { maxOutput: opts.maxOutput }),
     });
   };
 }

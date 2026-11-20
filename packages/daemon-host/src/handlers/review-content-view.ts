@@ -1,11 +1,20 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
-import { CONTENT_BINARY_SNIFF_BYTES, CONTENT_REFUSED, MAX_CONTENT_LINE, MAX_CONTENT_LINES, MAX_CONTENT_TEXT_BYTES, type ContentView } from "@axis/protocol";
+import { CONTENT_BINARY_SNIFF_BYTES, CONTENT_LEADING_REFUSED, CONTENT_REFUSED, MAX_CONTENT_LINE, MAX_CONTENT_LINES, MAX_CONTENT_TEXT_BYTES, type ContentView } from "@axis/protocol";
 
 /**
  * The views of `axis.review/1.content` (docs/design/review-core.md section 6b), built from bytes. Pure and total: any bytes
  * in, a view that passes `contentViewSchema` out. Work is bounded by what is shown, not by the file: a line is decoded
  * only up to `MAX_CONTENT_LINE` units, and only the lines that are shown are decoded at all.
  */
+
+/**
+ * How much of an object is read, decided from its size before any byte is held (`readNewBlob`). Up to 4 MiB: the whole
+ * object, so a text file over `MAX_CONTENT_TEXT_BYTES` still shows its last lines. Above: the first 256 KiB only (more than
+ * the first half of a view can show unless its lines are very long), so a reply holds at most one 4 MiB object at a time,
+ * however large the files are. A link target: 4 KiB, enough for the longest shown target (512 units, at most 4 bytes each).
+ */
+export const TEXT_READ = { wholeUpTo: 4 * 1_048_576, prefix: 256 * 1024 } as const;
+export const LINK_READ = { wholeUpTo: 4096, prefix: 4096 } as const;
 
 /** The length in bytes of a valid UTF-8 sequence at `i`, or 0 when the byte there does not start one (strict, RFC 3629). */
 function sequenceLength(b: Uint8Array, i: number, end: number): number {
@@ -32,11 +41,11 @@ function codePoint(b: Uint8Array, i: number, n: number): number {
   return ((c & 0x07) << 18) | (t(1) << 12) | (t(2) << 6) | t(3);
 }
 
-/** One code point as shown text: a backslash doubled, a refused code point as `\u{hex}`, TAB kept. */
-function token(cp: number): string {
+/** One code point as shown text: a backslash doubled, a refused code point (or a combining mark that would lead) as `\u{hex}`, TAB kept. */
+function token(cp: number, leading: boolean): string {
   if (cp === 0x5c) return "\\\\";
   const ch = String.fromCodePoint(cp);
-  return CONTENT_REFUSED.test(ch) ? `\\u{${cp.toString(16)}}` : ch;
+  return CONTENT_REFUSED.test(ch) || (leading && CONTENT_LEADING_REFUSED.test(ch)) ? `\\u{${cp.toString(16)}}` : ch;
 }
 
 /**
@@ -47,7 +56,7 @@ export function escapeBytes(b: Uint8Array, start: number, end: number, max: numb
   let text = "";
   for (let i = start; i < end; ) {
     const n = sequenceLength(b, i, end);
-    const t = n === 0 ? `\\x${(b[i] as number).toString(16).padStart(2, "0")}` : token(codePoint(b, i, n));
+    const t = n === 0 ? `\\x${(b[i] as number).toString(16).padStart(2, "0")}` : token(codePoint(b, i, n), text === "");
     if (text.length + t.length > max) return { text, cut: true };
     text += t;
     i += n === 0 ? 1 : n;
@@ -109,6 +118,16 @@ function excerpt(b: Uint8Array, complete: boolean, budget: number): Excerpt {
   const half = Math.floor(MAX_CONTENT_LINES / 2);
   const halfBudget = Math.floor(budget / 2);
   const head = forward(half, halfBudget);
+  // A prefix whose LF-terminated lines all fit: its unfinished last line is shown too, cut (one long line of minified code
+  // or JSON would otherwise show nothing).
+  const tail = b.lastIndexOf(0x0a) + 1;
+  if (!complete && head.out.length === usable && head.out.length < half && tail < end) {
+    const text = escapeBytes(b, tail, end, MAX_CONTENT_LINE).text;
+    if (head.chars + text.length <= halfBudget) {
+      head.out.push(text);
+      cutLines++;
+    }
+  }
   const last: string[] = [];
   if (complete) {
     let chars = 0;
@@ -156,8 +175,8 @@ export function fileView(blob: { readonly size: number; readonly bytes: Uint8Arr
   };
 }
 
-/** The view of a link: its target as text (bounded by the line limit and `budget`), never followed. */
-export function linkView(target: Uint8Array, escapesWorktree: boolean, budget: number): ContentView {
-  const r = escapeBytes(target, 0, target.length, Math.min(MAX_CONTENT_LINE, budget));
-  return { kind: "symlink", target: r.text, targetCut: r.cut, escapesWorktree };
+/** The view of a link: its target as text (bounded by the line limit and `budget`), never followed. A prefix is cut. */
+export function linkView(target: { readonly bytes: Uint8Array; readonly complete: boolean }, escapesWorktree: boolean, budget: number): ContentView {
+  const r = escapeBytes(target.bytes, 0, target.bytes.length, Math.min(MAX_CONTENT_LINE, budget));
+  return { kind: "symlink", target: r.text, targetCut: r.cut || !target.complete, escapesWorktree };
 }

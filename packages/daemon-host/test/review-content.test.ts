@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { test, type TestContext } from "node:test";
 import type { Policy } from "@axis/daemon";
 import { MAX_CONTENT_RESPONSE_CHARS, MAX_CONTENT_TEXT_BYTES } from "@axis/protocol";
+import type { ReviewRound, ReviewService } from "../src/ports/review.js";
 import { files, gitUnavailable, LONG_LINE, reviewRig, sha256, type Client, type ReviewRig, type RigOptions } from "./review-rig.js";
 
 const SKIP = gitUnavailable();
@@ -139,6 +140,38 @@ test("text over the size bound: a first and a last excerpt and the object prefix
   assert.equal(row?.view.kind, "too-large");
   const v = row?.view as unknown as { first: string[]; last: string[]; readComplete: boolean; objectPrefix: string; size: number };
   assert.deepEqual([v.first[0], v.last.at(-1), v.readComplete, v.objectPrefix, v.size], ["HEAD", "TAIL", true, oidOf(r, "big.csv").slice(0, 12), 5 + n * line.length + 5]);
+});
+
+test("the size decides the read: over 4 MiB only a 256 KiB prefix is held, a link target at most 4 KiB", { skip: SKIP ?? false }, async (t) => {
+  const reads: Array<[string, { wholeUpTo: number; prefix: number }, number]> = [];
+  const spy = (real: ReviewService): ReviewService => ({
+    ...real,
+    open: async (...a: Parameters<ReviewService["open"]>) => {
+      const round = await real.open(...a);
+      const readNewBlob: ReviewRound["readNewBlob"] = async (path, bound) => {
+        const blob = await round.readNewBlob(path, bound);
+        reads.push([path, bound, blob.bytes.length]);
+        return blob;
+      };
+      return new Proxy(round, { get: (o, k) => (k === "readNewBlob" ? readNewBlob : Reflect.get(o, k)) });
+    },
+  });
+  const { r, user } = await setup(t, { review: spy });
+  const line = "id,value,comment\n";
+  const huge = `HEAD\n${line.repeat(Math.ceil((4 * 1_048_576 + 1) / line.length))}`;
+  r.write("huge.csv", `${huge}TAIL\n`);
+  r.write("mid.csv", `HEAD\n${line.repeat(Math.ceil((2 * 1_048_576) / line.length))}TAIL\n`);
+  // A link target is capped by the OS (about 4 KiB, 1 KiB on some systems): the bound the handler asks for is checked instead.
+  symlinkSync("t/".repeat(400), join(r.repo, "deep"));
+  const { rows } = await content(user, r, ["huge.csv", "mid.csv", "deep"]);
+  const byPath = new Map(rows.map((f) => [f.displayPath, f.view as unknown as { first: string[]; last: string[]; readComplete: boolean; size: number; targetCut: boolean }]));
+  const big = byPath.get("huge.csv");
+  assert.deepEqual([big?.first[0], big?.last, big?.readComplete, big?.size], ["HEAD", [], false, huge.length + 5]);
+  assert.deepEqual([byPath.get("mid.csv")?.last.at(-1), byPath.get("mid.csv")?.readComplete], ["TAIL", true], "up to 4 MiB the end is still shown");
+  assert.equal(byPath.get("deep")?.targetCut, true);
+  const held = new Map(reads.map(([p, , n]) => [p, n]));
+  assert.deepEqual([held.get("huge.csv"), held.get("mid.csv"), held.get("deep")], [256 * 1024, byPath.get("mid.csv")?.size, 800]);
+  assert.deepEqual(reads.find(([p]) => p === "deep")?.[1], { wholeUpTo: 4096, prefix: 4096 });
 });
 
 test("the reply's text budget is shared: once it is spent, later files show no lines and count them all", { skip: SKIP ?? false }, async (t) => {

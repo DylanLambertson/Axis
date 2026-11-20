@@ -11,6 +11,7 @@ const esc = (s: string | readonly number[], max = MAX_CONTENT_LINE): string => {
   const b = B(s);
   return escapeBytes(b, 0, b.length, max).text;
 };
+const W = (bytes: Uint8Array): { bytes: Uint8Array; complete: boolean } => ({ bytes, complete: true });
 function view(bytes: Uint8Array, opts: { size?: number; complete?: boolean; budget?: number } = {}): ContentView {
   const v = fileView({ size: opts.size ?? bytes.length, bytes, complete: opts.complete ?? true }, OID, opts.budget ?? MAX_CONTENT_FILE_CHARS);
   assert.equal(contentViewSchema.safeParse(v).success, true, `the view passes the wire schema: ${JSON.stringify(v).slice(0, 200)}`);
@@ -122,11 +123,36 @@ test("over the text bound: a first and a last excerpt, and only the first when t
   assert.throws(() => fileView({ size: 10, bytes: B("abc"), complete: false }, OID, 100), RangeError, "a small file that did not read whole is a fault");
 });
 
+test("a prefix whose finished lines all fit also shows its unfinished line, cut and counted", () => {
+  const size = MAX_CONTENT_TEXT_BYTES + 10;
+  const oneLine = view(B("x".repeat(4000)), { size, complete: false });
+  assert.ok(oneLine.kind === "too-large");
+  assert.deepEqual([oneLine.first, oneLine.last, oneLine.cutLines], [["x".repeat(MAX_CONTENT_LINE)], [], 1], "minified code shows something");
+  const some = view(B("a\nb\nccc"), { size, complete: false });
+  assert.ok(some.kind === "too-large");
+  assert.deepEqual([some.first, some.cutLines], [["a", "b", "ccc"], 1], "the unfinished line counts as cut even when short");
+  const ends = view(B("a\nb\n"), { size, complete: false });
+  assert.ok(ends.kind === "too-large");
+  assert.deepEqual([ends.first, ends.cutLines], [["a", "b"], 0], "a prefix ending at a newline has no unfinished line");
+  const tight = view(B("ab\n" + "y".repeat(100)), { size, complete: false, budget: 10 });
+  assert.ok(tight.kind === "too-large");
+  assert.deepEqual([tight.first, tight.cutLines], [["ab"], 0], "not shown when it would pass the budget");
+  for (const v of [oneLine, some, ends, tight]) assert.equal(contentViewSchema.safeParse(v).success, true);
+});
+
+test("a combining mark is escaped at the start of a line and kept after a base character", () => {
+  assert.equal(escapeBytes(B("\u0336a\u0336"), 0, 5, 100).text, "\\u{336}a\u0336");
+  assert.equal(escapeBytes(B("\u20e3"), 0, 3, 100).text, "\\u{20e3}");
+  assert.equal(contentViewSchema.safeParse({ kind: "symlink", target: "\u0336x", targetCut: false, escapesWorktree: false }).success, false);
+});
+
 test("a link view shows the escaped target and its flags, bounded", () => {
-  assert.deepEqual(linkView(B("../\u202e/etc"), true, 1000), { kind: "symlink", target: "../\\u{202e}/etc", targetCut: false, escapesWorktree: true });
-  const long = linkView(B("a/".repeat(2000)), false, 1000);
+  assert.deepEqual(linkView(W(B("../\u202e/etc")), true, 1000), { kind: "symlink", target: "../\\u{202e}/etc", targetCut: false, escapesWorktree: true });
+  const long = linkView(W(B("a/".repeat(2000))), false, 1000);
   assert.deepEqual([long.kind === "symlink" && long.target.length, long.kind === "symlink" && long.targetCut], [MAX_CONTENT_LINE, true]);
-  const tight = linkView(B("abcdef"), false, 3);
+  const tight = linkView(W(B("abcdef")), false, 3);
   assert.deepEqual(tight, { kind: "symlink", target: "abc", targetCut: true, escapesWorktree: false });
-  for (const v of [long, tight]) assert.equal(contentViewSchema.safeParse(v).success, true);
+  const prefix = linkView({ bytes: B("ab"), complete: false }, true, 1000);
+  assert.deepEqual(prefix, { kind: "symlink", target: "ab", targetCut: true, escapesWorktree: true }, "a target read as a prefix is cut");
+  for (const v of [long, tight, prefix]) assert.equal(contentViewSchema.safeParse(v).success, true);
 });

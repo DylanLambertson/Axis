@@ -65,9 +65,10 @@ export interface ReviewRound {
   hasCutLines(path: string): Promise<boolean>;
   /**
    * The bytes this file would commit: the snapshot tree's entry (the one `build` uses), read from the object store, never
-   * from the work tree. A file or a link target only. `complete` is false when the read stopped at the runner's limit.
+   * from the work tree. A file or a link target only. The whole object when its size is at most `bound.wholeUpTo`, else
+   * only its first `bound.prefix` bytes (`complete` false): the size decides before any byte is held.
    */
-  readNewBlob(path: string): Promise<{ readonly size: number; readonly bytes: Uint8Array; readonly complete: boolean }>;
+  readNewBlob(path: string, bound: { readonly wholeUpTo: number; readonly prefix: number }): Promise<{ readonly size: number; readonly bytes: Uint8Array; readonly complete: boolean }>;
   /** Accepts a whole file. `acceptTruncated` only for a file the user acknowledged. */
   accept(path: string, options: { readonly acceptTruncated: boolean }): void;
   /** Builds the reviewed tree from what was accepted. Refuses (`ReviewRefusal`) for anything the review would not commit. */

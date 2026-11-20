@@ -14,7 +14,7 @@ import {
 import type { PortContext } from "../ports/common.js";
 import type { ReviewRound, ReviewService, RoundFile } from "../ports/review.js";
 import { fail, mapRefusal, NOT_AVAILABLE } from "./review-errors.js";
-import { fileView, linkView } from "./review-content-view.js";
+import { fileView, LINK_READ, linkView, TEXT_READ } from "./review-content-view.js";
 import { contentIdOf, fileIdOf, foldEqualPaths, hasReplacementChar, isProtected, protectedFirst } from "./review-wire.js";
 
 /**
@@ -61,16 +61,21 @@ export function createReviewContentHandler(deps: { readonly review: ReviewServic
   };
 }
 
-/** What the file would commit, decided by the snapshot entry's mode and bytes (never by the listed kind, which reads attributes). */
+/**
+ * What the file would commit, decided by the snapshot entry's mode and bytes, not by the listed kind (which reads attributes).
+ * The one exception fails closed: a file the listing marks `filtered` is never shown, whatever its bytes.
+ */
 async function viewOf(round: ReviewRound, f: RoundFile, budget: number): Promise<ContentView> {
   if (f.unsafePath || hasReplacementChar(f.path)) return { kind: "unavailable", reason: "unsafe_path" };
   // A content filter's file holds the smudged bytes (plaintext of an encrypted file, say): never shown, never acknowledgeable.
   if (f.kind === "filtered") return { kind: "unavailable", reason: "filtered" };
   if (f.status === "D" || f.newMode === "000000") return { kind: "deleted" };
   if (f.newMode === "160000") return { kind: "submodule", commit: f.newOid };
-  const blob = await round.readNewBlob(f.path);
-  if (f.newMode === "120000") return linkView(blob.bytes, f.warnings.includes("symlink-outside") || !blob.complete, budget);
-  return fileView(blob, f.newOid, budget);
+  if (f.newMode === "120000") {
+    const target = await round.readNewBlob(f.path, LINK_READ);
+    return linkView(target, f.warnings.includes("symlink-outside") || !target.complete, budget);
+  }
+  return fileView(await round.readNewBlob(f.path, TEXT_READ), f.newOid, budget);
 }
 
 function row(f: RoundFile, fileId: string, view: ContentView): ReviewContentFile {

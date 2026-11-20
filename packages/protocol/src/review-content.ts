@@ -43,10 +43,13 @@ export const CONTENT_REFUSED = new RegExp(
   `[${rangesToClass([[0x0, 0x8], [0xa, 0x1f], [0x7f, 0x9f], [0xd800, 0xdfff], 0x2028, 0x2029, ...CF_RANGES, ...INVISIBLE_RANGES])}]`,
   "u",
 );
+/** A combining mark may not start a line: it would draw over whatever the client puts before the line (a gutter, a marker). */
+export const CONTENT_LEADING_REFUSED = /^\p{M}/u;
 export const contentLineSchema = z
   .string()
   .max(MAX_CONTENT_LINE)
-  .refine((t) => !CONTENT_REFUSED.test(t), { message: "no control or invisible characters" });
+  .refine((t) => !CONTENT_REFUSED.test(t), { message: "no control or invisible characters" })
+  .refine((t) => !CONTENT_LEADING_REFUSED.test(t), { message: "no combining mark at the start" });
 
 /** The first 12 hex digits of the object id (`git hash-object <file>` starts with them): an identity, never bytes. */
 export const objectPrefixSchema = z.string().regex(/^[0-9a-f]{12}$/);
