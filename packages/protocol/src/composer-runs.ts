@@ -6,6 +6,7 @@ import { countSchema, displayTextSchema, guarded, reasonCodeSchema, timestampSch
 import { runIdSchema, workspaceIdSchema, type MethodSpec } from "./worktrees.js";
 import { runStateSchema } from "./cliRuns.js";
 import { connectionNameSchema, destinationTextSchema } from "./providers.js";
+import { approvalTaintSchema } from "./taint.js";
 
 /**
  * `axis.runs/1`: composer runs (docs/design/composer-runtime.md section 3; docs/design/daemon-host.md section 4.2).
@@ -162,6 +163,11 @@ export const approvalPreviewSchema = z
       .nullable(),
     /** The command the call starts (C3); absent or null for a call that starts none. */
     command: commandPreviewSchema.nullable().optional(),
+    /**
+     * IAC-T (PV-M0): the sources the run had received when the challenge was issued, so the card can say why a call that is
+     * usually allowed needs the user. Absent for a run that received none.
+     */
+    taint: approvalTaintSchema.optional(),
   });
 export type ApprovalPreview = z.infer<typeof approvalPreviewSchema>;
 

@@ -262,7 +262,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
           audit: composerWriter,
           redactor: ports.redactor,
           env: () => ports.env,
-          approvals: approvals.runs,
+          approvals: approvals.runs, taintStore: parts.journal.composer, // IAC-T: run taint, recorded in its journal record
           now: () => ports.clock.now(),
           platform: config.platform,
           ...(options.composer?.mock === undefined ? {} : { mock: options.composer.mock }),
