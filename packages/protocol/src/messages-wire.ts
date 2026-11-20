@@ -3,6 +3,7 @@ import { z } from "zod";
 import { CF_RANGES, INVISIBLE_RANGES, rangesToClass } from "./display.js";
 import { objectIdSchema } from "./git.js";
 import { countSchema, displayTextSchema, timestampSchema } from "./guard.js";
+import { MAX_TAINT_HOP } from "./taint.js";
 import { projectIdSchema, relativePathSchema, runIdSchema, workspaceIdSchema } from "./worktrees.js";
 
 /*
@@ -64,7 +65,7 @@ export const MAX_REFS = 16;
 export const MAX_EXCERPTS = 4;
 /** Lines one excerpt may ask for; the daemon also caps the copy at 64 KiB. */
 export const MAX_EXCERPT_LINES = 2_000;
-export const MAX_HOP = 8;
+export const MAX_HOP = MAX_TAINT_HOP;
 /** Members of a thread's participant set: it only grows (section 4.2), so it is bounded; a send past it is `too_many_recipients`. */
 export const MAX_THREAD_PARTICIPANTS = 64;
 /** Most messages one `thread` or `read` reply holds, and most threads one `threads` reply holds. */

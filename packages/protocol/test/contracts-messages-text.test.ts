@@ -9,6 +9,7 @@ import {
   MAX_EXCERPT_DISPLAY,
   MAX_EXCERPT_LINES,
   MAX_HOP,
+  MAX_TAINT_HOP,
   MAX_MESSAGE_TEXT,
   MAX_REF_PATH,
   MAX_READ_MESSAGES,
@@ -123,8 +124,10 @@ test("message: a response refuses unescaped text, a forged sender and broken inv
   rejects(r, sendRes(msg({ sender: { kind: "user", verified: true, agentId: "agent-a" } })), "user with an agent id");
   rejects(r, sendRes(msg({ sender: { kind: "daemon", verified: true } })), "unknown sender kind");
   rejects(r, sendRes(msg({ hop: 1 }, userMessage)), "a user message with hop 1");
-  accepts(r, sendRes(msg({ hop: MAX_HOP })), "hop at the cap");
-  rejects(r, sendRes(msg({ hop: MAX_HOP + 1 })), "hop over the cap");
+  assert.equal(MAX_HOP, 8, "the design hop cap (IAC section 7.2)");
+  assert.equal(MAX_HOP, MAX_TAINT_HOP, "one hop cap for messages and the taint core");
+  accepts(r, sendRes(msg({ hop: 8 })), "hop at the cap");
+  rejects(r, sendRes(msg({ hop: 9 })), "hop over the cap");
   rejects(r, sendRes(msg({ inReplyTo: MSG2 })), "a reply to itself");
   rejects(r, sendRes(msg({ expanded: [] })), "nobody delivered to");
   rejects(r, sendRes(msg({ expanded: [{ kind: "user" }, { kind: "user" }] })), "duplicate expansion");
