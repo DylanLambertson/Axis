@@ -44,8 +44,9 @@ test("an unmigrated (version 5) database has no composer records: the store fail
   assert.throws(() => unmigrated.get("r-old"), /no such table/);
   assert.throws(() => unmigrated.workspaceBudget("w"), /no such table/);
   const journal = Journal.open(db, { audit });
-  assert.equal(schemaVersion(db, "journal"), 6);
-  assert.deepEqual(dump(db, "agent_workspaces", "id"), before.ws);
+  assert.equal(schemaVersion(db, "journal"), JOURNAL_SCHEMA_VERSION);
+  // Later versions only add columns (version 7: base_tip, NULL for old rows); every column version 6 knew is unchanged.
+  assert.deepEqual(dump(db, "agent_workspaces", "id").map(({ base_tip: _t, ...rest }) => rest), before.ws);
   assert.deepEqual(dump(db, "agent_runs", "id"), before.runs);
   assert.deepEqual(dump(db, "audit_events", "1"), before.audit);
   assert.equal(journal.composer.get("r-old"), undefined, "an older run has no record: nothing is invented");
