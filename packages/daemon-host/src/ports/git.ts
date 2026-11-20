@@ -55,6 +55,8 @@ export interface PushCall {
   readonly allowedBinaryPaths?: readonly string[];
   /** Binary files allowed by identity (`blocked.binaryFiles[].id` of an earlier plan). */
   readonly allowedBinaryIds?: readonly string[];
+  /** The destination key (`pushTarget`), covered by the plan digest so a confirmation is bound to where the push goes. */
+  readonly destination?: string;
 }
 
 /**

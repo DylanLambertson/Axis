@@ -18,6 +18,8 @@ async function pushCall(deps: GitHandlerDeps, id: string, method: string, reques
     remote: request.remote,
     branch: ws.branch,
     baseSha: await scanBase(deps, ws, id, worktree, target),
+    // The destination is part of the plan digest, so the tier 4 approval names it: re-pointed after the plan, the push is `plan_changed`.
+    destination: target,
     ...(request.allowedBinaryPaths === undefined ? {} : { allowedBinaryPaths: request.allowedBinaryPaths }),
     ...(request.allowedBinaryIds === undefined ? {} : { allowedBinaryIds: request.allowedBinaryIds }),
   };

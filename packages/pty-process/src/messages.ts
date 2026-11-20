@@ -1,5 +1,6 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { z } from "zod";
+import { PUSH_REFSPEC, PUSH_REMOTE } from "./push-run.js";
 
 /** Bounds on every untrusted field, so a hostile peer cannot make the other end allocate without limit. */
 export const LIMITS = {
@@ -78,6 +79,24 @@ const hook = z
   })
   .strict();
 
+/**
+ * H9-hooks S4: `git push` of the one pinned refspec as a terminal-bound run (design §5.2), answered like `spawn`. The service
+ * builds the argv, the pins and the environment; the message names the repository, a configured remote and the refspec only.
+ */
+const push = z
+  .object({
+    t: z.literal("push"),
+    req: id,
+    runId: id,
+    repo: z.object({ gitDir: absPath, workTree: absPath }).strict(),
+    remote: z.string().regex(PUSH_REMOTE),
+    refspec: z.string().regex(PUSH_REFSPEC),
+    env: envRecord,
+    cols: dim,
+    rows: dim,
+  })
+  .strict();
+
 /** Daemon to pty process, on the control channel: the only channel that can spawn or signal. */
 export const controlRequest = z.discriminatedUnion("t", [
   spawn,
@@ -88,6 +107,7 @@ export const controlRequest = z.discriminatedUnion("t", [
   z.object({ t: z.literal("grant"), conn: id }).merge(term).strict(),
   exec,
   hook,
+  push,
   z.object({ t: z.literal("scratch-begin"), req: id, attempt, gitDir: absPath, worktree: absPath, tree: oid }).strict(),
   z.object({ t: z.literal("scratch-verify"), req: id, attempt }).strict(),
   z.object({ t: z.literal("scratch-end"), req: id, attempt }).strict(),
@@ -109,7 +129,7 @@ export const groupSchema = z.discriminatedUnion("kind", [z.object({ kind: z.lite
 /** Pty process to daemon. Terminal output is never sent here: the daemon sees status only. */
 export const controlReply = z.discriminatedUnion("t", [
   z.object({ t: z.literal("spawned"), req: id, term: id, group: groupSchema }).strict(),
-  z.object({ t: z.literal("spawn-failed"), req: id, code: z.enum(["env_denied", "bad_group", "capacity", "spawn_failed", "no_control", "bad_bind", "hook_changed"]) }).strict(),
+  z.object({ t: z.literal("spawn-failed"), req: id, code: z.enum(["env_denied", "bad_group", "capacity", "spawn_failed", "no_control", "bad_bind", "hook_changed", "bad_argv"]) }).strict(),
   z.object({ t: z.literal("exit"), term: id, exitCode: z.number().int().nullable(), signal: z.string().max(32).nullable() }).strict(),
   z.object({ t: z.literal("group-empty"), term: id }).strict(),
   /** Input for this terminal was dropped because the child holds too much unread input (PTY-4). Status only. */

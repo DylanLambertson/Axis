@@ -6,6 +6,7 @@ import { controlRequest, dataRequest, type ControlReply, type ControlRequest, ty
 import { DEFAULT_FLOW, OutputFlow, type FlowLimits } from "./flow.js";
 import { probeGroup, signalGroup, validPgid } from "./group.js";
 import { OscCwdFilter } from "./osc.js";
+import { preparePush } from "./push-run.js";
 import { hasNul, isAbsolutePath } from "./paths.js";
 import { systemClock, systemProcessOps, type Channel, type Clock, type Disposable, type ProcessOps, type PtyChild, type PtySignal, type SpawnFn } from "./ports.js";
 
@@ -197,6 +198,14 @@ export function createPtyService(options: PtyServiceOptions): PtyService {
     startTerminal(m.req, p.argv, p.cwd, p.env, m.cols, m.rows);
   };
 
+  /** H9-hooks S4: a push is a terminal like any other, but its argv, pins and environment come from the service (§5.2). */
+  const handlePush = (m: Extract<ControlRequest, { t: "push" }>): void => {
+    if (disposed || options.git === undefined) return refuseSpawn(m.req, "spawn_failed");
+    const p = preparePush(m, options.git, platform);
+    if ("code" in p) return refuseSpawn(m.req, p.code);
+    startTerminal(m.req, p.argv, p.cwd, p.env, m.cols, m.rows);
+  };
+
   const startTerminal = (req: string, argv: readonly string[], cwd: string, env: Readonly<Record<string, string>>, cols: number, rows: number): void => {
     reap();
     if (terminals.size >= max) return refuseSpawn(req, "capacity");
@@ -267,11 +276,14 @@ export function createPtyService(options: PtyServiceOptions): PtyService {
       const t = (raw as { t?: unknown }).t;
       if (t === "exec") return void sendTo(control, { t: "exec-failed", req, code: "bad_argv" });
       if (t === "scratch-begin" || t === "scratch-verify" || t === "scratch-end") return void sendTo(control, { t: "scratch-failed", req, code: "bad_bind" });
+      // A push whose remote or refspec is not the closed form (a force, another ref, an option) is refused as a bad argv.
+      if (t === "push") return refuseSpawn(req, "bad_argv");
       return refuseSpawn(req, "spawn_failed");
     }
     const m = parsed.data;
     if (m.t === "spawn") return handleSpawn(m);
     if (m.t === "hook") return handleHook(m);
+    if (m.t === "push") return handlePush(m);
     if (m.t === "exec" || m.t === "scratch-begin" || m.t === "scratch-verify" || m.t === "scratch-end") {
       if (disposed || git === undefined) {
         if (m.t === "exec") return void sendTo(control, { t: "exec-failed", req: m.req, code: "spawn_failed" });

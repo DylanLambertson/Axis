@@ -5,7 +5,7 @@ import { OBJECT_ID, REMOTE_NAME, branchFor, checkWorktree, daemonGitFor, platfor
 import { findOverride, overrideMessage, withNoPrompt } from "./env.js";
 import { assertPushUrl, protocolAllowList } from "./pushUrl.js";
 import { BINARY_ID, scanOutgoing, type BinaryRow } from "./scan.js";
-import { GitOpsError, conflict, denied, invalid, mapUnexpected, redactUrls, sanitizeText } from "./errors.js";
+import { GitOpsError, conflict, denied, invalid, mapUnexpected, sanitizeText } from "./errors.js";
 import type { GitOpsDeps, GitRunRequest, SecretFinding, WorktreeRef } from "./types.js";
 
 /** Most binary file ids one request may allow (the wire's `MAX_ALLOWED_BINARY_IDS`). */
@@ -40,6 +40,12 @@ export interface PushInput {
    * `E_POLICY_DENIED`, so the caller can show why. `executePush` never pushes a blocked plan, with or without this.
    */
   readonly reportBlocked?: boolean;
+  /**
+   * Where the push goes, as an opaque key the caller derived from the resolved push URLs (the host's destination hash, never a
+   * URL). Covered by the plan digest when given, so a confirmation names the destination too: a remote re-pointed between the
+   * plan and the push is `plan_changed`, not a push of the confirmed commits somewhere else. At most 128 characters.
+   */
+  readonly destination?: string;
 }
 
 /** Why a plan can never be pushed, closed. Checked in this order; the first that applies is the reason. */
@@ -85,12 +91,14 @@ export interface ExecutePushOptions {
 }
 
 /** A digest of everything a confirmation covers. Findings carry names, paths, lines and commits, never matched text. */
-export function planDigest(tip: string, findings: readonly SecretFinding[], reasons: readonly string[], waivedBinaryIds: readonly string[] = []): string {
+export function planDigest(tip: string, findings: readonly SecretFinding[], reasons: readonly string[], waivedBinaryIds: readonly string[] = [], destination?: string): string {
   const f = findings.map((x) => [x.rule, x.path ?? "", x.line ?? 0, x.commit ?? ""]);
   // The identities of the binary files a refuse-mode plan lets through are covered, so a confirmation names them, not their display text.
   // Left out when there are none, so a plan that waives nothing keeps its digest.
   const waived = waivedBinaryIds.length === 0 ? {} : { waived: [...waivedBinaryIds].sort() };
-  return createHash("sha256").update(JSON.stringify({ tip, findings: f, reasons, ...waived })).digest("hex");
+  // The destination likewise, only when the caller names one.
+  const dest = destination === undefined ? {} : { destination };
+  return createHash("sha256").update(JSON.stringify({ tip, findings: f, reasons, ...waived, ...dest })).digest("hex");
 }
 
 /** The pinned source: the scanned tip, by object id, so a commit made after the scan cannot ride along. */
@@ -125,6 +133,9 @@ async function check(deps: GitOpsDeps, input: PushInput): Promise<{ plan: PushPl
   const ids = input.allowedBinaryIds ?? [];
   if (!Array.isArray(ids) || ids.length > MAX_ALLOWED_BINARY_IDS || ids.some((i) => typeof i !== "string" || !BINARY_ID.test(i))) {
     throw invalid("allowedBinaryIds must be binary file ids from a plan");
+  }
+  if (input.destination !== undefined && (typeof input.destination !== "string" || input.destination.length === 0 || input.destination.length > 128)) {
+    throw invalid("destination must be a non-empty key of at most 128 characters");
   }
   const bad = findOverride(deps.env.pty);
   if (bad) throw denied(overrideMessage(bad));
@@ -207,7 +218,7 @@ async function check(deps: GitOpsDeps, input: PushInput): Promise<{ plan: PushPl
   return {
     plan: {
       worktree: input.worktree, remote: input.remote, branch, tip: tipSha, refspec, command, findings,
-      requiresConfirmation: shownReasons.length > 0, reasons: shownReasons, digest: planDigest(tipSha, findings, shownReasons, waivedIds),
+      requiresConfirmation: shownReasons.length > 0, reasons: shownReasons, digest: planDigest(tipSha, findings, shownReasons, waivedIds, input.destination),
       ...(blocked === undefined ? {} : { blocked }),
     },
     git,
@@ -241,5 +252,6 @@ async function runPush(deps: GitOpsDeps, input: PushInput, opts: ExecutePushOpti
   }
   await confirmTip(git, plan.branch, plan.tip);
   const r = await deps.runner.run(plan.command);
-  if (r.code !== 0) throw new GitOpsError("E_UNAVAILABLE", `git push failed (exit ${r.code}): ${redactUrls(sanitizeText(r.stderr)).slice(0, 500)}`);
+  // The exit status only (H9-hooks H-7): the push's output, a `pre-push` hook's included, belongs to the user's terminal.
+  if (r.code !== 0) throw new GitOpsError("E_UNAVAILABLE", `git push failed (exit ${r.code})`);
 }
