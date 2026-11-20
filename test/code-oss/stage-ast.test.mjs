@@ -338,11 +338,15 @@ test("the global network clients are named only in the daemon host's providers b
       assert.ok(bad(src, file, { pkg }).length >= 1, `${src} in ${file}`);
     }
   }
-  // The egress file may call the global client directly; the global object's own property stays refused there too.
+  // The egress file (named exactly) may only hand `fetch` to the adapter; a bare call, a wrapper or another client stays refused.
   for (const file of EGRESS) {
-    for (const src of ["fetch(u);", "const f = (u, i) => fetch(u, i);", "new WebSocket(u);"]) assert.deepEqual(bad(src, file, { pkg: "daemon-host" }), [], `${src} in ${file}`);
-    assert.ok(bad("globalThis.fetch(u);", file, { pkg: "daemon-host" }).length >= 1);
-    assert.ok(bad("fetch(u);", file, { pkg: "anthropic" }).length >= 1, "only as the daemon host's file");
+    const pkgRel = file.startsWith("C:") || file.startsWith("/") ? "src/bindings/providers.ts" : null;
+    assert.deepEqual(bad("createAnthropicAdapter({ fetch: (u, i) => fetch(u, i) });", file, { pkg: "daemon-host", pkgRel }), [], file);
+    for (const src of ["fetch(u);", "export const f = (u, i) => fetch(u, i);", "new WebSocket(u);", "globalThis.fetch(u);"]) assert.ok(bad(src, file, { pkg: "daemon-host", pkgRel }).length >= 1, `${src} in ${file}`);
+    assert.ok(bad("createAnthropicAdapter({ fetch });", file, { pkg: "anthropic", pkgRel }).length >= 1, "only as the daemon host's file");
+  }
+  for (const file of ["packages/daemon-host/src/web/daemon-host/bindings/providers.ts", "daemon-host/web/daemon-host/bindings/providers.ts", "xpackages/daemon-host/src/bindings/providers.ts", "daemon-host/bindings/providers.ts.evil.ts"]) {
+    assert.ok(bad("createAnthropicAdapter({ fetch });", file, { pkg: "daemon-host" }).length >= 1, `nested or suffixed: ${file}`);
   }
   // A property, a member, a parameter type or a type query is not the global; tests and pinned code are not shipped code.
   for (const src of ["options.fetch(u);", "const o = { fetch: f };", "interface A { fetch(u: string): void }", "type F = typeof fetch;", "class X { fetch() {} }", "const createEventSources = 1;", "const s = 'fetch';"]) {

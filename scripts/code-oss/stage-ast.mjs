@@ -16,8 +16,8 @@
 //     name, a string key (`o["eval"]`) or with unicode escapes (the parser decodes them), and element access with a
 //     computed key on `process`, `globalThis`, `global` and `module`;
 //   - the Function constructors (`Function`, `AsyncFunction`, ... and `.constructor` reached through a value);
-//   - the global network clients (EGRESS_NAMES: `fetch`, `WebSocket`, `EventSource`, `XMLHttpRequest`) outside the one
-//     egress file, in shipped code;
+//   - the global network clients (EGRESS_NAMES: `fetch`, `WebSocket`, `EventSource`, `XMLHttpRequest`) in shipped code,
+//     except `fetch` handed to the Anthropic adapter in the one egress file;
 //   - a re-export of a mint module (`daemon-principal`, `daemon-attestation`): `export ... from`, or importing one
 //     and exporting what it gave (see mintReexports).
 // LIMIT, stated plainly: this is a static check. Calls through the process global or any other indirect form
@@ -38,21 +38,31 @@ export const HIDDEN_NAMES = new Set(["createRequire", "getBuiltinModule", "dlope
  * `_linkedBinding` or `mainModule`) is refused: the structural rule is "a direct read of a known-safe property".
  */
 const PROCESS_SAFE = new Set(["platform", "env", "stdout", "stderr", "stdin", "execPath", "getuid", "getgid", "geteuid", "pid", "ppid", "kill", "on", "once", "off", "removeListener", "listenerCount", "eventNames", "memoryUsage", "exit", "exitCode", "cwd", "argv", "umask", "chdir", "hrtime", "cpuUsage", "uptime", "arch", "version", "versions", "getActiveResourcesInfo", "parentPort", "emitWarning", "nextTick"]);
-// `fetch` is not here: a global's network clients are EGRESS_NAMES, reachable only from the egress file.
+// `fetch` is not here: a global's network clients are EGRESS_NAMES (see below).
 const GLOBAL_SAFE = new Set(["setTimeout", "clearTimeout", "setInterval", "clearInterval", "setImmediate", "clearImmediate", "structuredClone", "queueMicrotask", "AbortController", "AbortSignal", "URL", "URLSearchParams", "TextEncoder", "TextDecoder", "performance"]);
 const GUARDED = new Map([["process", PROCESS_SAFE], ["globalThis", GLOBAL_SAFE], ["global", GLOBAL_SAFE], ["module", new Set()]]);
 
 /**
- * Network clients a global offers (outbound HTTP, WebSocket, server-sent events). Shipped code may name them in one file
- * only: the daemon host's providers binding, which hands Node's `fetch` to the Anthropic adapter with its fixed origin,
- * refused redirects and PRV-4 destination display (review c6 SF-1). Anywhere else a request could leave the daemon
- * around those controls. Socket built-ins are confined to the web host listener separately (`web-rules.mjs`).
+ * Network clients a global offers (outbound HTTP, WebSocket, server-sent events). Shipped code never names them, with one
+ * exception: the daemon host's providers binding may pass the global `fetch` to `createAnthropicAdapter` as its `fetch`
+ * option, where the adapter holds it to the fixed Anthropic origin with redirects refused and the PRV-4 destination shown
+ * (reviews c6 SF-1 and egress-lint r1). Anywhere else, or in any other position in that file (a variable, an export, a
+ * return value, a wrapper), a request could leave the daemon around those controls. Socket built-ins are confined to the
+ * web host listener separately (`web-rules.mjs`); `node:dns` and `node:child_process` are other egress surfaces this rule
+ * does not cover (see docs/design/daemon-host.md 2.1).
  */
 export const EGRESS_NAMES = new Set(["fetch", "WebSocket", "EventSource", "XMLHttpRequest"]);
-/** The egress file as each caller names it: in the repository (`packages/daemon-host/src/...`, or absolute) or staged (`daemon-host/...`). */
-const EGRESS_FILE = /(^|\/)(packages\/daemon-host\/src|daemon-host)\/bindings\/providers\.ts$/;
-/** True for the one file whose shipped code may name EGRESS_NAMES (`pkg` must be the daemon host). */
-export const isEgressFile = (file, pkg) => pkg === "daemon-host" && typeof file === "string" && EGRESS_FILE.test(file.split("\\").join("/"));
+/** The function the one allowed `fetch` is handed to. */
+export const EGRESS_SINK = "createAnthropicAdapter";
+/**
+ * True for the egress file, named exactly as a caller does (never a suffix): the import lint passes the package-relative
+ * path (`pkgRel`), the staging step `packages/daemon-host/src/...`, the staged-tree check `daemon-host/...`.
+ */
+export function isEgressFile(file, pkg, pkgRel = null) {
+  if (pkg !== "daemon-host") return false;
+  const norm = (p) => (typeof p === "string" ? p.split("\\").join("/") : null);
+  return norm(pkgRel) === "src/bindings/providers.ts" || norm(file) === "packages/daemon-host/src/bindings/providers.ts" || norm(file) === "daemon-host/bindings/providers.ts";
+}
 
 /** Packages that hold a mint symbol in a module named principal, attestation or lock. */
 const MINT_HOLDER_PACKAGES = new Set(["journal", "runs", "audit"]);
@@ -71,9 +81,9 @@ export const isMintModuleSpec = (spec) => /(^|\/)daemon-(?:principal|attestation
  * `{ refs, bad }`: `refs` are `{ spec, start, end, kind }` (offsets of the text between the quotes), `bad` are
  * human-readable reasons the file cannot be checked.
  */
-export function scanModules(source, file = "x.ts", { vendored = false, shipped = true, pkg = null } = {}) {
+export function scanModules(source, file = "x.ts", { vendored = false, shipped = true, pkg = null, pkgRel = null } = {}) {
   const sf = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
-  const egress = isEgressFile(file, pkg);
+  const egress = isEgressFile(file, pkg, pkgRel);
   const refs = [];
   const bad = [];
   const isLiteral = (n) => n !== undefined && (ts.isStringLiteral(n) || ts.isNoSubstitutionTemplateLiteral(n));
@@ -129,6 +139,36 @@ export function scanModules(source, file = "x.ts", { vendored = false, shipped =
     if (ts.isBindingElement(p) && p.propertyName === n) return true;
     return p.name === n && !ts.isShorthandPropertyAssignment(p);
   };
+  /**
+   * True when this `fetch` reaches `createAnthropicAdapter({ fetch: ... })` and nothing else: from the identifier up to that
+   * call, only a call of it, an expression-bodied arrow, parentheses, a type assertion, the right side of `??` or `||`, a
+   * branch of `?:`, and the `fetch` property of the object literal that is the call's argument. A variable, an assignment,
+   * a block body, a `return`, an export or any other position on the way is refused, so no unrestricted client escapes.
+   */
+  const handedToAdapter = (n) => {
+    if (n.text !== "fetch") return false;
+    let child = n;
+    let viaOption = false;
+    for (let a = n.parent; a !== undefined; child = a, a = a.parent) {
+      if (ts.isCallExpression(a)) {
+        if (a.expression === child) continue;
+        // An object literal is only ever reached through its `fetch` option (the step below needs `viaOption`).
+        return ts.isObjectLiteralExpression(child) && ts.isIdentifier(a.expression) && a.expression.text === EGRESS_SINK && a.arguments.includes(child);
+      }
+      if (ts.isParenthesizedExpression(a) || ts.isAsExpression(a) || ts.isSatisfiesExpression(a) || ts.isTypeAssertionExpression(a) || ts.isNonNullExpression(a)) continue;
+      if (ts.isArrowFunction(a) && a.body === child) continue;
+      if (ts.isBinaryExpression(a) && a.right === child && (a.operatorToken.kind === K.QuestionQuestionToken || a.operatorToken.kind === K.BarBarToken)) continue;
+      if (ts.isConditionalExpression(a) && (a.whenTrue === child || a.whenFalse === child)) continue;
+      if ((ts.isPropertyAssignment(a) && a.initializer === child) || (ts.isShorthandPropertyAssignment(a) && a.name === child)) {
+        if (!ts.isIdentifier(a.name) || a.name.text !== "fetch" || viaOption) return false;
+        viaOption = true;
+        continue;
+      }
+      if (ts.isObjectLiteralExpression(a) && viaOption && ts.isObjectLiteralElementLike(child)) continue;
+      return false;
+    }
+    return false;
+  };
   const hiddenForms = (n) => {
     const p = n.parent;
     if (ts.isIdentifier(n) && HIDDEN_NAMES.has(n.text)) bad.push(`${at(n)}: ${n.text} reaches code without a visible import specifier`);
@@ -158,9 +198,10 @@ export function scanModules(source, file = "x.ts", { vendored = false, shipped =
       bad.push(`${at(n)}: node:worker_threads is never re-exported`);
     }
     if (shipped && ts.isBindingElement(n) && (n.propertyName ?? n.name).text === "constructor") bad.push(`${at(n)}: destructuring constructor reaches the Function constructor`);
-    // Network clients: named only in the egress file (a property name such as `options.fetch` is not the global).
-    if (shipped && ts.isIdentifier(n) && EGRESS_NAMES.has(n.text) && !isNamePosition(n) && !inType(n) && !egress) {
-      bad.push(`${at(n)}: ${n.text} sends network requests: only daemon-host/src/bindings/providers.ts may use it`);
+    // Network clients: never named, except `fetch` handed to the adapter in the egress file (a property name such as
+    // `options.fetch` is not the global; a shorthand `{ fetch }` is not a name position, and `export { fetch }` counts too).
+    if (shipped && ts.isIdentifier(n) && EGRESS_NAMES.has(n.text) && (!isNamePosition(n) || ts.isExportSpecifier(p)) && !inType(n) && !(egress && handedToAdapter(n))) {
+      bad.push(`${at(n)}: ${n.text} sends network requests: only daemon-host/src/bindings/providers.ts may use \`fetch\`, and only as the fetch option of ${EGRESS_SINK}(...)`);
     }
     // process, globalThis, global and module: only a direct read of a known-safe property.
     if (shipped && ts.isIdentifier(n) && GUARDED.has(n.text) && !isNamePosition(n) && !inType(n)) {
