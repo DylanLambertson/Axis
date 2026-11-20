@@ -3,12 +3,12 @@
 // packaged-build check run against fake builds. Every rule has a fixture that must fail.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { checkNetGate, scanOverlaySource, scanPatchText } from "../../scripts/code-oss/net-gate.mjs";
+import { ELEMENT_CALL_ALLOW, FILE_ALLOW, addedLines, checkNetGate, scanOverlaySource, scanPatchText } from "../../scripts/code-oss/net-gate.mjs";
 import { DEBUG_FLAGS, EXIT_FAIL, EXIT_OK, EXIT_SKIP, SKIP_DIAGNOSTIC, exitCodeOf, listenersOfTree, parseLsofListeners, parseProcNet, processTree, runChecks } from "../../scripts/code-oss/check-net-packaged.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -51,23 +51,44 @@ test("overlay source that opens a listener, loads a socket module or the web hos
     "remote debugging flag": 'const a = ["--remote-debugging-port=9222"];',
     "inspect flag": 'child.fork(file, [], { execArgv: ["--inspect=0"] });',
     "inspect-brk template": "const a = `--inspect-brk=${port}`;",
+    "ws server": 'import { WebSocketServer } from "ws"; new WebSocketServer({ port: 1 });',
+    "express": 'import express from "express";',
+    "cluster": 'import cluster from "node:cluster";',
+    "child_process outside its file": 'import { fork } from "child_process";',
+    "require ws": 'const w = require("ws");',
+    "require alias": 'const r = require; r("node:net");',
+    "createRequire": 'import { createRequire } from "module"; createRequire(import.meta.url)("node:net");',
+    "getBuiltinModule": 'process.getBuiltinModule("node:net");',
+    "binding": 'process.binding("tcp_wrap");',
+    "bracket listen": 's["listen"](80);',
+    "bracket createServer": 's["createServer"]();',
+    "computed member call": "s[name](80);",
+    "split flag": 'const a = "--insp" + "ect";',
+    "split flag, three parts": 'const a = "--" + x + "remote-debugging-" + "port";',
+    "upper-case flag": 'const a = "--INSPECT";',
   };
   for (const [name, source] of Object.entries(bad)) assert.notEqual(scanOverlaySource(source, "x.ts").length, 0, name);
-  for (const ok of ['import { createHmac } from "node:crypto";', 'const note = "inspect the run";', "const s = new Set(); s.add(1);", "emitter.on('listening', f);"]) {
+  for (const ok of ['import { createHmac } from "node:crypto";', 'const note = "inspect the run";', "const s = new Set(); s.add(1);", "emitter.on('listening', f);", "const f = shapes[i];", 'import { a } from "../../base/common/uuid.js";', 'import assert from "assert";', 'const s = "a" + "b";']) {
     assert.deepEqual(scanOverlaySource(ok, "x.ts"), [], ok);
   }
 });
 
-test("the static scan walks the overlay, skips tests, and fails closed on links and a missing tree", () => {
+test("the static scan walks the overlay including tests, and fails closed on links and a missing tree", () => {
   const dir = repoCopy();
   const target = join(dir, "code-oss", "overlay", "src", "vs", "axis", "daemon", "node", "axisDaemonMain.ts");
   const original = readFileSync(target, "utf8");
   writeFileSync(target, `${original}\nimport net from "node:net";\n`);
   assert.match(text(checkNetGate(dir)), /node:net/);
   writeFileSync(target, original);
-  // A violation in a test file is not scanned: tests may name flags to refuse them.
+  // Test files are scanned too: a listener in a file named *.test.ts, or in any file under a test directory, is refused.
   const testFile = join(dir, "code-oss", "overlay", "src", "vs", "axis", "test", "browser", "flags.test.ts");
-  writeFileSync(testFile, 'const a = "--inspect";');
+  writeFileSync(testFile, 'import net from "node:net"; net.createServer().listen(80, "0.0.0.0");');
+  assert.match(text(checkNetGate(dir)), /node:net/);
+  rmSync(testFile);
+  const helper = join(dir, "code-oss", "overlay", "src", "vs", "axis", "test", "browser", "helper.ts");
+  writeFileSync(helper, "server.listen(80);");
+  assert.match(text(checkNetGate(dir)), /listen/);
+  rmSync(helper);
   assert.deepEqual(checkNetGate(dir), []);
   try {
     symlinkSync(target, join(dir, "code-oss", "overlay", "src", "vs", "axis", "link.ts"));
@@ -82,12 +103,29 @@ test("the static scan walks the overlay, skips tests, and fails closed on links 
   assert.match(text(checkNetGate(bare)), /holds no source files/);
 });
 
+test("the reviewed exceptions are per file and exact", () => {
+  const [[ptyFile]] = [...FILE_ALLOW];
+  assert.deepEqual(scanOverlaySource('import * as p from "node-pty";', ptyFile), []);
+  assert.notEqual(scanOverlaySource('import * as p from "node-pty";', "code-oss/overlay/src/vs/axis/other.ts").length, 0);
+  assert.notEqual(scanOverlaySource('import { fork } from "child_process";', ptyFile).length, 0);
+  const [elementFile] = [...ELEMENT_CALL_ALLOW];
+  assert.deepEqual(scanOverlaySource("shapes[i](id);", elementFile), []);
+  assert.notEqual(scanOverlaySource("shapes[i](id);", "x.ts").length, 0);
+});
+
 test("a patch that adds a listener or a debugging flag is refused; removed and context lines are not", () => {
-  const add = (l) => `--- a/x\n+++ b/x\n@@ -1 +1 @@\n context\n-old\n+${l}\n`;
-  for (const l of ["server.listen(1)", "const a = '--inspect=1';", "import net from 'node:net';", "startWebHost(c)", "app.commandLine.appendSwitch('remote-debugging-port', '9222')", "import x from 'daemon-host/web/index.js'"]) {
+  const add = (l) => `--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n context\n-old\n+${l}\n`;
+  for (const l of ["server.listen(1)", "const a = '--inspect=1';", "import net from 'node:net';", "startWebHost(c)", "app.commandLine.appendSwitch('remote-debugging-port', '9222')", "import x from 'daemon-host/web/index.js'", "const w = require('ws');", "import { WebSocketServer } from 'ws';", "s['listen'](1);", "s[name](1);", "const a = '--insp' + 'ect';", "const r = createRequire(url);", "import cluster from 'node:cluster';"]) {
     assert.notEqual(scanPatchText(add(l), "2999-x.patch").length, 0, l);
   }
-  assert.deepEqual(scanPatchText("--- a/x\n+++ b/x\n@@ -1 +1 @@\n-server.listen(1)\n server.listen(2)\n+const ok = 1;\n", "p.patch"), []);
+  assert.deepEqual(scanPatchText("--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n-server.listen(1)\n server.listen(2)\n+const ok = 1;\n", "p.patch"), []);
+  // An added line that itself starts with `++` is content, not a header; a header is judged only before a hunk.
+  assert.notEqual(scanPatchText("--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n context\n-old\n+++i; s.listen(1);\n", "p.patch").length, 0);
+  // A second file in the same patch has its own header, which is skipped, and its own hunk.
+  const two = "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\ndiff --git a/y b/y\n--- a/y\n+++ b/daemon-host/web/y.ts\n@@ -1 +1 @@\n-a\n+s.listen(2);\n";
+  assert.deepEqual(scanPatchText(two, "p.patch").map((v) => v.line), [11]);
+  assert.deepEqual(addedLines("@@ -1,3 +1,2 @@\n a\n-b\n+c\n").added, [{ line: 4, text: "c" }]);
+  assert.equal(scanPatchText("@@ nonsense @@\n+ok\n", "p.patch").length, 1);
   // A `+++` file header is not added content, even when the path names a refused module.
   assert.equal(scanPatchText("--- a/x\n+++ b/daemon-host/web/server.ts\n", "p.patch").length, 0);
   const dir = repoCopy();
@@ -168,6 +206,28 @@ test("a build that always listens fails the plain-run check, from the real socke
   assert.equal(byName(r, "plain run: no listener").status, "fail");
   assert.match(byName(r, "plain run: no listener").detail, /127\.0\.0\.1:\d+|0100007F/);
   for (const flag of DEBUG_FLAGS) assert.equal(byName(r, `${flag} refused`).status, "pass");
+});
+
+test("a run removes its private profile and leaves no process behind", { skip: process.platform === "win32" ? "process groups differ" : false }, async () => {
+  const record = join(temp(), "record.jsonl");
+  appendFileSync(record, "");
+  process.env.NET_GATE_FAKE_RECORD = record;
+  try { await check("clean", () => []); } finally { delete process.env.NET_GATE_FAKE_RECORD; }
+  const runs = readFileSync(record, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  assert.equal(runs.length, 1 + DEBUG_FLAGS.length);
+  for (const { pid, profile } of runs) {
+    assert.equal(existsSync(profile), false, `profile ${profile} removed`);
+    let alive = true;
+    for (let i = 0; i < 40 && alive; i++) {
+      try { process.kill(pid, 0); await new Promise((r) => setTimeout(r, 50)); } catch { alive = false; }
+    }
+    assert.equal(alive, false, `pid ${pid} gone`);
+  }
+});
+
+test("a flag run in which the app exited says so", async () => {
+  const r = await check("exit", () => []);
+  assert.match(byName(r, "--inspect refused").detail, /exited/);
 });
 
 test("a build that exits, or a host that cannot list sockets, is never a pass", async () => {

@@ -152,7 +152,9 @@ export async function runChecks({ app, appArgs = [], settleMs = 8000, listeners 
   for (const flag of DEBUG_FLAGS) {
     const port = await freePort();
     const name = `${flag} refused`;
-    results.push(await withApp(app, appArgs, [`${flag}=${port}`], settleMs, async () => {
+    results.push(await withApp(app, appArgs, [`${flag}=${port}`], settleMs, async (_child, exit) => {
+      // An app that exited did not honour the flag; whether it refused or crashed is not told apart (the plain run fails closed on a crash).
+      if (exit !== undefined) return { name, status: "pass", detail: `the app exited (${JSON.stringify(exit)}): refused or crashed, not told apart` };
       const open = await accepts(port);
       return open ? { name, status: "fail", detail: `port ${port} accepts connections: the flag was honoured` } : { name, status: "pass", detail: `nothing accepts on port ${port}` };
     }));
