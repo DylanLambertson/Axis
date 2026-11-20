@@ -16,6 +16,8 @@
 //     name, a string key (`o["eval"]`) or with unicode escapes (the parser decodes them), and element access with a
 //     computed key on `process`, `globalThis`, `global` and `module`;
 //   - the Function constructors (`Function`, `AsyncFunction`, ... and `.constructor` reached through a value);
+//   - the global network clients (EGRESS_NAMES: `fetch`, `WebSocket`, `EventSource`, `XMLHttpRequest`) outside the one
+//     egress file, in shipped code;
 //   - a re-export of a mint module (`daemon-principal`, `daemon-attestation`): `export ... from`, or importing one
 //     and exporting what it gave (see mintReexports).
 // LIMIT, stated plainly: this is a static check. Calls through the process global or any other indirect form
@@ -36,8 +38,21 @@ export const HIDDEN_NAMES = new Set(["createRequire", "getBuiltinModule", "dlope
  * `_linkedBinding` or `mainModule`) is refused: the structural rule is "a direct read of a known-safe property".
  */
 const PROCESS_SAFE = new Set(["platform", "env", "stdout", "stderr", "stdin", "execPath", "getuid", "getgid", "geteuid", "pid", "ppid", "kill", "on", "once", "off", "removeListener", "listenerCount", "eventNames", "memoryUsage", "exit", "exitCode", "cwd", "argv", "umask", "chdir", "hrtime", "cpuUsage", "uptime", "arch", "version", "versions", "getActiveResourcesInfo", "parentPort", "emitWarning", "nextTick"]);
-const GLOBAL_SAFE = new Set(["fetch", "setTimeout", "clearTimeout", "setInterval", "clearInterval", "setImmediate", "clearImmediate", "structuredClone", "queueMicrotask", "AbortController", "AbortSignal", "URL", "URLSearchParams", "TextEncoder", "TextDecoder", "performance"]);
+// `fetch` is not here: a global's network clients are EGRESS_NAMES, reachable only from the egress file.
+const GLOBAL_SAFE = new Set(["setTimeout", "clearTimeout", "setInterval", "clearInterval", "setImmediate", "clearImmediate", "structuredClone", "queueMicrotask", "AbortController", "AbortSignal", "URL", "URLSearchParams", "TextEncoder", "TextDecoder", "performance"]);
 const GUARDED = new Map([["process", PROCESS_SAFE], ["globalThis", GLOBAL_SAFE], ["global", GLOBAL_SAFE], ["module", new Set()]]);
+
+/**
+ * Network clients a global offers (outbound HTTP, WebSocket, server-sent events). Shipped code may name them in one file
+ * only: the daemon host's providers binding, which hands Node's `fetch` to the Anthropic adapter with its fixed origin,
+ * refused redirects and PRV-4 destination display (review c6 SF-1). Anywhere else a request could leave the daemon
+ * around those controls. Socket built-ins are confined to the web host listener separately (`web-rules.mjs`).
+ */
+export const EGRESS_NAMES = new Set(["fetch", "WebSocket", "EventSource", "XMLHttpRequest"]);
+/** The egress file as each caller names it: in the repository (`packages/daemon-host/src/...`, or absolute) or staged (`daemon-host/...`). */
+const EGRESS_FILE = /(^|\/)(packages\/daemon-host\/src|daemon-host)\/bindings\/providers\.ts$/;
+/** True for the one file whose shipped code may name EGRESS_NAMES (`pkg` must be the daemon host). */
+export const isEgressFile = (file, pkg) => pkg === "daemon-host" && typeof file === "string" && EGRESS_FILE.test(file.split("\\").join("/"));
 
 /** Packages that hold a mint symbol in a module named principal, attestation or lock. */
 const MINT_HOLDER_PACKAGES = new Set(["journal", "runs", "audit"]);
@@ -58,6 +73,7 @@ export const isMintModuleSpec = (spec) => /(^|\/)daemon-(?:principal|attestation
  */
 export function scanModules(source, file = "x.ts", { vendored = false, shipped = true, pkg = null } = {}) {
   const sf = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
+  const egress = isEgressFile(file, pkg);
   const refs = [];
   const bad = [];
   const isLiteral = (n) => n !== undefined && (ts.isStringLiteral(n) || ts.isNoSubstitutionTemplateLiteral(n));
@@ -142,6 +158,10 @@ export function scanModules(source, file = "x.ts", { vendored = false, shipped =
       bad.push(`${at(n)}: node:worker_threads is never re-exported`);
     }
     if (shipped && ts.isBindingElement(n) && (n.propertyName ?? n.name).text === "constructor") bad.push(`${at(n)}: destructuring constructor reaches the Function constructor`);
+    // Network clients: named only in the egress file (a property name such as `options.fetch` is not the global).
+    if (shipped && ts.isIdentifier(n) && EGRESS_NAMES.has(n.text) && !isNamePosition(n) && !inType(n) && !egress) {
+      bad.push(`${at(n)}: ${n.text} sends network requests: only daemon-host/src/bindings/providers.ts may use it`);
+    }
     // process, globalThis, global and module: only a direct read of a known-safe property.
     if (shipped && ts.isIdentifier(n) && GUARDED.has(n.text) && !isNamePosition(n) && !inType(n)) {
       const safe = GUARDED.get(n.text);

@@ -53,6 +53,7 @@ flowchart LR
 | `node:*`, `zod` 4.6.6 | anywhere | `electron`, `vs/*`, DOM, a socket listener (ADR 0003 D1.1, DMN-4). The one exception is the supervisor-side web host, `src/web/server.ts`, which no desktop entry can reach (`docs/design/web-host-entry.md`) |
 | `@axis/protocol`, `daemon`, `challenge`, `audit`, `journal`, `git-ops`, `pty-policy`, `providers` | anywhere | |
 | `@axis/vault`, `@axis/anthropic` | `src/bindings/providers.ts` only, 1b | handlers |
+| The global network clients (`fetch`, `WebSocket`, `EventSource`, `XMLHttpRequest`) | `src/bindings/providers.ts` only (it hands Node's `fetch` to the Anthropic adapter: fixed origin, refused redirects, PRV-4 display). Enforced on shipped code of every package by the module scanner (`EGRESS_NAMES` in `scripts/code-oss/stage-ast.mjs`), so the import lint, the staging hook and the staged-tree check all refuse it; `globalThis.fetch` is refused everywhere | every other file of every package |
 | `@axis/journal/daemon-principal` | `src/handlers/review.ts` only | any handler that is not the person's own act |
 | `@axis/worktrees` | `src/bindings/worktrees.ts` only | handlers, ports, compose |
 | `@axis/worktrees/daemon-confirm` | `src/gate/worktrees-confirm.ts` only | everything else. This is "the integration package that implements the gate adapter" of `docs/packages.md`, which is this package. |

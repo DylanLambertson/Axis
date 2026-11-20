@@ -476,3 +476,18 @@ test("scanner: only the web host listener loads a socket built-in, and only src/
   // The web host is not a composition point: it may not load the composition root, the process entry, the index or a minter.
   for (const spec of ["../compose.js", "../entry.js", "../index.js", "../gate/run-trust.js", "../gate/worktrees-confirm.js"]) assert.notEqual(violation("daemon-host", spec, at("src/web/server.ts"), dir), null, spec);
 });
+
+test("scanner: the global network clients are named only in daemon-host/src/bindings/providers.ts (review c6 SF-1)", () => {
+  const dir = join(packagesDir, "daemon-host");
+  const at = (rel) => join(dir, ...rel.split("/"));
+  const shipped = (pkg, file, src) => unsafeForms(src, file, { pkg, shipped: true });
+  for (const src of ["fetch(u);", "new WebSocket(u);", "new EventSource(u);", "globalThis.fetch(u);", 'globalThis["fetch"](u);', "fetch?.(u);", "globalThis?.fetch(u);", "const f = fetch; f(u);", "globalThis[k](u);"]) {
+    for (const f of ["src/handlers/git.ts", "src/bindings/agent.ts", "src/compose.ts", "src/web/server.ts"]) assert.ok(shipped("daemon-host", at(f), src).length >= 1, `${src} in ${f}`);
+    for (const pkg of ["anthropic", "providers", "broker", "daemon"]) assert.ok(shipped(pkg, join(packagesDir, pkg, "src", "a.ts"), src).length >= 1, `${src} in ${pkg}`);
+  }
+  assert.deepEqual(shipped("daemon-host", at("src/bindings/providers.ts"), "const f = (u, i) => fetch(u, i);"), []);
+  // The same file name in another package, or under another directory of a package, is not the egress file.
+  assert.ok(shipped("providers", join(packagesDir, "providers", "src", "daemon-host", "bindings", "providers.ts"), "fetch(u);").length >= 1);
+  assert.ok(shipped("daemon-host", at("src/web/bindings/providers.ts"), "fetch(u);").length >= 1);
+  assert.deepEqual(unsafeForms("fetch(u);", at("test/a.test.ts"), { pkg: "daemon-host", shipped: false }), [], "tests may");
+});
