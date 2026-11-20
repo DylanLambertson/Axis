@@ -37,7 +37,8 @@ export interface SshResolverOptions {
    * The daemon's environment: only `PATH`, `HOME`, `USER` and `LOGNAME` are taken from it. `PATH` keeps its plain absolute entries
    * only (an empty, `.` or relative entry would find `ssh` in the daemon's working directory), minus every entry inside
    * `excludeDirs`, judged by spelling AND by real path (symlinks resolved on both sides, compared by path component), so a PATH
-   * entry that is a symlink into a worktree is dropped too. `HOME` is passed for ssh's helpers; ssh itself reads `~/.ssh/config`
+   * entry that is a symlink into a worktree is dropped too. An entry whose real path does not resolve (missing, or a dangling
+   * symlink that a run could later make point into a worktree) is dropped as well. `HOME` is passed for ssh's helpers; ssh itself reads `~/.ssh/config`
    * from the account database, not from `HOME`.
    */
   readonly env: Readonly<Record<string, string | undefined>>;
@@ -115,7 +116,7 @@ export function createSshResolver(options: SshResolverOptions): SshHostResolver 
         env[k] = v;
         continue;
       }
-      const kept = v.split(delimiterOf(platform)).filter((e) => isPlainAbsolute(e, platform) && !isInsideAny(e, excluded, platform, nodeFs));
+      const kept = v.split(delimiterOf(platform)).filter((e) => isPlainAbsolute(e, platform) && nodeFs.realPath?.(e) !== undefined && !isInsideAny(e, excluded, platform, nodeFs));
       if (kept.length > 0) env.PATH = kept.join(delimiterOf(platform));
     }
     return env;
