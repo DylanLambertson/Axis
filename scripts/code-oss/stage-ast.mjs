@@ -54,6 +54,8 @@ const GUARDED = new Map([["process", PROCESS_SAFE], ["globalThis", GLOBAL_SAFE],
 export const EGRESS_NAMES = new Set(["fetch", "WebSocket", "EventSource", "XMLHttpRequest"]);
 /** The function the one allowed `fetch` is handed to. */
 export const EGRESS_SINK = "createAnthropicAdapter";
+/** Where the sink comes from, in the repository and in the staged tree (the egress file's place is fixed, so its staged path is too). */
+const EGRESS_SINK_MODULES = new Set(["@axis/anthropic", "../../anthropic/index.js"]);
 /**
  * True for the egress file, named exactly as a caller does (never a suffix): the import lint passes the package-relative
  * path (`pkgRel`), the staging step `packages/daemon-host/src/...`, the staged-tree check `daemon-host/...`.
@@ -145,15 +147,34 @@ export function scanModules(source, file = "x.ts", { vendored = false, shipped =
    * branch of `?:`, and the `fetch` property of the object literal that is the call's argument. A variable, an assignment,
    * a block body, a `return`, an export or any other position on the way is refused, so no unrestricted client escapes.
    */
+  /**
+   * The sink is trusted by name only because the egress file binds that name exactly once, as a plain value import from
+   * the adapter package: any other declaration of it (a const, function, class, parameter, catch or loop variable, a
+   * destructured name, an import alias or one from another module) is refused below, so a shadow cannot pose as the sink.
+   */
+  const isSinkImport = (n) => {
+    const p = n.parent;
+    if (!ts.isImportSpecifier(p) || p.name !== n || p.propertyName !== undefined || p.isTypeOnly) return false;
+    const decl = p.parent?.parent?.parent;
+    return decl !== undefined && ts.isImportDeclaration(decl) && !decl.importClause?.isTypeOnly && ts.isStringLiteral(decl.moduleSpecifier) && EGRESS_SINK_MODULES.has(decl.moduleSpecifier.text);
+  };
+  const declares = (n) => {
+    const p = n.parent;
+    if (p === undefined || p.name !== n) return false;
+    return ts.isVariableDeclaration(p) || ts.isFunctionDeclaration(p) || ts.isFunctionExpression(p) || ts.isClassDeclaration(p) || ts.isClassExpression(p) || ts.isParameter(p) || ts.isBindingElement(p) || ts.isImportSpecifier(p) || ts.isImportClause(p) || ts.isNamespaceImport(p) || ts.isImportEqualsDeclaration(p) || ts.isEnumDeclaration(p) || ts.isModuleDeclaration(p);
+  };
+  /** The egress file imports the sink as a plain value from the adapter package (without it the name is nothing to trust). */
+  const sinkImported = () =>
+    sf.statements.some((st) => ts.isImportDeclaration(st) && st.importClause?.namedBindings !== undefined && ts.isNamedImports(st.importClause.namedBindings) && st.importClause.namedBindings.elements.some((e) => e.name.text === EGRESS_SINK && isSinkImport(e.name)));
   const handedToAdapter = (n) => {
-    if (n.text !== "fetch") return false;
+    if (n.text !== "fetch" || !sinkImported()) return false;
     let child = n;
     let viaOption = false;
     for (let a = n.parent; a !== undefined; child = a, a = a.parent) {
       if (ts.isCallExpression(a)) {
         if (a.expression === child) continue;
         // An object literal is only ever reached through its `fetch` option (the step below needs `viaOption`).
-        return ts.isObjectLiteralExpression(child) && ts.isIdentifier(a.expression) && a.expression.text === EGRESS_SINK && a.arguments.includes(child);
+        return ts.isObjectLiteralExpression(child) && ts.isIdentifier(a.expression) && a.expression.text === EGRESS_SINK && a.arguments.length === 1 && a.arguments[0] === child;
       }
       if (ts.isParenthesizedExpression(a) || ts.isAsExpression(a) || ts.isSatisfiesExpression(a) || ts.isTypeAssertionExpression(a) || ts.isNonNullExpression(a)) continue;
       if (ts.isArrowFunction(a) && a.body === child) continue;
@@ -198,6 +219,13 @@ export function scanModules(source, file = "x.ts", { vendored = false, shipped =
       bad.push(`${at(n)}: node:worker_threads is never re-exported`);
     }
     if (shipped && ts.isBindingElement(n) && (n.propertyName ?? n.name).text === "constructor") bad.push(`${at(n)}: destructuring constructor reaches the Function constructor`);
+    // The sink's name: in the egress file, bound only by its plain import from the adapter package (no shadow, no alias).
+    if (shipped && egress && ts.isIdentifier(n) && n.text === EGRESS_SINK && declares(n) && !isSinkImport(n)) {
+      bad.push(`${at(n)}: ${EGRESS_SINK} may only be bound by its import from @axis/anthropic in this file: another binding could pose as the adapter`);
+    }
+    if (shipped && egress && ts.isImportSpecifier(n) && n.propertyName !== undefined && (n.propertyName.text === EGRESS_SINK)) {
+      bad.push(`${at(n)}: ${EGRESS_SINK} is imported under its own name only`);
+    }
     // Network clients: never named, except `fetch` handed to the adapter in the egress file (a property name such as
     // `options.fetch` is not the global; a shorthand `{ fetch }` is not a name position, and `export { fetch }` counts too).
     if (shipped && ts.isIdentifier(n) && EGRESS_NAMES.has(n.text) && (!isNamePosition(n) || ts.isExportSpecifier(p)) && !inType(n) && !(egress && handedToAdapter(n))) {

@@ -341,7 +341,9 @@ test("the global network clients are named only in the daemon host's providers b
   // The egress file (named exactly) may only hand `fetch` to the adapter; a bare call, a wrapper or another client stays refused.
   for (const file of EGRESS) {
     const pkgRel = file.startsWith("C:") || file.startsWith("/") ? "src/bindings/providers.ts" : null;
-    assert.deepEqual(bad("createAnthropicAdapter({ fetch: (u, i) => fetch(u, i) });", file, { pkg: "daemon-host", pkgRel }), [], file);
+    const imp = file.startsWith("daemon-host/") ? 'import { createAnthropicAdapter } from "../../anthropic/index.js";\n' : 'import { createAnthropicAdapter } from "@axis/anthropic";\n';
+    assert.deepEqual(bad(`${imp}createAnthropicAdapter({ fetch: (u, i) => fetch(u, i) });`, file, { pkg: "daemon-host", pkgRel }), [], file);
+    assert.ok(bad("createAnthropicAdapter({ fetch: (u, i) => fetch(u, i) });", file, { pkg: "daemon-host", pkgRel }).length >= 1, "no import, no sink");
     for (const src of ["fetch(u);", "export const f = (u, i) => fetch(u, i);", "new WebSocket(u);", "globalThis.fetch(u);"]) assert.ok(bad(src, file, { pkg: "daemon-host", pkgRel }).length >= 1, `${src} in ${file}`);
     assert.ok(bad("createAnthropicAdapter({ fetch });", file, { pkg: "anthropic", pkgRel }).length >= 1, "only as the daemon host's file");
   }

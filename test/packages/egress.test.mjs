@@ -19,11 +19,14 @@ const egressFindings = (src, opts) => unsafeForms(src, opts.file ?? "x.ts", { sh
 /** As the import lint calls the scanner: the absolute path and the package-relative one. */
 const lint = (src, pkgRel, pkg = "daemon-host") => egressFindings(src, { file: join(packagesDir, pkg, ...pkgRel.split("/")), pkg, pkgRel });
 
+/** The sink's one allowed binding: its plain import from the adapter package (the staged tree rewrites the specifier). */
+const IMPORT = 'import { createAnthropicAdapter, type FetchLike } from "@axis/anthropic";\n';
+const STAGED_IMPORT = 'import { createAnthropicAdapter } from "../../anthropic/index.js";\n';
 const ADAPTER = [
-  "createAnthropicAdapter({ fetch });",
-  "createAnthropicAdapter({ connectionId, apiKey, fetch: conn.fetch ?? ((url, init) => fetch(url, init) as unknown as R) });",
-  "createAnthropicAdapter({ fetch: fetch as never });",
-  "createAnthropicAdapter({ fetch: c ? (u) => fetch(u) : (u) => fetch(u, x) });",
+  `${IMPORT}createAnthropicAdapter({ fetch });`,
+  `${IMPORT}createAnthropicAdapter({ connectionId, apiKey, fetch: conn.fetch ?? ((url, init) => fetch(url, init) as unknown as R) });`,
+  `${IMPORT}createAnthropicAdapter({ fetch: fetch as never });`,
+  `${IMPORT}createAnthropicAdapter({ fetch: c ? (u) => fetch(u) : (u) => fetch(u, x) });`,
 ];
 
 test("shipped code of any package and any other file refuses every global network client, in every form", () => {
@@ -84,14 +87,65 @@ test("in the egress file `fetch` may only be the fetch option of createAnthropic
     "createAnthropicAdapter(fetch);",
     "const a = { fetch }; createAnthropicAdapter(a);",
     "new WebSocket(u);",
+    "createAnthropicAdapter({ fetch }, { fetch });",
+    "createAnthropicAdapter({ a: 1 }, { fetch });",
   ]) {
-    assert.ok(lint(src, EGRESS_REL).length >= 1, src);
+    assert.ok(lint(`${IMPORT}${src}`, EGRESS_REL).length >= 1, src);
   }
-  // The staged forms of the file follow the same rule.
+  // The staged forms of the file follow the same rule (the staged tree has the rewritten specifier).
+  assert.deepEqual(egressFindings(ADAPTER[1], { file: "packages/daemon-host/src/bindings/providers.ts", pkg: "daemon-host" }), []);
+  assert.deepEqual(egressFindings(`${STAGED_IMPORT}createAnthropicAdapter({ fetch });`, { file: "daemon-host/bindings/providers.ts", pkg: "daemon-host" }), []);
   for (const file of ["packages/daemon-host/src/bindings/providers.ts", "daemon-host/bindings/providers.ts"]) {
-    assert.deepEqual(egressFindings(ADAPTER[1], { file, pkg: "daemon-host" }), []);
-    assert.ok(egressFindings("export const f = (u, i) => fetch(u, i);", { file, pkg: "daemon-host" }).length >= 1);
+    assert.ok(egressFindings(`${IMPORT}export const f = (u, i) => fetch(u, i);`, { file, pkg: "daemon-host" }).length >= 1);
   }
+});
+
+test("in the egress file the sink is the adapter's import and nothing else: a shadow or alias cannot pose as it (review egress-lint r2)", () => {
+  const all = (src) => unsafeForms(src, at(EGRESS_REL), { pkg: "daemon-host", shipped: true, pkgRel: EGRESS_REL });
+  const leak = "export const f = createAnthropicAdapter({ fetch });";
+  for (const shadow of [
+    `${IMPORT}function g() { const createAnthropicAdapter = (o) => o.fetch; return createAnthropicAdapter({ fetch }); }`,
+    "const createAnthropicAdapter = (o) => o.fetch;\n" + leak,
+    "function createAnthropicAdapter(o) { return o.fetch; }\n" + leak,
+    "class createAnthropicAdapter { constructor(o) {} }\n" + leak,
+    `${IMPORT}export const f = ((createAnthropicAdapter) => createAnthropicAdapter({ fetch }))((o) => o.fetch);`,
+    `${IMPORT}try { x(); } catch (createAnthropicAdapter) { createAnthropicAdapter({ fetch }); }`,
+    `${IMPORT}for (const createAnthropicAdapter of [(o) => o.fetch]) createAnthropicAdapter({ fetch });`,
+    `${IMPORT}const { id: createAnthropicAdapter } = { id: (o) => o.fetch }; createAnthropicAdapter({ fetch });`,
+    'import { createAnthropicAdapter } from "./leak.js";\n' + leak,
+    'import { other as createAnthropicAdapter } from "@axis/anthropic";\n' + leak,
+    'import { createAnthropicAdapter as make } from "@axis/anthropic";\nmake({ fetch });',
+    'import createAnthropicAdapter from "@axis/anthropic";\n' + leak,
+    'import * as createAnthropicAdapter from "@axis/anthropic";\n' + leak,
+    'import { type createAnthropicAdapter } from "@axis/anthropic";\n' + leak,
+    'import type { createAnthropicAdapter } from "@axis/anthropic";\n' + leak,
+    leak,
+  ]) {
+    assert.ok(all(shadow).length >= 1, shadow);
+  }
+  assert.deepEqual(all(`${IMPORT}export const a = createAnthropicAdapter({ fetch });`), [], "the real import, once");
+  assert.ok(all('import { createAnthropicAdapter as make } from "@axis/anthropic";\n').some((m) => /under its own name only/.test(m)), "an alias of the sink is refused by itself");
+  // Each binding form is refused by the shadow rule itself, with the real import present.
+  for (const shadow of [
+    "function g(createAnthropicAdapter) {}",
+    "function g() { const createAnthropicAdapter = (o) => o.fetch; }",
+    "function g() { function createAnthropicAdapter(o) { return o.fetch; } }",
+    "function g() { class createAnthropicAdapter {} }",
+    "const k = class createAnthropicAdapter {};",
+    "const k = function createAnthropicAdapter() {};",
+    "try { x(); } catch (createAnthropicAdapter) {}",
+    "for (const createAnthropicAdapter of []) {}",
+    "const { id: createAnthropicAdapter } = o;",
+    'import createAnthropicAdapter from "./x.js";',
+    'import * as createAnthropicAdapter from "./x.js";',
+    'import { createAnthropicAdapter } from "./x.js";',
+    'import createAnthropicAdapter = require("./x.js");',
+    "enum createAnthropicAdapter { A }",
+  ]) {
+    assert.ok(all(`${IMPORT}${shadow}`).some((m) => /may only be bound by its import/.test(m)), shadow);
+  }
+  // Outside the egress file the name is not special (it is refused there for `fetch` anyway).
+  assert.deepEqual(unsafeForms("const createAnthropicAdapter = 1;", at("src/compose.ts"), { pkg: "daemon-host", shipped: true, pkgRel: "src/compose.ts" }), []);
 });
 
 test("the real providers binding passes the rule, and the same source anywhere else fails it", () => {
