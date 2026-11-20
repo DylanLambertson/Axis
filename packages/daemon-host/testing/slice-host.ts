@@ -55,6 +55,12 @@ if (breakPut !== undefined) {
   client.anchorPut = (head) => (existsSync(breakPut) ? ((): never => { throw new Error("channel closed"); })() : realPut(head));
 }
 
+/**
+ * TEST ONLY (`AXIS_SLICE_FINAL_WAIT_MS=<n>`): how long the final anchor waits for its acknowledgement (the finalize bound moves with
+ * it), so a test that holds the acknowledgement decides by condition when it arrives and a loaded host cannot time it out first.
+ */
+const finalWaitMs = /^[1-9][0-9]{0,8}$/.test(process.env["AXIS_SLICE_FINAL_WAIT_MS"] ?? "") ? Number(process.env["AXIS_SLICE_FINAL_WAIT_MS"]) : undefined;
+
 client.onInit((raw) => {
   const redactor = new Redactor();
   const fail = (e: unknown): void => {
@@ -76,6 +82,7 @@ client.onInit((raw) => {
       pty: new LocalPty(),
       ptyGitRunner: localPtyGitRunner(gitPath, env),
       snapshotter: gitSnapshotRunSnapshotter, // the real GIT-SNAP-1 snapshot (ticket H13), not a fake
+      ...(finalWaitMs === undefined ? {} : { finalAnchorWaitMs: finalWaitMs, finalizeTimeoutMs: finalWaitMs + 60_000 }),
       scanMode: process.env["AXIS_SLICE_SCAN_MODE"] === "warn" ? "warn" : "refuse",
       // A composer run's first turn writes the root Makefile (a protected path: it waits for the user's approval); later turns answer text.
       composer: { mock: { respond: (req) => (req.messages.length === 1 ? { kind: "tool_use", name: "write_file", input: { path: "Makefile", content: "all:\n" } } : { kind: "text", text: "done" }) } },

@@ -57,6 +57,10 @@ describe("headless slice: events", { skip: gitSkipReason(), timeout: SUITE_TIMEO
       const started = await user.ok<{ run: { runId: string } }>("axis.cli-runs", "start", { workspaceId: ws.id, agentId: "fake" }, true);
       await until(() => events().some((e) => e["topic"] === "runs" && e["runId"] === started.run.runId && e["state"] === "REVIEWING"), "the run reaching REVIEWING");
 
+      // The REVIEWING event is pushed when the process ends; the worktree stays held (`live`) until the post-run snapshot is taken, and
+      // a commit in between is refused as a conflict. The run summary says when it is released: wait on that, not on a delay.
+      await until(async () => (await user.ok<{ run: { live: boolean } }>("axis.cli-runs", "get", { runId: started.run.runId })).run.live === false, "the run released its worktree");
+
       // Each window first gets one "first sighting" hint (docs/design/events.md section 4); count from there.
       const approvalsOf = (c: TestClient, id: string) => c.frames.filter((f) => f.sub === id && f.event?.["topic"] === "approvals").length;
       await until(() => approvalsOf(user, sub.subscriptionId) >= 1 && approvalsOf(other, otherSub.subscriptionId) >= 1, "the first-sighting hints");
