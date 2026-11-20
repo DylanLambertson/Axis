@@ -148,6 +148,17 @@ Every broker tool except pure reads of the run's own worktree and of Axis state 
 - **Precedence.** IAC-T overrides every standing grant, auto mode, "always allow" rule or future wake grant (M-4). Nothing disables it in 2a (M-2).
 - **Separate ticket.** The taint core (flag, sources, broker decision hook, approval-card list) is ticket PV-M0, which PV-M4, PV-Q1 and PV-T1 depend on, so no source ships before the rule exists.
 
+### 6.7 The taint core as built (PV-M0)
+
+- **Sources as a closed enum.** `@axis/protocol` `TAINT_SOURCES`, in the order of §6.6: `message` (1), `read_messages` (2), `excerpt` (3), `page` (4), `task_start` (5), `plugin_output` (6), `integration_data` (7), `task_read` (8). The daemon refuses any other value. The user is never a sender kind (`agent`, `plugin`, `cli`, `integration`).
+- **The flag.** One `RunTaint` per composer run (`packages/daemon-host/src/composer/taint.ts`), held by the agent binding for the run's life. Nothing clears it. A producer calls `receive` before it returns the result or delivery that carries the content, so the next call of the same reply is decided tainted. `receive` sets the flag before it checks anything. A receipt that is not on the closed list, or whose audit row cannot be written, still leaves the run tainted, and then `receive` throws. When that happens, the binding withholds the result and the run ends `FAILED` / `TOOL_FAILED`.
+- **The decision hook.** `@axis/broker` `PolicyOptions.hook` is asked for every call, after the tier, launcher and protected-path rules. It can only raise a call to approval. While the run is tainted, every call above `read` needs the user's approval, whatever the floor. If the hook throws or gives a malformed answer, the call is denied (`decision-hook`). The `broker.decision` row records the tier and the `taint` reason at the moment of decision.
+- **Issue and consume.** `gate/run-approvals.ts` binds the flag into the challenge's request (`args.tainted`) at issue and reads it again at consume. If a challenge was issued untainted and approved after the run became tainted, it no longer matches its request. The manager burns it (`request_mismatch`), and the call is declined. The model's retry is then decided under the taint, and its card lists the sources.
+- **The card.** `approvalPreviewSchema.taint` (optional) holds the 16 most recent sources and a `total`. Each source has its type, sender kind, sender display name, the daemon's time of receipt, the hop and an opaque `ref` for a link. The native dialog shows only the daemon's count ("after untrusted input (N)").
+- **Audit.** `message.taint` keeps `runId`, `source`, `sourceId`, `senderKind` and `hop`, and never the content.
+- **Test source.** `AgentBindingDeps.taintSources` marks a tool's successful result as a source. The host passes none. The tests use it to drive every source through the real broker, approvals and loop.
+- **Residual.** A call the broker allowed without approval before the run became tainted is not re-checked when it runs. The composer loop runs calls one at a time, so no taint can arrive between that decision and its action. PV-M4's turn-boundary delivery keeps that order.
+
 ## 7. Limits
 
 ### 7.1 Size and rate

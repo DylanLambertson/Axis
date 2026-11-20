@@ -14,7 +14,7 @@ export { createCommandRunner, type CommandRunner, type CommandSpec, type RunReco
 export { createBrokerGit, checkGitCall, gitCallTier, GIT_COMMANDS, type BrokerGit, type BrokerGitDeps, type GitCall, type GitCommand } from "./git.js";
 export {
   ToolPolicy, ApprovalLedger, verifyApproval, isLauncher, approvalGrantSchema,
-  type ApprovalHook, type ApprovalRequest, type Decision, type PolicyInput, type PolicyOptions, type VerifiedApproval,
+  type ApprovalHook, type ApprovalRequest, type Decision, type DecisionHook, type PolicyInput, type PolicyOptions, type VerifiedApproval,
 } from "./policy.js";
 export { BrokerAudit, BROKER_ACTIONS, BROKER_PAYLOAD_ALLOWLIST, type AuditRecord } from "./audit.js";
 export { callDigest, type CallDigestInput } from "./text.js";

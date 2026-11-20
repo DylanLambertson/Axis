@@ -7,7 +7,7 @@ import { Journal, type ActivityBounds } from "@axis/journal";
 import type { RunEvent } from "@axis/protocol";
 import type { MockProviderOptions, MockReply, RunBudgetLimits, ValidRequest } from "@axis/providers";
 import type { Policy } from "@axis/daemon";
-import { AGENT_PAYLOAD_ALLOWLIST, createAgentBinding, createComposerService, type AgentBinding, type AgentBindingDeps, type ComposerService, type PreviewScanner, type ToolCaps } from "../src/index.js";
+import { AGENT_PAYLOAD_ALLOWLIST, TAINT_PAYLOAD_ALLOWLIST, createAgentBinding, createComposerService, type AgentBinding, type AgentBindingDeps, type ComposerService, type PreviewScanner, type ToolCaps } from "../src/index.js";
 import { ProjectMutex } from "../src/worktrees/project-mutex.js";
 import { rig, type Client, type Rig } from "./approvals-rig.js";
 
@@ -59,6 +59,8 @@ export interface ComposerRigOptions {
   readonly onRequest?: (n: number, req: ValidRequest) => void;
   /** The broker's file system, built over the rig's directories (to inject a race inside a write). */
   readonly wrapFs?: (paths: { readonly root: string; readonly outside: string }) => NonNullable<AgentBindingDeps["wrapFs"]>;
+  /** The binding's test taint source (IAC-T): which successful calls taint the run. */
+  readonly taintSources?: AgentBindingDeps["taintSources"];
 }
 
 const SHA = "b".repeat(40);
@@ -72,7 +74,7 @@ export async function composerRig(options: ComposerRigOptions): Promise<Composer
   mkdirSync(join(root, "src"), { recursive: true });
   mkdirSync(outside);
   const db = openDatabase(options.dbPath ?? ":memory:");
-  const audit = new AuditLog(db, { payloadAllowlist: AGENT_PAYLOAD_ALLOWLIST });
+  const audit = new AuditLog(db, { payloadAllowlist: { ...AGENT_PAYLOAD_ALLOWLIST, ...TAINT_PAYLOAD_ALLOWLIST } });
   const journal = Journal.open(db, { audit });
   const ws = journal.createWorkspace({ projectId: "p", branch: "axis/x", baseRef: "main", baseSha: SHA, createdBy: "user" }).value;
   journal.transitionWorkspace(ws.id, "READY");
@@ -98,6 +100,7 @@ export async function composerRig(options: ComposerRigOptions): Promise<Composer
     ...(options.previewScanner === undefined ? {} : { previewScanner: options.previewScanner }),
     writeLock: (_workspaceId, fn, signal) => mutex.exclusive("p", fn, signal),
     ...(options.wrapFs === undefined ? {} : { wrapFs: options.wrapFs({ root, outside }) }),
+    ...(options.taintSources === undefined ? {} : { taintSources: options.taintSources }),
   });
   const service = createComposerService({
     redactor: new Redactor(),

@@ -8,6 +8,7 @@ import { createSecretScanner } from "@axis/secret-scan";
 import { createMockProvider, guardProvider, type GuardedProvider, type MockProviderOptions, type Redactor as ProviderRedactor } from "@axis/providers";
 import { formatDriftNotice } from "../composer/drift.js";
 import { buildApprovalPreview, type PreviewScanner } from "../composer/preview.js";
+import { createRunTaint } from "../composer/taint.js";
 import { ObservedFiles } from "./agent-observed.js";
 import type { RunApprovals } from "../gate/run-approvals.js";
 import type { ComposerApprovalNote, ComposerEngine, ComposerRunContext, ComposerRunTools, ComposerToolSpec } from "../ports/composer.js";
@@ -38,6 +39,10 @@ import type { WorktreeLocator } from "../ports/worktree-locator.js";
  *   project mutex that Axis git operations take), and otherwise refuses `stale` with nothing written. Axis never merges.
  * - **Drift (C2, policies section 3.4).** The digests a run saw are kept (`agent-observed.ts`); before each model turn
  *   after the first, `drift()` lists the paths that changed outside the run since, as an untrusted-labelled notice.
+ * - **Taint (IAC-T, PV-M0).** Each run has one sticky taint flag (`composer/taint.ts`). The broker asks it for every call
+ *   (its decision hook, over any floor); a producer of a listed source taints the run BEFORE its result is returned, so
+ *   the next call of the same reply is decided tainted. An approval card of a tainted run lists the sources, and the flag
+ *   is bound into the challenge at issue and read again at consume (`gate/run-approvals.ts`).
  * - **What the model gets back.** File text, or a refusal word from the broker's closed set: never a path the broker
  *   resolved, an error message or a stack.
  */
@@ -66,6 +71,12 @@ export interface AgentBindingDeps {
   readonly writeLock: <T>(workspaceId: string, fn: () => Promise<T>, signal: AbortSignal) => Promise<T>;
   /** Wraps the file system the broker and the drift re-read use (tests inject races through it). Default: none. */
   readonly wrapFs?: (real: BrokerFs) => BrokerFs;
+  /**
+   * The taint sources among the tools' results (IAC-T): a receipt of the closed list for a successful call, or undefined.
+   * No registered tool is a source yet, so the host passes none; tests use it as the test source, and the later tickets'
+   * tools (PV-M4, PV-Q1, PV-T1) taint the run the same way, before their result is returned.
+   */
+  readonly taintSources?: (tool: string, args: unknown) => unknown;
 }
 
 /** The broker's audit payload keys (`broker.decision`: approver, approval id, expiry; `broker.result`), for the host's `AuditLog` (DMN-5). */
@@ -169,6 +180,7 @@ export function createAgentBinding(deps: AgentBindingDeps): AgentBinding {
       ...(deps.extraProtected === undefined ? {} : { extraProtected: deps.extraProtected }),
     };
     const observed = new ObservedFiles(contain, worktree.id, MAX_WRITE_BYTES);
+    const taint = createRunTaint({ runId: run.runId, audit: deps.audit, now: deps.now });
     // Calls inside the broker now, with their parsed arguments: the hook previews only the one whose digest it is asked for.
     const inflight = new Set<{ readonly tool: string; readonly args: unknown }>();
     const covered = (req: ApprovalRequest): { readonly tool: string; readonly args: unknown } | undefined => {
@@ -195,6 +207,9 @@ export function createAgentBinding(deps: AgentBindingDeps): AgentBinding {
         // a secret (the head is then redacted) or a scan that could not complete is never approved blind (review c2 S1). A call
         // cancelled during the preview is refused by `approvals.request`, which issues nothing for an aborted signal.
         if (preview === undefined || !shownWhole(preview)) return { approved: false };
+        // The card's sources, read with the flag the challenge binds: nothing awaits between here and its issue.
+        const card = taint.card();
+        const shown = card === undefined ? preview : { ...preview, taint: card };
         const base = {
           tool: req.tool,
           reasons: req.reasons.filter((r) => LABEL.test(r)).slice(0, 16),
@@ -202,10 +217,10 @@ export function createAgentBinding(deps: AgentBindingDeps): AgentBinding {
         };
         let digest: string | undefined;
         const note = (state: ComposerApprovalNote["state"]): void => {
-          if (digest !== undefined) run.onApproval({ ...base, state, digest, preview: state === "requested" ? preview : null });
+          if (digest !== undefined) run.onApproval({ ...base, state, digest, preview: state === "requested" ? shown : null });
         };
         const out = await deps.approvals.request(
-          { runId: run.runId, windowId: run.windowId, tool: req.tool, tier: req.tier, digest: req.digest, reasons: req.reasons, preview },
+          { runId: run.runId, windowId: run.windowId, tool: req.tool, tier: req.tier, digest: req.digest, reasons: req.reasons, preview: shown, tainted: taint.tainted },
           signal,
           (challenge) => {
             digest = challenge.digest;
@@ -230,6 +245,8 @@ export function createAgentBinding(deps: AgentBindingDeps): AgentBinding {
       redactor: deps.redactor,
       clock: { now: deps.now },
       platform,
+      // IAC-T: asked for every call after the tier policy; while the run is tainted every call above `read` needs the user.
+      policy: { hook: taint },
       ...(deps.extraProtected === undefined ? {} : { extraProtected: deps.extraProtected }),
     });
     broker.register({
@@ -280,9 +297,9 @@ export function createAgentBinding(deps: AgentBindingDeps): AgentBinding {
         // The loop runs one call at a time; a caller that floods the broker is refused before anything is held.
         if (inflight.size >= MAX_INFLIGHT_CALLS) return { ok: false, reason: "too_many_calls", content: "The call was refused (too_many_calls)." };
         if (call !== undefined) inflight.add(call);
+        let out: unknown;
         try {
-          const out = await broker.invoke({ tool: name, worktreeId: worktree.id, actor, args: input, signal });
-          return { ok: true, content: typeof out === "string" ? out : "done" };
+          out = await broker.invoke({ tool: name, worktreeId: worktree.id, actor, args: input, signal });
         } catch (e) {
           // The action ran but its audit row could not be written: the run must stop (never continue unrecorded).
           if (e instanceof BrokerError && e.details["executed"] === true) throw new Error("unrecorded side effect");
@@ -293,6 +310,11 @@ export function createAgentBinding(deps: AgentBindingDeps): AgentBinding {
         } finally {
           if (call !== undefined) inflight.delete(call);
         }
+        // IAC-T: a source taints the run BEFORE its result is returned. A throw stops the run with the result withheld
+        // (the flag is already set when the receipt is bad or its audit row could not be written).
+        const receipt = call === undefined ? undefined : deps.taintSources?.(name, call.args);
+        if (receipt !== undefined) taint.receive(receipt);
+        return { ok: true, content: typeof out === "string" ? out : "done" };
       },
     };
   }

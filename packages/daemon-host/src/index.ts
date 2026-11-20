@@ -91,6 +91,7 @@ export * from "./composer/loop.js";
 export * from "./composer/persist.js";
 export * from "./composer/preview.js";
 export * from "./composer/service.js";
+export * from "./composer/taint.js";
 export * from "./gate/run-approvals.js";
 export * from "./handlers/composer-runs.js";
 // The parent side: spawn, restart policy, exit-code handling and shutdown (ticket X1; runs in Electron main).
