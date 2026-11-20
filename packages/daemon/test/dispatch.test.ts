@@ -4,6 +4,7 @@ import { test, type TestContext } from "node:test";
 import { errorSchema, type Challenge } from "@axis/protocol";
 import { DaemonError, payloadHash, requestDigest } from "../src/index.js";
 import { approveAndRun, fakeGate } from "./gate.js";
+import { CLOSED } from "../src/pipeline.js";
 import { CONTRACT, KEY1, KEY2, cid, req, rig, untilTrue, type Rig } from "./harness.js";
 
 async function ready(t: TestContext, options: Parameters<typeof rig>[0] = {}): Promise<Rig> {
@@ -12,7 +13,6 @@ async function ready(t: TestContext, options: Parameters<typeof rig>[0] = {}): P
   await r.handshake();
   return r;
 }
-
 
 // ---- malformed and oversized input ----
 
@@ -292,12 +292,14 @@ test("the server enforces the smaller of the method ceiling and the client's tim
 test("closing the connection aborts in-flight handlers and sends nothing", async (t) => {
   const r = await ready(t);
   let signal: AbortSignal | undefined;
-  r.daemon.register(CONTRACT, 1, { slow: (c) => ((signal = c.signal), new Promise(() => undefined)) });
-  r.send(req("z1", "slow"));
+  // `echo` has a 1000 ms ceiling: the abort that matters is the close's, and its reason says so (a ceiling abort would carry TIMED_OUT).
+  r.daemon.register(CONTRACT, 1, { echo: (c) => ((signal = c.signal), new Promise(() => undefined)) });
+  r.send(req("z1", "echo", { text: "x" }));
   await untilTrue(() => signal !== undefined);
   r.client.close();
   await untilTrue(() => signal?.aborted === true && r.daemon.connectionCount === 0);
   assert.equal(signal?.aborted, true);
+  assert.equal(signal?.reason, CLOSED, "aborted by the close, not by the method's time ceiling");
   assert.equal(r.daemon.connectionCount, 0);
 });
 

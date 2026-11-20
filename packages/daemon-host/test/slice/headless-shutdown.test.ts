@@ -100,13 +100,9 @@ describe("headless slice: shutdown", { skip: gitSkipReason(), timeout: SUITE_TIM
     await until(async () => (await client.ok("axis.cli-runs", "list", {}), (await status()).stalled), "the anchor to stall");
     client.close();
     const exited = stop(sup);
-    sup.holdAcks = false; // the final put is acknowledged on arrival: that acknowledgement ends the stall
-    const old = sup.anchorPuts[sup.anchorPuts.length - 1];
-    try {
-      if (old !== undefined) sup.ack(old.seq, old.hash);
-    } catch (e) {
-      if (!/channel is closed/i.test(String((e as { message?: unknown }).message))) throw e;
-    }
+    // No explicit acknowledgement of an older put: one the host reads before it halts would end the stall (and write its row) before the
+    // final put. Releasing the hold only makes the final put acknowledged on arrival, and that acknowledgement ends the stall.
+    sup.holdAcks = false;
     const exit = await exited;
     assert.ok(exit.code === 0 || exit.code === 1, "the host ended");
     const last = sup.anchorPuts[sup.anchorPuts.length - 1];

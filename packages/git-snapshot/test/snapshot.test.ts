@@ -264,7 +264,8 @@ test("thousands of hook files are bounded: over the entry limit the snapshot is 
     assert.equal(v.status, "refused");
     assert.throws(() => acknowledgeDrift(s));
     // Within the default limits 3000 small files are fine.
-    const ok = await f.snap();
+    // The library's own time limit (10 s idle) is widened for a loaded machine like every budget here; the entry limit stays the default.
+    const ok = await f.snap({ maxMillis: budget(10_000) });
     assert.equal(ok.incomplete.length, 0);
     assert.ok(ok.entries.length > 3000);
   } finally {

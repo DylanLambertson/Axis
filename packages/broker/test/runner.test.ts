@@ -20,6 +20,12 @@ const alive = (pid: number): boolean => {
     return false;
   }
 };
+/** Wait by condition (30 s bound, only so a stuck test fails instead of hanging). */
+const waitFor = async (pred: () => boolean): Promise<void> => {
+  const deadline = Date.now() + 30_000;
+  while (!pred() && Date.now() < deadline) await new Promise((r) => setTimeout(r, 20));
+};
+
 /** Wait by condition for a process to be gone; the 30 s bound only turns a process that never dies into a failure. */
 const waitDead = async (pid: number): Promise<boolean> => {
   const deadline = Date.now() + 30_000;
@@ -126,6 +132,8 @@ test("the slot is held while a process runs and released after; extra runs get E
     hold.abort();
   }
   assert.equal((await first).endedBy, "aborted");
+  // The slot is held until the process has exited, which can be after the run's promise settled: wait for it by condition.
+  await waitFor(() => runner.active === 0);
   assert.equal(runner.active, 0);
   assert.equal((await runner.run(base("0"))).endedBy, "exit");
 });
