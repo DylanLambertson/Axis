@@ -51,6 +51,7 @@ const EXPECTED: readonly Row[] = [
   ["axis.git", "push", "network", 4, "required", 30_000],
   ["axis.git", "compareUrl", "read", 0, "none", 10_000],
   ["axis.review", "diff", "read", 1, "none", 30_000],
+  ["axis.review", "content", "read", 1, "none", 30_000],
   ["axis.review", "complete", "write", 2, "required", 15_000],
   ["axis.runs", "start", "write", 2, "required", 30_000],
   ["axis.runs", "cancel", "write", 2, "required", 15_000],

@@ -52,17 +52,32 @@ export interface PolicyInput {
 }
 
 export type Decision =
-  | { readonly effect: "deny"; readonly reason: "invalid-tier"; readonly tier?: undefined; readonly reasons: readonly string[] }
+  | { readonly effect: "deny"; readonly reason: "invalid-tier" | "decision-hook"; readonly tier?: undefined; readonly reasons: readonly string[] }
   | { readonly effect: "allow" | "approve"; readonly tier: Tier; readonly reasons: readonly string[] };
+
+/**
+ * Asked for EVERY call, after the tier, the launcher list and the protected paths decided, before any approval (the
+ * daemon's taint rule IAC-T, ticket PV-M0). It can only raise: `approve: true` makes the call need the user's approval
+ * whatever the floor, the tier or any other rule allowed, and its reasons (closed labels) join the decision's. It never
+ * lowers a decision. An answer of any other shape, a reason that is not a label, or a throw denies the call.
+ */
+export interface DecisionHook {
+  decide(call: { readonly tool: string; readonly tier: Tier }): { readonly approve: boolean; readonly reasons: readonly string[] };
+}
 
 export interface PolicyOptions {
   /** Calls at this tier or above need approval. Default `network`. */
   readonly approvalFloor?: unknown;
+  readonly hook?: DecisionHook;
 }
+
+const HOOK_REASON = /^[a-z][a-z0-9:._-]{0,63}$/;
 
 export class ToolPolicy {
   readonly #floor: Tier;
+  readonly #hook: DecisionHook | undefined;
   constructor(options: PolicyOptions = {}) {
+    this.#hook = options.hook;
     const floor = options.approvalFloor === undefined ? "network" : parseTier(options.approvalFloor);
     // A floor that is not a tier would make every comparison false and skip the gate, so it is refused at construction.
     if (floor === undefined) throw denied("invalid-tier", "the approval floor is not a tier");
@@ -99,6 +114,23 @@ export class ToolPolicy {
       // Whatever the floor: protected paths always need an explicit approval.
       approve = true;
       reasons.push(...input.protectedLabels.map((l) => `protected:${l}`));
+    }
+    if (this.#hook !== undefined) {
+      let raise: boolean;
+      try {
+        const out: unknown = this.#hook.decide({ tool: input.tool, tier });
+        if (typeof out !== "object" || out === null) throw new Error("shape");
+        // Each field is read exactly once: a getter cannot pass the check with one value and act with another.
+        const { approve: a, reasons: rs } = out as { approve?: unknown; reasons?: unknown };
+        const labels = Array.isArray(rs) ? [...(rs as unknown[])] : undefined;
+        if (typeof a !== "boolean" || labels === undefined || labels.length > 8 || !labels.every((l) => typeof l === "string" && HOOK_REASON.test(l))) throw new Error("shape");
+        raise = a;
+        if (raise) reasons.push(...(labels as string[]));
+      } catch {
+        return { effect: "deny", reason: "decision-hook", reasons: ["the call could not be judged"] };
+      }
+      // Only ever raises: an untainted answer leaves the tier policy's decision as it was.
+      if (raise) approve = true;
     }
     return { effect: approve ? "approve" : "allow", tier, reasons };
   }
