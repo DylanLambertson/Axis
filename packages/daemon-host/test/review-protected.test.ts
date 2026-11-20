@@ -2,6 +2,7 @@
 // WT-3 in diff review (ticket C11): the closed flag, protected files first, and the flag in the acknowledgement binding.
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
+import { reviewDepsOf, type ReviewBindingDeps } from "../src/bindings/review.js";
 import { brokerProtectedPaths } from "../src/bindings/review-protected.js";
 import type { ReviewRound, ReviewService, RoundFile } from "../src/index.js";
 import { files, gitUnavailable, reviewRig, sha256, type Client, type ReviewRig } from "./review-rig.js";
@@ -92,4 +93,11 @@ test("end to end with real git and no matcher given: a workflow, a hook and a Ma
   const rows = files(res);
   assert.deepEqual(rows.map((f) => [f["displayPath"], f["protectedPath"]]), [[".GitHub/workflows/ci.yml", true], ["sub/Makefile", true], ["a-first.txt", false], ["z-last.txt", false]]);
   assert.deepEqual(rows[0]?.["protectedRules"], [".github"]);
+});
+
+test("with no matcher given, the review deps carry the broker matcher; a given one replaces it", () => {
+  const base = { git: {}, tempIndex: {}, fileExists: async () => true, locator: {} } as unknown as ReviewBindingDeps;
+  const given = { match: () => [{ rule: "mine" }] };
+  assert.equal(reviewDepsOf(base).protectedPaths, brokerProtectedPaths, "never absent: omission cannot turn the flag off");
+  assert.equal(reviewDepsOf({ ...base, protectedPaths: given }).protectedPaths, given);
 });

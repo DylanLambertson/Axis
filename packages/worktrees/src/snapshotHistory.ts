@@ -16,7 +16,7 @@ const OID = /^[0-9a-f]{40,64}$/;
 const tooMuch = (): WorktreeError =>
   new WorktreeError('E_POLICY_DENIED', 'the snapshot was refused: its content could not be fully scanned for secrets', { reason: 'snapshot-unscanned' });
 
-/** What the trusted base commit's tree holds: content the user's own history already has, and its `path\0blob` names. */
+/** What the trusted base commit's tree holds: blob content the user's own history already has, and its `path\0id` names (blobs, subtrees and gitlinks). */
 export interface BaseTree {
   readonly ids: ReadonlySet<string>;
   readonly pairs: ReadonlySet<string>;
@@ -24,20 +24,20 @@ export interface BaseTree {
 
 export async function baseTree(git: HardenedGit, cwd: string, base: string): Promise<BaseTree> {
   if (!OID.test(base)) throw tooMuch();
-  const out = await git.run(['ls-tree', '-r', '-z', '--end-of-options', base], { cwd });
+  const out = await git.run(['ls-tree', '-r', '-t', '-z', '--end-of-options', base], { cwd });
   const ids = new Set<string>();
   const pairs = new Set<string>();
   for (const rec of out.stdout.split('\0')) {
-    const m = /^\d{6} blob ([0-9a-f]{40,64})\t([\s\S]+)$/.exec(rec);
+    const m = /^\d{6} (blob|tree|commit) ([0-9a-f]{40,64})\t([\s\S]+)$/.exec(rec);
     if (!m) continue;
-    ids.add(m[1] as string);
-    pairs.add(`${m[2] as string}\0${m[1] as string}`);
+    if (m[1] === 'blob') ids.add(m[2] as string);
+    pairs.add(`${m[3] as string}\0${m[2] as string}`);
   }
   return { ids, pairs };
 }
 
-/** The blob entries of a tree object (`<mode> <name>\0<raw id>`), as `{ name, mode, id }`. Gitlinks and subtrees are left out. */
-export function treeBlobs(bytes: Buffer, idBytes: number): { name: string; mode: string; id: string }[] {
+/** Every entry of a tree object (`<mode> <name>\0<raw id>`), as `{ name, mode, id }`: blobs, subtrees (mode 040000) and gitlinks (160000), since each name is scanned. */
+export function treeEntries(bytes: Buffer, idBytes: number): { name: string; mode: string; id: string }[] {
   const out: { name: string; mode: string; id: string }[] = [];
   for (let at = 0; at < bytes.length;) {
     const sp = bytes.indexOf(0x20, at);
@@ -45,7 +45,7 @@ export function treeBlobs(bytes: Buffer, idBytes: number): { name: string; mode:
     if (nul < 0 || nul + 1 + idBytes > bytes.length) throw tooMuch();
     const mode = bytes.toString('latin1', at, sp);
     const id = bytes.toString('hex', nul + 1, nul + 1 + idBytes);
-    if (mode !== '40000' && mode !== '160000') out.push({ name: bytes.toString('utf8', sp + 1, nul), mode: mode.padStart(6, '0'), id });
+    out.push({ name: bytes.toString('utf8', sp + 1, nul), mode: mode.padStart(6, '0'), id });
     at = nul + 1 + idBytes;
   }
   return out;
@@ -120,7 +120,7 @@ export async function scanHistory(
     if (o.type === 'commit') await check.addCommit(o.id, bytes);
     else if (o.type === 'blob') await check.add({ rel: o.path, mode: '100644', bytes });
     else {
-      for (const e of treeBlobs(bytes, o.id.length / 2)) {
+      for (const e of treeEntries(bytes, o.id.length / 2)) {
         const rel = o.path === '' ? e.name : `${o.path}/${e.name}`;
         if (!baseT.pairs.has(`${rel}\0${e.id}`)) names.set(rel, e.mode);
       }
