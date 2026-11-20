@@ -166,6 +166,7 @@ export function runNativeDetail(input: Pick<RunApprovalInput, "tool" | "tier" | 
   }
   const n = p?.taint?.total;
   if (n !== undefined && Number.isSafeInteger(n) && n > 0) parts.push(`after untrusted input (${n})`);
+  else if (p?.taint?.earlier === true) parts.push("after untrusted input (earlier)");
   return parts.join(", ");
 }
 

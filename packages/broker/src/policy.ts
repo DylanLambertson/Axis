@@ -119,10 +119,12 @@ export class ToolPolicy {
       let raise: boolean;
       try {
         const out: unknown = this.#hook.decide({ tool: input.tool, tier });
-        const r = out as { approve?: unknown; reasons?: unknown } | null;
-        const labels = typeof r === "object" && r !== null && Array.isArray(r.reasons) ? [...(r.reasons as unknown[])] : undefined;
-        if (typeof r?.approve !== "boolean" || labels === undefined || labels.length > 8 || !labels.every((l) => typeof l === "string" && HOOK_REASON.test(l))) throw new Error("shape");
-        raise = r.approve;
+        if (typeof out !== "object" || out === null) throw new Error("shape");
+        // Each field is read exactly once: a getter cannot pass the check with one value and act with another.
+        const { approve: a, reasons: rs } = out as { approve?: unknown; reasons?: unknown };
+        const labels = Array.isArray(rs) ? [...(rs as unknown[])] : undefined;
+        if (typeof a !== "boolean" || labels === undefined || labels.length > 8 || !labels.every((l) => typeof l === "string" && HOOK_REASON.test(l))) throw new Error("shape");
+        raise = a;
         if (raise) reasons.push(...(labels as string[]));
       } catch {
         return { effect: "deny", reason: "decision-hook", reasons: ["the call could not be judged"] };

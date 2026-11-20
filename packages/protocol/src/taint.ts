@@ -64,11 +64,17 @@ export const taintReceiptSchema = z.strictObject({
 });
 export type TaintReceipt = z.infer<typeof taintReceiptSchema>;
 
-/** What an approval card shows about a tainted run: the most recent sources, and how many it received in all. */
+/**
+ * What an approval card shows about a tainted run: the most recent sources this daemon handed to it, how many in all, and
+ * whether the run was already tainted when this daemon took it up (after a restart or a resume; its earlier sources are in
+ * the audit log as `message.taint` rows, not on the card). A card always says something: a source, a count or `earlier`.
+ */
 export const approvalTaintSchema = z
   .strictObject({
-    sources: z.array(taintReceiptSchema).min(1).max(MAX_CARD_TAINT_SOURCES),
+    sources: z.array(taintReceiptSchema).max(MAX_CARD_TAINT_SOURCES),
     total: countSchema,
+    earlier: z.boolean(),
   })
-  .refine((t) => t.total >= t.sources.length, "the total counts every listed source");
+  .refine((t) => t.total >= t.sources.length, "the total counts every listed source")
+  .refine((t) => t.total > 0 || t.earlier, "a card names why the run is tainted");
 export type ApprovalTaint = z.infer<typeof approvalTaintSchema>;

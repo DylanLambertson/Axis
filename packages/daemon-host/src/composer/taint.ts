@@ -12,7 +12,10 @@ import { MAX_CARD_TAINT_SOURCES, taintReceiptSchema, type ApprovalTaint, type Ta
  *   the flag. The flag is set first of all, before the input is even checked: an input that is not a receipt of the
  *   closed list, or an audit row that cannot be written, still leaves the run tainted, and `receive` then throws so the
  *   producer withholds the content (fail closed).
- * - **Sticky.** Nothing clears it: there is no method that does, and a run keeps its one `RunTaint` for its life.
+ * - **Sticky, also across a restart or a resume (review pv-m0 S2).** Nothing clears it: there is no method that does. It
+ *   is recorded in the journal (`composer_runs.tainted`, schema version 8, only ever set) right after the in-memory flag,
+ *   before anything else, and a `RunTaint` for a run starts from what the journal recorded. A journal that cannot be read
+ *   starts it tainted; a record that cannot be written throws, so the producer withholds the content.
  * - **The decision hook.** `decide` is the broker's `DecisionHook`, asked for every call: while the flag is set, every call
  *   above `read` (section 6.5: everything but pure reads) needs the user's approval, whatever the floor or any standing
  *   allow says; the broker records the decision's tier and the `taint` reason at that moment.
@@ -46,8 +49,16 @@ export interface RunTaint {
   decide(call: { readonly tool: string; readonly tier: string }): { readonly approve: boolean; readonly reasons: readonly string[] };
 }
 
+/** Where a run's taint is recorded (the journal's composer records). */
+export interface TaintStore {
+  tainted(runId: string): boolean;
+  /** Throws when the taint cannot be recorded (for example a run with no composer record). */
+  markTainted(runId: string): void;
+}
+
 export interface RunTaintDeps {
   readonly runId: string;
+  readonly store: TaintStore;
   readonly audit: AuditSink;
   readonly now: () => number;
   /** Sources kept for the card. Default `MAX_CARD_TAINT_SOURCES`. */
@@ -57,7 +68,14 @@ export interface RunTaintDeps {
 export function createRunTaint(deps: RunTaintDeps): RunTaint {
   const keep = deps.keep ?? MAX_CARD_TAINT_SOURCES;
   if (!Number.isSafeInteger(keep) || keep < 1 || keep > MAX_CARD_TAINT_SOURCES) throw new RangeError("taint card size is out of range");
-  let flag = false;
+  // Fail closed: a run whose record cannot be read is treated as tainted.
+  let earlier: boolean;
+  try {
+    earlier = deps.store.tainted(deps.runId) === true;
+  } catch {
+    earlier = true;
+  }
+  let flag = earlier;
   let total = 0;
   const recent: TaintReceipt[] = [];
 
@@ -66,6 +84,8 @@ export function createRunTaint(deps: RunTaintDeps): RunTaint {
       // First: whatever follows (a bad receipt, a failed audit row), the run is tainted from here on.
       flag = true;
       total += 1;
+      // Recorded before the content can reach the model, so a resumed or restarted run starts tainted.
+      deps.store.markTainted(deps.runId);
       const parsed = taintInputSchema.safeParse(input);
       if (!parsed.success) throw new TypeError("not a taint receipt of the closed source list");
       const at = Math.max(0, Math.floor(deps.now()));
@@ -81,7 +101,8 @@ export function createRunTaint(deps: RunTaintDeps): RunTaint {
       });
     },
     tainted: () => flag,
-    card: () => (flag && recent.length > 0 ? { sources: recent.map((r) => ({ ...r })), total } : undefined),
+    // A tainted run always has a card: its sources, the count of every receipt (a malformed one included), or `earlier`.
+    card: () => (flag ? { sources: recent.map((r) => ({ ...r })), total, earlier } : undefined),
     decide: ({ tier }) => (flag && tier !== "read" ? { approve: true, reasons: [TAINT_REASON] } : { approve: false, reasons: [] }),
   };
 }

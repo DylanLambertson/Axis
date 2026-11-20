@@ -100,3 +100,11 @@ test("PV-M0: a declined raised write writes nothing; a failing hook refuses the 
   const denied = broken.events.filter((e) => e.action === "broker.decision").map((e) => (e.payload as Record<string, unknown>)["reason"]);
   assert.deepEqual(denied, ["decision-hook", "decision-hook"]);
 });
+
+test("review N1: the hook's answer is read once: a getter that changes its answer after the check cannot lower the call", () => {
+  let reads = 0;
+  const shifty = { get approve() { return reads++ === 0; }, reasons: ["taint"] };
+  const p = new ToolPolicy({ hook: { decide: () => shifty as never } });
+  assert.deepEqual(p.decide(input({ tier: "write" })), { effect: "approve", tier: "write", reasons: ["taint"] });
+  assert.equal(reads, 1);
+});

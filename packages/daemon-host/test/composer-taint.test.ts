@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { test, type TestContext } from "node:test";
 import type { Challenge } from "@axis/protocol";
 import { createRunBudget, type GenerateResult } from "@axis/providers";
-import { runComposerLoop, type ComposerApprovalNote, type ComposerRunTools, type LoopEnd } from "../src/index.js";
+import { runComposerLoop, taintReceiptOf, type ComposerApprovalNote, type ComposerRunTools, type LoopEnd } from "../src/index.js";
 import { composerRig, START, allEvents, until, type ComposerRig } from "./composer-rig.js";
 
 // Ticket PV-M0 (IAC-T) over the real pieces: the agent binding with the real broker, the real approvals and the composer
@@ -23,6 +23,11 @@ async function setup(t: TestContext, over: { taintSources?: (tool: string, args:
   return c;
 }
 
+/** A real composer run record: a run's taint is recorded in it (IAC-T across a restart, review S2). */
+const newRun = (c: ComposerRig): string => c.journal.composer.createRun({ workspaceId: c.workspaceId, createdBy: "user" }, { mode: "agent", providerId: "mock", modelId: "mock-model" }).value.id;
+const toolsFor = async (c: ComposerRig, runId: string, notes: ComposerApprovalNote[] = []): Promise<ComposerRunTools> =>
+  (await c.agent.prepare(c.workspaceId))({ runId, workspaceId: c.workspaceId, windowId: "win-1", mode: "agent", onApproval: (n) => void notes.push(n) });
+
 const pending = async (c: ComposerRig): Promise<Challenge[]> => (await c.user.call("axis.approvals", "pending", {})).result?.["challenges"] as Challenge[];
 const answer = async (c: ComposerRig, ch: Challenge | undefined, decision: "approve" | "deny" = "approve"): Promise<void> => {
   const res = await c.user.call("axis.approvals", "resolve", { challengeId: ch?.challengeId, decision, digest: ch?.digest });
@@ -30,7 +35,7 @@ const answer = async (c: ComposerRig, ch: Challenge | undefined, decision: "appr
 };
 
 /** Run the real loop over the binding's tools with a provider that answers each reply's calls (several per reply). */
-function drive(c: ComposerRig, replies: readonly (readonly { name: string; input: object }[])[], runId = "run-taint") {
+function drive(c: ComposerRig, replies: readonly (readonly { name: string; input: object }[])[], runId = newRun(c)) {
   const notes: ComposerApprovalNote[] = [];
   const results: string[][] = [];
   let i = 0;
@@ -52,7 +57,7 @@ function drive(c: ComposerRig, replies: readonly (readonly { name: string; input
       },
     });
   })();
-  return { end, notes, results, requested: () => notes.filter((n) => n.state === "requested") };
+  return { runId, end, notes, results, requested: () => notes.filter((n) => n.state === "requested") };
 }
 
 test("PV-M0 gate 11: a tainting result followed by write_file in the SAME reply needs approval, and the card lists the source", async (t) => {
@@ -62,7 +67,7 @@ test("PV-M0 gate 11: a tainting result followed by write_file in the SAME reply 
   const [note] = run.requested();
   assert.equal(note?.tool, "write_file");
   assert.ok(note?.reasons.includes("taint"), "the broker recorded why");
-  assert.deepEqual(note?.preview?.taint, { sources: [{ ...SOURCE, at: c.r.clock.now() }], total: 1 });
+  assert.deepEqual(note?.preview?.taint, { sources: [{ ...SOURCE, at: c.r.clock.now() }], total: 1, earlier: false });
   assert.equal(existsSync(join(c.root, "src/a.txt")), false, "nothing is written before the user answers");
   const [ch] = await pending(c);
   assert.equal(ch?.digest, note?.digest);
@@ -70,7 +75,7 @@ test("PV-M0 gate 11: a tainting result followed by write_file in the SAME reply 
   assert.deepEqual(await run.end, { state: "REVIEWING", reason: null });
   assert.equal(readFileSync(join(c.root, "src/a.txt"), "utf8"), "hello");
   const rows = c.audit.list({ limit: 100 }).filter((e) => e.action === "message.taint");
-  assert.deepEqual(rows.map((e) => e.payload), [{ runId: "run-taint", source: "message", sourceId: "msg_7", senderKind: "agent", hop: 2 }]);
+  assert.deepEqual(rows.map((e) => e.payload), [{ runId: run.runId, source: "message", sourceId: "msg_7", senderKind: "agent", hop: 2 }]);
   const decision = c.audit.list({ limit: 100 }).find((e) => e.action === "broker.decision" && (e.payload as Record<string, unknown>)["tool"] === "write_file");
   assert.deepEqual([(decision?.payload as Record<string, unknown>)["tier"], (decision?.payload as Record<string, unknown>)["reasons"]], ["write", "taint"], "tier and reason recorded at the decision");
 });
@@ -111,7 +116,7 @@ test("PV-M0: a declined tainted write writes nothing and the run goes on tainted
 test("PV-M0 gate 18: a challenge issued before the run was tainted and approved after it is refused at consume; the retry is put to the user tainted", async (t) => {
   const c = await setup(t);
   const notes: ComposerApprovalNote[] = [];
-  const tools = (await c.agent.prepare(c.workspaceId))({ runId: "run-consume", workspaceId: c.workspaceId, windowId: "win-1", mode: "agent", onApproval: (n) => void notes.push(n) });
+  const tools = await toolsFor(c, newRun(c), notes);
   const signal = new AbortController().signal;
   // A protected write needs the user even untainted: its challenge is issued while the run is clean.
   const first = tools.invoke("write_file", { path: "Makefile", content: "all:" }, signal);
@@ -138,7 +143,7 @@ test("PV-M0 gate 18: a challenge issued before the run was tainted and approved 
 
 test("PV-M0: a challenge issued tainted and approved tainted is consumed (the flag is bound, not just compared to false)", async (t) => {
   const c = await setup(t);
-  const tools = (await c.agent.prepare(c.workspaceId))({ runId: "run-bound", workspaceId: c.workspaceId, windowId: "win-1", mode: "agent", onApproval: () => undefined });
+  const tools = await toolsFor(c, newRun(c));
   const signal = new AbortController().signal;
   await tools.invoke("read_file", { path: "inbox.txt" }, signal);
   const call = tools.invoke("write_file", { path: "src/a.txt", content: "y" }, signal);
@@ -166,4 +171,42 @@ test("PV-M0: the composer service's approval event carries the card the shell di
   assert.equal(ev?.type === "approval" ? ev.preview?.taint?.sources[0]?.sender : undefined, "Planner agent");
   c.service.cancel(run.runId);
   await until(() => !c.service.get(run.runId).live);
+});
+
+test("review S2: a run recorded as tainted starts tainted when its tools are built again (resume, restart): its next write needs the user", async (t) => {
+  const c = await setup(t);
+  const runId = newRun(c);
+  const signal = new AbortController().signal;
+  assert.equal((await (await toolsFor(c, runId)).invoke("read_file", { path: "inbox.txt" }, signal)).ok, true);
+  assert.equal(c.journal.composer.tainted(runId), true, "recorded before the result was returned");
+  // The same run taken up again, with nothing received this time: the journal, not memory, says it is tainted.
+  const notes: ComposerApprovalNote[] = [];
+  const again = await toolsFor(c, runId, notes);
+  const call = again.invoke("write_file", { path: "src/a.txt", content: "x" }, signal);
+  await until(() => c.r.approvals.runs.waiting() === 1, 50_000);
+  const requested = notes.find((n) => n.state === "requested");
+  assert.ok(requested?.reasons.includes("taint"));
+  assert.deepEqual(requested?.preview?.taint, { sources: [], total: 0, earlier: true });
+  await answer(c, (await pending(c))[0], "deny");
+  assert.equal((await call).ok, false);
+  assert.equal(existsSync(join(c.root, "src/a.txt")), false);
+  // Another run of the workspace is not tainted by it.
+  assert.equal((await (await toolsFor(c, newRun(c))).invoke("write_file", { path: "src/b.txt", content: "y" }, signal)).ok, true);
+});
+
+test("review S2: a taint that cannot be recorded (no run record) stops the run with the result withheld", async (t) => {
+  const c = await setup(t);
+  const run = drive(c, [[read("inbox.txt"), write("src/a.txt")]], "run-without-record");
+  assert.deepEqual(await run.end, { state: "FAILED", reason: "TOOL_FAILED" });
+  assert.deepEqual(run.results, [[]], "no result of the reply reached the model");
+  assert.equal(existsSync(join(c.root, "src/a.txt")), false);
+});
+
+test("review S1: the taint source is asked for every call, with the raw input when the tool has no preview schema", () => {
+  const seen: unknown[] = [];
+  const sources = (tool: string, args: unknown): unknown => (seen.push([tool, args]), tool === "read_messages" ? SOURCE : undefined);
+  assert.deepEqual(taintReceiptOf(sources, "read_messages", undefined, { threadId: "t1" }), SOURCE, "a source tool registered without a preview schema still taints");
+  assert.equal(taintReceiptOf(sources, "read_file", { args: { path: "a" } }, { path: "a", extra: 1 }), undefined);
+  assert.deepEqual(seen, [["read_messages", { threadId: "t1" }], ["read_file", { path: "a" }]], "the parsed arguments when there are some");
+  assert.equal(taintReceiptOf(undefined, "read_messages", undefined, {}), undefined);
 });

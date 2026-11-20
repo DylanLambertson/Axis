@@ -103,6 +103,7 @@ export async function composerRig(options: ComposerRigOptions): Promise<Composer
     redactor: new Redactor(),
     env: () => options.env?.({ root, outside, base }) ?? { PATH: "/usr/bin:/bin", HOME: base },
     approvals: r.approvals.runs,
+    taintStore: journal.composer,
     now: () => r.clock.now(),
     mock: { ...options.mock, replies, respond: () => ({ kind: "text", text: "no more replies" }) },
     ...(options.previewScanner === undefined ? {} : { previewScanner: options.previewScanner }),
