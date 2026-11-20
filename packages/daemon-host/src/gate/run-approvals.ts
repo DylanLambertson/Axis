@@ -28,7 +28,8 @@ import { NATIVE_SUMMARY_MAX, nativeSummary } from "./summary.js";
  *   user's approval, a tier 3 wait never takes a native answer. Without a native port, or
  *   when the dialog cannot be started, the call is declined (fail closed). The dialog shows a one-line summary built
  *   here from values the daemon derived (the action, the closed tool name, the tier, the protected flag, the byte count
- *   and a SHA-256 prefix), never the content head or anything else the model wrote (APR-2); the head stays on the
+ *   and a SHA-256 prefix; for a command, its program's base name and the first digits of its identity), never the content
+ *   head or anything else the model wrote (APR-2); the head stays on the
  *   approval card, matched by digest. A cancelled run ends the dialog's wait; a late answer is ignored.
  * - Nothing here is handed to a handler: the composer service sees only the outcome.
  */
@@ -110,6 +111,8 @@ const TIERS: ReadonlyMap<string, 3 | 4> = new Map([["read", 3], ["write", 3], ["
 const LABEL = /^[a-z][a-z0-9:._-]{0,63}$/;
 const TOOL = /^[a-z][a-z0-9_]{0,63}$/;
 const GRACE_MS = 1_000;
+/** A program's base name as the native dialog may show it. */
+const PROGRAM_NAME = /^[A-Za-z0-9._+-]{1,32}$/;
 const ACTION = `${COMPOSER_RUNS_CONTRACT}/${COMPOSER_RUNS_VERSION}.toolCall`;
 
 type Ending = "approved" | "denied" | "expired" | "withdrawn" | "refused";
@@ -143,6 +146,15 @@ export function runNativeDetail(input: Pick<RunApprovalInput, "tool" | "tier" | 
   const parts = [`${input.tool} (${input.tier}${p?.protected === true ? ", protected path" : ""})`];
   const c = p?.content;
   if (c != null && Number.isSafeInteger(c.bytes) && c.bytes >= 0 && /^[0-9a-f]{64}$/.test(c.sha256)) parts.push(`${c.bytes} bytes, SHA-256 ${c.sha256.slice(0, 16)}`);
+  // C3, command identity: which program (the base name of the real path the broker pinned, from a closed character set,
+  // else a fixed word) and the first 16 digits of the identity the approval card shows in full. A command with no
+  // identity is never put to the native dialog (the line could not tell it from another command).
+  const cmd = p?.command;
+  if (input.tool === "run_command" && (cmd == null || !/^[0-9a-f]{64}$/.test(cmd.identity))) return undefined;
+  if (cmd != null && /^[0-9a-f]{64}$/.test(cmd.identity)) {
+    const base = cmd.program.split(/[\\/]/).pop() ?? "";
+    parts.push(`program ${PROGRAM_NAME.test(base) ? base : "(unnamed)"}, identity ${cmd.identity.slice(0, 16)}`);
+  }
   return parts.join(", ");
 }
 
@@ -166,6 +178,8 @@ export function createRunApprovals(core: RunApprovalsCore): RunApprovals {
     const native = tier === 4 ? core.native : undefined;
     // A tier 4 call with no native dialog to ask cannot be approved: fail closed.
     if (tier === 4 && native === undefined) return refused;
+    // A command whose dialog line cannot name it (no identity) is not asked about at all: nothing is issued (C3).
+    if (input.tool === "run_command" && runNativeDetail(input) === undefined) return refused;
     if (signal.aborted) return { kind: "declined", state: "withdrawn" };
     try {
       core.preflight?.(tier);
@@ -216,11 +230,12 @@ export function createRunApprovals(core: RunApprovalsCore): RunApprovals {
     });
     if (native !== undefined) {
       try {
+        const detail = runNativeDetail(input);
         // Once, before the challenge reaches anyone: the proof goes to the supervisor only.
         const proof = core.manager.takeNativeProof(id);
         if (proof === null) throw new Error("no native proof");
         // The detail is daemon-derived only, so it may use the whole line: the protected label is never cut off.
-        const summary = nativeSummary(ACTION, challenge.targetSummary, runNativeDetail(input), NATIVE_SUMMARY_MAX - ACTION.length - 2);
+        const summary = nativeSummary(ACTION, challenge.targetSummary, detail, NATIVE_SUMMARY_MAX - ACTION.length - 2);
         await native.start({ challengeId: id, proof, windowId: input.windowId, connectionId, actor, summary }, reservation as { release(): void });
       } catch {
         // The user is never asked for a call whose dialog could not open.
