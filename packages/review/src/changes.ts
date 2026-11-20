@@ -282,6 +282,8 @@ export async function listChanges(
     const resolved = linkTarget === undefined ? undefined : resolveLinkTarget(e.path, linkTarget);
     const rules = protectedRules(matcher, asked, limits.maxDisplay);
     if (resolved !== undefined) for (const r of protectedRules(matcher, [resolved], limits.maxDisplay)) if (rules.length < 8 && !rules.includes(r)) rules.push(r);
+    // A link whose target could not be read cannot be judged by where it leads: it is highlighted, not assumed ordinary.
+    if (matcher !== undefined && kind === "symlink" && linkSide && linkTarget === undefined && rules.length < 8) rules.push("symlink-target-unread");
     files.push({
       path: e.path,
       ...(e.oldPath === undefined ? {} : { oldPath: e.oldPath }),

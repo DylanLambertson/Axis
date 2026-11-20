@@ -127,4 +127,22 @@ describe('snapshot secret scan of run-made history (REF-1)', () => {
     assert.ok(rm.branchBackupRef?.startsWith('refs/axis/backup/'));
     rmSync(wt, { recursive: true, force: true });
   });
+
+  it('a token-named copy of a base directory, or a token-named gitlink, refuses: directory names are scanned in history', async () => {
+    // The tree under the token name is the base's own `sub/`, so no new tree lists it; only the root tree's entry holds the name.
+    write(path.join(wt, TOKEN, 'b.txt'), 'bravo\n');
+    sh(wt, 'add', '--', TOKEN);
+    sh(wt, 'commit', '-q', '-m', 'dir');
+    const dir = await refusal(fx.manager.finalise({ path: wt, expectedWorktree: exp(wt), outcome: 'archived' }));
+    assert.deepEqual(dir.details['findings'], [{ rule: 'github-token' }]);
+    assert.ok(!JSON.stringify(dir.details).includes(TOKEN));
+    assert.equal(refs(fx.repo, 'refs/axis/archive'), '');
+    sh(wt, 'reset', '-q', '--hard', 'HEAD~1');
+    const head = sh(wt, 'rev-parse', 'HEAD').trim();
+    sh(wt, 'update-index', '--add', '--cacheinfo', `160000,${head},${TOKEN}`);
+    sh(wt, 'commit', '-q', '-m', 'gitlink');
+    const link = await refusal(fx.manager.finalise({ path: wt, expectedWorktree: exp(wt), outcome: 'archived' }));
+    assert.deepEqual(link.details['findings'], [{ rule: 'github-token' }]);
+    assert.equal(refs(fx.repo, 'refs/axis/archive'), '');
+  });
 });

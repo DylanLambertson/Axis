@@ -116,3 +116,8 @@ test("a confirmation names the waived file: the plan the user saw is not the pla
   const e = await refusal(executePush(d, { ...input, allowedBinaryIds: [binaryRow(a).id] }, { confirmed: true, confirmedPlan: forged }));
   assert.equal(e.details?.["reason"], "plan_changed");
 });
+
+test("the id of a fixed path equals a literal, so a change to the derivation (domain tag, hash, length) fails", async () => {
+  assert.equal(binaryRow(Buffer.from("docs/logo.png")).id, "bin_4e0734fdeba2836cdcd91d3668241ccb");
+  assert.equal(binaryRow(bytes(0x61, 0xff)).id, "bin_70bde17cda933668cfdf6e863738d2c9", "a lossy name is hashed by its bytes");
+});
