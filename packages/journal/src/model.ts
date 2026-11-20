@@ -87,6 +87,8 @@ export interface Workspace {
   readonly finaliseOutcome: FinaliseOutcome | null;
   /** The full `refs/heads/...` name the base resolved to at create, recorded by the daemon; null when unknown (refuse `merged`). */
   readonly baseBranch: string | null;
+  /** The commit `baseBranch` pointed at when it was recorded (FU-WT-BASE2); null when unknown (refuse `merged`). */
+  readonly baseTip: string | null;
 }
 
 export interface Project {
@@ -211,6 +213,7 @@ export interface WorkspaceRow {
   reviewed_at: string | null;
   finalise_outcome: string | null;
   base_branch: string | null;
+  base_tip: string | null;
 }
 export interface RunRow {
   id: string;
@@ -243,6 +246,7 @@ export const toWorkspace = (r: WorkspaceRow): Workspace => ({
   reviewedAt: r.reviewed_at,
   finaliseOutcome: r.finalise_outcome as FinaliseOutcome | null,
   baseBranch: r.base_branch,
+  baseTip: r.base_tip,
 });
 export const toRun = (r: RunRow): Run => ({
   id: r.id,

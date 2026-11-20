@@ -55,7 +55,7 @@ test("upgrading a populated version 4 database loses nothing and leaves every ol
   const journal = Journal.open(db, { audit });
   assert.equal(schemaVersion(db, "journal"), JOURNAL_SCHEMA_VERSION);
   const after = dump(db, "agent_workspaces", "id");
-  assert.deepEqual(without(after, "base_branch"), before.ws, "every old column of every row is unchanged");
+  assert.deepEqual(without(without(after, "base_branch"), "base_tip"), before.ws, "every old column of every row is unchanged");
   assert.ok(after.every((r) => r["base_branch"] === null), "old workspaces are not attestable: no base branch is invented");
   assert.equal(journal.getWorkspace("w-fin")?.baseBranch, null);
   assert.deepEqual(dump(db, "agent_runs", "id"), before.runs);
@@ -70,7 +70,7 @@ test("upgrading a populated version 4 database loses nothing and leaves every ol
 test("re-opening changes nothing; a newer database is refused; there is no way back to version 4", () => {
   const { db, audit } = oldDatabase();
   const journal = Journal.open(db, { audit });
-  journal.recordBaseBranch("w-creating", "refs/heads/main", "daemon");
+  journal.recordBaseBranch("w-creating", "refs/heads/main", SHA, "daemon");
   const schema = schemaOf(db);
   const rows = dump(db, "agent_workspaces", "id");
   Journal.open(db, { audit });
@@ -111,7 +111,7 @@ test("the database refuses a malformed base branch, and refuses to change or cle
   const db = openDatabase(":memory:");
   const journal = Journal.open(db, { audit: new AuditLog(db) });
   const id = creating(journal);
-  const set = (v: string | null) => db.prepare("UPDATE agent_workspaces SET base_branch = ? WHERE id = ?").run(v, id);
+  const set = (v: string | null) => db.prepare("UPDATE agent_workspaces SET base_branch = ?, base_tip = coalesce(base_tip, ?) WHERE id = ?").run(v, SHA, id); // a tip with it (v6)
   for (const bad of ["main", "HEAD", "refs/tags/v1", "refs/heads/", "refs/heads/a b", "refs/heads/a\nb", "refs/heads/a..b", "refs/heads/é", `refs/heads/${"a".repeat(300)}`, "heads/main", ""]) {
     assert.throws(() => set(bad), JSON.stringify(bad.slice(0, 30)));
   }
@@ -130,18 +130,18 @@ test("recordBaseBranch: only while CREATING, once, a valid branch, audited witho
   journal.registerProject({ id: "proj-a", path: "/work/a", displayName: "A", trusted: true, actor: "user" });
   const id = creating(journal);
   const head = audit.head()!.seq;
-  assert.equal(journal.recordBaseBranch(id, "refs/heads/main", "daemon").baseBranch, "refs/heads/main");
+  assert.equal(journal.recordBaseBranch(id, "refs/heads/main", SHA, "daemon").baseBranch, "refs/heads/main");
   assert.equal(audit.head()!.seq, head + 1);
-  assert.equal(journal.recordBaseBranch(id, "refs/heads/main", "daemon").baseBranch, "refs/heads/main", "same value is a no-op");
+  assert.equal(journal.recordBaseBranch(id, "refs/heads/main", SHA, "daemon").baseBranch, "refs/heads/main", "same value is a no-op");
   assert.equal(audit.head()!.seq, head + 1, "and writes no second audit row");
-  assert.throws(() => journal.recordBaseBranch(id, "refs/heads/evil", "daemon"), code("E_CONFLICT"));
+  assert.throws(() => journal.recordBaseBranch(id, "refs/heads/evil", SHA, "daemon"), code("E_CONFLICT"));
   for (const bad of ["main", "refs/heads/a b", "refs/heads/a..b", "refs/heads/é", "refs/remotes/o/main"]) {
-    assert.throws(() => journal.recordBaseBranch(creating(journal, `axis/${bad.length}${bad.length}x`), bad, "daemon"), code("E_INVALID_ARGUMENT"), bad);
+    assert.throws(() => journal.recordBaseBranch(creating(journal, `axis/${bad.length}${bad.length}x`), bad, SHA, "daemon"), code("E_INVALID_ARGUMENT"), bad);
   }
-  assert.throws(() => journal.recordBaseBranch("nope", "refs/heads/main", "daemon"), code("E_NOT_FOUND"));
+  assert.throws(() => journal.recordBaseBranch("nope", "refs/heads/main", SHA, "daemon"), code("E_NOT_FOUND"));
   const ready = creating(journal, "axis/ready");
   journal.transitionWorkspace(ready, "READY", { actor: "daemon" });
-  assert.throws(() => journal.recordBaseBranch(ready, "refs/heads/main", "daemon"), code("E_CONFLICT"), "a READY workspace cannot be given a base afterwards");
+  assert.throws(() => journal.recordBaseBranch(ready, "refs/heads/main", SHA, "daemon"), code("E_CONFLICT"), "a READY workspace cannot be given a base afterwards");
   assert.equal(journal.getWorkspace(ready)?.baseBranch, null);
   assert.equal(audit.verify().ok, true);
 });
