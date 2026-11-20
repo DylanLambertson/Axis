@@ -45,6 +45,8 @@ export class FakeRepository implements IGitRepository {
 
 /** A fake `IGitService` whose `openRepository` answers are settled by the test. */
 export class FakeGitService implements IAxisGitReader {
+	/** Repositories the service already has, as `IGitService.repositories` lists them. */
+	readonly repositories: IGitRepository[] = [];
 	readonly opened: string[] = [];
 	private readonly pending: { uri: URI; resolve: (repo: IGitRepository | undefined) => void; reject: (err: Error) => void }[] = [];
 

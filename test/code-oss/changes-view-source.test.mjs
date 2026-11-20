@@ -15,8 +15,8 @@ const VIEW = "contrib/agent/browser/changesView.ts";
 const MODEL = "services/changes/common/axisChanges.ts";
 const SOURCE = "services/changes/common/axisChangesSource.ts";
 const HTML_SINKS = new Set(["innerHTML", "outerHTML", "insertAdjacentHTML", "createContextualFragment", "DOMParser", "write", "writeln", "srcdoc"]);
-/** Every IGitService and IGitRepository member that is not the one read the Changes view needs. */
-const GIT_OTHER = new Set(["commitFiles", "updateState", "setDelegate", "diffBetweenWithStats", "diffBetweenWithStats2", "getRefs", "repositories"]);
+/** Every IGitService and IGitRepository member that is not a read the Changes view needs (openRepository, repositories, state). */
+const GIT_OTHER = new Set(["commitFiles", "updateState", "setDelegate", "diffBetweenWithStats", "diffBetweenWithStats2", "getRefs"]);
 const PROCESS = new Set(["child_process", "spawn", "spawnSync", "exec", "execFile", "execSync", "fork"]);
 /** Model fields that are raw paths or URIs: never shown. */
 const RAW = new Set(["resource", "original", "modified", "uri", "path", "fsPath", "query", "rootUri", "id"]);
@@ -40,7 +40,7 @@ export function readOnlyViolations(source) {
   for (const name of names(sf)) {
     if (HTML_SINKS.has(name)) bad.push(`html sink ${name}`);
     if (PROCESS.has(name)) bad.push(`process call ${name}`);
-    if (GIT_OTHER.has(name)) bad.push(`git call other than openRepository: ${name}`);
+    if (GIT_OTHER.has(name)) bad.push(`git call other than a read: ${name}`);
   }
   for (const spec of specifiers(sf)) if (/child_process|^node:|electron/.test(spec)) bad.push(`import ${spec}`);
   return bad;
@@ -55,23 +55,30 @@ export function changesViewViolations(source) {
     if (raw.length) bad.push(`raw path or URI shown: ${text(n)}`);
   }
   if (find(sf, (c) => ts.isPropertyAccessExpression(c) && c.name.text === "openEditor").length) bad.push("opens editors itself instead of through reveal");
+  if (find(sf, (c) => ts.isPropertyAccessExpression(c) && ["openRepository", "repositories", "state"].includes(c.name.text) && /gitService|repository/i.test(text(c.expression))).length) bad.push("the view reads git itself instead of through the source");
+  const reveals = find(sf, (c) => ts.isCallExpression(c) && ts.isPropertyAccessExpression(c.expression) && c.expression.name.text === "reveal").map((c) => text(c.arguments[0] ?? c));
+  if (reveals.sort().join(" | ") !== "diffTargetOf(row) | reviewAllTargetOf(this.visible, this.workspaceLabel)") bad.push("reveal targets are not built by the model (diffTargetOf, reviewAllTargetOf)");
+  const render = find(sf, (c) => ts.isMethodDeclaration(c) && ts.isIdentifier(c.name) && c.name.text === "render")[0];
+  const renderText = render ? text(render) : "";
+  if (!/nextActiveIndex\(this\.visible, this\.activeId, this\.activeIndex\)/.test(renderText)) bad.push("the active row does not follow its file (nextActiveIndex)");
+  if (!/if \(focusWasInside\) \{ this\.summary\.focus\(\); \}/.test(renderText)) bad.push("focus is dropped when the list empties");
+  if (!/const existing = this\.byId\.get\(row\.id\);/.test(source)) bad.push("rows are not kept by file id");
   if (find(sf, (c) => ts.isCallExpression(c) && ts.isPropertyAccessExpression(c.expression) && c.expression.name.text === "setAttribute" && c.arguments.length === 2 && ts.isStringLiteralLike(c.arguments[0]) && c.arguments[0].text === "aria-label" && text(c.arguments[1]) !== "changeRowLabel(row)" && /\brow\b/.test(text(c.arguments[1]))).length) bad.push("a row's accessible name is not changeRowLabel(row)");
-  const renderRow = find(sf, (c) => ts.isMethodDeclaration(c) && ts.isIdentifier(c.name) && c.name.text === "renderRow")[0];
-  if (!renderRow) {
-    bad.push("no renderRow");
+  const method = (name) => find(sf, (c) => ts.isMethodDeclaration(c) && ts.isIdentifier(c.name) && c.name.text === name)[0];
+  const renderRow = method("fillRow");
+  if (!renderRow || !method("createRow")) {
+    bad.push("no createRow or fillRow");
     return bad;
   }
   const body = text(renderRow);
-  if (!/element\.setAttribute\('role', 'option'\)/.test(body)) bad.push("a row is not a listbox option");
+  if (!/element\.setAttribute\('role', 'option'\)/.test(text(method("createRow")))) bad.push("a row is not a listbox option");
   if (!/element\.setAttribute\('aria-label', changeRowLabel\(row\)\)/.test(body)) bad.push("a row's accessible name is not changeRowLabel(row)");
-  const stateAt = body.indexOf("$('span.axis-change-state')");
-  const nameAt = body.indexOf("$('span.axis-change-name')");
-  if (!(stateAt > 0 && nameAt > stateAt)) bad.push("the state is not drawn before the name");
-  const rowTexts = find(renderRow, (c) => ts.isBinaryExpression(c) && ts.isPropertyAccessExpression(c.left) && c.left.name.text === "textContent" && ts.isCallExpression(c.left.expression));
+  if (!/element\.replaceChildren\(state, name, where\)/.test(body)) bad.push("the state is not drawn before the name");
+  const rowTexts = find(renderRow, (c) => ts.isBinaryExpression(c) && ts.isPropertyAccessExpression(c.left) && c.left.name.text === "textContent" && !text(c.left).startsWith("where."));
   for (const n of rowTexts) if (!ROW_TEXT.has(text(n.right))) bad.push(`row text not from the model: ${text(n.right)}`);
   if (rowTexts.length !== 3) bad.push("a row must show the glyph, the state word and the name");
   if (!/\.textContent = changeKindGlyph\(row\.kind\)/.test(body) || !/\.textContent = changeKindLabel\(row\.kind\)/.test(body)) bad.push("the state is not shown as a letter and a word");
-  if (!/\$\(`\.axis-change-row\.kind-\$\{row\.kind\}`\)/.test(body)) bad.push("the row class is not from the kind");
+  if (!/element\.className = `axis-change-row kind-\$\{row\.kind\}`;/.test(body)) bad.push("the row class is not from the kind");
   if (!/'listbox'/.test(source)) bad.push("the rows are not in a listbox");
   return bad;
 }
@@ -79,10 +86,13 @@ export function changesViewViolations(source) {
 /** The source reads only `openRepository` and `state`, and only opens worktrees inside the window's folders. */
 export function sourceViolations(source) {
   const bad = readOnlyViolations(source);
-  if (!/this\.git\.openRepository\(root\)/.test(source)) bad.push("the repository is not opened through IGitService.openRepository");
+  if (!/repository = await this\.isRepositoryRoot\(root\) \? await this\.git\.openRepository\(root\) : undefined;/.test(source)) bad.push("a folder that is not a repository root is opened");
+  if ((source.match(/openRepository\(/g) ?? []).length !== 1) bad.push("openRepository is called on more than one path");
+  if (!/const known = this\.find\(root\);\s+if \(known\) \{\s+this\.follow\(known, root\);\s+return;/.test(source)) bad.push("a repository the service already has is reopened");
+  if (!/if \(this\.tried\.has\(key\) && !retry\) \{/.test(source)) bad.push("an unavailable root is opened again on every update");
   if (!/if \(!root \|\| !this\.isMounted\(root\)\)/.test(source)) bad.push("a worktree outside the window's folders is opened");
   if (!/generation !== this\.generation/.test(source)) bad.push("a late answer for another worktree is not dropped");
-  if (!/!extUri\.isEqual\(repository\.rootUri, root\)/.test(source)) bad.push("a repository rooted elsewhere is accepted");
+  if (!/!roots\.isEqual\(roots\.removeTrailingPathSeparator\(repository\.rootUri\), root\)/.test(source)) bad.push("a repository rooted elsewhere is accepted");
   return bad;
 }
 
@@ -98,19 +108,24 @@ test("the Changes view, model and source follow the read-only, textContent-only 
 
 test("the checker finds each way of breaking the view rules", () => {
   const breaks = [
-    [GOOD_VIEW.replace(".textContent = row.name;", ".innerHTML = row.name;"), "html sink innerHTML"],
-    [GOOD_VIEW.replace(".textContent = row.name;", ".textContent = row.resource.path;"), "raw path or URI shown: append(element, $('span.axis-change-name')).textContent = row.resource.path"],
-    [GOOD_VIEW.replace(".textContent = row.name;", ".textContent = row.resource.path;"), "row text not from the model: row.resource.path"],
+    [GOOD_VIEW.replace("name.textContent = row.name;", "name.innerHTML = row.name;"), "html sink innerHTML"],
+    [GOOD_VIEW.replace("name.textContent = row.name;", "name.textContent = row.resource.path;"), "raw path or URI shown: name.textContent = row.resource.path"],
+    [GOOD_VIEW.replace("name.textContent = row.name;", "name.textContent = row.resource.path;"), "row text not from the model: row.resource.path"],
     [GOOD_VIEW.replace("element.title = row.folder ? `${row.folder}/${row.name}` : row.name;", "element.title = row.resource.fsPath;"), "raw path or URI shown: element.title = row.resource.fsPath"],
     [GOOD_VIEW.replace("element.setAttribute('aria-label', changeRowLabel(row));", "element.setAttribute('aria-label', row.name);"), "a row's accessible name is not changeRowLabel(row)"],
     [GOOD_VIEW.replace("element.setAttribute('role', 'option');", "element.setAttribute('role', 'button');"), "a row is not a listbox option"],
     [GOOD_VIEW.replace(".textContent = changeKindGlyph(row.kind);", ".textContent = '';"), "the state is not shown as a letter and a word"],
     [GOOD_VIEW.replace(".textContent = changeKindLabel(row.kind);", ".textContent = row.folder;"), "row text not from the model: row.folder"],
-    [moveNameFirst(GOOD_VIEW), "the state is not drawn before the name"],
-    [GOOD_VIEW.replace("this.viewService.reveal({\n\t\t\tkind: 'diff',", "this.editorService.openEditor({\n\t\t\tkind: 'diff',"), "opens editors itself instead of through reveal"],
+    [GOOD_VIEW.replace("element.replaceChildren(state, name, where);", "element.replaceChildren(name, state, where);"), "the state is not drawn before the name"],
+    [GOOD_VIEW.replace("this.viewService.reveal(diffTargetOf(row));", "this.editorService.openEditor(diffTargetOf(row));"), "opens editors itself instead of through reveal"],
+    [GOOD_VIEW.replace("this.viewService.reveal(diffTargetOf(row));", "this.viewService.reveal({ ...diffTargetOf(row), label: row.resource.path });"), "reveal targets are not built by the model (diffTargetOf, reviewAllTargetOf)"],
+    [GOOD_VIEW.replace("this.viewService.reveal(diffTargetOf(row));", "this.viewService.reveal({ kind: 'diff', original: row.resource, modified: row.resource, label: row.name });"), "reveal targets are not built by the model (diffTargetOf, reviewAllTargetOf)"],
     [GOOD_VIEW.replace("this.list.setAttribute('role', 'listbox');", "this.list.setAttribute('role', 'list');"), "the rows are not in a listbox"],
-    [GOOD_VIEW.replace("$(`.axis-change-row.kind-${row.kind}`)", "$(`.axis-change-row.kind-${row.name}`)"), "the row class is not from the kind"],
-    [GOOD_VIEW.replace("this.source.setRoot(root);", "this.source.setRoot(root); gitService.repositories;"), "git call other than openRepository: repositories"],
+    [GOOD_VIEW.replace("element.className = `axis-change-row kind-${row.kind}`;", "element.className = `axis-change-row kind-${row.name}`;"), "the row class is not from the kind"],
+    [GOOD_VIEW.replace("this.source.setRoot(root);", "this.source.setRoot(root); void this.gitService.repositories;"), "the view reads git itself instead of through the source"],
+    [GOOD_VIEW.replace("nextActiveIndex(this.visible, this.activeId, this.activeIndex)", "Math.min(this.activeIndex, this.rows.length - 1)"), "the active row does not follow its file (nextActiveIndex)"],
+    [GOOD_VIEW.replace("\t\t\tif (focusWasInside) {\n\t\t\t\tthis.summary.focus();\n\t\t\t}\n", ""), "focus is dropped when the list empties"],
+    [GOOD_VIEW.replace("const existing = this.byId.get(row.id);", "const existing = undefined;"), "rows are not kept by file id"],
   ];
   for (const [source, expected] of breaks) {
     assert.notEqual(source, GOOD_VIEW, `the mutation applies: ${expected}`);
@@ -119,27 +134,25 @@ test("the checker finds each way of breaking the view rules", () => {
 });
 
 test("the checker finds each way of breaking the source rules", () => {
+  const OPEN = "repository = await this.isRepositoryRoot(root) ? await this.git.openRepository(root) : undefined;";
   const breaks = [
-    [GOOD_SOURCE.replace("repository = await this.git.openRepository(root);", "repository = await this.git.openRepository(root); await repository?.commitFiles([], '');"), "git call other than openRepository: commitFiles"],
-    [GOOD_SOURCE.replace("repository = await this.git.openRepository(root);", "repository = await this.git.openRepository(root); repository?.updateState(repository.state.get());"), "git call other than openRepository: updateState"],
-    [GOOD_SOURCE.replace("repository = await this.git.openRepository(root);", "repository = await this.git.openRepository(root); await repository?.diffBetweenWithStats('HEAD', 'HEAD');"), "git call other than openRepository: diffBetweenWithStats"],
+    [GOOD_SOURCE.replace(OPEN, `${OPEN} await repository?.commitFiles([], '');`), "git call other than a read: commitFiles"],
+    [GOOD_SOURCE.replace(OPEN, `${OPEN} repository?.updateState(repository.state.get());`), "git call other than a read: updateState"],
+    [GOOD_SOURCE.replace(OPEN, `${OPEN} await repository?.diffBetweenWithStats('HEAD', 'HEAD');`), "git call other than a read: diffBetweenWithStats"],
     [`import { spawn } from 'child_process';\n${GOOD_SOURCE}`, "import child_process"],
     [GOOD_SOURCE.replace("if (!root || !this.isMounted(root)) {", "if (!root) {"), "a worktree outside the window's folders is opened"],
     [GOOD_SOURCE.replace("if (generation !== this.generation || this._store.isDisposed) {", "if (this._store.isDisposed) {"), "a late answer for another worktree is not dropped"],
-    [GOOD_SOURCE.replace("if (!repository || !extUri.isEqual(repository.rootUri, root)) {", "if (!repository) {"), "a repository rooted elsewhere is accepted"],
+    [GOOD_SOURCE.replace("if (!repository || !roots.isEqual(roots.removeTrailingPathSeparator(repository.rootUri), root)) {", "if (!repository) {"), "a repository rooted elsewhere is accepted"],
+    [GOOD_SOURCE.replace(OPEN, "repository = await this.git.openRepository(root);"), "a folder that is not a repository root is opened"],
+    [GOOD_SOURCE.replace("const known = this.find(root);", "const known = undefined;"), "a repository the service already has is reopened"],
+    [GOOD_SOURCE.replace("if (this.tried.has(key) && !retry) {", "if (false) {"), "an unavailable root is opened again on every update"],
+    [GOOD_SOURCE.replace("this.tried.add(key);", "this.tried.add(key); void this.git.openRepository(root);"), "openRepository is called on more than one path"],
   ];
   for (const [source, expected] of breaks) {
     assert.notEqual(source, GOOD_SOURCE, `the mutation applies: ${expected}`);
     assert.ok(sourceViolations(source).includes(expected), `${expected}\n  got: ${sourceViolations(source).join("; ")}`);
   }
 });
-
-function moveNameFirst(src) {
-  const state = "\t\tconst state = append(element, $('span.axis-change-state'));\n";
-  const name = "\t\tappend(element, $('span.axis-change-name')).textContent = row.name;\n";
-  assert.ok(src.includes(state) && src.includes(name));
-  return src.replace(name, "").replace(state, `${name}${state}`);
-}
 
 function overlayFiles(dir, out = []) {
   for (const e of readdirSync(dir, { withFileTypes: true })) {

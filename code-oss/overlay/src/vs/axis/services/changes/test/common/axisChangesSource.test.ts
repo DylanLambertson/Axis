@@ -16,23 +16,32 @@ suite('Axis Changes source (fake IGitService)', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 	let git: FakeGitService;
 	let mounted: (root: URI) => boolean;
+	/** Folders that hold `.git`. */
+	let roots: Set<string>;
+	let rootChecks: string[];
 	let source: AxisChangesSource;
 	let seen: AxisChangesStatus[];
 
 	setup(() => {
 		git = new FakeGitService();
 		mounted = () => true;
-		source = store.add(new AxisChangesSource(git, root => mounted(root)));
+		roots = new Set([ROOT.path, OTHER.path]);
+		rootChecks = [];
+		source = store.add(new AxisChangesSource(git, root => mounted(root), async root => {
+			rootChecks.push(root.path);
+			return roots.has(root.path);
+		}));
 		seen = [];
 		store.add(source.onDidChange(() => seen.push(source.status)));
 	});
 
 	const names = () => flatRows(source.changes).map(r => `${r.group}:${r.name}`);
 
-	test('opens the worktree, lists its state and follows every state change', async () => {
+	test('opens a repository root, lists its state and follows every state change', async () => {
 		const repo = new FakeRepository(ROOT, state({ workingTreeChanges: [change.modified('a.ts')] }));
 		const opening = source.setRoot(ROOT);
 		assert.strictEqual(source.status, 'loading');
+		await flush();
 		await git.answer(repo);
 		await opening;
 		assert.deepStrictEqual(git.opened, [ROOT.path]);
@@ -47,22 +56,66 @@ suite('Axis Changes source (fake IGitService)', () => {
 		assert.deepStrictEqual(repo.writes, [], 'the source only reads `state`');
 	});
 
-	test('the same root again does not reopen; refresh does', async () => {
+	test('a repository the service already has is followed, never reopened (so no other reader loses it)', async () => {
+		const known = new FakeRepository(URI.file('/w/ws-a/'), state({ untrackedChanges: [change.added('k.txt')] }));
+		git.repositories.push(new FakeRepository(URI.file('/w/elsewhere')), known);
+		await source.setRoot(ROOT);
+		assert.deepStrictEqual(git.opened, []);
+		assert.deepStrictEqual(rootChecks, []);
+		assert.strictEqual(source.status, 'ready');
+		assert.deepStrictEqual(names(), ['untracked:k.txt']);
+		known.set(state());
+		assert.deepStrictEqual(names(), []);
+	});
+
+	test('a folder that is not a repository root is never opened (the git extension would open a parent)', async () => {
+		roots.delete(ROOT.path);
+		await source.setRoot(ROOT);
+		await flush();
+		assert.deepStrictEqual(rootChecks, [ROOT.path]);
+		assert.deepStrictEqual(git.opened, [], 'no openRepository call');
+		assert.strictEqual(source.status, 'unavailable');
+	});
+
+	test('a root found unavailable is not tried again on a list update or a revisit, only on refresh', async () => {
 		source.setRoot(ROOT);
+		await flush();
+		await git.answer(undefined);
+		assert.strictEqual(source.status, 'unavailable');
+		source.setRoot(ROOT);
+		source.setRoot(URI.file('/w/ws-a/'));
+		source.setRoot(OTHER);
+		await flush();
+		await git.answer(new FakeRepository(OTHER));
+		await source.setRoot(ROOT);
+		assert.strictEqual(source.status, 'unavailable', 'a revisit does not reopen');
+		assert.deepStrictEqual(git.opened, [ROOT.path, OTHER.path]);
+		assert.deepStrictEqual(seen.filter(s => s === 'loading').length, 2, 'no "Reading…" flash on revisits');
+
+		source.refresh();
+		await flush();
+		assert.deepStrictEqual(git.opened, [ROOT.path, OTHER.path, ROOT.path]);
+		await git.answer(new FakeRepository(ROOT));
+		assert.strictEqual(source.status, 'ready');
+	});
+
+	test('the same root again does not reopen', async () => {
+		source.setRoot(ROOT);
+		await flush();
 		await git.answer(new FakeRepository(ROOT));
 		source.setRoot(URI.file('/w/ws-a/'));
 		source.setRoot(ROOT);
+		await flush();
 		assert.deepStrictEqual(git.opened, [ROOT.path]);
-		source.refresh();
-		assert.deepStrictEqual(git.opened, [ROOT.path, ROOT.path]);
-		await git.answer(undefined);
 	});
 
 	test('a late answer for the previous worktree is dropped (no changes shown under another name)', async () => {
 		const a = new FakeRepository(ROOT, state({ untrackedChanges: [change.added('from-a.txt')] }));
 		const b = new FakeRepository(OTHER, state({ untrackedChanges: [change.added('from-b.txt', OTHER)] }));
 		source.setRoot(ROOT);
+		await flush();
 		source.setRoot(OTHER);
+		await flush();
 		await git.answer(a);
 		assert.strictEqual(source.status, 'loading', 'the answer for ws-a does not settle ws-b');
 		assert.deepStrictEqual(names(), []);
@@ -77,7 +130,9 @@ suite('Axis Changes source (fake IGitService)', () => {
 		const a = new FakeRepository(ROOT);
 		const b = new FakeRepository(OTHER);
 		source.setRoot(ROOT);
+		await flush();
 		source.setRoot(OTHER);
+		await flush();
 		await git.answer(b, true);
 		await git.answer(a);
 		b.set(state({ untrackedChanges: [change.added('still-b.txt', OTHER)] }));
@@ -86,69 +141,65 @@ suite('Axis Changes source (fake IGitService)', () => {
 		assert.deepStrictEqual(names(), ['untracked:still-b.txt']);
 	});
 
-	test('switching worktrees stops listening to the old repository', async () => {
+	test('switching worktrees stops listening to the old repository at once', async () => {
 		const a = new FakeRepository(ROOT);
 		source.setRoot(ROOT);
+		await flush();
 		await git.answer(a);
 		source.setRoot(OTHER);
 		a.set(state({ untrackedChanges: [change.added('while-loading.txt')] }));
 		assert.strictEqual(source.status, 'loading', 'ws-a stops being followed as soon as ws-b is asked for');
 		assert.deepStrictEqual(names(), []);
+		await flush();
 		await git.answer(new FakeRepository(OTHER));
 		const before = seen.length;
 		a.set(state({ untrackedChanges: [change.added('x.txt')] }));
 		assert.strictEqual(seen.length, before);
-		assert.deepStrictEqual(names(), []);
 		source.setRoot(undefined);
 		assert.strictEqual(source.status, 'idle');
 		assert.strictEqual(source.root, undefined);
 	});
 
-	test('no repository, a repository rooted elsewhere, or a failed open is unavailable', async () => {
+	test('no repository, one rooted elsewhere, or a failed open is unavailable', async () => {
 		source.setRoot(ROOT);
-		await git.answer(undefined);
-		assert.strictEqual(source.status, 'unavailable');
-
-		source.refresh();
+		await flush();
 		await git.answer(new FakeRepository(URI.file('/w'), state({ untrackedChanges: [change.added('ws-a/x.txt', URI.file('/w'))] })));
 		assert.strictEqual(source.status, 'unavailable', 'a parent repository is not this worktree');
 		assert.deepStrictEqual(names(), []);
 
 		source.refresh();
+		await flush();
 		await git.answer(new Error('delegate failed'));
 		assert.strictEqual(source.status, 'unavailable');
-
-		source.setRoot(ROOT);
-		assert.strictEqual(source.status, 'loading', 'after unavailable, the same root is tried again');
-		await git.answer(new FakeRepository(ROOT));
-		assert.strictEqual(source.status, 'ready');
 	});
 
-	test('a worktree outside the window\'s folders is never opened', async () => {
+	test('a worktree outside the window\'s folders is never looked at', async () => {
 		mounted = root => root.path === ROOT.path;
 		await source.setRoot(OTHER);
 		assert.strictEqual(source.status, 'notMounted');
-		assert.deepStrictEqual(git.opened, [], 'no openRepository call, so the git extension never prompts');
+		assert.deepStrictEqual([git.opened, rootChecks], [[], []]);
 		mounted = () => true;
 		source.refresh();
+		await flush();
 		assert.deepStrictEqual(git.opened, [OTHER.path]);
 		await git.answer(undefined);
 	});
 
 	test('nothing is shown or listened to after dispose', async () => {
-		const own = new AxisChangesSource(git, () => true);
+		const own = new AxisChangesSource(git, () => true, async () => true);
 		const repo = new FakeRepository(ROOT);
 		own.setRoot(ROOT);
+		await flush();
 		own.dispose();
 		await git.answer(repo);
 		assert.strictEqual(own.status, 'loading');
 		repo.set(state({ untrackedChanges: [change.added('x')] }));
 		assert.deepStrictEqual(flatRows(own.changes), []);
-		await flush();
 	});
 
 	test('rows carry the real file for the editor', async () => {
 		source.setRoot(ROOT);
+		await flush();
 		await git.answer(new FakeRepository(ROOT, state({ workingTreeChanges: [change.modified('src/x.ts')] })));
 		assert.strictEqual(flatRows(source.changes)[0].resource.toString(), file('src/x.ts').toString());
 	});

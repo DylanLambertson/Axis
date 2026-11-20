@@ -21,7 +21,7 @@
 	font-size: 12px;
 	color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
 	background: var(--vscode-button-secondaryBackground, transparent);
-	border: 1px solid var(--vscode-button-border, var(--vscode-panel-border, transparent));
+	border: 1px solid var(--vscode-input-border);
 	border-radius: 6px;
 	padding: 3px 10px;
 	white-space: nowrap;
@@ -318,7 +318,7 @@
 
 .monaco-workbench .axis-change-row {
 	display: grid;
-	grid-template-columns: 92px minmax(0, auto) minmax(0, 1fr);
+	grid-template-columns: minmax(92px, max-content) minmax(0, auto) minmax(0, 1fr);
 	align-items: center;
 	gap: 8px;
 	height: 24px;
@@ -333,6 +333,37 @@
 
 .monaco-workbench .axis-change-row[aria-selected="true"] {
 	background: var(--vscode-list-inactiveSelectionBackground);
+}
+
+.monaco-workbench .axis-changes-list:focus-within .axis-change-row[aria-selected="true"] {
+	background: var(--vscode-list-activeSelectionBackground);
+	color: var(--vscode-list-activeSelectionForeground);
+}
+
+.monaco-workbench .axis-changes-list .axis-change-row:focus {
+	outline-width: 2px;
+	outline-offset: -2px;
+}
+
+.monaco-workbench .axis-changes-retry {
+	align-self: flex-start;
+	margin: 0 12px 8px;
+}
+
+.monaco-workbench .axis-changes-retry[hidden] {
+	display: none;
+}
+
+/* Forced colours: the selected row and the button edge stay visible without theme colours. */
+@media (forced-colors: active) {
+	.monaco-workbench .axis-agent-view .axis-button {
+		border-color: ButtonBorder;
+	}
+
+	.monaco-workbench .axis-change-row[aria-selected="true"] {
+		outline: 1px solid Highlight;
+		outline-offset: -1px;
+	}
 }
 
 .monaco-workbench .axis-change-state {

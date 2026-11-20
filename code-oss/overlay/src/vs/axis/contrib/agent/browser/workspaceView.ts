@@ -2,7 +2,7 @@
  *  Copyright (c) 2026 Dylan Lambertson. All rights reserved.
  *--------------------------------------------------------------------------------------------*/
 
-import { $, append, Dimension } from '../../../../base/browser/dom.js';
+import { $, addDisposableListener, append, Dimension, EventType } from '../../../../base/browser/dom.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
@@ -30,6 +30,8 @@ export class AxisWorkspaceView extends Disposable {
 	private readonly changes: AxisChangesView;
 	private readonly activity: HTMLElement;
 	private entry: IAxisWorkspaceEntry | undefined;
+	/** The region that last held focus, which `focus()` returns to. */
+	private lastRegion: 'files' | 'changes' = 'files';
 
 	constructor(
 		private readonly terminals: AxisWorkspaceTerminals,
@@ -54,6 +56,8 @@ export class AxisWorkspaceView extends Disposable {
 		this._register(this.fileTree.onDidOpen(resource => this.open(resource)));
 		this.changes = this._register(instantiationService.createInstance(AxisChangesView));
 		side.appendChild(this.changes.element);
+		this._register(addDisposableListener(files, EventType.FOCUS_IN, () => { this.lastRegion = 'files'; }));
+		this._register(addDisposableListener(this.changes.element, EventType.FOCUS_IN, () => { this.lastRegion = 'changes'; }));
 
 		this.activity = append(body, $('section.axis-workspace-activity'));
 		this._register(this.terminals.onDidChange(() => this.renderHeader()));
@@ -136,9 +140,16 @@ export class AxisWorkspaceView extends Disposable {
 		this.viewService.reveal({ resource, selection: { startLineNumber: 1, startColumn: 1 } });
 	}
 
-	/** The workspace view's primary region in Phase 0: the Files tree (the composer comes with Phase 1b). */
+	/**
+	 * Focuses the region that last held focus: the Files tree (the default; the composer comes
+	 * with Phase 1b) or the Changes list, so coming back from a diff lands on the Changes list.
+	 */
 	focus(): void {
-		this.fileTree.focus();
+		if (this.lastRegion === 'changes') {
+			this.changes.focus();
+		} else {
+			this.fileTree.focus();
+		}
 	}
 
 	layout(_dimension: Dimension): void {

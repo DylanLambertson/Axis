@@ -3,10 +3,11 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { Schemas } from '../../../../base/common/network.js';
-import { extUri } from '../../../../base/common/resources.js';
+import { extUri as exactUri, extUriBiasedIgnorePathCase as extUri } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
 import { GitChange, GitRepositoryState } from '../../../../workbench/contrib/git/common/gitService.js';
+import { IAxisRevealDiff, IAxisRevealMultiDiff } from '../../view/common/axisRevealInput.js';
 import { cleanDisplayText } from '../../workspaces/common/worktreeDiscovery.js';
 
 /**
@@ -66,8 +67,10 @@ export interface IAxisChangeGroup {
 export interface IAxisChanges {
 	/** Only groups that have changes, in `CHANGE_GROUPS` order. */
 	readonly groups: readonly IAxisChangeGroup[];
-	/** Changes across every group. */
+	/** Changes across every group (a file staged and changed again counts twice). */
 	readonly total: number;
+	/** Distinct files across every group. */
+	readonly files: number;
 	/** Changes dropped because a path was not inside the worktree root. */
 	readonly outside: number;
 }
@@ -95,7 +98,7 @@ function kindOf(group: AxisChangeGroupId, change: GitChange): AxisChangeKind {
 	if (!change.modifiedUri) {
 		return 'deleted';
 	}
-	return extUri.isEqual(change.originalUri, change.modifiedUri) ? 'modified' : 'renamed';
+	return exactUri.isEqual(change.originalUri, change.modifiedUri) ? 'modified' : 'renamed'; // a case-only rename is a rename
 }
 
 /**
@@ -161,6 +164,7 @@ export function readChanges(state: GitRepositoryState | undefined, root: URI): I
 	const groups: IAxisChangeGroup[] = [];
 	let total = 0;
 	let outside = 0;
+	const files = new Set<string>();
 	for (const id of CHANGE_GROUPS) {
 		const list = state ? listOf(state, id) ?? [] : [];
 		const kept = list.filter(change => inside(root, change.uri) && inside(root, change.originalUri) && inside(root, change.modifiedUri));
@@ -169,11 +173,12 @@ export function readChanges(state: GitRepositoryState | undefined, root: URI): I
 			continue;
 		}
 		total += kept.length;
+		kept.forEach(change => files.add(extUri.getComparisonKey(change.modifiedUri ?? change.uri)));
 		const sorted = kept.map(change => ({ change, path: (change.modifiedUri ?? change.uri).path })).sort((a, b) => cmp(a.path, b.path));
 		const rows = sorted.slice(0, MAX_CHANGE_ROWS).map(({ change }) => rowOf(root, id, change));
 		groups.push({ id, rows, total: kept.length });
 	}
-	return { groups, total, outside };
+	return { groups, total, files: files.size, outside };
 }
 
 function cmp(a: string, b: string): number {
@@ -230,13 +235,41 @@ export function changeRowLabel(row: IAxisChangeRow): string {
 	return localize('axis.changes.row', "{0}, {1}: {2}, {3}{4}", changeKindLabel(row.kind), changeGroupLabel(row.group), row.name, where, from);
 }
 
-/** The summary line above the list, e.g. "3 files: Staged 1, Not staged 2". */
+/** The summary line above the list, e.g. "3 files: Staged 1, Not staged 2" (a file in two groups is one file). */
 export function changesSummary(changes: IAxisChanges): string {
 	if (!changes.total) {
 		return localize('axis.changes.none', "No changes in this worktree.");
 	}
 	const parts = changes.groups.map(group => localize('axis.changes.count', "{0} {1}", changeGroupLabel(group.id), group.total));
-	return changes.total === 1
+	return changes.files === 1
 		? localize('axis.changes.summaryOne', "1 file: {0}", parts.join(', '))
-		: localize('axis.changes.summary', "{0} files: {1}", changes.total, parts.join(', '));
+		: localize('axis.changes.summary', "{0} files: {1}", changes.files, parts.join(', '));
+}
+
+/** The editor tab title of a row's diff: the cleaned name and the fixed group text, never a raw path. */
+export function diffLabelOf(row: IAxisChangeRow): string {
+	return localize('axis.changes.diffLabel', "{0} ({1})", row.name, changeGroupLabel(row.group));
+}
+
+/** What a row opens: its own two sides, titled by `diffLabelOf`. */
+export function diffTargetOf(row: IAxisChangeRow): IAxisRevealDiff {
+	return { kind: 'diff', original: row.original, modified: row.modified, label: diffLabelOf(row) };
+}
+
+/** What "Review all" opens: every listed row's sides, each going to its worktree file. */
+export function reviewAllTargetOf(rows: readonly IAxisChangeRow[], workspaceLabel: string): IAxisRevealMultiDiff {
+	return {
+		kind: 'multiDiff',
+		label: localize('axis.changes.allLabel', "Changes in {0}", cleanDisplayText(workspaceLabel, MAX_CHANGE_NAME)),
+		items: rows.map(row => ({ original: row.original, modified: row.modified, resource: row.resource })),
+	};
+}
+
+/**
+ * The row to keep active after the list changed: the same file (by id) if it is still listed,
+ * otherwise the row now at the old position (clamped), or -1 for an empty list.
+ */
+export function nextActiveIndex(rows: readonly IAxisChangeRow[], activeId: string | undefined, activeIndex: number): number {
+	const kept = activeId === undefined ? -1 : rows.findIndex(row => row.id === activeId);
+	return kept >= 0 ? kept : Math.min(Math.max(activeIndex, 0), rows.length - 1);
 }

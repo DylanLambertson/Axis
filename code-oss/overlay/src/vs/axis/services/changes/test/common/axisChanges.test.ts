@@ -5,7 +5,7 @@
 import assert from 'assert';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { changeGroupLabel, changeKindGlyph, changeKindLabel, changeRowLabel, changesSummary, flatRows, IAxisChangeRow, MAX_CHANGE_FOLDER, MAX_CHANGE_NAME, MAX_CHANGE_ROWS, readChanges, toGitUri } from '../../common/axisChanges.js';
+import { changeGroupLabel, changeKindGlyph, changeKindLabel, changeRowLabel, changesSummary, diffLabelOf, diffTargetOf, flatRows, IAxisChangeRow, MAX_CHANGE_FOLDER, MAX_CHANGE_NAME, MAX_CHANGE_ROWS, nextActiveIndex, readChanges, reviewAllTargetOf, toGitUri } from '../../common/axisChanges.js';
 import { change, file, ROOT, state } from './axisChangesFixtures.js';
 
 /** What a row puts on screen and in its accessible name, in DOM order. */
@@ -49,6 +49,10 @@ suite('Axis Changes model', () => {
 	test('a file both staged and changed again is listed in both groups', () => {
 		const changes = readChanges(state({ indexChanges: [change.modified('a.ts')], workingTreeChanges: [change.modified('a.ts')] }), ROOT);
 		assert.deepStrictEqual(flatRows(changes).map(r => r.id), [`staged:${file('a.ts')}`, `unstaged:${file('a.ts')}`]);
+		assert.deepStrictEqual([changes.total, changes.files], [2, 1]);
+		assert.strictEqual(changesSummary(changes), '1 file: Staged 1, Not staged 1', 'the summary counts files, not changes');
+		const three = readChanges(state({ indexChanges: [change.modified('a.ts')], workingTreeChanges: [change.modified('a.ts')], untrackedChanges: [change.added('b.txt')] }), ROOT);
+		assert.strictEqual(changesSummary(three), '2 files: Staged 1, Not staged 1, Untracked 1');
 	});
 
 	test('diff sides match the SCM view: staged is HEAD against the index, not staged is the index against the file', () => {
@@ -114,7 +118,7 @@ suite('Axis Changes model', () => {
 	});
 
 	test('no state and an empty state list nothing', () => {
-		assert.deepStrictEqual(readChanges(undefined, ROOT), { groups: [], total: 0, outside: 0 });
+		assert.deepStrictEqual(readChanges(undefined, ROOT), { groups: [], total: 0, files: 0, outside: 0 });
 		const empty = readChanges(state(), ROOT);
 		assert.deepStrictEqual(empty.groups, []);
 		assert.strictEqual(changesSummary(empty), 'No changes in this worktree.');
@@ -143,6 +147,7 @@ suite('Axis Changes model', () => {
 			['C1 control', 'c\u0085\u009b.ts'],
 			['stacked combining marks', `z${'\u0301'.repeat(40)}.ts`],
 			['private use', 'p\uE000.ts'],
+			['letters that draw nothing', '\u3164\u115F\u2800\uFFA0.ts'],
 		];
 
 		for (const [what, name] of HOSTILE) {
@@ -185,6 +190,37 @@ suite('Axis Changes model', () => {
 			assert.deepStrictEqual(kinds.map(changeKindGlyph), ['M', 'A', 'D', 'R', 'U', '!']);
 			assert.deepStrictEqual(kinds.map(changeKindLabel), ['Modified', 'Added', 'Deleted', 'Renamed', 'Untracked', 'Conflict']);
 			assert.deepStrictEqual((['conflicts', 'staged', 'unstaged', 'untracked'] as const).map(changeGroupLabel), ['Conflicts', 'Staged', 'Not staged', 'Untracked']);
+		});
+	});
+
+	suite('what a row opens', () => {
+
+		test('a row opens its own sides, titled by its cleaned name and fixed group text, never a raw path', () => {
+			const [row] = flatRows(readChanges(state({ workingTreeChanges: [change.modified('src/e\u202Evil\n.ts')] }), ROOT));
+			const target = diffTargetOf(row);
+			assert.deepStrictEqual(target, { kind: 'diff', original: row.original, modified: row.modified, label: 'e\uFFFDvil\uFFFD.ts (Not staged)' });
+			assert.strictEqual(target.label, diffLabelOf(row));
+			assert.ok(!UNSAFE.test(target.label));
+			assert.ok(!target.label.includes('src'), 'no folder or path in the tab title');
+			assert.notStrictEqual(target.original?.toString(), target.modified?.toString(), 'left and right are different sides');
+		});
+
+		test('Review all lists every row\'s sides and goes to the worktree file; the title is cleaned', () => {
+			const rows = flatRows(readChanges(state({ indexChanges: [change.added('a.ts')], untrackedChanges: [change.added('b.txt')] }), ROOT));
+			const target = reviewAllTargetOf(rows, 'ws\u202Ea\n');
+			assert.strictEqual(target.kind, 'multiDiff');
+			assert.strictEqual(target.label, 'Changes in ws\uFFFDa\uFFFD');
+			assert.deepStrictEqual(target.items, rows.map(r => ({ original: r.original, modified: r.modified, resource: r.resource })));
+		});
+
+		test('the active row follows its file across updates, else keeps its place, else none', () => {
+			const before = flatRows(readChanges(state({ untrackedChanges: ['a', 'b', 'c', 'd'].map(n => change.added(n)) }), ROOT));
+			const after = flatRows(readChanges(state({ untrackedChanges: ['b', 'c', 'd'].map(n => change.added(n)) }), ROOT));
+			assert.strictEqual(nextActiveIndex(after, before[2].id, 2), 1, 'the same file, moved up');
+			assert.strictEqual(nextActiveIndex(after, before[0].id, 0), 0, 'a removed file: the row now in its place');
+			assert.strictEqual(nextActiveIndex(after, before[3].id, 9), 2, 'clamped to the last row');
+			assert.strictEqual(nextActiveIndex(after, undefined, 1), 1);
+			assert.strictEqual(nextActiveIndex([], before[0].id, 3), -1, 'an empty list has no active row');
 		});
 	});
 });
