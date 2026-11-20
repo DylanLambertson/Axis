@@ -38,6 +38,7 @@ for (const dir of readdirSync(packagesDir).sort()) {
 }
 suites.push(run("test/packages", process.execPath, ["--test", "test/packages/*.test.mjs"]));
 suites.push(run("test/code-oss/renderer-imports", process.execPath, ["--test", "test/code-oss/renderer-imports.test.mjs"]));
+suites.push(run("test/code-oss/net-gate", process.execPath, ["--test", "test/code-oss/net-gate.test.mjs"]));
 suites.push(run("test/gate", process.execPath, ["--test", "test/gate/*.test.mjs"]));
 
 console.log("Test summary");

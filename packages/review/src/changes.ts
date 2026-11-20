@@ -133,7 +133,8 @@ async function filterRead(at: DaemonGit, paths: readonly string[], found: Set<st
  * info/attributes, the user and the system file; no repository or global config; an empty work tree, so tracked
  * `.gitattributes` come from an index, never the live work tree):
  *  - `numstat`: `diff-tree --numstat` with the reviewed worktree tree's index, so whether a file is binary (`-diff`, `binary`,
- *    content) is what the reviewed tree says, and `diff.<x>.binary` in the repository config does not count;
+ *    content) is what the reviewed tree says, and `diff.<x>.binary` in the repository config does not count; core.bigFileThreshold
+ *    is pinned (as for the hunk diff), since the system config, still read here, could otherwise call every file over it binary;
  *  - `filtered`: paths that have a `filter` attribute. No program runs: check-attr only reads attribute files. Such a path is
  *    never offered (design §2): the snapshot ran with every filter off, so its bytes are the smudged ones and "modified" may
  *    only mean "not cleaned", and a clean filter must not run inside the daemon. Three indexes, and a path is filtered if any
@@ -155,7 +156,7 @@ export async function attributeReads(
   // A path that cannot be accepted anyway is not asked about (a `..` or absolute path would make check-attr refuse the batch).
   const asked = realIndex === undefined ? [] : paths.filter((p) => pathProblem(p) === undefined);
   const numstat = await onTree(deps, git, attrs, trees.worktree, async (at) => {
-    const out = expectComplete(await at(["diff-tree", ...COMMON, "--numstat", trees.against, trees.worktree]), "count the changed lines");
+    const out = expectComplete(await at(["-c", "core.bigFileThreshold=2g", "diff-tree", ...COMMON, "--numstat", trees.against, trees.worktree]), "count the changed lines");
     if (asked.length > 0) await filterRead(at, asked, found);
     return out;
   });
