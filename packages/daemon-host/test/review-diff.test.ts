@@ -1,6 +1,8 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
+import { MAX_REVIEW_FILES } from "@axis/protocol";
+import { reviewDepsOf, type ReviewBindingDeps } from "../src/bindings/review.js";
 import { files, gitUnavailable, reviewRig, sha256, type Client, type ReviewRig, type RigOptions } from "./review-rig.js";
 
 const SKIP = gitUnavailable();
@@ -73,19 +75,37 @@ test("a symlink is a changed file, bound by mode 120000, and is committed as a l
 });
 
 test("more files than the reply holds fails the review instead of listing part of it", { skip: SKIP ?? false }, async (t) => {
+  // At the wire's own bound (200): one file over is refused before any file is read, so this is fast however loaded the host.
   const { r, user } = await setup(t);
-  for (let i = 0; i < 201; i++) r.write(`bulk/file-${i}.txt`, `${i}\n`);
+  for (let i = 0; i < MAX_REVIEW_FILES + 1; i++) r.write(`bulk/file-${i}.txt`, `${i}\n`);
   const res = await diff(user, r.workspaceId);
   assert.equal(res.ok, false);
   assert.equal(res.error?.code, "E_INVALID_ARGUMENT");
   assert.equal(res.error?.details?.["reason"], "too_large");
   assert.equal(r.calls.recordReviewedTree, 0);
   assert.equal(r.trees.size, 0);
-  const exactly200 = await setup(t);
-  for (let i = 0; i < 200; i++) exactly200.r.write(`bulk/file-${i}.txt`, `${i}\n`);
-  const ok = await diff(exactly200.user, exactly200.r.workspaceId);
-  assert.equal(files(ok).length, 200);
+});
+
+test("a change set exactly at the file bound is listed whole with its tree, one more is refused", { skip: SKIP ?? false }, async (t) => {
+  // The same rule at a small injected bound, so the success side does not read 200 files against the method's timeout.
+  const limits = { maxFiles: 3 };
+  const atBound = await setup(t, { limits });
+  for (let i = 0; i < 3; i++) atBound.r.write(`bulk/file-${i}.txt`, `${i}\n`);
+  const ok = await diff(atBound.user, atBound.r.workspaceId);
+  assert.equal(files(ok).length, 3);
   assert.notEqual(ok.result?.["treeHash"], null);
+  const over = await setup(t, { limits });
+  for (let i = 0; i < 4; i++) over.r.write(`bulk/file-${i}.txt`, `${i}\n`);
+  const res = await diff(over.user, over.r.workspaceId);
+  assert.deepEqual([res.ok, res.error?.code, res.error?.details?.["reason"]], [false, "E_INVALID_ARGUMENT", "too_large"]);
+  assert.deepEqual([over.r.calls.recordReviewedTree, over.r.trees.size], [0, 0]);
+});
+
+test("the review's file bound never exceeds what the reply can list", () => {
+  const base = { git: {}, locator: {}, tempIndex: {}, fileExists: async () => false } as unknown as ReviewBindingDeps;
+  assert.equal(reviewDepsOf(base).limits?.maxFiles, MAX_REVIEW_FILES, "the default is the wire's bound");
+  assert.equal(reviewDepsOf({ ...base, limits: { maxFiles: 10_000 } }).limits?.maxFiles, MAX_REVIEW_FILES, "a larger limit is capped");
+  assert.equal(reviewDepsOf({ ...base, limits: { maxFiles: 3 } }).limits?.maxFiles, 3, "a smaller one is kept");
 });
 
 test("a file over the size cap is listed as skipped, at most 50 rows, with the full count", { skip: SKIP ?? false }, async (t) => {
