@@ -81,7 +81,7 @@ export const messagesThreadResponseSchema = z
   .strictObject({
     thread: threadSummarySchema,
     messages: messageListSchema,
-    /** The cursor for the next call: the last returned message's `seq`, or the request's `afterSeq` when none. */
+    /** The cursor for the next call: the last returned message's `seq`, or `min(afterSeq, thread.lastSeq)` when none. */
     nextSeq: countSchema,
     /** No visible message after `nextSeq` when the reply was built. */
     complete: z.boolean(),

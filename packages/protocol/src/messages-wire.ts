@@ -68,21 +68,19 @@ export const MAX_EXCERPT_LINES = 2_000;
 export const MAX_HOP = MAX_TAINT_HOP;
 /** Members of a thread's participant set: it only grows (section 4.2), so it is bounded; a send past it is `too_many_recipients`. */
 export const MAX_THREAD_PARTICIPANTS = 64;
-/** Most messages one `thread` or `read` reply holds, and most threads one `threads` reply holds. */
-export const MAX_READ_MESSAGES = 50;
-export const MAX_THREADS_LIST = 100;
+/**
+ * Most messages one `thread` or `read` reply holds, and most threads one `threads` reply holds. Both are set so that a
+ * reply at every cap, with every id at its schema maximum, passes the protocol's message walk (1 MiB, 10,000 nodes): a
+ * thread summary with 64 participants is about 200 nodes, and a message's ids, recipients and refs about 8.5 KiB.
+ */
+export const MAX_READ_MESSAGES = 32;
+export const MAX_THREADS_LIST = 32;
 /**
  * Escaping writes one UTF-16 unit as at most 8 (`\u{dfff}`; a 2-unit `\u{e007f}` is 9), so an escaped body is at most
  * 8 times the cap and is never cut. An excerpt's escaped text is cut at `MAX_EXCERPT_DISPLAY` (with `truncated`).
  */
 export const MAX_BODY_DISPLAY = MAX_BODY_CHARS * 8;
 export const MAX_EXCERPT_DISPLAY = 65_536;
-/**
- * All body, excerpt and display-path text one reply carries (UTF-16 units; at most 3 UTF-8 bytes each, so a reply at
- * every cap stays inside the 1 MiB message walk). One message at its largest (`MAX_MESSAGE_TEXT`) always fits, so a
- * reader always makes progress.
- */
-export const MAX_READ_TEXT = 262_144;
 
 /**
  * What message text refuses, and what `toMessageText` escapes: every control character except tab and line feed (so CR,
@@ -210,6 +208,11 @@ function unitsOf(r: object, key: string): number {
 }
 /** The most text one message can carry: an uncut body, the excerpts' cap and every ref's display path at its cap. */
 export const MAX_MESSAGE_TEXT = MAX_BODY_DISPLAY + MAX_EXCERPT_DISPLAY + MAX_REFS * MAX_REF_PATH;
+/**
+ * All body, excerpt and display-path text one reply carries (UTF-16 units, at most 3 UTF-8 bytes each): exactly one
+ * message at its largest, so a reader always makes progress, and 32 messages at every cap stay inside the 1 MiB walk.
+ */
+export const MAX_READ_TEXT = MAX_MESSAGE_TEXT;
 
 export const messageSchema = z
   .strictObject({

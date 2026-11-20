@@ -10,12 +10,10 @@ import {
   MAX_EXCERPT_LINES,
   MAX_HOP,
   MAX_TAINT_HOP,
-  MAX_MESSAGE_TEXT,
-  MAX_REF_PATH,
   MAX_READ_MESSAGES,
-  MAX_READ_TEXT,
   MAX_RECIPIENTS,
   MAX_THREAD_PARTICIPANTS,
+  MAX_THREADS_LIST,
   REFUSED_MESSAGE_TEXT,
   encodeMessagingId,
   messageBodyTextSchema,
@@ -124,7 +122,7 @@ test("message: a response refuses unescaped text, a forged sender and broken inv
   rejects(r, sendRes(msg({ sender: { kind: "user", verified: true, agentId: "agent-a" } })), "user with an agent id");
   rejects(r, sendRes(msg({ sender: { kind: "daemon", verified: true } })), "unknown sender kind");
   rejects(r, sendRes(msg({ hop: 1 }, userMessage)), "a user message with hop 1");
-  assert.equal(MAX_HOP, 8, "the design hop cap (IAC section 7.2)");
+  assert.equal(MAX_HOP, 8, "the design hop cap (IAC section 7.3)");
   assert.equal(MAX_HOP, MAX_TAINT_HOP, "one hop cap for messages and the taint core");
   accepts(r, sendRes(msg({ hop: 8 })), "hop at the cap");
   rejects(r, sendRes(msg({ hop: 9 })), "hop over the cap");
@@ -161,38 +159,13 @@ test("thread: only the requested thread's messages, in order, with a consistent 
   rejects(req("thread"), { threadId: THREAD, afterSeq: -1 }, "negative cursor");
 });
 
-const PER_MESSAGE = Math.floor(MAX_READ_TEXT / MAX_READ_MESSAGES);
-/** 16 refs with half-length paths: at full length (16 x 512 per message) 50 messages exceed the reply cap, and the daemon pages. */
-const REF_PATH = MAX_REF_PATH / 2;
-const MAX_REFS_TEXT = 16 * REF_PATH;
-/** A message at every cap: 16 recipients and expansions, 16 refs with 4 excerpts, the largest text. */
-function largest(i: number): Record<string, unknown> {
-  const excerpt = { type: "excerpt", workspaceId: "ws-a", displayPath: "\u4e00".repeat(REF_PATH), startLine: 1, endLine: MAX_EXCERPT_LINES, text: "", truncated: true };
-  return {
-    ...structuredClone(agentReply),
-    messageId: encodeMessagingId("message", Uint8Array.from({ length: 16 }, (_, j) => (i * 7 + j) & 255)),
-    seq: i + 1,
-    recipients: Array.from({ length: MAX_RECIPIENTS }, (_, j) => ({ agent: `agent-${j}` })),
-    expanded: Array.from({ length: MAX_RECIPIENTS }, (_, j) => ({ kind: "agent", agentId: `agent-${j}` })),
-    body: { format: "text", text: "\u4e00".repeat(PER_MESSAGE - MAX_REFS_TEXT) },
-    refs: [...Array.from({ length: 4 }, () => structuredClone(excerpt)), ...Array.from({ length: 12 }, () => ({ type: "file", workspaceId: "ws-a", displayPath: "\u4e00".repeat(REF_PATH) }))],
-  };
-}
-
-test("read: the largest reply passes the message walk (nodes, bytes) and one more unit of text is refused", () => {
-  const messages = Array.from({ length: MAX_READ_MESSAGES }, (_, i) => largest(i));
-  accepts(res("read"), { messages, more: true }, "50 messages at every cap");
-  accepts(res("thread"), { thread: { ...structuredClone(summary), lastSeq: 50 }, messages: structuredClone(messages), nextSeq: 50, complete: false }, "the same as a thread");
-  const over = structuredClone(messages);
-  (over[0] as { body: { text: string } }).body.text += "x".repeat(MAX_READ_TEXT - MAX_READ_MESSAGES * PER_MESSAGE + 1);
-  rejects(res("read"), { messages: over, more: true }, "one unit over the reply text cap");
-  rejects(res("read"), { messages: [...structuredClone(messages), largest(50)], more: true }, "51 messages");
+test("read: messages of the caller's threads, each thread in order, no message twice; a cursor only within a thread", () => {
   rejects(res("read"), { messages: [msg(), msg()], more: false }, "a message twice");
   accepts(res("read"), { messages: [msg({ threadId: THREAD2, seq: 9 }), msg({}, userMessage)], more: false }, "two threads interleaved, each in order");
-  // One message at its largest always fits in a reply, so a reader always makes progress.
-  assert.ok(MAX_MESSAGE_TEXT <= MAX_READ_TEXT);
+  rejects(res("read"), { messages: [msg({ seq: 9 }), msg({ seq: 3, messageId: MSG1 })], more: false }, "one thread out of order");
   rejects(req("read"), { afterSeq: 3 }, "a cursor without a thread");
   accepts(req("read"), {}, "the whole inbox");
+  rejects(req("read"), { limit: MAX_READ_MESSAGES + 1 }, "limit over the cap");
 });
 
 test("threads and markRead: unique, most recent first; markRead names one thread and a positive seq", () => {
@@ -200,7 +173,7 @@ test("threads and markRead: unique, most recent first; markRead names one thread
   accepts(res("threads"), { threads: [t(THREAD, "2026-11-20T10:00:05.000Z"), t(THREAD2, "2026-11-20T10:00:01.000Z")] }, "newest first");
   rejects(res("threads"), { threads: [t(THREAD, "2026-11-20T10:00:01.000Z"), t(THREAD2, "2026-11-20T10:00:05.000Z")] }, "oldest first");
   rejects(res("threads"), { threads: [t(THREAD, "2026-11-20T10:00:05.000Z"), t(THREAD, "2026-11-20T10:00:01.000Z")] }, "a thread twice");
-  rejects(req("threads"), { limit: 101 }, "limit over the cap");
+  rejects(req("threads"), { limit: MAX_THREADS_LIST + 1 }, "limit over the cap");
   rejects(req("markRead"), { threadId: THREAD, throughSeq: 0 }, "seq 0");
   rejects(req("markRead"), { threadId: THREAD }, "no seq");
   rejects(req("markRead"), { threadId: THREAD, throughSeq: 3, agentId: "agent-b" }, "marking for someone else");
