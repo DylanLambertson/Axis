@@ -157,3 +157,26 @@ test("when the snapshot is untrusted, the shown line counts come from it, not fr
     f.cleanup();
   }
 });
+
+test("a small core.bigFileThreshold from outside the repository (as the system config could set) does not make a file binary", async () => {
+  const f = fixture();
+  try {
+    f.write("a.txt", BASE.replace("l2\n", "L2\n"));
+    // The lowest-ranked `-c` stands in for the system config, the one config file the private reads still see.
+    let lowered = 0;
+    const inner = f.deps.git.runner;
+    const runner = {
+      run: (req: GitRunRequest) => {
+        if (!req.argv.includes("--numstat")) return inner.run(req);
+        lowered += 1;
+        return inner.run({ ...req, argv: ["-c", "core.bigFileThreshold=8", ...req.argv] });
+      },
+    };
+    const a = (await start(f, { ...f.deps, git: { ...f.deps.git, runner } })).file("a.txt");
+    assert.ok(lowered > 0, "fixture: the line counts were taken");
+    assert.equal(a.kind, "text");
+    assert.deepEqual([a.additions, a.deletions], [1, 1]);
+  } finally {
+    f.cleanup();
+  }
+});

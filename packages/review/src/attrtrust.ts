@@ -86,7 +86,8 @@ export type AttributeSnapshot = { readonly untrusted: true; readonly read?: Attr
  * macro as it is now; deleting a filter that only the user's file sets makes the stored file look unfiltered; the system file is
  * found with `git var GIT_ATTR_SYSTEM` (git 2.42 and later): on an older git it cannot be named, so git reads it LIVE
  * (`liveSystemAttributes`) rather than not at all; a rule it sets is still seen, but a macro defined there is not judged and a
- * swap of that file (which needs administrator rights) is not excluded.
+ * swap of that file is not excluded (it needs write access to git's install prefix: administrator rights for a system git, but
+ * none beyond the user's own for a git installed under the user's account).
  */
 export async function snapshotAttributes(deps: ReviewDeps, git: ReviewGit, w: WorktreeRef, objectFormat: "sha1" | "sha256"): Promise<AttributeSnapshot> {
   const files = await outsideFiles(deps, git, w);
