@@ -42,6 +42,8 @@ export interface ComposerRunRecord extends ComposerRunMeta {
   readonly lastSeq: number;
   readonly activityRows: number;
   readonly activityBytes: number;
+  /** IAC-T (PV-M0, schema version 8): the run received content from a listed taint source. Never goes back to false. */
+  readonly tainted: boolean;
 }
 export type ActivityType = (typeof ACTIVITY_TYPES)[number];
 export interface ActivityRecord {
@@ -91,6 +93,7 @@ const parse = <T>(schema: z.ZodType<T>, value: unknown, what: string): T => {
 const ZERO: BudgetTotals = Object.freeze({ tokens: 0, costMicroUsd: 0, requests: 0, unpricedRequests: 0 });
 
 interface RunRow {
+  tainted: number;
   run_id: string;
   mode: ComposerRunMeta["mode"];
   provider_id: string;
@@ -149,7 +152,24 @@ export class ComposerRecords {
       lastSeq: row.last_seq,
       activityRows: row.activity_rows,
       activityBytes: row.activity_bytes,
+      tainted: row.tainted === 1,
     };
+  }
+
+  /**
+   * IAC-T: record that the run is tainted, before the tainted content reaches its model (the host taints the run in memory
+   * first). Idempotent; the schema refuses clearing it. Throws `E_NOT_FOUND` for a run with no composer record, so a taint
+   * that cannot be recorded never goes unnoticed.
+   */
+  markTainted(id: string): void {
+    const r = parse(runId, id, "run id");
+    withTransaction(this.#db, () => one(this.#db.prepare("UPDATE composer_runs SET tainted = 1 WHERE run_id = ?").run(r)));
+  }
+
+  /** Whether the run is recorded as tainted; false for a run with no composer record. */
+  tainted(id: string): boolean {
+    const row = this.#db.prepare("SELECT tainted FROM composer_runs WHERE run_id = ?").get(parse(runId, id, "run id")) as { tainted: number } | undefined;
+    return row?.tainted === 1;
   }
 
   recordUsage(id: string, usage: ComposerUsageRecord): void {

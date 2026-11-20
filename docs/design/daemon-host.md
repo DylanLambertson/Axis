@@ -154,6 +154,7 @@ Tier and `sideEffect` are the contract's declared minimum; policy may raise, nev
 | | `stop` | write | 2 | req | | | user | `RunSupervisor.stop` | 1a, new |
 | | `get`, `list` | read | 0 | none | | | user | `RunSupervisor` queries; `list` takes a `limit` of 1 to 500 (the contract limit); `RunSupervisor.list` itself accepts up to 1000 and the handler clamps to the contract limit. There is no cursor: a `runs.list` cursor is the named follow-up in `docs/packages.md` | 1a, new |
 | `axis.review/1` | `diff` | read | 1 | none | | | user | `ReviewService` | 1a, new |
+| | `content` (bounded, escaped view of what a file would commit; ticket RV-CONTENT, `review-core.md` §6b) | read | 1 | none | | | user (not on the web host) | `ReviewService` (`readNewBlob`) | 1a, new |
 | | `complete` (run REVIEWING to COMPLETED) | write | 2 | req | | | **user only**, mints `UserPrincipal` | journal | 1a, new |
 | `axis.git/1` (**decided:** a separate contract) | `pushPlan` | read | 1 | none | | | user | `git-ops` `planPush` | 1a, new |
 | | `commit` | write | 2 | req | | yes | user | `executeCommit` | 1a, new |
