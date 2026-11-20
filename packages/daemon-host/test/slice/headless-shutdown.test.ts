@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
@@ -16,6 +16,9 @@ const SUITE_TIMEOUT_MS = 240_000;
  * Design section 8, steps 3 and 4, on the composed host: (3) nothing writes after the final anchor, also not a CLI run that ends
  * while the acknowledgement is awaited, and (4) an anchor the supervisor never acknowledged is reported by the exit code (1).
  */
+/** The host waits this long for the acknowledgement the test holds; the test releases it by condition, so this only has to outlast a loaded machine. */
+const HELD_ACK_WAIT_MS = 120_000;
+
 describe("headless slice: shutdown", { skip: gitSkipReason(), timeout: SUITE_TIMEOUT_MS }, () => {
   let fx: GitFixture;
   let scratch: string;
@@ -30,13 +33,22 @@ describe("headless slice: shutdown", { skip: gitSkipReason(), timeout: SUITE_TIM
     rmSync(scratch, { recursive: true, force: true });
   });
 
+  /** Whether a process still exists (signal 0 only probes). */
+  const alive = (pid: number): boolean => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (e) {
+      return (e as NodeJS.ErrnoException).code === "EPERM";
+    }
+  };
   const stop = async (sup: TestSupervisor) => {
     if (process.platform === "win32") sup.shutdown();
     else sup.kill("SIGTERM");
     return sup.exited;
   };
-  const boot = async (agents: unknown, breakPutFile?: string) => {
-    const h = await startHost(fx, { agents, ...(breakPutFile === undefined ? {} : { breakPutFile }) });
+  const boot = async (agents: unknown, breakPutFile?: string, finalWaitMs?: number) => {
+    const h = await startHost(fx, { agents, ...(breakPutFile === undefined ? {} : { breakPutFile }), ...(finalWaitMs === undefined ? {} : { finalWaitMs }) });
     await h.ready;
     trustWindow(h.sup);
     const projectId = await registerProject(h.sup, fx.repo);
@@ -45,22 +57,31 @@ describe("headless slice: shutdown", { skip: gitSkipReason(), timeout: SUITE_TIM
 
   test("a run that ends while the final anchor is awaited writes nothing after it", async () => {
     const release = join(scratch, "release");
-    const { sup, projectId, client } = await boot([{ id: "gate", label: "Gate CLI", command: [process.execPath, FAKE_CLI], args: [join(scratch, "gate.json"), "until-file", release] }]);
+    const dump = join(scratch, "gate.json");
+    const { sup, projectId, client } = await boot([{ id: "gate", label: "Gate CLI", command: [process.execPath, FAKE_CLI], args: [dump, "until-file", release] }], undefined, HELD_ACK_WAIT_MS);
     const ws = await createWorkspace(client, projectId, "Shutdown");
     const started = await client.ok<{ run: { runId: string } }>("axis.cli-runs", "start", { workspaceId: ws.id, agentId: "gate" }, true);
     await awaitRun(client, started.run.runId, "RUNNING");
-    await until(() => sup.anchorPuts.length > 0, "the first anchor");
+    await until(() => existsSync(dump) && sup.anchorPuts.length > 0, "the CLI's pid file and the first anchor");
+    const cliPid = (JSON.parse(readFileSync(dump, "utf8")) as { pid: number }).pid;
     sup.holdAcks = true; // the final put will wait for its acknowledgement
     client.close();
     const exited = stop(sup);
-    writeFileSync(release, "go"); // the CLI would now end by itself, during the wait
-    await new Promise((r) => setTimeout(r, 300)); // only gives a late write the chance to happen; the assertions do not depend on it
-    const last = sup.anchorPuts[sup.anchorPuts.length - 1];
-    assert.ok(last !== undefined);
+    writeFileSync(release, "go"); // the CLI ends now (by itself or killed by the host), while the acknowledgement is awaited
+    await until(() => !alive(cliPid), "the CLI process to be gone"); // a condition, not a delay
+    // Whichever put was the final one, it is the newest the host ever sent (the anchor manager is halted): nothing may follow it.
     sup.holdAcks = false;
-    sup.ack(last.seq, last.hash);
+    const newest = () => sup.anchorPuts[sup.anchorPuts.length - 1];
+    assert.ok(newest() !== undefined);
+    try {
+      sup.ack(newest()!.seq, newest()!.hash); // a put that arrives later is acknowledged on arrival
+    } catch {
+      // The channel is closed: the host has nothing left to wait for and is ending; its exit is awaited below.
+    }
     const exit = await exited;
     assert.ok(exit.code === 0 || exit.code === 1, "the host ended");
+    const last = newest();
+    assert.ok(last !== undefined);
     const db = openStopped(sup.dataDir, join(scratch, "stopped-a"));
     const rows = auditRows(db);
     db.close();

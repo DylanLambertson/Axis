@@ -65,6 +65,35 @@ const isHttpsOrigin = (o: string): boolean => {
   }
 };
 
+/** Where a connection's credential is stored (PRV-1): the vault's closed backend ids (`BACKEND_IDS` in `@axis/vault`). */
+export const CREDENTIAL_BACKENDS = ["macos_keychain", "windows_dpapi", "gnome_libsecret", "kwallet", "kwallet5", "kwallet6", "basic_text", "unknown", "memory"] as const;
+/** `os_protected`: the OS guards the key; `none`: no real protection; `ephemeral`: never persisted (the vault's `PROTECTIONS`). */
+export const CREDENTIAL_PROTECTIONS = ["os_protected", "none", "ephemeral"] as const;
+
+/**
+ * The storage of a connection's credential, for the UI (PRV-1). Never the credential. `stored`: the backend and
+ * protection the vault recorded when it was stored, whether it was stored on a weak backend with the user's consent,
+ * and whether the backend now differs. `missing`: nothing is stored; the current backend and whether a store would be
+ * allowed, need consent or be refused. `unavailable`: the vault could not answer (a locked or failing keyring, too slow).
+ */
+export const providerCredentialSchema = z.discriminatedUnion("state", [
+  z.strictObject({
+    state: z.literal("stored"),
+    backend: z.enum(CREDENTIAL_BACKENDS),
+    protection: z.enum(CREDENTIAL_PROTECTIONS),
+    weakConsent: z.boolean(),
+    backendChanged: z.boolean(),
+  }),
+  z.strictObject({
+    state: z.literal("missing"),
+    backend: z.enum(CREDENTIAL_BACKENDS),
+    protection: z.enum(CREDENTIAL_PROTECTIONS),
+    policy: z.enum(["allowed", "consent_required", "refused"]),
+  }),
+  z.strictObject({ state: z.literal("unavailable") }),
+]);
+export type ProviderCredential = z.infer<typeof providerCredentialSchema>;
+
 export const providerInfoSchema = z
   .strictObject({
     /** Stable adapter id such as `anthropic` or `mock` (the pattern `@axis/providers` enforces). */
@@ -92,6 +121,8 @@ export const providerInfoSchema = z
       origin: z.string().max(256).refine(isHttpsOrigin, "an https origin").optional(),
       description: destinationTextSchema,
     }),
+    /** Where the connection's credential is stored (PRV-1); absent for an adapter that needs none (the mock). */
+    credential: providerCredentialSchema.optional(),
   })
   .refine((p) => p.status === "ready" || p.models.length === 0, "models only on a ready connection");
 export type ProviderInfo = z.infer<typeof providerInfoSchema>;

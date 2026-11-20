@@ -7,7 +7,8 @@ import { Journal, type ActivityBounds } from "@axis/journal";
 import type { RunEvent } from "@axis/protocol";
 import type { MockProviderOptions, MockReply, RunBudgetLimits, ValidRequest } from "@axis/providers";
 import type { Policy } from "@axis/daemon";
-import { AGENT_PAYLOAD_ALLOWLIST, createAgentBinding, createComposerService, type AgentBinding, type AgentBindingDeps, type ComposerService, type PreviewScanner, type ToolCaps } from "../src/index.js";
+import { createProvidersBinding, type AnthropicConnectionOptions, type ProvidersBinding } from "../src/bindings/providers.js";
+import { AGENT_PAYLOAD_ALLOWLIST, PROVIDERS_PAYLOAD_ALLOWLIST, createAgentBinding, createComposerService, type AgentBinding, type AgentBindingDeps, type ComposerService, type PreviewScanner, type ToolCaps } from "../src/index.js";
 import { ProjectMutex } from "../src/worktrees/project-mutex.js";
 import { rig, type Client, type Rig } from "./approvals-rig.js";
 
@@ -24,6 +25,10 @@ export interface ComposerRig {
   readonly audit: AuditLog;
   readonly service: ComposerService;
   readonly agent: AgentBinding;
+  /** The network providers over the vault (C6); empty without `anthropic`. */
+  readonly providers: ProvidersBinding;
+  /** The one redactor of the rig: the providers register keys with it, the service redacts stored events with it. */
+  readonly redactor: Redactor;
   /** The project mutex every composer write of the rig takes (the host's worktrees mutex). */
   readonly mutex: ProjectMutex;
   readonly workspaceId: string;
@@ -59,6 +64,15 @@ export interface ComposerRigOptions {
   readonly onRequest?: (n: number, req: ValidRequest) => void;
   /** The broker's file system, built over the rig's directories (to inject a race inside a write). */
   readonly wrapFs?: (paths: { readonly root: string; readonly outside: string }) => NonNullable<AgentBindingDeps["wrapFs"]>;
+  /** An Anthropic connection over the vault (C6), registered next to the mock. */
+  readonly anthropic?: AnthropicConnectionOptions;
+  /** A real worktree (a git fixture's linked worktree) instead of the rig's plain directory. */
+  readonly worktree?: { readonly workTree: string; readonly gitDir: string };
+  /** The host environment every tool child's PTY-2 environment is built from (built from the rig's directories). */
+  readonly env?: (paths: { readonly root: string; readonly outside: string; readonly base: string }) => Readonly<Record<string, string | undefined>>;
+  /** C3: the WT-2 guard (offers `run_command`) and the command bounds. */
+  readonly commandGuard?: AgentBindingDeps["commandGuard"];
+  readonly commandLimits?: AgentBindingDeps["commandLimits"];
 }
 
 const SHA = "b".repeat(40);
@@ -67,12 +81,13 @@ export async function composerRig(options: ComposerRigOptions): Promise<Composer
   const r = await rig(options.policy === undefined ? {} : { policy: options.policy });
   const user = await r.connect();
   const base = realpathSync(mkdtempSync(join(tmpdir(), "axis-composer-")));
-  const root = join(base, "wt");
+  const root = options.worktree?.workTree ?? join(base, "wt");
+  const gitDir = options.worktree?.gitDir ?? join(root, ".git");
   const outside = join(base, "outside");
   mkdirSync(join(root, "src"), { recursive: true });
   mkdirSync(outside);
   const db = openDatabase(options.dbPath ?? ":memory:");
-  const audit = new AuditLog(db, { payloadAllowlist: AGENT_PAYLOAD_ALLOWLIST });
+  const audit = new AuditLog(db, { payloadAllowlist: { ...AGENT_PAYLOAD_ALLOWLIST, ...PROVIDERS_PAYLOAD_ALLOWLIST } });
   const journal = Journal.open(db, { audit });
   const ws = journal.createWorkspace({ projectId: "p", branch: "axis/x", baseRef: "main", baseSha: SHA, createdBy: "user" }).value;
   journal.transitionWorkspace(ws.id, "READY");
@@ -85,22 +100,28 @@ export async function composerRig(options: ComposerRigOptions): Promise<Composer
     if ((req.tools?.length ?? 0) > 0) tools = true;
     return reply;
   });
+  const redactor = new Redactor();
+  const sink = { append: (e: Parameters<AuditLog["append"]>[0]) => (options.failAudit?.(e.action) === true ? ((): never => { throw new Error("disk full"); })() : audit.append(e)) };
+  const providers = createProvidersBinding({ redactor, audit: sink, ...(options.anthropic === undefined ? {} : { anthropic: options.anthropic }) });
   const agent = createAgentBinding({
     // Every workspace of the journal shares the one directory (enough for the service's limits; containment uses its id).
-    locator: { locate: async (id) => (journal.getWorkspace(id) !== undefined ? { workTree: root, gitDir: join(root, ".git") } : Promise.reject(new Error("unknown"))) },
+    locator: { locate: async (id) => (journal.getWorkspace(id) !== undefined ? { workTree: root, gitDir } : Promise.reject(new Error("unknown"))) },
     repositoryRoots: () => [],
-    audit: { append: (e) => (options.failAudit?.(e.action) === true ? ((): never => { throw new Error("disk full"); })() : audit.append(e)) },
-    redactor: new Redactor(),
-    env: () => ({ PATH: "/usr/bin:/bin", HOME: base }),
+    audit: sink,
+    redactor,
+    providers: providers.providers,
+    env: () => options.env?.({ root, outside, base }) ?? { PATH: "/usr/bin:/bin", HOME: base },
     approvals: r.approvals.runs,
     now: () => r.clock.now(),
     mock: { ...options.mock, replies, respond: () => ({ kind: "text", text: "no more replies" }) },
     ...(options.previewScanner === undefined ? {} : { previewScanner: options.previewScanner }),
     writeLock: (_workspaceId, fn, signal) => mutex.exclusive("p", fn, signal),
     ...(options.wrapFs === undefined ? {} : { wrapFs: options.wrapFs({ root, outside }) }),
+    ...(options.commandGuard === undefined ? {} : { commandGuard: options.commandGuard }),
+    ...(options.commandLimits === undefined ? {} : { commandLimits: options.commandLimits }),
   });
   const service = createComposerService({
-    redactor: new Redactor(),
+    redactor,
     journal,
     engine: agent,
     now: () => r.clock.now(),
@@ -117,6 +138,8 @@ export async function composerRig(options: ComposerRigOptions): Promise<Composer
     audit,
     service,
     agent,
+    providers,
+    redactor,
     mutex,
     workspaceId: ws.id,
     root,
@@ -149,11 +172,18 @@ export function allEvents(c: ComposerRig, runId: string): RunEvent[] {
   return c.service.events(runId, 0, 200).events;
 }
 
-/** Wait (event loop turns, never wall-clock bounds) until `pred` holds. */
-export async function until(pred: () => boolean, turns = 2000): Promise<void> {
-  for (let i = 0; i < turns; i++) {
+/** A hang guard only (a stuck run fails the test instead of hanging CI); a run that is making progress never reaches it, however loaded the host. */
+const HANG_GUARD_MS = 120_000;
+
+/**
+ * Wait until `pred` holds. A run does real file system and timer work, whose completion on a loaded host is not a count of event
+ * loop turns, so the wait is by condition: it yields to the event loop between tries and gives up only at the hang guard.
+ */
+export async function until(pred: () => boolean, guardMs = HANG_GUARD_MS): Promise<void> {
+  const deadline = process.hrtime.bigint() + BigInt(guardMs) * 1_000_000n;
+  for (let turn = 0; ; turn++) {
     if (pred()) return;
-    await new Promise((res) => setImmediate(res));
+    if (process.hrtime.bigint() > deadline) throw new Error("condition not reached");
+    await new Promise((res) => (turn % 64 === 63 ? setTimeout(res, 1) : setImmediate(res)));
   }
-  throw new Error("condition not reached");
 }

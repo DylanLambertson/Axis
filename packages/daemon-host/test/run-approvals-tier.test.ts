@@ -11,7 +11,7 @@ import { createRunApprovals, runNativeDetail, type RunApprovalInput, type RunApp
 const RUN = "3f2c7a10-1b2c-4d5e-8f90-a1b2c3d4e5f6";
 const DIGEST = "ab".repeat(32);
 const ID = "c".repeat(43);
-const input = (over: Partial<RunApprovalInput> = {}): RunApprovalInput => ({ runId: RUN, windowId: "win-1", tool: "run_command", tier: "destructive", digest: DIGEST, reasons: [], ...over });
+const input = (over: Partial<RunApprovalInput> = {}): RunApprovalInput => ({ runId: RUN, windowId: "win-1", tool: "delete_file", tier: "destructive", digest: DIGEST, reasons: [], ...over });
 
 function stub(opts: { issuedTier?: number; native?: boolean; startFails?: boolean; noNative?: boolean; full?: boolean } = {}) {
   const log: string[] = [];
@@ -21,7 +21,7 @@ function stub(opts: { issuedTier?: number; native?: boolean; startFails?: boolea
     issue: ((req: { tier: number }) => {
       log.push(`issue:${req.tier}`);
       const tier = opts.issuedTier ?? req.tier;
-      return { challengeId: ID, digest: "d".repeat(64), tier, nativeConfirmationRequired: opts.native ?? tier >= 4, targetSummary: "Composer tool run_command" } as unknown as Challenge;
+      return { challengeId: ID, digest: "d".repeat(64), tier, nativeConfirmationRequired: opts.native ?? tier >= 4, targetSummary: "Composer tool delete_file" } as unknown as Challenge;
     }) as never,
     takeNativeProof: () => "p".repeat(43),
     withdraw: (() => void log.push("withdraw")) as never,
@@ -105,7 +105,7 @@ test("consume is bound to the run's requester, its connection and the call diges
   assert.equal(s.consumed.length, 1, "spent once");
   assert.deepEqual(s.consumed[0]?.caller, { actor: `agent:composer.${RUN}`, connectionId: `run.${RUN}` });
   assert.equal(s.consumed[0]?.context["currentContentDigest"], DIGEST);
-  assert.deepEqual(s.consumed[0]?.context["args"], { runId: RUN, tool: "run_command", digest: DIGEST, tier: "destructive" });
+  assert.deepEqual(s.consumed[0]?.context["args"], { runId: RUN, tool: "delete_file", digest: DIGEST, tier: "destructive" });
   assert.equal(s.log.includes("end"), true, "the dialog's wait is ended after the spend");
 });
 
@@ -124,10 +124,10 @@ test("fails closed with no native port, or when the dialog cannot be started; th
 
 test("the native detail is built from daemon-derived values only and refuses a tool name it cannot vouch for", () => {
   const preview = { tier: "destructive" as const, protected: false, content: { bytes: 3, sha256: "0f".repeat(32), head: "rm -rf /", truncated: false, findings: [] } };
-  assert.equal(runNativeDetail({ tool: "run_command", tier: "destructive", preview }), "run_command (destructive), 3 bytes, SHA-256 0f0f0f0f0f0f0f0f");
+  assert.equal(runNativeDetail({ tool: "delete_file", tier: "destructive", preview }), "delete_file (destructive), 3 bytes, SHA-256 0f0f0f0f0f0f0f0f");
   assert.equal(runNativeDetail({ tool: "Run Command: safe", tier: "destructive" }), undefined);
-  assert.equal(runNativeDetail({ tool: "run_command", tier: "root" }), undefined);
-  assert.equal(runNativeDetail({ tool: "run_command", tier: "privileged" }), "run_command (privileged)");
+  assert.equal(runNativeDetail({ tool: "delete_file", tier: "root" }), undefined);
+  assert.equal(runNativeDetail({ tool: "delete_file", tier: "privileged" }), "delete_file (privileged)");
 });
 
 test("a full native bridge refuses before anything is issued: no challenge, no audit row, no quota used", async () => {
@@ -182,9 +182,9 @@ test("the native line keeps the protected label and the closing parenthesis whol
 
 test("a size or hash the daemon cannot vouch for is left out of the native detail", () => {
   const content = { bytes: 3, sha256: "0f".repeat(32), head: "", truncated: false, findings: [] };
-  const detail = (c: Partial<typeof content>) => runNativeDetail({ tool: "run_command", tier: "destructive", preview: { tier: "destructive", protected: false, content: { ...content, ...c } } });
+  const detail = (c: Partial<typeof content>) => runNativeDetail({ tool: "delete_file", tier: "destructive", preview: { tier: "destructive", protected: false, content: { ...content, ...c } } });
   for (const bad of [{ bytes: -1 }, { bytes: Number.NaN }, { bytes: 1.5 }, { sha256: "0F".repeat(32) }, { sha256: "0f".repeat(31) }]) {
-    assert.equal(detail(bad), "run_command (destructive)", JSON.stringify(bad));
+    assert.equal(detail(bad), "delete_file (destructive)", JSON.stringify(bad));
   }
-  assert.equal(detail({}), "run_command (destructive), 3 bytes, SHA-256 0f0f0f0f0f0f0f0f");
+  assert.equal(detail({}), "delete_file (destructive), 3 bytes, SHA-256 0f0f0f0f0f0f0f0f");
 });

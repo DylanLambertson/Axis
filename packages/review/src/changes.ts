@@ -3,8 +3,9 @@
 import { escapeForDisplay, escapeWithInfo, pathProblem, resolveLinkTarget, symlinkEscapes } from "./display.js";
 import { invalid, unavailable } from "./errors.js";
 import type { WorktreeRef } from "@axis/git-ops";
-import { OBJECT_ID, expectComplete, expectOk, type ReviewGit } from "./gitcall.js";
-import { attributeSources } from "./attrtrust.js";
+import { OBJECT_ID, expectComplete, expectOk, gitPaths, type ReviewGit } from "./gitcall.js";
+import type { AttributeRead, DaemonGit } from "@axis/git-ops";
+import { snapshotAttributes } from "./attrtrust.js";
 import { acquireIndex } from "./tempindex.js";
 import type { ChangeKind, ChangeStatus, ProtectedPathMatcher, ReviewDeps, ReviewFile, ReviewLimits } from "./types.js";
 
@@ -101,30 +102,22 @@ async function objectSizes(git: ReviewGit, oids: readonly string[]): Promise<Map
   return sizes;
 }
 
-/**
- * Paths that have a `filter` attribute, in the worktree's attribute files or the index's. No program runs: check-attr only
- * reads attribute files. Such a path is never offered (design §2): the snapshot ran with every filter off, so its bytes are
- * the smudged ones and "modified" may only mean "not cleaned", and a clean filter must not run inside the daemon.
- * (A filter literally named `unspecified` or `set` or `unset` cannot be told from no filter by check-attr; known limit.)
- */
-export async function filteredPaths(git: ReviewGit, paths: readonly string[] | string[], baseIndex: string): Promise<Set<string>> {
-  const found = new Set<string>();
-  // A path that cannot be accepted anyway is not asked about (a `..` or absolute path would make check-attr refuse the batch).
-  paths = paths.filter((p) => pathProblem(p) === undefined);
-  if (paths.length === 0) return found;
+/** Runs `fn` with a caller of the snapshot `attrs` whose index holds `tree` (a temporary index, released afterwards). */
+async function onTree<T>(deps: ReviewDeps, git: ReviewGit, attrs: AttributeRead, tree: string, fn: (at: DaemonGit) => Promise<T>): Promise<T> {
+  const idx = await acquireIndex(deps.tempIndex);
+  try {
+    expectOk(await git(["read-tree", tree], { index: idx.path }), "read a tree's attribute files");
+    return await fn(await attrs.withIndex(idx.path));
+  } finally {
+    await idx.release();
+  }
+}
+
+/** Adds to `found` the paths that `at`'s index gives a `filter` driver, asked with core.ignorecase both ways. */
+async function filterRead(at: DaemonGit, paths: readonly string[], found: Set<string>): Promise<void> {
   const stdin = `${paths.join("\0")}\0`;
-  // Three reads, and a path is filtered if any names a driver: the worktree's attribute files, the real index's, and the base
-  // tree's (a temporary index holding it). The base is where the stored blob came from: a CLI that stages an edit of
-  // `.gitattributes`, removes it, or writes `-filter` into `.git/info/attributes` cannot make the stored blob look plain.
-  // A path whose answer differs between them is therefore filtered too: nothing is offered on a changed answer.
-  // Each read runs with core.ignorecase both ways: the setting changes which paths a pattern matches, and a `-filter` line can
-  // match more paths one way than the other, so a path is filtered if either reading names a driver.
-  const reads = [{ extra: [] as string[] }, { extra: ["--cached"] }, { extra: ["--cached"], index: baseIndex }] as const;
-  for (const [read, ignorecase] of reads.flatMap((r) => [[r, "true"], [r, "false"]] as const)) {
-    const out = expectComplete(
-      await git(["check-attr", "-z", "--stdin", ...read.extra, "filter"], { stdin, config: [`core.ignorecase=${ignorecase}`], ..."index" in read ? { index: read.index } : {} }),
-      "read the file attributes",
-    );
+  for (const ignorecase of ["true", "false"]) {
+    const out = expectComplete(await at(["-c", `core.ignorecase=${ignorecase}`, "check-attr", "-z", "--stdin", "--cached", "filter"], stdin), "read the file attributes");
     const t = out.split("\0");
     if (t[t.length - 1] === "") t.pop();
     if (t.length !== paths.length * 3) return malformed();
@@ -133,7 +126,45 @@ export async function filteredPaths(git: ReviewGit, paths: readonly string[] | s
       if (value !== "unspecified" && value !== "unset" && value !== "set") found.add(t[i] as string);
     }
   }
-  return found;
+}
+
+/**
+ * The attribute-dependent half of the list, all of it read in the private git directory of `attrs` (one snapshot of
+ * info/attributes, the user and the system file; no repository or global config; an empty work tree, so tracked
+ * `.gitattributes` come from an index, never the live work tree):
+ *  - `numstat`: `diff-tree --numstat` with the reviewed worktree tree's index, so whether a file is binary (`-diff`, `binary`,
+ *    content) is what the reviewed tree says, and `diff.<x>.binary` in the repository config does not count; core.bigFileThreshold
+ *    is pinned (as for the hunk diff), since the system config, still read here, could otherwise call every file over it binary;
+ *  - `filtered`: paths that have a `filter` attribute. No program runs: check-attr only reads attribute files. Such a path is
+ *    never offered (design §2): the snapshot ran with every filter off, so its bytes are the smudged ones and "modified" may
+ *    only mean "not cleaned", and a clean filter must not run inside the daemon. Three indexes, and a path is filtered if any
+ *    names a driver: the reviewed worktree tree, the real index (read as git finds it), and the base tree. The base is where
+ *    the stored blob came from: a CLI that stages an edit of `.gitattributes`, removes it, or edits it in the worktree cannot
+ *    make the stored blob look plain. Each read runs with core.ignorecase both ways, since the setting changes which paths a
+ *    pattern matches. (A filter literally named `unspecified`, `set` or `unset` cannot be told from none; known limit.)
+ */
+export async function attributeReads(
+  deps: ReviewDeps,
+  git: ReviewGit,
+  attrs: AttributeRead,
+  paths: readonly string[],
+  trees: { readonly against: string; readonly worktree: string },
+  /** The real index, or undefined to skip the filter reads (an untrusted snapshot: every path is refused anyway). */
+  realIndex: string | undefined,
+): Promise<{ readonly filtered: Set<string>; readonly numstat: string }> {
+  const found = new Set<string>();
+  // A path that cannot be accepted anyway is not asked about (a `..` or absolute path would make check-attr refuse the batch).
+  const asked = realIndex === undefined ? [] : paths.filter((p) => pathProblem(p) === undefined);
+  const numstat = await onTree(deps, git, attrs, trees.worktree, async (at) => {
+    const out = expectComplete(await at(["-c", "core.bigFileThreshold=2g", "diff-tree", ...COMMON, "--numstat", trees.against, trees.worktree]), "count the changed lines");
+    if (asked.length > 0) await filterRead(at, asked, found);
+    return out;
+  });
+  if (asked.length > 0 && realIndex !== undefined) {
+    await onTree(deps, git, attrs, trees.against, (at) => filterRead(at, asked, found));
+    await filterRead(await attrs.withIndex(realIndex), asked, found);
+  }
+  return { filtered: found, numstat };
 }
 
 function protectedRules(matcher: ProtectedPathMatcher | undefined, paths: readonly string[], maxDisplay: number): string[] {
@@ -165,8 +196,6 @@ export async function listChanges(
   const rawOut = expectComplete(await git(["diff-tree", ...COMMON, "--raw", againstTree, worktreeTree]), "list the changed files");
   const { entries, overflow } = parseRaw(rawOut, limits.maxFiles);
   if (overflow) throw invalid(`more than ${limits.maxFiles} files changed`, "too_large");
-  const stats = parseNumstat(expectComplete(await git(["diff-tree", ...COMMON, "--numstat", againstTree, worktreeTree]), "count the changed lines"));
-
   const zero = /^0+$/;
   const wanted = new Set<string>();
   for (const e of entries) {
@@ -176,27 +205,29 @@ export async function listChanges(
   }
   const sizes = await objectSizes(git, [...wanted]);
   const allPaths = [...new Set(entries.flatMap((e) => (e.oldPath === undefined ? [e.path] : [e.path, e.oldPath])))];
-  let filtered: Set<string>;
+  let filtered: Set<string> = new Set();
+  let stats = new Map<string, NumstatEntry>();
   let untrusted = false;
-  if (allPaths.length === 0) filtered = new Set();
-  else {
-    const before = await attributeSources(deps, git, w, limits);
-    if (before.untrusted) {
+  if (allPaths.length > 0) {
+    const snap = await snapshotAttributes(deps, git, w, againstTree.length === 64 ? "sha256" : "sha1");
+    if (snap.untrusted) {
+      // Nothing is offered. The counts are only shown, and come from the snapshot when there is one (`--numstat --text` would
+      // still obey an explicit -diff in the live files); with none they are left out.
       filtered = new Set(allPaths);
       untrusted = true;
-    } else {
-      const idx = await acquireIndex(deps.tempIndex);
+    }
+    if (snap.read !== undefined) {
       try {
-        expectOk(await git(["read-tree", againstTree], { index: idx.path }), "read the base tree");
-        filtered = await filteredPaths(git, allPaths, idx.path);
+        let realIndex: string | undefined;
+        if (!snap.untrusted) {
+          [realIndex] = await gitPaths(deps, git, w, ["index"]);
+          if (realIndex === undefined) throw unavailable("could not find the index");
+        }
+        const r = await attributeReads(deps, git, snap.read, allPaths, { against: againstTree, worktree: worktreeTree }, realIndex);
+        if (!snap.untrusted) filtered = r.filtered;
+        stats = parseNumstat(r.numstat);
       } finally {
-        await idx.release();
-      }
-      // The reads above obey these files, so a file swapped in while they ran would have hidden a filter: read them again.
-      const after = await attributeSources(deps, git, w, limits);
-      if (after.untrusted || after.fingerprint !== before.fingerprint) {
-        filtered = new Set(allPaths);
-        untrusted = true;
+        snap.read.dispose();
       }
     }
   }
@@ -252,6 +283,8 @@ export async function listChanges(
     const resolved = linkTarget === undefined ? undefined : resolveLinkTarget(e.path, linkTarget);
     const rules = protectedRules(matcher, asked, limits.maxDisplay);
     if (resolved !== undefined) for (const r of protectedRules(matcher, [resolved], limits.maxDisplay)) if (rules.length < 8 && !rules.includes(r)) rules.push(r);
+    // A link whose target could not be read cannot be judged by where it leads: it is highlighted, not assumed ordinary.
+    if (matcher !== undefined && kind === "symlink" && linkSide && linkTarget === undefined && rules.length < 8) rules.push("symlink-target-unread");
     files.push({
       path: e.path,
       ...(e.oldPath === undefined ? {} : { oldPath: e.oldPath }),
