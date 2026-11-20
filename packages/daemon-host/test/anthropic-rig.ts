@@ -70,4 +70,3 @@ export function assertNoKey(s: Setup, ...shown: unknown[]): void {
 }
 
 export const credentialRows = (c: ComposerRig) => c.audit.list({ limit: 500 }).filter((e) => e.action === "provider.credential");
-
