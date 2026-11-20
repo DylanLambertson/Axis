@@ -107,6 +107,7 @@ describe("composer slice (C7): scenario 1 on the mock provider, hostile output, 
     const requested = approvalsOf(events).filter((a) => a.state === "requested");
     assert.deepEqual(requested.map((a) => a.digest), answered.map((c) => c.digest), "each card is bound to its challenge's digest");
     assert.deepEqual(requested.map((a) => [a.preview?.tier, a.preview?.protected]), [["write", true], ["privileged", false]], "the Makefile write is flagged protected (WT-3)");
+    assert.ok(requested.every((a) => a.preview?.taint === undefined), "IAC-T (PV-M0): a run that received nothing from anyone but the user carries no taint");
     assert.equal(requested[0]?.preview?.content?.head, "all:\n\techo build\n", "the card shows what will be written");
     const reqs = events.filter((e): e is Extract<RunEvent, { type: "request" }> => e.type === "request");
     assert.deepEqual(reqs.map((r) => [r.request, r.providerId, r.modelId]), [1, 2, 3, 4, 5].map((n) => [n, "mock", "mock-model"]), "PRV-4: every request is shown, on the run's provider");
@@ -247,7 +248,9 @@ describe("composer slice (C7): scenario 1 on the mock provider, hostile output, 
       assert.equal(budget.requests, perRun.n, "the workspace total is the sum of its runs");
       assert.equal(budget.requests, 27, "s1 5, long 3, head and tail secret 1 each, hostile 3, malformed 1, huge 1, cancel 1, budget 8, wt2 1, kill 1 (in flight at the kill), after 1");
       // DMN-3: each approval was authorised exactly once, and every later answer to it was refused (consumed once).
+      assert.equal((db.prepare("SELECT COUNT(*) AS n FROM composer_runs WHERE tainted <> 0").get() as { n: number }).n, 0, "no run was tainted (no taint source exists on main yet)");
       const rows = auditRows(db);
+      assert.equal(rows.filter((r) => r.action === "message.taint").length, 0);
       const phase = (r: AuditRow) => JSON.parse(r.payload) as { phase?: string; ref?: string };
       const authorised = rows.filter((r) => r.action === "tier4.execute" && phase(r).phase === "authorised").map((r) => phase(r).ref);
       assert.equal(authorised.length, 4, "the Makefile write and the three commands");
