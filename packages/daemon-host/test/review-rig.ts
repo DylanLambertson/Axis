@@ -8,6 +8,7 @@ import { AuditLog, openDatabase } from "@axis/audit";
 import { Daemon, MemoryIdempotencyStore, memoryPair, protocolRegistry, type DaemonAuditEvent, type Identity, type IdentityVerifier, type Policy } from "@axis/daemon";
 import { createNodeRunner, MIN_GIT_VERSION, type GitOpsDeps } from "@axis/git-ops";
 import { Journal } from "@axis/journal";
+import type { ReviewBindingDeps } from "../src/bindings/review.js";
 import {
   createReviewHandlers,
   createReviewService,
@@ -83,6 +84,8 @@ export interface RigOptions {
   workspaceNotReady?: boolean;
   /** Make `runs.get` throw. */
   runsFail?: boolean;
+  /** Review limits for the real service (the binding still caps them at the wire's bounds). */
+  limits?: ReviewBindingDeps["limits"];
 }
 
 export async function reviewRig(options: RigOptions = {}) {
@@ -119,7 +122,7 @@ export async function reviewRig(options: RigOptions = {}) {
       return { workTree: dir, gitDir: join(dir, ".git") };
     },
   };
-  const real = createReviewService({ git: gitOps, locator, tempIndex: createTempIndexProvider(indexDir), fileExists: async (p) => existsSync(p) });
+  const real = createReviewService({ git: gitOps, locator, tempIndex: createTempIndexProvider(indexDir), fileExists: async (p) => existsSync(p), ...(options.limits ? { limits: options.limits } : {}) });
 
   const db = openDatabase(":memory:");
   const audit = new AuditLog(db);
