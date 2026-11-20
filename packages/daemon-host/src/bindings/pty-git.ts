@@ -2,7 +2,7 @@
 import { isAbsolute as posixAbs, normalize as posixNorm } from "node:path/posix";
 import { isAbsolute as winAbs, normalize as winNorm } from "node:path/win32";
 import { GitOpsError, OBJECT_ID, isAllowedRefspec, type GitRunRequest, type GitRunResult, type GitRunner } from "@axis/git-ops";
-import type { PtyExecCall, PtyExecPort, PtyExit, PtyHandle, PtyPushPort } from "../ports/pty.js";
+import type { PtyExecCall, PtyExecPort, PtyExit, PtyHandle, PtyPushCall, PtyPushPort } from "../ports/pty.js";
 
 /**
  * `createPtyGitRunner` (docs/design/daemon-host-hooks.md §4.1, "Mapping git-ops' requests"): the ONE place that turns a git-ops
@@ -38,7 +38,11 @@ export interface PtyGitRunnerOptions {
   readonly timeoutMs?: number;
   /** Bytes kept per stream. Default 1 MiB (an object id or a config value). */
   readonly maxOutput?: number;
-  /** Bound on a push run, from the spawn to its exit; past it the group is killed and the push is `E_UNAVAILABLE`. Default 600 s. */
+  /**
+   * Bound on a push run, from the spawn to its exit; past it the group is killed and the push is `E_UNAVAILABLE`. Default 25 s, under
+   * the method's own 30 s (`axis.git/1.push`), so the run never outlives the request or holds the project mutex after the client was
+   * answered. The request's signal kills it sooner.
+   */
   readonly pushTimeoutMs?: number;
 }
 
@@ -49,12 +53,19 @@ const ENV_ALLOW = new Set([
   "GIT_TERMINAL_PROMPT", "LANG",
 ]);
 const LC_NAME = /^LC_[A-Z0-9_]{1,64}$/;
+/** The push run's default bound: under the 30 s of `axis.git/1.push` (a test compares the two). */
+export const DEFAULT_PUSH_TIMEOUT_MS = 25_000;
+/** The configuration and ssh variables git-ops validated the push with (the pty process's `PUSH_ENV_NAMES`), sent for comparison. */
+const PUSH_ENV_NAMES = ["HOME", "XDG_CONFIG_HOME", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM", "GIT_SSH", "GIT_SSH_COMMAND", "GIT_SSH_VARIANT", "GIT_PROXY_COMMAND"] as const;
 
 /** The service refused the mapped form itself: a wiring fault, not unavailability. Every other failure (closed, busy, slow, no control) is. */
 const FORM_REFUSALS: ReadonlySet<unknown> = new Set(["bad_argv", "env_denied", "bad_bind"]);
 
 const unmappable = (): GitOpsError => new GitOpsError("E_INTERNAL", "A git request for the pty process has a form Axis does not map.");
 const unavailable = (): GitOpsError => new GitOpsError("E_UNAVAILABLE", "The Axis pty process is not available for git.");
+const cancelled = (): GitOpsError => new GitOpsError("E_CANCELLED", "The push was cancelled.");
+/** The pty process's own check of the remote refused it (a `remote.<r>.vcs` helper or a helper URL; git-ops refuses these first). */
+const remoteRefused = (): GitOpsError => new GitOpsError("E_POLICY_DENIED", "The remote uses a transport helper, which Axis does not push through.");
 /**
  * A push with repository hooks on (`axis.git.runHooks`): git-ops leaves out the hooks pin and `--no-verify`, and `pre-push` would
  * run. Running it needs the hook path check of §5.2 (S4 part 2, after S2's resolution), so until then it is refused, never run
@@ -171,7 +182,7 @@ export function createPtyGitRunner(port: (PtyExecPort & Partial<PtyPushPort>) | 
   if (!absNormal(options.gitPath, options.platform)) throw new TypeError("the pty git runner needs the absolute git path of the pty process");
   const timeoutMs = options.timeoutMs ?? 120_000;
   const maxOutput = options.maxOutput ?? 1024 * 1024;
-  const pushTimeoutMs = options.pushTimeoutMs ?? 600_000;
+  const pushTimeoutMs = options.pushTimeoutMs ?? DEFAULT_PUSH_TIMEOUT_MS;
   let runs = 0;
   return {
     async run(req: GitRunRequest): Promise<GitRunResult> {
@@ -186,7 +197,10 @@ export function createPtyGitRunner(port: (PtyExecPort & Partial<PtyPushPort>) | 
         // git-ops' push writes nothing to stdin; a push request that does is not its form.
         if (req.stdin !== undefined) throw unmappable();
         if (port === undefined || typeof port.push !== "function") throw unavailable();
-        const code = await runPush(port as PtyPushPort, { runId: `git-push-${++runs}`, repo: { gitDir: m.gitDir, workTree: m.workTree }, remote: m.remote, refspec: m.refspec, env, cols: 120, rows: 30 }, pushTimeoutMs);
+        // Exactly the names git-ops checked, from the environment it checked them in (git-ops' push command carries its pty copy).
+        const expectEnv = Object.fromEntries(PUSH_ENV_NAMES.map((n) => [n, Object.hasOwn(req.env, n) && typeof req.env[n] === "string" ? req.env[n] : null])) as PtyPushCall["expectEnv"];
+        const call: PtyPushCall = { runId: `git-push-${++runs}`, repo: { gitDir: m.gitDir, workTree: m.workTree }, remote: m.remote, refspec: m.refspec, env, expectEnv, cols: 120, rows: 30 };
+        const code = await runPush(port as PtyPushPort, call, pushTimeoutMs, req.signal);
         // The exit status is the only thing read (H-7): git's and the transport's output went to the terminal, never here.
         return { code, stdout: "", stderr: "" };
       }
@@ -216,14 +230,18 @@ export function createPtyGitRunner(port: (PtyExecPort & Partial<PtyPushPort>) | 
 /**
  * One push run: spawned as a terminal in the pty process, then its exit status under `ms`. Past the bound, or when the pty process
  * reports no status, the group is killed and the push is `E_UNAVAILABLE` (it may have reached the remote: a retry is a fresh tier 4
- * request and a no-op push). A process still in the group after git exited is killed too; it cannot change the verdict.
+ * request and a no-op push). The request's signal kills it and answers `E_CANCELLED`. A process still in the group after git exited
+ * is killed too; it cannot change the verdict. The pty process's own refusal of the remote (`remote_refused`) is `E_POLICY_DENIED`.
  */
-async function runPush(port: PtyPushPort, call: Parameters<PtyPushPort["push"]>[0], ms: number): Promise<number> {
+async function runPush(port: PtyPushPort, call: PtyPushCall, ms: number, signal: AbortSignal | undefined): Promise<number> {
+  if (signal?.aborted === true) throw cancelled();
   let h: PtyHandle;
   try {
     h = await port.push(call);
   } catch (e) {
-    throw FORM_REFUSALS.has((e as { code?: unknown } | null)?.code) ? unmappable() : unavailable();
+    const code = (e as { code?: unknown } | null)?.code;
+    if (code === "remote_refused") throw remoteRefused();
+    throw FORM_REFUSALS.has(code) ? unmappable() : unavailable();
   }
   const kill = (): void => {
     try {
@@ -234,20 +252,26 @@ async function runPush(port: PtyPushPort, call: Parameters<PtyPushPort["push"]>[
   };
   let timer: ReturnType<typeof setTimeout> | undefined;
   let sub: { dispose(): void } | undefined;
-  const exit = await new Promise<PtyExit | "timeout">((resolve) => {
+  let onAbort: (() => void) | undefined;
+  const exit = await new Promise<PtyExit | "timeout" | "aborted">((resolve) => {
     timer = setTimeout(() => resolve("timeout"), ms);
     sub = h.onExit(resolve);
+    onAbort = () => resolve("aborted");
+    if (signal?.aborted === true) resolve("aborted");
+    signal?.addEventListener("abort", onAbort, { once: true });
   }).finally(() => {
     clearTimeout(timer);
     sub?.dispose();
+    if (onAbort !== undefined) signal?.removeEventListener("abort", onAbort);
   });
   let alive = true;
   try {
-    alive = exit === "timeout" || h.groupAlive();
+    alive = typeof exit === "string" || h.groupAlive();
   } catch {
     alive = true; // unknown counts as alive
   }
   if (alive) kill();
+  if (exit === "aborted") throw cancelled();
   if (exit === "timeout" || exit.exitCode === null) throw unavailable();
   return exit.exitCode;
 }

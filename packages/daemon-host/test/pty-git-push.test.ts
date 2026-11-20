@@ -5,7 +5,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { GitOpsError, prefix, type GitOpsDeps, type GitRunRequest } from "@axis/git-ops";
-import { createPtyGitRunner, PUSH_HOOKS_UNAVAILABLE, selectPtyGitRunner } from "../src/bindings/pty-git.js";
+import { gitMethods } from "@axis/protocol";
+import { createPtyGitRunner, DEFAULT_PUSH_TIMEOUT_MS, PUSH_HOOKS_UNAVAILABLE, selectPtyGitRunner } from "../src/bindings/pty-git.js";
 import type { PtyExecPort, PtyExit, PtyHandle, PtyPushCall, PtyPushPort } from "../src/ports/pty.js";
 
 const GIT = "/usr/bin/git";
@@ -76,6 +77,7 @@ test("git-ops' push maps onto the push run: repository, remote and pinned refspe
   const c = port.calls[0] as PtyPushCall;
   assert.deepEqual({ repo: c.repo, remote: c.remote, refspec: c.refspec }, { repo: W, remote: "origin", refspec: SPEC });
   assert.deepEqual(c.env, { GIT_TERMINAL_PROMPT: "0", LANG: "C" }, "redirectors, HOME, PATH and the agent socket are never sent");
+  assert.deepEqual(c.expectEnv, { HOME: "/home/u", XDG_CONFIG_HOME: null, GIT_CONFIG_GLOBAL: null, GIT_CONFIG_SYSTEM: null, GIT_CONFIG_NOSYSTEM: null, GIT_SSH: null, GIT_SSH_COMMAND: null, GIT_SSH_VARIANT: null, GIT_PROXY_COMMAND: null }, "the configuration and ssh variables git-ops checked, for the pty process to compare");
   assert.ok(c.runId.length > 0 && c.cols > 0 && c.rows > 0);
   assert.equal(port.execs, 0, "a push is never an exec");
   const failed = await runner(pushPort({ exitCode: 1, signal: null })).run(req(gitOpsPush(false)));
@@ -169,4 +171,28 @@ test("the composition passes the port's push to the runner it builds over exec",
   assert.equal(port.calls.length, 1);
   const execOnly = selectPtyGitRunner({ exec: port.exec }, undefined, "linux") as (g: string) => ReturnType<typeof runner>;
   await assert.rejects(execOnly(GIT).run(req(gitOpsPush(false))), isCode("E_UNAVAILABLE"));
+});
+
+test("the pty process's own refusal of the remote (remote_refused) is E_POLICY_DENIED; the variables git-ops saw are sent as they were", async () => {
+  await assert.rejects(runner(pushPort(Object.assign(new Error("x"), { code: "remote_refused" }))).run(req(gitOpsPush(false))), isCode("E_POLICY_DENIED"));
+  const port = pushPort();
+  await runner(port).run(req(gitOpsPush(false), { env: { ...ENV, XDG_CONFIG_HOME: "/x", GIT_SSH_COMMAND: "ssh -i k" } }));
+  assert.equal(port.calls[0]?.expectEnv.XDG_CONFIG_HOME, "/x");
+  assert.equal(port.calls[0]?.expectEnv.GIT_SSH_COMMAND, "ssh -i k");
+  assert.equal(port.calls[0]?.env["GIT_SSH_COMMAND"], undefined, "compared, never sent as environment");
+});
+
+test("S-1: the request's signal kills the push run (E_CANCELLED); aborted before, nothing starts; the default bound is under the method's 30 s", async () => {
+  const hang = pushPort("hang");
+  const ac = new AbortController();
+  const p = runner(hang).run(req(gitOpsPush(false), { signal: ac.signal }));
+  await new Promise((x) => setImmediate(x));
+  ac.abort();
+  await assert.rejects(p, isCode("E_CANCELLED"));
+  assert.deepEqual(hang.terms[0]?.killed, ["SIGKILL"]);
+  const none = pushPort();
+  await assert.rejects(runner(none).run(req(gitOpsPush(false), { signal: ac.signal })), isCode("E_CANCELLED"));
+  assert.equal(none.calls.length, 0);
+  // The default bound is under the method's own timeout, so the run never outlives the request.
+  assert.ok(DEFAULT_PUSH_TIMEOUT_MS < gitMethods.push.timeoutMs, `${DEFAULT_PUSH_TIMEOUT_MS} < ${gitMethods.push.timeoutMs}`);
 });

@@ -19,6 +19,8 @@ export interface GitRunRequest {
    * (E_UNAVAILABLE) when it asked for raw output and the result does not say it got it.
    */
   readonly raw?: boolean;
+  /** Ends the command early (the request was cancelled or timed out). A runner that honours it kills the command's group. */
+  readonly signal?: AbortSignal;
 }
 
 export interface GitRunResult {

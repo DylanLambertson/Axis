@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { z } from "zod";
-import { PUSH_REFSPEC, PUSH_REMOTE } from "./push-run.js";
+import { PUSH_ENV_NAMES, PUSH_REFSPEC, PUSH_REMOTE } from "./push-run.js";
 
 /** Bounds on every untrusted field, so a hostile peer cannot make the other end allocate without limit. */
 export const LIMITS = {
@@ -92,6 +92,8 @@ const push = z
     remote: z.string().regex(PUSH_REMOTE),
     refspec: z.string().regex(PUSH_REFSPEC),
     env: envRecord,
+    /** The configuration and ssh variables the host validated; the service's own must be the same (`PUSH_ENV_NAMES`). */
+    expectEnv: z.object(Object.fromEntries(PUSH_ENV_NAMES.map((n) => [n, z.string().max(LIMITS.envValueChars).nullable()])) as Record<(typeof PUSH_ENV_NAMES)[number], z.ZodNullable<z.ZodString>>).strict(),
     cols: dim,
     rows: dim,
   })
@@ -129,7 +131,7 @@ export const groupSchema = z.discriminatedUnion("kind", [z.object({ kind: z.lite
 /** Pty process to daemon. Terminal output is never sent here: the daemon sees status only. */
 export const controlReply = z.discriminatedUnion("t", [
   z.object({ t: z.literal("spawned"), req: id, term: id, group: groupSchema }).strict(),
-  z.object({ t: z.literal("spawn-failed"), req: id, code: z.enum(["env_denied", "bad_group", "capacity", "spawn_failed", "no_control", "bad_bind", "hook_changed", "bad_argv"]) }).strict(),
+  z.object({ t: z.literal("spawn-failed"), req: id, code: z.enum(["env_denied", "bad_group", "capacity", "spawn_failed", "no_control", "bad_bind", "hook_changed", "bad_argv", "remote_refused"]) }).strict(),
   z.object({ t: z.literal("exit"), term: id, exitCode: z.number().int().nullable(), signal: z.string().max(32).nullable() }).strict(),
   z.object({ t: z.literal("group-empty"), term: id }).strict(),
   /** Input for this terminal was dropped because the child holds too much unread input (PTY-4). Status only. */

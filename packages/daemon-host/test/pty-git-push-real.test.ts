@@ -19,13 +19,17 @@ const SKIP = process.platform === "win32" ? "POSIX process groups are needed (th
 const CANARY = ["AKIA", "ABCDEFGHIJKLMNOP"].join("");
 type Plan = { tip: string; digest: string };
 
-async function setup(t: TestContext, options: GitRigOptions = {}, pathPrefix = ""): Promise<{ r: GitRig; c: GitClient; pty: PtyProcessRig; sent: GitRunRequest[] }> {
+/**
+ * The pty process starts with the environment the host checked the push with (same HOME, no config-location override), as the
+ * embedder must start it; `ptyExtra` adds to the pty process's side only.
+ */
+async function setup(t: TestContext, options: GitRigOptions = {}, pathPrefix = "", ptyExtra: Record<string, string> = {}, pushTimeoutMs?: number): Promise<{ r: GitRig; c: GitClient; pty: PtyProcessRig; sent: GitRunRequest[] }> {
   let pty: PtyProcessRig | undefined;
   const sent: GitRunRequest[] = [];
   const r = await gitRig({
     ...options,
     ptyRunner: ({ home, gitPath, path }) => {
-      pty = ptyProcessRig(gitPath, { PATH: `${pathPrefix}${path}`, HOME: home, GIT_CONFIG_NOSYSTEM: "1", LANG: "C" });
+      pty = ptyProcessRig(gitPath, { PATH: `${pathPrefix}${path}`, HOME: home, LANG: "C", ...ptyExtra }, pushTimeoutMs === undefined ? {} : { pushTimeoutMs });
       const runner = pty.runner;
       return { run: (req) => (sent.push(req), runner.run(req)) };
     },
@@ -177,7 +181,8 @@ test("only the planned ref goes out: no tag (push.followTags), no configured pus
   assert.equal(res.ok, true, JSON.stringify(res.error));
   assert.equal(remoteRefs(r), `refs/heads/axis/feat ${tip}`);
   // The pty process itself refuses anything but `<id>:refs/heads/axis/<slug>`, whoever asks.
-  const call = { runId: "x", repo: { gitDir: join(r.repo, ".git"), workTree: r.repo }, remote: "origin", env: {}, cols: 80, rows: 24 };
+  const expectEnv = { HOME: join(r.root, "home"), XDG_CONFIG_HOME: null, GIT_CONFIG_GLOBAL: null, GIT_CONFIG_SYSTEM: null, GIT_CONFIG_NOSYSTEM: null, GIT_SSH: null, GIT_SSH_COMMAND: null, GIT_SSH_VARIANT: null, GIT_PROXY_COMMAND: null };
+  const call = { runId: "x", repo: { gitDir: join(r.repo, ".git"), workTree: r.repo }, remote: "origin", env: {}, expectEnv, cols: 80, rows: 24 };
   for (const refspec of [`+${tip}:refs/heads/axis/feat`, `${tip}:refs/heads/main`, `${tip}:refs/tags/v2`, ":refs/heads/axis/feat", "refs/heads/other:refs/heads/axis/feat", `${tip}:refs/heads/axis/feat --force`]) {
     await assert.rejects(pty.port.push({ ...call, refspec }), (e: unknown) => (e as PtySpawnError).code === "bad_argv", refspec);
   }
@@ -264,4 +269,66 @@ test("over ssh: a push to a resolvable alias runs through the user's ssh (stubbe
   assert.equal(pushed.error?.code, "E_INVALID_ARGUMENT");
   assert.equal(pushes(pty).length, 1, "only the first push ran");
   assert.equal(r.remoteTip(), tip);
+});
+
+test("B-1: a remote.origin.vcs helper naming an allowed transport is refused before any challenge, nothing runs; control: plain git runs the alias", { skip: SKIP ?? false }, async (t) => {
+  const { r, c, pty } = await setup(t);
+  commitFile(r, "b.txt", "bee\n");
+  const marker = join(r.root, "helper-ran");
+  r.git("config", "remote.origin.vcs", "file");
+  r.git("config", "alias.remote-file", `!echo ran > '${marker}'; false`);
+  const planned = await c.rpc("axis.git", "pushPlan", { workspaceId: r.workspaceId, remote: "origin" });
+  assert.equal(planned.error?.code, "E_CONFLICT", JSON.stringify(planned));
+  const res = await c.rpc("axis.git", "push", { workspaceId: r.workspaceId, remote: "origin", confirmedPlan: { tip: r.head(), digest: "0".repeat(64) } }, randomUUID());
+  assert.equal(res.error?.code, "E_CONFLICT");
+  assert.equal(pushes(pty).length, 0);
+  assert.equal(existsSync(marker), false);
+  try {
+    r.git("push", "origin", `${r.head()}:refs/heads/axis/feat`);
+  } catch {
+    /* the alias exits non-zero */
+  }
+  assert.equal(existsSync(marker), true, "control: plain git runs the helper alias");
+});
+
+test("S-2: a pty process started with another XDG_CONFIG_HOME than the host checked refuses the push; nothing reaches the remote", { skip: SKIP ?? false }, async (t) => {
+  const xdg = mkdtempSync(join(tmpdir(), "axis-xdg-"));
+  t.after(() => rmSync(xdg, { recursive: true, force: true }));
+  const { r, c, pty } = await setup(t, {}, "", { XDG_CONFIG_HOME: xdg });
+  commitFile(r, "b.txt", "bee\n");
+  const res = await (await approve(r, c, await plan(r, c)))();
+  assert.equal(res.ok, false);
+  assert.equal(pushes(pty).length, 0, "the pty process refused before spawning");
+  assert.equal(r.remoteTip(), null);
+});
+
+test("S-1: a push that hangs (an ssh waiting on a prompt) is killed at the runner's bound, under the method's timeout, and the project mutex is free again", { skip: SKIP ?? false }, async (t) => {
+  const stub = mkdtempSync(join(tmpdir(), "axis-ssh-hang-"));
+  t.after(() => rmSync(stub, { recursive: true, force: true }));
+  const pidFile = join(stub, "pid");
+  writeFileSync(join(stub, "ssh"), `#!/bin/sh\nfor a in "$@"; do [ "$a" = "-G" ] && exit 0; done\necho $$ > '${pidFile}'\nexec sleep 60\n`);
+  chmodSync(join(stub, "ssh"), 0o755);
+  const { r, c } = await setup(t, { resolveSshHost: resolver }, `${stub}:`, {}, 1500);
+  r.git("remote", "set-url", "origin", `ssh://axis-test-host${r.remote}`);
+  commitFile(r, "b.txt", "bee\n");
+  const started = Date.now();
+  const res = await (await approve(r, c, await plan(r, c)))();
+  assert.equal(res.error?.code, "E_UNAVAILABLE", JSON.stringify(res.error));
+  assert.ok(Date.now() - started < 25_000, "well under the method's 30 s");
+  const pid = Number(readFileSync(pidFile, "utf8").trim());
+  const end = Date.now() + 5000;
+  let alive = true;
+  while (alive && Date.now() < end) {
+    try {
+      process.kill(pid, 0);
+      await new Promise((x) => setTimeout(x, 20));
+    } catch {
+      alive = false;
+    }
+  }
+  assert.equal(alive, false, "the hanging ssh was killed with its group");
+  // The mutex was released: the next call on the project is answered at once.
+  const again = await plan(r, c);
+  assert.match(again.digest, /^[0-9a-f]{64}$/);
+  assert.equal(r.remoteTip(), null);
 });

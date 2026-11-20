@@ -2,24 +2,15 @@
 // H9-hooks S4 part 1: the `push` control message. The service builds the argv (its pins, the one refspec, no hook), the cwd and the
 // environment (the transport list of the push transports only, prompts off, the exec allow-list from the message); real git.
 import assert from "node:assert/strict";
-import { chmodSync, copyFileSync, existsSync, readFileSync, renameSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
+import { pipeExec } from "../testing/exec.js";
 import { channelPair, pipeSpawn, settle } from "../testing/helpers.js";
-import { GIT, gitRig, nextReq, SKIP, type GitRig } from "../testing/git.js";
-import { createPtyProcessPort, createPtyService, pushArgv } from "../src/index.js";
+import { GIT, gitRig, SKIP } from "../testing/git.js";
+import { expectOf, fixture, remoteRefs } from "../testing/push.js";
+import { createPtyProcessPort, createPtyService } from "../src/index.js";
 
-/** A repository on `axis/feat` with a bare remote `origin` (a path), and the push message for its tip. */
-function fixture(r: GitRig): { top: string; gitDir: string; remote: string; tip: string; msg: (extra?: Record<string, unknown>) => Record<string, unknown> } {
-  const { top, gitDir } = r.repo("work");
-  const remote = join(r.tmp, "remote.git");
-  r.git(["init", "-q", "--bare", remote], r.tmp);
-  r.git(["remote", "add", "origin", remote], top);
-  const tip = r.git(["rev-parse", "HEAD"], top).trim();
-  const msg = (extra: Record<string, unknown> = {}) => ({ t: "push", req: nextReq(), runId: "run-push", repo: { gitDir, workTree: top }, remote: "origin", refspec: `${tip}:refs/heads/axis/feat`, env: { LANG: "C", GIT_TERMINAL_PROMPT: "1" }, cols: 80, rows: 24, ...extra });
-  return { top, gitDir, remote, tip, msg };
-}
-const remoteRefs = (r: GitRig, remote: string): string => r.git(["--git-dir", remote, "for-each-ref", "--format=%(refname) %(objectname)"], r.tmp).trim();
 
 test("push: the service runs git push of the one refspec as a terminal, with its own pins and environment; the remote gets the tip", { skip: SKIP }, async (t) => {
   const r = gitRig();
@@ -32,7 +23,14 @@ test("push: the service runs git push of the one refspec as a terminal, with its
   assert.equal(remoteRefs(r, f.remote), `refs/heads/axis/feat ${f.tip}`);
   const s = r.spawned.at(-1);
   assert.ok(s !== undefined);
-  assert.deepEqual(s.argv, pushArgv({ gitPath: GIT as string, hooksOff: "/dev/null" }, { gitDir: f.gitDir, workTree: f.top }, "origin", `${f.tip}:refs/heads/axis/feat`));
+  // The literal token list (review N-2): a dropped or changed pin fails here.
+  assert.deepEqual(s.argv, [
+    GIT, "--no-pager", "--no-replace-objects", `--git-dir=${f.gitDir}`, `--work-tree=${f.top}`,
+    "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=", "-c", "protocol.allow=never", "-c", "protocol.ext.allow=never", "-c", "help.autocorrect=0",
+    "-c", "protocol.https.allow=always", "-c", "protocol.ssh.allow=always", "-c", "protocol.git.allow=always", "-c", "protocol.file.allow=always",
+    "-c", "alias.remote-https=", "-c", "alias.remote-ssh=", "-c", "alias.remote-git=", "-c", "alias.remote-file=",
+    "push", "--no-follow-tags", "--no-recurse-submodules", "--no-verify", "--", "origin", `${f.tip}:refs/heads/axis/feat`,
+  ]);
   assert.equal(s.argv[0], GIT, "the service's own git");
   assert.equal(s.cwd, f.top);
   assert.equal(s.env["GIT_ALLOW_PROTOCOL"], "https:ssh:git:file", "exactly the push transports, whatever the repository allows");
@@ -86,38 +84,6 @@ test("push: a message env naming anything outside the exec allow-list is env_den
   assert.equal(r.spawned.length, 0);
 });
 
-test("push: a repository cannot widen the transports: an ext:: URL with protocol.ext.allow=always and a helper remote never run; control: plain git runs both", { skip: SKIP }, async (t) => {
-  const r = gitRig();
-  t.after(() => r.cleanup());
-  const f = fixture(r);
-  const ext = r.marker("ext", "exit 1\n");
-  const helper = r.marker("helper", "exit 1\n");
-  // A `git-remote-axistest` helper on the service's PATH, named by `remote.<r>.vcs`.
-  renameSync(helper, join(r.bin, "git-remote-axistest"));
-  r.git(["config", "protocol.ext.allow", "always"], f.top);
-  r.git(["config", "protocol.allow", "always"], f.top);
-  r.git(["remote", "add", "viaext", `ext::${ext}`], f.top);
-  r.git(["remote", "add", "viahelper", "anything"], f.top);
-  r.git(["config", "remote.viahelper.vcs", "axistest"], f.top);
-  for (const remote of ["viaext", "viahelper"]) {
-    const spawned = await r.send(f.msg({ remote }));
-    assert.equal(spawned.t, "spawned");
-    const exit = await r.exit(spawned.term as string);
-    assert.notEqual(exit.exitCode, 0, remote);
-  }
-  assert.equal(r.markers(), "", "no transport program ran");
-  // Control: the same repository and remotes with plain git do start them.
-  for (const remote of ["viaext", "viahelper"]) {
-    try {
-      r.git(["push", remote, `${f.tip}:refs/heads/axis/feat`], f.top);
-    } catch {
-      /* the markers exit 1 */
-    }
-  }
-  assert.match(r.markers(), /ext/);
-  assert.match(r.markers(), /helper/);
-});
-
 test("push: a data channel cannot send a push; a service without git refuses one; a planted pre-push never runs", { skip: SKIP }, async (t) => {
   const r = gitRig();
   t.after(() => r.cleanup());
@@ -159,12 +125,12 @@ test("the host port's push: settles on spawned with a handle whose exit is the s
   const f = fixture(r);
   const c = channelPair();
   r.service.dispose();
-  const svc = createPtyService({ spawn: pipeSpawn(), git: { exec: () => assert.fail("no exec"), gitPath: GIT as string, hooksOff: "/dev/null", scratchParent: r.scratchParent, baseEnv: r.baseEnv } });
+  const svc = createPtyService({ spawn: pipeSpawn(), git: { exec: pipeExec(), gitPath: GIT as string, hooksOff: "/dev/null", scratchParent: r.scratchParent, baseEnv: r.baseEnv } });
   t.after(() => svc.dispose());
   svc.serveControl(c.b);
   const port = createPtyProcessPort({ channel: c.a });
   t.after(() => port.dispose());
-  const call = { runId: "p1", repo: { gitDir: f.gitDir, workTree: f.top }, remote: "origin", refspec: `${f.tip}:refs/heads/axis/feat`, env: {}, cols: 80, rows: 24 };
+  const call = { runId: "p1", repo: { gitDir: f.gitDir, workTree: f.top }, remote: "origin", refspec: `${f.tip}:refs/heads/axis/feat`, env: {}, expectEnv: expectOf(r.baseEnv) as never, cols: 80, rows: 24 };
   const h = await port.push(call);
   const exit = await new Promise((resolve) => h.onExit(resolve));
   assert.deepEqual(exit, { exitCode: 0, signal: null });

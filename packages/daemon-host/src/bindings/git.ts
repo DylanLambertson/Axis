@@ -253,8 +253,8 @@ export function createGitOperations(deps: GitOperationsDeps): GitOperations {
       }),
     // `confirmed: true` is what the spent tier 4 approval says: the user confirmed the challenge of THIS plan. The plan the
     // approval covered is passed back, so a push whose tip or findings changed since is `plan_changed`.
-    executePush: (call, confirmed) =>
-      guarded(() => (hooksGate(), executePush(forWorkspace(call.workspaceId), pushInput(call), { confirmed: true, confirmedPlan: { tip: confirmed.tip, digest: confirmed.digest } }))),
+    executePush: (call, confirmed, signal) =>
+      guarded(() => (hooksGate(), executePush(forWorkspace(call.workspaceId), pushInput(call), { confirmed: true, confirmedPlan: { tip: confirmed.tip, digest: confirmed.digest }, ...(signal === undefined ? {} : { signal }) }))),
     executeCommit: (call, input) => guarded(() => executeCommit(forWorkspace(call.workspaceId, call.assertFresh), input)),
     compareUrl: (call) =>
       guarded(async () => {

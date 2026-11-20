@@ -88,6 +88,8 @@ export interface ExecutePushOptions {
   readonly confirmed?: boolean;
   /** Required with `confirmed` when the plan needs confirmation: the `tip` and `digest` of the plan the user saw. */
   readonly confirmedPlan?: ConfirmedPlan;
+  /** The request's signal: passed to the push command, whose runner ends it on abort. Aborted before the push, nothing runs. */
+  readonly signal?: AbortSignal;
 }
 
 /** A digest of everything a confirmation covers. Findings carry names, paths, lines and commits, never matched text. */
@@ -148,6 +150,10 @@ async function check(deps: GitOpsDeps, input: PushInput): Promise<{ plan: PushPl
   const urls = await git(["remote", "get-url", "--push", "--all", "--", input.remote]);
   if (urls.code !== 0) throw invalid("the remote has no push URL");
   for (const u of urls.stdout.split("\n").map((l) => l.trim()).filter(Boolean)) assertPushUrl(u);
+  // A transport helper named by `remote.<r>.vcs` runs `git remote-<vcs>` (a `git-remote-<vcs>` program or an alias) even when
+  // <vcs> is an allowed transport name: refused whatever its value. Only a clean "not set" (exit 1) passes.
+  const vcs = await git(["config", "--get-all", `remote.${input.remote}.vcs`]);
+  if (vcs.code !== 1 || vcs.stdout.trim() !== "") throw denied("the remote names a transport helper (remote.<name>.vcs), which Axis does not push through");
   const head = await git(["symbolic-ref", "--quiet", "--short", "HEAD"]);
   if (head.code !== 0 || head.stdout.trim() !== branch) throw denied("the worktree is not on the branch being pushed");
   const tip = await git(["rev-parse", "--verify", "--end-of-options", `refs/heads/${branch}^{commit}`]);
@@ -251,7 +257,8 @@ async function runPush(deps: GitOpsDeps, input: PushInput, opts: ExecutePushOpti
     throw new GitOpsError("E_APPROVAL_REQUIRED", `confirm to push: ${plan.reasons.join("; ")}`);
   }
   await confirmTip(git, plan.branch, plan.tip);
-  const r = await deps.runner.run(plan.command);
+  if (opts.signal?.aborted === true) throw new GitOpsError("E_CANCELLED", "the push was cancelled");
+  const r = await deps.runner.run(opts.signal === undefined ? plan.command : { ...plan.command, signal: opts.signal });
   // The exit status only (H9-hooks H-7): the push's output, a `pre-push` hook's included, belongs to the user's terminal.
   if (r.code !== 0) throw new GitOpsError("E_UNAVAILABLE", `git push failed (exit ${r.code})`);
 }

@@ -126,7 +126,7 @@ export interface PtyProcessRig {
   cleanup(): void;
 }
 
-export function ptyProcessRig(gitPath: string, baseEnv: Record<string, string>): PtyProcessRig {
+export function ptyProcessRig(gitPath: string, baseEnv: Record<string, string>, opts: { pushTimeoutMs?: number } = {}): PtyProcessRig {
   const scratchParent = realpathSync(mkdtempSync(join(tmpdir(), "axis-ptygr-")));
   mkdirSync(join(scratchParent, "s"), { mode: 0o700 });
   const execs: ExecRequest[] = [];
@@ -139,7 +139,7 @@ export function ptyProcessRig(gitPath: string, baseEnv: Record<string, string>):
   service.serveControl(pair.b);
   const port = createPtyProcessPort({ channel: pair.a });
   return {
-    runner: createPtyGitRunner(port, { gitPath, platform: process.platform, hooksOffPath: "/dev/null" }),
+    runner: createPtyGitRunner(port, { gitPath, platform: process.platform, hooksOffPath: "/dev/null", ...(opts.pushTimeoutMs === undefined ? {} : { pushTimeoutMs: opts.pushTimeoutMs }) }),
     execs,
     spawned,
     port,

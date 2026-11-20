@@ -4,7 +4,7 @@ import { controlReply, type ControlReply } from "./messages.js";
 import { probeGroup, signalGroup, validPgid } from "./group.js";
 import { systemClock, systemProcessOps, type Channel, type Clock, type Disposable, type ProcessOps, type PtyExit, type PtyHandle, type PtyPort, type PtySignal, type PtySpawn } from "./ports.js";
 
-export type PtySpawnFailure = "timeout" | "channel_closed" | "capacity" | "env_denied" | "bad_group" | "spawn_failed" | "no_control" | "bad_bind" | "hook_changed" | "bad_argv";
+export type PtySpawnFailure = "timeout" | "channel_closed" | "capacity" | "env_denied" | "bad_group" | "spawn_failed" | "no_control" | "bad_bind" | "hook_changed" | "bad_argv" | "remote_refused";
 
 /** The rejection of `spawn`. Carries a code only: never the argv or the environment. */
 export class PtySpawnError extends Error {
@@ -35,6 +35,8 @@ export interface PtyPushCall {
   readonly remote: string;
   readonly refspec: string;
   readonly env: Readonly<Record<string, string>>;
+  /** The configuration and ssh variables the host validated, `null` for unset; the pty process refuses a push whose own differ. */
+  readonly expectEnv: Readonly<Record<"HOME" | "XDG_CONFIG_HOME" | "GIT_CONFIG_GLOBAL" | "GIT_CONFIG_SYSTEM" | "GIT_CONFIG_NOSYSTEM" | "GIT_SSH" | "GIT_SSH_COMMAND" | "GIT_SSH_VARIANT" | "GIT_PROXY_COMMAND", string | null>>;
   readonly cols: number;
   readonly rows: number;
 }
@@ -253,7 +255,7 @@ export function createPtyProcessPort(options: PtyProcessPortOptions): PtyProcess
     spawn: (spec: PtySpawn): Promise<PtyProcessHandle> =>
       request((req) => ({ t: "spawn", req, runId: spec.runId, argv: [...spec.argv], cwd: spec.cwd, env: { ...spec.env }, cols: spec.cols, rows: spec.rows })),
     push: (call: PtyPushCall): Promise<PtyProcessHandle> =>
-      request((req) => ({ t: "push", req, runId: call.runId, repo: { gitDir: call.repo.gitDir, workTree: call.repo.workTree }, remote: call.remote, refspec: call.refspec, env: { ...call.env }, cols: call.cols, rows: call.rows })),
+      request((req) => ({ t: "push", req, runId: call.runId, repo: { gitDir: call.repo.gitDir, workTree: call.repo.workTree }, remote: call.remote, refspec: call.refspec, env: { ...call.env }, expectEnv: { ...call.expectEnv }, cols: call.cols, rows: call.rows })),
     exec: (call) => execs.exec(call),
     trackedTerminals: () => terms.size,
     grant(terminalId, conn) {

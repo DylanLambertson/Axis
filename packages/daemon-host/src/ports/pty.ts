@@ -81,6 +81,8 @@ export interface PtyPushCall {
   readonly remote: string;
   readonly refspec: string;
   readonly env: Readonly<Record<string, string>>;
+  /** The configuration and ssh variables the host validated, `null` for unset; the pty process refuses a push whose own differ. */
+  readonly expectEnv: Readonly<Record<"HOME" | "XDG_CONFIG_HOME" | "GIT_CONFIG_GLOBAL" | "GIT_CONFIG_SYSTEM" | "GIT_CONFIG_NOSYSTEM" | "GIT_SSH" | "GIT_SSH_COMMAND" | "GIT_SSH_VARIANT" | "GIT_PROXY_COMMAND", string | null>>;
   readonly cols: number;
   readonly rows: number;
 }

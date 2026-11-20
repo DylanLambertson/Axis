@@ -345,3 +345,27 @@ test("S4: the plan digest covers the destination key when one is given; a push c
   assert.equal(r.calls.filter((c) => c.context === "pty").length, 0, "nothing was pushed");
   for (const bad of ["", "x".repeat(129)]) assert.equal(await code(planPush(makeDeps(new FakeRunner(healthy())), { ...input, destination: bad })), "E_INVALID_ARGUMENT");
 });
+
+test("S4 review B-1: a remote with any remote.<name>.vcs (an allowed transport name included) is refused before the scan; a failed read refuses too", async () => {
+  for (const answer of [{ code: 0, stdout: "file\n" }, { code: 0, stdout: "https\n" }, { code: 0, stdout: "" }, { code: 128, stdout: "" }]) {
+    const r = new FakeRunner(healthy((s) => (s[0] === "config" && s.includes("remote.origin.vcs") ? answer : undefined)));
+    assert.equal(await code(planPush(makeDeps(r), input)), "E_POLICY_DENIED", JSON.stringify(answer));
+    assert.equal(await code(executePush(makeDeps(r), input)), "E_POLICY_DENIED");
+    assert.equal(r.ptyCalls().length, 0);
+    assert.ok(!r.subs().some((x) => x[0] === "rev-list"), "no scan ran");
+  }
+  const clean = new FakeRunner(healthy());
+  await planPush(makeDeps(clean), input);
+  assert.ok(clean.subs().some((x) => x.join(" ") === "config --get-all remote.origin.vcs"), "the read is the exact key");
+});
+
+test("S4 review S-1: the request's signal reaches the push command; aborted before the push, nothing runs (E_CANCELLED)", async () => {
+  const r = new FakeRunner(healthy());
+  const ac = new AbortController();
+  await executePush(makeDeps(r), input, { signal: ac.signal });
+  assert.equal(r.ptyCalls()[0]?.signal, ac.signal);
+  const r2 = new FakeRunner(healthy());
+  ac.abort();
+  assert.equal(await code(executePush(makeDeps(r2), input, { signal: ac.signal })), "E_CANCELLED");
+  assert.equal(r2.ptyCalls().length, 0);
+});
