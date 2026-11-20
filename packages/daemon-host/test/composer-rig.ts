@@ -186,11 +186,11 @@ const HANG_GUARD_MS = 120_000;
  * Wait until `pred` holds. A run does real file system and timer work, whose completion on a loaded host is not a count of event
  * loop turns, so the wait is by condition: it yields to the event loop between tries and gives up only at the hang guard.
  */
-export async function until(pred: () => boolean, guardMs = HANG_GUARD_MS): Promise<void> {
+export async function until(pred: () => boolean, what = "the condition", guardMs = HANG_GUARD_MS): Promise<void> {
   const deadline = process.hrtime.bigint() + BigInt(guardMs) * 1_000_000n;
   for (let turn = 0; ; turn++) {
     if (pred()) return;
-    if (process.hrtime.bigint() > deadline) throw new Error("condition not reached");
+    if (process.hrtime.bigint() > deadline) throw new Error(`condition not reached: ${what}`);
     await new Promise((res) => (turn % 64 === 63 ? setTimeout(res, 1) : setImmediate(res)));
   }
 }
