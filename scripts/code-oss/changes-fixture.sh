@@ -8,8 +8,10 @@
 #                               staged and changed again, untracked files,
 #                               and untracked files with hostile names
 #                               (newline, right-to-left override, zero-width,
-#                               escape sequence, very long, a name that spells
-#                               another state)
+#                               escape sequence, C1 control, very long, a name
+#                               that spells another state, a name that looks
+#                               like a group header), and an untracked symlink
+#                               that points outside the worktree
 #   <dir>/conflict              a linked worktree with a merge conflict
 #
 # The directory must not exist yet, and its path must not contain whitespace.
@@ -27,7 +29,7 @@ die() {
 [ "$#" -eq 1 ] || die "usage: $0 <dir>"
 case "$1" in
 -h | --help)
-	sed -n '2,19p' "$0"
+	sed -n '2,22p' "$0"
 	exit 0
 	;;
 esac
@@ -38,6 +40,13 @@ command -v git >/dev/null || die "git not found"
 
 mkdir -p "$dir"
 dir="$(cd "$dir" && pwd -P)"
+# A failed run removes what it made, so the next run does not stop at "already exists".
+cleanup() {
+	status=$?
+	[ "$status" -eq 0 ] || rm -rf "$dir"
+	exit "$status"
+}
+trap cleanup EXIT
 repo="$dir/changes-repo"
 
 export GIT_AUTHOR_NAME="Axis Demo" GIT_AUTHOR_EMAIL="demo@example.invalid"
@@ -85,6 +94,10 @@ printf 'x\n' >"$repo/invoice"$'\xe2\x80\xae'"fdp.exe"
 printf 'x\n' >"$repo/zero"$'\xe2\x80\x8b'"width.ts"
 printf 'x\n' >"$repo/esc"$'\x1b'"[31mred.ts"
 printf 'x\n' >"$repo/Staged, Modified: spoof.ts"
+printf 'x\n' >"$repo/Staged · 3"
+printf 'x\n' >"$repo/c1"$'\xc2\x85'"next-line.ts"
+ln -s ../outside-target.txt "$repo/link-out"
+printf 'outside the worktree\n' >"$dir/outside-target.txt"
 printf 'x\n' >"$repo/$(printf 'n%.0s' $(seq 1 200)).ts"
 
 printf 'Changes fixture: %s\n' "$repo"
