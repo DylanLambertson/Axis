@@ -25,6 +25,8 @@ export interface GitCallOptions {
   readonly index?: string;
   /** `key=value` settings placed before the subcommand (`-c`), for this call only. */
   readonly config?: readonly string[];
+  /** Ask the runner for stdout as one character per byte (latin1); the result says `raw: true` when it honoured it. */
+  readonly raw?: boolean;
 }
 
 export interface ReviewGit {
@@ -70,6 +72,7 @@ export async function reviewGitFor(deps: ReviewDeps, w: WorktreeRef): Promise<Re
       env: index === undefined ? env : { ...env, GIT_INDEX_FILE: index },
       context: "daemon",
       ...(opts.stdin === undefined ? {} : { stdin: opts.stdin }),
+      ...(opts.raw === true ? { raw: true } : {}),
     });
   };
 }

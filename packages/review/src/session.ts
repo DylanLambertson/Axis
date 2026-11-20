@@ -5,7 +5,7 @@ import type { WorktreeRef } from "@axis/git-ops";
 import { headState, mintBinding, type ReviewBinding } from "./binding.js";
 import { buildReviewedTree, type FileDecision } from "./build.js";
 import { listChanges } from "./changes.js";
-import { conflict, denied, internal, invalid, mapUnexpected, notFound } from "./errors.js";
+import { conflict, denied, internal, invalid, mapUnexpected, notFound, unavailable } from "./errors.js";
 import { assertOid, expectComplete, objectSize, reviewGitFor, resolveObject, type ReviewGit } from "./gitcall.js";
 import { applyHunks, blobOid, hunkId, parseUnifiedHunks, type Hunk } from "./hunks.js";
 import { resolveLimits } from "./limits.js";
@@ -141,6 +141,26 @@ export class ReviewSession {
     const all = applyHunks(oldText, parsed.hunks, new Set(parsed.hunks.map((h) => h.index)));
     if (all === null || blobOid(all, f.newOid.length) !== f.newOid) return fileLevel("not_reproducible");
     return { kind: "hunks", hunks: parsed.hunks };
+  }
+
+  /**
+   * The bytes of a file's NEW side as the snapshot tree holds it (mode and object id of the entry `build` uses), read from
+   * the object store and never from the work tree. Blob modes only (a file or a symlink's target). `complete` is false when
+   * the runner cut the output at its limit (the bytes are then a prefix). A runner that cannot return bytes is refused.
+   */
+  async readNewBlob(path: string): Promise<{ readonly size: number; readonly bytes: Uint8Array; readonly complete: boolean }> {
+    return mapUnexpected(async () => {
+      const f = this.file(path);
+      if (!/^(?:100644|100755|120000)$/.test(f.newMode)) throw invalid("only a file or a link has content to read");
+      const size = await objectSize(this.#git, f.newOid);
+      if (size === undefined) throw unavailable("could not read the size of a file version");
+      const r = await this.#git(["cat-file", "blob", f.newOid], { raw: true });
+      if (r.code !== 0 || r.raw !== true) throw unavailable("could not read a file version as bytes");
+      const bytes = Buffer.from(r.stdout, "latin1");
+      const complete = r.truncated !== true;
+      if (bytes.length > size || (complete && bytes.length !== size)) throw unavailable("a file version did not read back at its size");
+      return { size, bytes: new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.length), complete };
+    });
   }
 
   preview(path: string, side: "old" | "new"): Promise<Preview> {

@@ -20,6 +20,7 @@ test("registry: tiers, side effects, idempotency, as in the design table", () =>
     [G, "push", 4, "network", "required"],
     [G, "compareUrl", 0, "read", "none"],
     [R, "diff", 1, "read", "none"],
+    [R, "content", 1, "read", "none"],
     [R, "complete", 2, "write", "required"],
   ];
   for (const [c, m, tier, sideEffect, idem] of expect) {
@@ -32,7 +33,7 @@ test("registry: tiers, side effects, idempotency, as in the design table", () =>
     assert.equal(Object.isFrozen(spec), true);
   }
   assert.deepEqual(Object.keys(contracts["axis.git/1"] ?? {}).sort(), ["commit", "compareUrl", "push", "pushPlan"]);
-  assert.deepEqual(Object.keys(contracts["axis.review/1"] ?? {}).sort(), ["complete", "diff"]);
+  assert.deepEqual(Object.keys(contracts["axis.review/1"] ?? {}).sort(), ["complete", "content", "diff"]);
   assert.deepEqual(tableProblems(contracts), []);
 });
 
