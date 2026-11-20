@@ -21,6 +21,7 @@ function fake(list: RoundFile[], seen: { hasCut: string[]; accepted: Array<[stri
       return {
         head: "a".repeat(40), branch: "axis/feat", files: list, skipped: [], skippedCount: 0,
         async hasCutLines(p) { seen.hasCut.push(p); return cut(p); },
+        async readNewBlob() { throw new Error("not read in this test"); },
         accept(p, o) { seen.accepted.push([p, o.acceptTruncated]); },
         async build() { seen.built++; return { reviewedTree: "c".repeat(40), head: "a".repeat(40), branch: "axis/feat", handle: {} as never }; },
       };

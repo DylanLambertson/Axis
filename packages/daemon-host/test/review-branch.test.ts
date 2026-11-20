@@ -65,6 +65,7 @@ test("a request cancelled while the tree is built records nothing", { skip: SKIP
     head: "a".repeat(40), branch: "axis/feat", skippedCount: 0, skipped: [],
     files: [{ path: "a.txt", status: "A", kind: "text", newMode: "100644", newOid: "b".repeat(40), unsafePath: false, protectedRules: [], warnings: [] }],
     hasCutLines: async () => false,
+    readNewBlob: async () => { throw new Error("not read in this test"); },
     accept: () => undefined,
     build: async () => (ac.abort(), { reviewedTree: "c".repeat(40), head: "a".repeat(40), branch: "axis/feat", handle: {} as never }),
   };
@@ -161,7 +162,7 @@ test("a reply the contract would refuse is refused before anything is audited or
   const { r, user } = await setup(t, {
     review: () => ({
       open: async () => ({
-        head: "a".repeat(40), branch: "axis/feat", skippedCount: 0, skipped: [], files: [bad], hasCutLines: async () => false, accept: () => undefined,
+        head: "a".repeat(40), branch: "axis/feat", skippedCount: 0, skipped: [], files: [bad], hasCutLines: async () => false, readNewBlob: async () => { throw new Error("not read in this test"); }, accept: () => undefined,
         build: async () => ({ reviewedTree: "c".repeat(40), head: "a".repeat(40), branch: "axis/feat", handle: {} as never }),
       }),
     }),
