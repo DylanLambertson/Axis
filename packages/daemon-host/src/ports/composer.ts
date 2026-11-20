@@ -1,7 +1,6 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import type { ApprovalPreview, ComposerMode, ComposerRun, JsonValue, RunEvent } from "@axis/protocol";
 import type { GuardedProvider } from "@axis/providers";
-import type { SnapshotContext } from "@axis/runs";
 
 /**
  * The composer ports (docs/design/composer-runtime.md section 4). Handlers see `ComposerRunsService` only; the service
@@ -77,9 +76,16 @@ export class ComposerRunHalt extends Error {
  * Held per RUN (one composer run per workspace at a time); the oldest goes first past `maxHeld`, so a run whose baseline was
  * pushed out finds none and its check throws (the caller reads that as drift).
  */
+/** The run and the worktree a guard's baseline is taken over (the shape of `@axis/runs` `SnapshotContext`). */
+export interface GuardContext {
+  readonly runId: string;
+  readonly workspaceId: string;
+  readonly worktree: { readonly workTree: string; readonly gitDir: string };
+}
+
 export interface RunRepositoryGuard {
   /** Takes the run's baseline; refuses (throws) when it cannot be judged, or when the run already has one. */
-  baseline(ctx: SnapshotContext): Promise<void>;
+  baseline(ctx: GuardContext): Promise<void>;
   /** The repository now against the run's baseline, which is kept. Throws when there is none or nothing can be judged. */
   check(runId: string): Promise<{ readonly drift: boolean }>;
   /** Drops the run's baseline (its end). */

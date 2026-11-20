@@ -1,6 +1,5 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { z } from "zod";
-import { checkExecutable } from "@axis/pty-policy";
 import { BrokerError, escapeDisplay, type ApprovalRequest, type RunRecord, type ToolDefinition } from "@axis/broker";
 import { escapedHead, type CommandInput } from "../composer/preview.js";
 import { ComposerRunHalt, type ComposerToolSpec, type RunRepositoryGuard } from "../ports/composer.js";
@@ -45,6 +44,9 @@ export const DEFAULT_COMMAND_LIMITS: CommandLimits = Object.freeze({ timeoutMs: 
 
 /** A bare program name, or an absolute path (POSIX or a drive path); nothing relative, nothing empty. */
 const PROGRAM = /^(?:[A-Za-z0-9._+-]+|\/.*|[A-Za-z]:[\\/].*)$/;
+/** Absolute for one platform only (the broker's `pinProgram` applies the same rule): POSIX `/...`, Windows `C:\` or `C:/`. */
+const ABSOLUTE_ON = (platform: NodeJS.Platform): RegExp => (platform === "win32" ? /^[A-Za-z]:[\\/]/ : /^\//);
+const BARE = /^[A-Za-z0-9._+-]+$/;
 const CONTROL = /[\u0000-\u001f\u007f]/;
 const arg = z.string().min(1).max(1024).refine((a) => !a.includes("\0"));
 const cwdArg = z
@@ -75,7 +77,7 @@ export const MAX_ARGV_JSON = 768;
 export const runCommandArgsOn = (platform: NodeJS.Platform, redact: (text: string) => string) =>
   runCommandArgs.refine((a) => {
     const line = JSON.stringify(a.argv);
-    return checkExecutable(a.argv[0] as string, platform) === undefined && line.length <= MAX_ARGV_JSON && escapeDisplay(line) === line && redact(line) === line;
+    return (BARE.test(a.argv[0] as string) || ABSOLUTE_ON(platform).test(a.argv[0] as string)) && line.length <= MAX_ARGV_JSON && escapeDisplay(line) === line && redact(line) === line;
   });
 
 export const RUN_COMMAND_SPEC: ComposerToolSpec = Object.freeze({
