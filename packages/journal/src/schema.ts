@@ -317,6 +317,22 @@ export const JOURNAL_MIGRATIONS: readonly Migration[] = [
         BEGIN SELECT RAISE(ABORT, 'base_branch is recorded with its tip'); END;
     `,
   },
+  {
+    // The taint rule IAC-T (ticket PV-M0, inter-agent-communication.md section 6.6): a composer run that received content
+    // from anyone but the user is tainted for its whole life, also across a restart or a later resume of the run. The flag
+    // only goes from 0 to 1; nothing clears it. 0 for every run made before this version (no source existed then). Additive.
+    version: 8,
+    sql: `
+      ALTER TABLE composer_runs ADD COLUMN tainted INTEGER NOT NULL DEFAULT 0 CHECK (tainted IN (0, 1));
+      CREATE TRIGGER composer_runs_taint_sticky BEFORE UPDATE OF tainted ON composer_runs
+        WHEN NEW.tainted < OLD.tainted
+        BEGIN SELECT RAISE(ABORT, 'a tainted run stays tainted'); END;
+      -- INSERT OR REPLACE deletes the old row without firing a DELETE trigger, which would clear the taint: refused.
+      CREATE TRIGGER composer_runs_inserted_once BEFORE INSERT ON composer_runs
+        WHEN EXISTS (SELECT 1 FROM composer_runs WHERE run_id = NEW.run_id)
+        BEGIN SELECT RAISE(ABORT, 'a composer run is recorded once'); END;
+    `,
+  },
 ];
 
 export const JOURNAL_SCHEMA_VERSION = JOURNAL_MIGRATIONS.length;
