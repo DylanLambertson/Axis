@@ -83,14 +83,15 @@ const hex = (ch: string): string => `\\u{${(ch.codePointAt(0) as number).toStrin
 /**
  * The start of `text` as the user sees it, cut on a code point boundary at `max` UTF-16 units. Every code point activity
  * text refuses, every blank letter and every combining mark past `MAX_COMBINING_RUN` in a row is written `\u{hex}`, and a
- * backslash is written `\\`, so the escaping is reversible: what the head shows names exactly one content.
+ * backslash is written `\\`, so the escaping is reversible: what the head shows names exactly one content. A character
+ * `also` matches is written `\u{hex}` too, inside the same walk, so the head stays within `max` units (review c3 r1 N-2).
  */
-export function escapedHead(text: string, max = MAX_PREVIEW_HEAD): { readonly head: string; readonly truncated: boolean } {
+export function escapedHead(text: string, max = MAX_PREVIEW_HEAD, also?: RegExp): { readonly head: string; readonly truncated: boolean } {
   let head = "";
   let marks = 0;
   for (const ch of text) {
     marks = MARK.test(ch) ? marks + 1 : 0;
-    const t = ch === "\\" ? "\\\\" : REFUSED_ACTIVITY.test(ch) || BLANK_LETTER.test(ch) || marks > MAX_COMBINING_RUN ? hex(ch) : ch;
+    const t = ch === "\\" ? "\\\\" : REFUSED_ACTIVITY.test(ch) || BLANK_LETTER.test(ch) || marks > MAX_COMBINING_RUN || also?.test(ch) === true ? hex(ch) : ch;
     if (head.length + t.length > max) return { head, truncated: true };
     head += t;
   }

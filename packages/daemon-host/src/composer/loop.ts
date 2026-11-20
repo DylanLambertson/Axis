@@ -161,6 +161,29 @@ function failure(error: unknown, signal: AbortSignal): LoopEnd {
 const add = (a: Usage, b: Usage): Usage => ({ inputTokens: a.inputTokens + b.inputTokens, outputTokens: a.outputTokens + b.outputTokens });
 
 export async function runComposerLoop(input: LoopInput): Promise<LoopEnd> {
+  try {
+    return await loop(input);
+  } finally {
+    try {
+      input.tools?.close?.();
+    } catch {
+      // releasing is best effort; a held baseline is bounded by the guard
+    }
+  }
+}
+
+/** WT-2 (C3): a change to the repository's hooks or common dir since the run's first command ends the run. */
+async function guarded(tools: ComposerRunTools | undefined, signal: AbortSignal): Promise<LoopEnd | undefined> {
+  try {
+    await tools?.guard?.(signal);
+    return undefined;
+  } catch (e) {
+    if (e instanceof ComposerRunHalt) return { state: "FAILED", reason: e.reason };
+    return signal.aborted ? { state: "CANCELLED", reason: "USER_CANCELLED" } : { state: "FAILED", reason: "INTERNAL" };
+  }
+}
+
+async function loop(input: LoopInput): Promise<LoopEnd> {
   const { signal, emit, tools } = input;
   const maxTurns = input.maxTurns ?? 24;
   const budget = withDestinationEvents(input.budget, input.destination, emit);
@@ -192,7 +215,8 @@ export async function runComposerLoop(input: LoopInput): Promise<LoopEnd> {
     for (const block of result.content) if (block.type === "text" && block.text.length > 0) emit({ type: "text", text: block.text });
     if (result.stopReason === "refusal") return { state: "FAILED", reason: "MODEL_REFUSAL" };
     const calls = result.content.filter((b) => b.type === "tool_use");
-    if (calls.length === 0) return { state: "REVIEWING", reason: null };
+    // The end check: a change that landed after the last command (a detached child of it) is still reported.
+    if (calls.length === 0) return (await guarded(tools, signal)) ?? { state: "REVIEWING", reason: null };
     // Bounded fan-out (S4): a reply that breaks a call cap runs none of its calls; the memory a run holds stays bounded.
     const over = checkCalls(calls, caps, used);
     if (over !== undefined) return { state: "FAILED", reason: over };
@@ -228,6 +252,8 @@ export async function runComposerLoop(input: LoopInput): Promise<LoopEnd> {
     // Drift before the next turn: what changed outside the run since this one, as context next to the tool results.
     const notice = await tools?.drift?.(signal).catch(() => undefined);
     if (signal.aborted) return { state: "CANCELLED", reason: "USER_CANCELLED" };
+    const halt = await guarded(tools, signal);
+    if (halt !== undefined) return halt;
     messages.push({ role: "user", content: notice === undefined ? results : [...results, { type: "text", text: notice }] });
   }
   return { state: "FAILED", reason: "TURN_LIMIT" };

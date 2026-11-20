@@ -8,7 +8,7 @@ import { composerRunsMethods } from "@axis/protocol";
 import type { ValidRequest } from "@axis/providers";
 import { START } from "./composer-rig.js";
 import { ComposerRunHalt } from "../src/index.js";
-import { NODE, answerPending, approveCommand, approvalsOf, command, commandRig, eventually, fakeSnapshotter, nodeRun, nodeScript, pending, posix, toolsOf } from "./composer-command-rig.js";
+import { NODE, answerPending, approveCommand, approvalsOf, command, commandRig, eventually, fakeGuard, nodeRun, nodeScript, pending, posix, toolsOf } from "./composer-command-rig.js";
 
 // Ticket C3: `run_command` through the composer (PTY-2, PTY-4, command identity on the approval and the native line).
 
@@ -28,9 +28,9 @@ function resultsSeen(): { seen: string[][]; onRequest: (n: number, req: ValidReq
 }
 
 test("C3: an approved command shows its whole line, real program and identity on the card and the native line; what runs is that line", async (t) => {
-  const snap = fakeSnapshotter();
+  const snap = fakeGuard();
   const r = resultsSeen();
-  const c = await commandRig(t, { replies: [nodeRun("process.stdout.write(process.argv[1] + '<b>')", "a b"), TEXT], commandSnapshotter: snap, onRequest: r.onRequest });
+  const c = await commandRig(t, { replies: [nodeRun("process.stdout.write(process.argv[1] + '<b>')", "a b"), TEXT], commandGuard: snap, onRequest: r.onRequest });
   const { run } = await c.service.start(START(c.workspaceId), new AbortController().signal);
   const { challenge, sent } = await approveCommand(c, run.runId);
   await eventually(ended(c, run.runId));
@@ -51,7 +51,9 @@ test("C3: an approved command shows its whole line, real program and identity on
   const out = r.seen[1]?.[0] ?? "";
   assert.match(out, /^exit: 0, ended: exit\n/);
   assert.ok(out.includes('<axis-command-output stream="stdout" content="untrusted">\na b\\u{3c}b\\u{3e}\n</axis-command-output>'), out);
-  assert.deepEqual(snap.calls, [`before:${run.runId}.command.1`, `after:${run.runId}.command.1`], "WT-2: one snapshot before and one after");
+  const id = run.runId;
+  // WT-2: the run's one baseline before its first command, then a check after it, before the next turn and at the end.
+  assert.deepEqual(snap.calls, [`baseline:${id}`, `check:${id}`, `check:${id}`, `check:${id}`, `release:${id}`]);
   const rows = c.audit.verify();
   assert.equal(rows.ok, true);
 });
@@ -60,7 +62,7 @@ test("C3 PTY-2: the child sees only the allow-list, whatever the host environmen
   const r = resultsSeen();
   const c = await commandRig(t, {
     replies: [nodeRun("process.stdout.write(JSON.stringify(Object.keys(process.env).sort()))"), TEXT],
-    commandSnapshotter: fakeSnapshotter(),
+    commandGuard: fakeGuard(),
     onRequest: r.onRequest,
     env: ({ base }) => ({
       PATH: "/usr/bin:/bin", HOME: base, LANG: "C", TERM: "dumb",
@@ -87,20 +89,23 @@ test("C3: the model cannot name an environment, a shell string or a working dire
       command([NODE, "-v"], { cwd: "/" }),
       command(["./bin/tool"]),
       command([""]),
+      // Review c3 r1 SF-2: a drive path is absolute on Windows only (relative to the daemon's directory elsewhere), and a
+      // root-relative path is refused on Windows.
+      command([posix ? "C:/prog" : "/usr/bin/prog"]),
       TEXT,
     ],
-    commandSnapshotter: fakeSnapshotter(),
+    commandGuard: fakeGuard(),
   });
   const { run } = await c.service.start(START(c.workspaceId), new AbortController().signal);
   await eventually(ended(c, run.runId));
-  assert.deepEqual(toolsOf(c, run.runId).map((e) => e.reason), Array(6).fill("invalid_args"));
+  assert.deepEqual(toolsOf(c, run.runId).map((e) => e.reason), Array(7).fill("invalid_args"));
   assert.deepEqual(approvalsOf(c, run.runId), [], "nothing was put to the user");
 });
 
 test("C3: a name planted on PATH inside the worktree, or on an empty or relative entry, is never found; an outside entry is pinned by real path", { skip: !posix }, async (t) => {
   const c = await commandRig(t, {
     script: () => [command(["axis-planted"]), command(["axis-tool"]), TEXT],
-    commandSnapshotter: fakeSnapshotter(),
+    commandGuard: fakeGuard(),
     env: ({ root, outside, base }) => ({ PATH: `${join(root, "bin")}::.:bin:${join(outside, "bin")}`, HOME: base }),
   });
   mkdirSync(join(c.root, "bin"));
@@ -122,7 +127,7 @@ test("C3: a name planted on PATH inside the worktree, or on an empty or relative
 });
 
 test("C3: a program swapped after the approval was asked is refused at run time (program_changed); nothing runs", { skip: !posix }, async (t) => {
-  const c = await commandRig(t, { script: ({ outside }) => [command([join(outside, "prog")]), TEXT], commandSnapshotter: fakeSnapshotter() });
+  const c = await commandRig(t, { script: ({ outside }) => [command([join(outside, "prog")]), TEXT], commandGuard: fakeGuard() });
   const marker = join(c.outside, "swapped-ran");
   if (!nodeScript(join(c.outside, "prog"), `process.stdout.write("approved")`)) return t.skip("no #! scripts here");
   const { run } = await c.service.start(START(c.workspaceId), new AbortController().signal);
@@ -138,7 +143,7 @@ test("C3: a program swapped after the approval was asked is refused at run time 
 
 test("C3: a working directory that is a symlink out of the tree is refused at run time; nothing runs", { skip: !posix }, async (t) => {
   const marker = "cwd-ran";
-  const c = await commandRig(t, { replies: [command([NODE, "-e", `require("fs").writeFileSync(${JSON.stringify(marker)}, "x")`], { cwd: "out" }), TEXT], commandSnapshotter: fakeSnapshotter() });
+  const c = await commandRig(t, { replies: [command([NODE, "-e", `require("fs").writeFileSync(${JSON.stringify(marker)}, "x")`], { cwd: "out" }), TEXT], commandGuard: fakeGuard() });
   symlinkSync(c.outside, join(c.root, "out"), "dir");
   const { run } = await c.service.start(START(c.workspaceId), new AbortController().signal);
   await approveCommand(c, run.runId);
@@ -151,7 +156,7 @@ test("C3 PTY-4: output over the cap stops the command; the model gets a bounded,
   const r = resultsSeen();
   const c = await commandRig(t, {
     replies: [nodeRun("const b = Buffer.alloc(65536, 0x41); for (let i = 0; i < 64; i++) process.stdout.write(b); process.stdout.write('\\u0007\\u202e')"), TEXT],
-    commandSnapshotter: fakeSnapshotter(),
+    commandGuard: fakeGuard(),
     commandLimits: { maxOutputBytes: 8192, modelChars: 1000 },
     onRequest: r.onRequest,
   });
@@ -168,7 +173,7 @@ test("C3 PTY-4: a command past its timeout is killed with its process group", { 
   const r = resultsSeen();
   const pidFile = "grandchild.pid";
   const code = `const { spawn } = require("child_process"); const g = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" }); require("fs").writeFileSync(${JSON.stringify(pidFile)}, String(g.pid)); setInterval(() => {}, 1000);`;
-  const c = await commandRig(t, { replies: [nodeRun(code), TEXT], commandSnapshotter: fakeSnapshotter(), commandLimits: { timeoutMs: 1500 }, onRequest: r.onRequest });
+  const c = await commandRig(t, { replies: [nodeRun(code), TEXT], commandGuard: fakeGuard(), commandLimits: { timeoutMs: 1500 }, onRequest: r.onRequest });
   const { run } = await c.service.start(START(c.workspaceId), new AbortController().signal);
   await approveCommand(c, run.runId);
   await eventually(ended(c, run.runId));
@@ -188,7 +193,7 @@ test("C3 PTY-4: a command past its timeout is killed with its process group", { 
 test("C3 WT-2: drift after a command, or a check that cannot judge, halts the run (GIT_DRIFT); a later call never runs", async (t) => {
   for (const verdict of [() => true, () => "throw" as const]) {
     const marker = "second-ran";
-    const c = await commandRig(t, { replies: [nodeRun("1"), nodeRun(`require("fs").writeFileSync(${JSON.stringify(marker)}, "x")`), TEXT], commandSnapshotter: fakeSnapshotter({ verdict }) });
+    const c = await commandRig(t, { replies: [nodeRun("1"), nodeRun(`require("fs").writeFileSync(${JSON.stringify(marker)}, "x")`), TEXT], commandGuard: fakeGuard({ verdict }) });
     const { run } = await c.service.start(START(c.workspaceId), new AbortController().signal);
     await approveCommand(c, run.runId);
     await eventually(ended(c, run.runId));
@@ -200,9 +205,37 @@ test("C3 WT-2: drift after a command, or a check that cannot judge, halts the ru
   }
 });
 
+test("C3 WT-2: the run's one baseline is checked before a later command, before the next turn and at the end; a change at any of them halts the run", async (t) => {
+  // Checks in order: 1 after command 1, 2 before turn 2, 3 before command 2, 4 after command 2, 5 before turn 3, 6 at the end.
+  for (const [drifting, wire, ran] of [[2, 1, false], [3, 2, false], [6, 3, true]] as const) {
+    const marker = `second-ran-${drifting}`;
+    let n = 0;
+    const guard = fakeGuard({ verdict: () => ++n === drifting });
+    const c = await commandRig(t, { replies: [nodeRun("1"), nodeRun(`require("fs").writeFileSync(${JSON.stringify(marker)}, "x")`), TEXT], commandGuard: guard });
+    const { run } = await c.service.start(START(c.workspaceId), new AbortController().signal);
+    await approveCommand(c, run.runId);
+    if (drifting > 2) await approveCommand(c, run.runId);
+    await eventually(ended(c, run.runId));
+    assert.deepEqual([c.service.get(run.runId).state, c.service.get(run.runId).reason], ["FAILED", "GIT_DRIFT"], `check ${drifting}`);
+    assert.equal(existsSync(join(c.root, marker)), ran, `check ${drifting}: the second command ran`);
+    assert.equal(c.wire(), wire, `check ${drifting}: the model is never asked after the drift`);
+    assert.equal(guard.calls.filter((x) => x.startsWith("baseline:")).length, 1, "one baseline for the whole run, never replaced");
+    assert.equal(guard.calls.at(-1), `release:${run.runId}`, "released when the run ends");
+  }
+});
+
+test("C3 WT-2: a run that never ran a command takes no baseline and checks nothing", async (t) => {
+  const guard = fakeGuard({ verdict: () => true });
+  const c = await commandRig(t, { replies: [{ kind: "tool_use", name: "read_file", input: { path: "src/none" } }, TEXT], commandGuard: guard });
+  const { run } = await c.service.start(START(c.workspaceId), new AbortController().signal);
+  await eventually(ended(c, run.runId));
+  assert.equal(c.service.get(run.runId).state, "REVIEWING");
+  assert.deepEqual(guard.calls, [`release:${run.runId}`]);
+});
+
 test("C3 WT-2: no baseline before the command refuses the call with nothing started; the run goes on", async (t) => {
   const marker = "ran";
-  const c = await commandRig(t, { replies: [nodeRun(`require("fs").writeFileSync(${JSON.stringify(marker)}, "x")`), TEXT], commandSnapshotter: fakeSnapshotter({ failBefore: true }) });
+  const c = await commandRig(t, { replies: [nodeRun(`require("fs").writeFileSync(${JSON.stringify(marker)}, "x")`), TEXT], commandGuard: fakeGuard({ failBaseline: true }) });
   const { run } = await c.service.start(START(c.workspaceId), new AbortController().signal);
   await approveCommand(c, run.runId);
   await eventually(ended(c, run.runId));
@@ -221,7 +254,7 @@ test("C3: without the WT-2 snapshotter run_command is not offered and a call to 
 
 test("C3: a dialog cancel declines the command; nothing runs", async (t) => {
   const marker = "declined-ran";
-  const c = await commandRig(t, { replies: [nodeRun(`require("fs").writeFileSync(${JSON.stringify(marker)}, "x")`), TEXT], commandSnapshotter: fakeSnapshotter() });
+  const c = await commandRig(t, { replies: [nodeRun(`require("fs").writeFileSync(${JSON.stringify(marker)}, "x")`), TEXT], commandGuard: fakeGuard() });
   const { run } = await c.service.start(START(c.workspaceId), new AbortController().signal);
   await approveCommand(c, run.runId, false);
   await eventually(ended(c, run.runId));
@@ -230,7 +263,7 @@ test("C3: a dialog cancel declines the command; nothing runs", async (t) => {
 });
 
 test("C3 WT-2: once a command drifted, the call halts the run and every later call of the run halts it too", async (t) => {
-  const c = await commandRig(t, { commandSnapshotter: fakeSnapshotter({ verdict: () => true }) });
+  const c = await commandRig(t, { commandGuard: fakeGuard({ verdict: () => true }) });
   const tools = (await c.agent.prepare(c.workspaceId))({ runId: "run-direct", workspaceId: c.workspaceId, windowId: "win-1", mode: "agent", onApproval: () => undefined });
   const signal = new AbortController().signal;
   const first = tools.invoke("run_command", { argv: [NODE, "-e", "1"] }, signal);

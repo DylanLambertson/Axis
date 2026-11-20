@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
 import { MAX_PREVIEW_ARGV_CHARS, approvalPreviewSchema, type Challenge } from "@axis/protocol";
-import { DEFAULT_COMMAND_LIMITS, buildApprovalPreview, commandIdentity, commandLimits, commandOf, commandPreview, createRunApprovals, formatCommandResult, runNativeDetail, type RunApprovalsCore } from "../src/index.js";
+import { DEFAULT_COMMAND_LIMITS, RunWt2, approvableCommand, buildApprovalPreview, commandTool, commandIdentity, commandLimits, commandOf, commandPreview, createRunApprovals, formatCommandResult, runNativeDetail, type RunApprovalsCore } from "../src/index.js";
 
 // Ticket C3: the pieces of `run_command`'s approval and result, one at a time.
 
@@ -109,6 +109,11 @@ test("the result the model gets says how the command ended and holds both stream
   const cut = formatCommandResult({ ...rec, stdout: Buffer.from("x".repeat(100)), endedBy: "output-cap", exitCode: null, truncated: true }, (t) => t, { ...DEFAULT_COMMAND_LIMITS, modelChars: 10 });
   assert.match(cut, /^exit: none, ended: output-cap \(output over the cap; the command was stopped\)\n/);
   assert.ok(cut.includes('<axis-command-output stream="stdout" content="untrusted" cut="true">\nxxxxxxxxxx\n</axis-command-output>'));
+  // Review c3 r1 N-2: `<` and `>` are escaped inside the walk, so a stream of them stays within the bound (never 6x it).
+  const angles = formatCommandResult({ ...rec, stdout: Buffer.from("<>".repeat(100)) }, (t) => t, { ...DEFAULT_COMMAND_LIMITS, modelChars: 64 });
+  const body = angles.split("\n")[3] as string;
+  assert.ok(body.length <= 64 && body.length > 64 - 6, body);
+  assert.equal(body, "\\u{3c}\\u{3e}".repeat(5));
 });
 
 test("command limits must be positive safe integers within the runner's bounds", () => {
@@ -116,5 +121,30 @@ test("command limits must be positive safe integers within the runner's bounds",
   assert.equal(commandLimits({ timeoutMs: 600_000 }).timeoutMs, 600_000);
   for (const bad of [{ timeoutMs: 0 }, { timeoutMs: 600_001 }, { maxOutputBytes: 1.5 }, { modelChars: Number.NaN }, { maxOutputBytes: 16 * 1024 * 1024 + 1 }]) {
     assert.throws(() => commandLimits(bad as never), RangeError, JSON.stringify(bad));
+  }
+});
+
+test("review c3 r1 N-5: a command request below tier 4 is never previewed (declined); at destructive or privileged it is", () => {
+  const args = { argv: ["tool", "a b"] };
+  const commands = [line(args.argv, PROG)];
+  for (const tier of ["read", "write", "network", "bogus"]) assert.equal(approvableCommand({ commands, tier: tier as never }, args), undefined, tier);
+  for (const tier of ["destructive", "privileged"] as const) assert.deepEqual(approvableCommand({ commands, tier }, args), base);
+});
+
+test("review c3 r1 N-5: a command whose runner rejects after it started is still checked (WT-2), and a drift halts the run", async () => {
+  for (const drift of [true, false]) {
+    const calls: string[] = [];
+    const guard = {
+      baseline: async () => void calls.push("baseline"),
+      check: async () => (calls.push("check"), { drift }),
+      release: () => undefined,
+    };
+    const writeLock = <T>(_id: string, fn: () => Promise<T>): Promise<T> => fn();
+    const wt2 = new RunWt2({ runId: "r", workspaceId: "w", worktree: { workTree: "/w", gitDir: "/g" }, guard, writeLock });
+    const tool = commandTool({ wt2, workspaceId: "w", platform: "linux", limits: DEFAULT_COMMAND_LIMITS, redact: (t) => t, writeLock });
+    const ctx = { signal: new AbortController().signal, run: async () => Promise.reject(new Error("runner failed")) };
+    await assert.rejects(tool.run(ctx as never, { argv: ["tool"] }), /runner failed/);
+    assert.deepEqual(calls, ["baseline", "check"], `drift ${drift}: checked after the failure`);
+    assert.equal(wt2.halted, drift);
   }
 });

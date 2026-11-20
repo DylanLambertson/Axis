@@ -20,21 +20,22 @@ type Tool = Extract<RunEvent, { type: "tool" }>;
 export const approvalsOf = (c: ComposerRig, runId: string): Approval[] => allEvents(c, runId).filter((e): e is Approval => e.type === "approval");
 export const toolsOf = (c: ComposerRig, runId: string): Tool[] => allEvents(c, runId).filter((e): e is Tool => e.type === "tool");
 
-/** A recording snapshotter (WT-2 port): `verdict` decides each `after`, `failBefore` refuses the baseline. */
-export function fakeSnapshotter(o: { verdict?: () => boolean | "throw"; failBefore?: boolean } = {}) {
+/** A recording WT-2 guard (port `RunRepositoryGuard`): `verdict` decides each check, `failBaseline` refuses the baseline. */
+export function fakeGuard(o: { verdict?: () => boolean | "throw"; failBaseline?: boolean } = {}) {
   const calls: string[] = [];
   return {
     calls,
-    before: async (ctx: { runId: string }) => {
-      calls.push(`before:${ctx.runId}`);
-      if (o.failBefore === true) throw new Error("no baseline");
+    baseline: async (ctx: { runId: string }) => {
+      calls.push(`baseline:${ctx.runId}`);
+      if (o.failBaseline === true) throw new Error("no baseline");
     },
-    after: async (ctx: { runId: string }) => {
-      calls.push(`after:${ctx.runId}`);
+    check: async (runId: string) => {
+      calls.push(`check:${runId}`);
       const v = o.verdict?.() ?? false;
       if (v === "throw") throw new Error("cannot judge");
       return { drift: v };
     },
+    release: (runId: string) => void calls.push(`release:${runId}`),
   };
 }
 

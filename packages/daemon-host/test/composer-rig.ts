@@ -63,8 +63,8 @@ export interface ComposerRigOptions {
   readonly worktree?: { readonly workTree: string; readonly gitDir: string };
   /** The host environment every tool child's PTY-2 environment is built from (built from the rig's directories). */
   readonly env?: (paths: { readonly root: string; readonly outside: string; readonly base: string }) => Readonly<Record<string, string | undefined>>;
-  /** C3: the WT-2 snapshotter (offers `run_command`) and the command bounds. */
-  readonly commandSnapshotter?: AgentBindingDeps["commandSnapshotter"];
+  /** C3: the WT-2 guard (offers `run_command`) and the command bounds. */
+  readonly commandGuard?: AgentBindingDeps["commandGuard"];
   readonly commandLimits?: AgentBindingDeps["commandLimits"];
 }
 
@@ -106,7 +106,7 @@ export async function composerRig(options: ComposerRigOptions): Promise<Composer
     ...(options.previewScanner === undefined ? {} : { previewScanner: options.previewScanner }),
     writeLock: (_workspaceId, fn, signal) => mutex.exclusive("p", fn, signal),
     ...(options.wrapFs === undefined ? {} : { wrapFs: options.wrapFs({ root, outside }) }),
-    ...(options.commandSnapshotter === undefined ? {} : { commandSnapshotter: options.commandSnapshotter }),
+    ...(options.commandGuard === undefined ? {} : { commandGuard: options.commandGuard }),
     ...(options.commandLimits === undefined ? {} : { commandLimits: options.commandLimits }),
   });
   const service = createComposerService({

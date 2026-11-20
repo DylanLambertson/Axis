@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import type { ApprovalPreview, ComposerMode, ComposerRun, JsonValue, RunEvent } from "@axis/protocol";
 import type { GuardedProvider } from "@axis/providers";
+import type { SnapshotContext } from "@axis/runs";
 
 /**
  * The composer ports (docs/design/composer-runtime.md section 4). Handlers see `ComposerRunsService` only; the service
@@ -69,6 +70,22 @@ export class ComposerRunHalt extends Error {
   }
 }
 
+/**
+ * WT-2 for a composer run (ticket C3, review c3 r1 SF-1): ONE baseline per run, taken before its first command and never
+ * replaced, and every later check compares the repository with it. A change that lands between two commands (a detached
+ * child of an earlier command, anything else) is therefore still drift at the next check, never absorbed into a new baseline.
+ * Held per RUN (one composer run per workspace at a time); the oldest goes first past `maxHeld`, so a run whose baseline was
+ * pushed out finds none and its check throws (the caller reads that as drift).
+ */
+export interface RunRepositoryGuard {
+  /** Takes the run's baseline; refuses (throws) when it cannot be judged, or when the run already has one. */
+  baseline(ctx: SnapshotContext): Promise<void>;
+  /** The repository now against the run's baseline, which is kept. Throws when there is none or nothing can be judged. */
+  check(runId: string): Promise<{ readonly drift: boolean }>;
+  /** Drops the run's baseline (its end). */
+  release(runId: string): void;
+}
+
 export interface ComposerRunTools {
   readonly specs: readonly ComposerToolSpec[];
   /** Never throws for a refusal: the model is told, the run goes on. Throws only when the run must stop (audit failure, or `ComposerRunHalt`). */
@@ -78,6 +95,13 @@ export interface ComposerRunTools {
    * its last turn, as untrusted-labelled text with no content, or undefined when nothing changed. Never throws.
    */
   drift?(signal: AbortSignal): Promise<string | undefined>;
+  /**
+   * WT-2 before a model turn that follows tool calls, and before the run ends `REVIEWING`: throws `ComposerRunHalt` when the
+   * repository's hooks or common dir changed since the run's first command (or cannot be judged). Nothing else throws.
+   */
+  guard?(signal: AbortSignal): Promise<void>;
+  /** The run ended (any state): releases what the tools hold for it. Never throws. */
+  close?(): void;
 }
 
 export interface ComposerRunContext {

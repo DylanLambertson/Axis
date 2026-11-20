@@ -106,11 +106,6 @@ const previewHeadSchema = z
   .max(MAX_PREVIEW_HEAD)
   .refine((t) => !REFUSED_ACTIVITY.test(t), { message: "no control or invisible characters" });
 
-/**
- * What a tool call will do, as the user answers its approval (review r1 S2, ticket C8). The daemon builds it from the
- * exact arguments the broker's digest covers (it recomputes the digest from them and shows nothing when they differ), so
- * the content the user judges is the content that runs. `content` is null for a call that writes no content.
- */
 /** Most arguments a previewed command line has, and the most escaped UTF-16 units all of them hold together. */
 export const MAX_PREVIEW_ARGS = 64;
 export const MAX_PREVIEW_ARGV_CHARS = 8192;
@@ -139,6 +134,11 @@ export const commandPreviewSchema = z
   .refine((c) => c.argv.reduce((n, a) => n + a.length, 0) <= MAX_PREVIEW_ARGV_CHARS, "the command line is over the preview bound");
 export type CommandPreview = z.infer<typeof commandPreviewSchema>;
 
+/**
+ * What a tool call will do, as the user answers its approval (review r1 S2, ticket C8). The daemon builds it from the
+ * exact arguments the broker's digest covers (it recomputes the digest from them and shows nothing when they differ), so
+ * the content the user judges is the content that runs. `content` is null for a call that writes no content.
+ */
 export const approvalPreviewSchema = z
   .strictObject({
     /** The broker tier the challenge was issued for (recorded at issue; the digest covers it). */

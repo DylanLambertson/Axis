@@ -16,7 +16,7 @@ import { selectPtyGitRunner } from "./bindings/pty-git.js";
 import { createCommitPreparer, createReviewService } from "./bindings/review.js";
 import { createTempIndexProvider } from "./bindings/review-tempindex.js";
 import { createRunsBinding, type RunsBinding } from "./bindings/runs.js";
-import type { RunSnapshotterFactory } from "./bindings/snapshot.js";
+import { createRunRepositoryGuard, type RunSnapshotterFactory } from "./bindings/snapshot.js";
 import { createWorktreesBinding, type WorktreesBinding } from "./bindings/worktrees.js";
 import { composerWriteLock, createActiveRunForwarder, createAuditSeal, createRunsClock, settleComposer, daemonAuditSink, handleProjectsRegister, recordingRegistrar } from "./compose-parts.js";
 import type { HostConfig } from "./config.js";
@@ -115,6 +115,8 @@ export interface ComposeOptions {
    * binding's sink), so a test can prove a write after shutdown is refused. It can only observe them, never unseal them.
    */
   readonly observeSealedWriters?: (writers: { readonly challenge: { append(e: never): unknown }; readonly composer: { append(e: never): unknown } }) => void;
+  /** TEST ONLY: sees whether the composer binding was given the WT-2 guard (review c3 r1 N-6). */
+  readonly observeAgent?: (agent: { readonly commands: boolean }) => void;
   /** How long shutdown waits for composer runs to record their last rows before the audit writers are sealed (default 1000). */
   readonly composerSettleMs?: number;
   /** Composer runs (`axis.runs/1`, docs/design/composer-runtime.md): the mock provider's script and the per-run budget. */
@@ -206,9 +208,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
           return ws === undefined ? undefined : parts.journal.getProject(ws.projectId)?.path;
         };
         const snapshotter = snapshotterFactory({ gitPath: parts.gitPath, env: ports.env, projectRoot });
-        // WT-2 broker side (C3): the composer's commands get their own instance, so they never replace a CLI run's held baseline.
-        const commandSnapshotter = snapshotterFactory({ gitPath: parts.gitPath, env: ports.env, projectRoot });
-        for (const x of [snapshotter, commandSnapshotter]) if (typeof x?.before !== "function" || typeof x?.after !== "function") refuse("snapshotter_required");
+        if (typeof snapshotter?.before !== "function" || typeof snapshotter?.after !== "function") refuse("snapshotter_required");
         const forwarder = createActiveRunForwarder();
         // Both writers are guarded by the seal (review r1 S1); removing either guard fails compose-composer.test.ts.
         const challengeWriter = { append: (e: Parameters<typeof parts.audit.append>[0]) => (auditSeal.guard(), parts.audit.append(e), parts.anchors.noteWrite(), undefined) };
@@ -264,8 +264,10 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
           ...(options.composer?.mock === undefined ? {} : { mock: options.composer.mock }),
           // Composer writes take the project mutex Axis git operations take (policies 3.3, 6.1), queued like any caller.
           writeLock: composerWriteLock(parts.journal, worktrees.mutex),
-          commandSnapshotter,
+          // WT-2 broker side (C3): one baseline per composer run, held by run and apart from the CLI runs' snapshotter.
+          commandGuard: createRunRepositoryGuard({ gitPath: parts.gitPath, env: ports.env, projectRoot }),
         });
+        options.observeAgent?.({ commands: agent.commands });
         const composer = createComposerService({
           journal: parts.journal,
           engine: agent,
