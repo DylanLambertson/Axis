@@ -9,7 +9,7 @@ import { createMockProvider, guardProvider, type GuardedProvider, type MockProvi
 import { formatDriftNotice } from "../composer/drift.js";
 import { buildApprovalPreview, type PreviewScanner } from "../composer/preview.js";
 import { ObservedFiles } from "./agent-observed.js";
-import { providerRedactor } from "./providers.js";
+import { providerRedactor } from "./provider-redactor.js";
 import type { RunApprovals } from "../gate/run-approvals.js";
 import type { ComposerApprovalNote, ComposerEngine, ComposerRunContext, ComposerRunTools, ComposerToolSpec } from "../ports/composer.js";
 import type { WorktreeLocator } from "../ports/worktree-locator.js";

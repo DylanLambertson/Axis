@@ -12,7 +12,7 @@ import { createSecretScanner, type ScanMode } from "@axis/secret-scan";
 import { anchorPreflight } from "./anchor/preflight.js";
 import { createAgentBinding, type AgentBinding } from "./bindings/agent.js";
 import { createGitOperations, createGitPort } from "./bindings/git.js";
-import { createProvidersBinding, type AnthropicConnectionOptions, type ProvidersBinding } from "./bindings/providers.js";
+import { createProvidersBinding, productionConnection, type AnthropicConnectionOptions, type ProvidersBinding } from "./bindings/providers.js";
 import { selectPtyGitRunner } from "./bindings/pty-git.js";
 import { createCommitPreparer, createReviewService } from "./bindings/review.js";
 import { createTempIndexProvider } from "./bindings/review-tempindex.js";
@@ -126,8 +126,8 @@ export interface ComposeOptions {
     readonly workspaceBudget?: RunBudgetLimits;
     readonly maxTurns?: number;
     readonly toolCaps?: Partial<ToolCaps>;
-    /** The Anthropic connection over the vault (C6, `bindings/providers.ts`); absent, only the mock is served. */
-    readonly anthropic?: AnthropicConnectionOptions;
+    /** The Anthropic connection over the vault (C6); absent, only the mock is served. Always Node's own `fetch` and the default wire caps. */
+    readonly anthropic?: Pick<AnthropicConnectionOptions, "connectionId" | "backend" | "pricing">;
   };
   /** Period of the event sources (docs/design/events.md section 4; default 250 ms). */
   readonly eventPumpMs?: number;
@@ -253,7 +253,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
         forwarder.bind(runs.service);
         const projectPaths = (): string[] => parts.journal.listProjects().map((p) => p.path);
         // Composer runs: the broker's audit rows mark the anchor batch dirty like every other writer.
-        const providers = createProvidersBinding({ redactor: ports.redactor, audit: composerWriter, ...(options.composer?.anthropic === undefined ? {} : { anthropic: options.composer.anthropic }) });
+        const providers = createProvidersBinding({ redactor: ports.redactor, audit: composerWriter, ...productionConnection(options.composer?.anthropic) });
         const agent = createAgentBinding({
           locator: worktrees.locator,
           repositoryRoots: projectPaths,
