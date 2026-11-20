@@ -127,14 +127,14 @@ test("a second hello is a protocol violation, not a renegotiation; repeated viol
 
 test("a connection that never completes the handshake is closed", async (t) => {
   const r = mk(t, { limits: { handshakeTimeoutMs: 30 } });
-  assert.ok(await r.inbox.closedWithin(500));
+  assert.ok(await r.inbox.closedWithin());
 });
 
 test("connections beyond the limit are closed immediately", async (t) => {
   const r = mk(t, { maxConnections: 1 });
   await r.handshake();
   const second = r.connect("good#conn-2");
-  assert.ok(await second.inbox.closedWithin(500));
+  assert.ok(await second.inbox.closedWithin());
   assert.equal(r.daemon.connectionCount, 1);
 });
 
