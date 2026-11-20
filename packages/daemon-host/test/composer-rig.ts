@@ -77,6 +77,8 @@ export interface ComposerRigOptions {
   readonly extraTools?: AgentBindingDeps["extraTools"];
   /** The binding's test taint source (IAC-T): which successful calls taint the run. */
   readonly taintSources?: AgentBindingDeps["taintSources"];
+  /** C3 slice 2: the host's git (offers `git_status` and `git_diff`). */
+  readonly gitPath?: string;
 }
 
 const SHA = "b".repeat(40);
@@ -126,6 +128,7 @@ export async function composerRig(options: ComposerRigOptions): Promise<Composer
     ...(options.commandLimits === undefined ? {} : { commandLimits: options.commandLimits }),
     ...(options.taintSources === undefined ? {} : { taintSources: options.taintSources }),
     ...(options.extraTools === undefined ? {} : { extraTools: options.extraTools }),
+    ...(options.gitPath === undefined ? {} : { gitPath: options.gitPath }),
   });
   const service = createComposerService({
     redactor,

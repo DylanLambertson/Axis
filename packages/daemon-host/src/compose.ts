@@ -117,7 +117,7 @@ export interface ComposeOptions {
    */
   readonly observeSealedWriters?: (writers: { readonly challenge: { append(e: never): unknown }; readonly composer: { append(e: never): unknown } }) => void;
   /** TEST ONLY: sees whether the composer binding was given the WT-2 guard (review c3 r1 N-6). */
-  readonly observeAgent?: (agent: { readonly commands: boolean }) => void;
+  readonly observeAgent?: (agent: { readonly commands: boolean; readonly gitReads: boolean }) => void;
   /** How long shutdown waits for composer runs to record their last rows before the audit writers are sealed (default 1000). */
   readonly composerSettleMs?: number;
   /** Composer runs (`axis.runs/1`, docs/design/composer-runtime.md): the mock provider's script and the per-run budget. */
@@ -271,8 +271,9 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
           writeLock: composerWriteLock(parts.journal, worktrees.mutex),
           // WT-2 broker side (C3): one baseline per composer run, held by run and apart from the CLI runs' snapshotter.
           commandGuard: createRunRepositoryGuard({ gitPath: parts.gitPath, env: ports.env, projectRoot }),
+          gitPath: parts.gitPath, // git_status and git_diff (C3 slice 2): the broker's git on the host's one git
         });
-        options.observeAgent?.({ commands: agent.commands });
+        options.observeAgent?.({ commands: agent.commands, gitReads: agent.gitReads });
         const composer = createComposerService({
           journal: parts.journal,
           engine: agent,
