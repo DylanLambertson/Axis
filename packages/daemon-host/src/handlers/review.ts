@@ -1,26 +1,28 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { AxisError } from "@axis/audit";
-import { DaemonError, type Handler, type HandlerContext } from "@axis/daemon";
+import type { Handler, HandlerContext } from "@axis/daemon";
 import type { Journal } from "@axis/journal";
 import { userPrincipal } from "@axis/journal/daemon-principal";
 import {
   isAcknowledged,
   reviewCompleteRequestSchema,
   reviewCompleteResponseSchema,
-  reviewDiffReasonSchema,
   reviewDiffRequestSchema,
   reviewDiffResponseSchema,
   axisBranchSchema,
   type ReviewFileWire,
 } from "@axis/protocol";
 import type { PortContext } from "../ports/common.js";
-import { ReviewRefusal, type ReviewRound, type ReviewService, type RoundFile } from "../ports/review.js";
+import type { ReviewRound, ReviewService, RoundFile } from "../ports/review.js";
 import type { RunsService } from "../ports/runs.js";
+import { createReviewContentHandler } from "./review-content.js";
+import { fail, mapRefusal, NOT_AVAILABLE } from "./review-errors.js";
 import { ReviewedTrees } from "./review-store.js";
 import { AckSessions, contentIdOf, fileIdOf, foldEqualPaths, hasReplacementChar, isProtected, protectedFirst, wireRow, wireSkipped } from "./review-wire.js";
 
 /**
- * `axis.review/1` (design section 4.2): `diff` (read, tier 1) and `complete` (write, tier 2).
+ * `axis.review/1` (design section 4.2): `diff` (read, tier 1) and `complete` (write, tier 2); `content` (read, tier 1) is in
+ * `review-content.ts`.
  *
  * Who is acting comes from `ctx.identity` only. Both handlers refuse any actor but `user` themselves, behind the policy
  * row, and only after that check is the `UserPrincipal` minted (it is never derived from a payload). A handler cannot
@@ -66,43 +68,6 @@ async function mapLimit<T, R>(items: readonly T[], limit: number, fn: (item: T) 
   };
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
   return out;
-}
-
-const NOT_AVAILABLE = "This review is not available.";
-type Code = "E_CANCELLED" | "E_INTERNAL" | "E_NOT_FOUND" | "E_CONFLICT" | "E_INVALID_ARGUMENT" | "E_UNAVAILABLE";
-
-function fail(code: Code, message: string, reason?: string): never {
-  throw new DaemonError(code, message, reason === undefined ? undefined : { reason });
-}
-
-/** The closed `reason` of a refusal, or undefined for anything outside the wire's set. */
-function reasonOf(e: ReviewRefusal): string | undefined {
-  const r = reviewDiffReasonSchema.safeParse(e.reason);
-  return r.success ? r.data : undefined;
-}
-
-function mapRefusal(e: unknown): never {
-  if (e instanceof DaemonError) throw e;
-  if (e instanceof ReviewRefusal) {
-    const reason = reasonOf(e);
-    switch (e.code) {
-      case "E_INVALID_ARGUMENT":
-        return fail("E_INVALID_ARGUMENT", reason === "too_large" ? "There are too many changed files to review at once." : "The review request is invalid.", reason);
-      case "E_NOT_FOUND":
-        return fail("E_NOT_FOUND", "The workspace was not found.");
-      case "E_CANCELLED":
-        return fail("E_CANCELLED", "The request was cancelled.");
-      case "E_INTERNAL":
-        return fail("E_INTERNAL", "The review could not be completed.");
-      // A handler cannot raise E_POLICY_DENIED: a review the package would not build is a conflict with the state.
-      case "E_CONFLICT":
-      case "E_POLICY_DENIED":
-        return fail("E_CONFLICT", "The workspace cannot be reviewed in its current state.", reason);
-      default:
-        return fail("E_UNAVAILABLE", "The review could not be completed.");
-    }
-  }
-  return fail("E_UNAVAILABLE", "The review could not be completed.");
 }
 
 export function createReviewDiffHandler(deps: ReviewHandlerDeps): Handler {
@@ -249,6 +214,6 @@ export function createReviewCompleteHandler(deps: ReviewHandlerDeps): Handler {
 }
 
 /** The handlers of this contract by method name, as the registry assembly (design section 4) expects them. */
-export function createReviewHandlers(deps: ReviewHandlerDeps): { readonly diff: Handler; readonly complete: Handler } {
-  return { diff: createReviewDiffHandler(deps), complete: createReviewCompleteHandler(deps) };
+export function createReviewHandlers(deps: ReviewHandlerDeps): { readonly diff: Handler; readonly content: Handler; readonly complete: Handler } {
+  return { diff: createReviewDiffHandler(deps), content: createReviewContentHandler(deps), complete: createReviewCompleteHandler(deps) };
 }

@@ -5,7 +5,7 @@ import type { WorktreeRef } from "@axis/git-ops";
 import { headState, mintBinding, type ReviewBinding } from "./binding.js";
 import { buildReviewedTree, type FileDecision } from "./build.js";
 import { listChanges } from "./changes.js";
-import { conflict, denied, internal, invalid, mapUnexpected, notFound } from "./errors.js";
+import { conflict, denied, internal, invalid, mapUnexpected, notFound, unavailable } from "./errors.js";
 import { assertOid, expectComplete, objectSize, reviewGitFor, resolveObject, type ReviewGit } from "./gitcall.js";
 import { applyHunks, blobOid, hunkId, parseUnifiedHunks, type Hunk } from "./hunks.js";
 import { resolveLimits } from "./limits.js";
@@ -143,6 +143,36 @@ export class ReviewSession {
     const all = applyHunks(oldText, parsed.hunks, new Set(parsed.hunks.map((h) => h.index)));
     if (all === null || blobOid(all, f.newOid.length) !== f.newOid) return fileLevel("not_reproducible");
     return { kind: "hunks", hunks: parsed.hunks };
+  }
+
+  /**
+   * The bytes of a file's NEW side as the snapshot tree holds it (mode and object id of the entry `build` uses), read from
+   * the object store and never from the work tree. Blob modes only (a file or a symlink's target). The size is read first
+   * and decides how much is kept, before any byte is held: the whole object when it is at most `bound.wholeUpTo` bytes,
+   * else its first `bound.prefix` bytes (`complete` false). Output past that is dropped by the runner as it streams. A
+   * runner that cannot return bytes, or returns more than was asked for, is refused.
+   */
+  async readNewBlob(
+    path: string,
+    bound: { readonly wholeUpTo: number; readonly prefix: number },
+  ): Promise<{ readonly size: number; readonly bytes: Uint8Array; readonly complete: boolean }> {
+    return mapUnexpected(async () => {
+      const f = this.file(path);
+      if (!/^(?:100644|100755|120000)$/.test(f.newMode)) throw invalid("only a file or a link has content to read");
+      for (const n of [bound?.wholeUpTo, bound?.prefix]) if (!Number.isSafeInteger(n) || (n as number) < 0) throw invalid("a read bound must be a non-negative integer");
+      const size = await objectSize(this.#git, f.newOid);
+      if (size === undefined) throw unavailable("could not read the size of a file version");
+      const keep = size <= bound.wholeUpTo ? size : Math.min(bound.prefix, size);
+      const r = await this.#git(["cat-file", "blob", f.newOid], { raw: true, maxOutput: keep });
+      if (r.code !== 0 || r.raw !== true) throw unavailable("could not read a file version as bytes");
+      // Short, or longer than asked for (a runner that ignored the cap): either way not the bytes that were planned.
+      if (r.stdout.length !== keep) throw unavailable("a file version did not read back at its size");
+      // A cap only cuts a prefix read. A whole read the runner says it cut means the size it was planned from is wrong:
+      // never report it complete.
+      if (r.truncated === true && keep === size) throw unavailable("a file version did not read back at its size");
+      const bytes = Buffer.from(r.stdout, "latin1");
+      return { size, bytes: new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.length), complete: keep === size };
+    });
   }
 
   preview(path: string, side: "old" | "new"): Promise<Preview> {
