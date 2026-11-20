@@ -175,7 +175,7 @@ test("PATH keeps absolute entries only, minus the excluded directories; with non
   await assert.rejects(none.resolve("alias", undefined, undefined));
   assert.equal(none.calls.length, 0, "no safe PATH: ssh is not started");
   const notFound = rig(answer(GOOD), { path: [join(work, "bin"), sibling + "-missing"].join(delimiter), excludeDirs: () => [work] });
-  await assert.rejects(notFound.resolve("alias", undefined, undefined), /not found/);
+  await assert.rejects(notFound.resolve("alias", undefined, undefined), /no usable PATH/, "the missing entry is dropped too, so nothing is left");
   assert.equal(notFound.calls.length, 0, "no ssh outside the worktrees: nothing starts, nothing falls back to a bare name");
 });
 
@@ -220,4 +220,43 @@ test("a configured program is spawned by its real path, and refused when relativ
   if (alias === undefined) return t.skip("symlinks are not available here");
   const viaLink = rig(answer(GOOD), { file: SSH, excludeDirs: () => [alias] });
   await assert.rejects(viaLink.resolve("alias", undefined, undefined), /not found/, "a worktree named through a symlink still holds the program");
+});
+
+test("a dangling symlink PATH entry is dropped, even when its target is later created inside a worktree", async (t) => {
+  const work = join(ROOT, "dangling-work");
+  mkdirSync(work, { recursive: true });
+  const outside = join(ROOT, "dangling-out");
+  mkdirSync(outside, { recursive: true });
+  const dangling = link(join(work, "notyet"), join(outside, "dangling"));
+  if (dangling === undefined) return t.skip("symlinks are not available here");
+  const r = rig(answer(GOOD), { path: [dangling, join(ROOT, "no-such-dir"), BIN].join(delimiter), excludeDirs: () => [work] });
+  await r.resolve("alias", undefined, undefined);
+  assert.equal(r.calls[0]?.env["PATH"], BIN, "entries that do not resolve are not passed to ssh's children");
+});
+
+test("a file symlink into a worktree ahead of the real ssh on PATH is skipped, and the real one is used", async (t) => {
+  const work = join(ROOT, "skip-work");
+  const planted = binWithSsh(join(work, "bin"));
+  const fbin = join(ROOT, "skip-fbin");
+  mkdirSync(fbin, { recursive: true });
+  try {
+    symlinkSync(join(planted, EXE), join(fbin, EXE), "file");
+  } catch {
+    return t.skip("symlinks are not available here");
+  }
+  const r = rig(answer(GOOD), { path: [fbin, BIN].join(delimiter), excludeDirs: () => [work] });
+  await r.resolve("alias", undefined, undefined);
+  assert.equal(r.calls[0]?.file, SSH, "resolution continues past the entry whose ssh lies inside a worktree");
+});
+
+test("a configured program that is not an executable file is refused", async () => {
+  const dir = join(ROOT, "plain");
+  mkdirSync(dir, { recursive: true });
+  const file = join(dir, "ssh-data");
+  writeFileSync(file, "x", { mode: 0o644 });
+  const r = rig(answer(GOOD), { file });
+  await assert.rejects(r.resolve("alias", undefined, undefined), /not found/);
+  const asDir = rig(answer(GOOD), { file: dir });
+  await assert.rejects(asDir.resolve("alias", undefined, undefined), /not found/);
+  assert.equal(r.calls.length + asDir.calls.length, 0, "nothing was started");
 });
