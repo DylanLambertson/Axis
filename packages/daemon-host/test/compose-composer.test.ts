@@ -121,3 +121,19 @@ test("S4: the composition hands its tool caps to the composer service (an invali
     fix.cleanup();
   }
 });
+
+test("C3 WT-2: the CLI runs' snapshotter is built once; the composer's commands never share it (their guard holds a baseline per run)", async () => {
+  const fix = hostFixture();
+  const made: string[] = [];
+  const counting: NonNullable<ComposeOptions["snapshotter"]> = (deps) => (made.push(deps.gitPath), snapshotter(deps));
+  let commands: boolean | undefined;
+  const composed = composeDaemonHost(options(fix, { snapshotter: counting, observeAgent: (a) => void (commands = a.commands) }));
+  try {
+    await composed.start();
+    assert.equal(made.length, 1, "the factory serves CLI runs only");
+    assert.equal(commands, true, "the composer binding got its own guard, so it offers run_command");
+  } finally {
+    await composed.stop();
+    fix.cleanup();
+  }
+});
