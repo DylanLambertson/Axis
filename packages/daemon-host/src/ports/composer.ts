@@ -57,15 +57,57 @@ export interface ComposerApprovalNote {
   readonly preview: ApprovalPreview | null;
 }
 
+/**
+ * The run must end now with a closed reason (C3, WT-2 broker side): a command changed the repository's hooks or common
+ * directory, or that could not be checked. Thrown by `ComposerRunTools.invoke`; the loop ends the run FAILED with `reason`.
+ */
+export const RUN_HALT_REASONS = ["GIT_DRIFT"] as const;
+export class ComposerRunHalt extends Error {
+  constructor(readonly reason: (typeof RUN_HALT_REASONS)[number]) {
+    super("the composer run was halted");
+    this.name = "ComposerRunHalt";
+  }
+}
+
+/**
+ * WT-2 for a composer run (ticket C3, review c3 r1 SF-1): ONE baseline per run, taken before its first command and never
+ * replaced, and every later check compares the repository with it. A change that lands between two commands (a detached
+ * child of an earlier command, anything else) is therefore still drift at the next check, never absorbed into a new baseline.
+ * Held per RUN (one composer run per workspace at a time); the oldest goes first past `maxHeld`, so a run whose baseline was
+ * pushed out finds none and its check throws (the caller reads that as drift).
+ */
+/** The run and the worktree a guard's baseline is taken over (the shape of `@axis/runs` `SnapshotContext`). */
+export interface GuardContext {
+  readonly runId: string;
+  readonly workspaceId: string;
+  readonly worktree: { readonly workTree: string; readonly gitDir: string };
+}
+
+export interface RunRepositoryGuard {
+  /** Takes the run's baseline; refuses (throws) when it cannot be judged, or when the run already has one. */
+  baseline(ctx: GuardContext): Promise<void>;
+  /** The repository now against the run's baseline, which is kept. Throws when there is none or nothing can be judged. */
+  check(runId: string): Promise<{ readonly drift: boolean }>;
+  /** Drops the run's baseline (its end). */
+  release(runId: string): void;
+}
+
 export interface ComposerRunTools {
   readonly specs: readonly ComposerToolSpec[];
-  /** Never throws for a refusal: the model is told, the run goes on. Throws only when the run must stop (audit failure). */
+  /** Never throws for a refusal: the model is told, the run goes on. Throws only when the run must stop (audit failure, or `ComposerRunHalt`). */
   invoke(name: string, input: unknown, signal: AbortSignal): Promise<ComposerToolOutcome>;
   /**
    * The drift notice before a model turn (policies section 3.4, C2): the paths the run saw that changed outside it since
    * its last turn, as untrusted-labelled text with no content, or undefined when nothing changed. Never throws.
    */
   drift?(signal: AbortSignal): Promise<string | undefined>;
+  /**
+   * WT-2 before a model turn that follows tool calls, and before the run ends `REVIEWING`: throws `ComposerRunHalt` when the
+   * repository's hooks or common dir changed since the run's first command (or cannot be judged). Nothing else throws.
+   */
+  guard?(signal: AbortSignal): Promise<void>;
+  /** The run ended (any state): releases what the tools hold for it. Never throws. */
+  close?(): void;
 }
 
 export interface ComposerRunContext {
