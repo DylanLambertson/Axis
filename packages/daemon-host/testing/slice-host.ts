@@ -19,6 +19,7 @@ import {
   gitSnapshotRunSnapshotter,
 } from "../src/index.js";
 import { LocalPty, localPtyGitRunner } from "./fake-pty.js";
+import { sliceComposer } from "./slice-composer.js";
 
 /**
  * TEST ONLY (`AXIS_SLICE_MUTEX_PROBE=1`): every `ProjectMutex.run` reports which instance it ran on, so the slice can assert that
@@ -84,8 +85,9 @@ client.onInit((raw) => {
       snapshotter: gitSnapshotRunSnapshotter, // the real GIT-SNAP-1 snapshot (ticket H13), not a fake
       ...(finalWaitMs === undefined ? {} : { finalAnchorWaitMs: finalWaitMs, finalizeTimeoutMs: finalWaitMs + 60_000 }),
       scanMode: process.env["AXIS_SLICE_SCAN_MODE"] === "warn" ? "warn" : "refuse",
-      // A composer run's first turn writes the root Makefile (a protected path: it waits for the user's approval); later turns answer text.
-      composer: { mock: { respond: (req) => (req.messages.length === 1 ? { kind: "tool_use", name: "write_file", input: { path: "Makefile", content: "all:\n" } } : { kind: "text", text: "done" }) } },
+      // By default a composer run's first turn writes the root Makefile (a protected path: it waits for the user's approval) and
+      // later turns answer text; `AXIS_SLICE_COMPOSER` names a file of scripted scenarios and an Anthropic connection (C7).
+      composer: sliceComposer(process.env),
       process,
       exit: (code, info) => {
         process.exitCode = code;
