@@ -15,6 +15,21 @@ test("RR-N4: the node runner reports truncated when stdout passes its limit, and
   assert.ok(big.stdout.length > 40);
 });
 
+test("a call's own output cap keeps at most that many characters, below the runner's limit only, and must be an integer", async () => {
+  const f = fixture();
+  const req = { argv: ["var", "-l"], cwd: f.wt.workTree, env: { PATH: process.env["PATH"] ?? "", HOME: f.home }, context: "pty" as const };
+  const runner = createNodeRunner({ allowPtyContext: true, allowUnpinnedGit: true, maxOutput: 60 });
+  const capped = await runner.run({ ...req, maxOutput: 25, raw: true });
+  assert.deepEqual([capped.stdout.length, capped.truncated, capped.code], [25, true, 0]);
+  const above = await runner.run({ ...req, maxOutput: 1000 });
+  assert.deepEqual([above.stdout.length, above.truncated], [60, true], "the runner's own limit still applies");
+  const none = await runner.run({ ...req, maxOutput: 0 });
+  assert.deepEqual([none.stdout, none.truncated], ["", true]);
+  for (const bad of [-1, 1.5, Number.NaN, Infinity]) {
+    await assert.rejects(runner.run({ ...req, maxOutput: bad }), /output cap/, String(bad));
+  }
+});
+
 test("RR-N5: a normal daemon exit kills git's live process groups (a crash cannot; that is documented)", async () => {
   const { spawnSync } = await import("node:child_process");
   const { existsSync, readFileSync, writeFileSync } = await import("node:fs");

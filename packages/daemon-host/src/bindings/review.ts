@@ -98,6 +98,7 @@ export function createReviewService(deps: ReviewBindingDeps): ReviewService {
           skipped: session.skipped.map((s) => ({ path: s.path, size: s.size })),
           skippedCount: session.skippedCount,
           hasCutLines: (path) => guarded(() => session.hasCutLines(path)),
+          readNewBlob: (path, bound) => guarded(() => session.readNewBlob(path, bound)),
           accept: (path, options) => {
             try {
               session.acceptFile(path, options.acceptTruncated ? { acceptTruncated: true } : {});
