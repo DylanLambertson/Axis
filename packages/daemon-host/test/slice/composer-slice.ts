@@ -72,9 +72,10 @@ export async function pendingOf(client: TestClient, runId: string): Promise<Chal
 
 /**
  * Answer the run's pending challenge as the user: approve or deny in the window, and for tier 4 confirm in the native dialog (the
- * supervisor's `native.result`). Returns the challenge and, for tier 4, the dialog line main was asked to show.
+ * supervisor's `native.result`; `beforeNative` runs between the two). Returns the challenge and, for tier 4, the dialog line main was
+ * asked to show.
  */
-export async function answer(h: ComposerHost, runId: string, decision: "approve" | "deny" = "approve"): Promise<{ challenge: Challenge; dialog: string | undefined }> {
+export async function answer(h: ComposerHost, runId: string, decision: "approve" | "deny" = "approve", beforeNative?: () => Promise<void>): Promise<{ challenge: Challenge; dialog: string | undefined }> {
   const challenge = await pendingOf(h.client, runId);
   if (decision === "deny" || !challenge.nativeConfirmationRequired) {
     await h.client.ok("axis.approvals", "resolve", { challengeId: challenge.challengeId, decision, digest: challenge.digest });
@@ -83,6 +84,9 @@ export async function answer(h: ComposerHost, runId: string, decision: "approve"
   await until(() => h.sup.nativeConfirms.some((c) => c.challengeId === challenge.challengeId), "native.confirm", 6_000);
   const resolved = await h.client.ok<{ nativeRequired: boolean }>("axis.approvals", "resolve", { challengeId: challenge.challengeId, decision, digest: challenge.digest });
   assert.equal(resolved.nativeRequired, true);
+  // The window's approval alone runs nothing at tier 4: the run still waits for the native dialog.
+  assert.equal((await getRun(h.client, runId)).awaitingApproval, true, "a tier 4 call waits for the native confirmation");
+  await beforeNative?.();
   await confirmNative(h.sup, h.client, challenge.challengeId);
   return { challenge, dialog: h.sup.nativeConfirms.find((c) => c.challengeId === challenge.challengeId)?.summary };
 }

@@ -78,7 +78,7 @@ describe("composer slice (C7): scenario 1 on the mock provider, hostile output, 
     assert.equal(makefile.challenge.targetSummary, "Composer tool write_file (protected:makefile)");
     assert.equal(readFileSync(join(ws.path, "feature.txt"), "utf8"), "feature\n", "a write below the approval floor ran without a question");
     assert.equal(existsSync(join(ws.path, "built.txt")), false, "the command did not run before its approval");
-    const cmd = await answer(h, runId);
+    const cmd = await answer(h, runId, "approve", async () => assert.equal(existsSync(join(ws.path, "built.txt")), false, "approved in the window only: not run"));
     assert.deepEqual([cmd.challenge.tier, cmd.challenge.nativeConfirmationRequired], [4, true], "a command is tier 4: the window and the native dialog");
     assert.match(cmd.dialog ?? "", /^axis\.runs\/1\.toolCall: run_command \(privileged\), program node[^,]*, identity [0-9a-f]{16}$/);
     answered.push(makefile.challenge, cmd.challenge);
@@ -228,6 +228,10 @@ describe("composer slice (C7): scenario 1 on the mock provider, hostile output, 
         const at = rows.findIndex((r) => r.action === "tier4.execute" && phase(r).ref === ref);
         const later = rows.slice(at + 1).filter((r) => r.action === "tier4.challenge" && phase(r).ref === ref && phase(r).phase === "resolve");
         assert.ok(later.length > 0 && later.every((r) => r.outcome === "denied"), "a second answer was refused");
+        const issued = rows.find((r) => r.action === "tier4.challenge" && phase(r).ref === ref && phase(r).phase === "issued");
+        const native = rows.findIndex((r) => r.action === "tier4.challenge" && phase(r).ref === ref && phase(r).phase === "native");
+        if ((JSON.parse(issued?.payload ?? "{}") as { tier?: number }).tier === 4) assert.ok(native >= 0 && native < at, "a tier 4 call was authorised only after the native confirmation");
+        else assert.equal(native, -1, "a tier 3 call has no native step");
       }
       const bytes = databaseBytes(join(scratch, "stopped"));
       assert.equal(bytes.includes(secret), false, "the secret is not in the database");

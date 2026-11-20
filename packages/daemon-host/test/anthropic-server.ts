@@ -37,6 +37,8 @@ export interface Seen {
 
 export interface MockAnthropic {
   readonly fetch: FetchLike;
+  /** The loopback port the server listens on (a child-process host routes its fetch here, ticket C7). */
+  readonly port: number;
   /** Every URL the adapter asked `fetch` for, in order. */
   readonly asked: string[];
   readonly seen: Seen[];
@@ -155,6 +157,7 @@ export async function mockAnthropic(): Promise<MockAnthropic> {
 
   return {
     fetch: fetchLike,
+    port,
     asked,
     seen,
     get replies() {
