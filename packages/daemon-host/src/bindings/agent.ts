@@ -5,10 +5,11 @@ import type { AuditSink, Redactor } from "@axis/audit";
 import { ABSENT, BROKER_PAYLOAD_ALLOWLIST, BrokerError, ToolBroker, callDigest, contentDigest, createCommandRunner, nodeBrokerFs, type ApprovalHook, type ApprovalRequest, type BrokerFs, type CommandRunner, type ContainDeps } from "@axis/broker";
 import { MAX_APPROVAL_PATHS, toDisplayPath, type ApprovalPreview } from "@axis/protocol";
 import { createSecretScanner } from "@axis/secret-scan";
-import { createMockProvider, guardProvider, type GuardedProvider, type MockProviderOptions, type Redactor as ProviderRedactor } from "@axis/providers";
+import { createMockProvider, guardProvider, type GuardedProvider, type MockProviderOptions } from "@axis/providers";
 import { formatDriftNotice } from "../composer/drift.js";
 import { buildApprovalPreview, type PreviewScanner } from "../composer/preview.js";
 import { ObservedFiles } from "./agent-observed.js";
+import { providerRedactor } from "./providers.js";
 import type { RunApprovals } from "../gate/run-approvals.js";
 import type { ComposerApprovalNote, ComposerEngine, ComposerRunContext, ComposerRunTools, ComposerToolSpec } from "../ports/composer.js";
 import type { WorktreeLocator } from "../ports/worktree-locator.js";
@@ -26,7 +27,7 @@ import type { WorktreeLocator } from "../ports/worktree-locator.js";
  *   containment and WT-3 protected paths apply at decision and at use. No command or git tool yet (ticket C3): no child
  *   process is started by a composer run, and the shared runner exists only so shutdown can kill one if C3 adds it.
  * - **Providers.** The mock, guarded (`guardProvider`: validation, outgoing secret scan with the host redactor, timeouts,
- *   stream grammar, the run budget). The Anthropic adapter comes with the vault in `bindings/providers.ts` (ticket C6).
+ *   stream grammar, the run budget), and the network providers `bindings/providers.ts` builds over the vault (C6).
  * - **Approval preview (C8).** Each call's parsed arguments are held while the broker decides; when the broker asks, the
  *   hook recomputes the broker's digest (`callDigest`) from those arguments and the request, and builds the preview
  *   (`composer/preview.ts`) only from the arguments whose digest is the one the challenge is bound to. No match, or no
@@ -55,6 +56,8 @@ export interface AgentBindingDeps {
   readonly platform?: NodeJS.Platform;
   /** The mock provider's script (tests and the UI fixtures). Default: echo. */
   readonly mock?: MockProviderOptions;
+  /** The network providers (`bindings/providers.ts`, already guarded). A provider id registered twice refuses the build. */
+  readonly providers?: readonly GuardedProvider[];
   /** More protected paths (WT-3), from the host's private settings. */
   readonly extraProtected?: readonly (readonly string[])[];
   /** The secret scan of approval previews. Default: `@axis/secret-scan` in `refuse` mode over plain text. */
@@ -129,17 +132,16 @@ const LABEL = /^[a-z][a-z0-9:._-]{0,63}$/;
 /** A broker reason (`approval-declined`) as a wire reason code (`approval_declined`). */
 const reasonOf = (e: unknown): string => (e instanceof BrokerError ? e.reason.replace(/-/g, "_") : "tool_failed");
 
-/** The host's audit redactor as the providers' redaction hook (PRV-2): anything it would change counts as a secret. */
-function providerRedactor(r: Redactor): ProviderRedactor {
-  return { redact: (t) => r.redactString(t), containsSecret: (t) => r.redactString(t) !== t };
-}
-
 export function createAgentBinding(deps: AgentBindingDeps): AgentBinding {
   const platform = deps.platform ?? process.platform;
   const brokerFs = deps.wrapFs?.(nodeBrokerFs) ?? nodeBrokerFs;
   const runner: CommandRunner = createCommandRunner({ platform });
   const scanner = deps.previewScanner ?? defaultPreviewScanner();
   const providers = new Map<string, GuardedProvider>([["mock", guardProvider(createMockProvider(deps.mock ?? {}), { redactor: providerRedactor(deps.redactor) })]]);
+  for (const p of deps.providers ?? []) {
+    if (providers.has(p.descriptor.providerId)) throw new Error("provider registered twice");
+    providers.set(p.descriptor.providerId, p);
+  }
 
   const roots = async (): Promise<string[]> => {
     const out: string[] = [];
