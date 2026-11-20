@@ -1,6 +1,6 @@
 # Daemon host: the composition root for the Axis daemon
 
-- **Status:** Proposed (design only, no code). Reviewed before any ticket below starts.
+- **Status:** Design baseline from 2026-11-04. The host and headless slice are built on main; later implementation status is in `docs/design/daemon-host-plan.md` and the companion implementation notes. The remaining production pty and hook wiring is open.
 - **Date:** 2026-11-04.
 - **Decision owner:** Dylan Lambertson.
 - **Depends on:** ADR 0003 (Electron IPC bridge; D1 handshake, D2 contracts, D3 call semantics, D4 policy and approvals, D5 audit, validation criteria 1 to 7), ADR 0005 (D3 staging, D9 `node:sqlite`), `docs/packages.md` ("Wiring the daemon", "Audit anchor", "Single instance", "Principals", "Data directory"), `docs/design/axis-agent-shell.md` §5 and §8.2, `docs/design/axis-agent-shell-policies.md` §6, threat model Phase 1 (DMN-1 to DMN-7, G-11, G-12, G-20, G-24).
@@ -16,7 +16,7 @@
 
 ## 1. Purpose and scope
 
-The merged libraries (`protocol`, `challenge`, `daemon`, `pty-policy`, `git-ops`, `audit`, `journal`, `providers`, `runs`, `worktrees`, `vault`, `anthropic`) are parts. Nothing yet starts a process, opens the database, takes the lock, registers handlers, wires approvals or answers a request. `@axis/daemon` is deliberately a core with every service injected ([V] `DaemonOptions`: `identity`, `audit`, `idempotency` required; `policy` absent means deny all; `approvals` absent refuses tier 3 and above). **`@axis/daemon-host` is the one place that chooses and connects those services.** It is the earliest thing that can answer a real request, so it is also the first demonstrable vertical slice (`daemon-host-plan.md` §1), before any UI work.
+At this design baseline, the merged libraries (`protocol`, `challenge`, `daemon`, `pty-policy`, `git-ops`, `audit`, `journal`, `providers`, `runs`, `worktrees`, `vault`, `anthropic`) were parts. The host subsequently added process startup, storage, handlers, approvals and request serving. `@axis/daemon` is deliberately a core with every service injected ([V] `DaemonOptions`: `identity`, `audit`, `idempotency` required; `policy` absent means deny all; `approvals` absent refuses tier 3 and above). **`@axis/daemon-host` is the one place that chooses and connects those services.** It is the earliest thing that can answer a real request, so it is also the first demonstrable vertical slice (`daemon-host-plan.md` §1), before any UI work.
 
 In scope: package boundary, startup and shutdown order, the contract registry and policy table, the wiring of challenge, idempotency, audit and anchor, the worktrees port, trust attestation, transports, error and logging policy, the headless slice test, tickets.
 
