@@ -66,6 +66,8 @@ export interface ComposerRigOptions {
   /** C3: the WT-2 guard (offers `run_command`) and the command bounds. */
   readonly commandGuard?: AgentBindingDeps["commandGuard"];
   readonly commandLimits?: AgentBindingDeps["commandLimits"];
+  /** Broker tools without a preview schema (IAC-T tests of the taint source seam). */
+  readonly extraTools?: AgentBindingDeps["extraTools"];
   /** The binding's test taint source (IAC-T): which successful calls taint the run. */
   readonly taintSources?: AgentBindingDeps["taintSources"];
 }
@@ -112,6 +114,7 @@ export async function composerRig(options: ComposerRigOptions): Promise<Composer
     ...(options.commandGuard === undefined ? {} : { commandGuard: options.commandGuard }),
     ...(options.commandLimits === undefined ? {} : { commandLimits: options.commandLimits }),
     ...(options.taintSources === undefined ? {} : { taintSources: options.taintSources }),
+    ...(options.extraTools === undefined ? {} : { extraTools: options.extraTools }),
   });
   const service = createComposerService({
     redactor: new Redactor(),

@@ -2,7 +2,7 @@
 import { realpath } from "node:fs/promises";
 import { z } from "zod";
 import type { AuditSink, Redactor } from "@axis/audit";
-import { ABSENT, BROKER_PAYLOAD_ALLOWLIST, BrokerError, ToolBroker, callDigest, contentDigest, createCommandRunner, nodeBrokerFs, type ApprovalHook, type ApprovalRequest, type BrokerFs, type CommandRunner, type ContainDeps } from "@axis/broker";
+import { ABSENT, BROKER_PAYLOAD_ALLOWLIST, BrokerError, ToolBroker, callDigest, contentDigest, createCommandRunner, nodeBrokerFs, type ApprovalHook, type ApprovalRequest, type BrokerFs, type CommandRunner, type ContainDeps, type ToolDefinition } from "@axis/broker";
 import { MAX_APPROVAL_PATHS, toDisplayPath, type ApprovalPreview } from "@axis/protocol";
 import { createSecretScanner } from "@axis/secret-scan";
 import { createMockProvider, guardProvider, type GuardedProvider, type MockProviderOptions, type Redactor as ProviderRedactor } from "@axis/providers";
@@ -78,6 +78,11 @@ export interface AgentBindingDeps {
    * tools (PV-M4, PV-Q1, PV-T1) taint the run the same way, before their result is returned.
    */
   readonly taintSources?: (tool: string, args: unknown) => unknown;
+  /**
+   * More broker tools for every run, registered after the built-in ones and WITHOUT a preview schema. The host passes none;
+   * the tests use it for a source tool that has no preview schema (review pv-m0 r2 N1). They are not offered to the model.
+   */
+  readonly extraTools?: readonly ToolDefinition[];
   /** Where each run's taint is recorded and read back (IAC-T across a restart or resume): the journal's composer records. */
   readonly taintStore: TaintStore;
   /**
@@ -324,6 +329,7 @@ export function createAgentBinding(deps: AgentBindingDeps): AgentBinding {
     const wt2 = guard === undefined ? undefined : new RunWt2({ runId: run.runId, workspaceId: worktree.id, worktree: { workTree: worktree.root, gitDir: worktree.gitDir }, guard, writeLock: deps.writeLock });
     const halted = (): boolean => wt2?.halted === true;
     if (wt2 !== undefined) broker.register(commandTool({ wt2, workspaceId: worktree.id, platform, limits, redact: (t) => deps.redactor.redactString(t), writeLock: deps.writeLock }));
+    for (const extra of deps.extraTools ?? []) broker.register(extra);
     const specs = wt2 === undefined ? COMPOSER_TOOLS : Object.freeze([...COMPOSER_TOOLS, RUN_COMMAND_SPEC]);
     return {
       specs,

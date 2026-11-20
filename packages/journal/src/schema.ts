@@ -327,6 +327,10 @@ export const JOURNAL_MIGRATIONS: readonly Migration[] = [
       CREATE TRIGGER composer_runs_taint_sticky BEFORE UPDATE OF tainted ON composer_runs
         WHEN NEW.tainted < OLD.tainted
         BEGIN SELECT RAISE(ABORT, 'a tainted run stays tainted'); END;
+      -- INSERT OR REPLACE deletes the old row without firing a DELETE trigger, which would clear the taint: refused.
+      CREATE TRIGGER composer_runs_inserted_once BEFORE INSERT ON composer_runs
+        WHEN EXISTS (SELECT 1 FROM composer_runs WHERE run_id = NEW.run_id)
+        BEGIN SELECT RAISE(ABORT, 'a composer run is recorded once'); END;
     `,
   },
 ];

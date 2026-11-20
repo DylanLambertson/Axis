@@ -42,6 +42,9 @@ test("version 8: nothing clears a recorded taint, not even a direct update", () 
   journal.composer.markTainted(a);
   assert.throws(() => db.prepare("UPDATE composer_runs SET tainted = 0 WHERE run_id = ?").run(a), /stays tainted/);
   assert.throws(() => db.prepare("UPDATE composer_runs SET tainted = 2 WHERE run_id = ?").run(a));
+  // REPLACE would delete the row (no DELETE trigger fires for it) and insert a fresh, untainted one.
+  assert.throws(() => db.prepare("INSERT OR REPLACE INTO composer_runs (run_id, mode, provider_id, model_id, created_at) VALUES (?, 'edit', 'mock', 'mock-model', 't')").run(a), /recorded once/);
+  assert.throws(() => db.prepare("REPLACE INTO composer_runs (run_id, mode, provider_id, model_id, created_at) VALUES (?, 'edit', 'mock', 'mock-model', 't')").run(a), /recorded once/);
   assert.equal(journal.composer.tainted(a), true);
   db.close();
 });
@@ -58,5 +61,22 @@ test("upgrading a version 7 database keeps every composer run and leaves it unta
   journal.composer.markTainted("r-old");
   const again = Journal.open(db, { audit: new AuditLog(db) });
   assert.equal(again.composer.tainted("r-old"), true);
+  db.close();
+});
+
+test("a version 8 upgrade that fails after the column was added rolls back the column and both triggers", () => {
+  const db = openDatabase(":memory:");
+  runMigrations(db, "journal", V7);
+  const schemaOf = (): unknown[] => (db.prepare("SELECT type, name, sql FROM sqlite_master ORDER BY type, name").all() as unknown[]).map((r) => ({ ...(r as object) }));
+  const before = schemaOf();
+  const v8 = JOURNAL_MIGRATIONS[7];
+  assert.ok(v8 !== undefined && v8.version === 8);
+  const broken = [...V7, { version: 8, sql: `${v8.sql}; INSERT INTO composer_runs (run_id) VALUES (NULL);` }];
+  assert.throws(() => runMigrations(db, "journal", broken));
+  assert.equal(db.isTransaction, false);
+  assert.equal(schemaVersion(db, "journal"), 7);
+  assert.deepEqual(schemaOf(), before, "no column, no trigger left behind");
+  Journal.open(db, { audit: new AuditLog(db) });
+  assert.equal(schemaVersion(db, "journal"), JOURNAL_SCHEMA_VERSION);
   db.close();
 });
