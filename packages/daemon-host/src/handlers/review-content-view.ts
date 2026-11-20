@@ -122,7 +122,7 @@ function excerpt(b: Uint8Array, complete: boolean, budget: number): Excerpt {
   // or JSON would otherwise show nothing).
   const tail = b.lastIndexOf(0x0a) + 1;
   if (!complete && head.out.length === usable && head.out.length < half && tail < end) {
-    const text = escapeBytes(b, tail, end, MAX_CONTENT_LINE).text;
+    const text = escapeBytes(b, tail, endOfWhole(b, tail, end), MAX_CONTENT_LINE).text;
     if (head.chars + text.length <= halfBudget) {
       head.out.push(text);
       cutLines++;
@@ -147,6 +147,19 @@ function excerpt(b: Uint8Array, complete: boolean, budget: number): Excerpt {
     }
   }
   return { first: head.out, last, lines, cutLines, finalNewline };
+}
+
+/**
+ * The end of `[start, end)` without a UTF-8 sequence the prefix cut short: a read that stopped mid-character would show its
+ * first bytes as `\xhh` though the file holds valid text there.
+ */
+function endOfWhole(b: Uint8Array, start: number, end: number): number {
+  let k = end - 1;
+  while (k > start && end - k < 4 && ((b[k] as number) & 0xc0) === 0x80) k--;
+  const c = b[k] as number;
+  const want = c >= 0xf5 ? 1 : c >= 0xf0 ? 4 : c >= 0xe0 ? 3 : c >= 0xc2 ? 2 : 1;
+  // Only the bytes after `k` are continuation bytes (the walk above), so `[k, end)` is the start of one sequence cut short.
+  return want > 1 && k + want > end ? k : end;
 }
 
 /** Whether git would call these bytes binary: a NUL in the leading bytes. */

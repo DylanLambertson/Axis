@@ -58,6 +58,7 @@ test("a runner that returns decoded text instead of bytes, a short read, or more
     ["short", (r: GitRunResult): GitRunResult => ({ ...r, stdout: r.stdout.slice(1) })],
     ["cut by the runner's own limit", (r: GitRunResult): GitRunResult => ({ ...r, stdout: r.stdout.slice(0, 3), truncated: true })],
     ["ignored the cap", (r: GitRunResult): GitRunResult => ({ ...r, stdout: r.stdout + "x", truncated: false })],
+    ["cut at exactly its size", (r: GitRunResult): GitRunResult => ({ ...r, truncated: true })],
   ] as const) {
     let arm = false;
     const f = fixture({
@@ -79,4 +80,25 @@ test("a runner that returns decoded text instead of bytes, a short read, or more
     // A prefix read that the runner cut at exactly the planned length is what was asked for.
     if (name === "ignored the cap") assert.equal((await refusal(s.readNewBlob("raw.bin", { wholeUpTo: 0, prefix: 4 }))).code, "E_UNAVAILABLE", name);
   }
+});
+
+test("a size that is too small never makes a cut read look whole", async (t) => {
+  let arm = false;
+  const f = fixture({
+    git: {
+      runner: {
+        run: async (req: GitRunRequest) => {
+          const { createNodeRunner } = await import("@axis/git-ops");
+          const r = await createNodeRunner({ allowPtyContext: true, allowUnpinnedGit: true }).run(req);
+          // The object store lies about the size: 3 bytes for a 9-byte object. The read itself is real.
+          return arm && req.argv.includes("-s") ? { ...r, stdout: "3\n" } : r;
+        },
+      },
+    },
+  });
+  t.after(() => f.cleanup());
+  f.write("raw.bin", BYTES);
+  const s = await ReviewSession.start(f.deps, { worktree: f.wt, against: f.head() });
+  arm = true;
+  assert.equal((await refusal(s.readNewBlob("raw.bin", { wholeUpTo: 1024, prefix: 1024 }))).code, "E_UNAVAILABLE");
 });

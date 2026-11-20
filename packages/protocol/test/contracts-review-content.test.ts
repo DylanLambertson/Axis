@@ -38,6 +38,14 @@ test("a shown line may hold a tab and escapes, but no raw control, terminal sequ
   assert.equal(CONTENT_REFUSED.test("\t"), false, "TAB is the one control a line keeps");
 });
 
+test("a combining mark may follow a base character, never start a line", () => {
+  accepts(res(), reply(text(["cafe\u0301", "\tx\u0336", "क्ष", "\u0633\u064e\u0644\u0627\u0645"])), "decomposed, struck-through, Devanagari and Arabic text");
+  for (const lead of ["\u0301abc", "\u20e3", "\u0336x"]) {
+    rejects(res(), reply(text(["ok", lead])), `leading mark ${JSON.stringify(lead)} in a text line`);
+    rejects(res(), reply(withView(link as F, { target: lead })), `leading mark ${JSON.stringify(lead)} in a link target`);
+  }
+});
+
 test("per line, per file and per reply bounds", () => {
   accepts(res(), reply(text(["x".repeat(MAX_CONTENT_LINE)])), "a line at the bound");
   rejects(res(), reply(text(["x".repeat(MAX_CONTENT_LINE + 1)])), "a line over the bound");

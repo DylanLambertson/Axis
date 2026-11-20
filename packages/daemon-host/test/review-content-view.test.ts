@@ -137,7 +137,19 @@ test("a prefix whose finished lines all fit also shows its unfinished line, cut 
   const tight = view(B("ab\n" + "y".repeat(100)), { size, complete: false, budget: 10 });
   assert.ok(tight.kind === "too-large");
   assert.deepEqual([tight.first, tight.cutLines], [["ab"], 0], "not shown when it would pass the budget");
-  for (const v of [oneLine, some, ends, tight]) assert.equal(contentViewSchema.safeParse(v).success, true);
+  const midChar = view(B("a\né\u4e2d").subarray(0, 6), { size, complete: false });
+  assert.ok(midChar.kind === "too-large");
+  assert.deepEqual(midChar.first, ["a", "é"], "a character the prefix cut short is left out, not shown as \\xhh");
+  const whole = view(B("a\nb\u4e2d"), { size, complete: false });
+  assert.ok(whole.kind === "too-large");
+  assert.deepEqual(whole.first, ["a", "b\u4e2d"], "a character that ends exactly at the prefix's end is kept");
+  const badEnd = view(B([0x61, 0x0a, 0x62, 0xff]), { size, complete: false });
+  assert.ok(badEnd.kind === "too-large");
+  assert.deepEqual(badEnd.first, ["a", "b\\xff"], "a byte that cannot start a sequence is still shown");
+  const full = view(B("l\n".repeat(MAX_CONTENT_LINES / 2) + "more"), { size, complete: false });
+  assert.ok(full.kind === "too-large");
+  assert.deepEqual([full.first.length, full.cutLines], [MAX_CONTENT_LINES / 2, 0], "never more lines than the first half holds");
+  for (const v of [oneLine, some, ends, tight, midChar, whole, badEnd, full]) assert.equal(contentViewSchema.safeParse(v).success, true);
 });
 
 test("a combining mark is escaped at the start of a line and kept after a base character", () => {

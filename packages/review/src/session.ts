@@ -167,6 +167,9 @@ export class ReviewSession {
       if (r.code !== 0 || r.raw !== true) throw unavailable("could not read a file version as bytes");
       // Short, or longer than asked for (a runner that ignored the cap): either way not the bytes that were planned.
       if (r.stdout.length !== keep) throw unavailable("a file version did not read back at its size");
+      // A cap only cuts a prefix read. A whole read the runner says it cut means the size it was planned from is wrong:
+      // never report it complete.
+      if (r.truncated === true && keep === size) throw unavailable("a file version did not read back at its size");
       const bytes = Buffer.from(r.stdout, "latin1");
       return { size, bytes: new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.length), complete: keep === size };
     });
