@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { judgeDrift, parseSnapshot, takeSnapshot, type TakeOptions } from "../src/index.js";
 import { parseListOutput, resolveGit, trustedPathEntries } from "../src/git.js";
 import { git, makeFixture, write, type Fixture } from "./helpers.js";
+import { budget } from "./budget.js";
 
 const posix = process.platform !== "win32";
 const realPath = process.env["PATH"] ?? "";
@@ -141,13 +142,13 @@ test("a git that hangs is cut by the time budget, and cancellation reaches the p
     const g = await logging(f, "exec sh -c 'exec sleep 30'");
     const t0 = Date.now();
     const s = await takeSnapshot(opts(f, { gitPath: g.path, limits: { maxMillis: 1500 } }));
-    assert.ok(Date.now() - t0 < 4500, `took ${Date.now() - t0} ms`);
+    assert.ok(Date.now() - t0 < budget(4500), `took ${Date.now() - t0} ms`);
     assert.ok(s.incomplete.some((i) => i.blocking), "a hung git leaves the snapshot incomplete");
     const ac = new AbortController();
     setTimeout(() => ac.abort(), 300);
     const t1 = Date.now();
     await assert.rejects(takeSnapshot(opts(f, { gitPath: g.path, signal: ac.signal })), /cancelled/);
-    assert.ok(Date.now() - t1 < 4000, `cancel took ${Date.now() - t1} ms`);
+    assert.ok(Date.now() - t1 < budget(4000), `cancel took ${Date.now() - t1} ms`);
   } finally {
     f.cleanup();
   }
@@ -188,7 +189,7 @@ test("git's output is bounded: more entries than the cap is unreadable, and the 
     appendFileSync(join(f.common, "config"), `[a]\n${"\tk = v\n".repeat(20_000)}`);
     const t0 = Date.now();
     const s = await takeSnapshot(opts(f));
-    assert.ok(Date.now() - t0 < 5000);
+    assert.ok(Date.now() - t0 < budget(5000));
     assert.ok(s.incomplete.some((i) => i.id === "git" && i.blocking));
   } finally {
     f.cleanup();

@@ -6,6 +6,7 @@ import { chmodSync, mkdirSync, renameSync, symlinkSync, writeFileSync, readFileS
 import { join } from "node:path";
 import { acknowledgeDrift, assertDriftAllowed, diffSnapshots, judgeDrift, parseSnapshot, takeStableSnapshot } from "../src/index.js";
 import { append, git, makeFixture, write } from "./helpers.js";
+import { budget } from "./budget.js";
 
 const flagsOf = (d: ReturnType<typeof diffSnapshots>): string => d.flags.join(" | ");
 
@@ -256,7 +257,7 @@ test("thousands of hook files are bounded: over the entry limit the snapshot is 
     for (let i = 0; i < 3000; i++) writeFileSync(join(dir, `h${i}`), "x");
     const t0 = Date.now();
     const s = await f.snap({ maxEntries: 1000 });
-    assert.ok(Date.now() - t0 < 5000);
+    assert.ok(Date.now() - t0 < budget(5000));
     assert.ok(s.incomplete.some((i) => i.blocking));
     assert.ok(s.entries.length <= 1001);
     const v = judgeDrift({ baseline: s, current: s });

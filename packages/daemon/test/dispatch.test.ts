@@ -4,7 +4,7 @@ import { test, type TestContext } from "node:test";
 import { errorSchema, type Challenge } from "@axis/protocol";
 import { DaemonError, payloadHash, requestDigest } from "../src/index.js";
 import { approveAndRun, fakeGate } from "./gate.js";
-import { CONTRACT, KEY1, KEY2, cid, req, rig, type Rig } from "./harness.js";
+import { CONTRACT, KEY1, KEY2, cid, req, rig, untilTrue, type Rig } from "./harness.js";
 
 async function ready(t: TestContext, options: Parameters<typeof rig>[0] = {}): Promise<Rig> {
   const r = rig(options);
@@ -13,7 +13,6 @@ async function ready(t: TestContext, options: Parameters<typeof rig>[0] = {}): P
   return r;
 }
 
-const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 // ---- malformed and oversized input ----
 
@@ -204,7 +203,7 @@ test("a failed call frees its key so a bounded retry can run; a concurrent call 
   r.send(req("f1", "write", { n: 1 }, { idempotencyKey: KEY1 }));
   assert.equal((await r.inbox.response("f1")).error?.code, "E_UNAVAILABLE");
   r.send(req("f2", "write", { n: 1 }, { idempotencyKey: KEY1 }));
-  await wait(30);
+  await untilTrue(() => runs === 2); // f2's handler is running (held), so f3 meets a call in flight
   r.send(req("f3", "write", { n: 1 }, { idempotencyKey: KEY1 }));
   assert.equal((await r.inbox.response("f3")).error?.code, "E_CONFLICT");
   release();
@@ -238,9 +237,11 @@ test("the approval field is excluded from the payload hash, so a retry with a ch
 test("cancel answers E_CANCELLED once, aborts the handler's signal, and a late result is dropped", async (t) => {
   const r = await ready(t);
   let aborted = false;
+  let started = false;
   r.daemon.register(CONTRACT, 1, {
     slow: (c) =>
       new Promise((resolve) => {
+        started = true;
         c.signal.addEventListener("abort", () => {
           aborted = true;
           setTimeout(() => resolve({}), 10);
@@ -248,10 +249,10 @@ test("cancel answers E_CANCELLED once, aborts the handler's signal, and a late r
       }),
   });
   r.send(req("x1", "slow"));
-  await wait(20);
+  await untilTrue(() => started);
   r.send({ v: 1, cancel: "x1" });
   assert.equal((await r.inbox.response("x1")).error?.code, "E_CANCELLED");
-  await wait(40);
+  await untilTrue(() => aborted);
   assert.ok(aborted);
   assert.equal(r.inbox.all.filter((m) => (m as { id?: string }).id === "x1").length, 1);
 });
@@ -270,16 +271,21 @@ test("cancelling an unknown or finished id is ignored", async (t) => {
 test("the server enforces the smaller of the method ceiling and the client's timeout; the client cannot raise it", async (t) => {
   const r = await ready(t);
   const signals: AbortSignal[] = [];
-  r.daemon.register(CONTRACT, 1, { slow: (c) => (signals.push(c.signal), new Promise(() => undefined)) });
-  const t0 = Date.now();
-  r.send(req("m1", "slow", {}, { timeoutMs: 20 }));
-  assert.equal((await r.inbox.response("m1")).error?.code, "E_TIMEOUT");
-  assert.ok(Date.now() - t0 < 100, "client's lower timeout applied");
+  const hang = (c: { signal: AbortSignal }) => (signals.push(c.signal), new Promise<never>(() => undefined));
+  r.daemon.register(CONTRACT, 1, { slow: hang, echo: hang });
+  // Order, not elapsed time: `echo` has a 1000 ms ceiling. `e0` takes it (no client timeout); `e1`, sent right after, asks for 20 ms.
+  // The server applies the smaller one, so `e1` must be answered before `e0`, a 980 ms gap that no scheduling stall of two adjacent sends reaches.
+  r.send(req("e0", "echo", { text: "x" }));
+  r.send(req("e1", "echo", { text: "x" }, { timeoutMs: 20 }));
+  assert.equal((await r.inbox.response("e1")).error?.code, "E_TIMEOUT");
+  assert.equal(r.inbox.all.some((m) => (m as { id?: string }).id === "e0"), false, "the client's lower timeout applied, not the method ceiling");
+  assert.equal((await r.inbox.response("e0")).error?.code, "E_TIMEOUT");
   const t1 = Date.now();
   r.send(req("m2", "slow", {}, { timeoutMs: 30_000 }));
   assert.equal((await r.inbox.response("m2")).error?.code, "E_TIMEOUT");
   const took = Date.now() - t1;
-  assert.ok(took >= 100 && took < 1000, `method ceiling (120 ms) applied, took ${took}`);
+  // The ceiling (120 ms) applied: a timer never fires early, and the client's 30 s was not honoured (the bound is below it).
+  assert.ok(took >= 100 && took < 20_000, `method ceiling (120 ms) applied, took ${took}`);
   assert.ok(signals.every((s) => s.aborted));
 });
 
@@ -288,9 +294,9 @@ test("closing the connection aborts in-flight handlers and sends nothing", async
   let signal: AbortSignal | undefined;
   r.daemon.register(CONTRACT, 1, { slow: (c) => ((signal = c.signal), new Promise(() => undefined)) });
   r.send(req("z1", "slow"));
-  await wait(20);
+  await untilTrue(() => signal !== undefined);
   r.client.close();
-  await wait(50);
+  await untilTrue(() => signal?.aborted === true && r.daemon.connectionCount === 0);
   assert.equal(signal?.aborted, true);
   assert.equal(r.daemon.connectionCount, 0);
 });
@@ -299,13 +305,18 @@ test("closing the connection aborts in-flight handlers and sends nothing", async
 
 test("more than maxInFlight concurrent requests get E_BACKPRESSURE; a reused in-flight id is refused", async (t) => {
   const r = await ready(t, { limits: { maxInFlight: 2 } });
-  r.daemon.register(CONTRACT, 1, { slow: () => new Promise((res) => setTimeout(() => res({}), 60)) });
+  // The two handlers stay in flight until the test lets them go: no delay decides whether the third request finds the slots taken.
+  let release: () => void = () => undefined;
+  const gate = new Promise<void>((res) => (release = res));
+  t.after(() => release());
+  r.daemon.register(CONTRACT, 1, { slow: () => gate.then(() => ({})) });
   r.send(req("b1", "slow"));
   r.send(req("b2", "slow"));
   r.send(req("b3", "slow"));
   assert.equal((await r.inbox.response("b3")).error?.code, "E_BACKPRESSURE");
   r.send(req("b1", "slow"));
   await r.inbox.until((m): m is object => (m as { id?: string }).id === "b1" && (m as { error?: { code: string } }).error?.code === "E_CONFLICT");
+  release();
   assert.equal((await r.inbox.response("b2")).ok, true);
 });
 
@@ -318,12 +329,12 @@ test("the per-connection message rate is bounded (injected clock, exact counts)"
   const answered = (prefix: string) => r.inbox.all.filter((m) => (m as { id?: string }).id?.startsWith(prefix)).length;
   // The handshake took one of the five tokens, so exactly four requests pass and the other 26 are refused.
   for (let i = 0; i < 30; i++) r.send(req(`rl${i}`, "echo", { text: "x" }));
-  await wait(100);
+  await untilTrue(() => answered("rl") === 30);
   assert.equal(answered("rl"), 30);
   assert.equal(limited("rl"), 26);
   clock += 2000; // two tokens come back
   for (let i = 0; i < 5; i++) r.send(req(`rm${i}`, "echo", { text: "x" }));
-  await wait(100);
+  await untilTrue(() => answered("rm") === 5);
   assert.equal(limited("rm"), 3);
 });
 

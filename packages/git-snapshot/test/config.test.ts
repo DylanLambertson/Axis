@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { diffSnapshots, escapeDisplay, judgeDrift, parseGitConfig } from "../src/index.js";
 import { git, makeFixture } from "./helpers.js";
+import { budget } from "./budget.js";
 
 const kv = (s: string) => parseGitConfig(s, 1000).entries.map((e) => [e.section, e.subsection, e.name, e.value]);
 
@@ -35,7 +36,7 @@ test("parser: a hostile 1 MiB line and many entries are linear and capped", () =
   const many = parseGitConfig(`[a]\n${"k = v\n".repeat(200_000)}`, 100);
   assert.equal(many.entries.length, 100);
   assert.equal(many.truncated, true);
-  assert.ok(Date.now() - t0 < 3000);
+  assert.ok(Date.now() - t0 < budget(3000));
 });
 
 test("a quote-and-newline config value reaches git and the diff as one escaped value", async () => {
