@@ -4,6 +4,7 @@ import { basename, dirname, isAbsolute, join } from "node:path";
 import { AxisError } from "@axis/audit";
 import { judgeDrift, takeStableSnapshot, type Snapshot } from "@axis/git-snapshot";
 import { DEFAULT_LIMITS, type RunSnapshotter, type RunWorktree, type SnapshotContext } from "@axis/runs";
+import type { RunRepositoryGuard } from "../ports/composer.js";
 
 /**
  * GIT-SNAP-1 around a CLI run (ticket H13, docs/design/git-snapshot.md section 8): `@axis/git-snapshot` is the one owner.
@@ -75,10 +76,10 @@ async function commonDirFor(root: string | undefined, gitDir: string): Promise<s
 /** TEST ONLY seam: the options every take passes (so a test can pin `attempts` and `maxMillis`); production uses the library's. */
 export type SnapshotTaker = (opts: Parameters<typeof takeStableSnapshot>[0]) => Promise<Snapshot>;
 
-export function createRunSnapshotter(deps: RunSnapshotterDeps, maxHeld = MAX_HELD_SNAPSHOTS, takeSnapshot: SnapshotTaker = takeStableSnapshot): RunSnapshotter {
-  if (typeof deps?.gitPath !== "string" || !isAbsolute(deps.gitPath) || typeof deps.projectRoot !== "function") throw new AxisError("E_INVALID_ARGUMENT", "The snapshotter needs the host's git path", { reason: "snapshotter_required" });
-  const held = new Map<string, Held>();
-  const take = (h: { readonly worktree: RunWorktree; readonly commonDir: string }): Promise<Snapshot> =>
+/** One stable snapshot over a worktree's trusted paths (the library's own options; `takeSnapshot` is the test seam). */
+const taker =
+  (deps: RunSnapshotterDeps, takeSnapshot: SnapshotTaker) =>
+  (h: { readonly worktree: RunWorktree; readonly commonDir: string }): Promise<Snapshot> =>
     takeSnapshot({
       worktreePath: h.worktree.workTree,
       commonDir: h.commonDir,
@@ -88,6 +89,11 @@ export function createRunSnapshotter(deps: RunSnapshotterDeps, maxHeld = MAX_HEL
       limits: { maxMillis: SNAPSHOT_TAKE_MS },
       attempts: SNAPSHOT_ATTEMPTS,
     });
+
+export function createRunSnapshotter(deps: RunSnapshotterDeps, maxHeld = MAX_HELD_SNAPSHOTS, takeSnapshot: SnapshotTaker = takeStableSnapshot): RunSnapshotter {
+  if (typeof deps?.gitPath !== "string" || !isAbsolute(deps.gitPath) || typeof deps.projectRoot !== "function") throw new AxisError("E_INVALID_ARGUMENT", "The snapshotter needs the host's git path", { reason: "snapshotter_required" });
+  const held = new Map<string, Held>();
+  const take = taker(deps, takeSnapshot);
   return {
     async before(ctx: SnapshotContext): Promise<void> {
       const worktree = Object.freeze({ workTree: ctx.worktree.workTree, gitDir: ctx.worktree.gitDir });
@@ -109,6 +115,36 @@ export function createRunSnapshotter(deps: RunSnapshotterDeps, maxHeld = MAX_HEL
       // Re-taken over the paths of `before`: a run that re-pointed the worktree's `.git` is a link mismatch, so `refused`, so drift.
       const current = await take(base);
       return { drift: judgeDrift({ baseline: base.snapshot, current }).status !== "clean" };
+    },
+  };
+}
+
+/** The host's `RunRepositoryGuard` (ports/composer.ts) over `@axis/git-snapshot`. */
+export function createRunRepositoryGuard(deps: RunSnapshotterDeps, maxHeld = MAX_HELD_SNAPSHOTS, takeSnapshot: SnapshotTaker = takeStableSnapshot): RunRepositoryGuard {
+  if (typeof deps?.gitPath !== "string" || !isAbsolute(deps.gitPath) || typeof deps.projectRoot !== "function") throw new AxisError("E_INVALID_ARGUMENT", "The snapshotter needs the host's git path", { reason: "snapshotter_required" });
+  const held = new Map<string, Held>();
+  const take = taker(deps, takeSnapshot);
+  return {
+    async baseline(ctx: SnapshotContext): Promise<void> {
+      if (held.has(ctx.runId)) throw refused("baseline_held");
+      const worktree = Object.freeze({ workTree: ctx.worktree.workTree, gitDir: ctx.worktree.gitDir });
+      const commonDir = await commonDirFor(deps.projectRoot(ctx.workspaceId), worktree.gitDir);
+      const snapshot = await take({ worktree, commonDir });
+      if (judgeDrift({ baseline: snapshot, current: snapshot }).status !== "clean") throw refused("snapshot_refused");
+      held.set(ctx.runId, { runId: ctx.runId, worktree, commonDir, snapshot });
+      for (const id of held.keys()) {
+        if (held.size <= maxHeld) break;
+        held.delete(id);
+      }
+    },
+    async check(runId: string): Promise<{ readonly drift: boolean }> {
+      const base = held.get(runId);
+      if (base === undefined) throw refused("no_baseline");
+      const current = await take(base);
+      return { drift: judgeDrift({ baseline: base.snapshot, current }).status !== "clean" };
+    },
+    release(runId: string): void {
+      held.delete(runId);
     },
   };
 }

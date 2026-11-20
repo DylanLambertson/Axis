@@ -119,11 +119,13 @@ export class ReviewSession {
     if (sizes.some((s) => s === undefined)) return fileLevel("unreadable");
     if (Math.max(...(sizes as number[])) > this.#limits.maxHunkFileBytes) return fileLevel("too_large");
     // Every setting that changes what a diff looks like is pinned, so a repository's config cannot switch per-hunk review off
-    // (diff.suppressBlankEmpty turns a blank context line into an empty one, which the parser rightly refuses).
+    // (diff.suppressBlankEmpty turns a blank context line into an empty one, which the parser rightly refuses). `--text`: git
+    // looks the blob ids up as paths in the live attribute files, so a `-diff` written there must not turn the file binary here;
+    // whether a file is text was decided by the list, from the reviewed tree (changes.ts `attributeReads`).
     const r = await git([
       "-c", "diff.suppressBlankEmpty=false", "-c", "diff.noprefix=false", "-c", "diff.mnemonicPrefix=false", "-c", "diff.interHunkContext=0",
       "-c", "diff.context=3", "-c", "core.bigFileThreshold=2g",
-      "diff", "--no-ext-diff", "--no-textconv", "--no-color", "--no-renames", "--inter-hunk-context=0", "-U3", f.oldOid, f.newOid,
+      "diff", "--no-ext-diff", "--no-textconv", "--text", "--no-color", "--no-renames", "--inter-hunk-context=0", "-U3", f.oldOid, f.newOid,
     ]);
     if (r.code !== 0) return fileLevel("diff_failed");
     if (r.truncated === true || r.stdout.length > this.#limits.maxPatchBytes) return fileLevel("patch_too_large");
