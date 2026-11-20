@@ -107,6 +107,34 @@ const previewHeadSchema = z
   .max(MAX_PREVIEW_HEAD)
   .refine((t) => !REFUSED_ACTIVITY.test(t), { message: "no control or invisible characters" });
 
+/** Most arguments a previewed command line has, and the most escaped UTF-16 units all of them hold together. */
+export const MAX_PREVIEW_ARGS = 64;
+export const MAX_PREVIEW_ARGV_CHARS = 8192;
+/** One escaped item of a command preview: activity text rules, never empty. */
+const previewItemSchema = (max: number) =>
+  z
+    .string()
+    .min(1)
+    .max(max)
+    .refine((t) => !REFUSED_ACTIVITY.test(t), { message: "no control or invisible characters" });
+
+/**
+ * The command a `run_command` call starts (ticket C3), shown whole: every argument escaped like a content head (reversible),
+ * the program's real path and its `#!` interpreter as the broker pinned them, the working directory below the worktree
+ * root, and the command identity: SHA-256 over the program, the interpreter, the arguments and the directory. The broker's
+ * digest covers every one of them, so the identity names exactly what runs; the native dialog shows its first 16 digits.
+ */
+export const commandPreviewSchema = z
+  .strictObject({
+    argv: z.array(previewItemSchema(4096)).min(1).max(MAX_PREVIEW_ARGS),
+    program: previewItemSchema(1024),
+    interpreter: previewItemSchema(1024).nullable(),
+    cwd: previewItemSchema(512),
+    identity: z.string().regex(/^[0-9a-f]{64}$/),
+  })
+  .refine((c) => c.argv.reduce((n, a) => n + a.length, 0) <= MAX_PREVIEW_ARGV_CHARS, "the command line is over the preview bound");
+export type CommandPreview = z.infer<typeof commandPreviewSchema>;
+
 /**
  * What a tool call will do, as the user answers its approval (review r1 S2, ticket C8). The daemon builds it from the
  * exact arguments the broker's digest covers (it recomputes the digest from them and shows nothing when they differ), so
@@ -133,6 +161,8 @@ export const approvalPreviewSchema = z
       })
       .refine((c) => c.truncated || c.findings.length > 0 || c.bytes === 0 || c.head.length > 0, "a whole, clean, non-empty content shows a head")
       .nullable(),
+    /** The command the call starts (C3); absent or null for a call that starts none. */
+    command: commandPreviewSchema.nullable().optional(),
     /**
      * IAC-T (PV-M0): the sources the run had received when the challenge was issued, so the card can say why a call that is
      * usually allowed needs the user. Absent for a run that received none.

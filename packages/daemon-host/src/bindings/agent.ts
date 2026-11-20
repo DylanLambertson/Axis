@@ -10,8 +10,9 @@ import { formatDriftNotice } from "../composer/drift.js";
 import { buildApprovalPreview, type PreviewScanner } from "../composer/preview.js";
 import { createRunTaint } from "../composer/taint.js";
 import { ObservedFiles } from "./agent-observed.js";
+import { RUN_COMMAND, RUN_COMMAND_SPEC, RunWt2, approvableCommand, commandLimits, commandTool, runCommandArgs, type CommandLimits, type RunCommandArgs } from "./agent-command.js";
 import type { RunApprovals } from "../gate/run-approvals.js";
-import type { ComposerApprovalNote, ComposerEngine, ComposerRunContext, ComposerRunTools, ComposerToolSpec } from "../ports/composer.js";
+import { ComposerRunHalt, type ComposerApprovalNote, type ComposerEngine, type ComposerRunContext, type ComposerRunTools, type ComposerToolSpec, type RunRepositoryGuard } from "../ports/composer.js";
 import type { WorktreeLocator } from "../ports/worktree-locator.js";
 
 /**
@@ -24,8 +25,8 @@ import type { WorktreeLocator } from "../ports/worktree-locator.js";
  * - **One broker per run.** Its approval hook knows the run and the window that started it (`gate/run-approvals.ts`), so
  *   an approval is always the run's own; its ledger refuses a replayed grant.
  * - **Tools (C1).** `read_file` (tier `read`) and `write_file` (tier `write`), each declaring its one path, so WT-1
- *   containment and WT-3 protected paths apply at decision and at use. No command or git tool yet (ticket C3): no child
- *   process is started by a composer run, and the shared runner exists only so shutdown can kill one if C3 adds it.
+ *   containment and WT-3 protected paths apply at decision and at use. `run_command` (C3, `agent-command.ts`) is offered
+ *   only when the host gave the WT-2 guard (`commandGuard`); shutdown kills what the shared runner started.
  * - **Providers.** The mock, guarded (`guardProvider`: validation, outgoing secret scan with the host redactor, timeouts,
  *   stream grammar, the run budget). The Anthropic adapter comes with the vault in `bindings/providers.ts` (ticket C6).
  * - **Approval preview (C8).** Each call's parsed arguments are held while the broker decides; when the broker asks, the
@@ -77,6 +78,13 @@ export interface AgentBindingDeps {
    * tools (PV-M4, PV-Q1, PV-T1) taint the run the same way, before their result is returned.
    */
   readonly taintSources?: (tool: string, args: unknown) => unknown;
+  /**
+   * WT-2, broker side (C3): GIT-SNAP-1 before and after every command a run starts (its own instance, not the CLI runs').
+   * Absent: `run_command` is not offered at all.
+   */
+  readonly commandGuard?: RunRepositoryGuard;
+  /** Bounds of one command (timeout, output cap, what the model sees). Default `DEFAULT_COMMAND_LIMITS`. */
+  readonly commandLimits?: Partial<CommandLimits>;
 }
 
 /** The broker's audit payload keys (`broker.decision`: approver, approval id, expiry; `broker.result`), for the host's `AuditLog` (DMN-5). */
@@ -87,6 +95,8 @@ export interface AgentBinding extends ComposerEngine {
   providers(): readonly GuardedProvider[];
   /** Kill any process a tool started (shutdown). */
   dispose(): void;
+  /** `run_command` is offered: the host gave the WT-2 guard (C3). */
+  readonly commands: boolean;
 }
 
 export const MAX_READ_BYTES = 262_144;
@@ -115,8 +125,8 @@ export const COMPOSER_TOOLS: readonly ComposerToolSpec[] = Object.freeze([
 const PREVIEWED: ReadonlyMap<string, { readonly args: z.ZodType; readonly content: (args: never) => string | undefined }> = new Map([
   ["read_file", { args: readArgs, content: () => undefined }],
   ["write_file", { args: writeArgs, content: (a: z.infer<typeof writeArgs>) => a.content }],
+  [RUN_COMMAND, { args: runCommandArgs, content: () => undefined }],
 ]);
-
 /** The user can judge the call from the preview: it writes nothing, or it is not protected, or its whole content is shown. */
 export function shownWhole(preview: ApprovalPreview): boolean {
   const c = preview.content;
@@ -150,6 +160,7 @@ export function createAgentBinding(deps: AgentBindingDeps): AgentBinding {
   const brokerFs = deps.wrapFs?.(nodeBrokerFs) ?? nodeBrokerFs;
   const runner: CommandRunner = createCommandRunner({ platform });
   const scanner = deps.previewScanner ?? defaultPreviewScanner();
+  const limits = commandLimits(deps.commandLimits);
   const providers = new Map<string, GuardedProvider>([["mock", guardProvider(createMockProvider(deps.mock ?? {}), { redactor: providerRedactor(deps.redactor) })]]);
 
   const roots = async (): Promise<string[]> => {
@@ -197,12 +208,21 @@ export function createAgentBinding(deps: AgentBindingDeps): AgentBinding {
     };
     const hook: ApprovalHook = {
       async request(req: ApprovalRequest, signal: AbortSignal): Promise<unknown> {
+        // A command line the hook is shown cut (a program path that pushes the line past the broker's bound) can never be
+        // matched to its call: refused with a closed reason, never declined as if the user had said no (review c3 r1 SF-3).
+        if (req.tool === RUN_COMMAND && req.commandsTruncated) throw new BrokerError("E_INVALID_ARGUMENT", "invalid-command", "the command line is too long to be shown whole");
         const call = covered(req);
         const spec = PREVIEWED.get(req.tool);
         // Fail closed: no preview bound to this digest, no challenge (the broker records the decline). The digest covers the
         // actor and the worktree, so a match is already this run's own call in this worktree.
         if (call === undefined || spec === undefined) return { approved: false };
-        const preview = await buildApprovalPreview({ tier: req.tier, reasons: req.reasons, content: spec.content(call.args as never) }, { scanner, redact: (t) => deps.redactor.redactString(t) });
+        // A command is previewed from the broker's own line (program and interpreter as pinned), only at tier 4.
+        const command = req.tool === RUN_COMMAND ? approvableCommand(req, call.args as RunCommandArgs) : undefined;
+        if (req.tool === RUN_COMMAND && command === undefined) return { approved: false };
+        const preview = await buildApprovalPreview(
+          { tier: req.tier, reasons: req.reasons, content: spec.content(call.args as never), ...(command === undefined ? {} : { command }) },
+          { scanner, redact: (t) => deps.redactor.redactString(t) },
+        );
         // A protected write (WT-3) is put to the user only when the head shows the whole content: a payload past the head,
         // a secret (the head is then redacted) or a scan that could not complete is never approved blind (review c2 S1). A call
         // cancelled during the preview is refused by `approvals.request`, which issues nothing for an aborted signal.
@@ -288,10 +308,18 @@ export function createAgentBinding(deps: AgentBindingDeps): AgentBinding {
         return `wrote ${data.length} bytes\ndigest: ${r.digest}${lost}`;
       },
     });
+    // WT-2: one baseline for the run; once a check finds a change, every later call and turn of the run halts it.
+    const guard = deps.commandGuard;
+    const wt2 = guard === undefined ? undefined : new RunWt2({ runId: run.runId, workspaceId: worktree.id, worktree: { workTree: worktree.root, gitDir: worktree.gitDir }, guard, writeLock: deps.writeLock });
+    const halted = (): boolean => wt2?.halted === true;
+    if (wt2 !== undefined) broker.register(commandTool({ wt2, workspaceId: worktree.id, platform, limits, redact: (t) => deps.redactor.redactString(t), writeLock: deps.writeLock }));
+    const specs = wt2 === undefined ? COMPOSER_TOOLS : Object.freeze([...COMPOSER_TOOLS, RUN_COMMAND_SPEC]);
     return {
-      specs: COMPOSER_TOOLS,
+      specs,
       drift: async (signal) => formatDriftNotice(await observed.drift(signal)),
+      ...(wt2 === undefined ? {} : { guard: (signal: AbortSignal) => wt2.turn(signal), close: () => wt2.close() }),
       async invoke(name, input, signal) {
+        if (halted()) throw new ComposerRunHalt("GIT_DRIFT");
         const parsed = PREVIEWED.get(name)?.args.safeParse(input);
         const call = parsed?.success === true ? { tool: name, args: parsed.data } : undefined;
         // The loop runs one call at a time; a caller that floods the broker is refused before anything is held.
@@ -300,7 +328,10 @@ export function createAgentBinding(deps: AgentBindingDeps): AgentBinding {
         let out: unknown;
         try {
           out = await broker.invoke({ tool: name, worktreeId: worktree.id, actor, args: input, signal });
+          // WT-2 (C3): a check that found a change halts the run; nothing the call returned reaches the model.
+          if (halted()) throw new ComposerRunHalt("GIT_DRIFT");
         } catch (e) {
+          if (halted()) throw new ComposerRunHalt("GIT_DRIFT");
           // The action ran but its audit row could not be written: the run must stop (never continue unrecorded).
           if (e instanceof BrokerError && e.details["executed"] === true) throw new Error("unrecorded side effect");
           const reason = reasonOf(e);
@@ -324,5 +355,6 @@ export function createAgentBinding(deps: AgentBindingDeps): AgentBinding {
     providers: () => [...providers.values()],
     prepare,
     dispose: () => void runner.killAll(),
+    commands: deps.commandGuard !== undefined,
   };
 }
