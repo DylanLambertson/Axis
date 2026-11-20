@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, before, describe, test } from "node:test";
@@ -34,6 +34,9 @@ describe("composer slice (C7): scenario 1 on the mock provider, hostile output, 
   const secret = canary(31);
   /** Model text that holds a credential-shaped string: shown live, stored redacted (the stored copy is display-safe, J2). */
   const spoken = canary(53);
+  /** In a long file the model reads: once within the redactor's first 16,384 characters, once past them. */
+  const inFile = canary(61);
+  const longText = "An ordinary line of a long project file.\n".repeat(1000); // about 41 KB
   const runs: Record<string, string> = {};
   const answered: Challenge[] = [];
 
@@ -52,6 +55,9 @@ describe("composer slice (C7): scenario 1 on the mock provider, hostile output, 
           write(".envrc", `export TOKEN=${secret}\n`),
         ],
         malformed: [{ kind: "malformed" }],
+        long: [read("long.txt"), command("process.stdout.write('one ordinary line of build output\\n'.repeat(1200))"), { kind: "text", text: "Read it and ran it." }],
+        headsecret: [read("head-secret.txt")],
+        tailsecret: [read("tail-secret.txt")],
         huge: [write("huge.txt", "x".repeat(6 * 1024))],
         cancel: [write(".envrc", "never\n")],
         budget: Array.from({ length: 12 }, () => read("README.txt")),
@@ -118,6 +124,22 @@ describe("composer slice (C7): scenario 1 on the mock provider, hostile output, 
     assert.equal(fx.git(ws.path, "status", "--porcelain").trim(), "", "everything reviewed was committed");
   });
 
+  test("2b. long tool results: a 41 KB file read and 41 KB of command output reach the model; a secret in either part still stops it", async () => {
+    writeFileSync(join(ws.path, "long.txt"), longText);
+    const runId = (runs["long"] = await startRun(h.client, ws.id, "long"));
+    const { challenge } = await answer(h, runId);
+    const run = await settled(h.client, runId);
+    await assertSpent(h.client, challenge);
+    assert.deepEqual([run.state, run.reason, run.usage?.requests], ["REVIEWING", null, 3], "a long legitimate result is not a secret");
+    assert.deepEqual(toolsOf(await eventsOf(h.client, runId)).map((t) => [t.tool, t.outcome]), [["read_file", "ok"], ["run_command", "ok"]]);
+    for (const [tag, at] of [["headsecret", 1000], ["tailsecret", 30_000]] as const) {
+      writeFileSync(join(ws.path, `${tag.replace("secret", "-secret")}.txt`), `${longText.slice(0, at)}key ${inFile}\n${longText.slice(at)}`);
+      const id = (runs[tag] = await startRun(h.client, ws.id, tag));
+      const r = await settled(h.client, id);
+      assert.deepEqual([r.state, r.reason], ["FAILED", "PROVIDER_SECRET_IN_REQUEST"], `${tag}: the outgoing scan reads the whole result`);
+    }
+  });
+
   test("3. hostile output: an unknown tool, a path outside the worktree, a secret in a protected write, a malformed reply, a huge call", async () => {
     const runId = (runs["hostile"] = await startRun(h.client, ws.id, "hostile"));
     const run = await settled(h.client, runId);
@@ -127,7 +149,7 @@ describe("composer slice (C7): scenario 1 on the mock provider, hostile output, 
     const events = await eventsOf(h.client, runId);
     assert.deepEqual(toolsOf(events).map((t) => [t.tool, t.outcome, t.reason]), [["delete_everything", "error", "unknown_tool"], ["write_file", "error", "dotdot"], ["write_file", "error", "approval_declined"]], "no hostile call ran");
     assert.deepEqual(approvalsOf(events), [], "nothing was put to the user");
-    assert.equal(h.sup.nativeConfirms.length, 1, "no dialog beyond scenario 1's command");
+    assert.equal(h.sup.nativeConfirms.length, 2, "no dialog beyond the earlier commands");
     assert.equal(existsSync(join(dirname(ws.path), "outside.txt")), false);
     assert.equal(existsSync(join(ws.path, ".envrc")), false);
     assert.ok(!JSON.stringify(events).includes(secret), "the secret is in no event");
@@ -223,13 +245,13 @@ describe("composer slice (C7): scenario 1 on the mock provider, hostile output, 
       const perRun = db.prepare("SELECT SUM(budget_requests) AS n FROM composer_runs").get() as { n: number };
       // Every request of every run, the killed run's in-flight reservation included, is charged to the workspace (C10, J2).
       assert.equal(budget.requests, perRun.n, "the workspace total is the sum of its runs");
-      assert.equal(budget.requests, 22, "s1 5, hostile 3, malformed 1, huge 1, cancel 1, budget 8, wt2 1, kill 1 (in flight at the kill), after 1");
+      assert.equal(budget.requests, 27, "s1 5, long 3, head and tail secret 1 each, hostile 3, malformed 1, huge 1, cancel 1, budget 8, wt2 1, kill 1 (in flight at the kill), after 1");
       // DMN-3: each approval was authorised exactly once, and every later answer to it was refused (consumed once).
       const rows = auditRows(db);
       const phase = (r: AuditRow) => JSON.parse(r.payload) as { phase?: string; ref?: string };
       const authorised = rows.filter((r) => r.action === "tier4.execute" && phase(r).phase === "authorised").map((r) => phase(r).ref);
-      assert.equal(authorised.length, 3, "the Makefile write and the two commands");
-      assert.equal(new Set(authorised).size, 3, "no approval was authorised twice");
+      assert.equal(authorised.length, 4, "the Makefile write and the three commands");
+      assert.equal(new Set(authorised).size, 4, "no approval was authorised twice");
       for (const ref of authorised) {
         const at = rows.findIndex((r) => r.action === "tier4.execute" && phase(r).ref === ref);
         const later = rows.slice(at + 1).filter((r) => r.action === "tier4.challenge" && phase(r).ref === ref && phase(r).phase === "resolve");
@@ -240,10 +262,10 @@ describe("composer slice (C7): scenario 1 on the mock provider, hostile output, 
         else assert.equal(native, -1, "a tier 3 call has no native step");
       }
       const bytes = databaseBytes(join(scratch, "stopped"));
-      for (const needle of [secret, spoken]) assert.equal(bytes.includes(needle), false, "a secret is in the database");
+      for (const needle of [secret, spoken, inFile]) assert.equal(bytes.includes(needle), false, "a secret is in the database");
     } finally {
       db.close();
     }
-    for (const t of [h.sup.stderr, ...transcript]) assert.equal(t.includes(secret), false, "the secret reached a response or the log");
+    for (const t of [h.sup.stderr, ...transcript]) for (const needle of [secret, inFile]) assert.equal(t.includes(needle), false, "the secret reached a response or the log");
   });
 });

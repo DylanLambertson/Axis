@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { composerRunsMethods, type Challenge, type ComposerRun, type RunEvent } from "@axis/protocol";
 import type { GitFixture } from "../../testing/git-fixture.js";
 import type { SliceComposerConfig } from "../../testing/slice-composer.js";
-import { confirmNative, registerProject, startHost, trustWindow, type AuditRow } from "../../testing/slice-helpers.js";
+import { registerProject, startHost, trustWindow, type AuditRow } from "../../testing/slice-helpers.js";
 import { TestClient, until } from "../../testing/test-client.js";
 import type { TestSupervisor } from "../../testing/test-supervisor.js";
 
@@ -87,7 +87,9 @@ export async function answer(h: ComposerHost, runId: string, decision: "approve"
   // The window's approval alone runs nothing at tier 4: the run still waits for the native dialog.
   assert.equal((await getRun(h.client, runId)).awaitingApproval, true, "a tier 4 call waits for the native confirmation");
   await beforeNative?.();
-  await confirmNative(h.sup, h.client, challenge.challengeId);
+  // Wait on the run, not on a count of audit rows (a window of the last rows can drop an old confirmation as the new one enters).
+  h.sup.answerNative(challenge.challengeId, true);
+  await until(async () => !(await getRun(h.client, runId)).awaitingApproval, "the native confirmation to be taken", 6_000);
   return { challenge, dialog: h.sup.nativeConfirms.find((c) => c.challengeId === challenge.challengeId)?.summary };
 }
 
