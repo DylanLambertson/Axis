@@ -32,6 +32,8 @@ describe("composer slice (C7): scenario 1 on the mock provider, hostile output, 
   let ws: Workspace;
   let config: SliceComposerConfig;
   const secret = canary(31);
+  /** Model text that holds a credential-shaped string: shown live, stored redacted (the stored copy is display-safe, J2). */
+  const spoken = canary(53);
   const runs: Record<string, string> = {};
   const answered: Challenge[] = [];
 
@@ -54,7 +56,7 @@ describe("composer slice (C7): scenario 1 on the mock provider, hostile output, 
         cancel: [write(".envrc", "never\n")],
         budget: Array.from({ length: 12 }, () => read("README.txt")),
         wt2: [command(`require('node:fs').writeFileSync(${JSON.stringify(hook)}, '#!/bin/sh\\n')`), write("after-drift.txt", "never\n")],
-        kill: [write(".envrc", "never\n")],
+        kill: [{ kind: "tool_use", name: "write_file", input: { path: ".envrc", content: "never\n" }, text: `I found ${spoken} in the logs.` }],
         after: [{ kind: "text", text: "Nothing to change." }],
       },
     };
@@ -190,7 +192,11 @@ describe("composer slice (C7): scenario 1 on the mock provider, hostile output, 
     const killed = await getRun(h.client, runId);
     assert.deepEqual([killed.state, killed.reason, killed.live, killed.awaitingApproval, killed.mode, killed.modelId], ["BLOCKED", "INTERRUPTED_BY_RESTART", false, false, "agent", "mock-model"]);
     const after = await eventsOf(h.client, runId);
-    assert.deepEqual(after.slice(0, killedEvents.length), killedEvents, "the stored activity is the activity shown before the kill");
+    const said = (events: RunEvent[]) => events.filter((e): e is Extract<RunEvent, { type: "text" }> => e.type === "text").map((e) => e.text).join("");
+    assert.ok(said(killedEvents).includes(spoken), "the live view shows the model's text as it came");
+    assert.ok(!said(after).includes(spoken) && said(after).startsWith("I found "), "the stored copy read back after the restart is redacted");
+    const shown = (events: RunEvent[]) => events.filter((e) => e.type !== "text");
+    assert.deepEqual(shown(after).slice(0, shown(killedEvents).length), shown(killedEvents), "the stored activity is the activity shown before the kill");
     assert.deepEqual(await eventsOf(h.client, runs["s1"] as string), s1Before, "a finished run reads back whole, summary included");
     const s1 = await getRun(h.client, runs["s1"] as string);
     assert.deepEqual([s1.state, s1.usage?.requests], ["REVIEWING", 5]);
@@ -234,7 +240,7 @@ describe("composer slice (C7): scenario 1 on the mock provider, hostile output, 
         else assert.equal(native, -1, "a tier 3 call has no native step");
       }
       const bytes = databaseBytes(join(scratch, "stopped"));
-      assert.equal(bytes.includes(secret), false, "the secret is not in the database");
+      for (const needle of [secret, spoken]) assert.equal(bytes.includes(needle), false, "a secret is in the database");
     } finally {
       db.close();
     }
