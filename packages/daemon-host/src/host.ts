@@ -176,7 +176,8 @@ function degradedSurface(full: PolicySurface): PolicySurface {
     const picked = Object.fromEntries(Object.entries(methods).filter(([m]) => DEGRADED_METHODS.has(`${contract}.${m}`)));
     if (Object.keys(picked).length > 0) registry[contract] = picked;
   }
-  return { registry, rules: keep(full.rules), planned: keep(full.planned) };
+  // Nothing planned is kept: a degraded host has no planned rows, so it has no planned contracts either.
+  return { registry, rules: keep(full.rules), planned: keep(full.planned), plannedRegistry: {} };
 }
 
 const STEP_ERRORS: ReadonlySet<string> = new Set(["E_CONFLICT", "E_INVALID_ARGUMENT", "E_POLICY_DENIED"]);

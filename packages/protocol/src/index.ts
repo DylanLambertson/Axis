@@ -16,5 +16,7 @@ export * from "./git.js";
 export * from "./review.js";
 export * from "./composer-runs.js";
 export * from "./events.js";
+export * from "./messages-wire.js";
+export * from "./messages.js";
 export * from "./contracts.js";
 export * from "./client.js";
