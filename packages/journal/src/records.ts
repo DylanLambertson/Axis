@@ -37,6 +37,7 @@ const workspaceId = z.string().min(1).max(128).refine(noControl).refine(isWellFo
 const actorOnly = z.string().regex(ACTOR);
 export const worktreePathSchema = absolutePath;
 export const baseBranchSchema = z.string().min(12).max(300).regex(/^refs\/heads\/[!-~]+$/).refine((r) => !r.includes(".."));
+export const baseTipSchema = z.string().regex(/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/);
 export const hashSchema = z.string().regex(HASH);
 export const workspaceIdSchema = workspaceId;
 export const actorSchema = actorOnly;
@@ -132,16 +133,21 @@ export function setWorktreePath(ctx: RecordsContext, id: string, path: string, a
   return out;
 }
 
-/** The base branch the daemon resolved at create: once, only while CREATING, and only a printable `refs/heads/` name. */
-export function recordBaseBranch(ctx: RecordsContext, id: string, ref: string, actor: AuditActor): Workspace {
+/**
+ * The base branch the daemon resolved at create and the commit it pointed at then (FU-WT-BASE2): both at once, once, only
+ * while CREATING, a printable `refs/heads/` name and a full commit sha. Recording the same pair again is a no-op.
+ */
+export function recordBaseBranch(ctx: RecordsContext, id: string, ref: string, tip: string, actor: AuditActor): Workspace {
   const a = parseActor(actor);
   const parsed = baseBranchSchema.safeParse(ref);
   if (!parsed.success) throw invalid(parsed.error, "base branch");
+  const tipParsed = baseTipSchema.safeParse(tip);
+  if (!tipParsed.success) throw invalid(tipParsed.error, "base tip");
   const row = load(ctx.db, id);
-  if (row.base_branch === parsed.data) return toWorkspace(row);
+  if (row.base_branch === parsed.data && row.base_tip === tipParsed.data) return toWorkspace(row);
   if (row.state !== "CREATING") throw new AxisError("E_CONFLICT", "A base branch can only be recorded while the workspace is being created", { state: row.state });
-  if (row.base_branch !== null) throw new AxisError("E_CONFLICT", "The base branch is already recorded and does not change");
-  const out = update(ctx, "base_branch = ?", [parsed.data], row.id);
+  if (row.base_branch !== null || row.base_tip !== null) throw new AxisError("E_CONFLICT", "The base branch is already recorded and does not change");
+  const out = update(ctx, "base_branch = ?, base_tip = ?", [parsed.data, tipParsed.data], row.id);
   audit(ctx, a, "journal.workspace.record", `workspace:${row.id}`, "baseBranch");
   return out;
 }

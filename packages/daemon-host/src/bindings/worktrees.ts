@@ -93,8 +93,8 @@ function adapt(manager: WorktreeManager, runner: GitRunner): ManagerShape {
         if (out.code !== 0 || !/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(sha)) throw worktreeFailure("E_NOT_FOUND", "base_ref");
         return sha;
       }),
-    isMerged: (repoPath, headSha, baseBranch) =>
-      mapped(async () => (await verifyMerged({ cwd: repoPath, run: (args, extraEnv) => runner.run(args, { cwd: repoPath, timeoutMs: 30_000, extraEnv }) }, headSha, baseBranch)) === "merged"),
+    isMerged: (repoPath, headSha, baseBranch, baseTip) =>
+      mapped(async () => (await verifyMerged({ cwd: repoPath, run: (args, extraEnv) => runner.run(args, { cwd: repoPath, timeoutMs: 30_000, extraEnv }) }, headSha, baseBranch, baseTip)) === "merged"),
     listRefs: (repoPath, prefix) =>
       mapped(async () => {
         const out = await git(repoPath, ["for-each-ref", "--format=%(refname)", "--", prefix]);
@@ -110,8 +110,8 @@ function adapt(manager: WorktreeManager, runner: GitRunner): ManagerShape {
     status: (p, expected) => mapped(() => manager.status(p, expected)),
     previewDiscard: (p, expected) => mapped(() => manager.previewDiscard(p, expected)),
     assertNoDrift: (p, expected) => mapped(() => manager.assertNoDrift(p, expected)),
-    finalise: ({ path, expectedWorktree, outcome, discardConfirmation, trustedBaseBranch }) =>
-      mapped(() => manager.finalise({ path, expectedWorktree, outcome, trustedBaseBranch, ...(discardConfirmation === undefined ? {} : { discardConfirmation: cap(discardConfirmation) as DiscardConfirmation }) })),
+    finalise: ({ path, expectedWorktree, outcome, discardConfirmation, trustedBaseBranch, trustedBaseTip }) =>
+      mapped(() => manager.finalise({ path, expectedWorktree, outcome, trustedBaseBranch, trustedBaseTip, ...(discardConfirmation === undefined ? {} : { discardConfirmation: cap(discardConfirmation) as DiscardConfirmation }) })),
     remove: ({ path, expectedWorktree, deleteBranch, discardConfirmation }) =>
       mapped(() => manager.remove({ path, expectedWorktree, deleteBranch, ...(discardConfirmation === undefined ? {} : { discardConfirmation: cap(discardConfirmation) as DiscardConfirmation }) })),
     restoreFromRunBase: ({ path, runId, expectedWorktree }) => mapped(() => manager.restoreFromRunBase({ path, runId, expectedWorktree })),

@@ -36,7 +36,7 @@ describe('finalise merged is judged against a trusted base branch', () => {
     const meta = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>;
     writeFileSync(file, JSON.stringify({ ...meta, baseBranch: 'refs/heads/evil' }));
     const trusted = sh(fx.repo, 'symbolic-ref', 'HEAD').trim();
-    await assert.rejects(fx.manager.finalise({ path: ws.path, expectedWorktree: exp(ws.path), outcome: 'merged', trustedBaseBranch: trusted }), reason('not-merged'));
+    await assert.rejects(fx.manager.finalise({ path: ws.path, expectedWorktree: exp(ws.path), outcome: 'merged', trustedBaseBranch: trusted, trustedBaseTip: ws.baseSha }), reason('not-merged'));
     // Without a trusted record the legacy behaviour reads the file, which is exactly why the daemon always passes one.
     const fin = await fx.manager.finalise({ path: ws.path, expectedWorktree: exp(ws.path), outcome: 'merged' });
     assert.equal(fin.outcome, 'merged');
@@ -58,9 +58,9 @@ describe('finalise merged is judged against a trusted base branch', () => {
   it('merged is accepted when the trusted base branch holds the tip, and the other outcomes are not affected', async () => {
     const ws = await withUnmergedCommit();
     const trusted = sh(fx.repo, 'symbolic-ref', 'HEAD').trim();
-    await assert.rejects(fx.manager.finalise({ path: ws.path, expectedWorktree: exp(ws.path), outcome: 'merged', trustedBaseBranch: trusted }), reason('not-merged'));
+    await assert.rejects(fx.manager.finalise({ path: ws.path, expectedWorktree: exp(ws.path), outcome: 'merged', trustedBaseBranch: trusted, trustedBaseTip: ws.baseSha }), reason('not-merged'));
     sh(fx.repo, 'merge', '-q', '--ff-only', 'axis/feat');
-    const fin = await fx.manager.finalise({ path: ws.path, expectedWorktree: exp(ws.path), outcome: 'merged', trustedBaseBranch: trusted });
+    const fin = await fx.manager.finalise({ path: ws.path, expectedWorktree: exp(ws.path), outcome: 'merged', trustedBaseBranch: trusted, trustedBaseTip: ws.baseSha });
     assert.equal(fin.outcome, 'merged');
   });
 
@@ -70,10 +70,10 @@ describe('finalise merged is judged against a trusted base branch', () => {
   });
 
   describe('a run that writes the shared repository without moving the base branch', () => {
-    const forgedMerge = async (ws: { path: string }, attack: () => void) => {
+    const forgedMerge = async (ws: { path: string; baseSha: string }, attack: () => void) => {
       const main = sh(fx.repo, 'symbolic-ref', 'HEAD').trim();
       attack();
-      return fx.manager.finalise({ path: ws.path, expectedWorktree: exp(ws.path), outcome: 'merged', trustedBaseBranch: main });
+      return fx.manager.finalise({ path: ws.path, expectedWorktree: exp(ws.path), outcome: 'merged', trustedBaseBranch: main, trustedBaseTip: ws.baseSha });
     };
 
     it('a replace ref on the base tip does not make the workspace look merged', async () => {
@@ -94,7 +94,7 @@ describe('finalise merged is judged against a trusted base branch', () => {
         writeFileSync(path.join(fx.repo, '.git', 'info', 'grafts'), `${tip} ${sh(ws.path, 'rev-parse', 'HEAD').trim()}\n`);
       }), reason('not-merged'));
       sh(fx.repo, 'merge', '-q', '--ff-only', 'axis/feat');
-      await assert.rejects(fx.manager.finalise({ path: ws.path, expectedWorktree: exp(ws.path), outcome: 'merged', trustedBaseBranch: sh(fx.repo, 'symbolic-ref', 'HEAD').trim() }), reason('not-merged'));
+      await assert.rejects(fx.manager.finalise({ path: ws.path, expectedWorktree: exp(ws.path), outcome: 'merged', trustedBaseBranch: sh(fx.repo, 'symbolic-ref', 'HEAD').trim(), trustedBaseTip: ws.baseSha }), reason('not-merged'));
     });
 
     it('a deleted base plus a lookalike refs/heads/refs/heads/<name> is no base, not a merged one', async () => {
