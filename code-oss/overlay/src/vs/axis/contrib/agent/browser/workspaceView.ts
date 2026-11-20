@@ -11,6 +11,7 @@ import { IAxisViewService } from '../../../services/view/browser/axisViewService
 import { IAxisWorkspaceService } from '../../../services/workspaces/browser/axisWorkspaceService.js';
 import { branchLabel, IAxisWorkspaceEntry, rowStateOf } from '../../../services/workspaces/common/axisWorkspaceModel.js';
 import { rowStateLabel, runLabel } from './dashboardView.js';
+import { AxisChangesView } from './changesView.js';
 import { AxisFileTree } from './fileTree.js';
 import { AxisWorkspaceTerminals } from './workspaceTerminals.js';
 
@@ -26,6 +27,7 @@ export class AxisWorkspaceView extends Disposable {
 	readonly element: HTMLElement;
 	private readonly header: HTMLElement;
 	private readonly fileTree: AxisFileTree;
+	private readonly changes: AxisChangesView;
 	private readonly activity: HTMLElement;
 	private entry: IAxisWorkspaceEntry | undefined;
 
@@ -41,7 +43,8 @@ export class AxisWorkspaceView extends Disposable {
 		this.header = append(this.element, $('.axis-workspace-header'));
 		const body = append(this.element, $('.axis-workspace-body'));
 
-		const files = append(body, $('section.axis-workspace-files'));
+		const side = append(body, $('.axis-workspace-side'));
+		const files = append(side, $('section.axis-workspace-files'));
 		const filesTitle = append(files, $('h3.axis-section-title'));
 		filesTitle.textContent = localize('axis.workspace.files', "Files");
 		filesTitle.id = 'axis-workspace-files-title';
@@ -49,6 +52,8 @@ export class AxisWorkspaceView extends Disposable {
 		this.fileTree.element.setAttribute('aria-labelledby', filesTitle.id);
 		files.appendChild(this.fileTree.element);
 		this._register(this.fileTree.onDidOpen(resource => this.open(resource)));
+		this.changes = this._register(instantiationService.createInstance(AxisChangesView));
+		side.appendChild(this.changes.element);
 
 		this.activity = append(body, $('section.axis-workspace-activity'));
 		this._register(this.terminals.onDidChange(() => this.renderHeader()));
@@ -60,9 +65,11 @@ export class AxisWorkspaceView extends Disposable {
 		this.element.setAttribute('aria-label', localize('axis.workspace.label', "Workspace {0}", entry.label));
 		this.renderHeader();
 		this.renderActivity();
+		const root = entry.worktree.present ? URI.file(entry.worktree.path) : undefined;
 		if (rootChanged) {
-			this.fileTree.setRoot(entry.worktree.present ? URI.file(entry.worktree.path) : undefined);
+			this.fileTree.setRoot(root);
 		}
+		this.changes.setRoot(root, entry.label);
 	}
 
 	private renderHeader(): void {
@@ -114,7 +121,7 @@ export class AxisWorkspaceView extends Disposable {
 					? localize('axis.workspace.noRuns', "No agent runs in this workspace yet. The composer and the activity stream come later.")
 					: localize('axis.workspace.noService', "No agent runs. The composer and the activity stream need the Axis service, which is not running in this preview.");
 		}
-		append(this.activity, $('p.axis-note')).textContent = localize('axis.workspace.hint', "Enter on a file opens it in the IDE view. The terminals of this workspace are in the panel.");
+		append(this.activity, $('p.axis-note')).textContent = localize('axis.workspace.hint', "Enter on a file opens it in the IDE view, and on a change opens its diff. The terminals of this workspace are in the panel.");
 	}
 
 	private button(parent: HTMLElement, label: string, run: () => void): HTMLButtonElement {
