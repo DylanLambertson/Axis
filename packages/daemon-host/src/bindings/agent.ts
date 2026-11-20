@@ -5,11 +5,12 @@ import type { AuditSink, Redactor } from "@axis/audit";
 import { ABSENT, BROKER_PAYLOAD_ALLOWLIST, BrokerError, ToolBroker, callDigest, contentDigest, createCommandRunner, nodeBrokerFs, type ApprovalHook, type ApprovalRequest, type BrokerFs, type CommandRunner, type ContainDeps, type ToolDefinition } from "@axis/broker";
 import { MAX_APPROVAL_PATHS, toDisplayPath, type ApprovalPreview } from "@axis/protocol";
 import { createSecretScanner } from "@axis/secret-scan";
-import { createMockProvider, guardProvider, type GuardedProvider, type MockProviderOptions, type Redactor as ProviderRedactor } from "@axis/providers";
+import { createMockProvider, guardProvider, type GuardedProvider, type MockProviderOptions } from "@axis/providers";
 import { formatDriftNotice } from "../composer/drift.js";
 import { buildApprovalPreview, type PreviewScanner } from "../composer/preview.js";
 import { createRunTaint, type TaintStore } from "../composer/taint.js";
 import { ObservedFiles } from "./agent-observed.js";
+import { providerRedactor } from "./provider-redactor.js";
 import { RUN_COMMAND, RUN_COMMAND_SPEC, RunWt2, approvableCommand, commandLimits, commandTool, runCommandArgs, type CommandLimits, type RunCommandArgs } from "./agent-command.js";
 import type { RunApprovals } from "../gate/run-approvals.js";
 import { ComposerRunHalt, type ComposerApprovalNote, type ComposerEngine, type ComposerRunContext, type ComposerRunTools, type ComposerToolSpec, type RunRepositoryGuard } from "../ports/composer.js";
@@ -28,7 +29,7 @@ import type { WorktreeLocator } from "../ports/worktree-locator.js";
  *   containment and WT-3 protected paths apply at decision and at use. `run_command` (C3, `agent-command.ts`) is offered
  *   only when the host gave the WT-2 guard (`commandGuard`); shutdown kills what the shared runner started.
  * - **Providers.** The mock, guarded (`guardProvider`: validation, outgoing secret scan with the host redactor, timeouts,
- *   stream grammar, the run budget). The Anthropic adapter comes with the vault in `bindings/providers.ts` (ticket C6).
+ *   stream grammar, the run budget), and the network providers `bindings/providers.ts` builds over the vault (C6).
  * - **Approval preview (C8).** Each call's parsed arguments are held while the broker decides; when the broker asks, the
  *   hook recomputes the broker's digest (`callDigest`) from those arguments and the request, and builds the preview
  *   (`composer/preview.ts`) only from the arguments whose digest is the one the challenge is bound to. No match, or no
@@ -61,6 +62,8 @@ export interface AgentBindingDeps {
   readonly platform?: NodeJS.Platform;
   /** The mock provider's script (tests and the UI fixtures). Default: echo. */
   readonly mock?: MockProviderOptions;
+  /** The network providers (`bindings/providers.ts`, already guarded). A provider id registered twice refuses the build. */
+  readonly providers?: readonly GuardedProvider[];
   /** More protected paths (WT-3), from the host's private settings. */
   readonly extraProtected?: readonly (readonly string[])[];
   /** The secret scan of approval previews. Default: `@axis/secret-scan` in `refuse` mode over plain text. */
@@ -166,11 +169,6 @@ export function taintReceiptOf(sources: AgentBindingDeps["taintSources"], tool: 
   return sources?.(tool, call === undefined ? input : call.args);
 }
 
-/** The host's audit redactor as the providers' redaction hook (PRV-2): anything it would change counts as a secret. */
-function providerRedactor(r: Redactor): ProviderRedactor {
-  return { redact: (t) => r.redactString(t), containsSecret: (t) => r.redactString(t) !== t };
-}
-
 export function createAgentBinding(deps: AgentBindingDeps): AgentBinding {
   const platform = deps.platform ?? process.platform;
   const brokerFs = deps.wrapFs?.(nodeBrokerFs) ?? nodeBrokerFs;
@@ -178,6 +176,10 @@ export function createAgentBinding(deps: AgentBindingDeps): AgentBinding {
   const scanner = deps.previewScanner ?? defaultPreviewScanner();
   const limits = commandLimits(deps.commandLimits);
   const providers = new Map<string, GuardedProvider>([["mock", guardProvider(createMockProvider(deps.mock ?? {}), { redactor: providerRedactor(deps.redactor) })]]);
+  for (const p of deps.providers ?? []) {
+    if (providers.has(p.descriptor.providerId)) throw new Error("provider registered twice");
+    providers.set(p.descriptor.providerId, p);
+  }
 
   const roots = async (): Promise<string[]> => {
     const out: string[] = [];

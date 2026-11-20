@@ -12,6 +12,7 @@ import { createSecretScanner, type ScanMode } from "@axis/secret-scan";
 import { anchorPreflight } from "./anchor/preflight.js";
 import { createAgentBinding, type AgentBinding } from "./bindings/agent.js";
 import { createGitOperations, createGitPort } from "./bindings/git.js";
+import { createProvidersBinding, productionConnection, type AnthropicConnectionOptions, type ProvidersBinding } from "./bindings/providers.js";
 import { selectPtyGitRunner } from "./bindings/pty-git.js";
 import { createCommitPreparer, createReviewService } from "./bindings/review.js";
 import { createTempIndexProvider } from "./bindings/review-tempindex.js";
@@ -127,6 +128,8 @@ export interface ComposeOptions {
     readonly workspaceBudget?: RunBudgetLimits;
     readonly maxTurns?: number;
     readonly toolCaps?: Partial<ToolCaps>;
+    /** The Anthropic connection over the vault (C6); absent, only the mock is served. Always Node's own `fetch` and the default wire caps. */
+    readonly anthropic?: Pick<AnthropicConnectionOptions, "connectionId" | "backend" | "pricing">;
   };
   /** Period of the event sources (docs/design/events.md section 4; default 250 ms). */
   readonly eventPumpMs?: number;
@@ -182,7 +185,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
   };
 
   // Built in `afterStorage`, used by `reconcile` and `beforeReady`.
-  const built: { worktrees?: WorktreesBinding; runs?: RunsBinding; approvals?: WorktreesApprovals; projectPaths?: () => string[]; agent?: AgentBinding; composer?: ComposerService } = {};
+  const built: { worktrees?: WorktreesBinding; runs?: RunsBinding; approvals?: WorktreesApprovals; projectPaths?: () => string[]; agent?: AgentBinding; composer?: ComposerService; providers?: ProvidersBinding } = {};
   let lifecycle: LifecycleHandle | undefined;
   let offConnect: (() => void) | undefined;
   let finish: () => void = () => undefined;
@@ -252,18 +255,18 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
         forwarder.bind(runs.service);
         const projectPaths = (): string[] => parts.journal.listProjects().map((p) => p.path);
         // Composer runs: the broker's audit rows mark the anchor batch dirty like every other writer.
+        const providers = createProvidersBinding({ redactor: ports.redactor, audit: composerWriter, ...productionConnection(options.composer?.anthropic) });
         const agent = createAgentBinding({
           locator: worktrees.locator,
           repositoryRoots: projectPaths,
           audit: composerWriter,
           redactor: ports.redactor,
           env: () => ports.env,
-          approvals: approvals.runs,
-          // IAC-T: each composer run's taint is recorded in, and read back from, its journal record.
-          taintStore: parts.journal.composer,
+          approvals: approvals.runs, taintStore: parts.journal.composer, // IAC-T: run taint, recorded in its journal record
           now: () => ports.clock.now(),
           platform: config.platform,
           ...(options.composer?.mock === undefined ? {} : { mock: options.composer.mock }),
+          providers: providers.providers,
           // Composer writes take the project mutex Axis git operations take (policies 3.3, 6.1), queued like any caller.
           writeLock: composerWriteLock(parts.journal, worktrees.mutex),
           // WT-2 broker side (C3): one baseline per composer run, held by run and apart from the CLI runs' snapshotter.
@@ -282,7 +285,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
           onInternalError: (where) => logger?.error("request.failed", { reason: `composer_${where.slice(0, 24)}` }),
         });
         cleanups.push(() => (composer.dispose(), agent.dispose()));
-        Object.assign(built, { worktrees, runs, approvals, projectPaths, agent, composer });
+        Object.assign(built, { worktrees, runs, approvals, projectPaths, agent, composer, providers });
       },
       async beforeReady(services, lock) {
         try {
@@ -386,10 +389,10 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
 
   /** The services of a healthy host, each registered through the registrar and nothing else. */
   function registerServing(registrar: ReturnType<typeof createHandlerRegistrar>, services: HostServices): void {
-    const { worktrees, runs, approvals, composer, agent } = built;
+    const { worktrees, runs, approvals, composer, agent, providers } = built;
     const journal = services.journal;
     const audit = services.audit;
-    if (worktrees === undefined || runs === undefined || approvals === undefined || composer === undefined || agent === undefined || journal === undefined || audit === undefined) throw new AxisError("E_INTERNAL", "The host composition is incomplete", { reason: "not_built" });
+    if (worktrees === undefined || runs === undefined || approvals === undefined || composer === undefined || agent === undefined || providers === undefined || journal === undefined || audit === undefined) throw new AxisError("E_INTERNAL", "The host composition is incomplete", { reason: "not_built" });
     const git = createGitPort({
       gitPath: services.gitPath,
       env: { daemon: ports.env, pty: ports.env },
@@ -407,7 +410,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
     const reviewDeps = { git, locator: worktrees.locator, tempIndex: createTempIndexProvider(reviewDir), fileExists: (p: string) => access(p).then(() => true, () => false) };
     const trees = new ReviewedTrees();
     registrar.register(APPROVALS_CONTRACT, APPROVALS_VERSION, createApprovalsHandlers({ approvals: approvals.port }));
-    registrar.register(PROVIDERS_CONTRACT, PROVIDERS_VERSION, createProvidersHandlers({ providers: () => agent.providers() }));
+    registrar.register(PROVIDERS_CONTRACT, PROVIDERS_VERSION, createProvidersHandlers({ providers: () => agent.providers(), cachedModels: (id) => providers.cachedModels(id), credential: (id, signal) => providers.credential(id, signal) }));
     registrar.register(WORKTREES_CONTRACT, WORKTREES_VERSION, createWorktreesHandlers({ service: worktrees.service, needsAttention: worktrees.needsAttention }), { content: worktrees.content });
     registerComposerRunsHandlers(registrar, { service: composer, journal, mutex: worktrees.mutex, needsAttention: worktrees.needsAttention });
     registerCliRunsHandlers(registrar, { service: runs.service, journal, control, minter: createRunTrustMinter(ports.clock), mutex: worktrees.mutex, needsAttention: worktrees.needsAttention, platform: config.platform });
