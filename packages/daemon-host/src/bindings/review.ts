@@ -46,7 +46,8 @@ async function guarded<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
-function reviewDepsOf(deps: ReviewBindingDeps): ReviewDeps {
+/** The review deps with the defaults applied (the broker's matcher, bounded limits). Exported for tests; not part of the package index. */
+export function reviewDepsOf(deps: ReviewBindingDeps): ReviewDeps {
   const limits: Partial<ReviewLimits> = {
     ...deps.limits,
     maxFiles: Math.min(deps.limits?.maxFiles ?? MAX_REVIEW_FILES, MAX_REVIEW_FILES),
