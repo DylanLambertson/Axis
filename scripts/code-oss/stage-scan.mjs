@@ -56,6 +56,10 @@ export const RESTRICTED_MODULES = [
   { pkg: "journal", file: "principal.ts", importers: new Set() },
   { pkg: "runs", file: "attestation.ts", importers: new Set() },
   { pkg: "audit", file: "lock.ts", importers: new Set() },
+  // The daemon host's providers binding hands the global fetch to the Anthropic adapter (the one egress point, stage-ast.mjs
+  // EGRESS_NAMES): only the composition root, the host and the public index load it (mirrors PROVIDERS_IMPORTERS in
+  // test/packages/imports.test.mjs).
+  { pkg: "daemon-host", file: "bindings/providers.ts", importers: new Set(), files: new Set(["daemon-host/compose.ts", "daemon-host/host.ts", "daemon-host/index.ts"]), exact: true },
   // The Anthropic adapter and the connection vault (the key's only holder in the daemon, PRV-2): only the host's providers
   // binding may load them (daemon-host.md 2.1, ticket C6; mirrors HOST_FILE_RULES in test/packages/imports.test.mjs).
   { pkg: "anthropic", file: "index.ts", importers: new Set(), files: new Set(["daemon-host/bindings/providers.ts"]) },
