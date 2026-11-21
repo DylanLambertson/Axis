@@ -173,8 +173,9 @@ test("review 1 SF-1: the environment is copied onto a null prototype: a key plan
   } finally {
     delete proto["X1A_POLLUTED"];
   }
-  for (const env of [{ "A=B": "x" }, { "": "x" }, { "A\0B": "x" }, { A: "x\0y" }, { A: 1 as unknown as string }]) {
-    assert.equal(codeOf(() => exec(req(dir, "", { env }))), "start_failed", JSON.stringify(Object.keys(env)));
+  const throwing = Object.defineProperty({}, "A", { enumerable: true, get: () => assert.fail("read") }) as Record<string, string>;
+  for (const env of [{ "A=B": "x" }, { "": "x" }, { "A\0B": "x" }, { A: "x\0y" }, { A: 1 as unknown as string }, throwing, null as unknown as Record<string, string>]) {
+    assert.equal(codeOf(() => exec(req(dir, "", { env }))), "start_failed", env === null ? "null" : JSON.stringify(Object.getOwnPropertyNames(env)));
   }
   for (const cwd of ["..", "rel", ""]) assert.equal(codeOf(() => exec(req(cwd, ""))), "start_failed", JSON.stringify(cwd));
 });
@@ -228,4 +229,46 @@ test("review 1 N-4: done waits for both pipes, so output the leader wrote just b
   assert.equal(Buffer.from(r2.stdout).toString(), "early;late");
   set.add("/bin/sh");
   assert.equal(codeOf(() => exec({ argv: ["/bin/sh", "-c", "true"], cwd: dir, env: {}, maxOutput: 10 })), "program_refused");
+});
+
+test("review 2 SF-A: a member still alive at the leader's exit is killed then, and the group id is never probed or signalled after that", { skip: POSIX, timeout: 30_000 }, async (t) => {
+  const dir = scratch(t);
+  const files = { leader: join(dir, "leader.pid"), member: join(dir, "member.pid"), holder: join(dir, "holder.pid") };
+  const exec = createNodeExec(new Set([NODE]), process.platform);
+  const sit = (f: string): string => `${GUARD}require('fs').writeFileSync(${JSON.stringify(f)},String(process.pid));setInterval(()=>{},1000)`;
+  // A same-group member (alive at the exit, pipes let go) and a holder in its own session (keeps the pipes); the leader then exits.
+  const leader = [
+    `require('fs').writeFileSync(${JSON.stringify(files.leader)},String(process.pid));`,
+    `const cp=require('child_process');`,
+    `cp.spawn(process.execPath,['-e',${JSON.stringify(sit(files.member))}],{stdio:'ignore'}).unref();`,
+    `cp.spawn(process.execPath,['-e',${JSON.stringify(sit(files.holder))}],{stdio:'inherit',detached:true}).unref();`,
+    `const fs=require('fs');const w=setInterval(()=>{if(fs.existsSync(${JSON.stringify(files.member)})&&fs.existsSync(${JSON.stringify(files.holder)})){clearInterval(w);process.exit(0)}},10)`,
+  ].join("");
+  const calls: Array<[number, unknown]> = [];
+  const real = process.kill;
+  const child = exec(req(dir, leader));
+  const ready = (f: string): boolean => existsSync(f) && readFileSync(f, "utf8") !== "";
+  await waitFor("the three pids", () => ready(files.leader) && ready(files.member) && ready(files.holder));
+  const [lead, member, held] = [files.leader, files.member, files.holder].map((f) => Number(readFileSync(f, "utf8"))) as [number, number, number];
+  t.after(() => {
+    for (const pid of [member, held]) {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        /* gone */
+      }
+    }
+  });
+  await waitFor("the leader to be reaped", () => !running(lead));
+  await waitFor("the member to be killed at the leader's exit", () => !running(member));
+  await new Promise((r) => setTimeout(r, 100));
+  process.kill = ((pid: number, sig?: string | number) => (calls.push([pid, sig]), real.call(process, pid, sig))) as typeof process.kill;
+  try {
+    child.kill();
+  } finally {
+    process.kill = real;
+  }
+  assert.deepEqual(calls, [], "after the exit kill the id is never touched again");
+  process.kill(held, "SIGKILL");
+  assert.equal((await child.done).code, 0);
 });

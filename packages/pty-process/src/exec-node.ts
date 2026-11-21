@@ -18,33 +18,43 @@ function startFailure(e: unknown): ExecStartError {
 
 /**
  * The group of one run, signalled by its pgid (the leader's pid). The id stays reserved while any member of the group lives, so a
- * signal is safe until the group is empty; after that the id is free and another process may take it. So: the group is killed at
- * the leader's exit (anything left in it then is still ours), and once a probe finds no group the id is never signalled again (a
- * latch). The probe only skips a group that does not exist; it cannot tell this group from a newer one, which the latch avoids.
+ * signal is safe until the group is empty; after that the id is free and another process may take it. So the group is killed at
+ * the leader's exit (anything left in it then is still ours), and from then on the id is never probed or signalled again (`last`):
+ * after a group-wide SIGKILL no member is left to keep it. Before the exit, a probe that finds no group latches the same way. The
+ * probe only skips a group that does not exist; it cannot tell this group from a newer one, which the latch avoids.
  */
-function groupOf(pid: number | undefined): { kill(): void } {
+function groupOf(pid: number | undefined): { kill(): void; last(): void } {
   let gone = !validPgid(pid);
+  const kill = (): void => {
+    if (gone) return;
+    try {
+      if (signalGroup(systemProcessOps, pid as number, "SIGKILL") === "gone") gone = true;
+    } catch {
+      /* unknown: nothing more this process can do */
+    }
+  };
   return {
-    kill() {
-      if (gone) return;
-      try {
-        if (signalGroup(systemProcessOps, pid as number, "SIGKILL") === "gone") gone = true;
-      } catch {
-        /* unknown: nothing more this process can do */
-      }
+    kill,
+    last() {
+      kill();
+      gone = true;
     },
   };
 }
 
 /** A copy of the request's environment on a null prototype (an inherited key would reach the child: Node's spawn walks them), or undefined when a name or value is not one a process environment can hold. */
 function envOf(env: Readonly<Record<string, string>>): Record<string, string> | undefined {
-  const out = Object.create(null) as Record<string, string>;
-  for (const name of Object.keys(env)) {
-    const value = env[name];
-    if (name === "" || name.includes("=") || name.includes("\0") || typeof value !== "string" || value.includes("\0")) return undefined;
-    out[name] = value;
+  try {
+    const out = Object.create(null) as Record<string, string>;
+    for (const name of Object.keys(env)) {
+      const value = env[name];
+      if (name === "" || name.includes("=") || name.includes("\0") || typeof value !== "string" || value.includes("\0")) return undefined;
+      out[name] = value;
+    }
+    return out;
+  } catch {
+    return undefined; // not a plain object (null, a throwing getter or proxy): a closed `start_failed`, never the raw error
   }
-  return out;
 }
 
 /** Keeps at most `cap` bytes of a stream and keeps reading past it, so a flood is never held and never blocks the child. */
@@ -128,7 +138,7 @@ export function createNodeExec(programs: ReadonlySet<string>, platform: NodeJS.P
       });
       // The leader is gone: end what is left of its group now, while the id is still the group's (a member left keeps it). Node
       // emits `exit` before `close`, so the group is dead before `done` settles.
-      cp.once("exit", () => group.kill());
+      cp.once("exit", () => group.last());
       cp.once("close", (code, signal) => {
         if (settled) return;
         settled = true;

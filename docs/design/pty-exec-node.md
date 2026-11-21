@@ -57,7 +57,7 @@ export class ExecStartError extends Error { readonly code: ExecStartFailure; }
   - **a latch:** once a probe finds the group gone, its id is never probed or signalled again;
   - **`kill()`** sends `SIGKILL` to the group unless the latch is set. Idempotent.
 - **`done` settles only after** the leader exited, the group was killed at that exit, and stdout and stderr closed (Node emits `exit` before `close`). No member of the group outlives a settled `done`, and output written before the leader exited is read to the end.
-- A process that left the group (`setsid`) and holds the pipes keeps `done` pending until the service's timeout calls `kill()`; by then the group id is latched gone, so nothing is signalled, and `done` settles when that process lets go of the pipes. The timeout stays in the service (its clock).
+- A process that left the group (`setsid`) and holds the pipes keeps `done` pending until the service's timeout calls `kill()`; by then the group id is latched (at the leader's exit, after its kill, whatever the probe found: review 2 SF-A), so nothing is probed or signalled, and `done` settles when that process lets go of the pipes. The timeout stays in the service (its clock).
 - **Residual:** a process that leaves the group itself (`setsid`) is not covered. Same-user class, closed by the Phase 3 sandbox (`forge-pr-list.md` §8).
 - **Caps:** each stream stops being held at its own cap (`maxOutput`, `maxStderr`); the bytes past it are read and dropped, so a flood never sits in memory and never blocks the child on a full pipe.
 
@@ -87,6 +87,7 @@ ADR 0005 D3, the built-ins sentence, gains (wording from `forge-pr-list.md` §1,
 | `AXIS_PTY_GH` | as `AXIS_PTY_GIT` (read and checked now; `forge-list`, PV-D2, uses it) | `forge-list` off |
 | `AXIS_PTY_SCRATCH` | an existing directory (not a symlink), this user's, mode without group or other bits | required when `AXIS_PTY_GIT` is set |
 
+- These are start-time checks: `spawn` resolves the path again on every call, and parent directories are not checked, so a later swap by a process running as the user is not caught (the same-user class of §3; review 2 N-2).
 - A name that is set and fails its check refuses the start (exit 78, one closed line: `git_path_refused`, `gh_path_refused`, `scratch_refused`), before any port is served. The line names no path.
 - With git: `createNodeExec(new Set([gitPath]), platform)` and `git: { exec, gitPath, hooksOff: "/dev/null", scratchParent, baseEnv }` to `createPtyService`; `baseEnv` is the entry's environment without the three names (PTY-5 drops `AXIS_*` from every child anyway).
 - Windows: the names are not read; no exec exists there (§1).
