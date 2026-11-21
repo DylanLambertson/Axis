@@ -11,6 +11,7 @@ import { isScriptFile } from "./loaders.mjs";
 import { importSpecifiers, unsafeForms } from "../../scripts/code-oss/stage-ast.mjs";
 import { LOADER_BUILTINS } from "../../scripts/code-oss/stage-scan.mjs";
 import { listenerBuiltinRefusal, webHostEdgeRefusal } from "../../scripts/code-oss/web-rules.mjs";
+import { egressBuiltinRefusal } from "../../scripts/code-oss/egress-rules.mjs";
 
 const packagesDir = fileURLToPath(new URL("../../packages/", import.meta.url));
 
@@ -156,7 +157,7 @@ export function violation(pkg, spec, file = null, pkgDir = null) {
     const only = LOADER_BUILTINS.get(spec.replace(/\/.*$/, ""));
     if (only !== undefined && !only.has(pkg) && inSrc) return "this built-in loads or runs code without a module specifier";
     const staged = file === null || pkgDir === null ? null : `${pkg}/${relative(pkgDir, file).split(sep).join("/").slice(4)}`;
-    return inSrc ? listenerBuiltinRefusal(spec, staged) : null;
+    return inSrc ? (listenerBuiltinRefusal(spec, staged) ?? egressBuiltinRefusal(spec, staged)) : null;
   }
   return "only relative, zod, @axis/* and node:* imports are allowed";
 }
