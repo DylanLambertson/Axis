@@ -99,6 +99,27 @@ test("drift fails closed: before every call, and after a write", async () => {
   await assert.rejects(g2.run(w, { command: "add", paths: ["a"] }), (e: unknown) => e instanceof BrokerError && e.code === "E_CONFLICT" && e.details["executed"] === true);
 });
 
+test("the drift check gets the call's signal; a check stopped by a cancel ends the call cancelled, never git-drift", async () => {
+  const f = fake();
+  let seen: AbortSignal | undefined;
+  const git = createBrokerGit({
+    runner: f.runner,
+    parentEnv: { PATH: "/bin" },
+    assertNoDrift: (_w, signal) => {
+      seen = signal;
+      return new Promise<void>((_res, rej) => signal?.addEventListener("abort", () => rej(new Error("stopped")), { once: true }));
+    },
+    platform: "linux",
+  });
+  const ac = new AbortController();
+  const pending = git.run(w, { command: "status" }, ac.signal);
+  assert.equal(seen, ac.signal, "the check was handed the call's own signal");
+  const before = f.calls.length;
+  ac.abort();
+  await assert.rejects(pending, (e: unknown) => e instanceof BrokerError && e.code === "E_CANCELLED" && e.details["executed"] === false);
+  assert.equal(f.calls.length, before, "git did not run");
+});
+
 const gitOk = ((): boolean => {
   const r = spawnSync("git", ["--version"], { encoding: "utf8" });
   const m = /git version (\d+)\.(\d+)/.exec(r.stdout ?? "");

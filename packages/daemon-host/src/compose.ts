@@ -16,7 +16,7 @@ import { selectPtyGitRunner } from "./bindings/pty-git.js";
 import { createCommitPreparer, createReviewService } from "./bindings/review.js";
 import { createTempIndexProvider } from "./bindings/review-tempindex.js";
 import { createRunsBinding, type RunsBinding } from "./bindings/runs.js";
-import { createRunRepositoryGuard, type RunSnapshotterFactory } from "./bindings/snapshot.js";
+import { composerGuardDeps, createRunRepositoryGuard, type RunSnapshotterFactory } from "./bindings/snapshot.js";
 import { createWorktreesBinding, type WorktreesBinding } from "./bindings/worktrees.js";
 import { composerWriteLock, createActiveRunForwarder, createAuditSeal, createRunsClock, isPty, refuseComposition, settleComposer, daemonAuditSink, handleProjectsRegister, recordingRegistrar, registryOf, type ComposerOptions } from "./compose-parts.js";
 import { hostCommandLimits, type CommandLimits } from "./bindings/agent-command.js";
@@ -256,7 +256,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
           // Composer writes take the project mutex Axis git operations take (policies 3.3, 6.1), queued like any caller.
           writeLock: composerWriteLock(parts.journal, worktrees.mutex),
           // WT-2 broker side (C3): one baseline per composer run, held by run and apart from the CLI runs' snapshotter.
-          commandGuard: createRunRepositoryGuard({ gitPath: parts.gitPath, env: ports.env, projectRoot }),
+          commandGuard: createRunRepositoryGuard(composerGuardDeps({ gitPath: parts.gitPath, env: ports.env, projectRoot }, config.limits)),
           gitPath: parts.gitPath, // git_status and git_diff (C3 slice 2): the broker's git on the host's one git
           commandLimits: commandBounds,
         });

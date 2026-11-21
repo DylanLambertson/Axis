@@ -21,7 +21,7 @@ export const approvalsOf = (c: ComposerRig, runId: string): Approval[] => allEve
 export const toolsOf = (c: ComposerRig, runId: string): Tool[] => allEvents(c, runId).filter((e): e is Tool => e.type === "tool");
 
 /** A recording WT-2 guard (port `RunRepositoryGuard`): `verdict` decides each check, `failBaseline` refuses the baseline. */
-export function fakeGuard(o: { verdict?: () => boolean | "throw"; failBaseline?: boolean } = {}) {
+export function fakeGuard(o: { verdict?: () => boolean | "throw" | "unjudged"; failBaseline?: boolean } = {}) {
   const calls: string[] = [];
   return {
     calls,
@@ -33,7 +33,7 @@ export function fakeGuard(o: { verdict?: () => boolean | "throw"; failBaseline?:
       calls.push(`check:${runId}`);
       const v = o.verdict?.() ?? false;
       if (v === "throw") throw new Error("cannot judge");
-      return { drift: v };
+      return v === "unjudged" ? { drift: true, unjudged: true } : { drift: v };
     },
     release: (runId: string) => void calls.push(`release:${runId}`),
   };

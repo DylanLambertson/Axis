@@ -79,7 +79,7 @@ export interface BrokerDeps {
   readonly redactor?: Redactor;
   /** Needed only for git tools. */
   readonly gitRunner?: GitRunner;
-  readonly assertNoDrift?: (w: WorktreeRef) => Promise<void>;
+  readonly assertNoDrift?: (w: WorktreeRef, signal?: AbortSignal) => Promise<void>;
   readonly clock?: Clock;
   readonly platform?: NodeJS.Platform;
   readonly policy?: PolicyOptions;

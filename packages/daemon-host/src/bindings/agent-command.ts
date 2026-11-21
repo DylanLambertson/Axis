@@ -25,7 +25,8 @@ import { ComposerRunHalt, type ComposerToolSpec, type RunRepositoryGuard } from 
  *   decoded, redacted, escaped and cut, inside an untrusted-labelled block.
  * - **WT-2, broker side.** One GIT-SNAP-1 baseline per run (hooks, common dir config, worktree link), taken before its first
  *   command and never replaced; the repository is compared with it around every later command, before every model turn and
- *   at the run's end (`RunWt2`). Any change, or a check that cannot be judged, halts the whole run (`GIT_DRIFT`): a planted
+ *   at the run's end (`RunWt2`). Any change, or a check that cannot be judged, halts the whole run (`GIT_DRIFT`; a check
+ *   whose take stopped at a bound and saw no addition or modification: `GIT_DRIFT_UNJUDGED`, C7-F2): a planted
  *   hook never reaches a later git operation of the run, even when it lands between two commands. A baseline that cannot be
  *   taken refuses the call with nothing started.
  */
@@ -160,37 +161,54 @@ export interface RunGuardDeps {
  */
 export class RunWt2 {
   #based = false;
-  #halted = false;
+  #halt: "GIT_DRIFT" | "GIT_DRIFT_UNJUDGED" | undefined;
   constructor(private readonly d: RunGuardDeps) {}
 
   get halted(): boolean {
-    return this.#halted;
+    return this.#halt !== undefined;
   }
 
-  /** Clean, or halt: anything but a clean verdict (drift, no baseline, a snapshot that cannot be taken or judged) is drift. */
-  async #check(): Promise<boolean> {
-    const drift = await this.d.guard.check(this.d.runId).then((r) => r.drift !== false, () => true);
-    if (drift) this.#halted = true;
-    return !drift;
+  /** The closed reason the run halts with: a change seen, or a check that could not finish and saw no addition or modification (C7-F2). */
+  get haltReason(): "GIT_DRIFT" | "GIT_DRIFT_UNJUDGED" {
+    return this.#halt ?? "GIT_DRIFT";
+  }
+
+  /**
+   * Clean, or halt: anything but a clean verdict (drift, no baseline, a snapshot that cannot be taken or judged) is drift.
+   * Only a check whose take stopped at a bound and saw no addition or modification is `GIT_DRIFT_UNJUDGED`; a check that throws is `GIT_DRIFT`.
+   */
+  async #check(signal: AbortSignal): Promise<boolean> {
+    let r: { readonly drift: boolean; readonly unjudged?: boolean };
+    try {
+      r = await this.d.guard.check(this.d.runId, signal);
+    } catch (e) {
+      // A take stopped by the run's own cancel (review c7-f2 r1 SF-2): not clean and not a halt; the abort propagates, so
+      // nothing runs after it and the run ends CANCELLED rather than reporting the user's cancel as a change.
+      if (signal.aborted) throw e;
+      r = { drift: true, unjudged: false };
+    }
+    if (r.drift === false) return true;
+    this.#halt ??= r.unjudged === true ? "GIT_DRIFT_UNJUDGED" : "GIT_DRIFT";
+    return false;
   }
 
   /** Before a command, under the lock: the baseline the first time (nothing starts without one), a check after that. */
-  async beforeCommand(): Promise<void> {
+  async beforeCommand(signal: AbortSignal): Promise<void> {
     if (!this.#based) {
       try {
-        await this.d.guard.baseline({ runId: this.d.runId, workspaceId: this.d.workspaceId, worktree: { workTree: this.d.worktree.workTree, gitDir: this.d.worktree.gitDir } });
+        await this.d.guard.baseline({ runId: this.d.runId, workspaceId: this.d.workspaceId, worktree: { workTree: this.d.worktree.workTree, gitDir: this.d.worktree.gitDir } }, signal);
       } catch {
         throw new BrokerError("E_UNAVAILABLE", "git-drift", "the repository could not be checked before the command");
       }
       this.#based = true;
       return;
     }
-    if (!(await this.#check())) throw new BrokerError("E_UNAVAILABLE", "git-drift", "the repository changed since the run's first command");
+    if (!(await this.#check(signal))) throw new BrokerError("E_UNAVAILABLE", "git-drift", "the repository changed since the run's first command");
   }
 
   /** After a command, under the lock; also when it was refused or failed: the check decides, never the command's outcome. */
-  async afterCommand(): Promise<void> {
-    await this.#check();
+  async afterCommand(signal: AbortSignal): Promise<void> {
+    await this.#check(signal);
   }
 
   /**
@@ -198,16 +216,16 @@ export class RunWt2 {
    * command took one. A read never takes or replaces the baseline (C3 slice 2), so it cannot absorb a change either.
    */
   async beforeRead(signal: AbortSignal): Promise<void> {
-    if (this.#halted) throw new BrokerError("E_UNAVAILABLE", "git-drift", "the run is halted");
+    if (this.halted) throw new BrokerError("E_UNAVAILABLE", "git-drift", "the run is halted");
     if (!this.#based) return;
-    if (!(await this.d.writeLock(this.d.workspaceId, () => this.#check(), signal))) throw new BrokerError("E_UNAVAILABLE", "git-drift", "the repository changed since the run's first command");
+    if (!(await this.d.writeLock(this.d.workspaceId, () => this.#check(signal), signal))) throw new BrokerError("E_UNAVAILABLE", "git-drift", "the repository changed since the run's first command");
   }
 
   /** Before a model turn and at the run's end: nothing to compare until a command ran. Throws `ComposerRunHalt` on drift. */
   async turn(signal: AbortSignal): Promise<void> {
-    if (this.#halted) throw new ComposerRunHalt("GIT_DRIFT");
+    if (this.halted) throw new ComposerRunHalt(this.haltReason);
     if (!this.#based) return;
-    if (!(await this.d.writeLock(this.d.workspaceId, () => this.#check(), signal))) throw new ComposerRunHalt("GIT_DRIFT");
+    if (!(await this.d.writeLock(this.d.workspaceId, () => this.#check(signal), signal))) throw new ComposerRunHalt(this.haltReason);
   }
 
   close(): void {
@@ -224,12 +242,12 @@ export function commandTool(d: { readonly wt2: RunWt2; readonly workspaceId: str
     argv: (a) => a.argv,
     run: (ctx, a) =>
       d.writeLock(d.workspaceId, async () => {
-        await d.wt2.beforeCommand();
+        await d.wt2.beforeCommand(ctx.signal);
         try {
           const rec = await ctx.run({ command: a.argv[0] as string, args: a.argv.slice(1), ...(a.cwd === undefined ? {} : { cwd: a.cwd }), timeoutMs: d.limits.timeoutMs, maxOutputBytes: d.limits.maxOutputBytes });
           return formatCommandResult(rec, d.redact, d.limits);
         } finally {
-          await d.wt2.afterCommand();
+          await d.wt2.afterCommand(ctx.signal);
         }
       }, ctx.signal),
   };
