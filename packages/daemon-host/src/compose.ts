@@ -6,7 +6,6 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { AxisError, withTransaction, type InstanceLock } from "@axis/audit";
 import { Daemon, EventHub, MemoryIdempotencyStore, type ElectronPortLike, type ShutdownOptions } from "@axis/daemon";
 import type { GitRunner } from "@axis/git-ops";
-import type { MockProviderOptions, RunBudgetLimits } from "@axis/providers";
 import { EVENTS_CONTRACT, EVENTS_VERSION, PROJECTS_CONTRACT, PROJECTS_VERSION, PROVIDERS_CONTRACT, PROVIDERS_VERSION, APPROVALS_CONTRACT, APPROVALS_VERSION, REVIEW_CONTRACT, REVIEW_VERSION, WORKTREES_CONTRACT, WORKTREES_VERSION } from "@axis/protocol";
 import { createSecretScanner, type ScanMode } from "@axis/secret-scan";
 import { anchorPreflight } from "./anchor/preflight.js";
@@ -17,9 +16,10 @@ import { selectPtyGitRunner } from "./bindings/pty-git.js";
 import { createCommitPreparer, createReviewService } from "./bindings/review.js";
 import { createTempIndexProvider } from "./bindings/review-tempindex.js";
 import { createRunsBinding, type RunsBinding } from "./bindings/runs.js";
-import { createRunRepositoryGuard, type RunSnapshotterFactory } from "./bindings/snapshot.js";
+import { composerGuardDeps, createRunRepositoryGuard, type RunSnapshotterFactory } from "./bindings/snapshot.js";
 import { createWorktreesBinding, type WorktreesBinding } from "./bindings/worktrees.js";
-import { composerWriteLock, createActiveRunForwarder, createAuditSeal, createRunsClock, settleComposer, daemonAuditSink, handleProjectsRegister, recordingRegistrar, registryOf } from "./compose-parts.js";
+import { composerWriteLock, createActiveRunForwarder, createAuditSeal, createRunsClock, isPty, refuseComposition, settleComposer, daemonAuditSink, handleProjectsRegister, recordingRegistrar, registryOf, type ComposerOptions } from "./compose-parts.js";
+import { hostCommandLimits, type CommandLimits } from "./bindings/agent-command.js";
 import type { HostConfig } from "./config.js";
 import { createAttestationVerifier } from "./control/attestation.js";
 import type { ControlClient } from "./control/client.js";
@@ -31,7 +31,6 @@ import { createChallengeAuditSink } from "./gate/audit-sink.js";
 import { createRunTrustMinter } from "./gate/run-trust.js";
 import { createWorktreesApprovals, type WorktreesApprovals } from "./gate/worktrees-confirm.js";
 import { createComposerService, type ComposerService } from "./composer/service.js";
-import type { ToolCaps } from "./composer/loop.js";
 import { createApprovalsHandlers } from "./handlers/approvals.js";
 import { createHandlerRegistrar, registerAuditHandlers, type HandlerRegistrar } from "./handlers/anchor-guard.js";
 import { registerCliRunsHandlers } from "./handlers/cli-runs.js";
@@ -42,7 +41,7 @@ import { loadPushedBases, savePushedBases } from "./storage/pushed-bases-file.js
 import { registerGitHandlers } from "./handlers/git.js";
 import { createProjectsHandlers } from "./handlers/projects.js";
 import { registerMessagesHandlers } from "./handlers/messages.js";
-import { createMessagingBinding, type MessagingBinding } from "./messages/binding.js";
+import { createMessagingBinding, hostMessagingDeps, type MessagingBinding } from "./messages/binding.js";
 import { createProvidersHandlers } from "./handlers/providers.js";
 import { createReviewHandlers } from "./handlers/review.js";
 import { createReviewAuditSink } from "./handlers/review-audit.js";
@@ -119,17 +118,11 @@ export interface ComposeOptions {
    */
   readonly observeSealedWriters?: (writers: { readonly challenge: { append(e: never): unknown }; readonly composer: { append(e: never): unknown } }) => void;
   /** TEST ONLY: sees whether the composer binding was given the WT-2 guard (review c3 r1 N-6). */
-  readonly observeAgent?: (agent: { readonly commands: boolean }) => void;
+  readonly observeAgent?: (agent: { readonly commands: boolean; readonly gitReads: boolean; readonly commandLimits: CommandLimits }) => void;
   /** How long shutdown waits for composer runs to record their last rows before the audit writers are sealed (default 1000). */
   readonly composerSettleMs?: number;
-  /** Composer runs (`axis.runs/1`, docs/design/composer-runtime.md): the mock provider's script and the per-run budget. */
-  readonly composer?: {
-    readonly mock?: MockProviderOptions;
-    readonly budget?: RunBudgetLimits;
-    /** Per-workspace budget across composer runs (C10); default `DEFAULT_WORKSPACE_BUDGET`. */
-    readonly workspaceBudget?: RunBudgetLimits;
-    readonly maxTurns?: number;
-    readonly toolCaps?: Partial<ToolCaps>;
+  /** Composer runs (`axis.runs/1`, docs/design/composer-runtime.md); see `ComposerOptions`. */
+  readonly composer?: ComposerOptions & {
     /** The Anthropic connection over the vault (C6); absent, only the mock is served. Always Node's own `fetch` and the default wire caps. */
     readonly anthropic?: Pick<AnthropicConnectionOptions, "connectionId" | "backend" | "pricing">;
   };
@@ -145,19 +138,16 @@ export interface ComposedHost {
   readonly finished: Promise<void>;
 }
 
-function refuse(reason: string): never {
-  throw new AxisError("E_INVALID_ARGUMENT", "The host composition is incomplete", { reason });
-}
-
-const isPty = (p: unknown): p is PtyPort => typeof (p as { spawn?: unknown } | null)?.spawn === "function";
-
 export function composeDaemonHost(options: ComposeOptions): ComposedHost {
-  if (!isPty(options.pty)) refuse("pty_required");
+  if (!isPty(options.pty)) refuseComposition("pty_required");
   // One source for the pty git context: the strict mapping over the pty process's `exec`, or (no `exec`) the caller's runner.
   const chosenPtyGit = selectPtyGitRunner(options.pty, options.ptyGitRunner, options.config.platform);
-  if (typeof chosenPtyGit === "string") refuse(chosenPtyGit);
+  if (typeof chosenPtyGit === "string") refuseComposition(chosenPtyGit);
   const ptyGitRunnerFor: (gitPath: string) => GitRunner = chosenPtyGit;
-  if (typeof options.snapshotter !== "function") refuse("snapshotter_required");
+  if (typeof options.snapshotter !== "function") refuseComposition("snapshotter_required");
+  // Lower-only (C3): read field by field before anything is built; a bad override refuses the composition.
+  const commandBounds = hostCommandLimits(options.composer?.commandLimits);
+  if (typeof commandBounds === "string") refuseComposition(commandBounds);
   const { config, control, ports } = options;
   const pty = options.pty;
   const snapshotterFactory = options.snapshotter;
@@ -205,7 +195,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
           return ws === undefined ? undefined : parts.journal.getProject(ws.projectId)?.path;
         };
         const snapshotter = snapshotterFactory({ gitPath: parts.gitPath, env: ports.env, projectRoot });
-        if (typeof snapshotter?.before !== "function" || typeof snapshotter?.after !== "function") refuse("snapshotter_required");
+        if (typeof snapshotter?.before !== "function" || typeof snapshotter?.after !== "function") refuseComposition("snapshotter_required");
         const forwarder = createActiveRunForwarder();
         // Both writers are guarded by the seal (review r1 S1); removing either guard fails compose-composer.test.ts.
         const challengeWriter = { append: (e: Parameters<typeof parts.audit.append>[0]) => (auditSeal.guard(), parts.audit.append(e), parts.anchors.noteWrite(), undefined) };
@@ -251,7 +241,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
         // Composer runs: the broker's audit rows mark the anchor batch dirty like every other writer.
         const providers = createProvidersBinding({ redactor: ports.redactor, audit: composerWriter, ...productionConnection(options.composer?.anthropic) });
         // axis.messages/1 (PV-M3): service, settings and delivery into runs; its rows go through the sealed composer writer.
-        const messaging = createMessagingBinding({ journal: parts.journal, audit: composerWriter, random: { bytes: (n) => randomBytes(n) }, monotonic: () => ports.clock.monotonic(), scan: (text) => scanner.scan(text, { part: "message" }), runLive: (id) => parts.journal.getRun(id)?.state === "RUNNING" });
+        const messaging = createMessagingBinding(hostMessagingDeps({ journal: parts.journal, audit: composerWriter, monotonic: () => ports.clock.monotonic(), scan: (text) => scanner.scan(text, { part: "message" }), logger }));
         const agent = createAgentBinding({
           locator: worktrees.locator,
           repositoryRoots: projectPaths,
@@ -266,9 +256,11 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
           // Composer writes take the project mutex Axis git operations take (policies 3.3, 6.1), queued like any caller.
           writeLock: composerWriteLock(parts.journal, worktrees.mutex),
           // WT-2 broker side (C3): one baseline per composer run, held by run and apart from the CLI runs' snapshotter.
-          commandGuard: createRunRepositoryGuard({ gitPath: parts.gitPath, env: ports.env, projectRoot }),
+          commandGuard: createRunRepositoryGuard(composerGuardDeps({ gitPath: parts.gitPath, env: ports.env, projectRoot }, config.limits)),
+          gitPath: parts.gitPath, // git_status and git_diff (C3 slice 2): the broker's git on the host's one git
+          commandLimits: commandBounds,
         });
-        options.observeAgent?.({ commands: agent.commands });
+        options.observeAgent?.({ commands: agent.commands, gitReads: agent.gitReads, commandLimits: agent.commandLimits });
         const composer = createComposerService({
           journal: parts.journal,
           engine: agent,

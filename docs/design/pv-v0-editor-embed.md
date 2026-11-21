@@ -76,9 +76,10 @@ Upstream binds many commands with `when` undefined (or a `when` that holds in an
 
 Desktop result:
 
-- **1,040 default keybindings** and **92 extension keybindings** give **152 candidates**.
-- Probe verdicts: 69 read the active editor, 11 delegate, 66 read other services, 3 read none, 1 core command is registered only at runtime (Tasks: Build), and 2 are extensions' own commands.
-- The web main gives 985 keybindings, 141 candidates and one extra command (New Terminal).
+- **1,040 default keybindings** and **92 extension keybindings** give **165 candidates**.
+- Each `when` is evaluated in eight states of the hidden IDE, and a keybinding is a candidate when it holds in any of them (review r3 N2): `base` (one group, a text editor, nothing dirty), `screenReader` (`accessibilityModeEnabled`), `diff` (the hidden editor is a text diff), `groups` (several editor groups), `sideBySide`, `dirty`, `debugging` (a stopped session) and `panels` (side bar and panel visible). The side editor's own keys (focus, language, read-only) stay fixed. 13 candidates hold only outside `base`; the TSV lists the states of each row.
+- Probe verdicts: 75 read the active editor, 11 delegate, 73 read other services, 3 read none, 1 core command is registered only at runtime (Tasks: Build), and 2 are extensions' own commands.
+- The web main gives 985 keybindings, 154 candidates and one extra command (New Terminal).
 
 All candidates and their policy actions are in `scan-2c33b50.tsv`.
 
@@ -88,7 +89,7 @@ All candidates and their policy actions are in `scan-2c33b50.tsv`.
 - the debug, run and task launchers resolve `${file}` and save-before-start through the configuration resolver and editor service;
 - Reveal in OS reads the active editor in a desktop-only contribution.
 
-So **the probe proves only the direct reads**. Every candidate, whatever its verdict, is therefore classified **by hand** in the policy, including the 66 "other services" rows, and `--check` fails on any unclassified candidate, not only on flagged ones. Extensions' own commands (2 at the pin) are accepted as a class: they run in the extension host, whose `activeTextEditor` follows text focus (`mainThreadDocumentsAndEditors.ts:205-223`). The claim is exactly this: **every keybinding the desktop and web workbench mains and the built-in extensions register at the pin is classified.** Residuals are listed below.
+So **the probe proves only the direct reads**. Every candidate, whatever its verdict, is therefore classified **by hand** in the policy, including the 73 "other services" rows, and `--check` fails on any unclassified candidate, not only on flagged ones. Extensions' own commands (2 at the pin) are accepted as a class: they run in the extension host, whose `activeTextEditor` follows text focus (`mainThreadDocumentsAndEditors.ts:205-223`). The claim is exactly this: **every keybinding that the desktop and web workbench mains and the built-in extensions register at the pin, and whose `when` holds with focus in the side editor in one of the eight states, is classified.** A state outside the matrix, and keybindings of user-installed extensions, are residuals (below).
 
 **Classification.** `AXIS_SIDE_PANEL_COMMAND_POLICY` (`contrib/sidePanel/common/axisSidePanelEditor.ts`) classifies each command:
 
@@ -97,11 +98,11 @@ So **the probe proves only the direct reads**. Every candidate, whatever its ver
 | `save`, `saveWithoutFormatting` | Save, Save without Formatting |
 | `close` | Close Editor |
 | `saveAllToo` | Save All (no Linux key; menus and macOS) |
-| `openInIde` | Save As, Revert File, Change Language Mode, Detect Language, Compare with Saved or Clipboard, the three copy-path commands, Reveal in OS, the six Split commands, Copy Editor to New Window, next/previous comment thread, Toggle Breakpoint, inline breakpoint, the six testing at-cursor / current-file commands, and the commands that find the active editor through another service: **Go to Line, Go to Symbol in Editor, Start Debugging, Run without Debugging, Tasks: Build**. After the hand-off the file is the active editor, so `${file}` resolves to it and save-before-start covers it. |
-| `block` | the tab, group and editor-index commands: Close Group, Close Saved, **Close All, Close All Groups**, Keep, Pin, Next/Previous Editor (in group), Last Editor, Open Editor at Index 1–9, focus first to eighth group, move group, move editor, toggle group layout, **the recently-used-editor pickers (`Ctrl+Tab`)** |
-| `accept` | 60 commands of the desktop scan, audited by hand. They act on the *focused* code editor: Undo, Redo, Select All, clipboard, tab focus, overtype, the accessibility help and views. Or they act on no editor: windows, views, panels, zoom, themes, the run-all and re-run test commands, New Terminal. Or they open something, which is an explicit user open that switches to IDE view (D-5): Quick Open, Open File, Open Recent, Reopen Closed Editor, Navigate to Last Edit, New File. The upstream F6 commands are replaced by Axis's. Find and Replace in Files seed their query from the hidden editor's selection, which is harmless. |
+| `openInIde` | Save As, Revert File, Change Language Mode, Detect Language, Compare with Saved or Clipboard, the three copy-path commands, Reveal in OS, the six Split commands, Copy Editor to New Window, next/previous comment thread, Toggle Breakpoint, Open New External Terminal (`Ctrl+Shift+C`: it opens at the editor history's last workspace root or file folder, which is the hidden editor's worktree; review r3 N6), inline breakpoint, the six testing at-cursor / current-file commands, and the commands that find the active editor through another service: **Go to Line, Go to Symbol in Editor, Start Debugging, Run without Debugging, Restart Debugging, Tasks: Build** (Restart saves before it starts again and may resolve `${file}` again; review r4 N5). After the hand-off the file is the active editor, so `${file}` resolves to it and save-before-start covers it. |
+| `block` | the tab, group and editor-index commands: Close Group, Close Saved, **Close All, Close All Groups**, Keep, Pin, Next/Previous Editor (in group), Last Editor, Open Editor at Index 1–9, focus first to eighth group, move group, move editor, toggle group layout, **the recently-used-editor pickers (`Ctrl+Tab`)**; and, found by the state matrix, **next/previous commenting range** (`Ctrl+K Ctrl+Alt+Down/Up` in screen-reader mode, which move the hidden editor's cursor), **next/previous change of a compare editor** (`Alt+F5`, `Shift+Alt+F5`, which navigate a hidden diff), Split and Join Editor in Group, and Toggle Maximize Group |
+| `accept` | 64 commands of the desktop scan, audited by hand. They act on the *focused* code editor: Undo, Redo, Select All, clipboard, tab focus, overtype, the accessibility help and views. Or they act on no editor: windows, views, panels, zoom, themes, the run-all and re-run test commands, New Terminal, and the debug session controls (Continue, Step Over, Step Into, Stop). Announce Cursor Position reads the focused code editor. Or they open something, which is an explicit user open that switches to IDE view (D-5): Quick Open, Open File, Open Recent, Reopen Closed Editor, Navigate to Last Edit, New File. The upstream F6 commands are replaced by Axis's. Find and Replace in Files seed their query from the hidden editor's selection, which is harmless. |
 
-**Guards.** `registerAxisSidePanelEditorCommands()` re-registers every non-`accept` command under its own id. The latest registration wins (`commands.ts:109`), and disposing it restores the original. The guard runs the policy action when the focused code editor is a side-panel editor and the command got no explicit target; otherwise it runs the original. A target counts as explicit only if it is a URI or an editor context (`resource`, `groupId`, `editorIndex`), as a tab or Explorer menu passes it. `args: {}` from a `keybindings.json` entry is not explicit (review r2 N2, tested). Guarding the **command** instead of its keys covers, by construction:
+**Guards.** `registerAxisSidePanelEditorCommands()` re-registers every non-`accept` command under its own id. The latest registration wins (`commands.ts:109`), and disposing it restores the original and the registry's own `registerCommand`. The install is shared and counted: the registry is one per JavaScript context, which auxiliary windows share, so a second call returns a handle on the same guards, and only the last handle disposed removes them, in any order (review r4 N2, tested). `guarded` compares the registered guard commands themselves, because the registry replaces the handler of a command whose metadata declares `args` with a validator (review r4 N1, tested with Change Language Mode). The guard runs the policy action when the focused code editor is a side-panel editor and the command got no explicit target; otherwise it runs the original. A target counts as explicit only if it is a URI or an editor context (`resource`, `groupId`, `editorIndex`), as a tab or Explorer menu passes it. `args: {}` from a `keybindings.json` entry is not explicit (review r2 N2, tested). Guarding the **command** instead of its keys covers, by construction:
 
 - every key and chord;
 - the macOS and Windows keymaps (`Ctrl+F4`, `Cmd+Alt+S`);
@@ -114,7 +115,10 @@ The harness runs each guarded key both ways: without the guards the upstream com
 **Residuals.**
 
 - **New upstream commands.** A command added by a later upstream release is unguarded until classified. `scan-keys.mjs --check` fails on it; a removed policy entry was tested to make the check fail.
-- **Later registrations of a guarded id (review r2 N1).** An extension can register the same id through `MainThreadCommands`, and a core command such as Tasks: Build registers at runtime. Either would sit on top of the guard. The guards listen to `CommandsRegistry.onDidRegisterCommand` and wrap any policy id again, with the new handler as the original. The harness tests a re-registered Save and a late Tasks: Build, and a mutant without the listener is killed.
+- **Later registrations of a guarded id (review r2 N1, r3 N1, r3 N3).** An extension can register the same id through `MainThreadCommands`, and a core command such as Tasks: Build registers at runtime. Either would sit on top of the guard. While the registration lives, `CommandsRegistry.registerCommand` is wrapped: a policy id gets a guard over it at once, and the disposable returned for that registration also removes its guard. So when the extension deactivates or the extension host restarts, Save in the IDE editor reaches the handler below again instead of a removed one. Guards are registered through the unwrapped method, so a guard is never guarded again, and each later registration adds exactly one layer. The harness tests a re-registered Save and a late Tasks: Build, one layer each, the disposal of the late Save (IDE editor reaches upstream, side editor still guarded), and the restored method; mutants for each are killed.
+- **A registration that existed before the guards and is disposed later.** The guard over it keeps calling it, because the registry has no removal event. Policy ids are core commands registered when their module loads and are never disposed, and the guards are installed before extensions activate, so an extension's registration of a policy id is always a later one. §8 item 3 checks at runtime that every guarded id still resolves.
+- **States outside the scan matrix.** A `when` that holds only in a state the matrix does not model is not scanned. The matrix covers the workbench-global state that the hidden IDE and user modes can be in; a new context key that gates a key-bound command reaching the hidden editor needs a new state.
+- **User-installed extensions' keybindings.** They are not scanned. A keybinding from such an extension to a **guarded** id is covered by the command guard. A keybinding to an **unclassified** core command is not, and only the runtime classification of PV-V2 (§8 item 3) could cover it.
 - **Contributions instantiated only at runtime**, such as a keybinding added by a workbench contribution after start-up or an extension's own command, are outside the scan. The first case is covered by the runtime check (§8 item 3), the second by the extension-host class.
 - **Extension commands.** An extension's own command that reads `activeTextEditor` sees the side-panel editor, which is correct (§9).
 - **Command palette.** When a command runs from the palette, the palette has focus, so the original runs on the IDE editor. PV-V2 decides whether the guard should also use "last focused editor was the side panel and Agent view is shown". It is on the go/no-go list.
@@ -206,7 +210,9 @@ The pinned behaviour, by reading:
 3. **Undo across a reload.** It is a user edit. It is accepted and documented: the buffer turns dirty, and saving it is a user write that drift tracking sees.
 4. **Auto-save and the conflict setting.** Under the default `askUser`, auto-save never overwrites a conflict: the write fails as a conflict and the notice of item 1 shows. **Axis's stance:**
    - the product default stays `askUser`;
-   - when the effective value for a side-panel file is `overwriteFileOnDisk`, from any scope, the side panel **refuses to save**: explicit Save and Save All are refused with a message naming the setting (prototype: the host's `saveConflictsDetected`, tested), and the Code tab shows a persistent warning;
+   - when the effective value for a side-panel file is `overwriteFileOnDisk`, from any scope, the side panel **refuses to save**: explicit Save and Save All are both refused with a message naming the setting (prototype: the host's `saveConflictsDetected` and `blocked`, both tested; review r3 N4), and the Code tab shows a persistent warning;
+   - **the host reads the setting per file and per call.** The setting is language-overridable, so the real host uses `IFilesConfigurationService.preventSaveConflicts(resource, languageId)` (or `getValue({ resource, overrideIdentifier })`), never a plain `getValue`. It reads it on every save, which the synchronous interface forces, and it treats a throw or an unknown value as "not detected", which refuses (the prototype does, and a host that throws is tested for Save and Save All; review r4 N4);
+   - a file that is open in the IDE too is still saved by upstream's own Save All, with `ETAG_DISABLED`. That is upstream behaviour for IDE editors and outside the side panel's refusal; the warning covers it;
    - auto-save cannot be refused per editor, so the warning also says auto-save may overwrite newer files. PV-V2 decides whether Axis turns `files.autoSave` off for that file's worktree while the setting is in effect.
 
    Locking the setting outright would need an upstream patch, so it is not proposed.
@@ -218,17 +224,20 @@ Items 1, 2 and 4, an atomic-rename write by the broker against a dirty buffer, a
 
 `prototypes/pv-v0-editor-embed/` (README there) runs the real upstream editor compiled at the pin, with upstream standalone services in place of the workbench ones, plus the transpiled overlay, in headless Chromium.
 
-- **Browser checks:** `run.mjs` has **51 check sites** in sections `model`, `route` (run twice), `keys`, `approve`, `trust`, `conflict` and `race`. That makes **61 executed checks**, and all pass. `check()` compares the observed value with the expected one and prints both.
-- **Mutation run:** `mutate.mjs` applies **32 mutants** to the prototype. They cover:
+- **Browser checks:** `run.mjs` has **59 check sites** in sections `model`, `route` (run twice), `keys`, `approve`, `trust`, `conflict` and `race`. That makes **69 executed checks**, and all pass. `check()` compares the observed value with the expected one and prints both.
+- **Mutation run:** `mutate.mjs` applies **46 mutants** to the prototype. They cover:
   - the reviewers' survivors: reopen keeps the model, reopen keeps the options, close does not cancel an open;
   - the guard's focus and explicit-target rules, and the policy classes (including the launchers that find the active editor through another service);
-  - Save All, re-guarding after a later registration, and the `overwriteFileOnDisk` refusal for Save and Save All;
+  - Save All (including on a read-only file), re-guarding after a later registration, removing that guard when the registration is disposed, one layer per registration, restoring `registerCommand`, and the `overwriteFileOnDisk` refusal for Save and Save All, each reported;
+  - the hand-off's selection, the native console's classification and the state-matrix rows;
   - the blur report, the label cleaning and five approval-gate clauses;
   - the races and reference releases, read-only save, and focus return.
 
-  **All 32 are killed** by the unit tests, the browser checks or both, and the unmutated baseline is clean.
-- **Key scan:** `scan-keys.mjs --check` produces the inventory (§3.2) and passes for the desktop main (139 commands) and the web main (132 commands).
-- **Unit tests:** `contrib/sidePanel/test/common/axisSidePanelEditor.test.ts` has 14 tests (mocha, as for every overlay test). They cover option precedence and immutability, trust, label cleaning, the command policy, the scan gate, the guard decision, explicit targets, the approval chord per platform, and every clause of the approval gate.
+  - the shared install (one layer, counted handles, double dispose), `guarded` with argument metadata, a throwing setting read and Debug Restart's class;
+
+  **All 46 are killed** by the unit tests, the browser checks or both, and the unmutated baseline is clean.
+- **Key scan:** `scan-keys.mjs --check` produces the inventory (§3.2) and passes for the desktop main (152 commands) and the web main (145 commands). It also pins the eight states and the counts at the pin (desktop 165 candidates and 152 commands, web 154 and 145): removing the `screenReader` state was tested to fail it, which the classification check alone would not (review r4 N3).
+- **Unit tests:** `contrib/sidePanel/test/common/axisSidePanelEditor.test.ts` has 15 tests (mocha, as for every overlay test). They cover option precedence and immutability, trust, label cleaning, the command policy, the scan gate, the guard decision, explicit targets, the approval chord per platform, and every clause of the approval gate.
 
 ## 7. Fallback: the split IDE half
 
@@ -250,7 +259,7 @@ Each item must pass before PV-V2 is reviewed. "Fallback" means: if it fails and 
 |---|---|---|
 | 1 | The browser checks of §6, re-run against the real workbench services (`TextFileEditorModel`, the workbench keybinding service on the window) | fallback |
 | 2 | Reference counts: closing the side editor with a dirty buffer keeps the working copy, and the window-close prompt and hot exit cover it | fallback |
-| 3 | `scan-keys.mjs --check` passes on the shipped pin for the desktop and web mains; at runtime every guarded id resolves to its guard (`guarded` equals the policy's non-`accept` ids that exist, and `missing` lists only commands never registered) | fix the policy |
+| 3 | `scan-keys.mjs --check` passes on the shipped pin for the desktop and web mains; at runtime every guarded id resolves to its guard (`guarded` equals the policy's non-`accept` ids that exist, and `missing` lists only commands never registered), also after an extension that registered a policy id deactivates and the extension host restarts; the scan's state matrix is reviewed against the context keys of the shipped pin | fix the policy |
 | 4 | The §5.2 conflict policy: notice, Compare, Discard, overwrite producing the drift notice, and auto-save (`afterDelay`) never overwriting a conflict under `askUser`. Includes a broker atomic-rename write against a dirty side-panel buffer, and the `overwriteFileOnDisk` refusal and warning set from user and from workspace settings | fix in overlay; else fallback |
 | 5 | The command palette and menus invoking a guarded command with the side editor last focused (§3.2 residual) | fix in overlay |
 | 6 | Status-bar entries in Agent view | fix in overlay |
@@ -277,7 +286,7 @@ Each item must pass before PV-V2 is reviewed. "Fallback" means: if it fails and 
 | Id | Finding | Where handled |
 |---|---|---|
 | F1 | Shared model, undo and dirty state work with no copying | §2, §5.1 |
-| F2 | 79 of the 139 key-bound candidate commands (plus Save All) at the pin act, or may act, on the hidden IDE editor: save, close, tabs, groups, copy path, compare, Save All, Go to Line or Symbol, the debug, run and task launchers … | command guards and a hand-classified policy, §3.2 |
+| F2 | 88 of the 152 key-bound candidate commands (plus Save All) at the pin act, or may act, on the hidden IDE editor: save, close, tabs, groups, copy path, compare, Save All, Go to Line or Symbol, the debug, run and task launchers … | command guards and a hand-classified policy, §3.2 |
 | F3 | A raw widget ignores `editor.*` settings, and `onFocusChange` auto-save ignores it | option merge and blur report, §5.1 |
 | F4 | Escape is free only when no editor widget wants it | leave weight −1, §3.3 |
 | F5 | Tab is trapped (upstream); F6 is unclaimed by the editor | §9 |

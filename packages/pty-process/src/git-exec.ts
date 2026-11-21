@@ -62,7 +62,7 @@ const O_NOFOLLOW = constants.O_NOFOLLOW ?? 0;
 const HOOK_MAX_BYTES = 64 * 1024 * 1024;
 
 /** Removes a directory tree without following links; a directory a hook made read-only is opened up first. */
-function removeTree(p: string): void {
+export function removeTree(p: string): void {
   try {
     rmSync(p, { recursive: true, force: true });
     return;

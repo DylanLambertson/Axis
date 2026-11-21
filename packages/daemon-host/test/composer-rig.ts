@@ -79,6 +79,8 @@ export interface ComposerRigOptions {
   readonly extraTools?: AgentBindingDeps["extraTools"];
   /** The binding's test taint source (IAC-T): which successful calls taint the run. */
   readonly taintSources?: AgentBindingDeps["taintSources"];
+  /** C3 slice 2: the host's git (offers `git_status` and `git_diff`). */
+  readonly gitPath?: string;
   /** Messages delivered into runs at turn boundaries (PV-M3 slice 2). */
   readonly deliveries?: AgentBindingDeps["deliveries"];
 }
@@ -110,39 +112,52 @@ export async function composerRig(options: ComposerRigOptions): Promise<Composer
   });
   const redactor = new Redactor();
   const sink = { append: (e: Parameters<AuditLog["append"]>[0]) => (options.failAudit?.(e.action) === true ? ((): never => { throw new Error("disk full"); })() : audit.append(e)) };
-  const providers = createProvidersBinding({ redactor, audit: sink, ...(options.anthropic === undefined ? {} : { anthropic: options.anthropic }) });
-  const agent = createAgentBinding({
-    // Every workspace of the journal shares the one directory (enough for the service's limits; containment uses its id).
-    locator: { locate: async (id) => (journal.getWorkspace(id) !== undefined ? { workTree: root, gitDir } : Promise.reject(new Error("unknown"))) },
-    repositoryRoots: () => [],
-    audit: sink,
-    redactor,
-    providers: providers.providers,
-    env: () => options.env?.({ root, outside, base }) ?? { PATH: "/usr/bin:/bin", HOME: base },
-    approvals: r.approvals.runs,
-    taintStore: journal.composer,
-    now: () => r.clock.now(),
-    mock: { ...options.mock, replies, respond: () => ({ kind: "text", text: "no more replies" }) },
-    ...(options.previewScanner === undefined ? {} : { previewScanner: options.previewScanner }),
-    writeLock: (_workspaceId, fn, signal) => mutex.exclusive("p", fn, signal),
-    ...(options.wrapFs === undefined ? {} : { wrapFs: options.wrapFs({ root, outside }) }),
-    ...(options.commandGuard === undefined ? {} : { commandGuard: options.commandGuard }),
-    ...(options.commandLimits === undefined ? {} : { commandLimits: options.commandLimits }),
-    ...(options.taintSources === undefined ? {} : { taintSources: options.taintSources }),
-    ...(options.extraTools === undefined ? {} : { extraTools: options.extraTools }),
-    ...(options.deliveries === undefined ? {} : { deliveries: options.deliveries }),
-  });
-  const service = createComposerService({
-    redactor,
-    journal,
-    engine: agent,
-    now: () => r.clock.now(),
-    ...(options.budget === undefined ? {} : { budget: options.budget }),
-    ...(options.workspaceBudget === undefined ? {} : { workspaceBudget: options.workspaceBudget }),
-    ...(options.storedActivity === undefined ? {} : { storedActivity: options.storedActivity }),
-    ...(options.maxActive === undefined ? {} : { maxActive: options.maxActive }),
-    ...(options.toolCaps === undefined ? {} : { toolCaps: options.toolCaps }),
-  });
+  // A binding or service that refuses its options (a bound out of range, say) throws here, before the caller can register
+  // `cleanup`: close what is already open, or the rig's server keeps the test file alive after the test has failed.
+  let providers: ProvidersBinding;
+  let agent: AgentBinding;
+  let service: ComposerService;
+  try {
+    providers = createProvidersBinding({ redactor, audit: sink, ...(options.anthropic === undefined ? {} : { anthropic: options.anthropic }) });
+    agent = createAgentBinding({
+      // Every workspace of the journal shares the one directory (enough for the service's limits; containment uses its id).
+      locator: { locate: async (id) => (journal.getWorkspace(id) !== undefined ? { workTree: root, gitDir } : Promise.reject(new Error("unknown"))) },
+      repositoryRoots: () => [],
+      audit: sink,
+      redactor,
+      providers: providers.providers,
+      env: () => options.env?.({ root, outside, base }) ?? { PATH: "/usr/bin:/bin", HOME: base },
+      approvals: r.approvals.runs,
+      taintStore: journal.composer,
+      now: () => r.clock.now(),
+      mock: { ...options.mock, replies, respond: () => ({ kind: "text", text: "no more replies" }) },
+      ...(options.previewScanner === undefined ? {} : { previewScanner: options.previewScanner }),
+      writeLock: (_workspaceId, fn, signal) => mutex.exclusive("p", fn, signal),
+      ...(options.wrapFs === undefined ? {} : { wrapFs: options.wrapFs({ root, outside }) }),
+      ...(options.commandGuard === undefined ? {} : { commandGuard: options.commandGuard }),
+      ...(options.commandLimits === undefined ? {} : { commandLimits: options.commandLimits }),
+      ...(options.taintSources === undefined ? {} : { taintSources: options.taintSources }),
+      ...(options.extraTools === undefined ? {} : { extraTools: options.extraTools }),
+      ...(options.gitPath === undefined ? {} : { gitPath: options.gitPath }),
+      ...(options.deliveries === undefined ? {} : { deliveries: options.deliveries }),
+    });
+    service = createComposerService({
+      redactor,
+      journal,
+      engine: agent,
+      now: () => r.clock.now(),
+      ...(options.budget === undefined ? {} : { budget: options.budget }),
+      ...(options.workspaceBudget === undefined ? {} : { workspaceBudget: options.workspaceBudget }),
+      ...(options.storedActivity === undefined ? {} : { storedActivity: options.storedActivity }),
+      ...(options.maxActive === undefined ? {} : { maxActive: options.maxActive }),
+      ...(options.toolCaps === undefined ? {} : { toolCaps: options.toolCaps }),
+    });
+  } catch (e) {
+    await r.cleanup();
+    db.close();
+    rmSync(base, { recursive: true, force: true });
+    throw e;
+  }
   return {
     r,
     user,

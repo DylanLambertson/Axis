@@ -1,6 +1,6 @@
 # Pull request list through the user's `gh` (ticket PV-D2)
 
-- **Status:** design, revision 3 (after design review 1, SF-1 to SF-9 and N1 to N8, and design review 2, NEW-1 to NEW-5 and N-a to N-f). Nothing is built. Phase 1c, dashboard item "Pull requests" (`product-vision-v2.md` §4 row 7, the data-source table, O-5).
+- **Status:** design, revision 3 (after design review 1, SF-1 to SF-9 and N1 to N8, and design review 2, NEW-1 to NEW-5 and N-a to N-f). Slice 1a (daemon side) is built (PR #527); slice 1b (pty process side) is built on `feat/pv-d2-s1b`; nothing is wired into a shipped build until slice 2. Phase 1c, dashboard item "Pull requests" (`product-vision-v2.md` §4 row 7, the data-source table, O-5).
 - **Scope:** `axis.forge/1.pullRequests { projectId, trigger }` returns **your** open pull requests: those opened by the account `gh` is logged in as, on this project's confirmed GitHub repository, whose head is an `axis/*` branch of that same repository. **This is a product choice (review 2 NEW-4).** A teammate's, a bot's or a second identity's pull request on an `axis/` branch is not listed, and nothing signals that it exists. The section is titled "Your pull requests", and its copy says so. "Your" means `gh`'s **active account** (`--author=@me`, review 3 N4): a pull request opened under another identity (a browser session behind the compare URL, a different push account) is not listed either. For each row: number, title, branch, author, draft, checks state, review state. Read-only. The dashboard UI is PV-D1.
 - **Constraints carried in:**
   - ADR 0004 decision 9 and D-9 stand: Axis stores, reads, logs and forwards **no forge credential**, and never writes the user's keyring.
@@ -99,6 +99,17 @@ The daemon maps the reply to the §7 states with the table in §7.
 - **Windows (review SF-7).** Windows has no process group, and `taskkill /T` would be a third program given by value, which the allow-list refuses. Until PV-X1 provides a job-object kill on Windows, through the native pty binding or a small addon, `forge-list` (and the git exec path) reply `unsupported_platform` on Windows. That gives the state `unsupported_platform` (§7).
 
 **Egress lint (#499, #506).** With PV-X1 the forge path adds no spawn site: it reaches `gh` through `createNodeExec`, whose file is the one listed entry. Without PV-X1 nothing in production can start `gh`.
+
+**Slice 1b as built** (`pty-process/src/forge-list.ts`, `forge-env.ts`; the service routes every `t: "forge-list"` there before its own union):
+- The request is parsed with the shared `forgeListRequestSchema`. Outside it with a usable `req`: `bad_request`, nothing starts. With no usable `req`: no answer (the daemon's bound covers it), never an answer in another family.
+- A service without a forge configuration (no `ghPath`) answers `spawn_missing`. Windows answers `unsupported_platform` before any directory is created.
+- The pre-exec check refuses any entry in the call directory other than `cwd/`, `config/` and `data/`, and a link in place of any of them. `XDG_CONFIG_HOME` is `config/` (as `GH_CONFIG_DIR`); `XDG_STATE_HOME` and `XDG_CACHE_HOME` are `state/` and `cache/`, created by `gh` if at all, removed with the call.
+- The version step: a run that exits non-zero or whose output was cut is `version_unknown`; its timeout is `timeout`.
+- The capacity of 2 counts a call from acceptance to reply, the version step included. A timed-out call frees its slot when it answers; its directory is removed when the exec settles. So the cap bounds calls in flight, not live `gh` processes: a process that left the group (`setsid`) and holds the pipes keeps its exec (and directory) unsettled while the slot is reused. That is the same-user residual of `pty-exec-node.md` §3; the daemon's 15 s floor bounds the rate (review S1b N-3).
+- A control close also drops the shared version run, so the next channel's first call starts its own (review S1b N-2).
+- The pre-exec race seam (`afterPrepare`) is not part of `ForgeListConfig`: only a test passes it, to `createForgeList` directly, which the package index does not export (review S1b N-4).
+- A cut stdout is not sent (`stdout: ""`, `truncated: true`): the daemon answers `output_too_large` whatever it holds.
+- A call killed by a control close answers nothing (the channel is gone, and a later channel never gets a stale `req`).
 
 ## 2. Which repository: derived by the daemon, confirmed by the user
 
@@ -247,7 +258,7 @@ The request carries `trigger`: `"view"` or `"user"`.
 
 - `state` is one of the closed values below.
 - No free text from `gh` (stderr or stdout) reaches the reply, the log or the audit.
-- Stderr is classified **in the pty process** against a fixed marker set and then discarded. The marker set is versioned with the gate, and the first match wins.
+- Stderr is classified **in the pty process** against a fixed marker set and then discarded. The marker set is versioned with the gate (`FORGE_STDERR_MARKERS_VERSION`, now 2). Before matching, every case-insensitive occurrence of the request's `owner/repo`, then of the longer and the shorter name, that does not continue a name to its left is removed whatever follows it (a name under 3 characters only as a whole token, so an owner `o` keeps `org` intact: review S1b-2 N-2), and leaves a gap character no marker holds (review S1b SF-1, D-1: a repository named `python-keyring` once read as a keyring failure and set the global latch; a sentence's closing `.` after a dotted name once kept it). Every marker is a phrase of `gh`'s or go-keyring's own messages and holds a space, which no vetted name can (D-2). The first match wins, in this order: `repo_missing` (a locked keyring stops `gh` before any API call, so a not-found text is the API's); then, on `gh`'s error exits only (1, or 4 for authentication), keyring markers (`gh` reports a locked keyring as not logged in too) and `auth_missing` (exit 4, or exit 1 with a line that starts `HTTP 401`; a line starts after LF only, never after a lone CR, U+2028, U+2029 or NEL: review S1b-2 N-1); then `network`, else `other`. Exit 0 is `none` whatever stderr holds. Removing a name only ever loses a marker: a repository named like a marker's last word (`keyring`) hides a genuine keyring text, which then degrades to `gh_failed` for that project, never to the global latch. The exact texts and the line shape of `HTTP 401` are unverified until the slice 2 gate.
 
 | State | When |
 |---|---|
@@ -381,7 +392,8 @@ The `ExecStartError` codes and the per-stream truncation flags are the PV-X1a ex
 **Slice 2:**
 - the pin in the journal and the composition wiring;
 - the hostile-`gh` suite rerun through the real `ExecFn` (from PV-X1), including the grandchild kill case;
-- the §4 verification gate with a real `gh`, recorded per platform.
+- the §4 verification gate with a real `gh`, recorded per platform;
+- the stderr texts of the default `--author=@me` path, which uses the search API: a missing or inaccessible repository there may answer "The listed users and repositories cannot be searched…" rather than "Could not resolve to a Repository", and would then be `gh_failed`, not `repo_not_found`. Markers v1 are unverified against a real `gh` until this gate (review S1b N-6).
 
 **Slice 3:** the dashboard section, with PV-D1 owning the frame. Its acceptance:
 - the pinned repository always shown;

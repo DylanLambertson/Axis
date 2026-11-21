@@ -99,6 +99,69 @@ test("drift fails closed: before every call, and after a write", async () => {
   await assert.rejects(g2.run(w, { command: "add", paths: ["a"] }), (e: unknown) => e instanceof BrokerError && e.code === "E_CONFLICT" && e.details["executed"] === true);
 });
 
+test("the drift check gets the call's signal; a check stopped by a cancel ends the call cancelled, never git-drift", async () => {
+  const f = fake();
+  let seen: AbortSignal | undefined;
+  const git = createBrokerGit({
+    runner: f.runner,
+    parentEnv: { PATH: "/bin" },
+    assertNoDrift: (_w, signal) => {
+      seen = signal;
+      return new Promise<void>((_res, rej) => signal?.addEventListener("abort", () => rej(new Error("stopped")), { once: true }));
+    },
+    platform: "linux",
+  });
+  const ac = new AbortController();
+  const pending = git.run(w, { command: "status" }, ac.signal);
+  assert.equal(seen, ac.signal, "the check was handed the call's own signal");
+  const before = f.calls.length;
+  ac.abort();
+  await assert.rejects(pending, (e: unknown) => e instanceof BrokerError && e.code === "E_CANCELLED" && e.details["executed"] === false);
+  assert.equal(f.calls.length, before, "git did not run");
+});
+
+test("the check after a write gets the call's signal; stopped by a cancel it is E_CANCELLED with executed:true (git ran)", async () => {
+  const f = fake();
+  const ac = new AbortController();
+  const seen: Array<AbortSignal | undefined> = [];
+  const git = createBrokerGit({
+    runner: f.runner,
+    parentEnv: { PATH: "/bin" },
+    assertNoDrift: (_w, signal) => {
+      seen.push(signal);
+      if (seen.length === 1) return Promise.resolve();
+      // The check after `add` never ends on its own: only the call's signal stops it (without one, fail at once, never hang).
+      if (signal === undefined) return Promise.reject(new Error("no signal"));
+      setImmediate(() => ac.abort());
+      return new Promise<void>((_res, rej) => signal?.addEventListener("abort", () => rej(new Error("stopped")), { once: true }));
+    },
+    platform: "linux",
+  });
+  await assert.rejects(git.run(w, { command: "add", paths: ["a"] }, ac.signal), (e: unknown) => e instanceof BrokerError && e.code === "E_CANCELLED" && e.details["executed"] === true);
+  assert.deepEqual(seen, [ac.signal, ac.signal], "both checks were handed the call's own signal");
+  assert.ok(f.calls.some((c) => c.argv.includes("add")), "git add ran before the check");
+});
+
+test("a drift the check found wins over a cancel that arrived meanwhile: E_CONFLICT git-drift, never E_CANCELLED", async () => {
+  for (const executed of [false, true]) {
+    const f = fake();
+    const ac = new AbortController();
+    let n = 0;
+    const git = createBrokerGit({
+      runner: f.runner,
+      parentEnv: { PATH: "/bin" },
+      assertNoDrift: async () => {
+        if (!executed || ++n === 2) {
+          ac.abort();
+          throw new BrokerError("E_UNAVAILABLE", "git-drift", "the repository changed");
+        }
+      },
+      platform: "linux",
+    });
+    await assert.rejects(git.run(w, { command: "add", paths: ["a"] }, ac.signal), (e: unknown) => e instanceof BrokerError && e.code === "E_CONFLICT" && e.reason === "git-drift" && e.details["executed"] === executed, String(executed));
+  }
+});
+
 const gitOk = ((): boolean => {
   const r = spawnSync("git", ["--version"], { encoding: "utf8" });
   const m = /git version (\d+)\.(\d+)/.exec(r.stdout ?? "");
@@ -140,6 +203,52 @@ test("real git: a planted hook, fsmonitor and external diff driver do not run", 
     // Control: the same repository without the broker's options does run the hook.
     spawnSync("git", ["add", "a.txt"], { cwd: base, env: { PATH: process.env["PATH"] ?? "", HOME: base } });
     spawnSync("git", ["status"], { cwd: base, env: { PATH: process.env["PATH"] ?? "", HOME: base } });
+    assert.equal(existsSync(marker), true, "the fixture is not vacuous");
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("status and diff never walk into a submodule: --ignore-submodules=dirty is fixed, after the subcommand", async () => {
+  const f = fake();
+  const git = createBrokerGit({ runner: f.runner, parentEnv: { PATH: "/bin" }, assertNoDrift: async () => undefined, platform: "linux" });
+  for (const command of ["status", "diff"] as const) {
+    await git.run(w, { command });
+    const a = (f.calls[f.calls.length - 1] as GitRunRequest).argv;
+    assert.ok(a.indexOf("--ignore-submodules=dirty") > a.indexOf(command), command);
+  }
+  assert.equal(refuse(() => checkGitCall({ command: "status", flags: ["--ignore-submodules=none"] }, root, "linux")), "git-flag", "the model cannot undo it");
+});
+
+test("real git: a clean filter defined inside a submodule does not run on status or diff", { skip: !gitOk || !posix }, async () => {
+  const base = realpathSync(mkdtempSync(join(tmpdir(), "axis-git-")));
+  try {
+    const env = { PATH: process.env["PATH"] ?? "", HOME: base, GIT_CONFIG_NOSYSTEM: "1" };
+    const run = (cwd: string, ...args: string[]): void => {
+      const r = spawnSync("git", ["-c", "user.name=F", "-c", "user.email=f@example.invalid", ...args], { cwd, encoding: "utf8", env });
+      assert.equal(r.status, 0, r.stderr);
+    };
+    const sub = join(base, "sub");
+    const marker = join(base, "MARKER");
+    run(base, "init", "-q");
+    run(base, "commit", "-q", "--allow-empty", "-m", "i");
+    mkdirSync(sub);
+    run(sub, "init", "-q");
+    writeFileSync(join(sub, "f"), "a\n");
+    writeFileSync(join(sub, ".gitattributes"), "* filter=evil\n");
+    run(sub, "add", ".");
+    run(sub, "commit", "-q", "-m", "s");
+    appendFileSync(join(sub, ".git", "config"), `[filter "evil"]\n\tclean = touch ${marker}; cat\n`);
+    run(base, "add", "sub");
+    run(base, "commit", "-q", "-m", "add");
+    writeFileSync(join(sub, "f"), "b\n");
+    const git = createBrokerGit({ runner: createNodeRunner({ excludeDirs: () => [base] }), parentEnv: env, assertNoDrift: async () => undefined });
+    const wt = { workTree: base, gitDir: join(base, ".git") };
+    assert.equal((await git.run(wt, { command: "status", flags: ["--porcelain=v1"] })).code, 0);
+    assert.equal((await git.run(wt, { command: "diff" })).code, 0);
+    assert.equal(existsSync(marker), false, "no git ran inside the submodule");
+    // Control: a plain status does run git inside the submodule, and its filter.
+    spawnSync("git", ["status", "--porcelain=v1"], { cwd: base, env });
     assert.equal(existsSync(marker), true, "the fixture is not vacuous");
   } finally {
     rmSync(base, { recursive: true, force: true });
