@@ -1,6 +1,6 @@
 # Exec on Windows with a tree kill (ticket PV-X1w)
 
-- **Status:** design, revision 2 (after design review 1: SF-1 to SF-7, N-1 to N-4). Nothing is built. **Lands after PV-X1a**: `exec-node.ts`, `docs/design/pty-exec-node.md` and the exec contract it extends are on `feat/pv-x1a` until that merges.
+- **Status:** design, revision 3 (after design review 1: SF-1 to SF-7, N-1 to N-4; review 2: SF-A, SF-B, N-1 to N-5). Nothing is built. **Lands after PV-X1a**: `exec-node.ts`, `docs/design/pty-exec-node.md` and the exec contract it extends are on `feat/pv-x1a` until that merges.
 - **Scope:** a kill that ends the whole process tree of one git (or `gh`) run on Windows, for the pty process's exec function and, as a second slice, the daemon's own git runner (§4). Windows CLI terminals need the same property and are not in this ticket (§7).
 - **Evidence key:** **[doc]** is from the Win32 or Node/libuv documentation and was not run here; **[U]** must be verified on Windows before the slice that depends on it. Nothing in this note was run on Windows: this host is Linux, and CI has no Windows job (`ci.yml` runs Ubuntu and macOS; `code-oss-build.yml` is Linux only).
 
@@ -38,7 +38,7 @@ The job is signalled by **handle**, never by id, so the pgid-reuse problem of PV
 | F | An **out-of-process helper EXE**, `axis-exec.exe`. Node spawns it with ordinary pipes; it starts git in a fresh job with exactly those three handles and ends the job when git exits | yes | yes | yes (Node's `kill` is `TerminateProcess` on the helper, which closes the job's last handle) | **Recommended** (§3). |
 
 **Why F over E (review 1 SF-2).**
-- **Stdio stays libuv's.** libuv already creates the child's stdio as overlapped named pipes, so the helper inherits ordinary std handles and passes them on. There is no fd hand-back and no threadpool cost.
+- **Stdio stays libuv's.** libuv creates each child stdio pipe as a named pipe whose **parent** end is overlapped (the child end is synchronous by default, which is fine: only the helper and git read or write it), so the pty process reads it on the event loop with no threadpool thread; the helper passes ordinary std handles on (review 2 N-2).
 - **No native code in the pty process.** The helper is a separate process with a closed argv; a bug in it can corrupt only itself.
 - **No Electron ABI coupling:** a plain Win32 console EXE.
 - **Cost:** the spawned program is the helper, so `exec-node.ts` wraps the argv on Windows (§3). Plus a signed binary to build and ship (§5).
@@ -47,22 +47,27 @@ The job is signalled by **handle**, never by id, so the pgid-reuse problem of PV
 
 **How `exec-node.ts` uses it (Windows only):**
 - **Check, then wrap.** The exact `argv[0]` check against the consumer's program set runs first, unchanged. Then the call becomes `spawn(helperPath, ["--", program, ...args], { windowsHide: true, shell: false, stdio: pipes, env, cwd })`.
-- **`helperPath`** is fixed at construction. It comes from main's hand-over (`AXIS_PTY_EXEC_HELPER`) and is checked like `AXIS_PTY_GIT` (§3.2). It is never taken from a request.
+- **`helperPath`** is fixed at construction. It comes from main's hand-over (`AXIS_PTY_EXEC_HELPER`) and is checked like `AXIS_PTY_GIT` (§3.2). It is never taken from a request. Slice 2 (the daemon runner): main passes the same string in the daemon's `HostConfig` (a new `execHelperPath` beside the git path), which the daemon checks the same way. In both lint entries (`exec-node.ts`, `nodeRunner.ts`) the program spawned by value is the helper; git is data in its argv, and the `SPAWN_FILES` runs text says so in that slice (review 2 N-5).
+- **Two extra pipes (review 2 SF-A, N-5).** `stdio` on Windows is `["pipe", "pipe", "pipe", "pipe", "pipe"]`: fd 3 is the **status** pipe (the helper writes, the pty process reads), fd 4 the **lifeline** (the pty process never writes and never closes it until the run ends). Neither is in git's `HANDLE_LIST`, so git can neither read, write nor imitate them. libuv hands fds 3 and 4 to the child through the CRT's inheritance block; the helper, built with the static CRT, takes them with `_get_osfhandle(3)` and `(4)` [U: spike item 5].
 - **`kill()`** is `cp.kill()`, which on Windows is `TerminateProcess(helper)`. That closes the job's only handle, so `KILL_ON_JOB_CLOSE` ends the tree.
 - **The outcome mapping (SF-3):**
   - normally, `code` is git's exit code (the helper exits with it) and `signal` is `null`;
-  - after `kill()`, `exec-node.ts` reports `code: null, signal: "SIGKILL"`, whatever exit code Windows gave the terminated helper, so callers see one shape on every platform;
-  - a failure of the helper itself (bad argv, no job, the start failed) exits with a reserved code: `125` start failed, `126` not permitted, `127` not found. `exec-node.ts` maps those to `ExecStartError` (`start_failed`, `not_permitted`, `not_found`) only when the helper also wrote its one fixed marker line to stderr. Without the marker, the code is git's own.
+  - after `kill()`, `exec-node.ts` reports `code: null, signal: "SIGKILL"`, **only if `kill()` was called before the helper's `exit` event**; a natural exit that races a later `kill()` keeps its own code (review 2 N-4);
+  - a crash of git surfaces as its NTSTATUS exit code, a 32-bit value (for example `0xC0000005` as `3221225477`), with `signal: null`; the helper passes git's code through unchanged, read with `GetExitCodeProcess` only after the completion port reported the exit, so `STILL_ACTIVE` (259) is never a misread (git exiting with 259 is reported as 259);
+  - **the helper's own outcome is out of band** (review 2 SF-A): it writes exactly one fixed-length record to the status pipe (right after git started, or instead of starting it), then closes the pipe. `AXSO` + `00` means git started; `AXSF` + one code byte means the helper failed before git ran (`01` start failed, `02` not permitted, `03` not found). `exec-node.ts` maps a failure record to `ExecStartError` and otherwise uses the exit code as git's, whatever its value (git's own 125, 126 or 127 included). No record at all (the helper died before writing) is `start_failed`. Nothing on stderr is ever parsed, so text from a repository cannot change the classification, and the stderr cap cannot drop the record.
 
 **What the helper does, in order:**
-1. **Parse its own command line** (`GetCommandLineW`, MSVCRT rules, N-3). It expects exactly `--`, then the program, then the arguments. Anything else is code 125 with no other effect.
+0. **Take fds 3 and 4.** Either missing or not a pipe: exit without a record (`start_failed`).
+1. **Parse its own command line** (`GetCommandLineW`, MSVCRT rules, N-3). It expects exactly `--`, then the program, then the arguments. Anything else is a failure record with no other effect.
 2. **Check the program** (§3.2), positively.
 3. **Create the job:** `CreateJobObjectW(NULL, NULL)`, non-inheritable, with `KILL_ON_JOB_CLOSE` and no `BREAKAWAY_OK` or `SILENT_BREAKAWAY_OK`. Associate a completion port **before** any process exists.
 4. **Start git:**
    - `CreateProcessW(lpApplicationName = program, lpCommandLine = quoted command line, bInheritHandles = TRUE, CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT, env = NULL (the helper's own environment, which is exec-node's copy), cwd = NULL (inherited))`;
-   - with `STARTUPINFOEXW` carrying `PROC_THREAD_ATTRIBUTE_JOB_LIST` (the job) and **`PROC_THREAD_ATTRIBUTE_HANDLE_LIST`** with exactly the three std handles (SF-4), so no other handle the helper holds can reach git, and no handle of a concurrent run can either (each run is its own helper);
-   - on Windows older than 10, refuse (code 125) rather than fall back to suspend-and-assign (§8).
-5. **Wait** on the completion port for git's process to exit.
+   - with `STARTUPINFOEXW` carrying `PROC_THREAD_ATTRIBUTE_JOB_LIST` (the job) and **`PROC_THREAD_ATTRIBUTE_HANDLE_LIST`** with exactly the three std handles (SF-4), so no other handle the helper holds can reach git (the status, lifeline and job handles included), and no handle of a concurrent run can either (each run is its own helper);
+   - `STARTF_USESTDHANDLES` with those three handles (review 2 N-1). Each must be valid, inheritable (libuv's are) and distinct, or `CreateProcessW` fails with `ERROR_INVALID_PARAMETER`; the helper checks first and writes a failure record instead. `exec-node.ts` always passes three pipes, so stdin is never absent;
+   - on Windows older than 10, refuse (a failure record) rather than fall back to suspend-and-assign (§8).
+   - Then write the `AXSO` record and close the status pipe.
+5. **Wait** on the completion port for git's process to exit, and in a second thread read the lifeline: EOF on it means the pty process is gone, so the helper calls `TerminateJobObject` at once. This is the crash backstop, so that safety does not rest only on libuv's job killing the helper [U] (review 2 N-5).
 6. **At git's exit:** `TerminateJobObject(job, 1)` ends what is left of the tree, the same moment POSIX kills the group (SF-3). Then close the handles and exit with git's code.
 
 Node then sees the helper exit, and `done` settles when both pipes close. Every holder of the pipes was in the job and is gone, except a process that escaped through a §1 residual. Such a process keeps `done` pending until the service's timeout, as on POSIX.
@@ -84,8 +89,8 @@ Node then sees the helper exit, and `done` settles when both pipes close. Every 
   - an argument is quoted when it contains a space, a tab or a quote, or is empty;
   - backslashes before a quote are doubled.
 
-  The helper rejects any argument holding a NUL, and a command line over 32,767 UTF-16 units (code 125). `exec-argv.ts` already limits the argument grammar the pty process emits, which narrows the quoting surface. A hop through an MSYS program (ssh, sh) parses again with MSYS rules; git builds those command lines itself, which is git's surface, not Axis's.
-- **The environment** stays `exec-node.ts`'s null-prototype copy. On Windows, names that differ only in case (`Path` and `PATH`) are a `start_failed`, not a silent fold, because Windows keeps one of them unpredictably.
+  The helper rejects any argument holding a NUL, and a command line over 32,767 UTF-16 units (a failure record). `exec-argv.ts` already limits the argument grammar the pty process emits, which narrows the quoting surface. A hop through an MSYS program (ssh, sh) parses again with MSYS rules; git builds those command lines itself, which is git's surface, not Axis's.
+- **The environment** stays `exec-node.ts`'s null-prototype copy. On Windows, names that differ only in case (`Path` and `PATH`) are a `start_failed`, not a silent fold, because Windows keeps one of them unpredictably. libuv adds `SYSTEMROOT` when it is absent and sorts the block (review 2 N-3), so on Windows the rule is "exactly as given, plus `SYSTEMROOT` when the request lacks it"; `exec-node.ts` passes the pty process's own `SYSTEMROOT` explicitly so the block is what the request says, and the prototype-canary test exempts that one name only. The helper passes `env = NULL`, so git sees exactly that block.
 
 ## 4. Today and before PV-X1w lands (SF-1, N-4)
 
@@ -108,7 +113,7 @@ Node then sees the helper exit, and `done` settles when both pipes close. Every 
 ## 5. Supply chain and native-code controls (SF-7)
 
 - **Source and build:**
-  - Axis-owned C, about 300 lines, no third-party code, linking `kernel32` only;
+  - Axis-owned C, about 300 lines, no third-party code, linked with the **static CRT (`/MT`)** so it imports no `ucrtbase`, `vcruntime` or `api-ms-win-crt-*` and needs no redistributable (review 2 SF-B);
   - built in CI with a pinned MSVC toolset and Windows SDK version (named in the build script), `/Brepro` for a deterministic PE, and the build inputs hashed into the release notes.
 - **Signing:**
   - Authenticode-signed with the same key and process as the Windows app;
@@ -119,8 +124,8 @@ Node then sees the helper exit, and `done` settles when both pipes close. Every 
   - a per-user install directory is writable by the user, so a same-user swap of the binary is the accepted same-user residual, as with git itself;
   - a per-machine install removes it.
 - **Binary check in CI** (instead of the egress lint, which sees only `node:child_process`):
-  - the built PE's import table must be a subset of an allow-list (`CreateJobObjectW`, `SetInformationJobObject`, `CreateIoCompletionPort`, `GetQueuedCompletionStatus`, `InitializeProcThreadAttributeList`, `UpdateProcThreadAttribute`, `DeleteProcThreadAttributeList`, `CreateProcessW`, `TerminateJobObject`, `GetExitCodeProcess`, `CloseHandle`, `GetCommandLineW`, `GetStdHandle`, `WriteFile`, `ExitProcess` and the CRT start-up);
-  - it must import no `ws2_32`, `winhttp`, `wininet`, `shell32` or `advapi32`.
+  - **DLL level:** the built PE imports from `kernel32.dll` only. Any other DLL (`ws2_32`, `winhttp`, `wininet`, `shell32`, `advapi32`, `ntdll`, any `api-ms-win-*`, the dynamic CRT) fails the build;
+  - **function level:** the first build's `kernel32` import list (the helper's own calls plus what the static CRT brings, such as heap and exception support) is committed as a reviewed baseline; CI diffs every build against it, and any added function needs a reviewed change to the baseline, never a hand-loosened rule (review 2 SF-B).
   - A failing check fails the build.
 - **Memory safety:**
   - the command-line parser and quoter are one pure function pair, fuzzed in CI (round trip, against `CommandLineToArgvW` and a reference MSVCRT parser) under `/fsanitize=address`;
@@ -132,9 +137,10 @@ Node then sees the helper exit, and `done` settles when both pipes close. Every 
 
 **Spike first (one day):**
 1. `JOB_LIST` when the helper itself is in libuv's or Electron's job (nesting).
-2. libuv's stdio handles passed through `HANDLE_LIST`.
+2. libuv's stdio handles passed through `HANDLE_LIST` with `STARTF_USESTDHANDLES`.
 3. `TerminateProcess` of the helper ending a tree that ignores Ctrl+C and Ctrl+Break.
 4. The completion-port message order (`EXIT_PROCESS` for git before `ACTIVE_PROCESS_ZERO`).
+5. fds 3 and 4 reaching a static-CRT EXE through libuv's inheritance block (`_get_osfhandle`), and EOF on the lifeline when the pty process is terminated.
 
 **Acceptance (on Windows, real helper, real `git.exe` where it matters):**
 - **Tree kill:**
@@ -150,10 +156,12 @@ Node then sees the helper exit, and `done` settles when both pipes close. Every 
   - hostile arguments round-trip through `git rev-parse --sq-quote` (quotes, backslashes before quotes, `%`, `^`, trailing backslash, empty);
   - a NUL and a 32,768-unit command line are refused;
   - `Path` with `PATH` is `start_failed`.
+- **Status channel (review 2 SF-A):** git writing the failure record's bytes to stderr, and git exiting 125, 126 and 127, all keep git's own code and never become `ExecStartError`; a helper killed before its record is `start_failed`; mutant: classify from stderr.
+- **Lifeline:** closing fd 4 from the pty process ends the job; mutant: no lifeline thread.
 - **Crash:** `TerminateProcess` on the pty process ends every run's tree (each helper is in libuv's job with `KILL_ON_JOB_CLOSE`, and each git is in its helper's job) [U].
-- **Reused PV-X1a cases:** exact program, environment exactly as given with a prototype canary, caps per stream, start-failure codes through the marker, stdin ended.
+- **Reused PV-X1a cases:** exact program, environment exactly as given (with `SYSTEMROOT` the one exemption) with a prototype canary, caps per stream, start-failure codes through the status record, stdin ended.
 - **End to end:** the PV-X1a child-process push test on Windows.
-- **Mutants:** breakaway allowed; no `KILL_ON_JOB_CLOSE`; terminate after the pipes instead of at git's exit; `lpApplicationName` NULL; the denylist instead of the positive check; no `HANDLE_LIST`; the marker not required for the reserved codes.
+- **Mutants:** breakaway allowed; no `KILL_ON_JOB_CLOSE`; terminate after the pipes instead of at git's exit; `lpApplicationName` NULL; the denylist instead of the positive check; no `HANDLE_LIST`; the status record ignored.
 
 ## 7. Terminals (not in this ticket)
 
@@ -170,4 +178,4 @@ The ticket that brings Windows terminals decides this, and should reuse the help
 2. The daemon runner's Windows policy before slice 2: the stated kill gap, or refuse daemon-context git (§4). Owner's decision.
 3. Who holds the Authenticode key, and how main verifies the signature (§5).
 4. The minimum Windows version: Windows 10 or Server 2016 (`JOB_LIST`), recommended. Older versions are refused rather than given the suspend-and-assign path.
-5. The exit-code and signal mapping (§3) is fixed here; confirm that callers never relied on a Windows-specific code.
+5. The exit-code and signal mapping (§3) is fixed here, over the 32-bit Windows exit-code domain; confirm that callers never relied on a Windows-specific code.
