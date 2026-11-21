@@ -36,8 +36,9 @@ the proposal below (review c7-f3-design r2 nits):
     (the object scanned with, one `ScanContext`, the version the last complete scan ended under) and calls `rescanIfMoved`
     after `capabilities` and again after the budget, its last `await` before the adapter call: a moved version scans the
     request again under the same budget. Between that check and the adapter call there are only microtasks.
-  - **Residual (review c7-f3-impl r3), not closed here: see C7-F4 below.** In production a key is registered with the host
-    redactor in exactly one place: the providers binding's key read (`daemon-host/src/bindings/providers.ts`, the
+  - **Residual (review c7-f3-impl r3), closed by C7-F4 below.** In production a provider key is registered with the host
+    redactor in exactly one place (the host's attestation key is registered at start, `daemon-host/src/secrets.ts`; it is
+    not a provider key): the providers binding's key read (`daemon-host/src/bindings/providers.ts`, the
     `registerSecret` after the vault read), which the Anthropic adapter calls INSIDE its send (`anthropic/src/adapter.ts`,
     the request function: `await getKey(...)`, then `fetch`), after every guard check. A request whose content holds a key
     the redactor does not know yet is therefore sent with it when that key is first read at the send. That happens when the
@@ -54,18 +55,47 @@ the proposal below (review c7-f3-design r2 nits):
   (`test/provider-redactor-async.test.ts`) with an equivalence test over a corpus of the synchronous cases, instead of
   running every synchronous test twice.
 
-## C7-F4 (follow-up ticket, not built): a key known before any request is built
+## C7-F4: the key is never sent inside its own request body (design delta; built on `fix/key-not-in-own-body`)
 
-Close the residual above so that no request body can carry a stored key that the scan did not know about:
-1. **Register a key when it is stored and at daemon start.** The providers binding registers every connection's key with the
-   host redactor when it is stored or rotated in the vault, and reads and registers each configured connection's key once at
-   daemon start (audited like any key read, DMN-5), before the composer accepts a run. The old key stays registered after a
-   rotation (an echo of it is still redacted).
-2. **And/or an adapter-level check at the send.** The Anthropic adapter (and any later network adapter) runs the request
-   scan again after its key read and before `fetch`, with no `await` between that check and the call: a key registered by
-   that read is then checked against the body it would go out with, and the request is refused `secret_in_request`.
-3. Tests: a rotated key held in a run's history is never sent (real redactor, guard, adapter and a fake fetch: the body that
-   reaches fetch never holds the key); a daemon restart with a key in a run's history refuses the first request.
+Facts (main after #553, which built C7-F3):
+- The daemon never stores or rotates a provider key: storing over the wire is not built (C6 follow-up); the key is put in the OS
+  keyring outside the daemon. A rotation is therefore invisible to the daemon until the next `vault.reveal`.
+- The only provider-key registration is the providers binding's `apiKey` (bindings/providers.ts), called by the Anthropic
+  adapter inside its send: `await getKey(purpose)` then `fetch`, with no await in between (adapter.ts).
+- The host attestation key is registered at start (secrets.ts); it is not a provider key.
+
+Chosen: **B, a send-time check in the adapter; A (register at start) not built.** (The ticket asked for "register at store,
+rotation and start, and/or a check at the send": the daemon has no store or rotation path, so B is what closes it.)
+
+B. The key is never sent inside its own request body.
+1. `createAnthropicAdapter` gains an option `bodyHolds?: (body: string, key: string) => boolean`, called synchronously after
+   `getKey` and before `fetch` (no await between) for every request that has a body. True: the request is refused, nothing
+   sent.
+2. The binding implements it as a substring test, not a redactor scan: the forms `Redactor.registerSecret` adds (raw,
+   JSON-escaped, URL-encoded in either case, hex in either case, base64 and base64url padded or not; a vault key is
+   printable ASCII, so its NFC/NFD forms are itself), each also as it appears inside the JSON body (JSON-escaped once more:
+   a `"` or `\` in a form doubles). One key, plain `includes`, about tens of ms for a 12 MiB body, on every request (no
+   "new key" state to race on). The form list is built by one exported helper beside `Redactor.registerSecret` (or a test
+   pins the two lists equal), so they cannot drift apart. Rationale: the invariant "the body never holds the key used to
+   send it" is checked at the one point the key and the body meet, after the vault read.
+3. The refusal: `ProviderError("secret_in_request")`. Open question for review: `secret_in_request` is GUARD_ONLY (an adapter
+   raising it becomes `internal`). Options: (a) drop it from GUARD_ONLY (an adapter can only use it to refuse; nothing is
+   sent either way) so the run ends `PROVIDER_SECRET_IN_REQUEST`; (b) keep GUARD_ONLY and accept `PROVIDER_INTERNAL` as the
+   run reason. Chosen: (a), with the GUARD_ONLY test updated to say why.
+4. Tests (real redactor, guard, adapter, a fake fetch): the key in the history and new to the process (first read) → the
+   body that reaches fetch never holds it; rotation (old key registered, new key read at the send, new key in the history)
+   → refused, fetch not called; each form; a body without the key is sent unchanged; the check runs after the vault read
+   (a vault that rotates between two requests). Mutants: check removed; check before getKey; one form dropped; refusal
+   answered by sending.
+
+A (not proposed): read and register each connection's key at daemon start. It would let the guard's own scan refuse first,
+but it costs a keyring read (on some desktops a user prompt) at every daemon start for a key that may never be used, needs a
+new vault purpose and audit value, and does not cover a rotation in the keyring after start. B covers start and rotation.
+
+Doc: the residual bullet above now says "provider key" (review c7-f3-impl r4 nit) and points here.
+
+Review plan: Opus review of the branch: the order in adapter.ts (no await between check and fetch), the forms set against
+`Redactor.registerSecret`, the GUARD_ONLY decision, the rotation test with a fake fetch, the mutants above.
 
 ## Problem
 
