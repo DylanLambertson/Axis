@@ -238,6 +238,50 @@ test("the check before a command also gets the command's signal: a cancel stops 
   assert.equal(c.service.get(run.runId).state, "CANCELLED");
 });
 
+test("the check before a git read gets the call's signal: a cancel stops a check that would never end, and the run ends CANCELLED (review r3 SF-1)", async (t) => {
+  const base = fakeGuard();
+  let checks = 0;
+  let stoppedBy = "";
+  const release = new AbortController();
+  const guard = {
+    ...base,
+    // After the command: 1 after it, 2 before the next turn, 3 before the git read, which ends only when a signal aborts.
+    check: async (runId: string, signal?: AbortSignal) =>
+      ++checks < 3
+        ? base.check(runId)
+        : new Promise<never>((_res, rej) => {
+            const stop = (by: string) => () => { stoppedBy ||= by; rej(new Error("stopped")); };
+            signal?.addEventListener("abort", stop("signal"), { once: true });
+            release.signal.addEventListener("abort", stop("release"), { once: true });
+          }),
+  };
+  const read = { kind: "tool_use", name: "git_status", input: {} } as const;
+  const c = await commandRig(t, { replies: [nodeRun("1"), read, { kind: "text", text: "never" }], commandGuard: guard, gitPath: "/nonexistent/git" });
+  const { run } = await c.service.start(START(c.workspaceId), new AbortController().signal);
+  try {
+    await approveCommand(c, run.runId);
+    await eventually(() => checks >= 3);
+    c.service.cancel(run.runId);
+    await eventually(() => !c.service.get(run.runId).live, 500);
+  } finally {
+    release.abort();
+  }
+  assert.equal(stoppedBy, "signal", "the cancel reached the check before the read");
+  await eventually(() => !c.service.get(run.runId).live);
+  assert.deepEqual([c.service.get(run.runId).state, c.service.get(run.runId).reason], ["CANCELLED", "USER_CANCELLED"]);
+});
+
+test("a halted run's git read is refused before any check (defence in depth; invoke also refuses it first, review r3 NIT-3)", async () => {
+  let checks = 0;
+  const guard = { ...fakeGuard(), check: async () => (checks++, { drift: true }) };
+  const wt2 = new RunWt2({ runId: "r", workspaceId: "w", worktree: { workTree: "/w", gitDir: "/g" }, guard, writeLock: (_w, fn) => fn() });
+  await wt2.beforeCommand(new AbortController().signal); // the baseline
+  await wt2.afterCommand(new AbortController().signal); // drift: the run halts
+  assert.deepEqual([wt2.halted, checks], [true, 1]);
+  await assert.rejects(wt2.beforeRead(new AbortController().signal), /halted/);
+  assert.equal(checks, 1, "no check ran for the read");
+});
+
 test("a composer run halts GIT_DRIFT_UNJUDGED on an unjudged check and GIT_DRIFT on a change or a check that throws", async (t) => {
   for (const [verdict, reason] of [["unjudged", "GIT_DRIFT_UNJUDGED"], [true, "GIT_DRIFT"], ["throw", "GIT_DRIFT"]] as const) {
     const guard = fakeGuard({ verdict: () => verdict });

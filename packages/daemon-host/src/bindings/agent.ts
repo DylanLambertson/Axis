@@ -314,7 +314,7 @@ export function createAgentBinding(deps: AgentBindingDeps): AgentBinding {
       // IAC-T: asked for every call after the tier policy; while the run is tainted every call above `read` needs the user.
       policy: { hook: taint },
       ...(deps.extraProtected === undefined ? {} : { extraProtected: deps.extraProtected }),
-      ...(gitRunner === undefined ? {} : { gitRunner, assertNoDrift: async () => wt2?.beforeRead(life.signal) }),
+      ...(gitRunner === undefined ? {} : { gitRunner, assertNoDrift: async (_w, s) => wt2?.beforeRead(s === undefined ? life.signal : AbortSignal.any([life.signal, s])) }),
     });
     broker.register({
       name: "read_file",
