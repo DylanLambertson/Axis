@@ -20,9 +20,8 @@ import {
 import { projectIdSchema, type MethodSpec } from "./worktrees.js";
 
 /**
- * `axis.messages/1` (docs/design/inter-agent-communication.md; docs/design/messages-contract.md). PLANNED: it is in
- * `plannedContracts`, not `contracts`, so no host serves it and no client can call it until PV-M3 registers its handlers
- * and moves it (with its policy rows) in one change.
+ * `axis.messages/1` (docs/design/inter-agent-communication.md; docs/design/messages-contract.md). Served since PV-M3 by
+ * the daemon host's message service (`packages/daemon-host/src/messages/`), to the user's own connection only.
  *
  * A message never grants anything. No request or response field can carry an approval, a challenge, a digest, a grant, a
  * token, a capability, a credential, a command or a path to execute, and no method is above tier 2, so none takes an

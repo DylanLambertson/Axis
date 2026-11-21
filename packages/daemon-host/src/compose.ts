@@ -14,8 +14,7 @@ import { createAgentBinding, type AgentBinding } from "./bindings/agent.js";
 import { createGitOperations, createGitPort } from "./bindings/git.js";
 import { createProvidersBinding, productionConnection, type AnthropicConnectionOptions, type ProvidersBinding } from "./bindings/providers.js";
 import { selectPtyGitRunner } from "./bindings/pty-git.js";
-import { createCommitPreparer, createReviewService } from "./bindings/review.js";
-import { createTempIndexProvider } from "./bindings/review-tempindex.js";
+import { createCommitPreparer, createReviewService } from "./bindings/review.js"; import { createTempIndexProvider } from "./bindings/review-tempindex.js";
 import { createRunsBinding, type RunsBinding } from "./bindings/runs.js";
 import { createRunRepositoryGuard, type RunSnapshotterFactory } from "./bindings/snapshot.js";
 import { createWorktreesBinding, type WorktreesBinding } from "./bindings/worktrees.js";
@@ -37,10 +36,10 @@ import { createHandlerRegistrar, registerAuditHandlers, type HandlerRegistrar } 
 import { registerCliRunsHandlers } from "./handlers/cli-runs.js";
 import { registerComposerRunsHandlers } from "./handlers/composer-runs.js";
 import { PushedBases } from "./handlers/git-common.js";
-import { createSshResolver, unavailableSshResolver, type SshSpawn } from "./bindings/ssh-resolver.js";
-import { loadPushedBases, savePushedBases } from "./storage/pushed-bases-file.js";
+import { createSshResolver, unavailableSshResolver, type SshSpawn } from "./bindings/ssh-resolver.js"; import { loadPushedBases, savePushedBases } from "./storage/pushed-bases-file.js";
 import { registerGitHandlers } from "./handlers/git.js";
 import { createProjectsHandlers } from "./handlers/projects.js";
+import { registerMessagesHandlers } from "./handlers/messages.js"; import { createMessagingBinding } from "./messages/binding.js";
 import { createProvidersHandlers } from "./handlers/providers.js";
 import { createReviewHandlers } from "./handlers/review.js";
 import { createReviewAuditSink } from "./handlers/review-audit.js";
@@ -413,6 +412,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
     registrar.register(PROVIDERS_CONTRACT, PROVIDERS_VERSION, createProvidersHandlers({ providers: () => agent.providers(), cachedModels: (id) => providers.cachedModels(id), credential: (id, signal) => providers.credential(id, signal) }));
     registrar.register(WORKTREES_CONTRACT, WORKTREES_VERSION, createWorktreesHandlers({ service: worktrees.service, needsAttention: worktrees.needsAttention }), { content: worktrees.content });
     registerComposerRunsHandlers(registrar, { service: composer, journal, mutex: worktrees.mutex, needsAttention: worktrees.needsAttention });
+    registerMessagesHandlers(registrar, createMessagingBinding({ journal, audit, noteWrite: () => services.anchors.noteWrite(), random: { bytes: (n) => randomBytes(n) }, monotonic: () => ports.clock.monotonic(), scan: (text) => scanner.scan(text, { part: "message" }) }));
     registerCliRunsHandlers(registrar, { service: runs.service, journal, control, minter: createRunTrustMinter(ports.clock), mutex: worktrees.mutex, needsAttention: worktrees.needsAttention, platform: config.platform });
     registrar.register(
       REVIEW_CONTRACT,

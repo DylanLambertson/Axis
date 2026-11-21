@@ -271,7 +271,12 @@ export const threadSummarySchema = z.strictObject({
 export const MESSAGES_REFUSALS = {
   E_NOT_FOUND: ["not_found"],
   E_INVALID_ARGUMENT: ["too_large", "too_many_recipients"],
-  E_POLICY_DENIED: ["recipient_refused", "cross_project", "paused", "hop_limit", "secret_found", "excerpt_path_refused", "bypass_entry"],
+  /**
+   * Policy refusals of the message service. `E_CONFLICT`, not `E_POLICY_DENIED`: only the daemon's pipeline raises
+   * `E_POLICY_DENIED` (with its own audit row), and a handler that tried would answer `E_INTERNAL` (the review and git
+   * contracts answer their package's policy refusals the same way).
+   */
+  E_CONFLICT: ["recipient_refused", "cross_project", "paused", "hop_limit", "secret_found", "excerpt_path_refused", "bypass_entry"],
   E_BACKPRESSURE: ["rate_limited", "queue_full"],
 } as const;
 export type MessagesRefusalCode = keyof typeof MESSAGES_REFUSALS;
