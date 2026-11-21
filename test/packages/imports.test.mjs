@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isScriptFile } from "./loaders.mjs";
+import { ptyClientVerdict } from "./pty-client-rule.mjs";
 import { importSpecifiers, unsafeForms } from "../../scripts/code-oss/stage-ast.mjs";
 import { LOADER_BUILTINS } from "../../scripts/code-oss/stage-scan.mjs";
 import { listenerBuiltinRefusal, webHostEdgeRefusal } from "../../scripts/code-oss/web-rules.mjs";
@@ -65,6 +66,8 @@ function hostViolation(pkg, spec, file, pkgDir) {
   if (spec === "@axis/daemon-host" || spec.startsWith("@axis/daemon-host/")) {
     return "nothing in packages/* may import the daemon host";
   }
+  const ptyClient = pkg === HOST_PACKAGE ? ptyClientVerdict(spec, file === null || pkgDir === null ? null : relative(pkgDir, file).split(sep).join("/")) : null;
+  if (ptyClient !== null) return ptyClient;
   const files = HOST_FILE_RULES.get(spec);
   const binding = HOST_BINDING_PACKAGES.some((p) => spec === p || spec.startsWith(`${p}/`));
   if (files === undefined && !binding) return null;
