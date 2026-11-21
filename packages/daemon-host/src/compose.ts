@@ -52,7 +52,7 @@ import { createDaemonHost, type DaemonHost, type HostOptions, type HostServices,
 import { installHostLifecycle, type LifecycleHandle, type LifecycleOptions } from "./lifecycle.js";
 import type { Logger } from "./log/logger.js";
 import { checkCoverage } from "./policy/coverage.js";
-import type { PtyExecPort, PtyPort } from "./ports/pty.js";
+import type { PtyExecPort, PtyPort, PtyPushPort } from "./ports/pty.js";
 import type { ChannelMux } from "./transport/mux.js";
 
 /**
@@ -88,8 +88,8 @@ export interface ComposeOptions {
   readonly portSource?: { onPort(handler: (data: unknown, port: ElectronPortLike) => void): () => void };
   readonly ports: Omit<StartupPorts, "control" | "reconcile" | "afterStorage" | "beforeReady">;
   readonly host?: HostOptions;
-  /** The Axis pty process: spawns CLI runs. REQUIRED. With `exec`, the `pty` git context runs over it (`createPtyGitRunner`). */
-  readonly pty: (PtyPort & Partial<PtyExecPort>) | undefined;
+  /** The Axis pty process (CLI runs). REQUIRED. With `exec`, the `pty` git context and push run over it (H9-hooks S4, hooks off). */
+  readonly pty: (PtyPort & Partial<PtyExecPort> & Partial<PtyPushPort>) | undefined;
   /** The `pty` git context runner, REQUIRED exactly when `pty` has no `exec` (test fakes); refused alongside one that has. */
   readonly ptyGitRunner: GitRunner | undefined;
   /** GIT-SNAP-1 around a run: production passes `gitSnapshotRunSnapshotter` (`@axis/git-snapshot`, question 10). REQUIRED. */
@@ -419,7 +419,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
       createReviewHandlers({ review: createReviewService(reviewDeps), journal, runs: runs.service, trees, audit: createReviewAuditSink({ append: (e) => (audit.append(e), services.anchors.noteWrite()) }) }),
     );
     registerGitHandlers(registrar, {
-      ops: createGitOperations({ git, runs: runs.service, resolveSshHost: options.sshSpawn === undefined ? unavailableSshResolver : createSshResolver({ spawn: options.sshSpawn, env: ports.env, excludeDirs: services.excludeDirs, platform: config.platform }) }),
+      ops: createGitOperations({ git, runs: runs.service, pushHooksUnavailable: typeof pty.exec === "function", resolveSshHost: options.sshSpawn === undefined ? unavailableSshResolver : createSshResolver({ spawn: options.sshSpawn, env: ports.env, excludeDirs: services.excludeDirs, platform: config.platform }) }),
       review: createCommitPreparer(reviewDeps),
       trees,
       journal,
