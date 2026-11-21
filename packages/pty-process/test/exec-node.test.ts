@@ -220,8 +220,12 @@ test("review 1 N-4: done waits for both pipes, so output the leader wrote just b
   const set = new Set([NODE]);
   const exec = createNodeExec(set, process.platform);
   const n = 4 * 1024 * 1024;
-  const r = await exec(req(dir, `process.stdout.write(Buffer.alloc(${n},111));process.stderr.write(Buffer.alloc(${n},101),()=>process.exit(0))`, { maxOutput: 8 * 1024 * 1024 })).done;
+  const r = await exec(req(dir, `let w=2;const end=()=>{if(--w===0)process.exit(0)};process.stdout.write(Buffer.alloc(${n},111),end);process.stderr.write(Buffer.alloc(${n},101),end)`, { maxOutput: 8 * 1024 * 1024 })).done;
   assert.deepEqual([r.stdout.length, r.stderr.length, r.truncated], [n, n, false]);
+  // A process outside the group (its own session) writes after the leader exited: done waits for the pipes, so it is there.
+  const late = `${GUARD}setTimeout(()=>process.stdout.write('late'),300)`;
+  const r2 = await exec(req(dir, `require('child_process').spawn(process.execPath,['-e',${JSON.stringify(late)}],{stdio:'inherit',detached:true}).unref();process.stdout.write('early;')`)).done;
+  assert.equal(Buffer.from(r2.stdout).toString(), "early;late");
   set.add("/bin/sh");
   assert.equal(codeOf(() => exec({ argv: ["/bin/sh", "-c", "true"], cwd: dir, env: {}, maxOutput: 10 })), "program_refused");
 });
