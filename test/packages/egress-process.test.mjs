@@ -176,6 +176,12 @@ test("a spawn function is called as (program, [argv], { options }), so the optio
   accepted("git-snapshot/git.ts", `${E}execFile(g, [], { cwd }, function cb() {});`);
   for (const c of ["execFile(g, [], { cwd }, cb);", "execFile(g, [], { cwd }, () => {}, x);", "execFile(g, [], o, () => {});"]) refused("git-snapshot/git.ts", `${E}${c}`, shape);
   refused("audit/lock.ts", 'import { execFileSync } from "node:child_process";\nexecFileSync("ps", [], {}, () => {});', shape);
+  // A fixed program's argv is written out: no spread (the value-program files may spread theirs).
+  for (const argv of ["[...a]", '["-o", ...a]', '["-o", "lstart=", "-p", ...[String(pid)]]']) {
+    refused("audit/lock.ts", `import { execFileSync } from "node:child_process";\nexecFileSync("ps", ${argv}, {});`, shape);
+    refused("worktrees/lock.ts", `import { execFile } from "node:child_process";\nexecFile("/bin/ps", ${argv}, {}, () => {});`, shape);
+  }
+  accepted("audit/lock.ts", 'import { execFileSync } from "node:child_process";\nexecFileSync("ps", ["-o", "lstart=", "-p", String(pid)], { timeout: 2000 });');
   // The injected default is held to the same shape.
   const B = 'import { spawn as nodeSpawn } from "node:child_process";\nconst f = o.spawn ?? nodeSpawn;\n';
   for (const c of ["f(p, a, {});", "f(p, [], o);", "f(p, [], { ...o });"]) refused("broker/runner.ts", `${B}${c}`, shape);
