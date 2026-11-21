@@ -221,13 +221,15 @@ async function loop(input: LoopInput): Promise<LoopEnd> {
     const over = checkCalls(calls, caps, used);
     if (over !== undefined) return { state: "FAILED", reason: over };
     let replyBytes = 0;
-    messages.push({ role: "assistant", content: result.content.map((b) => b as ContentBlock) });
     const results: ContentBlock[] = [];
+    /** Calls that did not complete: their input is withheld from the history (see `withheldTurn`). */
+    const withheld = new Set<string>();
     for (const call of calls) {
       if (signal.aborted) return { state: "CANCELLED", reason: "USER_CANCELLED" };
       if (tools === undefined) {
         emit({ type: "tool", tool: safeName(call.name), outcome: "error", reason: "no_tools" });
-        results.push({ type: "tool_result", toolUseId: call.id, content: "No tools are available in this mode.", isError: true });
+        withheld.add(call.id);
+        results.push({ type: "tool_result", toolUseId: call.id, content: `No tools are available in this mode. ${WITHHELD_NOTE}`, isError: true });
         continue;
       }
       let outcome;
@@ -246,8 +248,10 @@ async function loop(input: LoopInput): Promise<LoopEnd> {
       // The call ran (and is audited), but its result is not kept: the run stops before it holds more than a cap (S4).
       if (replyBytes > caps.resultBytesPerReply) return { state: "FAILED", reason: "TOOL_RESULT_REPLY_LIMIT" };
       if (used.resultBytes > caps.resultBytesPerRun) return { state: "FAILED", reason: "TOOL_RESULT_LIMIT" };
-      results.push({ type: "tool_result", toolUseId: call.id, content: outcome.content, ...(outcome.ok ? {} : { isError: true }) });
+      if (!outcome.ok) withheld.add(call.id);
+      results.push({ type: "tool_result", toolUseId: call.id, content: outcome.ok ? outcome.content : `${outcome.content} ${WITHHELD_NOTE}`, ...(outcome.ok ? {} : { isError: true }) });
     }
+    messages.push({ role: "assistant", content: withheldTurn(result.content.map((b) => b as ContentBlock), withheld) });
     if (signal.aborted) return { state: "CANCELLED", reason: "USER_CANCELLED" };
     // Drift before the next turn: what changed outside the run since this one, as context next to the tool results.
     const notice = await tools?.drift?.(signal).catch(() => undefined);
@@ -257,6 +261,19 @@ async function loop(input: LoopInput): Promise<LoopEnd> {
     messages.push({ role: "user", content: notice === undefined ? results : [...results, { type: "text", text: notice }] });
   }
   return { state: "FAILED", reason: "TURN_LIMIT" };
+}
+
+/** Told to the model with the result of a call that did not complete. */
+export const WITHHELD_NOTE = "The call's input is not kept in this conversation.";
+
+/**
+ * The model's turn as the history keeps it: a call that did not complete (refused, declined, failed, or no tools; a write
+ * whose folder was swapped may still have landed) keeps its id and name but not its input, so content the user or the broker turned down (a write whose content holds a secret, say) is never
+ * sent again with every later request, where the outgoing secret scan would end the run on it. A call that ran keeps its
+ * input: what ran is what the model sees, and the scan still refuses a request that holds a secret.
+ */
+function withheldTurn(content: readonly ContentBlock[], withheld: ReadonlySet<string>): ContentBlock[] {
+  return content.map((b) => (b.type === "tool_use" && withheld.has(b.id) ? { ...b, input: {} } : b));
 }
 
 /** A model-chosen tool name as an event field: the broker's name rule, or a fixed word. */
