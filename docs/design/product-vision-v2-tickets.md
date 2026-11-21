@@ -80,7 +80,7 @@
 - **Before any of this:** the Phase 0 gate (IDE view criterion 1, ADR 0004 validation), Phase 1a gate and Phase 1b gate. v2 tickets do not replace or jump them.
 - **Docs wave (can start now):** PV-R1, then PV-R2, PV-R3 and PV-R7 in parallel; PV-R4 after PV-R3; PV-R5 and PV-R6 can wait for 4a planning.
 - **1c wave 1:** PV-G1 → PV-G2 → PV-G3; PV-V0 in parallel with PV-G1 (no dependency on daemon work).
-- **1c wave 2:** PV-G4, PV-D3, PV-D4 (small), PV-X1 (production pty exec; also gates H9-hooks S4 push in production; PV-X1w, Windows, after it), PV-D2 (after B9 and X1; its slice 2 after PV-X1), PV-V1 and PV-D1 (after E1), PV-V2 (after PV-V0, A5); then PV-V3, then PV-V4.
+- **1c wave 2:** PV-G4, PV-D3, PV-D4 (small), PV-X1 (production pty exec, as X1a packages, X1b main and overlay, X1w Windows after X1a; H9-hooks S4 push in production needs X1a and X1b), PV-D2 (after B9 and X1; its slice 2 after PV-X1), PV-V1 and PV-D1 (after E1), PV-V2 (after PV-V0, A5); then PV-V3, then PV-V4.
 - **2a:** PV-M0 first (PV-M4, PV-T1 and PV-Q1 depend on it); PV-M1 → PV-M2 → PV-M3, then PV-M4 and PV-M5 in parallel, then PV-M6 → PV-M7, PV-M8 last; PV-T1, PV-T2, PV-Q1, PV-Q2 in parallel with messaging (only PV-T2 and PV-K4 cross over).
 - **4a:** PV-K1 → PV-K2 → PV-K3 → PV-K4 → PV-K5; PV-N1 → PV-N2 → PV-N3; PV-N4 last.
 - **Critical path to 1c:** E1 (merged, `116ef22`) and B9, J2 for usage, A5 (unbuilt shell Changes view, needed by PV-V2), then PV-G1 to PV-G3, PV-V0, PV-V2, PV-D1, PV-V4. **Critical path to 4a integrations:** C6 (vault wiring, behind C1 to C5 and C8) before PV-N1. The side-panel editor (PV-V0, PV-V2) carries the most uncertainty.

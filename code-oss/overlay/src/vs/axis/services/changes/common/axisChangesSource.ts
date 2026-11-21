@@ -3,7 +3,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { Emitter } from '../../../../base/common/event.js';
-import { Disposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, DisposableStore, IDisposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { autorun } from '../../../../base/common/observable.js';
 import { extUriBiasedIgnorePathCase, joinPath } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
@@ -12,6 +12,8 @@ import { IAxisChanges, readChanges } from './axisChanges.js';
 
 /**
  * `idle`: no worktree. `notMounted`: the worktree is not in the window's folders.
+ * `unconfirmed`: the repository's state is empty and Git has not confirmed a status for it
+ * (the refresh failed or timed out), so the list cannot say there are no changes.
  * `askFirst`: the user has closed repositories in the git extension, or it is not known yet
  * whether they have (the git extension has not set its key), so this one may be one of them;
  * it is opened only when the user asks (`refresh`), or once the key says none is closed
@@ -20,7 +22,7 @@ import { IAxisChanges, readChanges } from './axisChanges.js';
  * repository rooted at it (off, untrusted, still starting). `ready`: `changes` is the
  * repository's state.
  */
-export type AxisChangesStatus = 'idle' | 'notMounted' | 'askFirst' | 'loading' | 'unavailable' | 'ready';
+export type AxisChangesStatus = 'idle' | 'notMounted' | 'askFirst' | 'loading' | 'unavailable' | 'unconfirmed' | 'ready';
 
 /** What a folder's `.git` entry is, as far as the source needs to know. */
 export type AxisGitEntry = 'file' | 'directory' | 'none';
@@ -61,6 +63,27 @@ export async function isRepositoryRoot(root: URI, entry: (uri: URI) => Promise<A
 	}
 }
 
+/**
+ * The git extension's own Refresh command (the SCM view's refresh button): it runs that
+ * repository's `git status` and resolves when the status is done, after the new state has
+ * reached `IGitService`. It is the only "status has run" signal the workbench offers: the state
+ * `IGitService` hands over when a repository opens can come before the first status (the git
+ * extension sets `HEAD` before it reads the status), and `GitRepositoryState` cannot tell "not
+ * scanned yet" from "clean". It is called with the followed repository's own `rootUri`, the URI
+ * the git extension reported (not the workspace folder, whose letter case can differ on macOS and
+ * Windows), so the extension resolves exactly that repository and never asks the user to pick one.
+ */
+export const GIT_REFRESH_COMMAND = 'git.refresh';
+
+/** How long a confirming refresh may take before the list says Git has not reported yet (never "No changes"). */
+export const STATUS_TIMEOUT_MS = 15_000;
+
+/** Runs `run` once after `ms` milliseconds unless disposed first (`disposableTimeout` in the view; a manual timer in tests). */
+export type AxisTimer = (run: () => void, ms: number) => IDisposable;
+
+/** Asks the git extension to run a status for a repository (`GIT_REFRESH_COMMAND` with its `rootUri`); resolves true when it did. */
+export type AxisStatusConfirmer = (repository: IGitRepository) => Promise<boolean>;
+
 /** What the source needs from `IGitService`: it only reads. */
 export type IAxisGitReader = Pick<IGitService, 'openRepository' | 'repositories'>;
 
@@ -100,22 +123,29 @@ export class AxisChangesSource extends Disposable {
 	private readonly listener = this._register(new MutableDisposable());
 	private readonly tried = new Set<string>();
 	private followed: IGitRepository | undefined;
+	/** Repositories whose state is known to come from a status run: their empty state is believed at once. */
+	private readonly scanned = new WeakSet<IGitRepository>();
 	private generation = 0;
 	private _root: URI | undefined;
 	private _status: AxisChangesStatus = 'idle';
 	private _changes: IAxisChanges = NO_CHANGES;
+	private _waitingForGit = false;
 
 	/**
 	 * @param isMounted whether a folder is inside the window's folders.
 	 * @param isRoot whether a folder is a repository root (`isRepositoryRoot`).
 	 * @param closedRepositories whether the user has closed repositories in the git extension,
 	 * `undefined` while that is not known (`hasClosedRepositories`).
+	 * @param timer schedules the status timeout (`STATUS_TIMEOUT_MS`).
+	 * @param confirmStatus runs a status for a repository through the git extension (`GIT_REFRESH_COMMAND`).
 	 */
 	constructor(
 		private readonly git: IAxisGitReader,
 		private readonly isMounted: (root: URI) => boolean,
 		private readonly isRoot: (root: URI) => Promise<boolean>,
 		private readonly closedRepositories: () => boolean | undefined,
+		private readonly timer: AxisTimer,
+		private readonly confirmStatus: AxisStatusConfirmer,
 	) {
 		super();
 	}
@@ -123,6 +153,8 @@ export class AxisChangesSource extends Disposable {
 	get root(): URI | undefined { return this._root; }
 	get status(): AxisChangesStatus { return this._status; }
 	get changes(): IAxisChanges { return this._changes; }
+	/** In `askFirst`: true while Git has not said yet whether any repository is closed (its key is unset). */
+	get waitingForGit(): boolean { return this._waitingForGit; }
 
 	/**
 	 * Shows a worktree's changes; `undefined` clears. The same root again does nothing, unless the
@@ -165,7 +197,9 @@ export class AxisChangesSource extends Disposable {
 			this.set('unavailable', NO_CHANGES);
 			return;
 		}
-		if (this.closedRepositories() !== false && !retry) {
+		const closed = this.closedRepositories();
+		if (closed !== false && !retry) {
+			this._waitingForGit = closed === undefined;
 			this.set('askFirst', NO_CHANGES);
 			return;
 		}
@@ -201,9 +235,54 @@ export class AxisChangesSource extends Disposable {
 		return this.followed !== undefined && !Array.from(this.git.repositories).includes(this.followed);
 	}
 
+	/**
+	 * Follows a repository's state. A state with changes, or any state event after the first,
+	 * comes from a status run. An empty first state of a repository not known to be scanned is
+	 * confirmed first (`confirm`): until then the list reads, and it says "No changes" only once
+	 * Git has run a status.
+	 */
 	private follow(repository: IGitRepository, root: URI): void {
 		this.followed = repository;
-		this.listener.value = autorun(reader => this.set('ready', readChanges(repository.state.read(reader), root)));
+		const store = new DisposableStore();
+		let first = true;
+		store.add(autorun(reader => {
+			const changes = readChanges(repository.state.read(reader), root);
+			if (first) {
+				first = false;
+				if (!this.scanned.has(repository) && changes.total === 0 && changes.outside === 0) {
+					this.set('loading', changes);
+					this.confirm(repository, root, store);
+					return;
+				}
+			}
+			this.scanned.add(repository);
+			this.set('ready', changes);
+		}));
+		this.listener.value = store;
+	}
+
+	/**
+	 * Runs one status for the root and believes the state after it. A failure or timeout is
+	 * `unconfirmed` (never "No changes"); a Refresh that still answers later settles it then.
+	 * Leaving the worktree disposes `store`, so a late answer for it does nothing.
+	 */
+	private confirm(repository: IGitRepository, root: URI, store: DisposableStore): void {
+		const settle = (ran: boolean) => {
+			if (store.isDisposed) {
+				return;
+			}
+			timeout.dispose();
+			if (ran) {
+				this.scanned.add(repository);
+				if (this._status === 'loading' || this._status === 'unconfirmed') { // a state event may already have shown the changes
+					this.set('ready', readChanges(repository.state.get(), root));
+				}
+			} else if (this._status === 'loading') {
+				this.set('unconfirmed', NO_CHANGES);
+			}
+		};
+		const timeout = store.add(this.timer(() => settle(false), STATUS_TIMEOUT_MS));
+		this.confirmStatus(repository).then(settle, () => settle(false));
 	}
 
 	private set(status: AxisChangesStatus, changes: IAxisChanges): void {
