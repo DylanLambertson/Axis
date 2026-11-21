@@ -92,6 +92,8 @@ test("start: the same key replays the same run and spawns once; a retry after a 
   const retryKey = newKey();
   const failed = await user.call(RUNS, "start", START(other), retryKey);
   assert.equal(failed.error?.code, "E_UNAVAILABLE");
+  assert.equal(failed.error?.details?.["reason"], "snapshot_failed", "the refusal names why, with a fixed reason and no snapshotter text");
+  assert.equal(JSON.stringify(failed).includes("snapshot failed"), false);
   r.snapshots.failBefore = false;
   const retry = await user.call(RUNS, "start", START(other), retryKey);
   assert.equal(retry.ok, false);
