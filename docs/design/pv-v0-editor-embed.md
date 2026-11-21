@@ -6,11 +6,11 @@
 
 ## 1. Recommendation
 
-**Embed.** The widget, the shared model and every keyboard rule below work with no upstream change. The shell block stays at **8 upstream files** (§4), and the prototype is overlay-only. The safety rules are not optional, though. Without them, Save in the side panel saves a different file and Close closes an IDE editor hidden behind Agent view. 69 default-key commands at the pin read the editor part's active editor (§3.2).
+**Embed.** The widget, the shared model and every keyboard rule below work with no upstream change. The shell block stays at **8 upstream files** (§4), and the prototype is overlay-only. The safety rules are not optional, though. Without them, Save in the side panel saves a different file and Close closes an IDE editor hidden behind Agent view. The key scan at the pin finds 139 commands bound to keys that can fire in the side-panel editor. All are classified; 79 of them, plus Save All (which has no Linux key), are guarded because they act, or may act, on the editor part's active editor (§3.2).
 
 PV-V2 builds on the prototype under these conditions:
 
-1. **Command guards.** The command guards and the Escape rule of §3 ship with the editor. The key scan (`scan-keys.mjs --check`) is re-run on every upstream sync and fails on any flagged command the policy does not classify.
+1. **Command guards.** The command guards and the Escape rule of §3 ship with the editor. The key scan (`scan-keys.mjs --check`) is re-run on every upstream sync, for the desktop and the web workbench. It fails on any candidate command the policy does not classify, whatever the probe saw.
 2. **Approval shortcut.** When it is built, it uses the card-scoped DOM gate of §3.4 **and then** the same `AxisApprovalController` answer path as a click: shown digest, guard time, expiry, in flight. It is never a keybinding-service command. The DOM gate alone is not sufficient.
 3. **Settings.** The editor reads the user's `editor.*` settings, then forces the options of §5.
 4. **Conflict policy.** When a dirty side-panel buffer meets a write by a run, the policy in §5.2 applies.
@@ -70,11 +70,25 @@ Upstream binds many commands with `when` undefined (or a `when` that holds in an
 
 **Inventory.** `prototypes/pv-v0-editor-embed/scan-keys.mjs` measures the inventory at the pin:
 
-1. It registers every workbench contribution: the web workbench main is imported, never started.
-2. It keeps each default keybinding that can fire with focus in the side-panel editor (its `when` evaluated against that context, with an IDE editor open but hidden) and whose command is not an editor command.
-3. It runs each handler against recording services.
+1. **Registration.** It registers every workbench contribution: by default the **desktop** workbench main, which Axis ships (with stubbed preload globals), or with `--web` the web main. Neither is started. It also adds the keybindings that the built-in extensions contribute in their `package.json`, which register at extension scan and are therefore not in the workbench main.
+2. **Candidates.** It keeps each keybinding that can fire with focus in the side-panel editor and whose command is not an editor command. The `when` is evaluated against a desktop context with an IDE editor open but hidden, debuggers available and no debug session.
+3. **Probe.** It runs each handler against recording services and notes whether the handler reads the active editor **directly**.
 
-Result: **970 default keybindings, 132 candidates, 61 that read the active editor and 10 that delegate**. The recording services stop a handler that loops on them after 500 reads, and a handler that never returns would be recorded as `hung` and the scan continued in a fresh page; none was. The rows are in `scan-2c33b50.tsv`: 71 rows, 69 distinct commands.
+Desktop result:
+
+- **1,040 default keybindings** and **92 extension keybindings** give **152 candidates**.
+- Probe verdicts: 69 read the active editor, 11 delegate, 66 read other services, 3 read none, 1 core command is registered only at runtime (Tasks: Build), and 2 are extensions' own commands.
+- The web main gives 985 keybindings, 141 candidates and one extra command (New Terminal).
+
+All candidates and their policy actions are in `scan-2c33b50.tsv`.
+
+**What the probe can and cannot prove (review r2 S1).** The probe sees only direct reads by the handler. A handler that hands over to another service, which then finds the active editor, shows up as "other services":
+
+- Go to Line and Go to Symbol open quick access, whose providers read `activeTextEditorControl` (`gotoLineQuickAccess.ts:45-46`, `gotoSymbolQuickAccess.ts:85-95`);
+- the debug, run and task launchers resolve `${file}` and save-before-start through the configuration resolver and editor service;
+- Reveal in OS reads the active editor in a desktop-only contribution.
+
+So **the probe proves only the direct reads**. Every candidate, whatever its verdict, is therefore classified **by hand** in the policy, including the 66 "other services" rows, and `--check` fails on any unclassified candidate, not only on flagged ones. Extensions' own commands (2 at the pin) are accepted as a class: they run in the extension host, whose `activeTextEditor` follows text focus (`mainThreadDocumentsAndEditors.ts:205-223`). The claim is exactly this: **every keybinding the desktop and web workbench mains and the built-in extensions register at the pin is classified.** Residuals are listed below.
 
 **Classification.** `AXIS_SIDE_PANEL_COMMAND_POLICY` (`contrib/sidePanel/common/axisSidePanelEditor.ts`) classifies each command:
 
@@ -83,11 +97,11 @@ Result: **970 default keybindings, 132 candidates, 61 that read the active edito
 | `save`, `saveWithoutFormatting` | Save, Save without Formatting |
 | `close` | Close Editor |
 | `saveAllToo` | Save All (no Linux key; menus and macOS) |
-| `openInIde` | Save As, Revert File, Change Language Mode, Compare with Saved or Clipboard, the three copy-path commands, the six Split commands, Copy Editor to New Window, next/previous comment thread, inline breakpoint, and the six testing at-cursor / current-file commands |
-| `block` | the tab, group and editor-index commands: Close Group, Close Saved, Keep, Pin, Next/Previous Editor (in group), Last Editor, Open Editor at Index 1–9, focus and move group, move editor, toggle group layout |
-| `accept` | Undo, Redo, Select All (they read the *focused* code editor first, which is the side-panel editor); the upstream F6 commands (Axis replaces them); Toggle Breadcrumbs, Open Folder, Find in Files, Select Theme |
+| `openInIde` | Save As, Revert File, Change Language Mode, Detect Language, Compare with Saved or Clipboard, the three copy-path commands, Reveal in OS, the six Split commands, Copy Editor to New Window, next/previous comment thread, Toggle Breakpoint, inline breakpoint, the six testing at-cursor / current-file commands, and the commands that find the active editor through another service: **Go to Line, Go to Symbol in Editor, Start Debugging, Run without Debugging, Tasks: Build**. After the hand-off the file is the active editor, so `${file}` resolves to it and save-before-start covers it. |
+| `block` | the tab, group and editor-index commands: Close Group, Close Saved, **Close All, Close All Groups**, Keep, Pin, Next/Previous Editor (in group), Last Editor, Open Editor at Index 1–9, focus first to eighth group, move group, move editor, toggle group layout, **the recently-used-editor pickers (`Ctrl+Tab`)** |
+| `accept` | 60 commands of the desktop scan, audited by hand. They act on the *focused* code editor: Undo, Redo, Select All, clipboard, tab focus, overtype, the accessibility help and views. Or they act on no editor: windows, views, panels, zoom, themes, the run-all and re-run test commands, New Terminal. Or they open something, which is an explicit user open that switches to IDE view (D-5): Quick Open, Open File, Open Recent, Reopen Closed Editor, Navigate to Last Edit, New File. The upstream F6 commands are replaced by Axis's. Find and Replace in Files seed their query from the hidden editor's selection, which is harmless. |
 
-**Guards.** `registerAxisSidePanelEditorCommands()` re-registers every non-`accept` command under its own id. The latest registration wins (`commands.ts:109`), and disposing it restores the original. The guard runs the policy action when the focused code editor is a side-panel editor and the command got no explicit arguments; otherwise it runs the original. Guarding the **command** instead of its keys covers, by construction:
+**Guards.** `registerAxisSidePanelEditorCommands()` re-registers every non-`accept` command under its own id. The latest registration wins (`commands.ts:109`), and disposing it restores the original. The guard runs the policy action when the focused code editor is a side-panel editor and the command got no explicit target; otherwise it runs the original. A target counts as explicit only if it is a URI or an editor context (`resource`, `groupId`, `editorIndex`), as a tab or Explorer menu passes it. `args: {}` from a `keybindings.json` entry is not explicit (review r2 N2, tested). Guarding the **command** instead of its keys covers, by construction:
 
 - every key and chord;
 - the macOS and Windows keymaps (`Ctrl+F4`, `Cmd+Alt+S`);
@@ -100,6 +114,8 @@ The harness runs each guarded key both ways: without the guards the upstream com
 **Residuals.**
 
 - **New upstream commands.** A command added by a later upstream release is unguarded until classified. `scan-keys.mjs --check` fails on it; a removed policy entry was tested to make the check fail.
+- **Later registrations of a guarded id (review r2 N1).** An extension can register the same id through `MainThreadCommands`, and a core command such as Tasks: Build registers at runtime. Either would sit on top of the guard. The guards listen to `CommandsRegistry.onDidRegisterCommand` and wrap any policy id again, with the new handler as the original. The harness tests a re-registered Save and a late Tasks: Build, and a mutant without the listener is killed.
+- **Contributions instantiated only at runtime**, such as a keybinding added by a workbench contribution after start-up or an extension's own command, are outside the scan. The first case is covered by the runtime check (§8 item 3), the second by the extension-host class.
 - **Extension commands.** An extension's own command that reads `activeTextEditor` sees the side-panel editor, which is correct (§9).
 - **Command palette.** When a command runs from the palette, the palette has focus, so the original runs on the IDE editor. PV-V2 decides whether the guard should also use "last focused editor was the side panel and Agent view is shown". It is on the go/no-go list.
 - **Peek inside the side editor.** A peek or embedded editor inside the side editor is not a side-panel editor, so a guarded Save from there runs the original, as upstream does (review N6). This is on the list.
@@ -135,12 +151,13 @@ Harness results:
 **The DOM gate is not sufficient on its own.** The click path also goes through the controller (`axisApprovals.ts:210-232`), which checks the digest the card shows, the guard time, expiry, and whether an answer is in flight or already settled. A key that passes the DOM gate must go through **the same controller path**, with these rules:
 
 - **Digest.** It must be the digest the card *shows*, so a card re-rendered under a held finger is stale and refused.
-- **Guard time.** It counts from whichever is later: the card's last change or the moment focus entered the card.
+- **Guard time.** It counts from the latest of these: A4's restarts (the digest, the card's index and its position, `placed()`, `axisApprovals.ts:185-201`) and the moment focus entered the card. `settled` and `inFlight` refuse as for a click.
+- **Challenge id.** It comes from the controller's `layout()` entry for the focused card node, never from a DOM attribute.
 - **Gesture check.** `isTrustedGesture` requires a click on the button, so the key path needs its own trusted-key check in the controller. That check is this gate's clauses re-verified there against the card's challenge id.
 - **Scope builder.** It must walk `event.composedPath()` for the composer and editor checks, because `closest()` stops at a shadow root.
 - **Where it lives.** The scope functions belong in tested overlay code, not in the view.
 
-All of this belongs to the approval UI ticket and its security review. This spike does not wire the key gate, and the click gate is unchanged.
+A key press synthesized through the DevTools protocol (`Input.dispatchKeyEvent`) or `webContents.sendInputEvent` arrives with `isTrusted` set, exactly as a synthesized click does. That is threat-model rows G-28 and RR-19 (open) and applies to both paths. All of this belongs to the approval UI ticket and its security review. This spike does not wire the key gate, and the click gate is unchanged.
 
 ## 4. Footprint (ADR 0002 criterion 2)
 
@@ -175,25 +192,43 @@ The pinned behaviour, by reading:
 - The text file model sees the disk change.
 - If the buffer is **clean**, the model reloads through `modelService.updateModel`, which pushes undo stops (`modelService.ts:365-385`). The reload is therefore undoable: **shown in the harness**, Ctrl+Z in the side editor reverts the reload into a dirty buffer.
 - If the buffer is **dirty**, it keeps the user's text. The run's write stays on disk, invisible in the editor until a save meets the conflict, which offers Compare or Overwrite.
+- **The conflict check is mtime-based (review r2 S2).** A save is refused as "File Modified Since" only when the file's mtime on disk is newer than the one the model last read, and the etag (mtime and size) differs (`fileService.ts:519-536`, `files.ts:1570-1576`). The inode does not matter:
+  - the broker's atomic rename (`packages/broker/src/swap.ts:139`) and the worktree restore (`packages/worktrees/src/restore.ts:122`) give a new mtime, so they are caught;
+  - a writer that keeps or back-dates mtime (`cp -p`, `tar`, `rsync -t`, `utimes`) is not caught, and neither is a clean-buffer reload of such a write.
+
+  **Rule:** Axis writers never set an older mtime.
+- **The check can be switched off.** With `files.saveConflictResolution: overwriteFileOnDisk`, saves are written with `ETAG_DISABLED` (`textFileEditorModel.ts:1036`, `filesConfigurationService.ts:547-549`). Every save, including `afterDelay` auto-save of a stale dirty buffer, then silently overwrites a newer write. The setting is language-overridable and can come from a workspace's own settings file (`files.contribution.ts:354-366`), so a repository a run edits can set it.
 
 **Policy for PV-V2:**
 
 1. **Notice.** While a side-panel buffer is dirty and its file changes on disk, the file row and the editor show "Changed on disk" with **Compare** (opens the diff in IDE view, an explicit switch) and **Discard my changes** (reverts to disk).
 2. **Overwrite.** Saving over it is allowed. It is a user write, and for a composer run it produces the drift notice through the compare-and-swap path (`axis-agent-shell-policies.md` §3.3 to §3.5), exactly as an IDE save would.
 3. **Undo across a reload.** It is a user edit. It is accepted and documented: the buffer turns dirty, and saving it is a user write that drift tracking sees.
-4. **Auto-save.** It never overwrites a conflict. Upstream auto-save does not resolve save conflicts [I]; this is verified on the §8 list.
+4. **Auto-save and the conflict setting.** Under the default `askUser`, auto-save never overwrites a conflict: the write fails as a conflict and the notice of item 1 shows. **Axis's stance:**
+   - the product default stays `askUser`;
+   - when the effective value for a side-panel file is `overwriteFileOnDisk`, from any scope, the side panel **refuses to save**: explicit Save and Save All are refused with a message naming the setting (prototype: the host's `saveConflictsDetected`, tested), and the Code tab shows a persistent warning;
+   - auto-save cannot be refused per editor, so the warning also says auto-save may overwrite newer files. PV-V2 decides whether Axis turns `files.autoSave` off for that file's worktree while the setting is in effect.
+
+   Locking the setting outright would need an upstream patch, so it is not proposed.
 5. **Runs are never blocked by the editor.** A dirty buffer does not refuse a composer or CLI write. Refusing would let the user's open editor block agents, and drift detection already covers that case.
 
-Items 1, 2 and 4 are on the go/no-go list as packaged-workbench tests.
+Items 1, 2 and 4, an atomic-rename write by the broker against a dirty buffer, and the `overwriteFileOnDisk` case are on the go/no-go list as packaged-workbench tests.
 
 ## 6. Evidence
 
 `prototypes/pv-v0-editor-embed/` (README there) runs the real upstream editor compiled at the pin, with upstream standalone services in place of the workbench ones, plus the transpiled overlay, in headless Chromium.
 
-- **Browser checks:** `run.mjs` has **47 checks** in sections `model`, `route` (twice), `keys`, `approve`, `trust` and `race`, and all pass. `check()` compares the observed value with the expected one and prints both.
-- **Mutation run:** `mutate.mjs` applies **27 mutants** to the prototype. They include the reviewer's three survivors (reopen keeps the model, reopen keeps the options, close does not cancel an open), the guard's focus and argument rules, the policy classes, Save All, the blur report, the label cleaning, five approval-gate clauses, the races and reference releases, read-only save and focus return. **All 27 are killed** by the unit tests, the browser checks or both, and the unmutated baseline is clean.
-- **Key scan:** `scan-keys.mjs` produces the S1 inventory (§3.2).
-- **Unit tests:** `contrib/sidePanel/test/common/axisSidePanelEditor.test.ts` has 12 tests (mocha, as for every overlay test). They cover option precedence and immutability, trust, label cleaning, the command policy, the scan gate, the guard decision, the approval chord per platform, and every clause of the approval gate.
+- **Browser checks:** `run.mjs` has **51 check sites** in sections `model`, `route` (run twice), `keys`, `approve`, `trust`, `conflict` and `race`. That makes **61 executed checks**, and all pass. `check()` compares the observed value with the expected one and prints both.
+- **Mutation run:** `mutate.mjs` applies **32 mutants** to the prototype. They cover:
+  - the reviewers' survivors: reopen keeps the model, reopen keeps the options, close does not cancel an open;
+  - the guard's focus and explicit-target rules, and the policy classes (including the launchers that find the active editor through another service);
+  - Save All, re-guarding after a later registration, and the `overwriteFileOnDisk` refusal for Save and Save All;
+  - the blur report, the label cleaning and five approval-gate clauses;
+  - the races and reference releases, read-only save, and focus return.
+
+  **All 32 are killed** by the unit tests, the browser checks or both, and the unmutated baseline is clean.
+- **Key scan:** `scan-keys.mjs --check` produces the inventory (§3.2) and passes for the desktop main (139 commands) and the web main (132 commands).
+- **Unit tests:** `contrib/sidePanel/test/common/axisSidePanelEditor.test.ts` has 14 tests (mocha, as for every overlay test). They cover option precedence and immutability, trust, label cleaning, the command policy, the scan gate, the guard decision, explicit targets, the approval chord per platform, and every clause of the approval gate.
 
 ## 7. Fallback: the split IDE half
 
@@ -215,8 +250,8 @@ Each item must pass before PV-V2 is reviewed. "Fallback" means: if it fails and 
 |---|---|---|
 | 1 | The browser checks of §6, re-run against the real workbench services (`TextFileEditorModel`, the workbench keybinding service on the window) | fallback |
 | 2 | Reference counts: closing the side editor with a dirty buffer keeps the working copy, and the window-close prompt and hot exit cover it | fallback |
-| 3 | `scan-keys.mjs --check` passes on the shipped pin; `missing` is empty at registration; every guarded id resolves to the guard at runtime | fix the policy |
-| 4 | The §5.2 conflict policy: notice, Compare, Discard, overwrite producing the drift notice, auto-save never overwriting a conflict | fix in overlay; else fallback |
+| 3 | `scan-keys.mjs --check` passes on the shipped pin for the desktop and web mains; at runtime every guarded id resolves to its guard (`guarded` equals the policy's non-`accept` ids that exist, and `missing` lists only commands never registered) | fix the policy |
+| 4 | The §5.2 conflict policy: notice, Compare, Discard, overwrite producing the drift notice, and auto-save (`afterDelay`) never overwriting a conflict under `askUser`. Includes a broker atomic-rename write against a dirty side-panel buffer, and the `overwriteFileOnDisk` refusal and warning set from user and from workspace settings | fix in overlay; else fallback |
 | 5 | The command palette and menus invoking a guarded command with the side editor last focused (§3.2 residual) | fix in overlay |
 | 6 | Status-bar entries in Agent view | fix in overlay |
 | 7 | Extension host: the side editor is `activeTextEditor` when focused, and extensions acting on it behave (§9) | fallback if an extension class breaks |
@@ -242,14 +277,14 @@ Each item must pass before PV-V2 is reviewed. "Fallback" means: if it fails and 
 | Id | Finding | Where handled |
 |---|---|---|
 | F1 | Shared model, undo and dirty state work with no copying | §2, §5.1 |
-| F2 | 69 default-key commands read the hidden IDE editor (save, close, tabs, groups, copy path, compare, Save All …) | command guards and policy, §3.2 |
+| F2 | 79 of the 139 key-bound candidate commands (plus Save All) at the pin act, or may act, on the hidden IDE editor: save, close, tabs, groups, copy path, compare, Save All, Go to Line or Symbol, the debug, run and task launchers … | command guards and a hand-classified policy, §3.2 |
 | F3 | A raw widget ignores `editor.*` settings, and `onFocusChange` auto-save ignores it | option merge and blur report, §5.1 |
 | F4 | Escape is free only when no editor widget wants it | leave weight −1, §3.3 |
 | F5 | Tab is trapped (upstream); F6 is unclaimed by the editor | §9 |
 | F6 | The editor binds `Mod+Enter`; an approval key needs the card-scoped gate plus the controller | §3.4 |
 | F7 | No `aria-readonly` with EditContext | label, §9 |
 | F8 | Non-simple widget is extension-visible as the active editor | owner decision |
-| F9 | A reload from disk is undoable into a dirty buffer, and a dirty buffer hides a run's write | policy, §5.2 |
+| F9 | A reload from disk is undoable into a dirty buffer, a dirty buffer hides a run's write, the conflict check is mtime-based, and `overwriteFileOnDisk` disables it | policy, §5.2 |
 
 Owner decisions to record:
 
