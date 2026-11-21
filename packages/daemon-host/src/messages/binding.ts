@@ -26,6 +26,8 @@ export interface MessagingBindingDeps {
   readonly runLive?: (runId: string) => boolean;
   /** Bounds of one delivered block (defaults in `delivery.ts`). */
   readonly deliveryLimits?: { readonly maxMessages?: number; readonly maxText?: number };
+  /** A delivery failure the pipeline swallows, as a fixed code (the host logs it). */
+  readonly onInternalError?: (code: "notice_failed") => void;
 }
 
 export interface MessagingBinding {
@@ -39,6 +41,6 @@ export function createMessagingBinding(deps: MessagingBindingDeps): MessagingBin
   const store = deps.journal.messages;
   const common = { store, directory, audit: deps.audit, ...(deps.noteWrite === undefined ? {} : { noteWrite: deps.noteWrite }) };
   const service = createMessageService({ ...common, random: deps.random, monotonic: deps.monotonic, scan: deps.scan, ...(deps.limits === undefined ? {} : { limits: deps.limits }) });
-  const delivery = createMessageDelivery({ ...common, service, random: deps.random, agentOf: deps.agentOf ?? (() => undefined), runLive: deps.runLive ?? (() => false), ...deps.deliveryLimits });
+  const delivery = createMessageDelivery({ ...common, service, random: deps.random, agentOf: deps.agentOf ?? (() => undefined), runLive: deps.runLive ?? (() => false), ...deps.deliveryLimits, ...(deps.onInternalError === undefined ? {} : { onInternalError: deps.onInternalError }) });
   return { service, settings: createMessagingSettings({ ...common, context: (id) => service.context(id) }), delivery };
 }

@@ -95,49 +95,57 @@ export function buildForgeEnv(base: Readonly<Record<string, string | undefined>>
   return env;
 }
 
-/** The marker set's version; it changes with the gate that confirms the texts (§7). */
-export const FORGE_STDERR_MARKERS_VERSION = 1;
+/** The marker set's version; it changes with the gate that confirms the texts (§7). 2: phrases only, names removed (review S1b D-1, D-2). */
+export const FORGE_STDERR_MARKERS_VERSION = 2;
 
 /**
  * Fixed markers, matched case-insensitively on the first 64 KiB of stderr after the repository's own names are removed; the
- * first class with a match wins, in this order. The repository marker comes first: a locked keyring stops `gh` before any API
- * call, so a not-found text can only be the API's. Every marker is a phrase of `gh`'s or go-keyring's own messages, never a
- * single word a repository could be named (review S1b SF-1: `acme/python-keyring` once read as a keyring failure).
+ * first class with a match wins, in the order of `classifyForgeStderr`. Every marker is a phrase of `gh`'s or go-keyring's own
+ * messages and holds a space, so no vetted name (which cannot hold one) can be a marker by itself (review S1b SF-1, D-2).
  */
-const REPO_MISSING = ["could not resolve to a repository"];
-const KEYRING = ["org.freedesktop.secrets", "secret service", "secret not found in keyring", "from keyring", "to keyring", "keyring:", "couldn't find oauth token", "failed to migrate"];
-const NETWORK = ["dial tcp", "no such host", "connection refused", "connection reset", "network is unreachable", "i/o timeout", "tls handshake timeout", "could not connect to"];
+export const FORGE_STDERR_MARKERS = Object.freeze({
+  repo_missing: Object.freeze(["could not resolve to a repository"]),
+  keyring: Object.freeze(["name org.freedesktop.secrets", "secret service", "secret not found in keyring", "from keyring", "to keyring", "couldn't find oauth token", "failed to migrate"]),
+  network: Object.freeze(["dial tcp", "no such host", "connection refused", "connection reset", "network is unreachable", "i/o timeout", "tls handshake timeout", "could not connect to"]),
+});
+/** `gh`'s own API error line, at the start of a line: `HTTP 401: Bad credentials (https://api.github.com/graphql)`. */
+const HTTP_401 = /^HTTP 401(?:[:\s]|$)/m;
+/** What a removed name leaves: no marker holds it, so text on either side of a name never joins into one. */
+const GAP = "\u0001";
 
 const NAME_CHAR = "A-Za-z0-9._-";
 const escape = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 /**
- * `gh` echoes the repository it was asked about (`... with the name 'acme/python-keyring'.`). Every occurrence of `owner/repo`,
- * of the repository and of the owner as a whole name (bounded by characters a name cannot hold) is removed before matching, so
- * no name can supply a marker. The names are vetted (`vetOwnerRepo`) and cannot hold a space, so no multi-word marker can come
- * from them anyway; this closes the single-token ones.
+ * `gh` echoes the repository it was asked about (`... with the name 'acme/python-keyring'.`). Every case-insensitive occurrence of
+ * `owner/repo`, then of the longer and the shorter of the two names, that does not continue a name to its left is removed,
+ * whatever follows it (review S1b D-1: a sentence's closing `.` after `org.freedesktop.secrets` once kept the name). Removing
+ * too much only loses a marker (the class falls to `other`); it can never make one.
  */
 export function withoutNames(stderr: string, owner: string, repo: string): string {
   let text = stderr;
-  for (const name of [`${owner}/${repo}`, repo, owner]) {
-    if (name === "") continue;
-    text = text.replace(new RegExp(`(?<![${NAME_CHAR}])${escape(name)}(?![${NAME_CHAR}])`, "gi"), " ");
+  const parts = [repo, owner].sort((a, b) => b.length - a.length);
+  for (const name of [`${owner}/${repo}`, ...parts]) {
+    if (name === "" || name === "/") continue;
+    text = text.replace(new RegExp(`(?<![${NAME_CHAR}])${escape(name)}`, "gi"), GAP);
   }
   return text;
 }
 
 /**
  * The closed class of a finished call (§7). Exit 0 is `none` whatever stderr says. Then, on the text without the repository's
- * names: `repo_missing`, `keyring`, `auth_missing` (exit 4, or exit 1 with `HTTP 401`), `network`, else `other`. The text itself
- * is never returned.
+ * names: `repo_missing`; and only on `gh`'s error exits (1, or 4 for authentication) `keyring` and `auth_missing` (exit 4, or
+ * exit 1 with `gh`'s `HTTP 401` line); then `network`, else `other`. The text itself is never returned.
  */
 export function classifyForgeStderr(exit: number | null, stderr: string, owner: string, repo: string): ForgeStderrClass {
   if (exit === 0) return "none";
   const bare = withoutNames(stderr, owner, repo);
   const text = bare.toLowerCase();
   const has = (markers: readonly string[]): boolean => markers.some((m) => text.includes(m));
-  if (has(REPO_MISSING)) return "repo_missing";
-  if (has(KEYRING)) return "keyring";
-  if (exit === 4 || (exit === 1 && bare.includes("HTTP 401"))) return "auth_missing";
-  if (has(NETWORK)) return "network";
+  if (has(FORGE_STDERR_MARKERS.repo_missing)) return "repo_missing";
+  if (exit === 1 || exit === 4) {
+    if (has(FORGE_STDERR_MARKERS.keyring)) return "keyring";
+    if (exit === 4 || HTTP_401.test(bare)) return "auth_missing";
+  }
+  if (has(FORGE_STDERR_MARKERS.network)) return "network";
   return "other";
 }

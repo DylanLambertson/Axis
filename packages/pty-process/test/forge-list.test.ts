@@ -137,7 +137,7 @@ test("stderr leaves as a closed class only, whatever it holds", { skip: SKIP }, 
   ];
   await withRig({}, async (r) => {
     for (const [text, code, cls] of cases) {
-      r.rewrite(`process.stderr.write(${JSON.stringify(`${CANARY} ${text}`)}); process.stdout.write(${JSON.stringify(CANARY)}); process.exitCode = ${code};`);
+      r.rewrite(`process.stderr.write(${JSON.stringify(`${CANARY}\n${text}`)}); process.stdout.write(${JSON.stringify(CANARY)}); process.exitCode = ${code};`);
       const reply = await ask(r);
       assert.deepEqual([reply["exit"], reply["class"]], [code, cls], text);
       assert.ok(!JSON.stringify(reply).includes(text), "no stderr text in the reply");
@@ -318,6 +318,12 @@ test("exec start failures map to closed codes; program_refused is never a gh_mis
       assert.ok(!JSON.stringify(reply).includes(CANARY));
     });
   }
+});
+
+test("the package index does not export createForgeList, so the test seam is reachable from this file only (review S1b D-3)", async () => {
+  const index = await import("../src/index.js");
+  assert.equal("createForgeList" in index, false);
+  assert.equal(typeof createForgeList, "function");
 });
 
 test("Windows refuses before anything is created; a service without forge answers spawn_missing", async () => {
