@@ -23,10 +23,13 @@ interface Spec {
 const set = (...f: string[]): ReadonlySet<string> => new Set(f);
 // Patch-producing commands never run external diff or textconv drivers or signature programs, whatever the config says.
 const DIFFING = ["--no-ext-diff", "--no-textconv", "--no-color"] as const;
+// A command that compares the work tree would otherwise run `git status` inside each submodule to see whether it is dirty, and
+// that child reads the submodule's own config and attributes (a clean filter defined there runs): only its commit is compared.
+const NO_SUBMODULE_WALK = "--ignore-submodules=dirty";
 
 export const GIT_COMMANDS: Readonly<Record<GitCommand, Spec>> = {
-  status: { tier: "read", flags: set("--short", "-s", "--branch", "-b", "--porcelain", "--porcelain=v1", "--porcelain=v2", "-z", "--no-renames", "-uno", "-unormal", "-uall", "--untracked-files=no", "--untracked-files=normal", "--untracked-files=all"), numeric: [], fixed: ["--no-ahead-behind"], revs: "none", paths: "optional", writes: false },
-  diff: { tier: "read", flags: set("--stat", "--numstat", "--shortstat", "--name-only", "--name-status", "--cached", "--staged", "--patch", "-p", "--no-renames", "-z", "--exit-code", "--quiet", "--check", "--raw", "--summary", "--ignore-all-space", "-w"), numeric: ["--unified"], fixed: DIFFING, revs: "optional", paths: "optional", writes: false },
+  status: { tier: "read", flags: set("--short", "-s", "--branch", "-b", "--porcelain", "--porcelain=v1", "--porcelain=v2", "-z", "--no-renames", "-uno", "-unormal", "-uall", "--untracked-files=no", "--untracked-files=normal", "--untracked-files=all"), numeric: [], fixed: ["--no-ahead-behind", NO_SUBMODULE_WALK], revs: "none", paths: "optional", writes: false },
+  diff: { tier: "read", flags: set("--stat", "--numstat", "--shortstat", "--name-only", "--name-status", "--cached", "--staged", "--patch", "-p", "--no-renames", "-z", "--exit-code", "--quiet", "--check", "--raw", "--summary", "--ignore-all-space", "-w"), numeric: ["--unified"], fixed: [...DIFFING, NO_SUBMODULE_WALK], revs: "optional", paths: "optional", writes: false },
   log: { tier: "read", flags: set("--oneline", "--stat", "--name-only", "--name-status", "--no-merges", "--first-parent", "--no-decorate", "--reverse"), numeric: ["--max-count", "--skip"], fixed: [...DIFFING, "--no-show-signature"], revs: "optional", paths: "optional", writes: false },
   show: { tier: "read", flags: set("--stat", "--name-only", "--name-status", "--no-patch", "-s", "--oneline", "--patch", "-p"), numeric: ["--unified"], fixed: [...DIFFING, "--no-show-signature"], revs: "required", paths: "optional", writes: false },
   "ls-files": { tier: "read", flags: set("-z", "--cached", "-c", "--others", "-o", "--modified", "-m", "--deleted", "-d", "--exclude-standard", "--stage", "-s", "--full-name"), numeric: [], fixed: [], revs: "none", paths: "optional", writes: false },

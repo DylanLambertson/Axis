@@ -126,10 +126,18 @@ export async function filterNames(w: WorktreeRef, deps: GitOpsDeps, env: Record<
   if (r.code !== 0) throw invalid("could not read the git configuration");
   const names = new Set<string>();
   for (const key of r.stdout.split("\0").filter(Boolean)) {
-    const m = /^filter\.(.+)\.(clean|smudge|process|required)$/i.exec(key);
-    if (!m) continue;
+    // The name may be empty: `[filter ""]` is the driver `* filter=` selects, and `-c filter..clean=` empties it. `s`, so a
+    // name holding a line terminator (U+2028, U+0085, CR) is read like any other and then refused below. git prints the
+    // section and the variable lower-cased, so the match needs no `i`.
+    const m = /^filter\.(.*)\.(clean|smudge|process|required)$/s.exec(key);
+    if (m === null) {
+      // Only a two-level key such as `filter.process` names no driver (git ignores it). Any other key is refused, never
+      // skipped: a key this cannot read could be a driver it did not empty.
+      if (/^filter\.[a-z0-9-]*$/.test(key)) continue;
+      throw denied("a git filter key cannot be read safely");
+    }
     const n = m[1] as string;
-    if (!/^[A-Za-z0-9._-]+$/.test(n)) throw denied("a git filter has a name that cannot be neutralised safely");
+    if (!/^[A-Za-z0-9._-]*$/.test(n)) throw denied("a git filter has a name that cannot be neutralised safely");
     names.add(n);
   }
   return [...names];

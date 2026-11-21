@@ -193,6 +193,16 @@ export class RunWt2 {
     await this.#check();
   }
 
+  /**
+   * Before a git read (`git_status`, `git_diff`; the broker's `assertNoDrift`), under the lock: compared with the baseline when a
+   * command took one. A read never takes or replaces the baseline (C3 slice 2), so it cannot absorb a change either.
+   */
+  async beforeRead(signal: AbortSignal): Promise<void> {
+    if (this.#halted) throw new BrokerError("E_UNAVAILABLE", "git-drift", "the run is halted");
+    if (!this.#based) return;
+    if (!(await this.d.writeLock(this.d.workspaceId, () => this.#check(), signal))) throw new BrokerError("E_UNAVAILABLE", "git-drift", "the repository changed since the run's first command");
+  }
+
   /** Before a model turn and at the run's end: nothing to compare until a command ran. Throws `ComposerRunHalt` on drift. */
   async turn(signal: AbortSignal): Promise<void> {
     if (this.#halted) throw new ComposerRunHalt("GIT_DRIFT");
