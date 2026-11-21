@@ -126,6 +126,8 @@ async function withApp(app, appArgs, flags, settleMs, inspect, kill = killGroup)
   const profile = mkdtempSync(join(tmpdir(), "axis-net-gate-"));
   const args = [...appArgs, `--user-data-dir=${join(profile, "user")}`, `--extensions-dir=${join(profile, "ext")}`, "--disable-extensions", "--no-sandbox", ...flags];
   const child = spawn(app, args, { stdio: "ignore", detached: process.platform !== "win32", env: { ...process.env, NODE_OPTIONS: "" } });
+  // A launched app must never keep this checker alive: the group is killed in `finally`, and the handle does not hold the loop.
+  child.unref();
   let exit;
   child.once("exit", (code, signal) => { exit = { code, signal }; });
   child.once("error", (error) => { exit = { error: error.message }; });

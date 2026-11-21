@@ -2,7 +2,7 @@
 // A stand-in for a packaged desktop build, for test/code-oss/net-gate.test.mjs. Mode (first argument):
 //   clean   stays up and opens nothing;  honour  opens the port named by a debugging flag;  listen  always opens a loopback port;
 //   exit    exits at once;  family  stays up with a child in its process group;  orphan  starts such a child and exits at once.
-// NET_GATE_FAKE_CHILD_RECORD (a file path) receives the pid of that child.
+// NET_GATE_FAKE_CHILD_RECORD (a file path) receives {pid, kid}: this process and that child.
 import { spawn } from "node:child_process";
 import { appendFileSync } from "node:fs";
 import net from "node:net";
@@ -16,7 +16,7 @@ if (process.env.NET_GATE_FAKE_RECORD && profile !== undefined) {
 }
 if (mode === "family" || mode === "orphan") {
   const kid = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
-  if (process.env.NET_GATE_FAKE_CHILD_RECORD) appendFileSync(process.env.NET_GATE_FAKE_CHILD_RECORD, `${kid.pid}\n`);
+  if (process.env.NET_GATE_FAKE_CHILD_RECORD) appendFileSync(process.env.NET_GATE_FAKE_CHILD_RECORD, `${JSON.stringify({ pid: process.pid, kid: kid.pid })}\n`);
   if (mode === "orphan") setTimeout(() => process.exit(4), 300);
 }
 if (mode === "exit") process.exit(3);

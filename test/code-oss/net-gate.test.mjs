@@ -77,10 +77,16 @@ test("overlay source that opens a listener, loads a socket module or the web hos
     "listen via bracket reference": 'const f = s["listen"];',
     "listen destructured": "const { listen } = s;",
     "listen renamed on destructure": "const { listen: l } = s;",
+    "constructor.constructor": '[].constructor.constructor("return 1")();',
+    "indirect eval": '(0, eval)("1");',
+    "Function alias": "const F = Function;",
+    "Reflect.get": 'Reflect.get(s, "listen");',
+    "Reflect.construct": "Reflect.construct(Function, []);",
+    "fromCharCode": "const a = String.fromCharCode(45, 45);",
     "createServer via apply": "http.createServer.apply(http, []);",
   };
   for (const [name, source] of Object.entries(bad)) assert.notEqual(scanOverlaySource(source, "x.ts").length, 0, name);
-  for (const ok of ['import { createHmac } from "node:crypto";', 'const note = "inspect the run";', "const s = new Set(); s.add(1);", "emitter.on('listening', f);", "const f = shapes[i];", 'import { a } from "../../base/common/uuid.js";', 'import assert from "assert";', 'const s = "a" + "b";']) {
+  for (const ok of ['import { createHmac } from "node:crypto";', 'const note = "inspect the run";', "const s = new Set(); s.add(1);", "emitter.on('listening', f);", "const f = shapes[i];", "const x = v instanceof Function;", "let f: Function | undefined;", "const o = { constructor: 1 }; o.constructor;", 'import { a } from "../../base/common/uuid.js";', 'import assert from "assert";', 'const s = "a" + "b";']) {
     assert.deepEqual(scanOverlaySource(ok, "x.ts"), [], ok);
   }
 });
@@ -122,6 +128,10 @@ test("known limits of the source scan are pinned, so a change to them is deliber
     assert.equal(found.some((v) => /debugging flag/.test(v.text)), false, source);
   }
   assert.notEqual(scanOverlaySource('const k = "lis" + "ten"; s[k](80);', "x.ts").length, 0, "a computed member call is still refused");
+  // Flags built by string methods other than `+` and templates are not folded either (concat, replace, split/join, run-time input).
+  for (const source of ['const a = "--ins".concat("pect");', 'const a = "--inXspect".replace("X", "");', 'const a = readFlag();']) {
+    assert.deepEqual(scanOverlaySource(source, "x.ts").filter((v) => /debugging flag/.test(v.text)), [], source);
+  }
 });
 
 test("the file filter covers every source extension, one fixture each", () => {
@@ -149,7 +159,7 @@ test("the reviewed exceptions are per file and exact", () => {
 
 test("a patch that adds a listener or a debugging flag is refused; removed and context lines are not", () => {
   const add = (l) => `--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n context\n-old\n+${l}\n`;
-  for (const l of ["server.listen(1)", "const a = '--inspect=1';", "import net from 'node:net';", "startWebHost(c)", "app.commandLine.appendSwitch('remote-debugging-port', '9222')", "import x from 'daemon-host/web/index.js'", "const w = require('ws');", "import { WebSocketServer } from 'ws';", "s['listen'](1);", "s[name](1);", "const a = '--insp' + 'ect';", "const r = createRequire(url);", "import cluster from 'node:cluster';", "const r = require;", "const m = import(name);", "const a = `--insp${x}ect`;", "const w = new Worker(p);", "eval('1');", "s.listen.call(s, 80);", "new Function('return 1')();"]) {
+  for (const l of ["server.listen(1)", "const a = '--inspect=1';", "import net from 'node:net';", "startWebHost(c)", "app.commandLine.appendSwitch('remote-debugging-port', '9222')", "import x from 'daemon-host/web/index.js'", "const w = require('ws');", "import { WebSocketServer } from 'ws';", "s['listen'](1);", "s[name](1);", "const a = '--insp' + 'ect';", "const r = createRequire(url);", "import cluster from 'node:cluster';", "const r = require;", "const m = import(name);", "const a = `--insp${x}ect`;", "const w = new Worker(p);", "eval('1');", "s.listen.call(s, 80);", "const F = Function;", "[].constructor.constructor(1)();", "Reflect.get(s, 'listen');", "[/'/, require, /'/];", "new Function('return 1')();"]) {
     assert.notEqual(scanPatchText(add(l), "2999-x.patch").length, 0, l);
   }
   assert.deepEqual(scanPatchText("--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n-server.listen(1)\n server.listen(2)\n+const ok = 1;\n", "p.patch"), []);
@@ -165,6 +175,9 @@ test("a patch that adds a listener or a debugging flag is refused; removed and c
   assert.deepEqual(addedLines("--- a/x\n+++ b/x\n@@ -1,1 +1,1 @@\n-a\n+b\n+extra\n").bad, [{ line: 6, text: "+extra" }]);
   assert.deepEqual(addedLines("--- a/x\n+++ b/x\n@@ -1,1 +1,1 @@\n-a\n+b\n").bad, []);
   // Strings that contain a refused word are not code: no false positive on a CSP text or a comment about import().
+  // A regex literal holding a quote does not hide the code around it (the identifier rules read the raw line).
+  assert.notEqual(scanPatchText("@@ -1,1 +1,1 @@\n-a\n+x = [/'/, require, /'/];\n", "p.patch").length, 0);
+  assert.deepEqual(scanPatchText("@@ -1,2 +1,2 @@\n-a\n+// eval and Function are refused here\n+ * Reflect.get is too\n", "p.patch"), []);
   assert.deepEqual(scanPatchText("@@ -1,2 +1,2 @@\n-a\n+`require-trusted-types-for 'script'`\n+// the import (remote hosts) path\n", "p.patch"), []);
   // A `+++` file header is not added content, even when the path names a refused module.
   assert.equal(scanPatchText("--- a/x\n+++ b/daemon-host/web/server.ts\n", "p.patch").length, 0);
@@ -267,7 +280,8 @@ test("a run removes its private profile and leaves no process behind", { skip: p
 });
 
 /** Pids from a record file written by the fake app. */
-const pidsIn = (file) => readFileSync(file, "utf8").split("\n").filter(Boolean).map(Number);
+const recordsIn = (file) => readFileSync(file, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+const pidsIn = (file) => recordsIn(file).map((r) => r.kid);
 const gone = async (pid) => {
   for (let i = 0; i < 40; i++) {
     try { process.kill(pid, 0); } catch { return true; }
@@ -290,7 +304,8 @@ for (const mode of ["family", "orphan"]) {
       for (const pid of kids) assert.equal(await gone(pid), true, `child ${pid} of the ${mode} app is gone`);
     } finally {
       delete process.env.NET_GATE_FAKE_CHILD_RECORD;
-      reap(kids.length > 0 ? kids : pidsIn(record));
+      // A mutant that leaves the group alive must fail here within seconds, not hang the run on a live child handle.
+      reap(recordsIn(record).flatMap((r) => [r.pid, r.kid]));
     }
   });
 }

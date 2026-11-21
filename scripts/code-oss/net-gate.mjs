@@ -86,6 +86,14 @@ export function scanOverlaySource(source, file) {
       if (name === "open" && /inspector/i.test(callee.getText(sf))) add(node, "calls inspector.open");
     } else if (ts.isNewExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "Function") {
       add(node, "builds code from a string with new Function");
+    } else if (ts.isPropertyAccessExpression(node) && node.name.text === "constructor" && ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === "constructor") {
+      add(node, "reaches Function through constructor.constructor");
+    } else if (ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "Reflect" && ["get", "apply", "construct", "getOwnPropertyDescriptor"].includes(node.name.text)) {
+      add(node, `uses Reflect.${node.name.text}, which reaches a member the scan cannot name`);
+    } else if (ts.isPropertyAccessExpression(node) && ["fromCharCode", "fromCodePoint"].includes(node.name.text)) {
+      add(node, `builds text with ${node.name.text}: a flag or a name could be hidden in it`);
+    } else if (ts.isIdentifier(node) && node.text === "Function" && !ts.isTypeReferenceNode(node.parent) && !(ts.isBinaryExpression(node.parent) && node.parent.operatorToken.kind === ts.SyntaxKind.InstanceOfKeyword) && !((ts.isCallExpression(node.parent) || ts.isNewExpression(node.parent)) && node.parent.expression === node)) {
+      add(node, "takes Function as a value: an alias builds code from a string");
     } else if (ts.isPropertyAccessExpression(node) && LISTENER_CALLS.has(node.name.text)) {
       // Any reference, not only a call: `s.listen.call(s, 80)` and `Reflect.apply(s.listen, ...)` name the method too.
       add(node, `uses ${node.name.text}`);
@@ -140,15 +148,18 @@ export function addedLines(text) {
 
 /** The same rules as the source scan, as text rules for one added line (a diff fragment is not parseable on its own). */
 export function scanAddedLine(added) {
-  // Folded like the source scan: split strings joined, template substitutions dropped. `plain` is the line with string contents
-  // blanked, for identifiers that a string may legitimately contain (`require-trusted-types`).
+  // Folded like the source scan: split strings joined, template substitutions dropped. The identifier rules run on the raw text,
+  // strings included: blanking string contents needs a tokenizer that tells a regex literal (`/'/`) from a division, and a
+  // wrong guess hides code. The price is a possible false positive on a string holding a bare word like `require` (the
+  // hyphenated `require-trusted-types` is not one); a flagged line is reviewed and, if sound, the rule is narrowed.
   const text = added.replace(/['"`]\s*\+\s*['"`]/g, "").replace(/\$\{[^}]*\}/g, "");
-  const plain = added.replace(/(['"`])(?:\\.|(?!\1).)*\1/g, "''");
+  const plain = added;
   const imports = [...text.matchAll(/(?:\bfrom|\bimport\s*\(?|\brequire\s*\()\s*['"]([^'"]+)['"]/g)].map((m) => m[1]);
   if (LISTEN_TEXT.test(text) || /\[\s*['"](?:listen|createServer)['"]\s*\]/.test(text)) return "starts a listener";
   if (/\[[^\]'"]*\]\s*\(/.test(text) && !/^\s*(?:\/\/|\*)/.test(text)) return "calls a member chosen at run time";
   if (DEBUG_TEXT.test(text)) return "names a debugging flag";
-  if (/(?<![\w$.-])require(?![\w$-])|\brequire\s*\(|\b(?:createRequire|getBuiltinModule|_linkedBinding|dlopen)\b|\bbinding\s*\(|\beval\s*\(|\bFunction\s*\(/.test(plain)) return "uses a loader or code-from-string route the import check cannot see";
+  const comment = /^\s*(?:\/\/|\*|\/\*)/.test(plain);
+  if (!comment && /(?<![\w$.-])require(?![\w$-])|\brequire\s*\(|\b(?:createRequire|getBuiltinModule|_linkedBinding|dlopen|eval|Function)\b|\bbinding\s*\(|\bconstructor\s*\.\s*constructor\b|\bReflect\s*\.\s*(?:get|apply|construct|getOwnPropertyDescriptor)\b/.test(plain)) return "uses a loader or code-from-string route the import check cannot see";
   if (/\bimport\s*\(\s*[^'"\s]/.test(plain) && !/^\s*(?:\/\/|\*|\/\*)/.test(plain)) return "loads a module by a computed name";
   if (/\bnew\s+Worker\s*\(/.test(plain)) return "starts a worker";
   for (const spec of imports) {
