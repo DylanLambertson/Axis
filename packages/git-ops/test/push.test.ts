@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { GitOpsError, MAX_COMMITS, MAX_DIFF, executePush, isAllowedRefspec, planPush } from "../src/index.js";
+import { GitOpsError, MAX_COMMITS, MAX_DIFF, executePush, isAllowedRefspec, planDigest, planPush, pushUrlsDigest } from "../src/index.js";
 import { BASE, COMMIT, FakeRunner, HEAD, WT, healthy, makeDeps, sub } from "./helpers.js";
 
 const input = { worktree: WT, remote: "origin", branch: "axis/feat", baseSha: BASE };
@@ -230,10 +230,12 @@ test("S-3: a branch that moved after the scan is refused before the push, and th
 
 test("S-7: remote helpers and unlisted transports are refused; https, ssh, git, scp and local paths are accepted", async () => {
   const urlRunner = (u: string) => new FakeRunner(healthy((s) => (s[0] === "remote" && s[1] === "get-url" ? { stdout: `${u}\n` } : undefined)));
-  for (const bad of ["foo::bar", "ext::sh -c x", "fd::3", "http://github.com/o/r.git", "ftp://h/r", "git+ssh://h/r", "FOO://h/r", "rsync://h/r"]) {
+  // The same table as the pty process's `pushUrlAllowed` test (push-vet.test.ts, review 3 N-1): git's helper grammar takes a
+  // digit-led name, and git compares the scheme case-sensitively, so neither may be approved here and refused there.
+  for (const bad of ["foo::bar", "ext::sh -c x", "fd::3", "9p::x", "file::/r", "x-y::z", "http://github.com/o/r.git", "ftp://h/r", "git+ssh://h/r", "FOO://h/r", "rsync://h/r", "9p://h/r", "HTTPS://github.com/o/r", "SSH://h/r", "FILE:///r"]) {
     assert.equal(await code(planPush(makeDeps(urlRunner(bad)), input)), "E_POLICY_DENIED", bad);
   }
-  for (const ok of ["https://github.com/o/r.git", "ssh://git@github.com/o/r.git", "git://h/r.git", "git@github.com:o/r.git", "/srv/git/r.git", "file:///srv/git/r.git", "HTTPS://github.com/o/r"]) {
+  for (const ok of ["https://github.com/o/r.git", "ssh://git@github.com/o/r.git", "git://h/r.git", "git@github.com:o/r.git", "/srv/git/r.git", "rel/r.git", "file:///srv/git/r.git"]) {
     assert.equal(await code(planPush(makeDeps(urlRunner(ok)), input)), "OK", ok);
   }
 });
@@ -270,7 +272,7 @@ test("S-9: repository-location and object-store overrides in the pty environment
   }
 });
 
-test("N-4: push stderr is stripped of terminal control sequences and credentials before it reaches the error", async () => {
+test("H-7 (supersedes N-4): a failed push reports its exit status only; nothing of git's output reaches the error", async () => {
   const evil = "remote: \u001b]0;pwned\u0007\u001b[31mdenied\u001b[0m\u009b2J\u0000 for https://tok@github.com/o/r\u0008\u0008x\n";
   const r = new FakeRunner(healthy((_s, req) => (req.context === "pty" ? { code: 1, stderr: evil } : undefined)));
   try {
@@ -279,9 +281,7 @@ test("N-4: push stderr is stripped of terminal control sequences and credentials
   } catch (e) {
     assert.ok(e instanceof GitOpsError);
     assert.equal(e.code, "E_UNAVAILABLE");
-    assert.match(e.message, /remote: denied/);
-    assert.doesNotMatch(e.message, /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/);
-    assert.doesNotMatch(e.message, /tok@/);
+    assert.equal(e.message, "git push failed (exit 1)");
   }
 });
 
@@ -328,4 +328,57 @@ test("RR-N4: output the runner cut off fails the scan closed, whichever call los
     const plan = await planPush(makeDeps(runner(), { scanner, scanMode: "warn" }), input);
     assert.equal(plan.requiresConfirmation, true, lost);
   }
+});
+
+test("S4: the plan digest covers the destination key when one is given; a push confirmed for another destination is plan_changed", async () => {
+  const plain = await planPush(makeDeps(new FakeRunner(healthy())), input);
+  const a = await planPush(makeDeps(new FakeRunner(healthy())), { ...input, destination: "a".repeat(64) });
+  const b = await planPush(makeDeps(new FakeRunner(healthy())), { ...input, destination: "b".repeat(64) });
+  assert.equal(plain.digest, planDigest(plain.tip, [], []), "no destination: the digest is unchanged");
+  assert.equal(a.digest, planDigest(a.tip, [], [], [], "a".repeat(64), pushUrlsDigest(["https://github.com/o/r.git"])));
+  assert.notEqual(a.digest, b.digest);
+  assert.notEqual(a.digest, plain.digest);
+  const r = new FakeRunner(healthy());
+  const e = await executePush(makeDeps(r), { ...input, destination: "b".repeat(64) }, { confirmed: true, confirmedPlan: { tip: a.tip, digest: a.digest } }).then(
+    () => assert.fail("expected plan_changed"),
+    (x: unknown) => x as GitOpsError,
+  );
+  assert.equal(e.details?.["reason"], "plan_changed");
+  assert.equal(r.calls.filter((c) => c.context === "pty").length, 0, "nothing was pushed");
+  for (const bad of ["", "x".repeat(129)]) assert.equal(await code(planPush(makeDeps(new FakeRunner(healthy())), { ...input, destination: bad })), "E_INVALID_ARGUMENT");
+});
+
+test("S4 review B-1: a remote with any remote.<name>.vcs (an allowed transport name included) is refused before the scan; a failed read refuses too", async () => {
+  for (const answer of [{ code: 0, stdout: "file\n" }, { code: 0, stdout: "https\n" }, { code: 0, stdout: "" }, { code: 128, stdout: "" }]) {
+    const r = new FakeRunner(healthy((s) => (s[0] === "config" && s.includes("remote.origin.vcs") ? answer : undefined)));
+    assert.equal(await code(planPush(makeDeps(r), input)), "E_POLICY_DENIED", JSON.stringify(answer));
+    assert.equal(await code(executePush(makeDeps(r), input)), "E_POLICY_DENIED");
+    assert.equal(r.ptyCalls().length, 0);
+    assert.ok(!r.subs().some((x) => x[0] === "rev-list"), "no scan ran");
+  }
+  const clean = new FakeRunner(healthy());
+  await planPush(makeDeps(clean), input);
+  assert.ok(clean.subs().some((x) => x.join(" ") === "config --get-all remote.origin.vcs"), "the read is the exact key");
+});
+
+test("S4 review S-1: the request's signal reaches the push command; aborted before the push, nothing runs (E_CANCELLED)", async () => {
+  const r = new FakeRunner(healthy());
+  const ac = new AbortController();
+  await executePush(makeDeps(r), input, { signal: ac.signal });
+  assert.equal(r.ptyCalls()[0]?.signal, ac.signal);
+  const r2 = new FakeRunner(healthy());
+  ac.abort();
+  assert.equal(await code(executePush(makeDeps(r2), input, { signal: ac.signal })), "E_CANCELLED");
+  assert.equal(r2.ptyCalls().length, 0);
+});
+
+test("S4 review 2 N-1: the push command carries the digest of the push URLs read, and with a destination the plan digest covers them", async () => {
+  const urls = (u: string) => new FakeRunner(healthy((s) => (s[0] === "remote" && s[1] === "get-url" ? { stdout: `${u}\n` } : undefined)));
+  const a = await planPush(makeDeps(urls("https://github.com/o/r.git")), { ...input, destination: "d".repeat(64) });
+  const b = await planPush(makeDeps(urls("https://github.com/o/other.git")), { ...input, destination: "d".repeat(64) });
+  assert.equal(a.command.pushUrls, pushUrlsDigest(["https://github.com/o/r.git"]));
+  assert.notEqual(a.digest, b.digest, "same destination key, other URLs: another plan");
+  const noDest = await planPush(makeDeps(urls("https://github.com/o/other.git")), input);
+  assert.equal(noDest.digest, planDigest(noDest.tip, [], []), "without a destination the URLs are not covered");
+  assert.equal(pushUrlsDigest([" b ", "a", ""]), pushUrlsDigest(["a", "b"]));
 });

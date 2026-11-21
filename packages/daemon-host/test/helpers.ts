@@ -27,6 +27,15 @@ export function processSnapshot(): { resources: string[]; listeners: Record<stri
 
 export const wait = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
+/** Wait by condition (event loop turns); the bound only turns a stuck test into a failure, and a busy host reaches the condition late, not wrongly. */
+export async function untilTrue(pred: () => boolean, what: string, guardMs = 60_000): Promise<void> {
+  const deadline = Date.now() + guardMs;
+  while (!pred()) {
+    if (Date.now() > deadline) throw new Error(`condition not reached: ${what}`);
+    await new Promise((r) => setImmediate(r));
+  }
+}
+
 /**
  * Count the timers created and not yet fired or cleared while it is installed. `getActiveResourcesInfo` does not
  * list `unref`ed timers, so it cannot see a leaked one; this does. Call `restore()` in a `finally`.

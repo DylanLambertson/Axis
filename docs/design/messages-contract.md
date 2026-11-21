@@ -1,10 +1,10 @@
 # `axis.messages/1`: the protocol contract (PV-M1)
 
-- **Status:** Built as a **planned** contract (ticket PV-M1). The schemas, samples, hostile tests and policy rows exist; no host serves the contract until PV-M3 registers its handlers and moves the contract and its rows to the served tables in one change.
+- **Status:** Built (ticket PV-M1) and **served** since PV-M3 slice 1: the contract and its rows moved to the served tables together with the handlers (section 8). Section 1 describes the planned stage it went through.
 - **Design:** `docs/design/inter-agent-communication.md` (sections 2, 4, 7, 8), `docs/design/inter-agent-cli-endpoint.md` (sections 4, 5).
-- **Code:** `packages/protocol/src/messages.ts` (methods), `packages/protocol/src/messages-wire.ts` (ids, records, escaping, refusals), `packages/daemon-host/src/policy/planned.ts` (rows), `packages/daemon-host/src/policy/coverage.ts` (the check).
+- **Code:** `packages/protocol/src/messages.ts` (methods), `packages/protocol/src/messages-wire.ts` (ids, records, escaping, refusals), `packages/daemon-host/src/policy/rules.ts` (rows), `packages/daemon-host/src/policy/coverage.ts` (the check), `packages/daemon-host/src/messages/` and `src/handlers/messages.ts` (the service), `packages/journal/src/message-store.ts` (schema version 9).
 
-## 1. Planned, not served
+## 1. Planned, then served
 
 `@axis/protocol` has a second table, `plannedContracts`, next to `contracts`. `lookupMethod` reads only `contracts`, so a planned method cannot be called by a client or served by a daemon: the envelope answers `E_METHOD_NOT_FOUND` as for any unknown method. The daemon-host coverage check holds the two tables together:
 
@@ -13,7 +13,7 @@
 - a key in both the served and the planned registry, or in both rule tables, fails;
 - `policySurface(ids)` filters the planned registry with the planned rows, so a host configured without `axis.messages` drops both.
 
-`RuleTablePolicy` is built from `RULES` only, so planned rows are never served: the rows are written and reviewed now, and PV-M3 moves them. Adding the contract to `contracts` without handlers would fail host startup (the handler coverage check), which is why the contract is planned.
+`RuleTablePolicy` is built from `RULES` only, so planned rows are never served: the rows were written and reviewed first, and PV-M3 moved them. Adding the contract to `contracts` without handlers would fail host startup (the handler coverage check), which is why the contract is planned.
 
 ## 2. Methods
 
@@ -42,14 +42,16 @@ Thread and message ids are `thr_` or `msg_` followed by 16 random bytes as unpad
 
 ## 5. Visibility and `not_found`
 
-The contract comments state the rule of `inter-agent-communication.md` section 4.2: participant sets, participant-only reads, posting needs participation and every recipient passes the send policy at accept and at delivery, the user reads every thread. The contract's part of "no existence oracle" is that a refusal's `details` is exactly `{ reason }` from a closed set, with the fixed message `MESSAGES_REFUSAL_MESSAGE`: a `not_found` cannot carry an id, a count or text that would tell a hidden thread from a missing one. The same holds for `recipient_refused`, which answers both an unknown and a disallowed recipient. Same timing class is the service's job (PV-M3).
+The contract comments state the rule of `inter-agent-communication.md` section 4.2: participant sets, participant-only reads, posting needs participation and every recipient passes the send policy at accept and at delivery, the user reads every thread. The contract's part of "no existence oracle" is that a refusal's `details` is exactly `{ reason }` from a closed set, with the fixed message `MESSAGES_REFUSAL_MESSAGE`: a `not_found` cannot carry an id, a count or text that would tell a hidden thread from a missing one. The same holds for `recipient_refused`, which answers both an unknown and a disallowed recipient. The service makes the two refusals structurally identical (section 8).
 
 | Code | Reasons |
 |---|---|
 | `E_NOT_FOUND` | `not_found` |
 | `E_INVALID_ARGUMENT` | `too_large`, `too_many_recipients` |
-| `E_POLICY_DENIED` | `recipient_refused`, `cross_project` (user only), `paused`, `hop_limit`, `secret_found`, `excerpt_path_refused`, `bypass_entry` |
+| `E_CONFLICT` | `recipient_refused`, `cross_project` (user only), `paused`, `hop_limit`, `secret_found`, `excerpt_path_refused`, `bypass_entry` |
 | `E_BACKPRESSURE` | `rate_limited`, `queue_full` |
+
+PV-M1 put the policy refusals under `E_POLICY_DENIED`. A handler cannot raise that code (the daemon answers `E_INTERNAL` for it, because only its pipeline decides it, with its own audit row), so PV-M3 moved them to `E_CONFLICT`, as `axis.review/1` and `axis.git/1` answer their packages' policy refusals. The daemon's error filter now lets `E_BACKPRESSURE` carry `reason`, so `rate_limited` and `queue_full` stay apart on the wire.
 
 ## 6. Bounds and display text
 
@@ -61,8 +63,22 @@ The contract comments state the rule of `inter-agent-communication.md` section 4
 
 ## 7. Left to later tickets
 
-- PV-M3: serve the contract (move it and its rows), participant sets, timing class of `not_found`, quotas and limits, audit events, minting ids with `randomBytes(16)`.
 - PV-M4 and PV-M6: agent and CLI callers reach messaging through the broker and the endpoint, not the bridge. A bridge row that admits an agent actor needs a new actor kind in the rule table and its own review.
 - PV-M7: the second confirmation for enabling a CLI agent when a CLI project-configuration file is in the worktree (M-3) may add a field to `updateSettings`.
-- PV-M3: a new thread's project. Section 2 of the design takes it from the recipients, but a send to `{ user: true }` alone names none: the project is then the attested sender's (an agent's record, the run's workspace). A plugin cannot open a thread; it posts only to threads the user added it to (design section 4.1).
 - Thread titles are not in the design's section 2 table and are not in the contract.
+- PV-M3 later slices: delivery (into composer turns, PV-M4, and the CLI pull, PV-M6) with `message.deliver`, the taint producer (the existing source `message`, raising the run's received hop), user notices (hop limit, full queue), retention purge (of messages and of the `send` results the durable idempotency store keeps for its TTL), `bodyMac`, excerpts, and "add to thread" for the user and plugins.
+
+## 8. As served (PV-M3 slice 1)
+
+- **Who.** The bridge serves the user's own connection: the rows admit `user` only, every handler refuses any other actor again with `not_found`, and no row is in `WEB_ALLOWED`. The service (`createMessageService`, `createMessagingSettings`) takes an attested `MessageCaller` (`user`, or an agent or plugin with its run's received hop) from its binding, never from a payload, and parses every request with the contract's schema itself, so the broker (PV-M4) and the endpoint (PV-M6) cannot pass an unchecked one.
+- **Directory.** Agents and groups are PV-G3's. Until it lands the host's directory knows the journal's projects and no agent, so no agent can be addressed: every agent recipient is `recipient_refused`.
+- **Project of a thread.** From the thread; for a new thread the attested sender's own project for an agent, and the one project of every named agent and group for the user (a send to the user alone, from the user, is refused; recipients that span projects are `cross_project` to the user). A plugin cannot open a thread.
+- **Policy at accept.** Every expanded recipient, participant or not, passes section 4.1 (`mayAddress`: own group, `crossGroup` or a pair, the recipient's `acceptsFrom`, never itself, never another project); one refused principal refuses the whole send. Groups expand at accept, without the sender, and the expansion is recorded. A post into a thread needs participation (the user may post into any thread and joins it); new recipients join with `joinedSeq` = the thread's last seq. `inReplyTo` must be a message of that thread the sender can read. `deliverable(messageId, principal)` is slice 2's hook: it runs the policy and Pause again with the settings of the moment, for a principal the message was addressed to.
+- **No existence oracle.** Every method that names a thread resolves it on one path. For any caller but the user that is ONE participant-scoped lookup (the thread joined with the caller's participation), so an unknown and a hidden thread are the same miss, refused with the same audit row and the same error. The claim is structural identity, not equal latency; the test compares the sequence of store and audit calls of both cases. A late joiner's summary still shows the thread's `lastSeq` and its participants: the size of the history it cannot read is visible, not its content.
+- **Hop.** 0 for the user; for an agent or plugin one past the larger of the hop its run received and the hop of the message it replies to; past `MAX_TAINT_HOP`, or a received hop that is not an integer in range, is `hop_limit`. Slice 1 records no hop when an agent reads: slice 2's taint producer must raise the run's received hop on every `thread` and `read` result and every delivery, or a sender could reset the hop by posting without `inReplyTo`.
+- **Body.** Stored as the sender wrote it (raw, bounded by the request schema) and escaped with `toMessageText` on every way out, in one place (`messages/wire.ts`); a file ref leaves only as `toDisplayPath` text. Excerpt refs are refused (`excerpt_path_refused`) until the excerpt slice builds the containment and path refusals. The body is secret-scanned before accept (`refuse`; `warn` only when every recipient is a composer agent or the user, M-6; a scan that cannot finish refuses).
+- **Limits** (`DEFAULT_MESSAGING_LIMITS`, design section 7): per agent or plugin sender 30 sends a minute and 500 per run, 300 per project and minute, 60 reads a minute per agent or plugin caller (`rate_limited`); per recipient 200 unread messages from agents and plugins, 50 of them from one sender (`queue_full`, refused, never dropped; the user's messages never count and are never refused for a full queue; the user's own inbox is a recipient like any other, so agents' messages to the user share its 200, at most 50 from one agent, which bounds what any flood can hold); 2,000 messages per thread (`too_large`: start a new thread; nothing is archived), 10,000 threads per project (`queue_full`), 64 participants (`too_many_recipients`). The user is not rate limited (the daemon's connection limits bound it). Until delivery exists, the queue is a recipient's unread messages (after its read cursor). Every counter is bounded (4,096 keys; a new key past it is refused while all are live).
+- **Audit** (`MESSAGES_PAYLOAD_ALLOWLIST`): `message.send`, `message.send.refused`, `message.read.refused`, `message.settings` (one setting, before and after), `message.pause`, `message.resume`, with ids, kinds, counts and closed reasons only, never text. A `rate_limited` refusal is recorded once per caller and minute. `bodyMac` is not written: no hash of a body is recorded until the per-install key's storage is decided.
+- **Settings.** Held in the journal (`messaging_settings`, `messaging_agent_settings`), user only; an unknown project, group or agent is `not_found`. Enabling an endpoint (`cliMessaging: true`) is `bypass_entry` for every agent until PV-M7 can check launch entries.
+- **Ids.** `encodeMessagingId` over 16 bytes of the daemon's `randomBytes` for every thread and message. `send` answers `replayed: false`; a retry with the same key gets the stored result from the daemon's durable idempotency store.
+- **Journal** (schema version 9, forward-only, pinned by hash): `message_threads`, `message_participants` (join only, at most 64), `agent_messages` (never changed; the next seq of its thread, by trigger), `message_recipients`, `message_cursors` (never back) and the two settings tables.

@@ -129,7 +129,7 @@ export function createNodeRunner(opts: NodeRunnerOptions = {}): GitRunner {
       return new Promise((resolve, reject) => {
         // Its own process group on POSIX, so a timeout can kill git's children too (filters, submodule diffs, ssh).
         const group = process.platform !== "win32";
-        const child = spawn(gitPath, req.argv, { cwd: req.cwd, env: withTrustedPath(req.env, req, platform), shell: false, detached: group, stdio: ["pipe", "pipe", "pipe"] });
+        const child = spawn(gitPath, [...req.argv], { cwd: req.cwd, env: withTrustedPath(req.env, req, platform), shell: false, detached: group, stdio: ["pipe", "pipe", "pipe"] });
         if (group && child.pid !== undefined) {
           liveGroups.add(child.pid);
           if (!exitHookInstalled) {

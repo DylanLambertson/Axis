@@ -6,7 +6,7 @@ import assert from 'assert';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { flatRows } from '../../common/axisChanges.js';
-import { AxisChangesSource, AxisChangesStatus, AxisGitEntry, isRepositoryRoot } from '../../common/axisChangesSource.js';
+import { AxisChangesSource, AxisChangesStatus, AxisGitEntry, CLOSED_REPOSITORIES_KEY, gitEntryOf, hasClosedRepositories, isRepositoryRoot } from '../../common/axisChangesSource.js';
 import { change, FakeGitService, FakeRepository, file, flush, ROOT, state } from './axisChangesFixtures.js';
 
 const OTHER = URI.file('/w/ws-b');
@@ -19,7 +19,7 @@ suite('Axis Changes source (fake IGitService)', () => {
 	/** Folders that hold `.git`. */
 	let roots: Set<string>;
 	let rootChecks: string[];
-	let closed: boolean;
+	let closed: boolean | undefined;
 	let source: AxisChangesSource;
 	let seen: AxisChangesStatus[];
 
@@ -221,6 +221,26 @@ suite('Axis Changes source (fake IGitService)', () => {
 		assert.strictEqual(source.status, 'ready');
 	});
 
+	test('while Git has not said whether any repository is closed, a root waits; it opens once the count is 0', async () => {
+		closed = undefined;
+		await source.setRoot(ROOT);
+		assert.strictEqual(source.status, 'askFirst', 'unknown is treated as closed: never opened at startup');
+		assert.deepStrictEqual(git.opened, []);
+		closed = true;
+		await source.reconsider();
+		assert.strictEqual(source.status, 'askFirst');
+		assert.deepStrictEqual(git.opened, []);
+		closed = false;
+		source.reconsider();
+		await flush();
+		assert.deepStrictEqual(git.opened, [ROOT.path], 'the key now says none is closed');
+		await git.answer(new FakeRepository(ROOT));
+		assert.strictEqual(source.status, 'ready');
+		await source.reconsider();
+		assert.deepStrictEqual(git.opened, [ROOT.path], 'reconsider does nothing outside askFirst');
+		assert.strictEqual(source.status, 'ready', 'and keeps the followed repository');
+	});
+
 	test('with repositories closed in Git, a repository the service already has is still followed', async () => {
 		closed = true;
 		git.repositories.push(new FakeRepository(ROOT));
@@ -257,14 +277,31 @@ suite('Axis Changes repository root check', () => {
 		return [result, asked];
 	}
 
-	test('a .git file (linked worktree) or a .git directory holding HEAD is a root', async () => {
+	const GITDIR: Record<string, AxisGitEntry> = { '/.git': 'directory', '/.git/HEAD': 'file', '/.git/objects': 'directory', '/.git/refs': 'directory' };
+
+	test('a .git file (linked worktree) or a .git directory with HEAD, objects and refs is a root', async () => {
 		assert.deepStrictEqual(await check({ '/.git': 'file' }), [true, ['/.git']]);
-		assert.deepStrictEqual(await check({ '/.git': 'directory', '/.git/HEAD': 'file' }), [true, ['/.git', '/.git/HEAD']]);
+		assert.deepStrictEqual((await check(GITDIR))[0], true);
 	});
 
-	test('no .git, an empty or half-deleted .git directory, or a HEAD that is not a file is not (git would walk up to a parent)', async () => {
-		assert.deepStrictEqual((await check({}))[0], false);
-		assert.deepStrictEqual((await check({ '/.git': 'directory' }))[0], false);
-		assert.deepStrictEqual((await check({ '/.git': 'directory', '/.git/HEAD': 'directory' }))[0], false);
+	test('no .git, an empty or half-deleted .git directory is not a root (git would walk up to a parent)', async () => {
+		assert.strictEqual((await check({}))[0], false);
+		assert.strictEqual((await check({ '/.git': 'directory' }))[0], false);
+		assert.strictEqual((await check({ '/.git': 'directory', '/.git/HEAD': 'file' }))[0], false, 'HEAD alone: git walks up');
+		for (const [part, wrong] of [['/.git/HEAD', 'directory'], ['/.git/HEAD', 'none'], ['/.git/objects', 'none'], ['/.git/objects', 'file'], ['/.git/refs', 'none'], ['/.git/refs', 'file']] as const) {
+			assert.strictEqual((await check({ ...GITDIR, [part]: wrong }))[0], false, `${part} ${wrong}`);
+		}
+	});
+
+	test('a stat result maps to an entry; a missing path is none', () => {
+		assert.strictEqual(gitEntryOf({ isFile: true, isDirectory: false }), 'file');
+		assert.strictEqual(gitEntryOf({ isFile: false, isDirectory: true }), 'directory');
+		assert.strictEqual(gitEntryOf({ isFile: false, isDirectory: false }), 'none');
+		assert.strictEqual(gitEntryOf(undefined), 'none');
+	});
+
+	test('the closed-repository count: the git extension\'s key, unknown until it is a number', () => {
+		assert.strictEqual(CLOSED_REPOSITORIES_KEY, 'git.closedRepositoryCount');
+		assert.deepStrictEqual([0, 1, 3, undefined, null, '1', true].map(hasClosedRepositories), [false, true, true, undefined, undefined, undefined, undefined]);
 	});
 });
