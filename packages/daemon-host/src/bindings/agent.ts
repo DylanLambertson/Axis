@@ -4,12 +4,14 @@ import { z } from "zod";
 import type { AuditSink, Redactor } from "@axis/audit";
 import { ABSENT, BROKER_PAYLOAD_ALLOWLIST, BrokerError, ToolBroker, callDigest, contentDigest, createCommandRunner, nodeBrokerFs, type ApprovalHook, type ApprovalRequest, type BrokerFs, type CommandRunner, type ContainDeps, type ToolDefinition } from "@axis/broker";
 import { MAX_APPROVAL_PATHS, toDisplayPath, type ApprovalPreview } from "@axis/protocol";
+import { createNodeRunner, type GitRunner } from "@axis/git-ops";
 import { createSecretScanner } from "@axis/secret-scan";
 import { createMockProvider, guardProvider, type GuardedProvider, type MockProviderOptions } from "@axis/providers";
 import { formatDriftNotice } from "../composer/drift.js";
 import { buildApprovalPreview, type PreviewScanner } from "../composer/preview.js";
 import { createRunTaint, type TaintStore } from "../composer/taint.js";
 import { ObservedFiles } from "./agent-observed.js";
+import { GIT_DIFF, GIT_STATUS, GIT_TOOL_SPECS, gitDiffArgs, gitReadRunnerOptions, gitStatusArgs, gitTools } from "./agent-git.js";
 import { providerRedactor } from "./provider-redactor.js";
 import { RUN_COMMAND, RUN_COMMAND_SPEC, RunWt2, approvableCommand, commandLimits, commandTool, runCommandArgs, type CommandLimits, type RunCommandArgs } from "./agent-command.js";
 import type { RunApprovals } from "../gate/run-approvals.js";
@@ -27,7 +29,9 @@ import type { WorktreeLocator } from "../ports/worktree-locator.js";
  *   an approval is always the run's own; its ledger refuses a replayed grant.
  * - **Tools (C1).** `read_file` (tier `read`) and `write_file` (tier `write`), each declaring its one path, so WT-1
  *   containment and WT-3 protected paths apply at decision and at use. `run_command` (C3, `agent-command.ts`) is offered
- *   only when the host gave the WT-2 guard (`commandGuard`); shutdown kills what the shared runner started.
+ *   only when the host gave the WT-2 guard (`commandGuard`); shutdown kills what the shared runner started. `git_status` and
+ *   `git_diff` (C3 slice 2, `agent-git.ts`, tier `read`) are offered when the host gave its git (`gitPath`): the broker's git,
+ *   checked by the run's WT-2 guard before git starts.
  * - **Providers.** The mock, guarded (`guardProvider`: validation, outgoing secret scan with the host redactor, timeouts,
  *   stream grammar, the run budget), and the network providers `bindings/providers.ts` builds over the vault (C6).
  * - **Approval preview (C8).** Each call's parsed arguments are held while the broker decides; when the broker asks, the
@@ -95,6 +99,11 @@ export interface AgentBindingDeps {
    * Absent: `run_command` is not offered at all.
    */
   readonly commandGuard?: RunRepositoryGuard;
+  /**
+   * The host's ONE absolute git (`HostServices.gitPath`) for `git_status` and `git_diff`, run by the broker's git over a
+   * daemon-context node runner of `@axis/git-ops`. Absent: neither tool is offered.
+   */
+  readonly gitPath?: string;
   /** Bounds of one command (timeout, output cap, what the model sees). Default `DEFAULT_COMMAND_LIMITS`. */
   readonly commandLimits?: Partial<CommandLimits>;
 }
@@ -109,6 +118,10 @@ export interface AgentBinding extends ComposerEngine {
   dispose(): void;
   /** `run_command` is offered: the host gave the WT-2 guard (C3). */
   readonly commands: boolean;
+  /** `git_status` and `git_diff` are offered: the host gave its git (C3 slice 2). */
+  readonly gitReads: boolean;
+  /** The bounds every `run_command` of this binding runs under. */
+  readonly commandLimits: CommandLimits;
 }
 
 export const MAX_READ_BYTES = 262_144;
@@ -138,7 +151,11 @@ const PREVIEWED: ReadonlyMap<string, { readonly args: z.ZodType; readonly conten
   ["read_file", { args: readArgs, content: () => undefined }],
   ["write_file", { args: writeArgs, content: (a: z.infer<typeof writeArgs>) => a.content }],
   [RUN_COMMAND, { args: runCommandArgs, content: () => undefined }],
+  [GIT_STATUS, { args: gitStatusArgs, content: () => undefined }],
+  [GIT_DIFF, { args: gitDiffArgs, content: () => undefined }],
 ]);
+/** Tools that are never put to the user: a read the broker asks about (a path into the git directory) is refused, not declined. */
+const NEVER_ASKED: ReadonlySet<string> = new Set([GIT_STATUS, GIT_DIFF]);
 /** The user can judge the call from the preview: it writes nothing, or it is not protected, or its whole content is shown. */
 export function shownWhole(preview: ApprovalPreview): boolean {
   const c = preview.content;
@@ -177,6 +194,8 @@ export function createAgentBinding(deps: AgentBindingDeps): AgentBinding {
   const runner: CommandRunner = createCommandRunner({ platform });
   const scanner = deps.previewScanner ?? defaultPreviewScanner();
   const limits = commandLimits(deps.commandLimits);
+  // One runner for every run's git reads: the host's git only (never looked up), its output bounded for the model.
+  const gitRunner: GitRunner | undefined = deps.gitPath === undefined ? undefined : createNodeRunner(gitReadRunnerOptions(deps.gitPath, deps.env()));
   const providers = new Map<string, GuardedProvider>([["mock", guardProvider(createMockProvider(deps.mock ?? {}), { redactor: providerRedactor(deps.redactor) })]]);
   for (const p of deps.providers ?? []) {
     if (providers.has(p.descriptor.providerId)) throw new Error("provider registered twice");
@@ -231,6 +250,7 @@ export function createAgentBinding(deps: AgentBindingDeps): AgentBinding {
         // A command line the hook is shown cut (a program path that pushes the line past the broker's bound) can never be
         // matched to its call: refused with a closed reason, never declined as if the user had said no (review c3 r1 SF-3).
         if (req.tool === RUN_COMMAND && req.commandsTruncated) throw new BrokerError("E_INVALID_ARGUMENT", "invalid-command", "the command line is too long to be shown whole");
+        if (NEVER_ASKED.has(req.tool)) throw new BrokerError("E_POLICY_DENIED", "protected-path", "a git read of the git directory is refused");
         const call = covered(req);
         const spec = PREVIEWED.get(req.tool);
         // Fail closed: no preview bound to this digest, no challenge (the broker records the decline). The digest covers the
@@ -275,6 +295,12 @@ export function createAgentBinding(deps: AgentBindingDeps): AgentBinding {
         return { approved: false };
       },
     };
+    // WT-2: one baseline for the run; once a check finds a change, every later call and turn of the run halts it.
+    const guard = deps.commandGuard;
+    const wt2 = guard === undefined ? undefined : new RunWt2({ runId: run.runId, workspaceId: worktree.id, worktree: { workTree: worktree.root, gitDir: worktree.gitDir }, guard, writeLock: deps.writeLock });
+    const halted = (): boolean => wt2?.halted === true;
+    // Ends a lock wait of a git read when the run ends.
+    const life = new AbortController();
     const broker = new ToolBroker({
       registry: contain.registry,
       fs: brokerFs,
@@ -288,6 +314,7 @@ export function createAgentBinding(deps: AgentBindingDeps): AgentBinding {
       // IAC-T: asked for every call after the tier policy; while the run is tainted every call above `read` needs the user.
       policy: { hook: taint },
       ...(deps.extraProtected === undefined ? {} : { extraProtected: deps.extraProtected }),
+      ...(gitRunner === undefined ? {} : { gitRunner, assertNoDrift: async () => wt2?.beforeRead(life.signal) }),
     });
     broker.register({
       name: "read_file",
@@ -328,20 +355,21 @@ export function createAgentBinding(deps: AgentBindingDeps): AgentBinding {
         return `wrote ${data.length} bytes\ndigest: ${r.digest}${lost}`;
       },
     });
-    // WT-2: one baseline for the run; once a check finds a change, every later call and turn of the run halts it.
-    const guard = deps.commandGuard;
-    const wt2 = guard === undefined ? undefined : new RunWt2({ runId: run.runId, workspaceId: worktree.id, worktree: { workTree: worktree.root, gitDir: worktree.gitDir }, guard, writeLock: deps.writeLock });
-    const halted = (): boolean => wt2?.halted === true;
     if (wt2 !== undefined) broker.register(commandTool({ wt2, workspaceId: worktree.id, platform, limits, redact: (t) => deps.redactor.redactString(t), writeLock: deps.writeLock }));
     for (const extra of deps.extraTools ?? []) broker.register(extra);
-    const specs = wt2 === undefined ? COMPOSER_TOOLS : Object.freeze([...COMPOSER_TOOLS, RUN_COMMAND_SPEC]);
+    if (gitRunner !== undefined) for (const t of gitTools({ redact: (t) => deps.redactor.redactString(t) })) broker.register(t as ToolDefinition);
+    const specs = Object.freeze([...COMPOSER_TOOLS, ...(wt2 === undefined ? [] : [RUN_COMMAND_SPEC]), ...(gitRunner === undefined ? [] : GIT_TOOL_SPECS)]);
     return {
       specs,
       drift: async (signal) => formatDriftNotice(await observed.drift(signal)),
       // IAC-T source 1: the pipeline taints this run through its own flag before the block is returned. A halted run
       // (WT-2) never gets here: the loop's guard ends it at the boundary before it asks for a delivery.
       ...(deps.deliveries === undefined ? {} : { deliver: async () => deps.deliveries?.next(run.runId, taint) }),
-      ...(wt2 === undefined ? {} : { guard: (signal: AbortSignal) => wt2.turn(signal), close: () => wt2.close() }),
+      ...(wt2 === undefined ? {} : { guard: (signal: AbortSignal) => wt2.turn(signal) }),
+      close: () => {
+        life.abort();
+        wt2?.close();
+      },
       async invoke(name, input, signal) {
         if (halted()) throw new ComposerRunHalt("GIT_DRIFT");
         const parsed = PREVIEWED.get(name)?.args.safeParse(input);
@@ -380,5 +408,7 @@ export function createAgentBinding(deps: AgentBindingDeps): AgentBinding {
     prepare,
     dispose: () => void runner.killAll(),
     commands: deps.commandGuard !== undefined,
+    gitReads: gitRunner !== undefined,
+    commandLimits: limits,
   };
 }

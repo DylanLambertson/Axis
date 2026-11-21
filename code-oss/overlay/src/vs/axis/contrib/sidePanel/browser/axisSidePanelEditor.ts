@@ -4,7 +4,7 @@
 
 import { $, append } from '../../../../base/browser/dom.js';
 import { KeyCode } from '../../../../base/common/keyCodes.js';
-import { IReference, Disposable, DisposableStore, IDisposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
+import { IReference, Disposable, DisposableStore, IDisposable, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { URI } from '../../../../base/common/uri.js';
 import { ICodeEditor } from '../../../../editor/browser/editorBrowser.js';
 import { EditorExtensionsRegistry } from '../../../../editor/browser/editorExtensions.js';
@@ -13,7 +13,7 @@ import { CodeEditorWidget } from '../../../../editor/browser/widget/codeEditor/c
 import { EditorOption } from '../../../../editor/common/config/editorOptions.js';
 import { Selection } from '../../../../editor/common/core/selection.js';
 import { IResolvedTextEditorModel, ITextModelService } from '../../../../editor/common/services/resolverService.js';
-import { CommandsRegistry, ICommandHandler } from '../../../../platform/commands/common/commands.js';
+import { CommandsRegistry, ICommand, ICommandHandler } from '../../../../platform/commands/common/commands.js';
 import { ContextKeyExpr, IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
 import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { ServiceCollection } from '../../../../platform/instantiation/common/serviceCollection.js';
@@ -169,7 +169,7 @@ export class AxisSidePanelEditor extends Disposable {
 		switch (action) {
 			case 'save':
 			case 'saveWithoutFormatting':
-				if (!this.hostServices.saveConflictsDetected(resource)) {
+				if (!this.conflictsDetected(resource)) {
 					this.hostServices.blocked('files.saveConflictResolution');
 					return;
 				}
@@ -178,9 +178,15 @@ export class AxisSidePanelEditor extends Disposable {
 				}
 				return;
 			case 'saveAllToo':
-				if (!this.readOnly() && this.hostServices.isDirty(resource) && this.hostServices.saveConflictsDetected(resource)) {
-					await this.hostServices.save(resource, false);
+				if (this.readOnly() || !this.hostServices.isDirty(resource)) {
+					return;
 				}
+				// Refused like Save, and said so: a silent skip would let the user believe the file was saved (review r3 N4).
+				if (!this.conflictsDetected(resource)) {
+					this.hostServices.blocked('files.saveConflictResolution');
+					return;
+				}
+				await this.hostServices.save(resource, false);
 				return;
 			case 'openInIde':
 				await this.hostServices.reveal({ resource, selection: this.widget?.getSelection() ?? undefined });
@@ -196,6 +202,15 @@ export class AxisSidePanelEditor extends Disposable {
 				return;
 			case 'accept':
 				return;
+		}
+	}
+
+	/** The host's read of the conflict setting; a read that throws counts as "not detected", which refuses (review r4 N4). */
+	private conflictsDetected(resource: URI): boolean {
+		try {
+			return this.hostServices.saveConflictsDetected(resource) === true;
+		} catch {
+			return false;
 		}
 	}
 
@@ -216,25 +231,72 @@ export interface IAxisSidePanelRegistration extends IDisposable {
 	readonly missing: readonly string[];
 }
 
+interface IGuardInstall {
+	readonly store: DisposableStore;
+	readonly guarded: () => readonly string[];
+	readonly missing: () => readonly string[];
+	refs: number;
+}
+
+/** The one install shared by every caller in this JavaScript context (review r4 N2): the command registry is global. */
+let install: IGuardInstall | undefined;
+
 /**
  * Registers Escape and the command guards (review S1). Each policy command other than `accept` is re-registered
  * under its own id with a guard: while a side-panel editor has focus and the command has no explicit target, the
- * policy action runs on that editor's file; otherwise the original handler runs. A later registration of a policy id
- * (a command registered at runtime, or an extension registering the same id) would sit on top of the guard, so the
- * guard is applied again over it (review r2 N1). Disposing restores the originals.
+ * policy action runs on that editor's file; otherwise the handler under the guard runs.
+ *
+ * A later registration of a policy id (a command registered at runtime, or an extension registering the same id)
+ * would sit on top of the guard (review r2 N1). `CommandsRegistry.registerCommand` is therefore wrapped while this
+ * registration lives: a policy id gets its guard stacked over it at once, and the disposable it returns removes that
+ * guard with it, so no guard outlives the handler it calls (review r3 N1). Guards are registered through the
+ * unwrapped method, so a guard is never guarded again (review r3 N3).
+ *
+ * The install is shared and counted (review r4 N2): the registry is one per JavaScript context, which auxiliary windows
+ * share, so a second call returns a handle on the same guards instead of stacking a second set and a second wrapper.
+ * Each handle disposes once; the last one restores the method and the originals, in whatever order they are disposed.
  */
 export function registerAxisSidePanelEditorCommands(): IAxisSidePanelRegistration {
+	const shared = install ??= installGuards();
+	shared.refs++;
+	let disposed = false;
+	return {
+		get guarded() { return shared.guarded(); },
+		get missing() { return shared.missing(); },
+		dispose: () => {
+			if (disposed) {
+				return;
+			}
+			disposed = true;
+			if (--shared.refs === 0) {
+				if (install === shared) {
+					install = undefined;
+				}
+				shared.store.dispose();
+			}
+		},
+	};
+}
+
+function installGuards(): IGuardInstall {
 	const store = new DisposableStore();
-	const guards = new Map<string, ICommandHandler>();
+	// The registered guard commands themselves: the registry keeps the object it is given but replaces its `handler`
+	// with an argument validator when the metadata declares `args` (`commands.ts`), so a handler would not match (review r4 N1).
+	const guards = new WeakSet<ICommand>();
+	const registry = CommandsRegistry as { registerCommand: typeof CommandsRegistry.registerCommand };
+	const register = registry.registerCommand;
+	const registerRaw = (command: ICommand): IDisposable => register.call(CommandsRegistry, command);
 	store.add(KeybindingsRegistry.registerCommandAndKeybindingRule({
 		id: AXIS_SIDE_PANEL_LEAVE_COMMAND, weight: AXIS_SIDE_PANEL_LEAVE_WEIGHT, when: ContextKeyExpr.equals(AXIS_SIDE_PANEL_EDITOR_FOCUS, true), primary: KeyCode.Escape,
 		handler: accessor => focusedInstance(accessor)?.run('leave'),
 	}));
-	const guard = (id: string, action: AxisSidePanelAction): void => {
-		const original = CommandsRegistry.getCommand(id);
-		if (!original || original.handler === guards.get(id)) {
-			return;
-		}
+	const policyAction = (id: string): AxisSidePanelAction | undefined => {
+		const action = AXIS_SIDE_PANEL_COMMAND_POLICY.get(id);
+		return action === 'accept' ? undefined : action;
+	};
+	/** Stacks a guard over `original` (the top registration of its id) and returns the guard's own registration. */
+	const guard = (original: ICommand, action: AxisSidePanelAction): IDisposable => {
+		const id = original.id;
 		const handler: ICommandHandler = (accessor, ...args) => {
 			const instance = focusedInstance(accessor);
 			const decision = guardDecision(action, instance !== undefined, hasExplicitTarget(args));
@@ -246,24 +308,48 @@ export function registerAxisSidePanelEditorCommands(): IAxisSidePanelRegistratio
 			}
 			return instance?.run(decision, id);
 		};
-		guards.set(id, handler);
-		store.add(CommandsRegistry.registerCommand({ id, metadata: original.metadata, handler }));
+		const command: ICommand = { id, metadata: original.metadata, handler };
+		guards.add(command);
+		return registerRaw(command);
 	};
-	for (const [id, action] of AXIS_SIDE_PANEL_COMMAND_POLICY) {
-		if (action !== 'accept') {
-			guard(id, action);
+	for (const id of AXIS_SIDE_PANEL_COMMAND_POLICY.keys()) {
+		const action = policyAction(id);
+		const original = CommandsRegistry.getCommand(id);
+		if (action && original) {
+			store.add(guard(original, action));
 		}
 	}
-	store.add(CommandsRegistry.onDidRegisterCommand(id => {
-		const action = AXIS_SIDE_PANEL_COMMAND_POLICY.get(id);
-		if (action && action !== 'accept') {
-			guard(id, action);
+	let wrapped = true;
+	const wrapper = function (idOrCommand: string | ICommand, handler?: ICommandHandler): IDisposable {
+		// The string form is made a command here, so the guard does not depend on how the registry's own string form
+		// reaches its object form (at the pin it calls `this.registerCommand` again, which is this wrapper).
+		const command = typeof idOrCommand === 'string' && handler ? { id: idOrCommand, handler } : idOrCommand;
+		if (typeof command === 'string') {
+			throw new Error('invalid command'); // what the registry throws for an id without a handler
+		}
+		const inner = registerRaw(command);
+		const action = wrapped ? policyAction(command.id) : undefined;
+		if (!action) {
+			return inner;
+		}
+		const outer = store.add(guard(command, action));
+		return toDisposable(() => {
+			store.delete(outer);
+			inner.dispose();
+		});
+	} as typeof CommandsRegistry.registerCommand;
+	registry.registerCommand = wrapper;
+	store.add(toDisposable(() => {
+		wrapped = false;
+		if (registry.registerCommand === wrapper) {
+			registry.registerCommand = register;
 		}
 	}));
-	const policyIds = [...AXIS_SIDE_PANEL_COMMAND_POLICY].filter(([, action]) => action !== 'accept').map(([id]) => id);
+	const policyIds = [...AXIS_SIDE_PANEL_COMMAND_POLICY.keys()].filter(id => policyAction(id) !== undefined);
 	return {
-		get guarded() { return policyIds.filter(id => guards.has(id) && CommandsRegistry.getCommand(id)?.handler === guards.get(id)); },
-		get missing() { return policyIds.filter(id => !CommandsRegistry.getCommand(id)); },
-		dispose: () => store.dispose(),
+		store,
+		guarded: () => policyIds.filter(id => { const top = CommandsRegistry.getCommand(id); return top !== undefined && guards.has(top); }),
+		missing: () => policyIds.filter(id => !CommandsRegistry.getCommand(id)),
+		refs: 0,
 	};
 }

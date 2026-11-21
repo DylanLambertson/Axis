@@ -3,7 +3,7 @@
 <!-- PV-V0 key scan: registers every workbench contribution at the pin (the desktop workbench main by default, or the
      web one with ?main=web; never started), adds the keybindings that built-in extensions contribute in their
      package.json (extension-keys.json, written by prepare.mjs), then lists each keybinding that can fire while focus
-     is in the side-panel editor and probes whether its command reads the editor part's active editor directly.
+     is in the side-panel editor in any of several states of the hidden IDE and probes whether its command reads the editor part's active editor directly.
      Read by scan-keys.mjs. -->
 <html><head><meta charset="utf-8"></head><body><script type="module">
 const errs = window.errs = [];
@@ -32,7 +32,22 @@ const context = {
 	debuggersAvailable: true, debugState: 'inactive', inDebugMode: false, taskCommandsRegistered: true,
 	textCompareEditorVisible: false, textCompareEditorActive: false, sideBarVisible: false, panelVisible: false, auxiliaryBarVisible: true,
 };
-const evaluator = { getValue: key => context[key] };
+// The scan's context is one state of the hidden IDE; a keybinding whose \`when\` is false there may still hold in another
+// (review r3 N2). Each candidate is kept when its \`when\` holds in any of these states, and lists the states it holds in.
+// The side editor's own keys (focus, language, read-only) stay fixed; only workbench-global state and user modes vary.
+const STATES = {
+	base: {},
+	screenReader: { accessibilityModeEnabled: true },
+	diff: { textCompareEditorVisible: true, textCompareEditorActive: true, activeEditor: 'workbench.editors.textDiffEditor', isInDiffEditor: false },
+	groups: { multipleEditorGroups: true, activeEditorGroupIndex: 2, activeEditorGroupLast: true, editorPartMultipleEditorGroups: true },
+	sideBySide: { sideBySideEditorActive: true, activeEditorCanSplitInGroup: true, activeEditor: 'workbench.editor.sidebysideEditor' },
+	dirty: { activeEditorIsDirty: true },
+	debugging: { inDebugMode: true, debugState: 'stopped', debugType: 'node' },
+	panels: { sideBarVisible: true, panelVisible: true, auxiliaryBarVisible: true },
+};
+const evaluators = Object.entries(STATES).map(([name, over]) => ({ name, evaluator: { getValue: key => (key in over ? over[key] : context[key]) } }));
+window.states = Object.keys(STATES);
+const holdsIn = expr => evaluators.filter(e => !expr || expr.evaluate(e.evaluator)).map(e => e.name);
 const editorActions = new Set([...EditorExtensionsRegistry.getEditorActions()].map(a => a.id));
 const isEditorCommand = id => editorActions.has(id) || !!EditorExtensionsRegistry.getEditorCommand(id);
 
@@ -56,15 +71,15 @@ const ACTIVE = /^(editorService|editorGroupsService|codeEditorService|textFileSe
 // The candidates: default keybindings that can fire in the side-panel editor and are not editor commands, then the
 // built-in extensions' package.json keybindings that can fire there.
 const core = KeybindingsRegistry.getDefaultKeybindings().filter(item => item.command && !item.command.startsWith('-') && item.keybinding
-	&& (!item.when || item.when.evaluate(evaluator)) && !isEditorCommand(item.command));
-const candidates = core.map(item => ({ source: 'core', command: item.command, weight: item.weight1, when: item.when?.serialize() ?? null,
+	&& holdsIn(item.when).length > 0 && !isEditorCommand(item.command));
+const candidates = core.map(item => ({ source: 'core', command: item.command, weight: item.weight1, when: item.when?.serialize() ?? null, states: holdsIn(item.when).join(' '),
 	keys: item.keybinding.chords.map(c => [c.ctrlKey && 'Ctrl', c.shiftKey && 'Shift', c.altKey && 'Alt', c.metaKey && 'Meta', KeyCodeUtils.toString(c.keyCode)].filter(Boolean).join('+')).join(' ') }));
 const extensionKeys = await fetch('./extension-keys.json').then(r => r.ok ? r.json() : []).catch(() => []);
 for (const k of extensionKeys) {
 	let expr;
 	try { expr = k.when ? ContextKeyExpr.deserialize(k.when) : undefined; } catch { continue; }
-	if (!k.command || k.command.startsWith('-') || (expr && !expr.evaluate(evaluator)) || isEditorCommand(k.command)) { continue; }
-	candidates.push({ source: `extension:${k.extension}`, command: k.command, weight: 300, when: k.when ?? null, keys: k.key });
+	if (!k.command || k.command.startsWith('-') || holdsIn(expr).length === 0 || isEditorCommand(k.command)) { continue; }
+	candidates.push({ source: `extension:${k.extension}`, command: k.command, weight: 300, when: k.when ?? null, states: holdsIn(expr).join(' '), keys: k.key });
 }
 window.extensionKeyCount = extensionKeys.length;
 window.total = KeybindingsRegistry.getDefaultKeybindings().length;

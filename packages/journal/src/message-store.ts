@@ -149,6 +149,11 @@ export class MessageRecords {
     return r === undefined ? undefined : toMessage(r);
   }
 
+  /** True when Axis already posted a system message in reply to this one (a delivery notice). Rare: scans unindexed. */
+  systemReplied(messageId: string): boolean {
+    return this.#db.prepare("SELECT 1 FROM agent_messages WHERE in_reply_to = ? AND sender_key = 'system' LIMIT 1").get(messageId) !== undefined;
+  }
+
   /** True when the principal can read this message of its thread (`joinedSeq` is its own; 0 reads every message). */
   visible(messageId: string, principal: string, joinedSeq: number): boolean {
     return this.#db.prepare(`SELECT 1 FROM agent_messages m WHERE m.id = ? AND ${VISIBLE}`).get(messageId, joinedSeq, principal) !== undefined;
