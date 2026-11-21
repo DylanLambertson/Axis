@@ -39,7 +39,7 @@ Companion to `docs/design/daemon-host.md` (sections 3, 6.3 and 8), `docs/design/
 | 0 (no stop requested), 1, 70, other codes, signal, no `ready` in 60 s, spawn throws | crash | restart with delay 1 s doubling to 30 s; more than 5 crashes in 10 minutes is `failed` (`crash_loop`) and stays down; a run that was `ready` for 60 s forgets earlier crashes |
 | any, after `shutdown()` | requested stop | never restarted |
 
-On app quit (`onWillShutdown`, joined) the supervisor posts `{ type: "shutdown" }` first (the only graceful path on Windows) and kills after 20 s (the host's own drain is 10 s, settle 2 s, flush 5 s, final anchor 1.5 s). A kill that produces no exit event still ends the stop.
+On app quit (`onWillShutdown`, joined) the supervisor posts `{ type: "shutdown" }` first (the only graceful path on Windows) and kills after 20 s (the host's own drain is 10 s, settle 2 s, flush 5 s, final anchor 1.5 s). A kill that produces no exit event still ends the stop. The host never relies on draining to end: an Electron utility process does not exit when its event loop is empty (its parent port keeps it alive even with no listener; measured on Electron 43.8.3), so after a released shutdown the entry calls `process.exit` with the lifecycle's code one macrotask later (PV-X1b finding; `test/entry-stop-child.test.ts` runs the composed daemon as a child process that keeps its parent channel open).
 
 ## Choices made where the design was open
 

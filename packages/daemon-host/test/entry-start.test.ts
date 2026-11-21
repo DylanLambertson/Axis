@@ -101,10 +101,15 @@ test("with every port supplied the entry starts, serves an attested connection o
     port.deliver({ type: "connect", attestation: attest(init.key) }, [a.server, b.server]);
     await aClosed;
 
-    // `shutdown` on the control channel ends the host by draining: exit 0 and no `process.exit`.
+    // `shutdown` on the control channel releases the host (exit code 0), and only then does the entry end the process itself, one
+    // timer later: an Electron utility process never ends by draining (PV-X1b).
     port.deliver({ type: "shutdown" });
     assert.equal(await h.finished, EXIT.OK, lines.join("\n"));
-    assert.deepEqual(proc.exits, [], "the process ended by draining, not by exit()");
+    assert.equal(proc.exitCode, EXIT.OK);
+    assert.deepEqual(proc.exits, [], "no exit() before the release finished and a macrotask passed");
+    assert.equal(timers.pending(), 1, "the exit is on the injected timer");
+    timers.fire();
+    assert.deepEqual(proc.exits, [EXIT.OK], "a released host ends the process with the shutdown's code");
     assert.equal(port.attached(), false);
     for (const name of proc.eventNames()) assert.equal(proc.listenerCount(name), 0, `a listener on ${String(name)} was left behind`);
     assert.equal(JSON.stringify([...lines, ...port.posted]).includes(init.key.toString("base64url")), false, "the key reached no line and no message");
