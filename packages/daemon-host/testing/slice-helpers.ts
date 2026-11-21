@@ -31,14 +31,15 @@ export interface SliceHost {
 }
 
 /** Start the composed host as a child process on `fx`'s environment. `agents` is what `axis.cliAgents` answers. */
-export async function startHost(fx: GitFixture, over: Partial<TestSupervisorOptions> & { scanMode?: "refuse" | "warn"; agents?: unknown; probeMutex?: boolean; breakPutFile?: string; finalWaitMs?: number } = {}): Promise<SliceHost> {
-  const { scanMode, agents, probeMutex, breakPutFile, finalWaitMs, ...rest } = over;
+export async function startHost(fx: GitFixture, over: Partial<TestSupervisorOptions> & { scanMode?: "refuse" | "warn"; agents?: unknown; probeMutex?: boolean; breakPutFile?: string; finalWaitMs?: number; composerConfig?: string } = {}): Promise<SliceHost> {
+  const { scanMode, agents, probeMutex, breakPutFile, finalWaitMs, composerConfig, ...rest } = over;
   // The host's git environment is checked by git-ops: the pty one must not set GIT_CONFIG_NOSYSTEM (the fixture's own git calls do).
   const { GIT_CONFIG_NOSYSTEM: _fixtureOnly, ...hostBase } = fx.env;
   const env: Record<string, string> = { ...hostBase, AXIS_SLICE_SCAN_MODE: scanMode ?? "refuse" };
   if (breakPutFile !== undefined) env["AXIS_SLICE_BREAK_PUT"] = breakPutFile;
   if (finalWaitMs !== undefined) env["AXIS_SLICE_FINAL_WAIT_MS"] = String(finalWaitMs);
   if (probeMutex === true) env["AXIS_SLICE_MUTEX_PROBE"] = "1";
+  if (composerConfig !== undefined) env["AXIS_SLICE_COMPOSER"] = composerConfig; // a `SliceComposerConfig` file (slice-composer.ts)
   for (const n of DENIED_SEEDS) env[n] = "placeholder";
   const sup = await TestSupervisor.start({ entry: SLICE_HOST, env, ...rest });
   started.push(sup);

@@ -23,7 +23,9 @@ export type MessagesReply =
   /** A valid SSE stream of text deltas of `chunk` characters, about `bytes` long, unless the client goes first. */
   | { readonly kind: "flood"; readonly bytes: number; readonly chunk: number }
   /** Headers and nothing else, ever. */
-  | { readonly kind: "hang" };
+  | { readonly kind: "hang" }
+  /** A 200 event stream with exactly this body (hostile or malformed streams, ticket C7). */
+  | { readonly kind: "raw"; readonly body: string };
 
 export interface Seen {
   readonly method: string;
@@ -35,6 +37,8 @@ export interface Seen {
 
 export interface MockAnthropic {
   readonly fetch: FetchLike;
+  /** The loopback port the server listens on (a child-process host routes its fetch here, ticket C7). */
+  readonly port: number;
   /** Every URL the adapter asked `fetch` for, in order. */
   readonly asked: string[];
   readonly seen: Seen[];
@@ -45,7 +49,7 @@ export interface MockAnthropic {
   close(): Promise<void>;
 }
 
-const sse = (type: string, data: unknown): string => `event: ${type}\ndata: ${JSON.stringify(data)}\n\n`;
+export const sse = (type: string, data: unknown): string => `event: ${type}\ndata: ${JSON.stringify(data)}\n\n`;
 
 function textStream(text: string, model: string, inputTokens: number, outputTokens: number): string {
   let out = sse("message_start", { type: "message_start", message: { id: "msg_c6", type: "message", role: "assistant", model, content: [], usage: { input_tokens: inputTokens, output_tokens: 1 } } });
@@ -104,6 +108,10 @@ export async function mockAnthropic(): Promise<MockAnthropic> {
       case "redirect":
         res.writeHead(302, { location: reply.location });
         return void res.end();
+      case "raw":
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        streamed += Buffer.byteLength(reply.body);
+        return void res.end(reply.body);
       case "hang":
         res.writeHead(200, { "content-type": "text/event-stream" });
         return void res.flushHeaders();
@@ -149,6 +157,7 @@ export async function mockAnthropic(): Promise<MockAnthropic> {
 
   return {
     fetch: fetchLike,
+    port,
     asked,
     seen,
     get replies() {
