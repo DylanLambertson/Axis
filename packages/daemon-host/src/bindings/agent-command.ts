@@ -235,11 +235,15 @@ export function commandTool(d: { readonly wt2: RunWt2; readonly workspaceId: str
   };
 }
 
-/** Limits from the host, each a positive safe integer within the runner's own bounds; anything else refuses the binding. */
+/**
+ * The binding's limits (`AgentBindingDeps.commandLimits`), each a positive safe integer at or below its `DEFAULT_COMMAND_LIMITS`
+ * value; anything else refuses the binding. The ceiling is the default here too, not only in `hostCommandLimits`, so a direct
+ * caller of `createAgentBinding` (a test, the rig) cannot raise a bound either (review cmd-bounds N3); no caller needs more.
+ */
 export function commandLimits(over: Partial<CommandLimits> | undefined): CommandLimits {
   const out = { ...DEFAULT_COMMAND_LIMITS, ...over };
   const ok = (v: unknown, max: number): boolean => typeof v === "number" && Number.isSafeInteger(v) && v >= 1 && v <= max;
-  if (!ok(out.timeoutMs, 600_000) || !ok(out.maxOutputBytes, 16 * 1024 * 1024) || !ok(out.modelChars, 262_144)) throw new RangeError("composer command limits are out of range");
+  if (!ok(out.timeoutMs, DEFAULT_COMMAND_LIMITS.timeoutMs) || !ok(out.maxOutputBytes, DEFAULT_COMMAND_LIMITS.maxOutputBytes) || !ok(out.modelChars, DEFAULT_COMMAND_LIMITS.modelChars)) throw new RangeError("composer command limits are out of range");
   return Object.freeze(out);
 }
 
@@ -256,6 +260,9 @@ export function hostCommandLimits(raw: unknown): CommandLimits | "command_limits
   if (raw === undefined) return DEFAULT_COMMAND_LIMITS;
   try {
     if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return "command_limits_invalid";
+    // A Proxy can lie here (its `getPrototypeOf` trap may answer `Object.prototype` for an extensible target of any
+    // prototype). That is harmless: only own keys are read below, through the descriptor trap, and every value is checked,
+    // so whatever the real prototype holds never comes out; at most the defaults, or bounds lowered by checked values.
     const proto: unknown = Object.getPrototypeOf(raw);
     if (proto !== Object.prototype && proto !== null) return "command_limits_invalid";
     const out: Record<keyof CommandLimits, number> = Object.assign(Object.create(null) as object, DEFAULT_COMMAND_LIMITS);

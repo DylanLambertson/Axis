@@ -74,6 +74,19 @@ test("read once, field by field: a null-prototype object is accepted, the result
   assert.deepEqual(asked, ["d:timeoutMs"]);
 });
 
+test("review cmd-bounds N1: a Proxy that lies about its prototype passes that check, but only checked own values come out", () => {
+  let got = 0;
+  const base = Object.defineProperty({ modelChars: 999_999_999 }, "timeoutMs", { get: () => (got++, 999_999_999) });
+  const liar = (target: object): object => new Proxy(target, { getPrototypeOf: () => Object.prototype });
+  const empty = liar(Object.create(base) as object);
+  assert.equal(Object.getPrototypeOf(empty), Object.prototype, "the lie holds");
+  assert.deepEqual(hostCommandLimits(empty), DEFAULT_COMMAND_LIMITS, "the real prototype's values never come out");
+  assert.deepEqual(hostCommandLimits(liar(Object.assign(Object.create(base) as object, { modelChars: 50 }))), { ...DEFAULT_COMMAND_LIMITS, modelChars: 50 });
+  assert.equal(hostCommandLimits(liar(Object.assign(Object.create(base) as object, { modelChars: 999_999_999 }))), BAD);
+  assert.equal(hostCommandLimits(liar(new (class Limits { timeoutMs = 60_001; })())), BAD);
+  assert.equal(got, 0, "the prototype's getter is never called");
+});
+
 const pty: PtyPort = { spawn: () => Promise.reject(new Error("unused")) };
 const runner: GitRunner = { run: () => Promise.reject(new Error("unused")) };
 const snapshotter: NonNullable<ComposeOptions["snapshotter"]> = () => ({ before: () => Promise.resolve(), after: () => Promise.resolve({ drift: false }) });
