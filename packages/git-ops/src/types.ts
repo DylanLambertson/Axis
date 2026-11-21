@@ -23,6 +23,11 @@ export interface GitRunRequest {
   readonly signal?: AbortSignal;
   /** Push only: `pushUrlsDigest` of the push URLs git-ops read. A runner that can re-read them just before the push refuses on a difference. */
   readonly pushUrls?: string;
+  /**
+   * Keep at most this many characters of stdout for this call (a non-negative safe integer; the runner's own limit still
+   * applies when it is lower). Output past it is read and dropped, never held, and the result says `truncated`.
+   */
+  readonly maxOutput?: number;
 }
 
 export interface GitRunResult {

@@ -158,7 +158,7 @@ test("S2: a key whose begin() resolves after a timeout is not wedged in-progress
   assert.equal((await r.inbox.response("w1")).error?.code, "E_TIMEOUT");
   await wait(120);
   r.send(req("w2", "write", { n: 1 }, { idempotencyKey: KEY1 }));
-  const res = await r.inbox.response("w2", 2000);
+  const res = await r.inbox.response("w2");
   assert.equal(res.ok, true, `retry with the same key got ${res.error?.code}`);
 });
 
@@ -181,7 +181,7 @@ test("S3b: a verifier that never settles ends in close, and the pending slot is 
     identity: { verify: (a) => (hang ? never() : verifier.verify(a)) },
   });
   t.after(() => r.cleanup());
-  assert.ok(await r.inbox.closedWithin(1000), "the connection was closed when verification timed out");
+  assert.ok(await r.inbox.closedWithin(), "the connection was closed when verification timed out");
   hang = false;
   const again = r.connect("good#conn-2");
   await welcome(again);

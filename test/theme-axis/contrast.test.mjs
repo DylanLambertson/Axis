@@ -106,6 +106,8 @@ const checks = [
 	['panelTitle.activeBorder', ['panel.background'], NON_TEXT],
 	['icon.foreground', ALL, NON_TEXT],
 	['dropdown.border', ALL, NON_TEXT],
+	// Git decorations: file names in the explorer and the Changes state letter, also on a selected row.
+	...['added', 'untracked', 'modified', 'renamed', 'deleted', 'conflicting'].map(k => [`gitDecoration.${k}ResourceForeground`, [...SURFACE, 'list.inactiveSelectionBackground|sideBar.background', 'list.hoverBackground|sideBar.background'], TEXT]),
 	// Diagnostics: squiggles and Problems icons on the surfaces they are drawn on.
 	['editorError.foreground', [...SURFACE, ...RAISED], NON_TEXT],
 	['editorWarning.foreground', [...SURFACE, ...RAISED], NON_TEXT],
@@ -170,6 +172,14 @@ for (const file of ['axis-dark.json', 'axis-light.json']) {
 		}
 	});
 }
+
+// The Agent view's .axis-button border is input.border, which the table above checks at 3:1 on every pane (SC 1.4.11).
+test('the Agent view button border uses input.border, the token checked above', () => {
+	const css = fs.readFileSync(path.resolve(themesDir, '../../../src/vs/axis/contrib/agent/browser/media/axisAgent.css'), 'utf8');
+	const rule = /\.axis-agent-view \.axis-button \{([^}]*)\}/.exec(css);
+	assert.ok(rule, 'the .axis-button rule exists');
+	assert.match(rule[1], /border: 1px solid var\(--vscode-input-border\);/);
+});
 
 // Print the tightest pairs so the PR can quote them.
 if (process.env.AXIS_CONTRAST_REPORT) {

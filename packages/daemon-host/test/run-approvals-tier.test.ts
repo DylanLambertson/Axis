@@ -105,7 +105,8 @@ test("consume is bound to the run's requester, its connection and the call diges
   assert.equal(s.consumed.length, 1, "spent once");
   assert.deepEqual(s.consumed[0]?.caller, { actor: `agent:composer.${RUN}`, connectionId: `run.${RUN}` });
   assert.equal(s.consumed[0]?.context["currentContentDigest"], DIGEST);
-  assert.deepEqual(s.consumed[0]?.context["args"], { runId: RUN, tool: "delete_file", digest: DIGEST, tier: "destructive" });
+  // IAC-T (PV-M0): the run's taint state at issue is bound with the tier.
+  assert.deepEqual(s.consumed[0]?.context["args"], { runId: RUN, tool: "delete_file", digest: DIGEST, tier: "destructive", tainted: false });
   assert.equal(s.log.includes("end"), true, "the dialog's wait is ended after the spend");
 });
 

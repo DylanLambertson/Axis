@@ -7,19 +7,13 @@ import { resolveGit } from "@axis/git-ops";
 import { createRunRepositoryGuard } from "../src/index.js";
 import { createGitFixture, gitSkipReason, type GitFixture } from "../testing/git-fixture.js";
 import { START } from "./composer-rig.js";
-import { approveCommand, commandRig, eventually, nodeRun, posix, toolsOf } from "./composer-command-rig.js";
+import { answerPending, approvalsOf, approveCommand, commandRig, eventually, nodeRun, posix, toolsOf } from "./composer-command-rig.js";
 
 // Ticket C3, WT-2 broker side, on a real repository: GIT-SNAP-1 (`createRunRepositoryGuard`, the host's own) takes one baseline
 // at a composer run's first command and compares with it around every command, before every turn and at the end. A hook
 // planted or a common dir config changed at any point of the run halts it.
 
 const TEXT = { kind: "text", text: "done" } as const;
-/** Block this thread (the writer is another process) until `path` exists, bounded by a count, never asserting a duration. */
-function awaitFileSync(path: string): void {
-  const cell = new Int32Array(new SharedArrayBuffer(4));
-  for (let i = 0; i < 1500 && !existsSync(path); i++) Atomics.wait(cell, 0, 0, 10);
-  if (!existsSync(path)) throw new Error("the writer never finished");
-}
 const write = (path: string, text: string): string => `require("fs").appendFileSync(${JSON.stringify(path)}, ${JSON.stringify(text)})`;
 
 describe("C3 WT-2 on a real repository", { skip: gitSkipReason() }, () => {
@@ -38,7 +32,9 @@ describe("C3 WT-2 on a real repository", { skip: gitSkipReason() }, () => {
     fx.git(fx.repo, "worktree", "add", "-q", join(fx.root, name), "-b", `axis/${name}`);
     return { workTree: realpathSync(join(fx.root, name)), gitDir: realpathSync(join(fx.repo, ".git", "worktrees", name)) };
   };
-  const guard = () => createRunRepositoryGuard({ gitPath, env: fx.env, projectRoot: () => fx.repo });
+  // The host's guard, with room for a slow snapshot: on a loaded machine (a full gate) a take can pass the host's 3 s and would
+  // refuse the first command (`git_drift`) before anything this file tests happens.
+  const guard = () => createRunRepositoryGuard({ gitPath, env: fx.env, projectRoot: () => fx.repo, takeMs: 60_000 });
 
   test("a command that only writes work files is no drift: the run goes on", async (t) => {
     const worktree = linked();
@@ -76,20 +72,27 @@ describe("C3 WT-2 on a real repository", { skip: gitSkipReason() }, () => {
   test("review c3 r1 SF-1 (PROBE5): a detached child of one command plants a hook between commands; the next command never runs", { skip: !posix }, async (t) => {
     const worktree = linked();
     const hook = join(realpathSync(join(fx.repo, ".git")), "hooks", `post-checkout-${n}`);
-    const [go, done] = [join(fx.root, `go-${n}`), join(fx.root, `done-${n}`)];
-    // The child leaves the command's process group (the runner's kill cannot reach it) and writes only once told to.
-    const child = `const fs = require("fs"); let i = 0; const tick = () => { if (fs.existsSync(${JSON.stringify(go)})) { fs.appendFileSync(${JSON.stringify(hook)}, "#!/bin/sh\\nexit 0\\n"); fs.writeFileSync(${JSON.stringify(done)}, ""); } else if (++i < 3000) setTimeout(tick, 10); }; tick();`;
-    const spawner = `require("child_process").spawn(process.execPath, ["-e", ${JSON.stringify(child)}], { detached: true, stdio: "ignore" }).unref()`;
-    // The second model turn happens after command 1 and its checks: the hook lands there, before command 2 asks anything.
-    const onRequest = (k: number): void => {
-      if (k !== 2) return;
-      writeFileSync(go, "");
-      awaitFileSync(done);
-    };
-    const c = await commandRig(t, { worktree, replies: [nodeRun(spawner), nodeRun(write("after.txt", "x")), TEXT], commandGuard: guard(), onRequest });
+    const [go, done, stop] = [join(fx.root, `go-${n}`), join(fx.root, `done-${n}`), join(fx.root, `stop-${n}`)];
+    t.after(() => writeFileSync(stop, ""));
+    // The child leaves the command's process group (the runner's kill cannot reach it) and writes only once told to. It waits on
+    // the go (or the stop) file, not on a time: a loaded machine can take long between the commands. The count is a backstop only.
+    const child = `const fs = require("fs"); let i = 0; const tick = () => { if (fs.existsSync(${JSON.stringify(go)})) { fs.appendFileSync(${JSON.stringify(hook)}, "#!/bin/sh\\nexit 0\\n"); fs.writeFileSync(${JSON.stringify(done)}, ""); } else if (!fs.existsSync(${JSON.stringify(stop)}) && ++i < 60000) setTimeout(tick, 10); }; tick();`;
+    // The child's code is a file, so the command line names one path however long the temporary directory is (MAX_ARGV_JSON).
+    const script = join(fx.root, `child-${n}.js`);
+    writeFileSync(script, child);
+    const spawner = `require("child_process").spawn(process.execPath, [${JSON.stringify(script)}], { detached: true, stdio: "ignore" }).unref()`;
+    const c = await commandRig(t, { worktree, replies: [nodeRun(spawner), nodeRun(write("after.txt", "x")), TEXT], commandGuard: guard() });
     const { run } = await c.service.start(START(c.workspaceId), new AbortController().signal);
     await approveCommand(c, run.runId);
-    await approveCommand(c, run.runId);
+    // Command 2 waits for its approval: command 1, its check and the turn's check are done, command 2's own check is not. The
+    // hook lands now. Nothing blocks the daemon's thread while the child writes (a blocked thread let the client's own
+    // deadline run out on a loaded machine).
+    const asked = (): number => approvalsOf(c, run.runId).filter((e) => e.state === "requested").length;
+    await eventually(() => asked() === 2 || !c.service.get(run.runId).live, 6000);
+    assert.deepEqual(toolsOf(c, run.runId).map((e) => e.outcome), ["ok"], `command 1 ended before the hook lands: ${JSON.stringify(toolsOf(c, run.runId).map((e) => e.reason))}`);
+    writeFileSync(go, "");
+    await eventually(() => existsSync(done), 6000);
+    await answerPending(c);
     await eventually(() => !c.service.get(run.runId).live);
     assert.ok(existsSync(hook), "the detached child planted the hook after command 1 ended");
     assert.deepEqual([c.service.get(run.runId).state, c.service.get(run.runId).reason], ["FAILED", "GIT_DRIFT"]);

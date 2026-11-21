@@ -31,6 +31,9 @@ import { NATIVE_SUMMARY_MAX, nativeSummary } from "./summary.js";
  *   and a SHA-256 prefix; for a command, its program's base name and the first digits of its identity), never the content
  *   head or anything else the model wrote (APR-2); the head stays on the
  *   approval card, matched by digest. A cancelled run ends the dialog's wait; a late answer is ignored.
+ * - The run's taint flag (IAC-T, PV-M0) is part of the challenge's request: read at issue, read again at consume. An
+ *   approval given for the untainted state is not an approval of the tainted one (the C1 and H5 lesson: decide from the
+ *   state at issue, verify at use).
  * - Nothing here is handed to a handler: the composer service sees only the outcome.
  */
 
@@ -45,8 +48,14 @@ export interface RunApprovalInput {
   readonly digest: string;
   /** The broker's reasons (`tier:network`, `protected:github`): closed labels, shown in the listing summary. */
   readonly reasons: readonly string[];
-  /** The C8 preview of the call. Only its protected flag, byte count and SHA-256 reach the native dialog, never its head. */
+  /** The C8 preview of the call. Only its protected flag, byte count, SHA-256 and taint count reach the native dialog, never its head. */
   readonly preview?: ApprovalPreview;
+  /**
+   * The run's taint flag (IAC-T, PV-M0). Read at issue and bound into the challenge's request, then read again at consume:
+   * a challenge issued before the run was tainted and approved after it no longer covers the request, so the consume of
+   * that approval is refused (the call is declined; the next call is decided, and put to the user, under the taint).
+   */
+  readonly tainted?: () => boolean;
 }
 
 /** What the broker's `ApprovalHook` must answer for an approved call (the shape `approvalGrantSchema` accepts). */
@@ -155,6 +164,9 @@ export function runNativeDetail(input: Pick<RunApprovalInput, "tool" | "tier" | 
     const base = cmd.program.split(/[\\/]/).pop() ?? "";
     parts.push(`program ${PROGRAM_NAME.test(base) ? base : "(unnamed)"}, identity ${cmd.identity.slice(0, 16)}`);
   }
+  const n = p?.taint?.total;
+  if (n !== undefined && Number.isSafeInteger(n) && n > 0) parts.push(`after untrusted input (${n})`);
+  else if (p?.taint?.earlier === true) parts.push("after untrusted input (earlier)");
   return parts.join(", ");
 }
 
@@ -192,7 +204,9 @@ export function createRunApprovals(core: RunApprovalsCore): RunApprovals {
     const actor = `agent:composer.${input.runId}` as const;
     const connectionId = `run.${input.runId}`;
     const caller = { actor, connectionId };
-    const args = { runId: input.runId, tool: input.tool, digest: input.digest, tier: input.tier };
+    const tainted = (): boolean => input.tainted?.() === true;
+    // Recorded at issue with the tier: the consume below binds the state read then, so a later taint burns this approval.
+    const args = { runId: input.runId, tool: input.tool, digest: input.digest, tier: input.tier, tainted: tainted() };
     const request = { contract: COMPOSER_RUNS_CONTRACT, version: COMPOSER_RUNS_VERSION, method: "toolCall", args, target: `run:${input.runId}` };
     const quietWithdraw = (id: string): void => {
       try {
@@ -264,7 +278,8 @@ export function createRunApprovals(core: RunApprovalsCore): RunApprovals {
     if (signal.aborted) return close("withdrawn");
     try {
       // Spent here, once, for this run's requester and connection and this exact call: the grant exists only inside the action.
-      const grant = await core.manager.consume(id, caller, { ...request, currentContentDigest: input.digest }, (): RunApprovalGrant => ({
+      const now = { ...request, args: { ...args, tainted: tainted() }, currentContentDigest: input.digest };
+      const grant = await core.manager.consume(id, caller, now, (): RunApprovalGrant => ({
         approved: true,
         approvedBy: "user",
         approvalId: approvalIdOf(id),
