@@ -126,6 +126,17 @@ test("a key registered during a string's scan keeps no verdict for it and moves 
   assert.equal(r.calls, n, "nothing was kept from the scan the registration crossed");
 });
 
+test("a kept verdict is used only under the count it was kept with: a key registered since makes the text judged again (review c7-f3-impl r2 SF-1)", async () => {
+  const key = "registered-later-credential-value-0007";
+  const r = new Redactor();
+  const p = providerRedactor(r);
+  const text = `${prose(20_000)} ${key} ${prose(20_000)}`;
+  assert.equal(await p.containsSecretAsync?.(text, ctx()), false, "clean before the key exists, and kept");
+  r.registerSecret(key);
+  assert.equal(await p.containsSecretAsync?.(text, ctx()), true, "judged again under the new count");
+  assert.equal(p.containsSecret(text), true, "the synchronous path too");
+});
+
 /** A guarded mock over the real host hook, and what it was sent. */
 function guarded(r: Redactor) {
   const mock = createMockProvider({ replies: [{ kind: "text", text: "ok" }] });
@@ -182,6 +193,18 @@ test("one registration during a request costs one more scan of the request, and 
   assert.equal(long, 0, "the second scan's verdict is kept under the new count");
 });
 
+test("the same history sent again after a key was registered is refused, not passed on its kept verdict: nothing more is sent", async () => {
+  const key = "registered-later-credential-value-0008";
+  const r = new Redactor();
+  const { mock, g } = guarded(r);
+  const history = ask(`${prose(20_000)} ${key} ${prose(20_000)}`);
+  await g.generate(history, { runId: "r", signal: new AbortController().signal });
+  assert.equal(mock.requests.length, 1);
+  r.registerSecret(key);
+  assert.equal(await refusal(g.generate(history, { runId: "r", signal: new AbortController().signal })), "secret_in_request");
+  assert.equal(mock.requests.length, 1, "the request holding the key was not sent");
+});
+
 test("a request of many one-window strings yields between them: no more than YIELD_CHARS plus one string is read per loop turn (review c7-f3-impl r1 SF-2)", async () => {
   const r = new Counting();
   let since = 0;
@@ -230,6 +253,7 @@ test("the request budget holds a whole run history at the default caps scanned t
   assert.doesNotThrow(() => assertScanBudgetFits(caps));
   assert.throws(() => assertScanBudgetFits({ ...caps, inputBytesPerRun: 4 * caps.inputBytesPerRun }), RangeError);
   assert.throws(() => assertScanBudgetFits({ ...caps, maxTurns: 10 * caps.maxTurns }), RangeError);
+  for (const bad of [Number.NaN, -1, Number.POSITIVE_INFINITY]) assert.throws(() => assertScanBudgetFits({ ...caps, inputBytesPerRun: 1e12, maxTurns: bad }), RangeError, `maxTurns ${bad}`);
 });
 
 test("a request the hook refuses scan_budget never reaches the provider, and the run ends FAILED PROVIDER_SCAN_BUDGET", async () => {

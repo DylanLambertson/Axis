@@ -28,6 +28,19 @@ the proposal below (review c7-f3-design r2 nits):
   - Cost, for the record (measured by the reviewer on one loaded host): about 2.8 s for 14 M characters of prose and 11 s of
     random base64 per full pass, at most about 40-77 ms between loop turns; the full budget is reached only with a
     registration per pass.
+- **Implementation review r2.**
+  - SF-1 (a test): a kept verdict is used only under the count it was kept with; a text kept clean before a key existed is
+    judged again once the key is registered, and the same history sent again is refused (nothing sent).
+  - After the scan: a key registered while the guard awaits `capabilities` or the run budget's `beforeRequest` was not
+    checked (pre-existing: the same awaits followed the synchronous scan). Closed: the guard keeps one `RequestScan` per request
+    (the object scanned with, one `ScanContext`, the version the last complete scan ended under) and calls `rescanIfMoved`
+    after `capabilities` and again after the budget, its last `await` before the adapter call: a moved version scans the
+    request again under the same budget. What remains between that check and the send is microtasks only; a key the adapter
+    itself registers while sending (the Anthropic adapter reading its own key from the vault) cannot be in content built and
+    checked before it, and the response-side checks (`holdsRegisteredSecret`) cover what comes back. So every string of a
+    request is judged under the key set current at the last check before the send.
+  - N2: one budget for every pass of a request (a restart can no longer double it); N3: a cancel at the guard's yield stops a
+    synchronous scan (tested); N4: `assertScanBudgetFits` refuses NaN and every value the comparison cannot order.
 - **Tests.** The existing synchronous tests stay; the asynchronous path has its own file
   (`test/provider-redactor-async.test.ts`) with an equivalence test over a corpus of the synchronous cases, instead of
   running every synchronous test twice.

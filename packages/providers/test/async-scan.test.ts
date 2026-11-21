@@ -10,6 +10,7 @@ import {
   defaultMessage,
   guardProvider,
   isProviderError,
+  type BudgetHook,
   type GenerateRequest,
   type ProviderAdapter,
   type Redactor,
@@ -218,4 +219,71 @@ test("the guard yields between strings: a request of many short strings lets the
     assert.equal(mock.requests.length, 1);
     assert.ok(most <= YIELD_CHARS + 10_100, `${mode}: ${most} characters in one loop turn`);
   }
+});
+
+/** A hook that finds MARKER only once `armed()`; its secrets version is `version.n`. */
+function arming() {
+  const version = { n: 0 };
+  let armed = false;
+  const h = { ...hook(async (t) => armed && t.includes(MARKER)), secretsVersion: () => version.n };
+  const arm = (): void => {
+    armed = true;
+    version.n++;
+  };
+  return { h, arm };
+}
+
+test("a key registered after the scan, while capabilities or the run budget are awaited, is checked before the send (review c7-f3-impl r2)", async () => {
+  for (const at of ["capabilities", "budget", "count_tokens"] as const) {
+    const { h, arm } = arming();
+    const m = createMockProvider({ replies: [{ kind: "text", text: "ok" }] });
+    const adapter: ProviderAdapter = {
+      descriptor: m.descriptor,
+      listModels: (o) => m.listModels(o),
+      getCapabilities: (model, o) => (at !== "budget" && arm(), m.getCapabilities(model, o)),
+      validateConnection: (o) => m.validateConnection(o),
+      generate: (r, o) => m.generate(r, o),
+      stream: (r, o) => m.stream(r, o),
+      countTokens: (r, o) => (m.countTokens as NonNullable<typeof m.countTokens>)(r, o),
+    };
+    const g = guardProvider(adapter, { redactor: h });
+    const budget: BudgetHook = { beforeRequest: async () => (arm(), { allow: true }), recordUsage: () => undefined };
+    const p = at === "count_tokens" ? g.countTokens(req(), { runId: "r", signal: live() }) : g.generate(req(), { runId: "r", signal: live(), ...(at === "budget" ? { budget } : {}) });
+    assert.equal((await fails(p)).code, "secret_in_request", at);
+    assert.equal(m.requests.length, 0, `${at}: nothing sent`);
+  }
+});
+
+test("every pass of a request spends one budget: a restart that would read past what the first pass left is refused scan_budget (review c7-f3-impl r2 N2)", async () => {
+  const mock = createMockProvider({ replies: [{ kind: "text", text: "ok" }] });
+  let version = 0;
+  const h = {
+    ...hook(async (t, ctx) => {
+      if (!t.includes(MARKER)) return false;
+      const charge = Math.ceil(SCAN_BUDGET_CHARS * 0.6);
+      if (ctx.budget.remaining < charge) throw new ProviderError("scan_budget");
+      ctx.budget.remaining -= charge;
+      if (version === 0) version++;
+      return false;
+    }),
+    secretsVersion: () => version,
+  };
+  const g = guardProvider(mock, { redactor: h });
+  assert.equal((await fails(g.generate(req(), { runId: "r", signal: live() }))).code, "scan_budget");
+  assert.equal(mock.requests.length, 0);
+});
+
+test("a cancel at the guard's yield stops a synchronous scan: no string after it is read (review c7-f3-impl r2 N3)", async () => {
+  let calls = 0;
+  const ac = new AbortController();
+  const redactor: Redactor = { redact: (t) => t, containsSecret: (t) => (t.length > 1_000 && calls++, false) };
+  const mock = createMockProvider({ replies: [{ kind: "text", text: "ok" }] });
+  const g = guardProvider(mock, { redactor });
+  const strings = 200;
+  const many: GenerateRequest = { ...req(), messages: [{ role: "user", content: Array.from({ length: strings }, (_, i) => ({ type: "text" as const, text: `${i} ${"word ".repeat(2_000)}` })) }] };
+  setImmediate(() => ac.abort());
+  assert.equal((await fails(g.generate(many, { runId: "r", signal: ac.signal }))).code, "cancelled");
+  // The first yield comes after YIELD_CHARS (about 13 of these strings); none is read after the cancel it lets in.
+  assert.ok(calls <= Math.ceil(YIELD_CHARS / 10_000) + 1, `${calls} long strings read`);
+  assert.equal(mock.requests.length, 0);
 });

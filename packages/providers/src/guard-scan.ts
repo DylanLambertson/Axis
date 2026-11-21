@@ -12,7 +12,7 @@ export const YIELD_CHARS = 8 * 16_384;
 
 /**
  * The outgoing secret scan of one request (C7-F3). One `ScanContext` (the request's signal and `SCAN_BUDGET_CHARS`) is shared
- * by every string of the request. The object scanned with is probed for `containsSecretAsync` (a snapshot carries its own);
+ * by every string and every pass of the request (`RequestScan`). The object scanned with is probed for `containsSecretAsync` (a snapshot carries its own);
  * without it each string takes `containsSecret`.
  *
  * - **One secret set per request** (review c7-f3-impl r1 SF-1). The hook's `secretsVersion` is read before the first string
@@ -25,18 +25,45 @@ export const YIELD_CHARS = 8 * 16_384;
  *   `secret_in_request` and never clean); any other rejection, and any answer other than `false`, is `secret_in_request`.
  *   A hook that never settles does not hold the request past a cancel: each call is raced against the signal.
  */
-export async function scanRequest(scanner: Redactor, valid: ValidRequest, signal: AbortSignal): Promise<void> {
-  const scan: ScanContext = { signal, budget: { remaining: SCAN_BUDGET_CHARS } };
-  const version = (): unknown => scanner.secretsVersion?.();
-  let start = version();
+export async function scanRequest(rs: RequestScan, valid: ValidRequest): Promise<void> {
+  const { scanner, scan } = rs;
+  let start = versionOf(scanner);
   for (let pass = 0; ; pass++) {
     await scanOnce(scanner, valid, scan);
-    if (signal.aborted) throw new ProviderError("cancelled");
-    const now = version();
-    if (now === start) return;
+    if (scan.signal.aborted) throw new ProviderError("cancelled");
+    const now = versionOf(scanner);
+    if (now === start) {
+      rs.version = now;
+      return;
+    }
     if (pass === 1) throw new ProviderError("scan_budget");
     start = now;
   }
+}
+
+/**
+ * One request's scan state: the object scanned with, ONE `ScanContext` (one budget for every pass of the request, review
+ * c7-f3-impl r2 N2), and the secrets version the last complete scan ended under.
+ */
+export interface RequestScan {
+  readonly scanner: Redactor;
+  readonly scan: ScanContext;
+  version: unknown;
+}
+
+export function requestScan(scanner: Redactor, signal: AbortSignal): RequestScan {
+  return { scanner, scan: { signal, budget: { remaining: SCAN_BUDGET_CHARS } }, version: undefined };
+}
+
+const versionOf = (scanner: Redactor): unknown => scanner.secretsVersion?.();
+
+/**
+ * After the guard's later awaits (capabilities, the run budget), before the request is sent (review c7-f3-impl r2): a key
+ * registered since the scan ended means the request was judged under an older set, so it is scanned again (same budget). The
+ * guard calls this after its last `await` before the adapter call, so only microtasks lie between it and the send.
+ */
+export async function rescanIfMoved(rs: RequestScan, valid: ValidRequest): Promise<void> {
+  if (versionOf(rs.scanner) !== rs.version) await scanRequest(rs, valid);
 }
 
 async function scanOnce(scanner: Redactor, valid: ValidRequest, scan: ScanContext): Promise<void> {

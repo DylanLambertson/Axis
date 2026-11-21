@@ -218,5 +218,6 @@ export function scanCharsAtCaps(h: HistoryCaps): number {
  * (review c7-f3-impl r1 N2): raising a cap would otherwise refuse legitimate runs `PROVIDER_SCAN_BUDGET`.
  */
 export function assertScanBudgetFits(h: HistoryCaps): void {
-  if (scanCharsAtCaps(h) > SCAN_BUDGET_CHARS) throw new RangeError("the composer caps exceed what one request's secret scan may read");
+  // Written so that NaN (or any value the comparison cannot order) is refused too (review c7-f3-impl r2 N4).
+  if (!(scanCharsAtCaps(h) <= SCAN_BUDGET_CHARS)) throw new RangeError("the composer caps exceed what one request's secret scan may read");
 }
