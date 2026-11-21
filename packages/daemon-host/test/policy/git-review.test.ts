@@ -39,8 +39,8 @@ test("the six rows are served rules with the design's tier and trust mode, and n
   }
   assert.deepEqual(coverageProblems(), []);
   assert.deepEqual(coverageProblems(policySurface(["axis.git", "axis.review"])), []);
-  // Only planned contracts' methods are planned now (P1d moved discard and setUserEditing; axis.messages/1 is PV-M1's).
-  assert.deepEqual(Object.keys(PLANNED_RULES).filter((k) => !k.startsWith("axis.messages/")), []);
+  // Only planned contracts' methods are planned now (P1d moved discard and setUserEditing; axis.forge/1 is PV-D2's).
+  assert.deepEqual(Object.keys(PLANNED_RULES).filter((k) => !k.startsWith("axis.forge/")), []);
 });
 
 test("only a user is admitted: agent, daemon, missing and malformed actors are refused on every method (DMN-3)", () => {
