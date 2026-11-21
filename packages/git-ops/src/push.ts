@@ -5,7 +5,7 @@ import { OBJECT_ID, REMOTE_NAME, branchFor, checkWorktree, daemonGitFor, platfor
 import { findOverride, overrideMessage, withNoPrompt } from "./env.js";
 import { assertPushUrl, protocolAllowList } from "./pushUrl.js";
 import { BINARY_ID, scanOutgoing, type BinaryRow } from "./scan.js";
-import { GitOpsError, conflict, denied, invalid, mapUnexpected, redactUrls, sanitizeText } from "./errors.js";
+import { GitOpsError, conflict, denied, invalid, mapUnexpected, sanitizeText } from "./errors.js";
 import type { GitOpsDeps, GitRunRequest, SecretFinding, WorktreeRef } from "./types.js";
 
 /** Most binary file ids one request may allow (the wire's `MAX_ALLOWED_BINARY_IDS`). */
@@ -40,6 +40,12 @@ export interface PushInput {
    * `E_POLICY_DENIED`, so the caller can show why. `executePush` never pushes a blocked plan, with or without this.
    */
   readonly reportBlocked?: boolean;
+  /**
+   * Where the push goes, as an opaque key the caller derived from the resolved push URLs (the host's destination hash, never a
+   * URL). Covered by the plan digest when given, so a confirmation names the destination too: a remote re-pointed between the
+   * plan and the push is `plan_changed`, not a push of the confirmed commits somewhere else. At most 128 characters.
+   */
+  readonly destination?: string;
 }
 
 /** Why a plan can never be pushed, closed. Checked in this order; the first that applies is the reason. */
@@ -82,15 +88,29 @@ export interface ExecutePushOptions {
   readonly confirmed?: boolean;
   /** Required with `confirmed` when the plan needs confirmation: the `tip` and `digest` of the plan the user saw. */
   readonly confirmedPlan?: ConfirmedPlan;
+  /** The request's signal: passed to the push command, whose runner ends it on abort. Aborted before the push, nothing runs. */
+  readonly signal?: AbortSignal;
+}
+
+/**
+ * The resolved push URLs (`remote get-url --push --all`, `pushurl` and the `insteadOf` rules applied), as a digest: SHA-256 of the
+ * JSON of the trimmed, non-empty lines, sorted. The pty process computes the same over its own read just before the push, so a
+ * URL changed after this read (a user-level `pushInsteadOf` included, which no drift check sees) refuses the push. Never the URLs.
+ */
+export function pushUrlsDigest(lines: readonly string[]): string {
+  return createHash("sha256").update(JSON.stringify(lines.map((l) => l.trim()).filter((l) => l !== "").sort())).digest("hex");
 }
 
 /** A digest of everything a confirmation covers. Findings carry names, paths, lines and commits, never matched text. */
-export function planDigest(tip: string, findings: readonly SecretFinding[], reasons: readonly string[], waivedBinaryIds: readonly string[] = []): string {
+export function planDigest(tip: string, findings: readonly SecretFinding[], reasons: readonly string[], waivedBinaryIds: readonly string[] = [], destination?: string, pushUrls?: string): string {
   const f = findings.map((x) => [x.rule, x.path ?? "", x.line ?? 0, x.commit ?? ""]);
   // The identities of the binary files a refuse-mode plan lets through are covered, so a confirmation names them, not their display text.
   // Left out when there are none, so a plan that waives nothing keeps its digest.
   const waived = waivedBinaryIds.length === 0 ? {} : { waived: [...waivedBinaryIds].sort() };
-  return createHash("sha256").update(JSON.stringify({ tip, findings: f, reasons, ...waived })).digest("hex");
+  // The destination likewise, only when the caller names one.
+  // The destination likewise, and with it the digest of the resolved push URLs (only with a destination, so other digests keep their value).
+  const dest = destination === undefined ? {} : { destination, ...(pushUrls === undefined ? {} : { pushUrls }) };
+  return createHash("sha256").update(JSON.stringify({ tip, findings: f, reasons, ...waived, ...dest })).digest("hex");
 }
 
 /** The pinned source: the scanned tip, by object id, so a commit made after the scan cannot ride along. */
@@ -126,6 +146,9 @@ async function check(deps: GitOpsDeps, input: PushInput): Promise<{ plan: PushPl
   if (!Array.isArray(ids) || ids.length > MAX_ALLOWED_BINARY_IDS || ids.some((i) => typeof i !== "string" || !BINARY_ID.test(i))) {
     throw invalid("allowedBinaryIds must be binary file ids from a plan");
   }
+  if (input.destination !== undefined && (typeof input.destination !== "string" || input.destination.length === 0 || input.destination.length > 128)) {
+    throw invalid("destination must be a non-empty key of at most 128 characters");
+  }
   const bad = findOverride(deps.env.pty);
   if (bad) throw denied(overrideMessage(bad));
 
@@ -136,7 +159,12 @@ async function check(deps: GitOpsDeps, input: PushInput): Promise<{ plan: PushPl
   if (!remotes.includes(input.remote)) throw invalid("the remote is not configured in this repository");
   const urls = await git(["remote", "get-url", "--push", "--all", "--", input.remote]);
   if (urls.code !== 0) throw invalid("the remote has no push URL");
-  for (const u of urls.stdout.split("\n").map((l) => l.trim()).filter(Boolean)) assertPushUrl(u);
+  const urlList = urls.stdout.split("\n").map((l) => l.trim()).filter(Boolean);
+  for (const u of urlList) assertPushUrl(u);
+  // A transport helper named by `remote.<r>.vcs` runs `git remote-<vcs>` (a `git-remote-<vcs>` program or an alias) even when
+  // <vcs> is an allowed transport name: refused whatever its value. Only a clean "not set" (exit 1) passes.
+  const vcs = await git(["config", "--get-all", `remote.${input.remote}.vcs`]);
+  if (vcs.code !== 1 || vcs.stdout.trim() !== "") throw denied("the remote names a transport helper (remote.<name>.vcs), which Axis does not push through");
   const head = await git(["symbolic-ref", "--quiet", "--short", "HEAD"]);
   if (head.code !== 0 || head.stdout.trim() !== branch) throw denied("the worktree is not on the branch being pushed");
   const tip = await git(["rev-parse", "--verify", "--end-of-options", `refs/heads/${branch}^{commit}`]);
@@ -200,14 +228,14 @@ async function check(deps: GitOpsDeps, input: PushInput): Promise<{ plan: PushPl
     "push", "--no-follow-tags", "--no-recurse-submodules", ...(deps.runHooks ? [] : ["--no-verify"]),
     "--", input.remote, refspec,
   ];
-  const command: GitRunRequest = { argv, cwd: input.worktree.workTree, env: withNoPrompt(deps.env.pty), context: "pty" };
+  const command: GitRunRequest = { argv, cwd: input.worktree.workTree, env: withNoPrompt(deps.env.pty), context: "pty", pushUrls: pushUrlsDigest(urlList) };
   // A blocked plan asks for no confirmation: it cannot be confirmed, only fixed (an allowed binary path) or pushed elsewhere.
   const shownReasons = block === undefined ? reasons : [];
   const blocked: PushBlocked | undefined = block === undefined ? undefined : { reason: block.reason, unlistedBinaryRows: unlistedRows };
   return {
     plan: {
       worktree: input.worktree, remote: input.remote, branch, tip: tipSha, refspec, command, findings,
-      requiresConfirmation: shownReasons.length > 0, reasons: shownReasons, digest: planDigest(tipSha, findings, shownReasons, waivedIds),
+      requiresConfirmation: shownReasons.length > 0, reasons: shownReasons, digest: planDigest(tipSha, findings, shownReasons, waivedIds, input.destination, pushUrlsDigest(urlList)),
       ...(blocked === undefined ? {} : { blocked }),
     },
     git,
@@ -240,6 +268,8 @@ async function runPush(deps: GitOpsDeps, input: PushInput, opts: ExecutePushOpti
     throw new GitOpsError("E_APPROVAL_REQUIRED", `confirm to push: ${plan.reasons.join("; ")}`);
   }
   await confirmTip(git, plan.branch, plan.tip);
-  const r = await deps.runner.run(plan.command);
-  if (r.code !== 0) throw new GitOpsError("E_UNAVAILABLE", `git push failed (exit ${r.code}): ${redactUrls(sanitizeText(r.stderr)).slice(0, 500)}`);
+  if (opts.signal?.aborted === true) throw new GitOpsError("E_CANCELLED", "the push was cancelled");
+  const r = await deps.runner.run(opts.signal === undefined ? plan.command : { ...plan.command, signal: opts.signal });
+  // The exit status only (H9-hooks H-7): the push's output, a `pre-push` hook's included, belongs to the user's terminal.
+  if (r.code !== 0) throw new GitOpsError("E_UNAVAILABLE", `git push failed (exit ${r.code})`);
 }

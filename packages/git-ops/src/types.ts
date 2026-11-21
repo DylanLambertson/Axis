@@ -19,6 +19,10 @@ export interface GitRunRequest {
    * (E_UNAVAILABLE) when it asked for raw output and the result does not say it got it.
    */
   readonly raw?: boolean;
+  /** Ends the command early (the request was cancelled or timed out). A runner that honours it kills the command's group. */
+  readonly signal?: AbortSignal;
+  /** Push only: `pushUrlsDigest` of the push URLs git-ops read. A runner that can re-read them just before the push refuses on a difference. */
+  readonly pushUrls?: string;
   /**
    * Keep at most this many characters of stdout for this call (a non-negative safe integer; the runner's own limit still
    * applies when it is lower). Output past it is read and dropped, never held, and the result says `truncated`.
