@@ -54,6 +54,11 @@ function peer(p: MessagePort, answer?: (m: Record<string, unknown>) => unknown):
   return got;
 }
 const settle = (): Promise<void> => new Promise((r) => setTimeout(r, 20));
+/** Waits for `cond` to hold, polling; a bound that runs out is an assertion naming `what`, never a hang. Prefer this to `settle` wherever the awaited state can be observed. */
+async function until(cond: () => boolean, what: string, ms = 20_000): Promise<void> {
+  for (const end = Date.now() + ms; Date.now() < end; await new Promise((r) => setTimeout(r, 10))) if (cond()) return;
+  assert.fail(`${what}: not reached within ${ms} ms`);
+}
 /** `p`, or a rejection after `ms`: a wait that a regression would make endless fails as an assertion instead. */
 async function within<T>(p: Promise<T>, what: string, ms = 3_000): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
@@ -94,13 +99,13 @@ test("a second control port replaces the first: in flight on the old one fails c
     const oldGot = peer(a.peer); // holds every request
     slot.attach(a.mine);
     const inFlight = slot.port.spawn(SPEC);
-    await settle();
+    await until(() => oldGot.length === 1, "the in-flight request reaching the old pty process");
     assert.equal(oldGot.length, 1);
     const b = controlPair();
     const newGot = peer(b.peer, (m) => ({ t: "spawn-failed", req: m["req"], code: "capacity" }));
     slot.attach(b.mine);
     await assert.rejects(within(inFlight, "the in-flight spawn on the replaced port"), codeIs("channel_closed"));
-    await settle();
+    await until(a.closed, "the old port closing");
     assert.equal(a.closed(), true, "the old port is closed");
     await assert.rejects(within(slot.port.spawn(SPEC), "a spawn on the new port"), codeIs("capacity"));
     assert.equal(oldGot.length, 1, "nothing more went to the old pty process");
@@ -115,10 +120,10 @@ test("the port closing mid-run: in flight fails closed, later calls fail closed 
   const slot = createPtyControlSlot();
   try {
     const a = controlPair();
-    peer(a.peer);
+    const got = peer(a.peer);
     slot.attach(a.mine);
     const inFlight = slot.port.spawn(SPEC);
-    await settle();
+    await until(() => got.length === 1, "the in-flight request reaching the pty process");
     a.peer.close();
     await assert.rejects(within(inFlight, "the in-flight spawn on the closed port"), codeIs("channel_closed"));
     await assert.rejects(slot.port.spawn(SPEC), codeIs("channel_closed"));
@@ -133,7 +138,7 @@ test("the port closing mid-run: in flight fails closed, later calls fail closed 
   // After dispose a port is closed at once.
   const c = controlPair();
   slot.attach(c.mine);
-  await settle();
+  await until(c.closed, "a port attached after dispose being closed");
   assert.equal(c.closed(), true);
 });
 

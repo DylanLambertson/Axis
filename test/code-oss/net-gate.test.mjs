@@ -238,7 +238,32 @@ test("the packaged check covers exactly the four debugging flags", () => {
 });
 
 const canList = listenersOfTree(process.pid) !== null;
-const check = (mode, listeners) => runChecks({ app: process.execPath, appArgs: [FAKE, mode], settleMs: 600, ...(listeners === undefined ? {} : { listeners }) });
+/** Upper bound of every wait on a launch's own state: generous for a loaded host, never a hang (a wait that runs out throws and names the launch). */
+const WAIT_MS = 20_000;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+/**
+ * A `ready` hook for runChecks: resolves when the launched fake app has written its own ready marker (or, with `untilExit`, when it
+ * has exited), so no assertion depends on how long a process start took. Throws, naming the mode, when the bound runs out.
+ */
+const waitForLaunch = (markerFile, mode, untilExit) => async (child) => {
+  const end = Date.now() + WAIT_MS;
+  const exited = () => child.exitCode !== null || child.signalCode !== null;
+  const marked = () => readFileSync(markerFile, "utf8").split("\n").some((l) => l !== "" && JSON.parse(l).pid === child.pid);
+  while (!(untilExit ? exited() : marked() || exited())) {
+    if (Date.now() > end) throw new Error(`the ${mode} fake app (pid ${child.pid}) was not ${untilExit ? "gone" : "ready"} within ${WAIT_MS} ms`);
+    await sleep(10);
+  }
+};
+const check = async (mode, listeners, extra = {}) => {
+  const marker = join(temp(), "ready.jsonl");
+  appendFileSync(marker, "");
+  process.env.NET_GATE_FAKE_READY = marker;
+  try {
+    return await runChecks({ app: process.execPath, appArgs: [FAKE, mode], settleMs: 0, ready: waitForLaunch(marker, mode, mode === "exit" || mode === "orphan"), ...(listeners === undefined ? {} : { listeners }), ...extra });
+  } finally {
+    delete process.env.NET_GATE_FAKE_READY;
+  }
+};
 const byName = (r, name) => r.results.find((x) => x.name === name);
 
 test("a build that opens nothing and ignores the flags passes", { skip: canList ? false : "this host cannot list sockets" }, async () => {
@@ -271,11 +296,7 @@ test("a run removes its private profile and leaves no process behind", { skip: p
   assert.equal(runs.length, 1 + DEBUG_FLAGS.length);
   for (const { pid, profile } of runs) {
     assert.equal(existsSync(profile), false, `profile ${profile} removed`);
-    let alive = true;
-    for (let i = 0; i < 40 && alive; i++) {
-      try { process.kill(pid, 0); await new Promise((r) => setTimeout(r, 50)); } catch { alive = false; }
-    }
-    assert.equal(alive, false, `pid ${pid} gone`);
+    assert.equal(await gone(pid), true, `pid ${pid} gone`);
   }
 });
 
@@ -283,9 +304,9 @@ test("a run removes its private profile and leaves no process behind", { skip: p
 const recordsIn = (file) => readFileSync(file, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
 const pidsIn = (file) => recordsIn(file).map((r) => r.kid);
 const gone = async (pid) => {
-  for (let i = 0; i < 40; i++) {
+  for (const end = Date.now() + WAIT_MS; Date.now() < end;) {
     try { process.kill(pid, 0); } catch { return true; }
-    await new Promise((r) => setTimeout(r, 50));
+    await sleep(50);
   }
   return false;
 };
@@ -312,7 +333,7 @@ for (const mode of ["family", "orphan"]) {
 
 test("the kill runs once per launch, with the launched process, whatever the verdict", async () => {
   const seen = [];
-  const r = await runChecks({ app: process.execPath, appArgs: [FAKE, "exit"], settleMs: 300, listeners: () => [], kill: (child) => seen.push(child.pid) });
+  const r = await check("exit", () => [], { kill: (child) => seen.push(child.pid) });
   assert.equal(seen.length, 1 + DEBUG_FLAGS.length);
   assert.equal(new Set(seen).size, seen.length);
   assert.equal(r.status, "fail");
