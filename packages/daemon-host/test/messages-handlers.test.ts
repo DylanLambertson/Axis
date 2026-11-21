@@ -105,7 +105,9 @@ test("refusals leave as the fixed message with details { reason } only; backpres
   assert.equal((await user.call(C, "send", sendReq([{ agent: "a1" }]), newKey())).ok, true);
   const full = await user.call(C, "send", sendReq([{ agent: "a2" }]), newKey());
   assert.deepEqual([full.error?.code, full.error?.details, (full.error as { retryable?: boolean } | undefined)?.retryable], ["E_BACKPRESSURE", { reason: "queue_full" }, true]);
-  assert.equal(JSON.stringify([missing, cross, full]).includes("a1"), false, "no id or name in a refusal");
+  // Only what a refusal says (message and details), not its random correlation id, which can contain any two characters.
+  const said = JSON.stringify([missing, cross, full].map((x) => [x.error?.message, x.error?.details]));
+  assert.equal(/a1|x1|thr_|msg_/.test(said), false, "no id or name in a refusal");
 });
 
 test("toMessagesError: a reason outside the contract's set, or under the wrong code, is an internal error", () => {
