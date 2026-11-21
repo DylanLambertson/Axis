@@ -114,8 +114,10 @@ export interface ExecRequest {
   readonly cwd: string;
   readonly env: Readonly<Record<string, string>>;
   readonly stdin?: Uint8Array;
-  /** Bytes kept per stream; the function stops collecting past it and reports `truncated`. */
+  /** Bytes of stdout kept (and of stderr when `maxStderr` is absent); the function stops holding past it and reports the cut. */
   readonly maxOutput: number;
+  /** Bytes of stderr kept; default `maxOutput`. Each stream stops being held at its own cap (PV-X1a). */
+  readonly maxStderr?: number;
 }
 
 export interface ExecOutcome {
@@ -123,7 +125,23 @@ export interface ExecOutcome {
   readonly signal: string | null;
   readonly stdout: Uint8Array;
   readonly stderr: Uint8Array;
+  /** Either stream was cut. */
   readonly truncated: boolean;
+  readonly stdoutTruncated: boolean;
+  readonly stderrTruncated: boolean;
+}
+
+/** Why an exec did not start. `program_refused` and `unsupported_platform` are thrown before anything starts; the rest reject `done`. */
+export type ExecStartFailure = "program_refused" | "unsupported_platform" | "not_found" | "not_permitted" | "start_failed";
+
+/** A failed start. Carries a closed code only: never a path, an argv or OS text. */
+export class ExecStartError extends Error {
+  readonly code: ExecStartFailure;
+  constructor(code: ExecStartFailure) {
+    super(`The command did not start (${code}).`);
+    this.name = "ExecStartError";
+    this.code = code;
+  }
 }
 
 /** One running exec. `kill` must end its whole process group (the service calls it on a timeout, a channel close and dispose). */
@@ -132,5 +150,8 @@ export interface ExecChild {
   kill(): void;
 }
 
-/** Starts a command in its own process group. A throw is a failed start. Injected: this package does not import node:child_process. */
+/**
+ * Starts a command in its own process group. A throw is a failed start (`ExecStartError` from the production function). Injected:
+ * only `exec-node.ts` of this package loads node:child_process (PV-X1a), and the service takes the function as a parameter.
+ */
 export type ExecFn = (request: ExecRequest) => ExecChild;

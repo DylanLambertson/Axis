@@ -13,7 +13,7 @@ const GIT = "/opt/fake-git/bin/git";
 const URL = "https://example.invalid/r.git";
 const BASE = { PATH: "/usr/bin:/bin", HOME: "/home/u" };
 const EXPECT = { HOME: "/home/u", XDG_CONFIG_HOME: null, GIT_CONFIG: null, GIT_CONFIG_GLOBAL: null, GIT_CONFIG_SYSTEM: null, GIT_CONFIG_NOSYSTEM: null, GIT_SSH: null, GIT_SSH_COMMAND: null, GIT_SSH_VARIANT: null, GIT_PROXY_COMMAND: null };
-const out = (stdout: string, code: number | null = 0): ExecOutcome => ({ code, signal: null, stdout: Buffer.from(stdout), stderr: new Uint8Array(), truncated: false });
+const out = (stdout: string, code: number | null = 0): ExecOutcome => ({ code, signal: null, stdout: Buffer.from(stdout), stderr: new Uint8Array(), truncated: false, stdoutTruncated: false, stderrTruncated: false });
 
 type Answer = ExecOutcome | "hang" | "throw";
 /** A service whose exec answers `config` (the vcs read) and `remote` (get-url) as scripted, and whose terminals are fakes. */
