@@ -57,17 +57,16 @@ const EXPECTED: ReadonlyArray<readonly [string, string, number, string, number]>
   ["updateSettings", "write", 2, "none", 10_000],
 ];
 
-test("messages: planned, never served; the method table is the designed one, frozen and servable", () => {
-  const table = plannedContracts["axis.messages/1"];
+test("messages: served (PV-M3), nothing left planned; the method table is the designed one, frozen and servable", () => {
+  const table = contracts["axis.messages/1"];
   assert.ok(table !== undefined);
-  assert.deepEqual(Object.keys(plannedContracts), ["axis.messages/1"]);
-  assert.deepEqual(tableProblems(plannedContracts), []);
+  assert.deepEqual(Object.keys(plannedContracts), [], "a served contract is never also planned");
+  assert.deepEqual(tableProblems(contracts), []);
   assert.deepEqual(
     Object.entries(table).map(([m, s]) => [m, s.sideEffect, s.tier, s.idempotency, s.timeoutMs]),
     EXPECTED.map((r) => [...r]),
   );
-  for (const key of Object.keys(plannedContracts)) assert.equal(Object.hasOwn(contracts, key), false, `${key} is also served`);
-  for (const [m] of EXPECTED) assert.equal(lookupMethod("axis.messages", 1, m), undefined, `${m} is reachable through lookupMethod`);
+  for (const [m] of EXPECTED) assert.equal(lookupMethod("axis.messages", 1, m), table[m], `${m} is not reachable through lookupMethod`);
   assert.equal(Object.isFrozen(plannedContracts), true);
   for (const s of Object.values(table)) assert.throws(() => { (s as { tier: number }).tier = 0; }, TypeError);
 });
@@ -184,6 +183,9 @@ test("messages: encodeMessagingId is unpadded base64url of exactly 16 bytes and 
 
 test("messages: refusals are a closed set by code; details are exactly { reason }, so not_found carries nothing to tell hidden from missing", () => {
   assert.deepEqual(MESSAGES_REFUSALS.E_NOT_FOUND, ["not_found"]);
+  // Handlers cannot raise E_POLICY_DENIED (the daemon answers E_INTERNAL for it): no reason may sit under it.
+  assert.equal(Object.hasOwn(MESSAGES_REFUSALS, "E_POLICY_DENIED"), false);
+  assert.deepEqual(Object.keys(MESSAGES_REFUSALS).sort(), ["E_BACKPRESSURE", "E_CONFLICT", "E_INVALID_ARGUMENT", "E_NOT_FOUND"]);
   assert.deepEqual([...MESSAGES_REASONS].sort(), [
     "bypass_entry", "cross_project", "excerpt_path_refused", "hop_limit", "not_found", "paused", "queue_full", "rate_limited",
     "recipient_refused", "secret_found", "too_large", "too_many_recipients",
