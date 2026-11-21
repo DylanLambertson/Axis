@@ -3,7 +3,7 @@
 // bounded (only a tail is kept, for the pass/fail counts and the "last output" in a report), the
 // output is capped and the run is time-limited: a suite that spins, hangs or floods is killed and
 // named in its `== suite:` line instead of stalling or exhausting the job silently.
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { parseTestCounts } from "./lib.mjs";
 
 export const DEFAULT_TIMEOUT_MS = 20 * 60_000;
@@ -24,6 +24,15 @@ export function killGroup(pid, graceMs = KILL_GRACE_MS) {
   });
 }
 
+/** Memory and the biggest processes now: the evidence a CI job killed for memory leaves nowhere else (dmesg is not readable on a runner). */
+export function memorySample() {
+  if (process.platform !== "linux") return "";
+  const run = (c, a) => spawnSync(c, a, { encoding: "utf8", timeout: 5_000 }).stdout ?? "";
+  const mem = run("free", ["-m"]).split("\n").slice(0, 2).join(" | ");
+  const top = run("ps", ["-eo", "rss,pid,args", "--sort=-rss"]).split("\n").slice(1, 6).map((l) => l.trim().slice(0, 140)).join("\n    ");
+  return `${mem}\n    ${top}`;
+}
+
 /** The child of the running suite (for the runner's signal handler). */
 export const live = { child: undefined, name: "(none)" };
 
@@ -33,6 +42,8 @@ export function runSuite(name, command, args, opts = {}) {
   const capBytes = opts.capBytes ?? Number(process.env.AXIS_TEST_OUTPUT_CAP_BYTES ?? DEFAULT_OUTPUT_CAP_BYTES);
   const out = opts.out ?? process.stdout;
   const err = opts.err ?? process.stderr;
+  const sampleMs = opts.sampleMs ?? Number(process.env.AXIS_TEST_SAMPLE_MS ?? (process.env.CI === undefined ? 0 : 30_000));
+  const sampleAfterMs = opts.sampleAfterMs ?? 180_000;
   live.name = name;
   return new Promise((resolve) => {
     const child = spawn(command, args, { cwd, shell: false, detached: true, stdio: ["ignore", "pipe", "pipe"] });
@@ -40,10 +51,15 @@ export function runSuite(name, command, args, opts = {}) {
     let tail = Buffer.alloc(0);
     let total = 0;
     let spawnError;
+    const started = Date.now();
+    const sample = (why) => { const m = memorySample(); if (m !== "") out.write(`\n== sample (${name}, +${Math.round((Date.now() - started) / 1000)}s, ${why}): ${m}\n`); };
+    const sampler = sampleMs > 0 ? setInterval(() => { if (Date.now() - started >= sampleAfterMs) sample("running"); }, sampleMs) : undefined;
+    sampler?.unref();
     let stopped; // why the runner ended it: "timeout" | "cap"
     const stop = (why) => {
       if (stopped !== undefined) return;
       stopped = why;
+      sample(why);
       void killGroup(child.pid, opts.graceMs ?? KILL_GRACE_MS);
     };
     const timer = setTimeout(() => stop("timeout"), timeoutMs);
@@ -60,6 +76,7 @@ export function runSuite(name, command, args, opts = {}) {
     child.on("error", (e) => { spawnError = e; });
     child.on("close", (status, signal) => {
       clearTimeout(timer);
+      clearInterval(sampler);
       // Anything the suite left running in its group is killed, never left to hold the job.
       if (child.pid !== undefined && process.platform !== "win32") try { process.kill(-child.pid, "SIGKILL"); } catch { /* none left */ }
       const text = tail.toString("utf8");

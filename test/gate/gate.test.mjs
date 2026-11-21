@@ -271,3 +271,19 @@ test("test-all: pass counts, a kill signal and an exit status are reported; a le
   if (alive) { try { process.kill(pid, "SIGKILL"); } catch { /* gone */ } }
   assert.equal(alive, false, "the runner must have killed the suite's leftover child");
 });
+
+import { Writable } from "node:stream";
+import { runSuite } from "../../scripts/gate/run-suite.mjs";
+
+test("run-suite: a suite that runs past the sample point prints memory and its biggest processes; a killed one prints them once", { timeout: 20_000, skip: process.platform !== "linux" }, async () => {
+  const parts = [];
+  const sink = new Writable({ write(c, _e, cb) { parts.push(c); cb(); } });
+  await runSuite("slow", node, ["-e", "setTimeout(()=>{},700)"], { sampleMs: 100, sampleAfterMs: 0, out: sink, err: sink });
+  const text = Buffer.concat(parts).toString("utf8");
+  assert.match(text, /== sample \(slow, \+\d+s, running\): .*Mem:/s);
+  assert.match(text, /\d+ +\d+ .*node/, "a process line with its RSS");
+  const killed = [];
+  const sink2 = new Writable({ write(c, _e, cb) { killed.push(c); cb(); } });
+  await runSuite("spin", node, ["-e", "for(;;){}"], { timeoutMs: 400, graceMs: 200, sampleMs: 0, out: sink2, err: sink2 });
+  assert.match(Buffer.concat(killed).toString("utf8"), /== sample \(spin, \+\d+s, timeout\): /);
+});
