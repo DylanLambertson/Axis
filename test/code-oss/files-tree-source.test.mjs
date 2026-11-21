@@ -7,7 +7,9 @@
 //   opening) or as the argument of fileRowText (reads of fileRowText's own result, `text.name`, are the cleaned
 //   text); a tree node variable is never aliased or destructured;
 // - every write to a text sink, with any assignment operator, takes fileRowText's result or fixed text;
-// - setAttribute sets only known attributes, each from an allowed value; no other way to put text in the DOM.
+// - setAttribute sets only known attributes, each from an allowed value; no other way to put text in the DOM;
+// - no bracket member access except index lookups into the row and node arrays (a string or computed key could
+//   reach a sink by name).
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -56,6 +58,13 @@ export function filesTreeViolations(source) {
     const name = ts.isPropertyAccessExpression(n) ? n.name.text : n.text;
     if (HTML_SINKS.has(name)) bad.push(`html sink ${name}`);
     if (OTHER_TEXT_APIS.has(name)) bad.push(`text put in the DOM another way: ${name}`);
+  }
+  // Bracket access: only index lookups into the row and node arrays; a string key (row['innerHTML']) or any other
+  // computed member (row[k]) could reach a sink the checks above match by name, so both are refused.
+  for (const access of find(sf, ts.isElementAccessExpression)) {
+    const key = access.argumentExpression;
+    if (ts.isStringLiteralLike(key) || ts.isNoSubstitutionTemplateLiteral(key)) bad.push(`bracket property access: ${text(access)}`);
+    else if (!/^this\.(rows|visible)$/.test(text(access.expression))) bad.push(`computed member access: ${text(access)}`);
   }
   // Names and paths are read only as data or through fileRowText.
   for (const read of find(sf, (c) => ts.isPropertyAccessExpression(c) && NAME_OR_PATH.has(c.name.text) && text(c.expression) !== "text")) {
@@ -113,6 +122,9 @@ test("the checker finds each way of breaking the rules", () => {
     [GOOD.replace("row.setAttribute('aria-level', String(node.depth + 1));", "row.setAttribute('data-path', node.resource.toString());"), "attribute set from something else: row.setAttribute('data-path', node.resource.toString())"],
     [GOOD.replace("row.title = text.title;", "row.title = text.title; row.append(document.createTextNode(node.name));"), "text put in the DOM another way: createTextNode"],
     [GOOD.replace("row.title = text.title;", "row.title = text.title; row.dataset.name = text.name;"), "text put in the DOM another way: dataset"],
+    // Review 2: a sink reached through a bracket.
+    [GOOD.replace("row.title = text.title;", "row.title = text.title; row['innerHTML'] = text.name;"), "bracket property access: row['innerHTML']"],
+    [GOOD.replace("row.title = text.title;", "row.title = text.title; const k = 'innerHTML'; row[k] = text.name;"), "computed member access: row[k]"],
   ];
   for (const [source, expected] of breaks) {
     assert.notEqual(source, GOOD, `the mutation applies: ${expected}`);

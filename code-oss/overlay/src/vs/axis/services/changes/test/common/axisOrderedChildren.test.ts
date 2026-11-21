@@ -85,4 +85,19 @@ suite('Axis Changes in-place update (placeInOrder)', () => {
 		assert.deepStrictEqual(parent.names(), ['c', 'a', 'b']);
 		assert.deepStrictEqual(parent.ops, ['move c']);
 	});
+
+	test('a large list (10,000 rows) changes with one operation per changed row, not per row', () => {
+		const names = Array.from({ length: 10_000 }, (_, i) => `r${i}`);
+		const parent = new FakeParent(...names);
+		const kept = parent.children.slice();
+		placeInOrder(parent, kept.filter(c => c.name !== 'r0' && c.name !== 'r5000'));
+		assert.deepStrictEqual(parent.ops, ['remove r0', 'remove r5000']);
+		parent.ops.length = 0;
+		placeInOrder(parent, [node('top'), ...parent.children.slice()]);
+		assert.deepStrictEqual(parent.ops, ['move top']);
+		parent.ops.length = 0;
+		placeInOrder(parent, parent.children.slice());
+		assert.deepStrictEqual(parent.ops, [], 'an unchanged large list costs no operation');
+		assert.strictEqual(parent.children.length, 9_999);
+	});
 });
