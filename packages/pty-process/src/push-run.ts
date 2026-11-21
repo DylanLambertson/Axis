@@ -41,8 +41,8 @@ const PUSH_GIT_KEEP: ReadonlySet<string> = new Set([
   "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_AUTHOR_DATE", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "GIT_COMMITTER_DATE",
   "GIT_TERMINAL_PROMPT", "GIT_NO_LAZY_FETCH", "GIT_ALLOW_PROTOCOL",
 ]);
-/** Removes every `GIT_*` name outside `PUSH_GIT_KEEP` (any case). */
-function keepGitNames(env: Record<string, string>): void {
+/** Removes every `GIT_*` name outside `PUSH_GIT_KEEP` (any case). A second layer: PTY-5 already drops the redirect and config-injection names. */
+export function keepGitNames(env: Record<string, string>): void {
   for (const k of Object.keys(env)) {
     const u = k.toUpperCase();
     if (u.startsWith("GIT_") && !PUSH_GIT_KEEP.has(u)) delete env[k];

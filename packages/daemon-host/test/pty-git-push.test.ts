@@ -204,7 +204,7 @@ test("S-1: the request's signal kills the push run (E_CANCELLED); aborted before
   assert.ok(DEFAULT_PUSH_TIMEOUT_MS < gitMethods.push.timeoutMs, `${DEFAULT_PUSH_TIMEOUT_MS} < ${gitMethods.push.timeoutMs}`);
 });
 
-test("review 2 N-2: a cancel while the spawn is pending (the pty process's remote check) answers at once, and the handle that still arrives is killed", async () => {
+test("review 2 N-2: a cancel while the spawn is pending (the pty process's remote check) answers at once, and the handle that still arrives is killed", { timeout: 10_000 }, async () => {
   let deliver: ((h: PtyHandle) => void) | undefined;
   const t = term();
   const port: PtyExecPort & PtyPushPort = { exec: () => Promise.reject(new Error("x")), push: () => new Promise<PtyHandle>((resolve) => (deliver = resolve)) };
@@ -212,7 +212,20 @@ test("review 2 N-2: a cancel while the spawn is pending (the pty process's remot
   const p = runner(port).run(req(gitOpsPush(false), { signal: ac.signal }));
   await new Promise((x) => setImmediate(x));
   ac.abort();
-  await assert.rejects(p, isCode("E_CANCELLED"));
+  // The answer must come from the cancel, not from the spawn: race it against a short timer so a runner that waits on the
+  // spawn fails this assertion in about a second instead of hanging the suite (review 3 SF-1).
+  let timer: NodeJS.Timeout | undefined;
+  const outcome = await Promise.race([
+    p.then(() => "resolved", (e: unknown) => e),
+    new Promise<string>((resolve) => (timer = setTimeout(() => resolve("still pending 1 s after the cancel"), 1_000))),
+  ]);
+  clearTimeout(timer);
+  if (typeof outcome === "string") {
+    deliver?.(t); // let a waiting runner go on, so nothing it holds keeps the test alive
+    t.exit({ exitCode: 0, signal: null });
+    assert.fail(`the run did not answer the cancel: ${outcome}`);
+  }
+  assert.ok(isCode("E_CANCELLED")(outcome), String(outcome));
   deliver?.(t);
   await new Promise((x) => setImmediate(x));
   assert.deepEqual(t.killed, ["SIGKILL"], "the late terminal is ended");

@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { chmodSync, copyFileSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { createPtyService, pushUrlsDigest } from "../src/index.js";
+import { createPtyService, keepGitNames, pushUrlsDigest } from "../src/index.js";
 import { pipeExec } from "../testing/exec.js";
 import { channelPair, pipeSpawn, until } from "../testing/helpers.js";
 import { GIT, gitRig, SKIP, type GitRig } from "../testing/git.js";
@@ -193,7 +193,9 @@ test("review 2 SF-1: the push keeps GIT_* names by an allow-list: location, conf
   const r = gitRig();
   tc.after(() => r.cleanup());
   const f = fixture(r, "allow");
-  const extra = { GIT_TEMPLATE_DIR: r.tmp, GIT_ATTR_SOURCE: "HEAD", GIT_SSL_NO_VERIFY: "1", GIT_HTTP_LOW_SPEED_LIMIT: "1", Git_Object_Directory: r.tmp, GIT_SSL_CAINFO: join(r.tmp, "ca.pem") };
+  // Review 3 N-3: `Git_Trace` is a mixed-case name PTY-5 lets through, so only a case-blind allow-list drops it. GIT_EXEC_PATH and
+  // GIT_CONFIG_PARAMETERS are dropped by PTY-5 before the allow-list (any case); the allow-list's own answer for them is the unit test below.
+  const extra = { GIT_TEMPLATE_DIR: r.tmp, GIT_ATTR_SOURCE: "HEAD", GIT_SSL_NO_VERIFY: "1", GIT_HTTP_LOW_SPEED_LIMIT: "1", Git_Object_Directory: r.tmp, GIT_SSL_CAINFO: join(r.tmp, "ca.pem"), GIT_EXEC_PATH: r.tmp, GIT_CONFIG_PARAMETERS: "'core.x=1'", Git_Trace: join(r.tmp, "trace") };
   const base = { ...r.baseEnv, ...extra };
   const s = service(r, base);
   tc.after(() => s.dispose());
@@ -203,6 +205,12 @@ test("review 2 SF-1: the push keeps GIT_* names by an allow-list: location, conf
   const env = s.spawned[0]?.env ?? {};
   const kept = Object.keys(env).filter((k) => k.toUpperCase().startsWith("GIT_")).sort();
   assert.deepEqual(kept, ["GIT_ALLOW_PROTOCOL", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM", "GIT_NO_LAZY_FETCH", "GIT_SSL_CAINFO", "GIT_TERMINAL_PROMPT"]);
+});
+
+test("review 3 N-3: the GIT_* allow-list alone (without PTY-5 in front) drops the helper path and config injection in any case, and keeps only its own names", () => {
+  const env: Record<string, string> = { GIT_EXEC_PATH: "/x", Git_Exec_Path: "/x", GIT_CONFIG_PARAMETERS: "'a.b=1'", git_config_count: "1", Git_Trace: "1", GIT_SSH_COMMAND: "ssh", Git_Ssl_CaInfo: "/c", PATH: "/bin", gitish: "1" };
+  keepGitNames(env);
+  assert.deepEqual(Object.keys(env).sort(), ["GIT_SSH_COMMAND", "Git_Ssl_CaInfo", "PATH", "gitish"]);
 });
 
 test("review 2 N-1: a push URL changed after git-ops read it (a user-level pushInsteadOf) is refused by the service's own read; control: with the new digest the push goes there", { skip: SKIP }, async (tc) => {

@@ -230,10 +230,12 @@ test("S-3: a branch that moved after the scan is refused before the push, and th
 
 test("S-7: remote helpers and unlisted transports are refused; https, ssh, git, scp and local paths are accepted", async () => {
   const urlRunner = (u: string) => new FakeRunner(healthy((s) => (s[0] === "remote" && s[1] === "get-url" ? { stdout: `${u}\n` } : undefined)));
-  for (const bad of ["foo::bar", "ext::sh -c x", "fd::3", "http://github.com/o/r.git", "ftp://h/r", "git+ssh://h/r", "FOO://h/r", "rsync://h/r"]) {
+  // The same table as the pty process's `pushUrlAllowed` test (push-vet.test.ts, review 3 N-1): git's helper grammar takes a
+  // digit-led name, and git compares the scheme case-sensitively, so neither may be approved here and refused there.
+  for (const bad of ["foo::bar", "ext::sh -c x", "fd::3", "9p::x", "file::/r", "x-y::z", "http://github.com/o/r.git", "ftp://h/r", "git+ssh://h/r", "FOO://h/r", "rsync://h/r", "9p://h/r", "HTTPS://github.com/o/r", "SSH://h/r", "FILE:///r"]) {
     assert.equal(await code(planPush(makeDeps(urlRunner(bad)), input)), "E_POLICY_DENIED", bad);
   }
-  for (const ok of ["https://github.com/o/r.git", "ssh://git@github.com/o/r.git", "git://h/r.git", "git@github.com:o/r.git", "/srv/git/r.git", "file:///srv/git/r.git", "HTTPS://github.com/o/r"]) {
+  for (const ok of ["https://github.com/o/r.git", "ssh://git@github.com/o/r.git", "git://h/r.git", "git@github.com:o/r.git", "/srv/git/r.git", "rel/r.git", "file:///srv/git/r.git"]) {
     assert.equal(await code(planPush(makeDeps(urlRunner(ok)), input)), "OK", ok);
   }
 });

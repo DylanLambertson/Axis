@@ -64,8 +64,8 @@ const FORM_REFUSALS: ReadonlySet<unknown> = new Set(["bad_argv", "env_denied", "
 const unmappable = (): GitOpsError => new GitOpsError("E_INTERNAL", "A git request for the pty process has a form Axis does not map.");
 const unavailable = (): GitOpsError => new GitOpsError("E_UNAVAILABLE", "The Axis pty process is not available for git.");
 const cancelled = (): GitOpsError => new GitOpsError("E_CANCELLED", "The push was cancelled.");
-/** The pty process's own check of the remote refused it (a `remote.<r>.vcs` helper or a helper URL; git-ops refuses these first). */
-const remoteRefused = (): GitOpsError => new GitOpsError("E_POLICY_DENIED", "The remote uses a transport helper, which Axis does not push through.");
+/** The pty process's own check of the remote refused it: push URLs other than the approved ones, a `remote.<r>.vcs` helper or a helper URL. */
+const remoteRefused = (): GitOpsError => new GitOpsError("E_POLICY_DENIED", "The remote is not the one approved, or uses a transport helper, which Axis does not push through.");
 /**
  * A push with repository hooks on (`axis.git.runHooks`): git-ops leaves out the hooks pin and `--no-verify`, and `pre-push` would
  * run. Running it needs the hook path check of §5.2 (S4 part 2, after S2's resolution), so until then it is refused, never run
