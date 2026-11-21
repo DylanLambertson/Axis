@@ -4,8 +4,11 @@ import { mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
 import { resolveGit } from "@axis/git-ops";
-import { computeDigest, takeStableSnapshot, type Snapshot } from "@axis/git-snapshot";
 import { COMPOSER_SNAPSHOT_TAKE_MS, SNAPSHOT_TAKE_MS, composerGuardDeps, createRunRepositoryGuard, parseHostConfig, type SnapshotTaker } from "../src/index.js";
+import { snapshotLibraryForTests } from "../src/bindings/snapshot.js";
+
+const { take: takeStableSnapshot, digest: computeDigest } = snapshotLibraryForTests;
+type Snapshot = Awaited<ReturnType<SnapshotTaker>>;
 import { Redactor } from "@axis/audit";
 import { createGitFixture, gitSkipReason, type GitFixture } from "../testing/git-fixture.js";
 import { validConfig } from "./helpers.js";

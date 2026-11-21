@@ -2,7 +2,7 @@
 import { lstat, realpath } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { AxisError } from "@axis/audit";
-import { judgeDrift, takeStableSnapshot, type Snapshot } from "@axis/git-snapshot";
+import { computeDigest, judgeDrift, takeStableSnapshot, type Snapshot } from "@axis/git-snapshot";
 import { DEFAULT_LIMITS, type RunSnapshotter, type RunWorktree, type SnapshotContext } from "@axis/runs";
 import type { RunRepositoryGuard } from "../ports/composer.js";
 
@@ -172,6 +172,12 @@ export function createRunRepositoryGuard(deps: RunSnapshotterDeps, maxHeld = MAX
     },
   };
 }
+
+/**
+ * TEST ONLY: the library's own taker and digest, for tests that shape a real snapshot (this file is the only importer of
+ * `@axis/git-snapshot` in the package; `test/packages/imports.test.mjs`).
+ */
+export const snapshotLibraryForTests = Object.freeze({ take: takeStableSnapshot as SnapshotTaker, digest: computeDigest });
 
 /** The composer guard's deps as the composition builds them: the host limit `composerSnapshotTakeMs` sets the take bound. */
 export function composerGuardDeps(base: Omit<RunSnapshotterDeps, "takeMs">, limits: { readonly composerSnapshotTakeMs?: number | undefined }): RunSnapshotterDeps {
