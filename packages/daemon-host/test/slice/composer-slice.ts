@@ -62,11 +62,12 @@ export async function settled(client: TestClient, runId: string): Promise<Compos
 
 /** The run's one pending challenge, once the run waits for it. */
 export async function pendingOf(client: TestClient, runId: string): Promise<Challenge> {
+  // The pending list, not the run-wide "awaiting" flag: an answered challenge leaves the list at once, while the flag may
+  // still be set by it (or set again by the next call) when it is read.
+  let challenges: Challenge[] = [];
   let run: ComposerRun | undefined;
-  await until(async () => (run = await getRun(client, runId)).awaitingApproval || !run.live, "the approval to be asked", 6_000);
-  assert.ok(run?.awaitingApproval, `the run ended (${run?.state} ${run?.reason}) instead of asking: ${JSON.stringify(await eventsOf(client, runId))}`);
-  const { challenges } = await client.ok<{ challenges: Challenge[] }>("axis.approvals", "pending", {});
-  assert.equal(challenges.length, 1, "one challenge is pending");
+  await until(async () => (challenges = (await client.ok<{ challenges: Challenge[] }>("axis.approvals", "pending", {})).challenges).length > 0 || !(run = await getRun(client, runId)).live, "the approval to be asked", 6_000);
+  assert.equal(challenges.length, 1, `one challenge is pending (the run is ${run?.state ?? "live"} ${run?.reason ?? ""}): ${challenges.length === 0 ? JSON.stringify(await eventsOf(client, runId)) : ""}`);
   return challenges[0] as Challenge;
 }
 
@@ -87,9 +88,10 @@ export async function answer(h: ComposerHost, runId: string, decision: "approve"
   // The window's approval alone runs nothing at tier 4: the run still waits for the native dialog.
   assert.equal((await getRun(h.client, runId)).awaitingApproval, true, "a tier 4 call waits for the native confirmation");
   await beforeNative?.();
-  // Wait on the run, not on a count of audit rows (a window of the last rows can drop an old confirmation as the new one enters).
+  // Wait for THIS challenge's own answer in the run's events (review c7 S3): the run-wide "awaiting" flag is set again by the
+  // next call's challenge, and a count of recent audit rows can lose an old confirmation as the new one enters.
   h.sup.answerNative(challenge.challengeId, true);
-  await until(async () => !(await getRun(h.client, runId)).awaitingApproval, "the native confirmation to be taken", 6_000);
+  await until(async () => approvalsOf(await eventsOf(h.client, runId)).some((a) => a.digest === challenge.digest && a.state !== "requested"), "the native confirmation to be taken", 6_000);
   return { challenge, dialog: h.sup.nativeConfirms.find((c) => c.challengeId === challenge.challengeId)?.summary };
 }
 
