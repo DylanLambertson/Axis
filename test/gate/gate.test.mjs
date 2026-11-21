@@ -229,9 +229,15 @@ import { spawn } from "node:child_process";
 const testAll = fileURLToPath(new URL("../../scripts/test-all.mjs", import.meta.url));
 const node = process.execPath;
 
+function seamEnv(suites, env) {
+  const e = { ...process.env, AXIS_TEST_ALL_SUITES_JSON: JSON.stringify(suites), AXIS_TEST_ALL_SEAM: "runner-self-test", ...env };
+  delete e.CI;
+  return e;
+}
+
 function runner(suites, env, hardMs = 15_000) {
   return new Promise((resolve) => {
-    const child = spawn(node, [testAll], { detached: true, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, AXIS_TEST_ALL_SUITES_JSON: JSON.stringify(suites), ...env } });
+    const child = spawn(node, [testAll], { detached: true, stdio: ["ignore", "pipe", "pipe"], env: seamEnv(suites, env) });
     let out = "";
     child.stdout.on("data", (d) => { if (out.length < 1_000_000) out += d; });
     child.stderr.on("data", (d) => { if (out.length < 1_000_000) out += d; });
@@ -286,4 +292,44 @@ test("run-suite: a suite that runs past the sample point prints memory and its b
   const sink2 = new Writable({ write(c, _e, cb) { killed.push(c); cb(); } });
   await runSuite("spin", node, ["-e", "for(;;){}"], { timeoutMs: 400, graceMs: 200, sampleMs: 0, out: sink2, err: sink2 });
   assert.match(Buffer.concat(killed).toString("utf8"), /== sample \(spin, \+\d+s, timeout\): /);
+});
+
+test("test-all: SIGTERM during a suite stops the runner with 143 and no queued suite starts", { timeout: 25_000 }, async () => {
+  const suites = [["first", node, ["-e", "console.log('FIRST STARTED'); setInterval(()=>{},1000)"]], ["second", node, ["-e", "console.log('NEXT RAN')"]]];
+  const child = spawn(node, [testAll], { detached: true, stdio: ["ignore", "pipe", "pipe"], env: seamEnv(suites, {}) });
+  let out = "";
+  let sent = false;
+  const hard = setTimeout(() => { try { process.kill(-child.pid, "SIGKILL"); } catch { /* gone */ } }, 15_000);
+  const code = await new Promise((resolve) => {
+    const onData = (d) => { out += d; if (!sent && out.includes("FIRST STARTED")) { sent = true; child.kill("SIGTERM"); } };
+    child.stdout.on("data", onData);
+    child.stderr.on("data", onData);
+    child.on("close", (c) => resolve(c));
+  });
+  clearTimeout(hard);
+  assert.ok(sent, "the first suite started");
+  assert.ok(!out.includes("NEXT RAN"), "no suite may start after a termination signal");
+  assert.equal(code, 143, "the runner exits 143 on SIGTERM");
+});
+
+test("test-all: the suite-list seam is refused in CI or without its marker, and a bad limit is refused", { timeout: 25_000 }, async () => {
+  const run1 = (env) => new Promise((resolve) => {
+    const c = spawn(node, [testAll], { stdio: ["ignore", "pipe", "pipe"], env });
+    let out = "";
+    c.stdout.on("data", (d) => { out += d; });
+    c.stderr.on("data", (d) => { out += d; });
+    c.on("close", (code) => resolve({ code, out }));
+  });
+  let r = await run1({ ...seamEnv([], {}), CI: "true" });
+  assert.equal(r.code, 2, r.out);
+  assert.match(r.out, /test-only seam; refused/);
+  const noMarker = seamEnv([], {});
+  delete noMarker.AXIS_TEST_ALL_SEAM;
+  r = await run1(noMarker);
+  assert.equal(r.code, 2, r.out);
+  for (const bad of [{ AXIS_TEST_SUITE_TIMEOUT_MS: "abc" }, { AXIS_TEST_OUTPUT_CAP_BYTES: "0" }]) {
+    r = await run1(seamEnv([], bad));
+    assert.equal(r.code, 2, r.out);
+    assert.match(r.out, /must be a positive integer/);
+  }
 });

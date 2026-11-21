@@ -5,7 +5,7 @@
 import { readdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { killGroup, live, runSuite } from "./gate/run-suite.mjs";
+import { killGroup, live, readLimits, runSuite } from "./gate/run-suite.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const jsonAt = process.argv[2] === "--json" ? process.argv[3] : undefined;
@@ -16,18 +16,40 @@ const npm = process.platform === "win32" ? "npm.cmd" : "npm";
 // SIGTERM, SIGINT or SIGHUP the runner names the running suite, kills its group (SIGTERM, then
 // SIGKILL after a grace) and exits.
 // Env: AXIS_TEST_SUITE_TIMEOUT_MS (default 20 min per suite), AXIS_TEST_OUTPUT_CAP_BYTES (default 512 MiB).
+try {
+  readLimits();
+} catch (e) {
+  process.stderr.write(`test runner: ${e.message}\n`);
+  process.exit(2);
+}
+
+// `terminating` is set synchronously by a signal, before anything awaits: a killed suite's close
+// must never let the loop start the next suite (a cancelled CI job would begin a build).
+let terminating = false;
 for (const sig of ["SIGTERM", "SIGINT", "SIGHUP"]) {
   process.on(sig, async () => {
+    terminating = true;
     process.stderr.write(`\n== test runner received ${sig} while running ${live.name}\n`);
     await killGroup(live.child?.pid);
     process.exit(128 + (sig === "SIGTERM" ? 15 : sig === "SIGINT" ? 2 : 1));
   });
 }
 
-const run = (name, command, args) => runSuite(name, command, args, { cwd: root });
+const never = () => new Promise(() => {});
+const run = async (name, command, args) => {
+  if (terminating) return never();
+  const result = await runSuite(name, command, args, { cwd: root });
+  return terminating ? never() : result;
+};
 
-// AXIS_TEST_ALL_SUITES_JSON ([[name, command, args], ...]) replaces the list: a seam for the runner's own tests.
+// AXIS_TEST_ALL_SUITES_JSON ([[name, command, args], ...]) replaces the list. It exists only for the
+// runner's own tests: it needs AXIS_TEST_ALL_SEAM=runner-self-test and is refused when CI is set, so
+// it can never turn a CI run green by running nothing.
 const override = process.env.AXIS_TEST_ALL_SUITES_JSON;
+if (override !== undefined && (process.env.CI !== undefined || process.env.AXIS_TEST_ALL_SEAM !== "runner-self-test")) {
+  process.stderr.write("test runner: AXIS_TEST_ALL_SUITES_JSON is a test-only seam; refused (CI is set or AXIS_TEST_ALL_SEAM is missing)\n");
+  process.exit(2);
+}
 const suites = [];
 if (override !== undefined) {
   for (const [name, command, args] of JSON.parse(override)) suites.push(await run(name, command, args));

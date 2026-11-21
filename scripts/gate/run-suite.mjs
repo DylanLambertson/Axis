@@ -19,8 +19,6 @@ export function killGroup(pid, graceMs = KILL_GRACE_MS) {
   return new Promise((resolve) => {
     const t = setTimeout(() => { send("SIGKILL"); resolve(); }, graceMs);
     const poll = setInterval(() => { if (!send(0)) { clearTimeout(t); clearInterval(poll); resolve(); } }, 100);
-    t.unref?.();
-    poll.unref?.();
   });
 }
 
@@ -33,13 +31,24 @@ export function memorySample() {
   return `${mem}\n    ${top}`;
 }
 
+/** Limits from the environment: a positive integer or an error naming the variable (a typo must not disable a limit or kill at once). */
+export function readLimits(env = process.env) {
+  const one = (name, fallback) => {
+    const raw = env[name];
+    if (raw === undefined) return fallback;
+    if (!/^[1-9][0-9]*$/.test(raw)) throw new Error(`${name} must be a positive integer, got ${JSON.stringify(raw)}`);
+    return Number(raw);
+  };
+  return { timeoutMs: one("AXIS_TEST_SUITE_TIMEOUT_MS", DEFAULT_TIMEOUT_MS), capBytes: one("AXIS_TEST_OUTPUT_CAP_BYTES", DEFAULT_OUTPUT_CAP_BYTES) };
+}
+
 /** The child of the running suite (for the runner's signal handler). */
 export const live = { child: undefined, name: "(none)" };
 
 export function runSuite(name, command, args, opts = {}) {
   const cwd = opts.cwd;
-  const timeoutMs = opts.timeoutMs ?? Number(process.env.AXIS_TEST_SUITE_TIMEOUT_MS ?? DEFAULT_TIMEOUT_MS);
-  const capBytes = opts.capBytes ?? Number(process.env.AXIS_TEST_OUTPUT_CAP_BYTES ?? DEFAULT_OUTPUT_CAP_BYTES);
+  const timeoutMs = opts.timeoutMs ?? readLimits().timeoutMs;
+  const capBytes = opts.capBytes ?? readLimits().capBytes;
   const out = opts.out ?? process.stdout;
   const err = opts.err ?? process.stderr;
   const sampleMs = opts.sampleMs ?? Number(process.env.AXIS_TEST_SAMPLE_MS ?? (process.env.CI === undefined ? 0 : 30_000));
