@@ -23,7 +23,7 @@ export interface DeliveryRig {
   readonly codes: string[];
 }
 
-export async function deliveryRig(t: TestContext, options: { maxText?: number; failTaintAudit?: () => boolean; limits?: Partial<MessagingLimits> } = {}): Promise<DeliveryRig> {
+export async function deliveryRig(t: TestContext, options: { maxText?: number; failTaintAudit?: () => boolean; limits?: Partial<MessagingLimits>; onInternalError?: (code: string) => void } = {}): Promise<DeliveryRig> {
   const holder: { m?: MessagingBinding; rig?: DeliveryRig } = {};
   const c = await composerRig({
     replies: [],
@@ -58,7 +58,10 @@ export async function deliveryRig(t: TestContext, options: { maxText?: number; f
     runLive: (runId) => c.journal.getRun(runId)?.state === "RUNNING",
     ...(options.maxText === undefined ? {} : { deliveryLimits: { maxText: options.maxText } }),
     ...(options.limits === undefined ? {} : { limits: options.limits }),
-    onInternalError: (code) => void codes.push(code),
+    onInternalError: (code) => {
+      codes.push(code);
+      options.onInternalError?.(code);
+    },
   });
   holder.m = m;
   const rig: DeliveryRig = {

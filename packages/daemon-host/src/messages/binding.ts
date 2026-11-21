@@ -1,5 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
+import { randomBytes } from "node:crypto";
 import type { Journal } from "@axis/journal";
+import type { Logger } from "../log/logger.js";
 import { createMessageDelivery, type MessageDelivery } from "./delivery.js";
 import { createMessageService, type MessageService } from "./service.js";
 import { createMessagingSettings, type MessagingSettingsService } from "./settings.js";
@@ -43,4 +45,27 @@ export function createMessagingBinding(deps: MessagingBindingDeps): MessagingBin
   const service = createMessageService({ ...common, random: deps.random, monotonic: deps.monotonic, scan: deps.scan, ...(deps.limits === undefined ? {} : { limits: deps.limits }) });
   const delivery = createMessageDelivery({ ...common, service, random: deps.random, agentOf: deps.agentOf ?? (() => undefined), runLive: deps.runLive ?? (() => false), ...deps.deliveryLimits, ...(deps.onInternalError === undefined ? {} : { onInternalError: deps.onInternalError }) });
   return { service, settings: createMessagingSettings({ ...common, context: (id) => service.context(id) }), delivery };
+}
+
+/** What the composition root has for messaging; `logger` is required (possibly undefined), so it cannot be left out. */
+export interface HostMessaging {
+  readonly journal: Pick<Journal, "messages" | "getProject" | "getRun">;
+  readonly audit: MessageAuditSink;
+  readonly monotonic: () => number;
+  readonly scan: (text: string) => Promise<readonly unknown[]>;
+  readonly logger: Pick<Logger, "warn"> | undefined;
+}
+
+/** The binding's dependencies in the host: the daemon's CSPRNG, live runs from the journal, swallowed failures logged by code. */
+export function hostMessagingDeps(host: HostMessaging): MessagingBindingDeps {
+  const { journal, logger } = host;
+  return {
+    journal,
+    audit: host.audit,
+    random: { bytes: (n) => randomBytes(n) },
+    monotonic: host.monotonic,
+    scan: host.scan,
+    runLive: (id) => journal.getRun(id)?.state === "RUNNING",
+    onInternalError: (code) => logger?.warn("request.failed", { reason: `delivery_${code}` }),
+  };
 }
