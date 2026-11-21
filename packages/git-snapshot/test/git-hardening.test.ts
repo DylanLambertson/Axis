@@ -87,7 +87,7 @@ test("every git call is hardened: -C, neutral cwd, absolute git, GIT-ENV-1, no u
   try {
     const g = await logging(f);
     appendFileSync(join(f.home, ".gitconfig"), "[alias]\n\tfromglobal = x\n[core]\n\thooksPath = /tmp/from-global\n");
-    const hostile = { PATH: realPath, GIT_DIR: "/nowhere", GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "core.hooksPath", GIT_CONFIG_VALUE_0: "/tmp/evil", GIT_CONFIG_PARAMETERS: "'core.hooksPath=/tmp/evil'", GIT_EXEC_PATH: "/nowhere", GIT_CONFIG_GLOBAL: join(f.home, ".gitconfig") };
+    const hostile = { PATH: realPath, GIT_DIR: "/nowhere", GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "core.hooksPath", GIT_CONFIG_VALUE_0: "/tmp/evil", GIT_CONFIG_PARAMETERS: "'core.hooksPath=/tmp/evil'", GIT_EXEC_PATH: "/nowhere", GIT_CONFIG_GLOBAL: join(f.home, ".gitconfig"), GIT_NO_LAZY_FETCH: "0", GIT_ALLOW_PROTOCOL: "file:ext" };
     const s = await takeSnapshot(opts(f, { gitPath: g.path, env: hostile }));
     assert.equal(s.incomplete.length, 0, JSON.stringify(s.incomplete));
     assert.ok(!s.settings.some((x) => x.key === "alias.fromglobal" || x.label === "core.hooksPath"), "user config reached the answer");
@@ -101,6 +101,8 @@ test("every git call is hardened: -C, neutral cwd, absolute git, GIT-ENV-1, no u
       assert.match(c, /\nGIT_CONFIG_GLOBAL=\/dev\/null\n/);
       assert.match(c, new RegExp(`\\nGIT_CEILING_DIRECTORIES=${f.root}\\n`));
       assert.match(c, /\nGIT_TERMINAL_PROMPT=0\n/);
+      assert.match(c, /\nGIT_NO_LAZY_FETCH=1\n/);
+      assert.match(c, /\nGIT_ALLOW_PROTOCOL=\/\n/);
       for (const bad of ["GIT_DIR=", "GIT_CONFIG_COUNT=", "GIT_CONFIG_PARAMETERS=", "GIT_EXEC_PATH=", "GIT_CONFIG_KEY_0="]) assert.ok(!c.includes(bad), bad);
       assert.match(c, new RegExp(`\\nHOME=${f.home}\\n`));
     }

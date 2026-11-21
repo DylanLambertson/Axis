@@ -164,7 +164,9 @@ export function runsNoFilters(args: readonly string[]): boolean {
  * hooks off, core.fsmonitor=false, no signing, literal pathspecs, a timeout,
  * and only command shapes that cannot start a filter driver (clean, smudge,
  * process) or an editor (`runsNoFilters`); any other command is refused, so
- * nothing the repository configuration names can execute in the daemon.
+ * nothing the repository configuration names can execute in the daemon. A
+ * read of an object that a partial clone lacks does not fetch it (the
+ * runner's lazy-fetch pins, `help.autocorrect=0` here).
  */
 export class HardenedGit {
   private readonly timeoutMs: number;
@@ -184,6 +186,12 @@ export class HardenedGit {
       '-c', 'core.fsmonitor=false',
       '-c', 'commit.gpgsign=false',
       '-c', 'core.askPass=',
+      // protocol.allow=never is only a default (a repository's protocol.<name>.allow outranks it); the runner's
+      // GIT_NO_LAZY_FETCH / GIT_ALLOW_PROTOCOL carry the lazy-fetch protection. Autocorrect off: with `/` the only allowed
+      // protocol, a repository's `remote.<name>.vcs=/` makes git look for `git remote-/`, which autocorrect would turn
+      // into an `alias.remote-a` the repository defines.
+      '-c', 'protocol.allow=never',
+      '-c', 'help.autocorrect=0',
       ...(noOptionalLocks ? ['--no-optional-locks'] : []),
     ];
   }
