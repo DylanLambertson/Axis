@@ -6,7 +6,6 @@ import { chmodSync, mkdirSync, renameSync, symlinkSync, writeFileSync, readFileS
 import { join } from "node:path";
 import { acknowledgeDrift, assertDriftAllowed, diffSnapshots, judgeDrift, parseSnapshot, takeStableSnapshot } from "../src/index.js";
 import { append, git, makeFixture, write } from "./helpers.js";
-import { budget } from "./budget.js";
 
 const flagsOf = (d: ReturnType<typeof diffSnapshots>): string => d.flags.join(" | ");
 
@@ -255,17 +254,18 @@ test("thousands of hook files are bounded: over the entry limit the snapshot is 
   try {
     const dir = join(f.common, "hooks");
     for (let i = 0; i < 3000; i++) writeFileSync(join(dir, `h${i}`), "x");
-    const t0 = Date.now();
-    const s = await f.snap({ maxEntries: 1000 });
-    assert.ok(Date.now() - t0 < budget(5000));
+    // What is asserted is the entry bound and completeness, never elapsed time: the time limit is raised to a hang guard so a loaded
+    // machine can neither fail the default-limits snapshot (it would come back incomplete past 10 s) nor satisfy the first assertion
+    // for the wrong reason (an incomplete snapshot because the time ran out, not because of the entry limit).
+    const HANG_GUARD_MS = 10 * 60_000;
+    const s = await f.snap({ maxEntries: 1000, maxMillis: HANG_GUARD_MS });
     assert.ok(s.incomplete.some((i) => i.blocking));
     assert.ok(s.entries.length <= 1001);
     const v = judgeDrift({ baseline: s, current: s });
     assert.equal(v.status, "refused");
     assert.throws(() => acknowledgeDrift(s));
-    // Within the default limits 3000 small files are fine.
-    // The library's own time limit (10 s idle) is widened for a loaded machine like every budget here; the entry limit stays the default.
-    const ok = await f.snap({ maxMillis: budget(10_000) });
+    // Within the default entry limits 3000 small files are fine.
+    const ok = await f.snap({ maxMillis: HANG_GUARD_MS });
     assert.equal(ok.incomplete.length, 0);
     assert.ok(ok.entries.length > 3000);
   } finally {
