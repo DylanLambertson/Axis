@@ -269,6 +269,7 @@
 .monaco-workbench .axis-file-tree-row .name {
 	overflow: hidden;
 	text-overflow: ellipsis;
+	unicode-bidi: isolate;
 }
 
 .monaco-workbench .axis-file-tree-empty {
