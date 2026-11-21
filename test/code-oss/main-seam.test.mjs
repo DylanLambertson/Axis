@@ -74,7 +74,8 @@ test("patch 0210 passes the instantiation service and still adds 8 lines", () =>
 /** The rule breaks of the pty wiring (PV-X1b, docs/design/pty-exec-node.md §6): empty when fine. */
 export function ptyWiringViolations(seam, pty) {
   const bad = [];
-  const gate = seam.indexOf("if (!shouldStartDaemon(app.isPackaged)) {");
+  const gate = seam.indexOf("if (!shouldStartDaemon(services.environment.isBuilt)) {");
+  if (gate < 0 || /shouldStartDaemon\(app\.isPackaged\)/.test(seam)) bad.push("the start gate is not Code OSS's isBuilt");
   const startPty = seam.indexOf("const pty = startAxisPty(config, resolvedShellEnv(services), log, timers);");
   if (!(gate > 0 && startPty > gate)) bad.push("the pty process does not start under the daemon's start gate");
   if ((seam.match(/startAxisPty\(/g) ?? []).length !== 1) bad.push("the pty process is started more than once");
@@ -94,7 +95,8 @@ test("the pty process starts under the daemon's gate, its fork is fixed, both ch
 
 test("the pty wiring checker finds each way of breaking it", () => {
   const breaks = [
-    [SEAM.replace("\tif (!shouldStartDaemon(app.isPackaged)) {", "\tif (false) {"), PTY, "the pty process does not start under the daemon's start gate"],
+    [SEAM.replace("\tif (!shouldStartDaemon(services.environment.isBuilt)) {", "\tif (false) {"), PTY, "the pty process does not start under the daemon's start gate"],
+    [SEAM.replace("shouldStartDaemon(services.environment.isBuilt)", "shouldStartDaemon(app.isPackaged)"), PTY, "the start gate is not Code OSS's isBuilt"],
     [SEAM.replace("\t\t\tpty.handover.daemon(handle, true);\n", ""), PTY, "a daemon child is not reported to the control hand-over"],
     [SEAM.replace("child.once('exit', () => pty.handover.daemon(handle, false));", ""), PTY, "a daemon child is not reported to the control hand-over"],
     [SEAM, PTY.replace("\t\tenv,\n\t\texecArgv: [],", "\t\tenv: { ...process.env, ...env },\n\t\texecArgv: [],"), "the pty entry is not forked fixed, with exactly the checked environment, no execArgv and piped stdio"],

@@ -20,7 +20,7 @@
 //   hand-over, so both get one new channel whenever either (re)starts. Shutdown stops the daemon first, then the pty process.
 import { createHmac, randomBytes } from 'crypto';
 import { homedir } from 'os';
-import { app, utilityProcess, type MessagePortMain } from 'electron';
+import { utilityProcess, type MessagePortMain } from 'electron';
 import { validatedIpcMain } from '../../../base/parts/ipc/electron-main/ipcMain.js';
 import { FileAccess } from '../../../base/common/network.js';
 import type { IInstantiationService } from '../../../platform/instantiation/common/instantiation.js';
@@ -39,10 +39,13 @@ interface ILifecycle { readonly onWillShutdown: (listener: (event: IShutdownEven
 interface ILog { trace(message: string): void; warn(message: string): void; error(message: string): void }
 
 export function startAxisMainSeam(lifecycle: ILifecycle, log: ILog, instantiation: IInstantiationService): DaemonSupervisor | undefined {
-	// One start gate for both processes (supervisor.ts): unpackaged builds only, until the packaging ADR. The pty process never
-	// runs when the daemon does not.
-	if (!shouldStartDaemon(app.isPackaged)) {
-		log.trace('axis daemon: not started in a packaged build');
+	const services = resolveMainServices(instantiation);
+	// One start gate for both processes (supervisor.ts): development builds only, until the packaging ADR. The pty process never
+	// runs when the daemon does not. `isBuilt` (false only under VSCODE_DEV, which scripts/code.sh sets) is Code OSS's own
+	// development check; Electron's `app.isPackaged` cannot be used: it is true whenever the executable is not named `electron`,
+	// which a Code OSS development build never is, so it kept the daemon from starting in every build.
+	if (!shouldStartDaemon(services.environment.isBuilt)) {
+		log.trace('axis daemon: not started in a built (packaged) build');
 		return undefined;
 	}
 	const platform = process.platform === 'darwin' ? 'darwin' : process.platform === 'win32' ? 'win32' : 'linux';
@@ -51,9 +54,8 @@ export function startAxisMainSeam(lifecycle: ILifecycle, log: ILog, instantiatio
 		...axisDataRoots(platform, process.env, homedir()),
 		platform,
 		logLevel: 'info',
-		devDiagnostics: !app.isPackaged,
+		devDiagnostics: !services.environment.isBuilt,
 	};
-	const services = resolveMainServices(instantiation);
 	const timers: SupervisorTimers = { set: (fn, ms) => setTimeout(fn, ms), clear: handle => clearTimeout(handle as ReturnType<typeof setTimeout>) };
 	// The pty process first (§6.4): it is forked once main's shell environment is resolved; the daemon starts after it.
 	const pty = startAxisPty(config, resolvedShellEnv(services), log, timers);
