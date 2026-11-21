@@ -1,6 +1,5 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
-import { accessSync, constants, lstatSync, statSync } from "node:fs";
-import { isAbsolute } from "node:path";
+import { PTY_ENV_GH, PTY_ENV_GIT, PTY_ENV_SCRATCH, readPtyExecConfig } from "./config.js";
 import { createNodeExec } from "./exec-node.js";
 import { adaptMessagePort, type MessagePortLike } from "./port-adapter.js";
 import type { SpawnFn } from "./ports.js";
@@ -52,51 +51,7 @@ export interface PtyEntryDeps {
   readonly stderr: (line: string) => void;
 }
 
-/** The names main hands the programs and the scratch directory over in (§6.2). */
-export const PTY_ENV_GIT = "AXIS_PTY_GIT";
-export const PTY_ENV_GH = "AXIS_PTY_GH";
-export const PTY_ENV_SCRATCH = "AXIS_PTY_SCRATCH";
-
-/** The exec configuration the entry read from its environment, or the closed reason it refuses. */
-export interface PtyExecConfig {
-  readonly gitPath?: string;
-  readonly ghPath?: string;
-  readonly scratchParent?: string;
-}
-
-const programOk = (p: string): boolean => {
-  if (!isAbsolute(p) || p.includes("\0")) return false;
-  try {
-    if (!statSync(p).isFile()) return false;
-    accessSync(p, constants.X_OK);
-    return true;
-  } catch {
-    return false;
-  }
-};
-
-const scratchOk = (p: string): boolean => {
-  if (!isAbsolute(p) || p.includes("\0")) return false;
-  try {
-    const st = lstatSync(p);
-    const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
-    return st.isDirectory() && (st.mode & 0o077) === 0 && (uid === undefined || st.uid === uid);
-  } catch {
-    return false;
-  }
-};
-
-/** Reads and checks the hand-over names. Unset names stay unset; a set name that fails its check is a refusal reason. */
-export function readPtyExecConfig(env: Readonly<Record<string, string | undefined>>): PtyExecConfig | string {
-  const git = env[PTY_ENV_GIT];
-  const gh = env[PTY_ENV_GH];
-  const scratch = env[PTY_ENV_SCRATCH];
-  if (git !== undefined && !programOk(git)) return "git_path_refused";
-  if (gh !== undefined && !programOk(gh)) return "gh_path_refused";
-  if (scratch !== undefined && !scratchOk(scratch)) return "scratch_refused";
-  if (git !== undefined && scratch === undefined) return "scratch_refused";
-  return { ...(git === undefined ? {} : { gitPath: git }), ...(gh === undefined ? {} : { ghPath: gh }), ...(scratch === undefined ? {} : { scratchParent: scratch }) };
-}
+export { PTY_ENV_GH, PTY_ENV_GIT, PTY_ENV_SCRATCH, readPtyExecConfig, type PtyExecConfig } from "./config.js";
 
 export interface PtyEntryHandle {
   readonly service: PtyService | undefined;

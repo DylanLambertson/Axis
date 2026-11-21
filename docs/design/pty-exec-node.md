@@ -133,7 +133,7 @@ Both messages have exactly that one key and exactly one port; both entries drop 
 
 **6.5 Build entry.** Patch 0200 gains `vs/axis/pty/node/axisPtyMain` in the entry lists of `build/next/index.ts` (master's patch).
 
-**6.6 What X1b imports.** `readPtyExecConfig` and the three name constants (`PTY_ENV_GIT`, `PTY_ENV_GH`, `PTY_ENV_SCRATCH`) from `pty-process`, the daemon supervisor's restart policy (`daemon-host/supervisor`), and main's trusted resolver. `axisDaemonMain.ts` needs no change: the daemon entry takes `pty-control` itself; its placeholder comment ("the pty process does not exist yet") is X1b's to update.
+**6.6 What X1b imports.** `readPtyExecConfig` and the three name constants (`PTY_ENV_GIT`, `PTY_ENV_GH`, `PTY_ENV_SCRATCH`) from `@axis/pty-process/config` (PV-X1b: a subpath that holds only these and imports only `node:fs` and `node:path`; the entry re-exports them; the daemon host may import it only from `src/main/*.ts`, `test/packages/pty-client-rule.mjs`, pinned with its own breaks in `test/packages/pty-config-subpath.test.mjs`), the daemon supervisor's restart policy (`daemon-host/supervisor`), and main's trusted resolver. `axisDaemonMain.ts` needs no change: the daemon entry takes `pty-control` itself; its placeholder comment ("the pty process does not exist yet") is X1b's to update.
 
 **6.7 Tests X1b owns.** A packaged-shape GUI run (Xvfb) that pushes to a local bare remote through main, the pty process and the daemon; a pty-process crash mid-push answers `E_UNAVAILABLE` and a later push succeeds on the new channel.
 
