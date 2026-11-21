@@ -50,7 +50,8 @@ export function startAxisPty(config: SupervisedConfig, shellEnv: () => Promise<R
 		const env = { ...process.env, ...resolved };
 		// The Axis data root holds the daemon's data and the managed worktrees: a program found inside it is never chosen.
 		const base = dirname(config.dataDir);
-		const programs = resolvePtyPrograms(env, config.platform, [base, config.worktreeRoot]);
+		const excludeDirs = [base, config.worktreeRoot];
+		const programs = resolvePtyPrograms(env, config.platform, excludeDirs);
 		log.trace(`axis pty: git=${programs.gitPath === undefined ? 'missing' : 'found'} gh=${programs.ghPath === undefined ? 'missing' : 'found'}`);
 		const root = ptyScratchRoot(config.dataDir);
 		const scratchRoot = config.platform !== 'win32' && preparePtyScratchRoot(root) ? root : undefined;
@@ -59,6 +60,7 @@ export function startAxisPty(config: SupervisedConfig, shellEnv: () => Promise<R
 				platform: config.platform,
 				shellEnv: env,
 				programs,
+				excludeDirs,
 				scratchRoot,
 				fork: childEnv => forkPty(childEnv, log),
 				onEvent: event => log.warn(`axis pty: ${event}`),
@@ -83,10 +85,16 @@ export function startAxisPty(config: SupervisedConfig, shellEnv: () => Promise<R
 
 	return {
 		handover,
-		started: started.then(() => undefined),
+		// Never rejects: the seam starts the daemon after it either way.
+		started: started.then(() => undefined, () => undefined),
 		shutdown: async daemonStop => {
-			const supervisor = await started;
-			await shutdownInOrder(daemonStop, supervisor, timers, DAEMON_STOP_BOUND_MS);
+			// If the pty start ever failed, the daemon still gets its graceful stop.
+			const supervisor = await started.catch(() => undefined);
+			if (supervisor === undefined) {
+				await daemonStop().catch(() => undefined);
+			} else {
+				await shutdownInOrder(daemonStop, supervisor, timers, DAEMON_STOP_BOUND_MS);
+			}
 			handover.dispose();
 		},
 	};
@@ -106,6 +114,9 @@ function forkPty(env: Record<string, string>, log: ILog): PtyForkedChild {
 		// `pty-control` carries exactly one MessagePortMain; main sends the pty process nothing else.
 		postMessage: (message, transfer) => transfer === undefined ? child.postMessage(message) : child.postMessage(message, transfer as MessagePortMain[]),
 		kill: signal => {
+			// `utilityProcess.kill()` only sends SIGTERM on POSIX, so SIGKILL goes by pid. Deliberate: Electron clears `pid` only after
+			// the `exit` event, so a reaped pid could in theory be reused before that event; the supervisor sends SIGKILL only 5 s after
+			// SIGTERM with no exit seen, which makes that window negligible.
 			if (signal === 'SIGKILL' && child.pid !== undefined) {
 				process.kill(child.pid, 'SIGKILL');
 			} else {

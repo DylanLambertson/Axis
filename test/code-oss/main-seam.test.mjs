@@ -86,6 +86,8 @@ export function ptyWiringViolations(seam, pty) {
   if (!/onChild: \(child, alive\) => handover\.pty\(child as PtyForkedChild, alive\)/.test(pty)) bad.push("a pty child is not reported to the control hand-over");
   if (!/await shutdownInOrder\(daemonStop, supervisor, timers, DAEMON_STOP_BOUND_MS\);/.test(pty) || !/const DAEMON_STOP_BOUND_MS = DEFAULT_RESTART_POLICY\.stopGraceMs \+ 1_000;/.test(pty)) bad.push("shutdown is not the daemon first, then the pty process, bounded");
   if (/postMessage\(\{ type: 'pty-control'|type: "pty-control"/.test(seam + pty)) bad.push("main posts pty-control outside the hand-over module");
+  if (!/const supervisor = await started\.catch\(\(\) => undefined\);\s+if \(supervisor === undefined\) \{\s+await daemonStop\(\)\.catch\(\(\) => undefined\);/.test(pty) || !/started: started\.then\(\(\) => undefined, \(\) => undefined\)/.test(pty)) bad.push("a failed pty start can cost the daemon its graceful stop");
+  if (!/excludeDirs,\s+scratchRoot,/.test(pty)) bad.push("the pty PATH is not filtered against the Axis roots");
   return bad;
 }
 
@@ -105,6 +107,9 @@ test("the pty wiring checker finds each way of breaking it", () => {
     [SEAM, PTY.replace("onChild: (child, alive) => handover.pty(child as PtyForkedChild, alive),", ""), "a pty child is not reported to the control hand-over"],
     [SEAM, PTY.replace("await shutdownInOrder(daemonStop, supervisor, timers, DAEMON_STOP_BOUND_MS);", "await supervisor.shutdown(); await daemonStop();"), "shutdown is not the daemon first, then the pty process, bounded"],
     [SEAM.replace("return handle;", "child.postMessage({ type: 'pty-control' });\n\t\t\treturn handle;"), PTY, "main posts pty-control outside the hand-over module"],
+    [SEAM, PTY.replace("const supervisor = await started.catch(() => undefined);", "const supervisor = await started;"), "a failed pty start can cost the daemon its graceful stop"],
+    [SEAM, PTY.replace("started: started.then(() => undefined, () => undefined)", "started: started.then(() => undefined)"), "a failed pty start can cost the daemon its graceful stop"],
+    [SEAM, PTY.replace("\t\t\t\texcludeDirs,\n", ""), "the pty PATH is not filtered against the Axis roots"],
   ];
   for (const [seam, pty, expected] of breaks) {
     assert.ok(seam !== SEAM || pty !== PTY, `the mutation applies: ${expected}`);

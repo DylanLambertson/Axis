@@ -6,12 +6,14 @@
 // - Scratch: `<base>/pty-scratch/run-*`, one per spawn, mode 0700, removed when that process exits; leftovers of an earlier run
 //   (main or the pty process crashed) are removed at start, so nothing accumulates.
 // - Environment (PTY-5): only the daemon's allow-listed names plus `SSH_AUTH_SOCK` (git over ssh), then the three hand-over names.
-//   Nothing else of main's environment: no `AXIS_*` of another component, no vault or provider key, no `NODE_OPTIONS`.
+//   Nothing else of main's environment: no `AXIS_*` of another component, no vault or provider key, no `NODE_OPTIONS`. PATH (the
+//   base of every git call the pty process makes) keeps only plain absolute entries outside the Axis data and worktree roots,
+//   judged by real path: the rule of `@axis/git-ops` `withTrustedPath`.
 // - The whole hand-over is checked with the entry's own `readPtyExecConfig` before the fork, so a wrong resolution is a closed code
 //   in main's log, not the pty process's exit 78.
 import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { nodeFs, resolveExecutable, type ExecFs } from "@axis/pty-policy";
+import { delimiterOf, isInsideAny, isPlainAbsolute, nodeFs, resolveExecutable, type ExecFs } from "@axis/pty-policy";
 import { PTY_ENV_GH, PTY_ENV_GIT, PTY_ENV_SCRATCH, readPtyExecConfig } from "@axis/pty-process/config";
 import { daemonEnvironment } from "../supervisor.js";
 
@@ -44,12 +46,37 @@ export function resolvePtyPrograms(env: Env, platform: NodeJS.Platform, excludeD
   return { ...(gitPath === undefined ? {} : { gitPath }), ...(ghPath === undefined ? {} : { ghPath }) };
 }
 
-/** The pty process's environment: the allow-listed names of `source`, `SSH_AUTH_SOCK`, then the given hand-over names only. */
-export function ptyEnvironment(source: Env, handover: { readonly gitPath?: string; readonly ghPath?: string; readonly scratch?: string }): Record<string, string> {
+/** Where PATH entries may not point: the Axis data root and the worktree root (and anything under them). */
+export interface PtyPathRule {
+  readonly platform: NodeJS.Platform;
+  readonly excludeDirs: readonly string[];
+  readonly fs?: ExecFs;
+}
+
+/**
+ * A PATH value with only plain absolute entries outside `excludeDirs`, by spelling or real path (a symlinked entry that leads
+ * into a worktree is dropped too): empty, relative (`.`, `node_modules/.bin`) and excluded entries go. As `withTrustedPath`.
+ */
+export function trustedPathValue(value: string, rule: PtyPathRule): string {
+  const sep = delimiterOf(rule.platform);
+  return value
+    .split(sep)
+    .filter((d) => isPlainAbsolute(d, rule.platform) && !isInsideAny(d, rule.excludeDirs, rule.platform, rule.fs ?? nodeFs))
+    .join(sep);
+}
+
+/**
+ * The pty process's environment: the allow-listed names of `source`, `SSH_AUTH_SOCK`, then the given hand-over names only; PATH
+ * filtered by `trustedPathValue`.
+ */
+export function ptyEnvironment(source: Env, handover: { readonly gitPath?: string; readonly ghPath?: string; readonly scratch?: string }, rule: PtyPathRule): Record<string, string> {
   const env = daemonEnvironment(source);
   for (const name of PTY_ENV_EXTRA) {
     const value = source[name];
     if (typeof value === "string") env[name] = value;
+  }
+  for (const name of Object.keys(env)) {
+    if (name === "PATH" || (rule.platform === "win32" && name.toUpperCase() === "PATH")) env[name] = trustedPathValue(env[name] as string, rule);
   }
   if (handover.gitPath !== undefined) env[PTY_ENV_GIT] = handover.gitPath;
   if (handover.ghPath !== undefined) env[PTY_ENV_GH] = handover.ghPath;
@@ -62,28 +89,44 @@ export function ptyScratchRoot(dataDir: string): string {
   return join(dirname(dataDir), PTY_SCRATCH_DIR);
 }
 
+/** True while a process with this pid exists (`process.kill(pid, 0)`; a process of another user counts as existing). */
+export function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return (e as { code?: unknown }).code === "EPERM";
+  }
+}
+
 /**
- * Makes the scratch root (mode 0700, this user's, not a symlink) and removes every leftover in it. False when it cannot be made
- * safe: git is then off for this start.
+ * Makes the scratch root (mode 0700, this user's, not a symlink) and removes its leftovers: every entry except the `run-<pid>-*`
+ * directories of another main process that is still running (a second Axis instance on the same data root keeps its live
+ * scratch). False when the root cannot be made safe (a symlink, another user's): nothing is removed and git is off for this start.
  */
-export function preparePtyScratchRoot(root: string): boolean {
+export function preparePtyScratchRoot(root: string, ownPid: number = process.pid, alive: (pid: number) => boolean = processAlive): boolean {
   try {
     mkdirSync(root, { recursive: true, mode: 0o700 });
     const st = lstatSync(root);
     const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
     if (!st.isDirectory() || (uid !== undefined && st.uid !== uid)) return false;
     if ((st.mode & 0o777) !== 0o700) chmodSync(root, 0o700);
-    for (const name of readdirSync(root)) rmSync(join(root, name), { recursive: true, force: true });
+    for (const name of readdirSync(root)) {
+      const owner = /^run-(\d+)-/.exec(name);
+      const pid = owner === null ? undefined : Number(owner[1]);
+      if (pid !== undefined && pid !== ownPid && alive(pid)) continue;
+      rmSync(join(root, name), { recursive: true, force: true });
+    }
     return (lstatSync(root).mode & 0o077) === 0;
   } catch {
     return false;
   }
 }
 
-/** One run's scratch directory (mode 0700) inside `root`, or undefined. */
-export function newPtyScratch(root: string): string | undefined {
+/** One run's scratch directory (mode 0700) inside `root`, named for this main process (`run-<pid>-*`), or undefined. */
+export function newPtyScratch(root: string, ownPid: number = process.pid): string | undefined {
   try {
-    const dir = mkdtempSync(join(root, RUN_PREFIX));
+    const dir = mkdtempSync(join(root, `${RUN_PREFIX}${ownPid}-`));
     chmodSync(dir, 0o700);
     return dir;
   } catch {
@@ -112,7 +155,7 @@ export function checkedHandover(programs: PtyPrograms, scratch: string | undefin
     h = { ...(h.ghPath === undefined ? {} : { ghPath: h.ghPath }) };
   }
   for (let i = 0; i < 3; i++) {
-    const verdict = readPtyExecConfig(ptyEnvironment({}, h));
+    const verdict = readPtyExecConfig(ptyEnvironment({}, h, { platform: process.platform, excludeDirs: [] }));
     if (typeof verdict !== "string") return h;
     onEvent?.(verdict as PtyLaunchEvent);
     if (verdict === "git_path_refused" || verdict === "scratch_refused") h = { ...(h.ghPath === undefined ? {} : { ghPath: h.ghPath }) };
@@ -134,6 +177,8 @@ export interface PtySpawnOptions {
   /** Main's resolved shell environment. */
   readonly shellEnv: Env;
   readonly programs: PtyPrograms;
+  /** The Axis data root and the worktree root: no PATH entry of the pty process may lead into them. */
+  readonly excludeDirs: readonly string[];
   /** The prepared scratch root, or undefined (git off). */
   readonly scratchRoot: string | undefined;
   /** Forks the FIXED entry with exactly this environment. */
@@ -149,7 +194,7 @@ export function createPtySpawn(o: PtySpawnOptions): () => PtyForkedChild {
     const handover = o.platform === "win32" ? {} : checkedHandover(o.programs, scratch, o.onEvent);
     let child: PtyForkedChild;
     try {
-      child = o.fork(ptyEnvironment(o.shellEnv, handover));
+      child = o.fork(ptyEnvironment(o.shellEnv, handover, { platform: o.platform, excludeDirs: o.excludeDirs }));
     } catch (e) {
       if (scratch !== undefined && root !== undefined) removePtyScratch(scratch, root);
       throw e;

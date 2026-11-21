@@ -7,11 +7,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { PTY_ENV_GH, PTY_ENV_GIT, PTY_ENV_SCRATCH, readPtyExecConfig } from "@axis/pty-process/config";
-import { checkedHandover, createPtySpawn, newPtyScratch, preparePtyScratchRoot, ptyEnvironment, ptyScratchRoot, removePtyScratch, resolvePtyPrograms, type PtyForkedChild, type PtyLaunchEvent } from "../src/main/pty-launch.js";
+import { checkedHandover, createPtySpawn, newPtyScratch, preparePtyScratchRoot, ptyEnvironment, ptyScratchRoot, removePtyScratch, resolvePtyPrograms, trustedPathValue, type PtyForkedChild, type PtyLaunchEvent } from "../src/main/pty-launch.js";
 import { PtySupervisor } from "../src/main/pty-supervisor.js";
 import { DAEMON_ENV_ALLOW } from "../src/supervisor.js";
 
 const posix = process.platform !== "win32";
+const NO_RULE = { platform: "linux" as const, excludeDirs: [] };
 
 function sandbox(t: { after: (fn: () => void) => void }): string {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "axis-pty-launch-")));
@@ -34,14 +35,30 @@ test("PTY-5: the environment keeps only the daemon's allow-list, SSH_AUTH_SOCK a
     ANTHROPIC_API_KEY: "k", GH_TOKEN: "t", AWS_SECRET_ACCESS_KEY: "s", NODE_OPTIONS: "--require /evil.js", NODE_PATH: "/evil",
     ELECTRON_RUN_AS_NODE: "1", VSCODE_PID: "1", LD_PRELOAD: "/evil.so", DYLD_INSERT_LIBRARIES: "/evil.dylib", GIT_DIR: "/evil",
   };
-  const env = ptyEnvironment(source, {});
+  const env = ptyEnvironment(source, {}, NO_RULE);
   for (const name of Object.keys(env)) assert.ok((DAEMON_ENV_ALLOW as readonly string[]).includes(name) || name === "SSH_AUTH_SOCK", `${name} passed`);
   assert.deepEqual(env, { PATH: "/usr/bin", HOME: "/home/u", LANG: "C", SSH_AUTH_SOCK: "/tmp/agent.sock" });
   assert.ok(!Object.keys(env).some((n) => n.startsWith("AXIS_")), "an AXIS_* name of main's own environment never passes, the hand-over names included");
-  const handed = ptyEnvironment(source, { gitPath: "/usr/bin/git", scratch: "/s" });
+  const handed = ptyEnvironment(source, { gitPath: "/usr/bin/git", scratch: "/s" }, NO_RULE);
   assert.deepEqual(Object.keys(handed).filter((n) => n.startsWith("AXIS_")).sort(), [PTY_ENV_GIT, PTY_ENV_SCRATCH]);
   assert.equal(handed[PTY_ENV_GIT], "/usr/bin/git", "main's value, never the source's");
   assert.equal(handed[PTY_ENV_GH], undefined);
+});
+
+test("PATH keeps only plain absolute entries outside the Axis roots, by spelling or real path (SF-1, as withTrustedPath)", { skip: !posix }, (t) => {
+  const box = sandbox(t);
+  const worktrees = join(box, "Axis", "worktrees");
+  mkdirSync(join(worktrees, "ws", "bin"), { recursive: true });
+  const into = join(box, "into-worktree");
+  symlinkSync(join(worktrees, "ws", "bin"), into);
+  const rule = { platform: "linux" as const, excludeDirs: [join(box, "Axis"), worktrees] };
+  const path = ["/usr/bin", ".", "node_modules/.bin", "", join(worktrees, "ws", "bin"), into, join(box, "Axis", "daemon"), "/bin"].join(":");
+  assert.equal(trustedPathValue(path, rule), "/usr/bin:/bin");
+  assert.equal(ptyEnvironment({ PATH: path, HOME: "/h" }, {}, rule).PATH, "/usr/bin:/bin", "the pty process gets the filtered PATH");
+  assert.equal(trustedPathValue("", rule), "");
+  const win = ptyEnvironment({ Path: "C:\\Windows;.;relative\\bin;C:\\Tools" } as Record<string, string>, {}, { platform: "win32", excludeDirs: [] });
+  assert.deepEqual(Object.entries(win).filter(([k]) => k.toUpperCase() === "PATH"), [], "Windows: a differently cased Path is not on the allow-list at all");
+  assert.equal(trustedPathValue("C:\\Windows;.;relative\\bin;C:\\Tools", { platform: "win32", excludeDirs: ["C:\\Tools"] }), "C:\\Windows");
 });
 
 test("programs: found on PATH as real paths; a directory inside an excluded root never wins; not found is left out", { skip: !posix }, (t) => {
@@ -87,12 +104,25 @@ test("scratch root: made 0700, not listable by others, every leftover of an earl
   assert.equal(existsSync(run), false);
 });
 
-test("scratch root: a symlink in place of the root is refused", { skip: !posix }, (t) => {
+test("scratch root: a symlink in place of the root is refused and nothing in its target is removed (SF-2)", { skip: !posix }, (t) => {
   const box = sandbox(t);
   const target = join(box, "target");
   mkdirSync(target, { mode: 0o700 });
+  writeFileSync(join(target, "canary"), "keep");
+  mkdirSync(join(target, "run-1-x"));
   symlinkSync(target, join(box, "pty-scratch"));
   assert.equal(preparePtyScratchRoot(join(box, "pty-scratch")), false);
+  assert.ok(existsSync(join(target, "canary")) && existsSync(join(target, "run-1-x")), "the sweep never follows the symlink");
+});
+
+test("scratch root: the sweep keeps the live run directories of another main process and removes the rest (NIT-5)", { skip: !posix }, (t) => {
+  const box = sandbox(t);
+  const root = join(box, "pty-scratch");
+  for (const name of ["run-100-live", "run-200-dead", "run-300-mine", "run-bad", "other"]) mkdirSync(join(root, name), { recursive: true });
+  assert.ok(preparePtyScratchRoot(root, 300, (pid) => pid === 100 || pid === 300));
+  assert.deepEqual(readdirSync(root).sort(), ["run-100-live"], "another instance's live scratch survives; dead, own (a reused pid) and stray entries go");
+  const mine = newPtyScratch(root, 300)!;
+  assert.match(mine.slice(root.length + 1), /^run-300-/);
 });
 
 test("the hand-over is checked with the entry's own rule: a refused program is dropped with its closed code, the rest kept", { skip: !posix }, (t) => {
@@ -121,6 +151,7 @@ test("each spawn gets its own 0700 scratch, removed when that process exits; a c
     platform: "linux",
     shellEnv: { PATH: "/usr/bin", AXIS_VAULT_KEY: "x" },
     programs: { gitPath: git },
+    excludeDirs: [],
     scratchRoot: root,
     fork: (env): PtyForkedChild => {
       let handler: ((code: number | null) => void) | undefined;
@@ -151,15 +182,15 @@ test("a fork that throws removes the scratch it made; without git no scratch is 
   const git = program(join(box, "bin"), "git");
   const root = join(box, "pty-scratch");
   assert.ok(preparePtyScratchRoot(root));
-  const failing = createPtySpawn({ platform: "linux", shellEnv: {}, programs: { gitPath: git }, scratchRoot: root, fork: () => { throw new Error("fork failed"); } });
+  const failing = createPtySpawn({ platform: "linux", shellEnv: {}, programs: { gitPath: git }, excludeDirs: [], scratchRoot: root, fork: () => { throw new Error("fork failed"); } });
   assert.throws(() => failing());
   assert.deepEqual(readdirSync(root), []);
   const envs: Record<string, string>[] = [];
-  const noGit = createPtySpawn({ platform: "linux", shellEnv: {}, programs: {}, scratchRoot: root, fork: (env) => (envs.push(env), { kill: () => undefined, postMessage: () => undefined, onExit: () => () => undefined }) });
+  const noGit = createPtySpawn({ platform: "linux", shellEnv: {}, programs: {}, excludeDirs: [], scratchRoot: root, fork: (env) => (envs.push(env), { kill: () => undefined, postMessage: () => undefined, onExit: () => () => undefined }) });
   noGit();
   assert.deepEqual(readdirSync(root), []);
   assert.equal(envs[0]![PTY_ENV_SCRATCH], undefined);
-  const win = createPtySpawn({ platform: "win32", shellEnv: {}, programs: { gitPath: git }, scratchRoot: root, fork: (env) => (envs.push(env), { kill: () => undefined, postMessage: () => undefined, onExit: () => () => undefined }) });
+  const win = createPtySpawn({ platform: "win32", shellEnv: {}, programs: { gitPath: git }, excludeDirs: [], scratchRoot: root, fork: (env) => (envs.push(env), { kill: () => undefined, postMessage: () => undefined, onExit: () => () => undefined }) });
   win();
   assert.deepEqual(Object.keys(envs[1]!).filter((n) => n.startsWith("AXIS_")), [], "Windows: no hand-over names");
 });
