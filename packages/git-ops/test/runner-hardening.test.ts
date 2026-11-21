@@ -7,6 +7,7 @@ import { delimiter, join } from "node:path";
 import { GitOpsError, createNodeRunner } from "../src/index.js";
 import { BAD_EXCLUDES, readExcludeDirs } from "../src/excludeDirs.js";
 import { fixture } from "./realFixture.js";
+import { budget } from "./load-margin.js";
 
 const posix = process.platform !== "win32";
 const REAL_PATH = process.env["PATH"] ?? "";
@@ -76,7 +77,7 @@ test("excludeDirs: duplicates (by spelling and by real path) are dropped, and mo
   const huge = new Array<string>(2 ** 20).fill(f.wt.workTree);
   const t0 = Date.now();
   assert.throws(() => readExcludeDirs(() => huge, process.platform), unavailable);
-  assert.ok(Date.now() - t0 < 2000, "an oversize list is refused without resolving every entry");
+  assert.ok(Date.now() - t0 < budget(2000), "an oversize list is refused without resolving every entry");
 });
 
 test("--exec-path in any form is refused in the option area; nothing planted in the worktree runs", { skip: !posix }, async () => {
