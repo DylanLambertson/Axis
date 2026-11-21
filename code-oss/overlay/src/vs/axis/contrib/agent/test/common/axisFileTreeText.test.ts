@@ -48,6 +48,15 @@ suite('Axis Files tree row text', () => {
 		});
 	}
 
+	test('cleaning is lossy on purpose: invisible differences show the same visible marker', () => {
+		// A deliberate decision (Files tree review 1): each hidden character leaves a visible U+FFFD, so two names that
+		// differ only in which invisible character they hide look alike, and neither hides a different file.
+		const zwsp = fileRowText('a\u200Bb', false).name;
+		assert.strictEqual(zwsp, fileRowText('a\u200Cb', false).name);
+		assert.strictEqual(zwsp, fileRowText('a\u00ADb', false).name);
+		assert.strictEqual(zwsp, 'a\uFFFDb');
+	});
+
 	test('very long names are clamped on code points, the title a little longer', () => {
 		const long = 'n'.repeat(10_000);
 		const text = fileRowText(long, false);
