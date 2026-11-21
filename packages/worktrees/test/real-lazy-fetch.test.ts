@@ -112,6 +112,12 @@ interface Shape {
   readonly index?: string;
   /** The clones in which plain git runs the repository's program for this call (the control). */
   readonly fires: readonly Filter[];
+  /**
+   * The call does not need the object's content, so a git may skip the fetch: plain git fetches on 2.43 and 2.53 but
+   * not on 2.56 (write-tree), or the fetch is an implementation choice (rev-list --objects, commit-tree). A control that
+   * does not fire is reported, not failed; the call still runs through HardenedGit below.
+   */
+  readonly versionDependent?: true;
 }
 
 /**
@@ -131,10 +137,10 @@ const SHAPES = (h: Hostile): ReadonlyArray<Shape> => [
   { args: ['cat-file', '--batch'], input: `${h.blob}\n`, fires: ['blob:none', 'tree:0'] },
   { args: ['cat-file', '--batch-check'], input: `${h.blob}\n`, fires: ['blob:none', 'tree:0'] },
   { args: ['cat-file', '--batch-check'], input: `${h.tree}\n`, fires: ['tree:0'] },
-  { args: ['rev-list', '--objects', '--end-of-options', 'base..HEAD'], fires: ['blob:none', 'tree:0'] },
+  { args: ['rev-list', '--objects', '--end-of-options', 'base..HEAD'], fires: ['blob:none', 'tree:0'], versionDependent: true },
   { args: ['read-tree', 'HEAD'], index: 'idx-read', fires: ['tree:0'] },
-  { args: ['write-tree'], index: 'idx', fires: ['blob:none'] },
-  { args: ['-c', 'user.name=a', '-c', 'user.email=a@b', 'commit-tree', h.tree, '-p', 'HEAD', '-m', 'm'], fires: ['tree:0'] },
+  { args: ['write-tree'], index: 'idx', fires: ['blob:none'], versionDependent: true },
+  { args: ['-c', 'user.name=a', '-c', 'user.email=a@b', 'commit-tree', h.tree, '-p', 'HEAD', '-m', 'm'], fires: ['tree:0'], versionDependent: true },
 ];
 
 /** The real git with one variable of the environment removed before it starts. */
@@ -161,12 +167,17 @@ for (const filter of ['blob:none', 'tree:0'] as const) {
       const h = hostile(filter, vector);
       const shapes = SHAPES(h);
       const env = (s: Shape): Record<string, string> => (s.index === undefined ? {} : { GIT_INDEX_FILE: path.join(h.root, s.index) });
-      // Control: the same call with no Axis environment or options runs the repository's program.
+      // Control: the same call with no Axis environment or options runs the repository's program. A call that needs the
+      // object's content must fetch on every git; a version-dependent one that does not fetch on this git is noted.
+      let fired = 0;
       for (const s of shapes.filter((x) => x.fires.includes(filter))) {
         rmSync(h.marker, { force: true });
         spawnSync(GIT as string, [...s.args], { cwd: h.repo, env: { ...h.env, ...env(s) }, input: s.input ?? '', timeout: 30_000 });
-        assert.equal(h.fired(), true, `control: plain git ${s.args.join(' ')} runs the ${vector} program`);
+        if (h.fired()) fired++;
+        else if (s.versionDependent === true) t.diagnostic(`git ${version.join('.')}: plain git ${s.args.join(' ')} does not lazy-fetch here; its control is not counted`);
+        else assert.fail(`control: plain git ${s.args.join(' ')} runs the ${vector} program`);
       }
+      assert.ok(fired > 0, 'at least one control fires, or the fixture is broken');
       rmSync(h.marker, { force: true });
       for (const [label, pick, needs] of VARIANTS) {
         await t.test(label, { skip: needs }, async () => {
