@@ -133,10 +133,11 @@ export function createRunSnapshotter(deps: RunSnapshotterDeps, maxHeld = MAX_HEL
 export const COMPOSER_SNAPSHOT_TAKE_MS = 10_000;
 
 /**
- * The check could not judge the repository and saw no change in what it did read (review c7-f2 r1 SF-1, r2 SF-A): the current
+ * The check could not finish and saw no addition or modification (review c7-f2 r1 SF-1, r2 SF-A, r3 NIT-1): the current
  * snapshot's only problem is blocking `snapshot` items, among them a take stopped at one of its bounds ("stopped at the ...
  * limit": time, entries or bytes); nothing else is unread; the baseline is sound; the diff is not cut short; and it holds no
- * addition or modification, only removals of entries the stopped take never reached (or nothing). A take that ran to its end
+ * addition or modification, only removals (or nothing). A removal may be an entry the stopped take never reached or a real
+ * deletion it read (the walk is not in id order); it is label only, the halt is the same. A take that ran to its end
  * and differed from the next one ("changed between consecutive snapshots" without a stopped item) means a writer, not load:
  * `GIT_DRIFT`, even when the last take matches the baseline (a writer that plants and removes a hook in turn).
  * `current.link.mismatch` is also covered by `reasons.length` (a mismatch adds a second reason); kept as defence in depth.
