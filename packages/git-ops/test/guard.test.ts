@@ -27,7 +27,7 @@ test("N-1: dropping any one protection from the prefix is refused", async () => 
   const base = good();
   const without = (pred: (a: string, i: number, all: string[]) => boolean): string[] => base.filter((a, i, all) => !pred(a, i, all));
   const cfg = (key: string) => (a: string, i: number, all: string[]) => a === key || (all[i + 1] === key && a === "-c");
-  for (const key of ["core.fsmonitor=false", "protocol.allow=never", "protocol.ext.allow=never", "commit.gpgsign=false", "core.askPass=", "diff.submodule=short", "core.hooksPath=/dev/null"]) {
+  for (const key of ["core.fsmonitor=false", "protocol.allow=never", "protocol.ext.allow=never", "commit.gpgsign=false", "core.askPass=", "diff.submodule=short", "help.autocorrect=0", "core.hooksPath=/dev/null"]) {
     assert.equal(await run([...without(cfg(key)), "write-tree"]), "E_POLICY_DENIED", key);
   }
   for (const flag of ["--no-pager", "--no-replace-objects", `--git-dir=${WT.gitDir}`, `--work-tree=${WT.workTree}`]) {

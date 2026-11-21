@@ -121,9 +121,11 @@ test("every git call is daemon-context and hardened, and GIT_INDEX_FILE appears 
         assert.ok(isPrivate && r.argv.includes("--cached"), `an attribute read used the real git directory or the work tree: ${r.argv.join(" ")}`);
       }
       // GIT_ATTR_NOSYSTEM is absent on a git that cannot name the system file (real-attr-binary.test.ts), so it is allowed, not required.
-      if (isPrivate) assert.ok(gitEnv.every((k) => ["GIT_ATTR_NOSYSTEM", "GIT_INDEX_FILE", "GIT_TERMINAL_PROMPT"].includes(k)), r.argv.join(" "));
-      else assert.deepEqual(gitEnv, usesIndex ? ["GIT_INDEX_FILE", "GIT_TERMINAL_PROMPT"] : ["GIT_TERMINAL_PROMPT"], r.argv.join(" "));
-      for (const must of ["--no-pager", "--no-replace-objects", "core.fsmonitor=false", "core.hooksPath=/dev/null", "protocol.allow=never", "diff.submodule=short"]) {
+      const pins = ["GIT_ALLOW_PROTOCOL", "GIT_NO_LAZY_FETCH", "GIT_TERMINAL_PROMPT"];
+      if (isPrivate) assert.ok(gitEnv.every((k) => ["GIT_ATTR_NOSYSTEM", "GIT_INDEX_FILE", ...pins].includes(k)) && pins.every((k) => gitEnv.includes(k)), r.argv.join(" "));
+      else assert.deepEqual(gitEnv, usesIndex ? ["GIT_ALLOW_PROTOCOL", "GIT_INDEX_FILE", "GIT_NO_LAZY_FETCH", "GIT_TERMINAL_PROMPT"] : pins, r.argv.join(" "));
+      assert.deepEqual([r.env["GIT_ALLOW_PROTOCOL"], r.env["GIT_NO_LAZY_FETCH"]], ["/", "1"], r.argv.join(" "));
+      for (const must of ["--no-pager", "--no-replace-objects", "core.fsmonitor=false", "core.hooksPath=/dev/null", "protocol.allow=never", "diff.submodule=short", "help.autocorrect=0"]) {
         assert.ok(r.argv.includes(must), `${must} missing from ${r.argv.join(" ")}`);
       }
       // A private caller bound to an index has an empty private work tree, so no lookup reads the live one.

@@ -63,13 +63,20 @@ export interface PrefixOptions {
 export function prefix(w: WorktreeRef, deps: GitOpsDeps, o: PrefixOptions): string[] {
   // refs/replace is writable by the code running in the worktree but pack-objects ignores it, so reads that decide what is pushed must ignore it too.
   const a = ["--no-pager", "--no-replace-objects", `--git-dir=${w.gitDir}`, `--work-tree=${w.workTree}`, "-c", "core.fsmonitor=false", "-c", "protocol.ext.allow=never"];
-  // The daemon never touches the network or a remote: no transport, so a lazy fetch cannot run uploadpack, ssh or credential code.
+  // The daemon never touches the network or a remote. `protocol.allow=never` alone does NOT stop a lazy fetch in a partial
+  // clone: a repository `protocol.<name>.allow=always` overrides it (only `ext` is pinned by name above), and the repository
+  // then chooses what runs (uploadpack, core.sshCommand, a `vcs` helper or alias). The daemon environment closes that:
+  // GIT_NO_LAZY_FETCH=1 (git 2.44+) and GIT_ALLOW_PROTOCOL=/ (every git since 2.12, `daemonGitEnv`), with
+  // help.autocorrect=0 below for the `/` helper name.
   if (o.context === "daemon") a.push("-c", "protocol.allow=never");
   const hooksOn = o.context === "pty" && o.hooks;
   if (!hooksOn) a.push("-c", `core.hooksPath=${hooksOffPath(deps)}`);
   if (o.context === "daemon") {
     // diff.submodule=diff would make git spawn a child `git diff` in a nested repository that ignores --no-ext-diff.
     a.push("-c", "commit.gpgsign=false", "-c", "core.askPass=", "-c", "diff.submodule=short");
+    // GIT_ALLOW_PROTOCOL=/ admits a helper named `/` (remote.<r>.vcs=/); `git remote-/` does not exist, and with
+    // help.autocorrect set git would run the closest alias (alias.remote-a) instead. `0` suggests only, on every version.
+    a.push("-c", "help.autocorrect=0");
     for (const f of o.filters) {
       for (const k of ["clean", "smudge", "process"]) a.push("-c", `filter.${f}.${k}=`);
       a.push("-c", `filter.${f}.required=false`);
@@ -103,7 +110,7 @@ export function guardedRunner(inner: GitRunner, deps: GitOpsDeps): GitRunner {
         const missing = [
           ...["--no-pager", "--no-replace-objects"].filter((f) => !flags.has(f)),
           ...["--git-dir=", "--work-tree="].filter((p) => ![...flags].some((f) => f.startsWith(p) && f.length > p.length)),
-          ...[`core.hooksPath=${off}`, "core.fsmonitor=false", "protocol.allow=never", "protocol.ext.allow=never", "commit.gpgsign=false", "core.askPass=", "diff.submodule=short"].filter((c) => !configs.has(c)),
+          ...[`core.hooksPath=${off}`, "core.fsmonitor=false", "protocol.allow=never", "protocol.ext.allow=never", "commit.gpgsign=false", "core.askPass=", "diff.submodule=short", "help.autocorrect=0"].filter((c) => !configs.has(c)),
         ];
         if (off === "" || missing.length > 0) {
           throw denied(`a daemon-side git call must carry the hardened options (missing: ${missing.join(", ") || "core.hooksPath"})`);
