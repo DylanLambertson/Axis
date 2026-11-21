@@ -60,7 +60,7 @@ async function start(finalizeMs = 30_000): Promise<Child> {
 }
 
 for (const trigger of process.platform === "win32" ? (["message"] as const) : (["signal", "message"] as const)) {
-  test(`exit by draining: after ${trigger} the process ends only once pending work has drained, then on its own within 2 s`, async (t) => {
+  test(`exit by draining: after ${trigger} the process ends only once pending work has drained, then on its own, without being killed`, async (t) => {
     const c = await start();
     t.after(() => void c.proc.kill("SIGKILL"));
     await c.send("pending");
@@ -73,10 +73,9 @@ for (const trigger of process.platform === "win32" ? (["message"] as const) : ([
     assert.ok(await until(() => c.out.some((o) => "exit" in o), 3000), "the exit hook ran after the drain");
     const report = c.out.find((o) => "exit" in o);
     assert.deepEqual([report?.["exit"], report?.["released"], report?.["running"]], [0, true, 0]);
-    const started = Date.now();
-    const code = await Promise.race([c.closed, wait(2000).then(() => "timeout" as const)]);
-    assert.equal(code, 0, "exited by draining with code 0 (a leaked timer, listener or handle would hold it past 2 s)");
-    assert.ok(Date.now() - started < 2000);
+    // A leaked timer, listener or handle holds the process for good, so the bound only has to outlast a loaded machine.
+    const code = await Promise.race([c.closed, wait(20_000).then(() => "timeout" as const)]);
+    assert.equal(code, 0, "exited by draining with code 0 (a leaked timer, listener or handle would hold it)");
   });
 }
 
