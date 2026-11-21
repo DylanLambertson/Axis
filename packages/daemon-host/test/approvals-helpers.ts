@@ -23,10 +23,10 @@ export async function issue4(r: Rig, user: Client, over: Record<string, unknown>
   return { first, challenge, key, proof: String(sent["proof"]), sent };
 }
 /** A hang guard, not an expectation: the condition holds when the work is done, however slowly a loaded host gets there. */
-export async function waitFor(cond: () => boolean, ms = 60_000): Promise<void> {
+export async function waitFor(cond: () => boolean, ms = 60_000, what = "the condition"): Promise<void> {
   const end = Date.now() + ms;
   while (!cond()) {
-    if (Date.now() > end) assert.fail("condition not reached");
+    if (Date.now() > end) assert.fail(`condition not reached: ${what}`);
     await wait(5);
   }
 }

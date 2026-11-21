@@ -62,12 +62,12 @@ test("the dialog's answer may arrive before the user's resolve: it is held and a
   const { r, user } = await setup(t);
   const i = await issue4(r, user);
   r.answer(i.challenge.challengeId, i.proof, true);
-  await waitFor(() => r.approvals.stats().native.entries === 1, 10_000);
+  await waitFor(() => r.approvals.stats().native.entries === 1, 10_000, "the native bridge holds the early answer");
   assert.equal(r.approvals.stats().native.confirmed, 0, "held, not applied");
   assert.equal((await retry(user, i.challenge.challengeId, i.key)).error?.code, "E_CONFLICT");
   const res = await resolve(user, i.challenge);
   assert.equal(res.ok, true);
-  await waitFor(() => r.approvals.stats().native.confirmed === 1);
+  await waitFor(() => r.approvals.stats().native.confirmed === 1, 60_000, "the native answer was applied");
   assert.equal((await retry(user, i.challenge.challengeId, newKey())).ok, true);
 });
 
@@ -75,7 +75,7 @@ test("a native answer held before the user denies is dropped", async (t) => {
   const { r, user } = await setup(t);
   const i = await issue4(r, user);
   r.answer(i.challenge.challengeId, i.proof, true);
-  await waitFor(() => r.approvals.stats().native.entries === 1, 10_000);
+  await waitFor(() => r.approvals.stats().native.entries === 1, 10_000, "the native bridge holds the early answer");
   assert.deepEqual((await resolve(user, i.challenge, "deny")).result, { challengeId: i.challenge.challengeId, state: "denied", nativeRequired: true });
   assert.equal(r.approvals.stats().native.entries, 0);
   assert.equal(r.approvals.stats().native.confirmed, 0);
@@ -96,7 +96,7 @@ test("a supervisor that never answers (timeout) and a closed channel are refusal
   const i = await issue4(r, user);
   await wait(250);
   assert.equal((await resolve(user, i.challenge)).ok, true);
-  await waitFor(() => r.approvals.stats().native.failed === 1);
+  await waitFor(() => r.approvals.stats().native.failed === 1, 60_000, "the unanswered native wait was counted failed");
   assert.equal(r.approvals.stats().native.confirmed, 0);
   assert.equal((await retry(user, i.challenge.challengeId, i.key)).error?.code, "E_CONFLICT");
   assert.equal(r.runs.length, 0);
@@ -106,7 +106,7 @@ test("a channel that closes under a waiting dialog withdraws the challenge: the 
   const { r, user } = await setup(t);
   const j = await issue4(r, user);
   r.peer.close();
-  await waitFor(() => r.approvals.stats().native.lost === 1);
+  await waitFor(() => r.approvals.stats().native.lost === 1, 60_000, "the closed channel was counted lost");
   assert.equal(r.approvals.stats().pending, 0);
   assert.equal((await resolve(user, j.challenge)).error?.code, "E_NOT_FOUND");
   assert.equal((await retry(user, j.challenge.challengeId, j.key)).error?.code, "E_POLICY_DENIED");
@@ -136,7 +136,7 @@ test("native waits are capped below the control client's slots, so they cannot s
   assert.equal(third.error?.code, "E_BACKPRESSURE");
   assert.equal(r.control.stats().pending, 2);
   const setting = r.control.settingsGet("axis.cliAgents", { timeoutMs: 1000 });
-  await waitFor(() => r.supervisor.some((m) => m["type"] === "settings.get"));
+  await waitFor(() => r.supervisor.some((m) => m["type"] === "settings.get"), 60_000, "the supervisor was asked for settings");
   assert.equal(r.control.stats().pending, 3, "a free slot remains for the other requests");
   r.peer.send({ type: "settings.result", requestId: r.supervisor.find((m) => m["type"] === "settings.get")?.["requestId"], key: "axis.cliAgents", value: [] });
   assert.deepEqual(await setting, []);
@@ -151,7 +151,7 @@ test("a bad digest burns the challenge: its dialog wait is cancelled, a late ans
   assert.equal(r.control.stats().pending, 0);
   assert.deepEqual((await user.call(AP, "pending", {})).result, { challenges: [] });
   r.answer(i.challenge.challengeId, i.proof, true);
-  await waitFor(() => r.control.stats().ignoredAnswers === 1);
+  await waitFor(() => r.control.stats().ignoredAnswers === 1, 60_000, "one answer was ignored");
   assert.equal((await retry(user, i.challenge.challengeId, i.key)).error?.code, "E_CONFLICT");
   // A second approve while the dialog is open is refused but leaves the dialog alone.
   const k = await issue4(r, user, { id: "ws-2" });
@@ -199,13 +199,13 @@ test("unsolicited, mismatched and wrong-proof native.result messages are ignored
   r.answer(i.challenge.challengeId, "w".repeat(32), true); // wrong proof
   r.answer(i.challenge.challengeId, i.proof, true, "win-9"); // wrong window
   r.answer("V".repeat(43), i.proof, true); // another challenge
-  await waitFor(() => r.control.stats().ignoredAnswers === 4);
+  await waitFor(() => r.control.stats().ignoredAnswers === 4, 60_000, "four answers were ignored");
   assert.equal(r.approvals.stats().native.confirmed, 0);
   assert.equal((await resolve(user, i.challenge)).ok, true);
   assert.equal((await retry(user, i.challenge.challengeId, i.key)).error?.code, "E_CONFLICT", "none of them confirmed it");
   // The real answer still works afterwards.
   r.answer(i.challenge.challengeId, i.proof, true);
-  await waitFor(() => r.approvals.stats().native.confirmed === 1);
+  await waitFor(() => r.approvals.stats().native.confirmed === 1, 60_000, "the native answer was applied");
   assert.equal((await retry(user, i.challenge.challengeId, newKey())).ok, true);
 });
 
@@ -294,7 +294,7 @@ test("concurrent double use: two retries at once run the action exactly once", a
   r.holdNextRun(() => hold);
   user.send(WT, "remove", removePayload({ approval: { challengeId: i.challenge.challengeId } }), "c1", newKey());
   user.send(WT, "remove", removePayload({ approval: { challengeId: i.challenge.challengeId } }), "c2", newKey());
-  await waitFor(() => r.runs.length >= 1);
+  await waitFor(() => r.runs.length >= 1, 60_000, "a run was started");
   const loser = await user.until((m) => (m.id === "c1" || m.id === "c2") && m.ok === false);
   release();
   const both = await Promise.all([user.until((m) => m.id === "c1"), user.until((m) => m.id === "c2")]);
@@ -328,7 +328,7 @@ test("closing the connection withdraws its challenges and cancels the native wai
   const i = await issue4(r, user);
   assert.equal(r.control.stats().pending, 1);
   user.port.close();
-  await waitFor(() => r.approvals.stats().native.entries === 0);
+  await waitFor(() => r.approvals.stats().native.entries === 0, 60_000, "the native bridge is empty");
   assert.equal(r.approvals.stats().pending, 0);
   assert.equal(r.control.stats().pending, 0, "the control request was cancelled");
   const fresh = await r.connect("user#conn-5#win-1");
@@ -386,7 +386,7 @@ test("no timer or control wait is left behind after a full flow, an abandoned ch
     await issue4(r, user, { id: "ws-2" }); // abandoned: its native wait is still open
     assert.equal(r.control.stats().pending, 1);
     await r.cleanup();
-    await waitFor(() => r.control.stats().pending === 0, 10_000);
+    await waitFor(() => r.control.stats().pending === 0, 10_000, "the control channel drained");
     assert.equal(r.control.stats().pending, 0);
     assert.equal(timers.live(), 0);
   } finally {
@@ -399,7 +399,7 @@ test("a challenge belongs to the window that issued it: its dialog, listing and 
   const w2 = await r.connect("user#conn-7#win-2");
   const first = await w2.call(WT, "remove", removePayload(), newKey());
   const c = challengeOf(first);
-  await waitFor(() => r.nativeConfirms().length === 1);
+  await waitFor(() => r.nativeConfirms().length === 1, 60_000, "the native confirmation was sent");
   assert.equal(r.nativeConfirms()[0]?.["windowId"], "win-2");
   const w1 = await r.connect("user#conn-8#win-1");
   assert.equal((await resolve(w1, c)).error?.code, "E_NOT_FOUND");

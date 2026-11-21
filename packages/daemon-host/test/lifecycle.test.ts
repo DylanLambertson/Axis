@@ -5,7 +5,7 @@ import { test } from "node:test";
 import { Redactor } from "@axis/audit";
 import type { ShutdownResult } from "@axis/daemon";
 import { createLogger, EXIT, exitCodeForShutdown, installHostLifecycle, type DisposeResult, type ExitInfo, type LifecycleOptions } from "../src/index.js";
-import { fakeClock, trackTimers, wait } from "./helpers.js";
+import { fakeClock, trackTimers } from "./helpers.js";
 
 const CLEAN: ShutdownResult = { reason: "t", graceful: true, escalated: false, cancelled: 0, unsettled: 0, flushed: "done" };
 const OK_STOP: DisposeResult = { disposed: 1, failures: [] };
@@ -38,6 +38,9 @@ function rig(over: { result?: ShutdownResult | Error; shutdownGate?: Promise<voi
   const listeners = (): number => proc.eventNames().reduce((n, e) => n + proc.listenerCount(e), 0) + control.listenerCount("shutdown");
   return { proc, control, calls, exits, lines, handle, listeners, baseline };
 }
+
+/** One macrotask: every promise continuation queued by the code under test (it has no timers or I/O here) has run. Not a duration. */
+const drain = (): Promise<void> => new Promise((res) => setImmediate(res));
 
 test("SIGTERM: one shutdown, then the store is released, exit 0 and every listener is gone", async () => {
   const r = rig();
@@ -162,11 +165,13 @@ test("a crash fails closed: exit 70 at once, no graceful path, no store release,
 
 test("a crash during shutdown wins: the pending shutdown does not release the store or exit again", async () => {
   let open!: () => void;
-  const r = rig({ shutdownGate: new Promise<void>((res) => void (open = res)) });
+  const finalized: string[] = [];
+  const r = rig({ shutdownGate: new Promise<void>((res) => void (open = res)), opts: { finalize: async () => void finalized.push("finalize") } });
   r.proc.emit("SIGTERM", "SIGTERM");
   r.proc.emit("uncaughtException", new Error("x"));
   open();
-  await wait(10);
+  await drain();
+  assert.deepEqual(finalized, [], "the final checkpoint did not run after the crash");
   assert.deepEqual(r.exits.map((e) => e.code), [EXIT.INTERNAL]);
   assert.deepEqual(r.calls, ["shutdown:signal:SIGTERM"], "stop never ran");
 });
@@ -179,7 +184,7 @@ test("a failing exit hook is fatal, not swallowed: it rethrows with no listener 
   process.once("uncaughtException", (e) => void seen.push(e));
   try {
     r.proc.emit("uncaughtException", new Error("x"));
-    await wait(10);
+    await drain();
   } finally {
     process.removeAllListeners("uncaughtException");
     for (const l of original) process.on("uncaughtException", l);
@@ -203,28 +208,33 @@ test("dispose removes every listener and a later signal does nothing; bad timing
 test("a crash during the final checkpoint wins: stop never runs after the crash exit, and the exit is reported once", async () => {
   let crashNow!: () => void;
   let finishFinalize!: () => void;
+  let finalizeStarted!: () => void;
+  const started = new Promise<void>((res) => void (finalizeStarted = res));
   const r = rig({
     opts: {
-      finalize: () => new Promise<void>((res) => { finishFinalize = res; }),
+      finalize: () => new Promise<void>((res) => { finishFinalize = res; finalizeStarted(); }),
       finalizeTimeoutMs: 5_000,
     },
   });
   crashNow = () => r.proc.emit("uncaughtException", new Error("x"));
   r.proc.emit("SIGTERM", "SIGTERM");
-  await wait(10); // daemon.shutdown resolved, finalize is running
+  await started; // daemon.shutdown resolved, finalize is running
   crashNow();
   finishFinalize();
-  await wait(20);
+  await drain();
   assert.deepEqual(r.exits.map((e) => [e.code, e.info.released]), [[EXIT.INTERNAL, false]]);
   assert.deepEqual(r.calls, ["shutdown:signal:SIGTERM"], "the database and lock were not closed after the crash");
 });
 
 test("a crash while stop is running does not turn into a released exit", async () => {
   let crashNow!: () => void;
-  const r = rig({ opts: { stop: async () => { crashNow(); await wait(5); return OK_STOP; } } });
+  let finishStop!: () => void;
+  const stopGate = new Promise<void>((res) => void (finishStop = res));
+  const r = rig({ opts: { stop: async () => { crashNow(); await stopGate; return OK_STOP; } } });
   crashNow = () => r.proc.emit("uncaughtException", new Error("x"));
   r.proc.emit("SIGTERM", "SIGTERM");
-  await r.handle.finished;
-  await wait(20);
+  await r.handle.finished; // the crash exit
+  finishStop();
+  await drain();
   assert.deepEqual(r.exits.map((e) => [e.code, e.info.released]), [[EXIT.INTERNAL, false]]);
 });
