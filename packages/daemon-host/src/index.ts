@@ -86,7 +86,7 @@ export * from "./handlers/projects.js";
 export { AGENT_PAYLOAD_ALLOWLIST, createAgentBinding, taintReceiptOf, COMPOSER_TOOLS, MAX_INFLIGHT_CALLS, MAX_READ_BYTES, shownWhole, MAX_WRITE_BYTES, type AgentBinding, type AgentBindingDeps } from "./bindings/agent.js";
 // The Anthropic connection over the vault (ticket C6).
 export { createProvidersBinding, PROVIDERS_PAYLOAD_ALLOWLIST, type AnthropicConnectionOptions, type ProvidersBinding, type ProvidersBindingDeps } from "./bindings/providers.js";
-export { RunWt2, approvableCommand, commandLimits, commandOf, commandTool, runCommandArgsOn, formatCommandResult, DEFAULT_COMMAND_LIMITS, MAX_ARGV_JSON, RUN_COMMAND, RUN_COMMAND_SPEC, type CommandLimits } from "./bindings/agent-command.js";
+export { RunWt2, approvableCommand, commandLimits, commandOf, commandTool, hostCommandLimits, runCommandArgsOn, formatCommandResult, DEFAULT_COMMAND_LIMITS, MAX_ARGV_JSON, RUN_COMMAND, RUN_COMMAND_SPEC, type CommandLimits } from "./bindings/agent-command.js";
 export { DEFAULT_GIT_READ_LIMITS, GIT_COMMANDS, GIT_DIFF, GIT_READ_TIMEOUT_MS, GIT_STATUS, GIT_TOOL_SPECS, MAX_GIT_OUTPUT, checkGitCall, diffCall, escapeGitLine, gitCallTier, formatDiff, formatStatus, gitDiffArgs, gitReadRunnerOptions, gitStatusArgs, gitTools, statusCall, type GitReadLimits } from "./bindings/agent-git.js";
 export * from "./composer/activity.js";
 export * from "./composer/budget.js";

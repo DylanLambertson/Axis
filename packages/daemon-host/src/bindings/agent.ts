@@ -120,6 +120,8 @@ export interface AgentBinding extends ComposerEngine {
   readonly commands: boolean;
   /** `git_status` and `git_diff` are offered: the host gave its git (C3 slice 2). */
   readonly gitReads: boolean;
+  /** The bounds every `run_command` of this binding runs under. */
+  readonly commandLimits: CommandLimits;
 }
 
 export const MAX_READ_BYTES = 262_144;
@@ -407,5 +409,6 @@ export function createAgentBinding(deps: AgentBindingDeps): AgentBinding {
     dispose: () => void runner.killAll(),
     commands: deps.commandGuard !== undefined,
     gitReads: gitRunner !== undefined,
+    commandLimits: limits,
   };
 }

@@ -58,7 +58,7 @@ other-services	Alt+F4	workbench.action.closeWindow	core	base screenReader diff g
 other-services	Alt+F5	workbench.action.compareEditor.nextChange	core	diff	block
 other-services	Shift+Alt+F5	workbench.action.compareEditor.previousChange	core	diff	block
 reads-active-editor	Ctrl+K O	workbench.action.copyEditorToNewWindow	core	base screenReader diff groups sideBySide dirty debugging panels	openInIde
-other-services	Ctrl+Shift+F5	workbench.action.debug.restart	core	debugging	accept
+other-services	Ctrl+Shift+F5	workbench.action.debug.restart	core	debugging	openInIde
 delegates	Ctrl+F5	workbench.action.debug.run	core	base screenReader diff groups sideBySide dirty debugging panels	openInIde
 reads-active-editor	F5	workbench.action.debug.start	core	base screenReader diff groups sideBySide dirty panels	openInIde
 other-services	F10	workbench.action.debug.stepOver	core	debugging	accept

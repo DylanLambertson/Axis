@@ -115,6 +115,7 @@ suite('Axis side-panel editor (PV-V0 spike)', () => {
 
 	test('the policy classifies what the state matrix found, and the native console follows the IDE (review r3 N2, N6)', () => {
 		assert.strictEqual(AXIS_SIDE_PANEL_COMMAND_POLICY.get('workbench.action.terminal.openNativeConsole'), 'openInIde');
+		assert.strictEqual(AXIS_SIDE_PANEL_COMMAND_POLICY.get('workbench.action.debug.restart'), 'openInIde', 'Restart saves and resolves ${file} like Start (review r4 N5)');
 		for (const id of ['editor.action.nextCommentingRange', 'editor.action.previousCommentingRange', 'workbench.action.compareEditor.nextChange', 'workbench.action.compareEditor.previousChange',
 			'workbench.action.splitEditorInGroup', 'workbench.action.joinEditorInGroup', 'workbench.action.toggleMaximizeEditorGroup']) {
 			assert.strictEqual(AXIS_SIDE_PANEL_COMMAND_POLICY.get(id), 'block', id);

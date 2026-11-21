@@ -242,3 +242,34 @@ export function commandLimits(over: Partial<CommandLimits> | undefined): Command
   if (!ok(out.timeoutMs, 600_000) || !ok(out.maxOutputBytes, 16 * 1024 * 1024) || !ok(out.modelChars, 262_144)) throw new RangeError("composer command limits are out of range");
   return Object.freeze(out);
 }
+
+const LIMIT_KEYS: readonly (keyof CommandLimits)[] = ["timeoutMs", "maxOutputBytes", "modelChars"];
+
+/**
+ * The host's override of the command bounds (`ComposeOptions.composer.commandLimits`): it may only LOWER a bound, never raise
+ * one. Each given bound is a positive safe integer at or below its `DEFAULT_COMMAND_LIMITS` value; a bound not given keeps
+ * the default. Read field by field, never spread: a plain object (prototype `Object.prototype` or null) whose own keys are
+ * only those three, each a data property (a getter, a setter, a symbol, an inherited or unknown key such as `__proto__` is
+ * refused). Anything else is the closed `command_limits_invalid`, which carries no key or value.
+ */
+export function hostCommandLimits(raw: unknown): CommandLimits | "command_limits_invalid" {
+  if (raw === undefined) return DEFAULT_COMMAND_LIMITS;
+  try {
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return "command_limits_invalid";
+    const proto: unknown = Object.getPrototypeOf(raw);
+    if (proto !== Object.prototype && proto !== null) return "command_limits_invalid";
+    const out: Record<keyof CommandLimits, number> = Object.assign(Object.create(null) as object, DEFAULT_COMMAND_LIMITS);
+    for (const key of Reflect.ownKeys(raw)) {
+      if (typeof key !== "string" || !(LIMIT_KEYS as readonly string[]).includes(key)) return "command_limits_invalid";
+      const d = Object.getOwnPropertyDescriptor(raw, key);
+      if (d === undefined || !("value" in d)) return "command_limits_invalid";
+      const v: unknown = d.value;
+      const name = key as keyof CommandLimits;
+      if (typeof v !== "number" || !Number.isSafeInteger(v) || v < 1 || v > DEFAULT_COMMAND_LIMITS[name]) return "command_limits_invalid";
+      out[name] = v;
+    }
+    return Object.freeze({ timeoutMs: out.timeoutMs, maxOutputBytes: out.maxOutputBytes, modelChars: out.modelChars });
+  } catch {
+    return "command_limits_invalid"; // a Proxy whose traps throw
+  }
+}
