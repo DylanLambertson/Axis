@@ -112,6 +112,18 @@ test("filter drivers present in the config are neutralised on daemon calls", asy
   }
 });
 
+test("an empty or upper-case filter name is neutralised as git spells it; a two-level filter key names no driver", async () => {
+  const r = new FakeRunner(healthy((s) => (s[0] === "config" ? { stdout: "filter..process\0filter.Up.clean\0filter.process\0" } : undefined)));
+  await planCommit(makeDeps(r), input);
+  const wt = r.calls.find((c) => sub(c.argv)[0] === "write-tree");
+  assert.ok(wt);
+  for (const f of ["", "Up"]) {
+    for (const k of ["clean", "smudge", "process"]) assert.ok(wt.argv.includes(`filter.${f}.${k}=`), `${f}.${k}`);
+    assert.ok(wt.argv.includes(`filter.${f}.required=false`));
+  }
+  assert.ok(!wt.argv.some((a) => a.startsWith("filter.process")), "no key made from the two-level name");
+});
+
 test("a filter with an unsafe name is refused", async () => {
   const r = new FakeRunner(healthy((s) => (s[0] === "config" ? { stdout: "filter.a b.clean\0" } : undefined)));
   assert.equal(await code(planCommit(makeDeps(r), input)), "E_POLICY_DENIED");

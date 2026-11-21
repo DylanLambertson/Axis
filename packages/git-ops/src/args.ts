@@ -126,10 +126,12 @@ export async function filterNames(w: WorktreeRef, deps: GitOpsDeps, env: Record<
   if (r.code !== 0) throw invalid("could not read the git configuration");
   const names = new Set<string>();
   for (const key of r.stdout.split("\0").filter(Boolean)) {
-    const m = /^filter\.(.+)\.(clean|smudge|process|required)$/i.exec(key);
+    // The name may be empty: `[filter ""]` is the driver `* filter=` selects, and `-c filter..clean=` empties it.
+    // A two-level key such as `filter.process` names no driver (git ignores it), so it does not match.
+    const m = /^filter\.(.*)\.(clean|smudge|process|required)$/i.exec(key);
     if (!m) continue;
     const n = m[1] as string;
-    if (!/^[A-Za-z0-9._-]+$/.test(n)) throw denied("a git filter has a name that cannot be neutralised safely");
+    if (!/^[A-Za-z0-9._-]*$/.test(n)) throw denied("a git filter has a name that cannot be neutralised safely");
     names.add(n);
   }
   return [...names];
