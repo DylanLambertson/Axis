@@ -11,7 +11,7 @@ import { formatDriftNotice } from "../composer/drift.js";
 import { buildApprovalPreview, type PreviewScanner } from "../composer/preview.js";
 import { createRunTaint, type TaintStore } from "../composer/taint.js";
 import { ObservedFiles } from "./agent-observed.js";
-import { GIT_DIFF, GIT_STATUS, GIT_TOOL_SPECS, MAX_GIT_OUTPUT, gitDiffArgs, gitStatusArgs, gitTools } from "./agent-git.js";
+import { GIT_DIFF, GIT_STATUS, GIT_TOOL_SPECS, gitDiffArgs, gitReadRunnerOptions, gitStatusArgs, gitTools } from "./agent-git.js";
 import { providerRedactor } from "./provider-redactor.js";
 import { RUN_COMMAND, RUN_COMMAND_SPEC, RunWt2, approvableCommand, commandLimits, commandTool, runCommandArgs, type CommandLimits, type RunCommandArgs } from "./agent-command.js";
 import type { RunApprovals } from "../gate/run-approvals.js";
@@ -193,7 +193,7 @@ export function createAgentBinding(deps: AgentBindingDeps): AgentBinding {
   const scanner = deps.previewScanner ?? defaultPreviewScanner();
   const limits = commandLimits(deps.commandLimits);
   // One runner for every run's git reads: the host's git only (never looked up), its output bounded for the model.
-  const gitRunner: GitRunner | undefined = deps.gitPath === undefined ? undefined : createNodeRunner({ gitPath: deps.gitPath, env: deps.env(), maxOutput: MAX_GIT_OUTPUT });
+  const gitRunner: GitRunner | undefined = deps.gitPath === undefined ? undefined : createNodeRunner(gitReadRunnerOptions(deps.gitPath, deps.env()));
   const providers = new Map<string, GuardedProvider>([["mock", guardProvider(createMockProvider(deps.mock ?? {}), { redactor: providerRedactor(deps.redactor) })]]);
   for (const p of deps.providers ?? []) {
     if (providers.has(p.descriptor.providerId)) throw new Error("provider registered twice");

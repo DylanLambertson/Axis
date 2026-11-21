@@ -7,7 +7,7 @@ import { test, type TestContext } from "node:test";
 import { MAX_STRING_CHARS } from "@axis/audit";
 import { resolveGit } from "@axis/git-ops";
 import type { MockReply, ValidRequest } from "@axis/providers";
-import { GIT_DIFF, GIT_STATUS, createRunRepositoryGuard } from "../src/index.js";
+import { GIT_DIFF, GIT_STATUS, MAX_GIT_OUTPUT, createRunRepositoryGuard } from "../src/index.js";
 import { createGitFixture, gitSkipReason, type GitFixture } from "../testing/git-fixture.js";
 import { START, type ComposerRig } from "./composer-rig.js";
 import { approvalsOf, approveCommand, commandRig, eventually, fakeGuard, nodeRun, posix, toolsOf } from "./composer-command-rig.js";
@@ -122,6 +122,58 @@ test("planted hooks, fsmonitor, filters, a textconv and an external diff driver 
   assert.equal(existsSync(marker), true, "the fixture is not vacuous");
 });
 
+test("a filter and a diff driver with an empty name (`* filter= diff=`) never run; plain git runs them", { skip: skip ?? (!posix ? "posix shell scripts" : undefined) }, async (t) => {
+  const { fx, worktree, gitPath } = repoOf(t);
+  const marker = join(fx.root, "planted-ran.txt");
+  const script = (name: string): string => {
+    const p = join(fx.root, name);
+    writeFileSync(p, `#!/bin/sh\necho ${name} >> "${marker}"\ncat\n`);
+    chmodSync(p, 0o755);
+    return p;
+  };
+  writeFileSync(join(fx.repo, "staged.txt"), "staged\n");
+  fx.git(fx.repo, "add", "staged.txt"); // before anything is planted
+  writeFileSync(join(fx.repo, ".git", "info", "attributes"), "* filter= diff=\n");
+  appendFileSync(
+    join(fx.repo, ".git", "config"),
+    `[filter ""]\n\tclean = ${script("clean.sh")}\n\tsmudge = ${script("smudge.sh")}\n\tprocess = ${script("process.sh")}\n` +
+      `[diff ""]\n\ttextconv = ${script("textconv.sh")}\n\tcommand = ${script("driver.sh")}\n`,
+  );
+  writeFileSync(join(fx.repo, "README.txt"), "changed\n");
+  const r = results();
+  const c = await commandRig(t, { worktree, gitPath, env: () => fx.env, onRequest: r.onRequest, replies: [status(), diff(), diff({ staged: true }), TEXT] });
+  const runId = await runToEnd(c);
+  assert.deepEqual(toolsOf(c, runId).map((e) => e.outcome), ["ok", "ok", "ok"]);
+  assert.equal(existsSync(marker), false, existsSync(marker) ? readFileSync(marker, "utf8") : "");
+  assert.ok(r.seen[1]?.includes("+changed") && r.seen[2]?.includes("+staged"), "the built-in diff of the real bytes");
+  try {
+    execFileSync(gitPath, ["diff"], { cwd: fx.repo, env: fx.env, stdio: "ignore" });
+  } catch {
+    // a planted driver may fail git; only the marker matters
+  }
+  assert.equal(existsSync(marker), true, "the fixture is not vacuous");
+});
+
+test("git's output is cut at the read bound (MAX_GIT_OUTPUT), not the runner's larger default", { skip }, async (t) => {
+  const { fx, worktree, gitPath } = repoOf(t);
+  writeFileSync(join(fx.repo, "huge.txt"), "");
+  fx.git(fx.repo, "add", "huge.txt");
+  fx.git(fx.repo, "commit", "-q", "-m", "huge");
+  // Every diff line is 17 bytes (`+`, 15 characters, a line feed); git prints well over the bound.
+  const lines = Math.ceil((MAX_GIT_OUTPUT * 1.25) / 17);
+  writeFileSync(join(fx.repo, "huge.txt"), Array.from({ length: lines }, (_, i) => `x${String(i).padStart(14, "0")}\n`).join(""));
+  const r = results();
+  const c = await commandRig(t, { worktree, gitPath, env: () => fx.env, onRequest: r.onRequest, replies: [diff({ paths: ["huge.txt"] }), TEXT] });
+  const runId = await runToEnd(c);
+  assert.deepEqual(toolsOf(c, runId).map((e) => e.outcome), ["ok"]);
+  const out = r.seen[0] ?? assert.fail("no result");
+  assert.match(out, /git's output was cut at its bound/);
+  const m = /^git diff: (\d+) lines shown \((\d+) lines not shown/.exec(out) ?? assert.fail(out.slice(0, 200));
+  const counted = Number(m[1]) + Number(m[2]);
+  assert.ok(counted < lines, `${counted} of ${lines} lines reached the formatter`);
+  assert.ok(Math.abs(counted - MAX_GIT_OUTPUT / 17) < 16, `${counted} lines: about ${MAX_GIT_OUTPUT} bytes of git's output`);
+});
+
 test("hostile content: escaped names and lines, a binary file named only, a link's target as text, a huge diff cut", { skip: skip ?? (!posix ? "posix file names and links" : undefined) }, async (t) => {
   const { fx, worktree, gitPath } = repoOf(t);
   const secret = join(fx.root, "outside-secret.txt");
@@ -141,7 +193,6 @@ test("hostile content: escaped names and lines, a binary file named only, a link
   const c = await commandRig(t, { worktree, gitPath, env: () => fx.env, onRequest: r.onRequest, replies: [status(), diff({ paths: ["README.txt", "bin.dat", "link"] }), diff({ paths: ["big.txt"] }), TEXT] });
   const runId = await runToEnd(c);
   assert.deepEqual(toolsOf(c, runId).map((e) => e.outcome), ["ok", "ok", "ok"]);
-  console.error("DEBUG", c.service.get(runId).state, c.service.get(runId).reason, r.seen.length, r.seen.map((x) => x.slice(0, 200)));
   const [st, small, big] = r.seen as [string, string, string];
   for (const out of r.seen) {
     oneBlock(out);

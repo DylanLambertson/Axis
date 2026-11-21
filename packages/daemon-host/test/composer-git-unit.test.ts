@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { MockReply } from "@axis/providers";
-import { DEFAULT_GIT_READ_LIMITS, GIT_COMMANDS, checkGitCall, escapeGitLine, gitCallTier, GIT_DIFF, GIT_STATUS, GIT_TOOL_SPECS, diffCall, formatDiff, formatStatus, gitDiffArgs, gitStatusArgs, statusCall } from "../src/index.js";
+import { DEFAULT_GIT_READ_LIMITS, GIT_COMMANDS, GIT_READ_TIMEOUT_MS, MAX_GIT_OUTPUT, gitReadRunnerOptions, checkGitCall, escapeGitLine, gitCallTier, GIT_DIFF, GIT_STATUS, GIT_TOOL_SPECS, diffCall, formatDiff, formatStatus, gitDiffArgs, gitStatusArgs, statusCall } from "../src/index.js";
 import { START } from "./composer-rig.js";
 import { commandRig, eventually, fakeGuard, toolsOf } from "./composer-command-rig.js";
 
@@ -143,4 +143,11 @@ test("a line is escaped as axis.review/1.content escapes one (escapeBytes), with
   assert.deepEqual(escapeGitLine("ab<", 7), { text: "ab", cut: true }, "an escape is never split by the bound");
   assert.deepEqual(escapeGitLine("abc<d", 3), { text: "abc", cut: true });
   assert.deepEqual(escapeGitLine("", 3), { text: "", cut: false });
+});
+
+test("the read runner: the host's git and environment, 4 MiB of output, 30 s a process (not the runner's 32 MiB and 120 s)", () => {
+  const env = { PATH: "/usr/bin" };
+  assert.deepEqual(gitReadRunnerOptions("/usr/bin/git", env), { gitPath: "/usr/bin/git", env, maxOutput: 4 * 1024 * 1024, timeoutMs: 30_000 });
+  assert.equal(MAX_GIT_OUTPUT, 4 * 1024 * 1024);
+  assert.equal(GIT_READ_TIMEOUT_MS, 30_000);
 });

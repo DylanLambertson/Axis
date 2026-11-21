@@ -13,7 +13,7 @@ import type { ComposerToolSpec } from "../ports/composer.js";
  * - **One git path.** The broker runs the one call each tool declares (`git`), checked against its policy rows
  *   (`GIT_COMMANDS`: `status` and `diff` are tier `read`, no write), on the host's git (`AgentBindingDeps.gitPath`, the
  *   daemon-context node runner of `@axis/git-ops`) with the hardened daemon prefix: hooks off, `core.fsmonitor=false`, every
- *   filter the config names emptied, `--no-ext-diff --no-textconv --no-color`, `--no-optional-locks` (a read never writes
+ *   filter the config names emptied (an empty name too), `--no-ext-diff --no-textconv --no-color`, `--no-optional-locks` (a read never writes
  *   the index), literal pathspecs, GIT-ENV-1, and `--ignore-submodules=dirty` (no child git inside a submodule).
  * - **The model chooses no flag.** The flags are fixed here; the model gives at most the paths (WT-1 lexical rules in the
  *   broker, a path into the git directory refused) and, for a diff, the staged side and the context lines.
@@ -21,7 +21,7 @@ import type { ComposerToolSpec } from "../ports/composer.js";
  *   command took one, never taken or replaced by a read; a change halts the run as for a command.
  * - **What the model gets.** git's output, redacted by the host redactor, each line escaped as `axis.review/1.content` escapes
  *   a line (`escapeBytes`: controls, bidirectional, format and invisible characters and a leading combining mark as `\u{hex}`,
- *   a byte that is not UTF-8 as `\xhh`, a backslash doubled), and `<`, `>` and `"` as `\u{hex}` too, cut at `lineChars`, the whole
+ *   a backslash doubled; git's output reaches it decoded, so a byte that is not UTF-8 is U+FFFD), and `<`, `>` and `"` as `\u{hex}` too, cut at `lineChars`, the whole
  *   at `modelChars` (kept under what the redactor reads of one text, see `DEFAULT_GIT_READ_LIMITS`), inside an
  *   `<axis-git-output ... content="untrusted">` block that says how much was left out.
  */
@@ -46,6 +46,17 @@ export interface GitReadLimits {
 export const DEFAULT_GIT_READ_LIMITS: GitReadLimits = Object.freeze({ lineChars: MAX_CONTENT_LINE, modelChars: 12_288 });
 /** stdout the composer's git runner keeps; past it the output is cut and the result says so. */
 export const MAX_GIT_OUTPUT = 4 * 1024 * 1024;
+/**
+ * How long one git process of a read may take (the runner's default is 120 s): a slow read (a repository's `xfuncname`
+ * regex, a large rename search) ends as `git_unavailable` instead of holding the run. The runner takes no signal, so closing
+ * the run does not stop a git already started; this bounds that too.
+ */
+export const GIT_READ_TIMEOUT_MS = 30_000;
+
+/** The options of the one node runner every run's git reads use: the host's git, output and time bounded. */
+export function gitReadRunnerOptions(gitPath: string, env: Readonly<Record<string, string | undefined>>) {
+  return { gitPath, env, maxOutput: MAX_GIT_OUTPUT, timeoutMs: GIT_READ_TIMEOUT_MS } as const;
+}
 
 const gitPathArg = z.string().min(1).max(1024).refine((p) => !p.includes("\0"));
 const pathsArg = z.array(gitPathArg).min(1).max(32);
