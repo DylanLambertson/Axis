@@ -96,7 +96,7 @@ test("NEW-C: many sensitive keys with long names, and plain keys beyond the per-
   for (let i = 0; i < 2000; i++) o["x".repeat(16_000) + i + "pass" + "word"] = "v";
   const t0 = performance.now();
   const out = r.redactValue(o) as Record<string, unknown>;
-  assert.ok(performance.now() - t0 < 10_000); // already 20 times the idle time (0.5 s); the defect it guards took minutes
+  assert.ok(performance.now() - t0 < budget(10_000)); // about 0.5 s idle and about 3 s on a loaded host; the defect it guards (rules run on every long key name) took minutes
   assert.ok(Object.keys(out).every((k) => k.length <= 300));
   assert.ok(Object.keys(out).length <= 1025);
 
@@ -229,6 +229,8 @@ test("D2-B1: one string with a long token run before the cut redacts in millisec
   }
 });
 
+// The 20 s defect was a rule that rescanned a 16 000-character string made of one token run for every candidate start; the history that held it is squashed,
+// so no mutant of the current source restores it: the 6 s bound is 35 times the happy path and only catches a gross regression of the same kind.
 test("D2-B1: 64 such strings in one payload append in under a second (it took 20 s)", () => {
   const log = new AuditLog(openDatabase(":memory:"));
   const payload: Record<string, string> = {};
