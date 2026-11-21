@@ -1,5 +1,5 @@
-import assert from "node:assert/strict";
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
+import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import type { Clock } from "../src/index.js";
 
@@ -26,11 +26,13 @@ export function processSnapshot(): { resources: string[]; listeners: Record<stri
   return { resources: process.getActiveResourcesInfo().filter((r) => r === "Timeout" || r === "Immediate").sort(), listeners };
 }
 
-/** Wait until the process holds exactly what `before` recorded (closing handles finish on their own turns), then assert it; the guard only turns a leak into a named failure. */
-export async function settledTo(before: ReturnType<typeof processSnapshot>, message?: string, guardMs = 10_000): Promise<void> {
-  const same = (): boolean => JSON.stringify(processSnapshot()) === JSON.stringify(before);
-  const deadline = Date.now() + guardMs;
-  while (!same() && Date.now() < deadline) await new Promise((r) => setImmediate(r));
+/**
+ * "Nothing extra is alive after cleanup" is a negative claim, so it is asserted ONCE after letting what must terminate by
+ * itself do so (closing handles finish within a couple of macrotasks): never polled, or a leak that expires on its own
+ * inside a polling window would be waited out and pass.
+ */
+export async function settledTo(before: ReturnType<typeof processSnapshot>, message?: string): Promise<void> {
+  await drain();
   assert.deepEqual(processSnapshot(), before, message);
 }
 

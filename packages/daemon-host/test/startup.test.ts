@@ -82,7 +82,7 @@ test("a second host on the same data directory fails with E_CONFLICT (exit 75) a
     assert.equal((error as { code?: string }).code, "E_CONFLICT");
     assert.equal(exitCodeForStartupError(error), EXIT.LOCK_HELD);
     assert.equal(b.state, "stopped");
-    await drain();
+    await drain(); // flush sends already queued; no mutant can make a send appear here, the check is a guard rather than a proof
     assert.equal(second.sent.filter((m) => m["type"] === "ready").length, 0, "the loser never sends ready");
     assert.ok(existsSync(join(fix.dataDir, "axis.lock")), "the loser did not release the winner's lock");
     await b.stop();
@@ -106,7 +106,7 @@ test("a failure after the lock (git not found) is exit 70 and leaves no lock, ha
     assert.equal((error as { code?: string }).code, "E_UNAVAILABLE");
     assert.equal(exitCodeForStartupError(error), EXIT.INTERNAL);
     assert.ok(!existsSync(join(bad.dataDir, "axis.lock")), "git was not found after the lock was taken: it was released");
-    await drain();
+    await drain(); // flush sends already queued (a guard rather than a proof: start has already rejected)
     assert.equal(bad.sent.filter((m) => m["type"] === "ready").length, 0);
   } finally {
     bad.cleanup();
@@ -257,7 +257,7 @@ test("stop() during start(): no ready, no anchor.put, start rejects E_CANCELLED,
     release();
     assert.equal(await outcome, "E_CANCELLED");
     await stopped;
-    await drain();
+    await drain(); // flush sends already queued (a guard rather than a proof)
     assert.equal(fix.sent.filter((m) => m["type"] === "ready").length, 0);
     assert.deepEqual(fix.supervisor.puts, []);
     assert.ok(!existsSync(join(fix.dataDir, "axis.lock")));

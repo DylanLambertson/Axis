@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
-import assert from "node:assert/strict";
 // The scaffold must leave nothing behind: no timer, immediate or process listener after it has been used and disposed.
+import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Redactor } from "@axis/audit";
 import { createLogger, Disposables, exitCodeForStartupError, parseHostConfig, summarizeError } from "../src/index.js";
@@ -23,10 +23,14 @@ test("using every part of the scaffold leaves no timers and no process listeners
   await settledTo(before);
 });
 
-test("settledTo passes once a closing handle is gone and fails, bounded, while a timer is still live", async () => {
+test("settledTo is not waited out: a leak that would expire by itself fails at once, short-lived or not", async () => {
   const before = processSnapshot();
-  const t = setTimeout(() => undefined, 60_000);
-  await assert.rejects(settledTo(before, "a live timer", 200), { name: "AssertionError" });
-  clearTimeout(t);
-  await settledTo(before, "released", 2_000);
+  for (const ms of [1_000, 8_000, 60_000]) {
+    const t = setTimeout(() => undefined, ms);
+    const started = Date.now();
+    await assert.rejects(settledTo(before, `a ${ms} ms timer is still live`), { name: "AssertionError" });
+    assert.ok(Date.now() - started < 500, "it did not poll for the timer to expire");
+    clearTimeout(t);
+  }
+  await settledTo(before, "nothing left");
 });

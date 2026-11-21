@@ -82,7 +82,9 @@ export class Client {
   async call(contract: string, method: string, payload: unknown, key?: string): Promise<Msg> {
     const id = `q${++this.#n}`;
     this.send(contract, method, payload, id, key);
-    return this.until((m) => m.id === id);
+    const answer = this.until((m) => m.id === id);
+    answer.catch(() => undefined); // a call abandoned by a failed test rejects when the port closes: that is not an unhandled rejection
+    return answer;
   }
   send(contract: string, method: string, payload: unknown, id: string, key?: string): void {
     this.port.postMessage({ v: 1, id, contract, contractVersion: 1, method, payload, ...(key ? { idempotencyKey: key } : {}) });
