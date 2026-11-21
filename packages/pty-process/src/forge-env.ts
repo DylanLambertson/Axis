@@ -108,8 +108,11 @@ export const FORGE_STDERR_MARKERS = Object.freeze({
   keyring: Object.freeze(["name org.freedesktop.secrets", "secret service", "secret not found in keyring", "from keyring", "to keyring", "couldn't find oauth token", "failed to migrate"]),
   network: Object.freeze(["dial tcp", "no such host", "connection refused", "connection reset", "network is unreachable", "i/o timeout", "tls handshake timeout", "could not connect to"]),
 });
-/** `gh`'s own API error line, at the start of a line: `HTTP 401: Bad credentials (https://api.github.com/graphql)`. */
-const HTTP_401 = /^HTTP 401(?:[:\s]|$)/m;
+/**
+ * `gh`'s own API error line, at the start of a line: `HTTP 401: Bad credentials (https://api.github.com/graphql)`. A line starts
+ * after LF only (`\r\n` included); a lone CR, U+2028, U+2029 or NEL does not start one (review S1b-2 N-1: the `m` flag counted them).
+ */
+const HTTP_401 = /(?:^|\n)HTTP 401(?::|\s|$)/;
 /** What a removed name leaves: no marker holds it, so text on either side of a name never joins into one. */
 const GAP = "\u0001";
 
@@ -118,15 +121,18 @@ const escape = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 /**
  * `gh` echoes the repository it was asked about (`... with the name 'acme/python-keyring'.`). Every case-insensitive occurrence of
  * `owner/repo`, then of the longer and the shorter of the two names, that does not continue a name to its left is removed,
- * whatever follows it (review S1b D-1: a sentence's closing `.` after `org.freedesktop.secrets` once kept the name). Removing
- * too much only loses a marker (the class falls to `other`); it can never make one.
+ * whatever follows it (review S1b D-1: a sentence's closing `.` after `org.freedesktop.secrets` once kept the name). A name
+ * shorter than `SHORT_NAME` is removed only as a whole token, so an owner `o` does not eat the start of `org` (review S1b-2 N-2).
+ * Removing too much only loses a marker (the class falls to `other`); it can never make one.
  */
+const SHORT_NAME = 3;
 export function withoutNames(stderr: string, owner: string, repo: string): string {
   let text = stderr;
   const parts = [repo, owner].sort((a, b) => b.length - a.length);
   for (const name of [`${owner}/${repo}`, ...parts]) {
     if (name === "" || name === "/") continue;
-    text = text.replace(new RegExp(`(?<![${NAME_CHAR}])${escape(name)}`, "gi"), GAP);
+    const end = name.length < SHORT_NAME ? "(?![A-Za-z0-9_-])" : ""; // a closing '.' still ends it (D-1)
+    text = text.replace(new RegExp(`(?<![${NAME_CHAR}])${escape(name)}${end}`, "gi"), GAP);
   }
   return text;
 }

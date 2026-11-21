@@ -129,6 +129,10 @@ test("a name is removed wherever it starts a token, whatever follows; a removed 
   assert.equal(withoutNames("with the name org.freedesktop.secrets.", "acme", "org.freedesktop.secrets"), `with the name ${G}.`, "a closing '.' does not keep the name (review S1b D-1)");
   assert.equal(withoutNames("x-keyring and keyring-x", "acme", "keyring"), `x-keyring and ${G}-x`, "only where it does not continue a name to its left");
   assert.equal(withoutNames("keyring", "key", "keyring"), G, "the longer name first, so a shorter one never leaves part of it");
+  assert.equal(withoutNames("o org x o.", "o", "x"), `${G} org ${G} ${G}.`, "a name under 3 characters goes only as a whole token (review S1b-2 N-2)");
+  assert.equal(withoutNames("ab abc", "ab", "repo"), `${G} abc`);
+  assert.equal(withoutNames("abc abcd", "abc", "repo"), `${G} ${G}d`, "from 3 characters, whatever follows");
+  assert.equal(withoutNames("a / b  keep: this", "", ""), "a / b  keep: this", "empty names remove nothing, not even the '/' of the pair (review S1b-2 N-3)");
 });
 
 test("a sentence-ending '.' after a dotted name never makes it a marker (review S1b D-1)", () => {
@@ -147,6 +151,11 @@ test("keyring and auth need gh's error exits and gh's own line shapes (review S1
   assert.equal(classifyForgeStderr(1, "HTTP 401: Bad credentials (https://api.github.com/graphql)", "acme", "app"), "auth_missing");
   assert.equal(classifyForgeStderr(1, "warning\nHTTP 401\nTry authenticating with:  gh auth login", "acme", "app"), "auth_missing");
   for (const text of ["note: HTTP 401: Bad credentials", "HTTP 4010: odd", "xHTTP 401: x", "HTTP 403: Forbidden"]) assert.equal(classifyForgeStderr(1, text, "acme", "app"), "other", text);
+  for (const sep of ["\r", "\u2028", "\u2029", "\u0085"]) assert.equal(classifyForgeStderr(1, `x${sep}HTTP 401: Bad credentials`, "acme", "app"), "other", `a line does not start after ${JSON.stringify(sep)} (review S1b-2 N-1)`);
+  assert.equal(classifyForgeStderr(1, "x\r\nHTTP 401: Bad credentials", "acme", "app"), "auth_missing", "CRLF starts a line");
+  assert.equal(classifyForgeStderr(1, "x\nHTTP 401", "acme", "app"), "auth_missing", "at the end of the text");
+  const realKeyring = "The name org.freedesktop.secrets was not provided by any .service files";
+  assert.equal(classifyForgeStderr(1, realKeyring, "o", "app"), "keyring", "an owner 'o' does not hide 'org' (review S1b-2 N-2)");
   assert.equal(classifyForgeStderr(2, "HTTP 401: Bad credentials", "acme", "app"), "other", "only on exit 1");
   for (const marker of Object.values(FORGE_STDERR_MARKERS).flat()) assert.ok(marker.includes(" "), `a vetted name cannot be the marker ${marker}`);
   assert.equal(FORGE_STDERR_MARKERS_VERSION, 2);
