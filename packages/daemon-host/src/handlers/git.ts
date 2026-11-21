@@ -41,6 +41,8 @@ function createPushPlanHandler(deps: GitHandlerDeps): Handler {
             remote,
             branch: ws.branch,
             baseSha: await scanBase(deps, ws, workspaceId, worktree, target),
+            // As in `push`: the digest the user confirms names where the push goes.
+            destination: target,
             ...(allowedBinaryPaths === undefined ? {} : { allowedBinaryPaths }),
             ...(allowedBinaryIds === undefined ? {} : { allowedBinaryIds }),
           });

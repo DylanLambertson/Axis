@@ -8,6 +8,7 @@ import { mkdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:
 import * as path from 'node:path';
 import { after, describe, it } from 'node:test';
 import { createExecGitRunner, WorktreeError, WorktreeManager, type GitRunner } from '../src/index.js';
+import { expectNoHang, releaseFifos } from './fifo-guard.js';
 import { makeFixture, sh, write, type Fixture, exp } from './helpers.js';
 
 const fixtures: Fixture[] = [];
@@ -22,13 +23,7 @@ const posixOnly = { skip: process.platform === 'win32' ? 'no FIFOs or POSIX syml
 const SECRET = 'TOP-SECRET-outside-the-worktree\n';
 
 /** Rejects if `p` has not settled within `ms`: a hang becomes a test failure instead of a stuck run. */
-function within<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
-  let t: NodeJS.Timeout | undefined;
-  const timeout = new Promise<never>((_, reject) => {
-    t = setTimeout(() => reject(new Error(`${what} did not settle within ${ms} ms`)), ms);
-  });
-  return Promise.race([p, timeout]).finally(() => clearTimeout(t));
-}
+const within = <T>(p: Promise<T>, ms: number, what: string): Promise<T> => expectNoHang(p, ms, what, []);
 
 /**
  * A runner that calls `swap()` once, right before the first git call that follows the
@@ -130,24 +125,27 @@ describe('R3-1: snapshot content is read in-process from the scanned file only',
 });
 
 describe('R3-2: status() never blocks on a FIFO and never reads past a symlink', () => {
-  it('real time: a tracked file toggled between a file and a FIFO never hangs status()', { ...posixOnly, timeout: 90_000 }, async () => {
+  it('real time: a tracked file toggled between a file and a FIFO never hangs status()', { ...posixOnly, timeout: 300_000 }, async () => {
     const fx = fresh();
     const ws = await fx.manager.create({ repoPath: fx.repo, slug: 'agent' });
     // Atomic renames: the path always exists, so an lstat that sees a file is often followed by an open of a FIFO.
     const loop = spawn('/bin/sh', ['-c',
       `cd "${ws.path}" && printf 'alpha-x\\n' > .r; while :; do rm -f .f; mkfifo .f; mv -f .f a.txt; cp .r .r2; mv -f .r2 a.txt; done`],
     { stdio: 'ignore' });
+    // A fixed number of rounds, not a wall-clock window: a loaded machine runs them slower, never fewer. Each call keeps its own hang
+    // guard, so a status() that blocks on the FIFO fails the test instead of hanging it.
+    const ROUNDS = 200;
     let calls = 0;
     try {
-      const deadline = Date.now() + 25_000;
-      while (Date.now() < deadline && calls < 200) {
-        await within(fx.manager.status(ws.path, exp(ws.path)).catch(() => undefined), 10_000, `status() call ${calls + 1}`);
+      while (calls < ROUNDS) {
+        await expectNoHang(fx.manager.status(ws.path, exp(ws.path)).catch(() => undefined), 10_000, `status() call ${calls + 1}`, [ws.path]);
         calls++;
       }
     } finally {
       loop.kill('SIGKILL');
+      releaseFifos([ws.path]);
     }
-    assert.ok(calls > 5, `only ${calls} status() calls ran`);
+    assert.equal(calls, ROUNDS, 'every round ran');
   });
 
   it('a FIFO or a symlink to a device in place of a tracked file reads as modified', posixOnly, async () => {
