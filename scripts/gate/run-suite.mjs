@@ -1,0 +1,81 @@
+// Copyright (c) 2026 Dylan Lambertson. All rights reserved.
+// Runs one test suite as a child in its own process group and streams its output live. Memory is
+// bounded (only a tail is kept, for the pass/fail counts and the "last output" in a report), the
+// output is capped and the run is time-limited: a suite that spins, hangs or floods is killed and
+// named in its `== suite:` line instead of stalling or exhausting the job silently.
+import { spawn } from "node:child_process";
+import { parseTestCounts } from "./lib.mjs";
+
+export const DEFAULT_TIMEOUT_MS = 20 * 60_000;
+export const DEFAULT_OUTPUT_CAP_BYTES = 512 * 1024 * 1024;
+const TAIL_BYTES = 256 * 1024;
+const KILL_GRACE_MS = 5_000;
+
+/** Kill a whole process group: SIGTERM, then SIGKILL after a grace. Resolves when the group is gone or the grace passed. */
+export function killGroup(pid, graceMs = KILL_GRACE_MS) {
+  if (pid === undefined || process.platform === "win32") return Promise.resolve();
+  const send = (sig) => { try { process.kill(-pid, sig); return true; } catch { return false; } };
+  if (!send("SIGTERM")) return Promise.resolve();
+  return new Promise((resolve) => {
+    const t = setTimeout(() => { send("SIGKILL"); resolve(); }, graceMs);
+    const poll = setInterval(() => { if (!send(0)) { clearTimeout(t); clearInterval(poll); resolve(); } }, 100);
+    t.unref?.();
+    poll.unref?.();
+  });
+}
+
+/** The child of the running suite (for the runner's signal handler). */
+export const live = { child: undefined, name: "(none)" };
+
+export function runSuite(name, command, args, opts = {}) {
+  const cwd = opts.cwd;
+  const timeoutMs = opts.timeoutMs ?? Number(process.env.AXIS_TEST_SUITE_TIMEOUT_MS ?? DEFAULT_TIMEOUT_MS);
+  const capBytes = opts.capBytes ?? Number(process.env.AXIS_TEST_OUTPUT_CAP_BYTES ?? DEFAULT_OUTPUT_CAP_BYTES);
+  const out = opts.out ?? process.stdout;
+  const err = opts.err ?? process.stderr;
+  live.name = name;
+  return new Promise((resolve) => {
+    const child = spawn(command, args, { cwd, shell: false, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+    live.child = child;
+    let tail = Buffer.alloc(0);
+    let total = 0;
+    let spawnError;
+    let stopped; // why the runner ended it: "timeout" | "cap"
+    const stop = (why) => {
+      if (stopped !== undefined) return;
+      stopped = why;
+      void killGroup(child.pid, opts.graceMs ?? KILL_GRACE_MS);
+    };
+    const timer = setTimeout(() => stop("timeout"), timeoutMs);
+    const take = (sink) => (data) => {
+      total += data.length;
+      if (total > capBytes && stopped === undefined) stop("cap");
+      if (stopped === "cap") return;
+      sink.write(data);
+      tail = Buffer.concat([tail, data]);
+      if (tail.length > TAIL_BYTES) tail = tail.subarray(tail.length - TAIL_BYTES);
+    };
+    child.stdout.on("data", take(out));
+    child.stderr.on("data", take(err));
+    child.on("error", (e) => { spawnError = e; });
+    child.on("close", (status, signal) => {
+      clearTimeout(timer);
+      // Anything the suite left running in its group is killed, never left to hold the job.
+      if (child.pid !== undefined && process.platform !== "win32") try { process.kill(-child.pid, "SIGKILL"); } catch { /* none left */ }
+      const text = tail.toString("utf8");
+      const counts = parseTestCounts(text);
+      let why = "";
+      if (stopped === "timeout") {
+        const last = text.trimEnd().split("\n").pop()?.slice(0, 200) ?? "";
+        why = `, TIMED OUT after ${Math.round(timeoutMs / 1000)}s (last output: ${last})`;
+      } else if (stopped === "cap") why = `, OUTPUT CAP exceeded (${capBytes} bytes; output beyond it was dropped)`;
+      else if (signal !== null) why = `, killed by ${signal}`;
+      else if (spawnError !== undefined) why = `, ${spawnError.message}`;
+      else if (status !== 0) why = `, exit ${status}`;
+      const ok = status === 0 && signal === null && spawnError === undefined && stopped === undefined;
+      out.write(`\n== ${name}: ${ok ? "ok" : "FAILED"} (${counts.pass} pass, ${counts.fail} fail${why})\n\n`);
+      live.child = undefined;
+      resolve({ name, ok, ...counts });
+    });
+  });
+}
