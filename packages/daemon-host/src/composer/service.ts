@@ -77,10 +77,13 @@ export const DEFAULT_COMPOSER_BUDGET: RunBudgetLimits = Object.freeze({ maxToken
 export const DEFAULT_WORKSPACE_BUDGET: RunBudgetLimits = Object.freeze({ maxTokens: 2_000_000, maxRequests: 500 });
 const OPEN: readonly Run["state"][] = ["QUEUED", "RUNNING"];
 
+/** Live composer runs at once unless the composition says otherwise. */
+export const DEFAULT_MAX_ACTIVE = 8;
+
 export function createComposerService(deps: ComposerServiceDeps): ComposerService {
   const activity = new RunActivity(deps.now, deps.activity);
   const live = new Map<string, Live>();
-  const maxActive = deps.maxActive ?? 8;
+  const maxActive = deps.maxActive ?? DEFAULT_MAX_ACTIVE;
   const limits = deps.budget ?? DEFAULT_COMPOSER_BUDGET;
   createRunBudget(limits); // refuses invalid limits now, not at the first run
   const wsLimits = deps.workspaceBudget ?? DEFAULT_WORKSPACE_BUDGET;

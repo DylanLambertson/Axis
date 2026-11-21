@@ -10,6 +10,7 @@ import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.j
 import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
+import { fileRowText } from '../common/axisFileTreeText.js';
 
 /** Most entries listed per folder; the rest are summarised in one line. */
 export const MAX_TREE_CHILDREN = 2000;
@@ -122,7 +123,9 @@ export class AxisFileTree extends Disposable {
 			const row = append(this.element, $('.axis-file-tree-row'));
 			row.setAttribute('role', 'treeitem');
 			row.setAttribute('aria-level', String(node.depth + 1));
-			row.setAttribute('aria-label', node.isDirectory ? localize('axis.files.folder', "{0}, folder", node.name) : node.name);
+			const text = fileRowText(node.name, node.isDirectory);
+			row.setAttribute('aria-label', text.label);
+			row.title = text.title;
 			if (node.isDirectory) {
 				row.setAttribute('aria-expanded', String(node.expanded));
 			}
@@ -130,7 +133,7 @@ export class AxisFileTree extends Disposable {
 			row.style.paddingLeft = `${8 + node.depth * 14}px`;
 			const twistie = append(row, $('span.twistie'));
 			twistie.textContent = node.isDirectory ? (node.expanded ? '▾' : '▸') : '';
-			append(row, $('span.name')).textContent = node.name;
+			append(row, $('span.name')).textContent = text.name;
 			this.rowDisposables.add(addDisposableListener(row, EventType.FOCUS, () => this.setActive(index, false)));
 			this.rowDisposables.add(addDisposableListener(row, EventType.CLICK, () => {
 				this.setActive(index, true);
