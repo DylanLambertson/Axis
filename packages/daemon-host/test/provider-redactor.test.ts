@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { MAX_STRING_CHARS, Redactor, isWellFormedString } from "@axis/audit";
 import { canary } from "../testing/git-fixture.js";
-import { MAX_CLEAN_VERDICTS, MAX_KEY_FORM_CHARS, WINDOW_STEP, holdsRegisteredSecret, providerRedactor, windowBounds, windowCount } from "../src/bindings/provider-redactor.js";
+import { EDGE_SEARCH, MAX_CLEAN_VERDICTS, MAX_KEY_FORM_CHARS, WINDOW_STEP, holdsRegisteredSecret, providerRedactor, windowBounds, windowCount } from "../src/bindings/provider-redactor.js";
 
 // The providers' secret check on strings longer than the redactor reads (C7): a long clean tool result is not a secret, and a
 // secret anywhere in a long string still is.
@@ -23,7 +23,7 @@ test("a pattern secret anywhere in a long string is found: start, middle, end an
   const secret = ` ${canary(41)} `; // the rule wants a word boundary on each side
   const body = prose(40 * 1024);
   for (const at of [0, 16_000, 20_000, body.length]) assert.equal(p.containsSecret(body.slice(0, at) + secret + body.slice(at)), true, `at ${at}`);
-  for (let at = 4094 - secret.length; at < body.length; at += 4094) {
+  for (let at = WINDOW_STEP - secret.length; at < body.length; at += WINDOW_STEP) {
     for (const d of [-1, 0, 1]) assert.equal(p.containsSecret(body.slice(0, at + d) + secret + body.slice(at + d)), true, `at ${at + d}`);
   }
 });
@@ -83,7 +83,8 @@ test("every form of a longest key is found across every window boundary, at 16,3
   const r = new Redactor();
   r.registerSecret(key);
   const p = providerRedactor(r);
-  const body = prose(36 * 1024); // six windows: the first edge at 16,384 and edges at window steps after it
+  // Prose, and odd-aligned surrogate pairs with no word boundary anywhere (review c7 N2).
+  for (const body of [prose(36 * 1024), `y${"\u{1F600}".repeat(18 * 1024)}`]) {
   const edges = new Set<number>([MAX_STRING_CHARS]);
   for (const [start, end] of windowBounds(body)) edges.add(start).add(end);
   for (const [name, form] of Object.entries(forms)) {
@@ -97,7 +98,8 @@ test("every form of a longest key is found across every window boundary, at 16,3
       }
     }
   }
-  assert.ok(WINDOW_STEP + MAX_KEY_FORM_CHARS + 2 === MAX_STRING_CHARS);
+  }
+  assert.equal(WINDOW_STEP + MAX_KEY_FORM_CHARS + 2 * (EDGE_SEARCH + 1), MAX_STRING_CHARS);
 });
 
 test("work bound: a 4 MiB string costs windowCount(length) scans once, nothing on the next request, and again after a new key", () => {
@@ -146,4 +148,61 @@ test("a text with a lone surrogate never takes the clean verdict of its replacem
   assert.equal(p.containsSecret(twin), false, "U+FFFD is ordinary text");
   // UTF-8 encodes a lone surrogate as U+FFFD, so both would hash alike: the check before the kept verdicts tells them apart.
   assert.equal(p.containsSecret(`${prose(30_000)}\ud800${prose(30)}`), true);
+});
+
+test("a window edge never invents a word boundary: words that hold a key prefix stay clean wherever the edges fall (review c7 S1)", () => {
+  const p = providerRedactor(new Redactor());
+  // A key prefix inside a word: `sk-` at index 2, an AKIA token 16 characters long ending at index 20, `AIza` with 35 more.
+  const words = [["task-runner-configuration-loader-module", [2]], ["AKIAQWERTYUIOPASDFGHJKLZXCVBNMQWERTY", [0, 20]], ["xAIzaxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", [1, 40]]] as const;
+  for (const [w] of words) assert.equal(p.containsSecret(` ${w} `), false, `${w} alone is not a secret`);
+  const bodies = [prose(24 * 1024), "build-step-output-".repeat(1400)]; // with spaces, and with only hyphens between words
+  for (const body of bodies) {
+    for (const [w, cuts] of words) {
+      for (const edge of [WINDOW_STEP, 2 * WINDOW_STEP, MAX_STRING_CHARS, WINDOW_STEP + MAX_STRING_CHARS]) {
+        for (const cut of cuts) {
+          // The raw window edge falls exactly at the prefix (and one either side): before S1 the window read it as a key.
+          for (const d of [-1, 0, 1]) {
+            const at = edge - 1 - cut + d;
+            if (at < 1 || at > body.length) continue;
+            const text = `${body.slice(0, at)} ${w} ${body.slice(at)}`;
+            assert.equal(p.containsSecret(text), false, `${w} cut at ${cut}${d >= 0 ? "+" : ""}${d} on edge ${edge}`);
+          }
+        }
+      }
+    }
+  }
+});
+
+test("every inner window edge stands on a boundary: after whitespace or a non-word character, never inside a pair", () => {
+  const isWord = (c: string): boolean => /\w/.test(c);
+  for (const text of [prose(80_000), "build-step-output-".repeat(5000), `y${"\u{1F600}".repeat(40_000)}`]) {
+    const bounds = [...windowBounds(text)];
+    for (const [i, [start, end]] of bounds.entries()) {
+      const before = text.charCodeAt(start - 1);
+      if (i > 0) assert.ok(!isWord(text[start - 1] as string) && !(before >= 0xd800 && before <= 0xdbff), `start ${start}`);
+      if (i < bounds.length - 1) assert.ok(!isWord(text[end - 1] as string), `end ${end}`);
+      assert.ok(isWellFormedString(text.slice(start, end)), "no pair split");
+    }
+  }
+});
+
+test("work bound across turns: a growing history is scanned once in total, not once per request", () => {
+  const r = new Counting();
+  const p = providerRedactor(r);
+  const turns = Array.from({ length: 8 }, (_, n) => `${n} ${prose(512 * 1024)}`);
+  let expected = 0;
+  for (let t = 1; t <= turns.length; t++) {
+    // Each request carries the whole history so far, as the composer resends it.
+    for (const h of turns.slice(0, t)) assert.equal(p.containsSecret(h), false);
+    expected += windowCount((turns[t - 1] as string).length);
+    assert.equal(r.calls, expected, `request ${t} scanned only its new string`);
+  }
+});
+
+test("a window end inside a pair, with no boundary to move to, steps off the pair instead of splitting it", () => {
+  const p = providerRedactor(new Redactor());
+  // A pair whose halves sit on either side of the first window's end, inside one long word: no boundary within the search.
+  const text = `${"a".repeat(MAX_STRING_CHARS - 1)}\u{1F600}${"a".repeat(20_000)}`;
+  for (const [start, end] of windowBounds(text)) assert.ok(isWellFormedString(text.slice(start, end)), `[${start}, ${end})`);
+  assert.equal(p.containsSecret(text), false);
 });

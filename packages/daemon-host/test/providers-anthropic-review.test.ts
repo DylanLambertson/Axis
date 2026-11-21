@@ -117,6 +117,21 @@ test("N3: a key the redactor cannot register is not used, and its read is still 
   }
 });
 
+test("c7 N1: a stored key the windowed scan could not hold whole (too long, not printable ASCII) is never registered or sent", async () => {
+  for (const key of ["q".repeat(4097), `key-${"\u00e9".repeat(40)}`]) {
+    const s = await setup([{ kind: "text", text: "unused" }], {}, fakeBackend(CONN, key), key);
+    try {
+      const forms = s.c.redactor.registeredForms;
+      await assert.rejects(s.c.service.start(START(s.c.workspaceId, ANT), new AbortController().signal), (e: { details?: { reason?: string } }) => e.details?.reason === "provider_unavailable");
+      assert.equal(s.api.seen.length, 0, "nothing was sent");
+      assert.equal(s.c.redactor.registeredForms, forms, "nothing was registered");
+      assert.deepEqual(credentialRows(s.c).map((r) => r.payload), [{ purpose: "provider_request", outcome: "unusable" }]);
+    } finally {
+      await s.done();
+    }
+  }
+});
+
 test("N4: the recorded model list answers only its own connection", async () => {
   const s = await setup([{ kind: "text", text: "ok" }]);
   try {
