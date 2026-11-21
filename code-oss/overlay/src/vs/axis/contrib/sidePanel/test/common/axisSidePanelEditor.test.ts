@@ -113,6 +113,17 @@ suite('Axis side-panel editor (PV-V0 spike)', () => {
 		}
 	});
 
+	test('the policy classifies what the state matrix found, and the native console follows the IDE (review r3 N2, N6)', () => {
+		assert.strictEqual(AXIS_SIDE_PANEL_COMMAND_POLICY.get('workbench.action.terminal.openNativeConsole'), 'openInIde');
+		for (const id of ['editor.action.nextCommentingRange', 'editor.action.previousCommentingRange', 'workbench.action.compareEditor.nextChange', 'workbench.action.compareEditor.previousChange',
+			'workbench.action.splitEditorInGroup', 'workbench.action.joinEditorInGroup', 'workbench.action.toggleMaximizeEditorGroup']) {
+			assert.strictEqual(AXIS_SIDE_PANEL_COMMAND_POLICY.get(id), 'block', id);
+		}
+		for (const id of ['workbench.action.debug.continue', 'workbench.action.debug.stepOver', 'workbench.action.debug.stop', 'editor.action.announceCursorPosition']) {
+			assert.strictEqual(AXIS_SIDE_PANEL_COMMAND_POLICY.get(id), 'accept', id);
+		}
+	});
+
 	test('the spoken label is cleaned and clamped', () => {
 		const label = String(sidePanelEditorOptions(undefined, { trusted: true, label: 'a\u202Egnp.ts\u200B' }).ariaLabel);
 		assert.ok(!label.includes('\u202E') && !label.includes('\u200B'), label);

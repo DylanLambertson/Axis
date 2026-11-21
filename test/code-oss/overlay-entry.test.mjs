@@ -64,10 +64,13 @@ const SEAM = new URL("../../code-oss/overlay/src/vs/axis/code/electron-main/axis
 
 test("the main seam spawns only when shouldStartDaemon allows it, takes its data roots from axisDataRoots and uses no userData path", () => {
   const src = readFileSync(SEAM, "utf8");
-  const guard = src.indexOf("shouldStartDaemon(app.isPackaged)");
+  // The gate is Code OSS's isBuilt (PV-X1b): Electron's app.isPackaged is true for every Code OSS executable.
+  const guard = src.indexOf("shouldStartDaemon(services.environment.isBuilt)");
   const fork = src.indexOf("utilityProcess.fork");
-  assert.ok(guard > 0 && fork > guard, "the packaged-build guard comes before the fork");
-  assert.match(src.slice(guard, fork), /return undefined/);
+  const pty = src.indexOf("startAxisPty(");
+  assert.ok(guard > 0 && fork > guard && pty > guard, "the built-build guard comes before the daemon fork and the pty process's start");
+  assert.match(src.slice(guard, Math.min(fork, pty)), /return undefined/);
+  assert.equal(/app\.isPackaged/.test(src.replace(/\/\/[^\n]*/g, "")), false, "app.isPackaged is not used (only named in a comment)");
   assert.match(src, /axisDataRoots\(platform, process\.env, homedir\(\)\)/);
   assert.equal(/userData/.test(src.replace(/NOT Electron's userData[^\n]*/g, "")), false, "no userData path");
   assert.match(src, /execArgv: \[\]/);
