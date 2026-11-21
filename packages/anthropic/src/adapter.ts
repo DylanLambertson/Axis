@@ -68,10 +68,10 @@ export interface AnthropicAdapterOptions {
   /** Spacing of the progress events sent while the model streams thinking the adapter does not expose. Default 5,000 ms. */
   readonly keepAliveMs?: number;
   /**
-   * True when `text` holds `key` in a form the daemon's redactor would find (C7-F4; not every conceivable encoding). Called after the key is read and before `fetch`, with no `await`
-   * between, on the request path and body: a request that would carry the key used to send it is refused
-   * `secret_in_request` and nothing is sent. A check that throws refuses too. The daemon backs it with the forms its
-   * redactor knows (base64 at any byte offset included; the forms neither finds are listed at the daemon's `holdsKey`); the
+   * True when `text` holds `key` (C7-F4). Called after the key is read and before `fetch`, with no `await` between, on
+   * the request path and body: a request that would carry the key used to send it is refused `secret_in_request` and
+   * nothing is sent. A check that throws refuses too. The daemon backs it with the forms its redactor finds (base64 at
+   * any byte offset and in either alphabet included; the forms neither finds are listed at the daemon's `holdsKey`); the
    * guard's scan ran earlier, possibly before this key was first read (a new or rotated key).
    */
   readonly holdsKey?: (text: string, key: string) => boolean;

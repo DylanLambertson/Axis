@@ -81,12 +81,13 @@ B. The key is never sent inside its own request body.
    pins the two lists equal), so they cannot drift apart. The redactor also decodes a base64 run once, at any offset, and
    matches every registered form in it, so the check adds, for EVERY form, its base64 and base64url at byte offsets 0, 1
    and 2 without the partial groups at either end (`base64Middles`; reviews c7-f4 r1 and r2): base64 of the key, of its hex
-   and of its own base64 are found. Not found, by the check and by the redactor alike: base64 nested two levels over a form
-   (the redactor decodes once), a key split across two strings or across wrapped base64 lines (the base64 tool wraps at 76
-   columns), base64 mixing both alphabets inside the key, base64 then percent-encoded, `/`
-   written as `\/`, hex in mixed case or with separators, a key written with `\u00XX` escapes or with every character
-   percent-encoded, base64 of the key in another text encoding (UTF-16), a JSON escape nested deeper than once (only keys holding `"` or `\`; an
-   Anthropic key holds neither). Rationale: the invariant "the body never holds the key used to send it" is checked at the
+   and of its own base64 are found, in either alphabet or both mixed in one run (Node's base64 decoding, the redactor's,
+   accepts `-`/`_` and `+`/`/` alike; the check compares each place an alphabet-neutral piece of the needle occurs, review
+   c7-f4 follow-up r1). Not found, by the check and by the redactor alike: base64 nested two levels over a form (the
+   redactor decodes once), a key split across two strings or across wrapped base64 lines (the base64 tool wraps at 76
+   columns), base64 then percent-encoded, `/` written as `\/`, hex in mixed case or colon-separated, a key written with
+   `\u00XX` escapes or with every character percent-encoded, base64 of the key in another text encoding (UTF-16), a JSON
+   escape nested deeper than once (only keys holding `"` or `\`; an Anthropic key holds neither). Rationale: the invariant "the body never holds the key used to send it" is checked at the
    one point the key and the body meet, after the vault read.
 3. The refusal: `ProviderError("secret_in_request")`. Open question for review: `secret_in_request` is GUARD_ONLY (an adapter
    raising it becomes `internal`). Options: (a) drop it from GUARD_ONLY (an adapter can only use it to refuse; nothing is
