@@ -88,6 +88,8 @@ export interface AgentBindingDeps {
   readonly extraTools?: readonly ToolDefinition[];
   /** Where each run's taint is recorded and read back (IAC-T across a restart or resume): the journal's composer records. */
   readonly taintStore: TaintStore;
+  /** Messages delivered into runs at turn boundaries (PV-M3 slice 2); absent, nothing is delivered. */
+  readonly deliveries?: { next(runId: string, taint: { receive(input: unknown): void }): { readonly text: string; ack(): unknown; release(): unknown } | undefined };
   /**
    * WT-2, broker side (C3): GIT-SNAP-1 before and after every command a run starts (its own instance, not the CLI runs').
    * Absent: `run_command` is not offered at all.
@@ -336,6 +338,9 @@ export function createAgentBinding(deps: AgentBindingDeps): AgentBinding {
     return {
       specs,
       drift: async (signal) => formatDriftNotice(await observed.drift(signal)),
+      // IAC-T source 1: the pipeline taints this run through its own flag before the block is returned. A halted run
+      // (WT-2) never gets here: the loop's guard ends it at the boundary before it asks for a delivery.
+      ...(deps.deliveries === undefined ? {} : { deliver: async () => deps.deliveries?.next(run.runId, taint) }),
       ...(wt2 === undefined ? {} : { guard: (signal: AbortSignal) => wt2.turn(signal), close: () => wt2.close() }),
       async invoke(name, input, signal) {
         if (halted()) throw new ComposerRunHalt("GIT_DRIFT");
