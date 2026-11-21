@@ -10,6 +10,7 @@ import { test, type TestContext } from "node:test";
 import type { RunEvent } from "@axis/protocol";
 import type { MockReply, ValidRequest } from "@axis/providers";
 import { SWAPPED_RESULT } from "../src/bindings/agent.js";
+import { WITHHELD_NOTE } from "../src/composer/loop.js";
 import { ObservedFiles } from "../src/bindings/agent-observed.js";
 import { DRIFT_OPEN } from "../src/composer/drift.js";
 import { allEvents, composerRig, START, until, type ComposerRig, type ComposerRigOptions } from "./composer-rig.js";
@@ -99,7 +100,7 @@ test("N2: a folder swapped for a symlink in the residual window is not reported 
   assert.deepEqual(tools(allEvents(c, runId)), ["read_file:ok:null", "write_file:error:swapped"]);
   assert.equal(readFileSync(join(c.outside, "sub/a.txt"), "utf8"), "ours", "the bytes did land outside: the result must not say refused");
   const result = resultsOf(seen[2] as ValidRequest)[0] ?? "";
-  assert.equal(result, SWAPPED_RESULT);
+  assert.equal(result, `${SWAPPED_RESULT} ${WITHHELD_NOTE}`, "the swapped result, with the call's input withheld from the history");
   assert.doesNotMatch(result, /refused/);
   assert.match(result, /may have landed outside the workspace/);
 });

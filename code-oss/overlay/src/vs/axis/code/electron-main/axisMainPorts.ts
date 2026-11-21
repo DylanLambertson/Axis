@@ -9,7 +9,10 @@
 import { dialog, MessageChannelMain, safeStorage, type IpcMainEvent, type MessagePortMain } from 'electron';
 import { FileAccess } from '../../../base/common/network.js';
 import { IConfigurationService } from '../../../platform/configuration/common/configuration.js';
+import { IEnvironmentMainService } from '../../../platform/environment/electron-main/environmentMainService.js';
 import { IInstantiationService } from '../../../platform/instantiation/common/instantiation.js';
+import { ILogService } from '../../../platform/log/common/log.js';
+import { getResolvedShellEnv } from '../../../platform/shell/node/shellEnv.js';
 import { StorageScope } from '../../../platform/storage/common/storage.js';
 import { IApplicationStorageMainService } from '../../../platform/storage/electron-main/storageMainService.js';
 import { IWindowsMainService } from '../../../platform/windows/electron-main/windows.js';
@@ -27,6 +30,8 @@ export interface AxisMainServices {
 	readonly windows: IWindowsMainService;
 	readonly configuration: IConfigurationService;
 	readonly applicationStorage: IApplicationStorageMainService;
+	readonly environment: IEnvironmentMainService;
+	readonly log: ILogService;
 }
 
 export function resolveMainServices(instantiation: IInstantiationService): AxisMainServices {
@@ -34,7 +39,17 @@ export function resolveMainServices(instantiation: IInstantiationService): AxisM
 		windows: accessor.get(IWindowsMainService),
 		configuration: accessor.get(IConfigurationService),
 		applicationStorage: accessor.get(IApplicationStorageMainService),
+		environment: accessor.get(IEnvironmentMainService),
+		log: accessor.get(ILogService),
 	}));
+}
+
+/**
+ * Main's resolved shell environment (upstream's resolver, cached by it, honouring `--force-disable-user-env` and its timeout), for
+ * the pty process's program resolution (PV-X1b). Upstream skips it on Windows and when started from a CLI.
+ */
+export function resolvedShellEnv(services: AxisMainServices): () => Promise<Readonly<Record<string, string | undefined>>> {
+	return () => getResolvedShellEnv(services.configuration, services.log, services.environment.args, process.env);
 }
 
 /** `safeStorage` as the anchor cipher. `secure` only for a real OS backend: never Linux `basic_text` or `unknown`. */

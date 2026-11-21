@@ -1,0 +1,115 @@
+<!doctype html>
+<!-- Copyright (c) 2026 Dylan Lambertson. All rights reserved. -->
+<!-- PV-V0 harness page: the real upstream editor (compiled at the pin) and the transpiled overlay prototype. -->
+<html><head><meta charset="utf-8"><link rel="stylesheet" href="all.css">
+<style>
+body{margin:0;font:13px system-ui;display:grid;grid-template-columns:420px 1fr;grid-template-rows:auto 1fr;gap:8px;height:100vh}
+#side{display:flex;flex-direction:column;border-right:1px solid #ccc}
+.axis-side-editor,.axis-side-editor-host{width:400px;height:260px}
+#ide{width:560px;height:260px}
+.axis-approval-card{border:1px solid #888;padding:6px;margin:4px}
+#nested{width:300px;height:60px}
+</style></head><body>
+<div id="side">
+  <button id="row-a" class="file-row">a.ts</button>
+  <button id="row-b" class="file-row">b.ts</button>
+  <div id="side-slot"></div><button id="side-editor-left">next control</button>
+</div>
+<div><div id="ide"></div>
+  <textarea class="axis-composer" id="composer">composer</textarea>
+  <div id="cards"></div>
+  <button id="after">after</button>
+</div>
+<script type="module">
+const q = new URLSearchParams(location.search);
+const monaco = await import('./vs/editor/editor.main.js');
+const { KeybindingsRegistry } = await import('./vs/platform/keybinding/common/keybindingsRegistry.js');
+const { KeyMod, KeyCode, KeyChord } = await import('./vs/base/common/keyCodes.js');
+const { StandaloneServices } = await import('./vs/editor/standalone/browser/standaloneServices.js');
+const { IInstantiationService } = await import('./vs/platform/instantiation/common/instantiation.js');
+const { ServiceCollection } = await import('./vs/platform/instantiation/common/serviceCollection.js');
+const { ITextModelService } = await import('./vs/editor/common/services/resolverService.js');
+const { IKeybindingService } = await import('./vs/platform/keybinding/common/keybinding.js');
+const { StandardKeyboardEvent } = await import('./vs/base/browser/keyboardEvent.js');
+const { CodeEditorWidget } = await import('./vs/editor/browser/widget/codeEditor/codeEditorWidget.js');
+const { EditorExtensionsRegistry } = await import('./vs/editor/browser/editorExtensions.js');
+const sp = await import('./vs/axis/contrib/sidePanel/browser/axisSidePanelEditor.js');
+const common = await import('./vs/axis/contrib/sidePanel/common/axisSidePanelEditor.js');
+
+const log = window.log = { upstream: [], save: [], reveal: [], approve: [], refused: [], window: [], bubble: [], blocked: [], focusLost: [], released: 0 };
+// Stand-ins for upstream workbench commands, registered with the keys, weight (200) and `when` (undefined) of the pin.
+// Save All has no Linux key; it is run through the command service.
+const upstream = [['workbench.action.files.save', KeyMod.CtrlCmd | KeyCode.KeyS], ['workbench.action.files.saveAs', KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KeyS],
+	['workbench.action.closeActiveEditor', KeyMod.CtrlCmd | KeyCode.KeyW], ['workbench.action.splitEditor', KeyMod.CtrlCmd | KeyCode.Backslash],
+	['workbench.action.files.saveWithoutFormatting', KeyChord(KeyMod.CtrlCmd | KeyCode.KeyK, KeyCode.KeyS)],
+	['workbench.action.files.copyPathOfActiveFile', KeyChord(KeyMod.CtrlCmd | KeyCode.KeyK, KeyCode.KeyP)],
+	['workbench.action.nextEditor', KeyMod.CtrlCmd | KeyCode.PageDown], ['workbench.action.closeEditorsInGroup', KeyChord(KeyMod.CtrlCmd | KeyCode.KeyK, KeyCode.KeyW)],
+	['workbench.action.files.saveAll', 0]];
+for (const [id, primary] of upstream) {
+	KeybindingsRegistry.registerCommandAndKeybindingRule({ id, weight: 200, when: undefined, primary, handler: (_a, ...args) => log.upstream.push(args.length ? [id, args.length] : id) });
+}
+const { CommandsRegistry: CommandsRegistryEarly } = await import('./vs/platform/commands/common/commands.js');
+// A policy command whose metadata declares arguments: the registry replaces its handler with a validator (review r4 N1).
+CommandsRegistryEarly.registerCommand({ id: 'workbench.action.editor.changeLanguageMode', metadata: { description: 'Change Language Mode', args: [{ name: 'languageId' }] }, handler: (_a, ...args) => log.upstream.push(args.length ? ['workbench.action.editor.changeLanguageMode', args.length] : 'workbench.action.editor.changeLanguageMode') });
+window.sp = sp;
+window.registration = q.has('noroutes') ? undefined : sp.registerAxisSidePanelEditorCommands();
+const { ICommandService, CommandsRegistry } = await import('./vs/platform/commands/common/commands.js');
+window.registries = { CommandsRegistry, KeybindingsRegistry, KeyMod, KeyCode };
+const { IModelService } = await import('./vs/editor/common/services/model.js');
+
+const uriA = monaco.Uri.file('/w/repo/a.ts'), uriB = monaco.Uri.file('/w/repo/b.ts');
+const modelA = monaco.editor.createModel('const a = 1;\nexport { a };\n', 'typescript', uriA);
+monaco.editor.createModel('// b‮evil​\nlet b = 2;\n', 'typescript', uriB);
+const ide = window.ide = monaco.editor.create(document.getElementById('ide'), { model: modelA });
+
+const inst = StandaloneServices.get(IInstantiationService);
+const kb = StandaloneServices.get(IKeybindingService);
+const realResolver = StandaloneServices.get(ITextModelService);
+let delay = Number(q.get('delay') || 0);
+const textModelService = { _serviceBrand: undefined, async createModelReference(uri) {
+	if (uri.path.endsWith('missing.ts')) { throw new Error('not found'); }
+	const ref = await realResolver.createModelReference(uri);
+	const d = uri.path.endsWith('slow.ts') || uri === uriA && delay ? delay : 0;
+	if (d) { await new Promise(r => setTimeout(r, d)); }
+	return { object: ref.object, dispose() { log.released++; ref.dispose(); } };
+}, registerTextModelContentProvider() { return { dispose() {} }; }, canHandleResource() { return true; } };
+const child = inst.createChild(new ServiceCollection([ITextModelService, textModelService]));
+// The saved (alternative) version per file stands in for the text file model's dirty flag.
+const saved = new Map();
+const isDirty = uri => { const m = monaco.editor.getModel(uri); return !!m && m.getAlternativeVersionId() !== (saved.get(uri.toString()) ?? 1); };
+const host = { save: async (resource, skip) => { log.save.push([resource.path, skip]); saved.set(resource.toString(), monaco.editor.getModel(resource).getAlternativeVersionId()); },
+	reveal: async t => { log.reveal.push([t.resource.path, t.selection && t.selection.toString()]); },
+	editorSettings: () => JSON.parse(q.get('user') || '{}'), isDirty,
+	blocked: id => log.blocked.push(id), focusLost: r => log.focusLost.push(r.path),
+	saveConflictsDetected: () => { if (q.get('overwrite') === 'throw') { throw new Error('configuration unavailable'); } return !q.has('overwrite'); } };
+window.isDirty = isDirty;
+window.commands = StandaloneServices.get(ICommandService);
+window.modelService = StandaloneServices.get(IModelService);
+const side = window.side = child.createInstance(sp.AxisSidePanelEditor, host);
+document.getElementById('side-slot').appendChild(side.element);
+window.openFile = async (name, trusted = true) => { const r = await side.open(name === 'a' ? uriA : name === 'b' ? uriB : monaco.Uri.file('/w/repo/' + name), { trusted, label: name }, document.getElementById('row-' + name) || document.getElementById('row-a')); side.layout(400, 260); return r; };
+
+// What the workbench dispatcher (a keydown listener on the window) would resolve, recorded before anyone handles it.
+window.addEventListener('keydown', e => { const r = kb.softDispatch(new StandardKeyboardEvent(e), e.target); log.window.push([e.key, r.kind === 2 ? r.commandId : r.kind === 1 ? 'chord' : null]); }, true);
+
+window.addEventListener('keydown', e => log.bubble.push(e.key));
+// Approval cards with the card-scoped Mod+Enter of directions.md rule 9, gated by approvalShortcutAllowed.
+window.addCard = (id, withEditor) => {
+	const card = document.createElement('div'); card.className = 'axis-approval-card'; card.id = id; card.setAttribute('role', 'group');
+	card.innerHTML = '<button class="deny">Deny</button><button class="approve">Approve</button>';
+	if (withEditor) { const n = document.createElement('div'); n.id = 'nested'; card.appendChild(n); window.nested = inst.createInstance(CodeEditorWidget, n, { }, { contributions: EditorExtensionsRegistry.getEditorContributions() }); window.nested.setModel(monaco.editor.createModel('x', 'plaintext')); window.nested.layout({ width: 300, height: 60 }); }
+	// The workbench dispatches keys from a window listener, so an editor inside the card would not stop the event at
+	// its container as the standalone dispatcher does; workbenchStyle reads the event in the capture phase instead.
+	const gate = e => {
+		if (!common.isApprovalChord(e, false)) { return; }
+		const scope = { card, activeElement: document.activeElement, isInComposer: n => !!n?.closest?.('.axis-composer'), isInEditor: n => !!n?.closest?.('.monaco-editor') };
+		if (common.approvalShortcutAllowed(e, scope, false)) { log.approve.push(id); e.preventDefault(); e.stopPropagation(); } else { log.refused.push([id, e.isTrusted, e.repeat]); }
+	};
+	card.addEventListener('keydown', e => { if (!window.workbenchStyle) { gate(e); } });
+	card.addEventListener('keydown', e => { if (window.workbenchStyle) { gate(e); } }, true);
+	document.getElementById('cards').appendChild(card); return card;
+};
+window.where = () => { const a = document.activeElement; if (!a || a === document.body) { return 'BODY'; } if (a.closest('.axis-side-editor')) { return 'side-editor'; } if (a.closest('#ide')) { return 'ide-editor'; } if (a.closest('#nested')) { return 'nested-editor'; } return a.id || a.className; };
+window.models = { A: modelA, uriA, uriB };
+window.ready = true;
+</script></body></html>

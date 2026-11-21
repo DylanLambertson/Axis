@@ -7,6 +7,7 @@ import { createRunBudget, type StreamEvent } from "@axis/providers";
 import { CREDENTIAL, PATTERN_KEY, drain, failure, guarded, live, make, req, run, secretForms, views } from "./support/harness.js";
 import { MODEL } from "./support/scenarios.js";
 import { jsonResponse, sseResponse, textReply, type Handler } from "./support/transport.js";
+import { budget } from "./support/load-margin.js";
 
 const ok: Handler = (call, counter) =>
   call.url.endsWith("/count_tokens") ? jsonResponse(counter, 200, { input_tokens: 31 }) : sseResponse(counter, textReply("fine", { usageIn: 20 }));
@@ -104,6 +105,7 @@ test("an endless stream of pings ends in a timeout: pings do not reset the guard
     if (call.init.method !== "POST") return jsonResponse(counter, 200, {});
     let first = true;
     let live = true;
+    let pings = 0;
     open += 1;
     const end = (): void => {
       if (live) {
@@ -123,6 +125,9 @@ test("an endless stream of pings ends in a timeout: pings do not reset the guard
               return { done: false, value: new TextEncoder().encode(startEvt) };
             }
             await new Promise((r) => setTimeout(r, 15));
+            // "Endless" for the guard (its idle timer fires after about ten pings) but not for the test: a guard that never fires ends the stream here
+            // after about nine seconds, with an error other than the timeout the assertions below want, so a broken guard fails instead of hanging.
+            if (++pings > 600) end();
             return live ? { done: false, value: new TextEncoder().encode("event: ping\ndata: {\"type\":\"ping\"}\n\n") } : { done: true };
           },
           cancel: async () => end(),
@@ -136,7 +141,7 @@ test("an endless stream of pings ends in a timeout: pings do not reset the guard
   const err = await failure(drain(g.stream(req(), run())));
   assert.equal(err.code, "timeout");
   assert.equal(err.details.reason, "idle");
-  assert.ok(Date.now() - t0 < 3_000);
+  assert.ok(Date.now() - t0 < budget(3_000));
   await new Promise((r) => setTimeout(r, 50));
   assert.equal(open, 0, "the response was released");
 });

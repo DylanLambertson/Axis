@@ -19,9 +19,11 @@ export interface DeliveryRig {
   run(agentId: string): string;
   /** Called after each delivery the binding asked for (to cancel a run right after its block was leased). */
   afterNext?: () => void;
+  /** The codes of the failures the pipeline swallowed, in order. */
+  readonly codes: string[];
 }
 
-export async function deliveryRig(t: TestContext, options: { maxText?: number; failTaintAudit?: () => boolean; limits?: Partial<MessagingLimits> } = {}): Promise<DeliveryRig> {
+export async function deliveryRig(t: TestContext, options: { maxText?: number; failTaintAudit?: () => boolean; limits?: Partial<MessagingLimits>; onInternalError?: (code: string) => void } = {}): Promise<DeliveryRig> {
   const holder: { m?: MessagingBinding; rig?: DeliveryRig } = {};
   const c = await composerRig({
     replies: [],
@@ -44,6 +46,7 @@ export async function deliveryRig(t: TestContext, options: { maxText?: number; f
   }
   const directory: MessagingDirectory = { project: (id) => id === "p", agent: (id) => agents.get(id), group: (id) => groups.get(id), agents: () => [...agents.values()] };
   const runAgent = new Map<string, string>();
+  const codes: string[] = [];
   const m = createMessagingBinding({
     journal: c.journal,
     audit: c.audit,
@@ -55,11 +58,16 @@ export async function deliveryRig(t: TestContext, options: { maxText?: number; f
     runLive: (runId) => c.journal.getRun(runId)?.state === "RUNNING",
     ...(options.maxText === undefined ? {} : { deliveryLimits: { maxText: options.maxText } }),
     ...(options.limits === undefined ? {} : { limits: options.limits }),
+    onInternalError: (code) => {
+      codes.push(code);
+      options.onInternalError?.(code);
+    },
   });
   holder.m = m;
   const rig: DeliveryRig = {
     c,
     m,
+    codes,
     agents,
     runAgent,
     run(agentId) {

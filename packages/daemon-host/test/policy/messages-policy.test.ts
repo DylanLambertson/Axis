@@ -34,8 +34,8 @@ test("messages: one served row per method, at the contract's tier, user only, no
     assert.equal(WEB_ALLOWED.has(key(m)), false, `${m} reaches web clients`);
     if (methods[m]?.sideEffect === "read") assert.ok(row.tier <= 1, `${m}: a read above tier 1`);
   }
-  assert.deepEqual(Object.keys(PLANNED_RULES), []);
-  assert.deepEqual(Object.keys(plannedContracts), []);
+  assert.deepEqual(Object.keys(PLANNED_RULES).filter((k) => k.startsWith("axis.messages/")), []);
+  assert.equal(plannedContracts["axis.messages/1"], undefined);
   assert.deepEqual(coverageProblems(), []);
   assert.doesNotThrow(() => checkCoverage());
 });

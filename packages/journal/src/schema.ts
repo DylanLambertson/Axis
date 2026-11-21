@@ -443,7 +443,8 @@ export const JOURNAL_MIGRATIONS: readonly Migration[] = [
     // only moves to `acked`; an acked or failed row never changes. A lease is released (deleted) when the request that
     // carried it failed, when the run ended before it, and for every lease at host start (no run survives a restart), so
     // such a message goes to a later run. An acked or failed row is deleted only after its message (the retention purge),
-    // so a delivered message cannot become deliverable again. `message_delivery_failures` counts failed attempts. Additive.
+    // so a delivered message cannot become deliverable again (the purge deletes both in one transaction with deferred
+    // foreign keys). `message_delivery_failures` counts failed attempts. Additive.
     version: 10,
     sql: `
       CREATE TABLE message_deliveries (

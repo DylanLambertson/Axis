@@ -1,7 +1,7 @@
 # Pull request list through the user's `gh` (ticket PV-D2)
 
-- **Status:** design, revision 3 (after design review 1, SF-1 to SF-9 and N1 to N8, and design review 2, NEW-1 to NEW-5 and N-a to N-f). Nothing is built. Phase 1c, dashboard item "Pull requests" (`product-vision-v2.md` §4 row 7, the data-source table, O-5).
-- **Scope:** `axis.forge/1.pullRequests { projectId, trigger }` returns **your** open pull requests: those opened by the account `gh` is logged in as, on this project's confirmed GitHub repository, whose head is an `axis/*` branch of that same repository. **This is a product choice (review 2 NEW-4).** A teammate's, a bot's or a second identity's pull request on an `axis/` branch is not listed, and nothing signals that it exists. The section is titled "Your pull requests", and its copy says so. For each row: number, title, branch, author, draft, checks state, review state. Read-only. The dashboard UI is PV-D1.
+- **Status:** design, revision 3 (after design review 1, SF-1 to SF-9 and N1 to N8, and design review 2, NEW-1 to NEW-5 and N-a to N-f). Slice 1a (daemon side) is built (PR #527); slice 1b (pty process side) is built on `feat/pv-d2-s1b`; nothing is wired into a shipped build until slice 2. Phase 1c, dashboard item "Pull requests" (`product-vision-v2.md` §4 row 7, the data-source table, O-5).
+- **Scope:** `axis.forge/1.pullRequests { projectId, trigger }` returns **your** open pull requests: those opened by the account `gh` is logged in as, on this project's confirmed GitHub repository, whose head is an `axis/*` branch of that same repository. **This is a product choice (review 2 NEW-4).** A teammate's, a bot's or a second identity's pull request on an `axis/` branch is not listed, and nothing signals that it exists. The section is titled "Your pull requests", and its copy says so. "Your" means `gh`'s **active account** (`--author=@me`, review 3 N4): a pull request opened under another identity (a browser session behind the compare URL, a different push account) is not listed either. For each row: number, title, branch, author, draft, checks state, review state. Read-only. The dashboard UI is PV-D1.
 - **Constraints carried in:**
   - ADR 0004 decision 9 and D-9 stand: Axis stores, reads, logs and forwards **no forge credential**, and never writes the user's keyring.
   - `gh` runs under the user's own login.
@@ -38,7 +38,7 @@ The process start goes through the injected `ExecFn`.
 
   ```
   <ghPath> pr list --repo=github.com/<owner>/<repo> --state=open --author=@me --limit=50
-           --json=number,title,headRefName,author,isDraft,isCrossRepository,headRepositoryOwner,reviewDecision,statusCheckRollup,updatedAt
+           --json=number,title,headRefName,author,isDraft,isCrossRepository,headRepositoryOwner,reviewDecision,statusCheckRollup
   ```
 
   Each value is joined to its flag (`--repo=...`), so nothing can be read as a flag.
@@ -47,7 +47,7 @@ The process start goes through the injected `ExecFn`.
     - `isCrossRepository`, `headRepositoryOwner` and `statusCheckRollup` are still returned;
     - `@me` resolves on the supported versions;
     - search-index lag is acceptable (a just-opened PR can be missing for seconds; the copy says "recently opened pull requests can take a moment to appear").
-  - **Fallback.** If the gate fails, the fallback template drops `--author`, shows the plain 50-row window with `incomplete`, and lists every same-repository `axis/` PR, including bots, whose login is `app/<slug>` (§5). The `app/` rule exists only for this fallback, and the slice 1 tests cover the fallback path as well.
+  - **Fallback.** If the gate fails, the fallback template drops `--author`, shows the plain 50-row window with `incomplete`, and lists every same-repository `axis/` PR, including bots, whose login is `app/<slug>` (§5). The `app/` rule exists only for this fallback, and the slice 1 tests cover the fallback path as well. In the fallback the section title and copy change to "Pull requests on axis/ branches" (review 3 N3), since it then lists teammates' and bots' pull requests too.
 
 **Per-call directories (review SF-3, N4; review 2 N-a, N-b).**
 - **The private root** is `<scratchParent>/forge-calls`. `scratchParent` is the pty process's existing private directory (`GitExecConfig`), which is never under `TMPDIR` or a workspace. The pty process creates the root with mode 0700 at start and removes any leftover entries there first, such as those of a crashed earlier process. Removal never follows symlinks.
@@ -67,7 +67,7 @@ The daemon maps the reply to the §7 states with the table in §7.
 **The version check (review 2 NEW-3).** The second and only other command is `<ghPath> --version`, a fixed template with no message input.
 - It runs once per pty process, before its first `forge-list`, under the same environment, per-call directories, 5 s timeout and a 4 KiB output cap.
 - Its stdout must start with `gh version <major>.<minor>.<patch>`, parsed by a strict pattern. Anything else is `version_unknown`; below the minimum it is `too_old`.
-- The result is cached for the life of the process.
+- **Only a success is cached,** for the life of the process (review 3 N2). A failure (`too_old`, `version_unknown`, a timeout) is not: the next call re-checks, so upgrading `gh` takes effect without a restart. The re-check is still bounded by the daemon's 15 s floor (§6). Two concurrent first calls share one version run.
 - Both outcomes and a hostile version output are in the slice 1 tests (§9).
 
 **Bounds (review SF-8, N1).**
@@ -99,6 +99,17 @@ The daemon maps the reply to the §7 states with the table in §7.
 - **Windows (review SF-7).** Windows has no process group, and `taskkill /T` would be a third program given by value, which the allow-list refuses. Until PV-X1 provides a job-object kill on Windows, through the native pty binding or a small addon, `forge-list` (and the git exec path) reply `unsupported_platform` on Windows. That gives the state `unsupported_platform` (§7).
 
 **Egress lint (#499, #506).** With PV-X1 the forge path adds no spawn site: it reaches `gh` through `createNodeExec`, whose file is the one listed entry. Without PV-X1 nothing in production can start `gh`.
+
+**Slice 1b as built** (`pty-process/src/forge-list.ts`, `forge-env.ts`; the service routes every `t: "forge-list"` there before its own union):
+- The request is parsed with the shared `forgeListRequestSchema`. Outside it with a usable `req`: `bad_request`, nothing starts. With no usable `req`: no answer (the daemon's bound covers it), never an answer in another family.
+- A service without a forge configuration (no `ghPath`) answers `spawn_missing`. Windows answers `unsupported_platform` before any directory is created.
+- The pre-exec check refuses any entry in the call directory other than `cwd/`, `config/` and `data/`, and a link in place of any of them. `XDG_CONFIG_HOME` is `config/` (as `GH_CONFIG_DIR`); `XDG_STATE_HOME` and `XDG_CACHE_HOME` are `state/` and `cache/`, created by `gh` if at all, removed with the call.
+- The version step: a run that exits non-zero or whose output was cut is `version_unknown`; its timeout is `timeout`.
+- The capacity of 2 counts a call from acceptance to reply, the version step included. A timed-out call frees its slot when it answers; its directory is removed when the exec settles. So the cap bounds calls in flight, not live `gh` processes: a process that left the group (`setsid`) and holds the pipes keeps its exec (and directory) unsettled while the slot is reused. That is the same-user residual of `pty-exec-node.md` §3; the daemon's 15 s floor bounds the rate (review S1b N-3).
+- A control close also drops the shared version run, so the next channel's first call starts its own (review S1b N-2).
+- The pre-exec race seam (`afterPrepare`) is not part of `ForgeListConfig`: only a test passes it, to `createForgeList` directly, which the package index does not export (review S1b N-4).
+- A cut stdout is not sent (`stdout: ""`, `truncated: true`): the daemon answers `output_too_large` whatever it holds.
+- A call killed by a control close answers nothing (the channel is gone, and a later channel never gets a stale `req`).
 
 ## 2. Which repository: derived by the daemon, confirmed by the user
 
@@ -138,6 +149,8 @@ The request names a `projectId` only. The repository never comes from request co
 | `DBUS_SESSION_BUS_ADDRESS`, `XDG_RUNTIME_DIR` (Linux) | to reach the user's keyring |
 | `SYSTEMROOT`, `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, `TEMP`, `TMP` (Windows) | process setup and Credential Manager |
 | `HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY` and their lower-case forms, `SSL_CERT_FILE`, `SSL_CERT_DIR` | the user's network setup, as in their terminal (accepted decision) |
+
+The gate confirms that the PTY-5 clean startup environment still holds these names (review 3 N7): if PTY-5 stripped them, the last row would copy nothing, and corporate-proxy users would see `network_unavailable`.
 
 The pty process then sets:
 - `GH_CONFIG_DIR=<call>/config`, `XDG_DATA_HOME=<call>/data`, and `XDG_CONFIG_HOME`, `XDG_STATE_HOME` and `XDG_CACHE_HOME` under `<call>/`;
@@ -204,13 +217,14 @@ The parse happens in the daemon, from `forge-result.stdout`. `truncated` gives `
 | `author.login` | GitHub login pattern; bots as `app/<slug>` (gh's form for apps), reachable only with the fallback template of §1 |
 | `isDraft` | boolean |
 | `reviewDecision` | one of `APPROVED`, `CHANGES_REQUESTED`, `REVIEW_REQUIRED`, empty; anything else is `unknown` |
-| `updatedAt` | ISO 8601, at most 40 characters |
 
 - `statusCheckRollup` is reduced to one closed value: `passing`, `failing`, `pending`, `none` or `unknown`. At most 200 entries per row are **read**, the rest ignored; `gh` requests at most 100.
 - **Display text.** Title, branch and logins are prepared in the daemon:
-  - NFC;
-  - then removal of C0 and C1 controls (including ESC, so ANSI and OSC 8 sequences lose their introducer), bidi overrides and isolates (U+202A to U+202E, U+2066 to U+2069), `\p{Cf}`, and line and paragraph separators;
-  - truncation with an ellipsis, to 200 code points for a title and 120 for a branch.
+  - removal of C0 and C1 controls (including ESC, so ANSI and OSC 8 sequences lose their introducer), bidi overrides and isolates (U+202A to U+202E, U+2066 to U+2069), `\p{Cf}`, and line and paragraph separators;
+  - then NFC; the stripping runs first, so a removed character between a base and its mark leaves the composed form (review S1a N1);
+  - truncation with an ellipsis, to 200 UTF-16 units for a title and 120 for a branch, cut on a code point boundary so no lone surrogate is left (review S1a N2, SF-4).
+- **Owner compare:** the head owner must match the ASCII GitHub login pattern and equal the pin under an ASCII-only case fold; no Unicode or compatibility fold (review S1a SF-1).
+- **A re-pin while `gh` runs:** the exec is audited and logged with its state, but its answer is neither cached nor returned and no latch moves; the reply is `busy` with the new pin and `retryAfterMs` (review S1a SF-2).
 - **Rendering.** The renderer shows these as **plain text only**. The closed badges (draft, checks, review) sit in a fixed column, visually apart from the title, and title text is never placed where a state is shown (review N6: a title such as "✅ Approved · checks passing" must not pass for a badge).
 - **Who sees it.** The user's dashboard only. The policy row allows the `user` principal. In v1 no agent or model context receives the list. If a later ticket opens it to agents, they get only the closed scalars (number, draft, checks, review, branch-is-axis), as PV-M0-tainted data with a named source, never titles or logins.
 
@@ -230,7 +244,7 @@ The request carries `trigger`: `"view"` or `"user"`.
 - **Two kinds:**
   - **Authentication** (`not_logged_in`, `keyring_unavailable`). The keyring is shared, so this latch is **global**: one failure latches every project, and N projects do not mean N dialogs.
   - **Timeout.** A pending OS dialog can look like a timeout, so a timeout latches **that project** only.
-- **While latched,** `view` returns the cached state, and only `user` runs `gh`, still at most once per 15 s.
+- **While latched,** `view` returns the cached state, and only `user` runs `gh`, still at most once per 15 s. A latched project **with no cache** (another project hit the global latch) answers the latch's own state, `not_logged_in` or `keyring_unavailable`, with its pinned repository (review 3 N5).
 - **Cleared by:** a `user` refresh that succeeds (it clears the global latch and that project's own); a `pinRepository` for the project (clears that project's latch); a daemon restart (nothing persists, so the first `view` after a restart may run one call, and so raise one possible dialog: accepted).
 
 **Other states.**
@@ -240,11 +254,11 @@ The request carries `trigger`: `"view"` or `"user"`.
 
 ## 7. Closed states and errors
 
-`axis.forge/1.pullRequests` replies with `{ state, repository?, candidate?, rows?, incomplete?, invalidRows?, fetchedAt?, stale?, retryAfterMs? }`.
+`axis.forge/1.pullRequests` replies with `{ state, repository?, candidate?, rows?, incomplete?, invalidRows?, ageMs?, stale?, retryAfterMs? }` (`ageMs` from the daemon's monotonic clock, not a wall-clock time; concurrent requests for one project join the one exec in flight).
 
 - `state` is one of the closed values below.
 - No free text from `gh` (stderr or stdout) reaches the reply, the log or the audit.
-- Stderr is classified **in the pty process** against a fixed marker set and then discarded. The marker set is versioned with the gate, and the first match wins.
+- Stderr is classified **in the pty process** against a fixed marker set and then discarded. The marker set is versioned with the gate (`FORGE_STDERR_MARKERS_VERSION`, now 2). Before matching, every case-insensitive occurrence of the request's `owner/repo`, then of the longer and the shorter name, that does not continue a name to its left is removed whatever follows it (a name under 3 characters only as a whole token, so an owner `o` keeps `org` intact: review S1b-2 N-2), and leaves a gap character no marker holds (review S1b SF-1, D-1: a repository named `python-keyring` once read as a keyring failure and set the global latch; a sentence's closing `.` after a dotted name once kept it). Every marker is a phrase of `gh`'s or go-keyring's own messages and holds a space, which no vetted name can (D-2). The first match wins, in this order: `repo_missing` (a locked keyring stops `gh` before any API call, so a not-found text is the API's); then, on `gh`'s error exits only (1, or 4 for authentication), keyring markers (`gh` reports a locked keyring as not logged in too) and `auth_missing` (exit 4, or exit 1 with a line that starts `HTTP 401`; a line starts after LF only, never after a lone CR, U+2028, U+2029 or NEL: review S1b-2 N-1); then `network`, else `other`. Exit 0 is `none` whatever stderr holds. Removing a name only ever loses a marker: a repository named like a marker's last word (`keyring`) hides a genuine keyring text, which then degrades to `gh_failed` for that project, never to the global latch. The exact texts and the line shape of `HTTP 401` are unverified until the slice 2 gate.
 
 | State | When |
 |---|---|
@@ -266,7 +280,7 @@ The request carries `trigger`: `"view"` or `"user"`.
 | `timeout` | 20 s passed |
 | `output_too_large` | the output cap was reached |
 | `output_invalid` | the outer array was refused |
-| `busy` | the concurrency cap was hit |
+| `busy` | the pty process's cap was hit; any request (`view` or `user`) within 15 s of the project's last exec when there is no cached answer; or the pin changed while `gh` ran (§5) |
 | `unsupported_platform` | Windows until PV-X1 provides a job-object kill |
 | `unavailable` | no pty process connected |
 
@@ -322,14 +336,14 @@ The `ExecStartError` codes and the per-stream truncation flags are the PV-X1a ex
 
 ## 9. Slices, tickets and test plan
 
-**PV-X1 (separate prerequisite ticket):** production `ExecFn` for the pty process, POSIX and Windows. It blocks PV-D2 slice 2 and production push (H9-hooks S4). Its acceptance:
+**PV-X1 (separate prerequisite ticket; delivered as X1a, the packages part; X1b, main and the overlay entry; X1w, the Windows job object. Review 3 N1, N6):** production `ExecFn` for the pty process, POSIX and Windows. It blocks PV-D2 slice 2 and production push (H9-hooks S4). Its acceptance:
 - `exec-node.ts` with `createNodeExec` and the exact `argv[0]` allow-list (§1);
 - per-stream caps (`maxOutput`, `maxStderr`) enforced while reading, timeout, stdin;
 - real kill:
   - POSIX: the process group, verified with a grandchild that holds the pipes and ignores SIGTERM (`done` settles; `kill -0` shows no survivor);
   - Windows: a job object, or `unsupported_platform` until one exists;
 - the environment passed exactly as given;
-- the `git` and forge configuration (`gitPath`, `ghPath`, `hooksOff`, `scratchParent`, `baseEnv`) in `PtyEntryDeps` and `axisPtyMain.ts`. Main resolves both programs with the trusted resolver from main's resolved shell environment, so a Finder-started app finds `/opt/homebrew/bin/gh` (review N7);
+- the `git` configuration (`gitPath`, `hooksOff`, `scratchParent`, `baseEnv`) and the `ghPath` field in `PtyEntryDeps` and `axisPtyMain.ts` (X1a builds the git `createNodeExec` instance only; **the `ghPath` instance and the `forge-list` wiring are PV-D2 slice 2**). Main resolves both programs with the trusted resolver from main's resolved shell environment, so a Finder-started app finds `/opt/homebrew/bin/gh` (review N7);
 - the daemon entry's pty port;
 - the ADR 0005 amendment and the `daemon-host.md` 2.1 rows (§1).
 
@@ -378,7 +392,8 @@ The `ExecStartError` codes and the per-stream truncation flags are the PV-X1a ex
 **Slice 2:**
 - the pin in the journal and the composition wiring;
 - the hostile-`gh` suite rerun through the real `ExecFn` (from PV-X1), including the grandchild kill case;
-- the §4 verification gate with a real `gh`, recorded per platform.
+- the §4 verification gate with a real `gh`, recorded per platform;
+- the stderr texts of the default `--author=@me` path, which uses the search API: a missing or inaccessible repository there may answer "The listed users and repositories cannot be searched…" rather than "Could not resolve to a Repository", and would then be `gh_failed`, not `repo_not_found`. Markers v1 are unverified against a real `gh` until this gate (review S1b N-6).
 
 **Slice 3:** the dashboard section, with PV-D1 owning the frame. Its acceptance:
 - the pinned repository always shown;
@@ -390,4 +405,4 @@ The `ExecStartError` codes and the per-stream truncation flags are the PV-X1a ex
 
 1. **`--author=@me`:** search-API fields, `@me` resolution and index lag on the supported `gh` versions (gate). If it fails, the fallback template of §1 applies.
 2. **Minimum `gh` version:** the first that reads `version: "1"` without migrating (gate).
-3. **Windows job object:** the native pty binding or a small addon (PV-X1).
+3. **Windows job object:** the native pty binding or a small addon (X1w).

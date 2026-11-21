@@ -30,6 +30,7 @@ export const SPAWN_FILES = new Map([
   ["git-snapshot/git.ts", { names: new Set(["execFile"]), program: null, runs: "git (`rev-parse`, `config --list`), by the absolute path given" }],
   ["git-snapshot/indexflags.ts", { names: new Set(["spawn"]), program: null, runs: "git (`ls-files` index flags), by the absolute path given" }],
   ["worktrees/git.ts", { names: new Set(["spawn"]), program: null, runs: "git, by the resolved path, with an argument vector" }],
+  ["pty-process/exec-node.ts", { names: new Set(["spawn"]), program: null, runs: "git or gh: exactly the configured gitPath or ghPath, checked in this file before the call" }],
   ["broker/runner.ts", { names: new Set(["spawn"]), program: null, injectable: true, runs: "the approved command's argv (`argv[0]` an absolute path), the run_command boundary (PTY-2, Phase 3 sandbox)" }],
 ]);
 

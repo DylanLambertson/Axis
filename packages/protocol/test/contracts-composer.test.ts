@@ -35,6 +35,13 @@ const SAMPLES: readonly Sample[] = [
   { contract: "axis.runs", method: "list", side: "response", name: "mixed", value: { runs: [running, failed, blocked, queued].map((r) => structuredClone(r)) }, toleratedPattern: NULLABLE },
   { contract: "axis.runs", method: "events", side: "request", name: "events", value: { runId: "run-1", afterSeq: 0, limit: 200 } },
   { contract: "axis.runs", method: "events", side: "response", name: "all kinds", value: { events: structuredClone(events), nextSeq: 7, complete: false, available: true }, toleratedPattern: NULLABLE },
+  // C3 slice 2: the git reads are tools like any other (no approval, no preview); a refusal carries the broker's reason only.
+  {
+    contract: "axis.runs", method: "events", side: "response", name: "git reads",
+    value: { events: [{ seq: 1, at: T1, type: "tool", tool: "git_status", outcome: "ok", reason: null }, { seq: 2, at: T1, type: "tool", tool: "git_diff", outcome: "error", reason: "protected_path" }, { seq: 3, at: T2, type: "state", state: "FAILED", reason: "GIT_DRIFT" }], nextSeq: 3, complete: true, available: true },
+    // The tool event does not tie `reason` to `outcome` (an `ok` event with a reason parses): a contract gap left as it is here.
+    toleratedPattern: new RegExp(`${NULLABLE.source}|^string at events\\.0\\.reason$`),
+  },
 ];
 
 runSuite(SAMPLES);
