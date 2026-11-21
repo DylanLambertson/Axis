@@ -251,7 +251,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
         // Composer runs: the broker's audit rows mark the anchor batch dirty like every other writer.
         const providers = createProvidersBinding({ redactor: ports.redactor, audit: composerWriter, ...productionConnection(options.composer?.anthropic) });
         // axis.messages/1 (PV-M3): service, settings and delivery into runs; its rows go through the sealed composer writer.
-        const messaging = createMessagingBinding({ journal: parts.journal, audit: composerWriter, random: { bytes: (n) => randomBytes(n) }, monotonic: () => ports.clock.monotonic(), scan: (text) => scanner.scan(text, { part: "message" }), runLive: (id) => parts.journal.getRun(id)?.state === "RUNNING" });
+        const messaging = createMessagingBinding({ journal: parts.journal, audit: composerWriter, random: { bytes: (n) => randomBytes(n) }, monotonic: () => ports.clock.monotonic(), scan: (text) => scanner.scan(text, { part: "message" }), runLive: (id) => parts.journal.getRun(id)?.state === "RUNNING", onInternalError: (code) => logger?.warn("request.failed", { reason: `delivery_${code}` }) });
         const agent = createAgentBinding({
           locator: worktrees.locator,
           repositoryRoots: projectPaths,

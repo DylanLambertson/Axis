@@ -64,6 +64,8 @@ export interface MessageDeliveryDeps {
   readonly maxText?: number;
   /** Failed deliveries of one message to one recipient before it is quarantined (default 3). */
   readonly maxFailures?: number;
+  /** A failure the pipeline swallows, as a fixed code (no text): the host logs it. */
+  readonly onInternalError?: (code: "notice_failed") => void;
 }
 
 /** Candidates looked at per boundary, paged in send order: bounds what a long queue of refused messages costs a turn. */
@@ -103,7 +105,9 @@ export function createMessageDelivery(deps: MessageDeliveryDeps): MessageDeliver
     try {
       n = store.transact(() => store.deliveries.noteFailure(m.id, principal));
     } catch {
-      return; // the database refuses writes: the run ends either way, and the next attempt counts again
+      // The database refuses writes: this attempt goes uncounted. A skipped candidate is looked at again at the next
+      // boundary, a failed lease has already ended its run; either way a later attempt is counted.
+      return;
     }
     if (n < maxFailures) return;
     try {
@@ -140,6 +144,7 @@ export function createMessageDelivery(deps: MessageDeliveryDeps): MessageDeliver
       });
     } catch {
       // The notice is best effort: the quarantine and its audit row are already committed.
+      deps.onInternalError?.("notice_failed");
     }
   }
 
@@ -164,15 +169,18 @@ export function createMessageDelivery(deps: MessageDeliveryDeps): MessageDeliver
           scanned += 1;
           cursor = c.cursor;
           // The checks read stored state (the message, participation, the project's settings): one that throws on a
-          // corrupt record is counted against this message and the candidate skipped (review 2 NIT 2), so it cannot end
-          // every run of the agent; nothing was leased or tainted for it.
+          // corrupt record skips the candidate and is counted against a message not from the user (review 2 NIT 2), so it
+          // cannot end every run of the agent.
           let m: MessageRecord | undefined;
           try {
             m = store.message(c.messageId);
             if (m === undefined || store.participant(c.threadId, principal) === undefined) continue;
             if (deps.service.deliverable(m.id, { kind: "agent", agentId }) !== null) continue;
           } catch {
-            failed({ id: c.messageId, threadId: c.threadId }, principal, agentId, runId);
+            // A message from the user is never quarantined for a failing check: a fault of Axis (a corrupt settings
+            // row fails every check of its project) must not set the user's own words aside. It stays queued and is
+            // looked at again at every boundary; nothing was leased or tainted for it.
+            if (m === undefined || senderSchema.safeParse(m.sender).data?.kind !== "user") failed({ id: c.messageId, threadId: c.threadId }, principal, agentId, runId);
             continue;
           }
           if (m === undefined) continue;
