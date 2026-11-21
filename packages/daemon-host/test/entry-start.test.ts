@@ -1,11 +1,14 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { once } from "node:events";
 import { MessageChannel, type MessagePort } from "node:worker_threads";
 import { test } from "node:test";
 import type { ElectronPortLike } from "@axis/daemon";
+import { acquireInstanceLock, AuditLog, openDatabase, Redactor } from "@axis/audit";
 import { resolveGit } from "@axis/git-ops";
+import { Journal } from "@axis/journal";
 import { welcomeSchema } from "@axis/protocol";
 import { runDaemonEntry, type DaemonEntryDeps } from "../src/entry.js";
 import { EXIT, signAttestation, type Attestation } from "../src/index.js";
@@ -115,6 +118,50 @@ test("with every port supplied the entry starts, serves an attested connection o
     assert.equal(JSON.stringify([...lines, ...port.posted]).includes(init.key.toString("base64url")), false, "the key reached no line and no message");
   } finally {
     for (const p of open) p.close();
+    box.cleanup();
+  }
+});
+
+test("a released shutdown that is not clean ends the process with the lifecycle's code, not 0 (final anchor not acknowledged)", { skip }, async () => {
+  const box = sandbox();
+  const port = new FakeParentPort();
+  const proc = new FakeProcess();
+  const lines: string[] = [];
+  const env = { PATH: process.env["PATH"] ?? "", HOME: box.root };
+  const gitPath = resolveGit(env, process.platform);
+  assert.ok(gitPath, "git was found");
+  // What a killed host leaves: a lock whose pid is dead and a RUNNING run. The recovery at start writes audit rows, so the
+  // final anchor is due; the parent answers anchor.get with the chain's head but never acknowledges a put.
+  const dead = spawnSync(process.execPath, ["-e", ""]).pid;
+  assert.ok(dead !== undefined && dead > 0);
+  const lock = acquireInstanceLock(box.dataDir, { pid: dead, procStart: () => undefined });
+  const db = openDatabase(`${box.dataDir}/axis.db`);
+  const audit = new AuditLog(db, { redactor: new Redactor() });
+  const journal = Journal.open(db, { audit });
+  const ws = journal.createWorkspace({ projectId: "p1", branch: "axis/a", baseRef: "main", baseSha: "a".repeat(40), createdBy: "user" }).value;
+  journal.transitionWorkspace(ws.id, "READY");
+  journal.transitionRun(journal.createRun({ workspaceId: ws.id, kind: "cli", createdBy: "user" }).value.id, "RUNNING");
+  const anchor = audit.head(); // null: the journal writes no audit row of its own, so the chain is empty and sound
+  db.close();
+  assert.equal(lock.held, true, "the killed host never released its lock");
+  const puts: unknown[] = [];
+  port.reply = (m, deliver) => {
+    if (m["type"] === "anchor.get") deliver({ type: "anchor.result", requestId: m["requestId"], anchor });
+    if (m["type"] === "anchor.put") puts.push(m["seq"]);
+  };
+  const timers = new FakeTimers();
+  try {
+    const h = runDaemonEntry({ timers, parentPort: port, process: proc, env, cwd: box.root, platform: platformName(), execArgv: [], stderr: (l) => void lines.push(l), ports: { pty: new LocalPty(), ptyGitRunner: localPtyGitRunner(gitPath, env) } });
+    port.deliver(initPayload(box).message);
+    assert.equal(await h.started, true, lines.join("\n"));
+    port.deliver({ type: "shutdown" });
+    assert.equal(await h.finished, EXIT.UNSETTLED, lines.join("\n"));
+    assert.ok(puts.length > 0, "the recovery was anchored, and the final put was never acknowledged");
+    assert.equal(port.attached(), false, "the host was still released");
+    assert.deepEqual(proc.exits, []);
+    timers.fire();
+    assert.deepEqual(proc.exits, [EXIT.UNSETTLED], "the exit carries the lifecycle's code");
+  } finally {
     box.cleanup();
   }
 });
