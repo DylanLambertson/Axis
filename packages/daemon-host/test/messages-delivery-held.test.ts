@@ -48,7 +48,8 @@ test("a user message held by a failing check is shown to the user once, after th
   for (let i = 3; i <= 8; i++) assert.equal(r.m.delivery.next(runId, sink), undefined);
   const told = notices(r, mine.threadId);
   assert.equal(told.length, 1, "one notice, not one per boundary");
-  assert.match(told[0]?.body.text ?? "", new RegExp(`message ${mine.messageId} .*error in Axis.*stays queued`));
+  // Exact: every participant of the thread, the agents included, can read the notice, so it carries nothing else.
+  assert.equal(told[0]?.body.text, `Axis could not check message ${mine.messageId} for delivery because of an error in Axis. It stays queued and will be delivered once the error is fixed.`);
   assert.equal(told[0]?.inReplyTo, mine.messageId);
   assert.equal(failures(r, mine.messageId), 0, "never counted");
   assert.equal(r.c.journal.messages.deliveries.get(mine.messageId, "agent:a1"), undefined, "never quarantined");
@@ -78,6 +79,44 @@ test("a held notice is counted per message: each held user message is shown once
   for (let i = 0; i < 3; i++) r.m.delivery.next(runId, sink);
   assert.equal(notices(r, first.threadId).length, 1);
   assert.equal(notices(r, second.threadId).length, 1);
+});
+
+test("a user message held for two recipients gets one notice, naming neither", async (t) => {
+  const r = await deliveryRig(t);
+  const both = (await r.m.service.send(USER, { recipients: [{ agent: "a1" }, { agent: "a2" }], body: { format: "text", text: "to both" } })).message;
+  corruptSettings(r);
+  const [run1, run2] = [r.run("a1"), r.run("a2")];
+  for (let i = 0; i < 4; i++) {
+    assert.equal(r.m.delivery.next(run1, sink), undefined);
+    assert.equal(r.m.delivery.next(run2, sink), undefined);
+  }
+  const told = notices(r, both.threadId);
+  assert.equal(told.length, 1, "one notice per message");
+  assert.doesNotMatch(told[0]?.body.text ?? "", /a1|a2/);
+});
+
+test("a held notice that cannot be posted is tried again at the next failed check, then never again", async (t) => {
+  const r = await deliveryRig(t);
+  const mine = await sendMine(r);
+  corruptSettings(r);
+  r.c.db.exec("CREATE TEMP TRIGGER refuse_notice BEFORE INSERT ON agent_messages WHEN NEW.sender_key = 'system' BEGIN SELECT RAISE(ABORT, 'notice refused'); END;");
+  const runId = r.run("a1");
+  for (let i = 0; i < 3; i++) r.m.delivery.next(runId, sink);
+  assert.deepEqual(r.codes, ["notice_failed"], "the first try at the limit failed");
+  r.m.delivery.next(runId, sink);
+  assert.deepEqual(r.codes, ["notice_failed", "notice_failed"], "tried again at the next failed check");
+  r.c.db.exec("DROP TRIGGER refuse_notice");
+  r.m.delivery.next(runId, sink);
+  assert.equal(notices(r, mine.threadId).length, 1, "posted once the database takes it");
+  // Once posted, the message is marked told in memory: it is not even looked up again.
+  const store = r.c.journal.messages;
+  const replied = store.systemReplied.bind(store);
+  let lookups = 0;
+  store.systemReplied = (id) => (lookups++, replied(id));
+  for (let i = 0; i < 2 * 3; i++) r.m.delivery.next(runId, sink); // twice the limit, so a count restarted from the mark would fire
+  assert.equal(lookups, 0, "never tried again after it was posted");
+  assert.equal(notices(r, mine.threadId).length, 1);
+  assert.equal(r.codes.length, 2);
 });
 
 test("a log hook that throws never ends the run, on the check path of any sender", async (t) => {
