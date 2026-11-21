@@ -19,6 +19,8 @@ export const NOT_BILLED: ReadonlySet<ProviderErrorCode> = new Set<ProviderErrorC
   "rate_limited",
   "context_length_exceeded",
   "unsupported_capability",
+  // C7-F4: an adapter refuses before sending when the request holds the key it just read; nothing left, nothing to charge.
+  "secret_in_request",
 ]);
 
 /**
@@ -31,9 +33,11 @@ export const INPUT_BILLED: ReadonlySet<ProviderErrorCode> = new Set<ProviderErro
 /**
  * Codes only the guard may raise. An adapter that throws one (or `cancelled`
  * when nothing was cancelled) is misreporting, and gets `internal` (NS3).
- * `timeout` stays: adapters keep their own wire timeouts (ANT-1).
+ * `timeout` stays: adapters keep their own wire timeouts (ANT-1). `secret_in_request`
+ * is not guard-only (C7-F4): an adapter refuses with it when the key it just read
+ * is in the request it would send; it can only ever stop a send.
  */
-export const GUARD_ONLY: ReadonlySet<ProviderErrorCode> = new Set<ProviderErrorCode>(["budget_exceeded", "secret_in_request", "scan_budget", "cancelled"]);
+export const GUARD_ONLY: ReadonlySet<ProviderErrorCode> = new Set<ProviderErrorCode>(["budget_exceeded", "scan_budget", "cancelled"]);
 
 /**
  * Budget hooks whose `recordUsage` failed. The guard refuses every later

@@ -67,6 +67,14 @@ export interface AnthropicAdapterOptions {
   readonly now?: () => number;
   /** Spacing of the progress events sent while the model streams thinking the adapter does not expose. Default 5,000 ms. */
   readonly keepAliveMs?: number;
+  /**
+   * True when `text` holds `key` in any form (C7-F4). Called after the key is read and before `fetch`, with no `await`
+   * between, on the request path and body: a request that would carry the key used to send it is refused
+   * `secret_in_request` and nothing is sent. A check that throws refuses too. The daemon backs it with the forms its
+   * redactor knows (base64 at any byte offset included; the forms neither finds are listed at the daemon's `holdsKey`); the
+   * guard's scan ran earlier, possibly before this key was first read (a new or rotated key).
+   */
+  readonly holdsKey?: (text: string, key: string) => boolean;
 }
 
 /** Why the key is being read: the same words as the vault's `SecretPurpose`. */
@@ -140,6 +148,16 @@ export function createAnthropicAdapter(options: AnthropicAdapterOptions): Anthro
   ): Promise<BodyStream> => {
     if (signal.aborted) throw new ProviderError("cancelled");
     const key = await getKey(purpose);
+    // No await from here to `fetch`: the key just read is checked against exactly what would carry it (C7-F4).
+    if (options.holdsKey !== undefined) {
+      let holds: boolean;
+      try {
+        holds = options.holdsKey(path, key) || (body !== undefined && options.holdsKey(body, key));
+      } catch {
+        holds = true;
+      }
+      if (holds) throw new ProviderError("secret_in_request");
+    }
     const url = `${ANTHROPIC_ORIGIN}${path}`;
     const headers: Record<string, string> = {
       "x-api-key": key,
