@@ -30,7 +30,14 @@ export interface ForgeListConfig {
   readonly minVersion?: GhVersion;
   /** `false` is the gate's fallback template (no `--author=@me`). Default true. */
   readonly authorFilter?: boolean;
-  /** TEST ONLY: runs after a call directory is prepared and before it is checked (a same-user process racing the window). */
+}
+
+/**
+ * TEST ONLY (review S1b N-4): not part of the configuration the service and the entry pass. Only a test constructs the forge
+ * path with it, through `createForgeList` from this file (the package index does not export that function).
+ */
+export interface ForgeListTestSeams {
+  /** Runs after a call directory is prepared and before it is checked (a same-user process racing the window). */
   readonly afterPrepare?: (callDir: string) => void;
 }
 
@@ -110,7 +117,7 @@ const startCode = (e: unknown): ForgeFailureCode => {
   return "spawn_failed"; // program_refused (a bug), not_permitted, start_failed
 };
 
-export function createForgeList(cfg: ForgeListConfig, clock: Clock, platform: NodeJS.Platform, send: (m: ForgeReply) => void): ForgeList {
+export function createForgeList(cfg: ForgeListConfig, clock: Clock, platform: NodeJS.Platform, send: (m: ForgeReply) => void, seams: ForgeListTestSeams = {}): ForgeList {
   // Windows has no process group to kill (the job object is PV-X1w): every valid request is refused and nothing is created.
   if (platform === "win32") {
     return {
@@ -159,7 +166,7 @@ export function createForgeList(cfg: ForgeListConfig, clock: Clock, platform: No
     if (gh === undefined) return Promise.resolve({ fail: "spawn_missing" });
     const call = prepare();
     if (call === undefined) return Promise.resolve({ fail: "spawn_failed" });
-    cfg.afterPrepare?.(call.dir);
+    seams.afterPrepare?.(call.dir);
     if (!forgeCallIntact(call.dir)) {
       removeTree(call.dir);
       return Promise.resolve({ fail: "spawn_failed" });
@@ -235,7 +242,7 @@ export function createForgeList(cfg: ForgeListConfig, clock: Clock, platform: No
     const truncated = r.stdoutTruncated || r.stdout.length > FORGE_MAX_STDOUT;
     const exit = r.code !== null && Number.isInteger(r.code) && r.code >= 0 && r.code <= 255 ? r.code : null;
     const stderr = Buffer.from(r.stderr.subarray(0, FORGE_LIMITS.maxStderr)).toString("utf8");
-    return { t: "forge-result", req: m.req, exit, class: classifyForgeStderr(exit, stderr), stdout: truncated ? "" : Buffer.from(r.stdout).toString("utf8"), truncated };
+    return { t: "forge-result", req: m.req, exit, class: classifyForgeStderr(exit, stderr, m.owner, m.repo), stdout: truncated ? "" : Buffer.from(r.stdout).toString("utf8"), truncated };
   };
 
   return {
@@ -260,6 +267,8 @@ export function createForgeList(cfg: ForgeListConfig, clock: Clock, platform: No
     },
     closeAll() {
       generation++;
+      // A version run killed here must not be joined by the next channel's first call (review S1b N-2).
+      versionRun = undefined;
       for (const c of [...running]) {
         try {
           c.kill();

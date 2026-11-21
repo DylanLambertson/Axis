@@ -105,7 +105,9 @@ The daemon maps the reply to the §7 states with the table in §7.
 - A service without a forge configuration (no `ghPath`) answers `spawn_missing`. Windows answers `unsupported_platform` before any directory is created.
 - The pre-exec check refuses any entry in the call directory other than `cwd/`, `config/` and `data/`, and a link in place of any of them. `XDG_CONFIG_HOME` is `config/` (as `GH_CONFIG_DIR`); `XDG_STATE_HOME` and `XDG_CACHE_HOME` are `state/` and `cache/`, created by `gh` if at all, removed with the call.
 - The version step: a run that exits non-zero or whose output was cut is `version_unknown`; its timeout is `timeout`.
-- The capacity of 2 counts a call from acceptance to reply, the version step included. A timed-out call frees its slot when it answers; its directory is removed when the exec settles.
+- The capacity of 2 counts a call from acceptance to reply, the version step included. A timed-out call frees its slot when it answers; its directory is removed when the exec settles. So the cap bounds calls in flight, not live `gh` processes: a process that left the group (`setsid`) and holds the pipes keeps its exec (and directory) unsettled while the slot is reused. That is the same-user residual of `pty-exec-node.md` §3; the daemon's 15 s floor bounds the rate (review S1b N-3).
+- A control close also drops the shared version run, so the next channel's first call starts its own (review S1b N-2).
+- The pre-exec race seam (`afterPrepare`) is not part of `ForgeListConfig`: only a test passes it, to `createForgeList` directly, which the package index does not export (review S1b N-4).
 - A cut stdout is not sent (`stdout: ""`, `truncated: true`): the daemon answers `output_too_large` whatever it holds.
 - A call killed by a control close answers nothing (the channel is gone, and a later channel never gets a stale `req`).
 
@@ -256,7 +258,7 @@ The request carries `trigger`: `"view"` or `"user"`.
 
 - `state` is one of the closed values below.
 - No free text from `gh` (stderr or stdout) reaches the reply, the log or the audit.
-- Stderr is classified **in the pty process** against a fixed marker set and then discarded. The marker set is versioned with the gate (`FORGE_STDERR_MARKERS_VERSION`), and the first match wins, in this order: keyring markers (`gh` reports a locked keyring as not logged in too), then `auth_missing` (exit 4, or exit 1 with `HTTP 401`), `repo_missing`, `network`, else `other`. Exit 0 is `none` whatever stderr holds.
+- Stderr is classified **in the pty process** against a fixed marker set and then discarded. The marker set is versioned with the gate (`FORGE_STDERR_MARKERS_VERSION`). Before matching, every whole-name occurrence of the request's `owner/repo`, repository and owner is removed (`gh` echoes them), and every marker is a phrase of `gh`'s or go-keyring's own messages, never a single word (review S1b SF-1: a repository named `python-keyring` once read as a keyring failure and set the global latch). The first match wins, in this order: `repo_missing` (a locked keyring stops `gh` before any API call, so a not-found text is the API's), keyring markers (`gh` reports a locked keyring as not logged in too), `auth_missing` (exit 4, or exit 1 with `HTTP 401`), `network`, else `other`. Exit 0 is `none` whatever stderr holds. The cost: a repository named exactly like a marker's last word (`keyring`) hides a genuine keyring text, which then degrades to `gh_failed` for that project, never to the global latch.
 
 | State | When |
 |---|---|
@@ -390,7 +392,8 @@ The `ExecStartError` codes and the per-stream truncation flags are the PV-X1a ex
 **Slice 2:**
 - the pin in the journal and the composition wiring;
 - the hostile-`gh` suite rerun through the real `ExecFn` (from PV-X1), including the grandchild kill case;
-- the §4 verification gate with a real `gh`, recorded per platform.
+- the §4 verification gate with a real `gh`, recorded per platform;
+- the stderr texts of the default `--author=@me` path, which uses the search API: a missing or inaccessible repository there may answer "The listed users and repositories cannot be searched…" rather than "Could not resolve to a Repository", and would then be `gh_failed`, not `repo_not_found`. Markers v1 are unverified against a real `gh` until this gate (review S1b N-6).
 
 **Slice 3:** the dashboard section, with PV-D1 owning the frame. Its acceptance:
 - the pinned repository always shown;

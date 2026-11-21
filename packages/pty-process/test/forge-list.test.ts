@@ -6,9 +6,11 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmdirSync, symlinkSyn
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { forgeReplySchema } from "@axis/protocol";
-import { createNodeExec } from "../src/index.js";
+import { createForgeList } from "../src/forge-list.js";
+import { createNodeExec, createPtyService } from "../src/index.js";
+import { pipeExec } from "../testing/exec.js";
 import { forgeReq, forgeRig, GH_VERSION_OK, type ForgeRig } from "../testing/forge.js";
-import { until } from "../testing/helpers.js";
+import { channelPair, ManualClock, until } from "../testing/helpers.js";
 
 const SKIP = process.platform === "win32" ? "POSIX shebang scripts and process groups" : false;
 const CANARY = "CANARY0d2s1b";
@@ -140,6 +142,12 @@ test("stderr leaves as a closed class only, whatever it holds", { skip: SKIP }, 
       assert.deepEqual([reply["exit"], reply["class"]], [code, cls], text);
       assert.ok(!JSON.stringify(reply).includes(text), "no stderr text in the reply");
     }
+    // The request's own names reach the classifier (review S1b SF-1): gh echoes them, and they never pick the class.
+    r.rewrite(`process.stderr.write("GraphQL: Could not resolve to a Repository with the name 'acme/python-keyring'. (repository)"); process.exitCode = 1;`);
+    assert.equal((await ask(r, { repo: "python-keyring" }))["class"], "repo_missing");
+    r.rewrite('process.stderr.write("no pull requests to keyring"); process.exitCode = 1;');
+    assert.equal((await ask(r, { repo: "keyring" }))["class"], "other", "the repository name is removed before matching");
+    assert.equal((await ask(r, { repo: "app" }))["class"], "keyring", "control: the same text under another name is a keyring marker");
   });
 });
 
@@ -182,6 +190,48 @@ test("at most two calls at once; the third is capacity; a closed control channel
   });
 });
 
+/** Closes the rig's control channel and serves a new one at once, before the killed calls settle. */
+async function reconnect(r: ForgeRig): Promise<{ send(m: Record<string, unknown>): void; replies: Array<Record<string, unknown>> }> {
+  r.pair.a.close();
+  await new Promise<void>((res) => queueMicrotask(res));
+  await new Promise<void>((res) => queueMicrotask(res));
+  const next = channelPair();
+  r.service.serveControl(next.b);
+  const replies: Array<Record<string, unknown>> = [];
+  next.a.onMessage((m) => void replies.push(m as Record<string, unknown>));
+  return { send: (m) => next.a.send(m), replies };
+}
+
+test("a call killed by a control close never answers on the next channel (review S1b N-1)", { skip: SKIP }, async () => {
+  await withRig({ list: "setInterval(() => {}, 1000);" }, async (r) => {
+    const old = forgeReq();
+    r.pair.a.send(old);
+    await until(() => listRuns(r).length === 1);
+    const pid = listRuns(r)[0]?.pid as number;
+    const next = await reconnect(r);
+    await until(() => !alive(pid));
+    await until(() => readdirSync(join(r.scratchParent, "forge-calls")).length === 0);
+    const probe = forgeReq({ repo: ".." });
+    next.send(probe); // the new channel is served: its own request is answered
+    await until(() => next.replies.some((m) => m["req"] === probe["req"]));
+    assert.deepEqual(next.replies.map((m) => m["req"]), [probe["req"]], "nothing for the old req");
+  });
+});
+
+test("a version run killed by a control close is not joined by the next channel's first call (review S1b N-2)", { skip: SKIP }, async () => {
+  await withRig({ version: "setInterval(() => {}, 1000);" }, async (r) => {
+    r.pair.a.send(forgeReq());
+    await until(() => versionRuns(r).length === 1);
+    r.rewrite('process.stdout.write("[]");', GH_VERSION_OK);
+    const next = await reconnect(r);
+    const fresh = forgeReq();
+    next.send(fresh);
+    await until(() => next.replies.some((m) => m["req"] === fresh["req"]), 400_000);
+    assert.equal(next.replies.find((m) => m["req"] === fresh["req"])?.["t"], "forge-result");
+    assert.equal(versionRuns(r).length, 2, "a new version run");
+  });
+});
+
 test("the call directory is checked just before the exec: anything planted refuses the call and never runs", { skip: SKIP }, async () => {
   const plants: Array<[string, (dir: string) => void]> = [
     ["an extension in data/", (d) => { mkdirSync(join(d, "data", "gh", "extensions", "gh-pr"), { recursive: true }); writeFileSync(join(d, "data", "gh", "extensions", "gh-pr", "gh-pr"), `#!/bin/sh\ntouch ${JSON.stringify(join(dirname(dirname(dirname(d))), "SENTINEL"))}\n`, { mode: 0o700 }); }],
@@ -191,12 +241,25 @@ test("the call directory is checked just before the exec: anything planted refus
     ["a sibling directory", (d) => mkdirSync(join(d, "state"))],
     ["data/ swapped for a link to an empty directory elsewhere", (d) => { const elsewhere = join(dirname(dirname(dirname(d))), "user-data"); mkdirSync(elsewhere); rmdirSync(join(d, "data")); symlinkSync(elsewhere, join(d, "data")); }],
   ];
+  // The seam is not on the service's configuration (review S1b N-4): the forge path is built directly, beside the rig's fake gh.
+  const direct = async (r: ForgeRig, plant: ((dir: string) => void) | undefined): Promise<Record<string, unknown>> => {
+    const sp = join(r.dir, "direct");
+    mkdirSync(sp, { mode: 0o700 });
+    const replies: Array<Record<string, unknown>> = [];
+    const f = createForgeList({ exec: pipeExec(), ghPath: r.ghPath, scratchParent: sp, baseEnv: { PATH: "/usr/bin:/bin", HOME: r.dir } }, new ManualClock(), process.platform, (m) => void replies.push(m), plant === undefined ? {} : { afterPrepare: plant });
+    f.handle(forgeReq());
+    await until(() => replies.length === 1, 400_000);
+    await until(() => readdirSync(join(sp, "forge-calls")).length === 0);
+    return replies[0] as Record<string, unknown>;
+  };
+  await withRig({}, async (r) => {
+    assert.equal((await direct(r, undefined))["t"], "forge-result", "control: unplanted, the direct path runs gh");
+  });
   for (const [what, plant] of plants) {
-    await withRig({ config: { afterPrepare: plant } }, async (r) => {
-      assert.equal((await ask(r))["code"], "spawn_failed", what);
+    await withRig({}, async (r) => {
+      assert.equal((await direct(r, plant))["code"], "spawn_failed", what);
       assert.equal(r.runs().length, 0, `${what}: gh never ran`);
       assert.equal(existsSync(join(r.dir, "SENTINEL")), false);
-      assert.deepEqual(readdirSync(join(r.scratchParent, "forge-calls")), [], "the refused directory is removed");
     });
   }
 });
@@ -258,8 +321,6 @@ test("exec start failures map to closed codes; program_refused is never a gh_mis
 });
 
 test("Windows refuses before anything is created; a service without forge answers spawn_missing", async () => {
-  const { createForgeList, createPtyService } = await import("../src/index.js");
-  const { ManualClock, channelPair } = await import("../testing/helpers.js");
   const sent: unknown[] = [];
   const win = createForgeList({ exec: () => assert.fail("no exec on Windows"), ghPath: "C:\\gh\\gh.exe", scratchParent: "C:\\nonexistent-axis", baseEnv: {} }, new ManualClock(), "win32", (m) => void sent.push(m));
   win.handle(forgeReq({ req: "w1" }));

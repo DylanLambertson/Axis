@@ -2,7 +2,7 @@
 // PV-D2 slice 1b: what `gh` is given (docs/design/forge-pr-list.md §1, §4, §7), without a process.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { buildForgeEnv, classifyForgeStderr, FORGE_CONFIG_FILES, FORGE_CONFIG_YML, FORGE_HOSTS_YML, forgeListArgv, forgeVersionArgv, ghAtLeast, MIN_GH_VERSION, parseGhVersion } from "../src/index.js";
+import { buildForgeEnv, classifyForgeStderr, FORGE_CONFIG_FILES, FORGE_CONFIG_YML, FORGE_HOSTS_YML, forgeListArgv, forgeVersionArgv, ghAtLeast, MIN_GH_VERSION, parseGhVersion, withoutNames } from "../src/index.js";
 
 const JSON_FIELDS = "--json=number,title,headRefName,author,isDraft,isCrossRepository,headRepositoryOwner,reviewDecision,statusCheckRollup";
 
@@ -93,5 +93,36 @@ test("stderr is classified into a closed value; exit 0 is none whatever stderr s
     [1, "something else entirely", "other"],
     [null, "", "other"],
   ];
-  for (const [exit, stderr, want] of cases) assert.equal(classifyForgeStderr(exit, stderr), want, `${exit} ${stderr}`);
+  for (const [exit, stderr, want] of cases) assert.equal(classifyForgeStderr(exit, stderr, "acme", "app"), want, `${exit} ${stderr}`);
+});
+
+test("a repository or owner name never supplies a marker: the real error shape decides (review S1b SF-1)", () => {
+  const notFound = (o: string, r: string): string => `GraphQL: Could not resolve to a Repository with the name '${o}/${r}'. (repository)`;
+  const cases: Array<[string, string, number, string, string]> = [
+    ["acme", "python-keyring", 1, notFound("acme", "python-keyring"), "repo_missing"],
+    ["keyring-org", "app", 1, notFound("keyring-org", "app"), "repo_missing"],
+    ["acme", "Keyring", 1, notFound("ACME", "KEYRING"), "repo_missing"],
+    ["acme", "python-keyring", 1, "unexpected error for acme/python-keyring", "other"],
+    ["keyring", "keyring", 2, "failed for keyring/keyring: keyring", "other"],
+    ["acme", "secret-not-found-in-keyring", 1, "acme/secret-not-found-in-keyring: boom", "other"],
+    ["not-logged-in", "gh-auth-login", 1, "not-logged-in/gh-auth-login: boom", "other"],
+    ["acme", "dial-tcp", 1, "acme/dial-tcp: something", "other"],
+    ["acme", "keyring.", 1, "keyring.: x", "other"],
+    ["acme", "python-keyring", 1, "acme/python-keyring: dial tcp: lookup api.github.com: no such host", "network"],
+    ["acme", "python-keyring", 1, "HTTP 401: Bad credentials (acme/python-keyring)", "auth_missing"],
+    ["acme", "python-keyring", 4, "failed to get secret: The name org.freedesktop.secrets was not provided", "keyring"],
+    ["acme", "app", 1, "secret not found in keyring", "keyring"],
+    ["acme", "app", 1, "warning: unexpected keyring state", "other"],
+    // The cost of removing whole names: a repository named exactly like a marker's last word hides a genuine keyring text. It
+    // degrades to `other` (gh_failed for that project), never to the global latch.
+    ["acme", "keyring", 1, "secret not found in keyring", "other"],
+    ["acme", "app", 1, "Could not resolve to a Repository, then: secret not found in keyring", "repo_missing"],
+  ];
+  for (const [owner, repo, exit, text, want] of cases) assert.equal(classifyForgeStderr(exit, text, owner, repo), want, `${owner}/${repo}: ${text}`);
+});
+
+test("only whole names are removed: a name inside a longer word, or a regex character in it, leaves the rest intact", () => {
+  assert.equal(withoutNames("a.b and axb and A.B/c", "a.b", "c"), "  and axb and  ");
+  assert.equal(withoutNames("keyrings keyring", "x", "keyring"), "keyrings  ");
+  assert.equal(withoutNames("e secret service", "e", "r"), "  secret service");
 });

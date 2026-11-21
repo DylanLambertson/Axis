@@ -19,4 +19,4 @@ export * from "./scratch-tree.js";
 export * from "./push-run.js";
 export { createGitExec, MAX_ATTEMPTS, type GitExec, type GitExecConfig } from "./git-exec.js";
 export * from "./forge-env.js";
-export { createForgeList, forgeCallIntact, forgeRequestId, FORGE_LIMITS, type ForgeList, type ForgeListConfig } from "./forge-list.js";
+export { forgeCallIntact, forgeRequestId, FORGE_LIMITS, type ForgeList, type ForgeListConfig } from "./forge-list.js";

@@ -99,25 +99,45 @@ export function buildForgeEnv(base: Readonly<Record<string, string | undefined>>
 export const FORGE_STDERR_MARKERS_VERSION = 1;
 
 /**
- * Fixed markers, matched case-insensitively on the first 64 KiB of stderr; the first class with a match wins, in this order.
- * A keyring failure comes first: `gh` reports a locked or missing keyring as "not logged in" too, and the copy differs.
+ * Fixed markers, matched case-insensitively on the first 64 KiB of stderr after the repository's own names are removed; the
+ * first class with a match wins, in this order. The repository marker comes first: a locked keyring stops `gh` before any API
+ * call, so a not-found text can only be the API's. Every marker is a phrase of `gh`'s or go-keyring's own messages, never a
+ * single word a repository could be named (review S1b SF-1: `acme/python-keyring` once read as a keyring failure).
  */
-const MARKERS: readonly (readonly [Exclude<ForgeStderrClass, "none" | "other" | "auth_missing">, readonly string[]])[] = [
-  ["keyring", ["org.freedesktop.secrets", "secret service", "keyring", "couldn't find oauth token", "failed to migrate"]],
-  ["repo_missing", ["could not resolve to a repository"]],
-  ["network", ["dial tcp", "no such host", "connection refused", "connection reset", "network is unreachable", "i/o timeout", "tls handshake timeout", "could not connect to"]],
-];
+const REPO_MISSING = ["could not resolve to a repository"];
+const KEYRING = ["org.freedesktop.secrets", "secret service", "secret not found in keyring", "from keyring", "to keyring", "keyring:", "couldn't find oauth token", "failed to migrate"];
+const NETWORK = ["dial tcp", "no such host", "connection refused", "connection reset", "network is unreachable", "i/o timeout", "tls handshake timeout", "could not connect to"];
+
+const NAME_CHAR = "A-Za-z0-9._-";
+const escape = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+/**
+ * `gh` echoes the repository it was asked about (`... with the name 'acme/python-keyring'.`). Every occurrence of `owner/repo`,
+ * of the repository and of the owner as a whole name (bounded by characters a name cannot hold) is removed before matching, so
+ * no name can supply a marker. The names are vetted (`vetOwnerRepo`) and cannot hold a space, so no multi-word marker can come
+ * from them anyway; this closes the single-token ones.
+ */
+export function withoutNames(stderr: string, owner: string, repo: string): string {
+  let text = stderr;
+  for (const name of [`${owner}/${repo}`, repo, owner]) {
+    if (name === "") continue;
+    text = text.replace(new RegExp(`(?<![${NAME_CHAR}])${escape(name)}(?![${NAME_CHAR}])`, "gi"), " ");
+  }
+  return text;
+}
 
 /**
- * The closed class of a finished call (§7). Exit 0 is `none` whatever stderr says. Exit 4, or exit 1 with `HTTP 401`, is
- * `auth_missing` unless a keyring marker matched first. The text itself is never returned.
+ * The closed class of a finished call (§7). Exit 0 is `none` whatever stderr says. Then, on the text without the repository's
+ * names: `repo_missing`, `keyring`, `auth_missing` (exit 4, or exit 1 with `HTTP 401`), `network`, else `other`. The text itself
+ * is never returned.
  */
-export function classifyForgeStderr(exit: number | null, stderr: string): ForgeStderrClass {
+export function classifyForgeStderr(exit: number | null, stderr: string, owner: string, repo: string): ForgeStderrClass {
   if (exit === 0) return "none";
-  const text = stderr.toLowerCase();
-  const [keyring, ...rest] = MARKERS;
-  if (keyring !== undefined && keyring[1].some((m) => text.includes(m))) return keyring[0];
-  if (exit === 4 || (exit === 1 && stderr.includes("HTTP 401"))) return "auth_missing";
-  for (const [cls, markers] of rest) if (markers.some((m) => text.includes(m))) return cls;
+  const bare = withoutNames(stderr, owner, repo);
+  const text = bare.toLowerCase();
+  const has = (markers: readonly string[]): boolean => markers.some((m) => text.includes(m));
+  if (has(REPO_MISSING)) return "repo_missing";
+  if (has(KEYRING)) return "keyring";
+  if (exit === 4 || (exit === 1 && bare.includes("HTTP 401"))) return "auth_missing";
+  if (has(NETWORK)) return "network";
   return "other";
 }
