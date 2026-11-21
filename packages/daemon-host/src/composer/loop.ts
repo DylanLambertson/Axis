@@ -76,6 +76,9 @@ export const DEFAULT_TOOL_CAPS: ToolCaps = Object.freeze({
   resultBytesPerRun: 4_194_304,
 });
 
+/** Model turns a run takes at most unless the composition says otherwise. */
+export const DEFAULT_MAX_TURNS = 24;
+
 /** The closed set of run reasons a cap ends a run with. */
 export const TOOL_LIMIT_REASONS = [
   "TOOL_CALL_LIMIT",
@@ -185,7 +188,7 @@ async function guarded(tools: ComposerRunTools | undefined, signal: AbortSignal)
 
 async function loop(input: LoopInput): Promise<LoopEnd> {
   const { signal, emit, tools } = input;
-  const maxTurns = input.maxTurns ?? 24;
+  const maxTurns = input.maxTurns ?? DEFAULT_MAX_TURNS;
   const budget = withDestinationEvents(input.budget, input.destination, emit);
   const messages: Message[] = [{ role: "user", content: [{ type: "text", text: input.prompt }] }];
   let usage: Usage = { inputTokens: 0, outputTokens: 0 };

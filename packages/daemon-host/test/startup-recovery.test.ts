@@ -7,7 +7,7 @@ import { acquireInstanceLock, AuditLog, openDatabase, Redactor } from "@axis/aud
 import { Journal, JournalIdempotencyStore, RESTART_REASON } from "@axis/journal";
 import { createDaemonHost, DEFAULT_RECONCILE_BUDGET_MS } from "../src/index.js";
 import { hostFixture, type HostFixture } from "../testing/host-fixture.js";
-import { must, trackTimers, wait } from "./helpers.js";
+import { must, trackTimers, untilTrue, wait } from "./helpers.js";
 
 /** A pid that is not running: a child that has already exited. */
 function deadPid(): number {
@@ -187,13 +187,14 @@ test("stop() during anchor.get cancels the wait at once and runs no recovery wri
   const fix = hostFixture();
   try {
     const { runId } = leaveKilledHost(fix);
-    fix.supervisor.answerDelayMs = 3_000;
+    // The answer would come after 10 s and the host's own anchor timeout is 5 s: a stop that waited for either takes 5 s or more.
+    fix.supervisor.answerDelayMs = 10_000;
     const host = createDaemonHost(fix.config, fix.ports);
     const started = host.start().then(() => "resolved", (e: { code?: string }) => e.code);
-    await wait(30); // the anchor.get is in flight
+    await untilTrue(() => fix.sent.some((m) => m["type"] === "anchor.get"), "the anchor.get to be in flight");
     const t0 = Date.now();
     await host.stop();
-    assert.ok(Date.now() - t0 < 1_000, "stop did not wait out the 5 s anchor timeout");
+    assert.ok(Date.now() - t0 < 4_000, "stop did not wait out the 5 s anchor timeout");
     assert.equal(await started, "E_CANCELLED");
     const db = new DatabaseSync(`${fix.dataDir}/axis.db`);
     try {
@@ -210,14 +211,16 @@ test("stop() during anchor.get cancels the wait at once and runs no recovery wri
 });
 
 test("stop() during a reconcile that ignores its signal does not wait out the budget and writes no event", async () => {
-  const fix = hostFixture({ ports: { reconcile: () => new Promise(() => undefined) } });
+  let reconciling = false;
+  const fix = hostFixture({ ports: { reconcile: () => ((reconciling = true), new Promise(() => undefined)) } });
   const host = createDaemonHost(fix.config, fix.ports);
   try {
     const started = host.start().then(() => "resolved", (e: { code?: string }) => e.code);
-    await wait(50);
+    await untilTrue(() => reconciling, "the reconcile to be running");
     const t0 = Date.now();
     await host.stop();
-    assert.ok(Date.now() - t0 < 1_000);
+    // Waiting out the budget would take DEFAULT_RECONCILE_BUDGET_MS (20 s); the bound sits well under it and far above a loaded stop.
+    assert.ok(Date.now() - t0 < DEFAULT_RECONCILE_BUDGET_MS - 5_000);
     assert.equal(await started, "E_CANCELLED");
   } finally {
     fix.cleanup();
