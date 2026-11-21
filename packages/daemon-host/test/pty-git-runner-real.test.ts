@@ -1,7 +1,8 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 // H9-hooks §4.1 S1 tests of createPtyGitRunner with real git: git-ops' real commit requests, sent by the host's commit handler,
 // run in the real pty service over the real host port. The journal's git directory is where the commit lands whatever the
-// cwd (GIT-4), the commit encoding pin holds against the repository, and a gone pty process refuses the commit.
+// cwd (GIT-4), the commit encoding pin holds against the repository, and a gone pty process refuses the commit. The push
+// through the pty process (S4, which replaced the S1 guard that answered it E_UNAVAILABLE) is pty-git-push-real.test.ts.
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
@@ -96,37 +97,4 @@ test("the pty process gone: the commit is refused E_UNAVAILABLE, nothing runs in
   assert.equal(r.head(), before);
   assert.ok(sent.length >= 1, "the request reached the runner");
   assert.equal(pty.execs.filter((e) => e.argv.includes("commit-tree")).length, 0);
-});
-
-/**
- * GUARD until H9-hooks slice S4 (push as a terminal-bound run, design §5.2): a host whose pty port has `exec` answers a confirmed
- * push E_UNAVAILABLE, not an internal fault, and pushes nothing. S4 replaces this test with the real push through the pty process.
- */
-test("push over the pty process is not available until S4: a confirmed push is E_UNAVAILABLE and the remote does not move", { skip: SKIP ?? false }, async (t) => {
-  const { r, c, pty, sent } = await setup(t);
-  r.write("b.txt", "bee\n");
-  r.git("add", "-A");
-  r.git("commit", "-q", "-m", "add b");
-  const planned = await c.rpc("axis.git", "pushPlan", { workspaceId: r.workspaceId, remote: "origin" });
-  assert.equal(planned.ok, true, JSON.stringify(planned.error));
-  const p = planned.result as { tip: string; digest: string };
-  const req = { workspaceId: r.workspaceId, remote: "origin", confirmedPlan: { tip: p.tip, digest: p.digest } };
-  const key = randomUUID();
-  const first = await c.rpc("axis.git", "push", req, key);
-  assert.equal(first.error?.code, "E_APPROVAL_REQUIRED", JSON.stringify(first.error));
-  const ch = (first.error?.details as { challenge: { challengeId: string; digest: string } }).challenge;
-  const resolved = await c.rpc("axis.approvals", "resolve", { challengeId: ch.challengeId, decision: "approve", digest: ch.digest });
-  assert.equal(resolved.ok, true, JSON.stringify(resolved.error));
-  await r.confirmNative(ch.challengeId);
-  const end = Date.now() + 5000;
-  while (r.approvals.stats().native.entries !== 0) {
-    if (Date.now() > end) assert.fail("native confirmation not applied");
-    await new Promise((x) => setTimeout(x, 5));
-  }
-  const res = await c.rpc("axis.git", "push", { ...req, approval: { challengeId: ch.challengeId } }, key);
-  assert.equal(res.ok, false);
-  assert.equal((res.error as { code: string }).code, "E_UNAVAILABLE", JSON.stringify(res.error));
-  assert.equal(r.remoteTip(), null, "nothing was pushed");
-  assert.ok(sent.some((q) => q.argv.includes("push")), "git-ops' real push request reached the runner");
-  assert.equal(pty.execs.filter((e) => e.argv.includes("push")).length, 0, "and was never sent to the pty process");
 });
