@@ -1,6 +1,6 @@
 # The production exec function of the pty process (ticket PV-X1a)
 
-Status: BUILT (PV-X1a). Design inputs: `forge-pr-list.md` §1 and §9 (feat/pv-d2), design reviews 1 and 2 of that note (SF-6, SF-7, SF-8, N-d), `daemon-host-hooks.md` §4, ADR 0005 D3, `scripts/code-oss/egress-rules.mjs`.
+Status: BUILT (PV-X1a; main's side PV-X1b, section 8). Design inputs: `forge-pr-list.md` §1 and §9 (feat/pv-d2), design reviews 1 and 2 of that note (SF-6, SF-7, SF-8, N-d), `daemon-host-hooks.md` §4, ADR 0005 D3, `scripts/code-oss/egress-rules.mjs`.
 
 ## Split
 
@@ -162,3 +162,21 @@ Both messages have exactly that one key and exactly one port; both entries drop 
 | Every H9-hooks S4 real push test now runs on `createNodeExec` instead of a test exec | `daemon-host/test/pty-process-rig.ts` |
 
 The push itself is a terminal: in tests the node:child_process terminal stand-in, in the product Code OSS's node-pty (X1b's GUI run). What the exec function carries in a push is the service's remote check before it, and every other git command.
+
+## 8. As built (PV-X1b)
+
+Main's side of section 6, in `packages/daemon-host/src/main/` (tested without Electron) and one overlay file, `code/electron-main/axisMainPty.ts`, which the seam (`axisMainSeam.ts`) calls:
+
+- **`pty-launch.ts`.** `resolvePtyPrograms` runs the trusted resolver (`@axis/pty-policy` `resolveExecutable`) for `git` and `gh` over main's resolved shell environment (upstream `getResolvedShellEnv`, falling back to main's own), excluding the Axis data root and the worktree root, and returns real paths; Windows gets none. `ptyEnvironment` is the daemon's allow-list (`DAEMON_ENV_ALLOW`) plus `SSH_AUTH_SOCK` (git over ssh), then only the hand-over names main sets: no other `AXIS_*`, no key or token, no `NODE_OPTIONS`, `LD_PRELOAD` or `GIT_DIR`. The scratch root is `<base>/pty-scratch` (next to the daemon's data directory): made 0700, this user's, not a symlink, and emptied at every start; each spawn gets its own `run-*` directory (0700), removed when that process exits, so a crash restart leaves nothing behind. `checkedHandover` applies the entry's own `readPtyExecConfig` before the fork and drops a refused program with its closed code (`git_path_refused`, `gh_path_refused`, `scratch_refused`) instead of letting the process exit 78.
+- **`pty-supervisor.ts`.** `PtySupervisor` uses the daemon's restart policy (backoff from 1 s, at most 5 restarts in 10 minutes, then `failed` with `crash_loop`; a run alive `stableMs` forgets earlier crashes), never restarts exit 78 (`bad_config`), and stops with SIGTERM, then SIGKILL after 5 s. The pty process sends no `ready`, so "up" is "spawned". `shutdownInOrder` stops the daemon first and waits for it at most its own kill bound plus 1 s, then the pty process.
+- **`pty-handover.ts`.** `ControlHandover` posts `{ type: "pty-control" }` with port A to the pty process and port B to the daemon whenever either (re)starts and both are up; one new `MessageChannelMain` each time, a port never sent twice, a port it could not post closed.
+- **`@axis/pty-process/config`.** The three hand-over names and `readPtyExecConfig` moved to `config.ts` (only `node:fs` and `node:path`), re-exported by the entry; the daemon host may import it only from `src/main/*.ts` (`test/packages/pty-client-rule.mjs`).
+- **Start gate.** One gate for both processes, `shouldStartDaemon(environmentMainService.isBuilt)`: development builds start the daemon and the pty process, built (packaged) builds start neither until the packaging ADR. It was `app.isPackaged`, which Electron derives from the executable's name and which is true for every Code OSS executable, so no build started the daemon (`daemon-host-entry.md`). `devDiagnostics` follows `isBuilt` too.
+- **Build entry.** Patch 0200 lists `vs/axis/pty/node/axisPtyMain` in the desktop and server entry lists (patch 1580 carries it as context). Shell block: 8 files, 66 added lines.
+
+**Ordering after a daemon restart.** The pty service keeps one control channel and closes a second while the first is open. When the daemon dies the OS closes its port, the pty process sees the close, and only after the daemon's restart backoff (at least 1 s) does main post the new channel. Observed in the GUI run below.
+
+**GUI run (Xvfb, development build).** Main logged `git=found gh=found`, `pty: spawned`, `pty: handed_over`, `daemon: spawned`, then the daemon's `host.starting` and `host.ready` (degraded only for the audit anchor, which needs a secure keychain), never `pty_required`. The scratch root and the run directory were 0700. SIGKILL of the pty process: `exited code=9`, `restart_scheduled`, a new process after 1 s, `handed_over` again, the daemon unchanged, the old run directory gone and one new one. SIGKILL of the daemon: restart after its backoff, `handed_over`, the new daemon `host.ready`, the pty process unchanged. Quit: the daemon stopped first, then the pty process exited 0 on SIGTERM; no process left and the scratch root empty.
+
+**Not covered here.** The section 6.7 push through main, the pty process and the daemon in the GUI needs a client that drives `axis.git/1` (a project, a reviewed commit and the native confirmation); X1a's `pty-push-child.test.ts` covers the push over the real exec function with the channel relayed, and the GUI run above covers the processes and the channel. A composed daemon took its whole 20 s stop grace on quit (it logged `host.shutdown` and was then killed): something in the host keeps its event loop alive after the release; shutdown stays bounded (`shutdownInOrder`).
+
