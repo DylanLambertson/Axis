@@ -1,74 +1,156 @@
-# Key scan at 2c33b50 (Linux keymap, web workbench contributions): default keybindings that can fire in the side-panel
-# editor, are not editor commands, and read the active editor or delegate. Produced by scan-keys.mjs; columns: verdict, keys, command.
+# Key scan at 2c33b50: desktop workbench main (Linux keymap) plus the built-in extensions package.json keybindings.
+# Every candidate that can fire in the side-panel editor and is not an editor command. Produced by scan-keys.mjs.
+# Columns: probe verdict, keys, command, source, policy action (AXIS_SIDE_PANEL_COMMAND_POLICY; extension-host commands are accepted as a class).
 
-reads-active-editor	Ctrl+A	editor.action.selectAll
-reads-active-editor	Ctrl+Shift+Z	redo
-reads-active-editor	Ctrl+Y	redo
-reads-active-editor	Ctrl+Z	undo
-reads-active-editor	Alt+F9	editor.action.nextCommentThreadAction
-reads-active-editor	Shift+Alt+F9	editor.action.previousCommentThreadAction
-delegates	Ctrl+Shift+.	breadcrumbs.toggleToOn
-reads-active-editor	Ctrl+K Ctrl+Alt+C	copyFilePath
-reads-active-editor	Ctrl+K Ctrl+Shift+Alt+C	copyRelativeFilePath
-reads-active-editor	Shift+F9	editor.debug.action.toggleInlineBreakpoint
-reads-active-editor	Ctrl+; Ctrl+Shift+C	testing.coverageAtCursor
-reads-active-editor	Ctrl+; Ctrl+Shift+F	testing.coverageCurrentFile
-reads-active-editor	Ctrl+; Ctrl+C	testing.debugAtCursor
-reads-active-editor	Ctrl+; Ctrl+F	testing.debugCurrentFile
-reads-active-editor	Ctrl+; C	testing.runAtCursor
-reads-active-editor	Ctrl+; F	testing.runCurrentFile
-reads-active-editor	Ctrl+W	workbench.action.closeActiveEditor
-reads-active-editor	Ctrl+K W	workbench.action.closeEditorsInGroup
-reads-active-editor	Ctrl+K U	workbench.action.closeUnmodifiedEditors
-reads-active-editor	Ctrl+K O	workbench.action.copyEditorToNewWindow
-reads-active-editor	Ctrl+K M	workbench.action.editor.changeLanguageMode
-reads-active-editor	Ctrl+K P	workbench.action.files.copyPathOfActiveFile
-delegates	Ctrl+O	workbench.action.files.openFolderViaWorkspace
-reads-active-editor	Ctrl+S	workbench.action.files.save
-reads-active-editor	Ctrl+Shift+S	workbench.action.files.saveAs
-reads-active-editor	Ctrl+K S	workbench.action.files.saveWithoutFormatting
-delegates	Ctrl+Shift+F	workbench.action.findInFiles
-reads-active-editor	Ctrl+K Ctrl+UpArrow	workbench.action.focusAboveGroup
-reads-active-editor	Ctrl+K Ctrl+DownArrow	workbench.action.focusBelowGroup
-reads-active-editor	Ctrl+1	workbench.action.focusFirstEditorGroup
-reads-active-editor	Ctrl+K Ctrl+LeftArrow	workbench.action.focusLeftGroup
-reads-active-editor	F6	workbench.action.focusNextPart
-reads-active-editor	Shift+F6	workbench.action.focusPreviousPart
-reads-active-editor	Ctrl+K Ctrl+RightArrow	workbench.action.focusRightGroup
-reads-active-editor	Ctrl+K Enter	workbench.action.keepEditor
-reads-active-editor	Ctrl+9	workbench.action.lastEditorInGroup
-reads-active-editor	Alt+0	workbench.action.lastEditorInGroup
-reads-active-editor	Ctrl+K DownArrow	workbench.action.moveActiveEditorGroupDown
-reads-active-editor	Ctrl+K LeftArrow	workbench.action.moveActiveEditorGroupLeft
-reads-active-editor	Ctrl+K RightArrow	workbench.action.moveActiveEditorGroupRight
-reads-active-editor	Ctrl+K UpArrow	workbench.action.moveActiveEditorGroupUp
-delegates	Ctrl+Shift+PageUp	workbench.action.moveEditorLeftInGroup
-delegates	Ctrl+Shift+PageDown	workbench.action.moveEditorRightInGroup
-delegates	Shift+Alt+1	workbench.action.moveEditorToFirstGroup
-delegates	Shift+Alt+9	workbench.action.moveEditorToLastGroup
-delegates	Ctrl+Alt+RightArrow	workbench.action.moveEditorToNextGroup
-delegates	Ctrl+Alt+LeftArrow	workbench.action.moveEditorToPreviousGroup
-reads-active-editor	Ctrl+PageDown	workbench.action.nextEditor
-reads-active-editor	Ctrl+K Ctrl+PageDown	workbench.action.nextEditorInGroup
-reads-active-editor	Alt+1	workbench.action.openEditorAtIndex1
-reads-active-editor	Alt+2	workbench.action.openEditorAtIndex2
-reads-active-editor	Alt+3	workbench.action.openEditorAtIndex3
-reads-active-editor	Alt+4	workbench.action.openEditorAtIndex4
-reads-active-editor	Alt+5	workbench.action.openEditorAtIndex5
-reads-active-editor	Alt+6	workbench.action.openEditorAtIndex6
-reads-active-editor	Alt+7	workbench.action.openEditorAtIndex7
-reads-active-editor	Alt+8	workbench.action.openEditorAtIndex8
-reads-active-editor	Alt+9	workbench.action.openEditorAtIndex9
-reads-active-editor	Ctrl+K Shift+Enter	workbench.action.pinEditor
-reads-active-editor	Ctrl+PageUp	workbench.action.previousEditor
-reads-active-editor	Ctrl+K Ctrl+PageUp	workbench.action.previousEditorInGroup
-delegates	Ctrl+K Ctrl+T	workbench.action.selectTheme
-reads-active-editor	Ctrl+\	workbench.action.splitEditor
-reads-active-editor	Ctrl+K Ctrl+\	workbench.action.splitEditorDown
-reads-active-editor	Ctrl+K Ctrl+\	workbench.action.splitEditorLeft
-reads-active-editor	Ctrl+K Ctrl+\	workbench.action.splitEditorOrthogonal
-reads-active-editor	Ctrl+K Ctrl+\	workbench.action.splitEditorRight
-reads-active-editor	Ctrl+K Ctrl+\	workbench.action.splitEditorUp
-reads-active-editor	Shift+Alt+0	workbench.action.toggleEditorGroupLayout
-reads-active-editor	Ctrl+K C	workbench.files.action.compareWithClipboard
-reads-active-editor	Ctrl+K D	workbench.files.action.compareWithSaved
+reads-active-editor	Ctrl+A	editor.action.selectAll	core	accept
+reads-active-editor	Ctrl+Shift+Z	redo	core	accept
+reads-active-editor	Ctrl+Y	redo	core	accept
+reads-active-editor	Ctrl+Z	undo	core	accept
+reads-active-editor	Ctrl+C	editor.action.clipboardCopyAction	core	accept
+reads-active-editor	Ctrl+X	editor.action.clipboardCutAction	core	accept
+reads-active-editor	Shift+Insert	editor.action.clipboardPasteAction	core	accept
+reads-active-editor	Ctrl+V	editor.action.clipboardPasteAction	core	accept
+reads-active-editor	Alt+F9	editor.action.nextCommentThreadAction	core	openInIde
+reads-active-editor	Shift+Alt+F9	editor.action.previousCommentThreadAction	core	openInIde
+no-services	Ctrl+M	editor.action.toggleTabFocusMode	core	accept
+reads-active-editor	F9	editor.debug.action.toggleBreakpoint	core	openInIde
+delegates	Ctrl+Shift+.	breadcrumbs.toggleToOn	core	accept
+reads-active-editor	Ctrl+K Ctrl+Alt+C	copyFilePath	core	openInIde
+reads-active-editor	Ctrl+K Ctrl+Shift+Alt+C	copyRelativeFilePath	core	openInIde
+other-services	Alt+F1	editor.action.accessibilityHelp	core	accept
+other-services	Shift+Alt+F1	editor.action.accessibilityHelp	core	accept
+other-services	Alt+F2	editor.action.accessibleView	core	accept
+other-services	Shift+Alt+F2	editor.action.accessibleView	core	accept
+no-services	Insert	editor.action.toggleOvertypeInsertMode	core	accept
+reads-active-editor	Shift+F9	editor.debug.action.toggleInlineBreakpoint	core	openInIde
+reads-active-editor	Shift+Alt+D	editor.detectLanguage	core	openInIde
+other-services	Ctrl+; Ctrl+X	testing.cancelRun	core	accept
+other-services	Ctrl+; Ctrl+Shift+A	testing.coverageAll	core	accept
+reads-active-editor	Ctrl+; Ctrl+Shift+C	testing.coverageAtCursor	core	openInIde
+reads-active-editor	Ctrl+; Ctrl+Shift+F	testing.coverageCurrentFile	core	openInIde
+other-services	Ctrl+; Ctrl+Shift+L	testing.coverageLastRun	core	accept
+other-services	Ctrl+; Ctrl+A	testing.debugAll	core	accept
+reads-active-editor	Ctrl+; Ctrl+C	testing.debugAtCursor	core	openInIde
+reads-active-editor	Ctrl+; Ctrl+F	testing.debugCurrentFile	core	openInIde
+other-services	Ctrl+; Ctrl+E	testing.debugFailTests	core	accept
+other-services	Ctrl+; Ctrl+L	testing.debugLastRun	core	accept
+other-services	Ctrl+; Ctrl+M	testing.openOutputPeek	core	accept
+other-services	Ctrl+; E	testing.reRunFailTests	core	accept
+other-services	Ctrl+; L	testing.reRunLastRun	core	accept
+other-services	Ctrl+; A	testing.runAll	core	accept
+reads-active-editor	Ctrl+; C	testing.runAtCursor	core	openInIde
+reads-active-editor	Ctrl+; F	testing.runCurrentFile	core	openInIde
+other-services	Ctrl+; Ctrl+Shift+I	testing.toggleInlineCoverage	core	accept
+other-services	Ctrl+; Ctrl+I	testing.toggleInlineTestOutput	core	accept
+no-services	Ctrl+Alt+Meta+N	welcome.showNewFileEntries	core	accept
+other-services	Ctrl+Alt+/	workbench.action.browser.openOrList	core	accept
+other-services	Ctrl+Alt+I	workbench.action.chat.open	core	accept
+reads-active-editor	Ctrl+W	workbench.action.closeActiveEditor	core	close
+other-services	Ctrl+K Ctrl+W	workbench.action.closeAllEditors	core	block
+other-services	Ctrl+K Ctrl+Shift+W	workbench.action.closeAllGroups	core	block
+reads-active-editor	Ctrl+K W	workbench.action.closeEditorsInGroup	core	block
+reads-active-editor	Ctrl+K U	workbench.action.closeUnmodifiedEditors	core	block
+other-services	Ctrl+Shift+W	workbench.action.closeWindow	core	accept
+other-services	Alt+F4	workbench.action.closeWindow	core	accept
+reads-active-editor	Ctrl+K O	workbench.action.copyEditorToNewWindow	core	openInIde
+delegates	Ctrl+F5	workbench.action.debug.run	core	openInIde
+reads-active-editor	F5	workbench.action.debug.start	core	openInIde
+reads-active-editor	Ctrl+K M	workbench.action.editor.changeLanguageMode	core	openInIde
+reads-active-editor	Ctrl+K P	workbench.action.files.copyPathOfActiveFile	core	openInIde
+other-services	Ctrl+N	workbench.action.files.newUntitledFile	core	accept
+other-services	Ctrl+O	workbench.action.files.openFile	core	accept
+delegates	Ctrl+O	workbench.action.files.openFolderViaWorkspace	core	accept
+reads-active-editor	Ctrl+K R	workbench.action.files.revealActiveFileInWindows	core	openInIde
+reads-active-editor	Ctrl+S	workbench.action.files.save	core	save
+reads-active-editor	Ctrl+Shift+S	workbench.action.files.saveAs	core	openInIde
+reads-active-editor	Ctrl+K S	workbench.action.files.saveWithoutFormatting	core	saveWithoutFormatting
+delegates	Ctrl+Shift+F	workbench.action.findInFiles	core	accept
+reads-active-editor	Ctrl+K Ctrl+UpArrow	workbench.action.focusAboveGroup	core	block
+reads-active-editor	Ctrl+K Ctrl+DownArrow	workbench.action.focusBelowGroup	core	block
+other-services	Ctrl+8	workbench.action.focusEighthEditorGroup	core	block
+other-services	Ctrl+5	workbench.action.focusFifthEditorGroup	core	block
+reads-active-editor	Ctrl+1	workbench.action.focusFirstEditorGroup	core	block
+other-services	Ctrl+4	workbench.action.focusFourthEditorGroup	core	block
+reads-active-editor	Ctrl+K Ctrl+LeftArrow	workbench.action.focusLeftGroup	core	block
+reads-active-editor	F6	workbench.action.focusNextPart	core	accept
+reads-active-editor	Shift+F6	workbench.action.focusPreviousPart	core	accept
+reads-active-editor	Ctrl+K Ctrl+RightArrow	workbench.action.focusRightGroup	core	block
+other-services	Ctrl+2	workbench.action.focusSecondEditorGroup	core	block
+other-services	Ctrl+7	workbench.action.focusSeventhEditorGroup	core	block
+other-services	Ctrl+0	workbench.action.focusSideBar	core	accept
+other-services	Ctrl+6	workbench.action.focusSixthEditorGroup	core	block
+other-services	Ctrl+3	workbench.action.focusThirdEditorGroup	core	block
+other-services	Ctrl+G	workbench.action.gotoLine	core	openInIde
+other-services	Ctrl+Shift+O	workbench.action.gotoSymbol	core	openInIde
+reads-active-editor	Ctrl+K Enter	workbench.action.keepEditor	core	block
+other-services	Ctrl+K Ctrl+R	workbench.action.keybindingsReference	core	accept
+reads-active-editor	Ctrl+9	workbench.action.lastEditorInGroup	core	block
+reads-active-editor	Alt+0	workbench.action.lastEditorInGroup	core	block
+reads-active-editor	Ctrl+K DownArrow	workbench.action.moveActiveEditorGroupDown	core	block
+reads-active-editor	Ctrl+K LeftArrow	workbench.action.moveActiveEditorGroupLeft	core	block
+reads-active-editor	Ctrl+K RightArrow	workbench.action.moveActiveEditorGroupRight	core	block
+reads-active-editor	Ctrl+K UpArrow	workbench.action.moveActiveEditorGroupUp	core	block
+delegates	Ctrl+Shift+PageUp	workbench.action.moveEditorLeftInGroup	core	block
+delegates	Ctrl+Shift+PageDown	workbench.action.moveEditorRightInGroup	core	block
+delegates	Shift+Alt+1	workbench.action.moveEditorToFirstGroup	core	block
+delegates	Shift+Alt+9	workbench.action.moveEditorToLastGroup	core	block
+delegates	Ctrl+Alt+RightArrow	workbench.action.moveEditorToNextGroup	core	block
+delegates	Ctrl+Alt+LeftArrow	workbench.action.moveEditorToPreviousGroup	core	block
+other-services	Ctrl+K Ctrl+Q	workbench.action.navigateToLastEditLocation	core	accept
+other-services	Ctrl+Shift+N	workbench.action.newWindow	core	accept
+reads-active-editor	Ctrl+PageDown	workbench.action.nextEditor	core	block
+reads-active-editor	Ctrl+K Ctrl+PageDown	workbench.action.nextEditorInGroup	core	block
+reads-active-editor	Alt+1	workbench.action.openEditorAtIndex1	core	block
+reads-active-editor	Alt+2	workbench.action.openEditorAtIndex2	core	block
+reads-active-editor	Alt+3	workbench.action.openEditorAtIndex3	core	block
+reads-active-editor	Alt+4	workbench.action.openEditorAtIndex4	core	block
+reads-active-editor	Alt+5	workbench.action.openEditorAtIndex5	core	block
+reads-active-editor	Alt+6	workbench.action.openEditorAtIndex6	core	block
+reads-active-editor	Alt+7	workbench.action.openEditorAtIndex7	core	block
+reads-active-editor	Alt+8	workbench.action.openEditorAtIndex8	core	block
+reads-active-editor	Alt+9	workbench.action.openEditorAtIndex9	core	block
+other-services	Ctrl+R	workbench.action.openRecent	core	accept
+reads-active-editor	Ctrl+K Shift+Enter	workbench.action.pinEditor	core	block
+reads-active-editor	Ctrl+PageUp	workbench.action.previousEditor	core	block
+reads-active-editor	Ctrl+K Ctrl+PageUp	workbench.action.previousEditorInGroup	core	block
+other-services	Ctrl+E	workbench.action.quickOpen	core	accept
+other-services	Ctrl+P	workbench.action.quickOpen	core	accept
+other-services	Ctrl+Shift+Tab	workbench.action.quickOpenLeastRecentlyUsedEditorInGroup	core	block
+other-services	Ctrl+Tab	workbench.action.quickOpenPreviousRecentlyUsedEditorInGroup	core	block
+other-services	Ctrl+Q	workbench.action.quit	core	accept
+other-services	Ctrl+Shift+T	workbench.action.reopenClosedEditor	core	accept
+other-services	Ctrl+Shift+H	workbench.action.replaceInFiles	core	accept
+delegates	Ctrl+K Ctrl+T	workbench.action.selectTheme	core	accept
+other-services	Ctrl+K Ctrl+P	workbench.action.showAllEditors	core	accept
+other-services	Ctrl+T	workbench.action.showAllSymbols	core	accept
+other-services	F1	workbench.action.showCommands	core	accept
+other-services	Ctrl+Shift+P	workbench.action.showCommands	core	accept
+reads-active-editor	Ctrl+\	workbench.action.splitEditor	core	openInIde
+reads-active-editor	Ctrl+K Ctrl+\	workbench.action.splitEditorDown	core	openInIde
+reads-active-editor	Ctrl+K Ctrl+\	workbench.action.splitEditorLeft	core	openInIde
+reads-active-editor	Ctrl+K Ctrl+\	workbench.action.splitEditorOrthogonal	core	openInIde
+reads-active-editor	Ctrl+K Ctrl+\	workbench.action.splitEditorRight	core	openInIde
+reads-active-editor	Ctrl+K Ctrl+\	workbench.action.splitEditorUp	core	openInIde
+not-registered	Ctrl+Shift+B	workbench.action.tasks.build	core	openInIde
+other-services	Ctrl+Shift+C	workbench.action.terminal.openNativeConsole	core	accept
+other-services	Ctrl+Alt+B	workbench.action.toggleAuxiliaryBar	core	accept
+reads-active-editor	Shift+Alt+0	workbench.action.toggleEditorGroupLayout	core	block
+other-services	F11	workbench.action.toggleFullScreen	core	accept
+other-services	Ctrl+J	workbench.action.togglePanel	core	accept
+other-services	Ctrl+B	workbench.action.toggleSidebarVisibility	core	accept
+other-services	Ctrl+K Z	workbench.action.toggleZenMode	core	accept
+other-services	Ctrl+NumPad_Add	workbench.action.zoomIn	core	accept
+other-services	Ctrl+Shift+=	workbench.action.zoomIn	core	accept
+other-services	Ctrl+=	workbench.action.zoomIn	core	accept
+other-services	Ctrl+NumPad_Subtract	workbench.action.zoomOut	core	accept
+other-services	Ctrl+-	workbench.action.zoomOut	core	accept
+other-services	Ctrl+NumPad0	workbench.action.zoomReset	core	accept
+reads-active-editor	Ctrl+K C	workbench.files.action.compareWithClipboard	core	openInIde
+reads-active-editor	Ctrl+K D	workbench.files.action.compareWithSaved	core	openInIde
+other-services	Ctrl+K DownArrow	views.moveViewDown	core	accept
+other-services	Ctrl+K LeftArrow	views.moveViewLeft	core	accept
+other-services	Ctrl+K RightArrow	views.moveViewRight	core	accept
+other-services	Ctrl+K UpArrow	views.moveViewUp	core	accept
+other-services	Shift+Alt+F4	editor.action.toggleScreenReaderAccessibilityMode	core	accept
+extension-host	ctrl+k ctrl+alt+s	git.stageSelectedRanges	extension:git	accept (class)
+extension-host	ctrl+k ctrl+r	git.revertSelectedRanges	extension:git	accept (class)

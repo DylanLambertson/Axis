@@ -29,6 +29,21 @@ function walk(dir) {
 	}
 }
 walk(env.overlay);
+// The built-in extensions' package.json keybindings (AXIS_UPSTREAM_EXTENSIONS, optional), for the key scan.
+const extensionKeys = [];
+const extensions = process.env.AXIS_UPSTREAM_EXTENSIONS;
+for (const name of extensions ? readdirSync(extensions) : []) {
+	try {
+		const manifest = JSON.parse(readFileSync(join(extensions, name, 'package.json'), 'utf8'));
+		const keys = manifest.contributes?.keybindings ?? [];
+		for (const k of Array.isArray(keys) ? keys : [keys]) {
+			extensionKeys.push({ extension: name, command: k.command, key: k.linux ?? k.key, when: k.when });
+		}
+	} catch {
+		// not an extension folder
+	}
+}
+writeFileSync(join(www, 'extension-keys.json'), JSON.stringify(extensionKeys));
 for (const page of ['page.html', 'scan.html']) {
 	copyFileSync(join(env.here, page), join(www, page));
 }

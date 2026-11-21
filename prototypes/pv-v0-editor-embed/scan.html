@@ -1,11 +1,21 @@
 <!doctype html>
 <!-- Copyright (c) 2026 Dylan Lambertson. All rights reserved. -->
-<!-- PV-V0 key scan: registers every workbench contribution at the pin (the web workbench main, never started), then
-     lists each default keybinding that can fire while focus is in the side-panel editor and probes whether its
-     command reads the editor part's active editor. Read by scan-keys.mjs. -->
+<!-- PV-V0 key scan: registers every workbench contribution at the pin (the desktop workbench main by default, or the
+     web one with ?main=web; never started), adds the keybindings that built-in extensions contribute in their
+     package.json (extension-keys.json, written by prepare.mjs), then lists each keybinding that can fire while focus
+     is in the side-panel editor and probes whether its command reads the editor part's active editor directly.
+     Read by scan-keys.mjs. -->
 <html><head><meta charset="utf-8"></head><body><script type="module">
 const errs = window.errs = [];
-try { await import('./vs/workbench/workbench.web.main.internal.js'); } catch (e) { errs.push(String(e?.stack ?? e)); }
+globalThis._VSCODE_FILE_ROOT = new URL('./', location.href).href; // where FileAccess resolves module ids
+// The desktop main reads the Electron preload globals at import; a stub that answers every read lets it register its
+// contributions (nothing is started, so nothing is sent).
+const stub = () => new Proxy(function () { }, { get: (_t, p) => p === 'then' ? undefined : p === Symbol.toPrimitive ? () => '' : typeof p === 'symbol' ? undefined : stub(), apply: () => stub() });
+globalThis.vscode = { ipcRenderer: stub(), ipcMessagePort: stub(), webFrame: stub(), webUtils: stub(), context: stub(),
+	process: { platform: 'linux', arch: 'x64', env: {}, versions: {}, type: 'renderer', execPath: '', cwd: () => '/', shellEnv: async () => ({}), getProcessMemoryInfo: async () => ({}), on: () => undefined } };
+const main = new URLSearchParams(location.search).get('main') === 'web' ? 'web' : 'desktop';
+try { await import(main === 'web' ? './vs/workbench/workbench.web.main.internal.js' : './vs/workbench/workbench.desktop.main.js'); } catch (e) { errs.push(String(e?.stack ?? e)); }
+const { ContextKeyExpr } = await import('./vs/platform/contextkey/common/contextkey.js');
 const { KeybindingsRegistry } = await import('./vs/platform/keybinding/common/keybindingsRegistry.js');
 const { CommandsRegistry } = await import('./vs/platform/commands/common/commands.js');
 const { EditorExtensionsRegistry } = await import('./vs/editor/browser/editorExtensions.js');
@@ -18,7 +28,8 @@ const context = {
 	axisSidePanelEditorFocus: true, axisView: 'agent',
 	activeEditor: 'workbench.editors.files.textFileEditor', activeEditorGroupEmpty: false, editorIsOpen: true, multipleEditorGroups: false,
 	activeEditorIsDirty: false, activeEditorCanRevert: true, activeEditorAvailableEditorIds: '', resourceScheme: 'file', resourceExtname: '.ts',
-	resourceFilename: 'b.ts', isFileSystemResource: true, resourceSet: true, isWeb: true, isLinux: true, workbenchState: 'workspace', workspaceFolderCount: 1,
+	resourceFilename: 'b.ts', isFileSystemResource: true, resourceSet: true, isWeb: main === 'web', isLinux: true, workbenchState: 'workspace', workspaceFolderCount: 1,
+	debuggersAvailable: true, debugState: 'inactive', inDebugMode: false, taskCommandsRegistered: true,
 	textCompareEditorVisible: false, textCompareEditorActive: false, sideBarVisible: false, panelVisible: false, auxiliaryBarVisible: true,
 };
 const evaluator = { getValue: key => context[key] };
@@ -42,23 +53,36 @@ function recorder(log) {
 }
 
 const ACTIVE = /^(editorService|editorGroupsService|codeEditorService|textFileService|editorGroupService)\.(active|getActiveCodeEditor|getFocusedCodeEditor|activeGroup|activeEditor|activeEditorPane|activeTextEditorControl|activeTextEditorLanguageId|visibleEditors|visibleTextEditorControls|mainPart|groups)/;
-// The candidates: default keybindings that can fire in the side-panel editor and are not editor commands.
-const candidates = KeybindingsRegistry.getDefaultKeybindings().filter(item => item.command && !item.command.startsWith('-') && item.keybinding
+// The candidates: default keybindings that can fire in the side-panel editor and are not editor commands, then the
+// built-in extensions' package.json keybindings that can fire there.
+const core = KeybindingsRegistry.getDefaultKeybindings().filter(item => item.command && !item.command.startsWith('-') && item.keybinding
 	&& (!item.when || item.when.evaluate(evaluator)) && !isEditorCommand(item.command));
+const candidates = core.map(item => ({ source: 'core', command: item.command, weight: item.weight1, when: item.when?.serialize() ?? null,
+	keys: item.keybinding.chords.map(c => [c.ctrlKey && 'Ctrl', c.shiftKey && 'Shift', c.altKey && 'Alt', c.metaKey && 'Meta', KeyCodeUtils.toString(c.keyCode)].filter(Boolean).join('+')).join(' ') }));
+const extensionKeys = await fetch('./extension-keys.json').then(r => r.ok ? r.json() : []).catch(() => []);
+for (const k of extensionKeys) {
+	let expr;
+	try { expr = k.when ? ContextKeyExpr.deserialize(k.when) : undefined; } catch { continue; }
+	if (!k.command || k.command.startsWith('-') || (expr && !expr.evaluate(evaluator)) || isEditorCommand(k.command)) { continue; }
+	candidates.push({ source: `extension:${k.extension}`, command: k.command, weight: 300, when: k.when ?? null, keys: k.key });
+}
+window.extensionKeyCount = extensionKeys.length;
 window.total = KeybindingsRegistry.getDefaultKeybindings().length;
 window.describe = i => {
 	const item = candidates[i];
 	const title = MenuRegistry.getCommand(item.command)?.title;
-	return {
-		command: item.command, weight: item.weight1, when: item.when?.serialize() ?? null, title: typeof title === 'string' ? title : title?.value ?? '',
-		keys: item.keybinding.chords.map(c => [c.ctrlKey && 'Ctrl', c.shiftKey && 'Shift', c.altKey && 'Alt', c.metaKey && 'Meta', KeyCodeUtils.toString(c.keyCode)].filter(Boolean).join('+')).join(' '),
-	};
+	return { ...item, title: typeof title === 'string' ? title : title?.value ?? '' };
 };
 window.count = candidates.length;
 // Runs one handler against recording services (the driver gives up on a handler that never returns).
 window.probe = async i => {
 	const log = new Set();
 	let threw = '';
+	if (!CommandsRegistry.getCommand(candidates[i].command)) {
+		// A core command registered later (at runtime) must be classified by hand. An extension's own command runs in
+		// the extension host, whose activeTextEditor follows text focus.
+		return { verdict: candidates[i].source === 'core' ? 'not-registered' : 'extension-host', reads: [], threw };
+	}
 	try {
 		const r = CommandsRegistry.getCommand(candidates[i].command)?.handler?.(recorder(log));
 		if (r && typeof r.catch === 'function') { r.catch(() => undefined); }

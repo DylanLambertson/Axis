@@ -74,6 +74,17 @@ if (!only || only === 'route') for (const q of ['', 'noroutes']) await session(q
 	check(`[${tag}] Ctrl+S in the IDE editor stays upstream`, await ev(p, () => [log.save.length, log.upstream]), [0, ['workbench.action.files.save']]);
 	if (!q) {
 		check('every policy command present was guarded, none missing', await ev(p, () => [registration.guarded.length, registration.missing.includes('workbench.action.files.save')]), [9, false]);
+		// Review r2 N1: a later registration of a guarded id (an extension, or a core command registered at runtime).
+		await ev(p, () => { const { CommandsRegistry, KeybindingsRegistry, KeyMod, KeyCode } = registries;
+			CommandsRegistry.registerCommand('workbench.action.files.save', () => log.upstream.push('late save'));
+			KeybindingsRegistry.registerCommandAndKeybindingRule({ id: 'workbench.action.tasks.build', weight: 200, when: undefined, primary: KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KeyB, handler: () => log.upstream.push('late build') }); });
+		await ev(p, () => openFile('a')); await clickSide(p); await reset(p);
+		await p.keyboard.press('Control+s'); await ev(p, () => commands.executeCommand('workbench.action.tasks.build')); // a late keybinding is not read by the standalone dispatcher
+		check('a later registration is guarded again (save, run task)', await ev(p, () => [log.save.length, log.reveal.length, log.upstream, registration.missing.includes('workbench.action.tasks.build')]), [1, 1, [], false]);
+		await reset(p); await ev(p, () => commands.executeCommand('workbench.action.files.save', {}));
+		check('keybinding args {} are not an explicit target', await ev(p, () => [log.save.length, log.upstream]), [1, []]);
+		await clickIde(p); await reset(p); await p.keyboard.press('Control+s');
+		check('...and the later registration still runs from the IDE editor', await ev(p, () => log.upstream), ['late save']);
 	}
 });
 
@@ -137,6 +148,12 @@ if (!only || only === 'trust') await session('user=' + encodeURIComponent(JSON.s
 	await p.keyboard.type('q'); await p.keyboard.press('Control+s');
 	check('reopened trusted: editable and saves again', await ev(p, b => [models.A.getValue() !== b, log.save], a0), [true, [['/w/repo/a.ts', false]]]);
 	await ev(p, () => side.close()); check('open a missing file: unavailable', await ev(p, () => openFile('missing.ts')), 'unavailable');
+});
+
+if (!only || only === 'conflict') await session('overwrite=1', async p => {
+	await ev(p, () => openFile('a')); await clickSide(p); await p.keyboard.type('x'); await reset(p);
+	await p.keyboard.press('Control+s'); await ev(p, () => commands.executeCommand('workbench.action.files.saveAll'));
+	check('overwriteFileOnDisk: the side panel refuses to save', await ev(p, () => [log.save, log.blocked]), [[], ['files.saveConflictResolution']]);
 });
 
 if (!only || only === 'race') await session('delay=150', async p => {

@@ -9,8 +9,13 @@ import { env } from './env.mjs';
 const C = 'contrib/sidePanel/common/axisSidePanelEditor.ts';
 const B = 'contrib/sidePanel/browser/axisSidePanelEditor.ts';
 const MUTANTS = [
-	['guard: ignores focus', C, 'return sidePanelFocused && argumentCount === 0 ? action : undefined;', 'return action;', 'route'],
-	['guard: ignores explicit arguments', C, 'return sidePanelFocused && argumentCount === 0 ? action : undefined;', 'return sidePanelFocused ? action : undefined;', 'route'],
+	['guard: ignores focus', C, 'return sidePanelFocused && !explicitTarget ? action : undefined;', 'return action;', 'route'],
+	['guard: ignores explicit targets', C, 'return sidePanelFocused && !explicitTarget ? action : undefined;', 'return sidePanelFocused ? action : undefined;', 'route'],
+	['explicit target: any object counts', C, "(typeof arg === 'object' && arg !== null && ('resource' in arg || 'groupId' in arg || 'editorIndex' in arg))", "(typeof arg === 'object' && arg !== null)", 'route'],
+	['late registration not guarded again', B, 'store.add(CommandsRegistry.onDidRegisterCommand(id => {', 'store.add(CommandsRegistry.onDidRegisterCommand(_id => { const id = \'\';', 'route'],
+	['save ignores overwriteFileOnDisk', B, 'if (!this.hostServices.saveConflictsDetected(resource)) {', 'if (false) {', 'conflict'],
+	['Save All ignores overwriteFileOnDisk', B, '&& this.hostServices.isDirty(resource) && this.hostServices.saveConflictsDetected(resource)) {', '&& this.hostServices.isDirty(resource)) {', 'conflict'],
+	['policy: launchers accepted', C, "'workbench.action.gotoLine', 'workbench.action.gotoSymbol', 'workbench.action.debug.start',", "", 'route'],
 	['policy: Save accepted', C, "['workbench.action.files.save', 'save'],", "['workbench.action.files.save', 'accept'],", 'route'],
 	['policy: Save All not extended', C, "['workbench.action.files.saveAll', 'saveAllToo'],", "['workbench.action.files.saveAll', 'accept'],", 'route'],
 	['policy: tab and group commands accepted', C, "...BLOCK.map(id => [id, 'block'] as const),", "...BLOCK.map(id => [id, 'accept'] as const),", 'route'],

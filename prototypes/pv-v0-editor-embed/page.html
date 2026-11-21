@@ -49,7 +49,8 @@ for (const [id, primary] of upstream) {
 	KeybindingsRegistry.registerCommandAndKeybindingRule({ id, weight: 200, when: undefined, primary, handler: (_a, ...args) => log.upstream.push(args.length ? [id, args.length] : id) });
 }
 window.registration = q.has('noroutes') ? undefined : sp.registerAxisSidePanelEditorCommands();
-const { ICommandService } = await import('./vs/platform/commands/common/commands.js');
+const { ICommandService, CommandsRegistry } = await import('./vs/platform/commands/common/commands.js');
+window.registries = { CommandsRegistry, KeybindingsRegistry, KeyMod, KeyCode };
 const { IModelService } = await import('./vs/editor/common/services/model.js');
 
 const uriA = monaco.Uri.file('/w/repo/a.ts'), uriB = monaco.Uri.file('/w/repo/b.ts');
@@ -75,7 +76,7 @@ const isDirty = uri => { const m = monaco.editor.getModel(uri); return !!m && m.
 const host = { save: async (resource, skip) => { log.save.push([resource.path, skip]); saved.set(resource.toString(), monaco.editor.getModel(resource).getAlternativeVersionId()); },
 	reveal: async t => { log.reveal.push([t.resource.path, t.selection && t.selection.toString()]); },
 	editorSettings: () => JSON.parse(q.get('user') || '{}'), isDirty,
-	blocked: id => log.blocked.push(id), focusLost: r => log.focusLost.push(r.path) };
+	blocked: id => log.blocked.push(id), focusLost: r => log.focusLost.push(r.path), saveConflictsDetected: () => !q.has('overwrite') };
 window.isDirty = isDirty;
 window.commands = StandaloneServices.get(ICommandService);
 window.modelService = StandaloneServices.get(IModelService);
