@@ -18,6 +18,7 @@ export const MESSAGE_AUDIT = {
   pause: "message.pause",
   resume: "message.resume",
   deliver: "message.deliver",
+  deliverFailed: "message.deliver.failed",
 } as const;
 
 const WHO = ["callerKind", "callerId", "runId", "verified"] as const;
@@ -29,6 +30,7 @@ export const MESSAGES_PAYLOAD_ALLOWLIST: Readonly<Record<string, readonly string
   [MESSAGE_AUDIT.pause]: Object.freeze(["scopeKind", "scopeId", "changed"]),
   [MESSAGE_AUDIT.resume]: Object.freeze(["scopeKind", "scopeId", "changed"]),
   [MESSAGE_AUDIT.deliver]: Object.freeze(["messageId", "threadId", "runId", "agentId", "channel", "senderKind", "hop"]),
+  [MESSAGE_AUDIT.deliverFailed]: Object.freeze(["messageId", "threadId", "runId", "agentId", "failures"]),
 });
 
 export interface MessageAuditSink {

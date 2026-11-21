@@ -438,17 +438,19 @@ export const JOURNAL_MIGRATIONS: readonly Migration[] = [
   {
     // Message delivery into runs (ticket PV-M3 slice 2, inter-agent-communication.md sections 3 and 6.1). One row per
     // message and recipient, so a message reaches a recipient at most once: `leased` when a live run took it at a turn
-    // boundary (in the same transaction that taints the run), `acked` once the run's loop holds it. A lease only moves
-    // to `acked`; an acked row never changes. At host start every lease is released (deleted): no run survives a
-    // restart, so a message whose ack never landed is delivered again, to a later run. Deletes stay open for that release
-    // and for the retention purge. Additive.
+    // boundary (in the same transaction that taints the run), `acked` once the model's request that carried it succeeded,
+    // or `failed` when its delivery failed `failures` times (quarantined: never offered again; the user is told). A lease
+    // only moves to `acked`; an acked or failed row never changes. A lease is released (deleted) when the request that
+    // carried it failed, when the run ended before it, and for every lease at host start (no run survives a restart), so
+    // such a message goes to a later run. An acked or failed row is deleted only after its message (the retention purge),
+    // so a delivered message cannot become deliverable again. `message_delivery_failures` counts failed attempts. Additive.
     version: 10,
     sql: `
       CREATE TABLE message_deliveries (
         message_id TEXT NOT NULL REFERENCES agent_messages(id),
         principal  TEXT NOT NULL CHECK (length(principal) BETWEEN 4 AND 128 AND principal NOT GLOB '*[^A-Za-z0-9:._-]*'),
         run_id     TEXT NOT NULL REFERENCES agent_runs(id),
-        state      TEXT NOT NULL CHECK (state IN ('leased','acked')),
+        state      TEXT NOT NULL CHECK (state IN ('leased','acked','failed')),
         leased_at  TEXT NOT NULL,
         acked_at   TEXT,
         PRIMARY KEY (message_id, principal),
@@ -459,6 +461,15 @@ export const JOURNAL_MIGRATIONS: readonly Migration[] = [
         WHEN OLD.state <> 'leased' OR NEW.state <> 'acked' OR NEW.message_id IS NOT OLD.message_id
           OR NEW.principal IS NOT OLD.principal OR NEW.run_id IS NOT OLD.run_id OR NEW.leased_at IS NOT OLD.leased_at
         BEGIN SELECT RAISE(ABORT, 'a delivery only moves from leased to acked'); END;
+      CREATE TRIGGER message_deliveries_kept BEFORE DELETE ON message_deliveries
+        WHEN OLD.state <> 'leased' AND EXISTS (SELECT 1 FROM agent_messages WHERE id = OLD.message_id)
+        BEGIN SELECT RAISE(ABORT, 'a delivered message stays delivered'); END;
+      CREATE TABLE message_delivery_failures (
+        message_id TEXT NOT NULL REFERENCES agent_messages(id),
+        principal  TEXT NOT NULL CHECK (length(principal) BETWEEN 4 AND 128 AND principal NOT GLOB '*[^A-Za-z0-9:._-]*'),
+        failures   INTEGER NOT NULL CHECK (failures >= 1),
+        PRIMARY KEY (message_id, principal)
+      ) STRICT, WITHOUT ROWID;
     `,
   },
 ];

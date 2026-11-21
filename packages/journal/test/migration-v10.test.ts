@@ -50,6 +50,18 @@ test("version 10: pending, lease once, ack once, release only leases; a delivery
   assert.throws(() => d.lease(id("msg", 2), "agent:a1", "no-such-run"), "a delivery names a real run");
   assert.throws(() => d.lease(id("msg", 2), "a b", runs[0]!), "a principal is a key");
   assert.throws(() => d.pending("agent:a1", 0));
+  // A delivered message stays delivered; failures are counted and a quarantined message is never offered again.
+  assert.throws(() => db.prepare("DELETE FROM message_deliveries WHERE state = 'acked'").run(), /stays delivered/);
+  post(journal, 3);
+  assert.deepEqual([d.noteFailure(id("msg", 3), "agent:a1"), d.noteFailure(id("msg", 3), "agent:a1")], [1, 2]);
+  assert.equal(d.quarantine(id("msg", 3), "agent:a1", runs[0]!), true);
+  assert.equal(d.lease(id("msg", 3), "agent:a1", runs[1]!), false);
+  assert.throws(() => db.prepare("UPDATE message_deliveries SET state = 'acked', acked_at = 'x' WHERE state = 'failed'").run(), /only moves/);
+  assert.deepEqual(d.pending("agent:a1", 10).map((p) => p.seq), [2], "the keyset pages in send order");
+  assert.deepEqual(d.pending("agent:a1", 10, d.pending("agent:a1", 10)[0]!.cursor), []);
+  d.lease(id("msg", 2), "agent:a1", runs[1]!);
+  assert.equal(d.release(runs[0]!, [id("msg", 2)]), 0, "only the leasing run releases");
+  assert.equal(d.release(runs[1]!, [id("msg", 2)]), 1);
   db.close();
 });
 

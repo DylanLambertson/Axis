@@ -109,10 +109,11 @@ export interface ComposerRunTools {
   /**
    * Messages for the run at a turn boundary (PV-M3 slice 2, inter-agent-communication.md section 6.1): a framed, escaped
    * block for the next turn, or undefined. The run is tainted before the block is returned when any message is not the
-   * user's. The loop calls `ack` once the block is part of the conversation. Throws when the delivery could not be
-   * recorded (the content is withheld and the run must stop).
+   * user's. The loop calls `ack` once the next provider request (which carries the block) succeeded, and `release` when
+   * it failed or the run ended first. Throws when the delivery could not be recorded (the content is withheld and the
+   * run must stop).
    */
-  deliver?(signal: AbortSignal): Promise<{ readonly text: string; ack(): unknown } | undefined>;
+  deliver?(signal: AbortSignal): Promise<{ readonly text: string; ack(): unknown; release(): unknown } | undefined>;
   /** The run ended (any state): releases what the tools hold for it. Never throws. */
   close?(): void;
 }

@@ -89,7 +89,7 @@ export interface AgentBindingDeps {
   /** Where each run's taint is recorded and read back (IAC-T across a restart or resume): the journal's composer records. */
   readonly taintStore: TaintStore;
   /** Messages delivered into runs at turn boundaries (PV-M3 slice 2); absent, nothing is delivered. */
-  readonly deliveries?: { next(runId: string, taint: { receive(input: unknown): void }): { readonly text: string; ack(): unknown } | undefined };
+  readonly deliveries?: { next(runId: string, taint: { receive(input: unknown): void }): { readonly text: string; ack(): unknown; release(): unknown } | undefined };
   /**
    * WT-2, broker side (C3): GIT-SNAP-1 before and after every command a run starts (its own instance, not the CLI runs').
    * Absent: `run_command` is not offered at all.
