@@ -345,3 +345,27 @@ test("a request id outside the schema is never sent, and a reply that throws whi
   assert.equal(a.state, "gh_failed");
   assert.equal(JSON.stringify([r.audit, r.logs]).includes(CANARY), false);
 });
+
+test("re-pin race with an ok answer: the old repository's rows are never served under the new pin, and a case-only re-pin counts", async () => {
+  for (const [owner, repo] of [["acme", "other"], ["Acme", "App"]] as const) {
+    const r = rig();
+    await confirm(r);
+    let release: () => void = () => {};
+    r.reply = (req) => new Promise((res) => (release = () => res({ t: "forge-result", req: req.req, exit: 0, class: "none", stdout: listing([goodRow(7, { title: "OLD REPO PR" })]), truncated: false })));
+    const pending = r.svc.pullRequests("p1", "user");
+    await new Promise((res) => setImmediate(res));
+    r.origin = { kind: "url", url: `https://github.com/${owner}/${repo}.git` };
+    await r.svc.pinRepository("p1", { host: "github.com", owner, repo });
+    release();
+    assert.equal((await pending).state, "busy", `${owner}/${repo}`);
+    // Past the floor and well inside the 60 s freshness: a cached old answer would be served here.
+    r.now += 20_000;
+    r.reply = (req) => ({ t: "forge-result", req: req.req, exit: 0, class: "none", stdout: listing([goodRow(8, { title: "NEW REPO PR" })]), truncated: false });
+    const next = await r.svc.pullRequests("p1", "view");
+    assert.equal(r.sent.length, 2, `${owner}/${repo}: a new exec, not a cached old answer`);
+    assert.deepEqual([r.sent[1]?.owner, r.sent[1]?.repo], [owner, repo]);
+    assert.deepEqual(next.repository, { host: "github.com", owner, repo });
+    assert.deepEqual(next.rows?.map((x) => [x.title, x.url]), [[`NEW REPO PR`, `https://github.com/${owner}/${repo}/pull/8`]]);
+    assert.equal(JSON.stringify(next).includes("OLD REPO PR"), false);
+  }
+});

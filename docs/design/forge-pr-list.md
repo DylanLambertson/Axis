@@ -209,10 +209,9 @@ The parse happens in the daemon, from `forge-result.stdout`. `truncated` gives `
 
 - `statusCheckRollup` is reduced to one closed value: `passing`, `failing`, `pending`, `none` or `unknown`. At most 200 entries per row are **read**, the rest ignored; `gh` requests at most 100.
 - **Display text.** Title, branch and logins are prepared in the daemon:
-  - NFC;
-  - then removal of C0 and C1 controls (including ESC, so ANSI and OSC 8 sequences lose their introducer), bidi overrides and isolates (U+202A to U+202E, U+2066 to U+2069), `\p{Cf}`, and line and paragraph separators;
+  - removal of C0 and C1 controls (including ESC, so ANSI and OSC 8 sequences lose their introducer), bidi overrides and isolates (U+202A to U+202E, U+2066 to U+2069), `\p{Cf}`, and line and paragraph separators;
+  - then NFC; the stripping runs first, so a removed character between a base and its mark leaves the composed form (review S1a N1);
   - truncation with an ellipsis, to 200 UTF-16 units for a title and 120 for a branch, cut on a code point boundary so no lone surrogate is left (review S1a N2, SF-4).
-  - the stripping runs before NFC, so a removed character between a base and its mark leaves the composed form (review S1a N1).
 - **Owner compare:** the head owner must match the ASCII GitHub login pattern and equal the pin under an ASCII-only case fold; no Unicode or compatibility fold (review S1a SF-1).
 - **A re-pin while `gh` runs:** the exec is audited and logged with its state, but its answer is neither cached nor returned and no latch moves; the reply is `busy` with the new pin and `retryAfterMs` (review S1a SF-2).
 - **Rendering.** The renderer shows these as **plain text only**. The closed badges (draft, checks, review) sit in a fixed column, visually apart from the title, and title text is never placed where a state is shown (review N6: a title such as "✅ Approved · checks passing" must not pass for a badge).
@@ -270,7 +269,7 @@ The request carries `trigger`: `"view"` or `"user"`.
 | `timeout` | 20 s passed |
 | `output_too_large` | the output cap was reached |
 | `output_invalid` | the outer array was refused |
-| `busy` | the pty process's cap was hit, or a `user` refresh came within 15 s of an exec and there is no cached answer yet |
+| `busy` | the pty process's cap was hit; any request (`view` or `user`) within 15 s of the project's last exec when there is no cached answer; or the pin changed while `gh` ran (§5) |
 | `unsupported_platform` | Windows until PV-X1 provides a job-object kill |
 | `unavailable` | no pty process connected |
 
