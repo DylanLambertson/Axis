@@ -2,6 +2,7 @@
  *  Copyright (c) 2026 Dylan Lambertson. All rights reserved.
  *--------------------------------------------------------------------------------------------*/
 
+import { URI } from '../../../../base/common/uri.js';
 import { IEditorOptions } from '../../../../editor/common/config/editorOptions.js';
 import { localize } from '../../../../nls.js';
 import { cleanDisplayText } from '../../../services/workspaces/common/worktreeDiscovery.js';
@@ -48,6 +49,10 @@ const OPEN_IN_IDE = [
 	'workbench.action.splitEditorRight', 'workbench.action.splitEditorUp', 'workbench.action.copyEditorToNewWindow',
 	'editor.action.nextCommentThreadAction', 'editor.action.previousCommentThreadAction', 'editor.debug.action.toggleInlineBreakpoint',
 	'testing.coverageAtCursor', 'testing.coverageCurrentFile', 'testing.debugAtCursor', 'testing.debugCurrentFile', 'testing.runAtCursor', 'testing.runCurrentFile',
+	// Through another service (review r2 S1): quick access and the debug, run and task launchers resolve the active
+	// editor themselves (`${file}`, go to line or symbol, save before start).
+	'workbench.action.gotoLine', 'workbench.action.gotoSymbol', 'workbench.action.debug.start', 'workbench.action.debug.run', 'workbench.action.tasks.build',
+	'workbench.action.files.revealActiveFileInWindows', 'editor.debug.action.toggleBreakpoint', 'editor.detectLanguage',
 ];
 const BLOCK = [
 	'workbench.action.closeEditorsInGroup', 'workbench.action.closeUnmodifiedEditors', 'workbench.action.keepEditor', 'workbench.action.pinEditor',
@@ -57,17 +62,36 @@ const BLOCK = [
 	'workbench.action.moveEditorLeftInGroup', 'workbench.action.moveEditorRightInGroup', 'workbench.action.moveEditorToFirstGroup', 'workbench.action.moveEditorToLastGroup',
 	'workbench.action.moveEditorToNextGroup', 'workbench.action.moveEditorToPreviousGroup', 'workbench.action.toggleEditorGroupLayout',
 	...[1, 2, 3, 4, 5, 6, 7, 8, 9].map(n => `workbench.action.openEditorAtIndex${n}`),
+	'workbench.action.closeAllEditors', 'workbench.action.closeAllGroups', 'workbench.action.quickOpenLeastRecentlyUsedEditorInGroup', 'workbench.action.quickOpenPreviousRecentlyUsedEditorInGroup',
+	...['Second', 'Third', 'Fourth', 'Fifth', 'Sixth', 'Seventh', 'Eighth'].map(n => `workbench.action.focus${n}EditorGroup`),
 ];
 const ACCEPT = [
 	'editor.action.selectAll', 'undo', 'redo', // read the focused code editor first: the side-panel editor
 	'workbench.action.focusNextPart', 'workbench.action.focusPreviousPart', // replaced by the Axis part cycle (axis.action.focusNextPart)
 	'breadcrumbs.toggleToOn', 'workbench.action.files.openFolderViaWorkspace', 'workbench.action.findInFiles', 'workbench.action.selectTheme',
+	// Audited by hand (review r2 S1): they act on the focused code editor (clipboard, tab focus, overtype, the
+	// accessibility views), on no editor (windows, views, zoom, panels, all-tests runs), or open something, which is an
+	// explicit user open that switches to IDE view (decision D-5). Find and Replace in Files seed their query from the
+	// hidden editor's selection, which is harmless.
+	'editor.action.clipboardCopyAction', 'editor.action.clipboardCutAction', 'editor.action.clipboardPasteAction', 'editor.action.toggleTabFocusMode',
+	'editor.action.toggleOvertypeInsertMode', 'editor.action.accessibilityHelp', 'editor.action.accessibleView', 'editor.action.toggleScreenReaderAccessibilityMode',
+	'testing.cancelRun', 'testing.coverageAll', 'testing.coverageLastRun', 'testing.debugAll', 'testing.debugFailTests', 'testing.debugLastRun', 'testing.openOutputPeek',
+	'testing.reRunFailTests', 'testing.reRunLastRun', 'testing.runAll', 'testing.toggleInlineCoverage', 'testing.toggleInlineTestOutput',
+	'welcome.showNewFileEntries', 'workbench.action.browser.openOrList', 'workbench.action.chat.open', 'workbench.action.closeWindow', 'workbench.action.files.newUntitledFile',
+	'workbench.action.files.openFile', 'workbench.action.focusSideBar', 'workbench.action.keybindingsReference', 'workbench.action.navigateToLastEditLocation',
+	'workbench.action.newWindow', 'workbench.action.openRecent', 'workbench.action.quickOpen', 'workbench.action.quit', 'workbench.action.reopenClosedEditor',
+	'workbench.action.replaceInFiles', 'workbench.action.showAllEditors', 'workbench.action.showAllSymbols', 'workbench.action.showCommands',
+	'workbench.action.terminal.openNativeConsole', 'workbench.action.toggleAuxiliaryBar', 'workbench.action.toggleFullScreen', 'workbench.action.togglePanel',
+	'workbench.action.toggleSidebarVisibility', 'workbench.action.toggleZenMode', 'workbench.action.zoomIn', 'workbench.action.zoomOut', 'workbench.action.zoomReset',
+	'views.moveViewDown', 'views.moveViewLeft', 'views.moveViewRight', 'views.moveViewUp', 'workbench.action.terminal.new',
 ];
 
 /**
- * The policy for every default-keybinding command at the pin that can fire in the side-panel editor and reads the
- * active editor or delegates (prototypes/pv-v0-editor-embed/scan-keys.mjs), plus Save All (no Linux key). The scan
- * fails on a flagged command missing here, so an upstream sync cannot add an unguarded one silently.
+ * The policy for every candidate of the key scan at the pin (prototypes/pv-v0-editor-embed/scan-keys.mjs: the desktop
+ * workbench's default keybindings and the built-in extensions' package.json keybindings that can fire in the
+ * side-panel editor, other than editor commands and extension-host commands), plus Save All (no Linux key). The probe
+ * only sees direct reads of the active editor, so every candidate is classified here, audited by hand where the probe
+ * saw nothing; the scan fails on a candidate missing here, so an upstream sync cannot add one silently.
  */
 export const AXIS_SIDE_PANEL_COMMAND_POLICY: ReadonlyMap<string, AxisSidePanelAction> = new Map<string, AxisSidePanelAction>([
 	['workbench.action.files.save', 'save'],
@@ -85,18 +109,27 @@ export function unclassifiedCommands(flagged: readonly string[]): string[] {
 }
 
 /**
- * What a guarded command does now: its action when the focused code editor is a side-panel editor and the command
- * was given no explicit arguments (a tab or Explorer context menu passes its own target), and `undefined` (run the
- * original handler) otherwise. `saveAllToo` applies whatever has the focus.
+ * Whether a command's arguments name their own target: a URI, or an editor context (`resource`, `groupId`,
+ * `editorIndex`), as a tab, Explorer or SCM menu passes. Anything else, such as `args: {}` from a keybindings.json
+ * entry, does not (review r2 N2).
  */
-export function guardDecision(action: AxisSidePanelAction, sidePanelFocused: boolean, argumentCount: number): AxisSidePanelAction | undefined {
+export function hasExplicitTarget(args: readonly unknown[]): boolean {
+	return args.some(arg => URI.isUri(arg) || (typeof arg === 'object' && arg !== null && ('resource' in arg || 'groupId' in arg || 'editorIndex' in arg)));
+}
+
+/**
+ * What a guarded command does now: its action when the focused code editor is a side-panel editor and the command
+ * was given no explicit target, and `undefined` (run the original handler) otherwise. `saveAllToo` applies whatever
+ * has the focus.
+ */
+export function guardDecision(action: AxisSidePanelAction, sidePanelFocused: boolean, explicitTarget: boolean): AxisSidePanelAction | undefined {
 	if (action === 'accept') {
 		return undefined;
 	}
 	if (action === 'saveAllToo') {
 		return action;
 	}
-	return sidePanelFocused && argumentCount === 0 ? action : undefined;
+	return sidePanelFocused && !explicitTarget ? action : undefined;
 }
 
 export interface IAxisSidePanelEditorInput {

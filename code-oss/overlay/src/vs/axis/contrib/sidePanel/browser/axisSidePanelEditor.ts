@@ -13,12 +13,12 @@ import { CodeEditorWidget } from '../../../../editor/browser/widget/codeEditor/c
 import { EditorOption } from '../../../../editor/common/config/editorOptions.js';
 import { Selection } from '../../../../editor/common/core/selection.js';
 import { IResolvedTextEditorModel, ITextModelService } from '../../../../editor/common/services/resolverService.js';
-import { CommandsRegistry } from '../../../../platform/commands/common/commands.js';
+import { CommandsRegistry, ICommandHandler } from '../../../../platform/commands/common/commands.js';
 import { ContextKeyExpr, IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
 import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { ServiceCollection } from '../../../../platform/instantiation/common/serviceCollection.js';
 import { KeybindingsRegistry } from '../../../../platform/keybinding/common/keybindingsRegistry.js';
-import { AXIS_SIDE_PANEL_COMMAND_POLICY, AXIS_SIDE_PANEL_EDITOR_FOCUS, AXIS_SIDE_PANEL_LEAVE_COMMAND, AXIS_SIDE_PANEL_LEAVE_WEIGHT, AxisSidePanelAction, guardDecision, IAxisSidePanelEditorInput, sidePanelEditorOptions } from '../common/axisSidePanelEditor.js';
+import { AXIS_SIDE_PANEL_COMMAND_POLICY, AXIS_SIDE_PANEL_EDITOR_FOCUS, AXIS_SIDE_PANEL_LEAVE_COMMAND, AXIS_SIDE_PANEL_LEAVE_WEIGHT, AxisSidePanelAction, guardDecision, hasExplicitTarget, IAxisSidePanelEditorInput, sidePanelEditorOptions } from '../common/axisSidePanelEditor.js';
 
 /** What the workbench supplies: saving one resource, the hand-off to IDE view, and the user's editor settings. */
 export interface IAxisSidePanelEditorHost {
@@ -34,6 +34,11 @@ export interface IAxisSidePanelEditorHost {
 	blocked(commandId: string): void;
 	/** The side-panel editor lost focus: the workbench saves when `files.autoSave` is `onFocusChange` for `resource`. */
 	focusLost(resource: URI): void;
+	/**
+	 * False when `files.saveConflictResolution` is `overwriteFileOnDisk` for `resource` (review r2 S2): a save would
+	 * then overwrite a newer write on disk without asking, so the side panel refuses to save.
+	 */
+	saveConflictsDetected(resource: URI): boolean;
 }
 
 export type AxisSidePanelOpenResult = 'opened' | 'unavailable' | 'superseded' | 'disposed';
@@ -164,12 +169,16 @@ export class AxisSidePanelEditor extends Disposable {
 		switch (action) {
 			case 'save':
 			case 'saveWithoutFormatting':
+				if (!this.hostServices.saveConflictsDetected(resource)) {
+					this.hostServices.blocked('files.saveConflictResolution');
+					return;
+				}
 				if (!this.readOnly()) {
 					await this.hostServices.save(resource, action === 'saveWithoutFormatting');
 				}
 				return;
 			case 'saveAllToo':
-				if (!this.readOnly() && this.hostServices.isDirty(resource)) {
+				if (!this.readOnly() && this.hostServices.isDirty(resource) && this.hostServices.saveConflictsDetected(resource)) {
 					await this.hostServices.save(resource, false);
 				}
 				return;
@@ -203,49 +212,58 @@ function focusedInstance(accessor: ServicesAccessor): AxisSidePanelEditor | unde
 export interface IAxisSidePanelRegistration extends IDisposable {
 	/** Command ids now guarded. */
 	readonly guarded: readonly string[];
-	/** Policy ids with no command registered at the time (registered later, they would be unguarded). */
+	/** Policy ids with no command registered yet; each is guarded as soon as it registers. */
 	readonly missing: readonly string[];
 }
 
 /**
  * Registers Escape and the command guards (review S1). Each policy command other than `accept` is re-registered
- * under its own id with a guard: while a side-panel editor has focus and the command has no explicit arguments, the
- * policy action runs on that editor's file; otherwise the original handler runs. Must run after every upstream
- * contribution has registered its commands (`missing` lists the ones not there yet). Disposing restores the originals.
+ * under its own id with a guard: while a side-panel editor has focus and the command has no explicit target, the
+ * policy action runs on that editor's file; otherwise the original handler runs. A later registration of a policy id
+ * (a command registered at runtime, or an extension registering the same id) would sit on top of the guard, so the
+ * guard is applied again over it (review r2 N1). Disposing restores the originals.
  */
 export function registerAxisSidePanelEditorCommands(): IAxisSidePanelRegistration {
 	const store = new DisposableStore();
-	const guarded: string[] = [];
-	const missing: string[] = [];
+	const guards = new Map<string, ICommandHandler>();
 	store.add(KeybindingsRegistry.registerCommandAndKeybindingRule({
 		id: AXIS_SIDE_PANEL_LEAVE_COMMAND, weight: AXIS_SIDE_PANEL_LEAVE_WEIGHT, when: ContextKeyExpr.equals(AXIS_SIDE_PANEL_EDITOR_FOCUS, true), primary: KeyCode.Escape,
 		handler: accessor => focusedInstance(accessor)?.run('leave'),
 	}));
-	for (const [id, action] of AXIS_SIDE_PANEL_COMMAND_POLICY) {
-		if (action === 'accept') {
-			continue;
-		}
+	const guard = (id: string, action: AxisSidePanelAction): void => {
 		const original = CommandsRegistry.getCommand(id);
-		if (!original) {
-			missing.push(id);
-			continue;
+		if (!original || original.handler === guards.get(id)) {
+			return;
 		}
-		guarded.push(id);
-		store.add(CommandsRegistry.registerCommand({
-			id,
-			metadata: original.metadata,
-			handler: (accessor, ...args) => {
-				const instance = focusedInstance(accessor);
-				const decision = guardDecision(action, instance !== undefined, args.length);
-				if (decision === undefined) {
-					return original.handler(accessor, ...args);
-				}
-				if (decision === 'saveAllToo') {
-					return Promise.resolve(original.handler(accessor, ...args)).then(() => Promise.all([...live].map(editor => editor.run('saveAllToo', id))));
-				}
-				return instance?.run(decision, id);
-			},
-		}));
+		const handler: ICommandHandler = (accessor, ...args) => {
+			const instance = focusedInstance(accessor);
+			const decision = guardDecision(action, instance !== undefined, hasExplicitTarget(args));
+			if (decision === undefined) {
+				return original.handler(accessor, ...args);
+			}
+			if (decision === 'saveAllToo') {
+				return Promise.resolve(original.handler(accessor, ...args)).then(() => Promise.all([...live].map(editor => editor.run('saveAllToo', id))));
+			}
+			return instance?.run(decision, id);
+		};
+		guards.set(id, handler);
+		store.add(CommandsRegistry.registerCommand({ id, metadata: original.metadata, handler }));
+	};
+	for (const [id, action] of AXIS_SIDE_PANEL_COMMAND_POLICY) {
+		if (action !== 'accept') {
+			guard(id, action);
+		}
 	}
-	return { guarded, missing, dispose: () => store.dispose() };
+	store.add(CommandsRegistry.onDidRegisterCommand(id => {
+		const action = AXIS_SIDE_PANEL_COMMAND_POLICY.get(id);
+		if (action && action !== 'accept') {
+			guard(id, action);
+		}
+	}));
+	const policyIds = [...AXIS_SIDE_PANEL_COMMAND_POLICY].filter(([, action]) => action !== 'accept').map(([id]) => id);
+	return {
+		get guarded() { return policyIds.filter(id => guards.has(id) && CommandsRegistry.getCommand(id)?.handler === guards.get(id)); },
+		get missing() { return policyIds.filter(id => !CommandsRegistry.getCommand(id)); },
+		dispose: () => store.dispose(),
+	};
 }

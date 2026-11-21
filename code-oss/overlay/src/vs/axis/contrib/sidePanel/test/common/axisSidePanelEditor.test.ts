@@ -3,8 +3,9 @@
  *--------------------------------------------------------------------------------------------*/
 
 import assert from 'assert';
+import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { approvalShortcutAllowed, AXIS_SIDE_PANEL_COMMAND_POLICY, AXIS_SIDE_PANEL_LEAVE_WEIGHT, guardDecision, IAxisKeyGesture, IAxisKeyScope, isApprovalChord, MAX_LABEL, sidePanelEditorOptions, unclassifiedCommands } from '../../common/axisSidePanelEditor.js';
+import { approvalShortcutAllowed, AXIS_SIDE_PANEL_COMMAND_POLICY, AXIS_SIDE_PANEL_LEAVE_WEIGHT, guardDecision, hasExplicitTarget, IAxisKeyGesture, IAxisKeyScope, isApprovalChord, MAX_LABEL, sidePanelEditorOptions, unclassifiedCommands } from '../../common/axisSidePanelEditor.js';
 
 /** A card, its Deny button, a node in the composer and a node in a code editor, as plain objects. */
 class Dom {
@@ -84,14 +85,32 @@ suite('Axis side-panel editor (PV-V0 spike)', () => {
 		assert.deepStrictEqual(unclassifiedCommands(['workbench.action.newThing', 'undo', 'workbench.action.newThing', 'a.b']), ['a.b', 'workbench.action.newThing']);
 	});
 
-	test('the guard applies the action only with the side panel focused and no explicit arguments', () => {
-		assert.strictEqual(guardDecision('save', true, 0), 'save');
-		assert.strictEqual(guardDecision('save', false, 0), undefined, 'IDE editor focused: the original runs');
-		assert.strictEqual(guardDecision('save', true, 1), undefined, 'a tab or Explorer menu names its target');
-		assert.strictEqual(guardDecision('block', true, 0), 'block');
-		assert.strictEqual(guardDecision('accept', true, 0), undefined);
-		assert.strictEqual(guardDecision('saveAllToo', false, 0), 'saveAllToo', 'Save All covers side-panel files whatever has the focus');
-		assert.strictEqual(guardDecision('saveAllToo', true, 2), 'saveAllToo');
+	test('the guard applies the action only with the side panel focused and no explicit target', () => {
+		assert.strictEqual(guardDecision('save', true, false), 'save');
+		assert.strictEqual(guardDecision('save', false, false), undefined, 'IDE editor focused: the original runs');
+		assert.strictEqual(guardDecision('save', true, true), undefined, 'a tab or Explorer menu names its target');
+		assert.strictEqual(guardDecision('block', true, false), 'block');
+		assert.strictEqual(guardDecision('accept', true, false), undefined);
+		assert.strictEqual(guardDecision('saveAllToo', false, false), 'saveAllToo', 'Save All covers side-panel files whatever has the focus');
+		assert.strictEqual(guardDecision('saveAllToo', true, true), 'saveAllToo');
+	});
+
+	test('only a URI or an editor context is an explicit target; keybinding args are not', () => {
+		assert.strictEqual(hasExplicitTarget([]), false);
+		assert.strictEqual(hasExplicitTarget([{}]), false, 'args: {} from keybindings.json');
+		assert.strictEqual(hasExplicitTarget([{ preserveFocus: true }, 'x', 3, null]), false);
+		assert.strictEqual(hasExplicitTarget([URI.file('/w/a.ts')]), true);
+		assert.strictEqual(hasExplicitTarget([undefined, { groupId: 1, editorIndex: 0 }]), true);
+		assert.strictEqual(hasExplicitTarget([{ resource: URI.file('/w/a.ts') }]), true);
+	});
+
+	test('the policy classifies the commands the probe could not see (go to line or symbol, launchers, groups)', () => {
+		for (const id of ['workbench.action.gotoLine', 'workbench.action.gotoSymbol', 'workbench.action.debug.start', 'workbench.action.debug.run', 'workbench.action.tasks.build', 'workbench.action.files.revealActiveFileInWindows']) {
+			assert.strictEqual(AXIS_SIDE_PANEL_COMMAND_POLICY.get(id), 'openInIde', id);
+		}
+		for (const id of ['workbench.action.closeAllEditors', 'workbench.action.focusSecondEditorGroup', 'workbench.action.focusEighthEditorGroup', 'workbench.action.quickOpenPreviousRecentlyUsedEditorInGroup']) {
+			assert.strictEqual(AXIS_SIDE_PANEL_COMMAND_POLICY.get(id), 'block', id);
+		}
 	});
 
 	test('the spoken label is cleaned and clamped', () => {
