@@ -20,8 +20,9 @@ import type { Logger } from "./log/logger.js";
  *   does nothing: those are bounded (2 s, and 5 s per disposer).
  * - A crash (`uncaughtException`, `unhandledRejection`) fails closed: one log record of the closed error summary
  *   (never the message, stack or any property of the thrown value), exit code 70, no graceful path and no write.
- * - Every listener and timer it created is removed before the exit hook runs, so a clean exit needs no
- *   `process.exit`: the process drains.
+ * - Every listener and timer it created is removed before the exit hook runs, so after a clean exit nothing of the
+ *   lifecycle holds the event loop. Ending the process is the caller's: the daemon entry always calls `process.exit`,
+ *   because an Electron utility process never ends by draining (PV-X1b).
  */
 
 export interface ExitInfo {
@@ -29,8 +30,9 @@ export interface ExitInfo {
   readonly result: ShutdownResult | undefined;
   /**
    * True when `stop` ran and every disposer succeeded: every timer, listener, the database handle and the lock
-   * are released, so the process may simply end by draining. False (also when a disposer failed or was abandoned): something may still run or hold the store (or the process crashed), so
-   * the caller must end the process itself (`process.exit(code)`).
+   * are released, so nothing of the host can still write and the caller may end the process when it likes (the daemon
+   * entry does, one macrotask later). False (also when a disposer failed or was abandoned): something may still run or
+   * hold the store (or the process crashed), so the caller must end the process at once (`process.exit(code)`).
    */
   readonly released: boolean;
 }
