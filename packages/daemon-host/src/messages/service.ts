@@ -42,9 +42,9 @@ import { StoredRecordError, checked, pageByText, principalOf, toWire } from "./w
  * payload. Sends and reads by anyone but the user pass rate limits first; then every decision and the write happen in
  * one journal transaction with their audit row, so a setting cannot change between the check and the append.
  *
- * NO EXISTENCE ORACLE (section 4.2). Every method that names a thread resolves it through `#resolve`, which always runs
- * the same two lookups (the thread, the caller's participation) whether or not the thread exists, and refuses an
- * unknown and a hidden thread on one path: the same audit row (`message.read.refused` or `message.send.refused` with
+ * NO EXISTENCE ORACLE (section 4.2). Every method that names a thread resolves it through `resolve`: for any caller but
+ * the user that is ONE participant-scoped lookup (thread joined with the caller's participation), so an unknown and a
+ * hidden thread are the same miss, refused on one path: the same audit row (`message.read.refused` or `message.send.refused` with
  * the requested id and `not_found`), the same `MessageRefusal`. A message named by `inReplyTo` follows the same rule.
  *
  * DELIVERY is slice 2. `deliverable` is its hook: it runs the send policy and Pause again against the settings of the
@@ -103,12 +103,19 @@ export function createMessageService(deps: MessageServiceDeps): MessageService {
     return { projectId, settings: parsed.data, directory, agentSettings: (a: AgentEntry) => store.agentSettings(a.agentId) ?? defaultAgentSettings(a) };
   }
 
-  /** One path for an unknown and a hidden thread (see the class comment): both lookups always run. */
+  /**
+   * One path for an unknown and a hidden thread (see the comment above): a caller other than the user is looked up with
+   * one participant-scoped query, so both are the same miss; the user reads every thread.
+   */
   function resolve(caller: MessageCaller, key: string, threadId: string): { thread: ThreadRecord; joinedSeq: number } {
-    const thread = store.thread(threadId);
-    const part = store.participant(threadId, key);
-    if (thread === undefined || (caller.kind !== "user" && part === undefined)) return NOT_FOUND();
-    return { thread, joinedSeq: caller.kind === "user" ? 0 : (part?.joinedSeq ?? 0) };
+    if (caller.kind === "user") {
+      const thread = store.thread(threadId);
+      return thread === undefined ? NOT_FOUND() : { thread, joinedSeq: 0 };
+    }
+    const seen = store.threadFor(threadId, key);
+    if (seen === undefined) return NOT_FOUND();
+    const { joinedSeq, ...thread } = seen;
+    return { thread, joinedSeq };
   }
 
   /** Run a read; a refusal is audited as `message.read.refused` with the requested thread id and the reason, never text. */

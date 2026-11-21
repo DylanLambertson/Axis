@@ -4,21 +4,22 @@ import { access } from "node:fs/promises";
 import { join } from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
 import { AxisError, withTransaction, type InstanceLock } from "@axis/audit";
-import { Daemon, EventHub, MemoryIdempotencyStore, protocolRegistry, type ContractRegistry, type ElectronPortLike, type ShutdownOptions } from "@axis/daemon";
+import { Daemon, EventHub, MemoryIdempotencyStore, type ElectronPortLike, type ShutdownOptions } from "@axis/daemon";
 import type { GitRunner } from "@axis/git-ops";
 import type { MockProviderOptions, RunBudgetLimits } from "@axis/providers";
-import { EVENTS_CONTRACT, EVENTS_VERSION, PROJECTS_CONTRACT, PROJECTS_VERSION, PROVIDERS_CONTRACT, PROVIDERS_VERSION, APPROVALS_CONTRACT, APPROVALS_VERSION, REVIEW_CONTRACT, REVIEW_VERSION, WORKTREES_CONTRACT, WORKTREES_VERSION, lookupMethod } from "@axis/protocol";
+import { EVENTS_CONTRACT, EVENTS_VERSION, PROJECTS_CONTRACT, PROJECTS_VERSION, PROVIDERS_CONTRACT, PROVIDERS_VERSION, APPROVALS_CONTRACT, APPROVALS_VERSION, REVIEW_CONTRACT, REVIEW_VERSION, WORKTREES_CONTRACT, WORKTREES_VERSION } from "@axis/protocol";
 import { createSecretScanner, type ScanMode } from "@axis/secret-scan";
 import { anchorPreflight } from "./anchor/preflight.js";
 import { createAgentBinding, type AgentBinding } from "./bindings/agent.js";
 import { createGitOperations, createGitPort } from "./bindings/git.js";
 import { createProvidersBinding, productionConnection, type AnthropicConnectionOptions, type ProvidersBinding } from "./bindings/providers.js";
 import { selectPtyGitRunner } from "./bindings/pty-git.js";
-import { createCommitPreparer, createReviewService } from "./bindings/review.js"; import { createTempIndexProvider } from "./bindings/review-tempindex.js";
+import { createCommitPreparer, createReviewService } from "./bindings/review.js";
+import { createTempIndexProvider } from "./bindings/review-tempindex.js";
 import { createRunsBinding, type RunsBinding } from "./bindings/runs.js";
 import { createRunRepositoryGuard, type RunSnapshotterFactory } from "./bindings/snapshot.js";
 import { createWorktreesBinding, type WorktreesBinding } from "./bindings/worktrees.js";
-import { composerWriteLock, createActiveRunForwarder, createAuditSeal, createRunsClock, settleComposer, daemonAuditSink, handleProjectsRegister, recordingRegistrar } from "./compose-parts.js";
+import { composerWriteLock, createActiveRunForwarder, createAuditSeal, createRunsClock, settleComposer, daemonAuditSink, handleProjectsRegister, recordingRegistrar, registryOf } from "./compose-parts.js";
 import type { HostConfig } from "./config.js";
 import { createAttestationVerifier } from "./control/attestation.js";
 import type { ControlClient } from "./control/client.js";
@@ -36,10 +37,12 @@ import { createHandlerRegistrar, registerAuditHandlers, type HandlerRegistrar } 
 import { registerCliRunsHandlers } from "./handlers/cli-runs.js";
 import { registerComposerRunsHandlers } from "./handlers/composer-runs.js";
 import { PushedBases } from "./handlers/git-common.js";
-import { createSshResolver, unavailableSshResolver, type SshSpawn } from "./bindings/ssh-resolver.js"; import { loadPushedBases, savePushedBases } from "./storage/pushed-bases-file.js";
+import { createSshResolver, unavailableSshResolver, type SshSpawn } from "./bindings/ssh-resolver.js";
+import { loadPushedBases, savePushedBases } from "./storage/pushed-bases-file.js";
 import { registerGitHandlers } from "./handlers/git.js";
 import { createProjectsHandlers } from "./handlers/projects.js";
-import { registerMessagesHandlers } from "./handlers/messages.js"; import { createMessagingBinding } from "./messages/binding.js";
+import { registerMessagesHandlers } from "./handlers/messages.js";
+import { createMessagingBinding } from "./messages/binding.js";
 import { createProvidersHandlers } from "./handlers/providers.js";
 import { createReviewHandlers } from "./handlers/review.js";
 import { createReviewAuditSink } from "./handlers/review-audit.js";
@@ -147,14 +150,6 @@ function refuse(reason: string): never {
 }
 
 const isPty = (p: unknown): p is PtyPort => typeof (p as { spawn?: unknown } | null)?.spawn === "function";
-
-/** The registry restricted to what the host serves, so an unserved method does not exist (and `hello` does not offer it). */
-function registryOf(surface: HostServices["surface"]): ContractRegistry {
-  return {
-    lookup: (contract, version, method) => (surface.registry[`${contract}/${version}`]?.[method] === undefined ? undefined : lookupMethod(contract, version, method)),
-    versions: (contract) => protocolRegistry.versions(contract).filter((v) => surface.registry[`${contract}/${v}`] !== undefined),
-  };
-}
 
 export function composeDaemonHost(options: ComposeOptions): ComposedHost {
   if (!isPty(options.pty)) refuse("pty_required");

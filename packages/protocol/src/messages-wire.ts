@@ -264,7 +264,7 @@ export const threadSummarySchema = z.strictObject({
  * id, count or text from the journal, the recipient or the scanner). Closed set, never free text.
  *
  * `not_found` is the ONLY answer for a thread or message the caller cannot see, whether it exists or not: the same code,
- * the same fixed message, the same details and the same timing class (no existence oracle, section 4.2). A recipient the
+ * the same fixed message, the same details, on the same structural path (no existence oracle, section 4.2). A recipient the
  * sender may not address answers `recipient_refused` whether it exists or not, and an agent naming another project's
  * agent gets `recipient_refused`, never `cross_project` (which only the user, who can see every project, receives).
  */

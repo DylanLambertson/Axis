@@ -48,6 +48,11 @@ test("version 9: a message is never changed, a seq cannot be skipped or reused, 
   assert.throws(() => db.prepare("UPDATE agent_messages SET body = 'changed'").run(), /never changed/);
   assert.throws(() => db.prepare("INSERT INTO agent_messages (id, thread_id, seq, sender, sender_key, recipients, expanded, body, refs, hop, created_at) VALUES (?, ?, 5, '{}', 'user', '[]', '[]', 'x', '[]', 0, 't')").run(id("msg", 9), T1), /next sequence/);
   assert.throws(() => db.prepare("UPDATE message_participants SET joined_seq = 0").run(), /only joins/);
+  assert.throws(() => db.prepare("DELETE FROM message_participants WHERE principal = 'agent:a1'").run(), /only joins/);
+  assert.deepEqual(m.participants(T1).map((p) => p.principal), ["user", "agent:a1"], "nobody leaves the set");
+  assert.throws(() => db.prepare("UPDATE message_recipients SET counted = 1").run(), /never changed/);
+  assert.throws(() => db.prepare("UPDATE message_recipients SET principal = 'agent:a9'").run(), /never changed/);
+  assert.throws(() => db.prepare("INSERT INTO message_recipients (principal, message_id, thread_id, seq, sender_key, counted) VALUES ('a b', ?, ?, 1, 'user', 0)").run(id("msg", 1), T1), "a principal is a key, never free text");
   assert.throws(() => db.prepare("UPDATE message_threads SET project_id = 'p2'").run(), /keeps its id and project/);
   assert.throws(() => db.prepare("UPDATE message_threads SET last_seq = 0").run(), /only grows/);
   assert.equal(m.markRead(T1, "agent:a1", 1), 1);
@@ -58,6 +63,10 @@ test("version 9: a message is never changed, a seq cannot be skipped or reused, 
   assert.throws(() => m.append({ ...post({ n: 4 }), message: { ...post({ n: 4 }).message, id: "msg_short" } }));
   assert.throws(() => m.append(post({ n: 5, thread: { create: true, id: id("thr", 2), projectId: "nope" } })));
   assert.equal(m.thread(T1)?.lastSeq, 1, "nothing of a refused append is kept");
+  // The retention purge (a later slice) deletes a message after its recipient rows; that stays possible.
+  db.prepare("DELETE FROM message_recipients WHERE message_id = ?").run(id("msg", 1));
+  db.prepare("DELETE FROM agent_messages WHERE id = ?").run(id("msg", 1));
+  assert.equal(m.message(id("msg", 1)), undefined);
   assert.equal(m.thread(id("thr", 2)), undefined);
   db.close();
 });

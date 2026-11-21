@@ -338,11 +338,14 @@ export const JOURNAL_MIGRATIONS: readonly Migration[] = [
     // messages, who each message is addressed to, read cursors and messaging settings. Additive: new tables only.
     //
     // - A thread belongs to one registered project. Its `last_seq` only grows: a message must take the next one (trigger).
-    // - Participants only join (no update, no delete): `joined_seq` is the last message before the principal joined, so
-    //   it reads messages after it and the ones addressed to it (section 4.2).
+    // - Participants only join (no update, no delete, by trigger): `joined_seq` is the last message before the principal
+    //   joined, so it reads messages after it and the ones addressed to it (section 4.2).
     // - A message is never changed. Its body is the sender's raw text (escaped on every way out, never here).
     // - `message_recipients` holds who a message is addressed to after group expansion; `counted` marks a message that
-    //   counts against the recipient's queue quotas (an agent's or a plugin's, never the user's or the system's).
+    //   counts against the recipient's queue quotas (an agent's or a plugin's, never the user's or the system's). A
+    //   recipient row is never changed (it feeds the quotas).
+    // - Messages and their recipient rows can be deleted: the retention purge (a later slice) removes them, recipient
+    //   rows first. Threads, participants and cursors stay.
     // - A read cursor never moves back (trigger).
     version: 9,
     sql: `
@@ -370,6 +373,8 @@ export const JOURNAL_MIGRATIONS: readonly Migration[] = [
       CREATE INDEX message_participants_by_principal ON message_participants (principal, thread_id);
       CREATE TRIGGER message_participants_kept BEFORE UPDATE ON message_participants
         BEGIN SELECT RAISE(ABORT, 'a participant only joins'); END;
+      CREATE TRIGGER message_participants_no_delete BEFORE DELETE ON message_participants
+        BEGIN SELECT RAISE(ABORT, 'a participant only joins'); END;
 
       CREATE TABLE agent_messages (
         id          TEXT PRIMARY KEY CHECK (length(id) = 26 AND substr(id, 1, 4) = 'msg_' AND id NOT GLOB '*[^A-Za-z0-9_-]*'),
@@ -396,7 +401,7 @@ export const JOURNAL_MIGRATIONS: readonly Migration[] = [
         BEGIN SELECT RAISE(ABORT, 'a message is never changed'); END;
 
       CREATE TABLE message_recipients (
-        principal  TEXT NOT NULL,
+        principal  TEXT NOT NULL CHECK (length(principal) BETWEEN 4 AND 128 AND principal NOT GLOB '*[^A-Za-z0-9:._-]*'),
         message_id TEXT NOT NULL REFERENCES agent_messages(id),
         thread_id  TEXT NOT NULL REFERENCES message_threads(id),
         seq        INTEGER NOT NULL CHECK (seq >= 1),
@@ -406,6 +411,8 @@ export const JOURNAL_MIGRATIONS: readonly Migration[] = [
       ) STRICT, WITHOUT ROWID;
       CREATE INDEX message_recipients_by_thread ON message_recipients (principal, thread_id, seq);
       CREATE INDEX message_recipients_by_message ON message_recipients (message_id);
+      CREATE TRIGGER message_recipients_fixed BEFORE UPDATE ON message_recipients
+        BEGIN SELECT RAISE(ABORT, 'a recipient row is never changed'); END;
 
       CREATE TABLE message_cursors (
         thread_id    TEXT NOT NULL REFERENCES message_threads(id),

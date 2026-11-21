@@ -119,6 +119,17 @@ export class MessageRecords {
     return r === undefined ? undefined : toThread(r);
   }
 
+  /**
+   * The thread as one participant sees it, in ONE participant-scoped lookup: undefined both for a thread that does not
+   * exist and for one the principal is not in, so the two are the same miss (no existence oracle, section 4.2).
+   */
+  threadFor(threadId: string, principal: string): (ThreadRecord & { readonly joinedSeq: number }) | undefined {
+    const r = this.#db
+      .prepare("SELECT t.id, t.project_id, t.created_at, t.last_seq, t.last_at, p.joined_seq FROM message_threads t JOIN message_participants p ON p.thread_id = t.id WHERE t.id = ? AND p.principal = ?")
+      .get(threadId, principal) as Row | undefined;
+    return r === undefined ? undefined : { ...toThread(r), joinedSeq: int(r["joined_seq"]) };
+  }
+
   participant(threadId: string, principal: string): ParticipantRecord | undefined {
     const r = this.#db.prepare("SELECT principal, joined_seq FROM message_participants WHERE thread_id = ? AND principal = ?").get(threadId, principal) as Row | undefined;
     return r === undefined ? undefined : { principal: str(r["principal"]), joinedSeq: int(r["joined_seq"]) };

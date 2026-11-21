@@ -17,9 +17,9 @@ import type { HandlerRegistrar } from "./anchor-guard.js";
 
 /**
  * `axis.messages/1` over the bridge (ticket PV-M3; docs/design/messages-contract.md). The bridge serves the user's own
- * attested connection only: the policy rows admit only `user`, and every handler refuses any other actor again with
- * the contract's `not_found` (agents reach messaging through the broker, PV-M4, and the CLI endpoint, PV-M6, with their
- * own attested callers). The caller handed to the service is built here from `ctx.identity`, never from the payload.
+ * attested desktop connection only: the policy rows admit only `user`, and every handler refuses any other actor, and a
+ * web client, again with the contract's `not_found` (agents reach messaging through the broker, PV-M4, and the CLI
+ * endpoint, PV-M6, with their own attested callers). The caller handed to the service is built here from `ctx.identity`, never from the payload.
  *
  * Every refusal leaves as `{ code, MESSAGES_REFUSAL_MESSAGE, details: { reason } }` with a reason of the contract's closed
  * set under its code; anything else (a stored record that does not parse, a journal error) is `E_INTERNAL` with no
@@ -50,7 +50,8 @@ export function createMessagesHandlers(deps: MessagesHandlerDeps): Readonly<Reco
     async (context: HandlerContext, payload: never): Promise<unknown> => {
       if (context.signal.aborted) return fail("E_CANCELLED");
       // Defence in depth behind the policy row: only the user's own attested connection.
-      if (context.identity.actor !== "user") return fail("E_NOT_FOUND", "not_found");
+      // A web client is refused here too, not only by WEB_ALLOWED: one mistaken allow-list line must not expose threads.
+      if (context.identity.actor !== "user" || context.identity.clientKind !== "desktop") return fail("E_NOT_FOUND", "not_found");
       let out: unknown;
       try {
         out = await call(USER, payload as MessagesRequest<M>);

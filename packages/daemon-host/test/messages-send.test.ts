@@ -28,6 +28,16 @@ test("the user opens a thread with an agent: the daemon fills project, seq, send
   assert.deepEqual(r.journal.messages.participants(message.threadId).map((p) => p.principal), ["user", "agent:a1"]);
 });
 
+test("a CLI endpoint sender stays unverified on the wire and in the audit row; the sender comes from the caller only", async (t) => {
+  const r = setup(t);
+  const { message } = await svc(r).send(agent("c1", { verified: false, runId: "run-c1" }), sendReq([{ user: true }], "from the endpoint"));
+  assert.deepEqual(message.sender, { kind: "agent", agentId: "c1", runId: "run-c1", verified: false });
+  const row = auditRows(r).find((e) => e.action === "message.send");
+  assert.deepEqual([row?.actor, row?.payload["verified"], row?.payload["callerId"]], ["agent:c1", false, "c1"]);
+  const composer = (await svc(r).send(agent("a1", { runId: null }), sendReq([{ user: true }]))).message;
+  assert.deepEqual(composer.sender, { kind: "agent", agentId: "a1", runId: null, verified: true });
+});
+
 test("ids are random, unique and say nothing: a thousand sends give a thousand distinct ids", async (t) => {
   const r = setup(t);
   const ids = new Set<string>();
@@ -112,6 +122,9 @@ test("posting needs participation; every recipient passes the policy again (NS1)
   const a2 = r.journal.messages.participant(threadId, "agent:a2");
   assert.equal(a2?.joinedSeq, third.seq - 1);
   assert.deepEqual(s.thread(agent("a2"), { threadId }).messages.map((m) => m.seq), [third.seq]);
+  // Nobody addresses itself inside a thread either (the new-thread path refuses it earlier, so this is its own check).
+  assert.equal(await outcome(() => s.send(agent("a1"), sendReq([{ agent: "a1" }], "x", { threadId }))), "E_CONFLICT/recipient_refused");
+  assert.equal(await outcome(() => s.send(USER, sendReq([{ user: true }], "x", { threadId }))), "E_CONFLICT/recipient_refused");
   // The user posts into any thread of the project and joins it.
   assert.equal(await outcome(() => s.send(USER, sendReq([{ agent: "a1" }], "note", { threadId }))), "ok");
   assert.ok(r.journal.messages.participant(threadId, "user") !== undefined);

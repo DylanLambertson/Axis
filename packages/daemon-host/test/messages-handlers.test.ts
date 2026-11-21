@@ -128,6 +128,7 @@ test("behind the policy row, a handler still refuses any actor but the user with
   t.after(() => r.close());
   const handlers = createMessagesHandlers(r.binding);
   const ctx = (actor: string) => ({ identity: { connectionId: "c".repeat(22), windowId: "win-1", actorId: "x", actor, trusted: true, clientKind: "desktop" }, requestId: "r1", correlationId: "c1", signal: new AbortController().signal }) as never;
+  await assert.rejects(Promise.resolve(handlers.threads({ ...(ctx("user") as object), identity: { ...(ctx("user") as { identity: object }).identity, clientKind: "web" } } as never, {} as never)), { code: "E_NOT_FOUND" }, "a web client, even if an allow-list line admitted it");
   for (const actor of ["agent:a1", "daemon"]) {
     await assert.rejects(Promise.resolve(handlers.threads(ctx(actor), {} as never)), { code: "E_NOT_FOUND", details: { reason: "not_found" } }, actor);
     await assert.rejects(Promise.resolve(handlers.send(ctx(actor), sendReq([{ agent: "a1" }]) as never)), { code: "E_NOT_FOUND" }, actor);
