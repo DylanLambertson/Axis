@@ -7,7 +7,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { GitRunner } from "@axis/git-ops";
-import { createPtyProcessPort, createPtyService, type Channel, type ExecFn, type ExecOutcome, type ExecRequest, type PtyChild, type PtyExit, type PtyProcessPort, type SpawnFn, type SpawnRequest } from "@axis/pty-process";
+import { createNodeExec, createPtyProcessPort, createPtyService, type Channel, type ExecFn, type ExecRequest, type PtyChild, type PtyExit, type PtyProcessPort, type SpawnFn, type SpawnRequest } from "@axis/pty-process";
 import { createPtyGitRunner } from "../src/bindings/pty-git.js";
 
 /** One end of an in-memory channel pair that delivers in a later microtask, like a MessagePort. */
@@ -46,46 +46,17 @@ function channelPair(): { a: Channel; b: Channel } {
   return { a: x.channel, b: y.channel };
 }
 
-/** POSIX: each command leads its own process group; each stream keeps at most `maxOutput` bytes. */
-function pipeExec(log: ExecRequest[]): ExecFn {
+/** The production exec function (PV-X1a), for git only, recording each request. */
+function nodeExec(gitPath: string, log: ExecRequest[]): ExecFn {
+  const exec = createNodeExec(new Set([gitPath]), process.platform);
   return (req) => {
     log.push(req);
-    const cp = spawn(req.argv[0] as string, req.argv.slice(1), { cwd: req.cwd, env: { ...req.env }, detached: true, stdio: ["pipe", "pipe", "pipe"] });
-    let truncated = false;
-    const collect = (s: NodeJS.ReadableStream): Buffer[] => {
-      const parts: Buffer[] = [];
-      let n = 0;
-      s.on("data", (c: Buffer) => {
-        const room = Math.max(0, req.maxOutput - n);
-        if (c.length > room) truncated = true;
-        parts.push(c.subarray(0, room));
-        n += Math.min(room, c.length);
-      });
-      return parts;
-    };
-    const out = collect(cp.stdout);
-    const err = collect(cp.stderr);
-    cp.stdin.on("error", () => undefined);
-    const done = new Promise<ExecOutcome>((resolve, reject) => {
-      cp.once("error", reject);
-      cp.once("close", (code, signal) => resolve({ code, signal, stdout: Buffer.concat(out), stderr: Buffer.concat(err), truncated }));
-    });
-    cp.stdin.end(req.stdin === undefined ? undefined : Buffer.from(req.stdin));
-    return {
-      done,
-      kill: () => {
-        try {
-          if (cp.pid !== undefined) process.kill(-cp.pid, "SIGKILL");
-        } catch {
-          /* gone */
-        }
-      },
-    };
+    return exec(req);
   };
 }
 
 /** POSIX: a terminal stand-in. The child leads a new group; its output is read and dropped (the daemon never sees it). */
-function pipeSpawn(log: SpawnRequest[]): SpawnFn {
+export function pipeSpawn(log: SpawnRequest[]): SpawnFn {
   return (req) => {
     log.push(req);
     const cp = spawn(req.argv[0] as string, req.argv.slice(1), { cwd: req.cwd, env: { ...req.env }, detached: true, stdio: ["pipe", "pipe", "pipe"] });
@@ -133,7 +104,7 @@ export function ptyProcessRig(gitPath: string, baseEnv: Record<string, string>, 
   const spawned: SpawnRequest[] = [];
   const service = createPtyService({
     spawn: pipeSpawn(spawned),
-    git: { exec: pipeExec(execs), gitPath, hooksOff: "/dev/null", scratchParent: join(scratchParent, "s"), baseEnv },
+    git: { exec: nodeExec(gitPath, execs), gitPath, hooksOff: "/dev/null", scratchParent: join(scratchParent, "s"), baseEnv },
   });
   const pair = channelPair();
   service.serveControl(pair.b);

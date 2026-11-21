@@ -62,7 +62,7 @@ const O_NOFOLLOW = constants.O_NOFOLLOW ?? 0;
 const HOOK_MAX_BYTES = 64 * 1024 * 1024;
 
 /** Removes a directory tree without following links; a directory a hook made read-only is opened up first. */
-function removeTree(p: string): void {
+export function removeTree(p: string): void {
   try {
     rmSync(p, { recursive: true, force: true });
     return;
@@ -145,7 +145,9 @@ export function createGitExec(cfg: GitExecConfig, clock: Clock, platform: NodeJS
           running.delete(child);
           // The cap holds even if the exec function kept more.
           const cut = (b: Uint8Array): Uint8Array => (b.length > maxOutput ? b.subarray(0, maxOutput) : b);
-          res({ ...o, stdout: cut(o.stdout), stderr: cut(o.stderr), truncated: o.truncated || o.stdout.length > maxOutput || o.stderr.length > maxOutput });
+          const stdoutTruncated = o.stdoutTruncated || o.stdout.length > maxOutput;
+          const stderrTruncated = o.stderrTruncated || o.stderr.length > maxOutput;
+          res({ ...o, stdout: cut(o.stdout), stderr: cut(o.stderr), truncated: o.truncated || stdoutTruncated || stderrTruncated, stdoutTruncated, stderrTruncated });
         },
         () => {
           if (done) return;

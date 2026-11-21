@@ -58,7 +58,8 @@ export class Client {
       this.#waiters.splice(0).forEach((w) => w());
     });
   }
-  async until(pred: (m: Msg) => boolean, ms = 15_000): Promise<Msg> {
+  /** `ms` is a hang guard, not an expectation: a reply that exists arrives however slowly a loaded host runs real git, and a lost one fails loudly after the guard. */
+  async until(pred: (m: Msg) => boolean, ms = 120_000): Promise<Msg> {
     const end = Date.now() + ms;
     for (;;) {
       const hit = this.all.find(pred);

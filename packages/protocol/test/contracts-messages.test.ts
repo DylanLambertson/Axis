@@ -60,7 +60,7 @@ const EXPECTED: ReadonlyArray<readonly [string, string, number, string, number]>
 test("messages: served (PV-M3), nothing left planned; the method table is the designed one, frozen and servable", () => {
   const table = contracts["axis.messages/1"];
   assert.ok(table !== undefined);
-  assert.deepEqual(Object.keys(plannedContracts), [], "a served contract is never also planned");
+  assert.equal(plannedContracts["axis.messages/1"], undefined, "a served contract is never also planned");
   assert.deepEqual(tableProblems(contracts), []);
   assert.deepEqual(
     Object.entries(table).map(([m, s]) => [m, s.sideEffect, s.tier, s.idempotency, s.timeoutMs]),

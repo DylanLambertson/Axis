@@ -57,9 +57,21 @@ test("a long path is cut in the middle so the file name at its end survives", ()
   assert.ok(Array.from(out).length <= 61);
   assert.equal(escapeForDisplay("short/path", { maxLength: 60, cut: "middle" }), "short/path");
   const huge = `${"x".repeat(5_000_000)}/name.txt`;
-  const t = Date.now();
   assert.ok(escapeForDisplay(huge, { maxLength: 100, cut: "middle" }).endsWith("/name.txt"));
-  assert.ok(Date.now() - t < 500);
+  // Work is bounded by the display length, not by the input: a ratio of best-of-five times, not an absolute bound (a busy machine disturbs
+  // the best of several runs least). Looking at the whole 5M-character input costs hundreds of milliseconds against well under one.
+  const best = (input: string): number => {
+    let min = Infinity;
+    for (let i = 0; i < 5; i++) {
+      const t0 = performance.now();
+      escapeForDisplay(input, { maxLength: 100, cut: "middle" });
+      min = Math.min(min, performance.now() - t0);
+    }
+    return min;
+  };
+  const small = best(`${"x".repeat(5_000)}/name.txt`);
+  const large = best(huge);
+  assert.ok(large <= 10 * small + 15, `display work grew with the input: ${large.toFixed(1)} ms for 5M characters against ${small.toFixed(1)} ms for 5 000`);
   assert.ok(escapeForDisplay("😀".repeat(500), { maxLength: 9, cut: "middle" }).includes("\u2026"));
 });
 

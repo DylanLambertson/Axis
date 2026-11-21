@@ -145,3 +145,49 @@ test("real git: a planted hook, fsmonitor and external diff driver do not run", 
     rmSync(base, { recursive: true, force: true });
   }
 });
+
+test("status and diff never walk into a submodule: --ignore-submodules=dirty is fixed, after the subcommand", async () => {
+  const f = fake();
+  const git = createBrokerGit({ runner: f.runner, parentEnv: { PATH: "/bin" }, assertNoDrift: async () => undefined, platform: "linux" });
+  for (const command of ["status", "diff"] as const) {
+    await git.run(w, { command });
+    const a = (f.calls[f.calls.length - 1] as GitRunRequest).argv;
+    assert.ok(a.indexOf("--ignore-submodules=dirty") > a.indexOf(command), command);
+  }
+  assert.equal(refuse(() => checkGitCall({ command: "status", flags: ["--ignore-submodules=none"] }, root, "linux")), "git-flag", "the model cannot undo it");
+});
+
+test("real git: a clean filter defined inside a submodule does not run on status or diff", { skip: !gitOk || !posix }, async () => {
+  const base = realpathSync(mkdtempSync(join(tmpdir(), "axis-git-")));
+  try {
+    const env = { PATH: process.env["PATH"] ?? "", HOME: base, GIT_CONFIG_NOSYSTEM: "1" };
+    const run = (cwd: string, ...args: string[]): void => {
+      const r = spawnSync("git", ["-c", "user.name=F", "-c", "user.email=f@example.invalid", ...args], { cwd, encoding: "utf8", env });
+      assert.equal(r.status, 0, r.stderr);
+    };
+    const sub = join(base, "sub");
+    const marker = join(base, "MARKER");
+    run(base, "init", "-q");
+    run(base, "commit", "-q", "--allow-empty", "-m", "i");
+    mkdirSync(sub);
+    run(sub, "init", "-q");
+    writeFileSync(join(sub, "f"), "a\n");
+    writeFileSync(join(sub, ".gitattributes"), "* filter=evil\n");
+    run(sub, "add", ".");
+    run(sub, "commit", "-q", "-m", "s");
+    appendFileSync(join(sub, ".git", "config"), `[filter "evil"]\n\tclean = touch ${marker}; cat\n`);
+    run(base, "add", "sub");
+    run(base, "commit", "-q", "-m", "add");
+    writeFileSync(join(sub, "f"), "b\n");
+    const git = createBrokerGit({ runner: createNodeRunner({ excludeDirs: () => [base] }), parentEnv: env, assertNoDrift: async () => undefined });
+    const wt = { workTree: base, gitDir: join(base, ".git") };
+    assert.equal((await git.run(wt, { command: "status", flags: ["--porcelain=v1"] })).code, 0);
+    assert.equal((await git.run(wt, { command: "diff" })).code, 0);
+    assert.equal(existsSync(marker), false, "no git ran inside the submodule");
+    // Control: a plain status does run git inside the submodule, and its filter.
+    spawnSync("git", ["status", "--porcelain=v1"], { cwd: base, env });
+    assert.equal(existsSync(marker), true, "the fixture is not vacuous");
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});

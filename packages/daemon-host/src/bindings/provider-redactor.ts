@@ -14,7 +14,9 @@ import type { Redactor as ProviderRedactor } from "@axis/providers";
  * every live run's long strings at once, or the walk evicts its own verdicts and every request scans the whole history again.
  * A run's caps bound its long strings (over 16,384 characters): tool inputs 8 MiB / 16,385 = 511, results 4 MiB / 16,385 =
  * 255, at most one model text per turn (24) and the prompt: 791, rounded up to 1,024, times 8 live runs (the service's
- * default `maxActive`). Live runs touch their entries on every request, so the ones dropped first are those of runs that ended.
+ * default `maxActive`). The least recently used entries go first: those of runs that ended, but also those of a live run that
+ * has sent nothing for a while (parked on an approval) when other runs fill the bound; such a run's next request scans its
+ * history once more, which costs time and never a verdict.
  * About 2 MB of keys. Pinned by a test against the real caps.
  */
 export const MAX_CLEAN_VERDICTS = 8 * 1024;
@@ -38,6 +40,7 @@ export function providerRedactor(r: Redactor, maxVerdicts = MAX_CLEAN_VERDICTS):
     containsSecret: (t) => {
       if (t.length <= SCAN_CHARS) return r.redactString(t) !== t;
       if (!isWellFormedString(t)) return true;
+      // The UTF-8 bytes of the whole (well-formed) string: any lossy encoding would let two different strings share a verdict.
       const id = createHash("sha256").update(t, "utf8").digest("hex");
       const forms = r.registeredForms;
       if (clean.get(id) === forms) {

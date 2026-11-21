@@ -2,6 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { applyHunks, blobOid, hunkId, parseUnifiedHunks, splitKeepingEol, type Hunk } from "../src/hunks.js";
+import { budget } from "./load-margin.js";
 
 function parse(patch: string, max = 1000): readonly Hunk[] {
   const r = parseUnifiedHunks(patch, max);
@@ -143,5 +144,5 @@ test("a giant hunk list parses in linear time and memory proportional to the pat
   const t = Date.now();
   const r = parseUnifiedHunks(`@@ -1,${n} +0,0 @@\n${body}`, 10);
   assert.ok(r.ok);
-  assert.ok(Date.now() - t < 5000);
+  assert.ok(Date.now() - t < budget(5000));
 });
