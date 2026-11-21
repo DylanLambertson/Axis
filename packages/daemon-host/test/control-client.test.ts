@@ -4,7 +4,7 @@ import { getEventListeners } from "node:events";
 import { test } from "node:test";
 import { ChannelMux, ControlClient } from "../src/index.js";
 import { memoryChannelPair, type MemoryEnd } from "../testing/memory-channel.js";
-import { processSnapshot, trackTimers, wait } from "./helpers.js";
+import { processSnapshot, settledTo, trackTimers, wait } from "./helpers.js";
 
 const chal = "C".repeat(43);
 const proof = "q".repeat(32);
@@ -177,8 +177,7 @@ test("dispose rejects what is waiting and leaves no timer, listener or pending e
   assert.throws(() => client.send({ type: "fatal", code: "E_INTERNAL" }), { code: "E_UNAVAILABLE" });
   mux.dispose();
   assert.equal((a as MemoryEnd).listeners(), 0);
-  await wait(5);
-  assert.deepEqual(processSnapshot(), before);
+  await settledTo(before);
 });
 
 test("the channel closing rejects waiting requests with E_UNAVAILABLE", async () => {

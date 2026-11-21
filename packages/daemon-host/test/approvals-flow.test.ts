@@ -5,7 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { AuditLog, Redactor } from "@axis/audit";
 import { CHALLENGE_PAYLOAD_ALLOWLIST, createChallengeAuditSink } from "../src/index.js";
 import { challengeOf, newKey, removePayload, rig, wipePayload, type Msg } from "./approvals-rig.js";
-import { trackTimers, wait } from "./helpers.js";
+import { trackTimers } from "./helpers.js";
 
 import { approve4, AP, issue4, resolve, retry, setup, waitFor, WT } from "./approvals-helpers.js";
 test("full flow: challenge, native.confirm with a proof, resolve as user, the retry runs once, a second retry is refused", async (t) => {
@@ -94,9 +94,10 @@ test("user cancellation in the native dialog is a refusal", async (t) => {
 test("a supervisor that never answers (timeout) and a closed channel are refusals, never approvals", async (t) => {
   const { r, user } = await setup(t, { limits: { challengeTtlMs: 120 } });
   const i = await issue4(r, user);
-  await wait(250);
+  // The unanswered native wait ends at its own timeout, before the user approves: wait for that, not for a delay.
+  await waitFor(() => r.approvals.stats().native.failed === 1, 10_000, "the unanswered native wait was counted failed");
   assert.equal((await resolve(user, i.challenge)).ok, true);
-  await waitFor(() => r.approvals.stats().native.failed === 1, 60_000, "the unanswered native wait was counted failed");
+  await waitFor(() => r.approvals.stats().native.refused === 1, 10_000, "the failed wait was applied as a refusal");
   assert.equal(r.approvals.stats().native.confirmed, 0);
   assert.equal((await retry(user, i.challenge.challengeId, i.key)).error?.code, "E_CONFLICT");
   assert.equal(r.runs.length, 0);

@@ -18,7 +18,8 @@ const rows = (r: DeliveryRig, action: string) => r.c.audit.list({ limit: 1000 })
 const pending = async (r: DeliveryRig): Promise<Challenge[]> => (await r.c.user.call("axis.approvals", "pending", {})).result?.["challenges"] as Challenge[];
 /** Wait (bounded) until the run's write waits for the user's approval. */
 async function waitPending(r: DeliveryRig): Promise<void> {
-  for (let i = 0; i < 600; i++) {
+  const deadline = Date.now() + 60_000; // a hang guard: the approval is requested when the run reaches its write, however slowly
+  while (Date.now() < deadline) {
     if ((await pending(r)).length > 0) return;
     await new Promise((res) => setTimeout(res, 25));
   }

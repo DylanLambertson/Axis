@@ -9,13 +9,18 @@ import { finaliseApproved, createWs as createWsRaw, gitSkipReason } from "./work
 
 const skip = gitSkipReason();
 
-/** Counts the calls that ask the project mutex for a turn: a start that has asked is queued behind the holder (or has gone past it). */
-function countMutexAsks(mutex: { run: (...a: never[]) => unknown }): { asks: () => number } {
-  const real = mutex.run.bind(mutex) as (...a: unknown[]) => unknown;
-  let n = 0;
-  (mutex as { run: unknown }).run = (...a: unknown[]) => (n++, real(...a));
-  return { asks: () => n };
+/**
+ * Counts the calls that ask the project mutex for a turn (`asks`) and the ones whose work has begun (`entered`). A start
+ * that is queued behind the holder has asked and not entered; one that asked and was let through has entered.
+ */
+function watchMutex(mutex: { run: (...a: never[]) => unknown }): { asks: () => number; entered: () => number } {
+  const real = mutex.run.bind(mutex) as (key: string, fn: () => Promise<unknown>, signal?: AbortSignal) => unknown;
+  let asks = 0;
+  let entered = 0;
+  (mutex as { run: unknown }).run = (key: string, fn: () => Promise<unknown>, signal?: AbortSignal) => (asks++, real(key, () => (entered++, fn()), signal));
+  return { asks: () => asks, entered: () => entered };
 }
+
 const create = async (user: Parameters<typeof createWsRaw>[0]): Promise<string> => (await createWsRaw(user, (_m, x) => (assert.equal(x.ok, true, JSON.stringify(x.error)), x))).id;
 
 test("a start that races a finalise never runs in a workspace being changed (project mutex, state re-read)", { skip }, async (t) => {
@@ -41,7 +46,7 @@ test("a start that races a finalise never runs in a workspace being changed (pro
 
   const finalise = finaliseApproved(r, user, id, "archived");
   await reached; // the finalise holds the project mutex and the journal lock record, and has not touched git yet
-  const mx = countMutexAsks(r.binding.mutex);
+  const mx = watchMutex(r.binding.mutex);
   const start = user.call("axis.cli-runs", "start", START(id), newKey());
   // The binding is safe on its own too (a caller that is not the handler): its start waits for the project as well.
   const direct = r.runs.service.start({
@@ -52,7 +57,8 @@ test("a start that races a finalise never runs in a workspace being changed (pro
   });
   const directOutcome = direct.then(() => "started", (e: { details?: { reason?: string } }) => e.details?.reason);
   // Both starts (the wire call and the direct one) have asked the mutex, so both are queued behind the finalise; a start that skipped the queue would have spawned.
-  await untilTrue(() => mx.asks() >= 2 || r.pty.spawns.length > 0, "both starts asked the project mutex", 10_000);
+  await untilTrue(() => mx.asks() >= 2 || mx.entered() > 0 || r.pty.spawns.length > 0, "both starts asked the project mutex", 10_000);
+  assert.equal(mx.entered(), 0, "no start began its work while the finalise held the project");
   assert.equal(r.pty.spawns.length, 0, "no process was spawned while the finalise held the project");
   assert.equal(r.asked.some((m) => m["type"] === "trust.check"), false, "main is not asked until the start holds the project");
 
@@ -100,9 +106,10 @@ test("a start that races a remove never starts in a directory being deleted", { 
   await approve4(r as never, user, { challenge: c, proof: String(sent["proof"]), key, sent, first: {} as Msg });
   const removing = user.call("axis.worktrees", "remove", { id, approval: { challengeId: c.challengeId } }, key);
   await reached;
-  const mx2 = countMutexAsks(r.binding.mutex);
+  const mx2 = watchMutex(r.binding.mutex);
   const start = user.call("axis.cli-runs", "start", START(id), newKey());
-  await untilTrue(() => mx2.asks() >= 1 || r.pty.spawns.length > 0, "the start asked the project mutex", 10_000);
+  await untilTrue(() => mx2.asks() >= 1 || mx2.entered() > 0 || r.pty.spawns.length > 0, "the start asked the project mutex", 10_000);
+  assert.equal(mx2.entered(), 0, "the start did not begin its work while the removal held the project");
   assert.equal(r.pty.spawns.length, 0, "nothing was spawned into the directory while it is being removed");
   hold.open();
   assert.equal((await removing).ok, true);
