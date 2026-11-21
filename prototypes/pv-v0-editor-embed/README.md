@@ -20,9 +20,12 @@ Evidence for `docs/design/pv-v0-editor-embed.md`. It loads the **real upstream e
 node prepare.mjs     # links out/vs, transpiles the overlay into vs/axis, copies page.html
 node unit.mjs        # the overlay's unit tests for the pure rules
 node run.mjs         # the browser checks; or one section: model, route, keys, approve, trust, race
-node mutate.mjs      # 15 mutants of the prototype; each must fail the unit tests or the browser checks
+node mutate.mjs      # 27 mutants of the prototype; each must fail the unit tests or the browser checks
+node scan-keys.mjs --check   # the key inventory (review S1); fails on a flagged command the policy does not classify
 ```
 
-`run.mjs` prints one `PASS` or `FAIL` line per check with the value it saw. `page.html` registers stand-ins for the upstream workbench commands the side panel must not trigger (Save, Save As, Save without Formatting, Close Editor, Split Editor), with the same keys, weight and `when` as at the pin. The `route` section runs twice: with the Axis routes, and without them to show the upstream misroute.
+`run.mjs` prints one `PASS` or `FAIL` line per check, with the value it saw and, on a failure, the value it expected. `page.html` registers stand-ins for upstream workbench commands the side panel must not trigger, with the same keys, weight and `when` as at the pin: Save, Save As, Save without Formatting, Save All, Close Editor, Split Editor, Copy Path, Next Editor and Close Group. It then installs the Axis command guards. The `route` section runs twice: with the guards, and without them to show the upstream misroute.
+
+`scan-keys.mjs` imports the web workbench main (never started) so that every contribution registers its commands and keybindings. It keeps the default keybindings that can fire with focus in the side-panel editor and are not editor commands, and runs each handler against recording services to see whether it reads the editor part's active editor. `scan-2c33b50.tsv` is its output at the pin (Linux keymap).
 
 Known harness limits: the editor web worker is not bundled, so worker features (word-based suggestions, link detection) are not exercised, and their load errors are filtered from the output. One unrelated 404 (a missing asset) is reported as a page error.

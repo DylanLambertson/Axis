@@ -29,4 +29,6 @@ function walk(dir) {
 	}
 }
 walk(env.overlay);
-copyFileSync(join(env.here, 'page.html'), join(www, 'page.html'));
+for (const page of ['page.html', 'scan.html']) {
+	copyFileSync(join(env.here, page), join(www, page));
+}

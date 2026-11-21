@@ -36,15 +36,21 @@ const { EditorExtensionsRegistry } = await import('./vs/editor/browser/editorExt
 const sp = await import('./vs/axis/contrib/sidePanel/browser/axisSidePanelEditor.js');
 const common = await import('./vs/axis/contrib/sidePanel/common/axisSidePanelEditor.js');
 
-const log = window.log = { upstream: [], save: [], reveal: [], approve: [], refused: [], window: [], bubble: [], released: 0 };
-// Stand-ins for the upstream workbench commands, registered exactly as at the pin (weight 200, when undefined).
+const log = window.log = { upstream: [], save: [], reveal: [], approve: [], refused: [], window: [], bubble: [], blocked: [], focusLost: [], released: 0 };
+// Stand-ins for upstream workbench commands, registered with the keys, weight (200) and `when` (undefined) of the pin.
+// Save All has no Linux key; it is run through the command service.
 const upstream = [['workbench.action.files.save', KeyMod.CtrlCmd | KeyCode.KeyS], ['workbench.action.files.saveAs', KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KeyS],
 	['workbench.action.closeActiveEditor', KeyMod.CtrlCmd | KeyCode.KeyW], ['workbench.action.splitEditor', KeyMod.CtrlCmd | KeyCode.Backslash],
-	['workbench.action.files.saveWithoutFormatting', KeyChord(KeyMod.CtrlCmd | KeyCode.KeyK, KeyCode.KeyS)]];
+	['workbench.action.files.saveWithoutFormatting', KeyChord(KeyMod.CtrlCmd | KeyCode.KeyK, KeyCode.KeyS)],
+	['workbench.action.files.copyPathOfActiveFile', KeyChord(KeyMod.CtrlCmd | KeyCode.KeyK, KeyCode.KeyP)],
+	['workbench.action.nextEditor', KeyMod.CtrlCmd | KeyCode.PageDown], ['workbench.action.closeEditorsInGroup', KeyChord(KeyMod.CtrlCmd | KeyCode.KeyK, KeyCode.KeyW)],
+	['workbench.action.files.saveAll', 0]];
 for (const [id, primary] of upstream) {
-	KeybindingsRegistry.registerCommandAndKeybindingRule({ id, weight: 200, when: undefined, primary, handler: () => log.upstream.push(id) });
+	KeybindingsRegistry.registerCommandAndKeybindingRule({ id, weight: 200, when: undefined, primary, handler: (_a, ...args) => log.upstream.push(args.length ? [id, args.length] : id) });
 }
-if (!q.has('noroutes')) { sp.registerAxisSidePanelEditorKeys(); }
+window.registration = q.has('noroutes') ? undefined : sp.registerAxisSidePanelEditorCommands();
+const { ICommandService } = await import('./vs/platform/commands/common/commands.js');
+const { IModelService } = await import('./vs/editor/common/services/model.js');
 
 const uriA = monaco.Uri.file('/w/repo/a.ts'), uriB = monaco.Uri.file('/w/repo/b.ts');
 const modelA = monaco.editor.createModel('const a = 1;\nexport { a };\n', 'typescript', uriA);
@@ -63,9 +69,16 @@ const textModelService = { _serviceBrand: undefined, async createModelReference(
 	return { object: ref.object, dispose() { log.released++; ref.dispose(); } };
 }, registerTextModelContentProvider() { return { dispose() {} }; }, canHandleResource() { return true; } };
 const child = inst.createChild(new ServiceCollection([ITextModelService, textModelService]));
-const host = { save: async (resource, skip) => { log.save.push([resource.path, skip]); },
+// The saved (alternative) version per file stands in for the text file model's dirty flag.
+const saved = new Map();
+const isDirty = uri => { const m = monaco.editor.getModel(uri); return !!m && m.getAlternativeVersionId() !== (saved.get(uri.toString()) ?? 1); };
+const host = { save: async (resource, skip) => { log.save.push([resource.path, skip]); saved.set(resource.toString(), monaco.editor.getModel(resource).getAlternativeVersionId()); },
 	reveal: async t => { log.reveal.push([t.resource.path, t.selection && t.selection.toString()]); },
-	editorSettings: () => JSON.parse(q.get('user') || '{}') };
+	editorSettings: () => JSON.parse(q.get('user') || '{}'), isDirty,
+	blocked: id => log.blocked.push(id), focusLost: r => log.focusLost.push(r.path) };
+window.isDirty = isDirty;
+window.commands = StandaloneServices.get(ICommandService);
+window.modelService = StandaloneServices.get(IModelService);
 const side = window.side = child.createInstance(sp.AxisSidePanelEditor, host);
 document.getElementById('side-slot').appendChild(side.element);
 window.openFile = async (name, trusted = true) => { const r = await side.open(name === 'a' ? uriA : name === 'b' ? uriB : monaco.Uri.file('/w/repo/' + name), { trusted, label: name }, document.getElementById('row-' + name) || document.getElementById('row-a')); side.layout(400, 260); return r; };

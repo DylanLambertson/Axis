@@ -40,6 +40,12 @@ if (!only || only === 'model') await session('', async p => {
 	await reset(p); await ev(p, () => side.close());
 	check('close releases the reference, model survives', await ev(p, () => [log.released, models.A.isDisposed(), side.editor.getModel()]), [1, false, null]);
 	check('close returns the focus to the file row', await ev(p, () => where()), 'row-a');
+	// Review S2: a reload from disk goes through modelService.updateModel, which pushes undo stops, so Ctrl+Z in the
+	// side editor reverts the other writer's change into a dirty buffer. Shown here; the policy is in the report, §5.
+	await ev(p, () => openFile('a')); await ev(p, () => modelService.updateModel(models.A, 'written on disk by a run\n'));
+	const clean = await ev(p, () => models.A.getAlternativeVersionId());
+	await clickSide(p); await p.keyboard.press('Control+z');
+	check('[S2 hazard] undo reverts a reload from disk into a dirty buffer', await ev(p, c => [models.A.getValue().includes('written on disk'), models.A.getAlternativeVersionId() !== c], clean), [false, true]);
 });
 
 if (!only || only === 'route') for (const q of ['', 'noroutes']) await session(q, async p => {
@@ -51,10 +57,24 @@ if (!only || only === 'route') for (const q of ['', 'noroutes']) await session(q
 	check(`[${tag}] Ctrl+K S saves without formatting`, await ev(p, () => [log.save, log.upstream]), q ? [[], ['workbench.action.files.saveWithoutFormatting']] : [[['/w/repo/a.ts', true]], []]);
 	await reset(p); await p.keyboard.press('Control+Shift+s'); await p.keyboard.press('Control+Backslash');
 	check(`[${tag}] Save As and Split hand off to IDE view`, await ev(p, () => [log.reveal.length, log.upstream]), q ? [0, ['workbench.action.files.saveAs', 'workbench.action.splitEditor']] : [2, []]);
-	await reset(p); await p.keyboard.press('Control+w');
+	await reset(p); await p.keyboard.press('Control+k'); await p.keyboard.press('p');
+	check(`[${tag}] Ctrl+K P (copy path) hands off instead of copying the IDE file`, await ev(p, () => [log.reveal.length, log.upstream]), q ? [0, ['workbench.action.files.copyPathOfActiveFile']] : [1, []]);
+	await reset(p); await p.keyboard.press('Control+PageDown'); await p.keyboard.press('Control+k'); await p.keyboard.press('w');
+	check(`[${tag}] tab and group keys are blocked, not run on the IDE`, await ev(p, () => [log.blocked, log.upstream]), q ? [[], ['workbench.action.nextEditor', 'workbench.action.closeEditorsInGroup']] : [['workbench.action.nextEditor', 'workbench.action.closeEditorsInGroup'], []]);
+	await reset(p); await ev(p, () => commands.executeCommand('workbench.action.files.save', models.uriB));
+	check(`[${tag}] a command given an explicit target runs upstream`, await ev(p, () => [log.save, log.upstream]), [[], [['workbench.action.files.save', 1]]]);
+	await reset(p); await p.keyboard.type('y'); await clickIde(p);
+	check(`[${tag}] side editor blur reported (auto-save on focus change)`, await ev(p, () => log.focusLost), ['/w/repo/a.ts']);
+	await reset(p);
+	await ev(p, () => commands.executeCommand('workbench.action.files.saveAll'));
+	check(`[${tag}] Save All also saves the dirty side-panel file`, await ev(p, () => [log.upstream, log.save]), q ? [['workbench.action.files.saveAll'], []] : [['workbench.action.files.saveAll'], [['/w/repo/a.ts', false]]]);
+	await clickSide(p); await reset(p); await p.keyboard.press('Control+w');
 	check(`[${tag}] Ctrl+W closes the side editor, not an IDE editor`, await ev(p, () => [log.upstream, side.currentResource?.path ?? null, where()]), q ? [['workbench.action.closeActiveEditor'], '/w/repo/a.ts', 'side-editor'] : [[], null, 'row-a']);
 	await clickIde(p); await reset(p); await p.keyboard.press('Control+s');
 	check(`[${tag}] Ctrl+S in the IDE editor stays upstream`, await ev(p, () => [log.save.length, log.upstream]), [0, ['workbench.action.files.save']]);
+	if (!q) {
+		check('every policy command present was guarded, none missing', await ev(p, () => [registration.guarded.length, registration.missing.includes('workbench.action.files.save')]), [9, false]);
+	}
 });
 
 if (!only || only === 'keys') await session('', async p => {
@@ -103,7 +123,7 @@ if (!only || only === 'approve') await session('', async p => {
 });
 
 if (!only || only === 'trust') await session('user=' + encodeURIComponent(JSON.stringify({ unicodeHighlight: { invisibleCharacters: false, ambiguousCharacters: false }, renderControlCharacters: false, minimap: { enabled: true }, fontSize: 19 })), async p => {
-	check('open b.ts untrusted', await ev(p, () => openFile('b', false)), 'opened');
+	check('open a.ts trusted, then b.ts untrusted in the same widget', await ev(p, async () => [await openFile('a', true), await openFile('b', false), side.editor.getModel().uri.path]), ['opened', 'opened', '/w/repo/b.ts']);
 	const before = await ev(p, () => side.editor.getModel().getValue());
 	await clickSide(p); await p.keyboard.type('zz'); await reset(p); await p.keyboard.press('Control+s');
 	check('untrusted: typing ignored, Save does nothing', await ev(p, b => [side.editor.getModel().getValue() === b, log.save.length, log.upstream.length], before), [true, 0, 0]);
@@ -113,14 +133,19 @@ if (!only || only === 'trust') await session('user=' + encodeURIComponent(JSON.s
 	check('user settings kept, forced options win', o.slice(1), [{ invisibleCharacters: true, ambiguousCharacters: true }, true, { enabled: false }, 19]);
 	await p.waitForTimeout(400);
 	check('hidden RLO and zero-width characters are highlighted', await ev(p, () => document.querySelectorAll('.axis-side-editor .unicode-highlight, .axis-side-editor .mtkcontrol').length > 0), true);
+	await ev(p, () => openFile('a', true)); await clickSide(p); const a0 = await ev(p, () => models.A.getValue()); await reset(p);
+	await p.keyboard.type('q'); await p.keyboard.press('Control+s');
+	check('reopened trusted: editable and saves again', await ev(p, b => [models.A.getValue() !== b, log.save], a0), [true, [['/w/repo/a.ts', false]]]);
 	await ev(p, () => side.close()); check('open a missing file: unavailable', await ev(p, () => openFile('missing.ts')), 'unavailable');
 });
 
 if (!only || only === 'race') await session('delay=150', async p => {
-	const r = await ev(p, async () => { const a = openFile('a'); const b = openFile('b'); return [await a, await b, side.currentResource.path, log.released]; });
-	check('slow open of a.ts superseded by b.ts; a.ts reference released', r, ['superseded', 'opened', '/w/repo/b.ts', 1]);
-	const d = await ev(p, async () => { const a = openFile('a'); side.dispose(); return [await a, log.released]; });
-	check('dispose while resolving: reference released', d, ['disposed', 3]);
+	const r = await ev(p, async () => { const a = openFile('a'); const b = openFile('b'); return [await a, await b, side.currentResource.path, side.editor.getModel().uri.path, log.released]; });
+	check('slow open of a.ts superseded by b.ts; a.ts reference released', r, ['superseded', 'opened', '/w/repo/b.ts', '/w/repo/b.ts', 1]);
+	const c = await ev(p, async () => { const a = openFile('a'); side.close(); return [await a, side.editor.getModel(), side.currentResource ?? null, log.released]; });
+	check('close while resolving: nothing shown, references released', c, ['superseded', null, null, 3]);
+	const d = await ev(p, async () => { const a = openFile('a'); const m = openFile('missing.ts'); side.dispose(); return [await a, await m, log.released]; });
+	check('dispose while resolving (and a failed open): disposed', d, ['disposed', 'disposed', 4]);
 });
 server.close();
 console.log(failed ? `${failed} FAILED` : 'ALL PASSED');

@@ -1,0 +1,72 @@
+<!doctype html>
+<!-- Copyright (c) 2026 Dylan Lambertson. All rights reserved. -->
+<!-- PV-V0 key scan: registers every workbench contribution at the pin (the web workbench main, never started), then
+     lists each default keybinding that can fire while focus is in the side-panel editor and probes whether its
+     command reads the editor part's active editor. Read by scan-keys.mjs. -->
+<html><head><meta charset="utf-8"></head><body><script type="module">
+const errs = window.errs = [];
+try { await import('./vs/workbench/workbench.web.main.internal.js'); } catch (e) { errs.push(String(e?.stack ?? e)); }
+const { KeybindingsRegistry } = await import('./vs/platform/keybinding/common/keybindingsRegistry.js');
+const { CommandsRegistry } = await import('./vs/platform/commands/common/commands.js');
+const { EditorExtensionsRegistry } = await import('./vs/editor/browser/editorExtensions.js');
+const { MenuRegistry } = await import('./vs/platform/actions/common/actions.js');
+const { KeyCodeUtils } = await import('./vs/base/common/keyCodes.js');
+
+// Context while focus is in the side-panel editor and an IDE editor is open but hidden (Agent view).
+const context = {
+	editorTextFocus: true, editorFocus: true, textInputFocus: true, inputFocus: true, editorReadonly: false, editorLangId: 'typescript',
+	axisSidePanelEditorFocus: true, axisView: 'agent',
+	activeEditor: 'workbench.editors.files.textFileEditor', activeEditorGroupEmpty: false, editorIsOpen: true, multipleEditorGroups: false,
+	activeEditorIsDirty: false, activeEditorCanRevert: true, activeEditorAvailableEditorIds: '', resourceScheme: 'file', resourceExtname: '.ts',
+	resourceFilename: 'b.ts', isFileSystemResource: true, resourceSet: true, isWeb: true, isLinux: true, workbenchState: 'workspace', workspaceFolderCount: 1,
+	textCompareEditorVisible: false, textCompareEditorActive: false, sideBarVisible: false, panelVisible: false, auxiliaryBarVisible: true,
+};
+const evaluator = { getValue: key => context[key] };
+const editorActions = new Set([...EditorExtensionsRegistry.getEditorActions()].map(a => a.id));
+const isEditorCommand = id => editorActions.has(id) || !!EditorExtensionsRegistry.getEditorCommand(id);
+
+// Every service is a proxy that records what the handler reads; a handler looping on a proxy is stopped after a
+// fixed number of reads.
+function recorder(log) {
+	let reads = 0;
+	const make = path => new Proxy(function () { }, {
+		get(_t, prop) {
+			if (++reads > 500) { throw new Error('read limit'); }
+			if (prop === 'then' || typeof prop === 'symbol') { return undefined; }
+			log.add(`${path}.${String(prop)}`);
+			return make(`${path}.${String(prop)}`);
+		},
+		apply() { return make(`${path}()`); },
+	});
+	return { get: id => { log.add(String(id)); return make(String(id)); } };
+}
+
+const ACTIVE = /^(editorService|editorGroupsService|codeEditorService|textFileService|editorGroupService)\.(active|getActiveCodeEditor|getFocusedCodeEditor|activeGroup|activeEditor|activeEditorPane|activeTextEditorControl|activeTextEditorLanguageId|visibleEditors|visibleTextEditorControls|mainPart|groups)/;
+// The candidates: default keybindings that can fire in the side-panel editor and are not editor commands.
+const candidates = KeybindingsRegistry.getDefaultKeybindings().filter(item => item.command && !item.command.startsWith('-') && item.keybinding
+	&& (!item.when || item.when.evaluate(evaluator)) && !isEditorCommand(item.command));
+window.total = KeybindingsRegistry.getDefaultKeybindings().length;
+window.describe = i => {
+	const item = candidates[i];
+	const title = MenuRegistry.getCommand(item.command)?.title;
+	return {
+		command: item.command, weight: item.weight1, when: item.when?.serialize() ?? null, title: typeof title === 'string' ? title : title?.value ?? '',
+		keys: item.keybinding.chords.map(c => [c.ctrlKey && 'Ctrl', c.shiftKey && 'Shift', c.altKey && 'Alt', c.metaKey && 'Meta', KeyCodeUtils.toString(c.keyCode)].filter(Boolean).join('+')).join(' '),
+	};
+};
+window.count = candidates.length;
+// Runs one handler against recording services (the driver gives up on a handler that never returns).
+window.probe = async i => {
+	const log = new Set();
+	let threw = '';
+	try {
+		const r = CommandsRegistry.getCommand(candidates[i].command)?.handler?.(recorder(log));
+		if (r && typeof r.catch === 'function') { r.catch(() => undefined); }
+	} catch (e) { threw = String(e?.message ?? e).slice(0, 60); }
+	await new Promise(r => setTimeout(r, 0));
+	const reads = [...log].filter(s => ACTIVE.test(s));
+	const delegates = [...log].some(s => /^(instantiationService|commandService)\.(invokeFunction|executeCommand|createInstance)/.test(s));
+	return { verdict: reads.length ? 'reads-active-editor' : delegates ? 'delegates' : log.size ? 'other-services' : 'no-services', reads: reads.slice(0, 4), threw };
+};
+window.ready = true;
+</script></body></html>
