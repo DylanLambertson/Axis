@@ -75,7 +75,7 @@ Node then sees the helper exit, and `done` settles when both pipes close. Every 
   - no segment ending in a dot or a space;
   - no `~` in a segment (8.3 short names);
   - it ends in `.exe`, case-insensitively.
-  
+
   This replaces a `.cmd`/`.bat` denylist, which Win32 name normalisation bypasses (`x.bat.`, `x.BAT`, short names).
 - **"Exact string" on Windows:** the allow-list compares the raw configured string. `c:\git\git.exe` against `C:\Git\git.exe` is refused, which fails closed. Safety rests on the positive check above and on main passing one resolved string to both sides (`pty-exec-node.md` §6.2a), not on the comparison.
 - **`lpApplicationName`** is always the checked program, so there is no PATH or extension search and no `C:\Program.exe` trap for an unquoted path with a space.
@@ -83,7 +83,7 @@ Node then sees the helper exit, and `done` settles when both pipes close. Every 
   - the first token is the program, quoted;
   - an argument is quoted when it contains a space, a tab or a quote, or is empty;
   - backslashes before a quote are doubled.
-  
+
   The helper rejects any argument holding a NUL, and a command line over 32,767 UTF-16 units (code 125). `exec-argv.ts` already limits the argument grammar the pty process emits, which narrows the quoting surface. A hop through an MSYS program (ssh, sh) parses again with MSYS rules; git builds those command lines itself, which is git's surface, not Axis's.
 - **The environment** stays `exec-node.ts`'s null-prototype copy. On Windows, names that differ only in case (`Path` and `PATH`) are a `start_failed`, not a silent fold, because Windows keeps one of them unpredictably.
 
