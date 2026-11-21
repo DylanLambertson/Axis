@@ -2,7 +2,7 @@
 // PV-D2 slice 1b: what `gh` is given (docs/design/forge-pr-list.md §1, §4, §7), without a process.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { buildForgeEnv, classifyForgeStderr, FORGE_CONFIG_FILES, FORGE_CONFIG_YML, FORGE_HOSTS_YML, forgeListArgv, forgeVersionArgv, ghAtLeast, MIN_GH_VERSION, parseGhVersion, withoutNames } from "../src/index.js";
+import { buildForgeEnv, classifyForgeStderr, FORGE_CONFIG_FILES, FORGE_CONFIG_YML, FORGE_HOSTS_YML, forgeListArgv, FORGE_STDERR_MARKERS, FORGE_STDERR_MARKERS_VERSION, forgeVersionArgv, ghAtLeast, MIN_GH_VERSION, parseGhVersion, withoutNames } from "../src/index.js";
 
 const JSON_FIELDS = "--json=number,title,headRefName,author,isDraft,isCrossRepository,headRepositoryOwner,reviewDecision,statusCheckRollup";
 
@@ -121,8 +121,33 @@ test("a repository or owner name never supplies a marker: the real error shape d
   for (const [owner, repo, exit, text, want] of cases) assert.equal(classifyForgeStderr(exit, text, owner, repo), want, `${owner}/${repo}: ${text}`);
 });
 
-test("only whole names are removed: a name inside a longer word, or a regex character in it, leaves the rest intact", () => {
-  assert.equal(withoutNames("a.b and axb and A.B/c", "a.b", "c"), "  and axb and  ");
-  assert.equal(withoutNames("keyrings keyring", "x", "keyring"), "keyrings  ");
-  assert.equal(withoutNames("e secret service", "e", "r"), "  secret service");
+test("a name is removed wherever it starts a token, whatever follows; a removed name leaves a gap no marker holds", () => {
+  const G = "\u0001";
+  assert.equal(withoutNames("a.b and axb and A.B/c", "a.b", "c"), `${G} and axb and ${G}`);
+  assert.equal(withoutNames("keyrings keyring", "x", "keyring"), `${G}s ${G}`);
+  assert.equal(withoutNames("e secret service", "e", "r"), `${G} secret service`);
+  assert.equal(withoutNames("with the name org.freedesktop.secrets.", "acme", "org.freedesktop.secrets"), `with the name ${G}.`, "a closing '.' does not keep the name (review S1b D-1)");
+  assert.equal(withoutNames("x-keyring and keyring-x", "acme", "keyring"), `x-keyring and ${G}-x`, "only where it does not continue a name to its left");
+  assert.equal(withoutNames("keyring", "key", "keyring"), G, "the longer name first, so a shorter one never leaves part of it");
+});
+
+test("a sentence-ending '.' after a dotted name never makes it a marker (review S1b D-1)", () => {
+  const repo = "org.freedesktop.secrets";
+  for (const text of [`Could not find the name ${repo}.`, `The name ${repo}. was not provided`, `failed for acme/${repo}.`, `The name ${repo.toUpperCase()}.`]) {
+    assert.equal(classifyForgeStderr(1, text, "acme", repo), "other", text);
+    assert.equal(classifyForgeStderr(4, text, "acme", repo), "auth_missing", `exit 4 stays auth: ${text}`);
+  }
+  assert.equal(classifyForgeStderr(1, "The name org.freedesktop.secrets was not provided by any .service files", "acme", "app"), "keyring", "control: the real text under another name");
+});
+
+test("keyring and auth need gh's error exits and gh's own line shapes (review S1b D-2)", () => {
+  const keyringText = "failed to get secret: The name org.freedesktop.secrets was not provided by any .service files";
+  for (const exit of [1, 4]) assert.equal(classifyForgeStderr(exit, keyringText, "acme", "app"), "keyring", String(exit));
+  for (const exit of [2, 3, 5, 127, null]) assert.equal(classifyForgeStderr(exit, keyringText, "acme", "app"), "other", String(exit));
+  assert.equal(classifyForgeStderr(1, "HTTP 401: Bad credentials (https://api.github.com/graphql)", "acme", "app"), "auth_missing");
+  assert.equal(classifyForgeStderr(1, "warning\nHTTP 401\nTry authenticating with:  gh auth login", "acme", "app"), "auth_missing");
+  for (const text of ["note: HTTP 401: Bad credentials", "HTTP 4010: odd", "xHTTP 401: x", "HTTP 403: Forbidden"]) assert.equal(classifyForgeStderr(1, text, "acme", "app"), "other", text);
+  assert.equal(classifyForgeStderr(2, "HTTP 401: Bad credentials", "acme", "app"), "other", "only on exit 1");
+  for (const marker of Object.values(FORGE_STDERR_MARKERS).flat()) assert.ok(marker.includes(" "), `a vetted name cannot be the marker ${marker}`);
+  assert.equal(FORGE_STDERR_MARKERS_VERSION, 2);
 });
