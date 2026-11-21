@@ -9,6 +9,7 @@ export {
   MAX_STRING_CHARS,
   REDACTION_RULES,
   isWellFormedString,
+  secretForms,
   wellFormed,
   type RedactionKind,
   type RedactionRule,

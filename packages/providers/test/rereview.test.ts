@@ -149,13 +149,16 @@ test("NS3: generate failing with server_error or overloaded is charged the input
   }
 });
 
-test("NS3: an adapter that throws a guard-only code gets internal", async () => {
-  for (const code of ["budget_exceeded", "secret_in_request", "cancelled"] as const) {
+test("NS3: an adapter that throws a guard-only code gets internal; its own key refusal (C7-F4) keeps secret_in_request", async () => {
+  for (const code of ["budget_exceeded", "scan_budget", "cancelled"] as const) {
     const g = guardProvider(patched({ generate: async () => { throw new ProviderError(code); } }), { redactor });
     assert.equal((await fails(g.generate(req(), run()))).code, "internal", code);
   }
   const g = guardProvider(patched({ generate: async () => { throw new ProviderError("timeout"); } }), { redactor });
   assert.equal((await fails(g.generate(req(), run()))).code, "timeout", "adapters keep their own wire timeouts");
+  // C7-F4: an adapter refuses a request holding the key it just read; the refusal keeps its code (it only stops a send).
+  const s = guardProvider(patched({ generate: async () => { throw new ProviderError("secret_in_request"); } }), { redactor });
+  assert.equal((await fails(s.generate(req(), run()))).code, "secret_in_request", "an adapter's own key refusal");
 });
 
 test("NN7: a request cancelled before it reaches the adapter is charged nothing", async () => {

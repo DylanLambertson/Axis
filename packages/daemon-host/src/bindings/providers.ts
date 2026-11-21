@@ -1,5 +1,5 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
-import type { AuditSink, Redactor } from "@axis/audit";
+import { secretForms, type AuditSink, type Redactor } from "@axis/audit";
 import { createAnthropicAdapter, type AnthropicLimits, type FetchLike, type KeyPurpose, type Pricing } from "@axis/anthropic";
 import type { ProviderCredential } from "@axis/protocol";
 import { ProviderError, guardProvider, type GenerateRequest, type GenerateResult, type GuardLimits, type GuardedProvider, type ModelInfo, type RunOptions, type StreamEvent } from "@axis/providers";
@@ -166,6 +166,17 @@ export function productionConnection(o: Pick<AnthropicConnectionOptions, "connec
   return { anthropic: { connectionId: o.connectionId, backend: o.backend, ...(o.pricing === undefined ? {} : { pricing: o.pricing }) } };
 }
 
+/**
+ * True when `text` holds `key` in any form the host redactor would redact (`secretForms`), each also as it appears inside a
+ * JSON string (a request body is JSON). Plain substring tests: one key, no redactor windows, cheap enough for every request.
+ */
+export function holdsKey(text: string, key: string): boolean {
+  for (const form of secretForms(key)) {
+    if (text.includes(form) || text.includes(JSON.stringify(form).slice(1, -1))) return true;
+  }
+  return false;
+}
+
 export function createProvidersBinding(deps: ProvidersBindingDeps): ProvidersBinding {
   const conn = deps.anthropic;
   if (conn === undefined) return { providers: [], cachedModels: () => undefined, credential: async () => undefined };
@@ -209,6 +220,9 @@ export function createProvidersBinding(deps: ProvidersBindingDeps): ProvidersBin
   const adapter = createAnthropicAdapter({
     connectionId,
     apiKey,
+    // C7-F4: the key just read is never sent inside its own request. The guard's scan ran before the adapter read the key, so
+    // a key new to this process (first read since start, or rotated in the keyring) was unknown to it.
+    holdsKey,
     // The one place shipped code may use the global `fetch` (the module scanner's egress rule): handed to the adapter, which
     // keeps it to the fixed origin with redirects refused. `conn.fetch` is the binding tests' seam (never set in production).
     fetch: conn.fetch ?? ((url, init) => fetch(url, init) as unknown as ReturnType<FetchLike>),
