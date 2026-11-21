@@ -44,11 +44,12 @@ diff --git a/src/vs/platform/windows/electron-main/windowsMainService.ts b/src/v
 diff --git a/build/next/index.ts b/build/next/index.ts
 --- a/build/next/index.ts
 +++ b/build/next/index.ts
-@@ -103,13 +103,15 @@ const desktopWorkerEntryPoints = [
+@@ -103,14 +103,16 @@ const desktopWorkerEntryPoints = [
  // Desktop workbench and code entry points
  const desktopEntryPoints = [
  	// --- Start Axis ---
  	'vs/axis/daemon/node/axisDaemonMain',
+ 	'vs/axis/pty/node/axisPtyMain',
  	// --- End Axis ---
  	'vs/workbench/workbench.desktop.main',
  	// --- Start Axis ---
@@ -61,7 +62,7 @@ diff --git a/build/next/index.ts b/build/next/index.ts
  	'vs/workbench/contrib/debug/node/telemetryApp',
  	'vs/platform/files/node/watcher/watcherMain',
  	'vs/platform/localTranscription/node/localTranscriptionMain',
-@@ -118,7 +120,9 @@ const codeEntryPoints = [
+@@ -119,7 +121,9 @@ const codeEntryPoints = [
  	'vs/code/node/cliProcessMain',
  	'vs/code/electron-utility/sharedProcess/sharedProcessMain',
  	'vs/code/electron-browser/workbench/workbench',
@@ -72,7 +73,7 @@ diff --git a/build/next/index.ts b/build/next/index.ts
  ];
  
  // Additional web-only entry points (CDN build only, not in server-web)
-@@ -187,11 +191,12 @@ function getCssBundleEntryPointsForTarget(target: BuildTarget): Set<string> {
+@@ -189,11 +193,12 @@ function getCssBundleEntryPointsForTarget(target: BuildTarget): Set<string> {
  			return new Set([
  				'vs/workbench/workbench.desktop.main',
  				// --- Start Axis ---

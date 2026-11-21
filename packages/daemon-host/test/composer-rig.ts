@@ -79,6 +79,8 @@ export interface ComposerRigOptions {
   readonly extraTools?: AgentBindingDeps["extraTools"];
   /** The binding's test taint source (IAC-T): which successful calls taint the run. */
   readonly taintSources?: AgentBindingDeps["taintSources"];
+  /** C3 slice 2: the host's git (offers `git_status` and `git_diff`). */
+  readonly gitPath?: string;
   /** Messages delivered into runs at turn boundaries (PV-M3 slice 2). */
   readonly deliveries?: AgentBindingDeps["deliveries"];
 }
@@ -130,6 +132,7 @@ export async function composerRig(options: ComposerRigOptions): Promise<Composer
     ...(options.commandLimits === undefined ? {} : { commandLimits: options.commandLimits }),
     ...(options.taintSources === undefined ? {} : { taintSources: options.taintSources }),
     ...(options.extraTools === undefined ? {} : { extraTools: options.extraTools }),
+    ...(options.gitPath === undefined ? {} : { gitPath: options.gitPath }),
     ...(options.deliveries === undefined ? {} : { deliveries: options.deliveries }),
   });
   const service = createComposerService({
