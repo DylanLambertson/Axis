@@ -120,6 +120,48 @@ test("the drift check gets the call's signal; a check stopped by a cancel ends t
   assert.equal(f.calls.length, before, "git did not run");
 });
 
+test("the check after a write gets the call's signal; stopped by a cancel it is E_CANCELLED with executed:true (git ran)", async () => {
+  const f = fake();
+  const ac = new AbortController();
+  const seen: Array<AbortSignal | undefined> = [];
+  const git = createBrokerGit({
+    runner: f.runner,
+    parentEnv: { PATH: "/bin" },
+    assertNoDrift: (_w, signal) => {
+      seen.push(signal);
+      if (seen.length === 1) return Promise.resolve();
+      // The check after `add` never ends on its own: only the call's signal stops it (without one, fail at once, never hang).
+      if (signal === undefined) return Promise.reject(new Error("no signal"));
+      setImmediate(() => ac.abort());
+      return new Promise<void>((_res, rej) => signal?.addEventListener("abort", () => rej(new Error("stopped")), { once: true }));
+    },
+    platform: "linux",
+  });
+  await assert.rejects(git.run(w, { command: "add", paths: ["a"] }, ac.signal), (e: unknown) => e instanceof BrokerError && e.code === "E_CANCELLED" && e.details["executed"] === true);
+  assert.deepEqual(seen, [ac.signal, ac.signal], "both checks were handed the call's own signal");
+  assert.ok(f.calls.some((c) => c.argv.includes("add")), "git add ran before the check");
+});
+
+test("a drift the check found wins over a cancel that arrived meanwhile: E_CONFLICT git-drift, never E_CANCELLED", async () => {
+  for (const executed of [false, true]) {
+    const f = fake();
+    const ac = new AbortController();
+    let n = 0;
+    const git = createBrokerGit({
+      runner: f.runner,
+      parentEnv: { PATH: "/bin" },
+      assertNoDrift: async () => {
+        if (!executed || ++n === 2) {
+          ac.abort();
+          throw new BrokerError("E_UNAVAILABLE", "git-drift", "the repository changed");
+        }
+      },
+      platform: "linux",
+    });
+    await assert.rejects(git.run(w, { command: "add", paths: ["a"] }, ac.signal), (e: unknown) => e instanceof BrokerError && e.code === "E_CONFLICT" && e.reason === "git-drift" && e.details["executed"] === executed, String(executed));
+  }
+});
+
 const gitOk = ((): boolean => {
   const r = spawnSync("git", ["--version"], { encoding: "utf8" });
   const m = /git version (\d+)\.(\d+)/.exec(r.stdout ?? "");

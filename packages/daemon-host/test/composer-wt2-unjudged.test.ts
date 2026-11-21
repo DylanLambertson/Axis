@@ -271,6 +271,22 @@ test("the check before a git read gets the call's signal: a cancel stops a check
   assert.deepEqual([c.service.get(run.runId).state, c.service.get(run.runId).reason], ["CANCELLED", "USER_CANCELLED"]);
 });
 
+test("a drift the check found while a cancel is in flight still halts the run (the cancel never hides it, review r4 NIT-2)", async () => {
+  const guard = { ...fakeGuard(), check: async () => ({ drift: true }) };
+  const make = () => new RunWt2({ runId: "r", workspaceId: "w", worktree: { workTree: "/w", gitDir: "/g" }, guard, writeLock: (_w, fn) => fn() });
+  const read = make();
+  await read.beforeCommand(new AbortController().signal); // the baseline
+  await assert.rejects(read.beforeRead(AbortSignal.abort()), (e) => (e as { reason?: unknown }).reason === "git-drift", "the read is refused as drift, which the broker keeps");
+  assert.deepEqual([read.halted, read.haltReason], [true, "GIT_DRIFT"]);
+  const turn = make();
+  await turn.beforeCommand(new AbortController().signal);
+  await assert.rejects(turn.turn(AbortSignal.abort()), (e) => e instanceof ComposerRunHalt && e.reason === "GIT_DRIFT");
+  const after = make();
+  await after.beforeCommand(new AbortController().signal);
+  await after.afterCommand(AbortSignal.abort());
+  assert.equal(after.halted, true);
+});
+
 test("a halted run's git read is refused before any check (defence in depth; invoke also refuses it first, review r3 NIT-3)", async () => {
   let checks = 0;
   const guard = { ...fakeGuard(), check: async () => (checks++, { drift: true }) };

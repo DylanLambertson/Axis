@@ -119,7 +119,10 @@ export interface BrokerGitDeps {
   readonly parentEnv: Env;
   /**
    * GIT-SNAP-1 re-take: throws when the common dir drifted from the acknowledged baseline. It gets the call's signal, so a
-   * cancel can stop a long check; a check stopped that way ends the call cancelled, never as drift.
+   * cancel can stop a long check. Which rejection wins: a `BrokerError` whose reason is `git-drift` is drift (E_CONFLICT
+   * `git-drift`), even when the signal is aborted by then, so a change the check found is never reported as a cancel. Any
+   * other rejection is E_CANCELLED when the signal is aborted (the check was stopped, nothing was judged) and E_CONFLICT
+   * `git-drift` otherwise (fail closed). Both carry `executed`: whether git already ran (the check after a write).
    */
   readonly assertNoDrift: (w: WorktreeRef, signal?: AbortSignal) => Promise<void>;
   readonly platform?: NodeJS.Platform;
@@ -144,8 +147,9 @@ export function createBrokerGit(d: BrokerGitDeps): BrokerGit {
   const drift = async (w: WorktreeRef, executed: boolean, signal: AbortSignal | undefined): Promise<void> => {
     try {
       await d.assertNoDrift(w, signal);
-    } catch {
-      if (signal?.aborted === true) throw new BrokerError("E_CANCELLED", "aborted", "the call was cancelled", { executed });
+    } catch (e) {
+      const found = e instanceof BrokerError && e.reason === "git-drift";
+      if (!found && signal?.aborted === true) throw new BrokerError("E_CANCELLED", "aborted", "the call was cancelled", { executed });
       throw new BrokerError("E_CONFLICT", "git-drift", "the repository changed outside the tool call", { executed });
     }
   };
