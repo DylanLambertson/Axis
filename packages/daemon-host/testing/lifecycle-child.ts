@@ -7,7 +7,7 @@ import { hostFixture } from "./host-fixture.js";
  * Child process of the exit-by-draining test: a real host (real storage, lock and database) behind the real
  * lifecycle on the real `process`. It never calls `process.exit` on a released shutdown, so it ends only if
  * nothing is left holding the event loop. stdin lines drive it: `pending` (start one unit of work), `release`
- * (finish it), `signal` (send itself SIGTERM), `message` (the control `shutdown` message), `again` (a repeat).
+ * (finish it), `ping` (a round trip: it is acknowledged like every line), `signal` (send itself SIGTERM), `message` (the control `shutdown` message), `again` (a repeat). It reports `{ shuttingDown }` when the shutdown begins.
  */
 const fx = hostFixture();
 const drain = new DrainGate();
@@ -21,7 +21,7 @@ const say = (o: Record<string, unknown>): void => void process.stdout.write(`${J
 
 await host.start();
 installHostLifecycle({
-  daemon: { shutdown: (r) => coordinator.run(r), escalate: () => coordinator.escalate() },
+  daemon: { shutdown: (r) => (say({ shuttingDown: r }), coordinator.run(r)), escalate: () => coordinator.escalate() },
   control: fx.client,
   stop: async () => {
     const r = await host.stop();

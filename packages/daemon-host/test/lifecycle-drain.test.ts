@@ -65,8 +65,10 @@ for (const trigger of process.platform === "win32" ? (["message"] as const) : ([
     t.after(() => void c.proc.kill("SIGKILL"));
     await c.send("pending");
     await c.send(trigger);
-    // Shutdown has begun and must be waiting for the work: no exit report and a live process.
-    await wait(300);
+    // Shutdown has begun and must be waiting for the work: no exit report and a live process. The round trip puts any
+    // exit the child already decided on ahead of its acknowledgement; one that came later would report running > 0 below.
+    assert.ok(await until(() => c.out.some((o) => "shuttingDown" in o), 15_000), "the shutdown began");
+    await c.send("ping");
     assert.equal(c.out.some((o) => "exit" in o), false, "no exit while work is pending");
     assert.equal(c.proc.exitCode, null, "still alive while work is pending");
     c.proc.stdin.write("release\n");
@@ -84,7 +86,7 @@ test("a repeated trigger while work is still running ends the wait: exit 1, the 
   t.after(() => void c.proc.kill("SIGKILL"));
   await c.send("pending");
   await c.send("message");
-  await wait(100);
+  assert.ok(await until(() => c.out.some((o) => "shuttingDown" in o), 15_000), "the shutdown began");
   await c.send("again");
   assert.ok(await until(() => c.out.some((o) => "exit" in o), 3000), "escalation cut the grace wait short");
   const report = c.out.find((o) => "exit" in o);

@@ -8,7 +8,7 @@ import { Daemon, memoryPair, type ApprovalGate, type Handler, type Identity } fr
 import { auditListResponseSchema, auditStatusResponseSchema, auditVerifyResponseSchema } from "@axis/protocol";
 import { createDaemonHost, createHandlerRegistrar, guardHandlers, registerAuditHandlers, type HostServices } from "../src/index.js";
 import { hostFixture, type HostFixture } from "../testing/host-fixture.js";
-import { must, untilTrue, wait } from "./helpers.js";
+import { must, untilTrue } from "./helpers.js";
 
 const user: Identity = { connectionId: "conn-1".padEnd(22, "_"), windowId: "win-1", actorId: "actor-1", actor: "user", trusted: true, clientKind: "desktop" };
 const CANARY = ["cred", "ential", "-canary-", "value"].join("");
@@ -45,12 +45,12 @@ async function serve(services: HostServices, extra?: (d: Daemon, r: ReturnType<t
       { id: "axis.worktrees", versions: [1] },
     ],
   });
-  for (let i = 0; i < 200 && !replies.some((r) => r["type"] === "welcome"); i++) await wait(5);
+  await untilTrue(() => replies.some((r) => r["type"] === "welcome"), "the welcome", 30_000);
   let n = 0;
   const call = async (contract: string, method: string, payload: unknown): Promise<Reply> => {
     const id = `q${++n}`;
     client.postMessage({ v: 1, id, contract, contractVersion: 1, method, payload, ...(contract === "axis.worktrees" ? { idempotencyKey: randomUUID() } : {}) });
-    for (let i = 0; i < 200 && !replies.some((r) => r["id"] === id); i++) await wait(5);
+    await untilTrue(() => replies.some((r) => r["id"] === id), `the answer to ${method}`, 30_000);
     const r = replies.find((x) => x["id"] === id);
     assert.ok(r, "no response");
     return r as unknown as Reply;
@@ -342,8 +342,10 @@ test("startup anchors a verified head that is newer than the supervisor's anchor
     fix.sent.length = 0;
     const again = createDaemonHost(fix.config, fix.ports);
     const again2 = await again.start();
-    // The anchor it held at start is the head: once the manager reports that, nothing is left to put.
-    await untilTrue(() => again2.anchors.status().anchor?.seq === again2.anchors.status().head?.seq, "the anchor held at start is the head", 10_000);
+    // `start` awaits the supervisor's anchor and flushes before it returns, so what it sent is final. Ask for a flush once more:
+    // with the anchor already at the head there is nothing to put (a manager that ignored the supervisor's anchor would put now).
+    again2.anchors.noteWrite();
+    assert.equal(again2.anchors.status().anchor?.seq, again2.anchors.status().head?.seq, "the supervisor's anchor is the head");
     assert.equal(fix.sent.filter((m) => m["type"] === "anchor.put").length, 0);
     await again.stop();
   } finally {
