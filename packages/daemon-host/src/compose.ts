@@ -42,7 +42,7 @@ import { loadPushedBases, savePushedBases } from "./storage/pushed-bases-file.js
 import { registerGitHandlers } from "./handlers/git.js";
 import { createProjectsHandlers } from "./handlers/projects.js";
 import { registerMessagesHandlers } from "./handlers/messages.js";
-import { createMessagingBinding } from "./messages/binding.js";
+import { createMessagingBinding, type MessagingBinding } from "./messages/binding.js";
 import { createProvidersHandlers } from "./handlers/providers.js";
 import { createReviewHandlers } from "./handlers/review.js";
 import { createReviewAuditSink } from "./handlers/review-audit.js";
@@ -179,7 +179,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
   };
 
   // Built in `afterStorage`, used by `reconcile` and `beforeReady`.
-  const built: { worktrees?: WorktreesBinding; runs?: RunsBinding; approvals?: WorktreesApprovals; projectPaths?: () => string[]; agent?: AgentBinding; composer?: ComposerService; providers?: ProvidersBinding } = {};
+  const built: { worktrees?: WorktreesBinding; runs?: RunsBinding; approvals?: WorktreesApprovals; projectPaths?: () => string[]; agent?: AgentBinding; composer?: ComposerService; providers?: ProvidersBinding; messaging?: MessagingBinding } = {};
   let lifecycle: LifecycleHandle | undefined;
   let offConnect: (() => void) | undefined;
   let finish: () => void = () => undefined;
@@ -250,13 +250,15 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
         const projectPaths = (): string[] => parts.journal.listProjects().map((p) => p.path);
         // Composer runs: the broker's audit rows mark the anchor batch dirty like every other writer.
         const providers = createProvidersBinding({ redactor: ports.redactor, audit: composerWriter, ...productionConnection(options.composer?.anthropic) });
+        // axis.messages/1 (PV-M3): service, settings and delivery into runs; its rows go through the sealed composer writer.
+        const messaging = createMessagingBinding({ journal: parts.journal, audit: composerWriter, random: { bytes: (n) => randomBytes(n) }, monotonic: () => ports.clock.monotonic(), scan: (text) => scanner.scan(text, { part: "message" }), runLive: (id) => parts.journal.getRun(id)?.state === "RUNNING" });
         const agent = createAgentBinding({
           locator: worktrees.locator,
           repositoryRoots: projectPaths,
           audit: composerWriter,
           redactor: ports.redactor,
           env: () => ports.env,
-          approvals: approvals.runs, taintStore: parts.journal.composer, // IAC-T: run taint, recorded in its journal record
+          approvals: approvals.runs, taintStore: parts.journal.composer, deliveries: messaging.delivery, // IAC-T: run taint, recorded in its journal record
           now: () => ports.clock.now(),
           platform: config.platform,
           ...(options.composer?.mock === undefined ? {} : { mock: options.composer.mock }),
@@ -279,7 +281,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
           onInternalError: (where) => logger?.error("request.failed", { reason: `composer_${where.slice(0, 24)}` }),
         });
         cleanups.push(() => (composer.dispose(), agent.dispose()));
-        Object.assign(built, { worktrees, runs, approvals, projectPaths, agent, composer, providers });
+        Object.assign(built, { worktrees, runs, approvals, projectPaths, agent, composer, providers, messaging });
       },
       async beforeReady(services, lock) {
         try {
@@ -300,6 +302,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
     if (writable && lock !== undefined) {
       built.runs?.recover(lock); // DMN-7 for CLI runs: QUEUED never reached a process; nothing starts before this
       built.composer?.recover(); // after Journal.recover: a QUEUED composer run never reached its loop
+      built.messaging?.delivery.releaseLeases(); // no run survives a restart: a delivery whose ack never landed goes to a later run
     }
     // Contracts: identity, policy, the daemon.
     const verifier = createAttestationVerifier({ key: config.attestationKey, clock: ports.clock });
@@ -407,7 +410,8 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
     registrar.register(PROVIDERS_CONTRACT, PROVIDERS_VERSION, createProvidersHandlers({ providers: () => agent.providers(), cachedModels: (id) => providers.cachedModels(id), credential: (id, signal) => providers.credential(id, signal) }));
     registrar.register(WORKTREES_CONTRACT, WORKTREES_VERSION, createWorktreesHandlers({ service: worktrees.service, needsAttention: worktrees.needsAttention }), { content: worktrees.content });
     registerComposerRunsHandlers(registrar, { service: composer, journal, mutex: worktrees.mutex, needsAttention: worktrees.needsAttention });
-    registerMessagesHandlers(registrar, createMessagingBinding({ journal, audit, noteWrite: () => services.anchors.noteWrite(), random: { bytes: (n) => randomBytes(n) }, monotonic: () => ports.clock.monotonic(), scan: (text) => scanner.scan(text, { part: "message" }) }));
+    if (built.messaging === undefined) throw new AxisError("E_INTERNAL", "The host composition is incomplete", { reason: "not_built" });
+    registerMessagesHandlers(registrar, built.messaging);
     registerCliRunsHandlers(registrar, { service: runs.service, journal, control, minter: createRunTrustMinter(ports.clock), mutex: worktrees.mutex, needsAttention: worktrees.needsAttention, platform: config.platform });
     registrar.register(
       REVIEW_CONTRACT,
