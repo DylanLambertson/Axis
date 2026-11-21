@@ -79,3 +79,37 @@ test("names are read as git uses them; one that cannot be put on a command line 
     await assert.rejects(filterNames(g.wt, g.deps, env), (e: unknown) => e instanceof GitOpsError && e.code === "E_POLICY_DENIED", name);
   }
 });
+
+// A name holding a line terminator or another control character: `.` without `s` did not match it, so the key was skipped
+// (neither emptied nor refused) and the driver ran. Each is now refused before any daemon git runs. CR and tab are blanks to
+// git's attribute parser, so no attribute can select them; the others are selected, and plain git runs them.
+const ODD: readonly { label: string; ch: string; selectable: boolean }[] = [
+  { label: "U+2028", ch: "\u2028", selectable: true },
+  { label: "U+2029", ch: "\u2029", selectable: true },
+  { label: "U+0085", ch: "\u0085", selectable: true },
+  { label: "VT", ch: "\v", selectable: true },
+  { label: "FF", ch: "\f", selectable: true },
+  { label: "CR", ch: "\r", selectable: false },
+  { label: "tab", ch: "\t", selectable: false },
+];
+
+for (const o of ODD) {
+  test(`a filter named with ${o.label} is refused before any daemon git runs; plain git ${o.selectable ? "runs" : "cannot select"} it`, { skip: posix ? undefined : "posix shell drivers" }, async () => {
+    const f = fixture();
+    const name = `a${o.ch}b`;
+    appendFileSync(join(f.wt.gitDir, "config"), `[filter "${name}"]\n\tclean = ${driver(f, "odd")}\n`, "utf8");
+    writeFileSync(join(f.wt.gitDir, "info", "attributes"), `* filter=${name}\n`, "utf8");
+    writeFileSync(join(f.wt.workTree, "a.txt"), "changed\n");
+    await assert.rejects(daemonGitFor(f.wt, f.deps), (e: unknown) => e instanceof GitOpsError && e.code === "E_POLICY_DENIED");
+    await assert.rejects(daemonGitFor(f.wt, f.deps, { GIT_INDEX_FILE: join(f.root, "private-index") }), (e: unknown) => e instanceof GitOpsError && e.code === "E_POLICY_DENIED");
+    assert.equal(ran(f), "", "nothing ran");
+    plain(f, "diff");
+    assert.equal(ran(f) !== "", o.selectable, "the control");
+  });
+}
+
+test("a filter key with three parts and a variable that names no driver part is refused, not skipped", async () => {
+  const f = fixture();
+  appendFileSync(join(f.wt.gitDir, "config"), `[filter "x"]\n\tcleaner = y\n`);
+  await assert.rejects(daemonGitFor(f.wt, f.deps), (e: unknown) => e instanceof GitOpsError && e.code === "E_POLICY_DENIED");
+});

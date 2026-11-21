@@ -129,6 +129,16 @@ test("a filter with an unsafe name is refused", async () => {
   assert.equal(await code(planCommit(makeDeps(r), input)), "E_POLICY_DENIED");
 });
 
+test("a filter key that cannot be read is refused, never skipped: line terminators and controls in the name, an unknown variable", async () => {
+  const keys = ["\u2028", "\u2029", "\u0085", "\v", "\f", "\r", "\t", "\n"].map((c) => `filter.a${c}b.clean`).concat(["filter.x.cleaner", "filter.x.clean.", "filter.X"]);
+  for (const key of keys) {
+    const r = new FakeRunner(healthy((s) => (s[0] === "config" ? { stdout: `filter.ok.clean\0${key}\0` } : undefined)));
+    assert.equal(await code(planCommit(makeDeps(r), input)), "E_POLICY_DENIED", JSON.stringify(key));
+  }
+  const two = new FakeRunner(healthy((s) => (s[0] === "config" ? { stdout: "filter.process\0filter.required\0" } : undefined)));
+  await planCommit(makeDeps(two), input);
+});
+
 test("bad input is refused: tree hash, message, paths, detached HEAD, other branch", async () => {
   const mk = (over: Record<string, unknown>) => planCommit(makeDeps(new FakeRunner(healthy())), { ...input, ...over } as typeof input);
   assert.equal(await code(mk({ reviewedTreeHash: "HEAD" })), "E_INVALID_ARGUMENT");
