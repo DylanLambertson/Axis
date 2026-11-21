@@ -65,8 +65,6 @@ export interface ProvidersBinding {
 /** Audit payload keys of the vault reads (DMN-5): why the key was read and what came of it (`ok`, `unusable` or the vault's code). Never the key. */
 export const PROVIDERS_PAYLOAD_ALLOWLIST: Readonly<Record<string, readonly string[]>> = Object.freeze({ "provider.credential": Object.freeze(["purpose", "outcome"]) });
 
-const nodeFetch: FetchLike = (url, init) => fetch(url, init) as unknown as ReturnType<FetchLike>;
-
 /** Every string a tool call's input holds, keys included, parsed (not as JSON text, which would escape a key's quotes). */
 function* stringsOf(value: unknown): Generator<string> {
   const stack: unknown[] = [value];
@@ -211,7 +209,9 @@ export function createProvidersBinding(deps: ProvidersBindingDeps): ProvidersBin
   const adapter = createAnthropicAdapter({
     connectionId,
     apiKey,
-    fetch: conn.fetch ?? nodeFetch,
+    // The one place shipped code may use the global `fetch` (the module scanner's egress rule): handed to the adapter, which
+    // keeps it to the fixed origin with redirects refused. `conn.fetch` is the binding tests' seam (never set in production).
+    fetch: conn.fetch ?? ((url, init) => fetch(url, init) as unknown as ReturnType<FetchLike>),
     ...(conn.pricing === undefined ? {} : { pricing: conn.pricing }),
     ...(conn.limits === undefined ? {} : { limits: conn.limits }),
   });

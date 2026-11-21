@@ -28,6 +28,8 @@ const REASON_TEXT: Readonly<Record<string, string>> = {
   executable_not_found: "The CLI executable was not found.",
   bad_worktree: "The workspace location is not acceptable.",
   invalid_env: "The CLI environment is not usable.",
+  snapshot_timeout: "The snapshot before the run did not finish in time; try again.",
+  snapshot_failed: "The snapshot before the run could not be taken.",
   outcome_unknown: "The outcome of the start is not known; check the run list.",
 };
 
@@ -48,6 +50,8 @@ const FROM_SUPERVISOR: Readonly<Record<string, string>> = {
   INVALID_ENV: "invalid_env",
   EXECUTABLE_NOT_FOUND: "executable_not_found",
   EXECUTABLE_CHANGED: "executable_changed",
+  SNAPSHOT_TIMEOUT: "snapshot_timeout",
+  SNAPSHOT_FAILED: "snapshot_failed",
 };
 
 const CODE_TEXT = {
@@ -86,6 +90,7 @@ export function toRunError(error: unknown): DaemonError {
         // The reason shows in the fixed text only: the wire allows no `reason` detail on this code.
         return new DaemonError("E_BACKPRESSURE", reason === "run_limit" ? REASON_TEXT["run_limit"] as string : CODE_TEXT.E_BACKPRESSURE);
       case "E_UNAVAILABLE":
+        return runFailure(error.code, reason);
       case "E_TIMEOUT":
       case "E_CANCELLED":
         return runFailure(error.code);

@@ -85,14 +85,23 @@ test("two processes racing for the lock: exactly one wins", async () => {
   const dir = dirOf();
   try {
     const racer = fileURLToPath(new URL("./fixtures/lock-racer.js", import.meta.url));
-    const run = () =>
-      new Promise<string>((resolve) => {
-        const c = spawn(process.execPath, [racer, dir], { stdio: ["ignore", "pipe", "ignore"] });
-        let out = "";
-        c.stdout.on("data", (d: Buffer) => (out += d.toString()));
-        c.on("exit", () => resolve(out));
+    // Each racer answers on stdout; the winner keeps the lock until stdin closes, which the test does only after all have answered.
+    const racers = [0, 1, 2].map(() => {
+      const child = spawn(process.execPath, [racer, dir], { stdio: ["pipe", "pipe", "ignore"] });
+      let out = "";
+      let answered!: () => void;
+      const answer = new Promise<void>((resolve) => (answered = resolve));
+      child.stdout.on("data", (d: Buffer) => {
+        out += d.toString();
+        if (out === "won" || out === "E_CONFLICT") answered();
       });
-    const results = (await Promise.all([run(), run(), run()])).sort();
+      const exited = new Promise<void>((resolve) => child.on("exit", () => (answered(), resolve()))); // a racer that dies unanswered ends the wait (and fails the result)
+      return { child, answer, exited, result: () => out };
+    });
+    await Promise.all(racers.map((r) => r.answer));
+    for (const r of racers) r.child.stdin.end();
+    await Promise.all(racers.map((r) => r.exited));
+    const results = racers.map((r) => r.result()).sort();
     assert.deepEqual(results, ["E_CONFLICT", "E_CONFLICT", "won"]);
   } finally {
     rmSync(dir, { recursive: true, force: true });

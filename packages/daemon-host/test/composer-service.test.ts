@@ -33,7 +33,7 @@ test("edit mode: a write inside the worktree runs through the broker, is audited
   assert.equal(replayed, false);
   assert.equal(run.state, "RUNNING");
   assert.ok(composerRunsMethods.start.response.safeParse({ run, replayed }).success);
-  await until(ended(c, run.runId));
+  await until(ended(c, run.runId), "the run to end");
   const done = c.service.get(run.runId);
   assert.deepEqual([done.state, done.reason, done.live, done.mode, done.providerId], ["REVIEWING", null, false, "edit", "mock"]);
   assert.equal(readFileSync(join(c.root, "src/a.txt"), "utf8"), "hi");
@@ -63,7 +63,7 @@ test("WT-3 and DMN-3: a write to a protected path waits for the user's approval,
   assert.equal(pending[0]?.digest, requested.digest, "the event names the listed challenge");
   const res = await c.user.call("axis.approvals", "resolve", { challengeId: pending[0]?.challengeId, decision: "approve", digest: pending[0]?.digest });
   assert.equal(res.ok, true);
-  await until(ended(c, run.runId));
+  await until(ended(c, run.runId), "the run to end");
   assert.equal(readFileSync(join(c.root, ".github/workflows/ci.yml"), "utf8"), "on: push");
   assert.deepEqual(kinds(allEvents(c, run.runId)).filter((k) => k.startsWith("approval") || k.startsWith("tool")), ["approval:requested", "approval:approved", "tool:write_file:ok:null"]);
   const decision = auditRows(c, "broker.decision")[0]?.payload ?? {};
@@ -84,7 +84,7 @@ test("DMN-3: a denied approval writes nothing; the model is told and the run goe
   assert.equal(self.error?.code, "E_POLICY_DENIED", "the run cannot approve itself");
   assert.equal(c.service.get(run.runId).awaitingApproval, true);
   await c.user.call("axis.approvals", "resolve", { challengeId: challenge?.challengeId, decision: "deny", digest: challenge?.digest });
-  await until(ended(c, run.runId));
+  await until(ended(c, run.runId), "the run to end");
   assert.equal(existsSync(join(c.root, ".github/workflows/ci.yml")), false);
   assert.ok(kinds(allEvents(c, run.runId)).includes("tool:write_file:error:approval_declined"));
   assert.equal(c.service.get(run.runId).state, "REVIEWING");
@@ -113,7 +113,7 @@ test("WT-1: writes through `..`, an absolute path and a planted symlink are refu
 test("PRV-6: a run that reaches its request budget is stopped before the next provider request and records why", async (t) => {
   const c = await setup(t, { replies: [write("src/a.txt"), say("never sent")], budget: { maxRequests: 1 } });
   const { run } = await c.service.start(START(c.workspaceId), new AbortController().signal);
-  await until(ended(c, run.runId));
+  await until(ended(c, run.runId), "the run to end");
   const done = c.service.get(run.runId);
   assert.deepEqual([done.state, done.reason], ["FAILED", "BUDGET_REQUESTS"]);
   assert.equal(c.wire(), 1, "the second request never reached the provider");
@@ -123,7 +123,7 @@ test("PRV-6: a run that reaches its request budget is stopped before the next pr
 test("PRV-6: a token budget smaller than the first request stops the run before anything is sent", async (t) => {
   const c = await setup(t, { replies: [say("never sent")], budget: { maxTokens: 10 } });
   const { run } = await c.service.start(START(c.workspaceId, { prompt: "x".repeat(400) }), new AbortController().signal);
-  await until(ended(c, run.runId));
+  await until(ended(c, run.runId), "the run to end");
   assert.deepEqual([c.service.get(run.runId).state, c.service.get(run.runId).reason], ["FAILED", "BUDGET_TOKENS"]);
   assert.equal(c.wire(), 0);
 });
@@ -135,7 +135,7 @@ test("cancel during an approval withdraws it, writes nothing and ends the run CA
   await until(() => c.service.get(run.runId).awaitingApproval);
   const after = c.service.cancel(run.runId);
   assert.equal(after.runId, run.runId);
-  await until(ended(c, run.runId));
+  await until(ended(c, run.runId), "the run to end");
   assert.deepEqual([c.service.get(run.runId).state, c.service.get(run.runId).reason], ["CANCELLED", "USER_CANCELLED"]);
   assert.deepEqual((await c.user.call("axis.approvals", "pending", {})).result?.["challenges"], []);
   assert.deepEqual((await other.call("axis.approvals", "pending", {})).result?.["challenges"], [], "never listed for another window");
@@ -156,7 +156,7 @@ test("unknown provider or model creates nothing; one active run per workspace; a
   await assert.rejects(c.service.start(START(c.workspaceId, { mode: "ask" }), signal), (e) => reason(e) === "active_run");
   assert.equal(c.journal.listRuns({ workspaceId: c.workspaceId }).length, 1, "the refused start created nothing");
   c.service.cancel(run.runId);
-  await until(ended(c, run.runId));
+  await until(ended(c, run.runId), "the run to end");
   const ask = await c.service.start(START(c.workspaceId, { mode: "ask" }), signal);
   await until(ended(c, ask.run.runId));
   assert.equal(c.service.get(ask.run.runId).state, "REVIEWING");
@@ -166,7 +166,7 @@ test("unknown provider or model creates nothing; one active run per workspace; a
 test("ask mode sends no tools to the provider", async (t) => {
   const c = await setup(t, { replies: [say("answer")] });
   const { run } = await c.service.start(START(c.workspaceId, { mode: "ask" }), new AbortController().signal);
-  await until(ended(c, run.runId));
+  await until(ended(c, run.runId), "the run to end");
   assert.equal(c.sawTools(), false);
   assert.equal(c.service.get(run.runId).state, "REVIEWING");
 });
@@ -174,7 +174,7 @@ test("ask mode sends no tools to the provider", async (t) => {
 test("model text is escaped: control, bidi and invisible characters never reach the activity stream raw", async (t) => {
   const c = await setup(t, { replies: [say("ok‮evil\u001b[31m​\nnext\ttab")] });
   const { run } = await c.service.start(START(c.workspaceId, { mode: "ask" }), new AbortController().signal);
-  await until(ended(c, run.runId));
+  await until(ended(c, run.runId), "the run to end");
   const text = allEvents(c, run.runId).find((e) => e.type === "text");
   assert.ok(text?.type === "text");
   assert.equal(text.text, "ok\\u{202e}evil\\u{1b}[31m\\u{200b}\nnext\ttab");
@@ -184,7 +184,7 @@ test("model text is escaped: control, bidi and invisible characters never reach 
 test("events: the cursor returns only newer events and an unknown run is E_NOT_FOUND", async (t) => {
   const c = await setup(t, { replies: [say("a")] });
   const { run } = await c.service.start(START(c.workspaceId, { mode: "ask" }), new AbortController().signal);
-  await until(ended(c, run.runId));
+  await until(ended(c, run.runId), "the run to end");
   const first = c.service.events(run.runId, 0, 2);
   assert.deepEqual(first.events.map((e) => e.seq), [1, 2]);
   assert.equal(first.complete, false);

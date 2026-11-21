@@ -46,7 +46,7 @@ test("C8: a protected write's approval shows bytes, SHA-256 and an escaped head 
   const [challenge] = await pending(c);
   assert.equal(challenge?.digest, requested?.digest, "the preview is the one of the listed challenge");
   await c.user.call("axis.approvals", "resolve", { challengeId: challenge?.challengeId, decision: "approve", digest: challenge?.digest });
-  await until(ended(c, run.runId));
+  await until(ended(c, run.runId), "the run to end");
   assert.equal(sha(readFileSync(join(c.root, "Makefile"), "utf8")), preview.content.sha256, "what runs is what was shown");
   const later = approvals(c, run.runId).slice(1);
   assert.deepEqual(later.map((e) => [e.state, e.preview]), [["approved", null]], "only the request carries the preview");
@@ -102,7 +102,7 @@ test("C8: a call whose arguments the hook cannot prove the digest covers is decl
   const long = `.github/${"x".repeat(220)}.yml`;
   const c = await setup(t, { replies: [write(long, "payload"), { kind: "text", text: "ok" }] });
   const { run } = await c.service.start(START(c.workspaceId), new AbortController().signal);
-  await until(ended(c, run.runId));
+  await until(ended(c, run.runId), "the run to end");
   assert.deepEqual(approvals(c, run.runId), [], "no approval was ever requested");
   assert.deepEqual(await pending(c), []);
   assert.ok(allEvents(c, run.runId).some((e) => e.type === "tool" && e.outcome === "error" && e.reason === "approval_declined"));
@@ -113,7 +113,7 @@ test("C8: a call whose arguments the hook cannot prove the digest covers is decl
 /** The run asked for a protected write that must be declined before any challenge: nothing listed, nothing written. */
 async function declinedBlind(c: ComposerRig, path: string, end: readonly [string, string | null] = ["REVIEWING", null]): Promise<void> {
   const { run } = await c.service.start(START(c.workspaceId), new AbortController().signal);
-  await until(ended(c, run.runId));
+  await until(ended(c, run.runId), "the run to end");
   assert.deepEqual(approvals(c, run.runId), [], "no approval was ever requested");
   assert.deepEqual(await pending(c), []);
   assert.ok(allEvents(c, run.runId).some((e) => e.type === "tool" && e.outcome === "error" && e.reason === "approval_declined"));
@@ -134,7 +134,7 @@ test("review c2 S1: a protected write of exactly the head's length is shown whol
   await until(() => c.service.get(run.runId).awaitingApproval);
   assert.deepEqual([approvals(c, run.runId)[0]?.preview?.content?.head, approvals(c, run.runId)[0]?.preview?.content?.truncated], [content, false]);
   c.service.cancel(run.runId);
-  await until(ended(c, run.runId));
+  await until(ended(c, run.runId), "the run to end");
 });
 
 test("review c2 S1: a protected write with a secret-like value is declined, and the value is in no event", async (t) => {

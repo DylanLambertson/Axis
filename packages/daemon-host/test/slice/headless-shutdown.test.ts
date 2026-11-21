@@ -47,8 +47,8 @@ describe("headless slice: shutdown", { skip: gitSkipReason(), timeout: SUITE_TIM
     else sup.kill("SIGTERM");
     return sup.exited;
   };
-  const boot = async (agents: unknown, breakPutFile?: string, finalWaitMs?: number) => {
-    const h = await startHost(fx, { agents, ...(breakPutFile === undefined ? {} : { breakPutFile }), ...(finalWaitMs === undefined ? {} : { finalWaitMs }) });
+  const boot = async (agents: unknown, breakPutFile?: string, finalWaitMs?: number, config?: Record<string, unknown>) => {
+    const h = await startHost(fx, { agents, ...(breakPutFile === undefined ? {} : { breakPutFile }), ...(finalWaitMs === undefined ? {} : { finalWaitMs }), ...(config === undefined ? {} : { config }) });
     await h.ready;
     trustWindow(h.sup);
     const projectId = await registerProject(h.sup, fx.repo);
@@ -75,8 +75,9 @@ describe("headless slice: shutdown", { skip: gitSkipReason(), timeout: SUITE_TIM
     assert.ok(newest() !== undefined);
     try {
       sup.ack(newest()!.seq, newest()!.hash); // a put that arrives later is acknowledged on arrival
-    } catch {
-      // The channel is closed: the host has nothing left to wait for and is ending; its exit is awaited below.
+    } catch (e) {
+      // Only a closed channel is expected: the host has nothing left to wait for and is ending (its exit is awaited below).
+      if (!/channel is closed/i.test(String((e as { message?: unknown }).message))) throw e;
     }
     const exit = await exited;
     assert.ok(exit.code === 0 || exit.code === 1, "the host ended");
@@ -86,6 +87,30 @@ describe("headless slice: shutdown", { skip: gitSkipReason(), timeout: SUITE_TIM
     const rows = auditRows(db);
     db.close();
     assert.equal(rows[rows.length - 1]?.seq, last.seq, "the final anchor covers the last event: nothing was written after it");
+  });
+
+  test("a stall that ends with the final acknowledgement appends no row after the final anchor", async () => {
+    // Shutdown step 3 halts the anchor manager: the acknowledgement of the final put ends a stall, and without the halt that
+    // transition appends an audit row after the final anchor (the final anchor would no longer be the last row).
+    const { sup, client, projectId } = await boot([], undefined, HELD_ACK_WAIT_MS, { limits: { anchorMaxLagEvents: 4 } });
+    await createWorkspace(client, projectId, "Stalled");
+    await until(() => sup.anchorPuts.length > 0, "the first anchor");
+    sup.holdAcks = true;
+    const status = () => client.ok<{ stalled: boolean }>("axis.audit", "status", {});
+    await until(async () => (await client.ok("axis.cli-runs", "list", {}), (await status()).stalled), "the anchor to stall");
+    client.close();
+    const exited = stop(sup);
+    // No explicit acknowledgement of an older put: one the host reads before it halts would end the stall (and write its row) before the
+    // final put. Releasing the hold only makes the final put acknowledged on arrival, and that acknowledgement ends the stall.
+    sup.holdAcks = false;
+    const exit = await exited;
+    assert.ok(exit.code === 0 || exit.code === 1, "the host ended");
+    const last = sup.anchorPuts[sup.anchorPuts.length - 1];
+    assert.ok(last !== undefined);
+    const db = openStopped(sup.dataDir, join(scratch, "stopped-stall"));
+    const rows = auditRows(db);
+    db.close();
+    assert.equal(rows[rows.length - 1]?.seq, last.seq, "the final anchor is the last row: the end of the stall wrote nothing after it");
   });
 
   test("a final anchor the supervisor never acknowledges exits 1, without a forced exit", async () => {

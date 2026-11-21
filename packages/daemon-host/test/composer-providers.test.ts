@@ -87,7 +87,7 @@ const ended = (c: ComposerRig, id: string) => () => !c.service.get(id).live && [
 test("C9/PRV-4: every provider request is shown with its destination, before its usage, one event per request", async (t) => {
   const c = await rigged(t, [{ kind: "tool_use", name: "read_file", input: { path: "src/a.txt" } }, { kind: "text", text: "done" }]);
   const { run } = await c.service.start(START(c.workspaceId), new AbortController().signal);
-  await until(ended(c, run.runId));
+  await until(ended(c, run.runId), "the run to end");
   const events = allEvents(c, run.runId);
   for (const e of events) runEventSchema.parse(e);
   assert.deepEqual(requests(events).map((e) => [e.request, e.providerId, e.connectionId, e.modelId, e.destination]), [[1, "mock", "mock-connection", "mock-model", MOCK_TEXT], [2, "mock", "mock-connection", "mock-model", MOCK_TEXT]]);
@@ -100,7 +100,7 @@ test("C9/PRV-4: a request the budget refuses is not shown as sent", async (t) =>
   const c = await composerRig({ replies: [{ kind: "tool_use", name: "read_file", input: { path: "src/a.txt" } }, { kind: "text", text: "never" }], budget: { maxRequests: 1 } });
   t.after(() => c.cleanup());
   const { run } = await c.service.start(START(c.workspaceId), new AbortController().signal);
-  await until(ended(c, run.runId));
+  await until(ended(c, run.runId), "the run to end");
   assert.equal(c.service.get(run.runId).reason, "BUDGET_REQUESTS");
   assert.equal(c.wire(), 1);
   assert.equal(requests(allEvents(c, run.runId)).length, 1);

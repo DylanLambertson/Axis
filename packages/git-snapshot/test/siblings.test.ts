@@ -8,6 +8,7 @@ import { judgeDrift, takeSnapshot, type TakeOptions } from "../src/index.js";
 import { forgetGit, resolveGit } from "../src/git.js";
 import { redactText } from "../src/display.js";
 import { git, makeFixture, type Fixture } from "./helpers.js";
+import { budget } from "./budget.js";
 
 const posix = process.platform !== "win32";
 const realPath = process.env["PATH"] ?? "";
@@ -41,7 +42,7 @@ for (const [name, make] of shapes) {
       make(join(f.common, "worktrees", "zz", "gitdir"));
       const t0 = Date.now();
       const s = await takeSnapshot(opts(f));
-      assert.ok(Date.now() - t0 < 4000, `took ${Date.now() - t0} ms`);
+      assert.ok(Date.now() - t0 < budget(4000), `took ${Date.now() - t0} ms`);
       assert.ok(s.incomplete.some((i) => i.blocking && i.id === "worktrees/zz/gitdir"), JSON.stringify(s.incomplete));
       assert.equal(judgeDrift({ baseline: s, current: s }).status, "refused");
     } finally {
@@ -59,7 +60,7 @@ test("sibling list: a FIFO does not outlive an abort", { skip: !posix }, async (
     setTimeout(() => ac.abort(), 200);
     const t0 = Date.now();
     await takeSnapshot(opts(f, { signal: ac.signal })).catch(() => undefined);
-    assert.ok(Date.now() - t0 < 3000, `took ${Date.now() - t0} ms`);
+    assert.ok(Date.now() - t0 < budget(3000), `took ${Date.now() - t0} ms`);
   } finally {
     f.cleanup();
   }
