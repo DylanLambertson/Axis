@@ -63,31 +63,35 @@ test("S1: through a 150-token budget, usage-less replies are charged conservativ
 
 const bodyOf = (text: string, chunk = 65_536): Handler => (_c, counter) => sseResponse(counter, text, chunk);
 
-async function flood(line: string, copies: number): Promise<{ err: Awaited<ReturnType<typeof failure>>; ms: number }> {
+/** The most chunks of the body the adapter may pull before it gives up on a flood: a cut at the ignored cap needs about one; reading on needs all of them. */
+const MAX_CHUNKS_READ = 6;
+
+async function flood(line: string, copies: number): Promise<{ err: Awaited<ReturnType<typeof failure>>; reads: number; available: number }> {
   const text = start({ input_tokens: 5, output_tokens: 1 }) + line.repeat(copies);
-  const { adapter } = make(bodyOf(text));
-  const t0 = Date.now();
+  const { adapter, fake } = make(bodyOf(text));
   const err = await failure(drain(adapter.stream(req(), { signal: live() })));
-  return { err, ms: Date.now() - t0 };
+  return { err, reads: fake.counter.reads, available: Math.ceil(text.length / 65_536) };
 }
 
 for (const [name, line] of [["blank lines", "\n"], ["id fields", "id:1\n"], ["retry fields", "retry: 5\n"], ["repeated event lines", "event:x\n"], ["CR-only blank lines", "\r"]] as const) {
   test(`S6: a flood of ${name} is cut at the ignored cap, quickly, and is not retryable`, async () => {
-    const { err, ms } = await flood(line, 2_000_000);
+    const { err, reads, available } = await flood(line, 2_000_000);
     assert.equal(err.code, "invalid_response");
     assert.equal(err.details.reason, "too_many_ignored_events");
     assert.equal(err.retryable, false);
-    assert.ok(ms < 2_000, `took ${ms} ms`);
+    // Cut early means the body was not read on: counted in chunks pulled, so the check does not depend on how fast the machine is.
+    assert.ok(available > 4 * MAX_CHUNKS_READ && reads <= MAX_CHUNKS_READ, `read ${reads} of ${available} chunks`);
   });
 }
 
 test("S6: eight MiB of newlines does not cost seconds", async () => {
   const chunk = "\n".repeat(65_536);
-  const { adapter } = make((_c, counter) => response(counter, 200, [...chunkBytes(start({ input_tokens: 5, output_tokens: 1 }), 64), ...Array.from({ length: 128 }, () => new TextEncoder().encode(chunk))]));
-  const t0 = Date.now();
+  const startChunks = chunkBytes(start({ input_tokens: 5, output_tokens: 1 }), 64).length;
+  const { adapter, fake } = make((_c, counter) => response(counter, 200, [...chunkBytes(start({ input_tokens: 5, output_tokens: 1 }), 64), ...Array.from({ length: 128 }, () => new TextEncoder().encode(chunk))]));
   const err = await failure(drain(adapter.stream(req(), { signal: live() })));
   assert.equal(err.details.reason, "too_many_ignored_events");
-  assert.ok(Date.now() - t0 < 2_000);
+  // 128 chunks of 64 KiB are available; the cut needs the start event and about one chunk of newlines. Counted, not timed.
+  assert.ok(fake.counter.reads <= startChunks + 8, `read ${fake.counter.reads} of ${startChunks + 128} chunks`);
 });
 
 test("N5: an event with no data is skipped, not fatal; a BOM is stripped from the first line only", async () => {
