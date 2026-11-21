@@ -22,7 +22,8 @@ import { MAX_CARD_TAINT_SOURCES, taintReceiptSchema, type ApprovalTaint, type Ta
  * - **The card.** `card()` lists the most recent sources (bounded) and how many there were in all, for the approval card.
  * - **Audit.** One `message.taint` row per receipt: the run, the source type, the source id and the hop, never the content.
  *
- * No producer exists yet: PV-M4 (sources 1 to 3), PV-Q1 (4), PV-T1 (5 and 8), PV-K4 (6) and PV-N1 (7) call `receive`.
+ * Producers: the message delivery into runs (PV-M3 slice 2, `messages/delivery.ts`) for source 1; PV-M4 (2 and 3), PV-Q1 (4),
+ * PV-T1 (5 and 8), PV-K4 (6) and PV-N1 (7) call `receive` the same way.
  */
 
 export const TAINT_AUDIT_ACTION = "message.taint";
