@@ -303,3 +303,15 @@ test("S5: a throwing getter yields a fixed marker and its message never escapes"
   Object.defineProperty(err, "message", { get() { throw new Error(SECRET); } });
   assert.ok(!JSON.stringify(r.redactValue(err)).includes(SECRET));
 });
+
+test("registeredForms grows with each new secret and stays the same for one registered again", () => {
+  const r = new Redactor();
+  assert.equal(r.registeredForms, 0);
+  r.registerSecret("first-registered-value-for-forms");
+  const one = r.registeredForms;
+  assert.ok(one > 1, "a secret is held in several forms");
+  r.registerSecret("first-registered-value-for-forms");
+  assert.equal(r.registeredForms, one, "the same secret again adds nothing");
+  r.registerSecret("second-registered-value-for-forms");
+  assert.ok(r.registeredForms > one);
+});
