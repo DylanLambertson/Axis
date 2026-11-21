@@ -60,6 +60,15 @@ const EXPECTED: readonly Row[] = [
   ["axis.runs", "events", "read", 0, "none", 5_000],
   ["axis.events", "subscribe", "read", 0, "none", 5_000],
   ["axis.events", "unsubscribe", "read", 0, "none", 5_000],
+  ["axis.messages", "send", "write", 2, "required", 15_000],
+  ["axis.messages", "thread", "read", 1, "none", 10_000],
+  ["axis.messages", "threads", "read", 0, "none", 10_000],
+  ["axis.messages", "read", "read", 1, "none", 10_000],
+  ["axis.messages", "markRead", "write", 1, "none", 5_000],
+  ["axis.messages", "pause", "write", 2, "none", 5_000],
+  ["axis.messages", "resume", "write", 2, "none", 5_000],
+  ["axis.messages", "settings", "read", 0, "none", 5_000],
+  ["axis.messages", "updateSettings", "write", 2, "none", 10_000],
 ];
 
 function actualRows(): Row[] {

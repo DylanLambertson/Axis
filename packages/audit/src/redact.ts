@@ -319,6 +319,14 @@ export class Redactor {
     this.#literals = [...next].sort((a, b) => b.length - a.length || (a < b ? -1 : 1));
   }
 
+  /**
+   * How many registered forms the redactor holds. It only grows (nothing unregisters a secret), so a caller may keep a "no
+   * secret" verdict for a text while this number is unchanged, and must judge the text again once it grows.
+   */
+  get registeredForms(): number {
+    return this.#literals.length;
+  }
+
   /** The rules and registered literals, on a string already made well-formed and bounded. */
   #scan(input: string): string {
     let out = input;
