@@ -26,6 +26,15 @@ export {
   type ComposerRunRecord,
   type ComposerUsageRecord,
 } from "./composer-store.js";
+export {
+  MAX_STORED_PARTICIPANTS,
+  MessageRecords,
+  type AgentMessagingSettings,
+  type AppendMessage,
+  type MessageRecord,
+  type ParticipantRecord,
+  type ThreadRecord,
+} from "./message-store.js";
 export { baseBranchSchema, baseTipSchema, type RegisterProjectInput } from "./records.js";
 export { MAX_TAIL_ROWS, lastTransitionId, transitionsSince, type TransitionTail } from "./tail.js";
 export { JOURNAL_MIGRATIONS, JOURNAL_SCHEMA_VERSION } from "./schema.js";
