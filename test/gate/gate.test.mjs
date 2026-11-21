@@ -287,7 +287,8 @@ test("run-suite: a suite that runs past the sample point prints memory and its b
   await runSuite("slow", node, ["-e", "setTimeout(()=>{},700)"], { sampleMs: 100, sampleAfterMs: 0, out: sink, err: sink });
   const text = Buffer.concat(parts).toString("utf8");
   assert.match(text, /== sample \(slow, \+\d+s, running\): .*Mem:/s);
-  assert.match(text, /\d+ +\d+ .*node/, "a process line with its RSS");
+  // The shape of a process line (rss, pid, command), never which program is among the top five: that is the host's business.
+  assert.match(text, /\n    \d+ +\d+ +\S/, "at least one process line: rss, pid, command");
   const killed = [];
   const sink2 = new Writable({ write(c, _e, cb) { killed.push(c); cb(); } });
   await runSuite("spin", node, ["-e", "for(;;){}"], { timeoutMs: 400, graceMs: 200, sampleMs: 0, out: sink2, err: sink2 });
