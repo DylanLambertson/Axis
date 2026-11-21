@@ -53,7 +53,9 @@ describe("composer slice (C7): scenario 1 on the mock provider, hostile output, 
           { kind: "tool_use", name: "delete_everything", input: { path: "README.txt" } },
           write("../outside.txt", "escape"),
           write(".envrc", `export TOKEN=${secret}\n`),
+          { kind: "text", text: "Stopped." },
         ],
+        ransecret: [write("notes.txt", `key ${secret}\n`), { kind: "text", text: "never" }],
         malformed: [{ kind: "malformed" }],
         long: [read("long.txt"), command("process.stdout.write('one ordinary line of build output\\n'.repeat(1200))"), { kind: "text", text: "Read it and ran it." }],
         headsecret: [read("head-secret.txt")],
@@ -144,9 +146,10 @@ describe("composer slice (C7): scenario 1 on the mock provider, hostile output, 
   test("3. hostile output: an unknown tool, a path outside the worktree, a secret in a protected write, a malformed reply, a huge call", async () => {
     const runId = (runs["hostile"] = await startRun(h.client, ws.id, "hostile"));
     const run = await settled(h.client, runId);
-    // The secret-bearing write is declined before any question (a protected write is never approved blind, review c2 S1); the
-    // next request would send the model's own call, secret included, back out, and the outgoing scan refuses it: the run ends.
-    assert.deepEqual([run.state, run.reason, run.usage?.requests], ["FAILED", "PROVIDER_SECRET_IN_REQUEST", 3]);
+    // The secret-bearing write is declined before any question (a protected write is never approved blind, review c2 S1). The
+    // declined call's input is withheld from the next request (C7-F1), so the run goes on: the outgoing scan, which refuses any
+    // request that holds the secret, let all four through.
+    assert.deepEqual([run.state, run.reason, run.usage?.requests], ["REVIEWING", null, 4]);
     const events = await eventsOf(h.client, runId);
     assert.deepEqual(toolsOf(events).map((t) => [t.tool, t.outcome, t.reason]), [["delete_everything", "error", "unknown_tool"], ["write_file", "error", "dotdot"], ["write_file", "error", "approval_declined"]], "no hostile call ran");
     assert.deepEqual(approvalsOf(events), [], "nothing was put to the user");
@@ -154,6 +157,15 @@ describe("composer slice (C7): scenario 1 on the mock provider, hostile output, 
     assert.equal(existsSync(join(dirname(ws.path), "outside.txt")), false);
     assert.equal(existsSync(join(ws.path, ".envrc")), false);
     assert.ok(!JSON.stringify(events).includes(secret), "the secret is in no event");
+
+    // A call that RAN carries its input into the next request: the scan still refuses that request and the run ends.
+    const ran = (runs["ransecret"] = await startRun(h.client, ws.id, "ransecret"));
+    const r = await settled(h.client, ran);
+    assert.deepEqual([r.state, r.reason, r.usage?.requests], ["FAILED", "PROVIDER_SECRET_IN_REQUEST", 1]);
+    const ranEvents = await eventsOf(h.client, ran);
+    assert.deepEqual(toolsOf(ranEvents).map((t) => [t.tool, t.outcome]), [["write_file", "ok"]], "an unprotected write runs without a question");
+    assert.ok(!JSON.stringify(ranEvents).includes(secret), "the secret is in no event");
+    rmSync(join(ws.path, "notes.txt"));
 
     const malformed = (runs["malformed"] = await startRun(h.client, ws.id, "malformed"));
     const bad = await settled(h.client, malformed);
@@ -246,7 +258,7 @@ describe("composer slice (C7): scenario 1 on the mock provider, hostile output, 
       const perRun = db.prepare("SELECT SUM(budget_requests) AS n FROM composer_runs").get() as { n: number };
       // Every request of every run, the killed run's in-flight reservation included, is charged to the workspace (C10, J2).
       assert.equal(budget.requests, perRun.n, "the workspace total is the sum of its runs");
-      assert.equal(budget.requests, 27, "s1 5, long 3, head and tail secret 1 each, hostile 3, malformed 1, huge 1, cancel 1, budget 8, wt2 1, kill 1 (in flight at the kill), after 1");
+      assert.equal(budget.requests, 29, "s1 5, long 3, head and tail secret 1 each, hostile 4, ran secret 1, malformed 1, huge 1, cancel 1, budget 8, wt2 1, kill 1 (in flight at the kill), after 1");
       // DMN-3: each approval was authorised exactly once, and every later answer to it was refused (consumed once).
       assert.equal((db.prepare("SELECT COUNT(*) AS n FROM composer_runs WHERE tainted <> 0").get() as { n: number }).n, 0, "no run was tainted (no taint source exists on main yet)");
       const rows = auditRows(db);

@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { after, before, describe, test } from "node:test";
 import { AuditLog } from "@axis/audit";
 import type { RunEvent } from "@axis/protocol";
-import { createGitFixture, gitSkipReason, type GitFixture } from "../../testing/git-fixture.js";
+import { canary, createGitFixture, gitSkipReason, type GitFixture } from "../../testing/git-fixture.js";
 import type { SliceComposerConfig } from "../../testing/slice-composer.js";
 import { auditRows, createWorkspace, databaseBytes, disposeHosts, openStopped, type Workspace } from "../../testing/slice-helpers.js";
 import { transcript } from "../../testing/test-client.js";
@@ -45,6 +45,8 @@ describe("composer slice (C7): scenario 6 on the Anthropic connection in the chi
   let ws: Workspace;
   let config: SliceComposerConfig;
   const key = testKey(7);
+  /** A credential-shaped string the model writes (not the connection's key, which the adapter refuses as an echo). */
+  const secret = canary(37);
   const runs: string[] = [];
   const start = async (replies: MessagesReply[], prompt = "Make the change"): Promise<string> => {
     api.replies = replies;
@@ -123,6 +125,29 @@ describe("composer slice (C7): scenario 6 on the Anthropic connection in the chi
     assert.deepEqual(toolsOf(await eventsOf(h.client, echo)), []);
     assert.equal(existsSync(join(ws.path, "notes.txt")), false);
 
+    // A protected write holding a secret is declined before any question; its input is withheld from the next request
+    // (C7-F1), so the run goes on and no request body ever holds the secret.
+    const sent = api.seen.length;
+    const declined = await start([tool("write_file", { path: ".envrc", content: `export TOKEN=${secret}\n` }), text("Stopped.")]);
+    const dr = await settled(h.client, declined);
+    assert.deepEqual([dr.state, dr.reason, dr.usage?.requests], ["REVIEWING", null, 2]);
+    const de = await eventsOf(h.client, declined);
+    assert.deepEqual(toolsOf(de).map((t) => [t.tool, t.outcome, t.reason]), [["write_file", "error", "approval_declined"]]);
+    assert.deepEqual(approvalsOf(de), [], "nothing was put to the user");
+    assert.equal(existsSync(join(ws.path, ".envrc")), false);
+    const bodies = api.seen.slice(sent).filter((x) => x.path === "/v1/messages").map((x) => x.body);
+    assert.equal(bodies.length, 2);
+    assert.match(bodies[1] ?? "", /tool_result/, "the model was told the call was declined");
+    // A call that RAN carries its input into the next request: the outgoing scan refuses it, so it is never sent either.
+    const ran = await start([tool("write_file", { path: "notes.txt", content: `key ${secret}\n` }), text("never")]);
+    const rr = await settled(h.client, ran);
+    assert.deepEqual([rr.state, rr.reason, rr.usage?.requests], ["FAILED", "PROVIDER_SECRET_IN_REQUEST", 1]);
+    assert.deepEqual(toolsOf(await eventsOf(h.client, ran)).map((t) => [t.tool, t.outcome]), [["write_file", "ok"]]);
+    rmSync(join(ws.path, "notes.txt"));
+    assert.equal(api.seen.slice(sent).filter((x) => x.path === "/v1/messages").length, 3, "the refused request never left the host");
+    for (const x of api.seen) assert.equal(x.body.includes(secret), false, "the secret is in no request body");
+    for (const id of [declined, ran]) assert.ok(!JSON.stringify(await eventsOf(h.client, id)).includes(secret), "the secret is in no event");
+
     const huge = await start([tool("write_file", { path: "huge.txt", content: "y".repeat(6 * 1024) })]);
     const g = await settled(h.client, huge);
     assert.deepEqual([g.state, g.reason], ["FAILED", "TOOL_INPUT_LIMIT"]);
@@ -166,10 +191,11 @@ describe("composer slice (C7): scenario 6 on the Anthropic connection in the chi
       assert.deepEqual(new Set(records.map((r) => r.run_id)), new Set(runs));
       const bytes = databaseBytes(join(scratch, "stopped"));
       for (const needle of [key, key.slice(8), Buffer.from(key).toString("base64")]) assert.equal(bytes.includes(needle), false, "a form of the key is in the database");
+      assert.equal(bytes.includes(secret), false, "the written secret is in the database");
     } finally {
       db.close();
     }
-    for (const t of [h.sup.stderr, ...transcript]) assert.equal(t.includes(key), false, "the key reached a response or the host's log");
+    for (const t of [h.sup.stderr, ...transcript]) for (const needle of [key, secret]) assert.equal(t.includes(needle), false, "a secret reached a response or the host's log");
     assert.equal(readFileSync(join(ws.path, "Makefile"), "utf8"), "all:\n\ttrue\n");
   });
 });
