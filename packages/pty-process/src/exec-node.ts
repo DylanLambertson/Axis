@@ -88,8 +88,8 @@ function collector(stream: NodeJS.ReadableStream, cap: number): { readonly bytes
  * - The environment is copied onto a null prototype (a name with `=` or NUL, or a non-string value, is `start_failed`); the cwd
  *   must be absolute.
  * - At the leader's exit the rest of its group is sent SIGKILL; `done` settles only after that and after both pipes closed, so no
- *   member of the group outlives a settled `done`. `kill()` SIGKILLs the group at once. Once the group is found empty its id is
- *   never signalled again (it may belong to another process by then).
+ *   member of the group outlives a settled `done`. `kill()` SIGKILLs the group at once. From the leader's exit on, or once a probe
+ *   finds the group empty, its id is never probed or signalled again (it may belong to another process by then).
  */
 export function createNodeExec(programs: ReadonlySet<string>, platform: NodeJS.Platform): ExecFn {
   const allowed = new Set<string>();
