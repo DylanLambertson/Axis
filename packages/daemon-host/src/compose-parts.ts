@@ -13,6 +13,10 @@ import type { Logger } from "./log/logger.js";
 import type { Clock } from "./ports/clock.js";
 import type { RunsService } from "./ports/runs.js";
 import type { ProjectMutex } from "./worktrees/project-mutex.js";
+import type { MockProviderOptions, RunBudgetLimits } from "@axis/providers";
+import type { CommandLimits } from "./bindings/agent-command.js";
+import type { ToolCaps } from "./composer/loop.js";
+import type { PtyPort } from "./ports/pty.js";
 
 /**
  * Small pieces of the composition root (ticket H12), kept apart so `compose.ts` stays readable. None of them touches a
@@ -192,3 +196,25 @@ export function registryOf(surface: HostServices["surface"]): ContractRegistry {
     versions: (contract) => protocolRegistry.versions(contract).filter((v) => surface.registry[`${contract}/${v}`] !== undefined),
   };
 }
+
+/** Composer runs (`axis.runs/1`, docs/design/composer-runtime.md): the mock provider's script, budgets and bounds (the Anthropic connection is added in compose.ts, the only importer of the providers binding there). */
+export interface ComposerOptions {
+  readonly mock?: MockProviderOptions;
+  readonly budget?: RunBudgetLimits;
+  /** Per-workspace budget across composer runs (C10); default `DEFAULT_WORKSPACE_BUDGET`. */
+  readonly workspaceBudget?: RunBudgetLimits;
+  readonly maxTurns?: number;
+  readonly toolCaps?: Partial<ToolCaps>;
+  /**
+   * Lower the `run_command` bounds (C3), never raise them: each given bound a positive integer at or below its
+   * `DEFAULT_COMMAND_LIMITS` value, no other key (`hostCommandLimits`); anything else refuses the composition
+   * (`command_limits_invalid`).
+   */
+  readonly commandLimits?: Partial<CommandLimits>;
+}
+
+export function refuseComposition(reason: string): never {
+  throw new AxisError("E_INVALID_ARGUMENT", "The host composition is incomplete", { reason });
+}
+
+export const isPty = (p: unknown): p is PtyPort => typeof (p as { spawn?: unknown } | null)?.spawn === "function";
