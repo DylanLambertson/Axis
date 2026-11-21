@@ -82,7 +82,7 @@ test("a project-wide fault never quarantines the user's own message: it stays qu
   assert.equal(r.c.journal.messages.deliveries.get(mine.messageId, "agent:a1"), undefined, "nor quarantined");
   assert.equal(r.c.journal.messages.deliveries.get(theirs.messageId, "agent:a1")?.state, "failed", "another sender's message is");
   const notices = (threadId: string) => r.m.service.thread(USER, { threadId }).messages.filter((x) => x.sender.kind === "system").length;
-  assert.equal(notices(mine.threadId), 0, "no notice for the user's own message");
+  assert.equal(notices(mine.threadId), 1, "one held notice for the user's own message (messages-delivery-held.test.ts), not a quarantine notice");
   assert.equal(notices(theirs.threadId), 1);
   r.c.db.prepare("DELETE FROM messaging_settings WHERE project_id = 'p'").run();
   assert.deepEqual(r.m.delivery.next(runId, { receive: () => undefined })?.messageIds, [mine.messageId], "delivered once the fault is gone");
