@@ -318,6 +318,22 @@ suite('Axis Changes source (fake IGitService)', () => {
 		assert.deepStrictEqual([source.status, names()], ['ready', ['unstaged:a.ts']]);
 	});
 
+	test('a second empty state event (only HEAD changed) while reading is believed, and the Refresh runs only once', async () => {
+		const repo = new FakeRepository(ROOT);
+		source.setRoot(ROOT);
+		await flush();
+		await git.answer(repo);
+		assert.strictEqual(source.status, 'loading');
+		repo.set(state({ HEAD: { type: 0, name: 'main', commit: 'a'.repeat(40) } }));
+		repo.set(state({ HEAD: { type: 0, name: 'main', commit: 'b'.repeat(40) } }));
+		assert.strictEqual(source.status, 'ready', 'a state event after the first comes from a status');
+		assert.deepStrictEqual(names(), []);
+		assert.strictEqual(confirms.length, 1, 'later events never start another Refresh');
+		assert.strictEqual(timers.length, 1);
+		await confirmAll(true);
+		assert.strictEqual(confirms.length, 0);
+	});
+
 	test('a Refresh that answers after the changes showed redraws nothing', async () => {
 		const repo = new FakeRepository(ROOT);
 		source.setRoot(ROOT);
