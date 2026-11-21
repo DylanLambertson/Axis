@@ -4,7 +4,8 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { taintReceiptSchema, type MessageWire } from "@axis/protocol";
-import { DELIVERY_NOTE, senderLabel, type MessageCaller } from "../src/index.js";
+import { createRunBudget } from "@axis/providers";
+import { DELIVERY_NOTE, runComposerLoop, senderLabel, type ComposerRunTools, type MessageCaller } from "../src/index.js";
 import { deliveryRig, drive, read, type DeliveryRig } from "./messages-delivery-rig.js";
 
 // PV-M3 slice 2, review 1: no head-of-line starvation, acknowledgement only after the request that carried a block,
@@ -150,4 +151,32 @@ test("every block has a fresh full-length nonce, and a body quoting an earlier b
   assert.equal(lines.filter((l) => l.startsWith("[")).length, 4, "the frame lines Axis wrote, and no others");
   assert.ok(lines.filter((l) => l.includes(n1)).every((l) => l.startsWith("| ")), "the old nonce only inside the body");
   assert.equal(lines.at(-1), `[axis-delivery-end ${n2}]`);
+});
+
+test("a block holds at most 8 messages; the rest wait for the next boundary", async (t) => {
+  const r = await deliveryRig(t);
+  const ids: string[] = [];
+  for (let i = 0; i < 10; i++) ids.push((await send(r, USER, "a1", `note ${i}`)).messageId);
+  const runId = r.run("a1");
+  const first = r.m.delivery.next(runId, sink);
+  assert.deepEqual(first?.messageIds, ids.slice(0, 8));
+  first?.ack();
+  assert.deepEqual(r.m.delivery.next(runId, sink)?.messageIds, ids.slice(8));
+});
+
+test("an acknowledgement that fails ends the run and releases the block", async () => {
+  const calls: string[] = [];
+  const tools: ComposerRunTools = {
+    specs: [],
+    invoke: async () => ({ ok: true, content: "done" }),
+    deliver: async () => ({ text: "[axis-delivery x] block", ack: () => (calls.push("ack"), (() => { throw new Error("disk full"); })()), release: () => void calls.push("release") }),
+  };
+  let n = 0;
+  const end = await runComposerLoop({
+    runId: "r1", mode: "agent", prompt: "p", model: "m", budget: createRunBudget({}), signal: new AbortController().signal, emit: () => undefined, tools,
+    destination: { providerId: "mock", connectionId: "mock-connection", modelId: "m", text: "Local" },
+    provider: { generate: async () => ({ model: "m", usage: { inputTokens: 1, outputTokens: 1 }, stopReason: n++ === 0 ? "tool_use" : "end_turn", content: n === 1 ? [{ type: "tool_use" as const, id: "c1", name: "read_file", input: {} as never }] : [] }) },
+  });
+  assert.deepEqual(end, { state: "FAILED", reason: "DELIVERY_FAILED" });
+  assert.deepEqual(calls, ["ack", "release"]);
 });

@@ -338,8 +338,9 @@ export function createAgentBinding(deps: AgentBindingDeps): AgentBinding {
     return {
       specs,
       drift: async (signal) => formatDriftNotice(await observed.drift(signal)),
-      // IAC-T source 1: the pipeline taints this run through its own flag before the block is returned.
-      ...(deps.deliveries === undefined ? {} : { deliver: async () => (halted() ? undefined : deps.deliveries?.next(run.runId, taint)) }),
+      // IAC-T source 1: the pipeline taints this run through its own flag before the block is returned. A halted run
+      // (WT-2) never gets here: the loop's guard ends it at the boundary before it asks for a delivery.
+      ...(deps.deliveries === undefined ? {} : { deliver: async () => deps.deliveries?.next(run.runId, taint) }),
       ...(wt2 === undefined ? {} : { guard: (signal: AbortSignal) => wt2.turn(signal), close: () => wt2.close() }),
       async invoke(name, input, signal) {
         if (halted()) throw new ComposerRunHalt("GIT_DRIFT");
