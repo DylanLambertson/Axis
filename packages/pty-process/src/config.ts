@@ -3,7 +3,7 @@
 // directory over in, and the check the pty entry applies to them. Main imports this subpath to check its own resolution before the
 // fork (§6.2). It holds no exec function, service or spawn adapter and imports only `node:fs` and `node:path`
 // (test/packages/pty-config-subpath.test.mjs), so a main-side importer never reaches code that starts a program.
-import { accessSync, constants, lstatSync, statSync } from "node:fs";
+import { accessSync, constants, lstatSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute } from "node:path";
 
 /** The names main hands the programs and the scratch directory over in (§6.2). */
@@ -18,10 +18,13 @@ export interface PtyExecConfig {
   readonly scratchParent?: string;
 }
 
+/** An absolute, real path (no symlink anywhere in it: the string checked is the file run) of an executable file no group or other may write. */
 const programOk = (p: string): boolean => {
   if (!isAbsolute(p) || p.includes("\0")) return false;
   try {
-    if (!statSync(p).isFile()) return false;
+    if (realpathSync(p) !== p) return false;
+    const st = statSync(p);
+    if (!st.isFile() || (st.mode & 0o022) !== 0) return false;
     accessSync(p, constants.X_OK);
     return true;
   } catch {
