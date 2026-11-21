@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { MAX_STRING_CHARS, Redactor, isWellFormedString } from "@axis/audit";
 import { canary } from "../testing/git-fixture.js";
-import { DEFAULT_TOOL_CAPS } from "../src/composer/loop.js";
+import { DEFAULT_MAX_TURNS, DEFAULT_TOOL_CAPS } from "../src/composer/loop.js";
+import { DEFAULT_MAX_ACTIVE } from "../src/composer/service.js";
 import { EDGE_SEARCH, MAX_CLEAN_VERDICTS, MAX_KEY_FORM_CHARS, WINDOW_STEP, holdsRegisteredSecret, providerRedactor, windowBounds, windowCount } from "../src/bindings/provider-redactor.js";
 
 // The providers' secret check on strings longer than the redactor reads (C7): a long clean tool result is not a secret, and a
@@ -228,8 +229,8 @@ test("a kept verdict belongs to the whole string: an equal-length string that di
 
 test("the bound holds every live run's long strings at its caps (review r1 SF-2)", () => {
   const long = MAX_STRING_CHARS + 1;
-  const perRun = Math.ceil(DEFAULT_TOOL_CAPS.inputBytesPerRun / long) + Math.ceil(DEFAULT_TOOL_CAPS.resultBytesPerRun / long) + 24 + 1;
-  const liveRuns = 8; // the composer service's default maxActive
+  const perRun = Math.ceil(DEFAULT_TOOL_CAPS.inputBytesPerRun / long) + Math.ceil(DEFAULT_TOOL_CAPS.resultBytesPerRun / long) + DEFAULT_MAX_TURNS + 1;
+  const liveRuns = DEFAULT_MAX_ACTIVE;
   assert.ok(MAX_CLEAN_VERDICTS >= liveRuns * perRun, `${MAX_CLEAN_VERDICTS} < ${liveRuns} x ${perRun}`);
 });
 
@@ -256,4 +257,20 @@ test("a verdict used again is kept over one not used since (least recently used,
   r.calls = 0;
   p.containsSecret(a);
   assert.equal(r.calls, 0, "a was used after b, so b went first");
+});
+
+test("a kept verdict is keyed by the string's UTF-8 bytes: a twin equal in every low byte does not share it (review r2 N1)", () => {
+  const key = "registered-key-for-utf8-pin";
+  const r = new Redactor();
+  r.registerSecret(key);
+  const p = providerRedactor(r);
+  const body = prose(3 * MAX_STRING_CHARS);
+  // Each character of the key moved up by 0x100: the same low bytes (a latin1 or UTF-16 low-byte hash would collide), clean.
+  const shifted = [...key].map((c) => String.fromCharCode(c.charCodeAt(0) + 0x100)).join("");
+  const at = body.length - 100;
+  const clean = `${body.slice(0, at)} ${shifted} ${body.slice(at)}`;
+  const holding = `${body.slice(0, at)} ${key} ${body.slice(at)}`;
+  assert.equal(clean.length, holding.length);
+  assert.equal(p.containsSecret(clean), false);
+  assert.equal(p.containsSecret(holding), true);
 });
