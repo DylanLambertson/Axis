@@ -10,6 +10,7 @@ import {
   isWellFormedString,
   wellFormed,
 } from "../src/index.js";
+import { budget } from "./load-margin.js";
 
 // Low-entropy, runtime-assembled stand-ins; none is a credential.
 const SECRET = "hunter2" + "hunter2" + "xyz";
@@ -117,7 +118,7 @@ test("B2: the review's quadratic inputs now run in milliseconds", () => {
   for (const input of ["a-".repeat(40_000), "a.".repeat(80_000), "eyJaaaaa.".repeat(30_000), "sk-".repeat(60_000)]) {
     const t0 = performance.now();
     r.redactString(input);
-    assert.ok(performance.now() - t0 < 500, "the review's quadratic inputs took seconds to minutes");
+    assert.ok(performance.now() - t0 < budget(500), "the review's quadratic inputs took seconds to minutes");
   }
 });
 
@@ -266,7 +267,7 @@ test("S5: a shared-subtree DAG is walked once (the 24-level case took 31 s)", ()
   for (let i = 0; i < 24; i++) node = [node, node];
   const t0 = performance.now();
   const out = JSON.stringify(new Redactor().redactValue(node));
-  assert.ok(performance.now() - t0 < 2000, "an exponential walk took tens of seconds");
+  assert.ok(performance.now() - t0 < budget(2000), "an exponential walk took tens of seconds");
   assert.ok(out.includes("[SHARED]"));
   assert.ok(out.length < 10_000);
 });

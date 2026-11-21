@@ -3,6 +3,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { AuditLog, AxisError, MAX_STRING_CHARS, Redactor, canonicalize, isWellFormedString, openDatabase } from "../src/index.js";
+import { budget } from "./load-margin.js";
 
 // Low-entropy, runtime-assembled stand-ins; none is a credential.
 const PW = "Tr0ub4" + "dor-and-3";
@@ -95,7 +96,7 @@ test("NEW-C: many sensitive keys with long names, and plain keys beyond the per-
   for (let i = 0; i < 2000; i++) o["x".repeat(16_000) + i + "pass" + "word"] = "v";
   const t0 = performance.now();
   const out = r.redactValue(o) as Record<string, unknown>;
-  assert.ok(performance.now() - t0 < 10_000);
+  assert.ok(performance.now() - t0 < 10_000); // already 20 times the idle time (0.5 s); the defect it guards took minutes
   assert.ok(Object.keys(out).every((k) => k.length <= 300));
   assert.ok(Object.keys(out).length <= 1025);
 
@@ -235,10 +236,10 @@ test("D2-B1: 64 such strings in one payload append in under a second (it took 20
   const t0 = performance.now();
   log.append(ev(payload));
   const ms = performance.now() - t0;
-  assert.ok(ms < 1000, `append took ${ms.toFixed(0)} ms`);
+  assert.ok(ms < budget(1000), `append took ${ms.toFixed(0)} ms`);
   const t1 = performance.now();
   new Redactor().redactValue(Array.from({ length: 64 }, () => "b".repeat(MAX_STRING_CHARS - 1) + ":" + "x"));
-  assert.ok(performance.now() - t1 < 1000);
+  assert.ok(performance.now() - t1 < budget(1000));
 });
 
 test("D2-B1: the cut still drops a partial token and records the original length", () => {
@@ -253,9 +254,22 @@ test("D2-B1: the cut still drops a partial token and records the original length
 test("D2-B1: the cut comes before any other work, so a huge string of lone surrogates costs the same as a small one", () => {
   const r = new Redactor();
   const huge = "\udc00".repeat(8_000_000);
-  const t0 = performance.now();
+  // A ratio of best-of-five times, not an absolute bound: a cut input costs the same whatever its original size, a repair of the whole
+  // input first costs time in proportion to it (about 1 s for 8M characters against about 1 ms), and the best of several runs is what
+  // a busy machine disturbs least. The constant term keeps a few milliseconds of noise from deciding the result.
+  const best = (input: string): number => {
+    let min = Infinity;
+    for (let i = 0; i < 5; i++) {
+      const t0 = performance.now();
+      r.redactString(input);
+      min = Math.min(min, performance.now() - t0);
+    }
+    return min;
+  };
+  const small = best("\udc00".repeat(MAX_STRING_CHARS * 2));
+  const large = best(huge);
+  assert.ok(large <= 20 * small + 25, `surrogate repair ran on the whole input: ${large.toFixed(1)} ms for 8M characters against ${small.toFixed(1)} ms for ${MAX_STRING_CHARS * 2}`);
   const out = r.redactString(huge);
-  assert.ok(performance.now() - t0 < 250, "surrogate repair ran on the whole input");
   assert.ok(out.length <= MAX_STRING_CHARS + 32);
   assert.ok(isWellFormedString(out));
   assert.match(out, /\[TRUNCATED:8000000\]$/);
