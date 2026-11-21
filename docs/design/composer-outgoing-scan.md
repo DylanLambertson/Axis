@@ -87,8 +87,14 @@ B. The key is never sent inside its own request body.
    redactor decodes once), a key split across two strings or across wrapped base64 lines (the base64 tool wraps at 76
    columns), base64 then percent-encoded, `/` written as `\/`, hex in mixed case or colon-separated, a key written with
    `\u00XX` escapes or with every character percent-encoded, base64 of the key in another text encoding (UTF-16), a JSON
-   escape nested deeper than once (only keys holding `"` or `\`; an Anthropic key holds neither). Rationale: the invariant "the body never holds the key used to send it" is checked at the
-   one point the key and the body meet, after the vault read.
+   escape nested deeper than once (only keys holding `"` or `\`; an Anthropic key holds neither). The check is stricter than
+   the redactor in one way (it fails closed): it also flags some base64 runs shorter than the 16 characters the redactor
+   decodes. Residual (cost, review c7-f4 follow-up r2): the substring tests are linear for real keys (at most about 250 ms
+   on a 13.7 MB body for random keys of the vault's shape), but a degenerate periodic key (for example `AA>` followed by
+   `AAA` repeated) against a hostile periodic body makes the search quadratic (about 9 s on 1 MB), mostly in the plain
+   substring search that came before this check; no real credential has that structure, so it is recorded here rather than
+   guarded with a heuristic that could skip a real key's needle. Rationale: the invariant "the body never holds the key used
+   to send it" is checked at the one point the key and the body meet, after the vault read.
 3. The refusal: `ProviderError("secret_in_request")`. Open question for review: `secret_in_request` is GUARD_ONLY (an adapter
    raising it becomes `internal`). Options: (a) drop it from GUARD_ONLY (an adapter can only use it to refuse; nothing is
    sent either way) so the run ends `PROVIDER_SECRET_IN_REQUEST`; (b) keep GUARD_ONLY and accept `PROVIDER_INTERNAL` as the
