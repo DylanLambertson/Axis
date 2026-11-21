@@ -1,5 +1,5 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
-import { accessSync, constants, lstatSync, statSync } from "node:fs";
+import { accessSync, constants, lstatSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { createNodeExec } from "./exec-node.js";
 import { adaptMessagePort, type MessagePortLike } from "./port-adapter.js";
@@ -23,7 +23,7 @@ import { createPtyService, type PtyService, type PtyServiceOptions } from "./ser
  * Git and forge programs (PV-X1a, `docs/design/pty-exec-node.md` §5 and §6.2): main puts `AXIS_PTY_GIT`, `AXIS_PTY_GH` and
  * `AXIS_PTY_SCRATCH` in this process's environment at fork. With `AXIS_PTY_GIT` set the git exec path (exec, scratch, hook, push)
  * runs through `createNodeExec({gitPath})`; unset, it stays off (every exec answers `spawn_failed`) and terminals still work. A value
- * that is set and wrong refuses the start: a relative or non-executable program, a scratch directory that is missing, a symlink, not
+ * that is set and wrong refuses the start: a relative, symlinked, group- or world-writable or non-executable program, a scratch directory that is missing, a symlink, not
  * this user's, or open to group or others. `AXIS_*` names never reach a child (PTY-5 drops them). Windows: ignored (no exec there).
  */
 export const PTY_EXIT_REFUSED = 78;
@@ -64,10 +64,13 @@ export interface PtyExecConfig {
   readonly scratchParent?: string;
 }
 
+/** An absolute, real path (no symlink anywhere in it: the string checked is the file run) of an executable file no group or other may write. */
 const programOk = (p: string): boolean => {
   if (!isAbsolute(p) || p.includes("\0")) return false;
   try {
-    if (!statSync(p).isFile()) return false;
+    if (realpathSync(p) !== p) return false;
+    const st = statSync(p);
+    if (!st.isFile() || (st.mode & 0o022) !== 0) return false;
     accessSync(p, constants.X_OK);
     return true;
   } catch {

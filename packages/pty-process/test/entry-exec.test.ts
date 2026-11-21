@@ -57,12 +57,20 @@ test("a wrong hand-over value refuses the start before any port is served, with 
   const link = join(root, "link");
   symlinkSync(scratch, link);
   const git = GIT as string;
+  // Review 1 N-1: a symlink to git (the string checked must be the file run) and a group-writable program are refused.
+  const gitLink = join(root, "git-link");
+  symlinkSync(git, gitLink);
+  const writable = join(root, "writable-prog");
+  writeFileSync(writable, "#!/bin/sh\n");
+  chmodSync(writable, 0o775);
   const cases: Array<[Record<string, string>, string]> = [
     [{ AXIS_PTY_GIT: "git", AXIS_PTY_SCRATCH: scratch }, "git_path_refused"],
     [{ AXIS_PTY_GIT: plain, AXIS_PTY_SCRATCH: scratch }, "git_path_refused"],
     [{ AXIS_PTY_GIT: root, AXIS_PTY_SCRATCH: scratch }, "git_path_refused"],
     [{ AXIS_PTY_GIT: join(root, "missing"), AXIS_PTY_SCRATCH: scratch }, "git_path_refused"],
     [{ AXIS_PTY_GIT: git, AXIS_PTY_GH: "gh", AXIS_PTY_SCRATCH: scratch }, "gh_path_refused"],
+    [{ AXIS_PTY_GIT: gitLink, AXIS_PTY_SCRATCH: scratch }, "git_path_refused"],
+    [{ AXIS_PTY_GIT: writable, AXIS_PTY_SCRATCH: scratch }, "git_path_refused"],
     [{ AXIS_PTY_GIT: git }, "scratch_refused"],
     [{ AXIS_PTY_GIT: git, AXIS_PTY_SCRATCH: join(root, "none") }, "scratch_refused"],
     [{ AXIS_PTY_GIT: git, AXIS_PTY_SCRATCH: open }, "scratch_refused"],

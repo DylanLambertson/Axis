@@ -16,14 +16,35 @@ function startFailure(e: unknown): ExecStartError {
   return new ExecStartError("start_failed");
 }
 
-/** SIGKILL to the whole group, after a probe (a reused pgid of a finished group is never hit blind). Never throws. */
-function killGroup(pid: number | undefined): void {
-  if (!validPgid(pid)) return;
-  try {
-    signalGroup(systemProcessOps, pid, "SIGKILL");
-  } catch {
-    /* unknown: nothing more this process can do */
+/**
+ * The group of one run, signalled by its pgid (the leader's pid). The id stays reserved while any member of the group lives, so a
+ * signal is safe until the group is empty; after that the id is free and another process may take it. So: the group is killed at
+ * the leader's exit (anything left in it then is still ours), and once a probe finds no group the id is never signalled again (a
+ * latch). The probe only skips a group that does not exist; it cannot tell this group from a newer one, which the latch avoids.
+ */
+function groupOf(pid: number | undefined): { kill(): void } {
+  let gone = !validPgid(pid);
+  return {
+    kill() {
+      if (gone) return;
+      try {
+        if (signalGroup(systemProcessOps, pid as number, "SIGKILL") === "gone") gone = true;
+      } catch {
+        /* unknown: nothing more this process can do */
+      }
+    },
+  };
+}
+
+/** A copy of the request's environment on a null prototype (an inherited key would reach the child: Node's spawn walks them), or undefined when a name or value is not one a process environment can hold. */
+function envOf(env: Readonly<Record<string, string>>): Record<string, string> | undefined {
+  const out = Object.create(null) as Record<string, string>;
+  for (const name of Object.keys(env)) {
+    const value = env[name];
+    if (name === "" || name.includes("=") || name.includes("\0") || typeof value !== "string" || value.includes("\0")) return undefined;
+    out[name] = value;
   }
+  return out;
 }
 
 /** Keeps at most `cap` bytes of a stream and keeps reading past it, so a flood is never held and never blocks the child. */
@@ -54,8 +75,11 @@ function collector(stream: NodeJS.ReadableStream, cap: number): { readonly bytes
  * - stdin is written with the request's bytes, if any, and ended at once.
  * - Each stream is held up to its own cap (`maxOutput`; stderr `maxStderr`, default `maxOutput`) and read to the end.
  * - A start that fails after the call rejects `done` with `not_found`, `not_permitted` or `start_failed`.
- * - `done` settles only after the leader exited, both pipes closed, and the group was then sent SIGKILL: no member of the group
- *   outlives a settled `done`. `kill()` SIGKILLs the group at once; `done` still settles by the same path.
+ * - The environment is copied onto a null prototype (a name with `=` or NUL, or a non-string value, is `start_failed`); the cwd
+ *   must be absolute.
+ * - At the leader's exit the rest of its group is sent SIGKILL; `done` settles only after that and after both pipes closed, so no
+ *   member of the group outlives a settled `done`. `kill()` SIGKILLs the group at once. Once the group is found empty its id is
+ *   never signalled again (it may belong to another process by then).
  */
 export function createNodeExec(programs: ReadonlySet<string>, platform: NodeJS.Platform): ExecFn {
   const allowed = new Set<string>();
@@ -70,11 +94,14 @@ export function createNodeExec(programs: ReadonlySet<string>, platform: NodeJS.P
     const maxOut = capOf(req.maxOutput);
     const maxErr = req.maxStderr === undefined ? maxOut : capOf(req.maxStderr);
     if (maxOut === undefined || maxErr === undefined) throw new ExecStartError("start_failed");
+    if (typeof req.cwd !== "string" || !isAbsolute(req.cwd) || req.cwd.includes("\0")) throw new ExecStartError("start_failed");
+    const env = envOf(req.env);
+    if (env === undefined) throw new ExecStartError("start_failed");
     let cp: ReturnType<typeof spawn>;
     try {
       cp = spawn(program, [...req.argv.slice(1)], {
         cwd: req.cwd,
-        env: { ...req.env },
+        env,
         shell: false,
         detached: true,
         windowsHide: true,
@@ -84,8 +111,9 @@ export function createNodeExec(programs: ReadonlySet<string>, platform: NodeJS.P
       throw startFailure(e);
     }
     const { stdin, stdout, stderr } = cp;
+    const group = groupOf(cp.pid);
     if (stdin === null || stdout === null || stderr === null) {
-      killGroup(cp.pid);
+      group.kill();
       throw new ExecStartError("start_failed");
     }
     const out = collector(stdout, maxOut);
@@ -95,13 +123,15 @@ export function createNodeExec(programs: ReadonlySet<string>, platform: NodeJS.P
       cp.once("error", (e) => {
         if (settled) return;
         settled = true;
-        killGroup(cp.pid);
+        group.kill();
         reject(startFailure(e));
       });
+      // The leader is gone: end what is left of its group now, while the id is still the group's (a member left keeps it). Node
+      // emits `exit` before `close`, so the group is dead before `done` settles.
+      cp.once("exit", () => group.kill());
       cp.once("close", (code, signal) => {
         if (settled) return;
         settled = true;
-        killGroup(cp.pid);
         const stdoutTruncated = out.cut();
         const stderrTruncated = err.cut();
         resolve({ code, signal, stdout: out.bytes(), stderr: err.bytes(), truncated: stdoutTruncated || stderrTruncated, stdoutTruncated, stderrTruncated });
@@ -109,6 +139,6 @@ export function createNodeExec(programs: ReadonlySet<string>, platform: NodeJS.P
     });
     stdin.on("error", () => undefined);
     stdin.end(req.stdin === undefined ? undefined : Buffer.from(req.stdin));
-    return { done, kill: () => killGroup(cp.pid) };
+    return { done, kill: () => group.kill() };
   };
 }

@@ -131,7 +131,11 @@ export interface ExecOutcome {
   readonly stderrTruncated: boolean;
 }
 
-/** Why an exec did not start. `program_refused` and `unsupported_platform` are thrown before anything starts; the rest reject `done`. */
+/**
+ * Why an exec did not start. `program_refused`, `unsupported_platform` and a `start_failed` for a malformed request (caps, cwd, env, an
+ * argument Node or the OS refuses) are thrown before anything starts; `not_found`, `not_permitted` and other failures of the start
+ * itself reject `done`.
+ */
 export type ExecStartFailure = "program_refused" | "unsupported_platform" | "not_found" | "not_permitted" | "start_failed";
 
 /** A failed start. Carries a closed code only: never a path, an argv or OS text. */

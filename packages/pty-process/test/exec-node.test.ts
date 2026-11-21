@@ -161,3 +161,67 @@ test("Windows refuses before anything starts (no process group; the job-object k
   assert.equal(codeOf(() => exec(req(dir, `require('fs').writeFileSync(${JSON.stringify(sentinel)},'x')`))), "unsupported_platform");
   assert.equal(existsSync(sentinel), false);
 });
+
+test("review 1 SF-1: the environment is copied onto a null prototype: a key planted on Object.prototype never reaches the child; a malformed name or value, or a relative cwd, starts nothing", { skip: POSIX, timeout: 20_000 }, async (t) => {
+  const dir = scratch(t);
+  const exec = createNodeExec(new Set([NODE]), process.platform);
+  const proto = Object.prototype as unknown as Record<string, unknown>;
+  proto["X1A_POLLUTED"] = "yes";
+  try {
+    const r = await exec(req(dir, "process.stdout.write(JSON.stringify(process.env))", { env: { AXIS_T: "1" } })).done;
+    assert.deepEqual(JSON.parse(Buffer.from(r.stdout).toString("utf8")), { AXIS_T: "1" });
+  } finally {
+    delete proto["X1A_POLLUTED"];
+  }
+  for (const env of [{ "A=B": "x" }, { "": "x" }, { "A\0B": "x" }, { A: "x\0y" }, { A: 1 as unknown as string }]) {
+    assert.equal(codeOf(() => exec(req(dir, "", { env }))), "start_failed", JSON.stringify(Object.keys(env)));
+  }
+  for (const cwd of ["..", "rel", ""]) assert.equal(codeOf(() => exec(req(cwd, ""))), "start_failed", JSON.stringify(cwd));
+});
+
+test("review 1 SF-2: once the leader exited and its group is empty, the group id is never signalled again, even while a process outside the group (setsid) holds the pipes", { skip: POSIX, timeout: 30_000 }, async (t) => {
+  const dir = scratch(t);
+  const leaderFile = join(dir, "leader.pid");
+  const holderFile = join(dir, "holder.pid");
+  const exec = createNodeExec(new Set([NODE]), process.platform);
+  // The holder leaves the group (its own session) and keeps stdout and stderr open; the leader exits at once.
+  const holder = `${GUARD}require('fs').writeFileSync(${JSON.stringify(holderFile)},String(process.pid));setInterval(()=>{},1000)`;
+  const leader = `require('fs').writeFileSync(${JSON.stringify(leaderFile)},String(process.pid));const c=require('child_process').spawn(process.execPath,['-e',${JSON.stringify(holder)}],{stdio:'inherit',detached:true});c.unref();const w=setInterval(()=>{if(require('fs').existsSync(${JSON.stringify(holderFile)})){clearInterval(w);process.exit(0)}},10)`;
+  const child = exec(req(dir, leader));
+  await waitFor("both pids", () => existsSync(holderFile) && existsSync(leaderFile) && readFileSync(holderFile, "utf8") !== "");
+  const lead = Number(readFileSync(leaderFile, "utf8"));
+  const held = Number(readFileSync(holderFile, "utf8"));
+  t.after(() => {
+    try {
+      process.kill(held, "SIGKILL");
+    } catch {
+      /* gone */
+    }
+  });
+  await waitFor("the leader to be reaped", () => !running(lead));
+  await new Promise((r) => setTimeout(r, 100)); // the exit event
+  const calls: Array<[number, unknown]> = [];
+  const real = process.kill;
+  process.kill = ((pid: number, sig?: string | number) => (calls.push([pid, sig]), real.call(process, pid, sig))) as typeof process.kill;
+  try {
+    child.kill(); // the timeout path of the service, long after the leader's group emptied
+    child.kill();
+  } finally {
+    process.kill = real;
+  }
+  assert.deepEqual(calls, [], "no probe and no signal to a group id that may belong to another process by now");
+  process.kill(held, "SIGKILL"); // let go of the pipes
+  const r = await child.done;
+  assert.equal(r.code, 0);
+});
+
+test("review 1 N-4: done waits for both pipes, so output the leader wrote just before it exited is all there; a program added to the caller's set later is not allowed", { skip: POSIX, timeout: 20_000 }, async (t) => {
+  const dir = scratch(t);
+  const set = new Set([NODE]);
+  const exec = createNodeExec(set, process.platform);
+  const n = 4 * 1024 * 1024;
+  const r = await exec(req(dir, `process.stdout.write(Buffer.alloc(${n},111));process.stderr.write(Buffer.alloc(${n},101),()=>process.exit(0))`, { maxOutput: 8 * 1024 * 1024 })).done;
+  assert.deepEqual([r.stdout.length, r.stderr.length, r.truncated], [n, n, false]);
+  set.add("/bin/sh");
+  assert.equal(codeOf(() => exec({ argv: ["/bin/sh", "-c", "true"], cwd: dir, env: {}, maxOutput: 10 })), "program_refused");
+});
