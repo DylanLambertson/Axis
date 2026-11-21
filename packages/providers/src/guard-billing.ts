@@ -19,6 +19,8 @@ export const NOT_BILLED: ReadonlySet<ProviderErrorCode> = new Set<ProviderErrorC
   "rate_limited",
   "context_length_exceeded",
   "unsupported_capability",
+  // C7-F4: an adapter refuses before sending when the request holds the key it just read; nothing left, nothing to charge.
+  "secret_in_request",
 ]);
 
 /**

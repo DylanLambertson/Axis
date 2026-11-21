@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Redactor, secretForms, type AuditSink } from "@axis/audit";
 import { ProviderError, type GenerateRequest } from "@axis/providers";
-import { createProvidersBinding, holdsKey } from "../src/bindings/providers.js";
+import { base64Middles, createProvidersBinding, holdsKey } from "../src/bindings/providers.js";
 import { fakeBackend, mockAnthropic, MODEL } from "./anthropic-server.js";
 
 // C7-F4 (docs/design/composer-outgoing-scan.md): a provider key is never sent inside its own request body, also when the key is
@@ -39,7 +39,9 @@ async function rig() {
 test("a key rotated in the keyring and held in the request is refused at the send: the body that would carry it never reaches fetch", async () => {
   const rotated = unknownKey("rotated");
   // Each form on its own binding: after a refusal the rotated key is registered, and the guard's own scan would find the next.
-  for (const form of [rotated, Buffer.from(rotated).toString("base64"), Buffer.from(rotated).toString("hex"), encodeURIComponent(`${rotated}/`)]) {
+  // base64 and base64url at byte offsets 0, 1 and 2 of a longer run (review c7-f4 r1 SF), with bytes after it too.
+  const encoded = [0, 1, 2].flatMap((o) => (["base64", "base64url"] as const).map((enc) => Buffer.concat([Buffer.alloc(o, 0x78), Buffer.from(rotated), Buffer.from("tail")]).toString(enc)));
+  for (const form of [rotated, Buffer.from(rotated).toString("hex"), encodeURIComponent(`${rotated}/`), ...encoded]) {
     const r = await rig();
     try {
       r.api.replies = [{ kind: "text", text: "first" }];
@@ -68,4 +70,20 @@ test("holdsKey finds every form the redactor registers, also as it appears insid
   const r = new Redactor();
   r.registerSecret(key);
   assert.equal(r.registeredForms, secretForms(key).length, "one list for the redactor and the check");
+});
+
+test("holdsKey finds the key in base64 and base64url at every byte offset, with any bytes around it, also inside JSON", () => {
+  // Key lengths of every remainder modulo 3, so the key's own last group is whole, one byte short and two bytes short.
+  for (const key of ["holdout~offset~credential~c7f4", "holdout~offset~credential~c7f4x", "holdout~offset~credential~c7f4xy"])
+  for (let before = 0; before <= 5; before++) {
+    for (let after = 0; after <= 4; after++) {
+      for (const enc of ["base64", "base64url"] as const) {
+        const run = Buffer.concat([Buffer.alloc(before, 0x41), Buffer.from(key), Buffer.alloc(after, 0x42)]).toString(enc);
+        assert.equal(holdsKey(`x ${run} y`, key), true, `${enc} ${before}/${after}`);
+        assert.equal(holdsKey(JSON.stringify({ text: run }), key), true, `${enc} ${before}/${after} in JSON`);
+      }
+    }
+  }
+  assert.ok(base64Middles("12345678").every((m) => m.length >= 8), "no middle shorter than a redactor form");
+  assert.equal(holdsKey(Buffer.from("an unrelated base64 payload of some length").toString("base64"), "holdout~offset~credential~c7f4"), false);
 });

@@ -41,3 +41,10 @@ test("without a hit the body goes out unchanged", async () => {
   await plain.generate(req(), { signal: live() });
   assert.equal(posts(fake.calls)[0]?.init.body, posts(plainFake.calls)[0]?.init.body);
 });
+
+test("count_tokens goes through the same check: a body holding the key is refused and not sent", async () => {
+  const { adapter, fake } = make(ok, { holdsKey: (text) => text.includes(MARKER) });
+  const err = await failure(adapter.countTokens?.(req({ messages: [{ role: "user", content: [{ type: "text", text: `here ${MARKER}` }] }] }), { signal: live() }) ?? Promise.resolve());
+  assert.equal(err.code, "secret_in_request");
+  assert.equal(posts(fake.calls).length, 0, "the count request was not sent");
+});

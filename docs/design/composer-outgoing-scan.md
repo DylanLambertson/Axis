@@ -68,15 +68,20 @@ Chosen: **B, a send-time check in the adapter; A (register at start) not built.*
 rotation and start, and/or a check at the send": the daemon has no store or rotation path, so B is what closes it.)
 
 B. The key is never sent inside its own request body.
-1. `createAnthropicAdapter` gains an option `bodyHolds?: (body: string, key: string) => boolean`, called synchronously after
-   `getKey` and before `fetch` (no await between) for every request that has a body. True: the request is refused, nothing
-   sent.
+1. `createAnthropicAdapter` gains an option `holdsKey?: (text: string, key: string) => boolean`, called synchronously after
+   `getKey` and before `fetch` (no await between) on the request path and, when there is one, the body (the exact string
+   that is sent; every request, count_tokens included, goes through the one send). True, or a check that throws: the request
+   is refused `secret_in_request`, nothing sent, nothing charged (`NOT_BILLED`).
 2. The binding implements it as a substring test, not a redactor scan: the forms `Redactor.registerSecret` adds (raw,
    JSON-escaped, URL-encoded in either case, hex in either case, base64 and base64url padded or not; a vault key is
    printable ASCII, so its NFC/NFD forms are itself), each also as it appears inside the JSON body (JSON-escaped once more:
    a `"` or `\` in a form doubles). One key, plain `includes`, about tens of ms for a 12 MiB body, on every request (no
    "new key" state to race on). The form list is built by one exported helper beside `Redactor.registerSecret` (or a test
-   pins the two lists equal), so they cannot drift apart. Rationale: the invariant "the body never holds the key used to
+   pins the two lists equal), so they cannot drift apart. The redactor also decodes base64 runs at any byte offset, so the
+   check adds the key's base64 and base64url for byte offsets 1 and 2 without the partial groups at either end
+   (`base64Middles`, review c7-f4 r1 SF). Not found, by the check and by the redactor alike: a key split across two strings,
+   hex in mixed case, a key written with `\u00XX` escapes or with every character percent-encoded, a JSON escape nested
+   deeper than once (only keys holding `"` or `\`; an Anthropic key holds neither). Rationale: the invariant "the body never holds the key used to
    send it" is checked at the one point the key and the body meet, after the vault read.
 3. The refusal: `ProviderError("secret_in_request")`. Open question for review: `secret_in_request` is GUARD_ONLY (an adapter
    raising it becomes `internal`). Options: (a) drop it from GUARD_ONLY (an adapter can only use it to refuse; nothing is

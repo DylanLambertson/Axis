@@ -277,11 +277,6 @@ function base64Variants(raw: Buffer): string[] {
 }
 
 /**
- * Deterministic redaction of strings and structured payloads. One instance per
- * process holds the explicitly registered secret values (for example the
- * connection vault's API keys); the pattern rules are fixed.
- */
-/**
  * Every form `Redactor.registerSecret` redacts for `value`: raw, NFC and NFD, JSON-escaped, URL-encoded (either case), hex
  * (either case), base64 and base64url (padded or not); forms shorter than `MIN_REGISTERED_SECRET_LENGTH` are left out. One
  * list for the redactor and for any caller that must find a secret in its encoded forms (C7-F4).
@@ -306,6 +301,11 @@ export function secretForms(value: string): string[] {
   return [...variants];
 }
 
+/**
+ * Deterministic redaction of strings and structured payloads. One instance per
+ * process holds the explicitly registered secret values (for example the
+ * connection vault's API keys); the pattern rules are fixed.
+ */
 export class Redactor {
   #literals: string[] = [];
 

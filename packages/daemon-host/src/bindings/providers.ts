@@ -167,11 +167,32 @@ export function productionConnection(o: Pick<AnthropicConnectionOptions, "connec
 }
 
 /**
+ * The parts of `key`'s base64 and base64url that do not depend on where the key's bytes fall in a longer encoded run (review
+ * c7-f4 r1 SF): for a key starting 0, 1 or 2 bytes into a 3-byte group, the whole groups after the first partial one,
+ * without the last partial group (which bytes after the key change). The redactor decodes base64 runs at any offset; these let a plain substring test find the same
+ * key. Each is at least 8 characters for a key of at least 8 bytes.
+ */
+export function base64Middles(key: string): string[] {
+  const bytes = Buffer.from(key, "utf8");
+  const out: string[] = [];
+  for (const offset of [0, 1, 2]) {
+    const start = (3 - offset) % 3;
+    const whole = Math.floor((bytes.length - start) / 3) * 3;
+    if (whole <= 0) continue;
+    const mid = bytes.subarray(start, start + whole);
+    out.push(mid.toString("base64"), mid.toString("base64url"));
+  }
+  return out.filter((m) => m.length >= 8);
+}
+
+/**
  * True when `text` holds `key` in any form the host redactor would redact (`secretForms`), each also as it appears inside a
- * JSON string (a request body is JSON). Plain substring tests: one key, no redactor windows, cheap enough for every request.
+ * JSON string (a request body is JSON), or in base64 / base64url at any byte offset (`base64Middles`). Plain substring tests:
+ * one key, no redactor windows, cheap enough for every request. Not found (as by the redactor too): a key split across two
+ * strings, hex in mixed case, a key written with `\u00XX` escapes or with every character percent-encoded.
  */
 export function holdsKey(text: string, key: string): boolean {
-  for (const form of secretForms(key)) {
+  for (const form of [...secretForms(key), ...base64Middles(key)]) {
     if (text.includes(form) || text.includes(JSON.stringify(form).slice(1, -1))) return true;
   }
   return false;
