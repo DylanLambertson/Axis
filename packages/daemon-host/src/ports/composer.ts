@@ -86,13 +86,14 @@ export interface GuardContext {
 
 export interface RunRepositoryGuard {
   /** Takes the run's baseline; refuses (throws) when it cannot be judged, or when the run already has one. */
-  baseline(ctx: GuardContext): Promise<void>;
+  baseline(ctx: GuardContext, signal?: AbortSignal): Promise<void>;
   /**
    * The repository now against the run's baseline, which is kept. Throws when there is none or nothing can be judged.
    * `unjudged` marks a drift verdict that is only a snapshot stopped at its bound or changing between takes (a loaded host),
-   * not a change seen: still drift (the run halts), with its own reason so it can be told apart (C7-F2).
+   * not a change seen: still drift (the run halts), with its own reason so it can be told apart (C7-F2). `signal` (the run's)
+   * stops a take when the run is cancelled; the check then rejects, which is never a clean answer.
    */
-  check(runId: string): Promise<{ readonly drift: boolean; readonly unjudged?: boolean }>;
+  check(runId: string, signal?: AbortSignal): Promise<{ readonly drift: boolean; readonly unjudged?: boolean }>;
   /** Drops the run's baseline (its end). */
   release(runId: string): void;
 }

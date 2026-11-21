@@ -85,8 +85,9 @@ export type SnapshotTaker = (opts: Parameters<typeof takeStableSnapshot>[0]) => 
 /** One stable snapshot over a worktree's trusted paths (the library's own options; `takeSnapshot` is the test seam). */
 const taker =
   (deps: RunSnapshotterDeps, takeSnapshot: SnapshotTaker) =>
-  (h: { readonly worktree: RunWorktree; readonly commonDir: string }): Promise<Snapshot> =>
+  (h: { readonly worktree: RunWorktree; readonly commonDir: string }, signal?: AbortSignal): Promise<Snapshot> =>
     takeSnapshot({
+      ...(signal === undefined ? {} : { signal }),
       worktreePath: h.worktree.workTree,
       commonDir: h.commonDir,
       expectedGitDir: h.worktree.gitDir,
@@ -125,7 +126,6 @@ export function createRunSnapshotter(deps: RunSnapshotterDeps, maxHeld = MAX_HEL
   };
 }
 
-/** The host's `RunRepositoryGuard` (ports/composer.ts) over `@axis/git-snapshot`. */
 /**
  * Per take of a composer run's WT-2 snapshot (C7-F2): no supervisor bounds it, and a take that runs out fails the run closed,
  * so the default is longer than the CLI runs' `SNAPSHOT_TAKE_MS`.
@@ -133,25 +133,34 @@ export function createRunSnapshotter(deps: RunSnapshotterDeps, maxHeld = MAX_HEL
 export const COMPOSER_SNAPSHOT_TAKE_MS = 10_000;
 
 /**
- * Only a snapshot that stopped at its bound or kept changing between takes: no link mismatch, no other unread item, nothing
- * wrong with the baseline. Anything else that cannot be judged is reported as a change seen.
+ * The check could not judge the repository, and saw no change in what it did read (review c7-f2 r1 SF-1): the current snapshot's
+ * only problem is blocking `snapshot` items (a take stopped at its bound, or two takes that differed), nothing else is unread,
+ * the baseline is sound, and the diff against the baseline holds no addition or modification: none at all, or, for a take
+ * stopped at its bound, only removals (entries the partial take never reached). A writer that keeps touching a file the
+ * takes read in full (the takes then differ) shows that change in the diff and is a change seen, `GIT_DRIFT`.
+ * `current.link.mismatch` is also covered by `reasons.length` (a mismatch adds a second reason); kept as defence in depth.
  */
 function onlyUnfinished(v: ReturnType<typeof judgeDrift>, current: Snapshot): boolean {
   if (v.status !== "refused" || v.reasons.length !== 1 || current.link.mismatch) return false;
   const blocking = current.incomplete.filter((i) => i.blocking);
-  return blocking.length > 0 && blocking.every((i) => i.id === "snapshot");
+  if (blocking.length === 0 || !blocking.every((i) => i.id === "snapshot")) return false;
+  const d = v.diff;
+  if (d.changes.length === 0 && d.settingChanges.length === 0 && d.refChanges.length === 0) return true;
+  const stopped = blocking.some((i) => i.reason.startsWith("stopped at the"));
+  return stopped && d.changes.every((c) => c.kind === "removed") && d.settingChanges.every((c) => c.added.length === 0) && d.refChanges.every((c) => c.kind === "removed");
 }
 
+/** The host's `RunRepositoryGuard` (ports/composer.ts) over `@axis/git-snapshot`. `takeMs` bounds each take (default above). */
 export function createRunRepositoryGuard(deps: RunSnapshotterDeps, maxHeld = MAX_HELD_SNAPSHOTS, takeSnapshot: SnapshotTaker = takeStableSnapshot): RunRepositoryGuard {
   if (typeof deps?.gitPath !== "string" || !isAbsolute(deps.gitPath) || typeof deps.projectRoot !== "function") throw new AxisError("E_INVALID_ARGUMENT", "The snapshotter needs the host's git path", { reason: "snapshotter_required" });
   const held = new Map<string, Held>();
   const take = taker({ ...deps, takeMs: deps.takeMs ?? COMPOSER_SNAPSHOT_TAKE_MS }, takeSnapshot);
   return {
-    async baseline(ctx: SnapshotContext): Promise<void> {
+    async baseline(ctx: SnapshotContext, signal?: AbortSignal): Promise<void> {
       if (held.has(ctx.runId)) throw refused("baseline_held");
       const worktree = Object.freeze({ workTree: ctx.worktree.workTree, gitDir: ctx.worktree.gitDir });
       const commonDir = await commonDirFor(deps.projectRoot(ctx.workspaceId), worktree.gitDir);
-      const snapshot = await take({ worktree, commonDir });
+      const snapshot = await take({ worktree, commonDir }, signal);
       if (judgeDrift({ baseline: snapshot, current: snapshot }).status !== "clean") throw refused("snapshot_refused");
       held.set(ctx.runId, { runId: ctx.runId, worktree, commonDir, snapshot });
       for (const id of held.keys()) {
@@ -159,10 +168,10 @@ export function createRunRepositoryGuard(deps: RunSnapshotterDeps, maxHeld = MAX
         held.delete(id);
       }
     },
-    async check(runId: string): Promise<{ readonly drift: boolean; readonly unjudged?: boolean }> {
+    async check(runId: string, signal?: AbortSignal): Promise<{ readonly drift: boolean; readonly unjudged?: boolean }> {
       const base = held.get(runId);
       if (base === undefined) throw refused("no_baseline");
-      const current = await take(base);
+      const current = await take(base, signal);
       const v = judgeDrift({ baseline: base.snapshot, current });
       if (v.status === "clean") return { drift: false };
       return onlyUnfinished(v, current) ? { drift: true, unjudged: true } : { drift: true };
