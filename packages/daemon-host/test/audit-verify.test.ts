@@ -6,7 +6,7 @@ import type { Handler } from "@axis/daemon";
 import { auditListResponseSchema, auditVerifyResponseSchema } from "@axis/protocol";
 import { createAuditHandlers, createDaemonHost, createHandlerRegistrar, type AuditHandlerDeps, type AuditReader } from "../src/index.js";
 import { hostFixture } from "../testing/host-fixture.js";
-import { must, wait } from "./helpers.js";
+import { must, untilTrue } from "./helpers.js";
 
 function memoryLog(n: number): { db: DatabaseSync; log: AuditLog } {
   const db = openDatabase(":memory:");
@@ -299,9 +299,9 @@ test("the stall and resume rows are written with their one fixed field and nothi
     for (let i = 0; i < 4; i++) must(s.audit).append({ actor: "daemon", action: "policy.decision", target: `t:${i}`, outcome: "success", payload: { tier: 0 } });
     s.anchors.noteWrite();
     assert.equal(s.anchors.status().stalled, true);
-    await wait(20);
+    await untilTrue(() => fix.supervisor.puts.length > 0, "the head was put to the supervisor", 10_000);
     fix.peer.send({ type: "anchor.ack", seq: must(fix.supervisor.puts.at(-1)).seq });
-    await wait(20);
+    await untilTrue(() => !s.anchors.status().stalled, "the ack ended the stall", 10_000);
     assert.equal(s.anchors.status().stalled, false);
     const rows = s.auditRead.list({ limit: 100 }).filter((e) => e.action.startsWith("anchor."));
     assert.deepEqual(rows.map((e) => [e.action, e.actor, e.target, e.outcome, e.payload]), [
