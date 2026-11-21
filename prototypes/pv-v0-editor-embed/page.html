@@ -48,6 +48,10 @@ const upstream = [['workbench.action.files.save', KeyMod.CtrlCmd | KeyCode.KeyS]
 for (const [id, primary] of upstream) {
 	KeybindingsRegistry.registerCommandAndKeybindingRule({ id, weight: 200, when: undefined, primary, handler: (_a, ...args) => log.upstream.push(args.length ? [id, args.length] : id) });
 }
+const { CommandsRegistry: CommandsRegistryEarly } = await import('./vs/platform/commands/common/commands.js');
+// A policy command whose metadata declares arguments: the registry replaces its handler with a validator (review r4 N1).
+CommandsRegistryEarly.registerCommand({ id: 'workbench.action.editor.changeLanguageMode', metadata: { description: 'Change Language Mode', args: [{ name: 'languageId' }] }, handler: (_a, ...args) => log.upstream.push(args.length ? ['workbench.action.editor.changeLanguageMode', args.length] : 'workbench.action.editor.changeLanguageMode') });
+window.sp = sp;
 window.registration = q.has('noroutes') ? undefined : sp.registerAxisSidePanelEditorCommands();
 const { ICommandService, CommandsRegistry } = await import('./vs/platform/commands/common/commands.js');
 window.registries = { CommandsRegistry, KeybindingsRegistry, KeyMod, KeyCode };
@@ -76,7 +80,8 @@ const isDirty = uri => { const m = monaco.editor.getModel(uri); return !!m && m.
 const host = { save: async (resource, skip) => { log.save.push([resource.path, skip]); saved.set(resource.toString(), monaco.editor.getModel(resource).getAlternativeVersionId()); },
 	reveal: async t => { log.reveal.push([t.resource.path, t.selection && t.selection.toString()]); },
 	editorSettings: () => JSON.parse(q.get('user') || '{}'), isDirty,
-	blocked: id => log.blocked.push(id), focusLost: r => log.focusLost.push(r.path), saveConflictsDetected: () => !q.has('overwrite') };
+	blocked: id => log.blocked.push(id), focusLost: r => log.focusLost.push(r.path),
+	saveConflictsDetected: () => { if (q.get('overwrite') === 'throw') { throw new Error('configuration unavailable'); } return !q.has('overwrite'); } };
 window.isDirty = isDirty;
 window.commands = StandaloneServices.get(ICommandService);
 window.modelService = StandaloneServices.get(IModelService);

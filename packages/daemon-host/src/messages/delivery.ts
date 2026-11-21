@@ -64,6 +64,8 @@ export interface MessageDeliveryDeps {
   readonly maxText?: number;
   /** Failed deliveries of one message to one recipient before it is quarantined (default 3). */
   readonly maxFailures?: number;
+  /** A failure the pipeline swallows, as a fixed code (no text): the host logs it. */
+  readonly onInternalError?: (code: "notice_failed") => void;
 }
 
 /** Candidates looked at per boundary, paged in send order: bounds what a long queue of refused messages costs a turn. */
@@ -91,6 +93,60 @@ export function createMessageDelivery(deps: MessageDeliveryDeps): MessageDeliver
   const maxMessages = deps.maxMessages ?? 8;
   const maxText = deps.maxText ?? 65_536;
   const maxFailures = deps.maxFailures ?? 3;
+  /** Failed checks of user messages since host start, per recipient and message (bounded; see `held`). */
+  const heldChecks = new Map<string, number>();
+  // A throwing log hook must not end the run (it is called on paths that skip a candidate and go on).
+  const report = (code: "notice_failed"): void => {
+    try {
+      deps.onInternalError?.(code);
+    } catch {
+      // nothing more to do: the failure it reports is already contained
+    }
+  };
+
+  /** Post a system notice to the user in a message's thread (joining the user if room). Best effort: a failure is reported. */
+  function notify(m: { readonly id: string; readonly threadId: string }, body: string, once: boolean): void {
+    try {
+      store.transact(() => {
+        if (once && store.systemReplied(m.id)) return;
+        const joined = store.participant(m.threadId, "user") !== undefined;
+        if (!joined && store.participants(m.threadId).length >= MAX_THREAD_PARTICIPANTS) return;
+        store.append({
+          thread: { create: false, id: m.threadId },
+          join: joined ? [] : ["user"],
+          message: {
+            id: encodeMessagingId("message", deps.random.bytes(16)),
+            sender: { kind: "system", verified: true },
+            senderKey: "system",
+            recipients: [{ user: true }],
+            expanded: [{ kind: "user" }],
+            body,
+            refs: [],
+            inReplyTo: m.id,
+            hop: 0,
+          },
+          to: [{ principal: "user", counted: false }],
+        });
+      });
+    } catch {
+      report("notice_failed");
+    }
+  }
+
+  /**
+   * A user message whose check failed: never counted or quarantined (a fault of Axis must not set the user's own words
+   * aside), but after `maxFailures` failed checks since host start the user is told once, in the thread, that it is held
+   * (the notice is skipped when Axis already replied to that message, so a restart does not repeat it). The counts live
+   * in memory, at most 4,096 entries (cleared when full: a notice may then come later, never more than once).
+   */
+  function held(m: MessageRecord, principal: string, agentId: string): void {
+    const key = `${principal} ${m.id}`;
+    if (!heldChecks.has(key) && heldChecks.size >= 4_096) heldChecks.clear();
+    const k = (heldChecks.get(key) ?? 0) + 1;
+    heldChecks.set(key, k);
+    if (k !== maxFailures) return;
+    notify(m, `Axis could not check message ${m.id} for delivery to agent ${agentId} because of an error in Axis, ${k} times. It stays queued and will be delivered once the error is fixed.`, true);
+  }
 
   /**
    * Count a failed delivery; at the limit quarantine the message for this recipient and tell the user in its thread. Three
@@ -103,7 +159,9 @@ export function createMessageDelivery(deps: MessageDeliveryDeps): MessageDeliver
     try {
       n = store.transact(() => store.deliveries.noteFailure(m.id, principal));
     } catch {
-      return; // the database refuses writes: the run ends either way, and the next attempt counts again
+      // The database refuses writes: this attempt goes uncounted. A skipped candidate is looked at again at the next
+      // boundary, a failed lease has already ended its run; either way a later attempt is counted.
+      return;
     }
     if (n < maxFailures) return;
     try {
@@ -117,30 +175,8 @@ export function createMessageDelivery(deps: MessageDeliveryDeps): MessageDeliver
     } catch {
       return;
     }
-    try {
-      store.transact(() => {
-        const joined = store.participant(m.threadId, "user") !== undefined;
-        if (!joined && store.participants(m.threadId).length >= MAX_THREAD_PARTICIPANTS) return;
-        store.append({
-          thread: { create: false, id: m.threadId },
-          join: joined ? [] : ["user"],
-          message: {
-            id: encodeMessagingId("message", deps.random.bytes(16)),
-            sender: { kind: "system", verified: true },
-            senderKey: "system",
-            recipients: [{ user: true }],
-            expanded: [{ kind: "user" }],
-            body: `Axis could not deliver message ${m.id} to agent ${agentId} after ${n} attempts. It was set aside and will not be delivered.`,
-            refs: [],
-            inReplyTo: m.id,
-            hop: 0,
-          },
-          to: [{ principal: "user", counted: false }],
-        });
-      });
-    } catch {
-      // The notice is best effort: the quarantine and its audit row are already committed.
-    }
+    // The notice is best effort: the quarantine and its audit row are already committed.
+    notify(m, `Axis could not deliver message ${m.id} to agent ${agentId} after ${n} attempts. It was set aside and will not be delivered.`, false);
   }
 
   return {
@@ -164,15 +200,19 @@ export function createMessageDelivery(deps: MessageDeliveryDeps): MessageDeliver
           scanned += 1;
           cursor = c.cursor;
           // The checks read stored state (the message, participation, the project's settings): one that throws on a
-          // corrupt record is counted against this message and the candidate skipped (review 2 NIT 2), so it cannot end
-          // every run of the agent; nothing was leased or tainted for it.
+          // corrupt record skips the candidate and is counted against a message not from the user (review 2 NIT 2), so it
+          // cannot end every run of the agent.
           let m: MessageRecord | undefined;
           try {
             m = store.message(c.messageId);
             if (m === undefined || store.participant(c.threadId, principal) === undefined) continue;
             if (deps.service.deliverable(m.id, { kind: "agent", agentId }) !== null) continue;
           } catch {
-            failed({ id: c.messageId, threadId: c.threadId }, principal, agentId, runId);
+            // A message from the user is never quarantined for a failing check (see `held`); it stays queued and is
+            // looked at again at every boundary; nothing was leased or tainted for it. A failure after the lease (below)
+            // is counted for every sender, so no message can end every run of the agent.
+            if (m !== undefined && senderSchema.safeParse(m.sender).data?.kind === "user") held(m, principal, agentId);
+            else failed({ id: c.messageId, threadId: c.threadId }, principal, agentId, runId);
             continue;
           }
           if (m === undefined) continue;

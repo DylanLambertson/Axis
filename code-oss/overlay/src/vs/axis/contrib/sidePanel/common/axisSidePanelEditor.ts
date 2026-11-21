@@ -52,6 +52,8 @@ const OPEN_IN_IDE = [
 	// Through another service (review r2 S1): quick access and the debug, run and task launchers resolve the active
 	// editor themselves (`${file}`, go to line or symbol, save before start).
 	'workbench.action.gotoLine', 'workbench.action.gotoSymbol', 'workbench.action.debug.start', 'workbench.action.debug.run', 'workbench.action.tasks.build',
+	// Restart saves before it starts again and may resolve `${file}` again, like Start Debugging (review r4 N5).
+	'workbench.action.debug.restart',
 	'workbench.action.files.revealActiveFileInWindows', 'editor.debug.action.toggleBreakpoint', 'editor.detectLanguage',
 	// Opens at the last active workspace root or file folder of the editor history, which is the hidden editor's
 	// worktree, not the side-panel file's (review r3 N6).
@@ -92,9 +94,10 @@ const ACCEPT = [
 	'workbench.action.toggleAuxiliaryBar', 'workbench.action.toggleFullScreen', 'workbench.action.togglePanel',
 	'workbench.action.toggleSidebarVisibility', 'workbench.action.toggleZenMode', 'workbench.action.zoomIn', 'workbench.action.zoomOut', 'workbench.action.zoomReset',
 	'views.moveViewDown', 'views.moveViewLeft', 'views.moveViewRight', 'views.moveViewUp', 'workbench.action.terminal.new',
-	// Found by the state matrix (review r3 N2): the debug controls act on the debug session, not on an editor; the
+	// Found by the state matrix (review r3 N2): the debug controls act on the debug session, not on an editor (Restart
+	// is opened in the IDE above); the
 	// cursor announcement reads the focused code editor.
-	'workbench.action.debug.continue', 'workbench.action.debug.restart', 'workbench.action.debug.stepInto', 'workbench.action.debug.stepOver',
+	'workbench.action.debug.continue', 'workbench.action.debug.stepInto', 'workbench.action.debug.stepOver',
 	'workbench.action.debug.stop', 'editor.action.announceCursorPosition',
 ];
 

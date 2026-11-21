@@ -75,7 +75,8 @@ if (!only || only === 'route') for (const q of ['', 'noroutes']) await session(q
 	await clickIde(p); await reset(p); await p.keyboard.press('Control+s');
 	check(`[${tag}] Ctrl+S in the IDE editor stays upstream`, await ev(p, () => [log.save.length, log.upstream]), [0, ['workbench.action.files.save']]);
 	if (!q) {
-		check('every policy command present was guarded, none missing', await ev(p, () => [registration.guarded.length, registration.missing.includes('workbench.action.files.save')]), [9, false]);
+		// Review r4 N1: a guard over a command whose metadata declares arguments is still reported as guarded.
+		check('every policy command present was guarded, none missing', await ev(p, () => [registration.guarded.length, registration.guarded.includes('workbench.action.editor.changeLanguageMode'), registration.missing.includes('workbench.action.files.save')]), [10, true, false]);
 		// Review r2 N1: a later registration of a guarded id (an extension, or a core command registered at runtime).
 		// Review r3 N3: each later registration adds exactly one guard layer (the late command, then its guard).
 		const layers = await ev(p, () => { const { CommandsRegistry, KeybindingsRegistry, KeyMod, KeyCode } = registries;
@@ -97,7 +98,14 @@ if (!only || only === 'route') for (const q of ['', 'noroutes']) await session(q
 		check('a disposed later registration takes its guard with it', await ev(p, () => [log.upstream, registration.guarded.includes('workbench.action.files.save')]), [['workbench.action.files.save'], true]);
 		await clickSide(p); await reset(p); await p.keyboard.press('Control+s');
 		check('...and the side editor is still guarded', await ev(p, () => [log.save.length, log.upstream]), [1, []]);
-		await ev(p, () => registration.dispose()); await reset(p); await p.keyboard.press('Control+s');
+		// Review r4 N2: a second install (an auxiliary window sharing the registry) adds no layer, and the guards stay until
+		// the last handle is disposed, whatever the order.
+		const second = await ev(p, () => { const events = []; const l = registries.CommandsRegistry.onDidRegisterCommand(id => events.push(id));
+			window.registration2 = sp.registerAxisSidePanelEditorCommands(); l.dispose(); return [events.length, registration2.guarded.length]; });
+		check('a second install adds no guard layer and sees the same guards (the late Tasks: Build included)', second, [0, 11]);
+		await ev(p, () => { registration.dispose(); registration.dispose(); }); await reset(p); await p.keyboard.press('Control+s');
+		check('...disposing the first handle (twice) keeps the guards for the second', await ev(p, () => [log.save.length, log.upstream, registration2.guarded.length]), [1, [], 11]);
+		await ev(p, () => registration2.dispose()); await reset(p); await p.keyboard.press('Control+s');
 		check('disposing the registration restores upstream Save and the registry method', await ev(p, () => [log.save.length, log.upstream, registries.CommandsRegistry.registerCommand === Object.getPrototypeOf(registries.CommandsRegistry).registerCommand]), [0, ['workbench.action.files.save'], true]);
 	}
 });
@@ -173,6 +181,12 @@ if (!only || only === 'conflict') await session('overwrite=1', async p => {
 	await p.keyboard.press('Control+s'); await ev(p, () => commands.executeCommand('workbench.action.files.saveAll'));
 	// Save and Save All are both refused, and both say so (review r3 N4).
 	check('overwriteFileOnDisk: the side panel refuses Save and Save All, naming the setting', await ev(p, () => [log.save, log.blocked]), [[], ['files.saveConflictResolution', 'files.saveConflictResolution']]);
+});
+// Review r4 N4: a host whose read of the setting throws refuses both saves, and says so.
+if (!only || only === 'conflict') await session('overwrite=throw', async p => {
+	await ev(p, () => openFile('a')); await clickSide(p); await p.keyboard.type('x'); await reset(p);
+	await p.keyboard.press('Control+s'); await ev(p, () => commands.executeCommand('workbench.action.files.saveAll'));
+	check('a throwing setting read: Save and Save All are refused, naming the setting', await ev(p, () => [log.save, log.blocked, log.upstream]), [[], ['files.saveConflictResolution', 'files.saveConflictResolution'], ['workbench.action.files.saveAll']]);
 });
 
 if (!only || only === 'race') await session('delay=150', async p => {

@@ -6,7 +6,9 @@
 // verdict, must be classified by hand in the policy; only extension-host commands are accepted as a class.
 // A handler that never returns is recorded as 'hung' and the scan continues in a fresh page.
 // With --check, exits non-zero when a candidate is missing from AXIS_SIDE_PANEL_COMMAND_POLICY (the gate to re-run on
-// every upstream sync). Usage: node scan-keys.mjs [--web] [--json file] [--check]
+// every upstream sync). --check also pins the state matrix and the counts at the pin (review r4 N3): a state removed
+// from scan.html, or a sync that changes the candidates, fails until EXPECTED is updated after classifying.
+// Usage: node scan-keys.mjs [--web] [--json file] [--check]
 import { writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
@@ -15,6 +17,12 @@ import { env, www } from './env.mjs';
 import { startServer } from './serve.mjs';
 
 const { chromium } = createRequire(import.meta.url)(env.playwrightCore());
+const main = process.argv.includes('--web') ? 'web' : 'desktop';
+const EXPECTED = {
+	states: ['base', 'screenReader', 'diff', 'groups', 'sideBySide', 'dirty', 'debugging', 'panels'],
+	desktop: { candidates: 165, commands: 152 },
+	web: { candidates: 154, commands: 145 },
+};
 const server = await startServer(www, env.port);
 const browser = await chromium.launch({ executablePath: env.chromium() });
 
@@ -31,6 +39,7 @@ const total = await page.evaluate(() => window.total);
 const extensionKeys = await page.evaluate(() => window.extensionKeyCount);
 const loadErrors = await page.evaluate(() => window.errs);
 const count = await page.evaluate(() => window.count);
+const states = await page.evaluate(() => window.states);
 const rows = [];
 for (let i = 0; i < count; i++) {
 	const row = await page.evaluate(n => window.describe(n), i);
@@ -67,5 +76,15 @@ if (process.argv.includes('--check')) {
 	const candidates = rows.filter(r => r.verdict !== 'extension-host').map(r => r.command);
 	const missing = unclassifiedCommands(candidates);
 	console.log(missing.length ? `UNCLASSIFIED (${missing.length}): ${missing.join(', ')}` : `policy covers all ${new Set(candidates).size} candidate commands`);
-	process.exit(missing.length ? 1 : 0);
+	const want = EXPECTED[main];
+	const seen = { candidates: rows.length, commands: new Set(candidates).size };
+	const matrixOk = JSON.stringify(states) === JSON.stringify(EXPECTED.states);
+	const countsOk = seen.candidates === want.candidates && seen.commands === want.commands;
+	if (!matrixOk) {
+		console.log(`STATE MATRIX CHANGED: saw ${JSON.stringify(states)}, expected ${JSON.stringify(EXPECTED.states)}`);
+	}
+	if (!countsOk) {
+		console.log(`COUNTS CHANGED (${main}): saw ${JSON.stringify(seen)}, expected ${JSON.stringify(want)}`);
+	}
+	process.exit(missing.length || !matrixOk || !countsOk ? 1 : 0);
 }
