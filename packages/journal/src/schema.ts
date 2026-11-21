@@ -333,6 +333,108 @@ export const JOURNAL_MIGRATIONS: readonly Migration[] = [
         BEGIN SELECT RAISE(ABORT, 'a composer run is recorded once'); END;
     `,
   },
+  {
+    // axis.messages/1 (ticket PV-M3, inter-agent-communication.md sections 2, 4.2 and 7): threads, their participant sets,
+    // messages, who each message is addressed to, read cursors and messaging settings. Additive: new tables only.
+    //
+    // - A thread belongs to one registered project. Its `last_seq` only grows: a message must take the next one (trigger).
+    // - Participants only join (no update, no delete, by trigger): `joined_seq` is the last message before the principal
+    //   joined, so it reads messages after it and the ones addressed to it (section 4.2).
+    // - A message is never changed. Its body is the sender's raw text (escaped on every way out, never here).
+    // - `message_recipients` holds who a message is addressed to after group expansion; `counted` marks a message that
+    //   counts against the recipient's queue quotas (an agent's or a plugin's, never the user's or the system's). A
+    //   recipient row is never changed (it feeds the quotas).
+    // - Messages and their recipient rows can be deleted: the retention purge (a later slice) removes them, recipient
+    //   rows first. Threads, participants and cursors stay.
+    // - A read cursor never moves back (trigger).
+    version: 9,
+    sql: `
+      CREATE TABLE message_threads (
+        id         TEXT PRIMARY KEY CHECK (length(id) = 26 AND substr(id, 1, 4) = 'thr_' AND id NOT GLOB '*[^A-Za-z0-9_-]*'),
+        project_id TEXT NOT NULL REFERENCES projects(id),
+        created_at TEXT NOT NULL,
+        last_seq   INTEGER NOT NULL DEFAULT 0 CHECK (last_seq >= 0),
+        last_at    TEXT NOT NULL
+      ) STRICT;
+      CREATE INDEX message_threads_recent ON message_threads (last_at DESC, id);
+      CREATE TRIGGER message_threads_fixed BEFORE UPDATE OF id, project_id, created_at ON message_threads
+        BEGIN SELECT RAISE(ABORT, 'a thread keeps its id and project'); END;
+      CREATE TRIGGER message_threads_forward BEFORE UPDATE OF last_seq ON message_threads
+        WHEN NEW.last_seq < OLD.last_seq BEGIN SELECT RAISE(ABORT, 'a thread sequence only grows'); END;
+
+      CREATE TABLE message_participants (
+        thread_id  TEXT NOT NULL REFERENCES message_threads(id),
+        principal  TEXT NOT NULL CHECK (length(principal) BETWEEN 4 AND 128 AND principal NOT GLOB '*[^A-Za-z0-9:._-]*'),
+        joined_seq INTEGER NOT NULL CHECK (joined_seq >= 0),
+        ord        INTEGER NOT NULL CHECK (ord BETWEEN 0 AND 63),
+        PRIMARY KEY (thread_id, principal),
+        UNIQUE (thread_id, ord)
+      ) STRICT, WITHOUT ROWID;
+      CREATE INDEX message_participants_by_principal ON message_participants (principal, thread_id);
+      CREATE TRIGGER message_participants_kept BEFORE UPDATE ON message_participants
+        BEGIN SELECT RAISE(ABORT, 'a participant only joins'); END;
+      CREATE TRIGGER message_participants_no_delete BEFORE DELETE ON message_participants
+        BEGIN SELECT RAISE(ABORT, 'a participant only joins'); END;
+
+      CREATE TABLE agent_messages (
+        id          TEXT PRIMARY KEY CHECK (length(id) = 26 AND substr(id, 1, 4) = 'msg_' AND id NOT GLOB '*[^A-Za-z0-9_-]*'),
+        thread_id   TEXT NOT NULL REFERENCES message_threads(id),
+        seq         INTEGER NOT NULL CHECK (seq >= 1),
+        sender      TEXT NOT NULL CHECK (length(sender) <= 1024 AND json_valid(sender)),
+        sender_key  TEXT NOT NULL CHECK (length(sender_key) BETWEEN 4 AND 128),
+        recipients  TEXT NOT NULL CHECK (length(recipients) <= 8192 AND json_valid(recipients)),
+        expanded    TEXT NOT NULL CHECK (length(expanded) <= 8192 AND json_valid(expanded)),
+        body        TEXT NOT NULL CHECK (length(body) BETWEEN 1 AND 16384),
+        refs        TEXT NOT NULL CHECK (length(refs) <= 65536 AND json_valid(refs)),
+        in_reply_to TEXT,
+        hop         INTEGER NOT NULL CHECK (hop BETWEEN 0 AND 8),
+        created_at  TEXT NOT NULL,
+        UNIQUE (thread_id, seq)
+      ) STRICT;
+      CREATE TRIGGER agent_messages_in_order BEFORE INSERT ON agent_messages
+        WHEN NEW.seq <> (SELECT last_seq + 1 FROM message_threads WHERE id = NEW.thread_id)
+        BEGIN SELECT RAISE(ABORT, 'a message takes the next sequence of its thread'); END;
+      CREATE TRIGGER agent_messages_added AFTER INSERT ON agent_messages BEGIN
+        UPDATE message_threads SET last_seq = NEW.seq, last_at = NEW.created_at WHERE id = NEW.thread_id;
+      END;
+      CREATE TRIGGER agent_messages_immutable BEFORE UPDATE ON agent_messages
+        BEGIN SELECT RAISE(ABORT, 'a message is never changed'); END;
+
+      CREATE TABLE message_recipients (
+        principal  TEXT NOT NULL CHECK (length(principal) BETWEEN 4 AND 128 AND principal NOT GLOB '*[^A-Za-z0-9:._-]*'),
+        message_id TEXT NOT NULL REFERENCES agent_messages(id),
+        thread_id  TEXT NOT NULL REFERENCES message_threads(id),
+        seq        INTEGER NOT NULL CHECK (seq >= 1),
+        sender_key TEXT NOT NULL,
+        counted    INTEGER NOT NULL CHECK (counted IN (0, 1)),
+        PRIMARY KEY (principal, message_id)
+      ) STRICT, WITHOUT ROWID;
+      CREATE INDEX message_recipients_by_thread ON message_recipients (principal, thread_id, seq);
+      CREATE INDEX message_recipients_by_message ON message_recipients (message_id);
+      CREATE TRIGGER message_recipients_fixed BEFORE UPDATE ON message_recipients
+        BEGIN SELECT RAISE(ABORT, 'a recipient row is never changed'); END;
+
+      CREATE TABLE message_cursors (
+        thread_id    TEXT NOT NULL REFERENCES message_threads(id),
+        principal    TEXT NOT NULL,
+        read_through INTEGER NOT NULL CHECK (read_through >= 0),
+        PRIMARY KEY (thread_id, principal)
+      ) STRICT, WITHOUT ROWID;
+      CREATE TRIGGER message_cursors_forward BEFORE UPDATE OF read_through ON message_cursors
+        WHEN NEW.read_through < OLD.read_through BEGIN SELECT RAISE(ABORT, 'a read cursor never moves back'); END;
+
+      CREATE TABLE messaging_settings (
+        project_id TEXT PRIMARY KEY REFERENCES projects(id),
+        body       TEXT NOT NULL CHECK (length(body) <= 65536 AND json_valid(body))
+      ) STRICT;
+      CREATE TABLE messaging_agent_settings (
+        agent_id      TEXT PRIMARY KEY CHECK (length(agent_id) BETWEEN 1 AND 64),
+        accepts_from  TEXT NOT NULL CHECK (accepts_from IN ('none','group','project')),
+        cli_messaging INTEGER NOT NULL CHECK (cli_messaging IN (0, 1)),
+        muted         INTEGER NOT NULL CHECK (muted IN (0, 1))
+      ) STRICT;
+    `,
+  },
 ];
 
 export const JOURNAL_SCHEMA_VERSION = JOURNAL_MIGRATIONS.length;
