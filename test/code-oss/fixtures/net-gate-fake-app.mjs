@@ -2,6 +2,7 @@
 // A stand-in for a packaged desktop build, for test/code-oss/net-gate.test.mjs. Mode (first argument):
 //   clean   stays up and opens nothing;  honour  opens the port named by a debugging flag;  listen  always opens a loopback port;
 //   exit    exits at once;  family  stays up with a child in its process group;  orphan  starts such a child and exits at once.
+// NET_GATE_FAKE_READY (a file path) receives a line {pid} once this process is fully set up (its listener, if any, is open).
 // NET_GATE_FAKE_CHILD_RECORD (a file path) receives {pid, kid}: this process and that child.
 import { spawn } from "node:child_process";
 import { appendFileSync } from "node:fs";
@@ -21,6 +22,8 @@ if (mode === "family" || mode === "orphan") {
 }
 if (mode === "exit") process.exit(3);
 const flag = process.argv.slice(3).find((a) => /^--(?:remote-debugging-port|inspect(?:-brk|-extensions)?)=\d+$/.test(a));
-if (mode === "honour" && flag !== undefined) net.createServer().listen(Number(flag.split("=")[1]), "127.0.0.1");
-if (mode === "listen") net.createServer().listen(0, "127.0.0.1");
+const ready = () => { if (process.env.NET_GATE_FAKE_READY) appendFileSync(process.env.NET_GATE_FAKE_READY, `${JSON.stringify({ pid: process.pid })}\n`); };
+if (mode === "honour" && flag !== undefined) net.createServer().listen(Number(flag.split("=")[1]), "127.0.0.1", ready);
+else if (mode === "listen") net.createServer().listen(0, "127.0.0.1", ready);
+else ready();
 setInterval(() => {}, 1000);
