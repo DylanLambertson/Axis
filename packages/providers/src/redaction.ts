@@ -14,12 +14,38 @@ export interface Redactor {
   /** True when `text` contains a known secret or matches a secret pattern. */
   containsSecret(text: string): boolean;
   /**
+   * The same answer as `containsSecret`, for the outgoing scan of a request (C7-F3): a hook that reads a long string in
+   * steps implements it to yield to the event loop between them. True when the text holds a secret; never false for a
+   * text it could not judge. It charges `scan.budget` for the text it actually reads and throws
+   * `new ProviderError("scan_budget")` rather than read past it, and `new ProviderError("cancelled")` once `scan.signal`
+   * is aborted. Optional: the guard uses `containsSecret` when it is missing.
+   */
+  containsSecretAsync?(text: string, scan: ScanContext): Promise<boolean>;
+  /**
    * A redactor fixed to the current secret set, for scanning many strings of
    * one request without asking the vault for each (N3). Optional for custom
    * implementations; the guard falls back to the redactor itself.
    */
   snapshot?(): Redactor;
 }
+
+/**
+ * One request's outgoing scan (C7-F3): the guard creates one per request and passes the same object for every string of it,
+ * so `budget.remaining` bounds the characters the whole request's scan may read.
+ */
+export interface ScanContext {
+  readonly signal: AbortSignal;
+  readonly budget: { remaining: number };
+}
+
+/**
+ * Characters of window reads one request's outgoing scan may spend (C7-F3). A run's history at its caps is about 14 M
+ * characters (8 MiB of tool inputs, 4 MiB of results, the prompt and at most 24 model turns of 4,096 output tokens); the
+ * host's overlapping windows read a long string about 4.6 times over plus up to two windows of rounding per string, and a key
+ * registered during a scan makes the hook scan once more (one restart): about 182 M in all. A request past it is refused
+ * `scan_budget`, never sent and never answered clean. The host derives that minimum from its caps in a test.
+ */
+export const SCAN_BUDGET_CHARS = 192 * 1024 * 1024;
 
 export interface SecretRedactorOptions {
   /**

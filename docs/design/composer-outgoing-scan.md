@@ -1,9 +1,21 @@
-# C7-F3: an outgoing secret scan that yields (design note, not built)
+# C7-F3: an outgoing secret scan that yields (design note, built)
 
-Status: proposal, not built. It builds on what is on main: the windowed outgoing scan and its kept "no secret" verdicts
-(`packages/daemon-host/src/bindings/provider-redactor.ts`, merged with #509; composer-runtime.md section 4.2, whose "Long
-strings in the outgoing scan" bullet names this follow-up as C7-F3). A section 5 ticket row for C7-F3 is proposed on the
-open branch `fix/declined-content-not-resent`; until it merges, the 4.2 bullet is the only reference on main.
+Status: built on `feat/async-secret-scan`, on top of the windowed outgoing scan and its kept "no secret" verdicts
+(`packages/daemon-host/src/bindings/provider-redactor.ts`, #509; composer-runtime.md section 4.2). What the build changed from
+the proposal below (review c7-f3-design r2 nits):
+
+- **N1, fresh errors.** `preflight`'s scan (`scanRequest` in guard.ts) never forwards the hook's error object: it checks
+  `signal.aborted` first (any rejection after an abort ends `cancelled`), then builds a NEW `ProviderError` for the hook's
+  `scan_budget` or `cancelled` code, and `secret_in_request` for anything else. The signal is checked again after the last
+  string, so a hook that answers clean after an abort still ends `cancelled`.
+- **N2, budget and wording.** `SCAN_BUDGET_CHARS` is 192 Mi characters, not 64 M: a run's history at its caps (about 14 M
+  characters with 24 turns of model text) read at the window factor plus two windows of rounding per long string, TWICE (a
+  key registered during a scan costs one more scan). A host test derives that minimum from the caps. The fixed text is "The
+  request could not be checked for credentials and was not sent." (it also covers the second-registration refusal).
+- **N3.** `count_tokens` goes through `preflight`, so the same scan and refusals apply (tested).
+- **Tests.** The existing synchronous tests stay; the asynchronous path has its own file
+  (`test/provider-redactor-async.test.ts`) with an equivalence test over a corpus of the synchronous cases, instead of
+  running every synchronous test twice.
 
 ## Problem
 

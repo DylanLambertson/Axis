@@ -17,7 +17,7 @@ import {
   type Timers,
 } from "./guard-types.js";
 import { limitOf, read } from "./guard-util.js";
-import { stringsIn } from "./redaction.js";
+import { SCAN_BUDGET_CHARS, stringsIn, type Redactor, type ScanContext } from "./redaction.js";
 import { StreamValidator, type StreamLimits } from "./stream.js";
 import {
   PROVIDER_ADAPTER_API_VERSION,
@@ -40,6 +40,36 @@ import { checkCapabilities, validateRequest, type ValidRequest } from "./validat
 export type { GuardLimits, GuardMode, GuardOptions, GuardedProvider, ProviderLogRecord, RunOptions, Timers } from "./guard-types.js";
 export { DEFAULT_IDLE_TIMEOUT_MS, DEFAULT_REQUEST_TIMEOUT_MS, MAX_LISTED_MODELS, MAX_TIMEOUT_MS } from "./guard-types.js";
 export { estimateInputTokens } from "./guard-estimate.js";
+
+/**
+ * The outgoing secret scan of one request (C7-F3). One `ScanContext` (the request's signal and `SCAN_BUDGET_CHARS`) is shared
+ * by every string of the request. The object scanned with is probed for `containsSecretAsync` (a snapshot carries its own);
+ * without it each string takes `containsSecret`. Errors are built fresh here and never forwarded (review c7-f3-design r2 N1):
+ * a signal aborted by the time the hook settles ends `cancelled`, whatever the hook threw; a hook's own `scan_budget` or
+ * `cancelled` refusal keeps its code (a budget stop is never `secret_in_request` and never clean); any other rejection is
+ * `secret_in_request` (fail closed). The signal is checked again after the last string.
+ */
+async function scanRequest(scanner: Redactor, valid: ValidRequest, signal: AbortSignal): Promise<void> {
+  const scan: ScanContext = { signal, budget: { remaining: SCAN_BUDGET_CHARS } };
+  const async = typeof scanner.containsSecretAsync === "function" ? scanner.containsSecretAsync.bind(scanner) : undefined;
+  for (const s of stringsIn(valid)) {
+    if (async === undefined) {
+      if (scanner.containsSecret(s)) throw new ProviderError("secret_in_request");
+      continue;
+    }
+    let found: boolean;
+    try {
+      found = await async(s, scan);
+    } catch (e) {
+      if (signal.aborted) throw new ProviderError("cancelled");
+      const code = e instanceof ProviderError ? e.code : undefined;
+      if (code === "scan_budget" || code === "cancelled") throw new ProviderError(code);
+      throw new ProviderError("secret_in_request");
+    }
+    if (found !== false) throw new ProviderError("secret_in_request");
+  }
+  if (signal.aborted) throw new ProviderError("cancelled");
+}
 
 export function guardProvider(adapter: ProviderAdapter, options: GuardOptions): GuardedProvider {
   const raw = adapter.descriptor;
@@ -145,7 +175,8 @@ export function guardProvider(adapter: ProviderAdapter, options: GuardOptions): 
    *    sent: zod builds fresh objects and arrays and clones JSON values, so
    *    later changes to the caller's object (or a Proxy that answers
    *    differently to different reads) cannot reach the adapter (NB1);
-   * 3. the secret scan over that snapshot, before any `await`;
+   * 3. the secret scan over that snapshot (`scanRequest`); it may yield to the event loop between windows of a long
+   *    string (C7-F3), which is safe because the snapshot is a fresh validated clone that nothing else holds;
    * 4. capabilities (the first adapter call), checked against the snapshot.
    * Validation messages never echo values or record keys (S1).
    */
@@ -159,10 +190,7 @@ export function guardProvider(adapter: ProviderAdapter, options: GuardOptions): 
     const model = modelIdSchema.safeParse(read(request, "model"));
     if (!model.success) throw new ProviderError("invalid_request", { message: 'The request field "model" is invalid.', reason: "schema" });
     const valid = validateRequest(request);
-    const scanner = redactor.snapshot?.() ?? redactor;
-    for (const s of stringsIn(valid)) {
-      if (scanner.containsSecret(s)) throw new ProviderError("secret_in_request");
-    }
+    await scanRequest(redactor.snapshot?.() ?? redactor, valid, signal);
     setModel(valid.model);
     const caps = await capabilities(valid.model, signal);
     checkCapabilities(valid, caps, mode === "stream" ? "stream" : "generate");

@@ -33,7 +33,7 @@ export const INPUT_BILLED: ReadonlySet<ProviderErrorCode> = new Set<ProviderErro
  * when nothing was cancelled) is misreporting, and gets `internal` (NS3).
  * `timeout` stays: adapters keep their own wire timeouts (ANT-1).
  */
-export const GUARD_ONLY: ReadonlySet<ProviderErrorCode> = new Set<ProviderErrorCode>(["budget_exceeded", "secret_in_request", "cancelled"]);
+export const GUARD_ONLY: ReadonlySet<ProviderErrorCode> = new Set<ProviderErrorCode>(["budget_exceeded", "secret_in_request", "scan_budget", "cancelled"]);
 
 /**
  * Budget hooks whose `recordUsage` failed. The guard refuses every later
