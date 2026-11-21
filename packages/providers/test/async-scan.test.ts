@@ -5,6 +5,7 @@ import {
   MOCK_DEFAULT_MODEL,
   ProviderError,
   SCAN_BUDGET_CHARS,
+  YIELD_CHARS,
   createMockProvider,
   defaultMessage,
   guardProvider,
@@ -151,4 +152,70 @@ test("scan_budget is guard-only: an adapter that raises it gets internal", async
   };
   const g = guardProvider(adapter, { redactor: hook(async () => false) });
   assert.equal((await fails(g.generate(req(), { runId: "r", signal: live() }))).code, "internal");
+});
+
+test("an answer other than false is a secret: undefined, 1, a string, null, an object (review c7-f3-impl r1 N4)", async () => {
+  for (const answer of [undefined, 1, 0, "no", null, {}]) {
+    const mock = createMockProvider({ replies: [{ kind: "text", text: "ok" }] });
+    const g = guardProvider(mock, { redactor: hook(async () => answer as unknown as boolean) });
+    assert.equal((await fails(g.generate(req(), { runId: "r", signal: live() }))).code, "secret_in_request", String(answer));
+    assert.equal(mock.requests.length, 0);
+  }
+});
+
+test("a hook that never settles does not hold the request past a cancel: it ends cancelled, nothing sent (review c7-f3-impl r1 N1)", async () => {
+  const mock = createMockProvider({ replies: [{ kind: "text", text: "ok" }] });
+  const ac = new AbortController();
+  const g = guardProvider(mock, { redactor: hook(() => (setImmediate(() => ac.abort()), new Promise<boolean>(() => undefined))) });
+  // Bounded by loop turns, not time: the cancel lands on the first turn, so the request must have ended well before 50.
+  const turns = async (n: number): Promise<string> => {
+    for (let i = 0; i < n; i++) await new Promise<void>((res) => setImmediate(res));
+    return "still pending";
+  };
+  const outcome = await Promise.race([g.generate(req(), { runId: "r", signal: ac.signal }).then(() => "sent", (e: unknown) => (isProviderError(e) ? e.code : "other")), turns(50)]);
+  assert.equal(outcome, "cancelled");
+  assert.equal(mock.requests.length, 0);
+});
+
+test("a secret set that changed during the scan makes the whole request scanned again; a second change is refused scan_budget", async () => {
+  for (const [changes, outcome] of [[0, "sent"], [1, "sent"], [2, "scan_budget"]] as const) {
+    const mock = createMockProvider({ replies: [{ kind: "text", text: "ok" }] });
+    let version = 0;
+    let scanned = 0;
+    // The set changes once per pass while the prompt (one string of the request) is scanned, until `changes` is reached.
+    const h = { ...hook(async (t) => (scanned++, t.includes(MARKER) && version < changes && version++, false)), secretsVersion: () => version };
+    const g = guardProvider(mock, { redactor: h });
+    const got = await g.generate(req(), { runId: "r", signal: live() }).then(() => "sent", (e: unknown) => (isProviderError(e) ? e.code : "other"));
+    assert.equal(got, outcome, `${changes} changes`);
+    const perPass = h.seen.length / Math.min(changes + 1, 2);
+    assert.equal(scanned, Math.min(changes + 1, 2) * perPass, "every string of the request, once per pass");
+    assert.equal(mock.requests.length, outcome === "sent" ? 1 : 0);
+  }
+});
+
+test("the guard yields between strings: a request of many short strings lets the event loop turn every YIELD_CHARS characters", async () => {
+  for (const mode of ["sync", "async"] as const) {
+    let since = 0;
+    let most = 0;
+    let scanning = true;
+    const tick = (): void => {
+      since = 0;
+      if (scanning) setImmediate(tick);
+    };
+    setImmediate(tick);
+    const read = (t: string): boolean => {
+      since += t.length;
+      most = Math.max(most, since);
+      return false;
+    };
+    const redactor: Redactor = mode === "sync" ? { redact: (t) => t, containsSecret: read } : { redact: (t) => t, containsSecret: () => false, containsSecretAsync: async (t) => read(t) };
+    const mock = createMockProvider({ replies: [{ kind: "text", text: "ok" }] });
+    const g = guardProvider(mock, { redactor });
+    const r = req();
+    const many: GenerateRequest = { ...r, messages: [{ role: "user", content: Array.from({ length: 200 }, (_, i) => ({ type: "text" as const, text: `${i} ${"word ".repeat(2_000)}` })) }] };
+    await g.generate(many, { runId: "r", signal: live() });
+    scanning = false;
+    assert.equal(mock.requests.length, 1);
+    assert.ok(most <= YIELD_CHARS + 10_100, `${mode}: ${most} characters in one loop turn`);
+  }
 });

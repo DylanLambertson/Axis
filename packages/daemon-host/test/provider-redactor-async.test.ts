@@ -3,10 +3,10 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { MAX_STRING_CHARS, Redactor } from "@axis/audit";
 import { MAX_PROMPT_CHARS } from "@axis/protocol";
-import { ProviderError, SCAN_BUDGET_CHARS, createMockProvider, createRunBudget, guardProvider, type ScanContext } from "@axis/providers";
+import { ProviderError, SCAN_BUDGET_CHARS, YIELD_CHARS, createMockProvider, createRunBudget, guardProvider, type ScanContext } from "@axis/providers";
 import { canary } from "../testing/git-fixture.js";
-import { DEFAULT_MAX_TURNS, DEFAULT_TOOL_CAPS, runComposerLoop } from "../src/composer/loop.js";
-import { WINDOW_STEP, YIELD_WINDOWS, providerRedactor, windowBounds, windowCount } from "../src/bindings/provider-redactor.js";
+import { DEFAULT_MAX_OUTPUT_TOKENS, DEFAULT_MAX_TURNS, DEFAULT_TOOL_CAPS, runComposerLoop } from "../src/composer/loop.js";
+import { WINDOW_STEP, YIELD_WINDOWS, assertScanBudgetFits, providerRedactor, scanCharsAtCaps, windowBounds, windowCount } from "../src/bindings/provider-redactor.js";
 
 // C7-F3: the host hook's asynchronous outgoing scan (docs/design/composer-outgoing-scan.md): the same answers and kept verdicts
 // as the synchronous one, yielding between windows, charged to the request's budget, stopped by its signal.
@@ -111,39 +111,99 @@ test("aborts: before the scan, between windows and after the last one each end c
   }
 });
 
-test("a key registered during the scan is found in the same request: the scan runs once more under the new set", async () => {
-  const key = "late-registered-credential-value-0001";
-  const r = new Counting();
-  const p = providerRedactor(r);
-  const text = `${key} ${ofWindows(11)}`; // in the first window, which is read before the key is registered
-  r.onCall = (n) => n === 3 && r.registerSecret(key);
-  assert.equal(await p.containsSecretAsync?.(text, ctx()), true);
-});
-
-test("a second registration during the second scan is refused scan_budget, never answered clean", async () => {
+test("a key registered during a string's scan keeps no verdict for it and moves secretsVersion (the guard rescans)", async () => {
   const r = new Counting();
   const p = providerRedactor(r);
   const text = ofWindows(11);
   const n = windowCount(text.length);
-  r.onCall = (i) => (i === 2 || i === n + 2) && r.registerSecret(`registered-credential-value-${i}-abcdef`);
-  assert.equal(await code(p.containsSecretAsync?.(text, ctx()) ?? Promise.resolve()), "scan_budget");
+  const before = p.secretsVersion?.();
+  r.onCall = (i) => i === 2 && r.registerSecret("registered-credential-value-mid-abcdef");
+  assert.equal(await p.containsSecretAsync?.(text, ctx()), false);
+  assert.notEqual(p.secretsVersion?.(), before);
   r.onCall = () => undefined;
   r.calls = 0;
   assert.equal(await p.containsSecretAsync?.(text, ctx()), false);
-  assert.equal(r.calls, n, "nothing was kept from the refused scan");
+  assert.equal(r.calls, n, "nothing was kept from the scan the registration crossed");
 });
 
-test("one registration during the scan costs one more scan, and the verdict is kept under the new count", async () => {
+/** A guarded mock over the real host hook, and what it was sent. */
+function guarded(r: Redactor) {
+  const mock = createMockProvider({ replies: [{ kind: "text", text: "ok" }] });
+  return { mock, g: guardProvider(mock, { redactor: providerRedactor(r) }) };
+}
+const ask = (...texts: string[]) => ({
+  model: "mock-model",
+  messages: texts.map((text, i) => ({ role: i % 2 === 0 ? ("user" as const) : ("assistant" as const), content: [{ type: "text" as const, text }] })),
+  maxOutputTokens: 100,
+});
+const refusal = async (p: Promise<unknown>): Promise<string> => {
+  try {
+    await p;
+    return "sent";
+  } catch (e) {
+    return e instanceof ProviderError ? e.code : String(e);
+  }
+};
+
+test("a key registered while a LATER string is scanned is found in a string judged before it: the whole request is rescanned (review c7-f3-impl r1 SF-1)", async () => {
+  const key = "late-registered-credential-value-0001";
+  const holder = `${prose(2_000)} ${key} ${prose(2_000)}`;
   const r = new Counting();
-  const p = providerRedactor(r);
+  let long = 0;
+  let holderBefore = false;
+  const base = r.redactString.bind(r);
+  r.redactString = (w: string) => {
+    if (w === holder && long === 0) holderBefore = true;
+    if (w.length > 10_000 && ++long === 30) r.registerSecret(key);
+    return base(w);
+  };
+  const { mock, g } = guarded(r);
+  assert.equal(await refusal(g.generate(ask(prose(400_000), "ok", holder), { runId: "r", signal: new AbortController().signal })), "secret_in_request");
+  assert.equal(holderBefore, true, "the string holding the key was judged clean before the key was registered");
+  assert.equal(mock.requests.length, 0, "nothing was sent");
+});
+
+test("one registration during a request costs one more scan of the request, and the verdicts are kept under the new count", async () => {
+  const r = new Counting();
   const text = ofWindows(11);
   const n = windowCount(text.length);
-  r.onCall = (i) => i === 2 && r.registerSecret("registered-credential-value-once-abcdef");
-  assert.equal(await p.containsSecretAsync?.(text, ctx()), false);
-  assert.equal(r.calls, 2 * n);
-  r.calls = 0;
-  assert.equal(p.containsSecret(text), false);
-  assert.equal(r.calls, 0, "the synchronous path takes the verdict the asynchronous one kept");
+  let long = 0;
+  const base = r.redactString.bind(r);
+  r.redactString = (w: string) => {
+    if (w.length > 10_000 && ++long === 2) r.registerSecret("registered-credential-value-once-abcdef");
+    return base(w);
+  };
+  const { mock, g } = guarded(r);
+  await g.generate(ask(text), { runId: "r", signal: new AbortController().signal });
+  assert.equal(long, 2 * n);
+  assert.equal(mock.requests.length, 1);
+  long = 0;
+  await g.generate(ask(text), { runId: "r", signal: new AbortController().signal });
+  assert.equal(long, 0, "the second scan's verdict is kept under the new count");
+});
+
+test("a request of many one-window strings yields between them: no more than YIELD_CHARS plus one string is read per loop turn (review c7-f3-impl r1 SF-2)", async () => {
+  const r = new Counting();
+  let since = 0;
+  let most = 0;
+  let scanning = true;
+  const tick = (): void => {
+    since = 0;
+    if (scanning) setImmediate(tick);
+  };
+  setImmediate(tick);
+  const base = r.redactString.bind(r);
+  r.redactString = (w: string) => {
+    since += w.length;
+    most = Math.max(most, since);
+    return base(w);
+  };
+  const { mock, g } = guarded(r);
+  const texts = Array.from({ length: 100 }, (_, i) => `${i} ${prose(16_000)}`);
+  await g.generate(ask(...texts), { runId: "r", signal: new AbortController().signal });
+  scanning = false;
+  assert.equal(mock.requests.length, 1);
+  assert.ok(most <= YIELD_CHARS + MAX_STRING_CHARS, `${most} characters read in one loop turn`);
 });
 
 test("two concurrent scans of one string both answer clean, and one verdict is kept", async () => {
@@ -156,15 +216,20 @@ test("two concurrent scans of one string both answer clean, and one verdict is k
   assert.equal(r.calls, 0);
 });
 
-test("the request budget holds a whole run history at the caps scanned twice (one restart), with the windows' rounding", () => {
+test("the request budget holds a whole run history at the default caps scanned twice, with the windows' rounding; raised caps are refused (review c7-f3-impl r1 N2)", () => {
+  const caps = { ...DEFAULT_TOOL_CAPS, maxTurns: DEFAULT_MAX_TURNS, maxOutputTokens: DEFAULT_MAX_OUTPUT_TOKENS, promptChars: MAX_PROMPT_CHARS };
   // Characters: UTF-8 bytes bound the tool inputs and results; model text is at most 4,096 output tokens a turn, taken at a
   // generous 16 characters a token; the prompt.
-  const history = DEFAULT_TOOL_CAPS.inputBytesPerRun + DEFAULT_TOOL_CAPS.resultBytesPerRun + DEFAULT_MAX_TURNS * 4096 * 16 + MAX_PROMPT_CHARS;
+  const history = caps.inputBytesPerRun + caps.resultBytesPerRun + caps.maxTurns * caps.maxOutputTokens * 16 + caps.promptChars;
   const long = MAX_STRING_CHARS + 1;
-  const longStrings = Math.ceil(DEFAULT_TOOL_CAPS.inputBytesPerRun / long) + Math.ceil(DEFAULT_TOOL_CAPS.resultBytesPerRun / long) + DEFAULT_MAX_TURNS + 1;
+  const longStrings = Math.ceil(caps.inputBytesPerRun / long) + Math.ceil(caps.resultBytesPerRun / long) + caps.maxTurns + 1;
   // windowCount(L) <= (L - SCAN) / STEP + 2 for each long string, so a history reads at most this many characters once.
   const once = Math.ceil((history / WINDOW_STEP) * MAX_STRING_CHARS) + 2 * longStrings * MAX_STRING_CHARS;
+  assert.equal(scanCharsAtCaps(caps), 2 * once);
   assert.ok(SCAN_BUDGET_CHARS >= 2 * once, `${SCAN_BUDGET_CHARS} < 2 x ${once}`);
+  assert.doesNotThrow(() => assertScanBudgetFits(caps));
+  assert.throws(() => assertScanBudgetFits({ ...caps, inputBytesPerRun: 4 * caps.inputBytesPerRun }), RangeError);
+  assert.throws(() => assertScanBudgetFits({ ...caps, maxTurns: 10 * caps.maxTurns }), RangeError);
 });
 
 test("a request the hook refuses scan_budget never reaches the provider, and the run ends FAILED PROVIDER_SCAN_BUDGET", async () => {

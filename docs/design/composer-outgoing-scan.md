@@ -13,6 +13,21 @@ the proposal below (review c7-f3-design r2 nits):
   key registered during a scan costs one more scan). A host test derives that minimum from the caps. The fixed text is "The
   request could not be checked for credentials and was not sent." (it also covers the second-registration refusal).
 - **N3.** `count_tokens` goes through `preflight`, so the same scan and refusals apply (tested).
+- **Implementation review r1.**
+  - SF-1: the restart is per REQUEST, not per string. The hook exposes `secretsVersion` (its registered-forms count) and keeps
+    no verdict for a scan a registration crossed. The guard (`guard-scan.ts`) reads the version before the first string and
+    after the last (no `await` in between that read and the return), scans the whole request once more when it moved, and
+    refuses `scan_budget` on a second change. A key registered while a later string was scanned is found in a string judged
+    before it (tested end to end with the real hook: nothing sent).
+  - SF-2: the guard yields every `YIELD_CHARS` (131,072) characters of strings it scans, whatever their length, with or
+    without the asynchronous method; one-window strings still keep no verdict (memory: the verdicts are for long strings),
+    so their cost is unchanged but spread over loop turns. A test bounds the characters read in one loop turn.
+  - N1: each hook call is raced against the signal, so a hook that never settles cannot hold a cancelled request.
+  - N2: the composition refuses tool caps or a turn count whose history a request could not scan within the budget
+    (`assertScanBudgetFits`, the same derivation as the test).
+  - Cost, for the record (measured by the reviewer on one loaded host): about 2.8 s for 14 M characters of prose and 11 s of
+    random base64 per full pass, at most about 40-77 ms between loop turns; the full budget is reached only with a
+    registration per pass.
 - **Tests.** The existing synchronous tests stay; the asynchronous path has its own file
   (`test/provider-redactor-async.test.ts`) with an equivalence test over a corpus of the synchronous cases, instead of
   running every synchronous test twice.

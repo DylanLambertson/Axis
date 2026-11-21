@@ -22,6 +22,12 @@ export interface Redactor {
    */
   containsSecretAsync?(text: string, scan: ScanContext): Promise<boolean>;
   /**
+   * A value that changes whenever the set of secrets this hook finds changes (a key registered). The guard reads it before
+   * and after a request's scan and scans the whole request again when it moved, so every string of one request is judged
+   * under one set (review c7-f3-impl r1 SF-1). A hook whose set can change while a request is scanned implements it.
+   */
+  secretsVersion?(): number;
+  /**
    * A redactor fixed to the current secret set, for scanning many strings of
    * one request without asking the vault for each (N3). Optional for custom
    * implementations; the guard falls back to the redactor itself.
@@ -42,7 +48,7 @@ export interface ScanContext {
  * Characters of window reads one request's outgoing scan may spend (C7-F3). A run's history at its caps is about 14 M
  * characters (8 MiB of tool inputs, 4 MiB of results, the prompt and at most 24 model turns of 4,096 output tokens); the
  * host's overlapping windows read a long string about 4.6 times over plus up to two windows of rounding per string, and a key
- * registered during a scan makes the hook scan once more (one restart): about 182 M in all. A request past it is refused
+ * registered during a scan makes the guard scan the whole request once more (one restart): about 182 M in all. A request past it is refused
  * `scan_budget`, never sent and never answered clean. The host derives that minimum from its caps in a test.
  */
 export const SCAN_BUDGET_CHARS = 192 * 1024 * 1024;

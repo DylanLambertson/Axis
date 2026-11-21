@@ -122,6 +122,18 @@ test("S4: the composition hands its tool caps to the composer service (an invali
   }
 });
 
+test("C7-F3: caps whose run history one request's secret scan could not read are refused; the host does not start (review c7-f3-impl r1 N2)", async () => {
+  const fix = hostFixture();
+  const composed = composeDaemonHost(options(fix, { composer: { toolCaps: { inputBytesPerRun: 64 * 1024 * 1024 } } }));
+  try {
+    const outcome = await composed.start().then((s) => s.degraded ?? "started", (e: unknown) => (e instanceof RangeError ? "refused" : `other:${String(e)}`));
+    assert.equal(outcome, "refused");
+  } finally {
+    await composed.stop();
+    fix.cleanup();
+  }
+});
+
 test("C3 WT-2: the CLI runs' snapshotter is built once; the composer's commands never share it (their guard holds a baseline per run)", async () => {
   const fix = hostFixture();
   const made: string[] = [];

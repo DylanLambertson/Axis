@@ -80,6 +80,9 @@ export const DEFAULT_TOOL_CAPS: ToolCaps = Object.freeze({
 /** Model turns a run takes at most unless the composition says otherwise. */
 export const DEFAULT_MAX_TURNS = 24;
 
+/** Output tokens a composer request asks for unless the run says otherwise. */
+export const DEFAULT_MAX_OUTPUT_TOKENS = 4096;
+
 /** The closed set of run reasons a cap ends a run with. */
 export const TOOL_LIMIT_REASONS = [
   "TOOL_CALL_LIMIT",
@@ -220,7 +223,7 @@ async function loop(input: LoopInput, state: { held: Held | undefined }): Promis
           system: SYSTEM[input.mode],
           messages,
           ...(tools === undefined || tools.specs.length === 0 ? {} : { tools: tools.specs.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema })) }),
-          maxOutputTokens: input.maxOutputTokens ?? 4096,
+          maxOutputTokens: input.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
         },
         { runId: input.runId, signal, budget },
       );

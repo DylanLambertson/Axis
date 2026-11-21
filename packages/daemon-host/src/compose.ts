@@ -6,7 +6,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { AxisError, withTransaction, type InstanceLock } from "@axis/audit";
 import { Daemon, EventHub, MemoryIdempotencyStore, type ElectronPortLike, type ShutdownOptions } from "@axis/daemon";
 import type { GitRunner } from "@axis/git-ops";
-import { EVENTS_CONTRACT, EVENTS_VERSION, PROJECTS_CONTRACT, PROJECTS_VERSION, PROVIDERS_CONTRACT, PROVIDERS_VERSION, APPROVALS_CONTRACT, APPROVALS_VERSION, REVIEW_CONTRACT, REVIEW_VERSION, WORKTREES_CONTRACT, WORKTREES_VERSION } from "@axis/protocol";
+import { EVENTS_CONTRACT, EVENTS_VERSION, MAX_PROMPT_CHARS, PROJECTS_CONTRACT, PROJECTS_VERSION, PROVIDERS_CONTRACT, PROVIDERS_VERSION, APPROVALS_CONTRACT, APPROVALS_VERSION, REVIEW_CONTRACT, REVIEW_VERSION, WORKTREES_CONTRACT, WORKTREES_VERSION } from "@axis/protocol";
 import { createSecretScanner, type ScanMode } from "@axis/secret-scan";
 import { anchorPreflight } from "./anchor/preflight.js";
 import { createAgentBinding, type AgentBinding } from "./bindings/agent.js";
@@ -31,6 +31,8 @@ import { createChallengeAuditSink } from "./gate/audit-sink.js";
 import { createRunTrustMinter } from "./gate/run-trust.js";
 import { createWorktreesApprovals, type WorktreesApprovals } from "./gate/worktrees-confirm.js";
 import { createComposerService, type ComposerService } from "./composer/service.js";
+import { DEFAULT_MAX_OUTPUT_TOKENS, DEFAULT_MAX_TURNS, resolveToolCaps } from "./composer/loop.js";
+import { assertScanBudgetFits } from "./bindings/provider-redactor.js";
 import { createApprovalsHandlers } from "./handlers/approvals.js";
 import { createHandlerRegistrar, registerAuditHandlers, type HandlerRegistrar } from "./handlers/anchor-guard.js";
 import { registerCliRunsHandlers } from "./handlers/cli-runs.js";
@@ -261,6 +263,8 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
           commandLimits: commandBounds,
         });
         options.observeAgent?.({ commands: agent.commands, gitReads: agent.gitReads, commandLimits: agent.commandLimits });
+        const caps = resolveToolCaps(options.composer?.toolCaps);
+        assertScanBudgetFits({ ...caps, maxTurns: options.composer?.maxTurns ?? DEFAULT_MAX_TURNS, maxOutputTokens: DEFAULT_MAX_OUTPUT_TOKENS, promptChars: MAX_PROMPT_CHARS });
         const composer = createComposerService({
           journal: parts.journal,
           engine: agent,
