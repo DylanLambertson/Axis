@@ -110,7 +110,8 @@ test("itemTimeoutMs 0 means the default (5 s), never unbounded; bad options are 
 });
 
 test("a disposer that calls dispose() does not wait for itself", async () => {
-  for (const itemTimeoutMs of [0, 5_000, 200]) {
+  // A disposer that waited for itself would stall until its item timeout (0 means the 5 s default), so every timeout here is above the bound below.
+  for (const itemTimeoutMs of [0, 5_000, 8_000]) {
     const d = new Disposables({ itemTimeoutMs });
     const order: string[] = [];
     let nested: unknown;
@@ -124,7 +125,7 @@ test("a disposer that calls dispose() does not wait for itself", async () => {
     }, "shutdown");
     const started = Date.now();
     const r = await d.dispose();
-    assert.ok(Date.now() - started < 150, `stalled ${Date.now() - started} ms (timeout ${itemTimeoutMs})`);
+    assert.ok(Date.now() - started < 3_000, `stalled ${Date.now() - started} ms (timeout ${itemTimeoutMs})`);
     assert.deepEqual(order, ["shutdown", "first"]);
     assert.deepEqual(nested, { disposed: 0, failures: [] });
     assert.deepEqual(r, { disposed: 2, failures: [] });

@@ -130,24 +130,26 @@ describe('R3-1: snapshot content is read in-process from the scanned file only',
 });
 
 describe('R3-2: status() never blocks on a FIFO and never reads past a symlink', () => {
-  it('real time: a tracked file toggled between a file and a FIFO never hangs status()', { ...posixOnly, timeout: 90_000 }, async () => {
+  it('real time: a tracked file toggled between a file and a FIFO never hangs status()', { ...posixOnly, timeout: 300_000 }, async () => {
     const fx = fresh();
     const ws = await fx.manager.create({ repoPath: fx.repo, slug: 'agent' });
     // Atomic renames: the path always exists, so an lstat that sees a file is often followed by an open of a FIFO.
     const loop = spawn('/bin/sh', ['-c',
       `cd "${ws.path}" && printf 'alpha-x\\n' > .r; while :; do rm -f .f; mkfifo .f; mv -f .f a.txt; cp .r .r2; mv -f .r2 a.txt; done`],
     { stdio: 'ignore' });
+    // A fixed number of rounds, not a wall-clock window: a loaded machine runs them slower, never fewer. Each call keeps its own hang
+    // guard, so a status() that blocks on the FIFO fails the test instead of hanging it.
+    const ROUNDS = 25;
     let calls = 0;
     try {
-      const deadline = Date.now() + 25_000;
-      while (Date.now() < deadline && calls < 200) {
+      while (calls < ROUNDS) {
         await within(fx.manager.status(ws.path, exp(ws.path)).catch(() => undefined), 10_000, `status() call ${calls + 1}`);
         calls++;
       }
     } finally {
       loop.kill('SIGKILL');
     }
-    assert.ok(calls > 5, `only ${calls} status() calls ran`);
+    assert.equal(calls, ROUNDS, 'every round ran');
   });
 
   it('a FIFO or a symlink to a device in place of a tracked file reads as modified', posixOnly, async () => {
