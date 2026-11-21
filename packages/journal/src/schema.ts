@@ -435,6 +435,32 @@ export const JOURNAL_MIGRATIONS: readonly Migration[] = [
       ) STRICT;
     `,
   },
+  {
+    // Message delivery into runs (ticket PV-M3 slice 2, inter-agent-communication.md sections 3 and 6.1). One row per
+    // message and recipient, so a message reaches a recipient at most once: `leased` when a live run took it at a turn
+    // boundary (in the same transaction that taints the run), `acked` once the run's loop holds it. A lease only moves
+    // to `acked`; an acked row never changes. At host start every lease is released (deleted): no run survives a
+    // restart, so a message whose ack never landed is delivered again, to a later run. Deletes stay open for that release
+    // and for the retention purge. Additive.
+    version: 10,
+    sql: `
+      CREATE TABLE message_deliveries (
+        message_id TEXT NOT NULL REFERENCES agent_messages(id),
+        principal  TEXT NOT NULL CHECK (length(principal) BETWEEN 4 AND 128 AND principal NOT GLOB '*[^A-Za-z0-9:._-]*'),
+        run_id     TEXT NOT NULL REFERENCES agent_runs(id),
+        state      TEXT NOT NULL CHECK (state IN ('leased','acked')),
+        leased_at  TEXT NOT NULL,
+        acked_at   TEXT,
+        PRIMARY KEY (message_id, principal),
+        CHECK ((state = 'acked') = (acked_at IS NOT NULL))
+      ) STRICT, WITHOUT ROWID;
+      CREATE INDEX message_deliveries_by_run ON message_deliveries (run_id, state);
+      CREATE TRIGGER message_deliveries_forward BEFORE UPDATE ON message_deliveries
+        WHEN OLD.state <> 'leased' OR NEW.state <> 'acked' OR NEW.message_id IS NOT OLD.message_id
+          OR NEW.principal IS NOT OLD.principal OR NEW.run_id IS NOT OLD.run_id OR NEW.leased_at IS NOT OLD.leased_at
+        BEGIN SELECT RAISE(ABORT, 'a delivery only moves from leased to acked'); END;
+    `,
+  },
 ];
 
 export const JOURNAL_SCHEMA_VERSION = JOURNAL_MIGRATIONS.length;

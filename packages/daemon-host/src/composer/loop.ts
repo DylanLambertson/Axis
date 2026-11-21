@@ -11,7 +11,8 @@ import { withDestinationEvents, type RequestDestination } from "./destination.js
  * with the dimension as the reason. Every `tool_use` block goes through the run's tools (the broker, with its policy and
  * approvals), one at a time, and its result goes back to the model. The loop never sees a path, a credential or the
  * broker itself, and nothing it emits is model text that was not escaped by the activity store. Before each turn after
- * the first, the tools' drift notice (policies section 3.4, C2) is added after the tool results the model gets next.
+ * the first, the tools' drift notice (policies section 3.4, C2) is added after the tool results the model gets next, and
+ * then any messages delivered to the run (PV-M3 slice 2) as one framed, escaped block.
  */
 
 export type LoopEnd =
@@ -254,7 +255,20 @@ async function loop(input: LoopInput): Promise<LoopEnd> {
     if (signal.aborted) return { state: "CANCELLED", reason: "USER_CANCELLED" };
     const halt = await guarded(tools, signal);
     if (halt !== undefined) return halt;
-    messages.push({ role: "user", content: notice === undefined ? results : [...results, { type: "text", text: notice }] });
+    // Messages at the boundary (PV-M3 slice 2): after the tool results, as one untrusted block; never inside a tool call.
+    let delivery: { readonly text: string; ack(): unknown } | undefined;
+    try {
+      delivery = await tools?.deliver?.(signal);
+    } catch {
+      return signal.aborted ? { state: "CANCELLED", reason: "USER_CANCELLED" } : { state: "FAILED", reason: "DELIVERY_FAILED" };
+    }
+    const extra: ContentBlock[] = [...(notice === undefined ? [] : [{ type: "text" as const, text: notice }]), ...(delivery === undefined ? [] : [{ type: "text" as const, text: delivery.text }])];
+    messages.push({ role: "user", content: [...results, ...extra] });
+    try {
+      delivery?.ack();
+    } catch {
+      return { state: "FAILED", reason: "DELIVERY_FAILED" };
+    }
   }
   return { state: "FAILED", reason: "TURN_LIMIT" };
 }

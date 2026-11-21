@@ -1,5 +1,6 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { AxisError, withTransaction, type DatabaseSync } from "@axis/audit";
+import { DeliveryRecords } from "./delivery-store.js";
 
 /**
  * Message records of `axis.messages/1` (schema version 9, ticket PV-M3; docs/design/inter-agent-communication.md sections
@@ -108,10 +109,13 @@ const VISIBLE = "(m.seq > ? OR EXISTS (SELECT 1 FROM message_recipients r WHERE 
 export class MessageRecords {
   readonly #db: DatabaseSync;
   readonly #ts: () => string;
+  /** Delivery into runs (schema version 10). */
+  readonly deliveries: DeliveryRecords;
 
   constructor(db: DatabaseSync, ts: () => string) {
     this.#db = db;
     this.#ts = ts;
+    this.deliveries = new DeliveryRecords(db, ts);
   }
 
   thread(id: string): ThreadRecord | undefined {
