@@ -62,8 +62,8 @@ test("the dialog's answer may arrive before the user's resolve: it is held and a
   const { r, user } = await setup(t);
   const i = await issue4(r, user);
   r.answer(i.challenge.challengeId, i.proof, true);
-  await wait(30);
-  assert.equal(r.approvals.stats().native.entries, 1, "held, not applied");
+  await waitFor(() => r.approvals.stats().native.entries === 1, 10_000);
+  assert.equal(r.approvals.stats().native.confirmed, 0, "held, not applied");
   assert.equal((await retry(user, i.challenge.challengeId, i.key)).error?.code, "E_CONFLICT");
   const res = await resolve(user, i.challenge);
   assert.equal(res.ok, true);
@@ -75,7 +75,7 @@ test("a native answer held before the user denies is dropped", async (t) => {
   const { r, user } = await setup(t);
   const i = await issue4(r, user);
   r.answer(i.challenge.challengeId, i.proof, true);
-  await wait(30);
+  await waitFor(() => r.approvals.stats().native.entries === 1, 10_000);
   assert.deepEqual((await resolve(user, i.challenge, "deny")).result, { challengeId: i.challenge.challengeId, state: "denied", nativeRequired: true });
   assert.equal(r.approvals.stats().native.entries, 0);
   assert.equal(r.approvals.stats().native.confirmed, 0);
@@ -386,7 +386,7 @@ test("no timer or control wait is left behind after a full flow, an abandoned ch
     await issue4(r, user, { id: "ws-2" }); // abandoned: its native wait is still open
     assert.equal(r.control.stats().pending, 1);
     await r.cleanup();
-    await wait(20);
+    await waitFor(() => r.control.stats().pending === 0, 10_000);
     assert.equal(r.control.stats().pending, 0);
     assert.equal(timers.live(), 0);
   } finally {
