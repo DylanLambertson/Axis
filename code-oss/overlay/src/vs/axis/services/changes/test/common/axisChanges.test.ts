@@ -46,6 +46,17 @@ suite('Axis Changes model', () => {
 		assert.strictEqual(new Set(flatRows(changes).map(r => r.id)).size, 6, 'ids are unique');
 	});
 
+	test('a new file not staged is untracked, wherever the git extension lists it (untrackedChanges mixed or separate)', () => {
+		const mixed = flatRows(readChanges(state({ workingTreeChanges: [change.added('new.txt')] }), ROOT));
+		assert.deepStrictEqual(mixed.map(r => [r.group, r.kind]), [['unstaged', 'untracked']]);
+		assert.strictEqual(changeRowLabel(mixed[0]), 'Untracked, Not staged: new.txt, at the worktree root');
+		assert.deepStrictEqual([mixed[0].original, mixed[0].modified?.toString()], [undefined, file('new.txt').toString()]);
+		const separate = flatRows(readChanges(state({ untrackedChanges: [change.added('new.txt')] }), ROOT));
+		assert.deepStrictEqual(separate.map(r => [r.group, r.kind]), [['untracked', 'untracked']]);
+		const staged = flatRows(readChanges(state({ indexChanges: [change.added('new.txt')] }), ROOT));
+		assert.deepStrictEqual(staged.map(r => r.kind), ['added'], 'staged, it is an added file');
+	});
+
 	test('a file both staged and changed again is listed in both groups', () => {
 		const changes = readChanges(state({ indexChanges: [change.modified('a.ts')], workingTreeChanges: [change.modified('a.ts')] }), ROOT);
 		assert.deepStrictEqual(flatRows(changes).map(r => r.id), [`staged:${file('a.ts')}`, `unstaged:${file('a.ts')}`]);
