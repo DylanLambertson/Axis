@@ -222,48 +222,52 @@ test("the npm test runner runs the renderer-imports suite", () => {
   assert.match(src, /test\/code-oss\/renderer-imports\.test\.mjs/);
 });
 
-// scripts/gate/run-suite.mjs: the suite runner never stalls or dies silently.
-import { Writable } from "node:stream";
-import { runSuite } from "../../scripts/gate/run-suite.mjs";
+// scripts/test-all.mjs: the runner never stalls or dies silently. Each scenario runs the real runner
+// in a child with its own hard external limit, so a disabled limit fails by name and fast, never by hanging.
+import { spawn } from "node:child_process";
 
-function sink() {
-  const parts = [];
-  return { stream: new Writable({ write(c, _e, cb) { parts.push(c); cb(); } }), text: () => Buffer.concat(parts).toString("utf8") };
-}
+const testAll = fileURLToPath(new URL("../../scripts/test-all.mjs", import.meta.url));
 const node = process.execPath;
 
-test("run-suite: a suite that never ends is killed at its limit and named, with its last output", { timeout: 20_000 }, async () => {
-  const o = sink();
-  const r = await runSuite("spin", node, ["-e", "console.log('about to spin'); for (;;) {}"], { timeoutMs: 700, graceMs: 300, out: o.stream, err: o.stream });
-  assert.equal(r.ok, false);
-  assert.match(o.text(), /== spin: FAILED \(0 pass, 0 fail, TIMED OUT after 1s \(last output: about to spin\)\)/);
+function runner(suites, env, hardMs = 15_000) {
+  return new Promise((resolve) => {
+    const child = spawn(node, [testAll], { detached: true, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, AXIS_TEST_ALL_SUITES_JSON: JSON.stringify(suites), ...env } });
+    let out = "";
+    child.stdout.on("data", (d) => { if (out.length < 1_000_000) out += d; });
+    child.stderr.on("data", (d) => { if (out.length < 1_000_000) out += d; });
+    let hung = false;
+    const t = setTimeout(() => { hung = true; try { process.kill(-child.pid, "SIGKILL"); } catch { /* gone */ } }, hardMs);
+    child.on("close", (code) => { clearTimeout(t); resolve({ code, out, hung }); });
+  });
+}
+
+test("test-all: a spinning suite is killed at its limit, named with its last output, and the runner exits non-zero", { timeout: 25_000 }, async () => {
+  const r = await runner([["spin", node, ["-e", "console.log('about to spin'); for (;;) {}"]]], { AXIS_TEST_SUITE_TIMEOUT_MS: "700" });
+  assert.equal(r.hung, false, "the runner must have killed the spinning suite within 15 s of its 0.7 s limit");
+  assert.match(r.out, /== spin: FAILED \(0 pass, 0 fail, TIMED OUT after 1s \(last output: about to spin\)\)/);
+  assert.notEqual(r.code, 0, "a timed-out suite fails the run");
 });
 
-test("run-suite: output past the cap kills the suite and says so; memory is not grown by it", { timeout: 20_000 }, async () => {
-  const o = sink();
-  const r = await runSuite("flood", node, ["-e", "const b='x'.repeat(65536); setInterval(()=>process.stdout.write(b),1)"], { capBytes: 200_000, graceMs: 300, out: o.stream, err: o.stream });
-  assert.equal(r.ok, false);
-  assert.match(o.text(), /== flood: FAILED .*OUTPUT CAP exceeded \(200000 bytes/);
-  assert.ok(o.text().length < 400_000, "output past the cap is not echoed");
+test("test-all: output past the cap kills the suite, says so, stops echoing, and the runner exits non-zero", { timeout: 25_000 }, async () => {
+  const r = await runner([["flood", node, ["-e", "const b='x'.repeat(65536); setInterval(()=>process.stdout.write(b),1)"]]], { AXIS_TEST_OUTPUT_CAP_BYTES: "200000" });
+  assert.equal(r.hung, false, "the runner must have killed the flooding suite within 15 s");
+  assert.match(r.out, /== flood: FAILED .*OUTPUT CAP exceeded \(200000 bytes/);
+  assert.ok(r.out.length < 400_000, "output past the cap is not echoed");
+  assert.notEqual(r.code, 0, "a capped suite fails the run");
 });
 
-test("run-suite: pass counts, a kill signal and an exit status are reported; a leftover grandchild is killed", { timeout: 20_000 }, async () => {
-  let o = sink();
-  let r = await runSuite("ok", node, ["-e", "console.log('# pass 3\\n# fail 0')"], { out: o.stream, err: o.stream });
-  assert.deepEqual([r.ok, r.pass, r.fail], [true, 3, 0]);
-  o = sink();
-  r = await runSuite("sig", node, ["-e", "process.kill(process.pid,'SIGKILL')"], { out: o.stream, err: o.stream });
-  assert.match(o.text(), /== sig: FAILED \(0 pass, 0 fail, killed by SIGKILL\)/);
-  o = sink();
-  r = await runSuite("exit", node, ["-e", "process.exit(3)"], { out: o.stream, err: o.stream });
-  assert.match(o.text(), /exit 3\)/);
-  // A suite that leaves a detached-free child behind: the group is killed when the suite ends.
-  o = sink();
+test("test-all: pass counts, a kill signal and an exit status are reported; a leftover grandchild is killed", { timeout: 25_000 }, async () => {
   const pidFile = join(tmpdir(), `axis-rs-${process.pid}`);
-  r = await runSuite("orphan", node, ["-e", `const c=require('child_process').spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});c.unref();require('fs').writeFileSync(${JSON.stringify(pidFile)},String(c.pid));`], { out: o.stream, err: o.stream });
+  const orphan = `const c=require('child_process').spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});c.unref();require('fs').writeFileSync(${JSON.stringify(pidFile)},String(c.pid));`;
+  const r = await runner([["ok", node, ["-e", "console.log('# pass 3\\n# fail 0')"]], ["sig", node, ["-e", "process.kill(process.pid,'SIGKILL')"]], ["exit", node, ["-e", "process.exit(3)"]], ["orphan", node, ["-e", orphan]]], {});
+  assert.equal(r.hung, false, "the runner must finish within 15 s");
+  assert.match(r.out, /== ok: ok \(3 pass, 0 fail\)/);
+  assert.match(r.out, /== sig: FAILED \(0 pass, 0 fail, killed by SIGKILL\)/);
+  assert.match(r.out, /== exit: FAILED \(0 pass, 0 fail, exit 3\)/);
   const pid = Number(readFileSync(pidFile, "utf8"));
   rmSync(pidFile, { force: true });
   let alive = true;
-  for (let i = 0; i < 50 && alive; i++) { try { process.kill(pid, 0); await new Promise((res) => setTimeout(res, 100)); } catch { alive = false; } }
-  assert.equal(alive, false, "the grandchild is gone");
+  for (let i = 0; i < 30 && alive; i++) { try { process.kill(pid, 0); await new Promise((res) => setTimeout(res, 100)); } catch { alive = false; } }
+  if (alive) { try { process.kill(pid, "SIGKILL"); } catch { /* gone */ } }
+  assert.equal(alive, false, "the runner must have killed the suite's leftover child");
 });

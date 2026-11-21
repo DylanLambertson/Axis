@@ -26,19 +26,26 @@ for (const sig of ["SIGTERM", "SIGINT", "SIGHUP"]) {
 
 const run = (name, command, args) => runSuite(name, command, args, { cwd: root });
 
-const suites = [await run("build", npm, ["run", "build"])];
-const packagesDir = join(root, "packages");
-for (const dir of readdirSync(packagesDir).sort()) {
-  const file = join(packagesDir, dir, "package.json");
-  if (!existsSync(file)) continue;
-  const pkg = JSON.parse(readFileSync(file, "utf8"));
-  if (pkg.scripts?.test === undefined) continue;
-  suites.push(await run(pkg.name, npm, ["test", "--workspace", pkg.name]));
+// AXIS_TEST_ALL_SUITES_JSON ([[name, command, args], ...]) replaces the list: a seam for the runner's own tests.
+const override = process.env.AXIS_TEST_ALL_SUITES_JSON;
+const suites = [];
+if (override !== undefined) {
+  for (const [name, command, args] of JSON.parse(override)) suites.push(await run(name, command, args));
+} else {
+  suites.push(await run("build", npm, ["run", "build"]));
+  const packagesDir = join(root, "packages");
+  for (const dir of readdirSync(packagesDir).sort()) {
+    const file = join(packagesDir, dir, "package.json");
+    if (!existsSync(file)) continue;
+    const pkg = JSON.parse(readFileSync(file, "utf8"));
+    if (pkg.scripts?.test === undefined) continue;
+    suites.push(await run(pkg.name, npm, ["test", "--workspace", pkg.name]));
+  }
+  suites.push(await run("test/packages", process.execPath, ["--test", "test/packages/*.test.mjs"]));
+  suites.push(await run("test/code-oss/renderer-imports", process.execPath, ["--test", "test/code-oss/renderer-imports.test.mjs"]));
+  suites.push(await run("test/code-oss/net-gate", process.execPath, ["--test", "test/code-oss/net-gate.test.mjs"]));
+  suites.push(await run("test/gate", process.execPath, ["--test", "test/gate/*.test.mjs"]));
 }
-suites.push(await run("test/packages", process.execPath, ["--test", "test/packages/*.test.mjs"]));
-suites.push(await run("test/code-oss/renderer-imports", process.execPath, ["--test", "test/code-oss/renderer-imports.test.mjs"]));
-suites.push(await run("test/code-oss/net-gate", process.execPath, ["--test", "test/code-oss/net-gate.test.mjs"]));
-suites.push(await run("test/gate", process.execPath, ["--test", "test/gate/*.test.mjs"]));
 
 console.log("Test summary");
 for (const s of suites) console.log(`  ${s.ok ? "ok    " : "FAILED"} ${s.name}: ${s.pass} pass, ${s.fail} fail`);
