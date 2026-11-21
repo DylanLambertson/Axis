@@ -21,8 +21,8 @@ Evidence for `docs/design/pv-v0-editor-embed.md`. It loads the **real upstream e
 node prepare.mjs     # links out/vs, transpiles the overlay into vs/axis, copies page.html
 node unit.mjs        # the overlay's unit tests for the pure rules
 node run.mjs         # the browser checks; or one section: model, route, keys, approve, trust, conflict, race
-node mutate.mjs      # 40 mutants of the prototype; each must fail the unit tests or the browser checks
-node scan-keys.mjs --check         # the key inventory, desktop workbench; fails on a candidate the policy does not classify
+node mutate.mjs      # 46 mutants of the prototype; each must fail the unit tests or the browser checks
+node scan-keys.mjs --check         # the key inventory, desktop workbench; fails on a candidate the policy does not classify, or when the state matrix or the counts at the pin change
 node scan-keys.mjs --web --check   # the same for the web workbench
 ```
 

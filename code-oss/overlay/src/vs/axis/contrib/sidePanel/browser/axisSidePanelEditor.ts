@@ -169,7 +169,7 @@ export class AxisSidePanelEditor extends Disposable {
 		switch (action) {
 			case 'save':
 			case 'saveWithoutFormatting':
-				if (!this.hostServices.saveConflictsDetected(resource)) {
+				if (!this.conflictsDetected(resource)) {
 					this.hostServices.blocked('files.saveConflictResolution');
 					return;
 				}
@@ -182,7 +182,7 @@ export class AxisSidePanelEditor extends Disposable {
 					return;
 				}
 				// Refused like Save, and said so: a silent skip would let the user believe the file was saved (review r3 N4).
-				if (!this.hostServices.saveConflictsDetected(resource)) {
+				if (!this.conflictsDetected(resource)) {
 					this.hostServices.blocked('files.saveConflictResolution');
 					return;
 				}
@@ -205,6 +205,15 @@ export class AxisSidePanelEditor extends Disposable {
 		}
 	}
 
+	/** The host's read of the conflict setting; a read that throws counts as "not detected", which refuses (review r4 N4). */
+	private conflictsDetected(resource: URI): boolean {
+		try {
+			return this.hostServices.saveConflictsDetected(resource) === true;
+		} catch {
+			return false;
+		}
+	}
+
 	private readOnly(): boolean {
 		return !this.widget || this.widget.getOption(EditorOption.readOnly);
 	}
@@ -222,6 +231,16 @@ export interface IAxisSidePanelRegistration extends IDisposable {
 	readonly missing: readonly string[];
 }
 
+interface IGuardInstall {
+	readonly store: DisposableStore;
+	readonly guarded: () => readonly string[];
+	readonly missing: () => readonly string[];
+	refs: number;
+}
+
+/** The one install shared by every caller in this JavaScript context (review r4 N2): the command registry is global. */
+let install: IGuardInstall | undefined;
+
 /**
  * Registers Escape and the command guards (review S1). Each policy command other than `accept` is re-registered
  * under its own id with a guard: while a side-panel editor has focus and the command has no explicit target, the
@@ -231,11 +250,39 @@ export interface IAxisSidePanelRegistration extends IDisposable {
  * would sit on top of the guard (review r2 N1). `CommandsRegistry.registerCommand` is therefore wrapped while this
  * registration lives: a policy id gets its guard stacked over it at once, and the disposable it returns removes that
  * guard with it, so no guard outlives the handler it calls (review r3 N1). Guards are registered through the
- * unwrapped method, so a guard is never guarded again (review r3 N3). Disposing restores the method and the originals.
+ * unwrapped method, so a guard is never guarded again (review r3 N3).
+ *
+ * The install is shared and counted (review r4 N2): the registry is one per JavaScript context, which auxiliary windows
+ * share, so a second call returns a handle on the same guards instead of stacking a second set and a second wrapper.
+ * Each handle disposes once; the last one restores the method and the originals, in whatever order they are disposed.
  */
 export function registerAxisSidePanelEditorCommands(): IAxisSidePanelRegistration {
+	const shared = install ??= installGuards();
+	shared.refs++;
+	let disposed = false;
+	return {
+		get guarded() { return shared.guarded(); },
+		get missing() { return shared.missing(); },
+		dispose: () => {
+			if (disposed) {
+				return;
+			}
+			disposed = true;
+			if (--shared.refs === 0) {
+				if (install === shared) {
+					install = undefined;
+				}
+				shared.store.dispose();
+			}
+		},
+	};
+}
+
+function installGuards(): IGuardInstall {
 	const store = new DisposableStore();
-	const guards = new WeakSet<ICommandHandler>();
+	// The registered guard commands themselves: the registry keeps the object it is given but replaces its `handler`
+	// with an argument validator when the metadata declares `args` (`commands.ts`), so a handler would not match (review r4 N1).
+	const guards = new WeakSet<ICommand>();
 	const registry = CommandsRegistry as { registerCommand: typeof CommandsRegistry.registerCommand };
 	const register = registry.registerCommand;
 	const registerRaw = (command: ICommand): IDisposable => register.call(CommandsRegistry, command);
@@ -261,8 +308,9 @@ export function registerAxisSidePanelEditorCommands(): IAxisSidePanelRegistratio
 			}
 			return instance?.run(decision, id);
 		};
-		guards.add(handler);
-		return registerRaw({ id, metadata: original.metadata, handler });
+		const command: ICommand = { id, metadata: original.metadata, handler };
+		guards.add(command);
+		return registerRaw(command);
 	};
 	for (const id of AXIS_SIDE_PANEL_COMMAND_POLICY.keys()) {
 		const action = policyAction(id);
@@ -299,8 +347,9 @@ export function registerAxisSidePanelEditorCommands(): IAxisSidePanelRegistratio
 	}));
 	const policyIds = [...AXIS_SIDE_PANEL_COMMAND_POLICY.keys()].filter(id => policyAction(id) !== undefined);
 	return {
-		get guarded() { return policyIds.filter(id => { const top = CommandsRegistry.getCommand(id); return top !== undefined && guards.has(top.handler); }); },
-		get missing() { return policyIds.filter(id => !CommandsRegistry.getCommand(id)); },
-		dispose: () => store.dispose(),
+		store,
+		guarded: () => policyIds.filter(id => { const top = CommandsRegistry.getCommand(id); return top !== undefined && guards.has(top); }),
+		missing: () => policyIds.filter(id => !CommandsRegistry.getCommand(id)),
+		refs: 0,
 	};
 }
