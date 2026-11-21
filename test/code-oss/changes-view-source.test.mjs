@@ -76,6 +76,7 @@ export function changesViewViolations(source) {
   // The git wiring goes through the tested helpers: the stat mapping, the closed-repository key and the reconsider on its change.
   if (!/isRepositoryRoot\(root, uri => fileService\.stat\(uri\)\.then\(gitEntryOf, \(\) => gitEntryOf\(undefined\)\)\)/.test(source)) bad.push("the .git check does not use gitEntryOf");
   if (!/\(\) => hasClosedRepositories\(contextKeyService\.getContextKeyValue\(CLOSED_REPOSITORIES_KEY\)\)/.test(source) || /git\.closedRepositor/.test(source)) bad.push("the closed-repository count is not read through hasClosedRepositories and its key");
+  if (!/hasClosedRepositories\(contextKeyService\.getContextKeyValue\(CLOSED_REPOSITORIES_KEY\)\),\s+\(run, ms\) => disposableTimeout\(run, ms\),\s+\)\);/.test(source)) bad.push("the first-status grace is not scheduled with disposableTimeout");
   if (!/const closedKey = new Set\(\[CLOSED_REPOSITORIES_KEY\]\);\s+this\._register\(contextKeyService\.onDidChangeContext\(e => \{\s+if \(e\.affectsSome\(closedKey\)\) \{\s+this\.source\.reconsider\(\);/.test(source)) bad.push("a change of the closed-repository count is not reconsidered");
   if (!/if \(view\.shown !== shown\) \{/.test(source)) bad.push("an unchanged row is redrawn on every update");
   // Wiring: the retry button and a folder change look again; the button is shown only when it can help.
@@ -106,9 +107,9 @@ export function changesViewViolations(source) {
 export function sourceViolations(source) {
   const bad = readOnlyViolations(source);
   if (!/repository = await this\.isRoot\(root\) \? await this\.git\.openRepository\(root\) : undefined;/.test(source)) bad.push("a folder that is not a repository root is opened");
-  if (!/if \(this\.closedRepositories\(\) !== false && !retry\) \{\s+this\.set\('askFirst', NO_CHANGES\);\s+return;/.test(source)) bad.push("a root is opened without asking while repositories are closed");
+  if (!/const closed = this\.closedRepositories\(\);\s+if \(closed !== false && !retry\) \{\s+this\._waitingForGit = closed === undefined;\s+this\.set\('askFirst', NO_CHANGES\);\s+return;/.test(source)) bad.push("a root is opened without asking while repositories are closed");
   if ((source.match(/openRepository\(/g) ?? []).length !== 1) bad.push("openRepository is called on more than one path");
-  if (!/const known = this\.find\(root\);\s+if \(known\) \{\s+this\.follow\(known, root\);\s+return;/.test(source)) bad.push("a repository the service already has is reopened");
+  if (!/const known = this\.find\(root\);\s+if \(known\) \{\s+this\.follow\(known, root, generation\);\s+return;/.test(source)) bad.push("a repository the service already has is reopened");
   if (!/if \(this\.tried\.has\(key\) && !retry\) \{/.test(source)) bad.push("an unavailable root is opened again on every update");
   if (!/if \(!root \|\| !this\.isMounted\(root\)\)/.test(source)) bad.push("a worktree outside the window's folders is opened");
   if (!/generation !== this\.generation/.test(source)) bad.push("a late answer for another worktree is not dropped");
@@ -164,6 +165,7 @@ test("the checker finds each way of breaking the view rules", () => {
     [GOOD_VIEW.replace("hasClosedRepositories(contextKeyService.getContextKeyValue(CLOSED_REPOSITORIES_KEY))", "hasClosedRepositories(contextKeyService.getContextKeyValue('git.closedRepositoriesCount'))"), "the closed-repository count is not read through hasClosedRepositories and its key"],
     [GOOD_VIEW.replace("hasClosedRepositories(contextKeyService.getContextKeyValue(CLOSED_REPOSITORIES_KEY))", "(contextKeyService.getContextKeyValue<number>(CLOSED_REPOSITORIES_KEY) ?? 0) > 1"), "the closed-repository count is not read through hasClosedRepositories and its key"],
     [GOOD_VIEW.replace("\t\t\t\tthis.source.reconsider();", "\t\t\t\tvoid 0;"), "a change of the closed-repository count is not reconsidered"],
+    [GOOD_VIEW.replace("(run, ms) => disposableTimeout(run, ms),", "(run) => { run(); return { dispose() { } }; },"), "the first-status grace is not scheduled with disposableTimeout"],
     [GOOD_VIEW.replace("\t\tplaceInOrder(this.list, boxes);", "\t\tthis.list.replaceChildren(...boxes);"), "the list is rebuilt instead of updated in place"],
     [GOOD_VIEW.replace("if (view.shown !== shown) {", "if (true) {"), "an unchanged row is redrawn on every update"],
     [GOOD_VIEW.replace("addDisposableListener(this.retry, EventType.CLICK, () => this.source.refresh())", "addDisposableListener(this.retry, EventType.CLICK, () => undefined)"), "Try again / Show changes does not look again"],
@@ -204,8 +206,8 @@ test("the checker finds each way of breaking the source rules", () => {
     [GOOD_SOURCE.replace("const known = this.find(root);", "const known = undefined;"), "a repository the service already has is reopened"],
     [GOOD_SOURCE.replace("if (this.tried.has(key) && !retry) {", "if (false) {"), "an unavailable root is opened again on every update"],
     [GOOD_SOURCE.replace("this.tried.add(key);", "this.tried.add(key); void this.git.openRepository(root);"), "openRepository is called on more than one path"],
-    [GOOD_SOURCE.replace("if (this.closedRepositories() !== false && !retry) {", "if (false) {"), "a root is opened without asking while repositories are closed"],
-    [GOOD_SOURCE.replace("if (this.closedRepositories() !== false && !retry) {", "if (this.closedRepositories() === true && !retry) {"), "a root is opened without asking while repositories are closed"],
+    [GOOD_SOURCE.replace("if (closed !== false && !retry) {", "if (false) {"), "a root is opened without asking while repositories are closed"],
+    [GOOD_SOURCE.replace("if (closed !== false && !retry) {", "if (closed === true && !retry) {"), "a root is opened without asking while repositories are closed"],
   ];
   for (const [source, expected] of breaks) {
     assert.notEqual(source, GOOD_SOURCE, `the mutation applies: ${expected}`);

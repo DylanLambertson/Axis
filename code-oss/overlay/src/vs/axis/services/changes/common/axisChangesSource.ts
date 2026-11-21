@@ -3,7 +3,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { Emitter } from '../../../../base/common/event.js';
-import { Disposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, DisposableStore, IDisposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { autorun } from '../../../../base/common/observable.js';
 import { extUriBiasedIgnorePathCase, joinPath } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
@@ -61,6 +61,17 @@ export async function isRepositoryRoot(root: URI, entry: (uri: URI) => Promise<A
 	}
 }
 
+/**
+ * How long a repository's first state may look empty before the list believes it. The state
+ * `IGitService` hands over when a repository is opened can come before the git extension's first
+ * status, and `GitRepositoryState` cannot tell "not scanned yet" from "clean": an empty first
+ * state shows "Reading…" until the next state event or this grace, never "No changes" at once.
+ */
+export const FIRST_STATUS_GRACE_MS = 3000;
+
+/** Runs `run` once after `ms` milliseconds unless disposed first (`disposableTimeout` in the view; a manual timer in tests). */
+export type AxisTimer = (run: () => void, ms: number) => IDisposable;
+
 /** What the source needs from `IGitService`: it only reads. */
 export type IAxisGitReader = Pick<IGitService, 'openRepository' | 'repositories'>;
 
@@ -104,18 +115,21 @@ export class AxisChangesSource extends Disposable {
 	private _root: URI | undefined;
 	private _status: AxisChangesStatus = 'idle';
 	private _changes: IAxisChanges = NO_CHANGES;
+	private _waitingForGit = false;
 
 	/**
 	 * @param isMounted whether a folder is inside the window's folders.
 	 * @param isRoot whether a folder is a repository root (`isRepositoryRoot`).
 	 * @param closedRepositories whether the user has closed repositories in the git extension,
 	 * `undefined` while that is not known (`hasClosedRepositories`).
+	 * @param timer schedules the first-status grace (`FIRST_STATUS_GRACE_MS`).
 	 */
 	constructor(
 		private readonly git: IAxisGitReader,
 		private readonly isMounted: (root: URI) => boolean,
 		private readonly isRoot: (root: URI) => Promise<boolean>,
 		private readonly closedRepositories: () => boolean | undefined,
+		private readonly timer: AxisTimer,
 	) {
 		super();
 	}
@@ -123,6 +137,8 @@ export class AxisChangesSource extends Disposable {
 	get root(): URI | undefined { return this._root; }
 	get status(): AxisChangesStatus { return this._status; }
 	get changes(): IAxisChanges { return this._changes; }
+	/** In `askFirst`: true while Git has not said yet whether any repository is closed (its key is unset). */
+	get waitingForGit(): boolean { return this._waitingForGit; }
 
 	/**
 	 * Shows a worktree's changes; `undefined` clears. The same root again does nothing, unless the
@@ -157,7 +173,7 @@ export class AxisChangesSource extends Disposable {
 		}
 		const known = this.find(root);
 		if (known) {
-			this.follow(known, root);
+			this.follow(known, root, generation);
 			return;
 		}
 		const key = roots.getComparisonKey(root);
@@ -165,7 +181,9 @@ export class AxisChangesSource extends Disposable {
 			this.set('unavailable', NO_CHANGES);
 			return;
 		}
-		if (this.closedRepositories() !== false && !retry) {
+		const closed = this.closedRepositories();
+		if (closed !== false && !retry) {
+			this._waitingForGit = closed === undefined;
 			this.set('askFirst', NO_CHANGES);
 			return;
 		}
@@ -184,7 +202,7 @@ export class AxisChangesSource extends Disposable {
 			this.set('unavailable', NO_CHANGES);
 			return;
 		}
-		this.follow(repository, root);
+		this.follow(repository, root, generation);
 	}
 
 	private find(root: URI): IGitRepository | undefined {
@@ -201,9 +219,30 @@ export class AxisChangesSource extends Disposable {
 		return this.followed !== undefined && !Array.from(this.git.repositories).includes(this.followed);
 	}
 
-	private follow(repository: IGitRepository, root: URI): void {
+	private follow(repository: IGitRepository, root: URI, generation: number): void {
 		this.followed = repository;
-		this.listener.value = autorun(reader => this.set('ready', readChanges(repository.state.read(reader), root)));
+		const store = new DisposableStore();
+		const grace = store.add(new MutableDisposable());
+		let first = true;
+		store.add(autorun(reader => {
+			const changes = readChanges(repository.state.read(reader), root);
+			const looksEmpty = changes.total === 0 && changes.outside === 0;
+			if (first && looksEmpty) {
+				// Maybe not scanned yet: wait for the next state event, or the grace, before saying "No changes".
+				first = false;
+				this.set('loading', changes);
+				grace.value = this.timer(() => {
+					if (generation === this.generation) { // a timer that outlives its worktree does nothing
+						this.set('ready', readChanges(repository.state.get(), root));
+					}
+				}, FIRST_STATUS_GRACE_MS);
+				return;
+			}
+			first = false;
+			grace.clear();
+			this.set('ready', changes);
+		}));
+		this.listener.value = store;
 	}
 
 	private set(status: AxisChangesStatus, changes: IAxisChanges): void {

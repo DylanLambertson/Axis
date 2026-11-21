@@ -6,7 +6,7 @@ import assert from 'assert';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { flatRows } from '../../common/axisChanges.js';
-import { AxisChangesSource, AxisChangesStatus, AxisGitEntry, CLOSED_REPOSITORIES_KEY, gitEntryOf, hasClosedRepositories, isRepositoryRoot } from '../../common/axisChangesSource.js';
+import { AxisChangesSource, AxisChangesStatus, AxisGitEntry, CLOSED_REPOSITORIES_KEY, FIRST_STATUS_GRACE_MS, gitEntryOf, hasClosedRepositories, isRepositoryRoot } from '../../common/axisChangesSource.js';
 import { change, FakeGitService, FakeRepository, file, flush, ROOT, state } from './axisChangesFixtures.js';
 
 const OTHER = URI.file('/w/ws-b');
@@ -20,6 +20,14 @@ suite('Axis Changes source (fake IGitService)', () => {
 	let roots: Set<string>;
 	let rootChecks: string[];
 	let closed: boolean | undefined;
+	/** Pending grace timers, fired by the test (no wall clock). */
+	let timers: { run: () => void; ms: number; disposed: boolean }[];
+	const timer = (run: () => void, ms: number) => {
+		const t = { run, ms, disposed: false };
+		timers.push(t);
+		return { dispose: () => { t.disposed = true; } };
+	};
+	const fireTimers = () => timers.filter(t => !t.disposed).forEach(t => { t.disposed = true; t.run(); });
 	let source: AxisChangesSource;
 	let seen: AxisChangesStatus[];
 
@@ -29,10 +37,11 @@ suite('Axis Changes source (fake IGitService)', () => {
 		roots = new Set([ROOT.path, OTHER.path]);
 		rootChecks = [];
 		closed = false;
+		timers = [];
 		source = store.add(new AxisChangesSource(git, root => mounted(root), async root => {
 			rootChecks.push(root.path);
 			return roots.has(root.path);
-		}, () => closed));
+		}, () => closed, timer));
 		seen = [];
 		store.add(source.onDidChange(() => seen.push(source.status)));
 	});
@@ -88,7 +97,7 @@ suite('Axis Changes source (fake IGitService)', () => {
 		source.setRoot(URI.file('/w/ws-a/'));
 		source.setRoot(OTHER);
 		await flush();
-		await git.answer(new FakeRepository(OTHER));
+		await git.answer(new FakeRepository(OTHER, state({ untrackedChanges: [change.added('b.txt', OTHER)] })));
 		await source.setRoot(ROOT);
 		assert.strictEqual(source.status, 'unavailable', 'a revisit does not reopen');
 		assert.deepStrictEqual(git.opened, [ROOT.path, OTHER.path]);
@@ -98,6 +107,7 @@ suite('Axis Changes source (fake IGitService)', () => {
 		await flush();
 		assert.deepStrictEqual(git.opened, [ROOT.path, OTHER.path, ROOT.path]);
 		await git.answer(new FakeRepository(ROOT));
+		fireTimers(); // an empty first state waits for the grace
 		assert.strictEqual(source.status, 'ready');
 	});
 
@@ -188,7 +198,7 @@ suite('Axis Changes source (fake IGitService)', () => {
 	});
 
 	test('nothing is shown or listened to after dispose', async () => {
-		const own = new AxisChangesSource(git, () => true, async () => true, () => false);
+		const own = new AxisChangesSource(git, () => true, async () => true, () => false, timer);
 		const repo = new FakeRepository(ROOT);
 		own.setRoot(ROOT);
 		await flush();
@@ -218,6 +228,7 @@ suite('Axis Changes source (fake IGitService)', () => {
 		await flush();
 		assert.deepStrictEqual(git.opened, [ROOT.path], 'Show changes opens it');
 		await git.answer(new FakeRepository(ROOT));
+		fireTimers(); // an empty first state waits for the grace
 		assert.strictEqual(source.status, 'ready');
 	});
 
@@ -225,19 +236,23 @@ suite('Axis Changes source (fake IGitService)', () => {
 		closed = undefined;
 		await source.setRoot(ROOT);
 		assert.strictEqual(source.status, 'askFirst', 'unknown is treated as closed: never opened at startup');
+		assert.strictEqual(source.waitingForGit, true, 'and the list says it waits for Git, not that repositories were closed');
 		assert.deepStrictEqual(git.opened, []);
 		closed = true;
 		await source.reconsider();
 		assert.strictEqual(source.status, 'askFirst');
+		assert.strictEqual(source.waitingForGit, false, 'now known: repositories are closed');
 		assert.deepStrictEqual(git.opened, []);
 		closed = false;
 		source.reconsider();
 		await flush();
 		assert.deepStrictEqual(git.opened, [ROOT.path], 'the key now says none is closed');
 		await git.answer(new FakeRepository(ROOT));
+		fireTimers(); // an empty first state waits for the grace
 		assert.strictEqual(source.status, 'ready');
 		await source.reconsider();
 		assert.deepStrictEqual(git.opened, [ROOT.path], 'reconsider does nothing outside askFirst');
+		fireTimers(); // an empty first state waits for the grace
 		assert.strictEqual(source.status, 'ready', 'and keeps the followed repository');
 	});
 
@@ -245,6 +260,7 @@ suite('Axis Changes source (fake IGitService)', () => {
 		closed = true;
 		git.repositories.push(new FakeRepository(ROOT));
 		await source.setRoot(ROOT);
+		fireTimers(); // an empty first state waits for the grace
 		assert.strictEqual(source.status, 'ready');
 		assert.deepStrictEqual(git.opened, []);
 	});
@@ -261,6 +277,68 @@ suite('Axis Changes source (fake IGitService)', () => {
 		first.set(state());
 		assert.deepStrictEqual(names(), ['untracked:new.txt'], 'and no longer the old one');
 		assert.deepStrictEqual(git.opened, []);
+	});
+
+	test('an empty first state is not shown as "No changes": it reads until the next state event', async () => {
+		const repo = new FakeRepository(ROOT);
+		source.setRoot(ROOT);
+		await flush();
+		await git.answer(repo);
+		assert.strictEqual(source.status, 'loading', 'maybe not scanned yet');
+		assert.deepStrictEqual(timers.map(t => t.ms), [FIRST_STATUS_GRACE_MS]);
+		repo.set(state({ workingTreeChanges: [change.modified('a.ts')] }));
+		assert.strictEqual(source.status, 'ready', 'the first status arrived');
+		assert.deepStrictEqual(names(), ['unstaged:a.ts']);
+		assert.ok(timers[0].disposed, 'the grace is cancelled');
+	});
+
+	test('a second state event, even empty, is a real status: "No changes" without waiting for the grace', async () => {
+		const repo = new FakeRepository(ROOT);
+		source.setRoot(ROOT);
+		await flush();
+		await git.answer(repo);
+		assert.strictEqual(source.status, 'loading');
+		repo.set(state());
+		assert.strictEqual(source.status, 'ready');
+		assert.ok(timers[0].disposed);
+		assert.strictEqual(timers.length, 1, 'no second grace');
+		assert.ok(FIRST_STATUS_GRACE_MS >= 1000 && FIRST_STATUS_GRACE_MS <= 10_000, 'a grace long enough for a first status and short enough for a clean worktree');
+	});
+
+	test('an empty first state that stays empty becomes "No changes" after the grace, and later empty states show at once', async () => {
+		const repo = new FakeRepository(ROOT);
+		source.setRoot(ROOT);
+		await flush();
+		await git.answer(repo);
+		assert.strictEqual(source.status, 'loading');
+		fireTimers();
+		assert.strictEqual(source.status, 'ready');
+		assert.deepStrictEqual(names(), []);
+		repo.set(state({ untrackedChanges: [change.added('x')] }));
+		repo.set(state());
+		assert.strictEqual(source.status, 'ready', 'no second grace');
+		assert.strictEqual(timers.length, 1);
+	});
+
+	test('a first state with changes shows at once, with no grace', async () => {
+		source.setRoot(ROOT);
+		await flush();
+		await git.answer(new FakeRepository(ROOT, state({ indexChanges: [change.modified('a.ts')] })));
+		assert.strictEqual(source.status, 'ready');
+		assert.deepStrictEqual(timers, []);
+	});
+
+	test('the grace of a worktree the user left never settles the next one', async () => {
+		source.setRoot(ROOT);
+		await flush();
+		await git.answer(new FakeRepository(ROOT));
+		const grace = timers[0];
+		source.setRoot(OTHER);
+		assert.ok(grace.disposed, 'leaving cancels the grace');
+		await flush();
+		await git.answer(new FakeRepository(OTHER, state({ untrackedChanges: [change.added('b.txt', OTHER)] })));
+		grace.run();
+		assert.deepStrictEqual(names(), ['untracked:b.txt']);
 	});
 });
 

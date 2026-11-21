@@ -4,6 +4,7 @@
 
 import { $, addDisposableListener, append, EventType } from '../../../../base/browser/dom.js';
 import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js';
+import { disposableTimeout } from '../../../../base/common/async.js';
 import { KeyCode } from '../../../../base/common/keyCodes.js';
 import { Disposable, DisposableMap, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { URI } from '../../../../base/common/uri.js';
@@ -83,6 +84,7 @@ export class AxisChangesView extends Disposable {
 			root => contextService.isInsideWorkspace(root),
 			root => isRepositoryRoot(root, uri => fileService.stat(uri).then(gitEntryOf, () => gitEntryOf(undefined))),
 			() => hasClosedRepositories(contextKeyService.getContextKeyValue(CLOSED_REPOSITORIES_KEY)),
+			(run, ms) => disposableTimeout(run, ms),
 		));
 		const closedKey = new Set([CLOSED_REPOSITORIES_KEY]);
 		this._register(contextKeyService.onDidChangeContext(e => {
@@ -248,7 +250,9 @@ export class AxisChangesView extends Disposable {
 		switch (status) {
 			case 'idle': return '';
 			case 'loading': return localize('axis.changes.loading', "Reading the worktree's changes…");
-			case 'askFirst': return localize('axis.changes.askFirst', "Repositories have been closed in Git in this window, or Git has not said yet whether any were. Show changes opens this worktree's repository in Git, and it stays open there, even if you closed it before.");
+			case 'askFirst': return this.source.waitingForGit
+				? localize('axis.changes.waitingForGit', "Waiting for Git to start. Show changes opens this worktree's repository in Git now, and it stays open there, even if you closed it before.")
+				: localize('axis.changes.askFirst', "Repositories have been closed in Git in this window. Show changes opens this worktree's repository in Git, and it stays open there, even if you closed it before.");
 			case 'notMounted': return localize('axis.changes.notMounted', "Changes show for the folder this window has open. Open this worktree's folder in the window to see its changes.");
 			case 'unavailable': return localize('axis.changes.unavailable', "Git has no repository for this worktree. The folder may not be a Git worktree, the git extension may be off or the folder untrusted, or Git may still be starting.");
 			case 'ready': {
