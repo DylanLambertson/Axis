@@ -126,7 +126,7 @@ test("the snapshot before a run: a failure or a hang refuses the launch", async 
     h.snapshotter.before_ = mode;
     const w = h.workspace();
     const p = h.start(w);
-    const asserted = assert.rejects(p, code("E_UNAVAILABLE"));
+    const asserted = assert.rejects(p, (e: unknown) => code("E_UNAVAILABLE")(e) && (e as { detail?: Record<string, unknown> }).detail?.["reason"] === (mode === "hang" ? "SNAPSHOT_TIMEOUT" : "SNAPSHOT_FAILED"));
     await flush();
     await h.clock.advance(1000);
     await asserted;
