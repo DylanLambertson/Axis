@@ -185,19 +185,57 @@ export function base64Middles(text: string): string[] {
   return out.filter((m) => m.length >= 8);
 }
 
+/** Shortest alphabet-neutral piece searched for directly; a needle with only shorter pieces is matched on a normalised copy. */
+export const MIN_ANCHOR = 4;
+const STD_BASE64 = /^[A-Za-z0-9+/]+={0,2}$/;
+const toStandard = (c: number): number => (c === 0x2d ? 0x2b : c === 0x5f ? 0x2f : c);
+
+/**
+ * True when `text` holds the standard-alphabet base64 `needle` written with either alphabet at each position (`-` for `+`,
+ * `_` for `/`, mixed freely), as Node's base64 decoding (the redactor's) accepts it (review c7-f4 follow-up r1). The
+ * needle's longest piece without `+` or `/` reads the same in both alphabets: each place it occurs is compared in place.
+ * With no piece of `MIN_ANCHOR` characters the needle is searched in `normalised()`, the text with both alphabets mapped
+ * to the standard one (built at most once per `holdsKey` call).
+ */
+function holdsEitherAlphabet(text: string, needle: string, normalised: () => string): boolean {
+  let anchor = "";
+  let at = 0;
+  let from = 0;
+  for (const piece of needle.split(/[+/]/)) {
+    if (piece.length > anchor.length) [anchor, at] = [piece, from];
+    from += piece.length + 1;
+  }
+  if (anchor.length < MIN_ANCHOR) return normalised().includes(needle);
+  for (let i = text.indexOf(anchor); i !== -1; i = text.indexOf(anchor, i + 1)) {
+    const start = i - at;
+    if (start < 0 || start + needle.length > text.length) continue;
+    let j = 0;
+    while (j < needle.length && toStandard(text.charCodeAt(start + j)) === needle.charCodeAt(j)) j++;
+    if (j === needle.length) return true;
+  }
+  return false;
+}
+
 /**
  * True when `text` holds `key` as the host redactor would find it: any registered form (`secretForms`), or base64 /
  * base64url of any registered form at any byte offset (`base64Middles` of each form; the redactor decodes a base64 run
- * once and matches every form in it, so base64 of the key, of its hex and of its base64 are all found). Each also as it
- * appears inside a JSON string (a request body is JSON). Plain substring tests: one key, no redactor windows, cheap enough
- * for every request. Not found, as by the redactor: base64 nested two levels over a form (the redactor decodes once), a key
- * split across two strings or across wrapped base64 lines, hex in mixed case, `\u00XX` or full percent escapes, base64 of
- * the key in another text encoding (UTF-16).
+ * once and matches every form in it, so base64 of the key, of its hex and of its base64 are all found), in either base64
+ * alphabet or both mixed in one run. Each plain needle also as it appears inside a JSON string (a request body is JSON).
+ * Substring tests: one key, no redactor windows, cheap enough for every request. Not found, as by the redactor: base64
+ * nested two levels over a form (the redactor decodes once), a key split across two strings or across wrapped base64
+ * lines, base64 then percent-encoded, `/` written as `\/`, hex in mixed case or colon-separated, `\u00XX` or full percent
+ * escapes, base64 of the key in another text encoding (UTF-16).
  */
 export function holdsKey(text: string, key: string): boolean {
   const forms = secretForms(key);
-  for (const needle of new Set([...forms, ...forms.flatMap(base64Middles)])) {
+  const needles = new Set([...forms, ...forms.flatMap(base64Middles)]);
+  for (const needle of needles) {
     if (text.includes(needle) || text.includes(JSON.stringify(needle).slice(1, -1))) return true;
+  }
+  let normal: string | undefined;
+  const normalised = (): string => (normal ??= text.replaceAll("-", "+").replaceAll("_", "/"));
+  for (const needle of needles) {
+    if (STD_BASE64.test(needle) && /[+/]/.test(needle) && holdsEitherAlphabet(text, needle, normalised)) return true;
   }
   return false;
 }

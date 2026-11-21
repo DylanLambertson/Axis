@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Redactor, secretForms, type AuditSink } from "@axis/audit";
 import { ProviderError, type GenerateRequest } from "@axis/providers";
-import { base64Middles, createProvidersBinding, holdsKey } from "../src/bindings/providers.js";
+import { MIN_ANCHOR, base64Middles, createProvidersBinding, holdsKey } from "../src/bindings/providers.js";
 import { fakeBackend, mockAnthropic, MODEL } from "./anthropic-server.js";
 
 // C7-F4 (docs/design/composer-outgoing-scan.md): a provider key is never sent inside its own request body, also when the key is
@@ -24,6 +24,12 @@ const code = async (p: Promise<unknown>): Promise<string> => {
   }
 };
 
+/** `run` (standard alphabet) with every other `+` and `/` written in the URL alphabet: both alphabets in one run. */
+const mixed = (run: string): string => {
+  let n = 0;
+  return run.replace(/[+/]/g, (c) => (n++ % 2 === 0 ? c : c === "+" ? "-" : "_"));
+};
+
 async function rig() {
   const api = await mockAnthropic();
   const old = unknownKey("before");
@@ -37,14 +43,16 @@ async function rig() {
 }
 
 test("a key rotated in the keyring and held in the request is refused at the send: the body that would carry it never reaches fetch", async () => {
-  const rotated = unknownKey("rotated");
+  // `>` and `?` put sextets 62 and 63 in its base64 at every offset, so base64url (with `-` and `_`) differs from base64
+  // where it matters (review c7-f4 r3).
+  const rotated = unknownKey(">?>?rotated");
   // Each form on its own binding: after a refusal the rotated key is registered, and the guard's own scan would find the next.
   // base64 and base64url at byte offsets 0, 1 and 2 of a longer run (review c7-f4 r1 SF), with bytes after it too.
   const at = (inner: string, o: number, enc: "base64" | "base64url"): string => Buffer.concat([Buffer.alloc(o, 0x78), Buffer.from(inner), Buffer.from("tail")]).toString(enc);
   const encoded = [0, 1, 2].flatMap((o) => (["base64", "base64url"] as const).map((enc) => at(rotated, o, enc)));
   // One level over another form (review c7-f4 r2 SF): base64 of the key's base64 and of its hex, at each offset.
   const nested = [0, 1, 2].flatMap((o) => [at(Buffer.from(rotated).toString("base64"), o, "base64"), at(Buffer.from(rotated).toString("hex"), o, "base64")]);
-  for (const form of [rotated, Buffer.from(rotated).toString("hex"), encodeURIComponent(`${rotated}/`), ...encoded, ...nested]) {
+  for (const form of [rotated, Buffer.from(rotated).toString("hex"), encodeURIComponent(`${rotated}/`), ...encoded, ...nested, ...[0, 1, 2].map((o) => mixed(at(rotated, o, "base64")))]) {
     const r = await rig();
     try {
       r.api.replies = [{ kind: "text", text: "first" }];
@@ -76,8 +84,14 @@ test("holdsKey finds every form the redactor registers, also as it appears insid
 });
 
 test("holdsKey finds the key in base64 and base64url at every byte offset, with any bytes around it, also inside JSON", () => {
-  // Key lengths of every remainder modulo 3, so the key's own last group is whole, one byte short and two bytes short.
-  for (const key of ["holdout~offset~credential~c7f4", "holdout~offset~credential~c7f4x", "holdout~offset~credential~c7f4xy"])
+  // Key lengths of every remainder modulo 3; the `>?` keys put `+` and `/` in every base64 middle, so their base64url middles
+  // (with `-` and `_`) differ from them (review c7-f4 r3: with only the first three, the base64url middles were never needed).
+  const differing = ["holdout~>?>?~credential~c7f4", "holdout~>?>?~credential~c7f4x", "holdout~>?>?~credential~c7f4xy"];
+  for (const key of differing) {
+    const m = base64Middles(key);
+    for (let i = 0; i < m.length; i += 2) assert.notEqual(m[i], m[i + 1], `${key}: the alphabets differ at offset ${i / 2}`);
+  }
+  for (const key of ["holdout~offset~credential~c7f4", "holdout~offset~credential~c7f4x", "holdout~offset~credential~c7f4xy", ...differing])
   for (let before = 0; before <= 5; before++) {
     for (let after = 0; after <= 4; after++) {
       for (const enc of ["base64", "base64url"] as const) {
@@ -112,4 +126,73 @@ test("holdsKey finds base64 one level over any registered form (the key's hex, i
   const twice = Buffer.from(Buffer.from(Buffer.from(key).toString("base64")).toString("base64")).toString("base64");
   assert.equal(r.redactString(`x ${twice} y`), `x ${twice} y`);
   assert.equal(holdsKey(`x ${twice} y`, key), false);
+});
+
+test("holdsKey finds base64url over every registered form, where the two alphabets differ (review c7-f4 r3)", () => {
+  let differing = 0;
+  for (const key of ["holdout~>?>?~credential~c7f4", "holdout~>?>?~credential~c7f4x", "holdout~>?>?~credential~c7f4xy"]) {
+    for (const form of secretForms(key)) {
+      const m = base64Middles(form);
+      for (let i = 0; i < m.length; i += 2) if (m[i] !== m[i + 1]) differing++;
+      for (let before = 0; before <= 3; before++) {
+        for (const enc of ["base64", "base64url"] as const) {
+          const run = Buffer.concat([Buffer.alloc(before, 0x41), Buffer.from(form), Buffer.alloc(2, 0x42)]).toString(enc);
+          assert.equal(holdsKey(`x ${run} y`, key), true, `${enc}(${form.slice(0, 12)}) at ${before}`);
+        }
+      }
+    }
+  }
+  // The URL-encoded form (`%3E%3F`) and the raw key give base64 middles with `+` and `/`: base64url is needed for those.
+  assert.ok(differing >= 12, `${differing} form middles where the alphabets differ`);
+});
+
+test("holdsKey finds base64 that mixes both alphabets in one run, over every registered form, as the redactor does (review c7-f4 follow-up r1)", () => {
+  let mixedRuns = 0;
+  for (const key of ["holdout~>?>?~credential~c7f4", "holdout~>?>?~credential~c7f4x", "holdout~>?>?~credential~c7f4xy"]) {
+    const r = new Redactor();
+    r.registerSecret(key);
+    for (const form of secretForms(key)) {
+      for (let before = 0; before <= 3; before++) {
+        const run = mixed(Buffer.concat([Buffer.alloc(before, 0x41), Buffer.from(form), Buffer.alloc(2, 0x42)]).toString("base64"));
+        if (!(/[+/]/.test(run) && /[-_]/.test(run))) continue;
+        mixedRuns++;
+        assert.equal(holdsKey(`x ${run} y`, key), true, `mixed(${form.slice(0, 12)}) at ${before}`);
+        if (run.length <= 4096) assert.notEqual(r.redactString(`x ${run} y`), `x ${run} y`, "the redactor finds it too");
+      }
+    }
+  }
+  assert.ok(mixedRuns >= 12, `${mixedRuns} runs that really mix the alphabets`);
+});
+
+test("a needle whose alphabet-neutral pieces are all shorter than MIN_ANCHOR is still found mixed (the normalised-copy path)", () => {
+  // `~~~` is `fn5+` and `???` is `Pz8/` in base64: every alphabet-neutral piece is 3 characters, with `+` and with `/`.
+  for (const key of ["~".repeat(24), "?".repeat(24)]) {
+    const short = base64Middles(key).filter((m) => /^[A-Za-z0-9+/]+$/.test(m) && /[+/]/.test(m) && Math.max(...m.split(/[+/]/).map((p) => p.length)) < MIN_ANCHOR);
+    assert.ok(short.length > 0, "the key has a needle that takes the fallback");
+    for (let before = 0; before <= 2; before++) {
+      const run = mixed(Buffer.concat([Buffer.alloc(before, 0x41), Buffer.from(key), Buffer.alloc(1, 0x42)]).toString("base64"));
+      assert.ok(/[-_]/.test(run));
+      assert.equal(holdsKey(`x ${run} y`, key), true, `at ${before}`);
+    }
+    assert.equal(holdsKey(mixed(Buffer.from("~~~~~~~~ not the key at all ~~~~~~~~").toString("base64")), key), false);
+  }
+});
+
+test("every occurrence of a needle's anchor is compared, not only the first: decoys before the mixed run do not hide it (review c7-f4 follow-up r2)", () => {
+  for (const key of ["holdout~>?>?~credential~c7f4", "holdout~>?>?~credential~c7f4x", "holdout~>?>?~credential~c7f4xy"]) {
+    // The alphabet-neutral piece of every needle the in-place search uses, each followed by characters that fail the compare.
+    const needles = new Set([...secretForms(key), ...secretForms(key).flatMap(base64Middles)]);
+    const anchors = [...needles]
+      .filter((m) => /^[A-Za-z0-9+/]+={0,2}$/.test(m) && /[+/]/.test(m))
+      .map((m) => m.split(/[+/]/).reduce((a, b) => (b.length > a.length ? b : a), ""))
+      .filter((a) => a.length >= MIN_ANCHOR);
+    assert.ok(anchors.length > 0);
+    const decoys = anchors.map((a) => `${"Q".repeat(80)}${a}!!!!`).join(" ").repeat(50);
+    assert.equal(holdsKey(decoys, key), false, "the decoys alone hold nothing");
+    for (let before = 0; before <= 2; before++) {
+      const run = mixed(Buffer.concat([Buffer.alloc(before, 0x41), Buffer.from(key), Buffer.alloc(2, 0x42)]).toString("base64"));
+      assert.ok(/[+/]/.test(run) && /[-_]/.test(run), "both alphabets in the run");
+      assert.equal(holdsKey(`${decoys} ${run} y`, key), true, `${key.length} at ${before}`);
+    }
+  }
 });
