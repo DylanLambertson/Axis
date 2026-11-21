@@ -69,3 +69,27 @@ export interface PtyExecOutcome {
 export interface PtyExecPort {
   exec(call: PtyExecCall): Promise<PtyExecOutcome>;
 }
+
+/**
+ * `git push` of the one pinned refspec as a terminal-bound run in the pty process (the `push` message, H9-hooks §5.2, S4 part 1),
+ * repeated from `@axis/pty-process` (`PtyPushCall`; `test/types/pty-exec-port.test.ts` compares both directions). The pty process
+ * builds the argv, the pins and the environment; `env` carries only its allow-list. Only `createPtyGitRunner` builds one.
+ */
+export interface PtyPushCall {
+  readonly runId: string;
+  readonly repo: { readonly gitDir: string; readonly workTree: string };
+  readonly remote: string;
+  readonly refspec: string;
+  /** git-ops' `pushUrlsDigest` of the push URLs it read; the pty process refuses (`remote_refused`) when its own read differs. */
+  readonly pushUrls: string;
+  readonly env: Readonly<Record<string, string>>;
+  /** The configuration and ssh variables the host validated, `null` for unset; the pty process refuses a push whose own differ. */
+  readonly expectEnv: Readonly<Record<"HOME" | "XDG_CONFIG_HOME" | "GIT_CONFIG" | "GIT_CONFIG_GLOBAL" | "GIT_CONFIG_SYSTEM" | "GIT_CONFIG_NOSYSTEM" | "GIT_SSH" | "GIT_SSH_COMMAND" | "GIT_SSH_VARIANT" | "GIT_PROXY_COMMAND", string | null>>;
+  readonly cols: number;
+  readonly rows: number;
+}
+
+/** The pty process's `push`. The handle reports the exit status only; a rejection carries at most a closed `code`. */
+export interface PtyPushPort {
+  push(call: PtyPushCall): Promise<PtyHandle>;
+}

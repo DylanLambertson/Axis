@@ -80,13 +80,20 @@ describe("headless slice", { skip, timeout: SUITE_TIMEOUT_MS }, () => {
     sup = started.sup;
     const ready = await started.ready;
     assert.equal(ready["degraded"], undefined);
-    assert.deepEqual([...(ready["contracts"] as string[])].sort(), ["axis.approvals", "axis.audit", "axis.cli-runs", "axis.events", "axis.git", "axis.projects", "axis.providers", "axis.review", "axis.runs", "axis.worktrees"]);
+    assert.deepEqual([...(ready["contracts"] as string[])].sort(), ["axis.approvals", "axis.audit", "axis.cli-runs", "axis.events", "axis.git", "axis.messages", "axis.projects", "axis.providers", "axis.review", "axis.runs", "axis.worktrees"]);
     trustWindow(sup);
     projectId = await registerProject(sup, fx.repo);
     user = await TestClient.open(sup);
     assert.deepEqual(user.welcome.contracts.map((c) => c.id).sort(), (ready["contracts"] as string[]).slice().sort());
     const projects = await user.ok<{ projects: Array<{ id: string; trusted: boolean }> }>("axis.projects", "list", {});
     assert.deepEqual(projects.projects.map((p) => p.id), [projectId]);
+    // PV-M3: the composed host serves axis.messages/1 over the journal; no agent exists yet (PV-G3), so nothing can be addressed.
+    const threads = await user.ok<{ threads: unknown[] }>("axis.messages", "threads", {});
+    assert.deepEqual(threads.threads, []);
+    const settings = await user.ok<{ settings: { projectId: string; agents: unknown[] } }>("axis.messages", "settings", { projectId });
+    assert.deepEqual([settings.settings.projectId, settings.settings.agents], [projectId, []]);
+    const nobody = await user.call("axis.messages", "send", { recipients: [{ agent: "a1" }], body: { format: "text", text: "hi" } }, true);
+    assert.deepEqual([nobody.error?.code, nobody.error?.details], ["E_CONFLICT", { reason: "recipient_refused" }]);
     // C5: the composed list answers from the agent binding's registry (it was [] before), so the mock and its model are listed.
     const listed = await user.ok<{ providers: Array<{ providerId: string; status: string; models: Array<{ modelId: string }> }> }>("axis.providers", "list", {});
     assert.deepEqual(listed.providers.map((p) => [p.providerId, p.status, p.models.map((m) => m.modelId)]), [["mock", "ready", ["mock-model"]]]);

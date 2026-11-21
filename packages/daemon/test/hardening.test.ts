@@ -261,6 +261,7 @@ test("S6: details keys come from a per-code allowlist and are bounded", async (t
     reason: "in-progress",
     retryAfterMs: 500,
   });
+  assert.deepEqual((await thrown(t, new DaemonError("E_BACKPRESSURE", "Slow down", { reason: "rate_limited" }))).details, { reason: "rate_limited" });
   const dropped: Array<[ConstructorParameters<typeof DaemonError>[0], Record<string, never>]> = [
     ["E_CONFLICT", { path: "/home/u/.ssh" } as never],
     ["E_NOT_FOUND", { retryAfterMs: 1 } as never],
@@ -269,6 +270,8 @@ test("S6: details keys come from a per-code allowlist and are bounded", async (t
     ["E_CONFLICT", { retryAfterMs: 1e12 } as never],
     ["E_CONFLICT", { reason: ["pass", "word=", "hunter", "22222"].join("") } as never],
     ["E_INTERNAL", { reason: "x" } as never],
+    ["E_BACKPRESSURE", { reason: "x".repeat(500) } as never],
+    ["E_BACKPRESSURE", { threadId: "thr_x" } as never],
   ];
   for (const [code, details] of dropped) {
     const e = await thrown(t, new DaemonError(code, "Nope", details));

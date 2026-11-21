@@ -4,7 +4,7 @@ import { createAnthropicAdapter, type AnthropicLimits, type FetchLike, type KeyP
 import type { ProviderCredential } from "@axis/protocol";
 import { ProviderError, guardProvider, type GenerateRequest, type GenerateResult, type GuardLimits, type GuardedProvider, type ModelInfo, type RunOptions, type StreamEvent } from "@axis/providers";
 import { VaultError, createVault, type ConnectionVault, type SecretBackend } from "@axis/vault";
-import { MAX_KEY_FORM_CHARS, holdsRegisteredSecret, providerRedactor } from "./provider-redactor.js";
+import { KEY_RULE, MAX_KEY_FORM_CHARS, holdsRegisteredSecret, providerRedactor } from "./provider-redactor.js";
 
 export type { FetchLike, Pricing, SecretBackend };
 
@@ -193,6 +193,9 @@ export function createProvidersBinding(deps: ProvidersBindingDeps): ProvidersBin
     // Registered before the adapter sees it, so an echo anywhere the host writes is redacted; a key the redactor
     // refuses (too short) is not used. The audit row comes before any use: a read that cannot be recorded is refused.
     try {
+      // Only a key of the vault's own shape is registered: the windowed outgoing scan holds a whole form of such a key and
+      // no longer one (`MAX_KEY_FORM_CHARS`, review c7 N1); any other key is unusable, never registered or sent.
+      if (!KEY_RULE.test(key)) throw new Error("key shape");
       deps.redactor.registerSecret(key);
     } catch {
       // Every read is audited (DMN-5), this one too; the key is not used.

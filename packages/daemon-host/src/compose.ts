@@ -4,10 +4,10 @@ import { access } from "node:fs/promises";
 import { join } from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
 import { AxisError, withTransaction, type InstanceLock } from "@axis/audit";
-import { Daemon, EventHub, MemoryIdempotencyStore, protocolRegistry, type ContractRegistry, type ElectronPortLike, type ShutdownOptions } from "@axis/daemon";
+import { Daemon, EventHub, MemoryIdempotencyStore, type ElectronPortLike, type ShutdownOptions } from "@axis/daemon";
 import type { GitRunner } from "@axis/git-ops";
 import type { MockProviderOptions, RunBudgetLimits } from "@axis/providers";
-import { EVENTS_CONTRACT, EVENTS_VERSION, PROJECTS_CONTRACT, PROJECTS_VERSION, PROVIDERS_CONTRACT, PROVIDERS_VERSION, APPROVALS_CONTRACT, APPROVALS_VERSION, REVIEW_CONTRACT, REVIEW_VERSION, WORKTREES_CONTRACT, WORKTREES_VERSION, lookupMethod } from "@axis/protocol";
+import { EVENTS_CONTRACT, EVENTS_VERSION, PROJECTS_CONTRACT, PROJECTS_VERSION, PROVIDERS_CONTRACT, PROVIDERS_VERSION, APPROVALS_CONTRACT, APPROVALS_VERSION, REVIEW_CONTRACT, REVIEW_VERSION, WORKTREES_CONTRACT, WORKTREES_VERSION } from "@axis/protocol";
 import { createSecretScanner, type ScanMode } from "@axis/secret-scan";
 import { anchorPreflight } from "./anchor/preflight.js";
 import { createAgentBinding, type AgentBinding } from "./bindings/agent.js";
@@ -19,7 +19,7 @@ import { createTempIndexProvider } from "./bindings/review-tempindex.js";
 import { createRunsBinding, type RunsBinding } from "./bindings/runs.js";
 import { composerGuardDeps, createRunRepositoryGuard, type RunSnapshotterFactory } from "./bindings/snapshot.js";
 import { createWorktreesBinding, type WorktreesBinding } from "./bindings/worktrees.js";
-import { composerWriteLock, createActiveRunForwarder, createAuditSeal, createRunsClock, settleComposer, daemonAuditSink, handleProjectsRegister, recordingRegistrar } from "./compose-parts.js";
+import { composerWriteLock, createActiveRunForwarder, createAuditSeal, createRunsClock, settleComposer, daemonAuditSink, handleProjectsRegister, recordingRegistrar, registryOf } from "./compose-parts.js";
 import type { HostConfig } from "./config.js";
 import { createAttestationVerifier } from "./control/attestation.js";
 import type { ControlClient } from "./control/client.js";
@@ -41,6 +41,8 @@ import { createSshResolver, unavailableSshResolver, type SshSpawn } from "./bind
 import { loadPushedBases, savePushedBases } from "./storage/pushed-bases-file.js";
 import { registerGitHandlers } from "./handlers/git.js";
 import { createProjectsHandlers } from "./handlers/projects.js";
+import { registerMessagesHandlers } from "./handlers/messages.js";
+import { createMessagingBinding } from "./messages/binding.js";
 import { createProvidersHandlers } from "./handlers/providers.js";
 import { createReviewHandlers } from "./handlers/review.js";
 import { createReviewAuditSink } from "./handlers/review-audit.js";
@@ -50,7 +52,7 @@ import { createDaemonHost, type DaemonHost, type HostOptions, type HostServices,
 import { installHostLifecycle, type LifecycleHandle, type LifecycleOptions } from "./lifecycle.js";
 import type { Logger } from "./log/logger.js";
 import { checkCoverage } from "./policy/coverage.js";
-import type { PtyExecPort, PtyPort } from "./ports/pty.js";
+import type { PtyExecPort, PtyPort, PtyPushPort } from "./ports/pty.js";
 import type { ChannelMux } from "./transport/mux.js";
 
 /**
@@ -86,8 +88,8 @@ export interface ComposeOptions {
   readonly portSource?: { onPort(handler: (data: unknown, port: ElectronPortLike) => void): () => void };
   readonly ports: Omit<StartupPorts, "control" | "reconcile" | "afterStorage" | "beforeReady">;
   readonly host?: HostOptions;
-  /** The Axis pty process: spawns CLI runs. REQUIRED. With `exec`, the `pty` git context runs over it (`createPtyGitRunner`). */
-  readonly pty: (PtyPort & Partial<PtyExecPort>) | undefined;
+  /** The Axis pty process (CLI runs). REQUIRED. With `exec`, the `pty` git context and push run over it (H9-hooks S4, hooks off). */
+  readonly pty: (PtyPort & Partial<PtyExecPort> & Partial<PtyPushPort>) | undefined;
   /** The `pty` git context runner, REQUIRED exactly when `pty` has no `exec` (test fakes); refused alongside one that has. */
   readonly ptyGitRunner: GitRunner | undefined;
   /** GIT-SNAP-1 around a run: production passes `gitSnapshotRunSnapshotter` (`@axis/git-snapshot`, question 10). REQUIRED. */
@@ -148,14 +150,6 @@ function refuse(reason: string): never {
 }
 
 const isPty = (p: unknown): p is PtyPort => typeof (p as { spawn?: unknown } | null)?.spawn === "function";
-
-/** The registry restricted to what the host serves, so an unserved method does not exist (and `hello` does not offer it). */
-function registryOf(surface: HostServices["surface"]): ContractRegistry {
-  return {
-    lookup: (contract, version, method) => (surface.registry[`${contract}/${version}`]?.[method] === undefined ? undefined : lookupMethod(contract, version, method)),
-    versions: (contract) => protocolRegistry.versions(contract).filter((v) => surface.registry[`${contract}/${v}`] !== undefined),
-  };
-}
 
 export function composeDaemonHost(options: ComposeOptions): ComposedHost {
   if (!isPty(options.pty)) refuse("pty_required");
@@ -413,6 +407,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
     registrar.register(PROVIDERS_CONTRACT, PROVIDERS_VERSION, createProvidersHandlers({ providers: () => agent.providers(), cachedModels: (id) => providers.cachedModels(id), credential: (id, signal) => providers.credential(id, signal) }));
     registrar.register(WORKTREES_CONTRACT, WORKTREES_VERSION, createWorktreesHandlers({ service: worktrees.service, needsAttention: worktrees.needsAttention }), { content: worktrees.content });
     registerComposerRunsHandlers(registrar, { service: composer, journal, mutex: worktrees.mutex, needsAttention: worktrees.needsAttention });
+    registerMessagesHandlers(registrar, createMessagingBinding({ journal, audit, noteWrite: () => services.anchors.noteWrite(), random: { bytes: (n) => randomBytes(n) }, monotonic: () => ports.clock.monotonic(), scan: (text) => scanner.scan(text, { part: "message" }) }));
     registerCliRunsHandlers(registrar, { service: runs.service, journal, control, minter: createRunTrustMinter(ports.clock), mutex: worktrees.mutex, needsAttention: worktrees.needsAttention, platform: config.platform });
     registrar.register(
       REVIEW_CONTRACT,
@@ -420,7 +415,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
       createReviewHandlers({ review: createReviewService(reviewDeps), journal, runs: runs.service, trees, audit: createReviewAuditSink({ append: (e) => (audit.append(e), services.anchors.noteWrite()) }) }),
     );
     registerGitHandlers(registrar, {
-      ops: createGitOperations({ git, runs: runs.service, resolveSshHost: options.sshSpawn === undefined ? unavailableSshResolver : createSshResolver({ spawn: options.sshSpawn, env: ports.env, excludeDirs: services.excludeDirs, platform: config.platform }) }),
+      ops: createGitOperations({ git, runs: runs.service, pushHooksUnavailable: typeof pty.exec === "function", resolveSshHost: options.sshSpawn === undefined ? unavailableSshResolver : createSshResolver({ spawn: options.sshSpawn, env: ports.env, excludeDirs: services.excludeDirs, platform: config.platform }) }),
       review: createCommitPreparer(reviewDeps),
       trees,
       journal,

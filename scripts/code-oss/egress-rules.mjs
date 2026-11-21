@@ -10,7 +10,8 @@
 //   2. `node:child_process` is loaded only by the files in SPAWN_FILES, each taking only the functions listed for it (never
 //      `exec`, `execSync` or `fork`, which run a shell command string or a module), and a file with a fixed program must
 //      name it as a string literal. No file sets `shell` to anything but `false`. The module scanner (stage-ast.mjs
-//      spawnForms) enforces the per-file names, the program and the `shell` option on the parse.
+//      spawnForms) enforces the per-file names, the call shape, the program and the `shell` option on the parse, so in the
+//      import lint, the staging hook and the staged-tree check; the bundle graph check applies only which file may load it.
 
 /** Built-ins that resolve names over the network. No shipped file may load them. */
 export const RESOLVER_BUILTINS = new Set(["node:dns"]);

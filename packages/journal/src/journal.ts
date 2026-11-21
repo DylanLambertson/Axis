@@ -39,6 +39,7 @@ import {
   recordReviewedTree, registerProject, setWorktreePath, unlockWorkspace, type RecordsContext, type RegisterProjectInput,
 } from "./records.js";
 import { ComposerRecords } from "./composer-store.js";
+import { MessageRecords } from "./message-store.js";
 import { UserPrincipal } from "./principal.js";
 import { JOURNAL_MIGRATIONS } from "./schema.js";
 import {
@@ -83,6 +84,8 @@ export class Journal {
   readonly #newId: () => string;
   /** Composer run records (mode, provider, model, usage, budgets, bounded activity; schema version 6). */
   readonly composer: ComposerRecords;
+  /** `axis.messages/1` records (threads, participants, messages, cursors, settings; schema version 9). */
+  readonly messages: MessageRecords;
 
   private constructor(db: DatabaseSync, options: JournalOptions) {
     this.#db = db;
@@ -90,6 +93,7 @@ export class Journal {
     this.#now = options.now ?? (() => new Date());
     this.#newId = options.newId ?? (() => randomUUID());
     this.composer = new ComposerRecords(db, () => this.#ts(), (input) => this.createRun(input));
+    this.messages = new MessageRecords(db, () => this.#ts());
   }
 
   /** Migrate the schema and return a journal. On daemon start take the instance lock, then call `recover(lock)`. */

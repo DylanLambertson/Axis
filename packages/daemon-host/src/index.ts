@@ -99,3 +99,12 @@ export * from "./gate/run-approvals.js";
 export * from "./handlers/composer-runs.js";
 // The parent side: spawn, restart policy, exit-code handling and shutdown (ticket X1; runs in Electron main).
 export * from "./supervisor.js";
+// axis.messages/1: the message service, its settings and the bridge handlers (ticket PV-M3).
+export * from "./handlers/messages.js";
+export * from "./messages/audit.js";
+export * from "./messages/binding.js";
+export * from "./messages/limits.js";
+export * from "./messages/policy.js";
+export * from "./messages/service.js";
+export * from "./messages/settings.js";
+export { pageByText, principalOf, toWire, StoredRecordError } from "./messages/wire.js";

@@ -79,7 +79,7 @@ Settings that widen messaging (cross-group, an agent accepting from `project`, e
 - **Participant set.** Each thread has a daemon-held participant set of principals (the user, agent ids, plugin ids). It is fixed at creation from the sender and the policy-checked, expanded recipients. It grows only (a) by a user action ("add to thread"), or (b) when a send to the thread names a recipient that the send policy (§4.1) allows for that sender; the new participant sees messages from the moment it joined, not the history, unless the user adds it with history.
 - **Reads.** `thread`, `threads`, `read` (the composer tool `read_messages` and the CLI endpoint's read) and `markRead` return only threads where the caller is a participant, and within them only messages addressed to the caller or sent after it joined. Thread lists never include ids of other threads.
 - **Posting into a thread.** `send` with a `threadId` requires the sender to be a participant; the recipients must be a subset of the participants plus targets the send policy allows the sender. **Participation is necessary, not sufficient:** every recipient, participant or not, passes §4.1 (including the recipient's `accepts from`) at accept and again at delivery; a participant the policy no longer allows stays a reader of the history only (review 2, NS1).
-- **No existence oracle.** A thread that exists but is not visible to the caller answers with the same closed `not_found`, same shape and same timing class, as a thread that does not exist. Ids are random (§2), never sequential.
+- **No existence oracle.** A thread that exists but is not visible to the caller answers with the same closed `not_found`, same shape and on the same structural path (one participant-scoped lookup), as a thread that does not exist. Ids are random (§2), never sequential.
 - **The user.** The user (actor `user`) can read every thread of the project; that is the visibility guarantee in §10.
 - **Policy rows.** Every read method has its own policy row (actors, tier 0 or 1); a read by an actor without a row is `E_POLICY_DENIED`. The coverage check (the H6 pattern) covers them.
 - **Audit.** A refused read or post writes `message.read.refused` or `message.send.refused` with the caller's ids and the requested thread id (never content).
@@ -175,7 +175,7 @@ Values are proposed defaults; each is enforced in the daemon, and each refusal i
 | Sends per project | 300 per minute | `rate_limited` |
 | Reads per caller | 60 per minute; a read returns at most 50 messages and 256 KiB | `rate_limited` |
 | Hop depth | 8 | `hop_limit` |
-| Messages per thread kept | 2,000 (older ones archived, still in the journal until retention) | n/a |
+| Messages per thread | 2,000; a send past it is refused (start a new thread; archiving is a later decision) | `too_large` |
 | Retention | 30 days, user-configurable; audit events keep only keyed hashes | n/a |
 
 ### 7.2 Recipient queues (review S2)
