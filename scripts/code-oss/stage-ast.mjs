@@ -18,6 +18,9 @@
 //   - the Function constructors (`Function`, `AsyncFunction`, ... and `.constructor` reached through a value);
 //   - the global network clients (EGRESS_NAMES: `fetch`, `WebSocket`, `EventSource`, `XMLHttpRequest`) in shipped code,
 //     except `fetch` handed to the Anthropic adapter in the one egress file;
+//   - `node:child_process` other than a static named import of the functions SPAWN_FILES lists for this file, such a
+//     function used other than as a callee (or, where the program is a value, the default of `??`), a fixed program not
+//     named as that literal, and a `shell` option other than `false` (egress-rules.mjs, ticket FU-EGRESS);
 //   - a re-export of a mint module (`daemon-principal`, `daemon-attestation`): `export ... from`, or importing one
 //     and exporting what it gave (see mintReexports).
 // LIMIT, stated plainly: this is a static check. Calls through the process global or any other indirect form
@@ -25,6 +28,7 @@
 // module-graph check on the real bundle and code review of what the daemon package exports are the other layers.
 import { posix } from "node:path";
 import ts from "typescript6";
+import { SPAWN_BUILTIN, SPAWN_FILES, stagedPathOf } from "./egress-rules.mjs";
 
 const K = ts.SyntaxKind;
 const META_OK = new Set(["url", "dirname", "filename"]);
@@ -48,8 +52,8 @@ const GUARDED = new Map([["process", PROCESS_SAFE], ["globalThis", GLOBAL_SAFE],
  * option, where the adapter holds it to the fixed Anthropic origin with redirects refused and the PRV-4 destination shown
  * (reviews c6 SF-1 and egress-lint r1). Anywhere else, or in any other position in that file (a variable, an export, a
  * return value, a wrapper), a request could leave the daemon around those controls. Socket built-ins are confined to the
- * web host listener separately (`web-rules.mjs`); `node:dns` and `node:child_process` are other egress surfaces this rule
- * does not cover (see docs/design/daemon-host.md 2.1).
+ * web host listener separately (`web-rules.mjs`); `node:dns` and `node:child_process` by `egress-rules.mjs` and spawnForms
+ * below (see docs/design/daemon-host.md 2.1).
  */
 export const EGRESS_NAMES = new Set(["fetch", "WebSocket", "EventSource", "XMLHttpRequest"]);
 /** The function the one allowed `fetch` is handed to. */
@@ -86,6 +90,11 @@ export const isMintModuleSpec = (spec) => /(^|\/)daemon-(?:principal|attestation
 export function scanModules(source, file = "x.ts", { vendored = false, shipped = true, pkg = null, pkgRel = null } = {}) {
   const sf = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
   const egress = isEgressFile(file, pkg, pkgRel);
+  const spawnRule = SPAWN_FILES.get(stagedPathOf(file, pkg, pkgRel) ?? "");
+  /** Local names of the functions this file takes from node:child_process (an alias is judged by the name it imports). */
+  const spawnLocals = new Map();
+  /** Names bound by `const f = injected ?? fn` to such a function (the imported name): they may only be called. */
+  const spawnDerived = new Map();
   const refs = [];
   const bad = [];
   const isLiteral = (n) => n !== undefined && (ts.isStringLiteral(n) || ts.isNoSubstitutionTemplateLiteral(n));
@@ -128,6 +137,7 @@ export function scanModules(source, file = "x.ts", { vendored = false, shipped =
       if (!calledHere && !propertyName) bad.push(`${at(n)}: require used as a value hides a load from the import check`);
     }
     if (!vendored) hiddenForms(n);
+    if (!vendored && shipped) spawnForms(n);
     ts.forEachChild(n, visit);
   };
   const keyText = (k) => (k !== undefined && (ts.isStringLiteral(k) || ts.isNoSubstitutionTemplateLiteral(k)) ? k.text : null);
@@ -190,6 +200,78 @@ export function scanModules(source, file = "x.ts", { vendored = false, shipped =
     }
     return false;
   };
+  /** For `const f = x ?? fn` (the whole initializer), the identifier `fn`; otherwise undefined. */
+  const derivedDefault = (b) => {
+    if (b === undefined || !ts.isBinaryExpression(b) || b.operatorToken.kind !== K.QuestionQuestionToken || !ts.isIdentifier(b.right)) return undefined;
+    const d = b.parent;
+    const isConst = d !== undefined && ts.isVariableDeclaration(d) && ts.isIdentifier(d.name) && ts.isVariableDeclarationList(d.parent) && (d.parent.flags & ts.NodeFlags.Const) !== 0;
+    // Only where the rule allows an injected default, and never on an exported declaration (that would hand out the raw function).
+    const exported = isConst && ts.isVariableStatement(d.parent.parent) && (ts.getModifiers(d.parent.parent) ?? []).some((m) => m.kind === K.ExportKeyword);
+    return isConst && !exported && spawnRule?.injectable === true ? b.right : undefined;
+  };
+  /**
+   * The arguments of a call of a spawn function, so its options are traceable: exactly (program, [argv...], { options }), plus a
+   * function callback for execFile. The argv is an array literal (any other object there would be taken as the options) and the
+   * options an object literal of plain `key: value` and shorthand members; a spread only of `cond ? { ... } : { ... }`.
+   */
+  const optionsBad = (o) => !ts.isObjectLiteralExpression(o) || o.properties.some((m) => {
+    if (ts.isSpreadAssignment(m)) {
+      let e = m.expression;
+      while (ts.isParenthesizedExpression(e)) e = e.expression;
+      return !(ts.isConditionalExpression(e) && !optionsBad(e.whenTrue) && !optionsBad(e.whenFalse));
+    }
+    return !(ts.isShorthandPropertyAssignment(m) || (ts.isPropertyAssignment(m) && (ts.isIdentifier(m.name) || ts.isStringLiteral(m.name))));
+  });
+  const callShapeBad = (call, fn) => {
+    const a = call.arguments;
+    if (a.some((x) => ts.isSpreadElement(x)) || call.questionDotToken !== undefined) return true;
+    const cb = fn === "execFile" && a.length === 4 && (ts.isArrowFunction(a[3]) || ts.isFunctionExpression(a[3]));
+    return !(a.length === 3 || cb) || !ts.isArrayLiteralExpression(a[1]) || optionsBad(a[2]);
+  };
+  const isSpawnSpec = (e) => keyText(e) !== null && keyText(e).replace(/\/.*$/, "") === SPAWN_BUILTIN;
+  /** node:child_process in shipped code (ticket FU-EGRESS): which functions, how they are used, which program, no shell. */
+  const spawnForms = (n) => {
+    const p = n.parent;
+    if (ts.isImportDeclaration(n) && isSpawnSpec(n.moduleSpecifier)) {
+      const c = n.importClause;
+      if (c === undefined || c.isTypeOnly) return;
+      if (c.name !== undefined || (c.namedBindings !== undefined && !ts.isNamedImports(c.namedBindings))) bad.push(`${at(n)}: ${SPAWN_BUILTIN} is imported by name only (no default or namespace import)`);
+      for (const e of c.namedBindings !== undefined && ts.isNamedImports(c.namedBindings) ? c.namedBindings.elements : []) {
+        if (e.isTypeOnly) continue;
+        const imported = (e.propertyName ?? e.name).text;
+        if (spawnRule?.names.has(imported) !== true) bad.push(`${at(e)}: ${imported} from ${SPAWN_BUILTIN} is not one this file may use (egress-rules.mjs SPAWN_FILES)`);
+      }
+      return;
+    }
+    if ((ts.isExportDeclaration(n) && isSpawnSpec(n.moduleSpecifier)) || (ts.isImportEqualsDeclaration(n) && ts.isExternalModuleReference(n.moduleReference) && isSpawnSpec(n.moduleReference.expression))) {
+      bad.push(`${at(n)}: ${SPAWN_BUILTIN} is imported statically by name only, never re-exported or required`);
+    }
+    if (ts.isCallExpression(n) && (n.expression.kind === K.ImportKeyword || (ts.isIdentifier(n.expression) && n.expression.text === "require")) && isSpawnSpec(n.arguments[0])) {
+      bad.push(`${at(n)}: ${SPAWN_BUILTIN} is imported statically by name only, never dynamically`);
+    }
+    // A function taken from it: called (with the fixed program, if any), or, where the program is a value, the default in
+    // `const f = injected ?? fn`, after which `f` may only be called too. Nothing else.
+    const local = ts.isIdentifier(n) && spawnLocals.has(n.text);
+    const fn = ts.isIdentifier(n) ? spawnLocals.get(n.text) ?? spawnDerived.get(n.text) : undefined;
+    if (fn !== undefined && !(ts.isImportSpecifier(p) && p.name === n) && (!isNamePosition(n) || ts.isExportSpecifier(p)) && !inType(n)) {
+      if (ts.isCallExpression(p) && p.expression === n) {
+        if (local && spawnRule?.program != null && keyText(p.arguments[0]) !== spawnRule.program) bad.push(`${at(n)}: ${n.text} runs only ${spawnRule.program} in this file, named as that literal`);
+        if (callShapeBad(p, fn)) bad.push(`${at(n)}: ${n.text} is called as (program, [argv], { options })${fn === "execFile" ? " with an optional function callback" : ""}: an array literal argv and an object literal of plain members`);
+      } else if (!(local && derivedDefault(p) === n)) {
+        bad.push(`${at(n)}: ${n.text} from ${SPAWN_BUILTIN} may only be called, never stored, passed, returned or exported`);
+      }
+    }
+    // The shell option: only ever the literal `false`, in any spelling of the key, in a file that may start programs.
+    if (spawnRule !== undefined || spawnLocals.size > 0) {
+      const keyName = (k) => (k === undefined ? null : ts.isIdentifier(k) || ts.isStringLiteral(k) || ts.isNoSubstitutionTemplateLiteral(k) ? k.text : ts.isComputedPropertyName(k) ? keyText(k.expression) : null);
+      if (ts.isPropertyAssignment(n) && keyName(n.name) === "shell" && n.initializer.kind !== K.FalseKeyword) bad.push(`${at(n)}: shell is only ever false: a shell runs a command string`);
+      if (ts.isShorthandPropertyAssignment(n) && n.name.text === "shell") bad.push(`${at(n)}: shell is only ever the literal false`);
+      // A method, accessor or class member named shell computes the value at the call: refused in every spelling.
+      if ((ts.isMethodDeclaration(n) || ts.isGetAccessorDeclaration(n) || ts.isSetAccessorDeclaration(n) || ts.isPropertyDeclaration(n)) && keyName(n.name) === "shell") bad.push(`${at(n)}: shell is only ever the literal false (no method, accessor or class member)`);
+      const written = p !== undefined && ts.isBinaryExpression(p) && p.left === n && p.operatorToken.kind >= K.FirstAssignment && p.operatorToken.kind <= K.LastAssignment;
+      if (written && ((ts.isPropertyAccessExpression(n) && n.name.text === "shell") || (ts.isElementAccessExpression(n) && keyText(n.argumentExpression) === "shell"))) bad.push(`${at(n)}: shell is only ever the literal false`);
+    }
+  };
   const hiddenForms = (n) => {
     const p = n.parent;
     if (ts.isIdentifier(n) && HIDDEN_NAMES.has(n.text)) bad.push(`${at(n)}: ${n.text} reaches code without a visible import specifier`);
@@ -250,6 +332,17 @@ export function scanModules(source, file = "x.ts", { vendored = false, shipped =
       if (n.importClause?.name !== undefined || names === null || names.some((x) => x !== "MessageChannel" && x !== "MessagePort")) bad.push(`${at(n)}: only MessageChannel and MessagePort may be imported from node:worker_threads`);
     }
   };
+  // Imports are top-level statements: collect their local names first, so a use above the import is judged too.
+  for (const st of sf.statements) {
+    const nb = ts.isImportDeclaration(st) && isSpawnSpec(st.moduleSpecifier) && st.importClause?.isTypeOnly !== true ? st.importClause?.namedBindings : undefined;
+    if (nb !== undefined && ts.isNamedImports(nb)) for (const e of nb.elements) if (!e.isTypeOnly) spawnLocals.set(e.name.text, (e.propertyName ?? e.name).text);
+  }
+  const derive = (n) => {
+    const from = ts.isVariableDeclaration(n) && n.initializer !== undefined ? spawnLocals.get(derivedDefault(n.initializer)?.text) : undefined;
+    if (from !== undefined) spawnDerived.set(n.name.text, from);
+    ts.forEachChild(n, derive);
+  };
+  if (spawnLocals.size > 0) derive(sf);
   visit(sf);
   if (!vendored) bad.push(...mintUses(sf, at, !shipped, pkg, file));
   return { refs, bad };

@@ -151,7 +151,7 @@ export function createCommandRunner(options: RunnerOptions = {}): CommandRunner 
       }
       let child: ChildProcess;
       try {
-        child = spawnFn(spec.argv[0] as string, spec.argv.slice(1), {
+        child = spawnFn(spec.argv[0] as string, [...spec.argv.slice(1)], {
           cwd: spec.cwd, env: { ...spec.env }, shell: false, detached: posix, windowsHide: true,
           stdio: [spec.stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"],
         });
