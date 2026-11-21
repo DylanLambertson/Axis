@@ -25,7 +25,7 @@ export function fakeExec(opts: { version?: string; filters?: string; filterGate?
   return state;
 }
 
-export const out = (stdout: string | Uint8Array, code = 0): ExecOutcome => ({ code, signal: null, stdout: typeof stdout === "string" ? Buffer.from(stdout) : stdout, stderr: new Uint8Array(), truncated: false });
+export const out = (stdout: string | Uint8Array, code = 0): ExecOutcome => ({ code, signal: null, stdout: typeof stdout === "string" ? Buffer.from(stdout) : stdout, stderr: new Uint8Array(), truncated: false, stdoutTruncated: false, stderrTruncated: false });
 
 /** TEST ONLY: a pty service with a fake exec function on a manual clock. */
 export function fakeRig(exec: ExecFn, maxExecs?: number): { service: PtyService; pair: ChannelPair; clock: ManualClock; scratchParent: string; replies: Array<Record<string, unknown>>; send(m: Record<string, unknown>): Promise<Record<string, unknown>>; cleanup(): void } {
