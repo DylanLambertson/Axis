@@ -92,13 +92,33 @@ export function createMessageDelivery(deps: MessageDeliveryDeps): MessageDeliver
   const maxText = deps.maxText ?? 65_536;
   const maxFailures = deps.maxFailures ?? 3;
 
-  /** Count a failed delivery; at the limit quarantine the message for this recipient and tell the user in its thread. */
-  function failed(m: MessageRecord, principal: string, agentId: string, runId: string): void {
+  /**
+   * Count a failed delivery; at the limit quarantine the message for this recipient and tell the user in its thread. Three
+   * steps, each committed on its own (review 2 NIT 3): the count first, so a failing quarantine or notice cannot roll it
+   * back and hold the message out of quarantine forever; then the quarantine with its audit row; then the notice, best
+   * effort (a notice that cannot be posted leaves the message quarantined and audited).
+   */
+  function failed(m: { readonly id: string; readonly threadId: string }, principal: string, agentId: string, runId: string): void {
+    let n: number;
+    try {
+      n = store.transact(() => store.deliveries.noteFailure(m.id, principal));
+    } catch {
+      return; // the database refuses writes: the run ends either way, and the next attempt counts again
+    }
+    if (n < maxFailures) return;
+    try {
+      const quarantined = store.transact(() => {
+        if (!store.deliveries.quarantine(m.id, principal, runId)) return false;
+        deps.audit.append({ actor: "daemon", action: MESSAGE_AUDIT.deliverFailed, target: `run:${runId}`, outcome: "failure", payload: { messageId: m.id, threadId: m.threadId, runId, agentId, failures: n } });
+        return true;
+      });
+      deps.noteWrite?.();
+      if (!quarantined) return;
+    } catch {
+      return;
+    }
     try {
       store.transact(() => {
-        const n = store.deliveries.noteFailure(m.id, principal);
-        if (n < maxFailures || !store.deliveries.quarantine(m.id, principal, runId)) return;
-        deps.audit.append({ actor: "daemon", action: MESSAGE_AUDIT.deliverFailed, target: `run:${runId}`, outcome: "failure", payload: { messageId: m.id, threadId: m.threadId, runId, agentId, failures: n } });
         const joined = store.participant(m.threadId, "user") !== undefined;
         if (!joined && store.participants(m.threadId).length >= MAX_THREAD_PARTICIPANTS) return;
         store.append({
@@ -118,9 +138,8 @@ export function createMessageDelivery(deps: MessageDeliveryDeps): MessageDeliver
           to: [{ principal: "user", counted: false }],
         });
       });
-      deps.noteWrite?.();
     } catch {
-      // Counting is best effort; the delivery still throws, so the run ends either way.
+      // The notice is best effort: the quarantine and its audit row are already committed.
     }
   }
 
@@ -144,9 +163,19 @@ export function createMessageDelivery(deps: MessageDeliveryDeps): MessageDeliver
         for (const c of page) {
           scanned += 1;
           cursor = c.cursor;
-          const m = store.message(c.messageId);
-          if (m === undefined || store.participant(c.threadId, principal) === undefined) continue;
-          if (deps.service.deliverable(m.id, { kind: "agent", agentId }) !== null) continue;
+          // The checks read stored state (the message, participation, the project's settings): one that throws on a
+          // corrupt record is counted against this message and the candidate skipped (review 2 NIT 2), so it cannot end
+          // every run of the agent; nothing was leased or tainted for it.
+          let m: MessageRecord | undefined;
+          try {
+            m = store.message(c.messageId);
+            if (m === undefined || store.participant(c.threadId, principal) === undefined) continue;
+            if (deps.service.deliverable(m.id, { kind: "agent", agentId }) !== null) continue;
+          } catch {
+            failed({ id: c.messageId, threadId: c.threadId }, principal, agentId, runId);
+            continue;
+          }
+          if (m === undefined) continue;
           const body = toMessageText(m.body, MAX_BODY_DISPLAY).text;
           if (parts.length >= maxMessages || (parts.length > 0 && units + body.length > maxText)) {
             full = true;

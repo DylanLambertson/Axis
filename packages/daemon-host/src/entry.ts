@@ -1,6 +1,8 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { AxisError, Redactor } from "@axis/audit";
+import type { ElectronPortLike } from "@axis/daemon";
 import type { GitRunner } from "@axis/git-ops";
+import { createPtyControlSlot, type ControlPortLike, type PtyControlSlot } from "./bindings/pty-control.js";
 import { gitSnapshotRunSnapshotter } from "./bindings/snapshot.js";
 import { composeDaemonHost } from "./compose.js";
 import { parseHostConfig } from "./config.js";
@@ -28,10 +30,12 @@ import { ChannelMux } from "./transport/mux.js";
  * 3. exactly one `init` within `initTimeoutMs` (design 3, step 2); none in time: refused;
  * 4. `HostConfig` parsed strictly; a `platform` that is not the process's own: refused;
  * 5. `composeDaemonHost` with the real clock, the real storage, the one environment copy and the real `process` for signals. The
- *    run snapshotter is always the real one (`gitSnapshotRunSnapshotter`, `@axis/git-snapshot`, ticket H13). The pty port and the
- *    pty git runner are NOT defaults here: they come from `deps.ports` and the production entry passes none, so `composeDaemonHost`
- *    refuses (`pty_required`, exit 78) until the Axis pty process (B9) exists. No fake is imported by this file, by the overlay
- *    entry or by anything in `src`.
+ *    run snapshotter is always the real one (`gitSnapshotRunSnapshotter`, `@axis/git-snapshot`, ticket H13). The pty port is the
+ *    one main transfers in a `{ type: "pty-control" }` message (PV-X1a, `docs/design/pty-exec-node.md` §5a), and the pty git
+ *    runner is the strict mapping over it. The host is composed only once both `init` and a control port arrived, within
+ *    `initTimeoutMs`; a port that never comes is `pty_required` (exit 78). A later `pty-control` replaces the port (what was in flight
+ *    fails closed), and a closed port makes pty requests unavailable until the next. `deps.ports.pty` (tests) replaces all of this:
+ *    a `pty-control` is then closed. No fake is imported by this file, by the overlay entry or by anything in `src`.
  *
  * It opens no socket and no port; `connect` messages arrive only on the parent port, which only the parent can write.
  */
@@ -150,12 +154,45 @@ export function runDaemonEntry(deps: DaemonEntryDeps): DaemonEntryHandle {
   let initTimer: unknown;
   const timers: EntryTimers = deps.timers ?? realTimers;
   let ended = false;
+  // The parent port's one port handler is the entry's: a `pty-control` goes to the pty slot, any other port to the composition's
+  // handler (the connect router), which registers through `portSource` below.
+  const slot: PtyControlSlot | undefined = deps.ports?.pty === undefined ? createPtyControlSlot() : undefined;
+  let connectHandler: ((data: unknown, port: ElectronPortLike) => void) | undefined;
+  const closePort = (port: { close(): void }): void => {
+    try {
+      port.close();
+    } catch {
+      // already closed
+    }
+  };
+  control.onPort((data, port) => {
+    const kind = typeof data === "object" && data !== null ? (data as { type?: unknown }).type : undefined;
+    if (kind === "pty-control") {
+      const exact = Object.keys(data as object).length === 1;
+      if (slot === undefined || ended || !exact || typeof (port as { removeListener?: unknown }).removeListener !== "function") return closePort(port);
+      slot.attach(port as unknown as ControlPortLike);
+      compose();
+      return;
+    }
+    if (connectHandler === undefined) return closePort(port);
+    connectHandler(data, port);
+  });
+  const portSource = {
+    onPort(handler: (data: unknown, port: ElectronPortLike) => void): () => void {
+      if (connectHandler !== undefined) throw new AxisError("E_CONFLICT", "A port handler is already set");
+      connectHandler = handler;
+      return () => {
+        if (connectHandler === handler) connectHandler = undefined;
+      };
+    },
+  };
   const release = (): void => {
     if (initTimer !== undefined) timers.clear(initTimer);
     initTimer = undefined;
     client.dispose();
     mux.dispose();
     control.dispose();
+    slot?.dispose();
   };
   const end = (code: ExitCode, released: boolean): void => {
     if (ended) return;
@@ -179,33 +216,53 @@ export function runDaemonEntry(deps: DaemonEntryDeps): DaemonEntryHandle {
     end(code, false);
   };
 
-  // Step 3: exactly one init, bounded.
-  initTimer = timers.set(() => failStartup(new AxisError("E_INVALID_ARGUMENT", "No init message", { reason: "init_timeout" })), deps.initTimeoutMs ?? DEFAULT_INIT_TIMEOUT_MS);
-  client.onInit((raw) => {
-    if (initTimer !== undefined) timers.clear(initTimer);
+  // Step 3: exactly one init and (production) a pty control port, both within the bound. The init is checked when it arrives.
+  let init: { readonly config: ReturnType<typeof parseHostConfig>; readonly logger: ReturnType<typeof createLogger> } | undefined;
+  let initSeen = false;
+  let composed = false;
+  initTimer = timers.set(() => {
     initTimer = undefined;
+    if (!initSeen) failStartup(new AxisError("E_INVALID_ARGUMENT", "No init message", { reason: "init_timeout" }));
+    else failStartup(new AxisError("E_INVALID_ARGUMENT", "No pty control port", { reason: "pty_required" }));
+  }, deps.initTimeoutMs ?? DEFAULT_INIT_TIMEOUT_MS);
+  client.onInit((raw) => {
+    if (initSeen) return;
+    initSeen = true;
     try {
       // Step 4.
       const config = parseHostConfig(raw, redactor);
       if (config.platform !== deps.platform) throw new AxisError("E_INVALID_ARGUMENT", "The platform does not match", { reason: "platform_mismatch" });
-      const logger = createLogger({ redactor, clock, level: config.logLevel, sink: { write: (text) => void line(text) } });
-      // Step 5. `ports.pty` and `ptyGitRunner` are whatever the caller has: nothing in production yet, so this throws.
-      const composed = composeDaemonHost({
+      init = { config, logger: createLogger({ redactor, clock, level: config.logLevel, sink: { write: (text) => void line(text) } }) };
+    } catch (e) {
+      failStartup(e);
+      return;
+    }
+    compose();
+  });
+  function compose(): void {
+    if (composed || ended || init === undefined || (slot !== undefined && !slot.attached())) return;
+    composed = true;
+    if (initTimer !== undefined) timers.clear(initTimer);
+    initTimer = undefined;
+    const { config, logger } = init;
+    try {
+      // Step 5. The pty port is the slot's (production) or the caller's (tests); with the slot the git runner is the mapping over it.
+      const host = composeDaemonHost({
         config,
         control: client,
         mux,
-        portSource: control,
+        portSource,
         ports: { clock, storage: deps.storage ?? createNodeStorage(), redactor, logger, env: { ...deps.env }, cwd: deps.cwd },
-        pty: deps.ports?.pty,
-        ptyGitRunner: deps.ports?.ptyGitRunner,
+        pty: slot?.port ?? deps.ports?.pty,
+        ptyGitRunner: slot === undefined ? deps.ports?.ptyGitRunner : undefined,
         snapshotter: gitSnapshotRunSnapshotter,
         process: deps.process,
         exit: (code, info) => end(code, info.released),
       });
-      composed.start().then(() => resolveStarted(true), failStartup);
+      host.start().then(() => resolveStarted(true), failStartup);
     } catch (e) {
       failStartup(e);
     }
-  });
+  }
   return handle;
 }

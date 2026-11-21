@@ -55,7 +55,7 @@ export class FakeGitService implements IAxisGitReader {
 		return new Promise((resolve, reject) => this.pending.push({ uri, resolve, reject }));
 	}
 
-	/** Settles the oldest pending open, or the newest with `newest`. */
+	/** Settles the oldest pending open, or the newest with `newest`; an opened repository joins `repositories`. */
 	answer(repo: IGitRepository | undefined | Error, newest = false): Promise<void> {
 		const next = newest ? this.pending.pop() : this.pending.shift();
 		if (!next) {
@@ -64,6 +64,9 @@ export class FakeGitService implements IAxisGitReader {
 		if (repo instanceof Error) {
 			next.reject(repo);
 		} else {
+			if (repo && !this.repositories.includes(repo)) {
+				this.repositories.push(repo); // as the service does: an opened repository joins `repositories`
+			}
 			next.resolve(repo);
 		}
 		return flush();

@@ -11,6 +11,7 @@ export * from "./exec-client.js";
 export * from "./port-adapter.js";
 export * from "./node-pty.js";
 export * from "./entry.js";
+export { createNodeExec } from "./exec-node.js";
 export * from "./exec-argv.js";
 export * from "./exec-env.js";
 export * from "./hooks-scope.js";
