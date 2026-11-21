@@ -74,7 +74,9 @@ test("argv: hardened prefix, explicit dirs, hooks off, user values after the sep
   assert.ok(a.indexOf("--git-dir=/work/gitdir") < sub, "global options come before the subcommand");
   assert.deepEqual(a.slice(a.indexOf("--end-of-options")), ["--end-of-options", "main", "--", "--output=/x", ":(top)*"]);
   assert.equal(call.context, "daemon");
-  assert.deepEqual(Object.keys(call.env).sort(), ["GIT_TERMINAL_PROMPT", "HOME", "PATH"]);
+  assert.deepEqual(Object.keys(call.env).sort(), ["GIT_ALLOW_PROTOCOL", "GIT_NO_LAZY_FETCH", "GIT_TERMINAL_PROMPT", "HOME", "PATH"]);
+  assert.deepEqual([call.env["GIT_ALLOW_PROTOCOL"], call.env["GIT_NO_LAZY_FETCH"]], ["/", "1"], "no lazy fetch can run a program");
+  assert.ok(a.includes("help.autocorrect=0"));
 });
 
 test("N3: a git older than 2.24 is refused with a plain error before any other call", async () => {

@@ -93,7 +93,10 @@ test("every daemon-context call has an empty hooks path and no hook-capable defa
     assert.ok(c.argv.includes("core.hooksPath=/dev/null"), sub(c.argv).join(" "));
     assert.ok(c.argv.includes("core.fsmonitor=false"));
     assert.ok(c.argv.includes("commit.gpgsign=false"));
-    assert.equal(Object.keys(c.env).some((n) => /^GIT_/.test(n) && n !== "GIT_TERMINAL_PROMPT"), false);
+    assert.ok(c.argv.includes("help.autocorrect=0"));
+    // GIT-ENV-1 plus the lazy-fetch pins (no lazy fetch can run a program, whatever the repository config says).
+    assert.deepEqual(Object.keys(c.env).filter((n) => /^GIT_/.test(n)).sort(), ["GIT_ALLOW_PROTOCOL", "GIT_NO_LAZY_FETCH", "GIT_TERMINAL_PROMPT"]);
+    assert.deepEqual([c.env["GIT_ALLOW_PROTOCOL"], c.env["GIT_NO_LAZY_FETCH"]], ["/", "1"]);
   }
 });
 
