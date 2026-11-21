@@ -40,12 +40,12 @@ export function fakeGuard(o: { verdict?: () => boolean | "throw"; failBaseline?:
 }
 
 /** Wait on timers (a child process needs real time), bounded by a count, never asserting a duration. */
-export async function eventually(pred: () => boolean, tries = 1500): Promise<void> {
+export async function eventually(pred: () => boolean, tries = 1500, what = "condition"): Promise<void> {
   for (let i = 0; i < tries; i++) {
     if (pred()) return;
     await new Promise((res) => setTimeout(res, 10));
   }
-  throw new Error("condition not reached");
+  throw new Error(`${what} not reached`);
 }
 
 export async function commandRig(t: TestContext, options: Partial<ComposerRigOptions>): Promise<ComposerRig> {
