@@ -36,6 +36,8 @@ import { ChannelMux } from "./transport/mux.js";
  *    `initTimeoutMs`; a port that never comes is `pty_required` (exit 78). A later `pty-control` replaces the port (what was in flight
  *    fails closed), and a closed port makes pty requests unavailable until the next. `deps.ports.pty` (tests) replaces all of this:
  *    a `pty-control` is then closed. No fake is imported by this file, by the overlay entry or by anything in `src`.
+ * 6. a stop always ends in `process.exit` with the lifecycle's code: at once when the host was not released, and one unref'd timer
+ *    after the release otherwise (an Electron utility process never ends by draining, PV-X1b).
  *
  * It opens no socket and no port; `connect` messages arrive only on the parent port, which only the parent can write.
  */
@@ -68,7 +70,7 @@ export interface DaemonEntryDeps {
   readonly ports?: DaemonEntryPorts;
   /** Design 3, step 2: default 10000. */
   readonly initTimeoutMs?: number;
-  /** The timer for the init wait (default: the global one). Injected so a test needs no wall clock. */
+  /** The timer for the init wait and the exit after a released shutdown (default: the global one, unref'd). Injected so a test needs no wall clock. */
   readonly timers?: EntryTimers;
 }
 
@@ -80,14 +82,14 @@ export interface EntryTimers {
 export interface DaemonEntryHandle {
   /** Resolves `true` when the host sent `ready`, `false` when startup ended in an exit. */
   readonly started: Promise<boolean>;
-  /** Resolves with the exit code once the entry decided to end the process (after `exit` was called or the process was released). */
+  /** Resolves with the exit code once the entry decided to end the process: after `exit` was called, or once the host was released (`exit` then follows one macrotask later). */
   readonly finished: Promise<number>;
 }
 
 export const DEFAULT_INIT_TIMEOUT_MS = 10_000;
 const DEBUG_FLAG = /^--(?:inspect|debug|remote-debugging)/i;
 const REASON = /^[a-z][a-z0-9_]{0,63}$/;
-/** Opaque handles under Code OSS's typings (ADR 0005), as in compose.ts. The init timer is unref'd: the parent port keeps the process alive. */
+/** Opaque handles under Code OSS's typings (ADR 0005), as in compose.ts. Unref'd: neither timer may keep a Node process alive on its own. */
 const realTimers: EntryTimers = {
   set: (fn, ms) => {
     const t = setTimeout(fn, ms) as unknown as NodeJS.Timeout;
@@ -198,9 +200,14 @@ export function runDaemonEntry(deps: DaemonEntryDeps): DaemonEntryHandle {
     if (ended) return;
     ended = true;
     deps.process.exitCode = code;
-    release(); // the channel no longer holds the event loop: a released host ends by draining
+    release();
     resolveFinished(code);
-    if (!released) deps.process.exit(code);
+    const exit = (): unknown => deps.process.exit(code);
+    // Released: the database, the lock, every listener and the pty port are closed, so nothing can still write. Under Node the
+    // process now ends by draining, but an Electron utility process never does (its parent port keeps it alive even with no
+    // listener; PV-X1b), so it would wait for the supervisor's kill. The exit comes one macrotask later, on the unref'd timer.
+    if (released) timers.set(exit, 0);
+    else exit();
   };
   const failStartup = (error: unknown): void => {
     const code = exitCodeForStartupError(error);
