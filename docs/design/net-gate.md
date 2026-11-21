@@ -13,7 +13,12 @@ The gate has two halves. The static half runs on every CI run. The packaged half
 - **Web host guards** (`packages/daemon-host/src`): the web host configuration still requires `enabled: z.literal(true)` and has no default configuration object, and no file outside `src/web` names `startWebHost` or imports from a `/web/` path.
 - This adds to the staged-package rules in `scripts/code-oss/web-rules.mjs` (one listener file, the bundle graph walk).
 
-What the scan proves, and what it does not: no overlay file or patch line contains a construct that loads a socket or server module, starts a listener, reaches a built-in by a route the scan cannot read, or names a debugging flag, other than the reviewed exceptions. It reads source text. It does not prove that upstream Code OSS code, or an extension, opens no listener (that is the packaged half), and a flag assembled in a way the scan cannot fold (for example `["--insp", "ect"].join("")`) is not seen. The web host starts only for an explicit `enabled: true` configuration that nothing in the product passes yet (W1b).
+What the scan proves, and what it does not. It reads source text and it is a list of known constructs, not a proof.
+
+- **Refused (each has a test):** loading any module off the allowlist; `require`, `createRequire`, `getBuiltinModule`, `binding`; `eval` (direct or `(0, eval)`); `Function` as a call, `new` or any value (aliases); `x.constructor.constructor`; `Reflect.get`, `apply`, `construct`, `getOwnPropertyDescriptor`; any reference to `listen`, `createServer`, `startWebHost` (call, `.call`/`.apply` target, bracket reference, destructuring); a call of a member chosen at run time; `String.fromCharCode` and `fromCodePoint`; a string, template or `+` chain naming `--inspect*`, `--debug*` or `remote-debugging` (case-insensitive, template substitutions and `+` joined).
+- **Not detected (pinned by a test, so a change is deliberate):** a flag assembled from variables, `concat`, `replace`, `join`, or run-time input; code reached through a host object the scan has no name for. These are covered only by the packaged check, and only for the four flags it tries.
+- **Patch lines** get the same rules as text on the raw line: strings are not blanked, because that needs a tokenizer that tells a regex literal like `/'/` from a division, and a wrong guess hides code. The cost is a possible false positive on a string that holds a bare word such as `eval` or `Function`; a comment line is exempt. A `+` line outside a hunk is reported, and a hunk header that does not parse fails.
+- It does not prove that upstream Code OSS code, or an extension, opens no listener (that is the packaged half). The web host starts only for an explicit `enabled: true` configuration that nothing in the product passes yet (W1b).
 
 Run it with `node scripts/code-oss/net-gate.mjs`.
 
@@ -30,7 +35,7 @@ Scope limits, stated so they are not read as more than they are:
 
 - Extensions are disabled for the strict check. RR-19 records that the pinned extension set opened a loopback listener on a Linux run (GitLens), so extension-owned listeners are out of this gate; a run with the pinned set needs its own record.
 - A "no listener" result is a snapshot after a settle time (default 8 s), not a proof about every later moment.
-- The flag checks use the port the flag names. A build that honours a flag on another port is not seen. Only the four flags above and only TCP are tried (not `--remote-debugging-pipe`, `--inspect-port`, `--js-flags=--inspect`, UDP or unix sockets). An app that exits during a flag run counts as refusing; the plain run fails closed when the app does not stay up.
+- The flag checks use the port the flag names. A build that honours a flag on another port is not seen. Only the four flags above and only TCP are tried (not `--remote-debugging-pipe`, `--inspect-port`, `--js-flags=--inspect`, UDP or unix sockets). The whole process group is killed after every launch, also when the leader already exited (tested with a child that outlives its leader). An app that exits during a flag run counts as refusing; the plain run fails closed when the app does not stay up.
 - The static check runs through its test in CI (`test/code-oss/*.test.mjs`); it has no separate CI step.
 
 ## Open: refusing the flags needs a Code OSS patch (not done)

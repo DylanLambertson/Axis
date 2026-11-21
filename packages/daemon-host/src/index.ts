@@ -103,6 +103,7 @@ export * from "./supervisor.js";
 export * from "./handlers/messages.js";
 export * from "./messages/audit.js";
 export * from "./messages/binding.js";
+export * from "./messages/delivery.js";
 export * from "./messages/limits.js";
 export * from "./messages/policy.js";
 export * from "./messages/service.js";

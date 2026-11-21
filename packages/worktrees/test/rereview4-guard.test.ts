@@ -7,6 +7,7 @@ import { mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { after, describe, it } from 'node:test';
 import { snapshotGuardFiles } from '../src/gitSnap.js';
+import { expectNoHang, releaseFifos } from './fifo-guard.js';
 import { makeFixture, type Fixture, exp } from './helpers.js';
 
 const fixtures: Fixture[] = [];
@@ -19,16 +20,10 @@ after(() => fixtures.forEach((f) => f.cleanup()));
 
 const posixOnly = { skip: process.platform === 'win32' ? 'no FIFOs on win32' : false };
 
-function within<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
-  let t: NodeJS.Timeout | undefined;
-  const timeout = new Promise<never>((_, reject) => {
-    t = setTimeout(() => reject(new Error(`${what} did not settle within ${ms} ms`)), ms);
-  });
-  return Promise.race([p, timeout]).finally(() => clearTimeout(t));
-}
+const within = <T>(p: Promise<T>, ms: number, what: string): Promise<T> => expectNoHang(p, ms, what, []);
 
 describe('R4-1: the guard snapshot reads common-dir files without blocking or following links', () => {
-  it('real time: guard files toggled between a file and a FIFO never hang the snapshot or status()', { ...posixOnly, timeout: 120_000 }, async () => {
+  it('real time: guard files toggled between a file and a FIFO never hang the snapshot or status()', { ...posixOnly, timeout: 300_000 }, async () => {
     const fx = fresh();
     const ws = await fx.manager.create({ repoPath: fx.repo, slug: 'agent' });
     const common = path.join(fx.repo, '.git');
@@ -44,18 +39,21 @@ describe('R4-1: the guard snapshot reads common-dir files without blocking or fo
         `cd "${dir}" && while :; do rm -f .f${i}; mkfifo .f${i}; mv -f .f${i} ${name}; cp .r${i} .s${i}; mv -f .s${i} ${name}; done`],
       { stdio: 'ignore' });
     });
+    // A fixed number of rounds, not a wall-clock window: a loaded machine runs them slower, never fewer. Each call keeps its own hang guard.
+    const ROUNDS = 200;
+    const guardDirs = [path.join(common, 'info'), path.join(common, 'hooks'), common, ws.path];
     let calls = 0;
     try {
-      const deadline = Date.now() + 20_000;
-      while (Date.now() < deadline) {
-        await within(snapshotGuardFiles(common), 10_000, `snapshotGuardFiles call ${calls + 1}`);
-        if (calls % 50 === 0) await within(fx.manager.status(ws.path, exp(ws.path)).catch(() => undefined), 10_000, `status() at call ${calls + 1}`);
+      while (calls < ROUNDS) {
+        await expectNoHang(snapshotGuardFiles(common), 10_000, `snapshotGuardFiles call ${calls + 1}`, guardDirs);
+        if (calls % 50 === 0) await expectNoHang(fx.manager.status(ws.path, exp(ws.path)).catch(() => undefined), 10_000, `status() at call ${calls + 1}`, guardDirs);
         calls++;
       }
     } finally {
       loops.forEach((l) => l.kill('SIGKILL'));
+      releaseFifos(guardDirs);
     }
-    assert.ok(calls > 50, `only ${calls} snapshot calls ran`);
+    assert.equal(calls, ROUNDS, 'every round ran');
   });
 
   it('a FIFO guard file is skipped without blocking, and a symlinked one records its target, not the content', posixOnly, async () => {

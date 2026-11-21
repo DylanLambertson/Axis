@@ -1,4 +1,5 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
+import { createHash } from "node:crypto";
 import { chmodSync, cpSync, readFileSync, readdirSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
@@ -136,17 +137,20 @@ export function damagedCopy(dataDir: string, into: string, damage: (db: Database
 
 /**
  * The user's native confirmation of a challenge, answered through the supervisor, and the wait until the host has RECORDED it (the
- * audit log says so): after this the approved retry is accepted at once, so a test never polls an approval it could spend.
+ * audit log says so): after this the approved retry is accepted at once, so a test never polls an approval it could spend. The
+ * row is matched by THIS challenge's audit ref (the first 12 digits of the SHA-256 of its id, as the challenge manager writes it),
+ * not by a count of confirmations among the newest rows: on a long log an older confirmation can leave that window as the new
+ * one enters, and a count would then never rise.
  */
-export async function confirmNative(sup: TestSupervisor, client: TestClient, challengeId: string): Promise<void> {
-  const confirmed = async (): Promise<number> => {
+export async function confirmNative(sup: TestSupervisor, client: TestClient, challengeId: string, tries?: number): Promise<void> {
+  const ref = createHash("sha256").update(challengeId, "utf8").digest("hex").slice(0, 12);
+  const recorded = async (): Promise<boolean> => {
     const { head } = await client.ok<{ head: { seq: number } | null }>("axis.audit", "status", {});
     const { events } = await client.ok<{ events: Array<{ action: string; payload: Record<string, unknown> }> }>("axis.audit", "list", { afterSeq: Math.max(0, (head?.seq ?? 0) - MAX_AUDIT_LIST), limit: MAX_AUDIT_LIST });
-    return events.filter((e) => e.action === "tier4.challenge" && e.payload["phase"] === "native" && e.payload["decision"] === "confirm").length;
+    return events.some((e) => e.action === "tier4.challenge" && e.payload["phase"] === "native" && e.payload["decision"] === "confirm" && e.payload["ref"] === ref);
   };
-  const before = await confirmed();
   sup.answerNative(challengeId, true);
-  await until(async () => (await confirmed()) > before, "the native confirmation to be recorded");
+  await until(recorded, "the native confirmation to be recorded", tries);
 }
 
 /**
