@@ -54,6 +54,8 @@ const HOST_FILE_RULES = new Map([
 /** The files that may load the composition root: the public index, and the utility process entry (it calls `composeDaemonHost` and nothing else of it). */
 const COMPOSE_IMPORTERS = new Set(["src/index.ts", "src/entry.ts"]);
 const COMPOSITION_FILES = new Set(["src/index.ts", "src/compose.ts"]);
+/** The files that may load `src/bindings/providers.ts` (the egress point): the composition root, the host (its audit allowlist) and the public index. */
+export const PROVIDERS_IMPORTERS = new Set(["src/compose.ts", "src/host.ts", "src/index.ts"]);
 /** Packages whose bindings live in `src/bindings/*.ts` of the host (they land with their own changes). */
 const HOST_BINDING_PACKAGES = ["@axis/broker", "@axis/runs", "@axis/review"];
 
@@ -113,6 +115,11 @@ export function violation(pkg, spec, file = null, pkgDir = null) {
     if (pkg === HOST_PACKAGE && /^src[\\/]compose(\.[cm]?[jt]s)?$/.test(rel)) {
       const from = relative(pkgDir, file).split(sep).join("/");
       if (from.startsWith("src/") && !COMPOSE_IMPORTERS.has(from)) return "only src/index.ts and the process entry src/entry.ts may import the composition root";
+    }
+    // The providers binding holds the one egress point (the adapter's fetch): only the composition files that build or describe it load it.
+    if (pkg === HOST_PACKAGE && /^src[\\/]bindings[\\/]providers(\.[cm]?[jt]s)?$/.test(rel)) {
+      const from = relative(pkgDir, file).split(sep).join("/");
+      if (from.startsWith("src/") && !PROVIDERS_IMPORTERS.has(from)) return "only src/compose.ts, src/host.ts and src/index.ts may import the providers binding";
     }
     if (pkg === HOST_PACKAGE && /^src[\\/]gate[\\/]worktrees-confirm(\.[cm]?[jt]s)?$/.test(rel)) {
       const from = relative(pkgDir, file).split(sep).join("/");
@@ -186,7 +193,7 @@ for (const pkg of packages) {
         const why = violation(pkg, spec, file, pkgDir);
         if (why) bad.push(`${file}: ${spec} (${why})`);
       }
-      for (const call of unsafeForms(source, file, { pkg, shipped: relative(pkgDir, file).split(sep)[0] === "src" })) bad.push(`${file}: ${call}`);
+      for (const call of unsafeForms(source, file, { pkg, shipped: relative(pkgDir, file).split(sep)[0] === "src", pkgRel: relative(pkgDir, file).split(sep).join("/") })) bad.push(`${file}: ${call}`);
     }
     assert.deepEqual(bad, []);
   });

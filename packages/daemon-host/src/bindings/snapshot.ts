@@ -21,6 +21,11 @@ export interface RunSnapshotterDeps {
    * The common dir is `<root>/.git` and never comes from a file in the git directory, which a run can rewrite.
    */
   readonly projectRoot: (workspaceId: string) => string | undefined;
+  /**
+   * TEST ONLY: the wall-clock bound of one take (default `SNAPSHOT_TAKE_MS`). A real-repository test on a loaded machine raises
+   * it, so a slow snapshot is not read as one that cannot be taken; the host never sets it.
+   */
+  readonly takeMs?: number;
 }
 
 /** Builds the run snapshotter once the host has resolved git (`ComposeOptions.snapshotter`). */
@@ -86,7 +91,7 @@ const taker =
       expectedGitDir: h.worktree.gitDir,
       gitPath: deps.gitPath,
       env: deps.env,
-      limits: { maxMillis: SNAPSHOT_TAKE_MS },
+      limits: { maxMillis: deps.takeMs ?? SNAPSHOT_TAKE_MS },
       attempts: SNAPSHOT_ATTEMPTS,
     });
 

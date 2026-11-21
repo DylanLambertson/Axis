@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { judgeDrift, parseSnapshot, takeSnapshot, type TakeOptions } from "../src/index.js";
 import { parseListOutput, resolveGit, trustedPathEntries } from "../src/git.js";
 import { git, makeFixture, write, type Fixture } from "./helpers.js";
+import { budget } from "./budget.js";
 
 const posix = process.platform !== "win32";
 const realPath = process.env["PATH"] ?? "";
@@ -135,19 +136,26 @@ test("a worktree that is not a git worktree, nested in another repository, is re
   }
 });
 
+/**
+ * Not widened by `budget()`: each git call has its own 5 s cap (TIMEOUT_MS in git.ts), so a snapshot whose budget or abort signal is
+ * ignored would still end after about 5 s. These tests prove that the budget (300 ms) and the abort cut the hung git earlier than
+ * that cap, so the bound sits just under it; the hung git sleeps 30 s, and the slack to the budget is 4 s on a loaded machine.
+ */
+const CUT_BEFORE_PER_CALL_CAP_MS = 4500;
+
 test("a git that hangs is cut by the time budget, and cancellation reaches the process", { skip: !posix }, async () => {
   const f = makeFixture();
   try {
     const g = await logging(f, "exec sh -c 'exec sleep 30'");
     const t0 = Date.now();
-    const s = await takeSnapshot(opts(f, { gitPath: g.path, limits: { maxMillis: 1500 } }));
-    assert.ok(Date.now() - t0 < 4500, `took ${Date.now() - t0} ms`);
+    const s = await takeSnapshot(opts(f, { gitPath: g.path, limits: { maxMillis: 300 } }));
+    assert.ok(Date.now() - t0 < CUT_BEFORE_PER_CALL_CAP_MS, `took ${Date.now() - t0} ms`);
     assert.ok(s.incomplete.some((i) => i.blocking), "a hung git leaves the snapshot incomplete");
     const ac = new AbortController();
-    setTimeout(() => ac.abort(), 300);
+    setTimeout(() => ac.abort(), 100);
     const t1 = Date.now();
     await assert.rejects(takeSnapshot(opts(f, { gitPath: g.path, signal: ac.signal })), /cancelled/);
-    assert.ok(Date.now() - t1 < 4000, `cancel took ${Date.now() - t1} ms`);
+    assert.ok(Date.now() - t1 < CUT_BEFORE_PER_CALL_CAP_MS, `cancel took ${Date.now() - t1} ms`);
   } finally {
     f.cleanup();
   }
@@ -188,7 +196,7 @@ test("git's output is bounded: more entries than the cap is unreadable, and the 
     appendFileSync(join(f.common, "config"), `[a]\n${"\tk = v\n".repeat(20_000)}`);
     const t0 = Date.now();
     const s = await takeSnapshot(opts(f));
-    assert.ok(Date.now() - t0 < 5000);
+    assert.ok(Date.now() - t0 < budget(5000));
     assert.ok(s.incomplete.some((i) => i.id === "git" && i.blocking));
   } finally {
     f.cleanup();

@@ -108,7 +108,8 @@ export class RunSupervisor extends SupervisorQueries {
     const snap = await timed(o.clock, this.limits.snapshotTimeoutMs, () => o.snapshotter.before({ runId: id, workspaceId: live.workspaceId, worktree: live.worktree }));
     if (!snap.ok) {
       this.transition(live, "CANCELLED", RUN_REASONS.snapshotFailed);
-      throw new AxisError("E_UNAVAILABLE", "The pre-run snapshot did not complete, so the run was not started");
+      // A closed, specific reason (never the snapshotter's own text): a refusal on a loaded machine must say whether it was the time budget.
+      throw new AxisError("E_UNAVAILABLE", "The pre-run snapshot did not complete, so the run was not started", { reason: snap.why === "timeout" ? "SNAPSHOT_TIMEOUT" : "SNAPSHOT_FAILED" });
     }
     if (this.closed || live.stopRequested) {
       this.transition(live, "CANCELLED", RUN_REASONS.userKilled);

@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { z } from "zod";
-import { lookupMethod } from "../src/index.js";
+import { lookupMethod, lookupMethodIn, plannedContracts } from "../src/index.js";
 import { canaryVariants, hostileVariants, nodesOf } from "./hostile.js";
 
 export interface Sample {
@@ -27,7 +27,8 @@ export interface Sample {
 }
 
 export function schemaOf(contract: string, method: string, side: "request" | "response"): z.ZodType {
-  const spec = lookupMethod(contract, 1, method);
+  // A planned contract (`plannedContracts`) is tested like a served one; it is never served (registry.test.ts).
+  const spec = lookupMethod(contract, 1, method) ?? lookupMethodIn(plannedContracts, contract, 1, method);
   assert.ok(spec !== undefined, `${contract}/1.${method} is not in the registry`);
   return spec[side];
 }

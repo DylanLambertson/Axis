@@ -41,6 +41,18 @@ test("the supervisor's run limit reaches the wire as its fixed text on E_BACKPRE
   assert.equal(toRunError(new AxisError("E_BACKPRESSURE", "other")).message, "Too many requests are waiting.");
 });
 
+test("a pre-run snapshot refusal reaches the wire with a closed reason: timeout and failure are told apart, unknown reasons are dropped", () => {
+  for (const [raw, wire, text] of [
+    ["SNAPSHOT_TIMEOUT", "snapshot_timeout", "The snapshot before the run did not finish in time; try again."],
+    ["SNAPSHOT_FAILED", "snapshot_failed", "The snapshot before the run could not be taken."],
+  ] as const) {
+    const e = toRunError(new AxisError("E_UNAVAILABLE", "raw text /home/x", { reason: raw }));
+    assert.deepEqual([e.code, e.message, (e as { details?: Record<string, unknown> }).details?.["reason"]], ["E_UNAVAILABLE", text, wire]);
+  }
+  const other = toRunError(new AxisError("E_UNAVAILABLE", "raw text /home/x", { reason: "SOMETHING_ELSE" }));
+  assert.deepEqual([other.message, (other as { details?: unknown }).details], ["The run could not be started right now.", undefined]);
+});
+
 test("the minter refuses malformed facts with a fixed error and stamps the host clock", () => {
   let now = 1_700_000_000_000;
   const minter = createRunTrustMinter({ now: () => now });
