@@ -18,7 +18,9 @@ export const SPAWN_BUILTIN = "node:child_process";
 
 /**
  * The files that start programs, what they may take from `node:child_process`, and the program when it is fixed (`null`:
- * the program is a value, see `runs`). A new file, a new function or a new program here needs an ADR 0005 amendment.
+ * the program is a value, see `runs`: those files are the PTY-2 boundary, any program by value but never a shell). `injectable`:
+ * the file may take an injected spawn function, `const f = injected ?? spawn`, not exported. A new file, a new function or a
+ * new program here needs an ADR 0005 amendment.
  */
 export const SPAWN_FILES = new Map([
   ["audit/lock.ts", { names: new Set(["execFileSync"]), program: "ps", runs: "`ps -o lstart= -p <pid>`: the start time of the lock holder" }],
@@ -27,7 +29,7 @@ export const SPAWN_FILES = new Map([
   ["git-snapshot/git.ts", { names: new Set(["execFile"]), program: null, runs: "git (`rev-parse`, `config --list`), by the absolute path given" }],
   ["git-snapshot/indexflags.ts", { names: new Set(["spawn"]), program: null, runs: "git (`ls-files` index flags), by the absolute path given" }],
   ["worktrees/git.ts", { names: new Set(["spawn"]), program: null, runs: "git, by the resolved path, with an argument vector" }],
-  ["broker/runner.ts", { names: new Set(["spawn"]), program: null, runs: "the approved command's argv (`argv[0]` an absolute path), the run_command boundary (PTY-2, Phase 3 sandbox)" }],
+  ["broker/runner.ts", { names: new Set(["spawn"]), program: null, injectable: true, runs: "the approved command's argv (`argv[0]` an absolute path), the run_command boundary (PTY-2, Phase 3 sandbox)" }],
 ]);
 
 const base = (spec) => spec.replace(/\/.*$/, "");

@@ -92,9 +92,9 @@ export function scanModules(source, file = "x.ts", { vendored = false, shipped =
   const egress = isEgressFile(file, pkg, pkgRel);
   const spawnRule = SPAWN_FILES.get(stagedPathOf(file, pkg, pkgRel) ?? "");
   /** Local names of the functions this file takes from node:child_process (an alias is judged by the name it imports). */
-  const spawnLocals = new Set();
-  /** Names bound by `const f = injected ?? fn` to such a function: they may only be called. */
-  const spawnDerived = new Set();
+  const spawnLocals = new Map();
+  /** Names bound by `const f = injected ?? fn` to such a function (the imported name): they may only be called. */
+  const spawnDerived = new Map();
   const refs = [];
   const bad = [];
   const isLiteral = (n) => n !== undefined && (ts.isStringLiteral(n) || ts.isNoSubstitutionTemplateLiteral(n));
@@ -205,7 +205,28 @@ export function scanModules(source, file = "x.ts", { vendored = false, shipped =
     if (b === undefined || !ts.isBinaryExpression(b) || b.operatorToken.kind !== K.QuestionQuestionToken || !ts.isIdentifier(b.right)) return undefined;
     const d = b.parent;
     const isConst = d !== undefined && ts.isVariableDeclaration(d) && ts.isIdentifier(d.name) && ts.isVariableDeclarationList(d.parent) && (d.parent.flags & ts.NodeFlags.Const) !== 0;
-    return isConst ? b.right : undefined;
+    // Only where the rule allows an injected default, and never on an exported declaration (that would hand out the raw function).
+    const exported = isConst && ts.isVariableStatement(d.parent.parent) && (ts.getModifiers(d.parent.parent) ?? []).some((m) => m.kind === K.ExportKeyword);
+    return isConst && !exported && spawnRule?.injectable === true ? b.right : undefined;
+  };
+  /**
+   * The arguments of a call of a spawn function, so its options are traceable: exactly (program, [argv...], { options }), plus a
+   * function callback for execFile. The argv is an array literal (any other object there would be taken as the options) and the
+   * options an object literal of plain `key: value` and shorthand members; a spread only of `cond ? { ... } : { ... }`.
+   */
+  const optionsBad = (o) => !ts.isObjectLiteralExpression(o) || o.properties.some((m) => {
+    if (ts.isSpreadAssignment(m)) {
+      let e = m.expression;
+      while (ts.isParenthesizedExpression(e)) e = e.expression;
+      return !(ts.isConditionalExpression(e) && !optionsBad(e.whenTrue) && !optionsBad(e.whenFalse));
+    }
+    return !(ts.isShorthandPropertyAssignment(m) || (ts.isPropertyAssignment(m) && (ts.isIdentifier(m.name) || ts.isStringLiteral(m.name))));
+  });
+  const callShapeBad = (call, fn) => {
+    const a = call.arguments;
+    if (a.some((x) => ts.isSpreadElement(x)) || call.questionDotToken !== undefined) return true;
+    const cb = fn === "execFile" && a.length === 4 && (ts.isArrowFunction(a[3]) || ts.isFunctionExpression(a[3]));
+    return !(a.length === 3 || cb) || !ts.isArrayLiteralExpression(a[1]) || optionsBad(a[2]);
   };
   const isSpawnSpec = (e) => keyText(e) !== null && keyText(e).replace(/\/.*$/, "") === SPAWN_BUILTIN;
   /** node:child_process in shipped code (ticket FU-EGRESS): which functions, how they are used, which program, no shell. */
@@ -231,10 +252,12 @@ export function scanModules(source, file = "x.ts", { vendored = false, shipped =
     // A function taken from it: called (with the fixed program, if any), or, where the program is a value, the default in
     // `const f = injected ?? fn`, after which `f` may only be called too. Nothing else.
     const local = ts.isIdentifier(n) && spawnLocals.has(n.text);
-    if ((local || (ts.isIdentifier(n) && spawnDerived.has(n.text))) && !(ts.isImportSpecifier(p) && p.name === n) && (!isNamePosition(n) || ts.isExportSpecifier(p)) && !inType(n)) {
+    const fn = ts.isIdentifier(n) ? spawnLocals.get(n.text) ?? spawnDerived.get(n.text) : undefined;
+    if (fn !== undefined && !(ts.isImportSpecifier(p) && p.name === n) && (!isNamePosition(n) || ts.isExportSpecifier(p)) && !inType(n)) {
       if (ts.isCallExpression(p) && p.expression === n) {
         if (local && spawnRule?.program != null && keyText(p.arguments[0]) !== spawnRule.program) bad.push(`${at(n)}: ${n.text} runs only ${spawnRule.program} in this file, named as that literal`);
-      } else if (!(local && spawnRule?.program === null && derivedDefault(p) === n)) {
+        if (callShapeBad(p, fn)) bad.push(`${at(n)}: ${n.text} is called as (program, [argv], { options })${fn === "execFile" ? " with an optional function callback" : ""}: an array literal argv and an object literal of plain members`);
+      } else if (!(local && derivedDefault(p) === n)) {
         bad.push(`${at(n)}: ${n.text} from ${SPAWN_BUILTIN} may only be called, never stored, passed, returned or exported`);
       }
     }
@@ -243,6 +266,8 @@ export function scanModules(source, file = "x.ts", { vendored = false, shipped =
       const keyName = (k) => (k === undefined ? null : ts.isIdentifier(k) || ts.isStringLiteral(k) || ts.isNoSubstitutionTemplateLiteral(k) ? k.text : ts.isComputedPropertyName(k) ? keyText(k.expression) : null);
       if (ts.isPropertyAssignment(n) && keyName(n.name) === "shell" && n.initializer.kind !== K.FalseKeyword) bad.push(`${at(n)}: shell is only ever false: a shell runs a command string`);
       if (ts.isShorthandPropertyAssignment(n) && n.name.text === "shell") bad.push(`${at(n)}: shell is only ever the literal false`);
+      // A method, accessor or class member named shell computes the value at the call: refused in every spelling.
+      if ((ts.isMethodDeclaration(n) || ts.isGetAccessorDeclaration(n) || ts.isSetAccessorDeclaration(n) || ts.isPropertyDeclaration(n)) && keyName(n.name) === "shell") bad.push(`${at(n)}: shell is only ever the literal false (no method, accessor or class member)`);
       const written = p !== undefined && ts.isBinaryExpression(p) && p.left === n && p.operatorToken.kind >= K.FirstAssignment && p.operatorToken.kind <= K.LastAssignment;
       if (written && ((ts.isPropertyAccessExpression(n) && n.name.text === "shell") || (ts.isElementAccessExpression(n) && keyText(n.argumentExpression) === "shell"))) bad.push(`${at(n)}: shell is only ever the literal false`);
     }
@@ -310,10 +335,11 @@ export function scanModules(source, file = "x.ts", { vendored = false, shipped =
   // Imports are top-level statements: collect their local names first, so a use above the import is judged too.
   for (const st of sf.statements) {
     const nb = ts.isImportDeclaration(st) && isSpawnSpec(st.moduleSpecifier) && st.importClause?.isTypeOnly !== true ? st.importClause?.namedBindings : undefined;
-    if (nb !== undefined && ts.isNamedImports(nb)) for (const e of nb.elements) if (!e.isTypeOnly) spawnLocals.add(e.name.text);
+    if (nb !== undefined && ts.isNamedImports(nb)) for (const e of nb.elements) if (!e.isTypeOnly) spawnLocals.set(e.name.text, (e.propertyName ?? e.name).text);
   }
   const derive = (n) => {
-    if (ts.isVariableDeclaration(n) && n.initializer !== undefined && spawnLocals.has(derivedDefault(n.initializer)?.text)) spawnDerived.add(n.name.text);
+    const from = ts.isVariableDeclaration(n) && n.initializer !== undefined ? spawnLocals.get(derivedDefault(n.initializer)?.text) : undefined;
+    if (from !== undefined) spawnDerived.set(n.name.text, from);
     ts.forEachChild(n, derive);
   };
   if (spawnLocals.size > 0) derive(sf);

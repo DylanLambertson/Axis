@@ -98,11 +98,11 @@ const accepted = (staged, src) => assert.deepEqual(forms(staged, src), [], `${st
 test("a named file takes only its own functions, statically and by name, and only calls them", () => {
   const S = 'import { spawn } from "node:child_process";\n';
   accepted("git-ops/nodeRunner.ts", `${S}spawn(p, [], { shell: false });`);
-  accepted("git-ops/nodeRunner.ts", `spawn(p, []);\n${S}`);
-  accepted("git-ops/nodeRunner.ts", `${S}spawn("/usr/bin/git", []);`);
+  accepted("git-ops/nodeRunner.ts", `spawn(p, [...argv], { cwd });\n${S}`);
+  accepted("git-ops/nodeRunner.ts", `${S}spawn("/usr/bin/git", [], {});`);
   accepted("broker/runner.ts", 'import { spawn as nodeSpawn, type ChildProcess } from "node:child_process";\nconst f = o.spawn ?? nodeSpawn;\nlet c: ChildProcess; type T = typeof nodeSpawn;');
-  accepted("audit/lock.ts", 'import { execFileSync } from "node:child_process";\nexecFileSync("ps", ["-o", "lstart="]);');
-  accepted("worktrees/lock.ts", "import { execFile } from 'node:child_process';\nexecFile(`/bin/ps`, a, o, cb);");
+  accepted("audit/lock.ts", 'import { execFileSync } from "node:child_process";\nexecFileSync("ps", ["-o", "lstart="], { encoding: "utf8", "timeout": 2000 });');
+  accepted("worktrees/lock.ts", "import { execFile } from 'node:child_process';\nexecFile(`/bin/ps`, [], { env: { ...e } }, (err, out) => {});");
   const named = /is not one this file may use/;
   for (const fn of ["exec", "execSync", "fork", "spawnSync", "execFileSync", "execFile"]) refused("git-ops/nodeRunner.ts", `import { ${fn} } from "node:child_process";\n${fn}(p);`, named);
   refused("git-ops/nodeRunner.ts", 'import { exec as spawn } from "node:child_process";\nspawn(p);', named);
@@ -124,8 +124,15 @@ test("a named file takes only its own functions, statically and by name, and onl
   refused("audit/lock.ts", 'import { execFileSync } from "node:child_process";\nconst f = o.run ?? execFileSync;', value);
   // The injected default: bound once by const, and then only called.
   const B = 'import { spawn as nodeSpawn } from "node:child_process";\n';
-  accepted("broker/runner.ts", `${B}function r() { f(p, a, { shell: false }); }\nconst f = o.spawn ?? nodeSpawn;`);
+  accepted("broker/runner.ts", `${B}function r() { f(p, [...a.slice(1)], { shell: false }); }\nconst f = o.spawn ?? nodeSpawn;`);
   for (const use of ["g(f);", "export { f };", "const h = f;", "return f;", "const o2 = { f };"]) refused("broker/runner.ts", `${B}const f = o.spawn ?? nodeSpawn;\n${use}`, value);
+  // Never exported, in any form, and only where the rule allows an injected default (the broker).
+  for (const use of ["export const f = o.spawn ?? nodeSpawn;", "export const f = o.spawn ?? nodeSpawn, g = 1;"]) refused("broker/runner.ts", `${B}${use}`, value);
+  for (const use of ["export { f };", "export { f as spawn };", "export default f;", "module.exports.f = f;", "exports.f = f;", "export const g = f;", "export function g() { return f; }", "export class G { s = f; }", "export let g = f;", "export var g = f;"]) {
+    refused("broker/runner.ts", `${B}const f = o.spawn ?? nodeSpawn;\n${use}`, value);
+  }
+  for (const f of ["git-ops/nodeRunner.ts", "git-snapshot/indexflags.ts", "worktrees/git.ts"]) refused(f, 'import { spawn } from "node:child_process";\nconst f = o.spawn ?? spawn;', value);
+  refused("git-snapshot/git.ts", 'import { execFile } from "node:child_process";\nconst f = o.x ?? execFile;', value);
   for (const decl of ["let f = o.spawn ?? nodeSpawn;", "var f = o.spawn ?? nodeSpawn;", "const f = (o.spawn ?? nodeSpawn);", "const f = o.spawn ?? nodeSpawn ?? g;", "const { f } = o.spawn ?? nodeSpawn;", "f = o.spawn ?? nodeSpawn;", "const f = o.spawn || nodeSpawn;"]) {
     refused("broker/runner.ts", `${B}${decl}`, value);
   }
@@ -144,8 +151,34 @@ test("the shell option is only ever the literal false, in every spelling", () =>
     for (const f of ["git-ops/nodeRunner.ts", "broker/runner.ts", "audit/lock.ts"]) refused(f, `${S}const o = { ${opt} };`, shell);
   }
   refused("broker/runner.ts", "const o = { shell: true };", shell);
+  for (const m of ["get shell() { return true; }", "set shell(v) {}", "shell() { return true; }", '"shell"() {}', '["shell"]() {}', "get [`shell`]() { return 1; }", "async shell() {}", "*shell() {}"]) {
+    refused("git-ops/nodeRunner.ts", `${S}spawn(p, [], { ${m} });`, shell);
+  }
+  refused("git-ops/nodeRunner.ts", `${S}class O { shell = true; }`, shell);
+  refused("git-ops/nodeRunner.ts", `${S}class O { get shell() { return true; } }`, shell);
   for (const w of ["o.shell = true;", 'o["shell"] = "/bin/sh";', "o.shell ||= true;", "o.shell ??= x;"]) refused("worktrees/git.ts", `${S}${w}`, shell);
-  accepted("git-ops/nodeRunner.ts", `${S}spawn(p, a, { shell: false, "env": {} }); const v = o.shell;`);
+  accepted("git-ops/nodeRunner.ts", `${S}spawn(p, [], { shell: false, "env": {}, ...(c ? {} : { signal }) }); const v = o.shell;`);
+});
+
+test("a spawn function is called as (program, [argv], { options }), so the options can be traced", () => {
+  const S = 'import { spawn } from "node:child_process";\n';
+  const shape = /is called as \(program, \[argv\], \{ options \}\)/;
+  const calls = [
+    "spawn(p, [], o);", "spawn(p, [], { ...o });", "spawn(p, [], { ...(c ? o : {}) });", "spawn(p, [], { ...(c ? {} : { ...o }) });", "spawn(p, [], Object.assign({}, o));",
+    "spawn(p, [], mk());", "spawn(p, [], { [k]: true });", '[`spawn`](p, [], {});', "spawn(p, [], { get cwd() { return d; } });", "spawn(p, [], { m() {} });",
+    "spawn(p, argv, {});", "spawn(p, a.slice(1), {});", "spawn(p, { shell: true }, {});", "spawn(p, o);", "spawn(p);", "spawn(p, [], {}, () => {});", "spawn(...args);",
+    "spawn(p, ...rest);", "spawn(...[p, { shell: true }], [], {});", "spawn(...pa, [], {});", "spawn?.(p, [], {});", "spawn(p, [], { shell: false }, x);",
+  ].filter((c) => c.startsWith("spawn"));
+  for (const c of calls) refused("git-ops/nodeRunner.ts", `${S}${c}`, shape);
+  const E = 'import { execFile } from "node:child_process";\n';
+  accepted("git-snapshot/git.ts", `${E}execFile(g, [...b], { cwd }, (e, out) => {});`);
+  accepted("git-snapshot/git.ts", `${E}execFile(g, [], { cwd });`);
+  accepted("git-snapshot/git.ts", `${E}execFile(g, [], { cwd }, function cb() {});`);
+  for (const c of ["execFile(g, [], { cwd }, cb);", "execFile(g, [], { cwd }, () => {}, x);", "execFile(g, [], o, () => {});"]) refused("git-snapshot/git.ts", `${E}${c}`, shape);
+  refused("audit/lock.ts", 'import { execFileSync } from "node:child_process";\nexecFileSync("ps", [], {}, () => {});', shape);
+  // The injected default is held to the same shape.
+  const B = 'import { spawn as nodeSpawn } from "node:child_process";\nconst f = o.spawn ?? nodeSpawn;\n';
+  for (const c of ["f(p, a, {});", "f(p, [], o);", "f(p, [], { ...o });"]) refused("broker/runner.ts", `${B}${c}`, shape);
 });
 
 test("everywhere else, every way to reach a process or resolver is refused", () => {
