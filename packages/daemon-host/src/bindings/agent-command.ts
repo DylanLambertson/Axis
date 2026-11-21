@@ -25,8 +25,8 @@ import { ComposerRunHalt, type ComposerToolSpec, type RunRepositoryGuard } from 
  *   decoded, redacted, escaped and cut, inside an untrusted-labelled block.
  * - **WT-2, broker side.** One GIT-SNAP-1 baseline per run (hooks, common dir config, worktree link), taken before its first
  *   command and never replaced; the repository is compared with it around every later command, before every model turn and
- *   at the run's end (`RunWt2`). Any change, or a check that cannot be judged, halts the whole run (`GIT_DRIFT`; a snapshot
- *   that only ran out of time or kept changing: `GIT_DRIFT_UNJUDGED`, C7-F2): a planted
+ *   at the run's end (`RunWt2`). Any change, or a check that cannot be judged, halts the whole run (`GIT_DRIFT`; a check
+ *   whose take stopped at a bound and saw no change: `GIT_DRIFT_UNJUDGED`, C7-F2): a planted
  *   hook never reaches a later git operation of the run, even when it lands between two commands. A baseline that cannot be
  *   taken refuses the call with nothing started.
  */
@@ -168,14 +168,14 @@ export class RunWt2 {
     return this.#halt !== undefined;
   }
 
-  /** The closed reason the run halts with: a change seen, or only a snapshot that could not finish (C7-F2). */
+  /** The closed reason the run halts with: a change seen, or a check that could not finish and saw no change (C7-F2). */
   get haltReason(): "GIT_DRIFT" | "GIT_DRIFT_UNJUDGED" {
     return this.#halt ?? "GIT_DRIFT";
   }
 
   /**
    * Clean, or halt: anything but a clean verdict (drift, no baseline, a snapshot that cannot be taken or judged) is drift.
-   * Only a snapshot that ran out of time or kept changing is `GIT_DRIFT_UNJUDGED`; a check that throws is `GIT_DRIFT`.
+   * Only a check whose take stopped at a bound and saw no change is `GIT_DRIFT_UNJUDGED`; a check that throws is `GIT_DRIFT`.
    */
   async #check(signal: AbortSignal): Promise<boolean> {
     let r: { readonly drift: boolean; readonly unjudged?: boolean };

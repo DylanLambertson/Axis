@@ -133,21 +133,22 @@ export function createRunSnapshotter(deps: RunSnapshotterDeps, maxHeld = MAX_HEL
 export const COMPOSER_SNAPSHOT_TAKE_MS = 10_000;
 
 /**
- * The check could not judge the repository, and saw no change in what it did read (review c7-f2 r1 SF-1): the current snapshot's
- * only problem is blocking `snapshot` items (a take stopped at its bound, or two takes that differed), nothing else is unread,
- * the baseline is sound, and the diff against the baseline holds no addition or modification: none at all, or, for a take
- * stopped at its bound, only removals (entries the partial take never reached). A writer that keeps touching a file the
- * takes read in full (the takes then differ) shows that change in the diff and is a change seen, `GIT_DRIFT`.
+ * The check could not judge the repository and saw no change in what it did read (review c7-f2 r1 SF-1, r2 SF-A): the current
+ * snapshot's only problem is blocking `snapshot` items, among them a take stopped at one of its bounds ("stopped at the ...
+ * limit": time, entries or bytes); nothing else is unread; the baseline is sound; the diff is not cut short; and it holds no
+ * addition or modification, only removals of entries the stopped take never reached (or nothing). A take that ran to its end
+ * and differed from the next one ("changed between consecutive snapshots" without a stopped item) means a writer, not load:
+ * `GIT_DRIFT`, even when the last take matches the baseline (a writer that plants and removes a hook in turn).
  * `current.link.mismatch` is also covered by `reasons.length` (a mismatch adds a second reason); kept as defence in depth.
  */
 function onlyUnfinished(v: ReturnType<typeof judgeDrift>, current: Snapshot): boolean {
   if (v.status !== "refused" || v.reasons.length !== 1 || current.link.mismatch) return false;
   const blocking = current.incomplete.filter((i) => i.blocking);
   if (blocking.length === 0 || !blocking.every((i) => i.id === "snapshot")) return false;
+  if (!blocking.some((i) => i.reason.startsWith("stopped at the"))) return false;
   const d = v.diff;
-  if (d.changes.length === 0 && d.settingChanges.length === 0 && d.refChanges.length === 0) return true;
-  const stopped = blocking.some((i) => i.reason.startsWith("stopped at the"));
-  return stopped && d.changes.every((c) => c.kind === "removed") && d.settingChanges.every((c) => c.added.length === 0) && d.refChanges.every((c) => c.kind === "removed");
+  if (d.truncated) return false;
+  return d.changes.every((c) => c.kind === "removed") && d.settingChanges.every((c) => c.added.length === 0) && d.refChanges.every((c) => c.kind === "removed");
 }
 
 /** The host's `RunRepositoryGuard` (ports/composer.ts) over `@axis/git-snapshot`. `takeMs` bounds each take (default above). */
