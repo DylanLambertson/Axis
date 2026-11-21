@@ -46,6 +46,7 @@ const STATES = {
 	panels: { sideBarVisible: true, panelVisible: true, auxiliaryBarVisible: true },
 };
 const evaluators = Object.entries(STATES).map(([name, over]) => ({ name, evaluator: { getValue: key => (key in over ? over[key] : context[key]) } }));
+window.states = Object.keys(STATES);
 const holdsIn = expr => evaluators.filter(e => !expr || expr.evaluate(e.evaluator)).map(e => e.name);
 const editorActions = new Set([...EditorExtensionsRegistry.getEditorActions()].map(a => a.id));
 const isEditorCommand = id => editorActions.has(id) || !!EditorExtensionsRegistry.getEditorCommand(id);
