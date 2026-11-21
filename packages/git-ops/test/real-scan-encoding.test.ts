@@ -8,6 +8,7 @@ import { execFileSync } from "node:child_process";
 import { GitOpsError, executePush, planPush } from "../src/index.js";
 import { messageViews } from "../src/messageViews.js";
 import { baseOf, fixture, type Fixture } from "./realFixture.js";
+import { budget } from "./load-margin.js";
 
 /** A secret-shaped value assembled at runtime so no literal looks like a credential. */
 const AWS_KEY = ["AK", "IA", "ABCDEFGHIJKLMNOP"].join("");
@@ -190,7 +191,7 @@ for (const scanMode of ["refuse", "warn"] as const) {
     const t = Date.now();
     const e = await planPush(f.deps, input(f)).then(() => undefined, (x: unknown) => x);
     assert.ok(e instanceof GitOpsError && e.code === "E_POLICY_DENIED" && e.message.includes(sha.slice(0, 12)) && !e.message.includes("latin1"), String(e));
-    assert.ok(Date.now() - t < 5000, "bounded time");
+    assert.ok(Date.now() - t < budget(5000), "bounded time");
     assert.ok(process.memoryUsage().rss - rss < 1024 * 1024 * 1024, "bounded memory");
   });
 }
@@ -223,10 +224,11 @@ test("PSH-1: messageViews refuses what the strict decoder rejects and strips shi
 
 test("PSH-1: messageViews decodes once whatever the header count, and takes the first header the way git does", () => {
   const body = "x".repeat(1024);
-  const many = `tree x\n${"encoding latin1\n".repeat(5000)}\n${body}`;
+  // 50 000 headers (800 KB): one decode per header would cost minutes, a single scan of them a few milliseconds.
+  const many = `tree x\n${"encoding latin1\n".repeat(50_000)}\n${body}`;
   const t = Date.now();
   assert.equal(messageViews(many).undecodable, true);
-  assert.ok(Date.now() - t < 1000);
+  assert.ok(Date.now() - t < budget(1000));
   const object = (enc: string, m: Buffer): string => Buffer.concat([ascii(`tree x\nauthor a <b> 1 +0000\nencoding ${enc}\n\n`), m]).toString("latin1");
   for (const enc of ["CP932", "eucJP", "CP936", "CP949"]) assert.equal(messageViews(object(enc, ascii("ok\n"))).undecodable, false, enc);
   assert.equal(messageViews(object("ISO-2022-JP\r", ascii(`${AWS_KEY.slice(0, 4)}\x1b(B${AWS_KEY.slice(4)}\n`))).views.some((v) => v.includes(AWS_KEY)), true);
