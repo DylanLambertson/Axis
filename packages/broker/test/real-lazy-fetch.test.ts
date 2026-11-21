@@ -14,10 +14,11 @@ const GIT = ((): string | undefined => {
   const r = spawnSync("sh", ["-c", "command -v git"], { encoding: "utf8" });
   return r.status === 0 ? r.stdout.trim() : undefined;
 })();
-const partialOk = ((): boolean => {
+const minor = ((): number => {
   const m = GIT === undefined ? null : /git version (\d+)\.(\d+)/.exec(execFileSync(GIT, ["--version"], { encoding: "utf8" }));
-  return m !== null && (Number(m[1]) > 2 || (Number(m[1]) === 2 && Number(m[2]) >= 27));
+  return m === null ? 0 : Number(m[1]) > 2 ? Infinity : Number(m[1]) === 2 ? Number(m[2]) : 0;
 })();
+const partialOk = minor >= 27;
 const SKIP = process.platform === "win32" ? "POSIX shell fixture" : !partialOk ? "partial clone over file:// needs git 2.27" : false;
 const PATH = process.env["PATH"] ?? "/usr/bin:/bin";
 
@@ -96,16 +97,25 @@ const CALLS: ReadonlyArray<readonly [string, GitCall]> = [
   ["show -p HEAD", { command: "show", flags: ["-p"], revs: ["HEAD"] }],
 ];
 
-for (const [label, pick] of [["git as installed", () => GIT as string], ["old-git stand-in (no GIT_NO_LAZY_FETCH)", () => without("GIT_NO_LAZY_FETCH")]] as const) {
+// Each pin is the only protection in one variant: as installed (every pin); the old-git stand-in (GIT_ALLOW_PROTOCOL=/ and
+// help.autocorrect=0 alone); GIT_ALLOW_PROTOCOL removed (GIT_NO_LAZY_FETCH alone, git 2.44 and later).
+const VARIANTS: ReadonlyArray<readonly [string, () => string, string | false]> = [
+  ["git as installed", () => GIT as string, false],
+  ["old-git stand-in (no GIT_NO_LAZY_FETCH)", () => without("GIT_NO_LAZY_FETCH"), false],
+  ["GIT_NO_LAZY_FETCH alone (no GIT_ALLOW_PROTOCOL)", () => without("GIT_ALLOW_PROTOCOL"), minor >= 44 ? false : "GIT_NO_LAZY_FETCH needs git 2.44"],
+];
+
+for (const [label, pick, needs] of VARIANTS) {
   for (const vector of Object.keys(VECTORS)) {
-    test(`no broker git call runs a lazy-fetch program: ${vector}, ${label}`, { skip: SKIP }, async () => {
+    test(`no broker git call runs a lazy-fetch program: ${vector}, ${label}`, { skip: SKIP || needs }, async () => {
       const h = hostile(vector);
       spawnSync(pick(), ["diff"], { cwd: h.w.workTree, env: h.env, stdio: "ignore", timeout: 30_000 });
       assert.equal(h.fired(), true, `control: plain git diff runs the ${vector} program`);
       rmSync(h.marker, { force: true });
       const git = createBrokerGit({ runner: createNodeRunner({ gitPath: pick(), env: h.env }), parentEnv: h.env, assertNoDrift: async () => undefined, platform: "linux" });
       for (const [name, call] of CALLS) {
-        await git.run(h.w, call).catch(() => undefined);
+        // git may fail; a refusal must not pass for a safe call (the call has to really run).
+        await git.run(h.w, call).catch((e: unknown) => assert.notEqual((e as { code?: string }).code, "E_POLICY_DENIED", `${name} was refused`));
         assert.equal(h.fired(), false, `${name} ran it: ${h.fired() ? readFileSync(h.marker, "utf8") : ""}`);
       }
     });

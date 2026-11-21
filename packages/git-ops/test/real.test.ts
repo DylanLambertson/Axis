@@ -80,7 +80,7 @@ test("a hardened call runs no pre-push hook, a daemon-side push is refused by th
   const guarded = guardedRunner(inner, f.deps);
   const refspec = "refs/heads/axis/feat:refs/heads/axis/feat";
   const hardened = [...prefix(f.wt, f.deps, { context: "daemon", hooks: false, filters: [] }), "push", "--", "origin", refspec];
-  const env = { PATH: PATHS, HOME: f.deps.env.daemon["HOME"] as string, GIT_TERMINAL_PROMPT: "0" };
+  const env = { PATH: PATHS, HOME: f.deps.env.daemon["HOME"] as string, GIT_TERMINAL_PROMPT: "0", GIT_NO_LAZY_FETCH: "1", GIT_ALLOW_PROTOCOL: "/" };
   const r = await guarded.run({ argv: hardened, cwd: f.wt.workTree, env, context: "daemon" });
   assert.notEqual(r.code, 0, "the daemon never pushes");
   assert.match(r.stderr, /not allowed|protocol/i);

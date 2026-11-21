@@ -6,7 +6,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { createNodeRunner, daemonGitEnv, daemonGitFor, type GitOpsDeps, type WorktreeRef } from "../src/index.js";
+import { createNodeRunner, daemonGitEnv, daemonGitFor, type GitOpsDeps, type GitRunRequest, type WorktreeRef } from "../src/index.js";
 import { PATHS, tmp } from "./realFixture.js";
 
 const GIT = ((): string | undefined => {
@@ -132,7 +132,8 @@ for (const [label, pick, needs] of VARIANTS) {
       rmSync(h.marker, { force: true });
       const g = await daemonGitFor(h.wt, deps(pick(), h.env));
       for (const shape of SHAPES(h.missingBlob)) {
-        await g([...shape]).catch(() => undefined);
+        // git may fail; a refusal must not pass for a safe call (the call has to really run).
+        await g([...shape]).catch((e: unknown) => assert.notEqual((e as { code?: string }).code, "E_POLICY_DENIED", `${shape.join(" ")} was refused`));
         assert.equal(h.fired(), false, `${shape.join(" ")} ran it: ${h.fired() ? readFileSync(h.marker, "utf8") : ""}`);
       }
     });
@@ -146,5 +147,19 @@ test("daemonGitEnv pins GIT_NO_LAZY_FETCH=1 and GIT_ALLOW_PROTOCOL=/ whatever th
       assert.deepEqual([env["GIT_NO_LAZY_FETCH"], env["GIT_ALLOW_PROTOCOL"]], ["1", "/"], platform);
       assert.equal(env["GIT_PROTOCOL_FROM_USER"], undefined);
     }
+  }
+});
+
+test("daemonGitFor sets the pins after its fixed variables, so a fixed.env cannot replace one", async () => {
+  const seen: GitRunRequest[] = [];
+  const runner = {
+    run: async (req: GitRunRequest) => (seen.push(req), { code: req.argv.includes("--version") ? 0 : 1, stdout: "git version 2.53.0\n", stderr: "" }),
+  };
+  const d: GitOpsDeps = { ...deps("/usr/bin/git", { PATH: "/bin" }), runner };
+  const g = await daemonGitFor({ workTree: "/w", gitDir: "/w/.git" }, d, {}, { env: { GIT_NO_LAZY_FETCH: "0", GIT_ALLOW_PROTOCOL: "ext", GIT_ATTR_NOSYSTEM: "1" } });
+  await g(["cat-file", "-p", "HEAD"]);
+  assert.ok(seen.length >= 3, "the version check, the filter scan and the call");
+  for (const r of seen) {
+    assert.deepEqual([r.env["GIT_NO_LAZY_FETCH"], r.env["GIT_ALLOW_PROTOCOL"], r.env["GIT_ATTR_NOSYSTEM"]], ["1", "/", "1"], r.argv.join(" "));
   }
 });
