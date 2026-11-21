@@ -1,5 +1,5 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
-import type { AuditSink, Redactor } from "@axis/audit";
+import { secretForms, type AuditSink, type Redactor } from "@axis/audit";
 import { createAnthropicAdapter, type AnthropicLimits, type FetchLike, type KeyPurpose, type Pricing } from "@axis/anthropic";
 import type { ProviderCredential } from "@axis/protocol";
 import { ProviderError, guardProvider, type GenerateRequest, type GenerateResult, type GuardLimits, type GuardedProvider, type ModelInfo, type RunOptions, type StreamEvent } from "@axis/providers";
@@ -166,6 +166,42 @@ export function productionConnection(o: Pick<AnthropicConnectionOptions, "connec
   return { anthropic: { connectionId: o.connectionId, backend: o.backend, ...(o.pricing === undefined ? {} : { pricing: o.pricing }) } };
 }
 
+/**
+ * The parts of `text`'s base64 and base64url that do not depend on where its bytes fall in a longer encoded run (review
+ * c7-f4 r1 SF): for text starting 0, 1 or 2 bytes into a 3-byte group, the whole groups after the first partial one,
+ * without the last partial group (which bytes after it change). Each is at least 8 characters for text of at least 8
+ * bytes. `holdsKey` takes them for every form of the key.
+ */
+export function base64Middles(text: string): string[] {
+  const bytes = Buffer.from(text, "utf8");
+  const out: string[] = [];
+  for (const offset of [0, 1, 2]) {
+    const start = (3 - offset) % 3;
+    const whole = Math.floor((bytes.length - start) / 3) * 3;
+    if (whole <= 0) continue;
+    const mid = bytes.subarray(start, start + whole);
+    out.push(mid.toString("base64"), mid.toString("base64url"));
+  }
+  return out.filter((m) => m.length >= 8);
+}
+
+/**
+ * True when `text` holds `key` as the host redactor would find it: any registered form (`secretForms`), or base64 /
+ * base64url of any registered form at any byte offset (`base64Middles` of each form; the redactor decodes a base64 run
+ * once and matches every form in it, so base64 of the key, of its hex and of its base64 are all found). Each also as it
+ * appears inside a JSON string (a request body is JSON). Plain substring tests: one key, no redactor windows, cheap enough
+ * for every request. Not found, as by the redactor: base64 nested two levels over a form (the redactor decodes once), a key
+ * split across two strings or across wrapped base64 lines, hex in mixed case, `\u00XX` or full percent escapes, base64 of
+ * the key in another text encoding (UTF-16).
+ */
+export function holdsKey(text: string, key: string): boolean {
+  const forms = secretForms(key);
+  for (const needle of new Set([...forms, ...forms.flatMap(base64Middles)])) {
+    if (text.includes(needle) || text.includes(JSON.stringify(needle).slice(1, -1))) return true;
+  }
+  return false;
+}
+
 export function createProvidersBinding(deps: ProvidersBindingDeps): ProvidersBinding {
   const conn = deps.anthropic;
   if (conn === undefined) return { providers: [], cachedModels: () => undefined, credential: async () => undefined };
@@ -209,6 +245,9 @@ export function createProvidersBinding(deps: ProvidersBindingDeps): ProvidersBin
   const adapter = createAnthropicAdapter({
     connectionId,
     apiKey,
+    // C7-F4: the key just read is never sent inside its own request. The guard's scan ran before the adapter read the key, so
+    // a key new to this process (first read since start, or rotated in the keyring) was unknown to it.
+    holdsKey,
     // The one place shipped code may use the global `fetch` (the module scanner's egress rule): handed to the adapter, which
     // keeps it to the fixed origin with redirects refused. `conn.fetch` is the binding tests' seam (never set in production).
     fetch: conn.fetch ?? ((url, init) => fetch(url, init) as unknown as ReturnType<FetchLike>),
