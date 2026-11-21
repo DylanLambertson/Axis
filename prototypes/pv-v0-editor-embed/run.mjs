@@ -55,8 +55,10 @@ if (!only || only === 'route') for (const q of ['', 'noroutes']) await session(q
 	check(`[${tag}] Ctrl+S in side editor saves a.ts, not the IDE editor`, await ev(p, () => [log.save, log.upstream]), q ? [[], ['workbench.action.files.save']] : [[['/w/repo/a.ts', false]], []]);
 	await reset(p); await p.keyboard.press('Control+k'); await p.keyboard.press('s');
 	check(`[${tag}] Ctrl+K S saves without formatting`, await ev(p, () => [log.save, log.upstream]), q ? [[], ['workbench.action.files.saveWithoutFormatting']] : [[['/w/repo/a.ts', true]], []]);
-	await reset(p); await p.keyboard.press('Control+Shift+s'); await p.keyboard.press('Control+Backslash');
-	check(`[${tag}] Save As and Split hand off to IDE view`, await ev(p, () => [log.reveal.length, log.upstream]), q ? [0, ['workbench.action.files.saveAs', 'workbench.action.splitEditor']] : [2, []]);
+	await reset(p); await ev(p, () => side.editor.setSelection({ startLineNumber: 1, startColumn: 7, endLineNumber: 1, endColumn: 8 }));
+	await p.keyboard.press('Control+Shift+s'); await p.keyboard.press('Control+Backslash');
+	// The hand-off carries the side editor's selection, so IDE view opens where the user was (review r3 N5).
+	check(`[${tag}] Save As and Split hand off to IDE view with the selection`, await ev(p, () => [log.reveal, log.upstream]), q ? [[], ['workbench.action.files.saveAs', 'workbench.action.splitEditor']] : [[['/w/repo/a.ts', '[1,7 -> 1,8]'], ['/w/repo/a.ts', '[1,7 -> 1,8]']], []]);
 	await reset(p); await p.keyboard.press('Control+k'); await p.keyboard.press('p');
 	check(`[${tag}] Ctrl+K P (copy path) hands off instead of copying the IDE file`, await ev(p, () => [log.reveal.length, log.upstream]), q ? [0, ['workbench.action.files.copyPathOfActiveFile']] : [1, []]);
 	await reset(p); await p.keyboard.press('Control+PageDown'); await p.keyboard.press('Control+k'); await p.keyboard.press('w');
@@ -75,9 +77,13 @@ if (!only || only === 'route') for (const q of ['', 'noroutes']) await session(q
 	if (!q) {
 		check('every policy command present was guarded, none missing', await ev(p, () => [registration.guarded.length, registration.missing.includes('workbench.action.files.save')]), [9, false]);
 		// Review r2 N1: a later registration of a guarded id (an extension, or a core command registered at runtime).
-		await ev(p, () => { const { CommandsRegistry, KeybindingsRegistry, KeyMod, KeyCode } = registries;
-			CommandsRegistry.registerCommand('workbench.action.files.save', () => log.upstream.push('late save'));
-			KeybindingsRegistry.registerCommandAndKeybindingRule({ id: 'workbench.action.tasks.build', weight: 200, when: undefined, primary: KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KeyB, handler: () => log.upstream.push('late build') }); });
+		// Review r3 N3: each later registration adds exactly one guard layer (the late command, then its guard).
+		const layers = await ev(p, () => { const { CommandsRegistry, KeybindingsRegistry, KeyMod, KeyCode } = registries;
+			const events = []; const l = CommandsRegistry.onDidRegisterCommand(id => events.push(id));
+			window.lateSave = CommandsRegistry.registerCommand('workbench.action.files.save', () => log.upstream.push('late save'));
+			KeybindingsRegistry.registerCommandAndKeybindingRule({ id: 'workbench.action.tasks.build', weight: 200, when: undefined, primary: KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KeyB, handler: () => log.upstream.push('late build') });
+			l.dispose(); return events; });
+		check('each later registration adds one guard layer', layers, ['workbench.action.files.save', 'workbench.action.files.save', 'workbench.action.tasks.build', 'workbench.action.tasks.build']);
 		await ev(p, () => openFile('a')); await clickSide(p); await reset(p);
 		await p.keyboard.press('Control+s'); await ev(p, () => commands.executeCommand('workbench.action.tasks.build')); // a late keybinding is not read by the standalone dispatcher
 		check('a later registration is guarded again (save, run task)', await ev(p, () => [log.save.length, log.reveal.length, log.upstream, registration.missing.includes('workbench.action.tasks.build')]), [1, 1, [], false]);
@@ -85,6 +91,14 @@ if (!only || only === 'route') for (const q of ['', 'noroutes']) await session(q
 		check('keybinding args {} are not an explicit target', await ev(p, () => [log.save.length, log.upstream]), [1, []]);
 		await clickIde(p); await reset(p); await p.keyboard.press('Control+s');
 		check('...and the later registration still runs from the IDE editor', await ev(p, () => log.upstream), ['late save']);
+		// Review r3 N1: the late registration goes away (its extension deactivates); its guard goes with it, so the IDE
+		// editor's Save reaches the handler below again instead of the removed one, and the side editor is still guarded.
+		await ev(p, () => window.lateSave.dispose()); await reset(p); await p.keyboard.press('Control+s');
+		check('a disposed later registration takes its guard with it', await ev(p, () => [log.upstream, registration.guarded.includes('workbench.action.files.save')]), [['workbench.action.files.save'], true]);
+		await clickSide(p); await reset(p); await p.keyboard.press('Control+s');
+		check('...and the side editor is still guarded', await ev(p, () => [log.save.length, log.upstream]), [1, []]);
+		await ev(p, () => registration.dispose()); await reset(p); await p.keyboard.press('Control+s');
+		check('disposing the registration restores upstream Save and the registry method', await ev(p, () => [log.save.length, log.upstream, registries.CommandsRegistry.registerCommand === Object.getPrototypeOf(registries.CommandsRegistry).registerCommand]), [0, ['workbench.action.files.save'], true]);
 	}
 });
 
@@ -147,13 +161,18 @@ if (!only || only === 'trust') await session('user=' + encodeURIComponent(JSON.s
 	await ev(p, () => openFile('a', true)); await clickSide(p); const a0 = await ev(p, () => models.A.getValue()); await reset(p);
 	await p.keyboard.type('q'); await p.keyboard.press('Control+s');
 	check('reopened trusted: editable and saves again', await ev(p, b => [models.A.getValue() !== b, log.save], a0), [true, [['/w/repo/a.ts', false]]]);
+	// Review r3 N5: Save All never saves a read-only (untrusted) file, even one the IDE made dirty.
+	await ev(p, () => openFile('b', false)); await ev(p, () => side.editor.getModel().applyEdits([{ range: { startLineNumber: 2, startColumn: 1, endLineNumber: 2, endColumn: 1 }, text: '// ide\n' }])); await reset(p);
+	await ev(p, () => commands.executeCommand('workbench.action.files.saveAll'));
+	check('untrusted and dirty: Save All does not save it', await ev(p, () => [isDirty(models.uriB), log.save, log.upstream, log.blocked]), [true, [], ['workbench.action.files.saveAll'], []]);
 	await ev(p, () => side.close()); check('open a missing file: unavailable', await ev(p, () => openFile('missing.ts')), 'unavailable');
 });
 
 if (!only || only === 'conflict') await session('overwrite=1', async p => {
 	await ev(p, () => openFile('a')); await clickSide(p); await p.keyboard.type('x'); await reset(p);
 	await p.keyboard.press('Control+s'); await ev(p, () => commands.executeCommand('workbench.action.files.saveAll'));
-	check('overwriteFileOnDisk: the side panel refuses to save', await ev(p, () => [log.save, log.blocked]), [[], ['files.saveConflictResolution']]);
+	// Save and Save All are both refused, and both say so (review r3 N4).
+	check('overwriteFileOnDisk: the side panel refuses Save and Save All, naming the setting', await ev(p, () => [log.save, log.blocked]), [[], ['files.saveConflictResolution', 'files.saveConflictResolution']]);
 });
 
 if (!only || only === 'race') await session('delay=150', async p => {
