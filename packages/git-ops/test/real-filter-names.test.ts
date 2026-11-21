@@ -30,6 +30,18 @@ function plain(f: Fixture, ...args: string[]): void {
   }
 }
 
+/** The filter names this machine's system config holds (none on most machines; `lfs` where git-lfs is installed). */
+function systemFilters(env: Record<string, string>): string[] {
+  let out = "";
+  try {
+    out = execFileSync("git", ["config", "--system", "--null", "--name-only", "--get-regexp", "^filter\\."], { env, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+  } catch {
+    return []; // no system config, or no filter in it
+  }
+  const names = out.split("\0").flatMap((k) => /^filter\.(.*)\.(clean|smudge|process|required)$/s.exec(k)?.[1] ?? []);
+  return [...new Set(names)];
+}
+
 const CASES: readonly { attr: string; config: (f: Fixture) => string }[] = [
   { attr: "", config: (f) => `[filter ""]\n\tclean = ${driver(f, "e-clean")}\n\tsmudge = ${driver(f, "e-smudge")}\n\tprocess = ${driver(f, "e-process")}\n` },
   { attr: "Upper", config: (f) => `[filter "Upper"]\n\tclean = ${driver(f, "upper")}\n` },
@@ -72,7 +84,9 @@ test("names are read as git uses them; one that cannot be put on a command line 
   const f = fixture();
   const env = { PATH: process.env["PATH"] ?? "/usr/bin:/bin", HOME: f.home };
   appendFileSync(join(f.wt.gitDir, "config"), `[filter ""]\n\tclean = x\n[filter "Upper"]\n\tsmudge = x\n[Filter.Legacy]\n\tProcess = x\n[filter]\n\tprocess = x\n`);
-  assert.deepEqual((await filterNames(f.wt, f.deps, env)).sort(), ["", "Upper", "legacy"]);
+  // The daemon's git reads the system config too (its environment may not set GIT_CONFIG_*), as git does for every
+  // command, so a filter there (git-lfs installs `[filter "lfs"]` in /etc/gitconfig) is read and emptied as well.
+  assert.deepEqual((await filterNames(f.wt, f.deps, env)).sort(), ["", "Upper", "legacy", ...systemFilters(env)].sort());
   for (const name of ["a b", 'a\\"b', "a\\\\b", "é", "a=b"]) {
     const g = fixture();
     appendFileSync(join(g.wt.gitDir, "config"), `[filter "${name}"]\n\tclean = x\n`);
