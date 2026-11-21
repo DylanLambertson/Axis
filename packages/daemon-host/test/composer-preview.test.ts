@@ -140,8 +140,9 @@ test("review c2 S1: a protected write of exactly the head's length is shown whol
 test("review c2 S1: a protected write with a secret-like value is declined, and the value is in no event", async (t) => {
   const token = fakeToken();
   const c = await setup(t, { replies: [write(".github/workflows/deploy.yml", `deploy:\n\tTOKEN=${token} ./push.sh\n`), { kind: "text", text: "ok" }] });
-  // The next turn would send the model's own call (with the token) back to the provider: the outgoing secret scan stops it.
-  await declinedBlind(c, ".github/workflows/deploy.yml", ["FAILED", "PROVIDER_SECRET_IN_REQUEST"]);
+  // The declined call's input (with the token) is not kept in the history, so the next turn does not send it back and the
+  // run goes on (before, the outgoing secret scan ended it PROVIDER_SECRET_IN_REQUEST on that turn).
+  await declinedBlind(c, ".github/workflows/deploy.yml");
   const all = JSON.stringify(c.service.list({ limit: 10 }).map((r) => c.service.events(r.runId, 0, 200)));
   assert.equal(all.includes(token.slice(4, 20)), false);
 });
