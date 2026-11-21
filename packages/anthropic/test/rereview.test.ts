@@ -49,13 +49,14 @@ test("SF-1: aborting while a read is pending still fails promptly with cancelled
 for (const line of ["event:\n", "event\n", "event: \n"]) {
   test(`N-B: a flood of ${JSON.stringify(line)} lines is counted, quickly, and is not retryable`, async () => {
     const text = sseEvent("message_start", { type: "message_start", message: { id: "m", model: MODEL, usage: { input_tokens: 5, output_tokens: 1 } } }) + line.repeat(2_000_000);
-    const { adapter } = make((_c, counter) => sseResponse(counter, text, 65_536));
-    const t0 = Date.now();
+    const { adapter, fake } = make((_c, counter) => sseResponse(counter, text, 65_536));
     const err = await failure(drain(adapter.stream(req(), { signal: live() })));
     assert.equal(err.code, "invalid_response");
     assert.equal(err.details.reason, "too_many_ignored_events");
     assert.equal(err.retryable, false);
-    assert.ok(Date.now() - t0 < 2_000);
+    // Cut at the ignored cap means the body was not read on (about 2 MB of 14 MB here is never needed): counted in chunks, not timed.
+    const available = Math.ceil(text.length / 65_536);
+    assert.ok(available > 24 && fake.counter.reads <= 6, `read ${fake.counter.reads} of ${available} chunks`);
   });
 }
 
