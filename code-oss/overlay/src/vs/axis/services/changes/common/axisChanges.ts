@@ -273,3 +273,26 @@ export function nextActiveIndex(rows: readonly IAxisChangeRow[], activeId: strin
 	const kept = activeId === undefined ? -1 : rows.findIndex(row => row.id === activeId);
 	return kept >= 0 ? kept : Math.min(Math.max(activeIndex, 0), rows.length - 1);
 }
+
+/** Where keyboard focus was in the Changes view before it was redrawn. */
+export type AxisChangesFocusBefore = 'row' | 'control' | 'outside';
+
+/** What the view focuses after a redraw: nothing (focus stays), the active row, or the always-visible heading. */
+export type AxisChangesFocusAfter = 'stay' | 'row' | 'heading';
+
+/**
+ * The focus rule of the Changes view after the list is redrawn by a git update:
+ * - focus outside the view is never taken;
+ * - focus on another control (Review all, Try again) stays there; it moves to the heading only
+ *   if that control was hidden or removed by the update, never to a row;
+ * - focus on a row stays on a row (the same file, else the one now in its place), or goes to
+ *   the heading when the list emptied;
+ * so focus is never stolen and never falls to the page body.
+ */
+export function focusAfterUpdate(before: AxisChangesFocusBefore, stillInside: boolean, hasRows: boolean): AxisChangesFocusAfter {
+	switch (before) {
+		case 'outside': return 'stay';
+		case 'control': return stillInside ? 'stay' : 'heading';
+		case 'row': return hasRows ? 'row' : 'heading';
+	}
+}

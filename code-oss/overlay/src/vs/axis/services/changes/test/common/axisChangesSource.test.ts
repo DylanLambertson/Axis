@@ -6,7 +6,7 @@ import assert from 'assert';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { flatRows } from '../../common/axisChanges.js';
-import { AxisChangesSource, AxisChangesStatus } from '../../common/axisChangesSource.js';
+import { AxisChangesSource, AxisChangesStatus, AxisGitEntry, isRepositoryRoot } from '../../common/axisChangesSource.js';
 import { change, FakeGitService, FakeRepository, file, flush, ROOT, state } from './axisChangesFixtures.js';
 
 const OTHER = URI.file('/w/ws-b');
@@ -19,6 +19,7 @@ suite('Axis Changes source (fake IGitService)', () => {
 	/** Folders that hold `.git`. */
 	let roots: Set<string>;
 	let rootChecks: string[];
+	let closed: boolean;
 	let source: AxisChangesSource;
 	let seen: AxisChangesStatus[];
 
@@ -27,10 +28,11 @@ suite('Axis Changes source (fake IGitService)', () => {
 		mounted = () => true;
 		roots = new Set([ROOT.path, OTHER.path]);
 		rootChecks = [];
+		closed = false;
 		source = store.add(new AxisChangesSource(git, root => mounted(root), async root => {
 			rootChecks.push(root.path);
 			return roots.has(root.path);
-		}));
+		}, () => closed));
 		seen = [];
 		store.add(source.onDidChange(() => seen.push(source.status)));
 	});
@@ -186,7 +188,7 @@ suite('Axis Changes source (fake IGitService)', () => {
 	});
 
 	test('nothing is shown or listened to after dispose', async () => {
-		const own = new AxisChangesSource(git, () => true, async () => true);
+		const own = new AxisChangesSource(git, () => true, async () => true, () => false);
 		const repo = new FakeRepository(ROOT);
 		own.setRoot(ROOT);
 		await flush();
@@ -202,5 +204,67 @@ suite('Axis Changes source (fake IGitService)', () => {
 		await flush();
 		await git.answer(new FakeRepository(ROOT, state({ workingTreeChanges: [change.modified('src/x.ts')] })));
 		assert.strictEqual(flatRows(source.changes)[0].resource.toString(), file('src/x.ts').toString());
+	});
+
+	test('with repositories closed in Git, a root it does not have is opened only when the user asks', async () => {
+		closed = true;
+		await source.setRoot(ROOT);
+		assert.strictEqual(source.status, 'askFirst');
+		assert.deepStrictEqual([git.opened, rootChecks], [[], []], 'no open: it would forget the user closed it');
+		await source.setRoot(OTHER);
+		await source.setRoot(ROOT);
+		assert.strictEqual(source.status, 'askFirst', 'a revisit still asks');
+		source.refresh();
+		await flush();
+		assert.deepStrictEqual(git.opened, [ROOT.path], 'Show changes opens it');
+		await git.answer(new FakeRepository(ROOT));
+		assert.strictEqual(source.status, 'ready');
+	});
+
+	test('with repositories closed in Git, a repository the service already has is still followed', async () => {
+		closed = true;
+		git.repositories.push(new FakeRepository(ROOT));
+		await source.setRoot(ROOT);
+		assert.strictEqual(source.status, 'ready');
+		assert.deepStrictEqual(git.opened, []);
+	});
+
+	test('a followed repository the service replaced is looked up again on the next setRoot', async () => {
+		const first = new FakeRepository(ROOT, state({ untrackedChanges: [change.added('old.txt')] }));
+		git.repositories.push(first);
+		await source.setRoot(ROOT);
+		assert.deepStrictEqual(names(), ['untracked:old.txt']);
+		const second = new FakeRepository(ROOT, state({ untrackedChanges: [change.added('new.txt')] }));
+		git.repositories.splice(0, 1, second);
+		await source.setRoot(ROOT);
+		assert.deepStrictEqual(names(), ['untracked:new.txt'], 'follows the new object');
+		first.set(state());
+		assert.deepStrictEqual(names(), ['untracked:new.txt'], 'and no longer the old one');
+		assert.deepStrictEqual(git.opened, []);
+	});
+});
+
+suite('Axis Changes repository root check', () => {
+
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	async function check(entries: Record<string, AxisGitEntry>): Promise<[boolean, string[]]> {
+		const asked: string[] = [];
+		const result = await isRepositoryRoot(ROOT, async uri => {
+			asked.push(uri.path.slice(ROOT.path.length));
+			return entries[uri.path.slice(ROOT.path.length)] ?? 'none';
+		});
+		return [result, asked];
+	}
+
+	test('a .git file (linked worktree) or a .git directory holding HEAD is a root', async () => {
+		assert.deepStrictEqual(await check({ '/.git': 'file' }), [true, ['/.git']]);
+		assert.deepStrictEqual(await check({ '/.git': 'directory', '/.git/HEAD': 'file' }), [true, ['/.git', '/.git/HEAD']]);
+	});
+
+	test('no .git, an empty or half-deleted .git directory, or a HEAD that is not a file is not (git would walk up to a parent)', async () => {
+		assert.deepStrictEqual((await check({}))[0], false);
+		assert.deepStrictEqual((await check({ '/.git': 'directory' }))[0], false);
+		assert.deepStrictEqual((await check({ '/.git': 'directory', '/.git/HEAD': 'directory' }))[0], false);
 	});
 });

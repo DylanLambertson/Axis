@@ -61,8 +61,22 @@ export function changesViewViolations(source) {
   const render = find(sf, (c) => ts.isMethodDeclaration(c) && ts.isIdentifier(c.name) && c.name.text === "render")[0];
   const renderText = render ? text(render) : "";
   if (!/nextActiveIndex\(this\.visible, this\.activeId, this\.activeIndex\)/.test(renderText)) bad.push("the active row does not follow its file (nextActiveIndex)");
-  if (!/if \(focusWasInside\) \{ this\.summary\.focus\(\); \}/.test(renderText)) bad.push("focus is dropped when the list empties");
-  if (!/const existing = this\.byId\.get\(row\.id\);/.test(source)) bad.push("rows are not kept by file id");
+  // Focus (focusAfterUpdate): where focus was is read from the list first, the rule decides, and render focuses only per the rule.
+  if (!renderText.includes("const before = this.list.contains(document.activeElement) ? 'row' : this.element.contains(document.activeElement) ? 'control' : 'outside';")) bad.push("focus before the update is not told apart (row, control, outside)");
+  if (!renderText.includes("switch (focusAfterUpdate(before, this.element.contains(document.activeElement), this.rows.length > 0)) {")) bad.push("focus after an update does not follow focusAfterUpdate");
+  const focusCalls = render ? find(render, (c) => ts.isCallExpression(c) && ts.isPropertyAccessExpression(c.expression) && c.expression.name.text === "focus").map(text) : [];
+  if (focusCalls.sort().join(" | ") !== "this.rows[this.activeIndex].focus() | this.title.focus()") bad.push("render focuses something other than the rule's row or heading");
+  if (!renderText.includes("case 'row': if (document.activeElement !== this.rows[this.activeIndex]) { this.rows[this.activeIndex].focus(); } break; case 'heading': this.title.focus(); break;")) bad.push("render focuses something other than the rule's row or heading");
+  if (!/this\.setActive\(index, false\);/.test(renderText) || /this\.setActive\([^)]*, true\)/.test(renderText)) bad.push("render moves focus through setActive");
+  if (!/title\.tabIndex = -1;/.test(source) || !/\(this\.rows\[this\.activeIndex\] \?\? this\.title\)\.focus\(\);/.test(source)) bad.push("the fallback focus target is not the always-shown heading");
+  // In-place, keyed update: a row element is created only for a file not listed before, and no container is rebuilt.
+  if (!/const existing = this\.byId\.get\(row\.id\);\s+const view = existing \?\? this\.createRow\(row\);/.test(source) || (source.match(/this\.createRow\(/g) ?? []).length !== 1) bad.push("rows are not kept by file id");
+  if (/replaceChildren/.test(renderText) || !/place\(this\.list, boxes\);/.test(renderText) || !/place\(view\.box, \[view\.heading, \.\.\.elements\]\);/.test(renderText)) bad.push("the list is rebuilt instead of updated in place");
+  if (!/if \(view\.shown !== shown\) \{/.test(source)) bad.push("an unchanged row is redrawn on every update");
+  // Wiring: the retry button and a folder change look again; the button is shown only when it can help.
+  if (!/addDisposableListener\(this\.retry, EventType\.CLICK, \(\) => this\.source\.refresh\(\)\)/.test(source)) bad.push("Try again / Show changes does not look again");
+  if (!/onDidChangeWorkspaceFolders\(\(\) => \{\s+if \(this\.source\.status === 'notMounted' \|\| this\.source\.status === 'unavailable'\) \{[^\n]*\n\s+this\.source\.refresh\(\);/.test(source)) bad.push("a folder change does not look again (or opens an askFirst root)");
+  if (!renderText.includes("this.retry.hidden = status !== 'unavailable' && status !== 'askFirst';")) bad.push("the retry button shows in the wrong states");
   if (find(sf, (c) => ts.isCallExpression(c) && ts.isPropertyAccessExpression(c.expression) && c.expression.name.text === "setAttribute" && c.arguments.length === 2 && ts.isStringLiteralLike(c.arguments[0]) && c.arguments[0].text === "aria-label" && text(c.arguments[1]) !== "changeRowLabel(row)" && /\brow\b/.test(text(c.arguments[1]))).length) bad.push("a row's accessible name is not changeRowLabel(row)");
   const method = (name) => find(sf, (c) => ts.isMethodDeclaration(c) && ts.isIdentifier(c.name) && c.name.text === name)[0];
   const renderRow = method("fillRow");
@@ -86,13 +100,24 @@ export function changesViewViolations(source) {
 /** The source reads only `openRepository` and `state`, and only opens worktrees inside the window's folders. */
 export function sourceViolations(source) {
   const bad = readOnlyViolations(source);
-  if (!/repository = await this\.isRepositoryRoot\(root\) \? await this\.git\.openRepository\(root\) : undefined;/.test(source)) bad.push("a folder that is not a repository root is opened");
+  if (!/repository = await this\.isRoot\(root\) \? await this\.git\.openRepository\(root\) : undefined;/.test(source)) bad.push("a folder that is not a repository root is opened");
+  if (!/if \(this\.hasClosedRepositories\(\) && !retry\) \{\s+this\.set\('askFirst', NO_CHANGES\);\s+return;/.test(source)) bad.push("a root is opened without asking while repositories are closed");
+  if (!/case 'directory': return await entry\(joinPath\(git, 'HEAD'\)\) === 'file';/.test(source)) bad.push("an empty .git directory counts as a repository root");
   if ((source.match(/openRepository\(/g) ?? []).length !== 1) bad.push("openRepository is called on more than one path");
   if (!/const known = this\.find\(root\);\s+if \(known\) \{\s+this\.follow\(known, root\);\s+return;/.test(source)) bad.push("a repository the service already has is reopened");
   if (!/if \(this\.tried\.has\(key\) && !retry\) \{/.test(source)) bad.push("an unavailable root is opened again on every update");
   if (!/if \(!root \|\| !this\.isMounted\(root\)\)/.test(source)) bad.push("a worktree outside the window's folders is opened");
   if (!/generation !== this\.generation/.test(source)) bad.push("a late answer for another worktree is not dropped");
   if (!/!roots\.isEqual\(roots\.removeTrailingPathSeparator\(repository\.rootUri\), root\)/.test(source)) bad.push("a repository rooted elsewhere is accepted");
+  return bad;
+}
+
+/** The workspace view returns focus to the region that held it last (Files or Changes). */
+export function workspaceFocusViolations(source) {
+  const bad = [];
+  const t = source.replace(/\s+/g, " ");
+  if (!t.includes("addDisposableListener(files, EventType.FOCUS_IN, () => { this.lastRegion = 'files'; })") || !t.includes("addDisposableListener(this.changes.element, EventType.FOCUS_IN, () => { this.lastRegion = 'changes'; })")) bad.push("the last focused region is not tracked");
+  if (!t.includes("focus(): void { if (this.lastRegion === 'changes') { this.changes.focus(); } else { this.fileTree.focus(); } }")) bad.push("focus() does not return to the last focused region");
   return bad;
 }
 
@@ -124,8 +149,18 @@ test("the checker finds each way of breaking the view rules", () => {
     [GOOD_VIEW.replace("element.className = `axis-change-row kind-${row.kind}`;", "element.className = `axis-change-row kind-${row.name}`;"), "the row class is not from the kind"],
     [GOOD_VIEW.replace("this.source.setRoot(root);", "this.source.setRoot(root); void this.gitService.repositories;"), "the view reads git itself instead of through the source"],
     [GOOD_VIEW.replace("nextActiveIndex(this.visible, this.activeId, this.activeIndex)", "Math.min(this.activeIndex, this.rows.length - 1)"), "the active row does not follow its file (nextActiveIndex)"],
-    [GOOD_VIEW.replace("\t\t\tif (focusWasInside) {\n\t\t\t\tthis.summary.focus();\n\t\t\t}\n", ""), "focus is dropped when the list empties"],
-    [GOOD_VIEW.replace("const existing = this.byId.get(row.id);", "const existing = undefined;"), "rows are not kept by file id"],
+    [GOOD_VIEW.replace("const view = existing ?? this.createRow(row);", "const view = (existing && false) || this.createRow(row);"), "rows are not kept by file id"],
+    [GOOD_VIEW.replace("const before = this.list.contains(document.activeElement) ? 'row'", "const before = this.element.contains(document.activeElement) ? 'row'"), "focus before the update is not told apart (row, control, outside)"],
+    [GOOD_VIEW.replace("switch (focusAfterUpdate(before, this.element.contains(document.activeElement), this.rows.length > 0)) {", "switch (focusAfterUpdate(before, true, this.rows.length > 0)) {"), "focus after an update does not follow focusAfterUpdate"],
+    [GOOD_VIEW.replace("\t\t\tcase 'heading':\n\t\t\t\tthis.title.focus();", "\t\t\tcase 'heading':\n\t\t\t\tthis.summary.focus();"), "render focuses something other than the rule's row or heading"],
+    [GOOD_VIEW.replace("\t\t\tthis.setActive(index, false);\n\t\t} else {", "\t\t\tthis.setActive(index, true);\n\t\t} else {"), "render moves focus through setActive"],
+    [GOOD_VIEW.replace("title.tabIndex = -1;", "title.tabIndex = 0;"), "the fallback focus target is not the always-shown heading"],
+    [GOOD_VIEW.replace("\t\tplace(this.list, boxes);", "\t\tthis.list.replaceChildren(...boxes);"), "the list is rebuilt instead of updated in place"],
+    [GOOD_VIEW.replace("if (view.shown !== shown) {", "if (true) {"), "an unchanged row is redrawn on every update"],
+    [GOOD_VIEW.replace("addDisposableListener(this.retry, EventType.CLICK, () => this.source.refresh())", "addDisposableListener(this.retry, EventType.CLICK, () => undefined)"), "Try again / Show changes does not look again"],
+    [GOOD_VIEW.replace("\t\t\t\tthis.source.refresh();\n\t\t\t}\n\t\t}));", "\t\t\t\tvoid 0;\n\t\t\t}\n\t\t}));"), "a folder change does not look again (or opens an askFirst root)"],
+    [GOOD_VIEW.replace("this.source.status === 'notMounted' || this.source.status === 'unavailable') {", "this.source.status !== 'ready') {"), "a folder change does not look again (or opens an askFirst root)"],
+    [GOOD_VIEW.replace("this.retry.hidden = status !== 'unavailable' && status !== 'askFirst';", "this.retry.hidden = status !== 'unavailable';"), "the retry button shows in the wrong states"],
   ];
   for (const [source, expected] of breaks) {
     assert.notEqual(source, GOOD_VIEW, `the mutation applies: ${expected}`);
@@ -133,8 +168,21 @@ test("the checker finds each way of breaking the view rules", () => {
   }
 });
 
+test("the workspace view returns focus to Changes when Changes held it last", () => {
+  const good = read("contrib/agent/browser/workspaceView.ts");
+  assert.deepEqual(workspaceFocusViolations(good), []);
+  const breaks = [
+    [good.replace("if (this.lastRegion === 'changes') {", "if (false) {"), "focus() does not return to the last focused region"],
+    [good.replace("() => { this.lastRegion = 'changes'; }", "() => { }"), "the last focused region is not tracked"],
+  ];
+  for (const [source, expected] of breaks) {
+    assert.notEqual(source, good, `the mutation applies: ${expected}`);
+    assert.ok(workspaceFocusViolations(source).includes(expected), expected);
+  }
+});
+
 test("the checker finds each way of breaking the source rules", () => {
-  const OPEN = "repository = await this.isRepositoryRoot(root) ? await this.git.openRepository(root) : undefined;";
+  const OPEN = "repository = await this.isRoot(root) ? await this.git.openRepository(root) : undefined;";
   const breaks = [
     [GOOD_SOURCE.replace(OPEN, `${OPEN} await repository?.commitFiles([], '');`), "git call other than a read: commitFiles"],
     [GOOD_SOURCE.replace(OPEN, `${OPEN} repository?.updateState(repository.state.get());`), "git call other than a read: updateState"],
@@ -147,6 +195,8 @@ test("the checker finds each way of breaking the source rules", () => {
     [GOOD_SOURCE.replace("const known = this.find(root);", "const known = undefined;"), "a repository the service already has is reopened"],
     [GOOD_SOURCE.replace("if (this.tried.has(key) && !retry) {", "if (false) {"), "an unavailable root is opened again on every update"],
     [GOOD_SOURCE.replace("this.tried.add(key);", "this.tried.add(key); void this.git.openRepository(root);"), "openRepository is called on more than one path"],
+    [GOOD_SOURCE.replace("if (this.hasClosedRepositories() && !retry) {", "if (false) {"), "a root is opened without asking while repositories are closed"],
+    [GOOD_SOURCE.replace("case 'directory': return await entry(joinPath(git, 'HEAD')) === 'file';", "case 'directory': return true;"), "an empty .git directory counts as a repository root"],
   ];
   for (const [source, expected] of breaks) {
     assert.notEqual(source, GOOD_SOURCE, `the mutation applies: ${expected}`);

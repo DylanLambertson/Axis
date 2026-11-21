@@ -5,18 +5,38 @@
 import { Emitter } from '../../../../base/common/event.js';
 import { Disposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { autorun } from '../../../../base/common/observable.js';
-import { extUriBiasedIgnorePathCase } from '../../../../base/common/resources.js';
+import { extUriBiasedIgnorePathCase, joinPath } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
 import { IGitRepository, IGitService } from '../../../../workbench/contrib/git/common/gitService.js';
 import { IAxisChanges, readChanges } from './axisChanges.js';
 
 /**
  * `idle`: no worktree. `notMounted`: the worktree is not in the window's folders.
- * `loading`: the repository is being looked up or opened. `unavailable`: the folder is not a
- * repository root, or the git extension gave no repository rooted at it (off, untrusted,
- * still starting). `ready`: `changes` is the repository's state.
+ * `askFirst`: the user has closed repositories in the git extension, so this one may be one of
+ * them; it is opened only when the user asks (`refresh`), because opening a closed repository
+ * also forgets that the user closed it. `loading`: the repository is being looked up or
+ * opened. `unavailable`: the folder is not a repository root, or the git extension gave no
+ * repository rooted at it (off, untrusted, still starting). `ready`: `changes` is the
+ * repository's state.
  */
-export type AxisChangesStatus = 'idle' | 'notMounted' | 'loading' | 'unavailable' | 'ready';
+export type AxisChangesStatus = 'idle' | 'notMounted' | 'askFirst' | 'loading' | 'unavailable' | 'ready';
+
+/** What a folder's `.git` entry is, as far as the source needs to know. */
+export type AxisGitEntry = 'file' | 'directory' | 'none';
+
+/**
+ * True when a folder is a repository root git will not walk up from: its `.git` is a file (a
+ * linked worktree's pointer) or a directory holding `HEAD`. An empty or half-deleted `.git`
+ * directory is not enough: git would resolve a parent repository instead.
+ */
+export async function isRepositoryRoot(root: URI, entry: (uri: URI) => Promise<AxisGitEntry>): Promise<boolean> {
+	const git = joinPath(root, '.git');
+	switch (await entry(git)) {
+		case 'file': return true;
+		case 'directory': return await entry(joinPath(git, 'HEAD')) === 'file';
+		case 'none': return false;
+	}
+}
 
 /** What the source needs from `IGitService`: it only reads. */
 export type IAxisGitReader = Pick<IGitService, 'openRepository' | 'repositories'>;
@@ -39,7 +59,12 @@ const roots = extUriBiasedIgnorePathCase;
  *    `.git` (so the git extension never walks up to a parent repository), and at most once per
  *    root: a root found unavailable stays so until `refresh` (the window's folders changed, or
  *    the user asked), never on a workspace list update.
- * 3. A repository rooted anywhere else is not shown.
+ * 3. If the user has closed repositories in the git extension (its `git.closedRepositoryCount`),
+ *    a root it does not have is opened only when the user asks: the open would also clear the
+ *    user's "Close Repository" for good.
+ * 4. A repository rooted anywhere else is not shown.
+ * 5. A followed repository that the service has since replaced (another reader opened it again)
+ *    is looked up again on the next `setRoot` for the same root.
  *
  * A worktree switch while a lookup is pending drops the late result, so the list never shows
  * one workspace's changes under another's name.
@@ -51,6 +76,7 @@ export class AxisChangesSource extends Disposable {
 
 	private readonly listener = this._register(new MutableDisposable());
 	private readonly tried = new Set<string>();
+	private followed: IGitRepository | undefined;
 	private generation = 0;
 	private _root: URI | undefined;
 	private _status: AxisChangesStatus = 'idle';
@@ -58,12 +84,14 @@ export class AxisChangesSource extends Disposable {
 
 	/**
 	 * @param isMounted whether a folder is inside the window's folders.
-	 * @param isRepositoryRoot whether a folder holds `.git` (a file for a linked worktree).
+	 * @param isRoot whether a folder is a repository root (`isRepositoryRoot`).
+	 * @param hasClosedRepositories whether the user has closed repositories in the git extension.
 	 */
 	constructor(
 		private readonly git: IAxisGitReader,
 		private readonly isMounted: (root: URI) => boolean,
-		private readonly isRepositoryRoot: (root: URI) => Promise<boolean>,
+		private readonly isRoot: (root: URI) => Promise<boolean>,
+		private readonly hasClosedRepositories: () => boolean,
 	) {
 		super();
 	}
@@ -72,16 +100,19 @@ export class AxisChangesSource extends Disposable {
 	get status(): AxisChangesStatus { return this._status; }
 	get changes(): IAxisChanges { return this._changes; }
 
-	/** Shows a worktree's changes; `undefined` clears. The same root again does nothing. */
+	/**
+	 * Shows a worktree's changes; `undefined` clears. The same root again does nothing, unless the
+	 * repository it follows is no longer the service's (then it is looked up again).
+	 */
 	setRoot(folder: URI | undefined): Promise<void> {
 		const root = folder && roots.removeTrailingPathSeparator(folder);
-		if (root && this._root && roots.isEqual(root, this._root)) {
+		if (root && this._root && roots.isEqual(root, this._root) && !this.replaced()) {
 			return Promise.resolve();
 		}
 		return this.open(root, false);
 	}
 
-	/** Looks the current worktree up again, opening it even if it was found unavailable before. */
+	/** Looks the current worktree up again, opening it even if it was found unavailable or needed asking first. */
 	refresh(): Promise<void> {
 		return this.open(this._root, true);
 	}
@@ -89,6 +120,7 @@ export class AxisChangesSource extends Disposable {
 	private async open(root: URI | undefined, retry: boolean): Promise<void> {
 		const generation = ++this.generation;
 		this.listener.clear();
+		this.followed = undefined;
 		this._root = root;
 		if (!root || !this.isMounted(root)) {
 			this.set(root ? 'notMounted' : 'idle', NO_CHANGES);
@@ -104,11 +136,15 @@ export class AxisChangesSource extends Disposable {
 			this.set('unavailable', NO_CHANGES);
 			return;
 		}
+		if (this.hasClosedRepositories() && !retry) {
+			this.set('askFirst', NO_CHANGES);
+			return;
+		}
 		this.tried.add(key);
 		this.set('loading', NO_CHANGES);
 		let repository: IGitRepository | undefined;
 		try {
-			repository = await this.isRepositoryRoot(root) ? await this.git.openRepository(root) : undefined;
+			repository = await this.isRoot(root) ? await this.git.openRepository(root) : undefined;
 		} catch {
 			repository = undefined;
 		}
@@ -131,7 +167,13 @@ export class AxisChangesSource extends Disposable {
 		return undefined;
 	}
 
+	/** True when the followed repository is no longer one the service lists. */
+	private replaced(): boolean {
+		return this.followed !== undefined && !Array.from(this.git.repositories).includes(this.followed);
+	}
+
 	private follow(repository: IGitRepository, root: URI): void {
+		this.followed = repository;
 		this.listener.value = autorun(reader => this.set('ready', readChanges(repository.state.read(reader), root)));
 	}
 

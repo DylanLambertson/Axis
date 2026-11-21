@@ -5,7 +5,7 @@
 import assert from 'assert';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { changeGroupLabel, changeKindGlyph, changeKindLabel, changeRowLabel, changesSummary, diffLabelOf, diffTargetOf, flatRows, IAxisChangeRow, MAX_CHANGE_FOLDER, MAX_CHANGE_NAME, MAX_CHANGE_ROWS, nextActiveIndex, readChanges, reviewAllTargetOf, toGitUri } from '../../common/axisChanges.js';
+import { changeGroupLabel, changeKindGlyph, changeKindLabel, changeRowLabel, changesSummary, diffLabelOf, diffTargetOf, flatRows, focusAfterUpdate, IAxisChangeRow, MAX_CHANGE_FOLDER, MAX_CHANGE_NAME, MAX_CHANGE_ROWS, nextActiveIndex, readChanges, reviewAllTargetOf, toGitUri } from '../../common/axisChanges.js';
 import { change, file, ROOT, state } from './axisChangesFixtures.js';
 
 /** What a row puts on screen and in its accessible name, in DOM order. */
@@ -221,6 +221,29 @@ suite('Axis Changes model', () => {
 			assert.strictEqual(nextActiveIndex(after, before[3].id, 9), 2, 'clamped to the last row');
 			assert.strictEqual(nextActiveIndex(after, undefined, 1), 1);
 			assert.strictEqual(nextActiveIndex([], before[0].id, 3), -1, 'an empty list has no active row');
+		});
+	});
+
+	suite('focus after a git update', () => {
+
+		test('focus outside the view is never taken', () => {
+			assert.deepStrictEqual([focusAfterUpdate('outside', false, true), focusAfterUpdate('outside', false, false)], ['stay', 'stay']);
+		});
+
+		test('focus on another control (Review all) stays there and never moves to a row', () => {
+			assert.strictEqual(focusAfterUpdate('control', true, true), 'stay');
+			assert.strictEqual(focusAfterUpdate('control', true, false), 'stay');
+		});
+
+		test('a control hidden or disabled under focus (Try again, Review all) hands focus to the heading, not the body', () => {
+			assert.strictEqual(focusAfterUpdate('control', false, true), 'heading');
+			assert.strictEqual(focusAfterUpdate('control', false, false), 'heading');
+		});
+
+		test('a focused row stays on a row, or goes to the heading when the list empties', () => {
+			assert.strictEqual(focusAfterUpdate('row', true, true), 'row');
+			assert.strictEqual(focusAfterUpdate('row', false, true), 'row', 'the focused file left: the row now in its place');
+			assert.strictEqual(focusAfterUpdate('row', false, false), 'heading');
 		});
 	});
 });

@@ -6,22 +6,47 @@ import { $, addDisposableListener, append, EventType } from '../../../../base/br
 import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js';
 import { KeyCode } from '../../../../base/common/keyCodes.js';
 import { Disposable, DisposableMap, DisposableStore } from '../../../../base/common/lifecycle.js';
-import { joinPath } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
+import { IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IGitService } from '../../../../workbench/contrib/git/common/gitService.js';
-import { changeGroupLabel, changeKindGlyph, changeKindLabel, changeRowLabel, changesSummary, diffTargetOf, flatRows, IAxisChangeRow, MAX_CHANGE_ROWS, nextActiveIndex, reviewAllTargetOf } from '../../../services/changes/common/axisChanges.js';
-import { AxisChangesSource } from '../../../services/changes/common/axisChangesSource.js';
+import { AxisChangeGroupId, changeGroupLabel, changeKindGlyph, changeKindLabel, changeRowLabel, changesSummary, diffTargetOf, flatRows, focusAfterUpdate, IAxisChangeRow, MAX_CHANGE_ROWS, nextActiveIndex, reviewAllTargetOf } from '../../../services/changes/common/axisChanges.js';
+import { AxisChangesSource, AxisGitEntry, isRepositoryRoot } from '../../../services/changes/common/axisChangesSource.js';
 import { IAxisViewService } from '../../../services/view/browser/axisViewService.js';
 
 /** Rows moved by Page Up and Page Down. */
 const PAGE = 10;
 
+/** The git extension's context key: how many repositories the user has closed in this window. */
+const CLOSED_REPOSITORIES_KEY = 'git.closedRepositoryCount';
+
 interface IRowView {
 	readonly element: HTMLElement;
 	row: IAxisChangeRow;
+	/** What the row shows now; the row is redrawn only when this changes. */
+	shown: string;
+}
+
+interface IGroupView {
+	readonly box: HTMLElement;
+	readonly heading: HTMLElement;
+}
+
+/**
+ * Puts `children` into `parent` in order with the fewest moves: an element already in place is
+ * not touched, so a focused row is not blurred by an update that does not move it.
+ */
+function place(parent: HTMLElement, children: readonly HTMLElement[]): void {
+	children.forEach((child, i) => {
+		if (parent.children[i] !== child) {
+			parent.insertBefore(child, parent.children[i] ?? null);
+		}
+	});
+	while (parent.children.length > children.length) {
+		parent.lastElementChild!.remove();
+	}
 }
 
 /**
@@ -37,13 +62,16 @@ interface IRowView {
  * state text first. Every text is set with `textContent` from the model, which has already
  * cleaned file names (`cleanDisplayText`).
  *
- * Focus: a row keeps its element while its file stays listed (keyed by id), so the element
- * the view service remembers when a diff opens is still there on the way back. When the list
- * empties under focus, focus moves to the summary line, never to the page body.
+ * Focus (`focusAfterUpdate`): a row keeps its element while its file stays listed, and the
+ * DOM is updated in place, so the focused row is neither blurred nor re-announced by a git
+ * update and the element the view service remembers when a diff opens is still there on the
+ * way back. An update never moves focus onto a row from another control; focus that would
+ * be lost (the list emptied, a control hidden) goes to the always-visible heading.
  */
 export class AxisChangesView extends Disposable {
 
 	readonly element: HTMLElement;
+	private readonly title: HTMLElement;
 	private readonly summary: HTMLElement;
 	private readonly reviewAll: HTMLButtonElement;
 	private readonly list: HTMLElement;
@@ -52,6 +80,7 @@ export class AxisChangesView extends Disposable {
 	private readonly source: AxisChangesSource;
 	private readonly views = this._register(new DisposableMap<string, DisposableStore>());
 	private readonly byId = new Map<string, IRowView>();
+	private readonly groupViews = new Map<AxisChangeGroupId, IGroupView>();
 	private rows: HTMLElement[] = [];
 	private visible: IAxisChangeRow[] = [];
 	private activeIndex = 0;
@@ -61,6 +90,7 @@ export class AxisChangesView extends Disposable {
 	constructor(
 		@IGitService gitService: IGitService,
 		@IFileService fileService: IFileService,
+		@IContextKeyService contextKeyService: IContextKeyService,
 		@IWorkspaceContextService contextService: IWorkspaceContextService,
 		@IAxisViewService private readonly viewService: IAxisViewService,
 	) {
@@ -68,20 +98,28 @@ export class AxisChangesView extends Disposable {
 		this.source = this._register(new AxisChangesSource(
 			gitService,
 			root => contextService.isInsideWorkspace(root),
-			root => fileService.exists(joinPath(root, '.git')),
+			root => isRepositoryRoot(root, async (uri): Promise<AxisGitEntry> => {
+				try {
+					const stat = await fileService.stat(uri);
+					return stat.isFile ? 'file' : stat.isDirectory ? 'directory' : 'none';
+				} catch {
+					return 'none';
+				}
+			}),
+			() => (contextKeyService.getContextKeyValue<number>(CLOSED_REPOSITORIES_KEY) ?? 0) > 0,
 		));
 		this.element = $('section.axis-workspace-changes');
 		const header = append(this.element, $('.axis-changes-header'));
-		const title = append(header, $('h3.axis-section-title'));
+		const title = this.title = append(header, $('h3.axis-section-title'));
 		title.textContent = localize('axis.changes.title', "Changes");
 		title.id = 'axis-workspace-changes-title';
+		title.tabIndex = -1; // the focus target when focus would otherwise be lost; always shown
 		this.reviewAll = append(header, $<HTMLButtonElement>('button.axis-button.axis-changes-review'));
 		this.reviewAll.type = 'button';
 		this.reviewAll.textContent = localize('axis.changes.reviewAll', "Review all");
 		this.reviewAll.setAttribute('aria-label', localize('axis.changes.reviewAllLabel', "Review the listed changes in one multi-diff editor"));
 		this._register(addDisposableListener(this.reviewAll, EventType.CLICK, () => this.openAll()));
 		this.summary = append(this.element, $('p.axis-changes-summary'));
-		this.summary.tabIndex = -1;
 		this.list = append(this.element, $('.axis-changes-list'));
 		this.list.setAttribute('role', 'listbox');
 		this.list.setAttribute('aria-labelledby', title.id);
@@ -90,11 +128,10 @@ export class AxisChangesView extends Disposable {
 		this.note = append(this.element, $('p.axis-note.axis-changes-note'));
 		this.retry = append(this.element, $<HTMLButtonElement>('button.axis-button.axis-changes-retry'));
 		this.retry.type = 'button';
-		this.retry.textContent = localize('axis.changes.retry', "Try again");
 		this._register(addDisposableListener(this.retry, EventType.CLICK, () => this.source.refresh()));
 		this._register(this.source.onDidChange(() => this.render()));
 		this._register(contextService.onDidChangeWorkspaceFolders(() => {
-			if (this.source.status === 'notMounted' || this.source.status === 'unavailable') {
+			if (this.source.status === 'notMounted' || this.source.status === 'unavailable') { // never 'askFirst': only the user opens those
 				this.source.refresh();
 			}
 		}));
@@ -107,21 +144,18 @@ export class AxisChangesView extends Disposable {
 		this.source.setRoot(root);
 	}
 
-	/** True when keyboard focus is inside the view. */
-	hasFocus(): boolean {
-		return this.element.contains(this.element.ownerDocument.activeElement);
-	}
-
 	private render(): void {
-		const focusWasInside = this.hasFocus();
+		const document = this.element.ownerDocument;
+		const before = this.list.contains(document.activeElement) ? 'row' : this.element.contains(document.activeElement) ? 'control' : 'outside';
 		const { status, changes } = this.source;
 		this.visible = flatRows(changes);
 		this.reviewAll.disabled = this.visible.length === 0;
 		this.summary.textContent = status === 'ready' ? changesSummary(changes) : '';
 		this.note.textContent = this.noteText();
-		this.retry.hidden = status !== 'unavailable';
+		this.retry.hidden = status !== 'unavailable' && status !== 'askFirst';
+		this.retry.textContent = status === 'askFirst' ? localize('axis.changes.show', "Show changes") : localize('axis.changes.retry', "Try again");
 
-		// Keyed update: a listed file keeps its element; the rest are dropped.
+		// Keyed, in-place update: a listed file keeps its element and its place when it can.
 		const listed = new Set(this.visible.map(row => row.id));
 		for (const id of [...this.byId.keys()]) {
 			if (!listed.has(id)) {
@@ -132,39 +166,66 @@ export class AxisChangesView extends Disposable {
 		const boxes: HTMLElement[] = [];
 		this.rows = [];
 		for (const group of changes.groups) {
-			const box = $('.axis-changes-group');
-			box.setAttribute('role', 'group');
-			const heading = append(box, $('.axis-changes-group-title'));
-			heading.id = `axis-changes-group-${group.id}`;
-			heading.textContent = localize('axis.changes.groupTitle', "{0} · {1}", changeGroupLabel(group.id), group.total);
-			box.setAttribute('aria-labelledby', heading.id);
-			for (const row of group.rows) {
-				const element = this.rowElement(row);
-				box.appendChild(element);
-				this.rows.push(element);
+			const view = this.groupView(group.id);
+			const heading = localize('axis.changes.groupTitle', "{0} · {1}", changeGroupLabel(group.id), group.total);
+			if (view.heading.textContent !== heading) {
+				view.heading.textContent = heading;
 			}
-			boxes.push(box);
+			const elements = group.rows.map(row => this.rowElement(row));
+			place(view.box, [view.heading, ...elements]);
+			this.rows.push(...elements);
+			boxes.push(view.box);
 		}
-		this.list.replaceChildren(...boxes);
+		for (const id of [...this.groupViews.keys()]) {
+			if (!changes.groups.some(group => group.id === id)) {
+				this.groupViews.delete(id);
+			}
+		}
+		place(this.list, boxes);
 		this.list.hidden = this.rows.length === 0;
 
 		const index = nextActiveIndex(this.visible, this.activeId, this.activeIndex);
 		if (index >= 0) {
-			this.setActive(index, focusWasInside);
+			this.setActive(index, false);
 		} else {
 			this.activeId = undefined;
 			this.activeIndex = 0;
-			if (focusWasInside) {
-				this.summary.focus();
-			}
 		}
+		switch (focusAfterUpdate(before, this.element.contains(document.activeElement), this.rows.length > 0)) {
+			case 'row':
+				if (document.activeElement !== this.rows[this.activeIndex]) {
+					this.rows[this.activeIndex].focus();
+				}
+				break;
+			case 'heading':
+				this.title.focus();
+				break;
+		}
+	}
+
+	private groupView(id: AxisChangeGroupId): IGroupView {
+		let view = this.groupViews.get(id);
+		if (!view) {
+			const box = $('.axis-changes-group');
+			box.setAttribute('role', 'group');
+			const heading = append(box, $('.axis-changes-group-title'));
+			heading.id = `axis-changes-group-${id}`;
+			box.setAttribute('aria-labelledby', heading.id);
+			view = { box, heading };
+			this.groupViews.set(id, view);
+		}
+		return view;
 	}
 
 	private rowElement(row: IAxisChangeRow): HTMLElement {
 		const existing = this.byId.get(row.id);
 		const view = existing ?? this.createRow(row);
 		view.row = row;
-		this.fillRow(view.element, row);
+		const shown = [row.kind, changeRowLabel(row), row.name, row.folder, row.previousPath ?? ''].join('\n');
+		if (view.shown !== shown) {
+			view.shown = shown;
+			this.fillRow(view.element, row);
+		}
 		return view.element;
 	}
 
@@ -172,7 +233,7 @@ export class AxisChangesView extends Disposable {
 		const element = $('.axis-change-row');
 		element.setAttribute('role', 'option');
 		element.tabIndex = -1;
-		const view: IRowView = { element, row };
+		const view: IRowView = { element, row, shown: '' };
 		const store = new DisposableStore();
 		store.add(addDisposableListener(element, EventType.FOCUS, () => this.setActive(this.rows.indexOf(element), false)));
 		store.add(addDisposableListener(element, EventType.CLICK, () => {
@@ -205,6 +266,7 @@ export class AxisChangesView extends Disposable {
 		switch (status) {
 			case 'idle': return '';
 			case 'loading': return localize('axis.changes.loading', "Reading the worktree's changes…");
+			case 'askFirst': return localize('axis.changes.askFirst', "Repositories have been closed in Git in this window. Show changes opens this worktree's repository in Git, and it stays open there.");
 			case 'notMounted': return localize('axis.changes.notMounted', "Changes show for the folder this window has open. Open this worktree's folder in the window to see its changes.");
 			case 'unavailable': return localize('axis.changes.unavailable', "Git has no repository for this worktree. The folder may not be a Git worktree, the git extension may be off or the folder untrusted, or Git may still be starting.");
 			case 'ready': {
@@ -273,8 +335,8 @@ export class AxisChangesView extends Disposable {
 		}
 	}
 
-	/** Focuses the active row, or the summary when there is none. */
+	/** Focuses the active row, or the heading when there is none. */
 	focus(): void {
-		(this.rows[this.activeIndex] ?? this.summary).focus();
+		(this.rows[this.activeIndex] ?? this.title).focus();
 	}
 }
