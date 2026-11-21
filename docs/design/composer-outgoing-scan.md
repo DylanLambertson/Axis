@@ -1,9 +1,71 @@
-# C7-F3: an outgoing secret scan that yields (design note, not built)
+# C7-F3: an outgoing secret scan that yields (design note, built)
 
-Status: proposal, not built. It builds on what is on main: the windowed outgoing scan and its kept "no secret" verdicts
-(`packages/daemon-host/src/bindings/provider-redactor.ts`, merged with #509; composer-runtime.md section 4.2, whose "Long
-strings in the outgoing scan" bullet names this follow-up as C7-F3). A section 5 ticket row for C7-F3 is proposed on the
-open branch `fix/declined-content-not-resent`; until it merges, the 4.2 bullet is the only reference on main.
+Status: built on `feat/async-secret-scan`, on top of the windowed outgoing scan and its kept "no secret" verdicts
+(`packages/daemon-host/src/bindings/provider-redactor.ts`, #509; composer-runtime.md section 4.2). What the build changed from
+the proposal below (review c7-f3-design r2 nits):
+
+- **N1, fresh errors.** `preflight`'s scan (`scanRequest` in guard.ts) never forwards the hook's error object: it checks
+  `signal.aborted` first (any rejection after an abort ends `cancelled`), then builds a NEW `ProviderError` for the hook's
+  `scan_budget` or `cancelled` code, and `secret_in_request` for anything else. The signal is checked again after the last
+  string, so a hook that answers clean after an abort still ends `cancelled`.
+- **N2, budget and wording.** `SCAN_BUDGET_CHARS` is 192 Mi characters, not 64 M: a run's history at its caps (about 14 M
+  characters with 24 turns of model text) read at the window factor plus two windows of rounding per long string, TWICE (a
+  key registered during a scan costs one more scan). A host test derives that minimum from the caps. The fixed text is "The
+  request could not be checked for credentials and was not sent." (it also covers the second-registration refusal).
+- **N3.** `count_tokens` goes through `preflight`, so the same scan and refusals apply (tested).
+- **Implementation review r1.**
+  - SF-1: the restart is per REQUEST, not per string. The hook exposes `secretsVersion` (its registered-forms count) and keeps
+    no verdict for a scan a registration crossed. The guard (`guard-scan.ts`) reads the version before the first string and
+    after the last (no `await` in between that read and the return), scans the whole request once more when it moved, and
+    refuses `scan_budget` on a second change. A key registered while a later string was scanned is found in a string judged
+    before it (tested end to end with the real hook: nothing sent).
+  - SF-2: the guard yields every `YIELD_CHARS` (131,072) characters of strings it scans, whatever their length, with or
+    without the asynchronous method; one-window strings still keep no verdict (memory: the verdicts are for long strings),
+    so their cost is unchanged but spread over loop turns. A test bounds the characters read in one loop turn.
+  - N1: each hook call is raced against the signal, so a hook that never settles cannot hold a cancelled request.
+  - N2: the composition refuses tool caps or a turn count whose history a request could not scan within the budget
+    (`assertScanBudgetFits`, the same derivation as the test).
+  - Cost, for the record (measured by the reviewer on one loaded host): about 2.8 s for 14 M characters of prose and 11 s of
+    random base64 per full pass, at most about 40-77 ms between loop turns; the full budget is reached only with a
+    registration per pass.
+- **Implementation review r2.**
+  - SF-1 (a test): a kept verdict is used only under the count it was kept with; a text kept clean before a key existed is
+    judged again once the key is registered, and the same history sent again is refused (nothing sent).
+  - After the scan: a key registered while the guard awaits `capabilities` or the run budget's `beforeRequest` was not
+    checked (pre-existing: the same awaits followed the synchronous scan). Closed: the guard keeps one `RequestScan` per request
+    (the object scanned with, one `ScanContext`, the version the last complete scan ended under) and calls `rescanIfMoved`
+    after `capabilities` and again after the budget, its last `await` before the adapter call: a moved version scans the
+    request again under the same budget. Between that check and the adapter call there are only microtasks.
+  - **Residual (review c7-f3-impl r3), not closed here: see C7-F4 below.** In production a key is registered with the host
+    redactor in exactly one place: the providers binding's key read (`daemon-host/src/bindings/providers.ts`, the
+    `registerSecret` after the vault read), which the Anthropic adapter calls INSIDE its send (`anthropic/src/adapter.ts`,
+    the request function: `await getKey(...)`, then `fetch`), after every guard check. A request whose content holds a key
+    the redactor does not know yet is therefore sent with it when that key is first read at the send. That happens when the
+    key is new to this daemon process: after a daemon start before the first request on the connection, or after the key
+    was rotated in the vault while the old one stays registered (the new value reaches the redactor only in the send that
+    first reads it). What is sent: the whole request body, to that connection's own provider origin (the key's own provider),
+    in the run that holds the key in its history (pasted by the user, read from a file, or printed by a command). The next
+    request of the run is refused `secret_in_request` (the key is registered by then). The order is the same as before
+    C7-F3 (the synchronous scan also ran before the adapter's vault read); narrow, but it contradicts "nothing goes out
+    holding a stored credential".
+  - N2: one budget for every pass of a request (a restart can no longer double it); N3: a cancel at the guard's yield stops a
+    synchronous scan (tested); N4: `assertScanBudgetFits` refuses NaN and every value the comparison cannot order.
+- **Tests.** The existing synchronous tests stay; the asynchronous path has its own file
+  (`test/provider-redactor-async.test.ts`) with an equivalence test over a corpus of the synchronous cases, instead of
+  running every synchronous test twice.
+
+## C7-F4 (follow-up ticket, not built): a key known before any request is built
+
+Close the residual above so that no request body can carry a stored key that the scan did not know about:
+1. **Register a key when it is stored and at daemon start.** The providers binding registers every connection's key with the
+   host redactor when it is stored or rotated in the vault, and reads and registers each configured connection's key once at
+   daemon start (audited like any key read, DMN-5), before the composer accepts a run. The old key stays registered after a
+   rotation (an echo of it is still redacted).
+2. **And/or an adapter-level check at the send.** The Anthropic adapter (and any later network adapter) runs the request
+   scan again after its key read and before `fetch`, with no `await` between that check and the call: a key registered by
+   that read is then checked against the body it would go out with, and the request is refused `secret_in_request`.
+3. Tests: a rotated key held in a run's history is never sent (real redactor, guard, adapter and a fake fetch: the body that
+   reaches fetch never holds the key); a daemon restart with a key in a run's history refuses the first request.
 
 ## Problem
 

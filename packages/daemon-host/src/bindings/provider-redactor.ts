@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { createHash } from "node:crypto";
 import { MAX_STRING_CHARS, isWellFormedString, placeholder, type Redactor } from "@axis/audit";
-import type { Redactor as ProviderRedactor } from "@axis/providers";
+import { ProviderError, SCAN_BUDGET_CHARS, type Redactor as ProviderRedactor, type ScanContext } from "@axis/providers";
 
 /**
  * The host redactor as the providers' redaction hook, and the check for a registered secret in provider output. Kept
@@ -32,29 +32,80 @@ export const MAX_CLEAN_VERDICTS = 8 * 1024;
  * on a long string is kept by its SHA-256 together with the redactor's `registeredForms`: the same text is judged once while
  * the registered secrets are the same, and again as soon as one is added. A "secret" verdict is never kept (the request is
  * refused anyway). A request then scans only its new long strings, at most `windowCount(length)` windows each.
+ *
+ * The guard uses `containsSecretAsync` (C7-F3, docs/design/composer-outgoing-scan.md): the same windows and kept verdicts,
+ * yielding to the event loop between windows so other runs, approvals and the control channel are served during a long scan,
+ * charged to the request's `ScanContext` budget and stopped by its signal. A verdict is kept only after a complete scan whose
+ * registered-forms count did not change from its start; `secretsVersion` is that count, so the guard scans the whole request
+ * again when a key is registered during it.
  */
 export function providerRedactor(r: Redactor, maxVerdicts = MAX_CLEAN_VERDICTS): ProviderRedactor {
   const clean = new Map<string, number>();
+  /** Keep (or refresh) a "no secret" verdict under the registered-forms count its whole scan ran under; least recent goes first. */
+  const keep = (id: string, forms: number): void => {
+    clean.delete(id);
+    clean.set(id, forms);
+    if (clean.size > maxVerdicts) clean.delete(clean.keys().next().value as string);
+  };
+  /** The UTF-8 bytes of the whole (well-formed) string: any lossy encoding would let two different strings share a verdict. */
+  const idOf = (t: string): string => createHash("sha256").update(t, "utf8").digest("hex");
   return {
     redact: (t) => r.redactString(t),
     containsSecret: (t) => {
       if (t.length <= SCAN_CHARS) return r.redactString(t) !== t;
       if (!isWellFormedString(t)) return true;
-      // The UTF-8 bytes of the whole (well-formed) string: any lossy encoding would let two different strings share a verdict.
-      const id = createHash("sha256").update(t, "utf8").digest("hex");
+      const id = idOf(t);
       const forms = r.registeredForms;
       if (clean.get(id) === forms) {
-        clean.delete(id);
-        clean.set(id, forms);
+        keep(id, forms);
         return false;
       }
       for (const w of windowsOf(t)) if (r.redactString(w) !== w) return true;
-      clean.delete(id);
-      clean.set(id, forms);
-      if (clean.size > maxVerdicts) clean.delete(clean.keys().next().value as string);
+      keep(id, forms);
       return false;
     },
+    containsSecretAsync: async (t, scan) => {
+      // Block A (one synchronous block, no await): abort, short path, well-formedness, the id, the start count, the kept verdict.
+      if (scan.signal.aborted) throw new ProviderError("cancelled");
+      if (t.length <= SCAN_CHARS) return r.redactString(t) !== t;
+      if (!isWellFormedString(t)) return true;
+      const id = idOf(t);
+      const start = r.registeredForms;
+      if (clean.get(id) === start) {
+        keep(id, start);
+        return false;
+      }
+      if (await scanWindows(r, t, scan)) return true;
+      // Block B (one synchronous block): abort, then the count re-read, compared and stored with no await in between. A key
+      // registered during the scan means the windows read before it used an older set: no verdict is kept, and the guard,
+      // which sees `secretsVersion` move, scans the whole request again under the new set (review c7-f3-impl r1 SF-1).
+      if (scan.signal.aborted) throw new ProviderError("cancelled");
+      if (r.registeredForms === start) keep(id, start);
+      return false;
+    },
+    secretsVersion: () => r.registeredForms,
   };
+}
+
+/** Windows scanned between two yields to the event loop on the asynchronous path (C7-F3). */
+export const YIELD_WINDOWS = 8;
+
+/**
+ * Every window of `t`, each charged to the request's budget before it is read; yields to the event loop every
+ * `YIELD_WINDOWS` windows and checks the signal after each yield. True at the first window the redactor would change.
+ */
+async function scanWindows(r: Redactor, t: string, scan: ScanContext): Promise<boolean> {
+  let n = 0;
+  for (const w of windowsOf(t)) {
+    if (scan.budget.remaining - w.length < 0) throw new ProviderError("scan_budget");
+    scan.budget.remaining -= w.length;
+    if (r.redactString(w) !== w) return true;
+    if (++n % YIELD_WINDOWS === 0) {
+      await new Promise<void>((res) => setImmediate(res));
+      if (scan.signal.aborted) throw new ProviderError("cancelled");
+    }
+  }
+  return false;
 }
 
 /** The redactor reads at most this many characters of one string. */
@@ -135,4 +186,38 @@ function* windowsOf(text: string): Generator<string> {
 export function holdsRegisteredSecret(r: Redactor, text: string): boolean {
   for (const w of windowsOf(text)) if (marks(r.redactString(w)) > marks(w)) return true;
   return false;
+}
+
+/** What bounds a composer run's history, for `scanCharsAtCaps`. */
+export interface HistoryCaps {
+  readonly inputBytesPerRun: number;
+  readonly resultBytesPerRun: number;
+  readonly maxTurns: number;
+  readonly maxOutputTokens: number;
+  readonly promptChars: number;
+}
+
+/** Characters of model text one output token is taken to be at most, for the scan bound (generous: about 4 is usual). */
+const CHARS_PER_TOKEN = 16;
+
+/**
+ * Characters of window reads a request may need when its run's history is at these caps (C7-F3): the history (UTF-8 bytes
+ * bound the tool inputs and results; model text by output tokens; the prompt) read at the window factor, plus up to two
+ * windows of rounding per long string (`windowCount(L) <= (L - SCAN) / STEP + 2`), twice (a key registered during the scan
+ * makes the guard scan the whole request again).
+ */
+export function scanCharsAtCaps(h: HistoryCaps): number {
+  const history = h.inputBytesPerRun + h.resultBytesPerRun + h.maxTurns * h.maxOutputTokens * CHARS_PER_TOKEN + h.promptChars;
+  const long = SCAN_CHARS + 1;
+  const longStrings = Math.ceil(h.inputBytesPerRun / long) + Math.ceil(h.resultBytesPerRun / long) + h.maxTurns + 1;
+  return 2 * (Math.ceil((history / STEP) * SCAN_CHARS) + 2 * longStrings * SCAN_CHARS);
+}
+
+/**
+ * Refuses (RangeError) composer caps whose history one request's outgoing scan could not read within `SCAN_BUDGET_CHARS`
+ * (review c7-f3-impl r1 N2): raising a cap would otherwise refuse legitimate runs `PROVIDER_SCAN_BUDGET`.
+ */
+export function assertScanBudgetFits(h: HistoryCaps): void {
+  // Written so that NaN (or any value the comparison cannot order) is refused too (review c7-f3-impl r2 N4).
+  if (!(scanCharsAtCaps(h) <= SCAN_BUDGET_CHARS)) throw new RangeError("the composer caps exceed what one request's secret scan may read");
 }
