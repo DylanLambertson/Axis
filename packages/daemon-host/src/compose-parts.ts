@@ -2,7 +2,9 @@
 import { basename, normalize } from "node:path";
 import { randomBytes } from "node:crypto";
 import { AxisError, type AuditLog } from "@axis/audit";
-import type { DaemonAuditSink } from "@axis/daemon";
+import { protocolRegistry, type ContractRegistry, type DaemonAuditSink } from "@axis/daemon";
+import { lookupMethod } from "@axis/protocol";
+import type { HostServices } from "./host.js";
 import type { Journal } from "@axis/journal";
 import type { RunsBindingDeps } from "./bindings/runs.js";
 import type { ControlClient } from "./control/client.js";
@@ -181,4 +183,12 @@ export async function settleComposer(composer: { dispose(): void; idle(): Promis
     if (timer !== undefined) clearTimeout(timer);
     seal.seal();
   }
+}
+
+/** The registry restricted to what the host serves, so an unserved method does not exist (and `hello` does not offer it). */
+export function registryOf(surface: HostServices["surface"]): ContractRegistry {
+  return {
+    lookup: (contract, version, method) => (surface.registry[`${contract}/${version}`]?.[method] === undefined ? undefined : lookupMethod(contract, version, method)),
+    versions: (contract) => protocolRegistry.versions(contract).filter((v) => surface.registry[`${contract}/${v}`] !== undefined),
+  };
 }
