@@ -56,7 +56,7 @@ const LC_NAME = /^LC_[A-Z0-9_]{1,64}$/;
 /** The push run's default bound: under the 30 s of `axis.git/1.push` (a test compares the two). */
 export const DEFAULT_PUSH_TIMEOUT_MS = 25_000;
 /** The configuration and ssh variables git-ops validated the push with (the pty process's `PUSH_ENV_NAMES`), sent for comparison. */
-const PUSH_ENV_NAMES = ["HOME", "XDG_CONFIG_HOME", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM", "GIT_SSH", "GIT_SSH_COMMAND", "GIT_SSH_VARIANT", "GIT_PROXY_COMMAND"] as const;
+const PUSH_ENV_NAMES = ["HOME", "XDG_CONFIG_HOME", "GIT_CONFIG", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM", "GIT_SSH", "GIT_SSH_COMMAND", "GIT_SSH_VARIANT", "GIT_PROXY_COMMAND"] as const;
 
 /** The service refused the mapped form itself: a wiring fault, not unavailability. Every other failure (closed, busy, slow, no control) is. */
 const FORM_REFUSALS: ReadonlySet<unknown> = new Set(["bad_argv", "env_denied", "bad_bind"]);
@@ -194,12 +194,12 @@ export function createPtyGitRunner(port: (PtyExecPort & Partial<PtyPushPort>) | 
       if (m === undefined || env === undefined || !absNormal(req.cwd, options.platform)) throw unmappable();
       if ("push" in m) {
         if (m.hooks) throw pushHooksUnavailable();
-        // git-ops' push writes nothing to stdin; a push request that does is not its form.
-        if (req.stdin !== undefined) throw unmappable();
+        // git-ops' push writes nothing to stdin and always names the digest of the push URLs it read; a request without it is not its form.
+        if (req.stdin !== undefined || typeof req.pushUrls !== "string" || !/^[0-9a-f]{64}$/.test(req.pushUrls)) throw unmappable();
         if (port === undefined || typeof port.push !== "function") throw unavailable();
         // Exactly the names git-ops checked, from the environment it checked them in (git-ops' push command carries its pty copy).
         const expectEnv = Object.fromEntries(PUSH_ENV_NAMES.map((n) => [n, Object.hasOwn(req.env, n) && typeof req.env[n] === "string" ? req.env[n] : null])) as PtyPushCall["expectEnv"];
-        const call: PtyPushCall = { runId: `git-push-${++runs}`, repo: { gitDir: m.gitDir, workTree: m.workTree }, remote: m.remote, refspec: m.refspec, env, expectEnv, cols: 120, rows: 30 };
+        const call: PtyPushCall = { runId: `git-push-${++runs}`, repo: { gitDir: m.gitDir, workTree: m.workTree }, remote: m.remote, refspec: m.refspec, pushUrls: req.pushUrls, env, expectEnv, cols: 120, rows: 30 };
         const code = await runPush(port as PtyPushPort, call, pushTimeoutMs, req.signal);
         // The exit status is the only thing read (H-7): git's and the transport's output went to the terminal, never here.
         return { code, stdout: "", stderr: "" };
@@ -227,6 +227,35 @@ export function createPtyGitRunner(port: (PtyExecPort & Partial<PtyPushPort>) | 
   };
 }
 
+const CANCELLED = Symbol("cancelled");
+/**
+ * Waits for the spawn (the pty process's own remote check runs first) while watching the signal (review 2 N-2): aborted, it rejects
+ * at once with `CANCELLED`, and a handle that still arrives is killed.
+ */
+function spawnWatched(spawned: Promise<PtyHandle>, signal: AbortSignal | undefined): Promise<PtyHandle> {
+  if (signal === undefined) return spawned;
+  return new Promise<PtyHandle>((resolve, reject) => {
+    const onAbort = (): void => {
+      reject(CANCELLED);
+      spawned.then(
+        (late) => {
+          try {
+            late.kill("SIGKILL");
+          } catch {
+            /* gone */
+          }
+        },
+        () => undefined,
+      );
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    spawned.then(
+      (h) => (signal.removeEventListener("abort", onAbort), signal.aborted ? undefined : resolve(h)),
+      (e: unknown) => (signal.removeEventListener("abort", onAbort), reject(e)),
+    );
+  });
+}
+
 /**
  * One push run: spawned as a terminal in the pty process, then its exit status under `ms`. Past the bound, or when the pty process
  * reports no status, the group is killed and the push is `E_UNAVAILABLE` (it may have reached the remote: a retry is a fresh tier 4
@@ -237,8 +266,9 @@ async function runPush(port: PtyPushPort, call: PtyPushCall, ms: number, signal:
   if (signal?.aborted === true) throw cancelled();
   let h: PtyHandle;
   try {
-    h = await port.push(call);
+    h = await spawnWatched(port.push(call), signal);
   } catch (e) {
+    if (e === CANCELLED) throw cancelled();
     const code = (e as { code?: unknown } | null)?.code;
     if (code === "remote_refused") throw remoteRefused();
     throw FORM_REFUSALS.has(code) ? unmappable() : unavailable();

@@ -225,7 +225,7 @@ export function createPtyService(options: PtyServiceOptions): PtyService {
     if (vetting >= 4) return refuseSpawn(m.req, "capacity");
     vetting++;
     const ch = control;
-    void vetPushRemote(cfg, clock, m.repo, m.remote, p.readEnv, vetChildren)
+    void vetPushRemote(cfg, clock, m.repo, m.remote, m.pushUrls, p.readEnv, vetChildren)
       .catch(() => "spawn_failed" as const)
       .then((verdict) => {
         vetting--;

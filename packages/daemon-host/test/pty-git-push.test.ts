@@ -21,7 +21,8 @@ const gitOpsPush = (hooks: boolean, remote = "origin", refspec = SPEC): string[]
   "-c", "protocol.allow=never", ...["https", "ssh", "git", "file"].flatMap((p) => ["-c", `protocol.${p}.allow=always`]),
   "push", "--no-follow-tags", "--no-recurse-submodules", ...(hooks ? [] : ["--no-verify"]), "--", remote, refspec,
 ];
-const req = (argv: readonly string[], extra: Partial<GitRunRequest> = {}): GitRunRequest => ({ argv, cwd: W.workTree, env: ENV, context: "pty", ...extra });
+const URLS = "5".repeat(64);
+const req = (argv: readonly string[], extra: Partial<GitRunRequest> = {}): GitRunRequest => ({ argv, cwd: W.workTree, env: ENV, context: "pty", pushUrls: URLS, ...extra });
 const isCode = (code: string, reason?: string) => (e: unknown): boolean =>
   e instanceof GitOpsError && e.code === code && (reason === undefined || e.details?.["reason"] === reason) && !e.message.includes("/repo") && !e.message.includes(TIP);
 
@@ -77,7 +78,8 @@ test("git-ops' push maps onto the push run: repository, remote and pinned refspe
   const c = port.calls[0] as PtyPushCall;
   assert.deepEqual({ repo: c.repo, remote: c.remote, refspec: c.refspec }, { repo: W, remote: "origin", refspec: SPEC });
   assert.deepEqual(c.env, { GIT_TERMINAL_PROMPT: "0", LANG: "C" }, "redirectors, HOME, PATH and the agent socket are never sent");
-  assert.deepEqual(c.expectEnv, { HOME: "/home/u", XDG_CONFIG_HOME: null, GIT_CONFIG_GLOBAL: null, GIT_CONFIG_SYSTEM: null, GIT_CONFIG_NOSYSTEM: null, GIT_SSH: null, GIT_SSH_COMMAND: null, GIT_SSH_VARIANT: null, GIT_PROXY_COMMAND: null }, "the configuration and ssh variables git-ops checked, for the pty process to compare");
+  assert.equal(c.pushUrls, URLS, "git-ops' digest of the push URLs it read, for the pty process to compare");
+  assert.deepEqual(c.expectEnv, { HOME: "/home/u", XDG_CONFIG_HOME: null, GIT_CONFIG: null, GIT_CONFIG_GLOBAL: null, GIT_CONFIG_SYSTEM: null, GIT_CONFIG_NOSYSTEM: null, GIT_SSH: null, GIT_SSH_COMMAND: null, GIT_SSH_VARIANT: null, GIT_PROXY_COMMAND: null }, "the configuration and ssh variables git-ops checked, for the pty process to compare");
   assert.ok(c.runId.length > 0 && c.cols > 0 && c.rows > 0);
   assert.equal(port.execs, 0, "a push is never an exec");
   const failed = await runner(pushPort({ exitCode: 1, signal: null })).run(req(gitOpsPush(false)));
@@ -121,6 +123,11 @@ test("only git-ops' exact push form maps: a force, another ref, a URL, a second 
   }
   const port = pushPort();
   await assert.rejects(runner(port).run(req(base, { stdin: "x" })), isCode("E_INTERNAL"), "stdin is not git-ops' push");
+  for (const pushUrls of [undefined, "", "x".repeat(64), "5".repeat(63)]) {
+    const r = req(base);
+    const { pushUrls: _drop, ...rest } = r;
+    await assert.rejects(runner(port).run(pushUrls === undefined ? rest : { ...rest, pushUrls }), isCode("E_INTERNAL"), `push URL digest ${String(pushUrls)}`);
+  }
   await assert.rejects(runner(port).run(req(base, { env: { GIT_TERMINAL_PROMPT: "0\0x" } })), isCode("E_INTERNAL"), "a NUL in a kept value");
   assert.equal(port.calls.length, 0);
 });
@@ -195,4 +202,18 @@ test("S-1: the request's signal kills the push run (E_CANCELLED); aborted before
   assert.equal(none.calls.length, 0);
   // The default bound is under the method's own timeout, so the run never outlives the request.
   assert.ok(DEFAULT_PUSH_TIMEOUT_MS < gitMethods.push.timeoutMs, `${DEFAULT_PUSH_TIMEOUT_MS} < ${gitMethods.push.timeoutMs}`);
+});
+
+test("review 2 N-2: a cancel while the spawn is pending (the pty process's remote check) answers at once, and the handle that still arrives is killed", async () => {
+  let deliver: ((h: PtyHandle) => void) | undefined;
+  const t = term();
+  const port: PtyExecPort & PtyPushPort = { exec: () => Promise.reject(new Error("x")), push: () => new Promise<PtyHandle>((resolve) => (deliver = resolve)) };
+  const ac = new AbortController();
+  const p = runner(port).run(req(gitOpsPush(false), { signal: ac.signal }));
+  await new Promise((x) => setImmediate(x));
+  ac.abort();
+  await assert.rejects(p, isCode("E_CANCELLED"));
+  deliver?.(t);
+  await new Promise((x) => setImmediate(x));
+  assert.deepEqual(t.killed, ["SIGKILL"], "the late terminal is ended");
 });

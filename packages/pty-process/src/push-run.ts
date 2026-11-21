@@ -2,6 +2,7 @@
 // H9-hooks slice S4 part 1: `git push` as a terminal-bound run (docs/design/daemon-host-hooks.md §5.2,
 // docs/design/daemon-host-hooks-s4.md). The service builds the whole argv and environment itself from closed fields; the
 // message names a repository, a configured remote and the one pinned refspec, and nothing else.
+import { createHash } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { relative, resolve, isAbsolute as nodeAbsolute } from "node:path";
 import { plainPrefix } from "./exec-argv.js";
@@ -24,8 +25,29 @@ export const PUSH_TRANSPORTS = ["https", "ssh", "git", "file"] as const;
  * reads the destination and the GIT-7 checks with them); the service's own environment must hold exactly these values, or the push
  * is `env_denied` (an approval names a destination only as the daemon's git saw it). `null` is "not set".
  */
-export const PUSH_ENV_NAMES = ["HOME", "XDG_CONFIG_HOME", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM", "GIT_SSH", "GIT_SSH_COMMAND", "GIT_SSH_VARIANT", "GIT_PROXY_COMMAND"] as const;
+export const PUSH_ENV_NAMES = ["HOME", "XDG_CONFIG_HOME", "GIT_CONFIG", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM", "GIT_SSH", "GIT_SSH_COMMAND", "GIT_SSH_VARIANT", "GIT_PROXY_COMMAND"] as const;
 export type PushEnvName = (typeof PUSH_ENV_NAMES)[number];
+/**
+ * The only `GIT_*` names a push (and its remote check) keeps from the startup environment, by an allow-list (review 2 SF-1): the
+ * compared configuration and ssh names except the legacy `GIT_CONFIG` (which makes `git config` read only that file, blinding the
+ * remote check; compared AND dropped), the trust roots for https, and what the service sets itself. Every other `GIT_*` name
+ * (`GIT_CONFIG_PARAMETERS`, `GIT_CONFIG_COUNT`/`KEY_n`/`VALUE_n`, the location names `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`,
+ * `GIT_OBJECT_DIRECTORY`, `GIT_ALTERNATE_OBJECT_DIRECTORIES`, `GIT_COMMON_DIR`, `GIT_NAMESPACE`, `GIT_EXEC_PATH`,
+ * `GIT_TEMPLATE_DIR`, `GIT_ATTR_SOURCE`, `GIT_TRACE*`, `GIT_SSL_NO_VERIFY`, ...) is removed, whatever its case.
+ */
+const PUSH_GIT_KEEP: ReadonlySet<string> = new Set([
+  "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM", "GIT_SSH", "GIT_SSH_COMMAND", "GIT_SSH_VARIANT", "GIT_PROXY_COMMAND",
+  "GIT_SSL_CAINFO", "GIT_SSL_CAPATH",
+  "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_AUTHOR_DATE", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "GIT_COMMITTER_DATE",
+  "GIT_TERMINAL_PROMPT", "GIT_NO_LAZY_FETCH", "GIT_ALLOW_PROTOCOL",
+]);
+/** Removes every `GIT_*` name outside `PUSH_GIT_KEEP` (any case). */
+function keepGitNames(env: Record<string, string>): void {
+  for (const k of Object.keys(env)) {
+    const u = k.toUpperCase();
+    if (u.startsWith("GIT_") && !PUSH_GIT_KEEP.has(u)) delete env[k];
+  }
+}
 
 type PushMsg = Extract<ControlRequest, { t: "push" }>;
 type SpawnFailCode = Extract<ControlReply, { t: "spawn-failed" }>["code"];
@@ -119,6 +141,8 @@ export function preparePush(m: PushMsg, cfg: PushRunConfig, platform: NodeJS.Pla
     const have = Object.hasOwn(env, name) ? env[name] : undefined;
     if ((have ?? null) !== m.expectEnv[name]) return { code: "env_denied" };
   }
+  keepGitNames(env);
+  keepGitNames(readEnv);
   const path = pushPath(env["PATH"], [workTree, gitDir], platform);
   put(env, "PATH", path);
   put(readEnv, "PATH", path);
@@ -127,21 +151,31 @@ export function preparePush(m: PushMsg, cfg: PushRunConfig, platform: NodeJS.Pla
   return { argv: pushArgv(cfg, m.repo, m.remote, m.refspec), cwd: workTree, env, readEnv };
 }
 
-/** A push URL git can reach without a helper: no `<transport>::` form, and a scheme (when written) from the push transports. */
+/**
+ * A push URL git can reach without a helper, by git's own grammar (`is_urlschemechar`: the first character alphanumeric, then also
+ * `+`, `.`, `-`): no `<transport>::` form, and a scheme (when written) that is one of the push transports, compared case-sensitively
+ * as git does (`HTTPS://` makes git look for a helper named `HTTPS`).
+ */
 export function pushUrlAllowed(url: string): boolean {
-  if (url === "" || /^[A-Za-z][A-Za-z0-9+.-]*::/.test(url)) return false;
-  const scheme = /^([A-Za-z][A-Za-z0-9+.-]*):\/\//.exec(url)?.[1]?.toLowerCase();
+  if (url === "" || /^[A-Za-z0-9][A-Za-z0-9+.-]*::/.test(url)) return false;
+  const scheme = /^([A-Za-z0-9][A-Za-z0-9+.-]*):\/\//.exec(url)?.[1];
   return scheme === undefined || (PUSH_TRANSPORTS as readonly string[]).includes(scheme);
+}
+
+/** git-ops' `pushUrlsDigest`: SHA-256 of the JSON of the trimmed, non-empty lines, sorted. */
+export function pushUrlsDigest(lines: readonly string[]): string {
+  return createHash("sha256").update(JSON.stringify(lines.map((l) => l.trim()).filter((l) => l !== "").sort())).digest("hex");
 }
 
 /**
  * The service's own check of the remote, just before the spawn (it trusts the daemon for which repository, R-H3, not for what
  * its configuration starts): `remote.<r>.vcs` must be unset (a helper named there runs `git remote-<vcs>`: a `git-remote-<vcs>`
  * on PATH or in the exec path, or an alias), and every push URL git resolves (`pushurl`, `insteadOf` and `pushInsteadOf`
- * applied) must pass `pushUrlAllowed`. Both reads start nothing. Anything else, a timeout or a failed start is a refusal. Each
+ * applied) must pass `pushUrlAllowed` and hash to `expectUrls` (the digest git-ops read under the mutex: a URL changed since, a user-level
+ * `pushInsteadOf` included, refuses). Both reads start nothing; each is bounded by `timeoutMs` (3 s, under the host's 10 s spawn bound). Anything else, a timeout or a failed start is a refusal. Each
  * read is in `running` while it runs, so the caller can kill it when its channel closes.
  */
-export async function vetPushRemote(cfg: PushRunConfig, clock: Clock, repo: { gitDir: string; workTree: string }, remote: string, env: Record<string, string>, running: Set<ExecChild>, timeoutMs = 30_000): Promise<true | "remote_refused" | "spawn_failed"> {
+export async function vetPushRemote(cfg: PushRunConfig, clock: Clock, repo: { gitDir: string; workTree: string }, remote: string, expectUrls: string, env: Record<string, string>, running: Set<ExecChild>, timeoutMs = 3_000): Promise<true | "remote_refused" | "spawn_failed"> {
   const read = (sub: string, args: readonly string[]): Promise<{ code: number | null; stdout: string } | "failed"> => {
     let child: ExecChild;
     try {
@@ -165,7 +199,7 @@ export async function vetPushRemote(cfg: PushRunConfig, clock: Clock, repo: { gi
   if (vcs.code !== 1 || vcs.stdout !== "") return "remote_refused";
   const urls = await read("remote", ["get-url", "--push", "--all", "--", remote]);
   if (urls === "failed") return "spawn_failed";
-  const list = urls.stdout.split("\n").filter((l) => l !== "");
-  if (urls.code !== 0 || list.length === 0 || !list.every(pushUrlAllowed)) return "remote_refused";
+  const list = urls.stdout.split("\n").map((l) => l.trim()).filter((l) => l !== "");
+  if (urls.code !== 0 || list.length === 0 || !list.every(pushUrlAllowed) || pushUrlsDigest(list) !== expectUrls) return "remote_refused";
   return true;
 }

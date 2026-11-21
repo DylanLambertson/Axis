@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { GitOpsError, MAX_COMMITS, MAX_DIFF, executePush, isAllowedRefspec, planDigest, planPush } from "../src/index.js";
+import { GitOpsError, MAX_COMMITS, MAX_DIFF, executePush, isAllowedRefspec, planDigest, planPush, pushUrlsDigest } from "../src/index.js";
 import { BASE, COMMIT, FakeRunner, HEAD, WT, healthy, makeDeps, sub } from "./helpers.js";
 
 const input = { worktree: WT, remote: "origin", branch: "axis/feat", baseSha: BASE };
@@ -333,7 +333,7 @@ test("S4: the plan digest covers the destination key when one is given; a push c
   const a = await planPush(makeDeps(new FakeRunner(healthy())), { ...input, destination: "a".repeat(64) });
   const b = await planPush(makeDeps(new FakeRunner(healthy())), { ...input, destination: "b".repeat(64) });
   assert.equal(plain.digest, planDigest(plain.tip, [], []), "no destination: the digest is unchanged");
-  assert.equal(a.digest, planDigest(a.tip, [], [], [], "a".repeat(64)));
+  assert.equal(a.digest, planDigest(a.tip, [], [], [], "a".repeat(64), pushUrlsDigest(["https://github.com/o/r.git"])));
   assert.notEqual(a.digest, b.digest);
   assert.notEqual(a.digest, plain.digest);
   const r = new FakeRunner(healthy());
@@ -368,4 +368,15 @@ test("S4 review S-1: the request's signal reaches the push command; aborted befo
   ac.abort();
   assert.equal(await code(executePush(makeDeps(r2), input, { signal: ac.signal })), "E_CANCELLED");
   assert.equal(r2.ptyCalls().length, 0);
+});
+
+test("S4 review 2 N-1: the push command carries the digest of the push URLs read, and with a destination the plan digest covers them", async () => {
+  const urls = (u: string) => new FakeRunner(healthy((s) => (s[0] === "remote" && s[1] === "get-url" ? { stdout: `${u}\n` } : undefined)));
+  const a = await planPush(makeDeps(urls("https://github.com/o/r.git")), { ...input, destination: "d".repeat(64) });
+  const b = await planPush(makeDeps(urls("https://github.com/o/other.git")), { ...input, destination: "d".repeat(64) });
+  assert.equal(a.command.pushUrls, pushUrlsDigest(["https://github.com/o/r.git"]));
+  assert.notEqual(a.digest, b.digest, "same destination key, other URLs: another plan");
+  const noDest = await planPush(makeDeps(urls("https://github.com/o/other.git")), input);
+  assert.equal(noDest.digest, planDigest(noDest.tip, [], []), "without a destination the URLs are not covered");
+  assert.equal(pushUrlsDigest([" b ", "a", ""]), pushUrlsDigest(["a", "b"]));
 });

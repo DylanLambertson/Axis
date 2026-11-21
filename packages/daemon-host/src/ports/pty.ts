@@ -80,9 +80,11 @@ export interface PtyPushCall {
   readonly repo: { readonly gitDir: string; readonly workTree: string };
   readonly remote: string;
   readonly refspec: string;
+  /** git-ops' `pushUrlsDigest` of the push URLs it read; the pty process refuses (`remote_refused`) when its own read differs. */
+  readonly pushUrls: string;
   readonly env: Readonly<Record<string, string>>;
   /** The configuration and ssh variables the host validated, `null` for unset; the pty process refuses a push whose own differ. */
-  readonly expectEnv: Readonly<Record<"HOME" | "XDG_CONFIG_HOME" | "GIT_CONFIG_GLOBAL" | "GIT_CONFIG_SYSTEM" | "GIT_CONFIG_NOSYSTEM" | "GIT_SSH" | "GIT_SSH_COMMAND" | "GIT_SSH_VARIANT" | "GIT_PROXY_COMMAND", string | null>>;
+  readonly expectEnv: Readonly<Record<"HOME" | "XDG_CONFIG_HOME" | "GIT_CONFIG" | "GIT_CONFIG_GLOBAL" | "GIT_CONFIG_SYSTEM" | "GIT_CONFIG_NOSYSTEM" | "GIT_SSH" | "GIT_SSH_COMMAND" | "GIT_SSH_VARIANT" | "GIT_PROXY_COMMAND", string | null>>;
   readonly cols: number;
   readonly rows: number;
 }

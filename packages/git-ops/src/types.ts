@@ -21,6 +21,8 @@ export interface GitRunRequest {
   readonly raw?: boolean;
   /** Ends the command early (the request was cancelled or timed out). A runner that honours it kills the command's group. */
   readonly signal?: AbortSignal;
+  /** Push only: `pushUrlsDigest` of the push URLs git-ops read. A runner that can re-read them just before the push refuses on a difference. */
+  readonly pushUrls?: string;
 }
 
 export interface GitRunResult {

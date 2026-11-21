@@ -91,6 +91,8 @@ const push = z
     repo: z.object({ gitDir: absPath, workTree: absPath }).strict(),
     remote: z.string().regex(PUSH_REMOTE),
     refspec: z.string().regex(PUSH_REFSPEC),
+    /** git-ops' digest of the push URLs it read; the service's own read must match. */
+    pushUrls: z.string().regex(/^[0-9a-f]{64}$/),
     env: envRecord,
     /** The configuration and ssh variables the host validated; the service's own must be the same (`PUSH_ENV_NAMES`). */
     expectEnv: z.object(Object.fromEntries(PUSH_ENV_NAMES.map((n) => [n, z.string().max(LIMITS.envValueChars).nullable()])) as Record<(typeof PUSH_ENV_NAMES)[number], z.ZodNullable<z.ZodString>>).strict(),

@@ -9,7 +9,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
-import type { GitRunRequest } from "@axis/git-ops";
+import { pushUrlsDigest, type GitRunRequest } from "@axis/git-ops";
 import type { PtySpawnError } from "@axis/pty-process";
 import { gitRig, gitUnavailable, type GitClient, type GitRig, type GitRigOptions } from "./git-rig.js";
 import { ptyProcessRig, type PtyProcessRig } from "./pty-process-rig.js";
@@ -181,8 +181,8 @@ test("only the planned ref goes out: no tag (push.followTags), no configured pus
   assert.equal(res.ok, true, JSON.stringify(res.error));
   assert.equal(remoteRefs(r), `refs/heads/axis/feat ${tip}`);
   // The pty process itself refuses anything but `<id>:refs/heads/axis/<slug>`, whoever asks.
-  const expectEnv = { HOME: join(r.root, "home"), XDG_CONFIG_HOME: null, GIT_CONFIG_GLOBAL: null, GIT_CONFIG_SYSTEM: null, GIT_CONFIG_NOSYSTEM: null, GIT_SSH: null, GIT_SSH_COMMAND: null, GIT_SSH_VARIANT: null, GIT_PROXY_COMMAND: null };
-  const call = { runId: "x", repo: { gitDir: join(r.repo, ".git"), workTree: r.repo }, remote: "origin", env: {}, expectEnv, cols: 80, rows: 24 };
+  const expectEnv = { HOME: join(r.root, "home"), XDG_CONFIG_HOME: null, GIT_CONFIG: null, GIT_CONFIG_GLOBAL: null, GIT_CONFIG_SYSTEM: null, GIT_CONFIG_NOSYSTEM: null, GIT_SSH: null, GIT_SSH_COMMAND: null, GIT_SSH_VARIANT: null, GIT_PROXY_COMMAND: null };
+  const call = { runId: "x", repo: { gitDir: join(r.repo, ".git"), workTree: r.repo }, remote: "origin", pushUrls: pushUrlsDigest([r.remote]), env: {}, expectEnv, cols: 80, rows: 24 };
   for (const refspec of [`+${tip}:refs/heads/axis/feat`, `${tip}:refs/heads/main`, `${tip}:refs/tags/v2`, ":refs/heads/axis/feat", "refs/heads/other:refs/heads/axis/feat", `${tip}:refs/heads/axis/feat --force`]) {
     await assert.rejects(pty.port.push({ ...call, refspec }), (e: unknown) => (e as PtySpawnError).code === "bad_argv", refspec);
   }

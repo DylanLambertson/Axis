@@ -4,10 +4,10 @@
 // alias or by a `git-remote-<t>` program; S-2: configuration and ssh variables other than the host's; S-3: a relative or
 // worktree `PATH` entry supplying `ssh`.
 import assert from "node:assert/strict";
-import { chmodSync, copyFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { createPtyService } from "../src/index.js";
+import { createPtyService, pushUrlsDigest } from "../src/index.js";
 import { pipeExec } from "../testing/exec.js";
 import { channelPair, pipeSpawn, until } from "../testing/helpers.js";
 import { GIT, gitRig, SKIP, type GitRig } from "../testing/git.js";
@@ -126,7 +126,7 @@ test("S-2: the push's configuration and ssh variables must be the host's: anothe
   const denied = await s.send(f.msg({ expectEnv: expectOf(base) }));
   assert.deepEqual([denied["t"], denied["code"]], ["spawn-failed", "env_denied"]);
   // Control: when the host did see the same file, the push runs, and it goes where that file says.
-  const same = await s.send(f.msg({ expectEnv: expectOf({ ...base, GIT_CONFIG_GLOBAL: redirect }) }));
+  const same = await s.send(f.msg({ expectEnv: expectOf({ ...base, GIT_CONFIG_GLOBAL: redirect }), pushUrls: pushUrlsDigest([other]) }));
   assert.equal((await s.exit(same["term"] as string)).exitCode, 0);
   assert.equal(remoteRefs(r, f.remote), "");
   assert.match(remoteRefs(r, other), /refs\/heads\/axis\/feat/);
@@ -154,7 +154,7 @@ test("S-3: a relative PATH entry and one inside the work tree never supply ssh; 
   const base = { PATH: path, HOME: r.home, LANG: "C" };
   const s = service(r, base);
   tc.after(() => s.dispose());
-  const reply = await s.send(f.msg({ expectEnv: expectOf(base) }));
+  const reply = await s.send(f.msg({ expectEnv: expectOf(base), pushUrls: pushUrlsDigest([`ssh://host.invalid${f.remote}`]) }));
   assert.equal(reply["t"], "spawned");
   await s.exit(reply["term"] as string);
   assert.equal(r.markers(), "", "neither planted ssh ran");
@@ -163,4 +163,81 @@ test("S-3: a relative PATH entry and one inside the work tree never supply ssh; 
   // Control: the same PATH for plain git, from the work tree, runs the first planted ssh it finds.
   tryGit(r, ["push", "origin", `${f.tip}:refs/heads/axis/feat`], f.top, { PATH: path });
   assert.match(r.markers(), /rel-ssh|tree-ssh/);
+});
+
+test("review 2 SF-1: a startup GIT_CONFIG (which blinds `git config`) never lets a vcs helper through: refused when the host expects none, and dropped when it does; control: it blinds the read and plain git runs the program", { skip: SKIP }, async (tc) => {
+  const r = gitRig();
+  tc.after(() => r.cleanup());
+  const f = fixture(r, "legacy");
+  r.git(["config", "remote.origin.vcs", "file"], f.top);
+  copyFileSync(r.marker("legacy-prog", "exit 1\n"), join(r.bin, "git-remote-file"));
+  chmodSync(join(r.bin, "git-remote-file"), 0o755);
+  const empty = join(r.tmp, "empty.gitconfig");
+  writeFileSync(empty, "");
+  const base = { ...r.baseEnv, GIT_CONFIG: empty };
+  const s = service(r, base);
+  tc.after(() => s.dispose());
+  const denied = await s.send(f.msg({ expectEnv: expectOf(r.baseEnv) }));
+  assert.deepEqual([denied["t"], denied["code"]], ["spawn-failed", "env_denied"], "the host never has GIT_CONFIG");
+  const dropped = await s.send(f.msg({ expectEnv: expectOf(base) }));
+  assert.deepEqual([dropped["t"], dropped["code"]], ["spawn-failed", "remote_refused"], "dropped before the remote check, which then sees the vcs");
+  assert.equal(s.spawned.length, 0);
+  assert.equal(r.markers(), "");
+  // Control: GIT_CONFIG blinds `git config` (the vcs reads as unset), and plain git runs the program.
+  assert.throws(() => r.git(["config", "--get-all", "remote.origin.vcs"], f.top, undefined, { GIT_CONFIG: empty }));
+  tryGit(r, ["push", "origin", `${f.tip}:refs/heads/axis/feat`], f.top);
+  assert.match(r.markers(), /legacy-prog/);
+});
+
+test("review 2 SF-1: the push keeps GIT_* names by an allow-list: location, config, trace, template and attribute names from the startup environment are gone", { skip: SKIP }, async (tc) => {
+  const r = gitRig();
+  tc.after(() => r.cleanup());
+  const f = fixture(r, "allow");
+  const extra = { GIT_TEMPLATE_DIR: r.tmp, GIT_ATTR_SOURCE: "HEAD", GIT_SSL_NO_VERIFY: "1", GIT_HTTP_LOW_SPEED_LIMIT: "1", Git_Object_Directory: r.tmp, GIT_SSL_CAINFO: join(r.tmp, "ca.pem") };
+  const base = { ...r.baseEnv, ...extra };
+  const s = service(r, base);
+  tc.after(() => s.dispose());
+  const reply = await s.send(f.msg({ expectEnv: expectOf(base) }));
+  assert.equal(reply["t"], "spawned", JSON.stringify(reply));
+  await s.exit(reply["term"] as string);
+  const env = s.spawned[0]?.env ?? {};
+  const kept = Object.keys(env).filter((k) => k.toUpperCase().startsWith("GIT_")).sort();
+  assert.deepEqual(kept, ["GIT_ALLOW_PROTOCOL", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM", "GIT_NO_LAZY_FETCH", "GIT_SSL_CAINFO", "GIT_TERMINAL_PROMPT"]);
+});
+
+test("review 2 N-1: a push URL changed after git-ops read it (a user-level pushInsteadOf) is refused by the service's own read; control: with the new digest the push goes there", { skip: SKIP }, async (tc) => {
+  const r = gitRig();
+  tc.after(() => r.cleanup());
+  const f = fixture(r, "moved");
+  const other = join(r.tmp, "moved-other.git");
+  r.git(["init", "-q", "--bare", other], r.tmp);
+  const approved = f.msg();
+  writeFileSync(r.globalConfig, `[url "${other}"]\n\tpushInsteadOf = ${f.remote}\n`);
+  await refused(r, approved);
+  assert.equal(remoteRefs(r, other), "");
+  const control = await r.send(f.msg({ pushUrls: pushUrlsDigest([other]) }));
+  assert.equal((await r.exit(control.term as string)).exitCode, 0);
+  assert.match(remoteRefs(r, other), /axis\/feat/);
+});
+
+test("review 2 N-5: a PATH entry that is a symlink to the work tree is dropped too (by real path); control: plain git runs its ssh", { skip: SKIP }, async (tc) => {
+  const r = gitRig();
+  tc.after(() => r.cleanup());
+  const f = fixture(r, "symfix");
+  copyFileSync(r.marker("sym-ssh", "exit 1\n"), join(f.top, "ssh"));
+  chmodSync(join(f.top, "ssh"), 0o755);
+  const link = join(r.tmp, "looks-outside");
+  symlinkSync(f.top, link);
+  r.git(["remote", "set-url", "origin", `ssh://host.invalid${f.remote}`], f.top);
+  const path = `${link}:${process.env["PATH"] ?? "/usr/bin:/bin"}`;
+  const base = { PATH: path, HOME: r.home, LANG: "C" };
+  const s = service(r, base);
+  tc.after(() => s.dispose());
+  const reply = await s.send(f.msg({ expectEnv: expectOf(base), pushUrls: pushUrlsDigest([`ssh://host.invalid${f.remote}`]) }));
+  assert.equal(reply["t"], "spawned");
+  await s.exit(reply["term"] as string);
+  assert.equal(r.markers(), "");
+  assert.ok(!(s.spawned[0]?.env["PATH"] ?? "").split(":").includes(link));
+  tryGit(r, ["push", "origin", `${f.tip}:refs/heads/axis/feat`], f.top, { PATH: path });
+  assert.match(r.markers(), /sym-ssh/);
 });

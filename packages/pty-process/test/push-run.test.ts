@@ -9,7 +9,7 @@ import { pipeExec } from "../testing/exec.js";
 import { channelPair, pipeSpawn, settle } from "../testing/helpers.js";
 import { GIT, gitRig, SKIP } from "../testing/git.js";
 import { expectOf, fixture, remoteRefs } from "../testing/push.js";
-import { createPtyProcessPort, createPtyService } from "../src/index.js";
+import { createPtyProcessPort, createPtyService, pushUrlsDigest } from "../src/index.js";
 
 
 test("push: the service runs git push of the one refspec as a terminal, with its own pins and environment; the remote gets the tip", { skip: SKIP }, async (t) => {
@@ -130,7 +130,7 @@ test("the host port's push: settles on spawned with a handle whose exit is the s
   svc.serveControl(c.b);
   const port = createPtyProcessPort({ channel: c.a });
   t.after(() => port.dispose());
-  const call = { runId: "p1", repo: { gitDir: f.gitDir, workTree: f.top }, remote: "origin", refspec: `${f.tip}:refs/heads/axis/feat`, env: {}, expectEnv: expectOf(r.baseEnv) as never, cols: 80, rows: 24 };
+  const call = { runId: "p1", repo: { gitDir: f.gitDir, workTree: f.top }, remote: "origin", refspec: `${f.tip}:refs/heads/axis/feat`, pushUrls: pushUrlsDigest([f.remote]), env: {}, expectEnv: expectOf(r.baseEnv) as never, cols: 80, rows: 24 };
   const h = await port.push(call);
   const exit = await new Promise((resolve) => h.onExit(resolve));
   assert.deepEqual(exit, { exitCode: 0, signal: null });
