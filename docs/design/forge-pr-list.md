@@ -275,21 +275,23 @@ The request carries `trigger`: `"view"` or `"user"`.
 | Pty reply | State |
 |---|---|
 | `forge-result`, `exit` 0, not truncated | parsed (§5): `ok` or `output_invalid` |
-| `forge-result`, `truncated` | `output_too_large` |
+| `forge-result`, `truncated` (the exec outcome's `stdoutTruncated`; `stderrTruncated` is ignored, the classifier reads the first 64 KiB) | `output_too_large` |
 | `forge-result`, `class: auth_missing` (exit 1 with `HTTP 401`, or exit 4) | `not_logged_in` |
 | `forge-result`, `class: keyring` | `keyring_unavailable` |
 | `forge-result`, `class: repo_missing` | `repo_not_found` |
 | `forge-result`, `class: network` | `network_unavailable` |
 | `forge-result`, `class: other`, or `class: none` with a non-zero exit | `gh_failed` |
-| `forge-failed: spawn_missing` (no `ghPath`, or ENOENT) | `gh_missing` |
-| `forge-failed: spawn_failed` | `gh_failed` |
+| `forge-failed: spawn_missing` (no `ghPath`, or `ExecStartError` `not_found`) | `gh_missing` |
+| `forge-failed: spawn_failed` (`ExecStartError` `not_permitted`, `start_failed`, `program_refused`, or any other rejection of `done`; `program_refused` is also logged as a bug) | `gh_failed` |
 | `forge-failed: too_old` | `gh_too_old` |
 | `forge-failed: version_unknown` | `gh_failed` |
 | `forge-failed: timeout` | `timeout` |
 | `forge-failed: capacity` | `busy` |
 | `forge-failed: no_control` | `unavailable` |
 | `forge-failed: bad_request` | `remote_invalid` (the pty process refused values the daemon vetted: a bug, also logged as such) |
-| `forge-failed: unsupported_platform` | `unsupported_platform` |
+| `forge-failed: unsupported_platform` (`ExecStartError` `unsupported_platform`, thrown before spawn) | `unsupported_platform` |
+
+The `ExecStartError` codes and the per-stream truncation flags are the PV-X1a exec contract (agreed with its builder). Slice 1 builds against `pipeExec` with the same fields.
 
 **Audit.** The policy row's `rpc.execute` event records `projectId`, `trigger`, `state`, the row count and `invalidRows`, as allow-listed scalars. It never records a title, branch, login, URL or stderr. `pinRepository` is audited with the old and new `host/owner/repo`, which the daemon vetted.
 
