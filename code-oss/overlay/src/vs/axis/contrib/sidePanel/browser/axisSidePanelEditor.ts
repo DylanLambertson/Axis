@@ -13,11 +13,12 @@ import { CodeEditorWidget } from '../../../../editor/browser/widget/codeEditor/c
 import { EditorOption } from '../../../../editor/common/config/editorOptions.js';
 import { Selection } from '../../../../editor/common/core/selection.js';
 import { IResolvedTextEditorModel, ITextModelService } from '../../../../editor/common/services/resolverService.js';
+import { CommandsRegistry } from '../../../../platform/commands/common/commands.js';
 import { ContextKeyExpr, IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
 import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { ServiceCollection } from '../../../../platform/instantiation/common/serviceCollection.js';
 import { KeybindingsRegistry } from '../../../../platform/keybinding/common/keybindingsRegistry.js';
-import { AXIS_SIDE_PANEL_EDITOR_FOCUS, AXIS_SIDE_PANEL_LEAVE_WEIGHT, AXIS_SIDE_PANEL_ROUTE_WEIGHT, AXIS_SIDE_PANEL_ROUTED_KEYS, AxisSidePanelCommand, AxisSidePanelCommandId, IAxisSidePanelEditorInput, sidePanelEditorOptions } from '../common/axisSidePanelEditor.js';
+import { AXIS_SIDE_PANEL_COMMAND_POLICY, AXIS_SIDE_PANEL_EDITOR_FOCUS, AXIS_SIDE_PANEL_LEAVE_COMMAND, AXIS_SIDE_PANEL_LEAVE_WEIGHT, AxisSidePanelAction, guardDecision, IAxisSidePanelEditorInput, sidePanelEditorOptions } from '../common/axisSidePanelEditor.js';
 
 /** What the workbench supplies: saving one resource, the hand-off to IDE view, and the user's editor settings. */
 export interface IAxisSidePanelEditorHost {
@@ -27,12 +28,20 @@ export interface IAxisSidePanelEditorHost {
 	reveal(target: { resource: URI; selection: Selection | undefined }): Promise<void>;
 	/** `ITextResourceConfigurationService.getValue(resource, 'editor')`. */
 	editorSettings(resource: URI): Readonly<Record<string, unknown>> | undefined;
+	/** `ITextFileService.isDirty(resource)`. */
+	isDirty(resource: URI): boolean;
+	/** Says that a guarded command does nothing in the side panel (a status message in the workbench). */
+	blocked(commandId: string): void;
+	/** The side-panel editor lost focus: the workbench saves when `files.autoSave` is `onFocusChange` for `resource`. */
+	focusLost(resource: URI): void;
 }
 
 export type AxisSidePanelOpenResult = 'opened' | 'unavailable' | 'superseded' | 'disposed';
 
 /** Editors made by this class, so a command can find the instance from the focused code editor. */
 const instances = new WeakMap<ICodeEditor, AxisSidePanelEditor>();
+/** Live instances, for Save All. */
+const live = new Set<AxisSidePanelEditor>();
 
 /**
  * Spike PV-V0 (docs/design/pv-v0-editor-embed.md): a real `CodeEditorWidget` in an Axis part, over the same text
@@ -65,6 +74,8 @@ export class AxisSidePanelEditor extends Disposable {
 		const scoped = this._register(contextKeyService.createScoped(this.element));
 		scoped.createKey(AXIS_SIDE_PANEL_EDITOR_FOCUS, true);
 		this.instantiation = this._register(instantiationService.createChild(new ServiceCollection([IContextKeyService, scoped])));
+		live.add(this);
+		this._register({ dispose: () => live.delete(this) });
 	}
 
 	get currentResource(): URI | undefined {
@@ -85,7 +96,7 @@ export class AxisSidePanelEditor extends Disposable {
 		try {
 			reference = await this.textModelService.createModelReference(resource);
 		} catch {
-			return generation === this.generation && !this._store.isDisposed ? 'unavailable' : 'superseded';
+			return this._store.isDisposed ? 'disposed' : generation === this.generation ? 'unavailable' : 'superseded';
 		}
 		if (this._store.isDisposed) {
 			reference.dispose();
@@ -102,6 +113,13 @@ export class AxisSidePanelEditor extends Disposable {
 				isSimpleWidget: false, // a real text editor: extensions see it, as they see the IDE editor of the same document
 			}));
 			instances.set(this.widget, this);
+			const widget = this.widget;
+			this._register(widget.onDidBlurEditorWidget(() => {
+				const shown = this.resource;
+				if (shown) {
+					this.hostServices.focusLost(shown);
+				}
+			}));
 		} else {
 			this.widget.updateOptions(options);
 		}
@@ -137,28 +155,43 @@ export class AxisSidePanelEditor extends Disposable {
 		this.widget?.layout({ width, height });
 	}
 
-	async run(command: AxisSidePanelCommandId): Promise<void> {
+	/** Applies a guarded command's action (or `leave`) to the shown file. */
+	async run(action: AxisSidePanelAction | 'leave', commandId = ''): Promise<void> {
 		const resource = this.resource;
 		if (!resource) {
 			return;
 		}
-		switch (command) {
-			case AxisSidePanelCommand.save:
-			case AxisSidePanelCommand.saveWithoutFormatting:
-				if (this.widget && !this.widget.getOption(EditorOption.readOnly)) {
-					await this.hostServices.save(resource, command === AxisSidePanelCommand.saveWithoutFormatting);
+		switch (action) {
+			case 'save':
+			case 'saveWithoutFormatting':
+				if (!this.readOnly()) {
+					await this.hostServices.save(resource, action === 'saveWithoutFormatting');
 				}
 				return;
-			case AxisSidePanelCommand.openInIde:
+			case 'saveAllToo':
+				if (!this.readOnly() && this.hostServices.isDirty(resource)) {
+					await this.hostServices.save(resource, false);
+				}
+				return;
+			case 'openInIde':
 				await this.hostServices.reveal({ resource, selection: this.widget?.getSelection() ?? undefined });
 				return;
-			case AxisSidePanelCommand.close:
+			case 'close':
 				this.close();
 				return;
-			case AxisSidePanelCommand.leave:
+			case 'block':
+				this.hostServices.blocked(commandId);
+				return;
+			case 'leave':
 				this.leave();
 				return;
+			case 'accept':
+				return;
 		}
+	}
+
+	private readOnly(): boolean {
+		return !this.widget || this.widget.getOption(EditorOption.readOnly);
 	}
 }
 
@@ -167,25 +200,52 @@ function focusedInstance(accessor: ServicesAccessor): AxisSidePanelEditor | unde
 	return editor ? instances.get(editor) : undefined;
 }
 
+export interface IAxisSidePanelRegistration extends IDisposable {
+	/** Command ids now guarded. */
+	readonly guarded: readonly string[];
+	/** Policy ids with no command registered at the time (registered later, they would be unguarded). */
+	readonly missing: readonly string[];
+}
+
 /**
- * Registers the routed keys and Escape. Each routed key replaces, while the focus is in a side-panel editor, a
- * workbench command that would otherwise act on the editor part's active editor (for Save: save a different file).
+ * Registers Escape and the command guards (review S1). Each policy command other than `accept` is re-registered
+ * under its own id with a guard: while a side-panel editor has focus and the command has no explicit arguments, the
+ * policy action runs on that editor's file; otherwise the original handler runs. Must run after every upstream
+ * contribution has registered its commands (`missing` lists the ones not there yet). Disposing restores the originals.
  */
-export function registerAxisSidePanelEditorKeys(): IDisposable {
+export function registerAxisSidePanelEditorCommands(): IAxisSidePanelRegistration {
 	const store = new DisposableStore();
-	const when = ContextKeyExpr.equals(AXIS_SIDE_PANEL_EDITOR_FOCUS, true);
-	const seen = new Set<string>();
-	for (const key of AXIS_SIDE_PANEL_ROUTED_KEYS) {
-		const id = seen.has(key.route) ? `${key.route}.${key.upstreamCommand}` : key.route;
-		seen.add(key.route);
-		store.add(KeybindingsRegistry.registerCommandAndKeybindingRule({
-			id, weight: AXIS_SIDE_PANEL_ROUTE_WEIGHT, when, primary: key.primary, win: key.win,
-			handler: accessor => focusedInstance(accessor)?.run(key.route),
+	const guarded: string[] = [];
+	const missing: string[] = [];
+	store.add(KeybindingsRegistry.registerCommandAndKeybindingRule({
+		id: AXIS_SIDE_PANEL_LEAVE_COMMAND, weight: AXIS_SIDE_PANEL_LEAVE_WEIGHT, when: ContextKeyExpr.equals(AXIS_SIDE_PANEL_EDITOR_FOCUS, true), primary: KeyCode.Escape,
+		handler: accessor => focusedInstance(accessor)?.run('leave'),
+	}));
+	for (const [id, action] of AXIS_SIDE_PANEL_COMMAND_POLICY) {
+		if (action === 'accept') {
+			continue;
+		}
+		const original = CommandsRegistry.getCommand(id);
+		if (!original) {
+			missing.push(id);
+			continue;
+		}
+		guarded.push(id);
+		store.add(CommandsRegistry.registerCommand({
+			id,
+			metadata: original.metadata,
+			handler: (accessor, ...args) => {
+				const instance = focusedInstance(accessor);
+				const decision = guardDecision(action, instance !== undefined, args.length);
+				if (decision === undefined) {
+					return original.handler(accessor, ...args);
+				}
+				if (decision === 'saveAllToo') {
+					return Promise.resolve(original.handler(accessor, ...args)).then(() => Promise.all([...live].map(editor => editor.run('saveAllToo', id))));
+				}
+				return instance?.run(decision, id);
+			},
 		}));
 	}
-	store.add(KeybindingsRegistry.registerCommandAndKeybindingRule({
-		id: AxisSidePanelCommand.leave, weight: AXIS_SIDE_PANEL_LEAVE_WEIGHT, when, primary: KeyCode.Escape,
-		handler: accessor => focusedInstance(accessor)?.run(AxisSidePanelCommand.leave),
-	}));
-	return store;
+	return { guarded, missing, dispose: () => store.dispose() };
 }

@@ -2,9 +2,9 @@
  *  Copyright (c) 2026 Dylan Lambertson. All rights reserved.
  *--------------------------------------------------------------------------------------------*/
 
-import { KeyChord, KeyCode, KeyMod } from '../../../../base/common/keyCodes.js';
 import { IEditorOptions } from '../../../../editor/common/config/editorOptions.js';
 import { localize } from '../../../../nls.js';
+import { cleanDisplayText } from '../../../services/workspaces/common/worktreeDiscovery.js';
 
 /**
  * Spike PV-V0 (docs/design/pv-v0-editor-embed.md): the pure rules of the side-panel editor, kept free of the DOM so
@@ -14,56 +14,100 @@ import { localize } from '../../../../nls.js';
 /** Context key bound on the side-panel editor's container: true for any key event whose target is inside it. */
 export const AXIS_SIDE_PANEL_EDITOR_FOCUS = 'axisSidePanelEditorFocus';
 
-/** Commands Axis binds while that key is true, so a workbench command never acts on the hidden IDE editor instead. */
-export const AxisSidePanelCommand = {
-	save: 'axis.sidePanel.editor.save',
-	saveWithoutFormatting: 'axis.sidePanel.editor.saveWithoutFormatting',
-	openInIde: 'axis.sidePanel.editor.openInIde',
-	close: 'axis.sidePanel.editor.close',
-	leave: 'axis.sidePanel.editor.leave',
-} as const;
-export type AxisSidePanelCommandId = typeof AxisSidePanelCommand[keyof typeof AxisSidePanelCommand];
+/** The leave command, bound to Escape while that key is true. */
+export const AXIS_SIDE_PANEL_LEAVE_COMMAND = 'axis.sidePanel.editor.leave';
 
 /**
- * Weights, compared with upstream `KeybindingWeight` (EditorCore 0, EditorContrib 100, WorkbenchContrib 200).
- * A routed key must beat the workbench command it replaces (WorkbenchContrib, `when` undefined); Escape must lose to
- * every editor binding (find widget, suggest, hover, extra cursors, selection), so it only fires when none applies.
+ * Escape's weight, compared with upstream `KeybindingWeight` (EditorCore 0, EditorContrib 100): below every editor
+ * binding (find widget, suggest, hover, extra cursors, selection), so it fires only when none of them applies.
  */
-export const AXIS_SIDE_PANEL_ROUTE_WEIGHT = 201;
 export const AXIS_SIDE_PANEL_LEAVE_WEIGHT = -1;
 
 /**
- * Keys that upstream binds, with `when` undefined, to a workbench command acting on the editor part's active editor
- * (file:line of the pinned source), and the Axis command that replaces each while focus is in the side-panel editor.
+ * What a guarded workbench command does while a side-panel editor has focus (review S1). Upstream commands that act
+ * on the editor part's active editor would act on the IDE editor hidden behind Agent view; Axis re-registers each
+ * listed command id (the latest registration wins, `commands.ts:109`) with a guard that applies this action when the
+ * focused code editor is a side-panel editor and the command got no explicit arguments, and runs the original
+ * handler otherwise. Guarding the command, not a key, covers every key, chord, platform keymap, user keybinding and
+ * the command's menus at once.
+ *
+ * - `save`, `saveWithoutFormatting`: save this file through the host (never the IDE's active editor);
+ * - `close`: close the side-panel editor and return the focus;
+ * - `openInIde`: hand off to IDE view at this file and selection, where the user runs the command;
+ * - `block`: editor-group and tab commands, which mean nothing here; nothing happens and the host says so;
+ * - `saveAllToo`: run the original (it saves only editors in groups) and also save every dirty side-panel file;
+ * - `accept`: the command is right as it is (it acts on the focused code editor, or on no editor).
  */
-export interface IAxisRoutedKey {
-	readonly upstreamCommand: string;
-	readonly upstreamSource: string;
-	readonly route: AxisSidePanelCommandId;
-	readonly primary: number;
-	readonly win?: { readonly primary: number; readonly secondary?: number[] };
+export type AxisSidePanelAction = 'save' | 'saveWithoutFormatting' | 'close' | 'openInIde' | 'block' | 'saveAllToo' | 'accept';
+
+const OPEN_IN_IDE = [
+	'workbench.action.files.saveAs', 'workbench.action.files.revert', 'workbench.action.editor.changeLanguageMode',
+	'workbench.files.action.compareWithSaved', 'workbench.files.action.compareWithClipboard',
+	'copyFilePath', 'copyRelativeFilePath', 'workbench.action.files.copyPathOfActiveFile',
+	'workbench.action.splitEditor', 'workbench.action.splitEditorDown', 'workbench.action.splitEditorLeft', 'workbench.action.splitEditorOrthogonal',
+	'workbench.action.splitEditorRight', 'workbench.action.splitEditorUp', 'workbench.action.copyEditorToNewWindow',
+	'editor.action.nextCommentThreadAction', 'editor.action.previousCommentThreadAction', 'editor.debug.action.toggleInlineBreakpoint',
+	'testing.coverageAtCursor', 'testing.coverageCurrentFile', 'testing.debugAtCursor', 'testing.debugCurrentFile', 'testing.runAtCursor', 'testing.runCurrentFile',
+];
+const BLOCK = [
+	'workbench.action.closeEditorsInGroup', 'workbench.action.closeUnmodifiedEditors', 'workbench.action.keepEditor', 'workbench.action.pinEditor',
+	'workbench.action.focusAboveGroup', 'workbench.action.focusBelowGroup', 'workbench.action.focusLeftGroup', 'workbench.action.focusRightGroup', 'workbench.action.focusFirstEditorGroup',
+	'workbench.action.lastEditorInGroup', 'workbench.action.nextEditor', 'workbench.action.previousEditor', 'workbench.action.nextEditorInGroup', 'workbench.action.previousEditorInGroup',
+	'workbench.action.moveActiveEditorGroupDown', 'workbench.action.moveActiveEditorGroupLeft', 'workbench.action.moveActiveEditorGroupRight', 'workbench.action.moveActiveEditorGroupUp',
+	'workbench.action.moveEditorLeftInGroup', 'workbench.action.moveEditorRightInGroup', 'workbench.action.moveEditorToFirstGroup', 'workbench.action.moveEditorToLastGroup',
+	'workbench.action.moveEditorToNextGroup', 'workbench.action.moveEditorToPreviousGroup', 'workbench.action.toggleEditorGroupLayout',
+	...[1, 2, 3, 4, 5, 6, 7, 8, 9].map(n => `workbench.action.openEditorAtIndex${n}`),
+];
+const ACCEPT = [
+	'editor.action.selectAll', 'undo', 'redo', // read the focused code editor first: the side-panel editor
+	'workbench.action.focusNextPart', 'workbench.action.focusPreviousPart', // replaced by the Axis part cycle (axis.action.focusNextPart)
+	'breadcrumbs.toggleToOn', 'workbench.action.files.openFolderViaWorkspace', 'workbench.action.findInFiles', 'workbench.action.selectTheme',
+];
+
+/**
+ * The policy for every default-keybinding command at the pin that can fire in the side-panel editor and reads the
+ * active editor or delegates (prototypes/pv-v0-editor-embed/scan-keys.mjs), plus Save All (no Linux key). The scan
+ * fails on a flagged command missing here, so an upstream sync cannot add an unguarded one silently.
+ */
+export const AXIS_SIDE_PANEL_COMMAND_POLICY: ReadonlyMap<string, AxisSidePanelAction> = new Map<string, AxisSidePanelAction>([
+	['workbench.action.files.save', 'save'],
+	['workbench.action.files.saveWithoutFormatting', 'saveWithoutFormatting'],
+	['workbench.action.files.saveAll', 'saveAllToo'],
+	['workbench.action.closeActiveEditor', 'close'],
+	...OPEN_IN_IDE.map(id => [id, 'openInIde'] as const),
+	...BLOCK.map(id => [id, 'block'] as const),
+	...ACCEPT.map(id => [id, 'accept'] as const),
+]);
+
+/** Flagged commands the policy does not classify; the scan's gate. */
+export function unclassifiedCommands(flagged: readonly string[]): string[] {
+	return [...new Set(flagged)].filter(id => !AXIS_SIDE_PANEL_COMMAND_POLICY.has(id)).sort();
 }
 
-export const AXIS_SIDE_PANEL_ROUTED_KEYS: readonly IAxisRoutedKey[] = [
-	{ upstreamCommand: 'workbench.action.files.save', upstreamSource: 'contrib/files/browser/fileCommands.ts:501', route: AxisSidePanelCommand.save, primary: KeyMod.CtrlCmd | KeyCode.KeyS },
-	{
-		upstreamCommand: 'workbench.action.files.saveWithoutFormatting', upstreamSource: 'contrib/files/browser/fileCommands.ts:511', route: AxisSidePanelCommand.saveWithoutFormatting,
-		primary: KeyChord(KeyMod.CtrlCmd | KeyCode.KeyK, KeyCode.KeyS), win: { primary: KeyChord(KeyMod.CtrlCmd | KeyCode.KeyK, KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KeyS) }
-	},
-	{ upstreamCommand: 'workbench.action.files.saveAs', upstreamSource: 'contrib/files/browser/fileCommands.ts:522', route: AxisSidePanelCommand.openInIde, primary: KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KeyS },
-	{
-		upstreamCommand: 'workbench.action.closeActiveEditor', upstreamSource: 'browser/parts/editor/editorCommands.ts:835', route: AxisSidePanelCommand.close,
-		primary: KeyMod.CtrlCmd | KeyCode.KeyW, win: { primary: KeyMod.CtrlCmd | KeyCode.F4, secondary: [KeyMod.CtrlCmd | KeyCode.KeyW] }
-	},
-	{ upstreamCommand: 'workbench.action.splitEditor', upstreamSource: 'browser/parts/editor/editorActions.ts:81', route: AxisSidePanelCommand.openInIde, primary: KeyMod.CtrlCmd | KeyCode.Backslash },
-];
+/**
+ * What a guarded command does now: its action when the focused code editor is a side-panel editor and the command
+ * was given no explicit arguments (a tab or Explorer context menu passes its own target), and `undefined` (run the
+ * original handler) otherwise. `saveAllToo` applies whatever has the focus.
+ */
+export function guardDecision(action: AxisSidePanelAction, sidePanelFocused: boolean, argumentCount: number): AxisSidePanelAction | undefined {
+	if (action === 'accept') {
+		return undefined;
+	}
+	if (action === 'saveAllToo') {
+		return action;
+	}
+	return sidePanelFocused && argumentCount === 0 ? action : undefined;
+}
 
 export interface IAxisSidePanelEditorInput {
 	/** Whether the file's repository is trusted (ADR 0004 decision 12); untrusted means read-only. */
 	readonly trusted: boolean;
-	/** The file name shown to screen readers; cleaned by the caller. */
+	/** The file name; cleaned here (bidi, invisible and control characters) before it is spoken or shown. */
 	readonly label: string;
 }
+
+/** Longest file label spoken, in code points. */
+export const MAX_LABEL = 120;
 
 /** Options Axis always sets, whatever the user's `editor.*` settings say. */
 export function forcedSidePanelOptions(input: IAxisSidePanelEditorInput): IEditorOptions {
@@ -73,8 +117,8 @@ export function forcedSidePanelOptions(input: IAxisSidePanelEditorInput): IEdito
 		readOnlyMessage: input.trusted ? undefined : { value: localize('axis.sidePanel.editor.restricted', "Restricted Mode: trust this repository in IDE view to edit.") },
 		// The EditContext input (the Chromium default) sets no aria-readonly, so the label says it (spike finding F7).
 		ariaLabel: input.trusted
-			? localize('axis.sidePanel.editor.aria', "{0}, side panel editor", input.label)
-			: localize('axis.sidePanel.editor.ariaReadOnly', "{0}, side panel editor, read-only (Restricted Mode)", input.label),
+			? localize('axis.sidePanel.editor.aria', "{0}, side panel editor", cleanDisplayText(input.label, MAX_LABEL))
+			: localize('axis.sidePanel.editor.ariaReadOnly', "{0}, side panel editor, read-only (Restricted Mode)", cleanDisplayText(input.label, MAX_LABEL)),
 		// Agent-written text is untrusted even in a trusted repository: always show hidden and confusable characters.
 		unicodeHighlight: { invisibleCharacters: true, ambiguousCharacters: true },
 		renderControlCharacters: true,
@@ -116,6 +160,7 @@ export interface IAxisKeyGesture {
 	readonly altKey: boolean;
 	readonly shiftKey: boolean;
 	readonly repeat: boolean;
+	readonly isComposing: boolean;
 	readonly target: unknown;
 }
 
@@ -139,11 +184,17 @@ export function isApprovalChord(event: IAxisKeyGesture, isMacintosh: boolean): b
  * Whether a key event may answer an approval card (docs/design/ui/directions.md rule 9). It must be a real key press
  * (not script-dispatched, not auto-repeat), on the card itself with the focus inside the card, never from the
  * composer and never from a code editor: the side-panel editor binds `Mod+Enter` to Insert Line Below, and a key
- * typed there must never reach a card even if a future layout nests an editor inside one.
+ * typed there must never reach a card even if a future layout nests an editor inside one. IME composition is refused.
+ *
+ * This is the DOM gate only and is NOT sufficient on its own (review S3): a key that passes it must go through the
+ * same `AxisApprovalController` answer path as a click (the shown digest, the guard time counted from when the card
+ * last changed or the focus entered it, expiry, in flight and settled). `isInEditor` and `isInComposer` must walk
+ * `event.composedPath()`, because `closest()` stops at a shadow root.
  */
 export function approvalShortcutAllowed(event: IAxisKeyGesture, scope: IAxisKeyScope, isMacintosh: boolean): boolean {
 	return event.isTrusted === true
 		&& event.repeat === false
+		&& event.isComposing !== true
 		&& isApprovalChord(event, isMacintosh)
 		&& scope.card.contains(event.target)
 		&& scope.card.contains(scope.activeElement)

@@ -4,8 +4,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { KeyChord, KeyCode, KeyMod } from '../../../../../base/common/keyCodes.js';
-import { approvalShortcutAllowed, AXIS_SIDE_PANEL_LEAVE_WEIGHT, AXIS_SIDE_PANEL_ROUTE_WEIGHT, AXIS_SIDE_PANEL_ROUTED_KEYS, AxisSidePanelCommand, IAxisKeyGesture, IAxisKeyScope, isApprovalChord, sidePanelEditorOptions } from '../../common/axisSidePanelEditor.js';
+import { approvalShortcutAllowed, AXIS_SIDE_PANEL_COMMAND_POLICY, AXIS_SIDE_PANEL_LEAVE_WEIGHT, guardDecision, IAxisKeyGesture, IAxisKeyScope, isApprovalChord, MAX_LABEL, sidePanelEditorOptions, unclassifiedCommands } from '../../common/axisSidePanelEditor.js';
 
 /** A card, its Deny button, a node in the composer and a node in a code editor, as plain objects. */
 class Dom {
@@ -26,7 +25,7 @@ class Dom {
 }
 
 function key(target: unknown, extra: Partial<IAxisKeyGesture> = {}): IAxisKeyGesture {
-	return { isTrusted: true, type: 'keydown', key: 'Enter', ctrlKey: true, metaKey: false, altKey: false, shiftKey: false, repeat: false, target, ...extra };
+	return { isTrusted: true, type: 'keydown', key: 'Enter', ctrlKey: true, metaKey: false, altKey: false, shiftKey: false, repeat: false, isComposing: false, target, ...extra };
 }
 
 suite('Axis side-panel editor (PV-V0 spike)', () => {
@@ -62,19 +61,44 @@ suite('Axis side-panel editor (PV-V0 spike)', () => {
 		assert.deepStrictEqual(options.minimap, { enabled: false });
 	});
 
-	test('routed keys beat the workbench commands they replace; Escape loses to every editor binding', () => {
-		assert.ok(AXIS_SIDE_PANEL_ROUTE_WEIGHT > 200, 'above KeybindingWeight.WorkbenchContrib');
-		assert.ok(AXIS_SIDE_PANEL_LEAVE_WEIGHT < 0, 'below KeybindingWeight.EditorCore');
-		assert.deepStrictEqual(AXIS_SIDE_PANEL_ROUTED_KEYS.map(k => [k.upstreamCommand, k.route]), [
-			['workbench.action.files.save', AxisSidePanelCommand.save],
-			['workbench.action.files.saveWithoutFormatting', AxisSidePanelCommand.saveWithoutFormatting],
-			['workbench.action.files.saveAs', AxisSidePanelCommand.openInIde],
-			['workbench.action.closeActiveEditor', AxisSidePanelCommand.close],
-			['workbench.action.splitEditor', AxisSidePanelCommand.openInIde],
-		]);
-		assert.strictEqual(AXIS_SIDE_PANEL_ROUTED_KEYS[0].primary, KeyMod.CtrlCmd | KeyCode.KeyS);
-		assert.strictEqual(AXIS_SIDE_PANEL_ROUTED_KEYS[1].primary, KeyChord(KeyMod.CtrlCmd | KeyCode.KeyK, KeyCode.KeyS));
-		assert.deepStrictEqual(AXIS_SIDE_PANEL_ROUTED_KEYS[3].win, { primary: KeyMod.CtrlCmd | KeyCode.F4, secondary: [KeyMod.CtrlCmd | KeyCode.KeyW] });
+	test('the command policy pins the actions that keep the hidden IDE editor out of reach', () => {
+		const policy = AXIS_SIDE_PANEL_COMMAND_POLICY;
+		assert.strictEqual(policy.get('workbench.action.files.save'), 'save');
+		assert.strictEqual(policy.get('workbench.action.files.saveWithoutFormatting'), 'saveWithoutFormatting');
+		assert.strictEqual(policy.get('workbench.action.files.saveAll'), 'saveAllToo');
+		assert.strictEqual(policy.get('workbench.action.closeActiveEditor'), 'close');
+		for (const id of ['workbench.action.files.saveAs', 'workbench.action.files.copyPathOfActiveFile', 'workbench.action.editor.changeLanguageMode', 'workbench.files.action.compareWithSaved', 'workbench.action.splitEditor', 'workbench.action.files.revert']) {
+			assert.strictEqual(policy.get(id), 'openInIde', id);
+		}
+		for (const id of ['workbench.action.closeEditorsInGroup', 'workbench.action.closeUnmodifiedEditors', 'workbench.action.nextEditor', 'workbench.action.openEditorAtIndex9', 'workbench.action.keepEditor']) {
+			assert.strictEqual(policy.get(id), 'block', id);
+		}
+		for (const id of ['undo', 'redo', 'editor.action.selectAll', 'workbench.action.focusNextPart']) {
+			assert.strictEqual(policy.get(id), 'accept', id);
+		}
+		assert.ok(AXIS_SIDE_PANEL_LEAVE_WEIGHT < 0, 'Escape below KeybindingWeight.EditorCore');
+	});
+
+	test('a scan with an unclassified flagged command fails; a classified one passes', () => {
+		assert.deepStrictEqual(unclassifiedCommands(['workbench.action.files.save', 'undo']), []);
+		assert.deepStrictEqual(unclassifiedCommands(['workbench.action.newThing', 'undo', 'workbench.action.newThing', 'a.b']), ['a.b', 'workbench.action.newThing']);
+	});
+
+	test('the guard applies the action only with the side panel focused and no explicit arguments', () => {
+		assert.strictEqual(guardDecision('save', true, 0), 'save');
+		assert.strictEqual(guardDecision('save', false, 0), undefined, 'IDE editor focused: the original runs');
+		assert.strictEqual(guardDecision('save', true, 1), undefined, 'a tab or Explorer menu names its target');
+		assert.strictEqual(guardDecision('block', true, 0), 'block');
+		assert.strictEqual(guardDecision('accept', true, 0), undefined);
+		assert.strictEqual(guardDecision('saveAllToo', false, 0), 'saveAllToo', 'Save All covers side-panel files whatever has the focus');
+		assert.strictEqual(guardDecision('saveAllToo', true, 2), 'saveAllToo');
+	});
+
+	test('the spoken label is cleaned and clamped', () => {
+		const label = String(sidePanelEditorOptions(undefined, { trusted: true, label: 'a\u202Egnp.ts\u200B' }).ariaLabel);
+		assert.ok(!label.includes('\u202E') && !label.includes('\u200B'), label);
+		const long = String(sidePanelEditorOptions(undefined, { trusted: true, label: 'x'.repeat(500) }).ariaLabel);
+		assert.ok([...long.split(',')[0]].length <= MAX_LABEL, String(long.length));
 	});
 
 	test('the approval chord is Mod+Enter alone, per platform', () => {
@@ -93,10 +117,11 @@ suite('Axis side-panel editor (PV-V0 spike)', () => {
 		assert.strictEqual(approvalShortcutAllowed(key(dom.deny), dom.scope(), false), true);
 	});
 
-	test('script-dispatched, auto-repeated or wrong-chord key events are refused', () => {
+	test('script-dispatched, auto-repeated, composing or wrong-chord key events are refused', () => {
 		const dom = new Dom();
 		assert.strictEqual(approvalShortcutAllowed(key(dom.deny, { isTrusted: false }), dom.scope(), false), false);
 		assert.strictEqual(approvalShortcutAllowed(key(dom.deny, { repeat: true }), dom.scope(), false), false);
+		assert.strictEqual(approvalShortcutAllowed(key(dom.deny, { isComposing: true }), dom.scope(), false), false, 'IME composition');
 		assert.strictEqual(approvalShortcutAllowed(key(dom.deny, { ctrlKey: false }), dom.scope(), false), false);
 		assert.strictEqual(approvalShortcutAllowed({ ...key(dom.deny), isTrusted: 'true' as unknown as boolean }, dom.scope(), false), false);
 	});
