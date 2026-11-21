@@ -15,4 +15,5 @@ export * from "./exec-argv.js";
 export * from "./exec-env.js";
 export * from "./hooks-scope.js";
 export * from "./scratch-tree.js";
+export * from "./push-run.js";
 export { createGitExec, MAX_ATTEMPTS, type GitExec, type GitExecConfig } from "./git-exec.js";
