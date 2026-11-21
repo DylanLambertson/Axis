@@ -63,7 +63,7 @@ export async function readIndexFlags(i: AskInput): Promise<IndexFlags> {
     };
     let child;
     try {
-      child = spawn(i.gitPath, argv, { cwd: parse(i.worktree).root, env, stdio: ["ignore", "pipe", "ignore"], signal: ac.signal, windowsHide: true });
+      child = spawn(i.gitPath, [...argv], { cwd: parse(i.worktree).root, env, stdio: ["ignore", "pipe", "ignore"], signal: ac.signal, windowsHide: true });
     } catch {
       problem = "git could not list the index flags";
       return finish();

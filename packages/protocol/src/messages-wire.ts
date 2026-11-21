@@ -264,14 +264,19 @@ export const threadSummarySchema = z.strictObject({
  * id, count or text from the journal, the recipient or the scanner). Closed set, never free text.
  *
  * `not_found` is the ONLY answer for a thread or message the caller cannot see, whether it exists or not: the same code,
- * the same fixed message, the same details and the same timing class (no existence oracle, section 4.2). A recipient the
+ * the same fixed message, the same details, on the same structural path (no existence oracle, section 4.2). A recipient the
  * sender may not address answers `recipient_refused` whether it exists or not, and an agent naming another project's
  * agent gets `recipient_refused`, never `cross_project` (which only the user, who can see every project, receives).
  */
 export const MESSAGES_REFUSALS = {
   E_NOT_FOUND: ["not_found"],
   E_INVALID_ARGUMENT: ["too_large", "too_many_recipients"],
-  E_POLICY_DENIED: ["recipient_refused", "cross_project", "paused", "hop_limit", "secret_found", "excerpt_path_refused", "bypass_entry"],
+  /**
+   * Policy refusals of the message service. `E_CONFLICT`, not `E_POLICY_DENIED`: only the daemon's pipeline raises
+   * `E_POLICY_DENIED` (with its own audit row), and a handler that tried would answer `E_INTERNAL` (the review and git
+   * contracts answer their package's policy refusals the same way).
+   */
+  E_CONFLICT: ["recipient_refused", "cross_project", "paused", "hop_limit", "secret_found", "excerpt_path_refused", "bypass_entry"],
   E_BACKPRESSURE: ["rate_limited", "queue_full"],
 } as const;
 export type MessagesRefusalCode = keyof typeof MESSAGES_REFUSALS;

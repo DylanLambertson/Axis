@@ -7,7 +7,7 @@ Status: built as `@axis/pty-process`, without a native dependency. Sources: thre
 - The **pty process** is a separate utility process that main forks. It holds no secrets and no privileged port. `createPtyService` is its logic. The only thing it needs from outside is a `SpawnFn`: a synchronous function that starts a child in its **own session or job** and returns a `PtyChild`. In the shipped entry that function is the native pty binding.
 - The **daemon host** talks to it with `createPtyProcessPort` (a `PtyPort`, the shape `@axis/runs` uses) over one **control channel**. `composeDaemonHost` already takes `pty: PtyPort`, so the only wiring is passing this port instead of `LocalPty`; no composition code changes in this ticket.
 - The **renderer** reaches terminals over **data channels** that main brokers after the ADR 0003 window-identity checks. A data channel is named (`conn`) by whoever brokers it. It can only `attach` (to a terminal the control channel `grant`ed to that name), `write` and `resize`. A `spawn`, a `kill` or any other message on it is refused and never acted on (`refused unsupported`).
-- The package imports no `node:child_process` (ADR 0005: only the listed packages may), so the spawn function is injected. `testing/helpers.ts` holds a pipe-based POSIX reference (`pipeSpawn`) that the conformance tests run against.
+- The package imports no `node:child_process` (ADR 0005: only the files named in `SPAWN_FILES` may), so the spawn function is injected. `testing/helpers.ts` holds a pipe-based POSIX reference (`pipeSpawn`) that the conformance tests run against.
 
 ## Contracts
 

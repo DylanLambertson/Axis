@@ -20,9 +20,8 @@ import {
 import { projectIdSchema, type MethodSpec } from "./worktrees.js";
 
 /**
- * `axis.messages/1` (docs/design/inter-agent-communication.md; docs/design/messages-contract.md). PLANNED: it is in
- * `plannedContracts`, not `contracts`, so no host serves it and no client can call it until PV-M3 registers its handlers
- * and moves it (with its policy rows) in one change.
+ * `axis.messages/1` (docs/design/inter-agent-communication.md; docs/design/messages-contract.md). Served since PV-M3 by
+ * the daemon host's message service (`packages/daemon-host/src/messages/`), to the user's own connection only.
  *
  * A message never grants anything. No request or response field can carry an approval, a challenge, a digest, a grant, a
  * token, a capability, a credential, a command or a path to execute, and no method is above tier 2, so none takes an
@@ -34,7 +33,7 @@ import { projectIdSchema, type MethodSpec } from "./worktrees.js";
  * send policy allows. `thread`, `threads`, `read` and `markRead` answer only for threads where the caller is a
  * participant, and within them only messages addressed to the caller or sent after it joined. The user (actor `user`)
  * reads every thread of the project. A thread or message the caller cannot see answers exactly like one that does not
- * exist: `E_NOT_FOUND`, details `{ reason: "not_found" }`, the fixed message, the same timing class. `threads` never lists
+ * exist: `E_NOT_FOUND`, details `{ reason: "not_found" }`, the fixed message, the same structural path. `threads` never lists
  * another thread's id. `send` with a `threadId` needs the sender to be a participant, and EVERY recipient, participant or
  * not, passes the send policy (section 4.1, including `accepts from`) at accept and again at delivery (review 2, NS1).
  * `inReplyTo` names a message of the same thread that the sender can read, or the send answers `not_found`.

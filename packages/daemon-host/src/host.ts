@@ -10,6 +10,7 @@ import { REVIEW_PAYLOAD_ALLOWLIST } from "./handlers/review-audit.js";
 import { AGENT_PAYLOAD_ALLOWLIST } from "./bindings/agent.js";
 import { PROVIDERS_PAYLOAD_ALLOWLIST } from "./bindings/providers.js";
 import { TAINT_PAYLOAD_ALLOWLIST } from "./composer/taint.js";
+import { MESSAGES_PAYLOAD_ALLOWLIST } from "./messages/audit.js";
 import { RUN_PAYLOAD_ALLOWLIST } from "./bindings/runs.js";
 import { ANCHOR_PAYLOAD_ALLOWLIST } from "./anchor/preflight.js";
 import { DegradedStartError } from "./exit-codes.js";
@@ -237,7 +238,7 @@ export function createDaemonHost(config: HostConfig, ports: StartupPorts, option
       redactor: ports.redactor,
       now: () => new Date(ports.clock.now()),
       // The challenge rows keep their `method`; the anchor rows keep their one fixed field (a literal, never caller text); the review acknowledgement keeps its file id.
-      payloadAllowlist: { ...CHALLENGE_PAYLOAD_ALLOWLIST, ...ANCHOR_PAYLOAD_ALLOWLIST, ...REVIEW_PAYLOAD_ALLOWLIST, ...RUN_PAYLOAD_ALLOWLIST, ...AGENT_PAYLOAD_ALLOWLIST, ...PROVIDERS_PAYLOAD_ALLOWLIST, ...TAINT_PAYLOAD_ALLOWLIST },
+      payloadAllowlist: { ...CHALLENGE_PAYLOAD_ALLOWLIST, ...ANCHOR_PAYLOAD_ALLOWLIST, ...REVIEW_PAYLOAD_ALLOWLIST, ...RUN_PAYLOAD_ALLOWLIST, ...AGENT_PAYLOAD_ALLOWLIST, ...PROVIDERS_PAYLOAD_ALLOWLIST, ...TAINT_PAYLOAD_ALLOWLIST, ...MESSAGES_PAYLOAD_ALLOWLIST },
     });
     const check = await checkAnchor(audit, () => ports.control.anchorGet({ timeoutMs: options.anchorTimeoutMs ?? 5_000, signal: startup.signal }));
     alive();
