@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 import type { Journal } from "@axis/journal";
-import { createMessagingBinding, hostMessagingDeps, type MessageCaller } from "../src/index.js";
+import { encodeMessagingId } from "@axis/protocol";
+import { createMessagingBinding, heldNotice, hostMessagingDeps, type MessageCaller } from "../src/index.js";
 import { deliveryRig, type DeliveryRig } from "./messages-delivery-rig.js";
 
 // PV-M3 delivery, review of the nits fix: the user-message exemption covers failing checks only (a failure after the
@@ -16,6 +17,14 @@ const failures = (r: DeliveryRig, id: string): number =>
   Number((r.c.db.prepare("SELECT failures FROM message_delivery_failures WHERE message_id = ? AND principal = 'agent:a1'").get(id) as { failures?: number } | undefined)?.failures ?? 0);
 const notices = (r: DeliveryRig, threadId: string) => r.m.service.thread(USER, { threadId }).messages.filter((x) => x.sender.kind === "system");
 const sink = { receive: () => undefined };
+/**
+ * True when a notice names one of the recipients. The notice carries a random message id (base64url, so it can contain
+ * "a1"), which is removed first; a recipient then counts only as a whole identifier, never inside another word.
+ */
+const namesRecipient = (text: string, messageId: string, recipients: readonly string[]): boolean => {
+  const rest = text.split(messageId).join(" ");
+  return recipients.some((id) => new RegExp(`(?<![A-Za-z0-9_-])${id}(?![A-Za-z0-9_-])`).test(rest));
+};
 /** Store the project's settings row, then corrupt it: every check of the project throws. */
 const corruptSettings = (r: DeliveryRig) => {
   r.m.settings.updateSettings(USER, { setting: "retentionDays", projectId: "p", value: 7 });
@@ -92,7 +101,20 @@ test("a user message held for two recipients gets one notice, naming neither", a
   }
   const told = notices(r, both.threadId);
   assert.equal(told.length, 1, "one notice per message");
-  assert.doesNotMatch(told[0]?.body.text ?? "", /a1|a2/);
+  assert.equal(told[0]?.body.text, `Axis could not check message ${both.messageId} for delivery because of an error in Axis. It stays queued and will be delivered once the error is fixed.`);
+  assert.equal(namesRecipient(told[0]?.body.text ?? "", both.messageId, ["a1", "a2"]), false, "names neither recipient");
+});
+
+test("the recipient check ignores the random message id and still catches a notice that names a recipient", () => {
+  // An id that holds a recipient's name, as a random id sometimes does (seen in CI: msg_UELa1kKD9JTf3I4l-430Ow).
+  const unlucky = "msg_UELa1kKD9JTf3I4l-430Ow";
+  assert.equal(namesRecipient(heldNotice(unlucky), unlucky, ["a1", "a2"]), false);
+  assert.equal(namesRecipient(heldNotice(unlucky).replace("for delivery", "for delivery to agent a1"), unlucky, ["a1", "a2"]), true, "a notice naming a recipient fails");
+  assert.equal(namesRecipient(heldNotice(unlucky).replace("for delivery", "for delivery to a2"), unlucky, ["a1", "a2"]), true);
+  for (let i = 0; i < 2_000; i++) {
+    const id = encodeMessagingId("message", randomBytes(16));
+    assert.equal(namesRecipient(heldNotice(id), id, ["a1", "a2"]), false, `no false failure for ${id}`);
+  }
 });
 
 test("a held notice that cannot be posted is tried again at the next failed check, then never again", async (t) => {
