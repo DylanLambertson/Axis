@@ -8,8 +8,16 @@ import type { Redactor as ProviderRedactor } from "@axis/providers";
  * apart from `providers.ts` so the agent binding (the mock's guard) does not load the vault or the adapter (review c6 N6).
  */
 
-/** Most "no secret" verdicts on long strings one hook keeps (oldest dropped first). */
-export const MAX_CLEAN_VERDICTS = 1024;
+/**
+ * Most "no secret" verdicts on long strings one hook keeps, least recently used dropped first (review secret-scan-windows r1
+ * SF-2). One hook serves every run on its provider, and each request walks its run's whole history, so the bound must hold
+ * every live run's long strings at once, or the walk evicts its own verdicts and every request scans the whole history again.
+ * A run's caps bound its long strings (over 16,384 characters): tool inputs 8 MiB / 16,385 = 511, results 4 MiB / 16,385 =
+ * 255, at most one model text per turn (24) and the prompt: 791, rounded up to 1,024, times 8 live runs (the service's
+ * default `maxActive`). Live runs touch their entries on every request, so the ones dropped first are those of runs that ended.
+ * About 2 MB of keys. Pinned by a test against the real caps.
+ */
+export const MAX_CLEAN_VERDICTS = 8 * 1024;
 
 /**
  * The host's audit redactor as the providers' redaction hook (PRV-2): anything it would change counts as a secret. The redactor

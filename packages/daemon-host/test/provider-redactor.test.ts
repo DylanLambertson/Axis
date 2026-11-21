@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { MAX_STRING_CHARS, Redactor, isWellFormedString } from "@axis/audit";
 import { canary } from "../testing/git-fixture.js";
+import { DEFAULT_TOOL_CAPS } from "../src/composer/loop.js";
 import { EDGE_SEARCH, MAX_CLEAN_VERDICTS, MAX_KEY_FORM_CHARS, WINDOW_STEP, holdsRegisteredSecret, providerRedactor, windowBounds, windowCount } from "../src/bindings/provider-redactor.js";
 
 // The providers' secret check on strings longer than the redactor reads (C7): a long clean tool result is not a secret, and a
@@ -108,7 +109,7 @@ test("work bound: a 4 MiB string costs windowCount(length) scans once, nothing o
   const big = prose(4 * 1024 * 1024);
   assert.equal(p.containsSecret(big), false);
   assert.equal(r.calls, windowCount(big.length), "one scan per window, no more");
-  assert.ok(r.calls <= Math.ceil(big.length / WINDOW_STEP) + 1, "about four reads of each character");
+  assert.ok(r.calls <= Math.ceil(big.length / WINDOW_STEP) + 1, "about 4.6 reads of each character");
   r.calls = 0;
   assert.equal(p.containsSecret(`${big.slice(0, 10)}${big.slice(10)}`), false, "the same text in a new string");
   assert.equal(r.calls, 0, "a history judged before is not scanned again");
@@ -205,4 +206,54 @@ test("a window end inside a pair, with no boundary to move to, steps off the pai
   const text = `${"a".repeat(MAX_STRING_CHARS - 1)}\u{1F600}${"a".repeat(20_000)}`;
   for (const [start, end] of windowBounds(text)) assert.ok(isWellFormedString(text.slice(start, end)), `[${start}, ${end})`);
   assert.equal(p.containsSecret(text), false);
+});
+
+test("a kept verdict belongs to the whole string: an equal-length string that differs only late or in the middle is judged again (review r1 SF-1)", () => {
+  const r = new Redactor();
+  r.registerSecret("registered-late-value-for-sf1");
+  const p = providerRedactor(r);
+  const base = prose(3 * MAX_STRING_CHARS);
+  for (const at of [base.length - 40, Math.floor(base.length / 2)]) {
+    const swap = (insert: string) => `${base.slice(0, at)}${insert}${base.slice(at + insert.length)}`;
+    const clean = swap(" ordinary-words-of-the-same-length ");
+    const holding = swap(" registered-late-value-for-sf1     ");
+    assert.equal(clean.length, holding.length);
+    assert.equal(p.containsSecret(clean), false);
+    assert.equal(p.containsSecret(holding), true, `a secret at ${at} after a clean verdict on its twin`);
+    const pattern = swap(` ${canary(47)} `.padEnd(35, " "));
+    assert.equal(pattern.length, clean.length);
+    assert.equal(p.containsSecret(pattern), true, `a pattern secret at ${at}`);
+  }
+});
+
+test("the bound holds every live run's long strings at its caps (review r1 SF-2)", () => {
+  const long = MAX_STRING_CHARS + 1;
+  const perRun = Math.ceil(DEFAULT_TOOL_CAPS.inputBytesPerRun / long) + Math.ceil(DEFAULT_TOOL_CAPS.resultBytesPerRun / long) + 24 + 1;
+  const liveRuns = 8; // the composer service's default maxActive
+  assert.ok(MAX_CLEAN_VERDICTS >= liveRuns * perRun, `${MAX_CLEAN_VERDICTS} < ${liveRuns} x ${perRun}`);
+});
+
+test("interleaved runs whose histories fit the bound each scan only their new strings per request", () => {
+  const r = new Counting();
+  const perRun = 30;
+  const p = providerRedactor(r, 2 * perRun + 4); // the bound scaled down with the histories
+  const histories: string[][] = [[], []];
+  for (let turn = 0; turn < perRun; turn++) {
+    for (const [run, h] of histories.entries()) {
+      h.push(`${run}:${turn} ${prose(MAX_STRING_CHARS + 100)}`);
+      r.calls = 0;
+      for (const s of h) assert.equal(p.containsSecret(s), false);
+      assert.equal(r.calls, windowCount((h[h.length - 1] as string).length), `run ${run} turn ${turn}: only the new string`);
+    }
+  }
+});
+
+test("a verdict used again is kept over one not used since (least recently used, not first in)", () => {
+  const r = new Counting();
+  const p = providerRedactor(r, 2);
+  const [a, b, c] = ["a", "b", "c"].map((x) => `${x}${prose(MAX_STRING_CHARS + 10)}`) as [string, string, string];
+  for (const s of [a, b, a, c]) p.containsSecret(s);
+  r.calls = 0;
+  p.containsSecret(a);
+  assert.equal(r.calls, 0, "a was used after b, so b went first");
 });
