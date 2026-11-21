@@ -86,10 +86,7 @@ export interface ComposeOptions {
   readonly portSource?: { onPort(handler: (data: unknown, port: ElectronPortLike) => void): () => void };
   readonly ports: Omit<StartupPorts, "control" | "reconcile" | "afterStorage" | "beforeReady">;
   readonly host?: HostOptions;
-  /**
-   * The Axis pty process: spawns CLI runs. REQUIRED. With `exec`, the `pty` git context runs over it (`createPtyGitRunner`), and a
-   * push over its `push` (H9-hooks S4 part 1; with `axis.git.runHooks` on a push is refused until `pre-push` can run).
-   */
+  /** The Axis pty process (CLI runs). REQUIRED. With `exec`, the `pty` git context and push run over it (H9-hooks S4, hooks off). */
   readonly pty: (PtyPort & Partial<PtyExecPort> & Partial<PtyPushPort>) | undefined;
   /** The `pty` git context runner, REQUIRED exactly when `pty` has no `exec` (test fakes); refused alongside one that has. */
   readonly ptyGitRunner: GitRunner | undefined;
