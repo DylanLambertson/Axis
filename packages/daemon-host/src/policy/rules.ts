@@ -3,6 +3,12 @@
 // A method with no row is denied (invariant I2), and `checkCoverage` fails the test run and host startup when the
 // protocol registry and this table disagree in either direction. To add a method: add it to its contract, add its line
 // here (the tier must equal the contract's declared minimum), add its handler.
+//
+// axis.messages/1 (PV-M3, moved from planned.ts with its handlers). Every read method has its own row (review B1): the row
+// admits the caller, and the message service then answers only for threads the caller participates in, with `not_found`
+// for every other (docs/design/inter-agent-communication.md section 4.2). The rows are user only: agent and CLI callers
+// reach messaging through the broker (PV-M4) and the endpoint (PV-M6), not the bridge; a bridge row for them needs a new
+// actor kind and a new review. None is in WEB_ALLOWED.
 import { userRule, type Rule } from "./rule-types.js";
 
 export const RULES: Readonly<Record<string, Rule>> = Object.freeze({
@@ -39,4 +45,13 @@ export const RULES: Readonly<Record<string, Rule>> = Object.freeze({
   "axis.runs/1.events": userRule(0),
   "axis.events/1.subscribe": userRule(0),
   "axis.events/1.unsubscribe": userRule(0),
+  "axis.messages/1.send": userRule(2),
+  "axis.messages/1.thread": userRule(1),
+  "axis.messages/1.threads": userRule(0),
+  "axis.messages/1.read": userRule(1),
+  "axis.messages/1.markRead": userRule(1),
+  "axis.messages/1.pause": userRule(2),
+  "axis.messages/1.resume": userRule(2),
+  "axis.messages/1.settings": userRule(0),
+  "axis.messages/1.updateSettings": userRule(2),
 });
