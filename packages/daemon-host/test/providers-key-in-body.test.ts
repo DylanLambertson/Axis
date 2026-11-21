@@ -40,8 +40,11 @@ test("a key rotated in the keyring and held in the request is refused at the sen
   const rotated = unknownKey("rotated");
   // Each form on its own binding: after a refusal the rotated key is registered, and the guard's own scan would find the next.
   // base64 and base64url at byte offsets 0, 1 and 2 of a longer run (review c7-f4 r1 SF), with bytes after it too.
-  const encoded = [0, 1, 2].flatMap((o) => (["base64", "base64url"] as const).map((enc) => Buffer.concat([Buffer.alloc(o, 0x78), Buffer.from(rotated), Buffer.from("tail")]).toString(enc)));
-  for (const form of [rotated, Buffer.from(rotated).toString("hex"), encodeURIComponent(`${rotated}/`), ...encoded]) {
+  const at = (inner: string, o: number, enc: "base64" | "base64url"): string => Buffer.concat([Buffer.alloc(o, 0x78), Buffer.from(inner), Buffer.from("tail")]).toString(enc);
+  const encoded = [0, 1, 2].flatMap((o) => (["base64", "base64url"] as const).map((enc) => at(rotated, o, enc)));
+  // One level over another form (review c7-f4 r2 SF): base64 of the key's base64 and of its hex, at each offset.
+  const nested = [0, 1, 2].flatMap((o) => [at(Buffer.from(rotated).toString("base64"), o, "base64"), at(Buffer.from(rotated).toString("hex"), o, "base64")]);
+  for (const form of [rotated, Buffer.from(rotated).toString("hex"), encodeURIComponent(`${rotated}/`), ...encoded, ...nested]) {
     const r = await rig();
     try {
       r.api.replies = [{ kind: "text", text: "first" }];
@@ -84,6 +87,29 @@ test("holdsKey finds the key in base64 and base64url at every byte offset, with 
       }
     }
   }
-  assert.ok(base64Middles("12345678").every((m) => m.length >= 8), "no middle shorter than a redactor form");
+  // An 8-byte text (the shortest registered secret) yields a middle at each of the 3 offsets in both alphabets, each at least
+  // 8 characters: every alignment has a needle.
+  const shortest = base64Middles("12345678");
+  assert.equal(shortest.length, 6);
+  assert.ok(shortest.every((m) => m.length >= 8));
   assert.equal(holdsKey(Buffer.from("an unrelated base64 payload of some length").toString("base64"), "holdout~offset~credential~c7f4"), false);
+});
+
+test("holdsKey finds base64 one level over any registered form (the key's hex, its base64), at every offset, as the redactor does", () => {
+  const key = "holdout~nested~credential~c7f4x";
+  const r = new Redactor();
+  r.registerSecret(key);
+  for (const inner of [Buffer.from(key).toString("hex"), Buffer.from(key).toString("base64"), Buffer.from(key).toString("base64url"), encodeURIComponent(key)]) {
+    for (let before = 0; before <= 3; before++) {
+      for (const enc of ["base64", "base64url"] as const) {
+        const run = Buffer.concat([Buffer.alloc(before, 0x41), Buffer.from(inner), Buffer.alloc(2, 0x42)]).toString(enc);
+        assert.equal(holdsKey(`x ${run} y`, key), true, `${enc}(${inner.slice(0, 8)}) at ${before}`);
+      }
+    }
+  }
+  // Two levels over the key's base64 (three over the key): the redactor decodes once and does not find it, nor does the
+  // check (listed as not found).
+  const twice = Buffer.from(Buffer.from(Buffer.from(key).toString("base64")).toString("base64")).toString("base64");
+  assert.equal(r.redactString(`x ${twice} y`), `x ${twice} y`);
+  assert.equal(holdsKey(`x ${twice} y`, key), false);
 });

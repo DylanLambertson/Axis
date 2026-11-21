@@ -167,13 +167,13 @@ export function productionConnection(o: Pick<AnthropicConnectionOptions, "connec
 }
 
 /**
- * The parts of `key`'s base64 and base64url that do not depend on where the key's bytes fall in a longer encoded run (review
- * c7-f4 r1 SF): for a key starting 0, 1 or 2 bytes into a 3-byte group, the whole groups after the first partial one,
- * without the last partial group (which bytes after the key change). The redactor decodes base64 runs at any offset; these let a plain substring test find the same
- * key. Each is at least 8 characters for a key of at least 8 bytes.
+ * The parts of `text`'s base64 and base64url that do not depend on where its bytes fall in a longer encoded run (review
+ * c7-f4 r1 SF): for text starting 0, 1 or 2 bytes into a 3-byte group, the whole groups after the first partial one,
+ * without the last partial group (which bytes after it change). Each is at least 8 characters for text of at least 8
+ * bytes. `holdsKey` takes them for every form of the key.
  */
-export function base64Middles(key: string): string[] {
-  const bytes = Buffer.from(key, "utf8");
+export function base64Middles(text: string): string[] {
+  const bytes = Buffer.from(text, "utf8");
   const out: string[] = [];
   for (const offset of [0, 1, 2]) {
     const start = (3 - offset) % 3;
@@ -186,14 +186,18 @@ export function base64Middles(key: string): string[] {
 }
 
 /**
- * True when `text` holds `key` in any form the host redactor would redact (`secretForms`), each also as it appears inside a
- * JSON string (a request body is JSON), or in base64 / base64url at any byte offset (`base64Middles`). Plain substring tests:
- * one key, no redactor windows, cheap enough for every request. Not found (as by the redactor too): a key split across two
- * strings, hex in mixed case, a key written with `\u00XX` escapes or with every character percent-encoded.
+ * True when `text` holds `key` as the host redactor would find it: any registered form (`secretForms`), or base64 /
+ * base64url of any registered form at any byte offset (`base64Middles` of each form; the redactor decodes a base64 run
+ * once and matches every form in it, so base64 of the key, of its hex and of its base64 are all found). Each also as it
+ * appears inside a JSON string (a request body is JSON). Plain substring tests: one key, no redactor windows, cheap enough
+ * for every request. Not found, as by the redactor: base64 nested two levels over a form (the redactor decodes once), a key
+ * split across two strings or across wrapped base64 lines, hex in mixed case, `\u00XX` or full percent escapes, base64 of
+ * the key in another text encoding (UTF-16).
  */
 export function holdsKey(text: string, key: string): boolean {
-  for (const form of [...secretForms(key), ...base64Middles(key)]) {
-    if (text.includes(form) || text.includes(JSON.stringify(form).slice(1, -1))) return true;
+  const forms = secretForms(key);
+  for (const needle of new Set([...forms, ...forms.flatMap(base64Middles)])) {
+    if (text.includes(needle) || text.includes(JSON.stringify(needle).slice(1, -1))) return true;
   }
   return false;
 }

@@ -36,8 +36,9 @@ the proposal below (review c7-f3-design r2 nits):
     (the object scanned with, one `ScanContext`, the version the last complete scan ended under) and calls `rescanIfMoved`
     after `capabilities` and again after the budget, its last `await` before the adapter call: a moved version scans the
     request again under the same budget. Between that check and the adapter call there are only microtasks.
-  - **Residual (review c7-f3-impl r3), closed by C7-F4 below.** In production a provider key is registered with the host
-    redactor in exactly one place (the host's attestation key is registered at start, `daemon-host/src/secrets.ts`; it is
+  - **Residual (review c7-f3-impl r3), narrowed by C7-F4 below to the forms neither its check nor the
+    redactor finds.** In production a provider key is registered with the host redactor in exactly one place (the
+    host's attestation key is registered at start, `daemon-host/src/secrets.ts`; it is
     not a provider key): the providers binding's key read (`daemon-host/src/bindings/providers.ts`, the
     `registerSecret` after the vault read), which the Anthropic adapter calls INSIDE its send (`anthropic/src/adapter.ts`,
     the request function: `await getKey(...)`, then `fetch`), after every guard check. A request whose content holds a key
@@ -77,12 +78,15 @@ B. The key is never sent inside its own request body.
    printable ASCII, so its NFC/NFD forms are itself), each also as it appears inside the JSON body (JSON-escaped once more:
    a `"` or `\` in a form doubles). One key, plain `includes`, about tens of ms for a 12 MiB body, on every request (no
    "new key" state to race on). The form list is built by one exported helper beside `Redactor.registerSecret` (or a test
-   pins the two lists equal), so they cannot drift apart. The redactor also decodes base64 runs at any byte offset, so the
-   check adds the key's base64 and base64url for byte offsets 1 and 2 without the partial groups at either end
-   (`base64Middles`, review c7-f4 r1 SF). Not found, by the check and by the redactor alike: a key split across two strings,
-   hex in mixed case, a key written with `\u00XX` escapes or with every character percent-encoded, a JSON escape nested
-   deeper than once (only keys holding `"` or `\`; an Anthropic key holds neither). Rationale: the invariant "the body never holds the key used to
-   send it" is checked at the one point the key and the body meet, after the vault read.
+   pins the two lists equal), so they cannot drift apart. The redactor also decodes a base64 run once, at any offset, and
+   matches every registered form in it, so the check adds, for EVERY form, its base64 and base64url at byte offsets 0, 1
+   and 2 without the partial groups at either end (`base64Middles`; reviews c7-f4 r1 and r2): base64 of the key, of its hex
+   and of its own base64 are found. Not found, by the check and by the redactor alike: base64 nested two levels over a form
+   (the redactor decodes once), a key split across two strings or across wrapped base64 lines (the base64 tool wraps at 76
+   columns), hex in mixed case, a key written with `\u00XX` escapes or with every character percent-encoded, base64 of the
+   key in another text encoding (UTF-16), a JSON escape nested deeper than once (only keys holding `"` or `\`; an
+   Anthropic key holds neither). Rationale: the invariant "the body never holds the key used to send it" is checked at the
+   one point the key and the body meet, after the vault read.
 3. The refusal: `ProviderError("secret_in_request")`. Open question for review: `secret_in_request` is GUARD_ONLY (an adapter
    raising it becomes `internal`). Options: (a) drop it from GUARD_ONLY (an adapter can only use it to refuse; nothing is
    sent either way) so the run ends `PROVIDER_SECRET_IN_REQUEST`; (b) keep GUARD_ONLY and accept `PROVIDER_INTERNAL` as the
