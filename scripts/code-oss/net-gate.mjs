@@ -27,9 +27,9 @@ export const ELEMENT_CALL_ALLOW = new Set(["code-oss/overlay/src/vs/axis/service
 const WEB_SPEC = /daemon-host\/(?:web|index)|\/web\/(?:index|server)|vs\/server\/|serverMain|server-main|reh-web|ipc\.net/;
 /** Text that enables a debugging port or an inspector (case-insensitive). */
 const DEBUG_TEXT = /(?:^|[\s"'`=])--?(?:inspect|debug)|remote-debugging/i;
-const LISTEN_TEXT = /\b(?:startWebHost|createServer|createWebHost)\b|\.listen\s*\(/;
+const LISTEN_TEXT = /\b(?:startWebHost|createServer|createWebHost)\b|\.listen\b/;
 /** Names that load modules or reach built-ins by a route the specifier check cannot see. */
-const LOADER_NAMES = new Set(["require", "createRequire", "getBuiltinModule", "binding", "_linkedBinding", "dlopen"]);
+const LOADER_NAMES = new Set(["require", "createRequire", "getBuiltinModule", "binding", "_linkedBinding", "dlopen", "eval"]);
 /** Called names (also as a string element access) that start a listener. */
 const LISTENER_CALLS = new Set(["listen", "createServer", "startWebHost", "createWebHost"]);
 /** Patches allowed to name debugging flags, because their purpose is to refuse them (none yet: see the design doc). */
@@ -79,11 +79,20 @@ export function scanOverlaySource(source, file) {
       if (ts.isElementAccessExpression(callee)) {
         const key = callee.argumentExpression;
         if (!ts.isStringLiteralLike(key)) { if (!ELEMENT_CALL_ALLOW.has(file)) add(node, "calls a member chosen at run time"); }
-        else if (LISTENER_CALLS.has(key.text)) add(node, `calls ${key.text}`);
       }
       const name = ts.isIdentifier(callee) ? callee.text : ts.isPropertyAccessExpression(callee) ? callee.name.text : "";
-      if (LISTENER_CALLS.has(name)) add(node, `calls ${name}`);
+      if (LISTENER_CALLS.has(name) && ts.isIdentifier(callee)) add(node, `calls ${name}`);
+      if (ts.isIdentifier(callee) && callee.text === "Function") add(node, "builds code from a string with Function");
       if (name === "open" && /inspector/i.test(callee.getText(sf))) add(node, "calls inspector.open");
+    } else if (ts.isNewExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "Function") {
+      add(node, "builds code from a string with new Function");
+    } else if (ts.isPropertyAccessExpression(node) && LISTENER_CALLS.has(node.name.text)) {
+      // Any reference, not only a call: `s.listen.call(s, 80)` and `Reflect.apply(s.listen, ...)` name the method too.
+      add(node, `uses ${node.name.text}`);
+    } else if (ts.isElementAccessExpression(node) && ts.isStringLiteralLike(node.argumentExpression) && LISTENER_CALLS.has(node.argumentExpression.text)) {
+      add(node, `uses ${node.argumentExpression.text}`);
+    } else if (ts.isBindingElement(node) && [node.name, node.propertyName].some((n) => n !== undefined && ts.isIdentifier(n) && LISTENER_CALLS.has(n.text))) {
+      add(node, "takes a listener method out of an object");
     } else if (ts.isIdentifier(node) && LOADER_NAMES.has(node.text) && !(ts.isPropertyAssignment(node.parent) && node.parent.name === node)) {
       add(node, `uses ${node.text}, a route to built-ins the import check cannot see`);
     } else if (ts.isIdentifier(node) && node.text === "startWebHost") add(node, "names startWebHost");
@@ -109,6 +118,7 @@ export function addedLines(text) {
   const bad = [];
   let oldLeft = 0;
   let newLeft = 0;
+  let prev = "";
   text.split("\n").forEach((line, i) => {
     if (oldLeft > 0 || newLeft > 0) {
       if (line.startsWith("+")) { newLeft--; added.push({ line: i + 1, text: line.slice(1) }); }
@@ -116,6 +126,10 @@ export function addedLines(text) {
       else if (line.startsWith(" ") || line === "") { oldLeft--; newLeft--; }
       return;
     }
+    // Outside a hunk only header lines may start with `+`: a `+++ ` line straight after its `--- ` line. Anything else is a
+    // line the hunk counts did not account for (git apply would call the patch corrupt), reported rather than skipped.
+    if (line.startsWith("+") && !(line.startsWith("+++ ") && prev.startsWith("--- "))) bad.push({ line: i + 1, text: line });
+    prev = line;
     if (!line.startsWith("@@")) return;
     const m = /^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@/.exec(line);
     if (m === null) bad.push({ line: i + 1, text: line });
@@ -126,12 +140,17 @@ export function addedLines(text) {
 
 /** The same rules as the source scan, as text rules for one added line (a diff fragment is not parseable on its own). */
 export function scanAddedLine(added) {
-  const text = added.replace(/['"`]\s*\+\s*['"`]/g, "");
+  // Folded like the source scan: split strings joined, template substitutions dropped. `plain` is the line with string contents
+  // blanked, for identifiers that a string may legitimately contain (`require-trusted-types`).
+  const text = added.replace(/['"`]\s*\+\s*['"`]/g, "").replace(/\$\{[^}]*\}/g, "");
+  const plain = added.replace(/(['"`])(?:\\.|(?!\1).)*\1/g, "''");
   const imports = [...text.matchAll(/(?:\bfrom|\bimport\s*\(?|\brequire\s*\()\s*['"]([^'"]+)['"]/g)].map((m) => m[1]);
   if (LISTEN_TEXT.test(text) || /\[\s*['"](?:listen|createServer)['"]\s*\]/.test(text)) return "starts a listener";
   if (/\[[^\]'"]*\]\s*\(/.test(text) && !/^\s*(?:\/\/|\*)/.test(text)) return "calls a member chosen at run time";
   if (DEBUG_TEXT.test(text)) return "names a debugging flag";
-  if (/\brequire\s*\(|\b(?:createRequire|getBuiltinModule|_linkedBinding|dlopen)\b|\bbinding\s*\(/.test(text)) return "uses a loader route the import check cannot see";
+  if (/(?<![\w$.-])require(?![\w$-])|\brequire\s*\(|\b(?:createRequire|getBuiltinModule|_linkedBinding|dlopen)\b|\bbinding\s*\(|\beval\s*\(|\bFunction\s*\(/.test(plain)) return "uses a loader or code-from-string route the import check cannot see";
+  if (/\bimport\s*\(\s*[^'"\s]/.test(plain) && !/^\s*(?:\/\/|\*|\/\*)/.test(plain)) return "loads a module by a computed name";
+  if (/\bnew\s+Worker\s*\(/.test(plain)) return "starts a worker";
   for (const spec of imports) {
     const why = specRefusal(spec, "");
     if (why !== null && !/^(?:\.|\/)/.test(spec) && !/^vs\//.test(spec)) return why;

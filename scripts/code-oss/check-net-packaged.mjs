@@ -116,8 +116,13 @@ export async function accepts(port) {
   return (await one("127.0.0.1")) || (await one("::1"));
 }
 
+/** Kill the app's whole process group (a lone process on Windows). Always run, also after the leader exited: its children may live. */
+export function killGroup(child) {
+  try { process.platform === "win32" ? child.kill("SIGKILL") : process.kill(-child.pid, "SIGKILL"); } catch { /* the group is gone */ }
+}
+
 /** Launch the app, let it settle, run `inspect(child)`, then stop it. The profile is private and removed. */
-async function withApp(app, appArgs, flags, settleMs, inspect) {
+async function withApp(app, appArgs, flags, settleMs, inspect, kill = killGroup) {
   const profile = mkdtempSync(join(tmpdir(), "axis-net-gate-"));
   const args = [...appArgs, `--user-data-dir=${join(profile, "user")}`, `--extensions-dir=${join(profile, "ext")}`, "--disable-extensions", "--no-sandbox", ...flags];
   const child = spawn(app, args, { stdio: "ignore", detached: process.platform !== "win32", env: { ...process.env, NODE_OPTIONS: "" } });
@@ -128,16 +133,14 @@ async function withApp(app, appArgs, flags, settleMs, inspect) {
     await delay(settleMs);
     return await inspect(child, exit);
   } finally {
-    if (exit === undefined) {
-      try { process.platform === "win32" ? child.kill("SIGKILL") : process.kill(-child.pid, "SIGKILL"); } catch { /* gone */ }
-    }
+    kill(child);
     await delay(100);
     rmSync(profile, { recursive: true, force: true });
   }
 }
 
 /** Run every check. Returns { status, results } with status "pass", "fail" or "skip". Injectable for the tests. */
-export async function runChecks({ app, appArgs = [], settleMs = 8000, listeners = listenersOfTree } = {}) {
+export async function runChecks({ app, appArgs = [], settleMs = 8000, listeners = listenersOfTree, kill = killGroup } = {}) {
   if (app === undefined || app === "") return { status: "skip", results: [], diagnostic: SKIP_DIAGNOSTIC };
   const results = [];
   const plain = await withApp(app, appArgs, [], settleMs, async (child, exit) => {
@@ -147,7 +150,7 @@ export async function runChecks({ app, appArgs = [], settleMs = 8000, listeners 
     return found.length === 0
       ? { name: "plain run: no listener", status: "pass", detail: "no listening socket in the app's process tree" }
       : { name: "plain run: no listener", status: "fail", detail: `listening: ${found.map((f) => `${f.address}:${f.port} (pid ${f.pid})`).join(", ")}` };
-  });
+  }, kill);
   results.push(plain);
   for (const flag of DEBUG_FLAGS) {
     const port = await freePort();
@@ -157,7 +160,7 @@ export async function runChecks({ app, appArgs = [], settleMs = 8000, listeners 
       if (exit !== undefined) return { name, status: "pass", detail: `the app exited (${JSON.stringify(exit)}): refused or crashed, not told apart` };
       const open = await accepts(port);
       return open ? { name, status: "fail", detail: `port ${port} accepts connections: the flag was honoured` } : { name, status: "pass", detail: `nothing accepts on port ${port}` };
-    }));
+    }, kill));
   }
   const status = results.some((r) => r.status === "fail") ? "fail" : results.some((r) => r.status === "skip") ? "skip" : "pass";
   return { status, results };
