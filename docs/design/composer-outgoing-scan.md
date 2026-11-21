@@ -35,15 +35,37 @@ the proposal below (review c7-f3-design r2 nits):
     checked (pre-existing: the same awaits followed the synchronous scan). Closed: the guard keeps one `RequestScan` per request
     (the object scanned with, one `ScanContext`, the version the last complete scan ended under) and calls `rescanIfMoved`
     after `capabilities` and again after the budget, its last `await` before the adapter call: a moved version scans the
-    request again under the same budget. What remains between that check and the send is microtasks only; a key the adapter
-    itself registers while sending (the Anthropic adapter reading its own key from the vault) cannot be in content built and
-    checked before it, and the response-side checks (`holdsRegisteredSecret`) cover what comes back. So every string of a
-    request is judged under the key set current at the last check before the send.
+    request again under the same budget. Between that check and the adapter call there are only microtasks.
+  - **Residual (review c7-f3-impl r3), not closed here: see C7-F4 below.** In production a key is registered with the host
+    redactor in exactly one place: the providers binding's key read (`daemon-host/src/bindings/providers.ts`, the
+    `registerSecret` after the vault read), which the Anthropic adapter calls INSIDE its send (`anthropic/src/adapter.ts`,
+    the request function: `await getKey(...)`, then `fetch`), after every guard check. A request whose content holds a key
+    the redactor does not know yet is therefore sent with it when that key is first read at the send. That happens when the
+    key is new to this daemon process: after a daemon start before the first request on the connection, or after the key
+    was rotated in the vault while the old one stays registered (the new value reaches the redactor only in the send that
+    first reads it). What is sent: the whole request body, to that connection's own provider origin (the key's own provider),
+    in the run that holds the key in its history (pasted by the user, read from a file, or printed by a command). The next
+    request of the run is refused `secret_in_request` (the key is registered by then). The order is the same as before
+    C7-F3 (the synchronous scan also ran before the adapter's vault read); narrow, but it contradicts "nothing goes out
+    holding a stored credential".
   - N2: one budget for every pass of a request (a restart can no longer double it); N3: a cancel at the guard's yield stops a
     synchronous scan (tested); N4: `assertScanBudgetFits` refuses NaN and every value the comparison cannot order.
 - **Tests.** The existing synchronous tests stay; the asynchronous path has its own file
   (`test/provider-redactor-async.test.ts`) with an equivalence test over a corpus of the synchronous cases, instead of
   running every synchronous test twice.
+
+## C7-F4 (follow-up ticket, not built): a key known before any request is built
+
+Close the residual above so that no request body can carry a stored key that the scan did not know about:
+1. **Register a key when it is stored and at daemon start.** The providers binding registers every connection's key with the
+   host redactor when it is stored or rotated in the vault, and reads and registers each configured connection's key once at
+   daemon start (audited like any key read, DMN-5), before the composer accepts a run. The old key stays registered after a
+   rotation (an echo of it is still redacted).
+2. **And/or an adapter-level check at the send.** The Anthropic adapter (and any later network adapter) runs the request
+   scan again after its key read and before `fetch`, with no `await` between that check and the call: a key registered by
+   that read is then checked against the body it would go out with, and the request is refused `secret_in_request`.
+3. Tests: a rotated key held in a run's history is never sent (real redactor, guard, adapter and a fake fetch: the body that
+   reaches fetch never holds the key); a daemon restart with a key in a run's history refuses the first request.
 
 ## Problem
 

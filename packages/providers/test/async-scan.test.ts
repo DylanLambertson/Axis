@@ -287,3 +287,30 @@ test("a cancel at the guard's yield stops a synchronous scan: no string after it
   assert.ok(calls <= Math.ceil(YIELD_CHARS / 10_000) + 1, `${calls} long strings read`);
   assert.equal(mock.requests.length, 0);
 });
+
+test("a rescan after capabilities spends what the scan left of the request's one budget: past it, scan_budget, nothing sent (review c7-f3-impl r3)", async () => {
+  let version = 0;
+  const h = {
+    ...hook(async (t, ctx) => {
+      if (!t.includes(MARKER)) return false;
+      const charge = Math.ceil(SCAN_BUDGET_CHARS * 0.6);
+      if (ctx.budget.remaining < charge) throw new ProviderError("scan_budget");
+      ctx.budget.remaining -= charge;
+      return false;
+    }),
+    secretsVersion: () => version,
+  };
+  const m = createMockProvider({ replies: [{ kind: "text", text: "ok" }] });
+  const adapter: ProviderAdapter = {
+    descriptor: m.descriptor,
+    listModels: (o) => m.listModels(o),
+    // The scan ended with no change; a key is registered while capabilities are awaited, so the request is scanned again.
+    getCapabilities: (model, o) => (version++, m.getCapabilities(model, o)),
+    validateConnection: (o) => m.validateConnection(o),
+    generate: (r, o) => m.generate(r, o),
+    stream: (r, o) => m.stream(r, o),
+  };
+  const g = guardProvider(adapter, { redactor: h });
+  assert.equal((await fails(g.generate(req(), { runId: "r", signal: live() }))).code, "scan_budget");
+  assert.equal(m.requests.length, 0);
+});
