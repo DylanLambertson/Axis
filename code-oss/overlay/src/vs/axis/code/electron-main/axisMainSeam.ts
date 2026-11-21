@@ -16,6 +16,8 @@
 //   fresh `MessageChannelMain`, the daemon the other with a signed `connect`.
 // - The answers (anchor, native confirmation, trust, settings) are `createMainAnswers`'; the anchor store is read BEFORE the first
 //   spawn, so a keychain prompt cannot use up the daemon's 5 s anchor wait.
+// - The pty process (ticket PV-X1b, axisMainPty.ts) starts first, under the same gate; each daemon child is reported to its control
+//   hand-over, so both get one new channel whenever either (re)starts. Shutdown stops the daemon first, then the pty process.
 import { createHmac, randomBytes } from 'crypto';
 import { homedir } from 'os';
 import { app, utilityProcess, type MessagePortMain } from 'electron';
@@ -26,8 +28,9 @@ import { anchorFilePath, createAnchorFile } from '../../packages/daemon-host/mai
 import { createAnchorStore } from '../../packages/daemon-host/main/anchor-store.js';
 import { createMainAnswers } from '../../packages/daemon-host/main/answers.js';
 import { ConnectBroker } from '../../packages/daemon-host/main/connect-broker.js';
-import { DaemonSupervisor, axisDataRoots, daemonEnvironment, shouldStartDaemon, type DaemonChild, type SupervisedConfig } from '../../packages/daemon-host/supervisor.js';
-import { connectSender, messageChannel, nativeDialog, resolveMainServices, safeStorageCipher, settingsSource, trustSource, windowTrusted, workbenchUrls } from './axisMainPorts.js';
+import { DaemonSupervisor, axisDataRoots, daemonEnvironment, shouldStartDaemon, type DaemonChild, type SupervisedConfig, type SupervisorTimers } from '../../packages/daemon-host/supervisor.js';
+import { startAxisPty } from './axisMainPty.js';
+import { connectSender, messageChannel, nativeDialog, resolveMainServices, resolvedShellEnv, safeStorageCipher, settingsSource, trustSource, windowTrusted, workbenchUrls } from './axisMainPorts.js';
 
 const MAX_STDERR_LINE = 512;
 
@@ -36,7 +39,8 @@ interface ILifecycle { readonly onWillShutdown: (listener: (event: IShutdownEven
 interface ILog { trace(message: string): void; warn(message: string): void; error(message: string): void }
 
 export function startAxisMainSeam(lifecycle: ILifecycle, log: ILog, instantiation: IInstantiationService): DaemonSupervisor | undefined {
-	// Until the real ports exist the daemon only refuses to start: spawn it in unpackaged builds only (supervisor.ts).
+	// One start gate for both processes (supervisor.ts): unpackaged builds only, until the packaging ADR. The pty process never
+	// runs when the daemon does not.
 	if (!shouldStartDaemon(app.isPackaged)) {
 		log.trace('axis daemon: not started in a packaged build');
 		return undefined;
@@ -50,6 +54,9 @@ export function startAxisMainSeam(lifecycle: ILifecycle, log: ILog, instantiatio
 		devDiagnostics: !app.isPackaged,
 	};
 	const services = resolveMainServices(instantiation);
+	const timers: SupervisorTimers = { set: (fn, ms) => setTimeout(fn, ms), clear: handle => clearTimeout(handle as ReturnType<typeof setTimeout>) };
+	// The pty process first (§6.4): it is forked once main's shell environment is resolved; the daemon starts after it.
+	const pty = startAxisPty(config, resolvedShellEnv(services), log, timers);
 
 	let supervisor: DaemonSupervisor | undefined = undefined;
 	const broker = new ConnectBroker<MessagePortMain>({
@@ -81,7 +88,7 @@ export function startAxisMainSeam(lifecycle: ILifecycle, log: ILog, instantiatio
 		randomBytes: n => randomBytes(n),
 		hmacSha256: (key, text) => new Uint8Array(createHmac('sha256', key).update(text, 'utf8').digest()),
 		now: () => performance.now(),
-		timers: { set: (fn, ms) => setTimeout(fn, ms), clear: handle => clearTimeout(handle as ReturnType<typeof setTimeout>) },
+		timers,
 		onRequest: (message, reply) => answers.onRequest(message, reply),
 		spawn: () => {
 			const child = utilityProcess.fork(FileAccess.asFileUri('vs/axis/daemon/node/axisDaemonMain.js').fsPath, [], {
@@ -107,6 +114,9 @@ export function startAxisMainSeam(lifecycle: ILifecycle, log: ILog, instantiatio
 					return () => void child.off('exit', listener);
 				},
 			};
+			// The control channel (§6.3): a new one to both processes now, and none to this child after its exit.
+			child.once('exit', () => pty.handover.daemon(handle, false));
+			pty.handover.daemon(handle, true);
 			return handle;
 		},
 		onEvent: (event, fields) => {
@@ -135,8 +145,9 @@ export function startAxisMainSeam(lifecycle: ILifecycle, log: ILog, instantiatio
 
 	// The shutdown message is the only graceful path on Windows, where a utility process is ended by TerminateProcess.
 	// A final anchor write still in flight is finished before the answers are disposed.
-	lifecycle.onWillShutdown(event => event.join('axisDaemon', started.shutdown().then(() => answers.idle()).finally(() => answers.dispose())));
-	// Read the anchor store first (a keychain prompt must not use up the daemon's anchor wait), then spawn.
-	void answers.prepare().finally(() => started.start());
+	// The daemon first, then the pty process (bounded, so a daemon that hangs cannot keep the pty process alive).
+	lifecycle.onWillShutdown(event => event.join('axisDaemon', pty.shutdown(() => started.shutdown()).then(() => answers.idle()).finally(() => answers.dispose())));
+	// Read the anchor store first (a keychain prompt must not use up the daemon's anchor wait) and start the pty process, then spawn.
+	void Promise.all([answers.prepare(), pty.started]).finally(() => started.start());
 	return started;
 }
