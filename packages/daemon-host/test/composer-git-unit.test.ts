@@ -1,6 +1,10 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import assert from "node:assert/strict";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
+import { createNodeRunner } from "@axis/git-ops";
 import type { MockReply } from "@axis/providers";
 import { DEFAULT_GIT_READ_LIMITS, GIT_COMMANDS, GIT_READ_TIMEOUT_MS, MAX_GIT_OUTPUT, gitReadRunnerOptions, checkGitCall, escapeGitLine, gitCallTier, GIT_DIFF, GIT_STATUS, GIT_TOOL_SPECS, diffCall, formatDiff, formatStatus, gitDiffArgs, gitStatusArgs, statusCall } from "../src/index.js";
 import { START } from "./composer-rig.js";
@@ -150,4 +154,39 @@ test("the read runner: the host's git and environment, 4 MiB of output, 30 s a p
   assert.deepEqual(gitReadRunnerOptions("/usr/bin/git", env), { gitPath: "/usr/bin/git", env, maxOutput: 4 * 1024 * 1024, timeoutMs: 30_000 });
   assert.equal(MAX_GIT_OUTPUT, 4 * 1024 * 1024);
   assert.equal(GIT_READ_TIMEOUT_MS, 30_000);
+});
+
+test("a git read that does not finish is killed at GIT_READ_TIMEOUT_MS and shown as git_unavailable (mocked clock)", { skip: process.platform === "win32" ? "posix shell" : undefined }, async (t) => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "axis-git-timeout-")));
+  const git = join(root, "bin", "git");
+  mkdirSync(join(root, "bin"));
+  const pidFile = join(root, "pid");
+  // The fake git records its own pid (then becomes `sleep`), so a failing test kills exactly that process.
+  writeFileSync(git, `#!/bin/sh\necho $$ > "${pidFile}"\nexec sleep 600\n`);
+  chmodSync(git, 0o755);
+  mkdirSync(join(root, "wt"));
+  t.after(() => {
+    try {
+      process.kill(Number(readFileSync(pidFile, "utf8")), "SIGKILL");
+    } catch {
+      // already gone (the expected case)
+    }
+    rmSync(root, { recursive: true, force: true });
+  });
+  const realTimeout = globalThis.setTimeout; // captured before the clock is mocked: a backstop, not a bound under test
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const runner = createNodeRunner(gitReadRunnerOptions(git, { PATH: process.env["PATH"] ?? "/usr/bin:/bin" }));
+  let settled = false;
+  const read = runner.run({ argv: ["status"], cwd: join(root, "wt"), env: { PATH: process.env["PATH"] ?? "/usr/bin:/bin" }, context: "daemon" });
+  void read.then(() => (settled = true), () => (settled = true));
+  const turns = async (): Promise<void> => {
+    for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
+  };
+  t.mock.timers.tick(GIT_READ_TIMEOUT_MS - 1);
+  await turns();
+  assert.equal(settled, false, "still running just before the bound");
+  t.mock.timers.tick(1);
+  const result = await Promise.race([read, new Promise<never>((_, reject) => realTimeout(() => reject(new Error("not killed at the bound")), 30_000).unref())]);
+  assert.notEqual(result.code, 0, "killed");
+  assert.equal(reason(() => formatStatus(result, same)), "git-unavailable");
 });

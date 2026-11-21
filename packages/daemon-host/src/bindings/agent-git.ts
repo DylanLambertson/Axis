@@ -13,7 +13,7 @@ import type { ComposerToolSpec } from "../ports/composer.js";
  * - **One git path.** The broker runs the one call each tool declares (`git`), checked against its policy rows
  *   (`GIT_COMMANDS`: `status` and `diff` are tier `read`, no write), on the host's git (`AgentBindingDeps.gitPath`, the
  *   daemon-context node runner of `@axis/git-ops`) with the hardened daemon prefix: hooks off, `core.fsmonitor=false`, every
- *   filter the config names emptied (an empty name too), `--no-ext-diff --no-textconv --no-color`, `--no-optional-locks` (a read never writes
+ *   filter the config names emptied (an empty name too; a filter key it cannot read refuses the call), `--no-ext-diff --no-textconv --no-color`, `--no-optional-locks` (a read never writes
  *   the index), literal pathspecs, GIT-ENV-1, and `--ignore-submodules=dirty` (no child git inside a submodule).
  * - **The model chooses no flag.** The flags are fixed here; the model gives at most the paths (WT-1 lexical rules in the
  *   broker, a path into the git directory refused) and, for a diff, the staged side and the context lines.
