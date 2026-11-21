@@ -43,7 +43,7 @@ test("node:dns and node:dns/promises are refused in every shipped file, by every
 });
 
 test("node:child_process is accepted in exactly the named files, by every check", () => {
-  assert.equal(SPAWN_FILES.size, 7);
+  assert.equal(SPAWN_FILES.size, 8);
   for (const f of SPAWN_FILES.keys()) all(verdicts(f, "node:child_process"), false, f);
   const near = [
     "audit/x.ts", "audit/lock.tsx", "audit/lock.ts.ts", "audit/sub/lock.ts", "audit/Lock.ts", "broker/index.ts", "broker/x/runner.ts",
