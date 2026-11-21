@@ -8,6 +8,7 @@ import { mkdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:
 import * as path from 'node:path';
 import { after, describe, it } from 'node:test';
 import { createExecGitRunner, WorktreeError, WorktreeManager, type GitRunner } from '../src/index.js';
+import { expectNoHang, releaseFifos } from './fifo-guard.js';
 import { makeFixture, sh, write, type Fixture, exp } from './helpers.js';
 
 const fixtures: Fixture[] = [];
@@ -22,13 +23,7 @@ const posixOnly = { skip: process.platform === 'win32' ? 'no FIFOs or POSIX syml
 const SECRET = 'TOP-SECRET-outside-the-worktree\n';
 
 /** Rejects if `p` has not settled within `ms`: a hang becomes a test failure instead of a stuck run. */
-function within<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
-  let t: NodeJS.Timeout | undefined;
-  const timeout = new Promise<never>((_, reject) => {
-    t = setTimeout(() => reject(new Error(`${what} did not settle within ${ms} ms`)), ms);
-  });
-  return Promise.race([p, timeout]).finally(() => clearTimeout(t));
-}
+const within = <T>(p: Promise<T>, ms: number, what: string): Promise<T> => expectNoHang(p, ms, what, []);
 
 /**
  * A runner that calls `swap()` once, right before the first git call that follows the
@@ -139,15 +134,16 @@ describe('R3-2: status() never blocks on a FIFO and never reads past a symlink',
     { stdio: 'ignore' });
     // A fixed number of rounds, not a wall-clock window: a loaded machine runs them slower, never fewer. Each call keeps its own hang
     // guard, so a status() that blocks on the FIFO fails the test instead of hanging it.
-    const ROUNDS = 25;
+    const ROUNDS = 200;
     let calls = 0;
     try {
       while (calls < ROUNDS) {
-        await within(fx.manager.status(ws.path, exp(ws.path)).catch(() => undefined), 10_000, `status() call ${calls + 1}`);
+        await expectNoHang(fx.manager.status(ws.path, exp(ws.path)).catch(() => undefined), 10_000, `status() call ${calls + 1}`, [ws.path]);
         calls++;
       }
     } finally {
       loop.kill('SIGKILL');
+      releaseFifos([ws.path]);
     }
     assert.equal(calls, ROUNDS, 'every round ran');
   });
