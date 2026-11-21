@@ -93,7 +93,10 @@ function kindOf(group: AxisChangeGroupId, change: GitChange): AxisChangeKind {
 		return 'untracked';
 	}
 	if (!change.originalUri) {
-		return 'added';
+		// Not in the index: staged, that is an added file; not staged, an untracked file (or one
+		// marked intent-to-add). The git extension lists untracked files here by default
+		// (`git.untrackedChanges: mixed`) and in `untrackedChanges` only when set to `separate`.
+		return group === 'unstaged' ? 'untracked' : 'added';
 	}
 	if (!change.modifiedUri) {
 		return 'deleted';

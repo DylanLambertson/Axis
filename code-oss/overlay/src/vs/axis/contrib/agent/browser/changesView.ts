@@ -13,14 +13,12 @@ import { IFileService } from '../../../../platform/files/common/files.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IGitService } from '../../../../workbench/contrib/git/common/gitService.js';
 import { AxisChangeGroupId, changeGroupLabel, changeKindGlyph, changeKindLabel, changeRowLabel, changesSummary, diffTargetOf, flatRows, focusAfterUpdate, IAxisChangeRow, MAX_CHANGE_ROWS, nextActiveIndex, reviewAllTargetOf } from '../../../services/changes/common/axisChanges.js';
-import { AxisChangesSource, AxisGitEntry, isRepositoryRoot } from '../../../services/changes/common/axisChangesSource.js';
+import { AxisChangesSource, CLOSED_REPOSITORIES_KEY, gitEntryOf, hasClosedRepositories, isRepositoryRoot } from '../../../services/changes/common/axisChangesSource.js';
+import { placeInOrder } from '../../../services/changes/common/axisOrderedChildren.js';
 import { IAxisViewService } from '../../../services/view/browser/axisViewService.js';
 
 /** Rows moved by Page Up and Page Down. */
 const PAGE = 10;
-
-/** The git extension's context key: how many repositories the user has closed in this window. */
-const CLOSED_REPOSITORIES_KEY = 'git.closedRepositoryCount';
 
 interface IRowView {
 	readonly element: HTMLElement;
@@ -32,21 +30,6 @@ interface IRowView {
 interface IGroupView {
 	readonly box: HTMLElement;
 	readonly heading: HTMLElement;
-}
-
-/**
- * Puts `children` into `parent` in order with the fewest moves: an element already in place is
- * not touched, so a focused row is not blurred by an update that does not move it.
- */
-function place(parent: HTMLElement, children: readonly HTMLElement[]): void {
-	children.forEach((child, i) => {
-		if (parent.children[i] !== child) {
-			parent.insertBefore(child, parent.children[i] ?? null);
-		}
-	});
-	while (parent.children.length > children.length) {
-		parent.lastElementChild!.remove();
-	}
 }
 
 /**
@@ -98,16 +81,15 @@ export class AxisChangesView extends Disposable {
 		this.source = this._register(new AxisChangesSource(
 			gitService,
 			root => contextService.isInsideWorkspace(root),
-			root => isRepositoryRoot(root, async (uri): Promise<AxisGitEntry> => {
-				try {
-					const stat = await fileService.stat(uri);
-					return stat.isFile ? 'file' : stat.isDirectory ? 'directory' : 'none';
-				} catch {
-					return 'none';
-				}
-			}),
-			() => (contextKeyService.getContextKeyValue<number>(CLOSED_REPOSITORIES_KEY) ?? 0) > 0,
+			root => isRepositoryRoot(root, uri => fileService.stat(uri).then(gitEntryOf, () => gitEntryOf(undefined))),
+			() => hasClosedRepositories(contextKeyService.getContextKeyValue(CLOSED_REPOSITORIES_KEY)),
 		));
+		const closedKey = new Set([CLOSED_REPOSITORIES_KEY]);
+		this._register(contextKeyService.onDidChangeContext(e => {
+			if (e.affectsSome(closedKey)) {
+				this.source.reconsider();
+			}
+		}));
 		this.element = $('section.axis-workspace-changes');
 		const header = append(this.element, $('.axis-changes-header'));
 		const title = this.title = append(header, $('h3.axis-section-title'));
@@ -172,7 +154,7 @@ export class AxisChangesView extends Disposable {
 				view.heading.textContent = heading;
 			}
 			const elements = group.rows.map(row => this.rowElement(row));
-			place(view.box, [view.heading, ...elements]);
+			placeInOrder(view.box, [view.heading, ...elements]);
 			this.rows.push(...elements);
 			boxes.push(view.box);
 		}
@@ -181,7 +163,7 @@ export class AxisChangesView extends Disposable {
 				this.groupViews.delete(id);
 			}
 		}
-		place(this.list, boxes);
+		placeInOrder(this.list, boxes);
 		this.list.hidden = this.rows.length === 0;
 
 		const index = nextActiveIndex(this.visible, this.activeId, this.activeIndex);
@@ -266,7 +248,7 @@ export class AxisChangesView extends Disposable {
 		switch (status) {
 			case 'idle': return '';
 			case 'loading': return localize('axis.changes.loading', "Reading the worktree's changes…");
-			case 'askFirst': return localize('axis.changes.askFirst', "Repositories have been closed in Git in this window. Show changes opens this worktree's repository in Git, and it stays open there.");
+			case 'askFirst': return localize('axis.changes.askFirst', "Repositories have been closed in Git in this window, or Git has not said yet whether any were. Show changes opens this worktree's repository in Git, and it stays open there, even if you closed it before.");
 			case 'notMounted': return localize('axis.changes.notMounted', "Changes show for the folder this window has open. Open this worktree's folder in the window to see its changes.");
 			case 'unavailable': return localize('axis.changes.unavailable', "Git has no repository for this worktree. The folder may not be a Git worktree, the git extension may be off or the folder untrusted, or Git may still be starting.");
 			case 'ready': {
