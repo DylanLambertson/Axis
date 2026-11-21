@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { judgeDrift, takeSnapshot, type TakeOptions } from "../src/index.js";
 import { redactText } from "../src/display.js";
 import { forgetGit, parseListOutput, resolveGit } from "../src/git.js";
+import { budget } from "./budget.js";
 import { git, makeFixture, write, type Fixture } from "./helpers.js";
 
 const posix = process.platform !== "win32";
@@ -30,7 +31,7 @@ test("R1: redaction patterns are linear: long runs of scheme characters do not s
   redactText(`${"a:".repeat(8000)}`);
   redactText("a".repeat(15_000) + "://x");
   redactText("x".repeat(200_000));
-  assert.ok(Date.now() - t0 < 1500, `redaction took ${Date.now() - t0} ms`);
+  assert.ok(Date.now() - t0 < budget(1500), `redaction took ${Date.now() - t0} ms`);
 });
 
 test("R1b: a credential with no @ left (git ends a value at #) is redacted, a host and port is not", () => {
