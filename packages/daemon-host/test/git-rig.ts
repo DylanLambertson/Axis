@@ -144,7 +144,7 @@ export async function gitRig(options: GitRigOptions = {}) {
   const baseOps: GitOperations = {
     ...realOps,
     planPush: (c) => (calls.planPush.push({ baseSha: c.baseSha, branch: c.branch, remote: c.remote }), realOps.planPush(c)),
-    executePush: (c, p) => (calls.executePush++, realOps.executePush(c, p)),
+    executePush: (c, p, s) => (calls.executePush++, realOps.executePush(c, p, s)),
     executeCommit: (c, i) => (calls.executeCommit++, realOps.executeCommit(c, i)),
   };
   const ops = options.ops ? options.ops(baseOps) : baseOps;
