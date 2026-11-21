@@ -121,12 +121,11 @@ export function daemonEnvironment(source: Readonly<Record<string, string | undef
 }
 
 /**
- * Whether main starts the daemon at all. Until the pty process (B9) exists (the run snapshotter is wired, H13) the daemon refuses to
- * start (exit 78) in every build, so a packaged app does not spawn it: the extra process and its error lines would give a user
- * nothing. Unpackaged builds do, which exercises `fork`, `init` and the refusal. REMOVE the condition in the change that wires the
- * real ports (and X1c must land before or with it: docs/design/daemon-host-plan.md).
+ * Whether main starts the daemon, and with it the pty process (PV-X1b: one gate for both). Only in a development build until the
+ * owner's packaging ADR: a built (packaged) app starts neither. `isBuilt` is Code OSS's `environmentMainService.isBuilt` (false only
+ * under `VSCODE_DEV`), never Electron's `app.isPackaged`, which is true for every Code OSS executable (it is never named `electron`).
  */
-export const shouldStartDaemon = (isPackaged: boolean): boolean => !isPackaged;
+export const shouldStartDaemon = (isBuilt: boolean): boolean => !isBuilt;
 
 export interface AxisDataRoots {
   readonly dataDir: string;
