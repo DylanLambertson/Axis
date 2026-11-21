@@ -15,6 +15,10 @@
     "./client": {
       "types": "./dist/src/client-entry.d.ts",
       "default": "./dist/src/client-entry.js"
+    },
+    "./config": {
+      "types": "./dist/src/config.d.ts",
+      "default": "./dist/src/config.js"
     }
   },
   "scripts": {
