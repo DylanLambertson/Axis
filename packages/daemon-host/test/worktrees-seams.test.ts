@@ -151,9 +151,18 @@ test("hook re-check under the lock: a workspace flagged while the call waits for
   const projectId = String(r.journal.getWorkspace(id)?.projectId);
   let pending: Promise<unknown> = Promise.resolve();
   // Hold the project mutex; the retry passes the hook's first check, then waits; the flag appears while it waits.
-  await r.binding.mutex.run(projectId, async () => {
+  // The retry has passed the hook's first check and is queued once it asks the mutex for the project: wait for that, not for a delay.
+  const mutex = r.binding.mutex;
+  const realRun = mutex.run.bind(mutex);
+  let queued!: () => void;
+  const retryQueued = new Promise<void>((res) => (queued = res));
+  mutex.run = ((key: string, fn: () => Promise<unknown>, signal?: AbortSignal) => {
+    if (key === projectId) queued();
+    return realRun(key, fn, signal);
+  }) as typeof mutex.run;
+  await realRun(projectId, async () => {
     pending = user.call(WT, "remove", { id, approval: { challengeId: c.challengeId } }, newKey());
-    await new Promise((res) => setTimeout(res, 300));
+    await retryQueued;
     r.db.exec(`UPDATE agent_workspaces SET base_sha = '${"1".repeat(40)}' WHERE id = '${id}'`);
     await r.binding.service.reconcile(live);
   });
