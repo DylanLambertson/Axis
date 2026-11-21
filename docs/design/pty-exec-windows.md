@@ -1,126 +1,173 @@
-# The pty process's exec on Windows (ticket PV-X1w)
+# Exec on Windows with a tree kill (ticket PV-X1w)
 
-- **Status:** design, revision 1. Nothing is built. Follows PV-X1a (`docs/design/pty-exec-node.md`), whose exec function throws `unsupported_platform` on `win32` before anything starts.
-- **Scope:** a kill that ends the whole process tree of one exec run on Windows, so `createNodeExec` can run git (and `gh`, PV-D2) there. The same primitive is what Windows CLI terminals lack (`pty-process.md` decision 1: ConPTY through node-pty gives no job object). Terminals are discussed in §6 and are not in this ticket.
-- **Evidence key:** **[doc]** is from the Win32 or Node/libuv documentation and has not been run here; **[U]** must be verified on Windows before the slice that depends on it is built. No claim here was run on Windows: this host is Linux, and CI has no Windows job (`ci.yml` runs Ubuntu and macOS; `code-oss-build.yml` is Linux only).
+- **Status:** design, revision 2 (after design review 1: SF-1 to SF-7, N-1 to N-4). Nothing is built. **Lands after PV-X1a**: `exec-node.ts`, `docs/design/pty-exec-node.md` and the exec contract it extends are on `feat/pv-x1a` until that merges.
+- **Scope:** a kill that ends the whole process tree of one git (or `gh`) run on Windows, for the pty process's exec function and, as a second slice, the daemon's own git runner (§4). Windows CLI terminals need the same property and are not in this ticket (§7).
+- **Evidence key:** **[doc]** is from the Win32 or Node/libuv documentation and was not run here; **[U]** must be verified on Windows before the slice that depends on it. Nothing in this note was run on Windows: this host is Linux, and CI has no Windows job (`ci.yml` runs Ubuntu and macOS; `code-oss-build.yml` is Linux only).
 
-## 1. What POSIX gives that Windows does not
+## 1. What POSIX gives and Windows lacks
 
-On POSIX the exec child leads its own process group, and `kill(-pgid, SIGKILL)` ends every member. `exec-node.ts` relies on three properties:
+PV-X1a (`pty-exec-node.md` §3) relies on a process group:
 
-1. **The whole tree:** every descendant is in the group unless it leaves on purpose (`setsid`, the accepted same-user residual).
-2. **No escape window:** the child is in the group from its first instruction (the group is set between fork and exec).
-3. **A hard kill:** SIGKILL cannot be caught.
+1. **the whole tree** is in it, unless a process leaves on purpose (`setsid`, an accepted same-user residual);
+2. there is **no escape window** (the group is set between fork and exec);
+3. the kill is **hard** (SIGKILL);
+4. the **order:** the group is killed at the leader's exit, then `done` waits for both pipes to close.
 
-Windows has no process groups in this sense. A console process group (`CREATE_NEW_PROCESS_GROUP`) only routes Ctrl+Break and is not a kill target. The Windows object with properties 1 to 3 is the **job object**:
+Windows has no process group in that sense: a console process group only routes Ctrl+Break. The object with properties 1 to 3 is the **job object** [doc]:
+- `TerminateJobObject` ends every process in the job, hard;
+- a child of a process in the job is in the job, unless the job allows breakaway (`BREAKAWAY_OK` with `CREATE_BREAKAWAY_FROM_JOB`, or `SILENT_BREAKAWAY_OK`);
+- jobs nest (Windows 8 and later);
+- `KILL_ON_JOB_CLOSE` ends the job when its last handle closes;
+- a completion port reports `JOB_OBJECT_MSG_ACTIVE_PROCESS_ZERO`.
 
-- `TerminateJobObject` ends every process in the job, hard **[doc]**.
-- A process created by a process in a job is in that job, unless the job allows breakaway (`JOB_OBJECT_LIMIT_BREAKAWAY_OK` together with `CREATE_BREAKAWAY_FROM_JOB`, or `JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK`) **[doc]**. A job without those limits has no breakaway, so even a deliberate escape like `setsid` is impossible. That is stronger than POSIX.
-- Jobs nest (Windows 8 and later), so a run's job can sit inside the job Electron or libuv already put the pty process in **[doc]**.
-- Signalling is by **handle**, not by id: `TerminateJobObject` on Axis's own handle can never hit another process, so the pgid-reuse problem of review 1 SF-2 does not exist on Windows.
-- `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` ends the job when its last handle closes, so a crash of the pty process ends every run (it closes the PV-X1a residual N-8 on Windows) **[doc]**.
-- A completion port associated with the job reports `JOB_OBJECT_MSG_ACTIVE_PROCESS_ZERO` when the last process exits. That is the "group empty" event `ChildGroup { kind: "job" }` and `onGroupEmpty` already expect (`ports.ts`) **[doc]**.
+The job is signalled by **handle**, never by id, so the pgid-reuse problem of PV-X1a review 1 SF-2 does not exist.
 
-**Escape window.** A process is in the job only once it is assigned. Two ways close the window:
-- create the process suspended (`CREATE_SUSPENDED`), then `AssignProcessToJobObject`, then `ResumeThread`;
-- or pass the job in `PROC_THREAD_ATTRIBUTE_JOB_LIST` (Windows 10 and Server 2016 or later), so the process starts in the job **[doc]**.
+**No escape window:** the process must start inside the job, either through `PROC_THREAD_ATTRIBUTE_JOB_LIST` (Windows 10 and Server 2016 or later) or by creating it suspended, assigning it, then resuming. Both need the code that calls `CreateProcessW`; Node's `spawn` exposes neither.
 
-Either needs the code that calls `CreateProcessW`. Node's `child_process.spawn` does not expose either.
+**Residuals (review 1 N-1).** A job without breakaway keeps every descendant created the ordinary way. A process running as the user can still start one outside it through another creator: Task Scheduler, WMI `Win32_Process.Create`, a COM or service broker, or `PROC_THREAD_ATTRIBUTE_PARENT_PROCESS` naming a process outside the job [doc, U]. This is the Windows equivalent of the `setsid` residual: same-user, closed only by the Phase 3 sandbox. It is not "impossible".
 
 ## 2. Options
 
-| | Option | Whole tree (1) | No window (2) | Hard (3) | Verdict |
+| | Option | Tree (1) | Window (2) | Hard (3) | Verdict |
 |---|---|---|---|---|---|
-| A | **`taskkill /T /F`** | by parent pid, at kill time: a reparented or detached descendant is missed, and a reused pid is hit | n/a | yes | **Refused.** A second program given by value, which breaks the exact `argv[0]` allow-list of `exec-node.ts`. It also walks a pid tree, which has the pid-reuse problem the job handle avoids. |
-| B | **ConPTY for exec, kill by closing the pseudoconsole** | only console-attached processes; a `DETACHED_PROCESS` or GUI child escapes | yes | no: `CTRL_CLOSE_EVENT` can be handled, and the system kills a handler only after a timeout **[doc]** | **Refused.** Not a hard kill. It also merges stdout and stderr, which loses the separate stream caps (PV-X1a §2). |
-| C | **A helper process per run** (`node.exe` with a fixed script that spawns git), killed with `TerminateProcess` so its libuv job ends the tree | only if libuv's job lacks silent breakaway. libuv's Windows process code sets breakaway limits on its global job **[U: read `src/win/process.c` at the pinned Node]**; if they include `SILENT_BREAKAWAY_OK`, git's own children are not in it | yes (libuv assigns suspended **[U]**) | yes | **Rejected unless [U] shows no silent breakaway.** It adds a second program (`node.exe -e`), which is broad, and depends on a libuv detail Axis does not control. |
-| D | **Adopt after spawn:** Node spawns as today, then a small native call puts the new pid in a fresh job | yes, after the adoption | **no:** between libuv's resume and the adoption the child can start processes outside the job. The window is short (the adoption runs in the same tick, before git has loaded), but it is not closed | yes | **Fallback only.** Acceptable for terminals if §6 chooses it, with the window documented as a residual. |
-| E | **A small native addon that spawns in a job:** `CreateProcessW` with `PROC_THREAD_ATTRIBUTE_JOB_LIST` (or suspended, assign, resume) and the three pipes, behind the same `ExecFn` contract | yes | yes | yes | **Recommended** (§3). |
-| F | **Patch node-pty** (the native pty binding Code OSS ships) to create each spawn in a job and expose terminate and empty | yes | yes | yes | **Terminals only** (§6): exec uses pipes, not a pseudoconsole. It is a Code OSS patch on a native module and drifts with upstream. |
+| A | `taskkill /T /F` | walks parent pids at kill time: a reparented or detached descendant is missed, a reused pid is hit | n/a | yes | **Refused.** A second program given by value, and a pid walk. |
+| B | ConPTY for exec, kill by closing the pseudoconsole | console-attached processes only | yes | no: `CTRL_CLOSE_EVENT` can be handled [doc] | **Refused.** Not hard, and stdout and stderr merge. |
+| C | `node.exe -e <script>` as a per-run helper, relying on libuv's global job | only if libuv's job has no silent breakaway [U] | yes [U] | yes | **Refused.** A general-purpose interpreter as an allowed program, and a dependency on a libuv detail. |
+| D | Node spawns git as today, then native code adopts the pid into a fresh job | yes, after the adoption | **no:** a short window between libuv's resume and the adoption | yes | **Refused for exec.** Weighed against E and F (N-4): it keeps native code in the process and still leaves a window, so it has the cost of E or F without the guarantee. Kept as a possible answer for terminals (§7). |
+| E | An **in-process N-API addon** that calls `CreateProcessW` in a job and hands the pipes back to Node | yes | yes | yes | **Not chosen.** C++ inside the credentialed pty process, where a memory-safety bug reaches the push approval. Electron ABI and node-gyp coupling. Anonymous pipes are synchronous: as fds they block one libuv threadpool thread per stream, so the default pool of 4 starves with two concurrent runs (SF-6). Overlapped named pipes would fix that, at more native code. |
+| F | An **out-of-process helper EXE**, `axis-exec.exe`. Node spawns it with ordinary pipes; it starts git in a fresh job with exactly those three handles and ends the job when git exits | yes | yes | yes (Node's `kill` is `TerminateProcess` on the helper, which closes the job's last handle) | **Recommended** (§3). |
 
-## 3. Recommendation: option E
+**Why F over E (review 1 SF-2).**
+- **Stdio stays libuv's.** libuv already creates the child's stdio as overlapped named pipes, so the helper inherits ordinary std handles and passes them on. There is no fd hand-back and no threadpool cost.
+- **No native code in the pty process.** The helper is a separate process with a closed argv; a bug in it can corrupt only itself.
+- **No Electron ABI coupling:** a plain Win32 console EXE.
+- **Cost:** the spawned program is the helper, so `exec-node.ts` wraps the argv on Windows (§3). Plus a signed binary to build and ship (§5).
 
-**Where it lives.** ADR 0005 keeps native modules out of `packages/*`: they are reached only from overlay entries through injected functions (`pty-process.md` decision 1, how node-pty is used). So:
-- the addon is built in the overlay's native-module pipeline, as Code OSS builds node-pty;
-- `axisPtyMain.ts` loads it on `win32` only and passes a `WinJobSpawn` function into `runPtyEntry`;
-- `createNodeExec` keeps its POSIX path unchanged. On `win32` it calls the injected function instead of throwing `unsupported_platform`, and throws `unsupported_platform` only when none was injected.
+## 3. The helper `axis-exec.exe`
 
-**The addon's surface, closed and small:**
-```ts
-type WinJobSpawn = (req: {
-  program: string;                 // already checked by exec-node.ts against the exact allow-list
-  args: readonly string[];         // quoted by the addon with the CommandLineToArgvW rules; no shell, no cmd.exe
-  cwd: string;
-  env: Readonly<Record<string, string>>;  // the null-prototype copy of PV-X1a; the block is built from it only
-}) => {
-  stdin: number; stdout: number; stderr: number;   // CRT fds over anonymous pipe handles (see [U] below)
-  terminate(): void;                                // TerminateJobObject on this run's job handle; idempotent
-  onExit(listener: (code: number) => void): void;   // the leader's exit code
-  onEmpty(listener: () => void): void;              // ACTIVE_PROCESS_ZERO from the job's completion port
-  close(): void;                                    // closes the job handle (KILL_ON_JOB_CLOSE ends anything left)
-};
-```
-- **Job limits:** `KILL_ON_JOB_CLOSE`, and no `BREAKAWAY_OK` or `SILENT_BREAKAWAY_OK`; one job per run, never reused. `UI_LIMITS` are not needed.
-- **Mapping to the PV-X1a contract:**
-  - `done` settles after the leader exited, both pipes closed, and the job was terminated (the same order as POSIX §3);
-  - `kill()` maps to `terminate()`;
-  - there is no latch: the handle cannot be reused, so nothing is ever signalled by id;
-  - start failures map to the same closed codes (`ERROR_FILE_NOT_FOUND` and `ERROR_PATH_NOT_FOUND` to `not_found`, `ERROR_ACCESS_DENIED` to `not_permitted`, the rest to `start_failed`).
-- **Program check stays in `exec-node.ts`:** the exact `argv[0]` comparison runs before the injected function is called. The addon checks nothing itself and is never exported to anything but the pty entry. The lint (`SPAWN_FILES`) sees `node:child_process` only, so a native spawn is outside its reach. The ADR amendment names the addon as the one other spawn site, enforced by review and by the overlay import rule that only `axisPtyMain.ts` loads it.
-- **Pipes [U]:** handing anonymous pipe handles back to Node as stream-capable fds (`_open_osfhandle`, then `net.Socket({ fd })` or `fs.createReadStream(null, { fd })`) must be proven on the pinned Electron's Node. If it fails, the addon reads the pipes itself on a thread and delivers chunks with the per-stream caps applied in C++. That is larger, so the spike decides between the two.
-- **Command line [U]:** Windows passes one string, and each program parses it. Git for Windows uses the MSVCRT and `CommandLineToArgvW` rules; the addon quotes with those rules and the tests round-trip hostile arguments (quotes, backslashes before quotes, `%`, `^`, a trailing backslash). No `cmd.exe` is ever in the path, so `%` and `^` are literal. A `.cmd` or `.bat` `gitPath` is refused at the entry check, because it would run under `cmd.exe`.
+**How `exec-node.ts` uses it (Windows only):**
+- **Check, then wrap.** The exact `argv[0]` check against the consumer's program set runs first, unchanged. Then the call becomes `spawn(helperPath, ["--", program, ...args], { windowsHide: true, shell: false, stdio: pipes, env, cwd })`.
+- **`helperPath`** is fixed at construction. It comes from main's hand-over (`AXIS_PTY_EXEC_HELPER`) and is checked like `AXIS_PTY_GIT` (§3.2). It is never taken from a request.
+- **`kill()`** is `cp.kill()`, which on Windows is `TerminateProcess(helper)`. That closes the job's only handle, so `KILL_ON_JOB_CLOSE` ends the tree.
+- **The outcome mapping (SF-3):**
+  - normally, `code` is git's exit code (the helper exits with it) and `signal` is `null`;
+  - after `kill()`, `exec-node.ts` reports `code: null, signal: "SIGKILL"`, whatever exit code Windows gave the terminated helper, so callers see one shape on every platform;
+  - a failure of the helper itself (bad argv, no job, the start failed) exits with a reserved code: `125` start failed, `126` not permitted, `127` not found. `exec-node.ts` maps those to `ExecStartError` (`start_failed`, `not_permitted`, `not_found`) only when the helper also wrote its one fixed marker line to stderr. Without the marker, the code is git's own.
 
-**Cost and governance.**
-- **New native code:** an ADR 0005 amendment (D4 runtime dependencies: an Axis-owned native addon, built from source in the overlay pipeline, no third-party code) and a security review.
-- **Build:** a Windows build of Code OSS does not exist yet (only Linux). The addon's build lands with the first Windows build ticket, not before it.
+**What the helper does, in order:**
+1. **Parse its own command line** (`GetCommandLineW`, MSVCRT rules, N-3). It expects exactly `--`, then the program, then the arguments. Anything else is code 125 with no other effect.
+2. **Check the program** (§3.2), positively.
+3. **Create the job:** `CreateJobObjectW(NULL, NULL)`, non-inheritable, with `KILL_ON_JOB_CLOSE` and no `BREAKAWAY_OK` or `SILENT_BREAKAWAY_OK`. Associate a completion port **before** any process exists.
+4. **Start git:**
+   - `CreateProcessW(lpApplicationName = program, lpCommandLine = quoted command line, bInheritHandles = TRUE, CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT, env = NULL (the helper's own environment, which is exec-node's copy), cwd = NULL (inherited))`;
+   - with `STARTUPINFOEXW` carrying `PROC_THREAD_ATTRIBUTE_JOB_LIST` (the job) and **`PROC_THREAD_ATTRIBUTE_HANDLE_LIST`** with exactly the three std handles (SF-4), so no other handle the helper holds can reach git, and no handle of a concurrent run can either (each run is its own helper);
+   - on Windows older than 10, refuse (code 125) rather than fall back to suspend-and-assign (§8).
+5. **Wait** on the completion port for git's process to exit.
+6. **At git's exit:** `TerminateJobObject(job, 1)` ends what is left of the tree, the same moment POSIX kills the group (SF-3). Then close the handles and exit with git's code.
 
-## 4. Until then: what `unsupported_platform` means for a user
+Node then sees the helper exit, and `done` settles when both pipes close. Every holder of the pipes was in the job and is gone, except a process that escaped through a §1 residual. Such a process keeps `done` pending until the service's timeout, as on POSIX.
 
-There is no Windows build to ship today, so this is the stated behaviour for the first one, if it comes before PV-X1w:
-- **Works:** everything that runs in the daemon's own git context: status, diff, review, the journal and worktrees.
-- **Unavailable, refused before anything starts:**
-  - every pty-process git step: **commit** (`commit-tree` and the commit-signing read run in the `pty` context whatever `axis.git.runHooks` says, git-ops `commit.ts`), the hook scratch steps, **push** (H-7 keeps push out of the daemon, so there is no fallback);
+**3.2 The program and the command line (SF-5)**
+- **Positive check at the entry,** for `AXIS_PTY_GIT`, `AXIS_PTY_GH` and `AXIS_PTY_EXEC_HELPER` on Windows (and in the helper again, for its program):
+  - a drive-letter absolute path (`X:\`);
+  - no `\\?\` or `\\.\` prefix, no UNC (git-ops `gitPath.ts` already refuses UNC on Windows);
+  - no `:` after the drive (alternate data streams);
+  - no segment ending in a dot or a space;
+  - no `~` in a segment (8.3 short names);
+  - it ends in `.exe`, case-insensitively.
+  
+  This replaces a `.cmd`/`.bat` denylist, which Win32 name normalisation bypasses (`x.bat.`, `x.BAT`, short names).
+- **"Exact string" on Windows:** the allow-list compares the raw configured string. `c:\git\git.exe` against `C:\Git\git.exe` is refused, which fails closed. Safety rests on the positive check above and on main passing one resolved string to both sides (`pty-exec-node.md` §6.2a), not on the comparison.
+- **`lpApplicationName`** is always the checked program, so there is no PATH or extension search and no `C:\Program.exe` trap for an unquoted path with a space.
+- **The command line** is built with the MSVCRT quoting rules (N-3):
+  - the first token is the program, quoted;
+  - an argument is quoted when it contains a space, a tab or a quote, or is empty;
+  - backslashes before a quote are doubled.
+  
+  The helper rejects any argument holding a NUL, and a command line over 32,767 UTF-16 units (code 125). `exec-argv.ts` already limits the argument grammar the pty process emits, which narrows the quoting surface. A hop through an MSYS program (ssh, sh) parses again with MSYS rules; git builds those command lines itself, which is git's surface, not Axis's.
+- **The environment** stays `exec-node.ts`'s null-prototype copy. On Windows, names that differ only in case (`Path` and `PATH`) are a `start_failed`, not a silent fold, because Windows keeps one of them unpredictably.
+
+## 4. Today and before PV-X1w lands (SF-1, N-4)
+
+**The daemon's own git runner already runs on Windows with no tree kill.**
+- `git-ops/src/nodeRunner.ts` sets `detached` only off Windows. On Windows a timeout or `kill` ends `git.exe` alone; its children (filters, submodule diffs, `ssh`, credential helpers) survive.
+- Only status, diff, review reads and the journal's git use it, with hooks off. They run under the daemon's time bounds, but nothing ends a child that outlives them.
+- Revision 1 said Axis never runs git on Windows without a tree kill. That was false.
+
+**Policy:** slice 2 of this ticket routes the daemon runner's Windows spawn through the same helper. `nodeRunner.ts` is a `SPAWN_FILES` entry with its own program by value, and it gains the same wrap. Until then the gap is a stated residual of any Windows build. The alternative is to refuse daemon-context git on Windows, which would leave nothing working; the owner decides between the two before a Windows release (§8).
+
+**The floor if no Windows work ships.** If a Windows build comes before PV-X1w:
+- **Works, with the kill gap above:** the daemon-context reads: status, diff, review, the journal and worktrees.
+- **Refused before anything starts** (`E_UNAVAILABLE` with reason `unsupported_platform`):
+  - every pty-process git step, which includes **commit**: `commit-tree` and the `commit.gpgsign` read run in the `pty` context whatever `axis.git.runHooks` says (git-ops `commit.ts`);
+  - the hook scratch steps and **push** (H-7 keeps push out of the daemon);
   - the PR list (`forge-list`);
-  - CLI terminals (the node-pty spawn already refuses `win32`).
-- **What the UI shows:** a closed state, "Not available on Windows yet", with no retry and no partial run. The daemon answers `E_UNAVAILABLE` with reason `unsupported_platform`, and nothing is spawned. The user can still commit and push from their own terminal outside Axis. Without commit, the review flow ends at an approved diff on Windows; that is the largest user-visible gap and the reason PV-X1w should land before a Windows release.
-- **No silent fallback:** Axis never runs git or `gh` on Windows through a path without a tree kill (options A to D), even if asked to.
+  - CLI terminals (the node-pty spawn refuses `win32`).
+- **What the user sees:** a closed state, "Not available on Windows yet", with no retry. The review flow ends at an approved diff, and the user commits and pushes from their own terminal. That gap is the reason PV-X1w should land before a Windows release.
 
-## 5. Test plan
+## 5. Supply chain and native-code controls (SF-7)
 
-**Runner.** Add a `windows-2025` GitHub-hosted job to `ci.yml` for the pty-process package and the addon. Hosted Windows minutes are billed at a higher rate for private repositories; run it on pull requests that touch `pty-process` or the addon. Until that job exists, every Windows claim stays **[U]** and the Windows path stays `unsupported_platform`.
+- **Source and build:**
+  - Axis-owned C, about 300 lines, no third-party code, linking `kernel32` only;
+  - built in CI with a pinned MSVC toolset and Windows SDK version (named in the build script), `/Brepro` for a deterministic PE, and the build inputs hashed into the release notes.
+- **Signing:**
+  - Authenticode-signed with the same key and process as the Windows app;
+  - the key holder is the owner (an open question until a Windows release process exists);
+  - main checks the signature subject before handing the path over [U: the API main uses].
+- **Load path:**
+  - main passes the absolute path inside the app's install directory, and the entry checks it (§3.2);
+  - a per-user install directory is writable by the user, so a same-user swap of the binary is the accepted same-user residual, as with git itself;
+  - a per-machine install removes it.
+- **Binary check in CI** (instead of the egress lint, which sees only `node:child_process`):
+  - the built PE's import table must be a subset of an allow-list (`CreateJobObjectW`, `SetInformationJobObject`, `CreateIoCompletionPort`, `GetQueuedCompletionStatus`, `InitializeProcThreadAttributeList`, `UpdateProcThreadAttribute`, `DeleteProcThreadAttributeList`, `CreateProcessW`, `TerminateJobObject`, `GetExitCodeProcess`, `CloseHandle`, `GetCommandLineW`, `GetStdHandle`, `WriteFile`, `ExitProcess` and the CRT start-up);
+  - it must import no `ws2_32`, `winhttp`, `wininet`, `shell32` or `advapi32`.
+  - A failing check fails the build.
+- **Memory safety:**
+  - the command-line parser and quoter are one pure function pair, fuzzed in CI (round trip, against `CommandLineToArgvW` and a reference MSVCRT parser) under `/fsanitize=address`;
+  - the release build keeps `/guard:cf`, `/DYNAMICBASE` and `/HIGHENTROPYVA`.
 
-**Spike first (one day, before the slice).** Settle the three [U] items on the runner:
-1. Do libuv's global job limits include silent breakaway (option C)?
-2. Can pipe handles be handed back to Node as fds (§3)?
-3. Does an exec in a nested job work when the pty process itself is in Electron's or libuv's job?
+## 6. Test plan
 
-**Acceptance tests (on Windows, against the real addon):**
+**Runner.** A `windows-2025` GitHub-hosted job in `ci.yml` for the pty-process package and the helper, run on pull requests that touch either; hosted Windows minutes cost more for a private repository. Until it exists, every Windows claim stays [U] and the Windows path stays `unsupported_platform`.
+
+**Spike first (one day):**
+1. `JOB_LIST` when the helper itself is in libuv's or Electron's job (nesting).
+2. libuv's stdio handles passed through `HANDLE_LIST`.
+3. `TerminateProcess` of the helper ending a tree that ignores Ctrl+C and Ctrl+Break.
+4. The completion-port message order (`EXIT_PROCESS` for git before `ACTIVE_PROCESS_ZERO`).
+
+**Acceptance (on Windows, real helper, real `git.exe` where it matters):**
 - **Tree kill:**
-  - a leader starts a child that starts a grandchild, each ignoring Ctrl+C and Ctrl+Break;
-  - `kill()` ends all three, which the job's process list confirms empty and `OpenProcess` on each pid confirms.
-- **No escape:**
-  - a child started with `CREATE_BREAKAWAY_FROM_JOB` fails to start, or stays in the job;
-  - a `DETACHED_PROCESS` child and a `CREATE_NEW_PROCESS_GROUP` child are both ended by `kill()`.
-- **Crash:** the pty process is killed with `TerminateProcess`; every run's processes end (`KILL_ON_JOB_CLOSE`).
-- **Settle order:** `done` settles only after `ACTIVE_PROCESS_ZERO` and both pipes closed. A late writer outside the leader but inside the job is read to the end, then killed.
-- **Same assertions as POSIX:**
-  - the PV-X1a `exec-node.test.ts` cases (exact program, env exactly as given with a prototype canary, caps per stream, start-failure codes, stdin ended);
-  - plus hostile command-line arguments round-tripped through a real `git.exe` (`git rev-parse --sq-quote`).
-- **Refusals:** a `.cmd` or `.bat` program, a relative program, and an unsupported Windows version (no `JOB_LIST` attribute and no suspended path) all answer before anything starts.
-- **End to end:** the PV-X1a child-process push test on Windows, with git through the addon.
+  - a leader, child and grandchild, each ignoring Ctrl+C and Ctrl+Break, are all gone after `kill()` (`OpenProcess` fails for each);
+  - a `DETACHED_PROCESS` child and a `CREATE_NEW_PROCESS_GROUP` child are gone too;
+  - a `CREATE_BREAKAWAY_FROM_JOB` child fails to start.
+- **Order (SF-3):**
+  - a member still writing when git exits is ended at that exit; the bytes it wrote before are read, and `done` settles after both pipes close;
+  - the outcome is git's code with `signal: null`, and after `kill()` it is `code: null, signal: "SIGKILL"`.
+- **Handles (SF-4):** two concurrent runs, the first ends while the second keeps running. The first `done` settles promptly (its EOF arrives) and the second is unaffected. Mutant: inherit all handles (the first hangs until its timeout).
+- **Program and command line (SF-5):**
+  - the positive check refuses `x.bat.`, `x.BAT`, an 8.3 name, `x.exe:s`, UNC, `\\?\` and a relative path;
+  - hostile arguments round-trip through `git rev-parse --sq-quote` (quotes, backslashes before quotes, `%`, `^`, trailing backslash, empty);
+  - a NUL and a 32,768-unit command line are refused;
+  - `Path` with `PATH` is `start_failed`.
+- **Crash:** `TerminateProcess` on the pty process ends every run's tree (each helper is in libuv's job with `KILL_ON_JOB_CLOSE`, and each git is in its helper's job) [U].
+- **Reused PV-X1a cases:** exact program, environment exactly as given with a prototype canary, caps per stream, start-failure codes through the marker, stdin ended.
+- **End to end:** the PV-X1a child-process push test on Windows.
+- **Mutants:** breakaway allowed; no `KILL_ON_JOB_CLOSE`; terminate after the pipes instead of at git's exit; `lpApplicationName` NULL; the denylist instead of the positive check; no `HANDLE_LIST`; the marker not required for the reserved codes.
 
-**Mutants:** breakaway allowed; no `KILL_ON_JOB_CLOSE`; assign after resume (option D); settle on the leader's exit; `terminate` of the leader only; `cmd.exe` quoting.
+## 7. Terminals (not in this ticket)
 
-## 6. Terminals (not in this ticket)
+CLI terminals on Windows need the same property for the node-pty spawn (`ChildGroup { kind: "job" }` exists for it). The options are:
+- patch node-pty to pass `JOB_LIST`, a Code OSS native patch with no escape window;
+- adopt after spawn (D), with a documented window;
+- run the shell under this helper inside the pseudoconsole [U: ConPTY attaches the console through an attribute the helper would have to pass on].
 
-CLI terminals on Windows need the same property for the node-pty spawn (`ChildGroup { kind: "job" }` already exists for it). Two ways:
-- **F**, patch node-pty to pass `PROC_THREAD_ATTRIBUTE_JOB_LIST` (no window, but a Code OSS native patch);
-- **D**, adopt after spawn with this addon's job primitive (no patch, but a documented escape window).
+The ticket that brings Windows terminals decides this, and should reuse the helper where it can.
 
-That choice belongs to the ticket that brings Windows terminals, and the owner decides it. It should reuse this addon's job code either way.
+## 8. Open questions
 
-## 7. Open questions
-
-1. The three [U] items of the spike (§5).
-2. Whether the first Windows build ships before PV-X1w. If it does, §4 is the user-facing behaviour, and the release notes say so.
-3. The minimum Windows version. `PROC_THREAD_ATTRIBUTE_JOB_LIST` needs Windows 10 or Server 2016. The suspended, assign, resume path covers older versions at the cost of one more failure mode. Recommendation: Windows 10 and later only.
+1. The four spike items (§6).
+2. The daemon runner's Windows policy before slice 2: the stated kill gap, or refuse daemon-context git (§4). Owner's decision.
+3. Who holds the Authenticode key, and how main verifies the signature (§5).
+4. The minimum Windows version: Windows 10 or Server 2016 (`JOB_LIST`), recommended. Older versions are refused rather than given the suspend-and-assign path.
+5. The exit-code and signal mapping (§3) is fixed here; confirm that callers never relied on a Windows-specific code.
