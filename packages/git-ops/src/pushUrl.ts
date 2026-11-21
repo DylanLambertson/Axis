@@ -12,8 +12,10 @@ export function protocolAllowList(): string[] {
 
 /** Throws E_POLICY_DENIED for a push URL that uses a remote helper, an unlisted transport or embedded credentials. */
 export function assertPushUrl(url: string): void {
-  if (/^[A-Za-z][A-Za-z0-9+.-]*::/.test(url)) throw denied("the remote uses a transport that Axis does not push to");
-  const scheme = /^([A-Za-z][A-Za-z0-9+.-]*):\/\//.exec(url)?.[1]?.toLowerCase();
+  // git's helper grammar (as the pty process checks it): any `<name>::` with a letter- or digit-led name is a helper.
+  if (/^[A-Za-z0-9][A-Za-z0-9+.-]*::/.test(url)) throw denied("the remote uses a transport that Axis does not push to");
+  // git compares the scheme case-sensitively, so `HTTPS://` is not https to git: refuse it rather than approve what fails later.
+  const scheme = /^([A-Za-z0-9][A-Za-z0-9+.-]*):\/\//.exec(url)?.[1];
   if (scheme !== undefined && !(PUSH_PROTOCOLS as readonly string[]).includes(scheme)) {
     throw denied(`the remote uses the ${scheme.slice(0, 20)} transport, which Axis does not push to`);
   }

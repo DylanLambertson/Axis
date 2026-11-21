@@ -160,6 +160,11 @@ export interface GitOperationsDeps {
    * resolver that throws or answers badly refuses the scan base.
    */
   readonly resolveSshHost?: SshHostResolver;
+  /**
+   * The pty git context cannot run `pre-push` yet (the pty process's push, H9-hooks S4 part 1). With `runHooks` on, `pushPlan`
+   * and `push` are then refused `E_UNAVAILABLE` before anything runs, so no challenge is issued for a push that cannot happen.
+   */
+  readonly pushHooksUnavailable?: boolean;
 }
 
 const SSH_ENV = /^(?:GIT_SSH|GIT_SSH_COMMAND)$/i;
@@ -201,7 +206,12 @@ export function createGitOperations(deps: GitOperationsDeps): GitOperations {
     baseSha: call.baseSha,
     ...(call.allowedBinaryPaths === undefined ? {} : { allowedBinaryPaths: call.allowedBinaryPaths }),
     ...(call.allowedBinaryIds === undefined ? {} : { allowedBinaryIds: call.allowedBinaryIds }),
+    ...(call.destination === undefined ? {} : { destination: call.destination }),
   });
+  // `runHooks` on over a pty process that cannot run `pre-push`: refused before the scan and the challenge (H-5: never pushed without it).
+  const hooksGate = (): void => {
+    if (deps.pushHooksUnavailable === true && deps.git.runHooks) throw new GitRefusal("E_UNAVAILABLE", "hooks_unavailable");
+  };
   return {
     scanMode,
     pushTarget: (call) =>
@@ -224,6 +234,7 @@ export function createGitOperations(deps: GitOperationsDeps): GitOperations {
       }),
     planPush: (call) =>
       guarded(async () => {
+        hooksGate();
         // `reportBlocked`: a scan that blocks the push comes back as `blocked` (with the binary paths), not as a bare refusal.
         const plan = await planPush(forWorkspace(call.workspaceId), { ...pushInput(call), reportBlocked: true });
         return {
@@ -242,8 +253,8 @@ export function createGitOperations(deps: GitOperationsDeps): GitOperations {
       }),
     // `confirmed: true` is what the spent tier 4 approval says: the user confirmed the challenge of THIS plan. The plan the
     // approval covered is passed back, so a push whose tip or findings changed since is `plan_changed`.
-    executePush: (call, confirmed) =>
-      guarded(() => executePush(forWorkspace(call.workspaceId), pushInput(call), { confirmed: true, confirmedPlan: { tip: confirmed.tip, digest: confirmed.digest } })),
+    executePush: (call, confirmed, signal) =>
+      guarded(() => (hooksGate(), executePush(forWorkspace(call.workspaceId), pushInput(call), { confirmed: true, confirmedPlan: { tip: confirmed.tip, digest: confirmed.digest }, ...(signal === undefined ? {} : { signal }) }))),
     executeCommit: (call, input) => guarded(() => executeCommit(forWorkspace(call.workspaceId, call.assertFresh), input)),
     compareUrl: (call) =>
       guarded(async () => {

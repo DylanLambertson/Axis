@@ -5,6 +5,7 @@ import { AUDIT_CONTRACT, AUDIT_VERSION, auditMethods } from "./audit.js";
 import { CLI_RUNS_CONTRACT, CLI_RUNS_VERSION, cliRunsMethods } from "./cliRuns.js";
 import { COMPOSER_RUNS_CONTRACT, COMPOSER_RUNS_VERSION, composerRunsMethods } from "./composer-runs.js";
 import { EVENTS_CONTRACT, EVENTS_VERSION, eventsMethods } from "./events.js";
+import { FORGE_CONTRACT, FORGE_VERSION, forgeMethods } from "./forge.js";
 import { GIT_CONTRACT, GIT_VERSION, gitMethods } from "./git.js";
 import { MESSAGES_CONTRACT, MESSAGES_VERSION, messagesMethods } from "./messages.js";
 import { MAX_TIMEOUT_MS, methodNameSchema } from "./envelope.js";
@@ -41,9 +42,12 @@ export const contracts: Table = Object.freeze({
  * Contracts whose schemas are agreed but that no host serves yet. `lookupMethod` never sees them, so no client can call one
  * and no daemon can serve one; the daemon-host coverage check holds a planned policy row for each of their methods, at the
  * same tier. A contract moves to `contracts` in the change that registers its handlers, its rows moving with it
- * (`axis.messages/1` moved with ticket PV-M3). A key is never in both tables. Empty while nothing is planned.
+ * (`axis.messages/1` moved with ticket PV-M3). A key is never in both tables. `axis.forge/1` (PV-D2) is planned until its
+ * slice 2 wires the pty process's `forge-list` and serves it.
  */
-export const plannedContracts: Table = Object.freeze({});
+export const plannedContracts: Table = Object.freeze({
+  [`${FORGE_CONTRACT}/${FORGE_VERSION}`]: frozen(forgeMethods),
+});
 
 const SIDE_EFFECTS: ReadonlySet<unknown> = new Set(["none", "read", "write", "network", "destructive", "credential"]);
 const IDEMPOTENCY: ReadonlySet<unknown> = new Set(["none", "optional", "required"]);

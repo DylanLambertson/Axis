@@ -29,7 +29,10 @@ export function probeGroup(ops: ProcessOps, pgid: number): GroupState {
   }
 }
 
-/** Signals the whole group, only while the group answers the probe (a reused pgid of a finished group is never hit blind). ESRCH is success. */
+/**
+ * Signals the whole group if a group with this id exists (the probe skips one that does not). The probe cannot tell a group from a
+ * newer one that took the id after the first emptied; callers stop signalling once it answers "gone". ESRCH is success.
+ */
 export function signalGroup(ops: ProcessOps, pgid: number, signal: PtySignal): GroupState {
   if (probeGroup(ops, pgid) === "gone") return "gone";
   try {

@@ -1,13 +1,16 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { randomBytes } from "node:crypto";
 import { classifyDeniedName, isValidName } from "@axis/pty-policy";
+import type { ForgeReply } from "@axis/protocol";
+import { createForgeList, forgeRequestId, type ForgeList, type ForgeListConfig } from "./forge-list.js";
 import { createGitExec, type GitExec, type GitExecConfig } from "./git-exec.js";
 import { controlRequest, dataRequest, type ControlReply, type ControlRequest, type DataReply, type ExecReply } from "./messages.js";
 import { DEFAULT_FLOW, OutputFlow, type FlowLimits } from "./flow.js";
 import { probeGroup, signalGroup, validPgid } from "./group.js";
 import { OscCwdFilter } from "./osc.js";
+import { preparePush, vetPushRemote } from "./push-run.js";
 import { hasNul, isAbsolutePath } from "./paths.js";
-import { systemClock, systemProcessOps, type Channel, type Clock, type Disposable, type ProcessOps, type PtyChild, type PtySignal, type SpawnFn } from "./ports.js";
+import { systemClock, systemProcessOps, type Channel, type Clock, type Disposable, type ExecChild, type ProcessOps, type PtyChild, type PtySignal, type SpawnFn } from "./ports.js";
 
 export interface PtyServiceOptions {
   /** Starts a child in its own session or job. In the shipped entry this is the native pty binding. */
@@ -21,6 +24,8 @@ export interface PtyServiceOptions {
   readonly platform?: NodeJS.Platform;
   /** `exec`, `scratch-*` and `hook` (H9-hooks). Absent: every such message is refused. */
   readonly git?: GitExecConfig;
+  /** `forge-list` (PV-D2): `gh` through its own exec function. Absent: every `forge-list` answers `spawn_missing`. */
+  readonly forge?: ForgeListConfig;
   /** Times each exec. Default: the system clock. */
   readonly clock?: Clock;
   /** Output flow-control bounds per terminal (characters in flight to the viewer). Default 1 MiB pause, 256 KiB resume, 4 MiB drop. */
@@ -81,9 +86,11 @@ export function createPtyService(options: PtyServiceOptions): PtyService {
   let control: Channel | undefined;
   let disposed = false;
   // Replies go to whichever control channel is open when the work finishes; after a close they are dropped.
-  const git: GitExec | undefined = options.git === undefined ? undefined : createGitExec(options.git, options.clock ?? systemClock, platform, (m) => void sendTo(control, m));
+  const clock = options.clock ?? systemClock;
+  const git: GitExec | undefined = options.git === undefined ? undefined : createGitExec(options.git, clock, platform, (m) => void sendTo(control, m));
+  const forge: ForgeList | undefined = options.forge === undefined ? undefined : createForgeList(options.forge, clock, platform, (m) => void sendTo(control, m));
 
-  const sendTo = (ch: Channel | undefined, msg: ControlReply | DataReply | ExecReply): boolean => {
+  const sendTo = (ch: Channel | undefined, msg: ControlReply | DataReply | ExecReply | ForgeReply): boolean => {
     if (ch === undefined) return false;
     try {
       ch.send(msg);
@@ -197,6 +204,42 @@ export function createPtyService(options: PtyServiceOptions): PtyService {
     startTerminal(m.req, p.argv, p.cwd, p.env, m.cols, m.rows);
   };
 
+  /** Remote checks running for a push (each starts two git reads); past the bound a push is refused `capacity`. */
+  let vetting = 0;
+  const vetChildren = new Set<ExecChild>();
+  const killVets = (): void => {
+    for (const c of [...vetChildren]) {
+      try {
+        c.kill();
+      } catch {
+        /* gone */
+      }
+    }
+    vetChildren.clear();
+  };
+  /**
+   * H9-hooks S4: a push is a terminal like any other, but its argv, pins and environment come from the service (§5.2), and the
+   * service checks the remote itself first (`vetPushRemote`: no `remote.<r>.vcs` helper, no helper URL). A control channel that
+   * closed (or a service disposed) while the check ran starts nothing and gets no reply.
+   */
+  const handlePush = (m: Extract<ControlRequest, { t: "push" }>): void => {
+    if (disposed || options.git === undefined) return refuseSpawn(m.req, "spawn_failed");
+    const cfg = options.git;
+    const p = preparePush(m, cfg, platform);
+    if ("code" in p) return refuseSpawn(m.req, p.code);
+    if (vetting >= 4) return refuseSpawn(m.req, "capacity");
+    vetting++;
+    const ch = control;
+    void vetPushRemote(cfg, clock, m.repo, m.remote, m.pushUrls, p.readEnv, vetChildren)
+      .catch(() => "spawn_failed" as const)
+      .then((verdict) => {
+        vetting--;
+        if (disposed || control === undefined || control !== ch) return;
+        if (verdict !== true) return refuseSpawn(m.req, verdict);
+        startTerminal(m.req, p.argv, p.cwd, p.env, m.cols, m.rows);
+      });
+  };
+
   const startTerminal = (req: string, argv: readonly string[], cwd: string, env: Readonly<Record<string, string>>, cols: number, rows: number): void => {
     reap();
     if (terminals.size >= max) return refuseSpawn(req, "capacity");
@@ -259,6 +302,12 @@ export function createPtyService(options: PtyServiceOptions): PtyService {
 
   const onControl = (channel: Channel, raw: unknown): void => {
     if (control !== channel) return; // closed: a message that was already queued must not start anything
+    // PV-D2: `forge-list` has its own shared schema (@axis/protocol) and reply family; it never reaches the union below.
+    if (typeof raw === "object" && raw !== null && (raw as { t?: unknown }).t === "forge-list") {
+      if (forge !== undefined && !disposed) return forge.handle(raw);
+      const req = forgeRequestId(raw); // no usable req: nothing to answer
+      return void (req === undefined || sendTo(control, { t: "forge-failed", req, code: "spawn_missing" }));
+    }
     const parsed = controlRequest.safeParse(raw);
     if (!parsed.success) {
       const req = typeof raw === "object" && raw !== null && typeof (raw as { req?: unknown }).req === "string" ? (raw as { req: string }).req : undefined;
@@ -267,11 +316,14 @@ export function createPtyService(options: PtyServiceOptions): PtyService {
       const t = (raw as { t?: unknown }).t;
       if (t === "exec") return void sendTo(control, { t: "exec-failed", req, code: "bad_argv" });
       if (t === "scratch-begin" || t === "scratch-verify" || t === "scratch-end") return void sendTo(control, { t: "scratch-failed", req, code: "bad_bind" });
+      // A push whose remote or refspec is not the closed form (a force, another ref, an option) is refused as a bad argv.
+      if (t === "push") return refuseSpawn(req, "bad_argv");
       return refuseSpawn(req, "spawn_failed");
     }
     const m = parsed.data;
     if (m.t === "spawn") return handleSpawn(m);
     if (m.t === "hook") return handleHook(m);
+    if (m.t === "push") return handlePush(m);
     if (m.t === "exec" || m.t === "scratch-begin" || m.t === "scratch-verify" || m.t === "scratch-end") {
       if (disposed || git === undefined) {
         if (m.t === "exec") return void sendTo(control, { t: "exec-failed", req: m.req, code: "spawn_failed" });
@@ -360,6 +412,8 @@ export function createPtyService(options: PtyServiceOptions): PtyService {
       // every exec and every scratch attempt.
       for (const t of [...terminals.values()]) discard(t);
       git?.closeAll();
+      forge?.closeAll();
+      killVets();
     }
   };
 
@@ -400,6 +454,8 @@ export function createPtyService(options: PtyServiceOptions): PtyService {
       for (const t of terminals.values()) killTerminal(t, "SIGKILL");
       for (const t of terminals.values()) t.subs.forEach((d) => d.dispose());
       git?.closeAll();
+      forge?.closeAll();
+      killVets();
       terminals.clear();
       for (const subs of channelSubs.values()) subs.forEach((d) => d.dispose());
       channelSubs.clear();
