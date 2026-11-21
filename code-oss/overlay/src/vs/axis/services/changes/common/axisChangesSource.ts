@@ -12,6 +12,8 @@ import { IAxisChanges, readChanges } from './axisChanges.js';
 
 /**
  * `idle`: no worktree. `notMounted`: the worktree is not in the window's folders.
+ * `unconfirmed`: the repository's state is empty and Git has not confirmed a status for it
+ * (the refresh failed or timed out), so the list cannot say there are no changes.
  * `askFirst`: the user has closed repositories in the git extension, or it is not known yet
  * whether they have (the git extension has not set its key), so this one may be one of them;
  * it is opened only when the user asks (`refresh`), or once the key says none is closed
@@ -20,7 +22,7 @@ import { IAxisChanges, readChanges } from './axisChanges.js';
  * repository rooted at it (off, untrusted, still starting). `ready`: `changes` is the
  * repository's state.
  */
-export type AxisChangesStatus = 'idle' | 'notMounted' | 'askFirst' | 'loading' | 'unavailable' | 'ready';
+export type AxisChangesStatus = 'idle' | 'notMounted' | 'askFirst' | 'loading' | 'unavailable' | 'unconfirmed' | 'ready';
 
 /** What a folder's `.git` entry is, as far as the source needs to know. */
 export type AxisGitEntry = 'file' | 'directory' | 'none';
@@ -62,15 +64,24 @@ export async function isRepositoryRoot(root: URI, entry: (uri: URI) => Promise<A
 }
 
 /**
- * How long a repository's first state may look empty before the list believes it. The state
- * `IGitService` hands over when a repository is opened can come before the git extension's first
- * status, and `GitRepositoryState` cannot tell "not scanned yet" from "clean": an empty first
- * state shows "Reading…" until the next state event or this grace, never "No changes" at once.
+ * The git extension's own Refresh command (the SCM view's refresh button): it runs that
+ * repository's `git status` and resolves when the status is done, after the new state has
+ * reached `IGitService`. It is the only "status has run" signal the workbench offers: the state
+ * `IGitService` hands over when a repository opens can come before the first status (the git
+ * extension sets `HEAD` before it reads the status), and `GitRepositoryState` cannot tell "not
+ * scanned yet" from "clean". It is called only with the root of a repository the source
+ * follows, so the command never asks the user to pick one.
  */
-export const FIRST_STATUS_GRACE_MS = 3000;
+export const GIT_REFRESH_COMMAND = 'git.refresh';
+
+/** How long a confirming refresh may take before the list says Git has not reported yet (never "No changes"). */
+export const STATUS_TIMEOUT_MS = 15_000;
 
 /** Runs `run` once after `ms` milliseconds unless disposed first (`disposableTimeout` in the view; a manual timer in tests). */
 export type AxisTimer = (run: () => void, ms: number) => IDisposable;
+
+/** Asks the git extension to run a status for a root; resolves true when it did (`GIT_REFRESH_COMMAND`). */
+export type AxisStatusConfirmer = (root: URI) => Promise<boolean>;
 
 /** What the source needs from `IGitService`: it only reads. */
 export type IAxisGitReader = Pick<IGitService, 'openRepository' | 'repositories'>;
@@ -111,6 +122,8 @@ export class AxisChangesSource extends Disposable {
 	private readonly listener = this._register(new MutableDisposable());
 	private readonly tried = new Set<string>();
 	private followed: IGitRepository | undefined;
+	/** Repositories whose state is known to come from a status run: their empty state is believed at once. */
+	private readonly scanned = new WeakSet<IGitRepository>();
 	private generation = 0;
 	private _root: URI | undefined;
 	private _status: AxisChangesStatus = 'idle';
@@ -122,7 +135,8 @@ export class AxisChangesSource extends Disposable {
 	 * @param isRoot whether a folder is a repository root (`isRepositoryRoot`).
 	 * @param closedRepositories whether the user has closed repositories in the git extension,
 	 * `undefined` while that is not known (`hasClosedRepositories`).
-	 * @param timer schedules the first-status grace (`FIRST_STATUS_GRACE_MS`).
+	 * @param timer schedules the status timeout (`STATUS_TIMEOUT_MS`).
+	 * @param confirmStatus runs a status for a root through the git extension (`GIT_REFRESH_COMMAND`).
 	 */
 	constructor(
 		private readonly git: IAxisGitReader,
@@ -130,6 +144,7 @@ export class AxisChangesSource extends Disposable {
 		private readonly isRoot: (root: URI) => Promise<boolean>,
 		private readonly closedRepositories: () => boolean | undefined,
 		private readonly timer: AxisTimer,
+		private readonly confirmStatus: AxisStatusConfirmer,
 	) {
 		super();
 	}
@@ -173,7 +188,7 @@ export class AxisChangesSource extends Disposable {
 		}
 		const known = this.find(root);
 		if (known) {
-			this.follow(known, root, generation);
+			this.follow(known, root);
 			return;
 		}
 		const key = roots.getComparisonKey(root);
@@ -202,7 +217,7 @@ export class AxisChangesSource extends Disposable {
 			this.set('unavailable', NO_CHANGES);
 			return;
 		}
-		this.follow(repository, root, generation);
+		this.follow(repository, root);
 	}
 
 	private find(root: URI): IGitRepository | undefined {
@@ -219,30 +234,54 @@ export class AxisChangesSource extends Disposable {
 		return this.followed !== undefined && !Array.from(this.git.repositories).includes(this.followed);
 	}
 
-	private follow(repository: IGitRepository, root: URI, generation: number): void {
+	/**
+	 * Follows a repository's state. A state with changes, or any state event after the first,
+	 * comes from a status run. An empty first state of a repository not known to be scanned is
+	 * confirmed first (`confirm`): until then the list reads, and it says "No changes" only once
+	 * Git has run a status.
+	 */
+	private follow(repository: IGitRepository, root: URI): void {
 		this.followed = repository;
 		const store = new DisposableStore();
-		const grace = store.add(new MutableDisposable());
 		let first = true;
 		store.add(autorun(reader => {
 			const changes = readChanges(repository.state.read(reader), root);
-			const looksEmpty = changes.total === 0 && changes.outside === 0;
-			if (first && looksEmpty) {
-				// Maybe not scanned yet: wait for the next state event, or the grace, before saying "No changes".
+			if (first) {
 				first = false;
-				this.set('loading', changes);
-				grace.value = this.timer(() => {
-					if (generation === this.generation) { // a timer that outlives its worktree does nothing
-						this.set('ready', readChanges(repository.state.get(), root));
-					}
-				}, FIRST_STATUS_GRACE_MS);
-				return;
+				if (!this.scanned.has(repository) && changes.total === 0 && changes.outside === 0) {
+					this.set('loading', changes);
+					this.confirm(repository, root, store);
+					return;
+				}
 			}
-			first = false;
-			grace.clear();
+			this.scanned.add(repository);
 			this.set('ready', changes);
 		}));
 		this.listener.value = store;
+	}
+
+	/**
+	 * Runs one status for the root and believes the state after it. A failure or timeout is
+	 * `unconfirmed` (never "No changes"); a Refresh that still answers later settles it then.
+	 * Leaving the worktree disposes `store`, so a late answer for it does nothing.
+	 */
+	private confirm(repository: IGitRepository, root: URI, store: DisposableStore): void {
+		const settle = (ran: boolean) => {
+			if (store.isDisposed) {
+				return;
+			}
+			timeout.dispose();
+			if (ran) {
+				this.scanned.add(repository);
+				if (this._status === 'loading' || this._status === 'unconfirmed') { // a state event may already have shown the changes
+					this.set('ready', readChanges(repository.state.get(), root));
+				}
+			} else if (this._status === 'loading') {
+				this.set('unconfirmed', NO_CHANGES);
+			}
+		};
+		const timeout = store.add(this.timer(() => settle(false), STATUS_TIMEOUT_MS));
+		this.confirmStatus(root).then(settle, () => settle(false));
 	}
 
 	private set(status: AxisChangesStatus, changes: IAxisChanges): void {

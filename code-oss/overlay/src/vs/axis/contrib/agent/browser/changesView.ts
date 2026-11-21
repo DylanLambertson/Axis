@@ -9,12 +9,13 @@ import { KeyCode } from '../../../../base/common/keyCodes.js';
 import { Disposable, DisposableMap, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
+import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IGitService } from '../../../../workbench/contrib/git/common/gitService.js';
 import { AxisChangeGroupId, changeGroupLabel, changeKindGlyph, changeKindLabel, changeRowLabel, changesSummary, diffTargetOf, flatRows, focusAfterUpdate, IAxisChangeRow, MAX_CHANGE_ROWS, nextActiveIndex, reviewAllTargetOf } from '../../../services/changes/common/axisChanges.js';
-import { AxisChangesSource, CLOSED_REPOSITORIES_KEY, gitEntryOf, hasClosedRepositories, isRepositoryRoot } from '../../../services/changes/common/axisChangesSource.js';
+import { AxisChangesSource, CLOSED_REPOSITORIES_KEY, GIT_REFRESH_COMMAND, gitEntryOf, hasClosedRepositories, isRepositoryRoot } from '../../../services/changes/common/axisChangesSource.js';
 import { placeInOrder } from '../../../services/changes/common/axisOrderedChildren.js';
 import { IAxisViewService } from '../../../services/view/browser/axisViewService.js';
 
@@ -75,6 +76,7 @@ export class AxisChangesView extends Disposable {
 		@IGitService gitService: IGitService,
 		@IFileService fileService: IFileService,
 		@IContextKeyService contextKeyService: IContextKeyService,
+		@ICommandService commandService: ICommandService,
 		@IWorkspaceContextService contextService: IWorkspaceContextService,
 		@IAxisViewService private readonly viewService: IAxisViewService,
 	) {
@@ -85,6 +87,7 @@ export class AxisChangesView extends Disposable {
 			root => isRepositoryRoot(root, uri => fileService.stat(uri).then(gitEntryOf, () => gitEntryOf(undefined))),
 			() => hasClosedRepositories(contextKeyService.getContextKeyValue(CLOSED_REPOSITORIES_KEY)),
 			(run, ms) => disposableTimeout(run, ms),
+			root => commandService.executeCommand(GIT_REFRESH_COMMAND, root).then(() => true, () => false),
 		));
 		const closedKey = new Set([CLOSED_REPOSITORIES_KEY]);
 		this._register(contextKeyService.onDidChangeContext(e => {
@@ -110,6 +113,9 @@ export class AxisChangesView extends Disposable {
 		this.list.tabIndex = -1;
 		this._register(addDisposableListener(this.list, EventType.KEY_DOWN, e => this.onKeyDown(new StandardKeyboardEvent(e))));
 		this.note = append(this.element, $('p.axis-note.axis-changes-note'));
+		// One polite status region: loading, unavailable, "No changes" and the other notes are announced once each.
+		this.note.setAttribute('role', 'status');
+		this.note.setAttribute('aria-live', 'polite');
 		this.retry = append(this.element, $<HTMLButtonElement>('button.axis-button.axis-changes-retry'));
 		this.retry.type = 'button';
 		this._register(addDisposableListener(this.retry, EventType.CLICK, () => this.source.refresh()));
@@ -134,9 +140,15 @@ export class AxisChangesView extends Disposable {
 		const { status, changes } = this.source;
 		this.visible = flatRows(changes);
 		this.reviewAll.disabled = this.visible.length === 0;
-		this.summary.textContent = status === 'ready' ? changesSummary(changes) : '';
-		this.note.textContent = this.noteText();
-		this.retry.hidden = status !== 'unavailable' && status !== 'askFirst';
+		const summary = status === 'ready' && changes.total > 0 ? changesSummary(changes) : '';
+		if (this.summary.textContent !== summary) {
+			this.summary.textContent = summary;
+		}
+		const note = this.noteText();
+		if (this.note.textContent !== note) { // written only when it changes: no repeated announcement per git update
+			this.note.textContent = note;
+		}
+		this.retry.hidden = status !== 'unavailable' && status !== 'askFirst' && status !== 'unconfirmed';
 		this.retry.textContent = status === 'askFirst' ? localize('axis.changes.show', "Show changes") : localize('axis.changes.retry', "Try again");
 
 		// Keyed, in-place update: a listed file keeps its element and its place when it can.
@@ -254,8 +266,12 @@ export class AxisChangesView extends Disposable {
 				? localize('axis.changes.waitingForGit', "Waiting for Git to start. Show changes opens this worktree's repository in Git now, and it stays open there, even if you closed it before.")
 				: localize('axis.changes.askFirst', "Repositories have been closed in Git in this window. Show changes opens this worktree's repository in Git, and it stays open there, even if you closed it before.");
 			case 'notMounted': return localize('axis.changes.notMounted', "Changes show for the folder this window has open. Open this worktree's folder in the window to see its changes.");
+			case 'unconfirmed': return localize('axis.changes.unconfirmed', "Git has not reported this worktree's changes yet.");
 			case 'unavailable': return localize('axis.changes.unavailable', "Git has no repository for this worktree. The folder may not be a Git worktree, the git extension may be off or the folder untrusted, or Git may still be starting.");
 			case 'ready': {
+				if (!changes.total && !changes.outside) {
+					return changesSummary(changes); // "No changes in this worktree.", said only after Git has run a status
+				}
 				const notes: string[] = [];
 				const cut = changes.groups.reduce((sum, group) => sum + group.total - group.rows.length, 0);
 				if (cut) {
