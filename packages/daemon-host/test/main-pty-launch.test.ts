@@ -221,4 +221,3 @@ test("createPtySpawn filters the forked process's PATH against the excluded root
   spawn();
   assert.equal(envs[0]!.PATH, "/usr/bin:/bin", "the worktree entry and the relative entry never reach the pty process");
 });
-
