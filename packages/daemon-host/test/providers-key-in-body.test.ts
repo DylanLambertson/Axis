@@ -37,7 +37,9 @@ async function rig() {
 }
 
 test("a key rotated in the keyring and held in the request is refused at the send: the body that would carry it never reaches fetch", async () => {
-  const rotated = unknownKey("rotated");
+  // `>` and `?` put sextets 62 and 63 in its base64 at every offset, so base64url (with `-` and `_`) differs from base64
+  // where it matters (review c7-f4 r3).
+  const rotated = unknownKey(">?>?rotated");
   // Each form on its own binding: after a refusal the rotated key is registered, and the guard's own scan would find the next.
   // base64 and base64url at byte offsets 0, 1 and 2 of a longer run (review c7-f4 r1 SF), with bytes after it too.
   const at = (inner: string, o: number, enc: "base64" | "base64url"): string => Buffer.concat([Buffer.alloc(o, 0x78), Buffer.from(inner), Buffer.from("tail")]).toString(enc);
@@ -77,7 +79,14 @@ test("holdsKey finds every form the redactor registers, also as it appears insid
 
 test("holdsKey finds the key in base64 and base64url at every byte offset, with any bytes around it, also inside JSON", () => {
   // Key lengths of every remainder modulo 3, so the key's own last group is whole, one byte short and two bytes short.
-  for (const key of ["holdout~offset~credential~c7f4", "holdout~offset~credential~c7f4x", "holdout~offset~credential~c7f4xy"])
+  // Key lengths of every remainder modulo 3; the `>?` keys put `+` and `/` in every base64 middle, so their base64url middles
+  // (with `-` and `_`) differ from them (review c7-f4 r3: with only the first three, the base64url middles were never needed).
+  const differing = ["holdout~>?>?~credential~c7f4", "holdout~>?>?~credential~c7f4x", "holdout~>?>?~credential~c7f4xy"];
+  for (const key of differing) {
+    const m = base64Middles(key);
+    for (let i = 0; i < m.length; i += 2) assert.notEqual(m[i], m[i + 1], `${key}: the alphabets differ at offset ${i / 2}`);
+  }
+  for (const key of ["holdout~offset~credential~c7f4", "holdout~offset~credential~c7f4x", "holdout~offset~credential~c7f4xy", ...differing])
   for (let before = 0; before <= 5; before++) {
     for (let after = 0; after <= 4; after++) {
       for (const enc of ["base64", "base64url"] as const) {
@@ -112,4 +121,22 @@ test("holdsKey finds base64 one level over any registered form (the key's hex, i
   const twice = Buffer.from(Buffer.from(Buffer.from(key).toString("base64")).toString("base64")).toString("base64");
   assert.equal(r.redactString(`x ${twice} y`), `x ${twice} y`);
   assert.equal(holdsKey(`x ${twice} y`, key), false);
+});
+
+test("holdsKey finds base64url over every registered form, where the two alphabets differ (review c7-f4 r3)", () => {
+  let differing = 0;
+  for (const key of ["holdout~>?>?~credential~c7f4", "holdout~>?>?~credential~c7f4x", "holdout~>?>?~credential~c7f4xy"]) {
+    for (const form of secretForms(key)) {
+      const m = base64Middles(form);
+      for (let i = 0; i < m.length; i += 2) if (m[i] !== m[i + 1]) differing++;
+      for (let before = 0; before <= 3; before++) {
+        for (const enc of ["base64", "base64url"] as const) {
+          const run = Buffer.concat([Buffer.alloc(before, 0x41), Buffer.from(form), Buffer.alloc(2, 0x42)]).toString(enc);
+          assert.equal(holdsKey(`x ${run} y`, key), true, `${enc}(${form.slice(0, 12)}) at ${before}`);
+        }
+      }
+    }
+  }
+  // The URL-encoded form (`%3E%3F`) and the raw key give base64 middles with `+` and `/`: base64url is needed for those.
+  assert.ok(differing >= 12, `${differing} form middles where the alphabets differ`);
 });

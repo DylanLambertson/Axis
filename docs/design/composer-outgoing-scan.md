@@ -83,8 +83,9 @@ B. The key is never sent inside its own request body.
    and 2 without the partial groups at either end (`base64Middles`; reviews c7-f4 r1 and r2): base64 of the key, of its hex
    and of its own base64 are found. Not found, by the check and by the redactor alike: base64 nested two levels over a form
    (the redactor decodes once), a key split across two strings or across wrapped base64 lines (the base64 tool wraps at 76
-   columns), hex in mixed case, a key written with `\u00XX` escapes or with every character percent-encoded, base64 of the
-   key in another text encoding (UTF-16), a JSON escape nested deeper than once (only keys holding `"` or `\`; an
+   columns), base64 mixing both alphabets inside the key, base64 then percent-encoded, `/`
+   written as `\/`, hex in mixed case or with separators, a key written with `\u00XX` escapes or with every character
+   percent-encoded, base64 of the key in another text encoding (UTF-16), a JSON escape nested deeper than once (only keys holding `"` or `\`; an
    Anthropic key holds neither). Rationale: the invariant "the body never holds the key used to send it" is checked at the
    one point the key and the body meet, after the vault read.
 3. The refusal: `ProviderError("secret_in_request")`. Open question for review: `secret_in_request` is GUARD_ONLY (an adapter

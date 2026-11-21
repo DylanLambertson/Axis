@@ -191,8 +191,9 @@ export function base64Middles(text: string): string[] {
  * once and matches every form in it, so base64 of the key, of its hex and of its base64 are all found). Each also as it
  * appears inside a JSON string (a request body is JSON). Plain substring tests: one key, no redactor windows, cheap enough
  * for every request. Not found, as by the redactor: base64 nested two levels over a form (the redactor decodes once), a key
- * split across two strings or across wrapped base64 lines, hex in mixed case, `\u00XX` or full percent escapes, base64 of
- * the key in another text encoding (UTF-16).
+ * split across two strings or across wrapped base64 lines, base64 mixing both alphabets inside the key, base64 then
+ * percent-encoded, `/` written as `\/`, hex in mixed case or with separators, `\u00XX` or full percent escapes, base64 of the
+ * key in another text encoding (UTF-16).
  */
 export function holdsKey(text: string, key: string): boolean {
   const forms = secretForms(key);
