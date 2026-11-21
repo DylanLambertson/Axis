@@ -75,9 +75,9 @@ export function ptyEnvironment(source: Env, handover: { readonly gitPath?: strin
     const value = source[name];
     if (typeof value === "string") env[name] = value;
   }
-  for (const name of Object.keys(env)) {
-    if (name === "PATH" || (rule.platform === "win32" && name.toUpperCase() === "PATH")) env[name] = trustedPathValue(env[name] as string, rule);
-  }
+  // Only `PATH` passes the allow-list (POSIX spelling; Windows' `Path` is dropped there, and the pty process has no exec on Windows
+  // until PV-X1w).
+  if (env.PATH !== undefined) env.PATH = trustedPathValue(env.PATH, rule);
   if (handover.gitPath !== undefined) env[PTY_ENV_GIT] = handover.gitPath;
   if (handover.ghPath !== undefined) env[PTY_ENV_GH] = handover.ghPath;
   if (handover.scratch !== undefined) env[PTY_ENV_SCRATCH] = handover.scratch;
@@ -89,10 +89,10 @@ export function ptyScratchRoot(dataDir: string): string {
   return join(dirname(dataDir), PTY_SCRATCH_DIR);
 }
 
-/** True while a process with this pid exists (`process.kill(pid, 0)`; a process of another user counts as existing). */
-export function processAlive(pid: number): boolean {
+/** True while a process with this pid exists (`kill(pid, 0)`; a process of another user, EPERM, counts as existing). */
+export function processAlive(pid: number, kill: (pid: number, signal: 0) => unknown = (p, s) => process.kill(p, s)): boolean {
   try {
-    process.kill(pid, 0);
+    kill(pid, 0);
     return true;
   } catch (e) {
     return (e as { code?: unknown }).code === "EPERM";
@@ -113,7 +113,9 @@ export function preparePtyScratchRoot(root: string, ownPid: number = process.pid
     if ((st.mode & 0o777) !== 0o700) chmodSync(root, 0o700);
     for (const name of readdirSync(root)) {
       const owner = /^run-(\d+)-/.exec(name);
-      const pid = owner === null ? undefined : Number(owner[1]);
+      // pid 0 (the caller's own process group) and 1 (init) are never a main process: such a directory is stray.
+      const parsed = owner === null ? undefined : Number(owner[1]);
+      const pid = parsed !== undefined && Number.isSafeInteger(parsed) && parsed > 1 ? parsed : undefined;
       if (pid !== undefined && pid !== ownPid && alive(pid)) continue;
       rmSync(join(root, name), { recursive: true, force: true });
     }

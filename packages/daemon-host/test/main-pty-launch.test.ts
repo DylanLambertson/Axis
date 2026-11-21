@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { PTY_ENV_GH, PTY_ENV_GIT, PTY_ENV_SCRATCH, readPtyExecConfig } from "@axis/pty-process/config";
-import { checkedHandover, createPtySpawn, newPtyScratch, preparePtyScratchRoot, ptyEnvironment, ptyScratchRoot, removePtyScratch, resolvePtyPrograms, trustedPathValue, type PtyForkedChild, type PtyLaunchEvent } from "../src/main/pty-launch.js";
+import { checkedHandover, createPtySpawn, newPtyScratch, preparePtyScratchRoot, processAlive, ptyEnvironment, ptyScratchRoot, removePtyScratch, resolvePtyPrograms, trustedPathValue, type PtyForkedChild, type PtyLaunchEvent } from "../src/main/pty-launch.js";
 import { PtySupervisor } from "../src/main/pty-supervisor.js";
 import { DAEMON_ENV_ALLOW } from "../src/supervisor.js";
 
@@ -118,9 +118,9 @@ test("scratch root: a symlink in place of the root is refused and nothing in its
 test("scratch root: the sweep keeps the live run directories of another main process and removes the rest (NIT-5)", { skip: !posix }, (t) => {
   const box = sandbox(t);
   const root = join(box, "pty-scratch");
-  for (const name of ["run-100-live", "run-200-dead", "run-300-mine", "run-bad", "other"]) mkdirSync(join(root, name), { recursive: true });
-  assert.ok(preparePtyScratchRoot(root, 300, (pid) => pid === 100 || pid === 300));
-  assert.deepEqual(readdirSync(root).sort(), ["run-100-live"], "another instance's live scratch survives; dead, own (a reused pid) and stray entries go");
+  for (const name of ["run-100-live", "run-200-dead", "run-300-mine", "run-bad", "other", "run-0-x", "run-1-x", "run-99999999999999999999-x"]) mkdirSync(join(root, name), { recursive: true });
+  assert.ok(preparePtyScratchRoot(root, 300, (pid) => pid !== 200));
+  assert.deepEqual(readdirSync(root).sort(), ["run-100-live"], "another instance's live scratch survives; dead, own (a reused pid), pid 0, pid 1, an unsafe pid and stray entries go");
   const mine = newPtyScratch(root, 300)!;
   assert.match(mine.slice(root.length + 1), /^run-300-/);
 });
@@ -194,3 +194,31 @@ test("a fork that throws removes the scratch it made; without git no scratch is 
   win();
   assert.deepEqual(Object.keys(envs[1]!).filter((n) => n.startsWith("AXIS_")), [], "Windows: no hand-over names");
 });
+
+test("liveness: a process of another user (EPERM) is alive; no such process (ESRCH) is not", () => {
+  const throwing = (code: string) => () => {
+    throw Object.assign(new Error(code), { code });
+  };
+  assert.equal(processAlive(4242, throwing("EPERM")), true);
+  assert.equal(processAlive(4242, throwing("ESRCH")), false);
+  assert.equal(processAlive(4242, () => true), true);
+  assert.equal(processAlive(process.pid), true, "the default probes this very process");
+});
+
+test("createPtySpawn filters the forked process's PATH against the excluded roots it is given (SF-A)", { skip: !posix }, (t) => {
+  const box = sandbox(t);
+  const worktrees = join(box, "Axis", "worktrees");
+  mkdirSync(join(worktrees, "ws", "bin"), { recursive: true });
+  const envs: Record<string, string>[] = [];
+  const spawn = createPtySpawn({
+    platform: "linux",
+    shellEnv: { PATH: ["/usr/bin", join(worktrees, "ws", "bin"), ".", "/bin"].join(":") },
+    programs: {},
+    excludeDirs: [worktrees],
+    scratchRoot: undefined,
+    fork: (env) => (envs.push(env), { kill: () => undefined, postMessage: () => undefined, onExit: () => () => undefined }),
+  });
+  spawn();
+  assert.equal(envs[0]!.PATH, "/usr/bin:/bin", "the worktree entry and the relative entry never reach the pty process");
+});
+
