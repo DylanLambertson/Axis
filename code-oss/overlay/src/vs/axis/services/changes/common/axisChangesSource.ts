@@ -69,8 +69,9 @@ export async function isRepositoryRoot(root: URI, entry: (uri: URI) => Promise<A
  * reached `IGitService`. It is the only "status has run" signal the workbench offers: the state
  * `IGitService` hands over when a repository opens can come before the first status (the git
  * extension sets `HEAD` before it reads the status), and `GitRepositoryState` cannot tell "not
- * scanned yet" from "clean". It is called only with the root of a repository the source
- * follows, so the command never asks the user to pick one.
+ * scanned yet" from "clean". It is called with the followed repository's own `rootUri`, the URI
+ * the git extension reported (not the workspace folder, whose letter case can differ on macOS and
+ * Windows), so the extension resolves exactly that repository and never asks the user to pick one.
  */
 export const GIT_REFRESH_COMMAND = 'git.refresh';
 
@@ -80,8 +81,8 @@ export const STATUS_TIMEOUT_MS = 15_000;
 /** Runs `run` once after `ms` milliseconds unless disposed first (`disposableTimeout` in the view; a manual timer in tests). */
 export type AxisTimer = (run: () => void, ms: number) => IDisposable;
 
-/** Asks the git extension to run a status for a root; resolves true when it did (`GIT_REFRESH_COMMAND`). */
-export type AxisStatusConfirmer = (root: URI) => Promise<boolean>;
+/** Asks the git extension to run a status for a repository (`GIT_REFRESH_COMMAND` with its `rootUri`); resolves true when it did. */
+export type AxisStatusConfirmer = (repository: IGitRepository) => Promise<boolean>;
 
 /** What the source needs from `IGitService`: it only reads. */
 export type IAxisGitReader = Pick<IGitService, 'openRepository' | 'repositories'>;
@@ -136,7 +137,7 @@ export class AxisChangesSource extends Disposable {
 	 * @param closedRepositories whether the user has closed repositories in the git extension,
 	 * `undefined` while that is not known (`hasClosedRepositories`).
 	 * @param timer schedules the status timeout (`STATUS_TIMEOUT_MS`).
-	 * @param confirmStatus runs a status for a root through the git extension (`GIT_REFRESH_COMMAND`).
+	 * @param confirmStatus runs a status for a repository through the git extension (`GIT_REFRESH_COMMAND`).
 	 */
 	constructor(
 		private readonly git: IAxisGitReader,
@@ -281,7 +282,7 @@ export class AxisChangesSource extends Disposable {
 			}
 		};
 		const timeout = store.add(this.timer(() => settle(false), STATUS_TIMEOUT_MS));
-		this.confirmStatus(root).then(settle, () => settle(false));
+		this.confirmStatus(repository).then(settle, () => settle(false));
 	}
 
 	private set(status: AxisChangesStatus, changes: IAxisChanges): void {

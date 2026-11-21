@@ -5,6 +5,7 @@
 import assert from 'assert';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { IGitRepository } from '../../../../../workbench/contrib/git/common/gitService.js';
 import { flatRows } from '../../common/axisChanges.js';
 import { AxisChangesSource, AxisChangesStatus, AxisGitEntry, CLOSED_REPOSITORIES_KEY, GIT_REFRESH_COMMAND, STATUS_TIMEOUT_MS, gitEntryOf, hasClosedRepositories, isRepositoryRoot } from '../../common/axisChangesSource.js';
 import { change, FakeGitService, FakeRepository, file, flush, ROOT, state } from './axisChangesFixtures.js';
@@ -29,8 +30,8 @@ suite('Axis Changes source (fake IGitService)', () => {
 	};
 	const fireTimers = () => timers.filter(t => !t.disposed).forEach(t => { t.disposed = true; t.run(); });
 	/** Pending status confirmations (the git extension's Refresh), answered by the test. */
-	let confirms: { root: string; answer: (ran: boolean | Error) => void }[];
-	const confirmStatus = (root: URI) => new Promise<boolean>((resolve, reject) => confirms.push({ root: root.path, answer: ran => ran instanceof Error ? reject(ran) : resolve(ran) }));
+	let confirms: { root: string; repository: IGitRepository; answer: (ran: boolean | Error) => void }[];
+	const confirmStatus = (repository: IGitRepository) => new Promise<boolean>((resolve, reject) => confirms.push({ root: repository.rootUri.path, repository, answer: ran => ran instanceof Error ? reject(ran) : resolve(ran) }));
 	const confirmAll = async (ran: boolean | Error) => { confirms.splice(0).forEach(c => c.answer(ran)); await flush(); };
 	let source: AxisChangesSource;
 	let seen: AxisChangesStatus[];
@@ -292,6 +293,7 @@ suite('Axis Changes source (fake IGitService)', () => {
 		await git.answer(repo);
 		assert.strictEqual(source.status, 'loading', 'maybe not scanned yet');
 		assert.deepStrictEqual(confirms.map(c => c.root), [ROOT.path], 'one Refresh, for this root');
+		assert.strictEqual(confirms[0].repository, repo, 'for the followed repository itself (its own rootUri, never the folder)');
 		assert.deepStrictEqual(timers.map(t => t.ms), [STATUS_TIMEOUT_MS]);
 		await confirmAll(true);
 		assert.strictEqual(source.status, 'ready', 'Git ran a status: the empty state is believed');
@@ -403,11 +405,12 @@ suite('Axis Changes source (fake IGitService)', () => {
 		assert.deepStrictEqual(confirms, [], 'no second Refresh');
 	});
 
-	test('a known repository not yet confirmed is confirmed on its first empty state', async () => {
+	test('a known repository not yet confirmed is confirmed on its first empty state, by its own rootUri', async () => {
 		git.repositories.push(new FakeRepository(ROOT));
 		await source.setRoot(ROOT);
 		assert.strictEqual(source.status, 'loading');
 		assert.deepStrictEqual(git.opened, []);
+		assert.strictEqual(confirms[0].repository, git.repositories[0], 'the Refresh names the repository the extension reported');
 		await confirmAll(true);
 		assert.strictEqual(source.status, 'ready');
 	});

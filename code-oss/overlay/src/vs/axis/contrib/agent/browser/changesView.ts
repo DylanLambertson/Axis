@@ -87,7 +87,7 @@ export class AxisChangesView extends Disposable {
 			root => isRepositoryRoot(root, uri => fileService.stat(uri).then(gitEntryOf, () => gitEntryOf(undefined))),
 			() => hasClosedRepositories(contextKeyService.getContextKeyValue(CLOSED_REPOSITORIES_KEY)),
 			(run, ms) => disposableTimeout(run, ms),
-			root => commandService.executeCommand(GIT_REFRESH_COMMAND, root).then(() => true, () => false),
+			repository => commandService.executeCommand(GIT_REFRESH_COMMAND, repository.rootUri).then(() => true, () => false),
 		));
 		const closedKey = new Set([CLOSED_REPOSITORIES_KEY]);
 		this._register(contextKeyService.onDidChangeContext(e => {
