@@ -222,8 +222,10 @@ export function scanModules(source, file = "x.ts", { vendored = false, shipped =
     }
     return !(ts.isShorthandPropertyAssignment(m) || (ts.isPropertyAssignment(m) && (ts.isIdentifier(m.name) || ts.isStringLiteral(m.name))));
   });
-  const callShapeBad = (call, fn) => {
+  const callShapeBad = (call, fn, fixed) => {
     const a = call.arguments;
+    // A fixed program takes its argv as written: no spread, so nothing outside the call adds an argument to it.
+    if (fixed && a.length > 1 && ts.isArrayLiteralExpression(a[1]) && a[1].elements.some((x) => ts.isSpreadElement(x))) return true;
     if (a.some((x) => ts.isSpreadElement(x)) || call.questionDotToken !== undefined) return true;
     const cb = fn === "execFile" && a.length === 4 && (ts.isArrowFunction(a[3]) || ts.isFunctionExpression(a[3]));
     return !(a.length === 3 || cb) || !ts.isArrayLiteralExpression(a[1]) || optionsBad(a[2]);
@@ -256,7 +258,7 @@ export function scanModules(source, file = "x.ts", { vendored = false, shipped =
     if (fn !== undefined && !(ts.isImportSpecifier(p) && p.name === n) && (!isNamePosition(n) || ts.isExportSpecifier(p)) && !inType(n)) {
       if (ts.isCallExpression(p) && p.expression === n) {
         if (local && spawnRule?.program != null && keyText(p.arguments[0]) !== spawnRule.program) bad.push(`${at(n)}: ${n.text} runs only ${spawnRule.program} in this file, named as that literal`);
-        if (callShapeBad(p, fn)) bad.push(`${at(n)}: ${n.text} is called as (program, [argv], { options })${fn === "execFile" ? " with an optional function callback" : ""}: an array literal argv and an object literal of plain members`);
+        if (callShapeBad(p, fn, spawnRule?.program != null)) bad.push(`${at(n)}: ${n.text} is called as (program, [argv], { options })${fn === "execFile" ? " with an optional function callback" : ""}: an array literal argv (with no spread for a fixed program) and an object literal of plain members`);
       } else if (!(local && derivedDefault(p) === n)) {
         bad.push(`${at(n)}: ${n.text} from ${SPAWN_BUILTIN} may only be called, never stored, passed, returned or exported`);
       }
