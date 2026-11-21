@@ -87,12 +87,12 @@ test("no export of the public index and nothing the approvals wiring returns can
     assert.deepEqual(Object.keys(approvals).sort(), ["dispose", "gate", "onPreview", "port", "runs", "stats"], "the wiring exposes exactly these (runs: composer tool-call approvals, no capability)");
     assert.deepEqual(await findTokens(approvals, "wiring"), []);
     // Skip the factories that need real resources: they refuse hostile input before touching any.
-    // `policySurface()` returns frozen tables that are legitimately empty (no planned rows; `PLANNED_RULES` is an empty frozen table): data, not a capability.
+    // `policySurface()` returns frozen tables (registry, rules, planned rows, planned registry) that are legitimately empty when filtered to no contract: data, not a capability.
     const { policySurface: _data, PLANNED_RULES: _planned, ...rest } = host;
     void _data;
     void _planned;
     assert.deepEqual(await findTokens({ ...rest }, "index"), []);
-    assert.deepEqual((await findTokens({ policySurface: host.policySurface }, "index")).filter((n) => !/^index\.policySurface\(\)\.(registry|rules|planned)$/.test(n)), []);
+    assert.deepEqual((await findTokens({ policySurface: host.policySurface }, "index")).filter((n) => !/^index\.policySurface\(\)\.(registry|rules|planned|plannedRegistry)$/.test(n)), []);
   } finally {
     approvals.dispose();
     control.dispose();

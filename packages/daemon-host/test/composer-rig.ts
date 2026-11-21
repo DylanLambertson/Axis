@@ -2,13 +2,13 @@
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { AuditLog, Redactor, openDatabase } from "@axis/audit";
+import { AuditLog, Redactor, openDatabase, type DatabaseSync } from "@axis/audit";
 import { Journal, type ActivityBounds } from "@axis/journal";
 import type { RunEvent } from "@axis/protocol";
 import type { MockProviderOptions, MockReply, RunBudgetLimits, ValidRequest } from "@axis/providers";
 import type { Policy } from "@axis/daemon";
 import { createProvidersBinding, type AnthropicConnectionOptions, type ProvidersBinding } from "../src/bindings/providers.js";
-import { AGENT_PAYLOAD_ALLOWLIST, PROVIDERS_PAYLOAD_ALLOWLIST, TAINT_PAYLOAD_ALLOWLIST, createAgentBinding, createComposerService, type AgentBinding, type AgentBindingDeps, type ComposerService, type PreviewScanner, type ToolCaps } from "../src/index.js";
+import { AGENT_PAYLOAD_ALLOWLIST, MESSAGES_PAYLOAD_ALLOWLIST, PROVIDERS_PAYLOAD_ALLOWLIST, TAINT_PAYLOAD_ALLOWLIST, createAgentBinding, createComposerService, type AgentBinding, type AgentBindingDeps, type ComposerService, type PreviewScanner, type ToolCaps } from "../src/index.js";
 import { ProjectMutex } from "../src/worktrees/project-mutex.js";
 import { rig, type Client, type Rig } from "./approvals-rig.js";
 
@@ -23,6 +23,8 @@ export interface ComposerRig {
   readonly user: Client;
   readonly journal: Journal;
   readonly audit: AuditLog;
+  /** The one database handle (journal and audit log), for tests that reach a table directly. */
+  readonly db: DatabaseSync;
   readonly service: ComposerService;
   readonly agent: AgentBinding;
   /** The network providers over the vault (C6); empty without `anthropic`. */
@@ -79,6 +81,8 @@ export interface ComposerRigOptions {
   readonly taintSources?: AgentBindingDeps["taintSources"];
   /** C3 slice 2: the host's git (offers `git_status` and `git_diff`). */
   readonly gitPath?: string;
+  /** Messages delivered into runs at turn boundaries (PV-M3 slice 2). */
+  readonly deliveries?: AgentBindingDeps["deliveries"];
 }
 
 const SHA = "b".repeat(40);
@@ -93,7 +97,7 @@ export async function composerRig(options: ComposerRigOptions): Promise<Composer
   mkdirSync(join(root, "src"), { recursive: true });
   mkdirSync(outside);
   const db = openDatabase(options.dbPath ?? ":memory:");
-  const audit = new AuditLog(db, { payloadAllowlist: { ...AGENT_PAYLOAD_ALLOWLIST, ...PROVIDERS_PAYLOAD_ALLOWLIST, ...TAINT_PAYLOAD_ALLOWLIST } });
+  const audit = new AuditLog(db, { payloadAllowlist: { ...AGENT_PAYLOAD_ALLOWLIST, ...PROVIDERS_PAYLOAD_ALLOWLIST, ...TAINT_PAYLOAD_ALLOWLIST, ...MESSAGES_PAYLOAD_ALLOWLIST } });
   const journal = Journal.open(db, { audit });
   const ws = journal.createWorkspace({ projectId: "p", branch: "axis/x", baseRef: "main", baseSha: SHA, createdBy: "user" }).value;
   journal.transitionWorkspace(ws.id, "READY");
@@ -129,6 +133,7 @@ export async function composerRig(options: ComposerRigOptions): Promise<Composer
     ...(options.taintSources === undefined ? {} : { taintSources: options.taintSources }),
     ...(options.extraTools === undefined ? {} : { extraTools: options.extraTools }),
     ...(options.gitPath === undefined ? {} : { gitPath: options.gitPath }),
+    ...(options.deliveries === undefined ? {} : { deliveries: options.deliveries }),
   });
   const service = createComposerService({
     redactor,
@@ -146,6 +151,7 @@ export async function composerRig(options: ComposerRigOptions): Promise<Composer
     user,
     journal,
     audit,
+    db,
     service,
     agent,
     providers,
@@ -189,11 +195,11 @@ const HANG_GUARD_MS = 120_000;
  * Wait until `pred` holds. A run does real file system and timer work, whose completion on a loaded host is not a count of event
  * loop turns, so the wait is by condition: it yields to the event loop between tries and gives up only at the hang guard.
  */
-export async function until(pred: () => boolean, guardMs = HANG_GUARD_MS): Promise<void> {
+export async function until(pred: () => boolean, what = "the condition", guardMs = HANG_GUARD_MS): Promise<void> {
   const deadline = process.hrtime.bigint() + BigInt(guardMs) * 1_000_000n;
   for (let turn = 0; ; turn++) {
     if (pred()) return;
-    if (process.hrtime.bigint() > deadline) throw new Error("condition not reached");
+    if (process.hrtime.bigint() > deadline) throw new Error(`condition not reached: ${what}`);
     await new Promise((res) => (turn % 64 === 63 ? setTimeout(res, 1) : setImmediate(res)));
   }
 }

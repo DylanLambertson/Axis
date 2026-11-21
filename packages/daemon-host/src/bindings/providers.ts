@@ -4,7 +4,7 @@ import { createAnthropicAdapter, type AnthropicLimits, type FetchLike, type KeyP
 import type { ProviderCredential } from "@axis/protocol";
 import { ProviderError, guardProvider, type GenerateRequest, type GenerateResult, type GuardLimits, type GuardedProvider, type ModelInfo, type RunOptions, type StreamEvent } from "@axis/providers";
 import { VaultError, createVault, type ConnectionVault, type SecretBackend } from "@axis/vault";
-import { MAX_KEY_FORM_CHARS, holdsRegisteredSecret, providerRedactor } from "./provider-redactor.js";
+import { KEY_RULE, MAX_KEY_FORM_CHARS, holdsRegisteredSecret, providerRedactor } from "./provider-redactor.js";
 
 export type { FetchLike, Pricing, SecretBackend };
 
@@ -64,8 +64,6 @@ export interface ProvidersBinding {
 
 /** Audit payload keys of the vault reads (DMN-5): why the key was read and what came of it (`ok`, `unusable` or the vault's code). Never the key. */
 export const PROVIDERS_PAYLOAD_ALLOWLIST: Readonly<Record<string, readonly string[]>> = Object.freeze({ "provider.credential": Object.freeze(["purpose", "outcome"]) });
-
-const nodeFetch: FetchLike = (url, init) => fetch(url, init) as unknown as ReturnType<FetchLike>;
 
 /** Every string a tool call's input holds, keys included, parsed (not as JSON text, which would escape a key's quotes). */
 function* stringsOf(value: unknown): Generator<string> {
@@ -195,6 +193,9 @@ export function createProvidersBinding(deps: ProvidersBindingDeps): ProvidersBin
     // Registered before the adapter sees it, so an echo anywhere the host writes is redacted; a key the redactor
     // refuses (too short) is not used. The audit row comes before any use: a read that cannot be recorded is refused.
     try {
+      // Only a key of the vault's own shape is registered: the windowed outgoing scan holds a whole form of such a key and
+      // no longer one (`MAX_KEY_FORM_CHARS`, review c7 N1); any other key is unusable, never registered or sent.
+      if (!KEY_RULE.test(key)) throw new Error("key shape");
       deps.redactor.registerSecret(key);
     } catch {
       // Every read is audited (DMN-5), this one too; the key is not used.
@@ -208,7 +209,9 @@ export function createProvidersBinding(deps: ProvidersBindingDeps): ProvidersBin
   const adapter = createAnthropicAdapter({
     connectionId,
     apiKey,
-    fetch: conn.fetch ?? nodeFetch,
+    // The one place shipped code may use the global `fetch` (the module scanner's egress rule): handed to the adapter, which
+    // keeps it to the fixed origin with redirects refused. `conn.fetch` is the binding tests' seam (never set in production).
+    fetch: conn.fetch ?? ((url, init) => fetch(url, init) as unknown as ReturnType<FetchLike>),
     ...(conn.pricing === undefined ? {} : { pricing: conn.pricing }),
     ...(conn.limits === undefined ? {} : { limits: conn.limits }),
   });

@@ -7,7 +7,7 @@ import { test, type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import { Daemon, DaemonError, MemoryIdempotencyStore } from "../src/index.js";
 import { fakeGate } from "./gate.js";
-import { CONTRACT, KEY1, hello, req, rig, testRegistry, verifier, type Rig } from "./harness.js";
+import { CONTRACT, KEY1, hello, req, rig, testRegistry, untilTrue, verifier, type Rig } from "./harness.js";
 
 async function ready(t: TestContext, options: Parameters<typeof rig>[0] = {}): Promise<Rig> {
   const r = rig(options);
@@ -35,10 +35,11 @@ test("NEW-B1: a tiny shared-reference DAG sent before identity does not stall th
   const start = Date.now();
   r.send(dag);
   await wait(5);
-  assert.ok(Date.now() - start < 500, `event loop blocked for ${Date.now() - start} ms by one pre-identity message`);
+  // Expanding the DAG takes seconds to minutes (and gigabytes); 5 s is far from that and ten times what an idle machine needs.
+  assert.ok(Date.now() - start < 5000, `event loop blocked for ${Date.now() - start} ms by one pre-identity message`);
   assert.ok(await r.inbox.closedWithin(), "the connection is closed");
   release();
-  await wait(20);
+  await untilTrue(() => r.daemon.connectionCount === 0);
   assert.equal(r.daemon.connectionCount, 0);
 });
 
@@ -88,9 +89,9 @@ test("NEW-S1: one window's orphans do not starve another window; the quota survi
   r.daemon.register(CONTRACT, 1, { slow: () => new Promise(() => undefined), echo: (_c, p: { text: string }) => p });
   const evil = await open(r, "good:bad#evil-1@ws-evil~win-evil");
   for (let i = 0; i < 4; i++) evil.client.postMessage(req(`s${i}`, "slow", {}, { timeoutMs: 1 }));
-  await wait(40);
+  for (let i = 0; i < 4; i++) await evil.inbox.response(`s${i}`); // all four timed out and became orphans
   evil.client.close();
-  await wait(20);
+  await untilTrue(() => r.daemon.orphanedHandlers === 4);
   assert.equal(r.daemon.orphanedHandlers, 4);
 
   const again = await open(r, "good:bad#evil-2@ws-evil~win-evil"); // same window, new connection
@@ -110,7 +111,7 @@ test("NEW-S1: the daemon-wide backstop still applies across windows", async (t) 
   const r = await ready(t, { limits: { maxInFlight: 4 }, maxOrphanedPerWindow: 4, maxOrphanedHandlers: 4, attestation: "good#a1~win-a" });
   r.daemon.register(CONTRACT, 1, { slow: () => new Promise(() => undefined), echo: (_c, p: { text: string }) => p });
   for (let i = 0; i < 4; i++) r.send(req(`s${i}`, "slow", {}, { timeoutMs: 1 }));
-  await wait(40);
+  for (let i = 0; i < 4; i++) await r.inbox.response(`s${i}`);
   const other = await open(r, "good#b1~win-b");
   other.client.postMessage(req("o1", "echo", { text: "x" }));
   assert.equal((await other.inbox.response("o1")).error?.code, "E_BACKPRESSURE");
@@ -133,12 +134,14 @@ test("N-a: a malformed challenge from the gate is E_INTERNAL, audited as approva
 // ---- N-c: one handshake budget ----
 
 test("N-c: verification and handshake share one handshake timeout (not two in a row)", async (t) => {
-  const r = rig({ limits: { handshakeTimeoutMs: 120 }, identity: { verify: async (a) => (await wait(70), verifier.verify(a)) } });
+  // Long enough that a loaded host cannot blur the two outcomes: one shared budget closes at about 1500 ms after the connection is
+  // accepted, two in a row (verification, then a fresh handshake timer) at about 2300 ms. The bound sits between them.
+  const r = rig({ limits: { handshakeTimeoutMs: 1500 }, identity: { verify: async (a) => (await wait(800), verifier.verify(a)) } });
   t.after(() => r.cleanup());
   const start = Date.now();
-  assert.ok(await r.inbox.closedWithin(1000));
+  assert.ok(await r.inbox.closedWithin(15_000));
   const took = Date.now() - start;
-  assert.ok(took < 170, `closed after ${took} ms; verification (70) plus a second 120 ms timer would be 190`);
+  assert.ok(took < 1900, `closed after ${took} ms; verification (800) plus a second 1500 ms timer would be 2300`);
 });
 
 // ---- N-e: more daemon-only codes ----

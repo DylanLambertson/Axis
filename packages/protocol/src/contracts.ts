@@ -6,6 +6,7 @@ import { CLI_RUNS_CONTRACT, CLI_RUNS_VERSION, cliRunsMethods } from "./cliRuns.j
 import { COMPOSER_RUNS_CONTRACT, COMPOSER_RUNS_VERSION, composerRunsMethods } from "./composer-runs.js";
 import { EVENTS_CONTRACT, EVENTS_VERSION, eventsMethods } from "./events.js";
 import { GIT_CONTRACT, GIT_VERSION, gitMethods } from "./git.js";
+import { MESSAGES_CONTRACT, MESSAGES_VERSION, messagesMethods } from "./messages.js";
 import { MAX_TIMEOUT_MS, methodNameSchema } from "./envelope.js";
 import { PROJECTS_CONTRACT, PROJECTS_VERSION, projectsMethods } from "./projects.js";
 import { PROVIDERS_CONTRACT, PROVIDERS_VERSION, providersMethods } from "./providers.js";
@@ -33,7 +34,16 @@ export const contracts: Table = Object.freeze({
   [`${REVIEW_CONTRACT}/${REVIEW_VERSION}`]: frozen(reviewMethods),
   [`${COMPOSER_RUNS_CONTRACT}/${COMPOSER_RUNS_VERSION}`]: frozen(composerRunsMethods),
   [`${EVENTS_CONTRACT}/${EVENTS_VERSION}`]: frozen(eventsMethods),
+  [`${MESSAGES_CONTRACT}/${MESSAGES_VERSION}`]: frozen(messagesMethods),
 });
+
+/**
+ * Contracts whose schemas are agreed but that no host serves yet. `lookupMethod` never sees them, so no client can call one
+ * and no daemon can serve one; the daemon-host coverage check holds a planned policy row for each of their methods, at the
+ * same tier. A contract moves to `contracts` in the change that registers its handlers, its rows moving with it
+ * (`axis.messages/1` moved with ticket PV-M3). A key is never in both tables. Empty while nothing is planned.
+ */
+export const plannedContracts: Table = Object.freeze({});
 
 const SIDE_EFFECTS: ReadonlySet<unknown> = new Set(["none", "read", "write", "network", "destructive", "credential"]);
 const IDEMPOTENCY: ReadonlySet<unknown> = new Set(["none", "optional", "required"]);

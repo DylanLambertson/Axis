@@ -35,7 +35,7 @@ const resultsOf = (req: ValidRequest): string[] => lastBlocks(req).flatMap((b) =
 
 async function runToEnd(c: ComposerRig): Promise<string> {
   const { run } = await c.service.start(START(c.workspaceId), new AbortController().signal);
-  await until(ended(c, run.runId));
+  await until(ended(c, run.runId), "the run to end");
   return run.runId;
 }
 
@@ -117,7 +117,7 @@ test("every composer write waits for the workspace write lock (the project mutex
   assert.equal(existsSync(join(c.root, "src/a.txt")), false, "nothing is written while git holds the lock");
   release();
   await held;
-  await until(ended(c, run.runId));
+  await until(ended(c, run.runId), "the run to end");
   assert.equal(readFileSync(join(c.root, "src/a.txt"), "utf8"), "x");
 });
 
