@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 // TODO: switch to `import { buildGitEnv } from "@axis/pty-policy"` once that package is merged.
-// This is a copy of its GIT-ENV-1 semantics: an allow-list, GIT_TERMINAL_PROMPT=0, and no other GIT_*.
+// This is a copy of its GIT-ENV-1 semantics: an allow-list, GIT_TERMINAL_PROMPT=0, and no other GIT_* from the parent; the
+// daemon adds GIT_NO_LAZY_FETCH=1 and GIT_ALLOW_PROTOCOL=/ (no lazy fetch can run a program, see daemonGitEnv).
 import type { Env } from "./types.js";
 
 // XDG_CONFIG_HOME locates the user-level git config, so the daemon must read the same one the pty push will.
@@ -25,6 +26,14 @@ export function daemonGitEnv(parent: Env, platform: NodeJS.Platform = process.pl
     env[name] = value;
   }
   env["GIT_TERMINAL_PROMPT"] = "0";
+  // The daemon never fetches. A partial clone would otherwise start a lazy fetch for a missing object, and the repository
+  // config chooses the transport and what it runs (remote.<r>.uploadpack, core.sshCommand, a remote.<r>.vcs helper or alias):
+  // a per-protocol `protocol.<name>.allow=always` beats the pinned `protocol.allow=never`. GIT_NO_LAZY_FETCH stops the fetch
+  // on git 2.44 and later; GIT_ALLOW_PROTOCOL=/ overrides every protocol.* key on every git since 2.12, so older git refuses
+  // the transport instead (`/` names no helper that can run; see the pty side, pty-process exec-env.ts, and the
+  // `help.autocorrect=0` pin in prefix()).
+  env["GIT_NO_LAZY_FETCH"] = "1";
+  env["GIT_ALLOW_PROTOCOL"] = "/";
   return env;
 }
 
