@@ -59,9 +59,10 @@ export interface ComposerApprovalNote {
 
 /**
  * The run must end now with a closed reason (C3, WT-2 broker side): a command changed the repository's hooks or common
- * directory, or that could not be checked. Thrown by `ComposerRunTools.invoke`; the loop ends the run FAILED with `reason`.
+ * directory, or that could not be checked (`GIT_DRIFT_UNJUDGED` when the check only could not finish, C7-F2). Thrown by
+ * `ComposerRunTools.invoke`; the loop ends the run FAILED with `reason`.
  */
-export const RUN_HALT_REASONS = ["GIT_DRIFT"] as const;
+export const RUN_HALT_REASONS = ["GIT_DRIFT", "GIT_DRIFT_UNJUDGED"] as const;
 export class ComposerRunHalt extends Error {
   constructor(readonly reason: (typeof RUN_HALT_REASONS)[number]) {
     super("the composer run was halted");
@@ -86,8 +87,12 @@ export interface GuardContext {
 export interface RunRepositoryGuard {
   /** Takes the run's baseline; refuses (throws) when it cannot be judged, or when the run already has one. */
   baseline(ctx: GuardContext): Promise<void>;
-  /** The repository now against the run's baseline, which is kept. Throws when there is none or nothing can be judged. */
-  check(runId: string): Promise<{ readonly drift: boolean }>;
+  /**
+   * The repository now against the run's baseline, which is kept. Throws when there is none or nothing can be judged.
+   * `unjudged` marks a drift verdict that is only a snapshot stopped at its bound or changing between takes (a loaded host),
+   * not a change seen: still drift (the run halts), with its own reason so it can be told apart (C7-F2).
+   */
+  check(runId: string): Promise<{ readonly drift: boolean; readonly unjudged?: boolean }>;
   /** Drops the run's baseline (its end). */
   release(runId: string): void;
 }

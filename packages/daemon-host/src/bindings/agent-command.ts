@@ -25,7 +25,8 @@ import { ComposerRunHalt, type ComposerToolSpec, type RunRepositoryGuard } from 
  *   decoded, redacted, escaped and cut, inside an untrusted-labelled block.
  * - **WT-2, broker side.** One GIT-SNAP-1 baseline per run (hooks, common dir config, worktree link), taken before its first
  *   command and never replaced; the repository is compared with it around every later command, before every model turn and
- *   at the run's end (`RunWt2`). Any change, or a check that cannot be judged, halts the whole run (`GIT_DRIFT`): a planted
+ *   at the run's end (`RunWt2`). Any change, or a check that cannot be judged, halts the whole run (`GIT_DRIFT`; a snapshot
+ *   that only ran out of time or kept changing: `GIT_DRIFT_UNJUDGED`, C7-F2): a planted
  *   hook never reaches a later git operation of the run, even when it lands between two commands. A baseline that cannot be
  *   taken refuses the call with nothing started.
  */
@@ -160,18 +161,27 @@ export interface RunGuardDeps {
  */
 export class RunWt2 {
   #based = false;
-  #halted = false;
+  #halt: "GIT_DRIFT" | "GIT_DRIFT_UNJUDGED" | undefined;
   constructor(private readonly d: RunGuardDeps) {}
 
   get halted(): boolean {
-    return this.#halted;
+    return this.#halt !== undefined;
   }
 
-  /** Clean, or halt: anything but a clean verdict (drift, no baseline, a snapshot that cannot be taken or judged) is drift. */
+  /** The closed reason the run halts with: a change seen, or only a snapshot that could not finish (C7-F2). */
+  get haltReason(): "GIT_DRIFT" | "GIT_DRIFT_UNJUDGED" {
+    return this.#halt ?? "GIT_DRIFT";
+  }
+
+  /**
+   * Clean, or halt: anything but a clean verdict (drift, no baseline, a snapshot that cannot be taken or judged) is drift.
+   * Only a snapshot that ran out of time or kept changing is `GIT_DRIFT_UNJUDGED`; a check that throws is `GIT_DRIFT`.
+   */
   async #check(): Promise<boolean> {
-    const drift = await this.d.guard.check(this.d.runId).then((r) => r.drift !== false, () => true);
-    if (drift) this.#halted = true;
-    return !drift;
+    const r = await this.d.guard.check(this.d.runId).then((v) => v, () => ({ drift: true, unjudged: false }));
+    if (r.drift === false) return true;
+    this.#halt ??= r.unjudged === true ? "GIT_DRIFT_UNJUDGED" : "GIT_DRIFT";
+    return false;
   }
 
   /** Before a command, under the lock: the baseline the first time (nothing starts without one), a check after that. */
@@ -195,9 +205,9 @@ export class RunWt2 {
 
   /** Before a model turn and at the run's end: nothing to compare until a command ran. Throws `ComposerRunHalt` on drift. */
   async turn(signal: AbortSignal): Promise<void> {
-    if (this.#halted) throw new ComposerRunHalt("GIT_DRIFT");
+    if (this.halted) throw new ComposerRunHalt(this.haltReason);
     if (!this.#based) return;
-    if (!(await this.d.writeLock(this.d.workspaceId, () => this.#check(), signal))) throw new ComposerRunHalt("GIT_DRIFT");
+    if (!(await this.d.writeLock(this.d.workspaceId, () => this.#check(), signal))) throw new ComposerRunHalt(this.haltReason);
   }
 
   close(): void {

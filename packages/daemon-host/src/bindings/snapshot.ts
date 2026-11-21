@@ -22,8 +22,9 @@ export interface RunSnapshotterDeps {
    */
   readonly projectRoot: (workspaceId: string) => string | undefined;
   /**
-   * TEST ONLY: the wall-clock bound of one take (default `SNAPSHOT_TAKE_MS`). A real-repository test on a loaded machine raises
-   * it, so a slow snapshot is not read as one that cannot be taken; the host never sets it.
+   * The wall-clock bound of one take. CLI runs: TEST ONLY (default `SNAPSHOT_TAKE_MS`; a real-repository test on a loaded
+   * machine raises it, the host never sets it). Composer runs' guard: default `COMPOSER_SNAPSHOT_TAKE_MS`, set by the host
+   * limit `composerSnapshotTakeMs` (C7-F2).
    */
   readonly takeMs?: number;
 }
@@ -125,10 +126,26 @@ export function createRunSnapshotter(deps: RunSnapshotterDeps, maxHeld = MAX_HEL
 }
 
 /** The host's `RunRepositoryGuard` (ports/composer.ts) over `@axis/git-snapshot`. */
+/**
+ * Per take of a composer run's WT-2 snapshot (C7-F2): no supervisor bounds it, and a take that runs out fails the run closed,
+ * so the default is longer than the CLI runs' `SNAPSHOT_TAKE_MS`.
+ */
+export const COMPOSER_SNAPSHOT_TAKE_MS = 10_000;
+
+/**
+ * Only a snapshot that stopped at its bound or kept changing between takes: no link mismatch, no other unread item, nothing
+ * wrong with the baseline. Anything else that cannot be judged is reported as a change seen.
+ */
+function onlyUnfinished(v: ReturnType<typeof judgeDrift>, current: Snapshot): boolean {
+  if (v.status !== "refused" || v.reasons.length !== 1 || current.link.mismatch) return false;
+  const blocking = current.incomplete.filter((i) => i.blocking);
+  return blocking.length > 0 && blocking.every((i) => i.id === "snapshot");
+}
+
 export function createRunRepositoryGuard(deps: RunSnapshotterDeps, maxHeld = MAX_HELD_SNAPSHOTS, takeSnapshot: SnapshotTaker = takeStableSnapshot): RunRepositoryGuard {
   if (typeof deps?.gitPath !== "string" || !isAbsolute(deps.gitPath) || typeof deps.projectRoot !== "function") throw new AxisError("E_INVALID_ARGUMENT", "The snapshotter needs the host's git path", { reason: "snapshotter_required" });
   const held = new Map<string, Held>();
-  const take = taker(deps, takeSnapshot);
+  const take = taker({ ...deps, takeMs: deps.takeMs ?? COMPOSER_SNAPSHOT_TAKE_MS }, takeSnapshot);
   return {
     async baseline(ctx: SnapshotContext): Promise<void> {
       if (held.has(ctx.runId)) throw refused("baseline_held");
@@ -142,16 +159,23 @@ export function createRunRepositoryGuard(deps: RunSnapshotterDeps, maxHeld = MAX
         held.delete(id);
       }
     },
-    async check(runId: string): Promise<{ readonly drift: boolean }> {
+    async check(runId: string): Promise<{ readonly drift: boolean; readonly unjudged?: boolean }> {
       const base = held.get(runId);
       if (base === undefined) throw refused("no_baseline");
       const current = await take(base);
-      return { drift: judgeDrift({ baseline: base.snapshot, current }).status !== "clean" };
+      const v = judgeDrift({ baseline: base.snapshot, current });
+      if (v.status === "clean") return { drift: false };
+      return onlyUnfinished(v, current) ? { drift: true, unjudged: true } : { drift: true };
     },
     release(runId: string): void {
       held.delete(runId);
     },
   };
+}
+
+/** The composer guard's deps as the composition builds them: the host limit `composerSnapshotTakeMs` sets the take bound. */
+export function composerGuardDeps(base: Omit<RunSnapshotterDeps, "takeMs">, limits: { readonly composerSnapshotTakeMs?: number | undefined }): RunSnapshotterDeps {
+  return limits.composerSnapshotTakeMs === undefined ? { ...base } : { ...base, takeMs: limits.composerSnapshotTakeMs };
 }
 
 /** The production factory the process entry passes (`ComposeOptions.snapshotter`). */

@@ -338,7 +338,7 @@ export function createAgentBinding(deps: AgentBindingDeps): AgentBinding {
       drift: async (signal) => formatDriftNotice(await observed.drift(signal)),
       ...(wt2 === undefined ? {} : { guard: (signal: AbortSignal) => wt2.turn(signal), close: () => wt2.close() }),
       async invoke(name, input, signal) {
-        if (halted()) throw new ComposerRunHalt("GIT_DRIFT");
+        if (halted()) throw new ComposerRunHalt(wt2?.haltReason ?? "GIT_DRIFT");
         const parsed = PREVIEWED.get(name)?.args.safeParse(input);
         const call = parsed?.success === true ? { tool: name, args: parsed.data } : undefined;
         // The loop runs one call at a time; a caller that floods the broker is refused before anything is held.
@@ -348,9 +348,9 @@ export function createAgentBinding(deps: AgentBindingDeps): AgentBinding {
         try {
           out = await broker.invoke({ tool: name, worktreeId: worktree.id, actor, args: input, signal });
           // WT-2 (C3): a check that found a change halts the run; nothing the call returned reaches the model.
-          if (halted()) throw new ComposerRunHalt("GIT_DRIFT");
+          if (halted()) throw new ComposerRunHalt(wt2?.haltReason ?? "GIT_DRIFT");
         } catch (e) {
-          if (halted()) throw new ComposerRunHalt("GIT_DRIFT");
+          if (halted()) throw new ComposerRunHalt(wt2?.haltReason ?? "GIT_DRIFT");
           // The action ran but its audit row could not be written: the run must stop (never continue unrecorded).
           if (e instanceof BrokerError && e.details["executed"] === true) throw new Error("unrecorded side effect");
           const reason = reasonOf(e);
