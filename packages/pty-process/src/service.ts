@@ -6,8 +6,9 @@ import { controlRequest, dataRequest, type ControlReply, type ControlRequest, ty
 import { DEFAULT_FLOW, OutputFlow, type FlowLimits } from "./flow.js";
 import { probeGroup, signalGroup, validPgid } from "./group.js";
 import { OscCwdFilter } from "./osc.js";
+import { preparePush, vetPushRemote } from "./push-run.js";
 import { hasNul, isAbsolutePath } from "./paths.js";
-import { systemClock, systemProcessOps, type Channel, type Clock, type Disposable, type ProcessOps, type PtyChild, type PtySignal, type SpawnFn } from "./ports.js";
+import { systemClock, systemProcessOps, type Channel, type Clock, type Disposable, type ExecChild, type ProcessOps, type PtyChild, type PtySignal, type SpawnFn } from "./ports.js";
 
 export interface PtyServiceOptions {
   /** Starts a child in its own session or job. In the shipped entry this is the native pty binding. */
@@ -81,7 +82,8 @@ export function createPtyService(options: PtyServiceOptions): PtyService {
   let control: Channel | undefined;
   let disposed = false;
   // Replies go to whichever control channel is open when the work finishes; after a close they are dropped.
-  const git: GitExec | undefined = options.git === undefined ? undefined : createGitExec(options.git, options.clock ?? systemClock, platform, (m) => void sendTo(control, m));
+  const clock = options.clock ?? systemClock;
+  const git: GitExec | undefined = options.git === undefined ? undefined : createGitExec(options.git, clock, platform, (m) => void sendTo(control, m));
 
   const sendTo = (ch: Channel | undefined, msg: ControlReply | DataReply | ExecReply): boolean => {
     if (ch === undefined) return false;
@@ -197,6 +199,42 @@ export function createPtyService(options: PtyServiceOptions): PtyService {
     startTerminal(m.req, p.argv, p.cwd, p.env, m.cols, m.rows);
   };
 
+  /** Remote checks running for a push (each starts two git reads); past the bound a push is refused `capacity`. */
+  let vetting = 0;
+  const vetChildren = new Set<ExecChild>();
+  const killVets = (): void => {
+    for (const c of [...vetChildren]) {
+      try {
+        c.kill();
+      } catch {
+        /* gone */
+      }
+    }
+    vetChildren.clear();
+  };
+  /**
+   * H9-hooks S4: a push is a terminal like any other, but its argv, pins and environment come from the service (§5.2), and the
+   * service checks the remote itself first (`vetPushRemote`: no `remote.<r>.vcs` helper, no helper URL). A control channel that
+   * closed (or a service disposed) while the check ran starts nothing and gets no reply.
+   */
+  const handlePush = (m: Extract<ControlRequest, { t: "push" }>): void => {
+    if (disposed || options.git === undefined) return refuseSpawn(m.req, "spawn_failed");
+    const cfg = options.git;
+    const p = preparePush(m, cfg, platform);
+    if ("code" in p) return refuseSpawn(m.req, p.code);
+    if (vetting >= 4) return refuseSpawn(m.req, "capacity");
+    vetting++;
+    const ch = control;
+    void vetPushRemote(cfg, clock, m.repo, m.remote, m.pushUrls, p.readEnv, vetChildren)
+      .catch(() => "spawn_failed" as const)
+      .then((verdict) => {
+        vetting--;
+        if (disposed || control === undefined || control !== ch) return;
+        if (verdict !== true) return refuseSpawn(m.req, verdict);
+        startTerminal(m.req, p.argv, p.cwd, p.env, m.cols, m.rows);
+      });
+  };
+
   const startTerminal = (req: string, argv: readonly string[], cwd: string, env: Readonly<Record<string, string>>, cols: number, rows: number): void => {
     reap();
     if (terminals.size >= max) return refuseSpawn(req, "capacity");
@@ -267,11 +305,14 @@ export function createPtyService(options: PtyServiceOptions): PtyService {
       const t = (raw as { t?: unknown }).t;
       if (t === "exec") return void sendTo(control, { t: "exec-failed", req, code: "bad_argv" });
       if (t === "scratch-begin" || t === "scratch-verify" || t === "scratch-end") return void sendTo(control, { t: "scratch-failed", req, code: "bad_bind" });
+      // A push whose remote or refspec is not the closed form (a force, another ref, an option) is refused as a bad argv.
+      if (t === "push") return refuseSpawn(req, "bad_argv");
       return refuseSpawn(req, "spawn_failed");
     }
     const m = parsed.data;
     if (m.t === "spawn") return handleSpawn(m);
     if (m.t === "hook") return handleHook(m);
+    if (m.t === "push") return handlePush(m);
     if (m.t === "exec" || m.t === "scratch-begin" || m.t === "scratch-verify" || m.t === "scratch-end") {
       if (disposed || git === undefined) {
         if (m.t === "exec") return void sendTo(control, { t: "exec-failed", req: m.req, code: "spawn_failed" });
@@ -360,6 +401,7 @@ export function createPtyService(options: PtyServiceOptions): PtyService {
       // every exec and every scratch attempt.
       for (const t of [...terminals.values()]) discard(t);
       git?.closeAll();
+      killVets();
     }
   };
 
@@ -400,6 +442,7 @@ export function createPtyService(options: PtyServiceOptions): PtyService {
       for (const t of terminals.values()) killTerminal(t, "SIGKILL");
       for (const t of terminals.values()) t.subs.forEach((d) => d.dispose());
       git?.closeAll();
+      killVets();
       terminals.clear();
       for (const subs of channelSubs.values()) subs.forEach((d) => d.dispose());
       channelSubs.clear();

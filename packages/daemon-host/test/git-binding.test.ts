@@ -184,3 +184,19 @@ test("a drift refusal other than git_drift, and a DaemonError git_drift only, re
   const raw = new Error("x");
   await assert.rejects(drift(raw), (e: unknown) => e === raw);
 });
+
+test("S4 part 1: runHooks on over a pty process that cannot run pre-push refuses pushPlan and push E_UNAVAILABLE before any git call", async () => {
+  const calls: string[] = [];
+  const ptyRunner = { run: async (r: GitRunRequest): Promise<GitRunResult> => (calls.push(r.context), { code: 0, stdout: "", stderr: "" }) };
+  const call = { workspaceId: "w", worktree: { workTree: path.resolve("/w"), gitDir: path.resolve("/w/.git") }, remote: "origin", branch: "axis/feat", baseSha: "a".repeat(40) };
+  const isHooks = (e: unknown): boolean => (e as { code?: string; reason?: string }).code === "E_UNAVAILABLE" && (e as { reason?: string }).reason === "hooks_unavailable";
+  const runs = { hasActiveRun: () => false };
+  const on = createGitOperations({ git: createGitPort({ ...base, runHooks: true, scanner, ptyRunner }), runs, pushHooksUnavailable: true });
+  await assert.rejects(on.planPush(call), isHooks);
+  await assert.rejects(on.executePush(call, { tip: "a".repeat(40), digest: "b".repeat(64) }), isHooks);
+  assert.deepEqual(calls, [], "nothing ran");
+  // Hooks off, or a runner that can run them (a test fake): not refused here (the plan then fails on the missing repository instead).
+  for (const ops of [createGitOperations({ git: createGitPort({ ...base, scanner, ptyRunner }), runs, pushHooksUnavailable: true }), createGitOperations({ git: createGitPort({ ...base, runHooks: true, scanner, ptyRunner }), runs })]) {
+    await assert.rejects(ops.planPush(call), (e: unknown) => !isHooks(e));
+  }
+});

@@ -7,12 +7,14 @@
 // visible specifier. The guarantee that matters is the bundle-time module-graph check (scripts/code-oss/check-daemon-graph.mjs), which reads what esbuild really resolved.
 export { importSpecifiers, unsafeForms, rewriteSpecifiers, scanModules } from "./stage-ast.mjs";
 import { listenerBuiltinRefusal } from "./web-rules.mjs";
+import { egressBuiltinRefusal } from "./egress-rules.mjs";
 export { LISTENER_BUILTINS, LISTENER_FILE, WEB_HOST_DIR } from "./web-rules.mjs";
 
 /**
  * Node built-ins that load or run code by other means than a module specifier. No package needs them, except the
  * listed ones: `node:worker_threads` (MessageChannel only, enforced on the parse) for the daemon's in-process
- * transport, and `node:child_process` for the packages that spawn processes. Judged on `src/` files.
+ * transport. `node:cluster` forks a process that runs a chosen module. `node:child_process` is confined to named files
+ * (not packages) by egress-rules.mjs. Judged on `src/` files.
  */
 export const LOADER_BUILTINS = new Map([
   ["node:module", new Set()],
@@ -22,8 +24,7 @@ export const LOADER_BUILTINS = new Map([
   ["node:inspector", new Set()],
   ["node:wasi", new Set()],
   ["node:worker_threads", new Set(["daemon"])],
-  // Runs programs: only the packages that spawn processes today. A new one needs an ADR 0005 amendment.
-  ["node:child_process", new Set(["audit", "broker", "git-ops", "git-snapshot", "worktrees"])],
+  ["node:cluster", new Set()],
 ]);
 
 /** Subpaths of `@axis/*` that only some packages may import (ADR 0005 D2; mirrors test/packages/imports.test.mjs). */
@@ -112,6 +113,8 @@ export function classifySpecifier(spec, pkg, exportsOf, fileRel = null, targetOf
     if (only !== undefined && !only.has(pkg)) throw `${spec} loads or runs code without a module specifier and is not allowed${only.size > 0 ? ` outside ${[...only].join(", ")}` : ""}`;
     const listener = listenerBuiltinRefusal(spec, fileRel === null ? null : `${pkg}/${fileRel}`);
     if (listener !== null) throw listener;
+    const egress = egressBuiltinRefusal(spec, fileRel === null ? null : `${pkg}/${fileRel}`);
+    if (egress !== null) throw egress;
     return { kind: "node" };
   }
   if (spec.startsWith("@axis/")) {
