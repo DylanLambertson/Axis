@@ -291,3 +291,57 @@ test("no attacker text reaches an audit row, a log line, an error or the port re
   assert.deepEqual(Object.keys(r.audit.find((e) => e.action === "forge.pull_requests")?.payload ?? {}).sort(), ["invalidRows", "projectId", "rows", "state", "trigger"]);
   assert.ok(r.logs.every((l) => /^forge: state=[a-z_]+ exit=(none|\d+)$/.test(l)), r.logs.join("|"));
 });
+
+test("view with no cache inside the 15 s floor answers busy and sends nothing, whatever the trigger", async () => {
+  const r = rig();
+  await confirm(r);
+  await r.svc.pullRequests("p1", "view");
+  // A re-pin clears the cache; the floor still holds for the next view.
+  await r.svc.pinRepository("p1", { host: "github.com", owner: "acme", repo: "app" });
+  r.now += 5_000;
+  const a = await r.svc.pullRequests("p1", "view");
+  assert.deepEqual([a.state, a.retryAfterMs, r.sent.length], ["busy", 10_000, 1]);
+  valid(a);
+  r.now += 10_000;
+  assert.equal((await r.svc.pullRequests("p1", "view")).state, "ok");
+  assert.equal(r.sent.length, 2);
+});
+
+test("a pin changed while gh runs: the exec is audited and logged, its answer is not cached or returned, and no old candidate is offered", async () => {
+  const r = rig();
+  await confirm(r);
+  let release: () => void = () => {};
+  r.reply = (req) => new Promise((res) => (release = () => res({ t: "forge-result", req: req.req, exit: 1, class: "auth_missing", stdout: "", truncated: false })));
+  const pending = r.svc.pullRequests("p1", "user");
+  await new Promise((res) => setImmediate(res));
+  r.origin = { kind: "url", url: "https://github.com/acme/other.git" };
+  await r.svc.pinRepository("p1", { host: "github.com", owner: "acme", repo: "other" });
+  r.now += 3_000;
+  release();
+  const a = await pending;
+  assert.deepEqual(a, { state: "busy", repository: { host: "github.com", owner: "acme", repo: "other" }, retryAfterMs: 12_000 });
+  valid(a);
+  assert.deepEqual(r.audit.map((e) => e.action).sort(), ["forge.pin", "forge.pin", "forge.pull_requests"]);
+  assert.equal(r.audit.filter((e) => e.action === "forge.pull_requests").length, 1, "the exec is audited");
+  assert.equal(r.logs.length, 1, "and logged");
+  r.now += 12_000;
+  r.reply = (req) => ({ t: "forge-result", req: req.req, exit: 0, class: "none", stdout: "[]", truncated: false });
+  const next = await r.svc.pullRequests("p1", "view");
+  assert.equal(next.state, "ok", "the old answer was not cached under the new pin, and its auth failure set no latch");
+  assert.equal(r.sent.length, 2);
+  assert.deepEqual(r.sent[1], { t: "forge-list", req: "r2", host: "github.com", owner: "acme", repo: "other" });
+});
+
+test("a request id outside the schema is never sent, and a reply that throws while read is gh_failed", async () => {
+  const bad = rig({ requestId: () => "bad id!" });
+  await confirm(bad);
+  assert.equal((await bad.svc.pullRequests("p1", "user")).state, "gh_failed");
+  assert.equal(bad.sent.length, 0);
+  assert.equal(bad.audit.filter((e) => e.action === "forge.pull_requests").length, 1);
+  const r = rig();
+  await confirm(r);
+  r.reply = () => ({ get t(): string { throw new Error(CANARY); } });
+  const a = await r.svc.pullRequests("p1", "user");
+  assert.equal(a.state, "gh_failed");
+  assert.equal(JSON.stringify([r.audit, r.logs]).includes(CANARY), false);
+});

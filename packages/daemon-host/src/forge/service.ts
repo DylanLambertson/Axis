@@ -4,7 +4,9 @@ import { parseRemote } from "@axis/git-ops";
 import {
   FORGE_HOST,
   forgeReplySchema,
+  forgeListRequestSchema,
   type ForgeListRequest,
+  type ForgeRefusalReason,
   type ForgeRepository,
   type ForgeResponse,
   type ForgeState,
@@ -66,7 +68,6 @@ export interface ForgeServiceDeps {
   readonly limits?: Partial<ForgeLimits>;
 }
 
-export type ForgeRefusalReason = "not_found" | "candidate_changed";
 /** A refusal with a closed reason and a fixed message: never any text from a remote, a pull request or `gh`. */
 export class ForgeRefusal extends Error {
   constructor(readonly reason: ForgeRefusalReason) {
@@ -127,7 +128,13 @@ export function createForgeService(deps: ForgeServiceDeps): ForgeService {
   };
 
   const mapReply = (raw: unknown, req: string, pin: ForgeRepository): { answer: Answer; exit: number | null } => {
-    const parsed = forgeReplySchema.safeParse(raw);
+    let parsed: ReturnType<typeof forgeReplySchema.safeParse>;
+    try {
+      parsed = forgeReplySchema.safeParse(raw);
+    } catch {
+      // A getter or Proxy that throws while being read is a malformed reply too (review S1a N3).
+      return { answer: { state: "gh_failed", repository: pin }, exit: null };
+    }
     if (!parsed.success || parsed.data.req !== req) return { answer: { state: "gh_failed", repository: pin }, exit: null };
     const reply = parsed.data;
     if (reply.t === "forge-failed") {
@@ -160,24 +167,20 @@ export function createForgeService(deps: ForgeServiceDeps): ForgeService {
   const exec = async (projectId: string, st: ProjectState, pin: ForgeRepository, port: ForgeListPort, trigger: Trigger): Promise<Answer> => {
     const at = deps.monotonic();
     st.lastExec = at;
-    const req = deps.requestId();
-    let raw: unknown;
-    let failed = false;
-    try {
-      raw = await port.list({ t: "forge-list", req, host: FORGE_HOST, owner: pin.owner, repo: pin.repo });
-    } catch {
-      failed = true;
+    // The request is checked against the shared schema before it leaves (review S1a N4): a bad id is a bug, never sent.
+    const request = forgeListRequestSchema.safeParse({ t: "forge-list", req: deps.requestId(), host: FORGE_HOST, owner: pin.owner, repo: pin.repo });
+    let outcome: { answer: Answer; exit: number | null };
+    if (!request.success) {
+      outcome = { answer: { state: "gh_failed", repository: pin }, exit: null };
+    } else {
+      try {
+        outcome = mapReply(await port.list(request.data), request.data.req, pin);
+      } catch {
+        outcome = { answer: { state: "unavailable", repository: pin }, exit: null };
+      }
     }
-    const { answer, exit } = failed ? { answer: { state: "unavailable" as const, repository: pin }, exit: null } : mapReply(raw, req, pin);
-    // A pin changed while `gh` ran: the answer is for the old repository and is dropped.
-    if (st.pin === undefined || !same(st.pin, pin)) return { state: "repository_unconfirmed", ...(st.pin === undefined ? {} : { repository: st.pin }), candidate: pin };
-    if (AUTH_STATES.has(answer.state)) authLatch = answer.state;
-    if (answer.state === "timeout") st.timeoutLatch = true;
-    if (answer.state === "ok") {
-      authLatch = undefined;
-      st.timeoutLatch = false;
-    }
-    st.cache = { answer, at };
+    const { answer, exit } = outcome;
+    // Every exec is logged and audited with the state it produced, whatever happens to its answer next (review S1a SF-2).
     deps.log?.(`forge: state=${answer.state} exit=${exit === null ? "none" : String(exit)}`);
     deps.audit.append({
       actor: "user",
@@ -186,6 +189,19 @@ export function createForgeService(deps: ForgeServiceDeps): ForgeService {
       outcome: answer.state === "ok" ? "success" : "failure",
       payload: { projectId, trigger, state: answer.state, rows: answer.rows?.length ?? 0, invalidRows: answer.invalidRows ?? 0 },
     });
+    // The pin changed while `gh` ran (any re-pin, even a case-only one, is a new object): the answer is for the repository
+    // that was pinned before. It is neither cached nor returned, and no latch moves; the caller is told to ask again.
+    if (st.pin !== pin) {
+      const retryAfterMs = Math.max(0, Math.ceil(limits.minIntervalMs - (deps.monotonic() - at)));
+      return { state: "busy", ...(st.pin === undefined ? {} : { repository: st.pin }), retryAfterMs };
+    }
+    if (AUTH_STATES.has(answer.state)) authLatch = answer.state;
+    if (answer.state === "timeout") st.timeoutLatch = true;
+    if (answer.state === "ok") {
+      authLatch = undefined;
+      st.timeoutLatch = false;
+    }
+    st.cache = { answer, at };
     return answer;
   };
 

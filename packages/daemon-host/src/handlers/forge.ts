@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { DaemonError, type Handler, type HandlerContext } from "@axis/daemon";
-import { FORGE_CONTRACT, FORGE_VERSION, forgeMethods, type ForgeMethod, type ForgeRequest } from "@axis/protocol";
+import { FORGE_CONTRACT, FORGE_REFUSAL_MESSAGE, FORGE_REFUSALS, FORGE_VERSION, forgeMethods, isForgeRefusal, type ForgeMethod, type ForgeRequest } from "@axis/protocol";
 import { ForgeRefusal, type ForgeService } from "../forge/service.js";
 import type { HandlerRegistrar } from "./anchor-guard.js";
 
@@ -14,15 +14,17 @@ export interface ForgeHandlerDeps {
   readonly service: ForgeService;
 }
 
-export const FORGE_REFUSAL_MESSAGE = "The forge request was refused.";
-
-const fail = (code: "E_CANCELLED" | "E_INTERNAL" | "E_NOT_FOUND" | "E_CONFLICT", reason?: string): never => {
+const fail = (code: "E_CANCELLED" | "E_INTERNAL" | keyof typeof FORGE_REFUSALS, reason?: string): never => {
   throw new DaemonError(code, code === "E_CANCELLED" ? "The request was cancelled." : code === "E_INTERNAL" ? "Request failed" : FORGE_REFUSAL_MESSAGE, reason === undefined ? undefined : { reason });
 };
 
 export function toForgeError(e: unknown): never {
   if (e instanceof DaemonError) throw e;
-  if (e instanceof ForgeRefusal) return e.reason === "not_found" ? fail("E_NOT_FOUND", "not_found") : fail("E_CONFLICT", "candidate_changed");
+  if (e instanceof ForgeRefusal) {
+    // The code comes from the protocol's closed table; a reason outside it is an internal error, never sent.
+    const code = (Object.keys(FORGE_REFUSALS) as (keyof typeof FORGE_REFUSALS)[]).find((c) => isForgeRefusal(c, e.reason));
+    return code === undefined ? fail("E_INTERNAL") : fail(code, e.reason);
+  }
   return fail("E_INTERNAL");
 }
 

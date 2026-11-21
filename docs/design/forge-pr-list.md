@@ -38,7 +38,7 @@ The process start goes through the injected `ExecFn`.
 
   ```
   <ghPath> pr list --repo=github.com/<owner>/<repo> --state=open --author=@me --limit=50
-           --json=number,title,headRefName,author,isDraft,isCrossRepository,headRepositoryOwner,reviewDecision,statusCheckRollup,updatedAt
+           --json=number,title,headRefName,author,isDraft,isCrossRepository,headRepositoryOwner,reviewDecision,statusCheckRollup
   ```
 
   Each value is joined to its flag (`--repo=...`), so nothing can be read as a flag.
@@ -206,13 +206,15 @@ The parse happens in the daemon, from `forge-result.stdout`. `truncated` gives `
 | `author.login` | GitHub login pattern; bots as `app/<slug>` (gh's form for apps), reachable only with the fallback template of §1 |
 | `isDraft` | boolean |
 | `reviewDecision` | one of `APPROVED`, `CHANGES_REQUESTED`, `REVIEW_REQUIRED`, empty; anything else is `unknown` |
-| `updatedAt` | ISO 8601, at most 40 characters |
 
 - `statusCheckRollup` is reduced to one closed value: `passing`, `failing`, `pending`, `none` or `unknown`. At most 200 entries per row are **read**, the rest ignored; `gh` requests at most 100.
 - **Display text.** Title, branch and logins are prepared in the daemon:
   - NFC;
   - then removal of C0 and C1 controls (including ESC, so ANSI and OSC 8 sequences lose their introducer), bidi overrides and isolates (U+202A to U+202E, U+2066 to U+2069), `\p{Cf}`, and line and paragraph separators;
-  - truncation with an ellipsis, to 200 code points for a title and 120 for a branch.
+  - truncation with an ellipsis, to 200 UTF-16 units for a title and 120 for a branch, cut on a code point boundary so no lone surrogate is left (review S1a N2, SF-4).
+  - the stripping runs before NFC, so a removed character between a base and its mark leaves the composed form (review S1a N1).
+- **Owner compare:** the head owner must match the ASCII GitHub login pattern and equal the pin under an ASCII-only case fold; no Unicode or compatibility fold (review S1a SF-1).
+- **A re-pin while `gh` runs:** the exec is audited and logged with its state, but its answer is neither cached nor returned and no latch moves; the reply is `busy` with the new pin and `retryAfterMs` (review S1a SF-2).
 - **Rendering.** The renderer shows these as **plain text only**. The closed badges (draft, checks, review) sit in a fixed column, visually apart from the title, and title text is never placed where a state is shown (review N6: a title such as "✅ Approved · checks passing" must not pass for a badge).
 - **Who sees it.** The user's dashboard only. The policy row allows the `user` principal. In v1 no agent or model context receives the list. If a later ticket opens it to agents, they get only the closed scalars (number, draft, checks, review, branch-is-axis), as PV-M0-tainted data with a named source, never titles or logins.
 

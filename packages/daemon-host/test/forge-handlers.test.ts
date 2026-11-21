@@ -3,7 +3,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { HandlerContext } from "@axis/daemon";
-import { FORGE_REFUSAL_MESSAGE, ForgeRefusal, createForgeHandlers, type ForgeService } from "../src/index.js";
+import { FORGE_REASONS, FORGE_REFUSAL_MESSAGE, FORGE_REFUSALS, forgeRefusalDetailsSchema } from "@axis/protocol";
+import { ForgeRefusal, createForgeHandlers, toForgeError, type ForgeService } from "../src/index.js";
 
 const CANARY = "CANARY51ab";
 const ctx = (identity: Record<string, unknown>, aborted = false): HandlerContext => {
@@ -49,4 +50,25 @@ test("refusals map to closed codes; any other error or an answer outside the sch
   assert.equal(shape, "E_INTERNAL|Request failed|undefined");
   const noRows = createForgeHandlers({ service: service({ pullRequests: async () => ({ state: "ok" }) as never }) });
   assert.ok((await outcome(noRows.pullRequests(ctx(USER), { projectId: "p", trigger: "user" } as never))).startsWith("E_INTERNAL|"), "ok without rows is refused by the schema");
+});
+
+test("every refusal reason the service can throw is in the protocol's closed table, under its code", () => {
+  const seen: string[] = [];
+  for (const reason of FORGE_REASONS) {
+    try {
+      toForgeError(new ForgeRefusal(reason));
+    } catch (e) {
+      const x = e as { code: string; message: string; details: unknown };
+      assert.ok((FORGE_REFUSALS[x.code as keyof typeof FORGE_REFUSALS] as readonly string[] | undefined)?.includes(reason), `${reason} under ${x.code}`);
+      assert.equal(forgeRefusalDetailsSchema.safeParse(x.details).success, true);
+      assert.equal(x.message, FORGE_REFUSAL_MESSAGE);
+      seen.push(reason);
+    }
+  }
+  assert.deepEqual(seen.sort(), ["candidate_changed", "not_found"]);
+  try {
+    toForgeError(new ForgeRefusal("made_up" as never));
+  } catch (e) {
+    assert.equal((e as { code: string }).code, "E_INTERNAL", "a reason outside the table never leaves");
+  }
 });

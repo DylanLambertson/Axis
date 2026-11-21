@@ -29,7 +29,8 @@ const ELLIPSIS = "…";
 
 /** Plain display text of at most `max` UTF-16 units plus the ellipsis of a cut; total for any string. */
 export function forgeDisplay(raw: string, max: number): string {
-  const clean = raw.normalize("NFC").replace(STRIP, "");
+  // Strip first, then compose: a removed character between a base and its combining mark must not leave the pair decomposed.
+  const clean = raw.replace(STRIP, "").normalize("NFC");
   if (clean.length <= max) return clean;
   let out = "";
   for (const cp of clean) {
@@ -55,13 +56,17 @@ const keptRowSchema = z.object({
 const own = (o: object, k: string): unknown => (Object.hasOwn(o, k) ? (o as Record<string, unknown>)[k] : undefined);
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
+/** GitHub owner logins are ASCII: anything else is not a match, and the fold is ASCII-only (no Kelvin sign or fullwidth letter can fold onto one). */
+const OWNER_LOGIN = /^[A-Za-z0-9-]{1,39}$/;
+const asciiLower = (s: string): string => s.replace(/[A-Z]/g, (c) => String.fromCharCode(c.charCodeAt(0) + 32));
+
 /** Stage 2: is this row the user's same-repository pull request on an `axis/` branch? Reads three fields only. */
 function kept(row: Record<string, unknown>, owner: string): boolean {
   if (own(row, "isCrossRepository") !== false) return false;
   const head = own(row, "headRepositoryOwner");
   const login = isRecord(head) ? own(head, "login") : undefined;
   const branch = own(row, "headRefName");
-  return typeof login === "string" && login.toLowerCase() === owner.toLowerCase() && typeof branch === "string" && branch.startsWith("axis/");
+  return typeof login === "string" && OWNER_LOGIN.test(login) && asciiLower(login) === asciiLower(owner) && typeof branch === "string" && branch.startsWith("axis/");
 }
 
 const ROLLUP_READ = 200;

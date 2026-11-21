@@ -48,6 +48,10 @@ test("only same-repository rows of the pinned owner on axis/ branches are kept",
   ];
   assert.equal(ok(dropped).rows.length, 0);
   assert.equal(ok([row({ headRepositoryOwner: { login: "ACME" } })]).rows.length, 1, "owners compare case-insensitively");
+  // ASCII only: no Unicode case or compatibility fold can make another login equal the pin (review S1a SF-1).
+  const kelvin = parseForgeList(JSON.stringify([row({ headRepositoryOwner: { login: "\u212aelvin" } })]), { host: "github.com", owner: "kelvin", repo: "app" });
+  assert.deepEqual(kelvin.kind === "ok" ? kelvin.rows.length : -1, 0, "Kelvin sign");
+  for (const login of ["\uff21cme", "acme\u0301", "acm\u0435", "acme ", "ac_me"]) assert.equal(ok([row({ headRepositoryOwner: { login } })]).rows.length, 0, login);
   // A "__proto__" key in the JSON is an own property named so, never the row's fields.
   const smuggled = `[{"__proto__":${JSON.stringify(row())}}]`;
   assert.equal(ok(JSON.parse(smuggled)).rows.length, 0);
@@ -73,6 +77,9 @@ test("the outer layer is strict: one array of at most 50 objects", () => {
   assert.deepEqual(parse(Array.from({ length: 51 }, () => row())), { kind: "invalid" });
   assert.equal(ok(Array.from({ length: 50 }, () => row())).incomplete, true);
   assert.equal(ok(Array.from({ length: 49 }, () => row())).incomplete, false);
+  // The window is the gh output, not the kept rows: 50 rows with forks among them is still a full window (review S1a SF-4).
+  const mixed = ok([...Array.from({ length: 45 }, () => row({ isCrossRepository: true })), ...Array.from({ length: 5 }, () => row())]);
+  assert.deepEqual([mixed.rows.length, mixed.incomplete], [5, true]);
 });
 
 test("bots are accepted as app/<slug> and login[bot]", () => {
@@ -92,6 +99,12 @@ test("display text: controls, ANSI and OSC 8, bidi, zero-width and separators ar
   const astral = forgeDisplay("\u{1f600}".repeat(150), FORGE_TITLE_CHARS);
   assert.equal(astral, `${"\u{1f600}".repeat(100)}…`);
   assert.equal(forgeDisplay("y".repeat(FORGE_TITLE_CHARS), FORGE_TITLE_CHARS), "y".repeat(FORGE_TITLE_CHARS), "exactly the limit is not cut");
+  // An astral character straddling the 200th UTF-16 unit is left out whole: no lone surrogate (review S1a SF-4).
+  const straddle = forgeDisplay(`${"y".repeat(FORGE_TITLE_CHARS - 1)}\u{1f600}tail`, FORGE_TITLE_CHARS);
+  assert.equal(straddle, `${"y".repeat(FORGE_TITLE_CHARS - 1)}\u2026`);
+  assert.equal(displayTextSchema(FORGE_TITLE_CHARS + 1).safeParse(straddle).success, true);
+  // Strip, then compose: a zero-width character between a base and its mark leaves the composed form (review S1a N1).
+  assert.equal(forgeDisplay("e\u200b\u0301", FORGE_TITLE_CHARS), "\u00e9");
   const r = ok([row({ title: hostile, headRefName: `axis/${"b".repeat(240)}` })]);
   assert.equal(r.rows[0]?.title, shown);
   assert.equal(r.rows[0]?.branch.length, FORGE_BRANCH_CHARS + 1);

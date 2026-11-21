@@ -84,6 +84,26 @@ export const forgePinRepositoryRequestSchema = guarded(
 );
 export const forgePinRepositoryResponseSchema = guarded(z.strictObject({ repository: forgeRepositorySchema }));
 
+/**
+ * The closed refusals of `axis.forge/1` (review S1a SF-3): every error a forge handler returns other than `E_INTERNAL` and
+ * `E_CANCELLED` is one of these, with `details: { reason }` and the fixed message, so nothing from a remote, a pull request
+ * or `gh` can reach an error.
+ */
+export const FORGE_REFUSALS = {
+  E_NOT_FOUND: ["not_found"],
+  E_CONFLICT: ["candidate_changed"],
+} as const;
+export type ForgeRefusalCode = keyof typeof FORGE_REFUSALS;
+export type ForgeRefusalReason = (typeof FORGE_REFUSALS)[ForgeRefusalCode][number];
+export const FORGE_REASONS = Object.values(FORGE_REFUSALS).flat();
+export const forgeRefusalDetailsSchema = z.strictObject({ reason: z.enum(FORGE_REASONS as [string, ...string[]]) });
+/** The one message text of every forge refusal. */
+export const FORGE_REFUSAL_MESSAGE = "The forge request was refused.";
+
+export function isForgeRefusal(code: string, reason: string): boolean {
+  return Object.hasOwn(FORGE_REFUSALS, code) && (FORGE_REFUSALS[code as ForgeRefusalCode] as readonly string[]).includes(reason);
+}
+
 export const forgeMethods = {
   pullRequests: {
     request: forgePullRequestsRequestSchema,
