@@ -6,8 +6,8 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { composerRunsMethods } from "@axis/protocol";
 import type { ValidRequest } from "@axis/providers";
-import { START } from "./composer-rig.js";
-import { ComposerRunHalt } from "../src/index.js";
+import { START, composerRig } from "./composer-rig.js";
+import { ComposerRunHalt, DEFAULT_COMMAND_LIMITS } from "../src/index.js";
 import { NODE, answerPending, approveCommand, approvalsOf, command, commandRig, eventually, fakeGuard, nodeRun, nodeScript, pending, posix, toolsOf } from "./composer-command-rig.js";
 
 // Ticket C3: `run_command` through the composer (PTY-2, PTY-4, command identity on the approval and the native line).
@@ -169,6 +169,17 @@ test("C3 PTY-4: output over the cap stops the command; the model gets a bounded,
   assert.ok(out.length < 1600, `bounded: ${out.length}`);
 });
 
+test("review cmd-bounds N3: a bound above its default refuses the binding at once, and the rig leaves nothing open", async () => {
+  for (const k of ["timeoutMs", "maxOutputBytes", "modelChars"] as const) {
+    const started = process.hrtime.bigint();
+    await assert.rejects(composerRig({ replies: [], commandLimits: { [k]: DEFAULT_COMMAND_LIMITS[k] + 1 } }), RangeError, k);
+    assert.ok(process.hrtime.bigint() - started < 30_000_000_000n, `${k}: refused within 30 s`);
+  }
+  // Each default itself is accepted by the binding.
+  const c = await composerRig({ replies: [], commandLimits: DEFAULT_COMMAND_LIMITS });
+  await c.cleanup();
+});
+
 test("C3 PTY-4: a command past its timeout is killed with its process group", { skip: !posix }, async (t) => {
   const r = resultsSeen();
   const pidFile = "grandchild.pid";
@@ -176,7 +187,7 @@ test("C3 PTY-4: a command past its timeout is killed with its process group", { 
   const c = await commandRig(t, { replies: [nodeRun(code), TEXT], commandGuard: fakeGuard(), commandLimits: { timeoutMs: 1500 }, onRequest: r.onRequest });
   const { run } = await c.service.start(START(c.workspaceId), new AbortController().signal);
   await approveCommand(c, run.runId);
-  await eventually(ended(c, run.runId));
+  await eventually(ended(c, run.runId), 1500, "the lowered timeout (1500 ms) stopping the command within 1500 polls");
   assert.match(r.seen[1]?.[0] ?? "", /^exit: none, ended: timeout\n/);
   const pid = Number(readFileSync(join(c.root, pidFile), "utf8"));
   const alive = (): boolean => {

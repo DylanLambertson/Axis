@@ -116,10 +116,18 @@ test("the result the model gets says how the command ended and holds both stream
   assert.equal(body, "\\u{3c}\\u{3e}".repeat(5));
 });
 
-test("command limits must be positive safe integers within the runner's bounds", () => {
+test("command limits must be positive safe integers at or below the defaults, even for a direct caller of the binding", () => {
   assert.deepEqual(commandLimits(undefined), DEFAULT_COMMAND_LIMITS);
-  assert.equal(commandLimits({ timeoutMs: 600_000 }).timeoutMs, 600_000);
-  for (const bad of [{ timeoutMs: 0 }, { timeoutMs: 600_001 }, { maxOutputBytes: 1.5 }, { modelChars: Number.NaN }, { maxOutputBytes: 16 * 1024 * 1024 + 1 }]) {
+  for (const k of ["timeoutMs", "maxOutputBytes", "modelChars"] as const) {
+    const d = DEFAULT_COMMAND_LIMITS[k];
+    assert.equal(commandLimits({ [k]: d })[k], d, k);
+    assert.equal(commandLimits({ [k]: 1 })[k], 1, k);
+    // Review cmd-bounds N3: the old ceilings (600 s, 16 MiB, 262,144) no longer apply; one above the default is refused.
+    for (const v of [d + 1, { timeoutMs: 600_000, maxOutputBytes: 16 * 1024 * 1024, modelChars: 262_144 }[k]]) {
+      assert.throws(() => commandLimits({ [k]: v }), RangeError, `${k}=${v}`);
+    }
+  }
+  for (const bad of [{ timeoutMs: 0 }, { maxOutputBytes: 1.5 }, { modelChars: Number.NaN }]) {
     assert.throws(() => commandLimits(bad as never), RangeError, JSON.stringify(bad));
   }
 });

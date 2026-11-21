@@ -86,6 +86,10 @@ export function senderLabel(s: Sender, directory: MessagingDirectory): { readonl
   return { name: bounded(s.agentId), kind: cliAgent ? "cli agent" : "composer agent", verified: s.verified, taintKind: cliAgent || !s.verified ? "cli" : "agent" };
 }
 
+/** The notice that a user message is held by a failing check (one per message; agents in the thread can read it too). */
+export const heldNotice = (messageId: string): string =>
+  `Axis could not check message ${messageId} for delivery because of an error in Axis. It stays queued and will be delivered once the error is fixed.`;
+
 const prefixed = (body: string): string => body.split("\n").map((line) => `| ${line}`).join("\n");
 
 export function createMessageDelivery(deps: MessageDeliveryDeps): MessageDelivery {
@@ -93,7 +97,7 @@ export function createMessageDelivery(deps: MessageDeliveryDeps): MessageDeliver
   const maxMessages = deps.maxMessages ?? 8;
   const maxText = deps.maxText ?? 65_536;
   const maxFailures = deps.maxFailures ?? 3;
-  /** Failed checks of user messages since host start, per recipient and message (bounded; see `held`). */
+  /** Failed checks of user messages since host start, per recipient and message, or -1 once told (bounded; see `held`). */
   const heldChecks = new Map<string, number>();
   // A throwing log hook must not end the run (it is called on paths that skip a candidate and go on).
   const report = (code: "notice_failed"): void => {
@@ -104,8 +108,11 @@ export function createMessageDelivery(deps: MessageDeliveryDeps): MessageDeliver
     }
   };
 
-  /** Post a system notice to the user in a message's thread (joining the user if room). Best effort: a failure is reported. */
-  function notify(m: { readonly id: string; readonly threadId: string }, body: string, once: boolean): void {
+  /**
+   * Post a system notice to the user in a message's thread (joining the user if room). Best effort: a failure is reported
+   * and returns false; true when posted or skipped (`once` and Axis already replied, or the thread is full).
+   */
+  function notify(m: { readonly id: string; readonly threadId: string }, body: string, once: boolean): boolean {
     try {
       store.transact(() => {
         if (once && store.systemReplied(m.id)) return;
@@ -128,25 +135,31 @@ export function createMessageDelivery(deps: MessageDeliveryDeps): MessageDeliver
           to: [{ principal: "user", counted: false }],
         });
       });
+      return true;
     } catch {
       report("notice_failed");
+      return false;
     }
   }
 
   /**
    * A user message whose check failed: never counted or quarantined (a fault of Axis must not set the user's own words
-   * aside), but after `maxFailures` failed checks since host start the user is told once, in the thread, that it is held
-   * (the notice is skipped when Axis already replied to that message, so a restart does not repeat it). The counts live
-   * in memory, at most 4,096 entries (cleared when full: a notice may then come later, never more than once).
+   * aside), but after `maxFailures` failed checks since host start the user is told, in the thread, that it is held. One
+   * notice per message, whatever the number of recipients (a fault that fails the check, such as a corrupt settings row,
+   * usually holds it for every recipient), so it names none; it is skipped when Axis already replied to that message, so
+   * a restart does not repeat it. A notice that cannot be posted is tried again at the next failed check. The counts live
+   * in memory, at most 4,096 entries (cleared when full: a notice may then come later, never twice).
    */
-  function held(m: MessageRecord, principal: string, agentId: string): void {
+  function held(m: MessageRecord, principal: string): void {
     const key = `${principal} ${m.id}`;
     if (!heldChecks.has(key) && heldChecks.size >= 4_096) heldChecks.clear();
-    const k = (heldChecks.get(key) ?? 0) + 1;
-    heldChecks.set(key, k);
-    if (k !== maxFailures) return;
-    notify(m, `Axis could not check message ${m.id} for delivery to agent ${agentId} because of an error in Axis, ${k} times. It stays queued and will be delivered once the error is fixed.`, true);
+    const k = heldChecks.get(key) ?? 0;
+    if (k < 0) return;
+    heldChecks.set(key, k + 1);
+    if (k + 1 < maxFailures) return;
+    if (notify(m, heldNotice(m.id), true)) heldChecks.set(key, -1);
   }
+
 
   /**
    * Count a failed delivery; at the limit quarantine the message for this recipient and tell the user in its thread. Three
@@ -211,7 +224,7 @@ export function createMessageDelivery(deps: MessageDeliveryDeps): MessageDeliver
             // A message from the user is never quarantined for a failing check (see `held`); it stays queued and is
             // looked at again at every boundary; nothing was leased or tainted for it. A failure after the lease (below)
             // is counted for every sender, so no message can end every run of the agent.
-            if (m !== undefined && senderSchema.safeParse(m.sender).data?.kind === "user") held(m, principal, agentId);
+            if (m !== undefined && senderSchema.safeParse(m.sender).data?.kind === "user") held(m, principal);
             else failed({ id: c.messageId, threadId: c.threadId }, principal, agentId, runId);
             continue;
           }
