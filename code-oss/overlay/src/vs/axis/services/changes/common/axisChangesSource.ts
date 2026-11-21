@@ -12,9 +12,10 @@ import { IAxisChanges, readChanges } from './axisChanges.js';
 
 /**
  * `idle`: no worktree. `notMounted`: the worktree is not in the window's folders.
- * `askFirst`: the user has closed repositories in the git extension, so this one may be one of
- * them; it is opened only when the user asks (`refresh`), because opening a closed repository
- * also forgets that the user closed it. `loading`: the repository is being looked up or
+ * `askFirst`: the user has closed repositories in the git extension, or it is not known yet
+ * whether they have (the git extension has not set its key), so this one may be one of them;
+ * it is opened only when the user asks (`refresh`), or once the key says none is closed
+ * (`reconsider`), because opening a closed repository also forgets that the user closed it. `loading`: the repository is being looked up or
  * opened. `unavailable`: the folder is not a repository root, or the git extension gave no
  * repository rooted at it (off, untrusted, still starting). `ready`: `changes` is the
  * repository's state.
@@ -24,16 +25,38 @@ export type AxisChangesStatus = 'idle' | 'notMounted' | 'askFirst' | 'loading' |
 /** What a folder's `.git` entry is, as far as the source needs to know. */
 export type AxisGitEntry = 'file' | 'directory' | 'none';
 
+/** An `IFileService.stat` result (or none, when the path does not exist) as an `AxisGitEntry`. */
+export function gitEntryOf(stat: { readonly isFile: boolean; readonly isDirectory: boolean } | undefined): AxisGitEntry {
+	return stat?.isFile ? 'file' : stat?.isDirectory ? 'directory' : 'none';
+}
+
+/** The git extension's context key: how many repositories the user has closed in this window (`extensions/git/src/model.ts`). */
+export const CLOSED_REPOSITORIES_KEY = 'git.closedRepositoryCount';
+
+/**
+ * Whether the user has closed repositories, from that key's value: `undefined` while it is not
+ * known yet (the git extension has not activated or scanned, so the key is unset), which the
+ * source treats like "yes" until the key is set.
+ */
+export function hasClosedRepositories(value: unknown): boolean | undefined {
+	return typeof value === 'number' ? value > 0 : undefined;
+}
+
 /**
  * True when a folder is a repository root git will not walk up from: its `.git` is a file (a
- * linked worktree's pointer) or a directory holding `HEAD`. An empty or half-deleted `.git`
- * directory is not enough: git would resolve a parent repository instead.
+ * linked worktree's pointer), or a directory with what git's `is_git_directory` needs, a `HEAD`
+ * file and the `objects` and `refs` directories. An empty or half-deleted `.git` directory is
+ * not enough: git would resolve a parent repository instead. (A `.git` file that points nowhere
+ * makes git fail, not walk up.)
  */
 export async function isRepositoryRoot(root: URI, entry: (uri: URI) => Promise<AxisGitEntry>): Promise<boolean> {
 	const git = joinPath(root, '.git');
 	switch (await entry(git)) {
 		case 'file': return true;
-		case 'directory': return await entry(joinPath(git, 'HEAD')) === 'file';
+		case 'directory': {
+			const [head, objects, refs] = await Promise.all([entry(joinPath(git, 'HEAD')), entry(joinPath(git, 'objects')), entry(joinPath(git, 'refs'))]);
+			return head === 'file' && objects === 'directory' && refs === 'directory';
+		}
 		case 'none': return false;
 	}
 }
@@ -85,13 +108,14 @@ export class AxisChangesSource extends Disposable {
 	/**
 	 * @param isMounted whether a folder is inside the window's folders.
 	 * @param isRoot whether a folder is a repository root (`isRepositoryRoot`).
-	 * @param hasClosedRepositories whether the user has closed repositories in the git extension.
+	 * @param closedRepositories whether the user has closed repositories in the git extension,
+	 * `undefined` while that is not known (`hasClosedRepositories`).
 	 */
 	constructor(
 		private readonly git: IAxisGitReader,
 		private readonly isMounted: (root: URI) => boolean,
 		private readonly isRoot: (root: URI) => Promise<boolean>,
-		private readonly hasClosedRepositories: () => boolean,
+		private readonly closedRepositories: () => boolean | undefined,
 	) {
 		super();
 	}
@@ -117,6 +141,11 @@ export class AxisChangesSource extends Disposable {
 		return this.open(this._root, true);
 	}
 
+	/** Looks again at a root that waits for the user (`askFirst`): the closed-repository count changed. */
+	reconsider(): Promise<void> {
+		return this._status === 'askFirst' ? this.open(this._root, false) : Promise.resolve();
+	}
+
 	private async open(root: URI | undefined, retry: boolean): Promise<void> {
 		const generation = ++this.generation;
 		this.listener.clear();
@@ -136,7 +165,7 @@ export class AxisChangesSource extends Disposable {
 			this.set('unavailable', NO_CHANGES);
 			return;
 		}
-		if (this.hasClosedRepositories() && !retry) {
+		if (this.closedRepositories() !== false && !retry) {
 			this.set('askFirst', NO_CHANGES);
 			return;
 		}

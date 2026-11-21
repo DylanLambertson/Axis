@@ -34,17 +34,16 @@ export const contracts: Table = Object.freeze({
   [`${REVIEW_CONTRACT}/${REVIEW_VERSION}`]: frozen(reviewMethods),
   [`${COMPOSER_RUNS_CONTRACT}/${COMPOSER_RUNS_VERSION}`]: frozen(composerRunsMethods),
   [`${EVENTS_CONTRACT}/${EVENTS_VERSION}`]: frozen(eventsMethods),
+  [`${MESSAGES_CONTRACT}/${MESSAGES_VERSION}`]: frozen(messagesMethods),
 });
 
 /**
  * Contracts whose schemas are agreed but that no host serves yet. `lookupMethod` never sees them, so no client can call one
  * and no daemon can serve one; the daemon-host coverage check holds a planned policy row for each of their methods, at the
  * same tier. A contract moves to `contracts` in the change that registers its handlers, its rows moving with it
- * (`axis.messages/1`: ticket PV-M3). A key is never in both tables.
+ * (`axis.messages/1` moved with ticket PV-M3). A key is never in both tables. Empty while nothing is planned.
  */
-export const plannedContracts: Table = Object.freeze({
-  [`${MESSAGES_CONTRACT}/${MESSAGES_VERSION}`]: frozen(messagesMethods),
-});
+export const plannedContracts: Table = Object.freeze({});
 
 const SIDE_EFFECTS: ReadonlySet<unknown> = new Set(["none", "read", "write", "network", "destructive", "credential"]);
 const IDEMPOTENCY: ReadonlySet<unknown> = new Set(["none", "optional", "required"]);

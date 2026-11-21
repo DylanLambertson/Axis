@@ -187,8 +187,8 @@ export async function askGit(i: AskInput): Promise<GitView> {
     i.budget.tick();
     return new Promise((done) => {
       const timeout = Math.max(1, Math.floor(Math.min(TIMEOUT_MS, i.budget.remaining())));
-      const opts = { cwd, env, encoding: "buffer" as const, maxBuffer, timeout, windowsHide: true, ...(i.budget.signal === undefined ? {} : { signal: i.budget.signal }) };
-      execFile(i.gitPath, [...base, ...argv], opts, (err, stdout) => done({ ok: err === null, missing: (err as NodeJS.ErrnoException | null)?.code === "ENOENT", stdout: Buffer.isBuffer(stdout) ? stdout : Buffer.alloc(0) }));
+      const signal = i.budget.signal;
+      execFile(i.gitPath, [...base, ...argv], { cwd, env, encoding: "buffer", maxBuffer, timeout, windowsHide: true, ...(signal === undefined ? {} : { signal }) }, (err, stdout) => done({ ok: err === null, missing: (err as NodeJS.ErrnoException | null)?.code === "ENOENT", stdout: Buffer.isBuffer(stdout) ? stdout : Buffer.alloc(0) }));
     });
   };
   const guard = async (argv: readonly string[]): Promise<Out> => {
