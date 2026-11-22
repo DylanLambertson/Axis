@@ -44,6 +44,10 @@ test("a plugin identity missing or bending any rule is refused", () => {
     ["empty id", { actor: "plugin:", actorId: "plugin:" }],
     ["digit first", { actor: "plugin:1a", actorId: "plugin:1a" }],
     ["empty word", { actor: "plugin:a..b", actorId: "plugin:a..b" }],
+    ["non-ASCII letter", { actor: "plugin:acm\u00e9", actorId: "plugin:acm\u00e9" }],
+    ["Cyrillic look-alike", { actor: "plugin:\u0430cme", actorId: "plugin:\u0430cme" }],
+    ["NUL", { actor: "plugin:acme\u0000", actorId: "plugin:acme\u0000" }],
+    ["trailing newline", { actor: "plugin:acme\n", actorId: "plugin:acme\n" }],
     ["user actor", { actor: "user", actorId: "local-user" }],
     ["a plugin actorId on another plugin", { actorId: "plugin:acme.boards" }],
   ];
