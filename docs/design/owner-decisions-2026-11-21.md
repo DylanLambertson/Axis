@@ -104,7 +104,7 @@ Taken by the project lead under the delegation above while reviewing `docs/secur
 | OI-6 | No silent plugin update: every update needs the user's confirmation in a main-built dialog, even with an empty permission diff (stricter than ADR 0008 decision 8). |
 | OI-7 | No plugin-callable method enumerates other plugins, views or windows. |
 | OI-8 | An integration or `axis.net` response over 4 MiB decoded is refused with `response_too_large`; nothing is returned, never a truncated response. |
-| OI-9 | Per plugin, a rolling-hour request count and byte budget for integration and `axis.net` requests, stored with the grant; past either, its calls are refused until the window passes; disclosed at install. |
+| OI-9 | Per plugin, a rolling-hour request count and byte budget for integration and `axis.net` requests, stored with the grant; past either, its calls are refused until the window passes; disclosed at install; PV-N1 sets the values, never raised later without a decision. |
 | OI-10 | Every tier-3 challenge a plugin raises (`runs.start` or an integration write) counts toward the OI-2 bound. |
 
 ## 7. What these decisions unblock
