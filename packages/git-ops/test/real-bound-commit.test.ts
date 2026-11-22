@@ -263,12 +263,17 @@ test("racing commits on one expected parent: exactly one wins, the other fails w
   // Both pass every check and build their commit; neither updates the ref until both are about to.
   let arrived = 0;
   let release: () => void = () => undefined;
-  const gate = new Promise<void>((res) => { release = res; setTimeout(res, 5000).unref(); });
+  // The timer is only a hang guard, never a condition: it is far above any loaded build, and when it fires the test
+  // fails by name below instead of letting the later count assertion explain a release that came too early.
+  let hung = false;
+  const gate = new Promise<void>((res) => { release = res; });
+  const guard = setTimeout(() => { hung = true; release(); }, 30_000);
   const deps = around(f, isDaemon("update-ref"), {
     every: true,
     before: async () => { if (++arrived === 2) release(); await gate; },
   });
-  const results = await Promise.allSettled([executeCommit(deps, a), executeCommit(deps, b)]);
+  const results = await Promise.allSettled([executeCommit(deps, a), executeCommit(deps, b)]).finally(() => clearTimeout(guard));
+  assert.equal(hung, false, "the second commit did not reach the ref update within the hang guard");
   assert.equal(arrived, 2, "both commits reached the ref update");
   const won = results.filter((r) => r.status === "fulfilled");
   const lost = results.filter((r) => r.status === "rejected");
