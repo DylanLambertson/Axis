@@ -14,7 +14,9 @@ import type { ComposerToolSpec } from "../ports/composer.js";
  * - **Offered only to a run with an agent.** The binding registers them only when `ComposerMessaging.agentOf` knows the
  *   run's agent; no run has one until PV-G4, so a forged call by name is the broker's `unknown_tool`.
  * - **Tiers (section 6.5).** `read_messages` is `read`; `send_message` is `write` (it changes Axis state), so a tainted
- *   run's send needs the user's approval (IAC-T), and the card shows the recipients, the thread and the whole body.
+ *   run's send needs the user's approval (IAC-T), and the card shows the recipients, the thread and the whole body; a send
+ *   whose card cannot show it whole (`MAX_PREVIEW_HEAD`, 2,048 escaped units with the header lines, or a scan finding
+ *   hiding it) is refused before any card is shown, `body_not_reviewable` (the model is told the limit in the description).
  * - **The model names no sender.** Strict schemas: recipients, body, thread and reply only. The sender, its project and
  *   its hop come from the run (`runCaller`).
  * - **Refusals keep their reason.** The service's closed reason (`queue_full`, `hop_limit`, `secret_found`, ...) reaches
@@ -40,7 +42,7 @@ export const MESSAGE_TOOL_SPECS: readonly ComposerToolSpec[] = Object.freeze([
   {
     name: SEND_MESSAGE,
     description:
-      "Send a plain-text message to other participants of your project: `recipients` is a list of `{ \"agent\": id }`, `{ \"group\": id }` or `{ \"user\": true }`. Without `threadId` it starts a new thread; with it, it posts into that thread (you must be a participant). `inReplyTo` names a message of that thread. Axis fills in who you are; the message may be refused (for example queue_full, rate_limited, hop_limit, secret_found).",
+      "Send a plain-text message to other participants of your project: `recipients` is a list of `{ \"agent\": id }`, `{ \"group\": id }` or `{ \"user\": true }`. Without `threadId` it starts a new thread; with it, it posts into that thread (you must be a participant). `inReplyTo` names a message of that thread. Axis fills in who you are; the message may be refused (for example queue_full, rate_limited, hop_limit, secret_found). Once this run has received messages or other untrusted input, every send needs the user's approval, and the user must be able to read it whole: a message longer than about 2,000 characters (with its recipients and thread), or one holding a secret, is then refused as body_not_reviewable; send a shorter one.",
     inputSchema: {
       type: "object",
       properties: {

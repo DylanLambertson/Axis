@@ -2,8 +2,8 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
-import { MAX_HOP, encodeMessagingId } from "@axis/protocol";
-import { READ_MESSAGES, SEND_MESSAGE, messagingReason, raisedHop, type MessageCaller } from "../src/index.js";
+import { MAX_BODY_CHARS, MAX_HOP, MAX_PREVIEW_HEAD, encodeMessagingId } from "@axis/protocol";
+import { READ_MESSAGES, SEND_MESSAGE, messagingReason, raisedHop, sendPreview, type MessageCaller } from "../src/index.js";
 import { approveAll, denyAll, deliveryRig, drive, type DeliveryRig } from "./messages-delivery-rig.js";
 
 // PV-M4: IAC-T source 2 (`read_messages`) and the run's received hop (design section 7.3), end to end.
@@ -32,6 +32,58 @@ test("a read taints the run before its result returns: a send in the SAME reply 
   assert.deepEqual(card?.preview?.taint?.sources.map((x) => [x.source, x.sender, x.ref, x.hop]), [["read_messages", "a2", m.messageId, 4]], "the card lists the read");
   assert.match(card?.preview?.content?.head ?? "", /^To: agent a2\nThread: new\n\ndone$/, "the card shows the recipients, the thread and the whole body");
   assert.deepEqual(hopsTo(r, "a2"), [5], "received hop 4, so the new thread's message is hop 5");
+});
+
+// Review 1 B1: the card's head holds MAX_PREVIEW_HEAD escaped units; a body plus its To/Thread lines must fit in it whole.
+const CAP = MAX_PREVIEW_HEAD - sendPreview({ recipients: [{ agent: "a2" }], body: "" }).length;
+const decisions = (r: DeliveryRig) => rows(r, "broker.decision").filter((p) => p["tool"] === SEND_MESSAGE).map((p) => [p["decision"], p["reason"] ?? null]);
+
+test("a tainted run's send one unit past what the card can show is refused before any card, with its own reason, not as a decline", async (t) => {
+  const r = await deliveryRig(t, { messaging: true, noDelivery: true });
+  const runId = r.run("a1");
+  await post(r, agent("a2"), "a1", "taint me");
+  const d = drive(r, runId, [[readMsgs(), sendTo("a2", "x".repeat(CAP + 1))], []]);
+  assert.equal(await denyAll(r, d.end), 0, "never put to the user");
+  await d.end;
+  assert.match(d.results[1]?.[1] ?? "", /^The call was refused \(body_not_reviewable\)\./);
+  assert.deepEqual(d.notes, [], "no card was shown");
+  assert.deepEqual(decisions(r), [["deny", "body-not-reviewable"]], "audited as its own refusal");
+  assert.deepEqual(hopsTo(r, "a2"), [], "nothing sent");
+});
+
+test("a tainted run's send exactly at the card's bound is shown whole and sendable", async (t) => {
+  const r = await deliveryRig(t, { messaging: true, noDelivery: true });
+  const runId = r.run("a1");
+  await post(r, agent("a2"), "a1", "taint me");
+  const body = "y".repeat(CAP);
+  const d = drive(r, runId, [[readMsgs(), sendTo("a2", body)], []]);
+  assert.equal(await approveAll(r, d.end), 1);
+  const card = d.notes.find((n) => n.state === "requested")?.preview?.content;
+  assert.equal(card?.truncated, false);
+  assert.equal(card?.head.length, MAX_PREVIEW_HEAD);
+  assert.ok(card?.head.endsWith(`\n\n${body}`), "the whole body is on the card");
+  assert.deepEqual(r.m.service.read(agent("a2"), {}).messages.map((m) => m.body.text.length), [CAP]);
+});
+
+test("a tainted run's send whose text a scan finding would hide on the card is refused the same way", async (t) => {
+  const r = await deliveryRig(t, { messaging: true, noDelivery: true });
+  r.c.redactor.registerSecret("plum orchard quietly");
+  const runId = r.run("a1");
+  await post(r, agent("a2"), "a1", "taint me");
+  const d = drive(r, runId, [[readMsgs(), sendTo("a2", "short, but holds plum orchard quietly")], []]);
+  assert.equal(await denyAll(r, d.end), 0);
+  await d.end;
+  assert.match(d.results[1]?.[1] ?? "", /^The call was refused \(body_not_reviewable\)\./);
+  assert.deepEqual(decisions(r), [["deny", "body-not-reviewable"]]);
+});
+
+test("an untainted run is unaffected: a send of the full body bound is sent with no card", async (t) => {
+  const r = await deliveryRig(t, { messaging: true, noDelivery: true });
+  const runId = r.run("a1");
+  const d = drive(r, runId, [[sendTo("a2", "z".repeat(MAX_BODY_CHARS))], []]);
+  assert.equal(await denyAll(r, d.end), 0);
+  assert.deepEqual(await d.end, { state: "REVIEWING", reason: null });
+  assert.deepEqual(r.m.service.read(agent("a2"), {}).messages.map((m) => m.body.text.length), [MAX_BODY_CHARS]);
 });
 
 test("a message from the user read by the run does not taint it or raise its hop; a send in the same reply needs no approval", async (t) => {

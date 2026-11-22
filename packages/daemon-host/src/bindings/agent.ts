@@ -167,6 +167,8 @@ const PREVIEWED: ReadonlyMap<string, { readonly args: z.ZodType; readonly conten
 /** Tools that are never put to the user: a read the broker asks about (a path into the git directory) is refused, not declined. */
 const NEVER_ASKED: ReadonlySet<string> = new Set([GIT_STATUS, GIT_DIFF]);
 /** The user can judge the call from the preview: it writes nothing, or it is not protected, or its whole content is shown. */
+/** The preview shows its whole content: present, not cut at the head's bound, no finding hiding it. */
+export const wholeText = (preview: ApprovalPreview): boolean => preview.content !== null && !preview.content.truncated && preview.content.findings.length === 0;
 export function shownWhole(preview: ApprovalPreview): boolean {
   const c = preview.content;
   return c === null || !preview.protected || (!c.truncated && c.findings.length === 0);
@@ -290,6 +292,10 @@ export function createAgentBinding(deps: AgentBindingDeps): AgentBinding {
         // A protected write (WT-3) is put to the user only when the head shows the whole content: a payload past the head,
         // a secret (the head is then redacted) or a scan that could not complete is never approved blind (review c2 S1). A call
         // cancelled during the preview is refused by `approvals.request`, which issues nothing for an aborted signal.
+        // A message is judged by its whole text (PV-M4 review 1 B1): a send whose card cannot show all of it (past the head's
+        // bound, or hidden by a scan finding) is REFUSED before any card exists, with its own reason, never put to the user on
+        // its first 2,048 units and never recorded as the user's decline.
+        if (req.tool === SEND_MESSAGE && preview !== undefined && !wholeText(preview)) throw new BrokerError("E_POLICY_DENIED", "body-not-reviewable", "the message cannot be shown whole for approval");
         if (preview === undefined || !shownWhole(preview)) return { approved: false };
         // The card's sources, read with the flag the challenge binds: nothing awaits between here and its issue.
         const card = taint.card();
