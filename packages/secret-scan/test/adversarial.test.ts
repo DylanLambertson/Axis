@@ -58,7 +58,7 @@ test("linear-time: a 1 MiB single line of each hostile shape finishes, as a patc
 
 test("doubling the input does not much more than double the time (not quadratic)", () => {
   // The best of three runs per size: a load spike hits some runs, not all, so the minimum is the work itself.
-  // Linear growth gives about 4x for four times the input and a quadratic scan about 16x; the limit sits between.
+  // Linear growth gives about 4x for four times the input and a quadratic scan about 16x; the limit is 6x (plus a floor for timer noise).
   const best = (f: () => number, n: number): number => Math.min(...Array.from({ length: n }, f));
   for (const name of ["name repeats", "scheme repeats", "bearer repeats", "assignment values", "many runs"]) {
     const unit = (shapes[name] as string).slice(0, 4096);
@@ -71,9 +71,9 @@ test("doubling the input does not much more than double the time (not quadratic)
       return (used.user + used.system) / 1000;
     };
     run(256 * 1024); // warm up
-    const small = Math.max(best(() => run(512 * 1024), 3), 20);
-    const big = best(() => run(2 * MB), 3);
-    assert.ok(big < small * 9 + 100, `${name}: ${small} ms then ${big} ms (best of 3 each, CPU time) for four times the input`);
+    const small = Math.max(best(() => run(512 * 1024), 3), 10);
+    const big = best(() => run(2 * MB), 2);
+    assert.ok(big < small * 6 + 20, `${name}: ${small} ms then ${big} ms (best of 3 and 2, CPU time) for four times the input`);
   }
 });
 

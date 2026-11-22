@@ -25,12 +25,16 @@ const flag = process.argv.slice(3).find((a) => /^--(?:remote-debugging-port|insp
 const ready = () => { if (process.env.NET_GATE_FAKE_READY) appendFileSync(process.env.NET_GATE_FAKE_READY, `${JSON.stringify({ pid: process.pid })}\n`); };
 // The checker names a port it has just freed for the flag. A build that always listens must not take that very port
 // (the kernel may hand a just-released one out again): that would look like a honoured flag, and it is a coincidence.
-function listenElsewhere() {
+function listenElsewhere(attempt = 1) {
   const named = flag === undefined ? -1 : Number(flag.split("=")[1]);
+  const again = (why) => {
+    if (attempt >= 50) { process.stderr.write(`net-gate-fake-app: no loopback port to listen on after ${attempt} attempts (${why})\n`); process.exit(5); }
+    setImmediate(() => listenElsewhere(attempt + 1));
+  };
   const server = net.createServer();
-  server.once("error", () => setImmediate(listenElsewhere));
+  server.once("error", (e) => again(e.code ?? e.message));
   server.listen(0, "127.0.0.1", () => {
-    if (server.address().port === named) server.close(listenElsewhere);
+    if (server.address().port === named) server.close(() => again("got the flag's port"));
     else ready();
   });
 }
