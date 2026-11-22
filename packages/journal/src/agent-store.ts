@@ -197,6 +197,26 @@ export class AgentRecords {
     }
   }
 
+  /** The agent a run was started for (`agent_runs.agent_id`, fixed at insert), or undefined for a run of no agent. */
+  agentOfRun(runId: string): string | undefined {
+    const r = this.#db.prepare("SELECT agent_id FROM agent_runs WHERE id = ?").get(runId) as Row | undefined;
+    return r === undefined || r["agent_id"] === null ? undefined : String(r["agent_id"]);
+  }
+
+  /** A project's live agents as messaging needs them (id, group, kind), in id order, at most `limit`: the cap is the query's. */
+  liveEntries(projectId: string, limit: number): Array<{ readonly id: string; readonly groupId: string | null; readonly kind: "composer" | "cli" }> {
+    return (this.#db.prepare("SELECT id, group_id, kind FROM agents WHERE project_id = ? AND archived = 0 ORDER BY id LIMIT ?").all(projectId, limit) as Row[]).map((r) => ({
+      id: String(r["id"]),
+      groupId: r["group_id"] === null ? null : String(r["group_id"]),
+      kind: r["kind"] as "composer" | "cli",
+    }));
+  }
+
+  /** The live agents in a group, in id order, at most `limit`. */
+  liveMembers(groupId: string, limit: number): string[] {
+    return (this.#db.prepare("SELECT id FROM agents WHERE group_id = ? AND archived = 0 ORDER BY id LIMIT ?").all(groupId, limit) as Row[]).map((r) => String(r["id"]));
+  }
+
   // ---- groups ----
 
   getGroup(id: string): GroupRecord | undefined {
