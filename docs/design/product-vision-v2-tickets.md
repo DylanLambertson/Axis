@@ -72,7 +72,7 @@
 | **PV-K5** | Plugin contract tests (the existing Phase 4 gate item) | M | PV-K4 | small | gate review |
 | **PV-N1** | Credential proxy `axis.integrations/1` in the daemon: vault-held credentials, fixed method and path templates with typed encoded segments and a final URL pattern check, origin allowlist, IP literals refused, proxy variables ignored, redirect refusal, address checks incl. mapped and NAT64, caps, scope refusal, closed errors; wires integration data into PV-M0 as taint source 7 | L | PV-R6, C6 (vault wiring), PV-M0 | large | review |
 | **PV-N2** | OAuth (device-code first; one-shot loopback as a recorded NET-1 exception) | M | PV-N1 | large | review |
-| **PV-N3** | Only if the owner reverses D-9: first token-based integration (GitHub, read-only, behind the credential proxy). If D-9 stays, the first integration is the `gh`-based PR list (PV-D2) and PV-N3 is dropped; PV-N4 then evidences PV-N1 and PV-N2 with a test service | M | PV-N1, PV-N2 | small | review |
+| **PV-N3** | D-9 as taken (ADR 0009 decision 9) allows a read-only token from 4a, so this is built in 4a. Originally: only if the owner reverses D-9: first token-based integration (GitHub, read-only, behind the credential proxy). If D-9 stays, the first integration is the `gh`-based PR list (PV-D2) and PV-N3 is dropped; PV-N4 then evidences PV-N1 and PV-N2 with a test service | M | PV-N1, PV-N2 | small | review |
 | **PV-N4** | 4a gate evidence (`extensibility.md` §9) | M | PV-K5, PV-N3 | large | gate review |
 
 ## 6. Dependency order and critical path
