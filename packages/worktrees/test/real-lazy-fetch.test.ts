@@ -113,9 +113,9 @@ interface Shape {
   /** The clones in which plain git runs the repository's program for this call (the control). */
   readonly fires: readonly Filter[];
   /**
-   * The call does not need the object's content, so a git may skip the fetch: plain git fetches on 2.43 and 2.53 but
-   * not on 2.56 (write-tree), or the fetch is an implementation choice (rev-list --objects, commit-tree). A control that
-   * does not fire is reported, not failed; the call still runs through HardenedGit below.
+   * The call does not need the object's content, so a git may skip the fetch: plain write-tree fetches on 2.53 but not
+   * on 2.43 or 2.56, and for rev-list --objects, commit-tree, update-ref and a two-tree read-tree the fetch is an
+   * implementation choice. A control that does not fire is reported, not failed; the call still runs through HardenedGit.
    */
   readonly versionDependent?: true;
 }
@@ -124,7 +124,9 @@ interface Shape {
  * Every call shape in src/ that reads an object, in the form the manager sends it: ls-tree (dirty.ts, populate.ts,
  * snapshotHistory.ts, manager.ts), cat-file blob / --batch / --batch-check (manager.ts, populate.ts, snapshotHistory.ts,
  * snapshotRef.ts), rev-list --objects (snapshotHistory.ts), read-tree and write-tree into a private index and commit-tree
- * (snapshotRef.ts, populate.ts). The other shapes read refs, the index or the config only and fetch nothing (probed:
+ * (snapshotRef.ts, populate.ts), update-ref to an object id (snapshotRef.ts; git checks the object exists), and read-tree
+ * of two trees, which the read-tree shape admits though no caller sends it. The other shapes read refs, the index or the
+ * config only and fetch nothing (probed:
  * rev-parse, symbolic-ref, show-ref, for-each-ref, merge-base, rev-list --count, ls-files, config, hash-object,
  * update-index --index-info, worktree add --no-checkout).
  */
@@ -141,7 +143,12 @@ const SHAPES = (h: Hostile): ReadonlyArray<Shape> => [
   { args: ['read-tree', 'HEAD'], index: 'idx-read', fires: ['tree:0'] },
   { args: ['write-tree'], index: 'idx', fires: ['blob:none'], versionDependent: true },
   { args: ['-c', 'user.name=a', '-c', 'user.email=a@b', 'commit-tree', h.tree, '-p', 'HEAD', '-m', 'm'], fires: ['tree:0'], versionDependent: true },
+  { args: ['update-ref', 'refs/axis/probe-blob', h.blob, ZERO], fires: ['blob:none', 'tree:0'], versionDependent: true },
+  { args: ['update-ref', 'refs/axis/probe-tree', h.tree, ZERO], fires: ['tree:0'], versionDependent: true },
+  { args: ['read-tree', 'base', 'HEAD'], index: 'idx-two', fires: ['blob:none', 'tree:0'], versionDependent: true },
 ];
+
+const ZERO = '0'.repeat(40);
 
 /** The real git with one variable of the environment removed before it starts. */
 function without(name: string): string {
@@ -202,6 +209,24 @@ test('the exec runner pins GIT_NO_LAZY_FETCH=1 and GIT_ALLOW_PROTOCOL=/ over the
     assert.match(out, /^GIT_ALLOW_PROTOCOL=\/$/m);
     assert.equal(out.match(/^GIT_(NO_LAZY_FETCH|ALLOW_PROTOCOL)=/gm)?.length, 2);
   }
+});
+
+test('a caller variable cannot undo the pins: a real lazy fetch stays blocked', { skip: SKIP }, async () => {
+  const h = hostile('blob:none', 'uploadpack');
+  const undo = { GIT_NO_LAZY_FETCH: '0', GIT_ALLOW_PROTOCOL: 'file' };
+  spawnSync(GIT as string, ['cat-file', 'blob', h.blob], { cwd: h.repo, env: { ...h.env, ...undo }, timeout: 30_000 });
+  assert.equal(h.fired(), true, 'control: with those variables plain git runs the uploadpack');
+  rmSync(h.marker, { force: true });
+  // The runner directly (HardenedGit would refuse these names): its pins must still be the ones git sees.
+  await createExecGitRunner({ gitPath: GIT as string, baseEnv: h.env, platform: 'linux' }).run(['cat-file', 'blob', h.blob], { cwd: h.repo, extraEnv: undo, timeoutMs: 30_000 });
+  assert.equal(h.fired(), false, h.fired() ? readFileSync(h.marker, 'utf8') : '');
+});
+
+test('on Windows semantics every spelling of a pinned name is replaced by the one pin', { skip: process.platform === 'win32' ? 'POSIX env' : false }, async () => {
+  const runner = createExecGitRunner({ gitPath: '/usr/bin/env', baseEnv: { PATH, git_no_lazy_fetch: '0' }, platform: 'win32' });
+  const out = (await runner.run([], { cwd: os.tmpdir(), extraEnv: { git_allow_protocol: 'ext', Git_No_Lazy_Fetch: '0', GIT_ALLOW_PROTOCOL: 'file' } })).stdout;
+  const pins = out.split('\n').filter((l) => /^git_(no_lazy_fetch|allow_protocol)=/i.test(l)).sort();
+  assert.deepEqual(pins, ['GIT_ALLOW_PROTOCOL=/', 'GIT_NO_LAZY_FETCH=1']);
 });
 
 test('HardenedGit puts protocol.allow=never and help.autocorrect=0 before every command', async () => {
