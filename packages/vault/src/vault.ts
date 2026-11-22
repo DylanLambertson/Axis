@@ -1,10 +1,11 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import type { ConsentVerifier, WeakStorageConsent } from "./consent.js";
 import { VaultError } from "./errors.js";
-import { NAME_RE } from "./names.js";
+import { NAME_RE, entryKind } from "./names.js";
 import {
   BACKEND_IDS,
   PROTECTIONS,
+  PURPOSE_KIND,
   SECRET_PURPOSES,
   type AccessEvent,
   type BackendId,
@@ -326,6 +327,10 @@ export function createVault(options: VaultOptions): ConnectionVault {
       const name = checkName(connectionId);
       if (typeof purpose !== "string" || !PURPOSE_SET.has(purpose)) throw new VaultError("invalid_secret");
       const audit = (outcome: AccessEvent["outcome"]): void => notify(options.onAccess, { connectionId: name, purpose, outcome });
+      if (PURPOSE_KIND[purpose] !== entryKind(name)) {
+        audit("refused");
+        throw new VaultError("wrong_entry_kind");
+      }
       if (quarantine.has(name)) {
         audit("error");
         throw new VaultError("backend_changed");

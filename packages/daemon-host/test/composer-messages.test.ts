@@ -20,7 +20,6 @@ const readMsgs = (input: Record<string, unknown> = {}) => ({ name: READ_MESSAGES
 const unknownThread = (): string => encodeMessagingId("thread", randomBytes(16));
 
 test("production wiring: no run has an agent, so neither tool is offered, and a forged call by name is refused unknown_tool", async (t) => {
-  assert.equal("agentOf" in hostMessagingDeps({ journal: { messages: undefined as never, getProject: () => undefined, getRun: () => undefined }, audit: { append: () => undefined }, monotonic: () => 0, scan: async () => [], logger: undefined, holdsSecret: () => false }), false, "the host gives no agentOf");
   const c = await composerRig({
     replies: [],
     // The host's binding with its default `agentOf` (none), over a directory that would know any agent.
@@ -28,6 +27,9 @@ test("production wiring: no run has an agent, so neither tool is offered, and a 
   });
   t.after(() => c.cleanup());
   const runId = c.journal.composer.createRun({ workspaceId: c.workspaceId, createdBy: "user" }, { mode: "agent", providerId: "mock", modelId: "mock-model" }).value.id;
+  // The host's `agentOf` reads the run's recorded agent from the journal: a run started without one (every run until PV-G4) has none.
+  const host = hostMessagingDeps({ journal: c.journal, audit: { append: () => undefined }, monotonic: () => 0, scan: async () => [], holdsSecret: () => false, logger: undefined });
+  assert.equal(host.agentOf?.(runId), undefined, "the host knows no agent for a run started without one");
   const tools = (await c.agent.prepare(c.workspaceId))({ runId, workspaceId: c.workspaceId, windowId: "win-1", mode: "agent", onApproval: () => undefined });
   assert.deepEqual(tools.specs.map((s) => s.name).filter((n) => n === SEND_MESSAGE || n === READ_MESSAGES), [], "not offered, even with a directory that knows every agent");
   const signal = new AbortController().signal;

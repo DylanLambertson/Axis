@@ -8,6 +8,7 @@ import { APPROVALS_CONTRACT, APPROVALS_VERSION, PROVIDERS_CONTRACT, PROVIDERS_VE
 import type { SecretScanner } from "@axis/secret-scan";
 import { createGitOperations, createGitPort } from "./bindings/git.js";
 import { registerForgeServing } from "./compose-forge.js";
+import { registerAttentionServing } from "./handlers/attention.js";
 import { registerUsageServing } from "./handlers/usage.js";
 import { usageServiceDeps } from "./usage/service.js";
 import { createCommitPreparer, createReviewService } from "./bindings/review.js";
@@ -142,5 +143,11 @@ export function registerServing(registrar: HandlerRegistrar, services: HostServi
     onBookkeepingError: () => logger?.warn("request.failed", { reason: "git_bookkeeping" }),
   });
   registerForgeServing(registrar, { pty, projectPath: (id) => journal.getProject(id)?.path, git, platform: config.platform, audit: (e) => (audit.append(e), services.anchors.noteWrite()), monotonic: () => ports.clock.monotonic(), pins: journal.forgePins, ...(logger === undefined ? {} : { logger }) });
+  registerAttentionServing(registrar, {
+    projectExists: (id) => journal.getProject(id) !== undefined,
+    records: journal.attention,
+    cliRun: (id) => runs.service.get(id),
+    composerRun: (id) => composer.get(id),
+  });
   registerUsageServing(registrar, usageServiceDeps(journal, composer));
 }

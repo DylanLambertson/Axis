@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { settingsResultSchema, type OutboundMessage } from "../control/messages.js";
 import type { AnchorHead, AnchorRead, AnchorStore, AnchorUnavailable } from "./anchor-store.js";
-import { NativeQueue, type NativeDialogPort, type NativeRefusal, type NativeTimers } from "./native-queue.js";
+import { NativeQueue, type ChoiceRequest, type NativeDialogPort, type NativeRefusal, type NativeTimers } from "./native-queue.js";
 import { userScopeValue, type SettingInspect } from "./settings-scope.js";
 import { isPathTrusted, trustedFolders } from "./trust-model.js";
 
@@ -45,6 +45,8 @@ export interface MainAnswersOptions {
   readonly nativeMaxWaiting?: number;
   /** The bound of an open native dialog (default: the global timers). */
   readonly nativeTimers?: NativeTimers;
+  /** `projects.inspected` and `projects.result` from the host: the answers to the project messages main started. */
+  readonly onProjectAnswer?: (message: OutboundMessage) => void;
 }
 
 type Reply = (message: unknown) => void;
@@ -54,6 +56,8 @@ export interface MainAnswers {
   prepare(): Promise<void>;
   /** The supervisor's `onRequest`. Never throws. */
   onRequest(message: OutboundMessage, reply: Reply): void;
+  /** A main-started choice dialog in the shared native queue (one dialog at a time with `native.confirm`). */
+  choose(choice: ChoiceRequest): void;
   /** Resolves when no anchor write is in flight (for tests and shutdown). */
   idle(): Promise<void>;
   dispose(): void;
@@ -213,6 +217,11 @@ export function createMainAnswers(options: MainAnswersOptions): MainAnswers {
             else send(answer);
             return;
           }
+          // Answers to the project messages main started (project-actions.ts); nothing is sent back.
+          case "projects.inspected":
+          case "projects.result":
+            options.onProjectAnswer?.(message);
+            return;
           default:
             return;
         }
@@ -220,6 +229,7 @@ export function createMainAnswers(options: MainAnswersOptions): MainAnswers {
         // a failing answer is no answer
       }
     },
+    choose: (choice) => native.pushChoice(choice),
     idle: async (): Promise<void> => {
       while (writing !== undefined) await writing;
     },
