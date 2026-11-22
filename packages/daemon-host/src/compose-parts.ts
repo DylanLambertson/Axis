@@ -187,12 +187,14 @@ export const isPty = (p: unknown): p is PtyPort => typeof (p as { spawn?: unknow
  * does not outlive the trust it started under, so a revoke (`projects.trust` false) or a lost binding ends them. It is a stop,
  * not a rollback. Every step is best effort and never throws: a run that ended meanwhile refuses its stop harmlessly.
  *
- * It runs inside the PROJECT MUTEX (the same instance the start handlers hold across the gate and the start): a start that passed
- * the gate before the revoke finishes recording its run first, and is then stopped here; one that comes after meets the revoked
- * record at its own gate. No run that the revoke should end survives it.
+ * It runs inside the PROJECT MUTEX (the same instance the start handlers hold across the gate and the start), taken with
+ * `exclusive` (it queues like an unrelated caller even when fired from inside a holder's call chain): a start that passed the gate
+ * before the revoke, or was already waiting, finishes recording its run first and is then stopped here; one that comes after meets
+ * the revoked record at its own gate. No run that the revoke should end survives it. The stop waits for the current holder (a
+ * commit or push in progress, bounded by that method's own timeout); the revoke's answer does not wait for the stop.
  */
 export function createProjectRunStopper(deps: {
-  readonly mutex: () => Pick<ProjectMutex, "run"> | undefined;
+  readonly mutex: () => Pick<ProjectMutex, "exclusive"> | undefined;
   readonly journal: () => Pick<Journal, "listWorkspaces"> | undefined;
   readonly runs: () => Pick<RunsService, "list" | "stop"> | undefined;
   readonly composer: () => { list(o: { readonly workspaceId?: string; readonly limit: number }): readonly { readonly runId: string; readonly endedAt: string | null }[]; cancel(id: string): unknown } | undefined;
@@ -218,7 +220,9 @@ export function createProjectRunStopper(deps: {
     if (mutex === undefined) return stopAll(projectId);
     // Not awaited by the caller (a revoke answers at once); a failure of the mutex itself still stops, outside it.
     void Promise.resolve()
-      .then(() => mutex.run(projectId, async () => stopAll(projectId)))
+      // `exclusive`, never the re-entrant `run`: a revoke fired from inside a call that holds the project (the gate's binding_lost,
+      // inside a start handler) must still queue behind every start already waiting, so none of them records a run after the stop.
+      .then(() => mutex.exclusive(projectId, async () => stopAll(projectId)))
       .catch(() => stopAll(projectId));
   };
 }

@@ -63,6 +63,10 @@ export function createProjectTrustGate(deps: ProjectTrustGateDeps): ProjectTrust
       // was asked refuses here, so no ticket outlives the decision it was checked against.
       const still = deps.journal.getProject(projectId);
       if (still === undefined || !still.trusted || still.path !== row.path || still.commonDir !== row.commonDir || still.gitDirId !== row.gitDirId) throw untrusted();
+      if (workspaceId !== undefined) {
+        const ws = deps.journal.getWorkspace(workspaceId);
+        if (ws === undefined || ws.projectId !== projectId || ws.worktreePath === null) throw untrusted();
+      }
       if (deps.registry.isRevoked({ windowId, ...(workspaceId === undefined ? {} : { workspaceId }) })) throw untrusted();
       return mintTicket(projectId, workspaceId, deps.now());
     },

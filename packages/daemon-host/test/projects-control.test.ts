@@ -268,3 +268,23 @@ test("review B nits: a full queue never refuses a revoke; an excluded root whose
     assert.deepEqual([slow[0]?.["code"], slow[0]?.["reason"]], ["E_UNAVAILABLE", "roots_unavailable"], "mutant: the timed-out root is ignored");
   }
 });
+
+test("review 2 nit: a timed-out excluded root is not remembered: the next registration reads the roots again (mutant: sticky)", { skip: SKIP }, async (t) => {
+  const r = rig(t);
+  const p = git(join(r.root, "repo"));
+  const answers: Record<string, unknown>[] = [];
+  let hang = true;
+  const pc = createProjectControl({
+    journal: r.journal,
+    control: { send: (m) => void answers.push(m as Record<string, unknown>) },
+    excludedRoots: [r.dataDir],
+    binding: { platform: process.platform, uid: (process.getuid as () => number)() },
+    remote: { runner: { run: async () => ({ code: 1, stdout: "", stderr: "" }) }, env: {}, platform: process.platform },
+    rootsRealpath: (x) => (hang ? new Promise(() => undefined) : Promise.resolve(x)),
+  });
+  await pc.handle(register(p));
+  assert.equal(answers[0]?.["reason"], "roots_unavailable");
+  hang = false;
+  await pc.handle(register(p));
+  assert.equal(answers[1]?.["ok"], true, "the roots were read again");
+});

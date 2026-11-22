@@ -249,27 +249,47 @@ test("review B S2: the stopper takes the project mutex: a start that passed the 
   assert.deepEqual(stopped, ["late"], "the run the start recorded is stopped: none survives the revoke");
 });
 
-test("binding_lost inside a held project mutex: admit refuses at once and the stop runs in the same call chain (the mutex is re-entrant), no deadlock", async () => {
-  // ProjectMutex is re-entrant for the async call chain that holds it (AsyncLocalStorage, project-mutex.ts): the stop the gate
-  // triggers from inside a handler's critical section runs there and then, while every OTHER start still waits for the mutex.
+test("review 2 SF1: binding_lost inside a held project mutex: admit refuses at once, the stop runs AFTER the handler releases, and a start that was already waiting is stopped too (mutant: the re-entrant run)", async () => {
   const mutex = new ProjectMutex();
+  const runs: { runId: string; state: string }[] = [{ runId: "r1", state: "RUNNING" }];
   const stopped: string[] = [];
   const stopper = createProjectRunStopper({
     mutex: () => mutex,
     journal: () => ({ listWorkspaces: () => [{ id: "a", projectId: "p" }] as never }),
-    runs: () => ({ list: () => [{ runId: "r1", state: "RUNNING" }] as never, stop: (id: string) => (stopped.push(id), {} as never) }),
+    runs: () => ({ list: () => runs as never, stop: (id: string) => (stopped.push(id), {} as never) }),
     composer: () => undefined,
   });
   const lost = rig({ binding: async () => ({ ok: false, reason: "not_a_repository" }), onRevoked: stopper });
-  let otherRan = false;
+  let releaseHandler!: () => void;
+  const handlerDone = new Promise<void>((r) => (releaseHandler = r));
+  // A start handler holds the project and calls the gate, which finds the binding lost.
   const handler = mutex.run("p", async () => {
     await assert.rejects(lost.gate.admit({ projectId: "p", windowId: "w1", signal }), untrusted);
     await new Promise((x) => setTimeout(x, 10));
-    assert.deepEqual(stopped, ["r1"], "the stop ran inside the handler's critical section");
-    assert.equal(otherRan, false, "an unrelated call is still kept out");
+    assert.deepEqual(stopped, [], "the stop queues: it does not run inside the handler's critical section");
+    await handlerDone;
   });
-  const other = mutex.run("p", async () => void (otherRan = true));
-  const bound = new Promise((_, reject) => setTimeout(() => reject(new Error("deadlock: the handler never finished")), 2_000));
+  // Another start, in an unrelated context, was already waiting for the project: it records its run when it gets the lock.
+  const other = mutex.run("p", async () => void runs.push({ runId: "late", state: "RUNNING" }));
+  await new Promise((x) => setTimeout(x, 20));
+  releaseHandler();
+  const bound = new Promise((_, reject) => setTimeout(() => reject(new Error("deadlock")), 2_000));
   await Promise.race([Promise.all([handler, other]), bound]);
-  assert.equal(otherRan, true);
+  await new Promise((x) => setTimeout(x, 20));
+  assert.deepEqual(stopped, ["r1", "late"], "the stop ran after both, so the run the waiting start recorded did not survive");
+});
+
+test("review 2 nit: the workspace row is read again right before the mint: a workspace moved or removed during the gate refuses (mutant: no workspace re-read)", async () => {
+  const row = { id: "p", path: "/r", trusted: true, commonDir: "/r/.git", gitDirId: "1:2" };
+  let reads = 0;
+  const r = rig({
+    journal: {
+      getProject: () => ({ ...row }) as never,
+      // The first read (before the awaits) sees the workspace; the final one sees it gone.
+      getWorkspace: (id: string) => (++reads === 1 ? ({ id, projectId: "p", worktreePath: "/wt" } as never) : undefined),
+      setProjectTrust: () => row as never,
+    },
+  });
+  await assert.rejects(r.gate.admit({ projectId: "p", windowId: "w1", workspaceId: "ws", signal }), untrusted);
+  assert.equal(reads, 2);
 });

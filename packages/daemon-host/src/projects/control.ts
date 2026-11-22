@@ -119,7 +119,10 @@ export function createProjectControl(deps: ProjectControlDeps): { handle(message
 
   async function excluded(path: string, journal: NonNullable<ProjectControlDeps["journal"]>): Promise<string | undefined> {
     const known = await roots();
-    if (!known.complete) return "roots_unavailable";
+    if (!known.complete) {
+      rootsOnce = undefined; // a transient timeout is not remembered: the next message reads the roots again
+      return "roots_unavailable";
+    }
     for (const root of known.roots) if (within(path, root) || within(root, path)) return "excluded_root";
     // An identical path is a registered project (inspect answers it, register refuses it `E_CONFLICT` before this).
     for (const p of journal.listProjects()) if (within(path, p.path) || within(p.path, path)) return "nested_project";
