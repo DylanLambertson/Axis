@@ -1,5 +1,5 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
-// axis.pages/1 (PV-Q1 slice 1): planned, user-only rows at the contract's tiers; the wire title rule is exactly the
+// axis.pages/1 (PV-Q1 slices 1 and 2): served, user-only rows at the contract's tiers; the wire title rule is exactly the
 // journal's (schema version 14) inside a title, so a title the wire accepts is one the journal stores.
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -9,18 +9,18 @@ import {
 } from "@axis/protocol";
 import { coverageProblems, PLANNED_RULES, RULES } from "../../src/policy/index.js";
 
-test("every method has one planned, user-only row at the contract's tier, with no trust mode, and none is served", () => {
-  assert.equal(contracts["axis.pages/1"], undefined);
-  assert.ok(plannedContracts["axis.pages/1"] !== undefined);
+test("every method has one served, user-only row at the contract's tier, with no trust mode, and none is still planned", () => {
+  assert.ok(contracts["axis.pages/1"] !== undefined);
+  assert.equal(plannedContracts["axis.pages/1"], undefined);
   for (const [method, spec] of Object.entries(pagesMethods)) {
     const key = `axis.pages/1.${method}`;
-    assert.equal(RULES[key], undefined, `${key} is not a served rule`);
-    assert.deepEqual(PLANNED_RULES[key]?.actors, ["user"], key);
-    assert.equal(PLANNED_RULES[key]?.tier, spec.tier, key);
-    assert.equal(PLANNED_RULES[key]?.trust, "none", key);
+    assert.equal(PLANNED_RULES[key], undefined, `${key} is not planned`);
+    assert.deepEqual(RULES[key]?.actors, ["user"], key);
+    assert.equal(RULES[key]?.tier, spec.tier, key);
+    assert.equal(RULES[key]?.trust, "none", key);
   }
-  assert.equal(PLANNED_RULES["axis.pages/1.markReviewed"]?.tier, 3);
-  assert.equal(PLANNED_RULES["axis.pages/1.delete"]?.tier, 3);
+  assert.equal(RULES["axis.pages/1.markReviewed"]?.tier, 3);
+  assert.equal(RULES["axis.pages/1.delete"]?.tier, 3);
   assert.deepEqual(coverageProblems(), []);
 });
 
