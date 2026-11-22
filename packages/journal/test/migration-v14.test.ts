@@ -36,14 +36,14 @@ const att = (over: Row = {}): Row => {
 const refused = (f: () => void, what: string): void => assert.throws(f, Error, what);
 const count = (db: DatabaseSync, sql: string, ...a: Val[]): number => Number((db.prepare(sql).get(...a) as { n: number }).n);
 
-test("version 14 is the latest; a version 13 database gains the three empty tables and keeps its projects", () => {
+test("version 14: a version 13 database gains the three empty tables and keeps its projects", () => {
   const db = openDatabase(":memory:");
   new AuditLog(db);
   runMigrations(db, "journal", JOURNAL_MIGRATIONS.slice(0, 13));
   db.prepare("INSERT INTO projects (id, path, display_name, trusted, created_at, updated_at) VALUES ('old', '/repo/old', 'Old', 0, ?, ?)").run(T, T);
   const journal = Journal.open(db, { audit: new AuditLog(db) });
-  assert.equal(JOURNAL_SCHEMA_VERSION, 14);
-  assert.equal(schemaVersion(db, "journal"), 14);
+  assert.ok(JOURNAL_SCHEMA_VERSION >= 14);
+  assert.equal(schemaVersion(db, "journal"), JOURNAL_SCHEMA_VERSION);
   for (const t of ["pages", "page_versions", "page_attachments"]) assert.equal(count(db, `SELECT count(*) AS n FROM ${t}`), 0, t);
   assert.deepEqual(journal.pages.list("old"), []);
   db.close();

@@ -9,6 +9,9 @@
 //
 // axis.pages/1 (PV-Q1 slice 1, ADR 0010): user only. Marking a version reviewed lowers taint and needs main's native
 // confirmation (tier 3); delete is destructive (tier 3). Agents and plugins reach pages through their own tools and rows.
+//
+// axis.tasks/1 (PV-T1 slice 1): user only. Record writes are tier 1 (assigning starts nothing); delete is destructive (3).
+// Start, which taints the run (IAC-T source 5), and the agent and plugin task rows come with slice 2.
 import { userRule, type Rule } from "./rule-types.js";
 
 export const PLANNED_RULES: Readonly<Record<string, Rule>> = Object.freeze({
@@ -20,4 +23,14 @@ export const PLANNED_RULES: Readonly<Record<string, Rule>> = Object.freeze({
   "axis.pages/1.restore": userRule(1),
   "axis.pages/1.markReviewed": userRule(3),
   "axis.pages/1.delete": userRule(3),
+  "axis.tasks/1.list": userRule(0),
+  "axis.tasks/1.get": userRule(0),
+  "axis.tasks/1.revisions": userRule(0),
+  "axis.tasks/1.create": userRule(1),
+  "axis.tasks/1.update": userRule(1),
+  "axis.tasks/1.setStatus": userRule(1),
+  "axis.tasks/1.assign": userRule(1),
+  "axis.tasks/1.link": userRule(1),
+  "axis.tasks/1.unlink": userRule(1),
+  "axis.tasks/1.delete": userRule(3),
 });

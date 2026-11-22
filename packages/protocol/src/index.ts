@@ -24,5 +24,6 @@ export * from "./forge.js";
 export * from "./messages.js";
 export * from "./agents.js";
 export * from "./pages.js";
+export * from "./tasks.js";
 export * from "./contracts.js";
 export * from "./client.js";

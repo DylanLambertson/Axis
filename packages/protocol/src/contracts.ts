@@ -10,6 +10,7 @@ import { FORGE_CONTRACT, FORGE_VERSION, forgeMethods } from "./forge.js";
 import { GIT_CONTRACT, GIT_VERSION, gitMethods } from "./git.js";
 import { MESSAGES_CONTRACT, MESSAGES_VERSION, messagesMethods } from "./messages.js";
 import { PAGES_CONTRACT, PAGES_VERSION, pagesMethods } from "./pages.js";
+import { TASKS_CONTRACT, TASKS_VERSION, tasksMethods } from "./tasks.js";
 import { MAX_TIMEOUT_MS, methodNameSchema } from "./envelope.js";
 import { PROJECTS_CONTRACT, PROJECTS_VERSION, projectsMethods } from "./projects.js";
 import { PROVIDERS_CONTRACT, PROVIDERS_VERSION, providersMethods } from "./providers.js";
@@ -48,10 +49,12 @@ export const contracts: Table = Object.freeze({
  * and no daemon can serve one; the daemon-host coverage check holds a planned policy row for each of their methods, at the
  * same tier. A contract moves to `contracts` in the change that registers its handlers, its rows moving with it
  * (`axis.messages/1` moved with ticket PV-M3, `axis.forge/1` with PV-D2 slice 2, `axis.agents/1` and `axis.agent-groups/1`
- * with PV-G3). A key is never in both tables. `axis.pages/1` (PV-Q1 slice 1, ADR 0010) is planned until its service is served.
+ * with PV-G3). A key is never in both tables. `axis.pages/1` (PV-Q1 slice 1, ADR 0010) and `axis.tasks/1` (PV-T1 slice 1)
+ * are planned until their services are served.
  */
 export const plannedContracts: Table = Object.freeze({
   [`${PAGES_CONTRACT}/${PAGES_VERSION}`]: frozen(pagesMethods),
+  [`${TASKS_CONTRACT}/${TASKS_VERSION}`]: frozen(tasksMethods),
 });
 
 const SIDE_EFFECTS: ReadonlySet<unknown> = new Set(["none", "read", "write", "network", "destructive", "credential"]);
