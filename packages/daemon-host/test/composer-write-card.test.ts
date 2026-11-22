@@ -75,7 +75,7 @@ test("a protected write keeps C2's rule: past the card's bound it is declined un
   assert.equal(existsSync(join(r.c.root, ".github/workflows/ci.yml")), false);
 });
 
-test("a tainted run's write whose card could not be built at all is refused the same way, not as a decline", async (t) => {
+for (const path of ["src/broken.txt", ".github/workflows/ci.yml"]) test(`a tainted run's write whose card could not be built at all is refused the same way, not as a decline (${path}; a protected write too, review N1)`, async (t) => {
   // The scanner reports a finding and the redactor fails on the card's second pass, so the builder returns no preview.
   const r = await deliveryRig(t, { messaging: true, noDelivery: true, previewScanner: { scan: async (text) => (text.includes("BREAK-CARD") ? ["test-rule"] : []) } });
   const real = r.c.redactor.redactString.bind(r.c.redactor);
@@ -86,10 +86,12 @@ test("a tainted run's write whose card could not be built at all is refused the 
   };
   await r.m.service.send(a2, { recipients: [{ agent: "a1" }], body: { format: "text", text: "taint me" } });
   const runId = r.run("a1");
-  const d = drive(r, runId, [[readMsgs, write("src/broken.txt", "BREAK-CARD")], []]);
+  mkdirSync(join(r.c.root, ".github", "workflows"), { recursive: true });
+  const d = drive(r, runId, [[readMsgs, write(path, "BREAK-CARD")], []]);
   assert.equal(await denyAll(r, d.end), 0);
   await d.end;
   assert.equal(passes, 2, "the card's second pass failed");
   assert.match(d.results[1]?.[1] ?? "", /^The call was refused \(content_not_reviewable\)\./);
   assert.deepEqual(decisions(r), [["deny", "content-not-reviewable"]]);
+  assert.equal(existsSync(join(r.c.root, path)), false);
 });
