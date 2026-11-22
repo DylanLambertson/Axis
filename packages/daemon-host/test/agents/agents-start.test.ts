@@ -8,6 +8,7 @@ import { createAgentStart } from "../../src/agents/start.js";
 import { createAgentsService } from "../../src/agents/service.js";
 import { createAgentsHandlers } from "../../src/handlers/agents.js";
 import type { CliStart } from "../../src/handlers/cli-runs.js";
+import type { ComposerStart } from "../../src/handlers/composer-runs.js";
 import { hostMessagingDeps } from "../../src/messages/binding.js";
 import { InMemoryTrustRegistry } from "../../src/policy/trust-registry.js";
 import { runFailure, toRunError } from "../../src/runs/errors.js";
@@ -17,7 +18,8 @@ import { ProjectMutex } from "../../src/worktrees/project-mutex.js";
 // path recorded with the agent; composer agents are slice B; the run errors fold into the contract's closed reasons; and
 // the messaging option keeps a worker run outside messaging unless it is enabled.
 
-function setup(startCli?: (req: CliStart) => Promise<unknown>) {
+function setup(startCli?: (req: CliStart) => Promise<unknown>, opts: { startComposer?: (req: ComposerStart) => Promise<unknown>; providers?: Record<string, string> } = {}) {
+  const providers: Record<string, string> = opts.providers ?? { c: "mock" };
   const db = openDatabase(":memory:");
   const journal = Journal.open(db, { audit: new AuditLog(db) });
   journal.registerProject({ id: "p1", path: "/repo/p1", displayName: "p1", trusted: false, actor: "user" });
@@ -33,9 +35,17 @@ function setup(startCli?: (req: CliStart) => Promise<unknown>) {
     const run = journal.createRun({ workspaceId: req.workspaceId, kind: "cli", createdBy: "user", ...(req.worker === undefined ? {} : { agentId: req.worker }) }).value;
     return { run: { runId: run.id }, replayed: false };
   };
+  const composerCalls: ComposerStart[] = [];
+  const composer = async (req: ComposerStart) => {
+    composerCalls.push(req);
+    if (opts.startComposer !== undefined) return opts.startComposer(req);
+    req.recheck?.();
+    const run = journal.createRun({ workspaceId: req.workspaceId, kind: "composer", createdBy: "user", ...(req.worker === undefined ? {} : { agentId: req.worker }) }).value;
+    return { run: { runId: run.id }, replayed: false };
+  };
   const service = createAgentsService({ journal, worktrees: { create: async () => ({ id: "x" }) as never }, mutex: new ProjectMutex(), trust: new InMemoryTrustRegistry(), newId: () => "n1" });
-  const h = createAgentsHandlers(service, createAgentStart({ journal, startCli: cli as never }));
-  return { db, journal, home, calls, start: h.agents.start };
+  const h = createAgentsHandlers(service, createAgentStart({ journal, startCli: cli as never, startComposer: composer as never, providerFor: (c: string) => providers[c] }));
+  return { db, journal, home, calls, composerCalls, providers, start: h.agents.start };
 }
 const identity: Identity = { connectionId: "c1", windowId: "win-1", actorId: "u", actor: "user", trusted: true, clientKind: "desktop" };
 const call = (h: (c: HandlerContext, p: never) => unknown, payload: unknown): Promise<unknown> =>
@@ -52,12 +62,11 @@ test("a CLI agent's start runs in its home with its entry and records the agent;
   assert.equal((db.prepare("SELECT agent_id FROM agent_runs WHERE id = ?").get(out.runId) as { agent_id: string }).agent_id, "cli1");
 });
 
-test("refused: an unknown or archived agent, a home that is not READY, a prompt for a CLI agent; composer agents are slice B", async () => {
+test("refused: an unknown or archived agent, a home that is not READY, a prompt for a CLI agent, a composer agent without one", async () => {
   const { start, journal, home, calls } = setup();
   await refused(call(start, { agentId: "nope" }), "E_NOT_FOUND", "not_found");
   await refused(call(start, { agentId: "cli1", input: { prompt: "hi" } }), "E_INVALID_ARGUMENT");
   await refused(call(start, { agentId: "cmp1" }), "E_INVALID_ARGUMENT");
-  await refused(call(start, { agentId: "cmp1", input: { prompt: "hi" } }), "E_UNAVAILABLE", "not_available");
   journal.agents.archive("cli1");
   await refused(call(start, { agentId: "cli1" }), "E_CONFLICT", "archived");
   journal.agents.restore("cli1");
@@ -157,5 +166,55 @@ test("through the real CLI start path: a worker start passes the project trust g
       assert.deepEqual([processes, runs()], [[], []], "no process, no run row");
     }
     assert.equal((gated[0] as { workspaceId: string }).workspaceId, home, "the gate was asked for the worker's home");
+  }
+});
+
+test("a composer agent's start runs in its home with its mode, model and the provider serving its connection, recorded with the agent", async () => {
+  const { start, composerCalls, home, db } = setup();
+  const out = (await call(start, { agentId: "cmp1", input: { prompt: "Fix it." } })) as { runId: string; kind: string; workspaceId: string };
+  assert.deepEqual([out.kind, out.workspaceId], ["composer", home]);
+  assert.deepEqual(composerCalls.map((c) => [c.workspaceId, c.mode, c.prompt, c.providerId, c.modelId, c.worker]), [[home, "agent", "Fix it.", "mock", "m", "cmp1"]]);
+  assert.equal((db.prepare("SELECT agent_id, kind FROM agent_runs WHERE id = ?").get(out.runId) as { agent_id: string }).agent_id, "cmp1");
+});
+
+test("a connection no provider serves is connection_unavailable before anything starts; one removed while the start waited too", async () => {
+  const none = setup(undefined, { providers: {} });
+  await refused(call(none.start, { agentId: "cmp1", input: { prompt: "p" } }), "E_CONFLICT", "connection_unavailable");
+  assert.deepEqual(none.composerCalls, []);
+  const later = setup(undefined, {
+    startComposer: async (req) => {
+      delete later.providers["c"];
+      req.recheck?.();
+      throw new Error("not reached");
+    },
+  });
+  await refused(call(later.start, { agentId: "cmp1", input: { prompt: "p" } }), "E_CONFLICT", "connection_unavailable");
+  assert.equal(later.db.prepare("SELECT count(*) AS n FROM agent_runs").get()?.["n"], 0);
+});
+
+test("composer refusals fold into the closed reasons: model_unavailable, connection_unavailable, busy, untrusted_project, not_available", async () => {
+  const { composerFailure } = await import("../../src/composer/errors.js");
+  const { untrusted } = await import("../../src/gate/project-trust.js");
+  const cases: Array<[unknown, string, string | undefined]> = [
+    [composerFailure("E_NOT_FOUND", "model_unknown"), "E_CONFLICT", "model_unavailable"],
+    [composerFailure("E_NOT_FOUND", "provider_unknown"), "E_CONFLICT", "connection_unavailable"],
+    [composerFailure("E_UNAVAILABLE", "provider_unavailable"), "E_CONFLICT", "connection_unavailable"],
+    [composerFailure("E_CONFLICT", "active_run"), "E_CONFLICT", "busy"],
+    [composerFailure("E_BACKPRESSURE"), "E_CONFLICT", "busy"],
+    [composerFailure("E_CONFLICT", "not_ready"), "E_CONFLICT", "home_unavailable"],
+    [composerFailure("E_UNAVAILABLE", "worktree_unavailable"), "E_CONFLICT", "home_unavailable"],
+    [composerFailure("E_UNAVAILABLE", "shutting_down"), "E_UNAVAILABLE", "not_available"],
+    [untrusted(), "E_CONFLICT", "untrusted_project"],
+    [composerFailure("E_CANCELLED"), "E_CANCELLED", undefined],
+    [composerFailure("E_INTERNAL"), "E_INTERNAL", undefined],
+  ];
+  for (const [thrown, code, reason] of cases) {
+    const { start } = setup(undefined, { startComposer: async () => Promise.reject(thrown) });
+    await assert.rejects(call(start, { agentId: "cmp1", input: { prompt: "p" } }), (e: unknown) => {
+      assert.ok(e instanceof DaemonError);
+      assert.equal(e.code, code, String((thrown as Error).message));
+      assert.equal(e.details?.["reason"], reason, String((thrown as Error).message));
+      return true;
+    });
   }
 });

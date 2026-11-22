@@ -17,6 +17,8 @@ export interface ComposerStartInput {
   /** The window of the attested connection that started the run: the only one that answers its approvals. */
   readonly windowId: string;
   readonly idempotencyKey?: string;
+  /** The Axis agent record the run is started for (PV-G4), recorded as the run's `agent_id`. */
+  readonly worker?: string;
 }
 
 export interface ComposerEventsPage {
