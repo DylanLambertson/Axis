@@ -248,3 +248,28 @@ test("review B S2: the stopper takes the project mutex: a start that passed the 
   await new Promise((x) => setTimeout(x, 10));
   assert.deepEqual(stopped, ["late"], "the run the start recorded is stopped: none survives the revoke");
 });
+
+test("binding_lost inside a held project mutex: admit refuses at once and the stop runs in the same call chain (the mutex is re-entrant), no deadlock", async () => {
+  // ProjectMutex is re-entrant for the async call chain that holds it (AsyncLocalStorage, project-mutex.ts): the stop the gate
+  // triggers from inside a handler's critical section runs there and then, while every OTHER start still waits for the mutex.
+  const mutex = new ProjectMutex();
+  const stopped: string[] = [];
+  const stopper = createProjectRunStopper({
+    mutex: () => mutex,
+    journal: () => ({ listWorkspaces: () => [{ id: "a", projectId: "p" }] as never }),
+    runs: () => ({ list: () => [{ runId: "r1", state: "RUNNING" }] as never, stop: (id: string) => (stopped.push(id), {} as never) }),
+    composer: () => undefined,
+  });
+  const lost = rig({ binding: async () => ({ ok: false, reason: "not_a_repository" }), onRevoked: stopper });
+  let otherRan = false;
+  const handler = mutex.run("p", async () => {
+    await assert.rejects(lost.gate.admit({ projectId: "p", windowId: "w1", signal }), untrusted);
+    await new Promise((x) => setTimeout(x, 10));
+    assert.deepEqual(stopped, ["r1"], "the stop ran inside the handler's critical section");
+    assert.equal(otherRan, false, "an unrelated call is still kept out");
+  });
+  const other = mutex.run("p", async () => void (otherRan = true));
+  const bound = new Promise((_, reject) => setTimeout(() => reject(new Error("deadlock: the handler never finished")), 2_000));
+  await Promise.race([Promise.all([handler, other]), bound]);
+  assert.equal(otherRan, true);
+});
