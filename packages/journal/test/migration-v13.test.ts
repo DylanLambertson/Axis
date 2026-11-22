@@ -25,14 +25,14 @@ function insert(db: DatabaseSync, row: Row, verb = "INSERT"): void {
 }
 const rows = (db: DatabaseSync): Row[] => (db.prepare("SELECT * FROM forge_pins ORDER BY project_id").all() as Row[]).map((r) => ({ ...r }));
 
-test("version 13 is the latest; a version 12 database gains an empty forge_pins and keeps its projects", () => {
+test("version 13: a version 12 database gains an empty forge_pins and keeps its projects", () => {
   const db = openDatabase(":memory:");
   new AuditLog(db);
   runMigrations(db, "journal", V12);
   db.prepare("INSERT INTO projects (id, path, display_name, trusted, created_at, updated_at) VALUES ('old', '/repo/old', 'Old', 0, ?, ?)").run(T, T);
   const journal = Journal.open(db, { audit: new AuditLog(db) });
-  assert.equal(JOURNAL_SCHEMA_VERSION, 13);
-  assert.equal(schemaVersion(db, "journal"), 13);
+  assert.ok(JOURNAL_SCHEMA_VERSION >= 13);
+  assert.equal(schemaVersion(db, "journal"), JOURNAL_SCHEMA_VERSION);
   assert.deepEqual(rows(db), []);
   assert.equal(journal.getProject("old")?.path, "/repo/old");
   assert.equal(journal.forgePins.get("old"), undefined);

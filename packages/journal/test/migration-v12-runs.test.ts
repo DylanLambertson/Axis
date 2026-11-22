@@ -97,7 +97,7 @@ test("upgrading a version 10 database applies 11, 12 and 13 in order", () => {
   runMigrations(db, "journal", JOURNAL_MIGRATIONS.slice(0, 10));
   db.prepare("INSERT INTO projects (id, path, display_name, trusted, created_at, updated_at) VALUES ('p1', '/repo/one', 'One', 0, ?, ?)").run(T, T);
   open(db);
-  assert.equal(schemaVersion(db, "journal"), 13);
+  assert.equal(schemaVersion(db, "journal"), JOURNAL_SCHEMA_VERSION);
   const tables = (db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('agents','agent_groups','forge_pins')").all() as { name: string }[]).map((r) => r.name).sort();
   assert.deepEqual(tables, ["agent_groups", "agents", "forge_pins"]);
   db.close();
