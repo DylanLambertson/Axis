@@ -4,6 +4,7 @@ import { test, type TestContext } from "node:test";
 import { errorSchema, helloRejectedSchema, welcomeSchema } from "@axis/protocol";
 import { protocolRegistry } from "../src/index.js";
 import { CONTRACT, hello, identityOf, req, rig, verifier, type Rig } from "./harness.js";
+import { isAttestedIdentity } from "../src/index.js";
 
 function mk(t: TestContext, options: Parameters<typeof rig>[0] = {}): Rig {
   const r = rig(options);
@@ -114,6 +115,19 @@ test("identity comes only from the verifier: identity-looking fields in a reques
   r.send(req("i3", "echo", { text: "ok" }));
   assert.equal((await r.inbox.response("i3")).ok, true);
   assert.deepEqual(seen, [identityOf()]);
+});
+
+test("PV-K1c: a handler's identity is the session's attested object; a copy, a clone or a literal is not attested", async (t) => {
+  const seen: unknown[] = [];
+  const r = mk(t);
+  r.daemon.register(CONTRACT, 1, { echo: (ctx, p: { text: string }) => (seen.push(ctx.identity), p) });
+  await r.handshake();
+  r.send(req("a1", "echo", { text: "ok" }));
+  assert.equal((await r.inbox.response("a1")).ok, true);
+  const id = seen[0] as object;
+  assert.equal(isAttestedIdentity(id), true);
+  assert.equal(Object.isFrozen(id), true);
+  for (const copy of [{ ...id }, structuredClone(id), JSON.parse(JSON.stringify(id)), Object.create(id), identityOf(), null, "x"]) assert.equal(isAttestedIdentity(copy), false);
 });
 
 test("a second hello is a protocol violation, not a renegotiation; repeated violations close the connection", async (t) => {
