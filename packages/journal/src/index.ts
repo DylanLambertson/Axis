@@ -49,6 +49,18 @@ export {
   type PageVersionRecord,
 } from "./page-store.js";
 export { AttentionRecords, MAX_ATTENTION_ROWS, type AttentionRun } from "./attention-records.js";
+export { TASKS_MIGRATION, TASK_LIMITS, projectTaskBytesSql } from "./schema-tasks.js";
+export {
+  TaskRecords,
+  type TaskAssignee,
+  type TaskAuthor,
+  type TaskLink,
+  type TaskRecord,
+  type TaskRevisionMeta,
+  type TaskRevisionRecord,
+  type TaskSource,
+  type TaskStatus,
+} from "./task-store.js";
 export { baseBranchSchema, baseTipSchema, type ProjectTrustVia, type RegisterProjectInput, type SetProjectTrustInput } from "./records.js";
 export { MAX_TAIL_ROWS, lastTransitionId, transitionsSince, type TransitionTail } from "./tail.js";
 export { JOURNAL_MIGRATIONS, JOURNAL_SCHEMA_VERSION } from "./schema.js";

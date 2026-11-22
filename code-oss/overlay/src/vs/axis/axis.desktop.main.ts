@@ -9,5 +9,7 @@ import '../workbench/workbench.desktop.main.js';
 import './axis.common.main.js';
 // The real daemon client (PV-E0): registered after the shared entry, so it replaces the unavailable one on the desktop only.
 import './services/daemon/electron-browser/axisRendererDaemonClient.js';
+// Main's project actions (S3): registered after the shared entry, so they replace the unavailable ones on the desktop only.
+import './services/projects/electron-browser/axisProjectActionsIpc.js';
 
 export { main } from './electron-browser/axis.main.js';
