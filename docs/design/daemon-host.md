@@ -271,7 +271,7 @@ Two mechanisms, for two kinds of method.
 - At the registry cap (4096 entries) it **fails closed** and never evicts a revoke: a new grant is refused before a recorded revoke is dropped.
 The policy row `requireTrusted` consults it at evaluation and the handler re-checks immediately before the side effect (a revoke between the two refuses). Q6 is answered for these methods by the two levels above; whether a revoke should also stop a running run stays open.
 
-**Amended (2026-11-21, `project-registration-and-trust.md` §5.3).** These methods move to the trust mode `project`: the journal's run-trust record (set only through main's native dialog), its repository binding, main's `trust.check` and no registry revoke, all required, checked by one gate inside the handler right before the side effect (the gate mints a single-use ticket every gated side-effect port requires). Policy no longer reads `identity.trusted`, and main sends no `trust.set` grants. `cli-runs.start` keeps its attestation and uses the same gate.
+**Amended (2026-11-21, `project-registration-and-trust.md` §5.4).** These methods move to the trust mode `project`: the journal's run-trust record (set only through main's native dialog), its repository binding, main's `trust.check` and no registry revoke, all required, checked by one gate inside the handler right before the side effect (the gate mints a single-use ticket every gated side-effect port requires). Policy no longer reads `identity.trusted`, and main sends no `trust.set` grants. `cli-runs.start` keeps its attestation and uses the same gate.
 
 ### 6.3 Transport abstraction
 
