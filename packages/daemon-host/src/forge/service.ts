@@ -4,6 +4,7 @@ import { parseRemote } from "@axis/git-ops";
 import {
   FORGE_HOST,
   forgeReplySchema,
+  forgeRepositorySchema,
   forgeListRequestSchema,
   type ForgeListRequest,
   type ForgeRefusalReason,
@@ -50,8 +51,29 @@ export interface ForgeLimits {
 }
 export const DEFAULT_FORGE_LIMITS: ForgeLimits = Object.freeze({ freshMs: 60_000, minIntervalMs: 15_000, staleMs: 600_000 });
 
+/**
+ * Where the user's confirmed repository of each project is kept (§2). Slice 2 ships `createMemoryPinStore`: a pin is lost when
+ * the daemon restarts, so the project is unconfirmed again (`repository_unconfirmed`, no `gh` runs) until the user confirms it
+ * again. The journal store (schema v13) is slice 2b; it implements this interface and nothing else changes.
+ */
+export interface PinStore {
+  get(projectId: string): ForgeRepository | undefined;
+  set(projectId: string, repository: ForgeRepository): void;
+}
+
+/** The slice 2 pin store: this process's memory only. */
+export function createMemoryPinStore(): PinStore {
+  const pins = new Map<string, ForgeRepository>();
+  return {
+    get: (projectId) => pins.get(projectId),
+    set: (projectId, repository) => void pins.set(projectId, Object.freeze({ host: repository.host, owner: repository.owner, repo: repository.repo })),
+  };
+}
+
 export interface ForgeServiceDeps {
   readonly projectExists: (projectId: string) => boolean;
+  /** Default: a fresh `createMemoryPinStore()`. */
+  readonly pins?: PinStore;
   readonly readOrigin: (projectId: string) => Promise<OriginRead>;
   /** Absent: no pty process is connected (`unavailable`). */
   readonly port?: ForgeListPort;
@@ -85,7 +107,8 @@ interface Cached {
 }
 
 interface ProjectState {
-  pin?: ForgeRepository;
+  /** Bumped by every `pinRepository`: an exec that started under an older value is not the answer for the current pin. */
+  pinGen: number;
   cache?: Cached | undefined;
   lastExec?: number;
   timeoutLatch: boolean;
@@ -103,11 +126,17 @@ const AUTH_STATES: ReadonlySet<ForgeState> = new Set(["not_logged_in", "keyring_
 export function createForgeService(deps: ForgeServiceDeps): ForgeService {
   const limits: ForgeLimits = { ...DEFAULT_FORGE_LIMITS, ...deps.limits };
   const projects = new Map<string, ProjectState>();
+  const pins = deps.pins ?? createMemoryPinStore();
+  const pinOf = (projectId: string): ForgeRepository | undefined => {
+    const p = pins.get(projectId);
+    // A stored value is used only as a vetted repository; anything else is no pin (fail closed: the user confirms again).
+    return p !== undefined && p.host === FORGE_HOST && forgeRepositorySchema.safeParse(p).success ? p : undefined;
+  };
   /** The authentication latch is global: the keyring is shared, so one failure must not become one dialog per project (§6). */
   let authLatch: ForgeState | undefined;
   const stateOf = (id: string): ProjectState => {
     let s = projects.get(id);
-    if (s === undefined) projects.set(id, (s = { timeoutLatch: false }));
+    if (s === undefined) projects.set(id, (s = { pinGen: 0, timeoutLatch: false }));
     return s;
   };
   const target = (projectId: string): string => `project:${projectId}`;
@@ -166,6 +195,7 @@ export function createForgeService(deps: ForgeServiceDeps): ForgeService {
 
   const exec = async (projectId: string, st: ProjectState, pin: ForgeRepository, port: ForgeListPort, trigger: Trigger): Promise<Answer> => {
     const at = deps.monotonic();
+    const gen = st.pinGen;
     st.lastExec = at;
     // The request is checked against the shared schema before it leaves (review S1a N4): a bad id is a bug, never sent.
     const request = forgeListRequestSchema.safeParse({ t: "forge-list", req: deps.requestId(), host: FORGE_HOST, owner: pin.owner, repo: pin.repo });
@@ -191,9 +221,10 @@ export function createForgeService(deps: ForgeServiceDeps): ForgeService {
     });
     // The pin changed while `gh` ran (any re-pin, even a case-only one, is a new object): the answer is for the repository
     // that was pinned before. It is neither cached nor returned, and no latch moves; the caller is told to ask again.
-    if (st.pin !== pin) {
+    if (st.pinGen !== gen) {
       const retryAfterMs = Math.max(0, Math.ceil(limits.minIntervalMs - (deps.monotonic() - at)));
-      return { state: "busy", ...(st.pin === undefined ? {} : { repository: st.pin }), retryAfterMs };
+      const now = pinOf(projectId);
+      return { state: "busy", ...(now === undefined ? {} : { repository: now }), retryAfterMs };
     }
     if (AUTH_STATES.has(answer.state)) authLatch = answer.state;
     if (answer.state === "timeout") st.timeoutLatch = true;
@@ -215,10 +246,10 @@ export function createForgeService(deps: ForgeServiceDeps): ForgeService {
       if (!deps.projectExists(projectId)) throw new ForgeRefusal("not_found");
       const st = stateOf(projectId);
       const r = await resolve(projectId);
-      if ("state" in r) return { state: r.state, ...(st.pin === undefined ? {} : { repository: st.pin }) };
-      if (st.pin === undefined) return { state: "repository_unconfirmed", candidate: r.repo };
-      if (!same(st.pin, r.repo)) return { state: "remote_changed", repository: st.pin, candidate: r.repo };
-      const pin = st.pin;
+      const pin = pinOf(projectId);
+      if ("state" in r) return { state: r.state, ...(pin === undefined ? {} : { repository: pin }) };
+      if (pin === undefined) return { state: "repository_unconfirmed", candidate: r.repo };
+      if (!same(pin, r.repo)) return { state: "remote_changed", repository: pin, candidate: r.repo };
       if (deps.authUnsupported === true) return { state: "auth_unsupported", repository: pin };
       if (deps.port === undefined) return { state: "unavailable", repository: pin };
       if (st.inflight !== undefined) return st.inflight;
@@ -250,8 +281,9 @@ export function createForgeService(deps: ForgeServiceDeps): ForgeService {
       // The user confirms the value the daemon displayed; a remote changed since (by a run, say) is refused, never pinned.
       if ("state" in r || r.repo.owner !== repository.owner || r.repo.repo !== repository.repo || r.repo.host !== repository.host) throw new ForgeRefusal("candidate_changed");
       const st = stateOf(projectId);
-      const from = st.pin;
-      st.pin = r.repo;
+      const from = pinOf(projectId);
+      pins.set(projectId, r.repo);
+      st.pinGen++;
       st.cache = undefined;
       st.timeoutLatch = false;
       deps.audit.append({

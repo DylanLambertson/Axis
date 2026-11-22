@@ -1,5 +1,5 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
-// axis.forge/1 (PV-D2): planned, not served; the shared forge-list wire schemas; the one owner and repository check.
+// axis.forge/1 (PV-D2): served since slice 2, never also planned; the shared forge-list wire schemas; the one owner and repository check.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -13,10 +13,12 @@ import {
   vetOwnerRepo,
 } from "../src/index.js";
 
-test("axis.forge/1 is planned, never served, with the designed method table", () => {
-  assert.equal(contracts["axis.forge/1"], undefined);
-  assert.equal(lookupMethod("axis.forge", 1, "pullRequests"), undefined);
-  assert.equal(lookupMethodIn(plannedContracts, "axis.forge", 1, "pullRequests"), forgeMethods.pullRequests);
+test("axis.forge/1 is served (slice 2), never also planned, with the designed method table", () => {
+  assert.equal(contracts["axis.forge/1"]?.["pullRequests"], forgeMethods.pullRequests);
+  assert.equal(lookupMethod("axis.forge", 1, "pullRequests"), forgeMethods.pullRequests);
+  assert.equal(lookupMethod("axis.forge", 1, "pinRepository"), forgeMethods.pinRepository);
+  assert.equal(plannedContracts["axis.forge/1"], undefined);
+  assert.equal(lookupMethodIn(plannedContracts, "axis.forge", 1, "pullRequests"), undefined);
   assert.deepEqual(
     Object.entries(forgeMethods).map(([m, s]) => [m, s.sideEffect, s.tier, s.idempotency]),
     [["pullRequests", "read", 0, "none"], ["pinRepository", "write", 1, "none"]],
