@@ -18,6 +18,8 @@ export interface PtySpawn {
   readonly env: Readonly<Record<string, string>>;
   readonly cols: number;
   readonly rows: number;
+  /** PV-M6: the run's messaging endpoint (the daemon's id and token), set by the daemon host only; the supervisor never sets it. */
+  readonly messagesEndpoint?: { readonly endpoint: string; readonly token: string };
 }
 
 export interface PtyExit {

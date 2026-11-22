@@ -2,11 +2,11 @@
 import type { ForgeListRequest, ForgeReply } from "@axis/protocol";
 import { createExecCalls, type PtyExecCall, type PtyExecOutcome } from "./exec-client.js";
 import { createForgeCalls } from "./forge-client.js";
-import { controlReply, type ControlReply } from "./messages.js";
+import { controlReply, relayInbound, type ControlReply, type RelayInbound, type RelayOutbound } from "./messages.js";
 import { probeGroup, signalGroup, validPgid } from "./group.js";
 import { systemClock, systemProcessOps, type Channel, type Clock, type Disposable, type ProcessOps, type PtyExit, type PtyHandle, type PtyPort, type PtySignal, type PtySpawn } from "./ports.js";
 
-export type PtySpawnFailure = "timeout" | "channel_closed" | "capacity" | "env_denied" | "bad_group" | "spawn_failed" | "no_control" | "bad_bind" | "hook_changed" | "bad_argv" | "remote_refused";
+export type PtySpawnFailure = "timeout" | "channel_closed" | "capacity" | "env_denied" | "bad_group" | "spawn_failed" | "no_control" | "bad_bind" | "hook_changed" | "bad_argv" | "remote_refused" | "endpoint_unavailable";
 
 /** The rejection of `spawn`. Carries a code only: never the argv or the environment. */
 export class PtySpawnError extends Error {
@@ -25,6 +25,8 @@ export interface PtyProcessPortOptions {
   readonly spawnTimeoutMs?: number;
   /** Spawns waiting for an answer. Default 64; execs waiting for an answer are bounded by the same number, separately. */
   readonly maxPending?: number;
+  /** PV-M6: each endpoint relay message, parsed by the shared envelope schema (the daemon's relay answers it with `relay`). */
+  readonly onRelay?: (msg: RelayInbound) => void;
 }
 
 /**
@@ -71,6 +73,8 @@ export interface PtyProcessPort extends PtyPort, Disposable {
   forgeList(request: ForgeListRequest): Promise<ForgeReply | undefined>;
   /** How many terminals the port still tracks (an exited terminal whose group is gone is forgotten). For diagnostics and tests. */
   trackedTerminals(): number;
+  /** PV-M6: send the daemon's answer for the endpoint relay; false when the channel is closed. */
+  relay(msg: RelayOutbound): boolean;
 }
 
 interface Pending {
@@ -134,7 +138,11 @@ export function createPtyProcessPort(options: PtyProcessPortOptions): PtyProcess
 
   const onMessage = (raw: unknown): void => {
     const parsed = controlReply.safeParse(raw);
-    if (!parsed.success) return void (forge.onMessage(raw) || execs.onMessage(raw));
+    if (!parsed.success) {
+      const relay = relayInbound.safeParse(raw);
+      if (relay.success) return void options.onRelay?.(relay.data);
+      return void (forge.onMessage(raw) || execs.onMessage(raw));
+    }
     const m = parsed.data;
     if (m.t === "spawned") {
       const p = pending.get(m.req);
@@ -264,12 +272,13 @@ export function createPtyProcessPort(options: PtyProcessPortOptions): PtyProcess
 
   return {
     spawn: (spec: PtySpawn): Promise<PtyProcessHandle> =>
-      request((req) => ({ t: "spawn", req, runId: spec.runId, argv: [...spec.argv], cwd: spec.cwd, env: { ...spec.env }, cols: spec.cols, rows: spec.rows })),
+      request((req) => ({ t: "spawn", req, runId: spec.runId, argv: [...spec.argv], cwd: spec.cwd, env: { ...spec.env }, cols: spec.cols, rows: spec.rows, ...(spec.messagesEndpoint === undefined ? {} : { messagesEndpoint: { endpoint: spec.messagesEndpoint.endpoint, token: spec.messagesEndpoint.token } }) })),
     push: (call: PtyPushCall): Promise<PtyProcessHandle> =>
       request((req) => ({ t: "push", req, runId: call.runId, repo: { gitDir: call.repo.gitDir, workTree: call.repo.workTree }, remote: call.remote, refspec: call.refspec, pushUrls: call.pushUrls, env: { ...call.env }, expectEnv: { ...call.expectEnv }, cols: call.cols, rows: call.rows })),
     exec: (call) => execs.exec(call),
     forgeList: (request) => forge.list(request),
     trackedTerminals: () => terms.size,
+    relay: (msg) => !closed && send(msg),
     grant(terminalId, conn) {
       send({ t: "grant", term: terminalId, conn });
     },
