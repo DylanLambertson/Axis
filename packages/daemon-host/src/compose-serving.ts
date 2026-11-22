@@ -36,6 +36,7 @@ import { registerAgentsHandlers } from "./handlers/agents.js";
 import { providerForConnection } from "./agents/start.js";
 import { registerMessagesHandlers } from "./handlers/messages.js";
 import { registerPagesHandlers } from "./handlers/pages.js";
+import { createPagesContentHooks } from "./pages/confirm.js";
 import type { PagesService } from "./pages/service.js";
 import { createProvidersHandlers } from "./handlers/providers.js";
 import { createReviewAuditSink } from "./handlers/review-audit.js";
@@ -55,7 +56,7 @@ import { loadPushedBases, savePushedBases } from "./storage/pushed-bases-file.js
 export interface ServingParts {
   readonly worktrees?: WorktreesBinding;
   readonly runs?: RunsBinding;
-  readonly approvals?: { readonly port: ApprovalsHandlerDeps["approvals"] };
+  readonly approvals?: { readonly port: ApprovalsHandlerDeps["approvals"]; readonly onPreview?: (target: string, contentDigest: string, text: string) => void };
   readonly agent?: AgentBinding;
   readonly composer?: ComposerService;
   readonly providers?: { readonly cachedModels: NonNullable<ProvidersHandlerDeps["cachedModels"]>; readonly credential: NonNullable<ProvidersHandlerDeps["credential"]> };
@@ -117,7 +118,8 @@ export function registerServing(registrar: HandlerRegistrar, services: HostServi
   if (built.messaging === undefined) throw new AxisError("E_INTERNAL", "The host composition is incomplete", { reason: "not_built" });
   registerMessagesHandlers(registrar, built.messaging);
   if (built.pages === undefined) throw new AxisError("E_INTERNAL", "The host composition is incomplete", { reason: "not_built" });
-  registerPagesHandlers(registrar, built.pages); // axis.pages/1 (PV-Q1 slice 2): the user's own connection only
+  // axis.pages/1 (PV-Q1 slice 2): the user's own connection only; main's dialog for markReviewed and delete names the page.
+  registerPagesHandlers(registrar, built.pages, createPagesContentHooks({ journal, onPreview: built.approvals?.onPreview ?? (() => undefined) }));
   const cliRuns = { service: runs.service, journal, control, gate, minter: ctx.minter, mutex: worktrees.mutex, needsAttention: worktrees.needsAttention, platform: config.platform };
   registerAgentsHandlers(registrar, {
     journal,

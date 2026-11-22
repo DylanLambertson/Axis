@@ -109,7 +109,10 @@ export interface RigOptions {
   nativeWaitPerWindow?: number;
   /** Where the challenge events go instead of the in-memory list (a real `AuditLog`). */
   audit?: { append(e: ChallengeAuditEvent): unknown };
+  /** The native dialog's words for a target (`createApprovals` `describe`). */
+  describe?: ApprovalsDescribe;
 }
+type ApprovalsDescribe = NonNullable<Parameters<typeof createApprovals>[0]["describe"]>;
 
 /** The attestation is "<actor>#<connection>#<window>". */
 const verifier: IdentityVerifier = {
@@ -153,6 +156,7 @@ export async function rig(options: RigOptions = {}) {
     ...(options.limits ? { limits: options.limits } : {}),
     ...(options.nativeWaitLimit ? { nativeWaitLimit: options.nativeWaitLimit } : {}),
     ...(options.nativeWaitPerWindow ? { nativeWaitPerWindow: options.nativeWaitPerWindow } : {}),
+    ...(options.describe ? { describe: options.describe } : {}),
   });
   const trust = new InMemoryTrustRegistry();
   const runs: Array<{ id: string; approved: unknown; payload: unknown }> = [];
