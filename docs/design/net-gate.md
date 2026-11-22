@@ -35,6 +35,7 @@ Scope limits, stated so they are not read as more than they are:
 
 - Extensions are disabled for the strict check. RR-19 records that the pinned extension set opened a loopback listener on a Linux run (GitLens), so extension-owned listeners are out of this gate; a run with the pinned set needs its own record.
 - A "no listener" result is a snapshot after a settle time (default 8 s), not a proof about every later moment.
+- The CLI messaging endpoint (PV-M6) is a Unix socket the pty process opens only for a CLI run whose spawn asks for one (off by default, inert until PV-G4). An idle packaged run never opens it, so this gate does not exercise it; it lists TCP only either way. What keeps the endpoint off TCP is its source rules (`scripts/code-oss/web-rules.mjs` rule 1, `endpoint-ast.mjs`) and its own runtime check that it listens on an absolute path, not this gate.
 - The flag checks use the port the flag names. A build that honours a flag on another port is not seen. Only the four flags above and only TCP are tried (not `--remote-debugging-pipe`, `--inspect-port`, `--js-flags=--inspect`, UDP or unix sockets). The whole process group is killed after every launch, also when the leader already exited (tested with a child that outlives its leader). An app that exits during a flag run counts as refusing; the plain run fails closed when the app does not stay up.
 - The static check runs through its test in CI (`test/code-oss/*.test.mjs`); it has no separate CI step.
 

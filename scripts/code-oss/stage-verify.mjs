@@ -6,7 +6,7 @@ import { createHash } from "node:crypto";
 import { join, posix } from "node:path";
 import { StageError, fail, readRegular, walkFiles } from "./stage-fs.mjs";
 import { LOADER_BUILTINS, RESTRICTED_MODULES, mayImportRestricted, importSpecifiers, unsafeForms } from "./stage-scan.mjs";
-import { listenPathRefusals, listenerBuiltinRefusal, webHostEdgeRefusal } from "./web-rules.mjs";
+import { listenerBuiltinRefusal, webHostEdgeRefusal } from "./web-rules.mjs";
 import { egressBuiltinRefusal } from "./egress-rules.mjs";
 
 export const STAGE_ROOT = "src/vs/axis/packages";
@@ -32,8 +32,6 @@ export function checkStagedFile(rel, text, fileSet) {
   const here = posix.dirname(rel);
   const pkg = rel.split("/")[0];
   if (rel.endsWith(".ts") || rel.endsWith(".js")) for (const t of unsafeForms(text, rel, { vendored: pkg === "vendor", pkg })) fail(`staged ${rel}: ${t}`);
-  // The endpoint listener may only ever listen on a path (web-rules.mjs rule 1): never a TCP port.
-  for (const t of listenPathRefusals(rel, text)) fail(`staged ${t}`);
   for (const spec of importSpecifiers(text, rel)) {
     if (/^node:[a-z_]+(?:\/[a-z0-9_]+)*$/.test(spec)) {
       if (pkg === "vendor") fail(`staged ${rel}: vendored code imports ${spec}`);
