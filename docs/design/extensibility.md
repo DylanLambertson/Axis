@@ -177,7 +177,7 @@ Issue bodies, PR comments, chat messages and monitoring alerts are attacker-reac
 | INT-5 | Over-broad tokens | Narrowest scope offered, scopes shown, tokens with excess scopes refused | 4a |
 | INT-6 | Path or query injection through operation arguments sends the credential to an undeclared endpoint | Fixed method and template, typed encoded segments, dot-segment and separator refusal, final URL pattern match (§7.2) | 4a |
 
-## 9. Proposed gate lines (not added to `ROADMAP.md`)
+## 9. Gate lines (Phases 2a and 4a; `ROADMAP.md` refers to them)
 
 - **2a (pages, tasks):**
   - a page with raw HTML, a script tag, an `onerror` attribute or a remote image renders inert; a `file:` link is refused;

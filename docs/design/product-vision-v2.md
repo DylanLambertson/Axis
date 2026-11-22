@@ -1,6 +1,6 @@
 # Product vision v2: the agent home
 
-- **Status:** Proposed (planning only). Nothing here changes `docs/ROADMAP.md`, `docs/PRODUCT.md`, `docs/UX.md` or an ADR. Proposed edits to those files are collected in §6 and need the owner's approval before they are applied.
+- **Status:** Decided on 2026-11-21 (owner decisions O-1 to O-8, `docs/design/owner-decisions-2026-11-21.md`). ADR 0006 records the information architecture and amends ADR 0004; the §6 edits are applied to `docs/ROADMAP.md`, `docs/PRODUCT.md` and `docs/UX.md` (ticket PV-R2). The text below is kept as written on 2026-11-06; where it differs from ADR 0006, the ADR governs.
 - **Date:** 2026-11-06 (owner direction of 2026-11-06). Verified against `origin/main` at `74cd12e`; E1 (`116ef22`) and P1d (`e52114f`) have merged since.
 - **Decision owner:** Dylan Lambertson.
 - **Companion files:** `docs/design/inter-agent-communication.md` (messaging between agents) with `docs/design/inter-agent-cli-endpoint.md` (the CLI agent endpoint), `docs/design/extensibility.md` (plugins, pages, tasks, integrations), `docs/design/product-vision-v2-tickets.md` (ticket breakdown and ADR list).
@@ -108,7 +108,7 @@ Opening a project shows its home. It follows the `UX.md` thesis: dense, actionab
 |---|---|---|---|---|
 | Needs attention | approvals waiting (count per agent, opens the agent), failed runs, quiet CLI runs (may be waiting for input), drift and Git-config flags, unread messages to the user | `axis.approvals/1.pending`, run lists, review flags | 1c | Never resolves an approval from the dashboard (ADR 0004 implication 4) |
 | Agents | one row per agent, grouped: type, state, current step, branch, changed files, last activity | agents + runs + worktrees status | 1c | Same states as today's rows |
-| Pull requests | open PRs for `axis/*` branches of this project: number, title, branch, checks state, review state | the user's `gh` (`gh pr list` with JSON output) run in the pty-process context under the user's login | 1c | Read-only. No forge credential stored (ADR 0004 decision 9). Output is untrusted: parsed with a strict schema, bounded, display-escaped. Without `gh`: the section says so and offers the compare URL. Other forges: not shown |
+| Pull requests | your open PRs (opened by `gh`'s active account) for `axis/*` branches of this project (`forge-pr-list.md` §1): number, title, branch, checks state, review state | the user's `gh` (`gh pr list` with JSON output) run in the pty-process context under the user's login | 1c | Read-only. No forge credential stored (ADR 0004 decision 9). Output is untrusted: parsed with a strict schema, bounded, display-escaped. Without `gh`: the section says so and offers the compare URL. Other forges: not shown |
 | Usage and cost | per agent and per project: tokens, requests, cost where the provider reports pricing, against the run budget (PRV-6) | composer usage, persisted by J2 | 1c after J2 | **CLI agents: "not available".** Axis never reads a CLI's private stores (ADR 0004 decision 8). A CLI's documented usage output, if any, is out of scope until verified per CLI |
 | Run status | last N runs with state and reason codes | `axis.cli-runs/1.list`, `axis.runs/1.list` | 1c | |
 | Tasks | open tasks, assignee, linked run or PR | `axis.tasks/1` | 2a | |

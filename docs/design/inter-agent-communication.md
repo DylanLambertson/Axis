@@ -249,7 +249,7 @@ TSK-2 (task text laundering taint) and PAG-3 (page script reaching the bridge) a
 - **Kill switch:** **Pause messaging** per project (and per group and agent), a user-only tier-2 call. The daemon refuses every send, every delivery and every endpoint call in that scope with `paused`, for agent, CLI and plugin senders alike; queued messages stay queued. **Resume** is also user-only. The UI copy says plainly that Pause **stops new deliveries only: a message a CLI or a composer has already read cannot be recalled** (review N8). Stopping runs is the separate existing action.
 - **Mute:** per agent, the user can stop seeing an agent's messages in the attention block without changing delivery.
 
-## 11. Proposed gate lines (for Phase 2a; not added to `ROADMAP.md`)
+## 11. Gate lines (Phase 2a; `ROADMAP.md` refers to them)
 
 1. A composer agent's `send_message` to an agent in another group is refused by default; the refusal is audited with sender and recipient ids.
 2. A body containing a challenge id, a digest or the word "approved" changes no approval; an agent connection calling `axis.approvals/1.resolve` is denied (DMN-3 re-run with messaging on).
