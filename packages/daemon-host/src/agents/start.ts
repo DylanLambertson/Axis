@@ -59,6 +59,8 @@ function fromRunError(raw: unknown): never {
     const mapped = typeof reason === "string" && Object.hasOwn(FROM_RUN, reason) ? FROM_RUN[reason] : undefined;
     if (mapped !== undefined) refuse(mapped[0], mapped[1]);
     if (e.code === "E_NOT_FOUND") refuse("E_CONFLICT", "home_unavailable"); // the home went away while the start waited
+    // The run limit: the supervisor's `RUN_LIMIT` becomes `E_BACKPRESSURE` with no reason detail (`toRunError`).
+    if (e.code === "E_BACKPRESSURE") refuse("E_CONFLICT", "busy");
   }
   throw e;
 }

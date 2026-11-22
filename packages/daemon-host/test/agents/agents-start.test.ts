@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { AuditLog, openDatabase } from "@axis/audit";
+import { AuditLog, AxisError, openDatabase } from "@axis/audit";
 import { DaemonError, type HandlerContext, type Identity } from "@axis/daemon";
 import { Journal } from "@axis/journal";
 import { createAgentStart } from "../../src/agents/start.js";
@@ -10,7 +10,7 @@ import { createAgentsHandlers } from "../../src/handlers/agents.js";
 import type { CliStart } from "../../src/handlers/cli-runs.js";
 import { hostMessagingDeps } from "../../src/messages/binding.js";
 import { InMemoryTrustRegistry } from "../../src/policy/trust-registry.js";
-import { runFailure } from "../../src/runs/errors.js";
+import { runFailure, toRunError } from "../../src/runs/errors.js";
 import { ProjectMutex } from "../../src/worktrees/project-mutex.js";
 
 // axis.agents/1.start (PV-G4 slice A): resolved from the journal (live agent, READY home of its project, its launch), the CLI
@@ -82,7 +82,8 @@ test("run refusals fold into the contract's closed reasons; anything else is E_I
     [runFailure("E_NOT_FOUND", "agent_unknown"), "E_CONFLICT", "entry_unavailable"],
     [runFailure("E_CONFLICT", "executable_not_found"), "E_CONFLICT", "entry_unavailable"],
     [runFailure("E_CONFLICT", "active_run"), "E_CONFLICT", "busy"],
-    [runFailure("E_CONFLICT", "run_limit"), "E_CONFLICT", "busy"],
+    // The real shape of the run limit: the supervisor's refusal as `toRunError` turns it (E_BACKPRESSURE, no reason).
+    [toRunError(new AxisError("E_BACKPRESSURE", "Too many CLI runs are active on this device", { reason: "RUN_LIMIT" })), "E_CONFLICT", "busy"],
     [runFailure("E_CONFLICT", "not_ready"), "E_CONFLICT", "home_unavailable"],
     [runFailure("E_UNAVAILABLE", "needs_attention"), "E_CONFLICT", "home_unavailable"],
     [runFailure("E_NOT_FOUND"), "E_CONFLICT", "home_unavailable"],
