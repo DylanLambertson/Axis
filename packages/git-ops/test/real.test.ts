@@ -21,7 +21,7 @@ test("commit: the reviewed tree is committed with the config identity", async ()
   assert.equal(f.seen.filter((c) => c.context === "pty" && c.argv.includes("commit-tree")).length, 1);
 });
 
-// OPEN DECISION (docs/packages.md "Commit hooks"): today no commit hook runs, whatever axis.git.runHooks says. This test
+// OPEN DECISION (docs/packages/git-ops.md "Commit hooks"): today no commit hook runs, whatever axis.git.runHooks says. This test
 // records that behaviour so a change to it is deliberate; the owner's answer replaces it.
 test("commit: no commit hook runs on the bound path, with runHooks on or off", async () => {
   for (const runHooks of [true, false]) {

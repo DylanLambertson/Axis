@@ -12,7 +12,7 @@ import { selectPtyGitRunner } from "./bindings/pty-git.js";
 import { createRunsBinding, type RunsBinding } from "./bindings/runs.js";
 import { composerGuardDeps, createRunRepositoryGuard, type RunSnapshotterFactory } from "./bindings/snapshot.js";
 import { createWorktreesBinding, type WorktreesBinding } from "./bindings/worktrees.js";
-import { composerWriteLock, createActiveRunForwarder, createAuditSeal, createRunsClock, isPty, messageSecretCheck, refuseComposition, settleComposer, daemonAuditSink, createProjectRunStopper, recordingRegistrar, registryOf, type ComposerOptions } from "./compose-parts.js";
+import { composerWriteLock, createActiveRunForwarder, createAuditSeal, createRunsClock, isPty, messageSecretCheck, cliEndpointPty, wireCliEndpoints, refuseComposition, settleComposer, daemonAuditSink, createProjectRunStopper, recordingRegistrar, registryOf, type ComposerOptions, type MessagingOptions } from "./compose-parts.js";
 import { hostCommandLimits, type CommandLimits } from "./bindings/agent-command.js";
 import type { HostConfig } from "./config.js";
 import { createAttestationVerifier } from "./control/attestation.js";
@@ -118,8 +118,8 @@ export interface ComposeOptions {
   };
   /** Period of the event sources (docs/design/events.md section 4; default 250 ms). */
   readonly eventPumpMs?: number;
-  /** Messaging for agent runs (delivery, the send and read tools); off by default, see `HostMessaging.enabled`. */
-  readonly messaging?: { readonly enabled?: boolean };
+  /** Messaging: `enabled` for agent runs (delivery, the send and read tools; `HostMessaging.enabled`) and `cliEndpoint` for the CLI endpoint (PV-M6, needs `enabled`); both off by default. */
+  readonly messaging?: MessagingOptions;
 }
 
 export interface ComposedHost {
@@ -140,8 +140,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
   // Lower-only (C3): read field by field before anything is built; a bad override refuses the composition.
   const commandBounds = hostCommandLimits(options.composer?.commandLimits);
   if (typeof commandBounds === "string") refuseComposition(commandBounds);
-  const { config, control, ports } = options;
-  const pty = options.pty;
+  const { config, control, ports, pty } = options;
   const snapshotterFactory = options.snapshotter;
   const logger: Logger | undefined = ports.logger;
   const scanner = createSecretScanner({ mode: options.scanMode ?? "refuse" });
@@ -217,7 +216,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
         const runs = createRunsBinding({
           journal: parts.journal,
           audit: parts.audit,
-          pty,
+          pty: cliEndpointPty(pty, () => cliEndpoints), // PV-M6: a CLI run's endpoint at spawn, only with the messaging flags on
           clock: createRunsClock(ports.clock),
           locator: worktrees.locator,
           snapshotter,
@@ -238,6 +237,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
         const messagingDeps = hostMessagingDeps({ journal: parts.journal, audit: composerWriter, monotonic: () => ports.clock.monotonic(), scan: (text) => scanner.scan(text, { part: "message" }), logger, holdsSecret: messageSecretCheck(ports.redactor), enabled: options.messaging?.enabled === true });
         options.observeMessaging?.({ agentOf: (id) => messagingDeps.agentOf?.(id) });
         const messaging = createMessagingBinding(messagingDeps);
+        const cliEndpoints = wireCliEndpoints(options.messaging, pty, messaging.endpoints, cleanups); // inert unless both flags are on
         // axis.pages/1 and the page tools (PV-Q1 slice 2): writes and their audit rows through the sealed composer writer.
         const pages = createPagesService({ journal: parts.journal, audit: composerWriter, random: { bytes: (n) => randomBytes(n) } });
         const workerOf = journalWorkerOf(parts.journal);

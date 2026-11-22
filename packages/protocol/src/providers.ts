@@ -25,7 +25,7 @@ export const MAX_PROVIDERS = 64;
  * origin. The character rules are stricter, not looser (display text has no
  * edge whitespace and no control, bidi or zero-width characters), so an adapter
  * that passes `@axis/providers` can still make the whole list fail until it
- * adopts them (docs/packages.md, "Display text is held to rules").
+ * adopts them (docs/packages/protocol.md, "Display text is held to rules").
  * The connection id is the one deliberate tightening: it must be a vault
  * connection name (`NAME_RE` in `@axis/vault`), never free text, so a
  * credential or a URL with a password in a wrongly wired adapter cannot reach

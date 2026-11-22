@@ -17,6 +17,8 @@ export interface PtySpawn {
   readonly env: Readonly<Record<string, string>>;
   readonly cols: number;
   readonly rows: number;
+  /** PV-M6: the run's messaging endpoint (the daemon's id and token); the pty process opens it and adds its two names. */
+  readonly messagesEndpoint?: { readonly endpoint: string; readonly token: string };
 }
 
 export interface PtyExit {

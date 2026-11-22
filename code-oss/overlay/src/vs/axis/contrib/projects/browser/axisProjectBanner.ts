@@ -9,11 +9,9 @@
 import { isUsable } from '../../../services/daemon/common/axisDaemonClient.js';
 import { $, addDisposableListener, append } from '../../../../base/browser/dom.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
-import { Schemas } from '../../../../base/common/network.js';
 import { localize } from '../../../../nls.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
-import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
-import { AxisProjectAction, bannerContent, outcomeSentence, trustSource, windowLocalCheckoutIds, windowProjectState } from '../../../services/projects/common/axisProjectActions.js';
+import { AxisProjectAction, bannerContent, outcomeSentence, trustSource } from '../../../services/projects/common/axisProjectActions.js';
 import { IAxisProjectActionsService } from '../../../services/projects/common/axisProjectActionsService.js';
 import { IAxisWorkspaceService } from '../../../services/workspaces/browser/axisWorkspaceService.js';
 
@@ -29,13 +27,11 @@ export class AxisProjectBanner extends Disposable {
 	constructor(
 		@IAxisWorkspaceService private readonly workspaces: IAxisWorkspaceService,
 		@IAxisProjectActionsService private readonly actions: IAxisProjectActionsService,
-		@IWorkspaceContextService private readonly context: IWorkspaceContextService,
 		@ICommandService private readonly commands: ICommandService,
 	) {
 		super();
 		this.element = $('.axis-project-banner');
 		this.text = append(this.element, $('span.axis-project-banner-text'));
-		this.text.dir = 'auto'; // the sentence carries the project name
 		this.button = append(this.element, $('button.axis-project-banner-action')) as HTMLButtonElement;
 		this.button.type = 'button';
 		this.outcome = append(this.element, $('span.axis-project-banner-outcome'));
@@ -46,18 +42,17 @@ export class AxisProjectBanner extends Disposable {
 				void this.commands.executeCommand(COMMAND[this.action]);
 			}
 		}));
-		this._register(this.workspaces.onDidChangeWorkspaces(() => this.render()));
+		// Main reads this window's folder (`status`) when the data changes, never on a timer; its answer re-renders through onDidChange.
+		this._register(this.workspaces.onDidChangeWorkspaces(() => { this.actions.refreshStatus(); this.render(); }));
+		this.actions.refreshStatus();
 		this._register(this.actions.onDidChange(() => this.render()));
 		this.render();
 	}
 
 	render(): void {
-		const folders = this.context.getWorkspace().folders.filter(f => f.uri.scheme === Schemas.file).map(f => f.uri.fsPath);
 		const source = trustSource(isUsable(this.workspaces.daemonStatus), this.workspaces.dataOrigin);
-		const state = windowProjectState({ source, projects: this.workspaces.projects, localCheckoutProjectIds: windowLocalCheckoutIds(this.workspaces.workspaces, folders) });
-		const content = bannerContent(state, source);
+		const content = bannerContent(this.actions.windowTrust, source);
 		this.text.textContent = content.text;
-		this.text.title = content.text; // the full sentence, if it is cut short
 		this.action = content.action?.id;
 		this.button.hidden = content.action === undefined;
 		this.button.textContent = content.action?.label ?? '';

@@ -5,7 +5,7 @@ import type { TestContext } from "node:test";
 import { test } from "node:test";
 import { relayInbound, relayOutbound } from "@axis/pty-process";
 import { MAX_HOP } from "@axis/protocol";
-import { ENDPOINT_LIMITS, WITHHELD_BODY, createMessagingBinding, endpointIdOf, hostMessagingDeps, type MessageCaller, type RelayOut } from "../src/index.js";
+import { ENDPOINT_LIMITS, WITHHELD_BODY, createMessagingBinding, endpointIdOf, hostMessagingDeps, replyFrame, type MessageCaller, type RelayOut } from "../src/index.js";
 import { deliveryRig, type DeliveryRig } from "./messages-delivery-rig.js";
 
 // PV-M6 slice 1: the daemon's side of the CLI messaging endpoint, driven by a fake relay (no listener). ADR 0007 decision 7 and
@@ -247,4 +247,14 @@ test("review s1 SF: a revoked endpoint leaves the table: 1,000 minted and revoke
   assert.equal(relay.mint(newest), undefined, "and its run is not minted again");
   assert.deepEqual(relay.revoke(newest), { t: "endpoint-close", endpoint: endpointIdOf(newest), reason: "revoked" }, "revoking again is idempotent");
   assert.deepEqual(json((await late(runs[0] as string))[0]), { ok: false, reason: "refused" }, "past the ring of 256 revocations, the closed answer for an unknown id");
+});
+
+test("review s2 S2: a reply is bounded in UTF-8 bytes, not UTF-16 units: a multibyte body that fits in units but not in bytes is too_large", () => {
+  const body = { id: "r1", ok: true, text: "é".repeat(10) }; // 2 bytes each on the wire
+  const json = JSON.stringify(body);
+  const max = json.length + 5; // room in UTF-16 units, none in bytes
+  assert.ok(json.length <= max && Buffer.byteLength(json, "utf8") > max);
+  assert.deepEqual(JSON.parse(replyFrame(body, max)), { id: "r1", ok: false, reason: "too_large" });
+  assert.equal(replyFrame(body, Buffer.byteLength(json, "utf8")), json, "exactly at the byte bound it passes");
+  assert.equal(ENDPOINT_LIMITS.replyBytes, 1048576);
 });

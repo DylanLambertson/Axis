@@ -28,7 +28,16 @@ import { InvalidMessageRequest } from "./wire.js";
  *   registered secret is withheld (`readWithheld`, section 11 of messages-contract.md).
  */
 
-export const ENDPOINT_LIMITS = Object.freeze({ inflight: 4, connections: 4, readsPerMinute: 60, maxEndpoints: 256, frameChars: 64 * 1024, depth: 32, replyChars: 1024 * 1024 });
+export const ENDPOINT_LIMITS = Object.freeze({ inflight: 4, connections: 4, readsPerMinute: 60, maxEndpoints: 256, frameChars: 64 * 1024, depth: 32, replyBytes: 1024 * 1024 });
+
+/**
+ * A reply frame's JSON text, at most `maxBytes` UTF-8 BYTES on the wire (review s2 S2: counted in bytes, not UTF-16 units,
+ * which could be three times as many bytes); a larger body becomes the closed `too_large`, keeping its request id.
+ */
+export function replyFrame(body: Record<string, unknown>, maxBytes: number = ENDPOINT_LIMITS.replyBytes): string {
+  const frame = JSON.stringify(body);
+  return Buffer.byteLength(frame, "utf8") <= maxBytes ? frame : JSON.stringify({ ...(typeof body["id"] === "string" ? { id: body["id"] } : {}), ok: false, reason: "too_large" });
+}
 
 /** A relayed message, as the pty binding parsed it with the shared envelope schema (`@axis/pty-process/client` `relayInbound`). */
 export type RelayIn =
@@ -144,9 +153,7 @@ export function createEndpointRelay(deps: EndpointRelayDeps): EndpointRelay {
   };
 
   const reply = (endpoint: string, conn: string, body: Record<string, unknown>, close = false, authFailed = false): RelayOut => {
-    let frame = JSON.stringify(body);
-    if (frame.length > ENDPOINT_LIMITS.replyChars) frame = JSON.stringify({ ...(typeof body["id"] === "string" ? { id: body["id"] } : {}), ok: false, reason: "too_large" });
-    return { t: "relay-reply", endpoint, conn, frame, close, authFailed };
+    return { t: "relay-reply", endpoint, conn, frame: replyFrame(body), close, authFailed };
   };
   const refuse = (endpoint: string, conn: string, reason: string, close = true): RelayOut[] => [reply(endpoint, conn, { ok: false, reason }, close)];
 
