@@ -52,9 +52,15 @@ export class Client {
   readonly all: Msg[] = [];
   #waiters: Array<() => void> = [];
   #n = 0;
+  #closed = false;
   constructor(readonly port: MessagePort) {
     port.on("message", (m: Msg) => {
       this.all.push(m);
+      this.#waiters.splice(0).forEach((w) => w());
+    });
+    // A closed port ends every wait on it: a test that failed and tore the rig down must not leave a polling loop holding the process.
+    port.on("close", () => {
+      this.#closed = true;
       this.#waiters.splice(0).forEach((w) => w());
     });
   }
@@ -64,6 +70,7 @@ export class Client {
     for (;;) {
       const hit = this.all.find(pred);
       if (hit) return hit;
+      if (this.#closed) throw new Error("the client's port closed before the awaited message");
       if (Date.now() >= end) throw new Error(`timed out; got ${JSON.stringify(this.all).slice(0, 300)}`);
       await new Promise<void>((r) => {
         const t = setTimeout(r, 25);
@@ -75,7 +82,9 @@ export class Client {
   async call(contract: string, method: string, payload: unknown, key?: string): Promise<Msg> {
     const id = `q${++this.#n}`;
     this.send(contract, method, payload, id, key);
-    return this.until((m) => m.id === id);
+    const answer = this.until((m) => m.id === id);
+    answer.catch(() => undefined); // a call abandoned by a failed test rejects when the port closes: that is not an unhandled rejection
+    return answer;
   }
   send(contract: string, method: string, payload: unknown, id: string, key?: string): void {
     this.port.postMessage({ v: 1, id, contract, contractVersion: 1, method, payload, ...(key ? { idempotencyKey: key } : {}) });
