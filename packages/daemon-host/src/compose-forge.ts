@@ -1,12 +1,13 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 // `axis.forge/1` in the composition (ticket PV-D2 slice 2, docs/design/forge-pr-list.md §9): the forge service over the pty
-// process's `forge-list`, the project's main checkout and the in-memory pin store, registered through the host's registrar. Kept
+// process's `forge-list`, the project's main checkout and the journal's pin store (schema v13), registered through the host's registrar. Kept
 // out of compose.ts (its line budget); the composition root calls `registerForgeServing` and nothing else of this file.
 import { randomBytes } from "node:crypto";
 import type { GitOpsDeps } from "@axis/git-ops";
 import type { AuditEventInput } from "@axis/audit";
 import { createOriginReader } from "./forge/origin.js";
-import { createForgeService, createMemoryPinStore, type ForgeListPort } from "./forge/service.js";
+import type { ForgeRepository } from "@axis/protocol";
+import { createForgeService, type ForgeListPort, type PinStore } from "./forge/service.js";
 import { registerForgeHandlers } from "./handlers/forge.js";
 import type { HandlerRegistrar } from "./handlers/anchor-guard.js";
 import type { Logger } from "./log/logger.js";
@@ -29,6 +30,22 @@ export interface ForgeServingDeps {
   readonly audit: (event: AuditEventInput) => void;
   readonly monotonic: () => number;
   readonly logger?: Logger;
+  /** The journal's pins (`journal.forgePins`, schema v13). What it returns is only a candidate: the service re-vets it. */
+  readonly pins: StoredPins;
+}
+
+/** The journal's `ForgePinRecords`, structurally (a stored host is any string until the service vets it). */
+export interface StoredPins {
+  get(projectId: string): { readonly host: string; readonly owner: string; readonly repo: string } | undefined;
+  set(projectId: string, repository: ForgeRepository): void;
+}
+
+/** The service's pin store over the journal. A stored value that is not a vetted github.com repository is no pin (the service checks). */
+export function journalPinStore(pins: StoredPins): PinStore {
+  return {
+    get: (projectId) => pins.get(projectId) as ForgeRepository | undefined,
+    set: (projectId, repository) => pins.set(projectId, { host: repository.host, owner: repository.owner, repo: repository.repo }),
+  };
 }
 
 /** The service's one line per exec (`forge: state=<state> exit=<code|none>`) as a closed log record; any other line is dropped. */
@@ -55,9 +72,8 @@ export function registerForgeServing(registrar: HandlerRegistrar, deps: ForgeSer
     requestId: forgeRequestId,
     authUnsupported: FORGE_AUTH_UNSUPPORTED.has(deps.platform),
     log: forgeLogLine(deps.logger),
-    // Slice 2: the pin lives in this process only. A restart forgets it, so the project is unconfirmed until the user confirms
-    // again; nothing runs meanwhile. Persisted in journal v13 (slice 2b).
-    pins: createMemoryPinStore(),
+    // Slice 2b: the pin is the journal's (schema v13), so it survives a restart; a re-pin updates it in place.
+    pins: journalPinStore(deps.pins),
   });
   registerForgeHandlers(registrar, { service });
 }

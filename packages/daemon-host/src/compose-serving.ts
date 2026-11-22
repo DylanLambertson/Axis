@@ -128,5 +128,5 @@ export function registerServing(registrar: HandlerRegistrar, services: HostServi
     onInternalError: () => logger?.error("request.failed", { reason: "git_internal" }),
     onBookkeepingError: () => logger?.warn("request.failed", { reason: "git_bookkeeping" }),
   });
-  registerForgeServing(registrar, { pty, projectPath: (id) => journal.getProject(id)?.path, git, platform: config.platform, audit: (e) => (audit.append(e), services.anchors.noteWrite()), monotonic: () => ports.clock.monotonic(), ...(logger === undefined ? {} : { logger }) });
+  registerForgeServing(registrar, { pty, projectPath: (id) => journal.getProject(id)?.path, git, platform: config.platform, audit: (e) => (audit.append(e), services.anchors.noteWrite()), monotonic: () => ports.clock.monotonic(), pins: journal.forgePins, ...(logger === undefined ? {} : { logger }) });
 }

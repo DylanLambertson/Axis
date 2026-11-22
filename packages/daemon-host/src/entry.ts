@@ -25,7 +25,10 @@ import { ChannelMux } from "./transport/mux.js";
  *
  * What it does, in order, and what fails closed (every refusal is exit code 78 and a `fatal` message of closed codes, before any
  * data directory, lock, file or listener exists):
- * 1. not a utility process (no parent port), a debugging or inspector flag in `execArgv`, or `NODE_OPTIONS` in the environment: refused;
+ * 1. not a utility process (no parent port), a debugging or inspector flag in `execArgv`, or a non-empty `NODE_OPTIONS`,
+ *    `NODE_TLS_REJECT_UNAUTHORIZED` or `NODE_USE_ENV_PROXY` in the environment (any letter case on Windows, where the
+ *    environment is case-insensitive): refused. The last two would turn off certificate checks or route Node's own HTTP
+ *    through an environment proxy for every request the daemon makes (ADR 0009 decision 4);
  * 2. the parent port is adapted BEFORE anything awaits, so the one `init` message cannot be lost;
  * 3. exactly one `init` within `initTimeoutMs` (design 3, step 2); none in time: refused;
  * 4. `HostConfig` parsed strictly; a `platform` that is not the process's own: refused;
@@ -41,6 +44,26 @@ import { ChannelMux } from "./transport/mux.js";
  *
  * It opens no socket and no port; `connect` messages arrive only on the parent port, which only the parent can write.
  */
+
+/**
+ * Environment variables that change how Node itself loads code or makes TLS and HTTP connections, refused at start with
+ * their closed reason when set to anything but the empty string.
+ */
+export const REFUSED_ENV: ReadonlyArray<readonly [string, string]> = Object.freeze([
+  Object.freeze(["NODE_OPTIONS", "node_options_refused"] as const),
+  Object.freeze(["NODE_TLS_REJECT_UNAUTHORIZED", "tls_override_refused"] as const),
+  Object.freeze(["NODE_USE_ENV_PROXY", "env_proxy_refused"] as const),
+]);
+
+/** True when `name` holds a non-empty value; on Windows any key that equals `name` ignoring letter case counts. */
+export function envSet(env: Readonly<Record<string, string | undefined>>, name: string, platform: string): boolean {
+  if (platform !== "win32") {
+    const v = env[name];
+    return v !== undefined && v !== "";
+  }
+  const upper = name.toUpperCase();
+  return Object.keys(env).some((k) => k.toUpperCase() === upper && env[k] !== undefined && env[k] !== "");
+}
 
 /** A `process` the entry may end: the listener target the lifecycle needs plus the exit code and `exit`. */
 export interface EntryProcess extends ListenerTarget {
@@ -146,8 +169,9 @@ export function runDaemonEntry(deps: DaemonEntryDeps): DaemonEntryHandle {
   if (deps.execArgv.some(isDebugFlag)) return refuseEarly("debug_flag_refused");
   // Main always forks with an empty `execArgv`; `--require`, `--import` and loaders would run code before this file does.
   if (deps.execArgv.length > 0) return refuseEarly("exec_args_refused");
-  const nodeOptions = deps.env["NODE_OPTIONS"];
-  if (nodeOptions !== undefined && nodeOptions !== "") return refuseEarly("node_options_refused");
+  for (const [name, reason] of REFUSED_ENV) {
+    if (envSet(deps.env, name, deps.platform)) return refuseEarly(reason);
+  }
 
   // Step 2: listen before anything awaits.
   const control = adaptParentPort(deps.parentPort);
