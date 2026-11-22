@@ -9,6 +9,8 @@ import type { SecretScanner } from "@axis/secret-scan";
 import { createGitOperations, createGitPort } from "./bindings/git.js";
 import { registerForgeServing } from "./compose-forge.js";
 import { registerAttentionServing } from "./handlers/attention.js";
+import { registerUsageServing } from "./handlers/usage.js";
+import { usageServiceDeps } from "./usage/service.js";
 import { createCommitPreparer, createReviewService } from "./bindings/review.js";
 import { createTempIndexProvider } from "./bindings/review-tempindex.js";
 import { createSshResolver, unavailableSshResolver, type SshSpawn } from "./bindings/ssh-resolver.js";
@@ -150,4 +152,5 @@ export function registerServing(registrar: HandlerRegistrar, services: HostServi
     cliRun: (id) => runs.service.get(id),
     composerRun: (id) => composer.get(id),
   });
+  registerUsageServing(registrar, usageServiceDeps(journal, composer));
 }
