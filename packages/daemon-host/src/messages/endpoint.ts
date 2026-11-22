@@ -94,7 +94,11 @@ interface Endpoint {
 
 const digest = (s: string): Buffer => createHash("sha256").update(s, "utf8").digest();
 const b64url = (b: Uint8Array): string => Buffer.from(b).toString("base64url");
-/** The endpoint id of a run: derived from its id, so the daemon maps an endpoint to its run without a lookup the relay names. */
+/**
+ * The endpoint id of a run: derived from its id, so the daemon maps an endpoint to its run without a lookup the relay names. It
+ * is NOT a secret (anyone who knows the run id can compute it; review s1 N1): the 256-bit token is the only secret, and the pty
+ * process relays only for the endpoints it hosts.
+ */
 export const endpointIdOf = (runId: string): string => `ep_${b64url(createHash("sha256").update(`axis-endpoint\0${runId}`, "utf8").digest())}`;
 
 /** Depth of a parsed JSON value, iteratively, stopping past `max`. */
@@ -110,8 +114,13 @@ function depthWithin(value: unknown, max: number): boolean {
 }
 
 export function createEndpointRelay(deps: EndpointRelayDeps): EndpointRelay {
+  // Live endpoints only: a revoked one is removed (review s1 SF), so the table never holds more than `maxEndpoints` live ones,
+  // whatever the daemon's lifetime. What stays of a revoked endpoint is a tombstone (its id and run) in a ring of the last
+  // `maxEndpoints` revocations, so a late frame answers `revoked` and the run is not minted again; past the ring, `refused`.
   const byId = new Map<string, Endpoint>();
   const byRun = new Map<string, Endpoint>();
+  const tombstones = new Map<string, string>();
+  const tombstoneRuns = new Set<string>();
   const reads = new WindowCounter(ENDPOINT_LIMITS.readsPerMinute, MINUTE_MS, ENDPOINT_LIMITS.maxEndpoints, deps.monotonic);
 
   const audit = (ep: Endpoint, event: string, extra: Record<string, string | number> = {}): void => {
@@ -144,10 +153,20 @@ export function createEndpointRelay(deps: EndpointRelayDeps): EndpointRelay {
   function revokeEndpoint(ep: Endpoint): RelayOut {
     if (!ep.revoked) {
       ep.revoked = true;
+      ep.token?.fill(0); // wiped, not only dropped: a request still in flight holds this object
       ep.token = undefined;
       ep.conns.clear();
       flushFailures(ep);
       audit(ep, "revoked");
+      byId.delete(ep.id);
+      byRun.delete(ep.runId);
+      tombstones.set(ep.id, ep.runId);
+      tombstoneRuns.add(ep.runId);
+      if (tombstones.size > ENDPOINT_LIMITS.maxEndpoints) {
+        const [oldId, oldRun] = tombstones.entries().next().value as [string, string];
+        tombstones.delete(oldId);
+        tombstoneRuns.delete(oldRun);
+      }
     }
     return { t: "endpoint-close", endpoint: ep.id, reason: "revoked" };
   }
@@ -185,7 +204,7 @@ export function createEndpointRelay(deps: EndpointRelayDeps): EndpointRelay {
 
   return {
     mint(runId) {
-      if (deps.platform === "win32" || byRun.has(runId) || byRun.size >= ENDPOINT_LIMITS.maxEndpoints || !deps.runLive(runId)) return undefined;
+      if (deps.platform === "win32" || byRun.has(runId) || tombstoneRuns.has(runId) || byRun.size >= ENDPOINT_LIMITS.maxEndpoints || !deps.runLive(runId)) return undefined;
       const agentId = deps.agentOf(runId);
       const entry = agentId === undefined ? undefined : deps.directory.agent(agentId);
       if (agentId === undefined || entry === undefined || entry.kind !== "cli") return undefined;
@@ -200,7 +219,8 @@ export function createEndpointRelay(deps: EndpointRelayDeps): EndpointRelay {
 
     revoke(runId) {
       const ep = byRun.get(runId);
-      return ep === undefined ? undefined : revokeEndpoint(ep);
+      if (ep !== undefined) return revokeEndpoint(ep);
+      return tombstoneRuns.has(runId) ? { t: "endpoint-close", endpoint: endpointIdOf(runId), reason: "revoked" } : undefined;
     },
 
     flush: () => byId.forEach(flushFailures),
@@ -210,8 +230,7 @@ export function createEndpointRelay(deps: EndpointRelayDeps): EndpointRelay {
       // ADR 0007 validation line 7: only the supervised channel, only ids of the shapes the envelope allows, only minted ids.
       if (source !== deps.source || typeof endpoint !== "string" || typeof conn !== "string" || !ENDPOINT_ID.test(endpoint) || !CONN_ID.test(conn)) return [];
       const ep = byId.get(endpoint);
-      if (ep === undefined) return msg.t === "relay-close" ? [] : refuse(endpoint, conn, "refused");
-      if (ep.revoked) return msg.t === "relay-close" ? [] : refuse(endpoint, conn, "revoked");
+      if (ep === undefined) return msg.t === "relay-close" ? [] : refuse(endpoint, conn, tombstones.has(endpoint) ? "revoked" : "refused");
       if (!deps.runLive(ep.runId)) return msg.t === "relay-close" ? [revokeEndpoint(ep)] : [revokeEndpoint(ep), ...refuse(endpoint, conn, "revoked")];
       if (msg.t === "relay-close") {
         ep.conns.delete(conn);

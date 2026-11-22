@@ -225,3 +225,24 @@ test("the relay envelope: the daemon's replies pass the shared schema, and the s
   assert.equal(relayInbound.safeParse({ t: "relay-open", endpoint: endpointIdOf("r"), conn: "C", extra: 1 }).success, false);
   assert.equal(relayOutbound.safeParse({ t: "endpoint-close", endpoint: endpointIdOf("r"), reason: "revoked" }).success, true);
 });
+
+test("review s1 SF: a revoked endpoint leaves the table: 1,000 minted and revoked in one run, the 1,001st is still minted; late frames stay closed", async (t) => {
+  const r = await deliveryRig(t, { noDelivery: true });
+  r.c.journal.messages.setAgentSettings("c1", { acceptsFrom: "group", cliMessaging: true, muted: false });
+  const relay = r.m.endpoints.relay;
+  const src = r.m.endpoints.source;
+  const runs: string[] = [];
+  for (let i = 0; i < 1_000; i++) {
+    const runId = r.run("c1");
+    assert.ok(relay.mint(runId) !== undefined, `mint ${i}`);
+    assert.deepEqual(relay.revoke(runId), { t: "endpoint-close", endpoint: endpointIdOf(runId), reason: "revoked" });
+    runs.push(runId);
+  }
+  assert.ok(relay.mint(r.run("c1")) !== undefined, "the 1,001st is minted");
+  const late = (runId: string) => relay.onRelay(src, { t: "relay-open", endpoint: endpointIdOf(runId), conn: "late" });
+  const newest = runs[runs.length - 1] as string;
+  assert.deepEqual(json((await late(newest))[0]), { ok: false, reason: "revoked" }, "a recent revocation answers revoked");
+  assert.equal(relay.mint(newest), undefined, "and its run is not minted again");
+  assert.deepEqual(relay.revoke(newest), { t: "endpoint-close", endpoint: endpointIdOf(newest), reason: "revoked" }, "revoking again is idempotent");
+  assert.deepEqual(json((await late(runs[0] as string))[0]), { ok: false, reason: "refused" }, "past the ring of 256 revocations, the closed answer for an unknown id");
+});
