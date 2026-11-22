@@ -156,7 +156,7 @@ test("invalid specs are refused: NaN and fractional limits, relative argv0, NUL,
 test("killAll kills live groups and leaves no timers behind", async () => {
   const runner = createCommandRunner({ killGraceMs: 200 });
   const p = runner.run(base("setInterval(()=>{},1000)"));
-  await new Promise((r) => setTimeout(r, 200));
+  await waitFor(() => runner.active === 1);
   assert.equal(runner.killAll(), 1);
   const r = await p;
   assert.ok(r.signal !== null || !posix);

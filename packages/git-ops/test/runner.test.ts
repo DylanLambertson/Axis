@@ -53,6 +53,9 @@ test("RR-N5: a normal daemon exit kills git's live process groups (a crash canno
   assert.equal(r.status, 0, r.stderr);
   assert.ok(existsSync(pidFile));
   const pid = Number(readFileSync(pidFile, "utf8").trim());
-  await new Promise((res) => setTimeout(res, 300));
+  // The group is killed at exit, but the process is reaped on its own turn: wait for it to be gone (bounded, named) rather than for a duration.
+  for (const end = Date.now() + 10_000; Date.now() < end; await new Promise((res) => setTimeout(res, 10))) {
+    try { process.kill(pid, 0); } catch { break; }
+  }
   assert.throws(() => process.kill(pid, 0), "the grandchild did not outlive the daemon's exit");
 });

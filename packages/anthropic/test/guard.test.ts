@@ -13,6 +13,15 @@ const ok: Handler = (call, counter) =>
   call.url.endsWith("/count_tokens") ? jsonResponse(counter, 200, { input_tokens: 31 }) : sseResponse(counter, textReply("fine", { usageIn: 20 }));
 const posts = (calls: ReturnType<typeof make>["fake"]["calls"]) => calls.filter((c) => c.init.method === "POST");
 
+/** Wait by condition; the bound only turns a stuck test into a named failure (a busy host reaches the condition late, not wrongly). */
+async function until(pred: () => boolean, what: string, guardMs = 10_000): Promise<void> {
+  const deadline = Date.now() + guardMs;
+  while (!pred()) {
+    if (Date.now() > deadline) throw new Error(`condition not reached: ${what}`);
+    await new Promise((r) => setTimeout(r, 5));
+  }
+}
+
 test("a request through the guard works and its log names the destination (PRV-4)", async () => {
   const { adapter } = make(ok);
   const { g, logs } = guarded(adapter);
@@ -93,7 +102,7 @@ test("a cancelled stream is still charged for the input that was sent (usage arr
     seen.push(ev);
     if (ev.type === "usage") break;
   }
-  await new Promise((r) => setTimeout(r, 20));
+  await until(() => recorded.length >= 1, "the cancelled stream's usage was recorded");
   assert.equal(recorded.length, 1);
   assert.equal(recorded[0]?.tokens, 123);
 });
@@ -142,7 +151,7 @@ test("an endless stream of pings ends in a timeout: pings do not reset the guard
   assert.equal(err.code, "timeout");
   assert.equal(err.details.reason, "idle");
   assert.ok(Date.now() - t0 < budget(3_000));
-  await new Promise((r) => setTimeout(r, 50));
+  await until(() => open === 0, "the response was released");
   assert.equal(open, 0, "the response was released");
 });
 
