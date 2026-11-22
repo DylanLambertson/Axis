@@ -4,7 +4,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { AXIS_PROJECT_ACTIONS, AXIS_PROJECT_OUTCOMES, AXIS_PROJECT_REQUEST_CHANNEL, AXIS_PROJECT_RESULT_CHANNEL, AxisProjectActionClient, IAxisProjectTransport, AXIS_MAX_INLINE_NAME, isolateName, outcomeSentence, plainName, projectActionRequest, projectChip, toOutcome, toWindowRunTrust } from '../../common/axisProjectActions.js';
+import { AXIS_PROJECT_ACTIONS, AXIS_PROJECT_OUTCOMES, AXIS_PROJECT_REQUEST_CHANNEL, AXIS_PROJECT_RESULT_CHANNEL, AxisProjectActionClient, IAxisProjectTransport, AXIS_MAX_INLINE_NAME, AXIS_MAX_TOOLTIP_NAME, isolateName, outcomeSentence, plainName, projectActionRequest, projectChip, toOutcome, toWindowRunTrust } from '../../common/axisProjectActions.js';
 
 /** A transport that records what the renderer sends and lets the test answer as main. */
 function fakeTransport() {
@@ -111,6 +111,8 @@ suite('Axis project actions (renderer, S3)', () => {
 		const spoof = 'evil\u202Edetsurt\u202C\u200Fname';
 		assert.doesNotMatch(isolateName(spoof).slice(1, -1), /[\p{Cc}\p{Cf}]/u, 'mutant: an override inside the name reorders the sentence');
 		assert.strictEqual(plainName(spoof), 'evildetsurtname');
+		assert.strictEqual(isolateName('\u202E\u200F'), '\u2068(unnamed)\u2069', 'a name of control characters only gets a placeholder (review N4)');
+		assert.strictEqual([...plainName('x'.repeat(500))].length, AXIS_MAX_TOOLTIP_NAME, 'the tooltip is capped');
 		const label = projectChip({ id: 'p', name: rtl, trusted: false }, 'unregistered').label;
 		assert.ok(label.endsWith('\u2069: not added to Axis'), 'the words after the name are intact');
 	});

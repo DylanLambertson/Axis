@@ -61,7 +61,8 @@ export class AxisProjectActionsModel extends Disposable implements IAxisProjectA
 			return;
 		}
 		this.statusInFlight = true;
-		this.client.run('status').then(toWindowRunTrust, () => 'unknown' as const).then(trust => {
+		// A `busy` answer (the status rate limit) keeps the last answer instead of turning a known folder unknown (review N2).
+		this.client.run('status').then(o => o === 'busy' ? this._windowTrust : toWindowRunTrust(o), () => 'unknown' as const).then(trust => {
 			this.statusInFlight = false;
 			if (this._store.isDisposed) {
 				return;

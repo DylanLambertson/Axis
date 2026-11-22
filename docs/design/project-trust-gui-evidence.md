@@ -54,4 +54,4 @@ Every press below is real X input on main's own dialog. "Focus" is the renderer'
 - **S4:** the 🔒 glyph rendered as an empty box without an emoji font. Replaced by ⊘.
 - **Open (PV-E0 F2):** a degraded host counts as connected, so before `status` existed the banner offered Add, which every write refuses. With `status` a degraded host answers `unavailable` and the banner offers nothing. The degraded and failed notices themselves still need main's supervisor state in the renderer (a separate ticket).
 
-The screenshots (`01` to `25`) are kept with the reviewers' evidence, not in the repository.
+The screenshots (`01` to `25`) are kept with the reviewers' evidence, not in the repository, so the table is the record. What can be re-checked from the tree is the closed behaviour behind each row: `packages/daemon-host/test/main-project-actions.test.ts` (the dialogs' buttons and default, cooldown, buckets and status) and the overlay's `services/projects/test/common` (outcome sentences, banner and chips, names).

@@ -76,7 +76,11 @@ suite('Axis project actions service (S3)', () => {
 		f.calls[2].answer.complete('trusted');
 		await trust;
 		assert.strictEqual(f.calls[3]?.action, 'status', 'the action asks for status again when it ends');
-		f.calls[3].answer.complete('unavailable');
+		model.refreshStatus();
+		f.calls[3].answer.complete('busy');
+		await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+		assert.strictEqual(model.windowTrust, 'read_only', 'busy keeps the last answer (review N2)');
+		f.calls[4].answer.complete('unavailable');
 		await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
 		assert.strictEqual(model.windowTrust, 'unknown', 'main could not tell: unknown, never the last good answer');
 	});

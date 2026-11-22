@@ -281,6 +281,7 @@ test("status: no dialog, changes nothing, three closed outcomes from the window'
   const r = rig();
   assert.equal(await r.actions.act(1, { nonce: "s", action: "status", path: "/etc" }), undefined);
   assert.equal(await act(rig({ folder: undefined }), "status"), "no_folder");
+  assert.equal(await act(rig({ answers: (m) => (m.type === "projects.inspect" ? { ok: false, code: "E_INVALID_ARGUMENT", reason: "not_a_repository" } : undefined) }), "status"), "refused", "status answers only its closed set (review N1)");
   assert.equal(await act(rig({ send: false }), "status"), "unavailable", "a host that is down or degraded is unavailable");
   assert.equal(await act(rig({ answers: (m) => (m.type === "projects.inspect" ? { ok: false, code: "E_UNAVAILABLE" } : undefined) }), "status"), "unavailable", "a degraded host refuses every project message");
 });

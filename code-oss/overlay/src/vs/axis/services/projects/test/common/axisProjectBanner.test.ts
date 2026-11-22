@@ -29,7 +29,11 @@ suite('Axis project banner (S3)', () => {
 	});
 
 	test('connected: exactly one action from main\'s status of THIS folder: Add, Trust to Run… or Stop Trusting', () => {
-		for (const source of ['daemon', 'unregistered'] as const) {
+		assert.strictEqual(bannerContent('not_registered', 'unregistered').action?.id, 'add', 'the S3 case: a first project from discovery rows');
+		for (const stale of ['trusted', 'read_only'] as const) {
+			assert.strictEqual(bannerContent(stale, 'unregistered').action, undefined, 'a trust answer with discovery rows is stale: no Trust/Stop (review N3)');
+		}
+		for (const source of ['daemon'] as const) {
 			assert.strictEqual(bannerContent('not_registered', source).action?.id, 'add');
 			const r = bannerContent('read_only', source);
 			assert.strictEqual(r.action?.id, 'trust');

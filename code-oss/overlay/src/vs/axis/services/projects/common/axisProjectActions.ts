@@ -88,10 +88,16 @@ export function trustSource(daemonUsable: boolean, origin: 'daemon' | 'discovery
 
 /** The longest project name shown inline; the full name is in the tooltip. */
 export const AXIS_MAX_INLINE_NAME = 40;
+/** The longest name a tooltip shows (review N4). */
+export const AXIS_MAX_TOOLTIP_NAME = 200;
 
 /** The name with control and format characters removed: for a tooltip, which shows it whole. */
 export function plainName(name: string): string {
-	return name.replace(/[\p{Cc}\p{Cf}\u2028\u2029]/gu, '');
+	const clean = [...name.replace(/[\p{Cc}\p{Cf}\u2028\u2029]/gu, '')];
+	if (clean.length === 0) {
+		return localize('axis.project.unnamed', "(unnamed)");
+	}
+	return clean.length > AXIS_MAX_TOOLTIP_NAME ? clean.slice(0, AXIS_MAX_TOOLTIP_NAME - 1).join('') + '\u2026' : clean.join('');
 }
 
 /**
@@ -187,7 +193,8 @@ export function bannerContent(trust: AxisWindowRunTrust, source: AxisTrustSource
 	if (source === 'offline') {
 		return { text: localize('axis.banner.unknown', "Run trust unknown: the Axis service is not connected."), action: undefined };
 	}
-	switch (trust) {
+	// With discovery rows (the daemon holds no project) only "not registered" can be current: a trust answer is stale (review N3).
+	switch (source === 'unregistered' && trust !== 'not_registered' ? 'unknown' : trust) {
 		case 'not_registered':
 			return { text: localize('axis.banner.none', "This folder is not an Axis project yet."), action: { id: 'add', label: localize('axis.banner.add', "Add Project…") } };
 		case 'read_only':

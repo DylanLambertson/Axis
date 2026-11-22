@@ -164,7 +164,8 @@ export function createProjectActions(o: ProjectActionsOptions): ProjectActions {
     const folder = o.windowFolder(codeWindowId);
     if (folder === undefined) return "no_folder";
     const i = await inspect(folder);
-    if (typeof i === "string") return i;
+    // Only the closed status answers, or no_folder / unavailable / refused (a folder that is not a repository is just refused).
+    if (typeof i === "string") return i === "not_a_repository" ? "refused" : i;
     return i.registered === undefined ? "status_not_registered" : i.registered.trusted ? "status_trusted" : "status_read_only";
   }
 
