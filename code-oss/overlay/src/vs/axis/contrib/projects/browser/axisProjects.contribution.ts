@@ -6,7 +6,7 @@
 // Trusting Project. Each asks main, which takes the folder from this window and draws its own dialog; the renderer never names a
 // path or a project. None takes arguments, so no extension or keybinding can aim one anywhere.
 
-import { getActiveElement, isHTMLElement } from '../../../../base/browser/dom.js';
+import { getActiveElement, getActiveWindow, isHTMLElement } from '../../../../base/browser/dom.js';
 import { status } from '../../../../base/browser/ui/aria/aria.js';
 import { localize, localize2 } from '../../../../nls.js';
 import { Action2, registerAction2 } from '../../../../platform/actions/common/actions.js';
@@ -33,10 +33,31 @@ export async function runProjectAction(accessor: ServicesAccessor, action: AxisP
 	const outcome = await actions.run(action);
 	status(outcomeSentence(outcome));
 	void workspaces.refresh();
-	if (isHTMLElement(before) && before.isConnected) {
-		before.focus();
-	}
+	focusBack(before);
 	return outcome;
+}
+
+/**
+ * Give focus back to where it was. If that element is gone or hidden after the refresh (the banner's button changes with the
+ * outcome), fall back to a stable element: the banner, then the dashboard list. Never to a button.
+ */
+export function focusBack(before: Element | null): void {
+	const visible = (e: Element | null): e is HTMLElement => isHTMLElement(e) && e.isConnected && !e.hidden && e.getClientRects().length > 0 && !(e as HTMLButtonElement).disabled;
+	if (visible(before)) {
+		before.focus();
+		return;
+	}
+	const doc = isHTMLElement(before) ? before.ownerDocument : getActiveWindow().document;
+	for (const selector of ['.axis-project-banner', '.axis-dashboard-list']) {
+		const fallback = doc.querySelector(selector);
+		if (visible(fallback)) {
+			if (fallback.tabIndex < 0 && !fallback.hasAttribute('tabindex')) {
+				fallback.tabIndex = -1;
+			}
+			fallback.focus();
+			return;
+		}
+	}
 }
 
 registerAction2(class extends Action2 {

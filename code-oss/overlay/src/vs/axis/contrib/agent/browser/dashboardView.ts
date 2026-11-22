@@ -2,9 +2,6 @@
  *  Copyright (c) 2026 Dylan Lambertson. All rights reserved.
  *--------------------------------------------------------------------------------------------*/
 
-import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
-import { AxisProjectBanner } from '../../projects/browser/axisProjectBanner.js';
-import { projectChip } from '../../../services/projects/common/axisProjectActions.js';
 import { $, addDisposableListener, append, Dimension, EventType } from '../../../../base/browser/dom.js';
 import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js';
 import { fromNow } from '../../../../base/common/date.js';
@@ -12,7 +9,10 @@ import { KeyCode } from '../../../../base/common/keyCodes.js';
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { localize } from '../../../../nls.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
+import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
+import { AxisProjectBanner } from '../../projects/browser/axisProjectBanner.js';
 import { AxisApprovalCards } from './approvalCards.js';
+import { projectChip } from '../../../services/projects/common/axisProjectActions.js';
 import { IAxisCliRun } from '../../../services/workspaces/common/axisWorkspaceData.js';
 import { AxisRowState, branchLabel, changesLabel, IAxisWorkspaceEntry, rowStateOf } from '../../../services/workspaces/common/axisWorkspaceModel.js';
 import { daemonNotice } from '../../../services/workspaces/common/axisDaemonNotice.js';
@@ -117,11 +117,13 @@ export class AxisDashboardView extends Disposable {
 				const chip = projectChip(project, known);
 				const el = append(list, $('span.axis-project-chip'));
 				el.dataset.trust = known ? (project.trusted ? 'trusted' : 'read-only') : 'unknown';
-				el.title = chip.hint;
+				el.title = `${chip.label}\n${chip.hint}`; // the full name, if the label is cut short
 				const glyph = append(el, $('span.axis-project-chip-glyph'));
 				glyph.textContent = chip.glyph;
 				glyph.setAttribute('aria-hidden', 'true');
-				append(el, $('span.axis-project-chip-label')).textContent = chip.label;
+				const label = append(el, $('span.axis-project-chip-label'));
+				label.dir = 'auto'; // a right-to-left project name keeps its own order
+				label.textContent = chip.label;
 			}
 		}
 		const pending = this.workspaceService.pendingApprovals;
