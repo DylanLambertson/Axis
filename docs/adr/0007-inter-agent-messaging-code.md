@@ -68,6 +68,6 @@ Each is deliberate unless marked; none weakens a control.
 | "Add to thread" for the user and plugins | §4.2 | PV-M3 later | Participants join only through a send |
 | Transitive minter walk | §5.3 rule 1 | PV-M3 later | No test yet |
 | Plugin callers and `messages.send` | §6.3 | PV-K | No plugin binding exists |
-| Endpoint, relay, token, PTY-5 variables | endpoint design | PV-M6 | None |
+| Endpoint, relay, token, PTY-5 variables (the spawn's `messagesEndpoint` request; the pty process adds the two names), raising a CLI run's received hop on `read` | endpoint design; ADR 0007 decisions 5, 7 | PV-M6 | None; `handleSpawn` refuses any `AXIS_*` name today |
 | Shim, label wrapper, bypass checks | endpoint design §5, §6 | PV-M7 | `cliMessaging: true` refused for every agent |
 | Thread view, Pause UI | §10 | PV-M5 | Contract only |
