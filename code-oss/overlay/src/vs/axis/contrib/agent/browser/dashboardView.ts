@@ -2,6 +2,9 @@
  *  Copyright (c) 2026 Dylan Lambertson. All rights reserved.
  *--------------------------------------------------------------------------------------------*/
 
+import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
+import { AxisProjectBanner } from '../../projects/browser/axisProjectBanner.js';
+import { projectChip } from '../../../services/projects/common/axisProjectActions.js';
 import { $, addDisposableListener, append, Dimension, EventType } from '../../../../base/browser/dom.js';
 import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js';
 import { fromNow } from '../../../../base/common/date.js';
@@ -64,12 +67,15 @@ export class AxisDashboardView extends Disposable {
 		private readonly terminalCounts: IAxisTerminalCounts,
 		@IAxisWorkspaceService private readonly workspaceService: IAxisWorkspaceService,
 		@ICommandService private readonly commandService: ICommandService,
+		@IInstantiationService instantiationService: IInstantiationService,
 	) {
 		super();
 		this.element = $('.axis-dashboard');
 		this.notice = append(this.element, $('.axis-dashboard-note.axis-dashboard-notice'));
 		this.notice.setAttribute('role', 'status');
 		this.header = append(this.element, $('.axis-dashboard-header'));
+		// This window's project, its run trust and the one action that fits (S3); main draws every confirmation.
+		this.element.appendChild(this._register(instantiationService.createInstance(AxisProjectBanner)).element);
 		this.list = append(this.element, $('.axis-dashboard-list'));
 		this.list.setAttribute('role', 'listbox');
 		this.list.tabIndex = -1;
@@ -104,7 +110,19 @@ export class AxisDashboardView extends Disposable {
 		title.textContent = localize('axis.dashboard.title', "Workspaces");
 		const projects = this.workspaceService.projects;
 		if (projects.length) {
-			append(this.header, $('span.axis-dashboard-project')).textContent = projects.map(p => p.trusted ? p.name : localize('axis.project.restricted', "{0} (Restricted Mode)", p.name)).join(', ');
+			// Run trust (the daemon's record), never Code OSS Workspace Trust: shown only when the data came from the daemon (S3, review PV-E0 N6).
+			const known = this.workspaceService.dataOrigin === 'daemon';
+			const list = append(this.header, $('span.axis-dashboard-project'));
+			for (const project of projects) {
+				const chip = projectChip(project, known);
+				const el = append(list, $('span.axis-project-chip'));
+				el.dataset.trust = known ? (project.trusted ? 'trusted' : 'read-only') : 'unknown';
+				el.title = chip.hint;
+				const glyph = append(el, $('span.axis-project-chip-glyph'));
+				glyph.textContent = chip.glyph;
+				glyph.setAttribute('aria-hidden', 'true');
+				append(el, $('span.axis-project-chip-label')).textContent = chip.label;
+			}
 		}
 		const pending = this.workspaceService.pendingApprovals;
 		if (pending) {

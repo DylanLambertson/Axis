@@ -1,0 +1,99 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) 2026 Dylan Lambertson. All rights reserved.
+ *--------------------------------------------------------------------------------------------*/
+
+import assert from 'assert';
+import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { AXIS_PROJECT_OUTCOMES, AXIS_PROJECT_REQUEST_CHANNEL, AXIS_PROJECT_RESULT_CHANNEL, AxisProjectActionClient, IAxisProjectTransport, outcomeSentence, projectActionRequest, projectChip, toOutcome, windowProjectState } from '../../common/axisProjectActions.js';
+
+/** A transport that records what the renderer sends and lets the test answer as main. */
+function fakeTransport() {
+	const sent: Array<{ channel: string; payload: unknown }> = [];
+	let listener: ((payload: unknown) => void) | undefined;
+	const transport: IAxisProjectTransport = {
+		send: (channel, payload) => void sent.push({ channel, payload }),
+		on: (channel, l) => { assert.strictEqual(channel, AXIS_PROJECT_RESULT_CHANNEL); listener = l; return () => { listener = undefined; }; },
+	};
+	return { transport, sent, answer: (payload: unknown) => listener?.(payload), listening: () => listener !== undefined };
+}
+
+const UNSAFE = /[\p{Cc}\p{Cf}\u2028\u2029]/u;
+
+suite('Axis project actions (renderer, S3)', () => {
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('the request is exactly { nonce, action }: no path or project id can ride along, and a bad nonce or action is refused', () => {
+		assert.deepStrictEqual(Object.keys(projectActionRequest('n1', 'trust')).sort(), ['action', 'nonce']);
+		assert.throws(() => projectActionRequest('bad nonce', 'trust'));
+		assert.throws(() => projectActionRequest('n1', 'own' as never));
+		assert.ok(Object.isFrozen(projectActionRequest('n1', 'add')));
+	});
+
+	test('outcomes are closed: anything else from main is unavailable, and every outcome has a fixed sentence', () => {
+		for (const o of AXIS_PROJECT_OUTCOMES) {
+			assert.strictEqual(toOutcome(o), o);
+			const s = outcomeSentence(o);
+			assert.ok(s.length > 0 && !UNSAFE.test(s), o);
+		}
+		for (const v of ['Trusted!', '', undefined, 1, { outcome: 'trusted' }, 'added_read_only ']) {
+			assert.strictEqual(toOutcome(v), 'unavailable', String(v));
+		}
+		assert.strictEqual(new Set(AXIS_PROJECT_OUTCOMES.map(outcomeSentence)).size, AXIS_PROJECT_OUTCOMES.length, 'each outcome says something different');
+	});
+
+	test('the window project: one local checkout row decides it; run trust is known only from the daemon (never from discovery)', () => {
+		const projects = [{ id: 'p1', name: 'one', trusted: true }, { id: 'p2', name: 'two', trusted: false }];
+		assert.deepStrictEqual(windowProjectState({ origin: 'daemon', projects, localCheckoutProjectIds: ['p1', 'p1'] }), { kind: 'registered', project: projects[0], known: true });
+		assert.deepStrictEqual(windowProjectState({ origin: 'discovery', projects, localCheckoutProjectIds: ['p1'] }), { kind: 'registered', project: projects[0], known: false });
+		assert.deepStrictEqual(windowProjectState({ origin: 'daemon', projects, localCheckoutProjectIds: [] }), { kind: 'none' });
+		assert.deepStrictEqual(windowProjectState({ origin: 'daemon', projects, localCheckoutProjectIds: ['p1', 'p2'] }), { kind: 'none' }, 'two candidates: no guess');
+		assert.deepStrictEqual(windowProjectState({ origin: 'daemon', projects, localCheckoutProjectIds: ['gone'] }), { kind: 'none' });
+	});
+
+	test('chips use a glyph AND words; trust from discovery is shown as unknown, never as trusted to run', () => {
+		const trusted = { id: 'p1', name: 'one', trusted: true };
+		const ro = { id: 'p2', name: 'two', trusted: false };
+		assert.match(projectChip(trusted, true).label, /trusted to run/);
+		assert.match(projectChip(ro, true).label, /read only/);
+		assert.match(projectChip(ro, true).hint, /If the repository changed, review and trust it again/);
+		const unknown = projectChip(trusted, false);
+		assert.match(unknown.label, /run trust unknown/);
+		assert.doesNotMatch(unknown.label, /trusted to run/, 'mutant: discovery shown as trusted');
+		for (const c of [projectChip(trusted, true), projectChip(ro, true), unknown]) {
+			assert.ok(c.glyph.length > 0 && c.label.length > 0);
+		}
+	});
+
+	test('the client sends one request, matches the answer by nonce, ignores foreign or late answers, and times out as unavailable', async () => {
+		const t = fakeTransport();
+		const client = new AxisProjectActionClient(t.transport, () => 'r-a-n-d', 50);
+		const pending = client.run('trust');
+		assert.strictEqual(t.sent.length, 1);
+		assert.strictEqual(t.sent[0].channel, AXIS_PROJECT_REQUEST_CHANNEL);
+		const { nonce } = t.sent[0].payload as { nonce: string };
+		assert.deepStrictEqual(t.sent[0].payload, { nonce, action: 'trust' });
+		t.answer({ nonce: 'someone-else', outcome: 'trusted' });
+		t.answer(null);
+		t.answer({ nonce, outcome: 'Trusted, trust me' });
+		assert.strictEqual(await pending, 'unavailable', 'an answer outside the closed set is unavailable');
+		const second = client.run('add');
+		const n2 = (t.sent[1].payload as { nonce: string }).nonce;
+		assert.notStrictEqual(n2, nonce);
+		t.answer({ nonce: n2, outcome: 'added_read_only' });
+		assert.strictEqual(await second, 'added_read_only');
+		assert.strictEqual(await client.run('untrust'), 'unavailable', 'no answer within the bound');
+		client.dispose();
+		assert.strictEqual(t.listening(), false);
+	});
+
+	test('dispose answers a waiting call unavailable; a transport that throws is unavailable', async () => {
+		const t = fakeTransport();
+		const client = new AxisProjectActionClient(t.transport, () => 'x', 10_000);
+		const waiting = client.run('add');
+		client.dispose();
+		assert.strictEqual(await waiting, 'unavailable');
+		const throwing = new AxisProjectActionClient({ send: () => { throw new Error('closed'); }, on: () => () => undefined }, () => 'x', 10_000);
+		assert.strictEqual(await throwing.run('add'), 'unavailable');
+		throwing.dispose();
+	});
+});

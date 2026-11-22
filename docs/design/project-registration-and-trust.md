@@ -305,6 +305,7 @@ node:test only. The Electron-free cores live in `packages/daemon-host/src/main/`
 **S3, shell:**
 - Enablement: a single folder, not a worktree.
 - One sentence per outcome; focus returns; the status region announces once; no grant shortcut.
+- As built: `services/projects/common` holds the request builder (`{nonce, action}` only), the closed outcome table and the one-at-a-time model. Only `electron-browser/axisProjectActionsIpc.ts` touches `ipcRenderer` (one send, no invoke). The three palette commands take no arguments. The dashboard banner covers only the local checkout at the window's single folder, and its button is never focused, clicked or made default by code. Run trust shows only when the data came from the daemon (PV-E0); otherwise it reads "Run trust unknown". Pinned by `test/code-oss/project-actions-renderer.test.mjs`.
 
 **S4, evidence:**
 - The `pty-exec-node.md` §8 driver: Add project with xdotool clicking the real dialog, Trust to run, create, commit, push to a local bare remote. Without the click the ref does not move.
