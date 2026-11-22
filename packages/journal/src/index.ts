@@ -78,3 +78,4 @@ export {
   type StoredJson,
   type UnknownReason,
 } from "./idempotency-store.js";
+export { type ProjectUsage, type UsageTotals } from "./usage-totals.js";
