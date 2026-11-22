@@ -148,14 +148,16 @@ const spec = <Req extends z.ZodType, Res extends z.ZodType>(
   request: Req,
   response: Res,
   sideEffect: "read" | "write" | "credential" | "network",
-  tier: 0 | 1 | 3,
+  tier: 0 | 1 | 3 | 4,
   idempotency: "none" | "required",
   timeoutMs: number,
 ) => ({ request: guarded(request), response: guarded(response), sideEffect, tier, idempotency, timeoutMs }) as const;
 
 /**
- * Tiers are facts of the table, not promises of a handler. Reads 0. `connect` stores a credential: `credential`, tier 3 (the
- * main-built dialog of ADR 0009 decision 6 is its confirmation). `disconnect` only lowers privilege: a write at 1. A
+ * Tiers are facts of the table, not promises of a handler. Reads 0. `connect` stores a credential: `credential`, tier 4, like
+ * every credential action (ADR 0003 D4): a challenge confirmed in main's native dialog. That dialog is also the one that shows
+ * the device code and verification host (ADR 0009 decision 6), so one main-built dialog is both the approval and the code;
+ * PV-N2b builds it and must keep both, or state its own design. `disconnect` only lowers privilege: a write at 1. A
  * request that sends caller data to an external host and changes something there is a `network` method at tier 3 with a
  * REQUIRED idempotency key and an optional `approval` (`integrations.write`, `net.send`); the read of a `GET` or `HEAD`
  * is tier 0 (`integrations.read`, `net.read`). A plugin's row may raise a tier, never lower it (ADR 0008 decision 6). The
@@ -164,7 +166,7 @@ const spec = <Req extends z.ZodType, Res extends z.ZodType>(
 export const integrationsMethods = {
   list: spec(integrationsListRequestSchema, integrationsListResponseSchema, "read", 0, "none", 5_000),
   status: spec(integrationsStatusRequestSchema, integrationsStatusResponseSchema, "read", 0, "none", 5_000),
-  connect: spec(integrationsConnectRequestSchema, integrationsConnectResponseSchema, "credential", 3, "none", 10_000),
+  connect: spec(integrationsConnectRequestSchema, integrationsConnectResponseSchema, "credential", 4, "none", 10_000),
   disconnect: spec(integrationsDisconnectRequestSchema, integrationsDisconnectResponseSchema, "write", 1, "none", 10_000),
   read: spec(integrationsReadRequestSchema, integrationsReadResponseSchema, "read", 0, "none", 30_000),
   write: spec(integrationsWriteRequestSchema, integrationsWriteResponseSchema, "network", 3, "required", 30_000),

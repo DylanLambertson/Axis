@@ -10,7 +10,7 @@
 | Contract | Method | Side effect | Tier | Idempotency | What it does |
 |---|---|---|---|---|---|
 | `axis.integrations/1` | `list`, `status` | read | 0 | none | The project's integrations (id, label, punycode origins, operations with a `write` flag, declared and granted scopes, state) |
-| | `connect` | credential | 3 | none | Start the device-code flow, user only. Replies at once with `connecting`; the code and verification host are shown by main (ADR 0009 decision 6), never returned |
+| | `connect` | credential | 4 | none | Start the device-code flow, user only. A tier 4 challenge: main's native dialog is the approval and also shows the code and verification host (ADR 0009 decision 6); they are never returned. Replies with `connecting` |
 | | `disconnect` | write | 1 | none | Delete the vault entry, drop the memory token, cancel in-flight requests; only lowers privilege |
 | | `read` | read | 0 | none | One read operation (a `GET` or `HEAD` of the connector) of the integration's closed set with typed arguments; a write operation here is `operation_kind_mismatch` |
 | | `write` | network | 3 | **required** | One write operation with typed arguments: its own permission and a tier-3 challenge showing the integration, the operation and the exact values (D-10); the retry carries `approval`; a read operation here is `operation_kind_mismatch` |
@@ -44,4 +44,4 @@ Every refusal is `details: { reason }` with one fixed message, so no argument, h
 
 ## 5. Policy rows and open points
 
-The planned rows are user rows at the contract tiers, because `RuleActor` has no other actor yet. `connect` is user-only for good. `axis.net/1.read` and `.send` are plugin methods: when PV-K1 adds the plugin allow-list rows (ADR 0008), the user row is replaced and a user caller is refused. Open for review: (1) settled: the split of section 1; (2) `connect` at tier 3 beside main's native dialog; (3) the checks beyond ADR 0009's list (escaped control characters in a path, the reserved argument keys).
+The planned rows are user rows at the contract tiers, because `RuleActor` has no other actor yet. `connect` is user-only for good. `axis.net/1.read` and `.send` are plugin methods: when PV-K1 adds the plugin allow-list rows (ADR 0008), the user row is replaced and a user caller is refused. Open for review: (1) settled: the split of section 1; (2) settled (2026-11-22): `connect` is tier 4, like every credential action (ADR 0003 D4), and main's device-code dialog is its native confirmation; (3) the checks beyond ADR 0009's list (escaped control characters in a path, the reserved argument keys).
