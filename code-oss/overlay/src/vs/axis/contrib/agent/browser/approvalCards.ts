@@ -2,7 +2,7 @@
  *  Copyright (c) 2026 Dylan Lambertson. All rights reserved.
  *--------------------------------------------------------------------------------------------*/
 
-import { isUsable } from '../../../services/daemon/common/axisDaemonClient.js';
+import { approvalsAvailability } from '../../../services/workspaces/common/axisDaemonNotice.js';
 import { $, addDisposableListener, append } from '../../../../base/browser/dom.js';
 import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { Disposable, DisposableStore, toDisposable } from '../../../../base/common/lifecycle.js';
@@ -65,7 +65,9 @@ export class AxisApprovalCards extends Disposable {
 	}
 
 	render(): void {
-		const all = this.workspaceService.layoutApprovals();
+		// Cards only from a ready service: never an Approve the host cannot act on (degraded, failed, down; review SF2).
+		const availability = approvalsAvailability(this.workspaceService.daemonStatus);
+		const all = availability.cards ? this.workspaceService.layoutApprovals() : [];
 		const cards = all.slice(0, MAX_RENDERED_CARDS);
 		const ids = new Set(cards.map(card => card.challengeId));
 		for (const [id, view] of this.views) {
@@ -89,12 +91,8 @@ export class AxisApprovalCards extends Disposable {
 			}
 			this.views.set(card.challengeId, view);
 		}
-		const daemon = this.workspaceService.daemonStatus;
-		const offline = !isUsable(daemon);
-		this.offline.textContent = !offline ? '' : daemon.kind === 'connecting'
-			? localize('axis.approvals.connecting', "Approvals are not available yet: connecting to the Axis service.")
-			: localize('axis.approvals.offline', "Approvals need the Axis service. It is not connected, so none are shown.");
-		this.element.hidden = !cards.length && !offline;
+		this.offline.textContent = availability.line;
+		this.element.hidden = !cards.length && availability.cards;
 		this.more.textContent = all.length > cards.length ? localize('axis.approvals.more', "{0} more approvals are not shown.", all.length - cards.length) : '';
 		this.updateButtons();
 		this.placeTimer.schedule(); // after the rest of the dashboard has drawn for the same change

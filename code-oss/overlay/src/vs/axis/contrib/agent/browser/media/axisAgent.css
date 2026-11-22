@@ -77,7 +77,8 @@
 }
 
 .monaco-workbench .axis-project-chip[data-trust="offline"],
-.monaco-workbench .axis-project-chip[data-trust="unregistered"] {
+.monaco-workbench .axis-project-chip[data-trust="unregistered"],
+.monaco-workbench .axis-project-chip[data-trust="degraded"] {
 	color: var(--vscode-descriptionForeground);
 }
 

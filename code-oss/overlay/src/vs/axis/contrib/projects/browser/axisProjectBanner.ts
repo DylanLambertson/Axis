@@ -6,7 +6,6 @@
 // from the daemon; without it the banner says it is unknown and offers nothing. Buttons are plain `type=button`, never focused or
 // defaulted by the banner, so no Enter on load can trust anything; every action still ends in main's own dialog.
 
-import { isUsable } from '../../../services/daemon/common/axisDaemonClient.js';
 import { $, addDisposableListener, append } from '../../../../base/browser/dom.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { localize } from '../../../../nls.js';
@@ -50,7 +49,7 @@ export class AxisProjectBanner extends Disposable {
 	}
 
 	render(): void {
-		const source = trustSource(isUsable(this.workspaces.daemonStatus), this.workspaces.dataOrigin);
+		const source = trustSource(this.workspaces.daemonStatus, this.workspaces.dataOrigin);
 		const content = bannerContent(this.actions.windowTrust, source);
 		this.text.textContent = content.text;
 		this.action = content.action?.id;

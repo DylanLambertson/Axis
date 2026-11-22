@@ -11,6 +11,7 @@ import {
   protocolVersionSchema,
   reasonCodeSchema,
 } from "@axis/protocol";
+import { secretsRequestSchemas, secretsResultSchema } from "./secrets-messages.js";
 
 /**
  * The control plane (design section 6.3): every message between the supervisor and the host is one of these strict
@@ -129,6 +130,7 @@ export const shutdownSchema = z.strictObject({ type: z.literal("shutdown") });
 
 /** Supervisor to host. */
 export const inboundMessageSchema = z.discriminatedUnion("type", [
+  secretsResultSchema,
   initMessageSchema,
   connectMessageSchema,
   anchorResultSchema,
@@ -226,6 +228,7 @@ const logSchema = z.strictObject({
 /** Host to supervisor. Every outbound message is parsed with this before it is sent. */
 export const outboundMessageSchema = z.union([
   readySchema,
+  ...secretsRequestSchemas,
   anchorGetSchema,
   anchorPutSchema,
   nativeConfirmSchema,
