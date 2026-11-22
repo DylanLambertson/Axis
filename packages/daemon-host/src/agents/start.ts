@@ -24,7 +24,7 @@ export interface AgentStartDeps {
   /** The CLI start path (`startCliRun` with the host's CLI run deps). */
   readonly startCli: (req: CliStart, context: HandlerContext) => Promise<{ readonly run: RunSummary; readonly replayed: boolean }>;
   /** The composer start path (`startComposerRun` with the host's composer run deps). */
-  readonly startComposer: (req: ComposerStart, context: HandlerContext) => Promise<{ readonly run: unknown; readonly replayed: boolean }>;
+  readonly startComposer: (req: ComposerStart, context: HandlerContext) => Promise<{ readonly run: { readonly runId: string }; readonly replayed: boolean }>;
   /** The provider id of the guarded provider serving a vault connection, or undefined when none does (an unknown or removed one). */
   readonly providerFor: (connection: string) => string | undefined;
 }
@@ -95,9 +95,9 @@ export function createAgentStart(deps: AgentStartDeps): (req: AgentsRequest<"sta
     if (agent.launch.kind === "composer") {
       if (req.input === undefined) throw new DaemonError("E_INVALID_ARGUMENT", "invalid payload");
       const launch = agent.launch;
-      const provider = (): string => deps.providerFor(launch.connection) ?? refuse("E_CONFLICT", "connection_unavailable");
-      const providerId = provider();
-      let started: { readonly run: unknown; readonly replayed: boolean };
+      const providerOf = (connection: string): string => deps.providerFor(connection) ?? refuse("E_CONFLICT", "connection_unavailable");
+      const providerId = providerOf(launch.connection);
+      let started: { readonly run: { readonly runId: string }; readonly replayed: boolean };
       try {
         started = await deps.startComposer(
           {
@@ -107,9 +107,11 @@ export function createAgentStart(deps: AgentStartDeps): (req: AgentsRequest<"sta
             providerId,
             modelId: launch.modelId,
             worker: agent.id,
+            // Under the mutex: the worker read again, and the run takes ITS launch (an update while the start waited counts).
             recheck: () => {
-              resolve(agent.id);
-              if (provider() !== providerId) refuse("E_CONFLICT", "connection_unavailable");
+              const fresh = resolve(agent.id).launch;
+              if (fresh.kind !== "composer") return refuse("E_CONFLICT", "kind_changed");
+              return { mode: fresh.mode, modelId: fresh.modelId, providerId: providerOf(fresh.connection) };
             },
           },
           context,
@@ -117,9 +119,7 @@ export function createAgentStart(deps: AgentStartDeps): (req: AgentsRequest<"sta
       } catch (e) {
         return fromRunError(e);
       }
-      const runId = (started.run as { runId?: unknown }).runId;
-      if (typeof runId !== "string") throw new Error("composer run without an id");
-      return { runId, kind: "composer", workspaceId: agent.homeWorkspaceId, replayed: started.replayed };
+      return { runId: started.run.runId, kind: "composer", workspaceId: agent.homeWorkspaceId, replayed: started.replayed };
     }
     if (req.input !== undefined) throw new DaemonError("E_INVALID_ARGUMENT", "invalid payload"); // a CLI agent takes no prompt
     let out: { readonly run: RunSummary; readonly replayed: boolean };

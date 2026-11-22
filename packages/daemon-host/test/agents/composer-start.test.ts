@@ -44,3 +44,13 @@ test("under the mutex: the recheck first, the gate last, then the start; a refus
   assert.deepEqual(no.started, [], "a worker start the gate refuses starts nothing");
   assert.deepEqual(scopes.map((s) => ({ ...(s as object), signal: undefined })), [{ projectId: "p1", windowId: "win-1", workspaceId: "ws-1", signal: undefined }]);
 });
+
+test("the run takes the launch the recheck read fresh under the mutex, not the one read before the wait", async () => {
+  const { deps, started } = rig();
+  await startComposerRun(deps, { ...REQ, worker: "w1", recheck: () => ({ mode: "ask", modelId: "m2", providerId: "other" }) }, ctx);
+  const input = started[0]![0] as { mode: string; modelId: string; providerId: string; prompt: string; workspaceId: string };
+  assert.deepEqual([input.mode, input.modelId, input.providerId, input.prompt, input.workspaceId], ["ask", "m2", "other", "p", "ws-1"]);
+  const plain = rig();
+  await startComposerRun(plain.deps, { ...REQ, recheck: () => undefined }, ctx);
+  assert.deepEqual([(plain.started[0]![0] as { mode: string }).mode, (plain.started[0]![0] as { modelId: string }).modelId], ["agent", "m"], "no fresh launch: the request's");
+});

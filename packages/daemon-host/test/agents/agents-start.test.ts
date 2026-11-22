@@ -218,3 +218,18 @@ test("composer refusals fold into the closed reasons: model_unavailable, connect
     });
   }
 });
+
+test("an update while the start waited: the recheck returns the NEW mode, model and provider, which the run takes", async () => {
+  const fresh: unknown[] = [];
+  const s = setup(undefined, {
+    providers: { c: "mock", c2: "anthropic" },
+    startComposer: async (req) => {
+      s.journal.agents.setLaunch("cmp1", { kind: "composer", connection: "c2", modelId: "m2", mode: "ask" });
+      fresh.push(req.recheck?.());
+      return { run: { runId: "r-new" }, replayed: false };
+    },
+  });
+  const out = (await call(s.start, { agentId: "cmp1", input: { prompt: "p" } })) as { runId: string };
+  assert.equal(out.runId, "r-new");
+  assert.deepEqual(fresh, [{ mode: "ask", modelId: "m2", providerId: "anthropic" }]);
+});

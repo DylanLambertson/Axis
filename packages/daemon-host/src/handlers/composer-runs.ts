@@ -81,8 +81,11 @@ export interface ComposerStart {
   readonly providerId: string;
   readonly modelId: string;
   readonly worker?: string;
-  /** Re-checked under the project mutex, before the trust gate: throws to refuse. */
-  readonly recheck?: () => void;
+  /**
+   * Re-checked under the project mutex, before the trust gate: throws to refuse, or returns the launch read fresh there,
+   * which the run then takes instead of the one read before the wait (an `update` does not take the mutex).
+   */
+  readonly recheck?: () => void | { readonly mode: ComposerStartInput["mode"]; readonly providerId: string; readonly modelId: string };
 }
 
 /**
@@ -90,21 +93,21 @@ export interface ComposerStart {
  * then under the project mutex the agent's recheck and, right before the run is created, the project trust gate, whose
  * ticket the service spends (`ticketedStart`): both paths alike.
  */
-export async function startComposerRun(deps: ComposerRunsHandlerDeps, req: ComposerStart, context: HandlerContext): Promise<{ readonly run: unknown; readonly replayed: boolean }> {
+export async function startComposerRun(deps: ComposerRunsHandlerDeps, req: ComposerStart, context: HandlerContext): ReturnType<ComposerRunsService["start"]> {
   const ws = deps.journal.getWorkspace(req.workspaceId);
   if (ws === undefined) throw composerFailure("E_NOT_FOUND");
   if (deps.needsAttention?.(req.workspaceId, "start") === true) throw composerFailure("E_UNAVAILABLE", "needs_attention");
   return deps.mutex.run(
     ws.projectId,
     async () => {
-      req.recheck?.();
+      const fresh = req.recheck?.() ?? undefined;
       return deps.service.start(
         {
           workspaceId: req.workspaceId,
-          mode: req.mode,
+          mode: fresh?.mode ?? req.mode,
           prompt: req.prompt,
-          providerId: req.providerId,
-          modelId: req.modelId,
+          providerId: fresh?.providerId ?? req.providerId,
+          modelId: fresh?.modelId ?? req.modelId,
           windowId: context.identity.windowId,
           ...(context.idempotencyKey === undefined ? {} : { idempotencyKey: context.idempotencyKey }),
           ...(req.worker === undefined ? {} : { worker: req.worker }),
