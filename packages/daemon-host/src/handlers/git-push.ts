@@ -101,8 +101,10 @@ export function createGitPushHandler(deps: GitHandlerDeps): Handler {
           if (ws.projectId !== first.projectId) throw gitFailure("E_NOT_FOUND");
           if (runActive(deps, workspaceId)) throw gitFailure("E_CONFLICT");
           if (signal.aborted) throw gitFailure("E_CANCELLED");
+          // The gate, right before git: after the tier 4 confirmation (spent at dispatch) and inside the mutex.
+          const ticket = await deps.gate.admit({ projectId: ws.projectId, windowId: context.identity.windowId, workspaceId, signal });
           // The request's signal ends the push run (the method's timeout, a cancel): the run never outlives the request.
-          await deps.ops.executePush(call, confirmedPlan, signal);
+          await deps.ops.executePush({ ...call, projectId: ws.projectId }, confirmedPlan, ticket, signal);
           // Known pushed to THIS destination now (before the journal write, which can fail without undoing the push).
           deps.bases.record(workspaceId, target, confirmedPlan.tip);
           // Both writes can fail without undoing the push: a failed one is reported and the push still succeeds.

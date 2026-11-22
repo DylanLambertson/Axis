@@ -181,3 +181,23 @@ test("a project display name comes from the folder name, or a fixed word when th
   assert.equal(projectDisplayName("/work/my-repo"), "my-repo");
   assert.equal(projectDisplayName("/work/‮evil"), "project");
 });
+
+test("the message queue is bounded: past 16 waiting, a message is answered E_BACKPRESSURE at once (mutant: no bound)", async () => {
+  const answers: Record<string, unknown>[] = [];
+  const hung: BindingFs = { realpath: () => new Promise(() => undefined), lstat: () => new Promise(() => undefined) };
+  const pc = createProjectControl({
+    journal: { listProjects: () => [], getProject: () => undefined, registerProject: () => undefined as never, setProjectTrust: () => undefined as never },
+    control: { send: (m) => void answers.push(m as Record<string, unknown>) },
+    excludedRoots: ["/axis/data"],
+    binding: { platform: "linux", uid: 1, fs: hung, timeoutMs: 20 },
+    remote: { runner: { run: async () => ({ code: 1, stdout: "", stderr: "" }) }, env: {}, platform: "linux" },
+  });
+  const all = Array.from({ length: 17 }, (_, i) => pc.handle({ type: "projects.inspect", requestId: `r${i}`, path: `/repo${i}` }));
+  assert.deepEqual(answers.map((a) => [a["requestId"], a["code"]]), [["r16", "E_BACKPRESSURE"]], "refused before any work");
+  await Promise.all(all);
+  assert.equal(answers.length, 17);
+  assert.ok(answers.slice(1).every((a) => a["code"] === "E_UNAVAILABLE"), "the others ran and hit the binding bound");
+  // Once drained, the queue takes messages again.
+  await pc.handle({ type: "projects.inspect", requestId: "again", path: "/repo" });
+  assert.equal(answers.at(-1)?.["code"], "E_UNAVAILABLE");
+});
