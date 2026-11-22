@@ -119,13 +119,13 @@ test("cancellation before sending sends nothing; pending requests are bounded", 
   await assert.rejects(client.anchorGet({ timeoutMs: 0 }), { code: "E_INVALID_ARGUMENT" });
 });
 
-test("inbound events: init once, connect, trust.set, projects.register, shutdown, anchor.ack; invalid are counted", async () => {
+test("inbound events: init once, connect, trust.set, the project messages, shutdown, anchor.ack; invalid are counted", async () => {
   const { b, client } = setup();
   const seen: string[] = [];
   client.onInit((c) => seen.push(`init:${Object.keys(c).join(",")}`));
   client.onConnect((c) => seen.push(`connect:${c.cid}`));
   client.onTrustSet((m) => seen.push(`trust:${String(m.trusted)}`));
-  client.onProjectsRegister((m) => seen.push(`project:${m.path}`));
+  client.onProjects((m) => seen.push(`${m.type}:${m.path}`));
   client.onShutdown(() => seen.push("shutdown"));
   client.onAnchorAck((s) => seen.push(`ack:${s}`));
   const att = { identity: { actor: "user" }, issuedAt: 1, mac: "m".repeat(43) };
@@ -133,13 +133,15 @@ test("inbound events: init once, connect, trust.set, projects.register, shutdown
   b.send({ type: "init", config: { dataDir: "/other" } });
   b.send({ type: "connect", cid: "conn-0001", attestation: att });
   b.send({ type: "trust.set", windowId: "w", trusted: true });
-  b.send({ type: "projects.register", requestId: "r1", path: "/p", trusted: false });
+  b.send({ type: "projects.inspect", requestId: "r0", path: "/p" });
+  b.send({ type: "projects.register", requestId: "r1", path: "/p", commonDir: "/p/.git", trusted: false });
+  b.send({ type: "projects.trust", requestId: "r2", projectId: "p-1", path: "/p", trusted: false });
   b.send({ type: "anchor.ack", seq: 4 });
   b.send({ type: "shutdown" });
   b.send({ type: "shutdown", extra: 1 });
   b.send({ type: "mystery" });
   await wait(0);
-  assert.deepEqual(seen, ["init:dataDir", "connect:conn-0001", "trust:true", "project:/p", "ack:4", "shutdown"]);
+  assert.deepEqual(seen, ["init:dataDir", "connect:conn-0001", "trust:true", "projects.inspect:/p", "projects.register:/p", "projects.trust:/p", "ack:4", "shutdown"]);
   assert.equal(client.stats().duplicateInits, 1);
   assert.equal(client.stats().invalidMessages, 2);
 });

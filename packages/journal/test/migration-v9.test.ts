@@ -12,7 +12,7 @@ const T1 = id("thr", 1);
 
 function open(db: DatabaseSync = openDatabase(":memory:")): { db: DatabaseSync; journal: Journal } {
   const journal = Journal.open(db, { audit: new AuditLog(db) });
-  journal.registerProject({ id: "p1", path: "/repo/one", displayName: "One", trusted: true, actor: "user" });
+  journal.registerProject({ id: "p1", path: "/repo/one", displayName: "One", trusted: false, actor: "user" });
   return { db, journal };
 }
 const post = (over: Partial<AppendMessage> & { n: number; thread?: AppendMessage["thread"] }): AppendMessage => ({

@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { createHash } from "node:crypto";
-import { chmodSync, cpSync, readFileSync, readdirSync } from "node:fs";
+import { chmodSync, cpSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -53,7 +53,9 @@ export async function startHost(fx: GitFixture, over: Partial<TestSupervisorOpti
 export async function registerProject(sup: TestSupervisor, path: string): Promise<string> {
   const requestId = `reg-${newKey().slice(0, 8)}`;
   const from = sup.received.length;
-  sup.mux.sendControl({ type: "projects.register", requestId, path, trusted: true });
+  // As main does after its dialog: the repository's real path and its `.git` (the host re-derives both).
+  const real = realpathSync(path);
+  sup.mux.sendControl({ type: "projects.register", requestId, path: real, commonDir: join(real, ".git"), trusted: true });
   const reply = await sup.waitFor("projects.result", from);
   if (!reply.ok) throw new Error(`projects.register refused: ${reply.code}`);
   return reply.projectId;
