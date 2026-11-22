@@ -81,6 +81,9 @@ export { PushedBases } from "./handlers/git-common.js";
 // The composition root and its parts (ticket H12).
 export { composeDaemonHost, type ComposeOptions, type ComposedHost } from "./compose.js";
 export * from "./compose-parts.js";
+export { createProjectControl, installProjectControl, projectDisplayName, type ProjectControlDeps, type ProjectMessage } from "./projects/control.js";
+export { bindingMatches, readRepositoryBinding, type BindingFs, type BindingResult, type RepositoryBinding } from "./projects/binding.js";
+export { displayRemoteUrl, parseRemotes, readRemote, type RemoteSummary } from "./projects/remote.js";
 export * from "./handlers/projects.js";
 // axis.runs/1: composer runs on the mock provider through the broker (ticket C1, docs/design/composer-runtime.md).
 export { AGENT_PAYLOAD_ALLOWLIST, createAgentBinding, taintReceiptOf, COMPOSER_TOOLS, MAX_INFLIGHT_CALLS, MAX_READ_BYTES, shownWhole, MAX_WRITE_BYTES, type AgentBinding, type AgentBindingDeps } from "./bindings/agent.js";

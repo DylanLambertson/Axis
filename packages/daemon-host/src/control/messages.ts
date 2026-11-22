@@ -96,16 +96,34 @@ export const settingsResultSchema = z.strictObject({
   value: boundedJsonSchema,
 });
 
+const absolutePathSchema = z
+  .string()
+  .min(1)
+  .max(MAX_PATH_CHARS)
+  .refine((p) => !p.includes("\0") && isAbsolute(p), "absolute path required");
+
+/**
+ * The project messages (docs/design/project-registration-and-trust.md §5.1). Main sends them only after its own native dialog;
+ * the host re-derives every binding itself. `commonDir` is the repository's `.git` as main's inspection showed it.
+ */
+export const projectsInspectSchema = z.strictObject({ type: z.literal("projects.inspect"), requestId: requestIdSchema, path: absolutePathSchema });
 export const projectsRegisterSchema = z.strictObject({
   type: z.literal("projects.register"),
   requestId: requestIdSchema,
-  path: z
-    .string()
-    .min(1)
-    .max(MAX_PATH_CHARS)
-    .refine((p) => !p.includes("\0") && isAbsolute(p), "absolute path required"),
+  path: absolutePathSchema,
+  commonDir: absolutePathSchema,
   trusted: z.boolean(),
 });
+export const projectsTrustSchema = z
+  .strictObject({
+    type: z.literal("projects.trust"),
+    requestId: requestIdSchema,
+    projectId: scopeIdSchema,
+    path: absolutePathSchema,
+    commonDir: absolutePathSchema.optional(),
+    trusted: z.boolean(),
+  })
+  .refine((m) => m.trusted === (m.commonDir !== undefined), "a grant carries the binding, a revoke none");
 
 export const shutdownSchema = z.strictObject({ type: z.literal("shutdown") });
 
@@ -119,7 +137,9 @@ export const inboundMessageSchema = z.discriminatedUnion("type", [
   trustResultSchema,
   trustSetSchema,
   settingsResultSchema,
+  projectsInspectSchema,
   projectsRegisterSchema,
+  projectsTrustSchema,
   shutdownSchema,
 ]);
 export type InboundMessage = z.infer<typeof inboundMessageSchema>;
@@ -168,6 +188,27 @@ const projectsResultSchema = z.union([
   }),
 ]);
 
+const projectsInspectedSchema = z.union([
+  z.strictObject({
+    type: z.literal("projects.inspected"),
+    requestId: requestIdSchema,
+    ok: z.literal(true),
+    commonDir: absolutePathSchema,
+    registered: z.strictObject({ projectId: scopeIdSchema, trusted: z.boolean() }).optional(),
+    /** False when the remotes could not be read safely: the dialog says "remote unknown". */
+    remoteKnown: z.boolean(),
+    remote: z.strictObject({ name: displayTextSchema(64), url: displayTextSchema(192) }).nullable(),
+    remotes: z.number().int().min(0).max(64),
+  }),
+  z.strictObject({
+    type: z.literal("projects.inspected"),
+    requestId: requestIdSchema,
+    ok: z.literal(false),
+    code: errorCodeSchema,
+    reason: reasonCodeSchema.optional(),
+  }),
+]);
+
 const fatalSchema = z.strictObject({ type: z.literal("fatal"), code: errorCodeSchema, reason: reasonCodeSchema.optional() });
 
 const logSchema = z.strictObject({
@@ -186,6 +227,7 @@ export const outboundMessageSchema = z.union([
   trustCheckSchema,
   settingsGetSchema,
   projectsResultSchema,
+  projectsInspectedSchema,
   fatalSchema,
   logSchema,
 ]);
