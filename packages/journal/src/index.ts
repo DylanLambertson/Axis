@@ -39,6 +39,7 @@ export { DeliveryRecords, type PendingDelivery } from "./delivery-store.js";
 export { baseBranchSchema, baseTipSchema, type ProjectTrustVia, type RegisterProjectInput, type SetProjectTrustInput } from "./records.js";
 export { MAX_TAIL_ROWS, lastTransitionId, transitionsSince, type TransitionTail } from "./tail.js";
 export { JOURNAL_MIGRATIONS, JOURNAL_SCHEMA_VERSION } from "./schema.js";
+export { NAME_REFUSED_RANGES } from "./schema-agents.js";
 export {
   FINALISE_OUTCOMES,
   LOCK_STATES,
