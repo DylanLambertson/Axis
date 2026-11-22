@@ -19,7 +19,7 @@ import { createTempIndexProvider } from "./bindings/review-tempindex.js";
 import { createRunsBinding, type RunsBinding } from "./bindings/runs.js";
 import { composerGuardDeps, createRunRepositoryGuard, type RunSnapshotterFactory } from "./bindings/snapshot.js";
 import { createWorktreesBinding, type WorktreesBinding } from "./bindings/worktrees.js";
-import { composerWriteLock, createActiveRunForwarder, createAuditSeal, createRunsClock, isPty, refuseComposition, settleComposer, daemonAuditSink, recordingRegistrar, registryOf, type ComposerOptions } from "./compose-parts.js";
+import { composerWriteLock, createActiveRunForwarder, createAuditSeal, createRunsClock, isPty, messageSecretCheck, refuseComposition, settleComposer, daemonAuditSink, recordingRegistrar, registryOf, type ComposerOptions } from "./compose-parts.js";
 import { hostCommandLimits, type CommandLimits } from "./bindings/agent-command.js";
 import type { HostConfig } from "./config.js";
 import { createAttestationVerifier } from "./control/attestation.js";
@@ -44,6 +44,7 @@ import { createSshResolver, unavailableSshResolver, type SshSpawn } from "./bind
 import { loadPushedBases, savePushedBases } from "./storage/pushed-bases-file.js";
 import { registerGitHandlers } from "./handlers/git.js";
 import { createProjectsHandlers } from "./handlers/projects.js";
+import { registerAgentsHandlers } from "./handlers/agents.js";
 import { registerMessagesHandlers } from "./handlers/messages.js";
 import { createMessagingBinding, hostMessagingDeps, type MessagingBinding } from "./messages/binding.js";
 import { createProvidersHandlers } from "./handlers/providers.js";
@@ -245,7 +246,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
         // Composer runs: the broker's audit rows mark the anchor batch dirty like every other writer.
         const providers = createProvidersBinding({ redactor: ports.redactor, audit: composerWriter, ...productionConnection(options.composer?.anthropic) });
         // axis.messages/1 (PV-M3): service, settings and delivery into runs; its rows go through the sealed composer writer.
-        const messaging = createMessagingBinding(hostMessagingDeps({ journal: parts.journal, audit: composerWriter, monotonic: () => ports.clock.monotonic(), scan: (text) => scanner.scan(text, { part: "message" }), logger }));
+        const messaging = createMessagingBinding(hostMessagingDeps({ journal: parts.journal, audit: composerWriter, monotonic: () => ports.clock.monotonic(), scan: (text) => scanner.scan(text, { part: "message" }), logger, holdsSecret: messageSecretCheck(ports.redactor) }));
         const agent = createAgentBinding({
           locator: worktrees.locator,
           repositoryRoots: projectPaths,
@@ -411,10 +412,9 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
     registerComposerRunsHandlers(registrar, { service: composer, journal, mutex: worktrees.mutex, needsAttention: worktrees.needsAttention });
     if (built.messaging === undefined) throw new AxisError("E_INTERNAL", "The host composition is incomplete", { reason: "not_built" });
     registerMessagesHandlers(registrar, built.messaging);
+    registerAgentsHandlers(registrar, { journal, worktrees: worktrees.service, mutex: worktrees.mutex, trust: services.trust, noteWrite: () => services.anchors.noteWrite() });
     registerCliRunsHandlers(registrar, { service: runs.service, journal, control, minter: createRunTrustMinter(ports.clock), mutex: worktrees.mutex, needsAttention: worktrees.needsAttention, platform: config.platform });
-    registrar.register(
-      REVIEW_CONTRACT,
-      REVIEW_VERSION,
+    registrar.register(REVIEW_CONTRACT, REVIEW_VERSION,
       createReviewHandlers({ review: createReviewService(reviewDeps), journal, runs: runs.service, trees, audit: createReviewAuditSink({ append: (e) => (audit.append(e), services.anchors.noteWrite()) }) }),
     );
     registerGitHandlers(registrar, {

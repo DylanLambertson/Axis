@@ -64,6 +64,7 @@ test("a user message held by a failing check is shown to the user once, after th
   assert.equal(r.c.journal.messages.deliveries.get(mine.messageId, "agent:a1"), undefined, "never quarantined");
   // A host restart forgets the counts in memory; the notice already in the thread keeps it from being repeated.
   const restarted = createMessagingBinding({
+    holdsSecret: () => false,
     journal: r.c.journal,
     audit: r.c.audit,
     random: { bytes: (n) => randomBytes(n) },
@@ -157,11 +158,11 @@ test("a log hook that throws never ends the run, on the check path of any sender
 test("the host wiring logs a swallowed delivery failure by code and reads live runs from the journal", () => {
   const logged: unknown[] = [];
   const journal = { messages: {}, getProject: () => undefined, getRun: (id: string) => (id === "live" ? { state: "RUNNING" } : { state: "SUCCEEDED" }) } as unknown as Pick<Journal, "messages" | "getProject" | "getRun">;
-  const deps = hostMessagingDeps({ journal, audit: { append: () => undefined }, monotonic: () => 0, scan: async () => [], logger: { warn: (...a: unknown[]) => void logged.push(a) } });
+  const deps = hostMessagingDeps({ journal, audit: { append: () => undefined }, monotonic: () => 0, scan: async () => [], holdsSecret: () => false, logger: { warn: (...a: unknown[]) => void logged.push(a) } });
   deps.onInternalError?.("notice_failed");
   assert.deepEqual(logged, [["request.failed", { reason: "delivery_notice_failed" }]]);
   assert.equal(deps.runLive?.("live"), true);
   assert.equal(deps.runLive?.("done"), false);
   assert.equal(deps.random.bytes(16).length, 16);
-  assert.doesNotThrow(() => hostMessagingDeps({ journal, audit: { append: () => undefined }, monotonic: () => 0, scan: async () => [], logger: undefined }).onInternalError?.("notice_failed"));
+  assert.doesNotThrow(() => hostMessagingDeps({ journal, audit: { append: () => undefined }, monotonic: () => 0, scan: async () => [], holdsSecret: () => false, logger: undefined }).onInternalError?.("notice_failed"));
 });

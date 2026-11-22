@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 import type { TestContext } from "node:test";
 import type { Challenge } from "@axis/protocol";
 import { createRunBudget, type GenerateResult } from "@axis/providers";
-import { createMessagingBinding, runComposerLoop, type AgentEntry, type ComposerApprovalNote, type GroupEntry, type LoopEnd, type ToolCaps, type MessagingBinding, type MessagingDirectory, type MessagingLimits, type PreviewScanner } from "../src/index.js";
+import { createMessagingBinding, runComposerLoop, type AgentEntry, type ComposerApprovalNote, type GroupEntry, type LoopEnd, type ToolCaps, type MessagingBinding, type MessagingDirectory, type MessagingLimits, type PreviewScanner, messageSecretCheck } from "../src/index.js";
 import { composerRig, type ComposerRig } from "./composer-rig.js";
 
 /**
@@ -35,7 +35,7 @@ export async function deliveryRig(t: TestContext, options: { maxText?: number; f
     ...(options.previewScanner === undefined ? {} : { previewScanner: options.previewScanner }),
     // PV-M4: the run's `send_message` and `read_messages` over the same service (the binding is built first, so late-bound).
     ...(options.messaging === true
-      ? { messaging: { service: { send: (who, req) => live().service.send(who, req), read: (who, req) => live().service.read(who, req) }, directory, agentOf: (runId: string) => runAgent.get(runId), random: { bytes: (n: number) => randomBytes(n) } } }
+      ? { messaging: { service: { send: (who, req) => live().service.send(who, req), readWithheld: (who, req, check) => live().service.readWithheld(who, req, check) }, directory, agentOf: (runId: string) => runAgent.get(runId), random: { bytes: (n: number) => randomBytes(n) } } }
       : {}),
     replies: [],
     deliveries: {
@@ -56,6 +56,7 @@ export async function deliveryRig(t: TestContext, options: { maxText?: number; f
   }
   const codes: string[] = [];
   const m = createMessagingBinding({
+    holdsSecret: messageSecretCheck(c.redactor),
     journal: c.journal,
     audit: c.audit,
     random: { bytes: (n) => randomBytes(n) },
