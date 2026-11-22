@@ -74,6 +74,7 @@ export const RULES: Readonly<Record<string, Rule>> = Object.freeze({
   "axis.agents/1.update": userRule(2),
   "axis.agents/1.archive": userRule(1),
   "axis.agents/1.restore": userRule(1),
+  "axis.agents/1.start": userRule(2, "project"),
   "axis.agent-groups/1.list": userRule(0),
   "axis.agent-groups/1.create": userRule(1),
   "axis.agent-groups/1.rename": userRule(1),

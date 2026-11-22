@@ -212,9 +212,9 @@ export class Journal {
       const ts = this.#ts();
       this.#db
         .prepare(
-          "INSERT INTO agent_runs (id, workspace_id, kind, state, created_at, updated_at) VALUES (?, ?, ?, 'QUEUED', ?, ?)",
+          "INSERT INTO agent_runs (id, workspace_id, kind, state, created_at, updated_at, agent_id) VALUES (?, ?, ?, 'QUEUED', ?, ?, ?)",
         )
-        .run(id, body.workspaceId, body.kind, ts, ts);
+        .run(id, body.workspaceId, body.kind, ts, ts, body.agentId ?? null);
       this.#recordTransition("run", id, null, "QUEUED", null, createdBy, ts);
       this.#remember(scope, key, body, id, ts);
       return { value: this.#mustRun(id), replayed: false };

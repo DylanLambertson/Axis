@@ -17,7 +17,7 @@ test("every method of both contracts has one served, user-only row at the contra
       assert.equal(PLANNED_RULES[key], undefined, `${key} is not planned`);
       assert.deepEqual(RULES[key]?.actors, ["user"], key);
       assert.equal(RULES[key]?.tier, spec.tier, key);
-      assert.equal(RULES[key]?.trust, "none", key);
+      assert.equal(RULES[key]?.trust, key === "axis.agents/1.start" ? "project" : "none", key); // start: the gate decides in the handler
       assert.equal(WEB_ALLOWED.has(key), false, `${key} is not web-allowed`);
     }
   }
