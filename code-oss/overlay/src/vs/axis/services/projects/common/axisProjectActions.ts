@@ -100,17 +100,36 @@ export function windowLocalCheckoutIds(
 	return entries.filter(e => e.isLocalCheckout && e.worktree.path === folderPaths[0]).map(e => e.project.id);
 }
 
+/** The longest project name shown inline; the full name is in the tooltip. */
+export const AXIS_MAX_INLINE_NAME = 40;
+
+/** The name with control and format characters removed: for a tooltip, which shows it whole. */
+export function plainName(name: string): string {
+	return name.replace(/[\p{Cc}\p{Cf}\u2028\u2029]/gu, '');
+}
+
+/**
+ * A project name as it sits inside a sentence: control and format characters removed (a name cannot reorder the text around it),
+ * cut to `AXIS_MAX_INLINE_NAME` with an ellipsis, and wrapped in a first-strong isolate (U+2068 ... U+2069). So a right-to-left name
+ * keeps its own order and the sentence keeps the UI's direction and its words.
+ */
+export function isolateName(name: string): string {
+	const clean = [...plainName(name)];
+	const shown = clean.length > AXIS_MAX_INLINE_NAME ? clean.slice(0, AXIS_MAX_INLINE_NAME - 1).join('') + '\u2026' : clean.join('');
+	return `\u2068${shown}\u2069`;
+}
+
 /** The chip text for a project: glyph AND words, never colour alone. Unknown trust says so. */
 export function projectChip(project: IAxisProjectInfo, source: AxisTrustSource): { readonly glyph: string; readonly label: string; readonly hint: string } {
 	if (source === 'unregistered') {
-		return { glyph: '+', label: localize('axis.project.chip.unregistered', "{0}: not added to Axis", project.name), hint: localize('axis.project.chip.unregisteredHint', "Add Project… makes it an Axis project. It starts read only until you trust it to run.") };
+		return { glyph: '+', label: localize('axis.project.chip.unregistered', "{0}: not added to Axis", isolateName(project.name)), hint: localize('axis.project.chip.unregisteredHint', "Add Project… makes it an Axis project. It starts read only until you trust it to run.") };
 	}
 	if (source === 'offline') {
-		return { glyph: '?', label: localize('axis.project.chip.unknown', "{0}: run trust unknown", project.name), hint: localize('axis.project.chip.unknownHint', "The Axis service is not connected, so run trust cannot be shown.") };
+		return { glyph: '?', label: localize('axis.project.chip.unknown', "{0}: run trust unknown", isolateName(project.name)), hint: localize('axis.project.chip.unknownHint', "The Axis service is not connected, so run trust cannot be shown.") };
 	}
 	return project.trusted
-		? { glyph: '\u2713', label: localize('axis.project.chip.trusted', "{0}: trusted to run", project.name), hint: localize('axis.project.chip.trustedHint', "CLI and agent runs, commits and pushes are allowed.") }
-		: { glyph: '\u{1F512}', label: localize('axis.project.chip.readOnly', "{0}: read only", project.name), hint: localize('axis.project.chip.readOnlyHint', "Runs, commits and pushes need Trust to run. If the repository changed, review and trust it again.") };
+		? { glyph: '\u2713', label: localize('axis.project.chip.trusted', "{0}: trusted to run", isolateName(project.name)), hint: localize('axis.project.chip.trustedHint', "CLI and agent runs, commits and pushes are allowed.") }
+		: { glyph: '\u2298', label: localize('axis.project.chip.readOnly', "{0}: read only", isolateName(project.name)), hint: localize('axis.project.chip.readOnlyHint', "Runs, commits and pushes need Trust to run. If the repository changed, review and trust it again.") };
 }
 
 /** What the client needs from the IPC (the electron-browser adapter passes the preload's `ipcRenderer`). */
@@ -183,6 +202,6 @@ export function bannerContent(state: AxisWindowProjectState, source: AxisTrustSo
 		return { text: localize('axis.banner.none', "This folder is not an Axis project yet."), action: { id: 'add', label: localize('axis.banner.add', "Add Project…") } };
 	}
 	return state.project.trusted
-		? { text: localize('axis.banner.trusted', "{0} is trusted to run.", state.project.name), action: { id: 'untrust', label: localize('axis.banner.untrust', "Stop Trusting") } }
-		: { text: localize('axis.banner.readOnly', "{0} is read only: runs, commits and pushes need Trust to run.", state.project.name), action: { id: 'trust', label: localize('axis.banner.trust', "Trust to Run…") } };
+		? { text: localize('axis.banner.trusted', "{0} is trusted to run.", isolateName(state.project.name)), action: { id: 'untrust', label: localize('axis.banner.untrust', "Stop Trusting") } }
+		: { text: localize('axis.banner.readOnly', "{0} is read only: runs, commits and pushes need Trust to run.", isolateName(state.project.name)), action: { id: 'trust', label: localize('axis.banner.trust', "Trust to Run…") } };
 }

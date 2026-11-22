@@ -35,7 +35,6 @@ export class AxisProjectBanner extends Disposable {
 		super();
 		this.element = $('.axis-project-banner');
 		this.text = append(this.element, $('span.axis-project-banner-text'));
-		this.text.dir = 'auto'; // the sentence carries the project name
 		this.button = append(this.element, $('button.axis-project-banner-action')) as HTMLButtonElement;
 		this.button.type = 'button';
 		this.outcome = append(this.element, $('span.axis-project-banner-outcome'));
@@ -57,7 +56,6 @@ export class AxisProjectBanner extends Disposable {
 		const state = windowProjectState({ source, projects: this.workspaces.projects, localCheckoutProjectIds: windowLocalCheckoutIds(this.workspaces.workspaces, folders) });
 		const content = bannerContent(state, source);
 		this.text.textContent = content.text;
-		this.text.title = content.text; // the full sentence, if it is cut short
 		this.action = content.action?.id;
 		this.button.hidden = content.action === undefined;
 		this.button.textContent = content.action?.label ?? '';
