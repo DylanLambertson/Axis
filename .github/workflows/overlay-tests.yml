@@ -71,13 +71,21 @@ jobs:
         timeout-minutes: 10
         run: scripts/code-oss/fetch.sh
 
+      - name: Pinned Node toolchain (checksum-verified, before the apply)
+        # apply.sh's post-apply hook (10-regen-locks) needs the pinned Node. build.sh --toolchain-only requires an applied tree,
+        # so the toolchain is resolved here with lib.sh's own checksum-pinned download; apply.sh then finds it in TOOLS_DIR.
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          # shellcheck source=/dev/null
+          . scripts/code-oss/lib.sh
+          load_manifest
+          resolve_node download
+          echo "AXIS_PINNED_NODE_BIN=$NODE_BIN_DIR" >>"$GITHUB_ENV"
+
       - name: Apply patches, removals, replacements, overlay and hooks
         timeout-minutes: 10
         run: scripts/code-oss/apply.sh
-
-      - name: Pinned Node toolchain (checksum-verified)
-        timeout-minutes: 5
-        run: scripts/code-oss/build.sh --toolchain-only
 
       - name: Cache key from the tree's lockfiles and the pinned Node
         id: key
@@ -109,9 +117,8 @@ jobs:
         timeout-minutes: 25
         run: |
           set -euo pipefail
-          node_bin="$(ls -d "$AXIS_CODE_OSS_TOOLS_DIR"/node-v*/bin | head -n 1)"
           cd "$AXIS_CODE_OSS_VENDOR_DIR/code-oss"
-          PATH="$node_bin:$PATH" npm ci
+          PATH="$AXIS_PINNED_NODE_BIN:$PATH" npm ci
 
       - name: Save node_modules (main only, on a miss)
         if: steps.cache.outputs.cache-hit != 'true' && github.event_name == 'push'
