@@ -46,12 +46,12 @@ import {
   rewriteSpecifiers,
 } from "./stage-scan.mjs";
 import { MANIFEST_NAME, MAX_FILE_BYTES, STAGE_ROOT, checkStagedFile, sha256, treeHash, verifyStaged } from "./stage-verify.mjs";
-import { webHostEdgeRefusal } from "./web-rules.mjs";
+import { STAGED_NOTICE, webHostEdgeRefusal } from "./web-rules.mjs";
 
 export { STAGE_ROOT };
 export { importSpecifiers, unsafeForms, rewriteSpecifiers } from "./stage-scan.mjs";
 
-const GENERATED = "Staged by code-oss/hooks/post-apply.d/20-stage-axis-packages. Do not edit; edit the source and rerun apply.sh.";
+const GENERATED = STAGED_NOTICE;
 const MAX_TOTAL_BYTES = 32 * 1024 * 1024;
 const DEFAULT_FUTURE_SKEW_MS = 5 * 60 * 1000;
 const PACKAGE_DIR_RE = /^[a-z][a-z0-9-]*$/;

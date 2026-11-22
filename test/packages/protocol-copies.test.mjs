@@ -28,7 +28,7 @@ test("@axis/protocol has no dependency on another @axis package (runtime, dev, p
   assert.deepEqual(Object.keys(pkg.dependencies ?? {}), ["zod"]);
 });
 
-test("the daemon's request digest reproduces the shared vectors (docs/packages.md 'Shared request digest')", () => {
+test("the daemon's request digest reproduces the shared vectors (docs/packages/challenge.md 'Shared request digest')", () => {
   assert.equal(requestDigest("axis.worktrees/1", 1, "remove", { id: "ws-1", deleteBranch: false }), "ccb3a71aa0bc5bd6db5ccfe6fe9a09abef12092dce13ba4f6d99e929a30e0fd7");
   assert.equal(requestDigest("c", 1, "m", { b: [1, { z: null, y: true }], a: "x" }), "de8399306f850ad7498d82c8f95ec94ca317181b2422480425c52ad8ed55e596");
 });

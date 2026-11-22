@@ -76,7 +76,7 @@ export function checkMetafile(metafile, manifest, { bundledText = null, treeZod 
     const desktopEntry = input === DEFAULT_ENTRY || input === SEAM_ENTRY;
     for (const imp of info.imports) {
       if (imp.external === true && /^node:/.test(imp.path) && (rel !== null || desktopEntry)) {
-        const why = listenerBuiltinRefusal(imp.path, rel);
+        const why = listenerBuiltinRefusal(imp.path, rel, { desktop: true }); // the daemon and seam bundles: the web host only
         if (why !== null) bad.push(`${input}: ${why}`);
         const egress = egressBuiltinRefusal(imp.path, rel);
         if (egress !== null) bad.push(`${input}: ${egress}`);

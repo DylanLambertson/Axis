@@ -8,7 +8,7 @@
 export { importSpecifiers, unsafeForms, rewriteSpecifiers, scanModules } from "./stage-ast.mjs";
 import { listenerBuiltinRefusal } from "./web-rules.mjs";
 import { egressBuiltinRefusal } from "./egress-rules.mjs";
-export { LISTENER_BUILTINS, LISTENER_FILE, WEB_HOST_DIR } from "./web-rules.mjs";
+export { ENDPOINT_LISTENER_FILE, ENDPOINT_LISTENER_SHA256, LISTENER_BUILTINS, LISTENER_FILE, LISTENER_FILES, WEB_HOST_DIR } from "./web-rules.mjs";
 
 /**
  * Node built-ins that load or run code by other means than a module specifier. No package needs them, except the
@@ -62,9 +62,10 @@ export const RESTRICTED_MODULES = [
   // test/packages/imports.test.mjs).
   { pkg: "daemon-host", file: "bindings/providers.ts", importers: new Set(), files: new Set(["daemon-host/compose.ts", "daemon-host/host.ts", "daemon-host/index.ts"]), exact: true },
   // The Anthropic adapter and the connection vault (the key's only holder in the daemon, PRV-2): only the host's providers
-  // binding may load them (daemon-host.md 2.1, ticket C6; mirrors HOST_FILE_RULES in test/packages/imports.test.mjs).
+  // binding may load the adapter, and the providers and integrations bindings the vault (daemon-host.md 2.1, ticket C6;
+  // ADR 0009 decision 5, ticket PV-N1c; mirrors HOST_FILE_RULES in test/packages/imports.test.mjs).
   { pkg: "anthropic", file: "index.ts", importers: new Set(), files: new Set(["daemon-host/bindings/providers.ts"]) },
-  { pkg: "vault", file: "index.ts", importers: new Set(), files: new Set(["daemon-host/bindings/providers.ts"]) },
+  { pkg: "vault", file: "index.ts", importers: new Set(), files: new Set(["daemon-host/bindings/providers.ts", "daemon-host/bindings/integrations.ts"]) },
   // The host's run trust minter: even inside its own package only the composition points (the public index, and the composition
   // root `compose.ts`, which hands handler code the registrar only) may load it, so no handler, service or binding can mint an
   // attestation without main's per-start trust.check (TRU-2).

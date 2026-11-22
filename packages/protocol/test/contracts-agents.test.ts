@@ -29,7 +29,7 @@ test("both contracts are served (PV-G3), never planned, with the designed method
     Object.entries(methods).map(([m, s]) => [m, s.sideEffect, s.tier, s.idempotency]);
   assert.deepEqual(table(agentsMethods), [
     ["list", "read", 0, "none"], ["get", "read", 0, "none"], ["create", "write", 2, "required"],
-    ["update", "write", 2, "none"], ["archive", "write", 1, "none"], ["restore", "write", 1, "none"],
+    ["update", "write", 2, "none"], ["archive", "write", 1, "none"], ["restore", "write", 1, "none"], ["start", "write", 2, "required"],
   ]);
   assert.deepEqual(table(agentGroupsMethods), [
     ["list", "read", 0, "none"], ["create", "write", 1, "required"], ["rename", "write", 1, "none"],
@@ -78,7 +78,10 @@ test("update changes something; reorder names each group once; assign takes a gr
 });
 
 test("the refusals are closed and never echo a stored name", () => {
-  assert.deepEqual(Object.keys(AGENTS_REFUSALS), ["E_NOT_FOUND", "E_CONFLICT"]);
+  assert.deepEqual(Object.keys(AGENTS_REFUSALS), ["E_NOT_FOUND", "E_CONFLICT", "E_UNAVAILABLE"]);
+  assert.equal(isAgentsRefusal("E_UNAVAILABLE", "not_available"), true);
+  for (const r of ["entry_unavailable", "connection_unavailable", "model_unavailable", "busy"]) assert.equal(isAgentsRefusal("E_CONFLICT", r), true, r);
+  assert.equal(isAgentsRefusal("E_UNAVAILABLE", "model_unavailable"), false);
   assert.equal(new Set(AGENTS_REASONS).size, AGENTS_REASONS.length);
   for (const reason of AGENTS_REASONS) assert.match(reason, /^[a-z][a-z_]*$/);
   assert.equal(isAgentsRefusal("E_CONFLICT", "name_taken"), true);
@@ -92,4 +95,15 @@ test("a group's order is 0 to 9999, as the journal stores it", () => {
   const g = { id: "g", projectId: "p", name: "G", createdAt: "2026-11-21T10:00:00.000Z", updatedAt: "2026-11-21T10:00:00.000Z" };
   for (const order of [0, 9999]) accepts(res, { group: { ...g, order } }, `order ${order}`);
   for (const order of [-1, 10000, 1.5]) rejects(res, { group: { ...g, order } }, `order ${order}`);
+});
+
+test("start names only the agent and an optional prompt: no workspace, command, entry, provider or model", () => {
+  const start = schemaOf("axis.agents", "start", "request");
+  accepts(start, { agentId: "agent-a" }, "a CLI agent");
+  accepts(start, { agentId: "agent-a", input: { prompt: "p".repeat(32_768) } }, "a prompt at the bound");
+  rejects(start, { agentId: "agent-a", input: { prompt: "p".repeat(32_769) } }, "a prompt over the bound");
+  rejects(start, { agentId: "agent-a", input: { prompt: "" } }, "an empty prompt");
+  for (const extra of [{ workspaceId: "ws-1" }, { command: ["sh"] }, { entryId: "e" }, { providerId: "mock" }, { modelId: "m" }, { connection: "c" }, { input: { prompt: "p", mode: "agent" } }]) {
+    rejects(start, { agentId: "agent-a", ...extra }, JSON.stringify(extra));
+  }
 });

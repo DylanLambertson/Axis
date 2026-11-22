@@ -10,8 +10,10 @@
 
 export const MAIN_ATTESTATION_TAG = "axis.attest/1";
 
-/** The identity main vouches for (the daemon's `identitySchema` judges it again). */
-export interface MainIdentity {
+/** The identity main vouches for (the daemon's `identitySchema` judges it again): a code window's, or a plugin view's (ADR 0008 decision 3). */
+export type MainIdentity = MainWindowIdentity | MainPluginIdentity;
+
+export interface MainWindowIdentity {
   readonly connectionId: string;
   readonly windowId: string;
   readonly actorId: string;
@@ -19,6 +21,21 @@ export interface MainIdentity {
   readonly workspaceId?: string;
   readonly trusted: boolean;
   readonly clientKind: "desktop";
+}
+
+/** A plugin view's identity: minted by main when it creates the view (PV-K1d); `actorId` equals `actor`, `hostWindowId` is fixed. */
+export interface MainPluginIdentity {
+  readonly connectionId: string;
+  /** `p<n>` from main's counter, never reused. */
+  readonly windowId: string;
+  readonly actorId: `plugin:${string}`;
+  readonly actor: `plugin:${string}`;
+  /** The project the plugin is enabled in. */
+  readonly workspaceId: string;
+  readonly trusted: boolean;
+  readonly clientKind: "plugin";
+  /** The `w<n>` of the code window hosting the view. */
+  readonly hostWindowId: string;
 }
 
 export interface MainAttestation {
@@ -58,6 +75,7 @@ function plainIdentity(identity: MainIdentity): Record<string, string | boolean>
     clientKind: identity.clientKind,
   };
   if (identity.workspaceId !== undefined) out["workspaceId"] = identity.workspaceId;
+  if (identity.clientKind === "plugin") out["hostWindowId"] = identity.hostWindowId;
   for (const v of Object.values(out)) if (typeof v !== "string" && typeof v !== "boolean") throw new Error("unsignable identity");
   return out;
 }
