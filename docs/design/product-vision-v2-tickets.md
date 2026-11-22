@@ -27,7 +27,7 @@
 
 | ID | Ticket | Size | Depends on | Builder | Review |
 |---|---|---|---|---|---|
-| **PV-G1** | Journal migration: `agents` (id, project, name, kind `composer`/`cli`, launch config ref: `axis.cliAgents` entry id or connection, model and default mode; home workspace id; group id; archived; created by) and `agent_groups` (id, project, name, order); `agent_runs.agent_id` | M | PV-R1 | small (schema over the ADR) | review |
+| **PV-G1** | Journal migration: `agents` (id, project, name, kind `composer`/`cli`, launch config ref: `axis.cliAgents` entry id or connection, model and default mode; home workspace id; group id; archived; created by) and `agent_groups` (id, project, name, order); `agent_runs.agent_id`. **Built** as journal schema version 12 (`packages/journal/src/schema-agents.ts`), after the project trust binding's version 11 | M | PV-R1 | small (schema over the ADR) | review |
 | **PV-G2** | Protocol `axis.agents/1` (`create`, `update`, `archive`, `list`, `get`) and `axis.agent-groups/1` (`create`, `rename`, `reorder`, `delete`, `assign`); policy rows, user-only writes; no path, command or credential in any payload | M | PV-G1 | small | review |
 | **PV-G3** | Daemon-host: agents service and handlers; `create` composes `axis.worktrees/1.create` under the project mutex with idempotency; archive never removes a workspace (remove stays tier 4); runs record `agent_id`; coverage check | M | PV-G2, H8 (merged) | large | review |
 | **PV-G4** | Run start by agent: the shell starts CLI and composer runs from an agent (the daemon resolves the agent's workspace and launch entry; the caller still cannot supply a command) | S | PV-G3, C1 | small | review |
