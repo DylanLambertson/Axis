@@ -14,6 +14,7 @@ import { createGitOperations, createGitPort } from "./bindings/git.js";
 import { createProvidersBinding, productionConnection, type AnthropicConnectionOptions, type ProvidersBinding } from "./bindings/providers.js";
 import { selectPtyGitRunner } from "./bindings/pty-git.js";
 import { registerForgeServing } from "./compose-forge.js";
+import { registerAttentionServing } from "./handlers/attention.js";
 import { createCommitPreparer, createReviewService } from "./bindings/review.js";
 import { createTempIndexProvider } from "./bindings/review-tempindex.js";
 import { createRunsBinding, type RunsBinding } from "./bindings/runs.js";
@@ -414,9 +415,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
     registerMessagesHandlers(registrar, built.messaging);
     registerAgentsHandlers(registrar, { journal, worktrees: worktrees.service, mutex: worktrees.mutex, trust: services.trust, noteWrite: () => services.anchors.noteWrite() });
     registerCliRunsHandlers(registrar, { service: runs.service, journal, control, minter: createRunTrustMinter(ports.clock), mutex: worktrees.mutex, needsAttention: worktrees.needsAttention, platform: config.platform });
-    registrar.register(REVIEW_CONTRACT, REVIEW_VERSION,
-      createReviewHandlers({ review: createReviewService(reviewDeps), journal, runs: runs.service, trees, audit: createReviewAuditSink({ append: (e) => (audit.append(e), services.anchors.noteWrite()) }) }),
-    );
+    registrar.register(REVIEW_CONTRACT, REVIEW_VERSION, createReviewHandlers({ review: createReviewService(reviewDeps), journal, runs: runs.service, trees, audit: createReviewAuditSink({ append: (e) => (audit.append(e), services.anchors.noteWrite()) }) }));
     registerGitHandlers(registrar, {
       ops: createGitOperations({ git, runs: runs.service, pushHooksUnavailable: typeof pty.exec === "function", resolveSshHost: options.sshSpawn === undefined ? unavailableSshResolver : createSshResolver({ spawn: options.sshSpawn, env: ports.env, excludeDirs: services.excludeDirs, platform: config.platform }) }),
       review: createCommitPreparer(reviewDeps),
@@ -432,6 +431,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
       onBookkeepingError: () => logger?.warn("request.failed", { reason: "git_bookkeeping" }),
     });
     registerForgeServing(registrar, { pty, projectPath: (id) => journal.getProject(id)?.path, git, platform: config.platform, audit: (e) => (audit.append(e), services.anchors.noteWrite()), monotonic: () => ports.clock.monotonic(), pins: journal.forgePins, ...(logger === undefined ? {} : { logger }) });
+    registerAttentionServing(registrar, { projectExists: (id) => journal.getProject(id) !== undefined, records: journal.attention, cliRun: (id) => runs.service.get(id), composerRun: (id) => composer.get(id) });
   }
 
   /**

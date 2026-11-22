@@ -116,6 +116,18 @@ Opening a project shows its home. It follows the `UX.md` thesis: dense, actionab
 
 Updates: polled in 1a (plan Q5) and pushed once E1 merges. PR data is cached with a minimum refresh interval (recommended 60 s, manual refresh button) to stay within forge rate limits [I].
 
+**Needs attention as built (PV-D4).** `axis.attention/1.summary { projectId }`: a tier 0 read, user only (the policy row and the handler; any other caller, a web client and an unregistered project all get the same `E_NOT_FOUND`), any trust level of a registered project. The reply is ids and counts only, never text, a path, a branch, a reason code, a challenge or a message body; nothing in it resolves anything (ADR 0004 implication 4: an approval is answered only through `axis.approvals/1`). Counts are over the project's live (`READY`) workspaces:
+
+| Count | Derived from | Survives a restart |
+|---|---|---|
+| `approvalsWaiting` (total and per agent, at most 64 agents then `more`) | `RUNNING` composer runs whose loop waits on a confirmation (the composer service's `awaitingApproval`), grouped by the run's agent; not `axis.approvals/1.pending`, which is the caller's window and carries no project | no (live only: a restart ends every composer loop) |
+| `failedRuns` | workspaces whose newest run is `FAILED` (it clears when a new run starts or the workspace is finalised or removed) | yes (journal) |
+| `quietCliRuns` | `RUNNING` CLI runs whose supervisor status is `quiet` (may be waiting for input) | no (live only) |
+| `driftFlags` | workspaces whose newest run is an ended CLI run with a post-run snapshot other than `ok` (`drift`, or `unknown`: possibly changed, WT-2) | the verdict is in memory, so after a restart it is `unknown` and the flag stays (conservative, never lost) |
+| `unreadMessages` | messages to the user in the project's threads past the user's read cursor (the rule of `MessageRecords.unread`) | yes (journal) |
+
+Bounds: each journal read takes at most 1000 rows (`latestRuns`, `runningRuns`, `unreadForUser` of `Journal.attention`, all on indexed columns); a count saturates at 999 and says `capped` ("999+") when the true value is above it, or may be because a read filled its window. The method times out at 5 s. Not counted yet (follow-up): composer drift notices and Git-config flags, which have no stored record to count from.
+
 ### 3.5 Agent view (main surface) and the side panel
 
 Layout of the Agent view in v2 (replaces the per-workspace-first layout in `UX.md` "Agent view" once approved):
