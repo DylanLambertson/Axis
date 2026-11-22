@@ -5,7 +5,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { AuditEventInput } from "@axis/audit";
 import { forgeMethods, type ForgeListRequest } from "@axis/protocol";
-import { createForgeService, ForgeRefusal, type ForgeServiceDeps, type OriginRead } from "../src/index.js";
+import { createForgeService, createMemoryPinStore, ForgeRefusal, type ForgeServiceDeps, type OriginRead } from "../src/index.js";
 
 const CANARY = "CANARY7f3a";
 const goodRow = (n: number, over: Record<string, unknown> = {}) => ({
@@ -51,6 +51,7 @@ function rig(over: Partial<ForgeServiceDeps> = {}, projects = ["p1", "p2"]): Rig
     monotonic: () => r.now,
     requestId: () => `r${++n}`,
     log: (l) => void r.logs.push(l),
+    pins: createMemoryPinStore(),
     ...over,
   });
   (r as { svc: unknown }).svc = svc;

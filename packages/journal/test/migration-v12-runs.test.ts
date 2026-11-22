@@ -92,13 +92,13 @@ test("upgrading a version 11 database keeps its runs with no agent; a failed upg
   db.close();
 });
 
-test("upgrading a version 10 database applies 11 and 12 in order", () => {
+test("upgrading a version 10 database applies 11, 12 and 13 in order", () => {
   const db = openDatabase(":memory:");
   runMigrations(db, "journal", JOURNAL_MIGRATIONS.slice(0, 10));
   db.prepare("INSERT INTO projects (id, path, display_name, trusted, created_at, updated_at) VALUES ('p1', '/repo/one', 'One', 0, ?, ?)").run(T, T);
   open(db);
-  assert.equal(schemaVersion(db, "journal"), 12);
-  const tables = (db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('agents','agent_groups')").all() as { name: string }[]).map((r) => r.name).sort();
-  assert.deepEqual(tables, ["agent_groups", "agents"]);
+  assert.equal(schemaVersion(db, "journal"), 13);
+  const tables = (db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('agents','agent_groups','forge_pins')").all() as { name: string }[]).map((r) => r.name).sort();
+  assert.deepEqual(tables, ["agent_groups", "agents", "forge_pins"]);
   db.close();
 });
