@@ -60,16 +60,16 @@ export const RULES: Readonly<Record<string, Rule>> = Object.freeze({
   "axis.runs/1.events": userRule(0),
   "axis.events/1.subscribe": userRule(0),
   "axis.events/1.unsubscribe": userRule(0),
-  // axis.pages/1 (PV-Q1 slice 2, ADR 0010): the user's own connection only. Marking a version reviewed lowers taint and is tier 3,
-  // resolved in main's native dialog (threat-model-phase2a O-4); delete is destructive. Runs reach pages through their tools.
+  // axis.pages/1 (PV-Q1 slice 2, ADR 0010): the user's own connection only. Marking a version reviewed lowers taint and deleting
+  // destroys versions: both tier 4, confirmed in main's native dialog (threat-model-phase2a O-4; tier 3 has no native step). Runs reach pages through their tools.
   "axis.pages/1.list": userRule(0),
   "axis.pages/1.get": userRule(0),
   "axis.pages/1.versions": userRule(0),
   "axis.pages/1.create": userRule(1),
   "axis.pages/1.update": userRule(1),
   "axis.pages/1.restore": userRule(1),
-  "axis.pages/1.markReviewed": userRule(3),
-  "axis.pages/1.delete": userRule(3),
+  "axis.pages/1.markReviewed": userRule(4),
+  "axis.pages/1.delete": userRule(4),
   // axis.tasks/1 (PV-T1 slice 2a): the user's own connection only. Record writes are tier 1 (assigning starts nothing); delete is
   // destructive, tier 4: confirmed in main's native dialog. Runs reach tasks through their tools.
   "axis.tasks/1.list": userRule(0),
