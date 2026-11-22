@@ -57,7 +57,7 @@ All per-connection buffers are bounded; an idle authenticated connection is clos
 - **CLI configuration can auto-approve too**, including configuration files **in the repository**. The enable dialog states: "This CLI may act on other agents' messages without asking you, depending on its own configuration, including files in this repository." When a known CLI project-configuration file exists in the worktree (these paths are already in the protected set), Axis shows a warning and requires a second confirmation (M-3); the file's presence is re-checked at each run start and messaging is suspended for that run until confirmed again if the file changed.
 - The dashboard row of a CLI agent with messaging on says so in text.
 
-## 7. Proposed gate lines (Phase 2a)
+## 7. Gate lines (Phase 2a; `ROADMAP.md` refers to them)
 
 1. A CLI run without messaging enabled has neither endpoint variable in its environment (PTY-5 test extended).
 2. After the run ends, an **already-open** shim connection and a new connection with the old token are both refused; Pause makes open connections answer `paused`.
