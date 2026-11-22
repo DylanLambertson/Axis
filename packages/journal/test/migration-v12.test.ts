@@ -19,8 +19,8 @@ function workspace(journal: Journal, projectId: string, ready = true): string {
 function setup(): Fixture {
   const db = openDatabase(":memory:");
   const journal = Journal.open(db, { audit: new AuditLog(db) });
-  journal.registerProject({ id: "p1", path: "/repo/one", displayName: "One", trusted: true, actor: "user" });
-  journal.registerProject({ id: "p2", path: "/repo/two", displayName: "Two", trusted: true, actor: "user" });
+  journal.registerProject({ id: "p1", path: "/repo/one", displayName: "One", trusted: false, actor: "user" });
+  journal.registerProject({ id: "p2", path: "/repo/two", displayName: "Two", trusted: false, actor: "user" });
   return { db, journal, ws: { a: workspace(journal, "p1"), b: workspace(journal, "p1"), other: workspace(journal, "p2") } };
 }
 type Row = Record<string, string | number | null>;
@@ -244,6 +244,12 @@ test("an id is inserted once: INSERT OR REPLACE cannot rewrite an agent, a group
       assert.throws(() => db.prepare(`${verb} INTO agent_runs (id, workspace_id, kind, state, created_at, updated_at) VALUES (?, ?, 'cli', 'QUEUED', ?, ?)`).run(id, ws.a, T, T), /a run is inserted once/, verb);
     }
     assert.throws(() => db.prepare(`${verb} INTO agent_workspaces (id, project_id, branch, base_ref, base_sha, created_by, state, created_at, updated_at) VALUES (?, 'p1', 'axis/x', 'HEAD', ?, 'user', 'REMOVED', ?, ?)`).run(ws.a, "c".repeat(40), T, T), /a workspace is inserted once/, verb);
+  }
+  // The guard fires before any conflict clause, with the trigger's error code (1811), not a UNIQUE one.
+  for (const sql of ["INSERT OR IGNORE INTO agent_groups (id, project_id, name, ord, created_by, created_at, updated_at) VALUES ('g1', 'p1', 'X', 0, 'user', 't', 't')",
+    "INSERT INTO agent_groups (id, project_id, name, ord, created_by, created_at, updated_at) VALUES ('g1', 'p1', 'X', 0, 'user', 't', 't') ON CONFLICT DO NOTHING",
+    "INSERT INTO agent_groups (id, project_id, name, ord, created_by, created_at, updated_at) VALUES ('g1', 'p1', 'X', 0, 'user', 't', 't') ON CONFLICT (id) DO UPDATE SET name = 'Y'"]) {
+    assert.throws(() => db.prepare(sql).run(), (e: unknown) => (e as { errcode?: number }).errcode === 1811 && /inserted once/.test(String(e)), sql);
   }
   assert.deepEqual([agent(db, "c1")["project_id"], agent(db, "c1")["kind"], agent(db, "c1")["archived"]], ["p1", "cli", 0]);
   assert.equal((db.prepare("SELECT agent_id FROM agent_runs WHERE id = 'r-k'").get() as { agent_id: string }).agent_id, "c1");

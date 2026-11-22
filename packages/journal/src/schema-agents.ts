@@ -22,6 +22,11 @@ import type { Migration } from "@axis/audit";
  *   - Every table here, and `agent_runs` and `agent_workspaces`, refuses an INSERT of an id that exists: `INSERT OR
  *     REPLACE` deletes the old row without firing a DELETE or UPDATE trigger, which would bypass every fixed-column,
  *     never-deleted and archive rule above (the guard `composer_runs_inserted_once` of version 8 closes the same hole).
+ *     The guard fires before any conflict clause, so `INSERT OR IGNORE` and `ON CONFLICT ... DO NOTHING / DO UPDATE` on
+ *     an existing id abort as well; an upsert on these tables needs the guard dropped on purpose. The error is the
+ *     trigger's (SQLITE_CONSTRAINT_TRIGGER, errcode 1811), not a UNIQUE or PRIMARY KEY one (2067, 1555): `isUnique` in
+ *     `records.ts` does not see a duplicate id here, so a store (PV-G3) that maps duplicates must check the id first or
+ *     match the trigger's message.
  *   - `created_by` is always `user`: agent and group writes are user-only (ADR 0006 decision 10). Group membership
  *     feeds the messaging send policy (`accepts_from: group`), which is why it is constrained here as well.
  * - `agent_runs.agent_id`: NULL for every run recorded before this version and for runs started without an agent. It is

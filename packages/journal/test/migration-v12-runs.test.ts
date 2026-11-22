@@ -17,7 +17,7 @@ function readyWorkspace(journal: Journal, projectId = "p1"): string {
 }
 function open(db: DatabaseSync = openDatabase(":memory:")): Journal {
   const journal = Journal.open(db, { audit: new AuditLog(db) });
-  if (journal.getProject("p1") === undefined) journal.registerProject({ id: "p1", path: "/repo/one", displayName: "One", trusted: true, actor: "user" });
+  if (journal.getProject("p1") === undefined) journal.registerProject({ id: "p1", path: "/repo/one", displayName: "One", trusted: false, actor: "user" });
   return journal;
 }
 function addAgent(db: DatabaseSync, id: string, home: string, kind: "composer" | "cli"): void {
@@ -72,7 +72,7 @@ test("upgrading a version 11 database keeps its runs with no agent; a failed upg
   const db = openDatabase(":memory:");
   runMigrations(db, "journal", BEFORE);
   assert.equal(schemaVersion(db, "journal"), 11);
-  db.prepare("INSERT INTO projects (id, path, display_name, trusted, created_at, updated_at) VALUES ('p1', '/repo/one', 'One', 1, ?, ?)").run(T, T);
+  db.prepare("INSERT INTO projects (id, path, display_name, trusted, created_at, updated_at) VALUES ('p1', '/repo/one', 'One', 0, ?, ?)").run(T, T);
   db.prepare("INSERT INTO agent_workspaces (id, project_id, branch, base_ref, base_sha, created_by, state, created_at, updated_at) VALUES ('w1', 'p1', 'axis/a', 'HEAD', ?, 'user', 'READY', ?, ?)")
     .run("c".repeat(40), T, T);
   db.prepare("INSERT INTO agent_runs (id, workspace_id, kind, state, created_at, updated_at) VALUES ('old', 'w1', 'cli', 'COMPLETED', ?, ?)").run(T, T);
