@@ -97,8 +97,8 @@ export function createAgentsHandlers(service: AgentsService, start?: (req: Agent
 export const newAgentId = (): string => `a${randomBytes(15).toString("base64url")}`;
 
 /** Register both contracts through the host's registrar (never the daemon itself). */
-export function registerAgentsHandlers(registrar: HandlerRegistrar, deps: Omit<AgentsServiceDeps, "newId"> & { readonly newId?: () => string; readonly startCli: AgentStartDeps["startCli"] }): void {
-  const handlers = createAgentsHandlers(createAgentsService({ ...deps, newId: deps.newId ?? newAgentId }), createAgentStart({ journal: deps.journal, startCli: deps.startCli }));
+export function registerAgentsHandlers(registrar: HandlerRegistrar, deps: Omit<AgentsServiceDeps, "newId"> & { readonly newId?: () => string } & Omit<AgentStartDeps, "journal">): void {
+  const handlers = createAgentsHandlers(createAgentsService({ ...deps, newId: deps.newId ?? newAgentId }), createAgentStart({ journal: deps.journal, startCli: deps.startCli, startComposer: deps.startComposer, providerFor: deps.providerFor }));
   registrar.register(AGENTS_CONTRACT, AGENTS_VERSION, handlers.agents);
   registrar.register(AGENT_GROUPS_CONTRACT, AGENT_GROUPS_VERSION, handlers.groups);
 }

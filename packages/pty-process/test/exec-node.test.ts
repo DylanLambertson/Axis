@@ -180,7 +180,7 @@ test("review 1 SF-1: the environment is copied onto a null prototype: a key plan
   for (const cwd of ["..", "rel", ""]) assert.equal(codeOf(() => exec(req(cwd, ""))), "start_failed", JSON.stringify(cwd));
 });
 
-test("review 1 SF-2: once the leader exited and its group is empty, the group id is never signalled again, even while a process outside the group (setsid) holds the pipes", { skip: POSIX, timeout: 30_000 }, async (t) => {
+test("review 1 SF-2: once the leader exited and its group is empty, the group id is never signalled again, even while a process outside the group (setsid) holds the pipes", { skip: POSIX, timeout: 90_000 }, async (t) => {
   const dir = scratch(t);
   const leaderFile = join(dir, "leader.pid");
   const holderFile = join(dir, "holder.pid");
@@ -188,29 +188,31 @@ test("review 1 SF-2: once the leader exited and its group is empty, the group id
   // The holder leaves the group (its own session) and keeps stdout and stderr open; the leader exits at once.
   const holder = `${GUARD}require('fs').writeFileSync(${JSON.stringify(holderFile)},String(process.pid));setInterval(()=>{},1000)`;
   const leader = `require('fs').writeFileSync(${JSON.stringify(leaderFile)},String(process.pid));const c=require('child_process').spawn(process.execPath,['-e',${JSON.stringify(holder)}],{stdio:'inherit',detached:true});c.unref();const w=setInterval(()=>{if(require('fs').existsSync(${JSON.stringify(holderFile)})){clearInterval(w);process.exit(0)}},10)`;
+  // Every signal and probe of the run is recorded from before the leader exists. The exec's own `exit` handler probes and signals
+  // the leader's group once (the kill at the leader's exit), so seeing a call to `-lead` is the condition "the exit was handled":
+  // no sleep stands in for it.
+  const calls: Array<[number, unknown]> = [];
+  const real = process.kill;
+  process.kill = ((pid: number, sig?: string | number) => (calls.push([pid, sig]), real.call(process, pid, sig))) as typeof process.kill;
+  t.after(() => { process.kill = real; });
   const child = exec(req(dir, leader));
-  await waitFor("both pids", () => existsSync(holderFile) && existsSync(leaderFile) && readFileSync(holderFile, "utf8") !== "");
+  await waitFor("both pids", () => existsSync(holderFile) && existsSync(leaderFile) && readFileSync(holderFile, "utf8") !== "", 25_000);
   const lead = Number(readFileSync(leaderFile, "utf8"));
   const held = Number(readFileSync(holderFile, "utf8"));
   t.after(() => {
     try {
-      process.kill(held, "SIGKILL");
+      real.call(process, held, "SIGKILL");
     } catch {
       /* gone */
     }
   });
-  await waitFor("the leader to be reaped", () => !running(lead));
-  await new Promise((r) => setTimeout(r, 100)); // the exit event
-  const calls: Array<[number, unknown]> = [];
-  const real = process.kill;
-  process.kill = ((pid: number, sig?: string | number) => (calls.push([pid, sig]), real.call(process, pid, sig))) as typeof process.kill;
-  try {
-    child.kill(); // the timeout path of the service, long after the leader's group emptied
-    child.kill();
-  } finally {
-    process.kill = real;
-  }
-  assert.deepEqual(calls, [], "no probe and no signal to a group id that may belong to another process by now");
+  await waitFor("the leader to be reaped", () => !running(lead), 25_000);
+  await waitFor("the exec's exit handler to probe or signal the leader's group", () => calls.some(([pid]) => pid === -lead), 25_000);
+  const before = calls.length;
+  child.kill(); // the timeout path of the service, long after the leader's group emptied
+  child.kill();
+  assert.deepEqual(calls.slice(before), [], "no probe and no signal to a group id that may belong to another process by now");
+  process.kill = real;
   process.kill(held, "SIGKILL"); // let go of the pipes
   const r = await child.done;
   assert.equal(r.code, 0);
