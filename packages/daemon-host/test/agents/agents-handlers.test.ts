@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { AuditLog, openDatabase } from "@axis/audit";
+import { AuditLog, AxisError, openDatabase } from "@axis/audit";
 import { DaemonError, type Handler, type HandlerContext, type Identity } from "@axis/daemon";
 import { AGENT_RECORD_ACTION, Journal } from "@axis/journal";
 import { AGENTS_REFUSAL_MESSAGE } from "@axis/protocol";
@@ -189,4 +189,17 @@ test("the new-home decision is one seam: an injected admission replaces the regi
   await refused(call(h.agents.create, req("p1")), "E_CONFLICT", "untrusted_project");
   await call(h.agents.create, req("p2"), { trusted: false });
   assert.deepEqual([asked, made], [["p1", "p2"], ["p2"]]);
+});
+
+test("S1b review 3 N1/N2: the record admits a new home but the project trust gate refuses through the create (e.g. main's Workspace Trust says no): untrusted_project, not home_unavailable", async () => {
+  const gateRefusal = new AxisError("E_POLICY_DENIED", "The project is not trusted", { reason: "untrusted" });
+  const s = setup({ failCreate: gateRefusal });
+  s.trust.set({ windowId: WINDOW }, true); // the early check admits: the refusal comes from the gate at the port
+  const req = { projectId: "p1", name: "Worker", launch: CLI, home: { new: { name: "Worker home" } } };
+  await refused(call(s.handlers.agents.create, req), "E_CONFLICT", "untrusted_project");
+  assert.equal(s.made.length, 1, "the create was reached; the gate refused inside it");
+  // Any other failure of the create is still an unavailable home.
+  const other = setup({ failCreate: new Error("disk full") });
+  other.trust.set({ windowId: WINDOW }, true);
+  await refused(call(other.handlers.agents.create, req), "E_CONFLICT", "home_unavailable");
 });
