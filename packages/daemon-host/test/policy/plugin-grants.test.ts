@@ -100,7 +100,7 @@ test("tiers: a plugin run start is raised to 3; a read keeps its tier; nothing r
 test("trust: a gated row keeps its mode; a revoke of the view's or the host window refuses the plugin", () => {
   for (const w of ["p7", "w3"]) {
     const registry = new InMemoryTrustRegistry();
-    registry.set({ windowId: w, workspaceId: "proj" }, false);
+    registry.set({ windowId: w }, false); // a window-level revoke, so each window is checked on its own
     assert.equal(policyWith(reader(["runs.start"]), registry).evaluate(input("axis.runs/1.start")).effect, "deny", w);
   }
   assert.equal(policyWith(reader(["runs.start"])).evaluate(input("axis.runs/1.start")).effect, "allow");

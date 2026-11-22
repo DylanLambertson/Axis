@@ -89,6 +89,8 @@ test("the generation grows by one on a disable or a revoke and only then; it nev
   refused(() => upd("generation = 1"), "never back");
   refused(() => upd("enabled = 1, generation = 3"), "an enable does not bump it");
   refused(() => upd("revokes = 2, generation = 3"), "revokes move by one");
+  refused(() => upd("revokes = revokes + 2"), "revokes jump with no bump");
+  refused(() => upd("revokes = revokes - 1"), "revokes never go back");
   insert(db, "plugin_grants", gr());
   db.prepare("DELETE FROM plugin_grants WHERE permission = 'pages.read'").run();
   assert.equal(gen(db), 3, "a revoke bumps it in the same statement");
@@ -102,9 +104,11 @@ test("a plugin row is never deleted, a grant never changes, and a project holds 
   insert(db, "plugin_enablement", en());
   insert(db, "plugin_grants", gr());
   refused(() => db.prepare("DELETE FROM plugin_enablement").run(), "kept");
+  insert(db, "plugin_enablement", en({ plugin_id: "no.grants" }));
+  refused(() => db.prepare("DELETE FROM plugin_enablement WHERE plugin_id = 'no.grants'").run(), "kept even with no grant to hold it");
   refused(() => db.prepare("UPDATE plugin_grants SET permission = 'pages.write'").run(), "a grant never changes");
   refused(() => db.prepare("UPDATE plugin_grants SET granted_at = granted_at").run(), "not even in place");
-  for (let i = 1; i < PLUGIN_LIMITS.pluginsPerProject; i++) insert(db, "plugin_enablement", en({ plugin_id: `p${String(i).padStart(3, "0").replace(/\d/g, (d) => "abcdefghij"[Number(d)] as string)}` }));
+  for (let i = 2; i < PLUGIN_LIMITS.pluginsPerProject; i++) insert(db, "plugin_enablement", en({ plugin_id: `p${String(i).padStart(3, "0").replace(/\d/g, (d) => "abcdefghij"[Number(d)] as string)}` }));
   assert.equal(one(db, "SELECT count(*) FROM plugin_enablement WHERE project_id = 'p1'"), 64);
   refused(() => insert(db, "plugin_enablement", en({ plugin_id: "one.more" })), "the 65th");
   insert(db, "plugin_enablement", en({ plugin_id: "one.more", project_id: "p2" }));
