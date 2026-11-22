@@ -77,6 +77,7 @@ const EXPECTED: readonly Row[] = [
   ["axis.agents", "update", "write", 2, "none", 5_000],
   ["axis.agents", "archive", "write", 1, "none", 5_000],
   ["axis.agents", "restore", "write", 1, "none", 5_000],
+  ["axis.agents", "start", "write", 2, "required", 30_000],
   ["axis.agent-groups", "list", "read", 0, "none", 5_000],
   ["axis.agent-groups", "create", "write", 1, "required", 5_000],
   ["axis.agent-groups", "rename", "write", 1, "none", 5_000],
