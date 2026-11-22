@@ -11,7 +11,7 @@ Solo developers, power users, software teams, and agencies. Support personal and
 ## Product model
 The model is decided in ADR 0006: Space → Project → (Agent group) → Agent → home Workspace → runs.
 - **Space:** the container above projects; personal in v1, team Spaces in Phase 5 (`CONTEXT.md`).
-- **Project:** one repository (owner decision O-2), added by the user's explicit, confirmed **Add project** action. A new project is untrusted until the user trusts it.
+- **Project:** one repository (owner decision O-2), added by the user's explicit, confirmed **Add project** action. A new project is untrusted until the user trusts it in a dialog Axis's main process shows (owner decisions §5).
 - **Agent:** a named, persistent agent inside a project, of type composer (a provider connection, model and default mode) or CLI (one of the user's configured agent CLIs). Each agent has exactly one home workspace; several agents share a workspace only by the user's explicit choice (O-3). Creating, renaming, archiving and grouping agents are user actions. (Phase 1c)
 - **Agent group:** an optional, ordered, one-level folder of agents, used for the side panel, bulk actions and the messaging scope. A group is not a security boundary. (Phase 1c)
 - **Project home:** the landing surface when a project opens: needs attention, agents, pull requests, usage and cost, run status; tasks and pages from Phase 2a. (Phase 1c)
@@ -36,7 +36,7 @@ The model is decided in ADR 0006: Space → Project → (Agent group) → Agent 
 ## Feature priorities
 Priority follows `docs/ROADMAP.md`. The v1 agent home is the Phase 1 slice, shipped as Phase 1a (agent workspace shell, CLI agents, diff review, IDE view), then Phase 1b (composer, providers, vault, approvals), then Phase 1c (projects, agents and groups, project home, side panel); it is the product's first usable release target.
 
-### 1. Agent manager (primary; v1 in Phases 1a and 1b)
+### 1. Agent manager (primary; v1 in Phases 1a, 1b and 1c)
 - **Workspaces and worktrees:** create a workspace from a base branch with a new branch, recorded base SHA, list, focus, rename, archive and remove (removal refuses to discard uncommitted work without explicit confirmation). Several workspaces can exist and run agents at once, within a per-device limit.
 - **Dashboard:** one dense row per workspace: name, branch, agents (composer and CLI agent runs) and their state (idle, running, waiting for approval, quiet (may be waiting for input), failed, done), terminals, changed files, last activity.
 - **Terminals and split panes:** terminals bound to the workspace's worktree, split and arranged in panes, for running commands. Layout persists per workspace.
@@ -45,7 +45,7 @@ Priority follows `docs/ROADMAP.md`. The v1 agent home is the Phase 1 slice, ship
 - **Composer:** one composer with explicit Ask, Edit and Agent modes, bound to the focused workspace. v1 ships the mock provider and the Anthropic (Claude) API adapter with an API key in the connection vault, model selection within that connection, streaming, and an approval UI. (Phase 1b)
 - **Agent activity:** live progress, tool calls, approvals requested, errors and recovery actions for the workspace's composer agent run. (Phase 1b)
 - **Projects, agents and groups:** add a project (explicit confirmation; untrusted until the user trusts it); create composer and CLI agents, each with its own home workspace; group them; archive an agent without removing its workspace. (Phase 1c)
-- **Project home:** a dense, text-first landing surface: needs attention (approvals, failures, quiet CLI runs, Git-config flags), agents by group, the user's open pull requests read through their own `gh` (read-only, no stored token), usage and cost against the run budget (CLI agents: "not available"), run status. It never resolves an approval. (Phase 1c)
+- **Project home:** a dense, text-first landing surface: needs attention (approvals, failures, quiet CLI runs, Git-config flags), agents by group, the user's own open pull requests on `axis/*` branches, read through their own `gh` (read-only, no stored token; `docs/design/forge-pr-list.md`), usage and cost against the run budget (CLI agents: "not available"), run status. It never resolves an approval. (Phase 1c)
 - **All agents and the side panel:** one lane per agent with state, current step, waiting reason and changes; a side panel with an Agents tab (groups, New agent, New group) and a Code tab (file tree, Changes and an embedded editor for quick edits, read-only for an untrusted project, with a one-step hand-off to IDE view). (Phase 1c)
 
 ### 2. IDE view (secondary, fully capable; v1 in Phase 1a)
@@ -95,5 +95,5 @@ Reimplement every proprietary AI app feature; guarantee VS Code extension market
 8. Reopen workspace offline → edit, search, access local memory; sync when online and opted in.
 9. Team member joins project → sees allowed context → co-edits → reviews agent output; denied access stays denied.
 10. Unsupported provider capability is labeled unavailable, never silently emulated or misrepresented.
-11. Space → Add project (folder, repository root and remote shown, confirmed) → the project starts untrusted → trust it → create a composer agent and a CLI agent in two groups, each with its own home workspace → both appear on the project home and the All-agents surface with live state → edit a file in the side panel → the "files changed outside the agent" indicator appears → Open in IDE lands on the same file and line → the project home lists the user's open pull requests from `gh`, and CLI usage reads "not available". (Phase 1c)
+11. Space → Add project (folder, repository root and remote shown, confirmed) → the project starts untrusted → trust it → create a composer agent and a CLI agent in two groups, each with its own home workspace → both appear on the project home and the All-agents surface with live state → edit a file in the side panel → the "files changed outside the agent" indicator appears → Open in IDE lands on the same file and line → the project home lists the user's own open pull requests on `axis/*` branches from `gh`, and CLI usage reads "not available". (Phase 1c)
 12. A composer agent sends a message to another agent → the user sees it in the thread with sender, type and hop → the receiving composer run gets it at its next turn and its next side-effecting action needs the user's approval, whose card lists the message → the user pauses messaging and no new message is delivered. A task assigned to an agent runs only after the user's Start. (Phase 2a)

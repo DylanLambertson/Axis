@@ -49,7 +49,7 @@ Coding agents are now good enough to take real tasks, but the tools around them 
 
 Status key: ✅ built and merged · 🔨 in progress or in review · 🧭 planned. Phases refer to the [roadmap](#roadmap).
 
-### Agent manager (Phases 1a and 1b, the first usable release)
+### Agent manager (Phases 1a and 1b; with Phase 1c, the first usable release)
 
 | Capability | What it does | Status |
 |---|---|---|

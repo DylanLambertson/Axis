@@ -19,7 +19,7 @@ ADR 0004 already made the agent manager the primary surface and the IDE a switch
 ### What exists on main
 
 - `projects`, `agent_workspaces` and `agent_runs` (kind `composer` or `cli`) are journal tables. There is no agent or agent group table [V, `packages/journal/src/schema.ts`].
-- A project is one registered repository with a canonical path chosen by the host and a `trusted` flag [V, schema version 4]. Registration from the app is not built: the owner decided on 2026-11-21 that it is an explicit, user-confirmed "Add project" action, and that a new project is untrusted until the user trusts it (owner decisions §5).
+- A project is one registered repository with a canonical path chosen by the host and a `trusted` flag [V, schema version 4]. Registration from the app is not built: the owner decided on 2026-11-21 that main registers a project only after a confirmation main shows, and that a new project is untrusted until the user trusts it (owner decisions §5).
 - Messaging is built ahead of agents. Its tables key agents by an opaque id (`message_participants.principal`, `messaging_agent_settings.agent_id`), and its directory knows no agent until ticket PV-G3 lands, so every agent recipient is refused today [V, `messages-contract.md` "Directory"].
 - The shell has a workspace dashboard, a workspace view with a file tree and terminals (A1), a Changes view (A5) and approval cards (A4) [V]. The side-panel editor spike (PV-V0) recommends embedding the editor widget, with no upstream patch [V, `pv-v0-editor-embed.md` §1].
 - The pull request list runs the user's `gh pr list` in the pty process and parses its output behind a planned `axis.forge/1` contract (PV-D2 slices 1a and 1b) [V].
@@ -59,7 +59,8 @@ Tasks, pages, plugins and integrations hang off the project when their phases sh
 ### 3. Project
 
 - A project is **one repository** in 1c (O-2). Multi-repository projects need their own design first, because worktrees, review and push are per repository.
-- A project is registered only by the user's explicit **Add project** action, which shows the folder, its repository root and its remote before the user confirms. Opening a folder in IDE view does not register it. A new project is **untrusted** until the user marks it trusted, a user-only, audited action; read-only surfaces work while it is untrusted (owner decisions §5).
+- A project is registered only through the user's explicit **Add project** action: main registers it after the trust decision and a confirmation main shows, naming the folder, its repository root and its remote. Opening a folder in IDE view does not register it. A new project is **untrusted** until the user trusts it, and read-only surfaces (status, diff, review) work while it is untrusted.
+- Trusted means both conditions of owner decisions §5: the folder is trusted in the Code OSS Workspace Trust model (ADR 0004 decision 12, unchanged) **and** a main-owned run-trust record, which renderers cannot write, says so; that record is set only from a native dialog main shows ("Trust to run"), never from a renderer message. The same dialog is the user-only, audited mark-trusted step, and `trust.check` answers `true` only when both hold.
 - The user's own checkout is listed on the project home as the *local checkout*. No agent runs in it, and no agent can name it as a home (ADR 0004 decision 6).
 
 ### 4. Agent
@@ -106,13 +107,13 @@ Opening a project shows its **project home**. It follows `UX.md`: dense, actiona
 |---|---|---|
 | Needs attention | approvals waiting (count per agent; opens the agent), failed runs, quiet CLI runs, drift and Git-config flags; unread messages to the user from 2a | 1c |
 | Agents | one row per agent, grouped: type, state, current step, branch, changed files, last activity | 1c |
-| Pull requests | the user's open pull requests for this project's repository: number, title, branch, checks, review state | 1c |
+| Pull requests | "Your pull requests": **your** open pull requests (opened by the account `gh` is logged in as) on this project's confirmed GitHub repository whose head is an `axis/*` branch of that repository, as `forge-pr-list.md` §1 decides; number, title, branch, author, draft, checks, review state | 1c |
 | Usage and cost | per agent and per project against the run budget (PRV-6); **CLI agents: "not available"** | 1c (needs J2, merged) |
 | Run status | the last runs with state and reason | 1c |
 | Tasks; pages and integrations | | 2a; 2a and 4a |
 
 - The project home **never resolves an approval**; it opens the agent, where the full request is shown (ADR 0004 implication 4).
-- Pull request data comes from the user's `gh`, read-only, with **no stored token** (O-5). The output is untrusted: parsed with a strict schema, bounded and escaped (`forge-pr-list.md`). A vault-token GitHub integration comes only in 4a, and only if the owner reverses D-9 ("Axis stores no forge credentials").
+- Pull request data comes from the user's `gh`, read-only, with **no stored token** (O-5). The output is untrusted: parsed with a strict schema, bounded and escaped (`forge-pr-list.md`). If `gh`'s author narrowing fails its version gate, the fallback lists every same-repository `axis/*` pull request and the section is titled "Pull requests on axis/ branches" (`forge-pr-list.md` §1). A vault-token GitHub integration comes only in 4a, and only if the owner reverses D-9 ("Axis stores no forge credentials").
 - Updates are polled first and pushed through server events (E1) once the shell consumes them.
 
 ### 8. Agent view layout
@@ -177,7 +178,7 @@ ADR 0004's decisions are not rewritten; where wording differs, this section gove
 3. **Agent identity for messaging.** The agent id becomes the addressable principal that messaging already expects. Agent writes being user-only means no agent can mint a new principal, join a group or widen its own `accepts_from` scope.
 4. **CLI agents keep ADR 0004's rules.** The launch entry is resolved from user-scope settings at run start (CFG-1, CLI-1); PTY-5, the Git snapshot and "governed by its own permissions, can push" apply to every CLI agent's runs unchanged.
 5. **Untrusted inputs on the project home.** The pull request list is untrusted output of a user binary (`forge-pr-list.md`). Agent and group names are user text, and run reasons can carry agent text; all are shown escaped, with control and bidirectional characters made visible (as for dashboard rows in the 1a gate).
-6. **Trust.** Project trust (owner decisions §5) gates runs as ADR 0004 amendment item 2 does today; an untrusted project's agents can be created and viewed but not run, and its side-panel editor is read-only.
+6. **Trust.** Project trust gates runs as ADR 0004 amendment item 2 does today, with trust meaning Workspace Trust **and** the main-owned run-trust record set only from main's native dialog (owner decisions §5, decision 3); an untrusted project's agents can be created and viewed but not run, and its side-panel editor is read-only.
 
 ## Consequences
 
@@ -189,7 +190,7 @@ ADR 0004's decisions are not rewritten; where wording differs, this section gove
 
 **Accept** this ADR when the Phase 1c gate in `ROADMAP.md` passes, including:
 
-1. A project is added through the explicit confirmation, starts untrusted, and is trusted by a user-only action.
+1. A project is added through main's confirmation, starts untrusted, and is trusted only from main's native dialog, which writes the main-owned run-trust record (owner decisions §5).
 2. A composer agent and a CLI agent are created in two groups; each gets its own home workspace; both appear on the project home and the All-agents surface with live state.
 3. An agent, group or assignment write from any actor other than the user is refused, and every accepted write is audited.
 4. Removing a home workspace names its agents in the confirmation and archives them; archiving an agent removes no workspace.

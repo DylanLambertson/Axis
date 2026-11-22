@@ -83,13 +83,13 @@ A minimal, end-to-end agent manager on desktop, with the full IDE view. Phase 1 
 
 ### Phase 1c — Agent home
 Added by ADR 0006 (owner decision O-7). Needs 1a and 1b services plus server events (E1).
-- **Projects:** the Space's project list; **Add project** as an explicit, user-confirmed registration (folder, repository root and remote shown first); a new project is untrusted until the user trusts it (owner decisions §5). One repository per project (O-2).
+- **Projects:** the Space's project list; **Add project** as an explicit, user-confirmed registration (folder, repository root and remote shown first); a new project is untrusted until the user trusts it. Trusted means the Workspace Trust model **and** a main-owned run-trust record that renderers cannot write, set only from a native dialog main shows (owner decisions §5). One repository per project (O-2).
 - **Agents and groups:** agents (named, typed composer or CLI, one home workspace each, O-3) and agent groups (one level, ordered, not a security boundary); user-only writes, audited (ADR 0006 decisions 4 to 6 and 10). No agent without a workspace (O-4).
-- **Project home:** needs attention, agents, pull requests through the user's `gh` (read-only, no stored token, O-5), usage and cost for composer runs (CLI agents "not available"), run status.
+- **Project home:** needs attention, agents, your pull requests on `axis/*` branches through the user's `gh` (read-only, no stored token, O-5; `docs/design/forge-pr-list.md` §1), usage and cost for composer runs (CLI agents "not available"), run status.
 - **Agent view:** the labelled navigation rail (UI direction C); the All-agents surface; the side panel with Agents and Code tabs and an embedded editor for quick edits, sharing text models with IDE view (O-8; the IDE split half if the embed exceeds ADR 0002 criterion 2); server events in the UI.
 
 **Gate (1c):** on macOS, plus Windows/Linux CI smoke:
-- add a project through the confirmation; it starts untrusted, no run starts in it until the user trusts it, and trusting it is a user-only, audited action; opening a folder in IDE view does not register it;
+- add a project through the confirmation; it starts untrusted, no run starts in it until the user trusts it, and trusting it is a user-only, audited action through main's native dialog that writes the main-owned run-trust record (a renderer message alone never trusts it); opening a folder in IDE view does not register it;
 - create a composer agent and a CLI agent in two groups; each gets its own home workspace; both appear on the project home and the All-agents surface with live state;
 - an agent, group or group-assignment write from any actor other than the user is refused, and every accepted write writes an audit event; no agent or group payload accepts a path, a command or a credential;
 - archiving an agent removes no workspace; removing a home workspace names its agents in the tier-4 confirmation and archives them;
