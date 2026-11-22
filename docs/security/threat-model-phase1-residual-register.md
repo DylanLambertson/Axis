@@ -1,6 +1,6 @@
 # Threat model: Phase 1 residual-risk register (owner and ticket per item)
 
-- **Status:** Draft for review. §1.3 (RR-31 to RR-55) belongs to the Phase 2a revision, `threat-model-phase2a.md`; §1.4 (RR-56 to RR-74) to the Phase 4a revision, `threat-model-phase4a.md`. Part of the Phase 1 revision: `threat-model-phase1-revision-1a.md` (controls as built, new threats N-1 to N-14). Date 2026-11-05, code baseline `origin/main` `74cd12e`.
+- **Status:** Draft for review. §1.3 (RR-31 to RR-55) belongs to the Phase 2a revision, `threat-model-phase2a.md`; §1.4 (RR-56 to RR-74) and §1.5 (RR-75 to RR-86) to the Phase 4a revision, `threat-model-phase4a.md`. Part of the Phase 1 revision: `threat-model-phase1-revision-1a.md` (controls as built, new threats N-1 to N-14). Date 2026-11-05, code baseline `origin/main` `74cd12e`.
 - **Verified against:** `origin/main` `74cd12e` (PRs #455 and #454 included). Branch heads read: `feat/composer-runtime` `f36cdd5`, `feat/events-e1` `2955bf9`, `feat/protocol-worktrees-tier4` `f001dd8`, `feat/pty-process` `e0bd16c`. Main keeps moving: re-check every **[B]** row against git before the gate review.
 - **Since baseline (X1 merged):** the daemon entry, supervisor and Axis main seam (X1, PR #454) are merged on main as `74cd12e`; rows that said they were on a branch or open are now **[M]**. Main's answers to the control channel (`trust.check`, `anchor.get`/`anchor.put`, `native.confirm`, `settings.get`: ticket X1c) are **still not on main**: the seam passes no `onRequest`, so the host reads them as degraded, declined, untrusted and refused. The daemon is forked in unpackaged builds only and still refuses to start (exit 78) until the pty process (B9) exists (the run snapshotter is wired, H13).
 - **What this is.** Every risk that is accepted, open or deferred for the Phase 1a gate review and for 1b, with the owner (the package or workstream that carries the fix), the ticket, and the gate line. Original scores (R1 to R33, controls file §9) are not repeated; the "Risk" column names the row the item belongs to.
@@ -107,6 +107,25 @@ Added by `threat-model-phase4a.md` (ticket PV-R8, slice 1), verified against `or
 | RR-72 | A compromised curated-list signer key lets an attacker sign a list that new installs and updates trust; installed plugins are untouched, and revocation reaches users only through an app update (`notAfter` bounds how long an old build trusts it). | PLG-16, PLG-8 | release engineering | PV-K2 | 4a/L4, L12, L26 | Accepted |
 | RR-73 | A correctly signed update can ship malicious code within the permissions it already has; the confirmation dialog (OI-6) shows the version, publisher and permission diff, not the code, so the user cannot judge it. | PLG-16, PLG-4 | installer | PV-K2 | 4a/L26 | Accepted |
 | RR-74 | A user who copies plugin-written text by hand and pastes it into a terminal or a CLI is not stopped; the clipboard-write and drag-out refusals (OI-5) cover only the view's own actions. Electron's permission-handler behaviour for these is unverified [I] until PV-K3. | PLG-13 | P1 host | PV-K3 | 4a/L22, L28 | Accepted |
+
+### 1.5 Phase 4a, slice 2 (integrations and plugin network access)
+
+Added by `threat-model-phase4a.md` §9 (ticket PV-R8, slice 2), verified against `origin/main` `e7d2c8c` (ADR 0009 merged). One row per residual ADR 0009 states, plus those its decisions imply. Gate lines 4a/Ln and open items OI-n are that file's.
+
+| ID | Residual risk | Risk | Owner | Ticket | Gate | Status |
+|---|---|---|---|---|---|---|
+| RR-75 | A service that leaks or over-scopes a token on its own side is outside Axis's control; Axis refuses only tokens whose granted scopes it can read and that exceed the declared ones. | INT-5 | integrations | PV-N1, PV-N3 | 4a/L33, L40 | Accepted |
+| RR-76 | No certificate pinning: the system trust store and `NODE_EXTRA_CA_CERTS` decide which certificates the egress client accepts (A7). | INT-2, A7 | egress client | PV-N1 | 4a/L37 | Accepted |
+| RR-77 | NAT64 behind an operator's network-specific prefix cannot be told from a public IPv6 address, so an internal IPv4 host reachable through such a translator is not caught. | INT-2 | egress client | PV-N1 | 4a/L36 | Accepted |
+| RR-78 | A plugin holding `integration:<id>` and a `net:<origin>` can move service data to that origin by design; the install dialog names the combination. | INT-11 | installer | PV-K2 | 4a/L45 | Accepted, disclosure |
+| RR-79 | The provider adapter still uses global `fetch` and accepts a system proxy (ANT-1, A7), while integrations ignore every proxy: two egress paths with different rules. | INT-2, ANT-1 | providers, egress client | none | 4a/L37 | Accepted (recorded difference) |
+| RR-80 | Address pinning with `node:https`, a dedicated agent and a checking `lookup` (with `autoSelectFamily`) at Node 24.22.1 is unverified until PV-N1's first test; if it fails, ADR 0009 must be revisited before any integration ships. | INT-2 | egress client | PV-N1 | 4a/L36 | Open |
+| RR-81 | A service without a device-code flow cannot ship in 4a; the loopback fallback is deferred to its own decision. | INT-4 | integrations | none | 4a/L41 | Accepted (product) |
+| RR-82 | No integration can connect until main's secret broker over the privileged port (ADR 0003 D1.6) exists and the daemon entry passes it. | INT-1 | main, daemon entry | the secret-broker ticket (not yet cut) | 4a/L29 | Accepted (availability) |
+| RR-83 | Revealed credentials and OAuth access tokens are plaintext in daemon memory while in use; a same-UID process can read them (A10). | INT-1, A10 | integrations binding | PV-N1 | 4a/L35 | Accepted |
+| RR-84 | Integration data the user copies by hand into a CLI or a terminal is not tainted: CLI runs are under their own permission model (as RR-50 and RR-74). | INT-12 | integrations UI | none | 4a/L46 | Accepted |
+| RR-85 | Origins are shown in punycode and punycode labels are flagged, but look-alike ASCII hosts remain: a dialog shows an origin, it does not vouch for it. | INT-4, INT-11 | installer, connect dialog | PV-K2, PV-N2 | 4a/L40, L45 | Accepted |
+| RR-86 | Until PV-N1b (PR #582) merges, the daemon entry does not refuse `NODE_TLS_REJECT_UNAUTHORIZED` or `NODE_USE_ENV_PROXY`; nothing on main makes an integration request yet, so the gap has no reachable use today. | INT-10 | daemon entry | PV-N1b | 4a/L37 | Open |
 
 ## 2. Plan rows added with this change
 

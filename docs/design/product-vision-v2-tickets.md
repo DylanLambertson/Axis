@@ -21,7 +21,7 @@
 | **PV-R5** | ADR 0008 "Axis plugins": separate from Code OSS extensions; execution tiers; the P1 host (a sandboxed view per plugin, navigation and WebRTC blocked, header CSP) and the `plugin:*` principal attested by main per view (ADR 0003 change); permissions and dangerous combinations; signed curated list with rollback protection; update diff; extraction rules | L | PV-R1, owner D-1 to D-4, D-12 | large | security review |
 | **PV-R6** | ADR 0009 "Integrations and the credential proxy": vault, request composition and URL pattern checks, egress rules (IP literals, proxy variables, mapped and NAT64 ranges), OAuth flow, user-only connect and the NET-1 exception, scope refusal, no inbound webhooks, D-9 | M | PV-R5, owner D-7 to D-11, D-14 | large | security review |
 | **PV-R7** | ADR 0010 "Pages": storage (D-5), format (D-6), rendering rules, agent access | S | PV-R1 | small | design review |
-| **PV-R8** | Threat-model revision for 4a: PLG-1 to PLG-9, INT-1 to INT-6 and gate lines. **Slice 1 (plugins) written:** `docs/security/threat-model-phase4a.md` (PLG-1 to PLG-17, 4a/L1 to L28, RR-56 to RR-74); slice 2 (integrations) after ADR 0009, in review, merges | M | PV-R5, PV-R6 | large | security review |
+| **PV-R8** | Threat-model revision for 4a: PLG-1 to PLG-9, INT-1 to INT-6 and gate lines. **Slice 1 (plugins) written:** `docs/security/threat-model-phase4a.md` (PLG-1 to PLG-17, 4a/L1 to L28, RR-56 to RR-74); **slice 2 (integrations) written:** §9 of the same file (INT-1 to INT-12, 4a/L29 to L46, RR-75 to RR-86) | M | PV-R5, PV-R6 | large | security review |
 
 ## 3. Phase 1c: agent home
 

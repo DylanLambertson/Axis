@@ -1,10 +1,10 @@
-# Threat model: Phase 4a revision, slice 1 (Axis plugins)
+# Threat model: Phase 4a revision (Axis plugins and integrations)
 
-- **Status:** Draft for review (ticket PV-R8, slice 1: plugins). Slice 2 adds the integrations (INT-1 to INT-6) to this file once ADR 0009 (in review) is merged; nothing here covers the credential proxy, `net:<origin>`, `integration:<id>` or their dangerous combinations beyond noting that ADR 0008 refuses them at install until then. This file states nothing about ADR 0009's content.
-- **Date:** 2026-11-22. **Code baseline:** `origin/main` at `0ca1c43` (ADR 0008 and the 2a revision merged).
+- **Status:** Draft for review (ticket PV-R8). Sections 1 to 8 are slice 1 (plugins, merged); section 9 is slice 2 (integrations and plugin `net:<origin>`, from ADR 0009, merged #581).
+- **Date:** 2026-11-22. **Code baseline:** slice 1 `0ca1c43`; slice 2 `e7d2c8c` (ADR 0009 merged).
 - **Builds on:** `threat-model-phase1.md` and its companions (EXT-1 to EXT-4, EL-3 to EL-5, DMN-2, DMN-3, CFG-1, NET-1, A10, TB1 to TB13) and `threat-model-phase2a.md` (TB14 to TB18, IAC-T, the page view host, its decision O-6). Where this file and those disagree about a plugin surface, this file wins.
 - **Sources:** ADR 0008 ("the ADR") and its code map, `docs/design/extensibility.md` §3, §4, §8, §9 ("the design"), ADR 0010 (the shared view host), ADR 0007 (M-8, taint source 6), `docs/design/project-registration-and-trust.md`.
-- **Companion:** `threat-model-phase1-residual-register.md` §1.4 (RR-56 to RR-74).
+- **Companion:** `threat-model-phase1-residual-register.md` §1.4 (RR-56 to RR-74, plugins) and §1.5 (RR-75 to RR-86, integrations).
 - **Evidence tags:** as in `threat-model-phase2a.md`: **[M]** merged on main (file and symbol named, or the ADR 0008 code map row); **[D]** decided, nothing built; **[I]** inferred.
 - **Decisions.** This file makes none of its own. The threats that needed one were decided by the project lead; section 7 records them.
 
@@ -96,7 +96,7 @@ The 4a plugin gate is the design's §9 plugin lines plus ADR 0008's validation c
 | 4a/L4 | A curated list with a lower version, an expired list and a list signed by an unknown key are refused (as amended by ADR 0008: an expired or refused list blocks new curated installs and updates, installed plugins keep running with a warning) | PLG-8 | PV-K2 |
 | 4a/L5 | An archive with a symlink, a `..` entry or more than the entry cap is refused with nothing written outside the fresh directory | PLG-9 | PV-K2 |
 | 4a/L6 | A repository setting enabling a plugin has no effect and a warning is shown | PLG-5 | PV-K2 |
-| 4a/L7 | An install requesting `files.read` and `net:<origin>` shows the "can send your code to <origin>" line | PLG-2, RR-57 | PV-K2, after ADR 0009 (in review) is accepted and `net:` can be granted (until then such an install is refused, L11); slice 2 may restate this line |
+| 4a/L7 | An install requesting `files.read` and `net:<origin>` shows the "can send your code to <origin>" line | PLG-2, RR-57 | PV-K2, after ADR 0009 is accepted and `net:` can be granted (until then such an install is refused, L11); L45 adds the integration line |
 | 4a/L8 | A plugin view sending `vscode:axisConnect` gets no port; a plugin identity with a `w<n>` or `web` window id, another `clientKind` or another actor is refused | PLG-1, PLG-11 | PV-K1 |
 | 4a/L9 | `axis.approvals/1.resolve` and `pending` from a plugin connection are refused and audited as `plugin:<id>` | PLG-3 | PV-K1 |
 | 4a/L10 | A call allowed by a grant is refused after the plugin is disabled or the grant revoked, within one request | PLG-2, PLG-12 | PV-K1, PV-K2 |
@@ -136,3 +136,71 @@ The project lead decided these on 2026-11-22 under the owner's delegation (`owne
 ## 8. Pointer for 2a
 
 `threat-model-phase2a.md` decision O-6 refuses every plugin caller in 2a. That refusal stays until PV-K1 lands. From 4a, plugin callers are governed by ADR 0008 and this file: the plugin principal (TB20), the allow-list rows (PLG-2) and M-8 for messages (PLG-3).
+
+## 9. Slice 2: integrations and plugin network access (ADR 0009)
+
+- **Sources:** ADR 0009 (merged, #581) and its code map; `extensibility.md` §7, §8 INT-1 to INT-6, §9 4a integration lines; ADR 0008's amendment by ADR 0009 (dangerous combinations).
+- **What exists.** Nothing of the integration system is built [M, ADR 0009 code map §3]. What exists and constrains it: the vault with a closed purpose list and one allowed importer, the providers binding, which registers a key with the redactor and audits its read before use [M, `vault/src/types.ts` `SECRET_PURPOSES`; `daemon-host/src/bindings/providers.ts`; `test/packages/imports.test.mjs`]; the daemon entry refusing `NODE_OPTIONS`, inspector flags and `execArgv` [M, `daemon-host/src/entry.ts` step 1]; taint source 7 in the closed list [M, `protocol/src/taint.ts`]. The entry's refusal of `NODE_TLS_REJECT_UNAUTHORIZED` and `NODE_USE_ENV_PROXY` is PV-N1b, **PR #582, not merged**.
+- **Actors added:** an integration (a typed connector: declared HTTPS origins, an auth method, a closed set of operations), built in or contributed by a plugin; the remote service (untrusted, its data attacker-reachable); a plugin holding `integration:<id>` or `net:<origin>`. Composer agents get **no** integration operation in 4a; CLI agents never.
+- **Assets added:** `integration:<id>` vault entries (refresh or long-lived tokens); OAuth access tokens in daemon memory; recorded granted scopes; the egress client's checked and pinned addresses; the two audit rows per request.
+
+### 9.1 Trust boundaries added
+
+| ID | Boundary | Control |
+|---|---|---|
+| TB24 | **The daemon's egress client to the internet.** One client for integrations and plugin `net:<origin>`; HTTPS only to declared origins; the client resolves, checks every address and pins it; TLS checked against the original host; proxies ignored; no redirect followed | ADR 0009 decision 4 [D] |
+| TB25 | **The vault to the integrations binding.** `integration:<id>` entries revealed only with an integration purpose; the binding is the second allowed vault importer | ADR 0009 decision 5 [D]; today one importer and two purposes [M] |
+| TB26 | **The OAuth device flow to the user.** The daemon runs the flow; main shows the user code and verification host in a native dialog it builds and opens the verification URL in the system browser (EL-4, EL-5) | ADR 0009 decision 6 [D] |
+| TB27 | **Service data to Axis and to runs.** Schema-validated, capped, escaped in the UI; never sent to an agent automatically; taint source 7 when the user passes it to a run | ADR 0009 decision 7 [D]; the enum [M] |
+
+No listener is added: a default desktop run still has no TCP listener (ADR 0009 decision 6, validation criterion 7; NET-1 and DMN-4 hold).
+
+### 9.2 Threats and controls
+
+| ID | Threat | Control | State | Tickets | Gates |
+|---|---|---|---|---|---|
+| INT-1 | The credential leaves the daemon (logs, errors, plugin, prompt, CLI environment) | Credential proxy: the daemon composes every request; plaintext read immediately before use, registered with the redactor first, never kept in a row, event, error or log; access tokens in memory only; token-endpoint values redacted before any parsing; a response echoing the credential refused; no credential field in any schema | **Not built** [D]; the pattern exists for the provider key [M, `bindings/providers.ts`] | PV-N1, PV-N2 | 4a/L29, L35 |
+| INT-2 | SSRF, DNS rebinding or a redirect sends the request or the credential to an internal or another origin | WHATWG-parsed host, IP literals in every spelling refused, userinfo, undeclared ports, non-punycode and trailing-dot hosts refused; every resolved address must be public unicast (the IPv4 list, IPv6 inside `2000::/3` minus the listed blocks, embedded IPv4 checked) and the connection pinned to it; proxy variables and the system proxy ignored; every `3xx` a closed error, `Location` never kept | **Not built** [D]; pinning with `node:https` at Node 24.22.1 unverified [I] | PV-N1 | 4a/L30, L31, L36, L37, L39 |
+| INT-3 | Oversized or malformed responses (memory, parser, decompression) | No `Accept-Encoding`, any `Content-Encoding` but `identity` refused; caps on decoded bytes (1 MiB out, 4 MiB in, depth 64, 10 s, 30 s); schema validation; error text from fixed strings and the status | **Not built** [D] | PV-N1 | 4a/L34, L39 |
+| INT-4 | OAuth interception, CSRF or device-code phishing | Device-code flow only in 4a (no loopback listener); user-only connect; main-built native code dialog; verification hosts must be within the declared origins; `interval`, `slow_down` and `expires_in` caps | **Not built** [D] | PV-N2 | 4a/L33, L40, L41 |
+| INT-5 | Over-broad tokens | Narrowest credential offered; granted scopes recorded and shown; a token with excess scopes refused; a service whose scopes cannot be read back cannot ship a token integration | **Not built** [D] | PV-N1, PV-N3 | 4a/L33, L40 |
+| INT-6 | Path or query injection sends the credential to an undeclared endpoint | Fixed method and path template; typed values in named segments or declared query keys, percent-encoded; `/`, `?`, `#`, `\`, dot segments in every spelling, `%2f`, `%5c` and control characters refused before encoding; the final URL matched against the operation's pattern before the credential is attached | **Not built** [D] | PV-N1 | 4a/L32, L38 |
+| INT-7 | **A purpose reveals the wrong kind of secret** (a provider key for an integration request, or the reverse) | Namespaced `integration:<id>` entries; each purpose valid only for its entry kind; a mismatch refused and audited | **Not built** [D]; `reveal` checks no kind today [M, `vault/src/vault.ts`] | PV-N1 | 4a/L44 |
+| INT-8 | **A credentialed request leaves no trace**, or its result is used without one | `integration.credential` row written before the credential is attached (failure: nothing sent); `integration.request` row after (failure: the response discarded) | **Not built** [D] | PV-N1 | 4a/L42 |
+| INT-9 | **A rotated refresh token is lost** or a request uses a token that is not stored | The new refresh token is stored before the old one is discarded; on a failed write the old one is kept and the integration marked "needs reconnect"; disconnect deletes the entry, drops the access token and cancels in-flight requests | **Not built** [D] | PV-N1, PV-N2 | 4a/L43 |
+| INT-10 | **The daemon's environment weakens TLS or routes through a proxy** (`NODE_TLS_REJECT_UNAUTHORIZED`, `NODE_USE_ENV_PROXY`) | The entry refuses to start with either set; the agent sets `rejectUnauthorized: true` and no request can override it | **Not built** [D]; PV-N1b in review (PR #582) | PV-N1b | 4a/L37 |
+| INT-11 | **A plugin moves service data or project data out** through `net:<origin>`, or uses `axis.net/1` to reach an integration's origin with the user's credential | `axis.net/1.request` allows `GET`, `HEAD`, `POST` only, the composition refusals, a fixed header set and **never a credential**, even to an integration's origin; any `integration:<id>` with any `net:<origin>` is a dangerous combination named in the install dialog (ADR 0009 amendment to ADR 0008) | **Not built** [D] | PV-N1, PV-K2 | 4a/L38, L45 |
+| INT-12 | **Service text steers a model or the user** | Never sent to an agent automatically; taint source 7 when the user passes it; escaped in the UI; composer agents get no integration operation in 4a | **Not built** [D]; the enum [M] | PV-N1 | 4a/L46 |
+
+### 9.3 Gate lines
+
+L29 to L34 are the design's §9 integration lines in order; L35 to L44 are ADR 0009's validation criteria 1 to 10; L45 and L46 test the ADR 0008 amendment and taint source 7. Every line is **Open**. PV-N4 collects the evidence.
+
+| Line | Gate line (short; the source's wording wins) | Threats | Proved by |
+|---|---|---|---|
+| 4a/L29 | The credential never appears in renderer state, plugin views, prompts, CLI environments or logs (canary) | INT-1 | PV-N1 |
+| 4a/L30 | A redirect to another origin is not followed and the credential is not sent | INT-2 | PV-N1 |
+| 4a/L31 | A host resolving to a private, metadata, IPv4-mapped or NAT64 address, and an IP-literal origin, are refused; a set `HTTPS_PROXY` does not change where the request goes | INT-2 | PV-N1 |
+| 4a/L32 | An argument of `../x`, `%2e%2e/x`, `1?a=b` or `1#x` is refused before any request; the final URL check refuses a template mismatch | INT-6 | PV-N1 |
+| 4a/L33 | A token whose granted scopes exceed the declared ones is refused; connect from a non-user actor is denied | INT-4, INT-5 | PV-N1, PV-N2 |
+| 4a/L34 | An oversized response is cut and reported; no listener exists outside an active OAuth flow (with ADR 0009: no listener at all in 4a; for "cut" see open item OI-8) | INT-3 | PV-N1, PV-N2 |
+| 4a/L35 | Canary credential and canary access and refresh tokens (an invalid one included) appear nowhere: renderer, plugin views, prompts, CLI environments, logs, audit, errors; an echoing response is refused (criterion 1) | INT-1 | PV-N1, PV-N2 |
+| 4a/L36 | Every refused range is refused, including the listed mapped, compatible, SIIT, NAT64, 6to4, site-local and IETF-block addresses; the decimal, hexadecimal, short and bracketed IP origins and a trailing-dot host are refused; a resolver answering public then private cannot move the connection (criterion 2) | INT-2 | PV-N1 |
+| 4a/L37 | With `HTTPS_PROXY` and `ALL_PROXY` set the request goes to the checked address; the daemon refuses to start with `NODE_USE_ENV_PROXY` or `NODE_TLS_REJECT_UNAUTHORIZED` set; a self-signed certificate is refused (criterion 3) | INT-2, INT-10 | PV-N1, PV-N1b |
+| 4a/L38 | The listed argument spellings are refused before any request; a template mismatch is refused before the credential is attached; `axis.net/1.request` with `PUT`, a CRLF or a dot segment is refused, and one to an integration's origin carries no credential (criterion 4) | INT-6, INT-11 | PV-N1 |
+| 4a/L39 | A `3xx` is a closed error, its `Location` sent nothing and appears nowhere; a gzip-encoded response is refused (criterion 5) | INT-2, INT-3 | PV-N1 |
+| 4a/L40 | `connect` from a plugin or non-user actor is refused; excess scopes refused; a verification host outside the declared origins refused; a write operation without its permission refused, and with it a tier-3 challenge showing the values sent (criterion 6) | INT-4, INT-5 | PV-N1, PV-N2 |
+| 4a/L41 | No TCP listening socket in any Axis process during a default desktop run, a connect flow included; the daemon owns no listening socket; integrations add no listener (criterion 7) | INT-4 | PV-N2, PV-N4 |
+| 4a/L42 | A request whose `integration.credential` row cannot be written sends nothing; a response whose result row cannot be written is discarded (criterion 8) | INT-8 | PV-N1 |
+| 4a/L43 | A refresh whose new token cannot be stored keeps the old one and marks "needs reconnect"; disconnect cancels in-flight requests and leaves no token in memory or the vault (criterion 9) | INT-9 | PV-N1, PV-N2 |
+| 4a/L44 | A `reveal` of an `integration:` entry with `provider_request`, or of a provider entry with `integration_request`, is refused and audited (criterion 10) | INT-7 | PV-N1 |
+| 4a/L45 | An install or update granting any `integration:<id>` with any `net:<origin>` shows "can send data from <integration> to <origin>" (ADR 0009 amendment to ADR 0008) | INT-11 | PV-K2 |
+| 4a/L46 | Integration data reaches a run only when the user passes it, and then taints the run with `integration_data` before its next model call; no composer tool calls an integration operation | INT-12 | PV-N1 |
+
+### 9.4 Open items for the project lead
+
+| # | Item | Why it is open | Affects |
+|---|---|---|---|
+| OI-8 | Whether an oversized response is **cut and reported** (design §9, now 4a/L34) or **refused** with a closed error | ADR 0009 decision 4 states the caps and closed errors but not what happens to a response past 4 MiB; a cut response could be parsed as a valid but truncated answer | INT-3; 4a/L34 |
+| OI-9 | A per-plugin budget for integration and `axis.net/1` requests | ADR 0009 bounds requests per integration (4 in flight, backoff) and the session rate limiter bounds messages per connection; nothing bounds how fast one plugin spends the user's service quota or pumps data to its `net:` origin over time (OI-4 covers page, task and message writes only) | INT-11, PLG-15 |
+| OI-10 | Whether a plugin-raised integration **write** challenge counts toward OI-2's per-plugin approval bound, and what is refused past it | OI-2 bounds a plugin's approval requests but refuses only `runs.start` past the bound; an integration write is also a tier-3 challenge raised by the plugin | INT-4, PLG-3; 4a/L23 |
