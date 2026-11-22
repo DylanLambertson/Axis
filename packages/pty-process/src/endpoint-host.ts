@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { lstatSync, mkdirSync, rmSync } from "node:fs";
-import { createServer, type Server, type Socket } from "node:net";
+import { createServer, type Socket } from "node:net";
 import { isAbsolute, join } from "node:path";
 import { ENDPOINT_ID, RELAY_FRAME_CHARS, type RelayInbound, type RelayOutbound } from "./messages.js";
 import type { Clock } from "./ports.js";
@@ -22,7 +22,7 @@ import type { Clock } from "./ports.js";
  *   Node does not give, so the bound is one `auth` per connection under the 4-connection cap (the design's stated residual).
  */
 
-export const ENDPOINT_HOST_LIMITS = Object.freeze({ connections: 4, authFrameBytes: 512, frameBytes: 64 * 1024, preAuthMs: 2_000, idleMs: 600_000, pendingFrames: 4, pathBytes: 100 });
+export const ENDPOINT_HOST_LIMITS = { connections: 4, authFrameBytes: 512, frameBytes: 64 * 1024, preAuthMs: 2_000, idleMs: 600_000, pendingFrames: 4, pathBytes: 100 } as const;
 
 export interface EndpointHostConfig {
   /** The runtime directory: `$XDG_RUNTIME_DIR/axis`, else `/tmp/axis-<uid>` on Linux; `$TMPDIR/axis` on macOS (`defaultEndpointDir`). */
@@ -80,7 +80,8 @@ interface Conn {
   timer: unknown;
 }
 interface Hosted {
-  readonly server: Server;
+  /** Closes the listener: the server itself is only ever the receiver of a method call (the endpoint source rules). */
+  readonly stop: () => void;
   readonly path: string;
   readonly conns: Map<string, Conn>;
 }
@@ -153,7 +154,7 @@ export function createEndpointHost(cfg: EndpointHostConfig, deps: { readonly sen
       c.sock.destroy();
     }
     h.conns.clear();
-    h.server.close();
+    h.stop();
     rmSync(h.path, { force: true });
   };
 
@@ -165,7 +166,7 @@ export function createEndpointHost(cfg: EndpointHostConfig, deps: { readonly sen
       // Never a port: Node reads a numeric string given to listen() as a TCP port, so only an absolute path is listened on.
       if (!isEndpointPath(path) || Buffer.byteLength(path) > ENDPOINT_HOST_LIMITS.pathBytes) return undefined;
       const server = createServer();
-      const h: Hosted = { server, path, conns: new Map() };
+      const h: Hosted = { stop: () => { server.close(); }, path, conns: new Map() };
       server.on("connection", (sock) => accept(endpoint, h, sock));
       const ok = await new Promise<boolean>((res) => {
         server.once("error", () => res(false));
