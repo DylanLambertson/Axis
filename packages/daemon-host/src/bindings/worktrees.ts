@@ -30,6 +30,8 @@ export interface WorktreesBindingDeps {
   readonly transact: <T>(fn: () => T) => T;
   readonly random: RandomSource;
   readonly runs: Pick<RunsService, "hasActiveRun">;
+  /** Monotonic milliseconds for the project trust ticket: the SAME clock the gate mints on (`clock.monotonic`). */
+  readonly now: () => number;
   /** The ONE absolute git path of `HostServices.gitPath` (design step 5a, FU-GIT-RESOLVE): never looked up again. */
   readonly gitPath: string;
   /** A copy of the environment the git runner builds GIT-ENV-1 from. The host never reads `process.env` itself. */
@@ -166,6 +168,7 @@ function build(deps: WorktreesBindingDeps, seams: WorktreesTestSeams): Worktrees
     locator,
     mutex,
     runs: deps.runs,
+    now: deps.now,
     random: deps.random,
     platform: deps.platform,
     restorePathCheck: seams.restorePathCheck ?? assertSafeRestorePath,

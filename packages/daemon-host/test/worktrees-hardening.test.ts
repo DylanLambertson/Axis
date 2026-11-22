@@ -82,12 +82,12 @@ test("B1: the manager refuses a write that resolves into another worktree even w
   const real = r.binding.service.restoreFromRunBase.bind(r.binding.service);
   symlinkSync(dirOf(r, b), path.join(wa, "late"));
   await assert.rejects(
-    real({ id: a, runId, paths: ["late/a.txt"] }, { caller: { actor: "user", connectionId: "c", windowId: "w" }, signal: new AbortController().signal }),
+    real({ id: a, runId, paths: ["late/a.txt"] }, { caller: { actor: "user", connectionId: "c", windowId: "win-1" }, signal: new AbortController().signal, trust: (scope) => r.gate.admit({ ...scope, windowId: "win-1", signal: new AbortController().signal }) }),
   );
   untouched(r, b);
   // A normal restore still works.
   writeFileSync(path.join(wa, "a.txt"), "edited\n");
-  const ok = await real({ id: a, runId, paths: ["a.txt"] }, { caller: { actor: "user", connectionId: "c", windowId: "w" }, signal: new AbortController().signal });
+  const ok = await real({ id: a, runId, paths: ["a.txt"] }, { caller: { actor: "user", connectionId: "c", windowId: "win-1" }, signal: new AbortController().signal, trust: (scope) => r.gate.admit({ ...scope, windowId: "win-1", signal: new AbortController().signal }) });
   assert.equal(worktreesMethods.restoreFromRunBase.response.safeParse(ok).success, true);
   assert.equal(readFileSync(path.join(wa, "a.txt"), "utf8"), "alpha\n");
 });

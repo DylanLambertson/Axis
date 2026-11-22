@@ -113,9 +113,12 @@ export function windowTrusted(services: AxisMainServices, codeWindowId: number, 
 	return isPathTrusted(workspace.uri.fsPath, trustedFolders(trustModel(services), platform), platform);
 }
 
-/** No project is registered by main yet (main-answers.md section 3.3): every project path is unknown, so `trust.check` is false. */
+/**
+ * The Workspace Trust half of `trust.check` (project-registration-and-trust.md §5.4): main answers for the project path the daemon sends
+ * from its journal, and the daemon ANDs it with its own main-confirmed record, so this renderer-writable model alone never grants.
+ */
 export function trustSource(services: AxisMainServices): TrustSource {
-	return { projectPath: () => undefined, trustModel: () => trustModel(services) };
+	return { trustModel: () => trustModel(services) };
 }
 
 /** Main's configuration service holds the default profile's user settings, the policy and the defaults; the scope choice is CFG-1's. */

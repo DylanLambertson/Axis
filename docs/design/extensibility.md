@@ -198,7 +198,7 @@ Issue bodies, PR comments, chat messages and monitoring alerts are attacker-reac
   - a hostname resolving to a private, metadata, IPv4-mapped or NAT64 address, and an IP-literal origin, are refused; a set `HTTPS_PROXY` does not change where the request goes;
   - an argument of `../x`, `%2e%2e/x`, `1?a=b` or `1#x` is refused before any request; the final URL check refuses a template mismatch;
   - a token whose granted scopes exceed the declared ones is refused; connect from a non-user actor is denied;
-  - an oversized response is cut and reported; no listener exists outside an active OAuth flow. (ADR 0009 decision 6: 4a ships the device flow only; the loopback fallback is deferred to its own decision.)
+  - an oversized response is refused with `response_too_large` and nothing is returned (amended 2026-11-22: never cut, `threat-model-phase4a.md` OI-8); no listener exists outside an active OAuth flow. (ADR 0009 decision 6: 4a ships the device flow only; the loopback fallback is deferred to its own decision.)
 
 ## 10. Review requirements
 

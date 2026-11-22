@@ -9,6 +9,8 @@ import { gitCommitReasonSchema } from "@axis/protocol";
 import type { CommitInput } from "@axis/git-ops";
 import { DaemonError } from "@axis/daemon";
 import { GitRefusal } from "../src/index.js";
+import { AxisError } from "@axis/audit";
+import { openTrustGate } from "../testing/open-gate.js";
 import { gitRig, gitUnavailable, type GitClient, type GitRig, type GitRigOptions } from "./git-rig.js";
 
 const SKIP = gitUnavailable();
@@ -263,4 +265,25 @@ test("commit: a drifted git configuration is E_CONFLICT git_drift (a reason of t
   assert.equal(gitCommitReasonSchema.safeParse(reason).success, true, "the reason is in the commit contract's closed set");
   assert.equal(r.head(), before);
   assert.ok(!JSON.stringify(res.error).includes("/private/path"));
+});
+
+test("review A SF2: an untrust while a commit waits for the project mutex refuses that commit (mutant: the gate before the mutex)", { skip: SKIP ?? false }, async (t) => {
+  let revoked = false;
+  const open = openTrustGate();
+  const gate = { admit: (call: Parameters<ReturnType<typeof openTrustGate>["admit"]>[0]) => (revoked ? Promise.reject(new AxisError("E_POLICY_DENIED", "The project is not trusted", { reason: "untrusted" })) : open.admit(call)) };
+  const { r, c } = await setup(t, { gate });
+  const req = await review(r, c);
+  const head = r.git("rev-parse", "HEAD").trim();
+  // Another call holds the project: the commit queues behind it.
+  let release!: () => void;
+  const held = r.handlerDeps.mutex.run("p", () => new Promise<void>((resolve) => (release = resolve)));
+  const pending = commit(c, r, req);
+  await new Promise((x) => setTimeout(x, 50));
+  revoked = true; // the user stops trusting the project while the commit waits
+  release();
+  await held;
+  const res = await pending;
+  assert.deepEqual([res.error?.code, (res.error?.details as { reason?: string } | undefined)?.reason], ["E_CONFLICT", "untrusted"]);
+  assert.equal(r.git("rev-parse", "HEAD").trim(), head, "no commit was made");
+  assert.equal(r.calls.executeCommit, 0);
 });

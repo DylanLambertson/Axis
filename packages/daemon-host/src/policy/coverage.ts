@@ -18,6 +18,12 @@ export interface CoverageInput {
   readonly plannedRegistry?: Registry;
   /** Further sets that must equal the served set (handlers, audit action declarations), added by later tickets. */
   readonly also?: Readonly<Record<string, ReadonlySet<string>>>;
+  /**
+   * The registered methods whose handler is marked `projectGated` (project-registration-and-trust.md §5.4). When given, it must be
+   * exactly the served rows whose trust mode is `project` or `per-start`: a gated row with a plain handler, or a marked handler on
+   * another row, is a problem.
+   */
+  readonly gated?: ReadonlySet<string>;
 }
 
 /** Every `<contract>/<major>.<method>` the registry serves, with its declared tier. */
@@ -52,6 +58,15 @@ export function coverageProblems(input: CoverageInput = {}): string[] {
     if (served.has(key)) out.push(`${key}: planned but already served (move its row to the served table)`);
     else if (!plannedMethods.has(key)) out.push(`${key}: planned rule for no planned method`);
     if (rules.has(key)) out.push(`${key}: both a served and a planned rule`);
+  }
+  if (input.gated !== undefined) {
+    for (const key of served.keys()) {
+      const trust = rules.get(key)?.trust;
+      const wants = trust === "project" || trust === "per-start";
+      if (wants && !input.gated.has(key)) out.push(`${key}: a gated row registered without the project trust gate`);
+      if (!wants && input.gated.has(key)) out.push(`${key}: a gated handler on a row that is not gated`);
+    }
+    for (const key of input.gated) if (!served.has(key)) out.push(`${key}: gated but not served`);
   }
   for (const [name, set] of Object.entries(input.also ?? {})) {
     for (const key of served.keys()) if (!set.has(key)) out.push(`${key}: served but missing from ${name}`);

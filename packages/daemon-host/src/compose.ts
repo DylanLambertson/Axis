@@ -1,26 +1,18 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
-import { mkdirSync, rmSync } from "node:fs";
-import { access } from "node:fs/promises";
-import { join } from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
 import { AxisError, withTransaction, type InstanceLock } from "@axis/audit";
 import { Daemon, EventHub, MemoryIdempotencyStore, type ElectronPortLike, type ShutdownOptions } from "@axis/daemon";
 import type { GitRunner } from "@axis/git-ops";
-import { EVENTS_CONTRACT, EVENTS_VERSION, MAX_PROMPT_CHARS, PROJECTS_CONTRACT, PROJECTS_VERSION, PROVIDERS_CONTRACT, PROVIDERS_VERSION, APPROVALS_CONTRACT, APPROVALS_VERSION, REVIEW_CONTRACT, REVIEW_VERSION, WORKTREES_CONTRACT, WORKTREES_VERSION } from "@axis/protocol";
+import { EVENTS_CONTRACT, EVENTS_VERSION, MAX_PROMPT_CHARS, PROJECTS_CONTRACT, PROJECTS_VERSION } from "@axis/protocol";
 import { createSecretScanner, type ScanMode } from "@axis/secret-scan";
 import { anchorPreflight } from "./anchor/preflight.js";
 import { createAgentBinding, type AgentBinding } from "./bindings/agent.js";
-import { createGitOperations, createGitPort } from "./bindings/git.js";
 import { createProvidersBinding, productionConnection, type AnthropicConnectionOptions, type ProvidersBinding } from "./bindings/providers.js";
 import { selectPtyGitRunner } from "./bindings/pty-git.js";
-import { registerForgeServing } from "./compose-forge.js";
-import { registerAttentionServing } from "./handlers/attention.js";
-import { createCommitPreparer, createReviewService } from "./bindings/review.js";
-import { createTempIndexProvider } from "./bindings/review-tempindex.js";
 import { createRunsBinding, type RunsBinding } from "./bindings/runs.js";
 import { composerGuardDeps, createRunRepositoryGuard, type RunSnapshotterFactory } from "./bindings/snapshot.js";
 import { createWorktreesBinding, type WorktreesBinding } from "./bindings/worktrees.js";
-import { composerWriteLock, createActiveRunForwarder, createAuditSeal, createRunsClock, isPty, messageSecretCheck, refuseComposition, settleComposer, daemonAuditSink, recordingRegistrar, registryOf, type ComposerOptions } from "./compose-parts.js";
+import { composerWriteLock, createActiveRunForwarder, createAuditSeal, createRunsClock, isPty, messageSecretCheck, refuseComposition, settleComposer, daemonAuditSink, createProjectRunStopper, recordingRegistrar, registryOf, type ComposerOptions } from "./compose-parts.js";
 import { hostCommandLimits, type CommandLimits } from "./bindings/agent-command.js";
 import type { HostConfig } from "./config.js";
 import { createAttestationVerifier } from "./control/attestation.js";
@@ -30,29 +22,17 @@ import { createConnectRouter } from "./control/connect-router.js";
 import type { DisposeResult, ListenerTarget } from "./disposables.js";
 import { createEventSources } from "./events/sources.js";
 import { installProjectControl } from "./projects/control.js";
+import { registerServing } from "./compose-serving.js";
 import { createChallengeAuditSink } from "./gate/audit-sink.js";
-import { createRunTrustMinter } from "./gate/run-trust.js";
 import { createWorktreesApprovals, type WorktreesApprovals } from "./gate/worktrees-confirm.js";
+import { createRunTrustMinter } from "./gate/run-trust.js";
 import { createComposerService, type ComposerService } from "./composer/service.js";
 import { DEFAULT_MAX_OUTPUT_TOKENS, DEFAULT_MAX_TURNS, resolveToolCaps } from "./composer/loop.js";
 import { assertScanBudgetFits } from "./bindings/provider-redactor.js";
-import { createApprovalsHandlers } from "./handlers/approvals.js";
 import { createHandlerRegistrar, registerAuditHandlers, type HandlerRegistrar } from "./handlers/anchor-guard.js";
-import { registerCliRunsHandlers } from "./handlers/cli-runs.js";
-import { registerComposerRunsHandlers } from "./handlers/composer-runs.js";
-import { PushedBases } from "./handlers/git-common.js";
-import { createSshResolver, unavailableSshResolver, type SshSpawn } from "./bindings/ssh-resolver.js";
-import { loadPushedBases, savePushedBases } from "./storage/pushed-bases-file.js";
-import { registerGitHandlers } from "./handlers/git.js";
+import { type SshSpawn } from "./bindings/ssh-resolver.js";
 import { createProjectsHandlers } from "./handlers/projects.js";
-import { registerAgentsHandlers } from "./handlers/agents.js";
-import { registerMessagesHandlers } from "./handlers/messages.js";
 import { createMessagingBinding, hostMessagingDeps, type MessagingBinding } from "./messages/binding.js";
-import { createProvidersHandlers } from "./handlers/providers.js";
-import { createReviewHandlers } from "./handlers/review.js";
-import { createReviewAuditSink } from "./handlers/review-audit.js";
-import { ReviewedTrees } from "./handlers/review-store.js";
-import { createWorktreesHandlers } from "./handlers/worktrees.js";
 import { createDaemonHost, type DaemonHost, type HostOptions, type HostServices, type StartupPorts } from "./host.js";
 import { installHostLifecycle, type LifecycleHandle, type LifecycleOptions } from "./lifecycle.js";
 import type { Logger } from "./log/logger.js";
@@ -221,6 +201,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
           transact: (fn) => withTransaction(parts.db, fn),
           random: { bytes: (n) => randomBytes(n), uuid: () => randomUUID() },
           runs: forwarder,
+          now: () => ports.clock.monotonic(),
           gitPath: parts.gitPath,
           env: ports.env,
           platform: config.platform,
@@ -331,7 +312,9 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
 
     registerAuditHandlers(registrar, { audit: services.auditRead, anchors: services.anchors, degraded: () => services.degraded, clock: ports.clock });
     registrar.register(PROJECTS_CONTRACT, PROJECTS_VERSION, createProjectsHandlers({ projects: () => services.journalRead.listProjects() }));
-    if (writable) registerServing(registrar, services);
+    // A revoke (a gesture, or the gate's lost binding) stops the project's live runs (project-registration-and-trust.md §5.4).
+    const stopProjectRuns = createProjectRunStopper({ mutex: () => built.worktrees?.mutex, journal: () => services.journal, runs: () => built.runs?.service, composer: () => built.composer });
+    if (writable) registerServing(registrar, services, { built, config, control, ports, pty, scanner, ptyGitRunnerFor, logger, runHooks: options.runHooks ?? false, sshSpawn: options.sshSpawn, stopProjectRuns, minter: createRunTrustMinter(ports.clock) });
     if (events !== undefined) {
       registrar.register(EVENTS_CONTRACT, EVENTS_VERSION, events.handlers());
       const approvals = built.approvals;
@@ -347,7 +330,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
       cleanups.push(() => sources.dispose());
     }
     // Every served method has a handler and every handler is a served method; a mismatch is exit 70 before `ready`.
-    checkCoverage({ ...services.surface, also: { handlers: recorded.methods() } });
+    checkCoverage({ ...services.surface, also: { handlers: recorded.methods() }, gated: recorded.gated() });
 
     const limiter = createConnectLimiter({
       clock: ports.clock,
@@ -369,7 +352,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
         logger?.warn("request.failed", { reason: "trust_set_refused" }); // the registry fails closed by itself
       }
     }));
-    cleanups.push(installProjectControl(control, { journal, config, gitPath: services.gitPath, env: ports.env, ...(logger === undefined ? {} : { logger }) }));
+    cleanups.push(installProjectControl(control, { journal, config, gitPath: services.gitPath, env: ports.env, onRevoked: stopProjectRuns, ...(logger === undefined ? {} : { logger }) }));
 
     // Step 11: signals, the control `shutdown` message, crash handlers.
     lifecycle = installHostLifecycle({
@@ -383,55 +366,6 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
       process: options.process,
     });
     void lifecycle.finished.then(finish);
-  }
-
-  /** The services of a healthy host, each registered through the registrar and nothing else. */
-  function registerServing(registrar: ReturnType<typeof createHandlerRegistrar>, services: HostServices): void {
-    const { worktrees, runs, approvals, composer, agent, providers } = built;
-    const journal = services.journal;
-    const audit = services.audit;
-    if (worktrees === undefined || runs === undefined || approvals === undefined || composer === undefined || agent === undefined || providers === undefined || journal === undefined || audit === undefined) throw new AxisError("E_INTERNAL", "The host composition is incomplete", { reason: "not_built" });
-    const git = createGitPort({
-      gitPath: services.gitPath,
-      env: { daemon: ports.env, pty: ports.env },
-      platform: config.platform,
-      runHooks: options.runHooks ?? false,
-      scanner,
-      ptyRunner: ptyGitRunnerFor(services.gitPath),
-      assertNoDrift: (w) => worktrees.assertNoDrift(w),
-      excludeDirs: services.excludeDirs,
-    });
-    const basesPath = join(config.dataDir, "push-bases.v1.json");
-    const reviewDir = join(config.dataDir, "review-index");
-    rmSync(reviewDir, { recursive: true, force: true }); // stale temporary indexes of an earlier process (this one holds the lock)
-    mkdirSync(reviewDir, { recursive: true, mode: 0o700 });
-    const reviewDeps = { git, locator: worktrees.locator, tempIndex: createTempIndexProvider(reviewDir), fileExists: (p: string) => access(p).then(() => true, () => false) };
-    const trees = new ReviewedTrees();
-    registrar.register(APPROVALS_CONTRACT, APPROVALS_VERSION, createApprovalsHandlers({ approvals: approvals.port }));
-    registrar.register(PROVIDERS_CONTRACT, PROVIDERS_VERSION, createProvidersHandlers({ providers: () => agent.providers(), cachedModels: (id) => providers.cachedModels(id), credential: (id, signal) => providers.credential(id, signal) }));
-    registrar.register(WORKTREES_CONTRACT, WORKTREES_VERSION, createWorktreesHandlers({ service: worktrees.service, needsAttention: worktrees.needsAttention }), { content: worktrees.content });
-    registerComposerRunsHandlers(registrar, { service: composer, journal, mutex: worktrees.mutex, needsAttention: worktrees.needsAttention });
-    if (built.messaging === undefined) throw new AxisError("E_INTERNAL", "The host composition is incomplete", { reason: "not_built" });
-    registerMessagesHandlers(registrar, built.messaging);
-    registerAgentsHandlers(registrar, { journal, worktrees: worktrees.service, mutex: worktrees.mutex, trust: services.trust, noteWrite: () => services.anchors.noteWrite() });
-    registerCliRunsHandlers(registrar, { service: runs.service, journal, control, minter: createRunTrustMinter(ports.clock), mutex: worktrees.mutex, needsAttention: worktrees.needsAttention, platform: config.platform });
-    registrar.register(REVIEW_CONTRACT, REVIEW_VERSION, createReviewHandlers({ review: createReviewService(reviewDeps), journal, runs: runs.service, trees, audit: createReviewAuditSink({ append: (e) => (audit.append(e), services.anchors.noteWrite()) }) }));
-    registerGitHandlers(registrar, {
-      ops: createGitOperations({ git, runs: runs.service, pushHooksUnavailable: typeof pty.exec === "function", resolveSshHost: options.sshSpawn === undefined ? unavailableSshResolver : createSshResolver({ spawn: options.sshSpawn, env: ports.env, excludeDirs: services.excludeDirs, platform: config.platform }) }),
-      review: createCommitPreparer(reviewDeps),
-      trees,
-      journal,
-      locator: worktrees.locator,
-      mutex: worktrees.mutex,
-      needsAttention: worktrees.needsAttention,
-      anchors: services.anchors,
-      runs: runs.service,
-      bases: new PushedBases(1024, loadPushedBases(basesPath, 1024), (entries) => savePushedBases(basesPath, entries)),
-      onInternalError: () => logger?.error("request.failed", { reason: "git_internal" }),
-      onBookkeepingError: () => logger?.warn("request.failed", { reason: "git_bookkeeping" }),
-    });
-    registerForgeServing(registrar, { pty, projectPath: (id) => journal.getProject(id)?.path, git, platform: config.platform, audit: (e) => (audit.append(e), services.anchors.noteWrite()), monotonic: () => ports.clock.monotonic(), pins: journal.forgePins, ...(logger === undefined ? {} : { logger }) });
-    registerAttentionServing(registrar, { projectExists: (id) => journal.getProject(id) !== undefined, records: journal.attention, cliRun: (id) => runs.service.get(id), composerRun: (id) => composer.get(id) });
   }
 
   /**
