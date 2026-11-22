@@ -4,9 +4,9 @@
 - **Date:** 2026-11-22. **Code baseline:** `origin/main` at `9ddc55b` (ADR 0007 merged, #573).
 - **Builds on:** `threat-model-phase1.md` (the "model"), `threat-model-phase1-controls.md` (the "controls file"), `threat-model-phase1-revision-1a.md` (the "1a revision", merged; N-1 to N-15, TB12, TB13) and `threat-model-phase1-residual-register.md` (the "register"). Where this file and those disagree about a Phase 2a or 1c surface, this file wins; for everything else they win.
 - **Sources:** ADR 0006 (agent home), ADR 0007 (messaging, the CLI endpoint) and its code map, ADR 0010 (pages), `docs/design/inter-agent-communication.md` (the "messaging design"), `docs/design/inter-agent-cli-endpoint.md` (the "endpoint design"), `docs/design/messages-contract.md`, `docs/design/extensibility.md` §5, §6, §8, §9, `docs/design/project-registration-and-trust.md` (the "trust design"), `docs/design/owner-decisions-2026-11-21.md`.
-- **Companions:** `threat-model-phase2a-gates.md` (every 2a gate line, numbered, with the ticket that must prove it and the threats it covers); the register §1.3 (RR-31 to RR-52, one row per stated residual).
+- **Companions:** `threat-model-phase2a-gates.md` (every 2a gate line, numbered, with the ticket that must prove it and the threats it covers); the register §1.3 (RR-31 to RR-54, one row per stated residual).
 - **Evidence tags:** as in the 1a revision. **[M]** built and merged on main (file and symbol named, or the ADR 0007 code map row); **[D]** decided in an ADR or design, nothing built; **[I]** inferred. **Built** means code exists, not that a gate line passes.
-- **Decisions.** This file makes none. Where a threat needs one, it is listed in section 6 as an open item for the project lead.
+- **Decisions.** This file makes none of its own. Six threats needed one; the project lead decided them, and section 6 records them.
 
 ## 1. What 1c and 2a add
 
@@ -21,7 +21,7 @@ Messaging is the only part with code on main: the contract, the message service 
 | Agent (composer or CLI) as a principal | ADR 0006 §4; ADR 0007 decision 1 | Untrusted content source; identity is the daemon's record | Created, grouped and archived by the user only (ADR 0006 implication 3), so no agent mints a principal or widens its own scope. Addressed by opaque id (`message_participants.principal`) [M] |
 | Agent group | ADR 0006 §6 | Not a security boundary | Read by the send policy, so membership is a user-only write. An agent in no group shares a group with nobody [M, `messages/policy.ts` `mayAddress`] |
 | CLI endpoint caller | ADR 0007 §7.5 | **Unverified** (`verified: false`) | Anyone holding the run's token: the CLI, **and every program it runs, including the repository's scripts** |
-| Plugin (`plugin:<id>`) | `extensibility.md` §3.5 | Untrusted | 4a; no plugin caller exists. Listed so the send policy's plugin row has an owner (PV-R8) |
+| Plugin (`plugin:<id>`) | `extensibility.md` §3.5 | Untrusted | 4a; no plugin caller exists. **Refused by the send and read policy in 2a** (section 6, O-6); the 4a policy is PV-R8's |
 | System sender | messaging design §4.1 | Axis | Notices to the user only (delivery failures today [M]; hop and queue notices [D]) |
 | Page author, task author | ADR 0010 §1; `extensibility.md` §6 | User or agent per revision | Every non-user revision is a taint source and carries the writer's hop |
 | Imported task source | `extensibility.md` §6 | Untrusted | `source: integration`; 4a for the integration, 2a for the rule |
@@ -37,7 +37,7 @@ The user, the renderer (A10), main, the daemon and the pty process are as in the
 | Messaging settings and Pause state | journal schema 9 [M] | Widen or stop messaging; user-only writes |
 | The taint flag `composer_runs.tainted` | journal schema 8 [M] | Clearing it would remove the only injection control |
 | Endpoint tokens (256 bits per run) | daemon memory; the spawn message; the pty process; the CLI's environment [D] | Bearer identity of a CLI agent for `send` and `read` |
-| The per-install HMAC key for `bodyMac` | undecided (section 6, O-1) | Keyed hashes in audit; until it exists no body hash is written [M] |
+| The per-install HMAC key for `bodyMac` | a `0600` file in the Axis data directory, never the journal (section 6, O-1) [D] | Keyed hashes in audit; until it exists no body hash is written [M] |
 | Pages, versions, attachments, "reviewed" marks | Axis data directory per project [D, ADR 0010] | Agent-readable text that can steer runs; the reviewed mark lowers taint |
 | Task records and revisions | journal [D, PV-T1] | Start turns task text into a run's prompt |
 | Agent and group records | journal [D, PV-G1] | The send policy reads them |
@@ -65,22 +65,22 @@ State words as in the 1a revision: **Built**, **Partial**, **Not built**. Gate l
 
 | ID | Threat | Control | State | Tickets | Gates |
 |---|---|---|---|---|---|
-| IAC-1 | Confused deputy: a composer that read a hostile file asks a CLI agent, which holds the user's credentials, to act | CLI messaging off by default, pull-only, refused for bypass entries, warned and confirmed twice for repository CLI config (M-3); provenance label; the CLI's prompts stay the gate | **Partial:** `cliMessaging: true` is refused for every agent (`bypass_entry`) [M, `messages/settings.ts`]; the rest [D] | PV-M7 | 2a/L28, L35 |
-| IAC-2 | Prompt-injection relay steers a composer into a harmful call | IAC-T: sticky flag, every call above `read` needs the user, flag bound at issue and re-read at consume, card lists the sources | **Partial:** the core and source 1 [M, `composer/taint.ts`, `broker/src/policy.ts` `DecisionHook`, `gate/run-approvals.ts`, `messages/delivery.ts`]; sources 2 to 8 [D] | PV-M0 (built), PV-M4, PV-Q1, PV-T1 | 2a/L3, L11, L18, L19 |
-| IAC-3 | Approval laundering: A asks B to request an action the user then approves as B's own plan | The card lists the run's taint sources and their hop; DMN-3 unchanged | **Partial:** card schema and sources [M, `approvalPreviewSchema.taint`]; the UI [D] | PV-M0, PV-M5 | 2a/L2, L3 |
+| IAC-1 | Confused deputy: a composer that read a hostile file asks a CLI agent, which holds the user's credentials, to act | CLI messaging off by default, pull-only, refused for bypass entries, warned and confirmed twice for repository CLI config (M-3); provenance label; the CLI's prompts stay the gate | **Partial:** `cliMessaging: true` is refused for every agent (`bypass_entry`) [M, `messages/settings.ts`]; the in-repository list with unknown entries refused (O-3) and the rest [D] | PV-M7 | 2a/L28, L35, L52 |
+| IAC-2 | Prompt-injection relay steers a composer into a harmful call | IAC-T: sticky flag, every call above `read` needs the user, flag bound at issue and re-read at consume, card lists the sources | **Partial:** the core and source 1 [M, `composer/taint.ts`, `broker/src/policy.ts` `DecisionHook`, `gate/run-approvals.ts`, `messages/delivery.ts`]; sources 2 to 8 [D] | PV-M0 (built), PV-M4, PV-Q1, PV-T1 | 2a/L3, L11, L18, L19, L54 |
+| IAC-3 | Approval laundering: A asks B to request an action the user then approves as B's own plan | The card lists the run's taint sources and their hop; DMN-3 unchanged | **Partial:** card schema and sources [M, `approvalPreviewSchema.taint`]; the UI and the approval cap of 20 per tainted run (O-5) [D] | PV-M0, PV-M4, PV-M5 | 2a/L2, L3, L54 |
 | IAC-4 | UI spoofing: a body that looks like an approval, a notice or the user | Approval cards render only from `axis.approvals/1.pending`; escaped plain text; delivery blocks framed by a per-block nonce with every body line prefixed; sender badge from the daemon | **Partial:** escaping and the delivery frame [M, `messages-wire.ts` `toMessageText`, `messages/delivery.ts`]; thread view [D] | PV-M5 | 2a/L8, L32 |
 | IAC-5 | Message storms and cost loops | Hop limit 8 through messages, pages, tasks and CLI reads; rates; per-sender quotas; budgets; no wake (M-4) | **Partial:** rates, quotas and the reply-chain hop [M, `messages/limits.ts`, `messages/policy.ts` `hopOf`]; raising a run's received hop from what it reads (composer and CLI), hop on pages and tasks, the hop notice [D] | PV-M4, PV-M6, PV-Q1, PV-T1, PV-M3 later | 2a/L4, L33 |
 | IAC-6 | Impersonation of a sender | Sender from the attested caller, never the payload; CLI senders token-bound and `verified: false` | **Partial:** attested caller, user-only bridge [M, `handlers/messages.ts`, `messages/policy.ts` `MessageCaller`]; endpoint [D] | PV-M6 | 2a/L29, L36 |
-| IAC-7 | Exfiltration through messages | Excerpt path refusals, secret scan (refuse for CLI and plugin recipients, M-6), size caps, audit | **Partial:** body scan and caps [M, `messages/service.ts` `accept`]; every excerpt refused until the excerpt slice [M]; excerpt containment and path list [D] | PV-M3 later | 2a/L5 |
+| IAC-7 | Exfiltration through messages | Excerpt path refusals, secret scan (refuse for CLI and plugin recipients, M-6), size caps, audit | **Partial:** body scan and caps [M, `messages/service.ts` `accept`]; every excerpt refused until the excerpt slice [M]; excerpt containment, path list and the keyed-hash key file (O-1) [D] | PV-M3 later | 2a/L5, L17, L50 |
 | IAC-8 | Cross-project or cross-group leakage on send | Project from the thread or the attested sender, never renderer state; groups expanded at accept; delivery re-checks | **Built** in the service, tested with attested agent callers [M, `newThreadProject`, `expandRecipients`, `deliverable`]; no agent can reach it until PV-G3 and PV-M4 | PV-G3, PV-G4 | 2a/L1, L9, L14 |
-| IAC-9 | Daemon memory and journal growth | Bounded queues, counters, replies; `E_BACKPRESSURE`; retention | **Partial:** bounds [M]; retention purge [D] | PV-M3 later | 2a/L15, L16 |
+| IAC-9 | Daemon memory and journal growth | Bounded queues, counters, replies; `E_BACKPRESSURE`; retention | **Partial:** bounds [M]; retention purge and the archive clean-up (O-2) [D] | PV-M3 later, PV-G3 | 2a/L15, L16, L51 |
 | IAC-10 | Endpoint abuse by another local process | `0700` directory or user-only pipe, token, shim checks before sending it | **Not built** | PV-M6, PV-M7 | 2a/L26, L27 |
 | IAC-11 | Excerpt path tricks | Review-path containment, sender's own worktree, path refusal list with case and alias forms | **Not built** (every excerpt refused [M]) | PV-M3 later | 2a/L5 |
 | IAC-12 | Kill-switch race | Pause re-checked at delivery, queued messages stay queued | **Partial:** sends and delivery [M, `senderPaused`, `recipientPaused`, `deliverable`]; endpoint [D] | PV-M5, PV-M6 | 2a/L7, L21 |
 | IAC-13 | Read without authorization | Participant sets, one participant-scoped lookup, `not_found` with no existence oracle, read rows, `message.read.refused` | **Built** [M, `messages/service.ts` `resolve`, `message-store.ts` `VISIBLE`] | PV-M6 (endpoint reads) | 2a/L10 |
 | IAC-14 | Terminal escapes through the CLI read path | Daemon-side `toMessageText` on every endpoint answer; label with a per-response boundary and a prefix on every line ending at LF | **Partial:** the escaping function [M]; its use on the endpoint and the shim [D] | PV-M6, PV-M7 | 2a/L24, L32 |
 | IAC-15 | Endpoint DoS and audit flooding | Connection, framing, pre-auth, read and size bounds; per-peer backoff in the pty process; one auth per relay connection id; aggregated audit | **Not built** | PV-M6 | 2a/L22, L23 |
-| IAC-16 | Queue eviction erases the user's words | Per-sender quotas, refuse when full, user and system messages never counted or evicted | **Built** [M, `messages/service.ts` `accept`, `message-store.ts` `queued`]; the user notice [D] | PV-M3 later | 2a/L12 |
+| IAC-16 | Queue eviction erases the user's words | Per-sender quotas, refuse when full, user and system messages never counted or evicted | **Built** [M, `messages/service.ts` `accept`, `message-store.ts` `queued`]; the user notice and releasing an archived agent's queue (O-2) [D] | PV-M3 later, PV-G3 | 2a/L12, L51 |
 
 ### 5.2 The CLI endpoint as built by ADR 0007 (new rows)
 
@@ -96,7 +96,7 @@ State words as in the 1a revision: **Built**, **Partial**, **Not built**. Gate l
 | ID | Threat | Control | State | Tickets | Gates |
 |---|---|---|---|---|---|
 | PAG-1 | Script or tracking in a page | CommonMark subset, no raw HTML, sanitizer, raster attachments only by sniffing, EL-5 links opened from main on a click | **Not built** [D, ADR 0010 §2, §3] | PV-Q2 | 2a/L41, L43 |
-| PAG-2 | Page content steers an agent | `read_page` taints when current content holds non-user text not marked reviewed; `write_page` needs approval, is attributed and carries the hop | **Partial:** `page` is source 4 of `TAINT_SOURCES` [M]; the producer [D] | PV-Q1 | 2a/L11, L45, L46 |
+| PAG-2 | Page content steers an agent | `read_page` taints when current content holds non-user text not marked reviewed; `write_page` needs approval, is attributed and carries the hop | **Partial:** `page` is source 4 of `TAINT_SOURCES` [M]; the producer and the main-drawn confirmation for marking reviewed (O-4) [D] | PV-Q1, PV-Q2 | 2a/L11, L45, L46, L53 |
 | PAG-3 | Page script reaches the bridge and resolves an approval as the user | Isolated view with an opaque origin and **no bridge port**, header CSP, Trusted Types, own session, WebRTC off, no SVG | **Not built** [D, ADR 0010 §3] | PV-Q2 | 2a/L42, L43 |
 | TSK-1 | Imported issue text becomes an instruction | Start is a user action showing the full prompt and source; the run is tainted (source 5) | **Not built** [D]; the 4a import part is PV-N | PV-T1, PV-T2 | 2a/L44 |
 | TSK-2 | An agent rewrites a task so the user's Start launders injected text | Revisions with author and hop; Start marks non-user text; source 5 at start and source 8 on reads | **Not built** [D] | PV-T1, PV-T2 | 2a/L11, L44 |
@@ -105,23 +105,23 @@ State words as in the 1a revision: **Built**, **Partial**, **Not built**. Gate l
 
 | ID | Threat | Control | State | Tickets | Gates |
 |---|---|---|---|---|---|
-| HOME-1 | A non-user actor creates an agent, joins a group or widens `acceptsFrom`, minting a principal or a messaging scope | Agent, group and assignment writes are user-only and audited; messaging settings are user tier-2 writes held by the daemon, never repository settings | **Partial:** messaging settings [M, `messages/settings.ts`]; agents and groups [D, PV-G2, PV-G3] | PV-G2, PV-G3 | 1c gate lines 2 and 3 (`ROADMAP.md`); 2a/L1 |
+| HOME-1 | A non-user actor creates an agent, joins a group or widens `acceptsFrom`, minting a principal or a messaging scope | Agent, group and assignment writes are user-only and audited; messaging settings are user tier-2 writes held by the daemon, never repository settings | **Partial:** messaging settings [M, `messages/settings.ts`]; agents and groups, and archive ending an agent's messaging (O-2) [D, PV-G2, PV-G3] | PV-G2, PV-G3 | 1c gate lines 2 and 3 (`ROADMAP.md`); 2a/L1, L51 |
 | HOME-2 | Agent and group names, or run reasons carrying agent text, spoof UI | Escaped display with control and bidirectional characters visible (ADR 0006 implication 5) | **Not built** [D] | PV-D1 | `ROADMAP.md` 1c lines |
 | HOME-3 | Delivery to a run of another project or of no agent | Delivery only to a RUNNING run bound to an agent; PV-G4 must check that the run's project is the agent's | **Partial:** no run is bound in production, so nothing is delivered [M, `messages/binding.ts` `agentOf`]; the project check [D] | PV-G4 | 2a/L14 |
 | TRU-2 (amended) | Stale or widened trust | "Trusted" is T1 to T4 of the trust design §2: the main-owned record **and** Workspace Trust, the binding, no revoke; a renderer-written model alone never yields trusted; untrust and `binding_lost` stop live runs | **Not built** [D, trust design S1a to S2] | trust design slices | `ROADMAP.md` 1c line 1; trust design §9 |
 
-## 6. Open items for the project lead
+## 6. Decided items (were open items O-1 to O-6)
 
-Threats in this file that need a decision no document has taken. None is decided here.
+These six threats needed a decision no document had taken. The project lead decided them on 2026-11-22 under the owner's delegation (`owner-decisions-2026-11-21.md`); each is conservative and reversible by a new row there. The ids are this file's own (not the product-vision O-1 to O-8) and stay stable. Nothing here is built; each decision is a ticket item and has a gate line.
 
-| # | Item | Why it is open | Affects |
-|---|---|---|---|
-| O-1 | Where the per-install HMAC key for `bodyMac` lives | The contract doc and `messages/audit.ts` write no body hash until its storage is decided; M-7's "audit keeps keyed hashes" cannot be met before it | IAC-7, gate 2a/L17 |
-| O-2 | What an archived agent's messaging state becomes: its threads, its queued messages (they stay queued today and keep counting against senders' quotas), its endpoint and its settings | ADR 0006 defines archive for workspaces and runs only; delivery skips an unknown agent and leaves its messages queued | IAC-9, IAC-16, HOME-1 |
-| O-3 | Who maintains the bypass-flag list for CLI launch entries, and how it is updated | ADR 0007 §7.7 and plan question 16 name the list; no owner or update rule is written | IAC-1 |
-| O-4 | Whether a page's "reviewed" mark needs a native (main-drawn) confirmation | Marking reviewed lowers taint (ADR 0010 §4); a compromised renderer (A10) could mark every version reviewed. Every other taint-lowering action is impossible by design | PAG-2 |
-| O-5 | Whether IAC-T's approval load needs a product answer (for example, ending a tainted run after N approvals) | Every side-effecting call of a tainted run asks the user; approval fatigue is the known failure of that control. No document addresses it | IAC-2, IAC-3 |
-| O-6 | The send policy for `plugin:<id>` senders and its permission check | No plugin caller exists; the row is 4a and belongs to PV-R8, but `mayAddress` already lets a plugin caller address the user | PLG-3 (4a) |
+| # | Decided | Reflected in |
+|---|---|---|
+| O-1 | **The `bodyMac` key.** 32 random bytes per install, generated by the daemon at first need, stored in a **file** in the Axis data directory (directory `0700`, file `0600`, created with `O_EXCL` and written atomically: temporary file, fsync, rename). **Never in the journal**, never exported or backed up with a journal export. Read once at start and kept in memory; no OS keyring prompt. Losing the file only makes **old** keyed hashes incomparable: the audit keeps the hashes it stored. A same-UID process can read the file (A10). | IAC-7; gate 2a/L50; RR-42, RR-53; ticket item for PV-M2 or PV-M3 |
+| O-2 | **Archiving an agent** (1) cancels every pending or queued delivery to it, marked undeliverable, releasing its senders' quota slots; (2) makes it unaddressable: a send naming it is `recipient_refused` (live agents only); (3) revokes its endpoint and stops its live runs; (4) keeps its threads **readable by the user** and closed to agents; (5) keeps its messaging settings for a restore. | IAC-9, IAC-16, HOME-1; gate 2a/L51; RR-46; PV-G3 with PV-M3 |
+| O-3 | **The CLI bypass-flag list** lives in this repository, as one file in the pty-process or daemon-host adapter code with unit tests, changed only by a reviewed pull request (every CLI adapter change is a security-review item). An **unknown CLI entry is treated as bypassing** (messaging refused unless the entry is known safe: fail closed). No remote list. | IAC-1; gate 2a/L52; RR-35; PV-M7 |
+| O-4 | **Marking a page version reviewed** (which lowers taint) needs a **native confirmation drawn by main**, as trusting a project does; a renderer-only click is not enough (A10). | PAG-2; gate 2a/L53; RR-48; PV-Q1, PV-Q2 |
+| O-5 | **Approval cap under IAC-T.** After **20** approvals the user gives in one tainted run, the run is **ended** with a closed reason; the user may start a fresh run. The cap is a daemon constant that a setting can lower, never raise. Fatigue below the cap stays a residual. | IAC-2, IAC-3; gate 2a/L54; RR-36; PV-M4 (or PV-M0 follow-up) |
+| O-6 | **No plugin principal in 2a.** Plugins arrive in 4a, so a caller of kind `plugin` is **refused** by the send and read policy in 2a, addressing nobody, the user included, until PV-R8 and the PV-K tickets. Today `mayAddress` lets a plugin caller address the user (unreachable: no plugin binding exists); that gap is closed by this item. | Actor row "Plugin"; gate 2a/L55; RR-54; PV-M3 follow-up |
 
 ## 7. What this revision does not change
 
