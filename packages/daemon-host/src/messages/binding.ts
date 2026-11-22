@@ -4,7 +4,7 @@ import type { Journal } from "@axis/journal";
 import type { Logger } from "../log/logger.js";
 import { createMessageDelivery, type MessageDelivery } from "./delivery.js";
 import { createMessageService, type MessageService } from "./service.js";
-import { createMessagingSettings, type MessagingSettingsService } from "./settings.js";
+import { createMessagingSettings, type MessagingSettingsEvent, type MessagingSettingsService } from "./settings.js";
 import { journalAgentOf, journalAgentsDirectory } from "../agents/directory.js";
 import { journalDirectory, type MessagingDirectory } from "./policy.js";
 import type { MessageAuditSink } from "./audit.js";
@@ -49,7 +49,7 @@ export interface MessagingBinding {
    * The CLI endpoint relay (PV-M6 slice 1) and the mark of the one channel it accepts relayed messages from: the pty binding
    * (slice 2) is its only holder. Inert while messaging is off: `mint` gives no run an endpoint while `agentOf` knows none.
    */
-  readonly endpoints: { readonly relay: EndpointRelay; readonly source: symbol };
+  readonly endpoints: { readonly relay: EndpointRelay; readonly source: symbol; readonly onSettings: (l: (e: MessagingSettingsEvent) => void) => () => void };
   /** What a composer run's `send_message` and `read_messages` need (PV-M4), for `AgentBindingDeps.messaging`. */
   readonly participation: Omit<ComposerMessagingDeps, "holdsSecret">;
 }
@@ -77,7 +77,11 @@ export function createMessagingBinding(deps: MessagingBindingDeps): MessagingBin
     platform: deps.platform ?? process.platform,
     source,
   });
-  return { service, settings: createMessagingSettings({ ...common, context: (id) => service.context(id) }), delivery, participation, endpoints: { relay, source } };
+  // Late-bound: the composition wires the pty port after the binding exists (PV-M6 slice 3); with no listener a change does nothing.
+  const listeners = new Set<(e: MessagingSettingsEvent) => void>();
+  const onChange = (e: MessagingSettingsEvent): void => listeners.forEach((l) => l(e));
+  const onSettings = (l: (e: MessagingSettingsEvent) => void): (() => void) => (listeners.add(l), () => void listeners.delete(l));
+  return { service, settings: createMessagingSettings({ ...common, context: (id) => service.context(id), onChange }), delivery, participation, endpoints: { relay, source, onSettings } };
 }
 
 /** What the composition root has for messaging; `logger` is required (possibly undefined), so it cannot be left out. */

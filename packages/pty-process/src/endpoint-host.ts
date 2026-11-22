@@ -229,14 +229,24 @@ export function createEndpointHost(
       c.sock.destroy();
     }
     h.conns.clear();
-    // Every socket ever accepted goes: the lingering ones, already untracked, too (review 2 B1).
+    destroyLingering(h);
+    h.stop();
+    rmSync(h.path, { force: true });
+  };
+  /** Every socket ever accepted goes: the lingering ones, already untracked, too (review 2 B1). */
+  const destroyLingering = (h: Hosted): void => {
     for (const [sock, t] of h.lingering) {
       deps.clock.clearTimeout(t);
       sock.destroy();
     }
     h.lingering.clear();
-    h.stop();
-    rmSync(h.path, { force: true });
+  };
+  /** Pause (slice 3): every connection of the endpoint is dropped (destroyed, `relay-close` each) and lingering ones destroyed; the listener stays. */
+  const dropAll = (endpoint: string): void => {
+    const h = hosted.get(endpoint);
+    if (h === undefined) return;
+    for (const c of [...h.conns.values()]) drop(endpoint, c);
+    destroyLingering(h);
   };
 
   /** Listen for one endpoint, the id already reserved: the socket path, or undefined when no endpoint can be made. */
@@ -276,6 +286,7 @@ export function createEndpointHost(
     close,
     onRelay(msg) {
       if (msg.t === "endpoint-close") return close(msg.endpoint);
+      if (msg.t === "endpoint-drop") return dropAll(msg.endpoint);
       const c = hosted.get(msg.endpoint)?.conns.get(msg.conn);
       if (c === undefined) return;
       c.pending = Math.max(0, c.pending - 1);
