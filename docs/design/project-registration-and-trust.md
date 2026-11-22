@@ -209,7 +209,7 @@ Gating them would only keep a user from cleaning up an untrusted project.
 
 ### 6.2 The main actions
 
-They are not protocol methods; their weight is the dialog. `add` and `trust` are each a main-shown native confirmation, the tier 4 anchor outside the renderer (threat model assumption A10, item 8). `untrust` has no dialog.
+They are not protocol methods and have no tier; their weight is the dialog. `add` and `trust` are each confirmed in a dialog main draws: an anchor outside the renderer of the same kind as a tier 4 native confirmation, not a tier (threat model assumption A10, item 8). `untrust` has no dialog.
 
 ### 6.3 `axis.projects/1`
 
