@@ -1,6 +1,6 @@
 # Inter-agent communication: the CLI agent endpoint
 
-- **Status:** Proposed (design only; nothing is built). Companion to `docs/design/inter-agent-communication.md` ("the main design"); split out after security design review 1 (items S3, S4, S5, S11, N5) to keep both files short.
+- **Status:** Accepted by ADR 0007. The daemon side of the relay is built (PV-M6 slice 1, `messages-contract.md` section 12, inert until PV-G4); the pty process listener (slice 2) and the shim (PV-M7) are not. Companion to `docs/design/inter-agent-communication.md` ("the main design"); split out after security design review 1 (items S3, S4, S5, S11, N5) to keep both files short.
 - **Date:** 2026-11-06. Verified against `origin/main` at `74cd12e`; E1 (`116ef22`) and P1d (`e52114f`) have merged since.
 - **Depends on:** ADR 0004 decisions 8 and 10 and implication 3 (PTY-5), `docs/security/threat-model-phase1.md` (PTY-3, PTY-5, NET-1, A10, assumption on same-user processes), `docs/design/daemon-host-plan.md` §3 Q16 (permission-bypass entries), B9 (pty process, branch `feat/pty-process`).
 - **Evidence tags:** as in `product-vision-v2.md`.
