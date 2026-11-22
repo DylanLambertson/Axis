@@ -146,6 +146,7 @@ export function startAxisMainSeam(lifecycle: ILifecycle, log: ILog, instantiatio
 		workspaceTrusted: workspaceTrusted(services, platform),
 		now: () => performance.now(),
 	});
+	services.windows.onDidDestroyWindow(window => projects.windowClosed(window.id));
 
 	// The renderer handshake (ADR 0003 D1.2): upstream `acquirePort` sends the nonce; the answer carries the port, or upstream's
 	// error shape with a closed code. An invalid nonce is not echoed, and a destroyed sender gets nothing.

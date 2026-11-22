@@ -57,6 +57,7 @@ test("the cipher is secure only for a real backend, and the dialog confirms only
   // the default and the cancel id.
   assert.match(SEAM, /validatedIpcMain\.on\('vscode:axisProjectAction', \(event, payload: unknown\) => \{\s*const codeWindowId = checkSender\(connectSender\(services, event\), urls\);\s*if \(typeof codeWindowId === 'string'\)/);
   assert.match(SEAM, /void projects\.act\(codeWindowId, payload\)/);
+  assert.match(SEAM, /services\.windows\.onDidDestroyWindow\(window => projects\.windowClosed\(window\.id\)\)/);
   assert.match(SEAM, /onProjectAnswer: message => void projects\.answer\(message\)/);
   assert.match(SEAM, /send: message => started\.sendProject\(message\)/);
   assert.match(PORTS, /buttons: \[\.\.\.d\.buttons\],\s*defaultId: 0,\s*cancelId: 0,\s*noLink: true,\s*signal,/);

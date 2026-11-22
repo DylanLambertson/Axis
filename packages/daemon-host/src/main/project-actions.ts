@@ -59,6 +59,8 @@ type Inspected = Extract<Answer, { type: "projects.inspected"; ok: true }>;
 export interface ProjectActions {
   /** One renderer request from `codeWindowId` (resolved by main from the IPC sender). Never throws. */
   act(codeWindowId: number, payload: unknown): Promise<{ readonly nonce: string; readonly outcome: ProjectOutcome } | undefined>;
+  /** A code window closed: its rate-limit and in-flight entries go (nothing per window outlives it). */
+  windowClosed(codeWindowId: number): void;
   /** `projects.inspected` / `projects.result` from the host; true when it answered one of ours. */
   answer(message: OutboundMessage): boolean;
   dispose(): void;
@@ -175,7 +177,8 @@ export function createProjectActions(o: ProjectActionsOptions): ProjectActions {
       coolDown(key);
       return "cancelled";
     }
-    // trust: a registered, untrusted project whose folder the workbench trusts now.
+    // trust: a registered, untrusted project whose folder the workbench trusts now. Workspace Trust is read before the dialog only:
+    // harmless, because the user's press is the grant and the host checks main's Workspace Trust again at every gated call (T3).
     if (i.registered === undefined) return "refused";
     if (i.registered.trusted) return "trusted";
     if (!o.workspaceTrusted(folder)) return "refused";
@@ -206,6 +209,10 @@ export function createProjectActions(o: ProjectActionsOptions): ProjectActions {
       } finally {
         busy.delete(codeWindowId);
       }
+    },
+    windowClosed(codeWindowId) {
+      recent.delete(codeWindowId);
+      busy.delete(codeWindowId);
     },
     answer(message) {
       if (message.type !== "projects.inspected" && message.type !== "projects.result") return false;

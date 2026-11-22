@@ -203,3 +203,9 @@ test("S1b review 3 N1/N2: the record admits a new home but the project trust gat
   other.trust.set({ windowId: WINDOW }, true);
   await refused(call(other.handlers.agents.create, req), "E_CONFLICT", "home_unavailable");
 });
+
+test("S2 review N5: a different policy refusal through the create stays home_unavailable (only the trust gate's untrusted maps to untrusted_project)", async () => {
+  const s = setup({ failCreate: new AxisError("E_POLICY_DENIED", "Not permitted", { reason: "something_else" }) });
+  s.trust.set({ windowId: WINDOW }, true);
+  await refused(call(s.handlers.agents.create, { projectId: "p1", name: "Worker", launch: CLI, home: { new: { name: "Worker home" } } }), "E_CONFLICT", "home_unavailable");
+});

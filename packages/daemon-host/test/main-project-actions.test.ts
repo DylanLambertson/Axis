@@ -191,3 +191,75 @@ test("the shared native queue: a project dialog waits behind a confirmation, sha
   assert.deepEqual(results.at(-1), { refused: "expired" });
   q.dispose();
 });
+
+/** The real queue between the actions and a dialog port: what `show` does decides the outcome. */
+function withQueue(show: ProjectActionsOptions["show"], answers: (m: Sent) => Record<string, unknown> | undefined = () => undefined) {
+  const sent: Sent[] = [];
+  const q = new NativeQueue({ dialog: { confirm: async () => false }, codeWindowOf: () => 1, now: () => 0, ttlMs: 200, timers: { set: (fn, ms) => setTimeout(fn, ms), clear: (h) => clearTimeout(h as never) } });
+  let actions!: ReturnType<typeof createProjectActions>;
+  actions = createProjectActions({
+    send: (m) => {
+      sent.push(m as Sent);
+      const body = answers(m as Sent) ?? (m.type === "projects.inspect" ? inspected({ registered: { projectId: "p-1", trusted: false } }) : { ok: true, projectId: "p-1" });
+      queueMicrotask(() => actions.answer({ type: m.type === "projects.inspect" ? "projects.inspected" : "projects.result", requestId: m.requestId, ...body } as never));
+      return true;
+    },
+    choose: (c) => q.pushChoice(c),
+    show,
+    windowFolder: () => FOLDER,
+    workspaceTrusted: () => true,
+    now: () => 0,
+  });
+  return { actions, sent, q };
+}
+
+test("review SF: a dialog that fails to open, answers no button, or is aborted grants nothing (mutant: the failure taken as a press)", async () => {
+  const cases: Array<[string, ProjectActionsOptions["show"]]> = [
+    ["throws", async () => { throw new Error("no window"); }],
+    ["no button", async () => undefined as never],
+    ["not a button", async () => Number.NaN],
+    ["never answers (the lifetime aborts it)", (_w, _d, signal) => new Promise<number>((_, reject) => signal.addEventListener("abort", () => reject(new Error("aborted"))))],
+  ];
+  for (const [name, show] of cases) {
+    for (const action of ["trust", "add"] as const) {
+      const r = withQueue(show, (m) => (m.type === "projects.inspect" && action === "add" ? inspected() : undefined));
+      const outcome = (await r.actions.act(1, { nonce: "n", action }))?.outcome;
+      assert.ok(outcome === "unavailable" || outcome === "expired", `${name}/${action}: ${outcome}`);
+      assert.deepEqual(r.sent.map((m) => m.type), ["projects.inspect"], `${name}/${action}: nothing was registered or trusted`);
+    }
+  }
+});
+
+test("review N1/N2/N3: an approval waiting goes before a project dialog; shutdown answers waiting project dialogs; a closed window's limits go", async () => {
+  const order: string[] = [];
+  let release!: () => void;
+  const q = new NativeQueue({
+    dialog: { confirm: async ({ summary }) => (order.push(summary), summary === "first" ? new Promise<boolean>((r) => (release = () => r(true))) : true) },
+    codeWindowOf: () => 1,
+    now: () => 0,
+  });
+  q.push({ challengeId: "a".repeat(43), proof: "p".repeat(32), windowId: "w1", summary: "first" }, () => undefined);
+  q.pushChoice({ codeWindowId: 1, show: async () => (order.push("project"), 0), done: () => undefined });
+  q.push({ challengeId: "b".repeat(43), proof: "p".repeat(32), windowId: "w1", summary: "approval" }, () => undefined);
+  release();
+  await new Promise((x) => setTimeout(x, 10));
+  assert.deepEqual(order, ["first", "approval", "project"], "the waiting approval jumped the project dialog (mutant: plain FIFO)");
+  // Shutdown: a waiting and an open project dialog are both answered.
+  const results: Array<Record<string, unknown>> = [];
+  const q2 = new NativeQueue({ dialog: { confirm: async () => true }, codeWindowOf: () => 1, now: () => 0 });
+  q2.pushChoice({ codeWindowId: 1, show: () => new Promise<number>(() => undefined), done: (r) => results.push(r) });
+  q2.pushChoice({ codeWindowId: 1, show: async () => 1, done: (r) => results.push(r) });
+  q2.dispose();
+  assert.deepEqual(results, [{ refused: "dialog_failed" }, { refused: "dialog_failed" }], "mutant: dispose answers nothing");
+  const r = withQueue(() => new Promise<number>(() => undefined));
+  const pending = r.actions.act(1, { nonce: "n", action: "trust" });
+  await new Promise((x) => setTimeout(x, 10));
+  r.q.dispose();
+  assert.equal((await pending)?.outcome, "unavailable", "the action does not hang on a queue that is gone");
+  // A closed window: its rate limit is forgotten.
+  const w = rig({ answers: (m) => (m.type === "projects.inspect" ? inspected({ registered: { projectId: "p-1", trusted: true } }) : undefined) });
+  for (let i = 0; i < 6; i++) await w.actions.act(5, { nonce: "n", action: "untrust" });
+  assert.equal((await w.actions.act(5, { nonce: "n", action: "untrust" }))?.outcome, "busy");
+  w.actions.windowClosed(5);
+  assert.equal((await w.actions.act(5, { nonce: "n", action: "untrust" }))?.outcome, "untrusted", "mutant: the map is not pruned");
+});

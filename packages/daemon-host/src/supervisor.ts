@@ -1,8 +1,9 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { inboundMessageSchema, outboundMessageSchema, type InboundMessage, type OutboundMessage } from "./control/messages.js";
-
-const PROJECT_TYPES: ReadonlySet<string> = new Set(["projects.inspect", "projects.register", "projects.trust"]);
 import { base64url, signMainAttestation, type HmacSha256, type MainIdentity } from "./main/attest-sign.js";
+
+/** The project messages main starts (`sendProject`); nothing else goes that way. */
+const PROJECT_TYPES: ReadonlySet<string> = new Set(["projects.inspect", "projects.register", "projects.trust"]);
 
 /**
  * The parent side of the daemon host (ticket X1, design `docs/design/daemon-host-entry.md`): spawn the fixed entry, send `init`,

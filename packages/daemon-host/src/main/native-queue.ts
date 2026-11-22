@@ -111,15 +111,28 @@ export class NativeQueue {
   }
 
   dispose(): void {
+    // A main-started choice gets its closed answer (`dialog_failed`: the caller reports it unavailable), so nothing waits on a
+    // queue that is gone; a `native.confirm` gets nothing more (the host times out, which is a refusal).
+    const choices = [...this.#waiting, ...(this.#open === undefined ? [] : [this.#open])].filter((e) => e.choice !== undefined);
     this.#disposed = true;
     this.#waiting.length = 0;
     this.#settleOpen();
     this.#open = undefined;
+    for (const e of choices) {
+      try {
+        e.choice?.done({ refused: "dialog_failed" });
+      } catch {
+        // the caller's own handling never changes the queue
+      }
+    }
   }
 
   #pump(): void {
     while (!this.#disposed && this.#open === undefined && this.#waiting.length > 0) {
-      const entry = this.#waiting.shift() as Entry;
+      // An approval (`native.confirm`) waiting goes before a project dialog that has not opened yet: a project action can delay
+      // an approval only by a dialog that is already open (at most the 60 s lifetime), never by waiting in front of it.
+      const first = this.#waiting.findIndex((e) => e.request !== undefined);
+      const entry = this.#waiting.splice(first >= 0 ? first : 0, 1)[0] as Entry;
       if (this.#o.now() - entry.at > this.#ttl) {
         this.#answer(entry, false, "expired");
         continue;
