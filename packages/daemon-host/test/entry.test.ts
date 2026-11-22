@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { after, test } from "node:test";
-import { isDebugFlag, runDaemonEntry, type DaemonEntryDeps } from "../src/entry.js";
+import { envSet, isDebugFlag, REFUSED_ENV, runDaemonEntry, type DaemonEntryDeps } from "../src/entry.js";
 import { EXIT } from "../src/index.js";
 import { FakeParentPort, FakeProcess, FakeTimers, initPayload, platformName, sandbox } from "../testing/entry-harness.js";
 
@@ -60,7 +60,7 @@ test("outside a utility process (no parent port) the entry refuses with exit 78 
   }
 });
 
-test("a debugger or inspector flag, or NODE_OPTIONS, refuses before the parent port is touched", async () => {
+test("a debugger or inspector flag, NODE_OPTIONS, NODE_TLS_REJECT_UNAUTHORIZED or NODE_USE_ENV_PROXY refuses before the parent port is touched", async () => {
   for (const [name, over, reason] of [
     ["--inspect", { execArgv: ["--inspect"] }, "debug_flag_refused"],
     ["--inspect-brk", { execArgv: ["--no-warnings", "--inspect-brk=0"] }, "debug_flag_refused"],
@@ -68,6 +68,12 @@ test("a debugger or inspector flag, or NODE_OPTIONS, refuses before the parent p
     ["--require", { execArgv: ["--require", "/tmp/x.js"] }, "exec_args_refused"],
     ["--import", { execArgv: ["--import=data:text/javascript,0"] }, "exec_args_refused"],
     ["NODE_OPTIONS", { env: { NODE_OPTIONS: "--require /tmp/x.js" } }, "node_options_refused"],
+    ["NODE_TLS_REJECT_UNAUTHORIZED", { env: { NODE_TLS_REJECT_UNAUTHORIZED: "0" } }, "tls_override_refused"],
+    ["NODE_TLS_REJECT_UNAUTHORIZED=1", { env: { NODE_TLS_REJECT_UNAUTHORIZED: "1" } }, "tls_override_refused"],
+    ["NODE_USE_ENV_PROXY", { env: { NODE_USE_ENV_PROXY: "1", HTTPS_PROXY: "http://127.0.0.1:9" } }, "env_proxy_refused"],
+    ["win32 lower-case tls", { platform: "win32", env: { node_tls_reject_unauthorized: "0" } }, "tls_override_refused"],
+    ["win32 mixed-case proxy", { platform: "win32", env: { Node_Use_Env_Proxy: "1" } }, "env_proxy_refused"],
+    ["win32 mixed-case options", { platform: "win32", env: { Node_Options: "--require x" } }, "node_options_refused"],
   ] as const) {
     const { port, proc, deps } = rig(over);
     const h = runDaemonEntry(deps);
@@ -78,14 +84,29 @@ test("a debugger or inspector flag, or NODE_OPTIONS, refuses before the parent p
   }
 });
 
-test("an empty NODE_OPTIONS is not a refusal", async () => {
-  const { port, proc, deps, timers } = rig({ env: { NODE_OPTIONS: "" } });
-  const h = runDaemonEntry(deps);
-  assert.equal(port.attached(), true);
-  timers.fire();
-  await within(h.finished); // ends by the init timeout, not by a refusal of the environment
-  assert.equal(fatalOf(port)?.["reason"], "init_timeout");
-  assert.deepEqual(proc.exits, [EXIT.BAD_CONFIG]);
+test("an empty value, or a lower-case name outside Windows, is not a refusal", async () => {
+  for (const [name, over] of [
+    ["empty", { env: { NODE_OPTIONS: "", NODE_TLS_REJECT_UNAUTHORIZED: "", NODE_USE_ENV_PROXY: "" } }],
+    ["win32 empty", { platform: "win32", env: { node_options: "", Node_Tls_Reject_Unauthorized: "", NODE_USE_ENV_PROXY: "" } }],
+    ["linux lower-case", { platform: "linux", env: { node_options: "--require x", node_tls_reject_unauthorized: "0", node_use_env_proxy: "1" } }],
+  ] as const) {
+    const { port, proc, deps, timers } = rig(over);
+    const h = runDaemonEntry(deps);
+    assert.equal(port.attached(), true, name);
+    timers.fire();
+    await within(h.finished); // ends by the init timeout, not by a refusal of the environment
+    assert.equal(fatalOf(port)?.["reason"], "init_timeout", name);
+    assert.deepEqual(proc.exits, [EXIT.BAD_CONFIG], name);
+  }
+});
+
+test("envSet: exact on POSIX, any letter case on Windows, never an undefined or empty value", () => {
+  assert.equal(envSet({ NODE_USE_ENV_PROXY: "1" }, "NODE_USE_ENV_PROXY", "linux"), true);
+  assert.equal(envSet({ node_use_env_proxy: "1" }, "NODE_USE_ENV_PROXY", "darwin"), false);
+  assert.equal(envSet({ node_use_env_proxy: "1" }, "NODE_USE_ENV_PROXY", "win32"), true);
+  assert.equal(envSet({ node_use_env_proxy: undefined, NODE_USE_ENV_PROXY: "" }, "NODE_USE_ENV_PROXY", "win32"), false);
+  assert.equal(envSet({ a: "", node_use_env_proxy: undefined, Node_Use_Env_Proxy: "1" }, "NODE_USE_ENV_PROXY", "win32"), true);
+  assert.deepEqual(REFUSED_ENV.map(([n]) => n), ["NODE_OPTIONS", "NODE_TLS_REJECT_UNAUTHORIZED", "NODE_USE_ENV_PROXY"]);
 });
 
 test("no init message: the entry gives up with exit 78 and lets go of the port", async () => {
