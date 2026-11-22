@@ -34,6 +34,8 @@ function fakeClient() {
 }
 
 const flush = () => new Promise<void>(r => setTimeout(r, 0));
+/** Read through a function so one assertion does not narrow the next. */
+const kindOf = (c: { readonly status: AxisDaemonStatus }): string => c.status.kind;
 
 function rig() {
 	const timers = manualTimers();
@@ -63,14 +65,14 @@ suite('Axis renderer daemon client (PV-E0)', () => {
 
 	test('connecting, then ready on welcome; a close goes back to connecting and reconnects at once; one attempt at a time', async () => {
 		const r = rig();
-		assert.strictEqual(r.client.status.kind, 'connecting');
+		assert.strictEqual(kindOf(r.client), 'connecting');
 		assert.strictEqual(r.connects.length, 1);
 		const one = fakeClient();
 		r.connects[0].resolve(one.client);
 		await flush();
-		assert.strictEqual(r.client.status.kind, 'ready');
+		assert.strictEqual(kindOf(r.client), 'ready');
 		r.connects[0].onClose();
-		assert.strictEqual(r.client.status.kind, 'connecting');
+		assert.strictEqual(kindOf(r.client), 'connecting');
 		assert.deepStrictEqual(r.timers.due(), [0]);
 		r.timers.run(0);
 		assert.strictEqual(r.connects.length, 2);
@@ -87,14 +89,14 @@ suite('Axis renderer daemon client (PV-E0)', () => {
 		for (let i = 1; i <= 6; i++) {
 			r.connects[i - 1].reject(new Error('not_ready'));
 			await flush();
-			assert.strictEqual(r.client.status.kind, i >= AXIS_DOWN_AFTER_FAILURES ? 'down' : 'connecting', `after ${i}`);
+			assert.strictEqual(kindOf(r.client), i >= AXIS_DOWN_AFTER_FAILURES ? 'down' : 'connecting', `after ${i}`);
 			const delay = reconnectDelay(i, () => 0.5);
 			assert.deepStrictEqual(r.timers.due(), [delay]);
 			r.timers.run(delay);
 		}
 		r.connects[6].resolve(fakeClient().client);
 		await flush();
-		assert.strictEqual(r.client.status.kind, 'ready');
+		assert.strictEqual(kindOf(r.client), 'ready');
 		r.connects[6].onClose();
 		assert.deepStrictEqual(r.timers.due(), [0], 'the count was reset: the next attempt is immediate');
 		r.dispose();
@@ -104,12 +106,12 @@ suite('Axis renderer daemon client (PV-E0)', () => {
 		const r = rig();
 		r.timers.run(AXIS_WELCOME_TIMEOUT_MS);
 		await flush();
-		assert.strictEqual(r.client.status.kind, 'connecting');
+		assert.strictEqual(kindOf(r.client), 'connecting');
 		const late = fakeClient();
 		r.connects[0].resolve(late.client);
 		await flush();
 		assert.strictEqual(late.closed(), 1);
-		assert.strictEqual(r.client.status.kind, 'connecting');
+		assert.strictEqual(kindOf(r.client), 'connecting');
 		r.dispose();
 	});
 
@@ -128,7 +130,7 @@ suite('Axis renderer daemon client (PV-E0)', () => {
 		const bad = r.client.request('axis.projects', 'list', {});
 		one.calls[2].fail(Object.assign(new Error('bad_answer'), { code: 'E_INTERNAL' }));
 		await assert.rejects(bad, (e: unknown) => e instanceof AxisDaemonCallError && e.code === 'E_INTERNAL');
-		assert.strictEqual(r.client.status.kind, 'ready', 'a malformed reply does not tear the connection down');
+		assert.strictEqual(kindOf(r.client), 'ready', 'a malformed reply does not tear the connection down');
 		assert.strictEqual(one.closed(), 0);
 		const weird = r.client.request('axis.projects', 'list', {});
 		one.calls[3].fail(new Error('anything'));
