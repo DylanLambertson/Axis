@@ -66,7 +66,15 @@ export interface MessageDeliveryDeps {
   readonly maxFailures?: number;
   /** A failure the pipeline swallows, as a fixed code (no text): the host logs it. */
   readonly onInternalError?: (code: "notice_failed") => void;
+  /**
+   * True when the host redactor would change the text (a secret). Required (messages-contract.md section 11): a body whose
+   * stored raw text OR escaped text it matches is withheld from the block (the message still taints and raises the hop).
+   */
+  readonly holdsSecret: (text: string) => boolean;
 }
+
+/** What a model is shown in place of a body that holds a secret (a delivery or a read). */
+export const WITHHELD_BODY = "(Axis withheld this message's text: it holds a secret.)";
 
 /** Candidates looked at per boundary, paged in send order: bounds what a long queue of refused messages costs a turn. */
 export const DELIVERY_SCAN = 1_024;
@@ -248,7 +256,20 @@ export function createMessageDelivery(deps: MessageDeliveryDeps): MessageDeliver
             continue;
           }
           if (m === undefined) continue;
-          const body = toMessageText(m.body, MAX_BODY_DISPLAY).text;
+          // Section 11: the raw text catches a secret that escaping splits; the escaped text is what would leave. A check that
+          // throws ends the delivery like a failed lease (review N2): this call's leases are released and the failure counted,
+          // so the run fails closed and one message cannot fail every run of the agent.
+          let body: string;
+          let withheld: boolean;
+          try {
+            const escaped = toMessageText(m.body, MAX_BODY_DISPLAY).text;
+            withheld = deps.holdsSecret(m.body) || deps.holdsSecret(escaped);
+            body = withheld ? WITHHELD_BODY : escaped;
+          } catch (e) {
+            store.transact(() => store.deliveries.release(runId, parts.map((p) => p.id)));
+            failed(m, principal, agentId, runId);
+            throw e;
+          }
           if (parts.length >= maxMessages || (parts.length > 0 && units + body.length > maxText)) {
             full = true;
             break;
@@ -267,7 +288,7 @@ export function createMessageDelivery(deps: MessageDeliveryDeps): MessageDeliver
                 action: MESSAGE_AUDIT.deliver,
                 target: `run:${runId}`,
                 outcome: "success",
-                payload: { messageId: m.id, threadId: m.threadId, runId, agentId, channel: "composer-turn", senderKind: parsed.data.kind, hop: m.hop },
+                payload: { messageId: m.id, threadId: m.threadId, runId, agentId, channel: "composer-turn", senderKind: parsed.data.kind, hop: m.hop, withheld },
               });
               return `from ${who.name} (${who.kind}, ${who.verified ? "verified" : "unverified"}) | thread ${m.threadId} | message ${m.id} | hop ${m.hop}`;
             });
