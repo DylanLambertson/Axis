@@ -4,6 +4,7 @@
 - **Date:** 2026-11-06. Verified against `origin/main` at `74cd12e`; E1 (`116ef22`) and P1d (`e52114f`) have merged since.
 - **Depends on:** ADR 0004 decisions 8 and 10 and implication 3 (PTY-5), `docs/security/threat-model-phase1.md` (PTY-3, PTY-5, NET-1, A10, assumption on same-user processes), `docs/design/daemon-host-plan.md` §3 Q16 (permission-bypass entries), B9 (pty process, branch `feat/pty-process`).
 - **Evidence tags:** as in `product-vision-v2.md`.
+- **Decided by ADR 0007** (`docs/adr/0007-inter-agent-messaging.md` decision 7): the endpoint is hosted by the **pty process**, which relays frames to the daemon; the daemon checks the token and opens no listener (ADR 0003 D1.1, DMN-4). Where this file says "the daemon creates" or "the daemon accepts", read the pty process for the listener and the daemon for the token and the answer. Peer checks: Unix ships without a native helper (the `0700` directory is the control); Windows has no endpoint without the native pipe flags and DACL.
 
 ## 1. Constraints that do not change
 
@@ -39,7 +40,7 @@ All per-connection buffers are bounded; an idle authenticated connection is clos
 ## 4. The token and its residual (review S4)
 
 - 256 random bits, bound to `{ projectId, agentId, runId }` and to the methods `send` and `read`; never written to the journal, the audit log or any log (a canary test checks this); revoked as in §3.
-- **How it reaches the shim.** The endpoint address and the token are set as two variables in the CLI's environment after the PTY-5 deny-list. **PTY-5 amendment needed:** `AXIS_*` is denied today [V, `packages/pty-policy/src/names.ts`]; the amendment admits exactly two names, only for runs with messaging enabled, and the PTY-5 test asserts they are absent otherwise.
+- **How it reaches the shim.** The endpoint address and the token are two variables in the CLI's environment, added by the pty process after its PTY-5 re-check (ADR 0007 amendment item 1; they are never in the spawn's environment). **PTY-5 amendment needed:** `AXIS_*` is denied today [V, `packages/pty-policy/src/names.ts`]; the amendment admits exactly two names, only for runs with messaging enabled, and the PTY-5 test asserts they are absent otherwise.
 - **Residual, stated honestly.** The environment is inherited by **every program the CLI runs, including the repository's own scripts** (tests, build scripts, hooks, tool servers the repository configures). The hostile repository is the main in-scope adversary, so this is not only a "same-user process" concern. Such code can read this agent's inbox and send as this agent. The added privilege is small (that code already runs as the user and can do more than send messages), but **the attribution proves only that the sender held the token**.
 - **Labelling.** Every endpoint-originated message carries `verified: false`; the thread view and the audit show it as "via CLI endpoint, unverified writer". The taint rule treats it as a source like any agent message.
 - **Alternatives considered.** A file passed by path has the same exposure. A token handed only to the shim through the CLI's own tool configuration would avoid the environment but would put a long-lived secret in a config file; not chosen. Revisit when the OS sandbox (Phase 3) can scope child processes.

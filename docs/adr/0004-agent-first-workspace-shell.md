@@ -241,3 +241,7 @@ Records security decisions made while preparing the Phase 1 threat model (`docs/
 ## Amendment (2026-11-21, ADR 0006)
 
 ADR 0006 ("Agent home information architecture") amends this ADR: the app lands on the project home, the dashboard row is the agent (a stored entity with one home workspace), one agent is in focus and the focused workspace is its home, and the terminology adds Agent, Agent group and Project home while confirming Space and Workspace. Its section "Amendment to ADR 0004" governs where wording differs. The Phase 0 gate, the validation criteria and every security implication above are unchanged.
+
+## Amendment (2026-11-21, ADR 0007)
+
+ADR 0007 ("Inter-agent messaging") amends PTY-5 (implication 3 and amendment item 6): `AXIS_*` stays denied, and for a CLI run whose agent has messaging enabled, and only then, the spawn carries a separate `messagesEndpoint { token }` request (a spawn-message schema change, PV-M6), and the pty process, after its unchanged PTY-5 re-check of the environment and after creating the endpoint, adds exactly `AXIS_MESSAGES_ENDPOINT` and `AXIS_MESSAGES_TOKEN` to the child's environment; an inherited copy of either, in any letter case, is still removed by the deny-list, and a spawn environment carrying either is still refused. Decision 10 is unchanged: Axis never writes into a CLI agent's terminal. Its section "Amendment to ADR 0004" governs where wording differs.
