@@ -19,6 +19,8 @@ export const MESSAGE_AUDIT = {
   resume: "message.resume",
   deliver: "message.deliver",
   deliverFailed: "message.deliver.failed",
+  /** The CLI endpoint (PV-M6): minted, revoked, and one aggregated row per endpoint and minute of token failures. Never the token. */
+  endpoint: "message.endpoint",
 } as const;
 
 const WHO = ["callerKind", "callerId", "runId", "verified"] as const;
@@ -31,6 +33,7 @@ export const MESSAGES_PAYLOAD_ALLOWLIST: Readonly<Record<string, readonly string
   [MESSAGE_AUDIT.resume]: Object.freeze(["scopeKind", "scopeId", "changed"]),
   [MESSAGE_AUDIT.deliver]: Object.freeze(["messageId", "threadId", "runId", "agentId", "channel", "senderKind", "hop", "withheld"]),
   [MESSAGE_AUDIT.deliverFailed]: Object.freeze(["messageId", "threadId", "runId", "agentId", "failures"]),
+  [MESSAGE_AUDIT.endpoint]: Object.freeze(["endpointId", "runId", "agentId", "event", "failures", "firstAt", "lastAt"]),
 });
 
 export interface MessageAuditSink {

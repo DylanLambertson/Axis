@@ -57,6 +57,9 @@ export async function deliveryRig(t: TestContext, options: { maxText?: number; f
   const codes: string[] = [];
   const m = createMessagingBinding({
     holdsSecret: messageSecretCheck(c.redactor),
+    // The CLI endpoint is refused on Windows (no pipe helper); the tests judge the relay itself, on any host.
+    platform: "linux",
+    now: () => c.r.clock.now(),
     journal: c.journal,
     audit: c.audit,
     random: { bytes: (n) => randomBytes(n) },
