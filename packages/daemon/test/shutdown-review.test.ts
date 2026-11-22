@@ -289,7 +289,8 @@ test("R2: a flush that is cut short while still running is reported as running; 
   await settle(); // the run is in its flush (a promise-turn check: the stubs here are promise-only)
   c.escalate();
   // A guard, not an expectation: a broken escalate fails here by name in 5 s instead of waiting out the runner.
-  const res2 = await Promise.race([p, new Promise<never>((_, rej) => setTimeout(() => rej(new Error("escalate did not end the flush wait")), 5_000).unref())]);
-  assert.equal(res2.flushed, "running");
+  let guard: NodeJS.Timeout | undefined;
+  const result = await Promise.race([p, new Promise<never>((_, rej) => (guard = setTimeout(() => rej(new Error("escalate did not end the flush wait")), 5_000)))]).finally(() => clearTimeout(guard));
+  assert.equal(result.flushed, "running");
   late.resolve();
 });
