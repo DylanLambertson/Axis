@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { AuditLog, openDatabase, schemaVersion, type DatabaseSync } from "@axis/audit";
-import { JOURNAL_SCHEMA_VERSION, Journal } from "../src/index.js";
+import { JOURNAL_SCHEMA_VERSION, Journal, NAME_REFUSED_RANGES } from "../src/index.js";
 
 // Agents and agent groups (ticket PV-G1, ADR 0006): schema version 12. Every constraint has a refusing case here, and
 // the cases sit next to the closest accepted value, so loosening any check fails a test.
@@ -63,14 +63,34 @@ test("ids and names: journal-id format, 1 to 64 characters, no edge space, contr
   }
   const names = ["x", "Ünïcødé ok", "n".repeat(64), "inner  spaces"];
   names.forEach((n, i) => insert(db, "agents", composer(ws.a, { id: `n${i}`, name: n })));
-  const bad = ["", " lead", "trail ", "n".repeat(65), "a\u0001b", "a\u001fb", "a\u007fb", "a\u0000b", "a\tb", "a؜b", "a‎b", "a‏b",
-    "a‪b", "a‮b", "a⁦b", "a⁩b"];
-  for (const [i, n] of bad.entries()) {
+  for (const [i, n] of ["", " lead", "trail ", "n".repeat(65), "a\u0000b", "a\tb"].entries()) {
     assert.throws(() => insert(db, "agents", composer(ws.a, { id: `b${i}`, name: n })), /CHECK/, `agent name ${JSON.stringify(n)}`);
     assert.throws(() => insert(db, "agent_groups", group({ id: `b${i}`, name: n })), /CHECK/, `group name ${JSON.stringify(n)}`);
   }
-  // Neighbours of the refused ranges stay allowed.
-  ["a b", "a\u0080b", "a؛b", "a‍b", "a b", "a b", "a⁥b", "a⁪b"].forEach((n, i) => insert(db, "agents", composer(ws.a, { id: `k${i}`, name: n })));
+  // The refused set, written out independently: every range's ends are refused and the code points just outside are not.
+  const EXPECTED: readonly (number | readonly [number, number])[] = [
+    [0x1, 0x1f], [0x7f, 0x9f], 0xa0, 0xad, [0x600, 0x605], 0x61c, 0x6dd, 0x70f, [0x890, 0x891], 0x8e2, 0x180e,
+    [0x2000, 0x200f], [0x2028, 0x202f], [0x205f, 0x2064], [0x2066, 0x206f], 0xfeff, [0xfff9, 0xfffb], 0x110bd, 0x110cd,
+    [0x13430, 0x1343f], [0x1bca0, 0x1bca3], [0x1d173, 0x1d17a], 0xe0001, [0xe0020, 0xe007f],
+  ];
+  assert.deepEqual(NAME_REFUSED_RANGES, EXPECTED);
+  const spans = EXPECTED.map((r) => (typeof r === "number" ? [r, r] : r));
+  const refused = (cp: number): boolean => spans.some(([a, b]) => cp >= a! && cp <= b!);
+  let k = 0;
+  const probes = new Set(spans.flatMap(([a, b]) => [a!, b!, a! - 1, b! + 1]));
+  probes.delete(0);
+  for (const cp of probes) {
+    {
+      const name = `a${String.fromCodePoint(cp)}b`;
+      const row = composer(ws.a, { id: `k${k++}`, name });
+      if (refused(cp)) {
+        assert.throws(() => insert(db, "agents", row), /CHECK/, `U+${cp.toString(16)} is refused`);
+        assert.throws(() => insert(db, "agent_groups", group({ id: `k${k++}`, name })), /CHECK/, `U+${cp.toString(16)} is refused in a group`);
+      } else {
+        insert(db, "agents", row);
+      }
+    }
+  }
   db.close();
 });
 
@@ -84,7 +104,7 @@ test("groups: order 0 to 9999, user-created, in one existing project; id, projec
   assert.throws(() => insert(db, "agent_groups", group({ id: "g3", created_by: "agent:a1" })), /CHECK/);
   assert.throws(() => insert(db, "agent_groups", group({ id: "g3", created_by: "daemon" })), /CHECK/);
   assert.throws(() => insert(db, "agent_groups", group({ id: "g3", project_id: "nope" })), /FOREIGN KEY/);
-  assert.throws(() => insert(db, "agent_groups", group({ id: "g1" })), /UNIQUE/);
+  assert.throws(() => insert(db, "agent_groups", group({ id: "g1" })), /a group is inserted once/);
   db.prepare("UPDATE agent_groups SET name = 'Front', ord = 5, updated_at = 'later' WHERE id = 'g1'").run();
   for (const set of ["id = 'g9'", "project_id = 'p2'", "created_at = 'later'"]) {
     assert.throws(() => db.prepare(`UPDATE agent_groups SET ${set} WHERE id = 'g1'`).run(), /keeps its id, project and creation time/, set);
@@ -144,11 +164,14 @@ test("an agent keeps its id, project, kind, home and creation time, stays user-c
   db.close();
 });
 
-test("a live name is unique in its project; archived agents free it; archived_at goes with archived", () => {
+test("a live name is unique in its project, ignoring ASCII case; archived agents free it; archived_at goes with archived", () => {
   const { db, ws } = setup();
   insert(db, "agents", composer(ws.a));
   assert.throws(() => insert(db, "agents", cli(ws.b, { name: "Planner" })), /UNIQUE/);
-  insert(db, "agents", cli(ws.b, { name: "planner" }));
+  assert.throws(() => insert(db, "agents", cli(ws.b, { name: "planner" })), /UNIQUE/, "ASCII case is folded");
+  assert.throws(() => insert(db, "agents", cli(ws.b, { name: "PLANNER" })), /UNIQUE/);
+  insert(db, "agents", cli(ws.b, { name: "Plänner" }));
+  insert(db, "agents", cli(ws.b, { id: "c9", name: "PLÄNNER" })); // only ASCII is folded
   insert(db, "agents", composer(ws.other, { id: "a2", project_id: "p2" }));
   assert.throws(() => db.prepare("UPDATE agents SET archived = 1 WHERE id = 'a1'").run(), /CHECK/);
   assert.throws(() => db.prepare("UPDATE agents SET archived_at = 'x' WHERE id = 'a1'").run(), /CHECK/);
@@ -180,17 +203,20 @@ test("a new agent needs a home that is being created or ready; a home going away
   insert(db, "agents", cli(ws.a, { id: "c0", name: "Old", archived: 1, archived_at: "before" }));
   insert(db, "agents", cli(ws.b));
   const finalised = workspace(journal, "p1");
+  insert(db, "agents", cli(finalised, { id: "fin", name: "Finisher" }));
   journal.transitionWorkspace(finalised, "FINALISED", { outcome: "merged" });
+  assert.equal(agent(db, "fin")["archived"], 1, "a finalised home is not live: its agents are archived");
   assert.throws(() => insert(db, "agents", composer(finalised, { id: "f", name: "F" })), /being created or ready/);
+  assert.throws(() => db.prepare("UPDATE agents SET archived = 0, archived_at = NULL WHERE id = 'fin'").run(), /not live stays archived/);
   journal.transitionWorkspace(ws.a, "REMOVING");
   const gone = journal.getWorkspace(ws.a)!;
   assert.deepEqual([agent(db, "a1")["archived"], agent(db, "a1")["archived_at"], agent(db, "a1")["updated_at"]], [1, gone.updatedAt, gone.updatedAt]);
   assert.equal(agent(db, "c0")["archived_at"], "before", "an archived agent is left as it was");
   assert.equal(agent(db, "c1")["archived"], 0, "another workspace's agent stays live");
   assert.throws(() => insert(db, "agents", composer(ws.a, { id: "late", name: "Late" })), /being created or ready/);
-  assert.throws(() => db.prepare("UPDATE agents SET archived = 0, archived_at = NULL WHERE id = 'a1'").run(), /stays archived/);
+  assert.throws(() => db.prepare("UPDATE agents SET archived = 0, archived_at = NULL WHERE id = 'a1'").run(), /not live stays archived/);
   journal.transitionWorkspace(ws.a, "REMOVED");
-  assert.throws(() => db.prepare("UPDATE agents SET archived = 0, archived_at = NULL WHERE id = 'a1'").run(), /stays archived/);
+  assert.throws(() => db.prepare("UPDATE agents SET archived = 0, archived_at = NULL WHERE id = 'a1'").run(), /not live stays archived/);
   journal.transitionWorkspace(creating, "FAILED");
   assert.equal(agent(db, "early")["archived"], 1, "a workspace that failed to create archives its agents");
   // A removal that was abandoned returns the workspace to READY: its agents stay archived until the user restores them.
@@ -199,5 +225,27 @@ test("a new agent needs a home that is being created or ready; a home going away
   assert.equal(agent(db, "c1")["archived"], 1);
   db.prepare("UPDATE agents SET archived = 0, archived_at = NULL WHERE id = 'c1'").run();
   assert.equal(agent(db, "c1")["archived"], 0);
+  db.close();
+});
+
+test("an id is inserted once: INSERT OR REPLACE cannot rewrite an agent, a group, a run or a workspace", () => {
+  const { db, journal, ws } = setup();
+  insert(db, "agent_groups", group());
+  insert(db, "agent_groups", group({ id: "g2", project_id: "p2" }));
+  insert(db, "agents", cli(ws.a));
+  const run = journal.createRun({ workspaceId: ws.a, kind: "cli", createdBy: "user" }).value.id;
+  db.prepare("INSERT INTO agent_runs (id, workspace_id, kind, state, created_at, updated_at, agent_id) VALUES ('r-k', ?, 'cli', 'QUEUED', ?, ?, 'c1')").run(ws.a, T, T);
+  const moved = composer(ws.other, { id: "c1", project_id: "p2", group_id: "g2", created_at: "later" });
+  for (const verb of ["INSERT OR REPLACE", "REPLACE"]) {
+    const cols = Object.keys(moved);
+    assert.throws(() => db.prepare(`${verb} INTO agents (${cols.join(", ")}) VALUES (${cols.map(() => "?").join(", ")})`).run(...Object.values(moved)), /an agent is inserted once/, verb);
+    assert.throws(() => db.prepare(`${verb} INTO agent_groups (id, project_id, name, ord, created_by, created_at, updated_at) VALUES ('g1', 'p2', 'X', 0, 'user', 'later', 'later')`).run(), /a group is inserted once/, verb);
+    for (const id of [run, "r-k"]) {
+      assert.throws(() => db.prepare(`${verb} INTO agent_runs (id, workspace_id, kind, state, created_at, updated_at) VALUES (?, ?, 'cli', 'QUEUED', ?, ?)`).run(id, ws.a, T, T), /a run is inserted once/, verb);
+    }
+    assert.throws(() => db.prepare(`${verb} INTO agent_workspaces (id, project_id, branch, base_ref, base_sha, created_by, state, created_at, updated_at) VALUES (?, 'p1', 'axis/x', 'HEAD', ?, 'user', 'REMOVED', ?, ?)`).run(ws.a, "c".repeat(40), T, T), /a workspace is inserted once/, verb);
+  }
+  assert.deepEqual([agent(db, "c1")["project_id"], agent(db, "c1")["kind"], agent(db, "c1")["archived"]], ["p1", "cli", 0]);
+  assert.equal((db.prepare("SELECT agent_id FROM agent_runs WHERE id = 'r-k'").get() as { agent_id: string }).agent_id, "c1");
   db.close();
 });
