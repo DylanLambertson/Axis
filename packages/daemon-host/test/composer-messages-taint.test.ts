@@ -77,6 +77,26 @@ test("a tainted run's send whose text a scan finding would hide on the card is r
   assert.deepEqual(decisions(r), [["deny", "body-not-reviewable"]]);
 });
 
+test("review 2 N2: a tainted run's send whose card could not be built at all is refused the same way, not as a decline", async (t) => {
+  // The scanner reports a finding, and the redactor fails on the card's second pass (outside the builder's scan guard), so
+  // the builder returns no preview.
+  const r = await deliveryRig(t, { messaging: true, noDelivery: true, previewScanner: { scan: async (text) => (text.includes("BREAK-CARD") ? ["test-rule"] : []) } });
+  const real = r.c.redactor.redactString.bind(r.c.redactor);
+  let cardPasses = 0;
+  r.c.redactor.redactString = (text: string): string => {
+    if (text.startsWith("To: agent a2\n") && text.includes("BREAK-CARD") && ++cardPasses === 2) throw new Error("redactor failed");
+    return real(text);
+  };
+  const runId = r.run("a1");
+  await post(r, agent("a2"), "a1", "taint me");
+  const d = drive(r, runId, [[readMsgs(), sendTo("a2", "BREAK-CARD")], []]);
+  assert.equal(await denyAll(r, d.end), 0);
+  await d.end;
+  assert.equal(cardPasses, 2, "the card's second pass failed");
+  assert.match(d.results[1]?.[1] ?? "", /^The call was refused \(body_not_reviewable\)\./);
+  assert.deepEqual(decisions(r), [["deny", "body-not-reviewable"]]);
+});
+
 test("an untainted run is unaffected: a send of the full body bound is sent with no card", async (t) => {
   const r = await deliveryRig(t, { messaging: true, noDelivery: true });
   const runId = r.run("a1");

@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 import type { TestContext } from "node:test";
 import type { Challenge } from "@axis/protocol";
 import { createRunBudget, type GenerateResult } from "@axis/providers";
-import { createMessagingBinding, runComposerLoop, type AgentEntry, type ComposerApprovalNote, type GroupEntry, type LoopEnd, type ToolCaps, type MessagingBinding, type MessagingDirectory, type MessagingLimits } from "../src/index.js";
+import { createMessagingBinding, runComposerLoop, type AgentEntry, type ComposerApprovalNote, type GroupEntry, type LoopEnd, type ToolCaps, type MessagingBinding, type MessagingDirectory, type MessagingLimits, type PreviewScanner } from "../src/index.js";
 import { composerRig, type ComposerRig } from "./composer-rig.js";
 
 /**
@@ -24,7 +24,7 @@ export interface DeliveryRig {
   readonly codes: string[];
 }
 
-export async function deliveryRig(t: TestContext, options: { maxText?: number; failTaintAudit?: () => boolean; limits?: Partial<MessagingLimits>; onInternalError?: (code: string) => void; messaging?: boolean; noDelivery?: boolean; scan?: (text: string) => Promise<readonly unknown[]> } = {}): Promise<DeliveryRig> {
+export async function deliveryRig(t: TestContext, options: { maxText?: number; failTaintAudit?: () => boolean; limits?: Partial<MessagingLimits>; onInternalError?: (code: string) => void; messaging?: boolean; noDelivery?: boolean; previewScanner?: PreviewScanner; scan?: (text: string) => Promise<readonly unknown[]> } = {}): Promise<DeliveryRig> {
   const holder: { m?: MessagingBinding; rig?: DeliveryRig } = {};
   const agents = new Map<string, AgentEntry>();
   const groups = new Map<string, GroupEntry>();
@@ -32,6 +32,7 @@ export async function deliveryRig(t: TestContext, options: { maxText?: number; f
   const runAgent = new Map<string, string>();
   const live = (): MessagingBinding => holder.m as MessagingBinding;
   const c = await composerRig({
+    ...(options.previewScanner === undefined ? {} : { previewScanner: options.previewScanner }),
     // PV-M4: the run's `send_message` and `read_messages` over the same service (the binding is built first, so late-bound).
     ...(options.messaging === true
       ? { messaging: { service: { send: (who, req) => live().service.send(who, req), read: (who, req) => live().service.read(who, req) }, directory, agentOf: (runId: string) => runAgent.get(runId), random: { bytes: (n: number) => randomBytes(n) } } }
