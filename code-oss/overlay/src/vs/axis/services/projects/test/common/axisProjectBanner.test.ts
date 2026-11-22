@@ -4,7 +4,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { bannerContent, trustSource } from '../../common/axisProjectActions.js';
+import { bannerContent, projectChip, trustSource } from '../../common/axisProjectActions.js';
 
 suite('Axis project banner (S3)', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -13,10 +13,12 @@ suite('Axis project banner (S3)', () => {
 	const all = ['trusted', 'read_only', 'not_registered', 'unknown'] as const;
 
 	test('the source: not usable is offline whatever the rows say; connected with discovery rows is unregistered', () => {
-		assert.strictEqual(trustSource(false, 'daemon'), 'offline', 'a flip to down while daemon rows are shown: no stale trust');
-		assert.strictEqual(trustSource(false, 'discovery'), 'offline');
-		assert.strictEqual(trustSource(true, 'discovery'), 'unregistered');
-		assert.strictEqual(trustSource(true, 'daemon'), 'daemon');
+		assert.strictEqual(trustSource({ kind: 'down' }, 'daemon'), 'offline', 'a flip to down while daemon rows are shown: no stale trust');
+		assert.strictEqual(trustSource({ kind: 'failed', reason: 'crash_loop' }, 'daemon'), 'offline');
+		assert.strictEqual(trustSource({ kind: 'connecting' }, 'discovery'), 'offline');
+		assert.strictEqual(trustSource({ kind: 'ready' }, 'discovery'), 'unregistered');
+		assert.strictEqual(trustSource({ kind: 'ready' }, 'daemon'), 'daemon');
+		assert.strictEqual(trustSource({ kind: 'degraded' }, 'daemon'), 'degraded', 'F2: usable for reads, but never a trust source (mutant: degraded as daemon)');
 	});
 
 	test('offline (degraded host included, via status unknown): run trust unknown and no action, whatever main last said', () => {
@@ -44,5 +46,18 @@ suite('Axis project banner (S3)', () => {
 			assert.match(t.text, /trusted to run/);
 		}
 		assert.doesNotMatch(bannerContent('not_registered', 'daemon').text, /trusted to run|read only/, 'never a trust claim for an unregistered folder');
+	});
+
+	test('F2 degraded: no run trust shown and no action, whatever main last said; the chips say unknown', () => {
+		for (const trust of all) {
+			const c = bannerContent(trust, 'degraded');
+			assert.match(c.text, /read only \(degraded\)/);
+			assert.strictEqual(c.action, undefined, 'mutant: an action while degraded');
+		}
+		for (const trusted of [true, false]) {
+			const chip = projectChip({ id: 'p', name: 'repo', trusted }, 'degraded');
+			assert.match(chip.label, /run trust unknown/);
+			assert.doesNotMatch(chip.label, /trusted to run|read only/);
+		}
 	});
 });
