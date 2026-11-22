@@ -79,7 +79,7 @@ test("a start refuses while the supervisor's own run is still spawning: a hung s
   const b = createRunsBinding({ ...r.deps, pty: hung, limits: { startTimeoutMs: 50 } });
   t.after(() => b.dispose());
   const agent = (r.answers.agents as unknown[])[0];
-  const go = () => b.service.start({ workspaceId: id, agent, actor: "user", trust: r.handlerDeps.minter.attest({ workspaceId: id, projectId: r.projectId }) });
+  const go = async () => b.service.start({ workspaceId: id, agent, actor: "user", trust: await r.attest(id) });
   await assert.rejects(go(), (e: { code?: string }) => e.code === "E_TIMEOUT");
   assert.equal(b.service.hasActiveRun(id), true, "the supervisor holds the slot: the port may still produce a process");
   await assert.rejects(go(), (e: { code?: string; details?: { reason?: string } }) => e.code === "E_CONFLICT" && e.details?.reason === "active_run");
@@ -107,13 +107,12 @@ test("groups under watch are bounded: a spawn beyond the cap is refused and noth
   const user = await r.connect();
   const a = await create(user, "One");
   const b = await create(user, "Two");
-  const mint = r.handlerDeps.minter;
   const agent = (r.answers.agents as unknown[])[0];
-  const first = await capped.service.start({ workspaceId: a, agent, actor: "user", trust: mint.attest({ workspaceId: a, projectId: r.projectId }) });
+  const first = await capped.service.start({ workspaceId: a, agent, actor: "user", trust: await r.attest(a) });
   assert.equal(first.replayed, false);
   assert.equal(r.pty.spawns.length, 1);
   await assert.rejects(
-    capped.service.start({ workspaceId: b, agent, actor: "user", trust: mint.attest({ workspaceId: b, projectId: r.projectId }) }),
+    capped.service.start({ workspaceId: b, agent, actor: "user", trust: await r.attest(b) }),
     (e: { code?: string }) => e.code === "E_UNAVAILABLE",
   );
   assert.equal(r.pty.spawns.length, 1, "the second run was never spawned");

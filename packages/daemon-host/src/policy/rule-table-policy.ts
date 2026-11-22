@@ -74,12 +74,13 @@ export class RuleTablePolicy implements Policy {
     return rule.tier > tier ? { effect: "allow", tier: rule.tier } : { effect: "allow" };
   }
 
+  // `project` and `per-start`: the gate decides in the handler (and re-reads the revoke there); here only a recorded revoke
+  // refuses early. `identity.trusted` is never read. Any other mode fails closed.
   #trustOk(rule: Rule, identity: PolicyInput["identity"]): boolean {
     if (rule.trust === "none") return true;
-    const { windowId, workspaceId, trusted } = identity;
-    const subject = { windowId, ...(workspaceId === undefined ? {} : { workspaceId }) };
-    if (rule.trust === "per-start") return !this.#trust.isRevoked(subject);
-    return trusted === true && this.#trust.isTrusted(subject);
+    if (rule.trust !== "project" && rule.trust !== "per-start") return false;
+    const { windowId, workspaceId } = identity;
+    return !this.#trust.isRevoked({ windowId, ...(workspaceId === undefined ? {} : { workspaceId }) });
   }
 }
 

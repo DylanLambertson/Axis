@@ -23,4 +23,9 @@ export interface PortContext {
    * it. A handler passes it through and never builds one.
    */
   readonly confirmation?: unknown;
+  /**
+   * The project trust gate for this call (project-registration-and-trust.md §5.4), bound to the caller's window and signal: a
+   * gated port calls it inside its project mutex right before its first write and spends the ticket. Absent: the port refuses.
+   */
+  readonly trust?: (scope: { readonly projectId: string; readonly workspaceId?: string }) => Promise<unknown>;
 }

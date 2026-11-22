@@ -1,10 +1,11 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
+import { isProjectGated } from "./gate/project-trust.js";
 import { AxisError, type AuditLog, type Redactor } from "@axis/audit";
 import { providerRedactor } from "./bindings/provider-redactor.js";
 import { protocolRegistry, type ContractRegistry, type DaemonAuditSink } from "@axis/daemon";
 import { lookupMethod } from "@axis/protocol";
 import type { HostServices } from "./host.js";
-import type { Journal } from "@axis/journal";
+import { RUN_TERMINAL_STATES, type Journal } from "@axis/journal";
 import type { RunsBindingDeps } from "./bindings/runs.js";
 import type { HandlerRegistrar } from "./handlers/anchor-guard.js";
 import type { Clock } from "./ports/clock.js";
@@ -77,14 +78,19 @@ export function createRunsClock(clock: Pick<Clock, "now">): RunsBindingDeps["clo
 }
 
 /** Records every `<contract>/<version>.<method>` handed to the real registrar, so the composition can compare it with what is served. */
-export function recordingRegistrar(inner: HandlerRegistrar): { readonly registrar: HandlerRegistrar; readonly methods: () => ReadonlySet<string> } {
+export function recordingRegistrar(inner: HandlerRegistrar): { readonly registrar: HandlerRegistrar; readonly methods: () => ReadonlySet<string>; readonly gated: () => ReadonlySet<string> } {
   const seen = new Set<string>();
+  const gated = new Set<string>();
   const register: HandlerRegistrar["register"] = (contract, version, handlers, options) => {
-    for (const method of Object.keys(handlers)) seen.add(`${contract}/${version}.${method}`);
+    for (const [method, handler] of Object.entries(handlers)) {
+      seen.add(`${contract}/${version}.${method}`);
+      // As registered, before any wrapping: a handler marked `projectGated` reaches its side effect only through the gate.
+      if (isProjectGated(handler)) gated.add(`${contract}/${version}.${method}`);
+    }
     inner.register(contract, version, handlers, options);
   };
   const registrar: HandlerRegistrar = Object.freeze({ register });
-  return { registrar, methods: () => new Set(seen) };
+  return { registrar, methods: () => new Set(seen), gated: () => new Set(gated) };
 }
 
 /**
@@ -176,6 +182,51 @@ export function refuseComposition(reason: string): never {
 }
 
 export const isPty = (p: unknown): p is PtyPort => typeof (p as { spawn?: unknown } | null)?.spawn === "function";
+
+/**
+ * Stops the live CLI and composer runs of a project's workspaces (docs/design/project-registration-and-trust.md §5.4): a run
+ * does not outlive the trust it started under, so a revoke (`projects.trust` false) or a lost binding ends them. It is a stop,
+ * not a rollback. Every step is best effort and never throws: a run that ended meanwhile refuses its stop harmlessly.
+ *
+ * It runs inside the PROJECT MUTEX (the same instance the start handlers hold across the gate and the start), taken with
+ * `exclusive` (it queues like an unrelated caller even when fired from inside a holder's call chain): a start that passed the gate
+ * before the revoke, or was already waiting, finishes recording its run first and is then stopped here; one that comes after meets
+ * the revoked record at its own gate. No run that the revoke should end survives it. The stop waits for the current holder (a
+ * commit or push in progress, bounded by that method's own timeout); the revoke's answer does not wait for the stop.
+ */
+export function createProjectRunStopper(deps: {
+  readonly mutex: () => Pick<ProjectMutex, "exclusive"> | undefined;
+  readonly journal: () => Pick<Journal, "listWorkspaces"> | undefined;
+  readonly runs: () => Pick<RunsService, "list" | "stop"> | undefined;
+  readonly composer: () => { list(o: { readonly workspaceId?: string; readonly limit: number }): readonly { readonly runId: string; readonly endedAt: string | null }[]; cancel(id: string): unknown } | undefined;
+}): (projectId: string) => void {
+  const ended = new Set<string>(RUN_TERMINAL_STATES);
+  const quietly = (f: () => unknown): void => {
+    try {
+      f();
+    } catch {
+      // ended meanwhile, or the service is gone: nothing left to stop
+    }
+  };
+  const stopAll = (projectId: string): void =>
+    quietly(() => {
+      for (const ws of deps.journal()?.listWorkspaces() ?? []) {
+        if (ws.projectId !== projectId) continue;
+        for (const run of deps.runs()?.list({ workspaceId: ws.id, limit: 200 }) ?? []) if (!ended.has(run.state)) quietly(() => deps.runs()?.stop(run.runId, "daemon"));
+        for (const run of deps.composer()?.list({ workspaceId: ws.id, limit: 200 }) ?? []) if (run.endedAt === null) quietly(() => deps.composer()?.cancel(run.runId));
+      }
+    });
+  return (projectId) => {
+    const mutex = deps.mutex();
+    if (mutex === undefined) return stopAll(projectId);
+    // Not awaited by the caller (a revoke answers at once); a failure of the mutex itself still stops, outside it.
+    void Promise.resolve()
+      // `exclusive`, never the re-entrant `run`: a revoke fired from inside a call that holds the project (the gate's binding_lost,
+      // inside a start handler) must still queue behind every start already waiting, so none of them records a run after the stop.
+      .then(() => mutex.exclusive(projectId, async () => stopAll(projectId)))
+      .catch(() => stopAll(projectId));
+  };
+}
 
 /**
  * The host redactor's secret check for message deliveries (messages-contract.md section 11): the providers' own check

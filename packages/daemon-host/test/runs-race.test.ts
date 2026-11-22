@@ -47,20 +47,21 @@ test("a start that races a finalise never runs in a workspace being changed (pro
   const finalise = finaliseApproved(r, user, id, "archived");
   await reached; // the finalise holds the project mutex and the journal lock record, and has not touched git yet
   const mx = watchMutex(r.binding.mutex);
+  const asksBefore = r.asked.length; // the worktree create above asked main through the gate too
   const start = user.call("axis.cli-runs", "start", START(id), newKey());
   // The binding is safe on its own too (a caller that is not the handler): its start waits for the project as well.
   const direct = r.runs.service.start({
     workspaceId: id,
     agent: (r.answers.agents as unknown[])[0],
     actor: "user",
-    trust: r.handlerDeps.minter.attest({ workspaceId: id, projectId: r.projectId }),
+    trust: await r.attest(id),
   });
   const directOutcome = direct.then(() => "started", (e: { details?: { reason?: string } }) => e.details?.reason);
   // Both starts (the wire call and the direct one) have asked the mutex, so both are queued behind the finalise; a start that skipped the queue would have spawned.
   await untilTrue(() => mx.asks() >= 2 || mx.entered() > 0 || r.pty.spawns.length > 0, "both starts asked the project mutex", 10_000);
   assert.equal(mx.entered(), 0, "no start began its work while the finalise held the project");
   assert.equal(r.pty.spawns.length, 0, "no process was spawned while the finalise held the project");
-  assert.equal(r.asked.some((m) => m["type"] === "trust.check"), false, "main is not asked until the start holds the project");
+  assert.equal(r.asked.slice(asksBefore).some((m) => m["type"] === "trust.check"), false, "main is not asked until the start holds the project");
 
   hold.open();
   const f = await finalise;

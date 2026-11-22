@@ -37,7 +37,7 @@ async function run(identity: Identity, m: Op): Promise<Record<string, unknown>> 
     case "echo":
       return { echo: m["v"], actor: identity.actor, windowId: identity.windowId };
     case "trust":
-      await client.trustCheck({ windowId: identity.windowId, workspaceId: "ws-1", projectId: "p-1" });
+      await client.trustCheck({ windowId: identity.windowId, workspaceId: "ws-1", projectId: "p-1", projectPath: "/work/repo" });
       return { trusted: true };
     case "native":
       return { ...(await client.nativeConfirm({ challengeId: m["challengeId"] as string, proof: m["proof"] as string, windowId: identity.windowId, summary: "Test action" })) };

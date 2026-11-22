@@ -71,6 +71,11 @@ export const RESTRICTED_MODULES = [
   { pkg: "daemon-host", file: "gate/run-trust.ts", importers: new Set(), files: new Set(["daemon-host/index.ts", "daemon-host/compose.ts"]), exact: true },
   // The composition root loads the minters: only the public index and the process entry (`entry.ts`, which calls `composeDaemonHost` and nothing else of it) may load it, so no handler can import a minter through it.
   { pkg: "daemon-host", file: "compose.ts", importers: new Set(), files: new Set(["daemon-host/index.ts", "daemon-host/entry.ts"]), exact: true },
+  // The project trust gate (project-registration-and-trust.md §5.4): only the composition builds a gate, only the two gate modules
+  // reach the ticket's brand and state, and only the composition root loads the composition helper (mirrors imports.test.mjs).
+  { pkg: "daemon-host", file: "gate/project-trust-gate.ts", importers: new Set(), files: new Set(["daemon-host/compose-serving.ts"]), exact: true },
+  { pkg: "daemon-host", file: "gate/project-ticket.ts", importers: new Set(), files: new Set(["daemon-host/gate/project-trust.ts", "daemon-host/gate/project-trust-gate.ts"]), exact: true },
+  { pkg: "daemon-host", file: "compose-serving.ts", importers: new Set(), files: new Set(["daemon-host/compose.ts"]), exact: true },
   // The discard token minter has the same two loaders as the run trust minter.
   { pkg: "daemon-host", file: "gate/worktrees-confirm.ts", importers: new Set(), files: new Set(["daemon-host/index.ts", "daemon-host/compose.ts"]), exact: true },
   // The public index re-exports the composition (and so, through it, both minters): no staged file may load it (a barrel hop), only

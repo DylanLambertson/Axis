@@ -17,9 +17,9 @@ const blocked = (patch: Record<string, unknown> = {}, over: Record<string, unkno
   ...over,
 });
 
-test("push refusals: the four scan blocks and git_drift are closed reasons of E_CONFLICT, beside plan_changed", () => {
+test("push refusals: the four scan blocks, git_drift and untrusted are closed reasons of E_CONFLICT, beside plan_changed", () => {
   assert.deepEqual([...GIT_PUSH_BLOCKS], ["message_unscannable", "secrets_found", "scan_incomplete", "binary_unscanned"]);
-  assert.deepEqual([...GIT_PUSH_REFUSALS.E_CONFLICT].sort(), ["binary_unscanned", "git_drift", "message_unscannable", "plan_changed", "scan_incomplete", "secrets_found"]);
+  assert.deepEqual([...GIT_PUSH_REFUSALS.E_CONFLICT].sort(), ["binary_unscanned", "git_drift", "message_unscannable", "plan_changed", "scan_incomplete", "secrets_found", "untrusted"]);
   assert.deepEqual(Object.keys(GIT_PUSH_REFUSALS), ["E_CONFLICT"]);
   for (const r of GIT_PUSH_REASONS) assert.equal(gitPushReasonSchema.safeParse(r).success, true, r);
   for (const r of ["", "secrets", "SECRETS_FOUND", "secrets_found ", "binary", "head_moved", "other"]) assert.equal(gitPushReasonSchema.safeParse(r).success, false, r);

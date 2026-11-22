@@ -1,4 +1,5 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
+import { openTrustGate } from "../testing/open-gate.js";
 import { Redactor } from "@axis/audit";
 import assert from "node:assert/strict";
 import { mkdirSync, readFileSync } from "node:fs";
@@ -80,7 +81,7 @@ test("a run whose last transition could not be written can be cancelled, so the 
 
 test("axis.runs handlers refuse a non-user identity themselves, behind the policy row (defence in depth)", async (t) => {
   const c = await setup(t, { replies: [] });
-  const handlers = createComposerRunsHandlers({ service: c.service, journal: c.journal, mutex: new ProjectMutex() });
+  const handlers = createComposerRunsHandlers({ service: c.service, gate: openTrustGate(), journal: c.journal, mutex: new ProjectMutex() });
   const ctx = (actor: string) => ({ identity: { actor, windowId: "win-1" }, signal: new AbortController().signal }) as never;
   for (const [method, payload] of [["list", {}], ["get", { runId: "r1" }], ["events", { runId: "r1" }], ["start", { ...START(c.workspaceId) }]] as const) {
     await assert.rejects(Promise.resolve(handlers[method](ctx("agent:composer.x"), payload as never)), (e) => codeOf(e) === "E_NOT_FOUND", method);
