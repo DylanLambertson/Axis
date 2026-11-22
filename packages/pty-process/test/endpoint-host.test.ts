@@ -5,7 +5,7 @@ import { connect, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
-import { ENDPOINT_HOST_LIMITS, PtySpawnError, createEndpointHost, endpointDirOk, type EndpointHost, type RelayInbound } from "../src/index.js";
+import { ENDPOINT_HOST_LIMITS, PtySpawnError, createEndpointHost, endpointDirOk, isEndpointPath, type EndpointHost, type RelayInbound } from "../src/index.js";
 import { ManualClock, counterRandom } from "../testing/helpers.js";
 import { rig, SPEC } from "../testing/rig.js";
 
@@ -253,4 +253,23 @@ test("ADR 0007 validation 4 and endpoint line 1: without the request, or without
   for (const name of ["AXIS_MESSAGES_ENDPOINT", "AXIS_MESSAGES_TOKEN", "axis_messages_token", "Axis_Messages_Endpoint"]) {
     await assert.rejects(plain.port.spawn({ ...SPEC, env: { ...SPEC.env, [name]: "x" } }), (e: unknown) => e instanceof PtySpawnError && e.code === "env_denied", name);
   }
+});
+
+test("review: only an absolute path is ever listened on: a relative or numeric directory opens nothing (a numeric string would be a TCP port)", { skip }, async (t) => {
+  for (const p of ["8080", " 8080 ", "0", "rel/a.sock", "./a.sock"]) assert.equal(isEndpointPath(p), false, p);
+  assert.equal(isEndpointPath("/run/user/1000/axis/a.sock"), true);
+  const listened: unknown[] = [];
+  const net = await import("node:net");
+  const original = net.Server.prototype.listen;
+  net.Server.prototype.listen = function (this: unknown, ...args: unknown[]) {
+    listened.push(args[0]);
+    return original.apply(this as never, args as never);
+  } as typeof original;
+  t.after(() => void (net.Server.prototype.listen = original));
+  for (const dirName of ["8080", "relative-dir"]) {
+    const h = createEndpointHost({ dir: dirName, platform: process.platform, uid }, { send: () => true, clock: new ManualClock(), random: counterRandom() });
+    assert.equal(await h.open(EP), undefined, dirName);
+  }
+  assert.deepEqual(listened, [], "listen was never called");
+  assert.equal(existsSync("relative-dir") || existsSync("8080"), false, "and nothing was created in the working directory");
 });

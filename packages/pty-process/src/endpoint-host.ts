@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { lstatSync, mkdirSync, rmSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { ENDPOINT_ID, RELAY_FRAME_CHARS, type RelayInbound, type RelayOutbound } from "./messages.js";
 import type { Clock } from "./ports.js";
 
@@ -65,6 +65,10 @@ export function endpointDirOk(dir: string, uid: number): boolean {
     return false;
   }
 }
+
+/** True for an absolute Unix socket path that no reading of listen() could take for a port (not a numeric string). */
+// `p`, not `path`: the listen argument must be the one `path` the file declares (the endpoint source rules, web-rules.mjs rule 1).
+export const isEndpointPath = (p: string): boolean => isAbsolute(p) && p.startsWith("/") && !/^\d+$/.test(p.trim());
 
 interface Conn {
   readonly id: string;
@@ -155,9 +159,11 @@ export function createEndpointHost(cfg: EndpointHostConfig, deps: { readonly sen
 
   return {
     async open(endpoint) {
-      if (cfg.platform === "win32" || !ENDPOINT_ID.test(endpoint) || hosted.has(endpoint) || !endpointDirOk(cfg.dir, cfg.uid)) return undefined;
+      // An absolute directory first, before anything touches the file system (a relative one would be made in the working directory).
+      if (cfg.platform === "win32" || !ENDPOINT_ID.test(endpoint) || hosted.has(endpoint) || !isEndpointPath(cfg.dir) || !endpointDirOk(cfg.dir, cfg.uid)) return undefined;
       const path = join(cfg.dir, `${Buffer.from(deps.random(9)).toString("base64url")}.sock`);
-      if (Buffer.byteLength(path) > ENDPOINT_HOST_LIMITS.pathBytes) return undefined;
+      // Never a port: Node reads a numeric string given to listen() as a TCP port, so only an absolute path is listened on.
+      if (!isEndpointPath(path) || Buffer.byteLength(path) > ENDPOINT_HOST_LIMITS.pathBytes) return undefined;
       const server = createServer();
       const h: Hosted = { server, path, conns: new Map() };
       server.on("connection", (sock) => accept(endpoint, h, sock));
