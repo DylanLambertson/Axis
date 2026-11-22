@@ -29,6 +29,7 @@ import { registerCliRunsHandlers } from "./handlers/cli-runs.js";
 import { registerComposerRunsHandlers } from "./handlers/composer-runs.js";
 import { PushedBases } from "./handlers/git-common.js";
 import { registerGitHandlers } from "./handlers/git.js";
+import { registerAgentsHandlers } from "./handlers/agents.js";
 import { registerMessagesHandlers } from "./handlers/messages.js";
 import { createProvidersHandlers } from "./handlers/providers.js";
 import { createReviewAuditSink } from "./handlers/review-audit.js";
@@ -107,6 +108,16 @@ export function registerServing(registrar: HandlerRegistrar, services: HostServi
     journal, mutex: worktrees.mutex, needsAttention: worktrees.needsAttention });
   if (built.messaging === undefined) throw new AxisError("E_INTERNAL", "The host composition is incomplete", { reason: "not_built" });
   registerMessagesHandlers(registrar, built.messaging);
+  registerAgentsHandlers(registrar, {
+    journal,
+    mutex: worktrees.mutex,
+    trust: services.trust,
+    noteWrite: () => services.anchors.noteWrite(),
+    // S1b (agents-contract.md 4.4 left this hook for it): the early check is the project's run-trust record, and the new home
+    // worktree's create goes through the project trust gate like any other (the worktrees port spends its ticket).
+    admitNewHome: (_caller, projectId) => journal.getProject(projectId)?.trusted === true,
+    worktrees: { create: (req, ctx) => worktrees.service.create(req, { ...ctx, trust: (scope) => gate.admit({ ...scope, windowId: ctx.caller.windowId, signal: ctx.signal }) }) },
+  });
   registerCliRunsHandlers(registrar, { service: runs.service, journal, control, gate, minter: ctx.minter, mutex: worktrees.mutex, needsAttention: worktrees.needsAttention, platform: config.platform });
   registrar.register(
     REVIEW_CONTRACT,

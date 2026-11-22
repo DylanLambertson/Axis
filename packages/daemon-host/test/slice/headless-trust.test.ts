@@ -29,7 +29,7 @@ describe("headless slice: project trust", { skip: gitSkipReason(), timeout: SUIT
     rmSync(scratch, { recursive: true, force: true });
   });
 
-  test("review B S1: a revoke from main stops the running CLI run, and the next start is refused untrusted (mutant: no onRevoked wiring)", async () => {
+  test("review B S1: a revoke from main stops the running CLI run; the next start and a new agent home are refused (mutant: no onRevoked wiring)", async () => {
     const agents = [{ id: "slow", label: "Slow CLI", command: [process.execPath, FAKE_CLI], args: [join(scratch, "slow.json"), "slow"] }];
     const h = await startHost(fx, { agents });
     const sup = h.sup;
@@ -38,6 +38,10 @@ describe("headless slice: project trust", { skip: gitSkipReason(), timeout: SUIT
     const projectId = await registerProject(sup, fx.repo);
     const user = await TestClient.open(sup);
     const ws = await createWorkspace(user, projectId, "Trusted");
+    // PV-G3's new home worktree goes through the same gate (compose-serving.ts wires its admitNewHome and the create's trust hook).
+    const newAgent = (name: string) => user.call("axis.agents", "create", { projectId, name, launch: { kind: "cli", entryId: "slow" }, home: { new: { name: `${name} home` } } }, newKey());
+    const made = await newAgent("Trusted worker");
+    assert.equal(made.ok, true, JSON.stringify(made.error));
     const started = await user.ok<{ run: { runId: string } }>("axis.cli-runs", "start", { workspaceId: ws.id, agentId: "slow" }, true);
     await awaitRun(user, started.run.runId, "RUNNING");
 
@@ -50,5 +54,7 @@ describe("headless slice: project trust", { skip: gitSkipReason(), timeout: SUIT
 
     const again = await user.call("axis.cli-runs", "start", { workspaceId: ws.id, agentId: "slow" }, newKey());
     assert.deepEqual([again.error?.code, (again.error?.details as { reason?: string } | undefined)?.reason], ["E_CONFLICT", "untrusted"]);
+    const refused = await newAgent("Late worker");
+    assert.deepEqual([refused.error?.code, (refused.error?.details as { reason?: string } | undefined)?.reason], ["E_CONFLICT", "untrusted_project"], "a new home is refused once the project is revoked (mutant: admitNewHome left on the registry)");
   });
 });

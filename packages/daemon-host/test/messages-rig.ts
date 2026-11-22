@@ -88,6 +88,7 @@ export function messagesRig(options: { limits?: Partial<MessagingLimits>; path?:
     close: () => db.close(),
   };
   (rig as { binding: MessagingBinding }).binding = createMessagingBinding({
+    holdsSecret: () => false,
     journal,
     audit,
     random: { bytes: (n) => (drawn.push(n), randomBytes(n)) },
