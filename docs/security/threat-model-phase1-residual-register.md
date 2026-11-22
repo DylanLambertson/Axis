@@ -136,6 +136,14 @@ Added by `docs/design/secret-broker.md` §3.2 (revision 2). Numbered after the i
 |---|---|---|---|---|---|---|
 | RR-88 | Upstream's renderer-reachable `encryption` channel can decrypt any `safeStorage` ciphertext of the app, Axis credential records included, and can mint one; on macOS and Linux `safeStorage` is unauthenticated AES-CBC with a fixed IV, so a refusal by plaintext prefix cannot close it (secret-broker review 1). A process of the same user can also reach the key outside the app on Linux (unlocked keyring) and Windows (DPAPI). Accepted under EXT-1 and A10; an authenticated envelope with a refusal keyed on the ciphertext is a later option. | EXT-4, PRV-2, A10 | secret broker | PV-N0a, PV-N0c | secret-broker §5 lines 1, 7 | Accepted |
 
+### 1.7 The CLI messaging endpoint (PV-M6)
+
+Added by the endpoint listener rule (`scripts/code-oss/web-rules.mjs` rule 1, review 4 of the pinned template).
+
+| ID | Residual risk | Risk | Owner | Ticket | Gate | Status |
+|---|---|---|---|---|---|---|
+| RR-89 | Code in the pty process bundle (same JS process as the pinned endpoint template `pty-process/src/endpoint-listen.ts`) can bypass W1's "no listener" by patching shared prototypes (an `EventEmitter.prototype` method, an `Object.prototype` setter for a key Node writes on the server) to capture the template's server and listen on TCP; a reviewer reproduced both on Node 24. NET-GATE does not exercise it (an idle packaged run never opens the endpoint). Controls: code review, the pinned template, the best-effort prototype lint (`scripts/code-oss/prototype-lint.mjs`, the plain forms only, not a proof), the supply-chain checks. Future option: run the endpoint in its own fully pinned process | NET-1, A10, IAC-14 | pty process | PV-M6 | `test/packages/endpoint-listener-rule.test.mjs` (lint probes) | Accepted |
+
 ## 2. Plan rows added with this change
 
 `docs/design/daemon-host-plan.md` gains one-line rows for the ids this register introduces: `H13` (RR-3), `FU-STAGE` (RR-6), `RV-CONTENT` (RR-10), `H9-base` (RR-11), `P1f` (RR-12), `REV2-FIX` (RR-13), `OVSX-TEST` (RR-18), `NET-GATE` (RR-19) and `REF1-SCAN` (RR-24). They are proposals: sizes and owners are set by the plan owners. The earlier proposals `FU-WT-BASE-REF`, `C8` and `C9` are not used: FU-WT-BASE2, C8 and C9 already exist with the meanings above.

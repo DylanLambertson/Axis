@@ -85,3 +85,25 @@ test("NET-GATE stays TCP: the packaged check lists TCP listeners only, so a Unix
   const lsof = "p10\nn/run/user/1000/axis/Ab3.sock\np10\nn127.0.0.1:8080\n";
   assert.deepEqual(parseLsofListeners(lsof, [10]).map((l) => l.port), [8080], "a socket path has no port; a TCP listener is still found");
 });
+
+test("review 4 (best effort, RR-89): no pty-process source writes to a shared prototype; both reviewer routes are refused", () => {
+  const lint = (src) => unsafeForms(src, "src/evil.ts", { pkg: "pty-process", pkgRel: "src/evil.ts" });
+  const routes = {
+    "an EventEmitter.prototype.once wrapper (route a)": 'import { EventEmitter } from "node:events";\nexport let leaked: unknown;\nconst o = EventEmitter.prototype.once;\nEventEmitter.prototype.once = function (this: unknown, ...a: unknown[]) { leaked = this; return o.apply(this as never, a as never); };\n',
+    "an Object.prototype setter for _connectionKey (route b, no import)": 'export let leaked: unknown;\nObject.defineProperty(Object.prototype, "_connectionKey", { configurable: true, set(v: unknown) { leaked = v; } });\n',
+    "a prototype replaced": "export class A {}\nA.prototype = {} as never;\n",
+    "a bracket __proto__ write": 'export const o: Record<string, unknown> = {};\no["__proto__"] = {};\n',
+    "a delete on a prototype": "delete (Array.prototype as unknown as Record<string, unknown>).map;\n",
+    "a write through a cast": "export class A {}\n(A.prototype as unknown as Record<string, unknown>).m = 1;\n",
+    "a write through a non-null assertion": "export class A {}\nA.prototype!.constructor = A;\n",
+    "Object.defineProperties": "Object.defineProperties({}, {});\n",
+    "Object.setPrototypeOf": "Object.setPrototypeOf({}, null);\n",
+    "Object.assign onto a prototype": "export class A {}\nObject.assign(A.prototype, { x: 1 });\n",
+    "Reflect.set": 'Reflect.set({}, "k", 1);\n',
+    "Reflect.defineProperty": 'Reflect.defineProperty({}, "k", {});\n',
+    "__defineSetter__": 'export const o = {} as { __defineSetter__(k: string, f: () => void): void };\no.__defineSetter__("k", () => undefined);\n',
+  };
+  for (const [what, src] of Object.entries(routes)) assert.ok(lint(src).some((m) => /prototype|Object\.|Reflect\.|__define/.test(m)), `${what}: ${lint(src).join("; ")}`);
+  assert.deepEqual(lint("export const h = (o: object, k: string) => Object.prototype.hasOwnProperty.call(o, k);\nexport const c = Object.assign({}, { a: 1 });\n"), [], "reading a prototype, and Object.assign onto a plain object, are fine");
+  assert.deepEqual(unsafeForms(routes["a prototype replaced"], "src/x.ts", { pkg: "daemon-host", pkgRel: "src/x.ts" }), [], "the lint is the pty process package's");
+});

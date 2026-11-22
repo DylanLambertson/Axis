@@ -1,8 +1,9 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 // The ONE file of the repository besides the web host that may load node:net (scripts/code-oss/web-rules.mjs rule 1), pinned
 // by its SHA-256: any edit fails the rule until the pin is updated in the same reviewed change. It listens on an absolute
-// Unix socket path, never a port (Node reads a numeric string as one), and lets neither the server nor a raw socket out:
-// callers get `close()` and, per connection, a frozen facade of six closures (ADR 0007 decision 7.1, PV-M6).
+// Unix socket path, never a port (Node reads a numeric string as one), and its API hands out neither the server nor a raw
+// socket: callers get `close()` and, per connection, a frozen facade of six closures (ADR 0007 decision 7.1, PV-M6). Code in
+// the same process that patches shared prototypes could still reach them: a residual (RR-89), not a guarantee of this file.
 import { createServer } from "node:net";
 import { isAbsolute } from "node:path";
 

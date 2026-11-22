@@ -9,7 +9,11 @@
 //      the web host listener (opt-in, W1) and the CLI messaging endpoint template in the pty process, `node:net` only
 //      (ADR 0007 decision 7.1, PV-M6). The template is not analysed: it is PINNED by its SHA-256 (ENDPOINT_LISTENER_SHA256),
 //      checked wherever a file's source is checked (stage-ast.mjs scanModules: the import lint, the staging hook and the
-//      staged-tree check), so any edit fails until the pin changes in the same reviewed change. In the DESKTOP bundles (the
+//      staged-tree check), so any edit fails until the pin changes in the same reviewed change. The template's API hands out
+//      neither its server nor a raw socket. LIMIT, stated plainly: this rule refuses socket built-ins and listen-capable
+//      imports outside the pinned file; it does NOT defend against code in the same process that patches shared prototypes
+//      to reach the server (RR-89). A best-effort lint refuses the plain forms of such patching in pty-process sources
+//      (prototype-lint.mjs); code review, the pin and the supply-chain checks are the other controls. In the DESKTOP bundles (the
 //      daemon and the main seam) the allowance is the web host's alone, and neither listener file may be reached at all
 //      (rule 2). NET-1's "no TCP listener in a desktop run" is unchanged: the packaged check lists TCP sockets only.
 //   2. Nothing outside `daemon-host/web/` may load a file inside it (and no desktop bundle may reach the endpoint listener
@@ -30,7 +34,7 @@ export const ENDPOINT_LISTENER_FILE = "pty-process/endpoint-listen.ts";
  * which a reviewer sees: the template is about 40 lines that listen on an absolute path only and let neither the server nor
  * a raw socket out (`packages/pty-process/src/endpoint-listen.ts`).
  */
-export const ENDPOINT_LISTENER_SHA256 = "3d1d52bd5fb2b9b20e1e40473f0410911ecf707a8d47aed3f63b95c2c6441324";
+export const ENDPOINT_LISTENER_SHA256 = "9b1a187e7048c30b8c2edaba462c9713ca79f7199405e8354ffed81328713cb8";
 
 /** The notice the staging hook writes as the second line of every staged file (after the copyright line). */
 export const STAGED_NOTICE = "Staged by code-oss/hooks/post-apply.d/20-stage-axis-packages. Do not edit; edit the source and rerun apply.sh.";
@@ -44,7 +48,7 @@ export function endpointPinRefusals(rel, source) {
   const lines = source.replace(/\r\n/g, "\n").split("\n");
   if (lines[1] === `// ${STAGED_NOTICE}`) lines.splice(1, 1);
   const sha = createHash("sha256").update(lines.join("\n"), "utf8").digest("hex");
-  return sha === ENDPOINT_LISTENER_SHA256 ? [] : [`${rel} is not the pinned endpoint template (sha256 ${sha}, pinned ${ENDPOINT_LISTENER_SHA256}): change the pin in web-rules.mjs with the file, in a reviewed change`];
+  return sha === ENDPOINT_LISTENER_SHA256 ? [] : [`${rel} is not the pinned endpoint template (sha256 ${sha}, pinned ${ENDPOINT_LISTENER_SHA256}; a staged copy may differ only by the staging notice as its second line, after the copyright line): change the pin in web-rules.mjs with the file, in a reviewed change`];
 }
 /** Every staged file that may load a socket built-in, with exactly the built-ins it may load. */
 export const LISTENER_FILES = new Map([
