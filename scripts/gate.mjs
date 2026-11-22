@@ -142,7 +142,8 @@ step("test", "tests", () => {
   const file = join(dir, "tests.json");
   let keep = false;
   try {
-    const r = sh(process.execPath, [join(root, "scripts", "test-all.mjs"), "--json", file], { cwd: root });
+    // ADR 0009's first test (PV-N1d) may skip on a dev machine without openssl, never under the gate.
+    const r = sh(process.execPath, [join(root, "scripts", "test-all.mjs"), "--json", file], { cwd: root, env: { ...process.env, AXIS_REQUIRE_PINNING_TEST: "1" } });
     try { packageCounts = JSON.parse(readFileSync(file, "utf8")); } catch { /* summary missing */ }
     if (r.ok) return { status: "pass", detail: `${packageCounts.length} suites` };
     const bad = packageCounts.filter((s) => !s.ok).map((s) => s.name);
