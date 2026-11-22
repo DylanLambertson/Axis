@@ -4,5 +4,6 @@
 // function (`exec-node.ts`), the service or the native spawn adapter.
 export { createPtyProcessPort, PtySpawnError, type PtyProcessHandle, type PtyProcessPort, type PtyProcessPortOptions, type PtyPushCall, type PtySpawnFailure } from "./client.js";
 export { PtyExecError, type PtyExecCall, type PtyExecFailure, type PtyExecOutcome } from "./exec-client.js";
+export { FORGE_CALL_TIMEOUT_MS, PtyForgeError, type PtyForgeFailure } from "./forge-client.js";
 export { adaptMessagePort, type MessagePortLike, type PortAdapterOptions } from "./port-adapter.js";
 export type { Channel, Disposable } from "./ports.js";

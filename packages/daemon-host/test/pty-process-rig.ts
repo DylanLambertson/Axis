@@ -38,7 +38,7 @@ class End {
   }
 }
 
-function channelPair(): { a: Channel; b: Channel } {
+export function channelPair(): { a: Channel; b: Channel } {
   const x = new End();
   const y = new End();
   x.peer = y;
