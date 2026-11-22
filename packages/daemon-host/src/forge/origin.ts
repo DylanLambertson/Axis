@@ -3,40 +3,37 @@
 // main checkout says, read with the daemon's own pinned git (`daemonGitFor`, the H9 path `compareUrl` uses: no hooks, isolated
 // configuration, `--` before the name). The checkout comes from the journal row, never from a request, and is checked on disk at
 // the moment of use.
-import { realpath } from "node:fs/promises";
 import { daemonGitFor, type GitOpsDeps } from "@axis/git-ops";
-import type { RepoFacts } from "../worktrees/shapes.js";
+import { readRepositoryBinding } from "../projects/binding.js";
 import type { OriginRead } from "./service.js";
 
 export interface OriginReaderDeps {
   /** The registered project's recorded path (the journal row), or undefined. */
   readonly projectPath: (projectId: string) => string | undefined;
-  /** `resolveRepo` of `@axis/worktrees` (through the worktrees binding). */
-  readonly resolveRepo: (p: string) => Promise<RepoFacts>;
   /** The daemon's git port (`createGitPort`). */
   readonly git: GitOpsDeps;
   readonly platform: NodeJS.Platform;
+  /** This process's uid (`process.getuid()`), for the binding's owner rule; undefined where there is none (refused). */
+  readonly uid: number | undefined;
 }
 
 /** The longest `origin` URL read; a longer one is no remote Axis uses (the vetting would refuse it anyway). */
 export const MAX_ORIGIN_CHARS = 2048;
 
-const key = (p: string, platform: NodeJS.Platform): string => (platform === "win32" ? p.toLowerCase() : p);
-
 /**
  * Throws when the checkout is not usable: the service answers `no_remote` for a throw, so a moved, swapped or linked checkout
- * never names a repository. The checkout must be the recorded path itself (no symlink swapped in), the root of a main working
- * tree (`.git` found in that directory, not above it, and not a linked worktree).
+ * never names a repository. The checkout must pass the project registration's own binding check (`projects/binding.ts`,
+ * `readRepositoryBinding`, without git discovery): the recorded path is its own real path, and `.git` in it is a real directory
+ * this user owns (not a symlink, not a `gitdir:` file pointing elsewhere, no `commondir`). git then gets that directory as
+ * `--git-dir` and the recorded path as `--work-tree` (GIT-4).
  */
 export function createOriginReader(deps: OriginReaderDeps): (projectId: string) => Promise<OriginRead> {
   return async (projectId) => {
     const recorded = deps.projectPath(projectId);
     if (recorded === undefined) throw new Error("no project");
-    const real = await realpath(recorded);
-    if (key(real, deps.platform) !== key(recorded, deps.platform)) throw new Error("moved");
-    const repo = await deps.resolveRepo(real);
-    if (repo.linked || repo.workTree === null || key(repo.workTree, deps.platform) !== key(real, deps.platform)) throw new Error("not a main checkout");
-    const git = await daemonGitFor({ workTree: real, gitDir: repo.gitDir }, deps.git);
+    const bound = await readRepositoryBinding(recorded, { platform: deps.platform, uid: deps.uid });
+    if (!bound.ok) throw new Error("not a bound repository");
+    const git = await daemonGitFor({ workTree: bound.binding.path, gitDir: bound.binding.commonDir }, deps.git);
     const out = await git(["remote", "get-url", "--", "origin"]);
     if (out.code !== 0) return { kind: "none" };
     const url = out.stdout.trim();

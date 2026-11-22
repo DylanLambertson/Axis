@@ -21,7 +21,7 @@ import { assertSafeRestorePath } from "../worktrees/restore-paths.js";
 import { createWorktreeLocator } from "../worktrees/locator.js";
 import { ProjectMutex } from "../worktrees/project-mutex.js";
 import { createWorktreesService, type ServiceJournal } from "../worktrees/service.js";
-import type { ManagerShape, RepoFacts } from "../worktrees/shapes.js";
+import type { ManagerShape } from "../worktrees/shapes.js";
 
 export interface WorktreesBindingDeps {
   readonly journal: ServiceJournal & Pick<Journal, "getWorkspace" | "listRuns">;
@@ -66,8 +66,6 @@ export interface WorktreesBinding {
   readonly mutex: ProjectMutex;
   /** The GIT-SNAP-1 re-take for a registered worktree (refuses by throwing, a closed `DaemonError`): `GitOpsDeps.assertNoDrift` of ticket H9. */
   readonly assertNoDrift: (worktree: { readonly workTree: string }) => Promise<void>;
-  /** `resolveRepo` of the package, for the forge binding's main-checkout check (`forge/origin.ts`, PV-D2 slice 2). */
-  readonly resolveRepo: (p: string) => Promise<RepoFacts>;
 }
 
 /** Runs one manager call and turns what the package throws into the closed `DaemonError` set (no message is forwarded). */
@@ -189,5 +187,5 @@ function build(deps: WorktreesBindingDeps, seams: WorktreesTestSeams): Worktrees
     needsAttention: runtime.needsAttention,
     ...(deps.onPreview === undefined ? {} : { onPreview: deps.onPreview }),
   });
-  return { service: runtime.service, locator, content, needsAttention: runtime.needsAttention, mutex, assertNoDrift: (w) => driftFor(w.workTree), resolveRepo: (p) => resolveRepo(p) };
+  return { service: runtime.service, locator, content, needsAttention: runtime.needsAttention, mutex, assertNoDrift: (w) => driftFor(w.workTree) };
 }

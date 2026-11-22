@@ -1,7 +1,8 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 // PV-D2 slice 2: the host port's `forgeList`. The request is checked by the shared schema before it is sent and carries exactly
 // its five fields; the reply is checked by the shared reply schema; every call settles (reply, send failure, close, dispose,
-// its own bound); a forge reply never reaches the exec calls and an exec reply never settles a forge call.
+// its own bound); a forge reply never reaches the exec calls and an exec reply never settles a forge call. Each test has its own
+// 10 s bound, so a regression that leaves a call pending fails fast by name (review 1 N-4).
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createPtyProcessPort, FORGE_CALL_TIMEOUT_MS, PtyForgeError, type Channel } from "../src/index.js";
@@ -27,7 +28,7 @@ function unserved(opts: { maxPending?: number; send?: Channel["send"] } = {}) {
 }
 const flush = (): Promise<void> => new Promise((r) => setImmediate(r));
 
-test("forgeList reaches the real service's forge path and the parsed reply comes back", { skip: SKIP }, async () => {
+test("forgeList reaches the real service's forge path and the parsed reply comes back", { skip: SKIP, timeout: 10_000 }, async () => {
   const r = forgeRig({ list: 'process.stdout.write("[]");' });
   const port = createPtyProcessPort({ channel: r.pair.a });
   try {
@@ -39,7 +40,7 @@ test("forgeList reaches the real service's forge path and the parsed reply comes
   }
 });
 
-test("the request is checked before it leaves and carries exactly the five schema fields", async () => {
+test("the request is checked before it leaves and carries exactly the five schema fields", { timeout: 10_000 }, async () => {
   const { pair, port } = unserved();
   for (const bad of [{ ...REQ, owner: "--upload-pack" }, { ...REQ, repo: ".." }, { ...REQ, host: "gitlab.com" }, { ...REQ, req: "r 1" }, { ...REQ, argv: ["x"] }]) {
     await assert.rejects(port.forgeList(bad as typeof REQ), code("bad_request"), JSON.stringify(bad));
@@ -56,7 +57,7 @@ test("the request is checked before it leaves and carries exactly the five schem
   await assert.rejects(pending, code("channel_closed"));
 });
 
-test("a value that changes after it was checked: what is sent is what was checked, never a second read", async () => {
+test("a value that changes after it was checked: what is sent is what was checked, never a second read", { timeout: 10_000 }, async () => {
   const { pair, port } = unserved();
   let reads = 0;
   const shifty = { ...REQ };
@@ -67,7 +68,7 @@ test("a value that changes after it was checked: what is sent is what was checke
   await assert.rejects(p, code("channel_closed"));
 });
 
-test("replies: parsed by the shared schema; a malformed reply to a pending call is undefined; others are dropped", async () => {
+test("replies: parsed by the shared schema; a malformed reply to a pending call is undefined; others are dropped", { timeout: 10_000 }, async () => {
   const { port, reply } = unserved();
   const ok = port.forgeList({ ...REQ, req: "a" });
   reply({ t: "forge-result", req: "a", exit: 1, class: "auth_missing", stdout: "", truncated: false });
@@ -93,7 +94,7 @@ test("replies: parsed by the shared schema; a malformed reply to a pending call 
   port.dispose();
 });
 
-test("a forge reply never settles an exec call, and an exec reply never settles a forge call", async () => {
+test("a forge reply never settles an exec call, and an exec reply never settles a forge call", { timeout: 10_000 }, async () => {
   const { port, reply, pair } = unserved();
   const call = port.exec({ argv: ["/g", "write-tree"], cwd: "/w", env: {}, timeoutMs: 10, maxOutput: 10, repo: { gitDir: "/w/.git", workTree: "/w" } });
   const execReq = (pair.sent.a[0] as { req: string }).req;
@@ -109,7 +110,7 @@ test("a forge reply never settles an exec call, and an exec reply never settles 
   port.dispose();
 });
 
-test("every call settles: its own bound, a send failure, capacity, a close, a dispose; no timer is left", async () => {
+test("every call settles: its own bound, a send failure, capacity, a close, a dispose; no timer is left", { timeout: 10_000 }, async () => {
   {
     const { port, clock, bounds } = unserved();
     const p = port.forgeList({ ...REQ });

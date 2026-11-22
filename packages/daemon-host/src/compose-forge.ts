@@ -11,7 +11,6 @@ import { registerForgeHandlers } from "./handlers/forge.js";
 import type { HandlerRegistrar } from "./handlers/anchor-guard.js";
 import type { Logger } from "./log/logger.js";
 import type { PtyForgePort } from "./ports/pty.js";
-import type { RepoFacts } from "./worktrees/shapes.js";
 
 /**
  * The platforms where `gh` cannot find the keyring login with the generated configuration (§4): the daemon answers
@@ -24,7 +23,6 @@ export interface ForgeServingDeps {
   /** The host's pty port; `forgeList` absent (a test port, an older pty process): every list is `unavailable`. */
   readonly pty: Partial<PtyForgePort> | undefined;
   readonly projectPath: (projectId: string) => string | undefined;
-  readonly resolveRepo: (p: string) => Promise<RepoFacts>;
   readonly git: GitOpsDeps;
   readonly platform: NodeJS.Platform;
   /** Appends one audit row and marks the anchor batch dirty. */
@@ -50,7 +48,7 @@ export function registerForgeServing(registrar: HandlerRegistrar, deps: ForgeSer
   const port: ForgeListPort | undefined = typeof forgeList === "function" ? { list: (request) => forgeList.call(deps.pty, request) } : undefined;
   const service = createForgeService({
     projectExists: (projectId) => deps.projectPath(projectId) !== undefined,
-    readOrigin: createOriginReader({ projectPath: deps.projectPath, resolveRepo: deps.resolveRepo, git: deps.git, platform: deps.platform }),
+    readOrigin: createOriginReader({ projectPath: deps.projectPath, git: deps.git, platform: deps.platform, uid: typeof process.getuid === "function" ? process.getuid() : undefined }),
     ...(port === undefined ? {} : { port }),
     audit: { append: (e) => deps.audit(e) },
     monotonic: deps.monotonic,

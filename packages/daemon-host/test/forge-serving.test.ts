@@ -19,9 +19,13 @@ const SKIP = process.platform === "win32" ? "POSIX shebang scripts and process g
 const USER = { actor: "user", clientKind: "desktop" };
 const ctx = (): HandlerContext => ({ identity: USER, requestId: "q", correlationId: "c", signal: new AbortController().signal }) as unknown as HandlerContext;
 const PATHS = "/usr/bin:/bin";
+/** Planted in the pty process's startup environment: none of it may reach gh (review 1 N-3). */
+const PLANTED = { GH_TOKEN: "CANARY_TOKEN_9c1", GITHUB_TOKEN: "CANARY_TOKEN_9c1", GH_ENTERPRISE_TOKEN: "CANARY_TOKEN_9c1", GITHUB_ENTERPRISE_TOKEN: "CANARY_TOKEN_9c1", GH_REPO: "evil/x", GH_HOST: "evil.example", GH_DEBUG: "api", GIT_DIR: "/evil", GIT_CONFIG_GLOBAL: "/evil" };
+/** The only GH_* names gh gets: the ones the pty process sets itself (§4). */
+const GH_SET = ["GH_CONFIG_DIR", "GH_HOST", "GH_NO_EXTENSION_UPDATE_NOTIFIER", "GH_NO_UPDATE_NOTIFIER", "GH_PROMPT_DISABLED", "GH_SPINNER_DISABLED"];
 
 /** A fake `gh` (Node, with a shebang) that answers `--version` and otherwise replays `out`, `err` and `code` from its directory. */
-function fakeGh(dir: string): { gh: string; set(out: string | Buffer, err?: string, code?: number): void; runs(): string[][] } {
+function fakeGh(dir: string): { gh: string; set(out: string | Buffer, err?: string, code?: number): void; runs(): string[][]; envs(): Array<Record<string, string>> } {
   mkdirSync(dir, { mode: 0o700 });
   const gh = join(dir, "gh");
   const at = (f: string): string => JSON.stringify(join(dir, f));
@@ -29,6 +33,7 @@ function fakeGh(dir: string): { gh: string; set(out: string | Buffer, err?: stri
     `#!${process.execPath}`,
     'const fs = require("fs");',
     `fs.appendFileSync(${at("gh.log")}, JSON.stringify(process.argv.slice(2)) + "\\n");`,
+    `fs.appendFileSync(${at("env.log")}, JSON.stringify(process.env) + "\\n");`,
     'if (process.argv[2] === "--version") { process.stdout.write("gh version 2.45.0 (2024-03-04)\\n"); } else {',
     `  process.stderr.write(fs.readFileSync(${at("err")}));`,
     `  process.stdout.write(fs.readFileSync(${at("out")}), () => process.exit(Number(fs.readFileSync(${at("code")}, "utf8"))));`,
@@ -37,13 +42,15 @@ function fakeGh(dir: string): { gh: string; set(out: string | Buffer, err?: stri
   ].join("\n"), { mode: 0o700 });
   chmodSync(gh, 0o700);
   writeFileSync(join(dir, "gh.log"), "");
+  writeFileSync(join(dir, "env.log"), "");
   const set = (out: string | Buffer, err = "", code = 0): void => {
     writeFileSync(join(dir, "out"), out);
     writeFileSync(join(dir, "err"), err);
     writeFileSync(join(dir, "code"), String(code));
   };
   set("[]");
-  return { gh, set, runs: () => readFileSync(join(dir, "gh.log"), "utf8").split("\n").filter((l) => l !== "").map((l) => JSON.parse(l) as string[]).filter((a) => a[0] !== "--version") };
+  return { gh, set, runs: () => readFileSync(join(dir, "gh.log"), "utf8").split("\n").filter((l) => l !== "").map((l) => JSON.parse(l) as string[]).filter((a) => a[0] !== "--version"),
+    envs: () => readFileSync(join(dir, "env.log"), "utf8").split("\n").filter((l) => l !== "").map((l) => JSON.parse(l) as Record<string, string>) };
 }
 
 const row = (n: number, over: Record<string, unknown> = {}) => ({
@@ -72,7 +79,7 @@ async function served(t: TestContext): Promise<Served> {
     spawn: () => {
       throw new Error("no terminals here");
     },
-    forge: { exec: createNodeExec(new Set([gh.gh]), process.platform), ghPath: gh.gh, scratchParent: scratch, baseEnv: { PATH: PATHS, HOME: rig.home, GH_TOKEN: "CANARY_TOKEN_9c1" } },
+    forge: { exec: createNodeExec(new Set([gh.gh]), process.platform), ghPath: gh.gh, scratchParent: scratch, baseEnv: { PATH: PATHS, HOME: rig.home, ...PLANTED } },
   });
   const pair = channelPair();
   service.serveControl(pair.b);
@@ -87,7 +94,6 @@ async function served(t: TestContext): Promise<Served> {
     registerForgeServing(registrar, {
       pty: port,
       projectPath: (id) => rig.journal.getProject(id)?.path,
-      resolveRepo: rig.binding.resolveRepo,
       git,
       platform: process.platform,
       audit: (e) => void audit.push(e),
@@ -138,6 +144,15 @@ test("confirm, then list: hostile gh rows are filtered and escaped, links are da
   assert.ok(!text.includes("Red") && !text.includes("CANARY_TOKEN") && !text.includes("evil"), "the audit carries ids, states and counts only");
   assert.deepEqual(s.audit.map((e) => e.action), ["forge.pin", "forge.pull_requests"]);
   assert.deepEqual(logged, [["forge.list", { reason: "ok", code: "0" }]], "one closed log record per gh run");
+  const envs = s.gh.envs();
+  assert.equal(envs.length, 2, "the version step and the list");
+  for (const env of envs) {
+    const names = Object.keys(env);
+    assert.deepEqual(names.filter((n) => n.startsWith("GH_")).sort(), GH_SET, "only the GH_ names the pty process sets");
+    assert.deepEqual(names.filter((n) => n.startsWith("GITHUB_") || n.startsWith("GIT_")), [], "no GITHUB_ or GIT_ name");
+    assert.equal(env["GH_HOST"], "github.com");
+    assert.ok(!JSON.stringify(env).includes("CANARY_TOKEN") && !JSON.stringify(env).includes("evil"), "no planted value");
+  }
 });
 
 test("the exec log line becomes a closed record; any other line is dropped", () => {
@@ -191,7 +206,8 @@ test("origin is read from the project's main checkout only: a moved, linked, nes
   const s = await served(t);
   const { rig } = s;
   const git = createGitPort({ gitPath: rig.gitPath, env: { daemon: { PATH: PATHS, HOME: rig.home }, pty: {} }, platform: process.platform, runHooks: false, scanner: createSecretScanner({ mode: "refuse" }), assertNoDrift: async () => undefined });
-  const read = (path: string) => createOriginReader({ projectPath: (id) => (id === "p" ? path : undefined), resolveRepo: rig.binding.resolveRepo, git, platform: process.platform })("p");
+  const uid = process.getuid?.();
+  const read = (path: string) => createOriginReader({ projectPath: (id) => (id === "p" ? path : undefined), git, platform: process.platform, uid })("p");
   assert.deepEqual(await read(rig.repo), { kind: "url", url: "https://github.com/acme/app.git" });
   await assert.rejects(read(join(rig.repo, "sub")), "a directory inside the checkout is not its root");
   const link = join(rig.tmp, "repo-link");
@@ -200,11 +216,28 @@ test("origin is read from the project's main checkout only: a moved, linked, nes
   const linked = join(rig.tmp, "linked");
   rig.git(rig.repo, "worktree", "add", "-q", "-b", "side", linked);
   await assert.rejects(read(linked), "a linked worktree is not the main checkout");
-  await assert.rejects(createOriginReader({ projectPath: () => undefined, resolveRepo: rig.binding.resolveRepo, git, platform: process.platform })("p"));
+  await assert.rejects(createOriginReader({ projectPath: () => undefined, git, platform: process.platform, uid })("p"));
+  await assert.rejects(createOriginReader({ projectPath: () => rig.repo, git, platform: process.platform, uid: undefined })("p"), "no uid: refused, never skipped");
   rig.git(rig.repo, "remote", "set-url", "origin", `https://github.com/acme/${"a".repeat(MAX_ORIGIN_CHARS)}`);
   await assert.rejects(read(rig.repo), "an over-long origin is refused, never cut");
   rig.git(rig.repo, "remote", "set-url", "origin", `https://github.com/acme/${"a".repeat(MAX_ORIGIN_CHARS - 30)}`);
   assert.equal(((await read(rig.repo)) as { url: string }).url.length, MAX_ORIGIN_CHARS - 6, "just under the bound is read whole");
   rig.git(rig.repo, "remote", "remove", "origin");
   assert.deepEqual(await read(rig.repo), { kind: "none" });
+});
+
+test("review 1 N-2: a .git that is not a real directory (a gitdir: file, a symlink) names no repository, as at registration", { skip: SKIP }, async (t) => {
+  const { rig } = await served(t);
+  const git = createGitPort({ gitPath: rig.gitPath, env: { daemon: { PATH: PATHS, HOME: rig.home }, pty: {} }, platform: process.platform, runHooks: false, scanner: createSecretScanner({ mode: "refuse" }), assertNoDrift: async () => undefined });
+  const read = (path: string) => createOriginReader({ projectPath: () => path, git, platform: process.platform, uid: process.getuid?.() })("p");
+  // `projects/binding.ts` refuses both at registration; the forge read mirrors it (one project per object store).
+  const separate = join(rig.tmp, "separate");
+  const elsewhere = join(rig.tmp, "elsewhere.git");
+  rig.git(rig.tmp, "init", "-q", `--separate-git-dir=${elsewhere}`, separate);
+  rig.git(separate, "remote", "add", "origin", "https://github.com/acme/other.git");
+  await assert.rejects(read(separate), "a gitdir: file");
+  const viaLink = join(rig.tmp, "via-link");
+  mkdirSync(viaLink);
+  symlinkSync(elsewhere, join(viaLink, ".git"));
+  await assert.rejects(read(viaLink), "a .git symlink");
 });
