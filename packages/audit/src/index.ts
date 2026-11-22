@@ -40,6 +40,7 @@ export {
   AUDIT_SCHEMA_VERSION,
   GENESIS_HASH,
   HASH_VERSION,
+  ACTOR_PATTERN,
   type AuditActor,
   type AuditEvent,
   type AuditEventInput,

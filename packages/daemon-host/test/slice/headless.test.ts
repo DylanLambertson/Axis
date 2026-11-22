@@ -80,7 +80,7 @@ describe("headless slice", { skip, timeout: SUITE_TIMEOUT_MS }, () => {
     sup = started.sup;
     const ready = await started.ready;
     assert.equal(ready["degraded"], undefined);
-    assert.deepEqual([...(ready["contracts"] as string[])].sort(), ["axis.agent-groups", "axis.agents", "axis.approvals", "axis.attention", "axis.audit", "axis.cli-runs", "axis.events", "axis.forge", "axis.git", "axis.messages", "axis.projects", "axis.providers", "axis.review", "axis.runs", "axis.worktrees"]);
+    assert.deepEqual([...(ready["contracts"] as string[])].sort(), ["axis.agent-groups", "axis.agents", "axis.approvals", "axis.attention", "axis.audit", "axis.cli-runs", "axis.events", "axis.forge", "axis.git", "axis.messages", "axis.projects", "axis.providers", "axis.review", "axis.runs", "axis.usage", "axis.worktrees"]);
     trustWindow(sup);
     projectId = await registerProject(sup, fx.repo);
     user = await TestClient.open(sup);
@@ -103,6 +103,12 @@ describe("headless slice", { skip, timeout: SUITE_TIMEOUT_MS }, () => {
     assert.deepEqual(attention, { projectId, approvalsWaiting: { total: zero, byAgent: [], more: false }, failedRuns: zero, quietCliRuns: zero, driftFlags: zero, unreadMessages: zero });
     const unknown = await user.call("axis.attention", "summary", { projectId: "no-such-project" }, true);
     assert.deepEqual([unknown.error?.code, unknown.error?.details], ["E_NOT_FOUND", { reason: "not_found" }]);
+    // PV-D3: the composed host serves axis.usage/1 over the journal and the composer's workspace limits; nothing spent yet.
+    const none = { runs: 0, inputTokens: 0, outputTokens: 0, tokens: 0, requests: 0, costMicroUsd: 0, unpricedRequests: 0 };
+    const usage = await user.ok("axis.usage", "summary", { projectId });
+    assert.deepEqual(usage, { projectId, project: none, agents: [], unattributed: none });
+    const unknownUsage = await user.call("axis.usage", "summary", { projectId: "no-such-project" }, true);
+    assert.deepEqual([unknownUsage.error?.code, unknownUsage.error?.details], ["E_NOT_FOUND", { reason: "not_found" }]);
     // C5: the composed list answers from the agent binding's registry (it was [] before), so the mock and its model are listed.
     const listed = await user.ok<{ providers: Array<{ providerId: string; status: string; models: Array<{ modelId: string }> }> }>("axis.providers", "list", {});
     assert.deepEqual(listed.providers.map((p) => [p.providerId, p.status, p.models.map((m) => m.modelId)]), [["mock", "ready", ["mock-model"]]]);

@@ -58,6 +58,8 @@ export interface ComposerService extends ComposerRunsService {
   recover(): number;
   /** Live runs in a workspace (a loop the daemon drives now). */
   isLive(workspaceId: string): boolean;
+  /** The per-workspace budget limits this service enforces (C10): what `axis.usage/1` reports the remainder of (PV-D3). */
+  readonly workspaceLimits: Readonly<RunBudgetLimits>;
   /** Settles when every loop has ended (tests and orderly shutdown). */
   idle(): Promise<void>;
   /** Abort every loop and stop writing. Idempotent. */
@@ -86,7 +88,8 @@ export function createComposerService(deps: ComposerServiceDeps): ComposerServic
   const maxActive = deps.maxActive ?? DEFAULT_MAX_ACTIVE;
   const limits = deps.budget ?? DEFAULT_COMPOSER_BUDGET;
   createRunBudget(limits); // refuses invalid limits now, not at the first run
-  const wsLimits = deps.workspaceBudget ?? DEFAULT_WORKSPACE_BUDGET;
+  // Frozen once: the same object is enforced below and exposed as `workspaceLimits` (PV-D3 review N-2), so the two cannot drift.
+  const wsLimits: Readonly<RunBudgetLimits> = Object.freeze({ ...(deps.workspaceBudget ?? DEFAULT_WORKSPACE_BUDGET) });
   createRunBudget(wsLimits);
   const redactor = deps.redactor;
   if (!(redactor instanceof Redactor)) throw new TypeError("the composer service needs the host redactor");
@@ -232,7 +235,7 @@ export function createComposerService(deps: ComposerServiceDeps): ComposerServic
       }
       const meta = { mode: input.mode, providerId: input.providerId, modelId: input.modelId };
       const created = deps.journal.composer.createRun(
-        { workspaceId: input.workspaceId, createdBy: "user", ...(input.idempotencyKey === undefined ? {} : { idempotencyKey: input.idempotencyKey }) },
+        { workspaceId: input.workspaceId, createdBy: "user", ...(input.idempotencyKey === undefined ? {} : { idempotencyKey: input.idempotencyKey }), ...(input.worker === undefined ? {} : { agentId: input.worker }) },
         meta,
       );
       if (created.replayed) return { run: view(created.value), replayed: true };
@@ -353,6 +356,7 @@ export function createComposerService(deps: ComposerServiceDeps): ComposerServic
     },
 
     isLive: (workspaceId) => [...live.values()].some((l) => l.workspaceId === workspaceId),
+    workspaceLimits: wsLimits,
 
     async idle() {
       await Promise.all([...live.values()].map((l) => l.done));
