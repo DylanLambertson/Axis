@@ -226,7 +226,7 @@ test("a version run killed by a control close is not joined by the next channel'
     const next = await reconnect(r);
     const fresh = forgeReq();
     next.send(fresh);
-    await until(() => next.replies.some((m) => m["req"] === fresh["req"]), 400_000);
+    await until(() => next.replies.some((m) => m["req"] === fresh["req"]));
     assert.equal(next.replies.find((m) => m["req"] === fresh["req"])?.["t"], "forge-result");
     assert.equal(versionRuns(r).length, 2, "a new version run");
   });
@@ -248,7 +248,7 @@ test("the call directory is checked just before the exec: anything planted refus
     const replies: Array<Record<string, unknown>> = [];
     const f = createForgeList({ exec: pipeExec(), ghPath: r.ghPath, scratchParent: sp, baseEnv: { PATH: "/usr/bin:/bin", HOME: r.dir } }, new ManualClock(), process.platform, (m) => void replies.push(m), plant === undefined ? {} : { afterPrepare: plant });
     f.handle(forgeReq());
-    await until(() => replies.length === 1, 400_000);
+    await until(() => replies.length === 1);
     await until(() => readdirSync(join(sp, "forge-calls")).length === 0);
     return replies[0] as Record<string, unknown>;
   };
