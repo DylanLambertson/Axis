@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 
 /**
- * Main's store of the audit anchor (ticket X1c, `docs/design/main-answers.md` section 3.1, `docs/packages.md` "Audit anchor").
+ * Main's store of the audit anchor (ticket X1c, `docs/design/main-answers.md` section 3.1, `docs/packages/daemon.md` "Audit anchor").
  * The record is the text `axis.anchor/1 {"hash":"<64 hex>","seq":<n>}` encrypted with the OS-protected cipher (`safeStorage` in
  * the product) and kept in a file main owns, outside the daemon's data directory.
  *
