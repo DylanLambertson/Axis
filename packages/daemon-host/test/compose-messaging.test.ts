@@ -17,7 +17,7 @@ function options(fix: ReturnType<typeof hostFixture>, over: Partial<ComposeOptio
   return { config: fix.config, control: fix.client, ports, pty, ptyGitRunner: runner, snapshotter, process: new EventEmitter(), exit: () => undefined, ...over };
 }
 
-test("compose: a worker run counts for messaging only with messaging.enabled; absent or false, it does not", async () => {
+test("compose: a worker run (CLI or composer) counts for messaging only with messaging.enabled; absent or false, it does not", async () => {
   for (const [messaging, expected] of [[undefined, undefined], [{}, undefined], [{ enabled: false }, undefined], [{ enabled: true }, "w1"]] as const) {
     const fix = hostFixture();
     let agentOf: ((runId: string) => string | undefined) | undefined;
@@ -31,6 +31,10 @@ test("compose: a worker run counts for messaging only with messaging.enabled; ab
       journal.agents.create({ id: "w1", projectId: "p1", name: "W", launch: { kind: "cli", entryId: "e" }, homeWorkspaceId: home, groupId: null });
       const run = journal.createRun({ workspaceId: home, kind: "cli", createdBy: "user", agentId: "w1" }).value.id;
       assert.equal(agentOf?.(run), expected, JSON.stringify(messaging));
+      // A composer worker's run alike (PV-G4 slice B).
+      journal.agents.create({ id: "w2", projectId: "p1", name: "C", launch: { kind: "composer", connection: "conn", modelId: "m", mode: "agent" }, homeWorkspaceId: home, groupId: null });
+      const composerRun = journal.createRun({ workspaceId: home, kind: "composer", createdBy: "user", agentId: "w2" }).value.id;
+      assert.equal(agentOf?.(composerRun), expected === undefined ? undefined : "w2", `${JSON.stringify(messaging)} composer`);
     } finally {
       await composed.stop();
       fix.cleanup();

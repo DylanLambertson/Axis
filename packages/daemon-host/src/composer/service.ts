@@ -235,7 +235,7 @@ export function createComposerService(deps: ComposerServiceDeps): ComposerServic
       }
       const meta = { mode: input.mode, providerId: input.providerId, modelId: input.modelId };
       const created = deps.journal.composer.createRun(
-        { workspaceId: input.workspaceId, createdBy: "user", ...(input.idempotencyKey === undefined ? {} : { idempotencyKey: input.idempotencyKey }) },
+        { workspaceId: input.workspaceId, createdBy: "user", ...(input.idempotencyKey === undefined ? {} : { idempotencyKey: input.idempotencyKey }), ...(input.worker === undefined ? {} : { agentId: input.worker }) },
         meta,
       );
       if (created.replayed) return { run: view(created.value), replayed: true };

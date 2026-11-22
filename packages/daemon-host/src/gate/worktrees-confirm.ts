@@ -4,7 +4,7 @@ import { markDiscardConfirmed } from "@axis/worktrees/daemon-confirm";
 import { createApprovals, type Approvals, type ApprovalsDeps } from "./approvals.js";
 
 /**
- * The confirmation inputs of the worktree calls that discard data (design section 5.2, `docs/packages.md` "Calling
+ * The confirmation inputs of the worktree calls that discard data (design section 5.2, `docs/packages/daemon-host.md` "Calling
  * `@axis/worktrees` from the daemon"). This is the one file that may import `@axis/worktrees/daemon-confirm`: a
  * handler can never make the token that lets `finalise` or `remove` delete a dirty workspace.
  *

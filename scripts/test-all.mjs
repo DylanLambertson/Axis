@@ -66,6 +66,7 @@ if (override !== undefined) {
   suites.push(await run("test/packages", process.execPath, ["--test", "test/packages/*.test.mjs"]));
   suites.push(await run("test/code-oss/renderer-imports", process.execPath, ["--test", "test/code-oss/renderer-imports.test.mjs"]));
   suites.push(await run("test/code-oss/net-gate", process.execPath, ["--test", "test/code-oss/net-gate.test.mjs"]));
+  suites.push(await run("test/code-oss/web-isolation", process.execPath, ["--test", "test/code-oss/web-isolation.test.mjs"]));
   suites.push(await run("test/gate", process.execPath, ["--test", "test/gate/*.test.mjs"]));
 }
 

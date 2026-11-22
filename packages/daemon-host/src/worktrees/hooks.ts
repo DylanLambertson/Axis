@@ -31,7 +31,7 @@ function previewText(branch: string, scan: { dirty: readonly unknown[]; skippedL
 }
 
 /**
- * The approval content hooks of `finalise` and `remove` (design section 7.2, `docs/packages.md` "Calling
+ * The approval content hooks of `finalise` and `remove` (design section 7.2, `docs/packages/daemon-host.md` "Calling
  * `@axis/worktrees` from the daemon"). The target is `workspace:<id>`, never a path. `withLock(fn)` takes the project
  * mutex, refuses while a run is active (BEFORE `fn`, so a refusal never spends an approval), checks that the git
  * configuration did not drift (`assertNoDrift`), then hands `fn` the `previewDiscard` fingerprint as the content

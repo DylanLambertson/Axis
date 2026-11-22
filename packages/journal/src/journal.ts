@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { randomUUID } from "node:crypto";
-import { AuditActions, AuditLog, AxisError, InstanceLock, type AuditActor, runMigrations, withTransaction, type DatabaseSync } from "@axis/audit";
+import { AuditLog, AxisError, InstanceLock, type AuditActor, runMigrations, withTransaction, type DatabaseSync } from "@axis/audit";
 import { z } from "zod";
 import {
   createRunSchema,
@@ -26,9 +26,8 @@ import {
   type WorkspaceRow,
 } from "./model.js";
 import {
-  checkWorkspaceTransition, clearStaleLocks, getProject, listProjects, lockWorkspace, recordBaseBranch, recordPushed,
-  recordReviewedTree, registerProject, setProjectTrust, setWorktreePath, unlockWorkspace, type RecordsContext, type RegisterProjectInput,
-  type SetProjectTrustInput,
+  checkWorkspaceTransition, getProject, listProjects, lockWorkspace, recordBaseBranch, recordPushed, recordReviewedTree,
+  registerProject, setProjectTrust, setWorktreePath, unlockWorkspace, type RecordsContext, type RegisterProjectInput, type SetProjectTrustInput,
 } from "./records.js";
 import { AgentRecords } from "./agent-store.js";
 import { ComposerRecords } from "./composer-store.js";
@@ -36,8 +35,12 @@ import { MessageRecords } from "./message-store.js";
 import { UserPrincipal } from "./principal.js";
 import { ForgePinRecords } from "./forge-pin-store.js";
 import { AttentionRecords } from "./attention-records.js";
+import { PageRecords } from "./page-store.js";
+import { TaskRecords } from "./task-store.js";
+import { recoverJournal } from "./journal-recovery.js";
+import { readTransitions } from "./journal-transitions.js";
 import { JOURNAL_MIGRATIONS } from "./schema.js";
-import { RESTART_REASON, RUN_STATES, RUN_TERMINAL_STATES, RUN_TRANSITIONS, WORKSPACE_TRANSITIONS, type RunState, type WorkspaceState } from "./states.js";
+import { RUN_STATES, RUN_TERMINAL_STATES, RUN_TRANSITIONS, WORKSPACE_TRANSITIONS, type RunState, type WorkspaceState } from "./states.js";
 
 function inRecords<T>(db: DatabaseSync, audit: AuditLog, now: () => Date, fn: (ctx: RecordsContext) => T): T {
   return withTransaction(db, () => fn({ db, audit, ts: () => now().toISOString() }));
@@ -55,7 +58,6 @@ export interface JournalOptions {
   readonly newId?: () => string;
 }
 
-const OPEN_RUN_STATES = RUN_STATES.filter((s) => !RUN_TERMINAL_STATES.includes(s));
 
 /**
  * The durable journal for agent workspaces and runs. Every state change is a single SQLite transaction (journal-first: the
@@ -72,6 +74,8 @@ export class Journal {
   readonly agents: AgentRecords; // agents and agent groups: user-only writes, one audit event each (schema v12, PV-G3)
   readonly forgePins: ForgePinRecords; // the confirmed forge repository per project (schema v13, PV-D2 slice 2b)
   readonly attention: AttentionRecords; // the needs-attention reads of the project home (PV-D4): ids and counts only
+  readonly pages: PageRecords; // pages, versions and attachments (schema v14, PV-Q1 slice 1, ADR 0010)
+  readonly tasks: TaskRecords; // tasks, revisions and links (schema v15, PV-T1 slice 1)
 
   private constructor(db: DatabaseSync, options: JournalOptions) {
     this.#db = db;
@@ -83,6 +87,8 @@ export class Journal {
     this.agents = new AgentRecords(db, this.#audit, () => this.#ts());
     this.forgePins = new ForgePinRecords(db, () => this.#ts());
     this.attention = new AttentionRecords(db);
+    this.pages = new PageRecords(db, () => this.#ts());
+    this.tasks = new TaskRecords(db, () => this.#ts());
   }
 
   /** Migrate the schema and return a journal. On daemon start take the instance lock, then call `recover(lock)`. */
@@ -284,130 +290,17 @@ export class Journal {
 
   /** Transition history for a workspace or run, oldest first. */
   transitions(entity: "workspace" | "run", entityId: string): Transition[] {
-    const rows = this.#db
-      .prepare(
-        "SELECT entity, entity_id, from_state, to_state, reason, actor, ts FROM state_transitions WHERE entity = ? AND entity_id = ? ORDER BY id",
-      )
-      .all(entity, entityId) as unknown as Array<{
-      entity: "workspace" | "run";
-      entity_id: string;
-      from_state: string | null;
-      to_state: string;
-      reason: string | null;
-      actor: string;
-      ts: string;
-    }>;
-    return rows.map((r) => ({
-      entity: r.entity,
-      entityId: r.entity_id,
-      from: r.from_state,
-      to: r.to_state,
-      reason: r.reason,
-      actor: r.actor,
-      ts: r.ts,
-    }));
+    return readTransitions(this.#db, entity, entityId);
   }
 
-  // ---- recovery (DMN-7) ----
+  // ---- recovery (DMN-7): `journal-recovery.ts` ----
 
-  /**
-   * Reconcile after a start. Requires the held instance lock
-   * (`acquireInstanceLock`, an `InstanceLock` object, not a lookalike) for the
-   * directory of this journal's database: a second live daemon on the same data must never
-   * run this, because it would block the first one's RUNNING runs. Policy:
-   *
-   * - run RUNNING            -> BLOCKED / INTERRUPTED_BY_RESTART (the composer loop or the CLI supervision is gone);
-   * - workspace CREATING     -> FAILED / INTERRUPTED_BY_RESTART (the worktree manager sweeps any stray Git worktree);
-   * - workspace REMOVING     -> unchanged; reported on every call, audited once;
-   * - run QUEUED/REVIEWING/BLOCKED -> unchanged (durable states a person or the scheduler acts on);
-   * - workspace lock_state locked -> unlocked (the process that took it is gone).
-   *
-   * One transaction: each change is written with its transition record and a
-   * `journal.recovery` audit event, all or nothing. Converges: a second call
-   * after a completed recovery changes nothing and writes nothing, and a call
-   * after a crash (including one during recovery) finishes the job.
-   */
+  /** Reconcile after a start; the policy and its rules are on `recoverJournal`. */
   recover(lock: InstanceLock): RecoveryReport {
-    // A genuine lock (not a lookalike literal), still held, for this database's own directory.
-    if (!InstanceLock.is(lock)) {
-      throw new AxisError("E_INVALID_ARGUMENT", "Recovery requires an instance lock from acquireInstanceLock");
-    }
-    if (!lock.held) throw new AxisError("E_CONFLICT", "Recovery requires the held single-instance lock");
-    if (!lock.guards(this.#db)) {
-      throw new AxisError("E_INVALID_ARGUMENT", "The instance lock does not guard this database's directory");
-    }
-    return withTransaction(this.#db, () => {
-      const ts = this.#ts();
-      // First, so a CREATING workspace that holds a stale lock is reported as unlocked before it becomes FAILED.
-      const locksCleared = clearStaleLocks({ db: this.#db, audit: this.#audit, ts: () => ts });
-      const runsInterrupted: string[] = [];
-      const workspacesFailed: string[] = [];
-      const workspacesNeedingReconcile: string[] = [];
-      const runsLeftAlone: string[] = [];
-
-      const stuckWorkspaces = this.#db
-        .prepare("SELECT * FROM agent_workspaces WHERE state IN ('CREATING','REMOVING') ORDER BY created_at, id")
-        .all() as unknown as WorkspaceRow[];
-      for (const row of stuckWorkspaces) {
-        if (row.state === "CREATING") {
-          const homed = this.agents.liveOn(row.id);
-          this.#expectOne(
-            this.#db
-              .prepare("UPDATE agent_workspaces SET state = 'FAILED', updated_at = ? WHERE id = ? AND state = 'CREATING'")
-              .run(ts, row.id),
-          );
-          this.#recordTransition("workspace", row.id, "CREATING", "FAILED", RESTART_REASON, "daemon", ts);
-          this.#audit.append({
-            actor: "daemon",
-            action: AuditActions.journalRecovery,
-            target: `workspace:${row.id}`,
-            outcome: "success",
-            payload: { from: "CREATING", to: "FAILED", reason: RESTART_REASON, projectId: row.project_id },
-          });
-          this.agents.noteArchivedWithHome(homed, row.id, "daemon");
-          workspacesFailed.push(row.id);
-        } else {
-          workspacesNeedingReconcile.push(row.id);
-          if (row.reconcile_reported === 0) {
-            this.#expectOne(
-              this.#db.prepare("UPDATE agent_workspaces SET reconcile_reported = 1 WHERE id = ? AND state = 'REMOVING'").run(row.id),
-            );
-            this.#audit.append({
-              actor: "daemon",
-              action: AuditActions.journalRecovery,
-              target: `workspace:${row.id}`,
-              outcome: "success",
-              payload: { from: "REMOVING", to: "REMOVING", reason: "NEEDS_RECONCILE", projectId: row.project_id },
-            });
-          }
-        }
-      }
-
-      const nonTerminalRuns = this.#db
-        .prepare(`SELECT * FROM agent_runs WHERE state IN (${OPEN_RUN_STATES.map(() => "?").join(",")}) ORDER BY created_at, id`)
-        .all(...OPEN_RUN_STATES) as unknown as RunRow[];
-      for (const row of nonTerminalRuns) {
-        if (row.state !== "RUNNING") {
-          runsLeftAlone.push(row.id);
-          continue;
-        }
-        this.#expectOne(
-          this.#db
-            .prepare("UPDATE agent_runs SET state = 'BLOCKED', reason = ?, updated_at = ? WHERE id = ? AND state = 'RUNNING'")
-            .run(RESTART_REASON, ts, row.id),
-        );
-        this.#recordTransition("run", row.id, "RUNNING", "BLOCKED", RESTART_REASON, "daemon", ts);
-        this.#audit.append({
-          actor: "daemon",
-          action: AuditActions.journalRecovery,
-          target: `run:${row.id}`,
-          outcome: "success",
-          payload: { from: "RUNNING", to: "BLOCKED", reason: RESTART_REASON, kind: row.kind, workspaceId: row.workspace_id },
-        });
-        runsInterrupted.push(row.id);
-      }
-      return { runsInterrupted, workspacesFailed, workspacesNeedingReconcile, runsLeftAlone, locksCleared };
-    });
+    return recoverJournal(
+      { db: this.#db, audit: this.#audit, agents: this.agents, ts: () => this.#ts(), expectOne: (r) => this.#expectOne(r), recordTransition: (...a) => this.#recordTransition(...a) },
+      lock,
+    );
   }
 
   // ---- internals ----
