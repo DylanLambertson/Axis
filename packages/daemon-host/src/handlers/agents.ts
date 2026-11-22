@@ -16,7 +16,7 @@ import {
 } from "@axis/protocol";
 import { AgentRefusal, createAgentsService, type AgentsCaller, type AgentsService, type AgentsServiceDeps } from "../agents/service.js";
 import { createAgentStart, type AgentStartDeps } from "../agents/start.js";
-import { projectGated } from "../gate/project-trust.js";
+import { projectGated, trustCallOf } from "../gate/project-trust.js";
 import type { HandlerRegistrar } from "./anchor-guard.js";
 
 /**
@@ -41,7 +41,7 @@ export function toAgentsError(e: unknown): never {
 function callerOf(context: HandlerContext): AgentsCaller {
   const { identity, signal } = context;
   return {
-    ctx: { caller: { actor: identity.actor, connectionId: identity.connectionId, windowId: identity.windowId }, signal },
+    ctx: { caller: { actor: identity.actor, connectionId: identity.connectionId, windowId: identity.windowId, trust: trustCallOf(identity) }, signal },
     trusted: identity.trusted === true,
     windowId: identity.windowId,
     ...(identity.workspaceId === undefined ? {} : { workspaceId: identity.workspaceId }),
