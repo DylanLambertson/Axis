@@ -73,3 +73,10 @@ test("wrong_entry_kind is a fixed invalid-argument error", () => {
   assert.equal(axis.code, "E_INVALID_ARGUMENT");
   assert.equal(axis.message, "This credential cannot be read for that purpose.");
 });
+
+test("list stays strict by design: one bad name fails the whole list (PV-N0c's backend filters before the vault; do not relax)", async () => {
+  const { vault, backend } = setup("macos_keychain", "os_protected");
+  await vault.store("c1", SECRET);
+  backend.list = (async () => [{ name: "c1", meta: {} }, { name: "integration:Bad", meta: {} }]) as never;
+  assert.equal(await code(vault.list()), "backend_failed");
+});
