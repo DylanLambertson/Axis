@@ -13,16 +13,21 @@
 // axis.forge/1 (PV-D2 slice 2, moved from planned.ts with its handlers; docs/design/forge-pr-list.md): user only. The list is
 // shown on the user's dashboard and never handed to an agent or model in v1 (§5); confirming the repository is the user's own
 // act (§2). Neither is in WEB_ALLOWED.
+//
+// axis.agents/1 and axis.agent-groups/1 (PV-G3, moved from planned.ts with their handlers; ADR 0006 decision 10): user only,
+// reads included. No agent, plugin or message creates, changes or groups an agent: group membership feeds the messaging
+// send policy (`accepts_from: group`). `create` checks trust in its handler when it makes a worktree (the row cannot: a
+// create with an existing home needs none); none is in WEB_ALLOWED.
 import { userRule, type Rule } from "./rule-types.js";
 
 export const RULES: Readonly<Record<string, Rule>> = Object.freeze({
   "axis.worktrees/1.list": userRule(0),
   "axis.worktrees/1.status": userRule(0),
-  "axis.worktrees/1.create": userRule(2, "registry"),
+  "axis.worktrees/1.create": userRule(2, "project"),
   "axis.worktrees/1.finalise": userRule(4),
   "axis.worktrees/1.remove": userRule(4),
-  "axis.worktrees/1.restoreFromRunBase": userRule(2, "registry"),
-  "axis.worktrees/1.discard": userRule(2, "registry"),
+  "axis.worktrees/1.restoreFromRunBase": userRule(2, "project"),
+  "axis.worktrees/1.discard": userRule(2, "project"),
   "axis.worktrees/1.setUserEditing": userRule(2),
   "axis.projects/1.list": userRule(0),
   "axis.approvals/1.resolve": userRule(2),
@@ -36,13 +41,13 @@ export const RULES: Readonly<Record<string, Rule>> = Object.freeze({
   "axis.cli-runs/1.list": userRule(0),
   "axis.providers/1.list": userRule(0),
   "axis.git/1.pushPlan": userRule(1),
-  "axis.git/1.commit": userRule(2, "registry"),
-  "axis.git/1.push": userRule(4, "registry"),
+  "axis.git/1.commit": userRule(2, "project"),
+  "axis.git/1.push": userRule(4, "project"),
   "axis.git/1.compareUrl": userRule(0),
   "axis.review/1.diff": userRule(1),
   "axis.review/1.content": userRule(1),
   "axis.review/1.complete": userRule(2),
-  "axis.runs/1.start": userRule(2, "registry"),
+  "axis.runs/1.start": userRule(2, "project"),
   "axis.runs/1.cancel": userRule(2),
   "axis.runs/1.get": userRule(0),
   "axis.runs/1.list": userRule(0),
@@ -60,4 +65,16 @@ export const RULES: Readonly<Record<string, Rule>> = Object.freeze({
   "axis.messages/1.updateSettings": userRule(2),
   "axis.forge/1.pullRequests": userRule(0),
   "axis.forge/1.pinRepository": userRule(1),
+  "axis.agents/1.list": userRule(0),
+  "axis.agents/1.get": userRule(0),
+  "axis.agents/1.create": userRule(2),
+  "axis.agents/1.update": userRule(2),
+  "axis.agents/1.archive": userRule(1),
+  "axis.agents/1.restore": userRule(1),
+  "axis.agent-groups/1.list": userRule(0),
+  "axis.agent-groups/1.create": userRule(1),
+  "axis.agent-groups/1.rename": userRule(1),
+  "axis.agent-groups/1.reorder": userRule(1),
+  "axis.agent-groups/1.delete": userRule(1),
+  "axis.agent-groups/1.assign": userRule(2),
 });

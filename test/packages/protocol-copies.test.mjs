@@ -151,10 +151,14 @@ test("the closed-set refusal reasons of axis.git/1 and axis.review/1 are what th
   }
   // Raised by the packages as E_POLICY_DENIED, which a handler cannot answer: the host serves them as E_CONFLICT (`toGitError`).
   const SERVED_AS_CONFLICT = new Set(["secrets_found", "scan_incomplete", "binary_unscanned", "message_unscannable"]);
-  // Raised by the host itself, not by a package: the drift check of the git port (`driftAsRefusal` in bindings/git.ts).
-  const host = readFileSync(new URL("../../packages/daemon-host/src/bindings/git.ts", import.meta.url), "utf8");
-  const HOST_RAISED = { git_drift: /new GitOpsError\("E_CONFLICT",[^)]*\{ reason: "git_drift" \}\)/ };
-  for (const [reason, pattern] of Object.entries(HOST_RAISED)) assert.match(host, pattern, `the host no longer raises "${reason}"`);
+  // Raised by the host itself, not by a package: the drift check of the git port (`driftAsRefusal` in bindings/git.ts), and the
+  // project trust gate (gate/project-trust.ts), which the git handlers answer as E_CONFLICT (`toGitError`).
+  const hostFile = (f) => readFileSync(new URL(`../../packages/daemon-host/src/${f}`, import.meta.url), "utf8");
+  const HOST_RAISED = {
+    git_drift: ["bindings/git.ts", /new GitOpsError\("E_CONFLICT",[^)]*\{ reason: "git_drift" \}\)/],
+    untrusted: ["gate/project-trust.ts", /new AxisError\("E_POLICY_DENIED",[^)]*\{ reason: "untrusted" \}\)/],
+  };
+  for (const [reason, [file, pattern]] of Object.entries(HOST_RAISED)) assert.match(hostFile(file), pattern, `the host no longer raises "${reason}"`);
   // Wire to packages: every listed reason exists, and is raised under the code the contract lists it under.
   for (const [reason, codes] of wire) {
     if (Object.hasOwn(HOST_RAISED, reason)) {

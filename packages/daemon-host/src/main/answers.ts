@@ -15,8 +15,6 @@ import { isPathTrusted, trustedFolders } from "./trust-model.js";
  */
 
 export interface TrustSource {
-  /** The repository path of a project main registered; `undefined` for any other. */
-  projectPath(projectId: string): string | undefined;
   /** The raw Workspace Trust model (`content.trust.model.key`), `undefined` when absent. Renderer-writable: see main-answers.md 3.3. */
   trustModel(): string | undefined;
 }
@@ -153,11 +151,11 @@ export function createMainAnswers(options: MainAnswersOptions): MainAnswers {
   };
 
   // ---- trust and settings --------------------------------------------------------------------------------------
-  const trusted = (windowId: string, projectId: string): boolean => {
+  // The Workspace Trust half of T3 (project-registration-and-trust.md §5.4) for the project path the host sends from its journal;
+  // the host ANDs it with its own main-confirmed record, so the renderer-writable model alone never grants.
+  const trusted = (windowId: string, path: string): boolean => {
     try {
       if (options.windows.codeWindowOf(windowId) === undefined) return false;
-      const path = options.trust.projectPath(projectId);
-      if (typeof path !== "string") return false;
       return isPathTrusted(path, trustedFolders(options.trust.trustModel(), options.platform), options.platform);
     } catch {
       return false;
@@ -204,7 +202,7 @@ export function createMainAnswers(options: MainAnswersOptions): MainAnswers {
             native.push({ challengeId: message.challengeId, proof: message.proof, windowId: message.windowId, summary: message.summary }, send);
             return;
           case "trust.check": {
-            const ok = trusted(message.windowId, message.projectId);
+            const ok = trusted(message.windowId, message.projectPath);
             if (!ok) emit({ event: "trust_refused" });
             send({ type: "trust.result", requestId: message.requestId, trusted: ok });
             return;

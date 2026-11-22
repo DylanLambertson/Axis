@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { MAX_TAINT_HOP, senderSchema, type MessageWire, type MessagesRequest } from "@axis/protocol";
-import { frameNonce, framed, senderLabel, untrustedNote } from "./delivery.js";
+import { WITHHELD_BODY, frameNonce, framed, senderLabel, untrustedNote } from "./delivery.js";
 import type { MessageCaller, MessagingDirectory } from "./policy.js";
 import type { MessageService } from "./service.js";
 
@@ -15,8 +15,8 @@ import type { MessageService } from "./service.js";
  * - **Inert until PV-G4.** The host's `agentOf` knows no run yet (no run records its agent), so `agentOf` answers
  *   undefined and neither tool is offered to any run in production.
  * - **Reads are framed and checked.** A `read_messages` result is framed like a delivery (a nonce drawn for it, every body
- *   line prefixed `| `), every body escaped by the service (`toMessageText`); a body the host redactor would change (a
- *   secret) is withheld, never shown. Each shown message from an agent, a plugin or a CLI sender is a taint receipt
+ *   line prefixed `| `), every body escaped by the service (`toMessageText`); a body whose stored raw text or escaped text
+ *   the host redactor would change (a secret) is withheld, never shown (the service checks the raw text and returns ids only). Each shown message from an agent, a plugin or a CLI sender is a taint receipt
  *   (source 2); the binding takes each receipt (raising the run's received hop to its hop) BEFORE the result is returned.
  */
 
@@ -54,15 +54,16 @@ export interface ComposerMessaging {
 }
 
 export interface ComposerMessagingDeps {
-  readonly service: Pick<MessageService, "send" | "read">;
+  readonly service: Pick<MessageService, "send" | "readWithheld">;
   readonly directory: MessagingDirectory;
   readonly agentOf: (runId: string) => string | undefined;
   readonly random: { bytes(n: number): Uint8Array };
-  /** True when the host redactor would change the text (a secret): such a body is withheld from the result. */
+  /**
+   * True when the host redactor would change the text (a secret). The service applies it to each shown message's stored raw
+   * body and to its escaped body and returns only the ids that match (section 11): the raw text never reaches this module.
+   */
   readonly holdsSecret: (text: string) => boolean;
 }
-
-export const WITHHELD_BODY = "(Axis withheld this message's text: it holds a secret.)";
 
 /** The caller the service sees: always from the run, never from the model's arguments. */
 export function runCaller(who: RunParticipant): MessageCaller {
@@ -105,12 +106,12 @@ export function createComposerMessaging(deps: ComposerMessagingDeps): ComposerMe
         ...(a.afterSeq === undefined ? {} : { afterSeq: a.afterSeq }),
         ...(a.limit === undefined ? {} : { limit: a.limit }),
       };
-      const { messages, more } = deps.service.read(runCaller(who), req);
+      const { messages, more, withheld } = deps.service.readWithheld(runCaller(who), req, deps.holdsSecret);
       const receipts: ReadOutcome["receipts"][number][] = [];
       const parts = messages.map((m) => {
         const h = header(m, deps.directory);
         if (h.who.taintKind !== undefined) receipts.push({ source: "read_messages", senderKind: h.who.taintKind, sender: h.who.name, hop: m.hop, ref: m.messageId });
-        return { header: h.line, body: deps.holdsSecret(m.body.text) ? WITHHELD_BODY : m.body.text };
+        return { header: h.line, body: withheld.has(m.messageId) ? WITHHELD_BODY : m.body.text };
       });
       // A message from the user or from Axis is hop 0 and no source: only receipts raise the run's hop.
       if (parts.length === 0) return { text: "No messages to read.", receipts };

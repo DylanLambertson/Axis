@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isScriptFile } from "./loaders.mjs";
-import { ptyClientVerdict } from "./pty-client-rule.mjs";
+import { projectTrustVerdict, ptyClientVerdict } from "./pty-client-rule.mjs";
 import { importSpecifiers, unsafeForms } from "../../scripts/code-oss/stage-ast.mjs";
 import { LOADER_BUILTINS } from "../../scripts/code-oss/stage-scan.mjs";
 import { listenerBuiltinRefusal, webHostEdgeRefusal } from "../../scripts/code-oss/web-rules.mjs";
@@ -133,6 +133,7 @@ export function violation(pkg, spec, file = null, pkgDir = null) {
       const from = relative(pkgDir, file).split(sep).join("/");
       if (from.startsWith("src/") && !COMPOSITION_FILES.has(from)) return "only src/index.ts and the composition root src/compose.ts may import the run trust minter";
     }
+    { const gate = pkg === HOST_PACKAGE ? projectTrustVerdict(rel.split(sep).join("/"), relative(pkgDir, file).split(sep).join("/")) : null; if (gate !== null) return gate; }
     return rel === ".." || rel.startsWith(`..${sep}`) || resolve(rel) === rel
       ? "relative import leaves the package directory"
       : null;
@@ -415,6 +416,7 @@ test("scanner: the daemon host is imported by nothing and imports the restricted
     assert.notEqual(violation("daemon-host", "@axis/runs/daemon-attestation", at(f), dir), null, f);
   }
   assert.notEqual(violation("daemon-host", "@axis/runs/daemon-attestation"), null, "a call without a file is judged strictly");
+  assert.notEqual(violation("daemon-host", "../gate/project-trust-gate.js", at("src/handlers/git.ts"), dir), null, "project-trust-rule.mjs is wired in");
   // The run trust minter module (a relative import): only the public index, never a handler, binding or gate neighbour.
   assert.equal(violation("daemon-host", "./gate/run-trust.js", at("src/index.ts"), dir), null);
   assert.equal(violation("daemon-host", "./gate/run-trust.js", at("src/compose.ts"), dir), null, "the composition root");

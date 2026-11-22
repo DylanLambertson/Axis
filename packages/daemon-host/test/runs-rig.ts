@@ -13,6 +13,7 @@ import {
   type RunsBindingDeps,
 } from "../src/index.js";
 import { worktreesRig, type Rig, type RigOptions } from "./worktrees-rig.js";
+import { ticketFor } from "../testing/open-gate.js";
 
 /** A pty handle the test drives: it exits when told to and its process group lives until told otherwise. */
 export class FakeHandle implements PtyHandle {
@@ -76,13 +77,15 @@ export interface RunsRig extends Rig {
   readonly timers: Set<unknown>;
   readonly deps: RunsBindingDeps;
   readonly handlerDeps: CliRunsHandlerDeps;
+  /** A run attestation minted from a genuine gate ticket (as the handler does). */
+  readonly attest: (workspaceId: string) => Promise<ReturnType<CliRunsHandlerDeps["minter"]["attest"]>>;
   readonly asked: Array<Record<string, unknown>>;
   /** The settings and trust questions main was asked, in order. */
 }
 
 export async function runsRig(options: RigOptions = {}): Promise<RunsRig> {
   const holder: { runs?: RunsBinding } = {};
-  const rig = await worktreesRig({ ...options, hasActiveRun: (id) => holder.runs?.service.hasActiveRun(id) ?? true });
+  const rig = await worktreesRig({ ...options, answerTrust: false, hasActiveRun: (id) => holder.runs?.service.hasActiveRun(id) ?? true });
   const pty = new FakePty();
   const exe = path.join(rig.tmp, "bin", "fakecli");
   const answers: Answers = { trust: true, agents: [{ id: "fake", label: "Fake CLI", command: [exe], args: [] }] };
@@ -135,9 +138,13 @@ export async function runsRig(options: RigOptions = {}): Promise<RunsRig> {
     journal: rig.journal,
     control: rig.control,
     minter: createRunTrustMinter(rig.clock),
+    gate: rig.gate,
     mutex: rig.binding.mutex,
     needsAttention: rig.binding.needsAttention,
   };
+  /** An attestation as the handler mints it: a genuine gate ticket on the rig's clock, spent by the minter. */
+  const attest = async (workspaceId: string) =>
+    handlerDeps.minter.attest({ workspaceId, projectId: rig.projectId }, await ticketFor(rig.projectId, workspaceId, () => rig.clock.monotonic()));
   rig.daemon.register("axis.cli-runs", 1, createCliRunsHandlers(handlerDeps));
   const cleanup = rig.cleanup;
   return Object.assign(rig, {
@@ -149,6 +156,7 @@ export async function runsRig(options: RigOptions = {}): Promise<RunsRig> {
     timers,
     deps,
     handlerDeps,
+    attest,
     asked,
     cleanup: async (): Promise<void> => {
       runs.dispose();

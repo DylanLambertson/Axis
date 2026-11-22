@@ -6,6 +6,7 @@ import { resolveCliAgentsSetting } from "@axis/pty-policy";
 import type { ControlClient } from "../control/client.js";
 import type { RunSummary, RunTrustMinter, RunsService } from "../ports/runs.js";
 import { runFailure, toRunError } from "../runs/errors.js";
+import { projectGated, type ProjectTrustGate } from "../gate/project-trust.js";
 import type { HandlerRegistrar } from "./anchor-guard.js";
 import type { ProjectMutex } from "../worktrees/project-mutex.js";
 
@@ -28,7 +29,9 @@ export interface CliRunsHandlerDeps {
   readonly service: RunsService;
   readonly journal: Pick<Journal, "getWorkspace">;
   /** The control channel: main's live trust answer and the user-scope CLI definitions. */
-  readonly control: Pick<ControlClient, "trustCheck" | "settingsGet">;
+  readonly control: Pick<ControlClient, "settingsGet">;
+  /** The project trust gate (T1 to T4); its ticket is spent by `minter.attest`. */
+  readonly gate: ProjectTrustGate;
   readonly minter: RunTrustMinter;
   /** The project mutex of the worktrees binding (the same instance). */
   readonly mutex: Pick<ProjectMutex, "run">;
@@ -91,15 +94,16 @@ export function createCliRunsHandlers(deps: CliRunsHandlerDeps): Readonly<Record
         const current = deps.journal.getWorkspace(req.workspaceId);
         if (current === undefined || current.projectId !== ws.projectId) throw runFailure("E_NOT_FOUND");
         const { windowId } = context.identity;
+        let ticket: unknown;
         try {
-          await deps.control.trustCheck({ windowId, workspaceId: req.workspaceId, projectId: ws.projectId }, { signal: context.signal });
+          ticket = await deps.gate.admit({ projectId: ws.projectId, windowId, workspaceId: req.workspaceId, signal: context.signal });
         } catch (e) {
           context.signal.throwIfAborted();
           throw e;
         }
         // Nothing has been changed so far, but a write method that throws while aborted keeps its key outcome-unknown (safe).
         if (context.signal.aborted) throw cancelled();
-        const trust = deps.minter.attest({ workspaceId: req.workspaceId, projectId: ws.projectId });
+        const trust = deps.minter.attest({ workspaceId: req.workspaceId, projectId: ws.projectId }, ticket);
         const out = await deps.service.start({
           workspaceId: req.workspaceId,
           agent,
@@ -114,7 +118,7 @@ export function createCliRunsHandlers(deps: CliRunsHandlerDeps): Readonly<Record
   });
 
   return {
-    start,
+    start: projectGated(start),
     stop: guarded<"stop">((req) => ({ run: wire(deps.service.stop(req.runId, "user")) })),
     get: guarded<"get">((req) => ({ run: wire(deps.service.get(req.runId)) })),
     list: guarded<"list">((req) => {

@@ -1,4 +1,5 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
+import { projectGated, type ProjectTrustGate } from "../gate/project-trust.js";
 import type { Handler, HandlerContext } from "@axis/daemon";
 import {
   COMPOSER_RUNS_CONTRACT,
@@ -10,7 +11,7 @@ import {
   type ComposerRunsRequest,
 } from "@axis/protocol";
 import { composerFailure, toComposerError } from "../composer/errors.js";
-import type { ComposerRunsService } from "../ports/composer.js";
+import type { ComposerRunsService, ComposerStartInput } from "../ports/composer.js";
 import type { ProjectMutex } from "../worktrees/project-mutex.js";
 import type { HandlerRegistrar } from "./anchor-guard.js";
 
@@ -23,7 +24,10 @@ import type { HandlerRegistrar } from "./anchor-guard.js";
  * against the contract's response schema before it leaves; every error is a `DaemonError` of fixed text.
  */
 export interface ComposerRunsHandlerDeps {
-  readonly service: ComposerRunsService;
+  /** `start` takes the project trust gate's ticket and spends it before the service (see `ticketedComposerStart`). */
+  readonly service: Omit<ComposerRunsService, "start"> & { start(input: ComposerStartInput, signal: AbortSignal, ticket: unknown): ReturnType<ComposerRunsService["start"]> };
+  /** The project trust gate (T1 to T4). */
+  readonly gate: ProjectTrustGate;
   readonly journal: { getWorkspace(id: string): { readonly projectId: string } | undefined };
   readonly mutex: Pick<ProjectMutex, "run">;
   /** True for a workspace the last reconcile reported. Refuses `start`; the other methods always work. */
@@ -57,7 +61,7 @@ export function createComposerRunsHandlers(deps: ComposerRunsHandlerDeps): Reado
     if (deps.needsAttention?.(req.workspaceId, "start") === true) throw composerFailure("E_UNAVAILABLE", "needs_attention");
     return deps.mutex.run(
       ws.projectId,
-      () =>
+      async () =>
         deps.service.start(
           {
             workspaceId: req.workspaceId,
@@ -69,13 +73,15 @@ export function createComposerRunsHandlers(deps: ComposerRunsHandlerDeps): Reado
             ...(context.idempotencyKey === undefined ? {} : { idempotencyKey: context.idempotencyKey }),
           },
           context.signal,
+          // The gate, inside the mutex and right before the run is created (project-registration-and-trust.md §5.4).
+          await deps.gate.admit({ projectId: ws.projectId, windowId: context.identity.windowId, workspaceId: req.workspaceId, signal: context.signal }),
         ),
       context.signal,
     );
   });
 
   return {
-    start,
+    start: projectGated(start),
     cancel: guarded("cancel", (req) => ({ run: deps.service.cancel(req.runId) })),
     get: guarded("get", (req) => ({ run: deps.service.get(req.runId) })),
     list: guarded("list", (req) => {

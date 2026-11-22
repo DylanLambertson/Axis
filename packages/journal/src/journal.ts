@@ -30,6 +30,7 @@ import {
   recordReviewedTree, registerProject, setProjectTrust, setWorktreePath, unlockWorkspace, type RecordsContext, type RegisterProjectInput,
   type SetProjectTrustInput,
 } from "./records.js";
+import { AgentRecords } from "./agent-store.js";
 import { ComposerRecords } from "./composer-store.js";
 import { MessageRecords } from "./message-store.js";
 import { UserPrincipal } from "./principal.js";
@@ -37,13 +38,7 @@ import { ForgePinRecords } from "./forge-pin-store.js";
 import { PageRecords } from "./page-store.js";
 import { JOURNAL_MIGRATIONS } from "./schema.js";
 import {
-  RESTART_REASON,
-  RUN_STATES,
-  RUN_TERMINAL_STATES,
-  RUN_TRANSITIONS,
-  WORKSPACE_TRANSITIONS,
-  type RunState,
-  type WorkspaceState,
+  RESTART_REASON, RUN_STATES, RUN_TERMINAL_STATES, RUN_TRANSITIONS, WORKSPACE_TRANSITIONS, type RunState, type WorkspaceState,
 } from "./states.js";
 
 function inRecords<T>(db: DatabaseSync, audit: AuditLog, now: () => Date, fn: (ctx: RecordsContext) => T): T {
@@ -65,23 +60,19 @@ export interface JournalOptions {
 const OPEN_RUN_STATES = RUN_STATES.filter((s) => !RUN_TERMINAL_STATES.includes(s));
 
 /**
- * The durable journal for agent workspaces and runs. Every state change is a
- * single SQLite transaction (journal-first: the row and its transition record
- * commit together or not at all), so a process killed at any instant leaves
- * either the old state or the new one, never a mixture. `recover()` then
- * reconciles whatever the dead process left non-terminal.
+ * The durable journal for agent workspaces and runs. Every state change is a single SQLite transaction (journal-first: the
+ * row and its transition record commit together or not at all), so a process killed at any instant leaves either the old
+ * state or the new one, never a mixture. `recover()` then reconciles whatever the dead process left non-terminal.
  */
 export class Journal {
   readonly #db: DatabaseSync;
   readonly #audit: AuditLog;
   readonly #now: () => Date;
   readonly #newId: () => string;
-  /** Composer run records (mode, provider, model, usage, budgets, bounded activity; schema version 6). */
-  readonly composer: ComposerRecords;
-  /** `axis.messages/1` records (threads, participants, messages, cursors, settings; schema version 9). */
-  readonly messages: MessageRecords;
-  /** The confirmed forge repository per project (schema v13, PV-D2 slice 2b). */
-  readonly forgePins: ForgePinRecords;
+  readonly composer: ComposerRecords; // composer runs: mode, provider, model, usage, budgets, bounded activity (schema v6)
+  readonly messages: MessageRecords; // `axis.messages/1`: threads, participants, messages, cursors, settings (schema v9)
+  readonly agents: AgentRecords; // agents and agent groups: user-only writes, one audit event each (schema v12, PV-G3)
+  readonly forgePins: ForgePinRecords; // the confirmed forge repository per project (schema v13, PV-D2 slice 2b)
   readonly pages: PageRecords; // pages, versions and attachments (schema v14, PV-Q1 slice 1, ADR 0010)
 
   private constructor(db: DatabaseSync, options: JournalOptions) {
@@ -91,6 +82,7 @@ export class Journal {
     this.#newId = options.newId ?? (() => randomUUID());
     this.composer = new ComposerRecords(db, () => this.#ts(), (input) => this.createRun(input));
     this.messages = new MessageRecords(db, () => this.#ts());
+    this.agents = new AgentRecords(db, this.#audit, () => this.#ts());
     this.forgePins = new ForgePinRecords(db, () => this.#ts());
     this.pages = new PageRecords(db, () => this.#ts());
   }
@@ -153,6 +145,7 @@ export class Journal {
       this.#guard("workspace", current.state, to, WORKSPACE_TRANSITIONS[current.state], opts.expectedFrom);
       checkWorkspaceTransition(this.#db, id, current.state, to, opts.outcome);
       const ts = this.#ts();
+      const homed = to === "READY" ? [] : this.agents.liveOn(id); // leaving CREATING or READY archives them (v12 trigger): audited below
       this.#expectOne(
         this.#db
           .prepare(
@@ -163,6 +156,7 @@ export class Journal {
           .run(to, ts, opts.outcome ?? null, to, to, id, current.state),
       );
       this.#recordTransition("workspace", id, current.state, to, opts.reason ?? null, opts.actor ?? "daemon", ts);
+      this.agents.noteArchivedWithHome(homed, id, opts.actor ?? "daemon");
       return this.#mustWorkspace(id);
     });
   }
@@ -358,6 +352,7 @@ export class Journal {
         .all() as unknown as WorkspaceRow[];
       for (const row of stuckWorkspaces) {
         if (row.state === "CREATING") {
+          const homed = this.agents.liveOn(row.id);
           this.#expectOne(
             this.#db
               .prepare("UPDATE agent_workspaces SET state = 'FAILED', updated_at = ? WHERE id = ? AND state = 'CREATING'")
@@ -371,6 +366,7 @@ export class Journal {
             outcome: "success",
             payload: { from: "CREATING", to: "FAILED", reason: RESTART_REASON, projectId: row.project_id },
           });
+          this.agents.noteArchivedWithHome(homed, row.id, "daemon");
           workspacesFailed.push(row.id);
         } else {
           workspacesNeedingReconcile.push(row.id);
