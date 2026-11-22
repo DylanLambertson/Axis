@@ -40,9 +40,9 @@ export interface MessageAuditSink {
   append(input: AuditEventInput): unknown;
 }
 
-/** The audit actor of a caller. A plugin has no actor kind of its own yet: it is recorded as `daemon` with its id in the payload. */
+/** The audit actor of a caller: a plugin is `plugin:<id>` (ADR 0008 decision 4), its id also in the payload. */
 export function actorOf(c: MessageCaller): AuditActor {
-  return c.kind === "user" ? "user" : c.kind === "agent" ? `agent:${c.agentId}` : "daemon";
+  return c.kind === "user" ? "user" : c.kind === "agent" ? `agent:${c.agentId}` : `plugin:${c.pluginId}`;
 }
 
 /** Who asked, as payload fields. */

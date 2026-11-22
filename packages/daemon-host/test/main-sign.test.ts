@@ -5,13 +5,13 @@ import { test } from "node:test";
 import { canonicalJson, type Identity } from "@axis/daemon";
 import type { JsonValue } from "@axis/protocol";
 import { createAttestationVerifier, signAttestation } from "../src/index.js";
-import { attestationText, base64url, signMainAttestation, type MainIdentity } from "../src/main/attest-sign.js";
+import { attestationText, base64url, signMainAttestation, type MainIdentity, type MainPluginIdentity, type MainWindowIdentity } from "../src/main/attest-sign.js";
 import { DaemonSupervisor, type DaemonChild } from "../src/supervisor.js";
 
 const hmac = (key: Uint8Array, text: string): Uint8Array => new Uint8Array(createHmac("sha256", key).update(text, "utf8").digest());
 const clockAt = (t: number) => ({ now: () => t, monotonic: () => t });
 
-function identity(over: Partial<MainIdentity> = {}): MainIdentity {
+function identity(over: Partial<MainWindowIdentity> = {}): MainWindowIdentity {
   return { connectionId: randomBytes(16).toString("base64url"), windowId: `w${randomBytes(2).readUInt16BE()}`, actorId: "local-user", actor: "user", trusted: randomBytes(1)[0]! > 127, clientKind: "desktop", ...over };
 }
 
@@ -31,6 +31,34 @@ test("main's canonical text and MAC are byte-equal to the daemon's for random id
     assert.equal(verifier.verify({ ...mine, identity: { ...mine.identity, trusted: !id.trusted } }), undefined);
     assert.equal(createAttestationVerifier({ key: randomBytes(32), clock: clockAt(at) }).verify(mine), undefined);
   }
+});
+
+function pluginIdentity(over: Partial<MainPluginIdentity> = {}): MainPluginIdentity {
+  const id = `plugin:p${randomBytes(3).toString("hex")}.view` as const;
+  return { connectionId: randomBytes(16).toString("base64url"), windowId: `p${randomBytes(2).readUInt16BE()}`, actorId: id, actor: id, workspaceId: `proj-${randomBytes(2).toString("hex")}`, trusted: randomBytes(1)[0]! > 127, clientKind: "plugin", hostWindowId: `w${randomBytes(2).readUInt16BE()}`, ...over };
+}
+
+test("a plugin view's identity (ADR 0008 decision 3): main's text and MAC equal the daemon's, the verifier accepts it, and the host window is covered", () => {
+  for (let i = 0; i < 100; i++) {
+    const key = randomBytes(32);
+    const id: MainIdentity = pluginIdentity();
+    const at = 1_700_000_000_000 + i;
+    const mine = signMainAttestation(hmac, key, id, at);
+    const theirs = signAttestation(key, id as unknown as Identity, at);
+    assert.equal(mine.mac, theirs.mac);
+    assert.deepEqual(mine.identity, theirs.identity);
+    assert.equal(mine.identity["hostWindowId"], id.clientKind === "plugin" ? id.hostWindowId : undefined);
+    const verifier = createAttestationVerifier({ key, clock: clockAt(at) });
+    assert.deepEqual(verifier.verify(JSON.parse(JSON.stringify(mine))), { ...id });
+    assert.equal(verifier.verify({ ...mine, identity: { ...mine.identity, hostWindowId: "w999999" } }), undefined, "a moved host window breaks it");
+    const { hostWindowId: _dropped, ...withoutHost } = mine.identity;
+    assert.equal(verifier.verify({ ...mine, identity: withoutHost }), undefined, "a dropped host window breaks it");
+  }
+});
+
+test("a window identity is signed without a host window", () => {
+  const mine = signMainAttestation(hmac, randomBytes(32), identity(), 1);
+  assert.equal("hostWindowId" in mine.identity, false);
 });
 
 test("the text sorts keys by code unit at the identity level and has no whitespace", () => {
