@@ -110,6 +110,7 @@ export * from "./messages/audit.js";
 export * from "./messages/binding.js";
 export * from "./pages/service.js";
 export { createPagesHandlers, registerPagesHandlers, toPagesError } from "./handlers/pages.js";
+export { createPagesContentHooks, pageContent, type PagesConfirmDeps } from "./pages/confirm.js";
 export { PAGE_TOOL_SPECS, PageRead, READ_PAGE, WRITE_PAGE, lineChange, pageTools, pagesReason, readPageArgs, writePageArgs, writePagePreview } from "./bindings/agent-pages.js";
 export * from "./messages/delivery.js";
 export * from "./messages/limits.js";

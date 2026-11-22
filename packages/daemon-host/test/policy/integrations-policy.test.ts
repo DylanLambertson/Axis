@@ -19,7 +19,7 @@ test("every method of both planned contracts has one planned user-only row at th
       assert.equal(WEB_ALLOWED.has(key), false, `${key} is not web-allowed`);
     }
   }
-  assert.equal(PLANNED_RULES["axis.integrations/1.connect"]?.tier, 3, "connect stores a credential: tier 3");
+  assert.equal(PLANNED_RULES["axis.integrations/1.connect"]?.tier, 4, "connect stores a credential: tier 4, a challenge confirmed in main's native dialog");
   // The tier is a fact of the table: a write or a send to an external host is tier 3 and a read is tier 0, whatever a handler does.
   for (const [key, tier] of [["axis.integrations/1.read", 0], ["axis.integrations/1.write", 3], ["axis.net/1.read", 0], ["axis.net/1.send", 3]] as const) {
     assert.equal(PLANNED_RULES[key]?.tier, tier, key);
