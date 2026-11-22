@@ -188,7 +188,7 @@ Issue bodies, PR comments, chat messages and monitoring alerts are attacker-reac
   - a P1 plugin calling a method outside its grant is denied by the daemon; `axis.approvals/1.resolve` from a plugin connection is denied and audited as `plugin:<id>`;
   - a P1 plugin's `location` change to an external URL, `window.open`, a form post an `RTCPeerConnection` attempt from the view, from an `about:blank` child frame and from a worker, and a TURN-over-TCP candidate to the test server all fail, and no request reaches a test server;
   - a modified bundle is disabled at load; an update raising the tier, adding a contribution point, an origin or an integration is blocked until approved;
-  - a curated list with a lower version, an expired list and a list signed by an unknown key are refused;
+  - a curated list with a lower version, an expired list and a list signed by an unknown key are refused; (ADR 0008 §7: the list ships inside the app release; an expired list refuses new curated installs and updates, while installed curated plugins keep running with a warning, so an app that is not updated never loses them)
   - an archive with a symlink, a `..` entry or more than the entry cap is refused with nothing written outside the fresh directory;
   - a repository setting enabling a plugin has no effect and a warning is shown;
   - an install requesting `files.read` and `net:<origin>` shows the "can send your code to <origin>" line.

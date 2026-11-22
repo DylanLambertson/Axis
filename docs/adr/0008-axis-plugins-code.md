@@ -1,6 +1,6 @@
 # ADR 0008, code map and divergences
 
-Companion to `docs/adr/0008-axis-plugins.md`. Nothing of the plugin system is built, so this file does two things: it maps each claim the ADR makes about **existing** code to its anchor, and it lists every place where today's code, `docs/design/extensibility.md` ("the design") or another ADR differs from the ADR, with the ticket that closes it. Verified on `origin/main` at `2d3909c`. Paths are relative to `packages/` unless they start with `code-oss/` or `docs/`; anchors are exported symbols, so they survive line moves.
+Companion to `docs/adr/0008-axis-plugins.md`. Nothing of the plugin system is built, so this file does two things: it maps each claim the ADR makes about **existing** code to its anchor, and it lists every place where today's code, `docs/design/extensibility.md` ("the design"), the trust design or another ADR differs from the ADR, with the ticket that closes it. Verified on `origin/main` at `2d3909c`. Paths are relative to `packages/` unless they start with `code-oss/` or `docs/`; anchors are exported symbols, so they survive line moves.
 
 ## 1. Claims about existing code
 
@@ -29,21 +29,23 @@ Each item is a place where existing code or a document says something the ADR ch
 
 | # | Where | Today | ADR | Closed by |
 |---|---|---|---|---|
-| 1 | `daemon/src/types.ts` `ActorId`, `identity.ts` `identitySchema` | `user`, `daemon`, `agent:<id>`; `clientKind` `desktop` or `web` | adds `plugin:<id>` and `clientKind: plugin` (decision 3) | PV-K1 |
-| 2 | `protocol/src/messages-wire.ts` `pluginIdSchema` | up to four 64-character words, 259 characters | at most 64 characters, so `plugin:<id>` fits the identity's id rules. The contract is served, so this is a schema narrowing inside major version 1: allowed only as a recorded pre-release exception (the ADR 0003 D2 `finalise` precedent), since no plugin caller can exist before PV-K1 and no stored plugin key can exist | PV-K1 |
+| 1 | `daemon/src/types.ts` `ActorId`, `Identity`; `identity.ts` `identitySchema` | `user`, `daemon`, `agent:<id>`; `clientKind` `desktop` or `web`; no host window field | adds `plugin:<id>`, `clientKind: plugin` and `hostWindowId` (decision 3) | PV-K1 |
+| 2 | `protocol/src/messages-wire.ts` `pluginIdSchema` | up to four 64-character words, 259 characters | the 64-character cap is enforced at install (manifest validation); `axis.messages/1` is unchanged, since a plugin id reaches the wire only from main's attestation. Narrowing the schema stays an option for PV-K1 only if needed | PV-K2 (cap), PV-K1 (option) |
 | 3 | `main/attest-sign.ts` `MainIdentity` | `actor: "user"`, `clientKind: "desktop"` only | a second signed shape for plugin views; the byte-equality test with the daemon's signer extends to it | PV-K1 |
-| 4 | `policy/rule-types.ts` `RuleActor` | `"user"` only | a separate plugin row table keyed by permission; the user table stays user-only | PV-K1 |
+| 4 | `policy/rule-types.ts` `RuleActor`; `policy/coverage.ts` | `"user"` only; coverage knows no plugin table | a plugin allow-list table of closed per-permission method sets, plus a coverage deny list as a second fence (decision 4) | PV-K1 |
 | 5 | `audit/src/log.ts` `AuditActor`; `messages/audit.ts` `actorOf` | no plugin actor; plugin senders recorded as `daemon` | `plugin:<id>` as the actor (decision 4) | PV-K1 |
 | 6 | `daemon-host/src/handlers/messages.ts` (`USER`) | the bridge handlers build only the user caller; no plugin caller is ever built (ADR 0007 code map) | the binding builds a plugin caller from the attested plugin connection, never a payload | PV-K1, PV-K4 |
 | 7 | `docs/design/extensibility.md` §3.3 | "no preload beyond a fixed Axis port shim" | the shim exposes no `contextBridge` global (ADR 0003 D7) and hands the port over with one `window.postMessage` | PV-K3 |
 | 8 | the design §3.3 | WebRTC disabled "by a Chromium switch or a patch" | if neither works within the ADR 0002 budget, P1 does not ship (decision 5) | PV-K3 |
 | 9 | the design §4 | integrity "checked at every load" | the served bytes are the bytes checked at this load, not files re-read after the check | PV-K2, PV-K3 |
 | 10 | the design §4 extraction row | symlinks, hard links, absolute paths, `..`, three caps | adds NUL, backslash, drive letters, Windows reserved names, case-colliding entries, caps measured on decompressed bytes | PV-K2 |
-| 11 | the design §4 curated list and §9 gate line | a list fetched from an origin, with a version and an expiry; the gate refuses a lower version, an expired list and an unknown key | the list ships inside the app release and is never fetched in v1; the expiry is **kept** (`notAfter`, default 180 days after the release build) to bound how long an old build trusts a revoked publisher key, and an expired list refuses new curated installs and updates while installed plugins keep running with a warning. The §9 line is kept and extended with that behaviour (validation criterion 5). A fetched list needs its own ADR | PV-K2, PV-R8 |
+| 11 | the design §4 curated list and §9 gate line | a list fetched from an origin, with a version and an expiry; the gate refuses a lower version, an expired list and an unknown key | the list ships inside the app release and is never fetched in v1; the expiry is **kept** (`notAfter`, default 180 days after the release build) to bound how long an old build trusts a revoked publisher key. An expired list refuses new curated installs and updates, while installed plugins keep running with a warning, so an app that is not updated never loses them. The §9 line is kept and extended (the note added there; validation criterion 5). A fetched list needs its own ADR | PV-K2, PV-R8 |
 | 12 | the design §3.5 `net:<origin>`, `integration:<id>` | granted by the plugin system | refused at install until ADR 0009 is accepted | PV-R6 |
 | 13 | the design §4 install and update | "the user approves" | through a main-built native dialog (EL-4 pattern) | PV-K2 |
-| 14 | the design §3.3 identity | "maps it to `plugin:<id>`" | fixes `actorId`, `windowId` `p<n>`, `workspaceId` and `trusted` (decision 3) | PV-K1 |
+| 14 | the design §3.3 identity; `project-registration-and-trust.md` §5.4 | "maps it to `plugin:<id>`"; trust is per call on the project (T1 to T4), keyed for T4 by window | fixes `actorId`, `windowId` `p<n>`, `hostWindowId` and `workspaceId`; `trusted` informational; plugin rows use the same trust modes and gate, and T4 checks both window ids (decision 4) | PV-K1, with the trust slices |
 | 15 | ADR 0010 page view (merged, #571) | `img-src` attachment scheme only, no bridge port | the plugin view keeps `img-src 'self' data:` and one port; same host otherwise | PV-Q2, PV-K3 |
+| 16 | the design §3.3 | "workers get the same CSP"; nothing on other IPC | `worker-src 'none'`, service workers refused; main drops every IPC message from a plugin view (decisions 3, 5) | PV-K3 |
+| 17 | the design §4 signature and extraction rows | signature over manifest and bundle hash; no version rule; no normalisation, duplicate, length or depth rule | domain-separated signature binding id, version and tier; no silent version downgrade; the extraction additions and the in-memory serving (decisions 5, 7, 8) | PV-K2, PV-K3 |
 
 ## 3. Not built (all of the ADR's decisions)
 
