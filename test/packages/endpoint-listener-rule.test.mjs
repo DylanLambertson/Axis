@@ -91,6 +91,28 @@ test("the endpoint file's source rules accept the path listen and refuse each re
     '"::ffff:0.0.0.0"': `${OK}export const a = "::ffff:0.0.0.0";\n`,
     '"0.0.0.0"': `${OK}export const a = "0.0.0.0";\n`,
     "localhost": `${OK}export const a = "localhost";\n`,
+    // Review 2: the reviewer's two files that listened on TCP, and their relatives.
+    "review 2 B1: Reflect.get on the server (the allowed listen in dead code)": variant("server.listen(path, () => undefined);", 'if (dir === "never") server.listen(path);\n  const f = Reflect.get(server, "lis" + "ten");\n  f.call(server, 0);'),
+    "review 2 B2: a local enum named like the path": variant("server.listen(path, () => undefined);", "{\n    enum path { port = 0 }\n    server.listen(path);\n  }"),
+    "Object.getOwnPropertyDescriptor on the prototype": `${OK.replace("  server.listen(path, () => undefined);\n}", "  server.listen(path, () => undefined);\n  const d = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(server), \"x\");\n  void d;\n}")}`,
+    "Object.entries over the prototype": variant("server.listen(path, () => undefined);", "server.listen(path, () => undefined);\n  for (const [k, v] of Object.entries(server)) void [k, v];"),
+    "Function.prototype.call with the server": variant("server.listen(path, () => undefined);", "server.listen(path, () => undefined);\n  const g = server.close;\n  g.call(server);"),
+    "the server passed to a function": variant("server.listen(path, () => undefined);", "server.listen(path, () => undefined);\n  keep(server);"),
+    "the server stored in an object": variant("server.listen(path, () => undefined);", "server.listen(path, () => undefined);\n  const h = { server };\n  void h;"),
+    "the server returned": variant("server.listen(path, () => undefined);", "server.listen(path, () => undefined);\n  return void server;"),
+    "a method outside the list": variant("server.listen(path, () => undefined);", "server.listen(path, () => undefined);\n  server.getConnections(() => undefined);"),
+    "a namespace shadow": variant("server.listen(path, () => undefined);", "server.listen(path, () => undefined);\n}\nnamespace path { export const port = 8080; }\nfunction _x(): void {"),
+    "a class": `${OK}export class C {}\n`,
+    "declare": `${OK}declare const port: number;\n`,
+    "if (false)": variant("server.listen(path, () => undefined);", "if (false) void 0;\n  server.listen(path, () => undefined);"),
+    "a constant ternary": variant("server.listen(path, () => undefined);", "void (0 ? 1 : 2);\n  server.listen(path, () => undefined);"),
+    "a constant &&": variant("server.listen(path, () => undefined);", "void (true && dir);\n  server.listen(path, () => undefined);"),
+    "listen after a return": variant("server.listen(path, () => undefined);", "return;\n  server.listen(path, () => undefined);"),
+    "listen inside an expression": variant("server.listen(path, () => undefined);", "void server.listen(path, () => undefined);"),
+    "process named": `${OK}export const p = () => process.platform;\n`,
+    "globalThis named": `${OK}export const g = () => globalThis;\n`,
+    "eval named": `${OK}export const e = (s: string) => eval(s);\n`,
+    "import.meta": `${OK}export const u = import.meta.url;\n`,
   };
   for (const [what, source] of Object.entries(probes)) assert.ok(rules(source).length > 0, `${what} stages:\n${source}`);
   // Each rule on its own, where another rule would also refuse the probe.
@@ -99,8 +121,20 @@ test("the endpoint file's source rules accept the path listen and refuse each re
   says("a computed listen", /computed property access/);
   says("a unicode-escaped listen", /written with escapes/);
   says("createServer twice", /createServer is called exactly once/);
-  says("a parameter name (SF8)", /not a const declared once and initialised by join/);
+  says("a parameter name (SF8)", /not a const declared once/);
   says("export * from node:net", /re-exports nothing/);
+  says("review 2 B1: Reflect.get on the server (the allowed listen in dead code)", /the server is used only as server\./);
+  says("review 2 B1: Reflect.get on the server (the allowed listen in dead code)", /Reflect is never named/);
+  says("review 2 B2: a local enum named like the path", /no enum, namespace, module or class/);
+  says("review 2 B2: a local enum named like the path", /not a const declared once in the file/);
+  says("the server passed to a function", /the server is used only as server\./);
+  says("Function.prototype.call with the server", /the server is used only as server\./);
+  says("a method outside the list", /the server is used only as server\./);
+  says("if (false)", /constant condition/);
+  says("a constant &&", /constant operand/);
+  says("listen after a return", /follows a return/);
+  says("listen inside an expression", /a statement of its own in a block/);
+  says("process named", /process is never named/);
   assert.deepEqual(rules(`// server.listen(8080) in a comment\n/* port: 1 */\n${OK}`), [], "comments count for nothing");
   assert.deepEqual(unsafeForms(OK.replace("server.listen(path, () => undefined);", "server.listen(8080);"), "pty-process/service.ts", { pkg: "pty-process" }), [], "the rules are the endpoint file's (any other file may not load node:net at all)");
 });
