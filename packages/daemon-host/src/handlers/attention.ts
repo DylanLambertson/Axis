@@ -5,9 +5,10 @@ import { AttentionRefusal, createAttentionService, type AttentionService, type A
 import type { HandlerRegistrar } from "./anchor-guard.js";
 
 /**
- * `axis.attention/1` over the bridge (ticket PV-D4). The policy row admits only `user`; the handler refuses any other actor
- * and a web client again, with the same answer as an unknown project (`E_NOT_FOUND`, reason `not_found`, fixed text), so
- * nothing shows which projects exist. Anything else is `E_INTERNAL` with no text of its own, and every answer is checked
+ * `axis.attention/1` over the bridge (ticket PV-D4). The policy row admits only `user` (not web), so the daemon refuses any
+ * other caller before the handler with `E_POLICY_DENIED`, a decision that does not depend on the project id. An unregistered
+ * project is `E_NOT_FOUND` (reason `not_found`, fixed text). The handler re-checks the caller and answers a refused one
+ * `E_NOT_FOUND` too, as defence in depth; nothing shows which projects exist. Anything else is `E_INTERNAL` with no text of its own, and every answer is checked
  * against the response schema before it leaves.
  */
 const fail = (code: "E_CANCELLED" | "E_INTERNAL" | "E_NOT_FOUND"): never => {

@@ -3,11 +3,14 @@ import { ATTENTION_COUNT_CAP, ATTENTION_MAX_AGENTS, type AttentionCount, type At
 
 /**
  * The needs-attention summary of one project (ticket PV-D4, `axis.attention/1.summary`, docs/design/product-vision-v2.md
- * §3.4). A read: it only asks the journal and the live run services, and it answers ids and counts. Each journal read takes
- * at most `ATTENTION_SCAN_ROWS` rows, so the work is bounded whatever the tables hold; a scan that fills its window reports
- * the counts derived from it as capped ("999+": at least that many may need attention).
+ * §3.4). A read: it only asks the journal and the live run services, and it answers ids and counts. Each journal read
+ * returns at most `ATTENTION_SCAN_ROWS` rows (1001): 1000 is a complete read, and a 1001st row means more exist, so the counts
+ * derived from that read are reported capped ("999+": at least that many may need attention). Beyond the three journal
+ * reads, each returned run costs one point read of the run service it belongs to (`cliRun`, `composerRun`: one journal
+ * lookup by run id each), so at most about 2000 more, all synchronous and bounded. The method's `timeoutMs` cannot
+ * preempt this synchronous work; the bounds are what keep it short.
  */
-export const ATTENTION_SCAN_ROWS = ATTENTION_COUNT_CAP + 1;
+export const ATTENTION_SCAN_ROWS = ATTENTION_COUNT_CAP + 2;
 
 /** A run as the journal's attention reads return it (`AttentionRecords` of `@axis/journal`). */
 export interface AttentionRunRow {
@@ -63,6 +66,7 @@ export function createAttentionService(deps: AttentionServiceDeps): AttentionSer
       if (!deps.projectExists(projectId)) throw new AttentionRefusal();
       const latest = deps.records.latestRuns(projectId, ATTENTION_SCAN_ROWS);
       const running = deps.records.runningRuns(projectId, ATTENTION_SCAN_ROWS);
+      // A read that returned its 1001st row is incomplete; exactly 1000 rows is a complete read.
       const latestFull = latest.length >= ATTENTION_SCAN_ROWS;
       const runningFull = running.length >= ATTENTION_SCAN_ROWS;
 
@@ -77,15 +81,19 @@ export function createAttentionService(deps: AttentionServiceDeps): AttentionSer
         }
       }
 
-      // Durable: the newest run of a live workspace failed. Live verdict: an ended CLI run whose snapshot is not `ok`
-      // (`drift`, or `unknown` after a restart or a snapshot that did not answer: possibly changed, WT-2) is a drift flag.
+      // Durable: the newest run of a live workspace failed. Live verdict: an ended CLI run whose post-run snapshot is
+      // `drift`, or `unknown` (a restart or a snapshot that did not answer: possibly changed, WT-2), or that the supervisor
+      // no longer knows (the same: possibly changed), is a drift flag. `pending` is not: it means the supervisor still holds
+      // the ended run's process while its post-run snapshot runs (bounded by the supervisor's snapshot timeout), and the verdict
+      // follows when it settles. A flag is
+      // about the newest run only, so it clears when any newer run (CLI or composer) starts in the workspace.
       let failed = 0;
       let drift = 0;
       for (const r of latest) {
         if (r.state === "FAILED") failed++;
         if (r.kind === "cli" && TERMINAL.has(r.state)) {
           const after = attempt(() => deps.cliRun(r.runId))?.snapshotAfter;
-          if (after !== "ok") drift++;
+          if (after !== "ok" && after !== "pending") drift++;
         }
       }
 

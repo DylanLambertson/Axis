@@ -8,6 +8,12 @@ import { AxisError, type DatabaseSync } from "@axis/audit";
  *
  * A live workspace is one in `READY`, the only state a run is created in: a workspace being created, finalised, removed or
  * failed never needs attention.
+ *
+ * Cost (the limit bounds the rows returned, not the rows examined): `latestRuns` walks the project's workspaces by
+ * `agent_workspaces_by_project`, finalised and removed ones included, and sorts each live workspace's runs; `runningRuns` walks
+ * the `RUNNING` runs of every project by `agent_runs_by_state` (a handful: live runs are capped); `unreadForUser` walks the
+ * message threads (there is no index by project; a follow-up may add one) and seeks each project thread's user recipient rows
+ * by `message_recipients_by_thread`, so it never walks another project's recipient rows.
  */
 export interface AttentionRun {
   readonly runId: string;
@@ -71,9 +77,10 @@ export class AttentionRecords {
    * `MessageRecords.unread`, over every thread of the project). Nothing of a message is read but its recipient row.
    */
   unreadForUser(projectId: string, limit: number): number {
-    const sql = `SELECT count(*) AS n FROM (SELECT 1 FROM message_recipients r JOIN message_threads t ON t.id = r.thread_id
-      WHERE r.principal = 'user' AND t.project_id = ? AND r.seq > coalesce((SELECT read_through FROM message_cursors c
-      WHERE c.thread_id = r.thread_id AND c.principal = r.principal), 0) LIMIT ?)`;
+    // CROSS JOIN fixes the order: the project's threads first, then each thread's recipient rows by index (review N-3).
+    const sql = `SELECT count(*) AS n FROM (SELECT 1 FROM message_threads t CROSS JOIN message_recipients r
+      WHERE t.project_id = ? AND r.principal = 'user' AND r.thread_id = t.id AND r.seq > coalesce((SELECT read_through
+      FROM message_cursors c WHERE c.thread_id = r.thread_id AND c.principal = r.principal), 0) LIMIT ?)`;
     const row = this.#db.prepare(sql).get(projectId, limitOf(limit)) as Row | undefined;
     return Number(row?.["n"] ?? 0);
   }

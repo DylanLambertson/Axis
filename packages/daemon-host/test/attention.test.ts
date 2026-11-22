@@ -48,7 +48,7 @@ test("an empty project: every count is zero, read with one bounded call per jour
   const s = createAttentionService(deps({}, calls)).summary("p1");
   assert.deepEqual(s, { projectId: "p1", approvalsWaiting: { total: ZERO, byAgent: [], more: false }, failedRuns: ZERO, quietCliRuns: ZERO, driftFlags: ZERO, unreadMessages: ZERO });
   assert.deepEqual(calls.sort(), [`latest:p1:${ATTENTION_SCAN_ROWS}`, `running:p1:${ATTENTION_SCAN_ROWS}`, `unread:p1:${ATTENTION_SCAN_ROWS}`]);
-  assert.equal(ATTENTION_SCAN_ROWS, 1000);
+  assert.equal(ATTENTION_SCAN_ROWS, 1001, "1000 rows is a complete read; a 1001st marks it incomplete");
 });
 
 test("an unregistered project is refused before anything is read", () => {
@@ -98,21 +98,24 @@ test("failed runs: a live workspace whose newest run failed, CLI or composer; an
   assert.deepEqual(s.driftFlags, ZERO, "the failed CLI run's snapshot is ok");
 });
 
-test("drift flags: an ended CLI run whose snapshot is not ok (drift, unknown, unreadable); ok, pending and composer runs are not", () => {
+test("drift flags: an ended CLI run whose snapshot is drift, unknown or unreadable; ok, a pending verdict and composer runs are not", () => {
   const s = summary({
     latest: [
       row("d1", "cli", "COMPLETED"), row("d2", "cli", "CANCELLED"), row("d3", "cli", "FAILED"), row("lost", "cli", "COMPLETED"),
       row("ok", "cli", "COMPLETED"), row("live", "cli", "RUNNING"), row("rev", "cli", "REVIEWING"), row("c", "composer", "COMPLETED"),
+      row("settling", "cli", "FAILED"),
     ],
     cli: {
       d1: { status: "finished", snapshotAfter: "drift" }, d2: { status: "killed", snapshotAfter: "unknown" }, d3: { status: "failed", snapshotAfter: "drift" },
       ok: { status: "finished", snapshotAfter: "ok" }, live: { status: "running", snapshotAfter: "drift" }, rev: { status: "finished", snapshotAfter: "drift" },
       c: { status: "finished", snapshotAfter: "drift" },
+      // Ended, but the supervisor still holds the process while the post-run snapshot runs: no verdict yet, no flag (review N-3).
+      settling: { status: "failed", snapshotAfter: "pending" },
     },
   });
   // `lost` is unknown to the supervisor (a throw): possibly changed, so it counts. RUNNING and REVIEWING have not ended.
   assert.deepEqual(s.driftFlags, { n: 4, capped: false });
-  assert.deepEqual(s.failedRuns, { n: 1, capped: false });
+  assert.deepEqual(s.failedRuns, { n: 2, capped: false });
 });
 
 test("unread messages: the journal's count, capped above the cap", () => {
@@ -132,7 +135,7 @@ test("countOf saturates at the cap, and a full scan window reports capped whatev
   assert.deepEqual([s.failedRuns, s.driftFlags], [{ n: ATTENTION_COUNT_CAP, capped: true }, { n: ATTENTION_COUNT_CAP, capped: true }]);
   assert.deepEqual(s.quietCliRuns, ZERO, "the running window was not full");
   const one = summary({ latest: latest.slice(1) });
-  assert.deepEqual([one.failedRuns, one.driftFlags], [ZERO, ZERO], "one row short of the window is exact");
+  assert.deepEqual([one.failedRuns, one.driftFlags], [ZERO, ZERO], "exactly 1000 rows is a complete read, not capped (review N-2)");
   const running = Array.from({ length: ATTENTION_SCAN_ROWS }, (_, i) => row(`c${i}`, "composer", "RUNNING"));
   const r = summary({ running, composer: {} });
   assert.deepEqual([r.approvalsWaiting, r.quietCliRuns], [{ total: { n: ATTENTION_COUNT_CAP, capped: true }, byAgent: [], more: false }, { n: ATTENTION_COUNT_CAP, capped: true }]);

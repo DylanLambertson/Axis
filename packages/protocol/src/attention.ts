@@ -16,7 +16,7 @@ import { projectIdSchema, type MethodSpec } from "./worktrees.js";
  * | `approvalsWaiting` | live composer runs of the project waiting on a confirmation, per agent | no: LIVE only (a restart ends every composer loop, so it is 0 after one) |
  * | `failedRuns` | live workspaces whose newest run is `FAILED` | yes: DURABLE (journal) |
  * | `quietCliRuns` | CLI runs the daemon holds whose output went quiet (may be waiting for input) | no: LIVE only |
- * | `driftFlags` | live workspaces whose newest run is an ended CLI run with a post-run snapshot of `drift` or `unknown` | the verdict is held in memory; after a restart it is `unknown`, which counts (WT-2: possibly changed), so a flag is never lost by a restart, only made conservative |
+ * | `driftFlags` | live workspaces whose newest run is an ended CLI run with a post-run snapshot of `drift` or `unknown` | the verdict is held in memory; after a restart it is `unknown`, which counts (WT-2: possibly changed), so a restart keeps the flag. `pending` (snapshot still running) does not count yet. The flag clears when any newer run starts in the workspace |
  * | `unreadMessages` | messages to the user in the project's threads past the user's read cursor | yes: DURABLE (journal) |
  *
  * Not counted yet (a design follow-up): composer drift notices and Git-config flags, which have no stored record.
@@ -68,7 +68,11 @@ export const attentionSummaryResponseSchema = guarded(
 );
 export type AttentionSummary = z.infer<typeof attentionSummaryResponseSchema>;
 
-/** The one refusal: an unknown project or a caller other than the user's desktop, alike (no existence oracle). */
+/**
+ * The handler's one refusal: `E_NOT_FOUND` for an unregistered project. A caller other than the user's desktop is refused
+ * earlier, by policy (`E_POLICY_DENIED`), whatever the project id, so neither answer shows which projects exist; the handler's
+ * own re-check of the caller answers `E_NOT_FOUND` too (defence in depth).
+ */
 export const ATTENTION_REFUSAL_MESSAGE = "The attention request was refused.";
 
 export const attentionMethods = {
