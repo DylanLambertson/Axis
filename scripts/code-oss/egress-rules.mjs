@@ -6,7 +6,9 @@
 // without a file, judged strictly. Matched by equality, never as a prefix or suffix.
 //
 //   1. `node:dns` (and `node:dns/promises`) is loaded by no shipped file: a lookup of a chosen name is a request that leaves
-//      the machine (resolver exfiltration), and nothing in the daemon resolves names itself.
+//      the machine (resolver exfiltration). The ONE exception is the daemon's egress client (PV-N1d), which must resolve the
+//      host itself to check every address: exactly `node:dns` (never a subpath), in exactly `import { lookup } from
+//      "node:dns"`, in a file pinned by its SHA-256 (web-rules.mjs EGRESS_CLIENT_FILE, egressClientPinRefusals).
 //   2. `node:child_process` is loaded only by the files in SPAWN_FILES, each taking only the functions listed for it (never
 //      `exec`, `execSync` or `fork`, which run a shell command string or a module), and a file with a fixed program must
 //      name it as a string literal. No file sets `shell` to anything but `false`. The module scanner (stage-ast.mjs
@@ -34,12 +36,14 @@ export const SPAWN_FILES = new Map([
   ["broker/runner.ts", { names: new Set(["spawn"]), program: null, injectable: true, runs: "the approved command's argv (`argv[0]` an absolute path), the run_command boundary (PTY-2, Phase 3 sandbox)" }],
 ]);
 
+import { EGRESS_CLIENT_FILE } from "./web-rules.mjs";
+
 const base = (spec) => spec.replace(/\/.*$/, "");
 
 /** Why the staged file `rel` may not load the built-in `spec`, or null. */
 export function egressBuiltinRefusal(spec, rel) {
   const b = base(spec);
-  if (RESOLVER_BUILTINS.has(b)) return `${spec} resolves names over the network: no shipped file may load it`;
+  if (RESOLVER_BUILTINS.has(b)) return spec === "node:dns" && rel === EGRESS_CLIENT_FILE ? null : `${spec} resolves names over the network: no shipped file but the egress client (node:dns only) may load it`;
   if (b === SPAWN_BUILTIN && !(typeof rel === "string" && SPAWN_FILES.has(rel))) return `${spec} starts programs: only the files named in SPAWN_FILES (scripts/code-oss/egress-rules.mjs) may load it`;
   return null;
 }

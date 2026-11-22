@@ -13,7 +13,7 @@ import { vaultVerdict } from "./vault-importers-rule.mjs";
 import { daemonTestingVerdict } from "./daemon-testing-rule.mjs";
 import { importSpecifiers, unsafeForms } from "../../scripts/code-oss/stage-ast.mjs";
 import { LOADER_BUILTINS } from "../../scripts/code-oss/stage-scan.mjs";
-import { listenerBuiltinRefusal, webHostEdgeRefusal } from "../../scripts/code-oss/web-rules.mjs";
+import { egressClientEdgeRefusal, listenerBuiltinRefusal, webHostEdgeRefusal } from "../../scripts/code-oss/web-rules.mjs";
 import { egressBuiltinRefusal } from "../../scripts/code-oss/egress-rules.mjs";
 
 const packagesDir = fileURLToPath(new URL("../../packages/", import.meta.url));
@@ -112,6 +112,8 @@ export function violation(pkg, spec, file = null, pkgDir = null) {
     if (fromSrc.startsWith("src/")) {
       const web = webHostEdgeRefusal(`${pkg}/${fromSrc.slice(4)}`, `${pkg}/${rel.split(sep).join("/").slice(4)}`);
       if (web !== null && rel.startsWith(`src${sep}`)) return web;
+      const client = egressClientEdgeRefusal(`${pkg}/${fromSrc.slice(4)}`, `${pkg}/${rel.split(sep).join("/").slice(4).replace(/\.js$/, ".ts")}`);
+      if (client !== null && rel.startsWith(`src${sep}`)) return client;
     }
     // The process entry reaches the composition root, so it is a composition point: nothing inside src/ may load it, only the overlay entry.
     if (pkg === HOST_PACKAGE && /^src[\\/]entry(\.[cm]?[jt]s)?$/.test(rel)) {

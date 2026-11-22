@@ -16,6 +16,12 @@
 //      (prototype-lint.mjs); code review, the pin and the supply-chain checks are the other controls. In the DESKTOP bundles (the
 //      daemon and the main seam) the allowance is the web host's alone, and neither listener file may be reached at all
 //      (rule 2). NET-1's "no TCP listener in a desktop run" is unchanged: the packaged check lists TCP sockets only.
+//   1b. The daemon's egress client (PV-N1d, ADR 0009 decision 4, TB24) is OUTBOUND only: `daemon-host/net/egress-client.ts`
+//      may load `node:https` (and, by egress-rules.mjs, `node:dns` for `lookup`), in the desktop bundles too, and nothing else
+//      in the daemon may load either. Like the endpoint template it is PINNED by its SHA-256 (EGRESS_CLIENT_SHA256), so any edit
+//      fails until the pin changes in the same reviewed change, and its node:dns import must be exactly `import { lookup } from
+//      "node:dns"`. Only the composition root may import it (EGRESS_CLIENT_IMPORTERS, egressClientEdgeRefusal), so its test-only
+//      factory and seam cannot be reached from production wiring. It opens no listener: rule 2 and NET-1 are unchanged.
 //   2. Nothing outside `daemon-host/web/` may load a file inside it (and no desktop bundle may reach the endpoint listener
 //      file either, listenerReachViolations), except the overlay files listed in WEB_ENTRIES
 //      (none yet: the reh tunnel is ticket W1b). So no desktop bundle (the daemon entry, the main seam) can contain the
@@ -43,13 +49,44 @@ export const STAGED_NOTICE = "Staged by code-oss/hooks/post-apply.d/20-stage-axi
  * Why the endpoint template's text `source` is not the pinned one, as a list (empty when it is, or for any other file). The
  * source as written, or as staged: the staging hook's notice is removed when it is exactly the second line, nothing else.
  */
-export function endpointPinRefusals(rel, source) {
-  if (rel !== ENDPOINT_LISTENER_FILE) return [];
+/** SHA-256 of a source as written: CRLF read as LF, the staging notice removed when it is exactly the second line. */
+export function sourceSha256(source) {
   const lines = source.replace(/\r\n/g, "\n").split("\n");
   if (lines[1] === `// ${STAGED_NOTICE}`) lines.splice(1, 1);
-  const sha = createHash("sha256").update(lines.join("\n"), "utf8").digest("hex");
+  return createHash("sha256").update(lines.join("\n"), "utf8").digest("hex");
+}
+
+export function endpointPinRefusals(rel, source) {
+  if (rel !== ENDPOINT_LISTENER_FILE) return [];
+  const sha = sourceSha256(source);
   return sha === ENDPOINT_LISTENER_SHA256 ? [] : [`${rel} is not the pinned endpoint template (sha256 ${sha}, pinned ${ENDPOINT_LISTENER_SHA256}; a staged copy may differ only by the staging notice as its second line, after the copyright line): change the pin in web-rules.mjs with the file, in a reviewed change`];
 }
+/** The daemon's egress client: outbound only, `node:https` (and `node:dns` lookup, egress-rules.mjs), pinned below. */
+export const EGRESS_CLIENT_FILE = "daemon-host/net/egress-client.ts";
+/** SHA-256 of the egress client's text (as sourceSha256 computes it). Changing the client means changing this pin in the same change. */
+export const EGRESS_CLIENT_SHA256 = "5ce3d9b92fa9fac2ca46c9a3b9b88fbd66c12b9f1110387567836c0eedba8ce7";
+/** The one form of node:dns the egress client may use. */
+export const EGRESS_DNS_IMPORT = 'import { lookup } from "node:dns";';
+/** The only files that may import the egress client: the composition root (none does yet; PV-N1f wires it). */
+export const EGRESS_CLIENT_IMPORTERS = new Set(["daemon-host/compose.ts"]);
+
+/** Why the egress client's text is not the pinned one, or does not use node:dns in its one form (empty for any other file). */
+export function egressClientPinRefusals(rel, source) {
+  if (rel !== EGRESS_CLIENT_FILE) return [];
+  const bad = [];
+  const sha = sourceSha256(source);
+  if (sha !== EGRESS_CLIENT_SHA256) bad.push(`${rel} is not the pinned egress client (sha256 ${sha}, pinned ${EGRESS_CLIENT_SHA256}; review it and update EGRESS_CLIENT_SHA256 in scripts/code-oss/web-rules.mjs)`);
+  const dnsLines = source.split(/\r?\n/).filter((l) => /["'`]node:dns(?:\/[^"'`]*)?["'`]/.test(l)); // every line naming it as a string
+  if (dnsLines.length !== 1 || dnsLines[0] !== EGRESS_DNS_IMPORT) bad.push(`${rel}: node:dns must appear once, as exactly ${EGRESS_DNS_IMPORT}`);
+  return bad;
+}
+
+/** Why `fromRel` (a staged path, or null for an overlay file) may not load the staged `targetRel`, or null. */
+export function egressClientEdgeRefusal(fromRel, targetRel) {
+  if (targetRel !== EGRESS_CLIENT_FILE && targetRel !== EGRESS_CLIENT_FILE.replace(/\.ts$/, ".js")) return null;
+  return typeof fromRel === "string" && EGRESS_CLIENT_IMPORTERS.has(fromRel) ? null : `${targetRel} is the egress client: only ${[...EGRESS_CLIENT_IMPORTERS].join(", ")} may import it`;
+}
+
 /** Every staged file that may load a socket built-in, with exactly the built-ins it may load. */
 export const LISTENER_FILES = new Map([
   [LISTENER_FILE, LISTENER_BUILTINS],
@@ -68,6 +105,7 @@ export const isWebHostModule = (rel) => typeof rel === "string" && rel.startsWit
 export function listenerBuiltinRefusal(spec, rel, { desktop = false } = {}) {
   const base = spec.replace(/\/.*$/, "");
   if (!LISTENER_BUILTINS.has(base)) return null;
+  if (rel === EGRESS_CLIENT_FILE) return spec === "node:https" ? null : `${spec} opens sockets: ${rel} (the egress client, outbound only) may load only node:https`;
   if (desktop) return rel === LISTENER_FILE ? null : `${spec} opens sockets: in a desktop bundle only ${LISTENER_FILE} (the web host listener) may load it`;
   const allowed = LISTENER_FILES.get(rel);
   if (allowed === undefined) return `${spec} opens sockets: only ${LISTENER_FILE} (the web host listener) and ${ENDPOINT_LISTENER_FILE} (node:net) may load it`;
