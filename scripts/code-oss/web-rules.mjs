@@ -34,7 +34,7 @@ export const ENDPOINT_LISTENER_FILE = "pty-process/endpoint-listen.ts";
  * which a reviewer sees: the template is about 40 lines that listen on an absolute path only and let neither the server nor
  * a raw socket out (`packages/pty-process/src/endpoint-listen.ts`).
  */
-export const ENDPOINT_LISTENER_SHA256 = "9b1a187e7048c30b8c2edaba462c9713ca79f7199405e8354ffed81328713cb8";
+export const ENDPOINT_LISTENER_SHA256 = "68107008a3655750e3384eefec6ae5451ad6ebf8a332fcd0590c957752ed8c73";
 
 /** The notice the staging hook writes as the second line of every staged file (after the copyright line). */
 export const STAGED_NOTICE = "Staged by code-oss/hooks/post-apply.d/20-stage-axis-packages. Do not edit; edit the source and rerun apply.sh.";

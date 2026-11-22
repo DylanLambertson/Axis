@@ -73,7 +73,7 @@ test("an absolute path: listen is called exactly once, with that path; data flow
   assert.equal(existsSync(path), false, "the socket file goes with the listener");
 });
 
-test("the connection facade: frozen, exactly six closures, and neither the socket nor the server is reachable through it", { skip }, async (t) => {
+test("the connection facade: frozen, exactly seven closures, and neither the socket nor the server is reachable through it", { skip }, async (t) => {
   const path = socketPath(t);
   let conn: EndpointConn | undefined;
   const handle = await listenOnPath(path, (c) => void (conn = c));
@@ -82,7 +82,8 @@ test("the connection facade: frozen, exactly six closures, and neither the socke
   t.after(() => s.destroy());
   for (let i = 0; i < 200 && conn === undefined; i++) await new Promise((res) => setTimeout(res, 5));
   assert.ok(conn !== undefined, "connected");
-  assert.deepEqual(Object.keys(conn).sort(), ["destroy", "end", "onClose", "onData", "onError", "write"]);
+  assert.deepEqual(Object.keys(conn).sort(), ["buffered", "destroy", "end", "onClose", "onData", "onError", "write"]);
+  assert.equal(conn.buffered(), 0, "buffered() is a number (the bytes not yet taken by the peer)");
   assert.ok(Object.isFrozen(conn));
   for (const key of ["server", "_server", "_handle", "connect", "socket", "remoteAddress", "address"]) assert.equal(key in conn, false, key);
   assert.equal(Object.getPrototypeOf(conn), Object.prototype, "a plain object, not a socket");
