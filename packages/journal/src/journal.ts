@@ -26,9 +26,8 @@ import {
   type WorkspaceRow,
 } from "./model.js";
 import {
-  checkWorkspaceTransition, clearStaleLocks, getProject, listProjects, lockWorkspace, recordBaseBranch, recordPushed,
-  recordReviewedTree, registerProject, setProjectTrust, setWorktreePath, unlockWorkspace, type RecordsContext, type RegisterProjectInput,
-  type SetProjectTrustInput,
+  checkWorkspaceTransition, clearStaleLocks, getProject, listProjects, lockWorkspace, recordBaseBranch, recordPushed, recordReviewedTree,
+  registerProject, setProjectTrust, setWorktreePath, unlockWorkspace, type RecordsContext, type RegisterProjectInput, type SetProjectTrustInput,
 } from "./records.js";
 import { AgentRecords } from "./agent-store.js";
 import { ComposerRecords } from "./composer-store.js";
