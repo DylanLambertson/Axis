@@ -56,13 +56,13 @@ const PATH_CHARS = /^\/[A-Za-z0-9\-._~!$&'()*+,;=:@%/?]*$/;
  * A dot segment in any spelling: `.`, `..`, `%2e`, `%2E` and mixes, between slashes or at the end of the path part, and with
  * a path parameter (`..;`, `.;x`), which some servers strip before they normalise.
  */
-const DOT_SEGMENT = /(?:^|\/)(?:\.|%2e){1,2}(?=[/;]|$)/i;
+const DOT_SEGMENT = /(?:^|\/)(?:\.|%2e){1,2}(?=[/;]|%3b|$)/i;
 
 /**
  * A request path with its query. Refused: any character outside the unreserved, sub-delimiter and `:@%/?` set (so no
  * control character, CR, LF, space, `\`, `#`, quote or non-ASCII character); a malformed percent escape; `%2f` and `%5c`
  * anywhere; an escaped control character; a double-encoded dot, slash or backslash (`%252e`); an overlong UTF-8 lead byte
- * (`%c0`, `%c1`, `%e0%80`, `%f0%80`); `//` in the path part (a protocol-relative path would name another host if it were
+ * (`%c0`, `%c1`, `%e0%80`, `%f0%80`); an escaped `;` (`%3b`); `//` in the path part (a protocol-relative path would name another host if it were
  * resolved against the origin); and a dot segment in the path part. At most 2,048 characters. Control characters in a
  * path or query value are also refused where the daemon composes it (PV-N1f's composition test): this is the first fence.
  */
@@ -72,6 +72,7 @@ export const netPathSchema = z
   .regex(PATH_CHARS)
   .refine((p) => !/%(?![0-9a-fA-F]{2})/.test(p), "malformed percent escape")
   .refine((p) => !/%(?:2f|5c|[01][0-9a-f]|7f)/i.test(p), "an escaped slash, backslash or control character")
+  .refine((p) => !/%3b/i.test(p), "an escaped path-parameter separator")
   .refine((p) => !/%25(?:2e|2f|5c)/i.test(p), "a double-encoded dot, slash or backslash")
   .refine((p) => !/%(?:c0|c1|e0%80|f0%80)/i.test(p), "an overlong UTF-8 encoding")
   .refine((p) => !(p.split("?", 1)[0] as string).includes("//"), "no empty segment or protocol-relative path")
@@ -96,24 +97,25 @@ export const argValueSchema = z.union([
 ]);
 
 /**
- * Names that can never be an argument key. A key is split into its camelCase words and refused when any word is one of
- * ANYWHERE (so `authToken`, `proxyUrl`, `redirectUri`, `setCookie`, `callbackUrl` all go), when two adjacent words join to a
- * COMPOUND (`apiKey`, `privateKey`, `sessionId`), or when the whole name is one of WHOLE (`key`, `path`, `query`, `method`,
- * `origin`, `host`: words a real argument may contain, as in `sortKey` or `filePath`). `author` is not `auth`. Defence in
- * depth: the connector's own typed argument set is the authority and refuses any key it does not declare.
+ * Names that can never be an argument key. The key is NORMALISED (lower-cased, every non-alphanumeric character dropped, so
+ * `accessToken`, `accesstoken`, `callbackURL` and `Access-Token` are one name) and refused when it CONTAINS a danger stem, unless
+ * it is one of the exact LEGAL names below (`author` holds `auth`, `securityLevel` holds `uri`). A whole-name set (`key`,
+ * `path`, `query`, `method`) catches words a real argument may contain inside a longer name (`sortKey`, `filePath`). A
+ * stem inside an innocent longer name (`ghost`, `originalTitle`) is refused too: the cost of a false positive is a renamed
+ * argument, the cost of a miss is a credential or URL field. Defence in depth: the connector's own typed argument set is the
+ * authority and refuses any key it does not declare.
  */
-const ANYWHERE: ReadonlySet<string> = new Set([
-  "url", "uri", "href", "link", "header", "headers", "cookie", "cookies", "auth", "authorization", "bearer", "token", "tokens", "secret",
-  "secrets", "password", "passwd", "credential", "credentials", "proxy", "redirect", "jwt", "oauth",
-]);
-const COMPOUND: ReadonlySet<string> = new Set(["apikey", "privatekey", "accesskey", "signingkey", "secretkey", "sessionid", "clientid"]);
-const WHOLE: ReadonlySet<string> = new Set(["key", "path", "query", "method", "origin", "host", "hostname", "baseurl"]);
+const STEMS = [
+  "token", "secret", "passw", "pwd", "passphrase", "credential", "auth", "cookie", "apikey", "privatekey", "privkey", "accesskey",
+  "signingkey", "bearer", "jwt", "oauth", "session", "proxy", "redirect", "callback", "header", "url", "uri", "href", "host", "origin",
+] as const;
+const LEGAL: ReadonlySet<string> = new Set(["author", "authors", "authorname", "authorlogin", "authorid", "securitylevel", "securityadvisory", "securityadvisories"]);
+const WHOLE: ReadonlySet<string> = new Set(["key", "path", "query", "method", "link"]);
 const ARG_KEY = /^[a-z][a-zA-Z0-9]{0,31}$/;
-function reservedKey(key: string): boolean {
-  const words = key.split(/(?=[A-Z])/).map((w) => w.toLowerCase());
-  if (words.some((w) => ANYWHERE.has(w))) return true;
-  if (words.some((w, i) => i > 0 && COMPOUND.has((words[i - 1] as string) + w))) return true;
-  return WHOLE.has(key.toLowerCase()) || COMPOUND.has(key.toLowerCase());
+export function reservedKey(key: string): boolean {
+  const name = key.toLowerCase().replace(/[^a-z0-9]/g, "");
+  if (LEGAL.has(name)) return false;
+  return WHOLE.has(name) || STEMS.some((stem) => name.includes(stem));
 }
 export const argKeySchema = z
   .string()

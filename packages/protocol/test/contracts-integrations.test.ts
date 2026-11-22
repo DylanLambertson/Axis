@@ -4,6 +4,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  reservedKey,
   argsSchema,
   netBodySchema,
   resultValueSchema,
@@ -64,14 +65,34 @@ test("no request has a URL, header, cookie, redirect, proxy or credential field,
   }
   const request = schemaOf(I, "read", "request");
   for (const key of ["url", "uri", "href", "link", "host", "hostname", "origin", "baseUrl", "header", "headers", "cookie", "cookies", "authorization", "auth", "bearer", "token", "accessToken", "refreshToken", "idToken", "secret", "clientSecret", "password", "credential", "credentials", "apiKey", "key", "proxy", "redirect", "method", "path", "query",
-    "authToken", "apiToken", "bearerToken", "xApiKey", "privateKey", "sessionId", "setCookie", "proxyUrl", "redirectUri", "callbackUrl", "clientSecret", "jwt"]) {
+    "authToken", "apiToken", "bearerToken", "xApiKey", "privateKey", "sessionId", "setCookie", "proxyUrl", "redirectUri", "callbackUrl", "clientSecret", "jwt",
+    // the all-lower-case and upper-case-ending spellings a camelCase split misses
+    "accesstoken", "refreshtoken", "idtoken", "clientsecret", "authtoken", "bearertoken", "oauthtoken", "setcookie", "proxyurl", "redirectto", "callbackurl",
+    "xapikey", "callbackURL", "webhookURL", "targetURL", "imageURL", "ACCESSTOKEN", "pwd", "privKey", "passphrase", "sessiontoken", "hostName", "originUrl"]) {
     rejects(request, { ...base, args: { [key]: "x" } }, `argument key ${key}`);
     rejects(request, { ...base, args: { [key.toUpperCase()]: "x" } }, `argument key ${key} upper case`);
   }
-  for (const ok of ["author", "sortKey", "filePath", "state", "perPage", "number", "securityLevel", "pullNumber"]) accepts(request, { ...base, args: { [ok]: "x" } }, `a real argument ${ok}`);
+  for (const ok of ["author", "authors", "authorName", "authorlogin", "sortKey", "filePath", "state", "perPage", "number", "securityLevel", "securityadvisory", "pullNumber", "title", "labels", "milestone", "assignee", "sortDirection"]) accepts(request, { ...base, args: { [ok]: "x" } }, `a real argument ${ok}`);
   rejects(request, { ...base, args: { access_token: "x" } }, "snake case never matches the key pattern");
   rejects(request, { ...base, args: { "access-token": "x" } }, "a dash");
   rejects(request, { ...base, args: { ["x" + "a".repeat(32)]: "x" } }, "a 33-character key");
+});
+
+test("reservedKey: a table of spellings, whatever the case, joining or separator", () => {
+  const refused = [
+    "accessToken", "accesstoken", "ACCESSTOKEN", "access_token", "Access-Token", "refreshToken", "refreshtoken", "idToken", "idtoken", "clientSecret", "clientsecret",
+    "authToken", "authtoken", "bearerToken", "oauthToken", "setCookie", "setcookie", "set-cookie", "proxyUrl", "proxyurl", "redirectTo", "redirectto", "redirectUri",
+    "callbackUrl", "callbackurl", "callbackURL", "webhookURL", "targetURL", "imageURL", "xApiKey", "xapikey", "x-api-key", "API_KEY", "apiKey", "privateKey", "privKey",
+    "pwd", "passwd", "password", "passphrase", "sessionId", "sessiontoken", "Authorization", "authorization", "cookie", "jwt", "hostName", "originUrl", "headers", "href", "uri",
+    "key", "KEY", "path", "Query", "method", "link", "callback", "callbackFn", "sessionName", "oauth", "bearer", "redirect", "proxy", "origin", "host", "secret", "token", "credential", "accessKey", "signingKey",
+  ];
+  const legal = [
+    "author", "Author", "authors", "authorName", "authorLogin", "securityLevel", "securitylevel", "securityAdvisory", "sortKey", "sortkey", "filePath", "state", "perPage",
+    "number", "title", "labels", "milestone", "assignee", "sortDirection", "pullNumber", "body", "name", "page", "since", "ref", "sha", "draft", "base", "head",
+  ];
+  assert.ok(refused.length + legal.length >= 80);
+  for (const k of refused) assert.equal(reservedKey(k), true, `${k} is refused`);
+  for (const k of legal) assert.equal(reservedKey(k), false, `${k} is legal`);
 });
 
 test("an argument is a bounded text without NUL, a safe integer or a boolean; nothing nests", () => {
@@ -114,7 +135,7 @@ test("a path is composed: no CR, LF, control, space, backslash, fragment, dot se
   }
   for (const path of [
     "", "v1", "/a\r\nHost: evil", "/a\nb", "/a\rb", "/a\tb", "/a b", "/a\u0000b", "/a\u007fb", "/a\u0085b", "/a\\b", "/a#frag", "/a\"b", "/a<b", "/é", "/a‮b",
-    "//", "//evil.com/x", "//evil.com", "/a//b", "/x//", "/..;/x", "/x/..;/y", "/.;/x", "/..;", "/%2e;/x", "/%252e%252e/x", "/%252e/x", "/%252f", "/%255c", "/%c0%ae%c0%ae/x", "/%c0%af", "/%C1%9c", "/%e0%80%af", "/%f0%80%80%af",
+    "//", "//evil.com/x", "//evil.com", "/a//b", "/x//", "/..;/x", "/x/..;/y", "/.;/x", "/..;", "/%2e;/x", "/..%3b/x", "/%2e%2e%3b/x", "/x/..%3B/y", "/a%3bb", "/%252e%252e/x", "/%252e/x", "/%252f", "/%255c", "/%c0%ae%c0%ae/x", "/%c0%af", "/%C1%9c", "/%e0%80%af", "/%f0%80%80%af",
     "/.", "/..", "/./x", "/x/..", "/x/../y", "/x/./y", "/%2e", "/%2E", "/%2e%2e", "/%2E%2e", "/.%2e", "/%2e./x", "/x/%2E%2E/y", "/x/%2e", "/x/.%2E/y",
     "/a%2fb", "/a%2Fb", "/a%5cb", "/a%5Cb", "/x?q=%2f", "/x?q=%5c", "/a%00b", "/a%0db", "/a%0Ab", "/a%1fb", "/a%7fb", "/a%", "/a%2", "/a%zz", "/a?b?c", "/x".padEnd(2049, "a"),
   ]) {

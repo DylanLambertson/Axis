@@ -10,7 +10,7 @@ import { projectIdSchema, type MethodSpec } from "./worktrees.js";
 
 /*
  * `axis.integrations/1` and `axis.net/1` (ticket PV-N1a, `docs/design/integrations-contract.md`, ADR 0009 decisions 1 to 4).
-* Planned contracts: the agreed schemas, served by PV-N1f (integrations) and PV-N1f with PV-K1 (net). A request names an
+ * Planned contracts: the agreed schemas, served by PV-N1f (integrations) and PV-N1f with PV-K1 (net). A request names an
  * integration and one operation of its closed set with typed arguments, or an origin, a composed path and a method; there is
  * no URL, header, cookie, redirect, proxy or credential field in any request, and no reply carries a credential, a header or
  * a `Location` (ADR 0003 D7). The daemon composes the request, attaches the credential after the final URL pattern check
