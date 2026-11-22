@@ -88,7 +88,8 @@ export function createComposerService(deps: ComposerServiceDeps): ComposerServic
   const maxActive = deps.maxActive ?? DEFAULT_MAX_ACTIVE;
   const limits = deps.budget ?? DEFAULT_COMPOSER_BUDGET;
   createRunBudget(limits); // refuses invalid limits now, not at the first run
-  const wsLimits = deps.workspaceBudget ?? DEFAULT_WORKSPACE_BUDGET;
+  // Frozen once: the same object is enforced below and exposed as `workspaceLimits` (PV-D3 review N-2), so the two cannot drift.
+  const wsLimits: Readonly<RunBudgetLimits> = Object.freeze({ ...(deps.workspaceBudget ?? DEFAULT_WORKSPACE_BUDGET) });
   createRunBudget(wsLimits);
   const redactor = deps.redactor;
   if (!(redactor instanceof Redactor)) throw new TypeError("the composer service needs the host redactor");
@@ -355,7 +356,7 @@ export function createComposerService(deps: ComposerServiceDeps): ComposerServic
     },
 
     isLive: (workspaceId) => [...live.values()].some((l) => l.workspaceId === workspaceId),
-    workspaceLimits: Object.freeze({ ...wsLimits }),
+    workspaceLimits: wsLimits,
 
     async idle() {
       await Promise.all([...live.values()].map((l) => l.done));

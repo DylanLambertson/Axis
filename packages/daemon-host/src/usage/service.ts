@@ -1,5 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
+import type { Journal } from "@axis/journal";
 import type { UsageSummary, UsageTotalsWire } from "@axis/protocol";
+import type { ComposerService } from "../composer/service.js";
 
 /**
  * Usage, cost and budget left of one project (ticket PV-D3, `axis.usage/1.summary`, docs/design/product-vision-v2.md §3.4).
@@ -66,5 +68,20 @@ export function createUsageService(deps: UsageServiceDeps): UsageService {
       });
       return { projectId, project: copy(project), agents, unattributed };
     },
+  };
+}
+
+/**
+ * The service's dependencies as the host composes them (`compose-serving.ts` calls exactly this; review S-1): the project's
+ * listed workers only (archived ones are not), the journal's totals and workspace spend, and the very limits object the
+ * composer service enforces.
+ */
+export function usageServiceDeps(journal: Pick<Journal, "getProject" | "agents" | "composer">, composer: Pick<ComposerService, "workspaceLimits">): UsageServiceDeps {
+  return {
+    projectExists: (id) => journal.getProject(id) !== undefined,
+    agents: (id) => journal.agents.list(id).map((a) => ({ id: a.id, kind: a.launch.kind, homeWorkspaceId: a.homeWorkspaceId })),
+    usage: (id) => journal.composer.projectUsage(id),
+    workspaceSpent: (id) => journal.composer.workspaceBudget(id),
+    limits: composer.workspaceLimits,
   };
 }

@@ -2,7 +2,7 @@
 import { AxisError, isWellFormedString, withTransaction, type DatabaseSync } from "@axis/audit";
 import { z } from "zod";
 import { invalid, type CreateRunInput, type Created, type Run } from "./model.js";
-import { readProjectUsage, type ProjectUsage } from "./usage-totals.js";
+import { exactInt, readProjectUsage, type ProjectUsage } from "./usage-totals.js";
 
 /**
  * Composer run records (schema version 6, tickets J2 and C10; docs/design/composer-runtime.md section 4). What a run was
@@ -210,12 +210,16 @@ export class ComposerRecords {
     return readProjectUsage(this.#db, projectId);
   }
 
-  /** The workspace's budget totals so far; zero for a workspace no composer run has charged. */
+  /**
+   * The workspace's budget totals so far; zero for a workspace no composer run has charged. Read exactly (as BigInt): a value
+   * above `Number.MAX_SAFE_INTEGER` is refused, never rounded (PV-D3 review N-3), so neither a budget nor a reply is off.
+   */
   workspaceBudget(workspaceId: string): BudgetTotals {
-    const row = this.#db
-      .prepare("SELECT tokens, cost_micro_usd, requests, unpriced FROM composer_workspace_budgets WHERE workspace_id = ?")
-      .get(parse(runId, workspaceId, "workspace id")) as { tokens: number; cost_micro_usd: number; requests: number; unpriced: number } | undefined;
-    return row === undefined ? ZERO : { tokens: row.tokens, costMicroUsd: row.cost_micro_usd, requests: row.requests, unpricedRequests: row.unpriced };
+    const read = this.#db.prepare("SELECT tokens, cost_micro_usd, requests, unpriced FROM composer_workspace_budgets WHERE workspace_id = ?");
+    read.setReadBigInts(true);
+    const row = read.get(parse(runId, workspaceId, "workspace id")) as Record<string, unknown> | undefined;
+    if (row === undefined) return ZERO;
+    return { tokens: exactInt(row["tokens"]), costMicroUsd: exactInt(row["cost_micro_usd"]), requests: exactInt(row["requests"]), unpricedRequests: exactInt(row["unpriced"]) };
   }
 
   /**

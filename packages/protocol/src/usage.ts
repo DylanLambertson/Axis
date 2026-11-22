@@ -37,7 +37,10 @@ export const usageTotalsSchema = z.strictObject({
 export type UsageTotalsWire = z.infer<typeof usageTotalsSchema>;
 const FIELDS = Object.keys(usageTotalsSchema.shape) as (keyof UsageTotalsWire)[];
 
-/** What is left of the worker's home-workspace budget (C10), floored at zero; null where that budget sets no limit. */
+/**
+ * What is left of the worker's home-workspace budget (C10), floored at zero; null where that budget sets no limit. It is the
+ * workspace's, shared by every run in it: workers with the same home show the same remainder, which must not be summed.
+ */
 export const budgetRemainingSchema = z.strictObject({
   tokens: countSchema.nullable(),
   requests: countSchema.nullable(),

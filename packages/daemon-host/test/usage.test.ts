@@ -3,11 +3,11 @@
 // without a limit), CLI workers not available; the handler serves the user's desktop only, and errors carry no text.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { AuditLog, openDatabase } from "@axis/audit";
+import { AuditLog, Redactor, openDatabase } from "@axis/audit";
 import type { HandlerContext } from "@axis/daemon";
 import { Journal } from "@axis/journal";
 import { USAGE_REFUSAL_MESSAGE, usageSummaryResponseSchema } from "@axis/protocol";
-import { UsageRefusal, createUsageHandlers, createUsageService, remaining, type UsageService, type UsageServiceDeps, type UsageTotalsRow } from "../src/index.js";
+import { UsageRefusal, createComposerService, createUsageHandlers, createUsageService, remaining, usageServiceDeps, type UsageService, type UsageServiceDeps, type UsageTotalsRow } from "../src/index.js";
 
 const t = (runs: number, cost: number, unpriced = 0): UsageTotalsRow => ({ runs, inputTokens: runs * 10, outputTokens: runs * 20, tokens: runs * 30, requests: runs * 2, costMicroUsd: cost, unpricedRequests: unpriced });
 const ZERO = t(0, 0);
@@ -57,7 +57,7 @@ test("an unregistered project is refused before anything is read", () => {
   assert.deepEqual(read, []);
 });
 
-test("the service reads the journal as composed: an archived worker's run counts in project and unattributed, not in agents", () => {
+test("the composed deps (usageServiceDeps, what compose-serving registers): archived workers are not listed, budget left is the real limits minus the real spend", () => {
   const db = openDatabase(":memory:");
   const journal = Journal.open(db, { audit: new AuditLog(db) });
   journal.registerProject({ id: "p1", path: "/repo/p1", displayName: "p1", trusted: false, actor: "user" });
@@ -71,17 +71,31 @@ test("the service reads the journal as composed: an archived worker's run counts
     db.prepare("INSERT INTO agent_runs (id, workspace_id, kind, state, created_at, updated_at, agent_id) VALUES (?, ?, 'composer', 'COMPLETED', ?, ?, ?)").run(id, ws, T, T, agent);
     db.prepare("INSERT INTO composer_runs (run_id, mode, provider_id, model_id, input_tokens, output_tokens, usage_requests, budget_tokens, budget_cost_micro_usd, budget_requests, created_at) VALUES (?, 'ask', 'mock', 'm1', 1, 1, 1, 2, ?, 1, ?)").run(id, cost, T);
   }
+  // The workspace budget as the composer records it, with the run's own totals in the same write.
+  journal.composer.recordBudget("r1", ws, { tokens: 2, costMicroUsd: 100, requests: 1, unpricedRequests: 0 }, { tokens: 400, costMicroUsd: 123, requests: 7, unpricedRequests: 0 });
   journal.agents.archive("old");
-  const s = summary({
-    projectExists: (id) => journal.getProject(id) !== undefined,
-    agents: (id) => journal.agents.list(id).map((a) => ({ id: a.id, kind: a.launch.kind, homeWorkspaceId: a.homeWorkspaceId })),
-    usage: (id) => journal.composer.projectUsage(id),
-    workspaceSpent: (id) => journal.composer.workspaceBudget(id),
-    limits: { maxTokens: 10 },
-  });
-  assert.deepEqual(s.agents.map((a) => [a.agentId, a.usage?.costMicroUsd]), [["live", 100]]);
-  assert.deepEqual([s.project.costMicroUsd, s.project.runs, s.unattributed.costMicroUsd, s.unattributed.runs], [123, 3, 23, 2]);
+  const composer = { workspaceLimits: Object.freeze({ maxTokens: 1000, maxRequests: 10, maxCostMicroUsd: 100 }) };
+  const d = usageServiceDeps(journal, composer);
+  assert.equal(d.limits, composer.workspaceLimits, "the very limits object the composer service enforces");
+  const s = summary(d);
+  assert.deepEqual(s.agents.map((a) => [a.agentId, a.usage?.costMicroUsd, a.budgetRemaining]), [["live", 100, { tokens: 600, requests: 3, costMicroUsd: 0 }]], "the archived worker is not listed");
+  assert.deepEqual([s.project.costMicroUsd, s.project.runs, s.unattributed.costMicroUsd, s.unattributed.runs], [123, 3, 23, 2], "its run counts in project and unattributed");
+  assert.equal(d.projectExists("p1") && !d.projectExists("p2"), true);
   db.close();
+});
+
+test("the composer service enforces and exposes one frozen limits object, a copy of what it was given (review N-2)", () => {
+  const given = { maxTokens: 5, maxRequests: 6 };
+  const service = createComposerService({ journal: {} as never, engine: {} as never, now: () => 0, redactor: new Redactor(), workspaceBudget: given });
+  try {
+    assert.deepEqual(service.workspaceLimits, { maxTokens: 5, maxRequests: 6 });
+    assert.equal(Object.isFrozen(service.workspaceLimits), true);
+    given.maxTokens = 999;
+    assert.equal(service.workspaceLimits.maxTokens, 5, "changing the caller's object later changes neither the enforced nor the reported limits");
+    assert.equal(service.workspaceLimits, service.workspaceLimits);
+  } finally {
+    service.dispose();
+  }
 });
 
 const ctx = (identity: Record<string, unknown>, aborted = false): HandlerContext => {

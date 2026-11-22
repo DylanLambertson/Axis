@@ -121,5 +121,5 @@ export { createOriginReader, MAX_ORIGIN_CHARS, type OriginReaderDeps } from "./f
 export { FORGE_AUTH_UNSUPPORTED, forgeLogLine, forgeRequestId, journalPinStore, registerForgeServing, type ForgeServingDeps, type StoredPins } from "./compose-forge.js";
 export { parseForgeList, forgeDisplay, reduceChecks, reduceReview, type ParsedList } from "./forge/parse.js";
 export { createForgeHandlers, registerForgeHandlers, toForgeError, type ForgeHandlerDeps } from "./handlers/forge.js";
-export { UsageRefusal, createUsageService, remaining, type UsageService, type UsageServiceDeps, type UsageTotalsRow } from "./usage/service.js";
+export { UsageRefusal, createUsageService, remaining, usageServiceDeps, type UsageService, type UsageServiceDeps, type UsageTotalsRow } from "./usage/service.js";
 export { createUsageHandlers, registerUsageServing } from "./handlers/usage.js";

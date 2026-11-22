@@ -40,7 +40,7 @@ const FROM = `FROM composer_runs c JOIN agent_runs r ON r.id = c.run_id JOIN age
 type Row = Record<string, unknown>;
 
 /** A total read as a BigInt: exact up to 64 bits, then refused above `Number.MAX_SAFE_INTEGER` (never rounded). */
-function int(v: unknown): number {
+export function exactInt(v: unknown): number {
   if (typeof v !== "bigint" || v < 0n || v > BigInt(Number.MAX_SAFE_INTEGER)) {
     throw new AxisError("E_INTERNAL", "A usage total is out of range", { reason: "usage_range" });
   }
@@ -49,13 +49,13 @@ function int(v: unknown): number {
 
 function toTotals(r: Row | undefined): UsageTotals {
   return {
-    runs: int(r?.["runs"]),
-    inputTokens: int(r?.["input_tokens"]),
-    outputTokens: int(r?.["output_tokens"]),
-    tokens: int(r?.["tokens"]),
-    requests: int(r?.["requests"]),
-    costMicroUsd: int(r?.["cost"]),
-    unpricedRequests: int(r?.["unpriced"]),
+    runs: exactInt(r?.["runs"]),
+    inputTokens: exactInt(r?.["input_tokens"]),
+    outputTokens: exactInt(r?.["output_tokens"]),
+    tokens: exactInt(r?.["tokens"]),
+    requests: exactInt(r?.["requests"]),
+    costMicroUsd: exactInt(r?.["cost"]),
+    unpricedRequests: exactInt(r?.["unpriced"]),
   };
 }
 

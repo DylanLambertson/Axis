@@ -9,6 +9,7 @@ import type { SecretScanner } from "@axis/secret-scan";
 import { createGitOperations, createGitPort } from "./bindings/git.js";
 import { registerForgeServing } from "./compose-forge.js";
 import { registerUsageServing } from "./handlers/usage.js";
+import { usageServiceDeps } from "./usage/service.js";
 import { createCommitPreparer, createReviewService } from "./bindings/review.js";
 import { createTempIndexProvider } from "./bindings/review-tempindex.js";
 import { createSshResolver, unavailableSshResolver, type SshSpawn } from "./bindings/ssh-resolver.js";
@@ -141,11 +142,5 @@ export function registerServing(registrar: HandlerRegistrar, services: HostServi
     onBookkeepingError: () => logger?.warn("request.failed", { reason: "git_bookkeeping" }),
   });
   registerForgeServing(registrar, { pty, projectPath: (id) => journal.getProject(id)?.path, git, platform: config.platform, audit: (e) => (audit.append(e), services.anchors.noteWrite()), monotonic: () => ports.clock.monotonic(), pins: journal.forgePins, ...(logger === undefined ? {} : { logger }) });
-  registerUsageServing(registrar, {
-    projectExists: (id) => journal.getProject(id) !== undefined,
-    agents: (id) => journal.agents.list(id).map((a) => ({ id: a.id, kind: a.launch.kind, homeWorkspaceId: a.homeWorkspaceId })),
-    usage: (id) => journal.composer.projectUsage(id),
-    workspaceSpent: (id) => journal.composer.workspaceBudget(id),
-    limits: composer.workspaceLimits,
-  });
+  registerUsageServing(registrar, usageServiceDeps(journal, composer));
 }

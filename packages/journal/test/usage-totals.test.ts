@@ -109,3 +109,14 @@ test("a sum past 64 bits is an error from SQLite, not a wrapped or float total",
   }
   assert.throws(() => journal.composer.projectUsage("p1"), /integer overflow/);
 });
+
+test("a workspace's budget totals are read exactly: 2^53 - 1 is exact, above it is refused, never rounded (review N-3)", () => {
+  const { db, journal, ws } = setup();
+  const a = ws("p1");
+  assert.deepEqual(journal.composer.workspaceBudget(a), { tokens: 0, costMicroUsd: 0, requests: 0, unpricedRequests: 0 });
+  const max = Number.MAX_SAFE_INTEGER;
+  db.prepare("INSERT INTO composer_workspace_budgets (workspace_id, tokens, cost_micro_usd, requests, unpriced, updated_at) VALUES (?, 1, ?, 2, 3, ?)").run(a, max, T);
+  assert.deepEqual(journal.composer.workspaceBudget(a), { tokens: 1, costMicroUsd: max, requests: 2, unpricedRequests: 3 });
+  db.prepare("UPDATE composer_workspace_budgets SET tokens = 9007199254740992 WHERE workspace_id = ?").run(a);
+  assert.throws(() => journal.composer.workspaceBudget(a), /out of range/);
+});
