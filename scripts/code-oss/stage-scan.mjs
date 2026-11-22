@@ -8,7 +8,7 @@
 export { importSpecifiers, unsafeForms, rewriteSpecifiers, scanModules } from "./stage-ast.mjs";
 import { listenerBuiltinRefusal } from "./web-rules.mjs";
 import { egressBuiltinRefusal } from "./egress-rules.mjs";
-export { LISTENER_BUILTINS, LISTENER_FILE, WEB_HOST_DIR } from "./web-rules.mjs";
+export { ENDPOINT_LISTENER_FILE, ENDPOINT_LISTENER_SHA256, LISTENER_BUILTINS, LISTENER_FILE, LISTENER_FILES, WEB_HOST_DIR } from "./web-rules.mjs";
 
 /**
  * Node built-ins that load or run code by other means than a module specifier. No package needs them, except the
