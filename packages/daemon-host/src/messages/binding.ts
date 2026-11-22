@@ -9,6 +9,7 @@ import { journalDirectory, type MessagingDirectory } from "./policy.js";
 import type { MessageAuditSink } from "./audit.js";
 import type { MessagingLimits } from "./limits.js";
 import type { ComposerMessagingDeps } from "./participation.js";
+import { createEndpointRelay, type EndpointRelay } from "./endpoint.js";
 
 /**
  * The message service and its settings over the journal, as the composition root builds them. The directory defaults to
@@ -33,12 +34,21 @@ export interface MessagingBindingDeps {
   readonly onInternalError?: (code: "notice_failed") => void;
   /** The host redactor's check (a secret), for deliveries: required, so a host that leaves it out does not build. */
   readonly holdsSecret: (text: string) => boolean;
+  /** The platform the CLI endpoint would run on (no endpoint on Windows until the native pipe helper exists). Default this process's. */
+  readonly platform?: NodeJS.Platform;
+  /** Wall-clock milliseconds for the endpoint's aggregated audit rows. Default `Date.now`. */
+  readonly now?: () => number;
 }
 
 export interface MessagingBinding {
   readonly service: MessageService;
   readonly settings: MessagingSettingsService;
   readonly delivery: MessageDelivery;
+  /**
+   * The CLI endpoint relay (PV-M6 slice 1) and the mark of the one channel it accepts relayed messages from: the pty binding
+   * (slice 2) is its only holder. Inert until PV-G4: `mint` gives no run an endpoint while `agentOf` knows none.
+   */
+  readonly endpoints: { readonly relay: EndpointRelay; readonly source: symbol };
   /** What a composer run's `send_message` and `read_messages` need (PV-M4), for `AgentBindingDeps.messaging`. */
   readonly participation: Omit<ComposerMessagingDeps, "holdsSecret">;
 }
@@ -51,7 +61,22 @@ export function createMessagingBinding(deps: MessagingBindingDeps): MessagingBin
   const delivery = createMessageDelivery({ ...common, service, random: deps.random, agentOf: deps.agentOf ?? (() => undefined), runLive: deps.runLive ?? (() => false), ...deps.deliveryLimits, ...(deps.onInternalError === undefined ? {} : { onInternalError: deps.onInternalError }), holdsSecret: deps.holdsSecret });
   // Inert until PV-G4: the same `agentOf` as the delivery (default none), so no run is offered the tools.
   const participation = { service, directory, random: deps.random, agentOf: deps.agentOf ?? (() => undefined) };
-  return { service, settings: createMessagingSettings({ ...common, context: (id) => service.context(id) }), delivery, participation };
+  const source = Symbol("pty-control");
+  const relay = createEndpointRelay({
+    service,
+    directory,
+    agentOf: deps.agentOf ?? (() => undefined),
+    runLive: deps.runLive ?? (() => false),
+    random: deps.random,
+    audit: deps.audit,
+    ...(deps.noteWrite === undefined ? {} : { noteWrite: deps.noteWrite }),
+    now: deps.now ?? Date.now,
+    monotonic: deps.monotonic,
+    holdsSecret: deps.holdsSecret,
+    platform: deps.platform ?? process.platform,
+    source,
+  });
+  return { service, settings: createMessagingSettings({ ...common, context: (id) => service.context(id) }), delivery, participation, endpoints: { relay, source } };
 }
 
 /** What the composition root has for messaging; `logger` is required (possibly undefined), so it cannot be left out. */
