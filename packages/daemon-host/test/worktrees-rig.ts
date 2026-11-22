@@ -139,7 +139,7 @@ export async function worktreesRig(options: RigOptions = {}): Promise<Rig> {
   const journal = Journal.open(db, { audit, now: () => new Date(clock.now()) });
   const idempotency = JournalIdempotencyStore.open(db, { audit, redactor, monotonic: () => clock.monotonic() });
   const projectId = "proj-1";
-  journal.registerProject({ id: projectId, path: repo, displayName: "fixture", trusted: true, actor: "user" });
+  journal.registerProject({ id: projectId, path: repo, displayName: "fixture", trusted: false, actor: "user" });
 
   let env: Record<string, string> = { PATH: process.env["PATH"] ?? "", HOME: home };
   let gitPath = resolveGitOnce({ env, platform: process.platform, excludeDirs: [root, tmp, repo] });

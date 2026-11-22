@@ -49,7 +49,7 @@ export async function deliveryRig(t: TestContext, options: { maxText?: number; f
     ...(options.failTaintAudit === undefined ? {} : { failAudit: (action: string) => action === "message.taint" && options.failTaintAudit?.() === true }),
   });
   t.after(() => c.cleanup());
-  c.journal.registerProject({ id: "p", path: "/repo/p", displayName: "p", trusted: true, actor: "user" });
+  c.journal.registerProject({ id: "p", path: "/repo/p", displayName: "p", trusted: false, actor: "user" });
   for (const [id, g, kind] of [["a1", "g1", "composer"], ["a2", "g1", "composer"], ["c1", "g1", "cli"], ["b1", "g2", "composer"]] as const) {
     agents.set(id, { agentId: id, projectId: "p", groupId: g, kind });
     groups.set(g, { groupId: g, projectId: "p", members: [...(groups.get(g)?.members ?? []), id] });

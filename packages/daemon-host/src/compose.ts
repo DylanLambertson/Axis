@@ -18,7 +18,7 @@ import { createTempIndexProvider } from "./bindings/review-tempindex.js";
 import { createRunsBinding, type RunsBinding } from "./bindings/runs.js";
 import { composerGuardDeps, createRunRepositoryGuard, type RunSnapshotterFactory } from "./bindings/snapshot.js";
 import { createWorktreesBinding, type WorktreesBinding } from "./bindings/worktrees.js";
-import { composerWriteLock, createActiveRunForwarder, createAuditSeal, createRunsClock, isPty, refuseComposition, settleComposer, daemonAuditSink, handleProjectsRegister, recordingRegistrar, registryOf, type ComposerOptions } from "./compose-parts.js";
+import { composerWriteLock, createActiveRunForwarder, createAuditSeal, createRunsClock, isPty, refuseComposition, settleComposer, daemonAuditSink, recordingRegistrar, registryOf, type ComposerOptions } from "./compose-parts.js";
 import { hostCommandLimits, type CommandLimits } from "./bindings/agent-command.js";
 import type { HostConfig } from "./config.js";
 import { createAttestationVerifier } from "./control/attestation.js";
@@ -27,6 +27,7 @@ import { createConnectLimiter } from "./control/connect-limiter.js";
 import { createConnectRouter } from "./control/connect-router.js";
 import type { DisposeResult, ListenerTarget } from "./disposables.js";
 import { createEventSources } from "./events/sources.js";
+import { installProjectControl } from "./projects/control.js";
 import { createChallengeAuditSink } from "./gate/audit-sink.js";
 import { createRunTrustMinter } from "./gate/run-trust.js";
 import { createWorktreesApprovals, type WorktreesApprovals } from "./gate/worktrees-confirm.js";
@@ -365,7 +366,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
         logger?.warn("request.failed", { reason: "trust_set_refused" }); // the registry fails closed by itself
       }
     }));
-    cleanups.push(control.onProjectsRegister((m) => handleProjectsRegister({ journal, control, ...(logger === undefined ? {} : { logger }) }, m)));
+    cleanups.push(installProjectControl(control, { journal, config, gitPath: services.gitPath, env: ports.env, ...(logger === undefined ? {} : { logger }) }));
 
     // Step 11: signals, the control `shutdown` message, crash handlers.
     lifecycle = installHostLifecycle({

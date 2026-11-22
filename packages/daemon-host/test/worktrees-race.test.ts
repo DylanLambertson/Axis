@@ -44,7 +44,7 @@ async function repairDuringReconcile(t: TestContext, tamper: boolean) {
   r.git(second, "init", "-q");
   r.git(second, "symbolic-ref", "HEAD", "refs/heads/main");
   r.git(second, "commit", "-q", "--allow-empty", "-m", "init");
-  r.journal.registerProject({ id: "proj-2", path: second, displayName: "two", trusted: true, actor: "user" });
+  r.journal.registerProject({ id: "proj-2", path: second, displayName: "two", trusted: false, actor: "user" });
   assert.deepEqual((await r.binding.service.reconcile(live)).needsAttention, [{ workspaceId: id, reason: "finalise_incomplete" }]);
   if (tamper) r.db.exec(`UPDATE agent_workspaces SET base_sha = '${"1".repeat(40)}' WHERE id = '${id}'`);
   const reached = new Promise<void>((res) => (hold.reached = res));
