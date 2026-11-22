@@ -1,11 +1,11 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { z } from "zod";
 import { cliAgentIdSchema } from "./cliRuns.js";
-import { composerModeSchema, composerModelIdSchema } from "./composer-runs.js";
+import { MAX_PROMPT_CHARS, composerModeSchema, composerModelIdSchema } from "./composer-runs.js";
 import { guarded, safeTextSchema, timestampSchema } from "./guard.js";
 import { agentGroupIdSchema, agentIdSchema } from "./messages-wire.js";
 import { connectionNameSchema } from "./providers.js";
-import { projectIdSchema, refNameSchema, workspaceIdSchema, workspaceNameSchema, type MethodSpec } from "./worktrees.js";
+import { projectIdSchema, refNameSchema, runIdSchema, workspaceIdSchema, workspaceNameSchema, type MethodSpec } from "./worktrees.js";
 
 /*
  * `axis.agents/1` and `axis.agent-groups/1` (ticket PV-G2, `docs/design/agents-contract.md`, ADR 0006 decisions 4 to 6 and
@@ -98,6 +98,22 @@ export const agentsArchiveResponseSchema = z.strictObject({ agent: agentSchema, 
 export const agentsRestoreRequestSchema = z.strictObject({ agentId: agentIdSchema });
 export const agentsRestoreResponseSchema = z.strictObject({ agent: agentSchema, changed: z.boolean() });
 
+/**
+ * Start a run for an agent (PV-G4): the daemon resolves the agent's home workspace and its launch (a CLI entry or a composer
+ * connection, model and mode) from the journal; the caller names only the agent and, for a composer agent, the prompt. No
+ * workspace, command, entry, provider or model field exists here.
+ */
+export const agentsStartRequestSchema = z.strictObject({
+  agentId: agentIdSchema,
+  input: z.strictObject({ prompt: z.string().min(1).max(MAX_PROMPT_CHARS) }).optional(),
+});
+export const agentsStartResponseSchema = z.strictObject({
+  runId: runIdSchema,
+  kind: z.enum(["composer", "cli"]),
+  workspaceId: workspaceIdSchema,
+  replayed: z.boolean(),
+});
+
 // ---- axis.agent-groups/1 ----
 
 export const groupsListRequestSchema = z.strictObject({ projectId: projectIdSchema });
@@ -125,7 +141,10 @@ export const AGENTS_REFUSALS = {
   E_NOT_FOUND: ["not_found"],
   E_CONFLICT: [
     "name_taken", "cross_project", "kind_changed", "archived", "home_unavailable", "order_mismatch", "limit_reached", "untrusted_project",
+    "entry_unavailable", "connection_unavailable", "busy",
   ],
+  /** A start that could not be made now and may succeed later (settings or snapshot unavailable; a composer start before PV-G4 slice B). */
+  E_UNAVAILABLE: ["not_available"],
 } as const;
 export type AgentsRefusalCode = keyof typeof AGENTS_REFUSALS;
 export const AGENTS_REASONS = Object.values(AGENTS_REFUSALS).flat();
@@ -157,6 +176,7 @@ export const agentsMethods = {
   update: spec(agentsUpdateRequestSchema, agentsUpdateResponseSchema, "write", 2, "none", 5_000),
   archive: spec(agentsArchiveRequestSchema, agentsArchiveResponseSchema, "write", 1, "none", 5_000),
   restore: spec(agentsRestoreRequestSchema, agentsRestoreResponseSchema, "write", 1, "none", 5_000),
+  start: spec(agentsStartRequestSchema, agentsStartResponseSchema, "write", 2, "required", 30_000),
 } as const satisfies Record<string, MethodSpec>;
 
 export const agentGroupsMethods = {

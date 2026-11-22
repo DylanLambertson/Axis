@@ -38,6 +38,8 @@ export interface StartRequest {
   /** Main's attestation, minted by the daemon's connection layer (`@axis/runs/daemon-attestation`). */
   readonly trust: TrustAttestation;
   readonly idempotencyKey?: string;
+  /** The Axis agent record the run is started for (PV-G4), never the CLI entry above: recorded as the run's `agent_id`. */
+  readonly worker?: string;
 }
 
 export interface RunSummary {
