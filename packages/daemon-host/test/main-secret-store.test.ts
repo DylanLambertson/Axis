@@ -326,3 +326,17 @@ test("start checks the folder and cleans temporary files, and never throws", asy
   files.failCheck = true;
   await store.start();
 });
+
+test("a waiting put that times out never runs later, even after the held slots come back", async () => {
+  const files = memFiles();
+  const gates: Array<() => void> = [];
+  const hold = files.read;
+  files.read = (file: string) => (file === fileOf("w1") ? hold(file) : new Promise((resolve) => gates.push(() => resolve(null))));
+  const store = createSecretStore({ cipher: fakeCipher(), files, platform: "linux", timers: realTimers, budgets: { slowMs: 20, fastMs: 20 } });
+  await Promise.all(["h1", "h2", "h3", "h4"].map((n) => store.handle({ type: "secrets.get", name: n })));
+  assert.equal(err(await store.handle(put("w1"))), "failed", "it waited and timed out");
+  for (const g of gates.splice(0)) g();
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(files.writes, 0, "the timed-out put never ran");
+  assert.equal(files.store.has(fileOf("w1")), false);
+});

@@ -106,7 +106,11 @@ export const MAX_RECORD_BYTES = 16_384;
 export const MAX_ENTRIES = 256;
 export const MAX_RUNNING = 4;
 export const MAX_WAITING = 4;
-/** Running, waiting and timed-out operations that have not settled, together. */
+/**
+ * Running, waiting and timed-out operations that have not settled, together. With the running and waiting caps this is a fence
+ * that cannot be reached alone (a timed-out operation keeps its running slot), kept so a change to either cap cannot open an
+ * unbounded queue.
+ */
 export const MAX_OUTSTANDING = 8;
 export const SLOW_BUDGET_MS = 60_000;
 export const FAST_BUDGET_MS = 5_000;

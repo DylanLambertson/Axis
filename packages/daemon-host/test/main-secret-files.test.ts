@@ -2,6 +2,7 @@
 // The secret broker's record folder on a real file system (ticket PV-N0a, docs/design/secret-broker.md §3.1).
 import assert from "node:assert/strict";
 import { chmodSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -133,6 +134,20 @@ test("each entry check refuses a symlink on its own: lstat without O_NOFOLLOW, a
     assert.equal(await throwsAsync(createSecretFiles(box.dir, { testSeams: { skipEntryLstat: true } }).read("6331.v1")), true, "O_NOFOLLOW alone");
     assert.equal(Buffer.from((await createSecretFiles(box.dir, { testSeams: { skipEntryLstat: true, followLinks: true } }).read("6331.v1")) as Uint8Array).toString(), "x", "with both off the link is followed (the seams work)");
     assert.equal(await createSecretFiles(box.dir, { testSeams: { skipEntryLstat: true } }).read("6339.v1"), null, "absent is still absent");
+  } finally {
+    box.cleanup();
+  }
+});
+
+test("an entry swapped for a FIFO is refused without blocking (O_NONBLOCK)", { skip: !posix }, async () => {
+  const box = sandbox();
+  try {
+    await createSecretFiles(box.dir).check();
+    execFileSync("mkfifo", ["-m", "600", join(box.dir, "6331.v1")]);
+    // Skip the lstat so the open itself meets the FIFO, as after a swap between the two.
+    const read = createSecretFiles(box.dir, { testSeams: { skipEntryLstat: true } }).read("6331.v1").then(() => "read", () => "refused");
+    const outcome = await Promise.race([read, new Promise<string>((r) => setTimeout(() => r("blocked"), 2000))]);
+    assert.equal(outcome, "refused");
   } finally {
     box.cleanup();
   }
