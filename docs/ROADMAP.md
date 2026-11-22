@@ -1,6 +1,8 @@
 # Implementation Roadmap and Gates
 
-Sequenced agent-first per ADR 0004: the Agent view shell is built in Phases 0–1, alongside the IDE view on the same custom shell. The first usable release target is the Phase 1 slice (1a, then 1b).
+Sequenced agent-first per ADR 0004 and ADR 0006: the Agent view shell is built in Phases 0–1, alongside the IDE view on the same custom shell, and Axis becomes an agent home in Phase 1c. The first usable release target is the Phase 1 slice: 1a, then 1b, then 1c. Phase 1c is part of the target because ADR 0006 makes the agent, not the workspace, the unit the product manages and the project home its landing surface: a release without 1c would ship the workspace dashboard that ADR 0006 replaces (decided 2026-11-21 with O-7, `docs/design/owner-decisions-2026-11-21.md`).
+
+The phase structure follows owner decision O-7: Phase 1c is inserted after 1b, Phase 2 is split into 2a and 2b, and Phase 4 into 4a and 4b. Gates 0, 1a and 1b are unchanged. The ticket breakdown for 1c, 2a and 4a is `docs/design/product-vision-v2-tickets.md`.
 
 ## Phase 0 — Feasibility and product architecture
 Deliver Code OSS custom workbench spike, Electron+web prototypes, extension compatibility matrix, licenses/marketplace review, threat model, ADRs, architecture benchmarks, and an **agent-view skeleton** on the custom shell (M3, to be specified in `docs/design/axis-agent-shell.md`). **Gate:**
@@ -10,7 +12,7 @@ Deliver Code OSS custom workbench spike, Electron+web prototypes, extension comp
 - the shell-layer footprint including the skeleton is measured against ADR 0002 criterion 2.
 
 ## Phase 1 — Agent workspace shell + IDE view vertical slice
-A minimal, end-to-end agent manager on desktop, with the full IDE view. Phase 1 ships in two steps, both part of Agent view v1 (ADR 0004 decision 13); 1a ships first.
+A minimal, end-to-end agent manager on desktop, with the full IDE view. Phase 1 ships in three steps: 1a and 1b, both part of Agent view v1 (ADR 0004 decision 13), then 1c, the agent home (ADR 0006). 1a ships first.
 
 ### Phase 1a — Agent workspace shell
 - **Workspaces and worktrees:** dashboard; create, focus, rename, archive and remove workspaces; daemon worktree lifecycle manager (one worktree and branch per workspace, base SHA recorded, removal refuses to discard uncommitted work); worktrees outside the repository under the app data directory (configurable); Workspace Trust inherited from the source repository; several workspaces concurrently within a per-device limit; no agent runs in the local checkout (working-directory rule, not a security boundary).
@@ -47,7 +49,7 @@ A minimal, end-to-end agent manager on desktop, with the full IDE view. Phase 1 
 - **Open VSX:** a tampered VSIX from public open-vsx.org is refused; the outcomes for a signed and an unsigned VSIX are recorded in `docs/feasibility/extension-compatibility.md` and the test fails if an outcome differs from the record (planned for the M3 Stage 1b validation; not run there, still open);
 - **Bridge, UI and bundle:** ADR 0003 validation criteria 1 to 7 pass; the Axis React bundle runs under Trusted Types with no violation; the launch dialog and run row show that the CLI is governed by its own permissions and can push, and Agent-view copy contains no "sandbox" or "secure";
 - **Commit and push versus a running CLI:** Axis commit and push are refused while a CLI run is active in that workspace; a hook swapped after the GIT-SNAP-1 re-take but before git executes does not run (the refusal is the test);
-- **Trust enforcement:** a run-start call without main's trust attestation for the worktree's source repository is refused by the daemon, a renderer-supplied trust claim alone is refused, and a revoked trust refuses the next run start; main's run-trust answer does not rest on a store a renderer can write (the Workspace Trust model in application storage is renderer-writable, `docs/design/main-answers.md` section 3.3), which must hold before main registers projects;
+- **Trust enforcement:** a run-start call without main's trust attestation for the worktree's source repository is refused by the daemon, a renderer-supplied trust claim alone is refused, and a revoked trust refuses the next run start; main's run-trust answer does not rest on a store a renderer can write (the Workspace Trust model in application storage is renderer-writable, `docs/design/main-answers.md` section 3.3), which must hold before main registers projects (designed in `docs/design/project-registration-and-trust.md`: a rewritten Workspace Trust model alone never yields trusted, and commit, push and worktree create need the same main-confirmed record);
 - **Git argument injection:** a workspace name, branch slug, base ref or remote beginning with `-`, containing `--upload-pack`, or using an `ext::` transport is refused, and every daemon git call passes user-controlled values after `--`;
 - **Review and commit:** a commit is made from the exact tree hash the user reviewed, and a change to a file after review makes the commit refuse; an Axis push shows a warning that needs confirmation when the pushed diff contains a secret pattern; the file tree and preview do not follow a symlink that points outside the worktree; control and bidirectional characters in paths and hunks are escaped in diff review and in dashboard rows; an Open-in-IDE request for a path outside the worktree is refused;
 - **External links (EL-5):** `openExternal` from Axis UI accepts only `http`, `https` and `mailto`, links from agent output show the full URL for confirmation first, and `file:` and custom schemes are refused;
@@ -79,14 +81,38 @@ A minimal, end-to-end agent manager on desktop, with the full IDE view. Phase 1 
 - **Anthropic adapter (ANT-1):** a redirect response is not followed and the key is not sent to the target; an oversized stream event, deeply nested JSON and an error body that echoes the key are handled without leaking the key;
 - **Hooks placement:** a decision on `axis.git.runHooks` and where hooks run, made with the vault shipped, is recorded in an ADR or a design section that the gate review references.
 
-## Phase 2 — Agent depth and IDE-view AI
-Inline edit and inline diff in the IDE editor, selection/file/symbol context attachments, model/account switcher across connections, capability display, conversation history, checkpoints and undo (moved from Phase 3, ADR 0004), prompt templates, cost/usage where supported. Browser workspace skeleton with remote workspace protocol (moved from Phase 1; documented gaps, not gating). **Gate:** inline edit → reversible diff → accept/reject in IDE view; restoring a checkpoint returns the worktree to the recorded state; unsupported capabilities are labeled unavailable.
+### Phase 1c — Agent home
+Added by ADR 0006 (owner decision O-7). Needs 1a and 1b services plus server events (E1).
+- **Projects:** the Space's project list; **Add project** as an explicit, user-confirmed registration (folder, repository root and remote shown first); a new project is untrusted until the user trusts it. Trusted means the Workspace Trust model **and** a main-owned run-trust record that renderers cannot write, set only from a native dialog main shows (owner decisions §5). One repository per project (O-2).
+- **Agents and groups:** agents (named, typed composer or CLI, one home workspace each, O-3) and agent groups (one level, ordered, not a security boundary); user-only writes, audited (ADR 0006 decisions 4 to 6 and 10). No agent without a workspace (O-4).
+- **Project home:** needs attention, agents, your pull requests on `axis/*` branches through the user's `gh` (read-only, no stored token, O-5; `docs/design/forge-pr-list.md` §1), usage and cost for composer runs (CLI agents "not available"), run status.
+- **Agent view:** the labelled navigation rail (UI direction C); the All-agents surface; the side panel with Agents and Code tabs and an embedded editor for quick edits, sharing text models with IDE view (O-8; the IDE split half if the embed exceeds ADR 0002 criterion 2); server events in the UI.
+
+**Gate (1c):** on macOS, plus Windows/Linux CI smoke:
+- add a project through the confirmation; it starts untrusted, no run starts in it until the user trusts it, and trusting it is a user-only, audited action through main's native dialog that writes the main-owned run-trust record (a renderer message alone never trusts it); opening a folder in IDE view does not register it;
+- create a composer agent and a CLI agent in two groups; each gets its own home workspace; both appear on the project home and the All-agents surface with live state;
+- an agent, group or group-assignment write from any actor other than the user is refused, and every accepted write writes an audit event; no agent or group payload accepts a path, a command or a credential;
+- archiving an agent removes no workspace; removing a home workspace names its agents in the tier-4 confirmation and archives them;
+- edit a file in the side panel and see the "files changed outside the agent" indicator; a file of an untrusted project opens read-only there;
+- the pull request section lists a stub `gh`'s output escaped, and refuses malformed or oversized output; without `gh` it says so;
+- CLI agent usage shows "not available", never zero cost;
+- keyboard-only walkthrough of the side panel and hand-off to IDE view in all three view modes;
+- the shell-layer footprint is measured against ADR 0002 criterion 2.
+
+## Phase 2a — Agent collaboration
+Inter-agent messaging (composer agents and the user first, then CLI agents through the endpoint), tasks v1, pages v1 (Markdown), and the project home's Tasks and Pages sections (`docs/design/inter-agent-communication.md`, `docs/design/inter-agent-cli-endpoint.md`, `docs/design/extensibility.md`). **Gate:** the gate lines in `inter-agent-communication.md` §11, `inter-agent-cli-endpoint.md` §7 and `extensibility.md` §9 (2a items) pass.
+
+## Phase 2b — Agent depth and IDE-view AI
+Today's Phase 2, unchanged apart from its name. Inline edit and inline diff in the IDE editor, selection/file/symbol context attachments, model/account switcher across connections, capability display, conversation history, checkpoints and undo (moved from Phase 3, ADR 0004), prompt templates, cost/usage where supported. Browser workspace skeleton with remote workspace protocol (moved from Phase 1; documented gaps, not gating). **Gate:** inline edit → reversible diff → accept/reject in IDE view; restoring a checkpoint returns the worktree to the recorded state; unsupported capabilities are labeled unavailable.
 
 ## Phase 3 — Parallel orchestration
-Planner DAG, one workspace per worker, queue, reviewer, merge integration queue, retries, planner and per-goal budgets, task history, logs, OS sandbox for agent subprocesses (threat model §8.2), advanced DAG and worktree views. **Gate:** two workers independently implement tasks in separate workspaces, pass validation, and integrate without silent overwrites.
+Planner DAG (built on the 2a tasks and messages), one workspace per worker, queue, reviewer, merge integration queue, retries, planner and per-goal budgets, task history, logs, OS sandbox for agent subprocesses (threat model §8.2), advanced DAG and worktree views. **Gate:** two workers independently implement tasks in separate workspaces, pass validation, and integrate without silent overwrites.
 
-## Phase 4 — Intelligence and extensibility
-Repository indexing, project memory, rules, skills, knowledge graph, ACL retrieval, MCP, provider SDK, supported CLI sessions as provider connections (`PROVIDERS.md` type 3, beyond Phase 1 CLI agent runs) and additional providers. **Gate:** provenance-aware retrieval, data deletion, cross-project isolation and plugin contract tests.
+## Phase 4a — Extensibility
+Axis plugins (declarative and sandboxed-UI plugins; plugins that run code only inside the Phase 3 OS sandbox, O-6), integrations with the daemon credential proxy, MCP, provider SDK, supported CLI sessions as provider connections (`PROVIDERS.md` type 3, beyond Phase 1 CLI agent runs) (`docs/design/extensibility.md`). **Gate:** plugin contract tests, and the 4a gate lines in `extensibility.md` §9.
+
+## Phase 4b — Intelligence
+Repository indexing, project memory, rules, skills, knowledge graph, ACL retrieval and additional providers. **Gate:** provenance-aware retrieval, data deletion and cross-project isolation.
 
 ## Phase 5 — Teams and sync
 Organizations, RBAC, presence, CRDT collaboration, shared tasks/agents, encrypted opt-in sync, cloud runners, audit. **Gate:** concurrent editing and team agent runs pass permission, offline/conflict and recovery tests.
@@ -98,7 +124,7 @@ Cross-platform packaging, signed updates, performance, telemetry consent, extens
 Provider-native artifact integrations where official APIs exist; universal docs/slides, remote workspace fleets, extension marketplace, enterprise SSO/policies, advanced code graph, automation and richer collaboration.
 
 ## Recommended first 10 tickets
-Tickets 1–7 are Phase 0 and 1a; 8–10 are Phase 1b.
+Tickets 1–7 are Phase 0 and 1a; 8–10 are Phase 1b. This list is replaced after 1a ships; the tickets for 1c, 2a and 4a are in `docs/design/product-vision-v2-tickets.md`.
 
 1. Agent-view skeleton on the Axis shell: dashboard, workspace view with file tree and terminal, view-mode service with per-workspace, global and split modes (Phase 0 gate).
 2. IDE view on the custom shell passing ADR 0002 criterion 1, opened from the skeleton's file tree at file and line.
