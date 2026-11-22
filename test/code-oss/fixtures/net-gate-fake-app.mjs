@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 // A stand-in for a packaged desktop build, for test/code-oss/net-gate.test.mjs. Mode (first argument):
-//   clean   stays up and opens nothing;  honour  opens the port named by a debugging flag;  listen  always opens a loopback port;
+//   clean   stays up and opens nothing;  honour  opens the port named by a debugging flag;  listen  always opens a loopback port (never the flag's);
 //   exit    exits at once;  family  stays up with a child in its process group;  orphan  starts such a child and exits at once.
 // NET_GATE_FAKE_READY (a file path) receives a line {pid} once this process is fully set up (its listener, if any, is open).
 // NET_GATE_FAKE_CHILD_RECORD (a file path) receives {pid, kid}: this process and that child.
@@ -23,7 +23,18 @@ if (mode === "family" || mode === "orphan") {
 if (mode === "exit") process.exit(3);
 const flag = process.argv.slice(3).find((a) => /^--(?:remote-debugging-port|inspect(?:-brk|-extensions)?)=\d+$/.test(a));
 const ready = () => { if (process.env.NET_GATE_FAKE_READY) appendFileSync(process.env.NET_GATE_FAKE_READY, `${JSON.stringify({ pid: process.pid })}\n`); };
+// The checker names a port it has just freed for the flag. A build that always listens must not take that very port
+// (the kernel may hand a just-released one out again): that would look like a honoured flag, and it is a coincidence.
+function listenElsewhere() {
+  const named = flag === undefined ? -1 : Number(flag.split("=")[1]);
+  const server = net.createServer();
+  server.once("error", () => setImmediate(listenElsewhere));
+  server.listen(0, "127.0.0.1", () => {
+    if (server.address().port === named) server.close(listenElsewhere);
+    else ready();
+  });
+}
 if (mode === "honour" && flag !== undefined) net.createServer().listen(Number(flag.split("=")[1]), "127.0.0.1", ready);
-else if (mode === "listen") net.createServer().listen(0, "127.0.0.1", ready);
+else if (mode === "listen") listenElsewhere();
 else ready();
 setInterval(() => {}, 1000);

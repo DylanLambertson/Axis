@@ -13,7 +13,6 @@ import { until } from "../testing/helpers.js";
 
 const SKIP = process.platform === "win32" ? "POSIX shebang scripts and process groups" : false;
 const CANARY = "CANARY0d2s2node";
-const WAIT = 400_000;
 
 async function withRig(opts: Parameters<typeof forgeRig>[0], body: (r: ForgeRig) => Promise<void>): Promise<void> {
   const r = forgeRig({ ...opts, exec: (_inner, gh) => createNodeExec(new Set([gh]), process.platform) });
@@ -52,7 +51,7 @@ test("real exec: the environment is exactly the built one (no token, no planted 
       GH_HOST: "github.com", GH_PROMPT_DISABLED: "1", GH_NO_UPDATE_NOTIFIER: "1", GH_NO_EXTENSION_UPDATE_NOTIFIER: "1", GH_SPINNER_DISABLED: "1", NO_COLOR: "1", CLICOLOR: "0",
     });
     assert.ok(!readFileSync(out, "utf8").includes(CANARY));
-    await until(callsEmpty(r), WAIT);
+    await until(callsEmpty(r));
     r.rewrite('process.stdout.write(JSON.stringify(fs.readdirSync(process.cwd())));');
     assert.equal((await ask(r))["stdout"], "[]", "the next call's cwd is new and empty");
   });
@@ -73,12 +72,12 @@ test("real exec: endless stderr and a hang end as a timeout on the injected cloc
   for (const list of [endless, "setInterval(() => {}, 1000);"]) {
     await withRig({ list }, async (r) => {
       const pending = r.send(forgeReq());
-      await until(() => listRuns(r).length === 1, WAIT);
+      await until(() => listRuns(r).length === 1);
       r.clock.fire();
       assert.equal((await pending)["code"], "timeout");
       const pid = listRuns(r)[0]?.pid as number;
-      await until(() => !alive(pid), WAIT);
-      await until(callsEmpty(r), WAIT);
+      await until(() => !alive(pid));
+      await until(callsEmpty(r));
     });
   }
 });
@@ -90,8 +89,8 @@ test("real exec: a grandchild that holds the pipes and ignores SIGTERM is killed
     assert.deepEqual(await ask(r), { t: "forge-result", req: r.replies[0]?.["req"], exit: 0, class: "none", stdout: "[]", truncated: false });
     const grandchild = Number(readFileSync(pidFile, "utf8"));
     assert.ok(grandchild > 0);
-    await until(() => !alive(grandchild), WAIT);
-    await until(callsEmpty(r), WAIT);
+    await until(() => !alive(grandchild));
+    await until(callsEmpty(r));
   });
 });
 
