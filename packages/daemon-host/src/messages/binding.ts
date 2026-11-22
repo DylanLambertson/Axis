@@ -29,6 +29,8 @@ export interface MessagingBindingDeps {
   readonly agentOf?: (runId: string) => string | undefined;
   /** True while a run is RUNNING (the journal's state); default: never. */
   readonly runLive?: (runId: string) => boolean;
+  /** True while the supervisor launches the run (QUEUED): the CLI endpoint is minted in the spawn, before RUNNING. */
+  readonly runLaunching?: (runId: string) => boolean;
   /** Bounds of one delivered block (defaults in `delivery.ts`). */
   readonly deliveryLimits?: { readonly maxMessages?: number; readonly maxText?: number };
   /** A delivery failure the pipeline swallows, as a fixed code (the host logs it). */
@@ -68,6 +70,7 @@ export function createMessagingBinding(deps: MessagingBindingDeps): MessagingBin
     directory,
     agentOf: deps.agentOf ?? (() => undefined),
     runLive: deps.runLive ?? (() => false),
+    runLaunching: deps.runLaunching ?? (() => false),
     random: deps.random,
     audit: deps.audit,
     ...(deps.noteWrite === undefined ? {} : { noteWrite: deps.noteWrite }),
@@ -110,6 +113,7 @@ export function hostMessagingDeps(host: HostMessaging): MessagingBindingDeps {
     scan: host.scan,
     holdsSecret: host.holdsSecret,
     runLive: (id) => journal.getRun(id)?.state === "RUNNING",
+    runLaunching: (id) => journal.getRun(id)?.state === "QUEUED",
     onInternalError: (code) => logger?.warn("request.failed", { reason: `delivery_${code}` }),
   };
 }

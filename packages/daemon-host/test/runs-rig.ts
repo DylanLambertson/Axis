@@ -83,7 +83,7 @@ export interface RunsRig extends Rig {
   /** The settings and trust questions main was asked, in order. */
 }
 
-export async function runsRig(options: RigOptions = {}): Promise<RunsRig> {
+export async function runsRig(options: RigOptions & { readonly wrapPty?: (pty: PtyPort) => PtyPort } = {}): Promise<RunsRig> {
   const holder: { runs?: RunsBinding } = {};
   const rig = await worktreesRig({ ...options, answerTrust: false, hasActiveRun: (id) => holder.runs?.service.hasActiveRun(id) ?? true });
   const pty = new FakePty();
@@ -105,7 +105,8 @@ export async function runsRig(options: RigOptions = {}): Promise<RunsRig> {
   const deps: RunsBindingDeps = {
     journal: rig.journal,
     audit: rig.audit,
-    pty,
+    // A test may put the composition's own wrapper around the port (the CLI endpoint at spawn: `cliEndpointPty`).
+    pty: options.wrapPty?.(pty) ?? pty,
     clock: {
       now: () => rig.clock.now(),
       setTimeout: (fn, ms) => {
