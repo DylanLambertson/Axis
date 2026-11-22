@@ -39,4 +39,4 @@ Companion to `docs/adr/0009-integrations-and-credential-proxy.md`. Nothing of th
 
 ## 3. Not built
 
-Everything the ADR decides: the contracts and their rows, the egress client, address checks and pinning, request composition, the vault namespaces and purposes, the entry's environment refusals, device-code OAuth with its main dialog, the two audit rows and taint source 7 (PV-N1, PV-N2); the GitHub token integration (PV-N3); the gate evidence (PV-N4). The threat-model rows come with PV-R8.
+Everything the ADR decides: the contracts and their rows, the egress client, address checks and pinning, request composition, the vault namespaces and purposes, device-code OAuth with its main dialog, the two audit rows and taint source 7 (PV-N1, PV-N2); the GitHub token integration (PV-N3); the gate evidence (PV-N4). The threat-model rows come with PV-R8. **Built since:** the entry's environment refusals (`NODE_TLS_REJECT_UNAUTHORIZED`, `NODE_USE_ENV_PROXY`), PV-N1b, `6c95e93` (`daemon-host/src/entry.ts` step 1).
