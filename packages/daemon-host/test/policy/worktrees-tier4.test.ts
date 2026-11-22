@@ -19,10 +19,10 @@ const policy = (): RuleTablePolicy => {
   return new RuleTablePolicy(r);
 };
 
-const ROWS: Array<[string, number, "none" | "registry"]> = [
+const ROWS: Array<[string, number, "none" | "project"]> = [
   ["finalise", 4, "none"],
   ["remove", 4, "none"],
-  ["discard", 2, "registry"],
+  ["discard", 2, "project"],
   ["setUserEditing", 2, "none"],
 ];
 
@@ -45,12 +45,12 @@ test("the decision for finalise never lowers the tier below 4 (native dialog)", 
   assert.ok(d.effect === "allow" && (d.tier ?? 4) >= 4, "a raised tier is never below 4");
 });
 
-test("only a user is admitted to the new rows, and discard needs a trusted project while setUserEditing does not", () => {
+test("only a user is admitted to the new rows; discard is a project-trust row (the gate decides) and setUserEditing is not", () => {
   const p = policy();
   for (const [m, , trust] of ROWS) {
     for (const actor of ["agent:claude", "daemon", "", null]) {
       assert.equal(p.evaluate(input(m, { actor })).effect, "deny", `${m} as ${String(actor)}`);
     }
-    assert.equal(p.evaluate(input(m, { trusted: false })).effect, trust === "registry" ? "deny" : "allow", `${m} attested untrusted`);
+    assert.equal(p.evaluate(input(m, { trusted: false })).effect, "allow", `${m} attested untrusted (${trust}: the gate decides, not policy)`);
   }
 });

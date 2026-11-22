@@ -181,3 +181,110 @@ test("a project display name comes from the folder name, or a fixed word when th
   assert.equal(projectDisplayName("/work/my-repo"), "my-repo");
   assert.equal(projectDisplayName("/work/‮evil"), "project");
 });
+
+test("the message queue is bounded: past 16 waiting, a message is answered E_BACKPRESSURE at once (mutant: no bound)", async () => {
+  const answers: Record<string, unknown>[] = [];
+  const hung: BindingFs = { realpath: () => new Promise(() => undefined), lstat: () => new Promise(() => undefined) };
+  const pc = createProjectControl({
+    journal: { listProjects: () => [], getProject: () => undefined, registerProject: () => undefined as never, setProjectTrust: () => undefined as never },
+    control: { send: (m) => void answers.push(m as Record<string, unknown>) },
+    excludedRoots: ["/axis/data"],
+    binding: { platform: "linux", uid: 1, fs: hung, timeoutMs: 20 },
+    remote: { runner: { run: async () => ({ code: 1, stdout: "", stderr: "" }) }, env: {}, platform: "linux" },
+  });
+  const all = Array.from({ length: 17 }, (_, i) => pc.handle({ type: "projects.inspect", requestId: `r${i}`, path: `/repo${i}` }));
+  assert.deepEqual(answers.map((a) => [a["requestId"], a["code"]]), [["r16", "E_BACKPRESSURE"]], "refused before any work");
+  await Promise.all(all);
+  assert.equal(answers.length, 17);
+  assert.ok(answers.slice(1).every((a) => a["code"] === "E_UNAVAILABLE"), "the others ran and hit the binding bound");
+  // Once drained, the queue takes messages again.
+  await pc.handle({ type: "projects.inspect", requestId: "again", path: "/repo" });
+  assert.equal(answers.at(-1)?.["code"], "E_UNAVAILABLE");
+});
+
+test("review B S1: a projects.trust revoke calls onRevoked for that project (it stops the runs); a grant or a refusal does not (mutant: no call)", { skip: SKIP }, async (t) => {
+  const r = rig(t);
+  const p = git(join(r.root, "repo"));
+  const revoked: string[] = [];
+  const pc = createProjectControl({
+    journal: r.journal,
+    control: { send: () => undefined },
+    excludedRoots: [r.dataDir],
+    binding: { platform: process.platform, uid: (process.getuid as () => number)() },
+    remote: { runner: { run: async () => ({ code: 1, stdout: "", stderr: "" }) }, env: {}, platform: process.platform },
+    onRevoked: (id) => void revoked.push(id),
+  });
+  await pc.handle(register(p, true));
+  const id = r.journal.listProjects()[0]?.id as string;
+  await pc.handle(trust(id, p, true));
+  assert.deepEqual(revoked, [], "a grant stops nothing");
+  await pc.handle(trust("p-none", p, false));
+  assert.deepEqual(revoked, [], "a refused revoke stops nothing");
+  await pc.handle(trust(id, p, false));
+  assert.deepEqual(revoked, [id]);
+});
+
+test("review B nits: a full queue never refuses a revoke; an excluded root whose real path cannot be read in time refuses registration (fail closed)", async (t) => {
+  const answers: Record<string, unknown>[] = [];
+  const hung: BindingFs = { realpath: () => new Promise(() => undefined), lstat: () => new Promise(() => undefined) };
+  const revoked: string[] = [];
+  const journal = {
+    listProjects: () => [],
+    getProject: (id: string) => (id === "p-1" ? ({ id, path: "/repo", trusted: true, commonDir: "/repo/.git", gitDirId: "1:1" } as never) : undefined),
+    registerProject: () => undefined as never,
+    setProjectTrust: () => undefined as never,
+  };
+  const pc = createProjectControl({
+    journal,
+    control: { send: (m) => void answers.push(m as Record<string, unknown>) },
+    excludedRoots: ["/axis/data"],
+    binding: { platform: "linux", uid: 1, fs: hung, timeoutMs: 20 },
+    remote: { runner: { run: async () => ({ code: 1, stdout: "", stderr: "" }) }, env: {}, platform: "linux" },
+    onRevoked: (id) => void revoked.push(id),
+  });
+  const queued = Array.from({ length: 16 }, (_, i) => pc.handle({ type: "projects.inspect", requestId: `q${i}`, path: `/r${i}` }));
+  const revoke = pc.handle({ type: "projects.trust", requestId: "rv", projectId: "p-1", path: "/repo", trusted: false });
+  assert.equal(answers.some((a) => a["requestId"] === "rv"), false, "the revoke was not refused: it waits its turn (mutant: not exempt)");
+  await Promise.all([...queued, revoke]);
+  assert.deepEqual(answers.find((a) => a["requestId"] === "rv"), { type: "projects.result", requestId: "rv", ok: true, projectId: "p-1" });
+  assert.deepEqual(revoked, ["p-1"]);
+
+  // An excluded root whose real path hangs: registration and inspection are refused, never let through.
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "axis-roots-")));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const p = git(join(root, "repo"));
+  const slow: Record<string, unknown>[] = [];
+  const db = openDatabase(":memory:");
+  const pc2 = createProjectControl({
+    journal: Journal.open(db, { audit: new AuditLog(db) }),
+    control: { send: (m) => void slow.push(m as Record<string, unknown>) },
+    excludedRoots: ["/axis/data"],
+    binding: POSIX ? { platform: process.platform, uid: (process.getuid as () => number)() } : { platform: "linux", uid: 1, fs: hung, timeoutMs: 20 },
+    remote: { runner: { run: async () => ({ code: 1, stdout: "", stderr: "" }) }, env: {}, platform: process.platform },
+    rootsRealpath: () => new Promise(() => undefined),
+  });
+  if (POSIX) {
+    await pc2.handle(register(p));
+    assert.deepEqual([slow[0]?.["code"], slow[0]?.["reason"]], ["E_UNAVAILABLE", "roots_unavailable"], "mutant: the timed-out root is ignored");
+  }
+});
+
+test("review 2 nit: a timed-out excluded root is not remembered: the next registration reads the roots again (mutant: sticky)", { skip: SKIP }, async (t) => {
+  const r = rig(t);
+  const p = git(join(r.root, "repo"));
+  const answers: Record<string, unknown>[] = [];
+  let hang = true;
+  const pc = createProjectControl({
+    journal: r.journal,
+    control: { send: (m) => void answers.push(m as Record<string, unknown>) },
+    excludedRoots: [r.dataDir],
+    binding: { platform: process.platform, uid: (process.getuid as () => number)() },
+    remote: { runner: { run: async () => ({ code: 1, stdout: "", stderr: "" }) }, env: {}, platform: process.platform },
+    rootsRealpath: (x) => (hang ? new Promise(() => undefined) : Promise.resolve(x)),
+  });
+  await pc.handle(register(p));
+  assert.equal(answers[0]?.["reason"], "roots_unavailable");
+  hang = false;
+  await pc.handle(register(p));
+  assert.equal(answers[1]?.["ok"], true, "the roots were read again");
+});

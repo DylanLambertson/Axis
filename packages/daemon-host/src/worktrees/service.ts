@@ -1,4 +1,6 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
+import { consumeTicket, untrusted } from "../gate/project-trust.js";
+import type { PortContext } from "../ports/common.js";
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
 import type { AuditActor, AuditLog } from "@axis/audit";
@@ -32,6 +34,8 @@ export interface WorktreesServiceDeps {
   readonly locator: WorktreeLocator;
   readonly mutex: ProjectMutex;
   readonly runs: Pick<RunsService, "hasActiveRun">;
+  /** Monotonic milliseconds: the project trust ticket's clock. */
+  readonly now: () => number;
   readonly random: RandomSource;
   readonly platform: NodeJS.Platform;
   /** Checks a restore path on disk before anything is written (default: `assertSafeRestorePath`). A test seam; never weaken it in the product. */
@@ -60,6 +64,11 @@ const exists = (p: string | null): Promise<boolean> => (p === null ? Promise.res
  */
 export function createWorktreesService(deps: WorktreesServiceDeps): WorktreesRuntime {
   const { journal, manager, locator, mutex } = deps;
+  // The project trust gate, right before the first write and inside the mutex; the ticket is spent here (no hook: refused).
+  const gated = async (ctx: PortContext, scope: { readonly projectId: string; readonly workspaceId?: string }): Promise<void> => {
+    if (ctx.trust === undefined) throw untrusted();
+    consumeTicket(await ctx.trust(scope), scope, deps.now);
+  };
   let attention = new Map<string, string>();
   // True after a reconcile that did not finish (aborted by the startup budget, failed, or cut at the report cap): until a
   // full one completes, EVERY workspace needs attention (design section 3 step 9, gate G-12); never "nothing is wrong".
@@ -141,6 +150,7 @@ export function createWorktreesService(deps: WorktreesServiceDeps): WorktreesRun
           const branch = `axis/${slug}`;
           const baseSha = await manager.resolveCommit(project.path, baseRef);
           ctx.signal.throwIfAborted();
+          await gated(ctx, { projectId: project.id });
           // Journal first: the row exists (CREATING) before the repository changes, so a crash leaves a visible state.
           const id = journal.createWorkspace({ projectId: project.id, branch, baseRef, baseSha, createdBy: actor }).value.id;
           try {
@@ -302,6 +312,7 @@ export function createWorktreesService(deps: WorktreesServiceDeps): WorktreesRun
           const ref = await locator.locate(ws.id);
           // Before any write: every path must be a plain file path inside THIS workspace (a symlink in it could lead elsewhere).
           for (const rel of req.paths) await deps.restorePathCheck(ref.workTree, rel, deps.platform);
+          await gated(ctx, { projectId: ws.projectId, workspaceId: ws.id });
           return withLockRecord(ws.id, actor, async () => {
             const restored: string[] = [];
             let backupRef: string | undefined;

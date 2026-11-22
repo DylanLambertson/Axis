@@ -163,12 +163,17 @@ const nativeConfirmSchema = z.strictObject({
   summary: displayTextSchema(192),
 });
 
+/**
+ * Per gated call (docs/design/project-registration-and-trust.md §5.4, T3): main answers the Workspace Trust half for the journal's
+ * project path; the host requires its own record (T1, T2) as well. `workspaceId` is absent for `worktrees.create`.
+ */
 const trustCheckSchema = z.strictObject({
   type: z.literal("trust.check"),
   requestId: requestIdSchema,
   windowId: scopeIdSchema,
-  workspaceId: scopeIdSchema,
+  workspaceId: scopeIdSchema.optional(),
   projectId: scopeIdSchema,
+  projectPath: absolutePathSchema,
 });
 
 const settingsGetSchema = z.strictObject({

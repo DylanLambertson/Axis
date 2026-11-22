@@ -47,8 +47,10 @@ export interface NativeConfirmResult {
 
 export interface TrustCheckRequest {
   readonly windowId: string;
-  readonly workspaceId: string;
+  readonly workspaceId?: string;
   readonly projectId: string;
+  /** The journal's canonical project path: main checks it against the Workspace Trust model. */
+  readonly projectPath: string;
 }
 
 export interface ControlStats {

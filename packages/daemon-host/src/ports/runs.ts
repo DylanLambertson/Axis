@@ -27,7 +27,8 @@ export interface RunTrustAttestation {
 
 /** Mints a `RunTrustAttestation` from the window-verified call main attested. Fed by the control channel. */
 export interface RunTrustMinter {
-  attest(facts: { readonly workspaceId: string; readonly projectId: string }): RunTrustAttestation;
+  /** Spends the project trust gate's ticket for exactly these facts (it refuses without one), then mints the attestation. */
+  attest(facts: { readonly workspaceId: string; readonly projectId: string }, ticket: unknown): RunTrustAttestation;
 }
 
 export interface RunsStartRequest {

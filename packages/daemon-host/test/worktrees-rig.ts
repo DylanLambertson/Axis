@@ -1,6 +1,8 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
+import { createHostProjectTrustGate } from "../src/gate/project-trust-gate.js";
+import type { ProjectTrustGate } from "../src/gate/project-trust.js";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
@@ -66,6 +68,8 @@ export interface Rig {
   /** Answers for the next `hasActiveRun` calls, in order, before falling back to `active` (a call that sees a run only later). */
   readonly script: boolean[];
   readonly trust: InMemoryTrustRegistry;
+  /** The host's project trust gate over this rig (handlers that need one take it). */
+  readonly gate: ProjectTrustGate;
   readonly home: string;
   readonly gitPath: string;
   readonly gitLog: string;
@@ -99,6 +103,8 @@ const verifier: IdentityVerifier = {
 };
 
 export interface RigOptions {
+  /** Main's `trust.check` answer: `true` by default (the project's Workspace Trust half); `false` leaves it to the test. */
+  answerTrust?: boolean;
   /** Called after the repository is committed and before the project is registered. */
   prepare?: (repo: string, home: string) => void;
   /** Make the binding think a run is active (workspace ids). */
@@ -139,7 +145,9 @@ export async function worktreesRig(options: RigOptions = {}): Promise<Rig> {
   const journal = Journal.open(db, { audit, now: () => new Date(clock.now()) });
   const idempotency = JournalIdempotencyStore.open(db, { audit, redactor, monotonic: () => clock.monotonic() });
   const projectId = "proj-1";
-  journal.registerProject({ id: projectId, path: repo, displayName: "fixture", trusted: false, actor: "user" });
+  // Registered as main does after "Add and trust to run": with the repository's real binding (project-registration-and-trust.md §3).
+  const gitDirStat = lstatSync(path.join(repo, ".git"), { bigint: true });
+  journal.registerProject({ id: projectId, path: repo, displayName: "fixture", trusted: true, commonDir: path.join(repo, ".git"), gitDirId: `${gitDirStat.dev}:${gitDirStat.ino}`, actor: "daemon" });
 
   let env: Record<string, string> = { PATH: process.env["PATH"] ?? "", HOME: home };
   let gitPath = resolveGitOnce({ env, platform: process.platform, excludeDirs: [root, tmp, repo] });
@@ -155,6 +163,12 @@ export async function worktreesRig(options: RigOptions = {}): Promise<Rig> {
   const active = new Set<string>();
   const script: boolean[] = [];
   const { a, b } = memoryChannelPair();
+  if (options.answerTrust !== false) {
+    b.onMessage((m) => {
+      const msg = m as Record<string, unknown>;
+      if (msg["type"] === "trust.check") b.send({ type: "trust.result", requestId: msg["requestId"], trusted: true });
+    });
+  }
   const mux = new ChannelMux(a);
   const control = new ControlClient({ mux });
   const supervisor: Array<Record<string, unknown>> = [];
@@ -172,6 +186,7 @@ export async function worktreesRig(options: RigOptions = {}): Promise<Rig> {
     transact: (fn) => withTransaction(db, fn),
     random: { bytes: (n) => (options.fixedSuffix === true ? Uint8Array.from({ length: n }, (_, i) => i + 1) : randomBytes(n)), uuid: () => randomUUID() },
     runs: { hasActiveRun: (id) => (options.hasActiveRun !== undefined ? options.hasActiveRun(id) : script.length > 0 ? (script.shift() as boolean) : active.has(id)) },
+    now: () => clock.monotonic(),
     gitPath,
     env,
     platform: process.platform,
@@ -187,6 +202,8 @@ export async function worktreesRig(options: RigOptions = {}): Promise<Rig> {
 
   const trust = new InMemoryTrustRegistry();
   trust.set({ windowId: "win-1" }, true);
+  // The host's own gate over this rig's journal, control channel and registry (main is the rig's supervisor end).
+  const gate = createHostProjectTrustGate({ journal, control, registry: trust, platform: process.platform, now: () => clock.monotonic() });
   const rpcEvents: DaemonAuditEvent[] = [];
   const daemon = new Daemon({
     identity: verifier,
@@ -197,12 +214,12 @@ export async function worktreesRig(options: RigOptions = {}): Promise<Rig> {
     approvals: approvals.gate,
   });
   daemon.register("axis.approvals", 1, createApprovalsHandlers({ approvals: approvals.port }));
-  daemon.register("axis.worktrees", 1, createWorktreesHandlers({ service: binding.service, needsAttention: binding.needsAttention }), {
+  daemon.register("axis.worktrees", 1, createWorktreesHandlers({ service: binding.service, gate, needsAttention: binding.needsAttention }), {
     content: binding.content,
   });
   const ports: Array<{ close(): void }> = [];
   return {
-    tmp, repo, root, db, journal, binding, manager: manager as ManagerShape, approvals, daemon, rpcEvents, supervisor, active, script, trust, home, gitPath, gitLog, projectId,
+    tmp, repo, root, db, journal, binding, manager: manager as ManagerShape, approvals, daemon, rpcEvents, supervisor, active, script, trust, gate, home, gitPath, gitLog, projectId,
     audit, clock, channel: b, control,
     git: g,
     async connect(attestation = "user#conn-1#win-1") {

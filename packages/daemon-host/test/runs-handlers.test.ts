@@ -20,6 +20,7 @@ async function setup(t: TestContext): Promise<{ r: RunsRig; user: Client; id: st
 
 test("start: a run is created for the workspace, in its worktree, with the journal's project and the connection's window asked of main", { skip }, async (t) => {
   const { r, user, id } = await setup(t);
+  const from = r.asked.length; // the worktree create asked main through the gate too
   const s = await user.call(RUNS, "start", START(id), newKey());
   assert.equal(s.ok, true, JSON.stringify(s.error));
   const run = s.result?.["run"] as Record<string, unknown>;
@@ -30,10 +31,10 @@ test("start: a run is created for the workspace, in its worktree, with the journ
   assert.equal(r.pty.spawns.length, 1);
   assert.equal(r.pty.spawns[0]?.cwd, r.journal.getWorkspace(id)?.worktreePath);
   assert.equal(r.pty.spawns[0]?.argv[0], r.exe);
-  const trust = r.asked.find((m) => m["type"] === "trust.check");
+  const trust = r.asked.slice(from).find((m) => m["type"] === "trust.check");
   assert.deepEqual({ w: trust?.["windowId"], ws: trust?.["workspaceId"], p: trust?.["projectId"] }, { w: "win-1", ws: id, p: r.projectId });
-  assert.equal(r.asked[0]?.["type"], "settings.get", "the CLI entry comes from main's user-scope setting");
-  assert.equal(r.asked[0]?.["key"], "axis.cliAgents");
+  assert.equal(r.asked.slice(from)[0]?.["type"], "settings.get", "the CLI entry comes from main's user-scope setting");
+  assert.equal(r.asked.slice(from)[0]?.["key"], "axis.cliAgents");
   assert.ok(r.db.prepare("SELECT 1 FROM audit_events WHERE action = 'cli_run.start'").get());
 });
 
@@ -56,13 +57,14 @@ test("start: main's refusal, or its silence, refuses the start before any run ex
 
 test("start: an unknown or unset CLI id is E_NOT_FOUND and main is never asked about trust", { skip }, async (t) => {
   const { r, user, id } = await setup(t);
+  const from = r.asked.length; // the worktree create asked main through the gate too
   const unknown = await user.call(RUNS, "start", START(id, "other"), newKey());
   assert.equal(unknown.error?.code, "E_NOT_FOUND");
   assert.equal(unknown.error?.details?.["reason"], "agent_unknown");
   r.answers.agents = null;
   const unset = await user.call(RUNS, "start", START(id), newKey());
   assert.equal(unset.error?.details?.["reason"], "agent_unknown");
-  assert.equal(r.asked.some((m) => m["type"] === "trust.check"), false);
+  assert.equal(r.asked.slice(from).some((m) => m["type"] === "trust.check"), false);
   assert.equal(r.pty.spawns.length, 0);
 });
 
@@ -138,6 +140,7 @@ test("stop, get and list: ids only, the newest first bound, unknown runs are E_N
 
 test("handlers: only the user's own connection works with runs; a flagged workspace refuses start but never stop; a cancelled call does nothing", { skip }, async (t) => {
   const { r, id } = await setup(t);
+  const from = r.asked.length; // the worktree create asked main through the gate too
   const calls: string[] = [];
   const deps: CliRunsHandlerDeps = {
     ...r.handlerDeps,
@@ -158,5 +161,5 @@ test("handlers: only the user's own connection works with runs; a flagged worksp
   const gone = new AbortController();
   gone.abort();
   await assert.rejects(Promise.resolve(h.start(ctx("user", { signal: gone.signal }), START(id) as never)), (e: { code?: string }) => e.code === "E_CANCELLED");
-  assert.equal(r.asked.length, 0, "a cancelled start asks main nothing");
+  assert.equal(r.asked.slice(from).length, 0, "a cancelled start asks main nothing");
 });

@@ -19,10 +19,10 @@ const registry = (): InMemoryTrustRegistry => {
   return r;
 };
 
-const EXPECTED: Array<[string, string, number, "none" | "registry"]> = [
+const EXPECTED: Array<[string, string, number, "none" | "project"]> = [
   ["axis.git", "pushPlan", 1, "none"],
-  ["axis.git", "commit", 2, "registry"],
-  ["axis.git", "push", 4, "registry"],
+  ["axis.git", "commit", 2, "project"],
+  ["axis.git", "push", 4, "project"],
   ["axis.git", "compareUrl", 0, "none"],
   ["axis.review", "diff", 1, "none"],
   ["axis.review", "complete", 2, "none"],
@@ -56,13 +56,14 @@ test("only a user is admitted: agent, daemon, missing and malformed actors are r
   }
 });
 
-test("commit and push need a trusted project; reads, compareUrl and complete do not", () => {
+test("policy does not decide commit and push trust (the gate does): only a recorded revoke refuses them at dispatch", () => {
   const policy = new RuleTablePolicy(registry());
   for (const [c, m, , trust] of EXPECTED) {
     const untrusted = policy.evaluate(input(c, m, { trusted: false })).effect;
-    assert.equal(untrusted, trust === "registry" ? "deny" : "allow", `${c}.${m} attested untrusted`);
+    // The connect-time flag is never read and no grant is needed: the gate decides a project row in the handler.
+    assert.equal(untrusted, "allow", `${c}.${m} attested untrusted (${trust})`);
     const unknownWindow = policy.evaluate(input(c, m, { windowId: "w2", workspaceId: undefined })).effect;
-    assert.equal(unknownWindow, trust === "registry" ? "deny" : "allow", `${c}.${m} unknown window`);
+    assert.equal(unknownWindow, "allow", `${c}.${m} unknown window`);
   }
   const revoked = registry();
   revoked.set({ windowId: "w1", workspaceId: "ws1" }, false);
