@@ -37,6 +37,8 @@ import { providerForConnection } from "./agents/start.js";
 import { registerMessagesHandlers } from "./handlers/messages.js";
 import { registerPagesHandlers } from "./handlers/pages.js";
 import type { PagesService } from "./pages/service.js";
+import { registerTasksHandlers } from "./handlers/tasks.js";
+import type { TasksService } from "./tasks/service.js";
 import { createProvidersHandlers } from "./handlers/providers.js";
 import { createReviewAuditSink } from "./handlers/review-audit.js";
 import { createReviewHandlers } from "./handlers/review.js";
@@ -61,6 +63,7 @@ export interface ServingParts {
   readonly providers?: { readonly cachedModels: NonNullable<ProvidersHandlerDeps["cachedModels"]>; readonly credential: NonNullable<ProvidersHandlerDeps["credential"]> };
   readonly messaging?: MessagingBinding;
   readonly pages?: PagesService;
+  readonly tasks?: TasksService;
 }
 
 export interface ServingContext {
@@ -118,6 +121,8 @@ export function registerServing(registrar: HandlerRegistrar, services: HostServi
   registerMessagesHandlers(registrar, built.messaging);
   if (built.pages === undefined) throw new AxisError("E_INTERNAL", "The host composition is incomplete", { reason: "not_built" });
   registerPagesHandlers(registrar, built.pages); // axis.pages/1 (PV-Q1 slice 2): the user's own connection only
+  if (built.tasks === undefined) throw new AxisError("E_INTERNAL", "The host composition is incomplete", { reason: "not_built" });
+  registerTasksHandlers(registrar, built.tasks); // axis.tasks/1 (PV-T1 slice 2a): the user's own connection only
   const cliRuns = { service: runs.service, journal, control, gate, minter: ctx.minter, mutex: worktrees.mutex, needsAttention: worktrees.needsAttention, platform: config.platform };
   registerAgentsHandlers(registrar, {
     journal,

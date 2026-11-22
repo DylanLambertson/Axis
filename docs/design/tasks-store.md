@@ -1,6 +1,6 @@
-# The tasks store and `axis.tasks/1` (PV-T1 slice 1)
+# The tasks store and `axis.tasks/1` (PV-T1 slices 1 and 2a)
 
-- **Status:** Built (slice 1): journal schema version 15, `Journal.tasks`, and the **planned** contract `axis.tasks/1` with user-only planned policy rows. Nothing is served yet.
+- **Status:** Built. Slice 1: journal schema version 15, `Journal.tasks` and the contract's schemas. Slice 2a: the tasks service, `axis.tasks/1` **served** to the user with user-only rows, and the worker task tools (§5). Start is slice 2b.
 - **Decides nothing new.** It builds `extensibility.md` §6 (the task record, Start is the user's, non-user text taints) with the PV-Q1 guards (`pages-store.md`).
 - **Code:** `packages/journal/src/schema-tasks.ts`, `packages/journal/src/task-store.ts`, `packages/protocol/src/tasks.ts`, `packages/daemon-host/src/policy/planned.ts`.
 - **Slice 2 (after PV-G4):** the tasks service and handlers (served rows, audit with ids only), **Start** (shows the full prompt and its source, marks non-user text and taints the run, IAC-T source 5), the agent task tools (side-effecting under IAC-T, audited, a task read is source 8), `list` paging (the store answers all of a project's tasks today), and the plugin rows of ADR 0008.
@@ -27,14 +27,16 @@
 - **`hop`** is the highest hop of any revision, never goes down, and never rises above the highest hop its revisions had. A trusted task has hop 0 (a table CHECK, a second fence behind the update trigger, which refuses first).
 - The store derives both from the author, and the triggers (`tasks_start_empty`, `task_revisions_advance`, `tasks_sticky`) hold them, so no writer can store a task as more trusted than it is. The table CHECK `source = 'user' OR untrusted = 1` can never be the first to refuse (the insert and sticky triggers refuse first); it stays as a second fence.
 
-## 3. The planned contract
+## 3. The contract
 
 | Method | Side effect | Tier | Idempotency |
 |---|---|---|---|
 | `list` (100 a page, with a cursor), `get`, `revisions` | read | 0 | none |
 | `create` | write | 1 | required |
 | `update` (on top of `baseSeq`), `setStatus`, `assign`, `link`, `unlink` | write | 1 | none |
-| `delete` | destructive | 3 | none |
+| `delete` | destructive | 4 | none |
+
+- `delete` is tier 4: a destructive action is confirmed in main's native dialog (ADR 0003 D4), and tier 4 is the lowest tier with that step; a tier 3 challenge is released by the renderer's `resolve` alone.
 
 - No request carries an author, a source, a hop, a trust flag, a prompt or a command. Every row admits only `user`.
 - Refusals are closed: `not_found`, `too_large`, `stale_version`, `limit_reached`, `assignee_refused`, `link_refused`. Store reasons outside the set (`author`, `text`, `exists`, `status`, `assignee`, `link`) are internal: the slice-2 handler answers them as `E_INTERNAL`. The store checks only lengths and kinds; a value the table refuses (an empty or bad title, a bad id, an unknown project) surfaces as a database error without content, which the handler also answers as `E_INTERNAL`; the contract's schemas refuse all of them before the store.
@@ -48,3 +50,12 @@
 | 2 | no caps | 1,000 tasks, 50 revisions, 32 links, 64 MiB per project | Bounded journal growth |
 | 3 | `createdBy` | the first revision's author, which must be the source | One fact, stored once |
 | 4 | `system` not discussed | a `system` revision makes the task untrusted | Conservative: only the user's text is trusted |
+
+## 5. Slice 2a: the service, the bridge and the worker task tools
+
+- **Callers, attested.** The bridge serves the user's own desktop connection only: every row admits only `user`, and the handler refuses any other actor and a web client again with `not_found` (`handlers/tasks.ts`). A composer run reaches tasks only through its tools, as its **worker** (the run's recorded worker while it is not archived, `journalWorkerOf`), scoped to the worker's project: another project's task is `not_found`, the same as an unknown one. The worker is looked up again at every call, so archiving it takes the tools from its live runs. A run never assigns, starts or deletes a task.
+- **`read_task`** (tier `read`) is IAC-T source 8 (`task_read`). For an untrusted task the binding takes the receipt (the latest author still on record who is not the user, the task's hop, `taskId:seq` as its ref), which raises the run's received hop and taints the run, **before** the text is returned. The text is framed by a per-read nonce, escaped, every line prefixed `| `; a refused read takes no receipt.
+- **`list_tasks`** (tier `read`) takes no receipt: an untrusted task shows its id, its status and an `untrusted` flag, never its title; only the user's own titles are listed, escaped.
+- **`create_task` and `update_task`** (tier `write`) are below the broker's approval floor, so an untainted run writes without asking; once the run is tainted, IAC-T raises them to the user's approval and the card must show the text whole (a new task's title and body; for an update, the revision it edits and the changed lines), else `content-not-reviewable` before any card. The worker is the author at the run's received hop; the store makes the task untrusted, for good.
+- **Audit.** One row per write (`task.create`, `task.update`, `task.status`, `task.assign`, `task.link`, `task.unlink`, `task.delete`) in the write's transaction: task and project ids, the sequence number, a byte length, the caller's and the author's kinds, a status, an assignee or link kind, and for a run its id. Never a title or a body.
+- **Refusals are closed.** A store refusal of the contract's set keeps its reason; anything else is `E_INTERNAL` with no text.

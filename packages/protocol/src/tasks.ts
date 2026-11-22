@@ -8,9 +8,9 @@ import { projectIdSchema, runIdSchema, workspaceIdSchema, type MethodSpec } from
 
 /*
  * `axis.tasks/1` (ticket PV-T1 slice 1, `docs/design/extensibility.md` §6, `docs/design/tasks-store.md`, journal schema
- * version 15). A planned contract: the agreed schemas, served by slice 2 with the agent task tools and Start (which shows
- * the full prompt and taints the run, IAC-T source 5). The rows are the user's only; plugins (ADR 0008 `tasks.read`,
- * `tasks.write`) and agents get their own rows and tools later.
+ * version 15). Served by slice 2a to the user's own connection; runs of a worker reach tasks through their tools
+ * (`read_task`, `list_tasks`, `create_task`, `update_task`), never this contract. Start (which shows the full prompt and
+ * taints the run, IAC-T source 5) comes with slice 2b; plugins (ADR 0008 `tasks.read`, `tasks.write`) get their rows later.
  * No request names an author, a source, a hop or a trust flag: the daemon takes the author from the attested caller and
  * the store derives the rest. Assigning starts nothing.
  */
@@ -100,7 +100,7 @@ export const tasksLinkRequestSchema = z.strictObject({ taskId: taskIdSchema, lin
 export const tasksLinkResponseSchema = z.strictObject({ task: taskSchema, changed: z.boolean() });
 export const tasksUnlinkRequestSchema = tasksLinkRequestSchema;
 export const tasksUnlinkResponseSchema = tasksLinkResponseSchema;
-/** Delete a task with its revisions and links. Destructive, tier 3. */
+/** Delete a task with its revisions and links. Destructive, tier 4: main draws the native confirmation. */
 export const tasksDeleteRequestSchema = z.strictObject({ taskId: taskIdSchema, approval: challengeReferenceSchema.optional() });
 export const tasksDeleteResponseSchema = z.strictObject({ deleted: z.literal(true) });
 
@@ -123,12 +123,15 @@ const spec = <Req extends z.ZodType, Res extends z.ZodType>(
   request: Req,
   response: Res,
   sideEffect: "read" | "write" | "destructive",
-  tier: 0 | 1 | 3,
+  tier: 0 | 1 | 4,
   idempotency: "none" | "required",
   timeoutMs: number,
 ) => ({ request: guarded(request), response: guarded(response), sideEffect, tier, idempotency, timeoutMs }) as const;
 
-/** Tiers: reads 0; every record write 1 (nothing runs, assigning starts nothing); delete 3 and destructive. */
+/**
+ * Tiers: reads 0; every record write 1 (nothing runs, assigning starts nothing); delete 4 and destructive: a destructive
+ * action is confirmed in main's native dialog (ADR 0003 D4), which tier 4 is the lowest tier to have.
+ */
 export const tasksMethods = {
   list: spec(tasksListRequestSchema, tasksListResponseSchema, "read", 0, "none", 5_000),
   get: spec(tasksGetRequestSchema, tasksGetResponseSchema, "read", 0, "none", 5_000),
@@ -139,7 +142,7 @@ export const tasksMethods = {
   assign: spec(tasksAssignRequestSchema, tasksAssignResponseSchema, "write", 1, "none", 5_000),
   link: spec(tasksLinkRequestSchema, tasksLinkResponseSchema, "write", 1, "none", 5_000),
   unlink: spec(tasksUnlinkRequestSchema, tasksUnlinkResponseSchema, "write", 1, "none", 5_000),
-  delete: spec(tasksDeleteRequestSchema, tasksDeleteResponseSchema, "destructive", 3, "none", 30_000),
+  delete: spec(tasksDeleteRequestSchema, tasksDeleteResponseSchema, "destructive", 4, "none", 30_000),
 } as const satisfies Record<string, MethodSpec>;
 
 export type TasksMethod = keyof typeof tasksMethods;

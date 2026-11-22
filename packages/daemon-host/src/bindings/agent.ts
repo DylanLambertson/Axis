@@ -13,8 +13,10 @@ import { createRunTaint, type TaintStore } from "../composer/taint.js";
 import { ObservedFiles } from "./agent-observed.js";
 import { GIT_DIFF, GIT_STATUS, GIT_TOOL_SPECS, gitDiffArgs, gitReadRunnerOptions, gitStatusArgs, gitTools } from "./agent-git.js";
 import { providerRedactor } from "./provider-redactor.js";
-import { WRITE_PAGE, pagesReason } from "./agent-pages.js";
-import { optionalTools, taintedRead } from "./agent-optional-tools.js";
+import { pagesReason } from "./agent-pages.js";
+import { tasksReason } from "./agent-tasks.js";
+import type { TasksService } from "../tasks/service.js";
+import { WHOLE_CONTENT_TOOLS, optionalTools, taintedRead } from "./agent-optional-tools.js";
 import type { PagesService } from "../pages/service.js";
 import { READ_MESSAGES, SEND_MESSAGE, messagingReason, readMessagesArgs, sendMessageArgs, sendPreview } from "./agent-messages.js";
 import { createComposerMessaging, raisedHop, type ComposerMessagingDeps } from "../messages/participation.js";
@@ -119,6 +121,8 @@ export interface AgentBindingDeps {
   readonly messaging?: Omit<ComposerMessagingDeps, "holdsSecret">;
   /** `read_page` and `write_page` (PV-Q1 slice 2): offered only to a run whose worker `workerOf` knows. */
   readonly pages?: { readonly service: PagesService; readonly workerOf: (runId: string) => { readonly agentId: string; readonly projectId: string } | undefined };
+  /** `read_task`, `list_tasks`, `create_task`, `update_task` (PV-T1 slice 2a): the same rule as pages. */
+  readonly tasks?: { readonly service: TasksService; readonly workerOf: (runId: string) => { readonly agentId: string; readonly projectId: string } | undefined };
 }
 
 /** The broker's audit payload keys (`broker.decision`: approver, approval id, expiry; `broker.result`), for the host's `AuditLog` (DMN-5). */
@@ -262,7 +266,7 @@ export function createAgentBinding(deps: AgentBindingDeps): AgentBinding {
       },
     };
     // The worker's own tools (messaging, pages): offered, previewed and unwrapped in `agent-optional-tools.ts`.
-    const extra = optionalTools({ runId: run.runId, messaging: runMessaging, pages: deps.pages, receivedHop: () => receivedHop });
+    const extra = optionalTools({ runId: run.runId, messaging: runMessaging, pages: deps.pages, tasks: deps.tasks, receivedHop: () => receivedHop });
     const previewed = extra.previews.length === 0 ? PREVIEWED : new Map([...PREVIEWED, ...extra.previews]);
     // Calls inside the broker now, with their parsed arguments: the hook previews only the one whose digest it is asked for.
     const inflight = new Set<{ readonly tool: string; readonly args: unknown }>();
@@ -307,7 +311,7 @@ export function createAgentBinding(deps: AgentBindingDeps): AgentBinding {
         // The same for a write to a file that is not protected: with the floor at `network` it is asked only in a tainted run
         // (IAC-T), and the user must see all of what is written, never its first 2,048 units. A protected write keeps C2's rule
         // below (declined unless shown whole); a preview that could not be built is this refusal too.
-        if ((req.tool === "write_file" || req.tool === WRITE_PAGE) && (preview === undefined || (!preview.protected && !wholeText(preview)))) throw new BrokerError("E_POLICY_DENIED", "content-not-reviewable", "the content cannot be shown whole for approval");
+        if (WHOLE_CONTENT_TOOLS.has(req.tool) && (preview === undefined || (!preview.protected && !wholeText(preview)))) throw new BrokerError("E_POLICY_DENIED", "content-not-reviewable", "the content cannot be shown whole for approval");
         if (preview === undefined || !shownWhole(preview)) return { approved: false };
         // The card's sources, read with the flag the challenge binds: nothing awaits between here and its issue.
         const card = taint.card();
@@ -429,7 +433,7 @@ export function createAgentBinding(deps: AgentBindingDeps): AgentBinding {
           if (halted()) throw new ComposerRunHalt(wt2?.haltReason ?? "GIT_DRIFT");
           // The action ran but its audit row could not be written: the run must stop (never continue unrecorded).
           if (e instanceof BrokerError && e.details["executed"] === true) throw new Error("unrecorded side effect");
-          const reason = messagingReason(e) ?? pagesReason(e) ?? reasonOf(e);
+          const reason = messagingReason(e) ?? pagesReason(e) ?? tasksReason(e) ?? reasonOf(e);
           if (reason === "swapped") return { ok: false, reason, content: SWAPPED_RESULT };
           const hint = reason === "stale" ? " The file changed since you last read it: read it again before writing." : "";
           return { ok: false, reason, content: `The call was refused (${reason}).${hint}` };
