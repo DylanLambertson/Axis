@@ -12,7 +12,7 @@ Document names are written out in full in every row, because the same id can exi
 | O-2 | One repository or several per project | **One** in Phase 1c. Multi-repository projects later, with a design. |
 | O-3 | Agent to workspace | **One home workspace per agent**; attaching several agents to one workspace only by explicit user choice. |
 | O-4 | Agents without a workspace | **Not in 1c**; revisit with the Phase 3 planner. |
-| O-5 | PR data source | The user's `gh`, read-only, **no stored token**. A vault-token GitHub integration only in 4a, and only if extensibility D-9 is reversed. |
+| O-5 | PR data source | The user's `gh`, read-only, **no stored token**. A vault-token GitHub integration only in 4a, under extensibility D-9 as taken (a read-only, fine-grained token from 4a; ADR 0009 decision 9). |
 | O-6 | Plugins before Phase 3 | **No (this row differs from the source's wording).** The source default says declarative and sandboxed-UI plugins "may move to 2a if wanted"; the choice taken is that they stay in 4a, matching extensibility D-1. Code-running plugins only after the OS sandbox. |
 | O-7 | Insert Phase 1c and split 2 and 4 | **Yes.** |
 | O-8 | Side-panel editor scope | **Quick edits only** (§3.5 rule 4); fall back to the IDE split half if the PV-V0 spike exceeds the footprint budget. |
@@ -47,8 +47,8 @@ All recommended defaults:
 - **D-4** signature policy: Ed25519 publisher signatures required for the curated list (keys come from the signed list); unsigned local files only for P0 and P1, with a warning and hash pinning; never for P2.
 - **D-5** page storage: Axis data directory per project, with Export to repository.
 - **D-6** page format: Markdown subset only in v1, **rendered in the isolated page view**.
-- **D-7** OAuth redirect: device-code flow with a main-built code dialog; a one-shot loopback listener only as a recorded NET-1 exception when a service lacks it.
-- **D-8** first integration: GitHub read-only through the user's `gh`, no token (ticket PV-D2); a token-based GitHub integration (ticket PV-N3) only if D-9 is reversed.
+- **D-7** OAuth redirect: device-code flow with a main-built code dialog; a one-shot loopback listener only as a recorded NET-1 exception when a service lacks it. (Narrowed by ADR 0009 decision 6 on 2026-11-22: 4a ships the device flow only; the loopback fallback is deferred to its own decision.)
+- **D-8** first integration: GitHub read-only through the user's `gh`, no token (ticket PV-D2); a token-based GitHub integration (ticket PV-N3) in 4a under D-9 as taken (ADR 0009 decision 9; the earlier "only if D-9 is reversed" is superseded).
 - **D-9** reverse "Axis stores no forge credentials" (ADR 0004 decision 9): **keep** it until 4a, then a vault-held read-only fine-grained token behind the credential proxy.
 - **D-10** integrations that write: each write operation is its own permission and a tier-3 challenge.
 - **D-11** inbound webhooks: not on desktop; polling only.
@@ -89,6 +89,20 @@ All recommended defaults:
 | 4. Minimum Windows version | **Windows 10 or Server 2016** (`JOB_LIST`); older versions refused. |
 | 5. Exit-code and signal mapping | Confirmed as written in §3. |
 | Packaging ADR (gating the daemon and pty process in built builds) | **Deferred**; built builds keep refusing to start them until it is written. No packaged build is planned before 1a completes. |
+
+## 6a. Phase 4a plugin decisions (threat model, 2026-11-22)
+
+Taken by the project lead under the delegation above while reviewing `docs/security/threat-model-phase4a.md` (ticket PV-R8, slice 1); recorded in full in its §7 (ids OI-1 to OI-7, local to that file).
+
+| # | Taken |
+|---|---|
+| OI-1 | No weaker fallback: if PV-K3 cannot show, at the pinned Electron, the IPC drop placement, service-worker refusal, the CSP's effect on DNS prefetch and the clipboard and drag-out refusal, the plugin runtime ships disabled for that pin; WebRTC keeps ADR 0008's P0-only fallback. |
+| OI-2 | Per plugin, one pending tier-3 challenge and 6 approval requests in a rolling hour (approved or denied); past either, `runs.start` is refused until the user re-enables the plugin; the count is stored with the grant, survives a restart and is not reset by re-enabling. |
+| OI-3 | Disable, uninstall, a `runs.start` revoke, or a grant or trust withdrawal cancels the plugin's runs and pending challenges; a later approval is refused (challenges are bound to the grant's generation). |
+| OI-4 | Per-plugin write quotas for pages, tasks and messages, per rolling hour and in total bytes per project, modelled on the 2a message limits; closed refusal reason. |
+| OI-5 | No clipboard write or drag-out from a plugin view without a user gesture. |
+| OI-6 | No silent plugin update: every update needs the user's confirmation in a main-built dialog, even with an empty permission diff (stricter than ADR 0008 decision 8). |
+| OI-7 | No plugin-callable method enumerates other plugins, views or windows. |
 
 ## 7. What these decisions unblock
 

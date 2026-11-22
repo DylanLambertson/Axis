@@ -33,6 +33,7 @@ import {
 import { ComposerRecords } from "./composer-store.js";
 import { MessageRecords } from "./message-store.js";
 import { UserPrincipal } from "./principal.js";
+import { ForgePinRecords } from "./forge-pin-store.js";
 import { JOURNAL_MIGRATIONS } from "./schema.js";
 import {
   RESTART_REASON,
@@ -78,6 +79,8 @@ export class Journal {
   readonly composer: ComposerRecords;
   /** `axis.messages/1` records (threads, participants, messages, cursors, settings; schema version 9). */
   readonly messages: MessageRecords;
+  /** The confirmed forge repository per project (schema v13, PV-D2 slice 2b). */
+  readonly forgePins: ForgePinRecords;
 
   private constructor(db: DatabaseSync, options: JournalOptions) {
     this.#db = db;
@@ -86,6 +89,7 @@ export class Journal {
     this.#newId = options.newId ?? (() => randomUUID());
     this.composer = new ComposerRecords(db, () => this.#ts(), (input) => this.createRun(input));
     this.messages = new MessageRecords(db, () => this.#ts());
+    this.forgePins = new ForgePinRecords(db, () => this.#ts());
   }
 
   /** Migrate the schema and return a journal. On daemon start take the instance lock, then call `recover(lock)`. */
