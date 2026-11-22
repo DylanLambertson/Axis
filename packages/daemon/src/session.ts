@@ -1,4 +1,5 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
+import { markAttested } from "./identity.js";
 import {
   MAX_TIMEOUT_MS,
   PROTOCOL_VERSION,
@@ -89,7 +90,7 @@ export class Session {
    */
   constructor(conn: Connection, identity: Identity, deps: SessionDeps, handshakeBudgetMs: number = deps.limits.handshakeTimeoutMs) {
     this.#conn = conn;
-    this.#identity = Object.freeze({ ...identity });
+    this.#identity = markAttested(Object.freeze({ ...identity }));
     this.#d = deps;
     this.#limiter = new RateLimiter(deps.limits.maxMessagesPerSecond, deps.limits.burst, deps.now);
     this.#handshakeTimer = setTimeout(() => {

@@ -1,4 +1,5 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
+import { trustCallOf } from "../gate/project-trust.js";
 import type { Handler, HandlerContext } from "@axis/daemon";
 import { gitCommitRequestSchema } from "@axis/protocol";
 import type { PreparedCommitPort } from "../ports/review.js";
@@ -56,7 +57,7 @@ export function createGitCommitHandler(deps: GitHandlerDeps): Handler {
             }
             if (signal.aborted) throw gitFailure("E_CANCELLED");
             // The gate, right before git and inside the mutex (project-registration-and-trust.md §5.4).
-            const ticket = await deps.gate.admit({ projectId: ws.projectId, windowId: context.identity.windowId, workspaceId, signal });
+            const ticket = await deps.gate.admit({ projectId: ws.projectId, caller: trustCallOf(context.identity), workspaceId, signal });
             const result = await deps.ops.executeCommit({ workspaceId, projectId: ws.projectId, assertFresh: () => deps.review.assertFresh(entry.handle) }, input, ticket);
             landed = true;
             return finish(deps, workspaceId, result);
