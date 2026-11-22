@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { AuditLog, openDatabase, runMigrations, schemaVersion, type DatabaseSync } from "@axis/audit";
-import { JOURNAL_MIGRATIONS, JOURNAL_SCHEMA_VERSION, Journal, PAGE_LIMITS } from "../src/index.js";
+import { JOURNAL_MIGRATIONS, JOURNAL_SCHEMA_VERSION, Journal, PAGE_LIMITS, projectBytesSql } from "../src/index.js";
 
 // Pages (ticket PV-Q1 slice 1, ADR 0010): schema version 14, the table rules. Every rule has a refusing case next to the
 // closest accepted value, and every insert verb is tried against every insert-once guard. The store is page-store.test.ts.
@@ -24,8 +24,15 @@ function insert(db: DatabaseSync, table: string, row: Row, verb = "INSERT", tail
   db.prepare(`${verb} INTO ${table} (${cols.join(", ")}) VALUES (${cols.map(() => "?").join(", ")})${tail}`).run(...Object.values(row));
 }
 const page = (over: Row = {}): Row => ({ id: "pg1", project_id: "p1", last_seq: 0, created_at: T, updated_at: T, ...over });
-const ver = (over: Row = {}): Row => ({ page_id: "pg1", seq: 1, title: "Notes", body: "# Hi", author_kind: "user", author_id: null, hop: 0, untrusted: 0, restored_from: null, created_at: T, ...over });
-const att = (over: Row = {}): Row => ({ id: "at1", page_id: "pg1", media_type: "image/png", bytes: PNG, sha256: "a".repeat(64), created_by: "user", created_at: T, ...over });
+/** A version row; `bytes` is the stored count of its title and body unless the case overrides it. */
+const ver = (over: Row = {}): Row => {
+  const r: Row = { page_id: "pg1", seq: 1, title: "Notes", body: "# Hi", author_kind: "user", author_id: null, hop: 0, untrusted: 0, restored_from: null, created_at: T, ...over };
+  return "bytes" in over ? r : { ...r, bytes: Buffer.byteLength(String(r["title"])) + Buffer.byteLength(String(r["body"])) };
+};
+const att = (over: Row = {}): Row => {
+  const r: Row = { id: "at1", page_id: "pg1", media_type: "image/png", bytes: PNG, sha256: "a".repeat(64), created_by: "user", created_at: T, ...over };
+  return "size" in over ? r : { ...r, size: (r["bytes"] as Uint8Array).length };
+};
 const refused = (f: () => void, what: string): void => assert.throws(f, Error, what);
 const count = (db: DatabaseSync, sql: string, ...a: Val[]): number => Number((db.prepare(sql).get(...a) as { n: number }).n);
 
@@ -144,6 +151,16 @@ test("a restore copies its source, author and trust included, and records where 
     refused(() => insert(db, "page_versions", ver({ seq: 3, restored_from: 1, author_kind: "agent", author_id: "w1", untrusted: 1, hop: 2, body: "agent text", ...bad })), JSON.stringify(bad));
   }
   refused(() => insert(db, "page_versions", ver({ seq: 3, restored_from: 3, author_kind: "agent", author_id: "w1", untrusted: 1, hop: 2, body: "agent text" })), "from itself");
+  // The source is a user edit of agent text (untrusted, hop 2): its copy cannot claim to be trusted at hop 0, nor keep the
+  // untrusted flag and drop the hop, nor drop the flag and keep the hop.
+  for (const bad of [{ untrusted: 0, hop: 0 }, { untrusted: 1, hop: 0 }, { untrusted: 0, hop: 2 }] as Row[]) {
+    refused(() => insert(db, "page_versions", ver({ seq: 3, restored_from: 2, body: "user edit", ...bad })), `restore of an untrusted user edit as ${JSON.stringify(bad)}`);
+  }
+  // A hop-0 source (plugin text, then a user edit of it): only the untrusted flag tells the copy from a trusted version.
+  insert(db, "pages", page({ id: "pg2" }));
+  insert(db, "page_versions", ver({ page_id: "pg2", author_kind: "plugin", author_id: "acme.notes", untrusted: 1, hop: 0, body: "plugin text" }));
+  insert(db, "page_versions", ver({ page_id: "pg2", seq: 2, untrusted: 1, hop: 0, body: "edited" }));
+  refused(() => insert(db, "page_versions", ver({ page_id: "pg2", seq: 3, restored_from: 2, untrusted: 0, hop: 0, body: "edited" })), "a hop-0 untrusted edit restored as trusted");
   insert(db, "page_versions", ver({ seq: 3, restored_from: 1, author_kind: "agent", author_id: "w1", untrusted: 1, hop: 2, body: "agent text" }));
   db.close();
 });
@@ -231,5 +248,40 @@ test("deleting a page deletes its versions and attachments in the same statement
   assert.equal(count(db, "SELECT count(*) AS n FROM page_versions WHERE page_id = 'pg1'"), 0);
   assert.equal(count(db, "SELECT count(*) AS n FROM page_attachments"), 0);
   assert.equal(count(db, "SELECT count(*) AS n FROM page_versions WHERE page_id = 'keep'"), 1);
+  db.close();
+});
+
+test("stored byte counts: a version's bytes are its title and body, an attachment's size its bytes; neither changes", () => {
+  const { db } = setup();
+  insert(db, "pages", page());
+  for (const bytes of [0, 8, 10, -1]) refused(() => insert(db, "page_versions", ver({ bytes })), `bytes ${bytes}`);
+  insert(db, "page_versions", ver({ title: "é", body: "ü" }));
+  assert.equal(count(db, "SELECT bytes AS n FROM page_versions"), 4, "UTF-8 bytes, not characters");
+  refused(() => db.prepare("UPDATE page_versions SET bytes = 1").run(), "a count never changes");
+  for (const size of [PNG.length - 1, PNG.length + 1, 0]) refused(() => insert(db, "page_attachments", att({ size })), `size ${size}`);
+  insert(db, "page_attachments", att());
+  db.close();
+});
+
+test("the project total is summed from the stored counts through covering indexes: no title, body or image is read", () => {
+  const { db } = setup();
+  const plan = (db.prepare(`EXPLAIN QUERY PLAN SELECT ${projectBytesSql("?1")} AS n`).all("p1") as { detail: string }[]).map((r) => r.detail);
+  assert.ok(plan.some((d) => /page_versions USING COVERING INDEX page_versions_bytes|v USING COVERING INDEX page_versions_bytes/.test(d)), plan.join(" | "));
+  assert.ok(plan.some((d) => /a USING COVERING INDEX page_attachments_size|page_attachments USING COVERING INDEX page_attachments_size/.test(d)), plan.join(" | "));
+  assert.ok(!plan.some((d) => /SCAN (v|a|page_versions|page_attachments)\b/.test(d)), plan.join(" | "));
+  insert(db, "pages", page());
+  insert(db, "page_versions", ver({ body: "x".repeat(1000) }));
+  insert(db, "page_attachments", att());
+  assert.equal(count(db, `SELECT ${projectBytesSql("?1")} AS n`, "p1"), 5 + 1000 + PNG.length);
+  assert.equal(count(db, `SELECT ${projectBytesSql("?1")} AS n`, "p2"), 0);
+  db.close();
+});
+
+test("a version is marked reviewed no earlier than it was written", () => {
+  const { db } = setup();
+  insert(db, "pages", page());
+  insert(db, "page_versions", ver({ author_kind: "agent", author_id: "w1", untrusted: 1, hop: 1 }));
+  refused(() => db.prepare("UPDATE page_versions SET reviewed_at = '2026-11-21T00:00:00.000Z'").run(), "before it was written");
+  db.prepare("UPDATE page_versions SET reviewed_at = ?").run(T);
   db.close();
 });

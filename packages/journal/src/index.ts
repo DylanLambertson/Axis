@@ -38,7 +38,7 @@ export {
 export { DeliveryRecords, type PendingDelivery } from "./delivery-store.js";
 export { ForgePinRecords, type ForgePin } from "./forge-pin-store.js";
 export { FORGE_PINS_MIGRATION } from "./schema-forge-pins.js";
-export { PAGES_MIGRATION, PAGE_LIMITS } from "./schema-pages.js";
+export { PAGES_MIGRATION, PAGE_LIMITS, projectBytesSql } from "./schema-pages.js";
 export {
   PageRecords,
   type PageAttachmentRecord,

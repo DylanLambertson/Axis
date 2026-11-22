@@ -16,16 +16,19 @@
 - **Insert once.** Every table refuses an insert of an existing key. The guard fires before any conflict clause, so `INSERT OR REPLACE`, `REPLACE`, `INSERT OR IGNORE` and every `ON CONFLICT` form abort too; the tests try each verb on each table.
 - **NUL.** SQLite's text functions and `GLOB` stop at a NUL byte. ASCII columns (ids, times, hashes) check that their byte length equals their character length; titles and bodies refuse a NUL byte through their blob form.
 - **Limits** (ADR 0010 decision 1): body 256 KiB of UTF-8, title 1 to 200 characters under the agent-name rule (`NAME_REFUSED_RANGES`), 200 MiB of version and attachment bytes per project. A write over a limit is refused, never cut.
+- **Byte counts, not bodies.** Each version stores `bytes` (its title and body in UTF-8, checked against them at insert) and each attachment `size` (checked against its bytes). The 200 MiB check sums those counts through the covering indexes `page_versions_bytes` and `page_attachments_size` (`projectBytesSql`), so a write never reads another title, body or image and costs the same at any project size; a test pins the query plan.
+- **Redundant guards, kept.** `page_versions_inserted_once` and the `bytes` clause of `page_versions_fixed` can never be the first to refuse (the next-number trigger and the `bytes` CHECK refuse first); both stay as a second fence.
 - **Delete.** Deleting a page deletes its versions and attachments in the same statement.
 
 ## 2. Authors and trust
 
 - **Author** is a closed set: `user`, `agent` (an agent id), `plugin` (a plugin id of at most 64 characters, ADR 0008) or `system`. No request carries it: the daemon takes it from the attested caller.
 - **`untrusted`** marks a version that may hold text the user did not write. Every non-user version is untrusted, `system` included. A user edit of an untrusted, unreviewed version stays untrusted and keeps its hop, because the earlier text is still there (ADR 0010 decision 4); once the user marks a version reviewed, the next user edit is trusted again.
-- **Hop.** A non-user version records the hop of the writing run; an untrusted user edit inherits it; a trusted version has hop 0.
+- **Hop.** A non-user version records the hop of the writing run, which may be lower than the version before it (ADR 0010 decision 4: each revision carries its own writer's hop); an untrusted user edit inherits the hop of the version it edits; a trusted version has hop 0.
 - **Restore** copies its source version: title, body, author, hop and `untrusted`, and records `restored_from`. Restoring an agent's text never makes it the user's, and the reviewed mark is not copied.
 - **Derived twice.** The store derives these values itself, and the table's triggers check them against the version before, so no writer can store a page as more trusted than it is.
 - **What a reader receives.** `readTaint(pageId)` answers whether the current version is a taint source and at which hop; the taint producer of `read_page` uses it.
+- **The reviewed mark.** The store enforces only that a mark is set once, on an untrusted version, no earlier than the version was written. That the user made it, through main's native confirmation (2a decision O-4), is the slice-2 handler's job: the tier-3 row and its challenge.
 
 ## 3. The planned contract
 
@@ -41,6 +44,12 @@
 - Refusals are closed: `not_found`, `too_large`, `stale_version`, `limit_reached`, under one fixed message; no stored title or body reaches an error.
 - Every row admits only `user` (`PLANNED_RULES`); the coverage check holds them at the contract's tiers.
 - Attachments have no method yet: their transfer and the sniffing that ADR 0010 requires are PV-Q2's.
+- **Store reasons outside the closed set** (`author`, `text`, `exists`, `media_type`) are internal: they mean a daemon bug or a check the contract's schemas already made, and the slice-2 handler answers them as `E_INTERNAL`, never with the reason.
+
+## 3a. What the store does not defend
+
+- **Polyglot images.** The leading-byte check proves only the start of an attachment: a PNG prefix followed by SVG or HTML is stored. No method returns attachment bytes until PV-Q2, whose sniffer and the isolated page view's rules (no SVG, served only from the attachment scheme, never a top-level document) are the defence.
+- **Raw SQL.** A writer with the database file can store a title that is not valid UTF-8; SQLite does not check encodings. The daemon writes only through the store, whose values come from the contract's schemas; a same-UID writer is A10.
 
 ## 4. Divergences from ADR 0010
 

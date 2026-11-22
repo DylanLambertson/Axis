@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { createHash } from "node:crypto";
 import { AxisError, withTransaction, type DatabaseSync } from "@axis/audit";
-import { PAGE_LIMITS } from "./schema-pages.js";
+import { PAGE_LIMITS, projectBytesSql } from "./schema-pages.js";
 
 /**
  * Pages, their versions and attachments (schema version 14, ticket PV-Q1 slice 1, ADR 0010). A data layer: the daemon's
@@ -140,14 +140,14 @@ export class PageRecords {
     return withTransaction(this.#db, () => {
       const page = this.#page(input.pageId);
       if (page.lastSeq !== input.baseSeq) refuse("E_CONFLICT", "stale_version", "The page changed since that version");
-      const src = this.#db.prepare("SELECT title, body, author_kind, author_id, hop, untrusted FROM page_versions WHERE page_id = ? AND seq = ?").get(input.pageId, input.seq) as Row | undefined;
+      const src = this.#db.prepare("SELECT title, body, bytes, author_kind, author_id, hop, untrusted FROM page_versions WHERE page_id = ? AND seq = ?").get(input.pageId, input.seq) as Row | undefined;
       if (src === undefined) return NOT_FOUND();
-      this.#checkProjectBytes(page.projectId, bytesOf(String(src["title"])) + bytesOf(String(src["body"])));
+      this.#checkProjectBytes(page.projectId, Number(src["bytes"]));
       const seq = page.lastSeq + 1;
       const at = this.#ts();
       this.#db
-        .prepare(`INSERT INTO page_versions (page_id, seq, title, body, author_kind, author_id, hop, untrusted, restored_from, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-        .run(input.pageId, seq, src["title"] as string, src["body"] as string, src["author_kind"] as string, src["author_id"] as string | null, src["hop"] as number, src["untrusted"] as number, input.seq, at);
+        .prepare(`INSERT INTO page_versions (page_id, seq, title, body, bytes, author_kind, author_id, hop, untrusted, restored_from, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(input.pageId, seq, src["title"] as string, src["body"] as string, src["bytes"] as number, src["author_kind"] as string, src["author_id"] as string | null, src["hop"] as number, src["untrusted"] as number, input.seq, at);
       return this.get(input.pageId, seq) as PageVersionRecord;
     });
   }
@@ -208,8 +208,8 @@ export class PageRecords {
       const sha256 = createHash("sha256").update(input.bytes).digest("hex");
       const at = this.#ts();
       this.#db
-        .prepare("INSERT INTO page_attachments (id, page_id, media_type, bytes, sha256, created_by, created_at) VALUES (?, ?, ?, ?, ?, 'user', ?)")
-        .run(input.id, input.pageId, input.mediaType, input.bytes, sha256, at);
+        .prepare("INSERT INTO page_attachments (id, page_id, media_type, bytes, size, sha256, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, 'user', ?)")
+        .run(input.id, input.pageId, input.mediaType, input.bytes, input.bytes.length, sha256, at);
       return { id: input.id, pageId: input.pageId, mediaType: input.mediaType as PageAttachmentRecord["mediaType"], sha256, size: input.bytes.length, createdAt: at };
     });
   }
@@ -221,7 +221,7 @@ export class PageRecords {
 
   /** A page's attachments, oldest first, without their bytes. */
   attachments(pageId: string): PageAttachmentRecord[] {
-    const rows = this.#db.prepare("SELECT id, page_id, media_type, sha256, length(bytes) AS size, created_at FROM page_attachments WHERE page_id = ? ORDER BY created_at, id").all(pageId) as Row[];
+    const rows = this.#db.prepare("SELECT id, page_id, media_type, sha256, size, created_at FROM page_attachments WHERE page_id = ? ORDER BY created_at, id").all(pageId) as Row[];
     return rows.map((r) => ({ id: String(r["id"]), pageId: String(r["page_id"]), mediaType: r["media_type"] as PageAttachmentRecord["mediaType"], sha256: String(r["sha256"]), size: Number(r["size"]), createdAt: String(r["created_at"]) }));
   }
 
@@ -237,13 +237,7 @@ export class PageRecords {
   }
 
   #checkProjectBytes(projectId: string, adding: number): void {
-    const used = Number(
-      (this.#db
-        .prepare(`SELECT
-            (SELECT coalesce(sum(length(CAST(v.title AS BLOB)) + length(CAST(v.body AS BLOB))), 0) FROM page_versions v JOIN pages p ON p.id = v.page_id WHERE p.project_id = ?)
-          + (SELECT coalesce(sum(length(a.bytes)), 0) FROM page_attachments a JOIN pages p ON p.id = a.page_id WHERE p.project_id = ?) AS n`)
-        .get(projectId, projectId) as Row)["n"],
-    );
+    const used = Number((this.#db.prepare(`SELECT ${projectBytesSql("?1")} AS n`).get(projectId) as Row)["n"]);
     if (used + adding > PAGE_LIMITS.projectBytes) refuse("E_CONFLICT", "limit_reached", "The project holds its maximum of page bytes");
   }
 
@@ -259,8 +253,8 @@ export class PageRecords {
     }
     const authorId = author.kind === "agent" ? author.agentId : author.kind === "plugin" ? author.pluginId : null;
     this.#db
-      .prepare(`INSERT INTO page_versions (page_id, seq, title, body, author_kind, author_id, hop, untrusted, restored_from, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(pageId, seq, title, body, author.kind, authorId, hop, untrusted, restoredFrom, at);
+      .prepare(`INSERT INTO page_versions (page_id, seq, title, body, bytes, author_kind, author_id, hop, untrusted, restored_from, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(pageId, seq, title, body, bytesOf(title) + bytesOf(body), author.kind, authorId, hop, untrusted, restoredFrom, at);
     return this.get(pageId, seq) as PageVersionRecord;
   }
 }
