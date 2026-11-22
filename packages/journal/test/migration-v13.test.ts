@@ -59,7 +59,11 @@ test("the store: get is undefined until set; the first set inserts, a re-pin upd
 
 test("owner and repository: the GitHub patterns of vetOwnerRepo, never . or ..; host github.com; confirmed by the user", () => {
   const { db } = setup();
-  const ok: Row[] = [{ owner: "A-1", repo: ".github" }, { owner: "x".repeat(39), repo: "r".repeat(100) }, { owner: "a", repo: "a.b_c-d" }];
+  // vetOwnerRepo accepts a trailing hyphen, consecutive hyphens and a `.git` suffix (review 1 N1), so the table does too.
+  const ok: Row[] = [
+    { owner: "A-1", repo: ".github" }, { owner: "x".repeat(39), repo: "r".repeat(100) }, { owner: "a", repo: "a.b_c-d" },
+    { owner: "acme-", repo: "app.git" }, { owner: "a--b", repo: "a..b" },
+  ];
   for (const [i, over] of ok.entries()) {
     db.prepare("DELETE FROM forge_pins").run();
     insert(db, pin({ ...over, project_id: i % 2 === 0 ? "p1" : "p2" }));
@@ -70,6 +74,8 @@ test("owner and repository: the GitHub patterns of vetOwnerRepo, never . or ..; 
     { owner: "-acme" }, { owner: "x".repeat(40) }, { owner: "" }, { owner: "a_b" }, { owner: "a.b" }, { owner: "é" }, { owner: "a b" },
     { repo: "." }, { repo: ".." }, { repo: "" }, { repo: "r".repeat(101) }, { repo: "a/b" }, { repo: "a b" }, { repo: "a‮" },
     { confirmed_by: "agent:a1" }, { confirmed_by: "User" }, { confirmed_at: "2026" },
+    // Review 1 SF-1: SQLite's text checks stop at a NUL; the byte length check refuses one in each column.
+    { host: "github.com\0.evil" }, { owner: "a\0/../evil" }, { repo: "app\0/../../evil" },
   ];
   for (const over of refused) assert.throws(() => insert(db, pin(over)), /CHECK constraint failed/, JSON.stringify(over));
   assert.throws(() => insert(db, pin({ project_id: "nope" })), /FOREIGN KEY/);
@@ -103,5 +109,11 @@ test("a pin keeps its project: an UPDATE, or UPDATE OR REPLACE onto another pinn
   db.prepare("UPDATE forge_pins SET repo = 'renamed', confirmed_at = ? WHERE project_id = 'p1'").run(T);
   assert.equal(rows(db)[0]?.["repo"], "renamed", "a re-pin in place is accepted");
   assert.throws(() => db.prepare("UPDATE forge_pins SET repo = '..' WHERE project_id = 'p1'").run(), /CHECK constraint failed/, "the checks hold on update too");
+  // Review 1 N2: a re-pin cannot record another confirmer, nor smuggle a NUL in place.
+  for (const v of ["agent:a1", "daemon", "User", ""]) {
+    assert.throws(() => db.prepare("UPDATE forge_pins SET confirmed_by = ? WHERE project_id = 'p1'").run(v), /CHECK constraint failed/, v);
+  }
+  assert.throws(() => db.prepare("UPDATE forge_pins SET owner = ? WHERE project_id = 'p1'").run("acme\0x"), /CHECK constraint failed/);
+  assert.equal(rows(db)[0]?.["confirmed_by"], "user");
   db.close();
 });

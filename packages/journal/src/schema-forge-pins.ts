@@ -8,6 +8,8 @@ import type { Migration } from "@axis/audit";
  * - One row per project: the github.com owner and repository the user confirmed (`axis.forge/1.pinRepository`, tier 1, user
  *   only), as confirmed, and when. The checks repeat `vetOwnerRepo` of `@axis/protocol` (the GitHub owner pattern, the
  *   repository pattern, never `.` or `..`); the daemon also re-vets every value it reads and treats anything else as no pin.
+ *   SQLite's text functions and GLOB stop at a NUL, so each of host, owner and repository also has its byte length equal to its
+ *   character length (all three are ASCII): a value with a NUL and anything after it is refused (review 1 SF-1).
  * - `confirmed_by` is always `user`, as `created_by` of version 12: the write is the user's own act; the daemon's policy row and
  *   handler admit only the user's desktop connection.
  * - A pin is inserted once and re-pinned in place (`UPDATE`); its project never changes. The insert guard fires before any
@@ -23,11 +25,11 @@ export const FORGE_PINS_MIGRATION: Migration = {
   sql: `
     CREATE TABLE forge_pins (
       project_id   TEXT PRIMARY KEY REFERENCES projects(id),
-      host         TEXT NOT NULL CHECK (host = 'github.com'),
+      host         TEXT NOT NULL CHECK (host = 'github.com' AND length(CAST(host AS BLOB)) = length(host)),
       owner        TEXT NOT NULL CHECK (length(owner) BETWEEN 1 AND 39 AND substr(owner, 1, 1) GLOB '[A-Za-z0-9]'
-                     AND owner NOT GLOB '*[^A-Za-z0-9-]*'),
+                     AND owner NOT GLOB '*[^A-Za-z0-9-]*' AND length(CAST(owner AS BLOB)) = length(owner)),
       repo         TEXT NOT NULL CHECK (length(repo) BETWEEN 1 AND 100 AND repo NOT GLOB '*[^A-Za-z0-9._-]*'
-                     AND repo NOT IN ('.', '..')),
+                     AND repo NOT IN ('.', '..') AND length(CAST(repo AS BLOB)) = length(repo)),
       confirmed_by TEXT NOT NULL CHECK (confirmed_by = 'user'),
       confirmed_at TEXT NOT NULL CHECK (length(confirmed_at) BETWEEN 20 AND 30)
     ) STRICT, WITHOUT ROWID;
