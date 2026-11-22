@@ -3,7 +3,7 @@ import { lstat, readFile, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { bindingMatches, readRepositoryBinding } from "../projects/binding.js";
 import { mintTicket } from "./project-ticket.js";
-import { untrusted, type ProjectTrustGate, type ProjectTrustGateDeps } from "./project-trust.js";
+import { isTrustCall, untrusted, type ProjectTrustGate, type ProjectTrustGateDeps } from "./project-trust.js";
 
 /**
  * The project trust gate's factories (docs/design/project-registration-and-trust.md §5.4). Only the composition
@@ -30,8 +30,12 @@ export async function worktreeBelongs(worktree: string, commonDir: string, fs = 
 
 export function createProjectTrustGate(deps: ProjectTrustGateDeps): ProjectTrustGate {
   return {
-    async admit({ projectId, windowId, workspaceId, signal }) {
+    async admit({ projectId, caller, workspaceId, signal }) {
+      // The call must come from `trustCallOf` (the attested identity); a plugin's is pinned to its project before any step runs.
+      if (!isTrustCall(caller)) throw untrusted();
+      const { windowId, hostWindowId, pinnedProjectId } = caller;
       if (typeof windowId !== "string" || windowId === "") throw untrusted();
+      if (pinnedProjectId !== undefined && (pinnedProjectId === "" || hostWindowId === undefined || hostWindowId === "" || projectId !== pinnedProjectId)) throw untrusted();
       const row = deps.journal.getProject(projectId);
       if (row === undefined || !row.trusted) throw untrusted();
       const b = await deps.binding(row.path, signal);
@@ -57,7 +61,8 @@ export function createProjectTrustGate(deps: ProjectTrustGateDeps): ProjectTrust
         if (row.commonDir === null || !(await worktreeBelongs(ws.worktreePath, row.commonDir, deps.fs))) throw untrusted();
       }
       signal.throwIfAborted();
-      await deps.trustCheck({ windowId, projectId, projectPath: row.path, ...(workspaceId === undefined ? {} : { workspaceId }) }, { signal });
+      // T3: main knows code windows only, so a plugin view is asked for by its host window.
+      await deps.trustCheck({ windowId: hostWindowId ?? windowId, projectId, projectPath: row.path, ...(workspaceId === undefined ? {} : { workspaceId }) }, { signal });
       // After the LAST await, synchronously, and nothing awaited before the mint: the record (T1, and the row the binding was
       // checked for) and the registry revoke (T4) are read again. An untrust or a revoke recorded while the binding was read or main
       // was asked refuses here, so no ticket outlives the decision it was checked against.
@@ -67,7 +72,10 @@ export function createProjectTrustGate(deps: ProjectTrustGateDeps): ProjectTrust
         const ws = deps.journal.getWorkspace(workspaceId);
         if (ws === undefined || ws.projectId !== projectId || ws.worktreePath === null) throw untrusted();
       }
-      if (deps.registry.isRevoked({ windowId, ...(workspaceId === undefined ? {} : { workspaceId }) })) throw untrusted();
+      // T4: a revoke on the view's own window or on its host window refuses.
+      for (const w of hostWindowId === undefined ? [windowId] : [windowId, hostWindowId]) {
+        if (deps.registry.isRevoked({ windowId: w, ...(workspaceId === undefined ? {} : { workspaceId }) })) throw untrusted();
+      }
       return mintTicket(projectId, workspaceId, deps.now());
     },
   };

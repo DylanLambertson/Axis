@@ -6,7 +6,7 @@ import { resolveCliAgentsSetting } from "@axis/pty-policy";
 import type { ControlClient } from "../control/client.js";
 import type { RunSummary, RunTrustMinter, RunsService } from "../ports/runs.js";
 import { runFailure, toRunError } from "../runs/errors.js";
-import { projectGated, type ProjectTrustGate } from "../gate/project-trust.js";
+import { projectGated, trustCallOf, type ProjectTrustGate } from "../gate/project-trust.js";
 import type { HandlerRegistrar } from "./anchor-guard.js";
 import type { ProjectMutex } from "../worktrees/project-mutex.js";
 
@@ -126,10 +126,9 @@ export async function startCliRun(deps: CliRunsHandlerDeps, req: CliStart, conte
         const current = deps.journal.getWorkspace(req.workspaceId);
         if (current === undefined || current.projectId !== ws.projectId) throw runFailure("E_NOT_FOUND");
         req.recheck?.();
-        const { windowId } = context.identity;
         let ticket: unknown;
         try {
-          ticket = await deps.gate.admit({ projectId: ws.projectId, windowId, workspaceId: req.workspaceId, signal: context.signal });
+          ticket = await deps.gate.admit({ projectId: ws.projectId, caller: trustCallOf(context.identity), workspaceId: req.workspaceId, signal: context.signal });
         } catch (e) {
           context.signal.throwIfAborted();
           throw e;

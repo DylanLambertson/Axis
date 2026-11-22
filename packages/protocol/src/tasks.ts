@@ -100,7 +100,7 @@ export const tasksLinkRequestSchema = z.strictObject({ taskId: taskIdSchema, lin
 export const tasksLinkResponseSchema = z.strictObject({ task: taskSchema, changed: z.boolean() });
 export const tasksUnlinkRequestSchema = tasksLinkRequestSchema;
 export const tasksUnlinkResponseSchema = tasksLinkResponseSchema;
-/** Delete a task with its revisions and links. Destructive, tier 3. */
+/** Delete a task with its revisions and links. Destructive, tier 3: resolved in the renderer, with no native step. */
 export const tasksDeleteRequestSchema = z.strictObject({ taskId: taskIdSchema, approval: challengeReferenceSchema.optional() });
 export const tasksDeleteResponseSchema = z.strictObject({ deleted: z.literal(true) });
 

@@ -7,7 +7,11 @@ import { test, type TestContext } from "node:test";
 import { AxisError } from "@axis/audit";
 import { createProjectTrustGate, worktreeBelongs } from "../src/gate/project-trust-gate.js";
 import { ProjectTrustTicket } from "../src/gate/project-ticket.js";
-import { consumeTicket, ticketedStart, type ProjectTrustGateDeps } from "../src/gate/project-trust.js";
+import { attestedWindow } from "../testing/attested.js";
+import { consumeTicket, ticketedStart, trustCallOf, type ProjectTrustGateDeps } from "../src/gate/project-trust.js";
+
+/** A desktop window's gated call (the attested identity's form). */
+const win = (windowId: string) => trustCallOf(windowId === "" ? { windowId, clientKind: "desktop" } : attestedWindow(windowId));
 import { toGitError } from "../src/handlers/git-errors.js";
 import { toComposerError } from "../src/composer/errors.js";
 import { toRunError } from "../src/runs/errors.js";
@@ -49,19 +53,19 @@ function rig(over: Partial<ProjectTrustGateDeps> = {}, row: Record<string, unkno
 
 test("all hold: a ticket, after T1, T2, the workspace binding, T3 with the journal's path, and T4, in that order", async () => {
   const r = rig();
-  const t = await r.gate.admit({ projectId: "p", windowId: "w1", workspaceId: "ws", signal });
+  const t = await r.gate.admit({ projectId: "p", caller: win("w1"), workspaceId: "ws", signal });
   assert.ok(ProjectTrustTicket.isTicket(t));
   assert.deepEqual(r.calls, ["T1", "T2", `T3:${JSON.stringify({ windowId: "w1", projectId: "p", projectPath: "/r", workspaceId: "ws" })}`, "T1", "T4"], "T1 again right before the mint");
   // worktrees.create has no workspace: trust.check carries none, and no workspace binding is read.
   const c = rig();
-  await c.gate.admit({ projectId: "p", windowId: "w1", signal });
+  await c.gate.admit({ projectId: "p", caller: win("w1"), signal });
   assert.deepEqual(c.calls, ["T1", "T2", `T3:${JSON.stringify({ windowId: "w1", projectId: "p", projectPath: "/r" })}`, "T1", "T4"]);
 });
 
 test("each condition refuses on its own (one mutant each)", async () => {
-  const go = (r: ReturnType<typeof rig>, ws?: string) => r.gate.admit({ projectId: "p", windowId: "w1", ...(ws === undefined ? {} : { workspaceId: ws }), signal });
+  const go = (r: ReturnType<typeof rig>, ws?: string) => r.gate.admit({ projectId: "p", caller: win("w1"), ...(ws === undefined ? {} : { workspaceId: ws }), signal });
   await assert.rejects(go(rig({}, { trusted: false })), untrusted, "T1: the record is not trusted");
-  await assert.rejects(rig().gate.admit({ projectId: "nope", windowId: "w1", signal }), untrusted, "T1: no row");
+  await assert.rejects(rig().gate.admit({ projectId: "nope", caller: win("w1"), signal }), untrusted, "T1: no row");
   await assert.rejects(go(rig({ binding: async () => ({ ok: true, binding: { path: "/r", commonDir: "/r/.git", gitDirId: "9:9" } }) })), untrusted, "T2: another inode");
   await assert.rejects(go(rig({}, { commonDir: null, gitDirId: null })), untrusted, "T2: a pre-v11 row never matches");
   await assert.rejects(go(rig({ trustCheck: async () => { throw new AxisError("E_POLICY_DENIED", "no", { reason: "untrusted" }); } })), untrusted, "T3: main says no");
@@ -79,26 +83,26 @@ test("each condition refuses on its own (one mutant each)", async () => {
   await assert.rejects(go(repointed, "ws"), untrusted, "W: the worktree's .git repointed at another repository (mutant: W dropped)");
   const aborted = new AbortController();
   aborted.abort();
-  await assert.rejects(rig().gate.admit({ projectId: "p", windowId: "w1", signal: aborted.signal }), (e: unknown) => untrusted(e) || (e as Error).name === "AbortError", "an aborted call is refused (cancelled or untrusted)");
+  await assert.rejects(rig().gate.admit({ projectId: "p", caller: win("w1"), signal: aborted.signal }), (e: unknown) => untrusted(e) || (e as Error).name === "AbortError", "an aborted call is refused (cancelled or untrusted)");
 });
 
 test("a lost binding drops the record (binding_lost) and stops the project's runs; an unavailable filesystem refuses only this call", async () => {
   const lost = rig({ binding: async () => ({ ok: false, reason: "not_a_repository" }) });
-  await assert.rejects(lost.gate.admit({ projectId: "p", windowId: "w1", signal }), untrusted);
+  await assert.rejects(lost.gate.admit({ projectId: "p", caller: win("w1"), signal }), untrusted);
   assert.ok(lost.calls.includes(`drop:${JSON.stringify({ id: "p", trusted: false, via: "binding_lost" })}`), "mutant: binding_lost not persisted");
   assert.ok(lost.calls.includes("stop:p"), "mutant: runs not stopped");
   assert.equal(lost.calls.some((c) => c.startsWith("T3")), false, "main is not asked after a lost binding");
   const swapped = rig({ binding: async () => ({ ok: true, binding: { path: "/r", commonDir: "/r/.git", gitDirId: "3:4" } }) });
-  await assert.rejects(swapped.gate.admit({ projectId: "p", windowId: "w1", signal }), untrusted);
+  await assert.rejects(swapped.gate.admit({ projectId: "p", caller: win("w1"), signal }), untrusted);
   assert.ok(swapped.calls.some((c) => c.includes("binding_lost")));
   const slow = rig({ binding: async () => ({ ok: false, reason: "unavailable" }) });
-  await assert.rejects(slow.gate.admit({ projectId: "p", windowId: "w1", signal }), untrusted);
+  await assert.rejects(slow.gate.admit({ projectId: "p", caller: win("w1"), signal }), untrusted);
   assert.equal(slow.calls.some((c) => c.startsWith("drop") || c.startsWith("stop")), false, "a hung filesystem does not revoke");
 });
 
 test("the ticket: single use, bound to its project and workspace, fresh for 1 s on the gate's clock, unforgeable", async () => {
   const r = rig();
-  const get = (ws?: string) => r.gate.admit({ projectId: "p", windowId: "w1", ...(ws === undefined ? {} : { workspaceId: ws }), signal });
+  const get = (ws?: string) => r.gate.admit({ projectId: "p", caller: win("w1"), ...(ws === undefined ? {} : { workspaceId: ws }), signal });
   const t = await get("ws");
   consumeTicket(t, { projectId: "p", workspaceId: "ws" }, r.now);
   assert.throws(() => consumeTicket(t, { projectId: "p", workspaceId: "ws" }, r.now), untrusted, "spent");
@@ -153,11 +157,11 @@ test("the workspace binding on a real layout: a gitdir: file into <common>/workt
 test("an archive repository cannot trust itself: Workspace Trust says yes (T3), but without the record (T1) the gate refuses", async () => {
   // A repository unpacked under a folder the user trusts in the workbench: main would answer true, the journal has no record.
   const r = rig({}, { trusted: false });
-  await assert.rejects(r.gate.admit({ projectId: "p", windowId: "w1", signal }), untrusted);
+  await assert.rejects(r.gate.admit({ projectId: "p", caller: win("w1"), signal }), untrusted);
   assert.equal(r.calls.some((c) => c.startsWith("T3")), false, "main's answer is never the deciding one");
   // The renderer-writable model rewritten to trusted with the record false: still untrusted (the TRU-2 acceptance, unit level).
   const rewritten = rig({ trustCheck: async () => undefined }, { trusted: false });
-  await assert.rejects(rewritten.gate.admit({ projectId: "p", windowId: "w1", workspaceId: "ws", signal }), untrusted);
+  await assert.rejects(rewritten.gate.admit({ projectId: "p", caller: win("w1"), workspaceId: "ws", signal }), untrusted);
 });
 
 test("the wire code per path: every handler family answers the gate's refusal E_CONFLICT untrusted, never E_POLICY_DENIED or E_INTERNAL", () => {
@@ -195,11 +199,11 @@ test("the composer's start as the handler sees it spends the ticket first; witho
   const now = () => 5_000;
   const start = ticketedStart((i: { workspaceId: string }) => (started.push(i.workspaceId), "run"), () => "p", now);
   const gate = rig({ now } as never).gate;
-  const good = await gate.admit({ projectId: "p", windowId: "w1", workspaceId: "ws", signal });
+  const good = await gate.admit({ projectId: "p", caller: win("w1"), workspaceId: "ws", signal });
   assert.equal(start({ workspaceId: "ws" }, signal, good), "run");
   assert.throws(() => start({ workspaceId: "ws" }, signal, good), untrusted, "spent");
   assert.throws(() => start({ workspaceId: "ws" }, signal, undefined), untrusted);
-  const other = await gate.admit({ projectId: "p", windowId: "w1", workspaceId: "other", signal });
+  const other = await gate.admit({ projectId: "p", caller: win("w1"), workspaceId: "other", signal });
   assert.throws(() => start({ workspaceId: "ws" }, signal, other), untrusted, "another workspace");
   assert.deepEqual(started, ["ws"]);
 });
@@ -207,19 +211,19 @@ test("the composer's start as the handler sees it spends the ticket first; witho
 test("review B1: an untrust or a revoke that lands during any await of the gate refuses: the record is re-read right before the mint (mutant: no final re-read)", async () => {
   // The untrust lands while the binding is read.
   const duringBinding = rig({ binding: async () => ((duringBinding.project as { trusted: boolean }).trusted = false, { ok: true, binding: { path: "/r", commonDir: "/r/.git", gitDirId: "1:2" } }) });
-  await assert.rejects(duringBinding.gate.admit({ projectId: "p", windowId: "w1", signal }), untrusted);
+  await assert.rejects(duringBinding.gate.admit({ projectId: "p", caller: win("w1"), signal }), untrusted);
   // The untrust lands while main is asked (trust.check round trip).
   const duringMain = rig({ trustCheck: async () => void ((duringMain.project as { trusted: boolean }).trusted = false) });
-  await assert.rejects(duringMain.gate.admit({ projectId: "p", windowId: "w1", workspaceId: "ws", signal }), untrusted);
+  await assert.rejects(duringMain.gate.admit({ projectId: "p", caller: win("w1"), workspaceId: "ws", signal }), untrusted);
   // A registry revoke recorded while main is asked.
   let revoked = false;
   const revokedDuring = rig({ trustCheck: async () => void (revoked = true), registry: { isRevoked: () => revoked } });
-  await assert.rejects(revokedDuring.gate.admit({ projectId: "p", windowId: "w1", signal }), untrusted);
+  await assert.rejects(revokedDuring.gate.admit({ projectId: "p", caller: win("w1"), signal }), untrusted);
   // The row re-bound to another repository meanwhile (a different binding than the one checked).
   const rebound = rig({ trustCheck: async () => void ((rebound.project as { gitDirId: string }).gitDirId = "7:7") });
-  await assert.rejects(rebound.gate.admit({ projectId: "p", windowId: "w1", signal }), untrusted);
+  await assert.rejects(rebound.gate.admit({ projectId: "p", caller: win("w1"), signal }), untrusted);
   // An empty window id is refused by the gate itself.
-  await assert.rejects(rig().gate.admit({ projectId: "p", windowId: "", signal }), untrusted);
+  await assert.rejects(rig().gate.admit({ projectId: "p", caller: win(""), signal }), untrusted);
 });
 
 test("review B S2: the stopper takes the project mutex: a start that passed the gate before the revoke is recorded, then stopped (mutant: no mutex)", async () => {
@@ -264,7 +268,7 @@ test("review 2 SF1: binding_lost inside a held project mutex: admit refuses at o
   const handlerDone = new Promise<void>((r) => (releaseHandler = r));
   // A start handler holds the project and calls the gate, which finds the binding lost.
   const handler = mutex.run("p", async () => {
-    await assert.rejects(lost.gate.admit({ projectId: "p", windowId: "w1", signal }), untrusted);
+    await assert.rejects(lost.gate.admit({ projectId: "p", caller: win("w1"), signal }), untrusted);
     await new Promise((x) => setTimeout(x, 10));
     assert.deepEqual(stopped, [], "the stop queues: it does not run inside the handler's critical section");
     await handlerDone;
@@ -290,6 +294,6 @@ test("review 2 nit: the workspace row is read again right before the mint: a wor
       setProjectTrust: () => row as never,
     },
   });
-  await assert.rejects(r.gate.admit({ projectId: "p", windowId: "w1", workspaceId: "ws", signal }), untrusted);
+  await assert.rejects(r.gate.admit({ projectId: "p", caller: win("w1"), workspaceId: "ws", signal }), untrusted);
   assert.equal(reads, 2);
 });

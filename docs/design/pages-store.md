@@ -28,7 +28,7 @@
 - **Restore** copies its source version: title, body, author, hop and `untrusted`, and records `restored_from`. Restoring an agent's text never makes it the user's, and the reviewed mark is not copied.
 - **Derived twice.** The store derives these values itself, and the table's triggers check them against the version before, so no writer can store a page as more trusted than it is.
 - **What a reader receives.** `readTaint(pageId)` answers whether the current version is a taint source and at which hop; the taint producer of `read_page` uses it.
-- **The reviewed mark.** The store enforces only that a mark is set once, on an untrusted version, no earlier than the version was written. That the user made it, through main's native confirmation (2a decision O-4), is the slice-2 handler's job: the tier-3 row and its challenge.
+- **The reviewed mark.** The store enforces only that a mark is set once, on an untrusted version, no earlier than the version was written. That the user made it, through main's native confirmation (2a decision O-4), is the slice-2 handler's job: the tier-4 row and its challenge, which main confirms in its native dialog.
 
 ## 3. The contract
 
@@ -37,10 +37,10 @@
 | `list`, `get`, `versions` | read | 0 | none |
 | `create` | write | 1 | required |
 | `update` (on top of `baseSeq`), `restore` | write | 1 | none |
-| `markReviewed` | write | 3 | none |
-| `delete` | destructive | 3 | none |
+| `markReviewed` | write | 4 | none |
+| `delete` | destructive | 4 | none |
 
-- `markReviewed` lowers taint, so it is tier 3: the challenge is resolved in main's native dialog (2a decision O-4), never by a renderer click alone.
+- `markReviewed` lowers taint, so it is tier 4: main confirms the challenge in its own native dialog (2a decision O-4), never a renderer click alone. Tier 4 is the lowest tier with that step; a tier 3 challenge is released by the renderer's `resolve` alone (`packages/challenge` issues the native proof only from tier 4). `delete` is tier 4 too: it destroys every version.
 - Refusals are closed: `not_found`, `too_large`, `stale_version`, `limit_reached`, under one fixed message; no stored title or body reaches an error.
 - Every row admits only `user` (`RULES` since slice 2); the coverage check holds them at the contract's tiers.
 - Attachments have no method yet: their transfer and the sniffing that ADR 0010 requires are PV-Q2's.
@@ -64,7 +64,7 @@
 ## 5. Slice 2: the service, the bridge and the page tools
 
 - **Callers, attested.** The bridge serves the user's own desktop connection only: every row admits only `user`, and the handler refuses any other actor and a web client again with `not_found`. A composer run reaches pages only through `read_page` and `write_page`, as its **worker** (the run's recorded worker, PV-G4, while it is not archived), scoped to the worker's project: another project's page is the same `not_found` as an unknown one. No request names an author.
-- **`markReviewed` and `delete` are tier 3.** The pipeline has the challenge resolved in main's native dialog before the handler runs, so a renderer request alone never marks a version reviewed (`threat-model-phase2a.md` O-4).
+- **`markReviewed` and `delete` are tier 4.** The pipeline runs the handler only after main's native dialog confirmed the challenge with its proof, so a renderer request and its own `resolve` never mark a version reviewed or delete a page (`threat-model-phase2a.md` O-4). They were tier 3 until a fix after slice 2: at tier 3 there is no native step. Their content hooks (`pages/confirm.ts`) bind the approval to the page as it is (target `page:<id>`; a digest over the page id, project, newest version and, for a review, the version's number, byte length and author kind) and give main's dialog a line naming it from those values only, never the title or body a worker may have written. A page that changes between the dialog and the action refuses the approval.
 - **`read_page`** (tier `read`) is IAC-T source 4. When the version read is untrusted and not reviewed, the binding takes the receipt (source `page`, the latest non-user author still on record, the version's hop, `pageId:seq` as its ref), which raises the run's received hop and taints the run, **before** the text is returned, as `read_messages` does; a read the service refuses takes no receipt. The text is framed by a per-read nonce, escaped with `toMessageText`, every line prefixed `| `, and cut at 65,536 units.
 - **`write_page`** (tier `network`, the broker's approval floor) needs the user's approval in every run, as ADR 0010 asks, and IAC-T keeps it so. The card shows the page, the version it edits and the lines that change (`lineChange`: the common head and tail dropped); a write whose card cannot show that whole is refused before any card (`content_not_reviewable`). The worker is the author, at the run's received hop.
 - **Audit.** One row per write (`page.create`, `page.update`, `page.restore`, `page.review`, `page.delete`), in the write's transaction, with page and project ids, the sequence number, the caller's and the author's kinds, a byte length and, for a run, its id. Never a title or a body; no keyed hash yet (O-1).

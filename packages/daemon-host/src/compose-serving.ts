@@ -25,7 +25,7 @@ import type { MessagingBinding } from "./messages/binding.js";
 import type { RunTrustMinter } from "./ports/runs.js";
 import type { ControlClient } from "./control/client.js";
 import { createHostProjectTrustGate } from "./gate/project-trust-gate.js";
-import { ticketedStart } from "./gate/project-trust.js";
+import { ticketedStart, type TrustCall } from "./gate/project-trust.js";
 import type { HandlerRegistrar } from "./handlers/anchor-guard.js";
 import { createApprovalsHandlers } from "./handlers/approvals.js";
 import { registerCliRunsHandlers, startCliRun } from "./handlers/cli-runs.js";
@@ -36,6 +36,7 @@ import { registerAgentsHandlers } from "./handlers/agents.js";
 import { providerForConnection } from "./agents/start.js";
 import { registerMessagesHandlers } from "./handlers/messages.js";
 import { registerPagesHandlers } from "./handlers/pages.js";
+import { createPagesContentHooks } from "./pages/confirm.js";
 import type { PagesService } from "./pages/service.js";
 import { createProvidersHandlers } from "./handlers/providers.js";
 import { createReviewAuditSink } from "./handlers/review-audit.js";
@@ -55,7 +56,7 @@ import { loadPushedBases, savePushedBases } from "./storage/pushed-bases-file.js
 export interface ServingParts {
   readonly worktrees?: WorktreesBinding;
   readonly runs?: RunsBinding;
-  readonly approvals?: { readonly port: ApprovalsHandlerDeps["approvals"] };
+  readonly approvals?: { readonly port: ApprovalsHandlerDeps["approvals"]; readonly onPreview?: (target: string, contentDigest: string, text: string) => void };
   readonly agent?: AgentBinding;
   readonly composer?: ComposerService;
   readonly providers?: { readonly cachedModels: NonNullable<ProvidersHandlerDeps["cachedModels"]>; readonly credential: NonNullable<ProvidersHandlerDeps["credential"]> };
@@ -117,7 +118,8 @@ export function registerServing(registrar: HandlerRegistrar, services: HostServi
   if (built.messaging === undefined) throw new AxisError("E_INTERNAL", "The host composition is incomplete", { reason: "not_built" });
   registerMessagesHandlers(registrar, built.messaging);
   if (built.pages === undefined) throw new AxisError("E_INTERNAL", "The host composition is incomplete", { reason: "not_built" });
-  registerPagesHandlers(registrar, built.pages); // axis.pages/1 (PV-Q1 slice 2): the user's own connection only
+  // axis.pages/1 (PV-Q1 slice 2): the user's own connection only; main's dialog for markReviewed and delete names the page.
+  registerPagesHandlers(registrar, built.pages, createPagesContentHooks({ journal, onPreview: built.approvals?.onPreview ?? (() => undefined) }));
   const cliRuns = { service: runs.service, journal, control, gate, minter: ctx.minter, mutex: worktrees.mutex, needsAttention: worktrees.needsAttention, platform: config.platform };
   registerAgentsHandlers(registrar, {
     journal,
@@ -127,7 +129,7 @@ export function registerServing(registrar: HandlerRegistrar, services: HostServi
     // S1b (agents-contract.md 4.4 left this hook for it): the early check is the project's run-trust record, and the new home
     // worktree's create goes through the project trust gate like any other (the worktrees port spends its ticket).
     admitNewHome: (_caller, projectId) => journal.getProject(projectId)?.trusted === true,
-    worktrees: { create: (req, ctx) => worktrees.service.create(req, { ...ctx, trust: (scope) => gate.admit({ ...scope, windowId: ctx.caller.windowId, signal: ctx.signal }) }) },
+    worktrees: { create: (req, ctx) => worktrees.service.create(req, { ...ctx, trust: (scope) => gate.admit({ ...scope, caller: ctx.caller.trust as TrustCall, signal: ctx.signal }) }) },
     // PV-G4: an agent's CLI run goes through the one CLI start path, so the same project trust gate and ticket apply.
     startCli: (req, context) => startCliRun(cliRuns, req, context),
     // Composer agents: the same composer start path; the stored connection resolved to the provider that serves it now.

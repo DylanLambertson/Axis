@@ -7,7 +7,7 @@ export { protocolRegistry } from "./support.js";
 export { MemoryIdempotencyStore, type MemoryStoreOptions } from "./memory-store.js";
 export { canonicalJson, payloadHash, requestDigest, REQUEST_DIGEST_TAG } from "./digest.js";
 export { DaemonError, SAFE_MESSAGE_MAX } from "./errors.js";
-export { identitySchema } from "./identity.js";
+export { identitySchema, isAttestedIdentity } from "./identity.js";
 export type { SessionLimits } from "./session.js";
 export {
   ApprovalError,
