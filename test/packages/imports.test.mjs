@@ -44,10 +44,8 @@ const HOST_FILE_RULES = new Map([
   ["@axis/worktrees", ["src/bindings/worktrees.ts"]],
   ["@axis/worktrees/daemon-confirm", ["src/gate/worktrees-confirm.ts"]],
   ["@axis/runs/daemon-attestation", ["src/gate/run-trust.ts"]],
-  // The Anthropic adapter: the providers binding alone (daemon-host.md 2.1, ticket C6). The connection vault: the providers
-  // binding and the integrations binding, which does not exist yet (ADR 0009 decision 5, ticket PV-N1c; built by PV-N1f).
-  ["@axis/anthropic", ["src/bindings/providers.ts"]],
-  ["@axis/vault", ["src/bindings/providers.ts", "src/bindings/integrations.ts"]],
+  ["@axis/anthropic", ["src/bindings/providers.ts"]], // the adapter: the providers binding alone (daemon-host.md 2.1, C6)
+  ["@axis/vault", ["src/bindings/providers.ts", "src/bindings/integrations.ts"]], // and the integrations binding (ADR 0009, PV-N1c)
 ]);
 /**
  * The files that may load the two minter modules (`gate/worktrees-confirm.ts`, `gate/run-trust.ts`): the public index (which re-exports
@@ -406,13 +404,11 @@ test("scanner: the daemon host is imported by nothing and imports the restricted
   assert.equal(violation("daemon-host", "@axis/git-snapshot", at("src/bindings/snapshot.ts"), dir), null);
   for (const spec of ["@axis/anthropic", "@axis/vault"]) {
     assert.equal(violation("daemon-host", spec, at("src/bindings/providers.ts"), dir), null, spec);
+    assert.equal(violation("daemon-host", spec, at("src/bindings/integrations.ts"), dir) === null, spec === "@axis/vault", spec); // PV-N1c
     for (const f of ["src/bindings/agent.ts", "src/compose.ts", "src/handlers/providers.ts", "src/host.ts", "test/providers-anthropic.test.ts", "test/types/x.ts"]) {
       assert.notEqual(violation("daemon-host", spec, at(f), dir), null, `${spec} from ${f}`);
     }
   }
-  // ADR 0009 decision 5 (PV-N1c): the integrations binding is the vault's second importer, never the adapter's.
-  assert.equal(violation("daemon-host", "@axis/vault", at("src/bindings/integrations.ts"), dir), null);
-  assert.notEqual(violation("daemon-host", "@axis/anthropic", at("src/bindings/integrations.ts"), dir), null);
   for (const f of ["src/compose.ts", "src/entry.ts", "src/handlers/cli-runs.ts", "src/bindings/runs.ts"]) assert.notEqual(violation("daemon-host", "@axis/git-snapshot", at(f), dir), null, f);
   // The trust attestation: only src/gate/run-trust.ts of the host (the binding and the handler cannot mint one).
   assert.equal(violation("daemon-host", "@axis/runs/daemon-attestation", at("src/gate/run-trust.ts"), dir), null);
