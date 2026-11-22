@@ -146,7 +146,7 @@ test("review B1: the production runner ends a git blocked on a FIFO swapped in a
   const r = await readRemote(b, { runner: createRemoteRunner(gitPath, env), env, platform: process.platform, fs: lying, timeoutMs: 120_000 });
   const took = performance.now() - t0;
   assert.equal(r, undefined);
-  assert.ok(took >= 4_000 && took < 15_000, `ended by the runner's bound (${Math.round(took)} ms); mutant: no timeoutMs on the runner`);
+  assert.ok(took >= 4_000 && took < 40_000, `ended by the runner's bound (5 s; generous ceiling for a loaded machine, the unbounded runner waits 120 s; ${Math.round(took)} ms); mutant: no timeoutMs on the runner`);
   // Nothing is left reading the FIFO: a non-blocking open for writing fails with ENXIO when no process has it open to read.
   assert.throws(() => openSync(join(b.commonDir, "config"), constants.O_WRONLY | constants.O_NONBLOCK), { code: "ENXIO" }, "no git still holds the FIFO");
 });

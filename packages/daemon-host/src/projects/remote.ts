@@ -86,8 +86,10 @@ export function createRemoteRunner(gitPath: string, env: Env): GitRunner {
 function bounded<T>(p: Promise<T>, signal: AbortSignal): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     if (signal.aborted) return reject(new Error("aborted"));
-    signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
-    p.then(resolve, reject);
+    const onAbort = (): void => reject(new Error("aborted"));
+    signal.addEventListener("abort", onAbort, { once: true });
+    // The listener goes as soon as the work settles, so a finished read leaves nothing on the signal.
+    p.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
   });
 }
 
