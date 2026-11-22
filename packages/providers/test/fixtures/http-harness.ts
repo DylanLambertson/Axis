@@ -17,7 +17,8 @@
 //           transport. Must fail (N-2).
 //   bypass  never uses the transport; every request goes to globalThis.fetch.
 //           Must fail (N-2).
-//   verylate  as late, but 4 s later: after the suite's final late window.
+//   verylate  as late, but from the process's `beforeExit`: after the suite's final late window closed and the event loop
+//           emptied, however long the suite took (a fixed delay raced a suite slowed by load).
 //           Must fail the file through the process exit scan.
 //   captured  follows with a fetch reference captured at module load, which
 //           the globalThis.fetch trap cannot see. Must fail through Node's
@@ -103,7 +104,9 @@ runProviderContractSuite({
       const refuse = (): ProviderError => new ProviderError("invalid_response", { status: res.status, reason: "redirect" });
       if (MODE === "late" || MODE === "verylate") {
         // The defect under test: the call fails now, the key follows later.
-        setTimeout(() => void wrapped(`${location}?key=${CREDENTIAL}`, init).catch(() => undefined), MODE === "late" ? 50 : 4_000);
+        const follow = (): void => void wrapped(`${location}?key=${CREDENTIAL}`, init).catch(() => undefined);
+        if (MODE === "late") setTimeout(follow, 50);
+        else process.once("beforeExit", follow);
         throw refuse();
       }
       if (MODE === "second") {
