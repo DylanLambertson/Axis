@@ -50,4 +50,6 @@ Each item is a place where existing code or a document says something the ADR ch
 
 ## 3. Not built (all of the ADR's decisions)
 
+**Built so far:** the plugin principal in identities, main's signer and audit (PV-K1a); main's plugin-view table `daemon-host/src/main/plugin-views.ts` (PV-K1d): `p<n>` ids that are never reused within a main process, the host fixed per view, dead hosts never minting again, bounded tables, reload as a new view, and the silent IPC drop table with one closed event per view and channel; its Electron adapters are PV-K3's.
+
 The principal and its attestation (PV-K1); the manifest, permissions, grant store, installer, extractor, signature and list verifier and the update diff (PV-K2); the host view, its partition, handlers, protocol handler and WebRTC switch (PV-K3); contribution points and taint source 6 (PV-K4); the contract tests (PV-K5). The threat-model rows PLG-1 to PLG-9 come with PV-R8.
