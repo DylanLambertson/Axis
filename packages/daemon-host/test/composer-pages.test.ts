@@ -16,6 +16,8 @@ interface PagesRig {
   readonly r: DeliveryRig;
   readonly svc: PagesService;
   run(agentId?: string, projectId?: string): string;
+  /** Forget a run's worker (an archive while the run lives). */
+  drop(runId: string): void;
   rows(action: string): Record<string, unknown>[];
 }
 
@@ -37,6 +39,7 @@ async function pagesRig(t: TestContext): Promise<PagesRig> {
       if (agentId !== undefined) workers.set(id, { agentId, projectId });
       return id;
     },
+    drop: (runId) => void workers.delete(runId),
     rows: (action) => c.audit.list({ limit: 2000 }).filter((e) => e.action === action).map((e) => e.payload as Record<string, unknown>),
   };
 }
@@ -140,4 +143,39 @@ test("the change card's diff keeps only the lines that differ", () => {
   assert.equal(lineChange("a\nb\nc", "a\nB\nc"), "@@ line 2: -1 +1\n- b\n+ B");
   assert.equal(lineChange("a", "a\nb"), "@@ line 2: -0 +1\n+ b");
   assert.equal(lineChange("a\nb", "a"), "@@ line 2: -1 +0\n- b");
+});
+
+test("review 1 SF1: a write approved for base N is refused stale_version when the page moved to N+1 meanwhile; nothing written, no row", async (t) => {
+  const p = await pagesRig(t);
+  const pg = page(p.svc);
+  const runId = p.run("w1");
+  const d = drive(p.r, runId, [[writePage({ pageId: pg.pageId, baseSeq: 1, title: "Plan", body: "worker edit" })], []]);
+  let done = false;
+  void d.end.finally(() => (done = true));
+  let resolved = 0;
+  while (!done && resolved === 0) {
+    const pending = ((await p.c.user.call("axis.approvals", "pending", {})).result?.["challenges"] ?? []) as { challengeId: string; digest: string }[];
+    for (const ch of pending) {
+      p.svc.update(USER, { pageId: pg.pageId, baseSeq: 1, title: "Plan", body: "the user moved it" }); // after the card, before the write
+      await p.c.user.call("axis.approvals", "resolve", { challengeId: ch.challengeId, decision: "approve", digest: ch.digest });
+      resolved++;
+    }
+    await new Promise((res) => setTimeout(res, 10));
+  }
+  await d.end;
+  assert.equal(resolved, 1);
+  assert.match(d.results[1]?.[0] ?? "", /^The call was refused \(stale_version\)\./);
+  const now = p.svc.get({ pageId: pg.pageId }).version;
+  assert.deepEqual([now.meta.seq, now.body, now.meta.author], [2, "the user moved it", { kind: "user" }], "only the user's version");
+  assert.deepEqual(p.rows("page.update").map((x) => x["callerKind"]), ["user"], "no row for the refused write");
+});
+
+test("review 1 N1: a worker archived while its run lives loses the page tools at the next call", async (t) => {
+  const p = await pagesRig(t);
+  const pg = page(p.svc);
+  const runId = p.run("w1");
+  const d = drive(p.r, runId, [[readPage(pg.pageId)], [readPage(pg.pageId)], []], { onTurn: (n) => (n === 1 ? p.drop(runId) : undefined) });
+  await d.end;
+  assert.match(d.results[1]?.[0] ?? "", /^\[axis-page /, "read while the worker was live");
+  assert.match(d.results[2]?.[0] ?? "", /^The call was refused \(not_found\)/, "refused once it was archived");
 });

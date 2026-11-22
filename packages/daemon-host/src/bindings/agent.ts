@@ -14,7 +14,7 @@ import { ObservedFiles } from "./agent-observed.js";
 import { GIT_DIFF, GIT_STATUS, GIT_TOOL_SPECS, gitDiffArgs, gitReadRunnerOptions, gitStatusArgs, gitTools } from "./agent-git.js";
 import { providerRedactor } from "./provider-redactor.js";
 import { PAGE_TOOL_SPECS, PageRead, WRITE_PAGE, pageTools, pagesReason, writePageArgs, writePagePreview } from "./agent-pages.js";
-import type { PagesService } from "../pages/service.js";
+import { PagesRefusal, type PagesService } from "../pages/service.js";
 import { MESSAGE_TOOL_SPECS, MessagesRead, READ_MESSAGES, SEND_MESSAGE, messageTools, messagingReason, readMessagesArgs, sendMessageArgs, sendPreview } from "./agent-messages.js";
 import { createComposerMessaging, raisedHop, type ComposerMessagingDeps } from "../messages/participation.js";
 import { RUN_COMMAND, RUN_COMMAND_SPEC, RunWt2, approvableCommand, commandLimits, commandTool, runCommandArgs, type CommandLimits, type RunCommandArgs } from "./agent-command.js";
@@ -262,7 +262,12 @@ export function createAgentBinding(deps: AgentBindingDeps): AgentBinding {
     };
     const agentId = runMessaging?.agentOf(run.runId);
     const worker = deps.pages?.workerOf(run.runId);
-    const pageWho = () => ({ kind: "agent" as const, agentId: worker?.agentId as string, projectId: worker?.projectId as string, runId: run.runId, receivedHop });
+    // Asked again at every call: a worker archived while its run lives loses the page tools (review 1 N1).
+    const pageWho = () => {
+      const now = deps.pages?.workerOf(run.runId);
+      if (now === undefined || now.agentId !== worker?.agentId) throw new PagesRefusal("E_NOT_FOUND", "not_found");
+      return { kind: "agent" as const, agentId: now.agentId, projectId: now.projectId, runId: run.runId, receivedHop };
+    };
     const previewed = worker === undefined || deps.pages === undefined ? PREVIEWED : new Map([...PREVIEWED, [WRITE_PAGE, { args: writePageArgs, content: writePagePreview(deps.pages.service, pageWho) as never }]]);
     // Calls inside the broker now, with their parsed arguments: the hook previews only the one whose digest it is asked for.
     const inflight = new Set<{ readonly tool: string; readonly args: unknown }>();

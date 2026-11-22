@@ -34,6 +34,7 @@ import { type SshSpawn } from "./bindings/ssh-resolver.js";
 import { createProjectsHandlers } from "./handlers/projects.js";
 import { createMessagingBinding, hostMessagingDeps, type MessagingBinding } from "./messages/binding.js";
 import { createPagesService, type PagesService } from "./pages/service.js";
+import { journalWorkerOf } from "./agents/directory.js";
 import { createDaemonHost, type DaemonHost, type HostOptions, type HostServices, type StartupPorts } from "./host.js";
 import { installHostLifecycle, type LifecycleHandle, type LifecycleOptions } from "./lifecycle.js";
 import type { Logger } from "./log/logger.js";
@@ -239,11 +240,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
         const messaging = createMessagingBinding(messagingDeps);
         // axis.pages/1 and the page tools (PV-Q1 slice 2): writes and their audit rows through the sealed composer writer.
         const pages = createPagesService({ journal: parts.journal, audit: composerWriter, random: { bytes: (n) => randomBytes(n) } });
-        const workerOf = (runId: string) => {
-          const a = parts.journal.agents.agentOfRun(runId);
-          const r = a === undefined ? undefined : parts.journal.agents.get(a);
-          return r === undefined || r.archived ? undefined : { agentId: r.id, projectId: r.projectId };
-        };
+        const workerOf = journalWorkerOf(parts.journal);
         const agent = createAgentBinding({
           locator: worktrees.locator,
           repositoryRoots: projectPaths,

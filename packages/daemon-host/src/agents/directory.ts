@@ -32,6 +32,19 @@ export function journalAgentsDirectory(journal: Pick<Journal, "agents" | "getPro
   };
 }
 
+/**
+ * The worker a run acts for and its project, as the page tools ask it (PV-Q1 slice 2): the run's recorded worker while it is
+ * not archived, else undefined. Asked when the run's tools are built and again at every page call, so archiving the worker
+ * takes the tools away from its live runs too.
+ */
+export function journalWorkerOf(journal: Pick<Journal, "agents">): (runId: string) => { readonly agentId: string; readonly projectId: string } | undefined {
+  return (runId) => {
+    const id = journal.agents.agentOfRun(runId);
+    const r = id === undefined ? undefined : journal.agents.get(id);
+    return r === undefined || r.archived ? undefined : { agentId: r.id, projectId: r.projectId };
+  };
+}
+
 /** The agent a run acts for, as messaging asks it (`agentOf`): the run's recorded agent, set only by a run start from an agent (PV-G4). */
 export function journalAgentOf(journal: Pick<Journal, "agents">): (runId: string) => string | undefined {
   return (runId) => journal.agents.agentOfRun(runId);

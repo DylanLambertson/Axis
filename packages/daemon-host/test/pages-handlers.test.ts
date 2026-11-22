@@ -88,3 +88,15 @@ test("a run's worker sees only its own project's pages", () => {
   assert.throws(() => service.update(w, { pageId: other, baseSeq: 1, title: "Q", body: "y" }), /not_found/);
   assert.throws(() => service.create(w, { projectId: "q", title: "Q", body: "y" }), /not_found/);
 });
+
+test("the audit allow-list is exactly these keys for every page row", () => {
+  const keys = ["pageId", "projectId", "seq", "bytes", "authorKind", "callerKind", "runId", "changed"];
+  assert.deepEqual(Object.keys(PAGES_PAYLOAD_ALLOWLIST).sort(), ["page.create", "page.delete", "page.restore", "page.review", "page.update"]);
+  for (const v of Object.values(PAGES_PAYLOAD_ALLOWLIST)) assert.deepEqual([...v], keys);
+});
+
+test("a body over 256 KiB through the service is the closed too_large, nothing written", async () => {
+  const { h, journal } = setup();
+  assert.deepEqual(await refusal(call(h, "create", { projectId: "p", title: "Big", body: "é".repeat(131_073) })), ["E_INVALID_ARGUMENT", "too_large", PAGES_REFUSAL_MESSAGE]);
+  assert.deepEqual(journal.pages.list("p"), []);
+});
