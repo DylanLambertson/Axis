@@ -31,6 +31,8 @@ export interface MessagingBindingDeps {
   readonly deliveryLimits?: { readonly maxMessages?: number; readonly maxText?: number };
   /** A delivery failure the pipeline swallows, as a fixed code (the host logs it). */
   readonly onInternalError?: (code: "notice_failed") => void;
+  /** The host redactor's check (a secret), for deliveries: required, so a host that leaves it out does not build. */
+  readonly holdsSecret: (text: string) => boolean;
 }
 
 export interface MessagingBinding {
@@ -46,7 +48,7 @@ export function createMessagingBinding(deps: MessagingBindingDeps): MessagingBin
   const store = deps.journal.messages;
   const common = { store, directory, audit: deps.audit, ...(deps.noteWrite === undefined ? {} : { noteWrite: deps.noteWrite }) };
   const service = createMessageService({ ...common, random: deps.random, monotonic: deps.monotonic, scan: deps.scan, ...(deps.limits === undefined ? {} : { limits: deps.limits }) });
-  const delivery = createMessageDelivery({ ...common, service, random: deps.random, agentOf: deps.agentOf ?? (() => undefined), runLive: deps.runLive ?? (() => false), ...deps.deliveryLimits, ...(deps.onInternalError === undefined ? {} : { onInternalError: deps.onInternalError }) });
+  const delivery = createMessageDelivery({ ...common, service, random: deps.random, agentOf: deps.agentOf ?? (() => undefined), runLive: deps.runLive ?? (() => false), ...deps.deliveryLimits, ...(deps.onInternalError === undefined ? {} : { onInternalError: deps.onInternalError }), holdsSecret: deps.holdsSecret });
   // Inert until PV-G4: the same `agentOf` as the delivery (default none), so no run is offered the tools.
   const participation = { service, directory, random: deps.random, agentOf: deps.agentOf ?? (() => undefined) };
   return { service, settings: createMessagingSettings({ ...common, context: (id) => service.context(id) }), delivery, participation };
@@ -59,6 +61,7 @@ export interface HostMessaging {
   readonly monotonic: () => number;
   readonly scan: (text: string) => Promise<readonly unknown[]>;
   readonly logger: Pick<Logger, "warn"> | undefined;
+  readonly holdsSecret: (text: string) => boolean;
 }
 
 /** The binding's dependencies in the host: the daemon's CSPRNG, live runs from the journal, swallowed failures logged by code. */
@@ -70,6 +73,7 @@ export function hostMessagingDeps(host: HostMessaging): MessagingBindingDeps {
     random: { bytes: (n) => randomBytes(n) },
     monotonic: host.monotonic,
     scan: host.scan,
+    holdsSecret: host.holdsSecret,
     runLive: (id) => journal.getRun(id)?.state === "RUNNING",
     onInternalError: (code) => logger?.warn("request.failed", { reason: `delivery_${code}` }),
   };

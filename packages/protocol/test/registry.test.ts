@@ -71,6 +71,18 @@ const EXPECTED: readonly Row[] = [
   ["axis.messages", "updateSettings", "write", 2, "none", 10_000],
   ["axis.forge", "pullRequests", "read", 0, "none", 30_000],
   ["axis.forge", "pinRepository", "write", 1, "none", 10_000],
+  ["axis.agents", "list", "read", 0, "none", 5_000],
+  ["axis.agents", "get", "read", 0, "none", 5_000],
+  ["axis.agents", "create", "write", 2, "required", 30_000],
+  ["axis.agents", "update", "write", 2, "none", 5_000],
+  ["axis.agents", "archive", "write", 1, "none", 5_000],
+  ["axis.agents", "restore", "write", 1, "none", 5_000],
+  ["axis.agent-groups", "list", "read", 0, "none", 5_000],
+  ["axis.agent-groups", "create", "write", 1, "required", 5_000],
+  ["axis.agent-groups", "rename", "write", 1, "none", 5_000],
+  ["axis.agent-groups", "reorder", "write", 1, "none", 5_000],
+  ["axis.agent-groups", "delete", "write", 1, "none", 5_000],
+  ["axis.agent-groups", "assign", "write", 2, "none", 5_000],
 ];
 
 function actualRows(): Row[] {
