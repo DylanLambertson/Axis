@@ -1,4 +1,5 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
+import type { ForgeListRequest, ForgeReply } from "@axis/protocol";
 
 /**
  * The Axis pty process, as `@axis/runs` uses it (same shapes as its `PtyPort`, repeated here because only
@@ -92,4 +93,14 @@ export interface PtyPushCall {
 /** The pty process's `push`. The handle reports the exit status only; a rejection carries at most a closed `code`. */
 export interface PtyPushPort {
   push(call: PtyPushCall): Promise<PtyHandle>;
+}
+
+/**
+ * The pty process's `forge-list` (PV-D2 slice 2, docs/design/forge-pr-list.md §1), repeated from `@axis/pty-process`
+ * (`PtyProcessPort.forgeList`; `test/types/pty-exec-port.test.ts` compares it). The request is the shared `@axis/protocol`
+ * schema's; the reply comes back parsed by the shared reply schema, or `undefined` when it failed it. A rejection carries at most
+ * a closed `code`.
+ */
+export interface PtyForgePort {
+  forgeList(request: ForgeListRequest): Promise<ForgeReply | undefined>;
 }

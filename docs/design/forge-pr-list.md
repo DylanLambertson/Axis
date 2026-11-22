@@ -1,6 +1,6 @@
 # Pull request list through the user's `gh` (ticket PV-D2)
 
-- **Status:** design, revision 3 (after design review 1, SF-1 to SF-9 and N1 to N8, and design review 2, NEW-1 to NEW-5 and N-a to N-f). Slice 1a (daemon side) is built (PR #527); slice 1b (pty process side) is built on `feat/pv-d2-s1b`; nothing is wired into a shipped build until slice 2. Phase 1c, dashboard item "Pull requests" (`product-vision-v2.md` §4 row 7, the data-source table, O-5).
+- **Status:** design, revision 3 (after design review 1, SF-1 to SF-9 and N1 to N8, and design review 2, NEW-1 to NEW-5 and N-a to N-f). Slice 1a (daemon side) is built (PR #527); slice 1b (pty process side) is built (`df86b94`); slice 2 is built except the pin's persistence (slice 2b, a named departure in §9) and the owner-run gate evidence (§4, §9). Phase 1c, dashboard item "Pull requests" (`product-vision-v2.md` §4 row 7, the data-source table, O-5).
 - **Scope:** `axis.forge/1.pullRequests { projectId, trigger }` returns **your** open pull requests: those opened by the account `gh` is logged in as, on this project's confirmed GitHub repository, whose head is an `axis/*` branch of that same repository. **This is a product choice (review 2 NEW-4).** A teammate's, a bot's or a second identity's pull request on an `axis/` branch is not listed, and nothing signals that it exists. The section is titled "Your pull requests", and its copy says so. "Your" means `gh`'s **active account** (`--author=@me`, review 3 N4): a pull request opened under another identity (a browser session behind the compare URL, a different push account) is not listed either. For each row: number, title, branch, author, draft, checks state, review state. Read-only. The dashboard UI is PV-D1.
 - **Constraints carried in:**
   - ADR 0004 decision 9 and D-9 stand: Axis stores, reads, logs and forwards **no forge credential**, and never writes the user's keyring.
@@ -311,7 +311,7 @@ The `ExecStartError` codes and the per-stream truncation flags are the PV-X1a ex
 
 **Logs.** Only the state and the exit code.
 
-**Journal.** Only the pin (a schema bump in slice 2). The list is never persisted.
+**Journal.** Only the pin (a schema bump, v13, in slice 2b; slice 2 keeps it in memory: §9 departure S2-1). The list is never persisted.
 
 ## 8. Threat checklist
 
@@ -394,6 +394,22 @@ The `ExecStartError` codes and the per-stream truncation flags are the PV-X1a ex
 - the hostile-`gh` suite rerun through the real `ExecFn` (from PV-X1), including the grandchild kill case;
 - the §4 verification gate with a real `gh`, recorded per platform;
 - the stderr texts of the default `--author=@me` path, which uses the search API: a missing or inaccessible repository there may answer "The listed users and repositories cannot be searched…" rather than "Could not resolve to a Repository", and would then be `gh_failed`, not `repo_not_found`. Markers v1 are unverified against a real `gh` until this gate (review S1b N-6).
+
+**Slice 2 as built (branch `feat/pv-d2-s2`).**
+- **pty process.** The entry builds the forge path's own `createNodeExec(new Set([ghPath]), platform)` from `AXIS_PTY_GH` (never the git instance) and hands `createPtyService` the `forge` configuration with the git path's `baseEnv` and scratch. `AXIS_PTY_GH` now needs `AXIS_PTY_SCRATCH` too (`scratch_refused` otherwise; main's `checkedHandover` keeps the scratch for gh alone and drops both programs without one). On Windows every `forge-list` answers `unsupported_platform` and nothing is created.
+- **Host port.** `PtyProcessPort.forgeList` (`forge-client.ts`): the request is checked by `forgeListRequestSchema` and sent with exactly its five fields, an id already waiting is refused, the reply is checked by `forgeReplySchema` (one that fails it is `undefined`, so the service answers `gh_failed`), and every call settles on its reply, a send failure, a close, a dispose or its 35 s bound. The daemon's slot forwards it (`channel_closed` with no port).
+- **Daemon.** `axis.forge/1` moved from the planned to the served tables (contract and policy rows, user only, tiers 0 and 1). `compose-forge.ts` registers it: `readOrigin` reads `origin` of the project's main checkout (the journal's path, checked on disk: the same real path, a main working tree whose `.git` is in that directory, never a linked worktree), with the daemon's pinned git; a longer `origin` than 2,048 characters is refused, never cut. Request ids are 128 random bits. One closed log record per run (`forge.list`, the state and the exit code).
+- **Tests.** The hostile suite through `createNodeExec` (`forge-list-node.test.ts`: environment exactly as built, 5 MiB stdout and 1 MiB stderr, endless stderr and a hang to `timeout`, a grandchild that holds the pipes and ignores SIGTERM, wrong JSON, invalid UTF-8, raw controls, the markers v2 classes), the entry (`entry-forge.test.ts`), the port (`forge-client.test.ts`), and the whole stack with recorded-shape `gh` JSON (`forge-serving.test.ts`).
+
+**Departure S2-1: the pin is kept in memory until journal v13 (slice 2b).** The journal migrations v11 and v12 are in flight on other branches, so slice 2 adds none. The pin sits behind `PinStore` (`get`, `set`); slice 2 ships `createMemoryPinStore`. A restarted daemon has no pin, so it fails closed: `pullRequests` answers `repository_unconfirmed` with the candidate, and no `gh` runs until the user confirms again (a tier 1, user-only `pinRepository`). That is the existing closed state, not a new refusal reason: the confirm dialog needs the candidate it carries. A stored value that is not a vetted github.com repository counts as no pin. The service no longer relies on getting the same object back from the store (a re-pin bumps a per-project counter), so the journal store is a drop-in. **Slice 2b** (after v11 and v12 merge): the pin persisted in journal v13 behind the same interface.
+
+**Manual gate (owner-run, recorded later).** No automated test runs `gh` against a real account. With a throwaway account logged in to `gh` (keyring storage) on each platform:
+1. Record `gh --version` (the version step accepts it: 2.40.0 or newer is expected).
+2. List the keyring items, labels and attributes only (§4: D-Bus Secret Service listing on Linux, `security dump-keychain` without `-d` on macOS), and keep the list.
+3. Start Axis with `AXIS_PTY_GH` handed over; in a project whose `origin` is a github.com repository with an open pull request from that account on an `axis/` branch, confirm the repository and refresh. Expected: state `ok` with that row; a teammate's pull request and a fork's are not listed.
+4. List the keyring items again. Expected: no difference.
+5. Expected throughout: no `git` process started by the forge path; `@me` narrows to that account. Then `gh auth logout` in a fresh shell: a refresh answers `not_logged_in`.
+Only the verdicts are recorded (platform, `gh` version, pass or fail per step), never raw keyring output. A platform where step 3 fails goes into `FORGE_AUTH_UNSUPPORTED` (empty now).
 
 **Slice 3:** the dashboard section, with PV-D1 owning the frame. Its acceptance:
 - the pinned repository always shown;
