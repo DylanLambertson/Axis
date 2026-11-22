@@ -21,6 +21,7 @@ function service(over: Partial<ForgeServiceDeps> = {}) {
     audit: { append: () => undefined },
     monotonic: () => (now += 20_000),
     requestId: () => `r${++n}`,
+    pins: createMemoryPinStore(),
     ...over,
   });
   return { svc, sent };
