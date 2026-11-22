@@ -65,7 +65,7 @@
 
 | ID | Ticket | Size | Depends on | Builder | Review |
 |---|---|---|---|---|---|
-| **PV-K1** | `plugin:*` principal: main mints one connection per plugin view bound to its `webContents` id; daemon identity step, policy rows, coverage check; the user connection never carries plugin calls | L | PV-R5 | large | review |
+| **PV-K1** | `plugin:*` principal: main mints one connection per plugin view bound to its `webContents` id; daemon identity step, policy rows, coverage check; the user connection never carries plugin calls; test: a plugin-started composer run has initiator, `createdBy` and audit actor `plugin:<id>`, is tainted with `plugin_output` before its first model call, and its tier-3 challenge shows the full prompt, project, workspace, mode, provider and model (ADR 0008 decision 6; otherwise `runs.start` is not in 4a) | L | PV-R5 | large | review |
 | **PV-K2** | Plugin manifest schema, permissions, contribution points, dangerous-combination wording; install with SHA-256 pinning, publisher signature, signed curated list (embedded key, version, expiry, rotation, revocation), update diff over tier, permissions, origins, contributions and integrations; extraction rules | L | PV-K1 | large | review |
 | **PV-K3** | P1 host: sandboxed `WebContentsView` per plugin, own session partition, deny-all permission handlers, navigation and window-open denied, WebRTC removed, header CSP from the protocol handler | L | PV-K1, PV-K2 | large | review |
 | **PV-K4** | Contribution points: page, dashboard section, side-panel tab, task provider, message participant; wires plugin output into PV-M0 as taint source 6 | M | PV-K3, PV-D1, PV-V2, PV-T1, PV-M3, PV-M0 | small | UI review |
