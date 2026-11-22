@@ -82,8 +82,7 @@ export class Journal {
   readonly messages: MessageRecords;
   /** The confirmed forge repository per project (schema v13, PV-D2 slice 2b). */
   readonly forgePins: ForgePinRecords;
-  /** Pages, their versions and attachments (schema v14, PV-Q1 slice 1, ADR 0010). */
-  readonly pages: PageRecords;
+  readonly pages: PageRecords; // pages, versions and attachments (schema v14, PV-Q1 slice 1, ADR 0010)
 
   private constructor(db: DatabaseSync, options: JournalOptions) {
     this.#db = db;
