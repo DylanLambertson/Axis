@@ -102,3 +102,14 @@ test("PV-M6 slice 3: a revocation after a pause still removes the endpoint entir
   assert.equal(relayOutbound.safeParse({ t: "endpoint-close", endpoint: EP, reason: "paused" }).success, false, "pause never closes the endpoint");
   assert.equal(relayOutbound.safeParse({ t: "endpoint-drop", endpoint: EP, reason: "revoked" }).success, false);
 });
+
+test("review s3 N3: endpoint-drop for an endpoint this host does not hold changes nothing", { skip }, async (t) => {
+  const r = rig(t);
+  const path = (await r.host.open(EP)) as string;
+  const a = await r.authed(EP, path);
+  const before = r.sent.length;
+  r.host.onRelay({ t: "endpoint-drop", endpoint: EP2, reason: "paused" });
+  assert.equal(await r.within(a.gone, 200), false, "the held endpoint's connection stays");
+  assert.equal(r.sent.length, before, "nothing relayed");
+  assert.ok(existsSync(path));
+});

@@ -56,8 +56,12 @@ export function createMessagingSettings(deps: MessagingSettingsDeps): MessagingS
       deps.onChange?.(e);
     } catch {
       const target = e.kind === "paused" ? `project:${e.projectId}` : `agent:${e.agentId}`;
-      deps.audit.append({ actor: "daemon", action: MESSAGE_AUDIT.endpoint, target, outcome: "error", payload: { event: "hook_failed", ...(e.kind === "paused" ? { projectId: e.projectId } : { agentId: e.agentId }) } });
-      deps.noteWrite?.();
+      try {
+        deps.audit.append({ actor: "daemon", action: MESSAGE_AUDIT.endpoint, target, outcome: "error", payload: { event: "hook_failed", ...(e.kind === "paused" ? { projectId: e.projectId } : { agentId: e.agentId }) } });
+        deps.noteWrite?.();
+      } catch {
+        // The write has committed: a failing audit sink must not turn it into an error for the user (review s3 N2).
+      }
     }
   };
   const view = (ctx: PolicyContext) => ({ projectId: ctx.projectId, ...ctx.settings, agents: agentRows(directory, ctx.projectId, ctx.agentSettings) });

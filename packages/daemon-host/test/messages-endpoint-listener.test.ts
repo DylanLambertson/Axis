@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
 import { createPtyProcessPort, createPtyService, type Channel, type PtyChild, type PtyExit, type SpawnRequest } from "@axis/pty-process";
-import { cliEndpointPty, wireCliEndpoints, type CliEndpoints, type PtyHandle, type PtyPort, type RelayIn, type RelayOut } from "../src/index.js";
+import { cliEndpointPty, createMessagingSettings, wireCliEndpoints, type CliEndpoints, type PtyHandle, type PtyPort, type RelayIn, type RelayOut } from "../src/index.js";
 import { deliveryRig } from "./messages-delivery-rig.js";
 
 // PV-M6 slice 2, daemon side: the messaging options (both off by default), the spawn that mints and hands over a CLI run's
@@ -233,3 +233,20 @@ test("PV-M6 slice 3: a settings hook that throws is audited and never fails the 
   assert.equal(r.c.journal.messages.agentSettings("c1")?.cliMessaging, false, "the write stands");
 });
 const rows = (r: Awaited<ReturnType<typeof deliveryRig>>) => r.c.audit.list({ limit: 5000 }).filter((e) => e.action === "message.endpoint").map((e) => e.payload as Record<string, unknown>);
+
+test("review s3 N2: a hook that throws AND an audit sink that throws still leave the committed write a success", async (t) => {
+  const r = await deliveryRig(t, { noDelivery: true });
+  r.c.journal.messages.setAgentSettings("c1", { acceptsFrom: "group", cliMessaging: true, muted: false });
+  const settings = createMessagingSettings({
+    store: r.c.journal.messages,
+    directory: r.m.participation.directory,
+    audit: { append: (e) => (e.payload !== undefined && (e.payload as Record<string, unknown>)["event"] === "hook_failed" ? assert.fail("the sink fails") : r.c.audit.append(e)) },
+    context: (id) => r.m.service.context(id),
+    onChange: () => {
+      throw new Error("boom");
+    },
+  });
+  assert.equal(settings.updateSettings(USER, { setting: "cliMessaging", agentId: "c1", value: false }).changed, true);
+  assert.equal(settings.pause(USER, { scope: { project: "p" } }).changed, true);
+  assert.equal(r.c.journal.messages.agentSettings("c1")?.cliMessaging, false, "the write stands");
+});

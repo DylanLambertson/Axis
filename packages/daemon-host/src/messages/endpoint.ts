@@ -267,7 +267,12 @@ export function createEndpointRelay(deps: EndpointRelayDeps): EndpointRelay {
       // ADR 0007 validation line 7: only the supervised channel, only ids of the shapes the envelope allows, only minted ids.
       if (source !== deps.source || typeof endpoint !== "string" || typeof conn !== "string" || !ENDPOINT_ID.test(endpoint) || !CONN_ID.test(conn)) return [];
       const ep = byId.get(endpoint);
-      if (ep === undefined) return msg.t === "relay-close" ? [] : refuse(endpoint, conn, tombstones.has(endpoint) ? "revoked" : "refused");
+      if (ep === undefined) {
+        if (!tombstones.has(endpoint)) return msg.t === "relay-close" ? [] : refuse(endpoint, conn, "refused");
+        // Revoked earlier: close the endpoint again (idempotent), so a pty process that never got the first close stops listening.
+        const close: RelayOut = { t: "endpoint-close", endpoint, reason: "revoked" };
+        return msg.t === "relay-close" ? [close] : [close, ...refuse(endpoint, conn, "revoked")];
+      }
       if (!deps.runLive(ep.runId) || !enabled(ep)) return msg.t === "relay-close" ? [revokeEndpoint(ep)] : [revokeEndpoint(ep), ...refuse(endpoint, conn, "revoked")];
       if (msg.t === "relay-close") {
         ep.conns.delete(conn);

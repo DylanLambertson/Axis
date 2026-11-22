@@ -54,6 +54,11 @@ function json(out: RelayOut | undefined): Record<string, unknown> {
   relayOutbound.parse(out);
   return JSON.parse(out.frame) as Record<string, unknown>;
 }
+/** A tombstoned endpoint's answer (review s3 N1): an idempotent endpoint-close first, then the refusal's JSON. */
+function afterRevoke(endpoint: string, out: readonly RelayOut[]): Record<string, unknown> {
+  assert.deepEqual(out[0], { t: "endpoint-close", endpoint, reason: "revoked" }, "the endpoint is closed again");
+  return json(out[1]);
+}
 const rows = (r: DeliveryRig) => r.c.audit.list({ limit: 5000 }).filter((e) => e.action === "message.endpoint").map((e) => e.payload as Record<string, unknown>);
 const send = (to: string, body: string, over: Record<string, unknown> = {}) => ({ op: "send", id: "s1", recipients: [{ agent: to }], body, ...over });
 
@@ -151,7 +156,7 @@ test("ADR 0007 validation 6 and endpoint line 2: once the run leaves RUNNING, an
   assert.deepEqual(out[0], { t: "endpoint-close", endpoint: f.ep, reason: "revoked" });
   assert.deepEqual(json(out[1]), { ok: false, reason: "revoked" });
   await f.open("c-new");
-  assert.deepEqual(json((await f.frame("c-new", { op: "auth", token: f.token }))[0]), { ok: false, reason: "revoked" });
+  assert.deepEqual(afterRevoke(f.ep, await f.frame("c-new", { op: "auth", token: f.token })), { ok: false, reason: "revoked" });
   assert.deepEqual(rows(f.r).map((p) => p["event"]), ["minted", "revoked"]);
   assert.deepEqual(f.r.m.endpoints.relay.revoke(f.runId), { t: "endpoint-close", endpoint: f.ep, reason: "revoked" });
 });
@@ -243,7 +248,7 @@ test("review s1 SF: a revoked endpoint leaves the table: 1,000 minted and revoke
   assert.ok(relay.mint(r.run("c1")) !== undefined, "the 1,001st is minted");
   const late = (runId: string) => relay.onRelay(src, { t: "relay-open", endpoint: endpointIdOf(runId), conn: "late" });
   const newest = runs[runs.length - 1] as string;
-  assert.deepEqual(json((await late(newest))[0]), { ok: false, reason: "revoked" }, "a recent revocation answers revoked");
+  assert.deepEqual(afterRevoke(endpointIdOf(newest), await late(newest)), { ok: false, reason: "revoked" }, "a recent revocation answers revoked");
   assert.equal(relay.mint(newest), undefined, "and its run is not minted again");
   assert.deepEqual(relay.revoke(newest), { t: "endpoint-close", endpoint: endpointIdOf(newest), reason: "revoked" }, "revoking again is idempotent");
   assert.deepEqual(json((await late(runs[0] as string))[0]), { ok: false, reason: "refused" }, "past the ring of 256 revocations, the closed answer for an unknown id");
@@ -272,7 +277,7 @@ test("PV-M6 slice 3: revokeWorker revokes every live endpoint of that worker onl
     { t: "endpoint-close", endpoint: f.ep, reason: "revoked" },
     { t: "endpoint-close", endpoint: second.endpointId, reason: "revoked" },
   ]);
-  assert.deepEqual(json((await f.frame(conn, { op: "read", id: "r2" }))[0]), { ok: false, reason: "revoked" });
+  assert.deepEqual(afterRevoke(f.ep, await f.frame(conn, { op: "read", id: "r2" })), { ok: false, reason: "revoked" });
   assert.equal(f.r.m.endpoints.relay.mint(f.runId), undefined, "a revoked run is not minted again");
 });
 
@@ -283,7 +288,9 @@ test("PV-M6 slice 3 backstop: with the stored setting off, the next frame revoke
   const out = await f.frame(conn, { op: "read", id: "r1" });
   assert.deepEqual(out[0], { t: "endpoint-close", endpoint: f.ep, reason: "revoked" });
   assert.deepEqual(json(out[1]), { ok: false, reason: "revoked" });
-  assert.deepEqual(await f.open("c-2"), [{ t: "relay-reply", endpoint: f.ep, conn: "c-2", frame: '{"ok":false,"reason":"revoked"}', close: true, authFailed: false }]);
+  assert.deepEqual(afterRevoke(f.ep, await f.open("c-2")), { ok: false, reason: "revoked" });
+  assert.deepEqual(await f.r.m.endpoints.relay.onRelay(f.r.m.endpoints.source, { t: "relay-close", endpoint: f.ep, conn: "c-2" }), [{ t: "endpoint-close", endpoint: f.ep, reason: "revoked" }], "review s3 N1: even a close closes the endpoint again, so a lost endpoint-close is repaired");
+  assert.deepEqual(await f.r.m.endpoints.relay.onRelay(f.r.m.endpoints.source, { t: "relay-open", endpoint: endpointIdOf("never-minted"), conn: "c-3" }), [{ t: "relay-reply", endpoint: endpointIdOf("never-minted"), conn: "c-3", frame: '{"ok":false,"reason":"refused"}', close: true, authFailed: false }], "an id never minted gets no endpoint-close");
 });
 
 test("PV-M6 slice 3: dropPaused drops the connections of an endpoint whose sender a pause now covers (worker, group, project), and no other", async (t) => {
