@@ -1,5 +1,5 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
-import { lstatSync, mkdirSync, rmSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, rmSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { listenOnPath, type EndpointConn } from "./endpoint-listen.js";
 import { ENDPOINT_ID, RELAY_FRAME_CHARS, type RelayInbound, type RelayOutbound } from "./messages.js";
@@ -171,6 +171,14 @@ export function createEndpointHost(cfg: EndpointHostConfig, deps: { readonly sen
         h.stop = (await listenOnPath(path, (conn) => accept(endpoint, h, conn))).close;
       } catch {
         return undefined; // the template refused the path, or listening failed (it closed what it opened)
+      }
+      // The socket file itself 0600, whatever the umask (the 0700 directory is the control; this is depth).
+      try {
+        chmodSync(path, 0o600);
+      } catch {
+        h.stop();
+        rmSync(path, { force: true });
+        return undefined;
       }
       hosted.set(endpoint, h);
       return path;

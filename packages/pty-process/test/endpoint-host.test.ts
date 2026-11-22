@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { connect, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -127,6 +127,16 @@ test("an endpoint relays open, each frame as its text, and close; the daemon's r
   await until(() => ofType(h.sent, "relay-frame").length === 2, "an authenticated frame past the auth cap is relayed");
   s.destroy();
   await until(() => ofType(h.sent, "relay-close").length === 1, "relay-close");
+});
+
+test("the socket file is mode 0600 and owned by this uid, in the 0700 runtime directory", { skip }, async (t) => {
+  const h = host(t);
+  const path = (await h.host.open(EP)) as string;
+  const st = lstatSync(path);
+  assert.ok(st.isSocket());
+  assert.equal(st.mode & 0o777, 0o600);
+  assert.equal(st.uid, uid);
+  assert.equal(lstatSync(h.dir).mode & 0o777, 0o700);
 });
 
 test("endpoint line 3: a fifth connection is closed at accept", { skip }, async (t) => {
