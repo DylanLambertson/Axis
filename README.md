@@ -275,7 +275,7 @@ The full contributor workflow, branch and commit conventions, and the phase chec
 | [`docs/CONTEXT.md`](docs/CONTEXT.md) | Local-first memory and cross-project intelligence |
 | [`docs/SECURITY.md`](docs/SECURITY.md) | Trust model, secrets, isolation, sync and enterprise controls |
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | Phases, milestones and the full gate checklists |
-| [`docs/adr/`](docs/adr) | Architecture decision records: baseline, Code OSS integration, the IPC bridge, the agent-first shell, package layout |
+| [`docs/adr/`](docs/adr) | Architecture decision records: baseline, Code OSS integration, the IPC bridge, the agent-first shell, package layout, the agent home information architecture |
 | [`docs/design/`](docs/design) | Technical design for the Axis shell and its policies |
 | [`docs/feasibility/`](docs/feasibility) | The Phase 0 research behind the decisions |
 | [`docs/packages.md`](docs/packages.md) | The package map and the rules for wiring the daemon |
