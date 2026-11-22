@@ -37,7 +37,7 @@ test("version 11 resets every trusted row to 0, keeps the rows, and leaves them 
   const db = v10();
   const journal = Journal.open(db, { audit: new AuditLog(db) });
   assert.equal(schemaVersion(db, "journal"), JOURNAL_SCHEMA_VERSION);
-  assert.equal(JOURNAL_SCHEMA_VERSION, 11);
+  assert.ok(JOURNAL_SCHEMA_VERSION >= 11);
   for (const id of ["p1", "p2"]) {
     const p = journal.getProject(id);
     assert.equal(p?.trusted, false, `${id}: no row keeps a trust no dialog gave`);

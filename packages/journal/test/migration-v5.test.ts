@@ -58,7 +58,7 @@ test("upgrading a populated version 4 database loses nothing and leaves every ol
   assert.deepEqual(without(without(after, "base_branch"), "base_tip"), before.ws, "every old column of every row is unchanged");
   assert.ok(after.every((r) => r["base_branch"] === null), "old workspaces are not attestable: no base branch is invented");
   assert.equal(journal.getWorkspace("w-fin")?.baseBranch, null);
-  assert.deepEqual(dump(db, "agent_runs", "id"), before.runs);
+  assert.deepEqual(dump(db, "agent_runs", "id").map(({ agent_id: _a, ...rest }) => rest), before.runs);
   assert.deepEqual(dump(db, "state_transitions", "id"), before.tr);
   // Version 11 adds the binding columns and resets every trust (migration-v11.test.ts); every other column is unchanged.
   const projects = without(without(without(dump(db, "projects", "id"), "common_dir"), "git_dir_id"), "trust_changed_at");

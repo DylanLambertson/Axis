@@ -47,7 +47,7 @@ test("an unmigrated (version 5) database has no composer records: the store fail
   assert.equal(schemaVersion(db, "journal"), JOURNAL_SCHEMA_VERSION);
   // Later versions only add columns (version 7: base_tip, NULL for old rows); every column version 6 knew is unchanged.
   assert.deepEqual(dump(db, "agent_workspaces", "id").map(({ base_tip: _t, ...rest }) => rest), before.ws);
-  assert.deepEqual(dump(db, "agent_runs", "id"), before.runs);
+  assert.deepEqual(dump(db, "agent_runs", "id").map(({ agent_id: _a, ...rest }) => rest), before.runs);
   assert.deepEqual(dump(db, "audit_events", "1"), before.audit);
   assert.equal(journal.composer.get("r-old"), undefined, "an older run has no record: nothing is invented");
   assert.deepEqual(journal.composer.workspaceBudget("w"), { tokens: 0, costMicroUsd: 0, requests: 0, unpricedRequests: 0 });
