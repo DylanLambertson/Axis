@@ -1,5 +1,6 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import type { Migration } from "@axis/audit";
+import { JOURNAL_V11 } from "./schema-v11.js";
 
 /**
  * Journal schema, versioned in `axis_schema` under component `journal`.
@@ -473,6 +474,7 @@ export const JOURNAL_MIGRATIONS: readonly Migration[] = [
       ) STRICT, WITHOUT ROWID;
     `,
   },
+  JOURNAL_V11,
 ];
 
 export const JOURNAL_SCHEMA_VERSION = JOURNAL_MIGRATIONS.length;

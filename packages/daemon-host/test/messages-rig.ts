@@ -51,7 +51,7 @@ export function messagesRig(options: { limits?: Partial<MessagingLimits>; path?:
   const audit = new AuditLog(db, { payloadAllowlist: MESSAGES_PAYLOAD_ALLOWLIST });
   const journal = Journal.open(db, { audit });
   for (const [id, path] of [["p1", "/repo/one"], ["p2", "/repo/two"]] as const) {
-    if (journal.getProject(id) === undefined) journal.registerProject({ id, path, displayName: id, trusted: true, actor: "user" });
+    if (journal.getProject(id) === undefined) journal.registerProject({ id, path, displayName: id, trusted: false, actor: "user" });
   }
   const agents = new Map<string, AgentEntry>();
   const groups = new Map<string, GroupEntry>();

@@ -36,7 +36,7 @@ export {
   type ThreadRecord,
 } from "./message-store.js";
 export { DeliveryRecords, type PendingDelivery } from "./delivery-store.js";
-export { baseBranchSchema, baseTipSchema, type RegisterProjectInput } from "./records.js";
+export { baseBranchSchema, baseTipSchema, type ProjectTrustVia, type RegisterProjectInput, type SetProjectTrustInput } from "./records.js";
 export { MAX_TAIL_ROWS, lastTransitionId, transitionsSince, type TransitionTail } from "./tail.js";
 export { JOURNAL_MIGRATIONS, JOURNAL_SCHEMA_VERSION } from "./schema.js";
 export {

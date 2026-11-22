@@ -13,8 +13,6 @@ import {
   exitCodeForStartupError,
   EXIT,
   daemonAuditSink,
-  handleProjectsRegister,
-  projectDisplayName,
   recordingRegistrar,
   type ComposeOptions,
   type PtyPort,
@@ -89,30 +87,6 @@ test("the daemon audit sink writes and tells the anchor manager; without a write
   const failing = daemonAuditSink({ append: () => { throw new Error("disk"); } } as never, () => void noted++);
   assert.throws(() => failing.append(event), "a write that fails fails the request closed");
   assert.equal(noted, 1, "and is not counted as a write");
-});
-
-test("projects.register answers the project id or a closed code, and never what the journal said", () => {
-  const sent: Array<Record<string, unknown>> = [];
-  const control = { send: (m: unknown) => void sent.push(m as Record<string, unknown>) };
-  const journal = { registerProject: (i: { id: string; path: string; displayName: string }) => ({ id: i.id }) } as never;
-  const msg = (path: string) => ({ type: "projects.register" as const, requestId: "r1", path, trusted: true });
-  const abs = process.platform === "win32" ? "C:\\repos\\axis" : "/repos/axis";
-  handleProjectsRegister({ journal, control }, msg(abs));
-  assert.deepEqual([sent[0]?.["ok"], typeof sent[0]?.["projectId"]], [true, "string"]);
-  handleProjectsRegister({ journal: undefined, control }, msg(abs));
-  assert.deepEqual(sent[1], { type: "projects.result", requestId: "r1", ok: false, code: "E_UNAVAILABLE" });
-  handleProjectsRegister({ journal, control }, msg(`${abs}${process.platform === "win32" ? "\\" : "/"}..${process.platform === "win32" ? "\\" : "/"}x`));
-  assert.equal(sent[2]?.["code"], "E_INVALID_ARGUMENT", "a path that is not normalised is refused");
-  for (const [thrown, code] of [[new AxisError("E_CONFLICT", "secret path /home/x"), "E_CONFLICT"], [new Error("boom /home/x"), "E_INTERNAL"]] as const) {
-    handleProjectsRegister({ journal: { registerProject: () => { throw thrown; } } as never, control }, msg(abs));
-    assert.deepEqual(sent[sent.length - 1], { type: "projects.result", requestId: "r1", ok: false, code });
-  }
-  assert.ok(!JSON.stringify(sent).includes("/home/x"), "no message text is forwarded");
-});
-
-test("a project display name comes from the folder name, or a fixed word when that is not plain text", () => {
-  assert.equal(projectDisplayName("/work/my-repo"), "my-repo");
-  assert.equal(projectDisplayName("/work/\u202eevil"), "project");
 });
 
 test("axis.projects/1.list answers ids, names and trust only, and only to the user", () => {

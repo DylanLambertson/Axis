@@ -24,7 +24,7 @@ test("host start releases every lease and keeps every acknowledgement", async ()
     const first = compose();
     const s1 = await first.start();
     const journal = s1.journal!;
-    journal.registerProject({ id: "p1", path: "/repo/one", displayName: "One", trusted: true, actor: "user" });
+    journal.registerProject({ id: "p1", path: "/repo/one", displayName: "One", trusted: false, actor: "user" });
     const ws = journal.createWorkspace({ projectId: "p1", branch: "axis/m", baseRef: "HEAD", baseSha: "c".repeat(40), createdBy: "user" }).value.id;
     journal.transitionWorkspace(ws, "READY");
     const run = journal.composer.createRun({ workspaceId: ws, createdBy: "user" }, { mode: "agent", providerId: "mock", modelId: "mock-model" }).value.id;
