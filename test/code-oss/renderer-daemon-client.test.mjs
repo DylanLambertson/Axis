@@ -6,6 +6,7 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
+import { ALLOWED, CORE, scanDaemonCalls } from "./daemon-call-rule.mjs";
 
 const AXIS = fileURLToPath(new URL("../../code-oss/overlay/src/vs/axis", import.meta.url));
 const read = (rel) => readFileSync(join(AXIS, rel), "utf8");
@@ -59,36 +60,46 @@ test("the desktop entry registers the real client after the shared entry; the sh
   assert.match(client, /connectAxisDaemon\(AXIS_SHELL_CONTRACTS, onClose, AXIS_WELCOME_TIMEOUT_MS\)/, "the fixed contract list and the welcome bound");
 });
 
-// PV-E0 F2 condition (e): the shell's contract list is the only capability change. Every (contract, method) the renderer sends is a
-// literal from this allow-list; `axis.approvals resolve` is the user's own approval decision (pre-existing, approval cards), the only
-// write; `axis.audit` is read for `status` only, by the reconnect core only.
-const ALLOWED = [
-  "axis.approvals pending",
-  "axis.approvals resolve",
-  "axis.audit status",
-  "axis.cli-runs list",
-  "axis.projects list",
-  "axis.worktrees list",
-  "axis.worktrees status",
-];
-
-test("every daemon call is a literal (contract, method) from the allow-list; axis.audit only for status, only in the core", () => {
-  const files = sources(AXIS).filter((f) => !f.includes("/test/") && !f.includes("/electron-main/"));
-  const pairs = new Set();
-  const audit = [];
+// PV-E0 F2 condition (e) and review SF1: the shell's contract list is the only capability change. Every renderer-side file is
+// parsed; `request` may only be called directly with an allowed literal pair (test/code-oss/daemon-call-rule.mjs).
+test("every daemon call in the renderer is a literal allowed pair; axis.audit only through the core's .call; one pinned pass-through", () => {
+  const files = sources(AXIS).filter((f) => !f.includes("/test/") && !f.includes("/electron-main/") && !f.includes("/node/"));
+  const all = { violations: [], pairs: new Set(), passThroughs: [] };
   for (const f of files) {
-    const text = read(f);
-    for (const m of text.matchAll(/\.(?:request|call)\(\s*(['"`])(axis\.[a-z-]+)\1\s*,\s*(['"`])([A-Za-z]+)\3/g)) {
-      pairs.add(`${m[2]} ${m[4]}`);
-      if (m[2] === "axis.audit") audit.push(`${f}:${m[4]}`);
-    }
+    const r = scanDaemonCalls(f, read(f));
+    all.violations.push(...r.violations);
+    r.pairs.forEach((p) => all.pairs.add(p));
+    all.passThroughs.push(...r.passThroughs.map((x) => `${f}: ${x}`));
   }
-  assert.deepEqual([...pairs].sort(), ALLOWED, "a new method or contract needs a review and this list");
-  assert.deepEqual(audit, ["services/daemon/common/axisDaemonReconnect.ts:status"]);
-  // The only non-literal call: the core's request() pass-through, which takes a typed AxisReadContract from workbench code (no audit).
-  const dynamic = files.flatMap((f) => [...read(f).matchAll(/\.(?:request|call)\(\s*(?!['"`])([A-Za-z_.]+)\s*,/g)].map((m) => `${f}:${m[1]}`))
-    .filter((s) => !/\.(?:request|call)\(\s*(?:accessor|ServicesAccessor)/.test(s));
-  assert.deepEqual(dynamic.filter((s) => s.includes("axisDaemon")), ["services/daemon/common/axisDaemonReconnect.ts:contract"]);
+  assert.deepEqual(all.violations, []);
+  assert.deepEqual([...all.pairs].sort(), [...ALLOWED], "every allowed pair is in use; a new one needs a review and the list");
+  assert.deepEqual(all.passThroughs, [`${CORE}: contract, method, params`], "the core's request() pass-through, and nothing else");
   const client = read("services/daemon/common/axisDaemonClient.ts");
   assert.match(client, /export type AxisReadContract = 'axis\.projects' \| 'axis\.worktrees' \| 'axis\.cli-runs' \| 'axis\.approvals';/, "request() cannot name axis.audit");
+});
+
+test("the scanner refuses every evasion (self-test): concatenation, variables, aliases, optional and bracket calls, destructuring, audit outside the core", () => {
+  const probes = {
+    concat: "c.request('axis.' + 'git', 'commit', {});",
+    variableContract: "c.request(contract, 'list', {});",
+    aliasedMethod: "const r = c.request; r('axis.git', 'commit', {});",
+    boundMethod: "const r = c.request.bind(c);",
+    optionalCall: "c?.request?.('axis.git', 'commit', {});",
+    bracket: "c['request']('axis.projects', 'list', {});",
+    variableMethod: "c.request('axis.projects', method, {});",
+    auditViaRequest: "c.request('axis.audit', 'status', {});",
+    auditVariable: "c.request(aud, 'status', {});",
+    auditCallOutsideCore: "c.call('axis.audit', 'status', {});",
+    gitCall: "c.call('axis.git', 'commit', {});",
+    destructure: "const { request } = c;",
+    destructureRenamed: "const { request: go } = c;",
+    template: "c.request(`axis.${x}`, 'list', {});",
+  };
+  for (const [name, code] of Object.entries(probes)) {
+    assert.ok(scanDaemonCalls("contrib/x/browser/probe.ts", code).violations.length > 0, `${name} must be refused: ${code}`);
+  }
+  for (const ok of ["this.client.request('axis.projects', 'list', {}, t);", "fn.call(thisArg, 1);", "c?.request('axis.worktrees', 'status', { ids });"]) {
+    assert.deepEqual(scanDaemonCalls("contrib/x/browser/ok.ts", ok).violations, [], ok);
+  }
+  assert.deepEqual(scanDaemonCalls(CORE, "client.call('axis.audit', 'status', {});").violations, [], "the core may read audit status");
 });

@@ -197,19 +197,26 @@ export class AxisReconnectingDaemonClient extends Disposable implements IAxisDae
 				}
 			}
 		};
-		const bound = this.deps.timers.set(() => finish(undefined), AXIS_WELCOME_TIMEOUT_MS);
+		// One budget for the welcome AND the audit read after it (review N1): past it, a connect fails, a pending read is ready.
+		let auditTimeout: (() => void) | undefined;
+		const bound = this.deps.timers.set(() => auditTimeout ? auditTimeout() : finish(undefined), AXIS_WELCOME_TIMEOUT_MS);
 		this.bound = bound;
+		const releaseBound = () => {
+			this.deps.timers.clear(bound);
+			if (this.bound === bound) {
+				this.bound = undefined;
+			}
+		};
 		const finish = (client: IAxisConnectedClient | undefined, stopped?: AxisDaemonFailureReason) => {
 			if (done) {
 				client?.close(); // a connect that answers after its bound is not used
 				return;
 			}
 			done = true;
-			this.deps.timers.clear(bound);
-			if (this.bound === bound) {
-				this.bound = undefined;
-			}
 			this.attempting = false;
+			if (client === undefined || this.disposed) {
+				releaseBound();
+			}
 			if (this.disposed) {
 				client?.close();
 				return;
@@ -225,7 +232,7 @@ export class AxisReconnectingDaemonClient extends Disposable implements IAxisDae
 				this.failures = 0;
 				this.clearDownWindow();
 			}, AXIS_STABLE_AFTER_MS);
-			this.readAudit(client);
+			auditTimeout = this.readAudit(client, releaseBound);
 		};
 		let connecting: Promise<IAxisConnectedClient>;
 		try {
@@ -238,9 +245,10 @@ export class AxisReconnectingDaemonClient extends Disposable implements IAxisDae
 
 	/**
 	 * Once per connection, never polled: `axis.audit/1.status` says whether the host is degraded. Until it answers the status stays
-	 * `connecting`; a read that fails or takes past the welcome bound is `ready` (no state is invented from a missing answer).
+	 * `connecting`; a read that fails or outlasts what is left of the welcome bound is `ready` (no state is invented from a missing
+	 * answer). It returns what the bound calls when it runs out during the read.
 	 */
-	private readAudit(client: IAxisConnectedClient): void {
+	private readAudit(client: IAxisConnectedClient, releaseBound: () => void): () => void {
 		const abort = new AbortController();
 		let settled = false;
 		const settle = (degraded: boolean) => {
@@ -248,13 +256,12 @@ export class AxisReconnectingDaemonClient extends Disposable implements IAxisDae
 				return;
 			}
 			settled = true;
-			this.deps.timers.clear(timer);
+			releaseBound();
 			if (this.disposed || this.client !== client) {
 				return;
 			}
 			this.setStatus(degraded ? { kind: 'degraded' } : { kind: 'ready' });
 		};
-		const timer = this.deps.timers.set(() => { abort.abort(); settle(false); }, AXIS_WELCOME_TIMEOUT_MS);
 		let reading: Promise<{ readonly ok: boolean; readonly result?: unknown }>;
 		try {
 			reading = client.call('axis.audit', 'status', {}, { signal: abort.signal });
@@ -262,6 +269,7 @@ export class AxisReconnectingDaemonClient extends Disposable implements IAxisDae
 			reading = Promise.reject(new Error('call threw'));
 		}
 		reading.then(r => settle(r.ok && auditSaysDegraded(r.result)), () => settle(false));
+		return () => { abort.abort(); settle(false); }; // the welcome bound ran out during the read
 	}
 
 	private failed(stopped?: AxisDaemonFailureReason): void {

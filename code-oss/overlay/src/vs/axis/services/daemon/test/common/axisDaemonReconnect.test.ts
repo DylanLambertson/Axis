@@ -16,6 +16,8 @@ function manualTimers() {
 		set: (fn: () => void, ms: number) => { const id = next++; timers.set(id, { fn, ms }); return id; },
 		clear: (h: unknown) => void timers.delete(h as number),
 		due: () => [...timers.values()].map(t => t.ms),
+		/** How many timers were ever set. */
+		created: () => next - 1,
 		/** The pending retry timers: everything but the 15 s down window. */
 		retries: () => [...timers.values()].map(t => t.ms).filter(ms => ms !== AXIS_DOWN_AFTER_MS),
 		/** Run every pending timer of exactly `ms` (in creation order). */
@@ -294,9 +296,11 @@ suite('Axis renderer daemon client (PV-E0)', () => {
 		}
 		const slow = rig();
 		const s = fakeClient('hold');
+		const before = slow.timers.created();
 		slow.connects[0].resolve(s.client);
 		await flush();
 		assert.strictEqual(kindOf(slow.client), 'connecting', 'calls wait for the audit answer');
+		assert.strictEqual(slow.timers.created() - before, 1, 'only the stable timer: the read uses what is left of the welcome bound (review N1; mutant: a fresh 10 s timer)');
 		slow.timers.run(AXIS_WELCOME_TIMEOUT_MS);
 		assert.strictEqual(kindOf(slow.client), 'ready', 'a read past the bound is ready');
 		assert.strictEqual(s.audits[0].signal?.aborted, true, 'and it is cancelled');

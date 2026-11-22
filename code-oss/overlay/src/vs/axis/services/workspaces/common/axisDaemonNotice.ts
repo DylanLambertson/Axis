@@ -54,12 +54,12 @@ export function daemonNotice(input: IAxisNoticeInput): IAxisNotice {
 			}
 	}
 	// The daemon is usable (ready or degraded).
-	if (input.staleError) {
-		return { severity: 'warning', text: localize('axis.notice.stale', "The Axis service did not answer ({0}). Showing the last data it gave.", errorPhrase(input.staleError)) };
-	}
-	// Degraded outranks the data notes: it is why adding and trusting projects is off (PV-E0 F2; a stale marker still comes first).
+	// Degraded outranks the data notes: it is why adding and trusting projects is off and a degraded host does not serve the worktree reads, so a stale marker would hide the real cause (PV-E0 F2 review SF2).
 	if (status.kind === 'degraded') {
 		return { severity: 'warning', text: localize('axis.notice.degraded', "The Axis service is running in degraded mode. Reading works; starting runs and approving may be refused.") };
+	}
+	if (input.staleError) {
+		return { severity: 'warning', text: localize('axis.notice.stale', "The Axis service did not answer ({0}). Showing the last data it gave.", errorPhrase(input.staleError)) };
 	}
 	if (input.notRegistered) {
 		return { severity: 'info', text: localize('axis.notice.notRegistered', "No repository is registered with the Axis service yet. Worktrees are read from disk and no agent runs are shown.") };
@@ -72,3 +72,16 @@ export function daemonNotice(input: IAxisNoticeInput): IAxisNotice {
 
 /** Most projects one refresh reads from the daemon. */
 export const MAX_POLLED_PROJECTS = 50;
+
+/**
+ * Whether approval cards may be shown, and the line shown instead (PV-E0 F2 review SF2). Only a ready service shows cards: a
+ * degraded host serves no approvals, so cards kept from an earlier connection would offer an Approve that cannot work.
+ */
+export function approvalsAvailability(status: AxisDaemonStatus): { readonly cards: boolean; readonly line: string } {
+	switch (status.kind) {
+		case 'ready': return { cards: true, line: '' };
+		case 'connecting': return { cards: false, line: localize('axis.approvals.connecting', "Approvals are not available yet: connecting to the Axis service.") };
+		case 'degraded': return { cards: false, line: localize('axis.approvals.degraded', "Approvals are not available: the Axis service is in degraded mode.") };
+		default: return { cards: false, line: localize('axis.approvals.offline', "Approvals need the Axis service. It is not connected, so none are shown.") };
+	}
+}
