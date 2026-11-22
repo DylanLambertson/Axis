@@ -24,21 +24,25 @@ Two facts shape every answer:
 - Pages live in the **Axis data directory, per project**, in the journal database or in a store beside it [I: which of the two is decided in PV-Q1 against the journal's size and backup rules]. They are **not** stored in the repository.
 - **Reason:** a file in the repository exists once per branch, so every agent worktree would hold its own copy and the copies would diverge. A page belongs to the project, not to a branch.
 - **Export to repository** is a user action that writes one page as a Markdown file into a chosen workspace. The file then goes through the normal Changes review (A5) like any other change. Export is one way: a file in the repository is never read back as a page.
-- Every save keeps a **version** (bounded count, set in PV-Q1). Each version records its author (the user, or an agent id), its time and, for a non-user author, the **hop** of the writing run. Restore is a user action. Deleting a page removes its versions and attachments with it.
+- Every save keeps a **version**, at most 100 per page (the oldest is dropped). Each version records its author (the user, or an agent id), its time and, for a non-user author, the **hop** of the writing run. Restore is a user action. Deleting a page removes its versions and attachments with it.
+- **Limits.** Ceilings the ADR commits to; PV-Q1 may set lower values, never higher, and tests that each is enforced: a page body of at most 256 KiB, 100 versions per page, 20 attachments per page of at most 5 MiB each, and 200 MiB of pages and attachments per project. A write over a limit is refused, not truncated.
+- **Project removal.** Removing a project from Axis is a user action. Its confirmation names the number of pages and attachments, and offers Export to repository for each page first. On confirmation the page store of that project is deleted with the project's other Axis records, and the audit records the page count. No agent can remove a project or a page store.
+- **Backup.** The page store is an Axis record: it is covered by whatever backs up the Axis data directory and by nothing else. Axis never copies pages into the repository by itself; Export to repository is user-initiated only.
 - Audit holds page id, version, actor, length and a keyed hash. It never holds page text.
 
 ### 2. Format (D-6)
 
 - **Markdown, a CommonMark subset, in v1.** No raw HTML, no script, no iframes, no remote images. No other format in v1.
-- Links follow the EL-5 rules: `http`, `https` and `mailto` only; a `file:` link is refused; the full URL is shown for a link in content written by an agent. A link is never opened without a user click.
+- Links follow the EL-5 rules: `http`, `https` and `mailto` only; `file:`, `javascript:`, `data:` and every other scheme are refused. The full URL is shown for a link in content written by an agent. A permitted link opens in the **system browser, started from main on a user click**, never inside the page view and never automatically.
 - A page may reference attachments (below) and, as typed references, other pages, tasks, files and runs. A reference is data, not a grant (`inter-agent-communication.md` §5.3).
 
 ### 3. Rendering (D-13)
 
 - A page, and any rendered-Markdown view of a message body, is shown in an **isolated page view**: a sandboxed view with an **opaque origin and no bridge port**. It has no connection to the daemon at all, so there is nothing for page script to call. The Agent view renderer only hosts it. This is the control for PAG-3.
 - Inside the view: the upstream Markdown renderer and a **pinned sanitizer**, with **Trusted Types enforced** (`require-trusted-types-for 'script'`). The sanitizer is defence in depth; the missing port is the control, because a sanitizer bypass (mutation XSS) must still not reach the approval gate.
-- **CSP as a response header**, from the protocol handler that serves the view (a meta tag can be removed). It follows the header CSP of `extensibility.md` §3.3 with one change: `img-src` is limited to the **attachment scheme**, with no `data:` source. The header sets `default-src 'none'`, `connect-src 'none'`, `form-action 'none'`, `base-uri 'none'`, `frame-src 'none'`, `frame-ancestors 'none'`. Navigation and window open are denied in main, so a link is handed to the host, which applies EL-5 and asks the user.
-- **Attachments: raster images only** (PNG, JPEG, GIF, WebP), decided by **content sniffing**, not by file name or declared type. **SVG is refused**, and so is every other format, including a file named `.png` that sniffs as HTML. Size and count caps are set in PV-Q1. Attachments are served **only from the attachment scheme**, and never opened as top-level documents. Rasterising SVG is a later decision, not v1.
+- **CSP as a response header**, from the protocol handler that serves the view (a meta tag can be removed). It follows the header CSP of `extensibility.md` §3.3 with one change: `img-src` is limited to the **attachment scheme**, with no `data:` source. The header sets `default-src 'none'`, `connect-src 'none'`, `form-action 'none'`, `base-uri 'none'`, `frame-src 'none'`, `frame-ancestors 'none'`. Navigation and window open are denied in main, so a link is handed to the host, which applies EL-5 and opens it only on a user click.
+- **Host properties (the same host as `extensibility.md` §3.3, D-12).** The view is a separate `WebContentsView` with `sandbox: true`, `contextIsolation`, no `nodeIntegration`, no preload beyond a fixed shim that carries no bridge port, and **its own session partition**. Its permission request and check handlers **deny everything**. **WebRTC is disabled** for its session or process, and a `session.webRequest` handler cancels every request except to the attachment scheme and the view's own bundle. Child frames are denied in main, downloads are cancelled, and `X-DNS-Prefetch-Control: off` is set.
+- **Attachments: raster images only** (PNG, JPEG, GIF, WebP), decided by **content sniffing**, not by file name or declared type. **SVG is refused**, and so is every other format, including a file named `.png` that sniffs as HTML. The size and count limits are the ceilings in decision 1. Attachments are served **only from the attachment scheme**, and never opened as top-level documents. Rasterising SVG is a later decision, not v1.
 - A rendering failure shows the page as escaped plain text, never as a partly sanitised document.
 
 ### 4. Agent access
@@ -63,7 +67,7 @@ Two facts shape every answer:
 ## Consistency with the other documents
 
 - **ADR 0006:** the rail gains Pages and the project home gains a Pages section in 2a, and only when 2a ships (no "coming soon" entry). Both open the page view described here; neither renders page text itself.
-- **Threat text** (`extensibility.md` §8): PAG-1 (script or tracking in a page) is met by §2 and §3 above; PAG-2 (page content steers an agent) by §4; PAG-3 (page script reaches the bridge) by §3. The gate lines in §9 test each.
+- **Threat text** (`extensibility.md` §8): PAG-1 (script or tracking in a page) is met by §2 and §3 above; PAG-2 (page content steers an agent) by §4; PAG-3 (page script reaches the bridge) by §3. The §9 2a gate lines that test them: (a) a page with raw HTML, a script tag, an `onerror` attribute or a remote image renders inert, and a `file:` link is refused (PAG-1); (b) an agent-written page read by a run taints it, and page writes by agents are audited with the agent id and carry the hop (PAG-2); (c) a mutation-XSS corpus page cannot reach the bridge and a probe calling `axis.approvals/1.resolve` from the page view fails, and an SVG attachment and a PNG-named file that sniffs as HTML are refused (PAG-3). The validation criteria below repeat them.
 - **`inter-agent-communication.md`:** `page` stays source 4 of the closed list and the `page` reference type stays data. Nothing in this ADR adds a source.
 - **`PRODUCT.md` and `UX.md`:** pages are text-first and dense, with no sample content and no metric walls. A page is a document the user reads, so it has no live data.
 
@@ -81,8 +85,10 @@ Accept this ADR when the 2a pages gate lines in `extensibility.md` §9 pass and 
 2. A mutation-XSS corpus page cannot reach the bridge: no port exists, and a probe calling `axis.approvals/1.resolve` from the page view fails.
 3. An SVG attachment, and a PNG-named file that sniffs as HTML, are refused.
 4. `read_page` of a page with an agent revision sets the run's taint; a user edit afterwards still leaves it set; a user-marked-reviewed version does not.
-5. `write_page` by a composer run needs approval, is attributed to the agent id, and records the hop.
-6. No page file appears in any repository unless the user exports it.
+5. Each limit in decision 1 is enforced and tested; a write over it is refused.
+6. `write_page` by a composer run needs approval, is attributed to the agent id, and records the hop.
+7. Removing a project deletes its page store after the confirmation and is audited.
+8. No page file appears in any repository unless the user exports it.
 
 **Revisit** if the owner reverses D-5, D-6 or D-13, if the sanitizer or the upstream renderer cannot run under Trusted Types, or if a later phase needs rich content (then rasterised SVG or a second format is a new decision).
 
