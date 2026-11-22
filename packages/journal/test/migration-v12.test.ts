@@ -39,10 +39,10 @@ const cli = (home: string, over: Row = {}): Row => ({
 });
 const agent = (db: DatabaseSync, agentId: string): Row => db.prepare("SELECT * FROM agents WHERE id = ?").get(agentId) as Row;
 
-test("version 12 is the latest, and an agent and a group are stored as given", () => {
+test("version 12 applies (13 follows it), and an agent and a group are stored as given", () => {
   const { db, ws } = setup();
   assert.equal(schemaVersion(db, "journal"), JOURNAL_SCHEMA_VERSION);
-  assert.equal(JOURNAL_SCHEMA_VERSION, 12);
+  assert.ok(JOURNAL_SCHEMA_VERSION >= 12);
   insert(db, "agent_groups", group());
   insert(db, "agents", composer(ws.a, { group_id: "g1" }));
   insert(db, "agents", cli(ws.b));

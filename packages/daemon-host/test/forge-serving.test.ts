@@ -2,7 +2,7 @@
 // PV-D2 slice 2 end to end: `axis.forge/1` as the composition registers it (`registerForgeServing`), over the host's real pty port
 // (`createPtyProcessPort`), the real pty service and its production exec function (`createNodeExec`), a hostile fake `gh`, and a
 // real repository whose `origin` the daemon reads with its own pinned git. Recorded-shape `gh` JSON with hostile fields comes back
-// filtered and display-escaped; a restart forgets the pin (fail closed); the reply mapping holds through the whole stack.
+// filtered and display-escaped; the pin is the journal's and survives a restart; the reply mapping holds through the whole stack.
 import assert from "node:assert/strict";
 import { chmodSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -98,6 +98,7 @@ async function served(t: TestContext): Promise<Served> {
       platform: process.platform,
       audit: (e) => void audit.push(e),
       monotonic: () => now,
+      pins: rig.journal.forgePins,
       ...over,
     });
     return handlers as Readonly<Record<string, Handler>>;
@@ -165,18 +166,27 @@ test("the exec log line becomes a closed record; any other line is dropped", () 
   forgeLogLine(undefined)("forge: state=ok exit=0");
 });
 
-test("restart: the in-memory pin is gone, so the project is unconfirmed again and gh does not run (slice 2b persists it)", { skip: SKIP }, async (t) => {
+test("slice 2b: the pin is the journal's, so a restarted host lists without asking again; a changed origin still stops it", { skip: SKIP }, async (t) => {
   const s = await served(t);
   const projectId = s.rig.projectId;
   const before = s.serve();
   await call(before, "pinRepository", { projectId, host: "github.com", owner: "acme", repo: "app" });
   assert.equal((await call(before, "pullRequests", { projectId, trigger: "user" }))["state"], "ok");
+  assert.deepEqual(s.rig.journal.forgePins.get(projectId), { host: "github.com", owner: "acme", repo: "app" });
   s.tick();
-  const after = s.serve(); // what a restarted host registers
-  for (const trigger of ["view", "user"]) {
-    assert.deepEqual(await call(after, "pullRequests", { projectId, trigger }), { state: "repository_unconfirmed", candidate: { host: "github.com", owner: "acme", repo: "app" } });
-  }
-  assert.equal(s.gh.runs().length, 1, "only the run before the restart");
+  const after = s.serve(); // what a restarted host registers, over the same journal
+  assert.equal((await call(after, "pullRequests", { projectId, trigger: "user" }))["state"], "ok");
+  assert.equal(s.gh.runs().length, 2, "the restarted host ran gh for the stored pin");
+  // The pin is kept when origin changes: the user sees old and new side by side and re-pins; nothing runs meanwhile.
+  s.rig.git(s.rig.repo, "remote", "set-url", "origin", "git@github.com:acme/fork-of-app.git");
+  s.tick();
+  assert.deepEqual(await call(after, "pullRequests", { projectId, trigger: "user" }), { state: "remote_changed", repository: { host: "github.com", owner: "acme", repo: "app" }, candidate: { host: "github.com", owner: "acme", repo: "fork-of-app" } });
+  assert.equal(s.gh.runs().length, 2);
+  await call(after, "pinRepository", { projectId, host: "github.com", owner: "acme", repo: "fork-of-app" });
+  assert.deepEqual(s.rig.journal.forgePins.get(projectId), { host: "github.com", owner: "acme", repo: "fork-of-app" }, "a re-pin updates the row in place");
+  const third = s.serve();
+  assert.equal((await call(third, "pullRequests", { projectId, trigger: "user" }))["state"], "ok");
+  assert.deepEqual(s.gh.runs().at(-1)?.[2], "--repo=github.com/acme/fork-of-app");
 });
 
 test("the reply mapping through the whole stack: too much output, wrong JSON, invalid UTF-8, not logged in, no pty process", { skip: SKIP }, async (t) => {

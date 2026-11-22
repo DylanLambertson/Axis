@@ -117,6 +117,6 @@ export * from "./messages/settings.js";
 export { pageByText, principalOf, toWire, StoredRecordError } from "./messages/wire.js";
 export { createForgeService, createMemoryPinStore, ForgeRefusal, FORGE_AUDIT, FORGE_PAYLOAD_ALLOWLIST, DEFAULT_FORGE_LIMITS, type ForgeService, type ForgeServiceDeps, type ForgeListPort, type OriginRead, type ForgeLimits, type PinStore } from "./forge/service.js";
 export { createOriginReader, MAX_ORIGIN_CHARS, type OriginReaderDeps } from "./forge/origin.js";
-export { FORGE_AUTH_UNSUPPORTED, forgeLogLine, forgeRequestId, registerForgeServing, type ForgeServingDeps } from "./compose-forge.js";
+export { FORGE_AUTH_UNSUPPORTED, forgeLogLine, forgeRequestId, journalPinStore, registerForgeServing, type ForgeServingDeps, type StoredPins } from "./compose-forge.js";
 export { parseForgeList, forgeDisplay, reduceChecks, reduceReview, type ParsedList } from "./forge/parse.js";
 export { createForgeHandlers, registerForgeHandlers, toForgeError, type ForgeHandlerDeps } from "./handlers/forge.js";
