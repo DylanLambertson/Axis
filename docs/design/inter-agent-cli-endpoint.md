@@ -4,6 +4,7 @@
 - **Date:** 2026-11-06. Verified against `origin/main` at `74cd12e`; E1 (`116ef22`) and P1d (`e52114f`) have merged since.
 - **Depends on:** ADR 0004 decisions 8 and 10 and implication 3 (PTY-5), `docs/security/threat-model-phase1.md` (PTY-3, PTY-5, NET-1, A10, assumption on same-user processes), `docs/design/daemon-host-plan.md` §3 Q16 (permission-bypass entries), B9 (pty process, branch `feat/pty-process`).
 - **Evidence tags:** as in `product-vision-v2.md`.
+- **Decided by ADR 0007** (`docs/adr/0007-inter-agent-messaging.md` decision 7): the endpoint is hosted by the **pty process**, which relays frames to the daemon; the daemon checks the token and opens no listener (ADR 0003 D1.1, DMN-4). Where this file says "the daemon creates" or "the daemon accepts", read the pty process for the listener and the daemon for the token and the answer. Peer checks: Unix ships without a native helper (the `0700` directory is the control); Windows has no endpoint without the native pipe flags and DACL.
 
 ## 1. Constraints that do not change
 
