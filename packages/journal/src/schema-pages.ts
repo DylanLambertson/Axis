@@ -54,6 +54,9 @@ export const PAGE_LIMITS = Object.freeze({
   projectBytes: 209_715_200,
 });
 
+/** The column rules above, for the next schema versions to reuse (the SQL they build is unchanged). */
+export const SQL_RULES = Object.freeze({ ascii, noNul, id, pluginId, time, title });
+
 const L = PAGE_LIMITS;
 const PREV = (col: string): string => `(SELECT ${col} FROM page_versions WHERE page_id = NEW.page_id AND seq = NEW.seq - 1)`;
 const PROJECT_OF = (pageExpr: string): string => `(SELECT project_id FROM pages WHERE id = ${pageExpr})`;
