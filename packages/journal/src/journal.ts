@@ -34,6 +34,7 @@ import { AgentRecords } from "./agent-store.js";
 import { ComposerRecords } from "./composer-store.js";
 import { MessageRecords } from "./message-store.js";
 import { UserPrincipal } from "./principal.js";
+import { ForgePinRecords } from "./forge-pin-store.js";
 import { JOURNAL_MIGRATIONS } from "./schema.js";
 import {
   RESTART_REASON,
@@ -73,12 +74,10 @@ export class Journal {
   readonly #audit: AuditLog;
   readonly #now: () => Date;
   readonly #newId: () => string;
-  /** Composer run records (mode, provider, model, usage, budgets, bounded activity; schema version 6). */
-  readonly composer: ComposerRecords;
-  /** `axis.messages/1` records (threads, participants, messages, cursors, settings; schema version 9). */
-  readonly messages: MessageRecords;
-  /** Agents and agent groups (schema version 12, PV-G3): user-only writes, one audit event each. */
-  readonly agents: AgentRecords;
+  readonly composer: ComposerRecords; // composer runs: mode, provider, model, usage, budgets, bounded activity (schema v6)
+  readonly messages: MessageRecords; // `axis.messages/1`: threads, participants, messages, cursors, settings (schema v9)
+  readonly agents: AgentRecords; // agents and agent groups: user-only writes, one audit event each (schema v12, PV-G3)
+  readonly forgePins: ForgePinRecords; // the confirmed forge repository per project (schema v13, PV-D2 slice 2b)
 
   private constructor(db: DatabaseSync, options: JournalOptions) {
     this.#db = db;
@@ -88,6 +87,7 @@ export class Journal {
     this.composer = new ComposerRecords(db, () => this.#ts(), (input) => this.createRun(input));
     this.messages = new MessageRecords(db, () => this.#ts());
     this.agents = new AgentRecords(db, this.#audit, () => this.#ts());
+    this.forgePins = new ForgePinRecords(db, () => this.#ts());
   }
 
   /** Migrate the schema and return a journal. On daemon start take the instance lock, then call `recover(lock)`. */
