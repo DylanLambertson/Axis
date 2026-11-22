@@ -48,6 +48,7 @@ export {
   type PageVersionMeta,
   type PageVersionRecord,
 } from "./page-store.js";
+export { AttentionRecords, MAX_ATTENTION_ROWS, type AttentionRun } from "./attention-records.js";
 export { baseBranchSchema, baseTipSchema, type ProjectTrustVia, type RegisterProjectInput, type SetProjectTrustInput } from "./records.js";
 export { MAX_TAIL_ROWS, lastTransitionId, transitionsSince, type TransitionTail } from "./tail.js";
 export { JOURNAL_MIGRATIONS, JOURNAL_SCHEMA_VERSION } from "./schema.js";
