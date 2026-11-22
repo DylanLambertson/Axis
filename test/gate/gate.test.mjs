@@ -43,7 +43,8 @@ function setup() {
 
 /** The caller's environment without GATE_* knobs or git variables that would steer the child. */
 function cleanEnv() {
-  return Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("GATE_") && !k.startsWith("GIT_")));
+  // AXIS_REQUIRE_OVERLAY_TESTS is a builder's own setting: the throwaway repository never has an overlay tree (PV-X3).
+  return Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("GATE_") && !k.startsWith("GIT_") && k !== "AXIS_REQUIRE_OVERLAY_TESTS"));
 }
 
 function runGate(cwd, env = {}) {
@@ -185,6 +186,20 @@ function fakeGitleaks(dir, versionText) {
   chmodSync(file, 0o755);
   return file;
 }
+
+test("PV-X3: without a tree the overlay tests are a loud skip; AXIS_REQUIRE_OVERLAY_TESTS=1 makes that a failure", () => {
+  const dir = setup();
+  try {
+    commit(dir, "a.txt", "one\n", "feat: add a file");
+    let r = runGate(dir);
+    assert.match(r.out, /SKIP {2}overlay tests/);
+    assert.match(r.out, /WARNING: overlay tests did not run \(no Code OSS tree: set GATE_OVERLAY_TREE/);
+    r = runGate(dir, { AXIS_REQUIRE_OVERLAY_TESTS: "1" });
+    assert.equal(r.code, 1, r.out);
+    assert.match(r.out, /FAIL {2}overlay tests/);
+    assert.match(r.out, /required by AXIS_REQUIRE_OVERLAY_TESTS=1/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
 
 test("gitleaks: a binary whose version is not the CI pin is refused", { skip: process.platform === "win32" }, () => {
   const dir = setup();

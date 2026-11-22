@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
   countLines, exitCode, findLongFiles, formatReport, formatTable, gitleaksInstallSteps,
-  parseGitleaksPin, parseLog, parseSidecarHash, parseTestCounts, versionMatchesPin, scanCommits, scanWording
+  overlayNotRun, parseGitleaksPin, parseLog, parseSidecarHash, parseTestCounts, versionMatchesPin, scanCommits, scanWording
 } from "../../scripts/gate/lib.mjs";
 
 const config = JSON.parse(readFileSync(new URL("../../scripts/gate/config.json", import.meta.url), "utf8"));
@@ -147,4 +147,22 @@ test("version and sidecar helpers", () => {
   assert.ok(!versionMatchesPin("evil 8.30.1", pin));
   assert.equal(parseSidecarHash(`${"a".repeat(64)}  gitleaks\n`), "a".repeat(64));
   assert.equal(parseSidecarHash("nothing"), undefined);
+});
+
+test("PV-X3: overlay tests that could not run are a loud skip that still passes, or a failure when required", () => {
+  assert.deepEqual(overlayNotRun("no tree", false), { status: "absent", detail: "no tree" });
+  const required = overlayNotRun("no tree", true);
+  assert.equal(required.status, "fail", "AXIS_REQUIRE_OVERLAY_TESTS=1 turns the skip into a failure (mutant: still absent)");
+  assert.match(required.detail, /AXIS_REQUIRE_OVERLAY_TESTS=1.*no tree/);
+  const pass = { name: "tests", status: "pass" };
+  const absent = { name: "overlay tests", status: "absent", detail: "no tree" };
+  assert.equal(exitCode([pass, absent]), 0, "it does not make the run INCOMPLETE");
+  assert.equal(exitCode([pass, absent, { name: "x", status: "fail" }]), 1);
+  assert.equal(exitCode([pass, absent, { name: "x", status: "skip" }]), 2, "GATE_SKIP still makes it INCOMPLETE");
+  const report = formatReport({ branch: "b", head: "h", results: [pass, absent], packageCounts: [] });
+  assert.match(report, /verdict: PASSED \(overlay tests skipped\)/, "the verdict names it (mutant: ALL GATES PASSED)");
+  assert.doesNotMatch(report, /ALL GATES PASSED/);
+  assert.match(report, /SKIP {2}overlay tests \(no tree\)/);
+  assert.match(formatReport({ branch: "b", head: "h", results: [pass], packageCounts: [] }), /verdict: ALL GATES PASSED/);
+  assert.match(formatTable([absent]), /^SKIP {2}overlay tests {2}no tree$/);
 });

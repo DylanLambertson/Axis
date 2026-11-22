@@ -1,7 +1,9 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 // `npm run gate`: every pre-push check, in order, without stopping at the first failure.
 // Environment: GATE_BASE (default origin/main), GATE_GITLEAKS (binary path),
-// GATE_SKIP (comma-separated step ids; a run with skips is reported INCOMPLETE, exit 2).
+// GATE_SKIP (comma-separated step ids; a run with skips is reported INCOMPLETE, exit 2),
+// GATE_OVERLAY_TREE (a builder's PRIVATE Code OSS vendor dir: the overlay tests run there; unset, they are reported as
+// skipped and the verdict says so), AXIS_REQUIRE_OVERLAY_TESTS=1 (a missing tree then FAILS the gate).
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -10,7 +12,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   countLines, exitCode, findLongFiles, formatReport, formatTable, gitleaksInstallSteps,
-  parseGitleaksPin, parseLog, parseSidecarHash, scanCommits, versionMatchesPin
+  overlayNotRun, parseGitleaksPin, parseLog, parseSidecarHash, scanCommits, versionMatchesPin
 } from "./gate/lib.mjs";
 import { failureDigest, splitSuites } from "./gate/failures.mjs";
 
@@ -24,7 +26,7 @@ function sh(command, args, options = {}) {
   const r = spawnSync(command, args, {
     encoding: "utf8", maxBuffer: 512 * 1024 * 1024, timeout: 20 * 60 * 1000, ...options
   });
-  return { ok: r.status === 0 && r.error === undefined, out: `${r.stdout ?? ""}${r.stderr ?? ""}`, error: r.error };
+  return { ok: r.status === 0 && r.error === undefined, status: r.status, out: `${r.stdout ?? ""}${r.stderr ?? ""}`, error: r.error };
 }
 
 const top = sh("git", ["rev-parse", "--show-toplevel"]);
@@ -164,6 +166,19 @@ step("test", "tests", () => {
   }
 });
 
+// PV-X3: the overlay's node unit tests (vs/axis/**/test/common), which no other gate step or CI job runs. They need an
+// applied, installed Code OSS tree, so they run only when GATE_OVERLAY_TREE names one; otherwise the step is "absent":
+// loud, and the verdict says "PASSED (overlay tests skipped)", or a FAIL with AXIS_REQUIRE_OVERLAY_TESTS=1.
+step("overlay-tests", "overlay tests", () => {
+  const required = process.env.AXIS_REQUIRE_OVERLAY_TESTS === "1";
+  const tree = process.env.GATE_OVERLAY_TREE;
+  if (!tree) return overlayNotRun("no Code OSS tree: set GATE_OVERLAY_TREE to your private vendor dir", required);
+  const r = sh("bash", [join(root, "scripts", "code-oss", "overlay-tests.sh")], { cwd: root, env: { ...process.env, AXIS_CODE_OSS_VENDOR_DIR: tree } });
+  if (r.status === 3) return overlayNotRun(tail(r.out, 2), required);
+  const passing = /(\d+) passing/.exec(r.out)?.[1];
+  return r.ok ? { status: "pass", detail: `${passing ?? "?"} passing` } : { status: "fail", detail: tail(r.out) };
+});
+
 const results = [];
 for (const s of steps) {
   let r;
@@ -176,6 +191,7 @@ for (const s of steps) {
   }
   results.push({ name: s.name, ...r });
   console.log(`${r.status.toUpperCase().padEnd(4)} ${s.name}`);
+  if (r.status === "absent") console.error(`WARNING: ${s.name} did not run (${r.detail}); the verdict says so`);
 }
 
 console.log(`\n${formatTable(results)}\n`);
