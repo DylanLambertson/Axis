@@ -46,8 +46,8 @@ Each item is a place where existing code or a document says something the ADR ch
 | 15 | ADR 0010 page view (merged, #571) | `img-src` attachment scheme only, no bridge port | the plugin view keeps `img-src 'self' data:` and one port; same host otherwise | PV-Q2, PV-K3 |
 | 16 | the design §3.3 | "workers get the same CSP"; nothing on other IPC | `worker-src 'none'`, service workers refused; main drops every IPC message from a plugin view (decisions 3, 5) | PV-K3 |
 | 17 | the design §4 signature and extraction rows | signature over manifest and bundle hash; no version rule; no canonical form; no normalisation, duplicate, length or depth rule | domain-separated signature binding id, version and tier; the manifest canonicalised per RFC 8785 (JCS); the bundle hash over a sorted listing of path, size and content hash; no silent version downgrade; the extraction additions and the in-memory serving (decisions 5, 7, 8) | PV-K2, PV-K3 |
+| 18 | the design §3.5 permissions; ADR 0010 user actions | permissions named, method sets not | each permission's exact method set and tier (decision 6 table); page export, restore, mark reviewed, delete and attachments, and task Start, excluded and on the deny list | PV-K1, PV-Q1, PV-T1 |
 
 ## 3. Not built (all of the ADR's decisions)
 
 The principal and its attestation (PV-K1); the manifest, permissions, grant store, installer, extractor, signature and list verifier and the update diff (PV-K2); the host view, its partition, handlers, protocol handler and WebRTC switch (PV-K3); contribution points and taint source 6 (PV-K4); the contract tests (PV-K5). The threat-model rows PLG-1 to PLG-9 come with PV-R8.
-| 18 | the design §3.5 permissions; ADR 0010 user actions | permissions named, method sets not | each permission's exact method set and tier (decision 6 table); page export, restore, mark reviewed, delete and attachments, and task Start, excluded and on the deny list | PV-K1, PV-Q1, PV-T1 |
