@@ -53,7 +53,7 @@ test("a fresh database reaches the current version with the new tables and colum
     assert.ok(columns(db, "agent_workspaces").includes(c), c);
   }
   assert.deepEqual((db.prepare("PRAGMA foreign_key_check").all() as unknown[]), []);
-  assert.deepEqual(db.prepare("PRAGMA foreign_key_list(agent_runs)").all().map((r) => (r as { table: string }).table), ["agent_workspaces"]);
+  assert.deepEqual(db.prepare("PRAGMA foreign_key_list(agent_runs)").all().map((r) => (r as { table: string }).table).sort(), ["agent_workspaces", "agents"]);
 });
 
 test("upgrading a populated version 3 database keeps every row, every index and the foreign keys", () => {
@@ -79,7 +79,8 @@ test("upgrading a populated version 3 database keeps every row, every index and 
     assert.equal(r["reviewed_tree_hash"], null);
     assert.equal(r["finalise_outcome"], null);
   }
-  assert.deepEqual(dump(db, "agent_runs", "id"), before.runs);
+  assert.deepEqual((dump(db, "agent_runs", "id") as Array<Record<string, unknown>>).map(({ agent_id: _a, ...rest }) => rest), before.runs, "version 12 adds only agent_id");
+  for (const r of dump(db, "agent_runs", "id")) assert.equal((r as Record<string, unknown>)["agent_id"], null);
   assert.deepEqual(dump(db, "state_transitions", "id"), before.tr);
   assert.deepEqual(dump(db, "idempotency", "scope, key"), before.idem);
   assert.deepEqual(dump(db, "daemon_idempotency", "key"), before.didem);
