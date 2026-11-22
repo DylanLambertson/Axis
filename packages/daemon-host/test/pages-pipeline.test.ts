@@ -47,7 +47,7 @@ async function setup(t: TestContext) {
   return { journal, service, connect };
 }
 
-test("markReviewed and delete are unreachable without the tier-3 challenge: the handler never runs; a worker or web caller is denied by policy", async (t) => {
+test("markReviewed and delete are unreachable without their tier-4 challenge: the handler never runs; a worker or web caller is denied by policy", async (t) => {
   const { service, connect } = await setup(t);
   const pageId = service.create({ kind: "user" }, { projectId: "p", title: "Plan", body: "x" }).version.meta.pageId;
   service.update({ kind: "agent", agentId: "w1", projectId: "p", runId: "r", receivedHop: 1 }, { pageId, baseSeq: 1, title: "Plan", body: "agent" });

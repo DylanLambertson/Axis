@@ -18,7 +18,7 @@ import { userRule, type Rule } from "./rule-types.js";
 export const PLANNED_RULES: Readonly<Record<string, Rule>> = Object.freeze({
   "axis.integrations/1.list": userRule(0),
   "axis.integrations/1.status": userRule(0),
-  "axis.integrations/1.connect": userRule(3),
+  "axis.integrations/1.connect": userRule(4),
   "axis.integrations/1.disconnect": userRule(1),
   "axis.integrations/1.read": userRule(0),
   "axis.integrations/1.write": userRule(3),
