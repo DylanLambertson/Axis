@@ -1,5 +1,5 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
-// axis.pages/1 (PV-Q1 slice 1, ADR 0010): planned, never served; no author, hop or trust in any request; closed refusals.
+// axis.pages/1 (PV-Q1 slices 1 and 2, ADR 0010): served since slice 2; no author, hop or trust in any request; closed refusals.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -19,11 +19,11 @@ import { accepts, rejects, runSuite, schemaOf } from "./suite.js";
 
 runSuite(PAGES_SAMPLES);
 
-test("the contract is planned, never served, with the designed method table", () => {
-  assert.equal(contracts["axis.pages/1"], undefined);
-  assert.equal(lookupMethod("axis.pages", 1, "create"), undefined);
-  assert.equal(lookupMethodIn(plannedContracts, "axis.pages", 1, "delete"), pagesMethods.delete);
-  assert.deepEqual(tableProblems(plannedContracts), []);
+test("the contract is served (PV-Q1 slice 2), no longer planned, with the designed method table", () => {
+  assert.equal(contracts["axis.pages/1"], pagesMethods);
+  assert.equal(lookupMethod("axis.pages", 1, "create"), pagesMethods.create);
+  assert.equal(lookupMethodIn(plannedContracts, "axis.pages", 1, "delete"), undefined);
+  assert.deepEqual(tableProblems(contracts), []);
   assert.deepEqual(Object.entries(pagesMethods).map(([m, s]) => [m, s.sideEffect, s.tier, s.idempotency]), [
     ["list", "read", 0, "none"], ["get", "read", 0, "none"], ["versions", "read", 0, "none"], ["create", "write", 1, "required"],
     ["update", "write", 1, "none"], ["restore", "write", 1, "none"], ["markReviewed", "write", 3, "none"], ["delete", "destructive", 3, "none"],

@@ -33,6 +33,8 @@ import { createHandlerRegistrar, registerAuditHandlers, type HandlerRegistrar } 
 import { type SshSpawn } from "./bindings/ssh-resolver.js";
 import { createProjectsHandlers } from "./handlers/projects.js";
 import { createMessagingBinding, hostMessagingDeps, type MessagingBinding } from "./messages/binding.js";
+import { createPagesService, type PagesService } from "./pages/service.js";
+import { journalWorkerOf } from "./agents/directory.js";
 import { createDaemonHost, type DaemonHost, type HostOptions, type HostServices, type StartupPorts } from "./host.js";
 import { installHostLifecycle, type LifecycleHandle, type LifecycleOptions } from "./lifecycle.js";
 import type { Logger } from "./log/logger.js";
@@ -158,7 +160,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
   };
 
   // Built in `afterStorage`, used by `reconcile` and `beforeReady`.
-  const built: { worktrees?: WorktreesBinding; runs?: RunsBinding; approvals?: WorktreesApprovals; projectPaths?: () => string[]; agent?: AgentBinding; composer?: ComposerService; providers?: ProvidersBinding; messaging?: MessagingBinding } = {};
+  const built: { worktrees?: WorktreesBinding; runs?: RunsBinding; approvals?: WorktreesApprovals; projectPaths?: () => string[]; agent?: AgentBinding; composer?: ComposerService; providers?: ProvidersBinding; messaging?: MessagingBinding; pages?: PagesService } = {};
   let lifecycle: LifecycleHandle | undefined;
   let offConnect: (() => void) | undefined;
   let finish: () => void = () => undefined;
@@ -236,6 +238,9 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
         options.observeMessaging?.({ agentOf: (id) => messagingDeps.agentOf?.(id) });
         const messaging = createMessagingBinding(messagingDeps);
         const cliEndpoints = wireCliEndpoints(options.messaging, pty, messaging.endpoints, cleanups); // inert unless both flags are on
+        // axis.pages/1 and the page tools (PV-Q1 slice 2): writes and their audit rows through the sealed composer writer.
+        const pages = createPagesService({ journal: parts.journal, audit: composerWriter, random: { bytes: (n) => randomBytes(n) } });
+        const workerOf = journalWorkerOf(parts.journal);
         const agent = createAgentBinding({
           locator: worktrees.locator,
           repositoryRoots: projectPaths,
@@ -244,6 +249,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
           env: () => ports.env,
           approvals: approvals.runs, taintStore: parts.journal.composer, deliveries: messaging.delivery, // IAC-T: run taint, recorded in its journal record
           messaging: messaging.participation, // PV-M4: offered to no run while messaging is off (`agentOf` knows none)
+          pages: { service: pages, workerOf }, // PV-Q1 slice 2: read_page and write_page, for a run of a live worker only
           now: () => ports.clock.now(),
           platform: config.platform,
           ...(options.composer?.mock === undefined ? {} : { mock: options.composer.mock }),
@@ -270,7 +276,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
           onInternalError: (where) => logger?.error("request.failed", { reason: `composer_${where.slice(0, 24)}` }),
         });
         cleanups.push(() => (composer.dispose(), agent.dispose()));
-        Object.assign(built, { worktrees, runs, approvals, projectPaths, agent, composer, providers, messaging });
+        Object.assign(built, { worktrees, runs, approvals, projectPaths, agent, composer, providers, messaging, pages });
       },
       async beforeReady(services, lock) {
         try {

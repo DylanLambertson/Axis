@@ -108,6 +108,11 @@ export class PageRecords {
     this.#ts = ts;
   }
 
+  /** Runs `fn` in one transaction of the journal's database (a write with its audit row; a nested call joins the outer one). */
+  transaction<T>(fn: () => T): T {
+    return withTransaction(this.#db, fn);
+  }
+
   /** A new page with its first version. `pageId` comes from the caller (the daemon's random id). */
   create(input: { readonly pageId: string; readonly projectId: string; readonly title: string; readonly body: string; readonly author: PageAuthor }): PageVersionRecord {
     checkAuthor(input.author);
@@ -187,6 +192,12 @@ export class PageRecords {
   list(projectId: string): PageSummary[] {
     const rows = this.#db.prepare("SELECT id, project_id, last_seq, created_at, updated_at FROM pages WHERE project_id = ? ORDER BY updated_at DESC, id").all(projectId) as Row[];
     return rows.map((r) => ({ pageId: String(r["id"]), projectId: String(r["project_id"]), lastSeq: Number(r["last_seq"]), createdAt: String(r["created_at"]), updatedAt: String(r["updated_at"]) }));
+  }
+
+  /** The project a page belongs to, or undefined. */
+  projectOf(pageId: string): string | undefined {
+    const r = this.#db.prepare("SELECT project_id FROM pages WHERE id = ?").get(pageId) as Row | undefined;
+    return r === undefined ? undefined : String(r["project_id"]);
   }
 
   /** What a run reading the current version receives (the taint producer of a later slice uses this). */
