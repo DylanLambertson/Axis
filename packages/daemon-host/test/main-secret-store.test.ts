@@ -119,11 +119,61 @@ test("on Linux a v10 record placed by hand reads as unprotected; on macOS and Wi
   }
 });
 
-test("a write that would land elsewhere than the vault decided is refused, never made", async () => {
-  const { store, files } = rig();
+test("a write that would land elsewhere than the vault decided is refused with its own event, never made", async () => {
+  const { store, files, events } = rig();
   assert.equal(err(await store.handle(put("c1", SECRET, meta("kwallet")))), "refused");
   assert.equal(err(await store.handle(put("c1", SECRET, meta("gnome_libsecret", "none")))), "refused");
   assert.equal(files.writes, 0);
+  assert.deepEqual(events, ["secret_refused_elsewhere", "secret_refused_elsewhere"]);
+});
+
+test("each weak backend refuses a put whose metadata matches it, even with a v11 cipher", async () => {
+  for (const [backend, available] of [["basic_text", true], ["unknown", true], ["gnome_libsecret", false]] as const) {
+    const { store, files, events } = rig("linux", fakeCipher(backend, "v11", available));
+    assert.equal(err(await store.handle(put("c1", SECRET, meta(backend, "os_protected")))), "refused", backend);
+    assert.equal(err(await store.handle(put("c1", SECRET, meta(backend, "none")))), "refused", backend);
+    assert.equal(files.writes, 0, backend);
+    assert.deepEqual(events, ["secret_refused_weak", "secret_refused_weak"], backend);
+  }
+});
+
+test("the cleaned metadata is what is stored, not the caller's object read again", async () => {
+  const { store, files } = rig();
+  let reads = 0;
+  const tricky = { backend: "gnome_libsecret", protection: "os_protected", weakConsent: false, get storedAt() {
+    reads += 1;
+    return reads === 1 ? 7 : -5;
+  } };
+  assert.equal(err(await store.handle({ type: "secrets.put", name: "c1", secret: SECRET, meta: tricky as never })), "ok");
+  assert.equal(JSON.parse(Buffer.from(files.store.get("6331.v1") as Uint8Array).toString()).meta.storedAt, 7);
+});
+
+test("requests on one name never overlap; a later put cannot be overtaken by an earlier one", async () => {
+  const files = memFiles();
+  let active = 0;
+  let most = 0;
+  const read = files.read;
+  files.read = async (file: string) => {
+    active += 1;
+    most = Math.max(most, active);
+    await new Promise((r) => setTimeout(r, 5));
+    active -= 1;
+    return read(file);
+  };
+  const { store } = rig("linux", fakeCipher(), files);
+  const all = [store.handle(put("c1", "first-value-0001")), store.handle({ type: "secrets.get", name: "c1" }), store.handle(put("c1", "second-value-0002")), store.handle({ type: "secrets.get", name: "c1" })];
+  const done = await Promise.all(all);
+  assert.equal(most, 1, "one at a time on one name");
+  assert.deepEqual(done.map((a) => (a.ok && a.value.op === "get" ? a.value.secret : err(a))), ["ok", "first-value-0001", "ok", "second-value-0002"]);
+});
+
+test("the entry cap holds under concurrent puts of new names", async () => {
+  const { store, files } = rig();
+  for (let i = 0; i < 254; i++) files.store.set(fileOf(`e${i}`), new Uint8Array([1]));
+  const answers = await Promise.all(["n1", "n2", "n3", "n4"].map((n) => store.handle(put(n))));
+  assert.ok(answers.filter((a) => a.ok).length <= 2);
+  assert.ok([...files.store.keys()].filter((f) => nameOf(f) !== null).length <= 256);
+  assert.ok(answers.every((a) => a.ok || err(a) === "refused"));
 });
 
 test("a record moved to another entry's file, or with a changed frame or form, reads corrupt", async () => {
@@ -201,8 +251,8 @@ test("one request per name at a time, at most 4 running and 4 waiting; more answ
   assert.equal(gates.length, 4, "four run at once; the fifth waits");
   answers.push(store.handle({ type: "secrets.get", name: "a1" })); // same name: waits behind the first
   for (const n of ["b1", "b2"]) answers.push(store.handle({ type: "secrets.get", name: n }));
-  const overflow = await store.handle({ type: "secrets.get", name: "b3" });
-  assert.equal(err(overflow), "failed");
+  const overflow = await Promise.race([store.handle({ type: "secrets.get", name: "b3" }), new Promise<SecretAnswer>((r) => setTimeout(() => r({ ok: true, value: { op: "remove", removed: false } }), 2000))]);
+  assert.equal(err(overflow), "failed", "refused at once, not left waiting");
   assert.ok(events.includes("secret_overloaded"));
   for (let round = 0; round < 6; round++) {
     for (const g of gates.splice(0)) g();
@@ -212,7 +262,39 @@ test("one request per name at a time, at most 4 running and 4 waiting; more answ
   assert.deepEqual(done.map(err), Array(done.length).fill("not_found"));
 });
 
-test("a request past its budget answers failed and frees its slot", async () => {
+test("four hung operations: a fifth request answers failed at its own deadline, and a sixth runs once they settle", async () => {
+  const files = memFiles();
+  const gates: Array<() => void> = [];
+  files.read = () => new Promise((resolve) => gates.push(() => resolve(null)));
+  const events: string[] = [];
+  const store = createSecretStore({ cipher: fakeCipher(), files, platform: "linux", timers: realTimers, onEvent: (e) => events.push(e), budgets: { slowMs: 30, fastMs: 30 } });
+  const hung = ["h1", "h2", "h3", "h4"].map((n) => store.handle({ type: "secrets.get", name: n }));
+  assert.deepEqual((await Promise.all(hung)).map(err), ["failed", "failed", "failed", "failed"], "each answers at its deadline");
+  const started = Date.now();
+  const fifth = await store.handle({ type: "secrets.info" });
+  assert.equal(err(fifth), "failed", "waits behind the held slots, then answers at its own deadline");
+  assert.ok(Date.now() - started < 1000);
+  for (const g of gates.splice(0)) g();
+  await new Promise((r) => setTimeout(r, 5));
+  assert.equal(err(await store.handle({ type: "secrets.info" })), "ok", "the slots are back");
+});
+
+test("at most 8 outstanding in all: a ninth is refused at once, timed-out operations still count", async () => {
+  const files = memFiles();
+  const gates: Array<() => void> = [];
+  files.read = () => new Promise((resolve) => gates.push(() => resolve(null)));
+  const events: string[] = [];
+  const store = createSecretStore({ cipher: fakeCipher(), files, platform: "linux", timers: realTimers, onEvent: (e) => events.push(e), budgets: { slowMs: 20, fastMs: 20 } });
+  await Promise.all(["h1", "h2", "h3", "h4"].map((n) => store.handle({ type: "secrets.get", name: n })));
+  const waiters = ["w1", "w2", "w3", "w4"].map((n) => store.handle({ type: "secrets.get", name: n }));
+  const ninth = await store.handle({ type: "secrets.get", name: "x9" });
+  assert.equal(err(ninth), "failed");
+  assert.ok(events.includes("secret_overloaded"));
+  await Promise.all(waiters);
+  for (const g of gates.splice(0)) g();
+});
+
+test("a hung request answers failed at its deadline; other names still run", async () => {
   const files = memFiles();
   files.read = () => new Promise(() => undefined); // hangs
   const cipher = fakeCipher();

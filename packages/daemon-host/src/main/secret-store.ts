@@ -12,10 +12,13 @@
  * - **Weak backends store nothing** (§3.3): an unavailable cipher, or a Linux `basic_text` or `unknown` backend, refuses every
  *   `put`; on Linux the ciphertext itself must start with `v11` (a keyring key), so a session switched to the hardcoded key
  *   (`v10`) is refused too. On macOS and Windows protection comes from the platform report, never from a prefix.
- * - **Bounds** (§3.4): one request per name at a time, the next for the same name queues behind it; at most 4 run at once and at
- *   most 4 wait, more answer `failed`. Each request has a budget (60 s for `get` and `put` on macOS and Linux, where an unlock may
- *   prompt; 5 s otherwise); past it the answer is `failed` (the operation may still finish: the daemon's vault treats that as a
- *   failed write and rolls back).
+ * - **Bounds** (§3.4): one request per name at a time, the next for the same name queues behind it; at most 4 run at once, at
+ *   most 4 wait, and at most 8 are outstanding in all (a timed-out operation that has not settled still counts), more answer
+ *   `failed` at once. Each request's budget starts when it is accepted (60 s for `get` and `put` on macOS and Linux, where an
+ *   unlock may prompt; 5 s otherwise): past it the answer is `failed` whether it was waiting (it leaves the queue) or running. A
+ *   running operation keeps its name and its slot until it settles, so a late `put` can never land after a later request for
+ *   the same name. **A `failed` answer to `put` means "unknown":** the record may still be written by the late operation; the
+ *   daemon side (PV-N0c) reconciles by `get` or `remove` (`docs/design/secret-broker.md` §3.4).
  */
 
 export type CipherBackend = "macos_keychain" | "windows_dpapi" | "gnome_libsecret" | "kwallet" | "kwallet5" | "kwallet6" | "basic_text" | "unknown";
@@ -80,7 +83,7 @@ export type SecretValue =
 export type SecretAnswer = { readonly ok: true; readonly value: SecretValue } | { readonly ok: false; readonly error: SecretError };
 
 /** Closed event names only: never a name, a secret or a path. */
-export type SecretEvent = "secret_refused_weak" | "secret_refused_prefix" | "secret_corrupt" | "secret_failed" | "secret_timeout" | "secret_overloaded" | "secret_name_ignored";
+export type SecretEvent = "secret_refused_weak" | "secret_refused_elsewhere" | "secret_refused_prefix" | "secret_refused_full" | "secret_corrupt" | "secret_failed" | "secret_timeout" | "secret_overloaded" | "secret_name_ignored";
 
 export interface SecretStoreOptions {
   readonly cipher: SecretCipher;
@@ -103,6 +106,8 @@ export const MAX_RECORD_BYTES = 16_384;
 export const MAX_ENTRIES = 256;
 export const MAX_RUNNING = 4;
 export const MAX_WAITING = 4;
+/** Running, waiting and timed-out operations that have not settled, together. */
+export const MAX_OUTSTANDING = 8;
 export const SLOW_BUDGET_MS = 60_000;
 export const FAST_BUDGET_MS = 5_000;
 const NAME_RE = /^(?:integration:)?[a-z0-9][a-z0-9._-]{0,63}$/;
@@ -253,6 +258,8 @@ export function createSecretStore(options: SecretStoreOptions): SecretStore {
     return parseRecord(bytes);
   };
 
+  let newPuts = 0;
+
   const run = async (r: SecretRequest): Promise<SecretValue> => {
     switch (r.type) {
       case "secrets.info": {
@@ -263,7 +270,7 @@ export function createSecretStore(options: SecretStoreOptions): SecretStore {
         const n = now();
         if (!n.strong) throw new Refusal("refused", "secret_refused_weak");
         // The vault decided where the write lands; a write elsewhere is refused, never made (the SecretBackend contract).
-        if (r.meta.backend !== n.backend || r.meta.protection !== n.protection) throw new Refusal("refused", "secret_refused_weak");
+        if (r.meta.backend !== n.backend || r.meta.protection !== n.protection) throw new Refusal("refused", "secret_refused_elsewhere");
         const ct = cipher.encrypt(`${SECRET_FRAME_TAG}\n${r.name}\n${r.secret}`);
         if (!(ct instanceof Uint8Array) || ct.length === 0) throw new Refusal("failed", "secret_failed");
         if (linux && prefixProtection(ct) !== "os_protected") throw new Refusal("refused", "secret_refused_prefix");
@@ -271,8 +278,19 @@ export function createSecretStore(options: SecretStoreOptions): SecretStore {
         const record = utf8(JSON.stringify({ v: 1, meta: r.meta, ct: base64(ct) }));
         if (record.length > MAX_RECORD_BYTES) throw new Refusal("failed", "secret_failed");
         const existing = await files.read(fileOf(r.name));
-        if (existing === null && (await files.names()).filter((f) => nameOf(f) !== null).length >= MAX_ENTRIES) throw new Refusal("refused");
-        await files.write(fileOf(r.name), record);
+        if (existing !== null) {
+          await files.write(fileOf(r.name), record);
+        } else {
+          // A new entry is reserved before the count is read, so concurrent new puts cannot together pass the cap.
+          newPuts += 1;
+          try {
+            const count = (await files.names()).filter((f) => nameOf(f) !== null).length;
+            if (count + newPuts > MAX_ENTRIES) throw new Refusal("refused", "secret_refused_full");
+            await files.write(fileOf(r.name), record);
+          } finally {
+            newPuts -= 1;
+          }
+        }
         return { op: "put", landedOn: { backend: n.backend, protection: n.protection } };
       }
       case "secrets.get": {
@@ -325,9 +343,10 @@ export function createSecretStore(options: SecretStoreOptions): SecretStore {
     }
   };
 
-  // ---- bounds: one per name, at most MAX_RUNNING at once, at most MAX_WAITING waiting --------------------------------
+  // ---- bounds ----------------------------------------------------------------------------------------------------------
   const busyNames = new Set<string>();
   let running = 0;
+  let outstanding = 0;
   const waiting: Array<{ key: string; start: () => void }> = [];
 
   const keyOf = (r: SecretRequest): string => ("name" in r ? `n:${r.name}` : `*:${r.type}`);
@@ -345,38 +364,27 @@ export function createSecretStore(options: SecretStoreOptions): SecretStore {
 
   const budgetOf = (r: SecretRequest): number => ((r.type === "secrets.get" || r.type === "secrets.put") && (platform === "darwin" || platform === "linux") ? slowMs : fastMs);
 
-  const execute = (r: SecretRequest, key: string): Promise<SecretAnswer> => {
+  /** Runs `r` now; `finish` answers at most once; the slot and the name are held until the operation settles. */
+  const execute = (r: SecretRequest, key: string, finish: (a: SecretAnswer) => void, settled: () => void): void => {
     running += 1;
     busyNames.add(key);
-    return new Promise<SecretAnswer>((resolve) => {
-      let done = false;
-      const finish = (a: SecretAnswer): void => {
-        if (done) return;
-        done = true;
-        resolve(a);
-      };
-      const timer = timers.setTimeout(() => {
-        emit("secret_timeout");
-        finish({ ok: false, error: "failed" });
-      }, budgetOf(r));
-      run(r)
-        .then((value) => finish({ ok: true, value }))
-        .catch((e: unknown) => {
-          if (e instanceof Refusal) {
-            if (e.event !== undefined) emit(e.event);
-            finish({ ok: false, error: e.code });
-          } else {
-            emit("secret_failed");
-            finish({ ok: false, error: "failed" });
-          }
-        })
-        .finally(() => {
-          timers.clearTimeout(timer);
-          running -= 1;
-          busyNames.delete(key);
-          pump();
-        });
-    });
+    run(r)
+      .then((value) => finish({ ok: true, value }))
+      .catch((e: unknown) => {
+        if (e instanceof Refusal) {
+          if (e.event !== undefined) emit(e.event);
+          finish({ ok: false, error: e.code });
+        } else {
+          emit("secret_failed");
+          finish({ ok: false, error: "failed" });
+        }
+      })
+      .finally(() => {
+        running -= 1;
+        busyNames.delete(key);
+        settled();
+        pump();
+      });
   };
 
   return {
@@ -391,18 +399,41 @@ export function createSecretStore(options: SecretStoreOptions): SecretStore {
     handle(request: SecretRequest): Promise<SecretAnswer> {
       if (typeof request !== "object" || request === null) return Promise.resolve({ ok: false, error: "failed" });
       if ("name" in request && !validName(request.name)) return Promise.resolve({ ok: false, error: "failed" });
+      let cleaned: StoredMeta | null = null;
       if (request.type === "secrets.put") {
-        const meta = cleanMeta(request.meta);
-        if (meta === null || typeof request.secret !== "string" || !SECRET_RE.test(request.secret)) return Promise.resolve({ ok: false, error: "failed" });
+        cleaned = cleanMeta(request.meta);
+        if (cleaned === null || typeof request.secret !== "string" || !SECRET_RE.test(request.secret)) return Promise.resolve({ ok: false, error: "failed" });
       }
-      const key = keyOf(request);
-      if (canStart(key) && !waiting.some((w) => w.key === key)) return execute(request, key);
-      if (waiting.length >= MAX_WAITING) {
+      // Run the validated copy: a put stores the cleaned metadata, never the caller's object.
+      const r: SecretRequest = request.type === "secrets.put" && cleaned !== null ? { type: "secrets.put", name: request.name, secret: request.secret, meta: cleaned } : request;
+      const key = keyOf(r);
+      const runsNow = canStart(key) && !waiting.some((w) => w.key === key);
+      if (outstanding >= MAX_OUTSTANDING || (!runsNow && waiting.length >= MAX_WAITING)) {
         emit("secret_overloaded");
         return Promise.resolve({ ok: false, error: "failed" });
       }
+      outstanding += 1;
       return new Promise<SecretAnswer>((resolve) => {
-        waiting.push({ key, start: () => void execute(request, key).then(resolve) });
+        let answered = false;
+        const finish = (a: SecretAnswer): void => {
+          if (answered) return;
+          answered = true;
+          timers.clearTimeout(timer);
+          resolve(a);
+        };
+        const entry = { key, start: () => execute(r, key, finish, () => (outstanding -= 1)) };
+        // The budget starts now, whether the request runs or waits; a waiting request that times out leaves the queue.
+        const timer = timers.setTimeout(() => {
+          const at = waiting.indexOf(entry);
+          if (at >= 0) {
+            waiting.splice(at, 1);
+            outstanding -= 1;
+          }
+          emit("secret_timeout");
+          finish({ ok: false, error: "failed" });
+        }, budgetOf(r));
+        if (runsNow) entry.start();
+        else waiting.push(entry);
       });
     },
   };

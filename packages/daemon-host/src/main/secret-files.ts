@@ -11,12 +11,15 @@ import type { SecretFiles } from "./secret-store.js";
  * - **The folder is checked before every operation, never trusted:** it must be a real directory (not a symlink) and, on POSIX,
  *   owned by this process's user with mode `0700`. Absent, it is created `0700`; anything else throws. On Windows there is no
  *   POSIX mode: the files take the ACL inherited from the user's profile folder.
- * - **Entry files** are opened without following links (`O_NOFOLLOW`) and must be regular files, mode `0600` on POSIX, at most
- *   16 KiB, checked again on the open handle; reads are bounded.
+ * - **Entry files** are checked with `lstat` and then opened without following links (`O_NOFOLLOW`) and without blocking
+ *   (`O_NONBLOCK` on POSIX, so a file swapped for a FIFO between the two cannot hang a thread); they must be regular files, mode
+ *   `0600` on POSIX, at most 16 KiB, checked again on the open handle; reads are bounded.
  * - **Writes** are atomic and durable: a temporary file (`wx`, `0600`) in the folder, write, `fsync`, close, `rename`, then a
  *   folder `fsync` (not on Windows). A remove is `unlink` plus the folder `fsync`. Temporary files left by a crash are removed by
  *   `cleanup` and are never read as records (their names are not record names).
- * - Every failure throws a fixed text; the store turns it into a closed error.
+ * - Every failure throws a fixed text (file system errors, which carry paths, are never rethrown); the store turns it into a
+ *   closed error. A failed folder `fsync` after a completed `rename` is a failure too, although the record is in place: the
+ *   store's `failed` answer to a `put` means "unknown" (`secret-store.ts`).
  */
 
 const MAX_FILE_BYTES = 16_384;
@@ -35,12 +38,23 @@ export interface SecretFilesOptions {
   readonly platform?: string;
   /** The user id the folder must belong to (POSIX); defaults to this process's. */
   readonly uid?: number;
+  /** Test seams only: turn off one of the two entry checks so each is shown to refuse a symlink on its own. */
+  readonly testSeams?: { readonly skipEntryLstat?: boolean; readonly followLinks?: boolean };
 }
 
 export function createSecretFiles(dir: string, options: SecretFilesOptions = {}): SecretFiles {
   const platform = options.platform ?? process.platform;
   const posix = platform !== "win32";
   const uid = options.uid ?? (typeof process.getuid === "function" ? process.getuid() : -1);
+  const seams = options.testSeams ?? {};
+  const openFlags = constants.O_RDONLY | (seams.followLinks === true ? 0 : (constants.O_NOFOLLOW ?? 0)) | (posix ? (constants.O_NONBLOCK ?? 0) : 0);
+  const fixed = async <T>(text: string, f: () => Promise<T>): Promise<T> => {
+    try {
+      return await f();
+    } catch {
+      throw new Error(text);
+    }
+  };
 
   const checkDir = async (): Promise<void> => {
     let st;
@@ -63,12 +77,14 @@ export function createSecretFiles(dir: string, options: SecretFilesOptions = {})
 
   const syncDir = async (): Promise<void> => {
     if (!posix) return;
-    const dh = await open(dir, "r");
-    try {
-      await dh.sync();
-    } finally {
-      await dh.close();
-    }
+    await fixed("secrets folder sync failed", async () => {
+      const dh = await open(dir, "r");
+      try {
+        await dh.sync();
+      } finally {
+        await dh.close();
+      }
+    });
   };
 
   const named = (file: string): string => {
@@ -81,18 +97,21 @@ export function createSecretFiles(dir: string, options: SecretFilesOptions = {})
 
     async read(file: string): Promise<Uint8Array | null> {
       const path = named(file);
-      let st;
-      try {
-        st = await lstat(path);
-      } catch (e) {
-        if (codeOf(e) === "ENOENT") return null;
-        throw new Error("secret file unreadable");
+      if (seams.skipEntryLstat !== true) {
+        let st;
+        try {
+          st = await lstat(path);
+        } catch (e) {
+          if (codeOf(e) === "ENOENT") return null;
+          throw new Error("secret file unreadable");
+        }
+        if (!st.isFile() || st.size > MAX_FILE_BYTES || (posix && (st.mode & 0o777) !== 0o600)) throw new Error("secret file unreadable");
       }
-      if (!st.isFile() || st.size > MAX_FILE_BYTES || (posix && (st.mode & 0o777) !== 0o600)) throw new Error("secret file unreadable");
       let fh;
       try {
-        fh = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
-      } catch {
+        fh = await open(path, openFlags);
+      } catch (e) {
+        if (seams.skipEntryLstat === true && codeOf(e) === "ENOENT") return null;
         throw new Error("secret file unreadable");
       }
       try {
@@ -144,20 +163,22 @@ export function createSecretFiles(dir: string, options: SecretFilesOptions = {})
       return true;
     },
 
-    async names(): Promise<readonly string[]> {
-      const entries = await readdir(dir, { withFileTypes: true });
-      return entries.filter((d) => d.isFile() && FILE_NAME_RE.test(d.name)).map((d) => d.name);
-    },
+    names: () =>
+      fixed("secrets folder unreadable", async () => {
+        const entries = await readdir(dir, { withFileTypes: true });
+        return entries.filter((d) => d.isFile() && FILE_NAME_RE.test(d.name)).map((d) => d.name);
+      }),
 
-    async cleanup(): Promise<number> {
-      let n = 0;
-      for (const d of await readdir(dir, { withFileTypes: true })) {
-        if (d.isFile() && TEMP_RE.test(d.name)) {
-          await rm(join(dir, d.name), { force: true });
-          n += 1;
+    cleanup: () =>
+      fixed("secrets cleanup failed", async () => {
+        let n = 0;
+        for (const d of await readdir(dir, { withFileTypes: true })) {
+          if (d.isFile() && TEMP_RE.test(d.name)) {
+            await rm(join(dir, d.name), { force: true });
+            n += 1;
+          }
         }
-      }
-      return n;
-    },
+        return n;
+      }),
   };
 }

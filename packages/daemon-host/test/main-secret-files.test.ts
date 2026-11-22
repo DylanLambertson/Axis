@@ -120,3 +120,20 @@ test("an empty or oversize write is refused and leaves nothing", async () => {
     box.cleanup();
   }
 });
+
+test("each entry check refuses a symlink on its own: lstat without O_NOFOLLOW, and O_NOFOLLOW without lstat", { skip: !posix }, async () => {
+  const box = sandbox();
+  try {
+    const target = join(box.root, "elsewhere");
+    writeFileSync(target, "x", { mode: 0o600 });
+    chmodSync(target, 0o600);
+    await createSecretFiles(box.dir).check();
+    symlinkSync(target, join(box.dir, "6331.v1"));
+    assert.equal(await throwsAsync(createSecretFiles(box.dir, { testSeams: { followLinks: true } }).read("6331.v1")), true, "lstat alone");
+    assert.equal(await throwsAsync(createSecretFiles(box.dir, { testSeams: { skipEntryLstat: true } }).read("6331.v1")), true, "O_NOFOLLOW alone");
+    assert.equal(Buffer.from((await createSecretFiles(box.dir, { testSeams: { skipEntryLstat: true, followLinks: true } }).read("6331.v1")) as Uint8Array).toString(), "x", "with both off the link is followed (the seams work)");
+    assert.equal(await createSecretFiles(box.dir, { testSeams: { skipEntryLstat: true } }).read("6339.v1"), null, "absent is still absent");
+  } finally {
+    box.cleanup();
+  }
+});
