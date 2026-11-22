@@ -100,7 +100,7 @@ test("S4: each audited writer appends exactly one event, in the same transaction
     s.db.exec("DROP TRIGGER no_audit");
     assert.deepEqual(read(), before);
   };
-  check("register", () => s.journal.registerProject({ id: "p1", path: abs("p1"), displayName: "P", trusted: true, actor: "user" }), "journal.project.register", "project:p1");
+  check("register", () => s.journal.registerProject({ id: "p1", path: abs("p1"), displayName: "P", trusted: true, actor: "user" }), "journal.project.register.trusted", "project:p1");
   failing(() => s.journal.registerProject({ id: "p2", path: abs("p2"), displayName: "P", trusted: true, actor: "user" }), () => s.journal.getProject("p2"), undefined);
   check("lock", () => s.journal.lockWorkspace(id, "daemon"), "journal.workspace.lock", `workspace:${id}`);
   failing(() => s.journal.unlockWorkspace(id, "daemon"), () => s.journal.getWorkspace(id)?.lockState, "locked");

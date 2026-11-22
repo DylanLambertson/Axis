@@ -73,7 +73,7 @@ test("a refused removal falls back only to the state it started from", () => {
 test("projects: register, read, list; a duplicate id or path is a conflict and writes no audit event", () => {
   const { journal, audit } = setup();
   const p = journal.registerProject({ id: "proj-1", path: abs("repo"), displayName: "Repo", trusted: false, actor: "user" });
-  assert.deepEqual({ ...p, createdAt: "", updatedAt: "" }, { id: "proj-1", path: abs("repo"), displayName: "Repo", trusted: false, createdAt: "", updatedAt: "" });
+  assert.deepEqual({ ...p, createdAt: "", updatedAt: "", trustChangedAt: "" }, { id: "proj-1", path: abs("repo"), displayName: "Repo", trusted: false, commonDir: null, gitDirId: null, trustChangedAt: "", createdAt: "", updatedAt: "" });
   assert.equal(journal.getProject("proj-1")?.path, abs("repo"));
   assert.deepEqual(journal.listProjects().map((x) => x.id), ["proj-1"]);
   const head = audit.head();

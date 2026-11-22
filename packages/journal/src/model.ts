@@ -96,6 +96,10 @@ export interface Project {
   readonly path: string;
   readonly displayName: string;
   readonly trusted: boolean;
+  /** The repository binding (schema v11): `realpath(<path>/.git)` and `<dev>:<ino>` of it; null on a row not yet bound. */
+  readonly commonDir: string | null;
+  readonly gitDirId: string | null;
+  readonly trustChangedAt: string | null;
   readonly createdAt: string;
   readonly updatedAt: string;
 }
@@ -105,6 +109,9 @@ export interface ProjectRow {
   path: string;
   display_name: string;
   trusted: number;
+  common_dir: string | null;
+  git_dir_id: string | null;
+  trust_changed_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -114,6 +121,9 @@ export const toProject = (r: ProjectRow): Project => ({
   path: r.path,
   displayName: r.display_name,
   trusted: r.trusted === 1,
+  commonDir: r.common_dir ?? null,
+  gitDirId: r.git_dir_id ?? null,
+  trustChangedAt: r.trust_changed_at ?? null,
   createdAt: r.created_at,
   updatedAt: r.updated_at,
 });

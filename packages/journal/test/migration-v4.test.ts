@@ -48,7 +48,7 @@ test("a fresh database reaches the current version with the new tables and colum
   Journal.open(db, { audit });
   assert.equal(schemaVersion(db, "journal"), JOURNAL_SCHEMA_VERSION);
   assert.ok(JOURNAL_SCHEMA_VERSION >= 4);
-  assert.deepEqual(columns(db, "projects"), ["id", "path", "display_name", "trusted", "created_at", "updated_at"]);
+  assert.deepEqual(columns(db, "projects"), ["id", "path", "display_name", "trusted", "created_at", "updated_at", "common_dir", "git_dir_id", "trust_changed_at"]);
   for (const c of ["worktree_path", "lock_state", "locked_at", "last_pushed_sha", "reviewed_tree_hash", "reviewed_at", "finalise_outcome"]) {
     assert.ok(columns(db, "agent_workspaces").includes(c), c);
   }
@@ -143,7 +143,7 @@ test("a downgrade is not a migration: there is no way back to version 3, and an 
   // What a version 3 build does with this database: its list has three entries.
   assert.throws(() => runMigrations(db, "journal", V3), code("E_UNAVAILABLE"));
   assert.equal(schemaVersion(db, "journal"), JOURNAL_SCHEMA_VERSION);
-  assert.deepEqual(columns(db, "projects").length, 6);
+  assert.deepEqual(columns(db, "projects").length, 9);
 });
 
 test("a migration that fails late rolls back everything, schema and data, in one step", () => {

@@ -1,15 +1,6 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { randomUUID } from "node:crypto";
-import {
-  AuditActions,
-  AuditLog,
-  AxisError,
-  InstanceLock,
-  type AuditActor,
-  runMigrations,
-  withTransaction,
-  type DatabaseSync,
-} from "@axis/audit";
+import { AuditActions, AuditLog, AxisError, InstanceLock, type AuditActor, runMigrations, withTransaction, type DatabaseSync } from "@axis/audit";
 import { z } from "zod";
 import {
   createRunSchema,
@@ -36,7 +27,8 @@ import {
 } from "./model.js";
 import {
   checkWorkspaceTransition, clearStaleLocks, getProject, listProjects, lockWorkspace, recordBaseBranch, recordPushed,
-  recordReviewedTree, registerProject, setWorktreePath, unlockWorkspace, type RecordsContext, type RegisterProjectInput,
+  recordReviewedTree, registerProject, setProjectTrust, setWorktreePath, unlockWorkspace, type RecordsContext, type RegisterProjectInput,
+  type SetProjectTrustInput,
 } from "./records.js";
 import { ComposerRecords } from "./composer-store.js";
 import { MessageRecords } from "./message-store.js";
@@ -172,6 +164,10 @@ export class Journal {
 
   registerProject(input: RegisterProjectInput): Project {
     return inRecords(this.#db, this.#audit, this.#now, (ctx) => registerProject(ctx, input));
+  }
+  /** The run-trust record (schema v11): granted only `via: "dialog"`, with the binding; see `setProjectTrust` in records.ts. */
+  setProjectTrust(input: SetProjectTrustInput): Project {
+    return inRecords(this.#db, this.#audit, this.#now, (ctx) => setProjectTrust(ctx, input));
   }
   getProject(id: string): Project | undefined {
     return getProject(this.#db, id);
