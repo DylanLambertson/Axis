@@ -108,12 +108,21 @@ export const allowAll: Policy = { evaluate: () => ({ effect: "allow" }) };
 export const HANG_GUARD_MS = 30_000;
 
 /** Wait by condition (event loop turns) until `pred` holds, with the same hang guard. */
-export async function untilTrue(pred: () => boolean, guardMs = HANG_GUARD_MS): Promise<void> {
+export async function untilTrue(pred: () => boolean, guardMs = HANG_GUARD_MS, what = "the condition"): Promise<void> {
   const deadline = Date.now() + guardMs;
   while (!pred()) {
-    if (Date.now() > deadline) throw new Error("condition not reached");
+    if (Date.now() > deadline) throw new Error(`condition not reached: ${what}`);
     await new Promise((res) => setImmediate(res));
   }
+}
+
+/**
+ * Two macrotasks: every promise continuation queued so far has run (code with no timers or I/O has gone as far as it can).
+ * Not a duration. For a negative check, settle once and assert once: never poll for the absence of something.
+ */
+export async function drain(): Promise<void> {
+  await new Promise((res) => setImmediate(res));
+  await new Promise((res) => setImmediate(res));
 }
 
 export class Inbox {
