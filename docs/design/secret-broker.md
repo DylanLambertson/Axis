@@ -1,6 +1,6 @@
 # Main's secret broker (ticket PV-N0)
 
-- **Status:** design for review (security-relevant), revision 2 after design review 1. Nothing here is built.
+- **Status:** design (security-relevant), revision 2 after design review 1. **Built:** PV-N0a (the control schemas in `daemon-host/src/control/secrets-messages.ts`; main's store and record folder in `daemon-host/src/main/secret-store.ts` and `secret-files.ts`). Not built: PV-N0c (the daemon backend, the Electron adapter, the wiring).
 - **Date:** 2026-11-22. **Code baseline:** `origin/main` at `9642e46`; upstream Code OSS `1.144.0` at `2c33b50` (the vendor tree).
 - **Decides:** how the daemon's vault (`@axis/vault`) gets a production `SecretBackend`. ADR 0003 D1.6 sketches a privileged main port carrying `secrets.decrypt(handle, purpose)`; this note fixes the shape. It needs no ADR amendment: D1.6 stands, and section 3.4 says how the messages map to it.
 - **Builds on:** ADR 0003 (D1.6; the renderer holds the upstream `encryption` channel), ADR 0009 decision 5 (vault namespaces, the production backend as a prerequisite), `docs/design/anthropic-adapter.md` §10 (the vault and the `SecretBackend` contract), `docs/design/main-answers.md` §3.1 (the audit anchor: the pattern copied here), `docs/design/product-vision-v2-tickets.md` §5.1 (PV-N0), threat model PRV-1, PRV-2, EXT-1, EXT-4, A10.
