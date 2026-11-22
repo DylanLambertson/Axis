@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
-import { AuditLog, acquireInstanceLock, openDatabase, type AuditEvent } from "@axis/audit";
+import { AuditLog, DEFAULT_PAYLOAD_ALLOWLIST, acquireInstanceLock, openDatabase, type AuditEvent } from "@axis/audit";
 import { AGENT_RECORD_ACTION, Journal, type AgentLaunch } from "../src/index.js";
 
 // The agent and group records of PV-G3 over schema version 12: closed refusal reasons, one audit event per write naming
@@ -166,4 +166,9 @@ test("list: live agents by default, archived on request, per project", () => {
   assert.deepEqual(agents.list("p1").map((a) => a.id), ["a1"]);
   assert.deepEqual(agents.list("p1", true).map((a) => a.id).sort(), ["a1", "a2"]);
   assert.deepEqual(agents.list("p2").map((a) => a.id), ["a3"]);
+});
+
+test("the audit allowlist of agent records keeps ids and fixed fields only: never a name or other free text", () => {
+  assert.deepEqual(DEFAULT_PAYLOAD_ALLOWLIST[AGENT_RECORD_ACTION], ["field", "agentId", "groupId", "projectId", "workspaceId", "kind", "reason", "count"]);
+  for (const key of ["name", "label", "text", "title", "entryId", "connection", "modelId"]) assert.equal(DEFAULT_PAYLOAD_ALLOWLIST[AGENT_RECORD_ACTION]?.includes(key), false, key);
 });

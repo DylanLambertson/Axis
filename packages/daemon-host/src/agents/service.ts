@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { AxisError } from "@axis/audit";
 import { DaemonError } from "@axis/daemon";
-import { MAX_AGENTS, MAX_GROUPS, type AgentRecord, type GroupRecord, type Journal } from "@axis/journal";
+import { MAX_AGENTS, type AgentRecord, type GroupRecord, type Journal } from "@axis/journal";
 import type { Agent, AgentGroup, AgentGroupsRequest, AgentGroupsResponse, AgentsRequest, AgentsResponse } from "@axis/protocol";
 import type { PortContext } from "../ports/common.js";
 import type { TrustRegistry } from "../ports/trust.js";
@@ -145,7 +145,6 @@ export function createAgentsService(deps: AgentsServiceDeps): AgentsService {
     list: async (_c, req) => ({ groups: records.listGroups(project(req.projectId)).map(toGroup) }),
     create: async (_c, req) => {
       const projectId = project(req.projectId);
-      if (records.listGroups(projectId).length >= MAX_GROUPS) refuse("E_CONFLICT", "limit_reached");
       return { group: toGroup(write(() => records.createGroup({ id: deps.newId(), projectId, name: req.name }))) };
     },
     rename: async (_c, req) =>
