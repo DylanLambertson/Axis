@@ -23,7 +23,7 @@ Companion to `docs/adr/0009-integrations-and-credential-proxy.md`. Nothing of th
 |---|---|---|---|---|
 | 1 | `vault/src/types.ts` `SECRET_PURPOSES`; `vault.ts` `reveal` | two provider purposes; no entry kind | `integration:<id>` entries; three integration purposes; each purpose valid only for its entry kind, a mismatch refused and audited | PV-N1 |
 | 2 | `bindings/providers.ts` note; `test/packages/imports.test.mjs`; `scripts/code-oss/stage-scan.mjs` | providers binding is the only allowed importer of `@axis/vault` | the integrations binding is a second allowed importer | PV-N1 |
-| 3 | ADR 0003 D1.6; `entry.ts` | no secret broker, no production backend | integrations connect only once both exist | the secret-broker ticket (not yet cut), before PV-N1's gate |
+| 3 | ADR 0003 D1.6; `entry.ts` | no secret broker, no production backend | integrations connect only once both exist | PV-N0 (`docs/design/secret-broker.md`, slices PV-N0a and PV-N0c), before PV-N1's gate |
 | 4 | `entry.ts` step 1 | refuses `NODE_OPTIONS` only among environment variables | also refuses `NODE_USE_ENV_PROXY` and `NODE_TLS_REJECT_UNAUTHORIZED` | PV-N1 |
 | 5 | the design §7.3 "Node `fetch`" | the pinning mechanism left open | `node:https` with a dedicated agent, a checking `lookup` and `rejectUnauthorized: true` | PV-N1 |
 | 6 | the design §7.3 address ranges | "private, loopback, link-local, metadata, mapped and NAT64" | IPv4 list; IPv6 public unicast = inside `2000::/3` minus `2001::/23`, `2001:db8::/32`, `3fff::/20` and `2002::/16`; the embedded-IPv4 rule; WHATWG-parsed IP literals; trailing-dot hosts refused; the operator-NAT64 residual | PV-N1 |
