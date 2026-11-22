@@ -5,17 +5,19 @@
 import assert from 'assert';
 import { DeferredPromise } from '../../../../../base/common/async.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { AxisProjectAction, AxisProjectOutcome } from '../../common/axisProjectActions.js';
+import { AxisProjectAction, AxisProjectOutcome, IAxisProjectAnswer } from '../../common/axisProjectActions.js';
 import { AxisProjectActionsModel } from '../../common/axisProjectActionsService.js';
 
 function fakeClient() {
-	const calls: Array<{ action: AxisProjectAction | 'status'; answer: DeferredPromise<AxisProjectOutcome> }> = [];
+	const calls: Array<{ action: AxisProjectAction | 'status'; answer: DeferredPromise<AxisProjectOutcome | IAxisProjectAnswer> }> = [];
+	const ask = (action: AxisProjectAction | 'status') => { const answer = new DeferredPromise<AxisProjectOutcome | IAxisProjectAnswer>(); calls.push({ action, answer }); return answer.p; };
 	let disposed = 0;
 	return {
 		calls,
 		disposed: () => disposed,
 		client: {
-			run: (action: AxisProjectAction | 'status') => { const answer = new DeferredPromise<AxisProjectOutcome>(); calls.push({ action, answer }); return answer.p; },
+			run: (action: AxisProjectAction | 'status') => ask(action).then(a => typeof a === 'string' ? a : a.outcome),
+			status: () => ask('status').then(a => typeof a === 'string' ? { outcome: a } : a),
 			dispose: () => void disposed++,
 		},
 	};
@@ -89,5 +91,26 @@ suite('Axis project actions service (S3)', () => {
 		const none = store.add(new AxisProjectActionsModel(undefined));
 		none.refreshStatus();
 		assert.strictEqual(none.windowTrust, 'unknown');
+	});
+
+	test('PV-D1-0: the window project id comes with a registered status answer only, and goes with any other answer', async () => {
+		const f = fakeClient();
+		const model = store.add(new AxisProjectActionsModel(f.client));
+		const settle = async (a: AxisProjectOutcome | IAxisProjectAnswer) => {
+			model.refreshStatus();
+			f.calls[f.calls.length - 1].answer.complete(a);
+			await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+		};
+		await settle({ outcome: 'status_read_only', projectId: 'p-7' });
+		assert.strictEqual(model.windowProjectId, 'p-7');
+		await settle('busy');
+		assert.strictEqual(model.windowProjectId, 'p-7', 'busy keeps it');
+		await settle({ outcome: 'status_trusted', projectId: 'p-7' });
+		assert.strictEqual(model.windowTrust, 'trusted');
+		await settle('status_not_registered');
+		assert.strictEqual(model.windowProjectId, undefined, 'not registered clears it (mutant: kept)');
+		await settle({ outcome: 'status_read_only', projectId: 'p-8' });
+		await settle('unavailable');
+		assert.strictEqual(model.windowProjectId, undefined, 'unknown clears it: never a stale project home');
 	});
 });

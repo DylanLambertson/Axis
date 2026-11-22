@@ -9,7 +9,7 @@
 
 import { AxisDaemonStatus, isUsable } from '../../daemon/common/axisDaemonClient.js';
 import { localize } from '../../../../nls.js';
-import type { IAxisProjectInfo } from '../../workspaces/common/axisWorkspaceData.js';
+import { AXIS_ID_PATTERN, type IAxisProjectInfo } from '../../workspaces/common/axisWorkspaceData.js';
 
 /** What the user can ask for (the commands and the banner button). */
 export const AXIS_PROJECT_ACTIONS = ['add', 'trust', 'untrust'] as const;
@@ -137,12 +137,37 @@ export interface IAxisProjectTransport {
 	on(channel: string, listener: (payload: unknown) => void): () => void;
 }
 
+/** Main's answer as the renderer keeps it: the closed outcome, and (status of a registered folder only) its project id. */
+export interface IAxisProjectAnswer {
+	readonly outcome: AxisProjectOutcome;
+	readonly projectId?: string;
+}
+
+const ANSWER_KEYS: ReadonlySet<string> = new Set(['nonce', 'outcome', 'projectId']);
+
+/**
+ * Read main's answer strictly (PV-D1-0): no key beyond nonce, outcome and projectId; a projectId only on `status_trusted` or
+ * `status_read_only` and only in the journal id shape. Anything else is `unavailable`, never a partial answer.
+ */
+export function toAnswer(payload: object): IAxisProjectAnswer {
+	if (Object.keys(payload).some(k => !ANSWER_KEYS.has(k))) {
+		return { outcome: 'unavailable' };
+	}
+	const { outcome, projectId } = payload as { outcome?: unknown; projectId?: unknown };
+	const closed = toOutcome(outcome);
+	if (projectId === undefined) {
+		return { outcome: closed };
+	}
+	const registered = closed === 'status_trusted' || closed === 'status_read_only';
+	return registered && typeof projectId === 'string' && AXIS_ID_PATTERN.test(projectId) ? { outcome: closed, projectId } : { outcome: 'unavailable' };
+}
+
 /**
  * One request at a time is enough for the UI, but answers are matched by nonce anyway, so a late or foreign answer never settles
  * the wrong call. A call that gets no answer within the bound is `unavailable`.
  */
 export class AxisProjectActionClient {
-	private readonly pending = new Map<string, (outcome: AxisProjectOutcome) => void>();
+	private readonly pending = new Map<string, (answer: IAxisProjectAnswer) => void>();
 	private readonly off: () => void;
 	private seq = 0;
 
@@ -151,19 +176,28 @@ export class AxisProjectActionClient {
 	}
 
 	run(action: AxisProjectRequest): Promise<AxisProjectOutcome> {
+		return this.ask(action).then(a => a.outcome);
+	}
+
+	/** `status` with its project id (this window's registered project, if any). */
+	status(): Promise<IAxisProjectAnswer> {
+		return this.ask('status');
+	}
+
+	private ask(action: AxisProjectRequest): Promise<IAxisProjectAnswer> {
 		const nonce = `pa${++this.seq}${this.randomId().replace(/[^A-Za-z0-9]/g, '').slice(0, 32)}`;
 		return new Promise(resolve => {
-			const timer = setTimeout(() => settle('unavailable'), this.timeoutMs);
-			const settle = (outcome: AxisProjectOutcome) => {
+			const timer = setTimeout(() => settle({ outcome: 'unavailable' }), this.timeoutMs);
+			const settle = (answer: IAxisProjectAnswer) => {
 				clearTimeout(timer);
 				this.pending.delete(nonce);
-				resolve(outcome);
+				resolve(answer);
 			};
 			this.pending.set(nonce, settle);
 			try {
 				this.transport.send(AXIS_PROJECT_REQUEST_CHANNEL, projectActionRequest(nonce, action));
 			} catch {
-				settle('unavailable');
+				settle({ outcome: 'unavailable' });
 			}
 		});
 	}
@@ -171,7 +205,7 @@ export class AxisProjectActionClient {
 	dispose(): void {
 		this.off();
 		for (const settle of [...this.pending.values()]) {
-			settle('unavailable');
+			settle({ outcome: 'unavailable' });
 		}
 	}
 
@@ -179,9 +213,9 @@ export class AxisProjectActionClient {
 		if (typeof payload !== 'object' || payload === null) {
 			return;
 		}
-		const { nonce, outcome } = payload as { nonce?: unknown; outcome?: unknown };
+		const { nonce } = payload as { nonce?: unknown };
 		const settle = typeof nonce === 'string' ? this.pending.get(nonce) : undefined;
-		settle?.(toOutcome(outcome));
+		settle?.(toAnswer(payload));
 	}
 }
 

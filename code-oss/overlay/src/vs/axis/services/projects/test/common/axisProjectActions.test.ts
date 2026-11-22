@@ -4,7 +4,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { AXIS_PROJECT_ACTIONS, AXIS_PROJECT_OUTCOMES, AXIS_PROJECT_REQUEST_CHANNEL, AXIS_PROJECT_RESULT_CHANNEL, AxisProjectActionClient, IAxisProjectTransport, AXIS_MAX_INLINE_NAME, AXIS_MAX_TOOLTIP_NAME, isolateName, outcomeSentence, plainName, projectActionRequest, projectChip, toOutcome, toWindowRunTrust } from '../../common/axisProjectActions.js';
+import { AXIS_PROJECT_ACTIONS, AXIS_PROJECT_OUTCOMES, AXIS_PROJECT_REQUEST_CHANNEL, AXIS_PROJECT_RESULT_CHANNEL, AxisProjectActionClient, IAxisProjectTransport, AXIS_MAX_INLINE_NAME, AXIS_MAX_TOOLTIP_NAME, isolateName, outcomeSentence, plainName, projectActionRequest, projectChip, toAnswer, toOutcome, toWindowRunTrust } from '../../common/axisProjectActions.js';
 
 /** A transport that records what the renderer sends and lets the test answer as main. */
 function fakeTransport() {
@@ -115,5 +115,17 @@ suite('Axis project actions (renderer, S3)', () => {
 		assert.strictEqual([...plainName('x'.repeat(500))].length, AXIS_MAX_TOOLTIP_NAME, 'the tooltip is capped');
 		const label = projectChip({ id: 'p', name: rtl, trusted: false }, 'unregistered').label;
 		assert.ok(label.endsWith('\u2069: not added to Axis'), 'the words after the name are intact');
+	});
+
+	test('PV-D1-0: main\'s answer is read strictly: projectId only on a registered status, only in the id shape, and no other key', () => {
+		assert.deepStrictEqual(toAnswer({ nonce: 'n', outcome: 'status_read_only', projectId: 'p-7' }), { outcome: 'status_read_only', projectId: 'p-7' });
+		assert.deepStrictEqual(toAnswer({ nonce: 'n', outcome: 'status_trusted' }), { outcome: 'status_trusted' });
+		assert.deepStrictEqual(toAnswer({ nonce: 'n', outcome: 'trusted', projectId: 'p-7' }), { outcome: 'unavailable' }, 'an id on an action outcome');
+		assert.deepStrictEqual(toAnswer({ nonce: 'n', outcome: 'status_not_registered', projectId: 'p-7' }), { outcome: 'unavailable' });
+		for (const bad of ['../x', '', 'a b', 'x'.repeat(65), 7, { id: 'p' }]) {
+			assert.deepStrictEqual(toAnswer({ nonce: 'n', outcome: 'status_read_only', projectId: bad }), { outcome: 'unavailable' }, JSON.stringify(bad));
+		}
+		assert.deepStrictEqual(toAnswer({ nonce: 'n', outcome: 'status_read_only', projectId: 'p-7', name: 'repo' }), { outcome: 'unavailable' }, 'any other key (mutant: ignored)');
+		assert.deepStrictEqual(toAnswer({ nonce: 'n', outcome: 'status_read_only', path: '/home/u/r' }), { outcome: 'unavailable' });
 	});
 });
