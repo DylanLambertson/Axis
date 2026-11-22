@@ -1,10 +1,10 @@
 # Threat model: Phase 2a gate lines, numbered, with the ticket that proves each
 
 - **Status:** Draft for review (ticket PV-R4). Companion to `threat-model-phase2a.md`.
-- **Date:** 2026-11-22. **Code baseline:** `origin/main` at `9ddc55b`.
+- **Date:** 2026-11-22. **Code baseline:** `origin/main` at `0addd58`.
 - **What this is.** The 2a gate (`docs/ROADMAP.md`, Phase 2a) is "the gate lines in `inter-agent-communication.md` §11, `inter-agent-cli-endpoint.md` §7 and `extensibility.md` §9 (2a items) pass". ADR 0007 and ADR 0010 add validation criteria that are security gate lines too. This file numbers them all once as **2a/Ln**, so the threat rows and the register can cite them, and names the ticket whose tests must prove each line. The wording of a line is its source's; where this file shortens it, the source wins.
 - **Numbering.** L1 to L19 keep the numbers of the messaging design §11; L20 to L29 are the endpoint design §7 lines 1 to 10; L30 to L40 are ADR 0007's (validation criteria and the decisions they test); L41 to L49 are the pages and tasks lines of `extensibility.md` §9 and ADR 0010; L50 to L55 test the decisions of `threat-model-phase2a.md` §6. New lines are appended, never renumbered.
-- **State** is what exists on `9ddc55b`: **Evidence** (a merged test already covers the daemon half; the line still needs its full run), **Partial** or **Open**. PV-M8 collects the evidence for the whole gate.
+- **State** is what exists on `0addd58`: **Evidence** (a merged test already covers the daemon half; the line still needs its full run), **Partial** or **Open**. PV-M8 collects the evidence for the whole gate.
 
 ## 1. Messaging (messaging design §11)
 
@@ -83,7 +83,7 @@
 | 2a/L51 | Archiving an agent: its queued deliveries are cancelled and its senders' quota slots released; a send naming it is `recipient_refused`; its endpoint is revoked and its live runs stop; the user still reads its threads and no agent can; its settings survive a restore (O-2) | IAC-9, IAC-16, HOME-1 | PV-G3, PV-M3 | Open |
 | 2a/L52 | Enabling messaging for a CLI entry the in-repository list does not know is refused; the list is one file with unit tests (O-3) | IAC-1 | PV-M7 | Partial: refused for every entry today |
 | 2a/L53 | Marking a page version reviewed without main's native confirmation does not change its taint; a renderer request alone is refused (O-4) | PAG-2 | PV-Q1, PV-Q2 | Open |
-| 2a/L54 | The 21st approval request of one tainted run ends the run with a closed reason instead of asking; a setting can lower the cap and cannot raise it (O-5) | IAC-2, IAC-3 | PV-M4 | Open |
+| 2a/L54 | The 21st approval request (approved or denied) of any side-effecting call in one tainted run ends the run with a closed reason instead of asking; a setting can lower the cap and cannot raise it; the count is in the journal and survives a resume and a daemon restart (O-5) | IAC-2, IAC-3 | PV-M4 | Open |
 | 2a/L55 | A caller of kind `plugin` is refused by `send`, `thread`, `threads`, `read` and `markRead`, also when it addresses only the user (O-6) | IAC-6, PLG-3 | PV-M3 follow-up | Open (`mayAddress` lets a plugin address the user today; no plugin binding exists) |
 
 ## 6. Reading the gate against the register
