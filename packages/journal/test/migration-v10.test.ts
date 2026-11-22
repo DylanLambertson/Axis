@@ -12,7 +12,7 @@ const T1 = id("thr", 1);
 
 function setup(db: DatabaseSync = openDatabase(":memory:")): { db: DatabaseSync; journal: Journal; runs: string[] } {
   const journal = Journal.open(db, { audit: new AuditLog(db) });
-  if (journal.getProject("p1") === undefined) journal.registerProject({ id: "p1", path: "/repo/one", displayName: "One", trusted: true, actor: "user" });
+  if (journal.getProject("p1") === undefined) journal.registerProject({ id: "p1", path: "/repo/one", displayName: "One", trusted: false, actor: "user" });
   const ws = journal.createWorkspace({ projectId: "p1", branch: `axis/w${journal.listProjects().length}${Math.random().toString(36).slice(2, 6)}`, baseRef: "HEAD", baseSha: "c".repeat(40), createdBy: "user" }).value.id;
   journal.transitionWorkspace(ws, "READY");
   const runs = [0, 1].map(() => journal.composer.createRun({ workspaceId: ws, createdBy: "user" }, { mode: "agent", providerId: "mock", modelId: "mock-model" }).value.id);

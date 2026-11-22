@@ -1,15 +1,11 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
-import { basename, normalize } from "node:path";
-import { randomBytes } from "node:crypto";
 import { AxisError, type AuditLog } from "@axis/audit";
 import { protocolRegistry, type ContractRegistry, type DaemonAuditSink } from "@axis/daemon";
 import { lookupMethod } from "@axis/protocol";
 import type { HostServices } from "./host.js";
 import type { Journal } from "@axis/journal";
 import type { RunsBindingDeps } from "./bindings/runs.js";
-import type { ControlClient } from "./control/client.js";
 import type { HandlerRegistrar } from "./handlers/anchor-guard.js";
-import type { Logger } from "./log/logger.js";
 import type { Clock } from "./ports/clock.js";
 import type { RunsService } from "./ports/runs.js";
 import type { ProjectMutex } from "./worktrees/project-mutex.js";
@@ -103,45 +99,6 @@ export function daemonAuditSink(audit: Pick<AuditLog, "append"> | undefined, not
       noteWrite();
     },
   };
-}
-
-const NAME = /^[A-Za-z0-9][A-Za-z0-9 ._-]{0,62}$/;
-
-/** A display name for a project from its folder name; a name that is not plain text becomes a fixed word. */
-export function projectDisplayName(path: string): string {
-  const base = basename(path);
-  return NAME.test(base) ? base : "project";
-}
-
-type ProjectsRegister = Parameters<Parameters<ControlClient["onProjectsRegister"]>[0]>[0];
-
-/**
- * `projects.register` of the control channel (design 7.4 and question 4: main only). The id is generated here, the path is
- * main's and must already be normalised (the journal checks it), and the answer is the project id or a closed code: whatever
- * the journal said is never forwarded. `journal` is `undefined` when degraded (nothing may write).
- */
-export function handleProjectsRegister(
-  deps: { readonly journal: Pick<Journal, "registerProject"> | undefined; readonly control: Pick<ControlClient, "send">; readonly logger?: Logger },
-  message: ProjectsRegister,
-): void {
-  const reply = (body: { ok: true; projectId: string } | { ok: false; code: "E_UNAVAILABLE" | "E_CONFLICT" | "E_INVALID_ARGUMENT" | "E_INTERNAL" }): void => {
-    try {
-      deps.control.send({ type: "projects.result", requestId: message.requestId, ...body });
-    } catch {
-      // the channel is gone; nothing to answer
-    }
-  };
-  if (deps.journal === undefined) return reply({ ok: false, code: "E_UNAVAILABLE" });
-  if (normalize(message.path) !== message.path) return reply({ ok: false, code: "E_INVALID_ARGUMENT" });
-  const id = `p-${randomBytes(9).toString("hex")}`;
-  try {
-    const project = deps.journal.registerProject({ id, path: message.path, displayName: projectDisplayName(message.path), trusted: message.trusted, actor: "daemon" });
-    reply({ ok: true, projectId: project.id });
-  } catch (e) {
-    const code = e instanceof AxisError && (e.code === "E_CONFLICT" || e.code === "E_INVALID_ARGUMENT") ? e.code : "E_INTERNAL";
-    deps.logger?.warn("request.failed", { reason: "project_register", code });
-    reply({ ok: false, code });
-  }
 }
 
 /**
