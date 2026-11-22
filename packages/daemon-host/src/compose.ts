@@ -312,7 +312,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
     registerAuditHandlers(registrar, { audit: services.auditRead, anchors: services.anchors, degraded: () => services.degraded, clock: ports.clock });
     registrar.register(PROJECTS_CONTRACT, PROJECTS_VERSION, createProjectsHandlers({ projects: () => services.journalRead.listProjects() }));
     // A revoke (a gesture, or the gate's lost binding) stops the project's live runs (project-registration-and-trust.md §5.4).
-    const stopProjectRuns = createProjectRunStopper({ journal: () => services.journal, runs: () => built.runs?.service, composer: () => built.composer });
+    const stopProjectRuns = createProjectRunStopper({ mutex: () => built.worktrees?.mutex, journal: () => services.journal, runs: () => built.runs?.service, composer: () => built.composer });
     if (writable) registerServing(registrar, services, { built, config, control, ports, pty, scanner, ptyGitRunnerFor, logger, runHooks: options.runHooks ?? false, sshSpawn: options.sshSpawn, stopProjectRuns, minter: createRunTrustMinter(ports.clock) });
     if (events !== undefined) {
       registrar.register(EVENTS_CONTRACT, EVENTS_VERSION, events.handlers());

@@ -1,5 +1,6 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
-import { createProjectTrustGate, type ProjectTrustGate, type ProjectTrustTicket } from "../src/gate/project-trust.js";
+import { createProjectTrustGate } from "../src/gate/project-trust-gate.js";
+import type { ProjectTrustGate, ProjectTrustTicket } from "../src/gate/project-trust.js";
 
 /**
  * TESTS ONLY: a REAL project trust gate (`createProjectTrustGate`) over inputs in which every condition holds: a trusted, bound

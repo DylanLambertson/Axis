@@ -1,5 +1,6 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
-import { createHostProjectTrustGate, type ProjectTrustGate } from "../src/gate/project-trust.js";
+import { createHostProjectTrustGate } from "../src/gate/project-trust-gate.js";
+import type { ProjectTrustGate } from "../src/gate/project-trust.js";
 import { execFileSync } from "node:child_process";
 import { lstatSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";

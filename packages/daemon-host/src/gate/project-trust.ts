@@ -1,10 +1,9 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
-import { lstat, readFile, realpath } from "node:fs/promises";
-import { dirname, isAbsolute, join, resolve } from "node:path";
 import { AxisError } from "@axis/audit";
 import type { Journal } from "@axis/journal";
 import type { TrustCheckRequest } from "../control/client.js";
-import { bindingMatches, readRepositoryBinding, type BindingResult } from "../projects/binding.js";
+import type { BindingResult } from "../projects/binding.js";
+import { spendTicket, type ProjectTrustTicket } from "./project-ticket.js";
 import type { TrustSubject } from "../ports/trust.js";
 
 /**
@@ -26,27 +25,8 @@ import type { TrustSubject } from "../ports/trust.js";
  */
 export const TICKET_TTL_MS = 1_000;
 
-const STATE = new WeakMap<object, { readonly projectId: string; readonly workspaceId: string | undefined; readonly at: number; spent: boolean }>();
-
-/** The key only this module holds: no other code can construct a ticket. */
-const MINT: unique symbol = Symbol("project-trust-ticket");
-
-/** Minted only by `ProjectTrustGate.admit`; the brand is the private field (a structural copy is refused). */
-export class ProjectTrustTicket {
-  readonly #brand = true;
-  constructor(key: typeof MINT) {
-    if (key !== MINT) throw untrusted();
-  }
-  static isTicket(v: unknown): v is ProjectTrustTicket {
-    return typeof v === "object" && v !== null && #brand in v;
-  }
-}
-
-function mint(projectId: string, workspaceId: string | undefined, at: number): ProjectTrustTicket {
-  const t = new ProjectTrustTicket(MINT);
-  STATE.set(t, { projectId, workspaceId, at, spent: false });
-  return t;
-}
+/** The ticket type (its brand and state live in project-ticket.ts, which only the gate modules load). */
+export type { ProjectTrustTicket };
 
 export const untrusted = (): AxisError => new AxisError("E_POLICY_DENIED", "The project is not trusted", { reason: "untrusted" });
 
@@ -62,7 +42,7 @@ export interface ProjectTrustGateDeps {
   /** Called after a lost binding dropped the record: stop the project's live runs. Never throws into the gate. */
   readonly onRevoked?: (projectId: string) => void;
   /** Test seam: the filesystem the workspace binding reads. */
-  readonly fs?: { lstat: typeof lstat; readFile: typeof readFile; realpath: typeof realpath };
+  readonly fs?: { lstat: typeof import("node:fs/promises").lstat; readFile: typeof import("node:fs/promises").readFile; realpath: typeof import("node:fs/promises").realpath };
 }
 
 export interface ProjectTrustGate {
@@ -72,63 +52,7 @@ export interface ProjectTrustGate {
 
 /** At a port's entry: the ticket is real, unspent, fresh and for this project and workspace; it is spent here. */
 export function consumeTicket(ticket: unknown, scope: { readonly projectId: string; readonly workspaceId?: string }, now: () => number): void {
-  const s = ProjectTrustTicket.isTicket(ticket) ? STATE.get(ticket) : undefined;
-  if (s === undefined || s.spent) throw untrusted();
-  s.spent = true;
-  if (now() - s.at > TICKET_TTL_MS || s.at > now() || s.projectId !== scope.projectId || s.workspaceId !== scope.workspaceId) throw untrusted();
-}
-
-/** W: the worktree belongs to the repository whose common directory is `commonDir`. False on anything unexpected. */
-export async function worktreeBelongs(worktree: string, commonDir: string, fs = { lstat, readFile, realpath }): Promise<boolean> {
-  try {
-    const dotGit = join(worktree, ".git");
-    const st = await fs.lstat(dotGit);
-    if (!st.isFile() || st.size > 4096) return false;
-    const m = /^gitdir: (.+?)\r?\n?$/.exec(await fs.readFile(dotGit, "utf8"));
-    if (m === null) return false;
-    const target = m[1] as string;
-    const gitDir = await fs.realpath(isAbsolute(target) ? target : resolve(worktree, target));
-    if (dirname(gitDir) !== join(commonDir, "worktrees")) return false;
-    const common = (await fs.readFile(join(gitDir, "commondir"), "utf8")).trim();
-    return (await fs.realpath(isAbsolute(common) ? common : resolve(gitDir, common))) === commonDir;
-  } catch {
-    return false;
-  }
-}
-
-export function createProjectTrustGate(deps: ProjectTrustGateDeps): ProjectTrustGate {
-  return {
-    async admit({ projectId, windowId, workspaceId, signal }) {
-      const row = deps.journal.getProject(projectId);
-      if (row === undefined || !row.trusted) throw untrusted();
-      const b = await deps.binding(row.path, signal);
-      if (!b.ok || !bindingMatches(row, b.binding)) {
-        // Only a binding that is really gone drops the record; a filesystem that did not answer refuses this call only.
-        if (b.ok || b.reason === "not_a_repository") {
-          try {
-            deps.journal.setProjectTrust({ id: projectId, trusted: false, via: "binding_lost" });
-          } catch {
-            // the refusal below stands either way
-          }
-          try {
-            deps.onRevoked?.(projectId);
-          } catch {
-            // stopping runs never changes the gate's answer
-          }
-        }
-        throw untrusted();
-      }
-      if (workspaceId !== undefined) {
-        const ws = deps.journal.getWorkspace(workspaceId);
-        if (ws === undefined || ws.projectId !== projectId || ws.worktreePath === null) throw untrusted();
-        if (row.commonDir === null || !(await worktreeBelongs(ws.worktreePath, row.commonDir, deps.fs))) throw untrusted();
-      }
-      signal.throwIfAborted();
-      await deps.trustCheck({ windowId, projectId, projectPath: row.path, ...(workspaceId === undefined ? {} : { workspaceId }) }, { signal });
-      if (deps.registry.isRevoked({ windowId, ...(workspaceId === undefined ? {} : { workspaceId }) })) throw untrusted();
-      return mint(projectId, workspaceId, deps.now());
-    },
-  };
+  if (!spendTicket(ticket, scope, now, TICKET_TTL_MS)) throw untrusted();
 }
 
 /**
@@ -144,26 +68,6 @@ export function ticketedStart<I extends { readonly workspaceId: string }, R>(
     consumeTicket(ticket, { projectId: projectOf(input.workspaceId) ?? "", workspaceId: input.workspaceId }, now);
     return start(input, signal);
   };
-}
-
-/** The host's gate: the real binding reader (this process's uid), main's `trust.check`, the registry and the monotonic clock. */
-export function createHostProjectTrustGate(o: {
-  readonly journal: ProjectTrustGateDeps["journal"];
-  readonly control: { trustCheck: ProjectTrustGateDeps["trustCheck"] };
-  readonly registry: ProjectTrustGateDeps["registry"];
-  readonly platform: NodeJS.Platform;
-  readonly now: () => number;
-  readonly onRevoked?: (projectId: string) => void;
-}): ProjectTrustGate {
-  const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
-  return createProjectTrustGate({
-    journal: o.journal,
-    binding: (path, signal) => readRepositoryBinding(path, { platform: o.platform, uid, signal }),
-    trustCheck: (request, options) => o.control.trustCheck(request, options),
-    registry: o.registry,
-    now: o.now,
-    ...(o.onRevoked === undefined ? {} : { onRevoked: o.onRevoked }),
-  });
 }
 
 const GATED = new WeakSet<object>();

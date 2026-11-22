@@ -71,7 +71,8 @@ export function createWorktreesHandlers(deps: WorktreesHandlerDeps): Readonly<Re
     restoreFromRunBase: projectGated(run<"restoreFromRunBase">("restoreFromRunBase", (p) => [p.id], (p, ctx, context) => deps.service.restoreFromRunBase(p, withTrust(ctx, context)))),
     // The contract and policy rows exist (ticket P1d); the service behind them does not (it needs a discard entry point and a
     // user-editing set in `@axis/worktrees`). Until then both answer a fixed refusal and touch nothing.
-    // Not served yet; registered gated so the row and its handler agree when it is.
+    // Not served yet; marked gated so the row and its handler agree. When it is served it MUST pass `withTrust` to the service,
+    // whose discard then spends the ticket like create and restore (the mark alone guards nothing).
     discard: projectGated(run<"discard">("discard", (p) => [p.id], notServed)),
     setUserEditing: run<"setUserEditing">("setUserEditing", (p) => [p.id], notServed),
   };

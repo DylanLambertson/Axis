@@ -5,12 +5,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
 import { AxisError } from "@axis/audit";
-import { createProjectTrustGate, consumeTicket, ProjectTrustTicket, ticketedStart, worktreeBelongs, type ProjectTrustGateDeps } from "../src/gate/project-trust.js";
+import { createProjectTrustGate, worktreeBelongs } from "../src/gate/project-trust-gate.js";
+import { ProjectTrustTicket } from "../src/gate/project-ticket.js";
+import { consumeTicket, ticketedStart, type ProjectTrustGateDeps } from "../src/gate/project-trust.js";
 import { toGitError } from "../src/handlers/git-errors.js";
 import { toComposerError } from "../src/composer/errors.js";
 import { toRunError } from "../src/runs/errors.js";
 import { toDaemonError } from "../src/worktrees/errors.js";
 import { createProjectRunStopper } from "../src/compose-parts.js";
+import { ProjectMutex } from "../src/worktrees/project-mutex.js";
 
 // The project trust gate (docs/design/project-registration-and-trust.md §5.4): T1 to T4, the workspace binding, the ticket.
 
@@ -24,7 +27,8 @@ function rig(over: Partial<ProjectTrustGateDeps> = {}, row: Record<string, unkno
   let now = 1_000;
   const deps: ProjectTrustGateDeps = {
     journal: {
-      getProject: (id: string) => (calls.push("T1"), id === "p" ? (project as never) : undefined),
+      // A fresh copy per read, as the journal answers (a row read earlier does not change under the reader).
+      getProject: (id: string) => (calls.push("T1"), id === "p" ? ({ ...project } as never) : undefined),
       getWorkspace: (id: string) => ({ id, projectId: "p", worktreePath: "/wt" }) as never,
       setProjectTrust: (i: unknown) => (calls.push(`drop:${JSON.stringify(i)}`), project as never),
     },
@@ -47,11 +51,11 @@ test("all hold: a ticket, after T1, T2, the workspace binding, T3 with the journ
   const r = rig();
   const t = await r.gate.admit({ projectId: "p", windowId: "w1", workspaceId: "ws", signal });
   assert.ok(ProjectTrustTicket.isTicket(t));
-  assert.deepEqual(r.calls, ["T1", "T2", `T3:${JSON.stringify({ windowId: "w1", projectId: "p", projectPath: "/r", workspaceId: "ws" })}`, "T4"]);
+  assert.deepEqual(r.calls, ["T1", "T2", `T3:${JSON.stringify({ windowId: "w1", projectId: "p", projectPath: "/r", workspaceId: "ws" })}`, "T1", "T4"], "T1 again right before the mint");
   // worktrees.create has no workspace: trust.check carries none, and no workspace binding is read.
   const c = rig();
   await c.gate.admit({ projectId: "p", windowId: "w1", signal });
-  assert.deepEqual(c.calls, ["T1", "T2", `T3:${JSON.stringify({ windowId: "w1", projectId: "p", projectPath: "/r" })}`, "T4"]);
+  assert.deepEqual(c.calls, ["T1", "T2", `T3:${JSON.stringify({ windowId: "w1", projectId: "p", projectPath: "/r" })}`, "T1", "T4"]);
 });
 
 test("each condition refuses on its own (one mutant each)", async () => {
@@ -75,7 +79,7 @@ test("each condition refuses on its own (one mutant each)", async () => {
   await assert.rejects(go(repointed, "ws"), untrusted, "W: the worktree's .git repointed at another repository (mutant: W dropped)");
   const aborted = new AbortController();
   aborted.abort();
-  await assert.rejects(rig().gate.admit({ projectId: "p", windowId: "w1", signal: aborted.signal }));
+  await assert.rejects(rig().gate.admit({ projectId: "p", windowId: "w1", signal: aborted.signal }), (e: unknown) => untrusted(e) || (e as Error).name === "AbortError", "an aborted call is refused (cancelled or untrusted)");
 });
 
 test("a lost binding drops the record (binding_lost) and stops the project's runs; an unavailable filesystem refuses only this call", async () => {
@@ -167,6 +171,7 @@ test("the wire code per path: every handler family answers the gate's refusal E_
 test("the run stopper ends every live CLI and composer run of the project's workspaces and nothing else; it never throws", () => {
   const stopped: string[] = [];
   const stop = createProjectRunStopper({
+    mutex: () => undefined,
     journal: () => ({ listWorkspaces: () => [{ id: "a", projectId: "p" }, { id: "b", projectId: "q" }] as never }),
     runs: () => ({
       list: (o?: { workspaceId?: string }) => (o?.workspaceId === "a" ? [{ runId: "c1", state: "RUNNING" }, { runId: "c2", state: "COMPLETED" }] : [{ runId: "c3", state: "RUNNING" }]) as never,
@@ -182,7 +187,7 @@ test("the run stopper ends every live CLI and composer run of the project's work
   });
   stop("p");
   assert.deepEqual(stopped, ["cli:c1", "composer:m1"]);
-  assert.doesNotThrow(() => createProjectRunStopper({ journal: () => { throw new Error("x"); }, runs: () => undefined, composer: () => undefined })("p"));
+  assert.doesNotThrow(() => createProjectRunStopper({ mutex: () => undefined, journal: () => { throw new Error("x"); }, runs: () => undefined, composer: () => undefined })("p"));
 });
 
 test("the composer's start as the handler sees it spends the ticket first; without one nothing starts (mutant: not spent)", async () => {
@@ -197,4 +202,49 @@ test("the composer's start as the handler sees it spends the ticket first; witho
   const other = await gate.admit({ projectId: "p", windowId: "w1", workspaceId: "other", signal });
   assert.throws(() => start({ workspaceId: "ws" }, signal, other), untrusted, "another workspace");
   assert.deepEqual(started, ["ws"]);
+});
+
+test("review B1: an untrust or a revoke that lands during any await of the gate refuses: the record is re-read right before the mint (mutant: no final re-read)", async () => {
+  // The untrust lands while the binding is read.
+  const duringBinding = rig({ binding: async () => ((duringBinding.project as { trusted: boolean }).trusted = false, { ok: true, binding: { path: "/r", commonDir: "/r/.git", gitDirId: "1:2" } }) });
+  await assert.rejects(duringBinding.gate.admit({ projectId: "p", windowId: "w1", signal }), untrusted);
+  // The untrust lands while main is asked (trust.check round trip).
+  const duringMain = rig({ trustCheck: async () => void ((duringMain.project as { trusted: boolean }).trusted = false) });
+  await assert.rejects(duringMain.gate.admit({ projectId: "p", windowId: "w1", workspaceId: "ws", signal }), untrusted);
+  // A registry revoke recorded while main is asked.
+  let revoked = false;
+  const revokedDuring = rig({ trustCheck: async () => void (revoked = true), registry: { isRevoked: () => revoked } });
+  await assert.rejects(revokedDuring.gate.admit({ projectId: "p", windowId: "w1", signal }), untrusted);
+  // The row re-bound to another repository meanwhile (a different binding than the one checked).
+  const rebound = rig({ trustCheck: async () => void ((rebound.project as { gitDirId: string }).gitDirId = "7:7") });
+  await assert.rejects(rebound.gate.admit({ projectId: "p", windowId: "w1", signal }), untrusted);
+  // An empty window id is refused by the gate itself.
+  await assert.rejects(rig().gate.admit({ projectId: "p", windowId: "", signal }), untrusted);
+});
+
+test("review B S2: the stopper takes the project mutex: a start that passed the gate before the revoke is recorded, then stopped (mutant: no mutex)", async () => {
+  const mutex = new ProjectMutex();
+  const runs: { runId: string; state: string }[] = [];
+  const stopped: string[] = [];
+  const stop = createProjectRunStopper({
+    mutex: () => mutex,
+    journal: () => ({ listWorkspaces: () => [{ id: "a", projectId: "p" }] as never }),
+    runs: () => ({ list: () => runs as never, stop: (id: string) => (stopped.push(id), {} as never) }),
+    composer: () => undefined,
+  });
+  // A start holds the project mutex across its gate and its start, and records its run only after an await.
+  let release!: () => void;
+  const held = new Promise<void>((r) => (release = r));
+  const start = mutex.run("p", async () => {
+    await held;
+    runs.push({ runId: "late", state: "RUNNING" });
+  });
+  await new Promise((x) => setTimeout(x, 0));
+  stop("p"); // the revoke lands while the start is in flight
+  await new Promise((x) => setTimeout(x, 10));
+  assert.deepEqual(stopped, [], "the stopper waits for the start");
+  release();
+  await start;
+  await new Promise((x) => setTimeout(x, 10));
+  assert.deepEqual(stopped, ["late"], "the run the start recorded is stopped: none survives the revoke");
 });

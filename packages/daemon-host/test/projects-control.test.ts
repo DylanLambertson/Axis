@@ -201,3 +201,70 @@ test("the message queue is bounded: past 16 waiting, a message is answered E_BAC
   await pc.handle({ type: "projects.inspect", requestId: "again", path: "/repo" });
   assert.equal(answers.at(-1)?.["code"], "E_UNAVAILABLE");
 });
+
+test("review B S1: a projects.trust revoke calls onRevoked for that project (it stops the runs); a grant or a refusal does not (mutant: no call)", { skip: SKIP }, async (t) => {
+  const r = rig(t);
+  const p = git(join(r.root, "repo"));
+  const revoked: string[] = [];
+  const pc = createProjectControl({
+    journal: r.journal,
+    control: { send: () => undefined },
+    excludedRoots: [r.dataDir],
+    binding: { platform: process.platform, uid: (process.getuid as () => number)() },
+    remote: { runner: { run: async () => ({ code: 1, stdout: "", stderr: "" }) }, env: {}, platform: process.platform },
+    onRevoked: (id) => void revoked.push(id),
+  });
+  await pc.handle(register(p, true));
+  const id = r.journal.listProjects()[0]?.id as string;
+  await pc.handle(trust(id, p, true));
+  assert.deepEqual(revoked, [], "a grant stops nothing");
+  await pc.handle(trust("p-none", p, false));
+  assert.deepEqual(revoked, [], "a refused revoke stops nothing");
+  await pc.handle(trust(id, p, false));
+  assert.deepEqual(revoked, [id]);
+});
+
+test("review B nits: a full queue never refuses a revoke; an excluded root whose real path cannot be read in time refuses registration (fail closed)", async (t) => {
+  const answers: Record<string, unknown>[] = [];
+  const hung: BindingFs = { realpath: () => new Promise(() => undefined), lstat: () => new Promise(() => undefined) };
+  const revoked: string[] = [];
+  const journal = {
+    listProjects: () => [],
+    getProject: (id: string) => (id === "p-1" ? ({ id, path: "/repo", trusted: true, commonDir: "/repo/.git", gitDirId: "1:1" } as never) : undefined),
+    registerProject: () => undefined as never,
+    setProjectTrust: () => undefined as never,
+  };
+  const pc = createProjectControl({
+    journal,
+    control: { send: (m) => void answers.push(m as Record<string, unknown>) },
+    excludedRoots: ["/axis/data"],
+    binding: { platform: "linux", uid: 1, fs: hung, timeoutMs: 20 },
+    remote: { runner: { run: async () => ({ code: 1, stdout: "", stderr: "" }) }, env: {}, platform: "linux" },
+    onRevoked: (id) => void revoked.push(id),
+  });
+  const queued = Array.from({ length: 16 }, (_, i) => pc.handle({ type: "projects.inspect", requestId: `q${i}`, path: `/r${i}` }));
+  const revoke = pc.handle({ type: "projects.trust", requestId: "rv", projectId: "p-1", path: "/repo", trusted: false });
+  assert.equal(answers.some((a) => a["requestId"] === "rv"), false, "the revoke was not refused: it waits its turn (mutant: not exempt)");
+  await Promise.all([...queued, revoke]);
+  assert.deepEqual(answers.find((a) => a["requestId"] === "rv"), { type: "projects.result", requestId: "rv", ok: true, projectId: "p-1" });
+  assert.deepEqual(revoked, ["p-1"]);
+
+  // An excluded root whose real path hangs: registration and inspection are refused, never let through.
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "axis-roots-")));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const p = git(join(root, "repo"));
+  const slow: Record<string, unknown>[] = [];
+  const db = openDatabase(":memory:");
+  const pc2 = createProjectControl({
+    journal: Journal.open(db, { audit: new AuditLog(db) }),
+    control: { send: (m) => void slow.push(m as Record<string, unknown>) },
+    excludedRoots: ["/axis/data"],
+    binding: POSIX ? { platform: process.platform, uid: (process.getuid as () => number)() } : { platform: "linux", uid: 1, fs: hung, timeoutMs: 20 },
+    remote: { runner: { run: async () => ({ code: 1, stdout: "", stderr: "" }) }, env: {}, platform: process.platform },
+    rootsRealpath: () => new Promise(() => undefined),
+  });
+  if (POSIX) {
+    await pc2.handle(register(p));
+    assert.deepEqual([slow[0]?.["code"], slow[0]?.["reason"]], ["E_UNAVAILABLE", "roots_unavailable"], "mutant: the timed-out root is ignored");
+  }
+});

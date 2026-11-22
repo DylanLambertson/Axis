@@ -131,7 +131,7 @@ The daemon re-derives everything at each message and never takes main's earlier 
 3. `P/.git` has no `commondir` file, and has `HEAD` (a regular file), `objects/` and `refs/`, each a real directory by `lstat`, never a symlink: git's own repository test, made strict so the object store cannot live elsewhere.
 4. `P/.git` is owned by the daemon's user (POSIX `uid`). Otherwise `not_a_repository`: the daemon's equivalent of git's `safe.directory` "dubious ownership", failing closed. **On Windows** there is no `uid`, and this check is never skipped: every inspection and every T2 is refused `E_UNAVAILABLE` until a Windows ticket (with PV-X1w, the pty exec there) specifies the owner-SID comparison git's `safe.directory` makes. No project is registered or trusted on Windows before then.
 
-`commonDir` is `realpath(P/.git)`, and `gitDirId` is `<dev>:<ino>` of `P/.git` from `lstat`. **T2** at a gated call re-runs the same four checks on the row's `path`, and compares both values with the row's `common_dir` and `git_dir_id`. A `.git` directory removed and recreated at the same path (another repository moved in) has a new inode and fails. A row whose `common_dir` is NULL (pre-v11) always fails. A failure, a mismatch or the time bound sets the record `false` (`binding_lost`) and refuses.
+`commonDir` is `realpath(P/.git)`, and `gitDirId` is `<dev>:<ino>` of `P/.git` from `lstat`. **T2** at a gated call re-runs the same four checks on the row's `path`, and compares both values with the row's `common_dir` and `git_dir_id`. A `.git` directory removed and recreated at the same path (another repository moved in) has a new inode and fails. A row whose `common_dir` is NULL (pre-v11) always fails. A mismatch, or a folder that is no longer a repository (`not_a_repository`), sets the record `false` (`binding_lost`), stops the project's runs and refuses. A filesystem that does not answer in time, an abort or an error such as `EACCES` refuses THIS call only and leaves the record as it is: a slow or briefly unreadable disk is not evidence that the repository changed, and dropping the trust on it would let a hung mount revoke every project (the record is lowered only on positive evidence; as built in S1b).
 
 ### 5.3 Reading the remote for the dialog
 
@@ -179,7 +179,7 @@ A handler therefore cannot reach the side effect without calling the gate. It ca
 
 `identity.trusted` (the connect-time model reading) is **no longer read by policy**. It reflected only the renderer-writable model, once per connection; T3 replaces it per call. The field stays on the identity for wire compatibility. Main sends no `trust.set` grants; registry revokes still work (T4).
 
-**On a revoke or a lost binding,** the daemon stops the project's live runs (`cli-runs` stop, composer `runs` cancel) after the record write. This answers plan question 6 for project trust: a running run does not outlive the trust it started under. It is a stop, not a rollback: anything already written stays and is shown as changed. Since `untrust` needs no dialog, a compromised renderer can stop the project's runs repeatedly. That is accepted: it only lowers privilege, and the renderer can already stop runs (`cli-runs.stop`, `runs.cancel`).
+**On a revoke or a lost binding,** the daemon stops the project's live runs (`cli-runs` stop, composer `runs` cancel) after the record write, inside the project mutex: a start that passed the gate just before the revoke finishes recording its run and is then stopped, and the gate itself re-reads the record right before it mints, so a revoke during its awaits refuses the start. This answers plan question 6 for project trust: a running run does not outlive the trust it started under. It is a stop, not a rollback: anything already written stays and is shown as changed. Since `untrust` needs no dialog, a compromised renderer can stop the project's runs repeatedly. That is accepted: it only lowers privilege, and the renderer can already stop runs (`cli-runs.stop`, `runs.cancel`).
 
 **After a daemon restart nothing is resumed.** `Journal.recover` makes a RUNNING run BLOCKED / `INTERRUPTED_BY_RESTART`, and a QUEUED one is cancelled (`runs.md` recovery, `composer-runtime.md` §4). So every run that executes passed the gate at its own start, in this daemon's life.
 
@@ -281,8 +281,8 @@ node:test only. The Electron-free cores live in `packages/daemon-host/src/main/`
 - **T4 at the gate:** a registry revoke recorded during the push confirmation refuses the push (mutant: step 5 dropped).
 - **The wire code, per path:** `commit`, `push`, `worktrees.create`, `restoreFromRunBase`, `discard`, `runs.start` and `cli-runs.start` each answer a gate refusal `E_CONFLICT` with reason `untrusted`, never `E_POLICY_DENIED` or `E_INTERNAL` (mutant: a handler passing the internal code through).
 - **Untrust while the push dialog is open, then the push is refused** (mutant: gate before the confirmation). The tier 4 approval is spent at dispatch, before the handler (`packages/daemon/src/pipeline.ts` step 4), which the test relies on and pins.
-- Mixed contracts: `axis.git/1` and `axis.worktrees/1` register their gated methods only through `registerProjectGated` (mutant: a gated handler left in the plain map, caught by coverage).
-- Coverage: exit 70 for a plain gated registration, and for `registerProjectGated` on a non-gated row; the `cli-runs` path is covered (mutant: coverage check removed).
+- Mixed contracts: `axis.git/1` and `axis.worktrees/1` mark their gated handlers `projectGated()` and register marked and unmarked handlers in one call (mutant: a gated handler left unmarked, caught by coverage).
+- Coverage: `checkCoverage({ gated })` is exit 70 for a gated row registered with an unmarked handler, and for a marked handler on a non-gated row; the `cli-runs` path is covered (mutant: coverage check removed).
 - Policy ignores `identity.trusted` (mutant: read again).
 - Revoke and `binding_lost` stop live runs (mutant: no stop).
 - **The TRU-2 acceptance test:** model trusted, record false, untrusted end to end.
@@ -319,7 +319,7 @@ node:test only. The Electron-free cores live in `packages/daemon-host/src/main/`
    Nothing grants yet: every row keeps its current trust mode.
 2. **S1b, daemon gate (Opus review):**
    - trust mode `project`, `requireProjectTrust` with T4 re-read, and `ProjectTrustTicket` at the ports;
-   - `registerProjectGated`, with the mixed contracts split, and its coverage;
+   - `projectGated()` marking of the gated handlers and `checkCoverage({ gated })` (not a separate `registerProjectGated`: the mixed contracts register in one call);
    - the rows, `identity.trusted` dropped from policy, and stopping runs on a revoke.
 3. **S2, main (Opus review):**
    - `vscode:axisProjectAction` and the dialogs on the shared queue, with the cooldown;
