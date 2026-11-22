@@ -10,7 +10,7 @@ import type { Clock } from "./ports.js";
  * docs/design/inter-agent-cli-endpoint.md sections 2 and 3). It owns the transport only: the socket in the user's runtime
  * directory, the connection and frame bounds, and relaying each complete frame to the daemon as its JSON text. It loads no socket
  * built-in itself: it listens through the pinned template `endpoint-listen.ts` (scripts/code-oss/web-rules.mjs rule 1), which
- * gives it a close function and, per connection, a facade (write, end, destroy and three event hooks). The daemon owns
+ * gives it a close function and, per connection, a facade (write, end, destroy, three event hooks and `buffered()`). The daemon owns
  * the token, the caller, the message service and every answer; this module never reads a frame's content.
  *
  * - **The directory is the control (Unix).** A real directory, owned by this uid, mode 0700, never a symlink; created 0700 when
@@ -20,11 +20,15 @@ import type { Clock } from "./ports.js";
  *   first frame (the `auth`) at most 512 bytes and within 2 s, and nothing more until the daemon answered it; later frames at most
  *   64 KiB, at most 4 awaiting an answer; a frame that is not UTF-8 or over its cap closes the connection; an authenticated
  *   connection idle for 10 minutes is closed. Every buffer is bounded by those caps.
+ * - **A reader that does not read (review 1 B1).** A reply counts against the 4 unanswered frames until the peer has TAKEN
+ *   it (the facade's `buffered()` back at 0), not merely until the daemon produced it; a connection whose unread replies pass
+ *   4 MiB is dropped (checked before relaying a frame and after every write), one whose unread replies have not drained for
+ *   60 s is dropped, and frames from a connection above half that cap do not refresh its idle timer.
  * - **Backoff.** The daemon marks a token failure (`authFailed`) and closes that connection. Per-peer backoff needs a peer id that
  *   Node does not give, so the bound is one `auth` per connection under the 4-connection cap (the design's stated residual).
  */
 
-export const ENDPOINT_HOST_LIMITS = { connections: 4, authFrameBytes: 512, frameBytes: 64 * 1024, preAuthMs: 2_000, idleMs: 600_000, pendingFrames: 4, pathBytes: 100 } as const;
+export const ENDPOINT_HOST_LIMITS = { connections: 4, authFrameBytes: 512, frameBytes: 64 * 1024, preAuthMs: 2_000, idleMs: 600_000, pendingFrames: 4, pathBytes: 100, writeBufferBytes: 4 * 1024 * 1024, slowReaderMs: 60_000 } as const;
 
 export interface EndpointHostConfig {
   /** The runtime directory: `$XDG_RUNTIME_DIR/axis`, else `/tmp/axis-<uid>` on Linux; `$TMPDIR/axis` on macOS (`defaultEndpointDir`). */
@@ -77,8 +81,13 @@ interface Conn {
   buf: Buffer;
   /** The `auth` was relayed and not yet answered / it was answered without a close. */
   state: "new" | "authing" | "authed";
+  /** Frames relayed to the daemon and not answered yet. */
   pending: number;
+  /** Replies written since the peer last took everything (`buffered()` 0): they count as unanswered too. */
+  unflushed: number;
   timer: unknown;
+  /** Runs while replies are unread; fires the slow-reader drop. */
+  slowTimer: unknown;
 }
 interface Hosted {
   /** Closes the listener (set once it listens). */
@@ -87,8 +96,15 @@ interface Hosted {
   readonly conns: Map<string, Conn>;
 }
 
-export function createEndpointHost(cfg: EndpointHostConfig, deps: { readonly send: (msg: RelayInbound) => boolean; readonly clock: Clock; readonly random: (n: number) => Uint8Array }): EndpointHost {
+export function createEndpointHost(
+  cfg: EndpointHostConfig,
+  deps: { readonly send: (msg: RelayInbound) => boolean; readonly clock: Clock; readonly random: (n: number) => Uint8Array; readonly limits?: { readonly writeBufferBytes?: number; readonly slowReaderMs?: number } },
+): EndpointHost {
   const hosted = new Map<string, Hosted>();
+  /** Ids being opened (review 1 N2): a second open of the same id while the first awaits is refused. */
+  const opening = new Set<string>();
+  const writeCap = deps.limits?.writeBufferBytes ?? ENDPOINT_HOST_LIMITS.writeBufferBytes;
+  const slowMs = deps.limits?.slowReaderMs ?? ENDPOINT_HOST_LIMITS.slowReaderMs;
   let seq = 0;
 
   const drop = (endpoint: string, c: Conn): void => {
@@ -96,8 +112,28 @@ export function createEndpointHost(cfg: EndpointHostConfig, deps: { readonly sen
     if (h === undefined || h.conns.get(c.id) !== c) return;
     h.conns.delete(c.id);
     deps.clock.clearTimeout(c.timer);
+    deps.clock.clearTimeout(c.slowTimer);
     c.sock.destroy();
     deps.send({ t: "relay-close", endpoint, conn: c.id });
+  };
+  /** The replies the peer has not taken: past the cap the connection is dropped (true); unread ones keep the slow-reader clock running. */
+  const backlogged = (endpoint: string, c: Conn): boolean => {
+    const b = c.sock.buffered();
+    if (b > writeCap) {
+      drop(endpoint, c);
+      return true;
+    }
+    if (b === 0) {
+      c.unflushed = 0;
+      deps.clock.clearTimeout(c.slowTimer);
+      c.slowTimer = undefined;
+    } else if (c.slowTimer === undefined) {
+      c.slowTimer = deps.clock.setTimeout(() => {
+        c.slowTimer = undefined;
+        if (c.sock.buffered() > 0) drop(endpoint, c);
+      }, slowMs);
+    }
+    return false;
   };
   const arm = (endpoint: string, c: Conn, ms: number): void => {
     deps.clock.clearTimeout(c.timer);
@@ -121,17 +157,18 @@ export function createEndpointHost(cfg: EndpointHostConfig, deps: { readonly sen
       } catch {
         return drop(endpoint, c);
       }
-      if (frame.length > RELAY_FRAME_CHARS || c.pending >= ENDPOINT_HOST_LIMITS.pendingFrames) return drop(endpoint, c);
+      if (backlogged(endpoint, c)) return;
+      if (frame.length > RELAY_FRAME_CHARS || c.pending + c.unflushed >= ENDPOINT_HOST_LIMITS.pendingFrames) return drop(endpoint, c);
       c.pending += 1;
       if (c.state === "new") c.state = "authing";
-      else arm(endpoint, c, ENDPOINT_HOST_LIMITS.idleMs);
+      else if (c.sock.buffered() <= writeCap / 2) arm(endpoint, c, ENDPOINT_HOST_LIMITS.idleMs);
       if (!deps.send({ t: "relay-frame", endpoint, conn: c.id, frame })) return drop(endpoint, c);
     }
   }
 
   function accept(endpoint: string, h: Hosted, sock: EndpointConn): void {
     if (h.conns.size >= ENDPOINT_HOST_LIMITS.connections) return void sock.destroy();
-    const c: Conn = { id: `c${(seq++).toString(36)}`, sock, buf: Buffer.alloc(0), state: "new", pending: 0, timer: undefined };
+    const c: Conn = { id: `c${(seq++).toString(36)}`, sock, buf: Buffer.alloc(0), state: "new", pending: 0, unflushed: 0, timer: undefined, slowTimer: undefined };
     h.conns.set(c.id, c);
     arm(endpoint, c, ENDPOINT_HOST_LIMITS.preAuthMs);
     if (!deps.send({ t: "relay-open", endpoint, conn: c.id })) return drop(endpoint, c);
@@ -152,6 +189,7 @@ export function createEndpointHost(cfg: EndpointHostConfig, deps: { readonly sen
     hosted.delete(endpoint);
     for (const c of h.conns.values()) {
       deps.clock.clearTimeout(c.timer);
+      deps.clock.clearTimeout(c.slowTimer);
       c.sock.destroy();
     }
     h.conns.clear();
@@ -159,29 +197,39 @@ export function createEndpointHost(cfg: EndpointHostConfig, deps: { readonly sen
     rmSync(h.path, { force: true });
   };
 
+  /** Listen for one endpoint, the id already reserved: the socket path, or undefined when no endpoint can be made. */
+  async function openOn(endpoint: string): Promise<string | undefined> {
+    const path = join(cfg.dir, `${Buffer.from(deps.random(9)).toString("base64url")}.sock`);
+    // Never a port: Node reads a numeric string given to listen() as a TCP port, so only an absolute path is listened on.
+    if (!isEndpointPath(path) || Buffer.byteLength(path) > ENDPOINT_HOST_LIMITS.pathBytes) return undefined;
+    const h: Hosted = { stop: () => undefined, path, conns: new Map() };
+    try {
+      h.stop = (await listenOnPath(path, (conn) => accept(endpoint, h, conn))).close;
+    } catch {
+      return undefined; // the template refused the path, or listening failed (it closed what it opened)
+    }
+    // The socket file itself 0600, whatever the umask (the 0700 directory is the control; this is depth).
+    try {
+      chmodSync(path, 0o600);
+    } catch {
+      h.stop();
+      rmSync(path, { force: true });
+      return undefined;
+    }
+    hosted.set(endpoint, h);
+    return path;
+  }
+
   return {
     async open(endpoint) {
       // An absolute directory first, before anything touches the file system (a relative one would be made in the working directory).
-      if (cfg.platform === "win32" || !ENDPOINT_ID.test(endpoint) || hosted.has(endpoint) || !isEndpointPath(cfg.dir) || !endpointDirOk(cfg.dir, cfg.uid)) return undefined;
-      const path = join(cfg.dir, `${Buffer.from(deps.random(9)).toString("base64url")}.sock`);
-      // Never a port: Node reads a numeric string given to listen() as a TCP port, so only an absolute path is listened on.
-      if (!isEndpointPath(path) || Buffer.byteLength(path) > ENDPOINT_HOST_LIMITS.pathBytes) return undefined;
-      const h: Hosted = { stop: () => undefined, path, conns: new Map() };
+      if (cfg.platform === "win32" || !ENDPOINT_ID.test(endpoint) || hosted.has(endpoint) || opening.has(endpoint) || !isEndpointPath(cfg.dir) || !endpointDirOk(cfg.dir, cfg.uid)) return undefined;
+      opening.add(endpoint);
       try {
-        h.stop = (await listenOnPath(path, (conn) => accept(endpoint, h, conn))).close;
-      } catch {
-        return undefined; // the template refused the path, or listening failed (it closed what it opened)
+        return await openOn(endpoint);
+      } finally {
+        opening.delete(endpoint);
       }
-      // The socket file itself 0600, whatever the umask (the 0700 directory is the control; this is depth).
-      try {
-        chmodSync(path, 0o600);
-      } catch {
-        h.stop();
-        rmSync(path, { force: true });
-        return undefined;
-      }
-      hosted.set(endpoint, h);
-      return path;
     },
     close,
     onRelay(msg) {
@@ -189,14 +237,17 @@ export function createEndpointHost(cfg: EndpointHostConfig, deps: { readonly sen
       const c = hosted.get(msg.endpoint)?.conns.get(msg.conn);
       if (c === undefined) return;
       c.pending = Math.max(0, c.pending - 1);
+      c.unflushed += 1; // unanswered until the peer has taken it
       const body = Buffer.from(msg.frame, "utf8");
       const head = Buffer.alloc(4);
       head.writeUInt32BE(body.length, 0);
       c.sock.write(Buffer.concat([head, body]));
+      if (!msg.close && backlogged(msg.endpoint, c)) return;
       if (msg.close) {
         // After the reply is flushed; the daemon forgets the connection on the `relay-close` (a failed one too).
         hosted.get(msg.endpoint)?.conns.delete(c.id);
         deps.clock.clearTimeout(c.timer);
+        deps.clock.clearTimeout(c.slowTimer);
         c.sock.end();
         deps.send({ t: "relay-close", endpoint: msg.endpoint, conn: c.id });
         return;

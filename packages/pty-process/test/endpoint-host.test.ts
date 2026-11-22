@@ -1,9 +1,9 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync } from "node:fs";
 import { connect, type Socket } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { test, type TestContext } from "node:test";
 import { ENDPOINT_HOST_LIMITS, PtySpawnError, createEndpointHost, endpointDirOk, isEndpointPath, type EndpointHost, type RelayInbound } from "../src/index.js";
 import { ManualClock, counterRandom } from "../testing/helpers.js";
@@ -31,11 +31,11 @@ interface Host {
   readonly clock: DelayClock;
   readonly dir: string;
 }
-function host(t: TestContext): Host {
+function host(t: TestContext, limits?: { writeBufferBytes?: number; slowReaderMs?: number }): Host {
   const sent: RelayInbound[] = [];
   const clock = new DelayClock();
   const d = dir(t);
-  const h = createEndpointHost({ dir: d, platform: process.platform, uid }, { send: (m) => (sent.push(m), true), clock, random: counterRandom() });
+  const h = createEndpointHost({ dir: d, platform: process.platform, uid }, { send: (m) => (sent.push(m), true), clock, random: counterRandom(), ...(limits === undefined ? {} : { limits }) });
   t.after(() => h.closeAll());
   return { host: h, sent, clock, dir: d };
 }
@@ -282,4 +282,130 @@ test("review: only an absolute path is ever listened on: a relative or numeric d
   }
   assert.deepEqual(listened, [], "listen was never called");
   assert.equal(existsSync("relative-dir") || existsSync("8080"), false, "and nothing was created in the working directory");
+});
+
+test("review 1 N1: the endpoint's bounds are these literal values", () => {
+  assert.deepEqual({ ...ENDPOINT_HOST_LIMITS }, { connections: 4, authFrameBytes: 512, frameBytes: 65536, preAuthMs: 2000, idleMs: 600000, pendingFrames: 4, pathBytes: 100, writeBufferBytes: 4194304, slowReaderMs: 60000 });
+});
+
+/** An open, authenticated connection: the socket, its relay id, and a way to relay the daemon's answer to its next frame. */
+async function authedConn(h: Host, path: string): Promise<{ s: Awaited<ReturnType<typeof dial>>; conn: string }> {
+  const before = ofType(h.sent, "relay-open").length;
+  const s = await dial(path);
+  await until(() => ofType(h.sent, "relay-open").length === before + 1, "opened");
+  const conn = (ofType(h.sent, "relay-open").at(-1) as { conn: string }).conn;
+  s.write(frame(`{"op":"auth","token":"${TOKEN}"}`));
+  await until(() => ofType(h.sent, "relay-frame").some((m) => m.conn === conn), "the auth");
+  h.host.onRelay({ t: "relay-reply", endpoint: EP, conn, frame: "{}", close: false, authFailed: false });
+  await until(() => Buffer.concat(s.got).length > 0, "the auth answer");
+  return { s, conn };
+}
+
+test("review 1 S1: four frames may wait for the daemon's answer; a fifth closes the connection", { skip }, async (t) => {
+  const h = host(t);
+  const path = (await h.host.open(EP)) as string;
+  const { s, conn } = await authedConn(h, path);
+  for (let i = 0; i < 4; i++) s.write(frame(`{"op":"read","id":"r${i}"}`));
+  await until(() => ofType(h.sent, "relay-frame").filter((m) => m.conn === conn).length === 5, "four requests relayed (after the auth)");
+  assert.equal(ofType(h.sent, "relay-close").length, 0, "four unanswered are allowed");
+  s.write(frame('{"op":"read","id":"r4"}'));
+  await closes(s, "a fifth unanswered frame");
+  assert.equal(ofType(h.sent, "relay-frame").filter((m) => m.conn === conn).length, 5, "the fifth was not relayed");
+});
+
+test("review 1 B1: a client that never reads is dropped once its unread replies pass the cap (the reviewer's PoC)", { skip }, async (t) => {
+  const cap = 256 * 1024;
+  const h = host(t, { writeBufferBytes: cap });
+  const path = (await h.host.open(EP)) as string;
+  const { s, conn } = await authedConn(h, path);
+  s.pause(); // never reads again
+  const big = JSON.stringify({ ok: true, pad: "x".repeat(200 * 1024) });
+  let sent = 0;
+  for (let i = 0; i < 64 && ofType(h.sent, "relay-close").every((m) => m.conn !== conn); i++) {
+    s.write(frame(`{"op":"read","id":"r${i}"}`));
+    await until(() => ofType(h.sent, "relay-frame").filter((m) => m.conn === conn).length === i + 2 || ofType(h.sent, "relay-close").some((m) => m.conn === conn), "relayed or dropped");
+    if (ofType(h.sent, "relay-close").some((m) => m.conn === conn)) break;
+    h.host.onRelay({ t: "relay-reply", endpoint: EP, conn, frame: big, close: false, authFailed: false });
+    sent += big.length;
+  }
+  assert.ok(ofType(h.sent, "relay-close").some((m) => m.conn === conn), "the connection was dropped");
+  assert.ok(sent <= cap * 8, `bounded: the host wrote ${sent} bytes before dropping it (cap ${cap}, plus what the kernel holds)`);
+});
+
+test("review 1 B1: one reply larger than the cap, left unread, drops the connection at once (no later frame needed)", { skip }, async (t) => {
+  const h = host(t, { writeBufferBytes: 256 * 1024 });
+  const path = (await h.host.open(EP)) as string;
+  const { s, conn } = await authedConn(h, path);
+  s.pause();
+  s.write(frame('{"op":"read","id":"r0"}'));
+  await until(() => ofType(h.sent, "relay-frame").filter((m) => m.conn === conn).length === 2, "relayed");
+  h.host.onRelay({ t: "relay-reply", endpoint: EP, conn, frame: JSON.stringify({ pad: "v".repeat(2 * 1024 * 1024) }), close: false, authFailed: false });
+  assert.equal(ofType(h.sent, "relay-close").filter((m) => m.conn === conn).length, 1, "dropped right after the write that passed the cap");
+});
+
+test("review 1 B1: unread replies that do not drain for the slow-reader bound drop the connection", { skip }, async (t) => {
+  const h = host(t, { writeBufferBytes: 64 * 1024 * 1024 });
+  const path = (await h.host.open(EP)) as string;
+  const { s, conn } = await authedConn(h, path);
+  s.pause();
+  s.write(frame('{"op":"read","id":"r0"}'));
+  await until(() => ofType(h.sent, "relay-frame").filter((m) => m.conn === conn).length === 2, "relayed");
+  h.host.onRelay({ t: "relay-reply", endpoint: EP, conn, frame: JSON.stringify({ pad: "y".repeat(8 * 1024 * 1024) }), close: false, authFailed: false });
+  assert.ok(h.clock.delays().includes(ENDPOINT_HOST_LIMITS.slowReaderMs), `the slow-reader clock runs: ${h.clock.delays()}`);
+  assert.ok(ofType(h.sent, "relay-close").every((m) => m.conn !== conn), "not yet: the backlog is under the cap");
+  for (const [id, tm] of [...h.clock.timers]) if (tm.ms === ENDPOINT_HOST_LIMITS.slowReaderMs) (h.clock.timers.delete(id), tm.fn());
+  // The client is paused, so it does not see the close itself: the host's relay-close says the connection was dropped.
+  assert.deepEqual(ofType(h.sent, "relay-close").filter((m) => m.conn === conn).length, 1, "dropped at the slow-reader bound");
+});
+
+test("review 1 N2: two concurrent opens of one endpoint: the second is refused, one listener, one socket", { skip }, async (t) => {
+  // Every server this test starts is closed when it ends, so a leaked listener fails it by name instead of holding the process.
+  const net = await import("node:net");
+  const started: { close(): void }[] = [];
+  const original = net.Server.prototype.listen;
+  net.Server.prototype.listen = function (this: { close(): void }, ...args: unknown[]) {
+    started.push(this);
+    return original.apply(this as never, args as never);
+  } as typeof original;
+  t.after(() => {
+    net.Server.prototype.listen = original;
+    for (const srv of started) srv.close();
+  });
+  const h = host(t);
+  const [a, b] = await Promise.all([h.host.open(EP), h.host.open(EP)]);
+  assert.deepEqual([typeof a, b], ["string", undefined]);
+  assert.deepEqual(readdirSync(h.dir), [basename(a as string)], "one socket file");
+  assert.equal(started.length, 1, "one listener");
+});
+
+test("review 1 B1: a reply counts as unanswered until the reader takes it: four unread replies and a fifth frame close the connection", { skip }, async (t) => {
+  const h = host(t, { writeBufferBytes: 64 * 1024 * 1024 });
+  const path = (await h.host.open(EP)) as string;
+  const { s, conn } = await authedConn(h, path);
+  s.pause();
+  const big = JSON.stringify({ pad: "z".repeat(1024 * 1024) }); // larger than what the kernel holds, so it stays unread
+  for (let i = 0; i < 4; i++) {
+    s.write(frame(`{"op":"read","id":"r${i}"}`));
+    await until(() => ofType(h.sent, "relay-frame").filter((m) => m.conn === conn).length === i + 2, `request ${i} relayed`);
+    h.host.onRelay({ t: "relay-reply", endpoint: EP, conn, frame: big, close: false, authFailed: false });
+  }
+  assert.equal(ofType(h.sent, "relay-close").filter((m) => m.conn === conn).length, 0, "four, answered but unread, are allowed");
+  s.write(frame('{"op":"read","id":"r4"}'));
+  await until(() => ofType(h.sent, "relay-close").some((m) => m.conn === conn), "the fifth frame drops it");
+  assert.equal(ofType(h.sent, "relay-frame").filter((m) => m.conn === conn).length, 5, "the fifth was not relayed");
+});
+
+test("review 1 B1: a frame from a connection whose unread replies are above half the cap does not refresh its idle timer", { skip }, async (t) => {
+  const h = host(t, { writeBufferBytes: 2 * 1024 * 1024 });
+  const path = (await h.host.open(EP)) as string;
+  const { s, conn } = await authedConn(h, path);
+  s.pause();
+  s.write(frame('{"op":"read","id":"r0"}'));
+  await until(() => ofType(h.sent, "relay-frame").filter((m) => m.conn === conn).length === 2, "relayed");
+  h.host.onRelay({ t: "relay-reply", endpoint: EP, conn, frame: JSON.stringify({ pad: "w".repeat(1536 * 1024) }), close: false, authFailed: false });
+  const idleIds = () => [...h.clock.timers].filter(([, tm]) => tm.ms === ENDPOINT_HOST_LIMITS.idleMs).map(([id]) => id);
+  const before = idleIds();
+  s.write(frame('{"op":"read","id":"r1"}'));
+  await until(() => ofType(h.sent, "relay-frame").filter((m) => m.conn === conn).length === 3, "relayed");
+  assert.deepEqual(idleIds(), before, "the idle timer was not re-armed");
 });
