@@ -15,7 +15,7 @@ Companion to `docs/design/daemon-host.md` (sections 3, 6.3 and 8), `docs/design/
 
 ## Startup of the entry (fails closed, exit code 78, a closed `fatal` message, before any directory, lock or file exists)
 
-1. No `parentPort`, a debugger or inspector flag in `execArgv` (`--inspect*`, `--debug*`, `--remote-debugging*`), or a non-empty `NODE_OPTIONS`: refused.
+1. No `parentPort`, a debugger or inspector flag in `execArgv` (`--inspect*`, `--debug*`, `--remote-debugging*`), or a non-empty `NODE_OPTIONS` (`node_options_refused`), `NODE_TLS_REJECT_UNAUTHORIZED` (`tls_override_refused`) or `NODE_USE_ENV_PROXY` (`env_proxy_refused`): refused. On Windows the names match in any letter case, as Windows itself reads them. The last two would turn off certificate checks or route Node's own HTTP through an environment proxy (ADR 0009 decision 4). Main's allow-listed environment (`DAEMON_ENV_ALLOW`) already leaves all three out, so these refusals are the second line, for a daemon started any other way.
 2. The parent port is adapted before anything awaits, so the single `init` cannot be lost.
 3. One `init` within 10 s, else refused. A second `init` is ignored.
 4. `HostConfig` is parsed strictly; a `platform` different from the process's own is refused.
@@ -28,7 +28,7 @@ Companion to `docs/design/daemon-host.md` (sections 3, 6.3 and 8), `docs/design/
 - Minters: only `compose.ts` loads them. `compose.ts` may now be loaded by the public index and by `entry.ts` (nothing in `src/` may import the index, so the entry cannot go through it); `entry.ts` calls `composeDaemonHost` and exports no minter. This widens one rule in `test/packages/imports.test.mjs` and `RESTRICTED_MODULES` in `scripts/code-oss/stage-scan.mjs` by exactly that file, with tests for both the allowed and the refused importers.
 - No renderer-supplied trust: identity comes only from the attestation main signs with a per-spawn key (32 random bytes made by the supervisor, sent in `init`, never logged); the port arrives only on `parentPort`, which only main can write. Extra ports in one message are closed.
 - No listener: no socket, no `--inspect`, no reh listener. The reh server build bundles the entry file (patch `0200`) but nothing starts it there; run alone it refuses (step 1).
-- The daemon gets an allow-listed environment (`daemonEnvironment`), no `NODE_OPTIONS`, empty `execArgv`, piped stdio.
+- The daemon gets an allow-listed environment (`daemonEnvironment`), no `NODE_OPTIONS`, `NODE_TLS_REJECT_UNAUTHORIZED` or `NODE_USE_ENV_PROXY` (none is on `DAEMON_ENV_ALLOW`), empty `execArgv`, piped stdio.
 - Errors and logs are closed: `fatal` carries a code and a reason code only; the supervisor logs closed event names and exit codes, never child text. Child stderr reaches only the trace log, cut to 512 characters, after the daemon's own redaction.
 
 ## Supervision (decided, conservative)

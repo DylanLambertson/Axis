@@ -2,6 +2,7 @@
 import type { Migration } from "@axis/audit";
 import { JOURNAL_V11 } from "./schema-v11.js";
 import { AGENTS_MIGRATION } from "./schema-agents.js";
+import { FORGE_PINS_MIGRATION } from "./schema-forge-pins.js";
 
 /**
  * Journal schema, versioned in `axis_schema` under component `journal`.
@@ -477,6 +478,7 @@ export const JOURNAL_MIGRATIONS: readonly Migration[] = [
   },
   JOURNAL_V11,
   AGENTS_MIGRATION,
+  FORGE_PINS_MIGRATION,
 ];
 
 export const JOURNAL_SCHEMA_VERSION = JOURNAL_MIGRATIONS.length;

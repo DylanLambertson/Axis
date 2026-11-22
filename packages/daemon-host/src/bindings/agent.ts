@@ -149,7 +149,7 @@ export const COMPOSER_TOOLS: readonly ComposerToolSpec[] = Object.freeze([
   },
   {
     name: "write_file",
-    description: "Create or replace a UTF-8 text file of the workspace. The path is relative to the workspace root. To replace a file, set `base` to the digest your last read_file or write_file of it returned; to create one, omit `base` (or set it to `absent`). The write is refused (stale) if the file changed since: read it again.",
+    description: "Create or replace a UTF-8 text file of the workspace. The path is relative to the workspace root. To replace a file, set `base` to the digest your last read_file or write_file of it returned; to create one, omit `base` (or set it to `absent`). The write is refused (stale) if the file changed since: read it again. Once this run has received untrusted input (messages and the like), a write needs the user's approval and the user must be able to read all of it: content past 2,048 units counted after escaping (about 2,000 plain characters), or holding a secret, is then refused as content_not_reviewable (a write replaces the whole file, so such a file cannot be written in that run: tell the user what to change).",
     inputSchema: { type: "object", properties: { path: { type: "string" }, content: { type: "string" }, base: { type: "string" } }, required: ["path", "content"], additionalProperties: false },
   },
 ]);
@@ -297,6 +297,10 @@ export function createAgentBinding(deps: AgentBindingDeps): AgentBinding {
         // its first 2,048 units and never recorded as the user's decline. A preview that could not be built at all is the same
         // refusal for a send (review 2 N2).
         if (req.tool === SEND_MESSAGE && (preview === undefined || !wholeText(preview))) throw new BrokerError("E_POLICY_DENIED", "body-not-reviewable", "the message cannot be shown whole for approval");
+        // The same for a write to a file that is not protected: with the floor at `network` it is asked only in a tainted run
+        // (IAC-T), and the user must see all of what is written, never its first 2,048 units. A protected write keeps C2's rule
+        // below (declined unless shown whole); a preview that could not be built is this refusal too.
+        if (req.tool === "write_file" && (preview === undefined || (!preview.protected && !wholeText(preview)))) throw new BrokerError("E_POLICY_DENIED", "content-not-reviewable", "the content cannot be shown whole for approval");
         if (preview === undefined || !shownWhole(preview)) return { approved: false };
         // The card's sources, read with the flag the challenge binds: nothing awaits between here and its issue.
         const card = taint.card();

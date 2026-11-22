@@ -52,16 +52,16 @@ export interface ForgeLimits {
 export const DEFAULT_FORGE_LIMITS: ForgeLimits = Object.freeze({ freshMs: 60_000, minIntervalMs: 15_000, staleMs: 600_000 });
 
 /**
- * Where the user's confirmed repository of each project is kept (§2). Slice 2 ships `createMemoryPinStore`: a pin is lost when
- * the daemon restarts, so the project is unconfirmed again (`repository_unconfirmed`, no `gh` runs) until the user confirms it
- * again. The journal store (schema v13) is slice 2b; it implements this interface and nothing else changes.
+ * Where the user's confirmed repository of each project is kept (§2). The composition passes the journal's (schema v13, slice
+ * 2b: `journalPinStore` in compose-forge.ts), so a pin survives a restart. Whatever a store returns is re-vetted on every read;
+ * anything that is not a vetted github.com repository is no pin (the project is unconfirmed and no `gh` runs).
  */
 export interface PinStore {
   get(projectId: string): ForgeRepository | undefined;
   set(projectId: string, repository: ForgeRepository): void;
 }
 
-/** The slice 2 pin store: this process's memory only. */
+/** A pin store in this process's memory only (tests; slice 2 shipped it before the journal kept pins). */
 export function createMemoryPinStore(): PinStore {
   const pins = new Map<string, ForgeRepository>();
   return {
@@ -72,8 +72,8 @@ export function createMemoryPinStore(): PinStore {
 
 export interface ForgeServiceDeps {
   readonly projectExists: (projectId: string) => boolean;
-  /** Default: a fresh `createMemoryPinStore()`. */
-  readonly pins?: PinStore;
+  /** Required: there is no default, so a composition can never fall back to pins that a restart forgets. */
+  readonly pins: PinStore;
   readonly readOrigin: (projectId: string) => Promise<OriginRead>;
   /** Absent: no pty process is connected (`unavailable`). */
   readonly port?: ForgeListPort;
@@ -126,7 +126,7 @@ const AUTH_STATES: ReadonlySet<ForgeState> = new Set(["not_logged_in", "keyring_
 export function createForgeService(deps: ForgeServiceDeps): ForgeService {
   const limits: ForgeLimits = { ...DEFAULT_FORGE_LIMITS, ...deps.limits };
   const projects = new Map<string, ProjectState>();
-  const pins = deps.pins ?? createMemoryPinStore();
+  const pins = deps.pins;
   const pinOf = (projectId: string): ForgeRepository | undefined => {
     const p = pins.get(projectId);
     // A stored value is used only as a vetted repository; anything else is no pin (fail closed: the user confirms again).
