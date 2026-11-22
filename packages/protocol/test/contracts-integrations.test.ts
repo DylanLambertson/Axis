@@ -4,6 +4,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  argsSchema,
+  netBodySchema,
+  resultValueSchema,
   INTEGRATIONS_REASONS,
   INTEGRATIONS_REFUSALS,
   contracts,
@@ -24,51 +27,55 @@ const I = "axis.integrations";
 const N = "axis.net";
 const base = { projectId: "proj-1", integrationId: "github", operation: "list_pull_requests" };
 const net = { projectId: "proj-1", origin: "https://api.example.com", path: "/v1/items", method: "GET" };
+const send = { projectId: "proj-1", origin: "https://api.example.com", path: "/v1/items" };
 
 test("both contracts are planned, never served, with the designed method tables", () => {
   for (const key of ["axis.integrations/1", "axis.net/1"]) {
     assert.ok(plannedContracts[key] !== undefined, `${key} is planned`);
     assert.equal(contracts[key], undefined, `${key} is not served`);
   }
-  assert.equal(lookupMethod(I, 1, "request"), undefined);
-  assert.equal(lookupMethod(N, 1, "request"), undefined);
-  assert.equal(lookupMethodIn(plannedContracts, I, 1, "request"), integrationsMethods.request);
+  for (const [c, m] of [[I, "read"], [I, "write"], [N, "read"], [N, "send"]] as const) assert.equal(lookupMethod(c, 1, m), undefined, `${c}.${m}`);
+  assert.equal(lookupMethodIn(plannedContracts, I, 1, "write"), integrationsMethods.write);
+  assert.equal(lookupMethodIn(plannedContracts, I, 1, "request"), undefined, "the one request method is split");
+  assert.equal(lookupMethodIn(plannedContracts, N, 1, "request"), undefined, "the one request method is split");
   assert.deepEqual(tableProblems(plannedContracts), []);
   const table = (methods: Record<string, { sideEffect: string; tier: number; idempotency: string }>) =>
     Object.entries(methods).map(([m, s]) => [m, s.sideEffect, s.tier, s.idempotency]);
   assert.deepEqual(table(integrationsMethods), [
     ["list", "read", 0, "none"], ["status", "read", 0, "none"], ["connect", "credential", 3, "none"],
-    ["disconnect", "write", 1, "none"], ["request", "write", 1, "optional"],
+    ["disconnect", "write", 1, "none"], ["read", "read", 0, "none"], ["write", "network", 3, "required"],
   ]);
-  assert.deepEqual(table(netMethods), [["request", "write", 1, "optional"]]);
+  assert.deepEqual(table(netMethods), [["read", "read", 0, "none"], ["send", "network", 3, "required"]]);
 });
 
 test("no request has a URL, header, cookie, redirect, proxy or credential field, at the root or in an argument", () => {
   const smuggled = ["url", "uri", "href", "headers", "header", "cookie", "authorization", "Authorization", "token", "accessToken", "password", "credential", "apiKey", "redirect", "proxy", "host", "baseUrl", "method"];
   const bodies: Array<[string, string, Record<string, unknown>]> = [
     [I, "list", { projectId: "p" }], [I, "status", { projectId: "p", integrationId: "github" }], [I, "connect", { projectId: "p", integrationId: "github" }],
-    [I, "disconnect", { projectId: "p", integrationId: "github" }], [I, "request", base], [N, "request", net],
+    [I, "disconnect", { projectId: "p", integrationId: "github" }], [I, "read", base], [I, "write", base], [N, "read", net], [N, "send", send],
   ];
   for (const [contract, method, value] of bodies) {
     const schema = schemaOf(contract, method, "request");
     accepts(schema, value, `${contract}.${method}`);
     for (const key of smuggled) {
-      if (key === "method" && contract === N) continue; // a real field of axis.net/1.request
+      if (key === "method" && contract === N && method === "read") continue; // a real field of axis.net/1.read
       for (const smuggle of ["https://evil.example/", { a: "b" }, ["a"]]) rejects(schema, { ...value, [key]: smuggle }, `${contract}.${method} + ${key}: ${typeof smuggle}`);
     }
   }
-  const request = schemaOf(I, "request", "request");
-  for (const key of ["url", "uri", "href", "link", "host", "hostname", "origin", "baseUrl", "header", "headers", "cookie", "cookies", "authorization", "auth", "bearer", "token", "accessToken", "refreshToken", "idToken", "secret", "clientSecret", "password", "credential", "credentials", "apiKey", "key", "proxy", "redirect", "method", "path", "query"]) {
+  const request = schemaOf(I, "read", "request");
+  for (const key of ["url", "uri", "href", "link", "host", "hostname", "origin", "baseUrl", "header", "headers", "cookie", "cookies", "authorization", "auth", "bearer", "token", "accessToken", "refreshToken", "idToken", "secret", "clientSecret", "password", "credential", "credentials", "apiKey", "key", "proxy", "redirect", "method", "path", "query",
+    "authToken", "apiToken", "bearerToken", "xApiKey", "privateKey", "sessionId", "setCookie", "proxyUrl", "redirectUri", "callbackUrl", "clientSecret", "jwt"]) {
     rejects(request, { ...base, args: { [key]: "x" } }, `argument key ${key}`);
     rejects(request, { ...base, args: { [key.toUpperCase()]: "x" } }, `argument key ${key} upper case`);
   }
+  for (const ok of ["author", "sortKey", "filePath", "state", "perPage", "number", "securityLevel", "pullNumber"]) accepts(request, { ...base, args: { [ok]: "x" } }, `a real argument ${ok}`);
   rejects(request, { ...base, args: { access_token: "x" } }, "snake case never matches the key pattern");
   rejects(request, { ...base, args: { "access-token": "x" } }, "a dash");
   rejects(request, { ...base, args: { ["x" + "a".repeat(32)]: "x" } }, "a 33-character key");
 });
 
 test("an argument is a bounded text without NUL, a safe integer or a boolean; nothing nests", () => {
-  const request = schemaOf(I, "request", "request");
+  const request = schemaOf(I, "read", "request");
   for (const value of ["", "x", "line\nbreak", "é".repeat(65_536), 0, -5, Number.MAX_SAFE_INTEGER, true]) accepts(request, { ...base, args: { v: value } }, String(value).slice(0, 20));
   for (const value of ["a\u0000b", "x".repeat(65_537), 1.5, Number.NaN, Number.POSITIVE_INFINITY, 2 ** 60, null, undefined, [], ["a"], {}, { a: 1 }, () => 1]) {
     rejects(request, { ...base, args: { v: value } }, `argument ${typeof value} ${String(value).slice(0, 12)}`);
@@ -84,7 +91,7 @@ test("an argument is a bounded text without NUL, a safe integer or a boolean; no
 });
 
 test("an origin is a punycode https host: no IP literal in any spelling, port, userinfo, trailing dot, bracket or path", () => {
-  const request = schemaOf(N, "request", "request");
+  const request = schemaOf(N, "read", "request");
   for (const origin of ["https://api.example.com", "https://a.b.c.example.co.uk", "https://xn--bcher-kva.example", "https://example.xn--p1ai", "https://a-b.example.com"]) {
     accepts(request, { ...net, origin }, origin);
   }
@@ -101,12 +108,13 @@ test("an origin is a punycode https host: no IP literal in any spelling, port, u
 });
 
 test("a path is composed: no CR, LF, control, space, backslash, fragment, dot segment in any spelling, escaped slash or backslash", () => {
-  const request = schemaOf(N, "request", "request");
-  for (const path of ["/", "/v1", "/v1/items/", "/v1/items?limit=10&after=a%20b", "/a.b/c..d/...", "/a%2Eb", "/~user/@x", "/a:b;c=d", "/..a/b..", "/%41", "/x?next=%2e%2e", "/x".padEnd(2048, "a")]) {
+  const request = schemaOf(N, "read", "request");
+  for (const path of ["/", "/v1", "/a;b/c", "/x?u=//y", "/..a;b", "/%25", "/%2541", "/v1/items/", "/v1/items?limit=10&after=a%20b", "/a.b/c..d/...", "/a%2Eb", "/~user/@x", "/a:b;c=d", "/..a/b..", "/%41", "/x?next=%2e%2e", "/x".padEnd(2048, "a")]) {
     accepts(request, { ...net, path }, path.slice(0, 30));
   }
   for (const path of [
     "", "v1", "/a\r\nHost: evil", "/a\nb", "/a\rb", "/a\tb", "/a b", "/a\u0000b", "/a\u007fb", "/a\u0085b", "/a\\b", "/a#frag", "/a\"b", "/a<b", "/é", "/a‮b",
+    "//", "//evil.com/x", "//evil.com", "/a//b", "/x//", "/..;/x", "/x/..;/y", "/.;/x", "/..;", "/%2e;/x", "/%252e%252e/x", "/%252e/x", "/%252f", "/%255c", "/%c0%ae%c0%ae/x", "/%c0%af", "/%C1%9c", "/%e0%80%af", "/%f0%80%80%af",
     "/.", "/..", "/./x", "/x/..", "/x/../y", "/x/./y", "/%2e", "/%2E", "/%2e%2e", "/%2E%2e", "/.%2e", "/%2e./x", "/x/%2E%2E/y", "/x/%2e", "/x/.%2E/y",
     "/a%2fb", "/a%2Fb", "/a%5cb", "/a%5Cb", "/x?q=%2f", "/x?q=%5c", "/a%00b", "/a%0db", "/a%0Ab", "/a%1fb", "/a%7fb", "/a%", "/a%2", "/a%zz", "/a?b?c", "/x".padEnd(2049, "a"),
   ]) {
@@ -114,23 +122,41 @@ test("a path is composed: no CR, LF, control, space, backslash, fragment, dot se
   }
 });
 
-test("axis.net/1 allows GET, HEAD and POST only, and a body only with POST, as a JSON object", () => {
-  const request = schemaOf(N, "request", "request");
-  for (const method of ["GET", "HEAD", "POST"]) accepts(request, { ...net, method }, method);
-  for (const method of ["PUT", "PATCH", "DELETE", "OPTIONS", "CONNECT", "TRACE", "get", "Post", "GET ", "", "POST\r\nX: 1"]) rejects(request, { ...net, method }, JSON.stringify(method));
-  accepts(request, { ...net, method: "POST", body: {} }, "an empty object body");
-  for (const method of ["GET", "HEAD"]) rejects(request, { ...net, method, body: { a: 1 } }, `${method} with a body`);
-  for (const body of ["text", 1, true, null, ["a"], [], "x=1"]) rejects(request, { ...net, method: "POST", body }, `body ${JSON.stringify(body)}`);
+test("axis.net/1.read allows GET and HEAD only; axis.net/1.send is a POST with no method field and a JSON object body", () => {
+  const read = schemaOf(N, "read", "request");
+  const sendReq = schemaOf(N, "send", "request");
+  for (const method of ["GET", "HEAD"]) accepts(read, { ...net, method }, method);
+  for (const method of ["POST", "PUT", "PATCH", "DELETE", "OPTIONS", "CONNECT", "TRACE", "get", "Head", "GET ", "", "GET\r\nX: 1"]) rejects(read, { ...net, method }, JSON.stringify(method));
+  rejects(read, { ...net, body: { a: 1 } }, "a read has no body");
+  accepts(sendReq, send, "a POST without a body");
+  accepts(sendReq, { ...send, body: {} }, "an empty object body");
+  for (const method of ["GET", "POST", "PUT"]) rejects(sendReq, { ...send, method }, `a method field (${method}) on send`);
+  for (const body of ["text", 1, true, null, ["a"], [], "x=1"]) rejects(sendReq, { ...send, body }, `body ${JSON.stringify(body)}`);
   const deep = (n: number): unknown => (n === 0 ? 1 : { a: deep(n - 1) });
-  accepts(request, { ...net, method: "POST", body: deep(6) }, "body at depth 6");
-  rejects(request, { ...net, method: "POST", body: deep(7) }, "body at depth 7");
-  rejects(request, { ...net, method: "POST", body: { a: "x".repeat(65_537) } }, "an oversized text");
-  rejects(request, { ...net, method: "POST", headers: { "Content-Type": "text/plain" } }, "no header can be set, even Content-Type");
+  accepts(sendReq, { ...send, body: deep(6) }, "body at depth 6");
+  rejects(sendReq, { ...send, body: deep(7) }, "body at depth 7");
+  rejects(sendReq, { ...send, body: { a: "x".repeat(65_537) } }, "an oversized text");
+  rejects(sendReq, { ...send, headers: { "Content-Type": "text/plain" } }, "no header can be set, even Content-Type");
+});
+
+test("a key __proto__, constructor or prototype is refused in arguments, bodies and results, never silently dropped", () => {
+  const parse = (json: string): unknown => JSON.parse(json);
+  const withKey = (key: string): string => `{"${key}":{"polluted":1},"a":1}`;
+  for (const key of ["__proto__", "constructor", "prototype"]) {
+    // The schemas themselves (not only the envelope's walk, which also refuses these keys): an own key from JSON.parse.
+    rejects(argsSchema, parse(withKey(key)), `args ${key}`);
+    rejects(netBodySchema, parse(withKey(key)), `body ${key}`);
+    rejects(resultValueSchema, parse(withKey(key)), `result ${key}`);
+    rejects(resultValueSchema, parse(`{"outer":${withKey(key)}}`), `nested result ${key}`);
+    rejects(schemaOf(N, "send", "request"), { ...send, body: parse(withKey(key)) }, `send body ${key} through the guard`);
+    rejects(schemaOf(I, "read", "request"), { ...base, args: parse(withKey(key)) }, `read args ${key} through the guard`);
+  }
+  assert.equal(({} as Record<string, unknown>)["polluted"], undefined, "nothing was assigned to the prototype");
 });
 
 test("a reply carries a status and one typed value: no header, Location, cookie or credential, and no 3xx or error status", () => {
-  const rep = schemaOf(I, "request", "response");
-  const netRep = schemaOf(N, "request", "response");
+  const rep = schemaOf(I, "read", "response");
+  const netRep = schemaOf(N, "read", "response");
   accepts(rep, { status: 200, result: {} }, "200");
   accepts(netRep, { status: 204, body: null }, "204 with no body");
   for (const status of [100, 199, 300, 301, 302, 307, 308, 400, 404, 500, 200.5, "200", null]) {
@@ -170,11 +196,17 @@ test("an integration summary shows no credential and no URL beyond its punycode 
   rejects(list, { integrations: Array.from({ length: 65 }, () => github) }, "65 integrations");
 });
 
-test("connect carries an optional approval (tier 3); the others carry none and no payload says who is calling", () => {
+test("write and send carry an optional approval (tier 3), as connect does; reads and disconnect carry none; no payload says who is calling", () => {
+  const challenge = { challengeId: "A".repeat(43) };
+  accepts(schemaOf(I, "write", "request"), { ...base, approval: challenge }, "write with approval");
+  accepts(schemaOf(N, "send", "request"), { ...send, approval: challenge }, "send with approval");
+  rejects(schemaOf(I, "write", "request"), { ...base, approval: { challengeId: "short" } }, "a malformed challenge");
+  rejects(schemaOf(I, "read", "request"), { ...base, approval: challenge }, "read takes no approval");
+  rejects(schemaOf(N, "read", "request"), { ...net, approval: challenge }, "net read takes no approval");
   rejects(schemaOf(I, "connect", "request"), { projectId: "p", integrationId: "github", approval: { challengeId: "short" } }, "a malformed challenge");
   rejects(schemaOf(I, "disconnect", "request"), { projectId: "p", integrationId: "github", approval: { challengeId: "A".repeat(43) } }, "disconnect takes no approval");
-  for (const [c, m] of [[I, "connect"], [I, "disconnect"], [I, "request"], [N, "request"]] as const) {
-    rejects(schemaOf(c, m, "request"), { ...(c === N ? net : base), integrationId: "github", actor: "user", createdBy: "user", principal: "plugin:x" }, `${c}.${m}: no caller field`);
+  for (const [c, m] of [[I, "connect"], [I, "disconnect"], [I, "read"], [I, "write"], [N, "read"], [N, "send"]] as const) {
+    rejects(schemaOf(c, m, "request"), { ...(c === N ? (m === "read" ? net : send) : base), integrationId: "github", actor: "user", createdBy: "user", principal: "plugin:x" }, `${c}.${m}: no caller field`);
   }
 });
 
@@ -182,7 +214,7 @@ test("the refusals are closed and never echo an argument, host, body or Location
   assert.deepEqual(Object.keys(INTEGRATIONS_REFUSALS), ["E_NOT_FOUND", "E_INVALID_ARGUMENT", "E_CONFLICT", "E_UNAVAILABLE", "E_TIMEOUT"]);
   assert.equal(new Set(INTEGRATIONS_REASONS).size, INTEGRATIONS_REASONS.length);
   for (const reason of INTEGRATIONS_REASONS) assert.match(reason, /^[a-z][a-z_]*$/);
-  for (const reason of ["request_too_large", "response_too_large", "redirect_refused", "headers_too_large", "credential_echoed", "audit_unavailable"]) {
+  for (const reason of ["operation_kind_mismatch", "request_too_large", "response_too_large", "redirect_refused", "headers_too_large", "credential_echoed", "audit_unavailable"]) {
     assert.ok(INTEGRATIONS_REASONS.includes(reason as never), reason);
   }
   assert.equal(isIntegrationsRefusal("E_UNAVAILABLE", "redirect_refused"), true);

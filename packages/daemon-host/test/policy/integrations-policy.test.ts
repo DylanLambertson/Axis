@@ -20,11 +20,18 @@ test("every method of both planned contracts has one planned user-only row at th
     }
   }
   assert.equal(PLANNED_RULES["axis.integrations/1.connect"]?.tier, 3, "connect stores a credential: tier 3");
+  // The tier is a fact of the table: a write or a send to an external host is tier 3 and a read is tier 0, whatever a handler does.
+  for (const [key, tier] of [["axis.integrations/1.read", 0], ["axis.integrations/1.write", 3], ["axis.net/1.read", 0], ["axis.net/1.send", 3]] as const) {
+    assert.equal(PLANNED_RULES[key]?.tier, tier, key);
+  }
+  assert.equal(PLANNED_RULES["axis.integrations/1.request"], undefined, "the one request method is split");
+  assert.equal(PLANNED_RULES["axis.net/1.request"], undefined, "the one request method is split");
   assert.deepEqual(coverageProblems(), []);
 });
 
 test("the planned rows of these contracts are exactly one per method", () => {
   assert.deepEqual(Object.keys(PLANNED_RULES).filter((k) => k.startsWith("axis.integrations/") || k.startsWith("axis.net/")).sort(), [
-    "axis.integrations/1.connect", "axis.integrations/1.disconnect", "axis.integrations/1.list", "axis.integrations/1.request", "axis.integrations/1.status", "axis.net/1.request",
+    "axis.integrations/1.connect", "axis.integrations/1.disconnect", "axis.integrations/1.list", "axis.integrations/1.read", "axis.integrations/1.status",
+    "axis.integrations/1.write", "axis.net/1.read", "axis.net/1.send",
   ]);
 });

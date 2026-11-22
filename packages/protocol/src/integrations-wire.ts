@@ -52,13 +52,19 @@ export const originSchema = z
 // ---- the composed path of axis.net/1 (ADR 0009 decision 1) ----
 
 const PATH_CHARS = /^\/[A-Za-z0-9\-._~!$&'()*+,;=:@%/?]*$/;
-/** A dot segment in any spelling: `.`, `..`, `%2e`, `%2E` and mixes, between slashes or at the end of the path part. */
-const DOT_SEGMENT = /(?:^|\/)(?:\.|%2e){1,2}(?=\/|$)/i;
+/**
+ * A dot segment in any spelling: `.`, `..`, `%2e`, `%2E` and mixes, between slashes or at the end of the path part, and with
+ * a path parameter (`..;`, `.;x`), which some servers strip before they normalise.
+ */
+const DOT_SEGMENT = /(?:^|\/)(?:\.|%2e){1,2}(?=[/;]|$)/i;
 
 /**
  * A request path with its query. Refused: any character outside the unreserved, sub-delimiter and `:@%/?` set (so no
  * control character, CR, LF, space, `\`, `#`, quote or non-ASCII character); a malformed percent escape; `%2f` and `%5c`
- * anywhere; an escaped control character; and a dot segment in the path part. At most 2,048 characters.
+ * anywhere; an escaped control character; a double-encoded dot, slash or backslash (`%252e`); an overlong UTF-8 lead byte
+ * (`%c0`, `%c1`, `%e0%80`, `%f0%80`); `//` in the path part (a protocol-relative path would name another host if it were
+ * resolved against the origin); and a dot segment in the path part. At most 2,048 characters. Control characters in a
+ * path or query value are also refused where the daemon composes it (PV-N1f's composition test): this is the first fence.
  */
 export const netPathSchema = z
   .string()
@@ -66,16 +72,23 @@ export const netPathSchema = z
   .regex(PATH_CHARS)
   .refine((p) => !/%(?![0-9a-fA-F]{2})/.test(p), "malformed percent escape")
   .refine((p) => !/%(?:2f|5c|[01][0-9a-f]|7f)/i.test(p), "an escaped slash, backslash or control character")
+  .refine((p) => !/%25(?:2e|2f|5c)/i.test(p), "a double-encoded dot, slash or backslash")
+  .refine((p) => !/%(?:c0|c1|e0%80|f0%80)/i.test(p), "an overlong UTF-8 encoding")
+  .refine((p) => !(p.split("?", 1)[0] as string).includes("//"), "no empty segment or protocol-relative path")
   .refine((p) => !DOT_SEGMENT.test(p.split("?", 1)[0] as string), "no dot segments")
   .refine((p) => p.split("?").length <= 2, "one query only");
 
-/** The only methods `axis.net/1.request` allows. */
-export const NET_METHODS = ["GET", "HEAD", "POST"] as const;
-export const netMethodSchema = z.enum(NET_METHODS);
+/** `axis.net/1.read` allows `GET` and `HEAD`; `axis.net/1.send` is a `POST` and has no method field. */
+export const NET_READ_METHODS = ["GET", "HEAD"] as const;
+export const netReadMethodSchema = z.enum(NET_READ_METHODS);
 
 // ---- values ----
 
-/** An argument or a body field: a bounded text without NUL, a safe integer or a boolean. No nesting, no null, no array. */
+/**
+ * An argument or a body field: a bounded text without NUL, a safe integer or a boolean. No nesting, no null, no array. A
+ * text may hold CR, LF and other controls (a comment body has newlines); the daemon refuses them in a value that goes into
+ * a path segment or a query parameter (ADR 0009 decision 3: the PV-N1f composition test).
+ */
 export const argValueSchema = z.union([
   z.string().max(ARG_STRING_CHARS).refine((t) => !t.includes("\u0000"), "no NUL"),
   z.number().int().min(-Number.MAX_SAFE_INTEGER).max(Number.MAX_SAFE_INTEGER),
@@ -83,25 +96,43 @@ export const argValueSchema = z.union([
 ]);
 
 /**
- * Names that can never be an argument key, whatever their case, `_` or `-`: they would be a way to hand the daemon a URL,
- * a header or a credential. Defence in depth: the connector's own typed argument set is the authority and refuses any key
- * it does not declare.
+ * Names that can never be an argument key. A key is split into its camelCase words and refused when any word is one of
+ * ANYWHERE (so `authToken`, `proxyUrl`, `redirectUri`, `setCookie`, `callbackUrl` all go), when two adjacent words join to a
+ * COMPOUND (`apiKey`, `privateKey`, `sessionId`), or when the whole name is one of WHOLE (`key`, `path`, `query`, `method`,
+ * `origin`, `host`: words a real argument may contain, as in `sortKey` or `filePath`). `author` is not `auth`. Defence in
+ * depth: the connector's own typed argument set is the authority and refuses any key it does not declare.
  */
-const RESERVED_ARG_KEYS: ReadonlySet<string> = new Set([
-  "url", "uri", "href", "link", "host", "hostname", "origin", "baseurl", "header", "headers", "cookie", "cookies", "authorization",
-  "auth", "bearer", "token", "accesstoken", "refreshtoken", "idtoken", "secret", "clientsecret", "password", "passwd", "credential",
-  "credentials", "apikey", "key", "proxy", "redirect", "method", "path", "query",
+const ANYWHERE: ReadonlySet<string> = new Set([
+  "url", "uri", "href", "link", "header", "headers", "cookie", "cookies", "auth", "authorization", "bearer", "token", "tokens", "secret",
+  "secrets", "password", "passwd", "credential", "credentials", "proxy", "redirect", "jwt", "oauth",
 ]);
+const COMPOUND: ReadonlySet<string> = new Set(["apikey", "privatekey", "accesskey", "signingkey", "secretkey", "sessionid", "clientid"]);
+const WHOLE: ReadonlySet<string> = new Set(["key", "path", "query", "method", "origin", "host", "hostname", "baseurl"]);
 const ARG_KEY = /^[a-z][a-zA-Z0-9]{0,31}$/;
+function reservedKey(key: string): boolean {
+  const words = key.split(/(?=[A-Z])/).map((w) => w.toLowerCase());
+  if (words.some((w) => ANYWHERE.has(w))) return true;
+  if (words.some((w, i) => i > 0 && COMPOUND.has((words[i - 1] as string) + w))) return true;
+  return WHOLE.has(key.toLowerCase()) || COMPOUND.has(key.toLowerCase());
+}
 export const argKeySchema = z
   .string()
   .regex(ARG_KEY)
-  .refine((k) => !RESERVED_ARG_KEYS.has(k.toLowerCase()), "a reserved name");
+  .refine((k) => !reservedKey(k), "a reserved name");
+
+/** A key `__proto__`, `constructor` or `prototype` is refused, never dropped: the values sent are exactly the values the caller passed. */
+const FORBIDDEN_KEYS: ReadonlySet<string> = new Set(["__proto__", "constructor", "prototype"]);
+const recordKey = z.string().max(64).refine((k) => !FORBIDDEN_KEYS.has(k), "a forbidden key");
+/**
+ * zod's record skips an own `__proto__` key without looking at it (a silent drop: the values sent would differ from the
+ * values the caller passed), so the check runs on the input first, then the record parses.
+ */
+const noForbiddenKeys = z.unknown().refine((o) => typeof o !== "object" || o === null || !Object.keys(o).some((k) => FORBIDDEN_KEYS.has(k)), "a forbidden key");
 
 /** The typed arguments of one operation. The keys the operation takes are the connector's, not this schema's. */
-export const argsSchema = z
-  .record(argKeySchema, argValueSchema)
-  .refine((a) => Object.keys(a).length <= ARGS_MAX_KEYS, "too many arguments");
+export const argsSchema = noForbiddenKeys.pipe(
+  z.record(argKeySchema, argValueSchema).refine((a) => Object.keys(a).length <= ARGS_MAX_KEYS, "too many arguments"),
+);
 
 /**
  * A bounded JSON value the daemon built from a connector's response schema or a plugin's body. Built to a fixed depth, so
@@ -114,7 +145,7 @@ function jsonValue(depth: number): z.ZodType<unknown> {
   return z.union([
     leaf,
     z.array(inner).max(RESULT_ARRAY_ITEMS),
-    z.record(z.string().max(64), inner).refine((o) => Object.keys(o).length <= RESULT_OBJECT_KEYS, "too many keys"),
+    noForbiddenKeys.pipe(z.record(recordKey, inner).refine((o) => Object.keys(o).length <= RESULT_OBJECT_KEYS, "too many keys")),
   ]);
 }
 export const resultValueSchema = jsonValue(RESULT_MAX_DEPTH);

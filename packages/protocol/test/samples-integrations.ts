@@ -31,13 +31,16 @@ export const INTEGRATIONS_SAMPLES: readonly Sample[] = [
   res(I, "connect", "connecting", { integration: { ...idle, state: "connecting" }, changed: true }),
   req(I, "disconnect", "disconnect", { projectId: "proj-1", integrationId: "github" }),
   res(I, "disconnect", "disconnected", { integration: idle, changed: true }),
-  req(I, "request", "a read with arguments", { projectId: "proj-1", integrationId: "github", operation: "list_pull_requests", args: { state: "open", perPage: 30, draft: false } }, { toleratedPattern: FREE }),
-  req(I, "request", "a read without arguments", { projectId: "proj-1", integrationId: "github", operation: "list_pull_requests" }),
-  req(I, "request", "a write after its challenge", {
+  req(I, "read", "a read with arguments", { projectId: "proj-1", integrationId: "github", operation: "list_pull_requests", args: { state: "open", perPage: 30, draft: false } }, { toleratedPattern: FREE }),
+  req(I, "read", "a read without arguments", { projectId: "proj-1", integrationId: "github", operation: "list_pull_requests" }),
+  req(I, "write", "a write after its challenge", {
     projectId: "proj-1", integrationId: "github", operation: "comment_pull_request", args: { number: 7, body: "LGTM\nthanks" }, approval: challenge,
   }, { toleratedPattern: FREE }),
-  res(I, "request", "a typed result", { status: 200, result: { items: [{ number: 7, title: "Fix", draft: false, labels: ["a", "b"], milestone: null }], total: 1 } }, { toleratedPattern: FREE }),
-  req(N, "request", "a GET", { projectId: "proj-1", origin: "https://api.example.com", path: "/v1/items?limit=10&after=a%20b", method: "GET" }),
-  req(N, "request", "a POST with a JSON object", { projectId: "proj-1", origin: "https://api.example.com", path: "/v1/items", method: "POST", body: { name: "x", tags: ["a"], n: 1 } }, { toleratedPattern: FREE }),
-  res(N, "request", "a JSON body", { status: 201, body: { id: "abc", ok: true } }, { toleratedPattern: FREE }),
+  res(I, "read", "a typed result", { status: 200, result: { items: [{ number: 7, title: "Fix", draft: false, labels: ["a", "b"], milestone: null }], total: 1 } }, { toleratedPattern: FREE }),
+  req(N, "read", "a GET", { projectId: "proj-1", origin: "https://api.example.com", path: "/v1/items?limit=10&after=a%20b", method: "GET" }),
+  req(N, "read", "a HEAD", { projectId: "proj-1", origin: "https://api.example.com", path: "/v1/items", method: "HEAD" }),
+  req(N, "send", "a POST with a JSON object", { projectId: "proj-1", origin: "https://api.example.com", path: "/v1/items", body: { name: "x", tags: ["a"], n: 1 } }, { toleratedPattern: FREE }),
+  req(N, "send", "a POST with no body after a challenge", { projectId: "proj-1", origin: "https://api.example.com", path: "/v1/ping", approval: challenge }),
+  res(N, "read", "a JSON body", { status: 201, body: { id: "abc", ok: true } }, { toleratedPattern: FREE }),
+  res(N, "send", "the answer", { status: 201, body: { id: "abc" } }, { toleratedPattern: FREE }),
 ];
