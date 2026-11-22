@@ -25,8 +25,12 @@ export const PLUGIN_METHOD_SETS: Readonly<Record<PluginPermission, readonly stri
   "files.read": Object.freeze(["axis.review/1.content", "axis.review/1.diff"]),
 });
 
-/** Tiers a plugin call is raised to (never lowered): a plugin-started composer run is a tier-3 user challenge. */
-export const PLUGIN_SET_TIER: Readonly<Record<string, number>> = Object.freeze({ "axis.runs/1.start": 3 });
+/**
+ * Tiers a plugin call is raised to (never lowered), from ADR 0008 decision 6's table: a page write is tier 2 (the user row is 1),
+ * a plugin-started composer run a tier-3 user challenge. Every other set method's row already has the ADR's tier (a test
+ * compares each one with the ADR table).
+ */
+export const PLUGIN_SET_TIER: Readonly<Record<string, number>> = Object.freeze({ "axis.pages/1.create": 2, "axis.pages/1.update": 2, "axis.runs/1.start": 3 });
 
 /** Whole contracts no plugin may reach. */
 export const PLUGIN_DENY_CONTRACTS: readonly string[] = Object.freeze(["axis.approvals/", "axis.audit/", "axis.providers/", "axis.projects/", "axis.worktrees/", "axis.git/", "axis.forge/", "axis.events/"]);

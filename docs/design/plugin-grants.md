@@ -23,6 +23,17 @@ Only the user. **PV-K1b adds no contract or handler for these writes**: the stor
 - The deny list is a second fence: approvals, audit, providers, projects, worktrees, git, forge and events in whole; CLI run start and stop, run cancel and events, review completion, messaging Pause, Resume and settings, every agent and group write, and the user-only page operations. `checkPluginCoverage` fails the host's start when a set names an unserved, denied or tier-4 method; the policy also refuses a denied method at run time.
 - Dangerous combinations (any read grant or the message-participant contribution with a `net:` origin; any integration with a `net:` origin) are data in `PLUGIN_DANGEROUS_COMBINATIONS` for PV-K2's dialogs, with no logic here.
 
+### 3.1 Recorded points (review 1)
+
+- **Tiers** follow ADR 0008 decision 6's table: page writes (`axis.pages/1.create`, `update`) are raised to 2, a run start to 3; every other set method's row already has the ADR's tier (a test compares each with the ADR table).
+- A raw `UPDATE` of `plugin_enablement` can bump `revokes` and `generation` together without deleting a grant: harmless, it only invalidates more challenges; no writer does it.
+- A plugin `axis.runs/1.start` the policy allows raises its tier-3 approval card before the closed handler refuses it. Acceptable: no plugin can resolve an approval (the deny list), and the card names the plugin once K1e opens the handler.
+
 ## 4. Handlers stay closed
 
 Every handler still refuses any actor but the user, so a call the policy allows for a plugin ends `E_NOT_FOUND` at the handler and reaches no service (tested). Opening a handler to plugins, with `forcedScope` and the plugin quotas (OI-2, OI-4), is per-contract follow-up work.
+
+**Hard requirements before any handler opens to plugins (K1e, K4):**
+
+- `forcedScope` is applied first: the call is tied to the project the plugin's connection is pinned to, never to a project or workspace the request names.
+- `axis.review/1.diff` takes `acknowledged`: a plugin must never acknowledge files for the commit gate. The plugin handler refuses the field (or strips it) before the service runs.

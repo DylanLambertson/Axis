@@ -106,6 +106,37 @@ test("the tier ceiling holds on its own: a granted, undenied method whose row is
   assert.deepEqual(atThree.evaluate(input("axis.pages/1.list")), { effect: "allow", tier: 3 });
 });
 
+/** ADR 0008 decision 6's tiers, per method of each set (written out, not derived from the code under test). */
+const ADR_TIERS: Readonly<Record<string, number>> = {
+  "axis.agents/1.list": 0, "axis.agents/1.get": 0, "axis.agent-groups/1.list": 0, "axis.runs/1.list": 0, "axis.runs/1.get": 0, "axis.cli-runs/1.list": 0, "axis.cli-runs/1.get": 0,
+  "axis.messages/1.send": 2, "axis.messages/1.threads": 0, "axis.messages/1.thread": 1, "axis.messages/1.read": 1, "axis.messages/1.markRead": 1,
+  "axis.pages/1.list": 0, "axis.pages/1.get": 0, "axis.pages/1.versions": 0, "axis.pages/1.create": 2, "axis.pages/1.update": 2,
+  "axis.runs/1.start": 3, "axis.review/1.content": 1, "axis.review/1.diff": 1,
+};
+
+test("every set method runs at ADR 0008 decision 6's tier for a plugin, and the table covers exactly the sets", () => {
+  const all = Object.values(PLUGIN_METHOD_SETS).flat();
+  assert.deepEqual([...all].sort(), Object.keys(ADR_TIERS).sort());
+  const policy = policyWith(reader(Object.keys(PLUGIN_METHOD_SETS)));
+  for (const key of all) {
+    const i = input(key);
+    const d = policy.evaluate(i);
+    assert.equal(d.effect, "allow", key);
+    assert.equal(d.effect === "allow" ? (d.tier ?? i.tier) : -1, ADR_TIERS[key], key);
+  }
+});
+
+test("a refused plugin call never falls through: a user actor of kind plugin on a web-allowed read, and on a user-row method", () => {
+  const userActorPluginKind = { ...PLUGIN, actor: "user", actorId: "local-user" } as Identity;
+  for (const key of ["axis.projects/1.list", "axis.runs/1.list", "axis.worktrees/1.list"]) {
+    assert.ok(WEB_ALLOWED.has(key), key);
+    assert.deepEqual(policyWith(reader([])).evaluate(input(key, userActorPluginKind)), { effect: "deny" }, key);
+    assert.deepEqual(policyWith(undefined).evaluate(input(key, userActorPluginKind)), { effect: "deny" }, `${key}, no reader`);
+  }
+  assert.deepEqual(policyWith(reader([])).evaluate(input("axis.messages/1.pause", userActorPluginKind)), { effect: "deny" }, "a user-row method");
+  assert.deepEqual(policyWith(reader([])).evaluate(input("axis.projects/1.list")), { effect: "deny" }, "the plugin itself, ungranted");
+});
+
 test("trust: a gated row keeps its mode; a revoke of the view's or the host window refuses the plugin", () => {
   for (const w of ["p7", "w3"]) {
     const registry = new InMemoryTrustRegistry();
