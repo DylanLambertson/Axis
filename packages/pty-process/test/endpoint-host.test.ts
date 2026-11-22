@@ -46,8 +46,8 @@ const frame = (body: string | Buffer, declared?: number): Buffer => {
   head.writeUInt32BE(declared ?? b.length, 0);
   return Buffer.concat([head, b]);
 };
-async function dial(path: string): Promise<Socket & { ended: Promise<void>; got: Buffer[] }> {
-  const s = connect(path) as Socket & { ended: Promise<void>; got: Buffer[] };
+async function dial(path: string, allowHalfOpen = false): Promise<Socket & { ended: Promise<void>; got: Buffer[] }> {
+  const s = connect({ path, allowHalfOpen }) as Socket & { ended: Promise<void>; got: Buffer[] };
   s.got = [];
   s.on("data", (d: Buffer) => s.got.push(d));
   s.ended = new Promise((res) => s.on("close", () => res()));
@@ -289,9 +289,9 @@ test("review 1 N1: the endpoint's bounds are these literal values", () => {
 });
 
 /** An open, authenticated connection: the socket, its relay id, and a way to relay the daemon's answer to its next frame. */
-async function authedConn(h: Host, path: string): Promise<{ s: Awaited<ReturnType<typeof dial>>; conn: string }> {
+async function authedConn(h: Host, path: string, allowHalfOpen = false): Promise<{ s: Awaited<ReturnType<typeof dial>>; conn: string }> {
   const before = ofType(h.sent, "relay-open").length;
-  const s = await dial(path);
+  const s = await dial(path, allowHalfOpen);
   await until(() => ofType(h.sent, "relay-open").length === before + 1, "opened");
   const conn = (ofType(h.sent, "relay-open").at(-1) as { conn: string }).conn;
   s.write(frame(`{"op":"auth","token":"${TOKEN}"}`));
@@ -412,11 +412,9 @@ test("review 1 B1: a frame from a connection whose unread replies are above half
 
 /** Resume a paused client and count the bytes it gets until its socket closes (bounded wait; fails by name). */
 async function drainCount(s: Awaited<ReturnType<typeof dial>>, what: string): Promise<number> {
-  let n = 0;
-  s.on("data", (d: Buffer) => void (n += d.length));
-  s.resume();
-  await closes(s, what);
-  return n; // every byte after the resume
+  let n = 0; // every byte after the resume
+  s.on("data", (d: Buffer) => void (n += d.length)).resume();
+  return closes(s, what).then(() => n);
 }
 
 test("review 2 B1: a closing reply to a peer that never reads destroys its socket at once; 40 cycles leave nothing open after closeAll (the closepath PoC)", { skip }, async (t) => {
@@ -443,11 +441,33 @@ test("review 2 B1: a closing reply to a peer that never reads destroys its socke
 test("review 2 B1: a closing reply the peer has taken ends the socket with a linger timer; closeAll destroys a lingering one", { skip }, async (t) => {
   const h = host(t);
   const path = (await h.host.open(EP)) as string;
-  const { conn } = await authedConn(h, path);
+  const { s, conn } = await authedConn(h, path, true); // half-open: it keeps its side open after the host ends
+  t.after(() => s.destroy());
   h.host.onRelay({ t: "relay-reply", endpoint: EP, conn, frame: '{"ok":false,"reason":"refused"}', close: true, authFailed: false });
   await until(() => [...h.clock.timers.values()].some((tm) => tm.ms === LINGER_MS), "a linger timer for the ended connection");
   h.host.closeAll();
-  assert.equal([...h.clock.timers.values()].filter((tm) => tm.ms === LINGER_MS).length, 0, "closeAll destroyed the lingering connection and cleared its timer");
+  assert.equal([...h.clock.timers.values()].filter((tm) => tm.ms === LINGER_MS).length, 0, "closeAll cleared the linger timer");
+  let closed = false; // review 3 nit B: the lingering socket itself is destroyed, so the client's writes fail and it closes
+  void s.ended.then(() => (closed = true));
+  await until(() => (closed || s.write(frame('{"op":"read","id":"x"}')), closed), "the lingering socket destroyed by closeAll");
+});
+
+test("review 3 nit A: a lingering connection's data is discarded: no frame relayed, no timer armed", { skip }, async (t) => {
+  const h = host(t);
+  const path = (await h.host.open(EP)) as string;
+  const { s, conn } = await authedConn(h, path, true);
+  t.after(() => s.destroy());
+  h.host.onRelay({ t: "relay-reply", endpoint: EP, conn, frame: '{"ok":false,"reason":"refused"}', close: true, authFailed: false });
+  await until(() => [...h.clock.timers.values()].some((tm) => tm.ms === LINGER_MS), "lingering");
+  const frames0 = ofType(h.sent, "relay-frame").length;
+  const timers0 = h.clock.delays().length;
+  s.write(frame('{"op":"read","id":"late"}'));
+  const marker = await dial(path); // a marker after it: a second connection's open
+  t.after(() => marker.destroy());
+  await until(() => ofType(h.sent, "relay-open").length === 2, "the marker connection");
+  await new Promise((res) => setTimeout(res, 50));
+  assert.equal(ofType(h.sent, "relay-frame").length, frames0, "nothing relayed for a connection the daemon forgot");
+  assert.equal(h.clock.delays().length, timers0 + 1, "only the marker's pre-auth timer was armed");
 });
 
 test("review 2 N5: the slow-reader clock re-arms while the backlog shrinks and drops only when it did not", { skip }, async (t) => {
@@ -461,16 +481,11 @@ test("review 2 N5: the slow-reader clock re-arms while the backlog shrinks and d
     await until(() => ofType(h.sent, "relay-frame").filter((m) => m.conn === conn).length === i + 2, `request ${i} relayed`);
     h.host.onRelay({ t: "relay-reply", endpoint: EP, conn, frame: JSON.stringify({ pad: "p".repeat(1000 * 1024) }), close: false, authFailed: false });
   }
-  const fireSlow = (): void => {
-    for (const [id, tm] of [...h.clock.timers]) if (tm.ms === ENDPOINT_HOST_LIMITS.slowReaderMs) (h.clock.timers.delete(id), tm.fn());
-  };
+  const fireSlow = (): void => [...h.clock.timers].forEach(([id, tm]) => tm.ms === ENDPOINT_HOST_LIMITS.slowReaderMs && (h.clock.timers.delete(id), tm.fn()));
   // The reader takes some of it, then stops again: the backlog shrank, so the clock re-arms instead of dropping.
   await new Promise<void>((res) => {
     let n = 0;
-    const take = (d: Buffer): void => {
-      n += d.length;
-      if (n >= 1536 * 1024) (s.off("data", take), s.pause(), res());
-    };
+    const take = (d: Buffer): void => void ((n += d.length) >= 1536 * 1024 && (s.off("data", take), s.pause(), res()));
     s.on("data", take);
     s.resume();
   });

@@ -203,6 +203,8 @@ export function createEndpointHost(
     arm(endpoint, c, ENDPOINT_HOST_LIMITS.preAuthMs);
     if (!deps.send({ t: "relay-open", endpoint, conn: c.id })) return drop(endpoint, c);
     sock.onData((chunk) => {
+      // Untracked (dropped, or ended and lingering): its data is discarded, so it cannot arm a timer or relay a frame the daemon forgot.
+      if (h.conns.get(c.id) !== c) return;
       // Bounded: one frame's cap plus its prefix is all a connection may hold unanswered.
       const cap = 4 + (c.state === "authed" ? ENDPOINT_HOST_LIMITS.frameBytes : ENDPOINT_HOST_LIMITS.authFrameBytes);
       if (c.buf.length + chunk.length > cap) return drop(endpoint, c);
