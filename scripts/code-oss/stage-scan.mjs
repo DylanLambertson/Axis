@@ -66,6 +66,9 @@ export const RESTRICTED_MODULES = [
   // ADR 0009 decision 5, ticket PV-N1c; mirrors HOST_FILE_RULES in test/packages/imports.test.mjs).
   { pkg: "anthropic", file: "index.ts", importers: new Set(), files: new Set(["daemon-host/bindings/providers.ts"]) },
   { pkg: "vault", file: "index.ts", importers: new Set(), files: new Set(["daemon-host/bindings/providers.ts", "daemon-host/bindings/integrations.ts"]) },
+  // The daemon's tests-only subpath marks identities as attested (PV-K1c review 1): nothing staged may load it
+  // (mirrors test/packages/daemon-testing-rule.mjs).
+  { pkg: "daemon", file: "testing.ts", importers: new Set(), files: new Set() },
   // The host's run trust minter: even inside its own package only the composition points (the public index, and the composition
   // root `compose.ts`, which hands handler code the registrar only) may load it, so no handler, service or binding can mint an
   // attestation without main's per-start trust.check (TRU-2).

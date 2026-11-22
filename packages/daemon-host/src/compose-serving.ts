@@ -25,7 +25,7 @@ import type { MessagingBinding } from "./messages/binding.js";
 import type { RunTrustMinter } from "./ports/runs.js";
 import type { ControlClient } from "./control/client.js";
 import { createHostProjectTrustGate } from "./gate/project-trust-gate.js";
-import { ticketedStart } from "./gate/project-trust.js";
+import { ticketedStart, type TrustCall } from "./gate/project-trust.js";
 import type { HandlerRegistrar } from "./handlers/anchor-guard.js";
 import { createApprovalsHandlers } from "./handlers/approvals.js";
 import { registerCliRunsHandlers, startCliRun } from "./handlers/cli-runs.js";
@@ -129,7 +129,7 @@ export function registerServing(registrar: HandlerRegistrar, services: HostServi
     // S1b (agents-contract.md 4.4 left this hook for it): the early check is the project's run-trust record, and the new home
     // worktree's create goes through the project trust gate like any other (the worktrees port spends its ticket).
     admitNewHome: (_caller, projectId) => journal.getProject(projectId)?.trusted === true,
-    worktrees: { create: (req, ctx) => worktrees.service.create(req, { ...ctx, trust: (scope) => gate.admit({ ...scope, windowId: ctx.caller.windowId, signal: ctx.signal }) }) },
+    worktrees: { create: (req, ctx) => worktrees.service.create(req, { ...ctx, trust: (scope) => gate.admit({ ...scope, caller: ctx.caller.trust as TrustCall, signal: ctx.signal }) }) },
     // PV-G4: an agent's CLI run goes through the one CLI start path, so the same project trust gate and ticket apply.
     startCli: (req, context) => startCliRun(cliRuns, req, context),
     // Composer agents: the same composer start path; the stored connection resolved to the provider that serves it now.

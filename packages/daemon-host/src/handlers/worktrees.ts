@@ -1,5 +1,5 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
-import { projectGated, type ProjectTrustGate } from "../gate/project-trust.js";
+import { projectGated, trustCallOf, type ProjectTrustGate } from "../gate/project-trust.js";
 import { DaemonError, type Handler, type HandlerContext } from "@axis/daemon";
 import type { WorktreesMethod, WorktreesRequest } from "@axis/protocol";
 import type { PortContext } from "../ports/common.js";
@@ -33,7 +33,7 @@ function portContext(context: HandlerContext): PortContext {
 
 /** The gate bound to this caller's window and signal, for a gated method only. */
 const trustFor = (gate: ProjectTrustGate, context: HandlerContext) => (scope: { readonly projectId: string; readonly workspaceId?: string }) =>
-  gate.admit({ ...scope, windowId: context.identity.windowId, signal: context.signal });
+  gate.admit({ ...scope, caller: trustCallOf(context.identity), signal: context.signal });
 
 const notServed = (): Promise<never> => Promise.reject(worktreeFailure("E_UNAVAILABLE", "not_available"));
 

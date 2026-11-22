@@ -3,7 +3,7 @@
 // installed vendor tree, so the gate can report a skip; it never applies into a directory it did not find a tree in.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -31,4 +31,13 @@ test("a vendor directory without an installed tree: exit 3, and nothing is writt
     assert.deepEqual(readdirSync(dir), ["code-oss"], "no apply ran: no log, no stamp (mutant: apply before the check)");
     assert.equal(existsSync(join(dir, "code-oss.applied")), false);
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("apply.sh is handed the pinned Node through NODE24_BIN before it runs (its hooks do not read PATH; a gate run has no env.sh)", () => {
+  const text = readFileSync(script, "utf8");
+  const exported = text.indexOf("export NODE24_BIN");
+  const apply = text.indexOf('"$here/apply.sh" --force');
+  assert.ok(exported > 0 && apply > 0, "both present");
+  assert.ok(exported < apply, "NODE24_BIN is exported before the apply (mutant: after, or not at all)");
+  assert.match(text, /if \[ -z "\$\{NODE24_BIN:-\}" \]; then\n\tNODE24_BIN="\$\(dirname "\$\(command -v node\)"\)"/, "only when unset, from the node the script already checked");
 });

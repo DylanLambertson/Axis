@@ -34,6 +34,9 @@ const suites = [
 function runGate() {
   const env = { ...process.env, AXIS_TEST_ALL_SUITES_JSON: JSON.stringify(suites), AXIS_TEST_ALL_SEAM: "runner-self-test", GATE_SKIP: "diff-check,gitleaks,line-limit,wording,node-version,typecheck" };
   delete env.CI;
+  // A builder's own overlay-test settings must not reach this inner gate: it would re-apply and test their tree (PV-X3 fix).
+  delete env.GATE_OVERLAY_TREE;
+  delete env.AXIS_REQUIRE_OVERLAY_TESTS;
   const r = spawnSync(process.execPath, [gate], { cwd: root, env, encoding: "utf8", timeout: 60_000 });
   return { code: r.status, out: `${r.stdout}${r.stderr}` };
 }

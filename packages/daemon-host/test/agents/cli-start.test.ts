@@ -1,4 +1,5 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
+import { attestedWindow } from "../../testing/attested.js";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { HandlerContext } from "@axis/daemon";
@@ -23,7 +24,7 @@ function rig(admit: (scope: unknown) => Promise<unknown> = async () => "ticket-1
   };
   return { deps, order, started, minted };
 }
-const ctx = { identity: { actor: "user", connectionId: "c".repeat(22), windowId: "win-1", actorId: "a", trusted: true, clientKind: "desktop" }, requestId: "q", correlationId: "k", signal: new AbortController().signal, idempotencyKey: "k-1" } as unknown as HandlerContext;
+const ctx = { identity: attestedWindow("win-1", { connectionId: "c".repeat(22), actorId: "a" }), requestId: "q", correlationId: "k", signal: new AbortController().signal, idempotencyKey: "k-1" } as unknown as HandlerContext;
 
 test("the worker is passed to the supervisor; a start without one passes none", async () => {
   const { deps, started } = rig();
@@ -47,7 +48,7 @@ test("the gate decides for a worker start too: its scope is the run's workspace 
   const scopes: unknown[] = [];
   const ok = rig(async (scope) => (scopes.push(scope), "ticket-7"));
   await startCliRun(ok.deps, { workspaceId: "ws-1", entryId: "fake", worker: "w1" }, ctx);
-  assert.deepEqual(scopes.map((s) => ({ ...(s as object), signal: undefined })), [{ projectId: "p1", windowId: "win-1", workspaceId: "ws-1", signal: undefined }]);
+  assert.deepEqual(scopes.map((s) => ({ ...(s as object), signal: undefined })), [{ projectId: "p1", caller: { windowId: "win-1" }, workspaceId: "ws-1", signal: undefined }]);
   assert.deepEqual(ok.minted, [[{ workspaceId: "ws-1", projectId: "p1" }, "ticket-7"]]);
   const no = rig(async () => Promise.reject(untrusted()));
   await assert.rejects(startCliRun(no.deps, { workspaceId: "ws-1", entryId: "fake", worker: "w1" }, ctx), (e: unknown) => (e as { detail?: { reason?: string } }).detail?.reason === "untrusted");
