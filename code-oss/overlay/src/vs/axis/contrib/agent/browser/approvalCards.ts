@@ -2,6 +2,7 @@
  *  Copyright (c) 2026 Dylan Lambertson. All rights reserved.
  *--------------------------------------------------------------------------------------------*/
 
+import { isUsable } from '../../../services/daemon/common/axisDaemonClient.js';
 import { $, addDisposableListener, append } from '../../../../base/browser/dom.js';
 import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { Disposable, DisposableStore, toDisposable } from '../../../../base/common/lifecycle.js';
@@ -39,6 +40,8 @@ export class AxisApprovalCards extends Disposable {
 	private readonly status: HTMLElement;
 	private readonly list: HTMLElement;
 	private readonly more: HTMLElement;
+	/** Shown instead of cards while the daemon is not usable: approvals exist only in the Axis service. */
+	private readonly offline: HTMLElement;
 	private readonly views = new Map<string, ICardView>();
 	private readonly buttonTimer = this._register(new RunOnceScheduler(() => this.updateButtons(), 0));
 	private readonly placeTimer = this._register(new RunOnceScheduler(() => this.place(), 0));
@@ -51,6 +54,7 @@ export class AxisApprovalCards extends Disposable {
 		this.element.setAttribute('aria-label', localize('axis.approvals.label', "Approvals"));
 		this.list = append(this.element, $('.axis-approvals-list'));
 		this.more = append(this.element, $('.axis-approvals-more'));
+		this.offline = append(this.element, $('p.axis-approvals-offline'));
 		this.status = append(this.element, $('.axis-approvals-status')); // below the cards: its text never moves one
 		this.status.setAttribute('role', 'status');
 		this._register(this.workspaceService.onDidChangeWorkspaces(() => this.render()));
@@ -85,7 +89,9 @@ export class AxisApprovalCards extends Disposable {
 			}
 			this.views.set(card.challengeId, view);
 		}
-		this.element.hidden = !cards.length;
+		const offline = !isUsable(this.workspaceService.daemonStatus);
+		this.offline.textContent = offline ? localize('axis.approvals.offline', "Approvals need the Axis service. It is not connected, so none are shown.") : '';
+		this.element.hidden = !cards.length && !offline;
 		this.more.textContent = all.length > cards.length ? localize('axis.approvals.more', "{0} more approvals are not shown.", all.length - cards.length) : '';
 		this.updateButtons();
 		this.placeTimer.schedule(); // after the rest of the dashboard has drawn for the same change
