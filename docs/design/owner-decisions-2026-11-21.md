@@ -47,7 +47,7 @@ All recommended defaults:
 - **D-4** signature policy: Ed25519 publisher signatures required for the curated list (keys come from the signed list); unsigned local files only for P0 and P1, with a warning and hash pinning; never for P2.
 - **D-5** page storage: Axis data directory per project, with Export to repository.
 - **D-6** page format: Markdown subset only in v1, **rendered in the isolated page view**.
-- **D-7** OAuth redirect: device-code flow with a main-built code dialog; a one-shot loopback listener only as a recorded NET-1 exception when a service lacks it.
+- **D-7** OAuth redirect: device-code flow with a main-built code dialog; a one-shot loopback listener only as a recorded NET-1 exception when a service lacks it. (Narrowed by ADR 0009 decision 6 on 2026-11-22: 4a ships the device flow only; the loopback fallback is deferred to its own decision.)
 - **D-8** first integration: GitHub read-only through the user's `gh`, no token (ticket PV-D2); a token-based GitHub integration (ticket PV-N3) in 4a under D-9 as taken (ADR 0009 decision 9; the earlier "only if D-9 is reversed" is superseded).
 - **D-9** reverse "Axis stores no forge credentials" (ADR 0004 decision 9): **keep** it until 4a, then a vault-held read-only fine-grained token behind the credential proxy.
 - **D-10** integrations that write: each write operation is its own permission and a tier-3 challenge.
