@@ -55,22 +55,35 @@ export function outcomeSentence(outcome: AxisProjectOutcome): string {
 }
 
 /**
- * This window's project as the views show it. `known` is false unless the snapshot came from the daemon: local discovery's trust
- * flag is Code OSS Workspace Trust, not the run-trust record, so it must never be shown as "Trusted to run".
+ * Where the shown projects come from, which decides what may be said about run trust:
+ * - `daemon`: connected, and the projects are the daemon's records: run trust is known.
+ * - `unregistered`: connected, but the daemon holds no project, so the rows come from local discovery: none is an Axis project.
+ * - `offline`: the daemon is not usable: run trust is unknown and no action is offered.
+ * Local discovery's trust flag is Code OSS Workspace Trust, not the run-trust record, so it is never shown as "trusted to run".
  */
+export type AxisTrustSource = 'daemon' | 'unregistered' | 'offline';
+
+export function trustSource(daemonUsable: boolean, origin: 'daemon' | 'discovery'): AxisTrustSource {
+	return !daemonUsable ? 'offline' : origin === 'daemon' ? 'daemon' : 'unregistered';
+}
+
+/** This window's project as the views show it. `known` is true only when its record came from the daemon. */
 export type AxisWindowProjectState =
 	| { readonly kind: 'none' }
 	| { readonly kind: 'registered'; readonly project: IAxisProjectInfo; readonly known: boolean };
 
 /** The project whose local checkout row is this window's folder (the one the actions act on); `none` when there is no single one. */
 export function windowProjectState(input: {
-	readonly origin: 'daemon' | 'discovery';
+	readonly source: AxisTrustSource;
 	readonly projects: readonly IAxisProjectInfo[];
 	readonly localCheckoutProjectIds: readonly string[];
 }): AxisWindowProjectState {
+	if (input.source === 'unregistered') {
+		return { kind: 'none' }; // a discovered folder the daemon does not hold is not an Axis project
+	}
 	const ids = [...new Set(input.localCheckoutProjectIds)];
 	const project = ids.length === 1 ? input.projects.find(p => p.id === ids[0]) : undefined;
-	return project === undefined ? { kind: 'none' } : { kind: 'registered', project, known: input.origin === 'daemon' };
+	return project === undefined ? { kind: 'none' } : { kind: 'registered', project, known: input.source === 'daemon' };
 }
 
 /**
@@ -88,8 +101,11 @@ export function windowLocalCheckoutIds(
 }
 
 /** The chip text for a project: glyph AND words, never colour alone. Unknown trust says so. */
-export function projectChip(project: IAxisProjectInfo, known: boolean): { readonly glyph: string; readonly label: string; readonly hint: string } {
-	if (!known) {
+export function projectChip(project: IAxisProjectInfo, source: AxisTrustSource): { readonly glyph: string; readonly label: string; readonly hint: string } {
+	if (source === 'unregistered') {
+		return { glyph: '+', label: localize('axis.project.chip.unregistered', "{0}: not added to Axis", project.name), hint: localize('axis.project.chip.unregisteredHint', "Add Project… makes it an Axis project. It starts read only until you trust it to run.") };
+	}
+	if (source === 'offline') {
 		return { glyph: '?', label: localize('axis.project.chip.unknown', "{0}: run trust unknown", project.name), hint: localize('axis.project.chip.unknownHint', "The Axis service is not connected, so run trust cannot be shown.") };
 	}
 	return project.trusted
@@ -158,12 +174,12 @@ export interface IAxisBannerContent {
 	readonly action: { readonly id: AxisProjectAction; readonly label: string } | undefined;
 }
 
-/** What the dashboard banner says and offers for the window's project state (contrib/projects/browser/axisProjectBanner.ts). and offers for the window's project state. */
-export function bannerContent(state: AxisWindowProjectState, origin: 'daemon' | 'discovery'): IAxisBannerContent {
-	if (origin !== 'daemon') {
+/** What the dashboard banner (contrib/projects/browser/axisProjectBanner.ts) says and offers for the window's project state. */
+export function bannerContent(state: AxisWindowProjectState, source: AxisTrustSource): IAxisBannerContent {
+	if (source === 'offline') {
 		return { text: localize('axis.banner.unknown', "Run trust unknown: the Axis service is not connected."), action: undefined };
 	}
-	if (state.kind === 'none') {
+	if (source !== 'daemon' || state.kind === 'none' || !state.known) { // Trust and Stop only from daemon rows
 		return { text: localize('axis.banner.none', "This folder is not an Axis project yet."), action: { id: 'add', label: localize('axis.banner.add', "Add Project…") } };
 	}
 	return state.project.trusted

@@ -85,7 +85,8 @@
 	unicode-bidi: isolate;
 }
 
-.monaco-workbench .axis-project-chip[data-trust="unknown"] {
+.monaco-workbench .axis-project-chip[data-trust="offline"],
+.monaco-workbench .axis-project-chip[data-trust="unregistered"] {
 	color: var(--vscode-descriptionForeground);
 }
 

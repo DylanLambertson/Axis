@@ -43,23 +43,29 @@ suite('Axis project actions (renderer, S3)', () => {
 
 	test('the window project: one local checkout row decides it; run trust is known only from the daemon (never from discovery)', () => {
 		const projects = [{ id: 'p1', name: 'one', trusted: true }, { id: 'p2', name: 'two', trusted: false }];
-		assert.deepStrictEqual(windowProjectState({ origin: 'daemon', projects, localCheckoutProjectIds: ['p1', 'p1'] }), { kind: 'registered', project: projects[0], known: true });
-		assert.deepStrictEqual(windowProjectState({ origin: 'discovery', projects, localCheckoutProjectIds: ['p1'] }), { kind: 'registered', project: projects[0], known: false });
-		assert.deepStrictEqual(windowProjectState({ origin: 'daemon', projects, localCheckoutProjectIds: [] }), { kind: 'none' });
-		assert.deepStrictEqual(windowProjectState({ origin: 'daemon', projects, localCheckoutProjectIds: ['p1', 'p2'] }), { kind: 'none' }, 'two candidates: no guess');
-		assert.deepStrictEqual(windowProjectState({ origin: 'daemon', projects, localCheckoutProjectIds: ['gone'] }), { kind: 'none' });
+		assert.deepStrictEqual(windowProjectState({ source: 'daemon', projects, localCheckoutProjectIds: ['p1', 'p1'] }), { kind: 'registered', project: projects[0], known: true });
+		assert.deepStrictEqual(windowProjectState({ source: 'offline', projects, localCheckoutProjectIds: ['p1'] }), { kind: 'registered', project: projects[0], known: false });
+		assert.deepStrictEqual(windowProjectState({ source: 'unregistered', projects, localCheckoutProjectIds: ['p1'] }), { kind: 'none' }, 'a discovered folder the daemon does not hold is not a project');
+		assert.deepStrictEqual(windowProjectState({ source: 'daemon', projects, localCheckoutProjectIds: [] }), { kind: 'none' });
+		assert.deepStrictEqual(windowProjectState({ source: 'daemon', projects, localCheckoutProjectIds: ['p1', 'p2'] }), { kind: 'none' }, 'two candidates: no guess');
+		assert.deepStrictEqual(windowProjectState({ source: 'daemon', projects, localCheckoutProjectIds: ['gone'] }), { kind: 'none' });
 	});
 
 	test('chips use a glyph AND words; trust from discovery is shown as unknown, never as trusted to run', () => {
 		const trusted = { id: 'p1', name: 'one', trusted: true };
 		const ro = { id: 'p2', name: 'two', trusted: false };
-		assert.match(projectChip(trusted, true).label, /trusted to run/);
-		assert.match(projectChip(ro, true).label, /read only/);
-		assert.match(projectChip(ro, true).hint, /If the repository changed, review and trust it again/);
-		const unknown = projectChip(trusted, false);
+		assert.match(projectChip(trusted, 'daemon').label, /trusted to run/);
+		assert.match(projectChip(ro, 'daemon').label, /read only/);
+		assert.match(projectChip(ro, 'daemon').hint, /If the repository changed, review and trust it again/);
+		const unknown = projectChip(trusted, 'offline');
 		assert.match(unknown.label, /run trust unknown/);
 		assert.doesNotMatch(unknown.label, /trusted to run/, 'mutant: discovery shown as trusted');
-		for (const c of [projectChip(trusted, true), projectChip(ro, true), unknown]) {
+		for (const project of [trusted, ro]) {
+			const added = projectChip(project, 'unregistered');
+			assert.match(added.label, /not added to Axis/);
+			assert.doesNotMatch(added.label, /trusted to run|read only/, 'mutant: a trust claim from discovery');
+		}
+		for (const c of [projectChip(trusted, 'daemon'), projectChip(ro, 'daemon'), unknown, projectChip(ro, 'unregistered')]) {
 			assert.ok(c.glyph.length > 0 && c.label.length > 0);
 		}
 	});

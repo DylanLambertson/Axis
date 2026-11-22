@@ -12,7 +12,8 @@ import { ICommandService } from '../../../../platform/commands/common/commands.j
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { AxisProjectBanner } from '../../projects/browser/axisProjectBanner.js';
 import { AxisApprovalCards } from './approvalCards.js';
-import { projectChip } from '../../../services/projects/common/axisProjectActions.js';
+import { isUsable } from '../../../services/daemon/common/axisDaemonClient.js';
+import { projectChip, trustSource } from '../../../services/projects/common/axisProjectActions.js';
 import { IAxisCliRun } from '../../../services/workspaces/common/axisWorkspaceData.js';
 import { AxisRowState, branchLabel, changesLabel, IAxisWorkspaceEntry, rowStateOf } from '../../../services/workspaces/common/axisWorkspaceModel.js';
 import { daemonNotice } from '../../../services/workspaces/common/axisDaemonNotice.js';
@@ -111,12 +112,12 @@ export class AxisDashboardView extends Disposable {
 		const projects = this.workspaceService.projects;
 		if (projects.length) {
 			// Run trust (the daemon's record), never Code OSS Workspace Trust: shown only when the data came from the daemon (S3, review PV-E0 N6).
-			const known = this.workspaceService.dataOrigin === 'daemon';
+			const source = trustSource(isUsable(this.workspaceService.daemonStatus), this.workspaceService.dataOrigin);
 			const list = append(this.header, $('span.axis-dashboard-project'));
 			for (const project of projects) {
-				const chip = projectChip(project, known);
+				const chip = projectChip(project, source);
 				const el = append(list, $('span.axis-project-chip'));
-				el.dataset.trust = known ? (project.trusted ? 'trusted' : 'read-only') : 'unknown';
+				el.dataset.trust = source === 'daemon' ? (project.trusted ? 'trusted' : 'read-only') : source;
 				el.title = `${chip.label}\n${chip.hint}`; // the full name, if the label is cut short
 				const glyph = append(el, $('span.axis-project-chip-glyph'));
 				glyph.textContent = chip.glyph;
