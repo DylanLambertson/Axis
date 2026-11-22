@@ -29,8 +29,7 @@
 import { posix } from "node:path";
 import ts from "typescript6";
 import { SPAWN_BUILTIN, SPAWN_FILES, stagedPathOf } from "./egress-rules.mjs";
-import { endpointForms } from "./endpoint-ast.mjs";
-import { ENDPOINT_LISTENER_FILE } from "./web-rules.mjs";
+import { endpointPinRefusals } from "./web-rules.mjs";
 
 const K = ts.SyntaxKind;
 const META_OK = new Set(["url", "dirname", "filename"]);
@@ -349,7 +348,7 @@ export function scanModules(source, file = "x.ts", { vendored = false, shipped =
   if (spawnLocals.size > 0) derive(sf);
   visit(sf);
   if (!vendored) bad.push(...mintUses(sf, at, !shipped, pkg, file));
-  if (stagedPathOf(file, pkg, pkgRel) === ENDPOINT_LISTENER_FILE) bad.push(...endpointForms(sf, at)); // web-rules.mjs rule 1
+  bad.push(...endpointPinRefusals(stagedPathOf(file, pkg, pkgRel), source)); // web-rules.mjs rule 1: the pinned endpoint template
   return { refs, bad };
 }
 

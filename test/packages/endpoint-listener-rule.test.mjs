@@ -1,159 +1,81 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
-// Rule 1 of web-rules.mjs, widened for the CLI messaging endpoint (ADR 0007 decision 7.1, PV-M6 slice 2): besides the web host
-// listener, exactly one more staged file, pty-process/endpoint-host.ts, may load exactly one socket built-in, node:net, and
-// only `createServer` from it, listening only on a path (endpoint-ast.mjs, on the TypeScript AST). The desktop bundles (daemon,
-// main seam) keep refusing every socket built-in outside the web host and may not reach the endpoint file at all. NET-1's
-// "no TCP listener in a desktop run" stays as it was: the packaged check lists TCP sockets only.
+// Rule 1 of web-rules.mjs, widened for the CLI messaging endpoint (ADR 0007 decision 7.1, PV-M6): besides the web host
+// listener, exactly one more staged file, the endpoint template pty-process/endpoint-listen.ts, may load exactly one socket
+// built-in, node:net, and its whole content is pinned by SHA-256 (no analysis of arbitrary code). The desktop bundles (daemon,
+// main seam) keep refusing every socket built-in outside the web host and may not reach the template at all. NET-1's "no TCP
+// listener in a desktop run" stays as it was: the packaged check lists TCP sockets only.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { DEFAULT_ENTRY, SEAM_ENTRY, checkMetafile } from "../../scripts/code-oss/check-daemon-graph.mjs";
 import { parseLsofListeners } from "../../scripts/code-oss/check-net-packaged.mjs";
 import { unsafeForms } from "../../scripts/code-oss/stage-ast.mjs";
 import { classifySpecifier } from "../../scripts/code-oss/stage-scan.mjs";
 import { STAGE_ROOT, checkStagedFile } from "../../scripts/code-oss/stage-verify.mjs";
-import { ENDPOINT_LISTENER_FILE, LISTENER_BUILTINS, LISTENER_FILE, LISTENER_FILES, listenerBuiltinRefusal } from "../../scripts/code-oss/web-rules.mjs";
+import { ENDPOINT_LISTENER_FILE, ENDPOINT_LISTENER_SHA256, LISTENER_BUILTINS, STAGED_NOTICE, LISTENER_FILE, LISTENER_FILES, endpointPinRefusals, listenerBuiltinRefusal } from "../../scripts/code-oss/web-rules.mjs";
 
 const exportsOf = () => [];
-const HEAD = 'import { createServer } from "node:net";\nimport { join } from "node:path";\n';
-const OK = `${HEAD}export function open(dir: string): void {\n  const path = join(dir, "a.sock");\n  const server = createServer();\n  server.listen(path, () => undefined);\n}\n`;
-/** The endpoint rules' findings for a source of the endpoint file. */
-const rules = (source) => unsafeForms(source, "pty-process/endpoint-host.ts", { pkg: "pty-process" });
-/** The OK source with one line replaced. */
-const variant = (from, to) => {
-  assert.ok(OK.includes(from), from);
-  return OK.replace(from, to);
-};
+const TEMPLATE = readFileSync(fileURLToPath(new URL("../../packages/pty-process/src/endpoint-listen.ts", import.meta.url)), "utf8");
 
-test("rule 1: exactly two files may load socket built-ins; the endpoint file only node:net, and only the bare specifier", () => {
+test("rule 1: exactly two files may load socket built-ins; the endpoint template only node:net, and only the bare specifier", () => {
+  assert.equal(ENDPOINT_LISTENER_FILE, "pty-process/endpoint-listen.ts");
   assert.deepEqual([...LISTENER_FILES.keys()].sort(), [LISTENER_FILE, ENDPOINT_LISTENER_FILE].sort(), "no third file");
   assert.deepEqual([...LISTENER_FILES.get(ENDPOINT_LISTENER_FILE)], ["node:net"]);
-  assert.equal(classifySpecifier("node:net", "pty-process", exportsOf, "endpoint-host.ts").kind, "node");
+  assert.equal(classifySpecifier("node:net", "pty-process", exportsOf, "endpoint-listen.ts").kind, "node");
   for (const spec of LISTENER_BUILTINS) {
     if (spec === "node:net" || spec === "node:http2") continue; // http2 is a malformed specifier for the hook anyway
-    assert.throws(() => classifySpecifier(spec, "pty-process", exportsOf, "endpoint-host.ts"), /may load only node:net/, spec);
+    assert.throws(() => classifySpecifier(spec, "pty-process", exportsOf, "endpoint-listen.ts"), /may load only node:net/, spec);
   }
   assert.match(listenerBuiltinRefusal("node:net/x", ENDPOINT_LISTENER_FILE) ?? "", /may load only node:net/, "a subpath is refused there");
-  for (const [pkg, rel] of [["pty-process", "service.ts"], ["pty-process", "client.ts"], ["daemon-host", "messages/endpoint.ts"], ["pty-process", null]]) {
-    assert.throws(() => classifySpecifier("node:net", pkg, exportsOf, rel), /opens sockets/, `${pkg} ${rel}`);
+  for (const [pkg, rel] of [["pty-process", "endpoint-host.ts"], ["pty-process", "service.ts"], ["pty-process", "client.ts"], ["daemon-host", "messages/endpoint.ts"], ["pty-process", null]]) {
+    assert.throws(() => classifySpecifier("node:net", pkg, exportsOf, rel), /opens sockets/, `${pkg} ${rel}: a second file with node:net`);
   }
+  assert.throws(() => checkStagedFile("pty-process/endpoint-host.ts", 'import { createServer } from "node:net";\n', new Set(["pty-process/endpoint-host.ts"])), /opens sockets/);
   assert.equal(listenerBuiltinRefusal("node:https", LISTENER_FILE), null, "the web host listener is unchanged");
 });
 
-test("review blocker 1: in the desktop bundles only the web host may load a socket built-in, and the endpoint file may not be reached at all", () => {
+test("the template is pinned: the real file hashes to the pin, and any changed byte fails the import lint and the staged-tree check", () => {
+  const sha = createHash("sha256").update(TEMPLATE.replace(/\r\n/g, "\n"), "utf8").digest("hex");
+  assert.equal(sha, ENDPOINT_LISTENER_SHA256, "the template changed: review it and update the pin in web-rules.mjs");
+  assert.deepEqual(endpointPinRefusals(ENDPOINT_LISTENER_FILE, TEMPLATE), []);
+  assert.deepEqual(endpointPinRefusals(ENDPOINT_LISTENER_FILE, TEMPLATE.replace(/\n/g, "\r\n")), [], "CRLF reads as LF");
+  const [first, ...rest] = TEMPLATE.split("\n");
+  const staged = [first, `// ${STAGED_NOTICE}`, ...rest].join("\n");
+  assert.deepEqual(endpointPinRefusals(ENDPOINT_LISTENER_FILE, staged), [], "the staging hook's notice as the second line, as staged");
+  assert.ok(endpointPinRefusals(ENDPOINT_LISTENER_FILE, `${staged}\n// ${STAGED_NOTICE}`).length > 0, "the notice anywhere else is a change");
+  assert.ok(endpointPinRefusals(ENDPOINT_LISTENER_FILE, [first, "// another line", ...rest].join("\n")).length > 0, "any other second line is a change");
+  assert.deepEqual(unsafeForms(TEMPLATE, "src/endpoint-listen.ts", { pkg: "pty-process", pkgRel: "src/endpoint-listen.ts" }), [], "the import lint");
+  const files = new Set([ENDPOINT_LISTENER_FILE]);
+  assert.doesNotThrow(() => checkStagedFile(ENDPOINT_LISTENER_FILE, TEMPLATE, files), "the staged-tree check");
+  const at = TEMPLATE.indexOf("server.listen(path");
+  assert.ok(at > 0);
+  for (const [what, changed] of [
+    ["one byte flipped", TEMPLATE.slice(0, at) + "server.listen(8080" + TEMPLATE.slice(at + "server.listen(path".length)],
+    ["a second listen", TEMPLATE.replace("  return Object.freeze(", "  server.listen(8080);\n  return Object.freeze(")],
+    ["a trailing space", `${TEMPLATE} `],
+  ]) {
+    assert.match(endpointPinRefusals(ENDPOINT_LISTENER_FILE, changed)[0] ?? "", /is not the pinned endpoint template/, what);
+    assert.ok(unsafeForms(changed, "src/endpoint-listen.ts", { pkg: "pty-process", pkgRel: "src/endpoint-listen.ts" }).some((m) => /pinned endpoint template/.test(m)), `${what}: the import lint`);
+    assert.throws(() => checkStagedFile(ENDPOINT_LISTENER_FILE, changed, files), /pinned endpoint template/, `${what}: the staged-tree check`);
+  }
+  assert.deepEqual(endpointPinRefusals("pty-process/endpoint-host.ts", "anything"), [], "the pin is the template's alone");
+});
+
+test("in the desktop bundles only the web host may load a socket built-in, and the endpoint template may not be reached at all", () => {
   const P = (rel) => `${STAGE_ROOT}/${rel}`;
-  const stagedOf = (p) => (p.startsWith(`${STAGE_ROOT}/`) ? p.slice(STAGE_ROOT.length + 1) : null);
-  const manifest = { zod: null, files: ["pty-process/endpoint-host.ts", "pty-process/index.ts", "daemon-host/entry.ts"].map((path) => ({ path })) };
+  const manifest = { zod: null, files: ["pty-process/endpoint-listen.ts", "pty-process/endpoint-host.ts", "pty-process/index.ts", "daemon-host/entry.ts"].map((path) => ({ path })) };
   const graph = (edges) => ({ inputs: Object.fromEntries(Object.entries(edges).map(([from, tos]) => [from, { imports: tos.map((to) => (to.startsWith("node:") ? { path: to, external: true } : { path: to })) }])) });
-  assert.equal(listenerBuiltinRefusal("node:net", ENDPOINT_LISTENER_FILE, { desktop: true }) !== null, true, "the per-file allowance is not a desktop one");
+  assert.notEqual(listenerBuiltinRefusal("node:net", ENDPOINT_LISTENER_FILE, { desktop: true }), null, "the per-file allowance is not a desktop one");
   for (const entry of [DEFAULT_ENTRY, SEAM_ENTRY]) {
-    const direct = checkMetafile(graph({ [entry]: [P("pty-process/endpoint-host.ts")], [P("pty-process/endpoint-host.ts")]: ["node:net"] }), manifest);
+    const direct = checkMetafile(graph({ [entry]: [P("pty-process/endpoint-listen.ts")], [P("pty-process/endpoint-listen.ts")]: ["node:net"] }), manifest);
     assert.ok(direct.some((v) => /opens sockets: in a desktop bundle/.test(v)), `${entry}: node:net inside the bundle: ${direct.join("; ")}`);
     assert.ok(direct.some((v) => /endpoint listener, which no desktop bundle may contain/.test(v)), `${entry}: the file is reached: ${direct.join("; ")}`);
-    const via = checkMetafile(graph({ [entry]: [P("daemon-host/entry.ts")], [P("daemon-host/entry.ts")]: [P("pty-process/index.ts")], [P("pty-process/index.ts")]: [P("pty-process/endpoint-host.ts")], [P("pty-process/endpoint-host.ts")]: [] }), manifest);
-    assert.ok(via.some((v) => /pty-process\/index\.ts -> pty-process\/endpoint-host\.ts: reaches the pty process endpoint listener/.test(v)), `${entry}: transitively: ${via.join("; ")}`);
+    const via = checkMetafile(graph({ [entry]: [P("daemon-host/entry.ts")], [P("daemon-host/entry.ts")]: [P("pty-process/endpoint-host.ts")], [P("pty-process/endpoint-host.ts")]: [P("pty-process/endpoint-listen.ts")], [P("pty-process/endpoint-listen.ts")]: [] }), manifest);
+    assert.ok(via.some((v) => /pty-process\/endpoint-host\.ts -> pty-process\/endpoint-listen\.ts: reaches the pty process endpoint listener/.test(v)), `${entry}: transitively: ${via.join("; ")}`);
   }
   assert.ok(checkMetafile(graph({ [DEFAULT_ENTRY]: [P("pty-process/index.ts")], [P("pty-process/index.ts")]: ["node:net"] }), manifest).some((v) => /opens sockets/.test(v)), "any other file: refused as before");
-});
-
-test("the endpoint file's source rules accept the path listen and refuse each review probe", () => {
-  assert.deepEqual(rules(OK), []);
-  const probes = {
-    "a port": variant("server.listen(path, () => undefined);", "server.listen(8080);"),
-    "an options object": variant("server.listen(path, () => undefined);", "server.listen({ path });"),
-    "a parameter name (SF8)": variant("server.listen(path, () => undefined);", "((p: string) => server.listen(p))(path);"),
-    "a function parameter shadow": `${HEAD}export function open(path: number): void {\n  const server = createServer();\n  server.listen(path);\n}\nconst path = join("a", "b");\n`,
-    "let, then assigned": variant('const path = join(dir, "a.sock");', "let path;\n  path = 8080;"),
-    "for-of shadow": variant('const path = join(dir, "a.sock");', 'const path = join(dir, "a.sock");\n  for (const path of [8080]) void path;'),
-    "array destructuring shadow": variant('const path = join(dir, "a.sock");', 'const path = join(dir, "a.sock");\n  { const [path] = [8080]; void path; }'),
-    "a local join": variant('const path = join(dir, "a.sock");', 'const join = (..._a: unknown[]) => 8080;\n  const path = join(dir);'),
-    'a string "//" hiding code': variant("server.listen(path, () => undefined);", 'const sep = "//"; server.listen(8080);'),
-    'a "/*" string': variant("server.listen(path, () => undefined);", 'const a = "/*"; server.listen(8080); const b = "*/";'),
-    "a template //": variant("server.listen(path, () => undefined);", "const t = `x//`; server.listen(8080);"),
-    "a regex //": variant("server.listen(path, () => undefined);", "const r = /a\\/\\//; server.listen(8080);"),
-    "a unicode-escaped listen": variant("server.listen(path, () => undefined);", "server.l\\u0069sten(8080);"),
-    "a computed listen": variant("server.listen(path, () => undefined);", 'server["lis" + "ten"](8080);'),
-    "a literal ['listen']": variant("server.listen(path, () => undefined);", 'server["listen"](path);'),
-    "export { createServer } from node:net": `${OK}export { createServer } from "node:net";\n`,
-    "export * from node:net": `${OK}export * from "node:net";\n`,
-    "exporting the imported createServer": `${OK}export { createServer };\n`,
-    "connect (outbound TCP)": OK.replace("import { createServer }", "import { createServer, connect }") + 'export const c = () => connect(443, "evil.example");\n',
-    "createConnection": OK.replace("import { createServer }", "import { createServer, createConnection }"),
-    "Socket as a value": OK.replace("import { createServer }", "import { createServer, Socket }"),
-    "a namespace import": OK.replace("import { createServer } from", "import * as net from").replace("createServer()", "net.createServer()"),
-    "an alias": OK.replace("import { createServer }", "import { createServer as cs }").replace("createServer()", "cs()"),
-    "a dynamic import": `${OK}export const m = () => import("node:net");\n`,
-    "a second listen": variant("server.listen(path, () => undefined);", "server.listen(path);\n  server.listen(path);"),
-    "createServer twice": variant("const server = createServer();", "const server = createServer();\n  const other = createServer();\n  void other;"),
-    "a port option": `${OK}export const o = { port: 1 };\n`,
-    "a host option": `${OK}export const o = { host: "h" };\n`,
-    '"::ffff:0.0.0.0"': `${OK}export const a = "::ffff:0.0.0.0";\n`,
-    '"0.0.0.0"': `${OK}export const a = "0.0.0.0";\n`,
-    "localhost": `${OK}export const a = "localhost";\n`,
-    // Review 2: the reviewer's two files that listened on TCP, and their relatives.
-    "review 2 B1: Reflect.get on the server (the allowed listen in dead code)": variant("server.listen(path, () => undefined);", 'if (dir === "never") server.listen(path);\n  const f = Reflect.get(server, "lis" + "ten");\n  f.call(server, 0);'),
-    "review 2 B2: a local enum named like the path": variant("server.listen(path, () => undefined);", "{\n    enum path { port = 0 }\n    server.listen(path);\n  }"),
-    "Object.getOwnPropertyDescriptor on the prototype": `${OK.replace("  server.listen(path, () => undefined);\n}", "  server.listen(path, () => undefined);\n  const d = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(server), \"x\");\n  void d;\n}")}`,
-    "Object.entries over the prototype": variant("server.listen(path, () => undefined);", "server.listen(path, () => undefined);\n  for (const [k, v] of Object.entries(server)) void [k, v];"),
-    "Function.prototype.call with the server": variant("server.listen(path, () => undefined);", "server.listen(path, () => undefined);\n  const g = server.close;\n  g.call(server);"),
-    "the server passed to a function": variant("server.listen(path, () => undefined);", "server.listen(path, () => undefined);\n  keep(server);"),
-    "the server stored in an object": variant("server.listen(path, () => undefined);", "server.listen(path, () => undefined);\n  const h = { server };\n  void h;"),
-    "the server returned": variant("server.listen(path, () => undefined);", "server.listen(path, () => undefined);\n  return void server;"),
-    "a method outside the list": variant("server.listen(path, () => undefined);", "server.listen(path, () => undefined);\n  server.getConnections(() => undefined);"),
-    "a namespace shadow": variant("server.listen(path, () => undefined);", "server.listen(path, () => undefined);\n}\nnamespace path { export const port = 8080; }\nfunction _x(): void {"),
-    "a class": `${OK}export class C {}\n`,
-    "declare": `${OK}declare const port: number;\n`,
-    "if (false)": variant("server.listen(path, () => undefined);", "if (false) void 0;\n  server.listen(path, () => undefined);"),
-    "a constant ternary": variant("server.listen(path, () => undefined);", "void (0 ? 1 : 2);\n  server.listen(path, () => undefined);"),
-    "a constant &&": variant("server.listen(path, () => undefined);", "void (true && dir);\n  server.listen(path, () => undefined);"),
-    "listen after a return": variant("server.listen(path, () => undefined);", "return;\n  server.listen(path, () => undefined);"),
-    "listen inside an expression": variant("server.listen(path, () => undefined);", "void server.listen(path, () => undefined);"),
-    "process named": `${OK}export const p = () => process.platform;\n`,
-    "globalThis named": `${OK}export const g = () => globalThis;\n`,
-    "eval named": `${OK}export const e = (s: string) => eval(s);\n`,
-    "import.meta": `${OK}export const u = import.meta.url;\n`,
-  };
-  for (const [what, source] of Object.entries(probes)) assert.ok(rules(source).length > 0, `${what} stages:\n${source}`);
-  // Each rule on its own, where another rule would also refuse the probe.
-  const says = (what, re) => assert.ok(rules(probes[what]).some((m) => re.test(m)), `${what}: ${rules(probes[what]).join("; ")}`);
-  says("exporting the imported createServer", /exports only what it declares/);
-  says("a computed listen", /computed property access/);
-  says("a unicode-escaped listen", /written with escapes/);
-  says("createServer twice", /createServer is called exactly once/);
-  says("a parameter name (SF8)", /not a const declared once/);
-  says("export * from node:net", /re-exports nothing/);
-  says("review 2 B1: Reflect.get on the server (the allowed listen in dead code)", /the server is used only as server\./);
-  says("review 2 B1: Reflect.get on the server (the allowed listen in dead code)", /Reflect is never named/);
-  says("review 2 B2: a local enum named like the path", /no enum, namespace, module or class/);
-  says("review 2 B2: a local enum named like the path", /not a const declared once in the file/);
-  says("the server passed to a function", /the server is used only as server\./);
-  says("Function.prototype.call with the server", /the server is used only as server\./);
-  says("a method outside the list", /the server is used only as server\./);
-  says("if (false)", /constant condition/);
-  says("a constant &&", /constant operand/);
-  says("listen after a return", /follows a return/);
-  says("listen inside an expression", /a statement of its own in a block/);
-  says("process named", /process is never named/);
-  assert.deepEqual(rules(`// server.listen(8080) in a comment\n/* port: 1 */\n${OK}`), [], "comments count for nothing");
-  assert.deepEqual(unsafeForms(OK.replace("server.listen(path, () => undefined);", "server.listen(8080);"), "pty-process/service.ts", { pkg: "pty-process" }), [], "the rules are the endpoint file's (any other file may not load node:net at all)");
-});
-
-test("the rules run at staging and in the import lint: a port listen is refused, a path listen stages", () => {
-  const files = new Set(["pty-process/endpoint-host.ts"]);
-  assert.doesNotThrow(() => checkStagedFile(ENDPOINT_LISTENER_FILE, OK, files));
-  assert.throws(() => checkStagedFile(ENDPOINT_LISTENER_FILE, variant("server.listen(path, () => undefined);", "server.listen(8080);"), files), /listen/);
-  assert.throws(() => checkStagedFile(ENDPOINT_LISTENER_FILE, 'import { request } from "node:http";\n', files), /may load only node:net/);
-  assert.throws(() => checkStagedFile("pty-process/service.ts", 'import { createServer } from "node:net";\n', new Set(["pty-process/service.ts"])), /opens sockets/);
-  assert.ok(unsafeForms(variant("server.listen(path, () => undefined);", "server.listen(8080);"), "src/endpoint-host.ts", { pkg: "pty-process", pkgRel: "src/endpoint-host.ts" }).length > 0, "the import lint's path form");
-});
-
-test("the real endpoint file, once it exists (PV-M6 slice 2), passes the rules", () => {
-  const real = fileURLToPath(new URL("../../packages/pty-process/src/endpoint-host.ts", import.meta.url));
-  if (!existsSync(real)) return; // not on this branch yet: the staging hook and the import lint apply the same rules when it lands
-  const text = readFileSync(real, "utf8");
-  assert.deepEqual(rules(text), []);
-  for (const m of text.matchAll(/from "(node:[a-z0-9/]+)"/g)) assert.equal(listenerBuiltinRefusal(m[1], ENDPOINT_LISTENER_FILE), null, m[1]);
 });
 
 test("NET-GATE stays TCP: the packaged check lists TCP listeners only, so a Unix socket is not counted and a TCP one always is", () => {
