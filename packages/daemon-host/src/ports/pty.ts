@@ -1,4 +1,5 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
+import type { RelayIn, RelayOut } from "../messages/endpoint.js";
 import type { ForgeListRequest, ForgeReply } from "@axis/protocol";
 
 /**
@@ -17,6 +18,8 @@ export interface PtySpawn {
   readonly env: Readonly<Record<string, string>>;
   readonly cols: number;
   readonly rows: number;
+  /** PV-M6: the run's messaging endpoint (the daemon's id and token), set by the daemon host only; the supervisor never sets it. */
+  readonly messagesEndpoint?: { readonly endpoint: string; readonly token: string };
 }
 
 export interface PtyExit {
@@ -40,6 +43,15 @@ export interface PtyHandle {
 
 export interface PtyPort {
   spawn(spec: PtySpawn): Promise<PtyHandle>;
+}
+
+/**
+ * The messaging endpoint relay over the pty control channel (PV-M6, ADR 0007 decision 7.1): the relayed messages in, the
+ * daemon's answers out. The envelopes are `@axis/pty-process`'s `relayInbound` / `relayOutbound`, parsed by the port.
+ */
+export interface PtyRelayPort {
+  onRelay(handler: (msg: RelayIn) => void): { dispose(): void };
+  relay(msg: RelayOut): boolean;
 }
 
 /**

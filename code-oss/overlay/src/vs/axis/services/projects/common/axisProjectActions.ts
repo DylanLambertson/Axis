@@ -10,11 +10,15 @@
 import { localize } from '../../../../nls.js';
 import type { IAxisProjectInfo } from '../../workspaces/common/axisWorkspaceData.js';
 
+/** What the user can ask for (the commands and the banner button). */
 export const AXIS_PROJECT_ACTIONS = ['add', 'trust', 'untrust'] as const;
 export type AxisProjectAction = (typeof AXIS_PROJECT_ACTIONS)[number];
+/** Everything the renderer may send: the actions plus `status`, main's read of this window's folder (no dialog, changes nothing). */
+export const AXIS_PROJECT_REQUESTS = [...AXIS_PROJECT_ACTIONS, 'status'] as const;
+export type AxisProjectRequest = (typeof AXIS_PROJECT_REQUESTS)[number];
 
 /** Main's closed outcomes (`PROJECT_OUTCOMES` in packages/daemon-host/src/main/project-actions.ts). */
-export const AXIS_PROJECT_OUTCOMES = ['added', 'added_read_only', 'trusted', 'untrusted', 'cancelled', 'expired', 'no_folder', 'not_a_repository', 'refused', 'busy', 'unavailable'] as const;
+export const AXIS_PROJECT_OUTCOMES = ['added', 'added_read_only', 'trusted', 'untrusted', 'cancelled', 'expired', 'no_folder', 'not_a_repository', 'refused', 'busy', 'unavailable', 'status_trusted', 'status_read_only', 'status_not_registered'] as const;
 export type AxisProjectOutcome = (typeof AXIS_PROJECT_OUTCOMES)[number];
 
 export const AXIS_PROJECT_REQUEST_CHANNEL = 'vscode:axisProjectAction';
@@ -25,8 +29,8 @@ export const AXIS_PROJECT_CLIENT_TIMEOUT_MS = 90_000;
 const NONCE = /^[A-Za-z0-9_-]{1,64}$/;
 
 /** The one message the renderer may send: exactly `{ nonce, action }`, so no path or project id can ever ride along. */
-export function projectActionRequest(nonce: string, action: AxisProjectAction): { readonly nonce: string; readonly action: AxisProjectAction } {
-	if (!NONCE.test(nonce) || !(AXIS_PROJECT_ACTIONS as readonly string[]).includes(action)) {
+export function projectActionRequest(nonce: string, action: AxisProjectRequest): { readonly nonce: string; readonly action: AxisProjectRequest } {
+	if (!NONCE.test(nonce) || !(AXIS_PROJECT_REQUESTS as readonly string[]).includes(action)) {
 		throw new Error('invalid project action request');
 	}
 	return Object.freeze({ nonce, action });
@@ -51,6 +55,21 @@ export function outcomeSentence(outcome: AxisProjectOutcome): string {
 		case 'refused': return localize('axis.project.outcome.refused', "That cannot be done for this folder now.");
 		case 'busy': return localize('axis.project.outcome.busy', "Another project action is in progress, or one was just cancelled. Try again in a minute.");
 		case 'unavailable': return localize('axis.project.outcome.unavailable', "The Axis service is not available. Nothing changed.");
+		case 'status_trusted': return localize('axis.project.outcome.statusTrusted', "This folder is trusted to run.");
+		case 'status_read_only': return localize('axis.project.outcome.statusReadOnly', "This folder is read only.");
+		case 'status_not_registered': return localize('axis.project.outcome.statusNotRegistered', "This folder is not an Axis project yet.");
+	}
+}
+
+/** This window's folder as main last read it (`status`); `unknown` for anything but the three status outcomes. */
+export type AxisWindowRunTrust = 'trusted' | 'read_only' | 'not_registered' | 'unknown';
+
+export function toWindowRunTrust(outcome: AxisProjectOutcome): AxisWindowRunTrust {
+	switch (outcome) {
+		case 'status_trusted': return 'trusted';
+		case 'status_read_only': return 'read_only';
+		case 'status_not_registered': return 'not_registered';
+		default: return 'unknown';
 	}
 }
 
@@ -67,50 +86,42 @@ export function trustSource(daemonUsable: boolean, origin: 'daemon' | 'discovery
 	return !daemonUsable ? 'offline' : origin === 'daemon' ? 'daemon' : 'unregistered';
 }
 
-/** This window's project as the views show it. `known` is true only when its record came from the daemon. */
-export type AxisWindowProjectState =
-	| { readonly kind: 'none' }
-	| { readonly kind: 'registered'; readonly project: IAxisProjectInfo; readonly known: boolean };
+/** The longest project name shown inline; the full name is in the tooltip. */
+export const AXIS_MAX_INLINE_NAME = 40;
+/** The longest name a tooltip shows (review N4). */
+export const AXIS_MAX_TOOLTIP_NAME = 200;
 
-/** The project whose local checkout row is this window's folder (the one the actions act on); `none` when there is no single one. */
-export function windowProjectState(input: {
-	readonly source: AxisTrustSource;
-	readonly projects: readonly IAxisProjectInfo[];
-	readonly localCheckoutProjectIds: readonly string[];
-}): AxisWindowProjectState {
-	if (input.source === 'unregistered') {
-		return { kind: 'none' }; // a discovered folder the daemon does not hold is not an Axis project
+/** The name with control and format characters removed: for a tooltip, which shows it whole. */
+export function plainName(name: string): string {
+	const clean = [...name.replace(/[\p{Cc}\p{Cf}\u2028\u2029]/gu, '')];
+	if (clean.length === 0) {
+		return localize('axis.project.unnamed', "(unnamed)");
 	}
-	const ids = [...new Set(input.localCheckoutProjectIds)];
-	const project = ids.length === 1 ? input.projects.find(p => p.id === ids[0]) : undefined;
-	return project === undefined ? { kind: 'none' } : { kind: 'registered', project, known: input.source === 'daemon' };
+	return clean.length > AXIS_MAX_TOOLTIP_NAME ? clean.slice(0, AXIS_MAX_TOOLTIP_NAME - 1).join('') + '\u2026' : clean.join('');
 }
 
 /**
- * The project ids of the local checkout rows that ARE this window's folder (exactly one open folder; a path match). Main acts on the
- * window's folder itself; this only decides where the dashboard offers the buttons.
+ * A project name as it sits inside a sentence: control and format characters removed (a name cannot reorder the text around it),
+ * cut to `AXIS_MAX_INLINE_NAME` with an ellipsis, and wrapped in a first-strong isolate (U+2068 ... U+2069). So a right-to-left name
+ * keeps its own order and the sentence keeps the UI's direction and its words.
  */
-export function windowLocalCheckoutIds(
-	entries: ReadonlyArray<{ readonly isLocalCheckout: boolean; readonly project: { readonly id: string }; readonly worktree: { readonly path: string } }>,
-	folderPaths: readonly string[],
-): string[] {
-	if (folderPaths.length !== 1) {
-		return [];
-	}
-	return entries.filter(e => e.isLocalCheckout && e.worktree.path === folderPaths[0]).map(e => e.project.id);
+export function isolateName(name: string): string {
+	const clean = [...plainName(name)];
+	const shown = clean.length > AXIS_MAX_INLINE_NAME ? clean.slice(0, AXIS_MAX_INLINE_NAME - 1).join('') + '\u2026' : clean.join('');
+	return `\u2068${shown}\u2069`;
 }
 
 /** The chip text for a project: glyph AND words, never colour alone. Unknown trust says so. */
 export function projectChip(project: IAxisProjectInfo, source: AxisTrustSource): { readonly glyph: string; readonly label: string; readonly hint: string } {
 	if (source === 'unregistered') {
-		return { glyph: '+', label: localize('axis.project.chip.unregistered', "{0}: not added to Axis", project.name), hint: localize('axis.project.chip.unregisteredHint', "Add Project… makes it an Axis project. It starts read only until you trust it to run.") };
+		return { glyph: '+', label: localize('axis.project.chip.unregistered', "{0}: not added to Axis", isolateName(project.name)), hint: localize('axis.project.chip.unregisteredHint', "Add Project… makes it an Axis project. It starts read only until you trust it to run.") };
 	}
 	if (source === 'offline') {
-		return { glyph: '?', label: localize('axis.project.chip.unknown', "{0}: run trust unknown", project.name), hint: localize('axis.project.chip.unknownHint', "The Axis service is not connected, so run trust cannot be shown.") };
+		return { glyph: '?', label: localize('axis.project.chip.unknown', "{0}: run trust unknown", isolateName(project.name)), hint: localize('axis.project.chip.unknownHint', "The Axis service is not connected, so run trust cannot be shown.") };
 	}
 	return project.trusted
-		? { glyph: '\u2713', label: localize('axis.project.chip.trusted', "{0}: trusted to run", project.name), hint: localize('axis.project.chip.trustedHint', "CLI and agent runs, commits and pushes are allowed.") }
-		: { glyph: '\u{1F512}', label: localize('axis.project.chip.readOnly', "{0}: read only", project.name), hint: localize('axis.project.chip.readOnlyHint', "Runs, commits and pushes need Trust to run. If the repository changed, review and trust it again.") };
+		? { glyph: '\u2713', label: localize('axis.project.chip.trusted', "{0}: trusted to run", isolateName(project.name)), hint: localize('axis.project.chip.trustedHint', "CLI and agent runs, commits and pushes are allowed.") }
+		: { glyph: '\u2298', label: localize('axis.project.chip.readOnly', "{0}: read only", isolateName(project.name)), hint: localize('axis.project.chip.readOnlyHint', "Runs, commits and pushes need Trust to run. If the repository changed, review and trust it again.") };
 }
 
 /** What the client needs from the IPC (the electron-browser adapter passes the preload's `ipcRenderer`). */
@@ -133,7 +144,7 @@ export class AxisProjectActionClient {
 		this.off = transport.on(AXIS_PROJECT_RESULT_CHANNEL, payload => this.onResult(payload));
 	}
 
-	run(action: AxisProjectAction): Promise<AxisProjectOutcome> {
+	run(action: AxisProjectRequest): Promise<AxisProjectOutcome> {
 		const nonce = `pa${++this.seq}${this.randomId().replace(/[^A-Za-z0-9]/g, '').slice(0, 32)}`;
 		return new Promise(resolve => {
 			const timer = setTimeout(() => settle('unavailable'), this.timeoutMs);
@@ -174,15 +185,23 @@ export interface IAxisBannerContent {
 	readonly action: { readonly id: AxisProjectAction; readonly label: string } | undefined;
 }
 
-/** What the dashboard banner (contrib/projects/browser/axisProjectBanner.ts) says and offers for the window's project state. */
-export function bannerContent(state: AxisWindowProjectState, source: AxisTrustSource): IAxisBannerContent {
+/**
+ * What the dashboard banner (contrib/projects/browser/axisProjectBanner.ts) says and offers. `trust` is main's `status` answer for
+ * THIS window's folder; it counts only while the daemon is usable, so an offline service is always unknown with no action.
+ */
+export function bannerContent(trust: AxisWindowRunTrust, source: AxisTrustSource): IAxisBannerContent {
 	if (source === 'offline') {
 		return { text: localize('axis.banner.unknown', "Run trust unknown: the Axis service is not connected."), action: undefined };
 	}
-	if (source !== 'daemon' || state.kind === 'none' || !state.known) { // Trust and Stop only from daemon rows
-		return { text: localize('axis.banner.none', "This folder is not an Axis project yet."), action: { id: 'add', label: localize('axis.banner.add', "Add Project…") } };
+	// With discovery rows (the daemon holds no project) only "not registered" can be current: a trust answer is stale (review N3).
+	switch (source === 'unregistered' && trust !== 'not_registered' ? 'unknown' : trust) {
+		case 'not_registered':
+			return { text: localize('axis.banner.none', "This folder is not an Axis project yet."), action: { id: 'add', label: localize('axis.banner.add', "Add Project…") } };
+		case 'read_only':
+			return { text: localize('axis.banner.readOnly', "This folder is read only: runs, commits and pushes need Trust to run."), action: { id: 'trust', label: localize('axis.banner.trust', "Trust to Run…") } };
+		case 'trusted':
+			return { text: localize('axis.banner.trusted', "This folder is trusted to run."), action: { id: 'untrust', label: localize('axis.banner.untrust', "Stop Trusting") } };
+		case 'unknown':
+			return { text: localize('axis.banner.statusUnknown', "Run trust for this folder is not known right now."), action: undefined };
 	}
-	return state.project.trusted
-		? { text: localize('axis.banner.trusted', "{0} is trusted to run.", state.project.name), action: { id: 'untrust', label: localize('axis.banner.untrust', "Stop Trusting") } }
-		: { text: localize('axis.banner.readOnly', "{0} is read only: runs, commits and pushes need Trust to run.", state.project.name), action: { id: 'trust', label: localize('axis.banner.trust', "Trust to Run…") } };
 }

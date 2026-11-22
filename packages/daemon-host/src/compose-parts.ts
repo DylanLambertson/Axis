@@ -14,7 +14,8 @@ import type { ProjectMutex } from "./worktrees/project-mutex.js";
 import type { MockProviderOptions, RunBudgetLimits } from "@axis/providers";
 import type { CommandLimits } from "./bindings/agent-command.js";
 import type { ToolCaps } from "./composer/loop.js";
-import type { PtyPort } from "./ports/pty.js";
+import type { PtyPort, PtyRelayPort } from "./ports/pty.js";
+import type { EndpointRelay } from "./messages/endpoint.js";
 
 /**
  * Small pieces of the composition root (ticket H12), kept apart so `compose.ts` stays readable. None of them touches a
@@ -235,4 +236,61 @@ export function createProjectRunStopper(deps: {
 export function messageSecretCheck(redactor: Redactor): (text: string) => boolean {
   const check = providerRedactor(redactor);
   return (text) => check.containsSecret(text);
+}
+
+/** What compose's messaging option turns on (PV-M6; both default false; `cliEndpoint` needs `enabled`). PV-G4 reads `enabled`. */
+export interface MessagingOptions {
+  readonly enabled?: boolean;
+  readonly cliEndpoint?: boolean;
+}
+/** A CLI run's endpoint as the run's spawn needs it. */
+export interface CliEndpoints {
+  mint(runId: string): { readonly endpointId: string; readonly token: string } | undefined;
+  revoke(runId: string): void;
+}
+
+/**
+ * The CLI endpoint relay wired to the pty control channel (PV-M6 slice 2), or undefined: only with `messaging.enabled` AND
+ * `messaging.cliEndpoint` (both off by default) and a pty port that relays. Each relayed message goes to the daemon's relay
+ * with the channel's mark; its answers go back on the channel; shutdown writes the pending aggregated failure rows.
+ */
+export function wireCliEndpoints(o: MessagingOptions | undefined, pty: unknown, endpoints: { readonly relay: EndpointRelay; readonly source: symbol }, cleanups: (() => void)[]): CliEndpoints | undefined {
+  const port = pty as Partial<PtyRelayPort>;
+  if (o?.enabled !== true || o.cliEndpoint !== true || typeof port.onRelay !== "function" || typeof port.relay !== "function") return undefined;
+  const send = port.relay.bind(port);
+  const sub = port.onRelay((m) => void endpoints.relay.onRelay(endpoints.source, m).then((outs) => outs.forEach((out) => send(out)), () => undefined));
+  cleanups.push(() => {
+    endpoints.relay.flush();
+    sub.dispose();
+  });
+  return {
+    mint: (runId) => endpoints.relay.mint(runId),
+    revoke: (runId) => {
+      const out = endpoints.relay.revoke(runId);
+      if (out !== undefined) send(out);
+    },
+  };
+}
+
+/**
+ * The pty port a CLI run spawns through: with endpoints, the run's endpoint is minted at spawn and handed to the pty process
+ * (`messagesEndpoint`), and revoked when the spawn fails or the run's process exits (the endpoint closes at once, not at the
+ * next relayed message). Without them (`endpoints()` undefined: the default) the port is used as it is.
+ */
+export function cliEndpointPty(pty: PtyPort, endpoints: () => CliEndpoints | undefined): PtyPort {
+  return {
+    async spawn(spec) {
+      const e = endpoints();
+      const minted = e?.mint(spec.runId);
+      if (e === undefined || minted === undefined) return pty.spawn(spec);
+      try {
+        const handle = await pty.spawn({ ...spec, messagesEndpoint: { endpoint: minted.endpointId, token: minted.token } });
+        handle.onExit(() => e.revoke(spec.runId));
+        return handle;
+      } catch (err) {
+        e.revoke(spec.runId);
+        throw err;
+      }
+    },
+  };
 }

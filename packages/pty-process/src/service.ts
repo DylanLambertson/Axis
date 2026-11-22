@@ -4,7 +4,8 @@ import { classifyDeniedName, isValidName } from "@axis/pty-policy";
 import type { ForgeReply } from "@axis/protocol";
 import { createForgeList, forgeRequestId, type ForgeList, type ForgeListConfig } from "./forge-list.js";
 import { createGitExec, type GitExec, type GitExecConfig } from "./git-exec.js";
-import { controlRequest, dataRequest, type ControlReply, type ControlRequest, type DataReply, type ExecReply } from "./messages.js";
+import { controlRequest, dataRequest, relayOutbound, type ControlReply, type ControlRequest, type DataReply, type ExecReply, type RelayInbound } from "./messages.js";
+import { createEndpointHost, type EndpointHostConfig } from "./endpoint-host.js";
 import { DEFAULT_FLOW, OutputFlow, type FlowLimits } from "./flow.js";
 import { probeGroup, signalGroup, validPgid } from "./group.js";
 import { OscCwdFilter } from "./osc.js";
@@ -34,6 +35,8 @@ export interface PtyServiceOptions {
   readonly input?: Partial<{ terminal: number; process: number; entriesTerminal: number; entriesProcess: number }>;
   /** Distinct data-connection names served over the life of the service; past this a new name is refused. Default 65536. */
   readonly maxConnNames?: number;
+  /** PV-M6: the messaging endpoint listener's runtime directory. Absent (the default): a spawn asking for an endpoint is refused. */
+  readonly messagesEndpoints?: EndpointHostConfig;
 }
 
 export interface PtyService {
@@ -66,6 +69,8 @@ interface Terminal {
   /** Input was refused: every write is refused until the child has taken all it was given. */
   inputBlocked: boolean;
   exited: boolean;
+  /** The run's messaging endpoint, closed with the terminal (PV-M6). */
+  endpoint?: string;
   groupGone: boolean;
 }
 
@@ -89,8 +94,9 @@ export function createPtyService(options: PtyServiceOptions): PtyService {
   const clock = options.clock ?? systemClock;
   const git: GitExec | undefined = options.git === undefined ? undefined : createGitExec(options.git, clock, platform, (m) => void sendTo(control, m));
   const forge: ForgeList | undefined = options.forge === undefined ? undefined : createForgeList(options.forge, clock, platform, (m) => void sendTo(control, m));
+  const endpoints = options.messagesEndpoints === undefined ? undefined : createEndpointHost(options.messagesEndpoints, { send: (m) => sendTo(control, m), clock, random: rand });
 
-  const sendTo = (ch: Channel | undefined, msg: ControlReply | DataReply | ExecReply | ForgeReply): boolean => {
+  const sendTo = (ch: Channel | undefined, msg: ControlReply | DataReply | ExecReply | ForgeReply | RelayInbound): boolean => {
     if (ch === undefined) return false;
     try {
       ch.send(msg);
@@ -180,6 +186,7 @@ export function createPtyService(options: PtyServiceOptions): PtyService {
   const discard = (t: Terminal): void => {
     killTerminal(t, "SIGKILL");
     t.subs.forEach((d) => d.dispose());
+    if (t.endpoint !== undefined) endpoints?.close(t.endpoint);
     terminals.delete(t.id);
     sendTo(t.owner, { t: "exit", term: t.id });
     t.owner = undefined;
@@ -193,7 +200,17 @@ export function createPtyService(options: PtyServiceOptions): PtyService {
     // CLI-1 backstop: the daemon resolved an absolute executable and the worktree is an absolute directory; a relative one would be
     // searched in PATH by the spawn function, and a NUL would truncate silently in a native binding.
     if (!isAbsolutePath(m.argv[0] ?? "", platform) || !isAbsolutePath(m.cwd, platform) || m.argv.some(hasNul) || hasNul(m.cwd)) return refuseSpawn(m.req, "spawn_failed");
-    startTerminal(m.req, m.argv, m.cwd, m.env, m.cols, m.rows);
+    const ep = m.messagesEndpoint;
+    if (ep === undefined) return startTerminal(m.req, m.argv, m.cwd, m.env, m.cols, m.rows);
+    // ADR 0007 amendment item 1: the two names are added here only, after the PTY-5 check above, and only with the request.
+    if (endpoints === undefined) return refuseSpawn(m.req, "endpoint_unavailable");
+    const ch = control;
+    void endpoints.open(ep.endpoint).then((path) => {
+      if (disposed || control !== ch) return endpoints.close(ep.endpoint); // nobody to answer: listen for nobody either
+      if (path === undefined) return refuseSpawn(m.req, "endpoint_unavailable");
+      startTerminal(m.req, m.argv, m.cwd, { ...m.env, AXIS_MESSAGES_ENDPOINT: path, AXIS_MESSAGES_TOKEN: ep.token }, m.cols, m.rows, ep.endpoint);
+      if (![...terminals.values()].some((t) => t.endpoint === ep.endpoint)) endpoints.close(ep.endpoint); // the spawn was refused
+    });
   };
 
   /** H9-hooks: a hook is a terminal like any other, but its argv, cwd and redirectors come from the service (§4.2, §4.3). */
@@ -240,7 +257,7 @@ export function createPtyService(options: PtyServiceOptions): PtyService {
       });
   };
 
-  const startTerminal = (req: string, argv: readonly string[], cwd: string, env: Readonly<Record<string, string>>, cols: number, rows: number): void => {
+  const startTerminal = (req: string, argv: readonly string[], cwd: string, env: Readonly<Record<string, string>>, cols: number, rows: number, endpoint?: string): void => {
     reap();
     if (terminals.size >= max) return refuseSpawn(req, "capacity");
     let child: PtyChild;
@@ -262,7 +279,7 @@ export function createPtyService(options: PtyServiceOptions): PtyService {
     let idText = "";
     do idText = "pty_" + Buffer.from(rand(16)).toString("hex");
     while (terminals.has(idText));
-    const t: Terminal = { id: idText, child, filter: new OscCwdFilter(), resync: true, cancel: false, seen: false, inputBlocked: false, flow: new OutputFlow(options.flow ?? DEFAULT_FLOW), subs: [], granted: undefined, owner: undefined, exited: false, groupGone: false };
+    const t: Terminal = { id: idText, child, filter: new OscCwdFilter(), resync: true, cancel: false, seen: false, inputBlocked: false, flow: new OutputFlow(options.flow ?? DEFAULT_FLOW), subs: [], granted: undefined, owner: undefined, exited: false, groupGone: false, ...(endpoint === undefined ? {} : { endpoint }) };
     terminals.set(t.id, t);
     t.subs.push(
       child.onData((chunk) => {
@@ -284,6 +301,7 @@ export function createPtyService(options: PtyServiceOptions): PtyService {
       }),
       child.onExit((exit) => {
         t.exited = true;
+        if (t.endpoint !== undefined) endpoints?.close(t.endpoint); // the run ended: its endpoint goes with it
         sendTo(control, { t: "exit", term: t.id, exitCode: exit.exitCode, signal: exit.signal });
         sendTo(t.owner, { t: "exit", term: t.id });
       }),
@@ -308,6 +326,8 @@ export function createPtyService(options: PtyServiceOptions): PtyService {
       const req = forgeRequestId(raw); // no usable req: nothing to answer
       return void (req === undefined || sendTo(control, { t: "forge-failed", req, code: "spawn_missing" }));
     }
+    const relay = relayOutbound.safeParse(raw); // PV-M6: the daemon's answers for the endpoint relay
+    if (relay.success) return void endpoints?.onRelay(relay.data);
     const parsed = controlRequest.safeParse(raw);
     if (!parsed.success) {
       const req = typeof raw === "object" && raw !== null && typeof (raw as { req?: unknown }).req === "string" ? (raw as { req: string }).req : undefined;
@@ -411,6 +431,7 @@ export function createPtyService(options: PtyServiceOptions): PtyService {
       // Nobody can signal these any more and no run row will ever name them: closing the control channel ends every terminal,
       // every exec and every scratch attempt.
       for (const t of [...terminals.values()]) discard(t);
+      endpoints?.closeAll();
       git?.closeAll();
       forge?.closeAll();
       killVets();
@@ -453,6 +474,7 @@ export function createPtyService(options: PtyServiceOptions): PtyService {
       disposed = true;
       for (const t of terminals.values()) killTerminal(t, "SIGKILL");
       for (const t of terminals.values()) t.subs.forEach((d) => d.dispose());
+      endpoints?.closeAll();
       git?.closeAll();
       forge?.closeAll();
       killVets();
