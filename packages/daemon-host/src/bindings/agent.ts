@@ -13,6 +13,8 @@ import { createRunTaint, type TaintStore } from "../composer/taint.js";
 import { ObservedFiles } from "./agent-observed.js";
 import { GIT_DIFF, GIT_STATUS, GIT_TOOL_SPECS, gitDiffArgs, gitReadRunnerOptions, gitStatusArgs, gitTools } from "./agent-git.js";
 import { providerRedactor } from "./provider-redactor.js";
+import { MESSAGE_TOOL_SPECS, MessagesRead, READ_MESSAGES, SEND_MESSAGE, messageTools, messagingReason, readMessagesArgs, sendMessageArgs, sendPreview } from "./agent-messages.js";
+import { createComposerMessaging, raisedHop, type ComposerMessagingDeps } from "../messages/participation.js";
 import { RUN_COMMAND, RUN_COMMAND_SPEC, RunWt2, approvableCommand, commandLimits, commandTool, runCommandArgs, type CommandLimits, type RunCommandArgs } from "./agent-command.js";
 import type { RunApprovals } from "../gate/run-approvals.js";
 import { ComposerRunHalt, type ComposerApprovalNote, type ComposerEngine, type ComposerRunContext, type ComposerRunTools, type ComposerToolSpec, type RunRepositoryGuard } from "../ports/composer.js";
@@ -31,7 +33,8 @@ import type { WorktreeLocator } from "../ports/worktree-locator.js";
  *   containment and WT-3 protected paths apply at decision and at use. `run_command` (C3, `agent-command.ts`) is offered
  *   only when the host gave the WT-2 guard (`commandGuard`); shutdown kills what the shared runner started. `git_status` and
  *   `git_diff` (C3 slice 2, `agent-git.ts`, tier `read`) are offered when the host gave its git (`gitPath`): the broker's git,
- *   checked by the run's WT-2 guard before git starts.
+ *   checked by the run's WT-2 guard before git starts. `send_message` and `read_messages` (PV-M4, `agent-messages.ts`) are
+ *   offered only to a run whose agent the host's messaging knows (`messaging.agentOf`): none until PV-G4.
  * - **Providers.** The mock, guarded (`guardProvider`: validation, outgoing secret scan with the host redactor, timeouts,
  *   stream grammar, the run budget), and the network providers `bindings/providers.ts` builds over the vault (C6).
  * - **Approval preview (C8).** Each call's parsed arguments are held while the broker decides; when the broker asks, the
@@ -106,6 +109,11 @@ export interface AgentBindingDeps {
   readonly gitPath?: string;
   /** Bounds of one command (timeout, output cap, what the model sees). Default `DEFAULT_COMMAND_LIMITS`. */
   readonly commandLimits?: Partial<CommandLimits>;
+  /**
+   * A run's messaging (PV-M4): `send_message` and `read_messages` for a run whose agent it knows. Absent, or no agent for
+   * the run (every run until PV-G4 records a run's agent), and neither tool is offered or registered.
+   */
+  readonly messaging?: Omit<ComposerMessagingDeps, "holdsSecret">;
 }
 
 /** The broker's audit payload keys (`broker.decision`: approver, approval id, expiry; `broker.result`), for the host's `AuditLog` (DMN-5). */
@@ -153,6 +161,8 @@ const PREVIEWED: ReadonlyMap<string, { readonly args: z.ZodType; readonly conten
   [RUN_COMMAND, { args: runCommandArgs, content: () => undefined }],
   [GIT_STATUS, { args: gitStatusArgs, content: () => undefined }],
   [GIT_DIFF, { args: gitDiffArgs, content: () => undefined }],
+  [SEND_MESSAGE, { args: sendMessageArgs, content: sendPreview }],
+  [READ_MESSAGES, { args: readMessagesArgs, content: () => undefined }],
 ]);
 /** Tools that are never put to the user: a read the broker asks about (a path into the git directory) is refused, not declined. */
 const NEVER_ASKED: ReadonlySet<string> = new Set([GIT_STATUS, GIT_DIFF]);
@@ -196,7 +206,10 @@ export function createAgentBinding(deps: AgentBindingDeps): AgentBinding {
   const limits = commandLimits(deps.commandLimits);
   // One runner for every run's git reads: the host's git only (never looked up), its output bounded for the model.
   const gitRunner: GitRunner | undefined = deps.gitPath === undefined ? undefined : createNodeRunner(gitReadRunnerOptions(deps.gitPath, deps.env()));
-  const providers = new Map<string, GuardedProvider>([["mock", guardProvider(createMockProvider(deps.mock ?? {}), { redactor: providerRedactor(deps.redactor) })]]);
+  const outgoing = providerRedactor(deps.redactor);
+  const providers = new Map<string, GuardedProvider>([["mock", guardProvider(createMockProvider(deps.mock ?? {}), { redactor: outgoing })]]);
+  // A read never returns a body the providers' outgoing check would refuse (a secret): it is withheld instead.
+  const runMessaging = deps.messaging === undefined ? undefined : createComposerMessaging({ ...deps.messaging, holdsSecret: (t) => outgoing.containsSecret(t) });
   for (const p of deps.providers ?? []) {
     if (providers.has(p.descriptor.providerId)) throw new Error("provider registered twice");
     providers.set(p.descriptor.providerId, p);
@@ -231,6 +244,17 @@ export function createAgentBinding(deps: AgentBindingDeps): AgentBinding {
     };
     const observed = new ObservedFiles(contain, worktree.id, MAX_WRITE_BYTES);
     const taint = createRunTaint({ runId: run.runId, store: deps.taintStore, audit: deps.audit, now: deps.now });
+    // Section 7.3: the highest hop this run has received through any taint source (a delivery, a read, a test source). Every
+    // receipt raises it first, then taints, so a later send of the run carries it; held for the run's life (a run does not
+    // survive a restart). The run's agent is fixed when its tools are built: messaging is offered only when it is known.
+    let receivedHop = 0;
+    const received = {
+      receive(input: unknown): void {
+        receivedHop = raisedHop(receivedHop, typeof input === "object" && input !== null ? (input as { hop?: unknown }).hop : undefined);
+        taint.receive(input);
+      },
+    };
+    const agentId = runMessaging?.agentOf(run.runId);
     // Calls inside the broker now, with their parsed arguments: the hook previews only the one whose digest it is asked for.
     const inflight = new Set<{ readonly tool: string; readonly args: unknown }>();
     const covered = (req: ApprovalRequest): { readonly tool: string; readonly args: unknown } | undefined => {
@@ -358,13 +382,15 @@ export function createAgentBinding(deps: AgentBindingDeps): AgentBinding {
     if (wt2 !== undefined) broker.register(commandTool({ wt2, workspaceId: worktree.id, platform, limits, redact: (t) => deps.redactor.redactString(t), writeLock: deps.writeLock }));
     for (const extra of deps.extraTools ?? []) broker.register(extra);
     if (gitRunner !== undefined) for (const t of gitTools({ redact: (t) => deps.redactor.redactString(t) })) broker.register(t as ToolDefinition);
-    const specs = Object.freeze([...COMPOSER_TOOLS, ...(wt2 === undefined ? [] : [RUN_COMMAND_SPEC]), ...(gitRunner === undefined ? [] : GIT_TOOL_SPECS)]);
+    const messaging = agentId === undefined ? undefined : runMessaging;
+    if (messaging !== undefined && agentId !== undefined) for (const t of messageTools({ messaging, who: () => ({ agentId, runId: run.runId, receivedHop }) })) broker.register(t);
+    const specs = Object.freeze([...COMPOSER_TOOLS, ...(wt2 === undefined ? [] : [RUN_COMMAND_SPEC]), ...(gitRunner === undefined ? [] : GIT_TOOL_SPECS), ...(messaging === undefined ? [] : MESSAGE_TOOL_SPECS)]);
     return {
       specs,
       drift: async (signal) => formatDriftNotice(await observed.drift(signal)),
       // IAC-T source 1: the pipeline taints this run through its own flag before the block is returned. A halted run
       // (WT-2) never gets here: the loop's guard ends it at the boundary before it asks for a delivery.
-      ...(deps.deliveries === undefined ? {} : { deliver: async () => deps.deliveries?.next(run.runId, taint) }),
+      ...(deps.deliveries === undefined ? {} : { deliver: async () => deps.deliveries?.next(run.runId, received) }),
       ...(wt2 === undefined ? {} : { guard: (signal: AbortSignal) => wt2.turn(signal) }),
       close: () => {
         life.abort();
@@ -386,7 +412,7 @@ export function createAgentBinding(deps: AgentBindingDeps): AgentBinding {
           if (halted()) throw new ComposerRunHalt(wt2?.haltReason ?? "GIT_DRIFT");
           // The action ran but its audit row could not be written: the run must stop (never continue unrecorded).
           if (e instanceof BrokerError && e.details["executed"] === true) throw new Error("unrecorded side effect");
-          const reason = reasonOf(e);
+          const reason = messagingReason(e) ?? reasonOf(e);
           if (reason === "swapped") return { ok: false, reason, content: SWAPPED_RESULT };
           const hint = reason === "stale" ? " The file changed since you last read it: read it again before writing." : "";
           return { ok: false, reason, content: `The call was refused (${reason}).${hint}` };
@@ -395,8 +421,14 @@ export function createAgentBinding(deps: AgentBindingDeps): AgentBinding {
         }
         // IAC-T: a source taints the run BEFORE its result is returned. A throw stops the run with the result withheld
         // (the flag is already set when the receipt is bad or its audit row could not be written).
+        // IAC-T source 2 (PV-M4): each message from an agent, a plugin or a CLI sender in a read raises the run's received hop
+        // and taints the run, before the text is returned.
+        if (out instanceof MessagesRead) {
+          for (const r of out.outcome.receipts) received.receive(r);
+          return { ok: true, content: out.outcome.text };
+        }
         const receipt = taintReceiptOf(deps.taintSources, name, call, input);
-        if (receipt !== undefined) taint.receive(receipt);
+        if (receipt !== undefined) received.receive(receipt);
         return { ok: true, content: typeof out === "string" ? out : "done" };
       },
     };

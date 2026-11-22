@@ -88,6 +88,7 @@ export { AGENT_PAYLOAD_ALLOWLIST, createAgentBinding, taintReceiptOf, COMPOSER_T
 export { createProvidersBinding, PROVIDERS_PAYLOAD_ALLOWLIST, type AnthropicConnectionOptions, type ProvidersBinding, type ProvidersBindingDeps } from "./bindings/providers.js";
 export { RunWt2, approvableCommand, commandLimits, commandOf, commandTool, hostCommandLimits, runCommandArgsOn, formatCommandResult, DEFAULT_COMMAND_LIMITS, MAX_ARGV_JSON, RUN_COMMAND, RUN_COMMAND_SPEC, type CommandLimits } from "./bindings/agent-command.js";
 export { DEFAULT_GIT_READ_LIMITS, GIT_COMMANDS, GIT_DIFF, GIT_READ_TIMEOUT_MS, GIT_STATUS, GIT_TOOL_SPECS, MAX_GIT_OUTPUT, checkGitCall, diffCall, escapeGitLine, gitCallTier, formatDiff, formatStatus, gitDiffArgs, gitReadRunnerOptions, gitStatusArgs, gitTools, statusCall, type GitReadLimits } from "./bindings/agent-git.js";
+export { MESSAGE_TOOL_SPECS, MessagesRead, READ_MESSAGES, SEND_MESSAGE, messageTools, messagingReason, readMessagesArgs, sendMessageArgs, sendPreview } from "./bindings/agent-messages.js";
 export * from "./composer/activity.js";
 export * from "./composer/budget.js";
 export * from "./composer/errors.js";
@@ -106,6 +107,7 @@ export * from "./messages/audit.js";
 export * from "./messages/binding.js";
 export * from "./messages/delivery.js";
 export * from "./messages/limits.js";
+export * from "./messages/participation.js";
 export * from "./messages/policy.js";
 export * from "./messages/service.js";
 export * from "./messages/settings.js";
