@@ -1,6 +1,6 @@
 # Product vision v2: ticket breakdown and ADRs to write
 
-- **Status:** Proposed plan. Companion to `docs/design/product-vision-v2.md`. Nothing here is scheduled until the owner approves the phase proposal (`product-vision-v2.md` §5–§7).
+- **Status:** Plan, approved with the phase proposal on 2026-11-21 (owner decision O-7, `docs/design/owner-decisions-2026-11-21.md`). Companion to `docs/design/product-vision-v2.md`; PV-R1 is ADR 0006.
 - **Date:** 2026-11-06 (owner direction of 2026-11-06). Verified against `origin/main` at `74cd12e`; E1 (`116ef22`) and P1d (`e52114f`) have merged since.
 
 ## 1. Conventions

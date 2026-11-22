@@ -1,6 +1,6 @@
 # Product vision v2: the agent home
 
-- **Status:** Proposed (planning only). Nothing here changes `docs/ROADMAP.md`, `docs/PRODUCT.md`, `docs/UX.md` or an ADR. Proposed edits to those files are collected in §6 and need the owner's approval before they are applied.
+- **Status:** Decided on 2026-11-21 (owner decisions O-1 to O-8, `docs/design/owner-decisions-2026-11-21.md`). ADR 0006 records the information architecture and amends ADR 0004; the §6 edits are applied to `docs/ROADMAP.md`, `docs/PRODUCT.md` and `docs/UX.md` (ticket PV-R2). The text below is kept as written on 2026-11-06; where it differs from ADR 0006, the ADR governs.
 - **Date:** 2026-11-06 (owner direction of 2026-11-06). Verified against `origin/main` at `74cd12e`; E1 (`116ef22`) and P1d (`e52114f`) have merged since.
 - **Decision owner:** Dylan Lambertson.
 - **Companion files:** `docs/design/inter-agent-communication.md` (messaging between agents) with `docs/design/inter-agent-cli-endpoint.md` (the CLI agent endpoint), `docs/design/extensibility.md` (plugins, pages, tasks, integrations), `docs/design/product-vision-v2-tickets.md` (ticket breakdown and ADR list).
