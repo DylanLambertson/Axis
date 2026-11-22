@@ -30,7 +30,7 @@ export const CLIENT_OWNED_HEADERS: ReadonlySet<string> = new Set([
 
 /** The caller's headers with lower-case names, or `header_refused` for a client-owned or malformed one. */
 export function requestHeaders(headers: Readonly<Record<string, string>>): Record<string, string> {
-  const out: Record<string, string> = {};
+  const out = Object.create(null) as Record<string, string>; // a fresh null-prototype record: own pairs only, read once
   const seen = new Set<string>();
   for (const [name, value] of Object.entries(headers)) {
     const n = name.toLowerCase();

@@ -20,11 +20,21 @@ export const EGRESS_CLIENT_TYPES = new Set(["EgressClient", "EgressClientOptions
 const K = ts.SyntaxKind;
 const isLiteral = (n) => n !== undefined && (ts.isStringLiteral(n) || ts.isNoSubstitutionTemplateLiteral(n));
 
-/** True when `spec`, written in the staged file `fromRel`, names the egress client. */
+/**
+ * True when `spec`, written in the staged file `fromRel`, names the egress client. The specifier is normalised first (review
+ * 2 N1): a `?query` or `#fragment` suffix dropped, percent escapes decoded (a malformed one names the client, failing closed),
+ * and any one script extension, `.d.ts` included, removed.
+ */
 export function namesEgressClient(fromRel, spec) {
   if (typeof fromRel !== "string" || typeof spec !== "string" || !(spec.startsWith("./") || spec.startsWith("../"))) return false;
-  const target = posix.normalize(posix.join(posix.dirname(fromRel), spec));
-  return target.replace(/\.(?:js|mjs|cjs|ts|mts|cts)$/, "") === EGRESS_CLIENT_FILE.replace(/\.ts$/, "");
+  let path = spec.replace(/[?#].*$/s, "");
+  try {
+    path = decodeURIComponent(path);
+  } catch {
+    return true;
+  }
+  const target = posix.normalize(posix.join(posix.dirname(fromRel), path));
+  return target.replace(/\.d\.ts$|\.(?:js|mjs|cjs|ts|mts|cts|tsx|jsx)$/, "") === EGRESS_CLIENT_FILE.replace(/\.ts$/, "");
 }
 
 /** Every reason the parsed source `sf` imports the client other than by the allowed named imports (empty for the client itself). */

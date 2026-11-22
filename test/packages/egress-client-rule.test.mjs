@@ -149,6 +149,10 @@ test("an importer may take only the production factory and the client's types, b
   assert.deepEqual(shape('import { createEgressClientForTest } from "./egress-client.js";', EGRESS_CLIENT_FILE), [], "the client itself is not an importer");
   assert.ok(namesEgressClient("daemon-host/compose.ts", "./net/egress-client.mjs"));
   assert.ok(!namesEgressClient("daemon-host/compose.ts", "./net/egress-client-x.js"));
+  for (const spelling of ["./net/egress-client.js?x", "./net/egress-client.js#x", "./net/egress-clien%74.js", "./net/egress-client.d.ts", "./net/%65gress-client", "./net/egress-client.js%", "./net/egress-client.tsx"]) {
+    assert.ok(namesEgressClient("daemon-host/compose.ts", spelling), spelling);
+    assert.ok(shape(`import * as e from "${spelling}";`).length > 0, `a namespace import through ${spelling}`);
+  }
   assert.ok(!namesEgressClient("daemon-host/compose.ts", "@axis/daemon-host"));
   assert.ok(!namesEgressClient(null, "./net/egress-client.js"));
   // The staged-tree check applies it: compose.ts may import the client, but not the test factory.

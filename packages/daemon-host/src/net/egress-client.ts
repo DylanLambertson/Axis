@@ -113,22 +113,40 @@ function checkedLookup(resolve: (host: string) => Promise<readonly string[]>, di
   };
 }
 
-/** The request's fields, checked at run time whatever the types said; any problem is a closed error. */
-function checked(req: EgressRequest): { target: EgressTarget; headers: Record<string, string> } {
+/** What is sent: one copy of the caller's request, taken once and checked; nothing reads the caller's object again. */
+interface Snapshot {
+  readonly integration: string;
+  readonly method: EgressMethod;
+  readonly target: EgressTarget;
+  readonly headers: Record<string, string>;
+  readonly body: Buffer | undefined;
+  readonly signal: AbortSignal | undefined;
+}
+
+/**
+ * The request's fields, each READ ONCE into a snapshot and checked at run time whatever the types said (review 2: a
+ * getter or a Proxy cannot show one value to the check and send another). The body bytes are COPIED, so a caller
+ * changing its array afterwards changes nothing; the client computes Content-Length from the copy. Any problem is a
+ * closed error.
+ */
+function snapshot(req: EgressRequest): Snapshot {
   if (typeof req !== "object" || req === null) throw new EgressError("request_refused");
-  if (typeof req.integration !== "string" || !/^[\x21-\x7e]{1,128}$/.test(req.integration)) throw new EgressError("request_refused");
-  if (!(EGRESS_METHODS as readonly unknown[]).includes(req.method)) throw new EgressError("method_refused");
-  if (!Array.isArray(req.origins) || req.origins.some((o) => typeof o !== "string") || typeof req.url !== "string") throw new EgressError("request_refused");
-  if (req.headers !== undefined && (typeof req.headers !== "object" || req.headers === null || Array.isArray(req.headers))) throw new EgressError("header_refused");
-  if (req.body !== undefined && !(req.body instanceof Uint8Array)) throw new EgressError("request_refused");
-  if (req.body !== undefined && (req.method === "GET" || req.method === "HEAD")) throw new EgressError("request_refused");
-  if (req.signal !== undefined && !(req.signal instanceof AbortSignal)) throw new EgressError("request_refused");
-  const target = egressTarget(req.url, declaredOrigins(req.origins));
+  const { integration, method, origins, url, headers, body, signal } = req;
+  if (typeof integration !== "string" || !/^[\x21-\x7e]{1,128}$/.test(integration)) throw new EgressError("request_refused");
+  if (typeof method !== "string" || !(EGRESS_METHODS as readonly string[]).includes(method)) throw new EgressError("method_refused");
+  const originList: unknown[] | null = Array.isArray(origins) ? Array.from(origins) : null;
+  if (originList === null || originList.some((o) => typeof o !== "string") || typeof url !== "string") throw new EgressError("request_refused");
+  if (headers !== undefined && (typeof headers !== "object" || headers === null || ![Object.prototype, null].includes(Object.getPrototypeOf(headers)))) throw new EgressError("header_refused");
+  if (body !== undefined && !(body instanceof Uint8Array)) throw new EgressError("request_refused");
+  if (body !== undefined && (method === "GET" || method === "HEAD")) throw new EgressError("request_refused");
+  if (signal !== undefined && !(signal instanceof AbortSignal)) throw new EgressError("request_refused");
+  const target = egressTarget(url, declaredOrigins(originList as string[]));
   if (typeof target === "string") throw new EgressError("target_refused");
-  const headers = requestHeaders(req.headers ?? {});
-  checkRequestBody(req.body);
-  if (req.body !== undefined) headers["content-length"] = String(req.body.byteLength);
-  return { target, headers };
+  const copy = body === undefined ? undefined : Buffer.from(Uint8Array.prototype.slice.call(body));
+  checkRequestBody(copy);
+  const sent = requestHeaders(headers ?? {});
+  if (copy !== undefined) sent["content-length"] = String(copy.byteLength);
+  return Object.freeze({ integration, method: method as EgressMethod, target, headers: sent, body: copy, signal });
 }
 
 /** Any throw as a closed error: an EgressError as it is, anything else (a Node TypeError echoing input) as `request_refused`. */
@@ -142,12 +160,11 @@ function build(options: EgressClientOptions, seam: EgressTestSeam | undefined): 
   const agent = new Agent({ lookup: lookupChecked as never, autoSelectFamily: true, rejectUnauthorized: true, minVersion: "TLSv1.2", keepAlive: false, ...(seam === undefined ? {} : { ca: seam.ca }) });
 
   const send = (req: EgressRequest): Promise<EgressResponse> => {
-    let target: EgressTarget;
-    let headers: Record<string, string>;
+    let snap: Snapshot;
     let release: () => void;
     try {
-      ({ target, headers } = checked(req));
-      release = gate.enter(req.integration);
+      snap = snapshot(req);
+      release = gate.enter(snap.integration);
     } catch (e) {
       return Promise.reject(closed(e));
     }
@@ -177,13 +194,13 @@ function build(options: EgressClientOptions, seam: EgressTestSeam | undefined): 
       }
       function start(): void {
         const sent = request({
-          agent, host: target.host, port: target.port, servername: target.host, method: req.method, path: `${target.url.pathname}${target.url.search}`,
-          headers, rejectUnauthorized: true, minVersion: "TLSv1.2", maxHeaderSize: EGRESS_LIMITS.responseHeaderBytes, insecureHTTPParser: false, signal: req.signal,
+          agent, host: snap.target.host, port: snap.target.port, servername: snap.target.host, method: snap.method, path: `${snap.target.url.pathname}${snap.target.url.search}`,
+          headers: snap.headers, rejectUnauthorized: true, minVersion: "TLSv1.2", maxHeaderSize: EGRESS_LIMITS.responseHeaderBytes, insecureHTTPParser: false, signal: snap.signal,
         });
         r = sent;
+        sent.on("error", (e) => finish(socketError(e))); // first: a request destroyed by a later throw must not raise an unhandled error
         timers.push(clock.setTimeout(() => finish(new EgressError("first_byte_timeout")), EGRESS_LIMITS.firstByteMs));
         timers.push(clock.setTimeout(() => finish(new EgressError("total_timeout")), EGRESS_LIMITS.totalMs));
-        sent.on("error", (e) => finish(socketError(e)));
         sent.on("response", (res) => {
           try {
             clock.clearTimeout(timers[0]);
@@ -192,7 +209,7 @@ function build(options: EgressClientOptions, seam: EgressTestSeam | undefined): 
             res.on("aborted", () => finish(new EgressError("connect_failed")));
             if (status >= 300 && status < 400) return finish(new EgressError("redirect_refused", status));
             if (status === 429 || status === 503) {
-              const seconds = gate.backOff(req.integration, parseRetryAfter(res.headers["retry-after"]));
+              const seconds = gate.backOff(snap.integration, parseRetryAfter(res.headers["retry-after"]));
               return finish(new EgressError("rate_limited", status, seconds));
             }
             if (status < 200 || status >= 300) return finish(new EgressError("http_status", status));
@@ -211,14 +228,14 @@ function build(options: EgressClientOptions, seam: EgressTestSeam | undefined): 
             });
             res.on("end", () => {
               if (settled) return;
-              gate.succeeded(req.integration);
+              gate.succeeded(snap.integration);
               finish(null, { status, headers: { ...res.headers }, body: body.body() });
             });
           } catch (e) {
             finish(closed(e));
           }
         });
-        sent.end(req.body === undefined ? undefined : Buffer.from(req.body));
+        sent.end(snap.body);
       }
     });
   };

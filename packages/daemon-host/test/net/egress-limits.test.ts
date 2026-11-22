@@ -33,7 +33,9 @@ test("request headers: client-owned, proxy, malformed and duplicate names and no
   }
   for (const v of ["a\r\nX-Injected: 1", "a\nb", "a\0b", "é"]) assert.equal(code(() => requestHeaders({ "x-ok": v })), "header_refused", JSON.stringify(v));
   assert.equal(code(() => requestHeaders({ "X-A": "1", "x-a": "2" })), "header_refused", "the same name twice");
-  assert.deepEqual(requestHeaders({ Authorization: "Bearer t", "X-Tab": "a\tb", Accept: "application/json" }), { authorization: "Bearer t", "x-tab": "a\tb", accept: "application/json" });
+  const built = requestHeaders({ Authorization: "Bearer t", "X-Tab": "a\tb", Accept: "application/json" });
+  assert.equal(Object.getPrototypeOf(built), null, "a fresh null-prototype record");
+  assert.deepEqual({ ...built }, { authorization: "Bearer t", "x-tab": "a\tb", accept: "application/json" });
 });
 
 test("only identity content encoding is accepted", () => {

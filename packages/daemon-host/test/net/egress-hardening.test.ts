@@ -84,6 +84,61 @@ test("a throw inside the response handler is a closed error, and the slot is rel
   for (let i = 0; i < 6; i++) assert.equal((await failure(c.send(r.req()))).code, "request_refused");
   now += 1;
   await allFourSlotsFree(r, "gh");
+  // A clock whose setTimeout throws: a throw inside the request path, after the slot was taken.
+  const arming = r.client({ clock: { now: () => 0, setTimeout: () => { throw new Error(CANARY); }, clearTimeout: () => undefined } });
+  for (let i = 0; i < 6; i++) assert.equal((await failure(arming.send(r.req({ integration: "x" })))).code, "request_refused");
+  await allFourSlotsFree(r, "x");
+});
+
+test("the request is read once: getters, a Proxy and a body changed after the call cannot change what is sent", { skip }, async (t) => {
+  const r = await rig(t);
+  r.handle((_q, s) => s.end("ok"));
+  const c = r.client();
+  const flip = <T>(first: T, later: T): (() => T) => {
+    let n = 0;
+    return () => (n++ === 0 ? first : later);
+  };
+  // The method shows GET to the check, then DELETE: GET is sent.
+  const m = r.req();
+  Object.defineProperty(m, "method", { get: flip("GET", "DELETE"), enumerable: true });
+  await c.send(m);
+  assert.equal(r.hits.at(-1)?.method, "GET");
+  // The body shows 4 bytes, then 73: the 4-byte copy is sent, with its own length.
+  const small = new Uint8Array([1, 2, 3, 4]);
+  const b = r.req({ method: "POST" });
+  Object.defineProperty(b, "body", { get: flip<Uint8Array>(small, new Uint8Array(73)), enumerable: true });
+  await c.send(b);
+  assert.deepEqual([r.hits.at(-1)?.headers["content-length"], r.hits.at(-1)?.body.length], ["4", 4]);
+  // A body changed after the call starts: the copy is sent.
+  const live = new Uint8Array([0x61, 0x62]);
+  const p = c.send(r.req({ method: "POST", body: live }));
+  live.fill(0x7a);
+  await p;
+  assert.equal(r.hits.at(-1)?.body, "ab");
+  // Headers whose value is a getter that flips: the value read once is sent.
+  const h: Record<string, string> = {};
+  Object.defineProperty(h, "x-test", { get: flip("one", "two"), enumerable: true });
+  await c.send(r.req({ headers: h }));
+  assert.equal(r.hits.at(-1)?.headers["x-test"], "one");
+  // A signal getter that shows a real signal, then a bogus one: the request still works with the first.
+  const s = r.req();
+  Object.defineProperty(s, "signal", { get: flip<AbortSignal | undefined>(new AbortController().signal, { bogus: true } as never), enumerable: true });
+  await c.send(s);
+  // A Proxy over the whole request whose url flips to another origin after the first read: the checked target is used.
+  let urlReads = 0;
+  const proxied = new Proxy(r.req(), { get: (o, k) => (k === "url" && urlReads++ > 0 ? `https://${CANARY}.example/` : Reflect.get(o, k)) });
+  await c.send(proxied);
+  assert.equal(r.hits.at(-1)?.url, "/v1/items?q=1");
+  // Origins whose first element shows the declared origin, then another: each element is read once.
+  let originReads = 0;
+  const origins = new Proxy([r.origin], { get: (o, k) => (k === "0" && originReads++ > 0 ? `https://${CANARY}.example` : Reflect.get(o, k)) });
+  await c.send(r.req({ origins }));
+  assert.equal(r.hits.at(-1)?.servername, HOST);
+  // A non-plain headers object (a Map) is refused, not read as "no headers".
+  assert.equal((await failure(c.send(r.req({ headers: new Map([["x-a", "1"]]) as never })))).code, "header_refused");
+  // A Proxy of a byte array is not bytes: refused, closed.
+  assert.equal((await failure(c.send(r.req({ method: "POST", body: new Proxy(new Uint8Array(2), {}) })))).code, "request_refused");
+  await allFourSlotsFree(r, "gh");
 });
 
 test("the proxy variables do not apply: a child with NODE_USE_ENV_PROXY=1 and HTTPS_PROXY reaches the target directly", { skip }, async (t) => {
