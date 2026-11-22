@@ -4,3 +4,4 @@ export * from "./errors.js";
 export * from "./consent.js";
 export * from "./vault.js";
 export * from "./memory.js";
+export * from "./names.js";
