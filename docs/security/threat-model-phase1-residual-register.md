@@ -158,7 +158,7 @@ Added by `docs/design/egress-client.md` §5 (slice B).
 
 | ID | Residual risk | Risk | Owner | Ticket | Gate | Status |
 |---|---|---|---|---|---|---|
-| RR-91 | The system resolver is the trust anchor for NAME resolution (no DNSSEC, no DNS over HTTPS). The address checks stop a malicious or poisoned resolver from sending a request to a private, loopback, link-local or other reserved range, but it can still answer with another PUBLIC address; the control there is TLS: SNI and certificate verification against the declared host (system trust store, RR-76), so a substituted server needs a certificate for that host. | INT-2, A7 | egress client | PV-N1d | 4a/L36, L37 | Accepted |
+| RR-91 | The system resolver is the trust anchor for NAME resolution (no DNSSEC, no DNS over HTTPS). The address checks stop a malicious or poisoned resolver from sending a request to a private, loopback, link-local or other reserved range, but it can still answer with another PUBLIC address; the control there is TLS: SNI and certificate verification against the declared host (Node's default CA store, RR-76), so a substituted server needs a certificate for that host. | INT-2, A7 | egress client | PV-N1d | 4a/L36, L37 | Accepted |
 
 ## 2. Plan rows added with this change
 

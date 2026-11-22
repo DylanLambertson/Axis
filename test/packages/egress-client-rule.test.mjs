@@ -8,6 +8,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { importSpecifiers, unsafeForms } from "../../scripts/code-oss/stage-ast.mjs";
+import { EGRESS_CLIENT_TYPES, EGRESS_CLIENT_VALUES, namesEgressClient } from "../../scripts/code-oss/egress-client-imports.mjs";
 import { classifySpecifier } from "../../scripts/code-oss/stage-scan.mjs";
 import { STAGE_ROOT, checkStagedFile } from "../../scripts/code-oss/stage-verify.mjs";
 import { DEFAULT_ENTRY, checkMetafile } from "../../scripts/code-oss/check-daemon-graph.mjs";
@@ -70,7 +71,7 @@ test("the client is pinned: its text, and its one node:dns form", () => {
   const [first, ...rest] = SOURCE.split("\n");
   assert.deepEqual(egressClientPinRefusals(EGRESS_CLIENT_FILE, [first, `// ${STAGED_NOTICE}`, ...rest].join("\n")), [], "as staged");
   assert.match(egressClientPinRefusals(EGRESS_CLIENT_FILE, `${SOURCE}\n`)[0] ?? "", /is not the pinned egress client/, "any edit");
-  assert.ok(checkStagedFileFails(SOURCE.replace("rejectUnauthorized: true, keepAlive", "rejectUnauthorized: false, keepAlive")), "the staged-tree check refuses an edited client");
+  assert.ok(checkStagedFileFails(SOURCE.replace('minVersion: "TLSv1.2", keepAlive', "keepAlive")), "the staged-tree check refuses an edited client");
   for (const form of ['import * as dns from "node:dns";', 'import dns from "node:dns";', 'import { lookup, resolve4 } from "node:dns";', 'import { Resolver } from "node:dns";']) {
     const edited = SOURCE.replace(EGRESS_DNS_IMPORT, form);
     assert.ok(egressClientPinRefusals(EGRESS_CLIENT_FILE, edited).some((t) => t.includes("node:dns must appear once")), form);
@@ -104,11 +105,53 @@ test("only the composition root may import the client, by every check", () => {
   assert.equal(violation("daemon-host", "./net/egress-client.js", join(dir, "src", "compose.ts"), dir), null, "lint: the composition root");
   assert.equal(violation("daemon-host", "../../src/net/egress-client.js", join(dir, "test", "net", "a.test.ts"), dir), null, "lint: tests");
   const files = new Set([EGRESS_CLIENT_FILE, "daemon-host/handlers/x.ts", "daemon-host/compose.ts"]);
-  assert.throws(() => checkStagedFile("daemon-host/handlers/x.ts", 'import "../net/egress-client.js";\n', files), /is the egress client/, "verify: a handler");
-  assert.doesNotThrow(() => checkStagedFile("daemon-host/compose.ts", 'import "./net/egress-client.js";\n', files), "verify: the composition root");
+  assert.throws(() => checkStagedFile("daemon-host/handlers/x.ts", 'import { createEgressClient } from "../net/egress-client.js";\n', files), /is the egress client/, "verify: a handler");
+  assert.doesNotThrow(() => checkStagedFile("daemon-host/compose.ts", 'import { createEgressClient } from "./net/egress-client.js";\nexport const c = createEgressClient;\n', files), "verify: the composition root");
   const P = (r) => `${STAGE_ROOT}/${r}`;
   const meta = (from) => ({ inputs: { [DEFAULT_ENTRY]: { imports: [{ path: P(from), kind: "import-statement" }] }, [P(from)]: { imports: [{ path: P(EGRESS_CLIENT_FILE), kind: "import-statement" }] }, [P(EGRESS_CLIENT_FILE)]: { imports: [] } } });
   const manifest = (from) => ({ zod: null, files: [{ path: from }, { path: EGRESS_CLIENT_FILE }] });
   assert.ok(checkMetafile(meta("daemon-host/handlers/x.ts"), manifest("daemon-host/handlers/x.ts")).some((t) => t.includes("is the egress client")), "graph: a handler");
   assert.ok(!checkMetafile(meta("daemon-host/compose.ts"), manifest("daemon-host/compose.ts")).some((t) => t.includes("is the egress client")), "graph: the composition root");
+});
+
+test("an importer may take only the production factory and the client's types, by static named import (review 1 S1)", () => {
+  assert.deepEqual([...EGRESS_CLIENT_VALUES].sort(), ["EGRESS_METHODS", "createEgressClient"]);
+  assert.ok(!EGRESS_CLIENT_TYPES.has("EgressTestSeam"));
+  const shape = (text, file = "daemon-host/compose.ts") => unsafeForms(text, file, { pkg: "daemon-host" }).filter((t) => /(?:of|from) the egress client|egress client \(only/.test(t));
+  const ok = [
+    'import { createEgressClient } from "./net/egress-client.js";',
+    'import { createEgressClient as make, type EgressClient } from "./net/egress-client.js";',
+    'import type { EgressRequest, EgressResponse } from "./net/egress-client.js";',
+    'import { EGRESS_METHODS } from "./net/egress-client.js";',
+  ];
+  for (const text of ok) assert.deepEqual(shape(text), [], text);
+  const refused = [
+    'import * as egress from "./net/egress-client.js"; egress[["createEgressClient", "For", "Test"].join("")]({}, {});',
+    'import * as egress from "./net/egress-client";',
+    'import egress from "./net/egress-client.js";',
+    'import "./net/egress-client.js";',
+    'import { createEgressClientForTest } from "./net/egress-client.js";',
+    'import { createEgressClient, createEgressClientForTest as x } from "./net/egress-client.js";',
+    'import type { EgressTestSeam } from "./net/egress-client.js";',
+    'export { createEgressClientForTest } from "./net/egress-client.js";',
+    'export * from "./net/egress-client.js";',
+    'export * as e from "./net/egress-client.js";',
+    'const e = await import("./net/egress-client.js");',
+    'const e = require("./net/egress-client.js");',
+    'import e = require("./net/egress-client.js");',
+    'type T = import("./net/egress-client.js").EgressTestSeam;',
+    'import { createEgressClientForTest } from "./net/../net/egress-client.ts";',
+  ];
+  for (const text of refused) assert.ok(shape(text).length > 0, text);
+  assert.match(shape('import egress from "./net/egress-client.js";').join(), /a default import of the egress client/);
+  assert.match(shape('import egress, { createEgressClient } from "./net/egress-client.js";').join(), /a default import of the egress client/, "a default beside named imports");
+  assert.ok(shape('import { createEgressClientForTest } from "../net/egress-client.js";', "daemon-host/handlers/x.ts").length > 0, "from any directory");
+  assert.deepEqual(shape('import { createEgressClientForTest } from "./egress-client.js";', EGRESS_CLIENT_FILE), [], "the client itself is not an importer");
+  assert.ok(namesEgressClient("daemon-host/compose.ts", "./net/egress-client.mjs"));
+  assert.ok(!namesEgressClient("daemon-host/compose.ts", "./net/egress-client-x.js"));
+  assert.ok(!namesEgressClient("daemon-host/compose.ts", "@axis/daemon-host"));
+  assert.ok(!namesEgressClient(null, "./net/egress-client.js"));
+  // The staged-tree check applies it: compose.ts may import the client, but not the test factory.
+  const files = new Set([EGRESS_CLIENT_FILE, "daemon-host/compose.ts"]);
+  assert.throws(() => checkStagedFile("daemon-host/compose.ts", 'import * as e from "./net/egress-client.js";\nexport const x = e;\n', files), /namespace import of the egress client/);
 });

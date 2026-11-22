@@ -31,9 +31,11 @@ export const CLIENT_OWNED_HEADERS: ReadonlySet<string> = new Set([
 /** The caller's headers with lower-case names, or `header_refused` for a client-owned or malformed one. */
 export function requestHeaders(headers: Readonly<Record<string, string>>): Record<string, string> {
   const out: Record<string, string> = {};
+  const seen = new Set<string>();
   for (const [name, value] of Object.entries(headers)) {
     const n = name.toLowerCase();
-    if (!/^[!#$%&'*+.^_`|~0-9a-z-]+$/.test(n) || CLIENT_OWNED_HEADERS.has(n) || n.startsWith("proxy-") || n in out) throw new EgressError("header_refused");
+    if (!/^[!#$%&'*+.^_`|~0-9a-z-]+$/.test(n) || CLIENT_OWNED_HEADERS.has(n) || n.startsWith("proxy-") || seen.has(n)) throw new EgressError("header_refused");
+    seen.add(n);
     if (typeof value !== "string" || /[^\t\x20-\x7e]/.test(value)) throw new EgressError("header_refused");
     out[n] = value;
   }

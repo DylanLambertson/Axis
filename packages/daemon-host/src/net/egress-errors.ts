@@ -7,6 +7,8 @@
  */
 
 export const EGRESS_ERROR_TEXT = {
+  request_refused: "the request is malformed",
+  method_refused: "the request method is not allowed",
   target_refused: "the request target is not an allowed origin",
   header_refused: "a request header is not allowed",
   request_too_large: "the request body is over its cap",

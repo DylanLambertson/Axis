@@ -3,104 +3,15 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import https from "node:https";
-import type { IncomingMessage, ServerResponse } from "node:http";
+import type { ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { createEgressClient, createEgressClientForTest, type EgressClient, type EgressClock, type EgressRequest } from "../../src/net/egress-client.js";
-import { EgressError } from "../../src/net/egress-errors.js";
-import { opensslMissing } from "./openssl.js";
+import { createEgressClient, createEgressClientForTest, type EgressClient } from "../../src/net/egress-client.js";
+import { CANARY, failure, fakeClock, HOST, PUBLIC, rig, skip } from "./egress-rig.js";
 
 // PV-N1d slice B: the egress client against a local HTTPS server. The test seam resolves the declared host to a PUBLIC
 // address (so the address rule runs on what the resolver said) and dials that checked address at 127.0.0.1.
-
-const HOST = "api.example.test";
-const CANARY = "CANARY7f3a";
-const PUBLIC = "93.184.215.14";
-
-type Handler = (req: IncomingMessage, res: ServerResponse) => void;
-interface Rig {
-  port: number;
-  origin: string;
-  hits: Array<{ method: string | undefined; url: string | undefined; headers: IncomingMessage["headers"]; body: string; servername: string | undefined }>;
-  handle: (h: Handler) => void;
-  client: (opts?: { clock?: EgressClock; resolve?: (h: string) => Promise<readonly string[]>; ca?: Buffer }) => EgressClient;
-  req: (over?: Partial<EgressRequest>) => EgressRequest;
-  otherCa: Buffer;
-  keyFile: string;
-  certFile: string;
-}
-
-async function rig(t: import("node:test").TestContext): Promise<Rig> {
-  const dir = mkdtempSync(join(tmpdir(), "axis-egress-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const cert = (name: string, cn: string): Buffer => {
-    execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", join(dir, `${name}.key`), "-out", join(dir, `${name}.pem`), "-days", "1", "-subj", `/CN=${cn}`, "-addext", `subjectAltName=DNS:${cn}`], { stdio: "ignore" });
-    return readFileSync(join(dir, `${name}.pem`));
-  };
-  const ca = cert("a", HOST);
-  const otherCa = cert("b", HOST);
-  let handler: Handler = (_q, s) => s.end("{}");
-  const hits: Rig["hits"] = [];
-  const server = https.createServer({ key: readFileSync(join(dir, "a.key")), cert: ca, maxHeaderSize: 65_536 }, (q, s) => {
-    let body = "";
-    q.on("data", (c: Buffer) => (body += c.toString()));
-    q.on("end", () => {
-      hits.push({ method: q.method, url: q.url, headers: q.headers, body, servername: (q.socket as { servername?: string }).servername });
-      handler(q, s);
-    });
-  });
-  await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
-  const port = (server.address() as { port: number }).port;
-  const clients: EgressClient[] = [];
-  t.after(() => {
-    for (const c of clients) c.close();
-    server.closeAllConnections();
-    server.close();
-  });
-  const origin = `https://${HOST}:${port}`;
-  return {
-    port, origin, hits, otherCa, keyFile: join(dir, "a.key"), certFile: join(dir, "a.pem"),
-    handle: (h) => (handler = h),
-    client: (opts = {}) => {
-      const c = createEgressClientForTest(opts.clock === undefined ? {} : { clock: opts.clock }, { ca: opts.ca ?? ca, resolve: opts.resolve ?? (async () => [PUBLIC]), dial: (a) => (a === PUBLIC ? "127.0.0.1" : a) });
-      clients.push(c);
-      return c;
-    },
-    req: (over = {}) => ({ integration: "gh", origins: [origin], method: "GET", url: `${origin}/v1/items?q=1`, ...over }),
-  };
-}
-
-/** A clock whose time and timers move only when the test says. */
-function fakeClock(start = 5_000_000): EgressClock & { advance(ms: number): void; pending(): number[] } {
-  let now = start;
-  const timers = new Map<number, { at: number; fn: () => void }>();
-  let next = 1;
-  return {
-    now: () => now,
-    setTimeout: (fn, ms) => (timers.set(next, { at: now + ms, fn }), next++),
-    clearTimeout: (h) => void timers.delete(h as number),
-    pending: () => [...timers.values()].map((t) => t.at - now).sort((a, b) => a - b),
-    advance(ms) {
-      now += ms;
-      for (const [id, t] of [...timers]) if (t.at <= now) (timers.delete(id), t.fn());
-    },
-  };
-}
-
-const failure = async (p: Promise<unknown>): Promise<EgressError> => {
-  try {
-    await p;
-  } catch (e) {
-    assert.ok(e instanceof EgressError, `not an EgressError: ${String(e)}`);
-    const text = `${e.message} ${String(e.stack)} ${JSON.stringify(e)}`;
-    assert.ok(!text.includes(CANARY) && !text.includes(HOST) && !text.includes("/v1/"), `error text leaks request or response data: ${text}`);
-    return e;
-  }
-  assert.fail("expected the request to fail");
-};
-
-const skip = opensslMissing();
 
 test("a GET goes to the checked address with SNI on the original host, no Accept-Encoding, the parsed path; the body comes back whole", { skip }, async (t) => {
   const r = await rig(t);
@@ -161,6 +72,21 @@ test("the lookup keeps the resolver's order and checks every address, the last o
   };
   assert.equal((await via([A, B]).send(r.req())).body.toString(), "127.0.0.1");
   assert.equal((await via([B, A]).send(r.req())).body.toString(), "::1");
+  // The SYSTEM resolver path, with node:dns lookup stood in by a spy: asked for every address in the resolver's order.
+  const asked: unknown[] = [];
+  const system = (order: string[]): EgressClient => {
+    const dnsLookup = ((host: string, opts: unknown, cb: (e: null, list: Array<{ address: string; family: number }>) => void) => {
+      asked.push({ host, opts });
+      cb(null, order.map((address) => ({ address, family: address.includes(":") ? 6 : 4 })));
+    }) as never;
+    const c = createEgressClientForTest({}, { ca: readFileSync(r.certFile), dnsLookup, dial });
+    t.after(() => c.close());
+    return c;
+  };
+  assert.equal((await system([B, A]).send(r.req())).body.toString(), "::1");
+  assert.equal((await system([A, B]).send(r.req())).body.toString(), "127.0.0.1");
+  assert.deepEqual(asked, [{ host: HOST, opts: { all: true, order: "verbatim" } }, { host: HOST, opts: { all: true, order: "verbatim" } }]);
+  assert.equal((await failure(system([A, "10.0.0.1"]).send(r.req()))).code, "address_refused", "the system path is checked too");
   for (const bad of ["10.0.0.1", "::ffff:127.0.0.1", "fe80::1", "not an address"]) {
     assert.equal((await failure(via([A, B, A, bad]).send(r.req()))).code, "address_refused", `${bad} last`);
   }
@@ -307,14 +233,13 @@ test("a certificate the client does not trust fails closed; an abort is closed",
   assert.equal((await failure(p)).code, "aborted");
 });
 
-test("the production client uses the system resolver and trust store: localhost is refused by the address rule", async () => {
+test("the production client uses the system resolver and Node's default CA store: localhost is refused by the address rule", async () => {
+  // localhost resolves from the hosts file: no DNS query leaves the machine in CI.
   const c = createEgressClient();
   try {
     assert.equal(c.systemTrustOnly, true, "no CA of its own");
     const e = await failure(c.send({ integration: "x", origins: ["https://localhost"], method: "GET", url: "https://localhost/" }));
     assert.equal(e.code, "address_refused");
-    const u = await failure(c.send({ integration: "x", origins: ["https://pinned.invalid"], method: "GET", url: "https://pinned.invalid/" }));
-    assert.equal(u.code, "unresolved");
   } finally {
     c.close();
   }

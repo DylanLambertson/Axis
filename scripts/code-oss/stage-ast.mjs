@@ -31,6 +31,7 @@ import ts from "typescript6";
 import { SPAWN_BUILTIN, SPAWN_FILES, stagedPathOf } from "./egress-rules.mjs";
 import { egressClientPinRefusals, endpointPinRefusals } from "./web-rules.mjs";
 import { prototypeWrites } from "./prototype-lint.mjs";
+import { egressClientImportRefusals } from "./egress-client-imports.mjs";
 
 const K = ts.SyntaxKind;
 const META_OK = new Set(["url", "dirname", "filename"]);
@@ -350,7 +351,7 @@ export function scanModules(source, file = "x.ts", { vendored = false, shipped =
   visit(sf);
   if (!vendored) bad.push(...mintUses(sf, at, !shipped, pkg, file));
   bad.push(...endpointPinRefusals(stagedPathOf(file, pkg, pkgRel), source)); // web-rules.mjs rule 1: the pinned endpoint template
-  bad.push(...egressClientPinRefusals(stagedPathOf(file, pkg, pkgRel), source)); // web-rules.mjs rule 1b: the pinned egress client
+  bad.push(...egressClientPinRefusals(stagedPathOf(file, pkg, pkgRel), source), ...egressClientImportRefusals(sf, file, pkg, pkgRel, at)); // web-rules.mjs rule 1b
   if (shipped && stagedPathOf(file, pkg, pkgRel)?.startsWith("pty-process/") === true) bad.push(...prototypeWrites(sf, at)); // best effort, RR-89
   return { refs, bad };
 }
