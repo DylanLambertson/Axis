@@ -28,10 +28,11 @@ export const AuditActions = {
   journalRecovery: "journal.recovery",
 } as const;
 
-export const ACTOR_PATTERN = /^(?:user|daemon|agent:[A-Za-z0-9._-]{1,64})$/;
+/** `plugin:<id>` follows the daemon identity's plugin actor rule (ADR 0008 decision 4). */
+export const ACTOR_PATTERN = /^(?:user|daemon|agent:[A-Za-z0-9._-]{1,64}|plugin:(?=[a-z0-9.-]{1,64}$)[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*){0,3})$/;
 export const ACTION_PATTERN = /^[a-z][a-z0-9_]*(?:\.[a-z0-9_]+)+$/;
 
-export type AuditActor = "user" | "daemon" | `agent:${string}`;
+export type AuditActor = "user" | "daemon" | `agent:${string}` | `plugin:${string}`;
 export const AUDIT_OUTCOMES = ["success", "failure", "denied", "error"] as const;
 export type AuditOutcome = (typeof AUDIT_OUTCOMES)[number];
 

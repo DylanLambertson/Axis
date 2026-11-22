@@ -6,6 +6,7 @@ import { Daemon, MemoryIdempotencyStore, memoryPair, protocolRegistry, type Iden
 import { Journal } from "@axis/journal";
 import { createAgentsService } from "../../src/agents/service.js";
 import { createAgentsHandlers } from "../../src/handlers/agents.js";
+import { createAgentStart } from "../../src/agents/start.js";
 import { InMemoryTrustRegistry, RuleTablePolicy } from "../../src/policy/index.js";
 import { ProjectMutex } from "../../src/worktrees/project-mutex.js";
 import { Client, newKey } from "../approvals-rig.js";
@@ -38,7 +39,19 @@ function setup(t: TestContext) {
   const trust = new InMemoryTrustRegistry();
   trust.set({ windowId: "win-1" }, true);
   let n = 0;
-  const handlers = createAgentsHandlers(createAgentsService({ journal, worktrees, mutex: new ProjectMutex(), trust, newId: () => `id${++n}` }));
+  const composerStarts: string[] = [];
+  const start = createAgentStart({
+    journal,
+    startCli: async () => Promise.reject(new Error("unused")),
+    providerFor: (c) => (c === "conn" ? "mock" : undefined),
+    startComposer: async (req) => {
+      composerStarts.push(req.prompt);
+      req.recheck?.();
+      const run = journal.createRun({ workspaceId: req.workspaceId, kind: "composer", createdBy: "user", ...(req.worker === undefined ? {} : { agentId: req.worker }) }).value;
+      return { run: { runId: run.id }, replayed: false };
+    },
+  });
+  const handlers = createAgentsHandlers(createAgentsService({ journal, worktrees, mutex: new ProjectMutex(), trust, newId: () => `id${++n}` }), start);
   const daemon = new Daemon({ identity: verifier, audit: { append: () => undefined }, registry: protocolRegistry, idempotency: new MemoryIdempotencyStore(), policy: new RuleTablePolicy(trust) });
   daemon.register(A, 1, handlers.agents);
   daemon.register(G, 1, handlers.groups);
@@ -51,6 +64,7 @@ function setup(t: TestContext) {
   return {
     journal,
     made,
+    composerStarts,
     async connect(att = "user#conn-1#desktop"): Promise<Client> {
       const { client, server } = memoryPair();
       ports.push(client);
@@ -90,4 +104,18 @@ test("the served rows refuse an agent caller and a web client before any handler
     assert.equal((await c.call(G, "create", { projectId: "p1", name: "G" }, newKey())).error?.code, "E_POLICY_DENIED", att);
   }
   assert.deepEqual([made, journal.agents.listGroups("p1")], [[], []], "nothing was made or written");
+});
+
+test("a composer worker's start retried with its key replays the first run and starts no second one", async (t) => {
+  const { connect, composerStarts, journal } = setup(t);
+  const user = await connect();
+  const home = (await user.call(A, "create", { projectId: "p1", name: "Planner", launch: { kind: "composer", connection: "conn", modelId: "m", mode: "agent" }, home: { new: { name: "planner" } } }, newKey())).result as { agent: { id: string } };
+  const key = newKey();
+  const first = await user.call(A, "start", { agentId: home.agent.id, input: { prompt: "go" } }, key);
+  assert.equal(first.ok, true, JSON.stringify(first.error));
+  const again = await user.call(A, "start", { agentId: home.agent.id, input: { prompt: "go" } }, key);
+  assert.deepEqual(again.result, first.result);
+  assert.deepEqual(composerStarts, ["go"], "one start for one key");
+  assert.equal((journal.listRuns() as unknown[]).length, 1);
+  assert.equal((await user.call(A, "start", { agentId: home.agent.id, input: { prompt: "go" } })).error?.code, "E_INVALID_ARGUMENT", "a start needs an idempotency key");
 });

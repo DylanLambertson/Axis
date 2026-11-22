@@ -43,7 +43,7 @@ export function daemonNotice(input: IAxisNoticeInput): IAxisNotice {
 		case 'connecting':
 			return { severity: 'info', text: localize('axis.notice.connecting', "Connecting to the Axis service. Worktrees are read from disk meanwhile.") };
 		case 'down':
-			return { severity: 'info', text: localize('axis.notice.down', "Read from the worktrees on disk. The Axis service is not running, so no agent runs are shown.") };
+			return { severity: 'info', text: localize('axis.notice.down', "The Axis service is not connected. Worktrees are read from disk; agent runs, run trust and approvals are not shown.") };
 		case 'failed':
 			switch (status.reason) {
 				case 'degraded': return { severity: 'error', text: localize('axis.notice.failedDegraded', "The Axis service stopped in degraded mode (its safety checks could not be set up) and will not restart by itself. Restart Axis to try again. Worktrees are read from disk.") };

@@ -9,6 +9,8 @@ import type { SecretScanner } from "@axis/secret-scan";
 import { createGitOperations, createGitPort } from "./bindings/git.js";
 import { registerForgeServing } from "./compose-forge.js";
 import { registerAttentionServing } from "./handlers/attention.js";
+import { registerUsageServing } from "./handlers/usage.js";
+import { usageServiceDeps } from "./usage/service.js";
 import { createCommitPreparer, createReviewService } from "./bindings/review.js";
 import { createTempIndexProvider } from "./bindings/review-tempindex.js";
 import { createSshResolver, unavailableSshResolver, type SshSpawn } from "./bindings/ssh-resolver.js";
@@ -27,10 +29,11 @@ import { ticketedStart } from "./gate/project-trust.js";
 import type { HandlerRegistrar } from "./handlers/anchor-guard.js";
 import { createApprovalsHandlers } from "./handlers/approvals.js";
 import { registerCliRunsHandlers, startCliRun } from "./handlers/cli-runs.js";
-import { registerComposerRunsHandlers } from "./handlers/composer-runs.js";
+import { registerComposerRunsHandlers, startComposerRun, type ComposerRunsHandlerDeps } from "./handlers/composer-runs.js";
 import { PushedBases } from "./handlers/git-common.js";
 import { registerGitHandlers } from "./handlers/git.js";
 import { registerAgentsHandlers } from "./handlers/agents.js";
+import { providerForConnection } from "./agents/start.js";
 import { registerMessagesHandlers } from "./handlers/messages.js";
 import { createProvidersHandlers } from "./handlers/providers.js";
 import { createReviewAuditSink } from "./handlers/review-audit.js";
@@ -103,10 +106,11 @@ export function registerServing(registrar: HandlerRegistrar, services: HostServi
   registrar.register(APPROVALS_CONTRACT, APPROVALS_VERSION, createApprovalsHandlers({ approvals: approvals.port }));
   registrar.register(PROVIDERS_CONTRACT, PROVIDERS_VERSION, createProvidersHandlers({ providers: () => agent.providers(), cachedModels: (id) => providers.cachedModels(id), credential: (id, signal) => providers.credential(id, signal) }));
   registrar.register(WORKTREES_CONTRACT, WORKTREES_VERSION, createWorktreesHandlers({ service: worktrees.service, gate, needsAttention: worktrees.needsAttention }), { content: worktrees.content });
-  registerComposerRunsHandlers(registrar, {
+  const composerRuns: ComposerRunsHandlerDeps = {
     service: { cancel: (id) => composer.cancel(id), get: (id) => composer.get(id), list: (o) => composer.list(o), events: (id, a, l) => composer.events(id, a, l), start: ticketedStart((i, s) => composer.start(i, s), (id) => journal.getWorkspace(id)?.projectId, () => ports.clock.monotonic()) },
     gate,
-    journal, mutex: worktrees.mutex, needsAttention: worktrees.needsAttention });
+    journal, mutex: worktrees.mutex, needsAttention: worktrees.needsAttention };
+  registerComposerRunsHandlers(registrar, composerRuns);
   if (built.messaging === undefined) throw new AxisError("E_INTERNAL", "The host composition is incomplete", { reason: "not_built" });
   registerMessagesHandlers(registrar, built.messaging);
   const cliRuns = { service: runs.service, journal, control, gate, minter: ctx.minter, mutex: worktrees.mutex, needsAttention: worktrees.needsAttention, platform: config.platform };
@@ -121,6 +125,9 @@ export function registerServing(registrar: HandlerRegistrar, services: HostServi
     worktrees: { create: (req, ctx) => worktrees.service.create(req, { ...ctx, trust: (scope) => gate.admit({ ...scope, windowId: ctx.caller.windowId, signal: ctx.signal }) }) },
     // PV-G4: an agent's CLI run goes through the one CLI start path, so the same project trust gate and ticket apply.
     startCli: (req, context) => startCliRun(cliRuns, req, context),
+    // Composer agents: the same composer start path; the stored connection resolved to the provider that serves it now.
+    startComposer: (req, context) => startComposerRun(composerRuns, req, context),
+    providerFor: (connection) => providerForConnection(agent.providers(), connection),
   });
   registerCliRunsHandlers(registrar, cliRuns);
   registrar.register(
@@ -150,4 +157,5 @@ export function registerServing(registrar: HandlerRegistrar, services: HostServi
     cliRun: (id) => runs.service.get(id),
     composerRun: (id) => composer.get(id),
   });
+  registerUsageServing(registrar, usageServiceDeps(journal, composer));
 }
