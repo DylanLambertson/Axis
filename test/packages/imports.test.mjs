@@ -9,6 +9,7 @@ import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isScriptFile } from "./loaders.mjs";
 import { projectTrustVerdict, ptyClientVerdict } from "./pty-client-rule.mjs";
+import { vaultVerdict } from "./vault-importers-rule.mjs";
 import { importSpecifiers, unsafeForms } from "../../scripts/code-oss/stage-ast.mjs";
 import { LOADER_BUILTINS } from "../../scripts/code-oss/stage-scan.mjs";
 import { listenerBuiltinRefusal, webHostEdgeRefusal } from "../../scripts/code-oss/web-rules.mjs";
@@ -44,9 +45,6 @@ const HOST_FILE_RULES = new Map([
   ["@axis/worktrees", ["src/bindings/worktrees.ts"]],
   ["@axis/worktrees/daemon-confirm", ["src/gate/worktrees-confirm.ts"]],
   ["@axis/runs/daemon-attestation", ["src/gate/run-trust.ts"]],
-  // The Anthropic adapter and the connection vault: the providers binding alone (daemon-host.md 2.1, ticket C6).
-  ["@axis/anthropic", ["src/bindings/providers.ts"]],
-  ["@axis/vault", ["src/bindings/providers.ts"]],
 ]);
 /**
  * The files that may load the two minter modules (`gate/worktrees-confirm.ts`, `gate/run-trust.ts`): the public index (which re-exports
@@ -68,6 +66,8 @@ function hostViolation(pkg, spec, file, pkgDir) {
   }
   const ptyClient = pkg === HOST_PACKAGE ? ptyClientVerdict(spec, file === null || pkgDir === null ? null : relative(pkgDir, file).split(sep).join("/")) : null;
   if (ptyClient !== null) return ptyClient;
+  const vault = pkg === HOST_PACKAGE ? vaultVerdict(spec, file === null || pkgDir === null ? null : relative(pkgDir, file).split(sep).join("/")) : null;
+  if (vault !== null) return vault;
   const files = HOST_FILE_RULES.get(spec);
   const binding = HOST_BINDING_PACKAGES.some((p) => spec === p || spec.startsWith(`${p}/`));
   if (files === undefined && !binding) return null;
@@ -403,12 +403,7 @@ test("scanner: the daemon host is imported by nothing and imports the restricted
   }
   // GIT-SNAP-1 (H13): the run snapshotter binding is the host's one importer of @axis/git-snapshot.
   assert.equal(violation("daemon-host", "@axis/git-snapshot", at("src/bindings/snapshot.ts"), dir), null);
-  for (const spec of ["@axis/anthropic", "@axis/vault"]) {
-    assert.equal(violation("daemon-host", spec, at("src/bindings/providers.ts"), dir), null, spec);
-    for (const f of ["src/bindings/agent.ts", "src/compose.ts", "src/handlers/providers.ts", "src/host.ts", "test/providers-anthropic.test.ts", "test/types/x.ts"]) {
-      assert.notEqual(violation("daemon-host", spec, at(f), dir), null, `${spec} from ${f}`);
-    }
-  }
+  assert.notEqual(violation("daemon-host", "@axis/vault", at("src/host.ts"), dir), null, "vault-importers-rule.mjs is wired in");
   for (const f of ["src/compose.ts", "src/entry.ts", "src/handlers/cli-runs.ts", "src/bindings/runs.ts"]) assert.notEqual(violation("daemon-host", "@axis/git-snapshot", at(f), dir), null, f);
   // The trust attestation: only src/gate/run-trust.ts of the host (the binding and the handler cannot mint one).
   assert.equal(violation("daemon-host", "@axis/runs/daemon-attestation", at("src/gate/run-trust.ts"), dir), null);

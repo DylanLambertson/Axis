@@ -158,7 +158,7 @@ export function createRunsBinding(deps: RunsBindingDeps): RunsBinding {
   const service: RunsService = {
     async start(req) {
       // One read of each field: a getter cannot answer differently later.
-      const { workspaceId, agent, actor, trust, idempotencyKey } = req;
+      const { workspaceId, agent, actor, trust, idempotencyKey, worker } = req;
       const first = call(() => deps.journal.getWorkspace(workspaceId));
       if (first === undefined || first.state === "REMOVED" || first.state === "FAILED" || first.state === "CREATING") throw runFailure("E_NOT_FOUND");
       return deps.mutex.run(first.projectId, async () => {
@@ -177,6 +177,7 @@ export function createRunsBinding(deps: RunsBindingDeps): RunsBinding {
             actor,
             trust: trust as unknown as TrustAttestation,
             ...(idempotencyKey === undefined ? {} : { idempotencyKey }),
+            ...(worker === undefined ? {} : { worker }),
           });
         } catch (e) {
           throw toRunError(e);

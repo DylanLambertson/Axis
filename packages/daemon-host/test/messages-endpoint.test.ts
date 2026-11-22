@@ -58,7 +58,9 @@ const rows = (r: DeliveryRig) => r.c.audit.list({ limit: 5000 }).filter((e) => e
 const send = (to: string, body: string, over: Record<string, unknown> = {}) => ({ op: "send", id: "s1", recipients: [{ agent: to }], body, ...over });
 
 test("inert in production: the host's binding mints no endpoint; nor for a composer agent, messaging off, Windows, a dead run or twice", async (t) => {
-  assert.equal("agentOf" in hostMessagingDeps({ journal: { messages: {} as never, getProject: () => undefined, getRun: () => undefined }, audit: { append: () => undefined }, monotonic: () => 0, scan: async () => [], logger: undefined, holdsSecret: () => false }), false);
+  // The host's agentOf is the run's recorded agent (PV-G3 slice 2): a run started without one (every run until PV-G4) has none.
+  const hostDeps = hostMessagingDeps({ journal: { messages: {} as never, agents: { agentOfRun: () => undefined } as never, getProject: () => undefined, getRun: () => undefined }, audit: { append: () => undefined }, monotonic: () => 0, scan: async () => [], logger: undefined, holdsSecret: () => false });
+  assert.equal(hostDeps.agentOf?.("any-run"), undefined);
   const r = await deliveryRig(t, { noDelivery: true });
   const prod = createMessagingBinding({ journal: r.c.journal, audit: r.c.audit, random: { bytes: (n) => randomBytes(n) }, monotonic: () => 0, scan: async () => [], holdsSecret: () => false, directory: { project: () => true, agent: (id) => ({ agentId: id, projectId: "p", groupId: null, kind: "cli" }), group: () => undefined, agents: () => [] }, runLive: () => true, platform: "linux" });
   assert.equal(prod.endpoints.relay.mint(r.run("c1")), undefined, "no agentOf: no run has an agent");

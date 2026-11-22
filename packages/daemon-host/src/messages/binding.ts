@@ -5,6 +5,7 @@ import type { Logger } from "../log/logger.js";
 import { createMessageDelivery, type MessageDelivery } from "./delivery.js";
 import { createMessageService, type MessageService } from "./service.js";
 import { createMessagingSettings, type MessagingSettingsService } from "./settings.js";
+import { journalAgentOf, journalAgentsDirectory } from "../agents/directory.js";
 import { journalDirectory, type MessagingDirectory } from "./policy.js";
 import type { MessageAuditSink } from "./audit.js";
 import type { MessagingLimits } from "./limits.js";
@@ -24,7 +25,7 @@ export interface MessagingBindingDeps {
   readonly scan: (text: string) => Promise<readonly unknown[]>;
   readonly directory?: MessagingDirectory;
   readonly limits?: Partial<MessagingLimits>;
-  /** The agent a live composer run acts for (PV-G4); default none, so nothing is delivered into runs yet. */
+  /** The agent a live run acts for (its recorded agent, PV-G4); default none, so nothing is delivered into runs. */
   readonly agentOf?: (runId: string) => string | undefined;
   /** True while a run is RUNNING (the journal's state); default: never. */
   readonly runLive?: (runId: string) => boolean;
@@ -46,7 +47,7 @@ export interface MessagingBinding {
   readonly delivery: MessageDelivery;
   /**
    * The CLI endpoint relay (PV-M6 slice 1) and the mark of the one channel it accepts relayed messages from: the pty binding
-   * (slice 2) is its only holder. Inert until PV-G4: `mint` gives no run an endpoint while `agentOf` knows none.
+   * (slice 2) is its only holder. Inert while messaging is off: `mint` gives no run an endpoint while `agentOf` knows none.
    */
   readonly endpoints: { readonly relay: EndpointRelay; readonly source: symbol };
   /** What a composer run's `send_message` and `read_messages` need (PV-M4), for `AgentBindingDeps.messaging`. */
@@ -59,7 +60,7 @@ export function createMessagingBinding(deps: MessagingBindingDeps): MessagingBin
   const common = { store, directory, audit: deps.audit, ...(deps.noteWrite === undefined ? {} : { noteWrite: deps.noteWrite }) };
   const service = createMessageService({ ...common, random: deps.random, monotonic: deps.monotonic, scan: deps.scan, ...(deps.limits === undefined ? {} : { limits: deps.limits }) });
   const delivery = createMessageDelivery({ ...common, service, random: deps.random, agentOf: deps.agentOf ?? (() => undefined), runLive: deps.runLive ?? (() => false), ...deps.deliveryLimits, ...(deps.onInternalError === undefined ? {} : { onInternalError: deps.onInternalError }), holdsSecret: deps.holdsSecret });
-  // Inert until PV-G4: the same `agentOf` as the delivery (default none), so no run is offered the tools.
+  // The same `agentOf` as the delivery (default none; the host's reads a run's agent only with messaging enabled).
   const participation = { service, directory, random: deps.random, agentOf: deps.agentOf ?? (() => undefined) };
   const source = Symbol("pty-control");
   const relay = createEndpointRelay({
@@ -81,12 +82,18 @@ export function createMessagingBinding(deps: MessagingBindingDeps): MessagingBin
 
 /** What the composition root has for messaging; `logger` is required (possibly undefined), so it cannot be left out. */
 export interface HostMessaging {
-  readonly journal: Pick<Journal, "messages" | "getProject" | "getRun">;
+  readonly journal: Pick<Journal, "messages" | "getProject" | "getRun" | "agents">;
   readonly audit: MessageAuditSink;
   readonly monotonic: () => number;
   readonly scan: (text: string) => Promise<readonly unknown[]>;
   readonly logger: Pick<Logger, "warn"> | undefined;
   readonly holdsSecret: (text: string) => boolean;
+  /**
+   * `ComposeOptions.messaging.enabled` (default false): whether a run's recorded agent counts for messaging. Off, `agentOf`
+   * knows no run, so no run is delivered to or offered the send and read tools, even a run started for an agent (PV-G4).
+   * Turning it on is a separate decision (PV-M8 gate evidence).
+   */
+  readonly enabled?: boolean;
 }
 
 /** The binding's dependencies in the host: the daemon's CSPRNG, live runs from the journal, swallowed failures logged by code. */
@@ -94,6 +101,9 @@ export function hostMessagingDeps(host: HostMessaging): MessagingBindingDeps {
   const { journal, logger } = host;
   return {
     journal,
+    // The journal's live agents and groups (PV-G3 slice 2); a run's recorded agent only with messaging enabled (PV-G4).
+    directory: journalAgentsDirectory(journal),
+    agentOf: host.enabled === true ? journalAgentOf(journal) : () => undefined,
     audit: host.audit,
     random: { bytes: (n) => randomBytes(n) },
     monotonic: host.monotonic,

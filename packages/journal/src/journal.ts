@@ -35,12 +35,11 @@ import { ComposerRecords } from "./composer-store.js";
 import { MessageRecords } from "./message-store.js";
 import { UserPrincipal } from "./principal.js";
 import { ForgePinRecords } from "./forge-pin-store.js";
+import { AttentionRecords } from "./attention-records.js";
 import { PageRecords } from "./page-store.js";
 import { TaskRecords } from "./task-store.js";
 import { JOURNAL_MIGRATIONS } from "./schema.js";
-import {
-  RESTART_REASON, RUN_STATES, RUN_TERMINAL_STATES, RUN_TRANSITIONS, WORKSPACE_TRANSITIONS, type RunState, type WorkspaceState,
-} from "./states.js";
+import { RESTART_REASON, RUN_STATES, RUN_TERMINAL_STATES, RUN_TRANSITIONS, WORKSPACE_TRANSITIONS, type RunState, type WorkspaceState } from "./states.js";
 
 function inRecords<T>(db: DatabaseSync, audit: AuditLog, now: () => Date, fn: (ctx: RecordsContext) => T): T {
   return withTransaction(db, () => fn({ db, audit, ts: () => now().toISOString() }));
@@ -74,6 +73,7 @@ export class Journal {
   readonly messages: MessageRecords; // `axis.messages/1`: threads, participants, messages, cursors, settings (schema v9)
   readonly agents: AgentRecords; // agents and agent groups: user-only writes, one audit event each (schema v12, PV-G3)
   readonly forgePins: ForgePinRecords; // the confirmed forge repository per project (schema v13, PV-D2 slice 2b)
+  readonly attention: AttentionRecords; // the needs-attention reads of the project home (PV-D4): ids and counts only
   readonly pages: PageRecords; // pages, versions and attachments (schema v14, PV-Q1 slice 1, ADR 0010)
   readonly tasks: TaskRecords; // tasks, revisions and links (schema v15, PV-T1 slice 1)
 
@@ -86,6 +86,7 @@ export class Journal {
     this.messages = new MessageRecords(db, () => this.#ts());
     this.agents = new AgentRecords(db, this.#audit, () => this.#ts());
     this.forgePins = new ForgePinRecords(db, () => this.#ts());
+    this.attention = new AttentionRecords(db);
     this.pages = new PageRecords(db, () => this.#ts());
     this.tasks = new TaskRecords(db, () => this.#ts());
   }
@@ -217,9 +218,9 @@ export class Journal {
       const ts = this.#ts();
       this.#db
         .prepare(
-          "INSERT INTO agent_runs (id, workspace_id, kind, state, created_at, updated_at) VALUES (?, ?, ?, 'QUEUED', ?, ?)",
+          "INSERT INTO agent_runs (id, workspace_id, kind, state, created_at, updated_at, agent_id) VALUES (?, ?, ?, 'QUEUED', ?, ?, ?)",
         )
-        .run(id, body.workspaceId, body.kind, ts, ts);
+        .run(id, body.workspaceId, body.kind, ts, ts, body.agentId ?? null);
       this.#recordTransition("run", id, null, "QUEUED", null, createdBy, ts);
       this.#remember(scope, key, body, id, ts);
       return { value: this.#mustRun(id), replayed: false };

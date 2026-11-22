@@ -48,6 +48,7 @@ export {
   type PageVersionMeta,
   type PageVersionRecord,
 } from "./page-store.js";
+export { AttentionRecords, MAX_ATTENTION_ROWS, type AttentionRun } from "./attention-records.js";
 export { TASKS_MIGRATION, TASK_LIMITS, projectTaskBytesSql } from "./schema-tasks.js";
 export {
   TaskRecords,
