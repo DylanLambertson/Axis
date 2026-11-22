@@ -39,6 +39,8 @@ export interface RunsStartRequest {
   readonly actor: AuditActor;
   readonly trust: RunTrustAttestation;
   readonly idempotencyKey?: string;
+  /** The Axis agent record the run is started for (PV-G4), recorded as the run's `agent_id`; never the CLI entry. */
+  readonly worker?: string;
 }
 
 export interface RunSummary {

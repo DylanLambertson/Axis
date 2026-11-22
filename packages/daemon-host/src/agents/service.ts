@@ -15,7 +15,7 @@ import type { ProjectMutex } from "../worktrees/project-mutex.js";
  */
 
 export class AgentRefusal extends Error {
-  constructor(readonly code: "E_NOT_FOUND" | "E_CONFLICT", readonly reason: string) {
+  constructor(readonly code: "E_NOT_FOUND" | "E_CONFLICT" | "E_UNAVAILABLE", readonly reason: string) {
     super("agent request refused");
   }
 }

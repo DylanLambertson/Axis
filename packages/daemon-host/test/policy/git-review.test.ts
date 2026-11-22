@@ -41,7 +41,7 @@ test("the six rows are served rules with the design's tier and trust mode, and n
   assert.deepEqual(coverageProblems(policySurface(["axis.git", "axis.review"])), []);
   // Only planned contracts' methods are planned now (P1d moved discard and setUserEditing; axis.forge/1 is PV-D2's,
   // axis.agents/1 and axis.agent-groups/1 PV-G2's).
-  const planned = ["axis.forge/", "axis.agents/", "axis.agent-groups/"];
+  const planned = ["axis.forge/", "axis.agents/", "axis.agent-groups/", "axis.integrations/", "axis.net/"];
   assert.deepEqual(Object.keys(PLANNED_RULES).filter((k) => !planned.some((p) => k.startsWith(p))), []);
 });
 

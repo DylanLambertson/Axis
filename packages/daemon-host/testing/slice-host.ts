@@ -16,10 +16,10 @@ import {
   parseHostConfig,
   ProjectMutex,
   type Clock,
-  gitSnapshotRunSnapshotter,
 } from "../src/index.js";
 import { LocalPty, localPtyGitRunner } from "./fake-pty.js";
 import { sliceComposer } from "./slice-composer.js";
+import { SLICE_SNAPSHOT_TAKE_MS, sliceSnapshotter } from "./slice-snapshotter.js";
 
 /**
  * TEST ONLY (`AXIS_SLICE_MUTEX_PROBE=1`): every `ProjectMutex.run` reports which instance it ran on, so the slice can assert that
@@ -70,7 +70,9 @@ client.onInit((raw) => {
     process.exit(process.exitCode);
   };
   try {
-    const config = parseHostConfig(raw, redactor);
+    const parsed = parseHostConfig(raw, redactor);
+    // The supervisor's own bound on the whole snapshot follows the take bound (a hang guard on a loaded host; a take ends when git does).
+    const config = { ...parsed, limits: Object.freeze({ ...parsed.limits, runSnapshotTimeoutMs: SLICE_SNAPSHOT_TAKE_MS * 2 }) };
     const logger = createLogger({ redactor, clock, level: config.logLevel, sink: { write: (line) => void process.stderr.write(`${line}\n`) } });
     const env = { ...process.env };
     const gitPath = resolveGit(env, process.platform);
@@ -82,7 +84,7 @@ client.onInit((raw) => {
       ports: { clock, storage: createNodeStorage(), redactor, logger, env, cwd: process.cwd() },
       pty: new LocalPty(),
       ptyGitRunner: localPtyGitRunner(gitPath, env),
-      snapshotter: gitSnapshotRunSnapshotter, // the real GIT-SNAP-1 snapshot (ticket H13), not a fake
+      snapshotter: sliceSnapshotter(), // the real GIT-SNAP-1 snapshot (ticket H13), not a fake, with a hang-guard bound for a loaded host
       ...(finalWaitMs === undefined ? {} : { finalAnchorWaitMs: finalWaitMs, finalizeTimeoutMs: finalWaitMs + 60_000 }),
       scanMode: process.env["AXIS_SLICE_SCAN_MODE"] === "warn" ? "warn" : "refuse",
       // By default a composer run's first turn writes the root Makefile (a protected path: it waits for the user's approval) and

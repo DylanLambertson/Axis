@@ -1,5 +1,6 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { AGENT_GROUPS_CONTRACT, AGENT_GROUPS_VERSION, AGENTS_CONTRACT, AGENTS_VERSION, agentGroupsMethods, agentsMethods } from "./agents.js";
+import { ATTENTION_CONTRACT, ATTENTION_VERSION, attentionMethods } from "./attention.js";
 import { APPROVALS_CONTRACT, APPROVALS_VERSION, approvalsMethods } from "./approvals.js";
 import { permissionTierSchema } from "./challenge.js";
 import { AUDIT_CONTRACT, AUDIT_VERSION, auditMethods } from "./audit.js";
@@ -8,11 +9,13 @@ import { COMPOSER_RUNS_CONTRACT, COMPOSER_RUNS_VERSION, composerRunsMethods } fr
 import { EVENTS_CONTRACT, EVENTS_VERSION, eventsMethods } from "./events.js";
 import { FORGE_CONTRACT, FORGE_VERSION, forgeMethods } from "./forge.js";
 import { GIT_CONTRACT, GIT_VERSION, gitMethods } from "./git.js";
+import { INTEGRATIONS_CONTRACT, INTEGRATIONS_VERSION, NET_CONTRACT, NET_VERSION, integrationsMethods, netMethods } from "./integrations.js";
 import { MESSAGES_CONTRACT, MESSAGES_VERSION, messagesMethods } from "./messages.js";
 import { MAX_TIMEOUT_MS, methodNameSchema } from "./envelope.js";
 import { PROJECTS_CONTRACT, PROJECTS_VERSION, projectsMethods } from "./projects.js";
 import { PROVIDERS_CONTRACT, PROVIDERS_VERSION, providersMethods } from "./providers.js";
 import { REVIEW_CONTRACT, REVIEW_VERSION, reviewMethods } from "./review.js";
+import { USAGE_CONTRACT, USAGE_VERSION, usageMethods } from "./usage.js";
 import { contractIdSchema, contractVersionSchema } from "./version.js";
 import { WORKTREES_CONTRACT, WORKTREES_VERSION, worktreesMethods, type MethodSpec } from "./worktrees.js";
 
@@ -40,6 +43,8 @@ export const contracts: Table = Object.freeze({
   [`${FORGE_CONTRACT}/${FORGE_VERSION}`]: frozen(forgeMethods),
   [`${AGENTS_CONTRACT}/${AGENTS_VERSION}`]: frozen(agentsMethods),
   [`${AGENT_GROUPS_CONTRACT}/${AGENT_GROUPS_VERSION}`]: frozen(agentGroupsMethods),
+  [`${ATTENTION_CONTRACT}/${ATTENTION_VERSION}`]: frozen(attentionMethods),
+  [`${USAGE_CONTRACT}/${USAGE_VERSION}`]: frozen(usageMethods),
 });
 
 /**
@@ -47,9 +52,11 @@ export const contracts: Table = Object.freeze({
  * and no daemon can serve one; the daemon-host coverage check holds a planned policy row for each of their methods, at the
  * same tier. A contract moves to `contracts` in the change that registers its handlers, its rows moving with it
  * (`axis.messages/1` moved with ticket PV-M3, `axis.forge/1` with PV-D2 slice 2, `axis.agents/1` and `axis.agent-groups/1`
- * with PV-G3). A key is never in both tables.
+ * with PV-G3). `axis.integrations/1` and `axis.net/1` (PV-N1a, ADR 0009) are planned until PV-N1f serves them. A key is never in both tables.
  */
 export const plannedContracts: Table = Object.freeze({
+  [`${INTEGRATIONS_CONTRACT}/${INTEGRATIONS_VERSION}`]: frozen(integrationsMethods),
+  [`${NET_CONTRACT}/${NET_VERSION}`]: frozen(netMethods),
 });
 
 const SIDE_EFFECTS: ReadonlySet<unknown> = new Set(["none", "read", "write", "network", "destructive", "credential"]);
