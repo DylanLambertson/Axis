@@ -69,6 +69,8 @@ const EXPECTED: readonly Row[] = [
   ["axis.messages", "resume", "write", 2, "none", 5_000],
   ["axis.messages", "settings", "read", 0, "none", 5_000],
   ["axis.messages", "updateSettings", "write", 2, "none", 10_000],
+  ["axis.forge", "pullRequests", "read", 0, "none", 30_000],
+  ["axis.forge", "pinRepository", "write", 1, "none", 10_000],
 ];
 
 function actualRows(): Row[] {

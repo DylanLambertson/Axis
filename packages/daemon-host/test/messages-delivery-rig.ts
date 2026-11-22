@@ -1,8 +1,9 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { randomBytes } from "node:crypto";
 import type { TestContext } from "node:test";
+import type { Challenge } from "@axis/protocol";
 import { createRunBudget, type GenerateResult } from "@axis/providers";
-import { createMessagingBinding, runComposerLoop, type AgentEntry, type ComposerApprovalNote, type GroupEntry, type LoopEnd, type ToolCaps, type MessagingBinding, type MessagingDirectory, type MessagingLimits } from "../src/index.js";
+import { createMessagingBinding, runComposerLoop, type AgentEntry, type ComposerApprovalNote, type GroupEntry, type LoopEnd, type ToolCaps, type MessagingBinding, type MessagingDirectory, type MessagingLimits, type PreviewScanner } from "../src/index.js";
 import { composerRig, type ComposerRig } from "./composer-rig.js";
 
 /**
@@ -23,12 +24,23 @@ export interface DeliveryRig {
   readonly codes: string[];
 }
 
-export async function deliveryRig(t: TestContext, options: { maxText?: number; failTaintAudit?: () => boolean; limits?: Partial<MessagingLimits>; onInternalError?: (code: string) => void } = {}): Promise<DeliveryRig> {
+export async function deliveryRig(t: TestContext, options: { maxText?: number; failTaintAudit?: () => boolean; limits?: Partial<MessagingLimits>; onInternalError?: (code: string) => void; messaging?: boolean; noDelivery?: boolean; previewScanner?: PreviewScanner; scan?: (text: string) => Promise<readonly unknown[]> } = {}): Promise<DeliveryRig> {
   const holder: { m?: MessagingBinding; rig?: DeliveryRig } = {};
+  const agents = new Map<string, AgentEntry>();
+  const groups = new Map<string, GroupEntry>();
+  const directory: MessagingDirectory = { project: (id) => id === "p", agent: (id) => agents.get(id), group: (id) => groups.get(id), agents: () => [...agents.values()] };
+  const runAgent = new Map<string, string>();
+  const live = (): MessagingBinding => holder.m as MessagingBinding;
   const c = await composerRig({
+    ...(options.previewScanner === undefined ? {} : { previewScanner: options.previewScanner }),
+    // PV-M4: the run's `send_message` and `read_messages` over the same service (the binding is built first, so late-bound).
+    ...(options.messaging === true
+      ? { messaging: { service: { send: (who, req) => live().service.send(who, req), read: (who, req) => live().service.read(who, req) }, directory, agentOf: (runId: string) => runAgent.get(runId), random: { bytes: (n: number) => randomBytes(n) } } }
+      : {}),
     replies: [],
     deliveries: {
       next: (runId, taint) => {
+        if (options.noDelivery === true) return undefined;
         const out = holder.m?.delivery.next(runId, taint);
         holder.rig?.afterNext?.();
         return out;
@@ -38,21 +50,17 @@ export async function deliveryRig(t: TestContext, options: { maxText?: number; f
   });
   t.after(() => c.cleanup());
   c.journal.registerProject({ id: "p", path: "/repo/p", displayName: "p", trusted: false, actor: "user" });
-  const agents = new Map<string, AgentEntry>();
-  const groups = new Map<string, GroupEntry>();
   for (const [id, g, kind] of [["a1", "g1", "composer"], ["a2", "g1", "composer"], ["c1", "g1", "cli"], ["b1", "g2", "composer"]] as const) {
     agents.set(id, { agentId: id, projectId: "p", groupId: g, kind });
     groups.set(g, { groupId: g, projectId: "p", members: [...(groups.get(g)?.members ?? []), id] });
   }
-  const directory: MessagingDirectory = { project: (id) => id === "p", agent: (id) => agents.get(id), group: (id) => groups.get(id), agents: () => [...agents.values()] };
-  const runAgent = new Map<string, string>();
   const codes: string[] = [];
   const m = createMessagingBinding({
     journal: c.journal,
     audit: c.audit,
     random: { bytes: (n) => randomBytes(n) },
     monotonic: () => c.r.clock.monotonic(),
-    scan: async () => [],
+    scan: options.scan ?? (async () => []),
     directory,
     agentOf: (runId) => runAgent.get(runId),
     runLive: (runId) => c.journal.getRun(runId)?.state === "RUNNING",
@@ -89,6 +97,10 @@ export interface Driven {
   readonly notes: ComposerApprovalNote[];
   /** The system prompt of each request. */
   readonly systems: string[];
+  /** The tool results of the last user message of each request (what the model got back from its calls). */
+  readonly results: string[][];
+  /** The names of the tools each request offered. */
+  readonly tools: string[][];
 }
 
 export interface DriveOptions {
@@ -105,6 +117,8 @@ export function drive(r: DeliveryRig, runId: string, replies: readonly (readonly
   const seen: string[][] = [];
   const systems: string[] = [];
   const notes: ComposerApprovalNote[] = [];
+  const results: string[][] = [];
+  const offered: string[][] = [];
   let i = 0;
   const end = (async (): Promise<LoopEnd> => {
     const tools = (await r.c.agent.prepare(r.c.workspaceId))({ runId, workspaceId: r.c.workspaceId, windowId: "win-1", mode: "agent", onApproval: (n) => void notes.push(n) });
@@ -117,6 +131,8 @@ export function drive(r: DeliveryRig, runId: string, replies: readonly (readonly
         generate: async (req): Promise<GenerateResult> => {
           seen.push((req.messages.at(-1)?.content ?? []).flatMap((b) => (b.type === "text" ? [b.text] : [])));
           systems.push(req.system ?? "");
+          results.push((req.messages.at(-1)?.content ?? []).flatMap((b) => (b.type === "tool_result" ? [typeof b.content === "string" ? b.content : b.content.map((x) => x.text).join("")] : [])));
+          offered.push((req.tools ?? []).map((x) => x.name));
           o.onTurn?.(i);
           if (o.failRequests?.includes(i)) {
             i++;
@@ -131,8 +147,27 @@ export function drive(r: DeliveryRig, runId: string, replies: readonly (readonly
       },
     });
   })();
-  return { end, seen, notes, systems };
+  return { end, seen, notes, systems, results, tools: offered };
 }
 
 export const read = (path: string) => ({ name: "read_file", input: { path } });
 export const write = (path: string, content = "x") => ({ name: "write_file", input: { path, content } });
+
+/** Approve every challenge of the run until it ends (tier `write`: the window's approval is enough). */
+export async function approveAll(r: DeliveryRig, end: Promise<unknown>, decision: "approve" | "deny" = "approve"): Promise<number> {
+  let done = false;
+  void end.finally(() => (done = true));
+  let n = 0;
+  while (!done) {
+    const pending = ((await r.c.user.call("axis.approvals", "pending", {})).result?.["challenges"] ?? []) as Challenge[];
+    for (const ch of pending) {
+      await r.c.user.call("axis.approvals", "resolve", { challengeId: ch.challengeId, decision, digest: ch.digest });
+      n++;
+    }
+    await new Promise((res) => setTimeout(res, 10));
+  }
+  return n;
+}
+
+/** Deny every challenge of the run until it ends; the number denied (0 when the run never asked). */
+export const denyAll = (r: DeliveryRig, end: Promise<unknown>): Promise<number> => approveAll(r, end, "deny");

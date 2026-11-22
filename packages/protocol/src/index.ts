@@ -22,5 +22,6 @@ export * from "./messages-wire.js";
 export * from "./forge-wire.js";
 export * from "./forge.js";
 export * from "./messages.js";
+export * from "./agents.js";
 export * from "./contracts.js";
 export * from "./client.js";

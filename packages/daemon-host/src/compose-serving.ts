@@ -7,6 +7,7 @@ import type { GitRunner } from "@axis/git-ops";
 import { APPROVALS_CONTRACT, APPROVALS_VERSION, PROVIDERS_CONTRACT, PROVIDERS_VERSION, REVIEW_CONTRACT, REVIEW_VERSION, WORKTREES_CONTRACT, WORKTREES_VERSION } from "@axis/protocol";
 import type { SecretScanner } from "@axis/secret-scan";
 import { createGitOperations, createGitPort } from "./bindings/git.js";
+import { registerForgeServing } from "./compose-forge.js";
 import { createCommitPreparer, createReviewService } from "./bindings/review.js";
 import { createTempIndexProvider } from "./bindings/review-tempindex.js";
 import { createSshResolver, unavailableSshResolver, type SshSpawn } from "./bindings/ssh-resolver.js";
@@ -36,7 +37,7 @@ import { ReviewedTrees } from "./handlers/review-store.js";
 import { createWorktreesHandlers } from "./handlers/worktrees.js";
 import type { HostServices, StartupPorts } from "./host.js";
 import type { Logger } from "./log/logger.js";
-import type { PtyExecPort, PtyPort } from "./ports/pty.js";
+import type { PtyExecPort, PtyForgePort, PtyPort } from "./ports/pty.js";
 import { loadPushedBases, savePushedBases } from "./storage/pushed-bases-file.js";
 
 /** What `registerServing` takes from the composition (moved out of compose.ts unchanged, plus the project trust gate). */
@@ -59,7 +60,7 @@ export interface ServingContext {
   readonly config: HostConfig;
   readonly control: ControlClient;
   readonly ports: Omit<StartupPorts, "control" | "reconcile" | "afterStorage" | "beforeReady">;
-  readonly pty: (PtyPort & Partial<PtyExecPort>) | undefined;
+  readonly pty: (PtyPort & Partial<PtyExecPort> & Partial<PtyForgePort>) | undefined;
   readonly scanner: SecretScanner;
   readonly ptyGitRunnerFor: (gitPath: string) => GitRunner;
   readonly logger: Logger | undefined;
@@ -127,4 +128,5 @@ export function registerServing(registrar: HandlerRegistrar, services: HostServi
     onInternalError: () => logger?.error("request.failed", { reason: "git_internal" }),
     onBookkeepingError: () => logger?.warn("request.failed", { reason: "git_bookkeeping" }),
   });
+  registerForgeServing(registrar, { pty, projectPath: (id) => journal.getProject(id)?.path, git, platform: config.platform, audit: (e) => (audit.append(e), services.anchors.noteWrite()), monotonic: () => ports.clock.monotonic(), ...(logger === undefined ? {} : { logger }) });
 }

@@ -8,6 +8,7 @@ import { createMessagingSettings, type MessagingSettingsService } from "./settin
 import { journalDirectory, type MessagingDirectory } from "./policy.js";
 import type { MessageAuditSink } from "./audit.js";
 import type { MessagingLimits } from "./limits.js";
+import type { ComposerMessagingDeps } from "./participation.js";
 
 /**
  * The message service and its settings over the journal, as the composition root builds them. The directory defaults to
@@ -36,6 +37,8 @@ export interface MessagingBinding {
   readonly service: MessageService;
   readonly settings: MessagingSettingsService;
   readonly delivery: MessageDelivery;
+  /** What a composer run's `send_message` and `read_messages` need (PV-M4), for `AgentBindingDeps.messaging`. */
+  readonly participation: Omit<ComposerMessagingDeps, "holdsSecret">;
 }
 
 export function createMessagingBinding(deps: MessagingBindingDeps): MessagingBinding {
@@ -44,7 +47,9 @@ export function createMessagingBinding(deps: MessagingBindingDeps): MessagingBin
   const common = { store, directory, audit: deps.audit, ...(deps.noteWrite === undefined ? {} : { noteWrite: deps.noteWrite }) };
   const service = createMessageService({ ...common, random: deps.random, monotonic: deps.monotonic, scan: deps.scan, ...(deps.limits === undefined ? {} : { limits: deps.limits }) });
   const delivery = createMessageDelivery({ ...common, service, random: deps.random, agentOf: deps.agentOf ?? (() => undefined), runLive: deps.runLive ?? (() => false), ...deps.deliveryLimits, ...(deps.onInternalError === undefined ? {} : { onInternalError: deps.onInternalError }) });
-  return { service, settings: createMessagingSettings({ ...common, context: (id) => service.context(id) }), delivery };
+  // Inert until PV-G4: the same `agentOf` as the delivery (default none), so no run is offered the tools.
+  const participation = { service, directory, random: deps.random, agentOf: deps.agentOf ?? (() => undefined) };
+  return { service, settings: createMessagingSettings({ ...common, context: (id) => service.context(id) }), delivery, participation };
 }
 
 /** What the composition root has for messaging; `logger` is required (possibly undefined), so it cannot be left out. */
