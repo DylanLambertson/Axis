@@ -64,6 +64,30 @@
 
 .monaco-workbench .axis-dashboard-project {
 	color: var(--vscode-foreground);
+	display: inline-flex;
+	flex-wrap: wrap;
+	gap: 4px 12px;
+}
+
+/* Run trust is told by the glyph AND the words, never by colour alone. */
+.monaco-workbench .axis-project-chip {
+	display: inline-flex;
+	align-items: baseline;
+	gap: 4px;
+}
+
+.monaco-workbench .axis-project-chip-label,
+.monaco-workbench .axis-project-banner-text {
+	max-width: 48ch;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	unicode-bidi: isolate;
+}
+
+.monaco-workbench .axis-project-chip[data-trust="offline"],
+.monaco-workbench .axis-project-chip[data-trust="unregistered"] {
+	color: var(--vscode-descriptionForeground);
 }
 
 .monaco-workbench .axis-dashboard-note {
@@ -408,5 +432,18 @@
 
 .monaco-workbench .axis-change-folder {
 	font-size: 12px;
+	color: var(--vscode-descriptionForeground);
+}
+
+/* The project banner (S3): text first, then the one action; the outcome sentence after it. */
+.monaco-workbench .axis-project-banner {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	gap: 4px 12px;
+	margin: 4px 0 8px;
+}
+
+.monaco-workbench .axis-project-banner-outcome {
 	color: var(--vscode-descriptionForeground);
 }
