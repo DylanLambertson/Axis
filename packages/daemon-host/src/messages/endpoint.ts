@@ -66,6 +66,11 @@ export interface EndpointRelayDeps {
   readonly agentOf: (runId: string) => string | undefined;
   /** True while the run is RUNNING. */
   readonly runLive: (runId: string) => boolean;
+  /**
+   * True while the supervisor is launching the run (QUEUED: spawned but not yet RUNNING). The endpoint is minted in the spawn,
+   * before the run is RUNNING, so mint accepts this state; a message before RUNNING answers `not_ready` and revokes nothing.
+   */
+  readonly runLaunching?: (runId: string) => boolean;
   readonly random: { bytes(n: number): Uint8Array };
   readonly audit: MessageAuditSink;
   /** Called after each audit row (the anchor guard's `noteWrite`). */
@@ -136,6 +141,7 @@ export function createEndpointRelay(deps: EndpointRelayDeps): EndpointRelay {
   const byRun = new Map<string, Endpoint>();
   const tombstones = new Map<string, string>();
   const tombstoneRuns = new Set<string>();
+  const launching = (runId: string): boolean => deps.runLaunching?.(runId) === true;
   const reads = new WindowCounter(ENDPOINT_LIMITS.readsPerMinute, MINUTE_MS, ENDPOINT_LIMITS.maxEndpoints, deps.monotonic);
 
   const audit = (ep: Endpoint, event: string, extra: Record<string, string | number> = {}): void => {
@@ -223,7 +229,7 @@ export function createEndpointRelay(deps: EndpointRelayDeps): EndpointRelay {
 
   return {
     mint(runId) {
-      if (deps.platform === "win32" || byRun.has(runId) || tombstoneRuns.has(runId) || byRun.size >= ENDPOINT_LIMITS.maxEndpoints || !deps.runLive(runId)) return undefined;
+      if (deps.platform === "win32" || byRun.has(runId) || tombstoneRuns.has(runId) || byRun.size >= ENDPOINT_LIMITS.maxEndpoints || !(deps.runLive(runId) || launching(runId))) return undefined;
       const agentId = deps.agentOf(runId);
       const entry = agentId === undefined ? undefined : deps.directory.agent(agentId);
       if (agentId === undefined || entry === undefined || entry.kind !== "cli") return undefined;
@@ -273,7 +279,14 @@ export function createEndpointRelay(deps: EndpointRelayDeps): EndpointRelay {
         const close: RelayOut = { t: "endpoint-close", endpoint, reason: "revoked" };
         return msg.t === "relay-close" ? [close] : [close, ...refuse(endpoint, conn, "revoked")];
       }
-      if (!deps.runLive(ep.runId) || !enabled(ep)) return msg.t === "relay-close" ? [revokeEndpoint(ep)] : [revokeEndpoint(ep), ...refuse(endpoint, conn, "revoked")];
+      // The messaging setting is checked BEFORE the launch window: an endpoint whose worker's messaging is off is revoked even while QUEUED.
+      if (!enabled(ep)) return msg.t === "relay-close" ? [revokeEndpoint(ep)] : [revokeEndpoint(ep), ...refuse(endpoint, conn, "revoked")];
+      if (!deps.runLive(ep.runId)) {
+        // Still being launched (QUEUED): nothing is relayed as the worker before RUNNING, and the endpoint stays. Any other
+        // state (terminal, or REVIEWING and BLOCKED as before) revokes.
+        if (launching(ep.runId)) return msg.t === "relay-close" ? [] : refuse(endpoint, conn, "not_ready");
+        return msg.t === "relay-close" ? [revokeEndpoint(ep)] : [revokeEndpoint(ep), ...refuse(endpoint, conn, "revoked")];
+      }
       if (msg.t === "relay-close") {
         ep.conns.delete(conn);
         return [];
