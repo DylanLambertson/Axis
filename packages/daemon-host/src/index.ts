@@ -123,3 +123,5 @@ export { parseForgeList, forgeDisplay, reduceChecks, reduceReview, type ParsedLi
 export { createForgeHandlers, registerForgeHandlers, toForgeError, type ForgeHandlerDeps } from "./handlers/forge.js";
 export { AttentionRefusal, ATTENTION_SCAN_ROWS, countOf, createAttentionService, type AttentionRunRow, type AttentionService, type AttentionServiceDeps } from "./attention/service.js";
 export { createAttentionHandlers, registerAttentionServing } from "./handlers/attention.js";
+export { UsageRefusal, createUsageService, remaining, usageServiceDeps, type UsageService, type UsageServiceDeps, type UsageTotalsRow } from "./usage/service.js";
+export { createUsageHandlers, registerUsageServing } from "./handlers/usage.js";
