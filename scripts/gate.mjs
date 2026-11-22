@@ -4,7 +4,7 @@
 // GATE_SKIP (comma-separated step ids; a run with skips is reported INCOMPLETE, exit 2).
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -12,6 +12,7 @@ import {
   countLines, exitCode, findLongFiles, formatReport, formatTable, gitleaksInstallSteps,
   parseGitleaksPin, parseLog, parseSidecarHash, scanCommits, versionMatchesPin
 } from "./gate/lib.mjs";
+import { failureDigest, splitSuites } from "./gate/failures.mjs";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const config = JSON.parse(readFileSync(join(scriptDir, "gate", "config.json"), "utf8"));
@@ -139,14 +140,26 @@ let packageCounts = [];
 step("test", "tests", () => {
   const dir = mkdtempSync(join(tmpdir(), "axis-gate-"));
   const file = join(dir, "tests.json");
+  let keep = false;
   try {
     const r = sh(process.execPath, [join(root, "scripts", "test-all.mjs"), "--json", file], { cwd: root });
     try { packageCounts = JSON.parse(readFileSync(file, "utf8")); } catch { /* summary missing */ }
     if (r.ok) return { status: "pass", detail: `${packageCounts.length} suites` };
     const bad = packageCounts.filter((s) => !s.ok).map((s) => s.name);
-    return { status: "fail", detail: bad.length > 0 ? `failed: ${bad.join(", ")}` : tail(r.out) };
+    // Passing suites stay quiet. A failing one prints its failing tests' names and first error lines here and
+    // keeps its whole output in a file, because a flake that cannot be named cannot be chased.
+    const saved = [];
+    for (const s of splitSuites(r.out).filter((x) => !x.ok)) {
+      keep = true;
+      const log = join(dir, `${s.name.replace(/[^A-Za-z0-9._-]+/g, "_")}.log`);
+      writeFileSync(log, s.text);
+      saved.push(log);
+      console.log(`\n== ${s.name}: failing tests\n${failureDigest(s.text) || "(no failing test name in the output; see the full output)"}\n== full output: ${log}\n`);
+    }
+    const where = saved.length > 0 ? `; full output: ${saved.join(", ")}` : "";
+    return { status: "fail", detail: bad.length > 0 ? `failed: ${bad.join(", ")}${where}` : tail(r.out) };
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    if (!keep) rmSync(dir, { recursive: true, force: true });
   }
 });
 
