@@ -149,6 +149,7 @@ export class TaskRecords {
   /** Link a run, workspace or page of the task's project, or a pull request number; false when the link exists. */
   link(taskId: string, link: TaskLink): boolean {
     if (typeof link !== "object" || link === null || !LINK_KINDS.has(link.kind) || typeof link.target !== "string") refuse("E_INVALID_ARGUMENT", "link", "Unknown link");
+    if (link.kind === "pr" && !/^[1-9][0-9]{0,9}$/.test(link.target)) refuse("E_INVALID_ARGUMENT", "link", "A pull request link is its number");
     return withTransaction(this.#db, () => {
       this.#task(taskId);
       if (this.#db.prepare("SELECT 1 FROM task_links WHERE task_id = ? AND kind = ? AND target = ?").get(taskId, link.kind, link.target) !== undefined) return false;

@@ -15,14 +15,16 @@
 
 - **Insert once** on every table, before any conflict clause; NUL-safe text and ASCII checks; the title rule of pages (1 to 200 characters, `NAME_REFUSED_RANGES`); a body of at most 16,384 characters.
 - **Project cap:** 64 MiB of revision text, summed from each revision's stored `bytes` through the covering index `task_revisions_bytes` (`projectTaskBytesSql`); a write never reads another body. A test pins the plan.
-- **Assignee:** a live agent or a group of the task's project (a trigger checks it on every change). Assigning starts nothing.
+- **Assignee:** a live agent or a group of the task's project (a trigger checks it on every change). Archiving the agent or deleting the group clears the assignment in the same statement, so a re-created group id never inherits it. Assigning starts nothing.
+- **Status** is a closed set with free transitions (`done` back to `open` is allowed); no order is claimed.
+- **A task with no revision** (`last_seq` 0) can exist only through raw SQL: the store writes a task and its first revision in one transaction, and the contract requires `lastSeq` of at least 1.
 - **Delete** removes the task's revisions and links in the same statement.
 
 ## 2. Trust
 
 - **Source** is closed: `user`, `agent`, `plugin` or `integration`. **Authors** of revisions add `system`; the user writes at hop 0.
 - **`untrusted`** is set on the task, not derived per revision: a task whose source is not the user starts untrusted, and the first revision from anyone but the user sets it. Unlike a page, a task has no review, so the flag never clears; it survives the pruning of the revision that set it. That is what `extensibility.md` §6 asks: Start of a task with "any non-user revision" taints the run.
-- **`hop`** is the highest hop of any revision, and never goes down.
+- **`hop`** is the highest hop of any revision, never goes down, and never rises above the highest hop its revisions had. A trusted task has hop 0 (a table CHECK, a second fence behind the update trigger, which refuses first).
 - The store derives both from the author, and the triggers (`tasks_start_empty`, `task_revisions_advance`, `tasks_sticky`) hold them, so no writer can store a task as more trusted than it is. The table CHECK `source = 'user' OR untrusted = 1` can never be the first to refuse (the insert and sticky triggers refuse first); it stays as a second fence.
 
 ## 3. The planned contract
@@ -35,7 +37,8 @@
 | `delete` | destructive | 3 | none |
 
 - No request carries an author, a source, a hop, a trust flag, a prompt or a command. Every row admits only `user`.
-- Refusals are closed: `not_found`, `too_large`, `stale_version`, `limit_reached`, `assignee_refused`, `link_refused`. Store reasons outside the set (`author`, `text`, `exists`, `status`, `assignee`, `link`) are internal: the slice-2 handler answers them as `E_INTERNAL`.
+- Refusals are closed: `not_found`, `too_large`, `stale_version`, `limit_reached`, `assignee_refused`, `link_refused`. Store reasons outside the set (`author`, `text`, `exists`, `status`, `assignee`, `link`) are internal: the slice-2 handler answers them as `E_INTERNAL`. The store checks only lengths and kinds; a value the table refuses (an empty or bad title, a bad id, an unknown project) surfaces as a database error without content, which the handler also answers as `E_INTERNAL`; the contract's schemas refuse all of them before the store.
+- **Slice 2 binds the caller.** The store trusts the author it is given (an `author: { kind: "user" }` makes a trusted revision); the slice-2 handler builds the author from the attested connection, never a payload, and writes the audit rows with ids, kinds and counts only.
 
 ## 4. Divergences from `extensibility.md` §6
 

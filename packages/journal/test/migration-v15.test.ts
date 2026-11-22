@@ -232,3 +232,49 @@ test("deleting a task deletes its revisions and links in the same statement, and
   assert.equal(one(db, "SELECT count(*) FROM task_revisions WHERE task_id = 'keep'"), 1);
   db.close();
 });
+
+test("a trusted task has hop 0, and no task's hop rises above the highest hop of its revisions", () => {
+  const { db } = setup();
+  insert(db, "tasks", task());
+  insert(db, "task_revisions", rev());
+  refused(() => db.prepare("UPDATE tasks SET hop = 3 WHERE id = 't1'").run(), "a trusted task with a hop");
+  insert(db, "tasks", task({ id: "ta", source: "agent", untrusted: 1 }));
+  insert(db, "task_revisions", rev({ task_id: "ta", author_kind: "agent", author_id: "w1", hop: 4 }));
+  refused(() => db.prepare("UPDATE tasks SET hop = 5 WHERE id = 'ta'").run(), "a hop above every revision");
+  db.prepare("UPDATE tasks SET untrusted = 1 WHERE id = 't1'").run(); // more conservative is allowed
+  refused(() => db.prepare("UPDATE tasks SET hop = 1 WHERE id = 't1'").run(), "still no revision at that hop");
+  assert.equal(one(db, "SELECT hop FROM tasks WHERE id = 't1'"), 0);
+  db.close();
+});
+
+test("archiving the assigned agent or deleting the assigned group clears the assignment in the same statement", () => {
+  const { db, journal } = setup();
+  insert(db, "tasks", task());
+  insert(db, "tasks", task({ id: "t2" }));
+  db.prepare("UPDATE tasks SET assignee_kind = 'agent', assignee_id = 'w1' WHERE id = 't1'").run();
+  db.prepare("UPDATE tasks SET assignee_kind = 'group', assignee_id = 'g1' WHERE id = 't2'").run();
+  journal.agents.archive("w1");
+  assert.equal(one(db, "SELECT assignee_kind FROM tasks WHERE id = 't1'"), null);
+  journal.agents.deleteGroup("g1");
+  assert.equal(one(db, "SELECT assignee_kind FROM tasks WHERE id = 't2'"), null);
+  db.close();
+});
+
+test("a populated version 14 database upgrades with its rows kept; a rerun is idempotent and an older schema list is refused", () => {
+  const db = openDatabase(":memory:");
+  new AuditLog(db);
+  runMigrations(db, "journal", JOURNAL_MIGRATIONS.slice(0, 14));
+  db.prepare("INSERT INTO projects (id, path, display_name, trusted, created_at, updated_at) VALUES ('old', '/repo/old', 'Old', 0, ?, ?)").run(T, T);
+  db.prepare("INSERT INTO pages (id, project_id, last_seq, created_at, updated_at) VALUES ('pg', 'old', 0, ?, ?)").run(T, T);
+  db.prepare("INSERT INTO page_versions (page_id, seq, title, body, bytes, author_kind, author_id, hop, untrusted, created_at) VALUES ('pg', 1, 'P', 'x', 2, 'user', NULL, 0, 0, ?)").run(T);
+  const journal = Journal.open(db, { audit: new AuditLog(db) });
+  assert.equal(schemaVersion(db, "journal"), 15);
+  assert.equal(journal.pages.get("pg")?.body, "x", "the page survives");
+  journal.tasks.create({ taskId: "t1", projectId: "old", title: "T", body: "b", author: { kind: "user" } });
+  assert.equal(journal.tasks.link("t1", { kind: "page", target: "pg" }), true, "a task links to a page from before the upgrade");
+  runMigrations(db, "journal", JOURNAL_MIGRATIONS);
+  assert.equal(schemaVersion(db, "journal"), 15);
+  assert.equal(journal.tasks.get("t1")?.links.length, 1, "a rerun changes nothing");
+  assert.throws(() => runMigrations(db, "journal", JOURNAL_MIGRATIONS.slice(0, 14)), Error, "an older build refuses a newer schema");
+  db.close();
+});

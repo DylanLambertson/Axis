@@ -67,6 +67,7 @@ test("status, assignee and links change the task in place; refusals are closed",
   assert.equal(journal.tasks.link("t1", { kind: "workspace", target: ws }), false, "a link exists once");
   assert.equal(journal.tasks.link("t1", { kind: "pr", target: "7" }), true);
   reason(() => journal.tasks.link("t1", { kind: "page", target: "nope" }), "E_CONFLICT", "link_refused");
+  for (const target of ["0", "01", "1a"]) reason(() => journal.tasks.link("t1", { kind: "pr", target }), "E_INVALID_ARGUMENT", "link");
   reason(() => journal.tasks.link("t1", { kind: "url", target: "x" } as unknown as { kind: "pr"; target: string }), "E_INVALID_ARGUMENT", "link");
   assert.deepEqual(journal.tasks.get("t1")?.links.map((l) => l.kind).sort(), ["pr", "workspace"]);
   assert.equal(journal.tasks.unlink("t1", { kind: "pr", target: "7" }), true);

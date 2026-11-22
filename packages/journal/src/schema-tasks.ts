@@ -14,7 +14,8 @@ import { SQL_RULES } from "./schema-pages.js";
  *     slice) marks the text and taints the run (IAC-T source 5), and a task read is source 8. **`hop`** is the highest hop
  *     of any revision; it never goes down.
  *   - An assignee is an agent of the same project that is not archived, or a group of the same project. Assigning starts
- *     nothing.
+ *     nothing. Archiving the agent or deleting the group clears the assignment in the same statement.
+ *   - A trusted task has hop 0, and a task's hop is never above the highest hop of its revisions.
  * - `task_revisions`: every text change is a new revision, never changed afterwards. Author is closed: `user`, `agent`,
  *   `plugin`, `integration` or `system`; the user writes at hop 0. At most 50 per task: the 51st deletes the oldest in the
  *   same statement, which cannot clear the task's sticky flags.
@@ -60,7 +61,8 @@ export const TASKS_MIGRATION: Migration = {
       created_at    TEXT NOT NULL CHECK (${time("created_at")}),
       updated_at    TEXT NOT NULL CHECK (${time("updated_at")}),
       CHECK ((assignee_kind IS NULL) = (assignee_id IS NULL)),
-      CHECK (source = 'user' OR untrusted = 1)
+      CHECK (source = 'user' OR untrusted = 1),
+      CHECK (untrusted = 1 OR hop = 0)
     ) STRICT;
     CREATE INDEX tasks_by_project ON tasks (project_id, updated_at DESC, id);
     CREATE TRIGGER tasks_inserted_once BEFORE INSERT ON tasks
@@ -77,7 +79,8 @@ export const TASKS_MIGRATION: Migration = {
       BEGIN SELECT RAISE(ABORT, 'a task keeps its id, project, source and creation time'); END;
     CREATE TRIGGER tasks_sticky BEFORE UPDATE OF untrusted, hop ON tasks
       WHEN NEW.untrusted < OLD.untrusted OR NEW.hop < OLD.hop
-      BEGIN SELECT RAISE(ABORT, 'a task''s untrusted flag and hop never go back'); END;
+        OR NEW.hop > max(OLD.hop, (SELECT coalesce(max(hop), 0) FROM task_revisions WHERE task_id = NEW.id))
+      BEGIN SELECT RAISE(ABORT, 'a task''s untrusted flag and hop never go back, and its hop is the highest of its revisions'); END;
     CREATE TRIGGER tasks_seq_is_newest BEFORE UPDATE OF last_seq ON tasks
       WHEN NEW.last_seq IS NOT (SELECT coalesce(max(seq), 0) FROM task_revisions WHERE task_id = NEW.id)
       BEGIN SELECT RAISE(ABORT, 'a task''s last revision number is its newest revision'); END;
@@ -160,6 +163,12 @@ export const TASKS_MIGRATION: Migration = {
       BEGIN SELECT RAISE(ABORT, 'a link names a run, workspace or page of the task''s project'); END;
     CREATE TRIGGER task_links_fixed BEFORE UPDATE ON task_links
       BEGIN SELECT RAISE(ABORT, 'a link never changes'); END;
+
+    CREATE TRIGGER tasks_unassign_deleted_group AFTER DELETE ON agent_groups
+      BEGIN UPDATE tasks SET assignee_kind = NULL, assignee_id = NULL WHERE assignee_kind = 'group' AND assignee_id = OLD.id; END;
+    CREATE TRIGGER tasks_unassign_archived_agent AFTER UPDATE OF archived ON agents
+      WHEN NEW.archived = 1
+      BEGIN UPDATE tasks SET assignee_kind = NULL, assignee_id = NULL WHERE assignee_kind = 'agent' AND assignee_id = NEW.id; END;
 
     CREATE TRIGGER tasks_delete_contents AFTER DELETE ON tasks
       BEGIN
