@@ -4,6 +4,8 @@ import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
 import type { Policy } from "@axis/daemon";
+import { AxisError } from "@axis/audit";
+import { openTrustGate } from "../testing/open-gate.js";
 import { GitRefusal, PushedBases } from "../src/index.js";
 import { gitRig, gitUnavailable, type GitClient, type GitRig, type GitRigOptions } from "./git-rig.js";
 
@@ -111,8 +113,8 @@ test("the push that went out and then failed to answer is retried as a no-op pus
   const { r, c } = await setup(t, {
     ops: (real) => ({
       ...real,
-      executePush: async (call, conf) => {
-        await real.executePush(call, conf);
+      executePush: async (call, conf, ticket, signal) => {
+        await real.executePush(call, conf, ticket, signal);
         if (boom) {
           boom = false;
           throw new GitRefusal("E_UNAVAILABLE");
@@ -392,4 +394,37 @@ test("PushedBases is bounded (the oldest entry is forgotten and falls back to th
   assert.equal(b.baseFor("w", "t3", "base"), "c".repeat(40));
   assert.equal(b.baseFor("other", "t3", "base"), "base", "per workspace");
   for (const bad of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) assert.throws(() => new PushedBases(bad), RangeError);
+});
+
+test("untrust while the push's native dialog is open: the confirmed push is refused E_CONFLICT untrusted and nothing reaches the remote", { skip: SKIP ?? false }, async (t) => {
+  // The gate runs in the handler after the tier 4 approval was spent at dispatch (packages/daemon/src/pipeline.ts step 4), so a
+  // revoke recorded while the dialog is open refuses the push (mutant: the gate before the confirmation).
+  let revoked = false;
+  const open = openTrustGate();
+  const asked: string[] = [];
+  const gate = {
+    admit: (call: Parameters<ReturnType<typeof openTrustGate>["admit"]>[0]) =>
+      (asked.push(call.workspaceId ?? ""), revoked ? Promise.reject(new AxisError("E_POLICY_DENIED", "The project is not trusted", { reason: "untrusted" })) : open.admit(call)),
+  };
+  const { r, c } = await setup(t, { gate });
+  commitFile(r, "a.txt", "hello\n");
+  const p = confirmed((await plan(c, r)).result as unknown as Plan);
+  const key = randomUUID();
+  const first = await c.rpc("axis.git", "push", pushReq(r, p), key);
+  assert.equal(first.error?.code, "E_APPROVAL_REQUIRED");
+  assert.deepEqual(asked, [], "no gate before the confirmation");
+  const ch = (first.error?.details as { challenge: { challengeId: string; digest: string } }).challenge;
+  assert.equal((await c.rpc("axis.approvals", "resolve", { challengeId: ch.challengeId, decision: "approve", digest: ch.digest })).ok, true);
+  revoked = true; // the user stops trusting the project while the native dialog is open
+  await r.confirmNative(ch.challengeId);
+  const end = Date.now() + 5000;
+  while (r.approvals.stats().native.entries !== 0) {
+    if (Date.now() > end) assert.fail("native confirmation not applied");
+    await new Promise((x) => setTimeout(x, 5));
+  }
+  const res = await c.rpc("axis.git", "push", pushReq(r, p, { approval: { challengeId: ch.challengeId } }), key);
+  assert.deepEqual([res.error?.code, (res.error?.details as { reason?: string } | undefined)?.reason], ["E_CONFLICT", "untrusted"]);
+  assert.deepEqual(asked, [r.workspaceId], "the gate ran once, at the side effect");
+  assert.equal(r.remoteTip(), null, "nothing was pushed");
+  assert.equal(r.calls.executePush, 0, "the git operation was never reached");
 });

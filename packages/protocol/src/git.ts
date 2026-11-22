@@ -74,8 +74,9 @@ export const GIT_COMMIT_REFUSALS = {
    * `operation_in_progress`: a merge, cherry-pick, revert, rebase or bisect is under way or the index has unmerged paths.
    * `ref_update_failed`: the branch could not be moved by compare-and-swap (a lock); it was left as it was. `snapshot_failed`: the worktree could not be read for the freshness check.
    * `git_drift`: the repository's git configuration changed since it was recorded (`commit` re-takes the drift check before it commits).
+   * `untrusted`: the host's project trust gate refused (docs/design/project-registration-and-trust.md §5.4).
    */
-  E_CONFLICT: ["head_moved", "stale", "index_changed", "operation_in_progress", "ref_update_failed", "snapshot_failed", "git_drift"],
+  E_CONFLICT: ["head_moved", "stale", "index_changed", "operation_in_progress", "ref_update_failed", "snapshot_failed", "git_drift", "untrusted"],
   /** `too_large` and `not_found`: the freshness re-check reads the worktree and HEAD through `@axis/review`. */
   E_INVALID_ARGUMENT: ["too_large", "not_found"],
   /** HEAD is detached, or the branch has no commit: Axis commits on `axis/<slug>` only. */
@@ -99,8 +100,9 @@ export const GIT_PUSH_REFUSALS = {
    * `plan_changed`: the tip or the scan result differs from the plan the user confirmed: show the new plan. The four blocks:
    * the plan is refused before any challenge (the package raises them as `E_POLICY_DENIED` and the host answers `E_CONFLICT`).
    * `git_drift`: the repository's git configuration changed since it was recorded; the user must acknowledge the change first.
+   * `untrusted`: the host's project trust gate refused, after the confirmation (docs/design/project-registration-and-trust.md §5.4).
    */
-  E_CONFLICT: ["plan_changed", ...GIT_PUSH_BLOCKS, "git_drift"],
+  E_CONFLICT: ["plan_changed", ...GIT_PUSH_BLOCKS, "git_drift", "untrusted"],
 } as const;
 export const GIT_PUSH_REASONS = GIT_PUSH_REFUSALS.E_CONFLICT;
 export const gitCommitReasonSchema = z.enum(GIT_COMMIT_REASONS);
