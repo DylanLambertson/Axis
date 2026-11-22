@@ -258,3 +258,48 @@ test("review s2 S2: a reply is bounded in UTF-8 bytes, not UTF-16 units: a multi
   assert.equal(replyFrame(body, Buffer.byteLength(json, "utf8")), json, "exactly at the byte bound it passes");
   assert.equal(ENDPOINT_LIMITS.replyBytes, 1048576);
 });
+
+const USER = { kind: "user" } as const;
+
+test("PV-M6 slice 3: revokeWorker revokes every live endpoint of that worker only, and a later frame answers revoked", async (t) => {
+  const f = await fx(t);
+  const conn = await f.authed();
+  const second = f.r.m.endpoints.relay.mint(f.r.run("c1"));
+  assert.ok(second !== undefined);
+  assert.deepEqual(f.r.m.endpoints.relay.revokeWorker("a1"), [], "another worker: nothing");
+  assert.equal(json((await f.frame(conn, { op: "read", id: "r1" }))[0])["ok"], true, "still serving");
+  assert.deepEqual(f.r.m.endpoints.relay.revokeWorker("c1"), [
+    { t: "endpoint-close", endpoint: f.ep, reason: "revoked" },
+    { t: "endpoint-close", endpoint: second.endpointId, reason: "revoked" },
+  ]);
+  assert.deepEqual(json((await f.frame(conn, { op: "read", id: "r2" }))[0]), { ok: false, reason: "revoked" });
+  assert.equal(f.r.m.endpoints.relay.mint(f.runId), undefined, "a revoked run is not minted again");
+});
+
+test("PV-M6 slice 3 backstop: with the stored setting off, the next frame revokes the endpoint even when no hook ran", async (t) => {
+  const f = await fx(t);
+  const conn = await f.authed();
+  f.r.c.journal.messages.setAgentSettings("c1", { acceptsFrom: "group", cliMessaging: false, muted: false }); // behind the service's back
+  const out = await f.frame(conn, { op: "read", id: "r1" });
+  assert.deepEqual(out[0], { t: "endpoint-close", endpoint: f.ep, reason: "revoked" });
+  assert.deepEqual(json(out[1]), { ok: false, reason: "revoked" });
+  assert.deepEqual(await f.open("c-2"), [{ t: "relay-reply", endpoint: f.ep, conn: "c-2", frame: '{"ok":false,"reason":"revoked"}', close: true, authFailed: false }]);
+});
+
+test("PV-M6 slice 3: dropPaused drops the connections of an endpoint whose sender a pause now covers (worker, group, project), and no other", async (t) => {
+  for (const scope of [{ agent: "c1" }, { group: "g1" }, { project: "p" }] as const) {
+    const f = await fx(t);
+    const relay = f.r.m.endpoints.relay;
+    assert.deepEqual(relay.dropPaused("p"), [], `${JSON.stringify(scope)}: no connection yet, nothing to drop`);
+    await f.authed();
+    f.r.m.settings.pause(USER, { scope: { agent: "a1" } });
+    f.r.m.settings.pause(USER, { scope: { group: "g2" } });
+    assert.deepEqual(relay.dropPaused("p"), [], `${JSON.stringify(scope)}: other workers and groups paused: c1 keeps its connections`);
+    assert.deepEqual(relay.dropPaused("q"), [], "another project: nothing");
+    f.r.m.settings.pause(USER, { scope });
+    assert.deepEqual(relay.dropPaused("p"), [{ t: "endpoint-drop", endpoint: f.ep, reason: "paused" }], JSON.stringify(scope));
+    assert.deepEqual(relay.dropPaused("p"), [], "already dropped: nothing more");
+    assert.ok(rows(f.r).some((p) => p["event"] === "paused" && p["connections"] === 1));
+    assert.deepEqual(json((await f.frame("c-1", { op: "read", id: "r1" }))[0]), { ok: false, reason: "refused" }, "a dropped connection is forgotten");
+  }
+});

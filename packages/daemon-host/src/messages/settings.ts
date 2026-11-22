@@ -15,7 +15,12 @@ import { NOT_FOUND, agentRows, defaultAgentSettings, refuse, type AgentSettings,
  * agent's launch entry (M-3, PV-M7) does not exist yet, so the enable fails closed (and a composer agent has no endpoint).
  */
 
+/** A committed change the CLI endpoints act on (PV-M6 slice 3). */
+export type MessagingSettingsEvent = { readonly kind: "cliMessagingOff"; readonly agentId: string } | { readonly kind: "paused"; readonly projectId: string };
+
 export interface MessagingSettingsDeps {
+  /** Called after the change committed; a throw is audited (`hook_failed`) and never fails the user's write. */
+  readonly onChange?: (e: MessagingSettingsEvent) => void;
   readonly store: MessageRecords;
   readonly directory: MessagingDirectory;
   readonly audit: MessageAuditSink;
@@ -46,6 +51,15 @@ export function createMessagingSettings(deps: MessagingSettingsDeps): MessagingS
     if (a === undefined || !directory.project(a.projectId)) return NOT_FOUND();
     return { projectId: a.projectId, current: store.agentSettings(agentId) ?? defaultAgentSettings(a) };
   };
+  const notify = (e: MessagingSettingsEvent): void => {
+    try {
+      deps.onChange?.(e);
+    } catch {
+      const target = e.kind === "paused" ? `project:${e.projectId}` : `agent:${e.agentId}`;
+      deps.audit.append({ actor: "daemon", action: MESSAGE_AUDIT.endpoint, target, outcome: "error", payload: { event: "hook_failed", ...(e.kind === "paused" ? { projectId: e.projectId } : { agentId: e.agentId }) } });
+      deps.noteWrite?.();
+    }
+  };
   const view = (ctx: PolicyContext) => ({ projectId: ctx.projectId, ...ctx.settings, agents: agentRows(directory, ctx.projectId, ctx.agentSettings) });
 
   function setProject(ctx: PolicyContext, next: ProjectSettings, setting: string, before: Scalar, after: Scalar, groups?: string): boolean {
@@ -69,7 +83,7 @@ export function createMessagingSettings(deps: MessagingSettingsDeps): MessagingS
 
   function setPaused(scope: Scope, paused: boolean): boolean {
     const target = scopeProject(scope);
-    return store.transact(() => {
+    const changed = store.transact(() => {
       const s = deps.context(target.projectId).settings;
       const p = s.paused;
       const list = target.kind === "group" ? p.groups : target.kind === "agent" ? p.agents : undefined;
@@ -83,6 +97,8 @@ export function createMessagingSettings(deps: MessagingSettingsDeps): MessagingS
       audit(paused ? MESSAGE_AUDIT.pause : MESSAGE_AUDIT.resume, `${target.kind}:${target.id}`, { scopeKind: target.kind, scopeId: target.id, changed: was !== paused });
       return was !== paused;
     });
+    if (changed && paused) notify({ kind: "paused", projectId: target.projectId });
+    return changed;
   }
 
   return {
@@ -95,7 +111,8 @@ export function createMessagingSettings(deps: MessagingSettingsDeps): MessagingS
     updateSettings(caller, raw) {
       userOnly(caller);
       const req = checked("updateSettings", raw);
-      return store.transact(() => {
+      let off: string | undefined;
+      const result = store.transact(() => {
         if (req.setting === "acceptsFrom" || req.setting === "cliMessaging" || req.setting === "muted") {
           const { projectId, current } = agentSettingsOf(req.agentId);
           // Fails closed for every agent until PV-M7 can check the launch entry (a composer agent has no endpoint at all).
@@ -106,6 +123,7 @@ export function createMessagingSettings(deps: MessagingSettingsDeps): MessagingS
           if (changed) {
             store.setAgentSettings(req.agentId, next);
             audit(MESSAGE_AUDIT.settings, `agent:${req.agentId}`, { projectId, agentId: req.agentId, setting: req.setting, before, after: req.value });
+            if (req.setting === "cliMessaging" && before === true && req.value === false) off = req.agentId;
           }
           return { settings: view(deps.context(projectId)), changed };
         }
@@ -124,6 +142,8 @@ export function createMessagingSettings(deps: MessagingSettingsDeps): MessagingS
         }
         return { settings: view(deps.context(ctx.projectId)), changed };
       });
+      if (off !== undefined) notify({ kind: "cliMessagingOff", agentId: off });
+      return result;
     },
 
     pause(caller, raw) {

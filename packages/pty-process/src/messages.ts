@@ -185,11 +185,13 @@ export type RelayInbound = z.infer<typeof relayInbound>;
 
 /**
  * Daemon to pty process: the reply frame for one connection (`close`: close it after sending; `authFailed`: a token failure,
- * for the pty process's per-peer backoff), or the endpoint closed with every connection (revoked or paused).
+ * for the pty process's per-peer backoff), the endpoint closed with every connection (revoked), or every connection of it
+ * dropped while its listener stays (paused: a resume needs no new endpoint; PV-M6 slice 3).
  */
 export const relayOutbound = z.discriminatedUnion("t", [
   z.object({ t: z.literal("relay-reply"), endpoint: endpointId, conn: relayConn, frame: z.string().max(RELAY_REPLY_CHARS), close: z.boolean(), authFailed: z.boolean() }).strict(),
-  z.object({ t: z.literal("endpoint-close"), endpoint: endpointId, reason: z.enum(["revoked", "paused"]) }).strict(),
+  z.object({ t: z.literal("endpoint-close"), endpoint: endpointId, reason: z.literal("revoked") }).strict(),
+  z.object({ t: z.literal("endpoint-drop"), endpoint: endpointId, reason: z.literal("paused") }).strict(),
 ]);
 export type RelayOutbound = z.infer<typeof relayOutbound>;
 
