@@ -83,6 +83,7 @@ export interface ComposerRigOptions {
   readonly gitPath?: string;
   /** Messages delivered into runs at turn boundaries (PV-M3 slice 2). */
   readonly deliveries?: AgentBindingDeps["deliveries"];
+  readonly messaging?: AgentBindingDeps["messaging"];
 }
 
 const SHA = "b".repeat(40);
@@ -140,6 +141,7 @@ export async function composerRig(options: ComposerRigOptions): Promise<Composer
       ...(options.extraTools === undefined ? {} : { extraTools: options.extraTools }),
       ...(options.gitPath === undefined ? {} : { gitPath: options.gitPath }),
       ...(options.deliveries === undefined ? {} : { deliveries: options.deliveries }),
+      ...(options.messaging === undefined ? {} : { messaging: options.messaging }),
     });
     service = createComposerService({
       redactor,

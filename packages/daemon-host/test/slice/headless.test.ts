@@ -80,7 +80,7 @@ describe("headless slice", { skip, timeout: SUITE_TIMEOUT_MS }, () => {
     sup = started.sup;
     const ready = await started.ready;
     assert.equal(ready["degraded"], undefined);
-    assert.deepEqual([...(ready["contracts"] as string[])].sort(), ["axis.approvals", "axis.audit", "axis.cli-runs", "axis.events", "axis.git", "axis.messages", "axis.projects", "axis.providers", "axis.review", "axis.runs", "axis.worktrees"]);
+    assert.deepEqual([...(ready["contracts"] as string[])].sort(), ["axis.approvals", "axis.audit", "axis.cli-runs", "axis.events", "axis.forge", "axis.git", "axis.messages", "axis.projects", "axis.providers", "axis.review", "axis.runs", "axis.worktrees"]);
     trustWindow(sup);
     projectId = await registerProject(sup, fx.repo);
     user = await TestClient.open(sup);
@@ -94,6 +94,9 @@ describe("headless slice", { skip, timeout: SUITE_TIMEOUT_MS }, () => {
     assert.deepEqual([settings.settings.projectId, settings.settings.agents], [projectId, []]);
     const nobody = await user.call("axis.messages", "send", { recipients: [{ agent: "a1" }], body: { format: "text", text: "hi" } }, true);
     assert.deepEqual([nobody.error?.code, nobody.error?.details], ["E_CONFLICT", { reason: "recipient_refused" }]);
+    // PV-D2 slice 2: the composed host serves axis.forge/1 to the user; this fixture's origin is a local path, not GitHub.
+    const forge = await user.ok<{ state: string }>("axis.forge", "pullRequests", { projectId, trigger: "view" });
+    assert.equal(forge.state, "remote_invalid");
     // C5: the composed list answers from the agent binding's registry (it was [] before), so the mock and its model are listed.
     const listed = await user.ok<{ providers: Array<{ providerId: string; status: string; models: Array<{ modelId: string }> }> }>("axis.providers", "list", {});
     assert.deepEqual(listed.providers.map((p) => [p.providerId, p.status, p.models.map((m) => m.modelId)]), [["mock", "ready", ["mock-model"]]]);

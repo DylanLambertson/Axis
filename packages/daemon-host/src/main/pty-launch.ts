@@ -148,20 +148,26 @@ export function removePtyScratch(dir: string, root: string): void {
 
 /**
  * The hand-over for one spawn, checked with the entry's own rule. A refused program is dropped (with its closed code) and the
- * check repeated, so the result is always one the entry accepts; a refused scratch turns git off.
+ * check repeated, so the result is always one the entry accepts. Both programs need the scratch (git's hook scratch, gh's
+ * per-call directories: PV-D2 slice 2), so a refused or missing scratch turns both off; the scratch goes only with a program.
  */
 export function checkedHandover(programs: PtyPrograms, scratch: string | undefined, onEvent?: (event: PtyLaunchEvent) => void): { gitPath?: string; ghPath?: string; scratch?: string } {
-  let h: { gitPath?: string; ghPath?: string; scratch?: string } = { ...programs, ...(programs.gitPath !== undefined && scratch !== undefined ? { scratch } : {}) };
-  if (programs.gitPath !== undefined && scratch === undefined) {
+  const any = programs.gitPath !== undefined || programs.ghPath !== undefined;
+  if (any && scratch === undefined) {
     onEvent?.("scratch_refused");
-    h = { ...(h.ghPath === undefined ? {} : { ghPath: h.ghPath }) };
+    return {};
   }
+  let h: { gitPath?: string; ghPath?: string; scratch?: string } = { ...programs, ...(any && scratch !== undefined ? { scratch } : {}) };
+  const without = (drop: "gitPath" | "ghPath"): { gitPath?: string; ghPath?: string; scratch?: string } => {
+    const keep = drop === "gitPath" ? h.ghPath : h.gitPath;
+    return keep === undefined || h.scratch === undefined ? {} : drop === "gitPath" ? { ghPath: keep, scratch: h.scratch } : { gitPath: keep, scratch: h.scratch };
+  };
   for (let i = 0; i < 3; i++) {
     const verdict = readPtyExecConfig(ptyEnvironment({}, h, { platform: process.platform, excludeDirs: [] }));
     if (typeof verdict !== "string") return h;
     onEvent?.(verdict as PtyLaunchEvent);
-    if (verdict === "git_path_refused" || verdict === "scratch_refused") h = { ...(h.ghPath === undefined ? {} : { ghPath: h.ghPath }) };
-    else if (verdict === "gh_path_refused") h = { ...(h.gitPath === undefined ? {} : { gitPath: h.gitPath, ...(h.scratch === undefined ? {} : { scratch: h.scratch }) }) };
+    if (verdict === "git_path_refused") h = without("gitPath");
+    else if (verdict === "gh_path_refused") h = without("ghPath");
     else return {};
   }
   return {};
@@ -181,7 +187,7 @@ export interface PtySpawnOptions {
   readonly programs: PtyPrograms;
   /** The Axis data root and the worktree root: no PATH entry of the pty process may lead into them. */
   readonly excludeDirs: readonly string[];
-  /** The prepared scratch root, or undefined (git off). */
+  /** The prepared scratch root, or undefined (git and gh off). */
   readonly scratchRoot: string | undefined;
   /** Forks the FIXED entry with exactly this environment. */
   readonly fork: (env: Record<string, string>) => PtyForkedChild;
@@ -192,7 +198,7 @@ export interface PtySpawnOptions {
 export function createPtySpawn(o: PtySpawnOptions): () => PtyForkedChild {
   return () => {
     const root = o.scratchRoot;
-    const scratch = o.platform === "win32" || root === undefined || o.programs.gitPath === undefined ? undefined : newPtyScratch(root);
+    const scratch = o.platform === "win32" || root === undefined || (o.programs.gitPath === undefined && o.programs.ghPath === undefined) ? undefined : newPtyScratch(root);
     const handover = o.platform === "win32" ? {} : checkedHandover(o.programs, scratch, o.onEvent);
     let child: PtyForkedChild;
     try {

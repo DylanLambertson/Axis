@@ -55,8 +55,11 @@ export interface ForgeRig {
 let reqN = 0;
 export const forgeReq = (over: Record<string, unknown> = {}): Record<string, unknown> => ({ t: "forge-list", req: `f${++reqN}`, host: "github.com", owner: "acme", repo: "app", ...over });
 
-/** TEST ONLY: a pty service whose forge path runs a fake `gh` through `pipeExec` (or `exec`), on a manual clock. */
-export function forgeRig(opts: { list?: string; version?: string; exec?: (inner: ExecFn) => ExecFn; config?: Partial<ForgeListConfig>; baseEnv?: Record<string, string | undefined>; before?: (scratchParent: string) => void } = {}): ForgeRig {
+/**
+ * TEST ONLY: a pty service whose forge path runs a fake `gh` through `pipeExec` (or `exec`, given the inner `pipeExec` and the
+ * fake's path: `(_, gh) => createNodeExec(new Set([gh]), platform)` runs it through the production exec function), on a manual clock.
+ */
+export function forgeRig(opts: { list?: string; version?: string; exec?: (inner: ExecFn, ghPath: string) => ExecFn; config?: Partial<ForgeListConfig>; baseEnv?: Record<string, string | undefined>; before?: (scratchParent: string) => void } = {}): ForgeRig {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "axis-forge-")));
   const scratchParent = join(dir, "scratch");
   const ghLog = join(dir, "gh.log");
@@ -73,7 +76,7 @@ export function forgeRig(opts: { list?: string; version?: string; exec?: (inner:
       throw new Error("no spawn in this rig");
     },
     clock,
-    forge: { exec: opts.exec === undefined ? inner : opts.exec(inner), ghPath, scratchParent, baseEnv: opts.baseEnv ?? { PATH: "/usr/bin:/bin", HOME: dir }, ...opts.config },
+    forge: { exec: opts.exec === undefined ? inner : opts.exec(inner, ghPath), ghPath, scratchParent, baseEnv: opts.baseEnv ?? { PATH: "/usr/bin:/bin", HOME: dir }, ...opts.config },
   });
   service.serveControl(pair.b);
   const replies: Array<Record<string, unknown>> = [];
