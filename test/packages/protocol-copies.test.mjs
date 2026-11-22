@@ -39,11 +39,15 @@ test("every registry method that needs approval has a pinned digest under its ow
     ["axis.worktrees/1#remove", "adb7a157e75395816cf74974fbdfa2b5bdf32831996a578ff80cdb46fe9d2735"],
     ["axis.worktrees/1#finalise", "14241a246e41957535270af54e54f5de9eaa8bce5f816c44010664057f641878"],
     ["axis.git/1#push", "2ecb81c9079eaa3d3702f0cdb2b4c46e846306ac7cac7ad43938605541cf1747"],
+    ["axis.pages/1#delete", "aadcfc37ca00b03a71b40256b8f12d91b57e5061cff22d44851394e40b3de05c"],
+    ["axis.pages/1#markReviewed", "f92fbf1553a3ed1c3310d98f0d3d71b3226794170428ca605da2cb686112bb1b"],
   ]);
   const payloads = new Map([
     ["axis.worktrees/1#remove", { id: "ws-1", deleteBranch: false }],
     ["axis.worktrees/1#finalise", { id: "ws-1", outcome: "archived" }],
     ["axis.git/1#push", { workspaceId: "ws-1", remote: "origin", confirmedPlan: { tip: "a".repeat(40), digest: "d".repeat(64) }, allowedBinaryPaths: ["assets/logo.png"] }],
+    ["axis.pages/1#delete", { pageId: "page-1" }],
+    ["axis.pages/1#markReviewed", { pageId: "page-1", seq: 2 }],
   ]);
   const needing = [];
   for (const [key, methods] of Object.entries(contracts)) {

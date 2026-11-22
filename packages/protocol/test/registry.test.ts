@@ -86,6 +86,14 @@ const EXPECTED: readonly Row[] = [
   ["axis.agent-groups", "assign", "write", 2, "none", 5_000],
   ["axis.attention", "summary", "read", 0, "none", 5_000],
   ["axis.usage", "summary", "read", 0, "none", 5_000],
+  ["axis.pages", "list", "read", 0, "none", 5_000],
+  ["axis.pages", "get", "read", 0, "none", 5_000],
+  ["axis.pages", "versions", "read", 0, "none", 5_000],
+  ["axis.pages", "create", "write", 1, "required", 10_000],
+  ["axis.pages", "update", "write", 1, "none", 10_000],
+  ["axis.pages", "restore", "write", 1, "none", 10_000],
+  ["axis.pages", "markReviewed", "write", 3, "none", 30_000],
+  ["axis.pages", "delete", "destructive", 3, "none", 30_000],
 ];
 
 function actualRows(): Row[] {
@@ -291,7 +299,7 @@ test("methods that need approval: tier 3 and above, an optional approval field, 
   }
   // Every method added by P1a and P1c is tier 2 or below. `axis.git.push` (P1b) is tier 4 and has a pinned digest vector in
   // test/packages/protocol-copies.test.mjs.
-  assert.deepEqual(needing.sort(), ["axis.git.push", "axis.worktrees.finalise", "axis.worktrees.remove"]);
+  assert.deepEqual(needing.sort(), ["axis.git.push", "axis.pages.delete", "axis.pages.markReviewed", "axis.worktrees.finalise", "axis.worktrees.remove"]);
   const push = lookupMethod("axis.git", 1, "push") as MethodSpec;
   const pushBody = { workspaceId: "ws-1", remote: "origin", confirmedPlan: { tip: "a".repeat(40), digest: "d".repeat(64) } };
   assert.equal(push.request.safeParse({ ...pushBody, approval: { challengeId: "A".repeat(22) } }).success, true);
