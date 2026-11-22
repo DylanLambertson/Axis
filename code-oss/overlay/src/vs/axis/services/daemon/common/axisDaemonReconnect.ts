@@ -11,7 +11,7 @@
 import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
-import { AxisDaemonCallError, AxisDaemonStatus, AxisReadContract, IAxisDaemonClient, sameStatus } from './axisDaemonClient.js';
+import { AxisDaemonCallError, AxisDaemonFailureReason, AxisDaemonStatus, AxisReadContract, IAxisDaemonClient, isUsable, sameStatus } from './axisDaemonClient.js';
 
 /** How long one connect may take before it counts as failed (main's broker, then `hello`/`welcome`). */
 export const AXIS_WELCOME_TIMEOUT_MS = 10_000;
@@ -29,10 +29,34 @@ export const AXIS_STABLE_AFTER_MS = 10_000;
 export const AXIS_RECONNECT_BASE_MS = 250;
 export const AXIS_RECONNECT_CAP_MS = 30_000;
 export const AXIS_RECONNECT_JITTER = 0.2;
-/** The contracts the shell asks for, version 1 each: what it already reads and writes, nothing more. */
-export const AXIS_SHELL_CONTRACTS: ReadonlyArray<{ readonly id: AxisReadContract; readonly versions: readonly number[] }> = Object.freeze(
-	(['axis.projects', 'axis.worktrees', 'axis.cli-runs', 'axis.approvals'] as const).map(id => Object.freeze({ id, versions: Object.freeze([1]) })),
+/**
+ * The contracts the shell asks for, version 1 each: what it already reads and writes, plus `axis.audit`, read by this client only
+ * for `status` once per connection (PV-E0 F2: is the host degraded). Nothing more.
+ */
+export const AXIS_SHELL_CONTRACTS: ReadonlyArray<{ readonly id: AxisReadContract | 'axis.audit'; readonly versions: readonly number[] }> = Object.freeze(
+	(['axis.projects', 'axis.worktrees', 'axis.cli-runs', 'axis.approvals', 'axis.audit'] as const).map(id => Object.freeze({ id, versions: Object.freeze([1]) })),
 );
+
+const STOPPED: ReadonlySet<string> = new Set<AxisDaemonFailureReason>(['lock_held', 'bad_config', 'degraded', 'crash_loop']);
+
+/**
+ * Main's refusal of a connect, read through a closed map (PV-E0 F2): `stopped_<reason>` names a supervisor that stopped for good.
+ * Anything else, including any other text, is a plain failed connect: never shown, never parsed further.
+ */
+export function stoppedReason(error: unknown): AxisDaemonFailureReason | undefined {
+	const message = error instanceof Error ? error.message : undefined;
+	const reason = typeof message === 'string' && message.startsWith('stopped_') ? message.slice('stopped_'.length) : undefined;
+	return reason !== undefined && STOPPED.has(reason) ? reason as AxisDaemonFailureReason : undefined;
+}
+
+/** `axis.audit/1.status`'s answer says the host is degraded: only a present, non-null `degraded` object does. */
+export function auditSaysDegraded(result: unknown): boolean {
+	if (typeof result !== 'object' || result === null) {
+		return false;
+	}
+	const degraded = (result as { degraded?: unknown }).degraded;
+	return typeof degraded === 'object' && degraded !== null;
+}
 
 /** The delay before reconnect attempt `failures` (1-based): 250 ms doubling to the 30 s cap, ±20 % jitter. */
 export function reconnectDelay(failures: number, random: () => number): number {
@@ -90,7 +114,7 @@ export class AxisReconnectingDaemonClient extends Disposable implements IAxisDae
 
 	request(contract: AxisReadContract, method: string, params: object, token?: CancellationToken): Promise<unknown> {
 		const client = this.client;
-		if (client === undefined || this._status.kind !== 'ready') {
+		if (client === undefined || !isUsable(this._status)) {
 			return Promise.reject(new AxisDaemonCallError('unavailable'));
 		}
 		if (token?.isCancellationRequested) {
@@ -141,7 +165,7 @@ export class AxisReconnectingDaemonClient extends Disposable implements IAxisDae
 			return;
 		}
 		this._status = status;
-		if (status.kind !== 'ready') {
+		if (!isUsable(status)) {
 			this.failPending();
 		}
 		this._onDidChangeStatus.fire(status);
@@ -173,25 +197,32 @@ export class AxisReconnectingDaemonClient extends Disposable implements IAxisDae
 				}
 			}
 		};
-		const bound = this.deps.timers.set(() => finish(undefined), AXIS_WELCOME_TIMEOUT_MS);
+		// One budget for the welcome AND the audit read after it (review N1): past it, a connect fails, a pending read is ready.
+		let auditTimeout: (() => void) | undefined;
+		const bound = this.deps.timers.set(() => auditTimeout ? auditTimeout() : finish(undefined), AXIS_WELCOME_TIMEOUT_MS);
 		this.bound = bound;
-		const finish = (client: IAxisConnectedClient | undefined) => {
+		const releaseBound = () => {
+			this.deps.timers.clear(bound);
+			if (this.bound === bound) {
+				this.bound = undefined;
+			}
+		};
+		const finish = (client: IAxisConnectedClient | undefined, stopped?: AxisDaemonFailureReason) => {
 			if (done) {
 				client?.close(); // a connect that answers after its bound is not used
 				return;
 			}
 			done = true;
-			this.deps.timers.clear(bound);
-			if (this.bound === bound) {
-				this.bound = undefined;
-			}
 			this.attempting = false;
+			if (client === undefined || this.disposed) {
+				releaseBound();
+			}
 			if (this.disposed) {
 				client?.close();
 				return;
 			}
 			if (client === undefined) {
-				this.failed();
+				this.failed(stopped);
 				return;
 			}
 			opened = client;
@@ -201,7 +232,7 @@ export class AxisReconnectingDaemonClient extends Disposable implements IAxisDae
 				this.failures = 0;
 				this.clearDownWindow();
 			}, AXIS_STABLE_AFTER_MS);
-			this.setStatus({ kind: 'ready' });
+			auditTimeout = this.readAudit(client, releaseBound);
 		};
 		let connecting: Promise<IAxisConnectedClient>;
 		try {
@@ -209,16 +240,51 @@ export class AxisReconnectingDaemonClient extends Disposable implements IAxisDae
 		} catch {
 			connecting = Promise.reject(new Error('connect threw'));
 		}
-		connecting.then(client => finish(client), () => finish(undefined));
+		connecting.then(client => finish(client), error => finish(undefined, stoppedReason(error)));
 	}
 
-	private failed(): void {
+	/**
+	 * Once per connection, never polled: `axis.audit/1.status` says whether the host is degraded. Until it answers the status stays
+	 * `connecting`; a read that fails or outlasts what is left of the welcome bound is `ready` (no state is invented from a missing
+	 * answer). It returns what the bound calls when it runs out during the read.
+	 */
+	private readAudit(client: IAxisConnectedClient, releaseBound: () => void): () => void {
+		const abort = new AbortController();
+		let settled = false;
+		const settle = (degraded: boolean) => {
+			if (settled) {
+				return;
+			}
+			settled = true;
+			releaseBound();
+			if (this.disposed || this.client !== client) {
+				return;
+			}
+			this.setStatus(degraded ? { kind: 'degraded' } : { kind: 'ready' });
+		};
+		let reading: Promise<{ readonly ok: boolean; readonly result?: unknown }>;
+		try {
+			reading = client.call('axis.audit', 'status', {}, { signal: abort.signal });
+		} catch {
+			reading = Promise.reject(new Error('call threw'));
+		}
+		reading.then(r => settle(r.ok && auditSaysDegraded(r.result)), () => settle(false));
+		return () => { abort.abort(); settle(false); }; // the welcome bound ran out during the read
+	}
+
+	private failed(stopped?: AxisDaemonFailureReason): void {
 		this.failures++;
+		if (stopped !== undefined) {
+			// Main says the supervisor stopped for good: say why at once (no 15 s wait), and keep retrying at the backoff, to the cap.
+			this.setStatus({ kind: 'failed', reason: stopped });
+			this.schedule(reconnectDelay(this.failures, this.deps.random));
+			return;
+		}
 		if (this.downWindow === undefined && !this.downWindowPassed) {
 			this.downWindow = this.deps.timers.set(() => {
 				this.downWindow = undefined;
 				this.downWindowPassed = true;
-				if (this.client === undefined && !this.disposed) {
+				if (this.client === undefined && !this.disposed && this._status.kind !== 'failed') {
 					this.setStatus(this.downStatus());
 				}
 			}, AXIS_DOWN_AFTER_MS);

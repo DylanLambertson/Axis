@@ -63,7 +63,7 @@ export function startAxisMainSeam(lifecycle: ILifecycle, log: ILog, instantiatio
 
 	let supervisor: DaemonSupervisor | undefined = undefined;
 	const broker = new ConnectBroker<MessagePortMain>({
-		supervisor: { connect: (identity, port) => supervisor?.connect(identity, port) ?? false },
+		supervisor: { connect: (identity, port) => supervisor?.connect(identity, port) ?? false, state: () => supervisor?.state() ?? 'idle', failure: () => supervisor?.failure() },
 		createChannel: messageChannel,
 		closePort: port => port.close(),
 		randomBytes: n => randomBytes(n),
