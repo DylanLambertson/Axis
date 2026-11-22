@@ -57,14 +57,15 @@ export function daemonNotice(input: IAxisNoticeInput): IAxisNotice {
 	if (input.staleError) {
 		return { severity: 'warning', text: localize('axis.notice.stale', "The Axis service did not answer ({0}). Showing the last data it gave.", errorPhrase(input.staleError)) };
 	}
+	// Degraded outranks the data notes: it is why adding and trusting projects is off (PV-E0 F2; a stale marker still comes first).
+	if (status.kind === 'degraded') {
+		return { severity: 'warning', text: localize('axis.notice.degraded', "The Axis service is running in degraded mode. Reading works; starting runs and approving may be refused.") };
+	}
 	if (input.notRegistered) {
 		return { severity: 'info', text: localize('axis.notice.notRegistered', "No repository is registered with the Axis service yet. Worktrees are read from disk and no agent runs are shown.") };
 	}
 	if (input.truncatedProjects) {
 		return { severity: 'warning', text: localize('axis.notice.truncated', "The Axis service has more projects than the dashboard reads at once; only the first {0} are shown.", MAX_POLLED_PROJECTS) };
-	}
-	if (status.kind === 'degraded') {
-		return { severity: 'warning', text: localize('axis.notice.degraded', "The Axis service is running in degraded mode. Reading works; starting runs and approving may be refused.") };
 	}
 	return { severity: 'info', text: localize('axis.notice.ready', "Workspaces and agent runs are read from the Axis service.") };
 }

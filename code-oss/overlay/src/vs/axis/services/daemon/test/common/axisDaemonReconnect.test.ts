@@ -6,7 +6,7 @@ import assert from 'assert';
 import { CancellationTokenSource } from '../../../../../base/common/cancellation.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { AxisDaemonCallError, AxisDaemonStatus } from '../../common/axisDaemonClient.js';
-import { AXIS_DOWN_AFTER_FAILURES, AXIS_DOWN_AFTER_MS, AXIS_RECONNECT_CAP_MS, AXIS_SHELL_CONTRACTS, AXIS_STABLE_AFTER_MS, AXIS_WELCOME_TIMEOUT_MS, AxisReconnectingDaemonClient, IAxisConnectedClient, reconnectDelay } from '../../common/axisDaemonReconnect.js';
+import { AXIS_DOWN_AFTER_FAILURES, AXIS_DOWN_AFTER_MS, AXIS_RECONNECT_CAP_MS, AXIS_SHELL_CONTRACTS, AXIS_STABLE_AFTER_MS, AXIS_WELCOME_TIMEOUT_MS, AxisReconnectingDaemonClient, auditSaysDegraded, IAxisConnectedClient, reconnectDelay, stoppedReason } from '../../common/axisDaemonReconnect.js';
 
 /** Manual timers: nothing runs until `run`; `due` lists the pending delays. */
 function manualTimers() {
@@ -25,14 +25,25 @@ function manualTimers() {
 
 type Answer = { ok: true; result: unknown } | { ok: false; error: { code: string } };
 
-function fakeClient() {
+/** A connection. Its `axis.audit/1.status` answers at once with `audit` (not degraded by default) unless `audit` is 'hold'. */
+function fakeClient(audit: Answer | 'hold' | 'throw' = { ok: true, result: { degraded: null } }) {
 	const calls: Array<{ contract: string; method: string; settle: (a: Answer) => void; fail: (e: unknown) => void; signal?: AbortSignal }> = [];
+	const audits: Array<{ settle: (a: Answer) => void; fail: (e: unknown) => void; signal?: AbortSignal }> = [];
 	let closed = 0;
 	const client: IAxisConnectedClient = {
-		call: (contract, method, _payload, options) => new Promise((resolve, reject) => void calls.push({ contract, method, settle: resolve, fail: reject, signal: options?.signal })),
+		call: (contract, method, _payload, options) => {
+			if (contract === 'axis.audit') {
+				assert.strictEqual(method, 'status', 'the audit contract is read for status only');
+				if (audit === 'throw') {
+					return Promise.reject(new Error('bad_answer'));
+				}
+				return audit === 'hold' ? new Promise((resolve, reject) => void audits.push({ settle: resolve, fail: reject, signal: options?.signal })) : Promise.resolve(audit);
+			}
+			return new Promise((resolve, reject) => void calls.push({ contract, method, settle: resolve, fail: reject, signal: options?.signal }));
+		},
 		close: () => void closed++,
 	};
-	return { client, calls, closed: () => closed };
+	return { client, calls, audits, closed: () => closed };
 }
 
 const flush = () => new Promise<void>(r => setTimeout(r, 0));
@@ -64,7 +75,7 @@ suite('Axis renderer daemon client (PV-E0)', () => {
 		assert.strictEqual(reconnectDelay(1, () => 0), 200);
 		assert.strictEqual(reconnectDelay(1, () => 1), 300);
 		assert.strictEqual(reconnectDelay(30, () => 1), AXIS_RECONNECT_CAP_MS, 'jitter never passes the cap');
-		assert.deepStrictEqual(AXIS_SHELL_CONTRACTS.map(c => c.id), ['axis.projects', 'axis.worktrees', 'axis.cli-runs', 'axis.approvals'], 'no new capability');
+		assert.deepStrictEqual(AXIS_SHELL_CONTRACTS.map(c => c.id), ['axis.projects', 'axis.worktrees', 'axis.cli-runs', 'axis.approvals', 'axis.audit'], 'only axis.audit added (F2), for its status read');
 	});
 
 	test('connecting, then ready on welcome; a close goes back to connecting and reconnects at once; one attempt at a time', async () => {
@@ -236,5 +247,62 @@ suite('Axis renderer daemon client (PV-E0)', () => {
 		assert.deepStrictEqual(pending.timers.due(), [], 'dispose clears the welcome bound of the attempt in flight');
 		cts.dispose();
 		pre.dispose();
+	});
+
+	test('F2: main\'s stopped_<reason> is failed{reason} at once and it keeps retrying; any other refusal stays generic', async () => {
+		assert.deepStrictEqual(['stopped_lock_held', 'stopped_bad_config', 'stopped_degraded', 'stopped_crash_loop'].map(m => stoppedReason(new Error(m))), ['lock_held', 'bad_config', 'degraded', 'crash_loop']);
+		for (const other of [new Error('not_ready'), new Error('stopped_pty_required'), new Error('stopped_'), new Error('xstopped_crash_loop'), 'stopped_crash_loop', undefined, { message: 'stopped_crash_loop' }]) {
+			assert.strictEqual(stoppedReason(other), undefined, String(other));
+		}
+		const r = rig();
+		r.connects[0].reject(new Error('not_ready')); // a restart in progress: starts the 15 s window
+		await flush();
+		r.timers.run(reconnectDelay(1, () => 0.5));
+		r.connects[1].reject(new Error('stopped_crash_loop')); // then the supervisor gives up
+		await flush();
+		assert.deepStrictEqual(r.client.status, { kind: 'failed', reason: 'crash_loop' }, 'mutant: generic connecting/down for a stopped supervisor');
+		assert.deepStrictEqual(r.timers.retries(), [reconnectDelay(2, () => 0.5)], 'it keeps retrying on the backoff');
+		r.timers.run(AXIS_DOWN_AFTER_MS);
+		assert.strictEqual(kindOf(r.client), 'failed', 'the window started before never turns a stopped supervisor into connecting or down');
+		r.timers.run(reconnectDelay(2, () => 0.5));
+		r.connects[2].resolve(fakeClient().client);
+		await flush();
+		assert.strictEqual(kindOf(r.client), 'ready', 'a daemon that comes back is ready again');
+		r.dispose();
+	});
+
+	test('F2: one audit status read per connection: degraded only from a present degraded object; a failed or slow read is ready', async () => {
+		assert.strictEqual(auditSaysDegraded({ degraded: { reason: 'anchor_unreachable' } }), true);
+		for (const v of [{ degraded: null }, {}, null, 'degraded', { degraded: 'yes' }]) {
+			assert.strictEqual(auditSaysDegraded(v), false, JSON.stringify(v));
+		}
+		const degraded = rig();
+		const d = fakeClient({ ok: true, result: { degraded: { reason: 'anchor_unreachable' } } });
+		degraded.connects[0].resolve(d.client);
+		await flush();
+		assert.strictEqual(kindOf(degraded.client), 'degraded');
+		const call = degraded.client.request('axis.projects', 'list', {});
+		d.calls[0].settle({ ok: true, result: { projects: [] } });
+		assert.deepStrictEqual(await call, { projects: [] }, 'a degraded host still serves reads');
+		degraded.dispose();
+		for (const audit of [{ ok: false, error: { code: 'E_POLICY_DENIED' } } as const, 'throw' as const, { ok: true, result: 'odd' } as const]) {
+			const r = rig();
+			r.connects[0].resolve(fakeClient(audit).client);
+			await flush();
+			assert.strictEqual(kindOf(r.client), 'ready', `${JSON.stringify(audit)}: no state is invented (mutant: degraded on a failed read)`);
+			r.dispose();
+		}
+		const slow = rig();
+		const s = fakeClient('hold');
+		slow.connects[0].resolve(s.client);
+		await flush();
+		assert.strictEqual(kindOf(slow.client), 'connecting', 'calls wait for the audit answer');
+		slow.timers.run(AXIS_WELCOME_TIMEOUT_MS);
+		assert.strictEqual(kindOf(slow.client), 'ready', 'a read past the bound is ready');
+		assert.strictEqual(s.audits[0].signal?.aborted, true, 'and it is cancelled');
+		slow.timers.run(AXIS_STABLE_AFTER_MS);
+		slow.timers.run(AXIS_STABLE_AFTER_MS);
+		assert.strictEqual(s.audits.length, 1, 'never polled (mutant: a timer re-reads it)');
+		slow.dispose();
 	});
 });

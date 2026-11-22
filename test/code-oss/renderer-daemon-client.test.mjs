@@ -58,3 +58,37 @@ test("the desktop entry registers the real client after the shared entry; the sh
   assert.match(client, /registerSingleton\(IAxisDaemonClient, AxisRendererDaemonClient, InstantiationType\.Delayed\)/);
   assert.match(client, /connectAxisDaemon\(AXIS_SHELL_CONTRACTS, onClose, AXIS_WELCOME_TIMEOUT_MS\)/, "the fixed contract list and the welcome bound");
 });
+
+// PV-E0 F2 condition (e): the shell's contract list is the only capability change. Every (contract, method) the renderer sends is a
+// literal from this allow-list; `axis.approvals resolve` is the user's own approval decision (pre-existing, approval cards), the only
+// write; `axis.audit` is read for `status` only, by the reconnect core only.
+const ALLOWED = [
+  "axis.approvals pending",
+  "axis.approvals resolve",
+  "axis.audit status",
+  "axis.cli-runs list",
+  "axis.projects list",
+  "axis.worktrees list",
+  "axis.worktrees status",
+];
+
+test("every daemon call is a literal (contract, method) from the allow-list; axis.audit only for status, only in the core", () => {
+  const files = sources(AXIS).filter((f) => !f.includes("/test/") && !f.includes("/electron-main/"));
+  const pairs = new Set();
+  const audit = [];
+  for (const f of files) {
+    const text = read(f);
+    for (const m of text.matchAll(/\.(?:request|call)\(\s*(['"`])(axis\.[a-z-]+)\1\s*,\s*(['"`])([A-Za-z]+)\3/g)) {
+      pairs.add(`${m[2]} ${m[4]}`);
+      if (m[2] === "axis.audit") audit.push(`${f}:${m[4]}`);
+    }
+  }
+  assert.deepEqual([...pairs].sort(), ALLOWED, "a new method or contract needs a review and this list");
+  assert.deepEqual(audit, ["services/daemon/common/axisDaemonReconnect.ts:status"]);
+  // The only non-literal call: the core's request() pass-through, which takes a typed AxisReadContract from workbench code (no audit).
+  const dynamic = files.flatMap((f) => [...read(f).matchAll(/\.(?:request|call)\(\s*(?!['"`])([A-Za-z_.]+)\s*,/g)].map((m) => `${f}:${m[1]}`))
+    .filter((s) => !/\.(?:request|call)\(\s*(?:accessor|ServicesAccessor)/.test(s));
+  assert.deepEqual(dynamic.filter((s) => s.includes("axisDaemon")), ["services/daemon/common/axisDaemonReconnect.ts:contract"]);
+  const client = read("services/daemon/common/axisDaemonClient.ts");
+  assert.match(client, /export type AxisReadContract = 'axis\.projects' \| 'axis\.worktrees' \| 'axis\.cli-runs' \| 'axis\.approvals';/, "request() cannot name axis.audit");
+});

@@ -36,7 +36,7 @@ suite('Axis daemon notice and changes label', () => {
 		assert.match(texts.get('f-crash')!, /crashed repeatedly/);
 		assert.match(texts.get('f-degraded')!, /degraded mode/);
 		assert.match(texts.get('f-pty')!, /terminal host/);
-		assert.match(texts.get('down')!, /not running/);
+		assert.match(texts.get('down')!, /is not connected/);
 		assert.match(texts.get('not-registered')!, /No repository is registered/);
 		assert.match(texts.get('stale')!, /timed out/);
 	});
@@ -50,6 +50,8 @@ suite('Axis daemon notice and changes label', () => {
 	test('a failure outranks a stale marker, and a stale marker outranks the degraded note', () => {
 		assert.match(notice({ kind: 'failed', reason: 'lock_held' }, { staleError: 'E_TIMEOUT' }), /Another Axis/);
 		assert.match(notice({ kind: 'degraded' }, { staleError: 'E_TIMEOUT' }), /did not answer/);
+		assert.match(notice({ kind: 'degraded' }, { notRegistered: true }), /degraded mode/, 'F2: degraded outranks "not registered" (mutant: the old order)');
+		assert.match(notice({ kind: 'ready' }, { notRegistered: true }), /No repository is registered/);
 	});
 
 	test('error phrases are fixed text for every code, never the code or anything from the daemon', () => {
