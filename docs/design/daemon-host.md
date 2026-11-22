@@ -50,7 +50,7 @@ flowchart LR
 
 | May import | Only where | Never |
 |---|---|---|
-| `node:*`, `zod` 4.6.6 | anywhere | `electron`, `vs/*`, DOM, a socket listener (ADR 0003 D1.1, DMN-4). The one exception is the supervisor-side web host, `src/web/server.ts`, which no desktop entry can reach (`docs/design/web-host-entry.md`) |
+| `node:*`, `zod` 4.6.6 | anywhere | `electron`, `vs/*`, DOM, a socket listener (ADR 0003 D1.1, DMN-4). The one exception is the supervisor-side web host, `src/web/server.ts`, which no desktop entry can reach (`docs/design/web-host-entry.md`); outside this package, the pty process's messaging endpoint may load `node:net` to listen on a path only (ADR 0007 decision 7.1) |
 | `@axis/protocol`, `daemon`, `challenge`, `audit`, `journal`, `git-ops`, `pty-policy`, `providers` | anywhere | |
 | `@axis/vault`, `@axis/anthropic` | `src/bindings/providers.ts` only, 1b | handlers |
 | The global network clients (`fetch`, `WebSocket`, `EventSource`, `XMLHttpRequest`) | `src/bindings/providers.ts` only, and there only `fetch` as the `fetch` option of `createAnthropicAdapter({ ... })` (the adapter keeps it to the fixed origin with redirects refused and the destination shown, PRV-4). Enforced on shipped code of every package by the module scanner (`EGRESS_NAMES` in `scripts/code-oss/stage-ast.mjs`, the file matched exactly), so the import lint, the staging hook and the staged-tree check agree; `globalThis.fetch` is refused everywhere. Only `src/compose.ts`, `src/host.ts` and `src/index.ts` import that binding (`PROVIDERS_IMPORTERS`, `RESTRICTED_MODULES`) | any other use of these names in shipped code. Socket built-ins are confined to the web host listener by `web-rules.mjs`; `node:dns` and `node:child_process` by the next row |
