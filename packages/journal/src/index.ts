@@ -38,6 +38,16 @@ export {
 export { DeliveryRecords, type PendingDelivery } from "./delivery-store.js";
 export { ForgePinRecords, type ForgePin } from "./forge-pin-store.js";
 export { FORGE_PINS_MIGRATION } from "./schema-forge-pins.js";
+export { PAGES_MIGRATION, PAGE_LIMITS } from "./schema-pages.js";
+export {
+  PageRecords,
+  type PageAttachmentRecord,
+  type PageAuthor,
+  type PageReadTaint,
+  type PageSummary,
+  type PageVersionMeta,
+  type PageVersionRecord,
+} from "./page-store.js";
 export { baseBranchSchema, baseTipSchema, type ProjectTrustVia, type RegisterProjectInput, type SetProjectTrustInput } from "./records.js";
 export { MAX_TAIL_ROWS, lastTransitionId, transitionsSince, type TransitionTail } from "./tail.js";
 export { JOURNAL_MIGRATIONS, JOURNAL_SCHEMA_VERSION } from "./schema.js";

@@ -419,7 +419,7 @@ test("NEW-H: listRuns reports a bad state as E_INVALID_ARGUMENT, never a raw Zod
 test("the shipped journal migration is pinned by hash (add a new migration instead of editing it)", async () => {
   const { createHash } = await import("node:crypto");
   const { JOURNAL_MIGRATIONS } = await import("../src/index.js");
-  assert.equal(JOURNAL_MIGRATIONS.length, 13);
+  assert.equal(JOURNAL_MIGRATIONS.length, 14);
   assert.equal(createHash("sha256").update(JOURNAL_MIGRATIONS[0]?.sql ?? "").digest("hex"), "92332f71a375b32c59a45d0059e20ffd5a90090032b72c567ac0698c5db4d2e9");
   assert.equal(createHash("sha256").update(JOURNAL_MIGRATIONS[1]?.sql ?? "").digest("hex"), "9302852a810e1b6069f421ebb3af4b5493bbeb28753da79d24ed832e2571d0bf");
   assert.equal(createHash("sha256").update(JOURNAL_MIGRATIONS[2]?.sql ?? "").digest("hex"), "d5e282807fca70f2c7d4d627af46c38106a0395e67107f20a0c07012adf0d139");
@@ -433,6 +433,7 @@ test("the shipped journal migration is pinned by hash (add a new migration inste
   assert.equal(createHash("sha256").update(JOURNAL_MIGRATIONS[10]?.sql ?? "").digest("hex"), "3b843e6175ef7f752ce986898f38608f19b103085b6964fd92d9c9fec68288bc");
   assert.equal(createHash("sha256").update(JOURNAL_MIGRATIONS[11]?.sql ?? "").digest("hex"), "3e4fa0c6d526267c402b016a24d4bd0388f25f6a73e202c0126e68259ea686c0");
   assert.equal(createHash("sha256").update(JOURNAL_MIGRATIONS[12]?.sql ?? "").digest("hex"), "3603500fdaf78313b487ed3251b700285f054d6560482e7b1c308c09dfeb7208");
+  assert.equal(createHash("sha256").update(JOURNAL_MIGRATIONS[13]?.sql ?? "").digest("hex"), "PAGES_HASH");
 });
 
 // ---- the user principal is a brand the daemon mints, not a value a caller can assert ----
