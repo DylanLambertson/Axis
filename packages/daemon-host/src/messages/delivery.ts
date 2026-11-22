@@ -66,7 +66,15 @@ export interface MessageDeliveryDeps {
   readonly maxFailures?: number;
   /** A failure the pipeline swallows, as a fixed code (no text): the host logs it. */
   readonly onInternalError?: (code: "notice_failed") => void;
+  /**
+   * True when the host redactor would change the text (a secret). Required (messages-contract.md section 11): a body whose
+   * stored raw text OR escaped text it matches is withheld from the block (the message still taints and raises the hop).
+   */
+  readonly holdsSecret: (text: string) => boolean;
 }
+
+/** What a model is shown in place of a body that holds a secret (a delivery or a read). */
+export const WITHHELD_BODY = "(Axis withheld this message's text: it holds a secret.)";
 
 /** Candidates looked at per boundary, paged in send order: bounds what a long queue of refused messages costs a turn. */
 export const DELIVERY_SCAN = 1_024;
@@ -248,7 +256,9 @@ export function createMessageDelivery(deps: MessageDeliveryDeps): MessageDeliver
             continue;
           }
           if (m === undefined) continue;
-          const body = toMessageText(m.body, MAX_BODY_DISPLAY).text;
+          const escaped = toMessageText(m.body, MAX_BODY_DISPLAY).text;
+          // Section 11: the raw text catches a secret that escaping splits; the escaped text is what would leave.
+          const body = deps.holdsSecret(m.body) || deps.holdsSecret(escaped) ? WITHHELD_BODY : escaped;
           if (parts.length >= maxMessages || (parts.length > 0 && units + body.length > maxText)) {
             full = true;
             break;

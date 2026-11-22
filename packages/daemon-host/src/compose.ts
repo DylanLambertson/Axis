@@ -19,7 +19,7 @@ import { createTempIndexProvider } from "./bindings/review-tempindex.js";
 import { createRunsBinding, type RunsBinding } from "./bindings/runs.js";
 import { composerGuardDeps, createRunRepositoryGuard, type RunSnapshotterFactory } from "./bindings/snapshot.js";
 import { createWorktreesBinding, type WorktreesBinding } from "./bindings/worktrees.js";
-import { composerWriteLock, createActiveRunForwarder, createAuditSeal, createRunsClock, isPty, refuseComposition, settleComposer, daemonAuditSink, recordingRegistrar, registryOf, type ComposerOptions } from "./compose-parts.js";
+import { composerWriteLock, createActiveRunForwarder, createAuditSeal, createRunsClock, isPty, messageSecretCheck, refuseComposition, settleComposer, daemonAuditSink, recordingRegistrar, registryOf, type ComposerOptions } from "./compose-parts.js";
 import { hostCommandLimits, type CommandLimits } from "./bindings/agent-command.js";
 import type { HostConfig } from "./config.js";
 import { createAttestationVerifier } from "./control/attestation.js";
@@ -245,7 +245,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
         // Composer runs: the broker's audit rows mark the anchor batch dirty like every other writer.
         const providers = createProvidersBinding({ redactor: ports.redactor, audit: composerWriter, ...productionConnection(options.composer?.anthropic) });
         // axis.messages/1 (PV-M3): service, settings and delivery into runs; its rows go through the sealed composer writer.
-        const messaging = createMessagingBinding(hostMessagingDeps({ journal: parts.journal, audit: composerWriter, monotonic: () => ports.clock.monotonic(), scan: (text) => scanner.scan(text, { part: "message" }), logger }));
+        const messaging = createMessagingBinding(hostMessagingDeps({ journal: parts.journal, audit: composerWriter, monotonic: () => ports.clock.monotonic(), scan: (text) => scanner.scan(text, { part: "message" }), logger, holdsSecret: messageSecretCheck(ports.redactor) }));
         const agent = createAgentBinding({
           locator: worktrees.locator,
           repositoryRoots: projectPaths,
