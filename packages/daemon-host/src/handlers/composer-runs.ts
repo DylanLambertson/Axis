@@ -1,5 +1,5 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
-import { projectGated, type ProjectTrustGate } from "../gate/project-trust.js";
+import { projectGated, trustCallOf, type ProjectTrustGate } from "../gate/project-trust.js";
 import type { Handler, HandlerContext } from "@axis/daemon";
 import {
   COMPOSER_RUNS_CONTRACT,
@@ -114,7 +114,7 @@ export async function startComposerRun(deps: ComposerRunsHandlerDeps, req: Compo
         },
         context.signal,
         // The gate, inside the mutex and right before the run is created (project-registration-and-trust.md §5.4).
-        await deps.gate.admit({ projectId: ws.projectId, windowId: context.identity.windowId, workspaceId: req.workspaceId, signal: context.signal }),
+        await deps.gate.admit({ projectId: ws.projectId, caller: trustCallOf(context.identity), workspaceId: req.workspaceId, signal: context.signal }),
       );
     },
     context.signal,

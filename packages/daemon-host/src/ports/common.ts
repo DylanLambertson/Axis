@@ -11,6 +11,8 @@ export interface Caller {
   readonly actor: string;
   readonly connectionId: string;
   readonly windowId: string;
+  /** The gated-call form of the same identity (`trustCallOf`), where a port may call the project trust gate; absent: it refuses. */
+  readonly trust?: unknown;
 }
 
 /** Passed to every port method that can take time. Ports stop work promptly when `signal` aborts. */

@@ -47,7 +47,7 @@ test("the gate decides for a worker start too: its scope is the run's workspace 
   const scopes: unknown[] = [];
   const ok = rig(async (scope) => (scopes.push(scope), "ticket-7"));
   await startCliRun(ok.deps, { workspaceId: "ws-1", entryId: "fake", worker: "w1" }, ctx);
-  assert.deepEqual(scopes.map((s) => ({ ...(s as object), signal: undefined })), [{ projectId: "p1", windowId: "win-1", workspaceId: "ws-1", signal: undefined }]);
+  assert.deepEqual(scopes.map((s) => ({ ...(s as object), signal: undefined })), [{ projectId: "p1", caller: { windowId: "win-1" }, workspaceId: "ws-1", signal: undefined }]);
   assert.deepEqual(ok.minted, [[{ workspaceId: "ws-1", projectId: "p1" }, "ticket-7"]]);
   const no = rig(async () => Promise.reject(untrusted()));
   await assert.rejects(startCliRun(no.deps, { workspaceId: "ws-1", entryId: "fake", worker: "w1" }, ctx), (e: unknown) => (e as { detail?: { reason?: string } }).detail?.reason === "untrusted");

@@ -42,7 +42,7 @@ test("under the mutex: the recheck first, the gate last, then the start; a refus
   const no = rig(async (scope) => (scopes.push(scope), Promise.reject(untrusted())));
   await assert.rejects(startComposerRun(no.deps, { ...REQ, worker: "w1" }, ctx));
   assert.deepEqual(no.started, [], "a worker start the gate refuses starts nothing");
-  assert.deepEqual(scopes.map((s) => ({ ...(s as object), signal: undefined })), [{ projectId: "p1", windowId: "win-1", workspaceId: "ws-1", signal: undefined }]);
+  assert.deepEqual(scopes.map((s) => ({ ...(s as object), signal: undefined })), [{ projectId: "p1", caller: { windowId: "win-1" }, workspaceId: "ws-1", signal: undefined }]);
 });
 
 test("the run takes the launch the recheck read fresh under the mutex, not the one read before the wait", async () => {
