@@ -20,10 +20,13 @@ const alive = (pid: number): boolean => {
     return false;
   }
 };
-/** Wait by condition (30 s bound, only so a stuck test fails instead of hanging). */
-const waitFor = async (pred: () => boolean): Promise<void> => {
+/** Wait by condition (30 s bound, only so a stuck test fails by name instead of hanging). */
+const waitFor = async (pred: () => boolean, what: string): Promise<void> => {
   const deadline = Date.now() + 30_000;
-  while (!pred() && Date.now() < deadline) await new Promise((r) => setTimeout(r, 20));
+  while (!pred()) {
+    if (Date.now() > deadline) throw new Error(`condition not reached: ${what}`);
+    await new Promise((r) => setTimeout(r, 20));
+  }
 };
 
 /** Wait by condition for a process to be gone; the 30 s bound only turns a process that never dies into a failure. */
@@ -133,7 +136,7 @@ test("the slot is held while a process runs and released after; extra runs get E
   }
   assert.equal((await first).endedBy, "aborted");
   // The slot is held until the process has exited, which can be after the run's promise settled: wait for it by condition.
-  await waitFor(() => runner.active === 0);
+  await waitFor(() => runner.active === 0, "the run released its slot");
   assert.equal(runner.active, 0);
   assert.equal((await runner.run(base("0"))).endedBy, "exit");
 });
@@ -156,7 +159,7 @@ test("invalid specs are refused: NaN and fractional limits, relative argv0, NUL,
 test("killAll kills live groups and leaves no timers behind", async () => {
   const runner = createCommandRunner({ killGraceMs: 200 });
   const p = runner.run(base("setInterval(()=>{},1000)"));
-  await waitFor(() => runner.active === 1);
+  await waitFor(() => runner.active === 1, "the run is active");
   assert.equal(runner.killAll(), 1);
   const r = await p;
   assert.ok(r.signal !== null || !posix);
