@@ -64,9 +64,9 @@ if (override !== undefined) {
     suites.push(await run(pkg.name, npm, ["test", "--workspace", pkg.name]));
   }
   suites.push(await run("test/packages", process.execPath, ["--test", "test/packages/*.test.mjs"]));
-  suites.push(await run("test/code-oss/renderer-imports", process.execPath, ["--test", "test/code-oss/renderer-imports.test.mjs"]));
-  suites.push(await run("test/code-oss/net-gate", process.execPath, ["--test", "test/code-oss/net-gate.test.mjs"]));
-  suites.push(await run("test/code-oss/web-isolation", process.execPath, ["--test", "test/code-oss/web-isolation.test.mjs"]));
+  // Every test/code-oss suite (about 17 s), so the renderer boundary pins run in the solo gate too, not only in CI's
+  // Code OSS scripts job: import rules, the daemon call allow-list, project actions, the overlay test script, staging.
+  suites.push(await run("test/code-oss", process.execPath, ["--test", "test/code-oss/*.test.mjs"]));
   suites.push(await run("test/gate", process.execPath, ["--test", "test/gate/*.test.mjs"]));
 }
 

@@ -273,7 +273,7 @@ Use factual evidence. Distinguish `passed`, `failed`, `not run`, and `not applic
 | commit wording | Every commit message and the branch name, against `scripts/gate/config.json`: attribution trailers, "generated with/by", assistant or tool names, and the bare word "agent". Text is folded first (Unicode look-alikes, hyphens, underscores, zero-width characters), and `allowedPhrases` (for example "CLI agent", "user-agent") are blanked before the scan. A legitimate use of a flagged word needs an `allowedPhrases` entry in the same change. |
 | node version | The running Node equals `node` in `code-oss/upstream.json`. |
 | typecheck | `npm run typecheck`. |
-| tests | `scripts/test-all.mjs`: build, then each package's tests, `test/packages` and `test/gate`, all run even if one fails. |
+| tests | `scripts/test-all.mjs`: build, then each package's tests, `test/packages`, every `test/code-oss` suite (about 17 s: import rules, the renderer's daemon-call allow-list, staging) and `test/gate`, all run even if one fails. |
 
 `npm test` is the same runner: it prints a summary and exits non-zero if any suite failed, so the CI `Axis packages` job still fails when any suite fails, and now shows every suite's result. `GATE_BASE` changes the base ref (default `origin/main`). `GATE_SKIP=gitleaks,test` skips steps for local iteration; a run with skips exits 2 and says INCOMPLETE, so it is never a valid pre-push result. Exit codes: 0 all passed, 1 a gate failed, 2 nothing failed but a step was skipped (a warning is printed for each skip). Edit the wording lists and the line limit in `scripts/gate/config.json`; the pure logic is in `scripts/gate/lib.mjs`, tested by `test/gate/`.
 
