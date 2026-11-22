@@ -44,6 +44,7 @@ import { createSshResolver, unavailableSshResolver, type SshSpawn } from "./bind
 import { loadPushedBases, savePushedBases } from "./storage/pushed-bases-file.js";
 import { registerGitHandlers } from "./handlers/git.js";
 import { createProjectsHandlers } from "./handlers/projects.js";
+import { registerAgentsHandlers } from "./handlers/agents.js";
 import { registerMessagesHandlers } from "./handlers/messages.js";
 import { createMessagingBinding, hostMessagingDeps, type MessagingBinding } from "./messages/binding.js";
 import { createProvidersHandlers } from "./handlers/providers.js";
@@ -411,10 +412,9 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
     registerComposerRunsHandlers(registrar, { service: composer, journal, mutex: worktrees.mutex, needsAttention: worktrees.needsAttention });
     if (built.messaging === undefined) throw new AxisError("E_INTERNAL", "The host composition is incomplete", { reason: "not_built" });
     registerMessagesHandlers(registrar, built.messaging);
+    registerAgentsHandlers(registrar, { journal, worktrees: worktrees.service, mutex: worktrees.mutex, trust: services.trust, noteWrite: () => services.anchors.noteWrite() });
     registerCliRunsHandlers(registrar, { service: runs.service, journal, control, minter: createRunTrustMinter(ports.clock), mutex: worktrees.mutex, needsAttention: worktrees.needsAttention, platform: config.platform });
-    registrar.register(
-      REVIEW_CONTRACT,
-      REVIEW_VERSION,
+    registrar.register(REVIEW_CONTRACT, REVIEW_VERSION,
       createReviewHandlers({ review: createReviewService(reviewDeps), journal, runs: runs.service, trees, audit: createReviewAuditSink({ append: (e) => (audit.append(e), services.anchors.noteWrite()) }) }),
     );
     registerGitHandlers(registrar, {

@@ -40,6 +40,7 @@ export { baseBranchSchema, baseTipSchema, type ProjectTrustVia, type RegisterPro
 export { MAX_TAIL_ROWS, lastTransitionId, transitionsSince, type TransitionTail } from "./tail.js";
 export { JOURNAL_MIGRATIONS, JOURNAL_SCHEMA_VERSION } from "./schema.js";
 export { NAME_REFUSED_RANGES } from "./schema-agents.js";
+export { AGENT_RECORD_ACTION, AgentRecords, MAX_AGENTS, MAX_GROUPS, type AgentLaunch, type AgentRecord, type Changed, type GroupRecord } from "./agent-store.js";
 export {
   FINALISE_OUTCOMES,
   LOCK_STATES,
