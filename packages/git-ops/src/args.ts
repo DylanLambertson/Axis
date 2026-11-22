@@ -4,7 +4,7 @@ import { readdirSync } from "node:fs";
 import { isAbsolute as posixAbs, normalize as posixNorm } from "node:path/posix";
 import { isAbsolute as winAbs, normalize as winNorm } from "node:path/win32";
 import { refNameSchema } from "@axis/protocol";
-import { daemonGitEnv } from "./env.js";
+import { LAZY_FETCH_PINS, daemonGitEnv } from "./env.js";
 import { GitOpsError, denied, invalid } from "./errors.js";
 import type { GitContext, GitOpsDeps, GitRunRequest, GitRunResult, GitRunner, WorktreeRef } from "./types.js";
 
@@ -85,16 +85,19 @@ export function prefix(w: WorktreeRef, deps: GitOpsDeps, o: PrefixOptions): stri
   return a;
 }
 
-/** The global options before the subcommand: bare flags, `-c key=value` pairs, and where they end. */
-function leadingOptions(argv: readonly string[]): { flags: Set<string>; configs: Set<string> } {
+/** The global options before the subcommand: bare flags, `-c key=value` pairs in order, and where they end. */
+function leadingOptions(argv: readonly string[]): { flags: Set<string>; configs: string[] } {
   const flags = new Set<string>();
-  const configs = new Set<string>();
+  const configs: string[] = [];
   for (let i = 0; i < argv.length && (argv[i] as string).startsWith("-"); i++) {
-    if (argv[i] === "-c") configs.add(argv[++i] ?? "");
+    if (argv[i] === "-c") configs.push(argv[++i] ?? "");
     else flags.add(argv[i] as string);
   }
   return { flags, configs };
 }
+
+/** A `-c` entry's key as git compares it (`-c key` alone sets it true). Lower-cased whole: stricter than git, never looser. */
+const configKey = (c: string): string => (c.includes("=") ? c.slice(0, c.indexOf("=")) : c).toLowerCase();
 
 /**
  * Wraps a runner so a daemon-context call that lacks the hardened prefix is refused. Every protection that `prefix()`
@@ -107,13 +110,28 @@ export function guardedRunner(inner: GitRunner, deps: GitOpsDeps): GitRunner {
       if (req.context === "daemon") {
         const { flags, configs } = leadingOptions(req.argv);
         const off = hooksOffPath(deps);
+        const pins = [`core.hooksPath=${off}`, "core.fsmonitor=false", "protocol.allow=never", "protocol.ext.allow=never", "commit.gpgsign=false", "core.askPass=", "diff.submodule=short", "help.autocorrect=0"];
         const missing = [
           ...["--no-pager", "--no-replace-objects"].filter((f) => !flags.has(f)),
           ...["--git-dir=", "--work-tree="].filter((p) => ![...flags].some((f) => f.startsWith(p) && f.length > p.length)),
-          ...[`core.hooksPath=${off}`, "core.fsmonitor=false", "protocol.allow=never", "protocol.ext.allow=never", "commit.gpgsign=false", "core.askPass=", "diff.submodule=short", "help.autocorrect=0"].filter((c) => !configs.has(c)),
+          ...pins.filter((c) => !configs.includes(c)),
         ];
         if (off === "" || missing.length > 0) {
           throw denied(`a daemon-side git call must carry the hardened options (missing: ${missing.join(", ") || "core.hooksPath"})`);
+        }
+        // git takes the last value of a key, so a later `-c help.autocorrect=1` (any case) would undo a pin; and
+        // --config-env sets a key from a variable this cannot see. Neither is used by any daemon-side call.
+        const pinned = new Set(pins.map(configKey));
+        const undo = configs.filter((c) => pinned.has(configKey(c)) && !pins.includes(c));
+        if (undo.length > 0 || [...flags].some((f) => f === "--config-env" || f.startsWith("--config-env="))) {
+          throw denied(`a daemon-side git call may not change a hardened option (${undo.map(configKey).join(", ") || "--config-env"})`);
+        }
+        // The lazy-fetch pins (daemonGitEnv): exactly one variable of each name, any case, holding the pinned value.
+        for (const [name, value] of Object.entries(LAZY_FETCH_PINS)) {
+          const held = Object.entries(req.env).filter(([k]) => k.toUpperCase() === name);
+          if (held.length !== 1 || held[0]?.[0] !== name || held[0][1] !== value) {
+            throw denied(`a daemon-side git call must run with ${name}=${value}`);
+          }
         }
       }
       return inner.run(req);
@@ -198,7 +216,8 @@ export async function daemonGitFor(
     const abs = typeof v === "string" && (platform === "win32" ? winAbs(v) : posixAbs(v));
     if (!EXTRA_ENV.has(k) || !abs || (v as string).includes("\0")) throw invalid(`the daemon git environment cannot be extended with ${k}`);
   }
-  const env = { ...daemonEnv(deps), ...extraEnv, ...fixed.env };
+  // The pins last, so no fixed variable can replace one (guardedRunner refuses the call if one did).
+  const env = { ...daemonEnv(deps), ...extraEnv, ...fixed.env, ...LAZY_FETCH_PINS };
   await requireGitVersion(deps, w, env);
   const filters = await filterNames(w, deps, env);
   const runner = guardedRunner(deps.runner, deps);

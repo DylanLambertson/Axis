@@ -37,6 +37,9 @@ export function daemonGitEnv(parent: Env, platform: NodeJS.Platform = process.pl
   return env;
 }
 
+/** The values `daemonGitEnv` pins and `guardedRunner` requires of every daemon-side call (see daemonGitEnv). */
+export const LAZY_FETCH_PINS: Readonly<Record<string, string>> = Object.freeze({ GIT_NO_LAZY_FETCH: "1", GIT_ALLOW_PROTOCOL: "/" });
+
 /** Variables that would override the identity git takes from the repository config, or the repository location. */
 const OVERRIDES = new RegExp(
   [

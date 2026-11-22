@@ -102,10 +102,17 @@ export function createExecGitRunner(options: ExecGitRunnerOptions = {}): GitRunn
   return {
     gitPath,
     run(args, opts) {
-      const env = {
+      const env: Record<string, string> = {
         ...buildGitEnv(options.baseEnv ?? process.env, options.platform),
         ...opts.extraEnv,
       };
+      // Set last, after any caller variable. A read that needs an object a partial clone lacks would otherwise fetch it
+      // from the promisor remote, and the repository's own config picks the program that fetch runs (an uploadpack, a
+      // remote helper, core.sshCommand). GIT_NO_LAZY_FETCH (git 2.44) stops the fetch; GIT_ALLOW_PROTOCOL=/ (git 2.12)
+      // names a protocol no helper can have, so on an older git the fetch finds no transport it may start. An empty value
+      // would not do: it admits the empty `remote.<name>.vcs` helper.
+      env['GIT_NO_LAZY_FETCH'] = '1';
+      env['GIT_ALLOW_PROTOCOL'] = '/';
       return new Promise<GitResult>((resolve, reject) => {
         const child = spawn(gitPath, [...args], {
           cwd: opts.cwd,

@@ -82,7 +82,7 @@ for (const [i, c] of CASES.entries()) {
 
 test("names are read as git uses them; one that cannot be put on a command line safely is refused", async () => {
   const f = fixture();
-  const env = { PATH: process.env["PATH"] ?? "/usr/bin:/bin", HOME: f.home };
+  const env = { PATH: process.env["PATH"] ?? "/usr/bin:/bin", HOME: f.home, GIT_NO_LAZY_FETCH: "1", GIT_ALLOW_PROTOCOL: "/" };
   appendFileSync(join(f.wt.gitDir, "config"), `[filter ""]\n\tclean = x\n[filter "Upper"]\n\tsmudge = x\n[Filter.Legacy]\n\tProcess = x\n[filter]\n\tprocess = x\n`);
   // The daemon's git reads the system config too (its environment may not set GIT_CONFIG_*), as git does for every
   // command, so a filter there (git-lfs installs `[filter "lfs"]` in /etc/gitconfig) is read and emptied as well.
@@ -90,7 +90,7 @@ test("names are read as git uses them; one that cannot be put on a command line 
   for (const name of ["a b", 'a\\"b', "a\\\\b", "é", "a=b"]) {
     const g = fixture();
     appendFileSync(join(g.wt.gitDir, "config"), `[filter "${name}"]\n\tclean = x\n`);
-    await assert.rejects(filterNames(g.wt, g.deps, env), (e: unknown) => e instanceof GitOpsError && e.code === "E_POLICY_DENIED", name);
+    await assert.rejects(filterNames(g.wt, g.deps, env), (e: unknown) => e instanceof GitOpsError && e.code === "E_POLICY_DENIED" && /filter/.test(e.message), name);
   }
 });
 
