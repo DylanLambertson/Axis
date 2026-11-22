@@ -83,6 +83,7 @@ const EXPECTED: readonly Row[] = [
   ["axis.agent-groups", "reorder", "write", 1, "none", 5_000],
   ["axis.agent-groups", "delete", "write", 1, "none", 5_000],
   ["axis.agent-groups", "assign", "write", 2, "none", 5_000],
+  ["axis.attention", "summary", "read", 0, "none", 5_000],
 ];
 
 function actualRows(): Row[] {
