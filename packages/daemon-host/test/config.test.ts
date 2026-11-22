@@ -163,3 +163,8 @@ test("a long list of problems is reported bounded", () => {
   const e = refused(validConfig(over));
   assert.ok(String(e.detail["issues"]).length <= 512);
 });
+
+test("runSnapshotTimeoutMs is a test limit of 10 s to 300 s: a lower or higher value, or a non-number, is refused", () => {
+  for (const ok of [10_000, 120_000, 300_000]) assert.equal(parseHostConfig(validConfig({ limits: { runSnapshotTimeoutMs: ok } }), new Redactor()).limits.runSnapshotTimeoutMs, ok);
+  for (const bad of [0, 9_999, 300_001, 10_000.5, "120000", null]) refused(validConfig({ limits: { runSnapshotTimeoutMs: bad } }));
+});

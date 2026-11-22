@@ -40,9 +40,18 @@ export interface MessageAuditSink {
   append(input: AuditEventInput): unknown;
 }
 
-/** The audit actor of a caller. A plugin has no actor kind of its own yet: it is recorded as `daemon` with its id in the payload. */
+/** A plugin id the audit actor can carry (ADR 0008 decision 3: at most 64 characters); the message wire allows longer ones. */
+const AUDIT_PLUGIN_ID = /^(?=[a-z0-9.-]{1,64}$)[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*){0,3}$/;
+
+/**
+ * The audit actor of a caller: a plugin is `plugin:<id>` (ADR 0008 decision 4), its id also in the payload. An id the audit
+ * actor cannot carry (longer than 64 characters, which the wire allows) is recorded as `daemon`, so the audit write never fails
+ * on it; the payload still names the caller.
+ */
 export function actorOf(c: MessageCaller): AuditActor {
-  return c.kind === "user" ? "user" : c.kind === "agent" ? `agent:${c.agentId}` : "daemon";
+  if (c.kind === "user") return "user";
+  if (c.kind === "agent") return `agent:${c.agentId}`;
+  return AUDIT_PLUGIN_ID.test(c.pluginId) ? `plugin:${c.pluginId}` : "daemon";
 }
 
 /** Who asked, as payload fields. */

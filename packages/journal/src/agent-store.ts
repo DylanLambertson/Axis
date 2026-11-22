@@ -1,5 +1,5 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
-import { AxisError, withTransaction, type AuditLog, type DatabaseSync } from "@axis/audit";
+import { AxisError, withTransaction, type AuditActor, type AuditLog, type DatabaseSync } from "@axis/audit";
 
 /*
  * Agents and agent groups over schema version 12 (tickets PV-G1, PV-G3; ADR 0006 decisions 4 to 6 and 10;
@@ -82,7 +82,7 @@ export class AgentRecords {
     return withTransaction(this.#db, fn);
   }
 
-  #note(target: string, field: string, payload: Record<string, string>, actor: "user" | "daemon" | `agent:${string}` = "user"): void {
+  #note(target: string, field: string, payload: Record<string, string>, actor: AuditActor = "user"): void {
     this.#audit.append({ actor, action: AGENT_RECORD_ACTION, target, outcome: "success", payload: { field, ...payload } });
   }
 
@@ -190,7 +190,7 @@ export class AgentRecords {
   }
 
   /** Audits the archives the trigger made in the transition that just ran (one event per agent, by the transition's actor). */
-  noteArchivedWithHome(ids: readonly string[], workspaceId: string, actor: "user" | "daemon" | `agent:${string}`): void {
+  noteArchivedWithHome(ids: readonly string[], workspaceId: string, actor: AuditActor): void {
     // The trigger archived every id `liveOn` returned in the same statement that moved the workspace.
     for (const id of ids) {
       this.#note(`agent:${id}`, "archive", { agentId: id, workspaceId, reason: "home_not_live" }, actor);
