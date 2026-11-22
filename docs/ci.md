@@ -44,6 +44,7 @@ The workflow runs only on `workflow_dispatch`, never on PRs or pushes. It runs `
 
 - **Runner.** The required `runs-on` input has no default. Give the label of an **ephemeral** self-hosted runner: Linux x64 with at least 12 GiB of RAM. GitHub-hosted larger runners need an organization on Team or Enterprise Cloud, and this repository is owned by a user account, so they are not available. `npm ci` runs every dependency's install scripts, so never use a long-lived or shared machine. The job fails early on a runner that is not Linux x64 or has less than 12 GiB of RAM. Without a self-hosted runner, build locally in Docker with at least 12 GiB of memory (`docs/feasibility/code-oss-build.md` §7).
 - **Self-hosted images** that already have the build packages can set `install-build-packages` to false (otherwise `sudo apt-get` is used).
+- **Overlay tests.** After the build, the job runs `scripts/code-oss/overlay-tests.sh`: the overlay's node unit tests (`vs/axis/**/test/common`) on the built tree. No other job runs them. A per-PR job is a follow-up (PV-X3).
 - **Start it:** Actions tab → "Code OSS full build (manual)" → Run workflow, or `gh workflow run code-oss-build.yml -f runs-on=<label>`.
 
 ## Required status checks on `main`
