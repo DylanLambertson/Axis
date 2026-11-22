@@ -1,14 +1,16 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { lstatSync, mkdirSync, rmSync } from "node:fs";
-import { createServer, type Socket } from "node:net";
 import { isAbsolute, join } from "node:path";
+import { listenOnPath, type EndpointConn } from "./endpoint-listen.js";
 import { ENDPOINT_ID, RELAY_FRAME_CHARS, type RelayInbound, type RelayOutbound } from "./messages.js";
 import type { Clock } from "./ports.js";
 
 /**
  * The CLI messaging endpoint's listener, hosted by the pty process (ticket PV-M6 slice 2; ADR 0007 decisions 7.1 to 7.4;
  * docs/design/inter-agent-cli-endpoint.md sections 2 and 3). It owns the transport only: the socket in the user's runtime
- * directory, the connection and frame bounds, and relaying each complete frame to the daemon as its JSON text. The daemon owns
+ * directory, the connection and frame bounds, and relaying each complete frame to the daemon as its JSON text. It loads no socket
+ * built-in itself: it listens through the pinned template `endpoint-listen.ts` (scripts/code-oss/web-rules.mjs rule 1), which
+ * gives it a close function and, per connection, a facade (write, end, destroy and three event hooks). The daemon owns
  * the token, the caller, the message service and every answer; this module never reads a frame's content.
  *
  * - **The directory is the control (Unix).** A real directory, owned by this uid, mode 0700, never a symlink; created 0700 when
@@ -67,12 +69,11 @@ export function endpointDirOk(dir: string, uid: number): boolean {
 }
 
 /** True for an absolute Unix socket path that no reading of listen() could take for a port (not a numeric string). */
-// `p`, not `path`: the listen argument must be the one `path` the file declares (the endpoint source rules, web-rules.mjs rule 1).
 export const isEndpointPath = (p: string): boolean => isAbsolute(p) && p.startsWith("/") && !/^\d+$/.test(p.trim());
 
 interface Conn {
   readonly id: string;
-  readonly sock: Socket;
+  readonly sock: EndpointConn;
   buf: Buffer;
   /** The `auth` was relayed and not yet answered / it was answered without a close. */
   state: "new" | "authing" | "authed";
@@ -80,8 +81,8 @@ interface Conn {
   timer: unknown;
 }
 interface Hosted {
-  /** Closes the listener: the server itself is only ever the receiver of a method call (the endpoint source rules). */
-  readonly stop: () => void;
+  /** Closes the listener (set once it listens). */
+  stop: () => void;
   readonly path: string;
   readonly conns: Map<string, Conn>;
 }
@@ -128,21 +129,21 @@ export function createEndpointHost(cfg: EndpointHostConfig, deps: { readonly sen
     }
   }
 
-  function accept(endpoint: string, h: Hosted, sock: Socket): void {
+  function accept(endpoint: string, h: Hosted, sock: EndpointConn): void {
     if (h.conns.size >= ENDPOINT_HOST_LIMITS.connections) return void sock.destroy();
     const c: Conn = { id: `c${(seq++).toString(36)}`, sock, buf: Buffer.alloc(0), state: "new", pending: 0, timer: undefined };
     h.conns.set(c.id, c);
     arm(endpoint, c, ENDPOINT_HOST_LIMITS.preAuthMs);
     if (!deps.send({ t: "relay-open", endpoint, conn: c.id })) return drop(endpoint, c);
-    sock.on("data", (chunk: Buffer) => {
+    sock.onData((chunk) => {
       // Bounded: one frame's cap plus its prefix is all a connection may hold unanswered.
       const cap = 4 + (c.state === "authed" ? ENDPOINT_HOST_LIMITS.frameBytes : ENDPOINT_HOST_LIMITS.authFrameBytes);
       if (c.buf.length + chunk.length > cap) return drop(endpoint, c);
-      c.buf = Buffer.concat([c.buf, chunk]);
+      c.buf = Buffer.concat([c.buf, Buffer.from(chunk)]);
       frames(endpoint, c);
     });
-    sock.on("error", () => drop(endpoint, c));
-    sock.on("close", () => drop(endpoint, c));
+    sock.onError(() => drop(endpoint, c));
+    sock.onClose(() => drop(endpoint, c));
   }
 
   const close = (endpoint: string): void => {
@@ -165,16 +166,11 @@ export function createEndpointHost(cfg: EndpointHostConfig, deps: { readonly sen
       const path = join(cfg.dir, `${Buffer.from(deps.random(9)).toString("base64url")}.sock`);
       // Never a port: Node reads a numeric string given to listen() as a TCP port, so only an absolute path is listened on.
       if (!isEndpointPath(path) || Buffer.byteLength(path) > ENDPOINT_HOST_LIMITS.pathBytes) return undefined;
-      const server = createServer();
-      const h: Hosted = { stop: () => { server.close(); }, path, conns: new Map() };
-      server.on("connection", (sock) => accept(endpoint, h, sock));
-      const ok = await new Promise<boolean>((res) => {
-        server.once("error", () => res(false));
-        server.listen(path, () => res(true));
-      });
-      if (!ok) {
-        server.close();
-        return undefined;
+      const h: Hosted = { stop: () => undefined, path, conns: new Map() };
+      try {
+        h.stop = (await listenOnPath(path, (conn) => accept(endpoint, h, conn))).close;
+      } catch {
+        return undefined; // the template refused the path, or listening failed (it closed what it opened)
       }
       hosted.set(endpoint, h);
       return path;
