@@ -5,6 +5,7 @@ import type { Logger } from "../log/logger.js";
 import { createMessageDelivery, type MessageDelivery } from "./delivery.js";
 import { createMessageService, type MessageService } from "./service.js";
 import { createMessagingSettings, type MessagingSettingsService } from "./settings.js";
+import { journalAgentOf, journalAgentsDirectory } from "../agents/directory.js";
 import { journalDirectory, type MessagingDirectory } from "./policy.js";
 import type { MessageAuditSink } from "./audit.js";
 import type { MessagingLimits } from "./limits.js";
@@ -81,7 +82,7 @@ export function createMessagingBinding(deps: MessagingBindingDeps): MessagingBin
 
 /** What the composition root has for messaging; `logger` is required (possibly undefined), so it cannot be left out. */
 export interface HostMessaging {
-  readonly journal: Pick<Journal, "messages" | "getProject" | "getRun">;
+  readonly journal: Pick<Journal, "messages" | "getProject" | "getRun" | "agents">;
   readonly audit: MessageAuditSink;
   readonly monotonic: () => number;
   readonly scan: (text: string) => Promise<readonly unknown[]>;
@@ -94,6 +95,10 @@ export function hostMessagingDeps(host: HostMessaging): MessagingBindingDeps {
   const { journal, logger } = host;
   return {
     journal,
+    // The journal's live agents and groups (PV-G3 slice 2), and each run's recorded agent: none until PV-G4 starts runs from
+    // an agent, so delivery and the composer tools stay inert until then.
+    directory: journalAgentsDirectory(journal),
+    agentOf: journalAgentOf(journal),
     audit: host.audit,
     random: { bytes: (n) => randomBytes(n) },
     monotonic: host.monotonic,

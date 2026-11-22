@@ -49,9 +49,8 @@ export interface GroupEntry {
   readonly members: readonly string[];
 }
 /**
- * Agents, groups and projects as the daemon holds them. Agents and groups are PV-G3's records; until it lands the host
- * passes a directory with projects only (`journalDirectory`), so no agent can be addressed and every agent recipient is
- * `recipient_refused`.
+ * Agents, groups and projects as the daemon holds them. The host passes the journal's (`journalAgentsDirectory`,
+ * `src/agents/directory.ts`, PV-G3); `journalDirectory` below knows projects only and is the binding's default for tests.
  */
 export interface MessagingDirectory {
   project(projectId: string): boolean;
