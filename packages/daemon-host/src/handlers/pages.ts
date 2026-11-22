@@ -8,8 +8,9 @@ import type { HandlerRegistrar } from "./anchor-guard.js";
  * `axis.pages/1` over the bridge (ticket PV-Q1 slice 2, ADR 0010, docs/design/pages-store.md §5). The user's own attested
  * desktop connection only: the rows admit only `user`, and every handler refuses any other actor and a web client again
  * with `not_found`. The caller is built here from `ctx.identity`, never from the payload. `markReviewed` and `delete` are
- * tier 3: the daemon's pipeline has the challenge resolved in main's native dialog before the handler runs, so a renderer
- * request alone never marks a version reviewed (threat-model-phase2a O-4).
+ * tier 4: the daemon's pipeline has the challenge confirmed in main's native dialog (with its proof) before the handler
+ * runs, so a renderer request and its own `resolve` never mark a version reviewed or delete a page (threat-model-phase2a
+ * O-4). Tier 3 would not do: its challenge is released by `resolve` alone.
  *
  * Every refusal leaves as `{ code, PAGES_REFUSAL_MESSAGE, details: { reason } }` of the contract's closed set; anything else
  * (a store reason the contract does not have, a database error) is `E_INTERNAL` with no text of its own. Every answer is

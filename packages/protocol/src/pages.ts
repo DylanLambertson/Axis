@@ -88,10 +88,10 @@ export const pagesUpdateResponseSchema = z.strictObject({ version: pageVersionSc
 /** Version `seq` again, as a new version that keeps its author and trust (never the user's). */
 export const pagesRestoreRequestSchema = z.strictObject({ pageId: pageIdSchema, seq: seqSchema, baseSeq: seqSchema });
 export const pagesRestoreResponseSchema = z.strictObject({ version: pageVersionSchema });
-/** Mark one version reviewed: it stops tainting readers. Tier 3: main's native confirmation (O-4 of the 2a threat model). */
+/** Mark one version reviewed: it stops tainting readers. Tier 4: main draws the native confirmation (O-4 of the 2a threat model). */
 export const pagesMarkReviewedRequestSchema = z.strictObject({ pageId: pageIdSchema, seq: seqSchema, approval: challengeReferenceSchema.optional() });
 export const pagesMarkReviewedResponseSchema = z.strictObject({ version: pageVersionMetaSchema, changed: z.boolean() });
-/** Delete a page with its versions and attachments. Destructive, tier 3. */
+/** Delete a page with its versions and attachments. Destructive, tier 4: main draws the native confirmation. */
 export const pagesDeleteRequestSchema = z.strictObject({ pageId: pageIdSchema, approval: challengeReferenceSchema.optional() });
 export const pagesDeleteResponseSchema = z.strictObject({ deleted: z.literal(true) });
 
@@ -117,14 +117,15 @@ const spec = <Req extends z.ZodType, Res extends z.ZodType>(
   request: Req,
   response: Res,
   sideEffect: "read" | "write" | "destructive",
-  tier: 0 | 1 | 3,
+  tier: 0 | 1 | 4,
   idempotency: "none" | "required",
   timeoutMs: number,
 ) => ({ request: guarded(request), response: guarded(response), sideEffect, tier, idempotency, timeoutMs }) as const;
 
 /**
- * Tiers: reads 0; a new page or version and a restore 1 (records only, nothing runs); marking a version reviewed 3, since
- * it lowers taint and needs main's native confirmation; delete 3 and destructive (versions and attachments are lost).
+ * Tiers: reads 0; a new page or version and a restore 1 (records only, nothing runs); marking a version reviewed 4, since
+ * it lowers taint; delete 4 and destructive (versions and attachments are lost). Tier 4 is the lowest tier whose challenge
+ * main confirms in its own native dialog: a tier 3 challenge is released by the renderer's `resolve` alone.
  */
 export const pagesMethods = {
   list: spec(pagesListRequestSchema, pagesListResponseSchema, "read", 0, "none", 5_000),
@@ -133,8 +134,8 @@ export const pagesMethods = {
   create: spec(pagesCreateRequestSchema, pagesCreateResponseSchema, "write", 1, "required", 10_000),
   update: spec(pagesUpdateRequestSchema, pagesUpdateResponseSchema, "write", 1, "none", 10_000),
   restore: spec(pagesRestoreRequestSchema, pagesRestoreResponseSchema, "write", 1, "none", 10_000),
-  markReviewed: spec(pagesMarkReviewedRequestSchema, pagesMarkReviewedResponseSchema, "write", 3, "none", 30_000),
-  delete: spec(pagesDeleteRequestSchema, pagesDeleteResponseSchema, "destructive", 3, "none", 30_000),
+  markReviewed: spec(pagesMarkReviewedRequestSchema, pagesMarkReviewedResponseSchema, "write", 4, "none", 30_000),
+  delete: spec(pagesDeleteRequestSchema, pagesDeleteResponseSchema, "destructive", 4, "none", 30_000),
 } as const satisfies Record<string, MethodSpec>;
 
 export type PagesMethod = keyof typeof pagesMethods;
