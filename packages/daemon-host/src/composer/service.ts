@@ -3,7 +3,7 @@ import { Redactor } from "@axis/audit";
 import { DEFAULT_ACTIVITY_BOUNDS, checkActivityBounds, type ActivityBounds, type ComposerRunRecord, type Journal, type Run } from "@axis/journal";
 import type { ComposerRun } from "@axis/protocol";
 import { createRunBudget, type BudgetHook, type RunBudget, type RunBudgetLimits } from "@axis/providers";
-import type { ComposerEngine, ComposerEventsPage, ComposerRunsService, ComposerStartInput } from "../ports/composer.js";
+import type { ComposerEngine, ComposerEventsPage, ComposerRunsService, ComposerStartInput, RunInitiator } from "../ports/composer.js";
 import { RunActivity, type ActivityInput, type ActivityLimits } from "./activity.js";
 import { createComposerBudget } from "./budget.js";
 import { fromActivityRecords, toActivityRecord } from "./persist.js";
@@ -51,7 +51,26 @@ export interface ComposerServiceDeps {
   readonly toolCaps?: Partial<ToolCaps>;
   readonly activity?: ActivityLimits;
   readonly onInternalError?: (where: string) => void;
+  /**
+   * Taints a new run inside its creation (PV-K1e): `createRunTaint(...).receive(receipt)` over the journal's composer records and
+   * the journal's own audit log, so the mark and its audit row commit with the run or not at all. Absent: plugin starts are refused.
+   */
+  readonly taintAtStart?: (runId: string, receipt: unknown) => void;
 }
+
+/** A plugin id as an attested plugin identity carries it (ADR 0008 decision 3). */
+const PLUGIN_ID = /^(?=[a-z0-9.-]{1,64}$)[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*){0,3}$/;
+
+/** The run's creator, and for a plugin the taint receipt its prompt needs before any model call. Refuses a malformed initiator. */
+function initiatorOf(initiator: RunInitiator | undefined): { readonly createdBy: "user" | `plugin:${string}`; readonly pluginId?: string } {
+  if (initiator === undefined || (typeof initiator === "object" && initiator !== null && initiator.kind === "user" && Object.keys(initiator).length === 1)) return { createdBy: "user" };
+  if (typeof initiator === "object" && initiator !== null && initiator.kind === "plugin" && typeof initiator.pluginId === "string" && PLUGIN_ID.test(initiator.pluginId) && Number.isSafeInteger(initiator.generation) && initiator.generation >= 1) {
+    return { createdBy: `plugin:${initiator.pluginId}`, pluginId: initiator.pluginId };
+  }
+  throw composerFailure("E_INVALID_ARGUMENT");
+}
+
+class TaintUnrecorded extends Error {}
 
 export interface ComposerService extends ComposerRunsService {
   /** Startup (after `Journal.recover`): a QUEUED composer run never reached its loop, so it is cancelled. */
@@ -190,6 +209,8 @@ export function createComposerService(deps: ComposerServiceDeps): ComposerServic
   const service: ComposerService = {
     async start(input: ComposerStartInput, signal: AbortSignal) {
       if (closed) throw composerFailure("E_UNAVAILABLE", "shutting_down");
+      const by = initiatorOf(input.initiator);
+      if (by.pluginId !== undefined && deps.taintAtStart === undefined) throw composerFailure("E_UNAVAILABLE", "plugin_starts_unavailable");
       const ws = deps.journal.getWorkspace(input.workspaceId);
       if (ws === undefined || ws.state === "REMOVED" || ws.state === "FAILED" || ws.state === "CREATING") throw composerFailure("E_NOT_FOUND");
       if (ws.state !== "READY") throw composerFailure("E_CONFLICT", "not_ready");
@@ -234,10 +255,30 @@ export function createComposerService(deps: ComposerServiceDeps): ComposerServic
         throw composerFailure("E_INTERNAL");
       }
       const meta = { mode: input.mode, providerId: input.providerId, modelId: input.modelId };
-      const created = deps.journal.composer.createRun(
-        { workspaceId: input.workspaceId, createdBy: "user", ...(input.idempotencyKey === undefined ? {} : { idempotencyKey: input.idempotencyKey }), ...(input.worker === undefined ? {} : { agentId: input.worker }) },
-        meta,
-      );
+      // A plugin's prompt is a taint source (IAC-T source 6): the run is tainted inside its own creation, before the activity
+      // opens and before any model call; if the mark or its audit row fails, nothing is created.
+      const taintFirst =
+        by.pluginId === undefined
+          ? undefined
+          : (runId: string): void => {
+              try {
+                deps.taintAtStart?.(runId, { source: "plugin_output", senderKind: "plugin", sender: by.pluginId, hop: 1, ref: runId });
+              } catch {
+                throw new TaintUnrecorded();
+              }
+            };
+      let created;
+      try {
+        created = deps.journal.composer.createRun(
+          { workspaceId: input.workspaceId, createdBy: by.createdBy, ...(input.idempotencyKey === undefined ? {} : { idempotencyKey: input.idempotencyKey }), ...(input.worker === undefined ? {} : { agentId: input.worker }) },
+          meta,
+          taintFirst,
+        );
+      } catch (e) {
+        if (!(e instanceof TaintUnrecorded)) throw e;
+        internal("taint");
+        throw composerFailure("E_UNAVAILABLE", "taint_unrecorded");
+      }
       if (created.replayed) return { run: view(created.value), replayed: true };
       const runId = created.value.id;
       activity.open(runId, meta);

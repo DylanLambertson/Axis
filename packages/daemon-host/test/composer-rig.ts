@@ -56,6 +56,8 @@ export interface ComposerRigOptions {
   /** The agent binding's audit sink throws for these rows (the journal's own log is unaffected). */
   readonly failAudit?: (action: string) => boolean;
   readonly maxActive?: number;
+  /** The service's `taintAtStart` (PV-K1e); absent: plugin starts are refused. */
+  readonly taintAtStart?: (runId: string, receipt: unknown) => void;
   readonly toolCaps?: Partial<ToolCaps>;
   readonly previewScanner?: PreviewScanner;
   /** A database file instead of memory (restart tests reopen it); its directory is the caller's. */
@@ -156,6 +158,7 @@ export async function composerRig(options: ComposerRigOptions): Promise<Composer
       ...(options.storedActivity === undefined ? {} : { storedActivity: options.storedActivity }),
       ...(options.maxActive === undefined ? {} : { maxActive: options.maxActive }),
       ...(options.toolCaps === undefined ? {} : { toolCaps: options.toolCaps }),
+      ...(options.taintAtStart === undefined ? {} : { taintAtStart: options.taintAtStart }),
     });
   } catch (e) {
     await r.cleanup();
