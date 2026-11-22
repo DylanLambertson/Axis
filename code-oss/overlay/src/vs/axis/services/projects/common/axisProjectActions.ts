@@ -7,6 +7,7 @@
 // shows its own dialog and decides. What comes back is a closed outcome; what the user hears is a sentence from the closed table
 // below, never text from main or the daemon. Pure: the IPC lives in electron-browser/, the views in contrib/.
 
+import { AxisDaemonStatus, isUsable } from '../../daemon/common/axisDaemonClient.js';
 import { localize } from '../../../../nls.js';
 import type { IAxisProjectInfo } from '../../workspaces/common/axisWorkspaceData.js';
 
@@ -78,12 +79,14 @@ export function toWindowRunTrust(outcome: AxisProjectOutcome): AxisWindowRunTrus
  * - `daemon`: connected, and the projects are the daemon's records: run trust is known.
  * - `unregistered`: connected, but the daemon holds no project, so the rows come from local discovery: none is an Axis project.
  * - `offline`: the daemon is not usable: run trust is unknown and no action is offered.
+ * - `degraded`: the host is degraded (its audit status says so, PV-E0 F2): it serves reads but writes nothing, so run trust is not
+ *   shown and no action is offered either.
  * Local discovery's trust flag is Code OSS Workspace Trust, not the run-trust record, so it is never shown as "trusted to run".
  */
-export type AxisTrustSource = 'daemon' | 'unregistered' | 'offline';
+export type AxisTrustSource = 'daemon' | 'unregistered' | 'offline' | 'degraded';
 
-export function trustSource(daemonUsable: boolean, origin: 'daemon' | 'discovery'): AxisTrustSource {
-	return !daemonUsable ? 'offline' : origin === 'daemon' ? 'daemon' : 'unregistered';
+export function trustSource(status: AxisDaemonStatus, origin: 'daemon' | 'discovery'): AxisTrustSource {
+	return status.kind === 'degraded' ? 'degraded' : !isUsable(status) ? 'offline' : origin === 'daemon' ? 'daemon' : 'unregistered';
 }
 
 /** The longest project name shown inline; the full name is in the tooltip. */
@@ -115,6 +118,9 @@ export function isolateName(name: string): string {
 export function projectChip(project: IAxisProjectInfo, source: AxisTrustSource): { readonly glyph: string; readonly label: string; readonly hint: string } {
 	if (source === 'unregistered') {
 		return { glyph: '+', label: localize('axis.project.chip.unregistered', "{0}: not added to Axis", isolateName(project.name)), hint: localize('axis.project.chip.unregisteredHint', "Add Project… makes it an Axis project. It starts read only until you trust it to run.") };
+	}
+	if (source === 'degraded') {
+		return { glyph: '?', label: localize('axis.project.chip.unknown', "{0}: run trust unknown", isolateName(project.name)), hint: localize('axis.project.chip.degradedHint', "The Axis service is in degraded mode, so run trust cannot be shown.") };
 	}
 	if (source === 'offline') {
 		return { glyph: '?', label: localize('axis.project.chip.unknown', "{0}: run trust unknown", isolateName(project.name)), hint: localize('axis.project.chip.unknownHint', "The Axis service is not connected, so run trust cannot be shown.") };
@@ -190,6 +196,9 @@ export interface IAxisBannerContent {
  * THIS window's folder; it counts only while the daemon is usable, so an offline service is always unknown with no action.
  */
 export function bannerContent(trust: AxisWindowRunTrust, source: AxisTrustSource): IAxisBannerContent {
+	if (source === 'degraded') {
+		return { text: localize('axis.banner.degraded', "The Axis service is read only (degraded): projects cannot be added or trusted."), action: undefined };
+	}
 	if (source === 'offline') {
 		return { text: localize('axis.banner.unknown', "Run trust unknown: the Axis service is not connected."), action: undefined };
 	}

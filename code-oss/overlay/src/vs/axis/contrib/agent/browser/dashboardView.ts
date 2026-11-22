@@ -12,11 +12,10 @@ import { ICommandService } from '../../../../platform/commands/common/commands.j
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { AxisProjectBanner } from '../../projects/browser/axisProjectBanner.js';
 import { AxisApprovalCards } from './approvalCards.js';
-import { isUsable } from '../../../services/daemon/common/axisDaemonClient.js';
 import { plainName, projectChip, trustSource } from '../../../services/projects/common/axisProjectActions.js';
 import { IAxisCliRun } from '../../../services/workspaces/common/axisWorkspaceData.js';
 import { AxisRowState, branchLabel, changesLabel, IAxisWorkspaceEntry, rowStateOf } from '../../../services/workspaces/common/axisWorkspaceModel.js';
-import { daemonNotice } from '../../../services/workspaces/common/axisDaemonNotice.js';
+import { approvalsAvailability, daemonNotice } from '../../../services/workspaces/common/axisDaemonNotice.js';
 import { IAxisWorkspaceService } from '../../../services/workspaces/browser/axisWorkspaceService.js';
 import { MAX_DISCOVERED_WORKTREES } from '../../../services/workspaces/common/worktreeDiscovery.js';
 
@@ -112,7 +111,7 @@ export class AxisDashboardView extends Disposable {
 		const projects = this.workspaceService.projects;
 		if (projects.length) {
 			// Run trust (the daemon's record), never Code OSS Workspace Trust: shown only when the data came from the daemon (S3, review PV-E0 N6).
-			const source = trustSource(isUsable(this.workspaceService.daemonStatus), this.workspaceService.dataOrigin);
+			const source = trustSource(this.workspaceService.daemonStatus, this.workspaceService.dataOrigin);
 			const list = append(this.header, $('span.axis-dashboard-project'));
 			for (const project of projects) {
 				const chip = projectChip(project, source);
@@ -126,7 +125,7 @@ export class AxisDashboardView extends Disposable {
 				label.textContent = chip.label;
 			}
 		}
-		const pending = this.workspaceService.pendingApprovals;
+		const pending = approvalsAvailability(this.workspaceService.daemonStatus).cards ? this.workspaceService.pendingApprovals : 0;
 		if (pending) {
 			append(this.header, $('span.axis-dashboard-note')).textContent = pending === 1
 				? localize('axis.dashboard.approvalsOne', "1 approval waiting")

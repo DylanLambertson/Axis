@@ -42,7 +42,7 @@ sequenceDiagram
 4. `event.senderFrame === event.sender.mainFrame` (defence in depth).
 5. The sender is not destroyed.
 6. Per-window token bucket: burst 5, refill 10 per minute, at most 256 windows remembered (the oldest bucket of a closed window is dropped first; a full table refuses new windows rather than reset an exhausted bucket).
-7. The supervisor is `running` (it saw `ready`; a degraded host is running and serves its audit reads). Otherwise refused with `not_ready`.
+7. The supervisor is `running` (it saw `ready`; a degraded host is running and serves its audit reads). Otherwise refused with `not_ready`, or, when the supervisor has stopped for good, with its closed `FailureReason` as `stopped_lock_held`, `stopped_bad_config`, `stopped_degraded` or `stopped_crash_loop` (PV-E0 F2). Only a sender that passed every check above and the rate limit can get one of these reasons, and the reason carries no detail.
 
 **Identity** (built by main, never read from the renderer): `connectionId` = 16 random bytes, base64url (22 characters); `windowId` = `w<id>` from the code window's numeric id; `actorId` = `local-user`; `actor` = `user` (main never brokers an `agent:*` or `daemon` identity for a renderer); `workspaceId` absent (a window is not bound to an Axis workspace; scope comes from the request and the daemon's journal); `trusted` = the window's Workspace Trust answer at connect time from the trust port, `false` when it cannot tell; `clientKind` = `desktop`.
 
@@ -107,7 +107,7 @@ Main STARTS these, the only control requests it does: `vscode:axisProjectAction 
 
 ## 4. Audit and logs
 
-The daemon audits what it decides (policy decisions, challenges, run starts, anchors through the chain). Main writes no audit rows: its answers are inputs the daemon records. Main logs closed event names with counts through the seam's logger: `connect_refused` with a closed reason (`bad_nonce`, `not_code_window`, `bad_frame`, `not_main_frame`, `destroyed`, `rate_limited`, `not_ready`), `anchor_unavailable` with a closed reason (`insecure_backend`, `read_failed`, `decrypt_failed`, `corrupt`), `anchor_put_refused` (`store_unreadable`, `regression`, `write_failed`), `native_refused` (`no_window`, `expired`, `queue_full`, `dialog_failed`), `trust_refused`, `settings_unanswered`. Never a value, a path, a proof or a summary.
+The daemon audits what it decides (policy decisions, challenges, run starts, anchors through the chain). Main writes no audit rows: its answers are inputs the daemon records. Main logs closed event names with counts through the seam's logger: `connect_refused` with a closed reason (`bad_nonce`, `not_code_window`, `bad_frame`, `not_main_frame`, `destroyed`, `rate_limited`, `not_ready`, `stopped_lock_held`, `stopped_bad_config`, `stopped_degraded`, `stopped_crash_loop`), `anchor_unavailable` with a closed reason (`insecure_backend`, `read_failed`, `decrypt_failed`, `corrupt`), `anchor_put_refused` (`store_unreadable`, `regression`, `write_failed`), `native_refused` (`no_window`, `expired`, `queue_full`, `dialog_failed`), `trust_refused`, `settings_unanswered`. Never a value, a path, a proof or a summary.
 
 ## 5. Verification
 
