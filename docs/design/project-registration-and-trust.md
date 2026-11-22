@@ -158,13 +158,13 @@ URLs are display text only, never used to fetch. The display form:
 A new policy trust mode, **`project`**, replaces `registry` on every row that used it (§6.1). Policy checks T4 synchronously, as today.
 
 **One gate, `requireProjectTrust({ projectId, windowId, workspaceId?, signal })`,** checks, in this order:
-1. **T1:** the row exists and is `trusted`, else `E_POLICY_DENIED` (`reason: "untrusted"`).
+1. **T1:** the row exists and is `trusted`, else refused `untrusted` (see **Errors** below).
 2. **T2:** the binding of §5.2.
 3. **Workspace binding:** for a call on a workspace, the worktree `W` must belong to this repository. `W/.git` must be a `gitdir:` file whose `realpath` target is `<common_dir>/worktrees/<name>`, and that directory's `commondir` must resolve to `common_dir`. This closes the DMN-2 known gap ("the locator does not check that a worktree's common dir is the project repository's") for gated calls: a run that repoints its worktree's `.git` is refused.
 4. **T3:** `trust.check` with the row's path; refused on `false`, silence (2 s) or abort.
 5. **T4 again:** the `TrustRegistry` revoke for the call's window and workspace, re-read here. Policy checked it at dispatch, but a revoke recorded during a push's confirmation must refuse.
 
-**Errors.** Every refusal is `E_POLICY_DENIED` with `reason: "untrusted"`, the code `ControlClient.trustCheck` already uses; `binding_lost` adds nothing the caller can tell apart. The threat model's TRU-2 row said `E_CONFLICT` and is corrected with this note.
+**Errors.** The gate refuses with `E_POLICY_DENIED` (`reason: "untrusted"`) **internally**, as `ControlClient.trustCheck` already does. On the wire every handler answers **`E_CONFLICT` with reason `untrusted`**: a handler cannot raise `E_POLICY_DENIED`, which the daemon turns into `E_INTERNAL` because only the daemon decides it, with an audit row (`packages/daemon/src/errors.ts`). The existing mappings already do this: `cli-runs` in `packages/daemon-host/src/runs/errors.ts`, the git handlers' `toGitError`, and S1b adds the same for the worktrees and composer handlers. `binding_lost` adds nothing the caller can tell apart.
 
 **Where it runs (`daemon-host.md` §6.2: immediately before the side effect).** The gate mints a single-use, short-lived `ProjectTrustTicket`: a private-field brand like `TrustAttestation`, bound to `{ projectId, workspaceId? }`. Every gated side-effect port **requires** one:
 - the git commit and push runners;
@@ -279,7 +279,7 @@ node:test only. The Electron-free cores live in `packages/daemon-host/src/main/`
 - A port given no ticket, a spent ticket, an expired ticket (fake monotonic clock) or a ticket bound to another project or workspace refuses (mutants: ticket not checked; binding not compared). The port consumes the ticket before its pre-work.
 - **The gate inside the mutex:** an untrust that lands while a commit waits for the project mutex refuses that commit (mutant: gate before the mutex).
 - **T4 at the gate:** a registry revoke recorded during the push confirmation refuses the push (mutant: step 5 dropped).
-- Every refusal is `E_POLICY_DENIED` `untrusted`.
+- **The wire code, per path:** `commit`, `push`, `worktrees.create`, `restoreFromRunBase`, `discard`, `runs.start` and `cli-runs.start` each answer a gate refusal `E_CONFLICT` with reason `untrusted`, never `E_POLICY_DENIED` or `E_INTERNAL` (mutant: a handler passing the internal code through).
 - **Untrust while the push dialog is open, then the push is refused** (mutant: gate before the confirmation). The tier 4 approval is spent at dispatch, before the handler (`packages/daemon/src/pipeline.ts` step 4), which the test relies on and pins.
 - Mixed contracts: `axis.git/1` and `axis.worktrees/1` register their gated methods only through `registerProjectGated` (mutant: a gated handler left in the plain map, caught by coverage).
 - Coverage: exit 70 for a plain gated registration, and for `registerProjectGated` on a non-gated row; the `cli-runs` path is covered (mutant: coverage check removed).
