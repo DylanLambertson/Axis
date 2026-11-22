@@ -1,4 +1,5 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
+import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import type { Clock } from "../src/index.js";
 
@@ -24,6 +25,22 @@ export function processSnapshot(): { resources: string[]; listeners: Record<stri
   for (const name of process.eventNames()) listeners[String(name)] = process.listenerCount(name);
   return { resources: process.getActiveResourcesInfo().filter((r) => r === "Timeout" || r === "Immediate").sort(), listeners };
 }
+
+/**
+ * "Nothing extra is alive after cleanup" is a negative claim, so it is asserted ONCE after letting what must terminate by
+ * itself do so (closing handles finish within a couple of macrotasks): never polled, or a leak that expires on its own
+ * inside a polling window would be waited out and pass.
+ */
+export async function settledTo(before: ReturnType<typeof processSnapshot>, message?: string): Promise<void> {
+  await drain();
+  assert.deepEqual(processSnapshot(), before, message);
+}
+
+/** Two macrotasks: every promise continuation and every process-level rejection report queued so far has run. Not a duration. */
+export const drain = async (): Promise<void> => {
+  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => setImmediate(r));
+};
 
 export const wait = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
