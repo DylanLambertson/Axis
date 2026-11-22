@@ -220,6 +220,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
           mutex: worktrees.mutex,
           platform: config.platform,
           managedWorktreeRoots: () => [config.worktreeRoot],
+          ...(config.limits.runSnapshotTimeoutMs === undefined ? {} : { limits: { snapshotTimeoutMs: config.limits.runSnapshotTimeoutMs } }),
           onInternalError: (where) => logger?.error("request.failed", { reason: `runs_${String(where).slice(0, 24)}` }),
         });
         cleanups.push(() => runs.dispose());
