@@ -1,7 +1,7 @@
 # The daemon's egress client (PV-N1d)
 
 - **Status:** slice A built (the target and address rules, and the pinning test); slice B (the client itself) follows.
-- **Date:** 2026-11-23.
+- **Date:** 2026-11-22.
 - **Inputs:** ADR 0009 decision 4 (network egress, INT-2, INT-3, D-14), `docs/security/threat-model-phase4a.md` TB24, `docs/design/integrations-contract.md` (the caps), `docs/design/net-gate.md`.
 - **Code:** `packages/daemon-host/src/net/host.ts`, `packages/daemon-host/src/net/address.ts`; tests in `packages/daemon-host/test/net/`.
 
@@ -20,6 +20,8 @@ One egress client in the daemon serves integrations (PV-N1f) and plugin `net:<or
 - any other difference between the host or port as written and as parsed: upper case, Unicode instead of punycode, a percent escape, a default port written out (`not_canonical`);
 - an origin outside the declared set (`origin_not_declared`). Declared origins are kept only in `URL.origin` form (`declaredOrigins`); any other spelling can match nothing.
 
+Only the host and the port are held to one spelling. The path and query are normalised by the WHATWG parser (`/a/%2e%2e/admin` becomes `/admin`, tabs and newlines are stripped, a backslash becomes a slash), so everything after the origin MUST be read from the parsed `target.url`, never from the raw input: the client (slice B) sends `target.url`'s path and query, with a test that the path sent is that one, and PV-N1e's URL-pattern check runs on `target.url` too.
+
 **Addresses** (`addressRefusal(address)`, `resolvedRefusal(addresses)`): every address the lookup returned must be public unicast, or the request is refused (none returned is refused too).
 
 - IPv4 excludes the fifteen ranges of the ADR (`IPV4_RESERVED`), checked on strict dotted decimal only: any other spelling is `malformed`.
@@ -31,7 +33,7 @@ The reasons are internal (tests and the audit row of PV-N1f); the error a caller
 
 ## 3. The pinning test (ADR 0009's first test)
 
-`test/net/agent-pinning.test.ts` pins the Node behaviour the client relies on, at Node 24.22.1: a dedicated `https.Agent` whose `lookup` answers with checked addresses connects to those and to nothing else (a decoy listener on another address receives nothing, and a `.invalid` host proves the system resolver is never asked), asks for every address when `autoSelectFamily` is on, and keeps SNI and the certificate check on the original host (a certificate for another name fails at the checked address). It passed; the design stands. It needs `openssl` to make a test certificate and is skipped with that reason without it.
+`test/net/agent-pinning.test.ts` pins the Node behaviour the client relies on, at Node 24.22.1: a dedicated `https.Agent` whose `lookup` answers with checked addresses connects to those and to nothing else (a decoy listening on `::1` at the server's own port, proven to accept by a control connection, receives nothing; a `.invalid` host proves the system resolver is never asked), asks for every address when `autoSelectFamily` is on, and keeps SNI and the certificate check on the original host (a certificate for another name fails at the checked address). It passed; the design stands. It needs `openssl` to make a test certificate: without it the test FAILS under the gate (`scripts/gate.mjs` sets `AXIS_REQUIRE_PINNING_TEST=1`) and in CI (`CI` set), and only a dev run skips it, with a reason that says the gate requires it.
 
 ## 4. Slice B (next, its own review)
 

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import https from "node:https";
-import { createServer, type Server } from "node:net";
+import { connect, createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -13,21 +13,37 @@ import { test } from "node:test";
 // `lookup` answers with checked addresses connects to those and to nothing else, never asks the system resolver, and keeps
 // SNI and the certificate check on the original host name. If this ever fails, the egress design must change first.
 
-function opensslMissing(): string | false {
+/**
+ * Without openssl the test cannot make its certificate. On a dev machine it is skipped with a loud reason; under the gate
+ * (which sets AXIS_REQUIRE_PINNING_TEST=1) and in CI it FAILS, so ADR 0009's first test never passes by not running.
+ */
+export function opensslMissing(env: NodeJS.ProcessEnv = process.env, probe: () => void = () => execFileSync("openssl", ["version"], { stdio: "ignore" })): string | false {
   try {
-    execFileSync("openssl", ["version"], { stdio: "ignore" });
+    probe();
     return false;
   } catch {
-    return "openssl is needed to make the test certificate";
+    if (env.AXIS_REQUIRE_PINNING_TEST === "1" || env.CI !== undefined) throw new Error("openssl is missing: ADR 0009's pinning test is required here (gate or CI) and cannot run without it");
+    return "SKIPPED ADR 0009's pinning test: openssl is needed to make the test certificate (the gate and CI require it)";
   }
 }
 
 const HOST = "pinned.invalid"; // `.invalid` never resolves: a connection here proves the agent used our lookup
-const listen = (server: Server | https.Server, host: string): Promise<number> =>
+const listen = (server: Server | https.Server, host: string, port = 0): Promise<number> =>
   new Promise((resolve, reject) => {
     server.once("error", reject);
-    server.listen(0, host, () => resolve((server.address() as { port: number }).port));
+    server.listen(port, host, () => resolve((server.address() as { port: number }).port));
   });
+const closeServer = (server: Server | https.Server): Promise<void> => new Promise((resolve) => server.close(() => resolve()));
+
+test("without openssl the pinning test fails under the gate and in CI, and skips loudly elsewhere", () => {
+  const missing = (): void => {
+    throw new Error("ENOENT");
+  };
+  assert.throws(() => opensslMissing({ AXIS_REQUIRE_PINNING_TEST: "1" }, missing), /required here/);
+  assert.throws(() => opensslMissing({ CI: "true" }, missing), /required here/);
+  assert.match(String(opensslMissing({}, missing)), /^SKIPPED ADR 0009's pinning test/);
+  assert.equal(opensslMissing({ CI: "true" }, () => undefined), false);
+});
 
 test("a dedicated agent connects only to the addresses its lookup returns, with SNI and the certificate on the original host", { skip: opensslMissing() }, async (t) => {
   assert.equal(process.version, "v24.22.1", "this pins the behaviour of the Node the daemon ships with");
@@ -40,12 +56,28 @@ test("a dedicated agent connects only to the addresses its lookup returns, with 
     served.push(`${req.socket.localAddress} ${(req.socket as { servername?: string }).servername ?? ""}`);
     res.end("ok");
   });
-  const port = await listen(server, "127.0.0.1");
-  // A decoy on an address the lookup never returns, same port: any connection there is a connection the agent chose itself.
+  // A decoy on ::1, an address the lookup never returns, at the SAME port as the server: a connection the agent chose by
+  // itself (the other family of "localhost", say) would land there. A busy ::1 port retries with a new pair, bounded.
   const strays: string[] = [];
-  const decoy = createServer((s) => (strays.push(String(s.localAddress)), s.destroy()));
-  await listen(decoy, "::1").catch(() => undefined);
+  let decoy = createServer((s) => (strays.push(String(s.localAddress)), s.destroy()));
+  let port = 0;
+  for (let attempt = 0; ; attempt++) {
+    port = await listen(server, "127.0.0.1");
+    try {
+      await listen(decoy, "::1", port);
+      break;
+    } catch (e) {
+      await closeServer(server);
+      decoy = createServer((s) => (strays.push(String(s.localAddress)), s.destroy()));
+      if ((e as NodeJS.ErrnoException).code !== "EADDRINUSE" || attempt >= 4) throw e;
+    }
+  }
   t.after(() => (server.close(), decoy.close()));
+  // Control: the decoy really listens and records a connection; then it is cleared.
+  await new Promise<void>((resolve, reject) => connect({ host: "::1", port }).on("connect", function (this: import("node:net").Socket) { this.destroy(); resolve(); }).on("error", reject));
+  for (let i = 0; i < 50 && strays.length === 0; i++) await new Promise((r) => setTimeout(r, 10));
+  assert.deepEqual(strays, ["::1"], "the decoy listens on ::1 at the server's port");
+  strays.length = 0;
 
   for (const autoSelectFamily of [true, false]) {
     const asked: Array<{ hostname: string; all: boolean }> = [];
