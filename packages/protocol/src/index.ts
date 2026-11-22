@@ -21,6 +21,7 @@ export * from "./events.js";
 export * from "./messages-wire.js";
 export * from "./forge-wire.js";
 export * from "./forge.js";
+export * from "./attention.js";
 export * from "./messages.js";
 export * from "./agents.js";
 export * from "./integrations-wire.js";
