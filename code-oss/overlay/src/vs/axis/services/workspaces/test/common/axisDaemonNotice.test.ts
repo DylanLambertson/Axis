@@ -5,7 +5,7 @@
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { AXIS_ERROR_CODES, AxisDaemonStatus } from '../../../daemon/common/axisDaemonClient.js';
-import { daemonNotice, errorPhrase, IAxisNoticeInput } from '../../common/axisDaemonNotice.js';
+import { approvalsAvailability, daemonNotice, errorPhrase, IAxisNoticeInput } from '../../common/axisDaemonNotice.js';
 import { changesLabel } from '../../common/axisWorkspaceModel.js';
 import { IAxisWorktreeInfo } from '../../common/axisWorkspaceData.js';
 
@@ -36,7 +36,7 @@ suite('Axis daemon notice and changes label', () => {
 		assert.match(texts.get('f-crash')!, /crashed repeatedly/);
 		assert.match(texts.get('f-degraded')!, /degraded mode/);
 		assert.match(texts.get('f-pty')!, /terminal host/);
-		assert.match(texts.get('down')!, /not running/);
+		assert.match(texts.get('down')!, /is not connected/);
 		assert.match(texts.get('not-registered')!, /No repository is registered/);
 		assert.match(texts.get('stale')!, /timed out/);
 	});
@@ -47,9 +47,13 @@ suite('Axis daemon notice and changes label', () => {
 		assert.match(notice({ kind: 'failed', reason: 'crash_loop' }), /Restart Axis/);
 	});
 
-	test('a failure outranks a stale marker, and a stale marker outranks the degraded note', () => {
+	test('a failure and a degraded host outrank a stale marker (review SF2)', () => {
 		assert.match(notice({ kind: 'failed', reason: 'lock_held' }, { staleError: 'E_TIMEOUT' }), /Another Axis/);
-		assert.match(notice({ kind: 'degraded' }, { staleError: 'E_TIMEOUT' }), /did not answer/);
+		assert.match(notice({ kind: 'degraded' }, { staleError: 'E_METHOD_NOT_FOUND' }), /degraded mode/, 'review SF2: a degraded host with registered projects fails its worktree read; the cause is said, not "did not answer" (mutant: stale first)');
+		assert.match(notice({ kind: 'ready' }, { staleError: 'E_TIMEOUT' }), /did not answer/);
+		assert.match(notice({ kind: 'degraded' }, { notRegistered: true }), /degraded mode/, 'F2: degraded outranks "not registered" (mutant: the old order)');
+		assert.match(notice({ kind: 'failed', reason: 'crash_loop' }, { staleError: 'E_TIMEOUT' }), /crashed repeatedly/);
+		assert.match(notice({ kind: 'ready' }, { notRegistered: true }), /No repository is registered/);
 	});
 
 	test('error phrases are fixed text for every code, never the code or anything from the daemon', () => {
@@ -69,5 +73,16 @@ suite('Axis daemon notice and changes label', () => {
 		assert.strictEqual(changesLabel(wt({ dirty: { staged: 0, unstaged: 0, untracked: 3 }, ahead: 1, behind: 2 })), '3 untracked, 1 ahead, 2 behind');
 		assert.strictEqual(changesLabel(wt({ dirty: { staged: 0, unstaged: 0, untracked: 0 }, behind: 4 })), 'clean, 4 behind');
 		assert.strictEqual(changesLabel(wt({ ahead: 3 })), '3 ahead');
+	});
+
+	test('review SF2: approval cards only from a ready service; every other state says why and offers no Approve', () => {
+		assert.deepStrictEqual(approvalsAvailability({ kind: 'ready' }), { cards: true, line: '' });
+		for (const status of [{ kind: 'degraded' }, { kind: 'connecting' }, { kind: 'down' }, { kind: 'failed', reason: 'crash_loop' }] as const) {
+			const a = approvalsAvailability(status);
+			assert.strictEqual(a.cards, false, `${status.kind}: mutant: stale cards with Approve`);
+			assert.ok(a.line.length > 0);
+		}
+		assert.match(approvalsAvailability({ kind: 'degraded' }).line, /degraded mode/);
+		assert.match(approvalsAvailability({ kind: 'connecting' }).line, /connecting/);
 	});
 });

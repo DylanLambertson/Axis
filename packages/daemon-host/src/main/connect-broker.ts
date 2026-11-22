@@ -10,7 +10,21 @@ import { base64url, type MainIdentity } from "./attest-sign.js";
  * Runs in Electron main: no `electron`, no `@axis/*` package, no Node module.
  */
 
-export const CONNECT_REFUSALS = ["bad_nonce", "not_code_window", "bad_frame", "not_main_frame", "destroyed", "rate_limited", "not_ready"] as const;
+export const CONNECT_REFUSALS = [
+  "bad_nonce",
+  "not_code_window",
+  "bad_frame",
+  "not_main_frame",
+  "destroyed",
+  "rate_limited",
+  "not_ready",
+  // The supervisor stopped for good (PV-E0 F2): its closed FailureReason only, chosen after every sender check and the rate limit,
+  // so a frame that fails those learns nothing about the service.
+  "stopped_lock_held",
+  "stopped_bad_config",
+  "stopped_degraded",
+  "stopped_crash_loop",
+] as const;
 export type ConnectRefusal = (typeof CONNECT_REFUSALS)[number];
 
 /** What main knows about the sender of `vscode:axisConnect`. */
@@ -32,7 +46,12 @@ export interface PortPair<P> {
 }
 
 export interface ConnectBrokerOptions<P> {
-  readonly supervisor: { connect(identity: MainIdentity, port: unknown): boolean };
+  readonly supervisor: {
+    connect(identity: MainIdentity, port: unknown): boolean;
+    /** `DaemonSupervisor.state` and `.failure`: why there is no host to connect to, when it has stopped for good. */
+    state?(): string;
+    failure?(): string | undefined;
+  };
   readonly createChannel: () => PortPair<P>;
   readonly closePort: (port: P) => void;
   readonly randomBytes: (n: number) => Uint8Array;
@@ -122,6 +141,8 @@ export class ConnectBroker<P> {
     const id = checkSender(sender, this.#o.workbenchUrls);
     if (typeof id === "string") return refused(id);
     if (!this.#take(id)) return refused("rate_limited");
+    // Past every check: the window may now learn why the service is not there (its closed reason, nothing else).
+    const notReady = (): ConnectOutcome<P> => refused(this.#stopped() ?? "not_ready");
 
     let trusted = false;
     try {
@@ -134,7 +155,7 @@ export class ConnectBroker<P> {
     try {
       pair = this.#o.createChannel();
     } catch {
-      return refused("not_ready");
+      return notReady();
     }
     let sent = false;
     try {
@@ -149,7 +170,7 @@ export class ConnectBroker<P> {
     if (!sent) {
       this.#close(pair.daemonEnd);
       this.#close(pair.rendererEnd);
-      return refused("not_ready");
+      return notReady();
     }
     this.#windows.set(windowId, id);
     this.#emit("connected");
@@ -199,6 +220,17 @@ export class ConnectBroker<P> {
       this.#o.closePort(port);
     } catch {
       // already closed
+    }
+  }
+
+  /** The supervisor's closed failure as a refusal, or undefined while it is not `failed`. Never throws. */
+  #stopped(): ConnectRefusal | undefined {
+    try {
+      if (this.#o.supervisor.state?.() !== "failed") return undefined;
+      const reason = `stopped_${this.#o.supervisor.failure?.() ?? ""}`;
+      return (CONNECT_REFUSALS as readonly string[]).includes(reason) ? (reason as ConnectRefusal) : undefined;
+    } catch {
+      return undefined;
     }
   }
 
