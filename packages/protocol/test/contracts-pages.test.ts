@@ -26,7 +26,7 @@ test("the contract is served (PV-Q1 slice 2), no longer planned, with the design
   assert.deepEqual(tableProblems(contracts), []);
   assert.deepEqual(Object.entries(pagesMethods).map(([m, s]) => [m, s.sideEffect, s.tier, s.idempotency]), [
     ["list", "read", 0, "none"], ["get", "read", 0, "none"], ["versions", "read", 0, "none"], ["create", "write", 1, "required"],
-    ["update", "write", 1, "none"], ["restore", "write", 1, "none"], ["markReviewed", "write", 3, "none"], ["delete", "destructive", 3, "none"],
+    ["update", "write", 1, "none"], ["restore", "write", 1, "none"], ["markReviewed", "write", 4, "none"], ["delete", "destructive", 4, "none"],
   ]);
 });
 
@@ -67,7 +67,7 @@ test("a version's trust is consistent: hop only on untrusted or reviewed text; o
   rejects(get, v({ ...agentMeta, author: { kind: "admin" } }), "an unknown author");
 });
 
-test("tier-3 methods take an optional approval; the refusals are closed", () => {
+test("tier-4 methods take an optional approval; the refusals are closed", () => {
   for (const m of ["markReviewed", "delete"]) {
     const s = schemaOf("axis.pages", m, "request");
     accepts(s, { pageId: "p", ...(m === "markReviewed" ? { seq: 1 } : {}) }, `${m} without an approval`);

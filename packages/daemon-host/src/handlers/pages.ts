@@ -1,5 +1,5 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
-import { DaemonError, type Handler, type HandlerContext } from "@axis/daemon";
+import { DaemonError, type ApprovalContentHook, type Handler, type HandlerContext } from "@axis/daemon";
 import { PAGES_CONTRACT, PAGES_REFUSAL_MESSAGE, PAGES_VERSION, pagesMethods, type PagesMethod, type PagesRequest } from "@axis/protocol";
 import { PagesRefusal, type PageCaller, type PagesService } from "../pages/service.js";
 import type { HandlerRegistrar } from "./anchor-guard.js";
@@ -8,8 +8,10 @@ import type { HandlerRegistrar } from "./anchor-guard.js";
  * `axis.pages/1` over the bridge (ticket PV-Q1 slice 2, ADR 0010, docs/design/pages-store.md §5). The user's own attested
  * desktop connection only: the rows admit only `user`, and every handler refuses any other actor and a web client again
  * with `not_found`. The caller is built here from `ctx.identity`, never from the payload. `markReviewed` and `delete` are
- * tier 3: the daemon's pipeline has the challenge resolved in main's native dialog before the handler runs, so a renderer
- * request alone never marks a version reviewed (threat-model-phase2a O-4).
+ * tier 4: the daemon's pipeline has the challenge confirmed in main's native dialog (with its proof) before the handler
+ * runs, so a renderer request and its own `resolve` never mark a version reviewed or delete a page (threat-model-phase2a
+ * O-4). Tier 3 would not do: its challenge is released by `resolve` alone. Their content hooks (`pages/confirm.ts`) bind
+ * the approval to the page as it is and give main's dialog a line naming it.
  *
  * Every refusal leaves as `{ code, PAGES_REFUSAL_MESSAGE, details: { reason } }` of the contract's closed set; anything else
  * (a store reason the contract does not have, a database error) is `E_INTERNAL` with no text of its own. Every answer is
@@ -56,6 +58,7 @@ export function createPagesHandlers(service: PagesService): Readonly<Record<Page
 }
 
 /** Register `axis.pages/1` through the host's registrar (never the daemon itself). */
-export function registerPagesHandlers(registrar: HandlerRegistrar, service: PagesService): void {
-  registrar.register(PAGES_CONTRACT, PAGES_VERSION, createPagesHandlers(service));
+export function registerPagesHandlers(registrar: HandlerRegistrar, service: PagesService, content?: { readonly markReviewed: ApprovalContentHook; readonly delete: ApprovalContentHook }): void {
+  if (content === undefined) registrar.register(PAGES_CONTRACT, PAGES_VERSION, createPagesHandlers(service));
+  else registrar.register(PAGES_CONTRACT, PAGES_VERSION, createPagesHandlers(service), { content });
 }

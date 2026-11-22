@@ -18,7 +18,7 @@ import { ANCHOR_PAYLOAD_ALLOWLIST } from "./anchor/preflight.js";
 import { DegradedStartError } from "./exit-codes.js";
 import { summarizeError } from "./log/summarize-error.js";
 import type { Logger } from "./log/logger.js";
-import { checkCoverage, policySurface, RuleTablePolicy, InMemoryTrustRegistry, type PolicySurface } from "./policy/index.js";
+import { checkCoverage, checkPluginCoverage, policySurface, RuleTablePolicy, InMemoryTrustRegistry, type PolicySurface } from "./policy/index.js";
 import type { Clock } from "./ports/clock.js";
 import type { StoragePort } from "./ports/storage.js";
 import type { TrustRegistry } from "./ports/trust.js";
@@ -290,8 +290,10 @@ export function createDaemonHost(config: HostConfig, ports: StartupPorts, option
     const full = policySurface(config.contracts);
     const surface = degraded === undefined ? full : degradedSurface(full);
     const trust = ports.trust ?? new InMemoryTrustRegistry();
-    const policy = new RuleTablePolicy(trust, surface.rules);
+    // Plugin calls read the journal's grants; the plugin sets are checked against the full served table (fails closed).
+    const policy = new RuleTablePolicy(trust, surface.rules, degraded === undefined ? { state: (pluginId, projectId) => journal.plugins.state(pluginId, projectId) } : undefined);
     checkCoverage(surface);
+    checkPluginCoverage();
     const served = [...new Set(Object.keys(surface.registry).map((k) => k.slice(0, k.indexOf("/"))))];
     alive();
     const services: HostServices = Object.freeze({

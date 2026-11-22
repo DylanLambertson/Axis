@@ -36,6 +36,8 @@
 | `update` (on top of `baseSeq`), `setStatus`, `assign`, `link`, `unlink` | write | 1 | none |
 | `delete` | destructive | 3 | none |
 
+- `delete` is tier 3: its challenge is **resolved in the renderer** (`axis.approvals/1.resolve`) with no native step, which only tier 4 has. Deleting a task lowers no trust and runs nothing; a task Start, which runs a worker, is tier 4 (PV-T1 slice 2).
+
 - No request carries an author, a source, a hop, a trust flag, a prompt or a command. Every row admits only `user`.
 - Refusals are closed: `not_found`, `too_large`, `stale_version`, `limit_reached`, `assignee_refused`, `link_refused`. Store reasons outside the set (`author`, `text`, `exists`, `status`, `assignee`, `link`) are internal: the slice-2 handler answers them as `E_INTERNAL`. The store checks only lengths and kinds; a value the table refuses (an empty or bad title, a bad id, an unknown project) surfaces as a database error without content, which the handler also answers as `E_INTERNAL`; the contract's schemas refuse all of them before the store.
 - **Slice 2 binds the caller.** The store trusts the author it is given (an `author: { kind: "user" }` makes a trusted revision); the slice-2 handler builds the author from the attested connection, never a payload, and writes the audit rows with ids, kinds and counts only.
