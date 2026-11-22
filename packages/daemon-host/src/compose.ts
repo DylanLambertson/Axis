@@ -105,6 +105,8 @@ export interface ComposeOptions {
   readonly observeSealedWriters?: (writers: { readonly challenge: { append(e: never): unknown }; readonly composer: { append(e: never): unknown } }) => void;
   /** TEST ONLY: sees whether the composer binding was given the WT-2 guard (review c3 r1 N-6). */
   readonly observeAgent?: (agent: { readonly commands: boolean; readonly gitReads: boolean; readonly commandLimits: CommandLimits }) => void;
+  /** TEST ONLY: sees the `agentOf` the messaging binding was given (PV-G4: it knows no run unless `messaging.enabled`). */
+  readonly observeMessaging?: (m: { readonly agentOf: (runId: string) => string | undefined }) => void;
   /** How long shutdown waits for composer runs to record their last rows before the audit writers are sealed (default 1000). */
   readonly composerSettleMs?: number;
   /** Composer runs (`axis.runs/1`, docs/design/composer-runtime.md); see `ComposerOptions`. */
@@ -114,6 +116,8 @@ export interface ComposeOptions {
   };
   /** Period of the event sources (docs/design/events.md section 4; default 250 ms). */
   readonly eventPumpMs?: number;
+  /** Messaging for agent runs (delivery, the send and read tools); off by default, see `HostMessaging.enabled`. */
+  readonly messaging?: { readonly enabled?: boolean };
 }
 
 export interface ComposedHost {
@@ -229,7 +233,9 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
         // Composer runs: the broker's audit rows mark the anchor batch dirty like every other writer.
         const providers = createProvidersBinding({ redactor: ports.redactor, audit: composerWriter, ...productionConnection(options.composer?.anthropic) });
         // axis.messages/1 (PV-M3): service, settings and delivery into runs; its rows go through the sealed composer writer.
-        const messaging = createMessagingBinding(hostMessagingDeps({ journal: parts.journal, audit: composerWriter, monotonic: () => ports.clock.monotonic(), scan: (text) => scanner.scan(text, { part: "message" }), logger, holdsSecret: messageSecretCheck(ports.redactor) }));
+        const messagingDeps = hostMessagingDeps({ journal: parts.journal, audit: composerWriter, monotonic: () => ports.clock.monotonic(), scan: (text) => scanner.scan(text, { part: "message" }), logger, holdsSecret: messageSecretCheck(ports.redactor), enabled: options.messaging?.enabled === true });
+        options.observeMessaging?.({ agentOf: (id) => messagingDeps.agentOf?.(id) });
+        const messaging = createMessagingBinding(messagingDeps);
         const agent = createAgentBinding({
           locator: worktrees.locator,
           repositoryRoots: projectPaths,
@@ -237,7 +243,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
           redactor: ports.redactor,
           env: () => ports.env,
           approvals: approvals.runs, taintStore: parts.journal.composer, deliveries: messaging.delivery, // IAC-T: run taint, recorded in its journal record
-          messaging: messaging.participation, // PV-M4: offered to no run until PV-G4 records a run's agent (`agentOf` knows none)
+          messaging: messaging.participation, // PV-M4: offered to no run while messaging is off (`agentOf` knows none)
           now: () => ports.clock.now(),
           platform: config.platform,
           ...(options.composer?.mock === undefined ? {} : { mock: options.composer.mock }),

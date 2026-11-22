@@ -14,7 +14,8 @@ export interface Connection {
   close(): void;
 }
 
-export type ActorId = "user" | "daemon" | `agent:${string}`;
+/** `plugin:<id>` (ADR 0008 decision 3): attested by main per plugin view; never `user`, and no policy row admits it until PV-K1b. */
+export type ActorId = "user" | "daemon" | `agent:${string}` | `plugin:${string}`;
 
 /**
  * Who is on the other end, as established by main (desktop) or the
@@ -28,7 +29,9 @@ export interface Identity {
   readonly actor: ActorId;
   readonly workspaceId?: string;
   readonly trusted: boolean;
-  readonly clientKind: "desktop" | "web";
+  readonly clientKind: "desktop" | "web" | "plugin";
+  /** The code window (`w<n>`) hosting a plugin view; present exactly when `clientKind` is `plugin` (ADR 0008 decision 3). */
+  readonly hostWindowId?: string;
 }
 
 /**

@@ -18,6 +18,12 @@
 // reads included. No agent, plugin or message creates, changes or groups an agent: group membership feeds the messaging
 // send policy (`accepts_from: group`). `create` checks trust in its handler when it makes a worktree (the row cannot: a
 // create with an existing home needs none); none is in WEB_ALLOWED.
+//
+// axis.attention/1 (PV-D4): user only. The needs-attention counts of a project are the user's home view, never an agent's;
+// not in WEB_ALLOWED.
+//
+// axis.usage/1 (PV-D3): user only. Usage, cost and budget left are the user's home view (money), never an agent's; not in
+// WEB_ALLOWED.
 import { userRule, type Rule } from "./rule-types.js";
 
 export const RULES: Readonly<Record<string, Rule>> = Object.freeze({
@@ -71,10 +77,13 @@ export const RULES: Readonly<Record<string, Rule>> = Object.freeze({
   "axis.agents/1.update": userRule(2),
   "axis.agents/1.archive": userRule(1),
   "axis.agents/1.restore": userRule(1),
+  "axis.agents/1.start": userRule(2, "project"),
   "axis.agent-groups/1.list": userRule(0),
   "axis.agent-groups/1.create": userRule(1),
   "axis.agent-groups/1.rename": userRule(1),
   "axis.agent-groups/1.reorder": userRule(1),
   "axis.agent-groups/1.delete": userRule(1),
   "axis.agent-groups/1.assign": userRule(2),
+  "axis.attention/1.summary": userRule(0),
+  "axis.usage/1.summary": userRule(0),
 });

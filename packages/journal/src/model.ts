@@ -43,6 +43,8 @@ export const createRunSchema = z
     /** Required: the authenticated principal, never a default. */
     createdBy: actorSchema,
     idempotencyKey: idempotencyKey.optional(),
+    /** The agent the run is started for (PV-G4); the v12 trigger refuses one archived, of another kind or homed elsewhere. */
+    agentId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/).optional(),
   })
   .strict();
 
@@ -167,6 +169,8 @@ export interface CreateRunInput {
   /** The authenticated principal of the connection that asked, never a value taken from a request payload. */
   readonly createdBy: AuditActor;
   readonly idempotencyKey?: string;
+  /** The agent this run is started for (PV-G4), recorded in `agent_runs.agent_id` in the same insert. */
+  readonly agentId?: string;
 }
 
 export interface TransitionOptions {

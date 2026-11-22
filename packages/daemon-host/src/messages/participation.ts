@@ -12,8 +12,9 @@ import type { MessageService } from "./service.js";
  * - **Attested, never from the model.** The caller is built from the run: its agent (`agentOf`, which the directory must
  *   know), its id, `verified: true` (a composer run is the daemon's own), and the highest hop the run has received. The
  *   tools' argument schemas are strict, so a model field naming a sender, an agent, a project or a hop is refused.
- * - **Inert until PV-G4.** The host's `agentOf` knows no run yet (no run records its agent), so `agentOf` answers
- *   undefined and neither tool is offered to any run in production.
+ * - **Inert unless messaging is enabled.** A run started for an agent records it (PV-G4), but the host's `agentOf` reads
+ *   it only with `ComposeOptions.messaging.enabled` (default off); off, `agentOf` answers undefined and neither tool is
+ *   offered to any run in production.
  * - **Reads are framed and checked.** A `read_messages` result is framed like a delivery (a nonce drawn for it, every body
  *   line prefixed `| `), every body escaped by the service (`toMessageText`); a body whose stored raw text or escaped text
  *   the host redactor would change (a secret) is withheld, never shown (the service checks the raw text and returns ids only). Each shown message from an agent, a plugin or a CLI sender is a taint receipt
@@ -47,7 +48,7 @@ export interface ReadOutcome {
 }
 
 export interface ComposerMessaging {
-  /** The agent a run acts for, when the directory knows it; undefined: neither tool is offered (every run until PV-G4). */
+  /** The agent a run acts for, when the directory knows it; undefined: neither tool is offered (every run while messaging is off). */
   agentOf(runId: string): string | undefined;
   send(who: RunParticipant, args: SendArgs): Promise<string>;
   read(who: RunParticipant, args: ReadArgs): ReadOutcome;

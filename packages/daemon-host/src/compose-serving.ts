@@ -8,6 +8,9 @@ import { APPROVALS_CONTRACT, APPROVALS_VERSION, PROVIDERS_CONTRACT, PROVIDERS_VE
 import type { SecretScanner } from "@axis/secret-scan";
 import { createGitOperations, createGitPort } from "./bindings/git.js";
 import { registerForgeServing } from "./compose-forge.js";
+import { registerAttentionServing } from "./handlers/attention.js";
+import { registerUsageServing } from "./handlers/usage.js";
+import { usageServiceDeps } from "./usage/service.js";
 import { createCommitPreparer, createReviewService } from "./bindings/review.js";
 import { createTempIndexProvider } from "./bindings/review-tempindex.js";
 import { createSshResolver, unavailableSshResolver, type SshSpawn } from "./bindings/ssh-resolver.js";
@@ -25,7 +28,7 @@ import { createHostProjectTrustGate } from "./gate/project-trust-gate.js";
 import { ticketedStart } from "./gate/project-trust.js";
 import type { HandlerRegistrar } from "./handlers/anchor-guard.js";
 import { createApprovalsHandlers } from "./handlers/approvals.js";
-import { registerCliRunsHandlers } from "./handlers/cli-runs.js";
+import { registerCliRunsHandlers, startCliRun } from "./handlers/cli-runs.js";
 import { registerComposerRunsHandlers } from "./handlers/composer-runs.js";
 import { PushedBases } from "./handlers/git-common.js";
 import { registerGitHandlers } from "./handlers/git.js";
@@ -108,6 +111,7 @@ export function registerServing(registrar: HandlerRegistrar, services: HostServi
     journal, mutex: worktrees.mutex, needsAttention: worktrees.needsAttention });
   if (built.messaging === undefined) throw new AxisError("E_INTERNAL", "The host composition is incomplete", { reason: "not_built" });
   registerMessagesHandlers(registrar, built.messaging);
+  const cliRuns = { service: runs.service, journal, control, gate, minter: ctx.minter, mutex: worktrees.mutex, needsAttention: worktrees.needsAttention, platform: config.platform };
   registerAgentsHandlers(registrar, {
     journal,
     mutex: worktrees.mutex,
@@ -117,8 +121,10 @@ export function registerServing(registrar: HandlerRegistrar, services: HostServi
     // worktree's create goes through the project trust gate like any other (the worktrees port spends its ticket).
     admitNewHome: (_caller, projectId) => journal.getProject(projectId)?.trusted === true,
     worktrees: { create: (req, ctx) => worktrees.service.create(req, { ...ctx, trust: (scope) => gate.admit({ ...scope, windowId: ctx.caller.windowId, signal: ctx.signal }) }) },
+    // PV-G4: an agent's CLI run goes through the one CLI start path, so the same project trust gate and ticket apply.
+    startCli: (req, context) => startCliRun(cliRuns, req, context),
   });
-  registerCliRunsHandlers(registrar, { service: runs.service, journal, control, gate, minter: ctx.minter, mutex: worktrees.mutex, needsAttention: worktrees.needsAttention, platform: config.platform });
+  registerCliRunsHandlers(registrar, cliRuns);
   registrar.register(
     REVIEW_CONTRACT,
     REVIEW_VERSION,
@@ -140,4 +146,11 @@ export function registerServing(registrar: HandlerRegistrar, services: HostServi
     onBookkeepingError: () => logger?.warn("request.failed", { reason: "git_bookkeeping" }),
   });
   registerForgeServing(registrar, { pty, projectPath: (id) => journal.getProject(id)?.path, git, platform: config.platform, audit: (e) => (audit.append(e), services.anchors.noteWrite()), monotonic: () => ports.clock.monotonic(), pins: journal.forgePins, ...(logger === undefined ? {} : { logger }) });
+  registerAttentionServing(registrar, {
+    projectExists: (id) => journal.getProject(id) !== undefined,
+    records: journal.attention,
+    cliRun: (id) => runs.service.get(id),
+    composerRun: (id) => composer.get(id),
+  });
+  registerUsageServing(registrar, usageServiceDeps(journal, composer));
 }

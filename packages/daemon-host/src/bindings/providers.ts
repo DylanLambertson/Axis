@@ -10,8 +10,8 @@ export type { FetchLike, Pricing, SecretBackend };
 
 /**
  * The network providers and the connection vault (docs/design/composer-runtime.md ticket C6). This is the ONLY file that
- * imports `@axis/anthropic` and `@axis/vault` (`daemon-host.md` 2.1; `test/packages/imports.test.mjs`, and the staging
- * scan's `RESTRICTED_MODULES`). It hands the agent binding guarded providers and nothing of the vault.
+ * imports `@axis/anthropic`, and one of the two that import `@axis/vault`, with the integrations binding (ADR 0009
+ * decision 5; `daemon-host.md` 2.1; `test/packages/imports.test.mjs`, and the staging scan's `RESTRICTED_MODULES`). It hands the agent binding guarded providers and nothing of the vault.
  *
  * - **The key (PRV-2).** Read from the vault once per provider request, immediately before it (the adapter's `apiKey`), and
  *   never kept by this binding, a run row, an event or an error. It is registered with the host redactor before the adapter

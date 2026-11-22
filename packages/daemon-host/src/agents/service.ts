@@ -15,7 +15,7 @@ import type { ProjectMutex } from "../worktrees/project-mutex.js";
  */
 
 export class AgentRefusal extends Error {
-  constructor(readonly code: "E_NOT_FOUND" | "E_CONFLICT", readonly reason: string) {
+  constructor(readonly code: "E_NOT_FOUND" | "E_CONFLICT" | "E_UNAVAILABLE", readonly reason: string) {
     super("agent request refused");
   }
 }
@@ -111,6 +111,9 @@ export function createAgentsService(deps: AgentsServiceDeps): AgentsService {
           } catch (e) {
             if (e instanceof DaemonError && e.code === "E_CANCELLED") throw e;
             if (c.ctx.signal.aborted) throw new DaemonError("E_CANCELLED", "The request was cancelled.");
+            // The project trust gate refused through the create's hook (binding lost, main's Workspace Trust denies, a revoke,
+            // a stale ticket): the user must see the trust reason, not an unavailable home.
+            if (e instanceof AxisError && e.code === "E_POLICY_DENIED" && e.detail["reason"] === "untrusted") return refuse("E_CONFLICT", "untrusted_project");
             return refuse("E_CONFLICT", "home_unavailable");
           }
           // A refusal here leaves the new workspace without an agent (listed under Workspaces, ADR 0006 decision 5).
