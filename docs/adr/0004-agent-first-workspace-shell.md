@@ -245,3 +245,7 @@ ADR 0006 ("Agent home information architecture") amends this ADR: the app lands 
 ## Amendment (2026-11-21, ADR 0007)
 
 ADR 0007 ("Inter-agent messaging") amends PTY-5 (implication 3 and amendment item 6): `AXIS_*` stays denied, and for a CLI run whose agent has messaging enabled, and only then, the spawn carries a separate `messagesEndpoint { token }` request (a spawn-message schema change, PV-M6), and the pty process, after its unchanged PTY-5 re-check of the environment and after creating the endpoint, adds exactly `AXIS_MESSAGES_ENDPOINT` and `AXIS_MESSAGES_TOKEN` to the child's environment; an inherited copy of either, in any letter case, is still removed by the deny-list, and a spawn environment carrying either is still refused. Decision 10 is unchanged: Axis never writes into a CLI agent's terminal. Its section "Amendment to ADR 0004" governs where wording differs.
+
+## Amendment (2026-11-22, ADR 0009)
+
+ADR 0009 ("Integrations and the credential proxy") amends decision 9's engineering addition "Axis stores no forge credentials": it holds until Phase 4a; from 4a Axis may store a read-only, fine-grained, expiring forge token in the vault, used only by the daemon credential proxy, and a write-capable forge credential needs a new decision. Push and `gh pr create` keep using the user's own credentials. Its section "Amendment to ADR 0004" governs where wording differs.

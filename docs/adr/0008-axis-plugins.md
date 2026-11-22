@@ -132,7 +132,7 @@ One **sandboxed `WebContentsView` per plugin**, created and placed by main insid
 ### 8. Install, update, enable, extraction
 
 - **User-only and main-confirmed.** Install, every update that changes anything in the diff below, every grant increase and enable are user-only calls, shown in a **main-built native dialog** that lists the tier, permissions in plain language, origins, contribution points and integrations, and the dangerous-combination lines. A renderer or a plugin cannot answer it (the EL-4 pattern of ADR 0003 D4 and of the run-trust prompt, owner decisions §5) [D].
-- **Updates are never automatic.** The update diff covers **tier, permissions, origins, contribution points and integrations**; any increase in any of them is blocked until the user approves it; a decrease applies at once.
+- **Updates are never automatic.** The update diff covers **tier, permissions, origins, contribution points and integrations**; any increase in any of them is blocked until the user approves it; a decrease applies at once. *Amended 2026-11-22 (see "Amendment (2026-11-22, threat model 4a)" below): no update is applied without the user's confirmation.*
 - **Integrity at every load:** the bundle SHA-256 recorded at install is checked at every load; a mismatch disables the plugin and tells the user.
 - **Extraction** (PLG-9): the whole archive is checked against every rule below **before any entry is read, the manifest and the signature included**, so no entry is resolved by name while a duplicate or a colliding name could still shadow it. Refused: symlinks, hard links, absolute paths, `..` entries, and (engineering additions) entry names with NUL, backslash, a drive letter or a Windows reserved name; **exact duplicate names**; two names that collide after **Unicode normalisation and case folding** (names are compared NFC-normalised and case-folded, so an NFC and an NFD spelling of one name collide); a name component over 255 UTF-8 bytes, a path over 1,024 bytes or deeper than 16 folders. Caps: entry count (2,000), per-file size (10 MiB) and total size (50 MiB), measured on the decompressed bytes as they stream. Extraction goes into a fresh directory owned by Axis, never over an existing one.
 - **Repositories cannot install or enable.** Plugin enablement and grants are user or application scope only (the CFG-1 rule); a repository file may only **recommend** a plugin, shown as a notice, and a repository setting that tries to enable one has no effect and shows a warning.
@@ -164,6 +164,14 @@ ADR 0003's decisions are not rewritten; where wording differs, this section gove
 2. **D1 identity.** Besides window connections from `vscode:axisConnect`, main mints one connection per plugin view at the view's creation, signed like a window's, with `clientKind: plugin`, a `p<n>` window id and the host's `hostWindowId`. D1.3's checks are unchanged and still refuse a plugin view that sends `vscode:axisConnect`; main ignores every other IPC message from a plugin view.
 3. **D5 audit.** The record's `actor` may be `plugin:<id>`.
 4. **D7 unchanged.** The plugin port shim adds no `contextBridge` global and no channel prefix.
+
+## Amendment (2026-11-22, threat model 4a)
+
+Decided by the project lead under the owner's delegation (`docs/security/threat-model-phase4a.md` §7, OI-6; `owner-decisions-2026-11-21.md` §6a). Where wording differs, this section governs decision 8.
+
+1. **Updates are never silent.** Every update, including one whose diff is empty or holds only decreases, is shown in the main-built dialog (plugin, old and new version, publisher, and the diff over tier, permissions, origins, contribution points and integrations, shown even when empty) and is applied only after the user confirms it. Without confirmation nothing changes.
+2. **What changes from decision 8.** Before, a decrease applied at once with no dialog. Now a decrease applies at once **only through that dialog**: once the user confirms, it takes effect immediately, with no further step. An increase is approved in the same dialog, as before.
+3. Gate line `threat-model-phase4a.md` 4a/L26 tests it; residual RR-73 (a signed update with malicious code inside its existing permissions) remains, because the dialog shows the version, publisher and permissions, not the code.
 
 ## Consistency with other ADRs
 
@@ -213,3 +221,7 @@ Before 4a ships: revert this ADR; nothing depends on it. After: disabling every 
 ## Tickets this unblocks
 
 PV-K1 (principal), PV-K2 (manifest, install, list, extraction), PV-K3 (host), PV-K4 and PV-K5; PV-R6 (ADR 0009) and PV-R8 (threat model) follow it.
+
+## Amendment (2026-11-22, ADR 0009)
+
+ADR 0009 ("Integrations and the credential proxy") adds one dangerous combination to decision 6: any `integration:<id>` together with any `net:<origin>`, read-only integrations included, reads "can send data from <integration> to <origin>". Its section "Amendment to ADR 0008" governs where wording differs.
