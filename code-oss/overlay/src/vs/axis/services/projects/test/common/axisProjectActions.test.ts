@@ -4,7 +4,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { AXIS_PROJECT_OUTCOMES, AXIS_PROJECT_REQUEST_CHANNEL, AXIS_PROJECT_RESULT_CHANNEL, AxisProjectActionClient, IAxisProjectTransport, AXIS_MAX_INLINE_NAME, isolateName, outcomeSentence, plainName, projectActionRequest, projectChip, toOutcome, windowProjectState } from '../../common/axisProjectActions.js';
+import { AXIS_PROJECT_ACTIONS, AXIS_PROJECT_OUTCOMES, AXIS_PROJECT_REQUEST_CHANNEL, AXIS_PROJECT_RESULT_CHANNEL, AxisProjectActionClient, IAxisProjectTransport, AXIS_MAX_INLINE_NAME, isolateName, outcomeSentence, plainName, projectActionRequest, projectChip, toOutcome, toWindowRunTrust } from '../../common/axisProjectActions.js';
 
 /** A transport that records what the renderer sends and lets the test answer as main. */
 function fakeTransport() {
@@ -41,14 +41,11 @@ suite('Axis project actions (renderer, S3)', () => {
 		assert.strictEqual(new Set(AXIS_PROJECT_OUTCOMES.map(outcomeSentence)).size, AXIS_PROJECT_OUTCOMES.length, 'each outcome says something different');
 	});
 
-	test('the window project: one local checkout row decides it; run trust is known only from the daemon (never from discovery)', () => {
-		const projects = [{ id: 'p1', name: 'one', trusted: true }, { id: 'p2', name: 'two', trusted: false }];
-		assert.deepStrictEqual(windowProjectState({ source: 'daemon', projects, localCheckoutProjectIds: ['p1', 'p1'] }), { kind: 'registered', project: projects[0], known: true });
-		assert.deepStrictEqual(windowProjectState({ source: 'offline', projects, localCheckoutProjectIds: ['p1'] }), { kind: 'registered', project: projects[0], known: false });
-		assert.deepStrictEqual(windowProjectState({ source: 'unregistered', projects, localCheckoutProjectIds: ['p1'] }), { kind: 'none' }, 'a discovered folder the daemon does not hold is not a project');
-		assert.deepStrictEqual(windowProjectState({ source: 'daemon', projects, localCheckoutProjectIds: [] }), { kind: 'none' });
-		assert.deepStrictEqual(windowProjectState({ source: 'daemon', projects, localCheckoutProjectIds: ['p1', 'p2'] }), { kind: 'none' }, 'two candidates: no guess');
-		assert.deepStrictEqual(windowProjectState({ source: 'daemon', projects, localCheckoutProjectIds: ['gone'] }), { kind: 'none' });
+	test('status: a request like the others, three closed answers; anything else is unknown', () => {
+		assert.deepStrictEqual(projectActionRequest('n1', 'status'), { nonce: 'n1', action: 'status' });
+		assert.deepStrictEqual(['status_trusted', 'status_read_only', 'status_not_registered', 'unavailable', 'busy', 'no_folder', 'trusted'].map(o => toWindowRunTrust(o as never)),
+			['trusted', 'read_only', 'not_registered', 'unknown', 'unknown', 'unknown', 'unknown'], 'an action outcome (trusted) is not a status (mutant: mapped)');
+		assert.ok(!(AXIS_PROJECT_ACTIONS as readonly string[]).includes('status'), 'status is not a user action: no command or button asks for it');
 	});
 
 	test('chips use a glyph AND words; trust from discovery is shown as unknown, never as trusted to run', () => {

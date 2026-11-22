@@ -263,3 +263,39 @@ test("review N1/N2/N3: an approval waiting goes before a project dialog; shutdow
   w.actions.windowClosed(5);
   assert.equal((await w.actions.act(5, { nonce: "n", action: "untrust" }))?.outcome, "untrusted", "mutant: the map is not pruned");
 });
+
+test("status: no dialog, changes nothing, three closed outcomes from the window's folder only; never an id, name or path", async () => {
+  const cases: Array<[Record<string, unknown>, string]> = [
+    [inspected(), "status_not_registered"],
+    [inspected({ registered: { projectId: "p-secret", trusted: false } }), "status_read_only"],
+    [inspected({ registered: { projectId: "p-secret", trusted: true } }), "status_trusted"],
+  ];
+  for (const [answer, want] of cases) {
+    const r = rig({ answers: (m) => (m.type === "projects.inspect" ? answer : undefined) });
+    const reply = await r.actions.act(1, { nonce: "s1", action: "status" });
+    assert.deepEqual(reply, { nonce: "s1", outcome: want }, "exactly two keys: nothing about the project leaks");
+    assert.deepEqual(r.sent.map((m) => [m.type, m.path]), [["projects.inspect", FOLDER]], "only an inspect of the window's folder");
+    assert.equal(r.shown.length, 0, "no dialog");
+  }
+  // The folder is the window's: a payload cannot name one (strict schema), and a window without one has no status.
+  const r = rig();
+  assert.equal(await r.actions.act(1, { nonce: "s", action: "status", path: "/etc" }), undefined);
+  assert.equal(await act(rig({ folder: undefined }), "status"), "no_folder");
+  assert.equal(await act(rig({ send: false }), "status"), "unavailable", "a host that is down or degraded is unavailable");
+  assert.equal(await act(rig({ answers: (m) => (m.type === "projects.inspect" ? { ok: false, code: "E_UNAVAILABLE" } : undefined) }), "status"), "unavailable", "a degraded host refuses every project message");
+});
+
+test("status has its own bucket: polling never uses up the dialog actions, one in flight, at most 20 a minute, no cooldown", async () => {
+  const r = rig({ press: () => 0 });
+  const outcomes = [];
+  for (let i = 0; i < 20; i++) outcomes.push(await act(r, "status"));
+  assert.equal(outcomes.includes("busy"), false);
+  assert.equal(await act(r, "status"), "busy", "the 21st in a minute (mutant: no status cap)");
+  assert.equal(await act(r, "add"), "cancelled", "the dialog bucket is untouched by status (mutant: one shared bucket)");
+  const r2 = rig();
+  const first = r2.actions.act(1, { nonce: "a", action: "status" });
+  assert.equal((await r2.actions.act(1, { nonce: "b", action: "status" }))?.outcome, "busy", "one status in flight per window");
+  assert.equal((await first)?.outcome, "status_not_registered");
+  r.tick(60_001);
+  assert.equal(await act(r, "status"), "status_not_registered", "the bucket refills; a cancelled add set no status cooldown");
+});

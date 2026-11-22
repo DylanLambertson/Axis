@@ -9,7 +9,7 @@
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
-import { AxisProjectAction, AxisProjectOutcome } from './axisProjectActions.js';
+import { AxisProjectAction, AxisProjectOutcome, AxisProjectRequest, AxisWindowRunTrust, toWindowRunTrust } from './axisProjectActions.js';
 
 export const IAxisProjectActionsService = createDecorator<IAxisProjectActionsService>('axisProjectActionsService');
 
@@ -19,13 +19,17 @@ export interface IAxisProjectActionsService {
 	readonly waiting: AxisProjectAction | undefined;
 	/** The last outcome, for the dashboard banner; cleared when a new action starts. */
 	readonly lastOutcome: AxisProjectOutcome | undefined;
+	/** Main's last `status` answer for this window's folder; `unknown` until one arrives or when main cannot tell. */
+	readonly windowTrust: AxisWindowRunTrust;
 	readonly onDidChange: Event<void>;
 	/** One at a time: a second call while one waits answers `busy` without asking main. */
 	run(action: AxisProjectAction): Promise<AxisProjectOutcome>;
+	/** Ask main for `status` again (on a data change and after an action; never on a timer). One in flight; calls meanwhile coalesce. */
+	refreshStatus(): void;
 }
 
 export interface IAxisProjectActionClient {
-	run(action: AxisProjectAction): Promise<AxisProjectOutcome>;
+	run(action: AxisProjectRequest): Promise<AxisProjectOutcome>;
 	dispose(): void;
 }
 
@@ -36,6 +40,9 @@ export class AxisProjectActionsModel extends Disposable implements IAxisProjectA
 	readonly onDidChange = this._onDidChange.event;
 	private _waiting: AxisProjectAction | undefined;
 	private _lastOutcome: AxisProjectOutcome | undefined;
+	private _windowTrust: AxisWindowRunTrust = 'unknown';
+	private statusInFlight = false;
+	private statusAgain = false;
 
 	constructor(private readonly client: IAxisProjectActionClient | undefined) {
 		super();
@@ -43,6 +50,32 @@ export class AxisProjectActionsModel extends Disposable implements IAxisProjectA
 
 	get waiting(): AxisProjectAction | undefined { return this._waiting; }
 	get lastOutcome(): AxisProjectOutcome | undefined { return this._lastOutcome; }
+	get windowTrust(): AxisWindowRunTrust { return this._windowTrust; }
+
+	refreshStatus(): void {
+		if (this.client === undefined || this._store.isDisposed) {
+			return;
+		}
+		if (this.statusInFlight) {
+			this.statusAgain = true;
+			return;
+		}
+		this.statusInFlight = true;
+		this.client.run('status').then(toWindowRunTrust, () => 'unknown' as const).then(trust => {
+			this.statusInFlight = false;
+			if (this._store.isDisposed) {
+				return;
+			}
+			if (trust !== this._windowTrust) {
+				this._windowTrust = trust;
+				this._onDidChange.fire();
+			}
+			if (this.statusAgain) {
+				this.statusAgain = false;
+				this.refreshStatus();
+			}
+		});
+	}
 
 	async run(action: AxisProjectAction): Promise<AxisProjectOutcome> {
 		if (this._waiting !== undefined) {
@@ -61,7 +94,9 @@ export class AxisProjectActionsModel extends Disposable implements IAxisProjectA
 			outcome = 'unavailable';
 		}
 		this._waiting = undefined;
-		return this.finish(outcome);
+		const done = this.finish(outcome);
+		this.refreshStatus(); // the action may have changed this folder's record
+		return done;
 	}
 
 	override dispose(): void {

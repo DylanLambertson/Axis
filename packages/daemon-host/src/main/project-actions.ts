@@ -17,15 +17,19 @@ import type { ChoiceRequest, NativeRefusal } from "./native-queue.js";
  *   same action for that folder is refused `busy` for 60 s (at most 64 folders remembered; the oldest goes first).
  * - Cancel is the first button, the default and the cancel id; no grant is ever the default.
  * - `untrust` has no dialog: it only lowers privilege.
+ * - `status` has no dialog and changes nothing: it inspects the window's folder and answers one of three closed outcomes
+ *   (`status_trusted`, `status_read_only`, `status_not_registered`), never a project id, name or path. It has its own bucket
+ *   (one in flight and at most 20 a minute per window) so a view asking cannot use up the dialog actions' limit, and no cooldown.
  */
-export const PROJECT_ACTIONS = ["add", "trust", "untrust"] as const;
+export const PROJECT_ACTIONS = ["add", "trust", "untrust", "status"] as const;
 export type ProjectAction = (typeof PROJECT_ACTIONS)[number];
-export const PROJECT_OUTCOMES = ["added", "added_read_only", "trusted", "untrusted", "cancelled", "expired", "no_folder", "not_a_repository", "refused", "busy", "unavailable"] as const;
+export const PROJECT_OUTCOMES = ["added", "added_read_only", "trusted", "untrusted", "cancelled", "expired", "no_folder", "not_a_repository", "refused", "busy", "unavailable", "status_trusted", "status_read_only", "status_not_registered"] as const;
 export type ProjectOutcome = (typeof PROJECT_OUTCOMES)[number];
 
 export const projectActionSchema = z.strictObject({ nonce: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/), action: z.enum(PROJECT_ACTIONS) });
 
 export const ACTIONS_PER_MINUTE = 6;
+export const STATUS_PER_MINUTE = 20;
 export const COOLDOWN_MS = 60_000;
 export const MAX_COOLDOWNS = 64;
 export const PROJECT_REQUEST_TIMEOUT_MS = 15_000;
@@ -101,6 +105,8 @@ export function createProjectActions(o: ProjectActionsOptions): ProjectActions {
   const pending = new Map<string, (a: Answer | undefined) => void>();
   const busy = new Set<number>();
   const recent = new Map<number, number[]>();
+  const statusBusy = new Set<number>();
+  const statusRecent = new Map<number, number[]>();
   const cooldown = new Map<string, number>();
   const timers = new Set<ReturnType<typeof setTimeout>>();
   let disposed = false;
@@ -154,7 +160,25 @@ export function createProjectActions(o: ProjectActionsOptions): ProjectActions {
     return r.refused === "queue_full" ? "busy" : "unavailable";
   };
 
-  async function run(codeWindowId: number, action: ProjectAction): Promise<ProjectOutcome> {
+  async function status(codeWindowId: number): Promise<ProjectOutcome> {
+    const folder = o.windowFolder(codeWindowId);
+    if (folder === undefined) return "no_folder";
+    const i = await inspect(folder);
+    if (typeof i === "string") return i;
+    return i.registered === undefined ? "status_not_registered" : i.registered.trusted ? "status_trusted" : "status_read_only";
+  }
+
+  /** A per-window bucket: false (and nothing recorded) when the window already has `limit` in the last minute. */
+  const take = (bucket: Map<number, number[]>, codeWindowId: number, limit: number): boolean => {
+    const now = o.now();
+    const times = (bucket.get(codeWindowId) ?? []).filter((t) => now - t < 60_000);
+    if (times.length >= limit) return false;
+    times.push(now);
+    bucket.set(codeWindowId, times);
+    return true;
+  };
+
+  async function run(codeWindowId: number, action: Exclude<ProjectAction, "status">): Promise<ProjectOutcome> {
     const folder = o.windowFolder(codeWindowId);
     if (folder === undefined) return "no_folder";
     const key = `${action}\0${folder}`;
@@ -196,11 +220,18 @@ export function createProjectActions(o: ProjectActionsOptions): ProjectActions {
       const parsed = projectActionSchema.safeParse(payload);
       if (!parsed.success || disposed) return undefined;
       const { nonce, action } = parsed.data;
-      const now = o.now();
-      const times = (recent.get(codeWindowId) ?? []).filter((t) => now - t < 60_000);
-      if (busy.has(codeWindowId) || times.length >= ACTIONS_PER_MINUTE) return { nonce, outcome: "busy" };
-      times.push(now);
-      recent.set(codeWindowId, times);
+      if (action === "status") {
+        if (statusBusy.has(codeWindowId) || !take(statusRecent, codeWindowId, STATUS_PER_MINUTE)) return { nonce, outcome: "busy" };
+        statusBusy.add(codeWindowId);
+        try {
+          return { nonce, outcome: await status(codeWindowId) };
+        } catch {
+          return { nonce, outcome: "unavailable" };
+        } finally {
+          statusBusy.delete(codeWindowId);
+        }
+      }
+      if (busy.has(codeWindowId) || !take(recent, codeWindowId, ACTIONS_PER_MINUTE)) return { nonce, outcome: "busy" };
       busy.add(codeWindowId);
       try {
         return { nonce, outcome: await run(codeWindowId, action) };
@@ -213,6 +244,8 @@ export function createProjectActions(o: ProjectActionsOptions): ProjectActions {
     windowClosed(codeWindowId) {
       recent.delete(codeWindowId);
       busy.delete(codeWindowId);
+      statusRecent.delete(codeWindowId);
+      statusBusy.delete(codeWindowId);
     },
     answer(message) {
       if (message.type !== "projects.inspected" && message.type !== "projects.result") return false;
