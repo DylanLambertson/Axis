@@ -225,7 +225,9 @@ export function createMessageDelivery(deps: MessageDeliveryDeps): MessageDeliver
     next(runId, taint) {
       if (!deps.runLive(runId)) return undefined;
       const agentId = deps.agentOf(runId);
-      // An agent the directory no longer knows (archived) is delivered nothing; its messages stay queued.
+      // An agent the directory no longer knows (archived) is delivered nothing; its messages stay queued. Defence in depth:
+      // a run of an archived agent cannot start (the v12 trigger), but an agent archived while its run is live is caught here,
+      // at each boundary, and the send-side checks never see this path.
       if (agentId === undefined || deps.directory.agent(agentId) === undefined) return undefined;
       const principal = `agent:${agentId}`;
       const parts: { id: string; header: string; body: string }[] = [];

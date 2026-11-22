@@ -95,13 +95,26 @@ export interface ConnectionInfo {
 }
 
 /** Why the daemon asks for a secret. A closed set so every access is auditable. */
-export const SECRET_PURPOSES = ["provider_request", "validate_connection"] as const;
+export const SECRET_PURPOSES = ["provider_request", "validate_connection", "integration_request", "integration_refresh", "integration_validate"] as const;
 export type SecretPurpose = (typeof SECRET_PURPOSES)[number];
+
+/**
+ * The one entry kind each purpose may reveal (ADR 0009 decision 5): the provider purposes read provider entries only, the
+ * integration purposes `integration:` entries only, so a binding wired to the wrong name cannot read the other's secret.
+ */
+export const PURPOSE_KIND: Readonly<Record<SecretPurpose, "provider" | "integration">> = Object.freeze({
+  provider_request: "provider",
+  validate_connection: "provider",
+  integration_request: "integration",
+  integration_refresh: "integration",
+  integration_validate: "integration",
+});
 
 export interface AccessEvent {
   readonly connectionId: string;
   readonly purpose: SecretPurpose;
-  readonly outcome: "ok" | "not_found" | "error";
+  /** `refused`: the purpose does not match the entry's kind (nothing was read from the backend). */
+  readonly outcome: "ok" | "not_found" | "error" | "refused";
 }
 
 /** A store or removal, for the audit log (DMN-5). Never carries the secret. */

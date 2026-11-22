@@ -95,6 +95,8 @@ The dialog is modal on the requesting window, with `noLink: true`. **Cancel is i
 
 **Residual: a click placed onto the dialog.** A compromised renderer can trigger the dialog while the user is clicking. The dialog opens modal over the window, macOS as a sheet and Windows and Linux centred on it, so a pending click can land on a grant button. Mitigations: the grant buttons are never the default; the per-folder cooldown and the per-window rate limit apply; and the fixed text names the folder. Electron offers no delay before a button becomes active. S2's GUI run verifies the default focus on Linux; macOS and Windows are checked on the owner's machines before release.
 
+As built (S2): `packages/daemon-host/src/main/project-actions.ts` (Electron-free), the choice entry of `main/native-queue.ts`, `DaemonSupervisor.sendProject`, `checkSender` shared with the connect broker, and the overlay's `projectDialog`, `windowFolder` and `workspaceTrusted` adapters. The remote line reads "Remote (as configured in the repository, not verified): …": the dialog shows what the repository's config names, it does not vouch for it (S1a review 2 N4).
+
 ### 4.3 What main sends
 
 - **`add`:**
