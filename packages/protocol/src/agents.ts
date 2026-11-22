@@ -141,9 +141,9 @@ export const AGENTS_REFUSALS = {
   E_NOT_FOUND: ["not_found"],
   E_CONFLICT: [
     "name_taken", "cross_project", "kind_changed", "archived", "home_unavailable", "order_mismatch", "limit_reached", "untrusted_project",
-    "entry_unavailable", "connection_unavailable", "busy",
+    "entry_unavailable", "connection_unavailable", "model_unavailable", "busy",
   ],
-  /** A start that could not be made now and may succeed later (settings or snapshot unavailable; a composer start before PV-G4 slice B). */
+  /** A start that could not be made now and may succeed later (settings or snapshot unavailable, the agent service stopping). */
   E_UNAVAILABLE: ["not_available"],
 } as const;
 export type AgentsRefusalCode = keyof typeof AGENTS_REFUSALS;

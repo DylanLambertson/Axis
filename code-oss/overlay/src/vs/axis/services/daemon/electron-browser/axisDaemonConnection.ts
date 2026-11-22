@@ -14,7 +14,8 @@ import { AxisPortClient, type ClientPort } from '../../../packages/protocol/clie
 
 export type AxisContractRequest = ReadonlyArray<{ readonly id: string; readonly versions: readonly number[] }>;
 
-function domPort(port: MessagePort): ClientPort {
+function domPort(port: MessagePort, closed: () => void): ClientPort {
+	port.addEventListener('close', () => closed(), { once: true });
 	const wrapped: ClientPort = {
 		postMessage: message => port.postMessage(message),
 		onMessage: handler => {
@@ -32,8 +33,12 @@ function domPort(port: MessagePort): ClientPort {
 	return wrapped;
 }
 
-/** Ask main for a port and open the client on it. Rejects when main refuses the window or the daemon rejects the connection. */
-export async function connectAxisDaemon(contracts: AxisContractRequest): Promise<AxisPortClient> {
+/**
+ * Ask main for a port and open the client on it. Rejects when main refuses the window or the daemon rejects the connection.
+ * `onClose` is called once when the port closes later (a daemon restart, a new generation): the caller connects again.
+ * The only caller is `axisRendererDaemonClient.ts` (pinned by test/code-oss/renderer-daemon-client.test.mjs).
+ */
+export async function connectAxisDaemon(contracts: AxisContractRequest, onClose: () => void, helloTimeoutMs: number): Promise<AxisPortClient> {
 	const port = await acquirePort('vscode:axisConnect', 'vscode:axisConnectResult', generateUuid());
-	return AxisPortClient.open(domPort(port), { contracts });
+	return AxisPortClient.open(domPort(port, onClose), { contracts, helloTimeoutMs });
 }

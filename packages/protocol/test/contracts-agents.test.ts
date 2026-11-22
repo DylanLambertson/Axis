@@ -80,7 +80,8 @@ test("update changes something; reorder names each group once; assign takes a gr
 test("the refusals are closed and never echo a stored name", () => {
   assert.deepEqual(Object.keys(AGENTS_REFUSALS), ["E_NOT_FOUND", "E_CONFLICT", "E_UNAVAILABLE"]);
   assert.equal(isAgentsRefusal("E_UNAVAILABLE", "not_available"), true);
-  for (const r of ["entry_unavailable", "connection_unavailable", "busy"]) assert.equal(isAgentsRefusal("E_CONFLICT", r), true, r);
+  for (const r of ["entry_unavailable", "connection_unavailable", "model_unavailable", "busy"]) assert.equal(isAgentsRefusal("E_CONFLICT", r), true, r);
+  assert.equal(isAgentsRefusal("E_UNAVAILABLE", "model_unavailable"), false);
   assert.equal(new Set(AGENTS_REASONS).size, AGENTS_REASONS.length);
   for (const reason of AGENTS_REASONS) assert.match(reason, /^[a-z][a-z_]*$/);
   assert.equal(isAgentsRefusal("E_CONFLICT", "name_taken"), true);
