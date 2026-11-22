@@ -84,8 +84,8 @@ ADR 0005 D3, the built-ins sentence, gains (wording from `forge-pr-list.md` §1,
 | Name | Value | Unset |
 |---|---|---|
 | `AXIS_PTY_GIT` | absolute, real path (no symlink in it: the string checked is the file run) of a regular executable file no group or other may write (review 1 N-1) | git off: every exec, scratch step, hook and push answers `spawn_failed`; terminals work |
-| `AXIS_PTY_GH` | as `AXIS_PTY_GIT` (read and checked now; `forge-list`, PV-D2, uses it) | `forge-list` off |
-| `AXIS_PTY_SCRATCH` | an existing directory (not a symlink), this user's, mode without group or other bits | required when `AXIS_PTY_GIT` is set |
+| `AXIS_PTY_GH` | as `AXIS_PTY_GIT`; `forge-list` (PV-D2 slice 2) runs it through its own `createNodeExec(new Set([ghPath]))` | `forge-list` off (`spawn_missing`) |
+| `AXIS_PTY_SCRATCH` | an existing directory (not a symlink), this user's, mode without group or other bits | required when `AXIS_PTY_GIT` or `AXIS_PTY_GH` is set |
 
 - These are start-time checks: `spawn` resolves the path again on every call, and parent directories are not checked, so a later swap by a process running as the user is not caught (the same-user class of §3; review 2 N-2).
 - A name that is set and fails its check refuses the start (exit 78, one closed line: `git_path_refused`, `gh_path_refused`, `scratch_refused`), before any port is served. The line names no path.

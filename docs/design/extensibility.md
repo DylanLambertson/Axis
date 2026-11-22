@@ -1,6 +1,6 @@
 # Extensibility: plugins, pages, tasks and third-party integrations
 
-- **Status:** Proposed (design only; nothing is built). Proposed phases: pages and tasks 2a, plugins and integrations 4a (`product-vision-v2.md` §5). Revised after security design review 1 (items S6 to S10, N6, N7). ADR 0008 (`docs/adr/0008-axis-plugins.md`) decides §2 to §4 for plugins and governs where wording differs.
+- **Status:** Proposed (design only; nothing is built). Proposed phases: pages and tasks 2a, plugins and integrations 4a (`product-vision-v2.md` §5). Revised after security design review 1 (items S6 to S10, N6, N7). ADR 0008 (`docs/adr/0008-axis-plugins.md`) decides §2 to §4 for plugins and governs where wording differs. ADR 0009 (`docs/adr/0009-integrations-and-credential-proxy.md`) decides §7 and governs where wording differs.
 - **Date:** 2026-11-06 (owner direction of 2026-11-06). Verified against `origin/main` at `74cd12e`; E1 (`116ef22`) and P1d (`e52114f`) have merged since.
 - **Depends on:** ADR 0003 (bridge, policy pipeline, principals, D4, D5), ADR 0004, `docs/security/threat-model-phase1.md` (EXT-1, EXT-3, EXT-4, PRV-1, PRV-2, PRV-4, PRV-5, ANT-1, ANT-2, EL-5, NET-1), `docs/feasibility/extension-compatibility.md`, `docs/PROVIDERS.md`, `inter-agent-communication.md`.
 - **Evidence tags:** as in `product-vision-v2.md`.
@@ -135,7 +135,7 @@ An integration is a typed connector (built in, or contributed by a plugin in 4a)
 - **Credential proxy:** the daemon performs every integration request and attaches the credential itself. No plugin, renderer, agent prompt, CLI environment or log ever sees it (PRV-2, DMN-6). Contract `axis.integrations/1.request { integrationId, operation, args }`; no raw URL, header, path or query from the caller.
 - **Request composition (review S10).** Each operation fixes its HTTP method and a path template; each argument is a schema-typed value placed into one named segment or one declared query parameter, percent-encoded; values containing `/`, `?`, `#`, `%2e`-style or literal dot segments, or control characters are refused before encoding. There is no free-form query or body passthrough. The final URL is matched against the operation's URL pattern before the credential is attached; a mismatch is refused and audited.
 - **Scopes (review N6).** Prefer the narrowest credential the service offers (fine-grained, read-only, expiring). Record the granted scopes at connect, show them, and **refuse a token whose granted scopes exceed the integration's declared scopes**.
-- **OAuth:** connecting is a **user-only** policy row. The flow opens the system browser from main (EL-5 rules) with PKCE. For the device-code flow, the code and the verification host are shown in a **main-built** dialog (not plugin or renderer text), to limit device-code phishing. **Recommended:** device-code flow where the service supports it; otherwise a one-shot loopback listener bound to `127.0.0.1` on a random port, open only during the flow, with `state` checked, recorded as a NET-1 exception in ADR 0009 (decision D-7) [I: per-service support to verify].
+- **OAuth:** connecting is a **user-only** policy row. The flow opens the system browser from main (EL-5 rules) with PKCE. For the device-code flow, the code and the verification host are shown in a **main-built** dialog (not plugin or renderer text), to limit device-code phishing. **Recommended:** device-code flow where the service supports it; otherwise a one-shot loopback listener bound to `127.0.0.1` on a random port, open only during the flow, with `state` checked, recorded as a NET-1 exception in ADR 0009 (decision D-7) [I: per-service support to verify]. (ADR 0009 decision 6: 4a ships the device flow only; the loopback fallback is deferred to its own decision.)
 - Revocation: disconnect deletes the vault entry and, where the service has an API for it, revokes the token.
 
 ### 7.3 Network egress
@@ -173,7 +173,7 @@ Issue bodies, PR comments, chat messages and monitoring alerts are attacker-reac
 | INT-1 | Credential leaves the daemon (logs, errors, plugin, prompt) | Credential proxy, redaction canaries, closed errors | 4a |
 | INT-2 | SSRF or redirect to an internal or other origin with the credential | Origin allowlist, IP literals refused, proxy variables ignored, no cross-origin redirect, address checks incl. mapped and NAT64, pinning | 4a |
 | INT-3 | Oversized or malformed responses (memory, parser) | Byte, depth and time caps; schema validation | 4a |
-| INT-4 | OAuth redirect interception, CSRF or device-code phishing | Device flow preferred, user-only connect, main-built code dialog, PKCE and `state`, one-shot loopback only during the flow | 4a |
+| INT-4 | OAuth redirect interception, CSRF or device-code phishing | Device flow preferred, user-only connect, main-built code dialog, PKCE and `state`, one-shot loopback only during the flow (ADR 0009 decision 6: 4a ships the device flow only; the loopback fallback is deferred to its own decision.) | 4a |
 | INT-5 | Over-broad tokens | Narrowest scope offered, scopes shown, tokens with excess scopes refused | 4a |
 | INT-6 | Path or query injection through operation arguments sends the credential to an undeclared endpoint | Fixed method and template, typed encoded segments, dot-segment and separator refusal, final URL pattern match (§7.2) | 4a |
 
@@ -198,7 +198,7 @@ Issue bodies, PR comments, chat messages and monitoring alerts are attacker-reac
   - a hostname resolving to a private, metadata, IPv4-mapped or NAT64 address, and an IP-literal origin, are refused; a set `HTTPS_PROXY` does not change where the request goes;
   - an argument of `../x`, `%2e%2e/x`, `1?a=b` or `1#x` is refused before any request; the final URL check refuses a template mismatch;
   - a token whose granted scopes exceed the declared ones is refused; connect from a non-user actor is denied;
-  - an oversized response is cut and reported; no listener exists outside an active OAuth flow.
+  - an oversized response is cut and reported; no listener exists outside an active OAuth flow. (ADR 0009 decision 6: 4a ships the device flow only; the loopback fallback is deferred to its own decision.)
 
 ## 10. Review requirements
 
@@ -217,7 +217,7 @@ Issue bodies, PR comments, chat messages and monitoring alerts are attacker-reac
 | D-4 | Signature policy | Ed25519 publisher signatures required for the curated list (keys from the signed list); unsigned local files allowed for P0 and P1 only, with a warning and hash pinning; never for P2 |
 | D-5 | Page storage | Axis data directory per project, with Export to repository |
 | D-6 | Page format | Markdown subset only in v1, rendered in the isolated page view |
-| D-7 | OAuth redirect | Device-code flow with a main-built code dialog; one-shot loopback listener as a recorded NET-1 exception only when a service lacks it |
+| D-7 | OAuth redirect | Device-code flow with a main-built code dialog; one-shot loopback listener as a recorded NET-1 exception only when a service lacks it (ADR 0009 decision 6: 4a ships the device flow only; the loopback fallback is deferred to its own decision.) |
 | D-8 | First integration | GitHub read-only through the user's `gh` (no token) for the 1c dashboard (ticket PV-D2); a token-based GitHub integration (ticket PV-N3) is built only if D-9 is reversed |
 | D-9 | Reverse "Axis stores no forge credentials" (ADR 0004 decision 9 engineering addition) | Keep it until 4a; then allow a vault-held, read-only, fine-grained token behind the credential proxy |
 | D-10 | Integrations that write (comment on a PR, move an issue) | Each write operation is a separate permission and a tier-3 challenge |

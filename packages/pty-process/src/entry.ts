@@ -21,9 +21,12 @@ import { createPtyService, type PtyService, type PtyServiceOptions } from "./ser
  *
  * Git and forge programs (PV-X1a, `docs/design/pty-exec-node.md` §5 and §6.2): main puts `AXIS_PTY_GIT`, `AXIS_PTY_GH` and
  * `AXIS_PTY_SCRATCH` in this process's environment at fork. With `AXIS_PTY_GIT` set the git exec path (exec, scratch, hook, push)
- * runs through `createNodeExec({gitPath})`; unset, it stays off (every exec answers `spawn_failed`) and terminals still work. A value
+ * runs through `createNodeExec({gitPath})`; unset, it stays off (every exec answers `spawn_failed`) and terminals still work. With
+ * `AXIS_PTY_GH` set, `forge-list` (PV-D2) runs that gh through its own `createNodeExec({ghPath})`; unset, every `forge-list` answers
+ * `spawn_missing`. Either program needs `AXIS_PTY_SCRATCH`. A value
  * that is set and wrong refuses the start: a relative, symlinked, group- or world-writable or non-executable program, a scratch directory that is missing, a symlink, not
- * this user's, or open to group or others. `AXIS_*` names never reach a child (PTY-5 drops them). Windows: ignored (no exec there).
+ * this user's, or open to group or others. `AXIS_*` names never reach a child (PTY-5 drops them). Windows: ignored (no exec there;
+ * every `forge-list` answers `unsupported_platform`).
  */
 export const PTY_EXIT_REFUSED = 78;
 const MAX_CONN_CHARS = 128;
@@ -91,13 +94,21 @@ export function runPtyEntry(deps: PtyEntryDeps): PtyEntryHandle {
 
   const parentPort = deps.parentPort;
   let git: PtyServiceOptions["git"];
+  let forge: PtyServiceOptions["forge"];
+  const baseEnv: Record<string, string | undefined> = { ...deps.env };
+  for (const k of [PTY_ENV_GIT, PTY_ENV_GH, PTY_ENV_SCRATCH]) delete baseEnv[k];
   if (execConfig.gitPath !== undefined && execConfig.scratchParent !== undefined) {
     // One exec function per consumer (§1): git's can start only the git it was given.
-    const baseEnv: Record<string, string | undefined> = { ...deps.env };
-    for (const k of [PTY_ENV_GIT, PTY_ENV_GH, PTY_ENV_SCRATCH]) delete baseEnv[k];
     git = { exec: createNodeExec(new Set([execConfig.gitPath]), platform), gitPath: execConfig.gitPath, hooksOff: "/dev/null", scratchParent: execConfig.scratchParent, baseEnv };
   }
-  const service = createPtyService({ spawn: deps.spawn, ...(deps.platform === undefined ? {} : { platform: deps.platform }), ...(git === undefined ? {} : { git }) });
+  if (platform === "win32") {
+    // PV-D2: no process group to kill (PV-X1w), so every `forge-list` is `unsupported_platform` and nothing is created or run.
+    forge = { exec: createNodeExec(new Set(), platform), ghPath: undefined, scratchParent: "", baseEnv: {} };
+  } else if (execConfig.ghPath !== undefined && execConfig.scratchParent !== undefined) {
+    // PV-D2 slice 2: the forge path's own exec function, which can start only the gh it was given (never git).
+    forge = { exec: createNodeExec(new Set([execConfig.ghPath]), platform), ghPath: execConfig.ghPath, scratchParent: execConfig.scratchParent, baseEnv };
+  }
+  const service = createPtyService({ spawn: deps.spawn, ...(deps.platform === undefined ? {} : { platform: deps.platform }), ...(git === undefined ? {} : { git }), ...(forge === undefined ? {} : { forge }) });
   let disposed = false;
 
   const onMessage = (event: { data: unknown; ports?: readonly MessagePortLike[] }): void => {

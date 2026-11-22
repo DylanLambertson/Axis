@@ -1,5 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
+import type { ForgeListRequest, ForgeReply } from "@axis/protocol";
 import { createExecCalls, type PtyExecCall, type PtyExecOutcome } from "./exec-client.js";
+import { createForgeCalls } from "./forge-client.js";
 import { controlReply, type ControlReply } from "./messages.js";
 import { probeGroup, signalGroup, validPgid } from "./group.js";
 import { systemClock, systemProcessOps, type Channel, type Clock, type Disposable, type ProcessOps, type PtyExit, type PtyHandle, type PtyPort, type PtySignal, type PtySpawn } from "./ports.js";
@@ -62,6 +64,11 @@ export interface PtyProcessPort extends PtyPort, Disposable {
    * push's output goes to the terminal, never here). A refusal rejects with a `PtySpawnError` code (`bad_argv`, `env_denied`, ...).
    */
   push(call: PtyPushCall): Promise<PtyProcessHandle>;
+  /**
+   * The user's `gh pr list` for one vetted repository (`forge-list`, PV-D2). Resolves with the reply parsed by the shared schema
+   * (`undefined` for a reply to this request that failed it); rejects with a `PtyForgeError` code only.
+   */
+  forgeList(request: ForgeListRequest): Promise<ForgeReply | undefined>;
   /** How many terminals the port still tracks (an exited terminal whose group is gone is forgotten). For diagnostics and tests. */
   trackedTerminals(): number;
 }
@@ -101,6 +108,7 @@ export function createPtyProcessPort(options: PtyProcessPortOptions): PtyProcess
   let seq = 0;
   let closed = false;
   const execs = createExecCalls({ send: (m) => send(m), closed: () => closed, clock, graceMs: timeoutMs, maxPending });
+  const forge = createForgeCalls({ send: (m) => send(m), closed: () => closed, clock, maxPending });
 
   const send = (msg: unknown): boolean => {
     if (closed) return false;
@@ -126,7 +134,7 @@ export function createPtyProcessPort(options: PtyProcessPortOptions): PtyProcess
 
   const onMessage = (raw: unknown): void => {
     const parsed = controlReply.safeParse(raw);
-    if (!parsed.success) return execs.onMessage(raw);
+    if (!parsed.success) return void (forge.onMessage(raw) || execs.onMessage(raw));
     const m = parsed.data;
     if (m.t === "spawned") {
       const p = pending.get(m.req);
@@ -247,6 +255,7 @@ export function createPtyProcessPort(options: PtyProcessPortOptions): PtyProcess
       closed = true;
       failAll("channel_closed");
       execs.failAll("channel_closed");
+      forge.failAll("channel_closed");
       killKnown();
       // The pty process is gone, so no `exit` will come. Say so with an unknown exit; the group probe still guards finalisation.
       for (const t of terms.values()) settleExit(t, { exitCode: null, signal: null });
@@ -259,6 +268,7 @@ export function createPtyProcessPort(options: PtyProcessPortOptions): PtyProcess
     push: (call: PtyPushCall): Promise<PtyProcessHandle> =>
       request((req) => ({ t: "push", req, runId: call.runId, repo: { gitDir: call.repo.gitDir, workTree: call.repo.workTree }, remote: call.remote, refspec: call.refspec, pushUrls: call.pushUrls, env: { ...call.env }, expectEnv: { ...call.expectEnv }, cols: call.cols, rows: call.rows })),
     exec: (call) => execs.exec(call),
+    forgeList: (request) => forge.list(request),
     trackedTerminals: () => terms.size,
     grant(terminalId, conn) {
       send({ t: "grant", term: terminalId, conn });
@@ -268,6 +278,7 @@ export function createPtyProcessPort(options: PtyProcessPortOptions): PtyProcess
         closed = true;
         failAll("channel_closed");
         execs.failAll("channel_closed");
+        forge.failAll("channel_closed");
         killKnown();
       }
       subs.forEach((s) => s.dispose());
