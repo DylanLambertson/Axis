@@ -1,6 +1,6 @@
 # Extensibility: plugins, pages, tasks and third-party integrations
 
-- **Status:** Proposed (design only; nothing is built). Proposed phases: pages and tasks 2a, plugins and integrations 4a (`product-vision-v2.md` §5). Revised after security design review 1 (items S6 to S10, N6, N7).
+- **Status:** Proposed (design only; nothing is built). Proposed phases: pages and tasks 2a, plugins and integrations 4a (`product-vision-v2.md` §5). Revised after security design review 1 (items S6 to S10, N6, N7). ADR 0008 (`docs/adr/0008-axis-plugins.md`) decides §2 to §4 for plugins and governs where wording differs.
 - **Date:** 2026-11-06 (owner direction of 2026-11-06). Verified against `origin/main` at `74cd12e`; E1 (`116ef22`) and P1d (`e52114f`) have merged since.
 - **Depends on:** ADR 0003 (bridge, policy pipeline, principals, D4, D5), ADR 0004, `docs/security/threat-model-phase1.md` (EXT-1, EXT-3, EXT-4, PRV-1, PRV-2, PRV-4, PRV-5, ANT-1, ANT-2, EL-5, NET-1), `docs/feasibility/extension-compatibility.md`, `docs/PROVIDERS.md`, `inter-agent-communication.md`.
 - **Evidence tags:** as in `product-vision-v2.md`.
@@ -188,7 +188,7 @@ Issue bodies, PR comments, chat messages and monitoring alerts are attacker-reac
   - a P1 plugin calling a method outside its grant is denied by the daemon; `axis.approvals/1.resolve` from a plugin connection is denied and audited as `plugin:<id>`;
   - a P1 plugin's `location` change to an external URL, `window.open`, a form post an `RTCPeerConnection` attempt from the view, from an `about:blank` child frame and from a worker, and a TURN-over-TCP candidate to the test server all fail, and no request reaches a test server;
   - a modified bundle is disabled at load; an update raising the tier, adding a contribution point, an origin or an integration is blocked until approved;
-  - a curated list with a lower version, an expired list and a list signed by an unknown key are refused;
+  - a list that is expired, lower-versioned or signed by an unknown key is refused for new installs and updates; installed curated plugins keep running with a warning;
   - an archive with a symlink, a `..` entry or more than the entry cap is refused with nothing written outside the fresh directory;
   - a repository setting enabling a plugin has no effect and a warning is shown;
   - an install requesting `files.read` and `net:<origin>` shows the "can send your code to <origin>" line.
