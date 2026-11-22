@@ -1,4 +1,5 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
+import { AGENT_GROUPS_CONTRACT, AGENT_GROUPS_VERSION, AGENTS_CONTRACT, AGENTS_VERSION, agentGroupsMethods, agentsMethods } from "./agents.js";
 import { APPROVALS_CONTRACT, APPROVALS_VERSION, approvalsMethods } from "./approvals.js";
 import { permissionTierSchema } from "./challenge.js";
 import { AUDIT_CONTRACT, AUDIT_VERSION, auditMethods } from "./audit.js";
@@ -43,10 +44,13 @@ export const contracts: Table = Object.freeze({
  * and no daemon can serve one; the daemon-host coverage check holds a planned policy row for each of their methods, at the
  * same tier. A contract moves to `contracts` in the change that registers its handlers, its rows moving with it
  * (`axis.messages/1` moved with ticket PV-M3). A key is never in both tables. `axis.forge/1` (PV-D2) is planned until its
- * slice 2 wires the pty process's `forge-list` and serves it.
+ * slice 2 wires the pty process's `forge-list` and serves it. `axis.agents/1` and `axis.agent-groups/1` (PV-G2, ADR 0006)
+ * are planned until PV-G3 serves them.
  */
 export const plannedContracts: Table = Object.freeze({
   [`${FORGE_CONTRACT}/${FORGE_VERSION}`]: frozen(forgeMethods),
+  [`${AGENTS_CONTRACT}/${AGENTS_VERSION}`]: frozen(agentsMethods),
+  [`${AGENT_GROUPS_CONTRACT}/${AGENT_GROUPS_VERSION}`]: frozen(agentGroupsMethods),
 });
 
 const SIDE_EFFECTS: ReadonlySet<unknown> = new Set(["none", "read", "write", "network", "destructive", "credential"]);

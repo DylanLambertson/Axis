@@ -1,0 +1,54 @@
+# Agents and agent groups: the contracts (PV-G2)
+
+- **Status:** Planned contracts. The schemas are agreed and registered in `plannedContracts` with planned policy rows; no host serves them until PV-G3 registers the handlers and moves the rows to `rules.ts`.
+- **Date:** 2026-11-22.
+- **Inputs:** ADR 0006 decisions 4 to 6 and 10; journal schema version 12 (`packages/journal/src/schema-agents.ts`, PV-G1); `docs/design/product-vision-v2-tickets.md` PV-G2 and PV-G3.
+- **Code:** `packages/protocol/src/agents.ts`; rows in `packages/daemon-host/src/policy/planned.ts`; tests in `packages/protocol/test/contracts-agents.test.ts` and `packages/daemon-host/test/policy/agents-policy.test.ts`.
+
+## 1. Methods
+
+| Contract | Method | Side effect | Tier | Idempotency | What it does |
+|---|---|---|---|---|---|
+| `axis.agents/1` | `list` | read | 0 | none | A project's agents, live only unless `includeArchived` |
+| | `get` | read | 0 | none | One agent by id |
+| | `create` | write | 2 | required | A new agent with a new home workspace (the same inputs as `axis.worktrees/1.create`) or an existing workspace of the project, optionally in a group |
+| | `update` | write | 2 | none | Rename, or change the launch within the agent's kind |
+| | `archive` | write | 1 | none | Archive; never removes the home workspace |
+| | `restore` | write | 1 | none | Restore while the home is live and the name is free |
+| `axis.agent-groups/1` | `list` | read | 0 | none | A project's groups in order |
+| | `create` | write | 1 | required | A new group, last in order |
+| | `rename` | write | 1 | none | |
+| | `reorder` | write | 1 | none | The full new order: exactly the project's group ids, each once |
+| | `delete` | write | 1 | none | Ungroups its agents (listed in the reply); archives none |
+| | `assign` | write | 2 | none | Put an agent in a group of its project, or take it out (`null`) |
+
+**Tiers.** Reads are 0. `create` is 2 with a required idempotency key, as `axis.worktrees/1.create`, because it can create a worktree. Changing what an agent runs (`update` with a launch) and its messaging scope (`assign`: group membership feeds the send policy's `accepts_from: group`) are 2, as the messaging settings are. The other writes are 1. Archive and delete are not `destructive`: nothing is lost and the user can undo both.
+
+**Actors.** Every row is user-only, reads included (ADR 0006 decision 10). No agent, plugin or message creates, changes or groups an agent, so no agent can mint a messaging principal, join a group or widen its own scope. The journal backs this independently: `created_by` is always `user`.
+
+## 2. Payload rules
+
+- **No path, command or credential.** A launch is a reference: a CLI agent names an `axis.cliAgents` entry id (`cliAgentIdSchema`), a composer agent a vault connection name, a model id and a mode. The daemon resolves the entry when a run starts (PV-G4). A new home is a workspace name and an optional base ref, exactly what `axis.worktrees/1.create` takes; the daemon derives every path from its own records. Tests refuse `command`, `args`, `env`, an absolute path or `../` as an entry id, an `apiKey`, a URL as a connection, and a `path` in the home.
+- **The creator is the connection's.** No request carries `createdBy`; the handler records the authenticated principal (always the user under these rows).
+- **Kind is fixed.** `update` with a launch of the other kind is refused `kind_changed`; the journal refuses it too.
+- **Names.** 1 to 64 characters, no edge space, none of `safeTextSchema`'s refused set (Cc, Cs, the line and paragraph separators, Cf) and none of the space separators U+00A0, U+2000 to U+200A, U+202F and U+205F. That is exactly the journal's `NAME_REFUSED_RANGES` plus NUL; `agents-policy.test.ts` compares the two over every code point, so a name the wire accepts is one the journal stores. Live names are unique per project ignoring ASCII case (journal); other case pairs and look-alikes are not folded, and agents are always addressed by id.
+- **Bounds.** At most 500 agents (archived included) and 100 groups per project; a list answers all of them in one reply (within the envelope's node limit).
+
+## 3. Refusals
+
+Closed, with one fixed message (`agent request refused`) and `details: { reason }`, so no stored name reaches an error:
+
+| Code | Reasons |
+|---|---|
+| `E_NOT_FOUND` | `not_found`: unknown id, or an id of a project the caller cannot see |
+| `E_CONFLICT` | `name_taken`, `cross_project` (a group or an existing workspace of another project), `kind_changed`, `archived` (a write to an archived agent other than `restore`), `home_unavailable` (an existing workspace that is not live, or a restore whose home is not live), `order_mismatch` (a reorder that is not exactly the project's groups), `limit_reached`, `untrusted_project` |
+
+Schema failures are `E_INVALID_ARGUMENT` as everywhere. Policy denials are the pipeline's `E_POLICY_DENIED`, never a handler's.
+
+## 4. What PV-G3 must do (handler obligations)
+
+1. `create` with a new home composes `axis.worktrees/1.create` under the project mutex, with the request's idempotency key, and inserts the agent in the same journal transaction that records the workspace; a replay returns the first result.
+2. Every write re-reads the agent, group and workspace from the journal; the project comes from the journal, never the payload.
+3. Archive, restore, assign and delete write one audit event each, keyed by ids; a workspace leaving the live states archives its agents in the journal (trigger), and the host writes the audit events for those archives in the same flow that moved the workspace.
+4. Untrusted projects: agents can be created, viewed and grouped while the project is untrusted (ADR 0006 security implication 6), and runs stay refused until it is trusted (PV-G4). `create` with a new home answers `untrusted_project` when `axis.worktrees/1.create` would refuse the worktree for trust.
+5. When the contracts move to `contracts`, their rows move from `planned.ts` to `rules.ts` unchanged; the coverage check fails until they do.
