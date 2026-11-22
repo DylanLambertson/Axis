@@ -107,6 +107,19 @@ Taken by the project lead under the delegation above while reviewing `docs/secur
 | OI-9 | Per plugin, a rolling-hour request count and byte budget for integration and `axis.net` requests, stored with the grant; past either, its calls are refused until the window passes; disclosed at install; PV-N1 sets the values, never raised later without a decision. |
 | OI-10 | Every tier-3 challenge a plugin raises (`runs.start` or an integration write) counts toward the OI-2 bound. |
 
+## 6b. Secret broker decisions (PV-N0, 2026-11-22)
+
+Decided by the project lead under the owner's delegation, after two design reviews of `docs/design/secret-broker.md`.
+
+| # | Taken |
+|---|---|
+| SB-D1 | Main stores credential ciphertext in `<base>/secrets` (one framed `safeStorage` record per entry); the daemon never stores ciphertext. |
+| SB-D2 | **No upstream `EncryptionMainService` patch.** EXT-4 for Axis records is an accepted residual under EXT-1 and A10: `safeStorage` on macOS and Linux is unauthenticated CBC with a fixed IV, so a refusal by plaintext prefix cannot close the renderer's decrypt and encrypt oracle. An authenticated envelope with a refusal keyed on the ciphertext is a later decision (register RR-88). |
+| SB-D3 | **No consent path** for a `basic_text`, unavailable or unknown backend: Axis refuses to store any provider or integration credential, with a user-visible reason (install or unlock a keyring). Revisited only on an explicit owner decision. |
+| SB-D4 | A renderer calling `setUsePlainTextEncryption` can block every store for the session: accepted as a denial of service; nothing is stored in plain text (the Linux ciphertext check). |
+| SB-D5 | Entry names: the vault rule plus the `integration:<id>` prefix only, at most 100 characters. |
+| SB-D6 | Timeouts: main answers `get` and `put` within 60 s (macOS and Linux unlock prompts), the daemon waits 65 s, so main answers first. |
+
 ## 7. What these decisions unblock
 
 PV-R1 (ADR 0006) and the docs wave PV-R2, PV-R3 and PV-R7; then PV-G1 (journal migration), PV-D1 to PV-D4 (project home), PV-V0 to PV-V4 (agent view), PV-M4 to PV-M8 (messaging), PV-T, PV-Q, PV-K and PV-N as their dependencies land; and the project registration and trust slice in §5.

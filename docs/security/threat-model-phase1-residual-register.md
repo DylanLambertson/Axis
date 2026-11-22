@@ -128,6 +128,14 @@ Added by `threat-model-phase4a.md` §9 (ticket PV-R8, slice 2), verified against
 | RR-86 | The daemon entry did not refuse `NODE_TLS_REJECT_UNAUTHORIZED` or `NODE_USE_ENV_PROXY`. **Closed:** PV-N1b (`6c95e93`) refuses both at start (`daemon-host/src/entry.ts`, `tls_override_refused`, `env_proxy_refused`). Left: the egress agent's own `rejectUnauthorized: true` (PV-N1). | INT-10 | daemon entry | PV-N1b (merged), PV-N1 | 4a/L37 | Mitigated (entry built) |
 | RR-87 | Within its rolling-hour request count and byte budget (OI-9) a plugin can still spend that much of the user's service quota and send that much data to its `net:` origin; disclosed in the install dialog. | INT-11, PLG-15 | plugin policy, egress client | PV-N1, PV-K2 | 4a/L47 | Accepted, disclosure |
 
+### 1.6 The secret broker (PV-N0)
+
+Added by `docs/design/secret-broker.md` §3.2 (revision 2). Numbered after the integrations rows of §1.5 (RR-75 to RR-87).
+
+| ID | Residual risk | Risk | Owner | Ticket | Gate | Status |
+|---|---|---|---|---|---|---|
+| RR-88 | Upstream's renderer-reachable `encryption` channel can decrypt any `safeStorage` ciphertext of the app, Axis credential records included, and can mint one; on macOS and Linux `safeStorage` is unauthenticated AES-CBC with a fixed IV, so a refusal by plaintext prefix cannot close it (secret-broker review 1). A process of the same user can also reach the key outside the app on Linux (unlocked keyring) and Windows (DPAPI). Accepted under EXT-1 and A10; an authenticated envelope with a refusal keyed on the ciphertext is a later option. | EXT-4, PRV-2, A10 | secret broker | PV-N0a, PV-N0c | secret-broker §5 lines 1, 7 | Accepted |
+
 ## 2. Plan rows added with this change
 
 `docs/design/daemon-host-plan.md` gains one-line rows for the ids this register introduces: `H13` (RR-3), `FU-STAGE` (RR-6), `RV-CONTENT` (RR-10), `H9-base` (RR-11), `P1f` (RR-12), `REV2-FIX` (RR-13), `OVSX-TEST` (RR-18), `NET-GATE` (RR-19) and `REF1-SCAN` (RR-24). They are proposals: sizes and owners are set by the plan owners. The earlier proposals `FU-WT-BASE-REF`, `C8` and `C9` are not used: FU-WT-BASE2, C8 and C9 already exist with the meanings above.
