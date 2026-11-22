@@ -99,6 +99,11 @@ suite('Axis renderer daemon client (PV-E0)', () => {
 		assert.strictEqual(kindOf(r.client), 'ready');
 		r.connects[6].onClose();
 		assert.deepStrictEqual(r.timers.due(), [0], 'the count was reset: the next attempt is immediate');
+		r.timers.run(0);
+		r.connects[7].reject(new Error('not_ready'));
+		await flush();
+		assert.strictEqual(kindOf(r.client), 'connecting', 'one failure after a welcome is not down');
+		assert.deepStrictEqual(r.timers.due(), [reconnectDelay(1, () => 0.5)], 'the backoff starts again from 250 ms');
 		r.dispose();
 	});
 
