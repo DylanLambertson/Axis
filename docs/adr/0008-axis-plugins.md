@@ -3,7 +3,7 @@
 - **Status:** Proposed. Becomes Accepted when the Phase 4a plugin gate lines pass (ticket PV-K5, validation criteria below). The owner decisions it records (extensibility D-1 to D-4 and D-12, product vision O-6) are decided; the engineering decisions it adds are decided and revisable.
 - **Date:** 2026-11-22.
 - **Decision owner:** Dylan Lambertson. The owner delegated every open decision to the project lead on 2026-11-21; the decisions are recorded in `docs/design/owner-decisions-2026-11-21.md` §1 (O-6) and §4, and the owner can reverse any of them there.
-- **Depends on:** ADR 0002 (Code OSS integration strategy: shell-layer budget, criterion 2), ADR 0003 (bridge, principals, D1 handshake, D4 policy and approvals, D5 audit, D7 prohibited patterns), ADR 0006 (projects, the rail shows a destination only once its phase ships), ADR 0007 (messaging, M-8; in review), ADR 0010 (pages, the isolated view; in review, PR #571). All Proposed.
+- **Depends on:** ADR 0002 (Code OSS integration strategy: shell-layer budget, criterion 2), ADR 0003 (bridge, principals, D1 handshake, D4 policy and approvals, D5 audit, D7 prohibited patterns), ADR 0006 (projects, the rail shows a destination only once its phase ships), ADR 0007 (messaging, M-8; in review, PR #573), ADR 0010 (pages, the isolated view; merged, #571). All Proposed.
 - **Amends:** ADR 0003: a fourth principal kind, `plugin:<id>`, attested by main per plugin view (section "Amendment to ADR 0003"). **Keeps** ADR 0003 D1.1 (the daemon opens no listener), D1.3 (the connect checks), D4's rule that only a `user` actor resolves an approval, and D7 (no new `contextBridge` global).
 - **Related:** `docs/design/extensibility.md` ("the design": §2 to §4, §8 PLG-1 to PLG-9, §9 4a gate lines, §10), `docs/design/inter-agent-communication.md` (§4.1, §6.3, §6.6 source 6), `docs/design/product-vision-v2-tickets.md` (PV-K1 to PV-K5, PV-R6, PV-R8), `docs/security/threat-model-phase1.md` (EXT-1 to EXT-4, EL-3, EL-4, EL-5, DMN-2, DMN-3, CFG-1, NET-1, A10).
 - **Detail:** this file holds the decisions. `docs/adr/0008-axis-plugins-code.md` maps each claim about built code to its anchor and records every divergence between the design, this ADR and the code.
@@ -98,10 +98,11 @@ One **sandboxed `WebContentsView` per plugin**, created and placed by main insid
 ### 7. Sources and signatures (D-3, D-4)
 
 - **Sources:** a local file, or the Axis-curated list. **No public registry in v1.**
-- **Curated list:** signed with a key **embedded in the app**; it carries a monotonic version and an expiry. Axis refuses a version lower than the last one it accepted (rollback), an expired list (freeze) and a list signed by an unknown key; the last accepted version is kept in the journal. The embedded key set supports rotation (a new key signed by the old one) and revocation, in the style of TUF root metadata; the exact metadata format is PV-K2's [I].
+- **Curated list: shipped inside the app release, never fetched.** v1 has **no network fetch of any curated list** (decided by the project lead on 2026-11-22 under the owner's delegation). The list is part of each app release, signed by a key **embedded in the app**, and carries a monotonic version and a `notAfter` date. At every start Axis verifies the signature and refuses a list signed by an unknown key and a version lower than the last one it accepted (rollback, for example after an app downgrade); the last accepted version is kept in the journal. The list, its keys, their rotation and their revocation change **only with app updates**. The exact metadata format is PV-K2's [I]. **A network-fetched list needs its own ADR** (its origin, NET row, the ANT-1 request rules and freeze protection).
+- **Expiry bounds revocation, not freeze.** Nothing is fetched, so there is no freeze attack; but a revocation reaches an app only through an update, so without an expiry an old build would trust a compromised or revoked publisher key forever. `notAfter` is set at release time, by default **180 days after the release build** (a release-engineering parameter). Once it has passed, the list is expired and Axis **refuses new installs and updates of curated plugins** (fail closed; the UI says "this build's plugin list has expired: update Axis"). Curated plugins already installed keep running, with a warning, so there is no remote kill and no surprise breakage. Unsigned local P0 and P1 files are unaffected: they have their own hash pin and warning [D].
 - **Publisher signatures:** a detached **Ed25519** signature over the manifest and the bundle hash. For a curated plugin the publisher key comes **from the signed list**, never from trust on first use, and a key change blocks the update.
 - **Unsigned local files:** allowed for P0 and P1 only, with a warning naming the risk, and **hash pinning** (the bundle SHA-256 recorded at install). **Never for P2.** A local file signed by a key that is not in the current list is treated as unsigned.
-- **Where the list is fetched from** is not decided: there is no Axis origin yet. Until one is decided (with its NET row and the ANT-1 request rules), only local-file installs exist [D].
+- **Everything else is a local file:** the curated list names plugins and their publisher keys; the bundle itself is installed from a local file and checked against the list's entry. Axis makes no network request to install, update or verify a plugin [D].
 
 ### 8. Install, update, enable, extraction
 
@@ -126,7 +127,7 @@ Resolve or consume an approval; read a credential; write into a terminal; run in
 | O-6 | Plugins before Phase 3 | No; P0 and P1 in 4a, P2 only after the OS sandbox | 2 |
 | D-1 | P0 early | No; pages and tasks native in 2a, the plugin system in 4a | 2 |
 | D-2 | P2 before the OS sandbox | Not before Phase 3; user-added MCP servers disclosed as running as the user | 2 |
-| D-3 | Plugin source | Local file and an Axis-curated list signed by an app-embedded key with rollback protection; no public registry | 7 |
+| D-3 | Plugin source | Local file and an Axis-curated list signed by an app-embedded key with rollback protection; no public registry. **The list ships inside the app release and is never fetched in v1** (project lead, 2026-11-22) | 7 |
 | D-4 | Signature policy | Ed25519 publisher signatures for the curated list, keys from the list; unsigned local files for P0 and P1 only, with a warning and hash pinning; never P2 | 7 |
 | D-12 | P1 host | One sandboxed `WebContentsView` per plugin, main-attested identity | 3, 5 |
 
@@ -142,8 +143,8 @@ ADR 0003's decisions are not rewritten; where wording differs, this section gove
 ## Consistency with other ADRs
 
 - **ADR 0006:** plugins hang off the project; the rail gains Plugins only when 4a ships; no agent, plugin or message can create or change agents and groups. Consistent.
-- **ADR 0007 (in review):** M-8 as decided there and here; a plugin cannot open a thread [V]; plugin messages are taint source 1. ADR 0007 records "no plugin binding exists"; PV-K1 builds it from the attested plugin connection, and the interim `daemon` audit actor for plugins changes to `plugin:<id>` (decision 4).
-- **ADR 0010 (in review):** the same host type (D-12); the page view has no bridge port and the stricter `img-src`. Consistent; the shared host is built once (PV-Q2) and reused (PV-K3).
+- **ADR 0007 (in review, PR #573):** M-8 as decided there and here; a plugin cannot open a thread [V]; plugin messages are taint source 1. ADR 0007 records "no plugin binding exists"; PV-K1 builds it from the attested plugin connection, and the interim `daemon` audit actor for plugins changes to `plugin:<id>` (decision 4).
+- **ADR 0010 (merged, #571):** the same host type (D-12); the page view has no bridge port and the stricter `img-src`. Consistent; the shared host is built once (PV-Q2) and reused (PV-K3).
 - **ADR 0009 (not written):** owns `net:<origin>`, `integration:<id>`, the credential proxy and egress (decision 6).
 
 ## Security implications
@@ -156,7 +157,7 @@ ADR 0003's decisions are not rewritten; where wording differs, this section gove
 ## Consequences
 
 - **Positive:** plugins start from a small, daemon-enforced grant instead of the extension model's full trust; a host or plugin bug cannot become a user call; the page view and plugin host share one reviewed implementation.
-- **Negative:** a second attestation shape in main and the daemon; an Electron-level WebRTC switch or patch that counts against the ADR 0002 budget; no remote list until an Axis origin is decided.
+- **Negative:** a second attestation shape in main and the daemon; an Electron-level WebRTC switch or patch that counts against the ADR 0002 budget; the curated list changes only with an app release.
 
 ## Validation criteria
 
@@ -166,8 +167,9 @@ ADR 0003's decisions are not rewritten; where wording differs, this section gove
 2. `axis.approvals/1.resolve` and `pending` from a plugin connection are refused and audited with actor `plugin:<id>`.
 3. A plugin call allowed by its grant is refused after the plugin is disabled or the grant revoked, within one request.
 4. An install declaring P2, or requesting `net:` or `integration:` before ADR 0009 is accepted, is refused.
-5. WebRTC from the view, an `about:blank` child frame and a worker, and TURN over TCP, reach no test server.
-6. A bundle file changed on disk after install is not served; the plugin is disabled.
+5. With the clock past the list's `notAfter`, a curated install and a curated update are refused with the "update Axis" message, an installed curated plugin still loads and shows a warning, and an unsigned local P1 install behaves as before the expiry.
+6. WebRTC from the view, an `about:blank` child frame and a worker, and TURN over TCP, reach no test server.
+7. A bundle file changed on disk after install is not served; the plugin is disabled.
 
 **Revisit** if the owner reverses any decision in the table above, if PV-K3 finds no WebRTC mechanism within budget (P0 only), or when the Phase 3 OS sandbox exists (P2).
 

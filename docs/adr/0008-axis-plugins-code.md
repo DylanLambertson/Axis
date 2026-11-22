@@ -39,11 +39,11 @@ Each item is a place where existing code or a document says something the ADR ch
 | 8 | the design §3.3 | WebRTC disabled "by a Chromium switch or a patch" | if neither works within the ADR 0002 budget, P1 does not ship (decision 5) | PV-K3 |
 | 9 | the design §4 | integrity "checked at every load" | the served bytes are the bytes checked at this load, not files re-read after the check | PV-K2, PV-K3 |
 | 10 | the design §4 extraction row | symlinks, hard links, absolute paths, `..`, three caps | adds NUL, backslash, drive letters, Windows reserved names, case-colliding entries, caps measured on decompressed bytes | PV-K2 |
-| 11 | the design §4 curated list | list signed by an embedded key | where the list is fetched from is undecided (no Axis origin); local files only until then | owner, then PV-K2 |
+| 11 | the design §4 curated list and §9 gate line | a list fetched from an origin, with a version and an expiry; the gate refuses a lower version, an expired list and an unknown key | the list ships inside the app release and is never fetched in v1; the expiry is **kept** (`notAfter`, default 180 days after the release build) to bound how long an old build trusts a revoked publisher key, and an expired list refuses new curated installs and updates while installed plugins keep running with a warning. The §9 line is kept and extended with that behaviour (validation criterion 5). A fetched list needs its own ADR | PV-K2, PV-R8 |
 | 12 | the design §3.5 `net:<origin>`, `integration:<id>` | granted by the plugin system | refused at install until ADR 0009 is accepted | PV-R6 |
 | 13 | the design §4 install and update | "the user approves" | through a main-built native dialog (EL-4 pattern) | PV-K2 |
 | 14 | the design §3.3 identity | "maps it to `plugin:<id>`" | fixes `actorId`, `windowId` `p<n>`, `workspaceId` and `trusted` (decision 3) | PV-K1 |
-| 15 | ADR 0010 page view (in review) | `img-src` attachment scheme only, no bridge port | the plugin view keeps `img-src 'self' data:` and one port; same host otherwise | PV-Q2, PV-K3 |
+| 15 | ADR 0010 page view (merged, #571) | `img-src` attachment scheme only, no bridge port | the plugin view keeps `img-src 'self' data:` and one port; same host otherwise | PV-Q2, PV-K3 |
 
 ## 3. Not built (all of the ADR's decisions)
 
