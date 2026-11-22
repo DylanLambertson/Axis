@@ -19,13 +19,12 @@ import { accepts, rejects, runSuite, schemaOf } from "./suite.js";
 
 runSuite(AGENTS_SAMPLES);
 
-test("both contracts are planned, never served, with the designed method tables", () => {
-  for (const key of ["axis.agents/1", "axis.agent-groups/1"]) assert.equal(contracts[key], undefined, key);
-  assert.equal(lookupMethod("axis.agents", 1, "create"), undefined);
-  assert.equal(lookupMethod("axis.agent-groups", 1, "assign"), undefined);
-  assert.equal(lookupMethodIn(plannedContracts, "axis.agents", 1, "create"), agentsMethods.create);
-  assert.equal(lookupMethodIn(plannedContracts, "axis.agent-groups", 1, "assign"), agentGroupsMethods.assign);
-  assert.deepEqual(tableProblems(plannedContracts), []);
+test("both contracts are served (PV-G3), never planned, with the designed method tables", () => {
+  for (const key of ["axis.agents/1", "axis.agent-groups/1"]) assert.equal(plannedContracts[key], undefined, key);
+  assert.equal(lookupMethod("axis.agents", 1, "create"), agentsMethods.create);
+  assert.equal(lookupMethod("axis.agent-groups", 1, "assign"), agentGroupsMethods.assign);
+  assert.equal(lookupMethodIn(plannedContracts, "axis.agents", 1, "create"), undefined);
+  assert.deepEqual(tableProblems(contracts), []);
   const table = (methods: Record<string, { sideEffect: string; tier: number; idempotency: string }>) =>
     Object.entries(methods).map(([m, s]) => [m, s.sideEffect, s.tier, s.idempotency]);
   assert.deepEqual(table(agentsMethods), [
