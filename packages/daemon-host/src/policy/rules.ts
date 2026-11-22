@@ -9,6 +9,10 @@
 // for every other (docs/design/inter-agent-communication.md section 4.2). The rows are user only: agent and CLI callers
 // reach messaging through the broker (PV-M4) and the endpoint (PV-M6), not the bridge; a bridge row for them needs a new
 // actor kind and a new review. None is in WEB_ALLOWED.
+//
+// axis.forge/1 (PV-D2 slice 2, moved from planned.ts with its handlers; docs/design/forge-pr-list.md): user only. The list is
+// shown on the user's dashboard and never handed to an agent or model in v1 (§5); confirming the repository is the user's own
+// act (§2). Neither is in WEB_ALLOWED.
 import { userRule, type Rule } from "./rule-types.js";
 
 export const RULES: Readonly<Record<string, Rule>> = Object.freeze({
@@ -54,4 +58,6 @@ export const RULES: Readonly<Record<string, Rule>> = Object.freeze({
   "axis.messages/1.resume": userRule(2),
   "axis.messages/1.settings": userRule(0),
   "axis.messages/1.updateSettings": userRule(2),
+  "axis.forge/1.pullRequests": userRule(0),
+  "axis.forge/1.pinRepository": userRule(1),
 });

@@ -79,6 +79,7 @@ test("before a control port every call fails closed; a port routes calls to its 
   try {
     await assert.rejects(slot.port.spawn(SPEC), codeIs("channel_closed"));
     await assert.rejects(slot.port.exec({ argv: ["/g"], cwd: "/", env: {}, timeoutMs: 10, maxOutput: 1, repo: { gitDir: "/g", workTree: "/" } }), codeIs("channel_closed"));
+    await assert.rejects(slot.port.forgeList({ t: "forge-list", req: "f1", host: "github.com", owner: "acme", repo: "app" }), codeIs("channel_closed"));
     assert.equal(slot.attached(), false);
     const a = controlPair();
     const got = peer(a.peer, (m) => ({ t: "spawn-failed", req: m["req"], code: "capacity" }));

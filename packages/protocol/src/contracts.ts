@@ -36,18 +36,16 @@ export const contracts: Table = Object.freeze({
   [`${COMPOSER_RUNS_CONTRACT}/${COMPOSER_RUNS_VERSION}`]: frozen(composerRunsMethods),
   [`${EVENTS_CONTRACT}/${EVENTS_VERSION}`]: frozen(eventsMethods),
   [`${MESSAGES_CONTRACT}/${MESSAGES_VERSION}`]: frozen(messagesMethods),
+  [`${FORGE_CONTRACT}/${FORGE_VERSION}`]: frozen(forgeMethods),
 });
 
 /**
  * Contracts whose schemas are agreed but that no host serves yet. `lookupMethod` never sees them, so no client can call one
  * and no daemon can serve one; the daemon-host coverage check holds a planned policy row for each of their methods, at the
  * same tier. A contract moves to `contracts` in the change that registers its handlers, its rows moving with it
- * (`axis.messages/1` moved with ticket PV-M3). A key is never in both tables. `axis.forge/1` (PV-D2) is planned until its
- * slice 2 wires the pty process's `forge-list` and serves it.
+ * (`axis.messages/1` moved with ticket PV-M3, `axis.forge/1` with PV-D2 slice 2). A key is never in both tables.
  */
-export const plannedContracts: Table = Object.freeze({
-  [`${FORGE_CONTRACT}/${FORGE_VERSION}`]: frozen(forgeMethods),
-});
+export const plannedContracts: Table = Object.freeze({});
 
 const SIDE_EFFECTS: ReadonlySet<unknown> = new Set(["none", "read", "write", "network", "destructive", "credential"]);
 const IDEMPOTENCY: ReadonlySet<unknown> = new Set(["none", "optional", "required"]);

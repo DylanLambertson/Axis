@@ -51,6 +51,6 @@ export function readPtyExecConfig(env: Readonly<Record<string, string | undefine
   if (git !== undefined && !programOk(git)) return "git_path_refused";
   if (gh !== undefined && !programOk(gh)) return "gh_path_refused";
   if (scratch !== undefined && !scratchOk(scratch)) return "scratch_refused";
-  if (git !== undefined && scratch === undefined) return "scratch_refused";
+  if ((git !== undefined || gh !== undefined) && scratch === undefined) return "scratch_refused";
   return { ...(git === undefined ? {} : { gitPath: git }), ...(gh === undefined ? {} : { ghPath: gh }), ...(scratch === undefined ? {} : { scratchParent: scratch }) };
 }

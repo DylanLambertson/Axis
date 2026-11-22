@@ -3,13 +3,7 @@
 // yet. They are NOT served rules: `RuleTablePolicy` never sees them, so the policy denies them like any unknown method.
 // `checkCoverage` requires exactly one row per planned method at the contract's tier, fails on a row for anything else,
 // and fails once a planned key is served (move its line to rules.ts in the change that registers the handlers). One line
-// per method.
-//
-// axis.forge/1 (PV-D2, docs/design/forge-pr-list.md): user only. The list is shown on the user's dashboard and never handed
-// to an agent or model in v1 (§5); confirming the repository is the user's own act (§2). Neither is in WEB_ALLOWED.
-import { userRule, type Rule } from "./rule-types.js";
+// per method. None is planned now (axis.forge/1 moved to rules.ts with PV-D2 slice 2).
+import type { Rule } from "./rule-types.js";
 
-export const PLANNED_RULES: Readonly<Record<string, Rule>> = Object.freeze({
-  "axis.forge/1.pullRequests": userRule(0),
-  "axis.forge/1.pinRepository": userRule(1),
-});
+export const PLANNED_RULES: Readonly<Record<string, Rule>> = Object.freeze({});

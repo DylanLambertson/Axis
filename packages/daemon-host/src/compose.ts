@@ -13,6 +13,7 @@ import { createAgentBinding, type AgentBinding } from "./bindings/agent.js";
 import { createGitOperations, createGitPort } from "./bindings/git.js";
 import { createProvidersBinding, productionConnection, type AnthropicConnectionOptions, type ProvidersBinding } from "./bindings/providers.js";
 import { selectPtyGitRunner } from "./bindings/pty-git.js";
+import { registerForgeServing } from "./compose-forge.js";
 import { createCommitPreparer, createReviewService } from "./bindings/review.js";
 import { createTempIndexProvider } from "./bindings/review-tempindex.js";
 import { createRunsBinding, type RunsBinding } from "./bindings/runs.js";
@@ -54,7 +55,7 @@ import { createDaemonHost, type DaemonHost, type HostOptions, type HostServices,
 import { installHostLifecycle, type LifecycleHandle, type LifecycleOptions } from "./lifecycle.js";
 import type { Logger } from "./log/logger.js";
 import { checkCoverage } from "./policy/coverage.js";
-import type { PtyExecPort, PtyPort, PtyPushPort } from "./ports/pty.js";
+import type { PtyExecPort, PtyForgePort, PtyPort, PtyPushPort } from "./ports/pty.js";
 import type { ChannelMux } from "./transport/mux.js";
 
 /**
@@ -91,7 +92,7 @@ export interface ComposeOptions {
   readonly ports: Omit<StartupPorts, "control" | "reconcile" | "afterStorage" | "beforeReady">;
   readonly host?: HostOptions;
   /** The Axis pty process (CLI runs). REQUIRED. With `exec`, the `pty` git context and push run over it (H9-hooks S4, hooks off). */
-  readonly pty: (PtyPort & Partial<PtyExecPort> & Partial<PtyPushPort>) | undefined;
+  readonly pty: (PtyPort & Partial<PtyExecPort> & Partial<PtyPushPort> & Partial<PtyForgePort>) | undefined;
   /** The `pty` git context runner, REQUIRED exactly when `pty` has no `exec` (test fakes); refused alongside one that has. */
   readonly ptyGitRunner: GitRunner | undefined;
   /** GIT-SNAP-1 around a run: production passes `gitSnapshotRunSnapshotter` (`@axis/git-snapshot`, question 10). REQUIRED. */
@@ -430,6 +431,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
       onInternalError: () => logger?.error("request.failed", { reason: "git_internal" }),
       onBookkeepingError: () => logger?.warn("request.failed", { reason: "git_bookkeeping" }),
     });
+    registerForgeServing(registrar, { pty, projectPath: (id) => journal.getProject(id)?.path, git, platform: config.platform, audit: (e) => (audit.append(e), services.anchors.noteWrite()), monotonic: () => ports.clock.monotonic(), ...(logger === undefined ? {} : { logger }) });
   }
 
   /**
