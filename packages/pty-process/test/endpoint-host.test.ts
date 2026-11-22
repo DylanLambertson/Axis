@@ -5,7 +5,7 @@ import { connect, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { test, type TestContext } from "node:test";
-import { ENDPOINT_HOST_LIMITS, PtySpawnError, createEndpointHost, endpointDirOk, isEndpointPath, type EndpointHost, type RelayInbound } from "../src/index.js";
+import { ENDPOINT_HOST_LIMITS, LINGER_MS, PtySpawnError, createEndpointHost, endpointDirOk, isEndpointPath, type EndpointHost, type RelayInbound } from "../src/index.js";
 import { ManualClock, counterRandom } from "../testing/helpers.js";
 import { rig, SPEC } from "../testing/rig.js";
 
@@ -408,4 +408,76 @@ test("review 1 B1: a frame from a connection whose unread replies are above half
   s.write(frame('{"op":"read","id":"r1"}'));
   await until(() => ofType(h.sent, "relay-frame").filter((m) => m.conn === conn).length === 3, "relayed");
   assert.deepEqual(idleIds(), before, "the idle timer was not re-armed");
+});
+
+/** Resume a paused client and count the bytes it gets until its socket closes (bounded wait; fails by name). */
+async function drainCount(s: Awaited<ReturnType<typeof dial>>, what: string): Promise<number> {
+  let n = 0;
+  s.on("data", (d: Buffer) => void (n += d.length));
+  s.resume();
+  await closes(s, what);
+  return n; // every byte after the resume
+}
+
+test("review 2 B1: a closing reply to a peer that never reads destroys its socket at once; 40 cycles leave nothing open after closeAll (the closepath PoC)", { skip }, async (t) => {
+  const h = host(t, { writeBufferBytes: 64 * 1024 * 1024 });
+  const path = (await h.host.open(EP)) as string;
+  const reply = JSON.stringify({ ok: false, reason: "refused", pad: "q".repeat(512 * 1024) });
+  const clients: Awaited<ReturnType<typeof dial>>[] = [];
+  t.after(() => clients.forEach((s) => s.destroy())); // a leaked socket fails the test by name, never holds the process
+  const rss0 = process.memoryUsage().rss;
+  for (let i = 0; i < 40; i++) {
+    const { s, conn } = await authedConn(h, path);
+    s.pause(); // never reads the closing reply
+    clients.push(s);
+    h.host.onRelay({ t: "relay-reply", endpoint: EP, conn, frame: reply, close: true, authFailed: false });
+    assert.ok(ofType(h.sent, "relay-close").some((m) => m.conn === conn), `cycle ${i}: the daemon is told`);
+  }
+  assert.equal([...h.clock.timers.values()].filter((tm) => tm.ms === LINGER_MS).length, 0, "with the reply unread, each was destroyed at once, none left ended and lingering");
+  h.host.closeAll();
+  const got = await Promise.all(clients.map((s, i) => drainCount(s, `client ${i}`))); // one shared bound, not 40 in a row
+  for (const [i, n] of got.entries()) assert.ok(n < reply.length, `client ${i}: its socket was destroyed, not ended (it got ${n} of ${reply.length} bytes)`);
+  assert.ok(process.memoryUsage().rss - rss0 < 96 * 1024 * 1024, "memory bounded");
+});
+
+test("review 2 B1: a closing reply the peer has taken ends the socket with a linger timer; closeAll destroys a lingering one", { skip }, async (t) => {
+  const h = host(t);
+  const path = (await h.host.open(EP)) as string;
+  const { conn } = await authedConn(h, path);
+  h.host.onRelay({ t: "relay-reply", endpoint: EP, conn, frame: '{"ok":false,"reason":"refused"}', close: true, authFailed: false });
+  await until(() => [...h.clock.timers.values()].some((tm) => tm.ms === LINGER_MS), "a linger timer for the ended connection");
+  h.host.closeAll();
+  assert.equal([...h.clock.timers.values()].filter((tm) => tm.ms === LINGER_MS).length, 0, "closeAll destroyed the lingering connection and cleared its timer");
+});
+
+test("review 2 N5: the slow-reader clock re-arms while the backlog shrinks and drops only when it did not", { skip }, async (t) => {
+  const h = host(t, { writeBufferBytes: 64 * 1024 * 1024 });
+  const path = (await h.host.open(EP)) as string;
+  const { s, conn } = await authedConn(h, path);
+  s.pause();
+  // Three replies of about 1 MiB: progress is seen per reply (a write leaves `buffered()` only once all of it is taken).
+  for (let i = 0; i < 3; i++) {
+    s.write(frame(`{"op":"read","id":"r${i}"}`));
+    await until(() => ofType(h.sent, "relay-frame").filter((m) => m.conn === conn).length === i + 2, `request ${i} relayed`);
+    h.host.onRelay({ t: "relay-reply", endpoint: EP, conn, frame: JSON.stringify({ pad: "p".repeat(1000 * 1024) }), close: false, authFailed: false });
+  }
+  const fireSlow = (): void => {
+    for (const [id, tm] of [...h.clock.timers]) if (tm.ms === ENDPOINT_HOST_LIMITS.slowReaderMs) (h.clock.timers.delete(id), tm.fn());
+  };
+  // The reader takes some of it, then stops again: the backlog shrank, so the clock re-arms instead of dropping.
+  await new Promise<void>((res) => {
+    let n = 0;
+    const take = (d: Buffer): void => {
+      n += d.length;
+      if (n >= 1536 * 1024) (s.off("data", take), s.pause(), res());
+    };
+    s.on("data", take);
+    s.resume();
+  });
+  await new Promise((res) => setTimeout(res, 50));
+  fireSlow();
+  assert.equal(ofType(h.sent, "relay-close").filter((m) => m.conn === conn).length, 0, "a draining reader is kept");
+  assert.ok(h.clock.delays().includes(ENDPOINT_HOST_LIMITS.slowReaderMs), "and the clock runs again");
+  fireSlow(); // no progress since
+  assert.equal(ofType(h.sent, "relay-close").filter((m) => m.conn === conn).length, 1, "a stalled reader is dropped");
 });

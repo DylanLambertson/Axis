@@ -28,6 +28,9 @@ import type { Clock } from "./ports.js";
  *   Node does not give, so the bound is one `auth` per connection under the 4-connection cap (the design's stated residual).
  */
 
+/** How long a connection answered with a close may stay ended but open before it is destroyed. */
+export const LINGER_MS = 5_000;
+
 export const ENDPOINT_HOST_LIMITS = { connections: 4, authFrameBytes: 512, frameBytes: 64 * 1024, preAuthMs: 2_000, idleMs: 600_000, pendingFrames: 4, pathBytes: 100, writeBufferBytes: 4 * 1024 * 1024, slowReaderMs: 60_000 } as const;
 
 export interface EndpointHostConfig {
@@ -83,6 +86,8 @@ interface Conn {
   state: "new" | "authing" | "authed";
   /** Frames relayed to the daemon and not answered yet. */
   pending: number;
+  /** The largest `buffered()` seen since the slow-reader clock was armed: it fires a drop unless the backlog fell below it. */
+  slowAt: number;
   /** Replies written since the peer last took everything (`buffered()` 0): they count as unanswered too. */
   unflushed: number;
   timer: unknown;
@@ -94,6 +99,8 @@ interface Hosted {
   stop: () => void;
   readonly path: string;
   readonly conns: Map<string, Conn>;
+  /** Connections already answered with a close and ended, each with its linger timer: destroyed when it fires or the endpoint closes. */
+  readonly lingering: Map<EndpointConn, unknown>;
 }
 
 export function createEndpointHost(
@@ -127,13 +134,36 @@ export function createEndpointHost(
       c.unflushed = 0;
       deps.clock.clearTimeout(c.slowTimer);
       c.slowTimer = undefined;
-    } else if (c.slowTimer === undefined) {
-      c.slowTimer = deps.clock.setTimeout(() => {
-        c.slowTimer = undefined;
-        if (c.sock.buffered() > 0) drop(endpoint, c);
-      }, slowMs);
-    }
+    } else if (c.slowTimer === undefined) armSlow(endpoint, c);
+    else c.slowAt = Math.max(c.slowAt, b); // replies written while the clock runs raise the mark it must fall below
     return false;
+  };
+  /**
+   * The slow-reader clock (review 2 N5, N6): at its end a backlog that did not shrink drops the connection; one that shrank
+   * (a reader taking a long run of replies steadily) re-arms it; an empty one ends it and clears the unread count.
+   */
+  const armSlow = (endpoint: string, c: Conn): void => {
+    c.slowAt = c.sock.buffered();
+    c.slowTimer = deps.clock.setTimeout(() => {
+      c.slowTimer = undefined;
+      const now = c.sock.buffered();
+      if (now === 0) c.unflushed = 0;
+      else if (now < c.slowAt) armSlow(endpoint, c);
+      else drop(endpoint, c);
+    }, slowMs);
+  };
+  /**
+   * A connection answered with a close (review 2 B1): untracked from here, so it must end now. With replies still unread it is
+   * destroyed at once (never left holding them); otherwise it ends and lingers at most LINGER_MS, then is destroyed.
+   */
+  const closeAfterReply = (h: Hosted, c: Conn): void => {
+    if (c.sock.buffered() > 0) return c.sock.destroy();
+    c.sock.end();
+    const timer = deps.clock.setTimeout(() => {
+      h.lingering.delete(c.sock);
+      c.sock.destroy();
+    }, LINGER_MS);
+    h.lingering.set(c.sock, timer);
   };
   const arm = (endpoint: string, c: Conn, ms: number): void => {
     deps.clock.clearTimeout(c.timer);
@@ -168,7 +198,7 @@ export function createEndpointHost(
 
   function accept(endpoint: string, h: Hosted, sock: EndpointConn): void {
     if (h.conns.size >= ENDPOINT_HOST_LIMITS.connections) return void sock.destroy();
-    const c: Conn = { id: `c${(seq++).toString(36)}`, sock, buf: Buffer.alloc(0), state: "new", pending: 0, unflushed: 0, timer: undefined, slowTimer: undefined };
+    const c: Conn = { id: `c${(seq++).toString(36)}`, sock, buf: Buffer.alloc(0), state: "new", pending: 0, slowAt: 0, unflushed: 0, timer: undefined, slowTimer: undefined };
     h.conns.set(c.id, c);
     arm(endpoint, c, ENDPOINT_HOST_LIMITS.preAuthMs);
     if (!deps.send({ t: "relay-open", endpoint, conn: c.id })) return drop(endpoint, c);
@@ -180,7 +210,11 @@ export function createEndpointHost(
       frames(endpoint, c);
     });
     sock.onError(() => drop(endpoint, c));
-    sock.onClose(() => drop(endpoint, c));
+    sock.onClose(() => {
+      drop(endpoint, c);
+      const t = h.lingering.get(sock);
+      if (t !== undefined) (deps.clock.clearTimeout(t), h.lingering.delete(sock));
+    });
   }
 
   const close = (endpoint: string): void => {
@@ -193,6 +227,12 @@ export function createEndpointHost(
       c.sock.destroy();
     }
     h.conns.clear();
+    // Every socket ever accepted goes: the lingering ones, already untracked, too (review 2 B1).
+    for (const [sock, t] of h.lingering) {
+      deps.clock.clearTimeout(t);
+      sock.destroy();
+    }
+    h.lingering.clear();
     h.stop();
     rmSync(h.path, { force: true });
   };
@@ -202,7 +242,7 @@ export function createEndpointHost(
     const path = join(cfg.dir, `${Buffer.from(deps.random(9)).toString("base64url")}.sock`);
     // Never a port: Node reads a numeric string given to listen() as a TCP port, so only an absolute path is listened on.
     if (!isEndpointPath(path) || Buffer.byteLength(path) > ENDPOINT_HOST_LIMITS.pathBytes) return undefined;
-    const h: Hosted = { stop: () => undefined, path, conns: new Map() };
+    const h: Hosted = { stop: () => undefined, path, conns: new Map(), lingering: new Map() };
     try {
       h.stop = (await listenOnPath(path, (conn) => accept(endpoint, h, conn))).close;
     } catch {
@@ -244,11 +284,12 @@ export function createEndpointHost(
       c.sock.write(Buffer.concat([head, body]));
       if (!msg.close && backlogged(msg.endpoint, c)) return;
       if (msg.close) {
-        // After the reply is flushed; the daemon forgets the connection on the `relay-close` (a failed one too).
-        hosted.get(msg.endpoint)?.conns.delete(c.id);
+        // The daemon forgets the connection on the `relay-close` (a failed one too); here it ends now, never left open.
+        const h = hosted.get(msg.endpoint) as Hosted;
+        h.conns.delete(c.id);
         deps.clock.clearTimeout(c.timer);
         deps.clock.clearTimeout(c.slowTimer);
-        c.sock.end();
+        closeAfterReply(h, c);
         deps.send({ t: "relay-close", endpoint: msg.endpoint, conn: c.id });
         return;
       }
