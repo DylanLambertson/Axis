@@ -252,6 +252,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
           redactor: ports.redactor,
           env: () => ports.env,
           approvals: approvals.runs, taintStore: parts.journal.composer, deliveries: messaging.delivery, // IAC-T: run taint, recorded in its journal record
+          messaging: messaging.participation, // PV-M4: offered to no run until PV-G4 records a run's agent (`agentOf` knows none)
           now: () => ports.clock.now(),
           platform: config.platform,
           ...(options.composer?.mock === undefined ? {} : { mock: options.composer.mock }),
