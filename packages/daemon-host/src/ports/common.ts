@@ -1,5 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 
+import type { TrustCall } from "../gate/project-trust.js";
+
 /** Removes a listener or subscription. Calling it twice is harmless. */
 export type Unsubscribe = () => void;
 
@@ -11,6 +13,8 @@ export interface Caller {
   readonly actor: string;
   readonly connectionId: string;
   readonly windowId: string;
+  /** The gated-call form of the same identity (`trustCallOf`), where a port may call the project trust gate; absent: it refuses. */
+  readonly trust?: TrustCall;
 }
 
 /** Passed to every port method that can take time. Ports stop work promptly when `signal` aborts. */
