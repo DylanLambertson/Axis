@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { isScriptFile } from "./loaders.mjs";
 import { projectTrustVerdict, ptyClientVerdict } from "./pty-client-rule.mjs";
 import { vaultVerdict } from "./vault-importers-rule.mjs";
+import { daemonTestingVerdict } from "./daemon-testing-rule.mjs";
 import { importSpecifiers, unsafeForms } from "../../scripts/code-oss/stage-ast.mjs";
 import { LOADER_BUILTINS } from "../../scripts/code-oss/stage-scan.mjs";
 import { listenerBuiltinRefusal, webHostEdgeRefusal } from "../../scripts/code-oss/web-rules.mjs";
@@ -88,6 +89,8 @@ function hostViolation(pkg, spec, file, pkgDir) {
  */
 export function violation(pkg, spec, file = null, pkgDir = null) {
   const inSrc = file === null || pkgDir === null || relative(pkgDir, file).split(sep)[0] === "src";
+  const testingOnly = daemonTestingVerdict(spec, inSrc);
+  if (testingOnly !== null) return testingOnly;
   if (spec.startsWith("./") || spec.startsWith("../")) {
     if (file === null || pkgDir === null) return null;
     const target = resolve(dirname(file), spec);

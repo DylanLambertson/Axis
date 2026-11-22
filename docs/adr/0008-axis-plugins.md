@@ -225,3 +225,7 @@ PV-K1 (principal), PV-K2 (manifest, install, list, extraction), PV-K3 (host), PV
 ## Amendment (2026-11-22, ADR 0009)
 
 ADR 0009 ("Integrations and the credential proxy") adds one dangerous combination to decision 6: any `integration:<id>` together with any `net:<origin>`, read-only integrations included, reads "can send data from <integration> to <origin>". Its section "Amendment to ADR 0008" governs where wording differs.
+
+## Amendment (2026-11-22, how the main-built dialog is reached)
+
+Decision 8's "user-only and main-confirmed" rule (install, every update that changes anything in the diff, every grant increase, enable) and item 1 of the threat model 4a amendment (every update, an empty diff included, owner decision OI-6) are **requirements on PV-K2**, not a mechanism that exists: no plugin contract is on main. Each of these actions MUST be either a protocol method at tier 4 or above (a daemon challenge plus `native.confirm` over the privileged port, ADR 0003 D4, the dialog's line built from daemon-derived fields, APR-2) or a main-owned control flow with its own dialog that main draws, as project registration and trust are (`docs/design/project-registration-and-trust.md` §4: not protocol methods, no tier). A tier 3 approval has no native dialog and never meets the rule. PV-K2 decides which, per action, and records it in its contract and here.
