@@ -58,6 +58,8 @@ export interface ComposerService extends ComposerRunsService {
   recover(): number;
   /** Live runs in a workspace (a loop the daemon drives now). */
   isLive(workspaceId: string): boolean;
+  /** The per-workspace budget limits this service enforces (C10): what `axis.usage/1` reports the remainder of (PV-D3). */
+  readonly workspaceLimits: Readonly<RunBudgetLimits>;
   /** Settles when every loop has ended (tests and orderly shutdown). */
   idle(): Promise<void>;
   /** Abort every loop and stop writing. Idempotent. */
@@ -353,6 +355,7 @@ export function createComposerService(deps: ComposerServiceDeps): ComposerServic
     },
 
     isLive: (workspaceId) => [...live.values()].some((l) => l.workspaceId === workspaceId),
+    workspaceLimits: Object.freeze({ ...wsLimits }),
 
     async idle() {
       await Promise.all([...live.values()].map((l) => l.done));

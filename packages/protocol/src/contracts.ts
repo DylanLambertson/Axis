@@ -13,6 +13,7 @@ import { MAX_TIMEOUT_MS, methodNameSchema } from "./envelope.js";
 import { PROJECTS_CONTRACT, PROJECTS_VERSION, projectsMethods } from "./projects.js";
 import { PROVIDERS_CONTRACT, PROVIDERS_VERSION, providersMethods } from "./providers.js";
 import { REVIEW_CONTRACT, REVIEW_VERSION, reviewMethods } from "./review.js";
+import { USAGE_CONTRACT, USAGE_VERSION, usageMethods } from "./usage.js";
 import { contractIdSchema, contractVersionSchema } from "./version.js";
 import { WORKTREES_CONTRACT, WORKTREES_VERSION, worktreesMethods, type MethodSpec } from "./worktrees.js";
 
@@ -40,6 +41,7 @@ export const contracts: Table = Object.freeze({
   [`${FORGE_CONTRACT}/${FORGE_VERSION}`]: frozen(forgeMethods),
   [`${AGENTS_CONTRACT}/${AGENTS_VERSION}`]: frozen(agentsMethods),
   [`${AGENT_GROUPS_CONTRACT}/${AGENT_GROUPS_VERSION}`]: frozen(agentGroupsMethods),
+  [`${USAGE_CONTRACT}/${USAGE_VERSION}`]: frozen(usageMethods),
 });
 
 /**

@@ -2,6 +2,7 @@
 import { AxisError, isWellFormedString, withTransaction, type DatabaseSync } from "@axis/audit";
 import { z } from "zod";
 import { invalid, type CreateRunInput, type Created, type Run } from "./model.js";
+import { readProjectUsage, type ProjectUsage } from "./usage-totals.js";
 
 /**
  * Composer run records (schema version 6, tickets J2 and C10; docs/design/composer-runtime.md section 4). What a run was
@@ -202,6 +203,11 @@ export class ComposerRecords {
         )
         .run(w, wt.tokens, wt.costMicroUsd, wt.requests, wt.unpricedRequests, this.#ts());
     });
+  }
+
+  /** Usage and cost of the project's composer runs, in total and per agent (PV-D3, `axis.usage/1`; `./usage-totals.ts`). */
+  projectUsage(projectId: string): ProjectUsage {
+    return readProjectUsage(this.#db, projectId);
   }
 
   /** The workspace's budget totals so far; zero for a workspace no composer run has charged. */
