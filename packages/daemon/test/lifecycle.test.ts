@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 import { MemoryIdempotencyStore, type IdempotencyKey, type IdempotencyStore } from "../src/index.js";
 import { approveAndRun, fakeGate } from "./gate.js";
-import { CONTRACT, KEY1, cid, hello, req, rig, verifier, type Rig } from "./harness.js";
+import { CONTRACT, KEY1, cid, drain as settle, hello, req, rig, untilTrue, verifier, type Rig } from "./harness.js";
 
 async function ready(t: TestContext, options: Parameters<typeof rig>[0] = {}): Promise<Rig> {
   const r = rig(options);
@@ -64,7 +64,7 @@ test("B1c: the slot frees when the handler settles, and a handler that honours t
   });
   r.send(req("a", "slow", {}, { timeoutMs: 1 }));
   assert.equal((await r.inbox.response("a")).error?.code, "E_TIMEOUT");
-  await wait(20);
+  await untilTrue(() => r.daemon.orphanedHandlers === 0, 5_000, "the handler honoured the abort and its slot was freed");
   r.send(req("b", "slow", {}, { timeoutMs: 1 }));
   assert.equal((await r.inbox.response("b")).error?.code, "E_TIMEOUT", "admitted again, not backpressured");
 });
@@ -76,17 +76,16 @@ test("B1d: close does not free the slots of running handlers; the daemon-wide or
   r.daemon.register(CONTRACT, 1, { slow: () => gates[started++]?.promise ?? never() });
   r.send(req("o1", "slow"));
   r.send(req("o2", "slow"));
-  await wait(20);
+  await untilTrue(() => started === 2, undefined, "both handlers started");
   r.client.close(); // peer goes away with two handlers running
-  await wait(30);
+  await untilTrue(() => r.daemon.connectionCount === 0, undefined, "the daemon saw the peer go away");
   assert.equal(r.daemon.orphanedHandlers, 2);
   const next = r.connect("good#conn-2");
   await welcome(next);
   next.client.postMessage(req("n1", "slow"));
   assert.equal((await next.inbox.response("n1")).error?.code, "E_BACKPRESSURE");
   gates.forEach((g) => g.resolve());
-  await wait(30);
-  assert.equal(r.daemon.orphanedHandlers, 0);
+  await untilTrue(() => r.daemon.orphanedHandlers === 0, 5_000, "the orphans settled");
   next.client.postMessage(req("n2", "slow"));
   next.client.postMessage({ v: 1, cancel: "n2" });
   assert.equal((await next.inbox.response("n2")).error?.code, "E_CANCELLED", "admitted once the orphans settled");
@@ -104,7 +103,8 @@ test("B1e: the idempotency key stays in-progress until the handler settles; a wr
   assert.equal(busy.error?.code, "E_CONFLICT");
   assert.equal(busy.error?.details?.["reason"], "in-progress");
   gate.reject(new Error("failed after the caller left")); // settles after the abort: the effect is uncertain, so the key is not freed
-  await wait(30);
+  await untilTrue(() => r.daemon.orphanedHandlers === 0, 5_000, "the handler settled");
+  await settle(); // the key is marked in the continuation after the handler settles
   r.send(req("w3", "write", { n: 1 }, { idempotencyKey: KEY1 }));
   const after = await r.inbox.response("w3");
   assert.equal(after.error?.details?.["reason"], "outcome-unknown", "not wedged in progress, and not run again");
@@ -119,7 +119,8 @@ test("B1f: a success after the caller timed out is stored, and the retry replays
   r.send(req("s1", "write", { n: 7 }, { idempotencyKey: KEY1, timeoutMs: 10 }));
   assert.equal((await r.inbox.response("s1")).error?.code, "E_TIMEOUT");
   gate.resolve({ n: 7 });
-  await wait(30);
+  await untilTrue(() => r.daemon.orphanedHandlers === 0, 5_000, "the handler settled");
+  await settle(); // the result is stored in the continuation after the handler settles
   r.send(req("s2", "write", { n: 7 }, { idempotencyKey: KEY1 }));
   const res = await r.inbox.response("s2");
   assert.deepEqual([res.ok, res.result], [true, { n: 7 }]);
@@ -132,11 +133,12 @@ test("B1g: cancelling a keyed write leaves its key unknown once the handler sett
   let runs = 0;
   r.daemon.register(CONTRACT, 1, { write: (c) => (++runs, runs === 1 ? gate.promise.then(() => (c.signal.throwIfAborted(), { n: 1 })) : { n: 1 }) });
   r.send(req("k1", "write", { n: 1 }, { idempotencyKey: KEY1 }));
-  await wait(10);
+  await untilTrue(() => runs === 1, undefined, "the handler started");
   r.send({ v: 1, cancel: "k1" });
   assert.equal((await r.inbox.response("k1")).error?.code, "E_CANCELLED");
   gate.resolve({ n: 1 });
-  await wait(30);
+  await untilTrue(() => r.daemon.orphanedHandlers === 0, 5_000, "the handler settled");
+  await settle(); // the key is marked in the continuation after the handler settles
   r.send(req("k2", "write", { n: 1 }, { idempotencyKey: KEY1 }));
   assert.equal((await r.inbox.response("k2")).error?.details?.["reason"], "outcome-unknown");
   assert.equal(runs, 1);
@@ -146,8 +148,14 @@ test("B1g: cancelling a keyed write leaves its key unknown once the handler sett
 
 test("S2: a key whose begin() resolves after a timeout is not wedged in-progress", async (t) => {
   const inner = new MemoryIdempotencyStore();
+  let beginDone = false;
   const store: IdempotencyStore = {
-    begin: async (k: IdempotencyKey, h: string) => (await wait(50), inner.begin(k, h)),
+    begin: async (k: IdempotencyKey, h: string) => {
+      await wait(50); // the store's own latency: longer than the 10 ms the caller waits
+      const out = await inner.begin(k, h);
+      beginDone = true;
+      return out;
+    },
     complete: (k, v, o) => inner.complete(k, v, o),
     abandon: (k) => inner.abandon(k),
     markUnknown: (k) => inner.markUnknown(k),
@@ -156,7 +164,8 @@ test("S2: a key whose begin() resolves after a timeout is not wedged in-progress
   r.daemon.register(CONTRACT, 1, { write: (_c, p: { n: number }) => p });
   r.send(req("w1", "write", { n: 1 }, { idempotencyKey: KEY1, timeoutMs: 10 }));
   assert.equal((await r.inbox.response("w1")).error?.code, "E_TIMEOUT");
-  await wait(120);
+  await untilTrue(() => beginDone, undefined, "the slow begin() returned");
+  await settle(); // the key is abandoned or completed in the continuation after begin()
   r.send(req("w2", "write", { n: 1 }, { idempotencyKey: KEY1 }));
   const res = await r.inbox.response("w2");
   assert.equal(res.ok, true, `retry with the same key got ${res.error?.code}`);
@@ -168,9 +177,10 @@ test("S3a: maxConnections holds when the verifier is async", async (t) => {
   const r = rig({ maxConnections: 1, identity: { verify: async (a) => (await wait(20), verifier.verify(a)) } });
   t.after(() => r.cleanup());
   const extra = [r.connect("good#conn-2"), r.connect("good#conn-3"), r.connect("good#conn-4")];
-  await wait(100);
+  // The three extras are refused and closed (a cap that did not count pending verifications would let them in and never close them).
+  for (const c of extra) assert.ok(await c.inbox.closedWithin(5_000), "an extra connection was closed");
+  await untilTrue(() => r.daemon.connectionCount === 1, undefined, "the first connection finished verification");
   assert.ok(r.daemon.connectionCount <= 1, `${r.daemon.connectionCount} live sessions with maxConnections 1`);
-  for (const c of extra) assert.ok(await c.inbox.closedWithin());
 });
 
 test("S3b: a verifier that never settles ends in close, and the pending slot is released", async (t) => {
@@ -193,9 +203,11 @@ test("S3c: closing during verification leaves no session behind", async (t) => {
   const r = rig({ identity: { verify: async (a) => (await gate.promise, verifier.verify(a)) } });
   t.after(() => r.cleanup());
   r.client.close();
+  // No structural signal: the daemon's end of the rig's first connection is not exposed, so "the daemon saw the close" cannot be observed.
+  // The delay only gives the close time to arrive before verification completes; it can fail only by being too short.
   await wait(20);
   gate.resolve();
-  await wait(20);
+  await settle(); // verification continues within promise turns
   assert.equal(r.daemon.connectionCount, 0);
 });
 

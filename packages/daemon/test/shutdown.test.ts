@@ -97,7 +97,7 @@ test("SD5: shutdown is idempotent: same promise, first reason wins, escalate bef
   const p1 = r.daemon.shutdown("first");
   const p2 = r.daemon.shutdown("second");
   assert.equal(p1, p2);
-  await drain(); // one settle: the second call must not have started anything of its own
+  await drain(); // one settle (a promise-turn check, two macrotasks; the stubs are promise-only): the second call must not have started anything of its own
   gate.resolve({ text: "a" });
   const res = await p1;
   assert.equal(res.reason, "first");
@@ -137,7 +137,7 @@ test("SD7: a request whose handler is not started when the grace ends never star
   assert.equal(started, 0);
   assert.equal(res.cancelled, 1);
   audit.resolve();
-  await drain(); // one settle, then one assert: the released request must not start its handler now
+  await drain(); // one settle (a promise-turn check, two macrotasks; the stubs are promise-only), then one assert: the released request must not start its handler now
   assert.equal(started, 0);
 });
 
