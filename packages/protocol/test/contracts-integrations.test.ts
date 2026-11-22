@@ -43,7 +43,7 @@ test("both contracts are planned, never served, with the designed method tables"
   const table = (methods: Record<string, { sideEffect: string; tier: number; idempotency: string }>) =>
     Object.entries(methods).map(([m, s]) => [m, s.sideEffect, s.tier, s.idempotency]);
   assert.deepEqual(table(integrationsMethods), [
-    ["list", "read", 0, "none"], ["status", "read", 0, "none"], ["connect", "credential", 3, "none"],
+    ["list", "read", 0, "none"], ["status", "read", 0, "none"], ["connect", "credential", 4, "none"],
     ["disconnect", "write", 1, "none"], ["read", "read", 0, "none"], ["write", "network", 3, "required"],
   ]);
   assert.deepEqual(table(netMethods), [["read", "read", 0, "none"], ["send", "network", 3, "required"]]);
@@ -217,7 +217,7 @@ test("an integration summary shows no credential and no URL beyond its punycode 
   rejects(list, { integrations: Array.from({ length: 65 }, () => github) }, "65 integrations");
 });
 
-test("write and send carry an optional approval (tier 3), as connect does; reads and disconnect carry none; no payload says who is calling", () => {
+test("write and send carry an optional approval (tier 3), as connect does (tier 4); reads and disconnect carry none; no payload says who is calling", () => {
   const challenge = { challengeId: "A".repeat(43) };
   accepts(schemaOf(I, "write", "request"), { ...base, approval: challenge }, "write with approval");
   accepts(schemaOf(N, "send", "request"), { ...send, approval: challenge }, "send with approval");
