@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 // axis.agents/1 and axis.agent-groups/1 (PV-G2): planned, user-only rows at the contract tiers; the protocol's name rule is
-// exactly the journal's (schema version 12), so a name the wire accepts is one the journal stores, and the other way round.
+// exactly the journal's (schema version 12) inside a name, so a name the wire accepts is one the journal stores. At the edges
+// the wire is stricter (it refuses any leading or trailing whitespace, the journal only spaces): the safe direction.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { NAME_REFUSED_RANGES } from "@axis/journal";
