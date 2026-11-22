@@ -7,7 +7,8 @@ import { test, type TestContext } from "node:test";
 import { AuditLog, openDatabase } from "@axis/audit";
 import type { GitRunner } from "@axis/git-ops";
 import { Journal } from "@axis/journal";
-import { createProjectControl, outboundMessageSchema, projectDisplayName, type ProjectMessage } from "../src/index.js";
+import { createProjectControl, outboundMessageSchema, projectDisplayName, projectExcludedRoots, type BindingFs, type ProjectMessage } from "../src/index.js";
+import { nodeBindingFs } from "../src/projects/binding.js";
 
 // The project messages of the control channel (docs/design/project-registration-and-trust.md §5.1 and §5.2).
 
@@ -35,7 +36,7 @@ function rig(t: TestContext, o: { journal?: false } = {}) {
   const pc = createProjectControl({
     journal: o.journal === false ? undefined : journal,
     control: { send: (m) => void sent.push(m as Record<string, unknown>) },
-    excludedRoots: [dataDir, worktreeRoot],
+    excludedRoots: projectExcludedRoots({ dataDir, worktreeRoot }),
     binding: { platform: process.platform, uid: POSIX ? (process.getuid as () => number)() : undefined },
     remote: { runner, env: { PATH: process.env["PATH"] }, platform: process.platform },
   });
@@ -92,6 +93,9 @@ test("register refusals: not normalised, not a repository, a changed binding, a 
   assert.deepEqual(await code(register(git(join(r.dataDir, "repo")))), ["E_INVALID_ARGUMENT", "excluded_root"]);
   assert.deepEqual(await code(register(git(join(r.worktreeRoot, "ws")))), ["E_INVALID_ARGUMENT", "excluded_root"]);
   assert.deepEqual(await code(register(git(join(r.root, "axis")))), ["E_INVALID_ARGUMENT", "excluded_root"]);
+  // Review S2: the Axis data root (dirname of the data directory) holds the anchor and the pty scratch: never a project.
+  assert.deepEqual(await code(register(git(join(r.root, "axis", "anchor", "repo")))), ["E_INVALID_ARGUMENT", "excluded_root"], "mutant: data root not excluded");
+  assert.deepEqual(projectExcludedRoots({ dataDir: "/a/axis/data", worktreeRoot: "/w" }), ["/a/axis", "/a/axis/data", "/w"]);
   // Inside a registered project, or around one.
   assert.deepEqual(await code(register(git(join(p, "inner")))), ["E_INVALID_ARGUMENT", "nested_project"]);
   assert.deepEqual(await code(register(git(r.root))), ["E_INVALID_ARGUMENT", "excluded_root"]);
@@ -99,6 +103,40 @@ test("register refusals: not normalised, not a repository, a changed binding, a 
   const inner = git(join(outer, "inner"));
   await r.ask(register(inner));
   assert.deepEqual(await code(register(git(outer))), ["E_INVALID_ARGUMENT", "nested_project"]);
+});
+
+test("review N1: two overlapping registers of nested folders are handled one at a time: exactly one is registered", { skip: SKIP }, async (t) => {
+  const r = rig(t);
+  const outer = git(join(r.root, "outer"));
+  const inner = git(join(outer, "inner"));
+  const answers: Record<string, unknown>[] = [];
+  // A barrier: filesystem calls are released in pairs, so two unserialised flows run in lockstep and reach their checks in the
+  // same tick; a lone flow (serialised) is released after 30 ms.
+  const waiting: (() => void)[] = [];
+  const gate = (): Promise<void> => new Promise((resolve) => {
+    waiting.push(resolve);
+    if (waiting.length === 2) for (const go of waiting.splice(0)) go();
+    else setTimeout(() => { const i = waiting.indexOf(resolve); if (i >= 0) waiting.splice(i, 1); resolve(); }, 30);
+  });
+  // The gate comes AFTER each real call, so the last release resumes both flows in the same tick.
+  const after = async <T>(work: Promise<T>): Promise<T> => {
+    try {
+      return await work;
+    } finally {
+      await gate();
+    }
+  };
+  const lockstep: BindingFs = { realpath: (p) => after(nodeBindingFs.realpath(p)), lstat: (p) => after(nodeBindingFs.lstat(p)) };
+  const pc = createProjectControl({
+    journal: r.journal,
+    control: { send: (m) => void answers.push(m as Record<string, unknown>) },
+    excludedRoots: [r.dataDir],
+    binding: { platform: process.platform, uid: (process.getuid as () => number)(), fs: lockstep },
+    remote: { runner: { run: async () => ({ code: 1, stdout: "", stderr: "" }) }, env: {}, platform: process.platform },
+  });
+  await Promise.all([pc.handle(register(outer)), pc.handle(register(inner))]);
+  assert.deepEqual(answers.map((a) => a["ok"] === true ? "ok" : a["reason"]), ["ok", "nested_project"], "mutant: no serialisation");
+  assert.equal(r.journal.listProjects().length, 1);
 });
 
 test("trust: a grant re-derives the binding; a swapped .git is refused; a revoke needs nothing; a moved row is refused", { skip: SKIP }, async (t) => {

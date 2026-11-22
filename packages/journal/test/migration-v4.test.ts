@@ -110,7 +110,7 @@ test("the audit chain tables are byte for byte the same after the upgrade and th
 test("running the migration again changes nothing, including after data was written to the new columns", () => {
   const { db, audit } = oldDatabase();
   const journal = Journal.open(db, { audit });
-  journal.registerProject({ id: "proj-a", path: "/work/a", displayName: "A", trusted: true, actor: "user" });
+  journal.registerProject({ id: "proj-a", path: "/work/a", displayName: "A", trusted: false, actor: "user" });
   journal.setWorktreePath("w-ready", "/work/a/.axis/w-ready", "daemon");
   const schema = schemaOf(db);
   const ws = dump(db, "agent_workspaces", "id");

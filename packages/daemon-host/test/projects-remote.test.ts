@@ -1,12 +1,12 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, constants, existsSync, mkdtempSync, openSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
 import { createNodeRunner, type GitRunRequest, type GitRunner } from "@axis/git-ops";
-import { displayRemoteUrl, parseRemotes, readRemote, readRepositoryBinding, type RepositoryBinding } from "../src/index.js";
+import { createRemoteRunner, displayRemoteUrl, parseRemotes, readRemote, readRepositoryBinding, type BindingFs, type RepositoryBinding } from "../src/index.js";
 import { gitUnavailable } from "./review-rig.js";
 
 // The remote shown in main's dialogs (docs/design/project-registration-and-trust.md §5.3).
@@ -24,6 +24,27 @@ test("the display form drops user info, query and fragment, escapes what could m
   assert.ok(!bidi.includes("‮") && bidi.includes("\\u{202e}"), bidi);
   assert.ok(!displayRemoteUrl("https://host/a\nb").includes("\n"));
   assert.ok(displayRemoteUrl(`https://host/${"a".repeat(400)}`).length <= 192);
+  // Review S1: a `:` in scp-like user info, and a `?` or `#` inside the user info of a URL.
+  assert.equal(displayRemoteUrl("user:pass@host:path/x.git"), "host:path/x.git");
+  assert.equal(displayRemoteUrl("https://u:p?x@host/a"), "https://host/a");
+  assert.equal(displayRemoteUrl("https://u:p#x@host/a"), "https://host/a");
+});
+
+test("fuzz: no user info secret survives the display form, whatever surrounds it", () => {
+  const SECRET = "S3cr3tT0k3n";
+  const users = [`${SECRET}`, `u:${SECRET}`, `${SECRET}:x`, `u:${SECRET}?q`, `u:${SECRET}#f`, `a@b:${SECRET}`, `u:${SECRET}%40`, `:${SECRET}`];
+  const forms = [
+    (u: string) => `https://${u}@github.com/o/r.git`, (u: string) => `ssh://${u}@host:22/o/r`, (u: string) => `git+ssh://${u}@h/x`,
+    (u: string) => `${u}@host:o/r.git`, (u: string) => `${u}@host:/abs/r.git`, (u: string) => `HTTPS://${u}@H/`,
+    (u: string) => `https://${u}@host`, (u: string) => `${u}@host:r`, (u: string) => `ftp://${u}@h:21/p?x=1#y`,
+  ];
+  let n = 0;
+  for (const f of forms) for (const u of users) {
+    const shown = displayRemoteUrl(f(u));
+    assert.ok(!shown.includes(SECRET), `${f(u)} -> ${shown}`);
+    n++;
+  }
+  assert.equal(n, 72);
 });
 
 test("parse: origin first, else the first remote; counted and capped; anything else is ignored", () => {
@@ -109,4 +130,32 @@ test("real git on a hostile repository: no program the config names runs, an inc
   assert.equal(existsSync(marker), false, "no program named by the repository ran");
   // The FIFO has no writer: had git opened it (an include at startup or in the read), it would have hung until the bound.
   assert.deepEqual(r, { remote: { name: "origin", url: `file://${root}/elsewhere.git` }, remotes: 1 }, "read without following the include");
+});
+
+test("review B1: the production runner ends a git blocked on a FIFO swapped in after the lstat, and its process group", { skip: GIT_SKIP }, async (t) => {
+  const gitPath = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
+  const b = fakeBinding(t);
+  execFileSync("mkfifo", [join(b.commonDir, "config")]);
+  // The lstat lies (the TOCTOU between the check and git's open): a regular, small file.
+  const lying: BindingFs = {
+    realpath: async (p) => p,
+    lstat: async () => ({ isDirectory: () => false, isFile: () => true, isSymbolicLink: () => false, uid: 0, dev: 1, ino: 1, size: 10 }),
+  };
+  const t0 = performance.now();
+  // No caller signal and a remote bound far beyond the runner's: only the runner's own 5 s kill can end it.
+  const r = await readRemote(b, { runner: createRemoteRunner(gitPath, env), env, platform: process.platform, fs: lying, timeoutMs: 120_000 });
+  const took = performance.now() - t0;
+  assert.equal(r, undefined);
+  assert.ok(took >= 4_000 && took < 15_000, `ended by the runner's bound (${Math.round(took)} ms); mutant: no timeoutMs on the runner`);
+  // Nothing is left reading the FIFO: a non-blocking open for writing fails with ENXIO when no process has it open to read.
+  assert.throws(() => openSync(join(b.commonDir, "config"), constants.O_WRONLY | constants.O_NONBLOCK), { code: "ENXIO" }, "no git still holds the FIFO");
+});
+
+test("the config lstat is under the bound too: a hung filesystem ends at the remote bound", async () => {
+  const hung: BindingFs = { realpath: async (p) => p, lstat: () => new Promise(() => undefined) };
+  const runner = { run: async () => ({ code: 0, stdout: "", stderr: "" }) };
+  const t0 = performance.now();
+  const r = await readRemote({ path: "/r", commonDir: "/r/.git", gitDirId: "1:1" }, { runner, env, platform: "linux", fs: hung, timeoutMs: 50 });
+  assert.equal(r, undefined);
+  assert.ok(performance.now() - t0 < 2_000, "mutant: lstat not bounded");
 });

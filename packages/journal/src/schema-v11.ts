@@ -7,7 +7,8 @@ import type { Migration } from "@axis/audit";
  * - `git_dir_id`: `<dev>:<ino>` of `<path>/.git`, so a `.git` removed and recreated at the same path is a different binding.
  * - `trust_changed_at`: when `trusted` last changed.
  * Both binding columns are set once: NULL to a value is allowed (a pre-v11 row is re-bound by the "Trust to run" dialog), any
- * other change is refused; `path` never changes. Every existing row loses its trust: no row was trusted through main's dialog,
+ * other change is refused; `path` never changes. A row is trusted only with its binding (two triggers; safe on old rows,
+ * which are all reset first). Every existing row loses its trust: no row was trusted through main's dialog,
  * because no writer existed before this version.
  */
 export const JOURNAL_V11: Migration = {
@@ -27,5 +28,11 @@ export const JOURNAL_V11: Migration = {
       WHEN (OLD.common_dir IS NOT NULL AND NEW.common_dir IS NOT OLD.common_dir)
         OR (OLD.git_dir_id IS NOT NULL AND NEW.git_dir_id IS NOT OLD.git_dir_id)
       BEGIN SELECT RAISE(ABORT, 'a project keeps its binding'); END;
+    CREATE TRIGGER projects_trusted_bound_insert BEFORE INSERT ON projects
+      WHEN NEW.trusted = 1 AND (NEW.common_dir IS NULL OR NEW.git_dir_id IS NULL)
+      BEGIN SELECT RAISE(ABORT, 'a trusted project needs its binding'); END;
+    CREATE TRIGGER projects_trusted_bound_update BEFORE UPDATE OF trusted, common_dir, git_dir_id ON projects
+      WHEN NEW.trusted = 1 AND (NEW.common_dir IS NULL OR NEW.git_dir_id IS NULL)
+      BEGIN SELECT RAISE(ABORT, 'a trusted project needs its binding'); END;
   `,
 };

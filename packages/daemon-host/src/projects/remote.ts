@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { join } from "node:path";
-import { daemonGitEnv, guardedRunner, prefix, type Env, type GitOpsDeps, type GitRunner } from "@axis/git-ops";
+import { createNodeRunner, daemonGitEnv, guardedRunner, prefix, type Env, type GitOpsDeps, type GitRunner } from "@axis/git-ops";
 import { toDisplayPath } from "@axis/protocol";
 import { nodeBindingFs, type BindingFs, type RepositoryBinding } from "./binding.js";
 
@@ -46,16 +46,15 @@ export interface RemoteReaderDeps {
  * escaped; at most 192 characters).
  */
 export function displayRemoteUrl(raw: string): string {
-  let s = raw;
-  const url = /^([A-Za-z][A-Za-z0-9+.-]*:\/\/)([^/?#]*)(.*)$/s.exec(s);
-  if (url !== null) {
-    const authority = url[2] as string;
-    s = `${url[1]}${authority.slice(authority.lastIndexOf("@") + 1)}${url[3]}`;
-  } else {
-    const scp = /^[^/@:]+@([^/:]+:.*)$/s.exec(s);
-    if (scp !== null) s = scp[1] as string;
-  }
-  return toDisplayPath(s.replace(/[?#].*$/s, ""), MAX_REMOTE_URL_DISPLAY);
+  const scheme = /^[A-Za-z][A-Za-z0-9+.-]*:\/\//.exec(raw)?.[0] ?? "";
+  const rest = raw.slice(scheme.length);
+  // The authority (or an scp-like `user:pass@host:path` prefix) ends at the first `/`. Everything up to its LAST `@` is user info,
+  // whatever it holds (`:`, `?`, `#`), and is dropped before the query and fragment are cut.
+  const slash = rest.indexOf("/");
+  const head = slash < 0 ? rest : rest.slice(0, slash);
+  const tail = slash < 0 ? "" : rest.slice(slash);
+  const host = head.slice(head.lastIndexOf("@") + 1);
+  return toDisplayPath(`${scheme}${host}${tail}`.replace(/[?#].*$/s, ""), MAX_REMOTE_URL_DISPLAY);
 }
 
 /** Parses `config --null --get-regexp` output: `<key>\n<value>\0` per entry; keys are `remote.<name>.url`. */
@@ -75,18 +74,36 @@ export function parseRemotes(stdout: string): RemoteSummary {
   };
 }
 
+/**
+ * The runner of the remote read: dedicated to it, over the host's ONE `gitPath`, killed (with its process group) at the 5 s bound.
+ * The node runner does not read `GitRunRequest.signal`: its own `timeoutMs` is what ends a git blocked on a FIFO.
+ */
+export function createRemoteRunner(gitPath: string, env: Env): GitRunner {
+  return createNodeRunner({ gitPath, env, timeoutMs: REMOTE_TIMEOUT_MS });
+}
+
+/** `p`, or a rejection once `signal` aborts (the work itself is left to its own bound). */
+function bounded<T>(p: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    if (signal.aborted) return reject(new Error("aborted"));
+    signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+    p.then(resolve, reject);
+  });
+}
+
 /** Reads the remotes of a bound repository. `undefined` when they cannot be read safely (the dialog says "remote unknown"). */
 export async function readRemote(binding: RepositoryBinding, deps: RemoteReaderDeps, signal?: AbortSignal): Promise<RemoteSummary | undefined> {
   const config = join(binding.commonDir, "config");
+  const bound = AbortSignal.timeout(deps.timeoutMs ?? REMOTE_TIMEOUT_MS);
+  const all = signal === undefined ? bound : AbortSignal.any([signal, bound]);
   try {
-    const st = await (deps.fs ?? nodeBindingFs).lstat(config);
+    const st = await bounded((deps.fs ?? nodeBindingFs).lstat(config), all);
     if (st.isSymbolicLink() || !st.isFile() || BigInt(st.size) > BigInt(MAX_CONFIG_BYTES)) return undefined;
   } catch (e) {
     return (e as { code?: unknown } | null)?.code === "ENOENT" ? { remote: null, remotes: 0 } : undefined;
   }
   // Only what prefix(), hooksOffPath() and guardedRunner() read: the runner, the platform and the Windows hooks directory.
   const ops = { runner: deps.runner, platform: deps.platform, env: { daemon: deps.env, pty: {} }, ...(deps.emptyHooksDir === undefined ? {} : { emptyHooksDir: deps.emptyHooksDir }) } as unknown as GitOpsDeps;
-  const bound = AbortSignal.timeout(deps.timeoutMs ?? REMOTE_TIMEOUT_MS);
   try {
     const w = { workTree: binding.path, gitDir: binding.commonDir };
     const r = await guardedRunner(deps.runner, ops).run({
@@ -94,10 +111,10 @@ export async function readRemote(binding: RepositoryBinding, deps: RemoteReaderD
       cwd: binding.path,
       env: daemonGitEnv(deps.env, deps.platform),
       context: "daemon",
-      signal: signal === undefined ? bound : AbortSignal.any([signal, bound]),
+      signal: all,
       maxOutput: 65_536,
     });
-    if (bound.aborted || signal?.aborted) return undefined;
+    if (all.aborted) return undefined;
     // git config exits 1 when no key matches.
     if (r.code === 1) return { remote: null, remotes: 0 };
     if (r.code !== 0 || r.truncated === true) return undefined;

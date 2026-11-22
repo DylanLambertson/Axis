@@ -129,7 +129,7 @@ test("recordBaseBranch: only while CREATING, once, a valid branch, audited witho
   const db = openDatabase(":memory:");
   const audit = new AuditLog(db);
   const journal = Journal.open(db, { audit });
-  journal.registerProject({ id: "proj-a", path: "/work/a", displayName: "A", trusted: true, actor: "user" });
+  journal.registerProject({ id: "proj-a", path: "/work/a", displayName: "A", trusted: false, actor: "user" });
   const id = creating(journal);
   const head = audit.head()!.seq;
   assert.equal(journal.recordBaseBranch(id, "refs/heads/main", SHA, "daemon").baseBranch, "refs/heads/main");

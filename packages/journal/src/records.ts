@@ -36,7 +36,9 @@ export const registerProjectSchema = z
     actor: z.string().regex(ACTOR),
   })
   .strict()
-  .refine((p) => (p.commonDir === undefined) === (p.gitDirId === undefined), { message: "a binding has both parts" });
+  .refine((p) => (p.commonDir === undefined) === (p.gitDirId === undefined), { message: "a binding has both parts" })
+  // A trusted project always has its binding (schema v11 enforces it too): T2 has something to compare.
+  .refine((p) => !p.trusted || p.commonDir !== undefined, { message: "a trusted project needs its binding" });
 export type RegisterProjectInput = Omit<z.infer<typeof registerProjectSchema>, "actor"> & { readonly actor: AuditActor };
 
 const workspaceId = z.string().min(1).max(128).refine(noControl).refine(isWellFormedString);
@@ -92,7 +94,7 @@ const TRUST_ACTIONS: Readonly<Record<ProjectTrustVia, string>> = {
 };
 const setTrustSchema = z
   .object({
-    id: z.string().min(1).max(128),
+    id: z.string().min(1).max(128).refine(noControl).refine(isWellFormedString),
     trusted: z.boolean(),
     via: z.enum(["dialog", "gesture", "binding_lost"]),
     commonDir: absolutePath.optional(),

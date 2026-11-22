@@ -70,6 +70,11 @@ test("register: the decision is in the audit action name; the binding is stored 
   assert.deepEqual([journal.getProject("a")?.commonDir, journal.getProject("a")?.gitDirId], [BIND.commonDir, BIND.gitDirId]);
   assert.throws(() => journal.registerProject({ id: "c", path: abs("three"), displayName: "x", trusted: false, commonDir: abs("three/.git"), actor: "daemon" }), code("E_INVALID_ARGUMENT"));
   assert.throws(() => journal.registerProject({ id: "c", path: abs("three"), displayName: "x", trusted: false, ...BIND, actor: "daemon" }), code("E_CONFLICT"), "a repository is one project");
+  assert.throws(() => journal.registerProject({ id: "d", path: abs("four"), displayName: "x", trusted: true, actor: "daemon" }), code("E_INVALID_ARGUMENT"), "mutant: trusted without a binding");
+  // The schema refuses it too, whatever writes the row.
+  assert.throws(() => db.prepare("INSERT INTO projects (id, path, display_name, trusted, created_at, updated_at) VALUES ('e', ?, 'x', 1, 't', 't')").run(abs("five")), /needs its binding/);
+  assert.throws(() => db.prepare("UPDATE projects SET trusted = 1 WHERE id = 'b'").run(), /needs its binding/, "mutant: update trigger dropped");
+  assert.throws(() => journal.setProjectTrust({ id: "a\u0007", trusted: false, via: "gesture" }), code("E_INVALID_ARGUMENT"));
 });
 
 test("setProjectTrust: only a dialog grants, with the binding; actor daemon; one audit row per change and none without one", () => {

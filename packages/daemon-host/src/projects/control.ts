@@ -1,15 +1,15 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { randomBytes } from "node:crypto";
 import { realpath } from "node:fs/promises";
-import { basename, normalize, sep } from "node:path";
+import { basename, dirname, normalize, sep } from "node:path";
 import { AxisError } from "@axis/audit";
-import { createNodeRunner, type Env } from "@axis/git-ops";
+import type { Env } from "@axis/git-ops";
 import type { Journal } from "@axis/journal";
 import type { ControlClient } from "../control/client.js";
 import type { InboundMessage } from "../control/messages.js";
 import type { Logger } from "../log/logger.js";
-import { readRepositoryBinding, type BindingOptions, type BindingResult } from "./binding.js";
-import { readRemote, type RemoteReaderDeps } from "./remote.js";
+import { BINDING_TIMEOUT_MS, readRepositoryBinding, type BindingOptions, type BindingResult } from "./binding.js";
+import { createRemoteRunner, readRemote, REMOTE_TIMEOUT_MS, type RemoteReaderDeps } from "./remote.js";
 
 /**
  * The project messages of the control channel (docs/design/project-registration-and-trust.md §5.1; `daemon-host.md` §7.4).
@@ -91,7 +91,7 @@ export function createProjectControl(deps: ProjectControlDeps): { handle(message
     deps.logger?.warn("request.failed", { reason: f.reason ?? "project_control", code: f.code });
     send({ type, requestId, ok: false, code: f.code, ...(f.reason === undefined ? {} : { reason: f.reason }) } as never);
   };
-  const bind = (path: string) => readRepositoryBinding(path, deps.binding);
+  const bind = (path: string, signal?: AbortSignal) => readRepositoryBinding(path, { ...deps.binding, ...(signal === undefined ? {} : { signal }) });
 
   async function excluded(path: string, journal: NonNullable<ProjectControlDeps["journal"]>): Promise<string | undefined> {
     for (const root of await roots) if (within(path, root) || within(root, path)) return "excluded_root";
@@ -102,12 +102,14 @@ export function createProjectControl(deps: ProjectControlDeps): { handle(message
 
   async function inspect(m: Extract<ProjectMessage, { type: "projects.inspect" }>, journal: NonNullable<ProjectControlDeps["journal"]>): Promise<void> {
     if (normalize(m.path) !== m.path) return fail("projects.inspected", m.requestId, { code: "E_INVALID_ARGUMENT" });
-    const b = await bind(m.path);
+    // One signal for the whole inspection: the binding's bound, then the remote read's.
+    const signal = AbortSignal.timeout(BINDING_TIMEOUT_MS + REMOTE_TIMEOUT_MS);
+    const b = await bind(m.path, signal);
     if (!b.ok) return fail("projects.inspected", m.requestId, refusal(b));
     const registered = journal.listProjects().find((p) => p.path === m.path);
     const why = registered === undefined ? await excluded(m.path, journal) : undefined;
     if (why !== undefined) return fail("projects.inspected", m.requestId, { code: "E_INVALID_ARGUMENT", reason: why });
-    const remote = await readRemote(b.binding, deps.remote);
+    const remote = await readRemote(b.binding, deps.remote, signal);
     send({
       type: "projects.inspected",
       requestId: m.requestId,
@@ -149,20 +151,36 @@ export function createProjectControl(deps: ProjectControlDeps): { handle(message
     send({ type: "projects.result", requestId: m.requestId, ok: true, projectId: row.id });
   }
 
+  // One message at a time: a register's checks and its insert are separated by awaits, so two overlapping registers of nested
+  // folders could otherwise both pass (main sends one dialog at a time; this makes it true here as well).
+  let queue: Promise<void> = Promise.resolve();
+  const one = async (m: ProjectMessage): Promise<void> => {
+    const answer = m.type === "projects.inspect" ? "projects.inspected" : "projects.result";
+    const journal = deps.journal;
+    if (journal === undefined) return fail(answer, m.requestId, { code: "E_UNAVAILABLE" });
+    try {
+      if (m.type === "projects.inspect") await inspect(m, journal);
+      else if (m.type === "projects.register") await register(m, journal);
+      else await trust(m, journal);
+    } catch (e) {
+      fail(answer, m.requestId, failureOf(e));
+    }
+  };
   return {
-    async handle(m) {
-      const answer = m.type === "projects.inspect" ? "projects.inspected" : "projects.result";
-      const journal = deps.journal;
-      if (journal === undefined) return fail(answer, m.requestId, { code: "E_UNAVAILABLE" });
-      try {
-        if (m.type === "projects.inspect") await inspect(m, journal);
-        else if (m.type === "projects.register") await register(m, journal);
-        else await trust(m, journal);
-      } catch (e) {
-        fail(answer, m.requestId, failureOf(e));
-      }
+    handle(m) {
+      const run = queue.then(() => one(m));
+      queue = run.catch(() => undefined);
+      return run;
     },
   };
+}
+
+/**
+ * What no project may be, be inside or contain: the Axis data root (`dirname(dataDir)`: the daemon's data, the audit anchor and
+ * the pty scratch live there, as `pty-launch.ts` and `anchor-file.ts` define it), the data directory and the worktree root.
+ */
+export function projectExcludedRoots(config: { readonly dataDir: string; readonly worktreeRoot: string }): string[] {
+  return [dirname(config.dataDir), config.dataDir, config.worktreeRoot];
 }
 
 /**
@@ -183,9 +201,9 @@ export function installProjectControl(
   const handler = createProjectControl({
     journal: o.journal,
     control,
-    excludedRoots: [o.config.dataDir, o.config.worktreeRoot],
+    excludedRoots: projectExcludedRoots(o.config),
     binding: { platform: o.config.platform, uid: typeof process.getuid === "function" ? process.getuid() : undefined },
-    remote: { runner: createNodeRunner({ gitPath: o.gitPath, env: o.env }), env: o.env, platform: o.config.platform },
+    remote: { runner: createRemoteRunner(o.gitPath, o.env), env: o.env, platform: o.config.platform },
     ...(o.logger === undefined ? {} : { logger: o.logger }),
   });
   return control.onProjects((m) => void handler.handle(m));
