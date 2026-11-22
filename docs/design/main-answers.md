@@ -93,6 +93,8 @@ Bounds: one dialog open at a time; at most 16 waiting (the host's `nativeWaitLim
 
 **Open item (review of X1c): the trust model is renderer-writable.** `content.trust.model.key` is written by the workbench in each renderer through the storage channel, so a compromised renderer (the EL-3 actor) can rewrite it. Today that reaches only the connection's `trusted` flag, which grants nothing on its own (a workspace grant needs a main `trust.set`, not built) and `trust.check`, which is always `false` (no project path, below). Moving main to a store renderers cannot write is not cheap here (upstream has no main-only trust store). So it is a gate line instead (ROADMAP Phase 1a "Trust enforcement", threat model TRU-2): before main registers projects, main must own the run-trust decision for Axis projects in a record only main writes, from a prompt main shows, and must not read the workbench model for it.
 
+**Answered by design (2026-11-21):** `project-registration-and-trust.md` puts the run-trust record in the journal, written only by control messages main sends after its own native dialog; `trust.check` then carries the journal's `projectPath`, main answers the Workspace Trust part, and the daemon requires both. Built in its slice S2.
+
 **Not built: main does not register projects yet** (`projects.register` from main is the remaining part of X1b in `daemon-host-entry.md`). Until it does, main knows no project path and every `trust.check` answers `false`, so every run start is refused `untrusted` (fail closed). The core takes a `projectPath(projectId)` lookup so registration only has to fill it.
 
 ### 3.4 `settings.get` (CFG-1)
