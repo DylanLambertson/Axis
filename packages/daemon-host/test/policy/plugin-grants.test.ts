@@ -14,6 +14,7 @@ import {
   WEB_ALLOWED,
   checkPluginCoverage,
   pluginCoverageProblems,
+  userRule,
   type PluginGrantReader,
 } from "../../src/index.js";
 
@@ -95,6 +96,14 @@ test("tiers: a plugin run start is raised to 3; a read keeps its tier; nothing r
   assert.deepEqual(policy.evaluate(input("axis.runs/1.start")), { effect: "allow", tier: 3 });
   assert.deepEqual(policy.evaluate(input("axis.pages/1.list")), { effect: "allow" });
   assert.equal(policyWith(reader(["pages.read"]), new InMemoryTrustRegistry(), { "pages.read": ["axis.pages/1.markReviewed"] }).evaluate(input("axis.pages/1.markReviewed")).effect, "deny");
+});
+
+test("the tier ceiling holds on its own: a granted, undenied method whose row is tier 4 is refused", () => {
+  const rules = { ...RULES, "axis.pages/1.list": userRule(4) };
+  const policy = new RuleTablePolicy(new InMemoryTrustRegistry(), rules, reader(["pages.read"]));
+  assert.equal(policy.evaluate(input("axis.pages/1.list")).effect, "deny");
+  const atThree = new RuleTablePolicy(new InMemoryTrustRegistry(), { ...RULES, "axis.pages/1.list": userRule(3) }, reader(["pages.read"]));
+  assert.deepEqual(atThree.evaluate(input("axis.pages/1.list")), { effect: "allow", tier: 3 });
 });
 
 test("trust: a gated row keeps its mode; a revoke of the view's or the host window refuses the plugin", () => {
