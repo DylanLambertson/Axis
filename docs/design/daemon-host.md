@@ -271,6 +271,8 @@ Two mechanisms, for two kinds of method.
 - At the registry cap (4096 entries) it **fails closed** and never evicts a revoke: a new grant is refused before a recorded revoke is dropped.
 The policy row `requireTrusted` consults it at evaluation and the handler re-checks immediately before the side effect (a revoke between the two refuses). Q6 is answered for these methods by the two levels above; whether a revoke should also stop a running run stays open.
 
+**Amended (2026-11-21, `project-registration-and-trust.md` §5.3).** These methods move to the trust mode `project`: the journal's run-trust record (set only through main's native dialog), its repository binding, main's `trust.check` and no registry revoke, all required, checked by one gate right before the side effect. Policy no longer reads `identity.trusted`, and main sends no `trust.set` grants. `cli-runs.start` keeps its attestation and uses the same gate.
+
 ### 6.3 Transport abstraction
 
 Two planes, never mixed:
@@ -338,7 +340,7 @@ The host depends on `WorktreesService` (§2.3), defined from the `axis.worktrees
 
 ### 7.4 Projects
 
-A project is registered by **main** over the control channel (`projects.register { path, trusted }`, from the folder the window opened, after the trust decision), never by a renderer request. The host canonicalises the path, checks it is a git repository that is not inside a registered project or the worktree root, stores it in the journal and returns `projectId`. `axis.projects/1.list` returns ids, display names and trust, not paths.
+A project is registered by **main** over the control channel (`projects.register { path, trusted }`, from the folder the window opened, after the trust decision), never by a renderer request. The host canonicalises the path, checks it is a git repository that is not inside a registered project or the worktree root, stores it in the journal and returns `projectId`. `axis.projects/1.list` returns ids, display names and trust, not paths. Made exact in `project-registration-and-trust.md` §5: main first sends `projects.inspect` (hardened read-only git) to show the root and remote in its dialog, `projects.register` carries the common directory, and `projects.trust` changes the record.
 
 ### 7.5 Journal gaps this exposes [V `packages/journal/src/schema.ts`]
 
