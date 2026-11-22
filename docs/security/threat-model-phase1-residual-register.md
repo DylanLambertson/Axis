@@ -108,6 +108,14 @@ Added by `threat-model-phase4a.md` (ticket PV-R8, slice 1), verified against `or
 | RR-73 | A correctly signed update can ship malicious code within the permissions it already has; the confirmation dialog (OI-6) shows the version, publisher and permission diff, not the code, so the user cannot judge it. | PLG-16, PLG-4 | installer | PV-K2 | 4a/L26 | Accepted |
 | RR-74 | A user who copies plugin-written text by hand and pastes it into a terminal or a CLI is not stopped; the clipboard-write and drag-out refusals (OI-5) cover only the view's own actions. Electron's permission-handler behaviour for these is unverified [I] until PV-K3. | PLG-13 | P1 host | PV-K3 | 4a/L22, L28 | Accepted |
 
+### 1.6 The secret broker (PV-N0)
+
+Added by `docs/design/secret-broker.md` §3.2 (revision 2). Numbered after the integrations rows of PV-R8 slice 2 (PR #590, RR-75 to RR-87).
+
+| ID | Residual risk | Risk | Owner | Ticket | Gate | Status |
+|---|---|---|---|---|---|---|
+| RR-88 (after #590) | Upstream's renderer-reachable `encryption` channel can decrypt any `safeStorage` ciphertext of the app, Axis credential records included, and can mint one; on macOS and Linux `safeStorage` is unauthenticated AES-CBC with a fixed IV, so a refusal by plaintext prefix cannot close it (secret-broker review 1). A process of the same user can also reach the key outside the app on Linux (unlocked keyring) and Windows (DPAPI). Accepted under EXT-1 and A10; an authenticated envelope with a refusal keyed on the ciphertext is a later option. | EXT-4, PRV-2, A10 | secret broker | PV-N0a, PV-N0c | secret-broker §5 lines 1, 7 | Accepted |
+
 ## 2. Plan rows added with this change
 
 `docs/design/daemon-host-plan.md` gains one-line rows for the ids this register introduces: `H13` (RR-3), `FU-STAGE` (RR-6), `RV-CONTENT` (RR-10), `H9-base` (RR-11), `P1f` (RR-12), `REV2-FIX` (RR-13), `OVSX-TEST` (RR-18), `NET-GATE` (RR-19) and `REF1-SCAN` (RR-24). They are proposals: sizes and owners are set by the plan owners. The earlier proposals `FU-WT-BASE-REF`, `C8` and `C9` are not used: FU-WT-BASE2, C8 and C9 already exist with the meanings above.
