@@ -63,7 +63,7 @@ test("settings.get returns the value main sent", async () => {
 
 test("trust.check: trusted resolves; untrusted, no answer and a closed channel all refuse with E_POLICY_DENIED", async () => {
   const { b, client, peer } = setup();
-  const req = { windowId: "win-1", workspaceId: "ws-1", projectId: "p-1" };
+  const req = { windowId: "win-1", workspaceId: "ws-1", projectId: "p-1", projectPath: "/work/repo" };
   const ok = client.trustCheck(req);
   await wait(0);
   assert.deepEqual({ ...last(peer), requestId: undefined }, { type: "trust.check", requestId: undefined, ...req });
@@ -167,7 +167,7 @@ test("outbound messages are validated before they are sent, with fixed error tex
 test("dispose rejects what is waiting and leaves no timer, listener or pending entry", async () => {
   const before = processSnapshot();
   const { a, client, mux } = setup();
-  const waiting = [client.anchorGet(), client.settingsGet("axis.cliAgents"), client.trustCheck({ windowId: "w", workspaceId: "s", projectId: "p" })];
+  const waiting = [client.anchorGet(), client.settingsGet("axis.cliAgents"), client.trustCheck({ windowId: "w", workspaceId: "s", projectId: "p", projectPath: "/p" })];
   const ac = new AbortController();
   const withSignal = client.anchorGet({ signal: ac.signal });
   client.dispose();

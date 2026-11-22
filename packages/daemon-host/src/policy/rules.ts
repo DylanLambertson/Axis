@@ -18,16 +18,19 @@
 // reads included. No agent, plugin or message creates, changes or groups an agent: group membership feeds the messaging
 // send policy (`accepts_from: group`). `create` checks trust in its handler when it makes a worktree (the row cannot: a
 // create with an existing home needs none); none is in WEB_ALLOWED.
+//
+// axis.attention/1 (PV-D4): user only. The needs-attention counts of a project are the user's home view, never an agent's;
+// not in WEB_ALLOWED.
 import { userRule, type Rule } from "./rule-types.js";
 
 export const RULES: Readonly<Record<string, Rule>> = Object.freeze({
   "axis.worktrees/1.list": userRule(0),
   "axis.worktrees/1.status": userRule(0),
-  "axis.worktrees/1.create": userRule(2, "registry"),
+  "axis.worktrees/1.create": userRule(2, "project"),
   "axis.worktrees/1.finalise": userRule(4),
   "axis.worktrees/1.remove": userRule(4),
-  "axis.worktrees/1.restoreFromRunBase": userRule(2, "registry"),
-  "axis.worktrees/1.discard": userRule(2, "registry"),
+  "axis.worktrees/1.restoreFromRunBase": userRule(2, "project"),
+  "axis.worktrees/1.discard": userRule(2, "project"),
   "axis.worktrees/1.setUserEditing": userRule(2),
   "axis.projects/1.list": userRule(0),
   "axis.approvals/1.resolve": userRule(2),
@@ -41,13 +44,13 @@ export const RULES: Readonly<Record<string, Rule>> = Object.freeze({
   "axis.cli-runs/1.list": userRule(0),
   "axis.providers/1.list": userRule(0),
   "axis.git/1.pushPlan": userRule(1),
-  "axis.git/1.commit": userRule(2, "registry"),
-  "axis.git/1.push": userRule(4, "registry"),
+  "axis.git/1.commit": userRule(2, "project"),
+  "axis.git/1.push": userRule(4, "project"),
   "axis.git/1.compareUrl": userRule(0),
   "axis.review/1.diff": userRule(1),
   "axis.review/1.content": userRule(1),
   "axis.review/1.complete": userRule(2),
-  "axis.runs/1.start": userRule(2, "registry"),
+  "axis.runs/1.start": userRule(2, "project"),
   "axis.runs/1.cancel": userRule(2),
   "axis.runs/1.get": userRule(0),
   "axis.runs/1.list": userRule(0),
@@ -77,4 +80,5 @@ export const RULES: Readonly<Record<string, Rule>> = Object.freeze({
   "axis.agent-groups/1.reorder": userRule(1),
   "axis.agent-groups/1.delete": userRule(1),
   "axis.agent-groups/1.assign": userRule(2),
+  "axis.attention/1.summary": userRule(0),
 });

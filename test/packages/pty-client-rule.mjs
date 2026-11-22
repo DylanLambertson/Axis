@@ -22,3 +22,6 @@ export function ptyClientVerdict(spec, rel) {
   if (spec === "@axis/pty-process/config" && PTY_CONFIG_IMPORTER.test(at)) return "ok";
   return "the daemon host's src may import only @axis/pty-process/client, from src/bindings/pty-control.ts, and @axis/pty-process/config, from src/main/";
 }
+
+// The project trust gate's rule lives in its own module; re-exported here so imports.test.mjs loads both rule helpers in one import.
+export { projectTrustVerdict } from "./project-trust-rule.mjs";

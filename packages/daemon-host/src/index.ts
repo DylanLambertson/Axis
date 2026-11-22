@@ -111,6 +111,7 @@ export * from "./messages/binding.js";
 export * from "./messages/delivery.js";
 export * from "./messages/limits.js";
 export * from "./messages/participation.js";
+export * from "./messages/endpoint.js";
 export * from "./messages/policy.js";
 export * from "./messages/service.js";
 export * from "./messages/settings.js";
@@ -120,3 +121,5 @@ export { createOriginReader, MAX_ORIGIN_CHARS, type OriginReaderDeps } from "./f
 export { FORGE_AUTH_UNSUPPORTED, forgeLogLine, forgeRequestId, journalPinStore, registerForgeServing, type ForgeServingDeps, type StoredPins } from "./compose-forge.js";
 export { parseForgeList, forgeDisplay, reduceChecks, reduceReview, type ParsedList } from "./forge/parse.js";
 export { createForgeHandlers, registerForgeHandlers, toForgeError, type ForgeHandlerDeps } from "./handlers/forge.js";
+export { AttentionRefusal, ATTENTION_SCAN_ROWS, countOf, createAttentionService, type AttentionRunRow, type AttentionService, type AttentionServiceDeps } from "./attention/service.js";
+export { createAttentionHandlers, registerAttentionServing } from "./handlers/attention.js";

@@ -48,7 +48,7 @@ function mainProcess(root: string, cipher: AnchorCipher) {
     anchors: createAnchorStore(cipher, createAnchorFile(anchorFilePath(dataDir))),
     dialog: { confirm: () => Promise.resolve(false) },
     windows: broker,
-    trust: { projectPath: () => undefined, trustModel: () => undefined },
+    trust: { trustModel: () => undefined },
     settings: { inspect: () => ({}) },
     platform,
     now: () => performance.now(),

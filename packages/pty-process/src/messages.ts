@@ -157,6 +157,40 @@ export const execReply = z.discriminatedUnion("t", [
 ]);
 export type ExecReply = z.infer<typeof execReply>;
 
+/**
+ * The CLI messaging endpoint relay (PV-M6, ADR 0007 decision 7.1). The pty process hosts the endpoint's listener, applies the
+ * transport bounds and relays each complete frame here as its JSON text, unread; the daemon owns everything else: the token,
+ * the caller (from the endpoint's binding, never from a frame), the message service and the escaping of every answer. Ids:
+ * the endpoint id is the one the daemon minted for the run; the connection id is the pty process's name for one accepted
+ * connection.
+ */
+export const ENDPOINT_ID = /^ep_[A-Za-z0-9_-]{22,64}$/;
+export const RELAY_CONN_ID = /^[a-z0-9_-]{1,64}$/;
+/** A request frame's JSON text: at most 64 KiB (UTF-16 units; the pty process bounds the bytes it reads first). */
+export const RELAY_FRAME_CHARS = 64 * 1024;
+/** A reply frame's JSON text: a read reply at the contract's caps, escaped, plus its envelope. */
+export const RELAY_REPLY_CHARS = 1024 * 1024;
+const endpointId = z.string().regex(ENDPOINT_ID);
+const relayConn = z.string().regex(RELAY_CONN_ID);
+
+/** Pty process to daemon: a connection opened (after the transport and peer checks), a complete frame, a connection closed. */
+export const relayInbound = z.discriminatedUnion("t", [
+  z.object({ t: z.literal("relay-open"), endpoint: endpointId, conn: relayConn }).strict(),
+  z.object({ t: z.literal("relay-frame"), endpoint: endpointId, conn: relayConn, frame: z.string().max(RELAY_FRAME_CHARS) }).strict(),
+  z.object({ t: z.literal("relay-close"), endpoint: endpointId, conn: relayConn }).strict(),
+]);
+export type RelayInbound = z.infer<typeof relayInbound>;
+
+/**
+ * Daemon to pty process: the reply frame for one connection (`close`: close it after sending; `authFailed`: a token failure,
+ * for the pty process's per-peer backoff), or the endpoint closed with every connection (revoked or paused).
+ */
+export const relayOutbound = z.discriminatedUnion("t", [
+  z.object({ t: z.literal("relay-reply"), endpoint: endpointId, conn: relayConn, frame: z.string().max(RELAY_REPLY_CHARS), close: z.boolean(), authFailed: z.boolean() }).strict(),
+  z.object({ t: z.literal("endpoint-close"), endpoint: endpointId, reason: z.enum(["revoked", "paused"]) }).strict(),
+]);
+export type RelayOutbound = z.infer<typeof relayOutbound>;
+
 /** What the pty process may say on a data channel (not validated by the daemon; the renderer owns that end). */
 export type DataReply =
   | { readonly t: "attached"; readonly term: string }
