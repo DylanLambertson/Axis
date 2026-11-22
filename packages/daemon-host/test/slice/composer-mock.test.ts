@@ -118,6 +118,17 @@ describe("composer slice (C7): scenario 1 on the mock provider, hostile output, 
     assert.equal(readFileSync(join(ws.path, "built.txt"), "utf8"), "built", "the approved command ran in the worktree");
   });
 
+  test("1b. a composer worker whose connection no provider serves is refused connection_unavailable, before any run (PV-G4)", async () => {
+    const before = (await h.client.ok<{ runs: unknown[] }>("axis.runs", "list", {})).runs.length;
+    const created = await h.client.ok<{ agent: { id: string } }>("axis.agents", "create", {
+      projectId: h.projectId, name: "Unserved", launch: { kind: "composer", connection: "nobody-serves-this", modelId: "mock-model", mode: "edit" }, home: { existing: ws.id },
+    }, true);
+    const refused = await h.client.call("axis.agents", "start", { agentId: created.agent.id, input: { prompt: "go" } }, true);
+    assert.deepEqual([refused.error?.code, (refused.error?.details as { reason?: string } | undefined)?.reason], ["E_CONFLICT", "connection_unavailable"]);
+    assert.equal((await h.client.ok<{ runs: unknown[] }>("axis.runs", "list", {})).runs.length, before, "no run");
+    await h.client.ok("axis.agents", "archive", { agentId: created.agent.id });
+  });
+
   test("2. review the diff (the protected path first) and commit on the workspace branch", async () => {
     const d = await h.client.ok<{ head: string; branch: string; treeHash: string; files: Array<{ displayPath: string; protectedPath: boolean }> }>("axis.review", "diff", { workspaceId: ws.id });
     assert.deepEqual(d.files.map((f) => [f.displayPath, f.protectedPath]), [["Makefile", true], ["built.txt", false], ["feature.txt", false]]);
