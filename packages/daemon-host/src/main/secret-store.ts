@@ -12,9 +12,11 @@
  * - **Weak backends store nothing** (§3.3): an unavailable cipher, or a Linux `basic_text` or `unknown` backend, refuses every
  *   `put`; on Linux the ciphertext itself must start with `v11` (a keyring key), so a session switched to the hardcoded key
  *   (`v10`) is refused too. On macOS and Windows protection comes from the platform report, never from a prefix.
- * - **Bounds** (§3.4): one request per name at a time, the next for the same name queues behind it; at most 4 run at once, at
- *   most 4 wait, and at most 8 are outstanding in all (a timed-out operation that has not settled still counts), more answer
- *   `failed` at once. Each request's budget starts when it is accepted (60 s for `get` and `put` on macOS and Linux, where an
+ * - **Bounds** (§3.4): `info` never queues (it reads the cipher status only). For the five file operations: one request per name
+ *   at a time, the next for the same name queues behind it; at most 2 run at once (a hung one pins a thread of the libuv pool
+ *   main shares), at most 4 wait, and at most 6 are outstanding in all (a timed-out operation that has not settled still counts),
+ *   more answer `failed` at once. When every running slot is held by an overdue operation the broker is jammed: `secret_jammed`
+ *   is reported once per episode. Each request's budget starts when it is accepted (60 s for `get` and `put` on macOS and Linux, where an
  *   unlock may prompt; 5 s otherwise): past it the answer is `failed` whether it was waiting (it leaves the queue) or running. A
  *   running operation keeps its name and its slot until it settles, so a late `put` can never land after a later request for
  *   the same name. **A `failed` answer to `put` means "unknown":** the record may still be written by the late operation; the
@@ -83,7 +85,7 @@ export type SecretValue =
 export type SecretAnswer = { readonly ok: true; readonly value: SecretValue } | { readonly ok: false; readonly error: SecretError };
 
 /** Closed event names only: never a name, a secret or a path. */
-export type SecretEvent = "secret_refused_weak" | "secret_refused_elsewhere" | "secret_refused_prefix" | "secret_refused_full" | "secret_corrupt" | "secret_failed" | "secret_timeout" | "secret_overloaded" | "secret_name_ignored";
+export type SecretEvent = "secret_refused_weak" | "secret_refused_elsewhere" | "secret_refused_prefix" | "secret_refused_full" | "secret_corrupt" | "secret_failed" | "secret_timeout" | "secret_overloaded" | "secret_jammed" | "secret_name_ignored";
 
 export interface SecretStoreOptions {
   readonly cipher: SecretCipher;
@@ -104,14 +106,18 @@ export interface SecretStore {
 export const SECRET_FRAME_TAG = "axis.secret/1";
 export const MAX_RECORD_BYTES = 16_384;
 export const MAX_ENTRIES = 256;
-export const MAX_RUNNING = 4;
+/**
+ * File operations running at once. A hung file system operation pins one thread of libuv's pool, which main shares with all its
+ * own file and crypto work (4 threads by default), so at most 2 may run: a jam of the broker can never take the whole pool.
+ */
+export const MAX_RUNNING = 2;
 export const MAX_WAITING = 4;
 /**
  * Running, waiting and timed-out operations that have not settled, together. With the running and waiting caps this is a fence
  * that cannot be reached alone (a timed-out operation keeps its running slot), kept so a change to either cap cannot open an
  * unbounded queue.
  */
-export const MAX_OUTSTANDING = 8;
+export const MAX_OUTSTANDING = 6;
 export const SLOW_BUDGET_MS = 60_000;
 export const FAST_BUDGET_MS = 5_000;
 const NAME_RE = /^(?:integration:)?[a-z0-9][a-z0-9._-]{0,63}$/;
@@ -366,6 +372,21 @@ export function createSecretStore(options: SecretStoreOptions): SecretStore {
     }
   };
 
+  // A jam: every running slot is held by an operation past its budget. Reported once per episode; a settle ends it.
+  let overdueRunning = 0;
+  let jammed = false;
+  const noteOverdue = (): void => {
+    overdueRunning += 1;
+    if (overdueRunning >= MAX_RUNNING && !jammed) {
+      jammed = true;
+      emit("secret_jammed");
+    }
+  };
+  const settleOverdue = (): void => {
+    overdueRunning -= 1;
+    if (overdueRunning < MAX_RUNNING) jammed = false;
+  };
+
   const budgetOf = (r: SecretRequest): number => ((r.type === "secrets.get" || r.type === "secrets.put") && (platform === "darwin" || platform === "linux") ? slowMs : fastMs);
 
   /** Runs `r` now; `finish` answers at most once; the slot and the name are held until the operation settles. */
@@ -402,6 +423,12 @@ export function createSecretStore(options: SecretStoreOptions): SecretStore {
     },
     handle(request: SecretRequest): Promise<SecretAnswer> {
       if (typeof request !== "object" || request === null) return Promise.resolve({ ok: false, error: "failed" });
+      // `info` reads the cipher's status only (no file, cannot hang): it never queues, so the daemon can always learn that
+      // storage is unavailable, even while the broker is jammed.
+      if (request.type === "secrets.info") {
+        const n = now();
+        return Promise.resolve({ ok: true, value: { op: "info", backend: n.backend, protection: n.protection, available: n.available } });
+      }
       if ("name" in request && !validName(request.name)) return Promise.resolve({ ok: false, error: "failed" });
       let cleaned: StoredMeta | null = null;
       if (request.type === "secrets.put") {
@@ -425,13 +452,28 @@ export function createSecretStore(options: SecretStoreOptions): SecretStore {
           timers.clearTimeout(timer);
           resolve(a);
         };
-        const entry = { key, start: () => execute(r, key, finish, () => (outstanding -= 1)) };
-        // The budget starts now, whether the request runs or waits; a waiting request that times out leaves the queue.
+        let started = false;
+        let overdue = false;
+        const entry = {
+          key,
+          start: () => {
+            started = true;
+            execute(r, key, finish, () => {
+              outstanding -= 1;
+              if (overdue) settleOverdue();
+            });
+          },
+        };
+        // The budget starts now, whether the request runs or waits; a waiting request that times out leaves the queue, a running
+        // one keeps its slot until it settles (and counts towards a jam).
         const timer = timers.setTimeout(() => {
           const at = waiting.indexOf(entry);
           if (at >= 0) {
             waiting.splice(at, 1);
             outstanding -= 1;
+          } else if (started) {
+            overdue = true;
+            noteOverdue();
           }
           emit("secret_timeout");
           finish({ ok: false, error: "failed" });

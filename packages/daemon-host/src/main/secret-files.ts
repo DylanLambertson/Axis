@@ -126,8 +126,10 @@ export function createSecretFiles(dir: string, options: SecretFilesOptions = {})
           if (n > MAX_FILE_BYTES) throw new Error("secret file unreadable");
         }
         return buf.slice(0, n);
+      } catch {
+        throw new Error("secret file unreadable");
       } finally {
-        await fh.close();
+        await fh.close().catch(() => undefined);
       }
     },
 

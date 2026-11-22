@@ -171,8 +171,8 @@ test("the entry cap holds under concurrent puts of new names", async () => {
   const { store, files } = rig();
   for (let i = 0; i < 254; i++) files.store.set(fileOf(`e${i}`), new Uint8Array([1]));
   const answers = await Promise.all(["n1", "n2", "n3", "n4"].map((n) => store.handle(put(n))));
-  assert.ok(answers.filter((a) => a.ok).length <= 2);
-  assert.ok([...files.store.keys()].filter((f) => nameOf(f) !== null).length <= 256);
+  assert.equal(answers.filter((a) => a.ok).length, 2, "exactly the two that fit");
+  assert.equal([...files.store.keys()].filter((f) => nameOf(f) !== null).length, 256);
   assert.ok(answers.every((a) => a.ok || err(a) === "refused"));
 });
 
@@ -240,58 +240,96 @@ test("malformed requests are failed before anything runs", async () => {
   assert.equal(files.writes, 0);
 });
 
-test("one request per name at a time, at most 4 running and 4 waiting; more answer failed", async () => {
+/** A store whose reads hang until released; `active` counts reads in flight, `most` the highest it reached. */
+function hangingRig(budget = 20) {
   const files = memFiles();
   const gates: Array<() => void> = [];
-  files.read = () => new Promise((resolve) => gates.push(() => resolve(null)));
-  const { store, events } = rig("linux", fakeCipher(), files);
-  const answers: Array<Promise<SecretAnswer>> = [];
-  for (const n of ["a1", "a2", "a3", "a4", "a5"]) answers.push(store.handle({ type: "secrets.get", name: n }));
-  await new Promise((r) => setImmediate(r));
-  assert.equal(gates.length, 4, "four run at once; the fifth waits");
-  answers.push(store.handle({ type: "secrets.get", name: "a1" })); // same name: waits behind the first
-  for (const n of ["b1", "b2"]) answers.push(store.handle({ type: "secrets.get", name: n }));
-  const overflow = await Promise.race([store.handle({ type: "secrets.get", name: "b3" }), new Promise<SecretAnswer>((r) => setTimeout(() => r({ ok: true, value: { op: "remove", removed: false } }), 2000))]);
-  assert.equal(err(overflow), "failed", "refused at once, not left waiting");
-  assert.ok(events.includes("secret_overloaded"));
-  for (let round = 0; round < 6; round++) {
+  const state = { active: 0, most: 0 };
+  files.read = () =>
+    new Promise((resolve) => {
+      state.active += 1;
+      state.most = Math.max(state.most, state.active);
+      gates.push(() => {
+        state.active -= 1;
+        resolve(null);
+      });
+    });
+  const events: string[] = [];
+  const store = createSecretStore({ cipher: fakeCipher(), files, platform: "linux", timers: realTimers, onEvent: (e) => events.push(e), budgets: { slowMs: budget, fastMs: budget } });
+  const release = () => {
     for (const g of gates.splice(0)) g();
-    await new Promise((r) => setImmediate(r));
+  };
+  return { store, files, events, gates, state, release };
+}
+
+const tick = (ms = 0) => new Promise((r) => setTimeout(r, ms));
+
+test("one request per name at a time, at most 2 file operations running and 4 waiting; more answer failed at once", async () => {
+  const { store, events, gates, state, release } = hangingRig(5000);
+  const answers = ["a1", "a2", "a3", "a4", "a5", "a6"].map((n) => store.handle({ type: "secrets.get", name: n }));
+  await tick();
+  assert.equal(gates.length, 2, "two run; four wait");
+  const overflow = await Promise.race([store.handle({ type: "secrets.get", name: "b1" }), tick(2000).then(() => ({ ok: true, value: { op: "remove", removed: false } }) as SecretAnswer)]);
+  assert.equal(err(overflow), "failed", "refused at once while the queue is full, not left waiting");
+  assert.ok(events.includes("secret_overloaded"));
+  for (let round = 0; round < 5; round++) {
+    release();
+    await tick();
   }
-  const done = await Promise.all(answers);
-  assert.deepEqual(done.map(err), Array(done.length).fill("not_found"));
+  assert.deepEqual((await Promise.all(answers)).map(err), Array(6).fill("not_found"));
+  assert.equal(state.most, 2, "never more than two at once");
 });
 
-test("four hung operations: a fifth request answers failed at its own deadline, and a sixth runs once they settle", async () => {
-  const files = memFiles();
-  const gates: Array<() => void> = [];
-  files.read = () => new Promise((resolve) => gates.push(() => resolve(null)));
-  const events: string[] = [];
-  const store = createSecretStore({ cipher: fakeCipher(), files, platform: "linux", timers: realTimers, onEvent: (e) => events.push(e), budgets: { slowMs: 30, fastMs: 30 } });
-  const hung = ["h1", "h2", "h3", "h4"].map((n) => store.handle({ type: "secrets.get", name: n }));
-  assert.deepEqual((await Promise.all(hung)).map(err), ["failed", "failed", "failed", "failed"], "each answers at its deadline");
+test("info answers during a full jam, without queueing", async () => {
+  const { store, release } = hangingRig(20);
+  await Promise.all(["h1", "h2"].map((n) => store.handle({ type: "secrets.get", name: n })));
+  const waiting = ["w1", "w2", "w3", "w4"].map((n) => store.handle({ type: "secrets.get", name: n }));
+  assert.deepEqual(await store.handle({ type: "secrets.info" }), { ok: true, value: { op: "info", backend: "gnome_libsecret", protection: "os_protected", available: true } });
+  await Promise.all(waiting);
+  release();
+});
+
+test("a jam is reported once per episode and again only after a settle", async () => {
+  const { store, events, release } = hangingRig(20);
+  await Promise.all(["h1", "h2"].map((n) => store.handle({ type: "secrets.get", name: n })));
+  assert.equal(events.filter((e) => e === "secret_jammed").length, 1, "both slots overdue: one event");
+  await store.handle({ type: "secrets.get", name: "w1" }); // waits, times out: still the same episode
+  assert.equal(events.filter((e) => e === "secret_jammed").length, 1, "no repeat within the episode");
+  release();
+  await tick(5);
+  await Promise.all(["h3", "h4"].map((n) => store.handle({ type: "secrets.get", name: n })));
+  assert.equal(events.filter((e) => e === "secret_jammed").length, 2, "a new episode after the slots came back");
+  release();
+  await tick(5);
+  assert.equal(err(await store.handle({ type: "secrets.info" })), "ok");
+});
+
+test("one overdue operation is not a jam", async () => {
+  const { store, events, release } = hangingRig(20);
+  await store.handle({ type: "secrets.get", name: "h1" });
+  assert.equal(events.includes("secret_jammed"), false);
+  release();
+});
+
+test("two hung operations: a third request answers failed at its own deadline, and a fourth runs once they settle", async () => {
+  const { store, release } = hangingRig(30);
+  assert.deepEqual((await Promise.all(["h1", "h2"].map((n) => store.handle({ type: "secrets.get", name: n })))).map(err), ["failed", "failed"]);
   const started = Date.now();
-  const fifth = await store.handle({ type: "secrets.info" });
-  assert.equal(err(fifth), "failed", "waits behind the held slots, then answers at its own deadline");
+  assert.equal(err(await store.handle({ type: "secrets.get", name: "x1" })), "failed", "waits behind the held slots, then answers at its own deadline");
   assert.ok(Date.now() - started < 1000);
-  for (const g of gates.splice(0)) g();
-  await new Promise((r) => setTimeout(r, 5));
-  assert.equal(err(await store.handle({ type: "secrets.info" })), "ok", "the slots are back");
+  release();
+  await tick(5);
+  assert.equal(err(await store.handle({ type: "secrets.remove", name: "x2" })), "ok", "the slots are back");
 });
 
-test("at most 8 outstanding in all: a ninth is refused at once, timed-out operations still count", async () => {
-  const files = memFiles();
-  const gates: Array<() => void> = [];
-  files.read = () => new Promise((resolve) => gates.push(() => resolve(null)));
-  const events: string[] = [];
-  const store = createSecretStore({ cipher: fakeCipher(), files, platform: "linux", timers: realTimers, onEvent: (e) => events.push(e), budgets: { slowMs: 20, fastMs: 20 } });
-  await Promise.all(["h1", "h2", "h3", "h4"].map((n) => store.handle({ type: "secrets.get", name: n })));
+test("while two overdue operations hold the slots and four wait, a further request is refused at once", async () => {
+  const { store, events, release } = hangingRig(20);
+  await Promise.all(["h1", "h2"].map((n) => store.handle({ type: "secrets.get", name: n })));
   const waiters = ["w1", "w2", "w3", "w4"].map((n) => store.handle({ type: "secrets.get", name: n }));
-  const ninth = await store.handle({ type: "secrets.get", name: "x9" });
-  assert.equal(err(ninth), "failed");
+  assert.equal(err(await store.handle({ type: "secrets.get", name: "x9" })), "failed");
   assert.ok(events.includes("secret_overloaded"));
   await Promise.all(waiters);
-  for (const g of gates.splice(0)) g();
+  release();
 });
 
 test("a hung request answers failed at its deadline; other names still run", async () => {
@@ -333,7 +371,7 @@ test("a waiting put that times out never runs later, even after the held slots c
   const hold = files.read;
   files.read = (file: string) => (file === fileOf("w1") ? hold(file) : new Promise((resolve) => gates.push(() => resolve(null))));
   const store = createSecretStore({ cipher: fakeCipher(), files, platform: "linux", timers: realTimers, budgets: { slowMs: 20, fastMs: 20 } });
-  await Promise.all(["h1", "h2", "h3", "h4"].map((n) => store.handle({ type: "secrets.get", name: n })));
+  await Promise.all(["h1", "h2"].map((n) => store.handle({ type: "secrets.get", name: n })));
   assert.equal(err(await store.handle(put("w1"))), "failed", "it waited and timed out");
   for (const g of gates.splice(0)) g();
   await new Promise((r) => setTimeout(r, 30));
