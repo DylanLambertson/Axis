@@ -6,7 +6,7 @@ import assert from 'assert';
 import { CancellationTokenSource } from '../../../../../base/common/cancellation.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { AxisDaemonCallError, AxisDaemonStatus } from '../../common/axisDaemonClient.js';
-import { AXIS_DOWN_AFTER_FAILURES, AXIS_RECONNECT_CAP_MS, AXIS_SHELL_CONTRACTS, AXIS_WELCOME_TIMEOUT_MS, AxisReconnectingDaemonClient, IAxisConnectedClient, reconnectDelay } from '../../common/axisDaemonReconnect.js';
+import { AXIS_DOWN_AFTER_FAILURES, AXIS_DOWN_AFTER_MS, AXIS_RECONNECT_CAP_MS, AXIS_SHELL_CONTRACTS, AXIS_STABLE_AFTER_MS, AXIS_WELCOME_TIMEOUT_MS, AxisReconnectingDaemonClient, IAxisConnectedClient, reconnectDelay } from '../../common/axisDaemonReconnect.js';
 
 /** Manual timers: nothing runs until `run`; `due` lists the pending delays. */
 function manualTimers() {
@@ -16,6 +16,8 @@ function manualTimers() {
 		set: (fn: () => void, ms: number) => { const id = next++; timers.set(id, { fn, ms }); return id; },
 		clear: (h: unknown) => void timers.delete(h as number),
 		due: () => [...timers.values()].map(t => t.ms),
+		/** The pending retry timers: everything but the 15 s down window. */
+		retries: () => [...timers.values()].map(t => t.ms).filter(ms => ms !== AXIS_DOWN_AFTER_MS),
 		/** Run every pending timer of exactly `ms` (in creation order). */
 		run: (ms: number) => { for (const [id, t] of [...timers]) { if (t.ms === ms) { timers.delete(id); t.fn(); } } },
 	};
@@ -56,6 +58,8 @@ suite('Axis renderer daemon client (PV-E0)', () => {
 	test('the named bounds: a 10 s welcome bound, down after 5 failures, 250 ms doubling to a 30 s cap with ±20 % jitter', () => {
 		assert.strictEqual(AXIS_WELCOME_TIMEOUT_MS, 10_000);
 		assert.strictEqual(AXIS_DOWN_AFTER_FAILURES, 5);
+		assert.strictEqual(AXIS_DOWN_AFTER_MS, 15_000);
+		assert.strictEqual(AXIS_STABLE_AFTER_MS, 10_000);
 		assert.deepStrictEqual([1, 2, 3, 4, 8, 20].map(n => reconnectDelay(n, () => 0.5)), [250, 500, 1000, 2000, AXIS_RECONNECT_CAP_MS, AXIS_RECONNECT_CAP_MS], 'the 8th would be 32 s: capped');
 		assert.strictEqual(reconnectDelay(1, () => 0), 200);
 		assert.strictEqual(reconnectDelay(1, () => 1), 300);
@@ -71,6 +75,7 @@ suite('Axis renderer daemon client (PV-E0)', () => {
 		r.connects[0].resolve(one.client);
 		await flush();
 		assert.strictEqual(kindOf(r.client), 'ready');
+		r.timers.run(AXIS_STABLE_AFTER_MS);
 		r.connects[0].onClose();
 		assert.strictEqual(kindOf(r.client), 'connecting');
 		assert.deepStrictEqual(r.timers.due(), [0]);
@@ -84,26 +89,71 @@ suite('Axis renderer daemon client (PV-E0)', () => {
 		r.dispose();
 	});
 
-	test('failed connects back off and turn down after 5 in a row, still retrying; a welcome resets the count', async () => {
+	test('failed connects back off; down needs 5 in a row AND 15 s since the first; a connection that stays up resets both', async () => {
 		const r = rig();
 		for (let i = 1; i <= 6; i++) {
 			r.connects[i - 1].reject(new Error('not_ready'));
 			await flush();
-			assert.strictEqual(kindOf(r.client), i >= AXIS_DOWN_AFTER_FAILURES ? 'down' : 'connecting', `after ${i}`);
+			assert.strictEqual(kindOf(r.client), 'connecting', `after ${i}, inside 15 s: still connecting (a normal restart)`);
 			const delay = reconnectDelay(i, () => 0.5);
-			assert.deepStrictEqual(r.timers.due(), [delay]);
+			assert.deepStrictEqual(r.timers.retries(), [delay]);
 			r.timers.run(delay);
 		}
+		r.timers.run(AXIS_DOWN_AFTER_MS);
+		assert.strictEqual(kindOf(r.client), 'down', '6 failures and 15 s: down');
 		r.connects[6].resolve(fakeClient().client);
 		await flush();
 		assert.strictEqual(kindOf(r.client), 'ready');
+		r.timers.run(AXIS_STABLE_AFTER_MS);
 		r.connects[6].onClose();
-		assert.deepStrictEqual(r.timers.due(), [0], 'the count was reset: the next attempt is immediate');
+		assert.deepStrictEqual(r.timers.retries(), [0], 'the count was reset: the next attempt is immediate');
 		r.timers.run(0);
 		r.connects[7].reject(new Error('not_ready'));
 		await flush();
 		assert.strictEqual(kindOf(r.client), 'connecting', 'one failure after a welcome is not down');
-		assert.deepStrictEqual(r.timers.due(), [reconnectDelay(1, () => 0.5)], 'the backoff starts again from 250 ms');
+		assert.deepStrictEqual(r.timers.retries(), [reconnectDelay(1, () => 0.5)], 'the backoff starts again from 250 ms');
+		for (let i = 2; i <= AXIS_DOWN_AFTER_FAILURES; i++) {
+			r.timers.run(reconnectDelay(i - 1, () => 0.5));
+			r.connects[6 + i].reject(new Error('not_ready'));
+			await flush();
+		}
+		assert.strictEqual(kindOf(r.client), 'connecting', 'the 15 s window restarted too: 5 quick failures are not down yet');
+		r.timers.run(AXIS_DOWN_AFTER_MS);
+		assert.strictEqual(kindOf(r.client), 'down');
+		r.dispose();
+	});
+
+	test('15 s of failures is not enough without 5 of them: down comes with the 5th', async () => {
+		const r = rig();
+		r.connects[0].reject(new Error('not_ready'));
+		await flush();
+		r.timers.run(AXIS_DOWN_AFTER_MS);
+		assert.strictEqual(kindOf(r.client), 'connecting', 'mutant: time alone');
+		for (let i = 1; i < AXIS_DOWN_AFTER_FAILURES; i++) {
+			r.timers.run(reconnectDelay(i, () => 0.5));
+			r.connects[i].reject(new Error('not_ready'));
+			await flush();
+			assert.strictEqual(kindOf(r.client), i + 1 >= AXIS_DOWN_AFTER_FAILURES ? 'down' : 'connecting', `after ${i + 1}`);
+		}
+		r.dispose();
+	});
+
+	test('a daemon that welcomes and closes at once is a failed connect: it backs off and turns down, never a tight loop', async () => {
+		const r = rig();
+		for (let i = 1; i <= AXIS_DOWN_AFTER_FAILURES; i++) {
+			r.connects[i - 1].resolve(fakeClient().client);
+			await flush();
+			assert.strictEqual(kindOf(r.client), 'ready');
+			r.connects[i - 1].onClose();
+			assert.strictEqual(kindOf(r.client), 'connecting', `after ${i}`);
+			const delay = reconnectDelay(i, () => 0.5);
+			assert.deepStrictEqual(r.timers.retries(), [delay], 'mutant: reconnected at once');
+			if (i === AXIS_DOWN_AFTER_FAILURES) {
+				r.timers.run(AXIS_DOWN_AFTER_MS);
+				assert.strictEqual(kindOf(r.client), 'down');
+			}
+			r.timers.run(delay);
+		}
 		r.dispose();
 	});
 
@@ -181,6 +231,9 @@ suite('Axis renderer daemon client (PV-E0)', () => {
 		await assert.rejects(waiting, (e: unknown) => e instanceof AxisDaemonCallError && e.code === 'unavailable');
 		assert.strictEqual(one.closed(), 1);
 		assert.deepStrictEqual(r.timers.due(), []);
+		const pending = rig();
+		pending.dispose();
+		assert.deepStrictEqual(pending.timers.due(), [], 'dispose clears the welcome bound of the attempt in flight');
 		cts.dispose();
 		pre.dispose();
 	});

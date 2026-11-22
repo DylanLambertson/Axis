@@ -19,11 +19,26 @@ function sources(dir, out = []) {
   return out;
 }
 
-test("only the client module imports connectAxisDaemon, and the connection asks main only on vscode:axisConnect", () => {
-  const importers = sources(AXIS).filter((f) => !f.includes("/test/") && /\bconnectAxisDaemon\b/.test(read(f)) && /from '[^']*axisDaemonConnection\.js'/.test(read(f)));
+// Any static, side-effect, re-export or dynamic load of the connection module, in any quote style and across lines.
+const LOADS_CONNECTION = /(?:\bfrom|\bimport|\brequire)\s*\(?\s*['"`][^'"`]*axisDaemonConnection(?:\.js)?['"`]/;
+
+test("the load pattern sees every import shape", () => {
+  for (const src of [
+    "import { connectAxisDaemon } from '../electron-browser/axisDaemonConnection.js';",
+    'import {\n  connectAxisDaemon,\n} from "./axisDaemonConnection.js";',
+    "import './axisDaemonConnection.js';",
+    "export * from `./axisDaemonConnection.js`;",
+    "const m = await import(\n  './axisDaemonConnection.js');",
+    "const m = require('./axisDaemonConnection');",
+  ]) assert.match(src, LOADS_CONNECTION, src);
+  assert.doesNotMatch("import { x } from './axisDaemonClient.js';", LOADS_CONNECTION);
+});
+
+test("only the client module loads the connection, and the connection asks main only on vscode:axisConnect", () => {
+  const importers = sources(AXIS).filter((f) => !f.includes("/test/") && f !== "services/daemon/electron-browser/axisDaemonConnection.ts" && LOADS_CONNECTION.test(read(f)));
   assert.deepEqual(importers, ["services/daemon/electron-browser/axisRendererDaemonClient.ts"]);
   const connection = read("services/daemon/electron-browser/axisDaemonConnection.ts");
-  const channels = [...connection.matchAll(/acquirePort\(\s*'([^']+)'\s*,\s*'([^']+)'/g)].map((m) => [m[1], m[2]]);
+  const channels = [...connection.matchAll(/acquirePort\(\s*['"`]([^'"`]+)['"`]\s*,\s*['"`]([^'"`]+)['"`]/g)].map((m) => [m[1], m[2]]);
   assert.deepEqual(channels, [["vscode:axisConnect", "vscode:axisConnectResult"]], "the only port request is main's attested connect");
   assert.equal((connection.match(/acquirePort\(/g) ?? []).length, 1);
   // No other renderer module asks main for a port at all.

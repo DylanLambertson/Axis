@@ -89,8 +89,11 @@ export class AxisApprovalCards extends Disposable {
 			}
 			this.views.set(card.challengeId, view);
 		}
-		const offline = !isUsable(this.workspaceService.daemonStatus);
-		this.offline.textContent = offline ? localize('axis.approvals.offline', "Approvals need the Axis service. It is not connected, so none are shown.") : '';
+		const daemon = this.workspaceService.daemonStatus;
+		const offline = !isUsable(daemon);
+		this.offline.textContent = !offline ? '' : daemon.kind === 'connecting'
+			? localize('axis.approvals.connecting', "Approvals are not available yet: connecting to the Axis service.")
+			: localize('axis.approvals.offline', "Approvals need the Axis service. It is not connected, so none are shown.");
 		this.element.hidden = !cards.length && !offline;
 		this.more.textContent = all.length > cards.length ? localize('axis.approvals.more', "{0} more approvals are not shown.", all.length - cards.length) : '';
 		this.updateButtons();

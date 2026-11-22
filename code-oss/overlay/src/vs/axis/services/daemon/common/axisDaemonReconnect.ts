@@ -15,8 +15,17 @@ import { AxisDaemonCallError, AxisDaemonStatus, AxisReadContract, IAxisDaemonCli
 
 /** How long one connect may take before it counts as failed (main's broker, then `hello`/`welcome`). */
 export const AXIS_WELCOME_TIMEOUT_MS = 10_000;
-/** Consecutive failed connects after which the status is `down` (it keeps retrying at the cap). */
+/**
+ * The status turns `down` (the "not connected" notice) only after this many failed connects in a row AND at least
+ * `AXIS_DOWN_AFTER_MS` since the first of them, so a normal supervisor restart (a few seconds) shows "Connecting". It keeps retrying.
+ */
 export const AXIS_DOWN_AFTER_FAILURES = 5;
+export const AXIS_DOWN_AFTER_MS = 15_000;
+/**
+ * How long a connection must stay up before the failure count resets. A daemon that welcomes and then closes at once counts as a
+ * failed connect (it backs off and can turn `down`) instead of being reconnected at once in a loop.
+ */
+export const AXIS_STABLE_AFTER_MS = 10_000;
 export const AXIS_RECONNECT_BASE_MS = 250;
 export const AXIS_RECONNECT_CAP_MS = 30_000;
 export const AXIS_RECONNECT_JITTER = 0.2;
@@ -59,6 +68,13 @@ export class AxisReconnectingDaemonClient extends Disposable implements IAxisDae
 	private failures = 0;
 	private attempting = false;
 	private retry: unknown;
+	/** Set while a fresh connection has not yet stayed up for `AXIS_STABLE_AFTER_MS`. */
+	private stable: unknown;
+	/** The welcome bound of the attempt in flight. */
+	private bound: unknown;
+	/** Runs from the first failure of a run of failures; `down` needs it to have fired. */
+	private downWindow: unknown;
+	private downWindowPassed = false;
 	private disposed = false;
 	/** Every call in flight: each is settled exactly once, by its answer or by the connection leaving `ready`. */
 	private readonly pending = new Set<(error: AxisDaemonCallError) => void>();
@@ -108,6 +124,12 @@ export class AxisReconnectingDaemonClient extends Disposable implements IAxisDae
 		if (this.retry !== undefined) {
 			this.deps.timers.clear(this.retry);
 		}
+		this.clearStable();
+		this.clearDownWindow();
+		if (this.bound !== undefined) {
+			this.deps.timers.clear(this.bound);
+			this.bound = undefined;
+		}
 		this.failPending();
 		this.client?.close();
 		this.client = undefined;
@@ -142,11 +164,17 @@ export class AxisReconnectingDaemonClient extends Disposable implements IAxisDae
 		const onClose = () => {
 			if (this.client === opened && opened !== undefined) {
 				this.client = undefined;
-				this.setStatus({ kind: 'connecting' });
-				this.schedule(0);
+				if (this.stable === undefined) {
+					this.setStatus({ kind: 'connecting' });
+					this.schedule(0); // it stayed up: reconnect at once
+				} else {
+					this.clearStable();
+					this.failed(); // closed right after its welcome: a failed connect
+				}
 			}
 		};
 		const bound = this.deps.timers.set(() => finish(undefined), AXIS_WELCOME_TIMEOUT_MS);
+		this.bound = bound;
 		const finish = (client: IAxisConnectedClient | undefined) => {
 			if (done) {
 				client?.close(); // a connect that answers after its bound is not used
@@ -154,20 +182,25 @@ export class AxisReconnectingDaemonClient extends Disposable implements IAxisDae
 			}
 			done = true;
 			this.deps.timers.clear(bound);
+			if (this.bound === bound) {
+				this.bound = undefined;
+			}
 			this.attempting = false;
 			if (this.disposed) {
 				client?.close();
 				return;
 			}
 			if (client === undefined) {
-				this.failures++;
-				this.setStatus(this.failures >= AXIS_DOWN_AFTER_FAILURES ? { kind: 'down' } : { kind: 'connecting' });
-				this.schedule(reconnectDelay(this.failures, this.deps.random));
+				this.failed();
 				return;
 			}
 			opened = client;
 			this.client = client;
-			this.failures = 0;
+			this.stable = this.deps.timers.set(() => {
+				this.stable = undefined;
+				this.failures = 0;
+				this.clearDownWindow();
+			}, AXIS_STABLE_AFTER_MS);
 			this.setStatus({ kind: 'ready' });
 		};
 		let connecting: Promise<IAxisConnectedClient>;
@@ -177,6 +210,40 @@ export class AxisReconnectingDaemonClient extends Disposable implements IAxisDae
 			connecting = Promise.reject(new Error('connect threw'));
 		}
 		connecting.then(client => finish(client), () => finish(undefined));
+	}
+
+	private failed(): void {
+		this.failures++;
+		if (this.downWindow === undefined && !this.downWindowPassed) {
+			this.downWindow = this.deps.timers.set(() => {
+				this.downWindow = undefined;
+				this.downWindowPassed = true;
+				if (this.client === undefined && !this.disposed) {
+					this.setStatus(this.downStatus());
+				}
+			}, AXIS_DOWN_AFTER_MS);
+		}
+		this.setStatus(this.downStatus());
+		this.schedule(reconnectDelay(this.failures, this.deps.random));
+	}
+
+	private downStatus(): AxisDaemonStatus {
+		return this.failures >= AXIS_DOWN_AFTER_FAILURES && this.downWindowPassed ? { kind: 'down' } : { kind: 'connecting' };
+	}
+
+	private clearDownWindow(): void {
+		if (this.downWindow !== undefined) {
+			this.deps.timers.clear(this.downWindow);
+			this.downWindow = undefined;
+		}
+		this.downWindowPassed = false;
+	}
+
+	private clearStable(): void {
+		if (this.stable !== undefined) {
+			this.deps.timers.clear(this.stable);
+			this.stable = undefined;
+		}
 	}
 
 	private schedule(ms: number): void {
