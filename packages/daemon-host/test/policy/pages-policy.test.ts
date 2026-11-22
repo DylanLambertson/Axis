@@ -19,8 +19,8 @@ test("every method has one served, user-only row at the contract's tier, with no
     assert.equal(RULES[key]?.tier, spec.tier, key);
     assert.equal(RULES[key]?.trust, "none", key);
   }
-  assert.equal(RULES["axis.pages/1.markReviewed"]?.tier, 3);
-  assert.equal(RULES["axis.pages/1.delete"]?.tier, 3);
+  assert.equal(RULES["axis.pages/1.markReviewed"]?.tier, 4);
+  assert.equal(RULES["axis.pages/1.delete"]?.tier, 4);
   assert.deepEqual(coverageProblems(), []);
 });
 
