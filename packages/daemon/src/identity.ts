@@ -37,6 +37,23 @@ export const identitySchema = z
     return v.actorId === v.actor && PLUGIN_WINDOW_RE.test(v.windowId) && v.hostWindowId !== undefined && CODE_WINDOW_RE.test(v.hostWindowId) && v.workspaceId !== undefined;
   });
 
+/**
+ * Identities the connection layer itself attested (a session's frozen identity, ticket PV-K1c review 1). Only this package marks
+ * one (`markAttested` is not exported from the package root); `isAttestedIdentity` lets the host refuse an identity a handler
+ * made up from a literal, a copy or a clone.
+ */
+const ATTESTED = new WeakSet<object>();
+
+export function markAttested<T extends object>(identity: T): T {
+  ATTESTED.add(identity);
+  return identity;
+}
+
+/** True only for the very object a session was given by the connection layer (never a copy). */
+export function isAttestedIdentity(value: unknown): boolean {
+  return typeof value === "object" && value !== null && ATTESTED.has(value);
+}
+
 export function parseIdentity(value: unknown): Identity | undefined {
   const r = identitySchema.safeParse(value);
   return r.success ? (r.data as Identity) : undefined;

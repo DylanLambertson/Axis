@@ -33,6 +33,12 @@ if [ "$(node --version 2>/dev/null || true)" != "v$NODE_VERSION" ]; then
 	resolve_node
 	export PATH="$NODE_BIN_DIR:$PATH"
 fi
+# apply.sh and its post-apply hooks (10-regen-locks) find Node through NODE24_BIN or the .tools toolchain, not PATH: hand them
+# the same pinned Node, or a gate run without AXIS_CODE_OSS_TOOLS_DIR fails in the hook (PV-X3 fix).
+if [ -z "${NODE24_BIN:-}" ]; then
+	NODE24_BIN="$(dirname "$(command -v node)")"
+	export NODE24_BIN
+fi
 
 if ! nice -n 10 "$here/apply.sh" --force >"$vendor/overlay-tests-apply.log" 2>&1; then
 	echo "overlay tests: apply failed; see $vendor/overlay-tests-apply.log" >&2
