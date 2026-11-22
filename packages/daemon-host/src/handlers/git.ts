@@ -1,4 +1,5 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
+import { projectGated } from "../gate/project-trust.js";
 import type { Handler, HandlerContext } from "@axis/daemon";
 import { GIT_CONTRACT, GIT_VERSION, gitCompareUrlRequestSchema, gitCompareUrlResponseSchema, gitPushPlanRequestSchema, type GitMethod } from "@axis/protocol";
 import type { HandlerRegistrar } from "./anchor-guard.js";
@@ -83,7 +84,7 @@ function createCompareUrlHandler(deps: GitHandlerDeps): Handler {
 
 /** The handlers by method name, as the registry assembly expects them. */
 export function createGitHandlers(deps: GitHandlerDeps): Readonly<Record<GitMethod, Handler>> {
-  return { pushPlan: createPushPlanHandler(deps), commit: createGitCommitHandler(deps), push: createGitPushHandler(deps), compareUrl: createCompareUrlHandler(deps) };
+  return { pushPlan: createPushPlanHandler(deps), commit: projectGated(createGitCommitHandler(deps)), push: projectGated(createGitPushHandler(deps)), compareUrl: createCompareUrlHandler(deps) };
 }
 
 /**

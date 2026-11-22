@@ -1,4 +1,5 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
+import { openTrustGate } from "../testing/open-gate.js";
 import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
 import { test, type TestContext } from "node:test";
@@ -89,7 +90,7 @@ test("discard and setUserEditing are served (policy and schema) but answer a fix
 test("the finalise and remove handlers stop with E_INTERNAL when they run outside a spent approval (defence in depth)", async () => {
   let called = 0;
   const service = new Proxy({}, { get: () => async () => (called++, {}) });
-  const handlers = createWorktreesHandlers({ service: service as never, needsAttention: () => false });
+  const handlers = createWorktreesHandlers({ service: service as never, gate: openTrustGate(), needsAttention: () => false });
   const context = { identity: { actor: "user", connectionId: "c", windowId: "w" }, signal: new AbortController().signal };
   for (const [method, body] of [["finalise", { id: "ws-1", outcome: "archived" }], ["remove", { id: "ws-1" }]] as const) {
     await assert.rejects(Promise.resolve(handlers[method](context as never, body as never)), (e: { code?: string }) => e.code === "E_INTERNAL", method);

@@ -52,8 +52,10 @@ test("the cipher is secure only for a real backend, and the dialog confirms only
   assert.match(PORTS, /confirm: async \(\{ codeWindowId, summary, signal \}\)/);
   assert.match(PORTS, /noLink: true,\s*signal,/);
   assert.match(SEAM, /pty\.shutdown\(\(\) => started\.shutdown\(\)\)\.then\(\(\) => answers\.idle\(\)\)\.finally\(\(\) => answers\.dispose\(\)\)/);
-  // No project is registered by main yet: the trust source knows no path (every trust.check is false).
-  assert.match(PORTS, /projectPath: \(\) => undefined/);
+  // Main keeps no project map: the trust source is the Workspace Trust model only; the path comes with each trust.check from the
+  // daemon's journal, and the daemon ANDs main's answer with its own record (project-registration-and-trust.md §5.4).
+  assert.match(PORTS, /return \{ trustModel: \(\) => trustModel\(services\) \};/);
+  assert.doesNotMatch(PORTS, /projectPath/);
   assert.match(PORTS, /services\.configuration\.inspect\(key\)/);
 });
 

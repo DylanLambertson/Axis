@@ -92,17 +92,33 @@ All recommended defaults:
 
 ## 6a. Phase 4a plugin decisions (threat model, 2026-11-22)
 
-Taken by the project lead under the delegation above while reviewing `docs/security/threat-model-phase4a.md` (ticket PV-R8, slice 1); recorded in full in its §7 (ids OI-1 to OI-7, local to that file).
+Taken by the project lead under the delegation above while reviewing `docs/security/threat-model-phase4a.md` (ticket PV-R8, slice 1); recorded in full in its §7 and §9.4 (ids OI-1 to OI-10, local to that file).
 
 | # | Taken |
 |---|---|
 | OI-1 | No weaker fallback: if PV-K3 cannot show, at the pinned Electron, the IPC drop placement, service-worker refusal, the CSP's effect on DNS prefetch and the clipboard and drag-out refusal, the plugin runtime ships disabled for that pin; WebRTC keeps ADR 0008's P0-only fallback. |
-| OI-2 | Per plugin, one pending tier-3 challenge and 6 approval requests in a rolling hour (approved or denied); past either, `runs.start` is refused until the user re-enables the plugin; the count is stored with the grant, survives a restart and is not reset by re-enabling. |
+| OI-2 | Per plugin, one pending tier-3 challenge and 6 approval requests in a rolling hour (approved or denied), across `runs.start` and integration writes (OI-10); past either, every such call is refused until the user re-enables the plugin; the count is stored with the grant, survives a restart and is not reset by re-enabling. |
 | OI-3 | Disable, uninstall, a `runs.start` revoke, or a grant or trust withdrawal cancels the plugin's runs and pending challenges; a later approval is refused (challenges are bound to the grant's generation). |
 | OI-4 | Per-plugin write quotas for pages, tasks and messages, per rolling hour and in total bytes per project, modelled on the 2a message limits; closed refusal reason. |
 | OI-5 | No clipboard write or drag-out from a plugin view without a user gesture. |
 | OI-6 | No silent plugin update: every update needs the user's confirmation in a main-built dialog, even with an empty permission diff (stricter than ADR 0008 decision 8). |
 | OI-7 | No plugin-callable method enumerates other plugins, views or windows. |
+| OI-8 | An integration or `axis.net` response over 4 MiB decoded is refused with `response_too_large`; nothing is returned, never a truncated response. |
+| OI-9 | Per plugin, a rolling-hour request count and byte budget for integration and `axis.net` requests, stored with the grant; past either, its calls are refused until the window passes; disclosed at install; PV-N1 sets the values, never raised later without a decision. |
+| OI-10 | Every tier-3 challenge a plugin raises (`runs.start` or an integration write) counts toward the OI-2 bound. |
+
+## 6b. Secret broker decisions (PV-N0, 2026-11-22)
+
+Decided by the project lead under the owner's delegation, after two design reviews of `docs/design/secret-broker.md`.
+
+| # | Taken |
+|---|---|
+| SB-D1 | Main stores credential ciphertext in `<base>/secrets` (one framed `safeStorage` record per entry); the daemon never stores ciphertext. |
+| SB-D2 | **No upstream `EncryptionMainService` patch.** EXT-4 for Axis records is an accepted residual under EXT-1 and A10: `safeStorage` on macOS and Linux is unauthenticated CBC with a fixed IV, so a refusal by plaintext prefix cannot close the renderer's decrypt and encrypt oracle. An authenticated envelope with a refusal keyed on the ciphertext is a later decision (register RR-88). |
+| SB-D3 | **No consent path** for a `basic_text`, unavailable or unknown backend: Axis refuses to store any provider or integration credential, with a user-visible reason (install or unlock a keyring). Revisited only on an explicit owner decision. |
+| SB-D4 | A renderer calling `setUsePlainTextEncryption` can block every store for the session: accepted as a denial of service; nothing is stored in plain text (the Linux ciphertext check). |
+| SB-D5 | Entry names: the vault rule plus the `integration:<id>` prefix only, at most 100 characters. |
+| SB-D6 | Timeouts: main answers `get` and `put` within 60 s (macOS and Linux unlock prompts), the daemon waits 65 s, so main answers first. |
 
 ## 7. What these decisions unblock
 

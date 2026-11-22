@@ -8,6 +8,7 @@ import { DaemonError } from "@axis/daemon";
  * forwarded. A handler cannot raise `E_POLICY_DENIED` (only the daemon decides it).
  */
 const REASON_TEXT: Readonly<Record<string, string>> = {
+  untrusted: "The project is not trusted to run.",
   not_ready: "The workspace is not ready for a run.",
   needs_attention: "This workspace needs attention and is unavailable.",
   active_run: "A composer run is already active in this workspace.",
@@ -45,8 +46,10 @@ export function toComposerError(error: unknown): DaemonError {
       case "E_NOT_FOUND":
         return composerFailure("E_NOT_FOUND");
       case "E_CONFLICT":
-      case "E_POLICY_DENIED":
         return composerFailure("E_CONFLICT");
+      // The project trust gate's internal refusal: only the daemon may answer E_POLICY_DENIED on the wire.
+      case "E_POLICY_DENIED":
+        return composerFailure("E_CONFLICT", "untrusted");
       case "E_INVALID_ARGUMENT":
         return composerFailure("E_INVALID_ARGUMENT");
       case "E_CANCELLED":

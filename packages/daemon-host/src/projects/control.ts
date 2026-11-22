@@ -35,10 +35,14 @@ export interface ProjectControlDeps {
   readonly excludedRoots: readonly string[];
   readonly binding: Omit<BindingOptions, "signal">;
   readonly remote: RemoteReaderDeps;
+  /** Test seam: how the excluded roots' real paths are read (default `fs.realpath`). */
+  readonly rootsRealpath?: (path: string) => Promise<string>;
+  /** After a revoke: stop the project's live runs. Never changes the answer. */
+  readonly onRevoked?: (projectId: string) => void;
   readonly logger?: Logger;
 }
 
-type Failure = { readonly code: "E_UNAVAILABLE" | "E_CONFLICT" | "E_INVALID_ARGUMENT" | "E_NOT_FOUND" | "E_INTERNAL"; readonly reason?: string };
+type Failure = { readonly code: "E_UNAVAILABLE" | "E_CONFLICT" | "E_INVALID_ARGUMENT" | "E_NOT_FOUND" | "E_INTERNAL" | "E_BACKPRESSURE"; readonly reason?: string };
 
 const NAME = /^[A-Za-z0-9][A-Za-z0-9 ._-]{0,62}$/;
 
@@ -59,27 +63,47 @@ function failureOf(e: unknown): Failure {
   return { code: "E_INTERNAL" };
 }
 
-/** Real paths of the excluded roots, read once; a root that cannot be resolved is kept as given (it still refuses itself). */
-async function realRoots(roots: readonly string[]): Promise<string[]> {
+/**
+ * Real paths of the excluded roots, read once and bounded (2 s each, as the binding). A root that does not exist yet is kept as
+ * given (it still refuses itself). A root whose real path cannot be read in time makes the result INCOMPLETE: every registration
+ * and inspection is then refused (fail closed), because a symlinked root's target could not be excluded.
+ */
+async function realRoots(roots: readonly string[], timeoutMs: number, real: (p: string) => Promise<string>): Promise<{ readonly roots: string[]; readonly complete: boolean }> {
   const out = new Set<string>();
+  let complete = true;
   for (const r of roots) {
     out.add(normalize(r));
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      out.add(await realpath(r));
-    } catch {
-      // not there (yet): the spelling above still counts
+      const bound = new Promise<"timeout">((resolve) => {
+        timer = setTimeout(() => resolve("timeout"), timeoutMs);
+      });
+      const got = await Promise.race([real(r), bound]);
+      if (got === "timeout") complete = false;
+      else out.add(got);
+    } catch (e) {
+      // not there (yet): the spelling above still counts; anything else is not known to be safe
+      if ((e as { code?: unknown } | null)?.code !== "ENOENT") complete = false;
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
     }
   }
-  return [...out];
+  return { roots: [...out], complete };
 }
+
+/**
+ * Project messages waiting at once; main sends one dialog at a time, so more is a misbehaving sender (`E_BACKPRESSURE`). A revoke
+ * (`projects.trust` false) is never refused by this bound.
+ */
+export const MAX_PROJECT_MESSAGES = 16;
 
 export function createProjectControl(deps: ProjectControlDeps): { handle(message: ProjectMessage): Promise<void> } {
   if (!Array.isArray(deps?.excludedRoots) || deps.excludedRoots.length === 0 || deps.excludedRoots.some((r) => typeof r !== "string")) {
     throw new TypeError("the excluded roots must be a non-empty list of paths");
   }
-  const roots = realRoots(deps.excludedRoots);
-  // Awaited by every message (a failure refuses that message); never an unhandled rejection of its own.
-  roots.catch(() => undefined);
+  // Read on the first message that needs them, not at composition (no timer or filesystem work while the host starts), then kept.
+  let rootsOnce: ReturnType<typeof realRoots> | undefined;
+  const roots = (): ReturnType<typeof realRoots> => (rootsOnce ??= realRoots(deps.excludedRoots, BINDING_TIMEOUT_MS, deps.rootsRealpath ?? ((r) => realpath(r))));
   const send = (m: Parameters<ControlClient["send"]>[0]): void => {
     try {
       deps.control.send(m);
@@ -94,7 +118,12 @@ export function createProjectControl(deps: ProjectControlDeps): { handle(message
   const bind = (path: string, signal?: AbortSignal) => readRepositoryBinding(path, { ...deps.binding, ...(signal === undefined ? {} : { signal }) });
 
   async function excluded(path: string, journal: NonNullable<ProjectControlDeps["journal"]>): Promise<string | undefined> {
-    for (const root of await roots) if (within(path, root) || within(root, path)) return "excluded_root";
+    const known = await roots();
+    if (!known.complete) {
+      rootsOnce = undefined; // a transient timeout is not remembered: the next message reads the roots again
+      return "roots_unavailable";
+    }
+    for (const root of known.roots) if (within(path, root) || within(root, path)) return "excluded_root";
     // An identical path is a registered project (inspect answers it, register refuses it `E_CONFLICT` before this).
     for (const p of journal.listProjects()) if (within(path, p.path) || within(p.path, path)) return "nested_project";
     return undefined;
@@ -108,7 +137,7 @@ export function createProjectControl(deps: ProjectControlDeps): { handle(message
     if (!b.ok) return fail("projects.inspected", m.requestId, refusal(b));
     const registered = journal.listProjects().find((p) => p.path === m.path);
     const why = registered === undefined ? await excluded(m.path, journal) : undefined;
-    if (why !== undefined) return fail("projects.inspected", m.requestId, { code: "E_INVALID_ARGUMENT", reason: why });
+    if (why !== undefined) return fail("projects.inspected", m.requestId, { code: why === "roots_unavailable" ? "E_UNAVAILABLE" : "E_INVALID_ARGUMENT", reason: why });
     const remote = await readRemote(b.binding, deps.remote, signal);
     send({
       type: "projects.inspected",
@@ -129,7 +158,7 @@ export function createProjectControl(deps: ProjectControlDeps): { handle(message
     if (b.binding.commonDir !== m.commonDir) return fail("projects.result", m.requestId, { code: "E_INVALID_ARGUMENT", reason: "binding_changed" });
     if (journal.listProjects().some((p) => p.path === m.path || p.commonDir === m.commonDir)) return fail("projects.result", m.requestId, { code: "E_CONFLICT" });
     const why = await excluded(m.path, journal);
-    if (why !== undefined) return fail("projects.result", m.requestId, { code: "E_INVALID_ARGUMENT", reason: why });
+    if (why !== undefined) return fail("projects.result", m.requestId, { code: why === "roots_unavailable" ? "E_UNAVAILABLE" : "E_INVALID_ARGUMENT", reason: why });
     const id = `p-${randomBytes(9).toString("hex")}`;
     const p = journal.registerProject({ id, path: m.path, displayName: projectDisplayName(m.path), trusted: m.trusted, commonDir: b.binding.commonDir, gitDirId: b.binding.gitDirId, actor: "daemon" });
     send({ type: "projects.result", requestId: m.requestId, ok: true, projectId: p.id });
@@ -141,6 +170,11 @@ export function createProjectControl(deps: ProjectControlDeps): { handle(message
     if (row.path !== m.path) return fail("projects.result", m.requestId, { code: "E_INVALID_ARGUMENT", reason: "project_moved" });
     if (!m.trusted) {
       journal.setProjectTrust({ id: row.id, trusted: false, via: "gesture" });
+      try {
+        deps.onRevoked?.(row.id);
+      } catch {
+        // stopping runs never changes the answer
+      }
       return send({ type: "projects.result", requestId: m.requestId, ok: true, projectId: row.id });
     }
     if (m.commonDir === undefined) return fail("projects.result", m.requestId, { code: "E_INVALID_ARGUMENT" });
@@ -154,6 +188,7 @@ export function createProjectControl(deps: ProjectControlDeps): { handle(message
   // One message at a time: a register's checks and its insert are separated by awaits, so two overlapping registers of nested
   // folders could otherwise both pass (main sends one dialog at a time; this makes it true here as well).
   let queue: Promise<void> = Promise.resolve();
+  let waiting = 0;
   const one = async (m: ProjectMessage): Promise<void> => {
     const answer = m.type === "projects.inspect" ? "projects.inspected" : "projects.result";
     const journal = deps.journal;
@@ -168,7 +203,14 @@ export function createProjectControl(deps: ProjectControlDeps): { handle(message
   };
   return {
     handle(m) {
-      const run = queue.then(() => one(m));
+      // A revoke only lowers privilege and must never be dropped: it is exempt from the bound (it still waits its turn).
+      const revoke = m.type === "projects.trust" && !m.trusted;
+      if (waiting >= MAX_PROJECT_MESSAGES && !revoke) {
+        fail(m.type === "projects.inspect" ? "projects.inspected" : "projects.result", m.requestId, { code: "E_BACKPRESSURE" });
+        return Promise.resolve();
+      }
+      waiting++;
+      const run = queue.then(() => one(m)).finally(() => void waiting--);
       queue = run.catch(() => undefined);
       return run;
     },
@@ -195,6 +237,7 @@ export function installProjectControl(
     readonly config: { readonly dataDir: string; readonly worktreeRoot: string; readonly platform: NodeJS.Platform };
     readonly gitPath: string;
     readonly env: Env;
+    readonly onRevoked?: (projectId: string) => void;
     readonly logger?: Logger;
   },
 ): () => void {
@@ -204,6 +247,7 @@ export function installProjectControl(
     excludedRoots: projectExcludedRoots(o.config),
     binding: { platform: o.config.platform, uid: typeof process.getuid === "function" ? process.getuid() : undefined },
     remote: { runner: createRemoteRunner(o.gitPath, o.env), env: o.env, platform: o.config.platform },
+    ...(o.onRevoked === undefined ? {} : { onRevoked: o.onRevoked }),
     ...(o.logger === undefined ? {} : { logger: o.logger }),
   });
   return control.onProjects((m) => void handler.handle(m));

@@ -86,7 +86,7 @@ export function forgeRig(opts: { list?: string; version?: string; exec?: (inner:
     runs: () => readFileSync(ghLog, "utf8").split("\n").filter((l) => l !== "").map((l) => JSON.parse(l) as { args: string[]; pid: number; cwd: string }),
     async send(m) {
       pair.a.send(m);
-      await until(() => replies.some((r) => r["req"] === m["req"]), 400_000);
+      await until(() => replies.some((r) => r["req"] === m["req"]));
       return replies.find((r) => r["req"] === m["req"]) as Record<string, unknown>;
     },
     rewrite(list, version) {

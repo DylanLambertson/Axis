@@ -1,4 +1,5 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
+import { openTrustGate } from "../testing/open-gate.js";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -18,7 +19,7 @@ async function setup(t: TestContext, replies: Parameters<typeof composerRig>[0][
   const c = await composerRig({ replies, policy: new RuleTablePolicy(trust, RULES) });
   t.after(() => c.cleanup());
   mkdirSync(join(c.root, ".github"), { recursive: true });
-  c.r.daemon.register(RUNS, 1, createComposerRunsHandlers({ service: c.service, journal: c.journal, mutex: new ProjectMutex() }));
+  c.r.daemon.register(RUNS, 1, createComposerRunsHandlers({ service: c.service, gate: openTrustGate(), journal: c.journal, mutex: new ProjectMutex() }));
   return { c, trust };
 }
 

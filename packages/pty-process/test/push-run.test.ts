@@ -6,7 +6,7 @@ import { chmodSync, copyFileSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { pipeExec } from "../testing/exec.js";
-import { channelPair, pipeSpawn, settle } from "../testing/helpers.js";
+import { channelPair, pipeSpawn, settle, until } from "../testing/helpers.js";
 import { GIT, gitRig, SKIP } from "../testing/git.js";
 import { expectOf, fixture, remoteRefs } from "../testing/push.js";
 import { createPtyProcessPort, createPtyService, pushUrlsDigest } from "../src/index.js";
@@ -93,6 +93,7 @@ test("push: a data channel cannot send a push; a service without git refuses one
   const got: unknown[] = [];
   d.a.onMessage((m) => void got.push(m));
   d.a.send(f.msg());
+  await until(() => got.length > 0, "the data channel's refusal");
   await settle();
   assert.deepEqual(got, [{ t: "refused", term: null, code: "unsupported" }]);
   assert.equal(r.spawned.length, 0);
@@ -104,6 +105,7 @@ test("push: a data channel cannot send a push; a service without git refuses one
   c.a.onMessage((m) => void replies.push(m));
   const m = f.msg();
   c.a.send(m);
+  await until(() => replies.length > 0, "the spawn-failed reply of a service without git");
   await settle();
   assert.deepEqual(replies, [{ t: "spawn-failed", req: m["req"], code: "spawn_failed" }]);
   bare.dispose();

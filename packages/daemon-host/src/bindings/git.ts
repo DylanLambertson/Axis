@@ -1,4 +1,5 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
+import { AxisError } from "@axis/audit";
 import { DaemonError } from "@axis/daemon";
 import {
   GitOpsError,
@@ -17,6 +18,7 @@ import {
   type WorktreeRef,
 } from "@axis/git-ops";
 import { SecretScanError, type SecretScanner } from "@axis/secret-scan";
+import { consumeTicket } from "../gate/project-trust.js";
 import { GitRefusal, type GitOperations, type GitPort, type PushCall } from "../ports/git.js";
 import type { RunsService } from "../ports/runs.js";
 import { pushTargetKey, type SshHostResolver } from "./push-target.js";
@@ -133,6 +135,8 @@ export function createGitPort(deps: GitBindingDeps): GitPort {
 /** What leaves this file for a failure: a code, a closed reason and whether the branch moved. Never the package's text. */
 function refuse(e: unknown): never {
   if (e instanceof GitRefusal) throw e;
+  // A ticket the port could not spend (project-registration-and-trust.md §5.4): the gate's refusal, kept as such.
+  if (e instanceof AxisError && e.code === "E_POLICY_DENIED" && e.detail["reason"] === "untrusted") throw new GitRefusal("E_POLICY_DENIED", "untrusted");
   if (e instanceof GitOpsError) {
     const reason = e.details?.["reason"];
     throw new GitRefusal(e.code, typeof reason === "string" ? reason : undefined, e.details?.["updated"] === true);
@@ -150,6 +154,8 @@ async function guarded<T>(fn: () => Promise<T>): Promise<T> {
 
 export interface GitOperationsDeps {
   readonly git: GitPort;
+  /** Monotonic milliseconds: the project trust ticket's clock (commit and push spend one at their entry). */
+  readonly now: () => number;
   /** The supervisor's live view: a run in THIS workspace refuses commit and push. A throw counts as active. */
   readonly runs: Pick<RunsService, "hasActiveRun">;
   /** Extra hosts for compare URLs (GitHub Enterprise). github.com is always allowed. */
@@ -253,9 +259,10 @@ export function createGitOperations(deps: GitOperationsDeps): GitOperations {
       }),
     // `confirmed: true` is what the spent tier 4 approval says: the user confirmed the challenge of THIS plan. The plan the
     // approval covered is passed back, so a push whose tip or findings changed since is `plan_changed`.
-    executePush: (call, confirmed, signal) =>
-      guarded(() => (hooksGate(), executePush(forWorkspace(call.workspaceId), pushInput(call), { confirmed: true, confirmedPlan: { tip: confirmed.tip, digest: confirmed.digest }, ...(signal === undefined ? {} : { signal }) }))),
-    executeCommit: (call, input) => guarded(() => executeCommit(forWorkspace(call.workspaceId, call.assertFresh), input)),
+    executePush: (call, confirmed, ticket, signal) =>
+      guarded(() => (consumeTicket(ticket, { projectId: call.projectId, workspaceId: call.workspaceId }, deps.now), hooksGate(), executePush(forWorkspace(call.workspaceId), pushInput(call), { confirmed: true, confirmedPlan: { tip: confirmed.tip, digest: confirmed.digest }, ...(signal === undefined ? {} : { signal }) }))),
+    executeCommit: (call, input, ticket) =>
+      guarded(() => (consumeTicket(ticket, { projectId: call.projectId, workspaceId: call.workspaceId }, deps.now), executeCommit(forWorkspace(call.workspaceId, call.assertFresh), input))),
     compareUrl: (call) =>
       guarded(async () => {
         const git = await daemonGitFor(call.worktree, deps.git);

@@ -1,4 +1,5 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
+import type { ProjectTrustGate } from "../gate/project-trust.js";
 import { DaemonError, type HandlerContext } from "@axis/daemon";
 import type { Journal, Workspace } from "@axis/journal";
 import type { AnchorGuard } from "../anchor/manager.js";
@@ -19,6 +20,8 @@ import type { ReviewedTrees } from "./review-store.js";
 
 export interface GitHandlerDeps {
   readonly ops: GitOperations;
+  /** The project trust gate (commit and push): its ticket is spent by `ops` at the side effect. */
+  readonly gate: ProjectTrustGate;
   /** The commit side of the review binding; the handle of a reviewed tree is only ever passed to it. */
   readonly review: CommitPreparer;
   readonly trees: Pick<ReviewedTrees, "lookupReviewedTree" | "forget">;

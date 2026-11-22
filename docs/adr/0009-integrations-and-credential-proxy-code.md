@@ -23,7 +23,7 @@ Companion to `docs/adr/0009-integrations-and-credential-proxy.md`. Nothing of th
 |---|---|---|---|---|
 | 1 | `vault/src/types.ts` `SECRET_PURPOSES`; `vault.ts` `reveal` | two provider purposes; no entry kind | `integration:<id>` entries; three integration purposes; each purpose valid only for its entry kind, a mismatch refused and audited | PV-N1 |
 | 2 | `bindings/providers.ts` note; `test/packages/imports.test.mjs`; `scripts/code-oss/stage-scan.mjs` | providers binding is the only allowed importer of `@axis/vault` | the integrations binding is a second allowed importer | PV-N1 |
-| 3 | ADR 0003 D1.6; `entry.ts` | no secret broker, no production backend | integrations connect only once both exist | the secret-broker ticket (not yet cut), before PV-N1's gate |
+| 3 | ADR 0003 D1.6; `entry.ts` | no secret broker, no production backend | integrations connect only once both exist | PV-N0 (`docs/design/secret-broker.md`, slices PV-N0a and PV-N0c), before PV-N1's gate |
 | 4 | `entry.ts` step 1 | refuses `NODE_OPTIONS` only among environment variables | also refuses `NODE_USE_ENV_PROXY` and `NODE_TLS_REJECT_UNAUTHORIZED` | PV-N1 |
 | 5 | the design §7.3 "Node `fetch`" | the pinning mechanism left open | `node:https` with a dedicated agent, a checking `lookup` and `rejectUnauthorized: true` | PV-N1 |
 | 6 | the design §7.3 address ranges | "private, loopback, link-local, metadata, mapped and NAT64" | IPv4 list; IPv6 public unicast = inside `2000::/3` minus `2001::/23`, `2001:db8::/32`, `3fff::/20` and `2002::/16`; the embedded-IPv4 rule; WHATWG-parsed IP literals; trailing-dot hosts refused; the operator-NAT64 residual | PV-N1 |
@@ -39,4 +39,4 @@ Companion to `docs/adr/0009-integrations-and-credential-proxy.md`. Nothing of th
 
 ## 3. Not built
 
-Everything the ADR decides: the contracts and their rows, the egress client, address checks and pinning, request composition, the vault namespaces and purposes, the entry's environment refusals, device-code OAuth with its main dialog, the two audit rows and taint source 7 (PV-N1, PV-N2); the GitHub token integration (PV-N3); the gate evidence (PV-N4). The threat-model rows come with PV-R8.
+Everything the ADR decides: the contracts and their rows, the egress client, address checks and pinning, request composition, the vault namespaces and purposes, device-code OAuth with its main dialog, the two audit rows and taint source 7 (PV-N1, PV-N2); the GitHub token integration (PV-N3); the gate evidence (PV-N4). The threat-model rows come with PV-R8. **Built since:** the entry's environment refusals (`NODE_TLS_REJECT_UNAUTHORIZED`, `NODE_USE_ENV_PROXY`), PV-N1b, `6c95e93` (`daemon-host/src/entry.ts` step 1).
