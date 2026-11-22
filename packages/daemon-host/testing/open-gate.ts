@@ -1,5 +1,6 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { trustCallOf } from "../src/gate/project-trust.js";
+import { attestedWindow } from "./attested.js";
 import { createProjectTrustGate } from "../src/gate/project-trust-gate.js";
 import type { ProjectTrustGate, ProjectTrustTicket } from "../src/gate/project-trust.js";
 
@@ -35,5 +36,5 @@ export function openTrustGate(now: () => number = () => performance.now()): Proj
 
 /** A genuine, fresh ticket for these facts (spend it within the ticket's 1 s). */
 export function ticketFor(projectId: string, workspaceId?: string, now?: () => number): Promise<ProjectTrustTicket> {
-  return openTrustGate(now).admit({ projectId, caller: trustCallOf({ windowId: "win-1", clientKind: "desktop" }), ...(workspaceId === undefined ? {} : { workspaceId }), signal: new AbortController().signal });
+  return openTrustGate(now).admit({ projectId, caller: trustCallOf(attestedWindow("win-1")), ...(workspaceId === undefined ? {} : { workspaceId }), signal: new AbortController().signal });
 }

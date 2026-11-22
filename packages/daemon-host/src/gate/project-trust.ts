@@ -1,5 +1,6 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { AxisError } from "@axis/audit";
+import { isAttestedIdentity } from "@axis/daemon";
 import type { Journal } from "@axis/journal";
 import type { TrustCheckRequest } from "../control/client.js";
 import type { BindingResult } from "../projects/binding.js";
@@ -48,8 +49,11 @@ export interface ProjectTrustGateDeps {
 declare const TRUST_CALL: unique symbol;
 
 /**
- * Who a gated call acts for, as the gate needs it (ADR 0008 decision 4, ticket PV-K1c). Only `trustCallOf` makes one, from the
- * attested identity: the gate refuses any other object, so no handler can hand-build a call or take a window from a payload.
+ * Who a gated call acts for, as the gate needs it (ADR 0008 decision 4, ticket PV-K1c). Only `trustCallOf` makes one, and only
+ * from the identity object the connection layer attested (`isAttestedIdentity`: a session's own frozen identity, never a literal,
+ * a copy or a clone); for anything else it returns a call the gate refuses. The gate refuses every object `trustCallOf` did not
+ * make, so neither a hand-built call nor a made-up identity passes, however the gate is reached (an alias, a bracket, a
+ * destructured or bound `admit`: the source scan in test/plugin-trust.test.ts is only an early alarm for the usual spelling).
  * For a plugin view it carries the host code window (`w<n>`, which main's `trust.check` knows) and the project the plugin is
  * pinned to; it never widens a step: the plugin acts for that project only.
  */
@@ -62,8 +66,15 @@ export interface TrustCall {
 
 const TRUST_CALLS = new WeakSet<object>();
 
-/** The one way to build a gated call: from the supervisor-attested identity of the connection. */
+/** A call the gate always refuses (for an identity the connection layer did not attest). */
+const REFUSED_CALL = Object.freeze({ windowId: "" }) as unknown as TrustCall;
+
+/**
+ * The one way to build a gated call: from the attested identity of the connection (`context.identity`). A plugin identity's
+ * `workspaceId` is the PROJECT it is enabled in (ADR 0008 decision 3), so it becomes `pinnedProjectId`.
+ */
 export function trustCallOf(identity: { readonly windowId: string; readonly clientKind: string; readonly hostWindowId?: string; readonly workspaceId?: string }): TrustCall {
+  if (!isAttestedIdentity(identity)) return REFUSED_CALL;
   const plugin = identity.clientKind === "plugin";
   // A plugin identity missing its host or project yields empty strings, which the gate refuses.
   const call = Object.freeze({ windowId: identity.windowId, ...(plugin ? { hostWindowId: identity.hostWindowId ?? "", pinnedProjectId: identity.workspaceId ?? "" } : {}) });

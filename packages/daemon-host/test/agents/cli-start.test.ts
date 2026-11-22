@@ -1,4 +1,5 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
+import { attestedWindow } from "../../testing/attested.js";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { HandlerContext } from "@axis/daemon";
@@ -23,7 +24,7 @@ function rig(admit: (scope: unknown) => Promise<unknown> = async () => "ticket-1
   };
   return { deps, order, started, minted };
 }
-const ctx = { identity: { actor: "user", connectionId: "c".repeat(22), windowId: "win-1", actorId: "a", trusted: true, clientKind: "desktop" }, requestId: "q", correlationId: "k", signal: new AbortController().signal, idempotencyKey: "k-1" } as unknown as HandlerContext;
+const ctx = { identity: attestedWindow("win-1", { connectionId: "c".repeat(22), actorId: "a" }), requestId: "q", correlationId: "k", signal: new AbortController().signal, idempotencyKey: "k-1" } as unknown as HandlerContext;
 
 test("the worker is passed to the supervisor; a start without one passes none", async () => {
   const { deps, started } = rig();

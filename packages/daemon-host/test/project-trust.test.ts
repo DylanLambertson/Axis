@@ -7,10 +7,11 @@ import { test, type TestContext } from "node:test";
 import { AxisError } from "@axis/audit";
 import { createProjectTrustGate, worktreeBelongs } from "../src/gate/project-trust-gate.js";
 import { ProjectTrustTicket } from "../src/gate/project-ticket.js";
+import { attestedWindow } from "../testing/attested.js";
 import { consumeTicket, ticketedStart, trustCallOf, type ProjectTrustGateDeps } from "../src/gate/project-trust.js";
 
 /** A desktop window's gated call (the attested identity's form). */
-const win = (windowId: string) => trustCallOf({ windowId, clientKind: "desktop" });
+const win = (windowId: string) => trustCallOf(windowId === "" ? { windowId, clientKind: "desktop" } : attestedWindow(windowId));
 import { toGitError } from "../src/handlers/git-errors.js";
 import { toComposerError } from "../src/composer/errors.js";
 import { toRunError } from "../src/runs/errors.js";

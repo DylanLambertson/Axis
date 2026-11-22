@@ -1,5 +1,6 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { trustCallOf } from "../src/gate/project-trust.js";
+import { attestedWindow } from "../testing/attested.js";
 import type { ProjectTrustGate } from "../src/gate/project-trust.js";
 import assert from "node:assert/strict";
 import { existsSync, lstatSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -17,7 +18,7 @@ const createWs = (user: Client, name?: string) => createWsRaw(user, (_m, x) => (
 const dirOf = (r: Rig, id: string): string => String(r.journal.getWorkspace(id)?.worktreePath);
 const signal = new AbortController().signal;
 /** A direct service call as a handler makes it: with the gate (the rig's real one) bound to the caller's window. */
-const svcOf = (r: { gate: ProjectTrustGate }) => ({ caller: { actor: "user", connectionId: "c", windowId: "win-1" }, signal, trust: (scope: { projectId: string; workspaceId?: string }) => r.gate.admit({ ...scope, caller: trustCallOf({ windowId: "win-1", clientKind: "desktop" }), signal }) });
+const svcOf = (r: { gate: ProjectTrustGate }) => ({ caller: { actor: "user", connectionId: "c", windowId: "win-1" }, signal, trust: (scope: { projectId: string; workspaceId?: string }) => r.gate.admit({ ...scope, caller: trustCallOf(attestedWindow("win-1")), signal }) });
 const live = new AbortController().signal;
 
 async function twoWorkspaces(t: TestContext, options: RigOptions = {}) {
