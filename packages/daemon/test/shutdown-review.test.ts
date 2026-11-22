@@ -286,8 +286,10 @@ test("R2: a flush that is cut short while still running is reported as running; 
   const slow = { ...store, flush: () => late.promise };
   const c = new ShutdownCoordinator({ ...target(new DrainGate()), store: slow }, { flushTimeoutMs: Infinity });
   const p = c.run("t");
-  await settle(); // the run is in its flush
+  await settle(); // the run is in its flush (a promise-turn check: the stubs here are promise-only)
   c.escalate();
-  assert.equal((await p).flushed, "running");
+  // A guard, not an expectation: a broken escalate fails here by name in 5 s instead of waiting out the runner.
+  const res2 = await Promise.race([p, new Promise<never>((_, rej) => setTimeout(() => rej(new Error("escalate did not end the flush wait")), 5_000).unref())]);
+  assert.equal(res2.flushed, "running");
   late.resolve();
 });
