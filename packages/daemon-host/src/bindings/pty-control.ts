@@ -2,16 +2,16 @@
 // PV-X1a (docs/design/pty-exec-node.md §5a): the daemon's port to the Axis pty process, over the control port main transfers in a
 // `pty-control` message. The one file of the host that loads `@axis/pty-process/client` (test/packages/imports.test.mjs); nothing
 // it reaches can start a program.
-import { adaptMessagePort, createPtyProcessPort, PtyExecError, PtySpawnError, type Channel, type MessagePortLike, type PtyProcessPort } from "@axis/pty-process/client";
-import type { PtyExecPort, PtyPort, PtyPushPort } from "../ports/pty.js";
+import { adaptMessagePort, createPtyProcessPort, PtyExecError, PtyForgeError, PtySpawnError, type Channel, type MessagePortLike, type PtyProcessPort } from "@axis/pty-process/client";
+import type { PtyExecPort, PtyForgePort, PtyPort, PtyPushPort } from "../ports/pty.js";
 
 /** What the daemon entry needs from a transferred port: an Electron `MessagePortMain` has all of it. */
 export type ControlPortLike = MessagePortLike;
 
 export interface PtyControlSlot {
   /** The host's pty port. Before a control port arrives, and after one closes, every call fails closed (`channel_closed`). */
-  readonly port: PtyPort & PtyExecPort & PtyPushPort;
-  /** Takes a new control port. The previous one is disposed first: every pending spawn, exec and push on it settles `channel_closed`. */
+  readonly port: PtyPort & PtyExecPort & PtyPushPort & PtyForgePort;
+  /** Takes a new control port. The previous one is disposed first: every pending spawn, exec, push and forge-list on it settles `channel_closed`. */
   attach(port: ControlPortLike): void;
   /** True once a control port was attached (even if it has since closed). */
   attached(): boolean;
@@ -51,6 +51,7 @@ export function createPtyControlSlot(options: PtyControlOptions = {}): PtyContro
       spawn: (spec) => (current === undefined ? spawnClosed() : current.spawn(spec)),
       push: (call) => (current === undefined ? spawnClosed() : current.push(call)),
       exec: (call) => (current === undefined ? Promise.reject(new PtyExecError("channel_closed")) : current.exec(call)),
+      forgeList: (request) => (current === undefined ? Promise.reject(new PtyForgeError("channel_closed")) : current.forgeList(request)),
     },
     attach(port) {
       drop();

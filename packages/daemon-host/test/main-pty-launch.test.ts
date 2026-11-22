@@ -136,9 +136,12 @@ test("the hand-over is checked with the entry's own rule: a refused program is d
   const events: PtyLaunchEvent[] = [];
   assert.deepEqual(checkedHandover({ gitPath: git, ghPath: gh }, scratch, (e) => events.push(e)), { gitPath: git, ghPath: gh, scratch });
   assert.deepEqual(checkedHandover({ gitPath: git, ghPath: loose }, scratch, (e) => events.push(e)), { gitPath: git, scratch });
-  assert.deepEqual(checkedHandover({ gitPath: loose, ghPath: gh }, scratch, (e) => events.push(e)), { ghPath: gh });
-  assert.deepEqual(checkedHandover({ gitPath: git, ghPath: gh }, undefined, (e) => events.push(e)), { ghPath: gh }, "no scratch: git off");
-  assert.deepEqual(events, ["gh_path_refused", "git_path_refused", "scratch_refused"]);
+  assert.deepEqual(checkedHandover({ gitPath: loose, ghPath: gh }, scratch, (e) => events.push(e)), { ghPath: gh, scratch }, "gh keeps the scratch it needs");
+  assert.deepEqual(checkedHandover({ ghPath: gh }, scratch, (e) => events.push(e)), { ghPath: gh, scratch }, "gh alone gets a scratch");
+  assert.deepEqual(checkedHandover({ gitPath: loose, ghPath: loose }, scratch, (e) => events.push(e)), {}, "no program left: no scratch either");
+  assert.deepEqual(checkedHandover({ gitPath: git, ghPath: gh }, undefined, (e) => events.push(e)), {}, "no scratch: git and gh off");
+  assert.deepEqual(checkedHandover({}, scratch, (e) => events.push(e)), {}, "no program: no scratch");
+  assert.deepEqual(events, ["gh_path_refused", "git_path_refused", "git_path_refused", "gh_path_refused", "scratch_refused"]);
 });
 
 test("each spawn gets its own 0700 scratch, removed when that process exits; a crash restart leaves nothing behind", { skip: !posix }, (t) => {
