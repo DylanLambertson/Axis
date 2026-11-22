@@ -76,9 +76,9 @@ test("B1d: close does not free the slots of running handlers; the daemon-wide or
   r.daemon.register(CONTRACT, 1, { slow: () => gates[started++]?.promise ?? never() });
   r.send(req("o1", "slow"));
   r.send(req("o2", "slow"));
-  await untilTrue(() => started === 2, undefined, "both handlers started");
+  await untilTrue(() => started === 2, 5_000, "both handlers started");
   r.client.close(); // peer goes away with two handlers running
-  await untilTrue(() => r.daemon.connectionCount === 0, undefined, "the daemon saw the peer go away");
+  await untilTrue(() => r.daemon.connectionCount === 0, 5_000, "the daemon saw the peer go away");
   assert.equal(r.daemon.orphanedHandlers, 2);
   const next = r.connect("good#conn-2");
   await welcome(next);
@@ -133,7 +133,7 @@ test("B1g: cancelling a keyed write leaves its key unknown once the handler sett
   let runs = 0;
   r.daemon.register(CONTRACT, 1, { write: (c) => (++runs, runs === 1 ? gate.promise.then(() => (c.signal.throwIfAborted(), { n: 1 })) : { n: 1 }) });
   r.send(req("k1", "write", { n: 1 }, { idempotencyKey: KEY1 }));
-  await untilTrue(() => runs === 1, undefined, "the handler started");
+  await untilTrue(() => runs === 1, 5_000, "the handler started");
   r.send({ v: 1, cancel: "k1" });
   assert.equal((await r.inbox.response("k1")).error?.code, "E_CANCELLED");
   gate.resolve({ n: 1 });
@@ -164,7 +164,7 @@ test("S2: a key whose begin() resolves after a timeout is not wedged in-progress
   r.daemon.register(CONTRACT, 1, { write: (_c, p: { n: number }) => p });
   r.send(req("w1", "write", { n: 1 }, { idempotencyKey: KEY1, timeoutMs: 10 }));
   assert.equal((await r.inbox.response("w1")).error?.code, "E_TIMEOUT");
-  await untilTrue(() => beginDone, undefined, "the slow begin() returned");
+  await untilTrue(() => beginDone, 5_000, "the slow begin() returned");
   await settle(); // the key is abandoned or completed in the continuation after begin()
   r.send(req("w2", "write", { n: 1 }, { idempotencyKey: KEY1 }));
   const res = await r.inbox.response("w2");
@@ -179,7 +179,7 @@ test("S3a: maxConnections holds when the verifier is async", async (t) => {
   const extra = [r.connect("good#conn-2"), r.connect("good#conn-3"), r.connect("good#conn-4")];
   // The three extras are refused and closed (a cap that did not count pending verifications would let them in and never close them).
   for (const c of extra) assert.ok(await c.inbox.closedWithin(5_000), "an extra connection was closed");
-  await untilTrue(() => r.daemon.connectionCount === 1, undefined, "the first connection finished verification");
+  await untilTrue(() => r.daemon.connectionCount === 1, 5_000, "the first connection finished verification");
   assert.ok(r.daemon.connectionCount <= 1, `${r.daemon.connectionCount} live sessions with maxConnections 1`);
 });
 
