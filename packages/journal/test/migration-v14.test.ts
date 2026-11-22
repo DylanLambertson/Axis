@@ -108,6 +108,7 @@ test("a version: the next number, title and body rules, a closed author set, and
   }
   refused(() => insert(db, "page_versions", ver({ body: "a\u0000b" })), "a NUL in the body");
   refused(() => insert(db, "page_versions", ver({ body: "é".repeat(PAGE_LIMITS.bodyBytes / 2 + 1) })), "a body over 256 KiB of UTF-8");
+  refused(() => insert(db, "page_versions", ver({ body: `${"é".repeat(PAGE_LIMITS.bodyBytes / 2)}x` })), "256 KiB + 1 byte");
   refused(() => insert(db, "page_versions", ver({ reviewed_at: T, author_kind: "agent", author_id: "w1", untrusted: 1 })), "reviewed at insert");
   for (const bad of [
     { author_kind: "admin" }, { author_kind: "user", author_id: "x" }, { author_kind: "system", author_id: "x", untrusted: 1 },
@@ -215,6 +216,9 @@ test("attachments: raster types checked against their bytes, 20 per page, 5 MiB,
     { sha256: "A".repeat(64) }, { sha256: "a".repeat(63) }, { page_id: "nope" },
   ] as Row[]) refused(() => insert(db, "page_attachments", att({ id: "x", ...bad })), JSON.stringify(Object.keys(bad)));
   refused(() => db.prepare("UPDATE page_attachments SET media_type = 'image/png' WHERE id = 'j'").run(), "never changed");
+  insert(db, "page_attachments", att({ id: "max", bytes: Buffer.concat([PNG, Buffer.alloc(PAGE_LIMITS.attachmentBytes - PNG.length)]) }));
+  refused(() => insert(db, "page_attachments", att({ id: "max1", bytes: Buffer.concat([PNG, Buffer.alloc(PAGE_LIMITS.attachmentBytes - PNG.length + 1)]) })), "5 MiB + 1");
+  db.prepare("DELETE FROM page_attachments WHERE id = 'max'").run();
   for (let i = 4; i < PAGE_LIMITS.attachmentsPerPage; i++) insert(db, "page_attachments", att({ id: `a${i}` }));
   refused(() => insert(db, "page_attachments", att({ id: "a21" })), "the 21st attachment");
   db.close();
@@ -229,9 +233,12 @@ test("a project holds at most 200 MiB of version and attachment bytes, counted a
     insert(db, "pages", page({ id: `pg${p}` }));
     for (let i = 0; i < PAGE_LIMITS.attachmentsPerPage && n < 40; i++, n++) insert(db, "page_attachments", att({ id: `a${n}`, page_id: `pg${p}`, bytes: big }));
   }
-  insert(db, "page_versions", ver({ page_id: "pg2", body: "x".repeat(100) }));
-  refused(() => insert(db, "page_versions", ver({ page_id: "pg2", seq: 2, body: "x".repeat(PAGE_LIMITS.bodyBytes) })), "a version past the project cap");
-  refused(() => insert(db, "page_attachments", att({ id: "over", page_id: "pg2", bytes: big })), "an attachment past the project cap");
+  insert(db, "page_versions", ver({ page_id: "pg2", body: "x".repeat(100) })); // 105 bytes: 295 left
+  refused(() => insert(db, "page_versions", ver({ page_id: "pg2", seq: 2, body: "x".repeat(291) })), "one byte past the project cap");
+  insert(db, "page_versions", ver({ page_id: "pg2", seq: 2, body: "x".repeat(290) })); // exactly at the cap
+  assert.equal(count(db, `SELECT ${projectBytesSql("?1")} AS n`, "p1"), PAGE_LIMITS.projectBytes);
+  refused(() => insert(db, "page_versions", ver({ page_id: "pg2", seq: 3, title: "N", body: "" })), "any version at the cap");
+  refused(() => insert(db, "page_attachments", att({ id: "over", page_id: "pg2", bytes: PNG.subarray(0, 12) })), "any attachment at the cap");
   insert(db, "pages", page({ id: "elsewhere", project_id: "p2" }));
   insert(db, "page_attachments", att({ id: "fine", page_id: "elsewhere", bytes: big }));
   db.close();
@@ -266,9 +273,10 @@ test("stored byte counts: a version's bytes are its title and body, an attachmen
 test("the project total is summed from the stored counts through covering indexes: no title, body or image is read", () => {
   const { db } = setup();
   const plan = (db.prepare(`EXPLAIN QUERY PLAN SELECT ${projectBytesSql("?1")} AS n`).all("p1") as { detail: string }[]).map((r) => r.detail);
-  assert.ok(plan.some((d) => /page_versions USING COVERING INDEX page_versions_bytes|v USING COVERING INDEX page_versions_bytes/.test(d)), plan.join(" | "));
-  assert.ok(plan.some((d) => /a USING COVERING INDEX page_attachments_size|page_attachments USING COVERING INDEX page_attachments_size/.test(d)), plan.join(" | "));
-  assert.ok(!plan.some((d) => /SCAN (v|a|page_versions|page_attachments)\b/.test(d)), plan.join(" | "));
+  // The invariant, not the planner's wording: each count comes from its covering index, and neither table is scanned.
+  assert.ok(plan.some((d) => d.includes("COVERING INDEX page_versions_bytes")), plan.join(" | "));
+  assert.ok(plan.some((d) => d.includes("COVERING INDEX page_attachments_size")), plan.join(" | "));
+  assert.ok(!plan.some((d) => /\bSCAN\b/.test(d) && /\b(v|a|page_versions|page_attachments)\b/.test(d)), plan.join(" | "));
   insert(db, "pages", page());
   insert(db, "page_versions", ver({ body: "x".repeat(1000) }));
   insert(db, "page_attachments", att());
