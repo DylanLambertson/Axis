@@ -47,6 +47,7 @@ export const contracts: Table = Object.freeze({
   [`${AGENT_GROUPS_CONTRACT}/${AGENT_GROUPS_VERSION}`]: frozen(agentGroupsMethods),
   [`${ATTENTION_CONTRACT}/${ATTENTION_VERSION}`]: frozen(attentionMethods),
   [`${USAGE_CONTRACT}/${USAGE_VERSION}`]: frozen(usageMethods),
+  [`${PAGES_CONTRACT}/${PAGES_VERSION}`]: frozen(pagesMethods),
 });
 
 /**
@@ -54,14 +55,12 @@ export const contracts: Table = Object.freeze({
  * and no daemon can serve one; the daemon-host coverage check holds a planned policy row for each of their methods, at the
  * same tier. A contract moves to `contracts` in the change that registers its handlers, its rows moving with it
  * (`axis.messages/1` moved with ticket PV-M3, `axis.forge/1` with PV-D2 slice 2, `axis.agents/1` and `axis.agent-groups/1`
- * with PV-G3). `axis.integrations/1` and `axis.net/1` (PV-N1a, ADR 0009) are planned until PV-N1f serves them, and
- * `axis.pages/1` (PV-Q1 slice 1, ADR 0010) until its service is served, and
- * `axis.tasks/1` (PV-T1 slice 1) likewise. A key is never in both tables.
+ * with PV-G3, `axis.pages/1` with PV-Q1 slice 2). `axis.integrations/1` and `axis.net/1` (PV-N1a, ADR 0009) are planned until
+ * PV-N1f serves them, and `axis.tasks/1` (PV-T1 slice 1) until its service is served. A key is never in both tables.
  */
 export const plannedContracts: Table = Object.freeze({
   [`${INTEGRATIONS_CONTRACT}/${INTEGRATIONS_VERSION}`]: frozen(integrationsMethods),
   [`${NET_CONTRACT}/${NET_VERSION}`]: frozen(netMethods),
-  [`${PAGES_CONTRACT}/${PAGES_VERSION}`]: frozen(pagesMethods),
   [`${TASKS_CONTRACT}/${TASKS_VERSION}`]: frozen(tasksMethods),
 });
 
