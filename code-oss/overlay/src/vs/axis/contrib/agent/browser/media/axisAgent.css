@@ -76,15 +76,6 @@
 	gap: 4px;
 }
 
-.monaco-workbench .axis-project-chip-label,
-.monaco-workbench .axis-project-banner-text {
-	max-width: 48ch;
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
-	unicode-bidi: isolate;
-}
-
 .monaco-workbench .axis-project-chip[data-trust="offline"],
 .monaco-workbench .axis-project-chip[data-trust="unregistered"] {
 	color: var(--vscode-descriptionForeground);

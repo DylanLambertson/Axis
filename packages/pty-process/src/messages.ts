@@ -34,6 +34,8 @@ const spawn = z
     env: z.record(z.string().min(1).max(LIMITS.envNameChars), z.string().max(LIMITS.envValueChars)).refine((e) => Object.keys(e).length <= LIMITS.envEntries),
     cols: dim,
     rows: dim,
+    /** PV-M6 (ADR 0007 amendment item 1): open this run's messaging endpoint and add its two names to the child's environment. */
+    messagesEndpoint: z.object({ endpoint: z.string().regex(/^ep_[A-Za-z0-9_-]{22,64}$/), token: z.string().regex(/^[A-Za-z0-9_-]{43}$/) }).strict().optional(),
   })
   .strict();
 const term = z.object({ term: id });
@@ -133,7 +135,7 @@ export const groupSchema = z.discriminatedUnion("kind", [z.object({ kind: z.lite
 /** Pty process to daemon. Terminal output is never sent here: the daemon sees status only. */
 export const controlReply = z.discriminatedUnion("t", [
   z.object({ t: z.literal("spawned"), req: id, term: id, group: groupSchema }).strict(),
-  z.object({ t: z.literal("spawn-failed"), req: id, code: z.enum(["env_denied", "bad_group", "capacity", "spawn_failed", "no_control", "bad_bind", "hook_changed", "bad_argv", "remote_refused"]) }).strict(),
+  z.object({ t: z.literal("spawn-failed"), req: id, code: z.enum(["env_denied", "bad_group", "capacity", "spawn_failed", "no_control", "bad_bind", "hook_changed", "bad_argv", "remote_refused", "endpoint_unavailable"]) }).strict(),
   z.object({ t: z.literal("exit"), term: id, exitCode: z.number().int().nullable(), signal: z.string().max(32).nullable() }).strict(),
   z.object({ t: z.literal("group-empty"), term: id }).strict(),
   /** Input for this terminal was dropped because the child holds too much unread input (PTY-4). Status only. */
