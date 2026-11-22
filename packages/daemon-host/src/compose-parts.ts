@@ -1,5 +1,6 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
-import { AxisError, type AuditLog } from "@axis/audit";
+import { AxisError, type AuditLog, type Redactor } from "@axis/audit";
+import { providerRedactor } from "./bindings/provider-redactor.js";
 import { protocolRegistry, type ContractRegistry, type DaemonAuditSink } from "@axis/daemon";
 import { lookupMethod } from "@axis/protocol";
 import type { HostServices } from "./host.js";
@@ -175,3 +176,12 @@ export function refuseComposition(reason: string): never {
 }
 
 export const isPty = (p: unknown): p is PtyPort => typeof (p as { spawn?: unknown } | null)?.spawn === "function";
+
+/**
+ * The host redactor's secret check for message deliveries (messages-contract.md section 11): the providers' own check
+ * (windowed, so a long body is judged whole), so a body it matches is withheld before the providers would refuse it.
+ */
+export function messageSecretCheck(redactor: Redactor): (text: string) => boolean {
+  const check = providerRedactor(redactor);
+  return (text) => check.containsSecret(text);
+}

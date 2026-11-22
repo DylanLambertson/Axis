@@ -1,5 +1,5 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
-import type { MessageRecords, ThreadRecord } from "@axis/journal";
+import type { MessageRecord, MessageRecords, ThreadRecord } from "@axis/journal";
 import {
   MAX_READ_MESSAGES,
   MAX_RECIPIENTS,
@@ -72,6 +72,11 @@ export interface MessageService {
   thread(caller: MessageCaller, req: MessagesRequest<"thread">): MessagesResponse<"thread">;
   threads(caller: MessageCaller, req: MessagesRequest<"threads">): MessagesResponse<"threads">;
   read(caller: MessageCaller, req: MessagesRequest<"read">): MessagesResponse<"read">;
+  /**
+   * `read` for a broker caller (PV-M4, section 11): the same reply, and the ids of the messages whose body `holdsSecret`
+   * matches in its stored raw text OR its escaped display text. Only ids leave: the raw text stays here.
+   */
+  readWithheld(caller: MessageCaller, req: MessagesRequest<"read">, holdsSecret: (text: string) => boolean): MessagesResponse<"read"> & { readonly withheld: ReadonlySet<string> };
   markRead(caller: MessageCaller, req: MessagesRequest<"markRead">): MessagesResponse<"markRead">;
   /** Slice 2's delivery check: null when `recipient` may still receive `messageId` now, else the refusal reason. */
   deliverable(messageId: string, recipient: Principal): string | null;
@@ -215,6 +220,29 @@ export function createMessageService(deps: MessageServiceDeps): MessageService {
     return { message, replayed: false };
   }
 
+  /** `read`, and (given a predicate) the ids whose stored raw body or escaped body it matches: never the text (section 11). */
+  function readPage(caller: MessageCaller, raw: unknown, holdsSecret?: (text: string) => boolean): MessagesResponse<"read"> & { readonly withheld: ReadonlySet<string> } {
+    const req = checked("read", raw);
+    return reading(caller, "read", req.threadId, () => {
+      const key = callerKey(caller);
+      if (req.threadId !== undefined) resolve(caller, key, req.threadId);
+      const limit = Math.min(req.limit ?? MAX_READ_MESSAGES, MAX_READ_MESSAGES);
+      const recs = store.inbox(key, { ...(req.threadId === undefined ? {} : { threadId: req.threadId, afterSeq: req.afterSeq ?? 0 }), limit: limit + 1 });
+      const projectOf = new Map<string, string>();
+      const toProject = (id: string): string => {
+        const known = projectOf.get(id) ?? store.thread(id)?.projectId;
+        if (known === undefined) throw new StoredRecordError();
+        projectOf.set(id, known);
+        return known;
+      };
+      const page = pageByText(recs.slice(0, limit).map((m) => toWire(m, toProject(m.threadId))));
+      const withheld = new Set<string>();
+      // The page is a prefix of `recs`, in order: each shown message is checked against its own stored record.
+      if (holdsSecret !== undefined) page.messages.forEach((w, i) => (holdsSecret((recs[i] as MessageRecord).body) || holdsSecret(w.body.text)) && withheld.add(w.messageId));
+      return { messages: page.messages, more: recs.length > limit || page.cut, withheld };
+    });
+  }
+
   return {
     context,
 
@@ -274,24 +302,12 @@ export function createMessageService(deps: MessageServiceDeps): MessageService {
       });
     },
 
-    read(caller, raw) {
-      const req = checked("read", raw);
-      return reading(caller, "read", req.threadId, () => {
-        const key = callerKey(caller);
-        if (req.threadId !== undefined) resolve(caller, key, req.threadId);
-        const limit = Math.min(req.limit ?? MAX_READ_MESSAGES, MAX_READ_MESSAGES);
-        const recs = store.inbox(key, { ...(req.threadId === undefined ? {} : { threadId: req.threadId, afterSeq: req.afterSeq ?? 0 }), limit: limit + 1 });
-        const projectOf = new Map<string, string>();
-        const toProject = (id: string): string => {
-          const known = projectOf.get(id) ?? store.thread(id)?.projectId;
-          if (known === undefined) throw new StoredRecordError();
-          projectOf.set(id, known);
-          return known;
-        };
-        const page = pageByText(recs.slice(0, limit).map((m) => toWire(m, toProject(m.threadId))));
-        return { messages: page.messages, more: recs.length > limit || page.cut };
-      });
+    read: (caller, raw) => {
+      const { messages, more } = readPage(caller, raw);
+      return { messages, more };
     },
+
+    readWithheld: (caller, raw, holdsSecret) => readPage(caller, raw, holdsSecret),
 
     markRead(caller, raw) {
       const req = checked("markRead", raw);

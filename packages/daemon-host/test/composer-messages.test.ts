@@ -20,11 +20,11 @@ const readMsgs = (input: Record<string, unknown> = {}) => ({ name: READ_MESSAGES
 const unknownThread = (): string => encodeMessagingId("thread", randomBytes(16));
 
 test("production wiring: no run has an agent, so neither tool is offered, and a forged call by name is refused unknown_tool", async (t) => {
-  assert.equal("agentOf" in hostMessagingDeps({ journal: { messages: undefined as never, getProject: () => undefined, getRun: () => undefined }, audit: { append: () => undefined }, monotonic: () => 0, scan: async () => [], logger: undefined }), false, "the host gives no agentOf");
+  assert.equal("agentOf" in hostMessagingDeps({ journal: { messages: undefined as never, getProject: () => undefined, getRun: () => undefined }, audit: { append: () => undefined }, monotonic: () => 0, scan: async () => [], logger: undefined, holdsSecret: () => false }), false, "the host gives no agentOf");
   const c = await composerRig({
     replies: [],
     // The host's binding with its default `agentOf` (none), over a directory that would know any agent.
-    messaging: createMessagingBinding({ journal: { messages: {} as never, getProject: () => undefined }, audit: { append: () => undefined }, random: { bytes: (n) => randomBytes(n) }, monotonic: () => 0, scan: async () => [], directory: { project: () => true, agent: (id) => ({ agentId: id, projectId: "p", groupId: null, kind: "composer" }), group: () => undefined, agents: () => [] } }).participation,
+    messaging: createMessagingBinding({ journal: { messages: {} as never, getProject: () => undefined }, audit: { append: () => undefined }, random: { bytes: (n) => randomBytes(n) }, monotonic: () => 0, scan: async () => [], holdsSecret: () => false, directory: { project: () => true, agent: (id) => ({ agentId: id, projectId: "p", groupId: null, kind: "composer" }), group: () => undefined, agents: () => [] } }).participation,
   });
   t.after(() => c.cleanup());
   const runId = c.journal.composer.createRun({ workspaceId: c.workspaceId, createdBy: "user" }, { mode: "agent", providerId: "mock", modelId: "mock-model" }).value.id;
