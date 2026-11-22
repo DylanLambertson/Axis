@@ -81,3 +81,14 @@ test("protected paths: case, Unicode, ignorable characters, trailing dots and sh
   assert.ok(matchProtected([".HUSKY", "x"]));
   assert.ok(matchProtected(["extra", "dir"].slice(0, 0).concat(["deploy"]), [["deploy"]]), "host additions");
 });
+
+test("WT-3: a CLI's project configuration is protected: Claude's settings, local settings and hooks, Codex's config and hooks", () => {
+  const hit = (p: string[]): string | undefined => matchProtected(p)?.label;
+  // Fixed literals, not read from the shared list: removing a row must fail here.
+  for (const p of [[".claude", "settings.json"], [".claude", "settings.local.json"], [".claude", "hooks", "pre.sh"], [".codex", "config.toml"], [".codex", "hooks", "x"], [".CLAUDE", "Settings.JSON"]]) {
+    assert.ok(hit(p) !== undefined, p.join("/"));
+  }
+  assert.equal(hit([".claude", "commands", "x.md"]), undefined, "the rest of .claude is not on the list");
+  assert.equal(hit([".codex", "agents", "x.md"]), undefined);
+  assert.equal(hit(["sub", ".claude", "settings.json"]), undefined, "root-anchored: a nested copy is not the project's");
+});
