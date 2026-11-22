@@ -83,6 +83,19 @@ interface Bucket {
   at: number;
 }
 
+/**
+ * The sender checks of ADR 0003 D1.3, in this order (the first failure refuses): a code window, the workbench frame URL, the main
+ * frame, not destroyed. The code window id, or the refusal. Shared by `vscode:axisConnect` and `vscode:axisProjectAction`.
+ */
+export function checkSender(sender: ConnectSender, workbenchUrls: readonly string[]): number | "not_code_window" | "bad_frame" | "not_main_frame" | "destroyed" {
+  const id = sender.codeWindowId;
+  if (typeof id !== "number" || !Number.isSafeInteger(id) || id < 0) return "not_code_window";
+  if (!isWorkbenchFrame(sender.frameUrl, workbenchUrls)) return "bad_frame";
+  if (sender.isMainFrame !== true) return "not_main_frame";
+  if (sender.destroyed !== false) return "destroyed";
+  return id;
+}
+
 export class ConnectBroker<P> {
   readonly #o: ConnectBrokerOptions<P>;
   readonly #burst: number;
@@ -106,11 +119,8 @@ export class ConnectBroker<P> {
       return { ok: false, reason };
     };
     if (typeof nonce !== "string" || !NONCE.test(nonce)) return refused("bad_nonce");
-    const id = sender.codeWindowId;
-    if (typeof id !== "number" || !Number.isSafeInteger(id) || id < 0) return refused("not_code_window");
-    if (!isWorkbenchFrame(sender.frameUrl, this.#o.workbenchUrls)) return refused("bad_frame");
-    if (sender.isMainFrame !== true) return refused("not_main_frame");
-    if (sender.destroyed !== false) return refused("destroyed");
+    const id = checkSender(sender, this.#o.workbenchUrls);
+    if (typeof id === "string") return refused(id);
     if (!this.#take(id)) return refused("rate_limited");
 
     let trusted = false;

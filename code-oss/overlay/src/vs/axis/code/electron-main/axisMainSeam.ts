@@ -27,10 +27,11 @@ import type { IInstantiationService } from '../../../platform/instantiation/comm
 import { anchorFilePath, createAnchorFile } from '../../packages/daemon-host/main/anchor-file.js';
 import { createAnchorStore } from '../../packages/daemon-host/main/anchor-store.js';
 import { createMainAnswers } from '../../packages/daemon-host/main/answers.js';
-import { ConnectBroker } from '../../packages/daemon-host/main/connect-broker.js';
+import { createProjectActions, type ProjectActions } from '../../packages/daemon-host/main/project-actions.js';
+import { checkSender, ConnectBroker } from '../../packages/daemon-host/main/connect-broker.js';
 import { DaemonSupervisor, axisDataRoots, daemonEnvironment, shouldStartDaemon, type DaemonChild, type SupervisedConfig, type SupervisorTimers } from '../../packages/daemon-host/supervisor.js';
 import { startAxisPty } from './axisMainPty.js';
-import { connectSender, messageChannel, nativeDialog, resolveMainServices, resolvedShellEnv, safeStorageCipher, settingsSource, trustSource, windowTrusted, workbenchUrls } from './axisMainPorts.js';
+import { connectSender, messageChannel, nativeDialog, projectDialog, resolveMainServices, resolvedShellEnv, safeStorageCipher, settingsSource, trustSource, windowFolder, windowTrusted, workbenchUrls, workspaceTrusted } from './axisMainPorts.js';
 
 const MAX_STDERR_LINE = 512;
 
@@ -83,6 +84,7 @@ export function startAxisMainSeam(lifecycle: ILifecycle, log: ILog, instantiatio
 		platform,
 		now: () => performance.now(),
 		onEvent: e => log.warn(`axis daemon: ${e.event}${'reason' in e ? ` reason=${e.reason}` : ''}`),
+		onProjectAnswer: message => void projects.answer(message),
 	});
 
 	supervisor = new DaemonSupervisor({
@@ -134,6 +136,17 @@ export function startAxisMainSeam(lifecycle: ILifecycle, log: ILog, instantiatio
 	});
 	const started = supervisor;
 
+	// Project actions (project-registration-and-trust.md §4): the renderer names only the action; the folder is its window's, the
+	// decision is main's own dialog on the shared queue, and only then does main send the daemon `projects.register` or `.trust`.
+	const projects: ProjectActions = createProjectActions({
+		send: message => started.sendProject(message),
+		choose: choice => answers.choose(choice),
+		show: projectDialog(services),
+		windowFolder: id => windowFolder(services, id),
+		workspaceTrusted: workspaceTrusted(services, platform),
+		now: () => performance.now(),
+	});
+
 	// The renderer handshake (ADR 0003 D1.2): upstream `acquirePort` sends the nonce; the answer carries the port, or upstream's
 	// error shape with a closed code. An invalid nonce is not echoed, and a destroyed sender gets nothing.
 	validatedIpcMain.on('vscode:axisConnect', (event, nonce: unknown) => {
@@ -145,10 +158,25 @@ export function startAxisMainSeam(lifecycle: ILifecycle, log: ILog, instantiatio
 		}
 	});
 
+	// The same sender checks as `vscode:axisConnect`; the payload is `{ nonce, action }` only (checked in `createProjectActions`).
+	const urls = workbenchUrls();
+	validatedIpcMain.on('vscode:axisProjectAction', (event, payload: unknown) => {
+		const codeWindowId = checkSender(connectSender(services, event), urls);
+		if (typeof codeWindowId === 'string') {
+			log.warn(`axis project: refused reason=${codeWindowId}`);
+			return;
+		}
+		void projects.act(codeWindowId, payload).then(result => {
+			if (result !== undefined && !event.sender.isDestroyed()) {
+				event.sender.postMessage('vscode:axisProjectActionResult', result);
+			}
+		});
+	});
+
 	// The shutdown message is the only graceful path on Windows, where a utility process is ended by TerminateProcess.
 	// A final anchor write still in flight is finished before the answers are disposed.
 	// The daemon first, then the pty process (bounded, so a daemon that hangs cannot keep the pty process alive).
-	lifecycle.onWillShutdown(event => event.join('axisDaemon', pty.shutdown(() => started.shutdown()).then(() => answers.idle()).finally(() => answers.dispose())));
+	lifecycle.onWillShutdown(event => event.join('axisDaemon', pty.shutdown(() => started.shutdown()).then(() => answers.idle()).finally(() => (projects.dispose(), answers.dispose()))));
 	// Read the anchor store first (a keychain prompt must not use up the daemon's anchor wait) and start the pty process, then spawn.
 	void Promise.all([answers.prepare(), pty.started]).finally(() => started.start());
 	return started;

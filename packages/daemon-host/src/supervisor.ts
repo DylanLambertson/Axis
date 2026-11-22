@@ -1,5 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
-import { outboundMessageSchema, type OutboundMessage } from "./control/messages.js";
+import { inboundMessageSchema, outboundMessageSchema, type InboundMessage, type OutboundMessage } from "./control/messages.js";
+
+const PROJECT_TYPES: ReadonlySet<string> = new Set(["projects.inspect", "projects.register", "projects.trust"]);
 import { base64url, signMainAttestation, type HmacSha256, type MainIdentity } from "./main/attest-sign.js";
 
 /**
@@ -239,6 +241,24 @@ export class DaemonSupervisor {
     try {
       const attestation = signMainAttestation(hmac, key, identity, (this.#o.wallNow ?? Date.now)());
       child.postMessage({ type: "connect", attestation }, [port]);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Post one of the project messages main starts (`projects.inspect`, `projects.register`, `projects.trust`; main only, after its
+   * own dialog: docs/design/project-registration-and-trust.md §4.3). It is checked against the host's inbound schema first, so a
+   * malformed message is never posted. `false` unless the host is `running`. Never throws.
+   */
+  sendProject(message: Extract<InboundMessage, { type: "projects.inspect" | "projects.register" | "projects.trust" }>): boolean {
+    const child = this.#child;
+    if (this.#state !== "running" || child === undefined) return false;
+    const parsed = inboundMessageSchema.safeParse(message);
+    if (!parsed.success || !PROJECT_TYPES.has(parsed.data.type)) return false;
+    try {
+      child.postMessage(parsed.data);
       return true;
     } catch {
       return false;

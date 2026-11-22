@@ -352,3 +352,22 @@ test("the daemon is started in unpackaged builds only, until the real ports exis
   assert.equal(shouldStartDaemon(false), true);
   assert.equal(shouldStartDaemon(true), false);
 });
+
+test("sendProject: only while running, only the three project messages, and only what the host's inbound schema accepts (S2)", () => {
+  const t = rig();
+  t.sup.start();
+  const inspect = { type: "projects.inspect" as const, requestId: "r1", path: "/work/repo" };
+  assert.equal(t.sup.sendProject(inspect), false, "not running before ready");
+  t.last().ready();
+  const before = t.last().sent.length;
+  assert.equal(t.sup.sendProject(inspect), true);
+  assert.deepEqual(t.last().sent.slice(before), [inspect]);
+  // A malformed message is never posted (mutant: no schema check).
+  for (const bad of [{ ...inspect, path: "relative" }, { ...inspect, extra: 1 }, { type: "projects.trust", requestId: "r2", projectId: "p", path: "/w", trusted: true }]) {
+    assert.equal(t.sup.sendProject(bad as never), false, JSON.stringify(bad));
+  }
+  // Another inbound type is refused even though the schema knows it.
+  assert.equal(t.sup.sendProject({ type: "shutdown" } as never), false);
+  assert.equal(t.sup.sendProject({ type: "trust.set", windowId: "w1", trusted: true } as never), false, "main's trust grants never go this way");
+  assert.equal(t.last().sent.length, before + 1, "nothing else was posted");
+});

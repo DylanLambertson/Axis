@@ -28,6 +28,18 @@ export interface NativeRequest {
   readonly summary: string;
 }
 
+/**
+ * A main-started choice dialog (the project actions, docs/design/project-registration-and-trust.md §4.2) that shares this queue
+ * with `native.confirm`: the same one-open-at-a-time rule, waiting bound, 60 s lifetime and abort. `show` opens the modal box on
+ * the code window and resolves the index of the button pressed; `done` is called exactly once.
+ */
+export interface ChoiceRequest {
+  /** The code window the request came from (main resolved it from the IPC sender, never from a payload). */
+  readonly codeWindowId: number;
+  readonly show: (codeWindowId: number, signal: AbortSignal) => Promise<number>;
+  readonly done: (result: { readonly index: number } | { readonly refused: NativeRefusal }) => void;
+}
+
 export const NATIVE_REFUSALS = ["no_window", "expired", "queue_full", "dialog_failed"] as const;
 export type NativeRefusal = (typeof NATIVE_REFUSALS)[number];
 
@@ -49,7 +61,9 @@ const realTimers: NativeTimers = {
 };
 
 interface Entry {
-  readonly request: NativeRequest;
+  /** A `native.confirm`, or a main-started choice: exactly one is set. */
+  readonly request?: NativeRequest;
+  readonly choice?: ChoiceRequest;
   readonly at: number;
   readonly reply: (message: unknown) => void;
 }
@@ -80,8 +94,17 @@ export class NativeQueue {
   push(request: NativeRequest, reply: (message: unknown) => void): void {
     if (this.#disposed) return;
     const id = request.challengeId;
-    if (this.#open?.request.challengeId === id || this.#waiting.some((e) => e.request.challengeId === id)) return;
+    if (this.#open?.request?.challengeId === id || this.#waiting.some((e) => e.request?.challengeId === id)) return;
     const entry: Entry = { request, at: this.#o.now(), reply };
+    if (this.size >= this.#max) return this.#answer(entry, false, "queue_full");
+    this.#waiting.push(entry);
+    this.#pump();
+  }
+
+  /** A main-started choice dialog in the same queue (see `ChoiceRequest`). */
+  pushChoice(choice: ChoiceRequest): void {
+    if (this.#disposed) return;
+    const entry: Entry = { choice, at: this.#o.now(), reply: () => undefined };
     if (this.size >= this.#max) return this.#answer(entry, false, "queue_full");
     this.#waiting.push(entry);
     this.#pump();
@@ -103,7 +126,7 @@ export class NativeQueue {
       }
       let codeWindowId: number | undefined;
       try {
-        codeWindowId = this.#o.codeWindowOf(entry.request.windowId);
+        codeWindowId = entry.choice !== undefined ? entry.choice.codeWindowId : this.#o.codeWindowOf((entry.request as NativeRequest).windowId);
       } catch {
         codeWindowId = undefined;
       }
@@ -117,20 +140,21 @@ export class NativeQueue {
       const timers = this.#o.timers ?? realTimers;
       const left = Math.max(0, this.#ttl - (this.#o.now() - entry.at));
       this.#openTimer = timers.set(() => this.#close(entry, false, "expired"), left);
-      let shown: Promise<boolean>;
+      let shown: Promise<boolean | number>;
       try {
-        shown = Promise.resolve(this.#o.dialog.confirm({ codeWindowId, summary: entry.request.summary, signal: abort.signal }));
+        const window = codeWindowId;
+        shown = Promise.resolve(entry.choice !== undefined ? entry.choice.show(window, abort.signal) : this.#o.dialog.confirm({ codeWindowId: window, summary: (entry.request as NativeRequest).summary, signal: abort.signal }));
       } catch (e) {
         shown = Promise.reject(e);
       }
       shown.then(
-        (v) => this.#close(entry, v === true, undefined),
+        (v) => this.#close(entry, entry.choice !== undefined ? v : v === true, undefined),
         () => this.#close(entry, false, "dialog_failed"),
       );
     }
   }
 
-  #close(entry: Entry, confirmed: boolean, reason: NativeRefusal | undefined): void {
+  #close(entry: Entry, confirmed: boolean | number, reason: NativeRefusal | undefined): void {
     if (this.#open !== entry) return; // disposed, or already ended by its time bound
     this.#settleOpen();
     this.#open = undefined;
@@ -147,7 +171,7 @@ export class NativeQueue {
     abort?.abort();
   }
 
-  #answer(entry: Entry, confirmed: boolean, reason: NativeRefusal | undefined): void {
+  #answer(entry: Entry, confirmed: boolean | number, reason: NativeRefusal | undefined): void {
     if (this.#disposed) return;
     if (reason !== undefined) {
       try {
@@ -156,9 +180,18 @@ export class NativeQueue {
         // an observer never changes the answer
       }
     }
-    const { challengeId, proof, windowId } = entry.request;
+    if (entry.choice !== undefined) {
+      const index = typeof confirmed === "number" && Number.isSafeInteger(confirmed) ? confirmed : undefined;
+      try {
+        entry.choice.done(reason !== undefined || index === undefined ? { refused: reason ?? "dialog_failed" } : { index });
+      } catch {
+        // the caller's own handling never changes the queue
+      }
+      return;
+    }
+    const { challengeId, proof, windowId } = entry.request as NativeRequest;
     try {
-      entry.reply({ type: "native.result", challengeId, proof, confirmed, windowId });
+      entry.reply({ type: "native.result", challengeId, proof, confirmed: confirmed === true, windowId });
     } catch {
       // a closed channel: the host times out, which is a refusal
     }
