@@ -8,8 +8,10 @@
 //   - `Object.defineProperty`, `Object.defineProperties`, `Object.setPrototypeOf`, and `Object.assign` onto a `.prototype`;
 //   - `Reflect.set`, `Reflect.defineProperty`, `Reflect.setPrototypeOf`, `Reflect.deleteProperty`;
 //   - `__defineGetter__`, `__defineSetter__`.
-// It is NOT a proof: code in the same process can reach a prototype in forms a static check does not follow (an alias of
-// `Object`, a value passed in). The residual is recorded (RR-89); the controls are code review, the pinned template, this lint
+// It is NOT a proof. Forms it does NOT catch (review of the template, Sonnet check): calls through a bracket
+// (`Object["defineProperty"](...)`, `Reflect["set"](...)`); an aliased or destructured `Object` or `Reflect` (`const O = Object`,
+// `const { defineProperty } = Object`, `globalThis.Object`); a prototype held in a variable (`const p = X.prototype; p.m = f`);
+// a computed key (`x[k] = f` with `k` "prototype" at run time); `Object.getPrototypeOf(x).m = f`; any value passed in. The residual is recorded (RR-89); the controls are code review, the pinned template, this lint
 // and the supply-chain checks.
 import ts from "typescript6";
 
