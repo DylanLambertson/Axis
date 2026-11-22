@@ -213,3 +213,7 @@ Before 4a ships: revert this ADR; nothing depends on it. After: disabling every 
 ## Tickets this unblocks
 
 PV-K1 (principal), PV-K2 (manifest, install, list, extraction), PV-K3 (host), PV-K4 and PV-K5; PV-R6 (ADR 0009) and PV-R8 (threat model) follow it.
+
+## Amendment (2026-11-22, ADR 0009)
+
+ADR 0009 ("Integrations and the credential proxy") adds one dangerous combination to decision 6: any `integration:<id>` together with any `net:<origin>`, read-only integrations included, reads "can send data from <integration> to <origin>". Its section "Amendment to ADR 0008" governs where wording differs.

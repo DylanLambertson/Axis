@@ -12,7 +12,7 @@ Document names are written out in full in every row, because the same id can exi
 | O-2 | One repository or several per project | **One** in Phase 1c. Multi-repository projects later, with a design. |
 | O-3 | Agent to workspace | **One home workspace per agent**; attaching several agents to one workspace only by explicit user choice. |
 | O-4 | Agents without a workspace | **Not in 1c**; revisit with the Phase 3 planner. |
-| O-5 | PR data source | The user's `gh`, read-only, **no stored token**. A vault-token GitHub integration only in 4a, and only if extensibility D-9 is reversed. |
+| O-5 | PR data source | The user's `gh`, read-only, **no stored token**. A vault-token GitHub integration only in 4a, under extensibility D-9 as taken (a read-only, fine-grained token from 4a; ADR 0009 decision 9). |
 | O-6 | Plugins before Phase 3 | **No (this row differs from the source's wording).** The source default says declarative and sandboxed-UI plugins "may move to 2a if wanted"; the choice taken is that they stay in 4a, matching extensibility D-1. Code-running plugins only after the OS sandbox. |
 | O-7 | Insert Phase 1c and split 2 and 4 | **Yes.** |
 | O-8 | Side-panel editor scope | **Quick edits only** (§3.5 rule 4); fall back to the IDE split half if the PV-V0 spike exceeds the footprint budget. |
@@ -48,7 +48,7 @@ All recommended defaults:
 - **D-5** page storage: Axis data directory per project, with Export to repository.
 - **D-6** page format: Markdown subset only in v1, **rendered in the isolated page view**.
 - **D-7** OAuth redirect: device-code flow with a main-built code dialog; a one-shot loopback listener only as a recorded NET-1 exception when a service lacks it.
-- **D-8** first integration: GitHub read-only through the user's `gh`, no token (ticket PV-D2); a token-based GitHub integration (ticket PV-N3) only if D-9 is reversed.
+- **D-8** first integration: GitHub read-only through the user's `gh`, no token (ticket PV-D2); a token-based GitHub integration (ticket PV-N3) in 4a under D-9 as taken (ADR 0009 decision 9; the earlier "only if D-9 is reversed" is superseded).
 - **D-9** reverse "Axis stores no forge credentials" (ADR 0004 decision 9): **keep** it until 4a, then a vault-held read-only fine-grained token behind the credential proxy.
 - **D-10** integrations that write: each write operation is its own permission and a tier-3 challenge.
 - **D-11** inbound webhooks: not on desktop; polling only.
