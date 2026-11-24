@@ -50,6 +50,8 @@ export {
 } from "./page-store.js";
 export { AttentionRecords, MAX_ATTENTION_ROWS, type AttentionRun } from "./attention-records.js";
 export { TASKS_MIGRATION, TASK_LIMITS, projectTaskBytesSql } from "./schema-tasks.js";
+export { PLUGIN_GRANTS_MIGRATION, PLUGIN_LIMITS, PLUGIN_PERMISSIONS, type PluginPermission } from "./schema-plugins.js";
+export { PLUGIN_RECORD_ACTION, PluginGrantRecords, type PluginState } from "./plugin-grant-store.js";
 export {
   TaskRecords,
   type TaskAssignee,

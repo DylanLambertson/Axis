@@ -50,8 +50,8 @@ test("version 15 is the latest; a version 14 database gains the three empty tabl
   new AuditLog(db);
   runMigrations(db, "journal", JOURNAL_MIGRATIONS.slice(0, 14));
   const journal = Journal.open(db, { audit: new AuditLog(db) });
-  assert.equal(JOURNAL_SCHEMA_VERSION, 15);
-  assert.equal(schemaVersion(db, "journal"), 15);
+  assert.ok(JOURNAL_SCHEMA_VERSION >= 15);
+  assert.equal(schemaVersion(db, "journal"), JOURNAL_SCHEMA_VERSION);
   for (const t of ["tasks", "task_revisions", "task_links"]) assert.equal(one(db, `SELECT count(*) FROM ${t}`), 0, t);
   assert.deepEqual(journal.tasks.list("nope"), []);
   db.close();
@@ -268,12 +268,12 @@ test("a populated version 14 database upgrades with its rows kept; a rerun is id
   db.prepare("INSERT INTO pages (id, project_id, last_seq, created_at, updated_at) VALUES ('pg', 'old', 0, ?, ?)").run(T, T);
   db.prepare("INSERT INTO page_versions (page_id, seq, title, body, bytes, author_kind, author_id, hop, untrusted, created_at) VALUES ('pg', 1, 'P', 'x', 2, 'user', NULL, 0, 0, ?)").run(T);
   const journal = Journal.open(db, { audit: new AuditLog(db) });
-  assert.equal(schemaVersion(db, "journal"), 15);
+  assert.equal(schemaVersion(db, "journal"), JOURNAL_SCHEMA_VERSION);
   assert.equal(journal.pages.get("pg")?.body, "x", "the page survives");
   journal.tasks.create({ taskId: "t1", projectId: "old", title: "T", body: "b", author: { kind: "user" } });
   assert.equal(journal.tasks.link("t1", { kind: "page", target: "pg" }), true, "a task links to a page from before the upgrade");
   runMigrations(db, "journal", JOURNAL_MIGRATIONS);
-  assert.equal(schemaVersion(db, "journal"), 15);
+  assert.equal(schemaVersion(db, "journal"), JOURNAL_SCHEMA_VERSION);
   assert.equal(journal.tasks.get("t1")?.links.length, 1, "a rerun changes nothing");
   assert.throws(() => runMigrations(db, "journal", JOURNAL_MIGRATIONS.slice(0, 14)), Error, "an older build refuses a newer schema");
   db.close();

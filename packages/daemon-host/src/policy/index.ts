@@ -5,3 +5,4 @@ export * from "./rule-table-policy.js";
 export * from "./rule-types.js";
 export { RULES } from "./rules.js";
 export * from "./trust-registry.js";
+export * from "./plugin-rules.js";
