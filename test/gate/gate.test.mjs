@@ -232,9 +232,9 @@ test("gitleaks: the recorded binary hash is enforced and reported", { skip: proc
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test("the npm test runner runs the renderer-imports suite", () => {
+test("the npm test runner runs every test/code-oss suite (the renderer boundary pins among them)", () => {
   const src = readFileSync(fileURLToPath(new URL("../../scripts/test-all.mjs", import.meta.url)), "utf8");
-  assert.match(src, /test\/code-oss\/renderer-imports\.test\.mjs/);
+  assert.match(src, /\["--test", "test\/code-oss\/\*\.test\.mjs"\]/, "a glob, so a new pin file cannot be left out (mutant: a named list)");
 });
 
 // scripts/test-all.mjs: the runner never stalls or dies silently. Each scenario runs the real runner

@@ -1,11 +1,13 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { lstat, readlink } from "node:fs/promises";
 import { dirname, isAbsolute, join, parse, relative } from "node:path";
+import { CLI_PROJECT_CONFIG } from "@axis/pty-policy";
 import { realish } from "./paths.js";
 
 export type ProtectedCategory =
   | "ci"
   | "editor-config"
+  | "cli-config"
   | "dev-container"
   | "git-hooks"
   | "container-build"
@@ -72,6 +74,8 @@ const RULES: readonly Rule[] = [
   dir(".gitlab", "ci", "high", false, ".gitlab"),
   ...names("ci", "high", ".gitlab-ci.yml", "azure-pipelines.yml", "jenkinsfile", ".travis.yml", "bitbucket-pipelines.yml", ".drone.yml", "appveyor.yml", ".appveyor.yml", "cloudbuild.yaml", "cloudbuild.yml", "buildkite.yml", "buildkite.yaml"),
   dir(".vscode", "editor-config", "high", true, ".vscode"),
+  // A CLI's project configuration (hooks, permission and sandbox settings): the one shared list (`@axis/pty-policy`).
+  ...CLI_PROJECT_CONFIG.map((row) => dir(row.segments.join("/"), "cli-config", "high", false, ...row.segments)),
   dir(".devcontainer", "dev-container", "high", true, ".devcontainer"),
   ...names("dev-container", "high", ".devcontainer.json"),
   dir(".husky", "git-hooks", "high", true, ".husky"),

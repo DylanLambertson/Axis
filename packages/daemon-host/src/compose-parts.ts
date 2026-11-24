@@ -16,6 +16,7 @@ import type { CommandLimits } from "./bindings/agent-command.js";
 import type { ToolCaps } from "./composer/loop.js";
 import type { PtyPort, PtyRelayPort } from "./ports/pty.js";
 import type { EndpointRelay } from "./messages/endpoint.js";
+import type { MessagingSettingsEvent } from "./messages/settings.js";
 
 /**
  * Small pieces of the composition root (ticket H12), kept apart so `compose.ts` stays readable. None of them touches a
@@ -254,14 +255,22 @@ export interface CliEndpoints {
  * `messaging.cliEndpoint` (both off by default) and a pty port that relays. Each relayed message goes to the daemon's relay
  * with the channel's mark; its answers go back on the channel; shutdown writes the pending aggregated failure rows.
  */
-export function wireCliEndpoints(o: MessagingOptions | undefined, pty: unknown, endpoints: { readonly relay: EndpointRelay; readonly source: symbol }, cleanups: (() => void)[]): CliEndpoints | undefined {
+export function wireCliEndpoints(
+  o: MessagingOptions | undefined,
+  pty: unknown,
+  endpoints: { readonly relay: EndpointRelay; readonly source: symbol; readonly onSettings?: (l: (e: MessagingSettingsEvent) => void) => () => void },
+  cleanups: (() => void)[],
+): CliEndpoints | undefined {
   const port = pty as Partial<PtyRelayPort>;
   if (o?.enabled !== true || o.cliEndpoint !== true || typeof port.onRelay !== "function" || typeof port.relay !== "function") return undefined;
   const send = port.relay.bind(port);
   const sub = port.onRelay((m) => void endpoints.relay.onRelay(endpoints.source, m).then((outs) => outs.forEach((out) => send(out)), () => undefined));
+  // Slice 3: a worker's messaging turned off revokes its endpoints; a pause drops the connections of the senders it pauses.
+  const unsettle = endpoints.onSettings?.((e) => (e.kind === "cliMessagingOff" ? endpoints.relay.revokeWorker(e.agentId) : endpoints.relay.dropPaused(e.projectId)).forEach((out) => send(out)));
   cleanups.push(() => {
     endpoints.relay.flush();
     sub.dispose();
+    unsettle?.();
   });
   return {
     mint: (runId) => endpoints.relay.mint(runId),
