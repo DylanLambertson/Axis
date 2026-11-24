@@ -158,3 +158,10 @@ test("the dotless-i spelling counts below the root too", () => {
   for (const p of ["sub/toolx\u0131.md", "sub/\u0131ool.local.md", "a/b/n\u0131tes.md"]) assert.equal(cat(p), "instruction-file", p);
   assert.equal(cat("sub/toolxi.md"), null);
 });
+
+test("cli-config: a CLI's project configuration is its own high-severity category (the shared list); the rest of .claude stays generic", () => {
+  for (const p of [".claude/settings.json", ".claude/settings.local.json", ".claude/hooks/pre.sh", ".codex/config.toml", ".codex/hooks/x"]) {
+    assert.deepEqual([classifyPath(p)?.category, classifyPath(p)?.severity], ["cli-config", "high"], p);
+  }
+  assert.equal(cat(".claude/commands/x.md"), "hidden-config", "the generic dot-name rule still covers the rest");
+});

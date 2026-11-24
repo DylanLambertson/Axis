@@ -7,3 +7,4 @@ export * from "./launch.js";
 export * from "./paths.js";
 export * from "./exec.js";
 export * from "./gitConfigFiles.js";
+export * from "./cliConfig.js";
