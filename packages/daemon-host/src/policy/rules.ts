@@ -70,6 +70,18 @@ export const RULES: Readonly<Record<string, Rule>> = Object.freeze({
   "axis.pages/1.restore": userRule(1),
   "axis.pages/1.markReviewed": userRule(4),
   "axis.pages/1.delete": userRule(4),
+  // axis.tasks/1 (PV-T1 slice 2a): the user's own connection only. Record writes are tier 1 (assigning starts nothing); delete is
+  // destructive, tier 4: confirmed in main's native dialog. Runs reach tasks through their tools.
+  "axis.tasks/1.list": userRule(0),
+  "axis.tasks/1.get": userRule(0),
+  "axis.tasks/1.revisions": userRule(0),
+  "axis.tasks/1.create": userRule(1),
+  "axis.tasks/1.update": userRule(1),
+  "axis.tasks/1.setStatus": userRule(1),
+  "axis.tasks/1.assign": userRule(1),
+  "axis.tasks/1.link": userRule(1),
+  "axis.tasks/1.unlink": userRule(1),
+  "axis.tasks/1.delete": userRule(4),
   "axis.messages/1.send": userRule(2),
   "axis.messages/1.thread": userRule(1),
   "axis.messages/1.threads": userRule(0),
