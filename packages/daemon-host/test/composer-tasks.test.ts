@@ -123,7 +123,9 @@ test("review 2a F2: a task body with a NUL or a lone surrogate is a closed refus
   const bad = ["a\u0000b", "a\ud800b"];
   const d = drive(p.r, runId, [[call(CREATE_TASK, { title: "Bad", body: bad[0] ?? "" }), call(UPDATE_TASK, { taskId: tk.taskId, baseSeq: 1, title: "Fix it", body: bad[1] ?? "" })], []]);
   await d.end;
-  for (const r of d.results[0] ?? []) assert.match(r, /^The call was refused \([a-z_-]+\)\./, "a closed refusal, not an open tool failure");
+  const out = d.results[1] ?? [];
+  assert.equal(out.length, 2, "both calls answered");
+  for (const r of out) assert.match(r, /^The call was refused \(invalid_args\)\./, "the closed invalid_args refusal, not an open tool failure");
   assert.equal(p.svc.list({ projectId: "p" }).tasks.length, 1, "nothing was created");
   assert.equal(p.svc.get({ taskId: tk.taskId }).task.lastSeq, 1, "nothing was revised");
 });
