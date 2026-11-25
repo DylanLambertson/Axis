@@ -108,3 +108,27 @@ test("still inert: the axis.runs/1 handler refuses a plugin before the service, 
   const spoof = composerRunsMethods.start.request.safeParse({ workspaceId: c.workspaceId, mode: "edit", prompt: "x", providerId: "mock", modelId: "mock-model", initiator: PLUGIN });
   assert.equal(spoof.success, false, "the wire schema has no initiator field: a request cannot name one");
 });
+
+test("review K1e-a F1: the initiator is read once: a getter that answers differently on a later read cannot change the creator", async (t) => {
+  const c = await setup(t);
+  let reads = 0;
+  const flip = {
+    kind: "plugin",
+    generation: 2,
+    get pluginId(): string {
+      reads += 1;
+      return reads === 1 ? "acme.board" : "other.plugin";
+    },
+  };
+  const { run } = await c.service.start({ ...START(c.workspaceId), initiator: flip as never }, new AbortController().signal);
+  await until(ended(c, run.runId));
+  assert.equal(runRow(c, run.runId)["created_by"], "plugin:acme.board", "the id that was checked is the id that was recorded");
+  assert.equal(reads, 1, "the field was read once");
+});
+
+test("review K1e-a F2: a taint hook that returns a promise is refused: nothing is created and the provider is never called", async (t) => {
+  const c = await setup(t, { taintAtStart: (() => Promise.resolve()) as never });
+  await assert.rejects(c.service.start({ ...START(c.workspaceId), initiator: PLUGIN }, new AbortController().signal), (e: unknown) => (e as { code?: string }).code === "E_UNAVAILABLE");
+  assert.equal(Number((c.db.prepare("SELECT count(*) AS n FROM composer_runs").get() as Row)["n"]), 0, "no run record");
+  assert.equal(c.wire(), 0, "no provider call");
+});

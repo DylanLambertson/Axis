@@ -203,6 +203,7 @@ export const START = (workspaceId: string, over: Record<string, unknown> = {}) =
   providerId: "mock",
   modelId: "mock-model",
   windowId: "win-1",
+  initiator: { kind: "user" } as const,
   ...over,
 });
 

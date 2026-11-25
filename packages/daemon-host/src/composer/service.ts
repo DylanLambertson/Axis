@@ -61,11 +61,25 @@ export interface ComposerServiceDeps {
 /** A plugin id as an attested plugin identity carries it (ADR 0008 decision 3). */
 const PLUGIN_ID = /^(?=[a-z0-9.-]{1,64}$)[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*){0,3}$/;
 
-/** The run's creator, and for a plugin the taint receipt its prompt needs before any model call. Refuses a malformed initiator. */
-function initiatorOf(initiator: RunInitiator | undefined): { readonly createdBy: "user" | `plugin:${string}`; readonly pluginId?: string } {
-  if (initiator === undefined || (typeof initiator === "object" && initiator !== null && initiator.kind === "user" && Object.keys(initiator).length === 1)) return { createdBy: "user" };
-  if (typeof initiator === "object" && initiator !== null && initiator.kind === "plugin" && typeof initiator.pluginId === "string" && PLUGIN_ID.test(initiator.pluginId) && Number.isSafeInteger(initiator.generation) && initiator.generation >= 1) {
-    return { createdBy: `plugin:${initiator.pluginId}`, pluginId: initiator.pluginId };
+/**
+ * The run's creator, and for a plugin the plugin id its prompt's taint needs before any model call. The initiator is read ONCE
+ * into locals (a getter or a proxy that answers differently on a second read cannot change what was checked), and a malformed
+ * one is refused.
+ */
+function initiatorOf(initiator: RunInitiator): { readonly createdBy: "user" | `plugin:${string}`; readonly pluginId?: string } {
+  if (typeof initiator !== "object" || initiator === null) throw composerFailure("E_INVALID_ARGUMENT");
+  const kind: unknown = initiator.kind;
+  const keys = Object.keys(initiator);
+  if (kind === "user") {
+    if (keys.length === 1) return { createdBy: "user" };
+    throw composerFailure("E_INVALID_ARGUMENT");
+  }
+  if (kind === "plugin") {
+    const pluginId: unknown = (initiator as { pluginId?: unknown }).pluginId;
+    const generation: unknown = (initiator as { generation?: unknown }).generation;
+    if (keys.length === 3 && typeof pluginId === "string" && PLUGIN_ID.test(pluginId) && typeof generation === "number" && Number.isSafeInteger(generation) && generation >= 1) {
+      return { createdBy: `plugin:${pluginId}`, pluginId };
+    }
   }
   throw composerFailure("E_INVALID_ARGUMENT");
 }
@@ -261,8 +275,12 @@ export function createComposerService(deps: ComposerServiceDeps): ComposerServic
         by.pluginId === undefined
           ? undefined
           : (runId: string): void => {
+              const taint = deps.taintAtStart;
+              if (taint === undefined) throw new TaintUnrecorded(); // checked at the top as well: never skip the mark
               try {
-                deps.taintAtStart?.(runId, { source: "plugin_output", senderKind: "plugin", sender: by.pluginId, hop: 1, ref: runId });
+                const out: unknown = taint(runId, { source: "plugin_output", senderKind: "plugin", sender: by.pluginId, hop: 1, ref: runId });
+                // The mark must be complete when this returns, inside the creation: a promise would commit the run untainted.
+                if (out !== undefined && (typeof out === "object" || typeof out === "function") && out !== null && typeof (out as { then?: unknown }).then === "function") throw new TaintUnrecorded();
               } catch {
                 throw new TaintUnrecorded();
               }

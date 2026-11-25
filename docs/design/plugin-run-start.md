@@ -33,3 +33,10 @@ OI-2/OI-10 bounds, and `axis.review/1.diff`'s `acknowledged` still refused for p
 ## 4. Open for the owner
 
 Whether a plugin run start should be tier 4 (cost, side effects): see the tickets table, row PV-K1e-T4.
+
+## 5. What K1e-a does not enforce (review F-notes)
+
+- **A stale grant generation is not refused here.** K1e-a checks that `generation` is a positive integer and that the plugin id has the attested shape; it does not compare the generation with the stored grant. K1e-b's handler reads the K1b grant and binds the generation into the challenge (a2 adds the host-window binding), so a disable, revoke or generation change refuses the start there. Nobody should assume the service checks it.
+- **`initiator` is required** in `ComposerStartInput`: a caller that forgets it does not compile, so a missing initiator can never mean "the user" by default. Today the runs handler passes `{ kind: "user" }`; K1e-b builds a plugin initiator from the attested identity only.
+- **The initiator is read once** into locals before any check, and the taint hook must finish inside the creation: a missing hook or a hook that returns a promise refuses the start with nothing created.
+
