@@ -89,6 +89,17 @@ export class TaskRecords {
     this.#ts = ts;
   }
 
+  /** Runs `fn` in one transaction of the journal's database (a write with its audit row; a nested call joins the outer one). */
+  transaction<T>(fn: () => T): T {
+    return withTransaction(this.#db, fn);
+  }
+
+  /** The project a task belongs to, or undefined. */
+  projectOf(taskId: string): string | undefined {
+    const r = this.#db.prepare("SELECT project_id FROM tasks WHERE id = ?").get(taskId) as Row | undefined;
+    return r === undefined ? undefined : String(r["project_id"]);
+  }
+
   /** A new task and its first revision, written by its source. `taskId` comes from the caller (the daemon's random id). */
   create(input: { readonly taskId: string; readonly projectId: string; readonly title: string; readonly body: string; readonly author: Exclude<TaskAuthor, { kind: "system" }> }): TaskRecord {
     checkAuthor(input.author);

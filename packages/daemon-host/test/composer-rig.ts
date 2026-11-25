@@ -8,7 +8,7 @@ import type { RunEvent } from "@axis/protocol";
 import type { MockProviderOptions, MockReply, RunBudgetLimits, ValidRequest } from "@axis/providers";
 import type { Policy } from "@axis/daemon";
 import { createProvidersBinding, type AnthropicConnectionOptions, type ProvidersBinding } from "../src/bindings/providers.js";
-import { AGENT_PAYLOAD_ALLOWLIST, MESSAGES_PAYLOAD_ALLOWLIST, PAGES_PAYLOAD_ALLOWLIST, PROVIDERS_PAYLOAD_ALLOWLIST, TAINT_PAYLOAD_ALLOWLIST, createAgentBinding, createComposerService, type AgentBinding, type AgentBindingDeps, type ComposerService, type PreviewScanner, type ToolCaps } from "../src/index.js";
+import { AGENT_PAYLOAD_ALLOWLIST, MESSAGES_PAYLOAD_ALLOWLIST, PAGES_PAYLOAD_ALLOWLIST, PROVIDERS_PAYLOAD_ALLOWLIST, TASKS_PAYLOAD_ALLOWLIST, TAINT_PAYLOAD_ALLOWLIST, createAgentBinding, createComposerService, type AgentBinding, type AgentBindingDeps, type ComposerService, type PreviewScanner, type ToolCaps } from "../src/index.js";
 import { ProjectMutex } from "../src/worktrees/project-mutex.js";
 import { rig, type Client, type Rig } from "./approvals-rig.js";
 
@@ -86,6 +86,8 @@ export interface ComposerRigOptions {
   readonly messaging?: AgentBindingDeps["messaging"];
   /** PV-Q1 slice 2: `read_page` and `write_page` over a pages service. */
   readonly pages?: AgentBindingDeps["pages"];
+  /** PV-T1 slice 2a: the task tools over a tasks service. */
+  readonly tasks?: AgentBindingDeps["tasks"];
 }
 
 const SHA = "b".repeat(40);
@@ -100,7 +102,7 @@ export async function composerRig(options: ComposerRigOptions): Promise<Composer
   mkdirSync(join(root, "src"), { recursive: true });
   mkdirSync(outside);
   const db = openDatabase(options.dbPath ?? ":memory:");
-  const audit = new AuditLog(db, { payloadAllowlist: { ...AGENT_PAYLOAD_ALLOWLIST, ...PROVIDERS_PAYLOAD_ALLOWLIST, ...TAINT_PAYLOAD_ALLOWLIST, ...MESSAGES_PAYLOAD_ALLOWLIST, ...PAGES_PAYLOAD_ALLOWLIST } });
+  const audit = new AuditLog(db, { payloadAllowlist: { ...AGENT_PAYLOAD_ALLOWLIST, ...PROVIDERS_PAYLOAD_ALLOWLIST, ...TAINT_PAYLOAD_ALLOWLIST, ...MESSAGES_PAYLOAD_ALLOWLIST, ...PAGES_PAYLOAD_ALLOWLIST, ...TASKS_PAYLOAD_ALLOWLIST } });
   const journal = Journal.open(db, { audit });
   const ws = journal.createWorkspace({ projectId: "p", branch: "axis/x", baseRef: "main", baseSha: SHA, createdBy: "user" }).value;
   journal.transitionWorkspace(ws.id, "READY");
@@ -145,6 +147,7 @@ export async function composerRig(options: ComposerRigOptions): Promise<Composer
       ...(options.deliveries === undefined ? {} : { deliveries: options.deliveries }),
       ...(options.messaging === undefined ? {} : { messaging: options.messaging }),
       ...(options.pages === undefined ? {} : { pages: options.pages }),
+      ...(options.tasks === undefined ? {} : { tasks: options.tasks }),
     });
     service = createComposerService({
       redactor,

@@ -12,6 +12,7 @@ import { PROVIDERS_PAYLOAD_ALLOWLIST } from "./bindings/providers.js";
 import { TAINT_PAYLOAD_ALLOWLIST } from "./composer/taint.js";
 import { MESSAGES_PAYLOAD_ALLOWLIST } from "./messages/audit.js";
 import { PAGES_PAYLOAD_ALLOWLIST } from "./pages/service.js";
+import { TASKS_PAYLOAD_ALLOWLIST } from "./tasks/service.js";
 import { FORGE_PAYLOAD_ALLOWLIST } from "./forge/service.js";
 import { RUN_PAYLOAD_ALLOWLIST } from "./bindings/runs.js";
 import { ANCHOR_PAYLOAD_ALLOWLIST } from "./anchor/preflight.js";
@@ -240,7 +241,7 @@ export function createDaemonHost(config: HostConfig, ports: StartupPorts, option
       redactor: ports.redactor,
       now: () => new Date(ports.clock.now()),
       // The challenge rows keep their `method`; the anchor rows keep their one fixed field (a literal, never caller text); the review acknowledgement keeps its file id.
-      payloadAllowlist: { ...CHALLENGE_PAYLOAD_ALLOWLIST, ...ANCHOR_PAYLOAD_ALLOWLIST, ...REVIEW_PAYLOAD_ALLOWLIST, ...RUN_PAYLOAD_ALLOWLIST, ...AGENT_PAYLOAD_ALLOWLIST, ...PROVIDERS_PAYLOAD_ALLOWLIST, ...TAINT_PAYLOAD_ALLOWLIST, ...MESSAGES_PAYLOAD_ALLOWLIST, ...FORGE_PAYLOAD_ALLOWLIST, ...PAGES_PAYLOAD_ALLOWLIST },
+      payloadAllowlist: { ...CHALLENGE_PAYLOAD_ALLOWLIST, ...ANCHOR_PAYLOAD_ALLOWLIST, ...REVIEW_PAYLOAD_ALLOWLIST, ...RUN_PAYLOAD_ALLOWLIST, ...AGENT_PAYLOAD_ALLOWLIST, ...PROVIDERS_PAYLOAD_ALLOWLIST, ...TAINT_PAYLOAD_ALLOWLIST, ...MESSAGES_PAYLOAD_ALLOWLIST, ...FORGE_PAYLOAD_ALLOWLIST, ...PAGES_PAYLOAD_ALLOWLIST, ...TASKS_PAYLOAD_ALLOWLIST },
     });
     const check = await checkAnchor(audit, () => ports.control.anchorGet({ timeoutMs: options.anchorTimeoutMs ?? 5_000, signal: startup.signal }));
     alive();
