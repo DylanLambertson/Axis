@@ -83,6 +83,14 @@ jobs:
           resolve_node download
           echo "AXIS_PINNED_NODE_BIN=$NODE_BIN_DIR" >>"$GITHUB_ENV"
 
+      - name: Install the repository root dependencies (the apply's stage hook needs them)
+        # apply.sh's post-apply hook 20-stage-axis-packages bundles the staged packages and needs the repository's own zod and
+        # typescript at the root; --ignore-scripts keeps the install free of lifecycle scripts (no secrets or write token here).
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          PATH="$AXIS_PINNED_NODE_BIN:$PATH" npm ci --ignore-scripts
+
       - name: Apply patches, removals, replacements, overlay and hooks
         timeout-minutes: 10
         run: scripts/code-oss/apply.sh
