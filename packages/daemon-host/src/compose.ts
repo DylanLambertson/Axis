@@ -40,6 +40,7 @@ import { createDaemonHost, type DaemonHost, type HostOptions, type HostServices,
 import { installHostLifecycle, type LifecycleHandle, type LifecycleOptions } from "./lifecycle.js";
 import type { Logger } from "./log/logger.js";
 import { checkCoverage } from "./policy/coverage.js";
+import { createRunTaint } from "./composer/taint.js";
 import type { PtyExecPort, PtyForgePort, PtyPort, PtyPushPort } from "./ports/pty.js";
 import type { ChannelMux } from "./transport/mux.js";
 
@@ -277,6 +278,8 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
           ...(options.composer?.maxTurns === undefined ? {} : { maxTurns: options.composer.maxTurns }),
           ...(options.composer?.toolCaps === undefined ? {} : { toolCaps: options.composer.toolCaps }),
           onInternalError: (where) => logger?.error("request.failed", { reason: `composer_${where.slice(0, 24)}` }),
+          // PV-K1e: a plugin-started run is tainted inside its creation, over the journal's records and its own audit log.
+          taintAtStart: (runId, receipt) => createRunTaint({ runId, store: parts.journal.composer, audit: composerWriter, now: () => ports.clock.now() }).receive(receipt),
         });
         cleanups.push(() => (composer.dispose(), agent.dispose()));
         Object.assign(built, { worktrees, runs, approvals, projectPaths, agent, composer, providers, messaging, pages, tasks });
