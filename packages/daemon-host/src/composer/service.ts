@@ -68,18 +68,22 @@ const PLUGIN_ID = /^(?=[a-z0-9.-]{1,64}$)[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*){0,
  */
 function initiatorOf(initiator: RunInitiator): { readonly createdBy: "user" | `plugin:${string}`; readonly pluginId?: string } {
   if (typeof initiator !== "object" || initiator === null) throw composerFailure("E_INVALID_ARGUMENT");
-  const kind: unknown = initiator.kind;
-  const keys = Object.keys(initiator);
-  if (kind === "user") {
-    if (keys.length === 1) return { createdBy: "user" };
-    throw composerFailure("E_INVALID_ARGUMENT");
+  let keys: string[];
+  let kind: unknown;
+  let pluginId: unknown;
+  let generation: unknown;
+  try {
+    // Own keys, named exactly: an inherited `kind` (a prototype-built object) or an extra key is not an initiator. Read once.
+    keys = Object.keys(initiator).sort();
+    kind = keys.includes("kind") ? (initiator as { kind?: unknown }).kind : undefined;
+    pluginId = keys.includes("pluginId") ? (initiator as { pluginId?: unknown }).pluginId : undefined;
+    generation = keys.includes("generation") ? (initiator as { generation?: unknown }).generation : undefined;
+  } catch {
+    throw composerFailure("E_INVALID_ARGUMENT"); // a property access that throws is a malformed initiator, not an internal error
   }
-  if (kind === "plugin") {
-    const pluginId: unknown = (initiator as { pluginId?: unknown }).pluginId;
-    const generation: unknown = (initiator as { generation?: unknown }).generation;
-    if (keys.length === 3 && typeof pluginId === "string" && PLUGIN_ID.test(pluginId) && typeof generation === "number" && Number.isSafeInteger(generation) && generation >= 1) {
-      return { createdBy: `plugin:${pluginId}`, pluginId };
-    }
+  if (kind === "user" && keys.length === 1) return { createdBy: "user" };
+  if (kind === "plugin" && keys.join(",") === "generation,kind,pluginId" && typeof pluginId === "string" && PLUGIN_ID.test(pluginId) && typeof generation === "number" && Number.isSafeInteger(generation) && generation >= 1) {
+    return { createdBy: `plugin:${pluginId}`, pluginId };
   }
   throw composerFailure("E_INVALID_ARGUMENT");
 }
@@ -280,10 +284,19 @@ export function createComposerService(deps: ComposerServiceDeps): ComposerServic
               try {
                 const out: unknown = taint(runId, { source: "plugin_output", senderKind: "plugin", sender: by.pluginId, hop: 1, ref: runId });
                 // The mark must be complete when this returns, inside the creation: a promise would commit the run untainted.
-                if (out !== undefined && (typeof out === "object" || typeof out === "function") && out !== null && typeof (out as { then?: unknown }).then === "function") throw new TaintUnrecorded();
+                if (out !== undefined && (typeof out === "object" || typeof out === "function") && out !== null && typeof (out as { then?: unknown }).then === "function") {
+                  try {
+                    (out as PromiseLike<unknown>).then(undefined, () => undefined); // a rejection must not become an unhandled one
+                  } catch {
+                    // a thenable that throws is refused all the same
+                  }
+                  throw new TaintUnrecorded();
+                }
               } catch {
                 throw new TaintUnrecorded();
               }
+              // Whatever the hook did, the run must now be marked: the mark and the run commit together or not at all.
+              if (!deps.journal.composer.tainted(runId)) throw new TaintUnrecorded();
             };
       let created;
       try {

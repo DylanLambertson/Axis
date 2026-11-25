@@ -132,3 +132,32 @@ test("review K1e-a F2: a taint hook that returns a promise is refused: nothing i
   assert.equal(Number((c.db.prepare("SELECT count(*) AS n FROM composer_runs").get() as Row)["n"]), 0, "no run record");
   assert.equal(c.wire(), 0, "no provider call");
 });
+
+test("review K1e-a N1: an initiator built on a prototype (an inherited kind) is not the user: refused, nothing created", async (t) => {
+  const c = await setup(t);
+  const sneaky = Object.create({ kind: "user" }) as Record<string, unknown>;
+  sneaky["pluginId"] = "acme.board";
+  await assert.rejects(c.service.start({ ...START(c.workspaceId), initiator: sneaky as never }, new AbortController().signal), (e: unknown) => (e as { code?: string }).code === "E_INVALID_ARGUMENT");
+  const thrower = new Proxy({}, { ownKeys: () => { throw new Error("boom"); } });
+  await assert.rejects(c.service.start({ ...START(c.workspaceId), initiator: thrower as never }, new AbortController().signal), (e: unknown) => (e as { code?: string }).code === "E_INVALID_ARGUMENT", "a throwing property access is a malformed initiator");
+  assert.equal(Number((c.db.prepare("SELECT count(*) AS n FROM composer_runs").get() as Row)["n"]), 0);
+});
+
+test("review K1e-a N2: a taint hook that returns without marking the run is refused: the run must be tainted before the creation commits", async (t) => {
+  const c = await setup(t, { taintAtStart: () => undefined });
+  await assert.rejects(c.service.start({ ...START(c.workspaceId), initiator: PLUGIN }, new AbortController().signal), (e: unknown) => (e as { code?: string }).code === "E_UNAVAILABLE");
+  assert.equal(Number((c.db.prepare("SELECT count(*) AS n FROM composer_runs").get() as Row)["n"]), 0, "no run record");
+  assert.equal(c.wire(), 0, "no provider call");
+});
+
+test("review K1e-a N3: a taint hook that returns a rejected promise is refused without an unhandled rejection", async (t) => {
+  const seen: unknown[] = [];
+  const on = (e: unknown) => void seen.push(e);
+  process.on("unhandledRejection", on);
+  t.after(() => void process.off("unhandledRejection", on));
+  const c = await setup(t, { taintAtStart: (() => Promise.reject(new Error("late"))) as never });
+  await assert.rejects(c.service.start({ ...START(c.workspaceId), initiator: PLUGIN }, new AbortController().signal), (e: unknown) => (e as { code?: string }).code === "E_UNAVAILABLE");
+  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(seen, [], "no unhandled rejection");
+});
