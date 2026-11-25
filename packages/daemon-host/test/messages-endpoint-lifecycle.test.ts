@@ -101,3 +101,22 @@ test("through the real supervisor: a QUEUED endpoint whose worker's messaging is
   await f.start();
   assert.deepEqual(answer, [{ t: "endpoint-close", endpoint, reason: "revoked" }, { ok: false, reason: "revoked" }], "the setting is checked before the launch window");
 });
+
+test("through the real supervisor: a connection opened while QUEUED is not open afterwards: its frame is refused once the run is RUNNING, and a new open serves", { skip }, async (t) => {
+  const seen: { endpoint?: string; token?: string } = {};
+  const f = await setup(t, async (spec, inner) => {
+    const e = spec.messagesEndpoint;
+    assert.ok(e !== undefined, "the spawn spec carries the endpoint");
+    seen.endpoint = e.endpoint;
+    seen.token = e.token;
+    f.reply(await f.relay({ t: "relay-open", endpoint: e.endpoint, conn: "c0" })); // answered not_ready: nothing was registered
+    return inner.spawn(spec);
+  });
+  const { run } = (await f.start()) as { run: { runId: string } };
+  assert.equal(f.r.journal.getRun(run.runId)?.state, "RUNNING");
+  const endpoint = seen.endpoint as string;
+  const auth = JSON.stringify({ op: "auth", token: seen.token });
+  assert.deepEqual(f.reply(await f.relay({ t: "relay-frame", endpoint, conn: "c0", frame: auth })), [{ ok: false, reason: "refused" }], "the connection opened while QUEUED was never registered");
+  assert.deepEqual(await f.relay({ t: "relay-open", endpoint, conn: "c1" }), []);
+  assert.deepEqual(f.reply(await f.relay({ t: "relay-frame", endpoint, conn: "c1", frame: auth })), [{ ok: true, op: "auth" }], "a fresh open serves");
+});
