@@ -68,5 +68,36 @@ test("through the real supervisor: a failed spawn revokes the endpoint minted fo
   await assert.rejects(f.start());
   assert.ok(endpoint.length > 0, "an endpoint was minted for the spawn");
   assert.deepEqual(f.sent, [{ t: "endpoint-close", endpoint, reason: "revoked" }], "revoked at once");
-  assert.deepEqual(f.reply(await f.relay({ t: "relay-open", endpoint, conn: "c0" })), [{ ok: false, reason: "revoked" }]);
+  assert.deepEqual(f.reply(await f.relay({ t: "relay-open", endpoint, conn: "c0" })), [{ t: "endpoint-close", endpoint, reason: "revoked" }, { ok: false, reason: "revoked" }], "a revoked endpoint is closed again (idempotent), then refused");
+});
+
+test("through the real supervisor: while QUEUED a relay-close answers nothing and changes nothing, and a frame answers not_ready without revoking", { skip }, async (t) => {
+  const seen: { rounds?: unknown[]; closes?: number } = {};
+  const f = await setup(t, async (spec, inner) => {
+    const e = spec.messagesEndpoint;
+    assert.ok(e !== undefined, "the spawn spec carries the endpoint");
+    await f.relay({ t: "relay-open", endpoint: e.endpoint, conn: "c0" });
+    const frame = f.reply(await f.relay({ t: "relay-frame", endpoint: e.endpoint, conn: "c0", frame: JSON.stringify({ op: "auth", token: e.token }) }));
+    const closed = await f.relay({ t: "relay-close", endpoint: e.endpoint, conn: "c0" });
+    seen.rounds = [frame, closed];
+    seen.closes = f.sent.filter((o) => o.t === "endpoint-close").length;
+    return inner.spawn(spec);
+  });
+  await f.start();
+  assert.deepEqual(seen.rounds, [[{ ok: false, reason: "not_ready" }], []], "a frame is not_ready (not authenticated as the worker) and a close answers nothing");
+  assert.equal(seen.closes, 0, "nothing was revoked during the launch window");
+  assert.equal(f.sent.filter((o) => o.t === "endpoint-close").length, 0, "nor afterwards");
+});
+
+test("through the real supervisor: a QUEUED endpoint whose worker's messaging is switched off is revoked, not answered not_ready", { skip }, async (t) => {
+  let endpoint = "";
+  let answer: unknown[] = [];
+  const f = await setup(t, async (spec, inner) => {
+    endpoint = spec.messagesEndpoint?.endpoint ?? "";
+    f.r.journal.messages.setAgentSettings("w1", { acceptsFrom: "group", cliMessaging: false, muted: false });
+    answer = f.reply(await f.relay({ t: "relay-open", endpoint, conn: "c0" }));
+    return inner.spawn(spec);
+  });
+  await f.start();
+  assert.deepEqual(answer, [{ t: "endpoint-close", endpoint, reason: "revoked" }, { ok: false, reason: "revoked" }], "the setting is checked before the launch window");
 });
