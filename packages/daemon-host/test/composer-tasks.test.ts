@@ -115,3 +115,15 @@ test("the task tools: only for a run with a live worker, scoped to its project, 
   assert.deepEqual(d.results[1]?.map((x) => x.split(".")[0]), ["The call was refused (not_found)", "The call was refused (not_found)"], "another project's task is unknown");
   assert.match(d.results[2]?.[0] ?? "", /^The call was refused \(not_found\)/, "archived: refused");
 });
+
+test("review 2a F2: a task body with a NUL or a lone surrogate is a closed refusal before any card, and nothing is written", async (t) => {
+  const p = await tasksRig(t);
+  const tk = task(p.svc);
+  const runId = p.run("w1");
+  const bad = ["a\u0000b", "a\ud800b"];
+  const d = drive(p.r, runId, [[call(CREATE_TASK, { title: "Bad", body: bad[0] ?? "" }), call(UPDATE_TASK, { taskId: tk.taskId, baseSeq: 1, title: "Fix it", body: bad[1] ?? "" })], []]);
+  await d.end;
+  for (const r of d.results[0] ?? []) assert.match(r, /^The call was refused \([a-z_-]+\)\./, "a closed refusal, not an open tool failure");
+  assert.equal(p.svc.list({ projectId: "p" }).tasks.length, 1, "nothing was created");
+  assert.equal(p.svc.get({ taskId: tk.taskId }).task.lastSeq, 1, "nothing was revised");
+});

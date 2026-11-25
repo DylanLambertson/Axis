@@ -35,6 +35,8 @@ test("delete needs main's native dialog: refused without a challenge, not releas
   await resolve(user, one.c);
   assert.equal((await user.call(C, "delete", { taskId, approval: { challengeId: one.c.challengeId } }, k1)).ok, false, "renderer-only resolve");
   assert.ok(journal.tasks.get(taskId) !== undefined, "not deleted");
+  r.answer(one.c.challengeId, one.proof, false); // dismiss the first dialog so the second wait below does not sit on it until it expires
+  await waitFor(() => r.approvals.stats().native.entries === 0, 60_000, "the first dialog was dismissed");
   const k2 = newKey();
   const two = await issue(k2);
   await resolve(user, two.c);
