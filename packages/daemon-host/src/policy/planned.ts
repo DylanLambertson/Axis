@@ -9,10 +9,8 @@
 // no other actor yet. `connect` is user-only for good (a plugin's `integration:<id>` grant never includes it). The plugin
 // allow-list rows (ADR 0008 decision 6: `net:<origin>`, `integration:<id>`) are PV-K1's; `axis.net/1.read` and `.send` are plugin
 // methods, so when they are served (PV-N1f with PV-K1) these user rows are replaced by those rows and a user caller is refused.
-// (axis.forge/1 moved to rules.ts with PV-D2 slice 2, axis.agents/1 and axis.agent-groups/1 with PV-G3, axis.pages/1 with PV-Q1 slice 2.)
-//
-// axis.tasks/1 (PV-T1 slice 1): user only. Record writes are tier 1 (assigning starts nothing); delete is destructive (3).
-// Start, which taints the run (IAC-T source 5), and the agent and plugin task rows come with slice 2.
+// (axis.forge/1 moved to rules.ts with PV-D2 slice 2, axis.agents/1 and axis.agent-groups/1 with PV-G3, axis.pages/1 with PV-Q1 slice 2,
+// axis.tasks/1 with PV-T1 slice 2a.)
 import { userRule, type Rule } from "./rule-types.js";
 
 export const PLANNED_RULES: Readonly<Record<string, Rule>> = Object.freeze({
@@ -24,14 +22,4 @@ export const PLANNED_RULES: Readonly<Record<string, Rule>> = Object.freeze({
   "axis.integrations/1.write": userRule(3),
   "axis.net/1.read": userRule(0),
   "axis.net/1.send": userRule(3),
-  "axis.tasks/1.list": userRule(0),
-  "axis.tasks/1.get": userRule(0),
-  "axis.tasks/1.revisions": userRule(0),
-  "axis.tasks/1.create": userRule(1),
-  "axis.tasks/1.update": userRule(1),
-  "axis.tasks/1.setStatus": userRule(1),
-  "axis.tasks/1.assign": userRule(1),
-  "axis.tasks/1.link": userRule(1),
-  "axis.tasks/1.unlink": userRule(1),
-  "axis.tasks/1.delete": userRule(3),
 });

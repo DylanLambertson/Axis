@@ -19,7 +19,15 @@ export interface ComposerStartInput {
   readonly idempotencyKey?: string;
   /** The Axis agent record the run is started for (PV-G4), recorded as the run's `agent_id`. */
   readonly worker?: string;
+  /**
+   * Who started the run, built by the handler from the attested identity only, never from a request field (PV-K1e). REQUIRED, so
+   * a caller that forgets it does not compile (a missing initiator must never mean "the user" by default). A plugin start is
+   * recorded as `plugin:<id>` and is tainted before its first model call.
+   */
+  readonly initiator: RunInitiator;
 }
+
+export type RunInitiator = { readonly kind: "user" } | { readonly kind: "plugin"; readonly pluginId: string; readonly generation: number };
 
 export interface ComposerEventsPage {
   readonly events: RunEvent[];

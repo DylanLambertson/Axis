@@ -11,6 +11,8 @@ import { deliveryRig } from "./messages-delivery-rig.js";
 
 // PV-M6 slice 2, daemon side: the messaging options (both off by default), the spawn that mints and hands over a CLI run's
 // endpoint, and the whole chain over a real socket: shim -> pty process listener -> control channel -> daemon relay -> service.
+// Its rig creates a RUNNING run before spawning; the run lifecycle through the REAL supervisor (spawn while QUEUED, RUNNING
+// after) is `messages-endpoint-lifecycle.test.ts`, which a change to mint or to the run-state checks must keep passing.
 
 const posix = process.platform !== "win32";
 const skip = posix ? undefined : "Unix sockets: Windows has no messaging endpoint until the native pipe helper exists";

@@ -109,6 +109,7 @@ export async function startComposerRun(deps: ComposerRunsHandlerDeps, req: Compo
           providerId: fresh?.providerId ?? req.providerId,
           modelId: fresh?.modelId ?? req.modelId,
           windowId: context.identity.windowId,
+          initiator: { kind: "user" }, // this handler serves the user only today; PV-K1e-b derives a plugin initiator from the attested identity, never from the request
           ...(context.idempotencyKey === undefined ? {} : { idempotencyKey: context.idempotencyKey }),
           ...(req.worker === undefined ? {} : { worker: req.worker }),
         },
