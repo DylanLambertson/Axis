@@ -2,6 +2,9 @@
 import { trustCallOf } from "../gate/project-trust.js";
 import type { Handler, HandlerContext } from "@axis/daemon";
 import { gitCommitRequestSchema } from "@axis/protocol";
+import type { AuditEventInput } from "@axis/audit";
+import type { IndexRefreshOutcome } from "@axis/git-ops";
+import { GIT_AUDIT } from "./git-common.js";
 import { gitFailure } from "./git-errors.js";
 import { locate, mapError, portContext, requireUser, workspaceFor, type GitHandlerDeps } from "./git-common.js";
 
@@ -57,7 +60,7 @@ export function createGitCommitHandler(deps: GitHandlerDeps): Handler {
             // The gate, right before git and inside the mutex (project-registration-and-trust.md §5.4).
             const ticket = await deps.gate.admit({ projectId: ws.projectId, caller: trustCallOf(context.identity), workspaceId, signal });
             const result = await deps.ops.executeCommit({ workspaceId, projectId: ws.projectId, assertFresh: () => deps.review.assertFresh(entry.handle) }, input, ticket);
-            return finish(deps, workspaceId, result);
+            return finish(deps, workspaceId, result, context.identity.actor);
           } catch (e) {
             // The branch is moved only by the compare-and-swap at the very end; a failure that says it happened spends the reviewed tree.
             if ((e as { updated?: unknown } | null)?.updated === true) forgetTrees(deps, workspaceId);
@@ -77,9 +80,25 @@ export function createGitCommitHandler(deps: GitHandlerDeps): Handler {
  * the reply is not re-validated here, because a throw would free the idempotency key of a commit that landed (the daemon
  * checks the reply against the contract itself, and marks the key unknown if it is wrong).
  */
-function finish(deps: GitHandlerDeps, workspaceId: string, result: { readonly commit: string; readonly tree: string }) {
+function finish(deps: GitHandlerDeps, workspaceId: string, result: { readonly commit: string; readonly tree: string; readonly indexRefresh?: IndexRefreshOutcome }, actor: AuditEventInput["actor"]) {
   forgetTrees(deps, workspaceId);
-  return { commit: result.commit, tree: result.tree };
+  const r = result.indexRefresh;
+  if (r !== undefined) {
+    // DC-0 review 2 S2: a skipped refresh is never silent. It is audited (a closed reason, no path) and carried in the reply,
+    // so the UI can say the committed paths show as staged reversions and offer the reset. A failed audit write is bookkeeping.
+    try {
+      deps.audit?.append({
+        actor,
+        action: GIT_AUDIT.indexRefresh,
+        target: `workspace:${workspaceId}`,
+        outcome: "success",
+        payload: "skipped" in r ? { workspaceId, result: "skipped", reason: r.skipped } : { workspaceId, result: "refreshed", count: r.refreshed },
+      });
+    } catch (e) {
+      deps.onBookkeepingError?.(e);
+    }
+  }
+  return { commit: result.commit, tree: result.tree, ...(r === undefined ? {} : { indexRefresh: r }) };
 }
 
 function forgetTrees(deps: GitHandlerDeps, workspaceId: string): void {

@@ -1,8 +1,8 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { test, type TestContext } from "node:test";
 import type { Policy } from "@axis/daemon";
 import { gitCommitReasonSchema } from "@axis/protocol";
@@ -257,4 +257,27 @@ test("review A SF2: an untrust while a commit waits for the project mutex refuse
   assert.deepEqual([res.error?.code, (res.error?.details as { reason?: string } | undefined)?.reason], ["E_CONFLICT", "untrusted"]);
   assert.equal(r.git("rev-parse", "HEAD").trim(), head, "no commit was made");
   assert.equal(r.calls.executeCommit, 0);
+});
+
+test("commit (DC-0 review 2 S2): the reply and the audit say what the index refresh did, a skip included", { skip: SKIP ?? false }, async (t) => {
+  const { r, c } = await setup(t);
+  const req = await review(r, c);
+  const res = await commit(c, r, req);
+  assert.equal(res.ok, true, JSON.stringify(res.error));
+  assert.deepEqual((res.result as { indexRefresh?: unknown }).indexRefresh, { refreshed: 1 });
+  const refresh = () => r.auditRows.filter((e) => e.action === "git.index_refresh").map((e) => e.payload);
+  assert.deepEqual(refresh(), [{ workspaceId: r.workspaceId, result: "refreshed", count: 1 }]);
+  // Another git holds the index lock through the one retry: the commit lands, and the skip is said, not swallowed.
+  const lock = `${resolve(r.repo, r.git("rev-parse", "--git-path", "index").trim())}.lock`;
+  const next = await review(r, c, "two\n");
+  writeFileSync(lock, "an IDE's background status\n");
+  try {
+    const res2 = await commit(c, r, next);
+    assert.equal(res2.ok, true, JSON.stringify(res2.error));
+    assert.deepEqual((res2.result as { indexRefresh?: unknown }).indexRefresh, { skipped: "locked" });
+    assert.deepEqual(refresh()[1], { workspaceId: r.workspaceId, result: "skipped", reason: "locked" });
+    assert.equal(r.head(), (res2.result as { commit: string }).commit);
+  } finally {
+    rmSync(lock, { force: true });
+  }
 });

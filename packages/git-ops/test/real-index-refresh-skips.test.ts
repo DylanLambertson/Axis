@@ -7,7 +7,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseTaggedListing, refreshIndex, type WorktreeRef } from "../src/index.js";
 import { commitOnTop, entries, indexBytes, indexPath } from "./indexFixture.js";
@@ -110,3 +110,30 @@ test("the git answers the flags come from have exactly the shape the reader expe
 function execGit(f: Fixture, args: string[], input: string): void {
   execFileSync("git", args, { cwd: f.wt.workTree, env: f.env, input });
 }
+
+test("S2: a held lock is retried once after a short wait; a lock released by then is refreshed, one still held is a skip", { skip: !posix }, async () => {
+  const f = fixture();
+  const { old, next } = commitOnTop(f, { "a.txt": "axis\n" });
+  writeFileSync(lock(f), "an IDE's background status\n");
+  const waits: number[] = [];
+  const r = await refreshIndex(f.deps, f.wt, old, next, { wait: async (ms) => { waits.push(ms); rmSync(lock(f)); } });
+  assert.deepEqual([r, waits.length], [{ refreshed: 1 }, 1], "kills no retry");
+  const g = fixture();
+  const c = commitOnTop(g, { "a.txt": "axis\n" });
+  writeFileSync(lock(g), "held\n");
+  let n = 0;
+  assert.deepEqual(await refreshIndex(g.deps, g.wt, c.old, c.next, { wait: async () => void n++ }), { skipped: "locked" });
+  assert.equal(n, 1, "one retry only");
+});
+
+test("N2: a symlinked index is skipped, the link and its target unchanged", { skip: !posix }, async () => {
+  const f = fixture();
+  const target = join(f.root, "index-elsewhere");
+  renameSync(indexPath(f), target);
+  symlinkSync(target, indexPath(f));
+  const before = readFileSync(target);
+  const { old, next } = commitOnTop(f, { "a.txt": "axis\n" });
+  assert.deepEqual(await refreshIndex(f.deps, f.wt, old, next), { skipped: "symlink" });
+  assert.equal(lstatSync(indexPath(f)).isSymbolicLink(), true);
+  assert.deepEqual(readFileSync(target), before);
+});

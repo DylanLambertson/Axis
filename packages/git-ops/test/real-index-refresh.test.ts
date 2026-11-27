@@ -5,7 +5,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { executeCommit, refreshIndex } from "../src/index.js";
 import { commitOnTop, debugOf, entries, headEntries, indexBytes, indexMode } from "./indexFixture.js";
@@ -113,4 +113,70 @@ test("executeCommit refreshes the index after the compare-and-swap: a clean work
   assert.deepEqual(r.indexRefresh, { refreshed: 1 });
   assert.notDeepEqual(indexBytes(f), before);
   assert.equal(f.git("status", "--porcelain").trim(), "", "nothing shows as a staged reversion");
+});
+
+// Review 2 of DC-0.
+
+test("B1: a directory turned into a file keeps the user's staged entry under it, and its flagged entry; an equal one is replaced", { skip: !posix }, async () => {
+  for (const setup of ["staged", "flagged", "equal"] as const) {
+    const f = fixture();
+    mkdirSync(join(f.wt.workTree, "x"));
+    stage(f, "x/y", "y\n");
+    f.git("commit", "-q", "-m", "x/y");
+    if (setup === "staged") {
+      writeFileSync(join(f.wt.workTree, "x", "y"), "the user's edit\n");
+      f.git("add", "x/y");
+    }
+    if (setup === "flagged") f.git("update-index", "--skip-worktree", "x/y");
+    const kept = debugOf(f, "x/y");
+    const { old, next } = commitOnTop(f, { "x/y": null, x: "now a file\n" });
+    const r = await refreshIndex(f.deps, f.wt, old, next);
+    if (setup === "equal") {
+      assert.deepEqual(r, { refreshed: 2 });
+      assert.deepEqual(entries(f), headEntries(f));
+    } else {
+      assert.deepEqual(r, { refreshed: 0 }, `${setup}: kills an add that ignores a staying entry below it`);
+      assert.equal(debugOf(f, "x/y"), kept, `${setup}: x/y is still the user's`);
+      assert.equal(entries(f).has("x"), false);
+    }
+  }
+});
+
+test("B1: a file turned into a directory keeps the user's staged file", { skip: !posix }, async () => {
+  const f = fixture();
+  stage(f, "x", "a file\n");
+  f.git("commit", "-q", "-m", "x");
+  writeFileSync(join(f.wt.workTree, "x"), "the user's edit\n");
+  f.git("add", "x");
+  const kept = debugOf(f, "x");
+  const { old, next } = commitOnTop(f, { x: null, "x/y": "now below\n" });
+  assert.deepEqual(await refreshIndex(f.deps, f.wt, old, next), { refreshed: 0 }, "kills an add that ignores a staying entry above it");
+  assert.equal(debugOf(f, "x"), kept);
+  assert.equal(entries(f).has("x/y"), false);
+});
+
+test("S3: the user's own staged new file at a path the commit adds is kept (kills absent-in-both counted as always equal)", { skip: !posix }, async () => {
+  const f = fixture();
+  writeFileSync(join(f.wt.workTree, "new.txt"), "the user's new file\n");
+  f.git("add", "new.txt");
+  const kept = debugOf(f, "new.txt");
+  const { old, next } = commitOnTop(f, { "new.txt": "Axis's new file\n" });
+  assert.deepEqual(await refreshIndex(f.deps, f.wt, old, next), { refreshed: 0 });
+  assert.equal(debugOf(f, "new.txt"), kept);
+});
+
+test("S1: an entry racily clean against the index stays marked for a content check after the refresh (kills the copy's new times)", { skip: !posix }, async () => {
+  const f = fixture();
+  f.git("config", "core.trustctime", "false");
+  const r = join(f.wt.workTree, "r.txt");
+  const t = Math.floor(Date.now() / 1000) - 60;
+  writeFileSync(r, "aaaa\n");
+  utimesSync(r, t, t);
+  f.git("add", "r.txt");
+  writeFileSync(r, "bbbb\n"); // same size, same inode
+  utimesSync(r, t, t);
+  utimesSync(join(f.wt.gitDir, "index"), t, t); // the entry's mtime equals the index's: racily clean
+  const { old, next } = commitOnTop(f, { "a.txt": "axis\n" });
+  assert.deepEqual(await refreshIndex(f.deps, f.wt, old, next), { refreshed: 1 });
+  assert.ok(f.git("diff", "--name-only").split("\n").includes("r.txt"), "the unstaged same-size edit is still seen");
 });

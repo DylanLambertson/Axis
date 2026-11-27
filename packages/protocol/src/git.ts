@@ -235,7 +235,18 @@ export const gitCommitRequestSchema = guarded(
     author: commitAuthorSchema.optional(),
   }),
 );
-export const gitCommitResponseSchema = guarded(z.strictObject({ commit: objectIdSchema, tree: objectIdSchema }));
+/**
+ * What the narrow refresh of the person's own index did after the commit (DC-0, ADR 0011 Decision 3): `refreshed` entries
+ * moved to the new commit, or `skipped` with a closed reason. **On a skip the UI must say so:** the committed paths then show
+ * as staged reversions in `git status`, and a plain `git commit` in a terminal would undo the Axis commit until those paths
+ * are reset (`git reset -q -- <paths>`) or the index refreshed. Absent from a reply made before the refresh existed.
+ */
+export const GIT_INDEX_REFRESH_SKIPS = ["locked", "head_moved", "split_index", "sparse", "unmerged", "symlink", "unreadable", "rename_failed", "failed"] as const;
+export const gitIndexRefreshSchema = z.union([
+  z.strictObject({ refreshed: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER) }),
+  z.strictObject({ skipped: z.enum(GIT_INDEX_REFRESH_SKIPS) }),
+]);
+export const gitCommitResponseSchema = guarded(z.strictObject({ commit: objectIdSchema, tree: objectIdSchema, indexRefresh: gitIndexRefreshSchema.optional() }));
 
 // push (network, tier 4, idempotency required): always a challenge with native confirmation, bound to the plan the user saw.
 export const gitPushRequestSchema = guarded(
