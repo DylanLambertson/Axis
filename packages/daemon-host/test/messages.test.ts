@@ -22,6 +22,7 @@ const inbound: Record<string, unknown> = {
   "projects.trust": { type: "projects.trust", requestId: "r6", projectId: "p-1", path: "/work/repo", commonDir: "/work/repo/.git", trusted: true },
   "projects.trust (revoke)": { type: "projects.trust", requestId: "r6", projectId: "p-1", path: "/work/repo", trusted: false },
   shutdown: { type: "shutdown" },
+  "window.gone": { type: "window.gone", windowId: "w12" },
 };
 
 test("every inbound message of the design table parses, and a stray key refuses it", () => {
@@ -48,6 +49,14 @@ test("inbound refusals: unknown type, bad ids, relative path, unknown setting, b
     { ...(inbound["anchor.ack"] as object), seq: 1.5 },
     { ...(inbound["native.result"] as object), challengeId: "short" },
     { ...(inbound["connect"] as object), cid: "x" },
+    // window.gone names a code window only (PV-K2 K2-g4a): not a plugin view, not a free id, nothing else.
+    { type: "window.gone" },
+    { type: "window.gone", windowId: "p12" },
+    { type: "window.gone", windowId: "win-1" },
+    { type: "window.gone", windowId: "w" },
+    { type: "window.gone", windowId: "w12345678901" },
+    { type: "window.gone", windowId: " w1" },
+    { type: "window.gone", windowId: 12 },
     { ...(inbound["connect"] as object), attestation: { identity: {}, issuedAt: -1, mac: "m".repeat(43) } },
   ];
   for (const b of bad) assert.equal(inboundMessageSchema.safeParse(b).success, false, JSON.stringify(b)?.slice(0, 60));

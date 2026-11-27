@@ -21,6 +21,7 @@ import type { ComposerStartInput } from "../src/ports/composer.js";
 import { ProjectMutex } from "../src/worktrees/project-mutex.js";
 import { Client } from "./approvals-rig.js";
 import { fakeClock } from "./helpers.js";
+import { grantForTests, enableForTests } from "./plugin-grants-for-tests.js";
 
 type Row = Record<string, unknown>;
 const SHA = "b".repeat(40);
@@ -51,8 +52,8 @@ async function setup(t: TestContext, over: { admit?: () => Promise<void>; onAudi
   const ws2 = ws("p2");
   const ws1b = ws("p1");
   journal.plugins.add("acme.board", "p1");
-  journal.plugins.setEnabled("acme.board", "p1", true);
-  journal.plugins.grant("acme.board", "p1", "runs.start");
+  enableForTests(journal.plugins, "acme.board", "p1");
+  grantForTests(journal.plugins, "acme.board", "p1", "runs.start");
   const control: NativeControl = { nativeConfirm: () => new Promise(() => undefined) };
   const approvals = createApprovals({ audit: { append() {} }, control, clock, plugins: pluginRunStartChallenges(journal, journal.pluginIssues, () => clock.now()) });
   const daemon = new Daemon({ identity: verifier, audit: { append: (e) => over.onAudit?.(e as unknown as Row) }, registry: protocolRegistry, idempotency: new MemoryIdempotencyStore(), policy: new RuleTablePolicy(new InMemoryTrustRegistry(), RULES, journal.plugins), approvals: approvals.gate });
@@ -144,7 +145,7 @@ test("a disabled, ungranted or unknown plugin is refused by the policy, before a
   s.journal.plugins.setEnabled("acme.board", "p1", false);
   const plugin = await s.connect(PLUGIN_ATT);
   assert.equal((await plugin.call("axis.runs", "start", s.body(), randomUUID())).error?.code, "E_POLICY_DENIED");
-  s.journal.plugins.setEnabled("acme.board", "p1", true);
+  enableForTests(s.journal.plugins, "acme.board", "p1");
   s.journal.plugins.revoke("acme.board", "p1", "runs.start");
   assert.equal((await plugin.call("axis.runs", "start", s.body(), randomUUID())).error?.code, "E_POLICY_DENIED");
   const stranger = await s.connect("plugin:other.tool#Pother#p8#w1#p1");
@@ -155,7 +156,7 @@ test("a disabled, ungranted or unknown plugin is refused by the policy, before a
 test("a grant change after issue, after the approval and under the mutex each refuses the start with nothing started", async (t) => {
   const bump = (s: Awaited<ReturnType<typeof setup>>) => {
     s.journal.plugins.setEnabled("acme.board", "p1", false);
-    s.journal.plugins.setEnabled("acme.board", "p1", true);
+    enableForTests(s.journal.plugins, "acme.board", "p1");
   };
   for (const when of ["after issue", "after approval"] as const) {
     const s = await setup(t);
@@ -209,7 +210,7 @@ test("a seventh start in an hour is refused, across a disable and enable", async
     s.clock.advance(1);
   }
   s.journal.plugins.setEnabled("acme.board", "p1", false);
-  s.journal.plugins.setEnabled("acme.board", "p1", true);
+  enableForTests(s.journal.plugins, "acme.board", "p1");
   assert.equal((await plugin.call("axis.runs", "start", s.body(), randomUUID())).error?.code, "E_BACKPRESSURE");
 });
 
@@ -250,7 +251,7 @@ test("the content hook binds the grant generation: a disable and enable moves th
   const bound = deps.bind({ identity: asPlugin, actor: asPlugin.actor, contract: "axis.runs", method: "start", args: s.body() } as never, { target: lock.target, contentDigest: before });
   assert.equal(bound?.valid(), true);
   s.journal.plugins.setEnabled("acme.board", "p1", false);
-  s.journal.plugins.setEnabled("acme.board", "p1", true);
+  enableForTests(s.journal.plugins, "acme.board", "p1");
   assert.notEqual(await lock.withLock(async (d) => d), before, "the generation moved, so the digest did");
   assert.equal(bound?.valid(), false, "the binding no longer holds");
   // Another field of the start moves it too, and a user's call gets the daemon's own default.
@@ -273,7 +274,7 @@ test("bind refuses what is not a plugin run start, out of scope or ungranted; an
   assert.equal(call({}, { ...s.body(), extra: 1 }), undefined, "not a start request");
   s.journal.plugins.revoke("acme.board", "p1", "runs.start");
   assert.equal(call(), undefined, "ungranted");
-  s.journal.plugins.grant("acme.board", "p1", "runs.start");
+  grantForTests(s.journal.plugins, "acme.board", "p1", "runs.start");
   const { MAX_DETAIL_PROMPT, MAX_PROMPT_CHARS, challengeDetailSchema } = await import("@axis/protocol");
   // The longest prompt a start allows, every character a control one: escaped (`\u{1}`, five units each) it passes the cap.
   assert.ok(MAX_PROMPT_CHARS * 5 > MAX_DETAIL_PROMPT);
@@ -294,7 +295,7 @@ test("layer: the content hook refuses an out-of-scope or ungranted start itself,
   s.journal.plugins.setEnabled("acme.board", "p1", false);
   outOfScope(() => hook({ identity: asPlugin }, s.body()), "disabled");
   assert.equal(grantedGeneration(s.journal, "acme.board", "p1"), undefined, "a disabled plugin has no granted generation");
-  s.journal.plugins.setEnabled("acme.board", "p1", true);
+  enableForTests(s.journal.plugins, "acme.board", "p1");
   assert.equal(grantedGeneration(s.journal, "acme.board", "p1"), 2);
   s.journal.plugins.revoke("acme.board", "p1", "runs.start");
   outOfScope(() => hook({ identity: asPlugin }, s.body()), "ungranted");
@@ -341,7 +342,7 @@ test("layer: a grant change while the start waits for the project mutex is refus
   const started = Promise.resolve(h.handlers.start(h.ctx(asPlugin), s.body() as never));
   await new Promise((r) => setImmediate(r));
   s.journal.plugins.setEnabled("acme.board", "p1", false);
-  s.journal.plugins.setEnabled("acme.board", "p1", true);
+  enableForTests(s.journal.plugins, "acme.board", "p1");
   release();
   await held;
   await assert.rejects(started, (e: unknown) => (e as { code?: string; details?: Row }).code === "E_CONFLICT" && (e as { details?: Row }).details?.["reason"] === "grant_changed");
@@ -358,7 +359,7 @@ test("review K2 S2: a revoke and re-grant after the spend, before the handler, r
       bumped = true;
       const j = (s as Awaited<ReturnType<typeof setup>>).journal;
       j.plugins.revoke("acme.board", "p1", "runs.start");
-      j.plugins.grant("acme.board", "p1", "runs.start"); // granted again: only the generation tells the two apart
+      grantForTests(j.plugins, "acme.board", "p1", "runs.start"); // granted again: only the generation tells the two apart
     },
   });
   const plugin = await s.connect(PLUGIN_ATT);
@@ -380,7 +381,7 @@ test("review K2 S2, the handler alone: an approval minted at one generation neve
   const asPlugin = verifier.verify(PLUGIN_ATT) as Identity;
   const approved = h.mint();
   s.journal.plugins.revoke("acme.board", "p1", "runs.start");
-  s.journal.plugins.grant("acme.board", "p1", "runs.start");
+  grantForTests(s.journal.plugins, "acme.board", "p1", "runs.start");
   await assert.rejects(Promise.resolve(h.handlers.start(h.ctx(asPlugin, approved), s.body() as never)), (e: unknown) => (e as { code?: string; details?: Row }).code === "E_CONFLICT" && (e as { details?: Row }).details?.["reason"] === "grant_changed");
   assert.equal(h.seen.length, 0);
   await h.handlers.start(h.ctx(asPlugin, h.mint()), s.body() as never);

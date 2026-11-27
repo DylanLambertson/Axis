@@ -31,6 +31,8 @@ export const DEFAULT_PAYLOAD_ALLOWLIST: Readonly<Record<string, readonly string[
   "journal.agent.record": ["field", "agentId", "groupId", "projectId", "workspaceId", "kind", "reason", "count"],
   // Plugin grants (schema v16, PV-K1b): ids and a fixed field, the permission from a closed set; never anything a plugin wrote.
   "journal.plugin.record": ["field", "pluginId", "projectId", "permission"],
+  // The CLI messaging endpoint switch (schema v20, PV-M7 slice 2): a fixed field and the new boolean, nothing else.
+  "journal.messaging.record": ["field", "enabled"],
   "journal.recovery": ["from", "to", "reason", "kind", "workspaceId", "projectId", "count"],
 };
 

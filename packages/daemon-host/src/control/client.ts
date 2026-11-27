@@ -88,6 +88,7 @@ export class ControlClient {
   readonly #onTrustSet: Handlers<Extract<InboundMessage, { type: "trust.set" }>> = [];
   readonly #onProjects: Handlers<Extract<InboundMessage, { type: "projects.inspect" | "projects.register" | "projects.trust" }>> = [];
   readonly #onShutdown: Handlers<void> = [];
+  readonly #onWindowGone: Handlers<Extract<InboundMessage, { type: "window.gone" }>> = [];
   readonly #onInit: Handlers<Record<string, unknown>> = [];
   readonly #onAck: Handlers<number> = [];
   #nextId = 1;
@@ -128,6 +129,10 @@ export class ControlClient {
   }
   onTrustSet(handler: (message: Extract<InboundMessage, { type: "trust.set" }>) => void): Unsubscribe {
     return this.#add(this.#onTrustSet, handler);
+  }
+  /** `window.gone` (main only, PV-K2 K2-g4a): a code window was destroyed or its renderer died. */
+  onWindowGone(handler: (message: Extract<InboundMessage, { type: "window.gone" }>) => void): Unsubscribe {
+    return this.#add(this.#onWindowGone, handler);
   }
   /** `projects.inspect`, `projects.register` and `projects.trust` (main only; see `projects/control.ts`). */
   onProjects(handler: (message: Extract<InboundMessage, { type: "projects.inspect" | "projects.register" | "projects.trust" }>) => void): Unsubscribe {
@@ -339,6 +344,8 @@ export class ControlClient {
         return this.#emit(this.#onProjects, m);
       case "shutdown":
         return this.#emit(this.#onShutdown, undefined);
+      case "window.gone":
+        return this.#emit(this.#onWindowGone, m);
       case "anchor.ack":
         return this.#emit(this.#onAck, m.seq);
       case "anchor.result":

@@ -371,3 +371,16 @@ test("sendProject: only while running, only the three project messages, and only
   assert.equal(t.sup.sendProject({ type: "trust.set", windowId: "w1", trusted: true } as never), false, "main's trust grants never go this way");
   assert.equal(t.last().sent.length, before + 1, "nothing else was posted");
 });
+
+test("windowGone: only while running, only a code window id, and only window.gone (PV-K2 K2-g4a)", () => {
+  const t = rig();
+  t.sup.start();
+  assert.equal(t.sup.windowGone("w4"), false, "not running before ready");
+  t.last().ready();
+  const before = t.last().sent.length;
+  assert.equal(t.sup.windowGone("w4"), true);
+  assert.deepEqual(t.last().sent.slice(before), [{ type: "window.gone", windowId: "w4" }]);
+  for (const bad of ["p4", "win-1", "w", "", "w4 ", "w12345678901"]) assert.equal(t.sup.windowGone(bad), false, bad);
+  assert.equal(t.sup.windowGone({ toString: () => "w4" } as never), false, "a string only");
+  assert.equal(t.last().sent.length, before + 1, "nothing else was posted");
+});

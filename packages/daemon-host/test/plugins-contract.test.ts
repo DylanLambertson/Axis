@@ -16,6 +16,7 @@ import { PLUGIN_DENY_CONTRACTS, pluginCoverageProblems } from "../src/policy/plu
 import { ProjectMutex } from "../src/worktrees/project-mutex.js";
 import { Client } from "./approvals-rig.js";
 import { fakeClock } from "./helpers.js";
+import { grantForTests, enableForTests } from "./plugin-grants-for-tests.js";
 
 const SHA = "b".repeat(40);
 
@@ -44,9 +45,9 @@ async function setup(t: TestContext, over: { endPlugin?: (pluginId: string, proj
   const wsOf = { p1: ws("p1"), p2: ws("p2") };
   for (const [plugin, project] of [["acme.board", "p1"], ["other.tool", "p1"], ["acme.board", "p2"]] as const) {
     journal.plugins.add(plugin, project);
-    journal.plugins.setEnabled(plugin, project, true);
-    journal.plugins.grant(plugin, project, "runs.start");
-    journal.plugins.grant(plugin, project, "pages.read");
+    enableForTests(journal.plugins, plugin, project);
+    grantForTests(journal.plugins, plugin, project, "runs.start");
+    grantForTests(journal.plugins, plugin, project, "pages.read");
   }
   const control: NativeControl = { nativeConfirm: () => new Promise(() => undefined) };
   const approvals = createApprovals({ audit: { append() {} }, control, clock, plugins: pluginRunStartChallenges(journal, journal.pluginIssues, () => clock.now()) });
@@ -194,8 +195,8 @@ test("endPlugin matches the plugin id exactly: ending acme leaves acme-x; an id 
   const s = await setup(t);
   for (const id of ["acme", "acme-x"]) {
     s.journal.plugins.add(id, "p1");
-    s.journal.plugins.setEnabled(id, "p1", true);
-    s.journal.plugins.grant(id, "p1", "runs.start");
+    enableForTests(s.journal.plugins, id, "p1");
+    grantForTests(s.journal.plugins, id, "p1", "runs.start");
   }
   const acme = await s.pluginChallenge("acme", "p1");
   const acmeX = await s.pluginChallenge("acme-x", "p1");

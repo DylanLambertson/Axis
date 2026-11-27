@@ -10,6 +10,7 @@ import { MAX_DETAIL_PROMPT, type Challenge, type ChallengeDetail } from "@axis/p
 import { createApprovals, createApprovalsHandlers, type NativeControl } from "../src/index.js";
 import type { PluginChallengeDeps } from "../src/gate/plugin-approvals.js";
 import { fakeClock } from "./helpers.js";
+import { enableForTests } from "./plugin-grants-for-tests.js";
 
 type Row = Record<string, unknown>;
 const control: NativeControl = { nativeConfirm: () => new Promise(() => undefined) };
@@ -195,7 +196,7 @@ test("the journal's counter: six issues an hour per plugin and project, the seve
     r.approvals.gate.withdraw?.(c.challengeId, { actor: "plugin:acme.board", connectionId: r.plugin().connectionId });
     r.clock.advance(1);
   }
-  journal.plugins.setEnabled("acme.board", "p1", true);
+  enableForTests(journal.plugins, "acme.board", "p1");
   journal.plugins.setEnabled("acme.board", "p1", false);
   await refuses(r.approvals.gate.issue(r.plugin(), r.content), "E_BACKPRESSURE");
   r.clock.advance(3_600_000);

@@ -2,6 +2,7 @@
 import { DaemonError, type Handler, type HandlerContext } from "@axis/daemon";
 import type { PluginPermission, PluginState } from "@axis/journal";
 import { PLUGINS_CONTRACT, PLUGINS_VERSION, pluginsMethods, type PluginsMethod, type PluginsRequest } from "@axis/protocol";
+import type { GrantAction } from "../plugins/grant-action.js";
 import { createGrantContentHooks } from "../plugins/grant-content.js";
 import type { ProjectMutex } from "../worktrees/project-mutex.js";
 import type { HandlerRegistrar } from "./anchor-guard.js";
@@ -27,13 +28,18 @@ export interface PluginsHandlerDeps {
       list(projectId: string): Array<PluginState & { readonly pluginId: string }>;
       state(pluginId: string, projectId: string): PluginState | undefined;
       revoke(pluginId: string, projectId: string, permission: PluginPermission): boolean;
-      setEnabled(pluginId: string, projectId: string, enabled: boolean): void;
-      grant(pluginId: string, projectId: string, permission: PluginPermission): void;
+      /** Only ever called with `false` here: switching a plugin on goes through `grantAction`. */
+      setEnabled(pluginId: string, projectId: string, enabled: false): void;
     };
   };
   readonly mutex: Pick<ProjectMutex, "run">;
   /** Ends the plugin's open challenges in the project (`Approvals.endPlugin`). */
   readonly endPlugin: (pluginId: string, projectId: string) => unknown;
+  /**
+   * The only way this handler writes an increase (K2-g3): the approved grant action, which holds the journal's mint. Absent,
+   * `grant` and `enable` are refused like grants that are off.
+   */
+  readonly grantAction?: GrantAction;
   /** `grant` and `enable` are served only when this is true: the host's `pluginGrants` option (K2-enable turns it on). */
   readonly grantsEnabled?: boolean;
   /** Records a grant's or an enable's dialog line for (target, content digest): the approvals wiring's `onPreview`. */
@@ -93,7 +99,7 @@ export function createPluginsHandlers(deps: PluginsHandlerDeps): Readonly<Record
     }),
     grant: guarded("grant", (req, context) => {
       // Only inside a spent approval (tier 4, native confirmation); the content hook holds the project mutex around this call.
-      if (deps.grantsEnabled !== true) fail("E_UNAVAILABLE", "Plugin grants are not available.", "plugin_grants_off");
+      if (deps.grantsEnabled !== true || deps.grantAction === undefined) fail("E_UNAVAILABLE", "Plugin grants are not available.", "plugin_grants_off");
       if (context.approved === undefined) fail("E_NOT_FOUND", NOT_FOUND);
       project(req.projectId);
       return deps.mutex.run(
@@ -102,14 +108,14 @@ export function createPluginsHandlers(deps: PluginsHandlerDeps): Readonly<Record
           const now = deps.journal.plugins.state(req.pluginId, req.projectId);
           if (now === undefined) fail("E_NOT_FOUND", NOT_FOUND);
           if ((now as PluginState).permissions.includes(req.permission as PluginPermission)) fail("E_CONFLICT", "That permission is already granted.", "already_granted");
-          deps.journal.plugins.grant(req.pluginId, req.projectId, req.permission as PluginPermission);
+          (deps.grantAction as GrantAction).grant(req.pluginId, req.projectId, req.permission as PluginPermission);
           return { plugin: view(req.pluginId, deps.journal.plugins.state(req.pluginId, req.projectId) as PluginState) };
         },
         context.signal,
       );
     }),
     enable: guarded("enable", (req, context) => {
-      if (deps.grantsEnabled !== true) fail("E_UNAVAILABLE", "Plugin grants are not available.", "plugin_grants_off");
+      if (deps.grantsEnabled !== true || deps.grantAction === undefined) fail("E_UNAVAILABLE", "Plugin grants are not available.", "plugin_grants_off");
       if (context.approved === undefined) fail("E_NOT_FOUND", NOT_FOUND);
       project(req.projectId);
       return deps.mutex.run(
@@ -118,7 +124,7 @@ export function createPluginsHandlers(deps: PluginsHandlerDeps): Readonly<Record
           const now = deps.journal.plugins.state(req.pluginId, req.projectId);
           if (now === undefined) fail("E_NOT_FOUND", NOT_FOUND);
           if ((now as PluginState).enabled) fail("E_CONFLICT", "That plugin is already on.", "already_enabled");
-          deps.journal.plugins.setEnabled(req.pluginId, req.projectId, true);
+          (deps.grantAction as GrantAction).enable(req.pluginId, req.projectId);
           return { plugin: view(req.pluginId, deps.journal.plugins.state(req.pluginId, req.projectId) as PluginState) };
         },
         context.signal,
