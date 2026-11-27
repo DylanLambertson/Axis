@@ -1,0 +1,29 @@
+/* Copyright (c) 2026 Dylan Lambertson. All rights reserved. */
+/* Colours come only from the --axis-* tokens that renderer/main.tsx sets from @axis/ui. */
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: var(--axis-canvas);
+  color: var(--axis-text);
+  font-family: system-ui, sans-serif;
+  font-size: 13px;
+}
+
+#root,
+.axis-shell {
+  height: 100%;
+}
+
+.axis-shell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.axis-shell__title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--axis-text-secondary);
+}
