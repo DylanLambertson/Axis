@@ -38,6 +38,7 @@ const EXPECTED: readonly Row[] = [
   ["axis.projects", "list", "read", 0, "none", 10_000],
   ["axis.approvals", "resolve", "write", 2, "none", 10_000],
   ["axis.approvals", "pending", "read", 0, "none", 5_000],
+  ["axis.approvals", "detail", "read", 0, "none", 5_000],
   ["axis.audit", "status", "read", 0, "none", 5_000],
   ["axis.audit", "list", "read", 1, "none", 10_000],
   ["axis.audit", "verify", "read", 1, "none", 30_000],
