@@ -82,6 +82,10 @@ export const RULES: Readonly<Record<string, Rule>> = Object.freeze({
   "axis.tasks/1.link": userRule(1),
   "axis.tasks/1.unlink": userRule(1),
   "axis.tasks/1.delete": userRule(4),
+  // Start (PV-T1 slice 2b): the preview is a read; the start runs a worker, so it is tier 4 (main's dialog names the task,
+  // the worker and the trust of its text) and gated on the project's trust like any run start.
+  "axis.tasks/1.startPreview": userRule(0),
+  "axis.tasks/1.start": userRule(4, "project"),
   "axis.messages/1.send": userRule(2),
   "axis.messages/1.thread": userRule(1),
   "axis.messages/1.threads": userRule(0),

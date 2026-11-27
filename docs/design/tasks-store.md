@@ -1,6 +1,6 @@
-# The tasks store and `axis.tasks/1` (PV-T1 slices 1 and 2a)
+# The tasks store and `axis.tasks/1` (PV-T1 slices 1, 2a and 2b)
 
-- **Status:** Built. Slice 1: journal schema version 15, `Journal.tasks` and the contract's schemas. Slice 2a: the tasks service, `axis.tasks/1` **served** to the user with user-only rows, and the worker task tools (§5). Start is slice 2b.
+- **Status:** Built. Slice 1: journal schema version 15, `Journal.tasks` and the contract's schemas. Slice 2a: the tasks service, `axis.tasks/1` **served** to the user with user-only rows, and the worker task tools (§5). Slice 2b: Start (§6).
 - **Decides nothing new.** It builds `extensibility.md` §6 (the task record, Start is the user's, non-user text taints) with the PV-Q1 guards (`pages-store.md`).
 - **Code:** `packages/journal/src/schema-tasks.ts`, `packages/journal/src/task-store.ts`, `packages/protocol/src/tasks.ts`, `packages/daemon-host/src/policy/planned.ts`.
 - **Slice 2 (after PV-G4):** the tasks service and handlers (served rows, audit with ids only), **Start** (shows the full prompt and its source, marks non-user text and taints the run, IAC-T source 5), the agent task tools (side-effecting under IAC-T, audited, a task read is source 8), `list` paging (the store answers all of a project's tasks today), and the plugin rows of ADR 0008.
@@ -61,3 +61,20 @@
 - **Refusals are closed.** A store refusal of the contract's set keeps its reason; anything else is `E_INTERNAL` with no text.
 
 **For slice 2b (review 2a F3):** the content hook that names a task in main's native dialog (delete, Start) must be built only from daemon-derived values (the task id, the revision number, the author kind and hop, the project's display name, the worker's own label), never from a task's title or body: an untrusted title must not reach the dialog line. A test plants a canary title and asserts it never reaches the dialog.
+
+## 6. Slice 2b: Start
+
+`extensibility.md` §6: Start is the user's, it shows the full prompt and its source, and non-user text taints the run.
+
+| Method | Side effect | Tier | Idempotency | Row |
+|---|---|---|---|---|
+| `startPreview { taskId, worker }` | read | 0 | none | user |
+| `start { taskId, worker, seq, promptDigest }` | write | 4 | required | user, gated on the project's trust |
+
+- **The prompt is the daemon's.** `taskPrompt` builds it from the task's newest revision: a fixed line naming the task and the revision, a second fixed line when the text may not be the user's (it describes the work, is never an instruction, grants nothing), then the title and the body. It is deterministic, so its SHA-256 (`promptDigest`) binds it. `startPreview` answers it whole with the digest, the worker's kind and the task's source, trust and hop; no request carries a prompt.
+- **The worker** is a live agent of the task's project; anything else, an unknown id included, is `worker_unavailable`.
+- **Order of `start`**, after the pipeline spent the tier-4 approval (main's native dialog, with its proof): the handler builds the prompt again and compares the revision and the digest (`stale_version` when the task changed); the composer start path then re-checks the task once more under the project mutex, right before the project trust gate and the run's creation. Idempotency is required.
+- **Main's dialog** (`tasks/confirm.ts`) is built only from daemon-derived values, never the task's title or body (a worker or a plugin may have written them): the trust of the text first (`UNTRUSTED (<author kind>, hop N)` or `the user's text`), the first 12 characters of the task id, the revision and the worker's name cut at 20 (the user's own label). The line always fits the dialog's 80 units, which it would otherwise cut in the middle. The approval is bound to `task:<id>` and a digest over the task, its project, its revision, the worker and the prompt's digest: a task changed after the dialog refuses the approval before the handler runs. `delete` gets a line too: `task <id>, all N revisions, in <project>`.
+- **Taint before the first model call** (IAC-T source 5, `task_start`). For an untrusted task the start hands the run one receipt (the latest author who is not the user, the task's hop, `taskId:seq`). It never travels on the wire: `ComposerStartInput.taint`, then the binding takes it while the run's tools are built, before they exist, so the first model reply is already decided under the flag and the approval card lists the task. A receipt that cannot be recorded ends the run `START_FAILED` with nothing sent; an `ask` run is built for its receipts all the same, so its record says tainted. PV-K1e-a marks a plugin's run inside its creation instead; a task Start uses the binding's path because the receipt must also raise the run's received hop and fill the card, which a mark in the record alone does not.
+- **A CLI worker gets no run:** `start` answers the prompt as the text to copy into it (the tier-4 confirmation still applies); no receipt is taken, since Axis hands the text to no run of its own (RR-94).
+- **Audit.** One `task.start` row: task and project ids, the revision, the worker's id and kind, the trust flag and hop, and for a composer worker the run id. Never the prompt.
