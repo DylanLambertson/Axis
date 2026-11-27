@@ -163,6 +163,6 @@ test("cli-config: a CLI's project configuration is its own high-severity categor
   for (const p of [".claude/settings.json", ".claude/settings.local.json", ".claude/hooks/pre.sh", ".codex/config.toml", ".codex/hooks/x"]) {
     assert.deepEqual([classifyPath(p)?.category, classifyPath(p)?.severity], ["cli-config", "high"], p);
   }
-  for (const p of [".mcp.json", ".claude/skills/s/SKILL.md", ".claude/plugins/p", ".claude/commands/x.md"]) assert.equal(cat(p), "cli-config", p);
+  for (const p of [".mcp.json", ".claude/skills/s/SKILL.md", ".claude/plugins/p", ".claude/commands/x.md", ".claude/workflows/w.js", ".claude-plugin/plugin.json", ".claude/launch.json", ".claude/routines/r", ".claude/scheduled_tasks.json"]) assert.equal(cat(p), "cli-config", p);
   assert.equal(cat(".claude/rules/x.md"), "hidden-config", "the generic dot-name rule still covers the rest");
 });

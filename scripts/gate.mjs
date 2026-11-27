@@ -6,13 +6,13 @@
 // skipped and the verdict says so), AXIS_REQUIRE_OVERLAY_TESTS=1 (a missing tree then FAILS the gate).
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   countLines, exitCode, findLongFiles, formatReport, formatTable, gitleaksInstallSteps,
-  overlayNotRun, parseGitleaksPin, parseLog, parseSidecarHash, scanCommits, versionMatchesPin
+  overlayNotRun, parseGitleaksPin, parseLog, parseSidecarHash, scanCommits, versionMatchesPin, wrongNodeLine
 } from "./gate/lib.mjs";
 import { failureDigest, splitSuites } from "./gate/failures.mjs";
 
@@ -26,7 +26,7 @@ function sh(command, args, options = {}) {
   const r = spawnSync(command, args, {
     encoding: "utf8", maxBuffer: 512 * 1024 * 1024, timeout: 20 * 60 * 1000, ...options
   });
-  return { ok: r.status === 0 && r.error === undefined, status: r.status, out: `${r.stdout ?? ""}${r.stderr ?? ""}`, error: r.error };
+  return { ok: r.status === 0 && r.error === undefined, status: r.status, signal: r.signal, out: `${r.stdout ?? ""}${r.stderr ?? ""}`, error: r.error };
 }
 
 const top = sh("git", ["rev-parse", "--show-toplevel"]);
@@ -38,6 +38,20 @@ const root = top.out.trim();
 const git = (...args) => sh("git", args, { cwd: root });
 const tail = (text, n = 12) => text.trimEnd().split("\n").slice(-n).join("\n");
 const range = `${base}..HEAD`;
+
+// A wrong Node makes the node-version step, the typecheck and the pinning test fail for a reason that is not in them, so say it first.
+if (!skip.has("node-version")) {
+  let pinned;
+  try { pinned = JSON.parse(readFileSync(join(root, "code-oss", "upstream.json"), "utf8")).node; } catch { /* the node-version step reports it */ }
+  const dist = typeof pinned === "string" ? `node-v${pinned}-${process.platform === "darwin" ? "darwin" : "linux"}-${process.arch === "arm64" ? "arm64" : "x64"}` : "";
+  const toolsDir = process.env.AXIS_CODE_OSS_TOOLS_DIR ?? join(root, ".tools");
+  const hints = [process.env.NODE24_BIN, dist === "" ? undefined : join(toolsDir, dist, "bin")]
+    .filter((d) => typeof d === "string" && d !== "")
+    .map((d) => (existsSync(d) && statSync(d).isFile() ? dirname(d) : d)) // NODE24_BIN may name the binary itself (scripts/code-oss/lib.sh accepts both)
+    .filter((d) => existsSync(join(d, "node")));
+  const line = wrongNodeLine({ running: process.version, pinned, execPath: process.execPath, hints });
+  if (line !== undefined) console.log(line);
+}
 
 const head = git("rev-parse", "HEAD").out.trim();
 const branchName = git("rev-parse", "--abbrev-ref", "HEAD").out.trim();
@@ -138,14 +152,23 @@ step("typecheck", "typecheck", () => {
   return r.ok ? { status: "pass" } : { status: "fail", detail: tail(r.out) };
 });
 
+// The whole tests step has its own limit (each suite keeps its own 20 minute one in scripts/gate/run-suite.mjs): at a load of 20 to 37 the
+// run took about 20 minutes, and the fixed 20 minutes of `sh` killed it before its summary, leaving a failure with no suite named.
+const TESTS_LIMIT_MS = (() => {
+  const raw = process.env.AXIS_GATE_TESTS_TIMEOUT_MS;
+  if (raw === undefined) return 3 * 60 * 60 * 1000;
+  return /^[1-9][0-9]*$/.test(raw) ? Number(raw) : raw;
+})();
+
 let packageCounts = [];
 step("test", "tests", () => {
+  if (typeof TESTS_LIMIT_MS !== "number") return { status: "fail", detail: `AXIS_GATE_TESTS_TIMEOUT_MS must be a positive integer, got ${JSON.stringify(TESTS_LIMIT_MS)}` };
   const dir = mkdtempSync(join(tmpdir(), "axis-gate-"));
   const file = join(dir, "tests.json");
   let keep = false;
   try {
     // ADR 0009's first test (PV-N1d) may skip on a dev machine without openssl, never under the gate.
-    const r = sh(process.execPath, [join(root, "scripts", "test-all.mjs"), "--json", file], { cwd: root, env: { ...process.env, AXIS_REQUIRE_PINNING_TEST: "1" } });
+    const r = sh(process.execPath, [join(root, "scripts", "test-all.mjs"), "--json", file], { cwd: root, timeout: TESTS_LIMIT_MS, env: { ...process.env, AXIS_REQUIRE_PINNING_TEST: "1" } });
     try { packageCounts = JSON.parse(readFileSync(file, "utf8")); } catch { /* summary missing */ }
     if (r.ok) return { status: "pass", detail: `${packageCounts.length} suites` };
     const bad = packageCounts.filter((s) => !s.ok).map((s) => s.name);
@@ -160,7 +183,12 @@ step("test", "tests", () => {
       console.log(`\n== ${s.name}: failing tests\n${failureDigest(s.text) || "(no failing test name in the output; see the full output)"}\n== full output: ${log}\n`);
     }
     const where = saved.length > 0 ? `; full output: ${saved.join(", ")}` : "";
-    return { status: "fail", detail: bad.length > 0 ? `failed: ${bad.join(", ")}${where}` : tail(r.out) };
+    if (bad.length > 0) return { status: "fail", detail: `failed: ${bad.join(", ")}${where}` };
+    // No suite is marked failed: the run itself ended without its summary. Say why, and which suite it was in (the runner names it on a signal).
+    const started = [...r.out.matchAll(/^== running (.+)$/gm)].map((m) => m[1]);
+    const running = started.at(-1);
+    const why = r.error?.code === "ETIMEDOUT" ? `timed out after ${Math.round(TESTS_LIMIT_MS / 1000)}s` : r.signal ? `killed by ${r.signal}` : `exit ${r.status}`;
+    return { status: "fail", detail: `the test run ended without a summary (${why})${running ? ` while running ${running}` : ""}\n${tail(r.out)}` };
   } finally {
     if (!keep) rmSync(dir, { recursive: true, force: true });
   }

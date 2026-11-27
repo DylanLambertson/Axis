@@ -1,5 +1,7 @@
 # Product Requirements
 
+> **Direction change (2026-11-26):** ADR 0011 (`docs/adr/0011-own-shell-ide-as-optional-feature.md`, Proposed) replaces the Code OSS-based shell with our own shell, with the IDE as an optional module. Statements here about Code OSS, IDE view, Workspace Trust, extensions or Open VSX are revised by plan ticket OS-23 (`docs/design/own-shell-plan.md`).
+
 ## Vision
 Axis is an agent home for software development: projects, agents and groups, with a full IDE as the second view. A developer or team adds a project, creates agents of any type (Axis composer agents or the user's installed agent CLIs) inside it, organises them into groups, watches what each one is doing, reviews and commits their changes, and drops into a full IDE whenever they want to edit, debug or inspect code directly. Agents use approved connections to several model providers and a shared, permissioned project intelligence layer.
 

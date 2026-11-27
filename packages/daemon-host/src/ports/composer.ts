@@ -26,6 +26,11 @@ export interface ComposerStartInput {
    */
   readonly initiator: RunInitiator;
   /**
+   * Re-checked in the service's synchronous creation step, right before the run is recorded (PV-K1e-b): false refuses the start
+   * with nothing created. Required for a plugin initiator (the plugin still holds `runs.start` at the same grant generation).
+   */
+  readonly grantHolds?: () => boolean;
+  /**
    * IAC-T receipts the run takes before its first model call (PV-T1 slice 2b: a Start of an untrusted task, source 5).
    * Internal to the daemon, never on the wire: the run's tools are built only after every receipt is recorded, and a
    * receipt that cannot be recorded ends the run START_FAILED with nothing sent.

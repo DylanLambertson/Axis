@@ -2,6 +2,8 @@
 
 # Security, Privacy and Trust Model
 
+> **Direction change (2026-11-26):** ADR 0011 (`docs/adr/0011-own-shell-ide-as-optional-feature.md`, Proposed) replaces the Code OSS-based shell with our own shell, with the IDE as an optional module. Statements here about Code OSS, IDE view, Workspace Trust, extensions or Open VSX are revised by plan ticket OS-23 (`docs/design/own-shell-plan.md`).
+
 ## Threats
 Prompt injection from source files and external tools; malicious extensions; compromised provider credentials; shell command abuse; cross-Space or cross-project data leakage; supply-chain dependencies; malicious agent patches; cloud runner breakout; collab impersonation; sync key loss; model exfiltration.
 
