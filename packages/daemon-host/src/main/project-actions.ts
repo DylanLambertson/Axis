@@ -169,7 +169,8 @@ export function createProjectActions(o: ProjectActionsOptions): ProjectActions {
     return r.refused === "queue_full" ? "busy" : "unavailable";
   };
 
-  async function status(codeWindowId: number): Promise<{ outcome: ProjectOutcome; projectId?: string }> {
+  type StatusAnswer = { outcome: ProjectOutcome } | { outcome: "status_trusted" | "status_read_only"; projectId: string };
+  async function status(codeWindowId: number): Promise<StatusAnswer> {
     const folder = o.windowFolder(codeWindowId);
     if (folder === undefined) return { outcome: "no_folder" };
     const i = await inspect(folder);
@@ -235,8 +236,7 @@ export function createProjectActions(o: ProjectActionsOptions): ProjectActions {
         if (statusBusy.has(codeWindowId) || !take(statusRecent, codeWindowId, STATUS_PER_MINUTE)) return { nonce, outcome: "busy" };
         statusBusy.add(codeWindowId);
         try {
-          const s = await status(codeWindowId);
-          return s.projectId === undefined ? { nonce, outcome: s.outcome } : { nonce, outcome: s.outcome as "status_trusted" | "status_read_only", projectId: s.projectId };
+          return { nonce, ...(await status(codeWindowId)) };
         } catch {
           return { nonce, outcome: "unavailable" };
         } finally {

@@ -155,10 +155,11 @@ export function toAnswer(payload: object): IAxisProjectAnswer {
 	}
 	const { outcome, projectId } = payload as { outcome?: unknown; projectId?: unknown };
 	const closed = toOutcome(outcome);
-	if (projectId === undefined) {
-		return { outcome: closed };
-	}
 	const registered = closed === 'status_trusted' || closed === 'status_read_only';
+	if (projectId === undefined) {
+		// Main always names the project of a registered answer: one without it is not a status to show (review N2).
+		return registered ? { outcome: 'unavailable' } : { outcome: closed };
+	}
 	return registered && typeof projectId === 'string' && AXIS_ID_PATTERN.test(projectId) ? { outcome: closed, projectId } : { outcome: 'unavailable' };
 }
 

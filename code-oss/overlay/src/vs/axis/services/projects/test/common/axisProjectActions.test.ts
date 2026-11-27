@@ -119,7 +119,9 @@ suite('Axis project actions (renderer, S3)', () => {
 
 	test('PV-D1-0: main\'s answer is read strictly: projectId only on a registered status, only in the id shape, and no other key', () => {
 		assert.deepStrictEqual(toAnswer({ nonce: 'n', outcome: 'status_read_only', projectId: 'p-7' }), { outcome: 'status_read_only', projectId: 'p-7' });
-		assert.deepStrictEqual(toAnswer({ nonce: 'n', outcome: 'status_trusted' }), { outcome: 'status_trusted' });
+		assert.deepStrictEqual(toAnswer({ nonce: 'n', outcome: 'status_trusted' }), { outcome: 'unavailable' }, 'a registered answer without its id (review N2; mutant: trust kept without an id)');
+		assert.deepStrictEqual(toAnswer({ nonce: 'n', outcome: 'status_not_registered' }), { outcome: 'status_not_registered' });
+		assert.deepStrictEqual(toAnswer({ nonce: 'n', outcome: 'trusted' }), { outcome: 'trusted' });
 		assert.deepStrictEqual(toAnswer({ nonce: 'n', outcome: 'trusted', projectId: 'p-7' }), { outcome: 'unavailable' }, 'an id on an action outcome');
 		assert.deepStrictEqual(toAnswer({ nonce: 'n', outcome: 'status_not_registered', projectId: 'p-7' }), { outcome: 'unavailable' });
 		for (const bad of ['../x', '', 'a b', 'x'.repeat(65), 7, { id: 'p' }]) {
