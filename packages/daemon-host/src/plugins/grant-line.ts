@@ -17,7 +17,14 @@ import { PLUGIN_DANGEROUS_COMBINATIONS } from "../policy/plugin-rules.js";
 export const DIALOG_DETAIL_UNITS = 80;
 export const MIN_PROJECT_UNITS = 8;
 export const DANGER_MARKER = "SENDS DATA OUT: ";
-const ID_UNITS = 19;
+/**
+ * The plugin's units on the line (review K2-g2 N2): the most the worst case leaves with the project its minimum (the danger marker,
+ * the longest wording, the separators and `MIN_PROJECT_UNITS`: 16 + 28 + 2 + 22 + 4 + 8 = 80).
+ */
+export const ID_UNITS = 22;
+/** Hex digits of the whole id's SHA-256 in the short form: 60 bits, so finding another id with the same short form is not practical. */
+export const ID_HASH_HEX = 15;
+const ID_PREFIX = ID_UNITS - 1 - ID_HASH_HEX;
 
 /** The fixed wording of each grant (at most 28 units) and of an enable. */
 export const GRANT_WORDING: Readonly<Record<PluginPermission, string>> = Object.freeze({
@@ -59,10 +66,14 @@ function fitted(text: string, units: number): string {
   return `${out}…`;
 }
 
-/** The plugin id itself when it fits, else its first 12 characters, "…" and 6 hex of the SHA-256 of the whole id (19 units). */
+/**
+ * The plugin id itself when it fits (22 units or fewer), else its first 6 characters, "…" and 15 hex of the SHA-256 of the whole
+ * id (22 units). The card shows the whole id either way. The earlier form (12 characters and 6 hex, 24 bits) let another id with
+ * the same short form be found in seconds.
+ */
 export function shortPluginId(pluginId: string): string {
   if (pluginId.length <= ID_UNITS) return pluginId;
-  return `${pluginId.slice(0, 12)}…${createHash("sha256").update(pluginId, "utf8").digest("hex").slice(0, 6)}`;
+  return `${pluginId.slice(0, ID_PREFIX)}…${createHash("sha256").update(pluginId, "utf8").digest("hex").slice(0, ID_HASH_HEX)}`;
 }
 
 /** Whether the permissions after the grant complete a dangerous combination (none can today: `net:` is not grantable yet). */
