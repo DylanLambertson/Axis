@@ -275,6 +275,19 @@ export class MessageRecords {
       .run(agentId, s.acceptsFrom, s.cliMessaging ? 1 : 0, s.muted ? 1 : 0);
   }
 
+  /** The CLI project-configuration paths the user acknowledged when enabling this worker's messaging (PV-M7 slice 1), sorted. */
+  cliAcknowledged(agentId: string): string[] {
+    return (this.#db.prepare("SELECT path FROM messaging_cli_acknowledged WHERE agent_id = ? ORDER BY path").all(agentId) as Row[]).map((r) => str(r["path"]));
+  }
+
+  /** Replace the worker's acknowledged paths (the user's; an empty list clears them). Call inside `transact` with the setting. */
+  setCliAcknowledged(agentId: string, paths: readonly string[]): void {
+    this.#db.prepare("DELETE FROM messaging_cli_acknowledged WHERE agent_id = ?").run(agentId);
+    const ins = this.#db.prepare("INSERT INTO messaging_cli_acknowledged (agent_id, path, acknowledged_by, acknowledged_at) VALUES (?, ?, 'user', ?)");
+    const at = this.#ts();
+    for (const p of [...new Set(paths)].sort()) ins.run(agentId, p, at);
+  }
+
   /** Run `fn` in one transaction of the journal's database (an append with its audit row, a settings change with its row). */
   transact<T>(fn: () => T): T {
     return withTransaction(this.#db, fn);

@@ -2,6 +2,7 @@
 import type { MessageRecords } from "@axis/journal";
 import { MAX_SETTINGS_AGENTS, type MessagesRequest, type MessagesResponse } from "@axis/protocol";
 import { MESSAGE_AUDIT, type MessageAuditSink } from "./audit.js";
+import type { EnableDecision, EnableWarning } from "./enable-rule.js";
 import { checked } from "./wire.js";
 import { NOT_FOUND, agentRows, defaultAgentSettings, refuse, type AgentSettings, type MessageCaller, type MessagingDirectory, type PolicyContext, type ProjectSettings } from "./policy.js";
 
@@ -11,12 +12,15 @@ import { NOT_FOUND, agentRows, defaultAgentSettings, refuse, type AgentSettings,
  * before and after (`message.settings`), or a `message.pause` / `message.resume` row; the row commits with the change.
  * A project, group or agent the directory does not know is `not_found`.
  *
- * Enabling an agent's endpoint (`cliMessaging: true`) is refused with `bypass_entry` in this slice: the check of a CLI
- * agent's launch entry (M-3, PV-M7) does not exist yet, so the enable fails closed (and a composer agent has no endpoint).
+ * Enabling a CLI worker's endpoint (`cliMessaging: true`) needs the enable rule's decision (PV-M7 slice 1, `enable-rule.ts`),
+ * which the handler makes first: without one, or refused, it is `bypass_entry`, audited by the rule's id.
  */
 
 /** A committed change the CLI endpoints act on (PV-M6 slice 3). */
 export type MessagingSettingsEvent = { readonly kind: "cliMessagingOff"; readonly agentId: string } | { readonly kind: "paused"; readonly projectId: string };
+
+/** Enable refusals the caller sees by name: the launch could not be judged (the rest are `bypass_entry`). */
+const JUDGED: ReadonlySet<string> = new Set(["wrapper_unparsed", "config_unparsed", "too_many_repo_files", "empty_argv", "unknown_flag", "env_assignment", "config_home", "real_path_unresolved"]);
 
 export interface MessagingSettingsDeps {
   /** Called after the change committed; a throw is audited (`hook_failed`) and never fails the user's write. */
@@ -30,7 +34,11 @@ export interface MessagingSettingsDeps {
 
 export interface MessagingSettingsService {
   settings(caller: MessageCaller, req: MessagesRequest<"settings">): MessagesResponse<"settings">;
-  updateSettings(caller: MessageCaller, req: MessagesRequest<"updateSettings">): MessagesResponse<"updateSettings">;
+  /**
+   * `enable`: the enable rule's decision for `cliMessaging: true` (PV-M7 slice 1), made by the handler before this
+   * synchronous write. Without one, enabling is refused (`bypass_entry`): it fails closed.
+   */
+  updateSettings(caller: MessageCaller, req: MessagesRequest<"updateSettings">, enable?: EnableDecision): MessagesResponse<"updateSettings">;
   pause(caller: MessageCaller, req: MessagesRequest<"pause">): MessagesResponse<"pause">;
   resume(caller: MessageCaller, req: MessagesRequest<"resume">): MessagesResponse<"resume">;
 }
@@ -112,24 +120,49 @@ export function createMessagingSettings(deps: MessagingSettingsDeps): MessagingS
       return { settings: view(project(req.projectId)) };
     },
 
-    updateSettings(caller, raw) {
+    updateSettings(caller, raw, enable) {
       userOnly(caller);
       const req = checked("updateSettings", raw);
+      let warnings: readonly EnableWarning[] = [];
+      if (req.setting === "cliMessaging" && req.value && agentSettingsOf(req.agentId).current.cliMessaging !== true) {
+        // The enable rule (PV-M7 slice 1), decided before the write so a refusal's audit row is not rolled back with it: no
+        // decision, or a refusal, refuses with `bypass_entry`, audited by the rule's id only (never an argument).
+        const rule = enable === undefined ? "no_check" : enable.allowed ? undefined : enable.rule;
+        if (rule !== undefined) {
+          deps.audit.append({ actor: "user", action: MESSAGE_AUDIT.endpoint, target: `agent:${req.agentId}`, outcome: "denied", payload: { agentId: req.agentId, event: "enable_refused", rule } });
+          deps.noteWrite?.();
+          // A launch the rule cannot judge says so (review 3 N15); every bypass the rule recognised is `bypass_entry`.
+          refuse("E_CONFLICT", JUDGED.has(rule) ? rule : "bypass_entry");
+        }
+        warnings = enable !== undefined && enable.allowed ? enable.warnings : [];
+        // The second step (review 1 SF4, M-3): with warnings, nothing is written until the request names every file warned
+        // about; the first answer is the warnings alone. The confirmation is the shell's, resolved in the renderer (tier 2).
+        const ack = req.acknowledged ?? [];
+        if (!warnings.every((w) => ack.some((a) => a.path === w.path && a.cli === w.cli))) {
+          deps.audit.append({ actor: "user", action: MESSAGE_AUDIT.endpoint, target: `agent:${req.agentId}`, outcome: "success", payload: { agentId: req.agentId, event: "enable_needs_confirmation", warnings: warnings.length } });
+          deps.noteWrite?.();
+          return { settings: view(deps.context(agentSettingsOf(req.agentId).projectId)), changed: false, warnings: [...warnings] };
+        }
+      }
       let off: string | undefined;
       const result = store.transact(() => {
         if (req.setting === "acceptsFrom" || req.setting === "cliMessaging" || req.setting === "muted") {
           const { projectId, current } = agentSettingsOf(req.agentId);
-          // Fails closed for every agent until PV-M7 can check the launch entry (a composer agent has no endpoint at all).
-          if (req.setting === "cliMessaging" && req.value) refuse("E_CONFLICT", "bypass_entry");
+          if (req.setting === "cliMessaging" && req.value && current.cliMessaging !== true) {
+            // Allowed (checked above): the row commits with the change.
+            deps.audit.append({ actor: "user", action: MESSAGE_AUDIT.endpoint, target: `agent:${req.agentId}`, outcome: "success", payload: { agentId: req.agentId, event: "enable_allowed", warnings: warnings.length } });
+          }
           const next: AgentSettings = { ...current, [req.setting]: req.value };
           const before = current[req.setting];
           const changed = before !== req.value;
           if (changed) {
             store.setAgentSettings(req.agentId, next);
+            // The files acknowledged are what every mint compares against (review 1 SF3); off clears them.
+            if (req.setting === "cliMessaging") store.setCliAcknowledged(req.agentId, req.value ? warnings.map((w) => w.path) : []);
             audit(MESSAGE_AUDIT.settings, `agent:${req.agentId}`, { projectId, agentId: req.agentId, setting: req.setting, before, after: req.value });
             if (req.setting === "cliMessaging" && before === true && req.value === false) off = req.agentId;
           }
-          return { settings: view(deps.context(projectId)), changed };
+          return { settings: view(deps.context(projectId)), changed, ...(warnings.length === 0 ? {} : { warnings: [...warnings] }) };
         }
         const ctx = project(req.projectId);
         const s = ctx.settings;

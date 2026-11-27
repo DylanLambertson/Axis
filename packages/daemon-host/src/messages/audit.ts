@@ -36,7 +36,7 @@ export const MESSAGES_PAYLOAD_ALLOWLIST: Readonly<Record<string, readonly string
   [MESSAGE_AUDIT.resume]: Object.freeze(["scopeKind", "scopeId", "changed"]),
   [MESSAGE_AUDIT.deliver]: Object.freeze(["messageId", "threadId", "runId", "agentId", "channel", "senderKind", "hop", "withheld"]),
   [MESSAGE_AUDIT.deliverFailed]: Object.freeze(["messageId", "threadId", "runId", "agentId", "failures"]),
-  [MESSAGE_AUDIT.endpoint]: Object.freeze(["endpointId", "runId", "agentId", "projectId", "event", "failures", "firstAt", "lastAt", "connections"]),
+  [MESSAGE_AUDIT.endpoint]: Object.freeze(["endpointId", "runId", "agentId", "projectId", "event", "failures", "firstAt", "lastAt", "connections", "rule", "warnings"]),
 });
 
 export interface MessageAuditSink {
