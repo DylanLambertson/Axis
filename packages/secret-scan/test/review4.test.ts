@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { DEFAULT_LIMITS, MIN_LINE_LENGTH, WINDOW_OVERLAP, createSecretScanner, scanText } from "../src/index.js";
-import { canary, patch, rules } from "./helpers.js";
+import { canary, patch, rnd, rules } from "./helpers.js";
 
 const FILLER = "x ";
 
@@ -34,5 +34,15 @@ test("S-1: the minimum and the default are both safe for a token placed across a
     const line = FILLER.repeat((maxLineLength - 20) / 2) + token + " end";
     const found = await createSecretScanner({ mode: "refuse", maxLineLength, now: () => 0 }).scan(patch("a.txt", [line]), {});
     assert.deepEqual(rules(found), ["github-token"], `window ${maxLineLength}`);
+  }
+});
+
+test("S-1: a near-maximum JWT spanning the first two window boundaries is found", async () => {
+  const w = MIN_LINE_LENGTH;
+  const scanner = createSecretScanner({ mode: "refuse", maxLineLength: w, now: () => 0 });
+  const token = `eyJ${rnd(48, 1297)}.eyJ${rnd(49, 1297)}.${rnd(50, 1300)}`;
+  for (const at of [w - 2500, 2 * (w - (w >> 2)) - 500]) {
+    const line = "x ".repeat(at / 2) + token + " end";
+    assert.deepEqual(rules(await scanner.scan(patch("a.txt", [line]), {})), ["jwt"], `at ${at}`);
   }
 });

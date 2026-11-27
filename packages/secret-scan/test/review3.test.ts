@@ -106,6 +106,11 @@ test("N-3: any word_key name is a key name; hex digests under hash and etag key 
   assert.deepEqual(one(`key = "${v}"`), []);
 });
 
+test("N-3: a 64-character word before _key is still a key name", () => {
+  const name = `${"z".repeat(64)}_key`;
+  assert.deepEqual(rules(one(`${name} = "${randomValue(47, 32)}"`)), GENERIC);
+});
+
 test("N-2: every default-ignorable and format character, and the Braille blank, is folded", () => {
   const v = randomValue(24, 36);
   const k = canary.aws(9);

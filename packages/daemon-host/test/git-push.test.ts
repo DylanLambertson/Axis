@@ -372,6 +372,34 @@ test("a remote re-pointed after a push is scanned from the base again, and two n
   assert.equal(((await plan(c, r, { remote: "alias" })).result as unknown as Plan).requiresConfirmation, true);
 });
 
+test("multiple push URLs keep the same base after reordering and reset it when the second changes", { skip: SKIP ?? false }, async (t) => {
+  const { r, c } = await setup(t, { scanMode: "warn" });
+  const second = join(r.root, "second.git");
+  const replacement = join(r.root, "replacement.git");
+  for (const remote of [second, replacement]) r.git("init", "-q", "--bare", remote);
+  r.git("config", "--add", "remote.origin.pushurl", r.remote);
+  r.git("config", "--add", "remote.origin.pushurl", second);
+  commitFile(r, "cfg.txt", `aws_id = ${CANARY}\n`);
+  const first = (await plan(c, r)).result as unknown as Plan;
+  assert.equal((await pushOnce(r, c, confirmed(first))).ok, true);
+  commitFile(r, "clean.txt", "nothing here\n");
+  await plan(c, r);
+  assert.equal(r.calls.planPush.at(-1)?.baseSha, first.tip);
+
+  r.git("config", "--unset-all", "remote.origin.pushurl");
+  r.git("config", "--add", "remote.origin.pushurl", second);
+  r.git("config", "--add", "remote.origin.pushurl", r.remote);
+  await plan(c, r);
+  assert.equal(r.calls.planPush.at(-1)?.baseSha, first.tip, "URL ordering does not change the target");
+
+  r.git("config", "--unset-all", "remote.origin.pushurl");
+  r.git("config", "--add", "remote.origin.pushurl", r.remote);
+  r.git("config", "--add", "remote.origin.pushurl", replacement);
+  const changed = (await plan(c, r)).result as unknown as Plan;
+  assert.equal(r.calls.planPush.at(-1)?.baseSha, r.baseSha, "the second destination is part of the target");
+  assert.deepEqual(changed.findings.map((f) => f["rule"]), ["aws-access-key-id"]);
+});
+
 test("a push the remote refuses records no base: the next plan still scans from the recorded base", { skip: SKIP ?? false }, async (t) => {
   const { r, c } = await setup(t);
   commitFile(r, "a.txt", "hello\n");
