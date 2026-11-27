@@ -18,7 +18,8 @@ import { SQL_RULES } from "./schema-pages.js";
  *   - A trusted task has hop 0, and a task's hop is never above the highest hop of its revisions.
  * - `task_revisions`: every text change is a new revision, never changed afterwards. Author is closed: `user`, `agent`,
  *   `plugin`, `integration` or `system`; the user writes at hop 0. At most 50 per task: the 51st deletes the oldest in the
- *   same statement, which cannot clear the task's sticky flags.
+ *   same statement, which cannot clear the task's sticky flags. Version 19 (`schema-tasks-keep.ts`) keeps the user's newest
+ *   revision out of that deletion.
  * - `task_links`: typed links to a run, a workspace or a page of the same project, or a pull request number; at most 32 per
  *   task; inserted once, never changed, removable.
  * - Limits: title 1 to 200 characters (the agent-name rule), body at most 16,384 characters, 64 MiB of revision bytes per

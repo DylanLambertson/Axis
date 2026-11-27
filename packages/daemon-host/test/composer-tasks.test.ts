@@ -1,42 +1,12 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import assert from "node:assert/strict";
-import { randomBytes } from "node:crypto";
-import { test, type TestContext } from "node:test";
-import { CREATE_TASK, LIST_TASKS, READ_TASK, UPDATE_TASK, createTasksService, type TaskCaller, type TasksService } from "../src/index.js";
-import { composerRig, type ComposerRig } from "./composer-rig.js";
-import { approveAll, denyAll, drive, type DeliveryRig } from "./messages-delivery-rig.js";
+import { test } from "node:test";
+import { CREATE_TASK, LIST_TASKS, READ_TASK, UPDATE_TASK } from "../src/index.js";
+import { approveAll, denyAll, drive } from "./messages-delivery-rig.js";
+import { call, task, tasksRig, worker } from "./tasks-rig.js";
 
 // PV-T1 slice 2a: the task tools through the real broker, approvals and loop. `read_task` is IAC-T source 8; `list_tasks`
 // shows no untrusted title; `create_task` and `update_task` ask the user once the run is tainted, with the text whole.
-
-const USER: TaskCaller = { kind: "user" };
-const worker = (agentId: string, receivedHop = 0, projectId = "p"): TaskCaller => ({ kind: "agent", agentId, projectId, runId: "r-other", receivedHop });
-
-async function tasksRig(t: TestContext) {
-  const holder: { svc?: TasksService } = {};
-  const workers = new Map<string, { agentId: string; projectId: string }>();
-  const lazy = new Proxy({} as TasksService, { get: (_t, k) => (holder.svc as unknown as Record<string | symbol, unknown>)[k] });
-  const c: ComposerRig = await composerRig({ replies: [], tasks: { service: lazy, workerOf: (id) => workers.get(id) } });
-  t.after(() => c.cleanup());
-  for (const id of ["p", "q"]) if (c.journal.getProject(id) === undefined) c.journal.registerProject({ id, path: `/repo/${id}`, displayName: id, trusted: false, actor: "user" });
-  const svc = createTasksService({ journal: c.journal, audit: c.audit, random: { bytes: (n) => randomBytes(n) } });
-  holder.svc = svc;
-  return {
-    c,
-    r: { c } as unknown as DeliveryRig,
-    svc,
-    run(agentId?: string, projectId = "p"): string {
-      const id = c.journal.composer.createRun({ workspaceId: c.workspaceId, createdBy: "user" }, { mode: "agent", providerId: "mock", modelId: "mock-model" }).value.id;
-      c.journal.transitionRun(id, "RUNNING");
-      if (agentId !== undefined) workers.set(id, { agentId, projectId });
-      return id;
-    },
-    drop: (runId: string) => void workers.delete(runId),
-    rows: (action: string) => c.audit.list({ limit: 2000 }).filter((e) => e.action === action).map((e) => e.payload as Record<string, unknown>),
-  };
-}
-const task = (svc: TasksService, title = "Fix it", body = "user text", projectId = "p") => svc.create(USER, { projectId, title, body }).task;
-const call = (name: string, input: Record<string, unknown>) => ({ name, input });
 
 test("read_task of a worker's task taints the run before the text returns: a write in the SAME reply asks the user, written at the read's hop", async (t) => {
   const p = await tasksRig(t);
@@ -55,19 +25,18 @@ test("read_task of a worker's task taints the run before the text returns: a wri
   assert.match(d.results[1]?.[0] ?? "", /^\[axis-task [0-9a-f]{24}\] Task .*may hold text the user did not write[\s\S]*\n\| worker text\n/);
 });
 
-test("a task only the user wrote taints nothing, and an untainted run creates and updates without asking", async (t) => {
+test("a task only the user wrote taints nothing, and an untainted run creates without asking (updates: composer-tasks-guard)", async (t) => {
   const p = await tasksRig(t);
   const tk = task(p.svc);
   const runId = p.run("w1");
-  const d = drive(p.r, runId, [[call(READ_TASK, { taskId: tk.taskId })], [call(UPDATE_TASK, { taskId: tk.taskId, baseSeq: 1, title: "Fix it", body: "user text\nmore" }), call(CREATE_TASK, { title: "New", body: "x" })], []]);
+  const d = drive(p.r, runId, [[call(READ_TASK, { taskId: tk.taskId })], [call(CREATE_TASK, { title: "New", body: "x" })], []]);
   assert.equal(await denyAll(p.r, d.end), 0, "nothing was put to the user");
   assert.equal(p.c.journal.composer.tainted(runId), false);
   assert.deepEqual(p.rows("message.taint"), []);
-  assert.deepEqual(d.results[2], [`wrote task ${tk.taskId}, revision 2`, d.results[2]?.[1]]);
-  assert.match(d.results[2]?.[1] ?? "", /^created task t[0-9a-f]{32}, revision 1$/);
-  const now = p.svc.get({ taskId: tk.taskId });
-  assert.deepEqual([now.task.untrusted, now.revision.meta.author], [true, { kind: "agent", agentId: "w1" }], "the worker's revision makes the task untrusted");
-  assert.deepEqual(p.rows("task.update").map((x) => [x["callerKind"], x["authorKind"], x["runId"]]), [["agent", "agent", runId]]);
+  assert.match(d.results[2]?.[0] ?? "", /^created task t[0-9a-f]{32}, revision 1$/);
+  const mine = p.svc.list({ projectId: "p" }).tasks.find((x) => x.title === "New");
+  assert.deepEqual([mine?.source, mine?.untrusted], ["agent", true], "the worker's task is untrusted");
+  assert.deepEqual(p.rows("task.create").filter((x) => x["callerKind"] === "agent").map((x) => [x["authorKind"], x["runId"]]), [["agent", runId]]);
 });
 
 test("list_tasks shows an untrusted task's id, status and flag, never its title, and takes no receipt", async (t) => {
