@@ -197,3 +197,45 @@ call `grant` once per permission (decision 1). They never write the store direct
 - No change to the v16 or v17 migrations: their hashes stay pinned.
 - For K2-g2, the final `native.confirm` summary in a test, never an intermediate string.
 - For K2-enable, the evidence of all six rows above, linked in the PR body.
+
+### 8.4 Two details the slices must get right
+
+**K2-g3: no second writer, now or later.** Three locks, each failing the gate on its own:
+
+1. **The token is not in the journal's main entry.**
+   - `journal.plugins.grant` and `setEnabled(…, true)` take a `PluginGrantWrite` token. The token class and its minting function
+     live in a subpath export, `@axis/journal/plugin-grant-writer`, the way `./daemon-principal` is kept apart today.
+     `@axis/journal` itself does not export them.
+   - The store checks the token's brand, a module-private `WeakSet` in that subpath. A forged or reused token is refused, and a
+     token is spent once.
+   - `revoke` and `setEnabled(…, false)` need no token: a decrease applies at once.
+2. **An import rule.** `test/packages/plugin-grant-writer-rule.mjs` follows `vault-importers-rule.mjs`: only the approved action's
+   file (`daemon-host/src/plugins/grant-action.ts`) may import `@axis/journal/plugin-grant-writer`. Every other source file of
+   every package fails the gate, tests included, except one named test helper.
+3. **A call rule.** The same rule scans every non-test source file for a call of `.plugins.grant(` or `.plugins.setEnabled(` and
+   fails the gate for any file outside the approved action and the `axis.plugins/1` handlers. So a later module that reached the
+   store some other way, for example through a journal handle passed around, still cannot add a writer unseen.
+
+   The rule's own test proves it refuses a planted second writer, by import and by call.
+
+**K2-g4: what tells the start that the plugin or its host window is gone, and when.**
+
+The facts checked are taken from the attested identity at handler entry, never from the request: the plugin connection's request
+signal, and the plugin's `hostWindowId`.
+
+- **The plugin connection.** When it closes, the daemon aborts every in-flight request of that connection (`session.ts`,
+  `close()`), and the handler's `context.signal` is that request's. The service already checks the signal before its synchronous
+  creation step; K2-g4 checks it again inside that step, next to `grantHolds`, so no await separates the check from the record.
+- **The host window.** The daemon has no record of it today, so K2-g4 adds one. The daemon counts the attested desktop
+  connections of each window id: up when a handshake is accepted, down when a connection closes. It exposes `windowOpen(windowId)`
+  to the host. A window with no open desktop connection is closed. The plugin's `hostWindowId` must be open.
+- **When it is checked**, every time from the same facts:
+  1. at handler entry, after the daemon's awaited execute audit row;
+  2. under the project mutex, before the trust gate;
+  3. inside the service's synchronous creation step, with `grantHolds`, after the trust gate and the provider's model list.
+
+  A failure at any of them refuses the start with a closed reason (`host_window_closed`, or `E_CANCELLED` for the plugin
+  connection), and nothing is created.
+- **The test** pauses at each await after the spend: the audit row, the mutex wait, the trust gate and the model list. At each one
+  it closes the plugin connection, then (in a second run) the host window's last desktop connection, and asserts that no run
+  exists.
