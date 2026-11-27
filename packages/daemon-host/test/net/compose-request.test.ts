@@ -178,7 +178,7 @@ test("invisible characters that are not default-ignorable are refused in a path 
 });
 
 test("dots beside marks, and private-use, unassigned and noncharacter code points, are refused in a path value (N1f nits review B)", () => {
-  for (const v of [".\u0301.", "..\u0301", "\u0301..", ".\u20dd", ".\u0300\u0301.", "a\ue000b", "\u{f0000}", "a\u0378b", "a\ufdd0b", "a\ufffeb", "\u{10ffff}", "\u{1fffe}"]) {
+  for (const v of [".\u0301.", "..\u0301", "\u0301..", ".\u20dd", "\u2025\u0301", "\u2025\u0300", ".\u0300\u0301.", "a\ue000b", "\u{f0000}", "a\u0378b", "a\ufdd0b", "a\ufffeb", "\u{10ffff}", "\u{1fffe}"]) {
     assert.equal(reason(() => composeRequest(NAMED, "gh", ORIGIN, { name: v })), "argument_refused", JSON.stringify(v));
   }
   for (const v of ["cafe\u0301", "na\u0303o", "a.b\u0301"]) assert.equal(reason(() => composeRequest(NAMED, "gh", ORIGIN, { name: v })), "composed", `${JSON.stringify(v)}: a mark on a letter stays`);

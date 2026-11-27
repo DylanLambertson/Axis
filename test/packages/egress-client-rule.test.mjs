@@ -166,6 +166,8 @@ test("only the egress client may import takeAuthorization, the credential's one 
   assert.deepEqual(shape('import { takeAuthorization } from "./url-pattern.js";', EGRESS_CLIENT_FILE), []);
   for (const [text, file] of [
     ['import { takeAuthorization } from "./url-pattern.js";', "daemon-host/net/compose-request.ts"],
+    ['import { matchTarget, takeAuthorization } from "./net/url-pattern.js";', "daemon-host/compose.ts"],
+    ['import { matchTarget, authorize, takeAuthorization as t } from "./net/url-pattern.js";', "daemon-host/compose.ts"],
     ['import { takeAuthorization as t } from "./net/url-pattern.js";', "daemon-host/compose.ts"],
     ['import * as up from "./net/url-pattern.js"; up[["take", "Authorization"].join("")]({});', "daemon-host/compose.ts"],
     ['export { takeAuthorization } from "./url-pattern.js";', "daemon-host/net/index.ts"],

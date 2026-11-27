@@ -47,6 +47,7 @@ const M = [
   ["x", "url-pattern re-export", "else if (n.kind === K.ExportDeclaration && hit(n.moduleSpecifier)) bad.push(`${at(n)}: a re-export of url-pattern", "else if (false) bad.push(`${at(n)}: a re-export of url-pattern"],
   ["x", "url-pattern dynamic", "bad.push(`${at(n)}: a dynamic load of url-pattern", "void (`${at(n)}: a dynamic load of url-pattern"],
   ["x", "reader rule wired", "const readerBad = credentialReaderRefusals(sf, fromRel, at);", "const readerBad = [];"],
+  ["x", "reader pin checks every name", "else if (named !== undefined) for (const e of named.elements) if", "else if (named !== undefined) for (const e of named.elements.slice(0, 1)) if"],
   ["x", "namespace import", "else if (named === undefined || !ts.isNamedImports(named)) bad.push(", "else if (named === undefined) bad.push("],
   ["x", "named allowlist", "if (!EGRESS_CLIENT_VALUES.has(name) && !EGRESS_CLIENT_TYPES.has(name)) bad.push(", "if (false) bad.push("],
   ["x", "default import", "else if (clause.name !== undefined) bad.push(", "else if (false) bad.push("],
