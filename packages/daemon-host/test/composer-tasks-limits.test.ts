@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { CREATE_TASK, WORKER_CREATES_PER_RUN } from "../src/index.js";
+import { CREATE_TASK, TasksRefusal, WORKER_CREATES_PER_RUN, type TasksService } from "../src/index.js";
 import { denyAll, drive } from "./messages-delivery-rig.js";
 import { USER, call, tasksRig } from "./tasks-rig.js";
 
@@ -40,4 +40,28 @@ test("a new run of the same worker counts from zero, and the user's own creates 
   await second.end;
   assert.deepEqual(outputs(second).map(refusal).filter((r) => r !== undefined), [], "kills a cap per project or per worker, and a counter that survives the run");
   assert.equal(p.svc.list({ projectId: "p" }).tasks.length, 55);
+});
+
+test("review 1 N1: only a create that succeeded counts; refused ones (by the store, or invalid args) consume none of the 25", async (t) => {
+  const p = await tasksRig(t);
+  let refuse = 26;
+  const flaky: TasksService = { ...p.svc, create: (caller, req) => {
+    if (caller.kind === "agent" && refuse > 0) {
+      refuse--;
+      throw new TasksRefusal("E_CONFLICT", "limit_reached");
+    }
+    return p.svc.create(caller, req);
+  } };
+  p.use(flaky);
+  const calls = [...creates(26, "R").flat(), call(CREATE_TASK, { title: "Bad", body: "a\u0000b" }), ...creates(26, "V").flat()];
+  const turns: (typeof calls)[] = [];
+  for (let i = 0; i < calls.length; i += 13) turns.push(calls.slice(i, i + 13));
+  const d = drive(p.r, p.run("w1"), [...turns, []]);
+  await d.end;
+  const out = outputs(d);
+  assert.deepEqual(out.slice(0, 26).map(refusal), Array(26).fill("limit_reached"), "the store refused the first 26");
+  assert.equal(refusal(out[26]), "invalid_args");
+  assert.equal(out.slice(27, 52).filter((x) => /^created task t[0-9a-f]{32}, revision 1$/.test(x)).length, 25, "kills a counter that counts a refused create");
+  assert.equal(refusal(out[52]), "limit_reached", "the cap still holds after the 25 that succeeded");
+  assert.equal(p.svc.list({ projectId: "p" }).tasks.length, 25);
 });

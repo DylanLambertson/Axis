@@ -31,7 +31,7 @@ test("the reserve on tasks: other authors stop at 900, the user goes on to 1,000
   assert.deepEqual([TASK_USER_RESERVE.tasks, WORKER_TASKS], [100, 900]);
   for (let i = 0; i < WORKER_TASKS - 1; i++) journal.tasks.create({ taskId: `u${i}`, projectId: "p1", title: "Fix it", body: "x", author: USER });
   journal.tasks.create({ taskId: "w-last", projectId: "p1", title: "Fix it", body: "x", author: WORKER });
-  reason(() => journal.tasks.create({ taskId: "w-over", projectId: "p1", title: "Fix it", body: "x", author: WORKER }), "limit_reached", "a worker's 901st task");
+  reason(() => journal.tasks.create({ taskId: "w-over", projectId: "p1", title: "Fix it", body: "x", author: WORKER }), "limit_reached", "a worker's create with 900 tasks in the project");
   journal.tasks.update({ taskId: "w-last", baseSeq: 1, title: "Fix it", body: "y", author: WORKER });
   for (let i = WORKER_TASKS; i < TASK_LIMITS.tasksPerProject; i++) journal.tasks.create({ taskId: `u${i}`, projectId: "p1", title: "Fix it", body: "x", author: USER });
   assert.equal(journal.tasks.list("p1").length, 1_000, "kills the reserve applied to the user's create");
