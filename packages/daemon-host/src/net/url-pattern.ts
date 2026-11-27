@@ -202,7 +202,17 @@ export function authorize(matched: MatchedTarget, credential: Credential): Autho
   return request;
 }
 
-/** The Authorization header value of an AuthorizedRequest: the egress client's one reader (`not_authorized` otherwise). */
+/**
+ * The Authorization header value of an AuthorizedRequest, TAKEN: the egress client's reader, single-use, so one authorize
+ * is one request (`not_authorized` for a copy, a forgery or a second take).
+ */
+export function takeAuthorization(request: AuthorizedRequest): string {
+  const value = authorizationOf(request);
+  authorizations.delete(request);
+  return value;
+}
+
+/** The Authorization header value of an AuthorizedRequest, read without spending it (tests and diagnostics; `not_authorized` otherwise). */
 export function authorizationOf(request: AuthorizedRequest): string {
   const value = typeof request === "object" && request !== null ? authorizations.get(request) : undefined;
   if (value === undefined) throw new CredentialError("not_authorized");

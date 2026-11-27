@@ -24,7 +24,7 @@ export const EGRESS_LIMITS = Object.freeze({
  * names the host from the checked target and never uses a proxy or an upgrade.
  */
 export const CLIENT_OWNED_HEADERS: ReadonlySet<string> = new Set([
-  "host", "content-length", "transfer-encoding", "accept-encoding", "connection", "keep-alive", "upgrade", "te", "trailer",
+  "host", "content-length", "transfer-encoding", "accept-encoding", "authorization", "connection", "keep-alive", "upgrade", "te", "trailer",
   "expect", "proxy-authorization", "proxy-connection",
 ]);
 
