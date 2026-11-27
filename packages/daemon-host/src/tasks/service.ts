@@ -32,7 +32,7 @@ const NOT_FOUND = (): never => {
 export const TASK_AUDIT = {
   create: "task.create", update: "task.update", status: "task.status", assign: "task.assign", link: "task.link", unlink: "task.unlink", delete: "task.delete", start: "task.start",
 } as const;
-const PAYLOAD = ["taskId", "projectId", "seq", "bytes", "authorKind", "callerKind", "runId", "status", "assigneeKind", "linkKind", "changed", "workerId", "workerKind", "untrusted", "hop"] as const;
+const PAYLOAD = ["taskId", "projectId", "seq", "bytes", "authorKind", "callerKind", "runId", "status", "assigneeKind", "linkKind", "changed", "workerId", "workerKind", "untrusted", "hop", "linked"] as const;
 export const TASKS_PAYLOAD_ALLOWLIST: Readonly<Record<string, readonly string[]>> = Object.freeze(
   Object.fromEntries(Object.values(TASK_AUDIT).map((a) => [a, Object.freeze([...PAYLOAD])])),
 );
