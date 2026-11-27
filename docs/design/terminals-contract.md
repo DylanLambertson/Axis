@@ -1,6 +1,7 @@
 # `axis.terminals/1`: plain terminals and the grant of a terminal to a data connection (DC-3a)
 
-- **Status:** Proposed with its first slice (DC-3a). Security review. Reviews 1 and 2 folded.
+- **Status:** Proposed with its first slice (DC-3a). Security review. Reviews 1 to 3 folded.
+- **DC-3c, needed before a terminal opens:** trust-registry revocations reaching terminals (section 2 step 5). Until it lands, `open` is refused by a capability check, so a demo cannot open a terminal before DC-3c.
 - **The DC-3a code includes a pty-process change** (sections 4 and 5): a per-terminal grant revocation, and tracking a spawn whose answer arrives after the client's timeout. That change needs its own security review.
 - **Builds on:**
   - the pty process's existing `grant`, `attach` and credit flow (PTY-7);
@@ -72,10 +73,18 @@ The journal's READY state and the project mutex alone do not prove the directory
    - **Dispatch the spawn,** with the locator's canonical path as `cwd`.
 
    The ticket's own check (its brand, spent state, time and scope) does not re-check trust: it was minted before. So the live re-read above is what refuses an untrust or a revocation that lands between the gate and the spawn.
-4. **An untrust or a revocation reaches plain terminals.** The plain-terminal registry registers with the project's stop hook, the one an untrust or a trust revocation already calls for the project's CLI and composer runs. On that hook it does three things:
-   - every pending open of the project is cancelled, its slot kept until the spawn is definitively settled (section 4);
-   - every live terminal of the project is closed, its grant revoked first (section 5) and its group killed;
-   - a group that appears late is killed and tracked.
+4. **An untrust or a binding loss reaches plain terminals (DC-3a).** Project untrust and binding loss call the project's stop hook (`onRevoked(projectId)`). Today that hook stops only the project's CLI and composer runs, so DC-3a fans it out to the plain-terminal registry too. The CLI and composer path is kept, and a failure in one fan-out never stops the other. On that event, for the project:
+   - **Pending opens:** each is marked abandoned SYNCHRONOUSLY, before any cleanup queued behind the project mutex. Its operation identity and slot are kept until the spawn is definitively settled (section 4), and its handle, if one is reported later, is never published or granted.
+   - **Live terminals:** each is closed: its state becomes `closing` (section 4), its grant is revoked (section 5), and its group is killed.
+   - **Late groups:** a group reported late is killed and tracked.
+
+   **Cancellation is logical abandonment.** The control client's `spawn(spec)` takes no cancellation signal. A pending open is abandoned in the daemon, and the pty process's answer, whenever it arrives, goes through the definitive-outcome and late-group channel of section 4.
+5. **A trust-REGISTRY revocation reaching terminals is DC-3c, and `open` is refused until it exists.** The trust registry's revocations, by window and by workspace, are a separate event source: `InMemoryTrustRegistry.set` has no event and no project identity, and running runs are not touched by it today. Routing them to the affected pending and live terminal operations is ticket **DC-3c** (`own-shell-plan.md`). It needs:
+   - an event on the trust registry;
+   - a defined window, workspace and project mapping, failing closed when the mapping saturates;
+   - the same synchronous abandonment, never-publish and kill-and-track rules as step 4.
+
+   **The refusal is a capability check, not a flag.** The host registers the `axis.terminals/1` handlers only when the registry-revocation routing is present, under the same all-or-nothing rule as the terminal port (section 8). Without it, `open` is `not_found` before any spawn. A test pins that a composition without the routing refuses `open`, and a mutant that drops the check fails.
 
 **Residual RR-99 (check to exec).** The `cwd` is checked, then handed to the pty process, which changes into it at exec. A process of the same user that swaps the directory, or one of its parents, in that window gives the shell another directory. A descriptor-pinned working directory at exec is not built in DC-3a. Until then this is a same-user residual, recorded as RR-99 (the next number free on main and the open branches). DC-3a does not claim DMN-2 is closed for this case.
 
@@ -123,8 +132,12 @@ The journal's READY state and the project mutex alone do not prove the directory
   - **Late handles.** A group that appears after the open was abandoned or timed out is reported, killed, and tracked like any other. Its slot stays charged until the group is gone.
   - **Unknown stays charged.** A liveness check that throws or cannot answer keeps the slot charged. A slot can then stay held until the daemon restarts, within the 8-terminal bound.
   - **Released only when the group is gone.** A slot is freed when the terminal's process group is known gone (`groupAlive` false, the runs binding's pattern), not at the shell's own exit. A leader can exit while a child of the group survives (the pty process tells the leader's exit from the group's emptying).
-  - **`close` is idempotent.** It kills the group. A kill that throws still marks the terminal closing, and the slot waits for the group to be gone.
-  - **Grants end with the terminal,** and a later `attach` to a terminal that closed or exited is `not_found` (section 5).
+  - **A monotonic lifecycle (review 3 S1).** A terminal goes `open`, then `closing`, then `closed` or `exited`, never back.
+    - Only an `open` terminal may be granted or attached. `closing`, `closed` and `exited` always refuse (`not_found`), though the slot's accounting stays charged until the group is gone.
+    - `close` sets `closing` FIRST, then revokes the grant (section 5), then kills the group. A kill that throws leaves the terminal `closing`, and nothing can grant it again.
+    - A repeated `close` keeps the state: it is idempotent.
+    - **At the service boundary too:** a stale grant already in flight to the pty process cannot reactivate a terminal that has ended there.
+    - While a terminal is `open`, normal transfer between the user's data connections stays allowed.
 
 ## 5. The grant (PTY-7), and its residual
 
@@ -159,7 +172,13 @@ The trust gate's own refusals pass through as they do for a CLI start.
 - **The pty process (its own security review):**
   - a `revoke` control message for one terminal: it clears the grant and detaches the owner, as section 5 describes;
   - spawn answers that arrive after the client's timeout: they are reported and tracked, not only killed (section 4).
-- **The daemon's pty port does not carry the grant today.** `grant(terminalId, conn)` and a handle's `terminalId` exist on the pty process's own port (`PtyProcessPort`), but not on the daemon's `PtyPort` or its control slot. DC-3a adds them there as optional members: a terminal port with `spawn` giving a handle with `terminalId`, and `grant`. The host serves `axis.terminals/1` only when the port has both, and otherwise answers `not_found`.
+- **The terminal-port capability contract, complete and all-or-nothing (review 3 S2).** The daemon's `PtyPort` and its control slot carry none of it today; only the pty process's own port has `grant` and a handle's `terminalId`. DC-3a adds an optional terminal port with all four parts:
+  - `spawn`, giving a handle that carries its `terminalId`;
+  - `grant(terminalId, conn)`;
+  - the per-terminal revocation (section 5);
+  - the definitive-outcome and late-spawn reporting (section 4).
+
+  The host advertises the contract and registers its handlers only when every part is present, AND the registry-revocation routing of DC-3c exists (section 2 step 5). Any missing combination is refused before a spawn. Returned ids and handles are validated before anything is published. An ordinary CLI `PtyPort` keeps working without the terminal capability. A test weakens the predicate, and it must fail.
 - **CLI run terminals.** The composition wraps the runs' pty port, as the endpoint wrapper does, to record `runId` against `terminalId` when a CLI run spawns, and drops the record when the run's group is gone.
 - **Tests use a fake pty port.** Each line below has a mutant:
   - **Directory:**
@@ -195,3 +214,11 @@ The trust gate's own refusals pass through as they do for a CLI start.
     - a leader that exits with a surviving child, whose slot stays reserved until the group is gone;
     - with the real pty client, a delayed `spawned` answer after the timeout, with a kill the group survives: the group is tracked and the slot stays charged. Releasing on the timeout, or not tracking the late group, must fail.
   - **CLI run terminals:** `close` refuses one.
+  - **Lifecycle:**
+    - a close with a throwing kill, then a daemon `attach`, then data attach, write, resize and output: all refused;
+    - a re-grant after a natural exit: refused;
+    - a repeated close.
+
+    Removing the guard must reopen a terminal, and so fail.
+  - **Project events:** project untrust and binding loss, each during the final lookup, during a pending reply and during live use. Removing each event's routing must let a late handle publish or a live terminal survive, and so fail.
+  - **Capability:** a composition without the terminal port's parts, or without DC-3c's routing, refuses `open` before a spawn; the predicate weakened must fail.
