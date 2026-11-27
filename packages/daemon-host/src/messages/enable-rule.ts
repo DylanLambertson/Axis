@@ -146,7 +146,7 @@ function codexConfigRule(kv: string): string | undefined {
 /** Programs that run another program (review 3 N12): a known CLI's name whose real path is one of these is a wrapper. */
 const WRAPPERS: ReadonlySet<string> = new Set(["env", "sudo", "doas", "su", "runuser", "nice", "nohup", "timeout", "time", "stdbuf", "xargs", "setsid", "chrt", "ionice", "flock", "npx", "npm", "pnpm", "yarn", "bunx", "uvx", "pipx"]);
 /**
- * Environment assignments in a wrapper's arguments (`env A=b`, `docker -e A=b`, `--env=A=b`), INVERTED (review 4 SF11: a
+ * Environment assignments in a wrapper's arguments (`env A=b`), INVERTED (review 4 SF11: a
  * planted `$HOME/.codex/config.toml` behind `env HOME=/x` runs the CLI with approvals and the sandbox off). Only these names
  * are allowed; a configuration home (`HOME`, `XDG_*`, `CODEX_*`, `CLAUDE_*`) is `config_home`, any other `env_assignment`.
  */
@@ -253,6 +253,26 @@ export function decideCliMessaging(facts: EnableFacts, config: readonly CliProje
   // The union of the rows of every known CLI the name or the real path names (review 2 SF9); none known: every CLI's rows.
   // A known name whose real path is a wrapper or an interpreter is a wrapper (review 3 N12: `/r/codex -> /usr/bin/env`).
   const realIsWrapper = facts.executableReal !== undefined && (WRAPPERS.has(cliOf(facts.executableReal)) || interpreterOf(facts.executableReal) !== undefined);
+  // A known name is trusted only when its real path is that CLI itself (review 5 N24, tightened in review 6 N28 and N29), in
+  // exactly one of these layouts; a link named after a CLI whose real path is anything else could run anything, so it is
+  // refused, not trusted by name:
+  // - the real path's own name is a known CLI (`codex`, `codex.js`: the union of rows of review 2 SF9 still applies);
+  // - a version-number file inside a directory named after the CLI, matched as a whole path segment in any case (Claude's
+  //   native installer: `.../claude/versions/2.1.332`); any other file name there is not the CLI;
+  // - Claude Code's npm package script, by its exact path (`.../@anthropic-ai/claude-code/cli.js`, as the package publishes
+  //   it; no npm-installed copy was present to check here).
+  // Anything else is refused, a snap's `snapd` included (a residual: such an install cannot enable messaging).
+  const nameOnly = cliOf(executable);
+  if (KNOWN_CLIS.has(nameOnly) && facts.executableReal !== undefined && !realIsWrapper) {
+    const real = facts.executableReal.replace(/\\/g, "/");
+    const parts = real.split("/");
+    const file = parts.pop() ?? "";
+    const dirs = parts.map((d) => d.toLowerCase());
+    const realNamed = KNOWN_CLIS.has(cliOf(real));
+    const versioned = dirs.includes(nameOnly) && /^[0-9]+(\.[0-9]+)+$/.test(file);
+    const npmClaude = nameOnly === "claude" && /\/@anthropic-ai\/claude-code\/cli\.js$/.test(real);
+    if (!realNamed && !versioned && !npmClaude) return { allowed: false, rule: "wrapper_unparsed" };
+  }
   const knownNames = realIsWrapper ? [] : [...new Set(exes.map(cliOf).filter((n) => KNOWN_CLIS.has(n)))];
   const clis: ReadonlySet<string> = knownNames.length === 0 ? KNOWN_CLIS : new Set(knownNames);
   for (const exe of exes) {
@@ -285,7 +305,7 @@ export function decideCliMessaging(facts: EnableFacts, config: readonly CliProje
     for (let i = 0; i < args.length; i++) {
       if (scan.values.has(i)) continue;
       const tok = args[i] as string;
-      const m = /^([A-Za-z_][A-Za-z0-9_]*)=/.exec(tok.startsWith("--env=") ? tok.slice(6) : tok);
+      const m = /^([A-Za-z_][A-Za-z0-9_]*)=/.exec(tok);
       if (m === null || ENV_SAFE(m[1] as string)) continue;
       return { allowed: false, rule: CONFIG_HOME.test(m[1] as string) ? "config_home" : "env_assignment" };
     }

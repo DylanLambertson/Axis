@@ -5,7 +5,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { isAbsolute } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { pinnedNodeHints, validSummary, wrongNodeLine } from "../../scripts/gate/lib.mjs";
 
 const gate = fileURLToPath(new URL("../../scripts/gate.mjs", import.meta.url));
@@ -58,4 +58,19 @@ test("pinnedNodeHints: a file system that throws gives no hints instead of stopp
 
 test("pinnedNodeHints: no pin gives no tools-directory hint", () => {
   assert.deepEqual(pinnedNodeHints({ ...base, pinned: undefined, env: {}, fs: { exists: () => true, isFile: () => false } }).hints, []);
+});
+
+test("pinnedNodeHints: an absolute AXIS_CODE_OSS_TOOLS_DIR is used as it is, not joined under the checkout", () => {
+  const dist = "node-v24.22.1-linux-x64";
+  const r = pinnedNodeHints({ ...base, env: { AXIS_CODE_OSS_TOOLS_DIR: "/abs/tools" }, fs: fsOf([`/abs/tools/${dist}/bin/node`]) });
+  assert.deepEqual(r.hints, [`/abs/tools/${dist}/bin`]);
+});
+
+test("pinnedNodeHints: a relative NODE24_BIN is resolved, so the advice never prints a relative path", () => {
+  const dir = resolve("rel-node/bin");
+  const asDir = pinnedNodeHints({ ...base, env: { NODE24_BIN: "rel-node/bin" }, fs: fsOf([join(dir, "node")]) });
+  assert.deepEqual(asDir.hints, [dir]);
+  const asFile = pinnedNodeHints({ ...base, env: { NODE24_BIN: "rel-node/bin/node" }, fs: fsOf([join(dir, "node")]) });
+  assert.deepEqual(asFile.hints, [dir]);
+  assert.ok(asDir.hints.concat(asFile.hints).every((h) => isAbsolute(h)));
 });

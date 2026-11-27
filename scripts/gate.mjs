@@ -168,6 +168,7 @@ step("test", "tests", () => {
     try { packageCounts = JSON.parse(readFileSync(file, "utf8")); } catch { /* summary missing */ }
     if (!validSummary(packageCounts)) packageCounts = []; // forged or damaged: not a summary
     // A run that exits 0 with no summary, or with a summary of no suite, ran nothing: that is a failure, never "pass, 0 suites".
+    // `every(ok)` cannot fail today (the runner exits non-zero when a suite fails); it stays as defence in depth against a runner that does not.
     if (r.ok && packageCounts.every((s) => s.ok) && packageCounts.length > 0) return { status: "pass", detail: `${packageCounts.length} suites` };
     if (r.ok) return { status: "fail", detail: "the test run ended without a summary of any suite (zero suites ran, or no summary was written)" };
     const bad = packageCounts.filter((s) => !s.ok).map((s) => s.name);
