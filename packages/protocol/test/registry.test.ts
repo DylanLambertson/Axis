@@ -105,6 +105,9 @@ const EXPECTED: readonly Row[] = [
   ["axis.tasks", "link", "write", 1, "none", 5_000],
   ["axis.tasks", "unlink", "write", 1, "none", 5_000],
   ["axis.tasks", "delete", "destructive", 4, "none", 30_000],
+  ["axis.plugins", "list", "read", 0, "none", 5_000],
+  ["axis.plugins", "revoke", "write", 2, "required", 10_000],
+  ["axis.plugins", "disable", "write", 2, "required", 10_000],
   ["axis.tasks", "startPreview", "read", 0, "none", 5_000],
   ["axis.tasks", "start", "write", 4, "required", 30_000],
 ];

@@ -50,6 +50,20 @@ export class PluginGrantRecords {
     return { enabled: Number(r["enabled"]) === 1, generation: Number(r["generation"]), permissions: perms };
   }
 
+  /**
+   * Every plugin added to the project, by plugin id, each with its state (PV-K2 `axis.plugins/1.list`). Read only; at most 64
+   * (the table's per-project cap).
+   */
+  list(projectId: string): Array<PluginState & { readonly pluginId: string }> {
+    const ids = (this.#db.prepare("SELECT plugin_id FROM plugin_enablement WHERE project_id = ? ORDER BY plugin_id").all(projectId) as Row[]).map((r) => String(r["plugin_id"]));
+    const out: Array<PluginState & { readonly pluginId: string }> = [];
+    for (const pluginId of ids) {
+      const s = this.state(pluginId, projectId);
+      if (s !== undefined) out.push({ pluginId, ...s });
+    }
+    return out;
+  }
+
   /** The user added the plugin to the project: disabled, generation 1, no grant. Added once. */
   add(pluginId: string, projectId: string): void {
     const at = this.#ts();

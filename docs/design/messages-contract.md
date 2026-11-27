@@ -163,6 +163,11 @@ PV-M1 put the policy refusals under `E_POLICY_DENIED`. A handler cannot raise th
     - Claude Code's npm package script, by its exact path (`.../@anthropic-ai/claude-code/cli.js`; no npm-installed copy was present to check it against here).
     - **Anything else is `wrapper_unparsed`:** a link named after a CLI whose real path is `taskset`, an unknown binary, or a file under a CLI-named directory that is not a version number. A snap install (its real path is `snapd`) is refused as well, so such an install cannot enable messaging.
     - **A bare name** has no real path and is still trusted by name: a residual. At mint the supervisor's argv is absolute, so its real path is checked there.
+    - **What these layouts do not prove (residuals, review 7 N32 to N34).** They are judged by the path alone, not by what the file is. A file in one of the accepted layouts is trusted as the CLI, whatever it contains:
+      - **Npm package path.** The npm package path is matched under any prefix, so a `.../@anthropic-ai/claude-code/cli.js` anywhere passes.
+      - **Version-named copy.** A copy of another program (`env`) given a version-number name (`1.0`) inside a writable directory named after the CLI passes.
+      - **Any parent directory.** That directory may be any parent, including a home directory of a user named `claude`.
+      - **Why they stay residuals.** Each needs the user's own CLI entry to point at such a path, and whoever can write there can already plant that CLI's configuration. Checking the file itself (a signature, a hash of the installed build) is the step that would close them, and it is not taken here.
   - **Unresolvable real path.** An absolute executable whose real path cannot be resolved (a broken link, no permission, gone) refuses: `real_path_unresolved`.
   - So for a wrapper, Codex's `-p/--profile` row also refuses an argument meant as another CLI's `-p` (`npx <package> -p hi`). That fails closed.
 - **The rule, in order.**
