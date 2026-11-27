@@ -270,8 +270,12 @@ startup.
   access (a literal key, or a computed one) or destructuring of a callable member named `grant`, `setEnabled` or
   `takeGrantMint` is refused, whatever type the receiver has been given: the store, a `Pick<>`, a structural view, a union, a
   container, a promise's result, a generic. This includes calls through `call`, `apply` and `bind`.
-  - It is not refused when the receiver is the grant action (the one known type that is not the store), or for
-    `setEnabled(…, false)`, a decrease, which is allowed anywhere.
+  - It is not refused when the receiver is the grant action, or for `setEnabled(…, false)`, a decrease, which is allowed
+    anywhere.
+    - The grant action is recognised by its declaration in `plugins/grant-action.ts`, never by its name, so a local type that
+      happens to be called `GrantAction` is not exempt (review K2-g3, round 3).
+  - Destructuring is checked in every position: a `const`, a parameter, a `for-of`, a pattern nested in another, and assignment
+    patterns (`({ grant: g } = x)`, nested ones and `for ({ … } of …)`).
   - A data field that happens to be named `grant` is not callable, so it is never flagged.
   - This replaces chasing the shapes a value can flow through: whatever path the store takes, its increase members can only be
     reached by name at a call site, and every such site is checked.

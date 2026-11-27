@@ -72,7 +72,37 @@ export function grantWriterProblems(program, root, checked) {
     const rel = relOf(sf);
     if (!checked(rel)) continue;
     const at = (node, what) => out.push(`${rel}:${sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1}: ${what}`);
+    const atNode = at;
     const isStore = (expr) => isNamed(checker.getTypeAtLocation(expr), "PluginGrantRecords");
+    const knownOther = (_checker, expr) => knownOtherType(checker, checker.getTypeAtLocation(expr), relOf);
+    // A destructured member: the pattern's source type is checked like a receiver.
+    const destructured = (type, key, at) => {
+      if (knownOtherType(checker, type, relOf)) return;
+      const name = key === undefined ? undefined : ts.isIdentifier(key) || ts.isStringLiteralLike(key) ? key.text : undefined;
+      if (name === undefined) {
+        if (STORE_INCREASES.some((n) => callableMemberOf(checker, type, n, at))) atNode(at, "a computed member destructured from a value that may be the grant store");
+      } else if (MEMBER_FILES.has(name) && callableMemberOf(checker, type, name, at) && !MEMBER_FILES.get(name).has(rel)) atNode(at, `${name} destructured from a value that may be the grant store`);
+    };
+    // An assignment pattern ({ grant: g } = x, [{ grant }] = xs, nested): walked against the type assigned to it.
+    const assignmentPattern = (pattern, type) => {
+      if (ts.isObjectLiteralExpression(pattern)) {
+        for (const prop of pattern.properties) {
+          if (ts.isShorthandPropertyAssignment(prop)) destructured(type, prop.name, prop);
+          else if (ts.isPropertyAssignment(prop)) {
+            destructured(type, ts.isComputedPropertyName(prop.name) ? undefined : prop.name, prop);
+            const inner = ts.isIdentifier(prop.name) || ts.isStringLiteralLike(prop.name) ? checker.getPropertyOfType(checker.getNonNullableType(type), prop.name.text) : undefined;
+            const target = ts.isBinaryExpression(prop.initializer) ? prop.initializer.left : prop.initializer;
+            if (inner !== undefined && (ts.isObjectLiteralExpression(target) || ts.isArrayLiteralExpression(target))) assignmentPattern(target, checker.getTypeOfSymbolAtLocation(inner, prop));
+          }
+        }
+      } else if (ts.isArrayLiteralExpression(pattern)) {
+        const element = elementTypeOf(checker, type);
+        for (const el of pattern.elements) {
+          const target = ts.isBinaryExpression(el) ? el.left : el;
+          if (element !== undefined && (ts.isObjectLiteralExpression(target) || ts.isArrayLiteralExpression(target))) assignmentPattern(target, element);
+        }
+      }
+    };
     if (rel === FILES.action) {
       let values = 0;
       for (const st of sf.statements) {
@@ -98,14 +128,18 @@ export function grantWriterProblems(program, root, checked) {
           if (STORE_INCREASES.some((n) => callableMember(checker, node.expression, n))) at(node, "a computed member of a value that may be the grant store");
         } else if (MEMBER_FILES.has(literal) && callableMember(checker, node.expression, literal) && !MEMBER_FILES.get(literal).has(rel)) at(node, `${literal} on a value that may be the grant store`);
       }
-      if (ts.isVariableDeclaration(node) && node.initializer !== undefined && ts.isObjectBindingPattern(node.name) && !knownOther(checker, node.initializer)) {
-        for (const el of node.name.elements) {
-          const key = el.propertyName ?? el.name;
-          const name = ts.isIdentifier(key) || ts.isStringLiteralLike(key) ? key.text : undefined;
-          if (name === undefined) {
-            if (STORE_INCREASES.some((n) => callableMember(checker, node.initializer, n))) at(el, "a computed member destructured from a value that may be the grant store");
-          } else if (MEMBER_FILES.has(name) && callableMember(checker, node.initializer, name) && !MEMBER_FILES.get(name).has(rel)) at(el, `${name} destructured from a value that may be the grant store`);
-        }
+      // Destructuring in every position (review K2-g3 round 3): a binding pattern wherever it appears (a const, a parameter, a
+      // for-of, nested in another pattern), checked against the type it destructures; and assignment patterns.
+      if (ts.isObjectBindingPattern(node)) {
+        const type = checker.getTypeAtLocation(node);
+        for (const el of node.elements) destructured(type, el.propertyName ?? (el.dotDotDotToken === undefined ? el.name : undefined) ?? (ts.isIdentifier(el.name) ? el.name : undefined), el);
+      }
+      if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken && (ts.isObjectLiteralExpression(node.left) || ts.isArrayLiteralExpression(node.left))) {
+        assignmentPattern(node.left, checker.getTypeAtLocation(node.right));
+      }
+      if (ts.isForOfStatement(node) && (ts.isObjectLiteralExpression(node.initializer) || ts.isArrayLiteralExpression(node.initializer))) {
+        const element = elementTypeOf(checker, checker.getTypeAtLocation(node.expression));
+        if (element !== undefined) assignmentPattern(node.initializer, element);
       }
       if ((ts.isCallExpression(node) || ts.isNewExpression(node)) && node.arguments !== undefined) {
         const calleeFile = declFile(symbolOf(ts.isCallExpression(node) ? node.expression : node.expression));
@@ -153,16 +187,27 @@ export function grantWriterProblems(program, root, checked) {
 const STORE_INCREASES = ["grant", "setEnabled", "takeGrantMint"];
 /** The receiver's member of that name is callable (or the receiver is untyped): the store's three are methods. A data field is not. */
 function callableMember(checker, receiver, name) {
-  const type = checker.getNonNullableType(checker.getTypeAtLocation(receiver));
+  return callableMemberOf(checker, checker.getTypeAtLocation(receiver), name, receiver);
+}
+function callableMemberOf(checker, rawType, name, at) {
+  const type = checker.getNonNullableType(rawType);
   if (type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) return false; // an `any` cast is the reviewed boundary
   const prop = checker.getPropertyOfType(type, name);
   if (prop === undefined) return false;
-  return checker.getTypeOfSymbolAtLocation(prop, receiver).getCallSignatures().length > 0;
+  return checker.getTypeOfSymbolAtLocation(prop, at).getCallSignatures().length > 0;
 }
 /** The one receiver type known not to be the store: the grant action (its own rule keeps it in its files). */
-function knownOther(checker, receiver) {
-  const type = checker.getNonNullableType(checker.getTypeAtLocation(receiver));
-  return !type.isUnion() && isNamed(type, "GrantAction");
+function knownOtherType(checker, type, fileOf) {
+  const t = checker.getNonNullableType(type);
+  if (t.isUnion()) return false;
+  const sym = t.aliasSymbol ?? t.getSymbol();
+  // By declaration, never by name: only the GrantAction type DECLARED in plugins/grant-action.ts is known not to be the store.
+  return sym?.getName() === "GrantAction" && (sym.declarations ?? []).length > 0 && sym.declarations.every((d) => fileOf(d.getSourceFile()) === FILES.action);
+}
+/** The element type of an array, a tuple or another iterable with a number index. */
+function elementTypeOf(checker, type) {
+  const t = checker.getNonNullableType(type);
+  return checker.getIndexTypeOfType(t, ts.IndexKind.Number) ?? (checker.isTupleType?.(t) ? checker.getTypeArguments(t)[0] : undefined);
 }
 /** `x.setEnabled(a, b, false)`: a decrease, allowed anywhere. */
 const isDecrease = (access) => access.name.text === "setEnabled" && ts.isCallExpression(access.parent) && access.parent.expression === access && access.parent.arguments[2]?.kind === ts.SyntaxKind.FalseKeyword;

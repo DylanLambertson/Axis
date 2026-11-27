@@ -98,6 +98,17 @@ const PLANTED = [
   ["a function typed to return a view of the store", `${J}export function view(j: Journal): { setEnabled(a: string, b: string, e: boolean): void } { return j.plugins; }\nexport function f(j: Journal) { view(j).setEnabled("x", "p", true); }`],
   ["a function returning a token, alone", `${J}export function f(m: () => PluginGrantWrite) { return typeof m; }`],
   ["a shorthand property", `${J}export function f(j: Journal) { const plugins = j.plugins; const o = { plugins }; return o.plugins.takeGrantMint(); }`],
+  ["a forged local GrantAction cast", `${J}interface GrantAction { takeGrantMint(): unknown; grant(a: string, b: string, c: string): void }\nexport function f(j: Journal) { return (j.plugins as unknown as GrantAction).takeGrantMint(); }`],
+  ["a forged GrantAction in a tuple", `${J}interface GrantAction { takeGrantMint(): unknown }\nexport function f(j: Journal) { const t: [GrantAction] = [j.plugins]; return t[0].takeGrantMint(); }`],
+  ["an enable through a forged GrantAction", `${J}interface GrantAction { setEnabled(a: string, b: string, e: boolean): void }\nexport function f(j: Journal) { (j.plugins as GrantAction).setEnabled("x", "p", true); }`],
+  ["nested destructuring", `${J}export function f(j: Journal) { const { plugins: { takeGrantMint } } = j; return takeGrantMint; }`],
+  ["destructuring a parameter", `${J}export function f({ takeGrantMint }: Journal["plugins"]) { return takeGrantMint; }`],
+  ["destructuring a callback parameter", `${J}export function f(j: Journal) { return [j.plugins].map(({ takeGrantMint }) => takeGrantMint); }`],
+  ["destructuring in a for-of", `${J}export function f(j: Journal) { for (const { setEnabled } of [j.plugins]) void setEnabled; }`],
+  ["destructuring inside an array pattern", `${J}export function f(j: Journal) { const [{ grant }] = [j.plugins]; return grant; }`],
+  ["an assignment pattern", `${J}export function f(j: Journal) { let g: unknown; ({ grant: g } = j.plugins); return g; }`],
+  ["a nested assignment pattern", `${J}export function f(j: Journal) { let m: unknown; ({ plugins: { takeGrantMint: m } } = j); return m; }`],
+  ["an assignment pattern in a for-of", `${J}export function f(j: Journal) { let s: unknown; for ({ setEnabled: s } of [j.plugins]) void s; }`],
   ["Journal.open outside the host", `import { Journal } from "../../journal/src/journal.js";\nexport const j = Journal.open();`],
   ["new PluginGrantRecords outside the journal", `import { PluginGrantRecords } from "../../journal/src/plugin-grant-store.js";\nexport const p = new PluginGrantRecords();`],
   ["the audit openDatabase elsewhere", `import { openDatabase } from "../../audit/src/db.js";\nexport const d = openDatabase("y");`],
@@ -165,4 +176,9 @@ test("allowed: a decrease anywhere, the grant action's own calls, a data field n
   assert.deepEqual(run({ [EVIL]: `${J}export function f(j: Journal) { j.plugins.setEnabled("x", "p", false); }` }), [], "a decrease");
   assert.deepEqual(run({ [EVIL]: `export function f(out: { kind: "granted"; grant: { token: string } }) { return out.grant.token; }` }), [], "a data field");
   assert.deepEqual(run({ [EVIL]: `class Acl { grant(): void {} }\nexport function f(a: Acl) { return typeof a; }` }), [], "a method declared but not used");
+});
+
+test("refused: a local GrantAction declared inside the handler file itself", () => {
+  const problems = run({ [FILES.handler]: `${BASE[FILES.handler]}\nnamespace L { export interface GrantAction { takeGrantMint(): unknown } }\nexport function f(j: Journal) { return (j.plugins as unknown as L.GrantAction).takeGrantMint(); }` });
+  assert.ok(problems.some((p) => p.startsWith(`${FILES.handler}:`) && p.includes("takeGrantMint")), JSON.stringify(problems));
 });
