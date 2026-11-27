@@ -85,11 +85,11 @@ async function check(deps: GitOpsDeps, input: CommitInput): Promise<{ plan: Comm
   if (line(parentR) !== input.expectedParent) throw headMoved("HEAD is not the commit that was reviewed; review the changes again");
   await assertNoOperation(git, input.worktree, deps);
 
-  const index = await git(["write-tree"]);
-  if (index.code !== 0) throw conflict("the index cannot be written as a tree (unmerged paths?)");
-  if (line(index) !== input.reviewedTreeHash) {
-    throw conflict("the index differs from the tree that was reviewed; review the changes again");
-  }
+  // DC-0 (ADR 0011 S1): the commit is built from the reviewed tree OBJECT; the real index is never read as the commit's tree
+  // nor written, so the user's own staging is untouched. The id must name a tree that exists here. That it is the tree the
+  // user reviewed is the caller's binding (the daemon's reviewed-tree registry, `prepareCommit`, `assertReviewFresh`).
+  const tree = await git(["rev-parse", "--verify", "--quiet", "--end-of-options", `${input.reviewedTreeHash}^{tree}`]);
+  if (tree.code !== 0 || line(tree) !== input.reviewedTreeHash) throw conflict("the reviewed tree is not a tree of this repository; review the changes again");
   const headTree = await git(["rev-parse", "--verify", "--end-of-options", "HEAD^{tree}"]);
   if (headTree.code === 0 && line(headTree) === input.reviewedTreeHash) throw invalid("nothing to commit");
 

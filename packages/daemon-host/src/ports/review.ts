@@ -91,12 +91,13 @@ export interface ReviewService {
   open(workspaceId: string, ctx: PortContext): Promise<ReviewRound>;
 }
 
-/** A review whose staging was done: the input of the commit, and a way to put the person's own staging back. */
+/**
+ * A review that was checked for commit: the input of the commit. Nothing was staged (DC-0, ADR 0011 S1): the person's own index
+ * is never written by a commit or a refusal, so there is nothing to put back.
+ */
 export interface PreparedCommitPort {
-  /** Re-checks HEAD, the branch and the index, and returns what `executeCommit` takes (`expectedParent` and `expectedBranch` included). */
+  /** Re-checks HEAD, the branch and any operation in progress, and returns what `executeCommit` takes (`expectedParent` and `expectedBranch` included). */
   handoff(message: string, author?: { readonly name: string; readonly email: string }): Promise<CommitInput>;
-  /** Best effort, and only while HEAD is still the reviewed commit: puts back the index `prepare` replaced. Never throws. */
-  restoreIndex(): Promise<void>;
 }
 
 /**

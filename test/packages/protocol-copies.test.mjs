@@ -173,11 +173,17 @@ test("the closed-set refusal reasons of axis.git/1 and axis.review/1 are what th
     untrusted: ["gate/project-trust.ts", /new AxisError\("E_POLICY_DENIED",[^)]*\{ reason: "untrusted" \}\)/],
   };
   for (const [reason, [file, pattern]] of Object.entries(HOST_RAISED)) assert.match(hostFile(file), pattern, `the host no longer raises "${reason}"`);
+  // In the closed set but never produced: kept so an older client still parses every answer.
+  const RETIRED = { index_changed: "DC-0: the real index is no longer part of a commit" };
   // Wire to packages: every listed reason exists, and is raised under the code the contract lists it under.
   for (const [reason, codes] of wire) {
     if (Object.hasOwn(HOST_RAISED, reason)) {
       assert.deepEqual([...codes], ["E_CONFLICT"], `"${reason}" is served under E_CONFLICT only`);
       assert.equal(raised.has(reason), false, `"${reason}" is listed as host-raised but a package raises it too`);
+      continue;
+    }
+    if (Object.hasOwn(RETIRED, reason)) {
+      assert.equal(raised.has(reason), false, `"${reason}" is retired (${RETIRED[reason]}) but a package raises it again`);
       continue;
     }
     assert.ok(raised.has(reason), `no package raises "${reason}"`);

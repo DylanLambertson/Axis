@@ -25,7 +25,7 @@ There is one commit path, and it is bound. `executeCommit(deps, input)` and `pla
 | Field | Type | Required | Meaning |
 |---|---|---|---|
 | `worktree` | `WorktreeRef` | yes | The registered worktree (never discovered). |
-| `reviewedTreeHash` | `string`, full lower-case object id | yes | The tree the user reviewed. The index must write to exactly this tree. |
+| `reviewedTreeHash` | `string`, full lower-case object id | yes | The tree the user reviewed. It must name a tree of the repository; the commit is built from that object, and the real index is neither read nor written (DC-0). |
 | `message` | `string`, 1 to 64 KiB, no NUL | yes | Cleaned like git's default `stripspace` (trailing white space, repeated blank lines, outer blank lines, one final newline); `commit.cleanup` is ignored. |
 | `expectedParent` | `string`, full lower-case object id | **yes** | The commit HEAD pointed at when the diff was reviewed. |
 | `expectedBranch` | `string`, the SHORT name `axis/<slug>` | **yes** | The branch checked out at review time. Same slug rules as always. Not `refs/heads/axis/<slug>`, never `null`; a review with no branch (a detached HEAD) cannot be committed: git-ops refuses it. |
@@ -42,11 +42,11 @@ Errors. Argument shape: `E_INVALID_ARGUMENT` for a malformed `expectedParent`, a
 | `stale` | `assertReviewFresh` refused. |
 | `ref_update_failed` | The branch is still at `expectedParent` but git could not update it (a lock, for example). The message is fixed text; git's output is not carried. |
 
-`E_CONFLICT` without a reason: the index does not write to `reviewedTreeHash`. `E_INTERNAL` with `details.updated: false`: the commit object that was built failed verification (not exactly the expected parent, or not the reviewed tree) and the branch was not touched; `updated: true, rolledBack: false`: the update succeeded but the branch no longer points at the new commit when read back, and nothing was rolled back. `E_UNAVAILABLE`: git could not run, or the repository state could not be read, so an operation in progress cannot be ruled out.
+`E_CONFLICT` without a reason: `reviewedTreeHash` is not a tree of the repository. `E_INTERNAL` with `details.updated: false`: the commit object that was built failed verification (not exactly the expected parent, or not the reviewed tree) and the branch was not touched; `updated: true, rolledBack: false`: the update succeeded but the branch no longer points at the new commit when read back, and nothing was rolled back. `E_UNAVAILABLE`: git could not run, or the repository state could not be read, so an operation in progress cannot be ruled out.
 
 Order, with the caller holding the workspace lock:
 
-1. `check()`: argument checks; CLI-run and drift gates; the branch must be `expectedBranch` and HEAD `expectedParent`; operation in progress; the index must write to `reviewedTreeHash`; the identity checks; the signing setting; then, as the last step before git builds anything, `assertReviewFresh`.
+1. `check()`: argument checks; CLI-run and drift gates; the branch must be `expectedBranch` and HEAD `expectedParent`; operation in progress; `reviewedTreeHash` must name a tree (`rev-parse --verify <id>^{tree}`; the real index is not consulted, DC-0); the identity checks; the signing setting; then, as the last step before git builds anything, `assertReviewFresh`.
 2. `commit-tree [-S] -p <expectedParent> -F - <reviewedTreeHash>` in the **pty context**. Signing and identity come from the user's configuration; `commit.gpgsign=true` adds `-S` (commit-tree ignores the setting by itself), and an unreadable value refuses. It creates an object and moves no ref.
 3. The new object is verified with the daemon-side git: its parent list is exactly `[expectedParent]` and its tree is `reviewedTreeHash`.
 4. The checked-out branch and the operation state are asked again.

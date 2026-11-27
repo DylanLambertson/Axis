@@ -143,7 +143,7 @@ export async function gitRig(options: GitRigOptions = {}) {
 
   const gate = { runsActive: options.runsActive ?? false, stalled: false, branchOverride: undefined as string | undefined, recordPushed: [] as string[], bookkeeping: [] as unknown[], internal: [] as unknown[] };
   const runs: Pick<RunsService, "hasActiveRun"> = { hasActiveRun: () => gate.runsActive };
-  const calls = { planPush: [] as Array<{ baseSha: string; branch: string; remote: string }>, executePush: 0, executeCommit: 0, prepare: 0, restoreIndex: 0, assertFresh: 0 };
+  const calls = { planPush: [] as Array<{ baseSha: string; branch: string; remote: string }>, executePush: 0, executeCommit: 0, prepare: 0, assertFresh: 0 };
   const realOps = createGitOperations({ git: gitPort, now: () => performance.now(), runs, ...(options.resolveSshHost === undefined ? {} : { resolveSshHost: options.resolveSshHost }) });
   const baseOps: GitOperations = {
     ...realOps,
@@ -161,7 +161,7 @@ export async function gitRig(options: GitRigOptions = {}) {
     prepare: async (h, c) => {
       calls.prepare++;
       const p = await realPreparer.prepare(h, c);
-      return { handoff: (m, a) => p.handoff(m, a), restoreIndex: () => (calls.restoreIndex++, p.restoreIndex()) };
+      return { handoff: (m, a) => p.handoff(m, a) };
     },
     assertFresh: (h) => (calls.assertFresh++, realPreparer.assertFresh(h)),
   };

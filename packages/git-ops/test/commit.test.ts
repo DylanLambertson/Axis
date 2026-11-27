@@ -51,8 +51,8 @@ test("a configured identity that differs from the expected one is refused", asyn
   assert.equal(await code(planCommit(makeDeps(r), { ...input, author: { name: "Evil", email: "e@x" } })), "E_POLICY_DENIED");
 });
 
-test("REV-1: an index tree that differs from the reviewed tree is refused", async () => {
-  const r = new FakeRunner(healthy((s) => (s[0] === "write-tree" ? { stdout: `${OTHER_TREE}\n` } : undefined)));
+test("REV-1: a reviewed id that is not a tree of the repository is refused, before any pty call", async () => {
+  const r = new FakeRunner(healthy((s) => (s[0] === "rev-parse" && s.includes(`${TREE}^{tree}`) ? { code: 1 } : undefined)));
   assert.equal(await code(planCommit(makeDeps(r), input)), "E_CONFLICT");
   assert.equal(r.ptyCalls().length, 0);
 });
@@ -107,7 +107,7 @@ test("filter drivers present in the config are neutralised on daemon calls", asy
     ),
   );
   await planCommit(makeDeps(r), input);
-  const wt = r.calls.find((c) => sub(c.argv)[0] === "write-tree");
+  const wt = r.calls.find((c) => sub(c.argv).includes(`${TREE}^{tree}`));
   assert.ok(wt);
   for (const f of ["lfs", "evil"]) {
     for (const k of ["clean", "smudge", "process"]) assert.ok(wt.argv.includes(`filter.${f}.${k}=`), `${f}.${k}`);
@@ -118,7 +118,7 @@ test("filter drivers present in the config are neutralised on daemon calls", asy
 test("an empty or upper-case filter name is neutralised as git spells it; a two-level filter key names no driver", async () => {
   const r = new FakeRunner(healthy((s) => (s[0] === "config" ? { stdout: "filter..process\0filter.Up.clean\0filter.process\0" } : undefined)));
   await planCommit(makeDeps(r), input);
-  const wt = r.calls.find((c) => sub(c.argv)[0] === "write-tree");
+  const wt = r.calls.find((c) => sub(c.argv).includes(`${TREE}^{tree}`));
   assert.ok(wt);
   for (const f of ["", "Up"]) {
     for (const k of ["clean", "smudge", "process"]) assert.ok(wt.argv.includes(`filter.${f}.${k}=`), `${f}.${k}`);

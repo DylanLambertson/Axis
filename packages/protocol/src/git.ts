@@ -70,7 +70,8 @@ export const MAX_ALLOWED_BINARY_IDS = MAX_BLOCKED_BINARY_FILES;
 export const GIT_COMMIT_REFUSALS = {
   /**
    * `head_moved`: HEAD, the checked-out branch or the parent is not the one reviewed. `stale`: `assertReviewFresh`, the
-   * worktree no longer matches the reviewed tree. `index_changed`: the staged index changed since the review.
+   * worktree no longer matches the reviewed tree. `index_changed`: RETIRED, no longer produced (DC-0: the real index is not part
+   * of a commit any more); it stays in the closed set so an older client still parses every answer.
    * `operation_in_progress`: a merge, cherry-pick, revert, rebase or bisect is under way or the index has unmerged paths.
    * `ref_update_failed`: the branch could not be moved by compare-and-swap (a lock); it was left as it was. `snapshot_failed`: the worktree could not be read for the freshness check.
    * `git_drift`: the repository's git configuration changed since it was recorded (`commit` re-takes the drift check before it commits).

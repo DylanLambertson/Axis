@@ -8,6 +8,7 @@ import { conflict, denied, internal, invalid, mapUnexpected, unavailable } from 
 import { OBJECT_ID, expectComplete, expectOk, gitPaths, reviewGitFor, type ReviewGit } from "./gitcall.js";
 import { resolveLimits } from "./limits.js";
 import { snapshotWorktree } from "./snapshot.js";
+import { acquireIndex } from "./tempindex.js";
 import type { ReviewDeps } from "./types.js";
 
 export interface AcceptedFile {
@@ -135,12 +136,11 @@ export interface PreparedCommit {
   readonly worktree: WorktreeRef;
   readonly reviewedTreeHash: string;
   readonly head: string;
-  /** The tree the real index held before it was replaced, so a refused commit can put the user's staging back. Undefined when it could not be written. */
-  readonly previousIndexTree: string | undefined;
   /**
    * The input @axis/git-ops `planCommit` and `executeCommit` take. Call it immediately before handing over: it checks again
-   * that HEAD, the branch and the index are still what was prepared, and refuses (`E_CONFLICT`, `head_moved` or
-   * `index_changed`) when not. It does not close the last gap (design §6, G2/G3): git-ops must check `expectedParent`.
+   * that HEAD and the branch are still what was prepared and that no operation started, and refuses (`E_CONFLICT`,
+   * `head_moved` or `operation_in_progress`) when not. It does not close the last gap (design §6, G2/G3): git-ops must check
+   * `expectedParent`. (`index_changed` is no longer produced: the real index is not part of the commit, ADR 0011 S1.)
    */
   handoff(message: string, author?: { readonly name: string; readonly email: string }): Promise<PinnedCommitInput>;
 }
@@ -150,8 +150,8 @@ const IN_PROGRESS = ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "REBASE_HE
 
 /**
  * Refuses (E_CONFLICT `operation_in_progress`) while a merge, cherry-pick, revert, rebase, am or bisect is under way, or the
- * index has unmerged entries. Writing the reviewed tree into the index would clear the unmerged entries that make a commit
- * refuse, and git would then record the operation's second parent or another author (design §6).
+ * index has unmerged entries. Committing the reviewed tree now would record it in the middle of the operation, and the user's
+ * own finish of it would then build on a commit it did not expect (design §6).
  */
 async function assertNoOperation(deps: ReviewDeps, git: ReviewGit, w: WorktreeRef): Promise<void> {
   const unmerged = await git(["ls-files", "-u", "-z"]);
@@ -163,9 +163,11 @@ async function assertNoOperation(deps: ReviewDeps, git: ReviewGit, w: WorktreeRe
 }
 
 /**
- * Makes the real index equal the reviewed tree and returns what `executeCommit` needs. Refuses (E_CONFLICT) when HEAD moved
+ * Checks that the reviewed tree can be committed and returns what `executeCommit` needs. Refuses (E_CONFLICT) when HEAD moved
  * or any file changed since the review. Run under the daemon's worktree lock and before `executeCommit` (design §6: G1 to
- * G3). The index is the only user state it writes; the worktree and refs are never touched.
+ * G3). **It writes no user state** (DC-0, ADR 0011 S1): the reviewed tree is read into a PRIVATE index in the daemon's
+ * scratch directory and written back to prove it loads whole; the real `.git/index`, the worktree and the refs are never
+ * touched, so the user's own `git add` staging survives a commit and every refusal.
  */
 export function prepareCommit(deps: ReviewDeps, binding: ReviewBinding): Promise<PreparedCommit> {
   return mapUnexpected(async () => {
@@ -174,7 +176,8 @@ export function prepareCommit(deps: ReviewDeps, binding: ReviewBinding): Promise
     // (An unborn branch never gets a binding: `headState` refuses it with `no_head`.)
     if (binding.branch === null) throw denied("HEAD is detached; commit from a branch", "detached_head");
     const git = await reviewGitFor(deps, binding.worktree);
-    // read-tree into the real index would drop skip-worktree bits, so a sparse checkout is not supported (design §14).
+    // A sparse checkout is not supported (design §14, revisited for DC-0): the review's snapshot reads the worktree into a
+    // private index with sparse checkout off, so a file outside the cone would look deleted and be committed as deleted.
     const sparse = await git(["config", "--type=bool", "--get", "core.sparseCheckout"]);
     if (sparse.code === 0 && sparse.stdout.trim() === "true") throw unavailable("a sparse checkout cannot be committed from a review");
     await assertNoOperation(deps, git, binding.worktree);
@@ -186,11 +189,14 @@ export function prepareCommit(deps: ReviewDeps, binding: ReviewBinding): Promise
         { changedCount: fresh.changedCount },
       );
     }
-    const before = await git(["write-tree"]);
-    const previousIndexTree = before.code === 0 && OBJECT_ID.test(before.stdout.trim()) ? before.stdout.trim() : undefined;
-    expectOk(await git(["read-tree", binding.reviewedTree]), "stage the reviewed tree");
-    const written = expectComplete(await git(["write-tree"]), "read back the staged tree").trim();
-    if (written !== binding.reviewedTree) throw internal("the index does not hold the reviewed tree after staging it");
+    const idx = await acquireIndex(deps.tempIndex);
+    try {
+      expectOk(await git(["read-tree", binding.reviewedTree], { index: idx.path }), "load the reviewed tree");
+      const written = expectComplete(await git(["write-tree"], { index: idx.path }), "read back the reviewed tree").trim();
+      if (written !== binding.reviewedTree) throw internal("the reviewed tree does not read back whole");
+    } finally {
+      await idx.release();
+    }
     await assertNoOperation(deps, git, binding.worktree);
     const headNow = await headState(git);
     if (headNow.commit !== binding.head || headNow.branch !== binding.branch) throw conflict("HEAD or the branch moved since the review; review the changes again", "head_moved");
@@ -199,14 +205,11 @@ export function prepareCommit(deps: ReviewDeps, binding: ReviewBinding): Promise
       worktree: binding.worktree,
       reviewedTreeHash: binding.reviewedTree,
       head: binding.head,
-      previousIndexTree,
       handoff: (message, author) =>
         mapUnexpected(async () => {
           const g = await reviewGitFor(deps, binding.worktree);
           const now = await headState(g);
-          if (now.commit !== binding.head || now.branch !== binding.branch) throw conflict("HEAD or the branch moved since the review was staged; review the changes again", "head_moved");
-          const staged = await g(["write-tree"]);
-          if (staged.code !== 0 || staged.stdout.trim() !== binding.reviewedTree) throw conflict("the index changed since the reviewed tree was staged", "index_changed");
+          if (now.commit !== binding.head || now.branch !== binding.branch) throw conflict("HEAD or the branch moved since the review was prepared; review the changes again", "head_moved");
           await assertNoOperation(deps, g, binding.worktree);
           return {
             worktree: binding.worktree,
