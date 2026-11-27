@@ -1,14 +1,16 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { z } from "zod";
+import { challengeReferenceSchema } from "./challenge.js";
 import { guarded } from "./guard.js";
 import { pluginIdSchema } from "./messages-wire.js";
 import { projectIdSchema, type MethodSpec } from "./worktrees.js";
 
 /**
- * `axis.plugins/1` (PV-K2 slice K2-g1, `docs/design/plugin-grant-contract.md` sections 2 and 4): the user's view of the plugins of
- * a project and the two decreases, `revoke` and `disable`. Every method is the user's alone (a user policy row, never a web client,
- * never a plugin: `axis.plugins/` is on the plugin deny list). The increases, `grant` and `enable` (tier 4, a native confirmation),
- * are slice K2-g2 and are not served here, so no request of this contract can add a permission or switch a plugin on.
+ * `axis.plugins/1` (PV-K2, `docs/design/plugin-grant-contract.md` sections 2 to 4): the user's view of the plugins of a project,
+ * the two decreases `revoke` and `disable` (tier 2, K2-g1), and the two increases `grant` and `enable` (tier 4: a daemon challenge
+ * and main's native confirmation, K2-g2). Every method is the user's alone (a user policy row, never a web client, never a
+ * plugin: `axis.plugins/` is on the plugin deny list). The increases are served but switched off until K2-enable: the host
+ * refuses them before any challenge unless its `pluginGrants` option is on, and it is off in production.
  */
 export const PLUGINS_CONTRACT = "axis.plugins" as const;
 export const PLUGINS_VERSION = 1 as const;
@@ -49,11 +51,18 @@ export const pluginsRevokeRequestSchema = guarded(z.strictObject({ projectId: pr
 // disable (write, tier 2): the switch off; the grants are kept; a plugin already off is answered as it is, unchanged
 export const pluginsDisableRequestSchema = guarded(z.strictObject({ projectId: projectIdSchema, pluginId }));
 export const pluginsChangeResponseSchema = guarded(z.strictObject({ plugin: projectPluginSchema }));
+// grant (write, tier 4): one permission of the closed set; the retry that spends the approval carries `approval`
+export const pluginsGrantRequestSchema = guarded(z.strictObject({ projectId: projectIdSchema, pluginId, permission: pluginPermissionSchema, approval: challengeReferenceSchema.optional() }));
+// enable (write, tier 4): the switch on; the grants kept by a disable apply again
+export const pluginsEnableRequestSchema = guarded(z.strictObject({ projectId: projectIdSchema, pluginId, approval: challengeReferenceSchema.optional() }));
 
 export const pluginsMethods = {
   list: { request: pluginsListRequestSchema, response: pluginsListResponseSchema, sideEffect: "read", tier: 0, idempotency: "none", timeoutMs: 5_000 },
   revoke: { request: pluginsRevokeRequestSchema, response: pluginsChangeResponseSchema, sideEffect: "write", tier: 2, idempotency: "required", timeoutMs: 10_000 },
   disable: { request: pluginsDisableRequestSchema, response: pluginsChangeResponseSchema, sideEffect: "write", tier: 2, idempotency: "required", timeoutMs: 10_000 },
+  // Tier 4: the approval is single use, so no idempotency key (as the pages tier-4 methods).
+  grant: { request: pluginsGrantRequestSchema, response: pluginsChangeResponseSchema, sideEffect: "write", tier: 4, idempotency: "none", timeoutMs: 30_000 },
+  enable: { request: pluginsEnableRequestSchema, response: pluginsChangeResponseSchema, sideEffect: "write", tier: 4, idempotency: "none", timeoutMs: 30_000 },
 } as const satisfies Record<string, MethodSpec>;
 
 export type PluginsMethod = keyof typeof pluginsMethods;
