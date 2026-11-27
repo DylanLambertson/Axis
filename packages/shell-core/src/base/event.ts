@@ -25,18 +25,44 @@ export namespace Event {
   export const None: Event<never> = () => toDisposable(() => {});
 }
 
+interface Listener<T> {
+  readonly fn: (e: T) => unknown;
+  readonly thisArgs: unknown;
+  /** False once its subscription or the emitter is disposed: a pending delivery skips it. */
+  live: boolean;
+}
+
+/** One fire in progress: the listeners subscribed when it began, and how far delivery has got. */
+interface Delivery<T> {
+  readonly event: T;
+  readonly listeners: readonly Listener<T>[];
+  next: number;
+}
+
+/**
+ * Delivery follows the pinned Code OSS emitter (2c33b50b, `vs/base/common/event.ts`):
+ * - a fire reaches the listeners subscribed when it began, in subscription order; one added during delivery waits for
+ *   the next fire;
+ * - a listener whose subscription is disposed during delivery, by an earlier listener or itself, is not called again,
+ *   and disposing the emitter during delivery stops the rest of that delivery;
+ * - a fire from inside a listener first finishes the delivery in progress, then delivers its own event, so every
+ *   listener sees the events in the order they were fired (a status listener never ends on a stale status).
+ */
 export class Emitter<T> implements IDisposable {
-  #listeners: Array<{ fn: (e: T) => unknown; thisArgs: unknown }> = [];
+  #listeners: Listener<T>[] = [];
+  #delivery: Delivery<T> | undefined;
   #disposed = false;
   #event: Event<T> | undefined;
 
   get event(): Event<T> {
     this.#event ??= (fn, thisArgs, disposables) => {
       if (this.#disposed) return toDisposable(() => {});
-      const entry = { fn, thisArgs };
-      this.#listeners = [...this.#listeners, entry];
+      const entry: Listener<T> = { fn, thisArgs, live: true };
+      this.#listeners.push(entry);
       const sub = toDisposable(() => {
-        this.#listeners = this.#listeners.filter((l) => l !== entry);
+        entry.live = false;
+        const at = this.#listeners.indexOf(entry);
+        if (at !== -1) this.#listeners.splice(at, 1);
       });
       if (disposables instanceof DisposableStore) disposables.add(sub);
       else if (Array.isArray(disposables)) disposables.push(sub);
@@ -49,21 +75,34 @@ export class Emitter<T> implements IDisposable {
     return this.#listeners.length > 0;
   }
 
-  /** Calls every listener subscribed when the fire began, in subscription order. */
   fire(e: T): void {
     if (this.#disposed) return;
-    for (const l of this.#listeners) {
+    // A fire from inside a listener: finish the delivery in progress first (the Code OSS delivery queue).
+    if (this.#delivery !== undefined) this.#drain(this.#delivery);
+    if (this.#disposed) return;
+    const delivery: Delivery<T> = { event: e, listeners: [...this.#listeners], next: 0 };
+    this.#delivery = delivery;
+    this.#drain(delivery);
+  }
+
+  #drain(delivery: Delivery<T>): void {
+    while (this.#delivery === delivery && delivery.next < delivery.listeners.length) {
+      const l = delivery.listeners[delivery.next++]!;
+      if (!l.live) continue;
       try {
-        l.fn.call(l.thisArgs, e);
+        l.fn.call(l.thisArgs, delivery.event);
       } catch (error) {
         unexpected(error);
       }
     }
+    if (this.#delivery === delivery) this.#delivery = undefined;
   }
 
   dispose(): void {
     if (this.#disposed) return;
     this.#disposed = true;
+    for (const l of this.#listeners) l.live = false;
     this.#listeners = [];
+    this.#delivery = undefined;
   }
 }

@@ -80,18 +80,24 @@ export function toWindowRunTrust(outcome: AxisProjectOutcome): AxisWindowRunTrus
  * - `daemon`: connected, and the projects are the daemon's records: run trust is known.
  * - `unregistered`: connected, and the daemon answered that it holds no project: nothing shown is an Axis project.
  * - `offline`: the daemon is not usable, or no read of it has worked yet: run trust is unknown and no action is offered.
+ * - `stale`: connected, but the last read failed, so the rows on screen are the last good ones: their trust is old, not
+ *   current. Run trust is unknown and no action is offered until a read works again (OS-5 review B1). A stale empty
+ *   listing is not proof that no project exists either.
  * - `degraded`: the host is degraded (its audit status says so, PV-E0 F2): it serves reads but writes nothing, so run trust is not
  *   shown and no action is offered either.
  * The own shell reads rows from the daemon only (OS-5), so `rows` is the snapshot the rows came from.
  */
-export type AxisTrustSource = 'daemon' | 'unregistered' | 'offline' | 'degraded';
+export type AxisTrustSource = 'daemon' | 'unregistered' | 'offline' | 'stale' | 'degraded';
 
-export function trustSource(status: AxisDaemonStatus, rows: Pick<IAxisSnapshot, 'origin' | 'notRegistered'>): AxisTrustSource {
+export function trustSource(status: AxisDaemonStatus, rows: Pick<IAxisSnapshot, 'origin' | 'notRegistered' | 'staleError'>): AxisTrustSource {
 	if (status.kind === 'degraded') {
 		return 'degraded';
 	}
 	if (!isUsable(status) || rows.origin !== 'daemon') {
 		return 'offline';
+	}
+	if (rows.staleError !== undefined) {
+		return 'stale';
 	}
 	return rows.notRegistered ? 'unregistered' : 'daemon';
 }
@@ -131,6 +137,9 @@ export function projectChip(project: IAxisProjectInfo, source: AxisTrustSource):
 	}
 	if (source === 'offline') {
 		return { glyph: '?', label: localize('axis.project.chip.unknown', "{0}: run trust unknown", isolateName(project.name)), hint: localize('axis.project.chip.unknownHint', "The {0} service is not connected, so run trust cannot be shown.", BRAND.productName) };
+	}
+	if (source === 'stale') {
+		return { glyph: '?', label: localize('axis.project.chip.unknown', "{0}: run trust unknown", isolateName(project.name)), hint: localize('axis.project.chip.staleHint', "The {0} service did not answer the last read, so run trust cannot be shown as current.", BRAND.productName) };
 	}
 	return project.trusted
 		? { glyph: '\u2713', label: localize('axis.project.chip.trusted', "{0}: trusted to run", isolateName(project.name)), hint: localize('axis.project.chip.trustedHint', "CLI and agent runs, commits and pushes are allowed.") }
@@ -243,6 +252,9 @@ export function bannerContent(trust: AxisWindowRunTrust, source: AxisTrustSource
 	}
 	if (source === 'offline') {
 		return { text: localize('axis.banner.unknown', "Run trust unknown: the {0} service is not connected.", BRAND.productName), action: undefined };
+	}
+	if (source === 'stale') {
+		return { text: localize('axis.banner.stale', "Run trust unknown: the {0} service did not answer the last read.", BRAND.productName), action: undefined };
 	}
 	// While the daemon holds no project only "not registered" can be current: a trust answer is stale (review N3).
 	switch (source === 'unregistered' && trust !== 'not_registered' ? 'unknown' : trust) {

@@ -45,7 +45,7 @@ export function wire(extra: Record<string, unknown> = {}): Record<string, unknow
 
 export function runWire(extra: Record<string, unknown> = {}): Record<string, unknown> {
 	return {
-		runId: 'run-1', workspaceId: 'ws-a', agentId: 'claude', state: 'RUNNING', status: 'running', reason: null, exitCode: null,
+		runId: 'run-1', workspaceId: 'ws-a', agentId: 'runner-one', state: 'RUNNING', status: 'running', reason: null, exitCode: null,
 		createdAt: '2026-11-06T10:00:00.000Z', startedAt: '2026-11-06T10:00:01.000Z', endedAt: null, live: true,
 		lastOutputAt: 1_000, outputChars: 10, droppedChars: 0, snapshotAfter: 'pending', ...extra,
 	};

@@ -5,7 +5,7 @@ import { toDisposable, type IDisposable } from "./lifecycle.js";
 
 export interface CancellationToken {
   readonly isCancellationRequested: boolean;
-  /** Fires once, on cancellation. A listener added after cancellation is called at once (on a microtask). */
+  /** Fires once, on cancellation. A listener added after cancellation is called soon after, on a zero-delay timer (as in Code OSS). */
   readonly onCancellationRequested: Event<void>;
 }
 

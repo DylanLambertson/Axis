@@ -13,9 +13,9 @@ suite('Axis project banner (S3)', () => {
 	const all = ['trusted', 'read_only', 'not_registered', 'unknown'] as const;
 
 	test('the source: not usable is offline whatever the rows say; daemon rows decide registered or not', () => {
-		const rows = { origin: 'daemon', notRegistered: false } as const;
-		const empty = { origin: 'daemon', notRegistered: true } as const;
-		const none = { origin: 'none', notRegistered: false } as const;
+		const rows = { origin: 'daemon', notRegistered: false, staleError: undefined } as const;
+		const empty = { origin: 'daemon', notRegistered: true, staleError: undefined } as const;
+		const none = { origin: 'none', notRegistered: false, staleError: undefined } as const;
 		assert.strictEqual(trustSource({ kind: 'down' }, rows), 'offline', 'a flip to down while daemon rows are shown: no stale trust');
 		assert.strictEqual(trustSource({ kind: 'failed', reason: 'crash_loop' }, rows), 'offline');
 		assert.strictEqual(trustSource({ kind: 'connecting' }, none), 'offline');
@@ -24,6 +24,21 @@ suite('Axis project banner (S3)', () => {
 		assert.strictEqual(trustSource({ kind: 'ready' }, rows), 'daemon');
 		assert.strictEqual(trustSource({ kind: 'degraded' }, rows), 'degraded', 'F2: usable for reads, but never a trust source (mutant: degraded as daemon)');
 		assert.strictEqual(trustSource({ kind: 'degraded' }, none), 'degraded');
+		assert.strictEqual(trustSource({ kind: 'ready' }, { ...rows, staleError: 'E_TIMEOUT' }), 'stale', 'review B1: old rows are not current trust (mutant: staleError ignored)');
+		assert.strictEqual(trustSource({ kind: 'ready' }, { ...empty, staleError: 'E_TIMEOUT' }), 'stale', 'a stale empty listing is not proof that no project exists');
+	});
+
+	test('stale (review B1): the chip and the banner say run trust is unknown and offer no action, whatever main last said', () => {
+		const project = { id: 'p', name: 'repo', trusted: true };
+		const chip = projectChip(project, 'stale');
+		assert.strictEqual(chip.glyph, '?');
+		assert.match(chip.label, /run trust unknown/);
+		assert.match(chip.hint, /did not answer the last read/);
+		for (const trust of all) {
+			const c = bannerContent(trust, 'stale');
+			assert.match(c.text, /Run trust unknown/);
+			assert.strictEqual(c.action, undefined, `${trust}: mutant: an action offered from stale facts`);
+		}
 	});
 
 	test('offline (degraded host included, via status unknown): run trust unknown and no action, whatever main last said', () => {

@@ -6,8 +6,9 @@ import { AxisDaemonCallError } from '../daemon/axisDaemonClient.js';
 /*
  * Approval cards (docs/design/axis-shell-a4.md). The cards are display of daemon-issued challenges; the daemon
  * decides everything. The renderer's only power is to forward a user's answer to `axis.approvals/1.resolve`, and only
- * on a trusted gesture. For tier 4 and above (or a native flag) Approve is the first step only: it moves the
- * challenge to awaiting the native confirmation, which main shows and the user settles in that dialog.
+ * on a trusted gesture. For tier 4 and above (or a native flag) Approve records the in-app answer only; native
+ * confirmation is still required. Main requested that dialog when the challenge was issued (daemon-host
+ * gate/approvals.ts), so the renderer never opens or confirms it; the challenge waits for it in AWAITING_NATIVE.
  */
 
 /** A pending challenge as `axis.approvals/1.pending` lists it, text already cleaned. */
@@ -35,9 +36,10 @@ export const COMPOSER_SELECTOR = '.axis-composer';
 export const APPROVAL_GUARD_MS = 500;
 
 /**
- * Whether Approve only starts the native confirmation (so the button says so and the user is told to expect the
- * dialog). Either signal is enough: a tier of 4 or more, or a daemon flag. The native dialog is the real gate and
- * is never answered from the renderer.
+ * Whether Approve records the in-app answer only, with native confirmation still required (so the button says so and
+ * the user is told the dialog decides). Either signal is enough: a tier of 4 or more, or a daemon flag. The daemon
+ * sets the flag from the tier alone, so the OR is a conservative reading of inconsistent input. The native dialog is
+ * the real gate and is never answered from the renderer.
  */
 export function needsNativeConfirmation(card: Pick<IAxisApprovalCard, 'tier' | 'nativeConfirmationRequired'>): boolean {
 	return card.tier >= NATIVE_TIER || card.nativeConfirmationRequired;

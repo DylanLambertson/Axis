@@ -115,7 +115,8 @@ suite('Axis approval cards', () => {
 		assert.deepStrictEqual(resolves(), []);
 	});
 
-	test('tier 4 and 5 and the native flag: Approve starts the native confirmation and says so; the dialog is not answered here', async () => {
+	test('tier 4 and 5 and the native flag: Approve records the in-app answer and native confirmation is still required; the dialog is not answered here', async () => {
+		// { tier: 2, nativeConfirmationRequired: true } is contradictory defensive input: the daemon sets the flag from tier >= 4 alone.
 		for (const extra of [{ tier: 4, nativeConfirmationRequired: true }, { tier: 5, nativeConfirmationRequired: true }, { tier: 4, nativeConfirmationRequired: false }, { tier: 2, nativeConfirmationRequired: true }]) {
 			relist([card(extra)]);
 			assert.strictEqual(needsNativeConfirmation(listed![0]), true, JSON.stringify(extra));

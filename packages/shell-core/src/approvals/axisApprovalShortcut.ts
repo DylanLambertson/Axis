@@ -37,7 +37,8 @@ export function isApprovalChord(event: IAxisKeyGesture, isMacintosh: boolean): b
 /**
  * Whether a key event may answer an approval card (docs/design/ui/directions.md rule 9). It must be a real key press
  * (not script-dispatched, not auto-repeat), on the card itself with the focus inside the card, never from the
- * composer and never from a code editor: an editor binds `Mod+Enter` to its own command, and a key typed there must
+ * composer and never from a code editor, whether the key's target or the focus is there (an earlier handler can move
+ * the focus before the card's handler runs): an editor binds `Mod+Enter` to its own command, and a key typed there must
  * never reach a card even if a layout nests an editor inside one. IME composition is refused.
  *
  * This is the DOM gate only and is NOT sufficient on its own: a key that passes it must go through the same answer
@@ -53,6 +54,7 @@ export function approvalShortcutAllowed(event: IAxisKeyGesture, scope: IAxisKeyS
 		&& scope.card.contains(event.target)
 		&& scope.card.contains(scope.activeElement)
 		&& !scope.isInComposer(scope.activeElement)
+		&& !scope.isInComposer(event.target)
 		&& !scope.isInEditor(scope.activeElement)
 		&& !scope.isInEditor(event.target);
 }

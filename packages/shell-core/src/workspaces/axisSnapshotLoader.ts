@@ -102,7 +102,9 @@ export class AxisSnapshotLoader {
 			return this.lastDaemon;
 		} catch (error) {
 			const staleError = error instanceof AxisDaemonCallError ? error.code : 'E_INTERNAL';
-			return this.lastDaemon ? { ...this.lastDaemon, staleError } : emptySnapshot(staleError);
+			// The last good rows stay on screen, marked stale; their approvals do not: a card from an old read must not be
+			// answerable (OS-5 review B1), so `approvals` is unknown until a read works again.
+			return this.lastDaemon ? { ...this.lastDaemon, approvals: undefined, staleError } : emptySnapshot(staleError);
 		}
 	}
 

@@ -73,6 +73,19 @@ export interface IAxisConnectedClient {
 	close(): void;
 }
 
+/** The `code` of an error or answer as an own data property, or undefined; nothing on it is run, and nothing on it throws out. */
+function codeOf(value: unknown): unknown {
+	try {
+		if (typeof value !== 'object' || value === null) {
+			return undefined;
+		}
+		const d = Object.getOwnPropertyDescriptor(value, 'code');
+		return d !== undefined && 'value' in d ? d.value : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 export interface IAxisReconnectDeps {
 	/** Open one connection; `onClose` is called once if it closes later. Rejects when main or the daemon refuses. */
 	readonly connect: (onClose: () => void) => Promise<IAxisConnectedClient>;
@@ -133,11 +146,31 @@ export class AxisReconnectingDaemonClient extends Disposable implements IAxisDae
 				f();
 			};
 			this.pending.add(fail);
-			client.call(contract, method, params, { signal: abort.signal }).then(
-				r => finish(() => r.ok ? resolve(r.result) : reject(new AxisDaemonCallError(r.error.code))),
-				// A malformed reply (`bad_answer`), a timeout, a cancel, a closed port: a closed code, the connection stays as it is.
-				e => finish(() => reject(new AxisDaemonCallError((e as { code?: unknown } | null)?.code))),
-			);
+			// Everything read from the answer or the error is read here, before `finish`, and any failure to read it is a
+			// closed code: a getter or Proxy trap that throws cannot leave the call unsettled or carry its message out.
+			const onAnswer = (r: unknown) => {
+				let outcome: { readonly ok: true; readonly result: unknown } | { readonly ok: false; readonly code: unknown };
+				try {
+					const answer = r as { ok: unknown; result?: unknown; error?: { code?: unknown } };
+					outcome = answer.ok === true ? { ok: true, result: answer.result } : { ok: false, code: codeOf(answer.error) };
+				} catch {
+					outcome = { ok: false, code: 'invalid_reply' };
+				}
+				finish(() => outcome.ok ? resolve(outcome.result) : reject(new AxisDaemonCallError(outcome.code)));
+			};
+			// A malformed reply (`bad_answer`), a timeout, a cancel, a closed port: a closed code, the connection stays as it is.
+			const onError = (e: unknown) => {
+				const code = codeOf(e);
+				finish(() => reject(new AxisDaemonCallError(code)));
+			};
+			let call: Promise<unknown>;
+			try {
+				call = client.call(contract, method, params, { signal: abort.signal });
+			} catch (e) {
+				onError(e); // a synchronous throw takes the same closed path, and leaves nothing pending
+				return;
+			}
+			call.then(onAnswer, onError);
 		});
 	}
 

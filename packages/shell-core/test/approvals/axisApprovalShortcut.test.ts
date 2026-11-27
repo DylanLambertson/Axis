@@ -78,6 +78,10 @@ suite('Axis approval shortcut', () => {
 		assert.strictEqual(approvalShortcutAllowed(key(dom.editorInput), dom.scope(), false), false, 'editor target, focus on Deny');
 		dom.active = dom.editorInput;
 		assert.strictEqual(approvalShortcutAllowed(key(dom.deny), dom.scope(), false), false, 'editor focus, target Deny');
+		dom.active = dom.deny;
+		assert.strictEqual(approvalShortcutAllowed(key(dom.composerInput), dom.scope(), false), false, 'composer target, focus moved to Deny (review S1)');
+		dom.active = dom.composerInput;
+		assert.strictEqual(approvalShortcutAllowed(key(dom.deny), dom.scope(), false), false, 'composer focus, target Deny');
 	});
 
 	test('the badge shows the platform keys, and its spoken name and aria value match the chord the gate accepts', () => {

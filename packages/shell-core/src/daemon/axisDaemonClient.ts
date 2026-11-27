@@ -23,12 +23,25 @@ export type AxisDaemonStatus =
 
 const FAILURE_REASONS: ReadonlySet<string> = new Set<AxisDaemonFailureReason>(['lock_held', 'bad_config', 'pty_required', 'degraded', 'crash_loop']);
 
+/** An own data property of `value`, or undefined: a getter is never run, and a throwing Proxy trap reads as undefined. */
+function ownData(value: object, key: string): unknown {
+	const d = Object.getOwnPropertyDescriptor(value, key);
+	return d !== undefined && 'value' in d ? d.value : undefined;
+}
+
 /** Reads any value as a status of the closed set; anything else is `down`. Never throws, never returns a caller-owned object. */
 export function sanitizeStatus(value: unknown): AxisDaemonStatus {
 	if (typeof value !== 'object' || value === null) {
 		return { kind: 'down' };
 	}
-	const { kind, reason } = value as { kind?: unknown; reason?: unknown };
+	let kind: unknown;
+	let reason: unknown;
+	try {
+		kind = ownData(value, 'kind');
+		reason = ownData(value, 'reason');
+	} catch {
+		return { kind: 'down' };
+	}
 	switch (kind) {
 		case 'connecting': return { kind: 'connecting' };
 		case 'ready': return { kind: 'ready' };

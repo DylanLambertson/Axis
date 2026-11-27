@@ -4,6 +4,7 @@
 import { BRAND } from '@axis/ui';
 import { localize } from '../base/nls.js';
 import { type AxisCallErrorCode, type AxisDaemonStatus } from '../daemon/axisDaemonClient.js';
+import { type IAxisSnapshot } from './axisSnapshotLoader.js';
 
 export type AxisNoticeSeverity = 'info' | 'warning' | 'error';
 
@@ -16,8 +17,10 @@ export interface IAxisNoticeInput {
 	readonly status: AxisDaemonStatus;
 	/** The daemon is usable and answered, but has no registered project: the "add a project" empty state. */
 	readonly notRegistered: boolean;
-	/** The last daemon read failed; the rows are the last good data. */
+	/** The last daemon read failed; the rows are the last good data, if `hasRows`. */
 	readonly staleError: AxisCallErrorCode | undefined;
+	/** A read of the daemon has worked since it became usable, so there are rows (possibly none) to show. */
+	readonly hasRows: boolean;
 	/** The daemon listed more projects than one refresh reads. */
 	readonly truncatedProjects: boolean;
 }
@@ -56,7 +59,10 @@ export function daemonNotice(input: IAxisNoticeInput): IAxisNotice {
 	// The daemon is usable (ready or degraded).
 	// Degraded outranks the data notes: it is why adding and trusting projects is off and a degraded host does not serve the worktree reads, so a stale marker would hide the real cause (PV-E0 F2 review SF2).
 	if (status.kind === 'degraded') {
-		return { severity: 'warning', text: localize('axis.notice.degraded', "The {0} service is running in degraded mode. Reading works; starting runs and approving may be refused.", BRAND.productName) };
+		return { severity: 'warning', text: localize('axis.notice.degraded', "The {0} service is running in degraded mode: only project and audit reads work. Workspaces, runs and approvals are unavailable.", BRAND.productName) };
+	}
+	if (input.staleError && !input.hasRows) {
+		return { severity: 'warning', text: localize('axis.notice.noData', "The {1} service did not answer ({0}), and nothing has been read from it yet.", errorPhrase(input.staleError), BRAND.productName) };
 	}
 	if (input.staleError) {
 		return { severity: 'warning', text: localize('axis.notice.stale', "The {1} service did not answer ({0}). Showing the last data it gave.", errorPhrase(input.staleError), BRAND.productName) };
@@ -74,12 +80,20 @@ export function daemonNotice(input: IAxisNoticeInput): IAxisNotice {
 export const MAX_POLLED_PROJECTS = 50;
 
 /**
- * Whether approval cards may be shown, and the line shown instead (PV-E0 F2 review SF2). Only a ready service shows cards: a
- * degraded host serves no approvals, so cards kept from an earlier connection would offer an Approve that cannot work.
+ * Whether approval cards may be shown, and the line shown instead (PV-E0 F2 review SF2). Only a ready service with a
+ * fresh read shows cards: a degraded host serves no approvals, so cards kept from an earlier connection would offer an
+ * Approve that cannot work, and after a failed read the listing is not current (OS-5 review B1).
  */
-export function approvalsAvailability(status: AxisDaemonStatus): { readonly cards: boolean; readonly line: string } {
+export function approvalsAvailability(status: AxisDaemonStatus, rows: Pick<IAxisSnapshot, 'origin' | 'staleError'>): { readonly cards: boolean; readonly line: string } {
 	switch (status.kind) {
-		case 'ready': return { cards: true, line: '' };
+		case 'ready':
+			if (rows.origin !== 'daemon') {
+				return { cards: false, line: localize('axis.approvals.notRead', "Approvals are not available yet: nothing has been read from the {0} service.", BRAND.productName) };
+			}
+			if (rows.staleError !== undefined) {
+				return { cards: false, line: localize('axis.approvals.stale', "Approvals are not shown: the {0} service did not answer the last read. They return with the next good read.", BRAND.productName) };
+			}
+			return { cards: true, line: '' };
 		case 'connecting': return { cards: false, line: localize('axis.approvals.connecting', "Approvals are not available yet: connecting to the {0} service.", BRAND.productName) };
 		case 'degraded': return { cards: false, line: localize('axis.approvals.degraded', "Approvals are not available: the {0} service is in degraded mode.", BRAND.productName) };
 		default: return { cards: false, line: localize('axis.approvals.offline', "Approvals need the {0} service. It is not connected, so none are shown.", BRAND.productName) };

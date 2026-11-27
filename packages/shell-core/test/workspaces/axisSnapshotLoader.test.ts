@@ -82,7 +82,7 @@ suite('Axis snapshot loader', () => {
 		assert.strictEqual(workspaceKeyOf(row({ id: 'ws-a' })), 'ws-a', 'a journal id is the key');
 		assert.notStrictEqual(workspaceKeyOf(row({ path: '/a', projectId: 'p1' })), workspaceKeyOf(row({ path: '/a', projectId: 'p2' })), 'the project is part of the key');
 		client.replies.set('axis.cli-runs.list', { runs: [runWire({ workspaceId: external.key })] });
-		assert.deepStrictEqual(await loader.load({ kind: 'ready' }), { ...snapshot, staleError: 'invalid_reply' }, 'a run naming a derived key is refused by the reply reader, never attached');
+		assert.deepStrictEqual(await loader.load({ kind: 'ready' }), { ...snapshot, approvals: undefined, staleError: 'invalid_reply' }, 'a run naming a derived key is refused by the reply reader, never attached');
 		client.dispose();
 	});
 
@@ -116,6 +116,8 @@ suite('Axis snapshot loader', () => {
 		assert.strictEqual(stale.origin, 'daemon');
 		assert.strictEqual(stale.staleError, 'E_TIMEOUT');
 		assert.deepStrictEqual(stale.entries, good.entries);
+		assert.strictEqual(good.approvals?.length, 1);
+		assert.strictEqual(stale.approvals, undefined, 'review B1: the rows stay, the approvals of the old read do not (mutant: approvals kept)');
 		client.replies.set('axis.cli-runs.list', () => { throw new Error('/home/user/.secret leaked in a message'); });
 		assert.strictEqual((await loader.load({ kind: 'ready' })).staleError, 'E_INTERNAL', 'a foreign error is reduced to a code');
 		client.dispose();

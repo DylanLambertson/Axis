@@ -11,7 +11,7 @@ import { changesLabel } from '../../src/workspaces/axisWorkspaceModel.js';
 import { type IAxisWorktreeInfo } from '../../src/workspaces/axisWorkspaceData.js';
 
 function notice(status: AxisDaemonStatus, extra: Partial<IAxisNoticeInput> = {}): string {
-	return daemonNotice({ status, notRegistered: false, staleError: undefined, truncatedProjects: false, ...extra }).text;
+	return daemonNotice({ status, notRegistered: false, staleError: undefined, truncatedProjects: false, hasRows: true, ...extra }).text;
 }
 
 suite('Axis daemon notice and changes label', () => {
@@ -30,6 +30,7 @@ suite('Axis daemon notice and changes label', () => {
 			['f-config', notice({ kind: 'failed', reason: 'bad_config' })],
 			['f-pty', notice({ kind: 'failed', reason: 'pty_required' })],
 			['stale', notice({ kind: 'ready' }, { staleError: 'E_TIMEOUT' })],
+			['no-data', notice({ kind: 'ready' }, { staleError: 'E_TIMEOUT', hasRows: false })],
 			['not-registered', notice({ kind: 'ready' }, { notRegistered: true })],
 			['truncated', notice({ kind: 'ready' }, { truncatedProjects: true })],
 		]);
@@ -40,6 +41,9 @@ suite('Axis daemon notice and changes label', () => {
 		assert.match(texts.get('down')!, /is not connected/);
 		assert.match(texts.get('not-registered')!, /No repository is registered/);
 		assert.match(texts.get('stale')!, /timed out/);
+		assert.match(texts.get('no-data')!, /timed out/);
+		assert.doesNotMatch(texts.get('no-data')!, /last data/, 'a failed first read shows no data, so it never claims to show the last data (mutant: one stale text)');
+		assert.match(notice({ kind: 'ready' }, { notRegistered: true, staleError: 'E_TIMEOUT' }), /did not answer/, 'a stale empty listing is not "no repository is registered"');
 		for (const [state, text] of texts) {
 			assert.doesNotMatch(text, /disk/, `${state}: the own shell reads no files, so no notice says rows come from disk`);
 			assert.ok(text.includes(`${BRAND.productName} service`) || text.includes(`${BRAND.productName} window`), `${state}: the name comes from BRAND`);
@@ -49,8 +53,8 @@ suite('Axis daemon notice and changes label', () => {
 	});
 
 	test('a failed state is an error that says what to do, a stale one is a warning', () => {
-		assert.strictEqual(daemonNotice({ status: { kind: 'failed', reason: 'crash_loop' }, notRegistered: false, staleError: undefined, truncatedProjects: false }).severity, 'error');
-		assert.strictEqual(daemonNotice({ status: { kind: 'ready' }, notRegistered: false, staleError: 'E_TIMEOUT', truncatedProjects: false }).severity, 'warning');
+		assert.strictEqual(daemonNotice({ status: { kind: 'failed', reason: 'crash_loop' }, notRegistered: false, staleError: undefined, truncatedProjects: false, hasRows: true }).severity, 'error');
+		assert.strictEqual(daemonNotice({ status: { kind: 'ready' }, notRegistered: false, staleError: 'E_TIMEOUT', truncatedProjects: false, hasRows: true }).severity, 'warning');
 		assert.match(notice({ kind: 'failed', reason: 'crash_loop' }), new RegExp(`Restart ${BRAND.productName}`));
 	});
 
@@ -83,13 +87,30 @@ suite('Axis daemon notice and changes label', () => {
 	});
 
 	test('review SF2: approval cards only from a ready service; every other state says why and offers no Approve', () => {
-		assert.deepStrictEqual(approvalsAvailability({ kind: 'ready' }), { cards: true, line: '' });
+		const fresh = { origin: 'daemon', staleError: undefined } as const;
+		assert.deepStrictEqual(approvalsAvailability({ kind: 'ready' }, fresh), { cards: true, line: '' });
 		for (const status of [{ kind: 'degraded' }, { kind: 'connecting' }, { kind: 'down' }, { kind: 'failed', reason: 'crash_loop' }] as const) {
-			const a = approvalsAvailability(status);
+			const a = approvalsAvailability(status, fresh);
 			assert.strictEqual(a.cards, false, `${status.kind}: mutant: stale cards with Approve`);
 			assert.ok(a.line.length > 0);
 		}
-		assert.match(approvalsAvailability({ kind: 'degraded' }).line, /degraded mode/);
-		assert.match(approvalsAvailability({ kind: 'connecting' }).line, /connecting/);
+		assert.match(approvalsAvailability({ kind: 'degraded' }, fresh).line, /degraded mode/);
+		assert.match(approvalsAvailability({ kind: 'connecting' }, fresh).line, /connecting/);
+	});
+
+	test('review B1: a ready service shows cards only from a fresh read', () => {
+		const stale = approvalsAvailability({ kind: 'ready' }, { origin: 'daemon', staleError: 'E_TIMEOUT' });
+		assert.strictEqual(stale.cards, false, 'mutant: cards from a failed read');
+		assert.match(stale.line, /did not answer the last read/);
+		const unread = approvalsAvailability({ kind: 'ready' }, { origin: 'none', staleError: undefined });
+		assert.strictEqual(unread.cards, false, 'mutant: cards before any read');
+		assert.match(unread.line, /nothing has been read/);
+	});
+
+	test('review N2: the degraded notice says which reads work and that runs and approvals are unavailable', () => {
+		const text = notice({ kind: 'degraded' });
+		assert.match(text, /only project and audit reads work/);
+		assert.match(text, /Workspaces, runs and approvals are unavailable/);
+		assert.doesNotMatch(text, /Reading works/);
 	});
 });

@@ -78,7 +78,7 @@ suite('Axis daemon replies', () => {
 	test('runs: shape, enums and the terminal-state rules', () => {
 		const [run] = readCliRuns({ runs: [runWire()] });
 		assert.strictEqual(run.status, 'running');
-		assert.strictEqual(run.agentId, 'claude');
+		assert.strictEqual(run.agentId, 'runner-one');
 		invalidReply(() => readCliRuns({ runs: [runWire({ status: 'exploded' })] }), 'a status outside the set');
 		invalidReply(() => readCliRuns({ runs: [runWire({ reason: 'free text from a daemon' })] }), 'a reason that is not a code');
 		invalidReply(() => readCliRuns({ runs: [runWire({ agentId: 'Bad Agent' })] }), 'an agent id outside the pattern');
