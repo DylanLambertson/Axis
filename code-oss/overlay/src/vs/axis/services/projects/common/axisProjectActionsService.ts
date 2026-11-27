@@ -9,7 +9,7 @@
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
-import { AxisProjectAction, AxisProjectOutcome, AxisProjectRequest, AxisWindowRunTrust, toWindowRunTrust } from './axisProjectActions.js';
+import { AxisProjectAction, AxisProjectOutcome, AxisProjectRequest, AxisWindowRunTrust, IAxisProjectAnswer, toWindowRunTrust } from './axisProjectActions.js';
 
 export const IAxisProjectActionsService = createDecorator<IAxisProjectActionsService>('axisProjectActionsService');
 
@@ -21,6 +21,8 @@ export interface IAxisProjectActionsService {
 	readonly lastOutcome: AxisProjectOutcome | undefined;
 	/** Main's last `status` answer for this window's folder; `unknown` until one arrives or when main cannot tell. */
 	readonly windowTrust: AxisWindowRunTrust;
+	/** This window's registered project id from the same answer (PV-D1-0), or undefined: the project home shows only this one. */
+	readonly windowProjectId: string | undefined;
 	readonly onDidChange: Event<void>;
 	/** One at a time: a second call while one waits answers `busy` without asking main. */
 	run(action: AxisProjectAction): Promise<AxisProjectOutcome>;
@@ -30,6 +32,7 @@ export interface IAxisProjectActionsService {
 
 export interface IAxisProjectActionClient {
 	run(action: AxisProjectRequest): Promise<AxisProjectOutcome>;
+	status(): Promise<IAxisProjectAnswer>;
 	dispose(): void;
 }
 
@@ -41,6 +44,7 @@ export class AxisProjectActionsModel extends Disposable implements IAxisProjectA
 	private _waiting: AxisProjectAction | undefined;
 	private _lastOutcome: AxisProjectOutcome | undefined;
 	private _windowTrust: AxisWindowRunTrust = 'unknown';
+	private _windowProjectId: string | undefined;
 	private statusInFlight = false;
 	private statusAgain = false;
 
@@ -51,6 +55,7 @@ export class AxisProjectActionsModel extends Disposable implements IAxisProjectA
 	get waiting(): AxisProjectAction | undefined { return this._waiting; }
 	get lastOutcome(): AxisProjectOutcome | undefined { return this._lastOutcome; }
 	get windowTrust(): AxisWindowRunTrust { return this._windowTrust; }
+	get windowProjectId(): string | undefined { return this._windowProjectId; }
 
 	refreshStatus(): void {
 		if (this.client === undefined || this._store.isDisposed) {
@@ -62,13 +67,20 @@ export class AxisProjectActionsModel extends Disposable implements IAxisProjectA
 		}
 		this.statusInFlight = true;
 		// A `busy` answer (the status rate limit) keeps the last answer instead of turning a known folder unknown (review N2).
-		this.client.run('status').then(o => o === 'busy' ? this._windowTrust : toWindowRunTrust(o), () => 'unknown' as const).then(trust => {
+		const keep = { trust: this._windowTrust, projectId: this._windowProjectId };
+		this.client.status().then(
+			a => a.outcome === 'busy' ? keep : { trust: toWindowRunTrust(a.outcome), projectId: a.projectId },
+			() => ({ trust: 'unknown' as const, projectId: undefined }),
+		).then(({ trust, projectId }) => {
 			this.statusInFlight = false;
 			if (this._store.isDisposed) {
 				return;
 			}
-			if (trust !== this._windowTrust) {
+			// The id goes with a registered answer only; any other answer (unknown, not registered) clears it.
+			const id = trust === 'trusted' || trust === 'read_only' ? projectId : undefined;
+			if (trust !== this._windowTrust || id !== this._windowProjectId) {
 				this._windowTrust = trust;
+				this._windowProjectId = id;
 				this._onDidChange.fire();
 			}
 			if (this.statusAgain) {

@@ -6,7 +6,7 @@ import { createHash } from "node:crypto";
 import { join, posix } from "node:path";
 import { StageError, fail, readRegular, walkFiles } from "./stage-fs.mjs";
 import { LOADER_BUILTINS, RESTRICTED_MODULES, mayImportRestricted, importSpecifiers, unsafeForms } from "./stage-scan.mjs";
-import { listenerBuiltinRefusal, webHostEdgeRefusal } from "./web-rules.mjs";
+import { egressClientEdgeRefusal, listenerBuiltinRefusal, webHostEdgeRefusal } from "./web-rules.mjs";
 import { egressBuiltinRefusal } from "./egress-rules.mjs";
 
 export const STAGE_ROOT = "src/vs/axis/packages";
@@ -51,6 +51,8 @@ export function checkStagedFile(rel, text, fileSet) {
     if (!candidates.some((c) => fileSet.has(c))) fail(`staged ${rel}: ${spec} does not resolve to a staged file`);
     const web = webHostEdgeRefusal(rel, target.replace(/\.js$/, ".ts"));
     if (web !== null) fail(`staged ${rel}: ${spec}: ${web}`);
+    const client = egressClientEdgeRefusal(rel, target.replace(/\.js$/, ".ts"));
+    if (client !== null) fail(`staged ${rel}: ${spec}: ${client}`);
     const targetPkg = target.split("/")[0];
     if (pkg === "vendor" && targetPkg !== "vendor") fail(`staged ${rel}: vendored code reaches ${spec}`);
     if (pkg !== "vendor" && targetPkg === "vendor" && !target.startsWith("vendor/zod/")) fail(`staged ${rel}: ${spec} reaches an unknown vendored module`);

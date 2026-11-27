@@ -120,7 +120,7 @@ Added by `threat-model-phase4a.md` §9 (ticket PV-R8, slice 2), verified against
 | RR-77 | NAT64 behind an operator's network-specific prefix cannot be told from a public IPv6 address, so an internal IPv4 host reachable through such a translator is not caught. | INT-2 | egress client | PV-N1 | 4a/L36 | Accepted |
 | RR-78 | A plugin holding `integration:<id>` and a `net:<origin>` can move service data to that origin by design; the install dialog names the combination. | INT-11 | installer | PV-K2 | 4a/L45 | Accepted, disclosure |
 | RR-79 | The provider adapter still uses global `fetch` and accepts a system proxy (ANT-1, A7), while integrations ignore every proxy: two egress paths with different rules. | INT-2, ANT-1 | providers, egress client | none | 4a/L37 | Accepted (recorded difference) |
-| RR-80 | Address pinning with `node:https`, a dedicated agent and a checking `lookup` (with `autoSelectFamily`) at Node 24.22.1 is unverified until PV-N1's first test; if it fails, ADR 0009 must be revisited before any integration ships. | INT-2 | egress client | PV-N1 | 4a/L36 | Open |
+| RR-80 | Address pinning with `node:https`, a dedicated agent and a checking `lookup` (with `autoSelectFamily`) at Node 24.22.1 is unverified until PV-N1's first test; if it fails, ADR 0009 must be revisited before any integration ships. **Closed:** PV-N1d slice A's test (`packages/daemon-host/test/net/agent-pinning.test.ts`) passes at Node 24.22.1 and is required under the gate and in CI, and the egress client (slice B, `packages/daemon-host/src/net/egress-client.ts`) uses exactly that construction: a dedicated agent with `autoSelectFamily` whose `lookup` returns only checked addresses. | INT-2 | egress client | PV-N1 | 4a/L36 | Closed |
 | RR-81 | A service without a device-code flow cannot ship in 4a; the loopback fallback is deferred to its own decision. | INT-4 | integrations | none | 4a/L41 | Accepted (product) |
 | RR-82 | No integration can connect until main's secret broker over the privileged port (ADR 0003 D1.6) exists and the daemon entry passes it. | INT-1 | main, daemon entry | the secret-broker ticket (not yet cut) | 4a/L29 | Accepted (availability) |
 | RR-83 | Revealed credentials and OAuth access tokens are plaintext in daemon memory while in use; a same-UID process can read them (A10). | INT-1, A10 | integrations binding | PV-N1 | 4a/L35 | Accepted |
@@ -152,6 +152,14 @@ Added with `integrations.connect` at tier 4 (2026-11-22, ADR 0009 decision 6).
 |---|---|---|---|---|---|---|
 | RR-92 | `axis.integrations/1.write` and `axis.net/1.send` stay tier 3: a window approval with no native dialog, so a compromised renderer can approve its own outbound write to an integration or a declared origin. A plugin or a worker cannot approve its own call (challenges are resolved only by the user actor), and the credential never reaches the renderer (the vault and the egress client are daemon-side). `connect`, which stores the credential, is tier 4. Accepted under A10 (renderer equals user) | A10, INT-1, EL-4 | integrations | PV-N1a, PV-N2 | 4a | Accepted |
 | RR-93 | A worker in an UNTAINTED run can create a task and rewrite the user's own task (`create_task`, `update_task` are tier write: no approval before the run has received untrusted input), and the task then stays untrusted for good (its author is the worker at the run's received hop, so a later reader takes a receipt). The store keeps at most 50 revisions per task, so a worker that makes 50 unapproved updates pushes the user's original text out for good; until then every revision is kept and readable (`axis.tasks/1.read` with a `seq`). Once a run is tainted, create and update need the user's approval with a whole card. Planned before Start ships: a worker revision on top of a user-written revision needs the user's approval (or a per-run cap on worker revisions). | Medium | tasks | PV-T1 | 2a | Accepted |
+
+### 1.8 The egress client (PV-N1d)
+
+Added by `docs/design/egress-client.md` §5 (slice B).
+
+| ID | Residual risk | Risk | Owner | Ticket | Gate | Status |
+|---|---|---|---|---|---|---|
+| RR-91 | The system resolver is the trust anchor for NAME resolution (no DNSSEC, no DNS over HTTPS). The address checks stop a malicious or poisoned resolver from sending a request to a private, loopback, link-local or other reserved range, but it can still answer with another PUBLIC address; the control there is TLS: SNI and certificate verification against the declared host (Node's default CA store, RR-76), so a substituted server needs a certificate for that host. | INT-2, A7 | egress client | PV-N1d | 4a/L36, L37 | Accepted |
 
 ## 2. Plan rows added with this change
 
