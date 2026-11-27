@@ -51,6 +51,10 @@
 | 3 | `createdBy` | the first revision's author, which must be the source | One fact, stored once |
 | 4 | `system` not discussed | a `system` revision makes the task untrusted | Conservative: only the user's text is trusted |
 
+### 4.1 Limits for writers other than the user (RR-93 narrowed, decision C1)
+
+A worker in an untainted run creates tasks without asking (`tasks-slice3.md` §5), so without a bound it could fill the project and lock the user out of their own tasks. Two rules keep the user's share. **A reserve:** any author but the user (a worker, and later a plugin or an integration) is refused `limit_reached` once the project holds 900 tasks (the last 100 of the 1,000 are the user's), and once a write would bring the project's task text past 64 MiB less a tenth (6,710,886 bytes are the user's); the user's own create and update still reach the full 1,000 tasks and 64 MiB. The store applies it in `create` and `update` by the author's kind, so every write path is covered, and no schema change is needed (the hard caps stay in the triggers). **A per-run cap:** one composer run creates at most 25 tasks (`create_task`; the 26th is refused `limit_reached`); a new run counts from zero. It is counted by the run's own task tools, in memory, since a run lives in one daemon process (a restart ends it).
+
 ## 5. Slice 2a: the service, the bridge and the worker task tools
 
 - **Callers, attested.** The bridge serves the user's own desktop connection only: every row admits only `user`, and the handler refuses any other actor and a web client again with `not_found` (`handlers/tasks.ts`). A composer run reaches tasks only through its tools, as its **worker** (the run's recorded worker while it is not archived, `journalWorkerOf`), scoped to the worker's project: another project's task is `not_found`, the same as an unknown one. The worker is looked up again at every call, so archiving it takes the tools from its live runs. A run never assigns, starts or deletes a task.
