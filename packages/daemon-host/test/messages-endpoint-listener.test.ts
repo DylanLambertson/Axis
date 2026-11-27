@@ -6,11 +6,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
 import { createPtyProcessPort, createPtyService, type Channel, type PtyChild, type PtyExit, type SpawnRequest } from "@axis/pty-process";
-import { cliEndpointPty, wireCliEndpoints, type CliEndpoints, type PtyHandle, type PtyPort, type RelayIn, type RelayOut } from "../src/index.js";
+import { cliEndpointPty, createMessagingSettings, wireCliEndpoints, type CliEndpoints, type PtyHandle, type PtyPort, type RelayIn, type RelayOut } from "../src/index.js";
 import { deliveryRig } from "./messages-delivery-rig.js";
 
 // PV-M6 slice 2, daemon side: the messaging options (both off by default), the spawn that mints and hands over a CLI run's
 // endpoint, and the whole chain over a real socket: shim -> pty process listener -> control channel -> daemon relay -> service.
+// Its rig creates a RUNNING run before spawning; the run lifecycle through the REAL supervisor (spawn while QUEUED, RUNNING
+// after) is `messages-endpoint-lifecycle.test.ts`, which a change to mint or to the run-state checks must keep passing.
 
 const posix = process.platform !== "win32";
 const skip = posix ? undefined : "Unix sockets: Windows has no messaging endpoint until the native pipe helper exists";
@@ -22,7 +24,7 @@ function fakeHandle(): PtyHandle & { exit(): void } {
 }
 
 test("messaging options: the endpoint relay is wired only with enabled AND cliEndpoint, and only to a pty port that relays", () => {
-  const relay = { onRelay: async () => [], mint: () => undefined, revoke: () => undefined, flush: () => undefined };
+  const relay = { onRelay: async () => [], mint: () => undefined, revoke: () => undefined, revokeWorker: () => [], dropPaused: () => [], flush: () => undefined };
   const endpoints = { relay, source: Symbol("pty-control") };
   const port = { onRelay: () => ({ dispose: () => undefined }), relay: () => true };
   for (const o of [undefined, {}, { enabled: true }, { cliEndpoint: true }, { enabled: false, cliEndpoint: true }]) assert.equal(wireCliEndpoints(o, port, endpoints, []), undefined, JSON.stringify(o));
@@ -151,4 +153,102 @@ test("end to end over a real socket: a CLI run's endpoint relays auth, send and 
   await closed;
   assert.equal(existsSync(path), false, "the socket went with the run");
   cleanups.forEach((c) => c());
+});
+
+/** A live CLI endpoint over a real socket for worker c1 (group g1), and a connected, authenticated client: slice 3's rig. */
+async function liveEndpoint(t: TestContext) {
+  const r = await deliveryRig(t, { noDelivery: true });
+  r.c.journal.messages.setAgentSettings("c1", { acceptsFrom: "group", cliMessaging: true, muted: false });
+  const base = mkdtempSync(join(tmpdir(), "axep-"));
+  t.after(() => rmSync(base, { recursive: true, force: true }));
+  const [daemonSide, ptySide] = pair();
+  const requests: SpawnRequest[] = [];
+  const service = createPtyService({ spawn: (req) => (requests.push(req), child()), messagesEndpoints: { dir: join(base, "d"), platform: process.platform, uid: process.getuid?.() ?? -1 } });
+  t.after(() => service.dispose());
+  service.serveControl(ptySide);
+  let port: ReturnType<typeof createPtyProcessPort> | undefined;
+  port = createPtyProcessPort({ channel: daemonSide, onRelay: (m) => void r.m.endpoints.relay.onRelay(r.m.endpoints.source, m).then((outs) => outs.forEach((o) => port?.relay(o as never))) });
+  t.after(() => port?.dispose());
+  const cleanups: (() => void)[] = [];
+  t.after(() => cleanups.forEach((c) => c()));
+  const cli = wireCliEndpoints({ enabled: true, cliEndpoint: true }, { onRelay: () => ({ dispose: () => undefined }), relay: (m: RelayOut) => port?.relay(m as never) ?? false }, r.m.endpoints, cleanups) as CliEndpoints;
+  await cliEndpointPty(port as unknown as PtyPort, () => cli).spawn({ ...SPEC, runId: r.run("c1") });
+  const env = requests[0]?.env ?? {};
+  const path = env["AXIS_MESSAGES_ENDPOINT"] as string;
+  const token = env["AXIS_MESSAGES_TOKEN"] as string;
+  const open = async (): Promise<Socket & { gone: Promise<void> }> => {
+    const s = connect(path) as Socket & { gone: Promise<void> };
+    s.on("error", () => undefined);
+    s.gone = new Promise<void>((res) => s.once("close", () => res()));
+    t.after(() => s.destroy());
+    await new Promise<void>((res, rej) => (s.once("connect", () => res()), s.once("error", rej)));
+    assert.deepEqual(await call(s, { op: "auth", token }), { ok: true, op: "auth" });
+    return s;
+  };
+  return { r, path, open, s: await open() };
+}
+/** Resolves true when `p` settles within the bound, false otherwise: a test fails by name instead of hanging. */
+const within = (p: Promise<unknown>, ms = 3000): Promise<boolean> => Promise.race([p.then(() => true), new Promise<boolean>((res) => setTimeout(() => res(false), ms).unref())]);
+const USER = { kind: "user" } as const;
+
+test("PV-M6 slice 3: turning a worker's CLI messaging off revokes its endpoint at once: the client closes, the socket file and listener are gone", { skip }, async (t) => {
+  const { r, path, s } = await liveEndpoint(t);
+  const out = r.m.settings.updateSettings(USER, { setting: "cliMessaging", agentId: "c1", value: false });
+  assert.equal(out.changed, true);
+  assert.equal(await within(s.gone), true, "the open connection was closed");
+  assert.equal(await within((async () => { while (existsSync(path)) await new Promise((res) => setTimeout(res, 10)); })()), true, "the socket file is gone");
+  const again = connect(path);
+  t.after(() => again.destroy());
+  assert.equal(await new Promise<string>((res) => (again.once("error", (e: NodeJS.ErrnoException) => res(e.code ?? "error")), again.once("connect", () => res("connected")))) !== "connected", true, "nothing listens");
+  assert.ok(rows(r).some((p) => p["event"] === "revoked"), "the revocation is audited");
+});
+
+test("PV-M6 slice 3: a pause of the worker's group drops its connections but keeps the listener; a paused request is refused and a resume needs nothing", { skip }, async (t) => {
+  const { r, path, s, open } = await liveEndpoint(t);
+  r.m.settings.pause(USER, { scope: { group: "g2" } }); // another group: c1 is not paused
+  assert.equal(await within(s.gone, 300), false, "a pause out of scope leaves the connection open");
+  r.m.settings.pause(USER, { scope: { group: "g1" } });
+  assert.equal(await within(s.gone), true, "the connection was dropped");
+  assert.ok(existsSync(path), "the listener and its socket stay");
+  const s2 = await open(); // a new connection may still authenticate
+  assert.deepEqual(await call(s2, { op: "send", id: "s1", recipients: [{ agent: "a1" }], body: "x" }), { ok: false, reason: "paused" });
+  assert.equal(await within(s2.gone), true, "a paused request closes its connection");
+  r.m.settings.resume(USER, { scope: { group: "g1" } });
+  const s3 = await open();
+  assert.equal((await call(s3, { op: "send", id: "s2", recipients: [{ agent: "a1" }], body: "after resume" }))["ok"], true, "after resume the same socket serves");
+  assert.ok(rows(r).some((p) => p["event"] === "paused" && p["connections"] === 1), "the drop is audited with its count");
+});
+
+test("PV-M6 slice 3: a settings hook that throws is audited and never fails the user's write", async (t) => {
+  const r = await deliveryRig(t, { noDelivery: true });
+  r.c.journal.messages.setAgentSettings("c1", { acceptsFrom: "group", cliMessaging: true, muted: false });
+  const off = r.m.endpoints.onSettings(() => {
+    throw new Error("boom");
+  });
+  t.after(off);
+  assert.equal(r.m.settings.updateSettings(USER, { setting: "cliMessaging", agentId: "c1", value: false }).changed, true);
+  assert.equal(r.m.settings.pause(USER, { scope: { project: "p" } }).changed, true);
+  assert.equal(r.m.settings.updateSettings(USER, { setting: "cliMessaging", agentId: "c1", value: false }).changed, false);
+  assert.equal(r.m.settings.pause(USER, { scope: { project: "p" } }).changed, false);
+  r.m.settings.updateSettings(USER, { setting: "muted", agentId: "c1", value: true });
+  assert.deepEqual(rows(r).filter((p) => p["event"] === "hook_failed").map((p) => p["agentId"] ?? p["projectId"]), ["c1", "p"], "only a change that took effect, only cliMessaging off or a pause");
+  assert.equal(r.c.journal.messages.agentSettings("c1")?.cliMessaging, false, "the write stands");
+});
+const rows = (r: Awaited<ReturnType<typeof deliveryRig>>) => r.c.audit.list({ limit: 5000 }).filter((e) => e.action === "message.endpoint").map((e) => e.payload as Record<string, unknown>);
+
+test("review s3 N2: a hook that throws AND an audit sink that throws still leave the committed write a success", async (t) => {
+  const r = await deliveryRig(t, { noDelivery: true });
+  r.c.journal.messages.setAgentSettings("c1", { acceptsFrom: "group", cliMessaging: true, muted: false });
+  const settings = createMessagingSettings({
+    store: r.c.journal.messages,
+    directory: r.m.participation.directory,
+    audit: { append: (e) => (e.payload !== undefined && (e.payload as Record<string, unknown>)["event"] === "hook_failed" ? assert.fail("the sink fails") : r.c.audit.append(e)) },
+    context: (id) => r.m.service.context(id),
+    onChange: () => {
+      throw new Error("boom");
+    },
+  });
+  assert.equal(settings.updateSettings(USER, { setting: "cliMessaging", agentId: "c1", value: false }).changed, true);
+  assert.equal(settings.pause(USER, { scope: { project: "p" } }).changed, true);
+  assert.equal(r.c.journal.messages.agentSettings("c1")?.cliMessaging, false, "the write stands");
 });

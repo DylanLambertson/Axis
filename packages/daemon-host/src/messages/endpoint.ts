@@ -46,7 +46,9 @@ export type RelayIn =
   | { readonly t: "relay-close"; readonly endpoint: string; readonly conn: string };
 export type RelayOut =
   | { readonly t: "relay-reply"; readonly endpoint: string; readonly conn: string; readonly frame: string; readonly close: boolean; readonly authFailed: boolean }
-  | { readonly t: "endpoint-close"; readonly endpoint: string; readonly reason: "revoked" | "paused" };
+  | { readonly t: "endpoint-close"; readonly endpoint: string; readonly reason: "revoked" }
+  /** Pause (slice 3): every connection of the endpoint closes, the listener stays, so a resume needs no new endpoint. */
+  | { readonly t: "endpoint-drop"; readonly endpoint: string; readonly reason: "paused" };
 
 const ENDPOINT_ID = /^ep_[A-Za-z0-9_-]{22,64}$/;
 const CONN_ID = /^[a-z0-9_-]{1,64}$/;
@@ -64,6 +66,11 @@ export interface EndpointRelayDeps {
   readonly agentOf: (runId: string) => string | undefined;
   /** True while the run is RUNNING. */
   readonly runLive: (runId: string) => boolean;
+  /**
+   * True while the supervisor is launching the run (QUEUED: spawned but not yet RUNNING). The endpoint is minted in the spawn,
+   * before the run is RUNNING, so mint accepts this state; a message before RUNNING answers `not_ready` and revokes nothing.
+   */
+  readonly runLaunching?: (runId: string) => boolean;
   readonly random: { bytes(n: number): Uint8Array };
   readonly audit: MessageAuditSink;
   /** Called after each audit row (the anchor guard's `noteWrite`). */
@@ -82,6 +89,10 @@ export interface EndpointRelay {
   mint(runId: string): { readonly endpointId: string; readonly token: string } | undefined;
   /** Revoke a run's endpoint (it left RUNNING, its messaging was disabled): every connection closes, later frames answer `revoked`. */
   revoke(runId: string): RelayOut | undefined;
+  /** A worker's messaging was turned off (slice 3): every live endpoint of that worker is revoked. */
+  revokeWorker(agentId: string): RelayOut[];
+  /** A pause changed in a project (slice 3): each live endpoint whose sender is now paused drops its connections. */
+  dropPaused(projectId: string): RelayOut[];
   /** One relayed message; the messages to send back on the control channel. */
   onRelay(source: symbol, msg: RelayIn): Promise<readonly RelayOut[]>;
   /** Write the aggregated failure rows still pending (shutdown). */
@@ -130,6 +141,7 @@ export function createEndpointRelay(deps: EndpointRelayDeps): EndpointRelay {
   const byRun = new Map<string, Endpoint>();
   const tombstones = new Map<string, string>();
   const tombstoneRuns = new Set<string>();
+  const launching = (runId: string): boolean => deps.runLaunching?.(runId) === true;
   const reads = new WindowCounter(ENDPOINT_LIMITS.readsPerMinute, MINUTE_MS, ENDPOINT_LIMITS.maxEndpoints, deps.monotonic);
 
   const audit = (ep: Endpoint, event: string, extra: Record<string, string | number> = {}): void => {
@@ -178,6 +190,12 @@ export function createEndpointRelay(deps: EndpointRelayDeps): EndpointRelay {
     return { t: "endpoint-close", endpoint: ep.id, reason: "revoked" };
   }
 
+  /** The worker's endpoint setting as stored now: off (or the worker gone) means the endpoint must not serve (slice 3 backstop). */
+  function enabled(ep: Endpoint): boolean {
+    const entry = deps.directory.agent(ep.agentId);
+    return entry !== undefined && entry.projectId === ep.projectId && deps.service.context(ep.projectId).agentSettings(entry).cliMessaging;
+  }
+
   function caller(ep: Endpoint): Extract<MessageCaller, { kind: "agent" }> {
     return { kind: "agent", agentId: ep.agentId, runId: ep.runId, verified: false, receivedHop: ep.receivedHop };
   }
@@ -211,7 +229,7 @@ export function createEndpointRelay(deps: EndpointRelayDeps): EndpointRelay {
 
   return {
     mint(runId) {
-      if (deps.platform === "win32" || byRun.has(runId) || tombstoneRuns.has(runId) || byRun.size >= ENDPOINT_LIMITS.maxEndpoints || !deps.runLive(runId)) return undefined;
+      if (deps.platform === "win32" || byRun.has(runId) || tombstoneRuns.has(runId) || byRun.size >= ENDPOINT_LIMITS.maxEndpoints || !(deps.runLive(runId) || launching(runId))) return undefined;
       const agentId = deps.agentOf(runId);
       const entry = agentId === undefined ? undefined : deps.directory.agent(agentId);
       if (agentId === undefined || entry === undefined || entry.kind !== "cli") return undefined;
@@ -230,6 +248,24 @@ export function createEndpointRelay(deps: EndpointRelayDeps): EndpointRelay {
       return tombstoneRuns.has(runId) ? { t: "endpoint-close", endpoint: endpointIdOf(runId), reason: "revoked" } : undefined;
     },
 
+    revokeWorker(agentId) {
+      return [...byId.values()].filter((ep) => ep.agentId === agentId).map(revokeEndpoint);
+    },
+
+    dropPaused(projectId) {
+      const out: RelayOut[] = [];
+      for (const ep of byId.values()) {
+        if (ep.projectId !== projectId || ep.conns.size === 0) continue;
+        const ctx = deps.service.context(projectId);
+        const who = caller(ep);
+        if (!senderPaused(who, deps.directory.agent(ep.agentId), ctx.settings)) continue;
+        audit(ep, "paused", { connections: ep.conns.size });
+        ep.conns.clear(); // the pty process closes them; a late reply to one finds no connection there
+        out.push({ t: "endpoint-drop", endpoint: ep.id, reason: "paused" });
+      }
+      return out;
+    },
+
     flush: () => byId.forEach(flushFailures),
 
     async onRelay(source, msg) {
@@ -237,8 +273,20 @@ export function createEndpointRelay(deps: EndpointRelayDeps): EndpointRelay {
       // ADR 0007 validation line 7: only the supervised channel, only ids of the shapes the envelope allows, only minted ids.
       if (source !== deps.source || typeof endpoint !== "string" || typeof conn !== "string" || !ENDPOINT_ID.test(endpoint) || !CONN_ID.test(conn)) return [];
       const ep = byId.get(endpoint);
-      if (ep === undefined) return msg.t === "relay-close" ? [] : refuse(endpoint, conn, tombstones.has(endpoint) ? "revoked" : "refused");
-      if (!deps.runLive(ep.runId)) return msg.t === "relay-close" ? [revokeEndpoint(ep)] : [revokeEndpoint(ep), ...refuse(endpoint, conn, "revoked")];
+      if (ep === undefined) {
+        if (!tombstones.has(endpoint)) return msg.t === "relay-close" ? [] : refuse(endpoint, conn, "refused");
+        // Revoked earlier: close the endpoint again (idempotent), so a pty process that never got the first close stops listening.
+        const close: RelayOut = { t: "endpoint-close", endpoint, reason: "revoked" };
+        return msg.t === "relay-close" ? [close] : [close, ...refuse(endpoint, conn, "revoked")];
+      }
+      // The messaging setting is checked BEFORE the launch window: an endpoint whose worker's messaging is off is revoked even while QUEUED.
+      if (!enabled(ep)) return msg.t === "relay-close" ? [revokeEndpoint(ep)] : [revokeEndpoint(ep), ...refuse(endpoint, conn, "revoked")];
+      if (!deps.runLive(ep.runId)) {
+        // Still being launched (QUEUED): nothing is relayed as the worker before RUNNING, and the endpoint stays. Any other
+        // state (terminal, or REVIEWING and BLOCKED as before) revokes.
+        if (launching(ep.runId)) return msg.t === "relay-close" ? [] : refuse(endpoint, conn, "not_ready");
+        return msg.t === "relay-close" ? [revokeEndpoint(ep)] : [revokeEndpoint(ep), ...refuse(endpoint, conn, "revoked")];
+      }
       if (msg.t === "relay-close") {
         ep.conns.delete(conn);
         return [];

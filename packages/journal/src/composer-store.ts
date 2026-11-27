@@ -127,8 +127,12 @@ export class ComposerRecords {
     this.#createRun = createRun;
   }
 
-  /** `Journal.createRun` for a composer run and its record, in one transaction. A replay returns the earlier run as it is. */
-  createRun(input: Omit<CreateRunInput, "kind">, meta: ComposerRunMeta): Created<Run> {
+  /**
+   * `Journal.createRun` for a composer run and its record, in one transaction. A replay returns the earlier run as it is.
+   * `within` runs inside the same transaction once the record exists (a plugin-started run is tainted there, PV-K1e): if it
+   * throws, nothing is created.
+   */
+  createRun(input: Omit<CreateRunInput, "kind">, meta: ComposerRunMeta, within?: (runId: string) => void): Created<Run> {
     const m = parse(metaSchema, meta, "composer run");
     return withTransaction(this.#db, () => {
       const created = this.#createRun({ ...input, kind: "composer" });
@@ -136,6 +140,7 @@ export class ComposerRecords {
       this.#db
         .prepare("INSERT INTO composer_runs (run_id, mode, provider_id, model_id, created_at) VALUES (?, ?, ?, ?, ?)")
         .run(created.value.id, m.mode, m.providerId, m.modelId, this.#ts());
+      within?.(created.value.id);
       return created;
     });
   }

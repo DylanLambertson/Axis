@@ -1,5 +1,5 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
-// axis.tasks/1 (PV-T1 slice 1): planned, never served; no author, source, hop or trust in any request; closed refusals.
+// axis.tasks/1 (PV-T1 slices 1 and 2a): served; no author, source, hop or trust in any request; closed refusals.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -10,17 +10,17 @@ import { accepts, rejects, runSuite, schemaOf } from "./suite.js";
 
 runSuite(TASKS_SAMPLES);
 
-test("the contract is planned, never served, with the designed method table", () => {
-  assert.equal(contracts["axis.tasks/1"], undefined);
-  assert.equal(lookupMethod("axis.tasks", 1, "create"), undefined);
-  assert.equal(lookupMethodIn(plannedContracts, "axis.tasks", 1, "delete"), tasksMethods.delete);
-  assert.deepEqual(tableProblems(plannedContracts), []);
+test("the contract is served (PV-T1 slice 2a), no longer planned, with the designed method table", () => {
+  assert.ok(contracts["axis.tasks/1"] !== undefined);
+  assert.equal(lookupMethod("axis.tasks", 1, "create"), tasksMethods.create);
+  assert.equal(lookupMethodIn(plannedContracts, "axis.tasks", 1, "delete"), undefined);
+  assert.deepEqual(tableProblems(contracts), []);
   assert.deepEqual(Object.entries(tasksMethods).map(([m, s]) => [m, s.sideEffect, s.tier, s.idempotency]), [
     ["list", "read", 0, "none"], ["get", "read", 0, "none"], ["revisions", "read", 0, "none"], ["create", "write", 1, "required"],
     ["update", "write", 1, "none"], ["setStatus", "write", 1, "none"], ["assign", "write", 1, "none"], ["link", "write", 1, "none"],
-    ["unlink", "write", 1, "none"], ["delete", "destructive", 3, "none"],
+    ["unlink", "write", 1, "none"], ["delete", "destructive", 4, "none"],
   ]);
-  assert.equal("start" in tasksMethods, false, "Start is slice 2's, with the run it taints");
+  assert.equal("start" in tasksMethods, false, "Start is slice 2b's, with the run it taints");
 });
 
 test("no request names an author, a source, a hop, a trust flag or a command", () => {

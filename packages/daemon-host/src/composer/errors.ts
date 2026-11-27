@@ -18,6 +18,8 @@ const REASON_TEXT: Readonly<Record<string, string>> = {
   worktree_unavailable: "The workspace could not be located.",
   not_cancellable: "The run is not in a state that can be cancelled.",
   shutting_down: "The agent service is stopping.",
+  plugin_starts_unavailable: "Runs started by a plugin are not available.",
+  taint_unrecorded: "The run could not be marked as started from untrusted input.",
 };
 
 const CODE_TEXT = {

@@ -44,8 +44,16 @@ The workflow runs only on `workflow_dispatch`, never on PRs or pushes. It runs `
 
 - **Runner.** The required `runs-on` input has no default. Give the label of an **ephemeral** self-hosted runner: Linux x64 with at least 12 GiB of RAM. GitHub-hosted larger runners need an organization on Team or Enterprise Cloud, and this repository is owned by a user account, so they are not available. `npm ci` runs every dependency's install scripts, so never use a long-lived or shared machine. The job fails early on a runner that is not Linux x64 or has less than 12 GiB of RAM. Without a self-hosted runner, build locally in Docker with at least 12 GiB of memory (`docs/feasibility/code-oss-build.md` §7).
 - **Self-hosted images** that already have the build packages can set `install-build-packages` to false (otherwise `sudo apt-get` is used).
-- **Overlay tests.** After the build, the job runs `scripts/code-oss/overlay-tests.sh`: the overlay's node unit tests (`vs/axis/**/test/common`) on the built tree. No other job runs them. A per-PR job is a follow-up (PV-X3).
+- **Overlay tests.** After the build, the job runs `scripts/code-oss/overlay-tests.sh`: the overlay's node unit tests (`vs/axis/**/test/common`) on the built tree. No other job runs them. Every pull request and push to `main` that touches the overlay, the patches, the staged packages or the Code OSS scripts also runs them in `.github/workflows/overlay-tests.yml` (below).
 - **Start it:** Actions tab → "Code OSS full build (manual)" → Run workflow, or `gh workflow run code-oss-build.yml -f runs-on=<label>`.
+
+## Overlay tests (`.github/workflows/overlay-tests.yml`)
+
+The Code OSS overlay's node unit tests (`vs/axis/**/test/common`), with upstream's runner, on `ubuntu-24.04`. **Informational: it is not a required check**, so it cannot block a merge. It runs on pull requests and pushes to `main` that touch `code-oss/overlay`, the patches, replacements, hooks or removals, `upstream.json`, `packages/**`, `scripts/code-oss/**` or the root lockfile.
+
+- **What it does:** it fetches the pinned upstream, then resolves the checksum-pinned Node with `lib.sh`'s own download (`resolve_node download`). That happens before the apply, because the apply's lock hook needs it, and `build.sh --toolchain-only` requires an applied tree. It then installs the repository root dependencies with `npm ci --ignore-scripts` (the apply's stage hook needs the root `zod` and `typescript`), applies, runs `npm ci` in the tree (no compile, no Electron), and runs `scripts/code-oss/overlay-tests.sh`.
+- **The cache:** `node_modules` is cached with `actions/cache` (pinned by SHA). The key is the pinned Node version plus a hash of every `package-lock.json` in the applied tree. There are no fallback keys, so any change to a lockfile or to Node is a miss and a fresh `npm ci`: a stale cache is never restored. A restored cache is checked in seconds (mocha and the runner's dependencies present) before use. Only pushes to `main` save the cache, and pull requests read it.
+- **Limits:** every step has a timeout, and the job has 45 minutes. The token is read-only (`contents: read`), and the job uses no secrets.
 
 ## Required status checks on `main`
 

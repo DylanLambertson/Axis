@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { createHash } from "node:crypto";
-import { AxisError, canonicalize, isWellFormedString, type AuditActor } from "@axis/audit";
+import { ACTOR_PATTERN, AxisError, canonicalize, isWellFormedString, type AuditActor } from "@axis/audit";
 import { z } from "zod";
 import type { UserPrincipal } from "./principal.js";
 import {
@@ -17,7 +17,8 @@ import {
 
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const REASON = /^[A-Z][A-Z0-9_]{0,63}$/;
-const ACTOR = /^(?:user|daemon|agent:[A-Za-z0-9._-]{1,64})$/;
+/** The audit log's actor rule: `user`, `daemon`, `agent:<id>`, and `plugin:<id>` for a run a plugin started (PV-K1e). */
+const ACTOR = ACTOR_PATTERN;
 const noControl = (s: string): boolean => !/[\u0000-\u001f\u007f]/.test(s);
 /** Printable, well-formed (lone surrogates would be rewritten by SQLite), bounded. */
 const text = (max: number) => z.string().min(1).max(max).refine(noControl).refine(isWellFormedString);

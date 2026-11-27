@@ -13,9 +13,12 @@ import { createRunTaint, type TaintStore } from "../composer/taint.js";
 import { ObservedFiles } from "./agent-observed.js";
 import { GIT_DIFF, GIT_STATUS, GIT_TOOL_SPECS, gitDiffArgs, gitReadRunnerOptions, gitStatusArgs, gitTools } from "./agent-git.js";
 import { providerRedactor } from "./provider-redactor.js";
-import { PAGE_TOOL_SPECS, PageRead, WRITE_PAGE, pageTools, pagesReason, writePageArgs, writePagePreview } from "./agent-pages.js";
-import { PagesRefusal, type PagesService } from "../pages/service.js";
-import { MESSAGE_TOOL_SPECS, MessagesRead, READ_MESSAGES, SEND_MESSAGE, messageTools, messagingReason, readMessagesArgs, sendMessageArgs, sendPreview } from "./agent-messages.js";
+import { pagesReason } from "./agent-pages.js";
+import { tasksReason } from "./agent-tasks.js";
+import type { TasksService } from "../tasks/service.js";
+import { WHOLE_CONTENT_TOOLS, optionalTools, taintedRead } from "./agent-optional-tools.js";
+import type { PagesService } from "../pages/service.js";
+import { READ_MESSAGES, SEND_MESSAGE, messagingReason, readMessagesArgs, sendMessageArgs, sendPreview } from "./agent-messages.js";
 import { createComposerMessaging, raisedHop, type ComposerMessagingDeps } from "../messages/participation.js";
 import { RUN_COMMAND, RUN_COMMAND_SPEC, RunWt2, approvableCommand, commandLimits, commandTool, runCommandArgs, type CommandLimits, type RunCommandArgs } from "./agent-command.js";
 import type { RunApprovals } from "../gate/run-approvals.js";
@@ -118,6 +121,8 @@ export interface AgentBindingDeps {
   readonly messaging?: Omit<ComposerMessagingDeps, "holdsSecret">;
   /** `read_page` and `write_page` (PV-Q1 slice 2): offered only to a run whose worker `workerOf` knows. */
   readonly pages?: { readonly service: PagesService; readonly workerOf: (runId: string) => { readonly agentId: string; readonly projectId: string } | undefined };
+  /** `read_task`, `list_tasks`, `create_task`, `update_task` (PV-T1 slice 2a): the same rule as pages. */
+  readonly tasks?: { readonly service: TasksService; readonly workerOf: (runId: string) => { readonly agentId: string; readonly projectId: string } | undefined };
 }
 
 /** The broker's audit payload keys (`broker.decision`: approver, approval id, expiry; `broker.result`), for the host's `AuditLog` (DMN-5). */
@@ -260,15 +265,9 @@ export function createAgentBinding(deps: AgentBindingDeps): AgentBinding {
         taint.receive(input);
       },
     };
-    const agentId = runMessaging?.agentOf(run.runId);
-    const worker = deps.pages?.workerOf(run.runId);
-    // Asked again at every call: a worker archived while its run lives loses the page tools (review 1 N1).
-    const pageWho = () => {
-      const now = deps.pages?.workerOf(run.runId);
-      if (now === undefined || now.agentId !== worker?.agentId) throw new PagesRefusal("E_NOT_FOUND", "not_found");
-      return { kind: "agent" as const, agentId: now.agentId, projectId: now.projectId, runId: run.runId, receivedHop };
-    };
-    const previewed = worker === undefined || deps.pages === undefined ? PREVIEWED : new Map([...PREVIEWED, [WRITE_PAGE, { args: writePageArgs, content: writePagePreview(deps.pages.service, pageWho) as never }]]);
+    // The worker's own tools (messaging, pages): offered, previewed and unwrapped in `agent-optional-tools.ts`.
+    const extra = optionalTools({ runId: run.runId, messaging: runMessaging, pages: deps.pages, tasks: deps.tasks, receivedHop: () => receivedHop });
+    const previewed = extra.previews.length === 0 ? PREVIEWED : new Map([...PREVIEWED, ...extra.previews]);
     // Calls inside the broker now, with their parsed arguments: the hook previews only the one whose digest it is asked for.
     const inflight = new Set<{ readonly tool: string; readonly args: unknown }>();
     const covered = (req: ApprovalRequest): { readonly tool: string; readonly args: unknown } | undefined => {
@@ -312,7 +311,7 @@ export function createAgentBinding(deps: AgentBindingDeps): AgentBinding {
         // The same for a write to a file that is not protected: with the floor at `network` it is asked only in a tainted run
         // (IAC-T), and the user must see all of what is written, never its first 2,048 units. A protected write keeps C2's rule
         // below (declined unless shown whole); a preview that could not be built is this refusal too.
-        if ((req.tool === "write_file" || req.tool === WRITE_PAGE) && (preview === undefined || (!preview.protected && !wholeText(preview)))) throw new BrokerError("E_POLICY_DENIED", "content-not-reviewable", "the content cannot be shown whole for approval");
+        if (WHOLE_CONTENT_TOOLS.has(req.tool) && (preview === undefined || (!preview.protected && !wholeText(preview)))) throw new BrokerError("E_POLICY_DENIED", "content-not-reviewable", "the content cannot be shown whole for approval");
         if (preview === undefined || !shownWhole(preview)) return { approved: false };
         // The card's sources, read with the flag the challenge binds: nothing awaits between here and its issue.
         const card = taint.card();
@@ -405,10 +404,8 @@ export function createAgentBinding(deps: AgentBindingDeps): AgentBinding {
     if (wt2 !== undefined) broker.register(commandTool({ wt2, workspaceId: worktree.id, platform, limits, redact: (t) => deps.redactor.redactString(t), writeLock: deps.writeLock }));
     for (const extra of deps.extraTools ?? []) broker.register(extra);
     if (gitRunner !== undefined) for (const t of gitTools({ redact: (t) => deps.redactor.redactString(t) })) broker.register(t as ToolDefinition);
-    const messaging = agentId === undefined ? undefined : runMessaging;
-    if (messaging !== undefined && agentId !== undefined) for (const t of messageTools({ messaging, who: () => ({ agentId, runId: run.runId, receivedHop }) })) broker.register(t);
-    if (deps.pages !== undefined && worker !== undefined) for (const t of pageTools({ pages: deps.pages.service, who: pageWho })) broker.register(t);
-    const specs = Object.freeze([...COMPOSER_TOOLS, ...(wt2 === undefined ? [] : [RUN_COMMAND_SPEC]), ...(gitRunner === undefined ? [] : GIT_TOOL_SPECS), ...(messaging === undefined ? [] : MESSAGE_TOOL_SPECS), ...(worker === undefined || deps.pages === undefined ? [] : PAGE_TOOL_SPECS)]);
+    for (const t of extra.tools) broker.register(t);
+    const specs = Object.freeze([...COMPOSER_TOOLS, ...(wt2 === undefined ? [] : [RUN_COMMAND_SPEC]), ...(gitRunner === undefined ? [] : GIT_TOOL_SPECS), ...extra.specs]);
     return {
       specs,
       drift: async (signal) => formatDriftNotice(await observed.drift(signal)),
@@ -436,7 +433,7 @@ export function createAgentBinding(deps: AgentBindingDeps): AgentBinding {
           if (halted()) throw new ComposerRunHalt(wt2?.haltReason ?? "GIT_DRIFT");
           // The action ran but its audit row could not be written: the run must stop (never continue unrecorded).
           if (e instanceof BrokerError && e.details["executed"] === true) throw new Error("unrecorded side effect");
-          const reason = messagingReason(e) ?? pagesReason(e) ?? reasonOf(e);
+          const reason = messagingReason(e) ?? pagesReason(e) ?? tasksReason(e) ?? reasonOf(e);
           if (reason === "swapped") return { ok: false, reason, content: SWAPPED_RESULT };
           const hint = reason === "stale" ? " The file changed since you last read it: read it again before writing." : "";
           return { ok: false, reason, content: `The call was refused (${reason}).${hint}` };
@@ -448,13 +445,10 @@ export function createAgentBinding(deps: AgentBindingDeps): AgentBinding {
         // IAC-T source 2 (PV-M4): each message from an agent, a plugin or a CLI sender in a read raises the run's received hop
         // and taints the run, before the text is returned.
         // IAC-T source 4 (PV-Q1 slice 2): an untrusted page version raises the hop and taints the run before its text returns.
-        if (out instanceof PageRead) {
-          if (out.receipt !== undefined) received.receive(out.receipt);
-          return { ok: true, content: out.text };
-        }
-        if (out instanceof MessagesRead) {
-          for (const r of out.outcome.receipts) received.receive(r);
-          return { ok: true, content: out.outcome.text };
+        const read = taintedRead(out);
+        if (read !== undefined) {
+          for (const r of read.receipts) received.receive(r);
+          return { ok: true, content: read.content };
         }
         const receipt = taintReceiptOf(deps.taintSources, name, call, input);
         if (receipt !== undefined) received.receive(receipt);
