@@ -61,6 +61,7 @@ test("renderNotices: fails closed on a package without a licence file and on Mon
   const apache = "Apache License\n                           Version 2.0, January 2004";
   assert.throws(() => renderNotices([monaco], () => ["LICENSE"], () => "MIT"), /monaco-editor@1\.0\.0: its notices do not match/);
   assert.throws(() => renderNotices([monaco], () => ["LICENSE"], () => apache), /typescript version/);
+  assert.throws(() => renderNotices([monaco], () => ["ThirdPartyNotices.txt"], () => "%% typescript version 5.9 (MIT-only text)"), /Apache License/, "the TypeScript heading alone is not enough");
   const ok = renderNotices([monaco], () => ["ThirdPartyNotices.txt"], () => `%% typescript version 4.4.4\n${apache}`);
   assert.match(ok, /typescript version 4\.4\.4/);
 });

@@ -644,7 +644,7 @@ Exhibit B - "Incompatible With Secondary Licenses" Notice
   defined by the Mozilla Public License, v. 2.0.
 
 ==============================================================================
-electron 45.3.1 (MIT)
+electron 45.3.2 (MIT)
 ==============================================================================
 
 The Electron runtime contains Chromium and its dependencies. Their licences are in
@@ -1204,7 +1204,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SO
 END OF vscode-swift NOTICES AND INFORMATION
 
 ==============================================================================
-react 19.2.9 (MIT)
+react 19.3.1 (MIT)
 ==============================================================================
 
 --- LICENSE ---
@@ -1232,7 +1232,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ==============================================================================
-react-dom 19.2.9 (MIT)
+react-dom 19.3.1 (MIT)
 ==============================================================================
 
 --- LICENSE ---
@@ -1260,7 +1260,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ==============================================================================
-scheduler 0.27.0 (MIT)
+scheduler 0.28.0 (MIT)
 ==============================================================================
 
 --- LICENSE ---
