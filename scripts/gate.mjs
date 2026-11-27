@@ -12,7 +12,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   countLines, exitCode, findLongFiles, formatReport, formatTable, gitleaksInstallSteps,
-  overlayNotRun, parseGitleaksPin, parseLog, parseSidecarHash, scanCommits, versionMatchesPin, wrongNodeLine
+  overlayNotRun, parseGitleaksPin, parseLog, parseSidecarHash, pinnedNodeHints, scanCommits, validSummary, versionMatchesPin, wrongNodeLine
 } from "./gate/lib.mjs";
 import { failureDigest, splitSuites } from "./gate/failures.mjs";
 
@@ -43,13 +43,8 @@ const range = `${base}..HEAD`;
 if (!skip.has("node-version")) {
   let pinned;
   try { pinned = JSON.parse(readFileSync(join(root, "code-oss", "upstream.json"), "utf8")).node; } catch { /* the node-version step reports it */ }
-  const dist = typeof pinned === "string" ? `node-v${pinned}-${process.platform === "darwin" ? "darwin" : "linux"}-${process.arch === "arm64" ? "arm64" : "x64"}` : "";
-  const toolsDir = process.env.AXIS_CODE_OSS_TOOLS_DIR ?? join(root, ".tools");
-  const hints = [process.env.NODE24_BIN, dist === "" ? undefined : join(toolsDir, dist, "bin")]
-    .filter((d) => typeof d === "string" && d !== "")
-    .map((d) => (existsSync(d) && statSync(d).isFile() ? dirname(d) : d)) // NODE24_BIN may name the binary itself (scripts/code-oss/lib.sh accepts both)
-    .filter((d) => existsSync(join(d, "node")));
-  const line = wrongNodeLine({ running: process.version, pinned, execPath: process.execPath, hints });
+  const { hints, unusable } = pinnedNodeHints({ env: process.env, root, pinned, platform: process.platform, arch: process.arch, fs: { exists: existsSync, isFile: (p) => statSync(p).isFile() } });
+  const line = wrongNodeLine({ running: process.version, pinned, execPath: process.execPath, hints, unusable });
   if (line !== undefined) console.log(line);
 }
 
@@ -171,10 +166,10 @@ step("test", "tests", () => {
     // ADR 0009's first test (PV-N1d) may skip on a dev machine without openssl, never under the gate.
     const r = sh(process.execPath, [join(root, "scripts", "test-all.mjs"), "--json", file], { cwd: root, timeout: TESTS_LIMIT_MS, env: { ...process.env, AXIS_REQUIRE_PINNING_TEST: "1" } });
     try { packageCounts = JSON.parse(readFileSync(file, "utf8")); } catch { /* summary missing */ }
-    if (!Array.isArray(packageCounts)) packageCounts = [];
+    if (!validSummary(packageCounts)) packageCounts = []; // forged or damaged: not a summary
     // A run that exits 0 with no summary, or with a summary of no suite, ran nothing: that is a failure, never "pass, 0 suites".
-    if (r.ok && packageCounts.length > 0) return { status: "pass", detail: `${packageCounts.length} suites` };
-    if (r.ok) { return { status: "fail", detail: "the test run ended without a summary of any suite (zero suites ran, or no summary was written)" }; }
+    if (r.ok && packageCounts.every((s) => s.ok) && packageCounts.length > 0) return { status: "pass", detail: `${packageCounts.length} suites` };
+    if (r.ok) return { status: "fail", detail: "the test run ended without a summary of any suite (zero suites ran, or no summary was written)" };
     const bad = packageCounts.filter((s) => !s.ok).map((s) => s.name);
     // Passing suites stay quiet. A failing one prints its failing tests' names and first error lines here and
     // keeps its whole output in a file, because a flake that cannot be named cannot be chased.
