@@ -71,6 +71,7 @@ export function fixture(over: Partial<GitOpsDeps> = {}): Fixture {
     runHooks: true,
     isCliRunActive: () => false,
     assertNoDrift: async () => undefined,
+    assertReviewFresh: async () => undefined,
     ...over,
   };
   return { root, home, env, run, wt: { workTree: repo, gitDir: join(repo, ".git") }, remote, marker: join(root, "marker"), deps, seen, git: (...a) => run(repo, ...a) };

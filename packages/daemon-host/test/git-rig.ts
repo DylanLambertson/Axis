@@ -143,7 +143,7 @@ export async function gitRig(options: GitRigOptions = {}) {
 
   const gate = { runsActive: options.runsActive ?? false, stalled: false, branchOverride: undefined as string | undefined, recordPushed: [] as string[], bookkeeping: [] as unknown[], internal: [] as unknown[] };
   const runs: Pick<RunsService, "hasActiveRun"> = { hasActiveRun: () => gate.runsActive };
-  const calls = { planPush: [] as Array<{ baseSha: string; branch: string; remote: string }>, executePush: 0, executeCommit: 0, prepare: 0, restoreIndex: 0, assertFresh: 0 };
+  const calls = { planPush: [] as Array<{ baseSha: string; branch: string; remote: string }>, executePush: 0, executeCommit: 0, prepare: 0, assertFresh: 0 };
   const realOps = createGitOperations({ git: gitPort, now: () => performance.now(), runs, ...(options.resolveSshHost === undefined ? {} : { resolveSshHost: options.resolveSshHost }) });
   const baseOps: GitOperations = {
     ...realOps,
@@ -161,7 +161,7 @@ export async function gitRig(options: GitRigOptions = {}) {
     prepare: async (h, c) => {
       calls.prepare++;
       const p = await realPreparer.prepare(h, c);
-      return { handoff: (m, a) => p.handoff(m, a), restoreIndex: () => (calls.restoreIndex++, p.restoreIndex()) };
+      return { handoff: (m, a) => p.handoff(m, a) };
     },
     assertFresh: (h) => (calls.assertFresh++, realPreparer.assertFresh(h)),
   };
@@ -214,6 +214,7 @@ export async function gitRig(options: GitRigOptions = {}) {
   });
   daemon.register("axis.approvals", 1, createApprovalsHandlers({ approvals: approvals.port }));
   daemon.register("axis.review", 1, createReviewHandlers({ review, journal: spyJournal, runs: { get: () => { throw new Error("unused"); } }, trees, audit: { append: () => undefined } }));
+  const auditRows: Array<{ action: string; payload?: unknown }> = [];
   const handlerDeps: GitHandlerDeps = {
     gate: options.gate ?? openTrustGate(),
     ops,
@@ -228,12 +229,14 @@ export async function gitRig(options: GitRigOptions = {}) {
     bases: options.bases ?? new PushedBases(),
     onInternalError: (e) => void gate.internal.push(e),
     onBookkeepingError: (e) => void gate.bookkeeping.push(e),
+    audit: { append: (e) => void auditRows.push(e) },
   };
   registerGitHandlers(createHandlerRegistrar(daemon, guard), handlerDeps);
 
   const ports: MessagePort[] = [];
   let conn = 0;
   const rig = {
+    auditRows,
     root, repo, remote, git, write, genv, journal, trees, calls, gate, rpcEvents, workspaceId, newWorkspace, baseSha, gitPort, handlerDeps, ptyCalls, supervisor,
     approvals,
     /** HEAD of the repository, and the tip of the remote's branch (null when it has none). */

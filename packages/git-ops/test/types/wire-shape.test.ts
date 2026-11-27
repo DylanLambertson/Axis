@@ -17,7 +17,8 @@ const yes = <T extends true>(): T | undefined => undefined;
 
 // commit: the request is the package's input without the worktree (the host resolves it) plus the workspace id.
 yes<Shape<Omit<GitRequest<"commit">, "workspaceId">, Omit<CommitInput, "worktree">>>();
-yes<Same<GitResponse<"commit">, CommitResult>>();
+// The commit reply carries the optional refresh outcome: Shape, so an optional field and a closed reason list must agree too.
+yes<Shape<GitResponse<"commit">, CommitResult>>();
 // push: the wire carries the confirmed plan and the remote; the branch and the base commit come from the journal.
 yes<Equal<GitRequest<"push">["remote"], PushInput["remote"]>>();
 yes<Same<GitRequest<"push">["confirmedPlan"], ConfirmedPlan>>();

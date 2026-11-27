@@ -1,5 +1,5 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
-import type { CommitInput, GitOpsDeps, WorktreeRef } from "@axis/git-ops";
+import type { CommitInput, GitOpsDeps, IndexRefreshOutcome, WorktreeRef } from "@axis/git-ops";
 
 /**
  * Everything `@axis/git-ops` takes (`GitOpsDeps`): ONE runner that routes by `req.context` (`daemon`: the node runner
@@ -87,7 +87,7 @@ export interface GitOperations {
    * The commit of the reviewed tree. `assertFresh` refuses by throwing (G2). Both writes spend the project trust gate's ticket
    * (`consumeTicket`) for `projectId` and `workspaceId` at their entry, before any git: project-registration-and-trust.md §5.4.
    */
-  executeCommit(call: { readonly workspaceId: string; readonly projectId: string; readonly assertFresh: () => Promise<void> }, input: CommitInput, ticket: unknown): Promise<{ readonly commit: string; readonly tree: string }>;
+  executeCommit(call: { readonly workspaceId: string; readonly projectId: string; readonly assertFresh: () => Promise<void> }, input: CommitInput, ticket: unknown): Promise<{ readonly commit: string; readonly tree: string; readonly indexRefresh?: IndexRefreshOutcome }>;
   /** The compare URL of the named remote (its own URL, from the repository). */
   compareUrl(call: { readonly workspaceId: string; readonly worktree: WorktreeRef; readonly remote: string; readonly base: string; readonly head: string }): Promise<string>;
 }

@@ -68,7 +68,11 @@ export interface MessageServiceDeps {
 }
 
 export interface MessageService {
-  send(caller: MessageCaller, req: MessagesRequest<"send">): Promise<MessagesResponse<"send">>;
+  /**
+   * `guard` (audit B F2) runs inside the write, after the secret scan: a caller whose standing can change while the scan runs (a
+   * CLI endpoint) re-checks it there, and a throw writes nothing (no message, no row) and reaches the caller as thrown.
+   */
+  send(caller: MessageCaller, req: MessagesRequest<"send">, guard?: () => void): Promise<MessagesResponse<"send">>;
   thread(caller: MessageCaller, req: MessagesRequest<"thread">): MessagesResponse<"thread">;
   threads(caller: MessageCaller, req: MessagesRequest<"threads">): MessagesResponse<"threads">;
   read(caller: MessageCaller, req: MessagesRequest<"read">): MessagesResponse<"read">;
@@ -246,7 +250,7 @@ export function createMessageService(deps: MessageServiceDeps): MessageService {
   return {
     context,
 
-    async send(caller, raw) {
+    async send(caller, raw, guard) {
       const req = checked("send", raw);
       const key = callerKey(caller);
       const refused = (reason: string, e: unknown): never => {
@@ -269,7 +273,10 @@ export function createMessageService(deps: MessageServiceDeps): MessageService {
         findings = -1; // could not scan it all: refused in either mode
       }
       try {
-        return store.transact(() => accept(caller, req, findings));
+        return store.transact(() => {
+          guard?.();
+          return accept(caller, req, findings);
+        });
       } catch (e) {
         if (e instanceof MessageRefusal) refused(e.reason, e);
         throw e;

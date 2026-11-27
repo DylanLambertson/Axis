@@ -34,7 +34,7 @@ export class FakeRunner {
   }
 }
 
-/** A responder for a healthy axis/feat worktree whose index tree is TREE. */
+/** A responder for a healthy axis/feat worktree whose reviewed tree TREE is a tree object of the repository. */
 export function healthy(extra: Responder = () => undefined): Responder {
   return (s, req) => {
     const e = extra(s, req);
@@ -47,6 +47,7 @@ export function healthy(extra: Responder = () => undefined): Responder {
     if (s[0] === "rev-parse" && s[1] === "--git-path") return { stdout: s.filter((_, i) => s[i - 1] === "--git-path").map((n) => `${WT.gitDir}/${n}`).join("\n") + "\n" };
     if (k === "symbolic-ref --quiet --short HEAD") return { stdout: "axis/feat\n" };
     if (k === "write-tree") return { stdout: `${TREE}\n` };
+    if (k === `rev-parse --verify --quiet --end-of-options ${TREE}^{tree}`) return { stdout: `${TREE}\n` };
     if (k === "rev-parse --verify --end-of-options HEAD^{commit}") return { stdout: `${HEAD}\n` };
     if (k === "rev-parse --verify --end-of-options HEAD^{tree}") return { stdout: `${OTHER_TREE}\n` };
     if (s[0] === "var") return { stdout: "Dylan Lambertson <me@dylanlambertson.dev> 1700000000 +0000\n" };
@@ -70,6 +71,7 @@ export function makeDeps(runner: FakeRunner, over: Partial<GitOpsDeps> = {}): Gi
     runHooks: true,
     isCliRunActive: () => false,
     assertNoDrift: async () => undefined,
+    assertReviewFresh: async () => undefined,
     platform: "linux",
     ...over,
   };
