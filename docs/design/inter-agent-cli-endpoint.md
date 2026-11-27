@@ -33,7 +33,7 @@
 | Reads | 60 per minute per endpoint, shared by all its connections |
 | Sends | the main design's per-agent limits |
 | Authentication failures | compared in constant time; counted only **after** the peer checks of §2 pass (so another uid or a process outside the run's tree cannot lock the shim out); backoff is per peer process id (5 failures, then that peer is refused for 60 s), not for the whole endpoint; where peer checks are unavailable, the per-peer backoff uses the connection and the residual is stated (review 2, N-D); audited as one aggregated `message.endpoint` row per endpoint per minute (count, first and last time), never one row per attempt |
-| Revocation | at run end, at a settings change that disables messaging, or at Pause of its scope: open connections are closed at once and later calls answer `revoked` or `paused`. A run that leaves RUNNING for BLOCKED or REVIEWING has its endpoint revoked and it stays revoked for that run, even if the run returns to RUNNING (decided 2026-11-27, fail closed) |
+| Revocation | at run end, at a settings change that disables messaging, or at Pause of its scope: open connections are closed at once and later calls answer `revoked` or `paused`. A run that leaves RUNNING for BLOCKED or REVIEWING has its endpoint revoked and it stays revoked for that run, even if the run returns to RUNNING (decided 2026-11-27, fail closed): the relay reads the run's transition history at every mint and every message, so it is revoked at its next message even with none in between (audit B F3; `messages-contract.md` section 14) |
 
 All per-connection buffers are bounded; an idle authenticated connection is closed after 10 minutes.
 

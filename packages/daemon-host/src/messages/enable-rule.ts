@@ -66,6 +66,13 @@ export interface EnableFacts {
   readonly argv: readonly string[];
   /** The executable's real path when the host resolved it (a link to a versioned binary): its base name counts too. */
   readonly executableReal?: string;
+  /**
+   * Audit B F1 (review 1 B1): the real file is a regular file whose header is a native executable the platform's loader takes
+   * itself (ELF; Mach-O or fat on darwin), as the host read it. Anything else (a script with or without `#!`, a file the loader
+   * would hand to `/bin/sh`, a special file, one that cannot be read, or the fact missing) is not the CLI: a wrapper, unless the
+   * real path is exactly one of the two npm package scripts.
+   */
+  readonly executableNative?: boolean;
   readonly bypassesPrompts: boolean;
   /** Whether the root-relative path (folded segments) exists in the worker's workspace. */
   readonly exists: (segments: readonly string[]) => boolean;
@@ -271,7 +278,11 @@ export function decideCliMessaging(facts: EnableFacts, config: readonly CliProje
     const realNamed = KNOWN_CLIS.has(cliOf(real));
     const versioned = dirs.includes(nameOnly) && /^[0-9]+(\.[0-9]+)+$/.test(file);
     const npmClaude = nameOnly === "claude" && /\/@anthropic-ai\/claude-code\/cli\.js$/.test(real);
+    const npmCodex = nameOnly === "codex" && /\/@openai\/codex\/bin\/codex\.js$/.test(real);
     if (!realNamed && !versioned && !npmClaude) return { allowed: false, rule: "wrapper_unparsed" };
+    // Audit B F1: a file that merely has the name is not the CLI (a shell wrapper can run the real CLI with any flag, and a file
+    // with no header the loader knows is run by `/bin/sh`): only a native header, or the two npm package scripts by their paths.
+    if (facts.executableNative !== true && !npmClaude && !npmCodex) return { allowed: false, rule: "wrapper_unparsed" };
   }
   const knownNames = realIsWrapper ? [] : [...new Set(exes.map(cliOf).filter((n) => KNOWN_CLIS.has(n)))];
   const clis: ReadonlySet<string> = knownNames.length === 0 ? KNOWN_CLIS : new Set(knownNames);
