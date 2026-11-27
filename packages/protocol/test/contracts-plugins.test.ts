@@ -7,10 +7,16 @@ import { accepts, rejects, schemaOf } from "./suite.js";
 
 const entry = (over: Record<string, unknown> = {}) => ({ pluginId: "acme.board", enabled: true, generation: 1, permissions: ["pages.read", "runs.start"], ...over });
 
-test("served with exactly list, revoke and disable: no grant and no enable (K2-g2), so nothing here is an increase", () => {
+test("served with list, revoke, disable, grant and enable; the increases at tier 4 and approvable; no install or update here", () => {
   assert.ok(contracts["axis.plugins/1"] !== undefined);
-  assert.deepEqual(Object.keys(pluginsMethods).sort(), ["disable", "list", "revoke"]);
-  for (const m of ["grant", "enable", "install", "update"]) assert.equal(lookupMethod("axis.plugins", 1, m), undefined, m);
+  assert.deepEqual(Object.keys(pluginsMethods).sort(), ["disable", "enable", "grant", "list", "revoke"]);
+  for (const m of ["install", "update", "setEnabled", "add"]) assert.equal(lookupMethod("axis.plugins", 1, m), undefined, m);
+  for (const m of ["grant", "enable"] as const) {
+    assert.equal(pluginsMethods[m].tier, 4, m);
+    assert.equal(pluginsMethods[m].request.safeParse({ projectId: "p1", pluginId: "acme.board", ...(m === "grant" ? { permission: "runs.start" } : {}), approval: { challengeId: "A".repeat(22) } }).success, true, `${m} carries an approval`);
+  }
+  rejects(schemaOf("axis.plugins", "grant", "request"), { projectId: "p1", pluginId: "acme.board", permission: "net:example.com" }, "net: is not grantable here");
+  rejects(schemaOf("axis.plugins", "enable", "request"), { projectId: "p1", pluginId: "acme.board", permissions: ["runs.start"] }, "enable takes no permissions");
   assert.deepEqual([...PLUGIN_PERMISSION_NAMES], ["agents.read", "messages.send", "tasks.read", "tasks.write", "pages.read", "pages.write", "runs.start", "files.read"]);
 });
 
