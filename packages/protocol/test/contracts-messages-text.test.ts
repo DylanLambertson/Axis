@@ -190,7 +190,7 @@ test("pause and resume: one scope; the reply says the state it leaves", () => {
 });
 
 test("settings: closed values, one change per update, a composer never has an endpoint", () => {
-  const s = (over: Record<string, unknown>) => ({ settings: { ...structuredClone(settings), ...over } });
+  const s = (over: Record<string, unknown>) => ({ settings: { ...structuredClone(settings), ...over }, cliEndpoint: false });
   accepts(res("settings"), s({}), "as built");
   rejects(res("settings"), s({ agents: [{ agentId: "agent-a", kind: "composer", acceptsFrom: "group", cliMessaging: true, muted: false }] }), "composer with an endpoint");
   rejects(res("settings"), s({ crossGroupPairs: [["g1", "g2"], ["g2", "g1"]] }), "a pair twice, reversed");

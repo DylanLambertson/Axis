@@ -17,7 +17,7 @@ test("settings: the defaults, the project's agents with theirs, and only the use
   const r = setup(t);
   const st = r.binding.settings;
   const view = st.settings(USER, { projectId: "p1" });
-  assert.ok(messagesMethods.settings.response.safeParse(view).success);
+  assert.ok(messagesMethods.settings.response.safeParse({ ...view, cliEndpoint: false }).success, "the service's view, with the switch the handler adds beside it");
   const { agents, ...rest } = view.settings;
   assert.deepEqual(rest, { projectId: "p1", crossGroup: false, crossGroupPairs: [], secretScan: "refuse", retentionDays: 30, paused: { project: false, groups: [], agents: [] } });
   assert.deepEqual(agents.map((a) => [a.agentId, a.kind, a.acceptsFrom, a.cliMessaging]), [["a1", "composer", "group", false], ["a2", "composer", "group", false], ["c1", "cli", "none", false], ["b1", "composer", "group", false]]);

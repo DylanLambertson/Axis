@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { AuditLog, openDatabase, runMigrations, schemaVersion, type DatabaseSync } from "@axis/audit";
 import { CLI_ENDPOINT_RECORD_ACTION, CLI_ENDPOINT_SWITCH_MIGRATION, CliEndpointSwitchRecords, JOURNAL_MIGRATIONS, JOURNAL_SCHEMA_VERSION, Journal } from "../src/index.js";
+import { switchOnForTests } from "./cli-endpoint-for-tests.js";
 
 // The CLI messaging endpoint switch (PV-M7 slice 2; `docs/design/axis-messages-shim.md` section 7): schema version 20. One
 // row at most, written only by the user, every change audited in the same transaction, and no row meaning off. Each case
@@ -68,12 +69,12 @@ test("the store: off until the user turns it on; each change writes the row and 
   const { audit, journal } = setup();
   const sw = journal.cliEndpoint;
   assert.equal(sw.enabled(), false);
-  assert.deepEqual(sw.set(false), { changed: false }, "off while absent is no change");
+  assert.deepEqual(sw.switchOff(), { changed: false }, "off while absent is no change");
   assert.equal(records(audit).length, 0, "and nothing is audited");
-  assert.deepEqual(sw.set(true), { changed: true });
+  assert.deepEqual(switchOnForTests(sw), { changed: true });
   assert.equal(sw.enabled(), true);
-  assert.deepEqual(sw.set(true), { changed: false }, "a repeat is no change");
-  assert.deepEqual(sw.set(false), { changed: true });
+  assert.deepEqual(switchOnForTests(sw), { changed: false }, "a repeat is no change");
+  assert.deepEqual(sw.switchOff(), { changed: true });
   assert.equal(sw.enabled(), false);
   const rows = records(audit);
   assert.equal(rows.length, 2, "one event per change");
@@ -83,10 +84,10 @@ test("the store: off until the user turns it on; each change writes the row and 
   ]);
 });
 
-test("the store refuses anything but a boolean, writing nothing", () => {
+test("the store refuses switching on without a token of its own, writing nothing", () => {
   const { db, audit, journal } = setup();
   for (const v of [1, "true", null, undefined, {}]) {
-    assert.throws(() => journal.cliEndpoint.set(v as never), (e: unknown) => (e as { code?: string }).code === "E_INVALID_ARGUMENT", String(v));
+    assert.throws(() => journal.cliEndpoint.switchOn(v as never), (e: unknown) => ((e as { detail?: { reason?: string } }).detail?.reason ?? (e as { details?: { reason?: string } }).details?.reason) === "token", String(v));
   }
   assert.equal(one(db, "SELECT count(*) FROM messaging_cli_endpoint"), 0);
   assert.equal(records(audit).length, 0);
@@ -96,7 +97,7 @@ test("the row and its audit event are one transaction: an audit that fails leave
   const { db } = setup();
   const failing = { append: () => { throw new Error("audit down"); } } as unknown as AuditLog;
   const sw = new CliEndpointSwitchRecords(db, failing, () => T);
-  assert.throws(() => sw.set(true), /audit down/);
+  assert.throws(() => sw.switchOn(sw.takeSwitchMint()()), /audit down/);
   assert.equal(sw.enabled(), false, "turning on did not happen without its audit event");
   assert.equal(one(db, "SELECT count(*) FROM messaging_cli_endpoint"), 0);
   db.close();

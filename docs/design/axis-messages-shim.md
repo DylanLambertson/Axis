@@ -100,6 +100,13 @@ Production stays off. The one way on is a user-scope setting, turned on through 
 - **`axis.messages/1.disableCliEndpoint`** is user-only, tier 1 (it only lowers privilege), with no dialog.
 - **Who may call them.** Both are desktop only, absent from the web and plugin allow-lists. Negative tests cover a worker, a plugin and a web caller. Native proof and replay tests cover the enable.
 
+**Decided 2026-11-27 (delegated, reversible), as built in the contract slice:**
+
+- **Side effect `write`**, as `axis.plugins/1.grant`: the method table has no `privileged` side effect; the privilege is carried by tier 4 and main's native confirmation.
+- **A single-use write token for turning it on**, as plugin grants have. The journal hands its switch mint out once. The host composition passes it straight into the approved enable action, the only code that can switch on. Turning off needs no token. A static writer rule keeps `switchOn` to that action, `switchOff` to the disable handler, and the mint to the composition.
+- **What the switch turns on, exactly and only:** the CLI endpoint's relay, its own run-to-worker lookup (separate from `agentOf`), and minting for a CLI run whose worker has `cliMessaging` on. Delivery into runs and the composer's send and read tools stay with `messaging.enabled` (PV-G4, PV-M8). A test pins that with the switch on and `messaging.enabled` off, no composer run gets a message tool or a delivery.
+- **In two parts.** The contract slice reads the switch at start, and the relay reads it at every mint and every relayed message, so after a disable nothing is minted and every endpoint is revoked at its next message. The next slice adds the live turning on, the eager revocation of every endpoint, and the pty process's endpoint configuration.
+
 **Where the setting lives.** A singleton journal row, written only by the user, with an audited update and absent meaning off. It needs a new forward-only migration at the next free version (20 at this baseline; 19 is the tasks keep trigger). `journal/src/schema.ts` is at 496 lines, so the migration goes in its own module, and `schema.ts` is split first in its own tiny PR before it.
 
 **A live switch, not a startup flag.** Today `wireCliEndpoints` is decided once at composition, `hostMessagingDeps.agentOf` returns nothing while messaging is off, and the production pty process is never given the listener configuration (`messagesEndpoints`); only tests are. So the slice must make all of these true:

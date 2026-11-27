@@ -6,6 +6,7 @@ import { attestedWindow } from "../testing/attested.js";
 import { cliEndpointPty, createMessagingBinding, hostMessagingDeps, startCliRun, wireCliEndpoints, type CliEndpoints, type PtyPort, type RelayOut } from "../src/index.js";
 import { newKey } from "./approvals-rig.js";
 import { runsRig, until } from "./runs-rig.js";
+import { switchOnForTests } from "./cli-endpoint-for-tests.js";
 import { createWs, gitSkipReason } from "./worktrees-rig.js";
 
 // The CLI endpoint through the REAL run supervisor (not a rig that creates a RUNNING run first): the supervisor spawns while
@@ -26,15 +27,16 @@ async function setup(t: TestContext, spawnHook?: (spec: Parameters<PtyPort["spaw
   const ws = (await createWs(user, (_m, x) => (assert.equal(x.ok, true, JSON.stringify(x.error)), x))).id;
   r.journal.agents.create({ id: "w1", projectId: r.projectId, name: "W", launch: { kind: "cli", entryId: "fake" }, homeWorkspaceId: ws, groupId: null });
   r.journal.messages.setAgentSettings("w1", { acceptsFrom: "group", cliMessaging: true, muted: false }); // enabling is still refused: seeded
+  switchOnForTests(r.journal.cliEndpoint); // the user's switch (PV-M7 slice 2): the host's lookup and mint read it
   const m = createMessagingBinding(hostMessagingDeps({ journal: r.journal, audit: r.audit, monotonic: () => r.clock.monotonic(), scan: async () => [], logger: undefined, holdsSecret: () => false, enabled: true }));
   const sent: RelayOut[] = [];
   const cleanups: (() => void)[] = [];
   t.after(() => cleanups.forEach((c) => c()));
-  holder.cli = wireCliEndpoints({ enabled: true, cliEndpoint: true }, { onRelay: () => ({ dispose: () => undefined }), relay: (o: RelayOut) => (sent.push(o), true) }, m.endpoints, cleanups);
+  holder.cli = wireCliEndpoints(true, { onRelay: () => ({ dispose: () => undefined }), relay: (o: RelayOut) => (sent.push(o), true) }, m.endpoints, cleanups);
   const relay = (msg: Parameters<typeof m.endpoints.relay.onRelay>[1]) => m.endpoints.relay.onRelay(m.endpoints.source, msg);
   const reply = (outs: readonly RelayOut[]) => outs.map((o) => (o.t === "relay-reply" ? JSON.parse(o.frame) : o));
   const start = () => startCliRun(r.handlerDeps, { workspaceId: ws, entryId: "fake", worker: "w1" }, ctx);
-  return { r, ws, sent, relay, reply, start };
+  return { r, ws, sent, relay, reply, start, mint: (runId: string) => m.endpoints.relay.mint(runId) };
 }
 
 test("through the real supervisor: a worker's CLI run gets its endpoint at spawn; before RUNNING a message answers not_ready and the endpoint stays; after, it serves", { skip }, async (t) => {
@@ -119,4 +121,20 @@ test("through the real supervisor: a connection opened while QUEUED is not open 
   assert.deepEqual(f.reply(await f.relay({ t: "relay-frame", endpoint, conn: "c0", frame: auth })), [{ ok: false, reason: "refused" }], "the connection opened while QUEUED was never registered");
   assert.deepEqual(await f.relay({ t: "relay-open", endpoint, conn: "c1" }), []);
   assert.deepEqual(f.reply(await f.relay({ t: "relay-frame", endpoint, conn: "c1", frame: auth })), [{ ok: true, op: "auth" }], "a fresh open serves");
+});
+
+test("through the host's binding (hostMessagingDeps): the user's switch turned off after start: a serving endpoint is revoked at its next message, and a new run is minted none", { skip }, async (t) => {
+  const specs: { messagesEndpoint?: { endpoint: string; token: string } }[] = [];
+  const f = await setup(t, async (spec, inner) => (specs.push(spec), inner.spawn(spec)));
+  await f.start();
+  const e = specs[0]?.messagesEndpoint;
+  assert.ok(e !== undefined, "minted while the switch was on");
+  assert.deepEqual(await f.relay({ t: "relay-open", endpoint: e.endpoint, conn: "c1" }), []);
+  assert.deepEqual(f.reply(await f.relay({ t: "relay-frame", endpoint: e.endpoint, conn: "c1", frame: JSON.stringify({ op: "auth", token: e.token }) })), [{ ok: true, op: "auth" }]);
+  f.r.journal.cliEndpoint.switchOff(); // the user's disable, read by the host's binding per call (never once at wiring)
+  assert.deepEqual(f.reply(await f.relay({ t: "relay-frame", endpoint: e.endpoint, conn: "c1", frame: JSON.stringify({ op: "read", id: "r1" }) })), [{ t: "endpoint-close", endpoint: e.endpoint, reason: "revoked" }, { ok: false, reason: "revoked" }], "revoked at its next message");
+  // A new run of the same worker, launching (QUEUED, as the supervisor spawns it): the host's binding mints it nothing.
+  const next = f.r.journal.createRun({ workspaceId: f.ws, kind: "cli", createdBy: "user", agentId: "w1" }).value.id;
+  assert.equal(f.r.journal.getRun(next)?.state, "QUEUED");
+  assert.equal(f.mint(next), undefined, "nothing is minted after the switch is off");
 });

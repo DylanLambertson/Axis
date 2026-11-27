@@ -33,7 +33,8 @@ export interface MessagingSettingsDeps {
 }
 
 export interface MessagingSettingsService {
-  settings(caller: MessageCaller, req: MessagesRequest<"settings">): MessagesResponse<"settings">;
+  /** The project's settings; the handler adds the global CLI endpoint switch beside them. */
+  settings(caller: MessageCaller, req: MessagesRequest<"settings">): Omit<MessagesResponse<"settings">, "cliEndpoint">;
   /**
    * `enable`: the enable rule's decision for `cliMessaging: true` (PV-M7 slice 1), made by the handler before this
    * synchronous write. Without one, enabling is refused (`bypass_entry`): it fails closed.

@@ -90,8 +90,9 @@ describe("headless slice", { skip, timeout: SUITE_TIMEOUT_MS }, () => {
     // PV-M3: the composed host serves axis.messages/1 over the journal; no agent exists yet (PV-G3), so nothing can be addressed.
     const threads = await user.ok<{ threads: unknown[] }>("axis.messages", "threads", {});
     assert.deepEqual(threads.threads, []);
-    const settings = await user.ok<{ settings: { projectId: string; agents: unknown[] } }>("axis.messages", "settings", { projectId });
+    const settings = await user.ok<{ settings: { projectId: string; agents: unknown[] }; cliEndpoint: boolean }>("axis.messages", "settings", { projectId });
     assert.deepEqual([settings.settings.projectId, settings.settings.agents], [projectId, []]);
+    assert.equal(settings.cliEndpoint, false, "the production host's CLI endpoint switch is off until the user turns it on");
     const nobody = await user.call("axis.messages", "send", { recipients: [{ agent: "a1" }], body: { format: "text", text: "hi" } }, true);
     assert.deepEqual([nobody.error?.code, nobody.error?.details], ["E_CONFLICT", { reason: "recipient_refused" }]);
     // PV-D2 slice 2: the composed host serves axis.forge/1 to the user; this fixture's origin is a local path, not GitHub.

@@ -1,4 +1,5 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
+import { switchOnForTests } from "./cli-endpoint-for-tests.js";
 import { randomBytes } from "node:crypto";
 import type { TestContext } from "node:test";
 import type { Challenge } from "@axis/protocol";
@@ -24,7 +25,7 @@ export interface DeliveryRig {
   readonly codes: string[];
 }
 
-export async function deliveryRig(t: TestContext, options: { maxText?: number; failTaintAudit?: () => boolean; limits?: Partial<MessagingLimits>; onInternalError?: (code: string) => void; messaging?: boolean; noDelivery?: boolean; previewScanner?: PreviewScanner; scan?: (text: string) => Promise<readonly unknown[]> } = {}): Promise<DeliveryRig> {
+export async function deliveryRig(t: TestContext, options: { cliEndpointOff?: boolean; maxText?: number; failTaintAudit?: () => boolean; limits?: Partial<MessagingLimits>; onInternalError?: (code: string) => void; messaging?: boolean; noDelivery?: boolean; previewScanner?: PreviewScanner; scan?: (text: string) => Promise<readonly unknown[]> } = {}): Promise<DeliveryRig> {
   const holder: { m?: MessagingBinding; rig?: DeliveryRig } = {};
   const agents = new Map<string, AgentEntry>();
   const groups = new Map<string, GroupEntry>();
@@ -55,6 +56,7 @@ export async function deliveryRig(t: TestContext, options: { maxText?: number; f
     groups.set(g, { groupId: g, projectId: "p", members: [...(groups.get(g)?.members ?? []), id] });
   }
   const codes: string[] = [];
+  if (options.cliEndpointOff !== true) switchOnForTests(c.journal.cliEndpoint);
   const m = createMessagingBinding({
     holdsSecret: messageSecretCheck(c.redactor),
     // The CLI endpoint is refused on Windows (no pipe helper); the tests judge the relay itself, on any host.
@@ -67,6 +69,9 @@ export async function deliveryRig(t: TestContext, options: { maxText?: number; f
     scan: options.scan ?? (async () => []),
     directory,
     agentOf: (runId) => runAgent.get(runId),
+    // The CLI endpoint path (PV-M7 slice 2): its own lookup and the user's switch as stored (on in this rig unless asked off).
+    cliAgentOf: (runId) => runAgent.get(runId),
+    cliEndpointOn: () => c.journal.cliEndpoint.enabled(),
     runLive: (runId) => c.journal.getRun(runId)?.state === "RUNNING",
     ...(options.maxText === undefined ? {} : { deliveryLimits: { maxText: options.maxText } }),
     ...(options.limits === undefined ? {} : { limits: options.limits }),

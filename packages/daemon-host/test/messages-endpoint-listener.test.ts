@@ -23,13 +23,13 @@ function fakeHandle(): PtyHandle & { exit(): void } {
   return { kill: () => undefined, groupAlive: () => false, onExit: (l: (e: PtyExit) => void) => (exits.push(l), { dispose: () => undefined }), exit: () => exits.forEach((l) => l({ exitCode: 0, signal: null })) } as unknown as PtyHandle & { exit(): void };
 }
 
-test("messaging options: the endpoint relay is wired only with enabled AND cliEndpoint, and only to a pty port that relays", () => {
+test("the endpoint relay is wired only when the user's switch is on at start, and only to a pty port that relays", () => {
   const relay = { onRelay: async () => [], mint: () => undefined, revoke: () => undefined, revokeWorker: () => [], dropPaused: () => [], flush: () => undefined };
   const endpoints = { relay, source: Symbol("pty-control") };
   const port = { onRelay: () => ({ dispose: () => undefined }), relay: () => true };
-  for (const o of [undefined, {}, { enabled: true }, { cliEndpoint: true }, { enabled: false, cliEndpoint: true }]) assert.equal(wireCliEndpoints(o, port, endpoints, []), undefined, JSON.stringify(o));
-  assert.equal(wireCliEndpoints({ enabled: true, cliEndpoint: true }, {}, endpoints, []), undefined, "a pty port without the relay");
-  assert.ok(wireCliEndpoints({ enabled: true, cliEndpoint: true }, port, endpoints, []) !== undefined);
+  assert.equal(wireCliEndpoints(false, port, endpoints, []), undefined, "the switch off");
+  assert.equal(wireCliEndpoints(true, {}, endpoints, []), undefined, "a pty port without the relay");
+  assert.ok(wireCliEndpoints(true, port, endpoints, []) !== undefined);
 });
 
 test("the wired relay: relayed messages reach the daemon's relay with the channel's mark, answers go back, shutdown flushes", async () => {
@@ -45,7 +45,7 @@ test("the wired relay: relayed messages reach the daemon's relay with the channe
     flush: () => void flushed++,
   };
   const cleanups: (() => void)[] = [];
-  const wired = wireCliEndpoints({ enabled: true, cliEndpoint: true }, { onRelay: (h: (m: RelayIn) => void) => ((handler = h), { dispose: () => (handler = undefined) }), relay: (m: RelayOut) => (sent.push(m), true) }, { relay: relay as never, source }, cleanups) as CliEndpoints;
+  const wired = wireCliEndpoints(true, { onRelay: (h: (m: RelayIn) => void) => ((handler = h), { dispose: () => (handler = undefined) }), relay: (m: RelayOut) => (sent.push(m), true) }, { relay: relay as never, source }, cleanups) as CliEndpoints;
   handler?.({ t: "relay-open", endpoint: "ep_a", conn: "c0" });
   await new Promise((res) => setImmediate(res));
   assert.deepEqual(seen, [[source, { t: "relay-open", endpoint: "ep_a", conn: "c0" }]]);
@@ -132,7 +132,7 @@ test("end to end over a real socket: a CLI run's endpoint relays auth, send and 
   port = createPtyProcessPort({ channel: daemonSide, onRelay: (m) => void r.m.endpoints.relay.onRelay(r.m.endpoints.source, m).then((outs) => outs.forEach((o) => port?.relay(o as never))) });
   t.after(() => port?.dispose());
   const cleanups: (() => void)[] = [];
-  const cli = wireCliEndpoints({ enabled: true, cliEndpoint: true }, { onRelay: () => ({ dispose: () => undefined }), relay: (m: RelayOut) => port?.relay(m as never) ?? false }, r.m.endpoints, cleanups) as CliEndpoints;
+  const cli = wireCliEndpoints(true, { onRelay: () => ({ dispose: () => undefined }), relay: (m: RelayOut) => port?.relay(m as never) ?? false }, r.m.endpoints, cleanups) as CliEndpoints;
   const runId = r.run("c1");
   await cliEndpointPty(port as unknown as PtyPort, () => cli).spawn({ ...SPEC, runId });
   const env = requests[0]?.env ?? {};
@@ -171,7 +171,7 @@ async function liveEndpoint(t: TestContext) {
   t.after(() => port?.dispose());
   const cleanups: (() => void)[] = [];
   t.after(() => cleanups.forEach((c) => c()));
-  const cli = wireCliEndpoints({ enabled: true, cliEndpoint: true }, { onRelay: () => ({ dispose: () => undefined }), relay: (m: RelayOut) => port?.relay(m as never) ?? false }, r.m.endpoints, cleanups) as CliEndpoints;
+  const cli = wireCliEndpoints(true, { onRelay: () => ({ dispose: () => undefined }), relay: (m: RelayOut) => port?.relay(m as never) ?? false }, r.m.endpoints, cleanups) as CliEndpoints;
   await cliEndpointPty(port as unknown as PtyPort, () => cli).spawn({ ...SPEC, runId: r.run("c1") });
   const env = requests[0]?.env ?? {};
   const path = env["AXIS_MESSAGES_ENDPOINT"] as string;
