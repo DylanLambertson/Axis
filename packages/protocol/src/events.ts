@@ -3,7 +3,7 @@ import { z } from "zod";
 import { runStateSchema } from "./cliRuns.js";
 import { guarded } from "./guard.js";
 import { protocolVersionSchema } from "./version.js";
-import { runIdSchema, workspaceIdSchema, type MethodSpec } from "./worktrees.js";
+import { projectIdSchema, runIdSchema, workspaceIdSchema, type MethodSpec } from "./worktrees.js";
 
 /**
  * `axis.events/1` (docs/design/events.md): server-pushed invalidation hints.
@@ -26,7 +26,7 @@ export const EVENT_RING_SIZE = 256;
 export const MAX_SUBSCRIPTIONS_PER_CONNECTION = 4;
 export const MAX_SUBSCRIPTIONS_TOTAL = 256;
 
-export const EVENT_TOPICS = ["workspaces", "runs", "approvals", "anchor", "audit"] as const;
+export const EVENT_TOPICS = ["workspaces", "runs", "approvals", "anchor", "audit", "tasks"] as const;
 export const eventTopicSchema = z.enum(EVENT_TOPICS);
 export type EventTopic = z.infer<typeof eventTopicSchema>;
 
@@ -44,6 +44,8 @@ export const eventBodySchema = z.discriminatedUnion("topic", [
   z.strictObject({ topic: z.literal("approvals") }),
   z.strictObject({ topic: z.literal("anchor"), stalled: z.boolean() }),
   z.strictObject({ topic: z.literal("audit"), headSeq: eventSeqSchema }),
+  /** A task of the project changed (created, revised, status, assignee, links, Start or deleted): re-read `axis.tasks/1.list`. */
+  z.strictObject({ topic: z.literal("tasks"), projectId: projectIdSchema }),
 ]);
 export type EventBody = z.infer<typeof eventBodySchema>;
 
