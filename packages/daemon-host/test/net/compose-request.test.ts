@@ -177,6 +177,14 @@ test("invisible characters that are not default-ignorable are refused in a path 
   assert.equal(reason(() => composeRequest(ISSUE, "gh", ORIGIN, { owner: "o", repo: "r", number: 1, search: "a\u00a0b" })), "composed", "a query value is not a path segment");
 });
 
+test("dots beside marks, and private-use, unassigned and noncharacter code points, are refused in a path value (N1f nits review B)", () => {
+  for (const v of [".\u0301.", "..\u0301", "\u0301..", ".\u20dd", "\u2025\u0301", "\u2025\u0300", ".\u0300\u0301.", "a\ue000b", "\u{f0000}", "a\u0378b", "a\ufdd0b", "a\ufffeb", "\u{10ffff}", "\u{1fffe}"]) {
+    assert.equal(reason(() => composeRequest(NAMED, "gh", ORIGIN, { name: v })), "argument_refused", JSON.stringify(v));
+  }
+  for (const v of ["cafe\u0301", "na\u0303o", "a.b\u0301"]) assert.equal(reason(() => composeRequest(NAMED, "gh", ORIGIN, { name: v })), "composed", `${JSON.stringify(v)}: a mark on a letter stays`);
+  assert.equal(reason(() => composeRequest(ISSUE, "gh", ORIGIN, { owner: "o", repo: "r", number: 1, search: "a\ue000b" })), "composed", "a query value is not a path segment");
+});
+
 test("a multi-character path value is judged as a whole: a letter beside a character outside the look-alike list (N1e review 3 nit 2)", () => {
   for (const v of ["a\uff05", "x\uff0fy", "\uff1fq", "a\uff03b", "a\uff3cb"]) assert.equal(reason(() => composeRequest(NAMED, "gh", ORIGIN, { name: v })), "argument_refused", JSON.stringify(v));
 });
