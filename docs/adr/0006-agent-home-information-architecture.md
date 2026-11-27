@@ -1,7 +1,7 @@
 # ADR 0006: Agent home information architecture
 
 - **Status:** Proposed. Becomes Accepted when the Phase 1c gate in `docs/ROADMAP.md` is met (validation criteria below). The owner decisions it records (O-1 to O-8, UI direction C) are decided; the engineering defaults it adds are decided and revisable.
-- **Amended by:** ADR 0011 (Proposed, 2026-11-26): side-panel editor rule 1 and the O-8 fallback now use the own shell's editor kit.
+- **To be amended by:** ADR 0011 (Proposed 2026-11-26; takes effect when it is accepted): side-panel editor rule 1 and the O-8 fallback now use the own shell's editor kit.
 - **Date:** 2026-11-21.
 - **Decision owner:** Dylan Lambertson. The owner delegated every open decision to the project lead on 2026-11-21; the decisions are recorded in `docs/design/owner-decisions-2026-11-21.md`, and the owner can reverse any of them there.
 - **Depends on:** ADR 0002 (Code OSS integration strategy), ADR 0003 (Electron IPC bridge), ADR 0004 (agent-first workspace shell) and ADR 0005 (packages layout), all Proposed. This ADR changes none of their security decisions.
