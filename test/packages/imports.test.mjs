@@ -19,8 +19,11 @@ import { egressBuiltinRefusal } from "../../scripts/code-oss/egress-rules.mjs";
 
 const packagesDir = fileURLToPath(new URL("../../packages/", import.meta.url));
 
-/** Packages that must stay free of Node imports (contracts shared with the web target). */
-const NO_NODE = new Set(["protocol"]);
+/** The own shell's renderer packages (docs/design/own-shell-plan.md section 1): they import only @axis/protocol and each other, never node:*. */
+export const RENDERER_PACKAGES = new Set(["shell-core", "shell-sdk", "ui", "ui-editor"]);
+
+/** Packages that must stay free of Node imports (contracts shared with the web target, and the renderer packages). */
+const NO_NODE = new Set(["protocol", ...RENDERER_PACKAGES]);
 
 // The scanners imported above are the staging hook's own (scripts/code-oss/stage-ast.mjs, a TypeScript parse), so the lint and the
 // hook cannot disagree about what a file imports.
@@ -161,6 +164,10 @@ export function violation(pkg, spec, file = null, pkgDir = null) {
     if (allowed === undefined) return "deep imports into @axis/runs are not allowed";
     return allowed.has(pkg) ? null : "this subpath may only be imported by the daemon integration code";
   }
+  if (spec.startsWith("@axis/") && RENDERER_PACKAGES.has(pkg)) {
+    const target = spec.slice("@axis/".length).split("/")[0];
+    return target === "protocol" || RENDERER_PACKAGES.has(target) ? null : "a renderer package imports only @axis/protocol and the other renderer packages";
+  }
   if (spec.startsWith("@axis/")) return null;
   if (spec.startsWith("node:")) {
     if (NO_NODE.has(pkg) && inSrc) return "node:* is not allowed in this package";
@@ -281,6 +288,22 @@ test("scanner: node:* is banned in protocol src, allowed in its tests and test-s
   assert.equal(violation("protocol", "node:test", join(dir, "contract", "index.ts"), dir), null);
   assert.notEqual(violation("protocol", "electron", join(dir, "contract", "index.ts"), dir), null, "the rest of the allowlist still applies");
   assert.notEqual(violation("protocol", "vs/base/common/event", join(dir, "test", "a.test.ts"), dir), null);
+});
+
+test("scanner: the renderer packages import only @axis/protocol and each other, and no node:* in src", () => {
+  assert.deepEqual([...RENDERER_PACKAGES].sort(), ["shell-core", "shell-sdk", "ui", "ui-editor"]);
+  for (const pkg of RENDERER_PACKAGES) {
+    const dir = join(packagesDir, pkg);
+    const src = join(dir, "src", "a.ts");
+    for (const spec of ["@axis/protocol", "@axis/ui", "@axis/shell-core", "@axis/shell-sdk", "@axis/ui-editor", "zod"]) assert.equal(violation(pkg, spec, src, dir), null, `${pkg}: ${spec}`);
+    for (const spec of ["@axis/daemon", "@axis/daemon-host", "@axis/pty-process", "@axis/vault", "@axis/journal", "@axis/protocol-extra", "@axis/uix"]) {
+      assert.notEqual(violation(pkg, spec, src, dir), null, `${pkg}: ${spec}`);
+    }
+    assert.equal(violation(pkg, "node:fs", src, dir), "node:* is not allowed in this package", pkg);
+    assert.equal(violation(pkg, "node:test", join(dir, "test", "a.test.ts"), dir), null, `${pkg}: tests may use node:test`);
+    assert.notEqual(violation(pkg, "electron", src, dir), null, pkg);
+  }
+  assert.equal(violation("journal", "@axis/daemon"), null, "other packages keep their rules");
 });
 
 test("scanner: the user-principal subpath is restricted to the daemon; other journal deep imports are refused", () => {
