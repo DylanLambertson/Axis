@@ -103,7 +103,7 @@ Each failure answers a closed error with `INTEGRATIONS_REFUSAL_MESSAGE` and `det
 10. **Epilogue: audit `integration.request`.**
     - This step runs whenever step 6 wrote its row, on EVERY exit path that follows: success, any refusal, an echo, a parse failure, cancellation, or an internal error. The handler holds steps 7 to 9 in a `try` with this step in its `finally`.
     - If the row cannot be written, any result is discarded and the call answers `audit_unavailable`. A cancelled call still answers `E_CANCELLED`.
-    - A refusal before step 6 writes no row, because nothing was revealed for a send.
+    - A refusal before step 6 writes no integration row (neither kind), because nothing was revealed for a send.
 11. **Reply:** `{ status, result }`. No header, no URL, no `Location`.
 
 **Order invariant:**
@@ -128,7 +128,7 @@ The handler passes its call's `context.signal` to `sendAuthorized`. The daemon s
 - **What is answered:** a TLS failure is the client's `tls_failed`, and a dropped socket is `connect_failed`; both are `network_unavailable` on the wire. An abort is `E_CANCELLED`. The socket's own error text is never passed on. If the caller is gone, nothing is replied, and the body collector is dropped with the request.
 - **What is written:** the epilogue (step 10), with the byte counts of §5.
 - **Tests** (each checks every sink of §8 for the canary, and that the next `read` succeeds):
-  - an abort before step 6: no row, nothing sent;
+  - an abort before step 6: no `integration.credential` or `integration.request` row, and nothing sent;
   - an abort after step 6, before the send: one credential row, a request row with reason `cancelled` and `bytesOut` 0, and the server sees nothing;
   - an abort mid-response;
   - the server dropping the socket after part of a 200 body;
@@ -194,7 +194,7 @@ The first scan runs on the exact bytes the client collected, because only they h
   - A test passes `createEgressClientForTest(...)` (the CA, the resolver and dial, and the port seam) and an in-memory backend seeded with the canary.
 - **No secret backend until PV-N0c:**
   - Production has no integrations `SecretBackend` until PV-N0c lands. The composition does NOT build, borrow or fall back to one: no memory backend, and not the providers' vault in `bindings/providers.ts`.
-  - With no backend in the composition, no vault call is made, no credential exists, no egress request is issued, and no audit row is written. Then:
+  - With no backend in the composition, no vault call is made, no credential exists, no egress request is issued, and no `integration.credential` or `integration.request` row is written. The daemon's own `policy.decision` row is still written for every admitted call, as for any method. Then:
     - `list` and `status` are state queries. They answer a NORMAL reply showing GitHub with `state: "available"` and `grantedScopes: []`.
     - `read` is an action. It answers `E_CONFLICT` `not_connected`.
   - The served read runs only when BOTH hold: a backend is present in the composition, and the connector's entry exists (§3).
@@ -202,7 +202,7 @@ The first scan runs on the exact bytes the client collected, because only they h
     - the host starts healthily;
     - the `list` and `status` replies are checked against the contract's response schemas, field by field;
     - `read` answers `E_CONFLICT` `not_connected`;
-    - no request is issued and no row is written.
+    - no request is issued, and the audit log, filtered to the two integration row kinds, is empty.
   - Removing the no-backend check must fail them (a mutant).
 - The import pin stays: only the composition root imports the egress client, and only by its allowed names.
 
@@ -210,7 +210,7 @@ The first scan runs on the exact bytes the client collected, because only they h
 
 The test runs through the REAL host composition (the `test/slice/` headless rig). A local HTTPS server answers as GitHub.
 
-**The canary.** One plainly synthetic token sits in the fake vault, for example `canary+T0k3n/x=y~Q9w-synthetic-0001`. It is shaped so that its URL-encoded, base64 and JSON forms all differ from the raw one.
+**The canary.** One plainly synthetic token sits in the fake vault, for example `canary"T0k3n\x+y/z=Q9w-synthetic-0001`. Its quote and backslash need JSON escaping, and its `"`, `\`, `+`, `/` and `=` need URL encoding. So its JSON-escaped, URL-encoded and base64 forms each differ from the raw token, and the test asserts that, using `secretForms` itself, before any case runs. It still fits GitHub's `tokenShape` (visible ASCII).
 
 **Every sink.** For every case below (success, each echo, each refusal, each cancel), one shared assertion checks every sink for the token and for every registered form:
 - the reply or error, and its text;
