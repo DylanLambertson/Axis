@@ -28,7 +28,7 @@ const refused = (f: () => void, what: string): void => assert.throws(f, Error, w
 const one = (db: DatabaseSync, sql: string, ...a: Val[]): Val => Object.values(db.prepare(sql).get(...a) as Row)[0] as Val;
 const gen = (db: DatabaseSync): Val => one(db, "SELECT generation FROM plugin_enablement WHERE plugin_id = 'acme.board' AND project_id = 'p1'");
 
-test("version 16 is the latest; a populated version 15 database gains the two empty tables and keeps its rows", () => {
+test("version 16: a populated version 15 database gains the two empty tables and keeps its rows", () => {
   const db = openDatabase(":memory:");
   new AuditLog(db);
   runMigrations(db, "journal", JOURNAL_MIGRATIONS.slice(0, 15));
