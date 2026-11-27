@@ -1,4 +1,5 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
 import { DaemonError, type ApprovalContentHook, type ApprovalContentLock, type HandlerContext } from "@axis/daemon";
 import type { PluginPermission, PluginState } from "@axis/journal";
@@ -33,6 +34,16 @@ export interface GrantContentDeps {
 }
 
 export type GrantMethod = "grant" | "enable";
+
+/**
+ * The digest the approval in progress was spent on (audit A, L1). The daemon runs the spend and then the handler inside the hook's
+ * `withLock`, so the handler reads it here and compares it with the live state right before it writes: a revoke or a disable,
+ * which no longer waits for the project mutex, then always wins over an increase approved before it.
+ */
+const spent = new AsyncLocalStorage<string>();
+export function spentGrantDigest(): string | undefined {
+  return spent.getStore();
+}
 const TAG = "axis.plugin-grant/1";
 
 const refuse = (code: "E_UNAVAILABLE" | "E_NOT_FOUND" | "E_CONFLICT" | "E_INVALID_ARGUMENT", reason?: string): never => {
@@ -94,7 +105,7 @@ export function createGrantContentHooks(deps: GrantContentDeps): { readonly gran
                 throw e;
               }
               deps.onPreview(target, digest, line);
-              return fn(digest);
+              return spent.run(digest, () => fn(digest));
             },
             context.signal,
           ),

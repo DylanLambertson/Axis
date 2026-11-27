@@ -67,13 +67,15 @@ export async function setup(t: TestContext, over: SetupOptions = {}) {
   const daemon = new Daemon({ identity: verifier, audit: { append: (e) => over.onAudit?.(e as unknown as Row) }, registry: protocolRegistry, idempotency: new MemoryIdempotencyStore(), policy: new RuleTablePolicy(new InMemoryTrustRegistry(), RULES, journal.plugins), approvals: approvals.gate, lifecycle: windows });
   daemon.register("axis.approvals", 1, createApprovalsHandlers({ approvals: approvals.port }));
   // The user's plugin decreases (PV-K2 K2-g1), so a revoke can follow a plugin's run start.
-  registerPluginsHandlers({ register: (c, v, h, o) => (o === undefined ? daemon.register(c, v, h) : daemon.register(c, v, h, o)) }, { journal, mutex: new ProjectMutex(), endPlugin: (p, j) => approvals.endPlugin(p, j) });
+  // ONE project mutex for the plugin handlers and the plugin start, as in the composition (audit A, L2).
+  const mutex = new ProjectMutex();
+  registerPluginsHandlers({ register: (c, v, h, o) => (o === undefined ? daemon.register(c, v, h) : daemon.register(c, v, h, o)) }, { journal, mutex, endPlugin: (p, j) => approvals.endPlugin(p, j) });
   const starts: ComposerStartInput[] = [];
   const admitted: unknown[] = [];
   const run = (input: ComposerStartInput): ComposerRun => ({ runId: randomUUID(), workspaceId: input.workspaceId, mode: input.mode, providerId: input.providerId, modelId: input.modelId, state: "QUEUED", reason: null, createdAt: "2026-11-26T00:00:00.000Z", startedAt: null, endedAt: null, live: true, awaitingApproval: false, usage: null });
   const none = (): never => assert.fail("not used");
   const cancels: string[] = [];
-  const mutex = new ProjectMutex();
+
   registerComposerRunsHandlers(
     { register: (c, v, h, o) => (o === undefined ? daemon.register(c, v, h) : daemon.register(c, v, h, o)) },
     {

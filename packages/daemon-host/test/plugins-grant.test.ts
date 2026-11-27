@@ -32,7 +32,7 @@ const verifier: IdentityVerifier = {
   },
 };
 
-async function setup(t: TestContext, over: { grantsEnabled?: boolean; projectName?: string; pluginId?: string; onAudit?: (e: Row) => Promise<void> | void } = {}) {
+async function setup(t: TestContext, over: { grantsEnabled?: boolean; projectName?: string; pluginId?: string; onAudit?: (e: Row) => Promise<void> | void; dropNotes?: boolean } = {}) {
   const clock = fakeClock();
   const db = openDatabase(":memory:");
   const journal = Journal.open(db, { audit: new AuditLog(db) });
@@ -65,7 +65,7 @@ async function setup(t: TestContext, over: { grantsEnabled?: boolean; projectNam
     approvals: approvals.gate,
   });
   daemon.register("axis.approvals", 1, createApprovalsHandlers({ approvals: approvals.port }));
-  registerPluginsHandlers({ register: (c, v, h, o) => (o === undefined ? daemon.register(c, v, h) : daemon.register(c, v, h, o)) }, { journal: view, mutex, endPlugin: (p, j) => approvals.endPlugin(p, j), grantAction: createGrantAction(journal.plugins, mintOf(journal.plugins)), grantsEnabled: over.grantsEnabled ?? true, onPreview: approvals.onPreview });
+  registerPluginsHandlers({ register: (c, v, h, o) => (o === undefined ? daemon.register(c, v, h) : daemon.register(c, v, h, o)) }, { journal: view, mutex, endPlugin: (p, j) => approvals.endPlugin(p, j), grantAction: createGrantAction(journal.plugins, mintOf(journal.plugins)), grantsEnabled: over.grantsEnabled ?? true, onPreview: over.dropNotes === true ? () => undefined : approvals.onPreview });
   const ports: MessagePort[] = [];
   const connect = async (att: string): Promise<Client> => {
     const { client, server } = memoryPair();
@@ -202,31 +202,40 @@ test("TOCTOU: a change while the spend waits for the project mutex refuses the g
   assert.deepEqual(s.journal.plugins.state("acme.board", "p1")?.permissions, ["pages.read", "tasks.read"], "runs.start was not written");
 });
 
-test("the audit hand-off and the write are inside the mutex: a revoke sent during the execute audit row waits until the grant is done", async (t) => {
-  let s: Awaited<ReturnType<typeof setup>> | undefined;
-  let other: Client | undefined;
-  let revoke: Promise<Msg> | undefined;
-  let revokeSettledInside = false;
-  s = await setup(t, {
-    onAudit: async (e) => {
-      if (revoke !== undefined || e["outcome"] !== "success" || e["target"] !== "axis.plugins/1.grant") return;
-      revoke = (other as Client).call("axis.plugins", "revoke", { projectId: "p1", pluginId: "acme.board", permission: "pages.read" }, "c1d2e3f4-0000-4000-8000-000000000001");
-      revoke.then(() => void (revokeSettledInside = !granted()));
-      for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
-    },
+// An enable is pending only while the plugin is off, where a disable changes nothing (the v16 triggers), so the decrease that can
+// race an enable is a revoke.
+for (const [increase, decrease] of [["grant", "revoke"], ["enable", "revoke"]] as const) {
+  test(`audit A L1: a ${decrease} sent during the ${increase}'s execute audit row applies at once, and the ${increase} is then refused`, async (t) => {
+    let s: Awaited<ReturnType<typeof setup>> | undefined;
+    let other: Client | undefined;
+    let sent: Promise<Msg> | undefined;
+    let settledFirst = false;
+    let increaseDone = false;
+    s = await setup(t, {
+      onAudit: async (e) => {
+        if (sent !== undefined || e["outcome"] !== "success" || e["target"] !== `axis.plugins/1.${increase}`) return;
+        const args = decrease === "revoke" ? { projectId: "p1", pluginId: "acme.board", permission: "pages.read" } : { projectId: "p1", pluginId: "acme.board" };
+        sent = (other as Client).call("axis.plugins", decrease, args, "c1d2e3f4-0000-4000-8000-000000000001");
+        void sent.then(() => void (settledFirst = !increaseDone));
+        for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
+      },
+    });
+    const user = await s.connect("user#Uone#w1");
+    other = await s.connect("user#Utwo#w1");
+    const payload = increase === "grant" ? { projectId: "p1", pluginId: "acme.board", permission: "runs.start" } : { projectId: "p1", pluginId: "acme.board" };
+    const id = await s.approve(user, increase, payload);
+    const done = await user.call("axis.plugins", increase, { ...payload, approval: { challengeId: id } });
+    increaseDone = true;
+    assert.ok(sent !== undefined, `the ${decrease} was sent during the execute audit row`);
+    assert.equal((await sent).ok, true);
+    assert.equal(settledFirst, true, `the ${decrease} did not wait for the ${increase}`);
+    assert.equal(done.error?.code, "E_CONFLICT", JSON.stringify(done));
+    assert.equal(reasonOf(done), "plugin_changed");
+    const state = s.journal.plugins.state("acme.board", "p1");
+    assert.deepEqual(state?.permissions, [], "pages.read revoked, and nothing granted");
+    assert.equal(state?.enabled, false, "never turned on");
   });
-  const granted = () => (s as Awaited<ReturnType<typeof setup>>).journal.plugins.state("acme.board", "p1")?.permissions.includes("runs.start") === true;
-  const user = await s.connect("user#Uone#w1");
-  other = await s.connect("user#Utwo#w1");
-  const payload = { projectId: "p1", pluginId: "acme.board", permission: "runs.start" };
-  const id = await s.approve(user, "grant", payload);
-  const done = await user.call("axis.plugins", "grant", { ...payload, approval: { challengeId: id } });
-  assert.equal(done.ok, true, JSON.stringify(done.error));
-  assert.ok(revoke !== undefined, "the revoke was sent during the execute audit row");
-  await revoke;
-  assert.equal(revokeSettledInside, false, "the revoke did not finish before the grant's write");
-  assert.deepEqual(s.journal.plugins.state("acme.board", "p1")?.permissions, ["runs.start"]);
-});
+}
 
 test("single use: a spent approval cannot grant again, not the same permission and not another", async (t) => {
   const s = await setup(t);
@@ -309,6 +318,9 @@ test("the handlers themselves refuse grant and enable when grants are off, and w
   const on = createPluginsHandlers({ journal: s.journal, mutex: s.mutex, endPlugin: () => 0, grantsEnabled: true, grantAction: createGrantAction(s.journal.plugins, mintOf(s.journal.plugins)) });
   assert.equal(await code(on.grant(ctx(false), grantPayload)), "E_NOT_FOUND");
   assert.equal(await code(on.enable(ctx(false), enablePayload)), "E_NOT_FOUND");
+  // Audit A L1: an approval with no digest spent in this call chain (the handler reached outside its content hook) never writes.
+  assert.equal(await code(on.grant(ctx(true), grantPayload)), "E_CONFLICT:plugin_changed");
+  assert.equal(await code(on.enable(ctx(true), enablePayload)), "E_CONFLICT:plugin_changed");
   assert.deepEqual(s.journal.plugins.state("acme.board", "p1"), { enabled: false, generation: 1, permissions: ["pages.read"] });
 });
 
@@ -336,4 +348,23 @@ test("review K2-g2 N5: the handler re-checks already_granted and already_enabled
   enableForTests(s.journal.plugins, "acme.board", "p1");
   assert.equal(await code(h.enable(ctx, { projectId: "p1", pluginId: "acme.board" } as never)), "E_CONFLICT:already_enabled");
   assert.deepEqual(s.journal.plugins.state("acme.board", "p1"), { enabled: true, generation: 1, permissions: ["pages.read"] });
+});
+
+test("audit A L4: a grant or enable whose dialog line is not found (an evicted note) is refused: no native dialog, nothing listed", async (t) => {
+  for (const method of ["grant", "enable"] as const) {
+    const s = await setup(t, { dropNotes: true });
+    const user = await s.connect("user#Uone#w1");
+    const payload = method === "grant" ? { projectId: "p1", pluginId: "acme.board", permission: "runs.start" } : { projectId: "p1", pluginId: "acme.board" };
+    const asked = await user.call("axis.plugins", method, payload);
+    assert.notEqual(asked.error?.code, "E_APPROVAL_REQUIRED", `${method}: ${JSON.stringify(asked)}`);
+    assert.notEqual(asked.ok, true);
+    for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
+    assert.deepEqual(s.dialogs, [], `${method}: main was never asked to show a dialog without the permission`);
+    assert.deepEqual((await user.call("axis.approvals", "pending", {})).result?.["challenges"], [], `${method}: nothing listed`);
+  }
+  // Control: with the note kept, the same grant reaches main's dialog.
+  const s = await setup(t);
+  const user = await s.connect("user#Uone#w1");
+  const asked = await user.call("axis.plugins", "grant", { projectId: "p1", pluginId: "acme.board", permission: "runs.start" });
+  assert.equal(asked.error?.code, "E_APPROVAL_REQUIRED");
 });

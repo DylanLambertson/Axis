@@ -3,7 +3,7 @@ import { DaemonError, type Handler, type HandlerContext } from "@axis/daemon";
 import type { PluginPermission, PluginState } from "@axis/journal";
 import { PLUGINS_CONTRACT, PLUGINS_VERSION, pluginsMethods, type PluginsMethod, type PluginsRequest } from "@axis/protocol";
 import type { GrantAction } from "../plugins/grant-action.js";
-import { createGrantContentHooks } from "../plugins/grant-content.js";
+import { createGrantContentHooks, grantDigest, spentGrantDigest } from "../plugins/grant-content.js";
 import type { ProjectMutex } from "../worktrees/project-mutex.js";
 import type { HandlerRegistrar } from "./anchor-guard.js";
 
@@ -13,10 +13,14 @@ import type { HandlerRegistrar } from "./anchor-guard.js";
  * - **The user's alone.** The policy rows are user rows; a web client is outside `WEB_ALLOWED`, and a plugin is refused by the
  *   deny list (`axis.plugins/`). The handlers refuse every caller but the user's desktop connection too, with `E_NOT_FOUND`.
  * - **Decreases only.** `revoke` removes one permission and `disable` turns the plugin off; each bumps the generation (the v16
- *   triggers; a disable of a plugin already off changes nothing). Both run under the project mutex, the one every writer of the
- *   plugin rows takes, and then end that plugin's open challenges in the project at once (`endPlugin`), never another's.
+ *   triggers; a disable of a plugin already off changes nothing). Each is one synchronous write, applied at once: it does NOT wait
+ *   for the project mutex, which a plugin's start may hold across slow waits (audit A, L1). Then it ends that plugin's open
+ *   challenges in the project (`endPlugin`), never another's. An increase approved before it is refused at its write (below), and a
+ *   start is refused at its next grant check.
  * - **Increases at tier 4, switched off** (K2-g2). `grant` and `enable` run only inside a spent approval, after main's native
- *   confirmation, under the project mutex their content hook holds (`plugins/grant-content.ts`). Both refuse with `E_UNAVAILABLE`
+ *   confirmation, under the project mutex their content hook holds (`plugins/grant-content.ts`). Right before writing, each
+ *   recomputes the digest from the live state and refuses `plugin_changed` unless it equals the one its approval was spent on, so
+ *   a decrease that landed meanwhile always wins. Both refuse with `E_UNAVAILABLE`
  *   (`plugin_grants_off`) unless `grantsEnabled` (the host's `pluginGrants` option, off in production until K2-enable).
  * - **The accepted availability risk** (section 2): any code in a renderer of the user's window can revoke or disable, and so
  *   withdraw the plugin's open approvals; getting them back takes a tier-4 grant or enable (K2-g2), which no renderer can do alone.
@@ -47,6 +51,21 @@ export interface PluginsHandlerDeps {
 }
 
 const NOT_FOUND = "That project or plugin was not found.";
+
+/**
+ * An increase writes only the state its approval was spent on: the digest recomputed from the live state, synchronously right
+ * before the write, must equal the spent one. A revoke or a disable since then (each bumps the generation) refuses it.
+ */
+function unchangedSinceApproval(method: "grant" | "enable", pluginId: string, projectId: string, permission: string | null, now: PluginState): void {
+  const bound = spentGrantDigest();
+  let live: string | undefined;
+  try {
+    live = grantDigest(method, pluginId, projectId, permission, now);
+  } catch {
+    live = undefined;
+  }
+  if (bound === undefined || live !== bound) fail("E_CONFLICT", "The plugin changed since the approval; ask again.", "plugin_changed");
+}
 
 function fail(code: "E_NOT_FOUND" | "E_CANCELLED" | "E_INTERNAL" | "E_CONFLICT" | "E_UNAVAILABLE", message: string, reason?: string): never {
   throw new DaemonError(code, message, reason === undefined ? undefined : { reason });
@@ -84,18 +103,13 @@ export function createPluginsHandlers(deps: PluginsHandlerDeps): Readonly<Record
       project(req.projectId);
       return { plugins: deps.journal.plugins.list(req.projectId).map((p) => view(p.pluginId, p)) };
     }),
-    revoke: guarded("revoke", (req, context) => {
+    revoke: guarded("revoke", (req) => {
+      // One synchronous write, never behind the project mutex (audit A, L1): a decrease applies at once.
       project(req.projectId);
-      return deps.mutex.run(
-        req.projectId,
-        async () => {
-          if (deps.journal.plugins.state(req.pluginId, req.projectId) === undefined) fail("E_NOT_FOUND", NOT_FOUND);
-          if (!deps.journal.plugins.revoke(req.pluginId, req.projectId, req.permission as PluginPermission)) fail("E_NOT_FOUND", "That permission is not granted.", "not_granted");
-          end(req.pluginId, req.projectId);
-          return { plugin: view(req.pluginId, deps.journal.plugins.state(req.pluginId, req.projectId) as PluginState) };
-        },
-        context.signal,
-      );
+      if (deps.journal.plugins.state(req.pluginId, req.projectId) === undefined) fail("E_NOT_FOUND", NOT_FOUND);
+      if (!deps.journal.plugins.revoke(req.pluginId, req.projectId, req.permission as PluginPermission)) fail("E_NOT_FOUND", "That permission is not granted.", "not_granted");
+      end(req.pluginId, req.projectId);
+      return { plugin: view(req.pluginId, deps.journal.plugins.state(req.pluginId, req.projectId) as PluginState) };
     }),
     grant: guarded("grant", (req, context) => {
       // Only inside a spent approval (tier 4, native confirmation); the content hook holds the project mutex around this call.
@@ -108,6 +122,7 @@ export function createPluginsHandlers(deps: PluginsHandlerDeps): Readonly<Record
           const now = deps.journal.plugins.state(req.pluginId, req.projectId);
           if (now === undefined) fail("E_NOT_FOUND", NOT_FOUND);
           if ((now as PluginState).permissions.includes(req.permission as PluginPermission)) fail("E_CONFLICT", "That permission is already granted.", "already_granted");
+          unchangedSinceApproval("grant", req.pluginId, req.projectId, req.permission, now as PluginState);
           (deps.grantAction as GrantAction).grant(req.pluginId, req.projectId, req.permission as PluginPermission);
           return { plugin: view(req.pluginId, deps.journal.plugins.state(req.pluginId, req.projectId) as PluginState) };
         },
@@ -124,24 +139,20 @@ export function createPluginsHandlers(deps: PluginsHandlerDeps): Readonly<Record
           const now = deps.journal.plugins.state(req.pluginId, req.projectId);
           if (now === undefined) fail("E_NOT_FOUND", NOT_FOUND);
           if ((now as PluginState).enabled) fail("E_CONFLICT", "That plugin is already on.", "already_enabled");
+          unchangedSinceApproval("enable", req.pluginId, req.projectId, null, now as PluginState);
           (deps.grantAction as GrantAction).enable(req.pluginId, req.projectId);
           return { plugin: view(req.pluginId, deps.journal.plugins.state(req.pluginId, req.projectId) as PluginState) };
         },
         context.signal,
       );
     }),
-    disable: guarded("disable", (req, context) => {
+    disable: guarded("disable", (req) => {
+      // One synchronous write, never behind the project mutex (audit A, L1).
       project(req.projectId);
-      return deps.mutex.run(
-        req.projectId,
-        async () => {
-          if (deps.journal.plugins.state(req.pluginId, req.projectId) === undefined) fail("E_NOT_FOUND", NOT_FOUND);
-          deps.journal.plugins.setEnabled(req.pluginId, req.projectId, false);
-          end(req.pluginId, req.projectId);
-          return { plugin: view(req.pluginId, deps.journal.plugins.state(req.pluginId, req.projectId) as PluginState) };
-        },
-        context.signal,
-      );
+      if (deps.journal.plugins.state(req.pluginId, req.projectId) === undefined) fail("E_NOT_FOUND", NOT_FOUND);
+      deps.journal.plugins.setEnabled(req.pluginId, req.projectId, false);
+      end(req.pluginId, req.projectId);
+      return { plugin: view(req.pluginId, deps.journal.plugins.state(req.pluginId, req.projectId) as PluginState) };
     }),
   });
 }
