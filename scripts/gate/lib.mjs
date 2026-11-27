@@ -202,11 +202,12 @@ export function pinnedNodeHints({ env, root, pinned, platform, arch, fs }) {
   const hints = [];
   const unusable = [];
   try {
-    const bin = env.NODE24_BIN;
-    if (typeof bin === "string" && bin !== "") {
+    const named = env.NODE24_BIN;
+    if (typeof named === "string" && named !== "") {
+      const bin = resolve(named); // relative to the working directory, as scripts/code-oss/lib.sh uses it; the advice must print an absolute path
       const dir = fs.exists(bin) && fs.isFile(bin) ? dirname(bin) : bin;
       if (fs.exists(join(dir, "node"))) hints.push(dir);
-      else unusable.push(bin);
+      else unusable.push(named);
     }
     if (typeof pinned === "string") {
       const dist = `node-v${pinned}-${platform === "darwin" ? "darwin" : "linux"}-${arch === "arm64" ? "arm64" : "x64"}`;
