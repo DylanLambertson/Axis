@@ -24,10 +24,13 @@
 1. **`update_task` raises itself to `network` when it replaces the user's text.** The broker already lets a tool raise its tier from its arguments (`ToolDefinition.raise`, as git calls do). `update_task.raise(args)` reads the revision at `args.baseSeq`. If that revision's author is `user`, the call is raised to `network`, so it needs the user's approval in every run, tainted or not. Otherwise the tier stays `write`, as today.
    - The card is the existing one (`updateTaskPreview`: the revision it edits and the changed lines) and must be whole (`content-not-reviewable` otherwise).
    - `baseSeq` must be the newest revision, or the store refuses `stale_version`. A user edit between the raise and the write is therefore refused, never written over unasked.
-   - A task `baseSeq` does not name, or a task the run cannot see: no raise. The call is refused `not_found` as today, with no card.
+   - The raise reads through the run's own scoped read (`readForRun`), so it can never tell the run more than a call would: a task the run cannot see, or a revision that does not exist, gives no raise. What the call then gets depends on the case, as today:
+     - an untainted run, a task of its project, a positive `baseSeq` that names no revision: `stale_version` from the store;
+     - an untainted run, a task it cannot see (another project's, or unknown): `not_found`;
+     - a tainted run, a task it cannot see: `content-not-reviewable` before the call runs, with no card (the card has nothing to show).
    - The broker records the raised tier in `broker.decision`, so the audit says why the user was asked.
-2. **The store never evicts the user's newest revision.** The eviction trigger (`task_revisions_advance`) deletes the oldest revision past the cap of 50 *other than* the newest revision whose author is `user`. `task_revisions_kept` allows exactly that deletion. A task therefore keeps the user's last words however many worker revisions follow. It still holds at most 50 revisions.
-   - This is a journal schema change: the next free version after checking `main`, with a migration of the two triggers only. No data changes.
+2. **The store never evicts the user's newest revision.** The eviction trigger (`task_revisions_advance`) deletes the oldest revision past the cap of 50 *other than* the newest revision whose author is `user` (`max(seq)` among the user's rows, never `min`). `task_revisions_kept` allows exactly that deletion. The comparison is written `seq IS NOT (SELECT max(seq) … author_kind = 'user')`, so a task with no user revision (the subquery is NULL) is pruned as before rather than never. A task therefore keeps the user's last words however many worker revisions follow. It still holds at most 50 revisions.
+   - This is a journal schema change at the next free journal version at merge time (not fixed here: other slices hold versions in flight). The migration replaces the two triggers only; no data changes, and deleting a task still removes all its revisions.
 3. **Nothing else changes.**
    - `create_task` stays tier `write`: a new task replaces no one's text.
    - The user's own edits (`axis.tasks/1.update`) are unchanged.
@@ -35,11 +38,32 @@
 
 ## 4. Tests (mutation-proof)
 
-- An untainted run: `update_task` over a user revision asks the user. Denied: nothing written. Approved: written, with `broker.decision` at tier `network`. Over a worker revision it writes without asking.
+The raise:
+
+- An untainted run, `update_task` over a user revision: asks the user. Denied: nothing written. Approved: written, with `broker.decision` at tier `network`. The card must be whole: an untainted run's raised update too long to show is refused `content-not-reviewable` with no card.
+- Over a worker revision: writes without asking.
+- **Base, not newest.**
+  - The run edits a worker revision while a newer user revision already exists: no approval request, `stale_version`, nothing written. Raising from the newest revision would ask here.
+  - The reverse order (a user base with a newer worker revision): no approval either, `stale_version`.
+  - A race on the non-raised path: a user edit lands between the call and the write; `stale_version`, nothing written.
 - A user edit between the card and the write: `stale_version`, nothing written.
+- A user revision that kept a worker's text (it is the user's revision, so it still asks): the raise follows the author of the revision, not the trust of the text.
+- The refusals of §3.1, each by its case: `stale_version`, `not_found` and `content-not-reviewable`, with no card for an invisible task.
 - A tainted run: unchanged (it always asks).
-- The store: 60 worker revisions on top of one user revision. The user's revision is still there and readable by `seq`; there are 50 revisions in all; the oldest worker revisions went first. The trigger refuses any other deletion.
-- Mutants: no raise, raise on any author, raise read from the newest instead of `baseSeq`, the eviction that ignores the author, the `kept` trigger loosened.
+
+The store:
+
+- One user revision, then 60 worker revisions: the user's revision is still there and readable by `seq`; 50 revisions in all; the oldest worker revisions went first.
+- **Two user revisions separated by worker revisions, then 60 worker revisions:** the LATER user revision is kept; the earlier one is pruned in turn as the oldest eligible; exactly 50 are kept.
+- A task with no user revision (a worker's task), then 60 updates: pruned to 50 as before.
+- The `kept` trigger refuses any other deletion; deleting the task still removes every revision.
+- The migration over an existing populated journal: both triggers replaced, the data unchanged, the rules above hold on the migrated tasks.
+
+Mutants:
+
+- no raise; raise on any author; raise read from the newest instead of `baseSeq`;
+- the eviction that ignores the author; **pin the oldest user revision** (`min` for `max`); `<>` for `IS NOT` (pruning off for tasks with no user revision);
+- the `kept` trigger loosened.
 
 ## 5. What it leaves (RR-93, narrowed)
 
@@ -62,9 +86,10 @@ For the own-shell plan. Most of it is served already. The gaps are marked.
    - the worker's kind;
    - the task's source, `untrusted` and `hop`.
 4. **Confirm:** `axis.tasks/1.start { taskId, worker, seq, promptDigest }` with an idempotency key, served.
-   - The first call answers `E_APPROVAL_REQUIRED` with a tier-4 challenge.
-   - The shell shows its card: `axis.approvals/1.pending` and `detail`. The user resolves it, and main draws the native dialog.
-   - The shell then retries with `approval` and the same key.
+   - The first call answers `E_APPROVAL_REQUIRED` with a tier-4 challenge (its id, digest, method, tier, target summary, expiry and `nativeConfirmationRequired: true`). **Main's native dialog is launched when the challenge is issued**, not when the user answers the card.
+   - **The card is the shell's own, built from the `startPreview` answer it kept** (the whole prompt, the worker, the trust of the text) and the challenge. `axis.approvals/1.detail` serves plugin challenges only; it answers `not_found` for a task Start, and no new endpoint is planned. The card is bound to what it shows: `start` names the preview's `seq` and `promptDigest`, which are part of the request the challenge covers.
+   - The user answers the card (`axis.approvals/1.resolve`). For a tier-4 challenge that answer is `approved, nativeRequired: true`, which is **not yet a grant**: the challenge waits for main's dialog.
+   - The shell then retries `start` with `approval` and the same key. A retry before main's dialog has confirmed is refused `E_CONFLICT` and spends nothing, so the shell may retry after the dialog closes. The daemon sends no event when the dialog confirms. A confirmed challenge must be used within its short window, or it expires and the shell starts again from the first call.
    - On `stale_version`, preview again and ask again.
    - Refusals are the contract's closed reasons.
 5. **The result:**
@@ -73,4 +98,5 @@ For the own-shell plan. Most of it is served already. The gaps are marked.
 6. **Status: GAP.**
    - A Start does not link the run to the task or move it to `in_progress`. Proposed for the daemon: `start` adds a `run` link and sets `in_progress` in the same transaction as its `task.start` row.
    - Then the task view shows its run with no extra call.
-7. **Freshness: GAP.** `axis.events/1` has no tasks topic, so the shell would have to poll `list`. Proposed: a `tasks` topic (an invalidation hint per project, no text).
+   - A worker cannot trigger it. It happens only inside `axis.tasks/1.start`, the user's own tier-4 action that main's dialog confirms. The worker tools have no link or status call, and runs reach no `axis.tasks/1` row.
+7. **Freshness: GAP.** `axis.events/1` has no tasks topic, so the shell would have to poll `list`. Proposed: a `tasks` topic (an invalidation hint per project carrying no text: the shell then calls `list`, as for the other topics).
