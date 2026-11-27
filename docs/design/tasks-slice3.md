@@ -1,6 +1,6 @@
 # PV-T1 slice 3: worker revisions over the user's text (design note)
 
-- **Status:** Proposed, for review. No code until this note is accepted.
+- **Status:** Built (journal schema version 19; `update_task.raise` in `bindings/agent-tasks.ts`; tests `migration-v19.test.ts` and `composer-tasks-guard.test.ts`).
 - **Closes:** RR-93: a worker in an untainted run can rewrite the user's own task without asking, and after 50 of its own revisions the user's original text is gone for good (the store keeps the newest 50).
 - **Builds on:** `tasks-store.md` §5 (the worker task tools) and §6 (Start). It decides two things: when `update_task` asks the user, and which revision the store never evicts.
 
