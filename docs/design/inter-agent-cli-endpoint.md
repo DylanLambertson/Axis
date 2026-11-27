@@ -33,7 +33,7 @@
 | Reads | 60 per minute per endpoint, shared by all its connections |
 | Sends | the main design's per-agent limits |
 | Authentication failures | compared in constant time; counted only **after** the peer checks of §2 pass (so another uid or a process outside the run's tree cannot lock the shim out); backoff is per peer process id (5 failures, then that peer is refused for 60 s), not for the whole endpoint; where peer checks are unavailable, the per-peer backoff uses the connection and the residual is stated (review 2, N-D); audited as one aggregated `message.endpoint` row per endpoint per minute (count, first and last time), never one row per attempt |
-| Revocation | at run end, at a settings change that disables messaging, or at Pause of its scope: open connections are closed at once and later calls answer `revoked` or `paused` |
+| Revocation | at run end, at a settings change that disables messaging, or at Pause of its scope: open connections are closed at once and later calls answer `revoked` or `paused`. A run that leaves RUNNING for BLOCKED or REVIEWING has its endpoint revoked and it stays revoked for that run, even if the run returns to RUNNING (decided 2026-11-27, fail closed) |
 
 All per-connection buffers are bounded; an idle authenticated connection is closed after 10 minutes.
 
@@ -61,7 +61,7 @@ All per-connection buffers are bounded; an idle authenticated connection is clos
 ## 7. Gate lines (Phase 2a; `ROADMAP.md` refers to them)
 
 1. A CLI run without messaging enabled has neither endpoint variable in its environment (PTY-5 test extended).
-2. After the run ends, an **already-open** shim connection and a new connection with the old token are both refused; Pause makes open connections answer `paused`.
+2. After the run ends, an **already-open** shim connection and a new connection with the old token are both refused. Pause closes the scope's open connections at once and keeps the listener (`endpoint-drop`, `messages-contract.md` section 12); a new connection may authenticate, and while paused its requests answer `paused` and close.
 3. A fifth concurrent connection is closed; a connection that sends no `auth` frame within 2 s, or a frame over the cap, is closed; a 64 KiB+ unframed write before authentication does not grow daemon memory beyond the frame cap.
 4. A read loop is limited to 60 per minute and each response to the caps; 1,000 bad-token attempts produce at most one aggregated audit row per minute.
 5. A message containing `ESC ] 52`, `ESC ] 8` and a bidirectional override is returned escaped through the endpoint and wrapped in the label.

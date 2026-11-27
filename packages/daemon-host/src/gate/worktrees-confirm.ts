@@ -77,6 +77,7 @@ export function createWorktreesApprovals(deps: Omit<ApprovalsDeps, "capability" 
     port: approvals.port,
     runs: approvals.runs,
     stats: approvals.stats,
+    endPlugin: approvals.endPlugin,
     dispose: approvals.dispose,
     onPreview: notes.record,
   });

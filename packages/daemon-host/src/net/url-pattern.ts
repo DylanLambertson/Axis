@@ -83,7 +83,13 @@ export function matchTarget(composed: ComposedRequest, target: EgressTarget): Ma
   const refusal = kind === "net" ? netRefusal(segments, query, parsed) : operationRefusal(segments, query, parsed);
   if (refusal !== null) return refusal;
   if (href !== url) return "identity";
-  const snapshot: Snapshot = Object.freeze({ integration, origin, href, method, body: body === undefined ? undefined : copyBytes(body) });
+  let bodyCopy: Uint8Array | undefined;
+  try {
+    bodyCopy = body === undefined ? undefined : copyBytes(body);
+  } catch {
+    return "target"; // a body whose buffer was detached (transferred) before the match (N1f nits review D)
+  }
+  const snapshot: Snapshot = Object.freeze({ integration, origin, href, method, body: bodyCopy });
   matchedComposed.add(composed);
   const matched = Object.freeze({ origin, href }) as unknown as MatchedTarget;
   records.set(matched, snapshot);

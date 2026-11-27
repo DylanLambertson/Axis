@@ -30,6 +30,7 @@ import type { HandlerRegistrar } from "./handlers/anchor-guard.js";
 import { createApprovalsHandlers } from "./handlers/approvals.js";
 import { registerCliRunsHandlers, startCliRun, type CliStart } from "./handlers/cli-runs.js";
 import { registerComposerRunsHandlers, startComposerRun, type ComposerRunsHandlerDeps, type ComposerStart } from "./handlers/composer-runs.js";
+import { registerPluginsHandlers } from "./handlers/plugins.js";
 import type { HandlerContext } from "@axis/daemon";
 import { PushedBases } from "./handlers/git-common.js";
 import { registerGitHandlers } from "./handlers/git.js";
@@ -62,7 +63,7 @@ import { loadPushedBases, savePushedBases } from "./storage/pushed-bases-file.js
 export interface ServingParts {
   readonly worktrees?: WorktreesBinding;
   readonly runs?: RunsBinding;
-  readonly approvals?: { readonly port: ApprovalsHandlerDeps["approvals"]; readonly onPreview?: (target: string, contentDigest: string, text: string) => void };
+  readonly approvals?: { readonly port: ApprovalsHandlerDeps["approvals"]; readonly onPreview?: (target: string, contentDigest: string, text: string) => void; readonly endPlugin: (pluginId: string, projectId: string) => number };
   readonly agent?: AgentBinding;
   readonly composer?: ComposerService;
   readonly providers?: { readonly cachedModels: NonNullable<ProvidersHandlerDeps["cachedModels"]>; readonly credential: NonNullable<ProvidersHandlerDeps["credential"]> };
@@ -123,6 +124,8 @@ export function registerServing(registrar: HandlerRegistrar, services: HostServi
     journal, mutex: worktrees.mutex, needsAttention: worktrees.needsAttention,
     pluginStarts: journal }; // PV-K1e-b: a plugin's start reads its scope and grant from the journal
   registerComposerRunsHandlers(registrar, composerRuns);
+  // PV-K2 K2-g1: the user's plugin list, revoke and disable; a decrease ends the plugin's open challenges at once.
+  registerPluginsHandlers(registrar, { journal, mutex: worktrees.mutex, endPlugin: (pluginId, projectId) => approvals.endPlugin(pluginId, projectId) });
   if (built.messaging === undefined) throw new AxisError("E_INTERNAL", "The host composition is incomplete", { reason: "not_built" });
   // PV-M7 slice 1: enabling a CLI worker's messaging checks its launch entry (from main, as a CLI start does) and workspace.
   registerMessagesHandlers(registrar, { ...built.messaging, checkEnable: hostEnableCheck({ journal, settingsGet: (k, o) => control.settingsGet(k, o), platform: config.platform }) });
