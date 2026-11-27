@@ -81,7 +81,8 @@ renderer. It merges without the card by waiver; what the waiver moves to PV-K2 i
 **The waiver** (owner delegation, 2026-11-26, reversible): PV-K1e-b merges before any shell shows the card, because it is inert in
 production. No plugin can hold `runs.start` until PV-K2's grant contract exists, and the Code OSS shell is being replaced (ADR 0011).
 
-**PV-K2 must not be enabled or merged until all of these hold** (review K1e-b):
+**PV-K2 must not be enabled or merged until all of these hold** (review K1e-b). The full gate, with a sixth condition (the plugin
+connection checked after the spend, review 2 of PV-K1e-b), is `plugin-grant-contract.md` section 1:
 
 1. **The Code OSS listing.** Before any plugin challenge can reach a Code OSS window, that shell is retired or its pending-approvals
    reader (`axisDaemonReplies.ts` `readPendingChallenges`) accepts the optional `requester`. One plugin challenge makes the strict
