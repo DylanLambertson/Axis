@@ -96,6 +96,8 @@ export interface EndpointRelay {
   revoke(runId: string): RelayOut | undefined;
   /** A worker's messaging was turned off (slice 3): every live endpoint of that worker is revoked. */
   revokeWorker(agentId: string): RelayOut[];
+  /** The user's switch was turned off (PV-M7 slice 2): every live endpoint is revoked at once. */
+  revokeAll(): RelayOut[];
   /** A pause changed in a project (slice 3): each live endpoint whose sender is now paused drops its connections. */
   dropPaused(projectId: string): RelayOut[];
   /** One relayed message; the messages to send back on the control channel. */
@@ -256,6 +258,10 @@ export function createEndpointRelay(deps: EndpointRelayDeps): EndpointRelay {
 
     revokeWorker(agentId) {
       return [...byId.values()].filter((ep) => ep.agentId === agentId).map(revokeEndpoint);
+    },
+
+    revokeAll() {
+      return [...byId.values()].map(revokeEndpoint);
     },
 
     dropPaused(projectId) {
