@@ -74,3 +74,19 @@ test("refusals: an unknown permission, a plugin never added, a grant twice; noth
   assert.throws(() => plugins.add("acme.board", "p1"));
   assert.equal(records(audit).length, before + 1, "only the one good grant was audited");
 });
+
+test("list (PV-K2 K2-g1): the plugins of one project by id, each with its state; empty for a project with none; read only", () => {
+  const { journal } = setup();
+  journal.registerProject({ id: "p9", path: "/repo/nine", displayName: "Nine", trusted: false, actor: "user" });
+  assert.deepEqual(journal.plugins.list("p9"), []);
+  journal.plugins.add("zeta.tool", "p9");
+  journal.plugins.add("alpha.tool", "p9");
+  journal.plugins.setEnabled("alpha.tool", "p9", true);
+  journal.plugins.grant("alpha.tool", "p9", "runs.start");
+  journal.plugins.grant("alpha.tool", "p9", "pages.read");
+  assert.deepEqual(journal.plugins.list("p9"), [
+    { pluginId: "alpha.tool", enabled: true, generation: 1, permissions: ["pages.read", "runs.start"] },
+    { pluginId: "zeta.tool", enabled: false, generation: 1, permissions: [] },
+  ]);
+  assert.deepEqual(journal.plugins.list("nowhere"), []);
+});
