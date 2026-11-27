@@ -159,6 +159,9 @@ project and the permission's wording. So the line follows the task Start pattern
 2. **A disable does not cancel live runs.** The plugin's open challenges are withdrawn at once (section 4).
 3. **PV-K1e-T4 is deferred** to the moment PV-K2 is about to be enabled, as condition 5 of section 1. The leaning for then: keep
    tier 3 while every side effect asks and the run is tainted, and revisit with real plugin usage.
+4. **The grant token's guarantee stops at the serving store** (2026-11-27). Code that holds a writable database handle is in the
+   trusted base, and the construction rule keeps such handles in one file (section 8.4). A per-database authority, which would
+   refuse a second store over the same handle, is not built; it stays open as option (a).
 
 ## 8. Implementation plan
 
@@ -203,6 +206,15 @@ call `grant` once per permission (decision 1). They never write the store direct
 **K2-g3: no second writer.** The locks are of two kinds, and only the runtime ones are a guarantee. The static rules catch
 ordinary mistakes and leave a reviewed boundary, as the existing principal precedent says of itself (ADR 0005, on wrappers and
 indirect flows).
+
+**The trust boundary** (decision 4, section 7):
+- **What the guarantee covers:** code that reaches the **serving** store, the `journal.plugins` of the journal the host
+  composition opened. Through that store, a grant needs a token, and only the approved action can mint one.
+- **What it does not cover:** code that holds a writable database handle already has full authority. It can write
+  `plugin_grants` rows with raw SQL, since the triggers check only their shape. It can also open a second `Journal` over the same
+  handle, whose store has its own untaken mint.
+- **The answer to that is containment, not the token.** Only one file may open the database, the journal or the store (the
+  construction rule below). Code that gets a handle anyway is in the trusted base, and its review is the control.
 
 *Runtime locks:*
 
@@ -250,16 +262,28 @@ startup.
   Element access with a non-literal key on that type is refused outright. Passing a `PluginGrantRecords` value to a function is
   flagged at the call site unless the callee is in the allowed files.
 - **Exports.** `grant-action.ts` exports exactly one name.
+- **Construction.** Only `daemon-host/src/host.ts` may call `Journal.open` or the storage port's `openDatabase`. Only
+  `audit/src/db.ts` and `daemon-host/src/storage/node-storage.ts` may call the audit package's `openDatabase`. Only
+  `journal/src/journal.ts` may construct `PluginGrantRecords`. That is where they are today. Tests are exempt here, since every
+  test opens its own database.
 - **Allowed files:** `grant-action.ts`, the host composition (for `takeGrantMint` only), the `axis.plugins/1` handlers (revoke
   and disable only), the store itself, and one named test helper.
 - **The rule's own tests** plant every bypass form that a static rule can see, and each must fail through the real source-walk
   entry:
   - an alias, destructuring, bracket access, a helper that receives the plugins object;
-  - a wrapper export, a second caller of `takeGrantMint`, a re-export, and a barrel.
+  - a wrapper export, a second caller of `takeGrantMint`, a re-export, and a barrel;
+  - a second `Journal.open`, a `new PluginGrantRecords`, and an `openDatabase` call outside the allowed files.
 
-**The boundary.** Code that launders the store through `any`, or through a computed name built at run time, is outside what a
-static rule proves. The runtime locks still hold there: no token, no grant. The minting function never leaves its closure. A new
-writer would have to change `grant-action.ts` or the composition, which this rule pins and review sees.
+**The boundary.** The static rules cannot prove anything about code that launders the store through `any` or a name built at
+run time. The runtime locks hold only for the serving store; they do not hold for code that holds the database handle (the trust
+boundary above). Such a writer would have to change `grant-action.ts`, the composition or a construction site, which these rules
+pin and review sees.
+
+**The residual, recorded:** a second journal or store opened over the serving database, or raw SQL from code that holds the
+handle, can write a grant without a token. K2-g3 adds this as a row of the residual register, with the next free number at
+merge. Its compensating controls are the construction rule and review. A test pins the residual as it stands: it shows that a
+second `Journal.open` over the same handle can mint. If a per-database authority is chosen later (option (a) of review 3), that
+test flips and the row closes.
 
 **K2-g4: a closed connection or host window stops the start.**
 
