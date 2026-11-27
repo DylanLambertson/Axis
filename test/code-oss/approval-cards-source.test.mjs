@@ -198,9 +198,11 @@ test("the cards sit below the workspace list, so a new card cannot move a row (a
 });
 
 test("only the approval cards view asks the service for a decision", () => {
+  // Test files are told apart by their path INSIDE the overlay: a checkout whose own path contains "test" must not hide every file.
   const callers = overlayFiles(OVERLAY)
-    .filter((f) => !f.includes(`${join("test", "")}`) && /\.decideApproval\(/.test(readFileSync(f, "utf8")))
-    .map((f) => f.slice(OVERLAY.length + 1).replace(/\\/g, "/"));
+    .map((f) => ({ f, rel: f.slice(OVERLAY.length + 1).replace(/\\/g, "/") }))
+    .filter(({ f, rel }) => !rel.split("/").includes("test") && !/\.test\.[cm]?[jt]sx?$/.test(rel) && /\.decideApproval\(/.test(readFileSync(f, "utf8")))
+    .map(({ rel }) => rel);
   assert.deepEqual(callers, [VIEW]);
 });
 
