@@ -60,6 +60,12 @@ test("a value with a separator, a control character or an encoded separator is r
     assert.equal(reason(() => composeRequest(NAMED, "gh", ORIGIN, { name: v })), "argument_refused", `path ${JSON.stringify(v)}`);
     assert.equal(reason(() => composeRequest(ISSUE, "gh", ORIGIN, { ...BASE, search: v })), "composed", `query ${JSON.stringify(v)}`);
   }
+  // Audit C I1: dot look-alikes that no normalisation maps to "." (a confusable skeleton would): middle dot, Greek ano teleia
+  // (NFC to the middle dot), Arabic full stop, Syriac supralinear full stop, Lisu letter tone mya ti.
+  for (const v of ["\u00b7\u00b7", "\u0387\u0387", "\u06d4\u06d4", "\u0701\u0701", "\ua4f8\ua4f8", "a\u00b7b"]) {
+    assert.equal(reason(() => composeRequest(NAMED, "gh", ORIGIN, { name: v })), "argument_refused", `path ${JSON.stringify(v)}`);
+    assert.equal(reason(() => composeRequest(ISSUE, "gh", ORIGIN, { ...BASE, search: v })), "composed", `query ${JSON.stringify(v)}`);
+  }
 });
 
 test("non-ASCII only in a text value, encoded once; a lone surrogate is refused; at most 256 UTF-8 bytes", () => {

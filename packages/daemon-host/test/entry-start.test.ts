@@ -114,7 +114,9 @@ test("with every port supplied the entry starts, serves an attested connection o
     timers.fire();
     assert.deepEqual(proc.exits, [EXIT.OK], "a released host ends the process with the shutdown's code");
     assert.equal(port.attached(), false);
-    for (const name of proc.eventNames()) assert.equal(proc.listenerCount(name), 0, `a listener on ${String(name)} was left behind`);
+    // The SIGUSR1 listener is permanent by design (audit C M1): removing it would restore Node's inspector default.
+    for (const name of proc.eventNames()) assert.equal(proc.listenerCount(name), name === "SIGUSR1" ? 1 : 0, `a listener on ${String(name)} was left behind`);
+    assert.equal(proc.listenerCount("SIGUSR1"), 1, "the SIGUSR1 listener stays after the release");
     assert.equal(JSON.stringify([...lines, ...port.posted]).includes(init.key.toString("base64url")), false, "the key reached no line and no message");
   } finally {
     for (const p of open) p.close();

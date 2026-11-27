@@ -90,7 +90,9 @@ const CONTROL = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u20
 // `;` too: encoded it is `%3B`, which the contract refuses anywhere (a path parameter some servers strip), so it is refused here, before encoding.
 const SEPARATOR = /[/?#\\;]/;
 const PERCENT = /%/;
-const PATH_CONFUSABLE = /[\u2024\u2044\u2215\u2216\u29f5\u29f8\u3002\ufe52\ufe68\uff0e\uff0f\uff3c\uff61]/;
+// Audit C I1: the middle dot, Greek ano teleia, Arabic and Syriac full stops and the Lisu tone mark look like `.` and no
+// normalisation maps them to it, so normalisesToDanger cannot see them.
+const PATH_CONFUSABLE = /[\u00b7\u0387\u06d4\u0701\ua4f8\u2024\u2044\u2215\u2216\u29f5\u29f8\u3002\ufe52\ufe68\uff0e\uff0f\uff3c\uff61]/;
 const INTEGRATION = /^[a-z][a-z0-9:._-]{0,63}$/;
 
 /**

@@ -132,6 +132,9 @@ function reasonOf(error: unknown): string | undefined {
   return typeof r === "string" && REASON.test(r) ? r : undefined;
 }
 
+/** The one closed line the entry writes when SIGUSR1 arrives (the inspector stays closed). */
+export const DEBUG_SIGNAL_LINE = "axis.daemon ignored SIGUSR1: the inspector stays closed";
+
 export function runDaemonEntry(deps: DaemonEntryDeps): DaemonEntryHandle {
   let resolveStarted: (ok: boolean) => void = () => undefined;
   let resolveFinished: (code: number) => void = () => undefined;
@@ -148,6 +151,16 @@ export function runDaemonEntry(deps: DaemonEntryDeps): DaemonEntryHandle {
       // a failing log line never changes the outcome
     }
   };
+
+  // Audit C M1: SIGUSR1 would open Node's unauthenticated inspector on 127.0.0.1:9229, from which any local user could read the
+  // heap and every revealed credential. A listener replaces Node's default handler, so the signal opens nothing. It is the
+  // first thing installed, on every path, and never removed (removing it would restore the default).
+  let signalled = false;
+  deps.process.on("SIGUSR1", () => {
+    if (signalled) return;
+    signalled = true;
+    line(DEBUG_SIGNAL_LINE);
+  });
 
   /** A refusal before the channel exists: best-effort `fatal` straight on the parent port, then exit. */
   const refuseEarly = (reason: string): DaemonEntryHandle => {

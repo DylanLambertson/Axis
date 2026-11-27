@@ -40,7 +40,7 @@ export interface PtyParentPortLike {
 
 export interface PtyEntryProcess {
   exit(code?: number): unknown;
-  on(event: "SIGTERM" | "SIGINT" | "exit", listener: () => void): unknown;
+  on(event: "SIGTERM" | "SIGINT" | "SIGUSR1" | "exit", listener: () => void): unknown;
   removeListener(event: "SIGTERM" | "SIGINT" | "exit", listener: () => void): unknown;
 }
 
@@ -75,7 +75,23 @@ const closeAll = (ports: readonly MessagePortLike[]): void => {
   }
 };
 
+/** The one closed line the entry writes when SIGUSR1 arrives (the inspector stays closed). */
+export const DEBUG_SIGNAL_LINE = "axis.pty ignored SIGUSR1: the inspector stays closed";
+
 export function runPtyEntry(deps: PtyEntryDeps): PtyEntryHandle {
+  // Audit C M1: SIGUSR1 would open Node's unauthenticated inspector on 127.0.0.1:9229, from which any local user could read
+  // this process's heap. A listener replaces Node's default handler, so the signal opens nothing. Installed first, on every
+  // path, and never removed (not even by `dispose`: removing it would restore the default).
+  let signalled = false;
+  deps.process.on("SIGUSR1", () => {
+    if (signalled) return;
+    signalled = true;
+    try {
+      deps.stderr(DEBUG_SIGNAL_LINE);
+    } catch {
+      /* a failing log line never changes the outcome */
+    }
+  });
   const refuse = (reason: string): PtyEntryHandle => {
     try {
       deps.stderr(`axis.pty refused to start: ${reason}`);

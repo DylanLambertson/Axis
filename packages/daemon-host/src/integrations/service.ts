@@ -115,28 +115,35 @@ export function createIntegrationsService(deps: IntegrationsServiceDeps): Integr
       if (typeof matched === "string") return refuse(reasonIn(MATCH_REASON, matched));
       if (signal.aborted) return refuse("cancelled");
 
-      // Step 4: the vault's reveal gate refuses a weak or moved entry; the connector's shape is checked before any use.
+      // Step 4: the vault's reveal gate refuses a weak or moved entry; the connector's shape is checked before any use. Every
+      // reveal attempt writes one credential row (audit C L1, as the providers binding audits every read, DMN-5): a refused
+      // reveal, a token of the wrong shape and a failed registration each write a `failure` row with their closed reason, and
+      // the call keeps that reason; only a usable credential writes the `success` row the send needs (step 6).
+      const base = { integrationId: connector.id, operation: input.operation, projectId: input.projectId };
+      const credentialRow = (reason: IntegrationReason | "ok"): boolean =>
+        append({ actor: "user", action: "integration.credential", target: entryOf(connector.id), outcome: reason === "ok" ? "success" : "failure", payload: { ...base, actorKind: "user", purpose: "integration_request", reason } });
+      const refusedReveal = (reason: IntegrationReason): never => {
+        credentialRow(reason);
+        return refuse(reason);
+      };
       let token: string;
       try {
         token = await vault.reveal(entryOf(connector.id));
       } catch (e) {
-        return refuse(e instanceof IntegrationRefusal ? e.reason : "internal");
+        return refusedReveal(e instanceof IntegrationRefusal ? e.reason : "internal");
       }
-      if (!connector.tokenShape.test(token)) return refuse("needs_reconnect");
+      if (!connector.tokenShape.test(token)) return refusedReveal("needs_reconnect");
       const header = `Bearer ${token}`;
       // Step 5: registered at once, before anything else uses the value. The redactor only grows.
       try {
         redactor.registerSecret(token);
         redactor.registerSecret(header);
       } catch {
-        return refuse("internal");
+        return refusedReveal("internal");
       }
       const needles = echoNeedles(header, token);
-      const base = { integrationId: connector.id, operation: input.operation, projectId: input.projectId };
-      // Step 6: the credential row before attach; nothing is sent without it.
-      if (!append({ actor: "user", action: "integration.credential", target: entryOf(connector.id), outcome: "success", payload: { ...base, actorKind: "user", purpose: "integration_request" } })) {
-        return refuse("audit_unavailable");
-      }
+      // Step 6: the success credential row before attach; nothing is sent without it.
+      if (!credentialRow("ok")) return refuse("audit_unavailable");
 
       let failure: IntegrationRefusal | undefined;
       let out: { readonly status: number; readonly result: unknown } | undefined;
@@ -196,6 +203,6 @@ export function createIntegrationsService(deps: IntegrationsServiceDeps): Integr
 
 /** The exact payload keys of the two rows (audit payload policy): nothing else is ever stored. */
 export const INTEGRATIONS_PAYLOAD_ALLOWLIST: Readonly<Record<string, readonly string[]>> = Object.freeze({
-  "integration.credential": Object.freeze(["integrationId", "operation", "projectId", "actorKind", "purpose"]),
+  "integration.credential": Object.freeze(["integrationId", "operation", "projectId", "actorKind", "purpose", "reason"]),
   "integration.request": Object.freeze(["integrationId", "operation", "projectId", "status", "bytesOut", "bytesIn", "durationMs", "reason"]),
 });

@@ -76,6 +76,7 @@ const M = [
   ["u", "credential binding check", "typeof integration !== \"string\" || integration.length === 0 || !originSchema.safeParse(origin).success", "false"],
   ["c", "percent refused", "if (CONTROL.test(text) || SEPARATOR.test(text) || PERCENT.test(text))", "if (CONTROL.test(text) || SEPARATOR.test(text))"],
   ["c", "path confusables", "PATH_CONFUSABLE.test(text) || DEFAULT_IGNORABLE.test(text)", "DEFAULT_IGNORABLE.test(text)"],
+  ["c", "dot look-alikes without normalisation (audit C I1)", "/[\\u00b7\\u0387\\u06d4\\u0701\\ua4f8\\u2024", "/[\\u2024"],
   ["c", "integration checked", "if (typeof integration !== \"string\" || !INTEGRATION.test(integration))\n        throw new CompositionError(\"integration_refused\");\n    if (!originSchema.safeParse(origin).success)\n        throw new CompositionError(\"origin_refused\");\n    const used", "const used"],
   ["c", "net integration checked", "if (typeof integration !== \"string\" || !INTEGRATION.test(integration))\n        throw new CompositionError(\"integration_refused\");\n    if (!originSchema.safeParse(origin).success)\n        throw new CompositionError(\"origin_refused\");\n    if (typeof path", "if (typeof path"],
   ["c", "integration recorded", "kind: \"operation\", integration, method", "kind: \"operation\", integration: \"gh\", method"],
