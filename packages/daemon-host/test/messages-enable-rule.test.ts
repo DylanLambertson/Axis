@@ -274,3 +274,11 @@ test("review 6 N29: the npm layout of Claude Code is accepted by its exact packa
   assert.deepEqual(real(["/usr/local/bin/codex", "-m", "o3"], "/usr/local/lib/node_modules/@anthropic-ai/claude-code/cli.js"), { allowed: false, rule: "wrapper_unparsed" }, "the Claude package is not codex");
   assert.deepEqual(real(["/snap/bin/codex", "-m", "o3"], "/usr/lib/snapd/snapd"), { allowed: false, rule: "wrapper_unparsed" }, "snap: refused, documented");
 });
+
+test("review 7 N35: the layout rules are anchored, a version has at least two numbers, and a Windows real path is read by its segments", () => {
+  const real = (argv: string[], executableReal: string) => decideCliMessaging({ argv, executableReal, bypassesPrompts: false, exists: none });
+  assert.deepEqual(real(["/r/claude", "--verbose"], "/home/u/.local/share/claude/versions/evil2.1.332"), { allowed: false, rule: "wrapper_unparsed" }, "the version must be the whole file name");
+  assert.deepEqual(real(["/r/claude", "--verbose"], "/opt/claude/7"), { allowed: false, rule: "wrapper_unparsed" }, "a single number is not a version");
+  assert.deepEqual(real(["/r/claude", "--verbose"], "/x/@anthropic-ai/claude-code/cli.jsx"), { allowed: false, rule: "wrapper_unparsed" }, "the package script must end the path");
+  assert.deepEqual(real(["C:\\\\r\\\\claude.exe", "--verbose"], "C:\\\\Users\\\\u\\\\.local\\\\share\\\\claude\\\\versions\\\\2.1.332"), { allowed: true, warnings: [] }, "a Windows real path is split at its backslashes");
+});
